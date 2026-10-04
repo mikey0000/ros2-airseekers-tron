@@ -26,9 +26,7 @@ services:
       - DISPLAY=${DISPLAY:-}
     volumes:
       # ROS 2 workspace sources (bind-mount; built inside container by scripts/build.sh)
-      - ../src:/work/src
-      - ../launch:/work/launch
-      - ../config:/work/config
+      - ..:/work
       # Full /dev bind covers udev symlinks + hotplug (ttyUSB*, video*); explicit
       # `devices:` below pins the load-bearing serial ports even if /dev churns.
       - /dev:/dev
