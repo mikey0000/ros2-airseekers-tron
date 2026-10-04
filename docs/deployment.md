@@ -56,6 +56,19 @@ and mounts `../src → /work/src` (plus `launch/`, `config/`).
   lacks it; everything else (`ros-base`, `nav2-bringup`, `control-toolbox`,
   `serial-driver`, `colcon`) is a hard dependency.
 
+## Mower-side setup
+
+The following scripts live in `ros2_stack/scripts/` and assist with on-device preparation:
+
+- **`setup_mower.sh`** — Idempotent setup: detects Ubuntu 20.04 aarch64, warns if free space <10 GB on `/`, installs `docker.io` via `apt` if missing, adds the current user to the `docker` group, notes the iptables/nft caveat, and verifies Docker functionality with `docker info` (since `docker run hello-world` cannot be used off-image on this host). Set `PRE_PULL=1` to pre-pull `ros:humble-ros-base-jammy` before container bringup.
+- **`preflight.sh`** — Preflight checks before bringing up the ROS 2 stack: verifies docker is present, confirms serial device node symlinks (`/dev/serial_mower` → `ttyS9`, `/dev/serial_imu` → `ttyS1`, `/dev/serial_rtk` → `ttyS4`), warns if vendor services (`mower-base`, `mower-logic`, `mower-controller`) are active (they may hold serial ports), warns if free disk on `/userdata` <10 GB, and prints a **go/no-go** summary.
+
+Make both scripts executable after copying:
+
+```bash
+chmod +x ros2_stack/scripts/setup_mower.sh ros2_stack/scripts/preflight.sh
+```
+
 ## Build and run (on a dev host or the mower; never touch 192.168.1.105 blindly)
 
 ```bash

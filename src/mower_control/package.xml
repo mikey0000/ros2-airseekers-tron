@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_control</name>
+  <version>0.1.0</version>
+  <description>
+    ROS 2 Humble control-support nodes for the Airseekers Tron mower (MowgliNext
+    patterns ported): cmd_vel slew limiter with command watchdog, wheel-slip
+    (dig) detector gated on RTK-fixed, and at-rest IMU bias calibration with a
+    persisted YAML file.
+  </description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- ROS interfaces used by the nodes -->
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+  <!-- imu_cal subscribes to /imu/data (sensor_msgs/Imu) from wit_imu_driver;
+       slip_detector falls back to /odom (nav_msgs/Odometry) from
+       mower_mcu_driver. -->
+  <depend>sensor_msgs</depend>
+
+  <!-- imu_cal persists biases to YAML -->
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

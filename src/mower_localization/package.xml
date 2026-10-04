@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_localization</name>
+  <version>0.1.0</version>
+  <description>
+    Localization for the Airseekers Tron mower (ROS 2 Humble). Ships the
+    robot_localization parameter sets that fuse /odom, /imu/data and the
+    navsat_transform_node output of /fix into the REP-105 frame tree
+    (map -> odom -> base_link, world_frame odom), and gps_gate, which
+    republishes /fix only when NavSatFix.status.status >= STATUS_FIX and
+    the fix's covariance is inside the configured thresholds. The ekf_node
+    owns the odom -> base_link transform; map -> odom stays with the
+    localization back-end (MowgliNext Invariant 2: drivers publish no TF).
+  </description>
+
+  <maintainer email="dev@todo.todo">ROS 2 port team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <!-- ekf_node and navsat_transform_node themselves come from the
+       ros-humble-robot-localization apt package (see docs/localization.md);
+       this package only provides their parameters and the gps_gate node. -->
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

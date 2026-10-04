@@ -1,0 +1,100 @@
+# Localization EKF — robot_localization ekf_node (ROS 2 Humble).
+#
+# Fuses the three localization sources of this stack:
+#   /odom          mower_mcu_driver   50 Hz  wheel dead reckoning
+#   /imu/data      wit_imu_driver     100 Hz (its /imu remapped; see
+#                                          docs/localization.md)
+#   /odometry/gps  navsat_transform_node  ~10 Hz  the gated /fix pose
+#                  projected into the odom frame (config/navsat.yaml,
+#                  fed by mower_localization/gps_gate). It arrives as a
+#                  nav_msgs/Odometry message, so it is an odom input
+#                  (odom1) — the wiring robot_localization's own
+#                  dual_ekf_navsat_example uses.
+#
+# Frame policy (docs/localization.md, mowglinext_baseline.md section 3):
+#   * this node owns odom -> base_link (publish_tf: true)
+#   * world_frame == odom_frame: the filter runs in "odom world" and does
+#     NOT broadcast map -> odom. That transform belongs to the localization
+#     back-end (in MowgliNext: fusion_graph, the sole map/odom TF owner).
+#
+# Consume it with (from the workspace root, after colcon build):
+#   ros2 run robot_localization ekf_node --ros-args \
+#     --params-file install/mower_localization/share/mower_localization/config/ekf.yaml
+
+ekf_node:
+  ros__parameters:
+    # --- filter core -------------------------------------------------------
+    frequency: 30.0         # filter rate; faster than the slowest source
+    sensor_timeout: 0.2     # warn when a fused sensor is stale; 2x the
+                            # 10 Hz GPS period so receiver jitter is not a
+                            # timeout, but a dead IMU is flagged in 0.2 s
+    two_d_mode: true        # planar mower: z, roll, pitch are not estimated
+    publish_tf: true        # broadcast odom -> base_link
+    print_diagnostics: true
+
+    # --- frames (REP-105 chain map -> odom -> base_link) -------------------
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom       # fuse everything in the odom frame
+
+    # --- wheel odometry, 50 Hz (mower_mcu_driver) --------------------------
+    # Pose x/y and twist x/y + yaw rate. Pose yaw is deliberately NOT fused:
+    # /odom's heading comes from the JY61P (mcu_node use_imu_yaw), i.e. the
+    # same sensor as imu0, so fusing it here would double-count it.
+    odom0: /odom
+    odom0_config: [true,  true,  false,   # pose   x, y, z
+                   false, false, false,   # pose   roll, pitch, yaw
+                   true,  true,  false,   # twist  x, y, z
+                   false, false, false,   # twist  roll, pitch, yaw
+                   false, false, true]    # twist  yaw
+    odom0_differential: false
+    odom0_queue_size: 10
+
+    # --- IMU, 100 Hz (wit_imu_driver, /imu remapped to /imu/data) ----------
+    # Planar yaw, yaw rate and gravity-removed horizontal acceleration.
+    imu0: /imu/data
+    imu0_config: [false, false, false,  # pose   x, y, z
+                  false, false, true,   # pose   roll, pitch, yaw
+                  false, false, false,  # twist  x, y, z
+                  false, false, true,   # twist  roll, pitch, yaw
+                  true,  true,  false]  # accel  x, y, z
+    imu0_remove_gravitational_acceleration: true
+    imu0_queue_size: 10
+
+    # --- GPS pose, ~10 Hz (navsat_transform_node output) --------------------
+    # /odometry/gps is the gated /fix (gps_gate) projected into the odom
+    # frame: position only. GPS-derived heading is far worse than the JY61P
+    # yaw, so no yaw is fused from it. Fusing an absolute GPS measurement
+    # into the odom world means odom can jump when the GPS corrects it;
+    # the jump-free alternative is a second, map-frame EKF
+    # (robot_localization's dual_ekf_navsat_example), which is what the
+    # future localizer back-end replaces.
+    odom1: /odometry/gps
+    odom1_config: [true,  true,  false,  # pose   x, y, z
+                   false, false, false,  # pose   roll, pitch, yaw
+                   false, false, false,  # twist  x, y, z
+                   false, false, false,  # twist  roll, pitch, yaw
+                   false, false, false]  # accel  x, y, z
+    odom1_differential: false
+    odom1_queue_size: 10
+
+    # /cmd_vel goes to the MCU, not the filter.
+    use_control: false
+
+    # Process noise: robot_localization's documented template values.
+    process_noise_covariance: [0.05, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0.05, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0.06, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0.03, 0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0.06, 0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0.02, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0.025, 0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0.025, 0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0.04, 0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0.01, 0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.01, 0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.02, 0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                               0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.015]

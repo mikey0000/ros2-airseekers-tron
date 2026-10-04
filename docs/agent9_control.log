@@ -1,0 +1,490 @@
+[0m
+> build · longcat-2.5-preview-free
+I'll start by exploring the existing `ros2_stack` structure and the MowgliNext baseline doc to understand the patterns to follow.
+[0m$ [0mfind /home/michael/git/airseekers-decompile/ros2_stack -type f 2>/dev/null | head -50
+/home/michael/git/airseekers-decompile/ros2_stack/scripts/run_stack.sh
+/home/michael/git/airseekers-decompile/ros2_stack/scripts/build.sh
+/home/michael/git/airseekers-decompile/ros2_stack/launch/bringup.launch.py
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/d6/c8791cec878bf4734a4132478879c27b870837
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/d6/533bd2ea1c3366053b42cda2155083a274dfa3
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/d6/f84f4b74154361f4e7f80a6327bcd315503691
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/c1/89bd41dd5cb7ba6e649d24a31f8a0790804f80
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/b7/9b0346b4394ca99df21e3c4048c3f7a8fd81af
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/53/afb788eacd55ecaf36b396100f4a0cd86ab69d
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/6f/cfaeb45244fa8efc40775d6849dba90c796cb0
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/88/70e24206ec83618f90de2daf60c29cfcd78cb7
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/61/78532a7383ac43f25d498f27e099da39ccf536
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/bc/503e453cf97b62ae2611d6b310627e7c156099
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/2d/a32da151ae2006b1975d786afcbceedd0c76c1
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/b3/cb656ba1c04f5b48aabbe35144abe408ee938e
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/31/d02ec597ffd8c3512c61a289886081fdd6b4a8
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/44/1326af8ef30782b45fcc438ef0656893dcf413
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/65/9211709166865182694075fa2730d33ad411b5
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/05/20a1e3398a7627125f2f4643120e781e3ac06d
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/fd/8b261103ee50686b7502ffed3c70bf29eb5afb
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/9a/b31962548e54ef1e8c587a2e14329cdd0793f9
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/66/76efe9300465df30801939fdebb3dbfa87d237
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/37/2f5b5dc15a7cd083882bf0037d2c92d81104b6
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/aa/85bfd5d95398992288ce001da3c316c19ccdbb
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/ff/10a34b503455a7b2384da247893b8ffee9ee30
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/6d/4b3ccc8f386d86853132a15312a4bbbe036713
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/6d/ede96c18edccc7da38ccbb85ecc709cc78593b
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/03/d1a70e15df749a3d9f9261e0dfbbb1bd56f355
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/5d/a54e63e53b0c8c105f86541965e075d4130d57
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/0f/57bd84c9db1787ec9961036022478c1ea30d30
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/f5/b8c2adf34986a8841452fab32108e7da6c794d
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/0e/849c54bb5c46065abe452027e36986731b2452
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/94/6208de68f458b732df69e85a036b16892403c8
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/94/9648ad59d8aa4f79a56b22adf75dfda3939226
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/46/8814b134213f902b442acede1224626d50223b
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/a2/5cf32afb22c8a0a3a2db63dc83601a092990fc
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/c9/61253b069f32e5946f90efbf68ac52cbd38f6f
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/fc/b7fdba0d53fd235fe65f7157bea05d2e353086
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/5b/992421251b41f52dec84a8cf5e2e77f8421149
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/8f/a93a5cc50b26f362b76b07a32595465b7e0d30
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/e6/9de29bb2d1d6434b8b29ae775ad8c2e48c5391
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/e6/c080485a581bf15bfdb3611b2ba8c5ce35a9fb
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/a7/ccb60f06da2cbcf0ebe527ffaaddc65b963a1e
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/3f/2711db88d9d450024b683308925e8ec6af72a4
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/c4/0ee6b23a13b193def49c5399e80413b385c088
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/c4/5e5db529cd398674b66224a4d74f36a2e972f9
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/7a/eea3dbcaf45e7268b30655e696ded4f0555de0
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/01/20dccf7289fc99970e41ea74c6c570f762a768
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/01/1feee390a85071d383ec195580e3c524099638
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/0c/9c25fc52df1ae7e8696e26420d59c53a893250
+[0m✱ [0mGlob "ros2_stack/**/*" [90m63 matches[0m
+> build · longcat-2.5-preview-free
+Let me read the key reference files to match existing conventions.
+[0m→ [0mRead ros2_stack/docs/mowglinext_baseline.md 
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/setup.py 
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/package.xml 
+> build · longcat-2.5-preview-free
+Let me look at the existing node code style and the launch file to match conventions.
+[0m→ [0mRead ros2_stack/launch/bringup.launch.py 
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py [90m[limit=120][0m
+> build · longcat-2.5-preview-free
+Let me check the wit_imu_driver setup.py and a doc for style conventions.
+[0m→ [0mRead ros2_stack/docs/wit_imu.md [90m[limit=80][0m
+[0m→ [0mRead ros2_stack/src/wit_imu_driver/setup.py 
+> build · longcat-2.5-preview-free
+Let me check the interfaces and how GPS status is published (needed for the RTK-fixed gate).
+[0m✱ [0mGrep "wheel_vel|/odom" [90min ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py · 4 matches[0m
+[0m$ [0mls /home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/ && grep -rn "rtk\|RTK\|fix_status\|GnssStatus" /home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/um960_gps_driver/um960_node.py | head -20
+ControlInfo.msg
+MotorInfo.msg
+MotorStatus.msg
+MowerBaseDevStatus.msg
+MowerBaseMotorsInfo.msg
+MowerSensorInfo.msg
+PlannerOption.msg
+1:"""ROS 2 node wrapping the Unicore UM960 GNSS/RTK receiver.
+7:    /fix_status   std_msgs/msg/String         (human-readable quality/solution summary)
+10:Hardware: Unicore UM960 on /dev/serial_rtk (ttyS4, UART4 @ 0xfeb70000), 115200 8N1.
+69:        self.declare_parameter("port", "/dev/serial_rtk")
+75:        self.declare_parameter("fix_status_topic", "/fix_status")
+115:        self.fix_status_pub = self.create_publisher(
+116:            String, str(self.get_parameter("fix_status_topic").value), fix_qos
+412:            # Stop publishing the fix, but keep /fix_status alive so an operator can
+419:            self.fix_status_pub.publish(String(data="STALE " + status))
+429:        self.fix_status_pub.publish(String(data=status))
+> build · longcat-2.5-preview-free
+[0m→ [0mRead ros2_stack/src/um960_gps_driver/um960_gps_driver/um960_node.py [90m[offset=380, limit=60][0m
+> build · longcat-2.5-preview-free
+[0m✱ [0mGrep "GSA_FIX_TYPE" [90min ros2_stack/src/um960_gps_driver/um960_gps_driver/um960_node.py · 2 matches[0m
+> build · longcat-2.5-preview-free
+[0m✱ [0mGrep "GSA_FIX_TYPE\s*=|RTK|FIX" [90min ros2_stack/src/um960_gps_driver/um960_gps_driver/parsers.py · 14 matches[0m
+> build · longcat-2.5-preview-free
+[0m→ [0mRead ros2_stack/src/um960_gps_driver/um960_gps_driver/parsers.py [90m[offset=10, limit=25][0m
+> build · longcat-2.5-preview-free
+[0m→ [0mRead ros2_stack/src/um960_gps_driver/um960_gps_driver/parsers.py [90m[offset=34, limit=25][0m
+> build · longcat-2.5-preview-free
+Now let me check the `/wheel_vel` type in the vendor stack and the README ground rules.
+[0m→ [0mRead ros2_stack/README.md 
+[0m✱ [0mGrep "wheel_vel" [90min . · 100 matches[0m
+> build · longcat-2.5-preview-free
+`/wheel_vel` is `geometry_msgs/TwistStamped` in the vendor stack. Let me check the local Python environment for testing options.
+[0m$ [0mpython3 --version && python3 -c "import yaml; print('yaml OK', yaml.__version__)" 2>&1; python3 -c "import rclpy; print('rclpy OK')" 2>&1 | head -2; python3 -c "import numpy; print('numpy OK')" 2>&1 | head -2
+Python 3.14.4
+yaml OK 6.0.3
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+numpy OK
+> build · longcat-2.5-preview-free
+Let me verify the exact `/fix_status` string format from the um960 driver (needed for the RTK-fixed gate).
+[0m✱ [0mGrep "_build_status|quality_label|GGA_QUALITY\[|label" [90min ros2_stack/src/um960_gps_driver/um960_gps_driver/um960_node.py · 6 matches[0m
+> build · longcat-2.5-preview-free
+[0m→ [0mRead ros2_stack/src/um960_gps_driver/um960_gps_driver/um960_node.py [90m[offset=360, limit=20][0m
+> build · longcat-2.5-preview-free
+The `/fix_status` string contains `quality=RTK_FIXED` (GGA) or `solution=INS_RTKFIXED` (Unicore) — so a substring check for `RTK_FIXED` works. Let me check the resource marker convention, then write the package.
+[0m$ [0mwc -c /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/resource/mower_mcu_driver /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/mower_mcu_driver/__init__.py && cat /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/mower_mcu_driver/__init__.py
+0 /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/resource/mower_mcu_driver
+100 /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/mower_mcu_driver/__init__.py
+100 total
+"""Airseekers Tron MCU serial driver package (ROS 2 Humble)."""
+
+__all__ = ['mcu_node', 'fake_mcu']
+> build · longcat-2.5-preview-free
+I have everything I need. Let me check the `main()` convention in the existing node, then write all files.
+[0m$ [0mtail -30 /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+# Raw MotorInfo names -> names used by mower_interfaces/MotorInfo (vendor msg uses speed_rpm).
+# TODO: the vendor MotorInfo also nests a MotorStatus message where the wire format has a
+# single uint8; that field needs a converter once the interface package is final.
+_MOTOR_FIELD_ALIASES = {'speed': 'speed_rpm'}
+
+
+# Dead reckoning covariances (row-major 6x6).  Unobserved axes are marked with 1e6.
+_POSE_COVARIANCE = _diag6(0.05, 0.05, 0.10, 0.50, 0.50, 0.10)
+_TWIST_COVARIANCE_MEASURED = _diag6(0.02, 1e6, 1e6, 1e6, 1e6, 0.05)
+_TWIST_COVARIANCE_COMMANDED = _diag6(1.00, 1e6, 1e6, 1e6, 1e6, 1.00)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = McuNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.shutdown()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+> build · longcat-2.5-preview-free
+Conventions are clear. Now I'll write the package. Starting with the package metadata files:
+[0m← [0mWrite ros2_stack/src/mower_control/package.xml
+Created file successfully: ros2_stack/src/mower_control/package.xml
+[0m← [0mWrite ros2_stack/src/mower_control/setup.py
+Created file successfully: ros2_stack/src/mower_control/setup.py
+[0m← [0mWrite ros2_stack/src/mower_control/resource/mower_control
+Created file successfully: ros2_stack/src/mower_control/resource/mower_control
+[0m← [0mWrite ros2_stack/src/mower_control/mower_control/__init__.py
+Created file successfully: ros2_stack/src/mower_control/mower_control/__init__.py
+> build · longcat-2.5-preview-free
+Now the three nodes:
+[0m← [0mWrite ros2_stack/src/mower_control/mower_control/cmd_vel_slew.py
+Created file successfully: ros2_stack/src/mower_control/mower_control/cmd_vel_slew.py
+[0m← [0mWrite ros2_stack/src/mower_control/mower_control/slip_detector.py
+Created file successfully: ros2_stack/src/mower_control/mower_control/slip_detector.py
+[0m← [0mWrite ros2_stack/src/mower_control/mower_control/imu_cal.py
+Created file successfully: ros2_stack/src/mower_control/mower_control/imu_cal.py
+> build · longcat-2.5-preview-free
+Now the docs, then I'll verify everything with an offline logic test (rclpy isn't available outside Docker, so I'll stub it).
+[0m← [0mWrite ros2_stack/docs/control.md
+Created file successfully: ros2_stack/docs/control.md
+> build · longcat-2.5-preview-free
+Now let me verify — syntax check plus an offline logic test with stubbed rclpy:
+[0m← [0mWrite /tmp/opencode/test_mower_control.py
+Created file successfully: /tmp/opencode/test_mower_control.py
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_control && python3 -m py_compile mower_control/cmd_vel_slew.py mower_control/slip_detector.py mower_control/imu_cal.py setup.py && echo "SYNTAX OK" && python3 /tmp/opencode/test_mower_control.py
+SYNTAX OK
+Traceback (most recent call last):
+  File "/tmp/opencode/test_mower_control.py", line 173, in <module>
+    out = node._pub.messages[-1]
+          ~~~~~~~~~~~~~~~~~~^^^^
+IndexError: list index out of range
+> build · longcat-2.5-preview-free
+The test hit the warm-up tick (first `_tick` initializes the time base without publishing). Let me fix the test timing:
+[0m← [0mEdit /tmp/opencode/test_mower_control.py
+Index: /tmp/opencode/test_mower_control.py
+===================================================================
+--- /tmp/opencode/test_mower_control.py
++++ /tmp/opencode/test_mower_control.py
+@@ -167,10 +167,11 @@
+         clock.t += 1.0 / node._rate
+         tick()
+ 
+ # 1. slews up from zero toward a fresh command
++# (first tick is a warm-up that only initialises the time base)
+ node._on_cmd_vel_raw(FakeTwistStamped(lin_x=1.0, ang_z=0.5))
+-run_ticks(0.05)
++run_ticks(0.1)
+ out = node._pub.messages[-1]
+ check('slew first tick linear', abs(out.twist.linear.x - 0.025) < 1e-9,
+       'got %r' % out.twist.linear.x)
+ check('slew first tick angular', abs(out.twist.angular.z - 0.05) < 1e-9,
+
+> build · longcat-2.5-preview-free
+[0m← [0mEdit /tmp/opencode/test_mower_control.py
+Index: /tmp/opencode/test_mower_control.py
+===================================================================
+--- /tmp/opencode/test_mower_control.py
++++ /tmp/opencode/test_mower_control.py
+@@ -194,9 +194,9 @@
+       'got %r' % out.twist.angular.z)
+ 
+ # 4. recovery slews up from zero again
+ node._on_cmd_vel_raw(FakeTwistStamped(lin_x=1.0, ang_z=0.0))
+-run_ticks(0.05)
++run_ticks(0.1)
+ out = node._pub.messages[-1]
+ check('recovery slews from zero', abs(out.twist.linear.x - 0.025) < 1e-9,
+       'got %r' % out.twist.linear.x)
+ 
+
+> build · longcat-2.5-preview-free
+[0m← [0mEdit /tmp/opencode/test_mower_control.py
+Index: /tmp/opencode/test_mower_control.py
+===================================================================
+--- /tmp/opencode/test_mower_control.py
++++ /tmp/opencode/test_mower_control.py
+@@ -208,8 +208,10 @@
+ msg.twist.linear.y = 0.25
+ msg.twist.angular.x = 0.75
+ node2._on_cmd_vel_raw(msg)
+ clock2.t += 0.05
++node2._tick()  # warm-up tick
++clock2.t += 0.05
+ node2._tick()
+ out = node2._pub.messages[-1]
+ check('pass-through linear.y', out.twist.linear.y == 0.25)
+ check('pass-through angular.x', out.twist.angular.x == 0.75)
+
+> build · longcat-2.5-preview-free
+[0m$ [0mpython3 /tmp/opencode/test_mower_control.py
+PASS slew first tick linear got 0.025
+PASS slew first tick angular got 0.05
+FAIL slew reaches linear target got 0.0
+FAIL slew reaches angular target got 0.0
+PASS watchdog exact zero linear got 0.0
+PASS watchdog exact zero angular got 0.0
+FAIL recovery slews from zero got 0.049999999
+PASS pass-through linear.y 
+PASS pass-through angular.x 
+PASS frame_id stamped 
+PASS exact echo logging 55 echo lines
+FAIL fallback to /odom 
+PASS no latch without fix status 
+PASS warns about missing /fix_status 
+PASS no latch on RTK_FLOAT 
+FAIL latch on RTK_FIXED after window 
+FAIL /dig_stall published True 
+FAIL latch logged as WARN 
+PASS not latched before window 
+PASS violation window restarted 
+FAIL latch after continuous window 
+PASS calibrated at rest CALIBRATED
+PASS gyro bias small got [0.0019295453511404249, -0.000952048115559041, 8.275462860678795e-05]
+PASS accel bias z small got [4.06327522897796e-12, 2.0916891265918003e-12, 4.666103574635372e-07]
+PASS calibration file written 
+PASS file has version header 
+Traceback (most recent call last):
+  File "/tmp/opencode/test_mower_control.py", line 304, in <module>
+    ic._status_pub.messages[-1].data.startswith('state=CALIBRATED'))
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^
+IndexError: list index out of range
+> build · longcat-2.5-preview-free
+The failures are test-harness issues, not node bugs: (1) the slip detector uses real `time.monotonic()` so tight test loops never accumulate window time, (2) my stub's `create_subscription` returned `None`, (3) the slew test let the command go stale (watchdog correctly zeroed it), (4) `_tick` was never called for imu_cal status. Let me fix the test:
+[0m← [0mWrite /tmp/opencode/test_mower_control.py
+Wrote file successfully: /tmp/opencode/test_mower_control.py
+> build · longcat-2.5-preview-free
+[0m$ [0mpython3 /tmp/opencode/test_mower_control.py
+PASS slew first tick linear got 0.025
+PASS slew first tick angular got 0.05
+PASS slew reaches linear target got 1.0
+PASS slew reaches angular target got 0.5
+PASS watchdog exact zero linear got 0.0
+PASS watchdog exact zero angular got 0.0
+PASS recovery slews from zero got 0.0249999995
+PASS pass-through linear.y 
+PASS pass-through angular.x 
+PASS frame_id stamped 
+PASS exact echo logging 34 echo lines
+PASS fallback to /odom 
+PASS no latch without fix status 
+PASS warns about missing /fix_status 
+PASS no latch on RTK_FLOAT 
+PASS latch on RTK_FIXED after window 
+PASS /dig_stall published True 
+PASS latch logged as WARN 
+PASS prefers /wheel_vel when published 
+PASS not latched before window 
+PASS violation window restarted 
+PASS latch after continuous window 
+PASS calibrated at rest CALIBRATED
+PASS gyro bias small got [0.0019295453511404249, -0.000952048115559041, 8.275462860678795e-05]
+PASS accel bias z small got [4.06327522897796e-12, 2.0916891265918003e-12, 4.666103574635372e-07]
+PASS calibration file written 
+PASS file has version header 
+PASS status published CALIBRATED 
+PASS moving window discarded COLLECTING
+PASS discard logged as WARN 
+PASS timeout -> FAILED FAILED
+PASS all-zero file rejected 
+PASS valid file loaded 
+
+ALL CHECKS PASSED
+> build · longcat-2.5-preview-free
+All 34 checks pass. Let me verify the final file tree and confirm nothing was written outside `ros2_stack/`:
+[0m$ [0mfind /home/michael/git/airseekers-decompile/ros2_stack/src/mower_control /home/michael/git/airseekers-decompile/ros2_stack/docs/control.md -type f | sort && echo "---" && find /home/michael/git/airseekers-decompile -newer /home/michael/git/airseekers-decompile/ros2_stack/README.md -type f -not -path '*/.git/*' -not -path '*/ros2_stack/src/mower_control/*' -not -name 'control.md' 2>/dev/null
+/home/michael/git/airseekers-decompile/ros2_stack/docs/control.md
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/cmd_vel_slew.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/imu_cal.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/__init__.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/__pycache__/cmd_vel_slew.cpython-314.pyc
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/__pycache__/imu_cal.cpython-314.pyc
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/__pycache__/__init__.cpython-314.pyc
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/__pycache__/slip_detector.cpython-314.pyc
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/slip_detector.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/__pycache__/setup.cpython-314.pyc
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/resource/mower_control
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/setup.py
+---
+/home/michael/git/airseekers-decompile/ros2_port_handoff/01_mcu_protocol/__pycache__/mcu_frame_decode.cpython-314.pyc
+/home/michael/git/airseekers-decompile/mcu_decompile/battery/battery.strings.txt
+/home/michael/git/airseekers-decompile/mcu_decompile/battery/battery.hex.c
+/home/michael/git/airseekers-decompile/mcu_decompile/battery/battery.hex.functions.txt
+/home/michael/git/airseekers-decompile/mcu_decompile/scripts/SetupMem.py
+/home/michael/git/airseekers-decompile/mcu_decompile/scripts/decompile.sh
+/home/michael/git/airseekers-decompile/mcu_decompile/scripts/bin2hex.py
+/home/michael/git/airseekers-decompile/mcu_decompile/scripts/DecompileAll.py
+/home/michael/git/airseekers-decompile/mcu_decompile/chassis/chassis.hex.c
+/home/michael/git/airseekers-decompile/mcu_decompile/chassis/chassis.hex.functions.txt
+/home/michael/git/airseekers-decompile/mcu_decompile/chassis/chassis.strings.txt
+/home/michael/git/airseekers-decompile/mcu_decompile/hex/chassis.hex
+/home/michael/git/airseekers-decompile/mcu_decompile/hex/cutter.hex
+/home/michael/git/airseekers-decompile/mcu_decompile/hex/rtk_station.hex
+/home/michael/git/airseekers-decompile/mcu_decompile/hex/rtk_rover.hex
+/home/michael/git/airseekers-decompile/mcu_decompile/hex/battery.hex
+/home/michael/git/airseekers-decompile/mcu_decompile/rtk_station/rtk_station.hex.functions.txt
+/home/michael/git/airseekers-decompile/mcu_decompile/rtk_station/rtk_station.hex.c
+/home/michael/git/airseekers-decompile/mcu_decompile/rtk_station/rtk_station.strings.txt
+/home/michael/git/airseekers-decompile/mcu_decompile/ghidra_proj/mcu.gpr
+/home/michael/git/airseekers-decompile/mcu_decompile/ghidra_proj/mcu.lock~
+/home/michael/git/airseekers-decompile/mcu_decompile/ghidra_proj/mcu.rep/project.prp
+/home/michael/git/airseekers-decompile/mcu_decompile/ghidra_proj/mcu.rep/versioned/~index.dat
+/home/michael/git/airseekers-decompile/mcu_decompile/ghidra_proj/mcu.rep/user/~index.dat
+/home/michael/git/airseekers-decompile/mcu_decompile/ghidra_proj/mcu.rep/idata/~index.dat
+/home/michael/git/airseekers-decompile/mcu_decompile/ghidra_proj/mcu.lock
+/home/michael/git/airseekers-decompile/mcu_decompile/rtk_rover/rtk_rover.hex.functions.txt
+/home/michael/git/airseekers-decompile/mcu_decompile/rtk_rover/rtk_rover.hex.c
+/home/michael/git/airseekers-decompile/mcu_decompile/rtk_rover/rtk_rover.strings.txt
+/home/michael/git/airseekers-decompile/ros2_stack/scripts/preflight.sh
+/home/michael/git/airseekers-decompile/ros2_stack/scripts/setup_mower.sh
+/home/michael/git/airseekers-decompile/ros2_stack/scripts/run_stack.sh
+/home/michael/git/airseekers-decompile/ros2_stack/scripts/build.sh
+/home/michael/git/airseekers-decompile/ros2_stack/launch/nav2.launch.py
+/home/michael/git/airseekers-decompile/ros2_stack/launch/bringup.launch.py
+/home/michael/git/airseekers-decompile/ros2_stack/launch/__pycache__/nav2.launch.cpython-314.pyc
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent6_docker.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent1_mcu_spec.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent7_mowglinext.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/mowglinext_baseline.md
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent11_setup.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/interfaces_map.md
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent8_localization.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent3_mcu_driver.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent10_nav2.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/um960.md
+/home/michael/git/airseekers-decompile/ros2_stack/docs/wit_imu.md
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent2_interfaces.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/mcu_protocol_spec.md
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent9_control.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/deployment.md
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent4_wit.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent5_um960.log
+/home/michael/git/airseekers-decompile/ros2_stack/docker/Dockerfile.humble
+/home/michael/git/airseekers-decompile/ros2_stack/docker/docker-compose.yml
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/um960_gps_driver/parsers.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/um960_gps_driver/serial_port.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/um960_gps_driver/__init__.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/um960_gps_driver/um960_node.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/config/um960.yaml
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/launch/um960.launch.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/test/test_parsers.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/test/test_um960_node.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/test/test_serial_port.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/test/conftest.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/resource/um960_gps_driver
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/.pytest_cache/v/cache/nodeids
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/.pytest_cache/.gitignore
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/.pytest_cache/CACHEDIR.TAG
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/.pytest_cache/README.md
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/setup.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/um960_gps_driver/setup.cfg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/scripts/loopback_test.sh
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/test/ros_stubs.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/test/test_loopback.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/resource/mower_mcu_driver
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/.pytest_cache/v/cache/nodeids
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/.pytest_cache/.gitignore
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/.pytest_cache/CACHEDIR.TAG
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/.pytest_cache/README.md
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/mower_mcu_driver/__init__.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/setup.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/setup.cfg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/README.md
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/ControlInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseMotorsInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerSensorInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MotorInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/PlannerOption.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MotorStatus.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseDevStatus.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/CMakeLists.txt
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/PlannerTaskSet.srv
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/config/ekf.yaml
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/config/navsat.yaml
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/test/test_gps_gate.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/test/__pycache__/conftest.cpython-314-pytest-9.1.1.pyc
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/test/__pycache__/test_gps_gate.cpython-314-pytest-9.1.1.pyc
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/test/conftest.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/resource/mower_localization
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/.pytest_cache/v/cache/lastfailed
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/.pytest_cache/v/cache/nodeids
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/.pytest_cache/.gitignore
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/.pytest_cache/CACHEDIR.TAG
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/.pytest_cache/README.md
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/setup.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/setup.cfg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/mower_localization/__init__.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/mower_localization/gps_gate.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/mower_localization/__pycache__/gps_gate.cpython-314.pyc
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_localization/mower_localization/__pycache__/__init__.cpython-314.pyc
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/resource/wit_imu_driver
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/setup.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/wit_imu_driver/wit_node.py
+> build · longcat-2.5-preview-free
+The other files are from prior agent sessions — my writes are only the `mower_control` package and `control.md`. Let me clean up the `__pycache__` artifacts my syntax check created:
+[0m$ [0mrm -rf /home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/__pycache__ /home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/__pycache__ && find /home/michael/git/airseekers-decompile/ros2_stack/src/mower_control -type f | sort
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/cmd_vel_slew.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/imu_cal.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/__init__.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/slip_detector.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/resource/mower_control
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/setup.py
+> build · longcat-2.5-preview-free
+Done. The package is complete and verified with 34 offline logic checks (rclpy stubbed, since ROS runs in Docker here).
+
+## What was built — all under `ros2_stack/`
+
+**Package** `ros2_stack/src/mower_control/` — `package.xml`, `setup.py`, `resource/`, and three nodes:
+
+- **`cmd_vel_slew.py`** — sub `/cmd_vel_raw` → pub `/cmd_vel` (both `TwistStamped`). Fixed-rate loop slews `linear.x`/`angular.z` by `max_linear_accel` (0.5 m/s²) / `max_angular_accel` (1.0 rad/s²); other components pass through. Every published command is echoed to the log at full float precision (the MowgliNext `/cmd_vel_applied` idea as a log line). Watchdog: `cmd_timeout` 0.5 s → immediate exact zero (not slewed), held until a fresh command arrives, then slews up from zero.
+- **`slip_detector.py`** — sub `/cmd_vel` plus measured twist: auto-detects `/wheel_vel` (`TwistStamped`, preferred) or falls back to `/odom` (`Odometry`) after `discovery_timeout`. Latches `/dig_stall` (`Bool`, `transient_local`) + WARN log when `|measured − commanded| > slip_threshold` (0.3) holds continuously for `slip_window` (2.0 s) on either axis; any good sample restarts the window. RTK gate via `/fix_status` from `um960_gps_driver` (substring `RTK_FIXED`, which covers both GGA quality 4 and Unicore posType 17), disableable with `require_rtk_fixed`.
+- **`imu_cal.py`** — sub `/imu/data`, collects windows of `min_samples` (100), keeps only plausible ones (|accel|≈g within 0.5, non-zero but small gyro variance, |gyro bias| ≤ 0.2 rad/s — MowgliNext rules), averages gyro/accel biases, writes `~/mower_control/imu_calibration.yaml` atomically with a version header, validates any existing file on load (rejects all-zero / oversized biases), publishes `/bias_status` (`String`, `transient_local`).
+
+**Docs** `ros2_stack/docs/control.md` — data-flow diagram, per-node topic/param tables, MowgliNext lineage (§4.3 items 7–9), run instructions, and the inter-package dependency map.
+
+## Two things to flag
+
+1. **`package.xml` adds `sensor_msgs`** beyond your listed deps — `imu_cal` can't subscribe to `/imu/data` (`sensor_msgs/Imu`) without it. Also added `python3-yaml` as an exec_depend.
+2. **The `/fix-gated?` question** — I implemented it against the `um960_gps_driver`'s `/fix_status` string (no `mower_interfaces/GnssStatus` exists yet), behind the `require_rtk_fixed` param. When `GnssStatus` lands, that's a drop-in replacement for the substring check.
+
+Not done (follow-ups): wiring the three nodes into `bringup.launch.py`, and a `colcon build` smoke test in the Docker image.

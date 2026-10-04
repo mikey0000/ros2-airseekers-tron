@@ -1,0 +1,86 @@
+# GPS fusion — robot_localization navsat_transform_node (ROS 2 Humble).
+#
+# Projects the gated GPS fix into the odom frame so ekf_node can fuse it
+# as a 2D pose. Subscribed topics (Humble defaults) and how this stack
+# wires them:
+#   gps/fix           <- /fix_gated   (mower_localization/gps_gate output;
+#                                      remap, never the raw /fix)
+#   imu               <- /imu/data    (wit_imu_driver, its /imu remapped;
+#                                      heading source for the projection)
+#   odometry/filtered <- /odometry/filtered (ekf_node output; default name,
+#                                      no remap needed — supplies the latest
+#                                      fused pose, and its header/child frame
+#                                      ids define world_frame and base_link
+#                                      for this node)
+# Published:
+#   /odometry/gps     nav_msgs/Odometry, pose x/y in the odom frame ->
+#                     ekf_node's odom1 input (see config/ekf.yaml)
+#   /gps/filtered     only when publish_filtered_gps: true (diagnostics)
+#
+# The node needs the odom -> base_link TF that ekf_node publishes
+# (publish_tf: true in config/ekf.yaml), plus base_link -> gps and
+#   base_link -> imu_link (URDF / robot_state_publisher, or the
+#   wit_imu_driver static broadcast) to account for antenna and IMU
+#   mounting offsets. Without base_link -> gps it logs "Unable to
+#   obtain base_link -> gps transform" and assumes the antenna sits
+#   at the robot origin.
+#
+# Startup order: ekf_node first — navsat_transform_node consumes its
+# /odometry/filtered — then navsat_transform_node. The EKF runs fine
+# without GPS; it simply has no odom1 correction until the transform
+# is computed (needs one good fix + IMU + odometry).
+#
+# Consume it with (from the workspace root, after colcon build):
+#   ros2 run robot_localization navsat_transform_node --ros-args \
+#     --params-file install/mower_localization/share/mower_localization/config/navsat.yaml \
+#     --remap gps/fix:=/fix_gated \
+#     --remap imu:=/imu/data
+
+navsat_transform_node:
+  ros__parameters:
+    # --- core ---------------------------------------------------------------
+    frequency: 10.0    # match the UM960 /fix rate (publish_rate_hz)
+    delay: 0.0         # seconds to wait before computing the world-frame
+                       # transform; raise it if the EKF needs time to settle
+                       # (robot_localization's own example uses 3.0)
+    print_diagnostics: true
+
+    # --- orientation ---------------------------------------------------------
+    # The GPS-derived heading is rotated into the odom frame using the IMU
+    # yaw (use_odometry_yaw: false). The JY61P yaw is already
+    # magnetometer-referenced, so the declination stays 0.0 unless the IMU
+    # is reconfigured to output a raw gyro-integrated heading — then set
+    # the site declination here. TODO(site): measure on the mower.
+    magnetic_declination_radians: 0.0
+    yaw_offset: 0.0      # TODO(calib): antenna heading offset about Z
+    use_odometry_yaw: false
+    # use_odometry_yaw: true would take the heading from /odometry/filtered
+    # instead of the IMU — only valid if that yaw is world-referenced
+    # (ours is, but the IMU is the better source at mower speeds).
+
+    # --- UTM / datum ---------------------------------------------------------
+    # The filter is 2D; nothing in this stack consumes altitude.
+    zero_altitude: true
+    # No utm frame in our tree (map -> odom -> base_link): the UTM frame is
+    # an MowgliNext-ism this port does not need.
+    broadcast_utm_transform: false
+    broadcast_utm_transform_as_parent_frame: false
+    # Do not echo a filtered NavSatFix on /gps/filtered; diagnostics come
+    # from gps_gate and /fix_status instead.
+    publish_filtered_gps: false
+    # Do not block bringup while the RTK session converges — gps_gate drops
+    # fixes until they are trustworthy anyway.
+    wait_for_datum: false
+    # datum: [lat, lon, yaw]  The three fields are latitude, longitude (in
+    #                         decimal degrees) and heading (radians, ENU:
+    #                         0 = east). UNSET and wait_for_datum: false
+    #                         means the FIRST fix becomes the datum — fine
+    #                         for a first bring-up, wrong for repeatable
+    #                         field boundaries. To pin it: set
+    #                         wait_for_datum: true plus datum here, or call
+    #                         the /datum service at bringup (see
+    #                         docs/localization.md).
+    # utm_zone: "31T"         auto-detected by default; pin it if the mower
+    #                         operates near a UTM zone boundary
+    # use_local_cartesian: false  true = tangent-plane ENU projection around
+    #                         the first fix instead of UTM (no zone flips)
