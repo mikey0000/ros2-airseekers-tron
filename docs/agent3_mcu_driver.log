@@ -1,0 +1,2224 @@
+[0m
+> build · mimo-v2.6-flash-free
+[0m✱ [0mGlob "**/protocol_definitions_recovered.h" [90m1 match[0m
+[0m✱ [0mGlob "**/mcu_frame_decode.py" [90m1 match[0m
+[0m✱ [0mGlob "ros2_stack/**" [90m5 matches[0m
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_port_handoff/01_mcu_protocol/protocol_definitions_recovered.h 
+[0m→ [0mRead ros2_port_handoff/01_mcu_protocol/mcu_frame_decode.py 
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/README.md 
+[0m✱ [0mGlob "ros2_port_handoff/**" [90m100 matches[0m
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/docs/agent3_mcu_driver.log 
+[0m✱ [0mGlob "ros2_port_handoff/03_ros_interfaces/**" [90m100 matches[0m
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_port_handoff/10_ros_live_snapshot/sample__mower_sensor_info.txt 
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/msg/MowerSensorInfo.msg 
+[0m✱ [0mGlob "**/mower_interfaces/**" [90m0 matches[0m
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/docs/agent2_interfaces.log 
+[0m→ [0mRead ros2_port_handoff/10_ros_live_snapshot/sample__battery.txt 
+[0m→ [0mRead ros2_port_handoff/10_ros_live_snapshot/sample__odom.txt 
+> build · mimo-v2.6-flash-free
+[0m✱ [0mGrep "cmd_vel|estop|e_stop|emergency" [90min mower_docs · 12 matches[0m
+[0m✱ [0mGrep "heartbeat|Heartbeat|HEARTBEAT" [90min ros2_port_handoff · 60 matches[0m
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_port_handoff/README.md 
+[0m✱ [0mGlob "ros2_port_handoff/01_mcu_protocol/**" [90m59 matches[0m
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_port_handoff/01_mcu_protocol/mower_base_pkg/test/fake_mower_port.sh 
+[0m→ [0mRead ros2_port_handoff/01_mcu_protocol/mower_base_pkg/test/test_speed.py 
+[0m→ [0mRead ros2_port_handoff/01_mcu_protocol/mower_base_pkg/config/base.yaml 
+> build · mimo-v2.6-flash-free
+[0m✱ [0mGrep "heartbeat|Heartbeat|cmd_vel|odom|SpeedData|estop|PID|hz|Hz" [90min ros2_port_handoff/01_mcu_protocol/mower_base_pkg/docs/aichw_mower.md · 4 matches[0m
+[0m✱ [0mGrep "heartbeat|cmd_vel|estop|odom|imu|battery|param|frame" [90min ros2_port_handoff/01_mcu_protocol/mower_base_node_strings.txt · 17 matches[0m
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_port_handoff/10_ros_live_snapshot/sample__imu.txt 
+[0m$ [0mls -la /home/michael/git/airseekers-decompile/ros2_stack/ && ls -la /home/michael/git/airseekers-decompile/ros2_stack/docs/
+total 40
+drwxrwxr-x  9 michael michael 4096 Oct  5 10:19 .
+drwxrwxr-x 11 michael michael 4096 Oct  5 10:17 ..
+drwxrwxr-x  6 michael michael 4096 Oct  5 10:17 .git
+-rw-rw-r--  1 michael michael  521 Oct  5 10:19 README.md
+drwxrwxr-x  2 michael michael 4096 Oct  5 10:17 config
+drwxrwxr-x  2 michael michael 4096 Oct  5 10:21 docker
+drwxrwxr-x  2 michael michael 4096 Oct  5 10:21 docs
+drwxrwxr-x  2 michael michael 4096 Oct  5 10:17 launch
+drwxrwxr-x  2 michael michael 4096 Oct  5 10:21 scripts
+drwxrwxr-x  3 michael michael 4096 Oct  5 10:20 src
+total 168
+drwxrwxr-x 2 michael michael  4096 Oct  5 10:21 .
+drwxrwxr-x 9 michael michael  4096 Oct  5 10:19 ..
+-rw-rw-r-- 1 michael michael   978 Oct  5 10:20 agent1_mcu_spec.log
+-rw-rw-r-- 1 michael michael 19157 Oct  5 10:21 agent2_interfaces.log
+-rw-rw-r-- 1 michael michael  2344 Oct  5 10:21 agent3_mcu_driver.log
+-rw-rw-r-- 1 michael michael 20914 Oct  5 10:20 agent4_wit.log
+-rw-rw-r-- 1 michael michael 68954 Oct  5 10:21 agent5_um960.log
+-rw-rw-r-- 1 michael michael  4898 Oct  5 10:21 agent6_docker.log
+-rw-rw-r-- 1 michael michael 18106 Oct  5 10:21 agent7_mowglinext.log
+-rw-rw-r-- 1 michael michael  3321 Oct  5 10:21 deployment.md
+-rw-rw-r-- 1 michael michael  1718 Oct  5 10:20 wit_imu.md
+> build · mimo-v2.6-flash-free
+[0m$ [0mfind /home/michael/git/airseekers-decompile/ros2_stack/src /home/michael/git/airseekers-decompile/ros2_stack/config /home/michael/git/airseekers-decompile/ros2_stack/launch /home/michael/git/airseekers-decompile/ros2_stack/scripts -type f | head -50; git -C /home/michael/git/airseekers-decompile/ros2_stack log --oneline | head -20; git -C /home/michael/git/airseekers-decompile/ros2_stack status --short | head -30
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/setup.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/wit_imu_driver/wit_node.py
+/home/michael/git/airseekers-decompile/ros2_stack/scripts/run_stack.sh
+/home/michael/git/airseekers-decompile/ros2_stack/scripts/build.sh
+fatal: your current branch 'master' does not have any commits yet
+?? README.md
+?? docker/
+?? docs/
+?? scripts/
+?? src/
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/src/wit_imu_driver/package.xml 
+[0m→ [0mRead ros2_stack/src/wit_imu_driver/setup.py 
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/docs/deployment.md 
+[0m$ [0mls -la /home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver /home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/wit_imu_driver; wc -l /home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/wit_imu_driver/wit_node.py; sed -n 1,60p /home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/wit_imu_driver/wit_node.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver:
+total 20
+drwxrwxr-x 3 michael michael 4096 Oct  5 10:20 .
+drwxrwxr-x 3 michael michael 4096 Oct  5 10:20 ..
+-rw-rw-r-- 1 michael michael  758 Oct  5 10:20 package.xml
+-rw-rw-r-- 1 michael michael  440 Oct  5 10:20 setup.py
+drwxrwxr-x 2 michael michael 4096 Oct  5 10:20 wit_imu_driver
+
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/wit_imu_driver:
+total 20
+drwxrwxr-x 2 michael michael  4096 Oct  5 10:20 .
+drwxrwxr-x 3 michael michael  4096 Oct  5 10:20 ..
+-rw-rw-r-- 1 michael michael 10695 Oct  5 10:20 wit_node.py
+277 /home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/wit_imu_driver/wit_node.py
+#!/usr/bin/env python3
+import serial
+import math
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+
+from sensor_msgs.msg import Imu
+from std_msgs.msg import Float32
+
+import tf2_ros
+from geometry_msgs.msg import TransformStamped
+
+
+class WitImuNode(Node):
+    def __init__(self):
+        super().__init__('wit_imu_driver')
+
+        # Parameters
+        self.declare_parameter('port', '/dev/serial_imu')
+        self.declare_parameter('rate', 100.0)
+        self.declare_parameter('frame_id', 'imu_link')
+        self.declare_parameter('calibration_mode', False)
+
+        self.port = self.get_parameter('port').get_parameter_value().string_value
+        self.rate = self.get_parameter('rate').get_parameter_value().double_value
+        self.frame_id = self.get_parameter('frame_id').get_parameter_value().string_value
+        self.calibration_mode = self.get_parameter('calibration_mode').get_parameter_value().bool_value
+
+        self.get_logger().info(
+            f'WIT IMU Driver starting on {self.port} at {self.rate}Hz, '
+            f'frame_id={self.frame_id}, calibration={self.calibration_mode}'
+        )
+
+        # Publishers
+        qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+
+        self.imu_pub = self.create_publisher(Imu, '/imu', qos)
+        self.temp_pub = self.create_publisher(Float32, '/imu/temperature_c', qos)
+
+        # TF broadcaster
+        self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+
+        # IMU message
+        self.imu_msg = Imu()
+        self.imu_msg.header.frame_id = self.frame_id
+        # orientation covariance (identity-like, unset = zeros)
+        self.imu_msg.orientation_covariance = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self.imu_msg.angular_velocity_covariance = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self.imu_msg.linear_acceleration_covariance = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+        # Temperature message
+        self.temp_msg = Float32()
+        self.temp_msg.data = 0.0
+> build · mimo-v2.6-flash-free
+[0m✱ [0mGrep "mower_interfaces" [90min ros2_stack · 1 match[0m
+[0m→ [0mRead ros2_stack/docs/agent1_mcu_spec.log 
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/scripts/build.sh 
+[0m→ [0mRead ros2_stack/scripts/run_stack.sh 
+> build · mimo-v2.6-flash-free
+Now I have everything I need. Let me write the package.
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Created file successfully: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -80,9 +80,8 @@
+ (:mod:`mower_mcu_driver.fake_mcu`) against this node -- no hardware, no root, see README.md.
+ """
+ 
+ import math
+-import os
+ import struct
+ import time
+ from datetime import datetime
+ 
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -108,8 +108,9 @@
+ TYPE_ROS_MOWER = 0      # host -> MCU
+ TYPE_MOWER_ROS = 8      # MCU -> host
+ TYPE_HEARTBEAT = 255    # host -> MCU keepalive
+ 
++MOD_ALL = 0           # MODULE_ALL: addressed to the whole MCU (heartbeat uses this)
+ MOD_CHARGE = 3
+ MOD_SPEED = 4
+ MOD_BATTERY = 5
+ MOD_IMU = 9
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -130,15 +130,13 @@
+ VERSION_FMT = '<9B'               # VersionInfo (9): cutter/chassis/rtk major,minor,patch
+ BMS_FMT = '<3B'                   # BMS Version (3)
+ CALIB_FMT = '<3B'                 # MCCalib (3)
+ MOTOR_FMT = '<hhhbB'              # MotorInfo (8): speed, current, voltage, temperature, status
+-MOTORS_FMT = '<4s'                # MotorsInfo = 4 * MotorInfo (32) - handled per motor below
+ HEARTBEAT_FMT = '<8B'             # year, month, day, hour, minute, second, ms_h, ms_l
+ MOTOR_NAMES = ('cutter', 'left', 'right', 'height')
+ 
+ # WIT-Motion JY61P scaling convention used by ImuData (marked (?) in the recovered header:
+ # angle*32768/180, acc*32768/16 g, gyro*32768/2000 dps).
+-WIT_ANGLE_TO_RAD = math.pi / 180.0 * 32768.0 / 32768.0 / 1.0  # raw * (180/32768) deg -> rad
+ WIT_RAW_ANGLE_TO_RAD = math.radians(180.0) / 32768.0
+ WIT_RAW_GYRO_TO_RAD = math.radians(2000.0) / 32768.0
+ WIT_RAW_ACC_TO_MS2 = 16.0 * 9.80665 / 32768.0
+ 
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -610,11 +610,11 @@
+                 version = ('v' if key != 'rtk' else '') + '%d.%d.%d' % (major, minor, patch)
+                 _set_if(msg, prefix, version)
+ 
+         now = time.monotonic()
+-        measured = self._speed(now, measured_only=True)
+-        _set_if(msg, 'is_moving', measured is not None
+-                and (abs(measured[0]) > 1e-2 or abs(measured[1]) > 1e-2))
++        linear, angular, measured = self._speed(now)
++        _set_if(msg, 'is_moving', measured
++                and (abs(linear) > 1e-2 or abs(angular) > 1e-2))
+         _set_if(msg, 'is_cmd_moving',
+                 now - self._cmd_stamp < self.cmd_vel_timeout
+                 and (abs(self._cmd_linear) > 1e-2 or abs(self._cmd_angular) > 1e-2))
+         # Heuristic: cutter spinning == cutting (no explicit cutter state on this bus yet).
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -674,14 +674,16 @@
+         if time.monotonic() - self._cmd_stamp > self.cmd_vel_timeout:
+             return 0.0, 0.0
+         return self._cmd_linear, self._cmd_angular
+ 
+-    def _speed(self, now, measured_only=False):
+-        """Best available body velocity: measured ``SpeedData`` first, else commanded."""
++    def _speed(self, now):
++        """Best available body velocity as ``(linear, angular, measured)``.
++
++        Prefers the MCU's own ``SpeedData`` estimate; once that goes stale we degrade to the
++        last commanded velocity (and report ``measured=False`` so callers can flag it).
++        """
+         if now - self._meas_stamp < self.speed_timeout:
+-            return self._meas_linear, self._meas_angular, True  # measured
+-        if measured_only:
+-            return None
++            return self._meas_linear, self._meas_angular, True
+         if now - self._cmd_stamp < self.cmd_vel_timeout:
+             return self._cmd_linear, self._cmd_angular, False  # degraded: commanded
+         return 0.0, 0.0, False
+ 
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -703,10 +703,9 @@
+         if dt <= 0.0:
+             return
+         dt = min(dt, 0.5)  # do not jump across a scheduling hiccup
+ 
+-        speed = self._speed(now)
+-        linear, angular, measured = speed[0], speed[1], speed[2]
++        linear, angular, measured = self._speed(now)
+ 
+         # 1) translate along the previous heading
+         self._x += linear * math.cos(self._yaw) * dt
+         self._y += linear * math.sin(self._yaw) * dt
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -658,9 +658,9 @@
+         return linear, angular
+ 
+     def _send_heartbeat(self):
+         """Keepalive.  Fixed period by parameter because the real one is UNKNOWN (see doc)."""
+-        self._write(build_frame([(TYPE_HEARTBEAT, MODULE_ALL_SEND, heartbeat_payload())]))
++        self._write(build_frame([(TYPE_HEARTBEAT, MOD_ALL, heartbeat_payload())]))
+ 
+     def _send_speed(self):
+         """Stream the current ``SpeedData`` command (zeros once /cmd_vel goes stale).
+ 
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -756,11 +756,9 @@
+ _POSE_COVARIANCE = _diag6(0.05, 0.05, 0.10, 0.50, 0.50, 0.10)
+ _TWIST_COVARIANCE_MEASURED = _diag6(0.02, 1e6, 1e6, 1e6, 1e6, 0.05)
+ _TWIST_COVARIANCE_COMMANDED = _diag6(1.00, 1e6, 1e6, 1e6, 1e6, 1.00)
+ 
+-MODULE_ALL_SEND = 0  # MODULE_ALL: heartbeat is addressed to the whole MCU
+ 
+-
+ def main(args=None):
+     rclpy.init(args=args)
+     node = McuNode()
+     try:
+
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 -m py_compile mower_mcu_driver/mcu_node.py && echo SYNTAX_OK; python3 -c "import rclpy" 2>&1 | tail -1; which socat; python3 -c "import serial" 2>&1 | tail -1
+SYNTAX_OK
+ModuleNotFoundError: No module named 'rclpy'
+/usr/bin/socat
+ModuleNotFoundError: No module named 'serial'
+> build · mimo-v2.6-flash-free
+Now the fake MCU for the offline loopback test:
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+Created file successfully: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+@@ -30,22 +30,26 @@
+ import struct
+ import sys
+ import time
+ 
++# Import the driver's framing/struct code (single source of truth). Works both from an
++# installed overlay and straight from the source tree.
+ try:
+-    from mower_mcu_driver.mcu_node import (
+-        FrameParser, IMU_FMT, MOD_BATTERY, MOD_IMU, MOD_LOG, MOD_MOTORS, MOD_SENSor_PLACEHOLDER,
+-        build_frame, speed_payload)
+-except ImportError:  # running from the source tree without the overlay sourced
++    from mower_mcu_driver.mcu_node import (BATTERY_FMT, BMS_FMT, FrameParser, IMU_FMT,
++                                           MOD_BATTERY, MOD_BMS_VERSION, MOD_IMU, MOD_LOG,
++                                           MOD_MOTORS, MOD_SENSOR, MOD_SPEED, MOD_VERSION,
++                                           MOTOR_FMT, SENSOR_FMT, TYPE_HEARTBEAT,
++                                           TYPE_MOWER_ROS, TYPE_ROS_MOWER, VERSION_FMT,
++                                           build_frame, speed_payload)
++except ImportError:
+     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+-    from mower_mcu_driver.mcu_node import (  # noqa: F401
+-        FrameParser, IMU_FMT, MOD_BATTERY, MOD_IMU, MOD_LOG, MOD_MOTORS, build_frame,
+-        speed_payload)
++    from mower_mcu_driver.mcu_node import (BATTERY_FMT, BMS_FMT, FrameParser, IMU_FMT,
++                                           MOD_BATTERY, MOD_BMS_VERSION, MOD_IMU, MOD_LOG,
++                                           MOD_MOTORS, MOD_SENSOR, MOD_SPEED, MOD_VERSION,
++                                           MOTOR_FMT, SENSOR_FMT, TYPE_HEARTBEAT,
++                                           TYPE_MOWER_ROS, TYPE_ROS_MOWER, VERSION_FMT,
++                                           build_frame, speed_payload)
+ 
+-from mower_mcu_driver.mcu_node import (
+-    BATTERY_FMT, BMS_FMT, MOD_BMS_VERSION, MOD_SENSOR, MOD_SPEED, MOD_VERSION,
+-    SENSOR_FMT, TYPE_HEARTBEAT, TYPE_MOWER_ROS, TYPE_ROS_MOWER, VERSION_FMT, MOTOR_FMT)
+-
+ # Static-ish telemetry, values taken from live captures in 10_ros_live_snapshot/.
+ BATTERY_RAW = (248, 5, 99, 0, 15, 0)      # voltage 0.1V, current(?), %, dock_ok, degC, error
+ VERSION_RAW = (0, 6, 36, 0, 6, 34, 0, 9, 50)  # cutter, chassis, rtk
+ BMS_RAW = (1, 18, 0)
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+@@ -131,9 +131,9 @@
+     port = Port(args.port)
+     parser_rx = FrameParser()
+     start = time.monotonic()
+     cmd_linear = cmd_angular = 0.0
+-    heartbeats = host_frames = last_report = 0.0
++    heartbeats = host_frames = 0
+     next_fast = next_slow = next_report = time.monotonic()
+ 
+     port.write(build_frame([(TYPE_MOWER_ROS, MOD_LOG, b'fake MCU online')]))
+     print('fake_mcu: listening on %s (--imu=%s)' % (args.port, args.imu))
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+@@ -174,10 +174,8 @@
+             if now >= next_report:
+                 next_report = now + 1.0
+                 print('fake_mcu: host_frames=%d heartbeats=%d cmd=(%.2f m/s, %.2f rad/s)'
+                       % (host_frames, heartbeats, cmd_linear, cmd_angular))
+-                last_report = now
+-                del last_report
+             time.sleep(0.002)
+     except KeyboardInterrupt:
+         pass
+     finally:
+
+> build · mimo-v2.6-flash-free
+[0m$ [0mls -la /home/michael/git/airseekers-decompile/ros2_port_handoff/01_mcu_protocol/mcu_traffic_logs/
+total 5348
+drwxr-xr-x  2 michael michael    4096 Oct  5 10:11 .
+drwxr-xr-x 10 michael michael    4096 Oct  5 10:11 ..
+-rw-r--r--  1 michael michael 2593907 Oct  5 09:38 mcu.dat.4_2026-10-02
+-rw-r--r--  1 michael michael 2868607 Oct  5 09:38 mcu.dat.current_2026-10-05
+> build · mimo-v2.6-flash-free
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+Created file successfully: ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && touch mower_mcu_driver/__init__.py && python3 test/test_protocol.py 2>&1 | tail -40
+test_subpacket_histogram_matches_reference (__main__.TestAgainstReferenceDecoder.test_subpacket_histogram_matches_reference) ... ok
+test_bad_checksum_is_rejected_and_parser_resyncs (__main__.TestFraming.test_bad_checksum_is_rejected_and_parser_resyncs) ... ok
+test_chunked_stream_reassembly (__main__.TestFraming.test_chunked_stream_reassembly) ... ok
+test_heartbeat_payload_layout (__main__.TestFraming.test_heartbeat_payload_layout) ... ok
+test_leading_garbage_is_skipped (__main__.TestFraming.test_leading_garbage_is_skipped) ... ok
+test_multiple_subpackets_in_one_frame (__main__.TestFraming.test_multiple_subpackets_in_one_frame) ... ok
+test_round_trip_needs_escaping (__main__.TestFraming.test_round_trip_needs_escaping) ... ok
+test_round_trip_single_subpacket (__main__.TestFraming.test_round_trip_single_subpacket) ... ok
+test_speed_payload_layout (__main__.TestFraming.test_speed_payload_layout) ... ok
+test_struct_sizes_match_recovered_header (__main__.TestFraming.test_struct_sizes_match_recovered_header) ... ok
+test_wit_scaling (__main__.TestFraming.test_wit_scaling) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.531s
+
+OK
+> build · mimo-v2.6-flash-free
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/test/ros_stubs.py
+Created file successfully: ros2_stack/src/mower_mcu_driver/test/ros_stubs.py
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_protocol.py
++++ ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+@@ -1,9 +1,9 @@
+ #!/usr/bin/env python3
+ """Offline tests for the MCU framing/struct code in ``mower_mcu_driver.mcu_node``.
+ 
+-No ROS installation is required: when ``rclpy`` (and the message packages) are missing,
+-minimal stubs are installed first so that the module can be imported for its codec half.
++No ROS installation is required: ``ros_stubs`` installs minimal ``rclpy``/message
++placeholders first so that the module can be imported for its codec half.
+ 
+     python3 test/test_protocol.py          # plain
+     python3 -m pytest ros2_stack/src/mower_mcu_driver/test   # with pytest, if available
+ 
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_protocol.py
++++ ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+@@ -30,55 +30,12 @@
+ 
+ if PKG_DIR not in sys.path:
+     sys.path.insert(0, PKG_DIR)
+ 
++import ros_stubs  # noqa: E402  (same directory as this test)
+ 
+-def _install_ros_stubs():
+-    """Make ``import mower_mcu_driver.mcu_node`` work on a machine without ROS."""
+-    try:
+-        import rclpy  # noqa: F401
+-        return
+-    except ImportError:
+-        pass
++ros_stubs.install()
+ 
+-    def _mod(name):
+-        module = types.ModuleType(name)
+-        sys.modules[name] = module
+-        return module
+-
+-    rclpy = _mod('rclpy')
+-    rclpy.init = rclpy.spin = rclpy.shutdown = lambda *a, **k: None
+-    rclpy.ok = lambda: False
+-
+-    class _Node:
+-        def __init__(self, *a, **k):
+-            pass
+-
+-    _mod('rclpy.node').Node = _Node
+-
+-    class _QoSProfile:
+-        def __init__(self, *a, **k):
+-            pass
+-
+-    class _Policy:
+-        BEST_EFFORT = KEEP_LAST = RELIABLE = 0
+-
+-    qos = _mod('rclpy.qos')
+-    qos.QoSProfile = _QoSProfile
+-    qos.QoSReliabilityPolicy = qos.QoSHistoryPolicy = _Policy
+-
+-    _mod('geometry_msgs')
+-    _mod('geometry_msgs.msg').TwistStamped = type('TwistStamped', (), {})
+-    _mod('nav_msgs')
+-    _mod('nav_msgs.msg').Odometry = type('Odometry', (), {})
+-    _mod('sensor_msgs')
+-    sensor_msgs = _mod('sensor_msgs.msg')
+-    sensor_msgs.BatteryState = type('BatteryState', (), {})
+-    sensor_msgs.Imu = type('Imu', (), {})
+-
+-
+-_install_ros_stubs()
+-
+ from mower_mcu_driver import mcu_node as mn  # noqa: E402
+ 
+ 
+ def _load_reference():
+
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/test/test_protocol.py [90m[limit=50][0m
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_protocol.py
++++ ros2_stack/src/mower_mcu_driver/test/test_protocol.py
+@@ -18,9 +18,8 @@
+ import math
+ import os
+ import struct
+ import sys
+-import types
+ import unittest
+ 
+ PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ REPO_DIR = os.path.abspath(os.path.join(PKG_DIR, '..', '..', '..'))
+
+> build · mimo-v2.6-flash-free
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Created file successfully: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 test/test_node_smoke.py 2>&1 | tail -40
+test_battery_dock_flag_maps_to_charging (__main__.TestMcuNode.test_battery_dock_flag_maps_to_charging) ... ok
+test_battery_publishes_battery_state (__main__.TestMcuNode.test_battery_publishes_battery_state) ... ok
+test_cmd_vel_is_scaled_clamped_and_sent_as_speed_data (__main__.TestMcuNode.test_cmd_vel_is_scaled_clamped_and_sent_as_speed_data) ... ok
+test_heartbeat_frame_shape (__main__.TestMcuNode.test_heartbeat_frame_shape) ... ok
+test_mower_sensor_info_skipped_without_mower_interfaces (__main__.TestMcuNode.test_mower_sensor_info_skipped_without_mower_interfaces) ... ok
+test_nothing_published_on_imu_until_module_9_arrives (__main__.TestMcuNode.test_nothing_published_on_imu_until_module_9_arrives) ... ok
+test_odom_dead_reckons_from_measured_speed (__main__.TestMcuNode.test_odom_dead_reckons_from_measured_speed) ... ok
+test_odom_degrades_to_commanded_velocity (__main__.TestMcuNode.test_odom_degrades_to_commanded_velocity) ... ok
+test_odom_uses_imu_yaw_when_available (__main__.TestMcuNode.test_odom_uses_imu_yaw_when_available) ... ok
+test_shutdown_sends_zero_speed_before_closing (__main__.TestMcuNode.test_shutdown_sends_zero_speed_before_closing) ... ERROR
+test_stale_cmd_vel_sends_zero_speed (__main__.TestMcuNode.test_stale_cmd_vel_sends_zero_speed) ... ok
+
+======================================================================
+ERROR: test_shutdown_sends_zero_speed_before_closing (__main__.TestMcuNode.test_shutdown_sends_zero_speed_before_closing)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py", line 156, in test_shutdown_sends_zero_speed_before_closing
+    self.assertTrue(self.node._ser.closed)
+                    ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'closed'
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.003s
+
+FAILED (errors=1)
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -151,14 +151,15 @@
+         self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+ 
+     def test_shutdown_sends_zero_speed_before_closing(self):
+         self.node._on_cmd_vel(cmd_vel(1.0, 1.0))
++        serial_port = self.node._ser
+         self.node.shutdown()
+-        self.assertTrue(self.node._ser.closed)
++        self.assertTrue(serial_port.closed)
+         (_, mod_id, payload), = drain_tx(self.node)
+         self.assertEqual(mod_id, mn.MOD_SPEED)
+         self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+-        self.node._ser = None  # already closed, keep tearDown happy
++        self.node._ser = serial_port  # keep tearDown/shutdown idempotent
+ 
+     # -------------------------------------------------------------- heartbeat
+     def test_heartbeat_frame_shape(self):
+         self.node._send_heartbeat()
+
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 test/test_node_smoke.py 2>&1 | tail -8 && python3 test/test_protocol.py 2>&1 | tail -5
+subpackets = parser.feed(bytes(node._ser.tx))
+                                   ^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'tx'
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.001s
+
+FAILED (errors=1)
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.475s
+
+OK
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -67,13 +67,13 @@
+     node._ser.rx += mn.build_frame(subpackets)
+     node._poll_serial()
+ 
+ 
+-def drain_tx(node):
+-    """Return every sub-packet the node transmitted, decoded with its own parser."""
++def drain_tx(port):
++    """Return every sub-packet written to ``port``, decoded with the node's own parser."""
+     parser = mn.FrameParser()
+-    subpackets = parser.feed(bytes(node._ser.tx))
+-    node._ser.tx.clear()
++    subpackets = parser.feed(bytes(port.tx))
++    port.tx.clear()
+     return subpackets
+ 
+ 
+ def cmd_vel(linear, angular):
+
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && grep -n "drain_tx(" test/test_node_smoke.py
+71:def drain_tx(port):
+140:        (type_id, mod_id, payload), = drain_tx(self.node)
+150:        (_, _, payload), = drain_tx(self.node)
+158:        (_, mod_id, payload), = drain_tx(self.node)
+166:        (type_id, mod_id, payload), = drain_tx(self.node)
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -136,9 +136,9 @@
+         self.node.angular_max = 1.0
+ 
+         self.node._on_cmd_vel(cmd_vel(5.0, 10.0))          # both above the clamps
+         self.node._send_speed()
+-        (type_id, mod_id, payload), = drain_tx(self.node)
++        (type_id, mod_id, payload), = drain_tx(self.node._ser)
+         self.assertEqual((type_id, mod_id), (mn.TYPE_ROS_MOWER, mn.MOD_SPEED))
+         linear, angular = struct.unpack(mn.SPEED_FMT, payload)
+         self.assertAlmostEqual(linear, 1.0)                # 5.0 * 2.0 clamped to linear_max
+         self.assertAlmostEqual(angular, 1.0)               # 10.0 * 0.5 clamped to angular_max
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -146,9 +146,9 @@
+     def test_stale_cmd_vel_sends_zero_speed(self):
+         self.node._on_cmd_vel(cmd_vel(0.7, 0.2))
+         self.node._cmd_stamp = time.monotonic() - (self.node.cmd_vel_timeout + 1.0)
+         self.node._send_speed()
+-        (_, _, payload), = drain_tx(self.node)
++        (_, _, payload), = drain_tx(self.node._ser)
+         self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+ 
+     def test_shutdown_sends_zero_speed_before_closing(self):
+         self.node._on_cmd_vel(cmd_vel(1.0, 1.0))
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -154,9 +154,9 @@
+         self.node._on_cmd_vel(cmd_vel(1.0, 1.0))
+         serial_port = self.node._ser
+         self.node.shutdown()
+         self.assertTrue(serial_port.closed)
+-        (_, mod_id, payload), = drain_tx(self.node)
++        (_, mod_id, payload), = drain_tx(serial_port)
+         self.assertEqual(mod_id, mn.MOD_SPEED)
+         self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+         self.node._ser = serial_port  # keep tearDown/shutdown idempotent
+ 
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -162,9 +162,9 @@
+ 
+     # -------------------------------------------------------------- heartbeat
+     def test_heartbeat_frame_shape(self):
+         self.node._send_heartbeat()
+-        (type_id, mod_id, payload), = drain_tx(self.node)
++        (type_id, mod_id, payload), = drain_tx(self.node._ser)
+         self.assertEqual(type_id, mn.TYPE_HEARTBEAT)
+         self.assertEqual(mod_id, mn.MOD_ALL)
+         self.assertEqual(len(payload), 8)
+         year, month, day = struct.unpack('<3B', payload[:3])
+
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 test/test_node_smoke.py 2>&1 | tail -6 && python3 test/test_protocol.py 2>&1 | tail -4
+test_stale_cmd_vel_sends_zero_speed (__main__.TestMcuNode.test_stale_cmd_vel_sends_zero_speed) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.001s
+
+OK
+----------------------------------------------------------------------
+Ran 11 tests in 0.506s
+
+OK
+> build · mimo-v2.6-flash-free
+Now let me add a termios fallback so the node works (and the loopback test runs) even without pyserial:
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -80,8 +80,10 @@
+ (:mod:`mower_mcu_driver.fake_mcu`) against this node -- no hardware, no root, see README.md.
+ """
+ 
+ import math
++import os
++import select
+ import struct
+ import time
+ from datetime import datetime
+ 
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -273,8 +273,83 @@
+     """Planar yaw -> ``geometry_msgs/Quaternion`` (roll = pitch = 0)."""
+     return 0.0, 0.0, math.sin(yaw * 0.5), math.cos(yaw * 0.5)
+ 
+ 
++class _TermiosSerial:
++    """Tiny pyserial-compatible fallback (``read``/``write``/``in_waiting``/``close``).
++
++    ``python3-serial`` may be missing in a freshly pulled ``ros:humble`` image, and the
++    offline loopback test only ever talks to a pty - so if pyserial is not importable we
++    configure the tty ourselves in raw 8N1 mode with the ``termios`` stdlib module.  On a pty
++    the baud rate is meaningless; on a real UART it still gets applied.
++    """
++
++    SPEEDS = {}  # filled lazily: termios constants are only available on POSIX
++
++    def __init__(self, path, baud):
++        import array
++        import fcntl
++        import termios
++
++        if not _TermiosSerial.SPEEDS:
++            _TermiosSerial.SPEEDS = {
++                9600: termios.B9600, 19200: termios.B19200, 38400: termios.B38400,
++                57600: termios.B57600, 115200: termios.B115200, 230400: termios.B230400,
++            }
++        self._fcntl, self._termios, self._array = fcntl, termios, array
++        self._fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
++        try:
++            attrs = termios.tcgetattr(self._fd)
++            speed = _TermiosSerial.SPEEDS.get(baud, termios.B115200)
++            attrs[0] = 0                                        # iflag: no input processing
++            attrs[1] = 0                                        # oflag: no output post-processing
++            attrs[2] = termios.CS8 | termios.CREAD | termios.CLOCAL  # 8N1, no hw flow control
++            attrs[3] = 0                                        # lflag: raw (no canon, no echo)
++            attrs[4] = attrs[5] = speed                         # ispeed, ospeed
++            attrs[6][termios.VMIN] = 0
++            attrs[6][termios.VTIME] = 0
++            termios.tcsetattr(self._fd, termios.TCSANOW, attrs)
++            termios.tcflush(self._fd, termios.TCIOFLUSH)
++        except termios.error:
++            pass  # not a real tty (should not happen) - leave the line discipline alone
++
++    @property
++    def in_waiting(self):
++        buf = self._array.array('i', [0])
++        try:
++            self._fcntl.ioctl(self._fd, self._termios.FIONREAD, buf, True)
++        except OSError:
++            return 0
++        return buf[0]
++
++    def read(self, size):
++        ready, _, _ = select.select([self._fd], [], [], 0.02)
++        if not ready:
++            return b''
++        try:
++            return os.read(self._fd, size)
++        except BlockingIOError:
++            return b''
++
++    def write(self, data):
++        view = memoryview(data)
++        written = 0
++        while view:
++            _, ready, _ = select.select([], [self._fd], [], 1.0)
++            if not ready:
++                break
++            try:
++                count = os.write(self._fd, view)
++            except BlockingIOError:
++                continue
++            view = view[count:]
++            written += count
++        return written
++
++    def close(self):
++        os.close(self._fd)
++
++
+ class McuNode(Node):
+     """ROS 2 wrapper around the Airseekers MCU serial protocol."""
+ 
+     def __init__(self):
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -86,8 +86,12 @@
+ import struct
+ import time
+ from datetime import datetime
+ 
++import fcntl
++import termios
++import array
++
+ import rclpy
+ from rclpy.node import Node
+ from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+ 
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -286,21 +286,12 @@
+     configure the tty ourselves in raw 8N1 mode with the ``termios`` stdlib module.  On a pty
+     the baud rate is meaningless; on a real UART it still gets applied.
+     """
+ 
+-    SPEEDS = {}  # filled lazily: termios constants are only available on POSIX
++    SPEEDS = {9600: termios.B9600, 19200: termios.B19200, 38400: termios.B38400,
++              57600: termios.B57600, 115200: termios.B115200, 230400: termios.B230400}
+ 
+     def __init__(self, path, baud):
+-        import array
+-        import fcntl
+-        import termios
+-
+-        if not _TermiosSerial.SPEEDS:
+-            _TermiosSerial.SPEEDS = {
+-                9600: termios.B9600, 19200: termios.B19200, 38400: termios.B38400,
+-                57600: termios.B57600, 115200: termios.B115200, 230400: termios.B230400,
+-            }
+-        self._fcntl, self._termios, self._array = fcntl, termios, array
+         self._fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+         try:
+             attrs = termios.tcgetattr(self._fd)
+             speed = _TermiosSerial.SPEEDS.get(baud, termios.B115200)
+@@ -317,11 +308,11 @@
+             pass  # not a real tty (should not happen) - leave the line discipline alone
+ 
+     @property
+     def in_waiting(self):
+-        buf = self._array.array('i', [0])
++        buf = array.array('i', [0])
+         try:
+-            self._fcntl.ioctl(self._fd, self._termios.FIONREAD, buf, True)
++            fcntl.ioctl(self._fd, termios.FIONREAD, buf, True)
+         except OSError:
+             return 0
+         return buf[0]
+ 
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -79,19 +79,18 @@
+ ``scripts/loopback_test.sh`` builds a socat pty pair and runs a synthetic MCU
+ (:mod:`mower_mcu_driver.fake_mcu`) against this node -- no hardware, no root, see README.md.
+ """
+ 
++import array
++import fcntl
+ import math
+ import os
+ import select
+ import struct
++import termios
+ import time
+ from datetime import datetime
+ 
+-import fcntl
+-import termios
+-import array
+-
+ import rclpy
+ from rclpy.node import Node
+ from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+ 
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -460,14 +460,23 @@
+         if self._ser is not None or now - self._last_open_attempt < 2.0:
+             return
+         self._last_open_attempt = now
+         try:
+-            import serial  # python3-serial / pyserial, imported late on purpose
+-            self._ser = serial.Serial(self.port, self.baud, timeout=0.02, write_timeout=1.0)
+-            self.get_logger().info('opened %s @ %d baud' % (self.port, self.baud))
+-        except Exception as exc:  # ImportError, FileNotFoundError, SerialException, ...
++            import serial  # pyserial (python3-serial)
++        except ImportError:
++            serial = None
++        try:
++            if serial is not None:
++                self._ser = serial.Serial(self.port, self.baud, timeout=0.02, write_timeout=1.0)
++                backend = 'pyserial'
++            else:
++                self._ser = _TermiosSerial(self.port, self.baud)
++                backend = 'termios fallback (python3-serial not installed)'
++        except Exception as exc:  # FileNotFoundError, PermissionError, SerialException, ...
+             self.get_logger().warn('cannot open %s: %s (retrying in 2 s)' % (self.port, exc),
+                                    throttle_duration_sec=10.0)
++            return
++        self.get_logger().info('opened %s @ %d baud via %s' % (self.port, self.baud, backend))
+ 
+     def _close_serial(self, reason):
+         if self._ser is not None:
+             try:
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+@@ -125,8 +125,11 @@
+                         help='pty end owned by the fake MCU (default: %(default)s)')
+     parser.add_argument('--imu', action='store_true',
+                         help='also emit MODULE_IMU (9) frames; off by default because the '
+                              'real firmware does not send them')
++    parser.add_argument('--duration', type=float, default=0.0,
++                        help='stop after N seconds (0 = run until interrupted); used by the '
++                             'automated loopback test')
+     args = parser.parse_args(argv)
+ 
+     port = Port(args.port)
+     parser_rx = FrameParser()
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+@@ -177,8 +177,10 @@
+             if now >= next_report:
+                 next_report = now + 1.0
+                 print('fake_mcu: host_frames=%d heartbeats=%d cmd=(%.2f m/s, %.2f rad/s)'
+                       % (host_frames, heartbeats, cmd_linear, cmd_angular))
++            if args.duration > 0.0 and now - start > args.duration:
++                break
+             time.sleep(0.002)
+     except KeyboardInterrupt:
+         pass
+     finally:
+
+> build · mimo-v2.6-flash-free
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/test/test_loopback.py
+Created file successfully: ros2_stack/src/mower_mcu_driver/test/test_loopback.py
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_loopback.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_loopback.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_loopback.py
++++ ros2_stack/src/mower_mcu_driver/test/test_loopback.py
+@@ -76,12 +76,9 @@
+         self.addCleanup(node.shutdown)
+ 
+         fake = threading.Thread(
+             target=fake_mcu.main,
+-            args=([['--port', self.fake_pty, '--duration', '3.0'][0],
+-                   ['--port', self.fake_pty, '--duration', '3.0'][1],
+-                   ['--port', self.fake_pty, '--duration', '3.0'][2],
+-                   ['--port', self.fake_pty, '--duration', '3.0'][3]],),
++            args=(['--port', self.fake_pty, '--imu', '--duration', '3.0'],),
+             daemon=True)
+         fake.start()
+         self.addCleanup(fake.join, 5.0)
+ 
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_loopback.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_loopback.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_loopback.py
++++ ros2_stack/src/mower_mcu_driver/test/test_loopback.py
+@@ -104,9 +104,9 @@
+         self.assertEqual(node._parser.frames_bad, 0, 'corrupt frames on the loopback')
+         self.assertIsNotNone(node._sensor_info, 'SensorInfo never arrived')
+         self.assertTrue(node.published['/battery'], 'no /battery published')
+         self.assertAlmostEqual(node.published['/battery'][0].voltage, 24.8, places=3)
+-        self.assertTrue(node.published['/imu'], '/imu should follow the --imu-free module 9? no')
++        self.assertTrue(node.published['/imu'], 'module 9 (--imu) did not reach /imu')
+ 
+         # host -> MCU -> host round trip: the fake MCU echoes the command as measured speed
+         self.assertAlmostEqual(node._meas_linear, 0.4, places=2)
+         self.assertAlmostEqual(node._meas_angular, 0.1, places=2)
+
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && timeout 60 python3 test/test_loopback.py 2>&1 | tail -30
+test_bidirectional_traffic_over_pty (__main__.TestLoopback.test_bidirectional_traffic_over_pty) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 3.056s
+
+OK
+fake_mcu: listening on /tmp/opencode/mower_loopback_fkiky0bw/fake (--imu=True)
+fake_mcu: host_frames=0 heartbeats=0 cmd=(0.00 m/s, 0.00 rad/s)
+fake_mcu: host_frames=38 heartbeats=19 cmd=(0.40 m/s, 0.10 rad/s)
+fake_mcu: host_frames=56 heartbeats=28 cmd=(0.40 m/s, 0.10 rad/s)
+fake_mcu: stopped
+> build · mimo-v2.6-flash-free
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/package.xml
+Created file successfully: ros2_stack/src/mower_mcu_driver/package.xml
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/setup.py
+Created file successfully: ros2_stack/src/mower_mcu_driver/setup.py
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/setup.cfg
+Created file successfully: ros2_stack/src/mower_mcu_driver/setup.cfg
+[0m$ [0mmkdir -p /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/resource && printf '' > /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/resource/mower_mcu_driver && ls -R /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver:
+mower_mcu_driver
+package.xml
+resource
+setup.cfg
+setup.py
+test
+
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/mower_mcu_driver:
+__init__.py
+__pycache__
+fake_mcu.py
+mcu_node.py
+
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/mower_mcu_driver/__pycache__:
+__init__.cpython-314.pyc
+fake_mcu.cpython-314.pyc
+mcu_node.cpython-314.pyc
+
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/resource:
+mower_mcu_driver
+
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/test:
+__pycache__
+ros_stubs.py
+test_loopback.py
+test_node_smoke.py
+test_protocol.py
+
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/test/__pycache__:
+ros_stubs.cpython-314.pyc
+> build · mimo-v2.6-flash-free
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/mower_mcu_driver/__init__.py
+Wrote file successfully: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/__init__.py
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && find . -name __pycache__ -type d -prune -exec rm -rf {} + && ls -la src/mower_mcu_driver/mower_mcu_driver && cat .gitignore 2>/dev/null || echo "NO GITIGNORE"
+total 64
+drwxrwxr-x 2 michael michael  4096 Oct  5 10:41 .
+drwxrwxr-x 5 michael michael  4096 Oct  5 10:41 ..
+-rw-rw-r-- 1 michael michael   100 Oct  5 10:41 __init__.py
+-rw-rw-r-- 1 michael michael  8281 Oct  5 10:39 fake_mcu.py
+-rw-rw-r-- 1 michael michael 38619 Oct  5 10:39 mcu_node.py
+NO GITIGNORE
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && wc -l mower_mcu_driver/*.py test/*.py && grep -n "^class \|^def \|^    def " mower_mcu_driver/mcu_node.py
+194 mower_mcu_driver/fake_mcu.py
+    3 mower_mcu_driver/__init__.py
+  856 mower_mcu_driver/mcu_node.py
+  239 test/ros_stubs.py
+  120 test/test_loopback.py
+  209 test/test_node_smoke.py
+  157 test/test_protocol.py
+ 1778 total
+149:def escape(data):
+164:def unescape(data):
+178:def build_frame(subpackets):
+190:def split_subpackets(inner):
+202:class FrameParser:
+212:    def __init__(self):
+217:    def feed(self, data):
+254:def heartbeat_payload(now=None):
+262:def speed_payload(linear, angular):
+267:def _diag6(a, b, c, d, e, f):
+275:def _yaw_to_quaternion(yaw):
+280:class _TermiosSerial:
+292:    def __init__(self, path, baud):
+310:    def in_waiting(self):
+318:    def read(self, size):
+327:    def write(self, data):
+342:    def close(self):
+346:class McuNode(Node):
+349:    def __init__(self):
+457:    def _open_serial(self):
+480:    def _close_serial(self, reason):
+489:    def _write(self, data):
+497:    def _poll_serial(self):
+514:    def _dispatch(self, type_id, mod_id, payload):
+544:    def _on_speed_data(self, payload):
+550:    def _on_battery(self, payload):
+561:    def _publish_battery(self, raw):
+581:    def _on_imu(self, payload):
+620:    def _euler_to_quaternion(roll, pitch, yaw):
+629:    def _on_sensor_info(self, payload):
+637:    def _on_version(self, payload):
+644:    def _on_motors(self, payload):
+652:    def _publish_sensor_info(self):
+722:    def _on_cmd_vel(self, msg):
+726:    def _map_command(self, twist):
+740:    def _send_heartbeat(self):
+744:    def _send_speed(self):
+753:    def _commanded(self):
+758:    def _speed(self, now):
+771:    def _reckon(self):
+816:    def shutdown(self):
+827:def _set_if(msg, name, value):
+841:def main(args=None):
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py [90m[limit=150][0m
+> build · mimo-v2.6-flash-free
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/scripts/loopback_test.sh
+Created file successfully: ros2_stack/src/mower_mcu_driver/scripts/loopback_test.sh
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/scripts/loopback_test.sh
+Index: ros2_stack/src/mower_mcu_driver/scripts/loopback_test.sh
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/scripts/loopback_test.sh
++++ ros2_stack/src/mower_mcu_driver/scripts/loopback_test.sh
+@@ -79,6 +79,5 @@
+ sleep 0.5
+ 
+ echo "loopback: starting mower_mcu_driver on $HOST_PTY (Ctrl-C to stop)"
+ echo "  try: ros2 topic hz /battery  |  ros2 topic echo /odom"
+-exec 3>&1  # keep a handle on stdout for the hint below
+ ros2 run mower_mcu_driver mcu_node --ros-args -p "port:=$HOST_PTY" -p "heartbeat_period:=0.1"
+
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && chmod +x scripts/loopback_test.sh && bash -n scripts/loopback_test.sh && echo BASH_SYNTAX_OK && ./scripts/loopback_test.sh --help | head -8
+BASH_SYNTAX_OK
+# Offline loopback test for mower_mcu_driver: socat pty pair + synthetic MCU + the real node.
+# No mower hardware and no root needed (unless you use --dev).
+#
+# Run it inside the Humble container:
+#
+#   ./scripts/build.sh                                  # from ros2_stack/
+#   ./scripts/run_stack.sh                              # shell in the container
+#   src/mower_mcu_driver/scripts/loopback_test.sh       # this script (Ctrl-C stops everything)
+> build · mimo-v2.6-flash-free
+[0m← [0mWrite ros2_stack/src/mower_mcu_driver/README.md
+Created file successfully: ros2_stack/src/mower_mcu_driver/README.md
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 setup.py --name --version 2>&1 | tail -3; for t in test/test_protocol.py test/test_node_smoke.py test/test_loopback.py; do echo "== $t"; timeout 90 python3 $t 2>&1 | grep -E "^(OK|FAILED|Ran )"; done; command -v ruff || python3 -m pyflakes --version 2>/dev/null || echo "no linter"
+warnings.warn(msg)
+mower_mcu_driver
+0.1.0
+== test/test_protocol.py
+Ran 11 tests in 0.449s
+OK
+== test/test_node_smoke.py
+Ran 11 tests in 0.001s
+OK
+== test/test_loopback.py
+Ran 1 test in 3.054s
+OK
+no linter
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py [90m[offset=190, limit=175][0m
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py [90m[limit=200, offset=365][0m
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -369,26 +369,30 @@
+         self.declare_parameter('angular_max', 1.5)
+         self.declare_parameter('battery_voltage_scale', 0.1)
+         self.declare_parameter('battery_current_scale', 1.0)
+ 
+-        g = lambda name: self.get_parameter(name).value
+-        self.port = str(g('port'))
+-        self.baud = int(g('baud'))
+-        self.odom_frame = str(g('odom_frame'))
+-        self.base_frame = str(g('base_frame'))
+-        self.imu_frame = str(g('imu_frame'))
+-        self.frame_id = str(g('frame_id'))
+-        self.heartbeat_period = float(g('heartbeat_period'))
+-        self.cmd_vel_timeout = float(g('cmd_vel_timeout'))
+-        self.speed_timeout = float(g('speed_timeout'))
+-        self.use_imu_yaw = bool(g('use_imu_yaw'))
+-        self.linear_scale = float(g('linear_scale'))
+-        self.angular_scale = float(g('angular_scale'))
+-        self.linear_max = float(g('linear_max'))
+-        self.angular_max = float(g('angular_max'))
+-        self.battery_voltage_scale = float(g('battery_voltage_scale'))
+-        self.battery_current_scale = float(g('battery_current_scale'))
++        def param(name):
++            return self.get_parameter(name).value
+ 
++        self.port = str(param('port'))
++        self.baud = int(param('baud'))
++        self.odom_frame = str(param('odom_frame'))
++        self.base_frame = str(param('base_frame'))
++        self.imu_frame = str(param('imu_frame'))
++        self.frame_id = str(param('frame_id'))
++        self.heartbeat_period = float(param('heartbeat_period'))
++        self.cmd_vel_timeout = float(param('cmd_vel_timeout'))
++        self.speed_timeout = float(param('speed_timeout'))
++        self.use_imu_yaw = bool(param('use_imu_yaw'))
++        self.linear_scale = float(param('linear_scale'))
++        self.angular_scale = float(param('angular_scale'))
++        self.linear_max = float(param('linear_max'))
++        self.angular_max = float(param('angular_max'))
++        self.battery_voltage_scale = float(param('battery_voltage_scale'))
++        self.battery_current_scale = float(param('battery_current_scale'))
++        speed_cmd_rate = float(param('speed_cmd_rate'))
++        odom_rate = float(param('odom_rate'))
++
+         # ---- state --------------------------------------------------------
+         self._ser = None
+         self._last_open_attempt = 0.0
+         self._parser = FrameParser()
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -447,16 +447,16 @@
+         # Default single-threaded executor: all timers/callbacks touch the serial port, so no
+         # locking is needed as long as rclpy.spin() (not a MultiThreadedExecutor) is used.
+         self.create_timer(0.01, self._poll_serial)                       # 100 Hz RX poll
+         self.create_timer(self.heartbeat_period, self._send_heartbeat)
+-        self.create_timer(1.0 / max(float(g('speed_cmd_rate')), 1.0), self._send_speed)
+-        self.create_timer(1.0 / max(float(g('odom_rate')), 1.0), self._reckon)
++        self.create_timer(1.0 / max(speed_cmd_rate, 1.0), self._send_speed)
++        self.create_timer(1.0 / max(odom_rate, 1.0), self._reckon)
+ 
+         self.get_logger().info(
+             'mower_mcu_driver up: %s @ %d baud, heartbeat every %.0f ms (period UNKNOWN), '
+             'cmd_vel %.0f Hz, odom %.0f Hz'
+             % (self.port, self.baud, self.heartbeat_period * 1000.0,
+-               float(g('speed_cmd_rate')), float(g('odom_rate'))))
++               speed_cmd_rate, odom_rate))
+ 
+     # ------------------------------------------------------------------ serial
+     def _open_serial(self):
+         """Open the port, retrying forever so launch files survive a late udev symlink."""
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -538,9 +538,14 @@
+             self._on_motors(payload)
+         elif mod_id == MOD_LOG:
+             self.get_logger().info('MCU: %s' % payload.decode('utf-8', 'replace'))
+         elif mod_id == MOD_CALIB:
+-            self.get_logger().info('MCU calibration result: %s' % (payload.hex(),))
++            if len(payload) == struct.calcsize(CALIB_FMT):
++                calib, left, right = struct.unpack(CALIB_FMT, payload)
++                self.get_logger().info('MCU calibration: calib=%d left=%d right=%d'
++                                       % (calib, left, right))
++            else:
++                self.get_logger().info('MCU calibration result: %s' % payload.hex())
+         else:
+             # module 7 (uptime/tick ?) and anything else: counted but not decoded
+             self.get_logger().debug('unhandled module %d (%d bytes)' % (mod_id, len(payload)),
+                                     throttle_duration_sec=10.0)
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -598,9 +598,11 @@
+         if len(payload) != struct.calcsize(IMU_FMT):
+             return
+         (pitch, roll, yaw, accx, accy, accz,
+          gyrox, gyroy, gyroz) = struct.unpack(IMU_FMT, payload)
+-        self._have_imu = True
++        if not self._have_imu:
++            self._have_imu = True
++            self.get_logger().info('MCU MODULE_IMU (9) seen -> publishing placeholder /imu')
+ 
+         msg = Imu()
+         msg.header.stamp = self.get_clock().now().to_msg()
+         msg.header.frame_id = self.imu_frame
+
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py [90m[limit=200, offset=570][0m
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -114,14 +114,14 @@
+ TYPE_MOWER_ROS = 8      # MCU -> host
+ TYPE_HEARTBEAT = 255    # host -> MCU keepalive
+ 
+ MOD_ALL = 0           # MODULE_ALL: addressed to the whole MCU (heartbeat uses this)
+-MOD_CHARGE = 3
++MOD_CHARGE = 3        # not sent yet: /charging service -> ChargeControl is TODO
+ MOD_SPEED = 4
+ MOD_BATTERY = 5
+ MOD_IMU = 9
+ MOD_SENSOR = 10
+-MOD_CUTTER = 11
++MOD_CUTTER = 11       # not sent yet: /cutter_control service -> CutterControl is TODO
+ MOD_VERSION = 12
+ MOD_MOTORS = 13
+ MOD_CALIB = 18
+ MOD_LOG = 19
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -721,11 +721,14 @@
+                 continue
+             try:
+                 motor = type(getattr(msg, name))()
+             except Exception:
+-                continue
++                continue  # no such field on this interface package
+             for field, value in raw.items():
+-                _set_if(motor, field, value)
++                if not _set_if(motor, field, value):
++                    alias = _MOTOR_FIELD_ALIASES.get(field)
++                    if alias:
++                        _set_if(motor, alias, value)
+             _set_if(msg, name, motor)
+ 
+         self._sensor_pub.publish(msg)
+ 
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -838,15 +838,29 @@
+             self._ser = None
+ 
+ 
+ def _set_if(msg, name, value):
+-    """Set ``msg.name = value`` only when the interface actually has that field."""
+-    if hasattr(msg, name):
++    """Set ``msg.name = value`` only when the interface has that field.
++
++    Returns ``True`` when the assignment happened.  ``TypeError`` (field present but with a
++    different type, e.g. a nested message where we have a raw int) is swallowed: the interface
++    package is being written by another agent and its exact shape is not frozen yet.
++    """
++    if not name or not hasattr(msg, name):
++        return False
++    try:
+         setattr(msg, name, value)
+-        return True
+-    return False
++    except TypeError:
++        return False
++    return True
+ 
+ 
++# Raw MotorInfo names -> names used by mower_interfaces/MotorInfo (vendor msg uses speed_rpm).
++# TODO: the vendor MotorInfo also nests a MotorStatus message where the wire format has a
++# single uint8; that field needs a converter once the interface package is final.
++_MOTOR_FIELD_ALIASES = {'speed': 'speed_rpm'}
++
++
+ # Dead reckoning covariances (row-major 6x6).  Unobserved axes are marked with 1e6.
+ _POSE_COVARIANCE = _diag6(0.05, 0.05, 0.10, 0.50, 0.50, 0.10)
+ _TWIST_COVARIANCE_MEASURED = _diag6(0.02, 1e6, 1e6, 1e6, 1e6, 0.05)
+ _TWIST_COVARIANCE_COMMANDED = _diag6(1.00, 1e6, 1e6, 1e6, 1e6, 1.00)
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -25,11 +25,66 @@
+ ros_stubs.install()
+ 
+ from mower_mcu_driver import mcu_node as mn  # noqa: E402
+ 
+-from geometry_msgs.msg import TwistStamped  # noqa: E402  (stub or real)
++from geometry_msgs.msg import TwistStamped  # noqa: E402
+ 
+ 
++class FakeStatus:
++    """Stands in for the nested MotorStatus message of MowerSensorInfo."""
++
++    def __init__(self):
++        self.status = 0
++
++
++class FakeMotor:
++    """Vendor-shaped MotorInfo: speed_rpm (alias!), current, voltage, temp, nested status."""
++
++    def __init__(self):
++        self.speed_rpm = 0
++        self.current = 0
++        self.voltage = 0
++        self.temperature = 0
++        self._status = FakeStatus()
++
++    @property
++    def status(self):
++        return self._status
++
++    @status.setter
++    def status(self, value):
++        if not isinstance(value, FakeStatus):
++            raise TypeError('status must be a MotorStatus message, not %r' % (value,))
++
++
++class FakeMowerSensorInfo:
++    """Shape of mower_interfaces/MowerSensorInfo - but without rain_sensor_value/key_pressed
++    on purpose, so the guarded field assignment is exercised."""
++
++    def __init__(self):
++        self.header = types.SimpleNamespace(stamp=None, frame_id='')
++        self.bumper_triggered = False
++        self.rain_triggered = False
++        self.lift_triggered = False
++        self.stop_triggered = False
++        self.battery_gate_open = False
++        self.press_module = False
++        self.cutter_size = 0
++        self.battery_temperature = 0
++        self.battery_error = 0
++        self.is_charging = False
++        self.is_moving = False
++        self.is_cmd_moving = False
++        self.is_cutting = False
++        self.cutter_board_version = ''
++        self.chassis_board_version = ''
++        self.rtk_board_version = ''
++        self.cutter_motor = FakeMotor()
++        self.left_motor = FakeMotor()
++        self.right_motor = FakeMotor()
++        self.height_motor = FakeMotor()  (stub or real)
++
++
+ class FakeSerial:
+     """Byte pipes standing in for the pty/UART."""
+ 
+     def __init__(self):
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -13,8 +13,9 @@
+ import os
+ import struct
+ import sys
+ import time
++import types
+ import unittest
+ 
+ PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ if PKG_DIR not in sys.path:
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -183,8 +183,46 @@
+         self.assertIsNone(self.node._sensor_pub)
+         inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SENSOR, struct.pack(mn.SENSOR_FMT, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0)))
+         self.assertEqual(self.node.published.get('/mower_sensor_info', []), [])
+ 
++    def test_mower_sensor_info_published_when_interface_available(self):
++        # Simulate "mower_interfaces was created" and check every filled field.
++        published = self.node.published['/mower_sensor_info']
++        self.node._sensor_pub = types.SimpleNamespace(publish=published.append)
++        previous = mn.MowerSensorInfo
++        mn.MowerSensorInfo = FakeMowerSensorInfo
++        self.addCleanup(setattr, mn, 'MowerSensorInfo', previous)
++
++        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_VERSION,
++                           struct.pack(mn.VERSION_FMT, 0, 6, 36, 0, 6, 34, 0, 9, 50)))
++        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_BATTERY,
++                           struct.pack(mn.BATTERY_FMT, 248, 5, 99, 1, 15, 0)))
++        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_MOTORS,
++                           b''.join(struct.pack(mn.MOTOR_FMT, 0, 0, 2478, 14, 0)
++                                    for _ in range(4))))
++        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SPEED, mn.speed_payload(0.4, 0.0)))
++        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SENSOR,
++                           struct.pack(mn.SENSOR_FMT, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0)))
++
++        self.assertEqual(len(published), 1)
++        msg = published[0]
++        self.assertTrue(msg.bumper_triggered)
++        self.assertTrue(msg.stop_triggered)
++        self.assertTrue(msg.battery_gate_open)
++        self.assertTrue(msg.is_charging)
++        self.assertTrue(msg.is_moving)
++        self.assertTrue(msg.is_cmd_moving)
++        self.assertEqual(msg.cutter_board_version, 'v0.6.36')
++        self.assertEqual(msg.chassis_board_version, 'v0.6.34')
++        self.assertEqual(msg.rtk_board_version, '0.9.50')
++        self.assertEqual(msg.battery_temperature, 15)
++        self.assertEqual(msg.cutter_size, 1)
++        # 'speed' -> 'speed_rpm' alias, and the nested status message was left alone
++        # (assigning the raw int would raise TypeError, which _set_if swallows).
++        self.assertEqual(msg.cutter_motor.voltage, 2478)
++        self.assertEqual(msg.cutter_motor.speed_rpm, 0)
++        self.assertIsInstance(msg.cutter_motor.status, FakeStatus)
++
+     # ----------------------------------------------------------------- cmd_vel
+     def test_cmd_vel_is_scaled_clamped_and_sent_as_speed_data(self):
+         self.node.linear_scale = 2.0
+         self.node.angular_scale = 0.5
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -199,8 +199,9 @@
+         inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_MOTORS,
+                            b''.join(struct.pack(mn.MOTOR_FMT, 0, 0, 2478, 14, 0)
+                                     for _ in range(4))))
+         inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SPEED, mn.speed_payload(0.4, 0.0)))
++        self.node._on_cmd_vel(cmd_vel(0.4, 0.0))
+         inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SENSOR,
+                            struct.pack(mn.SENSOR_FMT, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0)))
+ 
+         self.assertEqual(len(published), 1)
+
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 test/test_node_smoke.py 2>&1 | tail -25
+test_battery_publishes_battery_state (__main__.TestMcuNode.test_battery_publishes_battery_state) ... ok
+test_cmd_vel_is_scaled_clamped_and_sent_as_speed_data (__main__.TestMcuNode.test_cmd_vel_is_scaled_clamped_and_sent_as_speed_data) ... ok
+test_heartbeat_frame_shape (__main__.TestMcuNode.test_heartbeat_frame_shape) ... ok
+test_mower_sensor_info_published_when_interface_available (__main__.TestMcuNode.test_mower_sensor_info_published_when_interface_available) ... FAIL
+test_mower_sensor_info_skipped_without_mower_interfaces (__main__.TestMcuNode.test_mower_sensor_info_skipped_without_mower_interfaces) ... ok
+test_nothing_published_on_imu_until_module_9_arrives (__main__.TestMcuNode.test_nothing_published_on_imu_until_module_9_arrives) ... ok
+test_odom_dead_reckons_from_measured_speed (__main__.TestMcuNode.test_odom_dead_reckons_from_measured_speed) ... ok
+test_odom_degrades_to_commanded_velocity (__main__.TestMcuNode.test_odom_degrades_to_commanded_velocity) ... ok
+test_odom_uses_imu_yaw_when_available (__main__.TestMcuNode.test_odom_uses_imu_yaw_when_available) ... ok
+test_shutdown_sends_zero_speed_before_closing (__main__.TestMcuNode.test_shutdown_sends_zero_speed_before_closing) ... ok
+test_stale_cmd_vel_sends_zero_speed (__main__.TestMcuNode.test_stale_cmd_vel_sends_zero_speed) ... ok
+
+======================================================================
+FAIL: test_mower_sensor_info_published_when_interface_available (__main__.TestMcuNode.test_mower_sensor_info_published_when_interface_available)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py", line 207, in test_mower_sensor_info_published_when_interface_available
+    self.assertEqual(len(published), 1)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 1
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.001s
+
+FAILED (failures=1)
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 - <<'EOF' 2>&1 | tail -30
+import sys, os, types, struct
+sys.path.insert(0, 'test'); sys.path.insert(0, '.')
+import ros_stubs; ros_stubs.install()
+from mower_mcu_driver import mcu_node as mn
+sys.path.insert(0,'test')
+import test_node_smoke as t
+n = t.make_node()
+pub = n.published['/mower_sensor_info']
+n._sensor_pub = types.SimpleNamespace(publish=pub.append)
+mn.MowerSensorInfo = t.FakeMowerSensorInfo
+n._sensor_info = {'bumper':1}
+try:
+    n._publish_sensor_info()
+except Exception as e:
+    import traceback; traceback.print_exc()
+print('published:', len(pub))
+EOF
+published: 0
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 - <<'EOF' 2>&1 | tail -30
+import sys, types
+sys.path.insert(0, 'test'); sys.path.insert(0, '.')
+import ros_stubs; ros_stubs.install()
+from mower_mcu_driver import mcu_node as mn
+from mower_mcu_driver import mcu_node
+print('module id', id(mn), id(mcu_node))
+print('global MowerSensorInfo:', mn.MowerSensorInfo)
+import test_node_smoke as t
+n = t.make_node()
+pub = n.published['/mower_sensor_info']
+n._sensor_pub = types.SimpleNamespace(publish=pub.append)
+n._sensor_info = {'bumper':1}
+mn.MowerSensorInfo = t.FakeMowerSensorInfo
+print('pub?', n._sensor_pub, 'info?', n._sensor_info, 'cls?', mn.MowerSensorInfo)
+print('body source check:', mn.McuNode._publish_sensor_info.__code__.co_names[:20])
+n._publish_sensor_info()
+print('published:', len(pub))
+EOF
+module id 128930316109200 128930316109200
+global MowerSensorInfo: None
+pub? namespace(publish=<built-in method append of list object at 0x7542ed9af700>) info? {'bumper': 1} cls? <class 'test_node_smoke.FakeMowerSensorInfo'>
+body source check: ('_sensor_pub', '_sensor_info', 'MowerSensorInfo', 'Exception', '_mower_sensor_info_pub_warned', 'get_logger', 'warn', 'get_clock', 'now', 'to_msg', 'header', 'stamp', '_set_if', 'bool', 'int', '_battery', '_versions', 'time', 'monotonic', '_speed')
+published: 0
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 - <<'EOF' 2>&1 | tail -40
+import sys, types, traceback
+sys.path.insert(0, 'test'); sys.path.insert(0, '.')
+import ros_stubs; ros_stubs.install()
+from mower_mcu_driver import mcu_node as mn
+import test_node_smoke as t
+n = t.make_node()
+pub = n.published['/mower_sensor_info']
+n._sensor_pub = types.SimpleNamespace(publish=lambda m: (print('PUBLISH CALLED'), pub.append(m)))
+n._sensor_info = {'bumper':1,'rain':0,'lift':0,'stop':1,'power_off':0,'battery_gate':0,'cutter_size':1,'press_module':1,'bumper_r':0,'bumper_l':0}
+mn.MowerSensorInfo = t.FakeMowerSensorInfo
+# replicate the guard manually
+print('guard:', n._sensor_pub is None, n._sensor_info is None, mn.MowerSensorInfo is None)
+try:
+    msg = mn.MowerSensorInfo()
+    print('constructed ok')
+except Exception:
+    traceback.print_exc()
+n._publish_sensor_info()
+print('published:', len(pub))
+EOF
+Traceback (most recent call last):
+  File "<stdin>", line 14, in <module>
+  File "/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py", line 85, in __init__
+    self.height_motor = FakeMotor()  (stub or real)
+                                      ^^^^
+NameError: name 'stub' is not defined
+guard: False False False
+published: 0
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py [90m[limit=50, offset=45][0m
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -81,9 +81,9 @@
+         self.rtk_board_version = ''
+         self.cutter_motor = FakeMotor()
+         self.left_motor = FakeMotor()
+         self.right_motor = FakeMotor()
+-        self.height_motor = FakeMotor()  (stub or real)
++        self.height_motor = FakeMotor()
+ 
+ 
+ class FakeSerial:
+     """Byte pipes standing in for the pty/UART."""
+
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && grep -n "geometry_msgs" test/*.py && python3 test/test_node_smoke.py 2>&1 | tail -20
+test/ros_stubs.py:231:    _mod('geometry_msgs')
+test/ros_stubs.py:232:    _mod('geometry_msgs.msg').TwistStamped = TwistStamped
+test/test_loopback.py:33:from geometry_msgs.msg import TwistStamped  # noqa: E402
+test/test_node_smoke.py:30:from geometry_msgs.msg import TwistStamped  # noqa: E402
+test_nothing_published_on_imu_until_module_9_arrives (__main__.TestMcuNode.test_nothing_published_on_imu_until_module_9_arrives) ... ok
+test_odom_dead_reckons_from_measured_speed (__main__.TestMcuNode.test_odom_dead_reckons_from_measured_speed) ... ok
+test_odom_degrades_to_commanded_velocity (__main__.TestMcuNode.test_odom_degrades_to_commanded_velocity) ... ok
+test_odom_uses_imu_yaw_when_available (__main__.TestMcuNode.test_odom_uses_imu_yaw_when_available) ... ok
+test_shutdown_sends_zero_speed_before_closing (__main__.TestMcuNode.test_shutdown_sends_zero_speed_before_closing) ... ok
+test_stale_cmd_vel_sends_zero_speed (__main__.TestMcuNode.test_stale_cmd_vel_sends_zero_speed) ... ok
+
+======================================================================
+FAIL: test_mower_sensor_info_published_when_interface_available (__main__.TestMcuNode.test_mower_sensor_info_published_when_interface_available)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py", line 222, in test_mower_sensor_info_published_when_interface_available
+    self.assertEqual(msg.cutter_motor.voltage, 2478)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 0 != 2478
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.001s
+
+FAILED (failures=1)
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 - <<'EOF' 2>&1 | tail -20
+import sys, types, struct
+sys.path.insert(0, 'test'); sys.path.insert(0, '.')
+import ros_stubs; ros_stubs.install()
+from mower_mcu_driver import mcu_node as mn
+import test_node_smoke as t
+n = t.make_node()
+pub = n.published['/mower_sensor_info']
+n._sensor_pub = types.SimpleNamespace(publish=pub.append)
+mn.MowerSensorInfo = t.FakeMowerSensorInfo
+t.inject(n, (mn.TYPE_MOWER_ROS, mn.MOD_MOTORS, b''.join(struct.pack(mn.MOTOR_FMT, 0,0,2478,14,0) for _ in range(4))))
+print('motors:', n._motors)
+t.inject(n, (mn.TYPE_MOWER_ROS, mn.MOD_SENSOR, struct.pack(mn.SENSOR_FMT, *([0]*10))))
+m = pub[0]
+print('cutter motor:', vars(m.cutter_motor))
+EOF
+motors: {'cutter': {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}, 'left': {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}, 'right': {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}, 'height': {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}}
+cutter motor: {'speed_rpm': 0, 'current': 0, 'voltage': 0, 'temperature': 0, '_status': <test_node_smoke.FakeStatus object at 0x796dec769160>}
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && grep -n "_set_if\b" -A2 mower_mcu_driver/mcu_node.py | sed -n '1,60p'
+666:        Every field is assigned through :func:`_set_if` so a ``mower_interfaces`` with a
+667-        slightly different (reduced) field set still works instead of raising.
+668-        """
+--
+681:        _set_if(msg, 'bumper_triggered', bool(s['bumper'] or s['bumper_l'] or s['bumper_r']))
+682:        _set_if(msg, 'rain_triggered', bool(s['rain']))
+683:        _set_if(msg, 'lift_triggered', bool(s['lift']))
+684:        _set_if(msg, 'stop_triggered', bool(s['stop']))
+685:        _set_if(msg, 'battery_gate_open', bool(s['battery_gate']))
+686:        _set_if(msg, 'press_module', bool(s['press_module']))
+687:        _set_if(msg, 'cutter_size', int(s['cutter_size']))
+688-
+689-        if self._battery:
+690:            _set_if(msg, 'battery_temperature', int(self._battery['temperature']) & 0xFF)
+691:            _set_if(msg, 'battery_error', int(self._battery['error']))
+692:            _set_if(msg, 'is_charging', bool(self._battery['dock_ok']))
+693-
+694-        for key, prefix in (('cutter', 'cutter_board_version'),
+--
+702:                _set_if(msg, prefix, version)
+703-
+704-        now = time.monotonic()
+--
+706:        _set_if(msg, 'is_moving', measured
+707-                and (abs(linear) > 1e-2 or abs(angular) > 1e-2))
+708:        _set_if(msg, 'is_cmd_moving',
+709-                now - self._cmd_stamp < self.cmd_vel_timeout
+710-                and (abs(self._cmd_linear) > 1e-2 or abs(self._cmd_angular) > 1e-2))
+--
+713:        _set_if(msg, 'is_cutting', bool(cutter and abs(cutter['speed']) > 0))
+714-        # TODO: key_pressed, is_fill_light_on, rain_sensor_value, bumper_routing_*,
+715-        # is_docking_done and the MotorInfo sub-messages need sources that are not on this
+--
+727:                if not _set_if(motor, field, value):
+728-                    alias = _MOTOR_FIELD_ALIASES.get(field)
+729-                    if alias:
+730:                        _set_if(motor, alias, value)
+731:            _set_if(msg, name, motor)
+732-
+733-        self._sensor_pub.publish(msg)
+--
+841:def _set_if(msg, name, value):
+842-    """Set ``msg.name = value`` only when the interface has that field.
+843-
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py [90m[limit=40, offset=836][0m
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 - <<'EOF' 2>&1 | tail -30
+import sys, types, struct
+sys.path.insert(0, 'test'); sys.path.insert(0, '.')
+import ros_stubs; ros_stubs.install()
+from mower_mcu_driver import mcu_node as mn
+import test_node_smoke as t
+
+orig = mn._set_if
+def spy(msg, name, value):
+    r = orig(msg, name, value)
+    print('set_if', type(msg).__name__, repr(name), repr(value)[:40], '->', r)
+    return r
+mn._set_if = spy
+
+n = t.make_node()
+pub = n.published['/mower_sensor_info']
+n._sensor_pub = types.SimpleNamespace(publish=pub.append)
+mn.MowerSensorInfo = t.FakeMowerSensorInfo
+t.inject(n, (mn.TYPE_MOWER_ROS, mn.MOD_MOTORS, b''.join(struct.pack(mn.MOTOR_FMT, 0,0,2478,14,0) for _ in range(4))))
+t.inject(n, (mn.TYPE_MOWER_ROS, mn.MOD_SENSOR, struct.pack(mn.SENSOR_FMT, *([0]*10))))
+m = pub[0]
+print('cutter motor:', vars(m.cutter_motor))
+EOF
+set_if FakeMowerSensorInfo 'bumper_triggered' False -> True
+set_if FakeMowerSensorInfo 'rain_triggered' False -> True
+set_if FakeMowerSensorInfo 'lift_triggered' False -> True
+set_if FakeMowerSensorInfo 'stop_triggered' False -> True
+set_if FakeMowerSensorInfo 'battery_gate_open' False -> True
+set_if FakeMowerSensorInfo 'press_module' False -> True
+set_if FakeMowerSensorInfo 'cutter_size' 0 -> True
+set_if FakeMowerSensorInfo 'is_moving' False -> True
+set_if FakeMowerSensorInfo 'is_cmd_moving' False -> True
+set_if FakeMowerSensorInfo 'is_cutting' False -> True
+cutter motor: {'speed_rpm': 0, 'current': 0, 'voltage': 0, 'temperature': 0, '_status': <test_node_smoke.FakeStatus object at 0x7aef2ad652b0>}
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 - <<'EOF' 2>&1 | tail -30
+import sys, types, struct
+sys.path.insert(0, 'test'); sys.path.insert(0, '.')
+import ros_stubs; ros_stubs.install()
+from mower_mcu_driver import mcu_node as mn
+import test_node_smoke as t
+n = t.make_node()
+pub = n.published['/mower_sensor_info']
+n._sensor_pub = types.SimpleNamespace(publish=pub.append)
+mn.MowerSensorInfo = t.FakeMowerSensorInfo
+t.inject(n, (mn.TYPE_MOWER_ROS, mn.MOD_MOTORS, b''.join(struct.pack(mn.MOTOR_FMT, 0,0,2478,14,0) for _ in range(4))))
+print('motors now:', n._motors)
+print('MOTOR_NAMES:', mn.MOTOR_NAMES)
+# emulate the loop
+msg = mn.MowerSensorInfo()
+for name in mn.MOTOR_NAMES:
+    raw = n._motors.get(name)
+    print(name, 'raw=', raw)
+    if raw is None:
+        print('  -> skip (None)')
+        continue
+    try:
+        motor = type(getattr(msg, name))()
+    except Exception as e:
+        print('  -> ctor fail', e); continue
+    for field, value in raw.items():
+        ok = mn._set_if(motor, field, value)
+        print('   ', field, value, ok)
+    print('  motor now:', vars(motor))
+EOF
+motors now: {'cutter': {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}, 'left': {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}, 'right': {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}, 'height': {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}}
+MOTOR_NAMES: ('cutter', 'left', 'right', 'height')
+cutter raw= {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}
+  -> ctor fail 'FakeMowerSensorInfo' object has no attribute 'cutter'
+left raw= {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}
+  -> ctor fail 'FakeMowerSensorInfo' object has no attribute 'left'
+right raw= {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}
+  -> ctor fail 'FakeMowerSensorInfo' object has no attribute 'right'
+height raw= {'speed': 0, 'current': 0, 'voltage': 2478, 'temperature': 14, 'status': 0}
+  -> ctor fail 'FakeMowerSensorInfo' object has no attribute 'height'
+> build · mimo-v2.6-flash-free
+[0m✗ [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py failed
+[91m[1mError: [0mCould not find oldString in /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py. It must match exactly, including whitespace and indentation.
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py [90m[limit=18, offset=718][0m
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -718,18 +718,20 @@
+         for name in MOTOR_NAMES:
+             raw = self._motors.get(name)
+             if raw is None:
+                 continue
++            # wire name 'cutter' -> message field 'cutter_motor'
++            motor_field = name + '_motor'
+             try:
+-                motor = type(getattr(msg, name))()
+-            except Exception:
+-                continue  # no such field on this interface package
++                motor = type(getattr(msg, motor_field))()
++            except AttributeError:
++                continue  # this interface package has no such field
+             for field, value in raw.items():
+                 if not _set_if(motor, field, value):
+                     alias = _MOTOR_FIELD_ALIASES.get(field)
+                     if alias:
+                         _set_if(motor, alias, value)
+-            _set_if(msg, name, motor)
++            _set_if(msg, motor_field, motor)
+ 
+         self._sensor_pub.publish(msg)
+ 
+     # ------------------------------------------------------------------- TX
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -674,9 +674,23 @@
+             if not self._mower_sensor_info_pub_warned:
+                 self.get_logger().warn('cannot build MowerSensorInfo: %s' % exc)
+                 self._mower_sensor_info_pub_warned = True
+             return
++        try:
++            self._fill_sensor_info(msg)
++        except Exception as exc:  # pragma: no cover - defensive
++            if not self._mower_sensor_info_pub_warned:
++                self.get_logger().error('cannot fill MowerSensorInfo: %s' % exc)
++                self._mower_sensor_info_pub_warned = True
++            return
++        self._sensor_pub.publish(msg)
+ 
++    def _fill_sensor_info(self, msg):
++        """Fill every field of ``msg`` from the cached MCU state.
++
++        Every assignment goes through :func:`_set_if`, so a ``mower_interfaces`` whose field
++        set differs from what is documented here still works instead of raising.
++        """
+         msg.header.stamp = self.get_clock().now().to_msg()
+         s = self._sensor_info
+         _set_if(msg, 'bumper_triggered', bool(s['bumper'] or s['bumper_l'] or s['bumper_r']))
+         _set_if(msg, 'rain_triggered', bool(s['rain']))
+
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py [90m[limit=90, offset=663][0m
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -745,10 +745,8 @@
+                     if alias:
+                         _set_if(motor, alias, value)
+             _set_if(msg, motor_field, motor)
+ 
+-        self._sensor_pub.publish(msg)
+-
+     # ------------------------------------------------------------------- TX
+     def _on_cmd_vel(self, msg):
+         self._cmd_linear, self._cmd_angular = self._map_command(msg.twist)
+         self._cmd_stamp = time.monotonic()
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -662,10 +662,10 @@
+ 
+     def _publish_sensor_info(self):
+         """Publish ``/mower_sensor_info`` if the interface package exists.
+ 
+-        Every field is assigned through :func:`_set_if` so a ``mower_interfaces`` with a
+-        slightly different (reduced) field set still works instead of raising.
++        Split into "build" + :meth:`_fill_sensor_info` so a malformed message can never take
++        the timer callback down: a warning is logged once and publishing simply stops.
+         """
+         if self._sensor_pub is None or self._sensor_info is None or MowerSensorInfo is None:
+             return
+         try:
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py
+@@ -689,9 +689,10 @@
+ 
+         Every assignment goes through :func:`_set_if`, so a ``mower_interfaces`` whose field
+         set differs from what is documented here still works instead of raising.
+         """
+-        msg.header.stamp = self.get_clock().now().to_msg()
++        if hasattr(msg, 'header'):
++            msg.header.stamp = self.get_clock().now().to_msg()
+         s = self._sensor_info
+         _set_if(msg, 'bumper_triggered', bool(s['bumper'] or s['bumper_l'] or s['bumper_r']))
+         _set_if(msg, 'rain_triggered', bool(s['rain']))
+         _set_if(msg, 'lift_triggered', bool(s['lift']))
+
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && for t in test/test_protocol.py test/test_node_smoke.py test/test_loopback.py; do echo "== $t"; timeout 90 python3 $t 2>&1 | grep -E "FAIL|Error|^(OK|Ran )" | head -20; done
+== test/test_protocol.py
+Ran 11 tests in 0.516s
+OK
+== test/test_node_smoke.py
+Ran 12 tests in 0.001s
+OK
+== test/test_loopback.py
+Ran 1 test in 3.055s
+OK
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/ros_stubs.py
+Index: ros2_stack/src/mower_mcu_driver/test/ros_stubs.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/ros_stubs.py
++++ ros2_stack/src/mower_mcu_driver/test/ros_stubs.py
+@@ -206,14 +206,23 @@
+     return module
+ 
+ 
+ def install():
+-    """Register the stubs, but never shadow a real ROS installation."""
++    """Register the stubs, but never shadow a real ROS installation.
++
++    With a real ROS, ``rclpy.init()`` is called here because the tests build ``Node``
++    instances directly without spinning a context of their own.
++    """
+     try:
+         import rclpy  # noqa: F401
+-        return False
+     except ImportError:
+         pass
++    else:
++        if not rclpy.ok():
++            import atexit
++            rclpy.init(args=None)
++            atexit.register(lambda: rclpy.shutdown() if rclpy.ok() else None)
++        return False
+ 
+     rclpy = _mod('rclpy')
+     rclpy.init = lambda *a, **k: None
+     rclpy.spin = lambda *a, **k: None
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+Index: ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
++++ ros2_stack/src/mower_mcu_driver/test/test_node_smoke.py
+@@ -177,10 +177,13 @@
+         self.assertEqual(len(imu), 1)
+         self.assertAlmostEqual(imu[0].linear_acceleration.z, 9.80665, places=3)  # raw 2048 = 1 g
+ 
+     def test_mower_sensor_info_skipped_without_mower_interfaces(self):
+-        # mower_interfaces is not part of this workspace yet -> publisher must be None and
+-        # incoming SensorInfo frames must not raise.
++        # When mower_interfaces has not been created the publisher must be None and incoming
++        # SensorInfo frames must not raise. (Skipped in an environment where the package
++        # exists - the sibling test covers that half.)
++        if mn.MowerSensorInfo is not None:
++            self.skipTest('mower_interfaces is installed in this environment')
+         self.assertIsNone(self.node._sensor_pub)
+         inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SENSOR, struct.pack(mn.SENSOR_FMT, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0)))
+         self.assertEqual(self.node.published.get('/mower_sensor_info', []), [])
+ 
+
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && for t in test/test_protocol.py test/test_node_smoke.py test/test_loopback.py; do echo "== $t"; timeout 90 python3 $t 2>&1 | grep -E "FAIL|Error|^(OK|Ran )" | head; done; find . -name '__pycache__' -type d -prune -exec rm -rf {} +; echo cleaned
+== test/test_protocol.py
+Ran 11 tests in 0.450s
+OK
+== test/test_node_smoke.py
+Ran 12 tests in 0.001s
+OK
+== test/test_loopback.py
+Ran 1 test in 3.056s
+OK
+cleaned
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/mower_mcu_driver/mcu_node.py [90m[limit=120, offset=770][0m
+> build · mimo-v2.6-flash-free
+[0m→ [0mRead ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py 
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+@@ -135,9 +135,9 @@
+     parser_rx = FrameParser()
+     start = time.monotonic()
+     cmd_linear = cmd_angular = 0.0
+     heartbeats = host_frames = 0
+-    next_fast = next_slow = next_report = time.monotonic()
++    next_fast = next_slow = next_report = next_imu = time.monotonic()
+ 
+     port.write(build_frame([(TYPE_MOWER_ROS, MOD_LOG, b'fake MCU online')]))
+     print('fake_mcu: listening on %s (--imu=%s)' % (args.port, args.imu))
+ 
+
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+@@ -170,11 +170,14 @@
+                     (TYPE_MOWER_ROS, MOD_BMS_VERSION, struct.pack(BMS_FMT, *BMS_RAW)),
+                     (TYPE_MOWER_ROS, MOD_MOTORS, motors_payload()),
+                 ]))
+                 if args.imu:
+-                    port.write(build_frame(
+-                        [(TYPE_MOWER_ROS, MOD_IMU, imu_payload(now - start))]))
++                    pass  # ImuData has its own 10 Hz timer below
+ 
++            if args.imu and now >= next_imu:
++                next_imu = now + 0.1
++                port.write(build_frame([(TYPE_MOWER_ROS, MOD_IMU, imu_payload(now - start))]))
++
+             if now >= next_report:
+                 next_report = now + 1.0
+                 print('fake_mcu: host_frames=%d heartbeats=%d cmd=(%.2f m/s, %.2f rad/s)'
+                       % (host_frames, heartbeats, cmd_linear, cmd_angular))
+
+> build · mimo-v2.6-flash-free
+[0m← [0mEdit ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+Index: ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+===================================================================
+--- ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
++++ ros2_stack/src/mower_mcu_driver/mower_mcu_driver/fake_mcu.py
+@@ -169,12 +169,11 @@
+                     (TYPE_MOWER_ROS, MOD_VERSION, struct.pack(VERSION_FMT, *VERSION_RAW)),
+                     (TYPE_MOWER_ROS, MOD_BMS_VERSION, struct.pack(BMS_FMT, *BMS_RAW)),
+                     (TYPE_MOWER_ROS, MOD_MOTORS, motors_payload()),
+                 ]))
+-                if args.imu:
+-                    pass  # ImuData has its own 10 Hz timer below
+ 
+             if args.imu and now >= next_imu:
++                # 10 Hz: only with --imu (the real firmware does not send MODULE_IMU)
+                 next_imu = now + 0.1
+                 port.write(build_frame([(TYPE_MOWER_ROS, MOD_IMU, imu_payload(now - start))]))
+ 
+             if now >= next_report:
+
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && python3 -m py_compile mower_mcu_driver/fake_mcu.py && timeout 90 python3 test/test_loopback.py 2>&1 | tail -8
+OK
+fake_mcu: listening on /tmp/opencode/mower_loopback_34hkytw1/fake (--imu=True)
+fake_mcu: host_frames=0 heartbeats=0 cmd=(0.00 m/s, 0.00 rad/s)
+fake_mcu: host_frames=40 heartbeats=20 cmd=(0.40 m/s, 0.10 rad/s)
+fake_mcu: host_frames=58 heartbeats=29 cmd=(0.40 m/s, 0.10 rad/s)
+fake_mcu: host_frames=58 heartbeats=29 cmd=(0.40 m/s, 0.10 rad/s)
+fake_mcu: stopped
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && find . -name '__pycache__' -type d -prune -exec rm -rf {} + ; python3 -c "
+import xml.dom.minidom, sys
+d = xml.dom.minidom.parse('src/mower_mcu_driver/package.xml')
+print('package.xml OK:', d.getElementsByTagName('name')[0].firstChild.data, d.getElementsByTagName('version')[0].firstChild.data)
+" && git status --short && for t in src/mower_mcu_driver/test/test_*.py; do echo "== $t"; timeout 90 python3 $t 2>&1 | grep -E "^(OK|FAILED|Ran )"; done; find . -name '__pycache__' -type d -prune -exec rm -rf {} +
+package.xml OK: mower_mcu_driver 0.1.0
+?? README.md
+?? docker/
+?? docs/
+?? scripts/
+?? src/
+== src/mower_mcu_driver/test/test_loopback.py
+Ran 1 test in 3.055s
+OK
+== src/mower_mcu_driver/test/test_node_smoke.py
+Ran 12 tests in 0.001s
+OK
+== src/mower_mcu_driver/test/test_protocol.py
+Ran 11 tests in 0.464s
+OK
+> build · mimo-v2.6-flash-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/src/mower_mcu_driver && find . -type f | sort | sed 's|^\./||' && echo "---" && wc -l mower_mcu_driver/*.py setup.py package.xml test/*.py scripts/*.sh | tail -12
+mower_mcu_driver/fake_mcu.py
+mower_mcu_driver/__init__.py
+mower_mcu_driver/mcu_node.py
+package.xml
+README.md
+resource/mower_mcu_driver
+scripts/loopback_test.sh
+setup.cfg
+setup.py
+test/ros_stubs.py
+test/test_loopback.py
+test/test_node_smoke.py
+test/test_protocol.py
+---
+  196 mower_mcu_driver/fake_mcu.py
+    3 mower_mcu_driver/__init__.py
+  899 mower_mcu_driver/mcu_node.py
+   29 setup.py
+   33 package.xml
+  248 test/ros_stubs.py
+  120 test/test_loopback.py
+  307 test/test_node_smoke.py
+  157 test/test_protocol.py
+   83 scripts/loopback_test.sh
+ 2075 total
+> build · mimo-v2.6-flash-free
+Done. Everything lives under `ros2_stack/` (nothing else was touched).
+
+## Package: `ros2_stack/src/mower_mcu_driver`
+
+| File | Purpose |
+|---|---|
+| `package.xml` | format 3, `ament_python`, `<depend>` rclpy, std_msgs, geometry_msgs, sensor_msgs, nav_msgs, **mower_interfaces**, + `python3-serial` |
+| `setup.py` / `setup.cfg` / `resource/` | ament_python packaging, console scripts `mcu_node` and `fake_mcu` |
+| `mower_mcu_driver/mcu_node.py` (899 L) | protocol codec + the driver node |
+| `mower_mcu_driver/fake_mcu.py` | synthetic MCU for the loopback test |
+| `scripts/loopback_test.sh` | socat pty pair + fake MCU + `ros2 run` node (no root, `--dev` for vendor-style links) |
+| `test/{test_protocol,test_node_smoke,test_loopback,ros_stubs}.py` | offline tests |
+| `README.md` | interfaces, params, TODO table, build/test instructions |
+
+## Protocol (ported from `mcu_frame_decode.py` + `protocol_definitions_recovered.h`)
+Framing `A5 | total_len | {sub_len type mod payload}+ | sum&0xFF | 5A`, `F5 01/02/03` stuffing, little-endian structs (`<ff` speed, `<HhBbbI` battery, `<10B` sensor, `<9h` imu, `<9B` version, `<hhhbB`×4 motors, `<8B` heartbeat). RX is an incremental `FrameParser` (resync, checksum, 8 KiB buffer cap).
+
+## Node behavior
+- Params `port:=/dev/serial_mower`, `baud:=115200`, plus frames, `heartbeat_period` (0.1), `speed_cmd_rate`, `cmd_vel_timeout`, `speed_timeout`, `odom_rate`, `linear/angular_scale/max`, `use_imu_yaw`, battery scales. Serial: pyserial when present, **built-in termios raw-8N1 fallback** otherwise (the `ros:humble` image may lack `python3-serial`); reconnect loop, zero-speed frame on shutdown.
+- `/battery` (BatteryState, `dock_ok`→charging), `/odom` (dead-reckon from measured `SpeedData`, heading from MCU `ImuData` yaw when fresh, else integrate ω; **degrades to the commanded velocity** with an inflated twist covariance), `/imu` placeholder only while module 9 arrives (**otherwise nothing published** — `SensorInfoControl` is the host→MCU direction of module 10 and carries no IMU data; this is documented in the docstring), `/mower_sensor_info` only if `mower_interfaces` imports, with guarded field assignment (`_set_if`, `speed`→`speed_rpm` alias, `TypeError` tolerated).
+- `/cmd_vel` `TwistStamped` → scale+clamp map → `SpeedCommand`/`SpeedData` frames streamed at `speed_cmd_rate`, zeros after `cmd_vel_timeout`. Heartbeat at fixed param period (**documented UNKNOWN**), **PID TODO** (`libpid_controller.so`, gains in `config/base.yaml`), **estop passthrough TODO**, plus TODOs for `/tf`, `/reset_odom`, unstamped Twist, cutter/charge modules.
+
+## Tests — all 24 pass here
+- `test_protocol.py` (11): framing round-trips, escaping, bad-checksum resync, struct sizes, WIT scaling, and **bit-exact sub-packet histogram parity with the reference decoder on the 2.8 MB live capture**.
+- `test_node_smoke.py` (12): battery/IMU/odom publishing, scale+clamp+timeout, heartbeat shape, both mower_sensor_info paths.
+- `test_loopback.py` (1): real socat pty ↔ fake MCU ↔ node round trip (58 frames, 28 heartbeats, measured speed = commanded).
+
+Tests use `ros_stubs.py` **only when ROS is absent**, so the same files run under `colcon test` in the container; `scripts/loopback_test.sh` is the interactive `ros2 run` version.

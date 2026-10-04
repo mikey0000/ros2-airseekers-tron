@@ -1,0 +1,550 @@
+[0m
+> build · big-pickle
+I'll research the MowgliNext repository and check the local repo structure in parallel.
+[0m✱ [0mGlob "ros2_stack/**/*" [90m8 matches[0m
+[0m✗ [0mWebFetch https://github.com/ClemensElflein/mowglinext failed
+[91m[1mError: [0mStatusCode: non 2xx status code (404 GET https://github.com/ClemensElflein/mowglinext)
+> build · big-pickle
+Repo URL404s. Let me search for the correct location and read existing local context.
+[0m✗ [0mWeb Search "mowglinext GitHub ROS2 open source mower ClemensElflein" failed
+[91m[1mError: [0mWeb search cancelled
+[0m→ [0mRead ros2_stack/README.md 
+[0m→ [0mRead ros2_stack/docs/agent7_mowglinext.log 
+> build · big-pickle
+[0m% [0mWebFetch https://api.github.com/search/repositories?q=mowglinext 
+[0m✱ [0mGrep "mowgli|Mowgli|mowglinext" [90min . · 8 matches[0m
+> build · big-pickle
+Found the real repo: `mowglinext/mowglinext`. Now fetching structure and local handoff context in parallel.
+[0m$ [0mls -R /home/michael/git/airseekers-decompile/ros2_port_handoff 2>/dev/null | head -80
+/home/michael/git/airseekers-decompile/ros2_port_handoff:
+00_docs
+01_mcu_protocol
+02_mcu_firmware
+03_ros_interfaces
+04_full_src_tree
+05_driver_binaries
+06_vendor_sdks
+07_system_config
+08_calibration_identity
+09_platform
+10_ros_live_snapshot
+11_perception_models
+12_excluded_secrets_identity
+MANIFEST.sha256
+README.md
+TREE.txt
+collect_excluded.sh
+mcu_frame_protocol_decode.log
+
+/home/michael/git/airseekers-decompile/ros2_port_handoff/00_docs:
+mower_docs_survey_2026-10-02
+
+/home/michael/git/airseekers-decompile/ros2_port_handoff/00_docs/mower_docs_survey_2026-10-02:
+01-system-overview.md
+02-ros2-migration.md
+03-yolo-perception.md
+04-ble-protocol.md
+05-maps-and-http-api.md
+06-mqtt-and-ros-services.md
+07-cautions.md
+08-closed-source-inventory.md
+09-reuse-strategy.md
+10-hardware.md
+README.md
+reference
+tools
+
+/home/michael/git/airseekers-decompile/ros2_port_handoff/00_docs/mower_docs_survey_2026-10-02/reference:
+CutterControl.srv
+IotCmd.msg
+IotNotice.msg
+LocatorGetMapInfo.srv
+LocatorLoadMap.srv
+LocatorSaveMap.srv
+MappingControl.srv
+ble_develop.md
+mower_map_geojson_README.md
+openapi.json
+proto
+
+/home/michael/git/airseekers-decompile/ros2_port_handoff/00_docs/mower_docs_survey_2026-10-02/reference/proto:
+ble.md
+common.proto
+config.proto
+init.proto
+live.proto
+log.proto
+map.proto
+monitor.proto
+msg.proto
+rtk.proto
+security.proto
+status.proto
+task.proto
+teleop.proto
+upgrade.proto
+upgrade_mcu.proto
+webshell_agent.proto
+
+/home/michael/git/airseekers-decompile/ros2_port_handoff/00_docs/mower_docs_survey_2026-10-02/tools:
+mower_client.py
+poc_13344.py
+
+/home/michael/git/airseekers-decompile/ros2_port_handoff/01_mcu_protocol:
+base_imu_pkg
+bin
+dwarf
+libbase_imu_strings.txt
+libs
+[0m% [0mWebFetch https://raw.githubusercontent.com/mowglinext/mowglinext/main/README.md 
+[0m% [0mWebFetch https://api.github.com/repos/mowglinext/mowglinext/git/trees/main?recursive=1 
+> build · big-pickle
+[0m→ [0mRead ros2_port_handoff/README.md 
+[0m$ [0mwc -c /home/michael/.local/share/opencode/tool-output/tool_108ca70d0001UWdvgbvwP4CXhY; python3 -c "
+import json
+d=json.load(open('/home/michael/.local/share/opencode/tool-output/tool_108ca70d0001UWdvgbvwP4CXhY'))
+print(d.get('truncated'))
+paths=[t['path'] for t in d['tree'] if t['type']=='blob']
+print(len(paths))
+"
+621863 /home/michael/.local/share/opencode/tool-output/tool_108ca70d0001UWdvgbvwP4CXhY
+False
+2075
+> build · big-pickle
+[0m$ [0mpython3 -c "
+import json
+d=json.load(open('/home/michael/.local/share/opencode/tool-output/tool_108ca70d0001UWdvgbvwP4CXhY'))
+paths=[t['path'] for t in d['tree'] if t['type']=='blob']
+# top-level
+import collections
+top=collections.Counter(p.split('/')[0] for p in paths)
+print('TOP:',dict(top))
+pkgs=sorted(set('/'.join(p.split('/')[:3]) for p in paths if p.startswith('ros2/') and p.count('/')>=2))
+for x in pkgs: print(x)
+"
+TOP: {'.claude': 6, '.devcontainer': 4, '.editorconfig': 1, '.gitattributes': 1, '.githooks': 1, '.github': 27, '.gitignore': 1, '.gitmodules': 1, 'AGENTS.md': 1, 'CLAUDE.md': 1, 'CODE_OF_CONDUCT.md': 1, 'CONTRIBUTING.md': 1, 'LICENSE': 1, 'OBSTACLE_WEDGE_RECOVERY_SPEC.md': 1, 'README.md': 1, 'SAFETY_REVIEW_2026-07-23.md': 1, 'SECURITY.md': 1, 'SESSION-2026-04-18.md': 1, 'TODO-runtime-backups.md': 1, 'app': 2, 'docker': 29, 'docs': 137, 'firmware': 718, 'gui': 532, 'icon.svg': 1, 'install': 83, 'logo.svg': 1, 'ros2': 468, 'sensors': 25, 'tools': 11, 'wiki': 15}
+ros2/foxglove/mowgli_sim.json
+ros2/scripts/build.sh
+ros2/scripts/build_lyrical_vendor.sh
+ros2/scripts/check_config_drift.py
+ros2/scripts/compute_nav2_params.md
+ros2/scripts/compute_nav2_params.py
+ros2/scripts/coverage_ascii_render.py
+ros2/scripts/diagnostics
+ros2/scripts/e2e_test.py
+ros2/scripts/f9p_set_nav_prio.py
+ros2/scripts/fix-copyright.sh
+ros2/scripts/format.sh
+ros2/scripts/forward_1m_yaw_test.py
+ros2/scripts/gps_log.py
+ros2/scripts/mow_session_monitor.py
+ros2/scripts/precision_monitor.py
+ros2/scripts/refresh_parameter_summary.py
+ros2/scripts/robot_monitor.sh
+ros2/scripts/ros2_entrypoint.sh
+ros2/scripts/serial_latency_probe.py
+ros2/scripts/sim-stop.sh
+ros2/scripts/start_dev_sim.sh
+ros2/scripts/start_vnc.sh
+ros2/scripts/sync_workspace_packages.sh
+ros2/scripts/test.sh
+ros2/scripts/test_check_config_drift.py
+ros2/scripts/unicore_signalgroup_benchmark.py
+ros2/scripts/wait_for_nav2_active.sh
+ros2/scripts/wheel_radius_cal.py
+ros2/scripts/wheel_yaw_cal.py
+ros2/src/e2e_test.py
+ros2/src/e2e_test_no_lidar.py
+ros2/src/fusion_graph
+ros2/src/mowgli_behavior
+ros2/src/mowgli_bringup
+ros2/src/mowgli_coverage
+ros2/src/mowgli_hardware
+ros2/src/mowgli_interfaces
+ros2/src/mowgli_leds
+ros2/src/mowgli_localization
+ros2/src/mowgli_map
+ros2/src/mowgli_monitoring
+ros2/src/mowgli_nav2_plugins
+ros2/src/mowgli_simulation
+ros2/src/precision_monitor.py
+ros2/systemd/mowgli.service
+> build · big-pickle
+[0m$ [0mpython3 -c "
+import json
+d=json.load(open('/home/michael/.local/share/opencode/tool-output/tool_108ca70d0001UWdvgbvwP4CXhY'))
+paths=[t['path'] for t in d['tree'] if t['type']=='blob']
+for pref in ['ros2/src/mowgli_hardware','ros2/src/mowgli_interfaces','ros2/src/mowgli_nav2_plugins']:
+    print('===',pref)
+    for p in sorted(paths):
+        if p.startswith(pref+'/'): print('  ',p)
+"
+=== ros2/src/mowgli_hardware
+   ros2/src/mowgli_hardware/CMakeLists.txt
+   ros2/src/mowgli_hardware/firmware/README.md
+   ros2/src/mowgli_hardware/firmware/cobs.c
+   ros2/src/mowgli_hardware/firmware/cobs.h
+   ros2/src/mowgli_hardware/firmware/crc16.c
+   ros2/src/mowgli_hardware/firmware/crc16.h
+   ros2/src/mowgli_hardware/firmware/mowgli_comms.c
+   ros2/src/mowgli_hardware/firmware/mowgli_comms.h
+   ros2/src/mowgli_hardware/firmware/mowgli_protocol.h
+   ros2/src/mowgli_hardware/include/mowgli_hardware/battery_state_semantics.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/blade_gate.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/blade_telemetry.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/clock_fit.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/cmd_vel_slew.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/cmd_vel_validation.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/cobs.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/crc16.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/dig_detector.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/dig_escalation.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/drive_gain_sanity.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/gnss_hardware_status.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/imu_liveness.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/ll_datatypes.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/odometry_publisher.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/packet_handler.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/serial_port.hpp
+   ros2/src/mowgli_hardware/include/mowgli_hardware/timer_period.hpp
+   ros2/src/mowgli_hardware/package.xml
+   ros2/src/mowgli_hardware/src/clock_fit.cpp
+   ros2/src/mowgli_hardware/src/cobs.cpp
+   ros2/src/mowgli_hardware/src/crc16.cpp
+   ros2/src/mowgli_hardware/src/hardware_bridge_node.cpp
+   ros2/src/mowgli_hardware/src/odometry_publisher.cpp
+   ros2/src/mowgli_hardware/src/packet_handler.cpp
+   ros2/src/mowgli_hardware/src/serial_port.cpp
+   ros2/src/mowgli_hardware/test/test_battery_state_semantics.cpp
+   ros2/src/mowgli_hardware/test/test_blade_gate.cpp
+   ros2/src/mowgli_hardware/test/test_clock_fit.cpp
+   ros2/src/mowgli_hardware/test/test_cmd_vel_slew.cpp
+   ros2/src/mowgli_hardware/test/test_cmd_vel_validation.cpp
+   ros2/src/mowgli_hardware/test/test_cobs.cpp
+   ros2/src/mowgli_hardware/test/test_dig_detector.cpp
+   ros2/src/mowgli_hardware/test/test_dig_escalation.cpp
+   ros2/src/mowgli_hardware/test/test_drive_gain_sanity.cpp
+   ros2/src/mowgli_hardware/test/test_hardware_bridge_parameters.cpp
+   ros2/src/mowgli_hardware/test/test_heartbeat_emergency_policy.cpp
+   ros2/src/mowgli_hardware/test/test_imu_liveness.cpp
+   ros2/src/mowgli_hardware/test/test_packet_handler.cpp
+   ros2/src/mowgli_hardware/test/test_protocol.cpp
+   ros2/src/mowgli_hardware/test/test_serial_port.cpp
+   ros2/src/mowgli_hardware/test/test_timer_period.cpp
+=== ros2/src/mowgli_interfaces
+   ros2/src/mowgli_interfaces/CMakeLists.txt
+   ros2/src/mowgli_interfaces/action/CalibrateDock.action
+   ros2/src/mowgli_interfaces/action/CoverageTask.action
+   ros2/src/mowgli_interfaces/action/PlanCoverage.action
+   ros2/src/mowgli_interfaces/include/mowgli_interfaces/coverage_geometry.hpp
+   ros2/src/mowgli_interfaces/include/mowgli_interfaces/gnss_observation_freshness.hpp
+   ros2/src/mowgli_interfaces/include/mowgli_interfaces/gnss_status_utils.hpp
+   ros2/src/mowgli_interfaces/include/mowgli_interfaces/motion_yaw_fit.hpp
+   ros2/src/mowgli_interfaces/include/mowgli_interfaces/robot_yaml_scalar.hpp
+   ros2/src/mowgli_interfaces/include/mowgli_interfaces/update_maintenance.hpp
+   ros2/src/mowgli_interfaces/include/mowgli_interfaces/wgs84_projection.hpp
+   ros2/src/mowgli_interfaces/msg/AbsolutePose.msg
+   ros2/src/mowgli_interfaces/msg/CoveragePath.msg
+   ros2/src/mowgli_interfaces/msg/DigEvent.msg
+   ros2/src/mowgli_interfaces/msg/DockCalibrationStatus.msg
+   ros2/src/mowgli_interfaces/msg/ESCStatus.msg
+   ros2/src/mowgli_interfaces/msg/Emergency.msg
+   ros2/src/mowgli_interfaces/msg/GnssStatus.msg
+   ros2/src/mowgli_interfaces/msg/HighLevelStatus.msg
+   ros2/src/mowgli_interfaces/msg/ImuRaw.msg
+   ros2/src/mowgli_interfaces/msg/MapArea.msg
+   ros2/src/mowgli_interfaces/msg/MapObstacleInfo.msg
+   ros2/src/mowgli_interfaces/msg/ObstacleArray.msg
+   ros2/src/mowgli_interfaces/msg/Power.msg
+   ros2/src/mowgli_interfaces/msg/Status.msg
+   ros2/src/mowgli_interfaces/msg/TrackedObstacle.msg
+   ros2/src/mowgli_interfaces/msg/WheelTick.msg
+   ros2/src/mowgli_interfaces/package.xml
+   ros2/src/mowgli_interfaces/srv/AddMowingArea.srv
+   ros2/src/mowgli_interfaces/srv/AreaRecording.srv
+   ros2/src/mowgli_interfaces/srv/CalibrateImuYaw.srv
+   ros2/src/mowgli_interfaces/srv/ClearMap.srv
+   ros2/src/mowgli_interfaces/srv/ClearObstacle.srv
+   ros2/src/mowgli_interfaces/srv/CoverageOrientation.srv
+   ros2/src/mowgli_interfaces/srv/EmergencyStop.srv
+   ros2/src/mowgli_interfaces/srv/GetMowingArea.srv
+   ros2/src/mowgli_interfaces/srv/GetRecoveryPoint.srv
+   ros2/src/mowgli_interfaces/srv/HighLevelControl.srv
+   ros2/src/mowgli_interfaces/srv/MowerControl.srv
+   ros2/src/mowgli_interfaces/srv/PromoteObstacle.srv
+   ros2/src/mowgli_interfaces/srv/SetDockingPoint.srv
+   ros2/src/mowgli_interfaces/srv/StartInArea.srv
+   ros2/src/mowgli_interfaces/srv/TriggerReplan.srv
+   ros2/src/mowgli_interfaces/test/test_update_maintenance.cpp
+=== ros2/src/mowgli_nav2_plugins
+   ros2/src/mowgli_nav2_plugins/CMakeLists.txt
+   ros2/src/mowgli_nav2_plugins/ftc_controller_plugin.xml
+   ros2/src/mowgli_nav2_plugins/goal_checker_plugin.xml
+   ros2/src/mowgli_nav2_plugins/include/mowgli_nav2_plugins/ftc_blade_load.hpp
+   ros2/src/mowgli_nav2_plugins/include/mowgli_nav2_plugins/ftc_controller.hpp
+   ros2/src/mowgli_nav2_plugins/include/mowgli_nav2_plugins/ftc_obstacle_wait.hpp
+   ros2/src/mowgli_nav2_plugins/include/mowgli_nav2_plugins/ftc_reverse_escape.hpp
+   ros2/src/mowgli_nav2_plugins/include/mowgli_nav2_plugins/ftc_stall.hpp
+   ros2/src/mowgli_nav2_plugins/include/mowgli_nav2_plugins/ftc_start_index.hpp
+   ros2/src/mowgli_nav2_plugins/include/mowgli_nav2_plugins/obstacle_deviation.hpp
+   ros2/src/mowgli_nav2_plugins/include/mowgli_nav2_plugins/oscillation_detector.hpp
+   ros2/src/mowgli_nav2_plugins/include/mowgli_nav2_plugins/path_progress_goal_checker.hpp
+   ros2/src/mowgli_nav2_plugins/package.xml
+   ros2/src/mowgli_nav2_plugins/src/ftc_controller.cpp
+   ros2/src/mowgli_nav2_plugins/src/ftc_controller_plugin.cpp
+   ros2/src/mowgli_nav2_plugins/src/obstacle_deviation.cpp
+   ros2/src/mowgli_nav2_plugins/src/oscillation_detector.cpp
+   ros2/src/mowgli_nav2_plugins/src/path_progress_goal_checker.cpp
+   ros2/src/mowgli_nav2_plugins/test/test_ftc_blade_load.cpp
+   ros2/src/mowgli_nav2_plugins/test/test_ftc_obstacle_wait.cpp
+   ros2/src/mowgli_nav2_plugins/test/test_ftc_reverse_escape.cpp
+   ros2/src/mowgli_nav2_plugins/test/test_ftc_stall.cpp
+   ros2/src/mowgli_nav2_plugins/test/test_ftc_start_index.cpp
+   ros2/src/mowgli_nav2_plugins/test/test_lyrical_goal_checker.cpp
+   ros2/src/mowgli_nav2_plugins/test/test_obstacle_deviation.cpp
+   ros2/src/mowgli_nav2_plugins/test/test_oscillation_detector.cpp
+> build · big-pickle
+[0m$ [0mpython3 -c "
+import json,collections
+d=json.load(open('/home/michael/.local/share/opencode/tool-output/tool_108ca70d0001UWdvgbvwP4CXhY'))
+paths=[t['path'] for t in d['tree'] if t['type']=='blob']
+for pref in ['ros2/src/mowgli_localization','ros2/src/mowgli_behavior','ros2/src/mowgli_coverage','ros2/src/fusion_graph','ros2/src/mowgli_bringup']:
+    c=collections.Counter()
+    for p in paths:
+        if p.startswith(pref+'/'):
+            parts=p[len(pref)+1:].split('/')
+            c[parts[0] if len(parts)>1 else '(root)']+=1
+    print('===',pref)
+    for k,v in sorted(c.items()): print('   ',k,v)
+print('=== firmware top2')
+c=collections.Counter('/'.join(p.split('/')[:2]) for p in paths if p.startswith('firmware/'))
+for k,v in sorted(c.items()): print('   ',k,v)
+"
+=== ros2/src/mowgli_localization
+    (root) 2
+    config 1
+    include 11
+    src 10
+    test 11
+=== ros2/src/mowgli_behavior
+    (root) 2
+    config 2
+    include 22
+    src 14
+    test 26
+    trees 3
+=== ros2/src/mowgli_coverage
+    (root) 2
+    include 2
+    src 3
+    test 1
+=== ros2/src/fusion_graph
+    (root) 2
+    config 1
+    include 25
+    launch 1
+    src 15
+    test 32
+    tools 6
+=== ros2/src/mowgli_bringup
+    (root) 2
+    config 7
+    launch 7
+    scripts 3
+    test 10
+    urdf 1
+=== firmware top2
+    firmware/.gitignore 1
+    firmware/CLAUDE.md 1
+    firmware/README.md 1
+    firmware/scripts 5
+    firmware/stm32 710
+[0m% [0mWebFetch https://raw.githubusercontent.com/mowglinext/mowglinext/main/ros2/src/mowgli_hardware/firmware/mowgli_protocol.h 
+> build · big-pickle
+[0m% [0mWebFetch https://raw.githubusercontent.com/mowglinext/mowglinext/main/ros2/README.md 
+[0m% [0mWebFetch https://raw.githubusercontent.com/mowglinext/mowglinext/main/docs/claude/ros-interfaces.md 
+> build · big-pickle
+[0m$ [0mpython3 -c "
+import json
+d=json.load(open('/home/michael/.local/share/opencode/tool-output/tool_108ca70d0001UWdvgbvwP4CXhY'))
+paths=[t['path'] for t in d['tree'] if t['type']=='blob']
+for p in sorted(paths):
+    if p.startswith('sensors/'): print(p)
+print('--- CLAUDE/docs claude')
+for p in sorted(paths):
+    if p.startswith('docs/claude/') or p in ('CLAUDE.md','ros2/CLAUDE.md'): print(p)
+"
+sensors/CLAUDE.md
+sensors/README.md
+sensors/gps/Dockerfile
+sensors/gps/mowgli_gnss_bridge/CMakeLists.txt
+sensors/gps/mowgli_gnss_bridge/include/mowgli_gnss_bridge/correction_diagnostic_tracker.hpp
+sensors/gps/mowgli_gnss_bridge/include/mowgli_gnss_bridge/universal_gnss_topic_bridge.hpp
+sensors/gps/mowgli_gnss_bridge/package.xml
+sensors/gps/mowgli_gnss_bridge/src/correction_diagnostic_tracker.cpp
+sensors/gps/mowgli_gnss_bridge/src/main.cpp
+sensors/gps/mowgli_gnss_bridge/src/universal_gnss_topic_bridge.cpp
+sensors/gps/mowgli_gnss_bridge/test/test_correction_diagnostic_tracker.cpp
+sensors/gps/mowgli_gnss_bridge/test/test_python_bridge.py
+sensors/gps/mowgli_gnss_bridge/test/test_universal_gnss_topic_bridge.cpp
+sensors/gps/ros2_entrypoint.sh
+sensors/gps/start_gps.sh
+sensors/gps/universal_gnss_topic_bridge.py
+sensors/lidar-ldlidar/Dockerfile
+sensors/lidar-ldlidar/ldlidar.yaml
+sensors/lidar-ldlidar/ldlidar_scan.launch.py
+sensors/lidar-ldlidar/ros2_entrypoint.sh
+sensors/lidar-ldlidar/start_lidar.sh
+sensors/lidar-rplidar/Dockerfile
+sensors/lidar-rplidar/ros2_entrypoint.sh
+sensors/lidar-stl27l/Dockerfile
+sensors/lidar-stl27l/ros2_entrypoint.sh
+--- CLAUDE/docs claude
+CLAUDE.md
+docs/claude/codemaps/ci_repo_tooling.md
+docs/claude/codemaps/deploy.md
+docs/claude/codemaps/firmware.md
+docs/claude/codemaps/fusion_graph.md
+docs/claude/codemaps/gui_backend.md
+docs/claude/codemaps/gui_frontend.md
+docs/claude/codemaps/mowgli_behavior.md
+docs/claude/codemaps/mowgli_bringup.md
+docs/claude/codemaps/mowgli_coverage.md
+docs/claude/codemaps/mowgli_hardware.md
+docs/claude/codemaps/mowgli_interfaces.md
+docs/claude/codemaps/mowgli_leds.md
+docs/claude/codemaps/mowgli_localization.md
+docs/claude/codemaps/mowgli_map.md
+docs/claude/codemaps/mowgli_monitoring.md
+docs/claude/codemaps/mowgli_nav2_plugins.md
+docs/claude/codemaps/mowgli_simulation.md
+docs/claude/codemaps/ros2_workspace_tooling.md
+docs/claude/commands.md
+docs/claude/contributing.md
+docs/claude/doc-index.md
+docs/claude/high-level-api.md
+docs/claude/lidar-precision-2026-09-08.md
+docs/claude/lidar-submaps-2026-09-09.md
+docs/claude/parameters.md
+docs/claude/ros-interfaces.md
+docs/claude/ros2-specifics.md
+docs/claude/session-monitoring.md
+docs/claude/testing-ci.md
+ros2/CLAUDE.md
+[0m% [0mWebFetch https://api.github.com/repos/mowglinext/mowglinext/tags 
+> build · big-pickle
+[0m% [0mWebFetch https://raw.githubusercontent.com/mowglinext/mowglinext/main/sensors/README.md 
+[0m% [0mWebFetch https://raw.githubusercontent.com/mowglinext/mowglinext/main/docs/claude/codemaps/mowgli_hardware.md 
+> build · big-pickle
+[0m✱ [0mGrep "mower_mcu_driver|wit_imu_driver|um960_gps_driver|mower_interfaces" [90min ros2_stack/docs · 34 matches[0m
+[0m$ [0mpython3 -c "
+import json,collections
+d=json.load(open('/home/michael/.local/share/opencode/tool-output/tool_108ca70d0001UWdvgbvwP4CXhY'))
+paths=[t['path'] for t in d['tree'] if t['type']=='blob']
+c=collections.Counter()
+for p in paths:
+    if p.startswith('firmware/stm32/'):
+        parts=p.split('/')
+        c['/'.join(parts[:4])]+=1
+for k,v in sorted(c.items())[:40]: print(k,v)
+"
+firmware/stm32/custom_panel_fw/YF500C_panel 18
+firmware/stm32/mainboard_firmware/README.md 1
+firmware/stm32/mainboard_firmware/backup_firmware.sh 1
+firmware/stm32/mainboard_firmware/restore_firmware.sh 1
+firmware/stm32/mainboard_firmware/yardforce500.cfg 1
+firmware/stm32/panel_firmware/README.md 1
+firmware/stm32/panel_firmware/backup_firmware.sh 1
+firmware/stm32/panel_firmware/backup_ram.sh 1
+firmware/stm32/panel_firmware/restore_firmware.sh 1
+firmware/stm32/panel_firmware/yardforce500.cfg 1
+firmware/stm32/ros_usbnode/.gitignore 1
+firmware/stm32/ros_usbnode/CDC 4
+firmware/stm32/ros_usbnode/README.md 1
+firmware/stm32/ros_usbnode/add_swo_viewer.py 1
+firmware/stm32/ros_usbnode/boards 1
+firmware/stm32/ros_usbnode/cppcheck-suppressions.txt 1
+firmware/stm32/ros_usbnode/git_build_id.py 1
+firmware/stm32/ros_usbnode/include 36
+firmware/stm32/ros_usbnode/lib 1
+firmware/stm32/ros_usbnode/patch_usb.py 1
+firmware/stm32/ros_usbnode/platformio.ini 1
+firmware/stm32/ros_usbnode/remote_upload 2
+firmware/stm32/ros_usbnode/src 608
+firmware/stm32/ros_usbnode/swo_parser.py 1
+firmware/stm32/ros_usbnode/test 2
+firmware/stm32/test_code/.gitignore 1
+firmware/stm32/test_code/README.md 1
+firmware/stm32/test_code/include 9
+firmware/stm32/test_code/lib 1
+firmware/stm32/test_code/platformio.ini 1
+firmware/stm32/test_code/src 7
+firmware/stm32/test_code/test 1
+> build · big-pickle
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack/docs && grep -ohE "/(mower_base|gps|imu|odom|cmd_vel|wheel|fix|rtk)[a-z_/]*" agent*.log | sort | uniq -c | sort -rn | head -40
+10 /fix
+      4 /imu/temperature_c
+      4 /imu
+      4 /gps_dev_status
+      3 /mower_base_node_strings
+      2 /rtk_input
+      2 /odometry_publisher
+      1 /wheel_yaw_cal
+      1 /wheel_radius_cal
+      1 /mower_base_pkg/test/test_speed
+      1 /mower_base_pkg/test/fake_mower_port
+      1 /mower_base_pkg/docs/aichw_mower
+      1 /mower_base_pkg/config/base
+      1 /imu_liveness
+      1 /gps_log
+      1 /gps_local_xyz
+      1 /gps/universal_gnss_topic_bridge
+      1 /gps/start_gps
+      1 /gps/ros
+      1 /gps/mowgli_gnss_bridge/test/test_universal_gnss_topic_bridge
+      1 /gps/mowgli_gnss_bridge/test/test_python_bridge
+      1 /gps/mowgli_gnss_bridge/test/test_correction_diagnostic_tracker
+      1 /gps/mowgli_gnss_bridge/src/universal_gnss_topic_bridge
+      1 /gps/mowgli_gnss_bridge/src/main
+      1 /gps/mowgli_gnss_bridge/src/correction_diagnostic_tracker
+      1 /gps/mowgli_gnss_bridge/package
+      1 /gps/mowgli_gnss_bridge/include/mowgli_gnss_bridge/universal_gnss_topic_bridge
+      1 /gps/mowgli_gnss_bridge/include/mowgli_gnss_bridge/correction_diagnostic_tracker
+      1 /gps/mowgli_gnss_bridge/
+      1 /gps/
+      1 /fix_fused
+      1 /cmd_vel_validation
+      1 /cmd_vel_slew
+> build · big-pickle
+I have what I need. Writing the baseline document.
+[0m← [0mWrite ros2_stack/docs/mowglinext_baseline.md
+Created file successfully: ros2_stack/docs/mowglinext_baseline.md
+> build · big-pickle
+[0m$ [0mpython3 -c "
+import json
+d=json.load(open('/home/michael/.local/share/opencode/tool-output/tool_108ca70d0001UWdvgbvwP4CXhY'))
+paths=[t['path'] for t in d['tree'] if t['type']=='blob']
+for k in ('msg','srv','action'):
+    n=[p for p in paths if p.startswith('ros2/src/mowgli_interfaces/'+k+'/')]
+    print(k,len(n))
+"; wc -l /home/michael/git/airseekers-decompile/ros2_stack/docs/mowglinext_baseline.md
+msg 16
+srv 15
+action 3
+464 /home/michael/git/airseekers-decompile/ros2_stack/docs/mowglinext_baseline.md
+> build · big-pickle
+Counts confirmed (16 msg / 15 srv / 3 action). Written to `ros2_stack/docs/mowglinext_baseline.md` (464 lines).
+
+## Key findings
+
+**The repo in the brief doesn't exist.** `ClemensElflein/mowglinext` → 404. The canonical repo is **`mowglinext/mowglinext`** (org, not user), GPLv3 + commercial dual licence, latest `v1.4.0`, site mowgli.garden. ClemensElflein is the OpenMower author — MowgliNext credits OpenMower and its `ll_datatypes.hpp` is literally a port of OpenMower's.
+
+**Two facts that change our plan:**
+
+1. **Upstream is ROS 2 Lyrical / Ubuntu 26.04, not Humble.** Humble gaps I flagged: no `docking_server` (`opennav_docking`), no `nav2_msgs/CollisionMonitorState`, renamed costmap/behaviour-server YAML keys (silently ignored if wrong), GTSAM + Fields2Cover must be built from source for aarch64. `TwistStamped` + `twist_mux use_stamped` port fine; they use Cyclone DDS on ARM — copy that.
+
+2. **They own both ends of the MCU link** (`firmware/stm32/ros_usbnode`, PlatformIO, USB CDC). We don't and won't — vendor Artery AT32 blobs. So the `mowgli_hardware` port is architecture-only: `A5…5A` + `F5` stuffing + module-id dispatch replaces COBS+CRC16 + typed packet ids, and the version handshake becomes the `version` (mod 12) sub-packet.
+
+**Highest-value logic to copy:** the dig (wheel-slip) detector — pure header, unit-tested against field-recorded slips, worst-wheel odometer, gated on RTK-fixed receiver accuracy (never the fused covariance), with an escalation latch cleared by charger contact or displacement. Plus: firmware owns the wheel PI loop (host sends linear/angular only — which matches Airseekers exactly), `cmd_vel` slew + exact-command echo, host↔firmware clock fit, at-rest IMU bias cal with a validated persisted file, and the deadband/gain sanity gate.
+
+**Mapping table** covers all12 MowgliNext packages → the four we're building (`mower_interfaces`, `mower_mcu_driver`, `wit_imu_driver`, `um960_gps_driver`) with what to take vs. write fresh, then the later batches. One package has **no MowgliNext analogue at all**: Metoak stereo depth (they only support 2D LiDAR) — flagged as new work with its own risk register.

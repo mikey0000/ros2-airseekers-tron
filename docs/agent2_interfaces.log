@@ -1,0 +1,451 @@
+[0m
+> build · longcat-2.5-preview-free
+[0m$ [0mls -la /home/michael/git/airseekers-decompile/
+total 17583636
+drwxrwxr-x 11 michael michael        4096 Oct  5 10:17 .
+drwxrwxr-x 90 michael michael        4096 Oct  2 13:14 ..
+-rw-rw-r--  1 michael michael        5171 Oct  2 21:45 RESUME.md
+drwxrwxr-x  4 michael michael        4096 Oct  2 12:13 apks
+drwxrwxr-x  4 michael michael        4096 Oct  2 12:26 blutter_out
+-rw-rw-r--  1 michael michael       21455 Oct  2 14:08 custom_wl.txt
+-rw-rw-r--  1 michael michael         263 Oct  2 14:20 dbg_cmds
+-rw-rw-r--  1 michael michael          37 Oct  2 14:21 dbg_fix
+-rw-rw-r--  1 michael michael         207 Oct  2 14:41 dbg_reinject
+drwxrwxr-x  2 michael michael        4096 Oct  2 18:51 docs
+-rw-rw-r--  1 michael michael        2436 Oct  2 16:23 fox_ctrl.py
+-rw-rw-r--  1 michael michael         230 Oct  2 14:08 hashes.txt
+drwxr-xr-x  4 michael michael        4096 Oct  2 22:15 mower_docs
+-rw-r--r--  1 michael michael   152944072 Oct  2 16:40 mower_src.tgz
+drwxrwxr-x  7 michael michael        4096 Oct  5 10:11 ota_v1.3.27-rc.1-tron+20260713
+-rw-r--r--  1 michael michael   361683224 Oct  5 10:08 ota_v1.3.27-rc.1-tron+20260713.tar.gz
+-rw-r--r--  1 root    root    17179869184 Oct  2 14:05 rootfs.img
+drwxr-xr-x 15 michael michael        4096 Oct  5 10:11 ros2_port_handoff
+-rw-r--r--  1 michael michael   310712856 Oct  5 10:07 ros2_port_handoff_2026-10-05_with_excluded.tgz
+drwxrwxr-x  9 michael michael        4096 Oct  5 10:19 ros2_stack
+drwxr-xr-x 16 michael michael        4096 Oct  2 19:16 src
+drwxrwxr-x  4 michael michael        4096 Oct  2 13:46 tools
+[0m✱ [0mGlob "ros2_port_handoff/03_ros_interfaces/**/*" [90m100 matches[0m
+> build · longcat-2.5-preview-free
+[0m$ [0mls /home/michael/git/airseekers-decompile/ros2_port_handoff/03_ros_interfaces/
+devel_generated_headers
+mower_gps_msgs
+mower_msgs
+mower_proto
+vanjee_lidar_msg
+[0m$ [0mls /home/michael/git/airseekers-decompile/ros2_port_handoff/03_ros_interfaces/mower_msgs/msg/ /home/michael/git/airseekers-decompile/ros2_port_handoff/03_ros_interfaces/mower_msgs/srv/ /home/michael/git/airseekers-decompile/ros2_port_handoff/03_ros_interfaces/mower_msgs/action/ 2>/dev/null
+/home/michael/git/airseekers-decompile/ros2_port_handoff/03_ros_interfaces/mower_msgs/action/:
+Docking.action
+NavigatePath.action
+NavigateToPose.action
+Undock.action
+
+/home/michael/git/airseekers-decompile/ros2_port_handoff/03_ros_interfaces/mower_msgs/msg/:
+AIClouds.msg
+BatteryHealthInfo.msg
+Cellpolygons.msg
+ControlInfo.msg
+ControllerEvent.msg
+ControllerOutput.msg
+ControllerStates.msg
+ControllerTrackingError.msg
+EskfState.msg
+Event.msg
+ExplorePose.msg
+ExploreRelocStatus.msg
+FusedObstacleCloud.msg
+FusedObstacleClouds.msg
+FusionObstacle.msg
+IotCmd.msg
+IotNotice.msg
+KinematicModel.msg
+LayerCropedMapInfo.msg
+LightMode.msg
+LineTrackingInfo.msg
+Map.msg
+MapChannel.msg
+MapObstacle.msg
+MapPolygon.msg
+MapPose.msg
+MapSpecialZone.msg
+MotorControl.msg
+MotorInfo.msg
+MotorStatus.msg
+MowerBaseButtonInfo.msg
+MowerBaseDevInfo.msg
+MowerBaseDevStatus.msg
+MowerBaseMotorsInfo.msg
+MowerControllerInfo.msg
+MowerLocalizationInfo.msg
+MowerSensorInfo.msg
+NavStatus.msg
+OAMonoMeasure.msg
+ObstacleInfo.msg
+ObstacleInfos.msg
+PlannerCode.msg
+PlannerInfo.msg
+PlannerOption.msg
+PlannerPath.msg
+PlannerPaths.msg
+Pose6D.msg
+RealObsInfo.msg
+TypePath.msg
+VioPoseResult.msg
+
+/home/michael/git/airseekers-decompile/ros2_port_handoff/03_ros_interfaces/mower_msgs/srv/:
+BumperControl.srv
+ChargingControl.srv
+CutterControl.srv
+EnableStereoPerc.srv
+GetCroppedLayerData.srv
+GetDockStatus.srv
+GetExploreResult.srv
+GetNRTKInfo.srv
+GetNavStatus.srv
+GetRemainPath.srv
+IotControl.srv
+LightControl.srv
+LocatorGetMapInfo.srv
+LocatorLoadMap.srv
+LocatorSaveMap.srv
+MapLayerObstacleInfos.srv
+MapSet.srv
+MappingControl.srv
+NRTKBind.srv
+OaSelectCamera.srv
+PlanPath.srv
+PlannerCoverage.srv
+PlannerExplore.srv
+PlannerGoal.srv
+PlannerTaskSet.srv
+RecordBreakPoint.srv
+SetDatum.srv
+SetDockPose.srv
+SetKinematicModel.srv
+SetObstacleFiltering.srv
+SetPath.srv
+SetTypePath.srv
+Trigger.srv
+UpdateNavParams.srv
+[0m$ [0mls /home/michael/git/airseekers-decompile/ros2_port_handoff/10_ros_live_snapshot/ 2>/dev/null; ls /home/michael/git/airseekers-decompile/mower_docs/ 2>/dev/null
+node_info_base_ble_node.txt
+node_info_base_driver_node.txt
+node_info_mower_charge.txt
+node_info_mower_gps_node.txt
+node_info_mower_light_sound_node.txt
+nodes.txt
+sample__battery.txt
+sample__imu.txt
+sample__mower_base_motor_info.txt
+sample__mower_base_status.txt
+sample__mower_sensor_info.txt
+sample__odom.txt
+sample__wheel_vel.txt
+services.txt
+topic_rates.txt
+topics_verbose.txt
+01-system-overview.md
+02-ros2-migration.md
+03-yolo-perception.md
+04-ble-protocol.md
+05-maps-and-http-api.md
+06-mqtt-and-ros-services.md
+07-cautions.md
+08-closed-source-inventory.md
+09-reuse-strategy.md
+10-hardware.md
+README.md
+reference
+tools
+> build · longcat-2.5-preview-free
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/msg/BatteryHealthInfo.msg 
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/msg/MowerSensorInfo.msg 
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/msg/ControlInfo.msg 
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/msg/MowerBaseDevStatus.msg 
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/msg/MotorInfo.msg 
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/msg/MowerBaseMotorsInfo.msg 
+> build · longcat-2.5-preview-free
+[0m→ [0mRead ros2_port_handoff/10_ros_live_snapshot/sample__mower_base_motor_info.txt 
+[0m→ [0mRead ros2_port_handoff/10_ros_live_snapshot/sample__mower_sensor_info.txt 
+[0m→ [0mRead ros2_port_handoff/10_ros_live_snapshot/sample__battery.txt 
+[0m→ [0mRead ros2_port_handoff/10_ros_live_snapshot/sample__wheel_vel.txt 
+[0m→ [0mRead ros2_port_handoff/10_ros_live_snapshot/sample__mower_base_status.txt 
+> build · longcat-2.5-preview-free
+The live snapshot shows battery and wheel velocity already use standard messages. Let me check the topic listings and remaining files.
+[0m→ [0mRead ros2_port_handoff/10_ros_live_snapshot/topics_verbose.txt 
+[0m→ [0mRead ros2_port_handoff/10_ros_live_snapshot/services.txt 
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/msg/MotorStatus.msg 
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/srv/PlannerTaskSet.srv 
+> build · longcat-2.5-preview-free
+Now let me read the docs file, PlannerOption.msg, and check the existing ros2_stack structure.
+[0m→ [0mRead mower_docs/06-mqtt-and-ros-services.md 
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/msg/PlannerOption.msg 
+[0m$ [0mfind /home/michael/git/airseekers-decompile/ros2_stack -maxdepth 3 -type d | head -50; echo ---; ls /home/michael/git/airseekers-decompile/ros2_stack/
+/home/michael/git/airseekers-decompile/ros2_stack
+/home/michael/git/airseekers-decompile/ros2_stack/scripts
+/home/michael/git/airseekers-decompile/ros2_stack/config
+/home/michael/git/airseekers-decompile/ros2_stack/launch
+/home/michael/git/airseekers-decompile/ros2_stack/.git
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/pack
+/home/michael/git/airseekers-decompile/ros2_stack/.git/objects/info
+/home/michael/git/airseekers-decompile/ros2_stack/.git/refs
+/home/michael/git/airseekers-decompile/ros2_stack/.git/refs/heads
+/home/michael/git/airseekers-decompile/ros2_stack/.git/refs/tags
+/home/michael/git/airseekers-decompile/ros2_stack/.git/hooks
+/home/michael/git/airseekers-decompile/ros2_stack/.git/info
+/home/michael/git/airseekers-decompile/ros2_stack/docs
+/home/michael/git/airseekers-decompile/ros2_stack/docker
+/home/michael/git/airseekers-decompile/ros2_stack/src
+---
+README.md
+config
+docker
+docs
+launch
+scripts
+src
+> build · longcat-2.5-preview-free
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/package.xml 
+[0m$ [0mfind /home/michael/git/airseekers-decompile/ros2_stack/src /home/michael/git/airseekers-decompile/ros2_stack/docs -type f | head -40
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent6_docker.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent1_mcu_spec.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent7_mowglinext.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent3_mcu_driver.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent2_interfaces.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent4_wit.log
+/home/michael/git/airseekers-decompile/ros2_stack/docs/agent5_um960.log
+> build · longcat-2.5-preview-free
+Let me check the mower_msgs CMakeLists.txt for reference and verify the current state of ros2_stack/src.
+[0m→ [0mRead ros2_port_handoff/03_ros_interfaces/mower_msgs/CMakeLists.txt 
+[0m$ [0mls -la /home/michael/git/airseekers-decompile/ros2_stack/src/ /home/michael/git/airseekers-decompile/ros2_stack/docs/; cat /home/michael/git/airseekers-decompile/ros2_stack/README.md 2>/dev/null | head -40
+/home/michael/git/airseekers-decompile/ros2_stack/docs/:
+total 140
+drwxrwxr-x 2 michael michael  4096 Oct  5 10:20 .
+drwxrwxr-x 9 michael michael  4096 Oct  5 10:19 ..
+-rw-rw-r-- 1 michael michael   978 Oct  5 10:20 agent1_mcu_spec.log
+-rw-rw-r-- 1 michael michael  8811 Oct  5 10:21 agent2_interfaces.log
+-rw-rw-r-- 1 michael michael  1875 Oct  5 10:21 agent3_mcu_driver.log
+-rw-rw-r-- 1 michael michael 20914 Oct  5 10:20 agent4_wit.log
+-rw-rw-r-- 1 michael michael 58349 Oct  5 10:21 agent5_um960.log
+-rw-rw-r-- 1 michael michael  2282 Oct  5 10:21 agent6_docker.log
+-rw-rw-r-- 1 michael michael 15158 Oct  5 10:21 agent7_mowglinext.log
+-rw-rw-r-- 1 michael michael  1718 Oct  5 10:20 wit_imu.md
+
+/home/michael/git/airseekers-decompile/ros2_stack/src/:
+total 12
+drwxrwxr-x 3 michael michael 4096 Oct  5 10:20 .
+drwxrwxr-x 9 michael michael 4096 Oct  5 10:19 ..
+drwxrwxr-x 3 michael michael 4096 Oct  5 10:20 wit_imu_driver
+# Airseekers Tron — ROS 2 (Humble) port stack
+
+Baseline: MowgliNext (ROS 2 mower stack). Target: runs on the mower via Docker (Humble).
+
+Source assets (read-only, do NOT modify):
+- ../ros2_port_handoff/ (README.md first, then 00_docs, 01_mcu_protocol, 03_ros_interfaces, 10_ros_live_snapshot)
+- ../mower_docs/ (02-ros2-migration.md, 05-maps-and-http-api.md, 10-hardware.md)
+
+Write all new files under ros2_stack/ only.
+Do NOT run anything on the actual mower (192.168.1.105); no apt changes, no flashing, no systemctl.
+> build · longcat-2.5-preview-free
+Let me check the existing package conventions in ros2_stack/src/wit_imu_driver.
+[0m$ [0mfind /home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver -type f | head; echo ===; cat /home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/setup.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/wit_imu_driver/wit_imu_driver/wit_node.py
+zsh:1: == not found
+> build · longcat-2.5-preview-free
+[0m→ [0mRead ros2_stack/src/wit_imu_driver/package.xml 
+[0m$ [0mls /home/michael/git/airseekers-decompile/ros2_port_handoff/; cat /home/michael/git/airseekers-decompile/ros2_port_handoff/README.md 2>/dev/null | head -60
+00_docs
+01_mcu_protocol
+02_mcu_firmware
+03_ros_interfaces
+04_full_src_tree
+05_driver_binaries
+06_vendor_sdks
+07_system_config
+08_calibration_identity
+09_platform
+10_ros_live_snapshot
+11_perception_models
+12_excluded_secrets_identity
+MANIFEST.sha256
+README.md
+TREE.txt
+collect_excluded.sh
+mcu_frame_protocol_decode.log
+# Airseekers Tron mower — ROS 2 port handoff bundle
+
+Collected on the robot itself on 2026-10-05 (serial no. in `/meta/sn` on the device, firmware
+`v1.3.27-rc.1-tron+20260713`). Everything here was gathered **read-only**; nothing on the mower
+was changed. Target: a ROS 2 driver stack modelled on OpenMower / MowgliNext that talks to the
+Airseekers mainboard MCUs directly.
+
+Start with `00_docs/` (the earlier full system survey), then `01_mcu_protocol/`.
+
+## TL;DR for the agent doing the port
+
+1. **The MCU serial protocol is fully recoverable.** `01_mcu_protocol/protocol_definitions_recovered.h`
+   is the stripped vendor header regenerated from DWARF debug info left in `libmower_sdk.a`
+   (struct layouts, offsets, both enums). `mcu_frame_decode.py` decodes/encodes frames and was
+   validated on 172,850 live frames with zero checksum errors. Byte order is little-endian.
+2. **Wire format:** `A5 | total_len | {sub_len type mod payload}+ | sum&0xFF | 5A`, with
+   `F5 01/02/03` byte-stuffing for `A5/5A/F5`. Host→MCU `type=0`, MCU→host `type=8`,
+   heartbeat `type=255`. Module ids: speed 4, battery 5, imu 9, sensor 10, cutter 11, version 12,
+   motors 13, calib 18, log 19, bms_version 24, charge 3.
+3. **Port:** `/dev/serial_mower` → `ttyS9` (RK3588 UART9 @ `0xfebc0000`), 115200 8N1. The cutter
+   board is the gateway; the chassis board hangs off it over a second UART. IMU is a separate
+   **WIT-Motion JY61P** on `/dev/serial_imu` (`ttyS1`, 115200, standard WIT 0x55 frames — public
+   protocol). GNSS is a **Unicore UM960** on `/dev/serial_rtk` (`ttyS4`). BLE module on
+   `/dev/serial_ble` (`ttyS3`).
+4. **Firmware for every MCU** is in `02_mcu_firmware/` together with the OTA flasher (`ota.py`)
+   which also documents the bootloader protocol. Do not flash anything until the driver works.
+5. **Unknowns to resolve on hardware** (marked `(?)` in the header): heartbeat period and
+   failsafe behaviour, units of `BatteryInfo.current` / `MotorInfo.*`, meaning of module id 7,
+   the exact semantics of `SensorInfoControl`, and whether `SendImuData` is required by the MCU.
+
+## What is in here
+
+| Dir | Contents |
+|---|---|
+| `00_docs/` | The 10-document system survey from 2026-10-02 (hardware, closed-source inventory, BLE, HTTP/MQTT APIs, reuse strategy, cautions) plus vendor `.proto`, `.srv`, OpenAPI. |
+| `01_mcu_protocol/` | **The core.** `protocol_definitions_recovered.h`, `mcu_frame_decode.py`, `sdk_static_lib/libmower_sdk.a` (+ extracted `.o` with full DWARF, `nm` symbol list), `dwarf/` (raw type dumps + the `dwarf2hdr.py` script that produced them), `bin/` (`mower_base_node`, and two **standalone non-ROS test tools** `mower_sdk_test` / `mower_sdk_ncurses` that drive the MCU directly), `libs/` (the 4 private `.so` the node links), `mower_base_pkg/` (package incl. Chinese design docs `docs/aichw_mower.md` describing the original **ROS 2 Humble** version of this driver, config, launch, URDFs, test scripts), `base_imu_pkg/`, `mcu_traffic_logs/` (raw MCU→host captures), `ota_tools/`, `mower_base_node_strings.txt` (topics/params/symbols from the stripped node). |
+| `02_mcu_firmware/` | `mcu_bin_v1.3.27/`: chassis (`0.6.14`–`0.6.34`, latest **0.6.34**), cutter (`0.6.21`–`0.6.36`, latest **0.6.36**), battery/BMS (`1.14.0`–`1.18.0`, latest **1.18.0**), rtk_rover (`0.7.x/0.8.x/0.9.x` by board rev `-addr 0/1/2`, latest 0.7.32/0.8.32/0.9.50), rtk_rover_m4 LoRa (`B039.01.02.dwn`), rtk_station, `emmc/emmc.img` (DDR-frequency config blob flashed at eMMC sector 0x40, SN-gated), `ota.py`, `install.sh`, `install.py`, `rtk_rover_m4/mcu_m4_ota.py`. Plus older rtk_rover binaries only present in the v1.0.60 OTA. All are **Artery AT32** application images (raw `.bin`, 20–65 KB). The versions running right now: cutter 0.6.36, chassis 0.6.34, BMS 1.18.0, rtk 0.9.50. |
+| `03_ros_interfaces/` | `mower_msgs` (88 msg/srv/action), `mower_gps_msgs`, `mower_proto` (19 `.proto`, BLE/MQTT payloads), `vanjee_lidar_msg`, and the generated headers that only exist in `devel/` (`mower_logic`, `mower_bt_nodes`, `mpc_controller`, …). |
+| `04_full_src_tree/` | Complete `/workspace/src` (no `.git`, no `.rknn`) + `install.sh`, `profile/`, build version. 52 of 72 packages are binary-only but every `package.xml`, `CMakeLists.txt`, launch, param YAML and the ~900 surviving headers (controller, localisation, planner interfaces) are here. Also contains the vendor SDK libs: Metoak `libMoGeneralSDK` (`mower_drivers/base_stereo/sdk_v2745/lib`, `mower_perception/vslam_ros/3rdparty/metoak/lib`), `librknnrt.so` (`mower_perception/rknn2_runtime/librknn_api/aarch64`), Rockchip MPP (`base_cameras/lib/mpp`), `libws_2812.so` (`mower_task/mower_light_sound/lib`). |
+| `05_driver_binaries/` | Hardware-abstraction nodes with no source: `base_ble_node`, `mower_gps_driver_node(+ntrip)`, `base_cameras_node`, `mower_light_sound_node`, `base_keys_node`, `base_net_node`, `mower_charge`, `stereo_ros`, `fake_rtk_node`, `fake_mower_node` (simulator), `gatt-service`; `libs/` with their private `.so`; `ldd_report.txt` lists what each needs outside the system. |
+| `06_vendor_sdks/` | Metoak camera tools + kernel modules (`ko/`), the custom OpenCV 4.2 (`/usr/metoak/4.2.0-gcc930`) every closed binary links against, AP6256 BT/Wi-Fi firmware (`BCM4345C5.hcd`), `librga`. See its README. |
+| `07_system_config/` | `udev/mower.rules` (the device-name mapping), all `mower-*.service` units, cron/logrotate/resolved/NetworkManager snippets, `mower_cam_keeper.py`, unit enablement state. |
+| `08_calibration_identity/` | Stereo intrinsics/extrinsics (`cam0/cam1/stereo_params.yaml`, camera SN IC17SZ01011), the Metoak camera EEPROM calibration dump, `base_cameras` configs, URDFs (`m2-11`…`m2-16`, `urdf.py` picks by SN). |
+| `09_platform/` | Device-tree blob (`device-tree.dtb`, decompile with `dtc -I dtb -O dts`), kernel cmdline, eMMC partition map, UART/I²C/sysfs mapping, `lsmod`, `dpkg -l`, ROS debs, live tty settings. |
+| `10_ros_live_snapshot/` | `rosnode/rostopic/rosservice` listings, per-node pub/sub/service tables for the driver nodes, one sample message per MCU-side topic, measured rates. |
+| `11_perception_models/` | The five `.rknn` NPU models (YOLOv8 det ×2, PP-LiteSeg ×2, light classifier). Not needed for the MCU work; included because they have no source. |
+
+Full OTA images (incl. the 798 MB `devel/` tree) remain on the device at
+`/userdata/RobotData/upgrade/*.tar.gz` if anything else is ever needed.
+
+## Hardware ↔ Linux device map (verified live)
+
+| Function | Device | Hardware | Owner process today | Notes |
+|---|---|---|---|---|
+| Cutter+chassis MCU bus | `/dev/serial_mower` → `ttyS9` (UART9, `febc0000`) | Artery AT32 boards | `mower_base_node` | 115200 8N1, this protocol |
+| IMU | `/dev/serial_imu` → `ttyS1` (UART1, `feb40000`) | WIT-Motion JY61P | `mower_base_node` (via `libbase_imu.so`) | configured by `wit_imu_config.py` (100 Hz, 98 Hz BW) |
+| GNSS/RTK rover | `/dev/serial_rtk` → `ttyS4` (UART4, `feb70000`) | Unicore UM960 + AT32 rtk board + LoRa M4 | `mower_gps_driver_node` | NMEA + Unicore binary; `ota.py -t 21 -m 37` for the rtk board; `mcu_m4_ota.py` for LoRa |
+| BLE link to app | `/dev/serial_ble` → `ttyS3` (UART3, `feb60000`) | external BLE UART module | `base_ble_node` | framing source in `base_ble/src`; alt. path via AP6256 on `ttyS5` + socat (disabled) |
+| LTE | `/dev/serial_lte` → `ttyUSB2` | Quectel EC200A-EU | `lte.py` | |
+| LEDs | `/dev/spidev3.0` | WS2812 strip | `mower_light_sound_node` (`libws_2812.so`) | |
+> build · longcat-2.5-preview-free
+I have a complete picture now. Let me quickly confirm which nodes publish the core topics, then build the package.
+[0m$ [0mgrep -l -i "wheel_vel\|/battery\|motor_info\|mower_sensor_info\|mower_base/status\|task_set" /home/michael/git/airseekers-decompile/ros2_port_handoff/10_ros_live_snapshot/node_info_*.txt 2>/dev/null; echo ---; grep -i -A2 -B2 "wheel_vel\|/battery" /home/michael/git/airseekers-decompile/ros2_port_handoff/10_ros_live_snapshot/node_info_base_driver_node.txt 2>/dev/null | head -30
+/home/michael/git/airseekers-decompile/ros2_port_handoff/10_ros_live_snapshot/node_info_base_driver_node.txt
+/home/michael/git/airseekers-decompile/ros2_port_handoff/10_ros_live_snapshot/node_info_mower_charge.txt
+/home/michael/git/airseekers-decompile/ros2_port_handoff/10_ros_live_snapshot/node_info_mower_light_sound_node.txt
+---
+Node [/base_driver_node]
+Publications: 
+ * /battery [sensor_msgs/BatteryState]
+ * /bumper_cloud [sensor_msgs/PointCloud2]
+ * /calibration_result [std_msgs/Int32MultiArray]
+--
+ * /imu [sensor_msgs/Imu]
+ * /imu/temperature [sensor_msgs/Temperature]
+ * /mower_base/battery_health [mower_msgs/BatteryHealthInfo]
+ * /mower_base/button_info [mower_msgs/MowerBaseButtonInfo]
+ * /mower_base/dev_base_info [mower_msgs/MowerBaseDevInfo]
+--
+ * /rosout [rosgraph_msgs/Log]
+ * /tf [tf2_msgs/TFMessage]
+ * /wheel_vel [geometry_msgs/TwistStamped]
+
+Subscriptions: 
+--
+ * /odom [nav_msgs/Odometry]
+ * /rear_camera/camera_status [std_msgs/Int8]
+ * /wheel_vel [geometry_msgs/TwistStamped]
+
+Services: 
+--
+    * direction: outbound (53891 - 127.0.0.1:42094) [49]
+    * transport: TCPROS
+ * topic: /battery
+    * to: /mower_mqtt
+    * direction: outbound (53891 - 127.0.0.1:42030) [54]
+    * transport: TCPROS
+> build · longcat-2.5-preview-free
+Confirmed: `/base_driver_node` publishes all core topics. Now I'll create the package. Starting with `package.xml` and `CMakeLists.txt`.
+[0m← [0mWrite ros2_stack/src/mower_interfaces/package.xml
+Created file successfully: ros2_stack/src/mower_interfaces/package.xml
+[0m← [0mWrite ros2_stack/src/mower_interfaces/CMakeLists.txt
+Created file successfully: ros2_stack/src/mower_interfaces/CMakeLists.txt
+> build · longcat-2.5-preview-free
+Now the message files — motor info group first.
+[0m← [0mWrite ros2_stack/src/mower_interfaces/msg/MotorStatus.msg
+Created file successfully: ros2_stack/src/mower_interfaces/msg/MotorStatus.msg
+[0m← [0mWrite ros2_stack/src/mower_interfaces/msg/MotorInfo.msg
+Created file successfully: ros2_stack/src/mower_interfaces/msg/MotorInfo.msg
+[0m← [0mWrite ros2_stack/src/mower_interfaces/msg/MowerBaseMotorsInfo.msg
+Created file successfully: ros2_stack/src/mower_interfaces/msg/MowerBaseMotorsInfo.msg
+> build · longcat-2.5-preview-free
+Now sensor info, control, and status messages.
+[0m← [0mWrite ros2_stack/src/mower_interfaces/msg/MowerSensorInfo.msg
+Created file successfully: ros2_stack/src/mower_interfaces/msg/MowerSensorInfo.msg
+[0m← [0mWrite ros2_stack/src/mower_interfaces/msg/ControlInfo.msg
+Created file successfully: ros2_stack/src/mower_interfaces/msg/ControlInfo.msg
+[0m← [0mWrite ros2_stack/src/mower_interfaces/msg/MowerBaseDevStatus.msg
+Created file successfully: ros2_stack/src/mower_interfaces/msg/MowerBaseDevStatus.msg
+> build · longcat-2.5-preview-free
+Now the planner task set files.
+[0m← [0mWrite ros2_stack/src/mower_interfaces/msg/PlannerOption.msg
+Created file successfully: ros2_stack/src/mower_interfaces/msg/PlannerOption.msg
+[0m← [0mWrite ros2_stack/src/mower_interfaces/srv/PlannerTaskSet.srv
+Created file successfully: ros2_stack/src/mower_interfaces/srv/PlannerTaskSet.srv
+> build · longcat-2.5-preview-free
+Now the interfaces map document.
+[0m← [0mWrite ros2_stack/docs/interfaces_map.md
+Created file successfully: ros2_stack/docs/interfaces_map.md
+> build · longcat-2.5-preview-free
+Let me verify the final package structure.
+[0m$ [0mfind /home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces /home/michael/git/airseekers-decompile/ros2_stack/docs/interfaces_map.md -type f | sort
+/home/michael/git/airseekers-decompile/ros2_stack/docs/interfaces_map.md
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/CMakeLists.txt
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/ControlInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MotorInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MotorStatus.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseDevStatus.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseMotorsInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerSensorInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/PlannerOption.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/PlannerTaskSet.srv
+> build · longcat-2.5-preview-free
+Done. The `mower_interfaces` package is created and the interfaces map is written. Here's a summary of what was built and the key decisions.
+
+## What I read
+- **`ros2_port_handoff/03_ros_interfaces/`** — 4 packages: `mower_msgs` (55 msg, 33 srv, 4 action), `mower_gps_msgs`, `mower_proto`, `vanjee_lidar_msg`.
+- **`ros2_port_handoff/10_ros_live_snapshot/`** — topic/service listings plus one sample message per MCU-side topic. Confirmed `/base_driver_node` publishes all core topics.
+- **`mower_docs/06-mqtt-and-ros-services.md`** — cloud MQTT paths and the live ROS services underneath.
+
+## Key finding from the live snapshot
+Two core topics already use **standard ROS 2 types**, so I reused them rather than defining duplicates:
+- `/battery` → `sensor_msgs/BatteryState` (replaces the ROS 1 `BatteryHealthInfo.msg`)
+- `/wheel_vel` → `geometry_msgs/TwistStamped` (the stamped form of `Twist`; equivalent + header)
+
+## What I created (all under `ros2_stack/`)
+
+**`src/mower_interfaces/`** — ament_cmake package:
+- `package.xml` — `mower_interfaces`, depends on `builtin_interfaces`, `std_msgs`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`
+- `CMakeLists.txt` — `rosidl_generate_interfaces(...)` with the 8 files below
+- **Converted messages** (names, fields, constants, and Chinese comments kept faithful):
+  - `msg/MotorStatus.msg`, `msg/MotorInfo.msg`, `msg/MowerBaseMotorsInfo.msg` — motor info
+  - `msg/MowerSensorInfo.msg` — sensor info
+  - `msg/ControlInfo.msg` — control state
+  - `msg/MowerBaseDevStatus.msg` — base status
+  - `msg/PlannerOption.msg` + `srv/PlannerTaskSet.srv` — task set
+
+**`docs/interfaces_map.md`** — maps every ROS 1 `mower_msgs` file to its ROS 2 counterpart, with:
+- Conversion table for the 8 core files
+- Field mapping for the two reused standard messages (`BatteryHealthInfo` → `BatteryState`, `TwistStamped`)
+- Live topic/service reference (topic name → type → publisher)
+- Dependency-usage table and the full deferred list (48 msg, 32 srv, 4 action) for later phases
+
+Read-only sources under `ros2_port_handoff/` and `mower_docs/` were not modified.

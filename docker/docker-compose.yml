@@ -1,0 +1,43 @@
+# Compose for the mower's Humble container.
+# Run from ros2_stack/:  docker compose -f docker/docker-compose.yml <up|build|run ...>
+# Serial map source: ros2_port_handoff/09_platform/dev_nodes.txt + udev-symlinks.txt
+#   serial_mower->ttyS9 (mower MCU, raw 115200) | serial_imu->ttyS1 | serial_rtk->ttyS4
+#   serial_ble->ttyS3 | serial_lte->ttyUSB2 (Quectel EC200A) | ttyUSB0/1 (modem/GNSS AT ports)
+#   cameras: video44/53/62 (left_oa_camera / right_oa_camera / rear_camera)
+
+services:
+  mower_humble:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.humble
+    image: mower:humble
+    container_name: mower_humble
+    platform: linux/arm64
+    privileged: true            # needs raw /dev + serial/ioctl access on the BSP kernel
+    network_mode: host          # ROS 2 DDS discovery + Foxglove on LAN without port lists
+    ipc: host
+    stdin_open: true
+    tty: true
+    environment:
+      - ROS_DISTRO=humble
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - DISPLAY=${DISPLAY:-}
+    volumes:
+      # ROS 2 workspace sources (bind-mount; built inside container by scripts/build.sh)
+      - ../src:/work/src
+      - ../launch:/work/launch
+      - ../config:/work/config
+      # Full /dev bind covers udev symlinks + hotplug (ttyUSB*, video*); explicit
+      # `devices:` below pins the load-bearing serial ports even if /dev churns.
+      - /dev:/dev
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    devices:
+      - /dev/ttyS9:/dev/ttyS9     # serial_mower (mower MCU)
+      - /dev/ttyS1:/dev/ttyS1     # serial_imu
+      - /dev/ttyS4:/dev/ttyS4     # serial_rtk
+      - /dev/ttyS3:/dev/ttyS3     # serial_ble
+      - /dev/ttyUSB0:/dev/ttyUSB0
+      - /dev/ttyUSB1:/dev/ttyUSB1
+      - /dev/ttyUSB2:/dev/ttyUSB2 # serial_lte (Quectel)
+    command: bash

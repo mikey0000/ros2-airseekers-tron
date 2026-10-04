@@ -1,0 +1,115 @@
+[0m
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+I'll start by reading the specified files.
+[0m→ [0mRead ros2_port_handoff/README.md 
+[0m→ [0mRead ros2_port_handoff/01_mcu_protocol/mower_base_node_strings.txt 
+[0m→ [0mRead ros2_port_handoff/01_mcu_protocol/mcu_frame_decode.py 
+[0m→ [0mRead ros2_port_handoff/01_mcu_protocol/protocol_definitions_recovered.h 
+> build · ling-3.1-flash-free
+Let me check the rest of the strings file and the target directory structure.
+[0m→ [0mRead ros2_port_handoff/01_mcu_protocol/mower_base_node_strings.txt [90m[limit=100, offset=472][0m
+[0m✱ [0mGlob "ros2_stack/**" [90min . · 4 matches[0m
+> build · ling-3.1-flash-free
+I have all the source material I need. Let me check the existing ros2_stack context files quickly.
+[0m→ [0mRead ros2_stack/README.md 
+[0m→ [0mRead ros2_stack/docs/agent1_mcu_spec.log [90m[limit=60][0m
+> build · ling-3.1-flash-free
+I have everything I need. Now I'll write the engineering spec.
+[0m← [0mWrite ros2_stack/docs/mcu_protocol_spec.md
+Created file successfully: ros2_stack/docs/mcu_protocol_spec.md
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+The spec is written. Let me verify it.
+[0m$ [0mwc -l /home/michael/git/airseekers-decompile/ros2_stack/docs/mcu_protocol_spec.md && head -30 /home/michael/git/airseekers-decompile/ros2_stack/docs/mcu_protocol_spec.md
+165 /home/michael/git/airseekers-decompile/ros2_stack/docs/mcu_protocol_spec.md
+# Airseekers Tron — MCU Serial Protocol Spec (chassis/cutter MCU ↔ RK3588)
+
+Engineering spec for the ROS 2 driver's MCU-facing half. Sources:
+`ros2_port_handoff/01_mcu_protocol/` (`protocol_definitions_recovered.h` regenerated from
+DWARF in `libmower_sdk.a`, `mcu_frame_decode.py` validated on 172,850 live frames with 0
+checksum errors, `mower_base_node_strings.txt`), plus the handoff README (live topic rates,
+ROS 1 contract). All multi-byte fields are **little-endian**; all structs are packed.
+Items marked `(?)` are unverified — see §10.
+
+## 1. Physical layer
+
+| Item | Value |
+|---|---|
+| Port | `/dev/serial_mower` → `ttyS9` (RK3588 UART9 @ `0xfebc0000`) |
+| Settings | 115200 8N1, no flow control |
+| Topology | `RK3588 ←serial_mower→ cutter_board ←uart→ chassis_board` — the **cutter board is the gateway**; chassis (wheels/bumper/lift/stop) hangs behind it |
+| MCUs | Artery AT32 (firmware running: cutter 0.6.36, chassis 0.6.34, BMS 1.18.0) |
+| Log capture | `/userdata/log/mcu.dat` (ProtocolManager::SaveLog) |
+
+## 2. Wire framing
+
+```
+SOF 0xA5 | total_len | { sub_len | type_id | mod_id | payload[sub_len] }+ | checksum | EOF 0x5A
+```
+
+- `total_len` (u8): byte count from the **first `sub_len` through the last payload byte** (excludes SOF, itself, checksum, EOF).
+- `sub_len` (u8): payload length; struct sizes match it exactly. Payload ≤ 255 B, frame body ≤ 255 B.
+- `checksum` (u8): `(sum of all bytes from total_len through last payload byte) & 0xFF` — covers `total_len` + all sub-packet bytes, excludes the checksum itself.
+- **Multi-subpacket frames are normal**: the MCU batches `BATTERY+VERSION+MOTORS` and `BMS_VERSION+mod7` together once per second.
+- Parser contract (as in `mcu_frame_decode.py`): scan for SOF → find next EOF → unescape the inner bytes → accept only if `inner[0] == len(inner)-2` and `sum(inner[:-1]) & 0xFF == inner[-1]`; otherwise discard and resync at the next SOF. SDK receive path uses a 4096-byte ring buffer (`Protocol::ReceivePacket`).
+> build · ling-3.1-flash-free
+One cross-reference fix needed — the open-questions section is §13, not §10.
+[0m← [0mEdit ros2_stack/docs/mcu_protocol_spec.md
+Index: ros2_stack/docs/mcu_protocol_spec.md
+===================================================================
+--- ros2_stack/docs/mcu_protocol_spec.md
++++ ros2_stack/docs/mcu_protocol_spec.md
+@@ -4,9 +4,9 @@
+ `ros2_port_handoff/01_mcu_protocol/` (`protocol_definitions_recovered.h` regenerated from
+ DWARF in `libmower_sdk.a`, `mcu_frame_decode.py` validated on 172,850 live frames with 0
+ checksum errors, `mower_base_node_strings.txt`), plus the handoff README (live topic rates,
+ ROS 1 contract). All multi-byte fields are **little-endian**; all structs are packed.
+-Items marked `(?)` are unverified — see §10.
++Items marked `(?)` are unverified — see §11 and §13.
+ 
+ ## 1. Physical layer
+ 
+ | Item | Value |
+
+> build · ling-3.1-flash-free
+[0m← [0mEdit ros2_stack/docs/mcu_protocol_spec.md
+Index: ros2_stack/docs/mcu_protocol_spec.md
+===================================================================
+--- ros2_stack/docs/mcu_protocol_spec.md
++++ ros2_stack/docs/mcu_protocol_spec.md
+@@ -145,9 +145,9 @@
+ ## 12. ROS 2 driver node — implementation checklist
+ 
+ - [ ] Serial: open `/dev/serial_mower` 115200 8N1, no flow control, exclusive; params for port/baud; single writer (stop vendor `mower-base.service` first).
+ - [ ] Frame codec: build/parse per §2, escape/unescape per §3, checksum verify, resync on garbage, 4096 B ring buffer; log checksum-error rate.
+-- [ ] Tx: heartbeat timer (period TBD, §11), `SpeedData` from `/cmd_vel`, `CutterControl`, `ChargeControl`, `SensorInfoControl`, optional `ImuData` forward (decide after §10/§11 testing).
++- [ ] Tx: heartbeat timer (period TBD, §11), `SpeedData` from `/cmd_vel`, `CutterControl`, `ChargeControl`, `SensorInfoControl`, optional `ImuData` forward (decide after §11/§13 testing).
+ - [ ] Rx: dispatch `(type, mod)` → sensor/speed/battery/motors/version/bms/calib/log callbacks; handle multi-subpacket frames; decode mod 7 (uptime?) opportunistically.
+ - [ ] `/odom` + `/wheel_vel` @100 Hz from SPEED + IMU yaw; time-jump guard; `/reset_odom`.
+ - [ ] Sensor flags → `/mower_sensor_info` @33 Hz + `/bumper_cloud`; host-side estop/lift/stop/bumper cut-off in addition to MCU's.
+ - [ ] Battery → `/battery` BatteryState (scale voltage ×0.1 V; current units TBD); sanity checks (`"charging but percentage decrease"`).
+
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+> build · ling-3.1-flash-free
+Done. Wrote `ros2_stack/docs/mcu_protocol_spec.md` (165 lines), covering everything requested:
+
+- **§1–2 Wire framing** — `A5 | total_len | {sub_len type mod payload}+ | sum&0xFF | 5A`, multi-subpacket batching (BATTERY+VERSION+MOTORS, BMS_VERSION+mod7 at 1 Hz), exact parser/validation contract from `mcu_frame_decode.py` (`inner[0] == len(inner)-2`, checksum over `total_len..payload`), 4096 B ring buffer.
+- **§3 Escaping** — `F5 01/02/03` for `A5/5A/F5`, applied to everything between SOF and EOF both directions, including the checksum.
+- **§4–5 Types & module ids** — TypeID 0 (host→MCU) / 8 (MCU→host) / 255 (heartbeat), plus OTA-only ids 21/22/37/23/16 flagged as bootloader-path; full ModuleID table (3 charge, 4 speed, 5 battery, 9 imu, 10 sensor, 11 cutter, 12 version, 13 motors, 18 calib, 19 log, 24 bms_version, plus observed-but-undocumented mod 7 = +600/s uptime tick `?`).
+- **§6–7 Payload structs** — both directions with sizes, live-calibrated units (voltage 0.1 V), and `(?)` markers on current/MotorInfo units, cutter speed scale (1000 seen), height_motor garbage.
+- **§11 Heartbeat/failsafe** — known: 8-byte wall-clock payload, `DevHealthHandler::{updateHeartbeat,checkHeartbeat}`, MCU-side estop/lift/bumper cut-offs; unknown: period, timeout, failsafe behavior (must characterize on hardware).
+- **§9 /odom + /cmd_vel + PID** — cmd_vel → `SpeedData{linear m/s, angular rad/s}`; MCU takes linear/angular only; host-side wheel PID (`libpid_controller.so`); odometry host-computed from SpeedData + JY61P yaw at 100 Hz.
+- **§10 Topic list with rates** — measured 100/33/3.3/1.7/1 Hz rates, pub/sub/service inventory, and the 60 Hz→33 Hz sensor decimation.
+- **§12 Driver checklist** — 16 items from serial bring-up through safety validation.
+
+Two source discrepancies are preserved rather than papered over: MOTORS rate (README ~1 Hz vs header ~2 Hz, written as 1–2 Hz) and the MOTORS/BMS batching detail. Source dirs were untouched; only the one spec file was written.

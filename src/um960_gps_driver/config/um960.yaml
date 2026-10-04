@@ -1,0 +1,35 @@
+# UM960 GNSS/RTK driver (Airseekers Tron)
+# Receiver: Unicore UM960 on /dev/serial_rtk -> ttyS4 (UART4 @ 0xfeb70000)
+# The vendor config (base_rtk/ntrip_client/scripts/serial_rtk_config.py) runs the
+# port at 115200 for configuration and streams ASCII logs at 115200 as well.
+
+um960_node:
+  ros__parameters:
+    # --- serial ---
+    port: "/dev/serial_rtk"
+    baud: 115200          # 921600 if the receiver is reconfigured for binary-heavy logs
+    serial_timeout_s: 0.2 # per-read() select() timeout
+
+    # --- framing / timestamps ---
+    frame_id: "gps"
+    publish_rate_hz: 10.0  # vendor /fix rate was 10 Hz
+    fix_timeout_s: 2.0     # no fresh solution for this long => stop publishing /fix
+
+    # --- topics ---
+    fix_topic: "/fix"
+    vel_topic: "/vel"
+    heading_topic: "/heading"
+    fix_status_topic: "/fix_status"
+    nmea_topic: "/nmea"
+    publish_nmea: false    # set true to debug the raw stream or feed an NTRIP client
+
+    # --- robustness ---
+    reconnect_period_s: 2.0
+    sane_lat_limit: 90.0
+    sane_lon_limit: 180.0
+
+    # --- receiver configuration sent once on (re)connect ---
+    # Left empty by default: the receiver keeps whatever the vendor wrote with
+    # `MODE ROVER` / `CONFIG ...` / `BESTNAVA 5`. Fill in only if you are
+    # deliberately reconfiguring the module.
+    config_commands: []

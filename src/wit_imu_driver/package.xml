@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>wit_imu_driver</name>
+  <version>0.1.0</version>
+  <description>WIT-Motion JY61P IMU driver for ROS 2 Humble</description>
+  <maintainer email="michael@example.com">michael</maintainer>
+
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin_python</buildtool_depend>
+  <build_depend>rclpy</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>tf2_ros</build_depend>
+  <build_depend>python3-serial</build_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
+
+  <export>
+  </export>
+</package>
