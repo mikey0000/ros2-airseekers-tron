@@ -3,6 +3,10 @@
 # Host stays on 20.04/Noetic; only the container is Jammy/Humble.
 set -euo pipefail
 
+# Mower kernel lacks CONFIG_POSIX_MQUEUE: BuildKit RUN steps fail mounting mqueue,
+# so force the legacy docker builder (see docs/deployment.md).
+export DOCKER_BUILDKIT=0
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK_ROOT="$(dirname "$SCRIPT_DIR")"
 

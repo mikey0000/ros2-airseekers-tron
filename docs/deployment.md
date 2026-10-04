@@ -77,3 +77,7 @@ cd ros2_stack
 ./scripts/run_stack.sh                         # shell in container (sources overlay)
 ./scripts/run_stack.sh <pkg> <launch.py> [args...]   # ros2 launch <pkg> <launch.py>
 ```
+
+## Kernel caveats on the stock BSP
+- `CONFIG_POSIX_MQUEUE is not set`: BuildKit's RUN steps fail (`error mounting mqueue`). `scripts/build.sh`/`run_stack.sh` set `DOCKER_BUILDKIT=0`; use the same for manual `docker compose build`. `docker run` is unaffected (verified).
+- mqueue not needed at runtime for our Python drivers.

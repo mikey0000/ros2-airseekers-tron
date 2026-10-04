@@ -10,6 +10,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.humble
+      network: host
     image: mower:humble
     container_name: mower_humble
     platform: linux/arm64

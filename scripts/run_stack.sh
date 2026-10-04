@@ -5,6 +5,9 @@
 #   ./scripts/run_stack.sh <pkg> <launch.py> [launch args]  # ros2 launch <pkg> <launch.py> ...
 set -euo pipefail
 
+# See build.sh: mower kernel lacks CONFIG_POSIX_MQUEUE, keep BuildKit off.
+export DOCKER_BUILDKIT=0
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK_ROOT="$(dirname "$SCRIPT_DIR")"
 
