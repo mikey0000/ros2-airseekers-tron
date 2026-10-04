@@ -228,10 +228,7 @@ class WitImuNode(Node):
 
         # Reset acceleration/gyro if not fully tracked
         # (if we have partial data, publish what we have)
-        has_data = (
-            all(self.imu_msg.linear_acceleration[i] != 0.0 or True for i in range(3)) or
-            self.packet_count_by_type[0x51] > 0
-        )
+        has_data = self.packet_count_by_type[0x51] > 0
 
         # Publish IMU message
         self.imu_pub.publish(self.imu_msg)

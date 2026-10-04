@@ -741,6 +741,12 @@ class McuNode(Node):
             except AttributeError:
                 continue  # this interface package has no such field
             for field, value in raw.items():
+                if field == 'status':
+                    # MotorInfo.status is a MotorStatus sub-message on the bus
+                    status_msg = getattr(motor, 'status', None)
+                    if status_msg is not None and hasattr(status_msg, 'status'):
+                        status_msg.status = value
+                    continue
                 if not _set_if(motor, field, value):
                     alias = _MOTOR_FIELD_ALIASES.get(field)
                     if alias:

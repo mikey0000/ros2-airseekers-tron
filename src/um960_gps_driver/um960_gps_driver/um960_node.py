@@ -49,7 +49,7 @@ FIXED_POS_TYPES = frozenset({1, 10, 11, 12, 17, 19})
 STATUS_BY_QUALITY = {
     0: NavSatStatus.STATUS_NO_FIX,
     1: NavSatStatus.STATUS_FIX,
-    2: NavSatStatus.STATUS_DGPS_FIX,
+    2: NavSatStatus.STATUS_GBAS_FIX,
     4: NavSatStatus.STATUS_FIX,
     5: NavSatStatus.STATUS_FIX,
     6: NavSatStatus.STATUS_FIX,
