@@ -36,13 +36,71 @@ right_oa_camera ──(V4L2)──> det_ros + seg_ros
    the first real inference.
 3. **NPU core split** preserved: det core 0, seg core 1, core 2 spare.
 
+## Metoak data path (recovered from the mower runtime `metoak/` + `iqfiles/`)
+
+The user pulled the mower's Metoak SDK runtime directory (`metoak/`) and Rockchip ISP IQ
+tunings (`iqfiles/`) into the workspace. Everything below is now concrete, not inferred.
+
+### i2c-8 peripherals (the whole stereo module hangs off `feca0000.i2c`)
+
+| addr | device | role |
+|---|---|---|
+| `0x06` | simor | stereo-matching / depth ASIC |
+| `0x1b` | xc9080 | stereo image sensor |
+| `0x1e` | lis2mdl / IIS2MDC | magnetometer |
+| `0x48` | tmp112 | temperature |
+| `0x50` | 24c128 (AT24 EE) | **calibration EEPROM** |
+| `0x68` | icm40608 | 6-axis IMU (driven by `inv-icm42600` kmod) |
+
+### Frame formats (from `mo_init.sh` + sample file sizes)
+
+| stream | size | format |
+|---|---|---|
+| ISP stereo (combined) | **1280×480** | YUV422 (`YVYU`) — 2×640×480 side-by-side |
+| Simor raw | 640×360 | `SBGGR8` Bayer |
+| Simor RGB | 640×360 | RGB888 |
+| Simor YUV | 640×360 | NV12 |
+| Simor depth | 640×360 | uint16 |
+
+`MoImage::SpliteImage` (in the SDK) splits the 1280×480 into left/right. So VIO input is
+one combined frame split in software — **not** two independent 640×480 V4L2 devices.
+
+### Calibration
+
+Stored in the 24c128 EEPROM at `0x50`, dumped by `local_dump_epr` (source
+`local_dump_epr.cpp`) → `metoak_stereo_eeprom_calibration.data` (magic `-Metoak-[Archer]`).
+SDK EPR codec funcs recovered from symbols: `MoBuildEprxFile`, `MoConvertEpr2SaveInfo`,
+`MoConvertSave2EprInfo`, with structs `MoEprInfo`/`MoEprSaveInfo`/`MoStreamInfo`/
+`MoDepthFrmInfo` (DWARF layouts extractable — binaries are **not stripped**).
+
+### SDK + init
+
+- SDK version **2.7.4.1**; camera model **"Mp021" MIPI** (`MoMp021MipiCamera`/`MoMp021MipiV4l2Manager`).
+- Sensor init is a short i2c sequence via `mo_asicrw 8 xc` + `mo_asicrw 8 s 0051 …` (bus 8).
+- GPIOs: 103 = trigger enable, 42 = Simor reset, 113 = rear-camera USB power.
+
+### Sensors → iqfiles (resolved from `device-tree.dtb` + `iqfiles/`)
+
+The device tree names the physical sensors exactly:
+
+| camera | sensor | i2c | driver | iqfile |
+|---|---|---|---|---|
+| left OA | GalaxyCore **GC2093** | `/i2c@feab0000/gc2093b_1@37` | `gc2093.ko` | `gc2093_MY_default.json` (1920×1080) |
+| right OA | GalaxyCore **GC2093** | `/i2c@fead0000/gc2093b_1@37` | `gc2093.ko` | `gc2093_MY_default.json` (1920×1080) |
+| stereo front | Metoak **XC9080** | `/i2c@feca0000/XC9080@1b` | `mo_xc9080.ko` | none (custom sensor) |
+
+The other IQ files (`imx327`, `os04a10`, `imx415`, `imx464`, `gc8034`, …) are for other
+Rockchip modules not on this unit. For Ubuntu 22 the OA cameras need `gc2093.ko` +
+rkaiq (`camera_engine_rkaiq`) + `gc2093_MY_default.json` installed — see
+`scripts/setup_camera_iq.sh`.
+
 ## Blockers / next
 
 1. **OpenVINS build in the Humble image** — add the `open_vins` repo to the colcon
    workspace (symlink under `src/`), `rosdep install`, add `libceres-dev` if rosdep can't
    resolve it on arm64. Configs are ready in `14_vio_replacement/open_vins/`.
 2. **IMU rate** — `stereo_vio_bridge` emits IMU on the image tick (~10 Hz); VIO wants
-   ~200 Hz. Configure the ICM-42600 IIO hrtimer/buffer (`update_rate: 200` assumed).
+   ~200 Hz. Configure the ICM-40608 IIO hrtimer/buffer (`update_rate: 200` assumed).
 3. **Obstacle-avoidance consumer** — `det_ros`/`seg_ros` publish standard
    `vision_msgs`/Image surfaces; the node that turns these into drive commands is still
    to be written (the closed OA/fusion nodes used vendor-specific pointcloud topics).

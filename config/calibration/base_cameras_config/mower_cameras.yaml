@@ -1,0 +1,70 @@
+camera_info:
+    - camera_name: rear_camera
+      camera_type: base_cameras/V4L2Camera
+      camera_path: /dev/rear_camera
+      pixel_format: "mjpeg2mono8"
+      av_device_format: "YUV422P"
+      camera_info_url: "package://base_cameras/config/usb_cam_info.yaml"
+      resolution_width: 1920
+      resolution_height: 1080
+      width_offset: 0
+      height_offset: 0
+      fps: 30
+      exposure_mode: 3 # 光圈优先
+      exposure_value: -1
+      exposure_time: -1
+      auto_white_balance: 1
+      auto_gain: false
+      exposure_auto_priority: 1
+      focus_auto: -1
+      power_line_frequency: 1
+      pub_compress_freq: 3 # 以多少频率发布压缩图片给foxglove显示
+      bag_img_reduce: 4 # bag包记录，降低多少倍分辨率
+      power_gpio: "gpio113"
+
+    - camera_name: left_oa_camera
+      camera_type: base_cameras/V4L2Camera
+      camera_path: /dev/left_oa_camera
+      pixel_format: "uyvy"
+      av_device_format: "UYVY422"
+      camera_info_url: "package://base_cameras/config/left_oa_info.yaml"
+      resolution_width: 1920
+      resolution_height: 1080
+      width_offset: 0
+      height_offset: 0
+      fps: 15
+      exposure_mode: 0
+      exposure_value: -1
+      exposure_time: -1
+      auto_white_balance: -1
+      auto_gain: false
+      exposure_auto_priority: -1
+      focus_auto: -1
+      power_line_frequency: -1
+      pub_compress_freq: 1
+      bag_img_reduce: 4 # bag包记录，降低多少倍分辨率
+      power_gpio: ""
+
+    - camera_name: right_oa_camera
+      camera_type: base_cameras/V4L2Camera
+      camera_path: /dev/right_oa_camera
+      pixel_format: "uyvy"
+      av_device_format: "UYVY422"
+      camera_info_url: "package://base_cameras/config/right_oa_info.yaml"
+      resolution_width: 1920
+      resolution_height: 1080
+      width_offset: 0
+      height_offset: 0
+      fps: 15
+      exposure_mode: 0
+      exposure_value: -1
+      exposure_time: -1
+      auto_white_balance: -1
+      auto_gain: false
+      exposure_auto_priority: -1
+      focus_auto: -1
+      power_line_frequency: -1
+      pub_compress_freq: 1
+      bag_img_reduce: 4 # bag包记录，降低多少倍分辨率
+      power_gpio: ""
+

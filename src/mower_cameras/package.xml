@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_cameras</name>
+  <version>0.1.0</version>
+  <description>
+    Minimal V4L2 camera driver for the Airseekers Tron mower. Opens the front
+    Metoak stereo module (/dev/videoSimor -&gt; video11, side-by-side frames)
+    and the rear USB UVC camera (/dev/rear_camera -&gt; video62) via
+    cv2.VideoCapture and publishes /vio/left, /vio/right and /rear_camera as
+    sensor_msgs/Image (bgr8, or mono8 when mono:=true), plus optional JPEG
+    CompressedImage streams on &lt;topic&gt;/compressed. No cv_bridge: frames
+    cross the OpenCV/ROS boundary as raw bytes.
+  </description>
+
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

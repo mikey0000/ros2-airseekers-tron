@@ -1,0 +1,222 @@
+<?xml version="1.0"?>
+<!--
+  Airseekers Tron — robot description (ROS 2 Humble).
+
+  xacro port of the vendor URDF recovered in
+  ros2_port_handoff/08_calibration_identity/mower_base_urdf/mower.urdf
+  (default variant; the m2-11..m2-16 / prototype-* siblings are the
+  same model with per-chassis mounting offsets — adjust the properties
+  below to match a specific unit).
+
+  Loaded by the robot_state_publisher entry in launch/nav2.launch.py:
+      robot_description = xacro <stack_root>/config/urdf/mower.urdf.xacro
+
+  ======================================================================
+  Frame contract — names MUST match the drivers that publish on them
+  ======================================================================
+
+  base_link   mower_mcu_driver: /odom header.frame_id=odom_frame,
+              child_frame_id=base_frame (defaults odom / base_link);
+              its other frames are stamped frame_id (default
+              base_link). ekf_node is the sole publisher of
+              odom -> base_link. Origin: centre of the REAR DRIVE
+              AXLE, not the chassis centre (REP-105).
+
+  imu_link    wit_imu_driver: /imu header.frame_id=frame_id (default
+              imu_link); mower_mcu_driver's imu_frame default matches.
+              wit_imu_driver ALSO broadcasts base_link -> imu_link
+              itself (identity translation today). The imu_joint below
+              is therefore identity on purpose so the two publishers
+              agree; TODO(calib): when the true mounting offset is
+              measured, put it here AND remove the driver's broadcast
+              (the planned move per docs/handoff_gap_analysis.md
+              P0 #5 — needs a driver change, out of scope for this
+              asset port).
+
+  gps_link    um960_gps_driver stamps /fix, /vel, /heading,
+              /fix_status with header.frame_id=frame_id. The driver's
+              built-in default is "gps"; launch/bringup.launch.py
+              overrides frame_id to "gps_link" so the published frame
+              matches this URDF child link. navsat_transform_node
+              looks up base_link -> gps_link for the antenna lever
+              arm — without it, it silently assumes the receiver sits
+              at the robot origin.
+              TODO(calib): antenna mounting offset (vendor: z=+0.30).
+
+  bumper      Bumper strip geometry. mower_mcu_driver reports bumper
+              state in MowerSensorInfo (bumper / bumper_l / bumper_r
+              flags -> bumper_triggered); it publishes no TF for this
+              frame, so the frame exists purely as URDF geometry for
+              visualization and any costmap that wants it.
+
+  left_oa_camera / right_oa_camera / rear_camera
+              cameras.launch.py runs v4l2_camera_node with
+              camera_frame_id set to exactly these names.
+  stereo_camera
+              Front stereo (Metoak). No driver ported yet — planned
+              stereo_vio_bridge; frame reserved here.
+
+  cutter_link, left/right_wheel, left/right_omni_wheel
+              Geometry/visualization only. The MCU owns the cutter
+              and the wheel loops; this stack publishes no TF for
+              them.
+
+  All mounting offsets are the recovered vendor values, NOT measured
+  on hardware — every joint below carries TODO(calib) until verified.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="mower">
+
+  <!-- ============================ materials ============================ -->
+  <material name="blue"><color rgba="0 0 1 1"/></material>
+  <material name="black"><color rgba="0 0 0 1"/></material>
+  <material name="green"><color rgba="0 1 0 1"/></material>
+  <material name="red"><color rgba="1 0 0 1"/></material>
+  <material name="yellow"><color rgba="1 1 0 1"/></material>
+  <material name="pink"><color rgba="1 0.5 0.5 1"/></material>
+  <material name="purple"><color rgba="0.5 0 0.5 1"/></material>
+
+  <!-- ================== tuning knobs (TODO: calibrate) ================= -->
+  <!-- Chassis visual box (cosmetic; the base_link origin stays at the
+       rear drive axle centre regardless of where the box is drawn). -->
+  <xacro:property name="chassis_size" value="0.7 0.5 0.2"/>
+  <xacro:property name="chassis_xyz"  value="0.12 0 0"/>
+
+  <!-- Wheels (vendor values). Drive axle x, track half-width y, drop z. -->
+  <xacro:property name="wheel_radius"  value="0.1"/>
+  <xacro:property name="wheel_width"   value="0.05"/>
+  <xacro:property name="drive_axle_x"  value="-0.098"/>
+  <xacro:property name="drive_track_y" value="0.24"/>
+  <xacro:property name="wheel_drop_z"  value="-0.05"/>
+  <!-- Omni wheels (castor pair at the front), canted by omni_yaw about Z. -->
+  <xacro:property name="omni_x"        value="0.36728"/>
+  <xacro:property name="omni_track_y"  value="0.2"/>
+  <xacro:property name="omni_yaw"      value="0.610865"/>
+
+  <!-- Sensor mounts. TODO(calib): measure on hardware. imu_xyz is
+       0 0 0 deliberately — it matches wit_imu_driver's current
+       identity broadcast (see the frame contract above). -->
+  <xacro:property name="imu_xyz"    value="0 0 0"/>
+  <xacro:property name="gps_xyz"    value="0 0 0.3"/>
+  <xacro:property name="bumper_xyz" value="0.50718 0 0"/>
+  <xacro:property name="cutter_xyz" value="0.3 0 -0.05"/>
+
+  <!-- Camera mounts (vendor values). -->
+  <xacro:property name="stereo_cam_xyz" value="0.466 0 0.25"/>
+  <xacro:property name="oa_cam_xyz"     value="0.4 0 0.25"/>
+  <xacro:property name="rear_cam_xyz"   value="-0.201 0 0.25"/>
+
+  <xacro:property name="sensor_box" value="0.05 0.05 0.05"/>
+  <xacro:property name="bumper_box" value="0.02 0.5 0.1"/>
+
+  <!-- ============================ macros ============================ -->
+
+  <!-- Fixed box sensor on a fixed joint off base_link.
+       xyz/rpy/size are space-separated triples — always pass
+       them explicitly (xacro params cannot default to a
+       multi-token value). -->
+  <xacro:macro name="box_sensor"
+               params="name xyz rpy size material:=green">
+    <link name="${name}">
+      <visual>
+        <geometry><box size="${size}"/></geometry>
+        <material name="${material}"/>
+      </visual>
+    </link>
+    <joint name="${name}_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="${name}"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Drive wheel: continuous joint about Z, cylinder axis rotated
+       to lie along Y (rpy = +/- pi/2 about X). -->
+  <xacro:macro name="drive_wheel" params="side y_sign">
+    <link name="${side}_wheel">
+      <visual>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+    </link>
+    <joint name="${side}_wheel_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${side}_wheel"/>
+      <origin xyz="${drive_axle_x} ${y_sign * drive_track_y} ${wheel_drop_z}"
+              rpy="${-y_sign * 1.5708} 0 0"/>
+      <axis xyz="0 0 1"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- Omni wheel: fixed joint, canted by +/- omni_yaw about Z. -->
+  <xacro:macro name="omni_wheel" params="side y_sign">
+    <link name="${side}_omni_wheel">
+      <visual>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+    </link>
+    <joint name="${side}_omni_wheel_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="${side}_omni_wheel"/>
+      <origin xyz="${omni_x} ${y_sign * omni_track_y} ${wheel_drop_z}"
+              rpy="${-y_sign * 1.57} 0 ${-y_sign * omni_yaw}"/>
+    </joint>
+  </xacro:macro>
+
+  <!-- ============================ chassis ============================ -->
+  <link name="base_link">
+    <visual>
+      <geometry><box size="${chassis_size}"/></geometry>
+      <origin xyz="${chassis_xyz}" rpy="0 0 0"/>
+      <material name="blue"/>
+    </visual>
+  </link>
+
+  <!-- Cutter (MCU-owned; geometry only). -->
+  <link name="cutter_link">
+    <visual>
+      <geometry>
+        <cylinder radius="0.1" length="0.05"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+  </link>
+  <joint name="base_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="cutter_link"/>
+    <origin xyz="${cutter_xyz}" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:drive_wheel side="left"  y_sign="-1"/>
+  <xacro:drive_wheel side="right" y_sign="1"/>
+  <xacro:omni_wheel side="left"  y_sign="-1"/>
+  <xacro:omni_wheel side="right" y_sign="1"/>
+
+  <!-- ============================ sensors ============================ -->
+  <!-- IMU: identity mount matches wit_imu_driver's base_link->imu_link
+       broadcast (see frame contract). TODO(calib): real offset here. -->
+  <xacro:box_sensor name="imu_link" xyz="${imu_xyz}" rpy="0 0 0" size="${sensor_box}" material="green"/>
+  <!-- GNSS antenna (UM960). TODO(calib): real lever arm here. -->
+  <xacro:box_sensor name="gps_link" xyz="${gps_xyz}" rpy="0 0 0" size="${sensor_box}" material="red"/>
+  <!-- Bumper strip. -->
+  <xacro:box_sensor name="bumper" xyz="${bumper_xyz}" rpy="0 0 0"
+                    size="${bumper_box}" material="pink"/>
+
+  <!-- ============================ cameras ============================ -->
+  <!-- Front stereo (Metoak; driver planned). -->
+  <xacro:box_sensor name="stereo_camera" xyz="${stereo_cam_xyz}"
+                    rpy="1.64061 0 1.57079" size="${sensor_box}" material="yellow"/>
+  <!-- OA cameras — frames match cameras.launch.py camera_frame_id. -->
+  <xacro:box_sensor name="left_oa_camera" xyz="${oa_cam_xyz}"
+                    rpy="0 1.57079 1.57079" size="${sensor_box}" material="purple"/>
+  <xacro:box_sensor name="right_oa_camera" xyz="${oa_cam_xyz}"
+                    rpy="0 1.57079 -1.57079" size="${sensor_box}" material="purple"/>
+  <!-- Rear camera. -->
+  <xacro:box_sensor name="rear_camera" xyz="${rear_cam_xyz}"
+                    rpy="-1.57079 0 1.57079" size="${sensor_box}" material="purple"/>
+
+</robot>

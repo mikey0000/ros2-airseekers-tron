@@ -1,24 +1,30 @@
 """``stereo_vio_bridge`` — feed the VSLAM/VIO estimator from the Metoak **stereo front**
-camera + its embedded ICM-42600 IMU.
+camera + its embedded ICM-40608 IMU.
 
 The Metoak module is a self-contained stereo pair (XC9080 sensors + on-board "Simor"
-depth ASIC) plus a TDK ICM-42600 IMU. The SDK is only kept for frame capture (or skipped
-entirely — see README); this node publishes the estimator inputs on the topics the VINS
-config already declares::
+depth ASIC) plus a TDK ICM-40608 IMU (the chip at i2c-8/0x68, driven by the
+``inv-icm42600`` kernel module — see ``09_platform/i2c8-devices.txt``).
+
+The stereo front is delivered by the RK ISP as **one combined 1280x480 YUV422 stream**
+(two 640x480 images side-by-side), *not* two independent V4L2 devices. The SDK's
+``MoImage::SpliteImage`` splits it; we do the same here, then stereo-rectify with the
+recovered calibration. Publishes the estimator inputs on the topics the OpenVINS config
+already declares::
 
     /vio/imu                sensor_msgs/Imu
     /vio/left/image_raw     sensor_msgs/Image   (+ /vio/left/camera_info)
     /vio/right/image_raw    sensor_msgs/Image   (+ /vio/right/camera_info)
 
-Two capture paths are supported and selected by parameter:
+Capture is selected by ``stereo_layout``:
 
-* ``source_mode: v4l2`` (default) — grab the two sensors straight from V4L2 and
-  stereo-rectify in software using the recovered ``cam0/cam1/stereo_params`` calibration.
-* ``source_mode: sdk``  — consume already-rectified frames + IMU from the Metoak SDK
-  (NOT implemented here; needs a libMoGeneralSDK shim — see README).
+* ``combined`` (default) — one device (``stereo_device``) at ``combined_width`` x
+  ``combined_height``, split left/right in software.
+* ``separate`` — the old two-device mode (``left_device`` / ``right_device``).
 
-Whether the raw V4L2 frames need rectifying depends on what the RK ISP / sensor expose
-(rectified vs raw); ``rectify:=true/false`` selects it. Confirm on hardware.
+Prerequisite (combined): ``mo_init.sh`` must have run first (``mo_xc9080.ko`` /
+``mo_simor.ko`` / ``video_rkisp.ko`` loaded + the i2c init sequence), so the ISP exposes
+the 1280x480 stream as a V4L2 node. ``source_mode: sdk`` (consume the SDK's already
+rectified frames) is documented but not implemented.
 """
 import math
 import os
@@ -41,15 +47,15 @@ from stereo_vio_bridge.camera_info_builder import (
 )
 
 
-def _to_img(time_stamp, frame_id, bgr):
-    """Convert an OpenCV BGR frame to a ROS ``Image`` (bgr8)."""
+def _to_img(time_stamp, frame_id, img):
+    """Convert an OpenCV image to a ROS ``Image`` (mono8 or bgr8, auto-detected)."""
     msg = Image()
     msg.header.stamp = time_stamp
     msg.header.frame_id = frame_id
-    msg.height, msg.width = bgr.shape[0], bgr.shape[1]
-    msg.encoding = 'bgr8'
-    msg.step = int(bgr.strides[0])
-    msg.data = bgr.tobytes()
+    msg.height, msg.width = img.shape[0], img.shape[1]
+    msg.encoding = 'bgr8' if (img.ndim == 3 and img.shape[2] == 3) else 'mono8'
+    msg.step = int(img.strides[0])
+    msg.data = img.tobytes()
     return msg
 
 
@@ -69,11 +75,11 @@ def _camera_info(time_stamp, frame_id, d):
 
 
 class IioImu:
-    """Read a TDK ICM-42600 (or any accel+gyro) IMU via the Linux IIO subsystem.
+    """Read a TDK ICM-40608 (or any accel+gyro) IMU via the Linux IIO subsystem.
 
-    The vendor ships ``inv-icm42600.ko`` + ``inv-icm42600-i2c.ko``, so the IMU appears as
-    an ``iio:deviceN`` with ``in_accel_*`` and ``in_anglvel_*`` channels. raw*scale gives
-    SI (m/s^2, rad/s).
+    The vendor ships ``inv-icm42600.ko`` + ``inv-icm42600-i2c.ko`` (the InvenSense driver
+    also covers ICM-40608), so the IMU appears as an ``iio:deviceN`` with ``in_accel_*``
+    and ``in_anglvel_*`` channels. raw*scale gives SI (m/s^2, rad/s).
     """
 
     def __init__(self, device=None):
@@ -130,8 +136,14 @@ class StereoVioBridge(Node):
         super().__init__('stereo_vio_bridge')
 
         self.declare_parameter('source_mode', 'v4l2')  # v4l2 | sdk
+        self.declare_parameter('stereo_layout', 'combined')  # combined | separate
+        self.declare_parameter('stereo_device', '/dev/video11')
         self.declare_parameter('left_device', '/dev/video0')
         self.declare_parameter('right_device', '/dev/video1')
+        self.declare_parameter('combined_width', 1280)
+        self.declare_parameter('combined_height', 480)
+        self.declare_parameter('swap_lr', False)  # swap left/right halves if ISP order differs
+        self.declare_parameter('publish_mono', True)  # mono8 (VIO wants intensity)
         self.declare_parameter('rectify', True)
         self.declare_parameter('rate', 10.0)
         self.declare_parameter('width', 640)
@@ -141,9 +153,12 @@ class StereoVioBridge(Node):
         self.declare_parameter('camera_frame', 'vio_camera')
 
         self.source_mode = self.get_parameter('source_mode').value
+        self.layout = self.get_parameter('stereo_layout').value
         self.rate = self.get_parameter('rate').value
         self.camera_frame = self.get_parameter('camera_frame').value
         self.rectify = self.get_parameter('rectify').value
+        self.swap_lr = self.get_parameter('swap_lr').value
+        self.publish_mono = self.get_parameter('publish_mono').value
         self.calib_dir = self.get_parameter('calib_dir').value
 
         # ---- publishers ----
@@ -162,15 +177,15 @@ class StereoVioBridge(Node):
             self._build_rectification()
 
         # ---- sources ----
-        self.capL = self.capR = None
+        self.capS = self.capL = self.capR = None
         if self.source_mode == 'v4l2' and cv2 is not None:
             self._open_cameras()
         self.imu_src = IioImu(self.get_parameter('imu_device').value or None)
 
         self.timer = self.create_timer(1.0 / self.rate, self._on_tick)
         self.get_logger().info(
-            'stereo_vio_bridge up (%s mode, rectify=%s, %g Hz)',
-            self.source_mode, self.rectify, self.rate)
+            'stereo_vio_bridge up (%s mode, layout=%s, rectify=%s, mono=%s, %g Hz)',
+            self.source_mode, self.layout, self.rectify, self.publish_mono, self.rate)
 
     # ------------------------------------------------------------------ calib
 
@@ -186,6 +201,8 @@ class StereoVioBridge(Node):
 
     def _build_rectification(self):
         c = self.calib
+        if c is None:
+            return
         cam0, cam1 = c['cam0'], c['cam1']
         size = (cam0['width'], cam0['height'])
         k0, d0 = intrinsics(cam0), distortion(cam0)
@@ -201,30 +218,81 @@ class StereoVioBridge(Node):
     # ------------------------------------------------------------------ capture
 
     def _open_cameras(self):
-        w = self.get_parameter('width').value
-        h = self.get_parameter('height').value
-        for attr, dev in (('capL', self.get_parameter('left_device').value),
-                          ('capR', self.get_parameter('right_device').value)):
+        if self.layout == 'combined':
+            dev = self.get_parameter('stereo_device').value
+            w = self.get_parameter('combined_width').value
+            h = self.get_parameter('combined_height').value
             cap = cv2.VideoCapture(dev)
             if cap.isOpened():
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
             else:
-                self.get_logger().error('could not open %s', dev)
-            setattr(self, attr, cap)
+                self.get_logger().error('could not open combined device %s', dev)
+            self.capS = cap
+        else:  # separate — two per-eye devices
+            w = self.get_parameter('width').value
+            h = self.get_parameter('height').value
+            for attr, dev in (('capL', self.get_parameter('left_device').value),
+                              ('capR', self.get_parameter('right_device').value)):
+                cap = cv2.VideoCapture(dev)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                else:
+                    self.get_logger().error('could not open %s', dev)
+                setattr(self, attr, cap)
 
-    def _grab(self):
-        """Pull one left/right frame pair. Returns ``(left, right)`` BGR or ``None``."""
+    @staticmethod
+    def _as_gray(frame):
+        """BGR -> mono8 if requested and the frame is colour."""
+        if frame.ndim == 3 and frame.shape[2] == 3:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        return frame
+
+    def _grab_combined(self):
+        if not (self.capS and self.capS.isOpened()):
+            return None
+        ok, frame = self.capS.read()
+        if not ok:
+            return None
+        w = frame.shape[1]
+        if w < 2:
+            return None
+        half = w // 2
+        left, right = frame[:, :half], frame[:, half:]
+        if self.swap_lr:
+            left, right = right, left
+        if self.publish_mono:
+            left = self._as_gray(left)
+            right = self._as_gray(right)
+        return self._rectify_pair(left, right)
+
+    def _grab_separate(self):
         if not (self.capL and self.capR and self.capL.isOpened() and self.capR.isOpened()):
             return None
         okL, frameL = self.capL.read()
         okR, frameR = self.capR.read()
         if not (okL and okR):
             return None
+        if self.swap_lr:
+            frameL, frameR = frameR, frameL
+        if self.publish_mono:
+            frameL = self._as_gray(frameL)
+            frameR = self._as_gray(frameR)
+        return self._rectify_pair(frameL, frameR)
+
+    def _rectify_pair(self, left, right):
+        """Software stereo-rectify if requested. Returns ``(left, right)``."""
         if self._rect_maps is not None:
-            frameL = cv2.remap(frameL, *self._rect_maps[0], cv2.INTER_LINEAR)
-            frameR = cv2.remap(frameR, *self._rect_maps[1], cv2.INTER_LINEAR)
-        return frameL, frameR
+            left = cv2.remap(left, *self._rect_maps[0], cv2.INTER_LINEAR)
+            right = cv2.remap(right, *self._rect_maps[1], cv2.INTER_LINEAR)
+        return left, right
+
+    def _grab(self):
+        """Pull one left/right frame pair (mono8 or bgr8), or ``None``."""
+        if self.layout == 'combined':
+            return self._grab_combined()
+        return self._grab_separate()
 
     # ------------------------------------------------------------------ publish
 

@@ -44,6 +44,7 @@ class WitImuNode(Node):
         self.declare_parameter('port', '/dev/serial_imu')
         self.declare_parameter('rate', 100.0)
         self.declare_parameter('frame_id', 'imu_link')
+        self.declare_parameter('publish_tf', False)  # robot_state_publisher owns base_link->imu_link
         self.declare_parameter('calibration_mode', False)
 
         self.port = self.get_parameter('port').get_parameter_value().string_value
@@ -260,8 +261,9 @@ class WitImuNode(Node):
         # Publish temperature
         self.temp_pub.publish(self.temp_msg)
 
-        # Publish transform
-        self.publish_transform()
+        # Publish transform only if requested (robot_state_publisher owns this TF today)
+        if self.get_parameter('publish_tf').get_parameter_value().bool_value:
+            self.publish_transform()
 
     def publish_transform(self):
         try:

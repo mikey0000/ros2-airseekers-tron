@@ -1,0 +1,18 @@
+%YAML:1.0
+---
+sn: IC17SZ01011
+model_type: PINHOLE_FULL
+camera_name: camera1
+image_width: 640
+image_height: 480
+distortion_parameters:
+   k1: -4.0901488065719604e-01
+   k2: 1.9976885616779327e-01
+   k3: -5.2232462912797928e-02
+   p1: 4.2883180867647752e-05
+   p2: 1.0727373592089862e-04
+projection_parameters:
+   fx: 4.4867199707031250e+02
+   fy: 4.4868869018554688e+02
+   cx: 3.1804757690429688e+02
+   cy: 2.3834710693359375e+02

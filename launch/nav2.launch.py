@@ -23,6 +23,8 @@ Localization (this file's core):
     ros-humble-nav2-velocity-smoother velocity limits, collision_monitor chain
     ros-humble-nav2-map-server       static layer source
     ros-humble-nav2-lifecycle-manager
+    ros-humble-robot-state-publisher URDF frames -> /tf (entry 0 below)
+    ros-humble-xacro                 robot_description preprocessor
     ros-humble-tf2-ros, ros-humble-tf2-geometry-msgs, ros-humble-geometry2_msgs
 
 NOT installed, deliberately: ``ros-humble-slam-toolbox``. This is a slam-less stack.
@@ -35,6 +37,11 @@ line for this file is:
 
 That belongs in the image build, not on the device: the host is Ubuntu 20.04/Noetic and
 cannot apt-install Humble (docs/deployment.md).
+
+``ros-humble-robot-state-publisher`` and ``ros-humble-xacro`` (entry 0 below)
+are likewise image dependencies, not yet in ``docker/Dockerfile.humble`` —
+``ros-humble-nav2-bringup`` may pull robot_state_publisher in transitively,
+but install both explicitly to be sure.
 
 ======================================================================================
 Frame tree (REP-105) and who owns each transform
@@ -51,25 +58,38 @@ Frame tree (REP-105) and who owns each transform
     odom                                                  <- ekf_node (publish_tf: true)
       |        The ONLY transform this stack currently owns.
       |
-    base_link                                             <- URDF (lands with mower_bringup)
+    base_link                                             <- URDF: config/urdf/mower.urdf.xacro
       |        Centre of the REAR DRIVE AXLE, not the chassis centre
       |        (MowgliNext default chassis_center_x = 0.18 m).
+      |        Published by the robot_state_publisher entry below
+      |        (mower_mcu_driver's /odom carries it as child_frame_id).
       |
-      +-- imu_link   WIT JY61P. wit_imu_driver broadcasts base_link -> imu_link
-      |             itself; translation is identity for now. TODO(calib): set the
-      |             real mounting offset.
-      +-- gps        UM960 antenna. um960_gps_driver stamps /fix with frame_id
-      |             "gps" and publishes NO transform, so this frame must exist in
-      |             the URDF or navsat_transform_node logs "Unable to obtain
-      |             base_link -> gps transform" and assumes the receiver sits at
-      |             the robot origin — a silent lever-arm error.
-      +-- blade_link cutter, if a costmap ever needs it.
+      +-- imu_link   WIT JY61P. wit_imu_driver broadcasts base_link ->
+      |             imu_link itself (identity today); the URDF's
+      |             imu_joint is identity on purpose so the two
+      |             publishers agree. TODO(calib): set the real
+      |             mounting offset in the xacro AND drop the driver
+      |             broadcast (handoff_gap_analysis P0 #5).
+      +-- gps_link   UM960 antenna. um960_gps_driver stamps /fix with
+      |             frame_id "gps_link" (launch/bringup.launch.py
+      |             overrides the driver's built-in "gps" default so
+      |             the published frame matches this URDF child link)
+      |             and publishes NO transform, so the frame must
+      |             exist in the URDF or navsat_transform_node logs
+      |             "Unable to obtain base_link -> gps_link transform"
+      |             and assumes the receiver sits at the robot origin
+      |             — a silent lever-arm error.
+      +-- bumper     bumper strip; mower_mcu_driver reports state in
+      |             MowerSensorInfo (no TF from the driver).
+      +-- cutter_link cutter, if a costmap ever needs it.
       +-- (no lidar_link: the Tron has no 2D LiDAR. Obstacle input is Metoak
           stereo depth — planned metoak_stereo_driver, see
           docs/localization_control_plan.md.)
 
-Sole TF ownership (MowgliNext Invariant 2, kept here): the drivers publish no TF except the
-IMU's static mount, and ``ekf_node`` is the only publisher of ``odom -> base_link``.
+Sole TF ownership (MowgliNext Invariant 2, kept here): the drivers publish no TF
+except the IMU's static mount, ``robot_state_publisher`` owns the URDF's
+fixed-joint frames, and ``ekf_node`` is the only publisher of
+``odom -> base_link``.
 
 ======================================================================================
 BLOCKER: navsat_transform_node needs an IMU orientation that we do not publish
@@ -109,9 +129,11 @@ the message itself, never a filter that already consumed the fix.
 the gated stream.
 """
 
+import os
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -136,7 +158,19 @@ def generate_launch_description() -> LaunchDescription:
     ekf_config = PathJoinSubstitution([share, "config", "ekf.yaml"])
     navsat_config = PathJoinSubstitution([share, "config", "navsat.yaml"])
 
+    # The URDF is a stack asset under config/, not a colcon package, so
+    # resolve it relative to this file instead of FindPackageShare.
+    stack_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    default_urdf = os.path.join(
+        stack_root, "config", "urdf", "mower.urdf.xacro")
+
     arguments = [
+        # robot_description: xacro source for robot_state_publisher (entry 0
+        # below). Defines the frame tree the drivers publish on — base_link,
+        # imu_link, gps_link, bumper, ... — see the xacro header for the
+        # per-frame contract.
+        DeclareLaunchArgument("urdf_file", default_value=default_urdf,
+                              description="xacro robot description."),
         # Frames. These match config/ekf.yaml; override only when the URDF for a specific
         # Tron chassis variant (m2-11..m2-16) says otherwise.
         DeclareLaunchArgument("map_frame", default_value="map",
@@ -167,6 +201,20 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         arguments
         + [
+            # ------------------------------------------------------------------
+            # 0. robot_state_publisher: parses the URDF/xacro above and owns all
+            #    static links (base_link, imu_link, gps_link, bumpers). Drivers
+            #    publish dynamic /odom->base_link and /imu.
+            # ------------------------------------------------------------------
+            Node(
+                package="robot_state_publisher",
+                executable="robot_state_publisher",
+                name="robot_state_publisher",
+                parameters=[{
+                    "robot_description": Command(["xacro ", LaunchConfiguration("urdf_file")]),
+                }],
+            ),
+
             # ------------------------------------------------------------------
             # 1. GNSS quality gate. Start first: navsat_transform_node gets nothing
             #    on gps/fix (remapped to /fix_gated) until this is up.

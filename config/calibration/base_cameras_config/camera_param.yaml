@@ -1,0 +1,81 @@
+camera_info:
+    - camera_name: uvc_camera
+      camera_type: base_cameras/UvcCamera
+      camera_path: /dev/ttyUSB0
+      camera_matrix: [839.92, 0.0, 340.78, 
+                      0.0, 837.67, 261.76, 
+                      0.0, 0.0, 1.0]
+      camera_distortion: [0.081,
+                          0.04,
+                          0.002,
+                          -0.0007,
+                          0.0]
+      camera_projection: [704.737228, 0.000000, 975.884033, 0.000000,
+                           0.000000, 738.205271, 568.388849, 0.000000,
+                           0.000000, 0.00000, 1.0000000, 0.000000]
+      resolution_width: 1920
+      resolution_height: 1080
+      width_offset: 0
+      height_offset: 0
+      fps: 30
+      auto_exposure: true
+      exposure_value: 70
+      exposure_time: 10
+      auto_white_balance: true
+      auto_gain: false
+      contrast: 50
+      buffer_count: 4
+
+
+    - camera_name: rear_camera
+      camera_type: base_cameras/V4L2Camera
+      camera_path: /dev/video20
+      camera_matrix: [839.92, 0.0,    340.78,
+                      0.0,    837.67, 261.76,
+                      0.0,    0.0,      1.0]
+      camera_distortion: [0.08,
+                          0.04,
+                          0.002,
+                          -0.0007,
+                          0.0]
+      camera_projection: [704.737228, 0.000000, 975.884033, 0.000000,
+                           0.000000, 738.205271, 568.388849, 0.000000,
+                           0.000000, 0.00000, 1.0000000, 0.000000]
+      resolution_width: 1920
+      resolution_height: 1080
+      width_offset: 0
+      height_offset: 0
+      fps: 30
+      auto_exposure: true
+      exposure_value: 70
+      exposure_time: 10
+      auto_white_balance: true
+      auto_gain: false
+      contrast: 50
+      buffer_count: 4
+
+
+    - camera_name: camera_short
+      camera_type: base_cameras/FakeCamera
+      camera_path: /dev/ttyUSB1
+      camera_matrix: [839.92, 0.0,    340.78,
+                      0.0,    837.67, 261.76,
+                      0.0,    0.0,      1.0]
+      camera_distortion: [0.08,
+                          0.04,
+                          0.002,
+                          -0.0007,
+                          0.0]
+      camera_projection: [704.737228, 0.000000, 975.884033, 0.000000,
+                           0.000000, 738.205271, 568.388849, 0.000000,
+                           0.000000, 0.00000, 1.0000000, 0.000000]
+      resolution_width: 640
+      resolution_height: 480
+      width_offset: 0
+      height_offset: 0
+      fps: 100
+      auto_exposure: true
+      exposure_value: 70
+      exposure_time: 10
+      auto_white_balance: true
+      auto_gain: false

@@ -7,6 +7,10 @@ rear camera is recording/telemetry only. Devices are udev-symlinked to
 
 Camera calibration recovered in ``ros2_port_handoff/08_calibration_identity/``; the
 ``camera_info`` yamls here are the same ``camera_info_manager`` format.
+
+The OA sensors are GalaxyCore GC2093 (see ``docs/perception_vio.md``). Before launching,
+run ``scripts/setup_camera_iq.sh`` to install ``gc2093_MY_default.json`` so rkaiq produces
+correct colour/exposure.
 """
 from launch import LaunchDescription
 from launch_ros.actions import Node
