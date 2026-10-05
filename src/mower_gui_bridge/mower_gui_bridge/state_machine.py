@@ -243,6 +243,7 @@ CAP_SATELLITES_VISIBLE = 256
 CAP_DIFFERENTIAL_CORRECTIONS = 1024
 CAP_CORRECTIONS_ACTIVE = 2048
 CAP_CORRECTION_AGE = 4096
+CAP_CORRECTION_STREAM = 8388608
 CAP_CORRECTION_TRANSPORT = 33554432
 CAP_CORRECTION_FLOW = 67108864
 
@@ -253,6 +254,13 @@ CORRECTION_TRANSPORT_STATUS_CONNECTED = 3
 CORRECTION_TRANSPORT_STATUS_STREAMING = 4
 CORRECTION_TRANSPORT_STATUS_RECONNECTING = 5
 CORRECTION_TRANSPORT_STATUS_FAILED = 6
+
+CORRECTION_STREAM_STATUS_UNKNOWN = 0
+CORRECTION_STREAM_STATUS_IDLE = 1
+CORRECTION_STREAM_STATUS_WAITING = 2
+CORRECTION_STREAM_STATUS_ACTIVE = 3
+CORRECTION_STREAM_STATUS_UNAVAILABLE = 4
+CORRECTION_STREAM_STATUS_ERROR = 5
 
 CORRECTION_FLOW_STATUS_UNKNOWN = 0
 CORRECTION_FLOW_STATUS_IDLE = 1
@@ -280,6 +288,16 @@ _FLOW_BY_TOKEN = {
     'active': CORRECTION_FLOW_STATUS_ACTIVE,
     'stale': CORRECTION_FLOW_STATUS_STALE,
     'invalid': CORRECTION_FLOW_STATUS_INVALID,
+}
+# Legacy ``correction_stream_status`` (the only correction field the stock GUI reads,
+# normally a Universal-GNSS diagnostics summary) mirrored from the driver's corr_flow.
+_STREAM_BY_TOKEN = {
+    'idle': CORRECTION_STREAM_STATUS_IDLE,
+    'waiting': CORRECTION_STREAM_STATUS_WAITING,
+    'held': CORRECTION_STREAM_STATUS_WAITING,
+    'active': CORRECTION_STREAM_STATUS_ACTIVE,
+    'stale': CORRECTION_STREAM_STATUS_UNAVAILABLE,
+    'invalid': CORRECTION_STREAM_STATUS_ERROR,
 }
 
 # sensor_msgs/NavSatStatus / NavSatFix constants
@@ -453,7 +471,7 @@ def derive_gnss_status(navsat_status, covariance=None, covariance_type=COVARIANC
 
     _derive_corrections(out, parsed)
     cap |= CAP_CORRECTIONS_ACTIVE | CAP_CORRECTION_AGE | CAP_CORRECTION_TRANSPORT \
-        | CAP_CORRECTION_FLOW
+        | CAP_CORRECTION_FLOW | CAP_CORRECTION_STREAM
     val |= out.pop('_corr_value_flags')
 
     if covariance is not None and covariance_type != COVARIANCE_TYPE_UNKNOWN \
@@ -481,6 +499,9 @@ def _derive_corrections(out, parsed):
     * ``correction_flow_status``: the driver's ``corr_flow`` (NTRIP: age of the last
       CRC-valid RTCM frame; LoRa: the receiver's differential age).
     * ``corrections_active``: flow ACTIVE.
+    * ``correction_stream_status``: legacy summary mirrored from ``corr_flow``
+      (idle->IDLE, waiting/held->WAITING, active->ACTIVE, stale->UNAVAILABLE,
+      invalid->ERROR) so stock GUIs, which read only this field, show the flow.
     * ``correction_age_s``: the receiver's own ``diff_age`` when it reports one (what
       the solution actually uses), else the driver's ``corr_age``.
     Adds the private key ``_corr_value_flags`` (popped by the caller).
@@ -493,6 +514,7 @@ def _derive_corrections(out, parsed):
     out['correction_transport_status'] = CORRECTION_TRANSPORT_STATUS_UNKNOWN
     out['correction_response_accepted'] = False
     out['correction_flow_status'] = CORRECTION_FLOW_STATUS_UNKNOWN
+    out['correction_stream_status'] = CORRECTION_STREAM_STATUS_UNKNOWN
     out['corrections_active'] = False
     out['correction_age_s'] = 0.0
 
@@ -506,7 +528,8 @@ def _derive_corrections(out, parsed):
 
     if flow_token in _FLOW_BY_TOKEN:
         out['correction_flow_status'] = _FLOW_BY_TOKEN[flow_token]
-        val |= CAP_CORRECTION_FLOW
+        out['correction_stream_status'] = _STREAM_BY_TOKEN[flow_token]
+        val |= CAP_CORRECTION_FLOW | CAP_CORRECTION_STREAM
     if src is not None:
         out['corrections_active'] = flow_token == 'active'
         val |= CAP_CORRECTIONS_ACTIVE

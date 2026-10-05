@@ -170,8 +170,15 @@ class BaseKeysNode(Node):
         self._last_open_try = -1e9
         self._last_fail_reason = None
         self.reopen_period = float(g('reopen_period_s'))
-        self.create_timer(0.02, self._spin_once)
         self._try_open()
+        # Key handling runs on a plain thread that blocks on the reader queue instead of a
+        # 50 Hz rclpy timer (50 executor wakes/s cost ~10 % of a core with no key pressed).
+        # It still ticks every 20 ms while a key is held (power long-press) and retries a
+        # missing device every reopen_period_s; events are handled as soon as they arrive.
+        self._stop = threading.Event()
+        self._loop_th = threading.Thread(target=self._key_loop, name='base_keys_loop',
+                                         daemon=True)
+        self._loop_th.start()
 
     # ---------------------------------------------------------------- device
     def _resolve_device(self):
@@ -215,13 +222,38 @@ class BaseKeysNode(Node):
             self._last_fail_reason = reason
 
     # ---------------------------------------------------------------- loop
-    def _spin_once(self):
+    def _key_loop(self):
+        ctx = self.context
+        while not self._stop.is_set() and ctx.ok():
+            if self.sm.held_bits:
+                timeout = 0.02                       # long-press tick while a key is held
+            elif self.reader is None:
+                timeout = max(0.0, self.reopen_period
+                              - (time.monotonic() - self._last_open_try))
+            else:
+                timeout = 0.5                        # only to notice shutdown
+            try:
+                first = self.q.get(timeout=timeout)
+            except queue.Empty:
+                first = None
+            if self._stop.is_set() or not ctx.ok():
+                break
+            try:
+                self._spin_once(first)
+            except Exception as exc:  # noqa: BLE001 - keep the buttons alive
+                self.get_logger().error('key handling failed: %r' % (exc,),
+                                        throttle_duration_sec=5.0)
+
+    def _spin_once(self, first=None):
         now = time.monotonic()
         while True:
-            try:
-                item = self.q.get_nowait()
-            except queue.Empty:
-                break
+            if first is not None:
+                item, first = first, None
+            else:
+                try:
+                    item = self.q.get_nowait()
+                except queue.Empty:
+                    break
             if item[0] == 'closed':
                 self.get_logger().warn('button device lost: %s; will reopen' % item[1])
                 if self.reader is not None:
@@ -309,6 +341,9 @@ class BaseKeysNode(Node):
                 log.error('shutdown hook write failed: %s' % e)
 
     def destroy_node(self):
+        self._stop.set()
+        if self._loop_th is not threading.current_thread():
+            self._loop_th.join(2.0)
         if self.reader is not None:
             self.reader.close()
         super().destroy_node()

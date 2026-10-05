@@ -9,7 +9,7 @@ All decisions are made by the pure-Python FSM; this module converts ROS
 messages into its input snapshot and executes the effects it returns:
 
 * subscriptions only update :class:`Inputs` under the lock;
-* a 10 Hz timer calls :meth:`MissionFSM.tick`;
+* a 10 Hz periodic thread (sub_pump.PeriodicRunner) calls :meth:`MissionFSM.tick`;
 * service callbacks call :meth:`command` / :meth:`start_in_area` / :meth:`clear_resume`;
 * actions and services are started from short-lived worker threads that
   ``wait_for_server`` with a timeout (so a missing server becomes an
@@ -18,6 +18,7 @@ messages into its input snapshot and executes the effects it returns:
   MultiThreadedExecutor).
 """
 
+import functools
 import math
 import os
 import signal
@@ -26,7 +27,7 @@ import time
 
 import rclpy
 from rclpy.action import ActionClient
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -50,6 +51,8 @@ from mowgli_interfaces.srv import AddMowingArea, GetMowingArea, HighLevelControl
 
 from mower_mission import mission_fsm as fsm_mod
 from mower_mission.resume import ResumeCursor
+from mower_mission.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
+                                    parse_odometry)
 
 TOPIC_DEFAULTS = {
     # inputs
@@ -153,7 +156,6 @@ class MissionNode(Node):
         self._shutdown_futures = []
 
         self._cb = ReentrantCallbackGroup()
-        self._timer_group = MutuallyExclusiveCallbackGroup()
         p = self._p
 
         latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -164,17 +166,23 @@ class MissionNode(Node):
         self._plan_pub = self.create_publisher(Path, p['full_plan_topic'], latched)
         self._twist_pub = self.create_publisher(Twist, p['emergency_twist_topic'], 10)
 
-        sub = self.create_subscription
-        sub(Emergency, p['emergency_topic'], self._on_emergency, 10, callback_group=self._cb)
-        sub(Status, p['hw_status_topic'], self._on_hw_status, 10, callback_group=self._cb)
-        sub(BatteryState, p['battery_topic'], self._on_battery, 10, callback_group=self._cb)
-        sub(MowerBaseDevStatus, p['mower_status_topic'], self._on_base, 10,
-            callback_group=self._cb)
-        sub(GnssStatus, p['gnss_status_topic'], self._on_gnss, 10, callback_group=self._cb)
-        sub(Odometry, p['odom_topic'], self._on_odom, 10, callback_group=self._cb)
-        sub(Bool, p['boundary_violation_topic'], self._on_boundary, 10, callback_group=self._cb)
-        sub(Bool, p['lethal_boundary_violation_topic'], self._on_lethal, 10,
-            callback_group=self._cb)
+        # Inputs bypass the executor (see sub_pump.py). Every handler only stores the latest
+        # value for the FSM, which reads them on the 10 Hz tick (and in status/services), so
+        # they are sampled (depth 1, newest message) right where they are consumed instead of
+        # being taken at their publish rates: /mower_base/status (100 Hz) and odometry
+        # (30 Hz) through the 6-thread MultiThreadedExecutor cost ~55 % of a core idle.
+        self._pump = SubscriptionPump(self, 'mission_inputs')
+        sub = functools.partial(self._pump.subscribe, sampled=True)
+        sub(Emergency, p['emergency_topic'], self._on_emergency, 1)
+        sub(Status, p['hw_status_topic'], self._on_hw_status, 1)
+        sub(BatteryState, p['battery_topic'], self._on_battery, 1)
+        sub(MowerBaseDevStatus, p['mower_status_topic'], self._on_base, 1,
+            parser=flat_parser(MowerBaseDevStatus))
+        sub(GnssStatus, p['gnss_status_topic'], self._on_gnss, 1)
+        sub(Odometry, p['odom_topic'], self._on_odom, 1, parser=parse_odometry)
+        sub(Bool, p['boundary_violation_topic'], self._on_boundary, 1, parser=flat_parser(Bool))
+        sub(Bool, p['lethal_boundary_violation_topic'], self._on_lethal, 1,
+            parser=flat_parser(Bool))
         self._hw_rain = self._base_rain = False
         self._hw_charging = self._base_charging = False
 
@@ -210,15 +218,19 @@ class MissionNode(Node):
         srv(Trigger, p['clear_coverage_resume_service'], self._srv_clear_resume,
             callback_group=self._cb)
 
-        self.create_timer(1.0 / max(1.0, float(self.fsm.p.tick_hz)), self._tick,
-                          callback_group=self._timer_group)
-        self.create_timer(1.0 / max(0.1, float(p['status_rate_hz'])), self._publish_status_now,
-                          callback_group=self._timer_group)
-        self.create_timer(1.0 / max(1.0, float(p['zero_burst_rate_hz'])), self._burst_tick,
-                          callback_group=self._timer_group)
+        # tick / status / zero-burst on one plain thread (sub_pump.PeriodicRunner) instead of
+        # rclpy timers in one mutually exclusive group: same sequential semantics, but no
+        # MultiThreadedExecutor wake (wait set of ~60 entities) 31 times a second while idle.
+        self._periodic = PeriodicRunner(self, [
+            (1.0 / max(1.0, float(self.fsm.p.tick_hz)), self._tick),
+            (1.0 / max(0.1, float(p['status_rate_hz'])), self._publish_status_now),
+            (1.0 / max(1.0, float(p['zero_burst_rate_hz'])), self._burst_tick),
+        ], 'mission_periodic')
 
         with self._lock:
             self._execute(self.fsm.initial_effects(time.monotonic()))
+        self._pump.start()
+        self._periodic.start()
         self.get_logger().info(
             'mission node up: resume file %s (%s), docking server %s' % (
                 self._resume_path, 'resume available' if cursor.available else 'no resume',
@@ -328,6 +340,7 @@ class MissionNode(Node):
     # ------------------------------------------------------------------
     def _tick(self):
         with self._lock:
+            self._pump.poll()
             self._execute(self.fsm.tick(time.monotonic()))
 
     def _burst_tick(self):
@@ -336,6 +349,7 @@ class MissionNode(Node):
 
     def _srv_hlc(self, req, resp):
         with self._lock:
+            self._pump.poll()
             ok, fx = self.fsm.command(int(req.command), time.monotonic())
             self.get_logger().info('high_level_control(%d) -> %s [%s]' % (
                 req.command, ok, self.fsm.phase))
@@ -345,6 +359,7 @@ class MissionNode(Node):
 
     def _srv_start_in_area(self, req, resp):
         with self._lock:
+            self._pump.poll()
             ok, fx = self.fsm.start_in_area(int(req.area), time.monotonic())
             self.get_logger().info('start_in_area(%d) -> %s' % (req.area, ok))
             self._execute(fx)
@@ -353,6 +368,7 @@ class MissionNode(Node):
 
     def _srv_clear_resume(self, req, resp):
         with self._lock:
+            self._pump.poll()
             ok, msg, fx = self.fsm.clear_resume(time.monotonic())
             self._execute(fx)
         resp.success, resp.message = bool(ok), msg
@@ -414,6 +430,7 @@ class MissionNode(Node):
 
     def _publish_status_now(self):
         with self._lock:
+            self._pump.poll()
             st = self.fsm.status()
         self._publish_status(st)
 
@@ -677,6 +694,11 @@ class MissionNode(Node):
             self._execute(self.fsm.on_service_result(token, ok, resp, time.monotonic()))
 
     # ------------------------------------------------------------------
+    def destroy_node(self):
+        self._periodic.stop()
+        self._pump.stop()
+        return super().destroy_node()
+
     def shutdown_effects(self):
         """Blade off, cancel goals, zero twist; returns futures to wait for."""
         with self._lock:
@@ -705,6 +727,7 @@ def main(args=None):
     finally:
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        node._periodic.stop()            # no tick may race the shutdown effects
         try:
             node.get_logger().info('shutting down: blade off, cancel goals, zero velocity')
             for fut in node.shutdown_effects():

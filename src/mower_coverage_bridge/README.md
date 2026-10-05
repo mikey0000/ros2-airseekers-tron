@@ -13,7 +13,7 @@ between sub-paths.
 | Node | `coverage_server` (executable `coverage_action_server`) |
 | Serves | action `/plan_coverage` — `mowgli_interfaces/action/PlanCoverage` |
 | Calls | service `/coverage/plan` — `mower_interfaces/srv/PlanCoverage` |
-| Launch | `ros2 launch mower_coverage_bridge coverage_bridge.launch.py [start_planner:=false] [transit_gap_m:=0.6]` |
+| Launch | `ros2 launch mower_coverage_bridge coverage_bridge.launch.py [start_planner:=false] [transit_gap_m:=0.6] [cut_width_m:=0.20] [swath_overlap_m:=0.02]` |
 
 The geometry lives in `mower_coverage_bridge/splitter.py`. It is pure Python
 with no ROS imports, and pytest covers it.
@@ -128,7 +128,20 @@ to [0, 180)) appears in `message`.
 | `split_at_keepouts` | `true` | split a ≤ 0.6 m connector that crosses the boundary or an obstacle |
 | `service_wait_s` | `2.0` | how long to wait for `/coverage/plan` to appear before aborting |
 | `service_timeout_s` | `30.0` | how long to wait for the plan response before aborting |
-| `operation_width`, `headland_width`, `headland_passes`, `min_swath_length` | `0.0`, `0.0`, `0`, `0.0` | forwarded to the planner; ≤ 0 (passes 0 = auto) means the planner default (0.18 m, 0.20 m, auto, 0.15 m) |
+| `operation_width` | `0.0` (launch: `cut_width_m - swath_overlap_m` = 0.18) | swath spacing forwarded to the planner; ≤ 0 = the planner default |
+| `headland_width`, `headland_passes`, `min_swath_length` | `0.0`, `0`, `0.0` | forwarded to the planner; ≤ 0 (passes 0 = auto) means the planner default (0.20 m, auto, 0.15 m) |
+
+### Swath width
+
+There is one source for the swath spacing: the launch arguments `cut_width_m`
+(default `0.20`, the URDF cutter disc radius 0.10 m × 2) and `swath_overlap_m`
+(default `0.02`). `coverage_bridge.launch.py` (and `mower.launch.py`, which
+forwards both) passes them to `mower_coverage_node` (parameters of the same
+name; its default spacing for requests with `operation_width ≤ 0` is their
+difference) and sets this node's `operation_width` to `cut_width_m -
+swath_overlap_m` = 0.18 m. **TODO:** measure the blade tip circle on the Tron
+and update `cut_width_m` together with `cutter_radius` in
+`config/urdf/mower.urdf.xacro`.
 
 All parameters are read again for each goal, so a `ros2 param set` applies
 to the next plan.

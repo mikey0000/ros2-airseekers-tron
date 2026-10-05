@@ -161,7 +161,7 @@ ros2 run mower_localization gps_gate --ros-args \
 | `publish_tf` | `true` | this node owns `odom → base_link` |
 | `map_frame` / `odom_frame` / `base_link_frame` | `map` / `odom` / `base_link` | REP-105 chain (must be unique — the node refuses non-unique frames) |
 | `world_frame` | `odom` | fuse in the odom frame; no `map → odom` from this node |
-| `odom0` `/odom` | pose x,y; twist x,y + yaw rate | pose yaw is *not* fused: `/odom`'s heading is the JY61P (`mcu_node use_imu_yaw`), the same sensor as `imu0` — fusing it twice double-counts it |
+| `odom0` `/odom` | twist vx + yaw rate | pose x,y are *not* fused (GPS `odom1` is the one absolute x/y source; see "ekf_node diagnostic warning" below). Pose yaw is *not* fused: `/odom`'s heading is the JY61P (`mcu_node use_imu_yaw`), the same sensor as `imu0`, so fusing it double-counts it. Twist vy is *not* fused: `mcu_node` marks it unobserved (variance 1e6) |
 | `imu0` `/imu/data` | orientation yaw, yaw rate, gravity-removed accel x,y | `imu0_remove_gravitational_acceleration: true` |
 | `odom1` `/odometry/gps` | pose x,y only | the NavSat transform output (`nav_msgs/Odometry`, hence an *odom* input, not `pose0`); GPS heading is far worse than the JY61P yaw |
 | `use_control` | `false` | `/cmd_vel` goes to the MCU, not the filter |
@@ -172,6 +172,37 @@ Both `odom0`/`imu0`/`odom1` subscriptions use
 drivers' publishers (reliable `/odom`, best-effort `/imu`,
 reliable `/odometry/gps`) all connect — the only incompatible pair
 in ROS 2 is a *best-effort publisher into a reliable subscriber*.
+
+### ekf_node diagnostic warning (fixed 2026-10-06)
+
+`/diagnostics` showed `ekf_node: Filter diagnostic updater` at WARN with
+"Potentially erroneous data or settings detected for a robot_localization state
+estimation node" (the GUI shows it on the Diagnostics page). robot_localization
+(`src/ros_filter.cpp`, 3.5.4) raises this summary whenever any static (config) or
+dynamic (per-message) diagnostic is pending. The key/values of the status name the
+causes. Reproduced in the dev container with fake `/odom` and `/imu/data` that carry
+the drivers' real covariances (old `ekf.yaml`, `ros2 run robot_localization ekf_node`):
+
+| Key | Kind | Cause |
+|---|---|---|
+| `X_configuration`, `Y_configuration` | static, raised at startup | "2 absolute pose inputs detected for X/Y". `odom0` fused wheel pose x,y *and* `odom1` fused GPS x,y, both non-differential. Two absolute sources that drift apart make the filter oscillate between them. |
+| `odom0_twist_covariance` | dynamic, every `/odom` | "covariance at position (7) … Y_VELOCITY … extremely large (1e+06), but the update vector … is set to true". `odom0` fused vy, but `mcu_node` publishes vy as unobserved (`_TWIST_COVARIANCE_MEASURED`, 1e6). |
+
+Fix (`src/mower_localization/config/ekf.yaml`): `odom0` now fuses twist vx and yaw
+rate only. Wheel pose x,y add nothing over vx + heading, which the filter integrates
+itself. Fusing vy at variance 1e6 constrained nothing. The old config also had the
+odom yaw-rate flag in the last row (linear acceleration z, which robot_localization
+ignores for Odometry inputs), so the MCU yaw rate was never fused. It is now in the
+twist roll/pitch/yaw row.
+
+After the fix, the same 20 s check through
+`ros2 launch mower_bringup nav2.launch.py use_robot_state_publisher:=false` shows only
+`Filter diagnostic updater: ... appears to be functioning properly` (level 0). The
+`odometry/filtered topic status: Frequency too low` WARN seen in the first ~4 s of
+both runs is the startup window of the frequency monitor, not a config problem.
+
+Follow-up (not done here): `mcu_node` could publish a small vy variance (for example
+0.001). `odom0` could then fuse vy = 0 as the diff-drive non-holonomic constraint.
 
 ## `navsat.yaml` — `navsat_transform_node` parameter reference
 
@@ -186,7 +217,7 @@ in ROS 2 is a *best-effort publisher into a reliable subscriber*.
 | `broadcast_utm_transform` | `false` | no `utm` frame in our tree |
 | `publish_filtered_gps` | `false` | diagnostics come from `gps_gate` and `/fix_status` instead |
 | `wait_for_datum` | `false` | do not block bringup while the RTK session converges — `gps_gate` drops fixes until they are trustworthy anyway |
-| `datum` | unset | **the first fix becomes the datum.** Pin it with `wait_for_datum: true` + `datum: [lat, lon, yaw]` (the third field is a *heading* in radians, ENU — 0 = east), or call the `/datum` service at bringup |
+| `datum` | unset | **the first fix becomes the datum.** Pin it with `wait_for_datum: true` + `datum: [lat, lon, yaw]` (the third field is a *heading* in radians, ENU — 0 = east), or call the `/datum` service at bringup. `nav2.launch.py` sets both from the `datum_lat`/`datum_lon`/`datum_yaw` args. `mower.launch.py` fills unset args from `/userdata/ros2/datum.env`, which the GUI's "set datum from GPS" writes (`gui_bridge` `set_datum`, which also calls `/datum` live) |
 
 Frames do **not** come from parameters on this node: it takes
 `world_frame`/`base_link_frame` from the `header.frame_id` /

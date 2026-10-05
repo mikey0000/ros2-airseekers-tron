@@ -52,7 +52,7 @@ paths:
     runOnDemand: >-
       ffmpeg -hide_banner -loglevel warning
       -f mpjpeg -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5
-      -i "http://127.0.0.1:8080/stream?topic=/rear_camera/image_raw&type=mjpeg&quality=70&width=1280&height=720"
+      -i "http://127.0.0.1:8080/stream?topic=/rear_camera/image_raw&type=mjpeg&qos_profile=sensor_data&quality=70&width=1280&height=720"
       -an -vf fps=10 -pix_fmt yuv420p
       -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline
       -g 20 -b:v 1500k -maxrate 2000k -bufsize 2000k
@@ -66,7 +66,7 @@ paths:
     runOnDemand: >-
       ffmpeg -hide_banner -loglevel warning
       -f mpjpeg -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5
-      -i "http://127.0.0.1:8080/stream?topic=/left_oa_camera/image_raw&type=mjpeg&quality=70&width=1280&height=720"
+      -i "http://127.0.0.1:8080/stream?topic=/left_oa_camera/image_raw&type=mjpeg&qos_profile=sensor_data&quality=70&width=1280&height=720"
       -an -vf fps=10 -pix_fmt yuv420p
       -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline
       -g 20 -b:v 1500k -maxrate 2000k -bufsize 2000k

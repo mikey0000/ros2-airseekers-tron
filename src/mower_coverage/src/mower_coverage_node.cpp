@@ -25,7 +25,11 @@
 namespace {
 
 // Sentinel defaults applied when a request field is left at its "unset" value.
-constexpr double kDefaultOperationWidth = 0.18;   // swath spacing [m]
+// The swath spacing default is cut_width_m - swath_overlap_m (ROS parameters,
+// set from mower.launch.py); these are only the parameter defaults.
+// cut_width_m: URDF cutter disc radius 0.10 m -> 0.20 m. TODO: measure the blade.
+constexpr double kDefaultCutWidth = 0.20;         // blade cut width [m]
+constexpr double kDefaultSwathOverlap = 0.02;     // overlap between swaths [m]
 constexpr double kDefaultHeadlandWidth = 0.20;    // desired headland band [m]
 constexpr double kDefaultMinSwathLength = 0.15;   // sliver-drop threshold [m]
 constexpr double kDuplicatePoseTol = 1e-6;        // dedupe consecutive poses
@@ -58,13 +62,24 @@ geometry_msgs::msg::Quaternion yawToQuaternion(double yaw) {
 class MowerCoverageNode : public rclcpp::Node {
  public:
   MowerCoverageNode() : rclcpp::Node("mower_coverage_node") {
+    const double cut_width = declare_parameter<double>("cut_width_m", kDefaultCutWidth);
+    const double overlap =
+        declare_parameter<double>("swath_overlap_m", kDefaultSwathOverlap);
+    default_operation_width_ = cut_width - overlap;
+    if (!(cut_width > 0.0) || overlap < 0.0 || !(default_operation_width_ > 0.0)) {
+      RCLCPP_ERROR(get_logger(),
+                   "invalid cut_width_m=%.3f / swath_overlap_m=%.3f; using %.3f - %.3f",
+                   cut_width, overlap, kDefaultCutWidth, kDefaultSwathOverlap);
+      default_operation_width_ = kDefaultCutWidth - kDefaultSwathOverlap;
+    }
     service_ = create_service<mower_interfaces::srv::PlanCoverage>(
         "/coverage/plan",
         std::bind(&MowerCoverageNode::handlePlan, this, std::placeholders::_1,
                   std::placeholders::_2));
     RCLCPP_INFO(get_logger(),
                 "mower_coverage_node ready: service /coverage/plan "
-                "(Fields2Cover headland + swath)");
+                "(Fields2Cover headland + swath, default swath spacing %.3f m)",
+                default_operation_width_);
   }
 
  private:
@@ -75,7 +90,7 @@ class MowerCoverageNode : public rclcpp::Node {
 
     const double op_width = request->operation_width > 0.0
                                 ? request->operation_width
-                                : kDefaultOperationWidth;
+                                : default_operation_width_;
     const double headland_width = request->headland_width > 0.0
                                       ? request->headland_width
                                       : kDefaultHeadlandWidth;
@@ -209,6 +224,7 @@ class MowerCoverageNode : public rclcpp::Node {
   }
 
   rclcpp::Service<mower_interfaces::srv::PlanCoverage>::SharedPtr service_;
+  double default_operation_width_ = kDefaultCutWidth - kDefaultSwathOverlap;
 };
 
 int main(int argc, char** argv) {

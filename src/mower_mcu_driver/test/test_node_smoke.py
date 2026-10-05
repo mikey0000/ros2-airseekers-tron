@@ -229,18 +229,44 @@ class TestMcuNode(unittest.TestCase):
 
     # ----------------------------------------------------------------- cmd_vel
     def test_cmd_vel_is_scaled_clamped_and_sent_as_speed_data(self):
+        """Default (pid_enabled=false): scaled + clamped command goes on the wire verbatim."""
         self.node.linear_scale = 2.0
         self.node.angular_scale = 0.5
         self.node.linear_max = 1.0
         self.node.angular_max = 1.0
+        self.assertFalse(self.node.pid_enabled)            # safe default
 
         self.node._on_cmd_vel(cmd_vel(5.0, 10.0))          # both above the clamps
         self.node._send_speed()
         (type_id, mod_id, payload), = drain_tx(self.node._ser)
         self.assertEqual((type_id, mod_id), (mn.TYPE_ROS_MOWER, mn.MOD_SPEED))
         linear, angular = struct.unpack(mn.SPEED_FMT, payload)
-        self.assertAlmostEqual(linear, 1.0)                # 5.0 * 2.0 clamped to linear_max
-        self.assertAlmostEqual(angular, 1.0)               # 10.0 * 0.5 clamped to angular_max
+        self.assertAlmostEqual(linear, 1.0)                # clamped to linear_max
+        self.assertAlmostEqual(angular, 1.0)               # clamped to angular_max
+
+    def test_pid_enabled_closes_loop_on_measured_speed(self):
+        """pid_enabled=true: the loop corrects against measured SpeedData, clamped to ±0.3."""
+        self.node.pid_enabled = True
+        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))           # idle setpoint
+        # Wheels still turning (this is the state that produced the oscillation on hardware)
+        self.node._meas_linear = 0.2
+        self.node._meas_angular = -0.4
+        self.node._send_speed()
+        (_, _, payload), = drain_tx(self.node._ser)
+        linear, angular = struct.unpack(mn.SPEED_FMT, payload)
+        # error = 0 - measured -> braking output, clamped to the ±0.3 PID bounds
+        self.assertAlmostEqual(linear, -0.3, places=1)
+        self.assertAlmostEqual(angular, 0.3, places=1)
+
+    def test_pid_disabled_at_idle_puts_exactly_zero_on_the_wire(self):
+        """The vendor sends no SpeedData while idle; we at worst send a true 0,0."""
+        self.assertFalse(self.node.pid_enabled)
+        self.node._meas_linear = 0.2                        # feedback must not leak through
+        self.node._meas_angular = -0.4
+        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
+        self.node._send_speed()
+        (_, _, payload), = drain_tx(self.node._ser)
+        self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
 
     def test_stale_cmd_vel_sends_zero_speed(self):
         self.node._on_cmd_vel(cmd_vel(0.7, 0.2))

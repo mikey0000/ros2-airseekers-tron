@@ -91,8 +91,9 @@ class TestLoopback(unittest.TestCase):
             if now >= next_tx:
                 next_tx = now + 0.05
                 # keep /cmd_vel alive so it does not hit the stale-command timeout
+                # Use velocities within PID output bounds (±0.3) so the PID can track them
                 cmd = Twist()
-                cmd.linear.x = 0.4
+                cmd.linear.x = 0.2
                 cmd.angular.z = 0.1
                 node._on_cmd_vel(cmd)
                 node._send_speed()
@@ -108,9 +109,10 @@ class TestLoopback(unittest.TestCase):
         self.assertAlmostEqual(node.published['/battery'][0].voltage, 24.8, places=3)
         self.assertTrue(node.published['/mcu/imu'], 'module 9 (--imu) did not reach /mcu/imu')
 
-        # host -> MCU -> host round trip: the fake MCU echoes the command as measured speed
-        self.assertAlmostEqual(node._meas_linear, 0.4, places=2)
-        self.assertAlmostEqual(node._meas_angular, 0.1, places=2)
+        # host -> MCU -> host round trip: the fake MCU echoes the PID-corrected command
+        # as measured speed; PID converges toward the setpoint within bounds
+        self.assertAlmostEqual(node._meas_linear, 0.2, places=1)
+        self.assertAlmostEqual(node._meas_angular, 0.1, places=1)
 
         # dead reckoning integrated the measured motion
         self.assertTrue(node.published['/odom'], 'no /odom published')

@@ -27,6 +27,13 @@ services:
       - MOWER_YAML_CONFIG_FILE=/mowgli_config/mowgli_robot.yaml
       - DB_PATH=/db
       - ONBOARDING_COMPLETED=true
+      # GUI robot profile until mowgli_robot.yaml sets mower_model
+      # (GET /api/robot/profile; web/src/constants/robotProfiles.ts).
+      - ROBOT_PROFILE=AirseekersTron
+      # Camera page (/api/cameras): web_video_server from cameras.launch.py
+      # (host network). Overridden by perception_settings.camera_stream_base_url
+      # in mowgli_robot.yaml; camera list override: CAMERAS='[{"id":..,"label":..,"topic":..}]'.
+      - CAMERA_STREAM_BASE_URL=http://localhost:8080
       - MQTT_ENABLED=false
       - HOMEKIT_ENABLED=false
     volumes:

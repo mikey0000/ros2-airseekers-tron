@@ -110,6 +110,10 @@
   <xacro:property name="gps_xyz"    value="0 0 0.3"/>
   <xacro:property name="bumper_xyz" value="0.50718 0 0"/>
   <xacro:property name="cutter_xyz" value="0.3 0 -0.05"/>
+  <!-- Cutter disc radius: 0.20 m cut width. TODO: measure the blade tip circle on the
+       Tron and update this, the coverage cut_width_m launch arg (mower.launch.py) and
+       mower_coverage's default together. -->
+  <xacro:property name="cutter_radius" value="0.10"/>
 
   <!-- Camera mounts (vendor values). -->
   <xacro:property name="stereo_cam_xyz" value="0.466 0 0.25"/>
@@ -191,7 +195,7 @@
   <link name="cutter_link">
     <visual>
       <geometry>
-        <cylinder radius="0.1" length="0.05"/>
+        <cylinder radius="${cutter_radius}" length="0.05"/>
       </geometry>
       <material name="red"/>
     </visual>
@@ -203,8 +207,17 @@
   </joint>
 
   <!-- blade_link: MowgliNext name for the cutter disc centre. Same origin
-       as cutter_link (kept for existing consumers). -->
-  <link name="blade_link"/>
+       as cutter_link (kept for existing consumers). Its visual is the blade
+       disc itself (true radius, thin): the GUI draws the blade silhouette
+       from this cylinder. -->
+  <link name="blade_link">
+    <visual>
+      <geometry>
+        <cylinder radius="${cutter_radius}" length="0.004"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+  </link>
   <joint name="blade_joint" type="fixed">
     <parent link="base_link"/>
     <child link="blade_link"/>

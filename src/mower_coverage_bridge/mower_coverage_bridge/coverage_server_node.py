@@ -52,6 +52,8 @@ class CoverageServer(Node):
         p('service_wait_s', 2.0)
         p('service_timeout_s', 30.0)
         # Forwarded to /coverage/plan; <= 0 (or 0 passes) = planner default.
+        # operation_width (swath spacing) is set by coverage_bridge.launch.py to
+        # cut_width_m - swath_overlap_m.
         p('operation_width', 0.0)
         p('headland_width', 0.0)
         p('headland_passes', 0)

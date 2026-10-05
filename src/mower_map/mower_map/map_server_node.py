@@ -8,14 +8,16 @@ contract (see README.md). Geometry and persistence live in
 
 import array
 import math
+import functools
 import os
+import threading
 import time
 from collections import deque
 
 import rclpy
 import rclpy.executors
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from rclpy.time import Time
 
 from geometry_msgs.msg import Point32, Polygon as PolygonMsg, PoseStamped
@@ -30,9 +32,11 @@ from mowgli_interfaces.srv import (AddMowingArea, ClearObstacle, GetMowingArea,
                                    GetRecoveryPoint, PromoteObstacle, SetDockingPoint)
 
 from mower_map import areas as core
+from mower_map.sub_pump import SubscriptionPump, flat_parser, parse_odometry
 
 try:
     import tf2_ros
+    from tf2_msgs.msg import TFMessage
 except ImportError:  # pragma: no cover
     tf2_ros = None
 
@@ -145,42 +149,86 @@ class MapServerNode(Node):
         self.lethal_pub = self.create_publisher(Bool, '~/lethal_boundary_violation', 1)
         self.replan_pub = self.create_publisher(Bool, '~/replan_needed', 1)
 
-        # subscriptions
-        self.create_subscription(MowerBaseDevStatus, self.p('status_topic'), self.on_status, 10)
-        self.create_subscription(GnssStatus, self.p('gps_status_topic'), self.on_gnss, 10)
-        self.create_subscription(Odometry, self.p('odom_topic'), self.on_odom, 10)
-        self.create_subscription(ObstacleArray, '/obstacle_tracker/obstacles',
-                                 self.on_tracker, 1)
+        # Inputs bypass rclpy.spin (see sub_pump.py): 100 Hz status + 30 Hz odometry + 30 Hz
+        # /tf through the executor cost ~40 % of a core while idle. Odometry is handled per
+        # message (progress stamping, yaw window, boundary checks); the latest-value inputs
+        # are sampled (depth 1) where they are read, keeping their receipt times. State used
+        # to be touched by the single spin thread only, so pump callbacks, services and the
+        # timer all run under self._lock now.
+        self._lock = threading.RLock()
+        self._pump = SubscriptionPump(self, 'map_server_inputs')
+        sub = self._pump.subscribe
+        lock = self._lock
+        self._status_sub = sub(MowerBaseDevStatus, self.p('status_topic'), self.on_status, 1,
+                               parser=flat_parser(MowerBaseDevStatus), lock=lock,
+                               sampled=True, with_receipt=True)
+        self._gnss_sub = sub(GnssStatus, self.p('gps_status_topic'), self.on_gnss, 1, lock=lock,
+                             sampled=True, with_receipt=True)
+        sub(Odometry, self.p('odom_topic'), self.on_odom, 10, parser=parse_odometry, lock=lock)
+        self._tracker_sub = sub(ObstacleArray, '/obstacle_tracker/obstacles', self.on_tracker,
+                                1, lock=lock, sampled=True)
 
         # services
-        self.create_service(AddMowingArea, '~/add_area', self.srv_add_area)
-        self.create_service(GetMowingArea, '~/get_mowing_area', self.srv_get_mowing_area)
-        self.create_service(Trigger, '~/clear_map', self.srv_clear_map)
-        self.create_service(Trigger, '~/save_areas', self.srv_save_areas)
-        self.create_service(Trigger, '~/load_areas', self.srv_load_areas)
-        self.create_service(SetDockingPoint, '~/set_docking_point', self.srv_set_docking_point)
-        self.create_service(PromoteObstacle, '~/promote_obstacle', self.srv_promote_obstacle)
-        self.create_service(ClearObstacle, '~/discard_obstacle', self.srv_discard_obstacle)
-        self.create_service(GetRecoveryPoint, '~/get_recovery_point',
-                            self.srv_get_recovery_point)
-        self.create_service(Trigger, '~/reset_mow_progress', self.srv_reset_mow_progress)
+        srv = self._locked_service
+        srv(AddMowingArea, '~/add_area', self.srv_add_area)
+        srv(GetMowingArea, '~/get_mowing_area', self.srv_get_mowing_area)
+        srv(Trigger, '~/clear_map', self.srv_clear_map)
+        srv(Trigger, '~/save_areas', self.srv_save_areas)
+        srv(Trigger, '~/load_areas', self.srv_load_areas)
+        srv(SetDockingPoint, '~/set_docking_point', self.srv_set_docking_point)
+        srv(PromoteObstacle, '~/promote_obstacle', self.srv_promote_obstacle)
+        srv(ClearObstacle, '~/discard_obstacle', self.srv_discard_obstacle)
+        srv(GetRecoveryPoint, '~/get_recovery_point', self.srv_get_recovery_point)
+        srv(Trigger, '~/reset_mow_progress', self.srv_reset_mow_progress)
 
         self.tf_buffer = None
         if tf2_ros is not None:
             self.tf_buffer = tf2_ros.Buffer()
-            self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+            # Same subscriptions/QoS/callbacks as tf2_ros.TransformListener(buffer, self).
+            # /tf is only read by the two lookups below, so its queue (100 deep, ~3 s) is
+            # drained into the buffer right before them instead of on every message.
+            self._tf_sub = sub(TFMessage, '/tf', self._on_tf,
+                               QoSProfile(depth=100, durability=QoSDurabilityPolicy.VOLATILE,
+                                          history=QoSHistoryPolicy.KEEP_LAST),
+                               sampled=True, deliver_all=True)
+            sub(TFMessage, '/tf_static', self._on_tf_static,
+                QoSProfile(depth=100, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                           history=QoSHistoryPolicy.KEEP_LAST))
 
         self.publish_filter_info()
         self.load_dock()
         self.load_areas(startup=True)
         self.create_timer(max(0.1, float(self.p('mow_progress_publish_period_s'))),
-                          self.on_progress_timer)
+                          self._locked(self.on_progress_timer))
+        self._pump.start()
         self.get_logger().info('map_server_node up: %d areas from %s, dock %s'
                                % (len(self.store.areas), self.areas_path,
                                   'set' if self.dock else 'unset'))
 
     def p(self, name):
         return self.get_parameter(name).value
+
+    def _locked(self, fn):
+        @functools.wraps(fn)
+        def wrapper(*args):
+            with self._lock:
+                return fn(*args)
+        return wrapper
+
+    def _locked_service(self, srv_type, name, fn):
+        return self.create_service(srv_type, name, self._locked(fn))
+
+    def destroy_node(self):
+        self._pump.stop()
+        return super().destroy_node()
+
+    def _on_tf(self, msg):
+        for transform in msg.transforms:
+            self.tf_buffer.set_transform(transform, 'default_authority')
+
+    def _on_tf_static(self, msg):
+        for transform in msg.transforms:
+            self.tf_buffer.set_transform_static(transform, 'default_authority')
 
     # ------------------------------------------------------------------
     # state changes
@@ -322,18 +370,19 @@ class MapServerNode(Node):
     # ------------------------------------------------------------------
     # subscriptions
     # ------------------------------------------------------------------
-    def on_status(self, msg):
+    def on_status(self, msg, receipt=None):
         self.status = msg
-        self.status_time = time.monotonic()
+        self.status_time = time.monotonic() if receipt is None else receipt
 
-    def on_gnss(self, msg):
+    def on_gnss(self, msg, receipt=None):
         self.gnss = msg
-        self.gnss_time = time.monotonic()
+        self.gnss_time = time.monotonic() if receipt is None else receipt
 
     def on_tracker(self, msg):
         self.tracker_snapshot = list(msg.obstacles)
 
     def is_cutting(self):
+        self._pump.poll((self._status_sub,))
         return (self.status is not None and self.status_time is not None
                 and time.monotonic() - self.status_time <= float(self.p('status_max_age_s'))
                 and bool(self.status.is_cutting))
@@ -342,6 +391,7 @@ class MapServerNode(Node):
         if self.blade_offset is not None:
             return self.blade_offset
         if self.tf_buffer is not None and child_frame:
+            self._pump.poll((self._tf_sub,))
             try:
                 tf = self.tf_buffer.lookup_transform(child_frame, self.p('blade_frame'), Time())
                 self.blade_offset = (tf.transform.translation.x, tf.transform.translation.y)
@@ -473,6 +523,7 @@ class MapServerNode(Node):
         """None when set_docking_point may proceed, else the reason."""
         if self.p('dock_gates_override'):
             return None
+        self._pump.poll((self._status_sub, self._gnss_sub))
         now = time.monotonic()
         if self.p('require_charging'):
             max_age = float(self.p('dock_set_status_max_age_s'))
@@ -557,6 +608,7 @@ class MapServerNode(Node):
         source = core.SOURCE_USER
         if len(poly) < 3:
             source = core.SOURCE_TRACKER
+            self._pump.poll((self._tracker_sub,))
             match = [o for o in self.tracker_snapshot if o.id == req.obstacle_id]
             if not match:
                 res.success = False
@@ -592,6 +644,7 @@ class MapServerNode(Node):
             return self.pose[0], self.pose[1], None
         if self.tf_buffer is None:
             return None, None, 'no pose (odometry stale, tf unavailable)'
+        self._pump.poll((self._tf_sub,))
         try:
             tf = self.tf_buffer.lookup_transform(self.map_frame, self.p('base_frame'), Time())
             return tf.transform.translation.x, tf.transform.translation.y, None

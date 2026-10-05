@@ -36,9 +36,14 @@ Rear camera: UVC webcam (32e6:9221), MJPG only (1920x1080 .. 640x480, 30 fps).
 The Metoak front stereo is NOT here: ``stereo_vio_bridge`` in ``launch/vio.launch.py``
 owns it (``/vio/{left,right}/image_raw``).
 
-``web_video_server:=true`` adds an MJPEG HTTP server on ``video_port`` (8080):
+``web_video_server`` (default ``true``) is an MJPEG HTTP server on ``video_port`` (8080):
 ``http://<mower>:8080/stream?topic=/rear_camera/image_raw`` (also the source for the
-RTSP/WebRTC relay in ``docker/docker-compose.video.yml``). See docs/cameras_and_video.md.
+RTSP/WebRTC relay in ``docker/docker-compose.video.yml``). The GUI reverse-proxies it as
+``:4006/api/cameras/<id>/stream`` and asks for ``quality=50`` at 640x360 and caps delivery
+at 5 fps. web_video_server 3.x has no node-level quality/fps parameters (``quality``,
+``width``, ``height`` are per-request URL args, default quality 95), so direct
+``:8080`` clients should pass them too, plus ``qos_profile=sensor_data`` (the camera
+publishers are best-effort; the default reliable subscription gets no frames). See docs/cameras_and_video.md.
 """
 import typing
 
@@ -153,8 +158,11 @@ def generate_launch_description():
                                                 'fastdds_camera_shm.xml']),
             description='Fast DDS profile for the camera publishers (32 MiB SHM segment; '
                         'without it 6 MB images arrive at ~1/3 rate). "" = RMW default.'),
-        DeclareLaunchArgument('web_video_server', default_value='false',
-                              description='Start web_video_server (MJPEG over HTTP).'),
+        DeclareLaunchArgument('web_video_server', default_value='true',
+                              description='Start web_video_server (MJPEG over HTTP; the GUI '
+                                          'camera page proxies it via :4006/api/cameras). '
+                                          'Idle cost is ~0: it only subscribes/encodes while a '
+                                          'client is streaming.'),
         DeclareLaunchArgument('video_port', default_value='8080'),
     ]
 
@@ -198,6 +206,10 @@ def generate_launch_description():
             'server_threads': 2,
             'ros_threads': 2,
             'default_stream_type': 'mjpeg',
+            # Frame re-publish rate for a stalled topic (-1 = never): avoids
+            # re-encoding the last image when a camera stops.
+            'publish_rate': -1.0,
+            'verbose': False,
         }],
     )
 

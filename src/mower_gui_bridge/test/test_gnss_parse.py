@@ -119,7 +119,7 @@ NTRIP_STR = ('um960=connected quality=RTK_FIXED sats=21/28 hdop=0.70 diff_age=1.
 LORA_STR = ('um960=connected solution=NARROW_FLOAT sats=18 diff_age=14.0s '
             'corr_src=lora corr=lora corr_flow=stale corr_age=14.0s age=0.05s')
 CORR_CAPS = (sm.CAP_CORRECTIONS_ACTIVE | sm.CAP_CORRECTION_AGE | sm.CAP_CORRECTION_TRANSPORT
-             | sm.CAP_CORRECTION_FLOW)
+             | sm.CAP_CORRECTION_FLOW | sm.CAP_CORRECTION_STREAM)
 
 
 def test_parse_correction_tokens():
@@ -182,3 +182,27 @@ def test_held_rtcm_is_waiting_not_active():
     assert g['correction_transport_status'] == sm.CORRECTION_TRANSPORT_STATUS_STREAMING
     assert g['correction_flow_status'] == sm.CORRECTION_FLOW_STATUS_WAITING
     assert not g['corrections_active']
+
+
+def test_correction_stream_status_mirrors_flow():
+    expected = {
+        'idle': sm.CORRECTION_STREAM_STATUS_IDLE,
+        'waiting': sm.CORRECTION_STREAM_STATUS_WAITING,
+        'held': sm.CORRECTION_STREAM_STATUS_WAITING,
+        'active': sm.CORRECTION_STREAM_STATUS_ACTIVE,
+        'stale': sm.CORRECTION_STREAM_STATUS_UNAVAILABLE,
+        'invalid': sm.CORRECTION_STREAM_STATUS_ERROR,
+    }
+    for token, status in expected.items():
+        text = 'um960=connected quality=GPS corr_src=lora corr=lora corr_flow=%s' % token
+        g = sm.derive_gnss_status(sm.NAVSAT_FIX, DIAG_COV, 2, sm.parse_fix_status(text))
+        assert g['correction_stream_status'] == status, token
+        assert g['capability_flags'] & sm.CAP_CORRECTION_STREAM
+        assert g['value_flags'] & sm.CAP_CORRECTION_STREAM
+
+
+def test_correction_stream_unknown_without_flow():
+    g = sm.derive_gnss_status(sm.NAVSAT_FIX, DIAG_COV, 2, None)
+    assert g['correction_stream_status'] == sm.CORRECTION_STREAM_STATUS_UNKNOWN
+    assert g['capability_flags'] & sm.CAP_CORRECTION_STREAM
+    assert not g['value_flags'] & sm.CAP_CORRECTION_STREAM

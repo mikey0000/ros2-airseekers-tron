@@ -81,7 +81,10 @@ reproduces them.
 - `<camera>_device`, `output_encoding` (bgr8; `v4l2_camera` only), `camera_info_dir`.
 - `camera_dds_profile`: the Fast DDS profile for the camera publishers; `""` uses the RMW
   default.
-- `web_video_server` (false) and `video_port` (8080).
+- `web_video_server` (true; `mower.launch.py video`, also true) and `video_port` (8080).
+  The GUI proxies it as `:4006/api/cameras/<id>/stream` and `/snapshot` (quality 50,
+  640x360, ≤ 5 fps per viewer; see `gui/pkg/api/cameras.go`). web_video_server only
+  subscribes and encodes while a client is connected, so the idle cost is about zero.
 
 ## 2. Models (deploy flow)
 
@@ -206,8 +209,8 @@ Config: `src/mower_vision/config/obstacle_guard.yaml`.
 
 | Feed | URL | Port | Source |
 |---|---|---|---|
-| MJPEG (HTTP) | `http://<mower>:8080/stream?topic=/rear_camera/image_raw` (also `&width=1280&height=720&quality=70`) | 8080/tcp | `web_video_server` (`cameras.launch.py web_video_server:=true`) |
-| Snapshot | `http://<mower>:8080/snapshot?topic=/rear_camera/image_raw` | 8080/tcp | same |
+| MJPEG (HTTP) | `http://<mower>:8080/stream?topic=/rear_camera/image_raw&qos_profile=sensor_data` (also `&width=1280&height=720&quality=70`). `qos_profile=sensor_data` is required: the camera drivers publish best-effort, and web_video_server's default (reliable) subscription receives nothing. Do not percent-encode the `/` in `topic`. | 8080/tcp | `web_video_server` (`cameras.launch.py`, on by default) |
+| Snapshot | `http://<mower>:8080/snapshot?topic=/rear_camera/image_raw&qos_profile=sensor_data` | 8080/tcp | same |
 | Topic list | `http://<mower>:8080/` | 8080/tcp | same |
 | RTSP H.264 | `rtsp://<mower>:8554/rear`, `rtsp://<mower>:8554/left_oa` | 8554/tcp, 8000-8001/udp | mediamtx (`docker/docker-compose.video.yml`) |
 | WebRTC | `http://<mower>:8889/rear` (WHEP `/rear/whep`) | 8889/tcp, 8189/udp | mediamtx |
@@ -281,7 +284,7 @@ needs the `devices:` entry in the compose file.
 ```python
 # arguments
 arg('cameras', 'true', 'Include cameras.launch.py (OA + rear v4l2_camera).'),
-arg('video', 'false', 'web_video_server MJPEG on :8080 (source for RTSP relay).'),
+arg('video', 'true', 'web_video_server MJPEG on :8080 (GUI camera page via /api/cameras; source for the RTSP relay).'),
 arg('perception', 'false', 'Include mower_vision/perception.launch.py (det_ros + obstacle_guard).'),
 arg('stop_on_close', 'false', 'obstacle_guard: zero burst + cutter off on close obstacle.'),
 

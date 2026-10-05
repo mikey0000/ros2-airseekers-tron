@@ -35,6 +35,7 @@ from mower_interfaces.msg import MowerBaseDevStatus
 from mower_interfaces.srv import ChargingControl
 
 from mower_docking import dock_logic as dl
+from mower_docking.sub_pump import SubscriptionPump, flat_parser, parse_odometry
 
 try:
     from mowgli_interfaces.msg import GnssStatus
@@ -124,6 +125,7 @@ class DockingServer(Node):
         self._odom: Optional[dl.Pose2D] = None
         self._odom_t = -1e9
         self._status_t = -1e9
+        self._status_count = 0
         self._stop = False
         self._lift = False
         self._contact = dl.ContactDebouncer(self.get_parameter('contact_debounce_samples').value)
@@ -148,18 +150,20 @@ class DockingServer(Node):
             PoseStamped, '~/approach_pose',
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                        reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST))
-        self.create_subscription(Odometry, p('odom_topic').value, self._on_odom, 20,
-                                 callback_group=self._sensor_group)
-        self.create_subscription(MowerBaseDevStatus, p('status_topic').value, self._on_status, 20,
-                                 callback_group=self._sensor_group)
+        # Inputs bypass the 6-thread executor (see sub_pump.py); the handlers only store under
+        # self._lock. Odometry and /mower_base/status are only read by a running goal, so their
+        # subscriptions exist only while one runs (_resume_inputs / _release_inputs): even
+        # untaken, DDS delivery of 100 Hz status + 50 Hz odometry costs ~5 % of a core, and
+        # through the executor they cost ~45 % while idle.
+        self._pump = SubscriptionPump(self, 'docking_inputs')
+        sub = self._pump.subscribe
+        self._goal_pump = None
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              reliability=ReliabilityPolicy.RELIABLE,
                              history=HistoryPolicy.KEEP_LAST)
-        self.create_subscription(PoseStamped, p('dock_pose_topic').value, self._on_dock_pose,
-                                 latched, callback_group=self._sensor_group)
+        sub(PoseStamped, p('dock_pose_topic').value, self._on_dock_pose, latched)
         if GnssStatus is not None:
-            self.create_subscription(GnssStatus, p('gps_status_topic').value, self._on_gps, 10,
-                                     callback_group=self._sensor_group)
+            sub(GnssStatus, p('gps_status_topic').value, self._on_gps, 10)
         else:
             self.get_logger().warn('mowgli_interfaces not importable: wait_for_rtk will time out')
 
@@ -176,7 +180,13 @@ class DockingServer(Node):
             self, Undock, '~/undock', execute_callback=self._execute_undock,
             goal_callback=self._goal_cb, cancel_callback=lambda _g: CancelResponse.ACCEPT,
             callback_group=self._action_group)
+        self._pump.start()
         self.get_logger().info('docking server ready (~/dock, ~/undock)')
+
+    def destroy_node(self):
+        self._release_inputs()
+        self._pump.stop()
+        return super().destroy_node()
 
     # ------------------------------------------------------------------ subs
     def _on_odom(self, msg: Odometry) -> None:
@@ -190,6 +200,7 @@ class DockingServer(Node):
     def _on_status(self, msg: MowerBaseDevStatus) -> None:
         with self._lock:
             self._contact.update(bool(msg.is_docking_done))
+            self._status_count += 1
             self._stop = bool(msg.stop_triggered)
             self._lift = bool(msg.lift_triggered)
             self._status_t = time.monotonic()
@@ -303,6 +314,39 @@ class DockingServer(Node):
         t.linear.x = float(v)
         t.angular.z = float(w)
         self._cmd_pub.publish(t)
+
+    def _resume_inputs(self, timeout: float = 2.0) -> None:
+        """Subscribe the goal-only inputs and wait for the state continuous updates give.
+
+        Resets the contact debouncer and waits until it has seen ``n`` fresh status samples
+        (its value then depends only on those, exactly as with continuous updates) and one
+        fresh odometry sample; the timeout also covers DDS discovery of the new readers. On
+        timeout the snapshot simply reports stale inputs, as before when they were missing.
+        """
+        p = self.get_parameter
+        t0 = time.monotonic()
+        with self._lock:
+            self._contact.reset()
+            self._status_count = 0
+        pump = SubscriptionPump(self, 'docking_goal_inputs')
+        pump.subscribe(Odometry, p('odom_topic').value, self._on_odom, 20,
+                       parser=parse_odometry)
+        pump.subscribe(MowerBaseDevStatus, p('status_topic').value, self._on_status, 20,
+                       parser=flat_parser(MowerBaseDevStatus))
+        pump.start()
+        self._goal_pump = pump
+        while time.monotonic() - t0 < timeout:
+            with self._lock:
+                if self._status_count >= self._contact.n and self._odom_t >= t0:
+                    return
+            time.sleep(0.005)
+        self.get_logger().warn('fresh odom/status not received within %.1f s of goal start'
+                               % timeout)
+
+    def _release_inputs(self) -> None:
+        pump, self._goal_pump = self._goal_pump, None
+        if pump is not None:
+            pump.close()
 
     def _stop_burst(self) -> None:
         rate = float(self.get_parameter('control_rate_hz').value)
@@ -429,6 +473,7 @@ class DockingServer(Node):
         period = 1.0 / rate
         self._nav_status = None
         self._charging_result = None
+        self._resume_inputs()
         out = machine.start(self._snapshot())
         self._handle(out.requests)
         last_state = None
@@ -464,6 +509,7 @@ class DockingServer(Node):
                 self._cancel_nav()
             self._stop_burst()
             self._enable_vision(False)
+            self._release_inputs()
             with self._lock:
                 self._busy = False
 

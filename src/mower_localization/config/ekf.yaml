@@ -39,15 +39,29 @@ ekf_node:
     world_frame: odom       # fuse everything in the odom frame
 
     # --- wheel odometry, 50 Hz (mower_mcu_driver) --------------------------
-    # Pose x/y and twist x/y + yaw rate. Pose yaw is deliberately NOT fused:
-    # /odom's heading comes from the JY61P (mcu_node use_imu_yaw), i.e. the
-    # same sensor as imu0, so fusing it here would double-count it.
+    # Twist only: forward speed vx + yaw rate. Not fused:
+    #   * pose x/y: /odometry/gps (odom1) is the absolute x/y source. A second
+    #     absolute x/y input (drifting wheel dead reckoning) makes the filter
+    #     oscillate between the two and is what raised the ekf_node diagnostic
+    #     "Potentially erroneous data or settings detected..." ("2 absolute pose
+    #     inputs detected for X/Y"). Wheel x/y carries no information beyond
+    #     vx + yaw, which the filter integrates itself. See docs/localization.md.
+    #   * pose yaw: /odom's heading comes from the JY61P (mcu_node use_imu_yaw),
+    #     i.e. the same sensor as imu0; fusing it would double-count it.
+    #   * twist vy: mcu_node marks it unobserved (variance 1e6), which triggers
+    #     the "covariance ... extremely large ... update vector is set to true"
+    #     warning on every message and constrains nothing. Re-enable it as a
+    #     non-holonomic vy = 0 constraint once mcu_node publishes a small vy
+    #     variance (e.g. 0.001).
     odom0: /odom
-    odom0_config: [true,  true,  false,   # pose   x, y, z
+    #   * the previous config put the yaw-rate flag in the last row, which is
+    #     linear acceleration z (ignored for Odometry inputs), so the MCU yaw
+    #     rate was never fused. It is now in the twist roll/pitch/yaw row.
+    odom0_config: [false, false, false,   # pose   x, y, z
                    false, false, false,   # pose   roll, pitch, yaw
-                   true,  true,  false,   # twist  x, y, z
-                   false, false, false,   # twist  roll, pitch, yaw
-                   false, false, true]    # twist  yaw
+                   true,  false, false,   # twist  x, y, z
+                   false, false, true,    # twist  roll, pitch, yaw
+                   false, false, false]   # accel  x, y, z (unused for odom)
     odom0_differential: false
     odom0_queue_size: 10
 

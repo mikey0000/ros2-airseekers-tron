@@ -56,11 +56,15 @@ Parameters
 
 Known gaps -- tracked as TODOs, do not treat this driver as safety-complete yet
 -------------------------------------------------------------------------------
-* **PID TODO.** The stock node runs a host-side wheel PID from ``libpid_controller.so``
-  (gains in ``mower_base_pkg/config/base.yaml``: linear kp/ki/kd 0.9/0.3/1.0, angular
-  0.9/0.3/0.5, both clamped to +-0.3) while the MCU only accepts linear/angular.  Until that
-  library is ported or reverse engineered, this node applies a plain linear/angular
-  scale+clamp mapping (see :meth:`McuNode._map_command`).  It is *not* equivalent.
+* **Host-side velocity PID present but DISABLED by default** (``pid_enabled`` = false).
+  Port of ``libpid_controller.so``: reads measured ``SpeedData`` from the MCU, compares
+  against commanded velocity, sends PID-corrected commands (gains from
+  ``mower_base_pkg/config/base.yaml``, output clamped to +-0.3).  It was enabled on
+  2026-10-06 and made the wheels oscillate and reverse under a zero ``/cmd_vel``, which
+  means the feedback sign/units are not yet what the loop assumes -- the vendor's own
+  capture shows **no SpeedData TX while idle** (``mcu_protocol_spec.md`` 10b), so the
+  stock machine never runs this loop at rest either.  Validate
+  ``/mcu/measured_speed`` against a known motion (wheels up) before turning it on.
 * **Heartbeat period unknown.** ``Heartbeat`` is a wall-clock stamp and the MCU most likely
   stops the motors when it stops arriving, but neither the period nor the timeout were
   recovered from the binary.  We default to 100 ms (the BLE link uses 100 ms too) purely as a
@@ -87,7 +91,9 @@ import os
 import select
 import struct
 import termios
+import threading
 import time
+import traceback
 from datetime import datetime
 
 import rclpy
@@ -100,6 +106,13 @@ from sensor_msgs.msg import BatteryState, Imu
 from std_msgs.msg import Bool
 from std_srvs.srv import Empty, Trigger
 
+try:  # real rclpy only (the offline tests run against ros_stubs)
+    from rclpy.serialization import deserialize_message
+    from mower_mcu_driver.sub_pump import (SubscriptionPump, flat_serializer, odometry_bytes,
+                                           parse_imu)
+except ImportError:  # pragma: no cover - stubbed ROS
+    deserialize_message = parse_imu = flat_serializer = odometry_bytes = None
+    SubscriptionPump = None
 try:  # Optional: only exists once ros2_stack/src/mower_interfaces has been created.
     from mower_interfaces.msg import MowerSensorInfo
 except ImportError:  # pragma: no cover - depends on workspace build order
@@ -321,6 +334,67 @@ def speed_payload(linear, angular):
     return struct.pack(SPEED_FMT, float(linear), float(angular))
 
 
+class VelocityPID:
+    """Minimal host-side velocity PID (port of ``libpid_controller.so`` / ``pid.h``).
+
+    The vendor node closes a velocity feedback loop: it reads measured ``SpeedData`` from
+    the MCU, compares against the commanded velocity, and sends PID-corrected speed
+    commands.  Without this loop the MCU treats ``SpeedData(0, 0)`` as "coast" and the
+    wheels never brake.
+
+    This class mirrors the vendor ``PID`` header (``mower_controller/navigation/src/common/pid.h``)
+    with the standard parallel form:
+
+        output = kp * error + ki * integral + kd * (error - last_error) / dt
+
+    with anti-windup (integral clamped to output bounds).
+    """
+
+    def __init__(self, kp, ki, kd, lower_bound, upper_bound, dt):
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.lower_bound = lower_bound
+        self.upper_bound = upper_bound
+        self.dt = dt
+        self.reset()
+
+    def reset(self):
+        self.last_error = 0.0
+        self.integral = 0.0
+        self.output = 0.0
+        self._d_filtered = 0.0
+
+    def __call__(self, error):
+        """Return PID-corrected output for the given error (setpoint - process_value).
+
+        Uses a parallel PID form.  The derivative term uses a small filter to avoid
+        amplifying noise from the MCU's one-cycle measurement delay.
+        """
+        # Proportional
+        p_term = self.kp * error
+
+        # Integral with anti-windup
+        self.integral += self.ki * error * self.dt
+        self.integral = max(
+            self.lower_bound - p_term,
+            min(self.upper_bound - p_term, self.integral),
+        )
+
+        # Derivative with low-pass filter (backward difference, filtered)
+        # The MCU echoes back our previous command with ~1 cycle delay,
+        # so raw D would oscillate.  Smooth it with alpha = dt / (dt + tau).
+        alpha = min(self.dt / (self.dt + 0.02), 0.9)  # tau=20 ms filter
+        self._d_filtered = alpha * (error - self.last_error) / self.dt \
+                           + (1.0 - alpha) * self._d_filtered
+        d_term = self.kd * self._d_filtered
+        self.last_error = error
+
+        self.output = p_term + self.integral + d_term
+        self.output = max(self.lower_bound, min(self.upper_bound, self.output))
+        return self.output
+
+
 def _diag6(a, b, c, d, e, f):
     """Row-major 6x6 covariance matrix with ``a..f`` on the diagonal."""
     cov = [0.0] * 36
@@ -401,6 +475,9 @@ class _TermiosSerial:
             written += count
         return written
 
+    def fileno(self):
+        return self._fd
+
     def close(self):
         os.close(self._fd)
 
@@ -431,6 +508,36 @@ class McuNode(Node):
         # Vendor PID clamps body speed to +-0.3 m/s; stay conservative until characterised.
         self.declare_parameter('linear_max', 0.5)
         self.declare_parameter('angular_max', 1.0)
+        # Host-side velocity PID gains (from mower_base/config/base.yaml).
+        # The vendor node runs a closed-loop PID: reads measured SpeedData from the MCU,
+        # compares against commanded velocity, and sends PID-corrected commands.
+        # Without this, SpeedData(0,0) is "coast" on the MCU and wheels never brake.
+        #
+        # The vendor gains (0.9/0.3/1.0 linear, 0.9/0.3/0.5 angular) are tuned for their
+        # own PID loop rate (~10 Hz from odometry callback).  Our speed command loop runs
+        # at 20 Hz, so the derivative term would be 2x more aggressive.  We reduce kd
+        # proportionally to keep the effective derivative action the same.
+        self.declare_parameter('linear_kp', 0.9)
+        self.declare_parameter('linear_ki', 0.3)
+        self.declare_parameter('linear_kd', 0.5)     # vendor 1.0 scaled for 20 Hz vs 10 Hz
+        self.declare_parameter('angular_kp', 0.9)
+        self.declare_parameter('angular_ki', 0.3)
+        self.declare_parameter('angular_kd', 0.25)   # vendor 0.5 scaled for 20 Hz vs 10 Hz
+        # PID output bounds (vendor clamps to +-0.3 for both)
+        self.declare_parameter('linear_pid_min', -0.3)
+        self.declare_parameter('linear_pid_max', 0.3)
+        self.declare_parameter('angular_pid_min', -0.3)
+        self.declare_parameter('angular_pid_max', 0.3)
+        # SAFETY: the closed loop is OFF by default.  With it on the driver streams a
+        # PID-corrected SpeedData at speed_cmd_rate even while idle, and an unverified
+        # feedback sign/units turns that into a +-0.3 bang-bang limit cycle (observed
+        # on the mower 2026-10-06: wheels oscillating and reversing at cmd_vel 0).
+        # Enable only after /mcu/measured_speed has been checked against a known motion.
+        self.declare_parameter('pid_enabled', False)
+        # Telemetry: measured vs commanded vs actually-sent body velocity, published at
+        # this rate while the port is up (0 disables).  Purely observational; it is what
+        # the feedback sign/units of the PID are verified against.
+        self.declare_parameter('speed_telemetry_rate_hz', 5.0)
         # Host-side interlock: stop wheels + cutter while lift / e-stop (and optionally
         # bumper) are asserted, in addition to whatever the MCU firmware enforces.
         self.declare_parameter('interlock_on_lift', True)
@@ -450,6 +557,12 @@ class McuNode(Node):
         self.declare_parameter('forward_imu_roll_offset_deg', 0.0)
         self.declare_parameter('forward_imu_pitch_offset_deg', 0.0)
         self.declare_parameter('battery_voltage_scale', 0.1)
+        # SensorInfo arrives at ~100 Hz. /mower_base/status is published for every frame;
+        # /mower_sensor_info (read only by gui_bridge at 5 Hz) and /estop (twist_mux lock with
+        # timeout 0, gui_bridge acts on changes) are published immediately whenever their
+        # content changes and otherwise as a keepalive at this rate. 0 = every frame (old).
+        self.declare_parameter('sensor_info_rate_hz', 10.0)
+        self.declare_parameter('estop_rate_hz', 10.0)
         self.declare_parameter('battery_current_scale', 1.0)
 
         def param(name):
@@ -471,9 +584,21 @@ class McuNode(Node):
         self.angular_max = float(param('angular_max'))
         self.battery_voltage_scale = float(param('battery_voltage_scale'))
         self.battery_current_scale = float(param('battery_current_scale'))
+        rate = float(param('sensor_info_rate_hz'))
+        self._sensor_info_period = 1.0 / rate if rate > 0 else 0.0
+        rate = float(param('estop_rate_hz'))
+        self._estop_period = 1.0 / rate if rate > 0 else 0.0
+        self._sensor_info_pub_t = -1e9
+        self._sensor_info_pub_key = None
+        self._estop_pub_t = -1e9
+        self._estop_pub_value = None
         self.interlock_on_lift = bool(param('interlock_on_lift'))
         self.interlock_on_stop = bool(param('interlock_on_stop'))
         self.interlock_on_bumper = bool(param('interlock_on_bumper'))
+        self.pid_enabled = bool(param('pid_enabled'))
+        rate = float(param('speed_telemetry_rate_hz'))
+        self._speed_telemetry_period = 1.0 / rate if rate > 0 else 0.0
+        self._speed_telemetry_t = -1e9
         self.cutter_default_speed = int(param('cutter_default_speed'))
         self.forward_imu = bool(param('forward_imu'))
         self.forward_imu_rate = float(param('forward_imu_rate'))
@@ -485,6 +610,12 @@ class McuNode(Node):
         odom_rate = float(param('odom_rate'))
 
         # ---- state --------------------------------------------------------
+        # One lock serialises everything that touches the port or the driver state: the
+        # I/O thread (serial RX + periodic TX/odom), the subscription pump thread and the
+        # executor (services only). This keeps the old single-threaded semantics.
+        self._lock = threading.RLock()
+        self._io_thread = None
+        self._io_stop = False
         self._ser = None
         self._last_open_attempt = 0.0
         self._parser = FrameParser()
@@ -496,6 +627,20 @@ class McuNode(Node):
         self._meas_linear = 0.0           # last measured SpeedData from the MCU
         self._meas_angular = 0.0
         self._meas_stamp = 0.0
+
+        # ---- host-side velocity PID (libpid_controller.so port) -----------
+        # dt = period of the speed command loop (1/speed_cmd_rate)
+        dt = 1.0 / max(speed_cmd_rate, 1.0)
+        self._pid_linear = VelocityPID(
+            float(param('linear_kp')), float(param('linear_ki')), float(param('linear_kd')),
+            float(param('linear_pid_min')), float(param('linear_pid_max')),
+            dt,
+        )
+        self._pid_angular = VelocityPID(
+            float(param('angular_kp')), float(param('angular_ki')), float(param('angular_kd')),
+            float(param('angular_pid_min')), float(param('angular_pid_max')),
+            dt,
+        )
 
         self._imu_yaw = None              # last MCU ImuData heading (rad)
         self._imu_stamp = 0.0
@@ -543,36 +688,145 @@ class McuNode(Node):
                 'mower_interfaces not available -> /mower_sensor_info disabled '
                 '(build ros2_stack/src/mower_interfaces and relaunch to enable it)')
 
+        # Telemetry for the closed-loop question: what the MCU reports it is doing vs
+        # what we asked for vs what we are actually putting on the wire.  Published at
+        # speed_telemetry_rate_hz from _send_speed (cheap: 5 Hz).
+        self._meas_speed_pub = self.create_publisher(TwistStamped, '/mcu/measured_speed', 10)
+        self._cmd_speed_pub = self.create_publisher(TwistStamped, '/mcu/commanded_speed', 10)
+        self._sent_speed_pub = self.create_publisher(TwistStamped, '/mcu/sent_speed', 10)
+
         # Humble convention (twist_mux 4.3 / Nav2 Humble): unstamped Twist on /cmd_vel.
         # /cmd_vel_stamped mirrors the vendor node's second input.
-        self.create_subscription(Twist, '/cmd_vel', self._on_cmd_vel, 10)
-        self.create_subscription(TwistStamped, '/cmd_vel_stamped', self._on_cmd_vel_stamped, 10)
-        self.create_subscription(Bool, '/estop_request', self._on_estop_request, 10)
+        # With real rclpy the subscriptions are served by a lean pump thread (see sub_pump.py)
+        # instead of the executor; the 100 Hz /imu/data alone cost ~10 % of a core there.
+        self._pump = SubscriptionPump(self, 'mcu_inputs') if SubscriptionPump else None
+        self._subscribe(Twist, '/cmd_vel', self._on_cmd_vel, 10)
+        self._subscribe(TwistStamped, '/cmd_vel_stamped', self._on_cmd_vel_stamped, 10)
+        self._subscribe(Bool, '/estop_request', self._on_estop_request, 10)
         if self.forward_imu:
-            self.create_subscription(Imu, str(param('forward_imu_topic')), self._on_imu_forward,
-                                     sensor_qos)
+            if self._pump is not None:
+                # raw: only the <= 45 Hz samples that pass the rate limit are deserialized
+                self._pump.subscribe(Imu, str(param('forward_imu_topic')),
+                                     self._on_imu_forward_raw, sensor_qos, raw=True,
+                                     lock=self._lock)
+            else:
+                self.create_subscription(Imu, str(param('forward_imu_topic')),
+                                         self._on_imu_forward, sensor_qos)
 
         # ---- services (vendor base_driver_node contract) ---------------------
         if CutterControl is not None:
-            self.create_service(CutterControl, '/cutter_control', self._srv_cutter_control)
+            self.create_service(CutterControl, '/cutter_control',
+                                self._locked(self._srv_cutter_control))
         if ChargingControl is not None:
-            self.create_service(ChargingControl, '/charging', self._srv_charging)
-        self.create_service(Empty, '/clear_estop', self._srv_clear_estop)
-        self.create_service(Trigger, '/cutter_off', self._srv_cutter_off)
+            self.create_service(ChargingControl, '/charging', self._locked(self._srv_charging))
+        self.create_service(Empty, '/clear_estop', self._locked(self._srv_clear_estop))
+        self.create_service(Trigger, '/cutter_off', self._locked(self._srv_cutter_off))
 
-        # ---- timers -------------------------------------------------------
-        # Default single-threaded executor: all timers/callbacks touch the serial port, so no
-        # locking is needed as long as rclpy.spin() (not a MultiThreadedExecutor) is used.
-        self.create_timer(0.01, self._poll_serial)                       # 100 Hz RX poll
-        self.create_timer(self.heartbeat_period, self._send_heartbeat)
-        self.create_timer(1.0 / max(speed_cmd_rate, 1.0), self._send_speed)
-        self.create_timer(1.0 / max(odom_rate, 1.0), self._reckon)
+        # The two 100/50 Hz publishers send pre-serialized CDR (sub_pump serializers, unit
+        # tested against rclpy): a typed publish costs ~0.4 ms more CPU here (message object,
+        # clock stamp, Python->C conversion). Typed publishing remains the fallback.
+        self._status_ser = None
+        self._fast_odom = False
+        if SubscriptionPump is not None:
+            if MowerBaseDevStatus is not None:
+                self._status_ser = flat_serializer(MowerBaseDevStatus)
+            self._fast_odom = odometry_bytes is not None
+            if bool(self.get_parameter('use_sim_time').value):
+                self._stamp_ns = lambda: self.get_clock().now().nanoseconds
+            else:
+                self._stamp_ns = time.time_ns       # ROS time == system time without sim time
+
+        # ---- periodic work ----------------------------------------------------
+        # Run by the I/O thread (start_io()), not by rclpy timers: the 100 Hz RX poll plus
+        # the 50/20/10 Hz timers were ~180 executor wakes/s (~40 % of a core). The I/O thread
+        # blocks in select() on the port and dispatches frames the moment they arrive.
+        self._periodic = [
+            (self.heartbeat_period, self._send_heartbeat),
+            (1.0 / max(speed_cmd_rate, 1.0), self._send_speed),
+            (1.0 / max(odom_rate, 1.0), self._reckon),
+        ]
 
         self.get_logger().info(
             'mower_mcu_driver up: %s @ %d baud, heartbeat every %.0f ms (period UNKNOWN), '
-            'cmd_vel %.0f Hz, odom %.0f Hz'
+            'cmd_vel %.0f Hz, odom %.0f Hz, speed loop %s'
             % (self.port, self.baud, self.heartbeat_period * 1000.0,
-               speed_cmd_rate, odom_rate))
+               speed_cmd_rate, odom_rate,
+               'CLOSED (pid_enabled)' if self.pid_enabled else 'open (pid_enabled=false)'))
+
+    # ------------------------------------------------------------- threading
+    def _locked(self, fn):
+        def wrapper(*args):
+            with self._lock:
+                return fn(*args)
+        wrapper.__name__ = getattr(fn, '__name__', 'locked')
+        return wrapper
+
+    def _subscribe(self, msg_type, topic, callback, qos):
+        if self._pump is not None:
+            return self._pump.subscribe(msg_type, topic, callback, qos, lock=self._lock)
+        return self.create_subscription(msg_type, topic, callback, qos)
+
+    def start_io(self):
+        """Start the serial I/O thread and the subscription pump (called by main())."""
+        if self._io_thread is None:
+            self._io_stop = False
+            self._io_thread = threading.Thread(target=self._io_loop, name='mcu_io',
+                                               daemon=True)
+            self._io_thread.start()
+        if self._pump is not None:
+            self._pump.start()
+
+    def stop_io(self, timeout=2.0):
+        self._io_stop = True
+        if self._pump is not None:
+            self._pump.stop(timeout)
+        if self._io_thread is not None:
+            self._io_thread.join(timeout)
+            self._io_thread = None
+
+    def _io_loop(self):
+        """Serial RX as frames arrive + the periodic heartbeat / SpeedData / odometry."""
+        now = time.monotonic()
+        due = [now + period for period, _fn in self._periodic]
+        errors = set()
+        while not self._io_stop:
+            try:
+                timeout = max(0.0, min(due) - time.monotonic())
+                ser = self._ser
+                if ser is None:
+                    with self._lock:
+                        self._open_serial()        # rate-limited to one attempt per 2 s
+                    if self._ser is None:
+                        time.sleep(min(timeout, 0.05))
+                else:
+                    try:
+                        fd = ser.fileno()
+                    except Exception:  # noqa: BLE001 - port object without an fd
+                        fd = None
+                    if fd is None:
+                        time.sleep(min(timeout, 0.005))
+                        readable = True
+                    else:
+                        readable = bool(select.select([fd], [], [], timeout)[0])
+                    if readable:
+                        with self._lock:
+                            if self._ser is ser:
+                                self._poll_serial()
+                now = time.monotonic()
+                for idx, (period, fn) in enumerate(self._periodic):
+                    if now >= due[idx]:
+                        due[idx] += period
+                        if due[idx] <= now:        # fell behind: do not burst to catch up
+                            due[idx] = now + period
+                        with self._lock:
+                            fn()
+            except Exception as exc:  # noqa: BLE001 - keep the link alive, log once per type
+                key = type(exc).__name__
+                if key not in errors:
+                    errors.add(key)
+                    self.get_logger().error('mcu I/O loop error (logged once per type):\n%s'
+                                            % traceback.format_exc())
+                time.sleep(0.01)
 
     # ------------------------------------------------------------------ serial
     def _open_serial(self):
@@ -787,6 +1041,21 @@ class McuNode(Node):
         """
         if self._sensor_pub is None or self._sensor_info is None or MowerSensorInfo is None:
             return
+        # Rate limit (see sensor_info_rate_hz), but never delay a change of the sensor flags,
+        # versions, battery flags or the motion/cutting state.
+        now = time.monotonic()
+        cutter = self._motors.get('cutter')
+        linear, angular, _measured = self._speed(now)
+        key = (tuple(self._sensor_info.values()), tuple(self._versions.items()),
+               (self._battery or {}).get('dock_ok'), (self._battery or {}).get('error'),
+               bool(cutter and abs(cutter['speed']) > 500),
+               abs(linear) > 1e-2 or abs(angular) > 1e-2,
+               now - self._cmd_stamp < self.cmd_vel_timeout)
+        if key == self._sensor_info_pub_key and \
+                now - self._sensor_info_pub_t < self._sensor_info_period:
+            return
+        self._sensor_info_pub_key = key
+        self._sensor_info_pub_t = now
         try:
             msg = MowerSensorInfo()
         except Exception as exc:  # pragma: no cover - defensive
@@ -809,6 +1078,10 @@ class McuNode(Node):
         if self._status_pub is None or self._sensor_info is None:
             return
         s = self._sensor_info
+        if self._status_ser is not None:
+            self._status_pub.publish(self._status_ser(self._dev_status_values(s),
+                                                      self._stamp_ns()))
+            return
         try:
             msg = MowerBaseDevStatus()
             msg.header.stamp = self.get_clock().now().to_msg()
@@ -836,6 +1109,31 @@ class McuNode(Node):
                                     throttle_duration_sec=30.0)
             return
         self._status_pub.publish(msg)
+
+    def _dev_status_values(self, s):
+        """Field values of /mower_base/status, identical to the typed path above."""
+        cutter = self._motors.get('cutter')
+        now = time.monotonic()
+        linear, angular, measured = self._speed(now)
+        dock_ok = bool(self._battery and self._battery.get('dock_ok'))
+        return {
+            'is_cutting': bool(cutter and abs(cutter['speed']) > 500),
+            'is_moving': bool(measured and (abs(linear) > 1e-2 or abs(angular) > 1e-2)),
+            'is_cmd_moving': bool(now - self._cmd_stamp < self.cmd_vel_timeout
+                                  and (abs(self._cmd_linear) > 1e-2
+                                       or abs(self._cmd_angular) > 1e-2)),
+            'is_docking_done': dock_ok,
+            'is_charging': bool(dock_ok and self._charging_enabled),
+            'bumper_routing_enabled': True,
+            'battery_gate_open': bool(s['battery_gate']),
+            'press_module': bool(s['press_module']),
+            'stop_triggered': bool(s['stop']) or self._estop_latched,
+            'bumper_triggered': bool(s['bumper'] or s['bumper_l'] or s['bumper_r']),
+            'left_bumper_triggered': bool(s['bumper_l']),
+            'right_bumper_triggered': bool(s['bumper_r']),
+            'rain_triggered': bool(s['rain']),
+            'lift_triggered': bool(s['lift']),
+        }
 
     def _fill_sensor_info(self, msg):
         """Fill every field of ``msg`` from the cached MCU state.
@@ -916,12 +1214,11 @@ class McuNode(Node):
         self._on_cmd_vel(msg.twist)
 
     def _map_command(self, twist):
-        """Simple host-side ``/cmd_vel`` -> ``SpeedData`` mapping.
+        """Scale + clamp ``/cmd_vel`` to the PID setpoint range.
 
-        TODO(port): the stock node runs a real controller here (``libpid_controller.so``,
-        gains in ``mower_base_pkg/config/base.yaml``: linear 0.9/0.3/1.0, angular 0.9/0.3/0.5,
-        both clamped to +-0.3).  Until that is ported this is only a scale + clamp; expect
-        different dynamics and no wheel-level closed loop.
+        The actual closed-loop velocity control is in :meth:`_send_speed` which runs
+        host-side PID (port of ``libpid_controller.so``) against measured SpeedData
+        from the MCU.  This method only maps the user command to the PID setpoint.
         """
         linear = float(twist.linear.x) * self.linear_scale
         angular = float(twist.angular.z) * self.angular_scale
@@ -934,13 +1231,60 @@ class McuNode(Node):
         self._write(build_frame([(TYPE_HEARTBEAT, MOD_ALL, heartbeat_payload())]))
 
     def _send_speed(self):
-        """Stream the current ``SpeedData`` command (zeros once /cmd_vel goes stale).
+        """Stream ``SpeedData`` commands to the MCU, optionally PID-corrected.
 
-        Streaming zeros instead of stopping the stream makes a stale command fail safe on
-        our side; the MCU additionally has its own (uncharacterised) command timeout.
+        With ``pid_enabled`` false (the default) the *commanded* body velocity goes on
+        the wire verbatim, which is the vendor contract: ``mcu_protocol_spec.md`` 10b
+        records that the stock node sends **no SpeedData at all while idle**, so 0,0 at
+        rest is the most aggressive thing we ever put there.
+
+        With ``pid_enabled`` true the host-side velocity loop closes on the MCU's measured
+        ``SpeedData`` (port of ``libpid_controller.so`` / ``mower_controller::PidControllerROS``).
+        Leave it off until /mcu/measured_speed has been checked against a known motion: an
+        unverified feedback sign or unit scale turns the +-0.3 clamp into a bang-bang limit
+        cycle that drives the wheels under a zero cmd_vel (observed on the mower 2026-10-06:
+        wheels oscillating and reversing at idle).
         """
-        linear, angular = self._commanded()
+        # Commanded velocity (zeros when stale or interlocked)
+        cmd_linear, cmd_angular = self._commanded()
+
+        if self.pid_enabled:
+            # Closed loop: error = setpoint - measured, output clamped to the PID bounds.
+            linear = self._pid_linear(cmd_linear - self._meas_linear)
+            angular = self._pid_angular(cmd_angular - self._meas_angular)
+        else:
+            # Open loop: exactly what was asked for (vendor behaviour at idle).
+            linear, angular = cmd_linear, cmd_angular
+
         self._write(build_frame([(TYPE_ROS_MOWER, MOD_SPEED, speed_payload(linear, angular))]))
+        self._publish_speed_telemetry(cmd_linear, cmd_angular, linear, angular)
+
+    def _publish_speed_telemetry(self, cmd_linear, cmd_angular, sent_linear, sent_angular):
+        """Publish measured / commanded / on-the-wire body velocity at a low rate.
+
+        Observational only: this is how the feedback sign and units a PID would need get
+        validated against a known motion, with none of it able to influence the wire.
+        """
+        if self._speed_telemetry_period <= 0.0:
+            return
+        now = time.monotonic()
+        if now - self._speed_telemetry_t < self._speed_telemetry_period:
+            return
+        self._speed_telemetry_t = now
+
+        stamp = self.get_clock().now().to_msg()
+
+        def _twist(linear, angular):
+            msg = TwistStamped()
+            msg.header.stamp = stamp
+            msg.header.frame_id = self.frame_id
+            msg.twist.linear.x = float(linear)
+            msg.twist.angular.z = float(angular)
+            return msg
+
+        self._meas_speed_pub.publish(_twist(self._meas_linear, self._meas_angular))
+        self._cmd_speed_pub.publish(_twist(cmd_linear, cmd_angular))
+        self._sent_speed_pub.publish(_twist(sent_linear, sent_angular))
 
     def _commanded(self):
         if self._interlock_active() or self._estop_latched:
@@ -974,7 +1318,11 @@ class McuNode(Node):
             self._interlock_latched = False
             self.get_logger().info('interlock released; cutter stays OFF until re-requested')
             self._cutter_requested_on = False
-        self._estop_pub.publish(Bool(data=bool(active)))
+        now = time.monotonic()
+        if active != self._estop_pub_value or now - self._estop_pub_t >= self._estop_period:
+            self._estop_pub_value = active
+            self._estop_pub_t = now
+            self._estop_pub.publish(Bool(data=bool(active)))
 
     def _send_cutter(self, enable, speed, height_position=None):
         payload = cutter_payload(enable, False, speed if enable else 0,
@@ -982,6 +1330,11 @@ class McuNode(Node):
                                  height_position if height_position is not None else 0)
         self._cutter_cmd = payload
         self._write(build_frame([(TYPE_ROS_MOWER, MOD_CUTTER, payload)]))
+
+    def _on_imu_forward_raw(self, data):
+        if time.monotonic() - self._last_imu_fwd < 1.0 / max(self.forward_imu_rate, 1.0):
+            return
+        self._on_imu_forward(parse_imu(data) or deserialize_message(data, Imu))
 
     def _on_imu_forward(self, msg):
         """Relay the host IMU to the MCU as ``ImuData`` at <= forward_imu_rate Hz."""
@@ -1092,13 +1445,20 @@ class McuNode(Node):
             self._yaw = self._yaw + angular * dt
         self._yaw = math.atan2(math.sin(self._yaw), math.cos(self._yaw))
 
+        _, _, qz, qw = _yaw_to_quaternion(self._yaw)
+        twist_cov = _TWIST_COVARIANCE_MEASURED if measured else _TWIST_COVARIANCE_COMMANDED
+        if self._fast_odom:
+            self._odom_pub.publish(odometry_bytes(
+                self._stamp_ns(), self.odom_frame, self.base_frame,
+                (self._x, self._y, 0.0), (0.0, 0.0, qz, qw),
+                (linear, 0.0, 0.0), (0.0, 0.0, angular), _POSE_COVARIANCE, twist_cov))
+            return
         msg = Odometry()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.odom_frame
         msg.child_frame_id = self.base_frame
         msg.pose.pose.position.x = self._x
         msg.pose.pose.position.y = self._y
-        _, _, qz, qw = _yaw_to_quaternion(self._yaw)
         msg.pose.pose.orientation.z = qz
         msg.pose.pose.orientation.w = qw
         msg.pose.covariance = _POSE_COVARIANCE
@@ -1152,11 +1512,13 @@ _TWIST_COVARIANCE_COMMANDED = _diag6(1.00, 1e6, 1e6, 1e6, 1e6, 1.00)
 def main(args=None):
     rclpy.init(args=args)
     node = McuNode()
+    node.start_io()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
+        node.stop_io()
         node.shutdown()
         node.destroy_node()
         if rclpy.ok():

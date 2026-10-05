@@ -19,6 +19,7 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
   <exec_depend>mower_interfaces</exec_depend>
   <exec_depend>mowgli_interfaces</exec_depend>
   <exec_depend>launch</exec_depend>

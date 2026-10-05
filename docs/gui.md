@@ -139,6 +139,16 @@ args left at 0.0/0.0 the launch logs a WARN and the first GPS fix becomes the
 origin, which moves every boot and misaligns the GUI map. With them set,
 `navsat_transform_node` gets `wait_for_datum: true` and `datum: [lat, lon, yaw]`.
 
+From the GUI: "set datum from GPS" (Settings > Positioning) calls
+`/navsat_to_absolute_pose/set_datum` (`mower_gui_bridge`). With a valid fix it
+replies `"<lat>,<lon>"`, writes `datum_lat`/`datum_lon` into
+`config/gui/mowgli_robot.yaml` and `/userdata/ros2/datum.env`, and calls
+robot_localization's `/datum`. When `datum_lat`/`datum_lon` are not passed,
+`mower.launch.py` reads them from `datum_env_file` (default
+`/userdata/ros2/datum.env`), so the datum survives restarts. The reply warns when the
+datum moves by more than 1 m, because stored areas and the dock pose are in map-frame
+metres. See `src/mower_gui_bridge/README.md#set_datum`.
+
 ## Datum pinning
 
 The GUI converts between GPS and map coordinates with `datum_lat` /
