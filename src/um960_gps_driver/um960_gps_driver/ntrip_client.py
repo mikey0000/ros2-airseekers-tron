@@ -260,7 +260,8 @@ class NtripConfig:
     def __init__(self, host: str, port: int = 2101, mountpoint: str = "", user: str = "",
                  password: str = "", version: int = 2, gga_interval_s: float = 10.0,
                  connect_timeout_s: float = 5.0, no_data_timeout_s: float = 20.0,
-                 reconnect_min_s: float = 1.0, reconnect_max_s: float = 30.0) -> None:
+                 reconnect_min_s: float = 1.0, reconnect_max_s: float = 30.0,
+                 bind_device: str = "") -> None:
         self.host = host
         self.port = int(port)
         self.mountpoint = mountpoint
@@ -272,6 +273,8 @@ class NtripConfig:
         self.no_data_timeout_s = float(no_data_timeout_s)
         self.reconnect_min_s = float(reconnect_min_s)
         self.reconnect_max_s = float(reconnect_max_s)
+        # Network interface to bind the socket to (SO_BINDTODEVICE), "" = any.
+        self.bind_device = bind_device
 
     def describe(self) -> str:
         """Log-safe description (never includes the password)."""
@@ -419,7 +422,10 @@ class NtripClient:
         """Connect + handshake. Returns body bytes that arrived with the header."""
         cfg = self.config
         self._set_state(STATE_CONNECTING)
-        sock = socket.create_connection((cfg.host, cfg.port), timeout=cfg.connect_timeout_s)
+        if cfg.bind_device:
+            sock = self._bound_connection(cfg)
+        else:
+            sock = socket.create_connection((cfg.host, cfg.port), timeout=cfg.connect_timeout_s)
         self._sock = sock
         gga = self._current_gga()
         sock.sendall(build_request(cfg.host, cfg.port, cfg.mountpoint, cfg.user, cfg.password,
@@ -447,6 +453,22 @@ class NtripClient:
         self._last_gga_attempt = None
         self._maybe_send_gga(force=True)
         return rest
+
+    @staticmethod
+    def _bound_connection(cfg: "NtripConfig") -> socket.socket:
+        """Connect through one interface, like the vendor's ``set_bind_device``."""
+        family, kind, proto, _name, addr = socket.getaddrinfo(
+            cfg.host, cfg.port, socket.AF_INET, socket.SOCK_STREAM)[0]
+        sock = socket.socket(family, kind, proto)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_BINDTODEVICE", 25),
+                            cfg.bind_device.encode() + b"\0")
+            sock.settimeout(cfg.connect_timeout_s)
+            sock.connect(addr)
+        except OSError:
+            sock.close()
+            raise
+        return sock
 
     def _read_head(self, sock: socket.socket) -> Tuple[bytes, bytes]:
         buf = bytearray()
@@ -590,6 +612,10 @@ __all__ = [
 # --------------------------------------------------------------------------------------
 VENDOR_NTRIP_FILE = "/userdata/mower/ntrip.yaml"
 
+# Vendor ntripConfig(): ntrip_netmode -> interface for SO_BINDTODEVICE.
+# "auto" (and our default "") leave the socket unbound.
+NETMODE_DEVICES = {"4g": "usb0", "wifi": "wlan0", "auto": "", "": ""}
+
 
 def load_vendor_ntrip_file(path: str) -> Optional[Dict[str, object]]:
     """Read the vendor's ``/userdata/mower/ntrip.yaml``.
@@ -643,4 +669,5 @@ def load_vendor_ntrip_file(path: str) -> Optional[Dict[str, object]]:
         "user": _str("ntrip_user"),
         "password": _str("ntrip_passwd"),
         "mountpoint": _str("ntrip_mountpoint"),
+        "netmode": _str("ntrip_netmode"),
     }

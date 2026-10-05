@@ -174,3 +174,11 @@ def test_no_correction_tokens_means_unknown_but_capable():
     for text in (NTRIP_STR, LORA_STR, 'corr_src=none corr=off corr_flow=idle'):
         g = sm.derive_gnss_status(sm.NAVSAT_FIX, DIAG_COV, 2, sm.parse_fix_status(text))
         assert g['value_flags'] & ~g['capability_flags'] == 0
+
+
+def test_held_rtcm_is_waiting_not_active():
+    text = 'um960=connected quality=GPS corr_src=ntrip corr=streaming corr_flow=held'
+    g = sm.derive_gnss_status(sm.NAVSAT_FIX, DIAG_COV, 2, sm.parse_fix_status(text))
+    assert g['correction_transport_status'] == sm.CORRECTION_TRANSPORT_STATUS_STREAMING
+    assert g['correction_flow_status'] == sm.CORRECTION_FLOW_STATUS_WAITING
+    assert not g['corrections_active']

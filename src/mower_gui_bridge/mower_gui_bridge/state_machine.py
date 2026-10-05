@@ -275,6 +275,8 @@ _TRANSPORT_BY_STATE = {
 _FLOW_BY_TOKEN = {
     'idle': CORRECTION_FLOW_STATUS_IDLE,
     'waiting': CORRECTION_FLOW_STATUS_WAITING,
+    # RTCM arrives from the caster but is held until the rover board acks NRTK.
+    'held': CORRECTION_FLOW_STATUS_WAITING,
     'active': CORRECTION_FLOW_STATUS_ACTIVE,
     'stale': CORRECTION_FLOW_STATUS_STALE,
     'invalid': CORRECTION_FLOW_STATUS_INVALID,

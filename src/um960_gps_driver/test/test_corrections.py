@@ -125,43 +125,107 @@ def test_ntrip_without_host_falls_back_to_none():
         h.close()
 
 
-def test_ntrip_end_to_end_rtcm_reaches_the_port_and_gga_reaches_the_caster(caster):
+RESET_ON = b"RTKRESET\r\n" + lora.NRTK_ON.encode() + b"\r\n"
+ON = lora.NRTK_ON.encode() + b"\r\n"
+
+
+def test_ntrip_handshake_holds_rtcm_until_the_board_acks(caster):
     h = Harness(extra_params=_ntrip_params(caster))
     try:
         reader = PtyReader(h.master)
         h.send(GGA_RTK)
-        _wait(lambda: reader.poll() and sample_frame(1077, 1) in bytes(reader.data))
-        written = bytes(reader.data)
-        # The rover board is switched to network RTK before any RTCM goes out.
-        assert written.startswith(lora.NRTK_ON.encode() + b"\r\n")
-        assert sample_frame(1005, 0) in written
+        # Off->on transition: exactly RTKRESET once, then the 12-char ON command.
+        _wait(lambda: reader.poll().startswith(RESET_ON))
+        # RTCM arrives from the caster but the board has not said ON: nothing passes.
+        _wait(lambda: h.node.correction_summary()["rtcm_held_bytes"] > 0)
+        assert b"\xd3" not in reader.poll(0.1)
+        status = _status(h)
+        assert "corr=streaming corr_flow=held" in status
+        assert _corrections(h)["rtcm_gate"] == "held"
+        # Board acknowledges network RTK: RTCM flows unchanged.
+        h.send(_cs("GNRTK,ON"))
+        _wait(lambda: b"\xd3\x00\x13" in reader.poll())
         _wait(lambda: any(u.startswith("$GNGGA,101530.00,4807.038") for u in caster.uploads))
         status = _status(h)
         assert "corr_src=ntrip corr=streaming corr_flow=active" in status
         assert "corr_rate=" in status and "corr_age=" in status
         diag = _corrections(h)
-        assert diag["state"] == "streaming" and diag["frames"] >= 2
+        assert diag["rtcm_gate"] == "open" and diag["frames"] >= 2
         assert diag["mountpoint"] == caster.mountpoint and "password" not in json.dumps(diag)
-        assert diag["serial_bytes_written"] > 0
+        assert diag["serial_bytes_written"] > len(RESET_ON)
+        assert reader.poll().count(b"RTKRESET") == 1
     finally:
         h.close()
 
 
-def test_ntrip_synthesizes_gga_from_bestnav_and_reasserts_nrtk(caster):
+def test_ntrip_keepalive_repeats_on_every_period(caster):
+    h = Harness(extra_params=_ntrip_params(caster, ntrip_keepalive_s=0.5))
+    try:
+        reader = PtyReader(h.master)
+        _wait(lambda: reader.poll().startswith(RESET_ON))
+        t0 = time.monotonic()
+        # Unconditional: the board saying ON does not stop the keep-alive.
+        h.send(_cs("GNRTK,ON"))
+        _wait(lambda: reader.poll().count(ON) >= 4, timeout=4.0)
+        elapsed = time.monotonic() - t0
+        assert 1.2 < elapsed < 2.5, elapsed
+        assert reader.poll().count(b"RTKRESET") == 1
+    finally:
+        h.close()
+
+
+def test_board_on_to_off_triggers_reset_and_on(caster):
     h = Harness(extra_params=_ntrip_params(caster))
     try:
         reader = PtyReader(h.master)
+        _wait(lambda: reader.poll().startswith(RESET_ON))
+        h.send(_cs("GNRTK,OFF"))   # unknown -> OFF: just the keep-alive, no reset
+        assert reader.poll(0.2).count(b"RTKRESET") == 1
+        h.send(_cs("GNRTK,ON"))
+        reader.data.clear()
+        h.send(_cs("GNRTK,OFF"))   # ON -> OFF: RTKRESET + ON again
+        _wait(lambda: RESET_ON in reader.poll())
+        assert h.node.correction_summary()["rover_nrtk"] == "OFF"
+    finally:
+        h.close()
+
+
+def test_forward_without_board_ack_for_bench_tests(caster):
+    h = Harness(extra_params=_ntrip_params(caster, forward_rtcm_without_board_ack=True))
+    try:
+        reader = PtyReader(h.master)
+        _wait(lambda: sample_frame(1005, 0) in reader.poll())
+        assert _corrections(h)["rtcm_gate"] == "forced"
+    finally:
+        h.close()
+
+
+def test_ntrip_synthesizes_gga_from_bestnav(caster):
+    h = Harness(extra_params=_ntrip_params(caster))
+    try:
         h.send(_bestnav_frame(lat=48.2, lon=11.6))
         _wait(lambda: any(u.startswith("$GPGGA") for u in caster.uploads))
         gga = [u for u in caster.uploads if u.startswith("$GPGGA")][-1]
         assert ",4812.0000000,N,01136.0000000,E," in gga
-        # Rover board says it fell back to LoRa: the node asks again.
-        h.node._rover_nrtk_sent = 0.0
-        reader.poll(0.1)
-        reader.data.clear()
-        h.send(_cs("GNRTK,OFF"))
-        _wait(lambda: lora.NRTK_ON.encode() in reader.poll())
-        assert h.node.correction_summary()["rover_nrtk"] == "OFF"
+    finally:
+        h.close()
+
+
+def test_netmode_maps_to_bind_device(caster):
+    h = Harness(extra_params=_ntrip_params(caster, ntrip_netmode="wifi"))
+    try:
+        assert h.node.ntrip_config.bind_device == "wlan0"
+        assert _corrections(h)["netmode"] == "wifi"
+    finally:
+        h.close()
+    h = Harness(extra_params=_ntrip_params(caster, ntrip_netmode="4g"))
+    try:
+        assert h.node.ntrip_config.bind_device == "usb0"
+    finally:
+        h.close()
+    h = Harness(extra_params=_ntrip_params(caster))
+    try:
+        assert h.node.ntrip_config.bind_device == ""
     finally:
         h.close()
 
@@ -172,7 +236,8 @@ def test_vendor_ntrip_yaml_enables_ntrip_when_source_unset(caster, tmp_path):
         "ntrip_enable: true\nntrip_ip: \"%s\"\nntrip_port: %d\nntrip_user: \"%s\"\n"
         "ntrip_passwd: \"%s\"\nntrip_mountpoint: \"%s\"\n"
         % (caster.host, caster.port, caster.user, caster.password, caster.mountpoint))
-    h = Harness(extra_params={"ntrip_config_file": str(path)})
+    h = Harness(extra_params={"ntrip_config_file": str(path),
+                              "forward_rtcm_without_board_ack": True})
     try:
         assert h.node.correction_source == "ntrip"
         assert h.node.ntrip_config_source == str(path)

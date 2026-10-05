@@ -49,6 +49,7 @@ from .parsers import (
 )
 from . import lora
 from .ntrip_client import (
+    NETMODE_DEVICES,
     STATE_OFF,
     VENDOR_NTRIP_FILE,
     NtripClient,
@@ -136,9 +137,15 @@ class Um960Node(Node):
         # Position for the caster before the receiver has one (0/0 = unset).
         self.declare_parameter("ntrip_fallback_lat", 0.0)
         self.declare_parameter("ntrip_fallback_lon", 0.0)
-        # Sent on every (re)connect in ntrip mode: tells the rtk_rover board to take
-        # host RTCM instead of LoRa (vendor UnicoreGps::switchNRTK).
-        self.declare_parameter("ntrip_rover_commands", [lora.NRTK_ON])
+        # Network-RTK handshake with the rtk_rover board (ntrip mode only): RTKRESET +
+        # $GNRTK,ON*69 on the off->on transition, $GNRTK,ON*69 every keepalive period
+        # (the board falls back to LoRa after ~6 s without it).
+        self.declare_parameter("ntrip_keepalive_s", 4.0)
+        # RTCM is only forwarded while the board reports $GNRTK,ON. true = forward
+        # anyway (bench tests without the board).
+        self.declare_parameter("forward_rtcm_without_board_ack", False)
+        # "" / "auto" = any interface, "4g" = usb0, "wifi" = wlan0 (vendor netmode).
+        self.declare_parameter("ntrip_netmode", "")
         self.declare_parameter("corrections_topic", "/gps/corrections")
         self.declare_parameter("corrections_stale_s", 10.0)
         self.declare_parameter("set_lora_service", "/mower_gps_node/set_lora")
@@ -202,7 +209,11 @@ class Um960Node(Node):
         self._last_gga: Optional[str] = None
         self._last_gga_time = 0.0
         self._rover_nrtk: Optional[str] = None      # "ON"/"OFF" from $GNRTK
-        self._rover_nrtk_sent = 0.0
+        self._nrtk_on_sent = 0.0                    # monotonic time of the last ON
+        self._nrtk_lock = threading.Lock()
+        self._rtcm_held_bytes = 0
+        self._rtcm_held_warned = 0.0
+        self._nrtk_thread: Optional[threading.Thread] = None
         self._lora_pairing: Optional[str] = None    # "addr,channel" from $GNCON
         self.ntrip: Optional[NtripClient] = None
         if self.correction_source == "ntrip":
@@ -233,6 +244,10 @@ class Um960Node(Node):
                 % (self.ntrip_config.describe(), self.ntrip_config.gga_interval_s)
             )
             self.ntrip.start()
+            self._nrtk_thread = threading.Thread(
+                target=self._nrtk_keepalive_loop, name="um960_nrtk", daemon=True
+            )
+            self._nrtk_thread.start()
         else:
             self.get_logger().info("corrections: %s" % self.correction_source)
 
@@ -248,6 +263,7 @@ class Um960Node(Node):
         self.ntrip_config_source = "parameters"
         vendor_file = str(get("ntrip_config_file") or "")
         vendor = None
+        netmode = str(get("ntrip_netmode") or "").strip().lower()
         if vendor_file and (not host or not source):
             vendor = load_vendor_ntrip_file(vendor_file)
         if vendor is not None:
@@ -257,6 +273,7 @@ class Um960Node(Node):
                 mount = mount or str(vendor["mountpoint"])
                 user = user or str(vendor["user"])
                 password = password or str(vendor["password"])
+                netmode = netmode or str(vendor.get("netmode") or "").lower()
                 self.ntrip_config_source = vendor_file
             if not source and vendor["enable"]:
                 source = "ntrip"
@@ -274,16 +291,24 @@ class Um960Node(Node):
             )
             source = "none"
         self.correction_source = source
+        if netmode not in NETMODE_DEVICES:
+            self.get_logger().warn(
+                "ntrip_netmode %r unknown (4g|wifi|auto); socket left unbound" % netmode
+            )
+            netmode = ""
+        self.ntrip_netmode = netmode
         self.ntrip_config = NtripConfig(
             host, port, mount, user, password,
             version=int(get("ntrip_version") or 2),
             gga_interval_s=float(get("ntrip_gga_interval_s")),
             no_data_timeout_s=float(get("ntrip_no_data_timeout_s")),
             reconnect_max_s=float(get("ntrip_reconnect_max_s")),
+            bind_device=NETMODE_DEVICES[netmode],
         )
         self.fallback_lat = float(get("ntrip_fallback_lat") or 0.0)
         self.fallback_lon = float(get("ntrip_fallback_lon") or 0.0)
-        self.rover_commands = [str(c) for c in get("ntrip_rover_commands") or []]
+        self.nrtk_keepalive_s = max(0.5, float(get("ntrip_keepalive_s")))
+        self.forward_without_ack = bool(get("forward_rtcm_without_board_ack"))
         self.corrections_stale_s = float(get("corrections_stale_s"))
         self.lora_pairing_enabled = bool(get("lora_pairing_enabled"))
 
@@ -316,16 +341,51 @@ class Um960Node(Node):
         self._serial_bytes_written += len(data)
         return True
 
+    def _rtcm_gate_open(self) -> bool:
+        return self.forward_without_ack or self._rover_nrtk == "ON"
+
     def _write_rtcm(self, data: bytes) -> None:
-        """NTRIP callback (client thread): RTCM straight into the UM960 port."""
+        """NTRIP callback (client thread): RTCM into the UM960 port via the board.
+
+        In LoRa mode the rtk_rover board does not pass host bytes to the UM960, so
+        RTCM is held (dropped) until the board reports ``$GNRTK,ON`` - as the vendor
+        ``rtcmCallback`` does - unless ``forward_rtcm_without_board_ack``.
+        """
+        if not self._rtcm_gate_open():
+            self._rtcm_held_bytes += len(data)
+            now = time.monotonic()
+            if now - self._rtcm_held_warned > 10.0:
+                self._rtcm_held_warned = now
+                self.get_logger().warn(
+                    "holding RTCM (%d bytes so far): rover board reports network RTK %s, "
+                    "not ON" % (self._rtcm_held_bytes, self._rover_nrtk or "unknown")
+                )
+            return
         if not self._serial_write(data, "rtcm"):
             raise SerialError("receiver port not open")
 
-    def _send_rover_commands(self) -> None:
-        for command in self.rover_commands:
-            if self._serial_write((command.rstrip("\r\n") + "\r\n").encode("ascii"), "rover"):
-                self.get_logger().info("sent rover command: %s" % command)
-        self._rover_nrtk_sent = time.monotonic()
+    def _nrtk_enable(self, reason: str) -> None:
+        """Off->on transition: ``RTKRESET`` once, then ``$GNRTK,ON*69``."""
+        with self._nrtk_lock:
+            ok = self._serial_write(b"RTKRESET\r\n", "rover")
+            ok = self._serial_write((lora.NRTK_ON + "\r\n").encode("ascii"), "rover") and ok
+            self._nrtk_on_sent = time.monotonic()
+        self.get_logger().info(
+            "network RTK on (%s): sent RTKRESET + %s%s" % (reason, lora.NRTK_ON,
+                                                           "" if ok else " (write FAILED)")
+        )
+
+    def _nrtk_keepalive_loop(self) -> None:
+        """Re-send ``$GNRTK,ON*69`` every ``ntrip_keepalive_s``, unconditionally."""
+        while not self._stopping.wait(0.05):
+            port = self._port
+            if port is None or not port.is_open:
+                continue
+            with self._nrtk_lock:
+                if time.monotonic() - self._nrtk_on_sent < self.nrtk_keepalive_s:
+                    continue
+                self._serial_write((lora.NRTK_ON + "\r\n").encode("ascii"), "rover")
+                self._nrtk_on_sent = time.monotonic()
 
     def _gga_for_caster(self) -> Optional[str]:
         """Latest receiver GGA, else one synthesized from the fix or the fallback."""
@@ -359,6 +419,10 @@ class Um960Node(Node):
             out["mountpoint"] = self.ntrip_config.mountpoint
             out["config_from"] = self.ntrip_config_source
             out["rover_nrtk"] = self._rover_nrtk
+            out["rtcm_held_bytes"] = self._rtcm_held_bytes
+            out["rtcm_gate"] = ("forced" if self.forward_without_ack
+                                else "open" if self._rover_nrtk == "ON" else "held")
+            out["netmode"] = self.ntrip_netmode or "unbound"
             out["serial_bytes_written"] = self._serial_bytes_written
             age = stats["frame_age_s"]
             if age is None:
@@ -368,6 +432,8 @@ class Um960Node(Node):
             else:
                 flow = "stale"
             out["corr_age_s"] = age if age is not None else stats["age_s"]
+            if out["rtcm_gate"] == "held" and stats["bytes_rx"]:
+                flow = "held"  # arriving from the caster, not reaching the receiver
         elif self.correction_source == "lora":
             out["state"] = "lora"
             out["lora_pairing"] = self._lora_pairing
@@ -468,7 +534,10 @@ class Um960Node(Node):
             except SerialError as exc:
                 self.get_logger().warn("failed to send config %r: %s" % (command, exc))
         if self.correction_source == "ntrip":
-            self._send_rover_commands()
+            # A (re)opened port is an off->on transition: the board may have
+            # rebooted or fallen back to LoRa while we were away.
+            self._rover_nrtk = None
+            self._nrtk_enable("port connected")
         elif self.correction_source == "lora" and self.lora_pairing_enabled:
             # Vendor checkRun(): ask the rover board for its current LoRa pairing.
             self._serial_write((lora.QUERY_PAIRING + "\r\n").encode("ascii"), "lora_pairing")
@@ -557,15 +626,14 @@ class Um960Node(Node):
         fields = line[1:].split("*")[0].split(",")
         if fields[0] == "GNRTK" and len(fields) > 1:
             state = fields[1].strip().upper()
-            changed = state != self._rover_nrtk
+            previous = self._rover_nrtk
             self._rover_nrtk = state
-            if changed:
+            if state != previous:
                 self.get_logger().info("rover board reports network RTK %s" % state)
-            # The board fell back to LoRa while we stream NTRIP: ask again (rate
-            # limited), as the vendor keep-alive does.
-            if (self.correction_source == "ntrip" and state != "ON"
-                    and time.monotonic() - self._rover_nrtk_sent > 5.0):
-                self._send_rover_commands()
+            # ON -> OFF: the board fell back to LoRa. Vendor: RTKReset(), then the
+            # keep-alive switches it on again; do both right away.
+            if self.correction_source == "ntrip" and previous == "ON" and state != "ON":
+                self._nrtk_enable("board dropped to %s" % state)
         elif fields[0] == "GNCON" and len(fields) > 2:
             self._lora_pairing = "%s,%s" % (fields[1], fields[2])
 
@@ -760,6 +828,8 @@ class Um960Node(Node):
         self._stopping.set()
         if self.ntrip is not None:
             self.ntrip.stop()
+        if self._nrtk_thread is not None:
+            self._nrtk_thread.join(timeout=1.0)
         self._close_port()
         if self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2.0)

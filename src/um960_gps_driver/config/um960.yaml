@@ -62,9 +62,17 @@ um960_node:
     # empty. Keys: ntrip_enable, ntrip_ip, ntrip_port, ntrip_user, ntrip_passwd,
     # ntrip_mountpoint. Set to "" to ignore it.
     ntrip_config_file: "/userdata/mower/ntrip.yaml"
-    # Written on every (re)connect in ntrip mode only: switches the rtk_rover board
-    # from LoRa to host-injected RTCM (vendor UnicoreGps::switchNRTK).
-    ntrip_rover_commands: ["$GNRTK,ON*69"]
+    # Network-RTK handshake with the rtk_rover board (ntrip mode only):
+    # RTKRESET + "$GNRTK,ON*69" when the port opens or the board drops ON -> OFF,
+    # then "$GNRTK,ON*69" every ntrip_keepalive_s (the board falls back to LoRa
+    # after ~6 s without it).
+    ntrip_keepalive_s: 4.0
+    # RTCM is held until the board reports $GNRTK,ON. true = forward anyway (bench
+    # tests with a pty / no rover board).
+    forward_rtcm_without_board_ack: false
+    # "" or "auto" = any interface, "4g" = bind to usb0, "wifi" = bind to wlan0
+    # (vendor ntrip_netmode; falls back to the vendor file's value).
+    ntrip_netmode: ""
 
     # --- diagnostics ---
     corrections_topic: "/gps/corrections"  # 1 Hz JSON
