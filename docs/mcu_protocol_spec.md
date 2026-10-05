@@ -135,6 +135,20 @@ Measured rates (from `mower_base_node` live): `/odom`, `/imu`, `/wheel_vel` **10
 
 Auxiliary (same node, non-MCU): rain ADC `/dev/rain` (thresholds `rain_min`/`rain_max` = 2000/4000), GPIO buttons `/dev/keyboard` (`input/event5`: pause/dock/power).
 
+## 10b. Host→MCU traffic, measured (mcu_tap capture 2026-10-05, 72 s, vendor node idle)
+
+| Item | Measured |
+|---|---|
+| Heartbeat (type 255) | every **100 ms** (n=717, min 0.098 / mean 0.100 / max 0.111 s) |
+| SpeedData TX | **none while idle** (vendor streams it only on `/cmd_vel`) |
+| ImuData TX (module 9) | **~44 Hz**, WIT raw counts, gyro fields always 0; e.g. pitch −1299, roll −32360 (IMU mounted inverted), accz ≈ 2017 (1 g) |
+| SensorInfoControl TX | none |
+| MCU→host | SENSOR + SPEED ~100 Hz each, MOTORS ~3.4 Hz, BATTERY/VERSION/BMS/mod 7 (4 B) ~1.7 Hz |
+
+Without the ImuData stream the MCU reports `lift=1` continuously (observed on 2026-10-06 with the
+mower on the ground); vendor captures with the stream never show `lift=1`. `mower_mcu_driver`
+therefore forwards `/imu/data` as ImuData (`forward_imu`, 45 Hz).
+
 ## 11. Heartbeat & failsafe — known vs unknown
 
 **Known:** `TYPE_HEARTBEAT` (255) carries an 8-byte wall-clock timestamp; the host side has `DevHealthHandler::{updateHeartbeat, checkHeartbeat}`; the MCU enforces estop / lift / bumper cut-offs itself.

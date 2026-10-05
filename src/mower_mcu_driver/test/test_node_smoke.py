@@ -391,3 +391,30 @@ class SafetyAndServicesTest(unittest.TestCase):
         self.assertTrue(resp.result)
         payloads = [p for (_t, m, p) in self._frames() if m == mn.MOD_CHARGE]
         self.assertEqual(payloads, [b'\x01'])
+
+
+class ImuForwardTest(unittest.TestCase):
+    def test_imu_payload_matches_vendor_scaling(self):
+        import math
+        # 1 g on z, level, yaw 0 -> accz 2048 counts, angles 0
+        pl = mn.imu_payload(0.0, 0.0, 0.0, (0.0, 0.0, 9.80665), (0.0, 0.0, 0.0))
+        self.assertEqual(len(pl), 18)
+        vals = struct.unpack(mn.IMU_FMT, pl)
+        self.assertEqual(vals[:3], (0, 0, 0))
+        self.assertEqual(vals[5], 2048)
+        # roll -177.8 deg (IMU mounted upside down, as in the vendor capture) -> ~ -32360 counts
+        pl = mn.imu_payload(math.radians(-177.8), math.radians(-7.14), 0.0, (0, 0, 0), (0, 0, 0))
+        pitch, roll = struct.unpack(mn.IMU_FMT, pl)[:2]
+        self.assertAlmostEqual(roll, -32368, delta=12)
+        self.assertAlmostEqual(pitch, -1300, delta=3)
+
+    def test_quat_to_rpy_roundtrip(self):
+        import math
+        r, p, y = 0.3, -0.2, 1.1
+        cy, sy = math.cos(y / 2), math.sin(y / 2); cp, sp = math.cos(p / 2), math.sin(p / 2)
+        cr, sr = math.cos(r / 2), math.sin(r / 2)
+        q = (sr * cp * cy - cr * sp * sy, cr * sp * cy + sr * cp * sy,
+             cr * cp * sy - sr * sp * cy, cr * cp * cy + sr * sp * sy)
+        rr, pp, yy = mn._quat_to_rpy(*q)
+        for a, b in ((rr, r), (pp, p), (yy, y)):
+            self.assertAlmostEqual(a, b, places=6)

@@ -286,6 +286,32 @@ def cutter_payload(cutter_enable, cutter_direction, cutter_speed, height_enable,
     return cutter + height
 
 
+def imu_payload(roll, pitch, yaw, acc, gyro):
+    """``ImuData`` (18 B, MODULE_IMU, host->MCU): pitch, roll, yaw, accx..z, gyrox..z as int16 in
+    WIT raw counts (angle*32768/180 deg, acc*32768/16 g, gyro*32768/2000 dps).
+
+    The vendor host forwards the WIT JY61P readings to the MCU at ~44 Hz (mcu_tap capture
+    2026-10-05: 3180 ImuData frames in 72 s, gyro fields always 0). The MCU uses them for its
+    own tilt/lift logic, so without this stream it reports the mower as lifted.
+    """
+    def clamp(v):
+        return max(-32768, min(32767, int(round(v))))
+    ang = lambda r: clamp(r / math.pi * 32768.0)                       # rad -> counts
+    acc_c = lambda a: clamp(a / (16.0 * 9.80665) * 32768.0)            # m/s^2 -> counts
+    gyr_c = lambda g: clamp(g / math.radians(2000.0) * 32768.0)        # rad/s -> counts
+    return struct.pack(IMU_FMT, ang(pitch), ang(roll), ang(yaw),
+                       acc_c(acc[0]), acc_c(acc[1]), acc_c(acc[2]),
+                       gyr_c(gyro[0]), gyr_c(gyro[1]), gyr_c(gyro[2]))
+
+
+def _quat_to_rpy(x, y, z, w):
+    roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+    sp = max(-1.0, min(1.0, 2.0 * (w * y - z * x)))
+    pitch = math.asin(sp)
+    yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    return roll, pitch, yaw
+
+
 def charge_payload(enable):
     return struct.pack(CHARGE_FMT, 1 if enable else 0)
 
@@ -392,7 +418,8 @@ class McuNode(Node):
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('imu_frame', 'imu_link')
         self.declare_parameter('frame_id', 'base_link')
-        # TODO(unknown): the real heartbeat period / MCU failsafe timeout were never recovered.
+        # Heartbeat period 100 ms CONFIRMED from the vendor tap capture (2026-10-05, 718 beats,
+        # mean 0.100 s). The MCU failsafe timeout is still uncharacterised.
         self.declare_parameter('heartbeat_period', 0.1)
         self.declare_parameter('speed_cmd_rate', 20.0)
         self.declare_parameter('cmd_vel_timeout', 0.5)
@@ -410,6 +437,10 @@ class McuNode(Node):
         self.declare_parameter('interlock_on_stop', True)
         self.declare_parameter('interlock_on_bumper', False)
         self.declare_parameter('cutter_default_speed', 100)   # MotorControl.speed (% or raw)
+        # Forward the WIT IMU to the MCU like the vendor host (ImuData @ ~44 Hz; see imu_payload).
+        self.declare_parameter('forward_imu', True)
+        self.declare_parameter('forward_imu_topic', '/imu/data')
+        self.declare_parameter('forward_imu_rate', 45.0)
         self.declare_parameter('battery_voltage_scale', 0.1)
         self.declare_parameter('battery_current_scale', 1.0)
 
@@ -436,6 +467,10 @@ class McuNode(Node):
         self.interlock_on_stop = bool(param('interlock_on_stop'))
         self.interlock_on_bumper = bool(param('interlock_on_bumper'))
         self.cutter_default_speed = int(param('cutter_default_speed'))
+        self.forward_imu = bool(param('forward_imu'))
+        self.forward_imu_rate = float(param('forward_imu_rate'))
+        self._last_imu_fwd = 0.0
+        self._imu_fwd_count = 0
         speed_cmd_rate = float(param('speed_cmd_rate'))
         odom_rate = float(param('odom_rate'))
 
@@ -503,6 +538,9 @@ class McuNode(Node):
         self.create_subscription(Twist, '/cmd_vel', self._on_cmd_vel, 10)
         self.create_subscription(TwistStamped, '/cmd_vel_stamped', self._on_cmd_vel_stamped, 10)
         self.create_subscription(Bool, '/estop_request', self._on_estop_request, 10)
+        if self.forward_imu:
+            self.create_subscription(Imu, str(param('forward_imu_topic')), self._on_imu_forward,
+                                     sensor_qos)
 
         # ---- services (vendor base_driver_node contract) ---------------------
         if CutterControl is not None:
@@ -934,6 +972,21 @@ class McuNode(Node):
                                  height_position if height_position is not None else 0)
         self._cutter_cmd = payload
         self._write(build_frame([(TYPE_ROS_MOWER, MOD_CUTTER, payload)]))
+
+    def _on_imu_forward(self, msg):
+        """Relay the host IMU to the MCU as ``ImuData`` at <= forward_imu_rate Hz."""
+        now = time.monotonic()
+        if now - self._last_imu_fwd < 1.0 / max(self.forward_imu_rate, 1.0):
+            return
+        self._last_imu_fwd = now
+        q = msg.orientation
+        roll, pitch, yaw = _quat_to_rpy(q.x, q.y, q.z, q.w)
+        a, g = msg.linear_acceleration, msg.angular_velocity
+        self._write(build_frame([(TYPE_ROS_MOWER, MOD_IMU,
+                                  imu_payload(roll, pitch, yaw, (a.x, a.y, a.z), (g.x, g.y, g.z)))]))
+        self._imu_fwd_count += 1
+        if self._imu_fwd_count == 1:
+            self.get_logger().info('forwarding host IMU to the MCU as ImuData (module 9)')
 
     def _on_estop_request(self, msg):
         if msg.data and not self._estop_latched:

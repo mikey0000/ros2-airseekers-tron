@@ -78,7 +78,7 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument('left_oa_camera', default_value='true'),
         DeclareLaunchArgument('right_oa_camera', default_value='true'),
-        DeclareLaunchArgument('rear_driver', default_value='v4l2',
+        DeclareLaunchArgument('rear_driver', default_value='opencv',
                               choices=['v4l2', 'opencv', 'none'],
                               description='Rear camera producer (see module docstring).'),
         DeclareLaunchArgument('left_oa_camera_device', default_value='/dev/left_oa_camera'),
