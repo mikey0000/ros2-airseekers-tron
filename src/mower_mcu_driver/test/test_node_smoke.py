@@ -418,3 +418,15 @@ class ImuForwardTest(unittest.TestCase):
         rr, pp, yy = mn._quat_to_rpy(*q)
         for a, b in ((rr, r), (pp, p), (yy, y)):
             self.assertAlmostEqual(a, b, places=6)
+
+
+class ClearEstopFrameTest(unittest.TestCase):
+    def test_clear_estop_sends_vendor_module10_zero_frame(self):
+        ros_stubs.install()
+        node = mn.McuNode()
+        tx = bytearray()
+        node._write = lambda data: tx.extend(data)
+        node._srv_clear_estop(None, types.SimpleNamespace())
+        frames = list(mn.FrameParser().feed(bytes(tx)))
+        self.assertEqual([(t, m, len(p)) for (t, m, p) in frames], [(mn.TYPE_ROS_MOWER, mn.MOD_SENSOR, 8)])
+        self.assertEqual(frames[0][2], bytes(8))

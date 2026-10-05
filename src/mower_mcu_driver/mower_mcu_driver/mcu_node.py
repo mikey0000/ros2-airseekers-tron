@@ -441,6 +441,12 @@ class McuNode(Node):
         self.declare_parameter('forward_imu', True)
         self.declare_parameter('forward_imu_topic', '/imu/data')
         self.declare_parameter('forward_imu_rate', 45.0)
+        # The vendor host sends roll ~ -178 deg with the mower upright (tap capture: roll -32360
+        # counts, accz +1 g), i.e. the MCU's ImuData convention has roll offset by 180 deg from
+        # the WIT frame we publish. The MCU uses this attitude for tilt/lift detection: with a
+        # plain 0 deg roll it reports the mower as lifted.
+        self.declare_parameter('forward_imu_roll_offset_deg', 180.0)
+        self.declare_parameter('forward_imu_pitch_offset_deg', 0.0)
         self.declare_parameter('battery_voltage_scale', 0.1)
         self.declare_parameter('battery_current_scale', 1.0)
 
@@ -469,6 +475,8 @@ class McuNode(Node):
         self.cutter_default_speed = int(param('cutter_default_speed'))
         self.forward_imu = bool(param('forward_imu'))
         self.forward_imu_rate = float(param('forward_imu_rate'))
+        self.forward_imu_roll_offset = math.radians(float(param('forward_imu_roll_offset_deg')))
+        self.forward_imu_pitch_offset = math.radians(float(param('forward_imu_pitch_offset_deg')))
         self._last_imu_fwd = 0.0
         self._imu_fwd_count = 0
         speed_cmd_rate = float(param('speed_cmd_rate'))
@@ -981,6 +989,8 @@ class McuNode(Node):
         self._last_imu_fwd = now
         q = msg.orientation
         roll, pitch, yaw = _quat_to_rpy(q.x, q.y, q.z, q.w)
+        roll = math.remainder(roll + self.forward_imu_roll_offset, 2.0 * math.pi)
+        pitch = math.remainder(pitch + self.forward_imu_pitch_offset, 2.0 * math.pi)
         a, g = msg.linear_acceleration, msg.angular_velocity
         self._write(build_frame([(TYPE_ROS_MOWER, MOD_IMU,
                                   imu_payload(roll, pitch, yaw, (a.x, a.y, a.z), (g.x, g.y, g.z)))]))
@@ -1028,10 +1038,14 @@ class McuNode(Node):
         return resp
 
     def _srv_clear_estop(self, req, resp):
-        """Clear the host-side e-stop latch. Vendor also sent an MCU frame here (module
-        10 = SensorInfoControl, exact payload unrecovered) - not replicated until verified."""
+        """Clear the e-stop: host-side latch plus the vendor's MCU clear frame.
+
+        Recovered from ``mower_base_node`` ``clearEStopROS`` (native_decompile ... :19943): a
+        ``SensorInfoControl`` sub-packet (module 10, 8 bytes, all zero) queued to the MCU.
+        """
         self._estop_latched = False
-        self.get_logger().info('host e-stop latch cleared')
+        self._write(build_frame([(TYPE_ROS_MOWER, MOD_SENSOR, bytes(8))]))
+        self.get_logger().info('host e-stop latch cleared; MCU clear frame (module 10, 8x00) sent')
         self._apply_interlock()
         return resp
 
