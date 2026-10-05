@@ -1,0 +1,2348 @@
+[0m
+> build · longcat-2.5-preview-free
+[0m→ [0mRead ros2_stack/docs/fields2cover_plan.md 
+[0m$ [0mls -la /home/michael/git/airseekers-decompile/ros2_stack/ 2>/dev/null && ls -la /home/michael/git/airseekers-decompile/ros2_stack/src/ 2>/dev/null; ls /home/michael/git/airseekers-decompile/docker/ 2>/dev/null
+total 48
+drwxrwxr-x 10 michael michael 4096 Oct  5 11:32 .
+drwxrwxr-x 16 michael michael 4096 Oct  5 15:50 ..
+drwxrwxr-x  7 michael michael 4096 Oct  5 16:10 .git
+drwxrwxr-x  3 michael michael 4096 Oct  5 11:32 .pytest_cache
+-rw-rw-r--  1 michael michael 4909 Oct  5 15:44 README.md
+drwxrwxr-x  7 michael michael 4096 Oct  5 15:59 config
+drwxrwxr-x  2 michael michael 4096 Oct  5 11:55 docker
+drwxrwxr-x  2 michael michael 4096 Oct  5 16:18 docs
+drwxrwxr-x  3 michael michael 4096 Oct  5 15:54 launch
+drwxrwxr-x  2 michael michael 4096 Oct  5 16:10 scripts
+drwxrwxr-x 16 michael michael 4096 Oct  5 15:53 src
+total 64
+drwxrwxr-x 16 michael michael 4096 Oct  5 15:53 .
+drwxrwxr-x 10 michael michael 4096 Oct  5 11:32 ..
+drwxrwxr-x  6 michael michael 4096 Oct  5 14:52 base_ble
+drwxrwxr-x  4 michael michael 4096 Oct  5 13:42 base_keys
+drwxrwxr-x  7 michael michael 4096 Oct  5 15:40 det_ros
+drwxrwxr-x  5 michael michael 4096 Oct  5 15:54 mower_cameras
+drwxrwxr-x  4 michael michael 4096 Oct  5 12:50 mower_control
+drwxrwxr-x  4 michael michael 4096 Oct  5 10:23 mower_interfaces
+drwxrwxr-x  6 michael michael 4096 Oct  5 11:41 mower_localization
+drwxrwxr-x  7 michael michael 4096 Oct  5 11:06 mower_mcu_driver
+drwxrwxr-x  4 michael michael 4096 Oct  5 14:52 mower_proto
+drwxrwxr-x  4 michael michael 4096 Oct  5 15:40 mower_rknn
+drwxrwxr-x  5 michael michael 4096 Oct  5 15:39 seg_ros
+drwxrwxr-x  6 michael michael 4096 Oct  5 15:19 stereo_vio_bridge
+drwxrwxr-x  8 michael michael 4096 Oct  5 11:06 um960_gps_driver
+drwxrwxr-x  4 michael michael 4096 Oct  5 12:04 wit_imu_driver
+> build · longcat-2.5-preview-free
+I've read the plan. Now let me survey the existing repo conventions — `mower_interfaces`, the Dockerfile, and an existing package's `package.xml`/`CMakeLists.txt` — before writing anything.
+[0m→ [0mRead ros2_stack/docker/Dockerfile.humble 
+[0m$ [0mfind /home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces -type f | head -50; echo ---; ls /home/michael/git/airseekers-decompile/ros2_stack/docker/ /home/michael/git/airseekers-decompile/ros2_stack/scripts/
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/ControlInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseMotorsInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerSensorInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MotorInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/PlannerOption.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MotorStatus.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseDevInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MotorControl.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/BatteryHealthInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseButtonInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseDevStatus.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/CMakeLists.txt
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/ChargingControl.srv
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/PlannerTaskSet.srv
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/CutterControl.srv
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/BumperControl.srv
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/SetLoRa.srv
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/MappingControl.srv
+---
+/home/michael/git/airseekers-decompile/ros2_stack/docker/:
+Dockerfile.humble
+docker-compose.yml
+
+/home/michael/git/airseekers-decompile/ros2_stack/scripts/:
+99-mower-cameras.rules
+build.sh
+install_mower_service.sh
+install_udev.sh
+preflight.sh
+run_stack.sh
+setup_camera_iq.sh
+setup_mower.sh
+> build · longcat-2.5-preview-free
+Now let me check the existing package conventions — `mower_interfaces` CMakeLists (for srv definitions) and one C++ package's `package.xml`/`CMakeLists.txt`.
+[0m→ [0mRead ros2_stack/src/mower_interfaces/package.xml 
+[0m→ [0mRead ros2_stack/src/mower_interfaces/CMakeLists.txt 
+[0m$ [0mcat /home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/PlannerTaskSet.srv; echo ===; ls /home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/; echo ===; cat /home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/package.xml 2>/dev/null
+PlannerOption[] options
+---
+int32 result
+zsh:1: == not found
+> build · longcat-2.5-preview-free
+[0m$ [0mcat /home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/package.xml; echo "---CMAKE---"; cat /home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/CMakeLists.txt; echo "---TREE---"; find /home/michael/git/airseekers-decompile/ros2_stack/src/mower_control -type f | head -30
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_control</name>
+  <version>0.1.0</version>
+  <description>
+    ROS 2 Humble control-support nodes for the Airseekers Tron mower (MowgliNext
+    patterns ported): cmd_vel slew limiter with command watchdog, wheel-slip
+    (dig) detector gated on RTK-fixed, and at-rest IMU bias calibration with a
+    persisted YAML file.
+  </description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- ROS interfaces used by the nodes -->
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+  <!-- imu_cal subscribes to /imu/data (sensor_msgs/Imu) from wit_imu_driver;
+       slip_detector falls back to /odom (nav_msgs/Odometry) from
+       mower_mcu_driver. -->
+  <depend>sensor_msgs</depend>
+
+  <!-- imu_cal persists biases to YAML -->
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
+---CMAKE---
+cat: /home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/CMakeLists.txt: No such file or directory
+---TREE---
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/__init__.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/imu_cal.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/cmd_vel_slew.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/mower_control/slip_detector.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/resource/mower_control
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/setup.py
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_control/setup.cfg
+> build · longcat-2.5-preview-free
+[0m$ [0mgrep -l "ament_cmake" /home/michael/git/airseekers-decompile/ros2_stack/src/*/package.xml; echo "---"; cat /home/michael/git/airseekers-decompile/ros2_stack/src/det_ros/package.xml 2>/dev/null | head -40
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/package.xml
+---
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>det_ros</name>
+  <version>0.1.0</version>
+  <description>YOLOv8 obstacle detection on the RK3588S NPU for the Airseekers Tron.
+    Replaces the closed det_ros binary.</description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>mower_rknn</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
+> build · longcat-2.5-preview-free
+The plan doc is thorough. The user's spec differs from the plan's §3.3 (action server) — they want a **service** `/coverage/plan` with polygon + holes + start/goal in the request and `nav_msgs/Path` back. Let me check what build tooling is available here before writing code.
+[0m$ [0mcat /home/michael/git/airseekers-decompile/ros2_stack/README.md; echo "---DOCS---"; ls /home/michael/git/airseekers-decompile/ros2_stack/docs/
+# Airseekers Tron — ROS 2 (Humble) port stack
+
+Baseline: MowgliNext (ROS 2 mower stack). Target: runs on the mower via Docker (Humble).
+
+Source assets (read-only, do NOT modify):
+- ../ros2_port_handoff/ (README.md first, then 00_docs, 01_mcu_protocol, 03_ros_interfaces, 10_ros_live_snapshot)
+- ../mower_docs/ (02-ros2-migration.md, 05-maps-and-http-api.md, 10-hardware.md)
+
+Write all new files under ros2_stack/ only.
+Do NOT run anything on the actual mower (192.168.1.105); no apt changes, no flashing, no systemctl.
+
+## Perception / VSLAM / NPU
+
+Metoak VIO is replaced by **OpenVINS**; YOLOv8 + PP-LiteSeg run on the RK3588S NPU.
+Full plan + blockers in [docs/perception_vio.md](docs/perception_vio.md). Packages:
+
+| Package | What |
+|---|---|
+| `mower_rknn` | shared rknn-toolkit-lite2 wrapper + preprocess |
+| `det_ros` | YOLOv8 `best_*_0208.rknn` → `/ai/det/detections` |
+| `seg_ros` | PP-LiteSeg `pplite-seg…6cls.rknn` → `/ai/seg/{mask,traversability}` |
+| `stereo_vio_bridge` | Metoak stereo + ICM-42600 IMU → `/vio/*` (VIO input) |
+
+OpenVINS configs live in `../ros2_port_handoff/14_vio_replacement/open_vins/`; the clone is
+in `../ros2_port_handoff/13_open_source_upstreams/open_vins/`. OA/rear camera bringup is
+`launch/cameras.launch.py`.
+
+## Next batch
+
+Localization and control, merged from `docs/mowglinext_baseline.md` §3, §4.3, §6 and §7.2.
+Full write-up in [docs/localization_control_plan.md](docs/localization_control_plan.md).
+
+**Localization** — `src/mower_localization`, slam-less, no `slam_toolbox`:
+
+| Piece | What it is |
+|---|---|
+| `gps_gate` | Republishes `/fix` → `/fix_gated` only when the fix is worth fusing: `NavSatFix.status` at/above `min_fix_status`, a `used_fixes` whitelist, and a position covariance inside `max_position_covariance`. Decides from the message itself, never from a filter that already consumed the fix. 25 tests, no hardware. |
+| `config/ekf.yaml` | 30 Hz `ekf_node`, `world_frame: odom`, `publish_tf: true`. Fuses `/odom` (x, y, vx, vy, yaw rate), `/imu/data` (yaw, yaw rate, ax, ay) and `/odometry/gps` as `odom1`. Sole publisher of `odom → base_link`. |
+| `config/navsat.yaml` | 10 Hz `navsat_transform_node`, publishing `/odometry/gps` for the EKF. `broadcast_utm_transform: false`, `wait_for_datum: false`. |
+
+Frames actually published today: `odom → base_link`, plus `base_link → imu_link` from
+`wit_imu_driver`. `map → odom` has no publisher yet — see the blockers below. Intended tree is
+`map` == `gps` → `odom` → `base_link` (rear drive axle, not chassis centre) → `imu_link`,
+`gps`, `blade_link`, anchored by the receiver alone with no SLAM back-end.
+
+We deliberately diverge from the baseline here: MowgliNext runs a GTSAM iSAM2 factor graph
+and removed `robot_localization` entirely. We keep the EKF, because GTSAM needs an aarch64
+source build and our three sources (wheel odom, IMU, RTK) are the case an EKF handles well —
+we have no 2D LiDAR for scan matching. Revisit if Metoak stereo depth becomes a second
+back-end. Invariants kept regardless: sole TF ownership, map == GPS frame, `base_link` at the
+rear axle.
+
+**Control** — `src/mower_control`, three baseline §4.3 ports (details in
+[docs/control.md](docs/control.md)): `cmd_vel_slew` (slew before the wire, exact-stop
+watchdog, echo the applied command), `slip_detector` (the dig detector — commanded vs
+measured twist, RTK-gated, latched), `imu_cal` (at-rest bias cal with a persisted,
+validated file). Not ported: the host-side wheel PID (MCU owns the fast loop) and the
+deadband/gain sanity gate (needs a runtime-tuning path the vendor protocol may not offer).
+
+**Wiring** — `launch/nav2.launch.py` starts `gps_gate` → `navsat_transform_node` → `ekf_node`,
+then the Nav2 controller stack. Its header comment block lists the required apt packages
+(`ros-humble-robot-localization` is the only one not already in `docker/Dockerfile.humble`)
+and the frame tree with per-transform ownership.
+
+**Blocking, in order** (details in the plan doc §3):
+
+1. `wit_imu_driver` never populates `Imu.orientation` — it parses the JY61P 0x53 angle frame
+   and only debug-logs it — and publishes all-zero covariances. `navsat_transform_node` builds
+   its heading from that quaternion, so the GPS correction is currently wrong and the EKF
+   over-trusts the IMU. Fix the driver before tuning anything else.
+2. No `map → odom` publisher, so the stack localizes in `odom` only. Topology decision needed.
+3. `/imu` vs `/imu/data` is settled only by a remap inside `nav2.launch.py`.
+4. No URDF yet, so `base_link → gps` does not exist and navsat assumes the receiver sits at
+   the robot origin.
+5. `ros-humble-robot-localization` is not in `docker/Dockerfile.humble` yet.
+
+None of the driver packages (`mower_mcu_driver`, `wit_imu_driver`, `um960_gps_driver`) has run
+against the mower. Verified with pytest only: 24 + 25 + 47 tests respectively.
+---DOCS---
+agent10_nav2.log
+agent11_setup.log
+agent12_mowgli_integration.log
+agent13_yolo.log
+agent14_f2c.log
+agent16_gap.log
+agent17_assets.log
+agent18_cameras.log
+agent19_coverage.log
+agent1_mcu_spec.log
+agent2_interfaces.log
+agent3_mcu_driver.log
+agent4_wit.log
+agent5_um960.log
+agent6_docker.log
+agent7_mowglinext.log
+agent8_localization.log
+agent9_control.log
+control.md
+deployment.md
+fields2cover_plan.md
+handoff_gap_analysis.md
+interfaces_map.md
+localization.md
+localization_control_plan.md
+mcu_protocol_spec.md
+mowglinext_baseline.md
+mowglinext_integration.md
+perception_vio.md
+um960.md
+wit_imu.md
+yolo_retrain_pipeline.md
+[0m$ [0mwhich docker colcon g++ 2>/dev/null; docker images 2>/dev/null | head -5; ls /opt/ros 2>/dev/null; echo "exit: $?"
+/usr/bin/docker
+colcon not found
+/usr/bin/g++
+IMAGE                                            ID             DISK USAGE   CONTENT SIZE   EXTRA
+eclipse-mosquitto:2.0                            42292b8c6592       10.3MB             0B        
+eclipse-mosquitto:2.0-openssl                    42292b8c6592       10.3MB             0B        
+ghcr.io/httptoolkit/docker-socks-tunnel:v1.2.1   32fb45adbeed        1.7MB             0B        
+mammotion-management-backend:latest              bb60dd943eed       1.16GB             0B        
+exit: 2
+> build · longcat-2.5-preview-free
+Docker is present but no ROS image locally. Let me check the prior agent logs for F2C/coverage work and recent git history before writing code.
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && git log --oneline | head -15; echo "---19---"; head -60 docs/agent19_coverage.log 2>/dev/null; echo "---14---"; head -40 docs/agent14_f2c.log 2>/dev/null
+a8b6a61 Add URDF + robot_state_publisher, wit publishes no TF by default, cam info yamls, systemd example, udev installers, mower_cameras package + camera launch files
+bf5eecb WIP: base_keys + mower_proto packages, expanded mower_interfaces, wit covariance fix (from parallel session)
+422a569 Fix runtime bugs: NavSatStatus DGPS->GBAS, wit Vector3 subscript, MotorStatus submessage fill
+75a5353 Add install_scripts/lib script_dir to all ament_python setup.cfg files so console entry points land in lib/<pkg>
+4316cab wit_imu_driver: package.xml format 3 so colcon recognises ros.ament_python
+40c4f94 wit_imu_driver: put build_type inside <export> and drop catkin_python buildtool dep
+97ce403 Explicit ament packages resource marker in every setup.py
+1b81c38 Mount whole stack root at /work so colcon build/install/log persist
+f6e85ec Add missing wit_imu_driver/__init__.py
+b3cf91d Fix wit_imu_driver: add ament_python build_type, setup.cfg, resource marker
+58c23c6 Use legacy docker builder (kernel lacks CONFIG_POSIX_MQUEUE); compose build uses host network
+992e1a3 Add localization (EKF+gps_gate), control (slew/slip/imu-cal), nav2 bringup, setup+preflight scripts
+0f57bd8 Initial ROS 2 Humble driver stack: MCU, WIT IMU, UM960 GNSS, interfaces, Docker
+---19---
+[0m
+> build · longcat-2.5-preview-free
+[0m→ [0mRead ros2_stack/docs/fields2cover_plan.md 
+[0m$ [0mls -la /home/michael/git/airseekers-decompile/ros2_stack/ 2>/dev/null && ls -la /home/michael/git/airseekers-decompile/ros2_stack/src/ 2>/dev/null; ls /home/michael/git/airseekers-decompile/docker/ 2>/dev/null
+total 48
+drwxrwxr-x 10 michael michael 4096 Oct  5 11:32 .
+drwxrwxr-x 16 michael michael 4096 Oct  5 15:50 ..
+drwxrwxr-x  7 michael michael 4096 Oct  5 16:10 .git
+drwxrwxr-x  3 michael michael 4096 Oct  5 11:32 .pytest_cache
+-rw-rw-r--  1 michael michael 4909 Oct  5 15:44 README.md
+drwxrwxr-x  7 michael michael 4096 Oct  5 15:59 config
+drwxrwxr-x  2 michael michael 4096 Oct  5 11:55 docker
+drwxrwxr-x  2 michael michael 4096 Oct  5 16:18 docs
+drwxrwxr-x  3 michael michael 4096 Oct  5 15:54 launch
+drwxrwxr-x  2 michael michael 4096 Oct  5 16:10 scripts
+drwxrwxr-x 16 michael michael 4096 Oct  5 15:53 src
+total 64
+drwxrwxr-x 16 michael michael 4096 Oct  5 15:53 .
+drwxrwxr-x 10 michael michael 4096 Oct  5 11:32 ..
+drwxrwxr-x  6 michael michael 4096 Oct  5 14:52 base_ble
+drwxrwxr-x  4 michael michael 4096 Oct  5 13:42 base_keys
+drwxrwxr-x  7 michael michael 4096 Oct  5 15:40 det_ros
+drwxrwxr-x  5 michael michael 4096 Oct  5 15:54 mower_cameras
+drwxrwxr-x  4 michael michael 4096 Oct  5 12:50 mower_control
+drwxrwxr-x  4 michael michael 4096 Oct  5 10:23 mower_interfaces
+drwxrwxr-x  6 michael michael 4096 Oct  5 11:41 mower_localization
+drwxrwxr-x  7 michael michael 4096 Oct  5 11:06 mower_mcu_driver
+drwxrwxr-x  4 michael michael 4096 Oct  5 14:52 mower_proto
+drwxrwxr-x  4 michael michael 4096 Oct  5 15:40 mower_rknn
+drwxrwxr-x  5 michael michael 4096 Oct  5 15:39 seg_ros
+drwxrwxr-x  6 michael michael 4096 Oct  5 15:19 stereo_vio_bridge
+drwxrwxr-x  8 michael michael 4096 Oct  5 11:06 um960_gps_driver
+drwxrwxr-x  4 michael michael 4096 Oct  5 12:04 wit_imu_driver
+> build · longcat-2.5-preview-free
+I've read the plan. Now let me survey the existing repo conventions — `mower_interfaces`, the Dockerfile, and an existing package's `package.xml`/`CMakeLists.txt` — before writing anything.
+[0m→ [0mRead ros2_stack/docker/Dockerfile.humble 
+[0m$ [0mfind /home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces -type f | head -50; echo ---; ls /home/michael/git/airseekers-decompile/ros2_stack/docker/ /home/michael/git/airseekers-decompile/ros2_stack/scripts/
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/package.xml
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/ControlInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseMotorsInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerSensorInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MotorInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/PlannerOption.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MotorStatus.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseDevInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MotorControl.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/BatteryHealthInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseButtonInfo.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/msg/MowerBaseDevStatus.msg
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/CMakeLists.txt
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/ChargingControl.srv
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/PlannerTaskSet.srv
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/CutterControl.srv
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/BumperControl.srv
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/SetLoRa.srv
+/home/michael/git/airseekers-decompile/ros2_stack/src/mower_interfaces/srv/MappingControl.srv
+---
+/home/michael/git/airseekers-decompile/ros2_stack/docker/:
+Dockerfile.humble
+docker-compose.yml
+---14---
+[0m
+> build · space-bunny-free
+I'll investigate both codebases before writing the plan. Let me start by exploring the structure.
+[0m$ [0mls -la /home/michael/git/airseekers-decompile
+total 17583652
+drwxrwxr-x 13 michael michael        4096 Oct  5 12:42 .
+drwxrwxr-x 90 michael michael        4096 Oct  2 13:14 ..
+-rw-rw-r--  1 michael michael        8145 Oct  5 13:21 REIMPLEMENTATION_PLAN.md
+-rw-rw-r--  1 michael michael        5171 Oct  2 21:45 RESUME.md
+drwxrwxr-x  4 michael michael        4096 Oct  2 12:13 apks
+drwxrwxr-x  4 michael michael        4096 Oct  2 12:26 blutter_out
+-rw-rw-r--  1 michael michael       21455 Oct  2 14:08 custom_wl.txt
+-rw-rw-r--  1 michael michael         263 Oct  2 14:20 dbg_cmds
+-rw-rw-r--  1 michael michael          37 Oct  2 14:21 dbg_fix
+-rw-rw-r--  1 michael michael         207 Oct  2 14:41 dbg_reinject
+drwxrwxr-x  2 michael michael        4096 Oct  2 18:51 docs
+-rw-rw-r--  1 michael michael        2436 Oct  2 16:23 fox_ctrl.py
+-rw-rw-r--  1 michael michael         230 Oct  2 14:08 hashes.txt
+drwxrwxr-x 11 michael michael        4096 Oct  5 12:12 mcu_decompile
+drwxr-xr-x  4 michael michael        4096 Oct  2 22:15 mower_docs
+-rw-r--r--  1 michael michael   152944072 Oct  2 16:40 mower_src.tgz
+drwxrwxr-x  8 michael michael        4096 Oct  5 12:21 native_decompile
+drwxrwxr-x  7 michael michael        4096 Oct  5 10:11 ota_v1.3.27-rc.1-tron+20260713
+-rw-r--r--  1 michael michael   361683224 Oct  5 10:08 ota_v1.3.27-rc.1-tron+20260713.tar.gz
+-rw-r--r--  1 root    root    17179869184 Oct  2 14:05 rootfs.img
+drwxr-xr-x 17 michael michael        4096 Oct  5 13:50 ros2_port_handoff
+-rw-r--r--  1 michael michael   310712856 Oct  5 10:07 ros2_port_handoff_2026-10-05_with_excluded.tgz
+drwxrwxr-x 10 michael michael        4096 Oct  5 11:32 ros2_stack
+drwxr-xr-x 16 michael michael        4096 Oct  2 19:16 src
+drwxrwxr-x  4 michael michael        4096 Oct  2 13:46 tools
+[0m$ [0mls -la /tmp/mowglinext-src/ros2/src/mowgli_coverage 2>&1 | head -50
+total 12
+drwxrwxr-x  5 michael michael  140 Oct  5 13:31 .
+drwxrwxr-x 16 michael michael  380 Oct  5 13:31 ..
+-rw-rw-r--  1 michael michael 5104 Oct  5 13:31 CMakeLists.txt
+drwxrwxr-x  3 michael michael   60 Oct  5 13:31 include
+-rw-rw-r--  1 michael michael 1428 Oct  5 13:31 package.xml
+drwxrwxr-x  2 michael michael  100 Oct  5 13:31 src
+drwxrwxr-x  2 michael michael   60 Oct  5 13:31 test
+> build · space-bunny-free
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && wc -l docs/agent19_coverage.log docs/agent14_f2c.log; grep -n "mower_coverage" docs/agent19_coverage.log | head -20; tail -30 docs/agent19_coverage.log
+396 docs/agent19_coverage.log
+  8392 docs/agent14_f2c.log
+  8788 total
+-rw-rw-r--  1 michael michael       21455 Oct  2 14:08 custom_wl.txt
+-rw-rw-r--  1 michael michael         263 Oct  2 14:20 dbg_cmds
+-rw-rw-r--  1 michael michael          37 Oct  2 14:21 dbg_fix
+-rw-rw-r--  1 michael michael         207 Oct  2 14:41 dbg_reinject
+drwxrwxr-x  2 michael michael        4096 Oct  2 18:51 docs
+-rw-rw-r--  1 michael michael        2436 Oct  2 16:23 fox_ctrl.py
+-rw-rw-r--  1 michael michael         230 Oct  2 14:08 hashes.txt
+drwxrwxr-x 11 michael michael        4096 Oct  5 12:12 mcu_decompile
+drwxr-xr-x  4 michael michael        4096 Oct  2 22:15 mower_docs
+-rw-r--r--  1 michael michael   152944072 Oct  2 16:40 mower_src.tgz
+drwxrwxr-x  8 michael michael        4096 Oct  5 12:21 native_decompile
+drwxrwxr-x  7 michael michael        4096 Oct  5 10:11 ota_v1.3.27-rc.1-tron+20260713
+-rw-r--r--  1 michael michael   361683224 Oct  5 10:08 ota_v1.3.27-rc.1-tron+20260713.tar.gz
+-rw-r--r--  1 root    root    17179869184 Oct  2 14:05 rootfs.img
+drwxr-xr-x 17 michael michael        4096 Oct  5 13:50 ros2_port_handoff
+-rw-r--r--  1 michael michael   310712856 Oct  5 10:07 ros2_port_handoff_2026-10-05_with_excluded.tgz
+drwxrwxr-x 10 michael michael        4096 Oct  5 11:32 ros2_stack
+drwxr-xr-x 16 michael michael        4096 Oct  2 19:16 src
+drwxrwxr-x  4 michael michael        4096 Oct  2 13:46 tools
+[0m$ [0mls -la /tmp/mowglinext-src/ros2/src/mowgli_coverage 2>&1 | head -50
+total 12
+drwxrwxr-x  5 michael michael  140 Oct  5 13:31 .
+drwxrwxr-x 16 michael michael  380 Oct  5 13:31 ..
+-rw-rw-r--  1 michael michael 5104 Oct  5 13:31 CMakeLists.txt
+drwxrwxr-x  3 michael michael   60 Oct  5 13:31 include
+-rw-rw-r--  1 michael michael 1428 Oct  5 13:31 package.xml
+drwxrwxr-x  2 michael michael  100 Oct  5 13:31 src
+drwxrwxr-x  2 michael michael   60 Oct  5 13:31 test
+> build · space-bunny-free
+> build · longcat-2.5-preview-free
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && grep -n "generateHeadlandSwaths\|genSortedSwaths\|addRing\|getGeometry\|LinearRing::size\|\.size()" docs/agent14_f2c.log | head -40
+381:  1183	          if (sparse.size() >= 5)
+386:  1188	            for (std::size_t j = 0; j < sparse.size(); ++j)
+389:  1191	              const auto& b = sparse[(j + 1) % sparse.size()];
+403:  1205	                (sparse[le].first + sparse[(le + 1) % sparse.size()].first) * 0.5,
+404:  1206	                (sparse[le].second + sparse[(le + 1) % sparse.size()].second) * 0.5};
+406:  1208	                        sparse.begin() + static_cast<std::ptrdiff_t>((le + 1) % sparse.size()),
+414:  1216	                plan.safe_boundary.size() >= 3 ? plan.safe_boundary : field_outer_pts;
+444:  1246	  if (mainland.size() == 0 || mainland.area() < 1e-6)
+470:  1272	  for (std::size_t i = 0; i < mainland.size(); ++i)
+472:  1274	    const auto cell = mainland.getGeometry(i);
+507:  1309	    if (swaths.size() == 0)
+526:  1328	      if (swaths.size() == 0)
+532:  1334	    f2c::types::Swaths ordered = order.genSortedSwaths(swaths);
+533:  1335	    for (std::size_t s = 0; s < ordered.size(); ++s)
+537:  1339	      if (line.size() < 2)
+541:  1343	      const auto p0 = line.getGeometry(0);
+542:  1344	      const auto p1 = line.getGeometry(line.size() - 1);
+598:  1400	// only source being the F2C offset mismatch between generateHeadlandSwaths (the
+619:  1421	  if (ring.size() < 3 || pointInRing(x, y, ring) || distanceToRing(x, y, ring) <= kOnEdgeTolM)
+624:  1426	  const std::size_t n = ring.size();
+689:  1491	  // Ring DRIVE-ORDER grouping. F2C's generateHeadlandSwaths emits ring loops PER
+704:  1506	  ring_order.reserve(plan.rings.size());
+712:  1514	    for (std::size_t i = 0; i < plan.rings.size(); ++i)
+727:  1529	    for (std::size_t i = 0; i < plan.rings.size(); ++i)
+737:  1539	    if (loop_in.size() < 2)
+742:  1544	    if (!segs.empty() && loop.size() >= 4)
+747:  1549	      const double ex = prev_end.first - prev[prev.size() - 2].first;
+748:  1550	      const double ey = prev_end.second - prev[prev.size() - 2].second;
+765:  1567	        for (std::size_t j = 0; j < loop.size(); ++j)
+769:  1571	            const auto& nxt = loop[(j + 1) % loop.size()];
+804:  1606	  const std::size_t first_swath_seg_idx = segs.size();
+820:  1622	    std::vector<bool> used(sw_in.size(), false);
+833:  1635	    ordered_swaths.reserve(sw_in.size());
+834:  1636	    for (std::size_t n = 0; n < sw_in.size(); ++n)
+836:  1638	      std::size_t best = sw_in.size();
+839:  1641	      for (std::size_t i = 0; i < sw_in.size(); ++i)
+878:  1680	    if (pts.size() >= 2)
+897:  1699	    const std::size_t n = s.size();
+909:  1711	  for (std::size_t i = 0; i < segs.size(); ++i)
+941:  1743	          (is_swath_join && swath_turn_boundary.size() >= 3) ? swath_turn_boundary : boundary;
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && grep -n "addRing\|generateHeadlands\|ConstHL\|BruteForce\|setStepAngle\|NSwath\|BoustrophedonOrder\|headland" docs/agent14_f2c.log | head -40
+305:  # validate genRoute / planPath output (the headland-rings-as-swaths trick is
+343:    ordered segments — headland rings + straight serpentine swaths, no turn
+436:  1238	  // generateHeadlands(safe_cells, 0.0): upstream that is Cells::buffer(-0.0), a
+441:  1243	      (n_rings > 0) ? hl.generateHeadlands(safe_cells, n_rings * op_width) : safe_cells;
+453:  1255	  // (4) Straight swaths per mainland cell. BruteForce clips each sweep line
+455:  1257	  // boundaries and interior holes need no decomposition. BoustrophedonOrder
+461:  1263	  f2c::sg::BruteForce bf;
+465:  1267	  bf.setStepAngle(kAutoAngleStepRad);
+466:  1268	  f2c::obj::NSwath n_swath_obj;
+467:  1269	  f2c::rp::BoustrophedonOrder order;
+566:  1368	                  "timing: headland=%.0fms mainland=%.0fms swaths=%.0fms "
+568:  1370	                  t_headland_ms,
+596:  1398	// placed. The clearance ring is the outermost headland ring's centerline (== the
+599:  1401	// ring) and generateHeadlands (the clearance boundary), which round convex
+615:  1417	  // A pose sitting exactly ON the ring is left alone: with the headland stage
+679:  1481	  // headland ring, oscillating, before moving on"). F2C starts every concentric
+806:  1608	  // Nearest-endpoint chaining of the swath pieces. BoustrophedonOrder's
+821:  1623	    // Seed from BoustrophedonOrder's OWN first swath, NOT from the last ring's
+827:  1629	    // edge U-turns that no longer had headland room). BoustrophedonOrder's own
+937:  1739	      // limited turn envelope can never push a headland ring's own connector
+1029:  1831	    // ring — generateHeadlandSwaths (the ring) and generateHeadlands (this
+1062:  1864	  //     U-turns (the hazard the seed-from-BoustrophedonOrder note above guards);
+1209:  2011	  // (obstacle_margin) so the planner keeps swaths, connectors and headlands
+1220:  2022	  poly.addRing(&ogr_ring);
+1271:  2073	// F2C's generateHeadlands offset and BruteForce swath clip silently produce
+1297:  2099	  poly.addRing(&ogr_ring);
+1343:  2145	  // boost accepts the points but F2C's headland offset / swath clip then drop
+1473://   1. ConstHL::generateHeadlandSwaths — N concentric headland rings (mowed,
+1475://   2. ConstHL::generateHeadlands     — the mainland left inside the rings,
+1476://   3. BruteForce + BoustrophedonOrder — straight serpentine swaths over the
+1496:// Fields2Cover v3 umbrella header — f2c::types::*, f2c::hg::ConstHL,
+1497:// f2c::sg::BruteForce, f2c::rp::BoustrophedonOrder.
+1530:  // Densified headland ring polylines (points ~0.10 m apart), outermost ring
+1535:  // direction already alternated by BoustrophedonOrder. The robot pivots in
+1541:  // planBoustrophedon's num_headland_passes_override three-way contract), not
+1543:  // (ceil(headland_width / op_width), floored at 1), which
+1544:  // connector_max_headland_passes still limits against even though the caller
+1547:  int n_headland_passes = 0;
+1549:  // rings/swaths are planned against, == generateHeadlands(field, inset)). The
+1558:  // ALWAYS the outermost headland RING's centerline (== safe_boundary eroded
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && sed -n '1230,1300p' docs/agent14_f2c.log
+2032	  const auto flat_type = wkbFlatten(grown->getGeometryType());
+  2033	  if (flat_type == wkbPolygon)
+  2034	  {
+  2035	    grown_poly = grown->toPolygon();
+  2036	  }
+  2037	  else if (flat_type == wkbMultiPolygon)
+  2038	  {
+  2039	    // Outward buffering can merge lobes of a degenerate ring into several
+  2040	    // parts; keep the largest (the obstacle body).
+  2041	    double best_area = -1.0;
+  2042	    for (const auto* part : *grown->toMultiPolygon())
+  2043	    {
+  2044	      const double a = part->get_Area();
+  2045	      if (a > best_area)
+  2046	      {
+  2047	        best_area = a;
+  2048	        grown_poly = part;
+  2049	      }
+  2050	    }
+  2051	  }
+  2052	  if (!grown_poly || !grown_poly->getExteriorRing() ||
+  2053	      grown_poly->getExteriorRing()->getNumPoints() < 4)
+  2054	  {
+  2055	    return dedupClosedRing(in);
+  2056	  }
+  2057	  const OGRLinearRing* ext = grown_poly->getExteriorRing();
+  2058	  f2c::types::LinearRing out;
+  2059	  for (int i = 0; i < ext->getNumPoints(); ++i)
+  2060	  {
+  2061	    out.addPoint(f2c::types::Point(ext->getX(i), ext->getY(i)));
+  2062	  }
+  2063	  return dedupClosedRing(out);
+  2064	}
+  2065	
+  2066	namespace
+  2067	{
+  2068	
+  2069	// Ring sanitization tolerances. Operator-recorded field boundaries carry
+  2070	// mm-scale geometric degeneracies (a real 252 m² field had a 1.2 mm near-
+  2071	// duplicate closure vertex and several 1–10 mm sliver edges). These are EXACT
+  2072	// enough that boost::geometry accepts the points yet degenerate enough that
+  2073	// F2C's generateHeadlands offset and BruteForce swath clip silently produce
+  2074	// PARTIAL coverage. Both tolerances sit safely below op_width (0.16 m) so no
+  2075	// real corner is ever removed.
+  2076	constexpr double kRingDedupTolM = 0.01;  // drop a vertex within 1 cm of the last kept one
+  2077	constexpr double kRingSpikeTolM = 0.005;  // drop a vertex within 5 mm of its neighbours' chord
+  2078	
+  2079	// Repair a ring into a boost::geometry-valid one via F2C's own OGR backend.
+  2080	// Buffer-by-zero is the standard OGR self-intersection fix (the same Buffer call
+  2081	// bufferRingOutward already relies on); it returns the valid equivalent of a
+  2082	// self-touching / sliver-laden ring. Keep the largest resulting polygon's
+  2083	// exterior. Any degeneracy (null buffer, empty result, collapsed ring) returns
+  2084	// the input unchanged — the planner must NEVER drop the field.
+  2085	f2c::types::LinearRing makeRingValid(const f2c::types::LinearRing& in)
+  2086	{
+  2087	  if (in.size() < 4)
+  2088	  {
+  2089	    return in;
+  2090	  }
+  2091	  OGRLinearRing ogr_ring;
+  2092	  for (std::size_t i = 0; i < in.size(); ++i)
+  2093	  {
+  2094	    const auto p = in.getGeometry(i);
+  2095	    ogr_ring.addPoint(p.getX(), p.getY());
+  2096	  }
+  2097	  ogr_ring.closeRings();
+  2098	  OGRPolygon poly;
+  2099	  poly.addRing(&ogr_ring);
+  2100	  std::unique_ptr<OGRGeometry> fixed(poly.Buffer(0.0));
+  2101	  if (!fixed)
+  2102	  {
+> build · longcat-2.5-preview-free
+The log confirms the F2C access patterns. Let me check how the mowgli code built `f2c::types::Cell` with holes and how it handled the v2.1.0 `generateHeadlandSwaths` return type.
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && grep -n "types::Cell\|types::Cells\|F2CCells\|F2CMultiLineString\|generateHeadlandSwaths" docs/agent14_f2c.log | head -30
+440:  1242	  f2c::types::Cells mainland =
+598:  1400	// only source being the F2C offset mismatch between generateHeadlandSwaths (the
+689:  1491	  // Ring DRIVE-ORDER grouping. F2C's generateHeadlandSwaths emits ring loops PER
+1029:  1831	    // ring — generateHeadlandSwaths (the ring) and generateHeadlands (this
+1473://   1. ConstHL::generateHeadlandSwaths — N concentric headland rings (mowed,
+2455:69:# /opt/fields2cover-300 and adapts the one API break (generateHeadlandSwaths
+2503:# /opt/fields2cover-300 and adapts the one API break (generateHeadlandSwaths
+2504:# returns vector<F2CMultiLineString>, was vector<F2CCells>).
+2944:f2c::types::Cell buildCellFromGoal(const mowgli_interfaces::action::PlanCoverage::Goal& goal,
+2965:  f2c::types::Cell cell(make_ring(goal.outer_boundary));
+2988:99:double longestEdgeAngle(const f2c::types::Cell& cell)
+2990:799:// generateHeadlandSwaths would otherwise produce. Holes (drawn obstacles) are
+2991:801:static f2c::types::Cell expandCellOutward(const f2c::types::Cell& in, double margin)
+2992:807:  f2c::types::Cell out(bufferRingOutward(in.getGeometry(0), margin));
+2994:838:BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
+2997:884:  f2c::types::Cells cells;
+2998:921:  // cell in BOTH generators — ConstHL::generateHeadlandSwaths uses
+2999:941:  f2c::types::Cells safe_cells = cells;
+3001:953:    f2c::types::Cells expanded;
+3002:999:  // NOT safe_boundary. generateHeadlandSwaths places ring 0 op_width/2 inside the
+3003:1029:    f2c::types::Cells cells_at = safe_cells;
+3005:1086:    const f2c::types::Cells& hole_src = safe_cells;
+3006:1116:  // #429): generateHeadlandSwaths(…, 0, dir_out2in=true) happens to return {}
+3007:1123:        hl.generateHeadlandSwaths(safe_cells, op_width, n_rings, /*dir_out2in=*/true);
+3009:1242:  f2c::types::Cells mainland =
+3022:1400:// only source being the F2C offset mismatch between generateHeadlandSwaths (the
+3025:1491:  // Ring DRIVE-ORDER grouping. F2C's generateHeadlandSwaths emits ring loops PER
+3029:1831:    // ring — generateHeadlandSwaths (the ring) and generateHeadlands (this
+3096:BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
+3208:double longestEdgeAngle(const f2c::types::Cell& cell)
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && sed -n '2944,3010p' docs/agent14_f2c.log
+f2c::types::Cell buildCellFromGoal(const mowgli_interfaces::action::PlanCoverage::Goal& goal,
+                                   double obstacle_margin)
+{
+  if (goal.outer_boundary.points.size() < 3)
+  {
+    throw std::invalid_argument("outer_boundary needs >= 3 points");
+  }
+  auto make_ring = [](const geometry_msgs::msg::Polygon& poly)
+  {
+    f2c::types::LinearRing ring;
+    for (const auto& p : poly.points)
+    {
+      ring.addPoint(f2c::types::Point(p.x, p.y));
+    }
+    // dedupClosedRing drops consecutive-duplicate vertices (a doubled leading
+    // vertex is the common case from OpenMower exports / GUI polygons) and
+    // closes the ring. A zero-length edge makes the ring non-simple and
+    // boost::geometry (under F2C) rejects it, silently dropping the area.
+    return dedupClosedRing(ring);
+  };
+
+  f2c::types::Cell cell(make_ring(goal.outer_boundary));
+  for (const auto& hole : goal.obstacles)
+  {
+    if (hole.points.size() >= 3)
+    {
+      cell.addRing(bufferRingOutward(make_ring(hole), obstacle_margin));
+    }
+  }
+  return cell;
+}
+
+geometry_msgs::msg::PoseStamped makePose(const std_msgs::msg::Header& header,
+                                         double x,
+                                         double y,
+                                         double yaw)
+{
+  geometry_msgs::msg::PoseStamped ps;
+  ps.header = header;
+  ps.pose.position.x = x;
+[0m$ [0mgrep -n "f2c::\|generateHeadland\|genRoute\|planPath\|ConstHL\|BruteForce\|Boustrophedon\|NSwath\|setStepAngle\|generateSwaths\|generateBestSwaths" /tmp/mowglinext-src/ros2/src/mowgli_coverage/src/coverage_planning.cpp | head -60
+42:// AUTO swath-angle field-size gate. f2c::sg::BruteForce::generateBestSwaths
+59:// AUTO swath-angle search resolution (radians). f2c::sg::BruteForce defaults to
+62:// the Pi4 / Cortex-A72 target). The swath-count objective (NSwath) is near-flat
+99:double longestEdgeAngle(const f2c::types::Cell& cell)
+179:    const f2c::types::MultiLineString& pass_lines)
+799:// generateHeadlandSwaths would otherwise produce. Holes (drawn obstacles) are
+801:static f2c::types::Cell expandCellOutward(const f2c::types::Cell& in, double margin)
+807:  f2c::types::Cell out(bufferRingOutward(in.getGeometry(0), margin));
+815:std::optional<double> longestValidSwathAngle(const f2c::types::Swaths& swaths)
+838:BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
+850:  BoustrophedonPlan plan;
+883:  f2c::hg::ConstHL hl;
+884:  f2c::types::Cells cells;
+921:  // cell in BOTH generators — ConstHL::generateHeadlandSwaths uses
+941:  f2c::types::Cells safe_cells = cells;
+944:    safe_cells = hl.generateHeadlands(cells, field_offset);
+953:    f2c::types::Cells expanded;
+999:  // NOT safe_boundary. generateHeadlandSwaths places ring 0 op_width/2 inside the
+1029:    f2c::types::Cells cells_at = safe_cells;
+1032:      cells_at = hl.generateHeadlands(safe_cells, (ring_index + 0.5) * op_width);
+1086:    const f2c::types::Cells& hole_src = safe_cells;
+1116:  // #429): generateHeadlandSwaths(…, 0, dir_out2in=true) happens to return {}
+1123:        hl.generateHeadlandSwaths(safe_cells, op_width, n_rings, /*dir_out2in=*/true);
+1238:  // generateHeadlands(safe_cells, 0.0): upstream that is Cells::buffer(-0.0), a
+1242:  f2c::types::Cells mainland =
+1243:      (n_rings > 0) ? hl.generateHeadlands(safe_cells, n_rings * op_width) : safe_cells;
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && sed -n '3096,3260p' docs/agent14_f2c.log
+BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
+                                    double op_width,
+                                    double headland_width,
+                                    int num_headland_passes_override,
+                                    double chassis_safety_inset,
+                                    double mow_angle_rad,
+                                    double min_swath_length,
+                                    int ring_direction = 0,
+                                    double min_turn_radius = 0.20,
+                                    bool perpendicular = false,
+                                    int connector_max_headland_passes = 0);
+
+// Per-plan accounting of how every segment-to-segment join was resolved by
+// buildConnector's radius-shrink search. Pure visibility — populating it
+// changes no decision.
+//
+// WHY THIS EXISTS (issue #499): the swath-end turn radius was believed to be
+// the lever on the "violent turns dig the lawn" failure, and raising
+// `min_turning_radius` was believed to be a TRADE rather than a free win — it
+// is the FLOOR of buildConnector's shrink loop, so raising it should make the
+// search give up sooner and fall through to the straight blind connector.
+// Nobody could tell a radius change that fixed the turns from one that quietly
+// replaced arcs with straight joins, so this counter shipped first as the
+// prerequisite measurement.
+//
+// WHAT IT MEASURED (2026-08-24, the first plan it ever counted): on the old
+// geometry — num_headland_passes 2, op_width = tool_width - swath_overlap,
+// connector_turn_radius 0.18, min_turning_radius 0.15 — only 1 join in 32 gets
+// an arc. The other 31 are already straight blind connectors, and raising the
+// floor to 0.25 m moves exactly one more. So the fallback TRADE above is not
+// what constrains the radius, and the swath-end turns being carved are NOT
+// too-tight Dubins arcs: there is no arc there to be tight.
+//
+// The binding constraint is the mowed HEADLAND APRON beyond the swath ends. At
+// swath spacing d < 2R the turn-around must be an omega (RLR/LRL) loop whose
+// forward extent past the swath end is ~sqrt(4R^2 - (R + d/2)^2) + R (~0.43 m
+// at R = 0.18, d = 0.16), while the apron is num_headland_passes * op_width
+// (0.32 m in that configuration). Nothing in [min_turn_radius, turn_radius] fits, so
+// buildConnector falls through; roundSharpCorners then cannot fillet the
+// resulting 90 degree corners either, because the fillet's tangent length is
+// floored at min_turn_radius (0.15 m) while the connector it must be trimmed
+// into is only op_width (0.16 m) long. The path handed to FTC at a swath end is
+[0m$ [0msed -n 30,100p /tmp/mowglinext-src/ros2/src/mowgli_coverage/src/coverage_planning.cpp; echo "...."; sed -n 860,960p /tmp/mowglinext-src/ros2/src/mowgli_coverage/src/coverage_planning.cpp
+constexpr double kDensifyStep = 0.10;  // m between ring polyline points
+
+// Format a "dropped <what> <val><cmp><thresh>" diagnostics line without pulling
+// in <sstream>/<iomanip>. Values are short distances/areas, so 4 decimals is
+// plenty of resolution for a log line.
+std::string fmtDrop(const char* what, double value, const char* cmp, double thresh)
+{
+  char buf[128];
+  std::snprintf(buf, sizeof(buf), "dropped %s%.4f%s%.4f", what, value, cmp, thresh);
+  return std::string(buf);
+}
+
+// AUTO swath-angle field-size gate. f2c::sg::BruteForce::generateBestSwaths
+// sweeps 180 candidate angles (1° step) and regenerates the full swath set at
+// each, so its cost scales ~linearly with field area and explodes on large
+// fields — a 100×100 m field takes ~24 s, far past the action (15 s) and BT
+// (12 s) planning timeouts, so the coverage action fails outright. Above this
+// area we skip the exhaustive search and use the boundary's longest-edge
+// orientation (the angle the search almost always converges to on a rectangular
+// lawn anyway — swaths along the long side minimise turns), which is ~3 orders
+// of magnitude cheaper and equally deterministic across re-plans.
+//
+// The threshold is deliberately conservative: the exhaustive search measures
+// ~1.7 s at 400 m² on an x86 dev host, and the target ARM SBC is ~5× slower, so
+// even a ~400 m² field is ~8 s of search there — already close to the 12 s BT
+// timeout. Keeping the gate at 400 m² guarantees AUTO planning never times out
+// on hardware; larger lawns simply use the (near-optimal) longest-edge angle.
+constexpr double kAutoAngleMaxAreaM2 = 400.0;  // ~20 × 20 m
+
+// AUTO swath-angle search resolution (radians). f2c::sg::BruteForce defaults to
+// a 1° step, which — sweeping the FULL 2π — regenerates the entire swath set 360
+// times per plan (the dominant coverage-planning cost, and single-threaded on
+// the Pi4 / Cortex-A72 target). The swath-count objective (NSwath) is near-flat
+// within a few degrees of the optimum, so a 5° step (72 candidates over 2π) cuts
+// that cost ~5× while leaving the chosen angle — and thus the whole plan —
+// essentially unchanged. It is a FIXED constant (not tuned per plan) so the
+// argmin is deterministic across re-plans, which the resume cursor relies on.
+constexpr double kAutoAngleStepRad = 5.0 * M_PI / 180.0;
+
+// On-edge tolerance for allInside(). The outermost DRIVEN geometry can lie
+// EXACTLY on the ring it is validated against: with the headland ring stage
+// DISABLED (num_headland_passes < 0 → n_rings == 0, issue #429) the swath ENDS
+// are GEOS intersection points sitting on safe_cells' exterior, which is also
+// the connector clearance ring. pointInRing() is a strict-`>` ray-crossing
+// test, so a pose exactly ON an edge is judged inside on one side of the
+// polygon and outside on the opposite side — roughly half those ends would be
+// rejected, and buildConnector's allInside() check would then split the
+// sub-path at every U-turn (one blade-off Nav2 transit per swath).
+//
+// The fix belongs in the PREDICATE, not in the geometry. 1 mm is ~1e9× the
+// double round-off at map-frame coordinate magnitudes, 1/80th of op_width/2 and
+// 1/50th of the server's kBoundarySlackM (0.05 m) verify slack, so it cannot
+// enable any turn arc and cannot move the chassis measurably. Mirrors the
+// tolerant-containment pattern coverage_server.cpp already uses (!pointInRing
+// && distanceToRing > slack).
+//
+// An earlier revision instead EXPANDED the zero-ring clearance ring outward by
+// 0.03 m. Do not reintroduce that: 0.03 m is ~5× too small to fit any Dubins
+// turn-around (buildConnector's production min radius is 0.20 m), so
+// it bought no arc it was added for, yet it let a connector centerline ride
+// 3 cm PAST the recorded line — invisible to the server's 0.05 m verify slack —
+// which erodes the keep-inside contract that is the SHIPPED mode at the default
+// chassis_safety_inset (0.20 m == robot_width/2). Companion to
+// kClearanceClampMarginM (see the second anonymous namespace below).
+constexpr double kOnEdgeTolM = 0.001;
+
+// Orientation (radians) of the longest edge of a cell's outer ring. A cheap,
+// deterministic AUTO swath angle for large fields. Falls back to 0 (sweep along
+// +x) for a degenerate ring.
+double longestEdgeAngle(const f2c::types::Cell& cell)
+{
+....
+  {
+    return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+  };
+  double t_headland_ms = 0.0;
+  double t_mainland_ms = 0.0;
+  double t_swaths_ms = 0.0;
+  int swath_angle_candidates = 1;  // 1 = fixed/longest-edge; >1 = exhaustive sweep
+  double mainland_area_m2 = 0.0;
+
+  // Raw operator boundary as (x, y) pairs — the ring-corner fillet's in-bounds
+  // fallback when no chassis-safety inset was applied (plan.safe_boundary empty).
+  std::vector<std::pair<double, double>> field_outer_pts;
+  if (field_cell.size() > 0)
+  {
+    const auto outer_ring = field_cell.getGeometry(0);
+    field_outer_pts.reserve(outer_ring.size());
+    for (std::size_t i = 0; i < outer_ring.size(); ++i)
+    {
+      const auto p = outer_ring.getGeometry(i);
+      field_outer_pts.emplace_back(p.getX(), p.getY());
+    }
+  }
+
+  f2c::hg::ConstHL hl;
+  f2c::types::Cells cells;
+  cells.addGeometry(field_cell);
+
+  // (0) Headland ring count — resolved FIRST because the boundary offset (1),
+  // the clearance ring (below) and the mainland (3) all depend on whether there
+  // is a ring 0 at all. Three-way contract on num_headland_passes_override:
+  //   < 0  NONE   — no perimeter rings; the serpentine swaths mow straight to
+  //                 the boundary (issue #429). Every ring-dependent stage below
+  //                 is skipped.
+  //   == 0 AUTO   — ceil(headland_width / op_width), floored at 1 (unchanged).
+  //   > 0  FORCED — exactly that many rings (unchanged).
+  const int n_rings =
+      (num_headland_passes_override < 0)
+          ? 0
+          : ((num_headland_passes_override > 0)
+                 ? num_headland_passes_override
+                 : std::max(1, static_cast<int>(std::ceil(headland_width / op_width - 1e-9))));
+  plan.n_headland_passes = n_rings;
+  if (n_rings == 0)
+  {
+    plan.diagnostics.notes.push_back(
+        "headland rings disabled (num_headland_passes < 0): swaths mow to the boundary");
+  }
+
+  // (1) Boundary offset so the OUTERMOST DRIVEN PASS's centerline sits
+  // `chassis_safety_inset` inside the recorded line. Shift the planning field by
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && sed -n '960,1060p' docs/agent14_f2c.log
+1762	          {
+  1763	            ++stats->split;
+  1764	          }
+  1765	          else if (fallback)
+  1766	          {
+  1767	            ++stats->straight_kept;
+  1768	          }
+  1769	          else
+  1770	          {
+  1771	            ++stats->arc;
+  1772	          }
+  1773	        }
+  1774	        if (conn_safe)
+  1775	        {
+  1776	          // conn is start-inclusive (== path.back()) / goal-exclusive; drop the
+  1777	          // duplicate start so the polyline stays simple.
+  1778	          path.insert(path.end(), conn.begin() + 1, conn.end());
+  1779	        }
+  1780	      }
+  1781	      if (!conn_safe)
+  1782	      {
+  1783	        subpaths.push_back(std::move(path));
+  1784	        path.clear();
+  1785	      }
+  1786	    }
+  1787	    // Append this segment. When continuing a sub-path, path.back() (== goal of
+  1788	    // the connector) coincides with segs[i].front(), so skip the first point to
+  1789	    // avoid a zero-length step; at a fresh sub-path start, take the whole segment.
+  1790	    const auto& s = segs[i];
+  1791	    if (path.empty())
+  1792	    {
+  1793	      path.insert(path.end(), s.begin(), s.end());
+  1794	    }
+  1795	    else
+  1796	    {
+  1797	      path.insert(path.end(), s.begin() + 1, s.end());
+  1798	    }
+  1799	  }
+  1800	  if (!path.empty())
+  1801	  {
+  1802	    subpaths.push_back(std::move(path));
+  1803	  }
+  1804	
+  1805	  // Round ONLY the true cusps — corners that exceed the 90° inversion limit
+  1806	  // (e.g. the recorded boundary's ~91° acute vertex the rings inherit). We do
+  1807	  // NOT fillet gentle (≤88°) ring corners: those are not cusps (FTC tracks a
+  1808	  // one-directional ≤90° turn fine, just slowing a bit), and filleting them near
+  1809	  // the boundary forced the radius down to ~0.02 m — an arc far too tight for
+  1810	  // FTC to track (wz≈vx/r), so the robot looped/hesitated at corners it used to
+  1811	  // turn through cleanly. 88° (not 90°) leaves a small margin so every corner
+  1812	  // findFirstPathInversion would flag (>90°) is still rounded. The fillet radius
+  1813	  // is floored at min_radius (= min_turn_radius): a corner that can only be
+  1814	  // rounded tighter than that is left sharp (pivoted through) rather than turned
+  1815	  // into a sub-trackable loop. Applied PER sub-path (each is independently
+  1816	  // continuous; a fillet must never span a break).
+  1817	  constexpr double kCornerThreshold = 88.0 * M_PI / 180.0;
+  1818	  const double fillet_r = std::max(turn_radius * 0.5, min_radius);
+  1819	  std::vector<std::vector<std::pair<double, double>>> out;
+  1820	  out.reserve(subpaths.size());
+  1821	  for (auto& sp : subpaths)
+  1822	  {
+  1823	    if (sp.size() < 2)
+  1824	    {
+  1825	      continue;
+  1826	    }
+  1827	    auto rounded = roundSharpCorners(
+  1828	        sp, boundary, plan.safe_holes, kCornerThreshold, fillet_r, min_radius, step);
+  1829	    // SAFETY (#388): the ring/swath poses are appended verbatim from F2C, and the
+  1830	    // OUTERMOST ring's convex-corner vertices can poke a few cm PAST the clearance
+  1831	    // ring — generateHeadlandSwaths (the ring) and generateHeadlands (this
+  1832	    // `boundary`) round corners differently, so the two nominally-coincident
+  1833	    // offsets disagree at corners. Left uncorrected, the first such pose is the
+  1834	    // seg-1 start TransitToStrip drives to; sitting outside the recorded line (in
+  1835	    // the keepout mask's lethal band) it made the blade-off transit un-drivable
+  1836	    // and the whole sub-path was skipped. Project every out-of-bounds pose back
+  1837	    // just inside the clearance ring so the path — and its start — stay drivable.
+  1838	    // A no-op for the in-bounds majority.
+  1839	    if (boundary.size() >= 3)
+  1840	    {
+  1841	      for (auto& pt : rounded)
+  1842	      {
+  1843	        pt = clampInsideRing(pt.first, pt.second, boundary, kClearanceClampMarginM);
+  1844	      }
+  1845	    }
+  1846	    // Connector discontinuities were split before rounding, so every remaining
+  1847	    // join in this sub-path is either part of an original segment or tangent to a
+  1848	    // real connector arc.
+  1849	    if (rounded.size() >= 2)
+  1850	    {
+  1851	      out.emplace_back(std::move(rounded));
+  1852	    }
+  1853	  }
+  1854	
+  1855	  // Sub-path DRIVE ORDER: minimize the blade-off Nav2 transit BETWEEN sub-paths.
+  1856	  // The sub-paths above come out in swath-chain order; on a multi-hole field that
+  1857	  // leaves the driver criss-crossing the lawn between lobes (measured 77 m of
+  1858	  // blade-off transit on the recorded 4-hole garden). Greedy nearest-neighbour
+  1859	  // over the FINISHED sub-path polylines, entering each at whichever end is
+  1860	  // nearer, mows spatially adjacent lobes consecutively (77 → 47 m there).
+  1861	  //   * Reversing a FINISHED polyline is safe: the points are identical, so every
+  1862	  //     turn-around / fillet stays exactly as in-bounds and trackable as before —
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && grep -n "v2.1.0\|2\.1\.0\|vector<F2CCells>\|F2CCells>" docs/agent14_f2c.log | head -30
+2504:# returns vector<F2CMultiLineString>, was vector<F2CCells>).
+5319:24161-Version: 2.1.0-1jammy.20260909.221402
+5327:24169-Filename: pool/main/r/ros-humble-fields2cover/ros-humble-fields2cover_2.1.0-1jammy.20260909.221402_arm64.deb
+5335:24180-Version: 2.1.0-1jammy.20260909.221402
+5340:24185-Depends: ros-humble-fields2cover (= 2.1.0-1jammy.20260909.221402)
+5343:24188-Filename: pool/main/r/ros-humble-fields2cover/ros-humble-fields2cover-dbgsym_2.1.0-1jammy.20260909.221402_arm64.deb
+5348:24385-Version: 2.1.0-1jammy.20260909.012417
+5353:[0m$ [0mcd /tmp/opencode && curl -sL --max-time 60 "http://packages.ros.org/ros2/ubuntu/pool/main/r/ros-humble-fields2cover/ros-humble-fields2cover_2.1.0-1jammy.20260909.012417_amd64.deb" -o f2c.deb && ls -la f2c.deb && dpkg-deb -c f2c.deb | grep -iE "cmake|\.so|hpp$" | head -30
+5445:set(PACKAGE_VERSION "2.1.0")
+5451:  if("2.1.0" MATCHES "^([0-9]+)\\.")
+5457:    set(CVF_VERSION_MAJOR "2.1.0")
+5589:headland_generator/headland_generator_base.h:67:  virtual std::vector<F2CCells> generateHeadlandSwaths(
+5604:  virtual std::vector<F2CCells> generateHeadlandSwaths(
+6725:24385-Version: 2.1.0-1jammy.20260909.012417
+6733:24393-Filename: pool/main/r/ros-humble-fields2cover/ros-humble-fields2cover_2.1.0-1jammy.20260909.012417_amd64.deb
+6881:[0m$ [0mcurl -s --max-time 25 "https://api.github.com/repos/Fields2Cover/Fields2Cover/contents/rosdep?ref=v2.1.0" | grep '"name"\|"path"' | head
+7209:[0m$ [0mcd /tmp/opencode && curl -sL --max-time 90 "http://packages.ros.org/ros2/ubuntu/pool/main/r/ros-humble-fields2cover/ros-humble-fields2cover_2.1.0-1jammy.20260909.221402_arm64.deb" -o f2c_arm.deb && ls -la f2c_arm.deb && dpkg-deb -c f2c_arm.deb | grep -E "cmake|libFields2Cover.so|include/fields2cover.h" | head
+7378:/home/michael/git/airseekers-decompile/ros2_stack/docs/agent14_f2c.log:5327:24169-Filename: pool/main/r/ros-humble-fields2cover/ros-humble-fields2cover_2.1.0-1jammy.20260909.221402_arm64.deb
+7381:/home/michael/git/airseekers-decompile/ros2_stack/docs/agent14_f2c.log:5340:24185-Depends: ros-humble-fields2cover (= 2.1.0-1jammy.20260909.221402)
+7382:/home/michael/git/airseekers-decompile/ros2_stack/docs/agent14_f2c.log:5343:24188-Filename: pool/main/r/ros-humble-fields2cover/ros-humble-fields2cover-dbgsym_2.1.0-1jammy.20260909.221402_arm64.deb
+7591:[0m$ [0mcd /tmp/opencode && curl -sL --max-time 60 "http://packages.ros.org/ros2/ubuntu/pool/main/r/ros-humble-fields2cover/ros-humble-fields2cover_2.1.0-1jammy.20260909.012417_amd64.deb" -o f2c.deb && dpkg-deb -x f2c.deb f2cx && sed -n 20,60p f2cx/opt/ros/humble/include/fields2cover/types/Point.h; echo "=== LinearRing ctor"; sed -n 20,50p f2cx/opt/ros/humble/include/fields2cover/types/LinearRing.h
+7954:  std::vector<F2CCells> generateHeadlandSwaths(
+8378:**`ros-humble-fields2cover` exists for arm64 and amd64 at v2.1.0**, and three findings change the plan versus the baseline's assumption that F2C needs a from-source arm64 build:
+8382:- **v2.1.0 returns `std::vector<F2CCells>` from `generateHeadlandSwaths`**, not v3's `vector<F2CMultiLineString>`. MowgliNext needs `ringPassToLoops()` to re-stitch chained segments; on 2.1.0 you get rings directly and skip that.
+8388:**Recommendation in the doc:** build the minimal package on apt F2C 2.1.0 first. If continuous sub-paths turn out to matter, lift `buildContinuousSubPaths` + `buildConnector` + `roundSharpCorners` as self-contained ROS-free functions rather than vendoring the whole server and inheriting a v3 source build.
+8392:Two things I could not verify: I confirmed the debs and headers exist and read them, but nothing has been compiled or run — no `colcon build`, no container. The `g++ 11` compatibility claim for the F2C 2.1.0 headers is inference from `cxx_std_17` in the exported target, not a compile. The first `find_package` configure in step 1 of the sequencing is there to prove it cheaply before any code is written.
+> build · longcat-2.5-preview-free
+The log has actual header excerpts from the deb. Let me extract the exact verified signatures for the types I need.
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && sed -n '5580,5640p' docs/agent14_f2c.log; echo "=== Point/LinearRing ==="; sed -n '7591,7700p' docs/agent14_f2c.log
+swath_generator/swath_generator_base.h:31:  virtual F2CSwathsByCells generateSwaths(double angle,
+swath_generator/swath_generator_base.h:46:}  // namespace f2c::sg
+headland_generator/headland_generator_base.h:14:namespace f2c::hg {
+headland_generator/headland_generator_base.h:16:/// Base class to generate the headlands.
+headland_generator/headland_generator_base.h:17:class HeadlandGeneratorBase {
+headland_generator/headland_generator_base.h:24:  virtual F2CCells generateHeadlands(
+headland_generator/headland_generator_base.h:32:  virtual F2CCells generateHeadlands(
+headland_generator/headland_generator_base.h:43:  virtual F2CCells generateHeadlands(
+headland_generator/headland_generator_base.h:53:  virtual F2CCells generateHeadlandArea(
+headland_generator/headland_generator_base.h:67:  virtual std::vector<F2CCells> generateHeadlandSwaths(
+headland_generator/headland_generator_base.h:74:}  // namespace f2c::hg
+> build · space-bunny-free
+[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; sed -n 55,75p headland_generator/headland_generator_base.h; echo "=== types alias?"; grep -rn "namespace types\|using F2CCell\|namespace f2c::types\|using Cell =" types/Cell.h types.h | head
+/// Generate headland swaths of the field for a given number of swaths
+  ///   with given width.
+  ///
+  /// @param field Borders of the field and the obstacles on it.
+  /// @param swath_width Width of each headland swath.
+  /// @param n_swaths Number of headland swaths.
+  /// @param dir_out2in When true, headland swaths are created from
+  ///          outer borders to inner borders.
+  ///          Otherwise, they are created from inner borders to outers.
+  /// @return Vector of size \a n_swaths for each headland swath.
+  ///   Each F2CLinearRing on it is a headland swath ring.
+  virtual std::vector<F2CCells> generateHeadlandSwaths(
+    const F2CCells& field, double swath_width, int n_swaths,
+    bool dir_out2in = true) = 0;
+
+  virtual ~HeadlandGeneratorBase() = default;
+};
+
+}  // namespace f2c::hg
+
+=== types alias?
+types/Cell.h:20:namespace f2c::types {
+types/Cell.h:113:}  // namespace f2c::types
+types.h:43:using F2CCell = f2c::types::Cell;
+types.h:44:using F2CCells = f2c::types::Cells;
+[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; head -40 types/Cell.h; echo "=== genSortedSwaths / route"; grep -n "genSortedSwaths\|namespace" route_planning/boustrophedon_order.h route_planning/single_cell_swaths_order_base.h | head -20
+//=============================================================================
+//    Copyright (C) 2021-2024 Wageningen University - All Rights Reserved
+//                     Author: Gonzalo Mier
+//                        BSD-3 License
+//=============================================================================
+
+#pragma once
+#ifndef FIELDS2COVER_TYPES_CELL_H_
+#define FIELDS2COVER_TYPES_CELL_H_
+
+#include <ogr_geometry.h>
+#include <string>
+#include <boost/math/constants/constants.hpp>
+#include "fields2cover/types/Geometries.h"
+#include "fields2cover/types/Point.h"
+#include "fields2cover/types/LinearRing.h"
+#include "fields2cover/types/LineString.h"
+#include "fields2cover/types/MultiLineString.h"
+
+namespace f2c::types {
+
+// Function to concat string easily with numbers
+=== Point/LinearRing ===
+[0m$ [0mcd /tmp/opencode && curl -sL --max-time 60 "http://packages.ros.org/ros2/ubuntu/pool/main/r/ros-humble-fields2cover/ros-humble-fields2cover_2.1.0-1jammy.20260909.012417_amd64.deb" -o f2c.deb && dpkg-deb -x f2c.deb f2cx && sed -n 20,60p f2cx/opt/ros/humble/include/fields2cover/types/Point.h; echo "=== LinearRing ctor"; sed -n 20,50p f2cx/opt/ros/humble/include/fields2cover/types/LinearRing.h
+namespace f2c::types {
+
+struct Point : public Geometry<OGRPoint, wkbPoint> {
+ public:
+  // Hidden from SWIG, which would also wrap the base copy/move constructors.
+#ifndef SWIG
+  using Geometry<OGRPoint, wkbPoint>::Geometry;
+#endif
+  Point();
+  Point(double x, double y, double z = 0);
+  Point(const Point&);
+  Point(Point&&);
+  ~Point();
+  Point& operator=(const Point&);
+  Point& operator=(Point&&);
+
+ public:
+  bool operator==(const Point& b) const;
+
+  bool operator!=(const Point& b) const;
+
+  bool operator<(const Point& b) const;
+
+  Point operator+(const Point& b) const;
+
+  Point operator-(const Point& b) const;
+
+  Point& operator*=(double b);
+
+  Point operator*(double b) const;
+  double operator*(const Point& b) const;
+
+  Point operator/(double b) const;
+
+  static double det(const Point& u, const Point& v);
+
+
+ public:
+  Point clone() const;
+  double X() const;
+=== LinearRing ctor
+struct LinearRing : public Geometries<LinearRing, OGRLinearRing, wkbLinearRing,
+  Point> {
+ public:
+  using Geometries<LinearRing, OGRLinearRing, wkbLinearRing, Point>::Geometries;
+  LinearRing();
+  explicit LinearRing(const std::vector<Point>& ps);
+  explicit LinearRing(const std::initializer_list<Point>& ps);
+
+  void operator*=(double b);
+
+  double getX(size_t i) const;
+  double getY(size_t i) const;
+  double getZ(size_t i) const;
+  double length() const;
+  void reversePoints();
+  size_t size() const;
+
+  void getGeometry(size_t i, Point& point);
+  void getGeometry(size_t i, Point& point) const;
+  Point getGeometry(size_t i);
+  const Point getGeometry(size_t i) const;
+
+  void setGeometry(size_t i, const Point& p);
+
+  void addPoint(double x, double y, double z = 0);
+  void addPoint(const Point& p);
+  void addGeometry(const Point& p);
+
+  const Point startPoint() const;
+  const Point endPoint() const;
+  bool isClockwise() const;
+> build · space-bunny-free
+[0m$ [0msed -n 1,80p /tmp/mowglinext-src/ros2/src/opennav_coverage/opennav_coverage/include/opennav_coverage/coverage_server.hpp
+// Copyright (c) 2023 Open Navigation LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#ifndef OPENNAV_COVERAGE__COVERAGE_SERVER_HPP_
+#define OPENNAV_COVERAGE__COVERAGE_SERVER_HPP_
+
+#include <vector>
+#include <memory>
+
+#include "fields2cover.h" // NOLINT
+
+#include "rclcpp/rclcpp.hpp"
+#include "nav2_util/lifecycle_node.hpp"
+#include "nav2_util/node_utils.hpp"
+#include "nav2_util/simple_action_server.hpp"
+#include "opennav_coverage/headland_generator.hpp"
+#include "opennav_coverage/swath_generator.hpp"
+#include "opennav_coverage/route_generator.hpp"
+#include "opennav_coverage/path_generator.hpp"
+#include "opennav_coverage/visualizer.hpp"
+
+namespace opennav_coverage
+{
+/**
+> build · longcat-2.5-preview-free
+Key finding: v2.1.0 `Point` shows `X()` in the excerpt but the plan says `getX()`. Let me verify the exact Point/Cell/Swath accessors from the log's header dumps.
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && grep -n "getX\|double X()\|double Y()\|double Z()" docs/agent14_f2c.log | head -10; echo "=== Cell.h ==="; sed -n '/types\/Cell.h/,/^> build/p' docs/agent14_f2c.log | sed -n '1,80p'
+543:  1345	      const double len = std::hypot(p1.getX() - p0.getX(), p1.getY() - p0.getY());
+551:  1353	        plan.swath_angle_rad = std::atan2(p1.getY() - p0.getY(), p1.getX() - p0.getX());
+554:  1356	      plan.swaths.push_back({{p0.getX(), p0.getY()}, {p1.getX(), p1.getY()}});
+1216:  2018	    ogr_ring.addPoint(p.getX(), p.getY());
+1259:  2061	    out.addPoint(f2c::types::Point(ext->getX(i), ext->getY(i)));
+1293:  2095	    ogr_ring.addPoint(p.getX(), p.getY());
+1332:  2134	    out.addPoint(f2c::types::Point(ext->getX(i), ext->getY(i)));
+1350:  2152	        std::hypot(p.getX() - pts.back().getX(), p.getY() - pts.back().getY()) < kRingDedupTolM)
+1354:  2156	    pts.push_back(f2c::types::Point(p.getX(), p.getY()));
+1358:  2160	  while (pts.size() >= 2 && std::hypot(pts.front().getX() - pts.back().getX(),
+=== Cell.h ===
+#include "fields2cover/types/Cell.h"
+#include "fields2cover/types/Cells.h"
+
+#include "fields2cover/types/Strip.h"
+#include "fields2cover/types/Field.h"
+
+#include "fields2cover/types/Swath.h"
+#include "fields2cover/types/Swaths.h"
+#include "fields2cover/types/SwathsByCells.h"
+#include "fields2cover/types/Route.h"
+#include "fields2cover/types/Path.h"
+=== hg/swath dirs
+headland_generator:
+constant_headland.h
+corridor_headland.h
+headland_generator_base.h
+required_headland.h
+
+route_planning:
+boustrophedon_order.h
+custom_order.h
+route_planner_base.h
+single_cell_swaths_order_base.h
+snake_order.h
+spiral_order.h
+
+swath_generator:
+brute_force.h
+swath_generator_base.h
+> build · space-bunny-free
+[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; sed -n 55,75p headland_generator/headland_generator_base.h; echo "=== types alias?"; grep -rn "namespace types\|using F2CCell\|namespace f2c::types\|using Cell =" types/Cell.h types.h | head
+/// Generate headland swaths of the field for a given number of swaths
+  ///   with given width.
+  ///
+  /// @param field Borders of the field and the obstacles on it.
+  /// @param swath_width Width of each headland swath.
+  /// @param n_swaths Number of headland swaths.
+  /// @param dir_out2in When true, headland swaths are created from
+  ///          outer borders to inner borders.
+  ///          Otherwise, they are created from inner borders to outers.
+  /// @return Vector of size \a n_swaths for each headland swath.
+  ///   Each F2CLinearRing on it is a headland swath ring.
+  virtual std::vector<F2CCells> generateHeadlandSwaths(
+    const F2CCells& field, double swath_width, int n_swaths,
+    bool dir_out2in = true) = 0;
+
+  virtual ~HeadlandGeneratorBase() = default;
+};
+
+}  // namespace f2c::hg
+
+=== types alias?
+types/Cell.h:20:namespace f2c::types {
+types/Cell.h:113:}  // namespace f2c::types
+types.h:43:using F2CCell = f2c::types::Cell;
+types.h:44:using F2CCells = f2c::types::Cells;
+[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; head -40 types/Cell.h; echo "=== genSortedSwaths / route"; grep -n "genSortedSwaths\|namespace" route_planning/boustrophedon_order.h route_planning/single_cell_swaths_order_base.h | head -20
+//=============================================================================
+//    Copyright (C) 2021-2024 Wageningen University - All Rights Reserved
+//                     Author: Gonzalo Mier
+//                        BSD-3 License
+//=============================================================================
+
+#pragma once
+#ifndef FIELDS2COVER_TYPES_CELL_H_
+#define FIELDS2COVER_TYPES_CELL_H_
+
+#include <ogr_geometry.h>
+#include <string>
+#include <boost/math/constants/constants.hpp>
+#include "fields2cover/types/Geometries.h"
+#include "fields2cover/types/Point.h"
+#include "fields2cover/types/LinearRing.h"
+#include "fields2cover/types/LineString.h"
+#include "fields2cover/types/MultiLineString.h"
+
+namespace f2c::types {
+
+// Function to concat string easily with numbers
+template < typename... Args >
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && awk '/head -40 types\/Cell.h/,/genSortedSwaths \/ route/' docs/agent14_f2c.log | head -60; echo "=== Swath ==="; grep -n "getPath\|struct Swath\|class Swath" docs/agent14_f2c.log | head; echo "=== Cells.h addGeometry ==="; grep -n "addGeometry\|getGeometry" docs/agent14_f2c.log | head -20
+[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; head -40 types/Cell.h; echo "=== genSortedSwaths / route"; grep -n "genSortedSwaths\|namespace" route_planning/boustrophedon_order.h route_planning/single_cell_swaths_order_base.h | head -20
+=== Swath ===
+536:  1338	      const auto line = sw.getPath();
+4390:34:const std::string kPackagePath = ros::package::getPath(kPackageName);
+5576:swath_generator/swath_generator_base.h:17:class SwathGeneratorBase {
+6144:[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover && grep -n "getPath\|class Swath\|size()" types/Swath.h types/Swaths.h | head -20; echo "=== Buffer on Cells/Cell?"; grep -n "buffer\|Buffer" types/Cell.h types/Cells.h | head
+6145:types/Swath.h:21:enum class SwathType {MAINLAND = 0, HEADLAND = 1};
+6146:types/Swath.h:46:  LineString getPath() const;
+6181:class SwathGeneratorBase {
+6862:[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; grep -n "append\|sortByMinY\|getPath\|exportToGeoJSON" types/Swaths.h types/Swath.h | head
+6870:types/Swath.h:46:  LineString getPath() const;
+=== Cells.h addGeometry ===
+472:  1274	    const auto cell = mainland.getGeometry(i);
+541:  1343	      const auto p0 = line.getGeometry(0);
+542:  1344	      const auto p1 = line.getGeometry(line.size() - 1);
+1215:  2017	    const auto p = in.getGeometry(i);
+1230:  2032	  const auto flat_type = wkbFlatten(grown->getGeometryType());
+1292:  2094	    const auto p = in.getGeometry(i);
+1304:  2106	  const auto flat_type = wkbFlatten(fixed->getGeometryType());
+1348:  2150	    const auto p = in.getGeometry(i);
+2992:807:  f2c::types::Cell out(bufferRingOutward(in.getGeometry(0), margin));
+3225:    const auto outer_ring = field_cell.getGeometry(0);
+3229:      const auto p = outer_ring.getGeometry(i);
+3236:  cells.addGeometry(field_cell);
+3305:    expanded.addGeometry(expandCellOutward(field_cell, -field_offset));
+5658:  void getGeometry(size_t i, LinearRing& ring);
+5929:        const double a = cells_at.getGeometry(i).area();
+5936:      const auto ring = cells_at.getGeometry(largest).getGeometry(0);  // exterior
+5940:        const auto p = ring.getGeometry(i);
+5978:      const auto& cell = hole_src.getGeometry(i);
+5981:        const auto ring = cell.getGeometry(r);
+5986:          const auto p = ring.getGeometry(j);
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && sed -n '5640,5700p' docs/agent14_f2c.log; echo "=== brute_force ==="; grep -n "generateSwaths\|generateBestSwaths\|setStepAngle" docs/agent14_f2c.log | head -12; echo "=== boustrophedon ==="; sed -n '/boustrophedon_order.h/,+30p' docs/agent14_f2c.log | head -40
+// Function to concat string easily with numbers
+template < typename... Args >
+inline std::string sstr(Args &&... args) {
+  std::ostringstream sstr;
+  sstr << std::dec;
+  (sstr <<  ...  << args);
+  return sstr.str();
+}
+
+
+struct Cell : public Geometries<Cell, OGRPolygon, wkbPolygon, LinearRing> {
+ public:
+  using Geometries<Cell, OGRPolygon, wkbPolygon, LinearRing>::Geometries;
+  Cell();
+  explicit Cell(const OGRGeometry* geom);
+  explicit Cell(const f2c::types::LinearRing& ring);
+  ~Cell() = default;
+
+  void getGeometry(size_t i, LinearRing& ring);
+=== genSortedSwaths / route
+route_planning/boustrophedon_order.h:14:namespace f2c::rp {
+route_planning/boustrophedon_order.h:22:}  // namespace f2c::rp
+route_planning/single_cell_swaths_order_base.h:13:namespace f2c::rp {
+route_planning/single_cell_swaths_order_base.h:17:  virtual F2CSwaths genSortedSwaths(
+route_planning/single_cell_swaths_order_base.h:29:}  // namespace f2c::rp
+> build · space-bunny-free
+[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include && ls; echo "=== any umbrella"; find . -maxdepth 2 -name "*.h" | head -20
+fields2cover
+fields2cover.h
+matplot
+=== any umbrella
+./fields2cover.h
+./fields2cover/types.h
+[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover && cat types.h | tail -25; echo "=== objectives"; ls objectives; echo "=== obj::NSwath?"; grep -rn "class NSwath\|namespace f2c::obj" objectives/*.h | head
+using F2CRobot = f2c::types::Robot;
+
+using F2CPoint = f2c::types::Point;
+using F2CMultiPoint = f2c::types::MultiPoint;
+using F2CLineString = f2c::types::LineString;
+using F2CLinearRing = f2c::types::LinearRing;
+using F2CMultiLineString = f2c::types::MultiLineString;
+using F2CCell = f2c::types::Cell;
+using F2CCells = f2c::types::Cells;
+using F2CStrip = f2c::types::Strip;
+using F2CField = f2c::types::Field;
+using F2CPath = f2c::types::Path;
+using F2CPathState = f2c::types::PathState;
+using F2CRoute = f2c::types::Route;
+using F2CSwath = f2c::types::Swath;
+using F2CSwaths = f2c::types::Swaths;
+using F2CSwathsByCells = f2c::types::SwathsByCells;
+using F2CGraph = f2c::types::Graph;
+using F2CGraph2D = f2c::types::Graph2D;
+
+using F2CRobots = std::vector<F2CRobot>;
+using F2CStrips = std::vector<F2CStrip>;
+using F2CFields = std::vector<F2CField>;
+
+#endif  //  FIELDS2COVER_TYPES_H_
+=== objectives
+base_objective.h
+=== brute_force ===
+465:  1267	  bf.setStepAngle(kAutoAngleStepRad);
+505:  1307	                                    ? bf.generateSwaths(cell_angle, op_width, cell)
+506:  1308	                                    : bf.generateBestSwaths(n_swath_obj, op_width, cell);
+525:  1327	      swaths = bf.generateSwaths(angle, op_width, cell);
+2984:[0m$ [0mgrep -n "f2c::\|generateHeadland\|genRoute\|planPath\|ConstHL\|BruteForce\|Boustrophedon\|NSwath\|setStepAngle\|generateSwaths\|generateBestSwaths" /tmp/mowglinext-src/ros2/src/mowgli_coverage/src/coverage_planning.cpp | head -60
+2985:42:// AUTO swath-angle field-size gate. f2c::sg::BruteForce::generateBestSwaths
+3014:1267:  bf.setStepAngle(kAutoAngleStepRad);
+3018:1307:                                    ? bf.generateSwaths(cell_angle, op_width, cell)
+3019:1308:                                    : bf.generateBestSwaths(n_swath_obj, op_width, cell);
+3020:1327:      swaths = bf.generateSwaths(angle, op_width, cell);
+3151:// AUTO swath-angle field-size gate. f2c::sg::BruteForce::generateBestSwaths
+5566:[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; grep -n "namespace\|class " headland_generator/constant_headland.h | head; echo "=== brute_force"; grep -n "namespace\|class \|setStepAngle\|generateSwaths\|generateBestSwaths\|generateHeadland" swath_generator/brute_force.h swath_generator/swath_generator_base.h headland_generator/headland_generator_base.h | head -40
+=== boustrophedon ===
+boustrophedon_order.h
+custom_order.h
+route_planner_base.h
+single_cell_swaths_order_base.h
+snake_order.h
+spiral_order.h
+
+swath_generator:
+brute_force.h
+swath_generator_base.h
+> build · space-bunny-free
+[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; grep -n "namespace\|class " headland_generator/constant_headland.h | head; echo "=== brute_force"; grep -n "namespace\|class \|setStepAngle\|generateSwaths\|generateBestSwaths\|generateHeadland" swath_generator/brute_force.h swath_generator/swath_generator_base.h headland_generator/headland_generator_base.h | head -40
+15:namespace f2c::hg {
+18:class ConstHL : public HeadlandGeneratorBase {
+55:}  // namespace f2c::hg
+=== brute_force
+swath_generator/brute_force.h:18:namespace f2c::sg {
+swath_generator/brute_force.h:20:class BruteForce : public SwathGeneratorBase {
+swath_generator/brute_force.h:23:  void setStepAngle(double d);
+swath_generator/brute_force.h:33:}  // namespace f2c::sg
+swath_generator/swath_generator_base.h:15:namespace f2c::sg {
+swath_generator/swath_generator_base.h:17:class SwathGeneratorBase {
+swath_generator/swath_generator_base.h:22:  virtual F2CSwaths generateBestSwaths(f2c::obj::SGObjective& obj,
+swath_generator/swath_generator_base.h:25:  virtual F2CSwathsByCells generateBestSwaths(f2c::obj::SGObjective& obj,
+swath_generator/swath_generator_base.h:28:  virtual F2CSwaths generateSwaths(double angle,
+swath_generator/swath_generator_base.h:31:  virtual F2CSwathsByCells generateSwaths(double angle,
+swath_generator/swath_generator_base.h:46:}  // namespace f2c::sg
+headland_generator/headland_generator_base.h:14:namespace f2c::hg {
+headland_generator/headland_generator_base.h:16:/// Base class to generate the headlands.
+headland_generator/headland_generator_base.h:17:class HeadlandGeneratorBase {
+headland_generator/headland_generator_base.h:24:  virtual F2CCells generateHeadlands(
+[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; head -40 types/Cell.h; echo "=== genSortedSwaths / route"; grep -n "genSortedSwaths\|namespace" route_planning/boustrophedon_order.h route_planning/single_cell_swaths_order_base.h | head -20
+//=============================================================================
+//    Copyright (C) 2021-2024 Wageningen University - All Rights Reserved
+//                     Author: Gonzalo Mier
+//                        BSD-3 License
+//=============================================================================
+
+#pragma once
+#ifndef FIELDS2COVER_TYPES_CELL_H_
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && grep -n "addRing\|struct Cells\|class Cells" docs/agent14_f2c.log | head; echo "=== full Cell.h dump ==="; awk '/sed -n 55,113p types\/Cell.h|head -60 types\/Cell.h|cat types\/Cell.h/,0' docs/agent14_f2c.log | head -5; grep -n "types/Cell.h" docs/agent14_f2c.log | head
+1220:  2022	  poly.addRing(&ogr_ring);
+1297:  2099	  poly.addRing(&ogr_ring);
+2970:      cell.addRing(bufferRingOutward(make_ring(hole), obstacle_margin));
+6273:[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; grep -n "area\|addRing\|size()" types/Cells.h | head -15; echo "=== LinearRing addPoint"; grep -n "addPoint\|closeRings" types/LinearRing.h | head; echo "=== getGeometry"; grep -n "getGeometry" types/Cells.h types/Cell.h | head
+6274:44:  void addRing(size_t i, const LinearRing& ring);
+6688:struct Cells : public Geometries<Cells, OGRMultiPolygon, wkbMultiPolygon,
+6711:  void addRing(size_t i, const LinearRing& ring);
+7222:[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; grep -n "addRing\|addInteriorRing" types/Cell.h types/Cells.h
+7223:types/Cell.h:68:  void addRing(const LinearRing& ring);
+7224:types/Cells.h:44:  void addRing(size_t i, const LinearRing& ring);
+=== full Cell.h dump ===
+5536:#include "fields2cover/types/Cell.h"
+5592:[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; sed -n 55,75p headland_generator/headland_generator_base.h; echo "=== types alias?"; grep -rn "namespace types\|using F2CCell\|namespace f2c::types\|using Cell =" types/Cell.h types.h | head
+5614:types/Cell.h:20:namespace f2c::types {
+5615:types/Cell.h:113:}  // namespace f2c::types
+5618:[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; head -40 types/Cell.h; echo "=== genSortedSwaths / route"; grep -n "genSortedSwaths\|namespace" route_planning/boustrophedon_order.h route_planning/single_cell_swaths_order_base.h | head -20
+6144:[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover && grep -n "getPath\|class Swath\|size()" types/Swath.h types/Swaths.h | head -20; echo "=== Buffer on Cells/Cell?"; grep -n "buffer\|Buffer" types/Cell.h types/Cells.h | head
+6149:types/Cell.h:55:  static Cell buffer(const Cell& geom, double width);
+6150:types/Cell.h:57:  static Cell buffer(const LineString& geom, double width);
+6151:types/Cell.h:59:  static Cell buffer(const LinearRing& ring, double width);
+6152:types/Cell.h:61:  static Cell buffer(const Point& geom, double width);
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && sed -n '6688,6720p' docs/agent14_f2c.log; echo "=== genSortedSwaths sig ==="; sed -n '/single_cell_swaths_order_base.h/,+16p' docs/agent14_f2c.log | grep -A8 "genSortedSwaths"; echo "=== Geometries area/size ==="; grep -n "double area\|size_t size\|int size" docs/agent14_f2c.log | head -8
+struct Cells : public Geometries<Cells, OGRMultiPolygon, wkbMultiPolygon,
+    Cell> {
+ public:
+  using Geometries<Cells, OGRMultiPolygon, wkbMultiPolygon, Cell>::Geometries;
+  Cells();
+  explicit Cells(const OGRGeometry* geom);
+  explicit Cells(const Cell& c);
+  ~Cells() = default;
+
+  void getGeometry(size_t i, Cell& cell);
+  void getGeometry(size_t i, Cell& cell) const;
+  Cell getGeometry(size_t i);
+  const Cell getGeometry(size_t i) const;
+  void setGeometry(size_t i, const Cell& cell);
+
+  const Cell getCell(size_t i) const;
+  const LinearRing getCellBorder(size_t i) const;
+  const LinearRing getInteriorRing(size_t i_cell, size_t i_ring) const;
+
+
+  void operator*=(double b);
+
+  void addGeometry(const Cell& c);
+  void addRing(size_t i, const LinearRing& ring);
+
+  size_t size() const;
+
+  bool isConvex() const;
+
+  Cell convexHull() const;
+=== Cell size
+types/Cell.h:49:  size_t size() const;
+> build · space-bunny-free
+=== genSortedSwaths sig ===
+[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include/fields2cover; head -40 types/Cell.h; echo "=== genSortedSwaths / route"; grep -n "genSortedSwaths\|namespace" route_planning/boustrophedon_order.h route_planning/single_cell_swaths_order_base.h | head -20
+//=============================================================================
+//    Copyright (C) 2021-2024 Wageningen University - All Rights Reserved
+//                     Author: Gonzalo Mier
+//                        BSD-3 License
+//=============================================================================
+
+#pragma once
+#ifndef FIELDS2COVER_TYPES_CELL_H_
+--
+route_planning/single_cell_swaths_order_base.h:17:  virtual F2CSwaths genSortedSwaths(
+route_planning/single_cell_swaths_order_base.h:29:}  // namespace f2c::rp
+> build · space-bunny-free
+[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include && ls; echo "=== any umbrella"; find . -maxdepth 2 -name "*.h" | head -20
+fields2cover
+fields2cover.h
+matplot
+=== any umbrella
+./fields2cover.h
+=== Geometries area/size ===
+6036:          double area2 = 0.0;
+6147:types/Swaths.h:46:  size_t size() const;
+6275:46:  size_t size() const;
+6291:types/Geometries.h:28:  double area() const;
+6385:29:  size_t size() const;
+6713:  size_t size() const;
+6719:types/Cell.h:49:  size_t size() const;
+7648:  size_t size() const;
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && grep -n -A4 "virtual F2CSwaths genSortedSwaths" docs/agent14_f2c.log | head -8; echo "=== Swaths getGeometry ==="; sed -n '6147,6160p' docs/agent14_f2c.log; echo "=== NSwath ==="; grep -n "NSwath" docs/agent14_f2c.log | head -5
+5663:route_planning/single_cell_swaths_order_base.h:17:  virtual F2CSwaths genSortedSwaths(
+5664-route_planning/single_cell_swaths_order_base.h:29:}  // namespace f2c::rp
+5665-> build · space-bunny-free
+5666-[0m$ [0mcd /tmp/opencode/f2cx/opt/ros/humble/include && ls; echo "=== any umbrella"; find . -maxdepth 2 -name "*.h" | head -20
+5667-fields2cover
+--
+6218:  virtual F2CSwaths genSortedSwaths(
+6219-      const F2CSwaths& swaths, uint32_t variant = 0) const;
+=== Swaths getGeometry ===
+types/Swaths.h:46:  size_t size() const;
+=== Buffer on Cells/Cell?
+types/Cell.h:55:  static Cell buffer(const Cell& geom, double width);
+types/Cell.h:57:  static Cell buffer(const LineString& geom, double width);
+types/Cell.h:59:  static Cell buffer(const LinearRing& ring, double width);
+types/Cell.h:61:  static Cell buffer(const Point& geom, double width);
+types/Cells.h:92:  static Cells buffer(const Geometry<T, R>& geom, double width,
+types/Cells.h:95:  Cells buffer(double width) const;
+types/Cells.h:103:Cells Cells::buffer(const Geometry<T, R>& geom, double width, int side) {
+types/Cells.h:104:  OGRGeometry* buffer = geom.OGRBuffer(width, side);
+types/Cells.h:105:  Cells cells {buffer};
+types/Cells.h:106:  OGRGeometryFactory::destroyGeometry(buffer);
+[0m$ [0mcd /tmp/opencode && readelf -d f2cx/opt/ros/humble/lib/x86_64-linux-gnu/libFields2Cover.so | grep NEEDED; echo "=== strings ortools"; strings f2cx/opt/ros/humble/lib/x86_64-linux-gnu/libFields2Cover.so | grep -i "ortools\|routing" | head -5
+0x0000000000000001 (NEEDED)             Shared library: [libgdal.so.30]
+=== NSwath ===
+466:  1268	  f2c::obj::NSwath n_swath_obj;
+2984:[0m$ [0mgrep -n "f2c::\|generateHeadland\|genRoute\|planPath\|ConstHL\|BruteForce\|Boustrophedon\|NSwath\|setStepAngle\|generateSwaths\|generateBestSwaths" /tmp/mowglinext-src/ros2/src/mowgli_coverage/src/coverage_planning.cpp | head -60
+2987:62:// the Pi4 / Cortex-A72 target). The swath-count objective (NSwath) is near-flat
+3015:1268:  f2c::obj::NSwath n_swath_obj;
+3171:// the Pi4 / Cortex-A72 target). The swath-count objective (NSwath) is near-flat
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && sed -n '1330,1360p' docs/agent14_f2c.log; grep -n "getGeometry" docs/agent14_f2c.log | grep -i "swath" | head -3; sed -n '6147,6156p' docs/agent14_f2c.log
+2132	  for (int i = 0; i < ext->getNumPoints(); ++i)
+  2133	  {
+  2134	    out.addPoint(f2c::types::Point(ext->getX(i), ext->getY(i)));
+  2135	  }
+  2136	  return out;
+  2137	}
+  2138	
+  2139	}  // namespace
+  2140	
+  2141	f2c::types::LinearRing dedupClosedRing(const f2c::types::LinearRing& in)
+  2142	{
+  2143	  // 1. Metric dedup: drop any vertex within kRingDedupTolM of the previous kept
+  2144	  // vertex. A 1e-9 (nanometre) tolerance let mm-scale near-duplicates through —
+  2145	  // boost accepts the points but F2C's headland offset / swath clip then drop
+  2146	  // whole swaths. 1 cm is well below op_width, so real corners are preserved.
+  2147	  std::vector<f2c::types::Point> pts;
+  2148	  for (std::size_t i = 0; i < in.size(); ++i)
+  2149	  {
+  2150	    const auto p = in.getGeometry(i);
+  2151	    if (!pts.empty() &&
+  2152	        std::hypot(p.getX() - pts.back().getX(), p.getY() - pts.back().getY()) < kRingDedupTolM)
+  2153	    {
+  2154	      continue;  // near-zero-length edge — boost/F2C would reject or mis-clip it
+  2155	    }
+  2156	    pts.push_back(f2c::types::Point(p.getX(), p.getY()));
+  2157	  }
+  2158	  // Drop a near-duplicate closing vertex (the 1.2 mm seam) so the open vertex
+  2159	  // list carries no first≈last pair; the ring is re-closed explicitly below.
+  2160	  while (pts.size() >= 2 && std::hypot(pts.front().getX() - pts.back().getX(),
+  2161	                                       pts.front().getY() - pts.back().getY()) < kRingDedupTolM)
+  2162	  {
+types/Swaths.h:46:  size_t size() const;
+=== Buffer on Cells/Cell?
+types/Cell.h:55:  static Cell buffer(const Cell& geom, double width);
+types/Cell.h:57:  static Cell buffer(const LineString& geom, double width);
+types/Cell.h:59:  static Cell buffer(const LinearRing& ring, double width);
+types/Cell.h:61:  static Cell buffer(const Point& geom, double width);
+types/Cells.h:92:  static Cells buffer(const Geometry<T, R>& geom, double width,
+types/Cells.h:95:  Cells buffer(double width) const;
+types/Cells.h:103:Cells Cells::buffer(const Geometry<T, R>& geom, double width, int side) {
+types/Cells.h:104:  OGRGeometry* buffer = geom.OGRBuffer(width, side);
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && sed -n '2162,2200p' docs/agent14_f2c.log; echo "=== swath iter ==="; sed -n '1334,1348p' docs/agent14_f2c.log
+# Request fields:
+polygon_coverage_msgs/PolygonWithHolesStamped polygon # The new polygon.
+---
+# Response fields:
+bool success # True on success, false on polygon error.
+===== package.xml
+<?xml version="1.0"?>
+<package format="2">
+  <name>polygon_coverage_msgs</name>
+  <version>3.3.2</version>
+  <description>
+    Messages specific to polygon coverage planning.
+  </description>
+
+  <maintainer email="brik@ethz.ch">Rik Bähnemann</maintainer>
+  <author>Rik Bähnemann</author>
+
+  <license>GPL</license>
+
+  <url type="website">https://github.com/ethz-asl/polygon_coverage_planning</url>
+  <url type="bugtracker">https://github.com/ethz-asl/polygon_coverage_planning/issues</url>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>message_generation</depend>
+  <depend>message_runtime</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>xmlrpcpp</depend>
+  <depend>polygon_coverage_geometry</depend>
+</package>
+> build · space-bunny-free
+[0m$ [0mD=/home/michael/git/airseekers-decompile/ros2_port_handoff/04_full_src_tree/src/mower_planner/coverage_planning; echo "=== solvers CMakeLists"; cat $D/polygon_coverage_solvers/CMakeLists.txt; echo; echo "=== solvers package.xml"; cat $D/polygon_coverage_solvers/package.xml
+=== solvers CMakeLists
+cmake_minimum_required(VERSION 3.16.3)
+project(polygon_coverage_solvers)
+
+find_package(catkin REQUIRED COMPONENTS rosconsole roslib)
+=== swath iter ===
+  2136	  return out;
+  2137	}
+  2138	
+  2139	}  // namespace
+  2140	
+  2141	f2c::types::LinearRing dedupClosedRing(const f2c::types::LinearRing& in)
+  2142	{
+  2143	  // 1. Metric dedup: drop any vertex within kRingDedupTolM of the previous kept
+  2144	  // vertex. A 1e-9 (nanometre) tolerance let mm-scale near-duplicates through —
+  2145	  // boost accepts the points but F2C's headland offset / swath clip then drop
+  2146	  // whole swaths. 1 cm is well below op_width, so real corners are preserved.
+  2147	  std::vector<f2c::types::Point> pts;
+  2148	  for (std::size_t i = 0; i < in.size(); ++i)
+  2149	  {
+  2150	    const auto p = in.getGeometry(i);
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && grep -n -B2 -A8 "genSortedSwaths(swaths)" docs/agent14_f2c.log | head -30
+530-  1332	      }
+531-  1333	    }
+532:  1334	    f2c::types::Swaths ordered = order.genSortedSwaths(swaths);
+533-  1335	    for (std::size_t s = 0; s < ordered.size(); ++s)
+534-  1336	    {
+535-  1337	      const auto& sw = ordered[s];
+536-  1338	      const auto line = sw.getPath();
+537-  1339	      if (line.size() < 2)
+538-  1340	      {
+539-  1341	        continue;
+540-  1342	      }
+--
+3019-1308:                                    : bf.generateBestSwaths(n_swath_obj, op_width, cell);
+3020-1327:      swaths = bf.generateSwaths(angle, op_width, cell);
+3021:1334:    f2c::types::Swaths ordered = order.genSortedSwaths(swaths);
+3022-1400:// only source being the F2C offset mismatch between generateHeadlandSwaths (the
+3023-1401:// ring) and generateHeadlands (the clearance boundary), which round convex
+3024-1469:    const BoustrophedonPlan& plan,
+3025-1491:  // Ring DRIVE-ORDER grouping. F2C's generateHeadlandSwaths emits ring loops PER
+3026-1608:  // Nearest-endpoint chaining of the swath pieces. BoustrophedonOrder's
+3027-1623:    // Seed from BoustrophedonOrder's OWN first swath, NOT from the last ring's
+3028-1629:    // edge U-turns that no longer had headland room). BoustrophedonOrder's own
+3029-1831:    // ring — generateHeadlandSwaths (the ring) and generateHeadlands (this
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker pull ros:humble-ros-base-jammy 2>&1 | tail -3
+Command moved to the background (shell ID: sh_10a200c440019Ige4iMBSTo7qA).
+Output is streaming to: /home/michael/.local/share/opencode/shell/f123ef41c4f2ce6698ef44360af6602954d91268/sh_10a200c440019Ige4iMBSTo7qA.out
+[0m→ [0mRead ros2_stack/docker/docker-compose.yml 
+> build · longcat-2.5-preview-free
+[0m← [0mWrite ros2_stack/src/mower_interfaces/srv/PlanCoverage.srv
+Created file successfully: ros2_stack/src/mower_interfaces/srv/PlanCoverage.srv
+> build · longcat-2.5-preview-free
+The Humble image pulled successfully — I'll be able to build and run the tests for real. Continuing with the interfaces CMakeLists:
+[0m← [0mEdit ros2_stack/src/mower_interfaces/CMakeLists.txt
+Index: ros2_stack/src/mower_interfaces/CMakeLists.txt
+===================================================================
+--- ros2_stack/src/mower_interfaces/CMakeLists.txt
++++ ros2_stack/src/mower_interfaces/CMakeLists.txt
+@@ -24,8 +24,9 @@
+   "srv/PlannerTaskSet.srv"
+   "srv/BumperControl.srv"
+   "srv/CutterControl.srv"
+   "srv/ChargingControl.srv"
++  "srv/PlanCoverage.srv"
+   DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs nav_msgs
+ )
+ 
+ ament_export_dependencies(rosidl_default_runtime)
+
+> build · longcat-2.5-preview-free
+Now the `mower_coverage` package. First `package.xml` (no `fields2cover` rosdep depend, per the plan):
+[0m← [0mWrite ros2_stack/src/mower_coverage/package.xml
+Created file successfully: ros2_stack/src/mower_coverage/package.xml
+> build · longcat-2.5-preview-free
+Now `CMakeLists.txt` with the required `find_package(Fields2Cover 2.1.0 CONFIG REQUIRED)` and the Dockerfile apt-install note:
+[0m← [0mWrite ros2_stack/src/mower_coverage/CMakeLists.txt
+Created file successfully: ros2_stack/src/mower_coverage/CMakeLists.txt
+> build · longcat-2.5-preview-free
+Now the planner core header — pure F2C, no ROS types:
+[0m← [0mWrite ros2_stack/src/mower_coverage/include/mower_coverage/coverage_planning.hpp
+Created file successfully: ros2_stack/src/mower_coverage/include/mower_coverage/coverage_planning.hpp
+> build · longcat-2.5-preview-free
+Now the planner core implementation:
+[0m← [0mWrite ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+Created file successfully: ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+> build · longcat-2.5-preview-free
+I made a typo in the auto-angle reporting (`s.second.second - s.second.second`). Fixing:
+[0m← [0mEdit ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+Index: ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+===================================================================
+--- ros2_stack/src/mower_coverage/src/coverage_planning.cpp
++++ ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+@@ -372,9 +372,9 @@
+   // For auto plans, report the angle actually used (from the first swath).
+   if (mow_angle_rad < 0.0 && !plan.swaths.empty()) {
+     const auto& s = plan.swaths.front();
+     plan.swath_angle_rad =
+-        std::atan2(s.second.second - s.second.second, s.second.first - s.first.first);
++        std::atan2(s.second.second - s.second.first, s.second.first - s.first.first);
+   }
+ 
+   // Report. Silent coverage loss is the failure mode worth designing
+   // against, so the fraction and the drop list always ship.
+
+> build · longcat-2.5-preview-free
+Now the ROS node:
+[0m← [0mWrite ros2_stack/src/mower_coverage/src/mower_coverage_node.cpp
+Created file successfully: ros2_stack/src/mower_coverage/src/mower_coverage_node.cpp
+> build · longcat-2.5-preview-free
+Now the standalone CLI test:
+[0m← [0mWrite ros2_stack/src/mower_coverage/src/coverage_cli.cpp
+Created file successfully: ros2_stack/src/mower_coverage/src/coverage_cli.cpp
+> build · longcat-2.5-preview-free
+Now let me refine the ring dedup in the planner — the mowgli-proven approach uses a chord-distance spike test (5 mm) rather than my cross-product version, which catches real out-and-back spikes more reliably:
+[0m← [0mEdit ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+Index: ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+===================================================================
+--- ros2_stack/src/mower_coverage/src/coverage_planning.cpp
++++ ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+@@ -18,9 +18,9 @@
+ // exact enough that boost::geometry accepts the points yet degenerate enough
+ // that F2C's headland offset / swath clip silently produce PARTIAL coverage.
+ // Both tolerances sit safely below op_width, so no real corner is removed.
+ constexpr double kRingDedupTolM = 0.01;   // drop a vertex within 1 cm of the last kept one
+-constexpr double kRingSpikeTolM = 1e-9;  // near-collinear spike gate (cross-product test)
++constexpr double kRingSpikeTolM = 0.005;  // drop a vertex within 5 mm of its neighbours' chord
+ 
+ // AUTO swath-angle field-size gate. BruteForce::generateBestSwaths sweeps 180
+ // candidate angles (1 deg step) and regenerates the full swath set at each, so
+ // its cost scales ~linearly with field area: a 100x100 m field takes ~24 s,
+
+> build · longcat-2.5-preview-free
+[0m← [0mEdit ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+Index: ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+===================================================================
+--- ros2_stack/src/mower_coverage/src/coverage_planning.cpp
++++ ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+@@ -40,8 +40,21 @@
+ double dist(const Point2D& a, const Point2D& b) {
+   return std::hypot(a.first - b.first, a.second - b.second);
+ }
+ 
++// Distance from point p to the segment a-b.
++double pointToSegmentDist(const Point2D& p, const Point2D& a, const Point2D& b) {
++  const double dx = b.first - a.first;
++  const double dy = b.second - a.second;
++  const double len2 = dx * dx + dy * dy;
++  if (len2 < 1e-18) {
++    return dist(p, a);
++  }
++  double t = ((p.first - a.first) * dx + (p.second - a.second) * dy) / len2;
++  t = std::max(0.0, std::min(1.0, t));
++  return std::hypot(p.first - (a.first + t * dx), p.second - (a.second + t * dy));
++}
++
+ // Format a "dropped <what> <val><cmp><thresh>" diagnostics line without
+ // pulling in <sstream>. Values are short distances/areas, so 4 decimals is
+ // plenty of resolution for a log line.
+ std::string fmtDrop(const char* what, double value, const char* cmp, double thresh) {
+
+> build · longcat-2.5-preview-free
+[0m← [0mEdit ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+Index: ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+===================================================================
+--- ros2_stack/src/mower_coverage/src/coverage_planning.cpp
++++ ros2_stack/src/mower_coverage/src/coverage_planning.cpp
+@@ -72,35 +72,18 @@
+   for (const auto& p : raw) {
+     if (!pts.empty() && dist(p, pts.back()) < kRingDedupTolM) {
+       continue;  // near-zero-length edge
+     }
+-    // Resolve near-collinear redundancy at the tail before adding: if p
+-    // continues in ~the same direction as the last kept segment, the middle
+-    // vertex is redundant (replace it); if p doubles back along the segment,
+-    // the middle vertex is a spike tip (drop it and retry p).
+-    bool added = false;
+-    while (!added) {
+-      if (pts.size() < 2) {
+-        pts.push_back(p);
+-        added = true;
+-        break;
+-      }
+-      const Point2D& a = pts[pts.size() - 2];
+-      const Point2D& b = pts[pts.size() - 1];
+-      const double cross = (b.first - a.first) * (p.second - b.second) -
+-                           (b.second - a.second) * (p.first - b.first);
+-      const double dot = (b.first - a.first) * (p.first - b.first) +
+-                         (b.second - a.second) * (p.first - b.first);
+-      if (std::abs(cross) > kRingSpikeTolM) {
+-        pts.push_back(p);
+-        added = true;
+-      } else if (dot > 0.0) {
+-        pts.back() = p;  // b is redundant
+-        added = true;
+-      } else {
+-        pts.pop_back();  // b is a spike tip; retry p against the new tail
+-      }
++    // Drop a tail vertex that sits within kRingSpikeTolM of its neighbours'
++    // chord: that is either a redundant collinear point or the tip of an
++    // out-and-back spike. Retry p against the new tail so chains of
++    // degenerate vertices collapse.
++    while (pts.size() >= 2 &&
++           pointToSegmentDist(pts.back(), pts[pts.size() - 2], p) <
++               kRingSpikeTolM) {
++      pts.pop_back();
+     }
++    pts.push_back(p);
+   }
+   // Drop a near-duplicate closing vertex, then re-close explicitly so the
+   // open vertex list carries first == last.
+   while (pts.size() >= 2 && dist(pts.front(), pts.back()) < kRingDedupTolM) {
+
+> build · longcat-2.5-preview-free
+Wait — I need to double-check the sign convention of `generateHeadlands` with negative width, since it determines my test expectations. Let me look at the mowgli code's `field_offset` definition in the log:
+[0m$ [0mcd /home/michael/git/airseekers-decompile/ros2_stack && grep -n -B3 -A10 "field_offset" docs/agent14_f2c.log | head -60
+2997-884:  f2c::types::Cells cells;
+2998-921:  // cell in BOTH generators — ConstHL::generateHeadlandSwaths uses
+2999-941:  f2c::types::Cells safe_cells = cells;
+3000:944:    safe_cells = hl.generateHeadlands(cells, field_offset);
+3001-953:    f2c::types::Cells expanded;
+3002-999:  // NOT safe_boundary. generateHeadlandSwaths places ring 0 op_width/2 inside the
+3003-1029:    f2c::types::Cells cells_at = safe_cells;
+3004-1032:      cells_at = hl.generateHeadlands(safe_cells, (ring_index + 0.5) * op_width);
+3005-1086:    const f2c::types::Cells& hole_src = safe_cells;
+3006-1116:  // #429): generateHeadlandSwaths(…, 0, dir_out2in=true) happens to return {}
+3007-1123:        hl.generateHeadlandSwaths(safe_cells, op_width, n_rings, /*dir_out2in=*/true);
+3008-1238:  // generateHeadlands(safe_cells, 0.0): upstream that is Cells::buffer(-0.0), a
+3009-1242:  f2c::types::Cells mainland =
+3010-1243:      (n_rings > 0) ? hl.generateHeadlands(safe_cells, n_rings * op_width) : safe_cells;
+--
+3287-  // chassis_safety_inset has never modelled (the server's footprint check offsets
+3288-  // ±robot_width/2 PERPENDICULAR to heading), so keep them on or inside the
+3289-  // recorded line.
+3290:  const double field_offset = (n_rings > 0) ? (chassis_safety_inset - 0.5 * op_width)
+3291-                                            : std::max(0.0, chassis_safety_inset - 0.5 * op_width);
+3292-  f2c::types::Cells safe_cells = cells;
+3293:  if (field_offset > 1e-3)
+3294-  {
+3295:    safe_cells = hl.generateHeadlands(cells, field_offset);
+3296-    if (safe_cells.size() == 0 || safe_cells.area() < 1e-6)
+3297-    {
+3298-      return plan;  // inset consumed the field
+3299-    }
+3300-  }
+3301:  else if (field_offset < -1e-3)
+3302-  {
+3303-    // Expand the field exterior outward so ring 0 lands on the recorded line.
+3304-    f2c::types::Cells expanded;
+3305:    expanded.addGeometry(expandCellOutward(field_cell, -field_offset));
+3306-    if (expanded.size() > 0 && expanded.area() > 1e-6)
+3307-    {
+3308-      safe_cells = expanded;
+3309-    }
+3310-    // else: buffer degeneracy — fall back to the raw field (safe_cells = cells).
+3311-  }
+3312-> build · space-bunny-free
+3313-[0m$ [0mgrep -rn -i "fields2cover\|f2c\|coverage" /home/michael/git/airseekers-decompile/ros2_stack/docs/mowglinext_integration.md | head -40
+3314-22:| Submodule 2 | `ros2/src/opennav_coverage` @ **`d6e41a298c5e9767cc2a42c9fafa7ca41b9bf089`** (from https://github.com/open-navigation/opennav_coverage.git) |
+3315-39:| `mowgli_interfaces` | — | 16 `.msg` / 15 `.srv` / 3 `.action` (`CalibrateDock`, `CoverageTask`, `PlanCoverage`) + shared C++ headers (`gnss_status_utils.hpp`, `wgs84_projection.hpp`) | `mower_interfaces` |
+> build · longcat-2.5-preview-free
+[0m$ [0muname -m; docker run --rm ros:humble-ros-base-jammy bash -c "apt-get update -qq && apt-get install -y -qq ros-humble-fields2cover >/dev/null 2>&1 && echo INSTALLED && ls /opt/ros/humble/lib/x86_64-linux-gnu/ | grep -i fields" 2>&1 | tail -5
+x86_64
+INSTALLED
+libFields2Cover.so
+> build · longcat-2.5-preview-free
+F2C installed. Now the probe program:
+[0m← [0mWrite /tmp/opencode/f2c_probe.cpp
+Created file successfully: /tmp/opencode/f2c_probe.cpp
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+source /opt/ros/humble/setup.bash
+export LD_LIBRARY_PATH=/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/opt/ortools_vendor/lib:$LD_LIBRARY_PATH
+g++ -std=c++17 -O1 /probe/f2c_probe.cpp -o /tmp/f2c_probe \
+  -I/opt/ros/humble/include \
+  -L/opt/ros/humble/lib/x86_64-linux-gnu -lFields2Cover \
+  -lgdal -lgeos_c -lpthread 2>&1 | head -30 && /tmp/f2c_probe' 2>&1 | tail -60
+/probe/f2c_probe.cpp:2:10: fatal error: fields2cover.h: No such file or directory
+    2 | #include <fields2cover.h>
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+bash: line 7: /tmp/f2c_probe: No such file or directory
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm ros:humble-ros-base-jammy bash -c 'ls /opt/ros/humble/include/ | head; find /opt/ros/humble/include -maxdepth 2 -name "fields2cover.h" -o -maxdepth 2 -name "fields2cover" -type d | head'
+action_msgs
+actionlib_msgs
+ament_index_cpp
+builtin_interfaces
+class_loader
+composition_interfaces
+diagnostic_msgs
+fastcdr
+fastrtps
+foonathan_memory
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm ros:humble-ros-base-jammy bash -c 'dpkg -L ros-humble-fields2cover | grep -E "include|\.so" | head -20; echo ---; ls /opt/ros/humble/include/ | grep -i field'
+dpkg-query: package 'ros-humble-fields2cover' is not installed
+Use dpkg --contents (= dpkg-deb --contents) to list archive files contents.
+---
+> build · longcat-2.5-preview-free
+Each `docker run` starts fresh from the image — the earlier install was discarded. Let me install + compile + probe in a single run:
+[0m$ [0mdocker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover 2>&1 | tail -2
+source /opt/ros/humble/setup.bash
+export LD_LIBRARY_PATH=/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/opt/ortools_vendor/lib:$LD_LIBRARY_PATH
+g++ -std=c++17 -O1 /probe/f2c_probe.cpp -o /tmp/f2c_probe \
+  -I/opt/ros/humble/include \
+  -L/opt/ros/humble/lib/x86_64-linux-gnu -lFields2Cover \
+  -lgdal -lgeos_c -lpthread 2>&1 | head -30 && /tmp/f2c_probe' 2>&1 | tail -70
+Processing triggers for fontconfig (2.13.1-4.2ubuntu5) ...
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+In file included from /opt/ros/humble/include/fields2cover.h:11,
+                 from /probe/f2c_probe.cpp:2:
+/opt/ros/humble/include/fields2cover/types.h:11:10: fatal error: ogr_geometry.h: No such file or directory
+   11 | #include <ogr_geometry.h>
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+bash: line 8: /tmp/f2c_probe: No such file or directory
+> build · longcat-2.5-preview-free
+GDAL headers are missing — the F2C deb's dev dependencies aren't all pulled in. Installing them:
+[0m$ [0mdocker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover libgdal-dev libgeos++-dev libtbb-dev libeigen3-dev 2>&1 | tail -1
+source /opt/ros/humble/setup.bash
+export LD_LIBRARY_PATH=/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/opt/ortools_vendor/lib:$LD_LIBRARY_PATH
+g++ -std=c++17 -O1 /probe/f2c_probe.cpp -o /tmp/f2c_probe \
+  -I/opt/ros/humble/include \
+  -L/opt/ros/humble/lib/x86_64-linux-gnu -lFields2Cover \
+  -lgdal -lgeos_c -lpthread 2>&1 | head -30 && /tmp/f2c_probe' 2>&1 | tail -70
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+In file included from /opt/ros/humble/include/fields2cover.h:11,
+                 from /probe/f2c_probe.cpp:2:
+/opt/ros/humble/include/fields2cover/types.h:11:10: fatal error: ogr_geometry.h: No such file or directory
+   11 | #include <ogr_geometry.h>
+      |          ^~~~~~~~~~~~~~~~
+compilation terminated.
+bash: line 8: /tmp/f2c_probe: No such file or directory
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq libgdal-dev 2>&1 | tail -1
+dpkg -L libgdal-dev | grep ogr_geometry.h
+ls /usr/include/gdal 2>/dev/null | head -5'
+Processing triggers for fontconfig (2.13.1-4.2ubuntu5) ...
+/usr/include/gdal/ogr_geometry.h
+cpl_atomic_ops.h
+cpl_auto_close.h
+cpl_compressor.h
+cpl_config.h
+cpl_config_extras.h
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover libgdal-dev 2>&1 | tail -1
+cat /opt/ros/humble/lib/x86_64-linux-gnu/cmake/Fields2Cover/Fields2CoverTargets.cmake | grep -A5 "INTERFACE_INCLUDE"' 2>&1 | tail -20
+INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include"
+  INTERFACE_LINK_LIBRARIES "GDAL::GDAL;GEOS::geos_c;/usr/lib/x86_64-linux-gnu/libm.so"
+)
+
+# Create imported target Fields2Cover::steering_functions
+add_library(Fields2Cover::steering_functions SHARED IMPORTED)
+--
+  INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include;/opt/ros/humble/opt/ortools_vendor/include/eigen3"
+)
+
+# Create imported target Fields2Cover::matplot
+add_library(Fields2Cover::matplot SHARED IMPORTED)
+
+--
+  INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include"
+)
+
+if(CMAKE_VERSION VERSION_LESS 2.8.12)
+  message(FATAL_ERROR "This file relies on consumers using CMake 2.8.12 or greater.")
+endif()
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq libgdal-dev 2>&1 | tail -1
+grep -i "include" /usr/lib/x86_64-linux-gnu/cmake/gdal/GDALConfig.cmake 2>/dev/null | head -5
+ls /usr/lib/x86_64-linux-gnu/cmake/gdal/ 2>/dev/null' 2>&1 | tail -10
+Processing triggers for fontconfig (2.13.1-4.2ubuntu5) ...
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm ros:humble-ros-base-jammy bash -c '
+dpkg -L libgdal-dev | grep -i cmake | head -5
+echo ---
+source /opt/ros/humble/setup.bash
+mkdir -p /tmp/gdalc && cd /tmp/gdalc
+cat > CMakeLists.txt <<EOF
+cmake_minimum_required(VERSION 3.8)
+project(gdalc)
+find_package(GDAL REQUIRED)
+message(STATUS "GDAL_INCLUDE_DIRS=${GDAL_INCLUDE_DIRS}")
+get_target_property(inc GDAL::GDAL INTERFACE_INCLUDE_DIRECTORIES)
+message(STATUS "GDAL target includes=${inc}")
+EOF
+cmake . 2>&1 | grep -E "GDAL|Error|error" | head -10' 2>&1 | tail -15
+dpkg-query: package 'libgdal-dev' is not installed
+Use dpkg --contents (= dpkg-deb --contents) to list archive files contents.
+---
+CMake Error at /usr/share/cmake-3.22/Modules/FindPackageHandleStandardArgs.cmake:230 (message):
+  Could NOT find GDAL (missing: GDAL_LIBRARY GDAL_INCLUDE_DIR) (found version
+  "GDAL_VERSION-NOTFOUND")
+  /usr/share/cmake-3.22/Modules/FindGDAL.cmake:185 (FIND_PACKAGE_HANDLE_STANDARD_ARGS)
+-- Configuring incomplete, errors occurred!
+> build · longcat-2.5-preview-free
+Fresh container each time — I need install + build + run in a single command. Let me do the GDAL include check and the probe together:
+[0m$ [0mdocker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover libgdal-dev libgeos++-dev libtbb-dev libeigen3-dev cmake g++ 2>&1 | tail -1
+source /opt/ros/humble/setup.bash
+mkdir -p /tmp/gdalc && cd /tmp/gdalc
+cat > CMakeLists.txt <<EOF
+cmake_minimum_required(VERSION 3.8)
+project(gdalc)
+find_package(GDAL REQUIRED)
+get_target_property(inc GDAL::GDAL INTERFACE_INCLUDE_DIRECTORIES)
+message(STATUS "GDAL_TARGET_INCLUDES=${inc}")
+EOF
+cmake . 2>&1 | grep "GDAL_TARGET_INCLUDES"' 2>&1 | tail -8
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+-- GDAL_TARGET_INCLUDES=
+> build · longcat-2.5-preview-free
+`GDAL::GDAL` carries no include dirs here. Let me check what the F2C deb actually depends on:
+[0m$ [0mdocker run --rm ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover 2>&1 | tail -1
+dpkg -s ros-humble-fields2cover | grep -i depends
+echo ---
+apt-cache depends ros-humble-fields2cover | head -20' 2>&1 | tail -25
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+Depends: libc6 (>= 2.33), libgcc-s1 (>= 3.4), libgdal30 (>= 3.3.0), libgeos-c1v5 (>= 3.4.2), libjpeg8 (>= 8c), libpng16-16 (>= 1.6.2-1), libstdc++6 (>= 11), libtiff5 (>= 4.0.3), libtinyxml2-9 (>= 8.0.0), ros-humble-ortools-vendor, git, libboost-all-dev, libeigen3-dev, libgdal-dev, libgeos++-dev, libgtest-dev, libtbb-dev, libtinyxml2-dev, python3-dev, python3-matplotlib, python3-tk, swig, ros-humble-ros-workspace
+---
+ros-humble-fields2cover
+  Depends: libc6
+  Depends: libgcc-s1
+  Depends: libgdal30
+  Depends: libgeos-c1v5
+  Depends: libjpeg8
+  Depends: libpng16-16
+  Depends: libstdc++6
+  Depends: libtiff5
+  Depends: libtinyxml2-9
+  Depends: ros-humble-ortools-vendor
+  Depends: git
+  Depends: libboost-all-dev
+  Depends: libeigen3-dev
+  Depends: libgdal-dev
+  Depends: libgeos++-dev
+  Depends: libgtest-dev
+  Depends: libtbb-dev
+  Depends: libtinyxml2-dev
+  Depends: python3-dev
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq libgdal-dev 2>&1 | tail -1
+dpkg -L libgdal-dev | grep -iE "cmake|config" | head -5
+echo "--- contents of cmake dir:"
+ls /usr/lib/x86_64-linux-gnu/cmake/ 2>/dev/null | head' 2>&1 | tail -10
+Boost-1.74.0
+BoostDetectToolset-1.74.0.cmake
+GEOS
+GTest
+Qhull
+boost_headers-1.74.0
+bullet
+charls
+expat-2.4.7
+fmt
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq libgdal-dev 2>&1 | tail -1
+ls /usr/lib/x86_64-linux-gnu/cmake/ | grep -i gdal
+echo "exit: $?"' 2>&1 | tail -5
+Processing triggers for fontconfig (2.13.1-4.2ubuntu5) ...
+exit: 1
+> build · longcat-2.5-preview-free
+No GDAL CMake config ships with libgdal-dev. The real test is whether a CMake project consuming `Fields2Cover::Fields2Cover` compiles — let me try exactly that:
+[0m← [0mWrite /tmp/opencode/f2c_probe/CMakeLists.txt
+Created file successfully: /tmp/opencode/f2c_probe/CMakeLists.txt
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover libgdal-dev libgeos++-dev libtbb-dev libeigen3-dev cmake g++ 2>&1 | tail -1
+source /opt/ros/humble/setup.bash
+cd /tmp && mkdir -p probebuild && cd probebuild
+cmake /probe/f2c_probe -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -3
+make -j4 2>&1 | tail -15' 2>&1 | tail -25
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+
+
+CMake Generate step failed.  Build files cannot be regenerated correctly.
+make: *** No targets specified and no makefile found.  Stop.
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover libgdal-dev libgeos++-dev libtbb-dev libeigen3-dev cmake g++ 2>&1 | tail -1
+source /opt/ros/humble/setup.bash
+cd /tmp && mkdir -p probebuild && cd probebuild
+cmake /probe/f2c_probe -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -20' 2>&1 | tail -25
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+-- Looking for pthread.h
+-- Looking for pthread.h - found
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE  
+-- Configuring done
+CMake Error at CMakeLists.txt:5 (add_executable):
+  Cannot find source file:
+
+    f2c_probe.cpp
+
+  Tried extensions .c .C .c++ .cc .cpp .cxx .cu .mpp .m .M .mm .ixx .cppm .h
+  .hh .h++ .hm .hpp .hxx .in .txx .f .F .for .f77 .f90 .f95 .f03 .hip .ispc
+
+
+CMake Error at CMakeLists.txt:5 (add_executable):
+  No SOURCES given to target: f2c_probe
+
+
+CMake Generate step failed.  Build files cannot be regenerated correctly.
+> build · longcat-2.5-preview-free
+The .cpp is in the wrong directory relative to the CMakeLists. Fixing:
+[0m$ [0mmv /tmp/opencode/f2c_probe.cpp /tmp/opencode/f2c_probe/f2c_probe.cpp && docker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover libgdal-dev libgeos++-dev libtbb-dev libeigen3-dev cmake g++ 2>&1 | tail -1
+source /opt/ros/humble/setup.bash
+cd /tmp && mkdir -p probebuild && cd probebuild
+cmake /probe/f2c_probe -DCMAKE_BUILD_TYPE=Release 2>&1 | tail -2
+make -j4 2>&1 | tail -8
+export LD_LIBRARY_PATH=/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/opt/ortools_vendor/lib:$LD_LIBRARY_PATH
+./f2c_probe' 2>&1 | tail -70
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+-- Generating done
+-- Build files have been written to: /tmp/probebuild
+In file included from /opt/ros/humble/include/fields2cover.h:52,
+                 from /probe/f2c_probe/f2c_probe.cpp:2:
+/opt/ros/humble/include/fields2cover/swath_generator/swath_generator_base.h:22:63: note:   initializing argument 1 of ‘virtual F2CSwaths f2c::sg::SwathGeneratorBase::generateBestSwaths(f2c::obj::SGObjective&, double, const F2CCell&)’
+   22 |   virtual F2CSwaths generateBestSwaths(f2c::obj::SGObjective& obj,
+      |                                        ~~~~~~~~~~~~~~~~~~~~~~~^~~
+make[2]: *** [CMakeFiles/f2c_probe.dir/build.make:76: CMakeFiles/f2c_probe.dir/f2c_probe.cpp.o] Error 1
+make[1]: *** [CMakeFiles/Makefile2:83: CMakeFiles/f2c_probe.dir/all] Error 2
+make: *** [Makefile:91: all] Error 2
+bash: line 8: ./f2c_probe: No such file or directory
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /tmp/opencode/f2c_probe && sed -i 's/bf.generateBestSwaths(f2c::obj::NSwath(),/f2c::obj::NSwath nsw; bf.generateBestSwaths(nsw,/g' f2c_probe.cpp && grep -n "NSwath" f2c_probe.cpp
+36:  auto sw = f2c::obj::NSwath nsw; bf.generateBestSwaths(nsw, 0.5, safe.getGeometry(0));
+37:  printf("== generateBestSwaths(NSwath, 0.5, safe): %zu swaths\n", sw.size());
+66:  auto sw2 = f2c::obj::NSwath nsw; bf.generateBestSwaths(nsw, 0.5, mainland.getGeometry(0));
+107:  auto sw3 = f2c::obj::NSwath nsw; bf.generateBestSwaths(nsw, 0.5, safe_holed.getGeometry(0));
+> build · longcat-2.5-preview-free
+The sed produced invalid C++. Fixing properly:
+[0m$ [0mcd /tmp/opencode/f2c_probe && sed -i 's/auto sw = f2c::obj::NSwath nsw; bf.generateBestSwaths(nsw,/f2c::obj::NSwath nsw; auto sw = bf.generateBestSwaths(nsw,/; s/auto sw2 = f2c::obj::NSwath nsw; bf.generateBestSwaths(nsw,/f2c::obj::NSwath nsw2; auto sw2 = bf.generateBestSwaths(nsw2,/; s/auto sw3 = f2c::obj::NSwath nsw; bf.generateBestSwaths(nsw,/f2c::obj::NSwath nsw3; auto sw3 = bf.generateBestSwaths(nsw3,/' f2c_probe.cpp && grep -n "NSwath" f2c_probe.cpp
+36:  f2c::obj::NSwath nsw; auto sw = bf.generateBestSwaths(nsw, 0.5, safe.getGeometry(0));
+37:  printf("== generateBestSwaths(NSwath, 0.5, safe): %zu swaths\n", sw.size());
+66:  f2c::obj::NSwath nsw2; auto sw2 = bf.generateBestSwaths(nsw2, 0.5, mainland.getGeometry(0));
+107:  f2c::obj::NSwath nsw3; auto sw3 = bf.generateBestSwaths(nsw3, 0.5, safe_holed.getGeometry(0));
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover libgdal-dev libgeos++-dev libtbb-dev libeigen3-dev cmake g++ 2>&1 | tail -1
+source /opt/ros/humble/setup.bash
+cd /tmp && mkdir -p probebuild && cd probebuild
+cmake /probe/f2c_probe -DCMAKE_BUILD_TYPE=Release >/dev/null 2>&1
+make -j4 2>&1 | tail -4
+export LD_LIBRARY_PATH=/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/opt/ortools_vendor/lib:$LD_LIBRARY_PATH
+./f2c_probe' 2>&1 | tail -75
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+[ 50%] Building CXX object CMakeFiles/f2c_probe.dir/f2c_probe.cpp.o
+[100%] Linking CXX executable f2c_probe
+[100%] Built target f2c_probe
+field area: 4.0000
+== generateHeadlands(field, -0.25): 1 cells
+  exterior (5 pts): (-0.2500,-0.2500) (-0.2500,2.2500) (2.2500,2.2500) (2.2500,-0.2500) (-0.2500,-0.2500)
+== generateBestSwaths(NSwath, 0.5, safe): 5 swaths
+  swath 0: (-0.2500,0.0000) -> (2.2500,0.0000) len=2.5000
+  swath 1: (-0.2500,0.5000) -> (2.2500,0.5000) len=2.5000
+  swath 2: (-0.2500,1.0000) -> (2.2500,1.0000) len=2.5000
+  swath 3: (-0.2500,1.5000) -> (2.2500,1.5000) len=2.5000
+  swath 4: (-0.2500,2.0000) -> (2.2500,2.0000) len=2.5000
+== generateHeadlandSwaths(safe, 0.5, 1, out2in): 1 passes
+  pass 0: 1 cells
+    ring (5 pts): (0.0000,0.0000) (0.0000,2.0000) (2.0000,2.0000) (2.0000,0.0000) (0.0000,0.0000)
+== generateHeadlands(safe, 0.5): 1 cells
+  exterior (5 pts): (0.2500,0.2500) (0.2500,1.7500) (1.7500,1.7500) (1.7500,0.2500) (0.2500,0.2500)
+== best swaths on mainland: 3
+  swath 0: (0.2500,0.5000) -> (1.7500,0.5000)
+  swath 1: (0.2500,1.0000) -> (1.7500,1.0000)
+  swath 2: (0.2500,1.5000) -> (1.7500,1.5000)
+== sorted swaths: 5
+  swath 0: (-0.2500,0.0000) -> (2.2500,0.0000)
+  swath 1: (2.2500,0.5000) -> (-0.2500,0.5000)
+  swath 2: (-0.2500,1.0000) -> (2.2500,1.0000)
+  swath 3: (2.2500,1.5000) -> (-0.2500,1.5000)
+  swath 4: (-0.2500,2.0000) -> (2.2500,2.0000)
+== holed field dilated: 1 cells
+  cell 0: 2 rings
+    exterior (5 pts): (-0.2500,-0.2500) (-0.2500,3.2500) (3.2500,3.2500) (3.2500,-0.2500) (-0.2500,-0.2500)
+    hole (5 pts): (1.2500,1.2500) (1.7500,1.2500) (1.7500,1.7500) (1.2500,1.7500) (1.2500,1.2500)
+== best swaths on holed safe: 8
+  swath 0: (-0.2500,0.0000) -> (3.2500,0.0000)
+  swath 1: (-0.2500,0.5000) -> (3.2500,0.5000)
+  swath 2: (-0.2500,1.0000) -> (3.2500,1.0000)
+  swath 3: (-0.2500,1.5000) -> (1.2500,1.5000)
+  swath 4: (1.7500,1.5000) -> (3.2500,1.5000)
+  swath 5: (-0.2500,2.0000) -> (3.2500,2.0000)
+  swath 6: (-0.2500,2.5000) -> (3.2500,2.5000)
+  swath 7: (-0.2500,3.0000) -> (3.2500,3.0000)
+> build · longcat-2.5-preview-free
+[0m← [0mWrite /tmp/opencode/f2c_probe/probe2.cpp
+Created file successfully: /tmp/opencode/f2c_probe/probe2.cpp
+> build · longcat-2.5-preview-free
+[0m$ [0mcd /tmp/opencode/f2c_probe && sed -i 's/add_executable(f2c_probe f2c_probe.cpp)/add_executable(f2c_probe f2c_probe.cpp)\nadd_executable(probe2 probe2.cpp)/' CMakeLists.txt && docker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover libgdal-dev libgeos++-dev libtbb-dev libeigen3-dev cmake g++ 2>&1 | tail -1
+source /opt/ros/humble/setup.bash
+cd /tmp && mkdir -p probebuild && cd probebuild
+cmake /probe/f2c_probe -DCMAKE_BUILD_TYPE=Release >/dev/null 2>&1
+make -j4 2>&1 | tail -2
+export LD_LIBRARY_PATH=/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/opt/ortools_vendor/lib:$LD_LIBRARY_PATH
+./probe2' 2>&1 | tail -45
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+[ 75%] Built target f2c_probe
+make: *** [Makefile:91: all] Error 2
+bash: line 8: ./probe2: No such file or directory
+> build · longcat-2.5-preview-free
+[0m$ [0mdocker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover libgdal-dev libgeos++-dev libtbb-dev libeigen3-dev cmake g++ 2>&1 | tail -1
+source /opt/ros/humble/setup.bash
+cd /tmp && mkdir -p probebuild && cd probebuild
+cmake /probe/f2c_probe -DCMAKE_BUILD_TYPE=Release >/dev/null 2>&1
+make -j4 2>&1 | grep -E "error|Error" | head -10' 2>&1 | tail -12
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+/probe/f2c_probe/probe2.cpp:2:10: fatal error: fields2cover.h: No such file or directory
+make[2]: *** [CMakeFiles/probe2.dir/build.make:76: CMakeFiles/probe2.dir/probe2.cpp.o] Error 1
+make[1]: *** [CMakeFiles/Makefile2:111: CMakeFiles/probe2.dir/all] Error 2
+make: *** [Makefile:91: all] Error 2
+> build · longcat-2.5-preview-free
+probe2 needs to link the F2C target too:
+[0m$ [0mcd /tmp/opencode/f2c_probe && sed -i 's/add_executable(probe2 probe2.cpp)/add_executable(probe2 probe2.cpp)\ntarget_link_libraries(probe2 Fields2Cover::Fields2Cover)/' CMakeLists.txt && docker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover libgdal-dev libgeos++-dev libtbb-dev libeigen3-dev cmake g++ 2>&1 | tail -1
+source /opt/ros/humble/setup.bash
+cd /tmp && mkdir -p probebuild && cd probebuild
+cmake /probe/f2c_probe -DCMAKE_BUILD_TYPE=Release >/dev/null 2>&1
+make -j4 2>&1 | tail -1
+export LD_LIBRARY_PATH=/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/opt/ortools_vendor/lib:$LD_LIBRARY_PATH
+./probe2' 2>&1 | tail -45
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+[100%] Built target f2c_probe
+== tiny 0.05x0.05, op 0.5
+  cell area: 0.002500, rings: 1
+  safe cells: 1, area 0.302500
+  best swaths: 1
+    swath 0: (-0.2500,0.0000) -> (0.3000,0.0000) len=0.5500
+  fixed-angle-0 swaths: 1
+    swath 0: (-0.2500,0.0000) -> (0.3000,0.0000)
+== collinear degenerate, op 0.5
+  cell area: 0.000000, rings: 1
+  safe cells: 1, area 0.500000
+  best swaths: 1
+    swath 0: (1.0000,0.0000) -> (2.0000,0.0000) len=1.0000
+  fixed-angle-0 swaths: 1
+    swath 0: (1.0000,0.0000) -> (2.0000,0.0000)
+== two-point degenerate, op 0.5
+  cell area: 0.000000, rings: 1
+  safe cells: 1, area 0.353553
+  best swaths: 1
+    swath 0: (0.1768,0.5303) -> (1.0578,0.7664) len=0.9121
+  fixed-angle-0 swaths: 2
+    swath 0: (0.0732,0.4268) -> (0.3467,0.4268)
+    swath 1: (0.5732,0.9268) -> (1.0732,0.9268)
+== small 0.2x0.2, op 0.5
+  cell area: 0.040000, rings: 1
+  safe cells: 1, area 0.490000
+  best swaths: 1
+    swath 0: (-0.2500,0.0000) -> (0.4500,0.0000) len=0.7000
+  fixed-angle-0 swaths: 1
+    swath 0: (-0.2500,0.0000) -> (0.4500,0.0000)
+> build · longcat-2.5-preview-free
+Key findings: tiny fields still get swaths (dilation grows them), degenerate input doesn't crash, and holes shrink in the dilated cell. Let me probe one more thing — headland rings around holes:
+[0m$ [0mcat >> /tmp/opencode/f2c_probe/probe3.cpp << 'EOF'
+// Probe 3: headland rings on a holed field.
+#include <fields2cover.h>
+#include <cstdio>
+
+int main() {
+  f2c::types::LinearRing ext;
+  ext.addPoint(0, 0); ext.addPoint(3, 0); ext.addPoint(3, 3);
+  ext.addPoint(0, 3); ext.addPoint(0, 0);
+  f2c::types::LinearRing hole;
+  hole.addPoint(1, 1); hole.addPoint(2, 1); hole.addPoint(2, 2);
+  hole.addPoint(1, 2); hole.addPoint(1, 1);
+  f2c::types::Cell holed(ext);
+  holed.addRing(hole);
+  f2c::types::Cells cells;
+  cells.addGeometry(holed);
+  f2c::hg::ConstHL hl;
+  auto safe = hl.generateHeadlands(cells, -0.25);
+  auto passes = hl.generateHeadlandSwaths(safe, 0.5, 1, true);
+  printf("holed: %zu passes\n", passes.size());
+  for (size_t i = 0; i < passes.size(); ++i) {
+    printf("pass %zu: %zu cells\n", i, passes[i].size());
+    for (size_t c = 0; c < passes[i].size(); ++c) {
+      auto r = passes[i].getGeometry(c).getGeometry(0);
+      printf("  cell %zu ring (%zu pts):", c, r.size());
+      for (size_t j = 0; j < r.size(); ++j) {
+        auto p = r.getGeometry(j);
+        printf(" (%.3f,%.3f)", p.getX(), p.getY());
+      }
+      printf("\n");
+    }
+  }
+  // mainland hole size
+  auto mainland = hl.generateHeadlands(safe, 0.5);
+  printf("mainland: %zu cells\n", mainland.size());
+  for (size_t i = 0; i < mainland.size(); ++i) {
+    const auto& c = mainland.getGeometry(i);
+    printf("  cell %zu: %zu rings\n", i, c.size());
+    for (size_t r = 0; r < c.size(); ++r) {
+      auto ring = c.getGeometry(r);
+      printf("    ring %zu (%zu pts):", r, ring.size());
+      for (size_t j = 0; j < ring.size(); ++j) {
+        auto p = ring.getGeometry(j);
+        printf(" (%.3f,%.3f)", p.getX(), p.getY());
+      }
+      printf("\n");
+    }
+  }
+  return 0;
+}
+EOF
+cd /tmp/opencode/f2c_probe && sed -i 's/add_executable(probe2 probe2.cpp)/add_executable(probe2 probe2.cpp)\nadd_executable(probe3 probe3.cpp)/' CMakeLists.txt && sed -i 's/target_link_libraries(probe2 Fields2Cover::Fields2Cover)/target_link_libraries(probe2 Fields2Cover::Fields2Cover)\ntarget_link_libraries(probe3 Fields2Cover::Fields2Cover)/' CMakeLists.txt && docker run --rm -v /tmp/opencode:/probe ros:humble-ros-base-jammy bash -c '
+apt-get update -qq 2>/dev/null && apt-get install -y -qq ros-humble-fields2cover libgdal-dev libgeos++-dev libtbb-dev libeigen3-dev cmake g++ 2>&1 | tail -1
+source /opt/ros/humble/setup.bash
+cd /tmp && mkdir -p probebuild && cd probebuild
+cmake /probe/f2c_probe -DCMAKE_BUILD_TYPE=Release >/dev/null 2>&1
+make -j4 2>&1 | tail -1
+export LD_LIBRARY_PATH=/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/opt/ortools_vendor/lib:$LD_LIBRARY_PATH
+./probe3' 2>&1 | tail -30
+Processing triggers for libc-bin (2.35-0ubuntu3.15) ...
+[100%] Built target f2c_probe
+holed: 1 passes
+pass 0: 1 cells
+  cell 0 ring (5 pts): (0.000,0.000) (0.000,3.000) (3.000,3.000) (3.000,0.000) (0.000,0.000)
+mainland: 1 cells
+  cell 0: 2 rings
+    ring 0 (5 pts): (0.250,0.250) (0.250,2.750) (2.750,2.750) (2.750,0.250) (0.250,0.250)
+    ring 1 (5 pts): (0.750,0.750) (2.250,0.750) (2.250,2.250) (0.750,2.250) (0.750,0.750)
+> build · longcat-2.5-preview-free
+[0m← [0mWrite ros2_stack/src/mower_coverage/test/test_coverage_planning.cpp
+Created file successfully: ros2_stack/src/mower_coverage/test/test_coverage_planning.cpp
+> build · longcat-2.5-preview-free
+[91m[1mError: [0mError from provider (Console): Rate limit exceeded. Please try again later.

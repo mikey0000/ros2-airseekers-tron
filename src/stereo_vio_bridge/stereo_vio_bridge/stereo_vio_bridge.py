@@ -21,10 +21,20 @@ Capture is selected by ``stereo_layout``:
   ``combined_height``, split left/right in software.
 * ``separate`` — the old two-device mode (``left_device`` / ``right_device``).
 
+Capture backend is selected by ``source_mode``:
+
+* ``v4l2`` (default) — OpenCV `VideoCapture` + software rectification.
+* ``sdk`` — the clean-room `libmetoak.so` (metoak.h C API, see
+  `metoak_reimpl/`) via `metoak_sdk.py`; build it first with
+  `cd metoak_reimpl/user && make`, then point `metoak_lib` at the result.
+  Produces pre-split 640x480 mono8 + IMU straight from `moLocalGetOneFrame` /
+  `moLocalSplitRGBFrame` / `moLocalGetIMUData`.
+
 Prerequisite (combined): ``mo_init.sh`` must have run first (``mo_xc9080.ko`` /
 ``mo_simor.ko`` / ``video_rkisp.ko`` loaded + the i2c init sequence), so the ISP exposes
-the 1280x480 stream as a V4L2 node. ``source_mode: sdk`` (consume the SDK's already
-rectified frames) is documented but not implemented.
+the 1280x480 stream as a V4L2 node. ``source_mode: sdk`` consumes the clean-room `libmetoak.so` (metoak.h C API)
+instead of the closed `libMoGeneralSDK`; see `metoak_sdk.py` and
+`metoak_reimpl/`.  ``source_mode: v4l2`` grabs raw V4L2 and rectifies in software.
 """
 import math
 import os
@@ -45,6 +55,7 @@ except ImportError:  # pragma: no cover - cv2/numpy live in the ROS 2 image
 from stereo_vio_bridge.camera_info_builder import (
     camera_info_dict, distortion, intrinsics, load_camera, load_stereo,
 )
+from stereo_vio_bridge.metoak_sdk import MetoakSdk
 
 
 def _to_img(time_stamp, frame_id, img):
@@ -150,6 +161,7 @@ class StereoVioBridge(Node):
         self.declare_parameter('height', 480)
         self.declare_parameter('calib_dir', '/userdata/ros2/calibration')
         self.declare_parameter('imu_device', '')
+        self.declare_parameter('metoak_lib', 'libmetoak.so')  # source_mode: sdk
         self.declare_parameter('camera_frame', 'vio_camera')
 
         self.source_mode = self.get_parameter('source_mode').value
@@ -178,9 +190,19 @@ class StereoVioBridge(Node):
 
         # ---- sources ----
         self.capS = self.capL = self.capR = None
+        self.sdk = None
+        if self.source_mode == 'sdk':
+            try:
+                self.sdk = MetoakSdk(self.get_parameter('metoak_lib').value or None)
+                self.get_logger().info('sdk source up (libmetoak via metoak.h)')
+            except (OSError, RuntimeError) as exc:
+                self.get_logger().error('sdk source failed, falling back to v4l2: %s', exc)
+                self.source_mode = 'v4l2'
         if self.source_mode == 'v4l2' and cv2 is not None:
             self._open_cameras()
-        self.imu_src = IioImu(self.get_parameter('imu_device').value or None)
+        self.imu_src = None
+        if self.sdk is None:
+            self.imu_src = IioImu(self.get_parameter('imu_device').value or None)
 
         self.timer = self.create_timer(1.0 / self.rate, self._on_tick)
         self.get_logger().info(
@@ -288,8 +310,23 @@ class StereoVioBridge(Node):
             right = cv2.remap(right, *self._rect_maps[1], cv2.INTER_LINEAR)
         return left, right
 
+    def _grab_sdk(self):
+        """Pull one left/right pair from libmetoak (metoak.h split -> mono8)."""
+        pair = self.sdk.grab()
+        if pair is None:
+            return None
+        left, right = pair
+        if self.publish_mono:
+            return self._rectify_pair(left, right)
+        # publish_mono=False: replicate luma to bgr8 for colour consumers
+        return self._rectify_pair(
+            cv2.cvtColor(left, cv2.COLOR_GRAY2BGR) if left is not None else None,
+            cv2.cvtColor(right, cv2.COLOR_GRAY2BGR) if right is not None else None)
+
     def _grab(self):
         """Pull one left/right frame pair (mono8 or bgr8), or ``None``."""
+        if self.sdk is not None:
+            return self._grab_sdk()
         if self.layout == 'combined':
             return self._grab_combined()
         return self._grab_separate()
@@ -316,7 +353,10 @@ class StereoVioBridge(Node):
         return _camera_info(stamp, self.camera_frame, d)
 
     def _publish_imu(self, stamp):
-        sample = self.imu_src.sample()
+        if self.sdk is not None:
+            sample = self.sdk.get_imu()
+        else:
+            sample = self.imu_src.sample()
         if sample is None:
             return
         ax, ay, az, gx, gy, gz = sample

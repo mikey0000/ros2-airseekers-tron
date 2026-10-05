@@ -1,0 +1,27 @@
+# Coverage plan request for mower_coverage (Fields2Cover headland + swath).
+# All geometry is metric, in the frame given by frame_id (node default "map").
+# Tuning knobs are per-request so a plan is self-describing; the node applies
+# the defaults below when a field is left at its sentinel (<= 0 / < 0).
+
+geometry_msgs/Polygon boundary            # outer field boundary, >= 3 points
+geometry_msgs/Polygon[] holes             # interior holes to avoid (flower beds, ponds)
+string     frame_id                       # frame of all geometry; empty -> "map"
+
+geometry_msgs/Point start                 # optional mower start position
+bool       has_start                      # false -> no transit from start
+geometry_msgs/Point goal                  # optional mower goal position
+bool       has_goal                       # false -> no transit to goal
+
+float64 operation_width                   # swath spacing [m] (the "border width"); <= 0 -> 0.18
+float64 headland_width                    # desired headland band [m]; <= 0 -> 0.20
+int32   headland_passes                   # -1 = none, 0 = auto (ceil(headland_width/operation_width)), >0 = forced
+float64 mow_angle_deg                     # swath heading [deg]; < 0 = auto (fewest swaths)
+float64 min_swath_length                  # drop swaths shorter than this [m]; <= 0 -> 0.15
+---
+bool   success
+string message
+nav_msgs/Path path                        # transit-in + headland rings + swaths + transit-out
+float64 total_distance                    # [m], including transits
+uint32  ring_count
+uint32  swath_count
+float64 planning_time_s

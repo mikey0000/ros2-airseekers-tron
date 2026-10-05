@@ -25,6 +25,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/BumperControl.srv"
   "srv/CutterControl.srv"
   "srv/ChargingControl.srv"
+  "srv/PlanCoverage.srv"
   DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs nav_msgs
 )
 

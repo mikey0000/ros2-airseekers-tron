@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_coverage</name>
+  <version>0.1.0</version>
+  <description>
+    Boustrophedon coverage planning for the Airseekers Tron mower, running
+    Fields2Cover 2.1.0 headland + swath directly (apt package
+    ros-humble-fields2cover). Replaces the vendor's GPL polygon_coverage stack
+    (CGAL + Mono/GkMa GTSP solver): a /coverage/plan service takes a
+    geometry_msgs/Polygon boundary with holes plus start/goal and returns a
+    nav_msgs/Path of headland rings and serpentine swaths. No turn planning —
+    the mower is diff-drive and pivots in place between segments.
+  </description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <!-- The planned nav_msgs/Path consumer is a trajectory follower; declared
+       here so the dependency is explicit when that node lands. -->
+  <depend>trajectory_msgs</depend>
+  <depend>mower_interfaces</depend>
+
+  <!-- NOTE: Fields2Cover is deliberately NOT a package.xml dependency.
+       rosdep has no `fields2cover` key in any rosdistro index, so a
+       <depend>fields2cover</depend> would make `rosdep install` fail on a
+       fresh machine. It is apt-installed by literal name in
+       docker/Dockerfile.humble (ros-humble-fields2cover, which pulls
+       ros-humble-ortools-vendor automatically). See the comment above
+       find_package(Fields2Cover) in CMakeLists.txt. -->
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

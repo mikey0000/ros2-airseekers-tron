@@ -1,5 +1,47 @@
 # Deployment — Humble container on the 20.04 (Noetic) mower
 
+## Kernel / deployment decision (settled — Humble container now, native LTS later)
+
+Two end-states were considered. **Plan: develop in the Humble container on the stock
+5.10.209 kernel now; do the proper OS changeover + LTS update on the machine later.**
+The container is a deliberate bridge, not the permanent deployment — when the machine is
+upgraded to a native 22.04 LTS (Jammy, Humble's target) the same ROS 2 packages run bare-
+metal and the `metoak_reimpl` drivers become the camera path.
+
+| | **A: stock 5.10.209 + container** (recommended) | **B: Joshua-Riek 6.1 reflash** |
+|---|---|---|---|
+| Camera modules | mower already loads matching `inv_icm42600` / `mo_trig_flash` / `mo_tmp112` (5.10.209 builds, `09_platform/lsmod.txt`); `mo_init.sh` brings up `mo_xc9080`/`mo_simor`/`video_rkisp` on demand | need to build + load the clean-room `metoak_reimpl/kernel/*` drivers |
+| OTA | **preserved** | **lost** (OS replaced) |
+| Vendor Noetic stack | intact, can be stopped bridged or replaced incrementally | gone |
+| VIO path | V4L2 read of the 1280x480 ISP stream (already implemented in `stereo_vio_bridge`) | same V4L2 path via re-impl subdevs |
+| Risk | low; touches nothing on the mower | high; full OS swap on a safety-critical unit |
+| Effort | docker install + `mo_init.sh` already present | full kernel/DT/OS bring-up |
+
+Rationale:
+
+- The stereo front **already works on the mower today** — the vendor `.ko` are
+  loaded from the stock 5.10.209 rootfs (the `metoak/ko/*.ko` we pulled are
+  **5.10.66 dev-board copies**, confirmed via `readelf -p .modinfo`, and will not
+  load on 5.10.209; the mower's own matching modules are what actually run).
+- OTA is the one thing a vendor update path depends on; dropping it is
+  unacceptable without an explicit product decision.
+- VSLAM (OpenVINS) only needs the raw **1280x480 stereo stream + IMU**, both of
+  which the stock kernel already exposes (`/dev/video22` + IIO). The SDK's
+  extra on-chip **Simor depth** is not used by VIO, so nothing is lost.
+- The re-impl 6.1 drivers (`metoak_reimpl/`) are the **native-LTS target**: on the stock
+  5.10 path the mower's own modules serve the V4L2 stream, but once the machine moves to
+  a 22.04/6.x (Joshua-Riek BSP) image the clean-room drivers replace the vendor `.ko`.
+
+### Path to native (LTS changeover)
+
+| Stage | Kernel | Camera | ROS 2 |
+|---|---|---|---|
+| **now (dev)** | stock 5.10.209 + Humble **container** | vendor `.ko` (5.10.209) via V4L2 | Humble in Docker |
+| **later (changeover)** | 22.04 LTS / 6.1 BSP (Joshua-Riek) | clean-room `metoak_reimpl` V4L2 subdevs | Humble native |
+
+Between the two stages nothing consumer-facing changes: `stereo_vio_bridge` publishes the
+same `/vio/*` topics + camera_info in both, and OpenVINS/det/seg consume them identically.
+
 ## The d-gap (why a container)
 
 | Fact | Source |

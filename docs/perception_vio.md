@@ -46,7 +46,7 @@ tunings (`iqfiles/`) into the workspace. Everything below is now concrete, not i
 | addr | device | role |
 |---|---|---|
 | `0x06` | simor | stereo-matching / depth ASIC |
-| `0x1b` | xc9080 | stereo image sensor |
+| `0x1b` | xc9080 | **ISP / disparity engine** (not the sensor — it sits ahead of the SC132GS pair) |
 | `0x1e` | lis2mdl / IIS2MDC | magnetometer |
 | `0x48` | tmp112 | temperature |
 | `0x50` | 24c128 (AT24 EE) | **calibration EEPROM** |
@@ -73,6 +73,28 @@ SDK EPR codec funcs recovered from symbols: `MoBuildEprxFile`, `MoConvertEpr2Sav
 `MoConvertSave2EprInfo`, with structs `MoEprInfo`/`MoEprSaveInfo`/`MoStreamInfo`/
 `MoDepthFrmInfo` (DWARF layouts extractable — binaries are **not stripped**).
 
+### Clean-room re-impl (metoak_reimpl/) — fold-in
+
+The `metoak_reimpl/` directory (produced in parallel) is a clean-room, open-source
+re-implementation of the MP021 stack. It supersedes the earlier reverse-engineering and
+gives us three concrete assets:
+
+1. **`include/metoak.h`** — reconstructed C API (~170 `moLocal*`/`Mo*` functions + DWARF-
+matching structs `MoFrame`/`MoIMUData`/`MoEprInfo`/`MoDepthFrmInfo`/…). This is the
+contract the `stereo_vio_bridge` `source_mode: sdk` shim targets (see below).
+2. **`kernel/regs_xc9080.h`** — verbatim per-resolution init tables extracted from the
+vendor `mo_xc9080.ko`. `isp_xc9080_1280x480_regs` is exactly the **VIO 1280×480 stream**
+(the others are 960×360 / 2160×720 / 2160×1080 / 1080×480 variants). `regs_simor.h` is
+empty/sentinel (Simor init is driven by XC9080/FPGA).
+3. **`docs/simor_meta.md` + `docs/API.md`** — decode of `simor.meta` (1280 B) and the
+**EPR** (400 KB, `MoEprInfo` header + CRC + backup slot) holding per-unit intrinsics +
+rectification + disparity offset — the exact calibration VSLAM needs.
+
+Also resolved this phase: the vendor dev-board `.ko` are **5.10.66** (`readelf -p
+.modinfo`); the mower runs **5.10.209** with its own matching modules, so the stock-
+kernel + container path is viable and the 6.1 re-impl drivers are a contingency only
+(see `deployment.md`).
+
 ### SDK + init
 
 - SDK version **2.7.4.1**; camera model **"Mp021" MIPI** (`MoMp021MipiCamera`/`MoMp021MipiV4l2Manager`).
@@ -87,7 +109,7 @@ The device tree names the physical sensors exactly:
 |---|---|---|---|---|
 | left OA | GalaxyCore **GC2093** | `/i2c@feab0000/gc2093b_1@37` | `gc2093.ko` | `gc2093_MY_default.json` (1920×1080) |
 | right OA | GalaxyCore **GC2093** | `/i2c@fead0000/gc2093b_1@37` | `gc2093.ko` | `gc2093_MY_default.json` (1920×1080) |
-| stereo front | Metoak **XC9080** | `/i2c@feca0000/XC9080@1b` | `mo_xc9080.ko` | none (custom sensor) |
+| stereo front | ISP **XC9080** + **2× SmartSens SC132GS** (1 MP global-shutter mono pair) | `/i2c@feca0000/XC9080@1b` | `mo_xc9080.ko` | none (custom sensor) |
 
 The other IQ files (`imx327`, `os04a10`, `imx415`, `imx464`, `gc8034`, …) are for other
 Rockchip modules not on this unit. For Ubuntu 22 the OA cameras need `gc2093.ko` +

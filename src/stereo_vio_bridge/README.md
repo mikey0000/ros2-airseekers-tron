@@ -55,9 +55,15 @@ Use `swap_lr:=true` if the ISP emits right-half-first; `publish_mono:=false` to 
 the recovered calibration (`cam0/cam1/stereo_params.yaml`). Whether the raw frames need
 rectifying (`rectify:=true/false`) depends on what the RK ISP exposes — confirm on hardware.
 
-`source_mode: sdk` (not implemented) would consume already-rectified frames + IMU from the
-Metoak SDK (needs a `libMoGeneralSDK` shim; API in `native_decompile/metoak/`). The SDK's
-`.ko` modules only run on the stock Rockchip BSP kernel, so the V4L2 path is preferred for
-a clean Ubuntu 22 port.
+`source_mode: sdk` consumes the clean-room `libmetoak.so` (the reconstructed `metoak.h` C
+API in `metoak_reimpl/`) instead of the closed `libMoGeneralSDK`. Build it with
+`cd metoak_reimpl/user && make` on the target, then run with `-p metoak_lib:=/path/to/libmetoak.so`.
+It produces pre-split 640x480 mono8 + IMU directly from `moLocalGetOneFrame` /
+`moLocalSplitRGBFrame` / `moLocalGetIMUData`. This is the "open SDK replacement" path;
+`source_mode: v4l2` (default) grabs raw V4L2 and rectifies in software.
+
+> Both modes still require `mo_init.sh` to have run (the ISP exposes the 1280x480
+> stream as a V4L2 node); the sdk mode only changes the userspace reader, not the
+> kernel bring-up.
 
 Calibration is in `ros2_port_handoff/08_calibration_identity/{cam0,cam1,stereo_params}.yaml`.
