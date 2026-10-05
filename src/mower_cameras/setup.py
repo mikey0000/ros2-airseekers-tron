@@ -16,7 +16,8 @@ setup(
     zip_safe=True,
     maintainer='michael',
     maintainer_email='michael@example.com',
-    description=('OpenCV/V4L2 fallback camera driver for the Airseekers Tron: '
+    description=('V4L2 camera drivers for the Airseekers Tron: OA rkisp cameras '
+                 '(v4l2_cam, multi-planar), '
                  'rear UVC MJPEG (/rear_camera/image_raw, opt-in) and debug Metoak '
                  'stereo split (/vio/{left,right}/image_raw, opt-in).'),
     license='Apache-2.0',
@@ -24,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'camera_node = mower_cameras.camera_node:main',
+            'v4l2_cam = mower_cameras.v4l2_node:main',
         ],
     },
 )

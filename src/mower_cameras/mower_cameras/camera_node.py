@@ -6,10 +6,10 @@ process only):**
 ==========================  ==========================================  ================
 topic                       canonical producer                          this node
 ==========================  ==========================================  ================
-/left_oa_camera/*           ``v4l2_camera`` in ``launch/cameras.launch.py``  never
-/right_oa_camera/*          ``v4l2_camera`` in ``launch/cameras.launch.py``  never
-/rear_camera/image_raw,     ``v4l2_camera`` (``rear_driver:=v4l2``,      ``enable_rear``
-/rear_camera/camera_info    default) in ``launch/cameras.launch.py``     (off by default)
+/left_oa_camera/*           ``v4l2_cam`` (``mower_cameras.v4l2_node``)    never
+/right_oa_camera/*          ``v4l2_cam`` (``mower_cameras.v4l2_node``)    never
+/rear_camera/image_raw,     this node (``cameras.launch.py``             ``enable_rear``
+/rear_camera/camera_info    ``rear_driver:=opencv``, the default)        (off by default)
 /vio/{left,right}/image_raw ``stereo_vio_bridge`` (``launch/vio.launch.py``) ``enable_stereo``
                                                                         (off by default)
 ==========================  ==========================================  ================
@@ -18,8 +18,9 @@ Why this node still exists:
 
 * ``enable_rear`` (``cameras.launch.py rear_driver:=opencv``): the rear USB UVC webcam
   (32e6:9221) delivers 1920x1080@30 only as **MJPEG**; ``v4l2_camera`` 0.6 (Humble) cannot
-  decode MJPEG (YUYV/UYVY/GREY only), so full-rate 1080p rear video needs this
-  OpenCV path (``CAP_PROP_FOURCC=MJPG``). Publishes ``/rear_camera/image_raw`` (bgr8),
+  decode MJPEG (YUYV/UYVY/GREY only), so full-rate rear video needs this node. Capture
+  runs in a thread (``CaptureLoop``); ``rear_backend`` ``v4l2`` (default: pure-Python mmap
+  reader, JPEG passed through to ``compressed``) or ``opencv``. Publishes ``/rear_camera/image_raw`` (bgr8),
   ``/rear_camera/camera_info`` (from ``rear_camera_info_file``) and optionally
   ``/rear_camera/image_raw/compressed`` (JPEG).
 * ``enable_stereo``: debug fallback for the Metoak side-by-side stereo when
@@ -28,6 +29,8 @@ Why this node still exists:
 """
 from __future__ import annotations
 
+import array
+
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -35,9 +38,11 @@ from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
 try:
     import cv2
-    import numpy as np  # noqa: F401
+    import numpy as np
 except ImportError:  # pragma: no cover - cv2/numpy live in the ROS 2 image
-    cv2 = None
+    cv2 = np = None
+
+from mower_cameras.v4l2_node import CaptureLoop, to_compressed_msg
 
 STEREO_FRAME_ID = 'vio_camera'
 REAR_FRAME_ID = 'rear_camera'
@@ -56,8 +61,14 @@ def _to_image(stamp, frame_id, frame):
     msg.height = frame.shape[0]
     msg.width = frame.shape[1]
     msg.encoding = encoding
+    frame = np.ascontiguousarray(frame)
     msg.step = int(frame.strides[0])
-    msg.data = frame.tobytes()
+    # array.array, not bytes: the Humble rclpy setter range-checks every element of a
+    # bytes/list value in Python (0.998 s per 1080p bgr8 frame measured on the mower ->
+    # the rear topic ran at ~1 Hz); array.array('B') is taken as-is (0.005 s).
+    data = array.array('B')
+    data.frombytes(frame.data)
+    msg.data = data
     return msg
 
 
@@ -70,7 +81,9 @@ def _to_compressed(stamp, frame_id, frame, quality):
     msg.header.stamp = stamp
     msg.header.frame_id = frame_id
     msg.format = 'jpeg'
-    msg.data = buf.tobytes()
+    data = array.array('B')
+    data.frombytes(buf.tobytes())
+    msg.data = data
     return msg
 
 
@@ -123,6 +136,9 @@ class CameraNode(Node):
         self.declare_parameter('rear_height', 1080)
         self.declare_parameter('rear_fps', 30.0)
         self.declare_parameter('rear_fourcc', 'MJPG')
+        # v4l2: pure-Python mmap reader (mower_cameras.v4l2), MJPEG passed through to
+        # image_raw/compressed for free; opencv: cv2.VideoCapture(CAP_V4L2).
+        self.declare_parameter('rear_backend', 'v4l2')
         # ---- options ----
         self.declare_parameter('publish_compressed', False)
         self.declare_parameter('jpeg_quality', 80)
@@ -167,10 +183,16 @@ class CameraNode(Node):
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().warning(f'rear camera_info not loaded: {exc}')
                 self.rear_info = None
+            self.rear_loop = None
             if cv2 is not None:
-                self.cap_rear = self._open(p('rear_device'), p('rear_width'),
-                                           p('rear_height'), p('rear_fourcc'), p('rear_fps'))
-            self.create_timer(1.0 / float(p('rear_fps')), self._on_rear_tick)
+                # Dedicated capture thread: a blocking read can never stall the executor.
+                self.rear_loop = CaptureLoop(
+                    self.get_logger(), p('rear_device'), p('rear_width'), p('rear_height'),
+                    p('rear_fourcc'), p('rear_fps'), self._on_rear_frame,
+                    backend=p('rear_backend'), name='cap:rear')
+                self.rear_loop.start()
+                self.create_timer(10.0, self._rear_watchdog)
+                self._rear_seen = 0
 
         if not (self.enable_stereo or self.enable_rear):
             self.get_logger().warning(
@@ -240,17 +262,75 @@ class CameraNode(Node):
         self._publish(stamp, STEREO_FRAME_ID, pair[0], self.left_pub, self.left_comp_pub)
         self._publish(stamp, STEREO_FRAME_ID, pair[1], self.right_pub, self.right_comp_pub)
 
-    def _on_rear_tick(self):
-        if self.cap_rear is None:
-            return
-        ok, frame = self.cap_rear.read()
-        if not ok:
-            return
+    def _scaled_rear_info(self, width, height):
+        """Rear camera_info, rescaled if the capture mode has the calibration's aspect."""
+        info = self.rear_info
+        if info is None or (info.width, info.height) == (width, height):
+            return info
+        sx, sy = width / info.width, height / info.height
+        if abs(sx - sy) > 1e-3:
+            return None
+        scaled = CameraInfo()
+        scaled.header.frame_id = info.header.frame_id
+        scaled.width, scaled.height = width, height
+        scaled.distortion_model, scaled.d, scaled.r = info.distortion_model, info.d, info.r
+        k, pm = list(info.k), list(info.p)
+        for i in (0, 1, 2):
+            k[i] *= sx
+            pm[i] *= sx
+        for i in (3, 4, 5):
+            k[i] *= sy
+            pm[4 + i - 3] *= sy
+        pm[3] *= sx
+        pm[7] *= sy
+        scaled.k, scaled.p = k, pm
+        self.get_logger().info(
+            f'rear camera_info scaled {info.width}x{info.height} -> {width}x{height} '
+            '(assumes the UVC mode is a full-FOV scale of the calibrated mode)')
+        return scaled
+
+    def _on_rear_frame(self, data, cap):
+        """Capture-thread callback: ``data`` is JPEG bytes (v4l2) or a BGR image (opencv)."""
         stamp = self.get_clock().now().to_msg()
-        self._publish(stamp, REAR_FRAME_ID, frame, self.rear_pub, self.rear_comp_pub)
-        if self.rear_info is not None:
-            self.rear_info.header.stamp = stamp
-            self.rear_info_pub.publish(self.rear_info)
+        jpeg = None
+        if self.get_parameter('rear_backend').value == 'opencv':
+            frame = data
+        else:
+            jpeg = data if cap.pixel_format == 'MJPG' else None
+            from mower_cameras.v4l2 import to_bgr
+            frame = to_bgr(data, cap.width, cap.height, cap.bytesperline, cap.pixel_format)
+            if frame is None:
+                raise ValueError('undecodable rear frame (corrupt JPEG?)')
+        self.rear_pub.publish(_to_image(stamp, REAR_FRAME_ID, frame))
+        if self.rear_comp_pub is not None:
+            comp = (to_compressed_msg(stamp, REAR_FRAME_ID, jpeg) if jpeg is not None
+                    else _to_compressed(stamp, REAR_FRAME_ID, frame, self.jpeg_quality))
+            if comp is not None:
+                self.rear_comp_pub.publish(comp)
+        h, w = frame.shape[:2]
+        if not hasattr(self, '_rear_info_wh') or self._rear_info_wh != (w, h):
+            self._rear_info_wh = (w, h)
+            self._rear_info_out = self._scaled_rear_info(w, h)
+        if self._rear_info_out is not None:
+            self._rear_info_out.header.stamp = stamp
+            self.rear_info_pub.publish(self._rear_info_out)
+
+    def _rear_watchdog(self):
+        n = self.rear_loop.frames
+        if n == self._rear_seen:
+            self.get_logger().warning(
+                'rear camera: no frame published in the last 10 s (%s %dx%d %s); see the '
+                'capture thread log above' % (self.get_parameter('rear_device').value,
+                                              self.get_parameter('rear_width').value,
+                                              self.get_parameter('rear_height').value,
+                                              self.get_parameter('rear_fourcc').value))
+        self._rear_seen = n
+
+    def destroy_node(self):
+        if getattr(self, 'rear_loop', None) is not None:
+            self.rear_loop.stop()
+            self.rear_loop.join(timeout=3.0)
+        super().destroy_node()
 
 
 def main(args=None):

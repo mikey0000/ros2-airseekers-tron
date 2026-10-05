@@ -13,9 +13,9 @@ reproduces them.
 
 | Camera | Device (symlink → node) | Sensor / format (vendor config) | Producer (canonical) | Topics |
 |---|---|---|---|---|
-| left OA | `/dev/left_oa_camera` → `video53` | GC2093 MIPI via rkisp, UYVY 1920x1080 @ 15 | `v4l2_camera` (`cameras.launch.py`) | `/left_oa_camera/image_raw`, `/left_oa_camera/camera_info` |
-| right OA | `/dev/right_oa_camera` → `video44` | GC2093 MIPI via rkisp, UYVY 1920x1080 @ 15 | `v4l2_camera` | `/right_oa_camera/image_raw`, `/right_oa_camera/camera_info` |
-| rear | `/dev/rear_camera` → `video62` | USB UVC "FHD webcam" 32e6:9221, MJPEG 1920x1080 @ 30 | `v4l2_camera` (`rear_driver:=v4l2`, default) or `mower_cameras` (`rear_driver:=opencv`) | `/rear_camera/image_raw`, `/rear_camera/camera_info` |
+| left OA | `/dev/left_oa_camera` → `video53` | GC2093 MIPI → rkcif → rkisp `rkisp_mainpath` (multi-planar), UYVY 1920x1080, sensor 30 fps, published at 15 | `mower_cameras/v4l2_cam` (`cameras.launch.py`, `oa_driver:=mower_cameras`) | `/left_oa_camera/image_raw`, `/left_oa_camera/camera_info` |
+| right OA | `/dev/right_oa_camera` → `video44` | same as left | `mower_cameras/v4l2_cam` | `/right_oa_camera/image_raw`, `/right_oa_camera/camera_info` |
+| rear | `/dev/rear_camera` → `video62` | USB UVC "FHD webcam" 32e6:9221, **MJPG only**, 30 fps at every size; default 1280x720, published at 15 | `mower_cameras/camera_node` (`rear_driver:=opencv`, the default) | `/rear_camera/image_raw`, `/rear_camera/image_raw/compressed`, `/rear_camera/camera_info` |
 | Metoak stereo | `/dev/video11` (`videoSimor`), `/dev/video22` (`videoIsp`, SDK) | side-by-side | `stereo_vio_bridge` (`vio.launch.py`) | `/vio/{left,right}/image_raw` |
 
 - Calibration comes from `config/cameras/<camera>_info.yaml`, which is installed to
@@ -35,25 +35,53 @@ reproduces them.
   - On a stock rootfs, the vendor `base_cameras` node, `mower-webcam.service` and
     `mower-cam-keeper.service` own the same devices and port 8080. Stop them before you
     start the Humble cameras.
-- The rear camera's limitation: in `v4l2_camera` 0.6.2 (Humble), the only input formats
-  are YUYV, UYVY and GREY. MJPEG is not supported. The UVC webcam does 1080p30 only as
-  MJPEG; YUYV at 1080p is usually about 5 fps over USB 2. You have three choices:
-  - Keep `rear_driver:=v4l2` and lower `rear_width` and `rear_height` (the calibration is
-    1080p).
-  - Use `rear_driver:=opencv` (MJPEG decoded by OpenCV at full rate, more CPU).
-  - Use `rear_driver:=none`.
-
-  Run `v4l2-ctl -d /dev/rear_camera --list-formats-ext` on the mower first.
-- The rear USB power is gated by GPIO 113. The OA cameras need the rkaiq IQ file:
-  `scripts/setup_camera_iq.sh`.
+- The OA nodes are V4L2 **multi-planar** (`rkisp_v6`, `Video Capture Multiplanar`).
+  `v4l2_camera` 0.6 and OpenCV 4.5.4 only speak single-planar, so `v4l2_camera` sees no
+  formats, logs `Requesting format: 0x0 UYVY` → EINVAL, then `Failed mapping device
+  memory`. The "0x0" is the empty single-planar `G_FMT`, not the `image_size` parameter
+  (which arrives correctly as `[1920, 1080]`; it is now typed `List[int]` anyway).
+  `mower_cameras/v4l2_cam` (`mower_cameras/v4l2.py`, a pure-Python ioctl+mmap reader that
+  handles single- and multi-planar devices) replaces it. The container has no GStreamer
+  plugins (only `coreelements`), so `v4l2src` is not an option.
+- The rear camera is MJPG-only, which `v4l2_camera` cannot decode. `camera_node`
+  captures in a thread with the same reader (`rear_backend:=v4l2`, the default), decodes
+  with `cv2.imdecode` for `image_raw`, and passes the camera's JPEG straight through to
+  `image_raw/compressed`. `rear_backend:=opencv` uses `cv2.VideoCapture(CAP_V4L2)`, which
+  also works (27.9 fps at 1080p). Do **not** set `CAP_PROP_BUFFERSIZE=1`: it halves the
+  rate to 13.5 fps.
+- Host prerequisites for the OA cameras are already met by the stock rootfs at boot:
+  `rkaiq_3A.service` (`/usr/bin/rkaiq_3A_server`, the 3A for both ISPs), the IQ file
+  `/etc/iqfiles/gc2093_MY_default.json`, and the media links `rkcif-mipi-lvds{,5}` →
+  `rkisp-isp-subdev` → `rkisp_mainpath` (already `[ENABLED]`; no `media-ctl -l` needed).
+  `scripts/setup_cameras_device.sh` checks all of this on the host (read-only;
+  `start-3a` starts rkaiq the vendor way if it is not running). Without rkaiq, rkisp still
+  streams, but exposure and white balance are not regulated.
+- Large images and DDS: with Fast DDS defaults (512 KiB SHM segment) a best-effort
+  6.2 MB bgr8 frame is fragmented and mostly dropped. A synthetic 15 Hz 1080p publisher
+  was received at 5.66 Hz. `cameras.launch.py` therefore sets
+  `FASTRTPS_DEFAULT_PROFILES_FILE=config/cameras/fastdds_camera_shm.xml` (a 32 MiB SHM
+  segment) for the camera nodes only (a scoped `GroupAction`). The profile is needed on
+  the publisher only, and with it delivery is 14.95 Hz. Remote (UDP) subscribers are
+  still limited by the host's `net.core.rmem_max=212992`, so use `image_raw/compressed`
+  off-board.
+- The rear USB power is gated by GPIO 113.
 
 ### `cameras.launch.py` arguments
 
-`left_oa_camera`, `right_oa_camera` (true), `rear_driver` (`v4l2|opencv|none`), and
-`<camera>_device`. Size and format: `oa_width`, `oa_height`, `oa_pixel_format`
-(1920/1080/UYVY) and `rear_width`, `rear_height`, `rear_pixel_format` (1920/1080/YUYV).
-Also `output_encoding` (bgr8), `camera_info_dir`, `web_video_server` (false) and
-`video_port` (8080).
+- `left_oa_camera`, `right_oa_camera` (true).
+- `oa_driver`: `mower_cameras` (default) or `v4l2_camera` (does not work on rkisp).
+- `oa_width`, `oa_height`, `oa_pixel_format`: 1920, 1080, UYVY. UYVY, NV12, NV21 and YUYV
+  are converted; any size from 32x32 to 1920x1080 in steps of 8 works, and the ISP scales.
+- `oa_fps` (15.0) caps the publish rate; frames above it are dropped before conversion.
+- `oa_compressed` (false).
+- `rear_driver`: `opencv` (default; `mower_cameras/camera_node`), `v4l2` or `none`.
+- `rear_width`, `rear_height`: 1280, 720. Calibration is 1080p; `camera_info` is
+  rescaled for 16:9 modes, assuming the UVC mode is a full-FOV scale.
+- `rear_fps` (15.0) and `rear_compressed` (true).
+- `<camera>_device`, `output_encoding` (bgr8; `v4l2_camera` only), `camera_info_dir`.
+- `camera_dds_profile`: the Fast DDS profile for the camera publishers; `""` uses the RMW
+  default.
+- `web_video_server` (false) and `video_port` (8080).
 
 ## 2. Models (deploy flow)
 
@@ -305,10 +333,7 @@ perception = IncludeLaunchDescription(
 
 ## 8. Only testable on the mower
 
-1. Whether the real devices open with these formats:
-   - OA: UYVY 1920x1080 through rkisp, which needs `gc2093.ko`, rkaiq and the IQ file.
-   - Rear: YUYV 1080p. It may not be offered, or only at about 5 fps; if so, use
-     `rear_driver:=opencv` or a lower size.
+1. (Done 2026-10-06, see below.) Device formats and rates.
 2. Whether the udev numbering (`video53`, `video44`, `video62`) holds after a re-flash or
    kernel change.
 3. NPU inference end to end:
@@ -335,8 +360,39 @@ perception = IncludeLaunchDescription(
   loads, `init_runtime(NPU_CORE_0_1_2)` succeeds, inference on a 640x480x3 uint8 input takes **86 ms**
   and returns the expected 9 outputs `[1,64,80,60] [1,22,80,60] [1,1,80,60] ... [1,64,20,15] [1,22,20,15] [1,1,20,15]`.
   RKNN driver 0.9.8.
-- Side cameras (`/dev/left_oa_camera` = video53, `/dev/right_oa_camera` = video44) expose UYVY/NV16/NV61/NV21
-  up to 1920x1080 (stepwise) but `v4l2_camera` fails with "Failed requesting pixel format: Invalid argument":
-  the rkisp pipeline must be configured (media-ctl / rkaiq) before the capture node can set a format. Open.
-- Rear camera (`/dev/rear_camera` = video62) is MJPG-only (1920x1080 ... 640x480), so `rear_driver` defaults to
-  the OpenCV MJPEG path in `mower_cameras`.
+- Cameras (all three streaming in `mower_humble`, measured with `ros2 topic hz`
+  inside the container):
+
+  | Topic | Rate | Size / format | Producer CPU (10 s `top`, % of one core) |
+  |---|---|---|---|
+  | `/rear_camera/image_raw` | 14.97 Hz | 1280x720 bgr8 (2.76 MB) | `camera_node` 29 % |
+  | `/rear_camera/image_raw/compressed` | 14.82 Hz | camera JPEG passthrough (~0.2 MB) | (same) |
+  | `/left_oa_camera/image_raw` | 15.02 Hz | 1920x1080 bgr8 (6.2 MB) | `v4l2_cam` 44 % |
+  | `/right_oa_camera/image_raw` | 14.98 Hz (raw subscriber) | 1920x1080 bgr8 | `v4l2_cam` 43 % |
+  | `/{left_oa,right_oa,rear}_camera/camera_info` | 15.0 Hz | from `config/cameras` | |
+
+  The whole container ran at about 65 % user CPU on 8 cores, with a load average of about
+  10, mostly from the non-camera nodes. `/mower_base/status` stayed at 100.0 Hz and
+  `/imu/data` at 100.0 Hz.
+- Raw device rates (`v4l2-ctl --stream-mmap` on the host):
+  - rear MJPG: 29.88 fps at both 1920x1080 and 1280x720.
+  - OA UYVY 1920x1080: 30.00 fps (bytesperline 3840, 1 plane, 4147200 B).
+  - The `mower_cameras.v4l2` reader gets the same rates from the container, plus the
+    per-frame conversion costs below.
+
+  | Conversion | Cost per frame |
+  |---|---|
+  | UYVY→BGR 1080p | 11 ms |
+  | UYVY→BGR or NV12→BGR 720p | 10 ms |
+  | MJPEG decode 1080p | 35 ms |
+  | MJPEG decode 720p | 26 ms |
+
+  Frame means are about 125/118/111 (BGR), so 3A is active.
+- Root cause of the old "rear opens but never publishes": reads worked, but
+  `msg.data = frame.tobytes()` makes the Humble rclpy setter range-check every byte in
+  Python. That took 0.998 s per 1080p frame, so the node ran at about 1 Hz and the
+  `ros2 topic hz` CLI dropped the huge messages. Assigning `array.array('B')` instead takes
+  0.005 s.
+- Vendor camera services: `rkaiq_3A.service` is active (and is required). `cam.service`
+  (Metoak `mo_init.sh`), `mower-webcam.service` and `mower-cam-keeper.service` are
+  inactive, which is what we want.

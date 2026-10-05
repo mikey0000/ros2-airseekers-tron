@@ -1,4 +1,5 @@
-# mower_cameras (OpenCV fallback driver) defaults. Both producers are OFF by default:
+# mower_cameras (camera_node: rear UVC + debug stereo) defaults. The OA cameras use the
+# separate v4l2_cam executable (see launch/cameras.launch.py). Both producers are OFF by default:
 #   * OA + rear cameras: canonical producer is v4l2_camera in launch/cameras.launch.py
 #     (rear_driver:=opencv switches the rear camera to this node instead).
 #   * Metoak stereo (/vio/{left,right}/image_raw): canonical producer is
@@ -31,6 +32,7 @@ mower_cameras:
     rear_height: 1080
     rear_fps: 30.0
     rear_fourcc: 'MJPG'
+    rear_backend: 'v4l2'        # v4l2 (pure-Python mmap, JPEG passthrough) | opencv
 
     publish_compressed: false
     jpeg_quality: 80

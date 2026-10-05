@@ -59,3 +59,22 @@ def test_split_and_camera_info():
     assert (info.width, info.height, info.header.frame_id) == (1920, 1080, 'rear_camera')
     assert len(info.k) == 9 and len(info.p) == 12 and len(info.d) == 5
     assert load_camera_info('') is None
+
+
+def test_v4l2_abi_and_conversion():
+    import ctypes
+    import struct
+    from mower_cameras import v4l2
+    if struct.calcsize('P') == 8:  # 64-bit kernel ABI (the mower is aarch64)
+        assert ctypes.sizeof(v4l2.v4l2_format) == 208
+        assert ctypes.sizeof(v4l2.v4l2_buffer) == 88
+        assert ctypes.sizeof(v4l2.v4l2_plane) == 64
+        assert v4l2.VIDIOC_DQBUF == 0xc0585611
+        assert v4l2.VIDIOC_S_FMT == 0xc0d05605
+    assert v4l2.fourcc_str(v4l2.fourcc('UYVY')) == 'UYVY'
+    np = pytest.importorskip('numpy')
+    pytest.importorskip('cv2')
+    # 4x2 UYVY with padded stride (bytesperline 12 > 8) -> 4x2x3 BGR
+    raw = np.full((2, 12), 128, np.uint8).tobytes()
+    img = v4l2.to_bgr(raw, 4, 2, 12, 'UYVY')
+    assert img.shape == (2, 4, 3)
