@@ -1,0 +1,1010 @@
+{
+  "type": "object",
+  "properties": {
+    "hardware_settings": {
+      "title": "Hardware",
+      "type": "object",
+      "properties": {
+        "mower_model": {
+          "type": "string",
+          "title": "Mower Model",
+          "enum": [
+            "YardForce500",
+            "YardForce500B",
+            "YardForceSA650",
+            "YardForce900ECO",
+            "LUV1000RI",
+            "Sabo",
+            "CUSTOM"
+          ],
+          "default": "YardForce500",
+          "description": "The type of mower you are using."
+        },
+        "wheel_radius": {
+          "type": "number",
+          "title": "Wheel Radius",
+          "default": 0.1,
+          "description": "Drive wheel radius in metres. Measured on the YardForce 500 (2026-09-05); was 0.04475, an 8.95 cm diameter wheel that no chassis here has. Consumed only by the URDF: it sets base_link's height above ground, so every sensor z offset is measured from it."
+        },
+        "wheel_track": {
+          "type": "number",
+          "title": "Wheel Track",
+          "default": 0.325,
+          "description": "Centre-to-centre distance between drive wheels in metres."
+        },
+        "wheel_width": {
+          "type": "number",
+          "title": "Wheel Width",
+          "default": 0.04,
+          "description": "Drive wheel width in metres."
+        },
+        "wheel_x_offset": {
+          "type": "number",
+          "title": "Wheel X Offset",
+          "default": 0.0,
+          "description": "Wheel axle offset from base_link in metres (0 = base_link at wheel axis)."
+        },
+        "chassis_center_x": {
+          "type": "number",
+          "title": "Chassis Center X",
+          "default": 0.18,
+          "description": "Distance from base_link (wheel axis) to chassis geometric centre in metres."
+        },
+        "chassis_length": {
+          "type": "number",
+          "title": "Chassis Length",
+          "default": 0.6,
+          "description": "Chassis length in metres."
+        },
+        "chassis_width": {
+          "type": "number",
+          "title": "Chassis Width",
+          "default": 0.45,
+          "description": "Chassis width in metres."
+        },
+        "chassis_height": {
+          "type": "number",
+          "title": "Chassis Height",
+          "default": 0.19,
+          "description": "Chassis height in metres."
+        },
+        "chassis_mass_kg": {
+          "type": "number",
+          "title": "Chassis Mass",
+          "default": 8.76,
+          "description": "Robot mass in kilograms."
+        },
+        "caster_radius": {
+          "type": "number",
+          "title": "Caster Radius",
+          "default": 0.03,
+          "description": "Front caster wheel radius in metres."
+        },
+        "caster_track": {
+          "type": "number",
+          "title": "Caster Track",
+          "default": 0.36,
+          "description": "Centre-to-centre distance between front casters in metres."
+        },
+        "ticks_per_meter": {
+          "type": "number",
+          "title": "Encoder Ticks per Meter",
+          "default": 399.0,
+          "description": "Encoder ticks per metre of wheel travel."
+        },
+        "tool_width": {
+          "type": "number",
+          "title": "Mowing Tool Width",
+          "default": 0.18,
+          "description": "Effective cutting width in metres (2 x blade_radius)."
+        },
+        "blade_radius": {
+          "type": "number",
+          "title": "Blade Radius",
+          "default": 0.09,
+          "description": "Mowing blade radius in metres."
+        },
+        "wheel_pid_kp": {
+          "type": "number",
+          "title": "Drive PID — Kp",
+          "default": 10.0,
+          "minimum": 0,
+          "maximum": 200,
+          "description": "Proportional gain of the firmware per-wheel velocity loop, applied unscaled in PWM per m/s (10 = 3 PWM at a 0.3 m/s step). Applied live; higher = stiffer tracking, too high oscillates. Field-validated default 10."
+        },
+        "wheel_pid_ki": {
+          "type": "number",
+          "title": "Drive PID — Ki",
+          "default": 2000.0,
+          "minimum": 0,
+          "maximum": 20000,
+          "description": "Integral gain of the firmware per-wheel velocity loop, applied unscaled in PWM per (m/s·s). Winds the integrator up to the static-friction deadband — 2000 reaches it from a 0.03 m/s error in about 0.5 s; values near 0.1 never move the wheel. Too high overshoots."
+        },
+        "wheel_pid_kd": {
+          "type": "number",
+          "title": "Drive PID — Kd",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 500,
+          "description": "Derivative gain of the firmware per-wheel velocity loop (PWM per m/s²). 0 = disabled (default): the 50 Hz tick-quantised wheel speed makes the derivative term noise."
+        },
+        "wheel_pid_integral_limit": {
+          "type": "number",
+          "title": "Drive PID — Integral Limit",
+          "default": 45.0,
+          "minimum": 0,
+          "maximum": 255,
+          "description": "Anti-windup clamp on the integral term (PWM units, motor max 255). Must let the integrator reach the ~40 PWM motor deadband minus feedforward (about 32 PWM at 0.03 m/s), or the slow inner wheel of an arc never turns. hardware_bridge refuses a set that cannot bridge deadband_pwm."
+        },
+        "wheel_pid_pwm_per_mps": {
+          "type": "number",
+          "title": "Drive Feedforward (PWM per m/s)",
+          "default": 282.135,
+          "minimum": 50,
+          "maximum": 600,
+          "description": "Open-loop velocity→PWM feedforward scale. Dominant drive term; sets the deadband/idle mapping. Change with care."
+        },
+        "deadband_pwm": {
+          "type": "number",
+          "title": "Drive Motor Deadband (PWM)",
+          "default": 40.0,
+          "minimum": 0,
+          "maximum": 255,
+          "description": "Estimated static-friction deadband of the drive motors in PWM. Sanity gate only, never sent to the firmware: when the configured wheel_pid_* set cannot reach it (integral_limit + kp*0.03 + pwm_per_mps*0.03), hardware_bridge sends the template gains instead and logs an error; a live change that fails the gate is rejected."
+        }
+      }
+    },
+    "sensor_extrinsics": {
+      "title": "Sensor Mounting",
+      "description": "Where the sensors sit on the robot (body-frame offsets and rotations). IMU rotation is normally set via the Auto-calibrate button; edit here only for manual overrides.",
+      "type": "object",
+      "properties": {
+        "imu_x": {
+          "type": "number",
+          "title": "IMU Offset X",
+          "default": 0.18,
+          "description": "Body-frame forward offset of IMU from base_footprint (metres)."
+        },
+        "imu_y": {
+          "type": "number",
+          "title": "IMU Offset Y",
+          "default": -0.195,
+          "description": "Body-frame left offset of IMU from base_footprint (metres). Negative = right of the wheelbase centre, which is where the IMU physically sits on the YardForce 500. Was 0.0 until 2026-09-05, so a reset-to-default moved the IMU 19.5 cm sideways in the URDF."
+        },
+        "imu_z": {
+          "type": "number",
+          "title": "IMU Offset Z",
+          "default": 0.095,
+          "description": "Body-frame up offset of IMU from base_footprint (metres)."
+        },
+        "imu_roll": {
+          "type": "number",
+          "title": "IMU Roll",
+          "default": 0.0,
+          "description": "IMU mounting roll (radians). Applied in URDF as rpy; set by /calibration/imu-yaw service."
+        },
+        "imu_pitch": {
+          "type": "number",
+          "title": "IMU Pitch",
+          "default": 0.0,
+          "description": "IMU mounting pitch (radians). Applied in URDF as rpy; set by /calibration/imu-yaw service."
+        },
+        "imu_yaw": {
+          "type": "number",
+          "title": "IMU Yaw",
+          "default": 0.0,
+          "description": "IMU mounting yaw (radians). Applied in URDF as rpy; set by /calibration/imu-yaw service."
+        },
+        "lidar_enabled": {
+          "type": "boolean",
+          "title": "Enable LiDAR",
+          "default": false,
+          "description": "Enable LiDAR. Sole source of truth for the ROS2 stack's LiDAR mode (the LIDAR_ENABLED env var is not read). Scan-to-map localization in fusion_graph_node is gated by this setting, so it cannot run without a scanner. Default false: this default MUST match robot_config_util.DEFAULT_LIDAR_ENABLED, because the settings backend prunes any value equal to its schema default -- with a default of true, switching LiDAR ON would be pruned away and the toggle would never persist."
+        },
+        "use_lidar_map_anchor": {
+          "type": "boolean",
+          "title": "LiDAR map anchor",
+          "default": false,
+          "description": "Scan-to-map (Beluga) XY anchor factors from a persistent LiDAR occupancy map, applied only after a full GNSS outage. Default false (matches the template): the anchor is experimental and costly on the Pi; requires LiDAR enabled. Restart the ROS2 stack after changing."
+        },
+        "lidar_anchor_shadow_mode": {
+          "type": "boolean",
+          "title": "LiDAR anchor shadow mode",
+          "default": false,
+          "description": "With the anchor enabled, also run and score the particle filter under RTK Fixed without ever applying a factor (calibrates the adaptive sigma floor, costs CPU). Default false (matches the template)."
+        },
+        "lidar_x": {
+          "type": "number",
+          "title": "LiDAR Offset X",
+          "default": 0.0,
+          "description": "Body-frame forward offset of LiDAR from base_footprint (metres)."
+        },
+        "lidar_y": {
+          "type": "number",
+          "title": "LiDAR Offset Y",
+          "default": 0.024,
+          "description": "Body-frame left offset of LiDAR from base_footprint (metres)."
+        },
+        "lidar_z": {
+          "type": "number",
+          "title": "LiDAR Offset Z",
+          "default": 0.30,
+          "description": "Body-frame up offset of LiDAR from base_footprint (metres)."
+        },
+        "lidar_yaw": {
+          "type": "number",
+          "title": "LiDAR Yaw",
+          "default": 3.1408,
+          "description": "LiDAR mounting yaw (radians). Reference robot mounts the LiDAR 180°-rotated."
+        },
+        "gps_x": {
+          "type": "number",
+          "title": "GPS Antenna Offset X",
+          "default": 0.3,
+          "description": "Body-frame forward offset of GPS antenna from base_footprint (metres). Used by fusion_graph_node's GnssLeverArmFactor to subtract the antenna lever-arm from each /gps/fix sample."
+        },
+        "gps_y": {
+          "type": "number",
+          "title": "GPS Antenna Offset Y",
+          "default": 0.0,
+          "description": "Body-frame left offset of GPS antenna from base_footprint (metres)."
+        },
+        "gps_z": {
+          "type": "number",
+          "title": "GPS Antenna Offset Z",
+          "default": 0.2,
+          "description": "Body-frame up offset of GPS antenna from base_footprint (metres)."
+        }
+      }
+    },
+    "gps_settings": {
+      "title": "GPS / Positioning",
+      "type": "object",
+      "properties": {
+        "datum_lat": {
+          "type": "number",
+          "title": "Datum Latitude",
+          "default": 0.0,
+          "description": "Map origin latitude (WGS84). Set near your docking station."
+        },
+        "datum_lon": {
+          "type": "number",
+          "title": "Datum Longitude",
+          "default": 0.0,
+          "description": "Map origin longitude (WGS84). Set near your docking station."
+        },
+        "datum_alt": {
+          "type": "number",
+          "title": "Datum Altitude",
+          "description": "Map origin altitude (WGS84 ellipsoidal, metres) — site-specific; no default. Used as the altitude reference when converting GPS fixes to the local map frame."
+        },
+        "gnss_receiver_family": {
+          "type": "string",
+          "title": "Receiver Family",
+          "enum": [
+            "auto",
+            "ublox",
+            "unicore",
+            "nmea"
+          ],
+          "default": "auto",
+          "description": "Universal GNSS receiver family. Auto is recommended unless you know you need a specific parser."
+        },
+        "gnss_receiver_model": {
+          "type": "string",
+          "title": "Receiver Model",
+          "description": "Optional Universal GNSS configuration hint passed only to configurator tools when explicitly set. Leave empty for Unknown / Auto."
+        },
+        "gnss_serial_device": {
+          "type": "string",
+          "title": "Serial Device",
+          "default": "/dev/ttyAMA4",
+          "description": "Receiver serial device. Prefer /dev/serial/by-id/... for USB receivers."
+        },
+        "gnss_serial_baud": {
+          "type": "integer",
+          "title": "Serial Baud",
+          "default": 921600,
+          "description": "Receiver serial baud rate. 921600 is the recommended runtime default."
+        },
+        "gnss_profile": {
+          "type": "string",
+          "title": "Receiver Profile",
+          "enum": [
+            "runtime_only",
+            "rover_high_precision",
+            "rover_high_precision_debug",
+            "factory_reset"
+          ],
+          "default": "runtime_only",
+          "description": "Vendor-neutral Universal GNSS receiver profile id to persist for this robot."
+        },
+        "gnss_signal_profile": {
+          "type": "string",
+          "title": "Signal Profile",
+          "enum": [
+            "minimal",
+            "balanced",
+            "high_precision",
+            "all_signals",
+            "custom"
+          ],
+          "default": "balanced",
+          "description": "Vendor-neutral constellation/signal profile used by the future backend translator. Custom is reserved for future profile-file or raw-command workflows."
+        },
+        "gnss_profile_rate_hz": {
+          "type": "integer",
+          "title": "Position Rate",
+          "enum": [
+            1,
+            5,
+            7,
+            10
+          ],
+          "default": 5,
+          "description": "Requested Universal GNSS receiver update/output rate in Hz."
+        },
+        "gnss_config_baud": {
+          "type": "integer",
+          "title": "Configured Receiver Baud",
+          "default": 921600,
+          "description": "Persisted target baud for future receiver-side profile application."
+        },
+        "gnss_signal_group": {
+          "type": "string",
+          "title": "Raw Signal Group",
+          "description": "Vendor-specific expert override. Accepts 'master slave', 'master,slave', or 'master/slave' and is normalized on save; advanced Unicore combinations are allowed with warnings instead of a hard allowlist."
+        },
+        "gnss_rover_dynamic_mode": {
+          "type": "string",
+          "enum": ["", "uav", "survey_mow", "rover"],
+          "title": "Rover Dynamic Mode",
+          "description": "Unicore rover motion model for RTK. Empty = auto (per-model default; UM980 defaults to uav). uav is the kinematic engine (fast fix, holds lock while moving); survey_mow is the near-static survey engine; rover is the generic fallback."
+        },
+        "gnss_unicore_pvt_algorithm": {
+          "type": "string",
+          "title": "Unicore PVT Algorithm",
+          "description": "Optional Unicore-specific expert override, for example MULTI."
+        },
+        "gnss_unicore_rtk_reliability": {
+          "type": "string",
+          "title": "Unicore RTK Reliability",
+          "description": "Optional Unicore-specific expert override for RTK reliability behavior."
+        },
+        "gnss_unicore_rtk_timeout_s": {
+          "type": "integer",
+          "title": "Unicore RTK Timeout",
+          "description": "Optional Unicore-specific expert override in seconds."
+        },
+        "gnss_unicore_dgps_timeout_s": {
+          "type": "integer",
+          "title": "Unicore DGPS Timeout",
+          "description": "Optional Unicore-specific expert override in seconds."
+        },
+        "gps_wait_after_undock_sec": {
+          "type": "number",
+          "title": "GPS Wait After Undock",
+          "default": 10.0,
+          "description": "Seconds to wait for RTK fix after undocking."
+        },
+        "gps_timeout_sec": {
+          "type": "number",
+          "title": "GPS Timeout",
+          "default": 5.0,
+          "description": "Pause mowing if no GPS fix for this many seconds."
+        },
+        "ntrip_enabled": {
+          "type": "boolean",
+          "title": "Enable NTRIP",
+          "default": false,
+          "description": "Enable NTRIP RTK corrections for cm-level accuracy."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "ntrip_enabled": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "ntrip_host": {
+                "type": "string",
+                "title": "NTRIP Host",
+                "default": "",
+                "description": "Hostname or IP of your NTRIP caster."
+              },
+              "ntrip_port": {
+                "type": "integer",
+                "title": "NTRIP Port",
+                "default": 2101,
+                "description": "Port of your NTRIP caster."
+              },
+              "ntrip_user": {
+                "type": "string",
+                "title": "NTRIP Username",
+                "default": "",
+                "description": "NTRIP username."
+              },
+              "ntrip_password": {
+                "type": "string",
+                "title": "NTRIP Password",
+                "default": "",
+                "description": "NTRIP password."
+              },
+              "ntrip_mountpoint": {
+                "type": "string",
+                "title": "NTRIP Mountpoint",
+                "default": "",
+                "description": "NTRIP endpoint / mount point."
+              }
+            }
+          }
+        }
+      ]
+    },
+    "docking_settings": {
+      "title": "Docking",
+      "description": "Dock position (X, Y, Yaw) is set from the map editor. Other docking parameters can be adjusted here.",
+      "type": "object",
+      "properties": {
+        "undock_distance": {
+          "type": "number",
+          "title": "Undock Distance",
+          "default": 1.5,
+          "description": "Reverse distance when undocking (metres)."
+        },
+        "undock_speed": {
+          "type": "number",
+          "title": "Undock Speed",
+          "default": 0.16,
+          "description": "Reverse speed when undocking (m/s)."
+        },
+        "dock_approach_distance": {
+          "type": "number",
+          "title": "Dock Approach Distance",
+          "default": 1.5,
+          "description": "Staging point distance in front of dock (metres)."
+        },
+        "dock_approach_overshoot": {
+          "type": "number",
+          "title": "Dock Approach Overshoot",
+          "default": 0.05,
+          "description": "Forward overshoot (metres) applied to the dock target along its yaw axis. opennav_docking drives toward dock_pose + overshoot * forward and stops at docking_threshold, putting firm contact on the cradle. 0 disables the shift."
+        },
+        "dock_max_retries": {
+          "type": "integer",
+          "title": "Dock Max Retries",
+          "default": 3,
+          "description": "Maximum docking retry attempts (nav2 docking_server.max_retries). Applied at launch: takes effect after a ROS2 restart."
+        },
+        "dock_use_charger_detection": {
+          "type": "boolean",
+          "title": "Use Charger Detection",
+          "default": true,
+          "description": "Confirm docking from the charging current (nav2 simple_charging_dock.use_battery_status). Off = the dock is considered reached on pose proximity alone. Applied at launch: takes effect after a ROS2 restart."
+        },
+        "dock_charging_threshold": {
+          "type": "number",
+          "title": "Charging Threshold",
+          "default": 0.3,
+          "description": "Battery current (A) at which SimpleChargingDock considers the cradle reached. Higher = more forward press into the contacts before stopping; lower = stops sooner. 0.3 A is a stable seat on the YardForce charger."
+        }
+      }
+    },
+    "mowing_settings": {
+      "title": "Mowing",
+      "type": "object",
+      "properties": {
+        "mowing_enabled": {
+          "type": "boolean",
+          "title": "Enable Mowing Motor",
+          "default": true,
+          "description": "Enable the mowing blade. false = DRY RUN: the robot mows the full path with the blade never spinning (commissioning, coverage tuning). This is a convenience inhibit, NOT a safety cut-out \u2014 the STM32 firmware remains the blade safety authority. Read by hardware_bridge_node at startup: takes effect after a ROS2 restart."
+        },
+        "mowing_speed": {
+          "type": "number",
+          "title": "Mowing Speed",
+          "default": 0.2,
+          "description": "Robot speed during mowing (m/s)."
+        },
+        "transit_speed": {
+          "type": "number",
+          "title": "Transit Speed",
+          "default": 0.2,
+          "description": "Robot speed when transiting between zones and to dock (m/s)."
+        },
+        "blade_load_slowdown_enabled": {
+          "type": "boolean",
+          "title": "Blade Load Slowdown",
+          "default": false,
+          "description": "Slow the mowing speed down when the blade motor's RPM sags under load (thick or wet grass), so the blade gets time to cut instead of stalling or leaving an uncut strip. Off by default: read your blade's no-load RPM off Diagnostics first and set the two thresholds. Fail-open \u2014 an inactive blade or stale telemetry never slows the robot. Coverage paths only; takes effect after a ROS2 restart."
+        },
+        "blade_load_rpm_full": {
+          "type": "number",
+          "title": "Blade RPM Full Speed",
+          "default": 2500,
+          "description": "Blade RPM at or above which the full mowing speed applies. Set it a little below the no-load RPM shown on Diagnostics."
+        },
+        "blade_load_rpm_min": {
+          "type": "number",
+          "title": "Blade RPM Min Speed",
+          "default": 1800,
+          "description": "Blade RPM at or below which the minimum mowing speed applies. Set it where the cut audibly labours; must be below Blade RPM Full Speed. The speed ramps linearly between the two."
+        },
+        "blade_load_min_speed_ratio": {
+          "type": "number",
+          "title": "Blade Load Min Speed Ratio",
+          "default": 0.4,
+          "description": "Slowest mowing feed under blade load, as a fraction of Mowing Speed (0.1\u20131.0). Never below the controller's 0.08 m/s crawl speed."
+        },
+        "path_spacing": {
+          "type": "number",
+          "title": "Path Spacing",
+          "default": 0.18,
+          "description": "DEAD KEY — nothing reads this, and it no longer exists in the ROS2 template (removed 2026-09-05). Kept in the schema only so previously-installed YAMLs still validate. Swath spacing is tool_width minus swath_overlap (coverage_server.operation_width); a separate value re-opens the swath-gap bug."
+        },
+        "headland_width": {
+          "type": "number",
+          "title": "Headland Width",
+          "default": 0.18,
+          "description": "Headland band width in metres. Injected as coverage_server.default_headland_width, where it is used for one thing only: the AUTO ring count, ceil(headland_width / operation_width). It therefore has NO effect unless Headland Passes is set to Auto (0) — with a forced pass count the ring count wins."
+        },
+        "num_headland_passes": {
+          "type": "integer",
+          "title": "Headland Passes",
+          "default": 5,
+          "minimum": -1,
+          "description": "Number of concentric perimeter rings before the inner field. -1 (or any negative) = none — no perimeter rings. The back-and-forth swaths become the outermost pass, and their centreline lands on exactly the line the outermost ring would have driven (chassis_safety_inset inside the recorded boundary), so sideways they leave the same uncut band as the rings — about 12 cm at the default 0.20 m inset. The swath ENDS, however, reach that same band, roughly 8 cm closer to the boundary than any ring pass gets, and with no mowed apron the row-end U-turns become pivot-through corners instead of smooth arcs. 0 = auto (ceil(headland_width / tool_width)); >0 forces exactly that count."
+        },
+        "connector_max_headland_passes": {
+          "type": "integer",
+          "title": "Turn-Around Headland Limit",
+          "default": 0,
+          "minimum": 0,
+          "description": "How many of the Headland Passes rings a turn-around may cross, counted from the inner field outward. 0 = unlimited (turns may use the whole headland apron, out to the outermost ring). Set it below Headland Passes (e.g. 2 with 3 passes configured) to keep the outermost ring(s) a no-turn zone, so U-turns stay further from the recorded boundary and clear of nearby objects — at the cost of more straight/blade-off connector fallbacks where the remaining apron is too narrow for a turn-around arc to fit."
+        },
+        "chassis_safety_inset": {
+          "type": "number",
+          "title": "Chassis Safety Inset",
+          "default": 0.2,
+          "description": "Pre-shrink the operator polygon by this many metres before F2C plans anything. Defaults to chassis_width / 2 so the chassis edge stays inside the polygon under perfect FTC tracking."
+        },
+        "min_turning_radius": {
+          "type": "number",
+          "title": "Min Turning Radius",
+          "default": 0.2,
+          "description": "Minimum turning radius for coverage path (metres). Skid-steer pivots in place; large values force wide F2C U-turns."
+        },
+        "mow_cross_hatch": {
+          "title": "Cross-hatch mowing",
+          "type": "boolean",
+          "default": false,
+          "description": "Alternate each area's stripe direction by 90 degrees between mowing sessions. Next-direction overrides apply to the next session; interrupted sessions keep their direction after restart."
+        },
+        "mow_angle_deg": {
+          "type": "number",
+          "title": "Mow Angle",
+          "minimum": -1,
+          "maximum": 179,
+          "default": -1.0,
+          "description": "Swath (mowing line) direction. -1 (or any negative) = auto: the coverage server picks the swath-count-minimising angle. 0..179 forces a fixed swath angle in degrees."
+        }
+      }
+    },
+    "battery_settings": {
+      "title": "Battery",
+      "type": "object",
+      "properties": {
+        "battery_full_voltage": {
+          "type": "number",
+          "title": "Full Voltage",
+          "default": 28.0,
+          "description": "Voltage at which battery is considered full. Default 28.0 matches YardForce500 SLA packs on the dock; raise if your pack genuinely reaches a higher resting voltage."
+        },
+        "battery_empty_voltage": {
+          "type": "number",
+          "title": "Empty Voltage",
+          "default": 24.0,
+          "description": "Dock if voltage stays below this for 20s."
+        },
+        "battery_critical_voltage": {
+          "type": "number",
+          "title": "Critical Voltage",
+          "default": 23.0,
+          "description": "Immediate dock if voltage drops below this."
+        },
+        "battery_full_percent": {
+          "type": "number",
+          "title": "Full Percent",
+          "default": 95.0,
+          "description": "Resume mowing above this battery percentage."
+        },
+        "battery_low_percent": {
+          "type": "number",
+          "title": "Low Percent",
+          "default": 20.0,
+          "description": "Start heading to dock below this battery percentage."
+        },
+        "battery_critical_percent": {
+          "type": "number",
+          "title": "Critical Percent",
+          "default": 10.0,
+          "description": "Critical battery percentage."
+        },
+        "battery_critical_recovery_percent": {
+          "type": "number",
+          "title": "Critical Recovery Percent",
+          "default": 30.0,
+          "description": "Leave the critical-battery state once recharged above this percentage. Hysteresis upper bound, must be greater than Critical Percent."
+        },
+        "battery_manual_resume_percent": {
+          "type": "number",
+          "title": "Manual Resume Percent",
+          "default": 30.0,
+          "description": "Floor for an operator-forced resume from the charger: pressing Play while the robot is charging mid-session resumes mowing only above this percentage. Must be greater than Low Percent or the robot re-docks within minutes."
+        }
+      }
+    },
+    "safety_settings": {
+      "title": "Safety",
+      "type": "object",
+      "properties": {
+        "lift_blade_resume_delay_sec": {
+          "type": "number",
+          "title": "Lift Blade Resume Delay",
+          "default": 1.0,
+          "description": "Seconds to keep the blade off after a lift event clears before resuming."
+        },
+        "lift_recovery_mode": {
+          "type": "boolean",
+          "title": "Lift Recovery Mode",
+          "default": false,
+          "description": "Allow autonomous resume after a lift event (default: stay stopped until operator ack)."
+        }
+      }
+    },
+    "obstacle_settings": {
+      "title": "Obstacles",
+      "type": "object",
+      "properties": {
+        "obstacle_inflation_radius": {
+          "type": "number",
+          "title": "Obstacle Inflation Radius",
+          "default": 0.58,
+          "description": "Buffer (m) kept around LiDAR-detected obstacles in the local costmap. Affects TRANSIT path costing only — it does NOT change how closely the robot skirts obstacles while mowing (use Obstacle Clearance Margin for that). Clamped to [0.58, 1.5] at launch. 0.58 (was 1.0): a wider halo smeared side obstacles across a narrow gap's whole front and wedged the robot; kept in sync with the ROS2 template default (mowgli_bringup/config/mowgli_robot.yaml)."
+        },
+        "obstacle_clearance_margin": {
+          "type": "number",
+          "title": "Obstacle Clearance Margin",
+          "default": 0.2,
+          "description": "Sideways room (m) left beyond the chassis when skirting an obstacle while mowing. Raise this if the robot goes around obstacles but shaves past them. Clamped to [0.0, 0.5] at launch."
+        },
+        "obstacle_detection_range_m": {
+          "type": "number",
+          "title": "Obstacle Detection Range",
+          "default": 2,
+          "description": "How far ahead (m) the coverage controller looks for obstacles before starting to skirt. Raise to react earlier and more smoothly. Clamped to [0.2, 5.0] at launch."
+        },
+        "obstacle_wait_timeout_s": {
+          "type": "number",
+          "title": "Obstacle Wait Timeout",
+          "default": 2.5,
+          "description": "How long (s) to wait in place when an obstacle blocks every detour before giving up on the current strip. Lets transient blockages (a person walking past) clear without aborting. Clamped to [0.5, 60.0] at launch."
+        },
+        "max_obstacle_avoidance_distance": {
+          "type": "number",
+          "title": "Max Obstacle Detour",
+          "default": 1,
+          "description": "Maximum lateral detour (m) around obstacles — drives both the coverage controller's skirting and the bypass give-up threshold."
+        },
+        "dig_obstacle_enabled": {
+          "type": "boolean",
+          "default": true,
+          "title": "Automatically create dig keepouts",
+          "description": "Create temporary keepout proposals for detected wheel-slip digs. Disabling this leaves dig detection and recovery active. Restart ROS2 to apply."
+        },
+        "obstacle_margin": {
+          "type": "number",
+          "title": "Drawn Obstacle Margin",
+          "default": 0.2,
+          "description": "Extra margin (m) around obstacles drawn on the map, applied to both coverage and transit planning. Draw a tree trunk and set this to cover its roots (invisible to the 2D LiDAR)."
+        },
+        "obstacle_slowdown_ratio": {
+          "type": "number",
+          "title": "Approach Slowdown Ratio",
+          "default": 0.7,
+          "description": "Speed factor when a scan return enters the chassis+15 cm approach box (LiDAR variant). 0.3 = slow to 30% of commanded speed."
+        }
+      }
+    },
+    "mapping_settings": {
+      "title": "Mapping",
+      "type": "object",
+      "properties": {
+        "slam_mode": {
+          "type": "string",
+          "title": "SLAM Mode",
+          "enum": [
+            "lifelong",
+            "mapping",
+            "localization"
+          ],
+          "default": "lifelong",
+          "description": "Legacy SLAM toolbox operating mode. Unused — fusion_graph_node (GTSAM iSAM2) is the primary localizer and slam_toolbox is no longer part of the stack. Kept for config backward compatibility."
+        },
+        "map_save_on_dock": {
+          "type": "boolean",
+          "title": "Save Map on Dock",
+          "default": true,
+          "description": "Persist map artefacts when the robot returns to the dock."
+        },
+        "map_save_path": {
+          "type": "string",
+          "title": "Map Save Path",
+          "description": "Container path where map artefacts are written."
+        }
+      }
+    },
+    "rain_settings": {
+      "title": "Rain",
+      "type": "object",
+      "properties": {
+        "rain_mode": {
+          "type": "integer",
+          "title": "Rain Mode",
+          "enum": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "default": 2,
+          "description": "0=Ignore, 1=Dock, 2=Dock until dry, 3=Pause automatic mode."
+        },
+        "rain_delay_minutes": {
+          "type": "number",
+          "title": "Rain Delay",
+          "default": 30.0,
+          "description": "Minutes to wait after rain stops before resuming."
+        },
+        "rain_debounce_sec": {
+          "type": "number",
+          "title": "Rain Debounce",
+          "default": 10.0,
+          "description": "Seconds of continuous rain signal before triggering."
+        }
+      }
+    },
+    "led_settings": {
+      "title": "Status LEDs",
+      "type": "object",
+      "properties": {
+        "led_enabled": {
+          "type": "boolean",
+          "title": "Enable Status Ring",
+          "default": false,
+          "description": "Drive a WS2812 (NeoPixel) status ring from the SBC over SPI MOSI. Read-only display: it never commands the robot and is not part of the blade-safety path (the STM32 keeps its own status LED). Default false MUST stay false and MUST equal the mowgli_bringup template value, because the settings backend prunes any value equal to its schema default -- with a default of true, switching the ring ON would be pruned away and the toggle would never persist (this is exactly the lidar_enabled bug fixed in #508). Requires the SPI4-M0 device-tree overlay plus a reboot before /dev/spidev exists at all; until then the node warns once and stands down."
+        },
+        "led_count": {
+          "type": "integer",
+          "title": "LED Count",
+          "default": 16,
+          "minimum": 0,
+          "maximum": 512,
+          "description": "Number of LEDs on the ring. The default of 16 is a placeholder, not a measurement -- set it to what your ring actually has, or the progress arc will be wrong."
+        },
+        "led_spi_device": {
+          "type": "string",
+          "title": "SPI Device",
+          "default": "/dev/spidev4.1",
+          "description": "spidev character device for the ring's data line (40-pin header pin 19 = GPIO1_C1 = SPI4_MOSI_M0). The spidevB.C numbering is assigned by the kernel, so confirm it with `ls /dev/spidev*` AFTER enabling the rk3588-spi4-m0-cs1-spidev overlay and rebooting -- the default is a best guess. The node warns once and stands down if the device is missing or unreadable."
+        },
+        "led_brightness": {
+          "type": "number",
+          "title": "Brightness",
+          "default": 0.6,
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Linear 0..1 scale applied to every colour channel. Full white on a 16-LED ring at 1.0 draws roughly 1 A; 0.6 keeps it under about 0.6 A and is still readable in daylight."
+        },
+        "led_refresh_hz": {
+          "type": "number",
+          "title": "Refresh Rate",
+          "default": 20.0,
+          "minimum": 1.0,
+          "maximum": 60.0,
+          "description": "Render tick in Hz. Frames are only WRITTEN to the ring when they change (plus the keepalive), so a static pattern costs about one write every keepalive interval regardless of this value."
+        },
+        "led_keepalive_s": {
+          "type": "number",
+          "title": "Keepalive Interval",
+          "default": 2.0,
+          "minimum": 0.2,
+          "description": "Re-send an unchanged frame at least this often (seconds), so a ring that lost power mid-run recovers its last state."
+        },
+        "led_status_timeout_s": {
+          "type": "number",
+          "title": "Status Timeout",
+          "default": 5.0,
+          "minimum": 0.5,
+          "description": "Seconds without a HighLevelStatus before the ring switches to the STALE pattern (amber comet). Also gates the charging fallback read from the hardware bridge's Power message."
+        },
+        "led_device_retry_s": {
+          "type": "number",
+          "title": "Device Retry Interval",
+          "default": 30.0,
+          "minimum": 1.0,
+          "description": "How often (seconds) to silently retry opening a missing or failed /dev/spidev. Only the FIRST failure of an outage is logged, so this never spams."
+        },
+        "led_low_battery_percent": {
+          "type": "number",
+          "title": "Low Battery Threshold",
+          "default": 20.0,
+          "minimum": 0.0,
+          "maximum": 100.0,
+          "description": "Below this battery percentage, and not charging, the whole ring blinks red at 1 Hz. Blinking, where the emergency pattern is SOLID red -- motion is what tells the two apart."
+        },
+        "led_charge_full_percent": {
+          "type": "number",
+          "title": "Charge Complete Threshold",
+          "default": 99.0,
+          "minimum": 0.0,
+          "maximum": 100.0,
+          "description": "At or above this battery percentage a charging ring stops breathing and goes steady full green."
+        },
+        "led_idle_scale": {
+          "type": "number",
+          "title": "Idle Brightness",
+          "default": 0.1,
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Brightness of the dim idle ring, relative to the global brightness above."
+        },
+        "led_charge_complete_timeout_s": {
+          "type": "number",
+          "title": "Charge Complete Dim Delay",
+          "default": 600.0,
+          "minimum": 0.0,
+          "description": "After the ring has shown steady full-green \"charge complete\" for this many seconds (10 minutes by default -- e.g. left on the dock overnight), dim it to the Charge Complete Brightness below. 0 disables this and the ring stays full green indefinitely. Unplugging, or the level dropping back below the Charge Complete Threshold, restores full brightness immediately."
+        },
+        "led_charge_complete_dim_scale": {
+          "type": "number",
+          "title": "Charge Complete Brightness",
+          "default": 0.0,
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Brightness scale applied once the Charge Complete Dim Delay above has elapsed. 0 (default) turns the ring off; a small non-zero value keeps a faint green glow as an at-a-glance \"still charged\" indicator instead."
+        },
+        "led_charge_complete_indicator_count": {
+          "type": "integer",
+          "title": "Charge Complete Indicator Pixels",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 512,
+          "description": "Number of pixels, spaced evenly around the ring, that stay lit at Charge Complete Indicator Brightness instead of dimming with the rest once Charge Complete Dim Delay elapses. 0 (default) disables this and the whole ring dims uniformly. E.g. 1 keeps a single pixel lit; 4 keeps four pixels 90 degrees apart."
+        },
+        "led_charge_complete_indicator_scale": {
+          "type": "number",
+          "title": "Charge Complete Indicator Brightness",
+          "default": 0.15,
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Brightness of the indicator pixels above, independent of Charge Complete Brightness, so they can stay visibly brighter than the dimmed (or fully off) background."
+        },
+        "led_charge_complete_indicator_ids": {
+          "type": "string",
+          "title": "Charge Complete Indicator Pixel IDs",
+          "default": "",
+          "description": "Comma-separated pixel indices to use instead of Charge Complete Indicator Pixels' auto-even spacing, e.g. \"0,4,8,12\" -- pick exactly which pixels stay lit (0-indexed, 0 = the first pixel on the data line). Leave empty (default) to use the count above instead. Indices at or beyond LED Count are ignored."
+        },
+        "led_spi_speed_hz": {
+          "type": "integer",
+          "title": "SPI Clock",
+          "default": 2400000,
+          "minimum": 1,
+          "description": "SPI clock in Hz. The WS2812 symbol table encodes each protocol bit as three SPI bits and is derived from exactly 2.4 MHz (3 bits = 1.25 us). Changing this breaks the bit timing and produces wrong colours; the node warns at startup if it is not 2400000."
+        }
+      }
+    },
+    "mqtt_settings": {
+      "title": "MQTT / Home Assistant",
+      "type": "object",
+      "properties": {
+        "mqtt_enabled": {
+          "type": "boolean",
+          "title": "Enable MQTT Bridge",
+          "default": false,
+          "description": "Launch mowgli_monitoring/mqtt_bridge_node, which publishes status/power/emergency/high_level_status/gps/diagnostics to an MQTT broker and relays <mqtt_topic_prefix>/command to HighLevelControl (see docs/MQTT_CONTROL.md). Default false MUST stay false and MUST equal the mowgli_bringup template value, because the settings backend prunes any value equal to its schema default -- with a default of true, switching the bridge ON would be pruned away and the toggle would never persist (this is the same lidar_enabled bug fixed in #508)."
+        },
+        "mqtt_host": {
+          "type": "string",
+          "title": "Broker Host",
+          "default": "localhost",
+          "description": "Hostname or IP of the MQTT broker. \"localhost\" also reaches the bundled mowgli-mqtt container (the robot's ROS2 service runs network_mode: host) -- point this at an external broker (e.g. one already running on your own server) instead."
+        },
+        "mqtt_port": {
+          "type": "integer",
+          "title": "Broker Port",
+          "default": 1883,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "TCP port of the MQTT broker."
+        },
+        "mqtt_username": {
+          "type": "string",
+          "title": "Username",
+          "default": "",
+          "description": "Empty means no authentication, matching the bundled broker's anonymous-access default."
+        },
+        "mqtt_password": {
+          "type": "string",
+          "title": "Password",
+          "default": "",
+          "description": "MQTT broker password. Sent in the clear unless Use TLS is also enabled."
+        },
+        "mqtt_topic_prefix": {
+          "type": "string",
+          "title": "Topic Prefix",
+          "default": "mowgli",
+          "description": "All topics are published as \"<prefix>/<name>\", e.g. \"mowgli/status\"."
+        },
+        "mqtt_use_ssl": {
+          "type": "boolean",
+          "title": "Use TLS",
+          "default": false,
+          "description": "Connect over TLS, verified against the system CA store only (no custom CA/client-certificate option exists yet). If TLS setup fails the bridge refuses to connect rather than silently falling back to plaintext."
+        }
+      }
+    },
+    "nav_settings": {
+      "title": "Navigation",
+      "type": "object",
+      "properties": {
+        "xy_goal_tolerance": {
+          "type": "number",
+          "title": "XY Goal Tolerance",
+          "default": 0.1,
+          "description": "Acceptable position error at goal (metres)."
+        },
+        "yaw_goal_tolerance": {
+          "type": "number",
+          "title": "Yaw Goal Tolerance",
+          "default": 0.1,
+          "description": "Acceptable heading error at goal (radians)."
+        },
+        "coverage_xy_tolerance": {
+          "type": "number",
+          "title": "Coverage XY Tolerance",
+          "default": 0.5,
+          "description": "Position tolerance for coverage waypoints (metres)."
+        },
+        "progress_timeout_sec": {
+          "type": "number",
+          "title": "Progress Timeout",
+          "default": 30.0,
+          "description": "Seconds without progress before recovery."
+        },
+        "boundary_inner_margin_m": {
+          "type": "number",
+          "title": "Transit Boundary Margin",
+          "default": 0.20,
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Distance (m) point-to-point TRANSIT moves are nudged to stay inside the recorded boundary, planned against the global costmap. This is a soft preference, never a hard block: transit can still start, end, or pass through the margin band if that is the only option (e.g. right after undocking, or a narrow gap between two areas) -- it just prefers a route that respects it when one exists. Coverage/mowing is unaffected -- it tracks the F2C path against the local costmap instead, and still reaches the true edge as configured elsewhere. 0 disables this and lets transit hug or clip the recorded line."
+        },
+        "dock_inner_margin_exempt_radius_m": {
+          "type": "number",
+          "title": "Dock Exemption Radius",
+          "default": 2.5,
+          "minimum": 0.0,
+          "maximum": 10.0,
+          "description": "Radius (m) around the dock pose, in every direction, exempt from Transit Boundary Margin above -- so the dock approach carries no bias at all, not just \"never blocked\". Only takes effect once a dock pose is set; widen it if your dock sees a lot of GNSS drift (e.g. under a canopy)."
+        }
+      }
+    }
+  }
+}

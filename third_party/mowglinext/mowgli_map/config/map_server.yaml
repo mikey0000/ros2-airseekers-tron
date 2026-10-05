@@ -1,0 +1,213 @@
+map_server_node:
+  ros__parameters:
+    resolution: 0.05
+    map_size_x: 20.0
+    map_size_y: 20.0
+    map_frame: "map"
+    # tool_width is the single source of truth for the blade's effective
+    # cutting width. Injected at launch from mowgli_robot.yaml.tool_width
+    # by full_system.launch.py / sim_full_system.launch.py (the launchers that
+    # spawn map_server_node) so this YAML only needs to keep the node-internal
+    # default that backs the test harness; production value comes from the
+    # per-site config. (navigation.launch.py injects the SAME scalar into
+    # coverage_server.operation_width.)
+    tool_width: 0.18
+
+    # ── Wheel-slip dig keepout ────────────────────────────────────────────
+    # hardware_bridge_node detects the robot digging a hole (wheels turning,
+    # GNSS-anchored pose not moving), hard-stops and reverses out, then
+    # publishes /hardware_bridge/dig_event. We stamp that location as a
+    # PENDING keepout through the same path the GUI's "promote obstacle"
+    # uses, so the NEXT coverage pass plans around the churned patch instead
+    # of driving back in and digging it deeper.
+    #
+    # PENDING means: live in the keepout mask + classification layer for this
+    # session, but NOT written to areas.dat. A single inferred dig is weaker
+    # evidence than a repeatedly-observed tracker obstacle, and those already
+    # need operator sign-off (auto_promote_persistent_obstacles: false), so
+    # the operator accepts the proposal (map_server_node/promote_obstacle with
+    # pending_id) or drops it (map_server_node/discard_obstacle).
+    #
+    # A dig outside every mowing area (transit / docking) is logged but NOT
+    # stamped — there is no area to attach it to, and coverage never plans
+    # there anyway.
+    # Overridden from mowgli_robot.yaml by full_system.launch.py; exposed in
+    # GUI Settings → Obstacles. False leaves dig detection/recovery active.
+    dig_obstacle_enabled: true
+    # Side of the square keepout stamped at the dig [m]. One chassis LENGTH
+    # (the Nav2 footprint is 0.60 × 0.40 m). It used to be one tool width
+    # (0.18 m) — NARROWER THAN THE BODY, so "route around it" still dragged
+    # the chassis over the hole; issue #500 recorded 3 dig latches in 18.4 s
+    # inside 0.13 m.
+    dig_obstacle_size: 0.60
+    map_file_path: ""
+    areas_file_path: "/ros2_ws/maps/areas.dat"
+    publish_rate: 1.0
+    # Minimum seconds between mowed-overlay (~/mow_progress) republishes. The
+    # overlay is re-serialized as a full-extent OccupancyGrid (O(cells), scales
+    # with map size), so on a large map publishing it every tick while mowing is
+    # the dominant steady cost. 2 s keeps the GUI overlay responsive while
+    # cutting that serialization ~publish_rate× (transient_local still delivers
+    # the latest grid to late subscribers immediately).
+    mow_progress_publish_period_s: 2.0
+    # The `actually mowed` overlay follows this physical cutting-tool TF, not
+    # base_footprint. Override for mower-specific cutter frames.
+    mow_progress_tool_frame: "blade_link"
+    # Progress is recorded only while a fresh blade-controller report confirms
+    # active state and at least this RPM. Missing, stale, spin-up, stalled and
+    # spin-down telemetry all fail closed (they do not mark grass as cut).
+    mow_progress_min_blade_rpm: 1000.0
+    mow_progress_blade_telemetry_max_age_s: 1.0
+    # Navigation margin around area boundaries for keepout mask.
+    # Cells outside the area but within this distance of the boundary
+    # edge are marked FREE (not lethal) in the keepout mask. Needed so
+    # the dock (often just outside the mowing polygon) can be reached
+    # and so the robot doesn't immediately self-reject as "Start
+    # occupied" when RTK drift puts it 10 cm past the edge.
+    #
+    # Previously 1.5 m — but that let Nav2's Smac planner route transit
+    # paths up to 1.5 m OUTSIDE the polygon during inter-strip turns.
+    # Combined with FTC tracking error, the robot would sit ~1 m past
+    # the polygon edge during corner-cutting, fire BoundaryGuard, and
+    # trigger emergency stop — even though the strip endpoints
+    # themselves respected strip_boundary_margin_m.
+    #
+    # 0.3 m: still covers non-RTK drift and dock approach (dock is
+    # typically within 0.2 m of polygon edge on a well-recorded site),
+    # but stops the planner from drafting big detours outside the area.
+    keepout_nav_margin: 0.45   # free band OUTSIDE the recorded line. The recorded outline IS the robot's
+                               # CENTRE path (you drive it to record), so the footprint legitimately
+                               # overhangs it; 0.30 left only 0.30 m and the 0.50 m nose swept into lethal
+                               # during boundary U-turns → robot pinned. 0.45 gives the footprint room to
+                               # overhang the line while staying under lethal_boundary_margin (0.5).
+                               # NOTE: only consulted when lethal_outside_areas is FALSE; with the default
+                               # (true) the smaller enforce_boundary_margin_m governs the outside-free band.
+
+    # Hard area-boundary enforcement. When true (operator intent: "lethal
+    # area where there is no navigation or mowing area"), the keepout mask
+    # marks EVERY cell outside the union of all areas (mowing + navigation,
+    # minus obstacle holes) as LETHAL (100). The Smac planner then never
+    # routes transit outside the authorised zone, and (via the global
+    # KeepoutFilter the planner consults) coverage/transit goals are clamped
+    # inside it — directly addressing the 2026-06 0.32 m concave-boundary
+    # excursion. The dock corridor is still carved back to FREE so docking /
+    # post-undock transit keep a lane. Set FALSE to restore the legacy wide
+    # keepout_nav_margin free band (only needed if the dock/transit corridor
+    # is NOT covered by a navigation area — otherwise the hard boundary would
+    # strand docking; draw a navigation area over the dock + approach instead).
+    lethal_outside_areas: true
+
+    # Free slack (m) left OUTSIDE each area edge even when lethal_outside_areas
+    # is on. Absorbs RTK/pose drift so a start pose a few cm past the recorded
+    # CENTRE line is not rejected as "Start occupied", and lets the footprint
+    # overhang the line. 0.40 = chassis half-width (0.225) + one global-costmap
+    # cell (0.08) + drift headroom: at the previous 0.25 (~robot radius), a
+    # robot riding the outer headland ring (centerline ON the recorded line)
+    # kept only ~5 cm between its centre cell and the inscribed-cost band —
+    # under one 0.08 m cell — so Smac transits sporadically failed "Start
+    # occupied" and FollowStrip skipped whole sub-paths (headland rings). The
+    # global costmap lists keepout_filter BEFORE inflation_layer, so this
+    # lethal wall is inflated inward by only inflation_radius (0.20 m): wall at
+    # 0.40 m outside the centre line → the inflated band now ends 0.20 m
+    # OUTSIDE it, no bite inside the ring. Stays under lethal_boundary_margin_m
+    # (0.5) so the planner wall engages before the e-stop tripwire.
+    enforce_boundary_margin_m: 0.40
+
+    # /local_costmap published values are 0–100 (OccupancyGrid units, with
+    # the Nav2 costmap_2d → OccupancyGrid mapping: internal 254/253 →
+    # OG 100/99, inflation 100..252 → OG ~80, free → 0).  Default 80 was
+    # too sensitive: ordinary inflation around the LiDAR-detected
+    # obstacles triggered `is_costmap_blocked`, which is_costmap_blocked
+    # callers use to gate strip cells. Combined with the 3 s reachability
+    # recompute, this caused 1000+-cell DEAD/LAWN flips every cycle and
+    # made GetNextSegment return empty paths after a few strips. 99
+    # restricts the keepout to lethal-or-inscribed cells only — the
+    # robot footprint genuinely cannot fit there — and matches the FTC's
+    # checkCollision threshold.
+    costmap_obstacle_threshold: 99
+
+    # Strip inset: distance from polygon edge to strip endpoints. Must
+    # exceed the worst-case overshoot of the active controller. With
+    # RotationShim+DWB (current setup) the rollout sim_time=1.0 s at
+    # max_vel_x=0.30 m/s means DWB can project the robot up to 0.30 m
+    # past the strip endpoint before the goal-checker fires; carrot
+    # lookaheads add ~0.6 m more in the worst case. 1.20 m absorbs all
+    # that with margin and stops the robot from clipping the polygon
+    # edge on every headland turn (the 4 boundary violations we saw on
+    # run 31 with 0.80 m). Effective mowable area is still ~ polygon -
+    # 2.4 m on each axis (e.g. 9×6 polygon → 6.6×3.6 m of strips =
+    # 24 m², well above the dock-only minimum).
+    strip_boundary_margin_m: 1.20
+
+    # Mowing strip angle in degrees. NaN (default) = auto-compute from
+    # polygon shape (minimum bounding rectangle — strips align with the
+    # longest axis to minimise turns). 0 = north-south, 90 = east-west.
+    # 90 explicit: garden polygon (-7,-3)..(2,3) has its long axis on
+    # X (9 m vs 6 m on Y). Auto-compute was returning a diagonal angle
+    # in some configurations, producing oblique strips that fragmented
+    # at every polygon edge crossing. 90° forces clean east-west rows
+    # — full polygon-width strips with the minimum number of headland
+    # turns. Restore .nan once auto-compute is debugged.
+    mow_angle_deg: 90.0
+
+    # Inner transit margin. Cells INSIDE a mowing/navigation area but within
+    # this distance of the nearest edge get a SOFT mid-cost penalty in the
+    # keepout mask (same cost tier as the outside-slack band above,
+    # kSoftPenaltyMaskCost in costmap_filters.cpp) — NEVER lethal. This
+    # nudges Nav2 TRANSIT paths (point-to-point moves between locations,
+    # planned against this GLOBAL costmap) to prefer staying that far
+    # inside the recorded edge when an alternative exists, without ever
+    # refusing to start, end, or pass through the band. Coverage/mowing
+    # itself is untouched: FTC tracks the F2C path against the LOCAL
+    # costmap, which never carries this mask, so the actual mowed area
+    # still reaches the boundary as configured elsewhere (chassis_safety_inset
+    # etc).
+    #
+    # This MUST stay a soft cost, never a lethal value:
+    #   * chassis_safety_inset defaults to the SAME 0.20 m. The outermost
+    #     coverage ring is planned exactly chassis_safety_inset inside the
+    #     line, so a lethal band here plus inflation_radius (0.20 m) would
+    #     swallow the ring itself and reopen the START_OCCUPIED skip cascade
+    #     (issue #487) -- a regression already paid for once (2026-07-23,
+    #     the commit that introduced chassis_safety_inset in the first
+    #     place to un-wedge that same ring).
+    #   * A lethal band also walls off any area-to-area seam (including
+    #     between two navigation/mowing areas) narrower than roughly twice
+    #     the inflated margin.
+    #   * 2026-04-23 (commit 7f4b43d5): an even earlier lethal attempt at
+    #     0.15 m was reverted because dock poses commonly sit <0.5 m from
+    #     the polygon edge -- a few cm of GNSS drift could land the robot's
+    #     OWN position in a lethal cell the planner could not route out of.
+    #     The mid-cost design means that failure mode cannot recur even
+    #     without dock_inner_margin_exempt_radius_m below, since a soft-cost
+    #     start/goal pose never fails "Start occupied".
+    #
+    # Set to 0 to disable outright. Boundary enforcement then remains via
+    # the outside keepout (cells outside any polygon → lethal) and the BT
+    # BoundaryGuard tripwire.
+    boundary_inner_margin_m: 0.20
+
+    # Radius (m) around the dock pose exempted from the penalty above,
+    # regardless of direction -- so the dock approach carries no bias at
+    # all rather than merely "never blocked" (see boundary_inner_margin_m).
+    # 2.5 m comfortably covers the dock body (0.80 m) plus the approach
+    # corridor (1.5 m) plus GNSS-settling drift right after undock. Only
+    # takes effect once a dock pose is set (all-zero dock_pose_* = "no
+    # dock" = no exemption). 0 disables the exemption.
+    dock_inner_margin_exempt_radius_m: 2.5
+
+    # Pre-defined mowing / navigation areas (OpenMower-style).
+    # Parallel arrays indexed by position. Polygon format: "x1,y1;x2,y2;..."
+    #
+    # Areas are populated by the GUI's recording flow
+    # (COMMAND_RECORD_AREA → COMMAND_RECORD_FINISH → /map_server_node/add_area)
+    # and persisted to areas.dat. Shipping a non-empty default would make
+    # a fresh install attempt to mow a phantom polygon anchored at the
+    # GPS datum the moment COMMAND_START fires.
+    #
+    # The four `area_*` arrays are intentionally NOT declared here — when
+    # YAML omits them, declare_parameter() in area_manager.cpp falls back
+    # to its empty-vector default. (ROS2 cannot infer the element type of
+    # an empty YAML array literal `[]`, which throws "No parameter value
+    # set" at lifecycle bring-up.) The simulation overrides these arrays
+    # from sim_full_system.launch.py to inject its test field.

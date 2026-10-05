@@ -4,8 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 install -m 0644 config/udev/mower.rules /etc/udev/rules.d/
-if [ -f config/cameras/99-mower-cameras.rules ]; then
-  install -m 0644 config/cameras/99-mower-cameras.rules /etc/udev/rules.d/
+if [ -f scripts/99-mower-cameras.rules ]; then
+  install -m 0644 scripts/99-mower-cameras.rules /etc/udev/rules.d/
 fi
 udevadm control --reload
 udevadm trigger

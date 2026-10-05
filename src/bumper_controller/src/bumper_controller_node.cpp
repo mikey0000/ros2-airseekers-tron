@@ -58,7 +58,9 @@ public:
             [this](const mower_interfaces::msg::MowerBaseDevStatus::SharedPtr m) { onStatus(m); });
 
         test_bumper_srv_ = create_service<std_srvs::srv::Empty>(
-            "/test_bumper_service", [this](const auto&, auto) { ctrl_.injectBumper(); });
+            "/test_bumper_service",
+            [this](const std::shared_ptr<std_srvs::srv::Empty::Request>,
+                   std::shared_ptr<std_srvs::srv::Empty::Response>) { ctrl_.injectBumper(); });
 
         cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/bumper_cloud", 10);
         routing_pub_ = create_publisher<std_msgs::msg::UInt8>("/mower_base/bumper_routing_status", 10);

@@ -1,0 +1,497 @@
+import React, { useMemo } from "react";
+import { Alert, Card, Col, Form, InputNumber, Row, Select, Space, Switch, Typography } from "antd";
+import { DashboardOutlined, ScissorOutlined } from "@ant-design/icons";
+import { useTranslation } from "react-i18next";
+import { useThemeMode } from "../../theme/ThemeContext.tsx";
+import {CrossHatchSettings} from "./CrossHatchSettings.tsx";
+import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
+
+const { Text, Paragraph } = Typography;
+
+// Swath-angle sentinel: any negative value means AUTO (the coverage server
+// picks the swath-count-minimising angle). 0..179 selects a fixed swath angle
+// in degrees. Mirrors kMowAngleAutoDeg on the ROS2 side.
+const MOW_ANGLE_AUTO = -1;
+const MOW_ANGLE_MAX_DEG = 179;
+
+// Headland (perimeter ring) count sentinel, mirroring coverage_server's
+// num_headland_passes contract: any negative value = NONE (no perimeter rings —
+// the serpentine swaths become the outermost driven pass; their CENTRELINE lands
+// on the same line ring 0 would have driven, chassis_safety_inset inside the
+// recorded boundary, so the uncut lateral band is unchanged, but the swath ENDS
+// reach that band and so nose ~op_width/2 closer to the boundary than any ring
+// pass does), 0 = AUTO (ceil(headland_width / tool_width), floored at 1),
+// >0 = exactly that count.
+const HEADLAND_PASSES_NONE = -1;
+const HEADLAND_PASSES_AUTO = 0;
+const HEADLAND_PASSES_MAX = 5;
+// The installed mowgli_robot.yaml is SPARSE (Invariant 15), so an untouched
+// robot sends no num_headland_passes at all. Fall back to the schema/template
+// default (mower_config.schema.json, mirroring
+// ros2/src/mowgli_bringup/config/mowgli_robot.yaml) — the value coverage_server
+// actually runs — not to AUTO, which would show a ring count nobody is using.
+// Used only before `defaults` has loaded (or if the key is ever absent from
+// it); once loaded, `defaults.num_headland_passes` is the source of truth so
+// this can never drift from the schema again (maintainer review on PR #598:
+// this literal had gone stale at 2 while the schema/template moved to 5).
+const HEADLAND_PASSES_FALLBACK_DEFAULT = 5;
+const HEADLAND_PASS_OPTIONS = [
+    HEADLAND_PASSES_NONE,
+    HEADLAND_PASSES_AUTO,
+    ...Array.from({ length: HEADLAND_PASSES_MAX }, (_, i) => i + 1),
+];
+
+// Blade-load slowdown (FollowCoveragePath.blade_load_*, injected by
+// navigation.launch.py). Template defaults mirrored here because the installed
+// yaml is SPARSE (Invariant 15): an untouched robot sends none of these keys.
+// The ratio floor mirrors robot_config_util.BLADE_LOAD_MIN_SPEED_RATIO_FLOOR —
+// below it the launch clamps anyway, and near 0 the robot would park with the
+// blade grinding one spot.
+const BLADE_LOAD_ENABLED_DEFAULT = false;
+const BLADE_LOAD_RPM_FULL_DEFAULT = 2500;
+const BLADE_LOAD_RPM_MIN_DEFAULT = 1800;
+const BLADE_LOAD_MIN_SPEED_RATIO_DEFAULT = 0.4;
+const BLADE_LOAD_MIN_SPEED_RATIO_FLOOR = 0.1;
+const BLADE_RPM_MAX = 10000;
+
+type Props = {
+    values: Record<string, any>;
+    onChange: (key: string, value: any) => void;
+    isOverridden?: (key: string) => boolean;
+    hasDefault?: (key: string) => boolean;
+    onReset?: (key: string) => void;
+    // Schema/template defaults (useSettingsManager's `defaults`), keyed by
+    // yaml key — the same map hasDefault/isOverridden/onReset already read.
+    // Used ONLY to derive HEADLAND_PASSES_FALLBACK_DEFAULT's replacement from
+    // the schema instead of a literal that can drift from it.
+    defaults?: Record<string, any>;
+};
+
+/** Mini SVG preview showing the strip pattern. Spacing == tool_width (F2C
+ * swath spacing = coverage_server.operation_width = tool_width); there is no
+ * separate path_spacing knob (it was a dead param). */
+const StripPreview: React.FC<{ pathSpacing: number; toolWidth: number; headlandWidth: number }> = ({
+    pathSpacing,
+    toolWidth,
+    headlandWidth,
+}) => {
+    const { colors, mode } = useThemeMode();
+    const w = 200;
+    const h = 140;
+    const margin = 10;
+
+    const strips = useMemo(() => {
+        const lines: React.ReactNode[] = [];
+        if (pathSpacing <= 0 || toolWidth <= 0) return lines;
+
+        // Scale: 1m = 120px
+        const scale = 120;
+        const spacingPx = pathSpacing * scale;
+        const widthPx = toolWidth * scale;
+        const headlandPx = headlandWidth * scale;
+        const areaW = w - 2 * margin;
+        const areaH = h - 2 * margin;
+
+        // Draw area boundary
+        lines.push(
+            <rect
+                key="area"
+                x={margin} y={margin}
+                width={areaW} height={areaH}
+                fill="none"
+                stroke={mode === "dark" ? "#555" : "#ccc"}
+                strokeWidth={1}
+                strokeDasharray="3 2"
+            />
+        );
+
+        // Draw headland
+        if (headlandPx > 0) {
+            lines.push(
+                <rect
+                    key="headland"
+                    x={margin + headlandPx} y={margin + headlandPx}
+                    width={areaW - 2 * headlandPx} height={areaH - 2 * headlandPx}
+                    fill="none"
+                    stroke={mode === "dark" ? "#4a6" : "#8c8"}
+                    strokeWidth={0.5}
+                    strokeDasharray="2 2"
+                />
+            );
+        }
+
+        // Draw strips
+        const startX = margin + headlandPx + widthPx / 2;
+        const endX = margin + areaW - headlandPx;
+        let x = startX;
+        let i = 0;
+        while (x < endX && i < 20) {
+            const stripColor = mode === "dark" ? "rgba(44, 199, 107, 0.3)" : "rgba(27, 157, 82, 0.2)";
+            const lineColor = mode === "dark" ? "#2CC76B" : "#1B9D52";
+
+            // Strip width (blade coverage)
+            lines.push(
+                <rect
+                    key={`strip-${i}`}
+                    x={x - widthPx / 2}
+                    y={margin + headlandPx}
+                    width={widthPx}
+                    height={areaH - 2 * headlandPx}
+                    fill={stripColor}
+                    rx={1}
+                />
+            );
+
+            // Centre line (actual path)
+            lines.push(
+                <line
+                    key={`line-${i}`}
+                    x1={x} y1={margin + headlandPx + 2}
+                    x2={x} y2={margin + areaH - headlandPx - 2}
+                    stroke={lineColor}
+                    strokeWidth={1}
+                />
+            );
+
+            x += spacingPx;
+            i++;
+        }
+
+        // Overlap indicator
+        if (spacingPx < widthPx && spacingPx > 0) {
+            lines.push(
+                <text key="overlap-label" x={w / 2} y={h - 3} textAnchor="middle" fontSize={8}
+                    fill={mode === "dark" ? "#aaa" : "#666"} fontFamily="monospace">
+                    overlap: {((toolWidth - pathSpacing) * 100).toFixed(0)}%
+                </text>
+            );
+        }
+
+        return lines;
+    }, [pathSpacing, toolWidth, headlandWidth, mode]);
+
+    return (
+        <div style={{
+            background: mode === "dark" ? "#1a1a1a" : "#fafafa",
+            border: `1px solid ${colors.border}`,
+            borderRadius: 8,
+            padding: 4,
+            display: "flex",
+            justifyContent: "center",
+        }}>
+            <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
+                {strips}
+            </svg>
+        </div>
+    );
+};
+
+export const MowingSection: React.FC<Props> = ({
+    values,
+    onChange,
+    isOverridden,
+    hasDefault,
+    onReset,
+    defaults,
+}) => {
+    const { t } = useTranslation();
+    const fieldLabel = (key: string, label: React.ReactNode) => (
+        <SettingFieldLabel
+            settingKey={key}
+            label={label}
+            overridden={isOverridden?.(key) ?? false}
+            canReset={hasDefault?.(key) ?? false}
+            onReset={onReset}
+        />
+    );
+    // F2C swath spacing == tool_width (Robot::setCovWidth). The
+    // preview shows blade swaths spaced by tool_width — adjacent
+    // strips tile exactly, no overlap or gap.
+    const pathSpacing = values.tool_width ?? 0.18;
+    const toolWidth = values.tool_width ?? 0.18;
+    const headlandWidth = values.headland_width ?? 0.18;
+    // Turn-Around Headland Limit only makes sense against a FORCED ring count
+    // (num_headland_passes > 0) — with AUTO (0) the actual ring count is not
+    // known until a plan runs, and with NONE (negative) there are no rings to
+    // bound turns against at all. Falls back to the schema default (via
+    // `defaults`, so this can never drift from mower_config.schema.json /
+    // the ROS2 template the way the old hardcoded literal did), so the option
+    // list matches what coverage_server actually plans against on a sparse
+    // (untouched) robot.
+    const currentHeadlandPasses =
+        values.num_headland_passes ?? defaults?.num_headland_passes ?? HEADLAND_PASSES_FALLBACK_DEFAULT;
+    // AUTO is modelled as a negative sentinel (-1). The Auto switch toggles
+    // between the sentinel and a concrete 0..179° angle; the degrees input is
+    // disabled while Auto is on.
+    const mowAngleIsAuto = (values.mow_angle_deg ?? MOW_ANGLE_AUTO) < 0;
+    const bladeLoadEnabled = values.blade_load_slowdown_enabled ?? BLADE_LOAD_ENABLED_DEFAULT;
+    const bladeLoadRpmFull = values.blade_load_rpm_full ?? BLADE_LOAD_RPM_FULL_DEFAULT;
+    const bladeLoadRpmMin = values.blade_load_rpm_min ?? BLADE_LOAD_RPM_MIN_DEFAULT;
+    // navigation.launch.py disables the feature (with a warning) on an empty or
+    // inverted ramp; surface that here instead of letting the operator save a
+    // toggle that silently never engages.
+    const bladeLoadRampInvalid = bladeLoadEnabled && !(bladeLoadRpmFull > bladeLoadRpmMin);
+
+    return (
+        <div>
+            {/* Blade toggle + speeds */}
+            <Card size="small" style={{ marginBottom: 16 }}>
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div>
+                            {/* Wired since issue #195: hardware_bridge_node gates
+                                blade ENABLE requests on this key. Wrapped in
+                                fieldLabel() so it gets the overridden dot + reset
+                                affordance every other control has. */}
+                            {fieldLabel(
+                                "mowing_enabled",
+                                <Text strong style={{ fontSize: 14 }}>
+                                    <ScissorOutlined style={{ marginRight: 6 }} />
+                                    {t("settingsMowing.mowingMotor")}
+                                </Text>,
+                            )}
+                            <Paragraph type="secondary" style={{ margin: "4px 0 0" }}>
+                                {t("settingsMowing.mowingMotorDescription")}
+                            </Paragraph>
+                        </div>
+                        <Switch
+                            checked={values.mowing_enabled ?? true}
+                            onChange={(v) => onChange("mowing_enabled", v)}
+                        />
+                    </div>
+                    <Form layout="vertical" size="small">
+                        <Row gutter={[16, 0]}>
+                            <Col xs={12} sm={8}>
+                                <Form.Item label={fieldLabel("mowing_speed", t("settingsMowing.mowingSpeed"))} tooltip={t("settingsMowing.mowingSpeedTooltip")}>
+                                    <InputNumber
+                                        value={values.mowing_speed}
+                                        onChange={(v) => onChange("mowing_speed", v)}
+                                        min={0.05} max={0.6} step={0.05} precision={2}
+                                        style={{ width: "100%" }} addonAfter="m/s"
+                                    />
+                                </Form.Item>
+                            </Col>
+                            <Col xs={12} sm={8}>
+                                <Form.Item label={fieldLabel("transit_speed", t("settingsMowing.transitSpeed"))} tooltip={t("settingsMowing.transitSpeedTooltip")}>
+                                    <InputNumber
+                                        value={values.transit_speed}
+                                        onChange={(v) => onChange("transit_speed", v)}
+                                        min={0.05} max={0.6} step={0.05} precision={2}
+                                        style={{ width: "100%" }} addonAfter="m/s"
+                                    />
+                                </Form.Item>
+                            </Col>
+                        </Row>
+                    </Form>
+                </Space>
+            </Card>
+
+            {/* Blade-load slowdown: feed the blade slower when its RPM sags */}
+            <Card size="small" style={{ marginBottom: 16 }}>
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div>
+                            {fieldLabel(
+                                "blade_load_slowdown_enabled",
+                                <Text strong style={{ fontSize: 14 }}>
+                                    <DashboardOutlined style={{ marginRight: 6 }} />
+                                    {t("settingsMowing.bladeLoad")}
+                                </Text>,
+                            )}
+                            <Paragraph type="secondary" style={{ margin: "4px 0 0" }}>
+                                {t("settingsMowing.bladeLoadDescription")}
+                            </Paragraph>
+                        </div>
+                        <Switch
+                            checked={bladeLoadEnabled}
+                            onChange={(v) => onChange("blade_load_slowdown_enabled", v)}
+                            aria-label={t("settingsMowing.bladeLoad")}
+                        />
+                    </div>
+                    {bladeLoadRampInvalid && (
+                        <Alert type="warning" showIcon message={t("settingsMowing.bladeLoadRampInvalid")} />
+                    )}
+                    <Form layout="vertical" size="small">
+                        <Row gutter={[16, 0]}>
+                            <Col xs={12} sm={8}>
+                                <Form.Item label={fieldLabel("blade_load_rpm_full", t("settingsMowing.bladeLoadRpmFull"))} tooltip={t("settingsMowing.bladeLoadRpmFullTooltip")}>
+                                    <InputNumber
+                                        value={bladeLoadRpmFull}
+                                        onChange={(v) => onChange("blade_load_rpm_full", v)}
+                                        disabled={!bladeLoadEnabled}
+                                        min={0} max={BLADE_RPM_MAX} step={50} precision={0}
+                                        style={{ width: "100%" }} addonAfter="rpm"
+                                    />
+                                </Form.Item>
+                            </Col>
+                            <Col xs={12} sm={8}>
+                                <Form.Item label={fieldLabel("blade_load_rpm_min", t("settingsMowing.bladeLoadRpmMin"))} tooltip={t("settingsMowing.bladeLoadRpmMinTooltip")}>
+                                    <InputNumber
+                                        value={bladeLoadRpmMin}
+                                        onChange={(v) => onChange("blade_load_rpm_min", v)}
+                                        disabled={!bladeLoadEnabled}
+                                        min={0} max={BLADE_RPM_MAX} step={50} precision={0}
+                                        style={{ width: "100%" }} addonAfter="rpm"
+                                    />
+                                </Form.Item>
+                            </Col>
+                            <Col xs={12} sm={8}>
+                                <Form.Item label={fieldLabel("blade_load_min_speed_ratio", t("settingsMowing.bladeLoadMinSpeedRatio"))} tooltip={t("settingsMowing.bladeLoadMinSpeedRatioTooltip")}>
+                                    <InputNumber
+                                        value={values.blade_load_min_speed_ratio ?? BLADE_LOAD_MIN_SPEED_RATIO_DEFAULT}
+                                        onChange={(v) => onChange("blade_load_min_speed_ratio", v)}
+                                        disabled={!bladeLoadEnabled}
+                                        min={BLADE_LOAD_MIN_SPEED_RATIO_FLOOR} max={1.0} step={0.05} precision={2}
+                                        style={{ width: "100%" }}
+                                    />
+                                </Form.Item>
+                            </Col>
+                        </Row>
+                    </Form>
+                </Space>
+            </Card>
+
+            {/* Path pattern with visual preview */}
+            <Card size="small" title={t("settingsMowing.mowingPattern")} style={{ marginBottom: 16 }}>
+                <Row gutter={[16, 16]}>
+                    <Col xs={24} lg={14}>
+                        <Form layout="vertical" size="small">
+                            <Row gutter={[16, 0]}>
+                                <Col xs={12}>
+                                    <Form.Item label={fieldLabel("headland_width", t("settingsMowing.headlandWidth"))} tooltip={t("settingsMowing.headlandWidthTooltip")}>
+                                        <InputNumber
+                                            value={values.headland_width}
+                                            onChange={(v) => onChange("headland_width", v)}
+                                            min={0} max={1.0} step={0.05} precision={2}
+                                            style={{ width: "100%" }} addonAfter="m"
+                                        />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={12}>
+                                    <Form.Item label={fieldLabel("num_headland_passes", t("settingsMowing.headlandPasses"))} tooltip={t("settingsMowing.headlandPassesTooltip")}>
+                                        <Select
+                                            value={currentHeadlandPasses}
+                                            onChange={(v) => onChange("num_headland_passes", v)}
+                                            style={{ width: "100%" }}
+                                            options={HEADLAND_PASS_OPTIONS.map((value) => ({
+                                                value,
+                                                label:
+                                                    value === HEADLAND_PASSES_NONE
+                                                        ? t("settingsMowing.headlandPassesNone")
+                                                        : value === HEADLAND_PASSES_AUTO
+                                                          ? t("settingsMowing.headlandPassesAuto")
+                                                          : String(value),
+                                            }))}
+                                        />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={12}>
+                                    <Form.Item label={fieldLabel("connector_max_headland_passes", t("settingsMowing.connectorMaxHeadlandPasses"))} tooltip={t("settingsMowing.connectorMaxHeadlandPassesTooltip")}>
+                                        <Select
+                                            value={values.connector_max_headland_passes ?? 0}
+                                            onChange={(v) => onChange("connector_max_headland_passes", v)}
+                                            style={{ width: "100%" }}
+                                            disabled={currentHeadlandPasses <= 0}
+                                            virtual={false}
+                                            options={[
+                                                { value: 0, label: t("settingsMowing.connectorMaxHeadlandPassesUnlimited") },
+                                                ...Array.from({ length: Math.max(currentHeadlandPasses, 0) }, (_, i) => i + 1).map((value) => ({
+                                                    value,
+                                                    label: String(value),
+                                                })),
+                                            ]}
+                                        />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={12}>
+                                    <Form.Item label={fieldLabel("chassis_safety_inset", t("settingsMowing.chassisSafetyInset"))} tooltip={t("settingsMowing.chassisSafetyInsetTooltip")}>
+                                        <InputNumber
+                                            value={values.chassis_safety_inset}
+                                            onChange={(v) => onChange("chassis_safety_inset", v)}
+                                            min={0} max={0.5} step={0.01} precision={2}
+                                            style={{ width: "100%" }} addonAfter="m"
+                                        />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={12}>
+                                    <Form.Item label={fieldLabel("min_turning_radius", t("settingsMowing.minTurningRadius"))} tooltip={t("settingsMowing.minTurningRadiusTooltip")}>
+                                        <InputNumber
+                                            value={values.min_turning_radius}
+                                            onChange={(v) => onChange("min_turning_radius", v)}
+                                            min={0.05} max={1.0} step={0.01} precision={2}
+                                            style={{ width: "100%" }} addonAfter="m"
+                                        />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={12}>
+                                    <Form.Item label={fieldLabel("swath_overlap", t("settingsMowing.swathOverlap"))} tooltip={t("settingsMowing.swathOverlapTooltip")}>
+                                        <InputNumber
+                                            value={values.swath_overlap}
+                                            onChange={(v) => onChange("swath_overlap", v)}
+                                            min={0} max={0.2} step={0.01} precision={3}
+                                            style={{ width: "100%" }} addonAfter="m"
+                                        />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={12}>
+                                    <Form.Item label={fieldLabel("mow_direction", t("settingsMowing.mowDirection"))} tooltip={t("settingsMowing.mowDirectionTooltip")}>
+                                        <Select
+                                            value={values.mow_direction ?? 0}
+                                            onChange={(v) => onChange("mow_direction", v)}
+                                            style={{ width: "100%" }}
+                                            options={[
+                                                { value: 0, label: t("settingsMowing.mowDirectionAuto") },
+                                                { value: 1, label: t("settingsMowing.mowDirectionCw") },
+                                                { value: 2, label: t("settingsMowing.mowDirectionCcw") },
+                                            ]}
+                                        />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={12}>
+                                    <Form.Item label={fieldLabel("mow_cross_hatch", t("settingsMowing.crossHatch"))} tooltip={t("settingsMowing.crossHatchTooltip")}>
+                                        <Switch
+                                            aria-label={t("settingsMowing.crossHatch")}
+                                            checked={values.mow_cross_hatch ?? false}
+                                            onChange={(v) => onChange("mow_cross_hatch", v)}
+                                        />
+                                    </Form.Item>
+                                </Col>
+                                <Col xs={12}>
+                                    <Form.Item label={fieldLabel("mow_angle_deg", t("settingsMowing.mowAngleDeg"))} tooltip={t("settingsMowing.mowAngleDegTooltip")}>
+                                        <Space>
+                                            <Switch
+                                                checkedChildren={t("settingsMowing.mowAngleAuto")}
+                                                unCheckedChildren={t("settingsMowing.mowAngleFixed")}
+                                                checked={mowAngleIsAuto}
+                                                onChange={(auto) => onChange("mow_angle_deg", auto ? MOW_ANGLE_AUTO : 0)}
+                                            />
+                                            <InputNumber
+                                                value={mowAngleIsAuto ? undefined : values.mow_angle_deg}
+                                                onChange={(v) => onChange("mow_angle_deg", v ?? 0)}
+                                                disabled={mowAngleIsAuto}
+                                                min={0} max={MOW_ANGLE_MAX_DEG} step={1} precision={0}
+                                                placeholder={t("settingsMowing.mowAngleAuto")}
+                                                style={{ width: "100%" }} addonAfter="°"
+                                            />
+                                        </Space>
+                                    </Form.Item>
+                                </Col>
+                            </Row>
+                        </Form>
+                    </Col>
+                    <Col xs={24} lg={10}>
+                        <Text type="secondary" style={{ fontSize: 11, display: "block", marginBottom: 6 }}>
+                            {t("settingsMowing.stripPreview")}
+                        </Text>
+                        <StripPreview
+                            pathSpacing={pathSpacing}
+                            toolWidth={toolWidth}
+                            headlandWidth={headlandWidth}
+                        />
+                    </Col>
+                </Row>
+                {values.mow_cross_hatch && <CrossHatchSettings angle={values.mow_angle_deg ?? MOW_ANGLE_AUTO}/>}
+            </Card>
+        </div>
+    );
+};

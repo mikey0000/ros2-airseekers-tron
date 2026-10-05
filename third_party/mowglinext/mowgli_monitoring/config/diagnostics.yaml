@@ -1,0 +1,18 @@
+/**:
+  ros__parameters:
+    # Rate at which the /diagnostics topic is published.
+    publish_rate: 1.0  # Hz
+
+    # Default freshness thresholds (applied to IMU, LiDAR, Odometry, Hardware Bridge).
+    # A sensor silent for longer than freshness_warn_sec produces a WARN status.
+    # A sensor silent for longer than freshness_error_sec produces an ERROR status.
+    freshness_warn_sec: 5.0    # seconds
+    freshness_error_sec: 10.0  # seconds
+
+    # Battery thresholds (derived from 4S LiPo voltage range 12.0–16.8 V).
+    battery_warn_pct: 20.0   # %  — below this → WARN
+    battery_error_pct: 10.0  # %  — below this → ERROR
+
+    # ESC / motor temperature thresholds.
+    motor_temp_warn_c: 60.0   # °C — above this → WARN
+    motor_temp_error_c: 80.0  # °C — above this → ERROR

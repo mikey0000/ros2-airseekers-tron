@@ -15,9 +15,20 @@ PKG_DIR="$HERE"                                               # the python packa
 REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"                  # repo root
 PROTO_DIR="$REPO_ROOT/mower_docs/reference/proto"
 
-command -v protoc >/dev/null 2>&1 || { echo "protoc not found" >&2; exit 1; }
+# REQUIRED: protoc 3.12.x (Ubuntu 22.04 Jammy `protobuf-compiler`), matching the runtime
+# apt `python3-protobuf` 3.12.4, which has no google.protobuf.internal.builder. Do NOT
+# generate with a newer protoc (>= 3.20 output fails to import on Jammy). Run inside the
+# Jammy dev container with the whole repo mounted (the proto sources live outside
+# ros2_stack/). Note ROS ships a newer protoc (ortools_vendor) earlier on PATH, so we
+# default to /usr/bin/protoc; override with PROTOC=...
+PROTOC="${PROTOC:-/usr/bin/protoc}"
+command -v "$PROTOC" >/dev/null 2>&1 || { echo "protoc not found: $PROTOC" >&2; exit 1; }
+case "$("$PROTOC" --version)" in
+  "libprotoc 3.12."*) ;;
+  *) echo "need protoc 3.12.x, got: $("$PROTOC" --version)" >&2; exit 1 ;;
+esac
 
-protoc -I "$PROTO_DIR" -I /usr/include \
+"$PROTOC" -I "$PROTO_DIR" -I /usr/include \
     --python_out="$PKG_DIR" \
     "$PROTO_DIR"/*.proto
 

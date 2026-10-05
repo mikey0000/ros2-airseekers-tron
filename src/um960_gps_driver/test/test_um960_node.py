@@ -187,7 +187,7 @@ def test_gga_produces_a_fix(harness):
     assert abs(fix.latitude - 48.1173) < 1e-4
     assert abs(fix.longitude - 11.5166666) < 1e-5
     assert abs(fix.altitude - 545.4) < 1e-6
-    assert fix.status.status == NavSatStatus.STATUS_FIX
+    assert fix.status.status == NavSatStatus.STATUS_GBAS_FIX  # GGA quality 4 (RTK fixed)
     assert fix.position_covariance_type == NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
     assert fix.position_covariance[0] > 0.0
     assert fix.header.frame_id == "gps"

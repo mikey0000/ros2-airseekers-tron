@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -36,6 +37,9 @@ constexpr double kAutoAngleMaxAreaM2 = 400.0;  // ~20 x 20 m
 // degrees of the optimum, so a 5 deg step cuts that cost ~5x while leaving
 // the chosen angle — and thus the whole plan — essentially unchanged.
 constexpr double kAutoAngleStepRad = 5.0 * M_PI / 180.0;
+
+// Swath clip pieces closer than this along the swath axis are one segment.
+constexpr double kSwathMergeTolM = 1e-6;
 
 double dist(const Point2D& a, const Point2D& b) {
   return std::hypot(a.first - b.first, a.second - b.second);
@@ -112,6 +116,13 @@ std::vector<Point2D> repairSelfTouch(const std::vector<Point2D>& ring) {
   }
   exterior->closeRings();
   poly.addRing(exterior);  // OGRPolygon takes ownership
+  // An already-valid ring is returned untouched: Buffer(0.0) would re-orient
+  // and re-start it (GEOS normalises to clockwise from a different vertex),
+  // discarding the operator's recorded vertex order, which the longest-edge
+  // AUTO angle relies on for a deterministic tie-break.
+  if (poly.IsValid()) {
+    return ring;
+  }
   std::unique_ptr<OGRGeometry> fixed(poly.Buffer(0.0));
   const OGRPolygon* fixed_poly = dynamic_cast<const OGRPolygon*>(fixed.get());
   if (fixed_poly == nullptr) {
@@ -125,7 +136,7 @@ std::vector<Point2D> repairSelfTouch(const std::vector<Point2D>& ring) {
         if (part == nullptr) {
           continue;
         }
-        const double a = part->getArea();
+        const double a = part->get_Area();
         if (a > best_area) {
           best_area = a;
           fixed_poly = part;
@@ -199,7 +210,11 @@ double ringLength(const std::vector<Point2D>& loop) {
 
 // Orientation (radians) of the longest edge of a cell's outer ring. A cheap,
 // deterministic AUTO swath angle for large fields. Falls back to 0 (sweep
-// along +x) for a degenerate ring.
+// along +x) for a degenerate ring. Call it on the RECORDED field, not on a
+// buffered planning cell: GEOS re-orients and re-starts buffered rings (a
+// dilated square comes back clockwise starting on a vertical edge), so on a
+// tie the "longest" edge would be a GEOS artifact rather than the operator's
+// first edge. Ties keep the first edge in recorded order.
 double longestEdgeAngle(const f2c::types::Cell& cell) {
   const f2c::types::LinearRing ring = cell.getGeometry(0);
   double best_len = -1.0;
@@ -216,6 +231,72 @@ double longestEdgeAngle(const f2c::types::Cell& cell) {
     }
   }
   return best_angle;
+}
+
+// Clip one swath (p0 -> p1) to `drivable`, returning the inside pieces in
+// drive order (projected along p0 -> p1), each oriented p0 -> p1. Pieces that
+// touch end-to-end (GEOS splits a line lying ON a boundary edge at every
+// vertex) are merged back into one segment. If the clip comes back empty —
+// numerical noise on a swath that lies exactly on the recorded line — the
+// swath is returned unclipped rather than silently dropping coverage.
+std::vector<std::pair<Point2D, Point2D>> clipSwathToDrivable(
+    const f2c::types::Cells& drivable, const Point2D& p0, const Point2D& p1) {
+  const double dx = p1.first - p0.first;
+  const double dy = p1.second - p0.second;
+  const double len = std::hypot(dx, dy);
+  if (len < 1e-12) {
+    return {};
+  }
+  const double ux = dx / len;
+  const double uy = dy / len;
+  auto proj = [&](double x, double y) {
+    return (x - p0.first) * ux + (y - p0.second) * uy;
+  };
+
+  f2c::types::LineString line;
+  line.addPoint(p0.first, p0.second);
+  line.addPoint(p1.first, p1.second);
+  const f2c::types::MultiLineString inside = drivable.getLinesInside(line);
+
+  // Each piece as a [t_start, t_end] interval along the swath axis.
+  std::vector<std::pair<double, double>> spans;
+  for (size_t i = 0; i < inside.size(); ++i) {
+    const f2c::types::LineString piece = inside.getGeometry(i);
+    if (piece.size() < 2) {
+      continue;
+    }
+    double t_lo = std::numeric_limits<double>::max();
+    double t_hi = std::numeric_limits<double>::lowest();
+    for (size_t k = 0; k < piece.size(); ++k) {
+      const f2c::types::Point q = piece.getGeometry(k);
+      const double t = proj(q.getX(), q.getY());
+      t_lo = std::min(t_lo, t);
+      t_hi = std::max(t_hi, t);
+    }
+    spans.emplace_back(std::max(0.0, t_lo), std::min(len, t_hi));
+  }
+  if (spans.empty()) {
+    return {{p0, p1}};
+  }
+  std::sort(spans.begin(), spans.end());
+  std::vector<std::pair<double, double>> merged;
+  for (const auto& sp : spans) {
+    if (!merged.empty() && sp.first <= merged.back().second + kSwathMergeTolM) {
+      merged.back().second = std::max(merged.back().second, sp.second);
+    } else {
+      merged.push_back(sp);
+    }
+  }
+  std::vector<std::pair<Point2D, Point2D>> out;
+  out.reserve(merged.size());
+  for (const auto& sp : merged) {
+    if (sp.second - sp.first < 1e-9) {
+      continue;
+    }
+    out.push_back({{p0.first + sp.first * ux, p0.second + sp.first * uy},
+                   {p0.first + sp.second * ux, p0.second + sp.second * uy}});
+  }
+  return out;
 }
 
 // Signed area (shoelace) of a closed loop.
@@ -330,6 +411,27 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
     mainland = safe_cells;
   }
 
+  // Drivable region for swath centerlines: the recorded field pulled in by
+  // border_inset. BruteForce clips each sweep line to the (dilated) planning
+  // cell, so with no headland rings every swath end overshoots the recorded
+  // line by op_width/2 - border_inset along the swath axis — and in a concave
+  // field it runs that far into the notch. The dilation is only there to put
+  // the outermost pass laterally ON the line; the ends must not leave the
+  // field, so clip every swath back to it. With rings the mainland is already
+  // well inside this region and the clip is a no-op. No buffer when
+  // border_inset <= 0 (never call buffer(-0.0), see the mainland note).
+  // A degenerate (zero-area / invalid) region cannot be clipped against —
+  // GEOS raises a TopologyException and F2C then dereferences a null result —
+  // so such a field keeps its unclipped swaths and says so in `drops`.
+  const f2c::types::Cells drivable =
+      (border_inset > 0.0) ? hl.generateHeadlands(field_cells, border_inset)
+                           : field_cells;
+  const bool clip_swaths = drivable.size() > 0 && drivable.area() > 1e-9 &&
+                           drivable.get() != nullptr && drivable.get()->IsValid();
+  if (!clip_swaths) {
+    plan.drops.push_back("drivable region degenerate; swath ends not clipped");
+  }
+
   // Straight serpentine swaths per mainland cell.
   double swath_strip_area = 0.0;
   for (size_t i = 0; i < mainland.size(); ++i) {
@@ -339,10 +441,11 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
       plan.swath_angle_rad = mow_angle_rad;
       sw = bf.generateSwaths(mow_angle_rad, op_width, cell);
     } else if (std::abs(cell.area()) > kAutoAngleMaxAreaM2) {
-      plan.swath_angle_rad = longestEdgeAngle(cell);
+      plan.swath_angle_rad = longestEdgeAngle(field);
       sw = bf.generateSwaths(plan.swath_angle_rad, op_width, cell);
     } else {
-      sw = bf.generateBestSwaths(f2c::obj::NSwath(), op_width, cell);
+      f2c::obj::NSwath n_swath_objective;  // F2C 2.x takes a non-const reference
+      sw = bf.generateBestSwaths(n_swath_objective, op_width, cell);
     }
     f2c::types::Swaths sorted = order.genSortedSwaths(sw);
     for (size_t s = 0; s < sorted.size(); ++s) {
@@ -354,14 +457,20 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
       }
       const f2c::types::Point p0 = line.getGeometry(0);
       const f2c::types::Point p1 = line.getGeometry(line.size() - 1);
-      const double len =
-          std::hypot(p1.getX() - p0.getX(), p1.getY() - p0.getY());
-      if (len < min_swath_length) {
-        plan.drops.push_back(fmtDrop("swath len=", len, "<", min_swath_length));
-        continue;
+      const Point2D a{p0.getX(), p0.getY()};
+      const Point2D b{p1.getX(), p1.getY()};
+      const std::vector<std::pair<Point2D, Point2D>> pieces =
+          clip_swaths ? clipSwathToDrivable(drivable, a, b)
+                      : std::vector<std::pair<Point2D, Point2D>>{{a, b}};
+      for (const auto& piece : pieces) {
+        const double len = dist(piece.first, piece.second);
+        if (len < min_swath_length) {
+          plan.drops.push_back(fmtDrop("swath len=", len, "<", min_swath_length));
+          continue;
+        }
+        plan.swaths.push_back(piece);
+        swath_strip_area += len * op_width;
       }
-      plan.swaths.push_back({{p0.getX(), p0.getY()}, {p1.getX(), p1.getY()}});
-      swath_strip_area += len * op_width;
     }
   }
 
@@ -369,7 +478,7 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
   if (mow_angle_rad < 0.0 && !plan.swaths.empty()) {
     const auto& s = plan.swaths.front();
     plan.swath_angle_rad =
-        std::atan2(s.second.second - s.second.first, s.second.first - s.first.first);
+        std::atan2(s.second.second - s.first.second, s.second.first - s.first.first);
   }
 
   // Report. Silent coverage loss is the failure mode worth designing

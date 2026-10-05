@@ -1,0 +1,12 @@
+behavior_tree_node:
+  ros__parameters:
+    # Path to the main behavior tree XML file
+    tree_file: ""
+    # Tick rate in Hz
+    tick_rate: 10.0
+    # Battery thresholds
+    battery_low_pct: 20.0
+    battery_critical_pct: 10.0
+    # Mowing area defined in map_server_small_garden.yaml (area_names/area_polygons).
+    # Dock near bottom-left corner of small garden
+    dock_pose: "-4.0;-3.0;0.0"

@@ -18,25 +18,58 @@ ENV DEBIAN_FRONTEND=noninteractive \
     ROS_DISTRO=humble
 
 # Base build/colcon/serial tooling + requested Humble stacks.
+# Mirrors docker/Dockerfile.dev-amd64 so a green amd64 dev build means this
+# image needs nothing extra.
 # - ros-humble-ros-base: explicit even though ros-base image already contains it
 # - nav2-bringup: Nav2 bringup/launch (replaces Noetic move_base/navfn per migration doc)
+# - robot-localization: ekf_node + navsat_transform_node (launch/nav2.launch.py)
 # - control-toolbox: replaces ros-noetic-control-toolbox usage
 # - serial: pyserial + asio serial driver (Humble name is serial-driver, not "serial")
+# - grid-map-*, behaviortree-cpp: MowgliNext map server / mission layer
+# - twist-mux: velocity arbitration (mower_teleop)
+# - foxglove-bridge: WebSocket telemetry on :8765 (launch/mower.launch.py).
+#   Unconditional: present for arm64 Humble (3.5.0).
+# - xacro, robot/joint-state-publisher: URDF -> /tf (config/urdf/mower.urdf.xacro)
+# - v4l2-camera: OA + rear cameras (launch/cameras.launch.py)
+# - tf-transformations, python3-transforms3d: Python TF math
+# - python3-evdev/protobuf/shapely/pyproj/aiohttp: teleop, mower_proto, coverage,
+#   GUI bridge
+# - python3-pip: for websockets below (NOT apt python3-websockets, see there)
 # - colcon: workspace builds
-# - foxglove-bridge: optional, guarded (may be absent from some arm64 snapshots)
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-humble-ros-base \
       ros-humble-nav2-bringup \
+      ros-humble-robot-localization \
       ros-humble-control-toolbox \
       ros-humble-serial-driver \
       ros-humble-fields2cover \
-      libceres-dev \
+      ros-humble-grid-map-ros \
+      ros-humble-grid-map-msgs \
+      ros-humble-grid-map-cv \
+      ros-humble-behaviortree-cpp \
+      ros-humble-twist-mux \
+      ros-humble-foxglove-bridge \
+      ros-humble-xacro \
+      ros-humble-robot-state-publisher \
+      ros-humble-joint-state-publisher \
+      ros-humble-v4l2-camera \
       ros-humble-cv-bridge \
       ros-humble-image-transport \
+      ros-humble-tf-transformations \
+      libceres-dev \
+      libeigen3-dev \
       python3-colcon-common-extensions \
       python3-rosdep \
       python3-vcstool \
       python3-serial \
+      python3-pytest \
+      python3-pip \
+      python3-protobuf \
+      python3-evdev \
+      python3-aiohttp \
+      python3-shapely \
+      python3-pyproj \
+      python3-transforms3d \
       libserial-dev \
       build-essential \
       cmake \
@@ -44,9 +77,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       usbutils \
       iproute2 \
       iputils-ping \
-    && (apt-get install -y --no-install-recommends ros-humble-foxglove-bridge \
-        || echo "NOTE: ros-humble-foxglove-bridge not in this snapshot, skipping") \
     && rm -rf /var/lib/apt/lists/*
+
+# Jammy's python3-websockets (9.1) is broken on Python 3.10 (asyncio Lock(loop=) removed):
+# every connection raises TypeError. The teleop relay / GUI bridge need websockets >= 10.
+RUN pip3 install --no-cache-dir 'websockets>=12,<14'
 
 # rosdep (guarded: rebuild cache is refreshed at build time, not on device)
 RUN (rosdep init || true) && rosdep update || true
@@ -55,7 +90,7 @@ WORKDIR /work
 
 # Workspace is mounted at runtime (compose binds ../src -> /work/src),
 # so only ensure the mount points exist at build time.
-RUN mkdir -p /work/src /work/launch /work/config
+RUN mkdir -p /work/src /work/launch /work/config /userdata/ros2 /ros2_ws/maps
 
 # Convenience: interactive shells source Humble + workspace overlay if built.
 RUN echo 'source /opt/ros/humble/setup.bash 2>/dev/null || true; \

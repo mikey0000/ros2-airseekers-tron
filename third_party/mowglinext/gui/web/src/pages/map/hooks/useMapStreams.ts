@@ -1,0 +1,476 @@
+import React, { useEffect, useRef, useState } from "react";
+import type { Map as MapboxMap } from "mapbox-gl";
+import { useWS } from "../../../hooks/useWS.ts";
+import { useHighLevelStatus } from "../../../hooks/useHighLevelStatus.ts";
+import {
+    AbsolutePose,
+    LaserScan,
+    Map as MapType,
+    ObstacleArray,
+    Path,
+    TrackedObstacle,
+} from "../../../types/ros.ts";
+import {
+    LineFeatureBase,
+    MowingFeature,
+    MowerFeatureBase,
+    RobotPartFeature,
+    PathFeature,
+    DynObstacleFeature,
+} from "../../../types/map.ts";
+import { drawLine, drawRobotSilhouette, transpose } from "../../../utils/map.tsx";
+import { rasterizeMowProgress } from "../../../utils/mowProgress.ts";
+import { rasterizeLidarMap } from "../../../utils/lidarMap.ts";
+import { GridImage, useGridImageStream } from "./useGridImageStream.ts";
+import { useRobotDescription } from "../../../hooks/useRobotDescription.ts";
+import {useLatestThrottle} from "./useLatestThrottle.ts";
+import {useThemeMode} from "../../../theme/ThemeContext.tsx";
+import {MAP_RENDER_BUDGETS} from "./mapRenderBudget.ts";
+
+export type MowProgressImage = GridImage;
+
+interface UseMapStreamsOptions {
+    editMap: boolean;
+    settings: Record<string, string>;
+    offsetX: number;
+    offsetY: number;
+    datum: [number, number, number];
+    setFeatures: React.Dispatch<React.SetStateAction<Record<string, MowingFeature>>>;
+    setEditMap: React.Dispatch<React.SetStateAction<boolean>>;
+    setMapKey: React.Dispatch<React.SetStateAction<string>>;
+    mapInstanceRef: React.RefObject<MapboxMap | null>;
+    robotPoseRef: React.RefObject<{ x: number; y: number; heading: number } | null>;
+}
+
+interface LidarRenderFrame {
+    scan: LaserScan;
+    pose: { x: number; y: number; heading: number };
+}
+
+export function useMapStreams({
+    editMap,
+    settings,
+    offsetX,
+    offsetY,
+    datum,
+    setFeatures,
+    setEditMap,
+    setMapKey,
+    mapInstanceRef,
+    robotPoseRef,
+}: UseMapStreamsOptions) {
+    const [map, setMap] = useState<MapType | undefined>(undefined);
+    const [path, setPath] = useState<Path | undefined>(undefined);
+    const [plan, setPlan] = useState<Path | undefined>(undefined);
+    const [lidarCollection, setLidarCollection] = useState<GeoJSON.FeatureCollection>({
+        type: "FeatureCollection",
+        features: [],
+    });
+    const [dynamicObstacles, setDynamicObstacles] = useState<TrackedObstacle[]>([]);
+    // Debounce timer for tearing down the teleop joy stream. A single stray
+    // non-MANUAL_MOWING/non-RECORDING frame (guard blip ahead of MainLogic) must
+    // NOT kill teleop mid-drive — we only stop the joy stream after the mower has
+    // stayed out of a joy-eligible state for a sustained window.
+    const joyStopTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+    const highLevelStatus = useHighLevelStatus();
+    const {displayMode} = useThemeMode();
+    const renderBudget = MAP_RENDER_BUDGETS[displayMode];
+
+    // Robot geometry from the /robot_description URDF — single source of truth
+    // for the on-map robot shape, so it matches the sensors-page model.
+    const robot = useRobotDescription();
+
+    const poseRender = useLatestThrottle<AbsolutePose>((pose) => {
+        // position.x/y are optional on the wire. The old `?.x!` claimed
+        // otherwise and drew the robot at NaN on a malformed pose; drop the
+        // frame instead — the previous good pose stays on screen.
+        const posX = pose.pose?.pose?.position?.x;
+        const posY = pose.pose?.pose?.position?.y;
+        if (posX === undefined || posY === undefined) return;
+        const mower_lonlat = transpose(
+            offsetX,
+            offsetY,
+            datum,
+            posY,
+            posX
+        );
+        setFeatures((oldFeatures) => {
+            const orientation = pose.motion_heading ?? 0;
+            const line = drawLine(offsetX, offsetY, datum, posY, posX, orientation);
+            // URDF-derived robot silhouette (chassis + drive wheels + blade)
+            // so the map robot matches the sensors-page model exactly.
+            const sil = drawRobotSilhouette(
+                offsetX, offsetY, datum, posY, posX, orientation, robot
+            );
+            return {
+                ...oldFeatures,
+                mower: new MowerFeatureBase(mower_lonlat),
+                ["mower-footprint"]: new RobotPartFeature("mower-footprint", sil.chassis, "#00a6ff"),
+                ["mower-wheel-l"]: new RobotPartFeature("mower-wheel-l", sil.wheelL, "#0b2e3f"),
+                ["mower-wheel-r"]: new RobotPartFeature("mower-wheel-r", sil.wheelR, "#0b2e3f"),
+                ["mower-blade"]: new RobotPartFeature("mower-blade", sil.blade, "#ff6b6b"),
+                ["mower-heading"]: new LineFeatureBase(
+                    "mower-heading",
+                    [mower_lonlat, line],
+                    "#ff0000",
+                    "heading"
+                ),
+            };
+        });
+    }, renderBudget.poseIntervalMs);
+
+    const poseStream = useWS<string>(
+        () => {
+        },
+        () => {
+        },
+        (e) => {
+            const pose = (e as any) as AbsolutePose;
+            robotPoseRef.current = {
+                x: pose.pose?.pose?.position?.x ?? 0,
+                y: pose.pose?.pose?.position?.y ?? 0,
+                heading: pose.motion_heading ?? 0,
+            };
+            poseRender.push(pose);
+        }
+    );
+
+    const mapStream = useWS<string>(
+        () => {
+        },
+        () => {
+        },
+        (e) => {
+            const parse = (e as any) as MapType;
+            setMap(parse);
+            setMapKey("live");
+        }
+    );
+
+    const pathStream = useWS<string>(
+        () => {
+        },
+        () => {
+        },
+        (e) => {
+            const parse = (e as any) as Path;
+            setPath(parse);
+        }
+    );
+
+    const planStream = useWS<string>(
+        () => {
+        },
+        () => {
+        },
+        (e) => {
+            const parse = (e as any) as Path;
+            setPlan(parse);
+        }
+    );
+
+    const joyStream = useWS<string>(
+        () => {
+        },
+        () => {
+        },
+        () => {}
+    );
+
+    // Mow-progress overlay and the LiDAR anchor map are both OccupancyGrids
+    // rasterized off the message handler (see useGridImageStream).
+    const mowProgress = useGridImageStream(rasterizeMowProgress, offsetX, offsetY, datum);
+    const lidarMap = useGridImageStream(rasterizeLidarMap, offsetX, offsetY, datum);
+    // Once fusion_graph publishes its LiDAR map the map REPLACES the raw scan
+    // points: the points are what the map is built from, and drawing both just
+    // hides the walls under a moving cloud. Ref, not state, so the WebSocket
+    // handler closure below never reads a stale value.
+    const lidarMapPresentRef = useRef(false);
+    useEffect(() => {
+        lidarMapPresentRef.current = lidarMap.image != null;
+        if (lidarMap.image != null) setLidarCollection({type: "FeatureCollection", features: []});
+    }, [lidarMap.image]);
+
+    const lidarRender = useLatestThrottle<LidarRenderFrame>(({scan, pose}) => {
+        if (!scan.ranges) return;
+
+        const rays: GeoJSON.Feature[] = [];
+        const angleMin = scan.angle_min ?? 0;
+        const angleInc = scan.angle_increment ?? 0;
+        const rangeMin = scan.range_min ?? 0;
+        const rangeMax = scan.range_max ?? 12;
+
+        // Scan rays live in the lidar_link frame, which is mounted on the
+        // chassis with a static base_footprint→lidar_link transform
+        // (lidar_x/y forward+lateral offset, lidar_yaw heading offset — see
+        // mowgli_robot.yaml). Compose that mount transform with the robot
+        // pose so points land at their true map position instead of being
+        // drawn as if the lidar sat at base_footprint with zero yaw.
+        const lidarX = parseFloat(settings["lidar_x"]) || 0;
+        const lidarY = parseFloat(settings["lidar_y"]) || 0;
+        const lidarYaw = parseFloat(settings["lidar_yaw"]) || 0;
+        const cosH = Math.cos(pose.heading);
+        const sinH = Math.sin(pose.heading);
+
+        // Downsample: take every Nth point for performance
+        const step = Math.max(1, Math.floor(scan.ranges.length / 90));
+        for (let i = 0; i < scan.ranges.length; i += step) {
+            const range = scan.ranges[i];
+            if (range < rangeMin || range > rangeMax) continue;
+
+            // Point in the lidar frame (lidar_yaw folded into the ray angle).
+            const angle = angleMin + i * angleInc + lidarYaw;
+            const px = range * Math.cos(angle);
+            const py = range * Math.sin(angle);
+            // lidar_link → base_footprint (rotate by lidar_yaw, translate by mount offset).
+            const bx = lidarX + px;
+            const by = lidarY + py;
+            // base_footprint → map (rotate by robot heading, translate by pose).
+            const endX = pose.x + bx * cosH - by * sinH;
+            const endY = pose.y + bx * sinH + by * cosH;
+            const endLonLat = transpose(offsetX, offsetY, datum, endY, endX);
+
+            rays.push({
+                type: "Feature",
+                properties: { intensity: range < rangeMax * 0.8 ? "hit" : "far" },
+                geometry: {
+                    type: "Point",
+                    coordinates: endLonLat,
+                },
+            });
+        }
+        setLidarCollection({
+            type: "FeatureCollection",
+            features: rays,
+        });
+    }, renderBudget.lidarIntervalMs);
+
+    const lidarStream = useWS<string>(
+        () => {
+        },
+        () => {
+        },
+        (e) => {
+            if (lidarMapPresentRef.current) return;
+            const pose = robotPoseRef.current;
+            if (!pose) return;
+            lidarRender.push({scan: (e as any) as LaserScan, pose});
+        }
+    );
+
+    const obstaclesStream = useWS<string>(
+        () => {},
+        () => {},
+        (e) => {
+            const parsed = (e as any) as ObstacleArray;
+            if (parsed.obstacles) {
+                // Only show persistent obstacles (status=1)
+                setDynamicObstacles(parsed.obstacles.filter(o => o.status === 1));
+
+                // Render obstacle polygons on the map
+                setFeatures((oldFeatures) => {
+                    const newFeatures = { ...oldFeatures };
+                    // Remove old dynamic obstacle features
+                    Object.keys(newFeatures).forEach(k => {
+                        if (k.startsWith("dyn-obs-")) delete newFeatures[k];
+                    });
+                    // Add current obstacles as semi-transparent polygons
+                    (parsed.obstacles ?? []).filter(o => o.status === 1).forEach((obs) => {
+                        if (obs.polygon?.points && obs.polygon.points.length >= 3) {
+                            const coords = obs.polygon.points.map(p =>
+                                transpose(offsetX, offsetY, datum, p.y ?? 0, p.x ?? 0)
+                            );
+                            // Close the polygon ring (GeoJSON requires first == last)
+                            coords.push(coords[0]);
+                            newFeatures["dyn-obs-" + obs.id] = new DynObstacleFeature(
+                                "dyn-obs-" + obs.id,
+                                coords,
+                                obs.id ?? 0
+                            );
+                        }
+                    });
+                    return newFeatures;
+                });
+            }
+        }
+    );
+
+    const recordingTrajectoryStream = useWS<string>(
+        () => {
+        },
+        () => {
+        },
+        (e) => {
+            const path = (e as any) as Path;
+            if (!path.poses || path.poses.length === 0) {
+                // Recording cleared — remove trajectory feature
+                setFeatures((oldFeatures) => {
+                    const newFeatures = { ...oldFeatures };
+                    delete newFeatures["recording-trajectory"];
+                    return newFeatures;
+                });
+                return;
+            }
+            // Draw the recording trajectory as a line on the map
+            const coords = path.poses.map(p =>
+                transpose(offsetX, offsetY, datum, p.pose?.position?.y ?? 0, p.pose?.position?.x ?? 0)
+            );
+            setFeatures((oldFeatures) => ({
+                ...oldFeatures,
+                ["recording-trajectory"]: new PathFeature(
+                    "recording-trajectory",
+                    coords,
+                    "#ff6600",
+                    2,
+                ),
+            }));
+        }
+    );
+
+    // Keep lidar layer on top of draw layers
+    useEffect(() => {
+        const m = mapInstanceRef.current;
+        if (!m) return;
+        try {
+            if (m.getLayer("lidar-points")) {
+                m.moveLayer("lidar-points");
+            }
+        } catch { /* layer may not exist yet */ }
+    }, [lidarCollection]);
+
+    // Start/stop streams when editMap changes
+    useEffect(() => {
+        if (editMap) {
+            mapStream.stop();
+            poseStream.stop();
+            pathStream.stop();
+            planStream.stop();
+            lidarStream.stop();
+            poseRender.cancel();
+            lidarRender.cancel();
+            obstaclesStream.stop();
+            recordingTrajectoryStream.stop();
+            highLevelStatus.stop();
+            setPath(undefined);
+            setPlan(undefined);
+            setLidarCollection({ type: "FeatureCollection", features: [] });
+        } else {
+            if (
+                settings["datum_lon"] == undefined ||
+                settings["datum_lat"] == undefined
+            ) {
+                return;
+            }
+            highLevelStatus.start("/api/mowglinext/subscribe/highLevelStatus");
+            poseStream.start("/api/mowglinext/subscribe/pose");
+            mapStream.start("/api/mowglinext/subscribe/map");
+            pathStream.start("/api/mowglinext/subscribe/path");
+            planStream.start("/api/mowglinext/subscribe/plan");
+            lidarStream.start("/api/mowglinext/subscribe/lidar");
+            obstaclesStream.start("/api/mowglinext/subscribe/obstacles");
+            mowProgress.stream.start("/api/mowglinext/subscribe/mowProgress");
+            lidarMap.stream.start("/api/mowglinext/subscribe/lidarMap");
+        }
+    }, [editMap]);
+
+    // Start joy + recording trajectory streams on RECORDING state
+    useEffect(() => {
+        const stateName = highLevelStatus.highLevelStatus.state_name;
+        if (stateName === "RECORDING") {
+            clearTimeout(joyStopTimerRef.current);
+            joyStopTimerRef.current = undefined;
+            joyStream.start("/api/mowglinext/publish/joy");
+            recordingTrajectoryStream.start("/api/mowglinext/subscribe/recordingTrajectory");
+            setEditMap(false);
+            return;
+        }
+        if (stateName === "MANUAL_MOWING") {
+            clearTimeout(joyStopTimerRef.current);
+            joyStopTimerRef.current = undefined;
+            joyStream.start("/api/mowglinext/publish/joy");
+            return;
+        }
+        // Leaving a joy-eligible state: DEBOUNCE the joy teardown so a single
+        // stray guard frame (EMERGENCY/battery/boundary blip) can't kill teleop
+        // mid-drive. The recording-trajectory cleanup can happen immediately —
+        // it's only visual and re-subscribes instantly if RECORDING returns.
+        if (joyStopTimerRef.current === undefined) {
+            joyStopTimerRef.current = setTimeout(() => {
+                joyStopTimerRef.current = undefined;
+                joyStream.stop();
+            }, 1200);
+        }
+        recordingTrajectoryStream.stop();
+        // Clear trajectory feature when leaving recording mode
+        setFeatures((oldFeatures) => {
+            const newFeatures = { ...oldFeatures };
+            delete newFeatures["recording-trajectory"];
+            return newFeatures;
+        });
+    }, [highLevelStatus.highLevelStatus.state_name]);
+
+    // Clear the joy-stop debounce on unmount so it can't fire after teardown.
+    useEffect(() => {
+        return () => clearTimeout(joyStopTimerRef.current);
+    }, []);
+
+    // Start streams once the datum is available. Keyed on the datum values
+    // ONLY — not the whole `settings` object. The previous `[settings]`
+    // dependency re-ran on every settings-object identity change (each poll /
+    // partial merge creates a new object), tearing down and re-subscribing all
+    // eight streams each time. That re-subscribe storm churned the backend
+    // RosSubscribers and left components briefly without data ("stale").
+    useEffect(() => {
+        if (
+            settings["datum_lon"] == undefined ||
+            settings["datum_lat"] == undefined
+        ) {
+            return;
+        }
+        highLevelStatus.start("/api/mowglinext/subscribe/highLevelStatus");
+        poseStream.start("/api/mowglinext/subscribe/pose");
+        mapStream.start("/api/mowglinext/subscribe/map");
+        pathStream.start("/api/mowglinext/subscribe/path");
+        planStream.start("/api/mowglinext/subscribe/plan");
+        lidarStream.start("/api/mowglinext/subscribe/lidar");
+        obstaclesStream.start("/api/mowglinext/subscribe/obstacles");
+        mowProgress.stream.start("/api/mowglinext/subscribe/mowProgress");
+            lidarMap.stream.start("/api/mowglinext/subscribe/lidarMap");
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [settings["datum_lon"], settings["datum_lat"]]);
+
+    // Cleanup all streams on unmount
+    useEffect(() => {
+        return () => {
+            poseStream.stop();
+            mapStream.stop();
+            pathStream.stop();
+            joyStream.stop();
+            planStream.stop();
+            lidarStream.stop();
+            poseRender.cancel();
+            lidarRender.cancel();
+            obstaclesStream.stop();
+            mowProgress.stream.stop();
+            mowProgress.cancel();
+            lidarMap.stream.stop();
+            lidarMap.cancel();
+            recordingTrajectoryStream.stop();
+            highLevelStatus.stop();
+        };
+    }, []);
+
+    return {
+        map,
+        dynamicObstacles,
+        setMap,
+        path,
+        plan,
+        lidarCollection,
+        mowProgressImage: mowProgress.image,
+        lidarMapImage: lidarMap.image,
+        highLevelStatus,
+        joyStream,
+    };
+}

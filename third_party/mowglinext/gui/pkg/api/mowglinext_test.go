@@ -1,0 +1,434 @@
+package api
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+
+	"github.com/vmihailenco/msgpack/v5"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	"github.com/mowglinext/mowglinext/pkg/msgs/mowgli"
+	"github.com/mowglinext/mowglinext/pkg/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func setupMowgliNextRouter(provider types.IRosProvider) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	group := r.Group("/api")
+	MowgliNextRoutes(group, provider)
+	return r
+}
+
+func TestServiceRoute_HighLevelControl(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	router := setupMowgliNextRouter(mock)
+
+	payload := map[string]any{"Command": 1}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/call/high_level_control", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, mock.ServiceCalls, 1)
+	assert.Equal(t, "/behavior_tree_node/high_level_control", mock.ServiceCalls[0].Service)
+}
+
+func TestServiceRoute_Emergency(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	router := setupMowgliNextRouter(mock)
+
+	payload := map[string]any{"Emergency": 1}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/call/emergency", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, mock.ServiceCalls, 1)
+	assert.Equal(t, "/hardware_bridge/emergency_stop", mock.ServiceCalls[0].Service)
+}
+
+func TestServiceRoute_MowEnabled(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	router := setupMowgliNextRouter(mock)
+
+	payload := map[string]any{"MowEnabled": 1, "MowDirection": 0}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/call/mow_enabled", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, mock.ServiceCalls, 1)
+	assert.Equal(t, "/hardware_bridge/mower_control", mock.ServiceCalls[0].Service)
+}
+
+func TestServiceRoute_FusionGraphTriggers(t *testing.T) {
+	cases := []struct {
+		command string
+		service string
+	}{
+		{"fusion_graph_save", "/fusion_graph_node/save_graph"},
+		{"fusion_graph_clear", "/fusion_graph_node/clear_graph"},
+		{"fusion_graph_clear_lidar_map", "/fusion_graph_node/clear_lidar_map"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.command, func(t *testing.T) {
+			mock := types.NewMockRosProvider()
+			// The handler maps a std_srvs/Trigger {success:false} to a 500,
+			// so the mock has to answer like a healthy node.
+			mock.ServiceResponder = func(_ string, _ any, res any) {
+				_ = json.Unmarshal([]byte(`{"success":true,"message":"done"}`), res)
+			}
+			router := setupMowgliNextRouter(mock)
+
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("POST", "/api/mowglinext/call/"+tc.command, bytes.NewReader([]byte("{}")))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			assert.Contains(t, w.Body.String(), "done")
+			require.Len(t, mock.ServiceCalls, 1)
+			assert.Equal(t, tc.service, mock.ServiceCalls[0].Service)
+		})
+	}
+}
+
+func TestServiceRoute_FusionGraphClearLidarMap_ServiceError(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	mock.ServiceErr = assert.AnError
+	router := setupMowgliNextRouter(mock)
+	// A node-side {success:false} must surface as a 500 too, not a silent 200.
+	t.Run("node reports failure", func(t *testing.T) {
+		failing := types.NewMockRosProvider()
+		failing.ServiceResponder = func(_ string, _ any, res any) {
+			_ = json.Unmarshal([]byte(`{"success":false,"message":"anchor disabled"}`), res)
+		}
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/api/mowglinext/call/fusion_graph_clear_lidar_map", bytes.NewReader([]byte("{}")))
+		req.Header.Set("Content-Type", "application/json")
+		setupMowgliNextRouter(failing).ServeHTTP(w, req)
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Contains(t, w.Body.String(), "anchor disabled")
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/call/fusion_graph_clear_lidar_map", bytes.NewReader([]byte("{}")))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestServiceRoute_UnknownCommand(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	router := setupMowgliNextRouter(mock)
+
+	payload := map[string]any{}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/call/unknown_command", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+
+	var resp ErrorResponse
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+	assert.Equal(t, "unknown command", resp.Error)
+}
+
+func TestServiceRoute_ServiceError(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	mock.ServiceErr = assert.AnError
+	router := setupMowgliNextRouter(mock)
+
+	payload := map[string]any{"Command": 1}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/call/high_level_control", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestServiceRoute_StartInArea(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	router := setupMowgliNextRouter(mock)
+
+	payload := map[string]any{"Area": 2}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/call/start_in_area", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, mock.ServiceCalls, 1)
+	assert.Equal(t, "/behavior_tree_node/start_in_area", mock.ServiceCalls[0].Service)
+}
+
+func TestClearMapRoute(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	router := setupMowgliNextRouter(mock)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("DELETE", "/api/mowglinext/map", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, mock.ServiceCalls, 1)
+	assert.Equal(t, "/map_server_node/clear_map", mock.ServiceCalls[0].Service)
+}
+
+func TestClearMapRoute_Error(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	mock.ServiceErr = assert.AnError
+	router := setupMowgliNextRouter(mock)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("DELETE", "/api/mowglinext/map", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestSetDockingPointRoute(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	router := setupMowgliNextRouter(mock)
+
+	payload := map[string]any{
+		"dockX":   1.5,
+		"dockY":   2.5,
+		"heading": 0.78,
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/map/docking", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, mock.ServiceCalls, 1)
+	assert.Equal(t, "/map_server_node/set_docking_point", mock.ServiceCalls[0].Service)
+}
+
+// dialMultiplex opens the test server's /multiplex WebSocket. Returns the
+// connection plus a teardown closure that closes both the connection and
+// the test server.
+func dialMultiplex(t *testing.T, server *httptest.Server) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/mowglinext/multiplex"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	return conn
+}
+
+func readMultiplexFrame(t *testing.T, conn *websocket.Conn) (string, []byte) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, raw, err := conn.ReadMessage()
+	require.NoError(t, err)
+	// Since the #337 binary transport, frames are msgpack-encoded
+	// {topic, data:<decoded object>} sent as BINARY websocket messages
+	// (was JSON {topic, data:<base64>}). Re-encode the decoded object as
+	// JSON so the assertions can keep comparing JSON payloads.
+	var frame struct {
+		Topic string      `msgpack:"topic"`
+		Data  interface{} `msgpack:"data"`
+	}
+	require.NoError(t, msgpack.Unmarshal(raw, &frame))
+	payload, err := json.Marshal(frame.Data)
+	require.NoError(t, err)
+	return frame.Topic, payload
+}
+
+func TestMultiplexRoute_FansOutOnSubscribe(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	server := httptest.NewServer(setupMowgliNextRouter(mock))
+	defer server.Close()
+	conn := dialMultiplex(t, server)
+	defer conn.Close()
+
+	require.NoError(t, conn.WriteJSON(map[string]string{"op": "subscribe", "topic": "highLevelStatus"}))
+	// Give the server's read loop a moment to register the subscription.
+	time.Sleep(50 * time.Millisecond)
+
+	mock.Dispatch("highLevelStatus", []byte(`{"hello":"world"}`))
+
+	topic, payload := readMultiplexFrame(t, conn)
+	assert.Equal(t, "highLevelStatus", topic)
+	assert.JSONEq(t, `{"hello":"world"}`, string(payload))
+}
+
+func TestMultiplexRoute_UnsubscribeStopsDelivery(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	server := httptest.NewServer(setupMowgliNextRouter(mock))
+	defer server.Close()
+	conn := dialMultiplex(t, server)
+	defer conn.Close()
+
+	require.NoError(t, conn.WriteJSON(map[string]string{"op": "subscribe", "topic": "status"}))
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, conn.WriteJSON(map[string]string{"op": "unsubscribe", "topic": "status"}))
+	time.Sleep(50 * time.Millisecond)
+
+	mock.Dispatch("status", []byte(`{"x":1}`))
+
+	_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	_, _, err := conn.ReadMessage()
+	assert.Error(t, err, "no frame should arrive after unsubscribe")
+}
+
+func TestMultiplexRoute_IgnoresUnknownTopic(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	server := httptest.NewServer(setupMowgliNextRouter(mock))
+	defer server.Close()
+	conn := dialMultiplex(t, server)
+	defer conn.Close()
+
+	require.NoError(t, conn.WriteJSON(map[string]string{"op": "subscribe", "topic": "made_up"}))
+	time.Sleep(50 * time.Millisecond)
+
+	mock.Dispatch("made_up", []byte(`x`))
+	_ = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	_, _, err := conn.ReadMessage()
+	assert.Error(t, err)
+}
+
+func TestMultiplexRoute_DropsSubscriptionsOnDisconnect(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	server := httptest.NewServer(setupMowgliNextRouter(mock))
+	defer server.Close()
+	conn := dialMultiplex(t, server)
+
+	require.NoError(t, conn.WriteJSON(map[string]string{"op": "subscribe", "topic": "imu"}))
+	time.Sleep(50 * time.Millisecond)
+	_ = conn.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	// Dispatch after the client is gone should be a no-op (no panic).
+	mock.Dispatch("imu", []byte(`{"a":1}`))
+}
+
+// TestTopicSubscribeInterval_CoversKnownSubscriberRouteTopics locks
+// topicSubscribeInterval as the single source of topic->interval truth: both
+// SubscriberRoute (dedicated /subscribe/:topic connections) and
+// MultiplexRoute (fan-out over one connection) derive their throttle
+// intervals from it, so a topic added to one path can't silently diverge
+// from the other.
+func TestTopicSubscribeInterval_CoversKnownSubscriberRouteTopics(t *testing.T) {
+	knownTopics := []string{
+		"gps", "gnssStatus", "pose", "imu", "ticks", "wheelOdom", "lidar",
+		"fusionRaw", "cogHeading", "magYaw", "obstacles",
+		"mowProgress", "lidarMap",
+		"diagnostics", "status", "highLevelStatus", "btLog", "map",
+		"path", "plan", "power", "emergency", "dockingSensor",
+		"robotDescription", "recordingTrajectory",
+		"coverageResumeAvailable", "fusionDiag", "dockCalibrationStatus",
+	}
+	for _, topic := range knownTopics {
+		interval, known := topicSubscribeInterval(topic)
+		assert.Truef(t, known, "expected %q to be a known topic", topic)
+		assert.NotZerof(t, interval, "expected %q to resolve to a real interval or -1 (unthrottled)", topic)
+	}
+
+	_, known := topicSubscribeInterval("not_a_real_topic")
+	assert.False(t, known)
+}
+
+// dialSubscribe opens the test server's dedicated /subscribe/:topic
+// WebSocket.
+func dialSubscribe(t *testing.T, server *httptest.Server, topic string) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/mowglinext/subscribe/" + topic
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	return conn
+}
+
+func TestSubscriberRoute_DeliversKnownTopic(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	server := httptest.NewServer(setupMowgliNextRouter(mock))
+	defer server.Close()
+	conn := dialSubscribe(t, server, "highLevelStatus")
+	defer conn.Close()
+	// Give the server's handler a moment to register the subscription.
+	time.Sleep(50 * time.Millisecond)
+
+	mock.Dispatch("highLevelStatus", []byte(`{"hello":"world"}`))
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, raw, err := conn.ReadMessage()
+	require.NoError(t, err)
+	decoded, err := base64.StdEncoding.DecodeString(string(raw))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"hello":"world"}`, string(decoded))
+}
+
+func TestSubscriberRoute_RejectsUnknownTopic(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	server := httptest.NewServer(setupMowgliNextRouter(mock))
+	defer server.Close()
+	conn := dialSubscribe(t, server, "not_a_real_topic")
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	_, _, err := conn.ReadMessage()
+	assert.Error(t, err, "connection should close without ever subscribing")
+}
+
+func TestMapWriteBudget(t *testing.T) {
+	// Base budget for a small/empty map (regression: a fixed 30 s used to time
+	// out saving a big edited map on RPi4 — issue #341).
+	assert.Equal(t, 60*time.Second, mapWriteBudget(0))
+	// Scales +5 s per area.
+	assert.Equal(t, 60*time.Second+10*5*time.Second, mapWriteBudget(10))
+	// Capped at 6 min so a pathological area count can't set an absurd budget.
+	assert.Equal(t, 6*time.Minute, mapWriteBudget(1000))
+	// The old fixed 30 s is always exceeded now, even for zero areas.
+	assert.Greater(t, mapWriteBudget(0), 30*time.Second)
+}
+
+func TestServiceRoute_CoverageOrientation(t *testing.T) {
+	for _, setNext := range []bool{false, true} {
+		mock := types.NewMockRosProvider()
+		mock.ServiceResponder = func(service string, req any, res any) {
+			assert.Equal(t, "/behavior_tree_node/coverage_orientation", service)
+			input := req.(*mowgli.CoverageOrientationReq)
+			assert.Equal(t, uint32(2), input.AreaIndex)
+			assert.Equal(t, setNext, input.SetNext)
+			*res.(*mowgli.CoverageOrientationRes) = mowgli.CoverageOrientationRes{Success: true, NextPerpendicular: true, CurrentActive: true}
+		}
+		body, _ := json.Marshal(map[string]any{"area_index": 2, "set_next": setNext, "perpendicular": true})
+		req := httptest.NewRequest("POST", "/api/mowglinext/call/coverage_orientation", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		setupMowgliNextRouter(mock).ServeHTTP(w, req)
+		assert.Equal(t, 200, w.Code)
+		assert.Contains(t, w.Body.String(), `"next_perpendicular":true`)
+	}
+}

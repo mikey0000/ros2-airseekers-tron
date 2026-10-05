@@ -1,12 +1,18 @@
+# Starts the Airseekers Tron ROS 2 stack at boot. docker/docker-compose.yml's
+# mower_humble service runs `ros2 launch mower_bringup mower.launch.py`
+# (restart: unless-stopped), so this unit only has to bring compose up/down.
+# The workspace must already be built (scripts/build.sh) in /home/airseekers/ros2_stack.
+# Install: scripts/install_mower_service.sh
 [Unit]
-Description=Airseekers Tron ROS 2 Humble bridge (Docker)
+Description=Airseekers Tron ROS 2 Humble stack (Docker, mower_bringup/mower.launch.py)
 After=docker.service network-online.target
+Wants=network-online.target
 Requires=docker.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/docker compose -f /home/airseekers/ros2_stack/docker/docker-compose.yml up -d mower_humble
+ExecStart=/usr/bin/docker compose -f /home/airseekers/ros2_stack/docker/docker-compose.yml up -d
 ExecStop=/usr/bin/docker compose -f /home/airseekers/ros2_stack/docker/docker-compose.yml down
 TimeoutStartSec=120
 

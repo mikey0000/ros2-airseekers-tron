@@ -1,0 +1,14 @@
+# Used by BuildKit instead of third_party/mowglinext/gui/.dockerignore because
+# it sits next to gui/Dockerfile. Upstream entries plus the large artifacts.
+web/dist
+web/node_modules
+web/tests
+web/test-results
+web/playwright-report
+.idea
+.git
+docker-compose.yaml
+.env
+mower_config.sh
+mowglinext-gui.iml
+openmower-gui

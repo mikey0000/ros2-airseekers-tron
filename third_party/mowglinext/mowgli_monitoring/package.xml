@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mowgli_monitoring</name>
+  <version>0.1.0</version>
+  <description>
+    Diagnostics and monitoring package for the Mowgli robot mower.
+    Aggregates robot health into standard ROS2 diagnostic_msgs and bridges
+    key topics to an MQTT broker for external monitoring (mobile app,
+    Home Assistant, etc.).
+  </description>
+  <maintainer email="cedric@mowgli.dev">Cedric</maintainer>
+  <license>GPL-3.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>mowgli_interfaces</depend>
+
+  <!--
+    libmosquitto-dev is NOT a registered rosdep key (checked against
+    ros/rosdistro rosdep/base.yaml) — a plain <depend> here would make
+    `rosdep install` fail with "Cannot locate rosdep definition". It is
+    installed directly via apt-get in ros2/Dockerfile instead (base stage:
+    runtime libmosquitto1, deps stage: libmosquitto-dev for the build).
+  -->
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

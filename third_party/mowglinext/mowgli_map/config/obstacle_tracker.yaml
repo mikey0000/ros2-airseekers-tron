@@ -1,0 +1,18 @@
+obstacle_tracker:
+  ros__parameters:
+    # Garden-tuned: larger clusters required to filter grass/ground noise
+    cluster_tolerance: 0.20           # 20cm epsilon (was 15cm)
+    min_cluster_points: 5             # need 5 points to form cluster (was 3)
+    persistence_threshold: 10.0       # promote after 10s — 60s was too long, real obstacles
+                                       # got hit before the tracker promoted them. Grass is
+                                       # already filtered by min_cluster_points=5 and
+                                       # min_obstacle_radius=0.08.
+    transient_timeout: 5.0
+    min_obstacle_radius: 0.08         # ignore tiny clusters < 8cm (was 5cm)
+    max_obstacle_radius: 1.5
+    inflation_radius: 0.10            # 10cm expansion (was 15cm)
+    persistence_file: "/ros2_ws/maps/obstacles.yaml"
+    map_frame: "map"
+    publish_rate: 1.0
+    boundary_margin: 0.3
+    map_obstacle_min_dist_from_boundary: 0.2

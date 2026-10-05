@@ -94,13 +94,19 @@ bool pointInPolygon(const Point2D& p, const std::vector<Point2D>& poly,
 
 // A 2x2 field at 0.5 m spacing with headland disabled: the -op_width/2
 // boundary offset dilates the planning cell to [-0.25, 2.25]^2, so F2C places
-// 5 swaths at y = 0.0, 0.5, 1.0, 1.5, 2.0, each clipped to the cell (length
-// 2.5). The outermost swath lands exactly ON the recorded boundary.
+// 5 swaths at y = 0.0, 0.5, 1.0, 1.5, 2.0. F2C clips them to the DILATED cell
+// (length 2.5, ends 0.25 m outside the field); the planner clips them back to
+// the recorded field, so each is exactly 2.0 long with ends on x = 0 / x = 2.
+// The outermost swath lands exactly ON the recorded boundary.
 TEST(CoveragePlanning, SquareCoversField) {
   auto plan = planSquare(2.0, /*headland=*/-1);
   ASSERT_EQ(plan.swaths.size(), 5u);
   for (const auto& s : plan.swaths) {
-    EXPECT_NEAR(swathLength(s), 2.5, 1e-6);
+    EXPECT_NEAR(swathLength(s), 2.0, 1e-6);
+    for (const auto& p : {s.first, s.second}) {
+      EXPECT_GE(p.first, -1e-9);
+      EXPECT_LE(p.first, 2.0 + 1e-9);
+    }
   }
   // Swath lines are horizontal (auto angle converged to 0 for a square).
   for (const auto& s : plan.swaths) {
@@ -168,7 +174,9 @@ TEST(CoveragePlanning, HoleIsNotCrossed) {
 }
 
 // L-shaped (concave) field: the plan is non-empty and every swath endpoint
-// stays inside or on the field.
+// stays inside or on the field — in particular no swath end overshoots into
+// the notch or past the outer edges (F2C alone would leave them op_width/2
+// outside, since it clips to the dilated planning cell).
 TEST(CoveragePlanning, ConcaveFieldIsCovered) {
   std::vector<Point2D> lshape = {{0, 0}, {3, 0}, {3, 1}, {1, 1}, {1, 3}, {0, 3}};
   auto plan = mower_coverage::planBoustrophedon(
@@ -293,7 +301,8 @@ TEST(CoveragePlanning, LargeFieldUsesLongestEdgeAngleFallback) {
 
 // A negative longest-edge angle is used as-is (never falling back to the
 // exhaustive auto search): a rectangle rotated -20 deg plans at -20 deg
-// (mod pi, since swath lines are undirected).
+// (mod pi, since swath lines are undirected). 40x20 = 800 m^2 so the field is
+// above the 400 m^2 auto-search gate and actually takes the longest-edge path.
 TEST(CoveragePlanning, NegativeLongestEdgeNeverFallsBackToAutoSearch) {
   const double ang = -20.0 * M_PI / 180.0;
   const double c = std::cos(ang);
@@ -301,9 +310,9 @@ TEST(CoveragePlanning, NegativeLongestEdgeNeverFallsBackToAutoSearch) {
   auto rot = [&](double x, double y) {
     return Point2D{x * c - y * s, x * s + y * c};
   };
-  // 20x10 rectangle, first long edge at -20 deg.
-  std::vector<Point2D> boundary = {rot(-10, 5), rot(10, 5), rot(10, -5),
-                                  rot(-10, -5)};
+  // 40x20 rectangle, first long edge at -20 deg.
+  std::vector<Point2D> boundary = {rot(-20, 10), rot(20, 10), rot(20, -10),
+                                  rot(-20, -10)};
   auto plan = mower_coverage::planBoustrophedon(
       field(boundary), kOpWidth, kHeadlandWidth, /*headland_passes=*/-1,
       /*border_inset=*/0.0, /*mow_angle_rad=*/-1.0, kMinSwath);

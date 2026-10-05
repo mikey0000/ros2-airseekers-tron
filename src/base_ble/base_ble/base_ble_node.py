@@ -42,7 +42,7 @@ import rclpy
 from rclpy.node import Node
 
 from geometry_msgs.msg import Twist
-from std_srvs.srv import Trigger
+from std_srvs.srv import Empty, Trigger
 
 from mower_interfaces.msg import MotorControl
 from mower_interfaces.srv import CutterControl, MappingControl, SetLoRa
@@ -74,9 +74,10 @@ class BleNode(Node):
         self.drive_timeout_ms = self.get_parameter('drive_timeout_ms').value
 
         # ---- ROS interfaces ----
-        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.clear_estop_cli = self.create_client(Trigger, '/clear_estop')
-        self.cutter_cli = self.create_client(CutterControl, '/logic/cutter_control')
+        # Teleop lane of twist_mux (unstamped Twist, Humble); never /cmd_vel directly.
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_teleop', 10)
+        self.clear_estop_cli = self.create_client(Empty, '/clear_estop')
+        self.cutter_cli = self.create_client(CutterControl, '/cutter_control')
         self.mapping_cli = self.create_client(MappingControl, '/mapping_control')
         self.set_lora_cli = self.create_client(SetLoRa, '/mower_gps_node/set_lora')
         self.init_srv = self.create_service(Trigger, '/base_ble/init', self._init_cb)
@@ -293,7 +294,7 @@ class BleNode(Node):
     def _on_clear_fault(self):
         self.get_logger().info('clear fault -> /clear_estop')
         if self.clear_estop_cli.service_is_ready():
-            self.clear_estop_cli.call_async(Trigger.Request())
+            self.clear_estop_cli.call_async(Empty.Request())
         else:
             self.get_logger().warning('/clear_estop service unavailable')
 
@@ -344,13 +345,14 @@ class BleNode(Node):
     # ------------------------------------------------------------------ drive / cutter
 
     def _publish_cmd_vel(self):
+        if not self._teleop:
+            return  # publish nothing: twist_mux times the teleop lane out on its own
         msg = Twist()
-        if self._teleop:
-            msg.linear.x = max(-self.linear_max, min(self.linear_max, self._linear))
-            msg.angular.z = max(-self.angular_max, min(self.angular_max, self._angular))
-            # deadband (recovered): below 1 mm/s / 1 mrad/s treat as zero
-            if abs(msg.linear.x) < 0.001 and abs(msg.angular.z) < 0.001:
-                msg.linear.x = msg.angular.z = 0.0
+        msg.linear.x = max(-self.linear_max, min(self.linear_max, self._linear))
+        msg.angular.z = max(-self.angular_max, min(self.angular_max, self._angular))
+        # deadband (recovered): below 1 mm/s / 1 mrad/s treat as zero
+        if abs(msg.linear.x) < 0.001 and abs(msg.angular.z) < 0.001:
+            msg.linear.x = msg.angular.z = 0.0
         self.cmd_vel_pub.publish(msg)
 
     def _cutter(self, enable):

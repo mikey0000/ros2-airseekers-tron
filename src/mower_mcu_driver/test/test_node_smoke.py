@@ -27,7 +27,7 @@ ros_stubs.install()
 
 from mower_mcu_driver import mcu_node as mn  # noqa: E402
 
-from geometry_msgs.msg import TwistStamped  # noqa: E402
+from geometry_msgs.msg import Twist, TwistStamped  # noqa: E402
 
 
 class FakeStatus:
@@ -133,12 +133,13 @@ def drain_tx(port):
 
 
 def cmd_vel(linear, angular):
-    msg = TwistStamped()
-    msg.twist.linear.x = linear
-    msg.twist.angular.z = angular
+    msg = Twist()
+    msg.linear.x = linear
+    msg.angular.z = angular
     return msg
 
 
+@unittest.skipUnless(ros_stubs.is_stubbed(), 'stub-only test (needs ros_stubs internals; real rclpy present)')
 class TestMcuNode(unittest.TestCase):
 
     def setUp(self):
@@ -170,10 +171,10 @@ class TestMcuNode(unittest.TestCase):
 
     def test_nothing_published_on_imu_until_module_9_arrives(self):
         inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SENSOR, struct.pack(mn.SENSOR_FMT, *([0] * 10))))
-        self.assertEqual(self.node.published['/imu'], [])
+        self.assertEqual(self.node.published['/mcu/imu'], [])
         inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_IMU,
                            struct.pack(mn.IMU_FMT, 0, 0, 0, 0, 0, 2048, 0, 0, 0)))
-        imu = self.node.published['/imu']
+        imu = self.node.published['/mcu/imu']
         self.assertEqual(len(imu), 1)
         self.assertAlmostEqual(imu[0].linear_acceleration.z, 9.80665, places=3)  # raw 2048 = 1 g
 
@@ -253,9 +254,10 @@ class TestMcuNode(unittest.TestCase):
         serial_port = self.node._ser
         self.node.shutdown()
         self.assertTrue(serial_port.closed)
-        (_, mod_id, payload), = drain_tx(serial_port)
-        self.assertEqual(mod_id, mn.MOD_SPEED)
-        self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+        frames = drain_tx(serial_port)
+        self.assertEqual([m for (_, m, _) in frames], [mn.MOD_CUTTER, mn.MOD_SPEED])
+        self.assertEqual(frames[0][2][0], 0)  # cutter enable byte off
+        self.assertEqual(struct.unpack(mn.SPEED_FMT, frames[1][2]), (0.0, 0.0))
         self.node._ser = serial_port  # keep tearDown/shutdown idempotent
 
     # -------------------------------------------------------------- heartbeat
@@ -305,3 +307,87 @@ class TestMcuNode(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+@unittest.skipUnless(ros_stubs.is_stubbed(), 'stub-only test (needs ros_stubs internals; real rclpy present)')
+class SafetyAndServicesTest(unittest.TestCase):
+    """Interlocks, cutter/charging services and the host e-stop latch (stubbed ROS)."""
+
+    def setUp(self):
+        ros_stubs.install()
+        self.node = mn.McuNode()
+        self.tx = bytearray()
+        self.node._ser = types.SimpleNamespace(
+            write=lambda b: self.tx.extend(b) or len(b), in_waiting=0,
+            read=lambda n: b'', close=lambda: None)
+        self.node._write = lambda data: self.tx.extend(data)
+
+    def _frames(self):
+        parser = mn.FrameParser()
+        out = []
+        for f in parser.feed(bytes(self.tx)):
+            out.append(f)
+        return out
+
+    def _sensor(self, **flags):
+        names = ('bumper', 'rain', 'lift', 'stop', 'power_off', 'battery_gate',
+                 'cutter_size', 'press_module', 'bumper_r', 'bumper_l')
+        vals = [int(flags.get(n, 0)) for n in names]
+        self.node._on_sensor_info(struct.pack(mn.SENSOR_FMT, *vals))
+
+    def test_cutter_payload_layout(self):
+        pl = mn.cutter_payload(True, False, 100, True, False, 60)
+        self.assertEqual(len(pl), 12)
+        self.assertEqual(struct.unpack('<BBHH', pl[:6]), (1, 0, 100, 0))
+        self.assertEqual(struct.unpack('<BBHH', pl[6:]), (1, 0, 0, 60))
+
+    def test_lift_interlock_zeroes_speed_and_sends_cutter_off(self):
+        cmd = Twist()
+        cmd.linear.x = 0.3
+        self.node._on_cmd_vel(cmd)
+        self.assertEqual(self.node._commanded(), (0.3, 0.0))
+        self._sensor(lift=1)
+        self.assertEqual(self.node._commanded(), (0.0, 0.0))
+        mods = [m for (_t, m, _p) in self._frames()]
+        self.assertIn(mn.MOD_CUTTER, mods)
+        # cutter off payload: enable byte 0
+        cutter_payloads = [p for (_t, m, p) in self._frames() if m == mn.MOD_CUTTER]
+        self.assertEqual(cutter_payloads[-1][0], 0)
+        # released -> motion allowed again
+        self.node._on_cmd_vel(cmd)
+        self._sensor(lift=0)
+        self.assertEqual(self.node._commanded(), (0.3, 0.0))
+
+    def test_estop_latch_blocks_until_cleared(self):
+        cmd = Twist()
+        cmd.linear.x = 0.2
+        self.node._on_cmd_vel(cmd)
+        self.node._on_estop_request(types.SimpleNamespace(data=True))
+        self.assertEqual(self.node._commanded(), (0.0, 0.0))
+        self.node._on_cmd_vel(cmd)
+        self.assertEqual(self.node._commanded(), (0.0, 0.0))
+        self.node._srv_clear_estop(None, types.SimpleNamespace())
+        self.node._on_cmd_vel(cmd)
+        self.assertEqual(self.node._commanded(), (0.2, 0.0))
+
+    def test_cutter_service_refused_while_interlocked(self):
+        self._sensor(stop=1)
+        req = types.SimpleNamespace(
+            cutter=types.SimpleNamespace(enable=True, direction=False, speed=0, position=0),
+            height=types.SimpleNamespace(enable=False, direction=False, speed=0, position=0))
+        resp = self.node._srv_cutter_control(req, types.SimpleNamespace(result=None))
+        self.assertFalse(resp.result)
+        self._sensor(stop=0)
+        self.tx.clear()
+        resp = self.node._srv_cutter_control(req, types.SimpleNamespace(result=None))
+        self.assertTrue(resp.result)
+        payloads = [p for (_t, m, p) in self._frames() if m == mn.MOD_CUTTER]
+        self.assertEqual(payloads[-1][0], 1)
+        self.assertEqual(struct.unpack('<H', payloads[-1][2:4])[0], self.node.cutter_default_speed)
+
+    def test_charging_service_sends_charge_control(self):
+        resp = self.node._srv_charging(types.SimpleNamespace(enable_charging=True),
+                                       types.SimpleNamespace(result=None))
+        self.assertTrue(resp.result)
+        payloads = [p for (_t, m, p) in self._frames() if m == mn.MOD_CHARGE]
+        self.assertEqual(payloads, [b'\x01'])

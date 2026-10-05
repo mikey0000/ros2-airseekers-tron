@@ -1,0 +1,876 @@
+// Copyright 2026 Mowgli Project
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+#include "mowgli_behavior/navigation_nodes.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <sstream>
+#include <stdexcept>
+
+#include "action_msgs/msg/goal_status.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/quaternion.hpp"
+#include "rcl_interfaces/srv/set_parameters.hpp"
+#include "tf2/LinearMath/Quaternion.hpp"
+#include "tf2/utils.hpp"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+
+namespace mowgli_behavior
+{
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+/// Parse a pose string "x;y;yaw" and fill a PoseStamped (frame_id = "map").
+geometry_msgs::msg::PoseStamped parsePoseString(const std::string& pose_str,
+                                                const rclcpp::Node::SharedPtr& node)
+{
+  std::istringstream ss(pose_str);
+  std::string token;
+  double x = 0.0, y = 0.0, yaw = 0.0;
+
+  if (!std::getline(ss, token, ';'))
+  {
+    throw std::invalid_argument("NavigateToPose: missing 'x' in goal string");
+  }
+  x = std::stod(token);
+
+  if (!std::getline(ss, token, ';'))
+  {
+    throw std::invalid_argument("NavigateToPose: missing 'y' in goal string");
+  }
+  y = std::stod(token);
+
+  if (!std::getline(ss, token, ';'))
+  {
+    throw std::invalid_argument("NavigateToPose: missing 'yaw' in goal string");
+  }
+  yaw = std::stod(token);
+
+  geometry_msgs::msg::PoseStamped pose;
+  pose.header.stamp = node->now();
+  pose.header.frame_id = "map";
+  pose.pose.position.x = x;
+  pose.pose.position.y = y;
+  pose.pose.position.z = 0.0;
+
+  tf2::Quaternion q;
+  q.setRPY(0.0, 0.0, yaw);
+  pose.pose.orientation = tf2::toMsg(q);
+
+  return pose;
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// StopMoving
+// ---------------------------------------------------------------------------
+
+void StopMoving::publish_zero(const rclcpp::Node::SharedPtr& node)
+{
+  geometry_msgs::msg::TwistStamped zero{};
+  zero.header.stamp = node->now();
+  zero.header.frame_id = "base_footprint";
+  pub_->publish(zero);
+}
+
+BT::NodeStatus StopMoving::onStart()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  if (!pub_)
+  {
+    pub_ = ctx->node->create_publisher<geometry_msgs::msg::TwistStamped>("/cmd_vel_emergency", 10);
+  }
+
+  duration_sec_ = 0.5;
+  getInput("duration_sec", duration_sec_);
+  start_time_ = ctx->node->now();
+
+  publish_zero(ctx->node);
+  RCLCPP_INFO(ctx->node->get_logger(),
+              "StopMoving: streaming zero velocity for %.2fs",
+              duration_sec_);
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus StopMoving::onRunning()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  publish_zero(ctx->node);
+
+  const double elapsed = (ctx->node->now() - start_time_).seconds();
+  if (elapsed >= duration_sec_)
+  {
+    return BT::NodeStatus::SUCCESS;
+  }
+  return BT::NodeStatus::RUNNING;
+}
+
+void StopMoving::onHalted()
+{
+  // Nothing to cancel — publisher is fire-and-forget.
+}
+
+// ---------------------------------------------------------------------------
+// ClearCostmap
+// ---------------------------------------------------------------------------
+
+BT::NodeStatus ClearCostmap::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  if (!global_client_)
+  {
+    global_client_ = ctx->node->create_client<nav2_msgs::srv::ClearEntireCostmap>(
+        "/global_costmap/clear_entirely_global_costmap");
+  }
+  if (!local_client_)
+  {
+    local_client_ = ctx->node->create_client<nav2_msgs::srv::ClearEntireCostmap>(
+        "/local_costmap/clear_entirely_local_costmap");
+  }
+
+  // Nav2's clear_entirely_* services use nav2_msgs/ClearEntireCostmap, NOT
+  // std_srvs/Empty. An earlier version of this node used Empty which
+  // silently failed at the DDS type-match stage — ClearCostmap returned
+  // SUCCESS but the costmap was never actually cleared, leaving stale
+  // obstacle marks (observed on the 2026-04-24 'Start occupied' loop).
+  auto request = std::make_shared<nav2_msgs::srv::ClearEntireCostmap::Request>();
+
+  // Just send the requests. If the service isn't ready, async_send_request
+  // will fail silently (no response). This avoids DDS discovery issues
+  // where service_is_ready() and wait_for_service() never return true
+  // even though the services exist (Cyclone DDS on ARM).
+  global_client_->async_send_request(request);
+  local_client_->async_send_request(request);
+  RCLCPP_INFO(ctx->node->get_logger(), "ClearCostmap: sent clear requests");
+
+  return BT::NodeStatus::SUCCESS;
+}
+
+// ---------------------------------------------------------------------------
+// SetNav2Lifecycle
+// ---------------------------------------------------------------------------
+
+BT::NodeStatus SetNav2Lifecycle::tick()
+{
+  // Feature flag (default false): when disabled, this node is a pure no-op.
+  // No service client is created and no manage_nodes request is ever sent,
+  // so behaviour is identical to a build without idle suspend.
+  bool enabled = false;
+  config().blackboard->get<bool>("idle_nav2_suspend", enabled);
+  if (!enabled)
+  {
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  std::string command;
+  if (!getInput<std::string>("command", command))
+  {
+    return BT::NodeStatus::FAILURE;
+  }
+  const bool want_pause = (command == "PAUSE");
+  if (!want_pause && command != "RESUME")
+  {
+    return BT::NodeStatus::FAILURE;
+  }
+
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  // Decide whether a transition is actually needed. ctx->nav2_suspended is
+  // our single source of truth (the BT is the only pause/resume authority),
+  // so we issue a manage_nodes call only on a real transition — no per-tick
+  // service spam while mowing or while parked.
+  {
+    std::lock_guard<std::mutex> lock(ctx->context_mutex);
+    if (want_pause)
+    {
+      if (ctx->nav2_suspended)
+      {
+        return BT::NodeStatus::SUCCESS;  // already paused
+      }
+      // SAFETY: only suspend (which deactivates collision_monitor) when the
+      // robot is physically on the dock. Off-dock idle keeps Nav2 active.
+      if (!ctx->latest_power.charger_enabled)
+      {
+        return BT::NodeStatus::SUCCESS;
+      }
+    }
+    else if (!ctx->nav2_suspended)
+    {
+      return BT::NodeStatus::SUCCESS;  // already active, nothing to resume
+    }
+  }
+
+  if (!client_)
+  {
+    client_ = ctx->helper_node->create_client<nav2_msgs::srv::ManageLifecycleNodes>(
+        "/lifecycle_manager_navigation/manage_nodes");
+  }
+  if (!client_->service_is_ready())
+  {
+    // lifecycle_manager not up yet — leave our tracked state unchanged so we
+    // retry on the next tick rather than desyncing.
+    RCLCPP_WARN_THROTTLE(ctx->node->get_logger(),
+                         *ctx->node->get_clock(),
+                         5000,
+                         "SetNav2Lifecycle: manage_nodes service not ready, skipping %s",
+                         command.c_str());
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  auto req = std::make_shared<nav2_msgs::srv::ManageLifecycleNodes::Request>();
+  req->command = want_pause ? nav2_msgs::srv::ManageLifecycleNodes::Request::PAUSE
+                            : nav2_msgs::srv::ManageLifecycleNodes::Request::RESUME;
+  // Fire-and-forget: RESUME completion is gated downstream by Nav2ReadyPoll
+  // (Nav2Active) before any motion, so we don't block the tick on the
+  // transition. Mark our tracked state immediately.
+  client_->async_send_request(req);
+  {
+    std::lock_guard<std::mutex> lock(ctx->context_mutex);
+    ctx->nav2_suspended = want_pause;
+  }
+  RCLCPP_INFO(ctx->node->get_logger(),
+              "SetNav2Lifecycle: sent %s to lifecycle_manager_navigation",
+              command.c_str());
+  return BT::NodeStatus::SUCCESS;
+}
+
+// ---------------------------------------------------------------------------
+// NavigateToPose
+// ---------------------------------------------------------------------------
+
+void NavigateToPose::ensureActionClient(const rclcpp::Node::SharedPtr& node)
+{
+  if (!action_client_)
+  {
+    action_client_ = rclcpp_action::create_client<Nav2Goal>(node, "/navigate_to_pose");
+  }
+}
+
+BT::NodeStatus NavigateToPose::onStart()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  auto goal_res = getInput<std::string>("goal");
+  if (!goal_res)
+  {
+    RCLCPP_ERROR(ctx->node->get_logger(),
+                 "NavigateToPose: missing required port 'goal': %s",
+                 goal_res.error().c_str());
+    return BT::NodeStatus::FAILURE;
+  }
+
+  geometry_msgs::msg::PoseStamped target_pose;
+  try
+  {
+    target_pose = parsePoseString(goal_res.value(), ctx->node);
+  }
+  catch (const std::exception& ex)
+  {
+    RCLCPP_ERROR(ctx->node->get_logger(), "NavigateToPose: %s", ex.what());
+    return BT::NodeStatus::FAILURE;
+  }
+
+  ensureActionClient(ctx->node);
+
+  if (!action_client_->wait_for_action_server(std::chrono::seconds(5)))
+  {
+    RCLCPP_WARN(ctx->node->get_logger(),
+                "NavigateToPose: action server '/navigate_to_pose' not available");
+    return BT::NodeStatus::FAILURE;
+  }
+
+  Nav2Goal::Goal goal_msg;
+  goal_msg.pose = target_pose;
+
+  auto send_goal_options = rclcpp_action::Client<Nav2Goal>::SendGoalOptions{};
+
+  goal_handle_future_ = action_client_->async_send_goal(goal_msg, send_goal_options);
+  goal_handle_.reset();
+
+  RCLCPP_INFO(ctx->node->get_logger(),
+              "NavigateToPose: goal sent (x=%.2f y=%.2f yaw=%.2f)",
+              target_pose.pose.position.x,
+              target_pose.pose.position.y,
+              0.0 /* yaw logged for info, already in quaternion */);
+
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus NavigateToPose::onRunning()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  // Resolve the goal handle the first time it is ready.
+  if (!goal_handle_)
+  {
+    if (goal_handle_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+    {
+      return BT::NodeStatus::RUNNING;
+    }
+    goal_handle_ = goal_handle_future_.get();
+    if (!goal_handle_)
+    {
+      RCLCPP_ERROR(ctx->node->get_logger(),
+                   "NavigateToPose: goal was rejected by the action server");
+      return BT::NodeStatus::FAILURE;
+    }
+  }
+
+  const auto status = goal_handle_->get_status();
+
+  switch (status)
+  {
+    case action_msgs::msg::GoalStatus::STATUS_SUCCEEDED:
+      RCLCPP_INFO(ctx->node->get_logger(), "NavigateToPose: goal succeeded");
+      return BT::NodeStatus::SUCCESS;
+
+    case action_msgs::msg::GoalStatus::STATUS_ABORTED:
+      RCLCPP_WARN(ctx->node->get_logger(), "NavigateToPose: goal aborted");
+      return BT::NodeStatus::FAILURE;
+
+    case action_msgs::msg::GoalStatus::STATUS_CANCELED:
+      RCLCPP_WARN(ctx->node->get_logger(), "NavigateToPose: goal canceled");
+      return BT::NodeStatus::FAILURE;
+
+    default:
+      return BT::NodeStatus::RUNNING;
+  }
+}
+
+void NavigateToPose::onHalted()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  if (goal_handle_)
+  {
+    RCLCPP_INFO(ctx->node->get_logger(), "NavigateToPose: canceling active goal");
+    action_client_->async_cancel_goal(goal_handle_);
+    goal_handle_.reset();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// NavigateInsideBoundary
+// ---------------------------------------------------------------------------
+
+void NavigateInsideBoundary::ResetState()
+{
+  service_future_ = {};
+  toggle_filter_future_ = {};
+  clear_future_ = {};
+  goal_handle_future_ = {};
+  goal_handle_.reset();
+  goal_result_future_ = {};
+  recovery_pose_ = geometry_msgs::msg::Pose{};
+  distance_outside_ = 0.0;
+  pending_nav_result_ = BT::NodeStatus::FAILURE;
+  keepout_disabled_ = false;
+  phase_ = Phase::WaitingForService;
+}
+
+void NavigateInsideBoundary::RequestKeepoutEnable(bool enabled)
+{
+  // Fire-and-forget: drop the returned future on the floor. The client posts
+  // the request to the executor, so it goes out even when this BT node is
+  // being halted / destroyed shortly after.
+  if (!keepout_toggle_client_)
+    return;
+  // Do NOT gate on service_is_ready(): on Cyclone/ARM discovery can report the
+  // service as not ready long after it exists (see the parameter-client note
+  // above). A request to an absent service just never gets a reply.
+  auto request = std::make_shared<ToggleFilterSrv::Request>();
+  request->data = enabled;
+  (void)keepout_toggle_client_->async_send_request(request);
+}
+
+BT::NodeStatus NavigateInsideBoundary::onStart()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  if (!service_client_)
+  {
+    service_client_ = ctx->node->create_client<RecoverySrv>("/map_server_node/get_recovery_point");
+  }
+  if (!clear_client_)
+  {
+    clear_client_ =
+        ctx->node->create_client<ClearSrv>("/global_costmap/clear_entirely_global_costmap");
+  }
+  if (!keepout_toggle_client_)
+  {
+    keepout_toggle_client_ =
+        ctx->node->create_client<ToggleFilterSrv>("/global_costmap/keepout_filter/toggle_filter");
+  }
+  if (!action_client_)
+  {
+    action_client_ = rclcpp_action::create_client<Nav2Goal>(ctx->node, "/navigate_to_pose");
+  }
+  if (!service_client_->wait_for_service(std::chrono::seconds(2)))
+  {
+    RCLCPP_ERROR(ctx->node->get_logger(),
+                 "NavigateInsideBoundary: /map_server_node/get_recovery_point unavailable");
+    return BT::NodeStatus::FAILURE;
+  }
+
+  ResetState();
+  service_future_ =
+      service_client_->async_send_request(std::make_shared<RecoverySrv::Request>()).share();
+
+  RCLCPP_INFO(ctx->node->get_logger(),
+              "NavigateInsideBoundary: requesting recovery pose from map server");
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus NavigateInsideBoundary::onRunning()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  // Phase 1: service response for the recovery pose.
+  if (phase_ == Phase::WaitingForService)
+  {
+    if (service_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+    {
+      return BT::NodeStatus::RUNNING;
+    }
+    auto resp = service_future_.get();
+    if (!resp || !resp->success)
+    {
+      RCLCPP_WARN(ctx->node->get_logger(),
+                  "NavigateInsideBoundary: recovery pose request failed: %s",
+                  resp ? resp->message.c_str() : "null response");
+      return BT::NodeStatus::FAILURE;
+    }
+
+    recovery_pose_ = resp->recovery_pose;
+    distance_outside_ = resp->distance_outside;
+
+    // Disable the global_costmap's keepout filter so Smac can plan from
+    // the robot's current cell (which is in the keepout-lethal zone —
+    // that's why we triggered recovery in the first place). CostmapFilter
+    // exposes a SetBool service; changing a similarly named ROS parameter is
+    // accepted but does not toggle the filter.
+    if (!keepout_toggle_client_->service_is_ready())
+    {
+      // Discovery-only signal, unreliable on Cyclone/ARM: warn and still send
+      // the request. The ack wait below (kToggleAckTimeoutSec) is what decides.
+      RCLCPP_WARN(ctx->node->get_logger(),
+                  "NavigateInsideBoundary: keepout toggle service not discovered yet — "
+                  "sending the disable request anyway and waiting for its ack");
+    }
+    toggle_sent_time_ = std::chrono::steady_clock::now();
+    auto request = std::make_shared<ToggleFilterSrv::Request>();
+    request->data = false;
+    // Treat the filter as potentially disabled as soon as the request is in
+    // flight. If the BT is halted before the response arrives, onHalted must
+    // still enqueue the matching enable request.
+    keepout_disabled_ = true;
+    toggle_filter_future_ = keepout_toggle_client_->async_send_request(request).share();
+    phase_ = Phase::DisablingKeepout;
+    RCLCPP_INFO(ctx->node->get_logger(),
+                "NavigateInsideBoundary: disabling global_costmap keepout_filter "
+                "(recovery target=(%.2f, %.2f), robot %.2fm outside)",
+                recovery_pose_.position.x,
+                recovery_pose_.position.y,
+                distance_outside_);
+    return BT::NodeStatus::RUNNING;
+  }
+
+  // Phase 2: filter disable acknowledged → kick off costmap clear.
+  if (phase_ == Phase::DisablingKeepout)
+  {
+    if (toggle_filter_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+    {
+      const double waited =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - toggle_sent_time_)
+              .count();
+      if (waited < kToggleAckTimeoutSec)
+      {
+        return BT::NodeStatus::RUNNING;
+      }
+      // No ack: the filter may or may not be disabled. Do not move; ask for
+      // re-enable (harmless if it never was disabled) and fail the recovery.
+      RCLCPP_ERROR(ctx->node->get_logger(),
+                   "NavigateInsideBoundary: no ack from the keepout toggle service after %.0fs — "
+                   "refusing recovery motion",
+                   waited);
+      pending_nav_result_ = BT::NodeStatus::FAILURE;
+      return BeginReEnableKeepout();
+    }
+    auto response = toggle_filter_future_.get();
+    if (!response || !response->success)
+    {
+      keepout_disabled_ = false;
+      RCLCPP_ERROR(ctx->node->get_logger(),
+                   "NavigateInsideBoundary: keepout disable failed: %s — refusing recovery motion",
+                   response ? response->message.c_str() : "empty response");
+      return BT::NodeStatus::FAILURE;
+    }
+    // Clear the existing lethals stamped by the (now-disabled) keepout
+    // filter. Without this, the master costmap still carries the old
+    // lethal cells until the next costmap update sweeps them out.
+    if (!clear_client_->service_is_ready())
+    {
+      RCLCPP_WARN(ctx->node->get_logger(),
+                  "NavigateInsideBoundary: clear_entirely_global_costmap not ready — "
+                  "proceeding without clear");
+      return SendNav2Goal();
+    }
+    clear_future_ =
+        clear_client_->async_send_request(std::make_shared<ClearSrv::Request>()).share();
+    phase_ = Phase::ClearingCostmap;
+    return BT::NodeStatus::RUNNING;
+  }
+
+  // Phase 3: clear acknowledged → send Nav2 goal.
+  if (phase_ == Phase::ClearingCostmap)
+  {
+    if (clear_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+    {
+      return BT::NodeStatus::RUNNING;
+    }
+    (void)clear_future_.get();  // ClearEntireCostmap returns an empty response
+    return SendNav2Goal();
+  }
+
+  // Phase 4: wait for the Nav2 goal handle.
+  if (phase_ == Phase::WaitingForGoalHandle)
+  {
+    if (goal_handle_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+    {
+      return BT::NodeStatus::RUNNING;
+    }
+    goal_handle_ = goal_handle_future_.get();
+    if (!goal_handle_)
+    {
+      RCLCPP_ERROR(ctx->node->get_logger(), "NavigateInsideBoundary: nav2 rejected recovery goal");
+      pending_nav_result_ = BT::NodeStatus::FAILURE;
+      return BeginReEnableKeepout();
+    }
+    goal_result_future_ = action_client_->async_get_result(goal_handle_);
+    phase_ = Phase::WaitingForResult;
+  }
+
+  // Phase 5: poll the Nav2 result.
+  if (phase_ == Phase::WaitingForResult)
+  {
+    if (goal_result_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+    {
+      return BT::NodeStatus::RUNNING;
+    }
+    const auto result = goal_result_future_.get();
+    switch (result.code)
+    {
+      case rclcpp_action::ResultCode::SUCCEEDED:
+        RCLCPP_INFO(ctx->node->get_logger(), "NavigateInsideBoundary: recovery complete");
+        pending_nav_result_ = BT::NodeStatus::SUCCESS;
+        return BeginReEnableKeepout();
+      case rclcpp_action::ResultCode::ABORTED:
+        RCLCPP_WARN(ctx->node->get_logger(), "NavigateInsideBoundary: nav2 aborted");
+        pending_nav_result_ = BT::NodeStatus::FAILURE;
+        return BeginReEnableKeepout();
+      case rclcpp_action::ResultCode::CANCELED:
+        RCLCPP_WARN(ctx->node->get_logger(), "NavigateInsideBoundary: nav2 canceled");
+        pending_nav_result_ = BT::NodeStatus::FAILURE;
+        return BeginReEnableKeepout();
+      default:
+        RCLCPP_ERROR(ctx->node->get_logger(), "NavigateInsideBoundary: unknown nav2 result");
+        pending_nav_result_ = BT::NodeStatus::FAILURE;
+        return BeginReEnableKeepout();
+    }
+  }
+
+  // Phase 6: re-enable keepout before returning the latched Nav2 result.
+  if (phase_ == Phase::ReEnablingKeepout)
+  {
+    if (toggle_filter_future_.valid() &&
+        toggle_filter_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+    {
+      return BT::NodeStatus::RUNNING;
+    }
+    if (toggle_filter_future_.valid())
+    {
+      auto response = toggle_filter_future_.get();
+      if (!response || !response->success)
+      {
+        RCLCPP_ERROR(ctx->node->get_logger(),
+                     "NavigateInsideBoundary: re-enable keepout failed: %s — retrying once and "
+                     "escalating to a stopped recovery failure",
+                     response ? response->message.c_str() : "empty response");
+        RequestKeepoutEnable(true);
+        pending_nav_result_ = BT::NodeStatus::FAILURE;
+      }
+    }
+    keepout_disabled_ = false;
+    return pending_nav_result_;
+  }
+
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus NavigateInsideBoundary::SendNav2Goal()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  if (!action_client_->wait_for_action_server(std::chrono::seconds(5)))
+  {
+    RCLCPP_WARN(ctx->node->get_logger(), "NavigateInsideBoundary: /navigate_to_pose unavailable");
+    pending_nav_result_ = BT::NodeStatus::FAILURE;
+    return BeginReEnableKeepout();
+  }
+
+  Nav2Goal::Goal goal_msg;
+  goal_msg.pose.header.stamp = ctx->node->now();
+  goal_msg.pose.header.frame_id = "map";
+  goal_msg.pose.pose = recovery_pose_;
+
+  goal_handle_future_ = action_client_->async_send_goal(goal_msg);
+
+  RCLCPP_INFO(ctx->node->get_logger(),
+              "NavigateInsideBoundary: nav2 goal sent (x=%.2f y=%.2f, robot %.2fm outside)",
+              recovery_pose_.position.x,
+              recovery_pose_.position.y,
+              distance_outside_);
+  phase_ = Phase::WaitingForGoalHandle;
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus NavigateInsideBoundary::BeginReEnableKeepout()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  if (!keepout_disabled_)
+  {
+    // We never disabled (e.g. toggle service unavailable on entry), so
+    // nothing to re-enable. Return the latched Nav2 outcome directly.
+    return pending_nav_result_;
+  }
+  if (!keepout_toggle_client_)
+  {
+    RCLCPP_WARN(ctx->node->get_logger(),
+                "NavigateInsideBoundary: cannot re-enable keepout — no toggle client; "
+                "boundary protection requires operator intervention");
+    pending_nav_result_ = BT::NodeStatus::FAILURE;
+    keepout_disabled_ = false;
+    return pending_nav_result_;
+  }
+  // service_is_ready() is deliberately not consulted here either: a Nav2 run
+  // that brought the robot back inside must not be reported as FAILURE just
+  // because discovery lags; the request is sent and its reply checked.
+  auto request = std::make_shared<ToggleFilterSrv::Request>();
+  request->data = true;
+  toggle_filter_future_ = keepout_toggle_client_->async_send_request(request).share();
+  phase_ = Phase::ReEnablingKeepout;
+  return BT::NodeStatus::RUNNING;
+}
+
+void NavigateInsideBoundary::onHalted()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  if (goal_handle_)
+  {
+    RCLCPP_INFO(ctx->node->get_logger(), "NavigateInsideBoundary: canceling goal");
+    action_client_->async_cancel_goal(goal_handle_);
+    goal_handle_.reset();
+  }
+  if (keepout_disabled_)
+  {
+    RCLCPP_INFO(ctx->node->get_logger(), "NavigateInsideBoundary: halt — restoring keepout filter");
+    RequestKeepoutEnable(true);
+    keepout_disabled_ = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BackUp
+// ---------------------------------------------------------------------------
+
+BT::NodeStatus BackUp::onStart()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  if (!action_client_)
+  {
+    action_client_ = rclcpp_action::create_client<BackUpAction>(ctx->node, "/backup");
+  }
+
+  if (!action_client_->wait_for_action_server(std::chrono::seconds(5)))
+  {
+    RCLCPP_ERROR(ctx->node->get_logger(), "BackUp: /backup action server not available");
+    return BT::NodeStatus::FAILURE;
+  }
+
+  double dist = 0.5;
+  double speed = 0.15;
+  getInput("backup_dist", dist);
+  getInput("backup_speed", speed);
+
+  auto goal_msg = BackUpAction::Goal{};
+  // BackUp target is negative X (reverse) in base_link frame
+  goal_msg.target.x = -dist;
+  goal_msg.target.y = 0.0;
+  goal_msg.speed = speed;
+  // Generous timeout: slow motors need extra time. 3x nominal duration.
+  goal_msg.time_allowance = rclcpp::Duration::from_seconds(dist / speed * 3.0);
+
+  RCLCPP_INFO(ctx->node->get_logger(), "BackUp: reversing %.2fm at %.2f m/s", dist, speed);
+
+  goal_handle_future_ = action_client_->async_send_goal(goal_msg);
+  goal_handle_ = nullptr;
+  result_requested_ = false;
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus BackUp::onRunning()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  // Wait for goal acceptance
+  if (!goal_handle_)
+  {
+    if (goal_handle_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+    {
+      return BT::NodeStatus::RUNNING;
+    }
+    goal_handle_ = goal_handle_future_.get();
+    if (!goal_handle_)
+    {
+      RCLCPP_ERROR(ctx->node->get_logger(), "BackUp: goal rejected");
+      return BT::NodeStatus::FAILURE;
+    }
+  }
+
+  // Request result future only once
+  if (!result_requested_)
+  {
+    result_future_ = action_client_->async_get_result(goal_handle_);
+    result_requested_ = true;
+  }
+
+  if (result_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+  {
+    return BT::NodeStatus::RUNNING;
+  }
+
+  auto wrapped = result_future_.get();
+  if (wrapped.code == rclcpp_action::ResultCode::SUCCEEDED)
+  {
+    RCLCPP_INFO(ctx->node->get_logger(), "BackUp: complete");
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  RCLCPP_WARN(ctx->node->get_logger(),
+              "BackUp: action ended with code %d",
+              static_cast<int>(wrapped.code));
+  return BT::NodeStatus::FAILURE;
+}
+
+void BackUp::onHalted()
+{
+  if (goal_handle_)
+  {
+    auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+    action_client_->async_cancel_goal(goal_handle_);
+    RCLCPP_INFO(ctx->node->get_logger(), "BackUp: halted, goal cancelled");
+  }
+  goal_handle_ = nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// SetNavMode
+// ---------------------------------------------------------------------------
+
+BT::NodeStatus SetNavMode::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  auto mode_res = getInput<std::string>("mode");
+  if (!mode_res)
+  {
+    return BT::NodeStatus::FAILURE;
+  }
+  const std::string mode = mode_res.value();
+
+  if (mode == ctx->current_nav_mode)
+  {
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  // Reconfigure controller speed via dynamic parameter API.
+  auto param_client =
+      std::make_shared<rclcpp::AsyncParametersClient>(ctx->node, "/controller_server");
+
+  if (!param_client->wait_for_service(std::chrono::milliseconds(200)))
+  {
+    // controller_server's lifecycle ramp is ~15-20 s on this hardware; if
+    // COMMAND_START arrives during that window the BT used to return
+    // FAILURE here, the parent GPSModeSelector Fallback would fail, and
+    // the BT would silently hold in IDLE — operator-visible symptom was
+    // "I clicked Start, nothing happened" (issue #197). Returning SUCCESS
+    // without latching current_nav_mode means the next BT tick re-enters
+    // SetNavMode and retries; the controller server has no inflight motion
+    // during this boot window so the deferred mode swap is harmless. We
+    // log once per process via WARN_ONCE to avoid spamming the boot log.
+    RCLCPP_WARN_ONCE(ctx->node->get_logger(),
+                     "SetNavMode: controller_server param service not ready yet — "
+                     "deferring '%s' (BT will retry on next tick)",
+                     mode.c_str());
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  // Apply the operator-configured speeds (from mowgli_robot.yaml via
+  // behavior_tree_node → BTContext), NOT hardcoded magic numbers. We set the
+  // knob each controller actually reads: FollowPath is RPP (via RotationShim),
+  // whose speed knob is max_linear_vel; FollowCoveragePath is FTCController,
+  // whose carrot-speed knob is speed_fast (FTC applies it live via its
+  // onParameterChange). Setting vx_max here — the old MPPI knob — would spam
+  // "parameter not declared" warnings and silently drop the operator's
+  // mowing_speed, since FTC has no vx_max.
+  //
+  // "degraded" (Float-quality GPS) runs at half the configured speed, floored
+  // at the host min-drive clamp: hardware_bridge zeroes |vx| < kMinLinVel
+  // (0.15 m/s), so a half-speed below that would stall the robot entirely.
+  constexpr double kMinDriveSpeed = 0.15;
+  const double transit =
+      (mode == "precise") ? ctx->transit_speed : std::max(0.5 * ctx->transit_speed, kMinDriveSpeed);
+  const double mowing =
+      (mode == "precise") ? ctx->mowing_speed : std::max(0.5 * ctx->mowing_speed, kMinDriveSpeed);
+
+  const std::vector<rclcpp::Parameter> params = {
+      rclcpp::Parameter("FollowPath.primary_controller.max_linear_vel", transit),
+      rclcpp::Parameter("FollowCoveragePath.speed_fast", mowing),
+  };
+
+  param_client->set_parameters(params);
+  ctx->current_nav_mode = mode;
+
+  RCLCPP_INFO(ctx->node->get_logger(),
+              "SetNavMode: mode '%s' — transit %.2f m/s, mowing %.2f m/s",
+              mode.c_str(),
+              transit,
+              mowing);
+  return BT::NodeStatus::SUCCESS;
+}
+
+}  // namespace mowgli_behavior

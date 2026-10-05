@@ -12,7 +12,7 @@ contain the substring ``RTK_FIXED``).
 
 Subscribed topics
 -----------------
-``/cmd_vel``      geometry_msgs/TwistStamped   commanded twist (output of
+``/cmd_vel``      geometry_msgs/Twist          commanded twist (output of
                                                   ``mower_control/cmd_vel_slew``)
 ``/wheel_vel``    geometry_msgs/TwistStamped   measured twist -- preferred source
                                                   (published by the vendor
@@ -67,7 +67,7 @@ from rclpy.node import Node
 from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
                        QoSReliabilityPolicy)
 
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, String
 
@@ -106,7 +106,7 @@ class SlipDetectorNode(Node):
         self._qos10 = QoSProfile(depth=10,
                                  reliability=QoSReliabilityPolicy.RELIABLE,
                                  history=QoSHistoryPolicy.KEEP_LAST)
-        self.create_subscription(TwistStamped, '/cmd_vel', self._on_cmd_vel,
+        self.create_subscription(Twist, '/cmd_vel', self._on_cmd_vel,
                                  self._qos10)
         self.create_subscription(String, '/fix_status', self._on_fix_status,
                                  self._qos10)
@@ -133,7 +133,7 @@ class SlipDetectorNode(Node):
     # callbacks
     # ------------------------------------------------------------------
     def _on_cmd_vel(self, msg):
-        self._cmd = (msg.twist.linear.x, msg.twist.angular.z)
+        self._cmd = (msg.linear.x, msg.angular.z)
 
     def _on_meas_twist(self, msg):
         self._meas = (msg.twist.linear.x, msg.twist.angular.z)

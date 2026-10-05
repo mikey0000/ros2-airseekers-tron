@@ -1,0 +1,38 @@
+# twist_mux 4.3.0 (ROS 2 Humble). Messages are geometry_msgs/Twist; there is
+# no `use_stamped` parameter in this version.
+twist_mux:
+  ros__parameters:
+    # Higher priority overrides lower while its topic is active within timeout.
+    topics:
+      navigation:
+        topic: /cmd_vel_nav
+        # Short timeouts everywhere: if a source dies, twist_mux must stop
+        # republishing its last command quickly so the robot does not coast on
+        # a stale command. 0.6 s still covers several periods of a 10 Hz
+        # controller.
+        timeout: 0.6
+        priority: 10
+      docking:
+        topic: /cmd_vel_docking
+        timeout: 0.5
+        priority: 15
+      teleop:
+        topic: /cmd_vel_teleop
+        timeout: 0.5
+        priority: 20      # operator override beats navigation
+      bumper:
+        topic: /cmd_vel_bumper
+        timeout: 0.5
+        priority: 50
+      emergency:
+        topic: /cmd_vel_emergency
+        timeout: 0.2      # tighter timeout for the safety-critical source
+        priority: 100
+
+    # std_msgs/Bool published by mower_mcu_driver; while true, twist_mux
+    # blocks all lanes (outputs nothing).
+    locks:
+      estop:
+        topic: /estop
+        timeout: 0.0
+        priority: 255

@@ -1,0 +1,2616 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "API for the MowgliNext autonomous robot mower GUI",
+        "title": "MowgliNext GUI API",
+        "contact": {},
+        "version": "1.0"
+    },
+    "host": "localhost:4200",
+    "basePath": "/api",
+    "paths": {
+        "/config/envs": {
+            "get": {
+                "description": "get config env from backend",
+                "produces": [
+                    "application/json",
+                    "application/json"
+                ],
+                "tags": [
+                    "config"
+                ],
+                "summary": "get config env from backend",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.GetConfigResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/config/keys/get": {
+            "post": {
+                "description": "get config from backend",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "config"
+                ],
+                "summary": "get config from backend",
+                "parameters": [
+                    {
+                        "description": "settings",
+                        "name": "settings",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/config/keys/set": {
+            "post": {
+                "description": "set config to backend",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "config"
+                ],
+                "summary": "set config to backend",
+                "parameters": [
+                    {
+                        "description": "settings",
+                        "name": "settings",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/containers": {
+            "get": {
+                "description": "list all containers",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "containers"
+                ],
+                "summary": "list all containers",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.ContainerListResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/containers/{containerId}/logs": {
+            "get": {
+                "description": "get container logs",
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "containers"
+                ],
+                "summary": "get container logs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "container id",
+                        "name": "containerId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {}
+            }
+        },
+        "/containers/{containerId}/{command}": {
+            "post": {
+                "description": "execute a command on a container",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "containers"
+                ],
+                "summary": "execute a command on a container",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "container id",
+                        "name": "containerId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "command to execute (start/stop/restart)",
+                        "name": "command",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/import/openmower": {
+            "post": {
+                "description": "Parse a user-supplied OpenMower map.json, translate it\ninto MowgliNext's coordinate frame, and return a summary\nfor confirmation. Setting `apply=true` runs the live write\npath (areas + dock pose). See docs/IMPORT_OPENMOWER_MAP.md.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "import"
+                ],
+                "summary": "import an OpenMower map.json (preview-only by default)",
+                "parameters": [
+                    {
+                        "description": "import request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.ImportOpenMowerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.ImportOpenMowerSummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/irrisense/gardens": {
+            "get": {
+                "description": "gardens readable by the stored token, for the picker and \"test connection\"",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "irrisense"
+                ],
+                "summary": "list IrriSense gardens",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.IrriSenseGardensResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.IrriSenseErrorResponse"
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/api.IrriSenseErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/irrisense/settings": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "irrisense"
+                ],
+                "summary": "IrriSense settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.IrriSenseSettingsResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "irrisense"
+                ],
+                "summary": "update IrriSense settings",
+                "parameters": [
+                    {
+                        "description": "partial settings",
+                        "name": "settings",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.IrriSenseSettingsUpdate"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.IrriSenseSettingsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/irrisense/status": {
+            "get": {
+                "description": "cached wet/dry/unknown verdict the scheduler gate reads",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "irrisense"
+                ],
+                "summary": "IrriSense soil status",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/types.SoilStatus"
+                        }
+                    }
+                }
+            }
+        },
+        "/mowglinext/call/{command}": {
+            "post": {
+                "description": "call a service",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mowglinext"
+                ],
+                "summary": "call a service",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "command to call, could be: high_level_control, emergency, mow_enabled, start_in_area",
+                        "name": "command",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "request body",
+                        "name": "CallReq",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/mowglinext/map": {
+            "put": {
+                "description": "clear the map and insert all provided areas in a single transaction",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mowglinext"
+                ],
+                "summary": "Delete the current map and replace all areas",
+                "parameters": [
+                    {
+                        "description": "replace map request body",
+                        "name": "CallReq",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/mowgli.ReplaceMapReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "clear the map",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mowglinext"
+                ],
+                "summary": "clear the map",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/mowglinext/map/area/add": {
+            "post": {
+                "description": "add a map area",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mowglinext"
+                ],
+                "summary": "add a map area",
+                "parameters": [
+                    {
+                        "description": "request body",
+                        "name": "CallReq",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/mowgli.AddMowingAreaReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/mowglinext/map/docking": {
+            "post": {
+                "description": "set the docking point",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mowglinext"
+                ],
+                "summary": "set the docking point",
+                "parameters": [
+                    {
+                        "description": "request body",
+                        "name": "CallReq",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/mowgli.SetDockingPointReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/mowglinext/multiplex": {
+            "get": {
+                "description": "multiplexed topic subscription",
+                "tags": [
+                    "mowglinext"
+                ],
+                "summary": "multiplexed topic subscription",
+                "responses": {}
+            }
+        },
+        "/mowglinext/publish/{topic}": {
+            "get": {
+                "description": "publish to a topic",
+                "tags": [
+                    "mowglinext"
+                ],
+                "summary": "publish to a topic",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "topic to publish to, could be: joy",
+                        "name": "topic",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {}
+            }
+        },
+        "/mowglinext/subscribe/{topic}": {
+            "get": {
+                "description": "subscribe to a topic",
+                "tags": [
+                    "mowglinext"
+                ],
+                "summary": "subscribe to a topic",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "logical topic key: diagnostics, status, highLevelStatus, gps, gnssStatus, pose, imu, ticks, map, path, plan, mowingPath, power, emergency, dockingSensor, lidar",
+                        "name": "topic",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {}
+            }
+        },
+        "/notifications/settings": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "notifications"
+                ],
+                "summary": "notification settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.NotificationSettingsResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "notifications"
+                ],
+                "summary": "update notification settings",
+                "parameters": [
+                    {
+                        "description": "partial settings",
+                        "name": "settings",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.NotificationSettingsUpdate"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.NotificationSettingsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/notifications/status": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "notifications"
+                ],
+                "summary": "notification delivery status",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/providers.NotifyDeliveryStatus"
+                        }
+                    }
+                }
+            }
+        },
+        "/notifications/test": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "notifications"
+                ],
+                "summary": "send a test notification",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/remote-access/apply": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "remote-access"
+                ],
+                "summary": "Retry applying remote access settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/remote-access/logout": {
+            "post": {
+                "description": "the node key is discarded; the sidecar restarts and logs in again (interactively or with the stored auth key)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "remote-access"
+                ],
+                "summary": "Log the robot out of the tailnet",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/remote-access/settings": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "remote-access"
+                ],
+                "summary": "Remote access settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.RemoteAccessSettingsResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "remote-access"
+                ],
+                "summary": "update remote access settings",
+                "parameters": [
+                    {
+                        "description": "partial settings",
+                        "name": "settings",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.RemoteAccessSettingsUpdate"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.RemoteAccessSettingsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/remote-access/status": {
+            "get": {
+                "description": "container phase, tailscaled login state, login URL while waiting, reachable URLs once connected",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "remote-access"
+                ],
+                "summary": "Remote access status",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/providers.RemoteAccessStatus"
+                        }
+                    }
+                }
+            }
+        },
+        "/schedules": {
+            "get": {
+                "description": "list all mowing schedules",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "schedules"
+                ],
+                "summary": "list all schedules",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.ScheduleListResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "create a new mowing schedule",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "schedules"
+                ],
+                "summary": "create a schedule",
+                "parameters": [
+                    {
+                        "description": "schedule",
+                        "name": "schedule",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.Schedule"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.Schedule"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/schedules/{id}": {
+            "put": {
+                "description": "update an existing mowing schedule",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "schedules"
+                ],
+                "summary": "update a schedule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "schedule ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "schedule",
+                        "name": "schedule",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.Schedule"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.Schedule"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "delete a mowing schedule",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "schedules"
+                ],
+                "summary": "delete a schedule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "schedule ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/settings": {
+            "get": {
+                "description": "returns a JSON object with the settings",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "returns a JSON object with the settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.GetSettingsResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "saves the settings to the mower_config.sh file",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "saves the settings to the mower_config.sh file",
+                "parameters": [
+                    {
+                        "description": "settings key-value map",
+                        "name": "settings",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/settings/schema": {
+            "get": {
+                "description": "returns the JSON Schema for mower configuration parameters",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "returns the mower config JSON Schema",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/settings/status": {
+            "get": {
+                "description": "returns whether onboarding has been completed",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "get settings onboarding status",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SettingsStatusResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "marks onboarding as completed so the wizard is not shown again",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "mark onboarding as completed",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/settings/yaml": {
+            "get": {
+                "description": "returns the current YAML mower configuration values as a flat key-value map",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "returns the current YAML mower configuration",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "saves the mower configuration as YAML to mowgli_robot.yaml",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "saves the mower configuration as YAML",
+                "parameters": [
+                    {
+                        "description": "flat key-value settings map",
+                        "name": "settings",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/settings/yaml/defaults": {
+            "get": {
+                "description": "returns a flat key-value map of default values (the reset-to-default source)",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "settings"
+                ],
+                "summary": "returns the schema default value for every known parameter",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/setup/flashBoard": {
+            "post": {
+                "description": "flash the mower board with the given config",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "setup"
+                ],
+                "summary": "flash the mower board with the given config",
+                "parameters": [
+                    {
+                        "description": "config",
+                        "name": "settings",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/types.FirmwareConfig"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/system/info": {
+            "get": {
+                "description": "get system info such as CPU temperature",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system"
+                ],
+                "summary": "get system info",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SystemInfo"
+                        }
+                    }
+                }
+            }
+        },
+        "/system/reboot": {
+            "post": {
+                "description": "reboots the Raspberry Pi",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system"
+                ],
+                "summary": "reboot the system",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/system/shutdown": {
+            "post": {
+                "description": "shuts down the Raspberry Pi",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system"
+                ],
+                "summary": "shutdown the system",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.OkResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/system/updater/state": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "updates"
+                ],
+                "summary": "Read cached host updater status",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/system/updater/{operation}": {
+            "post": {
+                "description": "Same-origin JSON and X-Mowgli-Update: 1 are required. See docs/UPDATES.md for the operation contract.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "updates"
+                ],
+                "summary": "Review or control a coordinated software update",
+                "parameters": [
+                    {
+                        "enum": [
+                            "policy",
+                            "check",
+                            "plan",
+                            "apply",
+                            "rollback",
+                            "recover",
+                            "notice",
+                            "agent-update"
+                        ],
+                        "type": "string",
+                        "description": "Operation",
+                        "name": "operation",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Must be 1",
+                        "name": "X-Mowgli-Update",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Operation-specific request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/system/updates": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system"
+                ],
+                "summary": "Check available software versions",
+                "parameters": [
+                    {
+                        "enum": [
+                            "stable",
+                            "dev"
+                        ],
+                        "type": "string",
+                        "description": "Comparison channel",
+                        "name": "channel",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Check remote metadata (otherwise cached result)",
+                        "name": "check",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.UpdateCheck"
+                        }
+                    }
+                }
+            }
+        },
+        "/system/versions": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system"
+                ],
+                "summary": "Installed software versions",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.VersionsResponse"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "api.Container": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "names": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "state": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.ContainerListResponse": {
+            "type": "object",
+            "properties": {
+                "containers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.Container"
+                    }
+                }
+            }
+        },
+        "api.ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.GetConfigResponse": {
+            "type": "object",
+            "properties": {
+                "tileUri": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.GetSettingsResponse": {
+            "type": "object",
+            "properties": {
+                "settings": {
+                    "type": "object",
+                    "additionalProperties": {}
+                }
+            }
+        },
+        "api.ImportDockPose": {
+            "type": "object",
+            "properties": {
+                "x": {
+                    "type": "number"
+                },
+                "y": {
+                    "type": "number"
+                },
+                "yaw_rad": {
+                    "type": "number"
+                }
+            }
+        },
+        "api.ImportOpenMowerRequest": {
+            "type": "object",
+            "properties": {
+                "apply": {
+                    "type": "boolean"
+                },
+                "map": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "om_datum_lat": {
+                    "type": "number"
+                },
+                "om_datum_lon": {
+                    "type": "number"
+                }
+            }
+        },
+        "api.ImportOpenMowerSummary": {
+            "type": "object",
+            "properties": {
+                "applied": {
+                    "type": "boolean"
+                },
+                "areas": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.ImportedAreaBrief"
+                    }
+                },
+                "datum_shift_east_m": {
+                    "type": "number"
+                },
+                "datum_shift_north_m": {
+                    "type": "number"
+                },
+                "dock_pose": {
+                    "$ref": "#/definitions/api.ImportDockPose"
+                },
+                "mn_datum_configured": {
+                    "description": "MnDatumConfigured is true when mowgli_robot.yaml already has a\ndatum_lat/datum_lon set. The GUI uses this to decide whether to\noffer the \"import the datum too\" step: on a fresh install (false)\nthe OpenMower datum can be adopted as the robot's datum; when a\ndatum already exists (true) the geometry was reprojected INTO it,\nso overwriting it would misalign the just-imported map — the GUI\nthen hides the datum-import option.",
+                    "type": "boolean"
+                },
+                "mowing_areas": {
+                    "type": "integer"
+                },
+                "navigation_areas": {
+                    "type": "integer"
+                },
+                "obstacles": {
+                    "type": "integer"
+                },
+                "orphan_obstacles": {
+                    "type": "integer"
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "api.ImportedAreaBrief": {
+            "type": "object",
+            "properties": {
+                "approx_area_sqm": {
+                    "type": "number"
+                },
+                "is_navigation_area": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "obstacles": {
+                    "type": "integer"
+                },
+                "type": {
+                    "description": "\"mow\" | \"nav\"",
+                    "type": "string"
+                },
+                "vertices": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.InstalledComponent": {
+            "type": "object",
+            "properties": {
+                "architecture": {
+                    "type": "string"
+                },
+                "built_at": {
+                    "type": "string"
+                },
+                "component": {
+                    "type": "string"
+                },
+                "digests": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "image": {
+                    "type": "string"
+                },
+                "image_id": {
+                    "type": "string"
+                },
+                "metadata_available": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.IrriSenseErrorResponse": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.IrriSenseGardensResponse": {
+            "type": "object",
+            "properties": {
+                "gardens": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providers.IrriSenseGardenSummary"
+                    }
+                }
+            }
+        },
+        "api.IrriSenseSettingsResponse": {
+            "type": "object",
+            "properties": {
+                "baseUrl": {
+                    "type": "string"
+                },
+                "dryAfterWateringHours": {
+                    "type": "number"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "gardenId": {
+                    "type": "string"
+                },
+                "gateScheduler": {
+                    "type": "boolean"
+                },
+                "maxStaleMinutes": {
+                    "type": "number"
+                },
+                "tokenMasked": {
+                    "type": "string"
+                },
+                "tokenSet": {
+                    "type": "boolean"
+                },
+                "wetDeficitMm": {
+                    "type": "number"
+                },
+                "zoneIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "api.IrriSenseSettingsUpdate": {
+            "type": "object",
+            "properties": {
+                "baseUrl": {
+                    "type": "string"
+                },
+                "clearToken": {
+                    "type": "boolean"
+                },
+                "dryAfterWateringHours": {
+                    "type": "number"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "gardenId": {
+                    "type": "string"
+                },
+                "gateScheduler": {
+                    "type": "boolean"
+                },
+                "maxStaleMinutes": {
+                    "type": "number"
+                },
+                "token": {
+                    "type": "string"
+                },
+                "wetDeficitMm": {
+                    "type": "number"
+                },
+                "zoneIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "api.NotificationSettingsResponse": {
+            "type": "object",
+            "properties": {
+                "channel": {
+                    "type": "string"
+                },
+                "channels": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "eventKinds": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "events": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "boolean"
+                    }
+                },
+                "language": {
+                    "type": "string"
+                },
+                "ntfyServer": {
+                    "type": "string"
+                },
+                "ntfyTokenMasked": {
+                    "type": "string"
+                },
+                "ntfyTokenSet": {
+                    "type": "boolean"
+                },
+                "ntfyTopic": {
+                    "type": "string"
+                },
+                "pushoverAppTokenMasked": {
+                    "type": "string"
+                },
+                "pushoverAppTokenSet": {
+                    "type": "boolean"
+                },
+                "pushoverUserKey": {
+                    "type": "string"
+                },
+                "telegramBotTokenMasked": {
+                    "type": "string"
+                },
+                "telegramBotTokenSet": {
+                    "type": "boolean"
+                },
+                "telegramChatId": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "webhookUrl": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.NotificationSettingsUpdate": {
+            "type": "object",
+            "properties": {
+                "channel": {
+                    "type": "string"
+                },
+                "clearNtfyToken": {
+                    "type": "boolean"
+                },
+                "clearPushoverAppToken": {
+                    "type": "boolean"
+                },
+                "clearTelegramBotToken": {
+                    "type": "boolean"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "events": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "boolean"
+                    }
+                },
+                "language": {
+                    "type": "string"
+                },
+                "ntfyServer": {
+                    "type": "string"
+                },
+                "ntfyToken": {
+                    "type": "string"
+                },
+                "ntfyTopic": {
+                    "type": "string"
+                },
+                "pushoverAppToken": {
+                    "type": "string"
+                },
+                "pushoverUserKey": {
+                    "type": "string"
+                },
+                "telegramBotToken": {
+                    "type": "string"
+                },
+                "telegramChatId": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "webhookUrl": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.OkResponse": {
+            "type": "object",
+            "properties": {
+                "ok": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.RemoteAccessSettingsResponse": {
+            "type": "object",
+            "properties": {
+                "authKeyMasked": {
+                    "type": "string"
+                },
+                "authKeySet": {
+                    "type": "boolean"
+                },
+                "containerName": {
+                    "type": "string"
+                },
+                "defaultImage": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "hostname": {
+                    "type": "string"
+                },
+                "image": {
+                    "type": "string"
+                },
+                "serveHttps": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.RemoteAccessSettingsUpdate": {
+            "type": "object",
+            "properties": {
+                "authKey": {
+                    "type": "string"
+                },
+                "clearAuthKey": {
+                    "type": "boolean"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "hostname": {
+                    "type": "string"
+                },
+                "image": {
+                    "type": "string"
+                },
+                "serveHttps": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.Schedule": {
+            "type": "object",
+            "properties": {
+                "area": {
+                    "type": "integer"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "daysOfWeek": {
+                    "description": "0=Sunday .. 6=Saturday",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "lastRun": {
+                    "type": "string"
+                },
+                "lastSkipReason": {
+                    "description": "Written by the scheduler when a due run was skipped (soil wet); the GUI\nshows them, the API only preserves them across updates.",
+                    "type": "string"
+                },
+                "lastSkippedAt": {
+                    "type": "string"
+                },
+                "time": {
+                    "description": "HH:mm format",
+                    "type": "string"
+                }
+            }
+        },
+        "api.ScheduleListResponse": {
+            "type": "object",
+            "properties": {
+                "schedules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.Schedule"
+                    }
+                }
+            }
+        },
+        "api.SettingsStatusResponse": {
+            "type": "object",
+            "properties": {
+                "onboarding_completed": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.SystemInfo": {
+            "type": "object",
+            "properties": {
+                "cpuTemperature": {
+                    "type": "number"
+                }
+            }
+        },
+        "api.UpdateCheck": {
+            "type": "object",
+            "properties": {
+                "channel": {
+                    "type": "string"
+                },
+                "checked_at": {
+                    "type": "string"
+                },
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.UpdateComponent"
+                    }
+                },
+                "last_successful_at": {
+                    "type": "string"
+                },
+                "notes_url": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.UpdateComponent": {
+            "type": "object",
+            "properties": {
+                "available_image": {
+                    "type": "string"
+                },
+                "available_revision": {
+                    "type": "string"
+                },
+                "custom_image": {
+                    "type": "boolean"
+                },
+                "digest_reference": {
+                    "type": "boolean"
+                },
+                "installed_revision": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "source_relation": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.VersionsResponse": {
+            "type": "object",
+            "properties": {
+                "components": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.InstalledComponent"
+                    }
+                },
+                "docker_available": {
+                    "type": "boolean"
+                },
+                "observed_at": {
+                    "type": "string"
+                },
+                "server": {
+                    "$ref": "#/definitions/buildinfo.Info"
+                }
+            }
+        },
+        "buildinfo.Info": {
+            "type": "object",
+            "properties": {
+                "built_at": {
+                    "type": "string"
+                },
+                "modified": {
+                    "type": "boolean"
+                },
+                "revision": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "geometry.Point": {
+            "type": "object",
+            "properties": {
+                "x": {
+                    "type": "number"
+                },
+                "y": {
+                    "type": "number"
+                },
+                "z": {
+                    "type": "number"
+                }
+            }
+        },
+        "geometry.Point32": {
+            "type": "object",
+            "properties": {
+                "x": {
+                    "type": "number"
+                },
+                "y": {
+                    "type": "number"
+                },
+                "z": {
+                    "type": "number"
+                }
+            }
+        },
+        "geometry.Polygon": {
+            "type": "object",
+            "properties": {
+                "points": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/geometry.Point32"
+                    }
+                }
+            }
+        },
+        "geometry.Pose": {
+            "type": "object",
+            "properties": {
+                "orientation": {
+                    "$ref": "#/definitions/geometry.Quaternion"
+                },
+                "position": {
+                    "$ref": "#/definitions/geometry.Point"
+                }
+            }
+        },
+        "geometry.Quaternion": {
+            "type": "object",
+            "properties": {
+                "w": {
+                    "type": "number"
+                },
+                "x": {
+                    "type": "number"
+                },
+                "y": {
+                    "type": "number"
+                },
+                "z": {
+                    "type": "number"
+                }
+            }
+        },
+        "mowgli.AddMowingAreaReq": {
+            "type": "object",
+            "properties": {
+                "area": {
+                    "$ref": "#/definitions/mowgli.MapArea"
+                },
+                "is_navigation_area": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "mowgli.MapArea": {
+            "type": "object",
+            "properties": {
+                "area": {
+                    "$ref": "#/definitions/geometry.Polygon"
+                },
+                "is_navigation_area": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "obstacle_info": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mowgli.MapObstacleInfo"
+                    }
+                },
+                "obstacles": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/geometry.Polygon"
+                    }
+                }
+            }
+        },
+        "mowgli.MapObstacleInfo": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "pending": {
+                    "type": "boolean"
+                },
+                "source": {
+                    "type": "integer"
+                }
+            }
+        },
+        "mowgli.ReplaceMapArea": {
+            "type": "object",
+            "properties": {
+                "area": {
+                    "$ref": "#/definitions/mowgli.MapArea"
+                },
+                "is_navigation_area": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "mowgli.ReplaceMapReq": {
+            "type": "object",
+            "properties": {
+                "areas": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mowgli.ReplaceMapArea"
+                    }
+                }
+            }
+        },
+        "mowgli.SetDockingPointReq": {
+            "type": "object",
+            "properties": {
+                "docking_pose": {
+                    "$ref": "#/definitions/geometry.Pose"
+                },
+                "use_gps_position": {
+                    "type": "boolean"
+                },
+                "yaw_rad": {
+                    "type": "number"
+                },
+                "yaw_source": {
+                    "type": "integer"
+                }
+            }
+        },
+        "providers.IrriSenseGardenSummary": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "zones": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providers.IrriSenseZoneSummary"
+                    }
+                }
+            }
+        },
+        "providers.IrriSenseZoneSummary": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                }
+            }
+        },
+        "providers.NotifyDeliveryStatus": {
+            "type": "object",
+            "properties": {
+                "channel": {
+                    "type": "string"
+                },
+                "configured": {
+                    "type": "boolean"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "failedCount": {
+                    "type": "integer"
+                },
+                "lastError": {
+                    "type": "string"
+                },
+                "lastErrorAt": {
+                    "type": "string"
+                },
+                "lastMessage": {
+                    "type": "string"
+                },
+                "lastSentAt": {
+                    "type": "string"
+                },
+                "sentCount": {
+                    "type": "integer"
+                }
+            }
+        },
+        "providers.RemoteAccessPhase": {
+            "type": "string",
+            "enum": [
+                "disabled",
+                "pulling",
+                "starting",
+                "running",
+                "error"
+            ],
+            "x-enum-varnames": [
+                "RemoteAccessDisabled",
+                "RemoteAccessPulling",
+                "RemoteAccessStarting",
+                "RemoteAccessRunning",
+                "RemoteAccessError"
+            ]
+        },
+        "providers.RemoteAccessStatus": {
+            "type": "object",
+            "properties": {
+                "backendState": {
+                    "description": "BackendState mirrors tailscaled: NoState, NeedsLogin, NeedsMachineAuth,\nStopped, Starting, Running.",
+                    "type": "string"
+                },
+                "checkedAt": {
+                    "type": "string"
+                },
+                "containerState": {
+                    "description": "ContainerState is Docker's state string, or \"absent\".",
+                    "type": "string"
+                },
+                "dnsName": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "health": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "hostname": {
+                    "type": "string"
+                },
+                "httpUrls": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "httpsUrl": {
+                    "type": "string"
+                },
+                "loginUrl": {
+                    "description": "LoginUrl is set while the node waits for an interactive login.",
+                    "type": "string"
+                },
+                "magicDnsEnabled": {
+                    "type": "boolean"
+                },
+                "phase": {
+                    "$ref": "#/definitions/providers.RemoteAccessPhase"
+                },
+                "tailscaleIps": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "types.FirmwareConfig": {
+            "type": "object",
+            "properties": {
+                "batChargeCutoffVoltage": {
+                    "type": "number"
+                },
+                "boardType": {
+                    "type": "string"
+                },
+                "boardTypeOrigin": {
+                    "description": "Firmware selection provenance is written alongside the saved config so\nlater mower-model changes can update only fields that still follow model\ndefaults. Empty/unknown values are legacy and are handled conservatively\nby the GUI.",
+                    "type": "string"
+                },
+                "bothWheelsLiftEmergencyMillis": {
+                    "type": "integer"
+                },
+                "branch": {
+                    "type": "string"
+                },
+                "directory": {
+                    "type": "string"
+                },
+                "disableEmergency": {
+                    "type": "boolean"
+                },
+                "expertBuild": {
+                    "description": "ExpertBuild routes the flash to the compile-from-source path\n(flashMowgli); the default (false) flashes a prebuilt binary. Kept for\nbackward compatibility — FirmwareSource == \"custom\" implies it.",
+                    "type": "boolean"
+                },
+                "externalImuAcceleration": {
+                    "type": "boolean"
+                },
+                "externalImuAngular": {
+                    "type": "boolean"
+                },
+                "file": {
+                    "type": "string"
+                },
+                "firmwareSelectionModel": {
+                    "type": "string"
+                },
+                "firmwareSource": {
+                    "description": "FirmwareSource is the GUI dropdown selector: \"custom\" compiles from\nsource (the expert path), \"prebuilt\" (or empty, for older payloads)\nflashes the tested prebuilt binary.",
+                    "type": "string"
+                },
+                "imuOnboardInclinationThreshold": {
+                    "type": "integer"
+                },
+                "limitVoltage150MA": {
+                    "type": "number"
+                },
+                "masterJ18": {
+                    "type": "boolean"
+                },
+                "maxChargeCurrent": {
+                    "type": "number"
+                },
+                "maxChargeVoltage": {
+                    "type": "number"
+                },
+                "maxMps": {
+                    "type": "number"
+                },
+                "oneWheelLiftEmergencyMillis": {
+                    "type": "integer"
+                },
+                "panelType": {
+                    "type": "string"
+                },
+                "panelTypeOrigin": {
+                    "type": "string"
+                },
+                "perimeterWire": {
+                    "type": "boolean"
+                },
+                "playButtonClearEmergencyMillis": {
+                    "type": "integer"
+                },
+                "repository": {
+                    "type": "string"
+                },
+                "stopButtonEmergencyMillis": {
+                    "type": "integer"
+                },
+                "tickPerM": {
+                    "type": "number"
+                },
+                "tiltEmergencyMillis": {
+                    "type": "integer"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "wheelBase": {
+                    "type": "number"
+                }
+            }
+        },
+        "types.SoilStatus": {
+            "type": "object",
+            "properties": {
+                "configured": {
+                    "type": "boolean"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "fetchedAt": {
+                    "type": "string"
+                },
+                "fresh": {
+                    "type": "boolean"
+                },
+                "gardenName": {
+                    "type": "string"
+                },
+                "gateScheduler": {
+                    "type": "boolean"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "unknown": {
+                    "type": "boolean"
+                },
+                "wet": {
+                    "type": "boolean"
+                },
+                "zones": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/types.SoilZoneStatus"
+                    }
+                }
+            }
+        },
+        "types.SoilZoneStatus": {
+            "type": "object",
+            "properties": {
+                "deficitMm": {
+                    "type": "number"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "lastWateredAt": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "selected": {
+                    "type": "boolean"
+                },
+                "wet": {
+                    "type": "boolean"
+                }
+            }
+        }
+    }
+}

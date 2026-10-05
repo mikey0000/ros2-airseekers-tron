@@ -1,0 +1,53 @@
+twist_mux:
+  ros__parameters:
+    # Kilted Kaiju: all Nav2 nodes use TwistStamped
+    use_stamped: true
+
+    # Topics are evaluated in ascending priority order.
+    # Higher priority overrides lower when active within timeout.
+    topics:
+      navigation:
+        topic: /cmd_vel_monitored
+        # 0.6 s (was 2.0 — SAFETY_REVIEW_2026-07-23 A-M4): if collision_monitor
+        # dies, twist_mux kept republishing the LAST nav command for up to 2 s,
+        # refreshing the firmware's 200 ms cmd_vel watchdog and letting the
+        # robot coast ~0.4 m on a stale command AFTER the safety filter was
+        # gone. 0.6 s still covers 6 periods of the 10 Hz controller (no false
+        # lane drops) while shrinking the stale-coast window to ~0.12 m.
+        timeout: 0.6
+        # collision_monitor IS working — it stops the robot when PolygonStop triggers.
+        priority: 10      # lowest priority – autonomous navigation (post collision_monitor)
+
+      docking:
+        topic: /cmd_vel_docking
+        timeout: 0.5
+        priority: 15      # between navigation and teleop — docking/undocking manoeuvres
+
+      teleop:
+        topic: /cmd_vel_teleop
+        timeout: 0.5
+        priority: 20      # operator override always beats navigation
+
+      tuning:
+        topic: /cmd_vel_tuning
+        timeout: 0.5
+        priority: 30      # dedicated drive-tuning lane above shared teleop/ws relay
+
+      emergency:
+        topic: /cmd_vel_emergency
+        timeout: 0.2      # tighter timeout for safety-critical source
+        priority: 100     # highest velocity-source priority
+
+    # No locks — emergency stop is enforced by the STM32 firmware
+    # (CLAUDE.md invariant 9: firmware is the sole safety authority).
+    # An earlier configuration declared an /emergency_stop std_msgs/Bool
+    # lock with priority 255, but no node in the codebase ever published
+    # to that topic — the lock was dead and gave a false sense of
+    # software-side redundancy. Real e-stops travel via the
+    # /hardware_bridge/emergency_stop service which sets the firmware
+    # latch; the firmware then refuses to forward cmd_vel to the
+    # motors. If a software-side mux lock is ever wanted, wire a
+    # publisher in hardware_bridge_node first, then re-add a `locks:`
+    # block. The key is intentionally omitted (not `locks: {}`) because
+    # ROS2 cannot infer the type of an empty YAML mapping at lifecycle
+    # bring-up.

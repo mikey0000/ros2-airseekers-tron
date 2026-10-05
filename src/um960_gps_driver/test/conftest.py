@@ -33,7 +33,8 @@ def _install_rclpy_shim() -> None:
     class NavSatStatus:
         STATUS_NO_FIX = -1
         STATUS_FIX = 0
-        STATUS_DGPS_FIX = 1
+        STATUS_SBAS_FIX = 1
+        STATUS_GBAS_FIX = 2
         SERVICE_GPS = 1
         SERVICE_GLONASS = 2
         SERVICE_COMPASS = 4
@@ -180,3 +181,21 @@ try:  # pragma: no cover - depends on the environment
 except ImportError:  # pragma: no cover
     _install_rclpy_shim()
     HAS_RCLPY = False
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _rclpy_context():
+    """Initialise the real rclpy context once per session (no-op for the shim)."""
+    if HAS_RCLPY:
+        import rclpy
+
+        if not rclpy.ok():
+            rclpy.init()
+        yield
+        if rclpy.ok():
+            rclpy.shutdown()
+    else:
+        yield

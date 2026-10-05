@@ -1,0 +1,53 @@
+%YAML:1.0
+
+# IMU noise + gyro/accel intrinsic model for the Airseekers Tron VIO.
+#
+# The stereo front Metoak module carries a TDK ICM-40608 (accel+gyro, at i2c-8/0x68,
+# driven by the inv-icm42600 kernel module). Noise values
+# recovered from the vendor VIO config (generate_vio_config.py IMU dict) and mapped
+# onto OpenVINS' Kalibr IMU schema. Field names are continuous-time densities:
+#   accelerometer_noise_density   [ m / s^2 / sqrt(Hz) ]
+#   accelerometer_random_walk     [ m / s^3 / sqrt(Hz) ]
+#   gyroscope_noise_density       [ rad / s / sqrt(Hz) ]
+#   gyroscope_random_walk         [ rad / s^2 / sqrt(Hz) ]
+#
+# NOTE (flag for hardware): these recovered values are unusually large (accel density
+# 0.5 vs ~0.005 for a mid-range MEMS). They may be conservative vendor picks, or the
+# vendor config stored per-sample discrete sigmas instead of continuous densities. If
+# the estimator over/under-trusts the IMU, re-identify with kalibr or an at-rest
+# Allan-variance run on the actual module before trusting this on the mower.
+
+imu0:
+  T_i_b:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  accelerometer_noise_density: 0.5       # vendor acc_n
+  accelerometer_random_walk: 0.001       # vendor acc_w
+  gyroscope_noise_density: 0.08          # vendor gyr_n
+  gyroscope_random_walk: 0.001           # vendor gyr_w
+  rostopic: /vio/imu
+  time_offset: 0.0
+  update_rate: 200.0
+  model: "kalibr"
+  Tw:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  R_IMUtoGYRO:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  Ta:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  R_IMUtoACC:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  Tg:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]

@@ -31,6 +31,11 @@ services:
       # `devices:` below pins the load-bearing serial ports even if /dev churns.
       - /dev:/dev
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Persistent state on the device's /userdata partition: calibration
+      # (imu_cal -> /userdata/ros2/calibration/imu_calibration.yaml) and maps.
+      - /userdata/ros2:/userdata/ros2
+      # MowgliNext map_server default map directory.
+      - /userdata/ros2/maps:/ros2_ws/maps
     devices:
       - /dev/ttyS9:/dev/ttyS9     # serial_mower (mower MCU)
       - /dev/ttyS1:/dev/ttyS1     # serial_imu
@@ -39,4 +44,11 @@ services:
       - /dev/ttyUSB0:/dev/ttyUSB0
       - /dev/ttyUSB1:/dev/ttyUSB1
       - /dev/ttyUSB2:/dev/ttyUSB2 # serial_lte (Quectel)
-    command: bash
+    # Runs the whole stack (launch/mower.launch.py via mower_bringup). The
+    # workspace must already be built in /work/install (scripts/build.sh).
+    # For an interactive shell instead: scripts/run_stack.sh shell
+    command: >-
+      bash -lc "source /opt/ros/humble/setup.bash &&
+      source /work/install/setup.bash &&
+      ros2 launch mower_bringup mower.launch.py"
+    restart: unless-stopped

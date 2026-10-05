@@ -4,7 +4,7 @@ Layer on top of ``bringup.launch.py`` (the three serial drivers). Start those fi
 file consumes their topics:
 
     mower_mcu_driver -> /odom                     50 Hz  SpeedData dead reckoning
-    wit_imu_driver   -> /imu                      100 Hz JY61P, frame imu_link
+    wit_imu_driver   -> /imu/data                 100 Hz JY61P, frame imu_link
     um960_gps_driver -> /fix, /fix_status         10 Hz  NavSatFix + quality summary
 
 ======================================================================================
@@ -132,7 +132,8 @@ the gated stream.
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
+from launch.conditions import IfCondition
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -153,6 +154,51 @@ def _int(argument: str) -> ParameterValue:
     return ParameterValue(LaunchConfiguration(argument), value_type=int)
 
 
+def _navsat_transform(context, navsat_config):
+    """Build navsat_transform_node, pinning the map origin (GPS datum) when one is given.
+
+    ``datum_lat``/``datum_lon`` both 0.0 is the "unset" placeholder: keep
+    ``wait_for_datum: false`` so the first fix becomes the origin (it moves every boot, so
+    the GUI map, which uses a fixed datum, will be misaligned). Otherwise pass
+    ``wait_for_datum: true`` and ``datum: [lat_deg, lon_deg, yaw_rad]`` (robot_localization's
+    double array). Evaluated here, not as substitutions, so the values are real floats.
+    """
+    lat = float(LaunchConfiguration("datum_lat").perform(context))
+    lon = float(LaunchConfiguration("datum_lon").perform(context))
+    yaw = float(LaunchConfiguration("datum_yaw").perform(context))
+
+    parameters = [navsat_config]
+    actions = []
+    if lat == 0.0 and lon == 0.0:
+        actions.append(LogInfo(msg=(
+            "WARN: map origin (GPS datum) is not pinned: datum_lat/datum_lon are unset, so "
+            "navsat_transform_node uses the first GPS fix as the origin (wait_for_datum: "
+            "false) and the GUI map will be misaligned. Pass datum_lat:=<deg> "
+            "datum_lon:=<deg> (the dock position, same as config/gui/mowgli_robot.yaml).")))
+    else:
+        parameters.append({
+            "wait_for_datum": True,
+            "datum": [lat, lon, yaw],
+        })
+
+    actions.append(Node(
+        package="robot_localization",
+        executable="navsat_transform_node",
+        name="navsat_transform_node",
+        output="screen",
+        parameters=parameters,
+        remappings=[
+            # Its fix input is relative, so this is what points it at the
+            # gate's output rather than the raw fix.
+            ("gps/fix", LaunchConfiguration("gated_fix_topic")),
+            ("imu", LaunchConfiguration("imu_data_topic")),
+            # ekf_node publishes odometry/filtered under its own default name,
+            # which is already the topic navsat subscribes to. Nothing to remap.
+        ],
+    ))
+    return actions
+
+
 def generate_launch_description() -> LaunchDescription:
     share = FindPackageShare("mower_localization")
     ekf_config = PathJoinSubstitution([share, "config", "ekf.yaml"])
@@ -165,6 +211,16 @@ def generate_launch_description() -> LaunchDescription:
         stack_root, "config", "urdf", "mower.urdf.xacro")
 
     arguments = [
+        # Toggles so launch/mower.launch.py can include this file for localization
+        # only: it runs its own robot_state_publisher and leaves Nav2 to
+        # mower_navigation/navigation.launch.py. Standalone use keeps both on.
+        DeclareLaunchArgument("use_robot_state_publisher", default_value="true",
+                              description="Start robot_state_publisher from this file."),
+        # use_nav2_core: kept as a NO-OP for callers that still pass it (mower.launch.py).
+        # The placeholder Nav2 nodes it used to gate were removed; Nav2 is now
+        # mower_navigation/navigation.launch.py.
+        DeclareLaunchArgument("use_nav2_core", default_value="true",
+                              description="No-op (Nav2 moved to mower_navigation)."),
         # robot_description: xacro source for robot_state_publisher (entry 0
         # below). Defines the frame tree the drivers publish on — base_link,
         # imu_link, gps_link, bumper, ... — see the xacro header for the
@@ -178,24 +234,30 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("odom_frame", default_value="odom"),
         DeclareLaunchArgument("base_frame", default_value="base_link",
                               description="Rear drive axle centre, per the REP-105 chain."),
-        # Sources. wit_imu_driver publishes /imu; the localization configs were written
-        # against the Nav2-friendly /imu/data, so the remap happens here.
+        # Sources. wit_imu_driver publishes /imu/data directly (its imu_topic parameter).
         DeclareLaunchArgument("odom_topic", default_value="/odom",
                               description="From mower_mcu_driver (SpeedData dead reckoning)."),
-        DeclareLaunchArgument("imu_topic", default_value="/imu",
-                              description="From wit_imu_driver (JY61P, frame imu_link)."),
         DeclareLaunchArgument("imu_data_topic", default_value="/imu/data",
-                              description="Where the localization configs expect the IMU."),
+                              description="From wit_imu_driver (JY61P, frame imu_link)."),
         DeclareLaunchArgument("fix_topic", default_value="/fix",
                               description="Raw UM960 fix; gated before the filter sees it."),
         DeclareLaunchArgument("gated_fix_topic", default_value="/fix_gated"),
         # Gate thresholds. 100 m^2 is a 10 m sigma: loose enough to admit RTK float, tight
         # enough that a single-point 500 m^2 fix never reaches the filter. Set 0.0 to disable
         # the covariance check, or tighten used_fixes to RTK-fixed only.
-        DeclareLaunchArgument("min_fix_status", default_value="1",
+        DeclareLaunchArgument("min_fix_status", default_value="0",
                               description="NavSatStatus.STATUS_FIX."),
         DeclareLaunchArgument("max_position_covariance", default_value="100.0",
                               description="m^2, largest diagonal. 0 disables the check."),
+        # Map origin (GPS datum). Must equal datum_lat/datum_lon in
+        # config/gui/mowgli_robot.yaml (both = dock position). 0.0/0.0 = unset: the first
+        # fix becomes the origin (wait_for_datum: false) and a WARN is logged.
+        DeclareLaunchArgument("datum_lat", default_value="0.0",
+                              description="Map origin latitude, deg. 0.0 with datum_lon 0.0 = unset."),
+        DeclareLaunchArgument("datum_lon", default_value="0.0",
+                              description="Map origin longitude, deg. 0.0 with datum_lat 0.0 = unset."),
+        DeclareLaunchArgument("datum_yaw", default_value="0.0",
+                              description="Map origin heading, rad ENU (0 = east)."),
     ]
 
     return LaunchDescription(
@@ -210,6 +272,7 @@ def generate_launch_description() -> LaunchDescription:
                 package="robot_state_publisher",
                 executable="robot_state_publisher",
                 name="robot_state_publisher",
+                condition=IfCondition(LaunchConfiguration("use_robot_state_publisher")),
                 parameters=[{
                     "robot_description": Command(["xacro ", LaunchConfiguration("urdf_file")]),
                 }],
@@ -248,21 +311,7 @@ def generate_launch_description() -> LaunchDescription:
             #    no world_frame/odom_frame/base_link_frame. It reads them off the
             #    /odometry/filtered header and child_frame_id.
             # ------------------------------------------------------------------
-            Node(
-                package="robot_localization",
-                executable="navsat_transform_node",
-                name="navsat_transform_node",
-                output="screen",
-                parameters=[navsat_config],
-                remappings=[
-                    # Its fix input is relative, so this is what points it at the
-                    # gate's output rather than the raw fix.
-                    ("gps/fix", LaunchConfiguration("gated_fix_topic")),
-                    ("imu", LaunchConfiguration("imu_data_topic")),
-                    # ekf_node publishes odometry/filtered under its own default name,
-                    # which is already the topic navsat subscribes to. Nothing to remap.
-                ],
-            ),
+            OpaqueFunction(function=_navsat_transform, args=[navsat_config]),
 
             # ------------------------------------------------------------------
             # 3. ekf_node: /odom + /imu (+ /odometry/gps) -> odom -> base_link at
@@ -286,81 +335,12 @@ def generate_launch_description() -> LaunchDescription:
                         "imu0": LaunchConfiguration("imu_data_topic"),
                     },
                 ],
-                remappings=[
-                    (LaunchConfiguration("imu_topic"),
-                     LaunchConfiguration("imu_data_topic")),
-                ],
             ),
 
-            # ------------------------------------------------------------------
-            # 4. Nav2 controller stack.
-            #    Consumes /odometry/filtered (odom-frame) and /tf. It also needs the
-            #    URDF and nav2_params.yaml, which land with mower_bringup — bring
-            #    localization up alone first, then add this block once those exist.
-            #    A wrong parameter key is SILENTLY IGNORED (see
-            #    docs/mowglinext_baseline.md section 6), so check these key-by-key
-            #    against nav2_params.yaml when it arrives.
-            # ------------------------------------------------------------------
-            Node(
-                package="nav2_controller",
-                executable="controller_server",
-                name="controller_server",
-                output="screen",
-                parameters=[{
-                    "controller_frequency": 20.0,
-                    # Never leave odom_topic at its default "/odom": Nav2's default has
-                    # no publisher in this stack, and the robot silently refuses to move.
-                    "odom_topic": "/odometry/filtered",
-                    "use_stamped_odom": True,
-                    "path_topic": "/plan",
-                    "transform_tolerance": 0.5,
-                    "progress_checker_plugin": "progress_checker",
-                    "goal_checker_plugins": ["general_goal_checker"],
-                    # Transit: RegulatedPurePursuit behind a RotationShim, so a heading
-                    # change costs a rotate-in-place instead of a wide loop.
-                    "controller_plugins": ["FollowPath", "AlignToHeading"],
-                }],
-                remappings=[
-                    ("odom", "/odometry/filtered"),
-                    # Velocity chain: Nav2 -> cmd_vel_nav -> collision_monitor ->
-                    # cmd_vel_monitored -> mower_control/cmd_vel_slew -> mower_mcu_driver.
-                    # cmd_vel_slew lands with mower_control; until it is wired,
-                    # bypassing the monitor leaves the collision_monitor timeout as
-                    # the only backstop.
-                    ("cmd_vel", "/cmd_vel_nav"),
-                ],
-            ),
-
-            Node(
-                package="nav2_planner",
-                executable="planner_server",
-                name="planner_server",
-                output="screen",
-                parameters=[{
-                    "expected_planner_frequency": 10.0,
-                    "planner_plugins": ["SmacPlanner2D"],
-                    "SmacPlanner2D": {
-                        "plugin": "nav2_smac_planner::SmacPlanner2D",
-                        "tolerance": 0.5,
-                        "downsample_costmap": True,
-                    },
-                }],
-            ),
-
-            # ------------------------------------------------------------------
-            # 5. Lifecycle manager, after localization. A controller_server that
-            #    activates before /tf is complete reports "Timed out waiting for
-            #    transform" and has to be cycled by hand.
-            # ------------------------------------------------------------------
-            Node(
-                package="nav2_lifecycle_manager",
-                executable="lifecycle_manager",
-                name="lifecycle_manager_navigation",
-                output="screen",
-                parameters=[{
-                    "autostart": True,
-                    "node_names": ["controller_server", "planner_server"],
-                }],
-            ),
+            # Nav2 itself (controller/planner/behavior/bt_navigator/velocity_smoother
+            # + lifecycle_manager_navigation) lives in
+            # src/mower_navigation/launch/navigation.launch.py and
+            # src/mower_navigation/config/nav2_params.yaml. This file is
+            # localization only.
         ]
     )

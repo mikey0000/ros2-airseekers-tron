@@ -1,0 +1,35 @@
+# MowgliNext web GUI (GPLv3, vendored at third_party/mowglinext/gui) for the
+# Tron port. Overlay on top of the main stack -- run from ros2_stack/:
+#
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.gui.yml up -d
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.gui.yml up -d mower_gui   # GUI only
+#
+# Build the image first:  ARCH=arm64 ./gui/build.sh   (-> mower-gui:arm64)
+# then copy it to the mower: docker save mower-gui:arm64 | ssh <mower> docker load
+# See docs/gui.md. Serves http://<mower-ip>:4006 ; talks to ROS only through
+# foxglove_bridge (ws://localhost:8765) and the teleop relay (8766).
+#
+# Deliberately NOT mounted/granted: /var/run/docker.sock, /dev, privileged,
+# pid: host -- the docker-/openocd-driven GUI tools are hidden in this build
+# and their API routes fail harmlessly.
+
+services:
+  mower_gui:
+    # On an amd64 dev box use `image: mower-gui:latest` (./gui/build.sh with no
+    # ARCH) and drop/override `platform`.
+    image: mower-gui:arm64
+    platform: linux/arm64
+    container_name: mower_gui
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - FOXGLOVE_URL=ws://localhost:8765
+      - MOWER_YAML_CONFIG_FILE=/mowgli_config/mowgli_robot.yaml
+      - DB_PATH=/db
+      - ONBOARDING_COMPLETED=true
+      - MQTT_ENABLED=false
+      - HOMEKIT_ENABLED=false
+    volumes:
+      - /userdata/ros2/gui_db:/db
+      - ../config/gui:/mowgli_config
+      - /userdata/ros2/maps:/ros2_ws/maps

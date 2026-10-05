@@ -1,0 +1,1204 @@
+package api
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/mowglinext/mowglinext/pkg/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func setupSettingsRouter(dbProvider types.IDBProvider) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	group := r.Group("/api")
+	SettingsRoutes(group, dbProvider)
+	return r
+}
+
+// chdirToGuiRoot moves the working directory to the gui module root (two levels
+// up from pkg/api), where asserts/ lives, and restores it on cleanup. Used by
+// tests that need the real local schema rather than a synthetic one.
+func chdirToGuiRoot(t *testing.T) {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir("../.."); err != nil {
+		t.Fatalf("chdir to gui root: %v", err)
+	}
+	if _, err := os.Stat("asserts"); err != nil {
+		t.Fatalf("expected asserts/ at gui root: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+}
+
+// seedSchemaCache primes the schema cache so the schema-driven known-key filter
+// recognises the given keys. getSchema otherwise loads asserts/mower_config.schema.json
+// relative to the working directory, which isn't present under pkg/api during tests.
+func seedSchemaCache(t *testing.T, keys ...string) {
+	t.Helper()
+	props := map[string]any{}
+	for _, k := range keys {
+		props[k] = map[string]any{"type": "string", "x-environment-variable": k}
+	}
+	schemaCacheMu.Lock()
+	schemaCache = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"important_settings": map[string]any{
+				"type":       "object",
+				"properties": props,
+			},
+		},
+	}
+	schemaCacheTime = time.Now()
+	schemaCacheMu.Unlock()
+	t.Cleanup(resetSchemaCache)
+}
+
+func TestGetSettings_Success(t *testing.T) {
+	seedSchemaCache(t, "OM_DATUM_LAT", "OM_USE_NTRIP", "OM_TOOL_WIDTH")
+	configFile := createTempConfigFile(t, `export OM_DATUM_LAT="48.123"
+export OM_USE_NTRIP="True"
+export OM_TOOL_WIDTH="0.13"
+`)
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.configFile", []byte(configFile))
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp GetSettingsResponse
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	require.NoError(t, err)
+
+	assert.Equal(t, "48.123", resp.Settings["OM_DATUM_LAT"])
+	assert.Equal(t, "True", resp.Settings["OM_USE_NTRIP"])
+	assert.Equal(t, "0.13", resp.Settings["OM_TOOL_WIDTH"])
+}
+
+func TestGetSettings_FileNotFound(t *testing.T) {
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.configFile", []byte("/nonexistent/config.sh"))
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings", nil)
+	router.ServeHTTP(w, req)
+
+	// A configured-but-missing legacy .sh file degrades gracefully to an empty
+	// settings object (the YAML flow is now primary). Only a missing config-path
+	// KEY is a hard 500 — see TestGetSettings_NoConfigKey.
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp GetSettingsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Empty(t, resp.Settings)
+}
+
+func TestGetSettings_NoConfigKey(t *testing.T) {
+	db := types.NewMockDBProvider()
+	// Don't set system.mower.configFile
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestPostSettings_NewFile(t *testing.T) {
+	configFile := createTempConfigFile(t, "")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.configFile", []byte(configFile))
+
+	router := setupSettingsRouter(db)
+
+	payload := map[string]any{
+		"OM_DATUM_LAT":  "48.999",
+		"OM_USE_NTRIP":  true,
+		"OM_TOOL_WIDTH": 0.15,
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Verify file was written
+	content, err := os.ReadFile(configFile)
+	require.NoError(t, err)
+
+	fileContent := string(content)
+	assert.Contains(t, fileContent, "export OM_DATUM_LAT=")
+	assert.Contains(t, fileContent, "48.999000000")
+	assert.Contains(t, fileContent, "export OM_USE_NTRIP=")
+	assert.Contains(t, fileContent, "export OM_TOOL_WIDTH=")
+}
+
+func TestPostSettings_MergesExistingSettings(t *testing.T) {
+	// OM_DATUM_LAT is a schema-known key so the new value survives; OM_EXISTING_KEY
+	// is unknown and is preserved as a custom-environment passthrough.
+	seedSchemaCache(t, "OM_DATUM_LAT")
+	configFile := createTempConfigFile(t, `export OM_DATUM_LAT="48.123"
+export OM_EXISTING_KEY="keep_me"
+`)
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.configFile", []byte(configFile))
+
+	router := setupSettingsRouter(db)
+
+	// Send only one new setting
+	payload := map[string]any{
+		"OM_DATUM_LAT": "99.999",
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Verify existing settings were preserved
+	content, err := os.ReadFile(configFile)
+	require.NoError(t, err)
+
+	fileContent := string(content)
+	assert.Contains(t, fileContent, "OM_EXISTING_KEY")
+	assert.Contains(t, fileContent, "keep_me")
+	assert.Contains(t, fileContent, "99.999000000")
+}
+
+func TestPostSettings_BooleanConversion(t *testing.T) {
+	configFile := createTempConfigFile(t, "")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.configFile", []byte(configFile))
+
+	router := setupSettingsRouter(db)
+
+	payload := map[string]any{
+		"OM_ENABLE_MOWER": true,
+		"OM_USE_NTRIP":    false,
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	content, err := os.ReadFile(configFile)
+	require.NoError(t, err)
+
+	fileContent := string(content)
+	assert.Contains(t, fileContent, "True")
+	assert.Contains(t, fileContent, "False")
+}
+
+func TestPostSettings_InvalidJSON(t *testing.T) {
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.configFile", []byte("/tmp/test.sh"))
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	// Gin's BindJSON returns 400 for malformed JSON
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func resetSchemaCache() {
+	schemaCacheMu.Lock()
+	schemaCache = nil
+	schemaCacheTime = time.Time{}
+	schemaCacheMu.Unlock()
+}
+
+// Upstream schema fetching was removed — getSchema now loads the local
+// asserts/mower_config.schema.json and applies the Mowgli overlay at load time.
+// This verifies the served schema carries that overlay (the regression this
+// replaced: the overlay had become dead code, so "Mowgli" silently vanished
+// from the OM_MOWER enum).
+func TestGetSettingsSchema_AppliesMowgliOverlay(t *testing.T) {
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+
+	// Provide a local schema (base OpenMower shape, without the overlay).
+	origDir, _ := os.Getwd()
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(tmpDir+"/asserts", 0755))
+	localSchema := `{"type":"object","properties":{"important_settings":{"title":"Hardware Settings","type":"object","properties":{"OM_HARDWARE_VERSION":{"type":"string","enum":["0_13_X"],"x-environment-variable":"OM_HARDWARE_VERSION"},"OM_MOWER":{"type":"string","enum":["YardForce500","CUSTOM"],"x-environment-variable":"OM_MOWER"},"OM_MOWER_ESC_TYPE":{"type":"string","enum":["xesc_mini"],"x-environment-variable":"OM_MOWER_ESC_TYPE"}}}}}`
+	require.NoError(t, os.WriteFile(tmpDir+"/asserts/mower_config.schema.json", []byte(localSchema), 0644))
+	require.NoError(t, os.Chdir(tmpDir))
+	defer os.Chdir(origDir)
+
+	router := setupSettingsRouter(types.NewMockDBProvider())
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings/schema", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	assert.Equal(t, "object", result["type"])
+
+	props := result["properties"].(map[string]any)
+	hw := props["important_settings"].(map[string]any)
+	hwProps := hw["properties"].(map[string]any)
+
+	// "Mowgli" added to the OM_MOWER enum by the overlay.
+	omMower := hwProps["OM_MOWER"].(map[string]any)
+	assert.Contains(t, omMower["enum"].([]any), "Mowgli")
+
+	// HW version + ESC type moved out of base props into the conditional allOf.
+	assert.NotContains(t, hwProps, "OM_HARDWARE_VERSION")
+	assert.NotContains(t, hwProps, "OM_MOWER_ESC_TYPE")
+	allOf := hw["allOf"].([]any)
+	assert.GreaterOrEqual(t, len(allOf), 2)
+}
+
+func TestGetSettingsSchema_FallbackToLocal(t *testing.T) {
+	resetSchemaCache()
+
+	// Point to a bad upstream URL
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.schemaURL", []byte("http://127.0.0.1:1/nonexistent"))
+
+	// Provide local fallback
+	origDir, _ := os.Getwd()
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(tmpDir+"/asserts", 0755))
+	localSchema := `{"type":"object","properties":{"important_settings":{"title":"Hardware Settings","type":"object","properties":{"OM_MOWER":{"type":"string","enum":["CUSTOM"]}}}}}`
+	require.NoError(t, os.WriteFile(tmpDir+"/asserts/mower_config.schema.json", []byte(localSchema), 0644))
+	require.NoError(t, os.Chdir(tmpDir))
+	defer os.Chdir(origDir)
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings/schema", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var result map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &result)
+	require.NoError(t, err)
+	assert.Equal(t, "object", result["type"])
+}
+
+func TestGetSettingsSchema_NoUpstreamNoLocal(t *testing.T) {
+	resetSchemaCache()
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.schemaURL", []byte("http://127.0.0.1:1/nonexistent"))
+
+	// No local fallback either
+	origDir, _ := os.Getwd()
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Chdir(tmpDir))
+	defer os.Chdir(origDir)
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings/schema", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestApplyMowgliOverlay(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"important_settings": map[string]any{
+				"title": "Hardware Settings",
+				"type":  "object",
+				"properties": map[string]any{
+					"OM_MOWER": map[string]any{
+						"type": "string",
+						"enum": []any{"YardForce500", "CUSTOM"},
+					},
+					"OM_HARDWARE_VERSION": map[string]any{
+						"type": "string",
+						"enum": []any{"0_13_X"},
+					},
+					"OM_MOWER_ESC_TYPE": map[string]any{
+						"type": "string",
+						"enum": []any{"xesc_mini"},
+					},
+					"OM_MOWER_GAMEPAD": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
+	}
+
+	result := applyMowgliOverlay(schema)
+
+	hw := result["properties"].(map[string]any)["important_settings"].(map[string]any)
+	hwProps := hw["properties"].(map[string]any)
+
+	// Mowgli should be added to OM_MOWER enum
+	omMower := hwProps["OM_MOWER"].(map[string]any)
+	assert.Contains(t, omMower["enum"].([]any), "Mowgli")
+
+	// OM_HARDWARE_VERSION and ESC_TYPE should be removed from base props
+	assert.NotContains(t, hwProps, "OM_HARDWARE_VERSION")
+	assert.NotContains(t, hwProps, "OM_MOWER_ESC_TYPE")
+
+	// Gamepad should remain
+	assert.Contains(t, hwProps, "OM_MOWER_GAMEPAD")
+
+	// allOf should have 2 conditions
+	allOf := hw["allOf"].([]any)
+	require.Len(t, allOf, 2)
+
+	// First condition: non-Mowgli shows HW version + ESC type
+	nonMowgli := allOf[0].(map[string]any)
+	nonMowgliThen := nonMowgli["then"].(map[string]any)
+	nonMowgliProps := nonMowgliThen["properties"].(map[string]any)
+	assert.Contains(t, nonMowgliProps, "OM_HARDWARE_VERSION")
+	assert.Contains(t, nonMowgliProps, "OM_MOWER_ESC_TYPE")
+
+	// Second condition: Mowgli shows OM_NO_COMMS
+	mowgli := allOf[1].(map[string]any)
+	mowgliThen := mowgli["then"].(map[string]any)
+	mowgliProps := mowgliThen["properties"].(map[string]any)
+	assert.Contains(t, mowgliProps, "OM_NO_COMMS")
+	omNoComms := mowgliProps["OM_NO_COMMS"].(map[string]any)
+	assert.Equal(t, true, omNoComms["default"])
+}
+
+func TestApplyMowgliOverlay_AlreadyHasMowgli(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"important_settings": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"OM_MOWER": map[string]any{
+						"type": "string",
+						"enum": []any{"YardForce500", "Mowgli"},
+					},
+					"OM_HARDWARE_VERSION": map[string]any{"type": "string"},
+				},
+			},
+		},
+	}
+
+	result := applyMowgliOverlay(schema)
+	hw := result["properties"].(map[string]any)["important_settings"].(map[string]any)
+	omMower := hw["properties"].(map[string]any)["OM_MOWER"].(map[string]any)
+
+	// Should not duplicate Mowgli
+	count := 0
+	for _, v := range omMower["enum"].([]any) {
+		if v == "Mowgli" {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count)
+}
+
+func TestGetSettingsYAML_Success(t *testing.T) {
+	yamlFile := createTempYAMLFile(t, `mowgli:
+  ros__parameters:
+    datum_lat: 48.123
+    ntrip_enabled: true
+    gnss_receiver_family: auto
+`)
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings/yaml", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var result map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &result)
+	require.NoError(t, err)
+	assert.Equal(t, 48.123, result["datum_lat"])
+	assert.Equal(t, true, result["ntrip_enabled"])
+	assert.Equal(t, "auto", result["gnss_receiver_family"])
+}
+
+func TestGetSettingsYAML_FileNotExist_ReturnsEmpty(t *testing.T) {
+	// This asserts the real schema's GNSS defaults, so run from the gui root
+	// where asserts/mower_config.schema.json lives and start from a clean cache.
+	chdirToGuiRoot(t)
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte("/nonexistent/config.yaml"))
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings/yaml", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var result map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &result)
+	require.NoError(t, err)
+	assert.Equal(t, "auto", result["gnss_receiver_family"])
+	assert.Equal(t, "runtime_only", result["gnss_profile"])
+	assert.Equal(t, "balanced", result["gnss_signal_profile"])
+	assert.Equal(t, float64(5), result["gnss_profile_rate_hz"])
+	assert.Equal(t, float64(921600), result["gnss_config_baud"])
+}
+
+func TestGetSettingsYAML_NoConfigKey(t *testing.T) {
+	db := types.NewMockDBProvider()
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings/yaml", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestPostSettingsYAML_NewFile(t *testing.T) {
+	// Use the real schema so the sparse-write pruning (default-equal keys
+	// dropped from the installed YAML) is exercised.
+	yamlFile := createTempYAMLFile(t, "")
+	envFile := createTempConfigFile(t, "ROS_DOMAIN_ID=0\n")
+	chdirToGuiRoot(t)
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	payload := map[string]any{
+		"datum_lat":                  48.999,
+		"ntrip_enabled":              true,
+		"gnss_receiver_family":       "unicore",
+		"gnss_receiver_model":        "UM982",
+		"gnss_serial_device":         "/dev/serial/by-id/usb-gnss",
+		"gnss_serial_baud":           921600,
+		"gnss_config_baud":           460800,
+		"gnss_profile":               "rover_high_precision",
+		"gnss_signal_profile":        "all_signals",
+		"gnss_profile_rate_hz":       5,
+		"gnss_signal_group":          "3 6",
+		"gnss_unicore_pvt_algorithm": "MULTI",
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	content, err := os.ReadFile(yamlFile)
+	require.NoError(t, err)
+	// Sparse write: only keys that DIFFER from the schema default are
+	// persisted. These payload values all differ from the schema defaults.
+	assert.Contains(t, string(content), "datum_lat: 48.999000000")
+	assert.Contains(t, string(content), "gnss_receiver_family: unicore")
+	assert.Contains(t, string(content), "gnss_receiver_model: UM982")
+	assert.Contains(t, string(content), "gnss_serial_device: /dev/serial/by-id/usb-gnss")
+	assert.Contains(t, string(content), "gnss_config_baud: 460800")
+	assert.Contains(t, string(content), "gnss_profile: rover_high_precision")
+	assert.Contains(t, string(content), "gnss_signal_profile: all_signals")
+	assert.Contains(t, string(content), "gnss_signal_group: 3 6")
+	assert.Contains(t, string(content), "gnss_unicore_pvt_algorithm: MULTI")
+	// These payload values EQUAL their schema default, so they are pruned
+	// from the installed YAML (the ROS2 deep-merge supplies them from the
+	// package template). The derived runtime env below is unaffected.
+	assert.NotContains(t, string(content), "gnss_serial_baud:")
+	assert.NotContains(t, string(content), "gnss_profile_rate_hz:")
+	// ntrip_enabled=true is an OVERRIDE (schema default is false, reconciled to
+	// the template), so it is PERSISTED, not pruned.
+	assert.Contains(t, string(content), "ntrip_enabled: true")
+
+	envContent, err := os.ReadFile(envFile)
+	require.NoError(t, err)
+	legacyProtocol := "GPS_" + "PROTOCOL=UBX"
+	legacyByID := "GPS_" + "BY_ID=/dev/serial/by-id/usb-gnss"
+	assert.Contains(t, string(envContent), "GNSS_RECEIVER_FAMILY=unicore")
+	assert.Contains(t, string(envContent), "GNSS_SERIAL_DEVICE=/dev/serial/by-id/usb-gnss")
+	assert.Contains(t, string(envContent), "GNSS_SERIAL_BAUD=921600")
+	assert.Contains(t, string(envContent), "GNSS_BACKEND=universal")
+	assert.Contains(t, string(envContent), "GNSS_TRANSPORT=serial")
+	assert.Contains(t, string(envContent), "GNSS_FRAME_ID=gps_link")
+	assert.Contains(t, string(envContent), "GNSS_NTRIP_ENABLED=true")
+	assert.NotContains(t, string(envContent), "GNSS_CONFIG_BAUD=460800")
+	assert.NotContains(t, string(envContent), "GNSS_PROFILE=rover_high_precision")
+	assert.NotContains(t, string(envContent), "GNSS_SIGNAL_PROFILE=all_signals")
+	assert.NotContains(t, string(envContent), "GNSS_PROFILE_RATE_HZ=5")
+	assert.NotContains(t, string(envContent), "GNSS_SIGNAL_GROUP=3 6")
+	assert.NotContains(t, string(envContent), legacyProtocol)
+	assert.NotContains(t, string(envContent), legacyByID)
+}
+
+func TestPostSettingsYAML_MergesExisting(t *testing.T) {
+	yamlFile := createTempYAMLFile(t, `mowgli:
+  ros__parameters:
+    datum_lat: 48.123
+    gnss_receiver_family: auto
+    extra_existing: keep_me
+`)
+	envFile := createTempConfigFile(t, "")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	payload := map[string]any{
+		"datum_lat":            99.999,
+		"gnss_receiver_family": "nmea",
+		"gnss_serial_device":   "/dev/serial/by-id/usb-test",
+		"gnss_serial_baud":     115200,
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	content, err := os.ReadFile(yamlFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "extra_existing")
+	assert.Contains(t, string(content), "keep_me")
+	assert.Contains(t, string(content), "99.999000000")
+	assert.Contains(t, string(content), "gnss_receiver_family: nmea")
+	assert.Contains(t, string(content), "gnss_serial_device: /dev/serial/by-id/usb-test")
+	assert.Contains(t, string(content), "gnss_serial_baud: 115200")
+}
+
+func TestPostSettingsYAML_PreservesFractionalTicksPerMeter(t *testing.T) {
+	yamlFile := createTempYAMLFile(t, `mowgli:
+  ros__parameters:
+    ticks_per_meter: 300.0
+`)
+	envFile := createTempConfigFile(t, "")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	payload := map[string]any{
+		"ticks_per_meter": 319.305,
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	content, err := os.ReadFile(yamlFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "ticks_per_meter: 319.305")
+}
+
+func TestApplyUniversalGnssCompatibility_NormalizesProfileKeys(t *testing.T) {
+	flat := map[string]any{
+		"gnss_receiver_family": "unicore",
+		"gnss_receiver_model":  " um982 ",
+		"gnss_serial_device":   "/dev/ttyUSB0",
+		"gnss_serial_baud":     460800,
+		"gnss_profile":         "debug",
+		"gnss_signal_profile":  "ppp-optimized",
+		"gnss_rate_hz":         7,
+		"gnss_signal_group":    "  3   6  ",
+		"ntrip_enabled":        true,
+		"ntrip_mountpoint":     "NEAR",
+	}
+
+	compat := applyUniversalGnssCompatibility(flat, nil)
+
+	assert.Equal(t, "rover_high_precision_debug", compat["GNSS_PROFILE"])
+	assert.Equal(t, "high_precision", compat["GNSS_SIGNAL_PROFILE"])
+	assert.Equal(t, "7", compat["GNSS_PROFILE_RATE_HZ"])
+	assert.Equal(t, "460800", compat["GNSS_CONFIG_BAUD"])
+	assert.Equal(t, "rover_high_precision_debug", flat["gnss_profile"])
+	assert.Equal(t, "high_precision", flat["gnss_signal_profile"])
+	assert.Equal(t, "UM982", flat["gnss_receiver_model"])
+	assert.Equal(t, 7, flat["gnss_profile_rate_hz"])
+	assert.Equal(t, 460800, flat["gnss_config_baud"])
+	assert.Equal(t, "3 6", flat["gnss_signal_group"])
+	_, hasLegacyRate := flat["gnss_rate_hz"]
+	assert.False(t, hasLegacyRate)
+}
+
+func TestApplyUniversalGnssCompatibility_NormalizesSignalGroupSeparators(t *testing.T) {
+	for _, input := range []string{"3,6", "3/6"} {
+		flat := map[string]any{
+			"gnss_receiver_family": "unicore",
+			"gnss_signal_group":    input,
+		}
+
+		applyUniversalGnssCompatibility(flat, nil)
+
+		assert.Equal(t, "3 6", flat["gnss_signal_group"])
+	}
+}
+
+// gnssTestSchemaDefaults mirrors the subset of asserts/mower_config.schema.json
+// that gnssCompatFromFlat/applyUniversalGnssCompatibility consult, so unit
+// tests can exercise the schema-default-routing behavior without loading the
+// real schema file from disk.
+func gnssTestSchemaDefaults() map[string]any {
+	return map[string]any{
+		"gnss_receiver_family": "auto",
+		"gnss_serial_device":   "/dev/ttyAMA4",
+		"gnss_serial_baud":     float64(921600),
+		"gnss_config_baud":     float64(921600),
+		"gnss_profile":         "runtime_only",
+		"gnss_signal_profile":  "balanced",
+		"gnss_profile_rate_hz": float64(5),
+	}
+}
+
+func TestApplyUniversalGnssCompatibility_LeavesAbsentDefaultsUnmaterialized(t *testing.T) {
+	flat := map[string]any{
+		"datum_lat": 48.5,
+	}
+
+	applyUniversalGnssCompatibility(flat, gnssTestSchemaDefaults())
+
+	// None of these were operator-provided and each computed value equals its
+	// schema default, so materializing them would inject a spurious explicit
+	// key into an otherwise-sparse config (Invariant 15) — gnss_signal_group
+	// in particular has NO schema default, so once written it could never be
+	// pruned back out.
+	for _, key := range []string{
+		"gnss_receiver_family",
+		"gnss_serial_device",
+		"gnss_serial_baud",
+		"gnss_config_baud",
+		"gnss_profile",
+		"gnss_signal_profile",
+		"gnss_profile_rate_hz",
+		"gnss_signal_group",
+	} {
+		_, exists := flat[key]
+		assert.Falsef(t, exists, "expected %s to stay absent, got %v", key, flat[key])
+	}
+}
+
+func TestApplyUniversalGnssCompatibility_MaterializesConfigBaudInheritedFromNonDefaultSerialBaud(t *testing.T) {
+	// gnss_config_baud is absent, but it inherits from gnss_serial_baud, which
+	// the operator set away from its default. The inherited value differs
+	// from the gnss_config_baud schema default, so it must still be written —
+	// silently falling through to the template default (921600) here would be
+	// wrong, not sparse.
+	flat := map[string]any{
+		"gnss_serial_baud": 115200,
+	}
+
+	applyUniversalGnssCompatibility(flat, gnssTestSchemaDefaults())
+
+	assert.Equal(t, 115200, flat["gnss_config_baud"])
+}
+
+func TestApplyUniversalGnssCompatibility_DeletesEmptyNormalizedReceiverModel(t *testing.T) {
+	// gnss_receiver_model has no schema default either; normalizing an
+	// "auto"-ish operator value down to "" must delete the key rather than
+	// leave it as an explicit empty string that can never be pruned.
+	flat := map[string]any{
+		"gnss_receiver_model": "auto",
+	}
+
+	applyUniversalGnssCompatibility(flat, gnssTestSchemaDefaults())
+
+	_, exists := flat["gnss_receiver_model"]
+	assert.False(t, exists)
+}
+
+func TestPostSettingsYAML_DoesNotMaterializeAbsentGnssDefaults(t *testing.T) {
+	// Use the real schema so this proves the fix against the actual schema
+	// defaults, not a test stub.
+	yamlFile := createTempYAMLFile(t, "")
+	envFile := createTempConfigFile(t, "")
+	chdirToGuiRoot(t)
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	payload := map[string]any{
+		"datum_lat": 48.5,
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	content, err := os.ReadFile(yamlFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "datum_lat: 48.5")
+	// The operator never touched GNSS settings; none of them should have been
+	// materialized into the installed config. gnss_signal_group is the key
+	// regression case: it has no schema default, so once written it could
+	// never be pruned back out.
+	for _, key := range []string{
+		"gnss_signal_group",
+		"gnss_receiver_family",
+		"gnss_serial_device",
+		"gnss_serial_baud",
+		"gnss_config_baud",
+		"gnss_profile",
+		"gnss_signal_profile",
+		"gnss_profile_rate_hz",
+	} {
+		assert.NotContainsf(t, string(content), key, "expected %s to stay out of the installed config", key)
+	}
+}
+
+func TestPostSettingsYAMLPurgesLegacyRuntimeEnvKeys(t *testing.T) {
+	yamlFile := createTempYAMLFile(t, "")
+	legacyProtocol := "GPS_" + "PROTOCOL=UBX\n"
+	legacyByID := "GPS_" + "BY_ID=/dev/serial/by-id/legacy\n"
+	legacyRuntime := "UNICORE_" + "ROS_EXECUTABLE=unicore_node\n"
+	envFile := createTempConfigFile(t, "ROS_DOMAIN_ID=0\n"+legacyProtocol+legacyByID+legacyRuntime+"GNSS_RECEIVER_FAMILY=ublox\nGNSS_PROFILE=runtime_only\n")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	payload := map[string]any{
+		"gnss_receiver_family": "ublox",
+		"gnss_serial_device":   "/dev/serial/by-id/usb-test",
+		"gnss_serial_baud":     921600,
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	envContent, err := os.ReadFile(envFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(envContent), "GNSS_BACKEND=universal")
+	assert.NotContains(t, string(envContent), strings.TrimSpace(legacyProtocol))
+	assert.NotContains(t, string(envContent), strings.TrimSpace(legacyByID))
+	assert.NotContains(t, string(envContent), strings.TrimSpace(legacyRuntime))
+	assert.Contains(t, string(envContent), "GNSS_RECEIVER_FAMILY=ublox")
+	assert.NotContains(t, string(envContent), "GNSS_PROFILE=runtime_only")
+}
+
+func TestGetSettingsYAML_UsesEnvFallbackForFamilyDeviceAndBaudWhenYAMLIsMissing(t *testing.T) {
+	yamlFile := createTempYAMLFile(t, "mowgli:\n  ros__parameters:\n    gnss_profile: rover_high_precision\n")
+	envFile := createTempConfigFile(t, strings.Join([]string{
+		"GNSS_RECEIVER_FAMILY=unicore",
+		"GNSS_SERIAL_DEVICE=/dev/serial/by-id/usb-fallback",
+		"GNSS_SERIAL_BAUD=460800",
+	}, "\n")+"\n")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings/yaml", nil)
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.Equal(t, "unicore", response["gnss_receiver_family"])
+	assert.Equal(t, "/dev/serial/by-id/usb-fallback", response["gnss_serial_device"])
+	assert.Equal(t, float64(460800), response["gnss_serial_baud"])
+}
+
+func TestGetSettingsYAML_NTRIPEnvFallbackIsBoolean(t *testing.T) {
+	chdirToGuiRoot(t)
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"false", false}, {"0", false}, {"off", false}, {"no", false},
+		{"true", true}, {"1", true}, {" ON ", true}, {"yes", true}, {"Y", true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			yamlFile := createTempYAMLFile(t, "")
+			envFile := createTempConfigFile(t, "GNSS_NTRIP_ENABLED="+tc.value+"\nGNSS_NTRIP_GGA_ENABLED="+tc.value+"\n")
+			db := types.NewMockDBProvider()
+			db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+			db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("GET", "/api/settings/yaml", nil)
+			setupSettingsRouter(db).ServeHTTP(w, req)
+			require.Equal(t, http.StatusOK, w.Code)
+			var response map[string]any
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+			assert.Equal(t, tc.want, response["ntrip_enabled"])
+			assert.Equal(t, tc.want, response["gnss_ntrip_gga_enabled"])
+		})
+	}
+}
+
+func TestPostSettingsYAML_NTRIPDisableSurvivesReloadAfterDefaultPruning(t *testing.T) {
+	chdirToGuiRoot(t)
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+	yamlFile := createTempYAMLFileAtGuiRoot(t, "mowgli:\n  ros__parameters:\n    ntrip_enabled: true\n")
+	envFile := createTempConfigFileAtGuiRoot(t, "GNSS_NTRIP_ENABLED=true\n")
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+	router := setupSettingsRouter(db)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", strings.NewReader(`{"ntrip_enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	content, err := os.ReadFile(yamlFile)
+	require.NoError(t, err)
+	assert.NotContains(t, string(content), "ntrip_enabled:")
+	env, err := os.ReadFile(envFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(env), "GNSS_NTRIP_ENABLED=false")
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest("GET", "/api/settings/yaml", nil)
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.Equal(t, false, response["ntrip_enabled"])
+}
+
+func TestGetSettingsYAML_KeepsExplicitNTRIPDisableOverEnvFallback(t *testing.T) {
+	yamlFile := createTempYAMLFile(t, `mowgli:
+  ros__parameters:
+    ntrip_enabled: false
+`)
+	envFile := createTempConfigFile(t, "GNSS_NTRIP_ENABLED=true\n")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings/yaml", nil)
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.Equal(t, false, response["ntrip_enabled"])
+}
+
+func TestGetSettingsYAML_UsesDefaultsOnlyWhenYAMLAndEnvAreAbsent(t *testing.T) {
+	yamlFile := createTempYAMLFile(t, "")
+	envFile := createTempConfigFile(t, "")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings/yaml", nil)
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.Equal(t, "auto", response["gnss_receiver_family"])
+	assert.Equal(t, "/dev/ttyAMA4", response["gnss_serial_device"])
+	assert.Equal(t, float64(921600), response["gnss_serial_baud"])
+}
+
+func TestPostSettingsYAML_InvalidJSON(t *testing.T) {
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte("/tmp/test.yaml"))
+
+	router := setupSettingsRouter(db)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// TestPostSettingsYAML_SparseWrite_PrunesDefaults verifies that a key whose
+// value equals the schema default is NOT persisted to the installed YAML (it
+// falls through to the ROS2 package template), while a key that differs is.
+func TestPostSettingsYAML_SparseWrite_PrunesDefaults(t *testing.T) {
+	chdirToGuiRoot(t)
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+
+	// Start with an on-disk value that is already at its default so we can
+	// confirm the pruner scrubs a pre-existing default-valued key too.
+	yamlFile := createTempYAMLFileAtGuiRoot(t, `mowgli:
+  ros__parameters:
+    mowing_speed: 0.2
+`)
+	envFile := createTempConfigFileAtGuiRoot(t, "")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	// Schema defaults are reconciled to the package template: mowing_speed 0.2,
+	// transit_speed 0.25.
+	payload := map[string]any{
+		"mowing_speed":  0.2, // == schema default (0.2) -> pruned
+		"transit_speed": 0.5, // != schema default (0.25) -> persisted
+	}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	content, err := os.ReadFile(yamlFile)
+	require.NoError(t, err)
+	assert.NotContains(t, string(content), "mowing_speed:")
+	assert.Contains(t, string(content), "transit_speed: 0.5")
+}
+
+// TestPostSettingsYAML_ResetToDefault verifies that writing a key back to its
+// default value removes it from an installed YAML that previously overrode it.
+func TestPostSettingsYAML_ResetToDefault(t *testing.T) {
+	chdirToGuiRoot(t)
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+
+	yamlFile := createTempYAMLFileAtGuiRoot(t, `mowgli:
+  ros__parameters:
+    mowing_speed: 0.55
+    datum_lat: 48.123
+`)
+	envFile := createTempConfigFileAtGuiRoot(t, "")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	// Reset mowing_speed to its schema default (0.2, reconciled to the package
+	// template); leave datum_lat as an operator override (48.123 != default 0.0)
+	// to confirm it survives.
+	payload := map[string]any{"mowing_speed": 0.2}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	content, err := os.ReadFile(yamlFile)
+	require.NoError(t, err)
+	assert.NotContains(t, string(content), "mowing_speed:")
+	assert.Contains(t, string(content), "datum_lat: 48.123")
+}
+
+// TestPostSettingsYAMLPrunesRetiredKeys verifies that keys retired in issue #195
+// (removed from BOTH the ROS2 template and the GUI schema, because no node ever
+// read them) are scrubbed from a pre-existing installed YAML on the next save.
+// sparsifyFlat cannot do this on its own: a key with no schema default left is
+// invisible to it, so retiredParamKeys must carry them explicitly. A genuine
+// non-default override must still survive the same write.
+func TestPostSettingsYAMLPrunesRetiredKeys(t *testing.T) {
+	chdirToGuiRoot(t)
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+
+	yamlFile := createTempYAMLFileAtGuiRoot(t, `mowgli:
+  ros__parameters:
+    outline_passes: 3
+    motor_temp_high_c: 80.0
+    mow_angle_increment_deg: 15.0
+    ticks_per_revolution: 84
+    use_scan_matching: true
+    use_loop_closure: true
+    icp_max_iter: 30
+    lc_max_dist_m: 5.0
+    lidar_map_half_extent_m: 80.0
+    use_lidar_map_anchor: true
+    mowing_speed: 0.55
+`)
+	envFile := createTempConfigFileAtGuiRoot(t, "")
+
+	db := types.NewMockDBProvider()
+	db.Set("system.mower.yamlConfigFile", []byte(yamlFile))
+	db.Set("system.mower.runtimeEnvFile", []byte(envFile))
+
+	router := setupSettingsRouter(db)
+
+	// A save that does not even mention the retired keys must still remove them.
+	payload := map[string]any{"mowing_speed": 0.55}
+	body, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/yaml", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	content, err := os.ReadFile(yamlFile)
+	require.NoError(t, err)
+	for _, retired := range []string{"outline_passes", "motor_temp_high_c", "mow_angle_increment_deg", "ticks_per_revolution", "use_scan_matching", "use_loop_closure", "icp_max_iter", "lc_max_dist_m", "lidar_map_half_extent_m"} {
+		assert.NotContains(t, string(content), retired,
+			"retired key %s must be scrubbed from the installed YAML", retired)
+	}
+	assert.Contains(t, string(content), "use_lidar_map_anchor: true")
+	// A real operator override (0.55 != the 0.2 default) must survive.
+	assert.Contains(t, string(content), "mowing_speed: 0.55")
+}
+
+// TestGetSettingsYAMLDefaults_ReturnsSchemaDefaults verifies the defaults
+// endpoint surfaces the schema default values used as the reset source.
+func TestGetSettingsYAMLDefaults_ReturnsSchemaDefaults(t *testing.T) {
+	chdirToGuiRoot(t)
+	resetSchemaCache()
+	t.Cleanup(resetSchemaCache)
+
+	router := setupSettingsRouter(types.NewMockDBProvider())
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/settings/yaml/defaults", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	// Schema defaults are reconciled to the package template (the robot's real
+	// default source): mowing_speed 0.2, transit_speed 0.2.
+	assert.Equal(t, 0.2, result["mowing_speed"])
+	assert.Equal(t, 0.2, result["transit_speed"])
+}
+
+func TestValuesEqual(t *testing.T) {
+	assert.True(t, valuesEqual(5, 5.0))        // int vs float from YAML/JSON
+	assert.True(t, valuesEqual(int64(5), 5.0)) // yaml int64 vs json float64
+	assert.True(t, valuesEqual(true, true))
+	assert.True(t, valuesEqual("auto", "auto"))
+	assert.False(t, valuesEqual(5, 6))
+	assert.False(t, valuesEqual(true, false))
+	assert.False(t, valuesEqual("auto", "unicore"))
+	assert.False(t, valuesEqual(nil, 0))
+}
+
+// createTempYAMLFileAtGuiRoot / createTempConfigFileAtGuiRoot create temp files
+// under an absolute path so they survive the chdirToGuiRoot cwd change (a
+// t.TempDir path is absolute, so this is really just createTempYAMLFile — the
+// distinct name documents intent for the chdir'd tests).
+func createTempYAMLFileAtGuiRoot(t *testing.T, content string) string {
+	return createTempYAMLFile(t, content)
+}
+
+func createTempConfigFileAtGuiRoot(t *testing.T, content string) string {
+	return createTempConfigFile(t, content)
+}
+
+func createTempYAMLFile(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "mower_config_*.yaml")
+	require.NoError(t, err)
+	_, err = f.WriteString(content)
+	require.NoError(t, err)
+	f.Close()
+	return f.Name()
+}
+
+func createTempConfigFile(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "mower_config_*.sh")
+	require.NoError(t, err)
+	_, err = f.WriteString(content)
+	require.NoError(t, err)
+	f.Close()
+	return f.Name()
+}

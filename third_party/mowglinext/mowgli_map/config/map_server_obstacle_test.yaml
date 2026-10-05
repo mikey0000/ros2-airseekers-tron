@@ -1,0 +1,18 @@
+map_server_node:
+  ros__parameters:
+    resolution: 0.05
+    map_size_x: 12.0
+    map_size_y: 12.0
+    map_frame: "map"
+    tool_width: 0.18
+    map_file_path: ""
+    areas_file_path: ""
+    publish_rate: 1.0
+
+    # Small test area: 5x5m with two obstacles.
+    # Robot starts at origin (0,0), dock at (-2, -2).
+    area_names: ["obstacle_test"]
+    area_polygons: ["-3.0,-3.0;3.0,-3.0;3.0,3.0;-3.0,3.0"]
+    area_is_navigation: [false]
+    # Two obstacles: 0.8x0.8m box at (1,1) and 0.6x0.6m box at (-1,-0.5)
+    area_obstacles: ["0.6,0.6;1.4,0.6;1.4,1.4;0.6,1.4|-1.3,-0.8;-0.7,-0.8;-0.7,-0.2;-1.3,-0.2"]

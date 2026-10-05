@@ -1,0 +1,26 @@
+/**:
+  ros__parameters:
+    # MQTT broker address and port.
+    mqtt_host: "localhost"
+    mqtt_port: 1883
+
+    # Authentication (leave empty strings to connect without credentials).
+    mqtt_username: ""
+    mqtt_password: ""
+
+    # MQTT client identity as seen by the broker.
+    mqtt_client_id: "mowgli_ros2"
+
+    # Prefix prepended to every MQTT topic published or subscribed by this node.
+    # With the default "mowgli" prefix the topics become:
+    #   mowgli/status, mowgli/power, mowgli/emergency, mowgli/position,
+    #   mowgli/diagnostics, mowgli/command
+    mqtt_topic_prefix: "mowgli"
+
+    # Rate limit for the /wheel_odom → mowgli/position bridge.
+    # Other topics (status, power, emergency) are published on every ROS2 message.
+    publish_rate: 1.0  # Hz
+
+    # Enable TLS/SSL for the broker connection.
+    # Requires the broker to be configured with a valid certificate.
+    use_ssl: false

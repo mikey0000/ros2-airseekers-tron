@@ -65,14 +65,14 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 
-# NavSatStatus values (sensor_msgs/msg/NavSatStatus):
-#   0 NO_FIX, 1 FIX, 2 DGPS_FIX, 3 PPS_FIX, 4 RTK_FIX, 5 RTK_FLOAT,
-#   6 ESTIMATED (dead reckoning), 7 MANUAL, 8 SIMULATION
+# NavSatStatus values (sensor_msgs/msg/NavSatStatus, ROS 2 Humble):
+#   -1 NO_FIX, 0 FIX (autonomous), 1 SBAS_FIX (differential), 2 GBAS_FIX (RTK fixed/float)
+# um960_gps_driver maps GGA quality 2 -> SBAS_FIX and 4/5 -> GBAS_FIX; RTK fixed vs float
+# is only visible through the position covariance, which is why the gate also checks that.
 DEFAULT_USED_FIXES = (
     NavSatStatus.STATUS_FIX,
-    NavSatStatus.STATUS_DGPS_FIX,
-    NavSatStatus.STATUS_RTK_FIX,
-    NavSatStatus.STATUS_RTK_FLOAT,
+    NavSatStatus.STATUS_SBAS_FIX,
+    NavSatStatus.STATUS_GBAS_FIX,
 )
 
 # Log a rejection at most once per this many seconds.

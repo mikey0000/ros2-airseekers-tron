@@ -8,7 +8,8 @@
   same model with per-chassis mounting offsets — adjust the properties
   below to match a specific unit).
 
-  Loaded by the robot_state_publisher entry in launch/nav2.launch.py:
+  Loaded by the robot_state_publisher in launch/mower.launch.py (and
+  launch/nav2.launch.py when run standalone):
       robot_description = xacro <stack_root>/config/urdf/mower.urdf.xacro
 
   ======================================================================
@@ -55,6 +56,16 @@
   stereo_camera
               Front stereo (Metoak). No driver ported yet — planned
               stereo_vio_bridge; frame reserved here.
+
+  base_footprint
+              Identity child of base_link (fixed joint). MowgliNext nodes
+              (e.g. mowgli_map map_server_node) look up
+              map -> base_footprint, so the frame must exist. Planar
+              robot: no ground-projection offset is needed today.
+
+  blade_link  Alias of cutter_link (same origin: the cutter disc
+              centre), the frame name MowgliNext coverage/mowing code
+              expects. Fixed joint from base_link.
 
   cutter_link, left/right_wheel, left/right_omni_wheel
               Geometry/visualization only. The MCU owns the cutter
@@ -189,6 +200,23 @@
     <parent link="base_link"/>
     <child link="cutter_link"/>
     <origin xyz="${cutter_xyz}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- blade_link: MowgliNext name for the cutter disc centre. Same origin
+       as cutter_link (kept for existing consumers). -->
+  <link name="blade_link"/>
+  <joint name="blade_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="blade_link"/>
+    <origin xyz="${cutter_xyz}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- base_footprint: identity child of base_link (MowgliNext requires it). -->
+  <link name="base_footprint"/>
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="base_footprint"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
   <xacro:drive_wheel side="left"  y_sign="-1"/>

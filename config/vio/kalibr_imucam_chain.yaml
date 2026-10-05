@@ -1,0 +1,39 @@
+%YAML:1.0
+
+# Camera intrinsics + IMU<->camera extrinsics for the Airseekers Tron Metoak stereo front.
+#
+# Recovered from the vendor Metoak SDK calibration dump
+# (ros2_port_handoff/08_calibration_identity/{cam0,cam1,stereo_params}.yaml, sn IC17SZ01011)
+# and the vendor VIO config extrisics (generate_vio_config.py BODY_T_CAM0).
+#
+# Convention: OpenVINS reads "T_imu_cam" as T_CtoI = [ R_CtoI | p_CinI ],
+# i.e. the transform from camera to IMU/body. The recovered body_T_cam0/1 are
+# already in that exact form (see generate_vio_config.py), so no inversion is needed.
+
+cam0:
+  T_imu_cam: # R_CtoI, p_CinI  (translation units: meters)
+    - [-1.0, 0.0, 0.0, 0.05143]
+    - [0.0, 1.0, 0.0, -0.00453]
+    - [0.0, 0.0, -1.0, -0.01503]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [1]
+  camera_model: pinhole
+  distortion_model: radtan
+  distortion_coeffs: [-0.4083914161, 0.1972861439, -0.0000793726, 0.0000277763] # k1 k2 p1 p2 (OpenVINS radtan is 4 coeffs; k3 dropped)
+  intrinsics: [449.6371155, 449.6687927, 319.9060974, 240.6614532] # fu fv cu cv
+  resolution: [640, 480]
+  rostopic: /vio/left/image_raw
+
+cam1:
+  T_imu_cam: # body_T_cam1 = body_T_cam0 * T_cam0_cam1 (see generate_vio_config.py)
+    - [-0.999963977, -0.00716914884, -0.00454394301, 0.111478447]
+    - [-0.00718107658, 0.999970799, 0.00261411916, -0.00394337764]
+    - [0.00452506932, 0.00264665539, -0.999986259, -0.0150247656]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [0]
+  camera_model: pinhole
+  distortion_model: radtan
+  distortion_coeffs: [-0.4090148807, 0.1997688562, 0.0000428832, 0.0001072737] # k1 k2 p1 p2
+  intrinsics: [448.6719971, 448.6886902, 318.0475769, 238.3471069] # fu fv cu cv
+  resolution: [640, 480]
+  rostopic: /vio/right/image_raw

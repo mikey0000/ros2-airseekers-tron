@@ -1,3 +1,9 @@
+> **Historical document (superseded 2026-10-05).** The current state of the port, the fixed
+> topic/frame contract and the roadmap live in `STATUS.md`. The full audits that replaced this
+> analysis are in `audit_2026-10-05/` (`ros2_stack_audit.md`, `mowglinext_reuse_study.md`,
+> `vendor_mission_layer.md`). Everything below is kept for history and is out of date in places
+> (package count, `config/` contents, test counts).
+
 # Handoff gap analysis — `ros2_port_handoff/` vs `ros2_stack/`
 
 Date: 2026-10-05. Method: read `ros2_port_handoff/README.md` plus the top-level

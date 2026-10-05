@@ -1,0 +1,339 @@
+# Nav2 parameters for the Airseekers Tron (ROS 2 Humble, Nav2 1.1.x).
+#
+# Translated from third_party/mowglinext/mowgli_bringup/config/nav2_params_base.yaml
+# (Kilted). Every deviation is marked "DEVIATION:" with the reason. Summary:
+#
+#   * Humble: unstamped Twist everywhere -> no `enable_stamped_cmd_vel` keys.
+#   * No docking_server (opennav_docking is not in Humble), no collision_monitor
+#     in this file yet (velocity chain is controller -> velocity_smoother ->
+#     twist_mux lane), no smoother_server / waypoint_follower / map_server /
+#     map_saver / coverage_server / AMCL.
+#   * No mowgli_nav2_plugins (FTCController, PathProgressGoalChecker) until they
+#     are ported: FollowCoveragePath and coverage_goal_checker use stock Humble
+#     plugins under the SAME ids, so the MowgliNext BT keeps working.
+#   * No LiDAR, no /map: global costmap has no static_layer; local costmap gets
+#     an obstacle_layer fed only by /bumper_cloud.
+#
+# Frame contract (fixed):
+#   map --(static identity for now)--> odom --(ekf_node)--> base_link (rear axle)
+#   --(URDF identity)--> base_footprint.   Odometry: /odometry/filtered (odom frame).
+#
+# DEVIATION (all nodes): robot_base_frame is base_link, not MowgliNext's
+# base_footprint. Our EKF's child frame is base_link and base_footprint is an
+# identity child of it, so the two are interchangeable; base_link avoids one
+# extra TF lookup and matches /odometry/filtered.child_frame_id.
+#
+# Footprint (from config/urdf/mower.urdf.xacro, base_link origin):
+#   chassis box 0.7 x 0.5 centred at x=+0.12  -> x in [-0.23, +0.47], y +-0.25
+#   drive wheels at y=+-0.24, width 0.05      -> outer y +-0.265
+#   bumper box at x=0.507, 0.02 thick         -> front x +0.517
+#   => [[0.52, 0.27], [0.52, -0.27], [-0.23, -0.27], [-0.23, 0.27]]
+# NOTE: the xacro places the drive axle at x=-0.098 while base_link is documented
+# as the rear-axle centre; if base_link moves to the axle, shift x by +0.098.
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: false
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odometry/filtered
+    bt_loop_duration: 10
+    # Same 1000 ms as MowgliNext: is_path_valid shares planner_server's callback
+    # group and can exceed short timeouts on ARM.
+    default_server_timeout: 1000
+    wait_for_service_timeout: 10000
+    transform_tolerance: 0.5
+    # default_nav_to_pose_bt_xml / default_nav_through_poses_bt_xml are injected
+    # by navigation.launch.py (absolute paths into this package's
+    # behavior_trees/). They are the Humble default trees plus
+    # goal_checker_id="general_goal_checker" on FollowPath (see the XML headers).
+    # DEVIATION: MowgliNext uses its own custom trees; we use the Humble defaults
+    # until mowgli_behavior is ported.
+    # DEVIATION: no enable_stamped_cmd_vel (Humble has unstamped Twist only).
+
+bt_navigator_navigate_through_poses_rclcpp_node:
+  ros__parameters:
+    use_sim_time: false
+
+bt_navigator_navigate_to_pose_rclcpp_node:
+  ros__parameters:
+    use_sim_time: false
+
+controller_server:
+  ros__parameters:
+    use_sim_time: false
+    # DEVIATION: MowgliNext reads /wheel_odom; our velocity feedback is the EKF.
+    odom_topic: /odometry/filtered
+    # DEVIATION: 20 Hz (MowgliNext 10 Hz): RPP on a 0.3 m/s mower is cheap.
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5      # diff-drive: no lateral velocity
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    # Humble key is progress_checker_plugin (singular); Iron+ uses the plural list.
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker"]
+    controller_plugins: ["FollowPath", "FollowCoveragePath"]
+    # DEVIATION: no path_handler_plugins (Kilted-only API).
+
+    # DEVIATION: SimpleProgressChecker (MowgliNext: PoseProgressChecker 0.15 m /
+    # 30 s). Contract values: 0.3 m within 15 s.
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.3
+      movement_time_allowance: 15.0
+
+    # Transit goals. DEVIATION: MowgliNext has stopped_goal_checker +
+    # transit_goal_checker; collapsed into one SimpleGoalChecker per contract.
+    general_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.15
+      yaw_goal_tolerance: 0.25
+      stateful: true
+
+    # Requested by the MowgliNext BT (goal_checker_id="coverage_goal_checker").
+    # DEVIATION: stock SimpleGoalChecker instead of
+    # mowgli_nav2_plugins/PathProgressGoalChecker (not ported yet). Yaw left
+    # loose: a swath end does not need a final heading.
+    coverage_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.10
+      yaw_goal_tolerance: 3.14
+      stateful: true
+
+    # Transit controller. DEVIATION: plain RPP with use_rotate_to_heading
+    # instead of MowgliNext's RotationShim(RPP): one fewer plugin to tune,
+    # RPP's own rotate-to-heading covers pivots on a diff-drive.
+    FollowPath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.3
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.4
+      max_lookahead_dist: 0.8
+      lookahead_time: 2.0
+      use_velocity_scaled_lookahead_dist: true
+      rotate_to_heading_angular_vel: 1.0
+      transform_tolerance: 0.5
+      min_approach_linear_velocity: 0.1
+      approach_velocity_scaling_dist: 0.6
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.15
+      use_cost_regulated_linear_velocity_scaling: false
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.785
+      max_angular_accel: 2.0
+      allow_reversing: false
+      max_robot_pose_search_dist: 10.0
+      use_interpolation: true
+
+    # Coverage controller, requested by the MowgliNext BT
+    # (controller_id="FollowCoveragePath"). DEVIATION: RPP instead of
+    # mowgli_nav2_plugins/FTCController (not ported yet). Slower and a shorter
+    # lookahead so it tracks straight swaths tightly.
+    FollowCoveragePath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.25
+      lookahead_dist: 0.5
+      min_lookahead_dist: 0.4
+      max_lookahead_dist: 0.7
+      lookahead_time: 1.5
+      use_velocity_scaled_lookahead_dist: true
+      rotate_to_heading_angular_vel: 1.0
+      transform_tolerance: 0.5
+      min_approach_linear_velocity: 0.1
+      approach_velocity_scaling_dist: 0.4
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.6
+      regulated_linear_scaling_min_speed: 0.12
+      use_cost_regulated_linear_velocity_scaling: false
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.6
+      max_angular_accel: 2.0
+      allow_reversing: false
+      max_robot_pose_search_dist: 10.0
+      use_interpolation: true
+
+planner_server:
+  ros__parameters:
+    use_sim_time: false
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    # DEVIATION: NavFn instead of SmacPlanner2D. With an empty global costmap
+    # (inflation + keepout only) NavFn is plenty and has fewer knobs.
+    # allow_unknown true: without a static map every cell outside the keepout
+    # mask is unknown/free.
+    GridBased:
+      plugin: "nav2_navfn_planner/NavfnPlanner"
+      tolerance: 0.3
+      use_astar: false
+      allow_unknown: true
+
+behavior_server:
+  ros__parameters:
+    use_sim_time: false
+    local_costmap_topic: local_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_costmap_topic: global_costmap/costmap_raw
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    # DEVIATION: no assisted_teleop (not needed; teleop goes through twist_mux).
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    global_frame: odom
+    robot_base_frame: base_link
+    transform_tolerance: 0.5
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 2.0
+
+# Controller output (/cmd_vel_nav_raw) -> velocity_smoother -> /cmd_vel_nav,
+# the twist_mux navigation lane (priority 10, timeout 0.6 s).
+# DEVIATION: MowgliNext routes cmd_vel_nav through collision_monitor; with no
+# scan source a collision_monitor would be a pass-through, so it is omitted.
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: false
+    use_realtime_priority: false
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    # OPEN_LOOP: smooth against the last command, not measured velocity, so the
+    # smoother never stalls on a missing / late /odometry/filtered.
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.5, 0.0, 1.0]
+    min_velocity: [-0.3, 0.0, -1.0]
+    max_accel: [0.5, 0.0, 1.0]
+    max_decel: [-1.0, 0.0, -2.0]
+    odom_topic: /odometry/filtered
+    odom_duration: 0.1
+    deadband_velocity: [0.01, 0.0, 0.01]
+    velocity_timeout: 0.5
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 10.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      transform_tolerance: 0.5
+      always_send_full_costmap: true
+      footprint: "[[0.52, 0.27], [0.52, -0.27], [-0.23, -0.27], [-0.23, 0.27]]"
+      footprint_padding: 0.02
+      # DEVIATION: 4 x 4 m (MowgliNext 12 x 12) — only bumper hits populate it.
+      rolling_window: true
+      width: 4
+      height: 4
+      resolution: 0.05
+      track_unknown_space: false
+      plugins: ["obstacle_layer", "inflation_layer"]
+      # Bumper contacts as a marking-only obstacle source. bumper_controller
+      # publishes points in base_link at z=0 (x=0.4, y in {-0.2,0,0.2}), i.e.
+      # INSIDE the footprint, so footprint_clearing_enabled must be false or the
+      # layer erases the hit immediately.
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        footprint_clearing_enabled: false
+        max_obstacle_height: 2.0
+        combination_method: 1
+        observation_sources: bumper
+        bumper:
+          topic: /bumper_cloud
+          data_type: "PointCloud2"
+          marking: true
+          clearing: false
+          min_obstacle_height: -0.5
+          max_obstacle_height: 2.0
+          obstacle_max_range: 1.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 1.5
+          raytrace_min_range: 0.0
+          observation_persistence: 2.0
+          expected_update_rate: 0.0
+          inf_is_valid: false
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.4
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      transform_tolerance: 0.5
+      always_send_full_costmap: false
+      footprint: "[[0.52, 0.27], [0.52, -0.27], [-0.23, -0.27], [-0.23, 0.27]]"
+      footprint_padding: 0.02
+      # No static_layer: there is no /map publisher (no LiDAR, no SLAM). Rolling
+      # window in the GPS-anchored map frame; the keepout mask carries the
+      # field boundary / no-go zones.
+      # DEVIATION: 0.1 m resolution, 50 x 50 m (MowgliNext 0.08 m, 70 x 70 m).
+      rolling_window: true
+      width: 50
+      height: 50
+      resolution: 0.1
+      track_unknown_space: false
+      plugins: ["inflation_layer"]
+      filters: ["keepout_filter"]
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.4
+      # Filter info (/costmap_filter_info) + mask (/keepout_mask) come from the
+      # ported MowgliNext map_server_node (or costmap_filter_info_server with
+      # use_keepout:=true). With no publisher the filter is idle and does not
+      # block lifecycle activation.
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: true
+        filter_info_topic: "/costmap_filter_info"
+        transform_tolerance: 0.5
+
+# Only started when use_keepout:=true (its own lifecycle manager).
+costmap_filter_info_server:
+  ros__parameters:
+    use_sim_time: false
+    type: 0                     # 0 = keepout
+    filter_info_topic: "/costmap_filter_info"
+    mask_topic: "/keepout_mask"
+    base: 0.0
+    multiplier: 1.0
+
+lifecycle_manager_navigation:
+  ros__parameters:
+    use_sim_time: false
+    autostart: true
+    bond_timeout: 10.0
+    # Dependency order; must match navigation.launch.py.
+    node_names:
+      - controller_server
+      - planner_server
+      - behavior_server
+      - bt_navigator
+      - velocity_smoother
+
+lifecycle_manager_costmap_filters:
+  ros__parameters:
+    use_sim_time: false
+    autostart: true
+    bond_timeout: 10.0
+    node_names:
+      - costmap_filter_info_server

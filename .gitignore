@@ -1,0 +1,11 @@
+# colcon workspace artefacts (built inside docker, mounted at /work)
+build/
+install/
+log/
+__pycache__/
+*.pyc
+.pytest_cache/
+# GUI build outputs
+third_party/mowglinext/gui/web/node_modules/
+third_party/mowglinext/gui/web/dist/
+third_party/mowglinext/gui/mowglinext

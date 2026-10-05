@@ -15,6 +15,7 @@
 #include <memory>
 
 #include "rclcpp/rclcpp.hpp"
+#include <string>
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 
@@ -37,7 +38,8 @@ public:
         double pid_tolerance   = 0.03; // rad convergence threshold
     };
 
-    explicit BumperController(rclcpp::Node& node, Config cfg = {});
+    explicit BumperController(rclcpp::Node& node);
+    BumperController(rclcpp::Node& node, Config cfg);
 
     // Call on every sensor update. Returns true when a state transition occurred.
     bool update(bool bumper, bool bumper_l, bool bumper_r, bool routing_enabled, double dt);
@@ -69,7 +71,9 @@ private:
         double calc(double setpoint, double measured, double dt);
     };
 
+    void publishTwist(double linear, double angular);
     void enterBackingUp();
+    void finishToIdle();
     void startRotate(double delta_yaw);   // relative yaw turn
     void stopRotate();
     double spinRotate(double dt, double* w);  // returns heading error; sets *w (rad/s)

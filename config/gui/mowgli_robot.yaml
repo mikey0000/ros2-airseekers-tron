@@ -1,0 +1,29 @@
+# =============================================================================
+# mowgli_robot.yaml -- MowgliNext GUI settings file for the Airseekers Tron port
+#
+# Mounted into the mower_gui container at /mowgli_config/mowgli_robot.yaml
+# (MOWER_YAML_CONFIG_FILE). The GUI reads datum_lat/datum_lon (map origin for
+# the map page and GPS<->map conversion) and dock_pose_* from here, and the
+# Settings page writes back ONLY the keys you change (sparse file; every key
+# not present falls back to the default in
+# third_party/mowglinext/gui/asserts/mower_config.schema.json).
+#
+# No other key is required for the GUI to start: a missing or empty file is
+# tolerated and the schema defaults are used. Keep it minimal -- nothing in
+# the Tron ROS stack reads this file; it is the GUI's view only.
+#
+# Structure copied from third_party/mowglinext/mowgli_bringup/config/mowgli_robot.yaml.
+# =============================================================================
+
+mowgli:
+  ros__parameters:
+    # Map origin. Set the same values as the datum_lat/datum_lon launch args (e.g. in the
+    # docker/docker-compose.yml command or a .env); both must be the dock position, or the
+    # GUI map and the robot's map frame will disagree.
+    datum_lat: 0.000000000
+    datum_lon: 0.000000000
+
+    # Dock pose in the map frame (m, m, rad ENU yaw).
+    dock_pose_x: 0.0
+    dock_pose_y: 0.0
+    dock_pose_yaw: 0.0

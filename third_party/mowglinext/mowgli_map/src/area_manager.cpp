@@ -1,0 +1,1944 @@
+// Copyright (C) 2024 Cedric <cedric@mowgli.dev>
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+// Area CRUD, map I/O service handlers (save/load/clear_map), area
+// persistence (areas.dat), dock-pose setter (with mowgli_robot.yaml
+// line-splice update), classification re-application, and unit-test
+// entry points — all split out of map_server_node.cpp without
+// changing the on-disk formats or service interfaces.
+
+#include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <map>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <system_error>
+#include <vector>
+
+#include <geometry_msgs/msg/pose_stamped.hpp>
+
+#include "mowgli_interfaces/robot_yaml_scalar.hpp"
+#include "mowgli_interfaces/wgs84_projection.hpp"
+#include "mowgli_map/internal_helpers.hpp"
+#include "mowgli_map/map_server_node.hpp"
+#include <grid_map_core/iterators/PolygonIterator.hpp>
+#include <grid_map_ros/GridMapRosConverter.hpp>
+
+namespace mowgli_map
+{
+
+// (kRuntimeRobotYaml moved to map_server_node.hpp — it is now the default of
+// the `robot_yaml_path` parameter so tests can redirect dock-pose writes.)
+
+namespace
+{
+
+/// A datum is "set" once it is meaningfully away from the 0/0 template
+/// default. 1e-9° ≈ 0.1 mm — anything closer to Null Island is unset.
+constexpr double kDatumUnsetEpsilonDeg = 1e-9;
+
+/// Two datums this close (≈ 1 mm) are the same site anchor — no migration.
+/// Loose enough to absorb the fixed-precision formatting round-trip of the
+/// areas.dat stamp and the GUI's geo-scalar formatting.
+constexpr double kDatumMatchEpsilonDeg = 1e-8;
+
+bool is_datum_set(double lat, double lon)
+{
+  return std::abs(lat) > kDatumUnsetEpsilonDeg || std::abs(lon) > kDatumUnsetEpsilonDeg;
+}
+
+}  // namespace
+
+// The x/y/yaw splice-in-place writer moved to mowgli_interfaces::
+// robot_yaml_scalar::UpdateDockPose (task #42) — was a byte-for-byte-
+// identical copy of the same logic duplicated across this file,
+// mowgli_localization/calibrate_imu_yaw_node.cpp, and
+// mowgli_behavior/calibration_nodes.cpp.
+
+geometry_msgs::msg::Polygon MapServerNode::parse_polygon_string(const std::string& s)
+{
+  geometry_msgs::msg::Polygon poly;
+  if (s.empty())
+  {
+    return poly;
+  }
+
+  std::istringstream pts_stream(s);
+  std::string point_str;
+  while (std::getline(pts_stream, point_str, ';'))
+  {
+    std::istringstream coord_stream(point_str);
+    std::string x_str, y_str;
+    if (std::getline(coord_stream, x_str, ',') && std::getline(coord_stream, y_str, ','))
+    {
+      geometry_msgs::msg::Point32 p;
+      p.x = std::stof(x_str);
+      p.y = std::stof(y_str);
+      p.z = 0.0f;
+      poly.points.push_back(p);
+    }
+  }
+  return poly;
+}
+
+void MapServerNode::load_areas_from_params()
+{
+  // Declare area parameter arrays with empty defaults.
+  const auto area_names =
+      declare_parameter<std::vector<std::string>>("area_names", std::vector<std::string>{});
+  const auto area_polygons =
+      declare_parameter<std::vector<std::string>>("area_polygons", std::vector<std::string>{});
+  const auto area_is_navigation =
+      declare_parameter<std::vector<bool>>("area_is_navigation", std::vector<bool>{});
+  const auto area_obstacles =
+      declare_parameter<std::vector<std::string>>("area_obstacles", std::vector<std::string>{});
+
+  if (area_names.empty())
+  {
+    RCLCPP_WARN(get_logger(),
+                "No areas configured (area_names is empty). "
+                "Keepout mask will not be published until areas are added via service.");
+    return;
+  }
+
+  if (area_names.size() != area_polygons.size())
+  {
+    RCLCPP_ERROR(get_logger(),
+                 "area_names (%zu) and area_polygons (%zu) must have the same length!",
+                 area_names.size(),
+                 area_polygons.size());
+    return;
+  }
+
+  for (std::size_t i = 0; i < area_names.size(); ++i)
+  {
+    AreaEntry entry;
+    entry.name = area_names[i];
+    entry.polygon = parse_polygon_string(area_polygons[i]);
+    entry.is_navigation_area = (i < area_is_navigation.size()) && area_is_navigation[i];
+
+    if (entry.polygon.points.size() < 3)
+    {
+      RCLCPP_WARN(get_logger(),
+                  "Skipping area '%s': polygon has %zu vertices (need >= 3)",
+                  entry.name.c_str(),
+                  entry.polygon.points.size());
+      continue;
+    }
+
+    // Parse obstacle polygons (semicolon-separated polygon strings, pipe-separated).
+    // Format: "x1,y1;x2,y2;x3,y3|x4,y4;x5,y5;x6,y6" for multiple obstacles.
+    if (i < area_obstacles.size() && !area_obstacles[i].empty())
+    {
+      std::istringstream obs_stream(area_obstacles[i]);
+      std::string obs_str;
+      while (std::getline(obs_stream, obs_str, '|'))
+      {
+        auto obs_poly = parse_polygon_string(obs_str);
+        // Dedup on load so pre-existing stacked duplicates (from the old
+        // no-dedup promote path) collapse to a single keepout.
+        if (obs_poly.points.size() >= 3 &&
+            !has_duplicate_obstacle_entry(entry.obstacles, obs_poly, kObstacleDedupEpsilonM) &&
+            !has_duplicate_obstacle(obstacle_polygons_, obs_poly, kObstacleDedupEpsilonM))
+        {
+          entry.obstacles.push_back(make_obstacle_entry(
+              obs_poly, {}, mowgli_interfaces::msg::MapObstacleInfo::SOURCE_USER, false));
+          obstacle_polygons_.push_back(obs_poly);
+        }
+      }
+    }
+
+    RCLCPP_INFO(get_logger(),
+                "Loaded area '%s': %zu vertices, %s, %zu obstacles",
+                entry.name.c_str(),
+                entry.polygon.points.size(),
+                entry.is_navigation_area ? "navigation" : "mowing",
+                entry.obstacles.size());
+
+    areas_.push_back(std::move(entry));
+  }
+}
+void MapServerNode::init_map()
+{
+  std::lock_guard<std::mutex> lock(map_mutex_);
+
+  map_ = grid_map::GridMap({std::string(layers::OCCUPANCY), std::string(layers::CLASSIFICATION)});
+
+  map_.setFrameId(map_frame_);
+  map_.setGeometry(grid_map::Length(map_size_x_, map_size_y_),
+                   resolution_,
+                   grid_map::Position(0.0, 0.0));
+
+  map_[std::string(layers::OCCUPANCY)].setConstant(defaults::OCCUPANCY);
+  map_[std::string(layers::CLASSIFICATION)].setConstant(defaults::CLASSIFICATION);
+
+  // A fresh map (startup or a map delete) starts coverage over and must not
+  // retain an OccupancyGrid cache generated for its previous geometry.
+  initialize_mow_progress_map();
+
+  RCLCPP_DEBUG(get_logger(),
+               "Grid map created: %zu×%zu cells",
+               static_cast<std::size_t>(map_.getSize()(0)),
+               static_cast<std::size_t>(map_.getSize()(1)));
+}
+
+void MapServerNode::resize_map_to_areas()
+{
+  if (areas_.empty())
+  {
+    return;
+  }
+
+  // Compute bounding box of all area polygons.
+  double min_x = std::numeric_limits<double>::max();
+  double max_x = std::numeric_limits<double>::lowest();
+  double min_y = std::numeric_limits<double>::max();
+  double max_y = std::numeric_limits<double>::lowest();
+
+  for (const auto& area : areas_)
+  {
+    for (const auto& pt : area.polygon.points)
+    {
+      min_x = std::min(min_x, static_cast<double>(pt.x));
+      max_x = std::max(max_x, static_cast<double>(pt.x));
+      min_y = std::min(min_y, static_cast<double>(pt.y));
+      max_y = std::max(max_y, static_cast<double>(pt.y));
+    }
+  }
+
+  // Add 5m margin on each side for navigation around the areas.
+  constexpr double margin = 5.0;
+  const double new_size_x = (max_x - min_x) + 2.0 * margin;
+  const double new_size_y = (max_y - min_y) + 2.0 * margin;
+  const double center_x = (min_x + max_x) * 0.5;
+  const double center_y = (min_y + max_y) * 0.5;
+
+  // Only resize if the new size differs meaningfully from the current one.
+  if (std::abs(new_size_x - map_size_x_) < resolution_ &&
+      std::abs(new_size_y - map_size_y_) < resolution_)
+  {
+    return;
+  }
+
+  map_size_x_ = new_size_x;
+  map_size_y_ = new_size_y;
+
+  std::lock_guard<std::mutex> lock(map_mutex_);
+  map_.setGeometry(grid_map::Length(map_size_x_, map_size_y_),
+                   resolution_,
+                   grid_map::Position(center_x, center_y));
+
+  map_[std::string(layers::OCCUPANCY)].setConstant(defaults::OCCUPANCY);
+  map_[std::string(layers::CLASSIFICATION)].setConstant(defaults::CLASSIFICATION);
+
+  initialize_mow_progress_map();
+
+  masks_dirty_ = true;
+
+  RCLCPP_INFO(get_logger(),
+              "Map resized to %.1f×%.1f m (center: %.1f, %.1f) to fit %zu areas",
+              map_size_x_,
+              map_size_y_,
+              center_x,
+              center_y,
+              areas_.size());
+}
+void MapServerNode::on_save_map(const std_srvs::srv::Trigger::Request::SharedPtr /*req*/,
+                                std_srvs::srv::Trigger::Response::SharedPtr res)
+{
+  if (map_file_path_.empty())
+  {
+    res->success = false;
+    res->message = "map_file_path parameter is empty; cannot save.";
+    RCLCPP_WARN(get_logger(), "%s", res->message.c_str());
+    return;
+  }
+
+  try
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+
+    const std::string yaml_path = map_file_path_ + ".yaml";
+    const std::string data_path = map_file_path_ + ".dat";
+
+    std::ofstream yaml(yaml_path);
+    if (!yaml.is_open())
+    {
+      throw std::runtime_error("Cannot open " + yaml_path + " for writing");
+    }
+    yaml << "resolution: " << resolution_ << "\n"
+         << "map_size_x: " << map_size_x_ << "\n"
+         << "map_size_y: " << map_size_y_ << "\n"
+         << "map_frame: " << map_frame_ << "\n"
+         << "rows: " << map_.getSize()(0) << "\n"
+         << "cols: " << map_.getSize()(1) << "\n"
+         << "pos_x: " << map_.getPosition().x() << "\n"
+         << "pos_y: " << map_.getPosition().y() << "\n";
+    yaml.close();
+
+    std::ofstream dat(data_path, std::ios::binary);
+    if (!dat.is_open())
+    {
+      throw std::runtime_error("Cannot open " + data_path + " for writing");
+    }
+
+    const int rows = map_.getSize()(0);
+    const int cols = map_.getSize()(1);
+
+    const auto& occ = map_[std::string(layers::OCCUPANCY)];
+    const auto& cls = map_[std::string(layers::CLASSIFICATION)];
+
+    for (int r = 0; r < rows; ++r)
+    {
+      for (int c = 0; c < cols; ++c)
+      {
+        float vals[2] = {occ(r, c), cls(r, c)};
+        dat.write(reinterpret_cast<const char*>(vals), sizeof(vals));
+      }
+    }
+    dat.close();
+
+    res->success = true;
+    res->message = "Map saved to " + map_file_path_;
+    RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
+  }
+  catch (const std::exception& ex)
+  {
+    res->success = false;
+    res->message = std::string("Save failed: ") + ex.what();
+    RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+  }
+}
+
+void MapServerNode::on_load_map(const std_srvs::srv::Trigger::Request::SharedPtr /*req*/,
+                                std_srvs::srv::Trigger::Response::SharedPtr res)
+{
+  if (map_file_path_.empty())
+  {
+    res->success = false;
+    res->message = "map_file_path parameter is empty; cannot load.";
+    RCLCPP_WARN(get_logger(), "%s", res->message.c_str());
+    return;
+  }
+
+  try
+  {
+    const std::string yaml_path = map_file_path_ + ".yaml";
+    const std::string data_path = map_file_path_ + ".dat";
+
+    std::ifstream yaml(yaml_path);
+    if (!yaml.is_open())
+    {
+      throw std::runtime_error("Cannot open " + yaml_path);
+    }
+
+    double res_loaded{}, sx{}, sy{};
+    std::string frame_loaded{};
+    int rows_loaded{}, cols_loaded{};
+    double pos_x{}, pos_y{};
+
+    std::string line;
+    while (std::getline(yaml, line))
+    {
+      std::istringstream ss(line);
+      std::string key;
+      if (!(ss >> key))
+        continue;
+      if (key == "resolution:")
+        ss >> res_loaded;
+      else if (key == "map_size_x:")
+        ss >> sx;
+      else if (key == "map_size_y:")
+        ss >> sy;
+      else if (key == "map_frame:")
+        ss >> frame_loaded;
+      else if (key == "rows:")
+        ss >> rows_loaded;
+      else if (key == "cols:")
+        ss >> cols_loaded;
+      else if (key == "pos_x:")
+        ss >> pos_x;
+      else if (key == "pos_y:")
+        ss >> pos_y;
+    }
+    yaml.close();
+
+    if (rows_loaded <= 0 || cols_loaded <= 0)
+    {
+      throw std::runtime_error("Invalid map dimensions in " + yaml_path);
+    }
+
+    std::lock_guard<std::mutex> lock(map_mutex_);
+
+    resolution_ = res_loaded;
+    map_size_x_ = sx;
+    map_size_y_ = sy;
+    map_frame_ = frame_loaded;
+
+    map_ = grid_map::GridMap({std::string(layers::OCCUPANCY), std::string(layers::CLASSIFICATION)});
+
+    map_.setFrameId(map_frame_);
+    map_.setGeometry(grid_map::Length(map_size_x_, map_size_y_),
+                     resolution_,
+                     grid_map::Position(pos_x, pos_y));
+
+    initialize_mow_progress_map();
+
+    std::ifstream dat(data_path, std::ios::binary);
+    if (!dat.is_open())
+    {
+      throw std::runtime_error("Cannot open " + data_path);
+    }
+
+    auto& occ = map_[std::string(layers::OCCUPANCY)];
+    auto& cls = map_[std::string(layers::CLASSIFICATION)];
+
+    const int actual_rows = map_.getSize()(0);
+    const int actual_cols = map_.getSize()(1);
+
+    for (int r = 0; r < actual_rows && r < rows_loaded; ++r)
+    {
+      for (int c = 0; c < actual_cols && c < cols_loaded; ++c)
+      {
+        float vals[2] = {};
+        dat.read(reinterpret_cast<char*>(vals), sizeof(vals));
+        occ(r, c) = vals[0];
+        cls(r, c) = vals[1];
+      }
+    }
+    dat.close();
+
+    res->success = true;
+    res->message = "Map loaded from " + map_file_path_;
+    RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
+  }
+  catch (const std::exception& ex)
+  {
+    res->success = false;
+    res->message = std::string("Load failed: ") + ex.what();
+    RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+  }
+}
+
+void MapServerNode::on_clear_map(const std_srvs::srv::Trigger::Request::SharedPtr /*req*/,
+                                 std_srvs::srv::Trigger::Response::SharedPtr res)
+{
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    clear_map_layers();
+  }
+  areas_.clear();
+  obstacle_polygons_.clear();
+  docking_pose_set_ = false;
+  keepout_filter_info_sent_ = false;
+  speed_filter_info_sent_ = false;
+  masks_dirty_ = true;
+
+  res->success = true;
+  res->message = "All map layers and areas cleared.";
+  RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
+}
+
+void MapServerNode::on_add_area(const mowgli_interfaces::srv::AddMowingArea::Request::SharedPtr req,
+                                mowgli_interfaces::srv::AddMowingArea::Response::SharedPtr res)
+{
+  const auto& polygon_msg = req->area.area;
+
+  if (polygon_msg.points.size() < 3)
+  {
+    res->success = false;
+    RCLCPP_WARN(get_logger(), "add_area: polygon must have at least 3 points.");
+    return;
+  }
+
+  // Build grid_map polygon from geometry_msgs polygon
+  grid_map::Polygon gm_polygon;
+  for (const auto& pt : polygon_msg.points)
+  {
+    gm_polygon.addVertex(grid_map::Position(static_cast<double>(pt.x), static_cast<double>(pt.y)));
+  }
+
+  // Classify cells inside the area as LAWN (mowable), not NO_GO_ZONE.
+  // Only exclusion zones and obstacles should be NO_GO_ZONE.
+  const float lawn_val = static_cast<float>(CellType::LAWN);
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    for (grid_map::PolygonIterator it(map_, gm_polygon); !it.isPastEnd(); ++it)
+    {
+      map_.at(std::string(layers::CLASSIFICATION), *it) = lawn_val;
+    }
+  }
+
+  // Store as an area entry.
+  AreaEntry entry;
+  entry.name = req->area.name;
+  entry.polygon = polygon_msg;
+  entry.is_navigation_area = req->is_navigation_area;
+
+  // Store obstacle polygons from the MapArea message.
+  // Only store in the area entry (static), NOT in obstacle_polygons_
+  // (which is for dynamic LiDAR-detected obstacles).
+  const float no_go_val = static_cast<float>(CellType::NO_GO_ZONE);
+  for (std::size_t j = 0; j < req->area.obstacles.size(); ++j)
+  {
+    const auto& obstacle = req->area.obstacles[j];
+    if (obstacle.points.size() >= 3)
+    {
+      // Identity is optional and index-aligned: a caller that sends bare
+      // polygons (or a pre-#502 GUI) gets unnamed user-drawn keepouts.
+      // `pending` is deliberately NOT taken from the request — proposals are
+      // created by the dig path only, never by drawing an area.
+      std::string obs_name;
+      uint8_t obs_source = mowgli_interfaces::msg::MapObstacleInfo::SOURCE_USER;
+      if (j < req->area.obstacle_info.size())
+      {
+        obs_name = req->area.obstacle_info[j].name;
+        obs_source = req->area.obstacle_info[j].source;
+      }
+      entry.obstacles.push_back(make_obstacle_entry(obstacle, obs_name, obs_source, false));
+
+      grid_map::Polygon obs_gm;
+      for (const auto& pt : obstacle.points)
+      {
+        obs_gm.addVertex(grid_map::Position(static_cast<double>(pt.x), static_cast<double>(pt.y)));
+      }
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      for (grid_map::PolygonIterator it(map_, obs_gm); !it.isPastEnd(); ++it)
+      {
+        map_.at(std::string(layers::CLASSIFICATION), *it) = no_go_val;
+      }
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    areas_.push_back(std::move(entry));
+  }
+  resize_map_to_areas();
+  // resize_map_to_areas() reallocates the grid and resets every layer
+  // (CLASSIFICATION → UNKNOWN), discarding the LAWN/NO_GO cells stamped above.
+  // Re-stamp from the full area list — exactly as on_load_areas does — so the
+  // keepout/speed costmap filters see the correct classification.
+  apply_area_classifications();
+  masks_dirty_ = true;
+
+  RCLCPP_INFO(get_logger(),
+              "Added area '%s' (%s) with %zu vertices and %zu obstacles.",
+              req->area.name.c_str(),
+              req->is_navigation_area ? "navigation" : "mowing",
+              polygon_msg.points.size(),
+              req->area.obstacles.size());
+
+  // Auto-save if persistence path is set.
+  if (!areas_file_path_.empty())
+  {
+    try
+    {
+      save_areas_to_file(areas_file_path_);
+    }
+    catch (const std::exception& ex)
+    {
+      RCLCPP_WARN(get_logger(), "Auto-save after area add failed: %s", ex.what());
+    }
+  }
+
+  res->success = true;
+}
+
+void MapServerNode::on_get_mowing_area(
+    const mowgli_interfaces::srv::GetMowingArea::Request::SharedPtr req,
+    mowgli_interfaces::srv::GetMowingArea::Response::SharedPtr res)
+{
+  std::lock_guard<std::mutex> lock(map_mutex_);
+
+  const auto idx = static_cast<std::size_t>(req->index);
+  if (idx < areas_.size())
+  {
+    const auto& entry = areas_[idx];
+    res->area.name = entry.name;
+    res->area.area = entry.polygon;
+    res->area.is_navigation_area = entry.is_navigation_area;
+
+    // Start with the area's own obstacles. `obstacle_info` is index-aligned
+    // with `obstacles` (MapObstacleInfo.msg) and carries the name/provenance
+    // that tells a dig proposal apart from a keepout the operator drew.
+    // PENDING proposals are included: they are live keepouts for this
+    // session, so the coverage planner must route around them exactly like
+    // accepted ones — only persistence waits for the operator.
+    for (const auto& obs : entry.obstacles)
+    {
+      res->area.obstacles.push_back(obs.polygon);
+      mowgli_interfaces::msg::MapObstacleInfo info;
+      info.name = obs.name;
+      info.source = obs.source;
+      info.pending = obs.pending;
+      info.id = obs.id;
+      res->area.obstacle_info.push_back(info);
+    }
+
+    // Area entries own every obstacle, including pending digs and promoted
+    // tracker observations. obstacle_polygons_ is only a flat keepout cache
+    // for navigation; appending it here leaks other areas' obstacles into
+    // this response. With three lawns that drew one dig three times, and the
+    // extra copies lost their id/name/pending provenance. Return the owning
+    // area's entries only; the global keepout mask still protects every spot.
+
+    res->success = true;
+    RCLCPP_INFO(get_logger(),
+                "GetMowingArea[%u]: area='%s', %zu obstacles",
+                req->index,
+                entry.name.c_str(),
+                res->area.obstacles.size());
+  }
+  else
+  {
+    res->success = false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Private helpers
+// ─────────────────────────────────────────────────────────────────────────────
+void MapServerNode::clear_map_layers()
+{
+  map_[std::string(layers::OCCUPANCY)].setConstant(defaults::OCCUPANCY);
+  map_[std::string(layers::CLASSIFICATION)].setConstant(defaults::CLASSIFICATION);
+  initialize_mow_progress_map();
+}
+void MapServerNode::on_set_docking_point(
+    const mowgli_interfaces::srv::SetDockingPoint::Request::SharedPtr req,
+    mowgli_interfaces::srv::SetDockingPoint::Response::SharedPtr res)
+{
+  // Sequence of gates protecting dock_pose accuracy. The operator forces
+  // the EKF to dock_pose at boot via the fusion_graph gauge reset, so a
+  // bad calibration leaks straight into the map-frame anchor for every
+  // subsequent session. Reject unless ALL conditions hold:
+  //   (1) firmware reports is_charging=true (robot physically on dock)
+  //   (2) GPS sample fresh and σ(xy) ≤ dock_set_gps_accuracy_max_m_
+  //   (3) EKF yaw converged on the recent rolling window
+  //
+  // (1) — is_charging gate. Refuse if the last /hardware_bridge/status was
+  // not charging or is older than dock_set_status_max_age_s_.
+  {
+    const double max_age = get_parameter("dock_set_status_max_age_s").as_double();
+    const double status_age = (last_status_time_.nanoseconds() == 0)
+                                  ? std::numeric_limits<double>::infinity()
+                                  : (now() - last_status_time_).seconds();
+    if (status_age > max_age || !last_is_charging_)
+    {
+      res->success = false;
+      RCLCPP_WARN(get_logger(),
+                  "set_docking_point rejected: robot not detected on dock "
+                  "(is_charging=%s, status_age=%.1fs, max=%.1fs). "
+                  "Drive onto the dock and wait for the firmware to report "
+                  "charging before retrying.",
+                  last_is_charging_ ? "true" : "false",
+                  status_age,
+                  max_age);
+      return;
+    }
+  }
+
+  // (2) — GPS accuracy gate. RTK-Fixed reports σ ≈ 3 mm; RTK-Float is
+  // 10-50 cm. Reject when σ(xx) or σ(yy) breaches the threshold, or when
+  // /gps/pose_cov is stale (driver dead, USB unplugged, datum unset).
+  {
+    const double max_acc = get_parameter("dock_set_gps_accuracy_max_m").as_double();
+    const double max_age = get_parameter("dock_set_gps_max_age_s").as_double();
+    geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr gps_snap;
+    rclcpp::Time gps_time{0, 0, RCL_ROS_TIME};
+    {
+      std::lock_guard<std::mutex> lk(last_gps_pose_cov_mutex_);
+      gps_snap = last_gps_pose_cov_;
+      gps_time = last_gps_pose_cov_time_;
+    }
+    if (!gps_snap)
+    {
+      res->success = false;
+      RCLCPP_WARN(get_logger(),
+                  "set_docking_point rejected: no /gps/pose_cov sample yet "
+                  "(navsat_to_absolute_pose_node not running, or no GPS fix).");
+      return;
+    }
+    const double gps_age = (now() - gps_time).seconds();
+    if (gps_age > max_age)
+    {
+      res->success = false;
+      RCLCPP_WARN(get_logger(),
+                  "set_docking_point rejected: /gps/pose_cov stale "
+                  "(age %.2fs > %.2fs). Wait for the GPS feed to refresh.",
+                  gps_age,
+                  max_age);
+      return;
+    }
+    const double sigma_xx = std::sqrt(std::max(gps_snap->pose.covariance[0], 0.0));
+    const double sigma_yy = std::sqrt(std::max(gps_snap->pose.covariance[7], 0.0));
+    const double sigma_max = std::max(sigma_xx, sigma_yy);
+    if (sigma_max > max_acc)
+    {
+      res->success = false;
+      RCLCPP_WARN(get_logger(),
+                  "set_docking_point rejected: GPS not accurate enough "
+                  "(σ_max=%.3f m > %.3f m). Achieve RTK-Fixed before retrying.",
+                  sigma_max,
+                  max_acc);
+      return;
+    }
+  }
+
+  // (3) — Yaw convergence gate. Pinning a dock pose during EKF startup
+  // transient writes a wildly wrong heading (and therefore a wrong base
+  // position via the lever-arm projection on /gps/absolute_pose). The
+  // operator should drive the robot forward briefly to lock in COG yaw,
+  // then retry, or wait for mag/COG to settle the EKF naturally.
+  //
+  // Read thresholds live each call so `ros2 param set` works without a
+  // node restart — the constructor-cached values were stuck at startup.
+  const double threshold_rad = get_parameter("yaw_convergence_threshold_rad").as_double();
+  const double window_s = get_parameter("yaw_convergence_window_s").as_double();
+  const auto min_samples =
+      static_cast<size_t>(get_parameter("yaw_convergence_min_samples").as_int());
+  {
+    std::lock_guard<std::mutex> lk(recent_yaws_mutex_);
+    if (recent_yaws_.size() < min_samples)
+    {
+      res->success = false;
+      RCLCPP_WARN(get_logger(),
+                  "set_docking_point rejected: only %zu yaw samples in the last %.1f s "
+                  "(need >= %zu). Wait for the EKF to receive more updates.",
+                  recent_yaws_.size(),
+                  window_s,
+                  min_samples);
+      return;
+    }
+    // Yaw is a wrapping angle in (-π, π]; a linear mean/variance blows up near
+    // ±π (a stable west-facing dock straddles the wrap point), which would
+    // always reject convergence. Use circular statistics: circular std =
+    // sqrt(-2 ln R) where R is the mean resultant length.
+    double sum_cos = 0.0;
+    double sum_sin = 0.0;
+    for (const auto& [t, y] : recent_yaws_)
+    {
+      sum_cos += std::cos(y);
+      sum_sin += std::sin(y);
+    }
+    const double n = static_cast<double>(recent_yaws_.size());
+    const double resultant = std::hypot(sum_cos, sum_sin) / n;
+    const double std_dev = std::sqrt(-2.0 * std::log(std::max(resultant, 1e-12)));
+    if (std_dev > threshold_rad)
+    {
+      res->success = false;
+      RCLCPP_WARN(get_logger(),
+                  "set_docking_point rejected: EKF yaw not converged "
+                  "(std %.3f° > threshold %.3f° over %.1f s, %zu samples). "
+                  "Drive the robot 1 m forward to anchor heading from COG, then retry.",
+                  std_dev * 180.0 / M_PI,
+                  threshold_rad * 180.0 / M_PI,
+                  window_s,
+                  recent_yaws_.size());
+      return;
+    }
+  }
+
+  // Position capture mode, selected by req->use_gps_position:
+  //   true  — "capture current robot position": the robot is physically
+  //           seated on the dock, so take the dock POSITION from the averaged
+  //           independent GPS projection (/gps/pose_cov, GPS-vs-datum +
+  //           lever-arm), NOT from req->docking_pose (which the GUI fills from
+  //           the fused /odometry/filtered_map). While charging, fusion_graph
+  //           gauge-resets the fused pose onto the EXISTING dock_pose, so
+  //           capturing it would just re-store the old value — a calibration
+  //           that can never correct a stale dock_pose. The GPS projection is
+  //           free of that circularity; averaging kills the ~1-3 cm RTK jitter.
+  //   false — manual map-drag / settings edit: the operator specified the
+  //           location directly, so use req->docking_pose.position as given.
+  //
+  // Orientation (task #45, from #44's circularity trace): the SAME gauge-
+  // reset circularity that poisons the fused POSITION while charging also
+  // poisons the fused YAW — fusion_graph pins the fused yaw to the EXISTING
+  // dock_pose_yaw via a tight (~2°) unary factor plus a periodic gauge
+  // reset, so req->docking_pose.orientation is just as circular as its
+  // position would be in the use_gps_position=true case (confirmed #44: no
+  // independent yaw source is observable at standstill on the dock). A
+  // few-degree bad heading could therefore never self-correct via a live
+  // GUI re-capture, and #44 traced this as the likely cause of a consistent
+  // ~10cm-right dock miss (yaw_err × ~1.5m approach distance). PRESERVE the
+  // existing dock_pose_yaw for a live GPS capture — it comes from the
+  // motion-derived, RTK-gated writers (calibrate_imu_yaw_node's reverse
+  // maneuver + per-undock CalibrateHeadingFromUndock, both confirmed NOT
+  // circular in #40/#44). For a manual map-drag (use_gps_position=false)
+  // the operator is explicitly setting orientation by hand, so honor the
+  // request as before — that path was never circular (no fused-yaw readback
+  // involved).
+  // ── Orientation capture — keyed on req->yaw_source, DECOUPLED from the
+  // position source. PRESERVE keeps the existing persisted dock_pose_yaw
+  // (safe default: a live on-dock capture cannot observe an independent yaw —
+  // see the circularity note above). REQUEST honours the request quaternion
+  // (manual map-drag / settings edit — never circular). MOTION takes the
+  // RTK-gated, COG-derived yaw_rad from the one-click dock-calibration action
+  // — the ONLY non-circular way to correct a stale dock heading (task #45).
+  using SetDockReq = mowgli_interfaces::srv::SetDockingPoint::Request;
+  const auto preserved_orientation = docking_pose_.orientation;
+  docking_pose_ = req->docking_pose;  // request position (+ request orientation for REQUEST)
+  const char* yaw_src_desc = "request";
+  switch (req->yaw_source)
+  {
+    case SetDockReq::MOTION:
+      docking_pose_.orientation.x = 0.0;
+      docking_pose_.orientation.y = 0.0;
+      docking_pose_.orientation.z = std::sin(req->yaw_rad * 0.5);
+      docking_pose_.orientation.w = std::cos(req->yaw_rad * 0.5);
+      yaw_src_desc = "motion (COG-derived)";
+      break;
+    case SetDockReq::REQUEST:
+      // orientation already assigned from req->docking_pose above.
+      yaw_src_desc = "request (manual)";
+      break;
+    case SetDockReq::PRESERVE:
+    default:
+      docking_pose_.orientation = preserved_orientation;
+      yaw_src_desc = "preserved (existing dock_pose_yaw)";
+      break;
+  }
+
+  if (req->use_gps_position)
+  {
+    // Capture the dock POSITION from the averaged RAW (yaw-independent) GPS
+    // antenna position, then lever-arm-correct it ONCE using docking_pose_'s
+    // yaw — the switch above has already set that to whatever THIS call is
+    // about to persist (PRESERVE: the existing dock_pose_yaw; REQUEST: the
+    // manually-specified yaw; MOTION: req->yaw_rad, a fresh independently-
+    // measured heading). See recent_gps_antenna_enu_'s doc comment in the
+    // header for why this averages the raw antenna position rather than
+    // /gps/pose_cov's already lever-arm-corrected one (issue #446): that
+    // correction is applied with whatever the FUSED yaw is at each sample,
+    // so a stable-but-biased fused yaw (e.g. a settled-wrong magnetometer
+    // lock) silently biased the averaged position with nothing to catch it
+    // after the fact. Correcting once with THIS call's own final yaw makes
+    // the result correct regardless of what the fused yaw was doing during
+    // capture — in particular, MOTION mode's fresh req->yaw_rad fixes a
+    // stale stored yaw even though every /gps/fix sample in the window was
+    // received before that fresh yaw was known.
+    double antenna_east_mean = 0.0;
+    double antenna_north_mean = 0.0;
+    size_t antenna_sample_count = 0;
+    {
+      std::lock_guard<std::mutex> lk(recent_gps_antenna_mutex_);
+      if (recent_gps_antenna_enu_.size() < dock_set_gps_avg_min_samples_)
+      {
+        res->success = false;
+        RCLCPP_WARN(get_logger(),
+                    "set_docking_point rejected: only %zu RTK-Fixed /gps/fix sample(s) in "
+                    "the last %.1f s (need >= %zu) to average the dock antenna position. "
+                    "Wait for more GPS updates.",
+                    recent_gps_antenna_enu_.size(),
+                    dock_set_gps_avg_window_s_,
+                    dock_set_gps_avg_min_samples_);
+        return;
+      }
+      for (const auto& [t, east, north] : recent_gps_antenna_enu_)
+      {
+        (void)t;
+        antenna_east_mean += east;
+        antenna_north_mean += north;
+      }
+      antenna_sample_count = recent_gps_antenna_enu_.size();
+      const double n = static_cast<double>(antenna_sample_count);
+      antenna_east_mean /= n;
+      antenna_north_mean /= n;
+    }
+
+    // Resolve the GPS lever arm from TF — mirrors
+    // navsat_to_absolute_pose_node's own resolution, which this node cannot
+    // reach into (separate process). Retried on every capture until
+    // URDF/TF is up. Fail closed rather than silently treat an unresolved
+    // lever arm as (0, 0): that would apply NO correction at all and
+    // quietly re-introduce the yaw-bias error this capture path exists to
+    // avoid, only now unconditionally instead of only when the fused yaw
+    // happened to be wrong.
+    if (!lever_arm_known_)
+    {
+      try
+      {
+        auto tf = tf_buffer_->lookupTransform("base_footprint", "gps_link", tf2::TimePointZero);
+        lever_arm_x_ = tf.transform.translation.x;
+        lever_arm_y_ = tf.transform.translation.y;
+        lever_arm_known_ = true;
+      }
+      catch (const tf2::TransformException& ex)
+      {
+        res->success = false;
+        RCLCPP_WARN(get_logger(),
+                    "set_docking_point rejected: GPS lever arm not yet resolved from TF "
+                    "(base_footprint→gps_link: %s). Wait for robot_state_publisher to "
+                    "come up and retry.",
+                    ex.what());
+        return;
+      }
+    }
+
+    // antenna_enu = base_enu + R(yaw)·lever_arm_body
+    //   -> base_enu = antenna_enu - R(yaw)·lever_arm_body
+    // Same formula navsat_to_absolute_pose_node applies per-sample with the
+    // LIVE fused yaw; here it is applied once with the FINAL yaw this call
+    // persists.
+    const double final_yaw =
+        2.0 * std::atan2(docking_pose_.orientation.z, docking_pose_.orientation.w);
+    const double cos_yaw = std::cos(final_yaw);
+    const double sin_yaw = std::sin(final_yaw);
+    const double base_x = antenna_east_mean - (cos_yaw * lever_arm_x_ - sin_yaw * lever_arm_y_);
+    const double base_y = antenna_north_mean - (sin_yaw * lever_arm_x_ + cos_yaw * lever_arm_y_);
+
+    docking_pose_.position.x = base_x;
+    docking_pose_.position.y = base_y;
+    docking_pose_.position.z = 0.0;
+    RCLCPP_INFO(get_logger(),
+                "Docking point captured: raw antenna GPS averaged to (%.3f, %.3f) over "
+                "%zu sample(s), lever-arm-corrected with yaw=%.3f rad (source: %s) to "
+                "base position (%.3f, %.3f); request fused position was (%.3f, %.3f) — "
+                "Δ=(%.3f, %.3f) m.",
+                antenna_east_mean,
+                antenna_north_mean,
+                antenna_sample_count,
+                final_yaw,
+                yaw_src_desc,
+                base_x,
+                base_y,
+                req->docking_pose.position.x,
+                req->docking_pose.position.y,
+                req->docking_pose.position.x - base_x,
+                req->docking_pose.position.y - base_y);
+  }
+  else
+  {
+    RCLCPP_INFO(get_logger(),
+                "Docking point set from request position (manual): (%.3f, %.3f). "
+                "Orientation source: %s.",
+                docking_pose_.position.x,
+                docking_pose_.position.y,
+                yaw_src_desc);
+  }
+  docking_pose_set_ = true;
+
+  // Publish the docking pose for other nodes (e.g., behavior tree).
+  geometry_msgs::msg::PoseStamped pose_msg;
+  pose_msg.header.stamp = now();
+  pose_msg.header.frame_id = map_frame_;
+  pose_msg.pose = docking_pose_;
+  docking_pose_pub_->publish(pose_msg);
+
+  RCLCPP_INFO(get_logger(),
+              "Docking point set: (%.3f, %.3f, %.3f) orientation (%.3f, %.3f, %.3f, %.3f)",
+              docking_pose_.position.x,
+              docking_pose_.position.y,
+              docking_pose_.position.z,
+              docking_pose_.orientation.x,
+              docking_pose_.orientation.y,
+              docking_pose_.orientation.z,
+              docking_pose_.orientation.w);
+
+  // Persist to mowgli_robot.yaml — single source of truth for dock pose.
+  // Manual placements via the GUI land here; calibrate_imu_yaw_node writes
+  // the same file when its dock pre-phase finishes. A line-regex update
+  // preserves the surrounding comments / structure.
+  try
+  {
+    const double yaw_rad =
+        2.0 * std::atan2(docking_pose_.orientation.z, docking_pose_.orientation.w);
+    if (!mowgli_interfaces::robot_yaml_scalar::UpdateDockPose(
+            robot_yaml_path_, docking_pose_.position.x, docking_pose_.position.y, yaw_rad))
+    {
+      RCLCPP_WARN(get_logger(),
+                  "Could not persist dock pose to %s — file missing or "
+                  "not writable. Pose still applied in-memory.",
+                  robot_yaml_path_.c_str());
+    }
+    else
+    {
+      RCLCPP_INFO(get_logger(),
+                  "Persisted dock pose to %s: (%.3f, %.3f) yaw=%.3f rad",
+                  robot_yaml_path_.c_str(),
+                  docking_pose_.position.x,
+                  docking_pose_.position.y,
+                  yaw_rad);
+    }
+  }
+  catch (const std::exception& ex)
+  {
+    RCLCPP_WARN(get_logger(),
+                "Failed to persist dock pose to %s: %s",
+                robot_yaml_path_.c_str(),
+                ex.what());
+  }
+
+  // Rebuild the lethal dock body + corridor carve-out so they follow the new
+  // dock pose immediately. The constructor builds these polygons only at boot
+  // (and only when a non-zero dock pose was persisted), so without this a fresh
+  // install — or any GUI re-placement — left the dock structure unmarked (or
+  // pinned to the old pose) until the node restarted, letting coverage plan a
+  // blade-on swath through the physical dock.
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    rebuild_dock_polygons();
+    masks_dirty_ = true;
+  }
+  apply_area_classifications();
+
+  res->success = true;
+}
+void MapServerNode::on_save_areas(const std_srvs::srv::Trigger::Request::SharedPtr /*req*/,
+                                  std_srvs::srv::Trigger::Response::SharedPtr res)
+{
+  if (areas_file_path_.empty())
+  {
+    res->success = false;
+    res->message = "areas_file_path parameter is empty; cannot save.";
+    RCLCPP_WARN(get_logger(), "%s", res->message.c_str());
+    return;
+  }
+
+  try
+  {
+    save_areas_to_file(areas_file_path_);
+    res->success = true;
+    res->message = "Areas saved to " + areas_file_path_;
+    RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
+  }
+  catch (const std::exception& ex)
+  {
+    res->success = false;
+    res->message = std::string("Save failed: ") + ex.what();
+    RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+  }
+}
+
+void MapServerNode::on_load_areas(const std_srvs::srv::Trigger::Request::SharedPtr /*req*/,
+                                  std_srvs::srv::Trigger::Response::SharedPtr res)
+{
+  if (areas_file_path_.empty())
+  {
+    res->success = false;
+    res->message = "areas_file_path parameter is empty; cannot load.";
+    RCLCPP_WARN(get_logger(), "%s", res->message.c_str());
+    return;
+  }
+
+  try
+  {
+    load_areas_from_file(areas_file_path_);
+    apply_area_classifications();
+    res->success = true;
+    res->message = "Areas loaded from " + areas_file_path_;
+    RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
+  }
+  catch (const std::exception& ex)
+  {
+    res->success = false;
+    res->message = std::string("Load failed: ") + ex.what();
+    RCLCPP_ERROR(get_logger(), "%s", res->message.c_str());
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// User-driven obstacle promotion
+// ─────────────────────────────────────────────────────────────────────────────
+
+void MapServerNode::on_promote_obstacle(
+    const mowgli_interfaces::srv::PromoteObstacle::Request::SharedPtr req,
+    mowgli_interfaces::srv::PromoteObstacle::Response::SharedPtr res)
+{
+  // Path 1: accept a PENDING proposal (a wheel-slip dig keepout). The
+  // polygon is already live in the mask, so re-sending it through the
+  // append path below would hit the centroid dedup guard and silently do
+  // nothing — the proposal would stay pending and never be persisted.
+  // Clearing the flag here is what makes the next save write it out.
+  if (req->pending_id != 0)
+  {
+    const auto area_index = accept_pending_obstacle(req->pending_id, req->name);
+    if (!area_index.has_value())
+    {
+      res->success = false;
+      res->message =
+          "no pending obstacle with id " + std::to_string(req->pending_id) +
+          " (already accepted, discarded, or lost to a restart — proposals are session-scoped)";
+      return;
+    }
+
+    persist_areas_best_effort("promote_obstacle");
+
+    res->success = true;
+    res->message = "pending obstacle " + std::to_string(req->pending_id) +
+                   " accepted as a permanent keepout for area " + std::to_string(*area_index);
+    RCLCPP_INFO(get_logger(),
+                "promote_obstacle: operator accepted pending obstacle %u in area %zu",
+                req->pending_id,
+                *area_index);
+    return;
+  }
+
+  // Path 2/3: resolve the polygon source: prefer the request's explicit
+  // polygon (free-form draw), fall back to looking up the obstacle id in
+  // the most recent /obstacle_tracker/obstacles snapshot.
+  const uint8_t source = (req->polygon.points.size() >= 3)
+                             ? mowgli_interfaces::msg::MapObstacleInfo::SOURCE_USER
+                             : mowgli_interfaces::msg::MapObstacleInfo::SOURCE_TRACKER;
+  geometry_msgs::msg::Polygon poly = req->polygon;
+  if (poly.points.size() < 3)
+  {
+    bool found = false;
+    {
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      for (const auto& obs : last_tracker_snapshot_)
+      {
+        if (obs.id == req->obstacle_id)
+        {
+          poly = obs.polygon;
+          found = true;
+          break;
+        }
+      }
+    }
+    if (!found)
+    {
+      res->success = false;
+      res->message = "obstacle_id not found in last tracker snapshot and no polygon supplied";
+      return;
+    }
+  }
+
+  if (!apply_promoted_obstacle(req->area_index, poly, req->name, source, /*pending=*/false))
+  {
+    res->success = false;
+    res->message = "promotion rejected (bad area_index, navigation area, or polygon < 3 points)";
+    return;
+  }
+
+  // Persist immediately so the keepout survives a restart.
+  persist_areas_best_effort("promote_obstacle");
+
+  res->success = true;
+  res->message =
+      "obstacle promoted to permanent keepout for area " + std::to_string(req->area_index);
+  RCLCPP_INFO(get_logger(),
+              "promote_obstacle: appended polygon (%zu points) to area %u",
+              poly.points.size(),
+              req->area_index);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wheel-slip dig reports
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::optional<size_t> MapServerNode::mowing_area_containing(double x, double y) const
+{
+  geometry_msgs::msg::Point32 pt;
+  pt.x = static_cast<float>(x);
+  pt.y = static_cast<float>(y);
+
+  for (size_t i = 0; i < areas_.size(); ++i)
+  {
+    if (areas_[i].is_navigation_area)
+    {
+      continue;  // obstacles can only be promoted into mowing areas
+    }
+    if (point_in_polygon(pt, areas_[i].polygon))
+    {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+void MapServerNode::on_dig_event(mowgli_interfaces::msg::DigEvent::ConstSharedPtr msg)
+{
+  const double x = msg->position.x;
+  const double y = msg->position.y;
+
+  RCLCPP_WARN(get_logger(),
+              "Dig reported at (%.2f, %.2f): wheels claimed %.2f m, fused pose moved "
+              "%.2f m (sigma %.3f m).",
+              x,
+              y,
+              msg->wheel_distance,
+              msg->map_distance,
+              msg->position_sigma);
+
+  std::optional<size_t> area_index;
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    area_index = mowing_area_containing(x, y);
+  }
+
+  if (!area_index.has_value())
+  {
+    // Digs during transit or docking can happen outside every mowing area.
+    // There is no area to attach a keepout to, and inventing one would put a
+    // permanent obstacle somewhere the operator never drew a boundary. The
+    // stop-and-reverse already happened at the bridge; this is only about
+    // whether COVERAGE needs to route around the spot, and coverage never
+    // goes here. Log it and move on.
+    RCLCPP_INFO(get_logger(),
+                "Dig at (%.2f, %.2f) is outside every mowing area - not stamping a "
+                "keepout (nothing plans coverage there).",
+                x,
+                y);
+    return;
+  }
+
+  // Keepout dig_obstacle_size_ wide (one chassis length by default, see
+  // kDefaultDigKeepoutSizeM), biased AHEAD of the robot's heading: the hole is
+  // under the wheels and the bridge has just reversed the robot ~0.2-0.3 m out
+  // of it, so the keepout must not reach back over the spot the robot now
+  // stands on or every transit from there is START_OCCUPIED
+  // (kDigKeepoutBehindM, net of the mask's obstacle_margin band). The heading is the last one
+  // latched by on_odom; a dig with no heading yet falls back to the centred square.
+  const bool have_heading = have_robot_heading_;
+  const double yaw = last_robot_yaw_;
+  const geometry_msgs::msg::Polygon poly =
+      dig_keepout_polygon(x, y, yaw, have_heading, dig_obstacle_size_, obstacle_margin_m_);
+
+  // The name IS the proposal's evidence: it is what the operator reads in the
+  // GUI when deciding whether this inferred dig deserves a permanent hole in
+  // their map. Keep it short and factual.
+  std::ostringstream label;
+  label << std::fixed << std::setprecision(2) << "Dig at (" << x << ", " << y << "): wheels "
+        << msg->wheel_distance << " m vs pose " << msg->map_distance << " m, sigma "
+        << std::setprecision(3) << msg->position_sigma << " m";
+
+  // PENDING: live in the keepout mask right now (issue #500's re-dig loop -
+  // 3 latches in 18.4 s inside 0.13 m - is exactly what this prevents), but
+  // NOT written to areas.dat. A single inferred dig is weaker evidence than a
+  // repeatedly-observed tracker obstacle, and those already require operator
+  // sign-off (auto_promote_persistent_obstacles defaults false); the less
+  // certain signal must not get the more automatic treatment.
+  if (!apply_promoted_obstacle(*area_index,
+                               poly,
+                               label.str(),
+                               mowgli_interfaces::msg::MapObstacleInfo::SOURCE_DIG,
+                               /*pending=*/true))
+  {
+    RCLCPP_WARN(
+        get_logger(), "Dig keepout rejected for area %zu at (%.2f, %.2f).", *area_index, x, y);
+    return;
+  }
+
+  RCLCPP_WARN(get_logger(),
+              "Dig keepout (%.2f m wide, %s) proposed for area %zu at (%.2f, %.2f); coverage "
+              "will route around it for this session. It is NOT saved to the map - accept "
+              "it in the GUI to make it permanent.",
+              std::max(dig_obstacle_size_, kMinDigKeepoutSizeM),
+              have_heading ? "ahead of the heading" : "centred square, no heading yet",
+              *area_index,
+              x,
+              y);
+}
+
+std::optional<size_t> MapServerNode::accept_pending_obstacle(uint32_t pending_id,
+                                                             const std::string& name)
+{
+  if (pending_id == 0)
+  {
+    return std::nullopt;
+  }
+
+  std::lock_guard<std::mutex> lock(map_mutex_);
+  for (size_t i = 0; i < areas_.size(); ++i)
+  {
+    for (auto& obs : areas_[i].obstacles)
+    {
+      if (obs.id != pending_id || !obs.pending)
+      {
+        continue;
+      }
+      obs.pending = false;
+      if (!name.empty())
+      {
+        obs.name = name;
+      }
+      // Geometry, classification and mask are unchanged - the polygon has
+      // been live since the dig. Only its persistence status changed.
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+bool MapServerNode::discard_pending_obstacle(uint32_t pending_id)
+{
+  if (pending_id == 0)
+  {
+    return false;
+  }
+
+  bool removed = false;
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    for (auto& area : areas_)
+    {
+      auto it = std::find_if(area.obstacles.begin(),
+                             area.obstacles.end(),
+                             [pending_id](const ObstacleEntry& obs)
+                             {
+                               return obs.id == pending_id && obs.pending;
+                             });
+      if (it == area.obstacles.end())
+      {
+        continue;
+      }
+      erase_obstacle_polygon_locked(it->polygon);
+      area.obstacles.erase(it);
+      masks_dirty_ = true;
+      removed = true;
+      break;
+    }
+  }
+
+  if (!removed)
+  {
+    return false;
+  }
+
+  // Re-stamp the classification layer from the surviving geometry so the
+  // discarded square stops being NO_GO_ZONE, then nudge planners to replan.
+  apply_area_classifications();
+  std_msgs::msg::Bool replan_msg;
+  replan_msg.data = true;
+  replan_needed_pub_->publish(replan_msg);
+  return true;
+}
+
+void MapServerNode::on_discard_obstacle(
+    const mowgli_interfaces::srv::ClearObstacle::Request::SharedPtr req,
+    mowgli_interfaces::srv::ClearObstacle::Response::SharedPtr res)
+{
+  if (!discard_pending_obstacle(req->obstacle_id))
+  {
+    res->success = false;
+    res->message = "no pending obstacle with id " + std::to_string(req->obstacle_id) +
+                   " (accepted keepouts are part of the saved map - edit the area to "
+                   "remove one)";
+    return;
+  }
+
+  // Nothing to persist: a pending obstacle was never in areas.dat, which is
+  // also why a discarded proposal cannot come back after a restart.
+  res->success = true;
+  res->message = "pending obstacle " + std::to_string(req->obstacle_id) + " discarded";
+  RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
+}
+
+namespace
+{
+/// How far outside a pending dig polygon the robot centre may sit and still
+/// count as "trapped by it": one chassis length, which also covers the
+/// inflation the global costmap wraps around the lethal band (floor 0.58 m).
+constexpr double kDigDiscardClearanceM = 0.60;
+}  // namespace
+
+std::size_t MapServerNode::discard_dig_keepouts_near_robot()
+{
+  if (!have_robot_heading_)
+  {
+    RCLCPP_WARN(get_logger(),
+                "discard_dig_keepouts_near_robot: no robot pose latched yet - nothing dropped.");
+    return 0;
+  }
+  const double rx = last_robot_x_;
+  const double ry = last_robot_y_;
+  geometry_msgs::msg::Point32 robot;
+  robot.x = static_cast<float>(rx);
+  robot.y = static_cast<float>(ry);
+  std::size_t dropped = 0;
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    for (auto& area : areas_)
+    {
+      for (auto it = area.obstacles.begin(); it != area.obstacles.end();)
+      {
+        const bool is_pending_dig =
+            it->pending && it->source == mowgli_interfaces::msg::MapObstacleInfo::SOURCE_DIG;
+        const bool touches_robot =
+            is_pending_dig &&
+            (point_in_polygon(robot, it->polygon) ||
+             point_to_polygon_distance(rx, ry, it->polygon) <= kDigDiscardClearanceM);
+        if (!touches_robot)
+        {
+          ++it;
+          continue;
+        }
+        RCLCPP_WARN(get_logger(),
+                    "Dropping pending dig keepout %u ('%s') - it sits under the robot at "
+                    "(%.2f, %.2f) and would refuse the way out.",
+                    it->id,
+                    it->name.c_str(),
+                    rx,
+                    ry);
+        erase_obstacle_polygon_locked(it->polygon);
+        it = area.obstacles.erase(it);
+        masks_dirty_ = true;
+        ++dropped;
+      }
+    }
+  }
+  if (dropped == 0)
+  {
+    return 0;
+  }
+  // Same re-stamp + replan nudge as a single discard.
+  apply_area_classifications();
+  std_msgs::msg::Bool replan_msg;
+  replan_msg.data = true;
+  replan_needed_pub_->publish(replan_msg);
+  return dropped;
+}
+
+void MapServerNode::on_discard_dig_keepouts_near_robot(
+    const std_srvs::srv::Trigger::Request::SharedPtr /*req*/,
+    std_srvs::srv::Trigger::Response::SharedPtr res)
+{
+  const std::size_t dropped = discard_dig_keepouts_near_robot();
+  res->success = true;
+  res->message = std::to_string(dropped) + " pending dig keepout(s) under the robot discarded";
+  RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
+}
+
+void MapServerNode::erase_obstacle_polygon_locked(const geometry_msgs::msg::Polygon& polygon)
+{
+  const auto target = polygon_centroid(polygon);
+  const auto is_same_keepout = [&target](const geometry_msgs::msg::Polygon& poly)
+  {
+    const auto c = polygon_centroid(poly);
+    return std::hypot(static_cast<double>(c.x) - static_cast<double>(target.x),
+                      static_cast<double>(c.y) - static_cast<double>(target.y)) <=
+           kObstacleDedupEpsilonM;
+  };
+  obstacle_polygons_.erase(std::remove_if(obstacle_polygons_.begin(),
+                                          obstacle_polygons_.end(),
+                                          is_same_keepout),
+                           obstacle_polygons_.end());
+}
+
+MapServerNode::ObstacleEntry MapServerNode::make_obstacle_entry(
+    const geometry_msgs::msg::Polygon& polygon,
+    const std::string& name,
+    uint8_t source,
+    bool pending)
+{
+  ObstacleEntry entry;
+  entry.polygon = polygon;
+  entry.name = name;
+  entry.source = source;
+  entry.pending = pending;
+  entry.id = next_obstacle_id_++;
+  return entry;
+}
+
+bool MapServerNode::has_duplicate_obstacle_entry(const std::vector<ObstacleEntry>& existing,
+                                                 const geometry_msgs::msg::Polygon& candidate,
+                                                 double eps)
+{
+  std::vector<geometry_msgs::msg::Polygon> polygons;
+  polygons.reserve(existing.size());
+  for (const auto& obs : existing)
+  {
+    polygons.push_back(obs.polygon);
+  }
+  return has_duplicate_obstacle(polygons, candidate, eps);
+}
+
+void MapServerNode::persist_areas_best_effort(const char* context)
+{
+  if (areas_file_path_.empty())
+  {
+    return;
+  }
+  try
+  {
+    save_areas_to_file(areas_file_path_);
+  }
+  catch (const std::exception& ex)
+  {
+    // The live state is already updated, so a failed save is a warning, not
+    // a failure: the next save_areas tick retries.
+    RCLCPP_WARN(get_logger(), "%s: applied to live state but save failed: %s", context, ex.what());
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Area persistence helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::string MapServerNode::polygon_to_string(const geometry_msgs::msg::Polygon& poly)
+{
+  std::ostringstream oss;
+  for (std::size_t i = 0; i < poly.points.size(); ++i)
+  {
+    if (i > 0)
+    {
+      oss << ";";
+    }
+    oss << poly.points[i].x << "," << poly.points[i].y;
+  }
+  return oss.str();
+}
+
+void MapServerNode::save_areas_to_file(const std::string& path)
+{
+  std::ofstream out(path);
+  if (!out.is_open())
+  {
+    throw std::runtime_error("Cannot open " + path + " for writing");
+  }
+
+  out << "# Mowgli ROS2 — Persisted areas and docking point\n";
+  out << "# Auto-generated by map_server_node. Do not edit manually.\n\n";
+
+  // Datum stamp (issue #216): records which WGS84 datum the metre
+  // coordinates below are anchored to. On load, a stamp that differs from
+  // the launch datum triggers migrate_areas_datum, which re-projects every
+  // polygon + the dock pose into the new datum frame instead of letting the
+  // whole map silently shift across the garden.
+  if (is_datum_set(datum_lat_, datum_lon_))
+  {
+    out << std::fixed << std::setprecision(9) << "datum_lat: " << datum_lat_ << "\n"
+        << "datum_lon: " << datum_lon_ << "\n\n";
+    out.unsetf(std::ios_base::floatfield);
+    out << std::setprecision(6);
+  }
+
+  out << "area_count: " << areas_.size() << "\n\n";
+
+  for (std::size_t i = 0; i < areas_.size(); ++i)
+  {
+    const auto& area = areas_[i];
+    out << "area_" << i << "_name: " << area.name << "\n";
+    out << "area_" << i << "_polygon: " << polygon_to_string(area.polygon) << "\n";
+    out << "area_" << i << "_is_navigation: " << (area.is_navigation_area ? 1 : 0) << "\n";
+    // PENDING obstacles (wheel-slip dig proposals) are deliberately NOT
+    // written: they protect the spot for this session only, and become
+    // permanent solely when the operator accepts them through
+    // ~/promote_obstacle. Count only what we actually write, and keep the
+    // written indices contiguous so the loader sees no gaps.
+    std::size_t persisted = 0;
+    for (const auto& obs : area.obstacles)
+    {
+      if (!obs.pending)
+      {
+        ++persisted;
+      }
+    }
+    out << "area_" << i << "_obstacle_count: " << persisted << "\n";
+    std::size_t j = 0;
+    for (const auto& obs : area.obstacles)
+    {
+      if (obs.pending)
+      {
+        continue;
+      }
+      out << "area_" << i << "_obstacle_" << j << ": " << polygon_to_string(obs.polygon) << "\n";
+      // Identity lines are OPTIONAL on read (see load_areas_from_file), so an
+      // areas.dat written before #502 still loads. Only emit them when they
+      // carry information, keeping the file diff-friendly.
+      if (!obs.name.empty())
+      {
+        out << "area_" << i << "_obstacle_" << j << "_name: " << obs.name << "\n";
+      }
+      if (obs.source != mowgli_interfaces::msg::MapObstacleInfo::SOURCE_USER)
+      {
+        out << "area_" << i << "_obstacle_" << j << "_source: " << static_cast<int>(obs.source)
+            << "\n";
+      }
+      ++j;
+    }
+    out << "\n";
+  }
+
+  // Dock pose intentionally NOT serialized here. The single source of truth
+  // is mowgli_robot.yaml — written by calibrate_imu_yaw_node and
+  // on_set_docking_point. Storing it in areas.dat too led to a stale
+  // all-zero pose taking precedence over the calibrated value.
+
+  out.close();
+}
+
+void MapServerNode::load_areas_from_file(const std::string& path)
+{
+  std::ifstream in(path);
+  if (!in.is_open())
+  {
+    throw std::runtime_error("Cannot open " + path);
+  }
+
+  // Parse all key-value pairs into a map.
+  std::map<std::string, std::string> kv;
+  std::string line;
+  while (std::getline(in, line))
+  {
+    if (line.empty() || line[0] == '#')
+    {
+      continue;
+    }
+    auto colon_pos = line.find(':');
+    if (colon_pos == std::string::npos)
+    {
+      continue;
+    }
+    std::string key = line.substr(0, colon_pos);
+    std::string val = line.substr(colon_pos + 1);
+    // Trim leading whitespace from value.
+    auto start = val.find_first_not_of(" \t");
+    if (start != std::string::npos)
+    {
+      val = val.substr(start);
+    }
+    else
+    {
+      val.clear();
+    }
+    kv[key] = val;
+  }
+  in.close();
+
+  auto get_int = [&](const std::string& key, int def) -> int
+  {
+    auto it = kv.find(key);
+    return (it != kv.end()) ? std::stoi(it->second) : def;
+  };
+
+  auto get_double = [&](const std::string& key, double def) -> double
+  {
+    auto it = kv.find(key);
+    return (it != kv.end()) ? std::stod(it->second) : def;
+  };
+
+  auto get_str = [&](const std::string& key) -> std::string
+  {
+    auto it = kv.find(key);
+    return (it != kv.end()) ? it->second : std::string{};
+  };
+
+  // Clear existing areas and reload from file.
+  areas_.clear();
+  obstacle_polygons_.clear();
+
+  const int area_count = get_int("area_count", 0);
+  for (int i = 0; i < area_count; ++i)
+  {
+    const std::string prefix = "area_" + std::to_string(i);
+    AreaEntry entry;
+    entry.name = get_str(prefix + "_name");
+    entry.polygon = parse_polygon_string(get_str(prefix + "_polygon"));
+    entry.is_navigation_area = (get_int(prefix + "_is_navigation", 0) != 0);
+
+    const int obs_count = get_int(prefix + "_obstacle_count", 0);
+    for (int j = 0; j < obs_count; ++j)
+    {
+      const std::string obs_prefix = prefix + "_obstacle_" + std::to_string(j);
+      auto obs_poly = parse_polygon_string(get_str(obs_prefix));
+      // Identity is optional: a file written before #502 has no _name/_source
+      // lines, and every obstacle in it is by definition an operator-drawn
+      // keepout. Never pending — nothing pending is ever written.
+      const std::string obs_name = get_str(obs_prefix + "_name");
+      const auto obs_source = static_cast<uint8_t>(
+          get_int(obs_prefix + "_source", mowgli_interfaces::msg::MapObstacleInfo::SOURCE_USER));
+      // Dedup on load so pre-existing stacked duplicates collapse to one.
+      if (obs_poly.points.size() >= 3 &&
+          !has_duplicate_obstacle_entry(entry.obstacles, obs_poly, kObstacleDedupEpsilonM))
+      {
+        entry.obstacles.push_back(make_obstacle_entry(obs_poly, obs_name, obs_source, false));
+      }
+    }
+
+    if (entry.polygon.points.size() >= 3)
+    {
+      RCLCPP_INFO(get_logger(),
+                  "Loaded area '%s': %zu vertices, %s, %zu obstacles",
+                  entry.name.c_str(),
+                  entry.polygon.points.size(),
+                  entry.is_navigation_area ? "navigation" : "mowing",
+                  entry.obstacles.size());
+      areas_.push_back(std::move(entry));
+    }
+  }
+
+  // Dock pose is loaded from mowgli_robot.yaml at construction, never
+  // from areas.dat. Old areas.dat files may still contain dock_x/dock_qw
+  // keys — they are ignored on purpose.
+
+  // Datum-change migration (issue #216): if the file was recorded against a
+  // different datum than the one this node was launched with, re-project the
+  // just-loaded polygons + the dock pose into the new datum frame and
+  // re-stamp the file. Runs BEFORE resize_map_to_areas so the grid is sized
+  // around the migrated coordinates.
+  {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    migrate_areas_datum(get_double("datum_lat", nan), get_double("datum_lon", nan), path);
+  }
+
+  // Resize map to fit new areas and reset masks.
+  resize_map_to_areas();
+  keepout_filter_info_sent_ = false;
+  speed_filter_info_sent_ = false;
+  masks_dirty_ = true;
+}
+
+void MapServerNode::migrate_areas_datum(double file_datum_lat,
+                                        double file_datum_lon,
+                                        const std::string& path)
+{
+  namespace wgs84 = mowgli_interfaces::wgs84;
+
+  if (!is_datum_set(datum_lat_, datum_lon_))
+  {
+    // No site datum configured yet (fresh install, sim without GPS) —
+    // nothing to anchor the metres against; leave the file as-is.
+    return;
+  }
+
+  const bool file_has_stamp = std::isfinite(file_datum_lat) && std::isfinite(file_datum_lon) &&
+                              is_datum_set(file_datum_lat, file_datum_lon);
+  if (!file_has_stamp)
+  {
+    // Pre-#216 file (recorded before stamping existed). Its metres are by
+    // definition anchored to the datum currently in effect — adopt it by
+    // re-saving with a stamp so the NEXT datum change migrates from the
+    // correct baseline.
+    RCLCPP_INFO(get_logger(),
+                "areas file %s has no datum stamp — stamping it with the current "
+                "datum (%.9f, %.9f).",
+                path.c_str(),
+                datum_lat_,
+                datum_lon_);
+    try
+    {
+      save_areas_to_file(path);
+    }
+    catch (const std::exception& ex)
+    {
+      RCLCPP_WARN(get_logger(),
+                  "Could not re-save %s with datum stamp: %s",
+                  path.c_str(),
+                  ex.what());
+    }
+    return;
+  }
+
+  if (std::abs(datum_lat_ - file_datum_lat) < kDatumMatchEpsilonDeg &&
+      std::abs(datum_lon_ - file_datum_lon) < kDatumMatchEpsilonDeg)
+  {
+    return;  // Same site anchor — nothing to migrate.
+  }
+
+  // The datum moved (operator relocated the base / re-centred the datum).
+  // Re-project every persisted metre coordinate: old-ENU → WGS84 → new-ENU,
+  // the exact inverse/forward of the localizer's projection, so each vertex
+  // keeps pointing at the same physical spot in the garden.
+  auto reproject_polygon = [&](geometry_msgs::msg::Polygon& poly)
+  {
+    for (auto& pt : poly.points)
+    {
+      double east = static_cast<double>(pt.x);
+      double north = static_cast<double>(pt.y);
+      wgs84::ReprojectEnu(file_datum_lat, file_datum_lon, datum_lat_, datum_lon_, east, north);
+      pt.x = static_cast<float>(east);
+      pt.y = static_cast<float>(north);
+    }
+  };
+
+  for (auto& area : areas_)
+  {
+    reproject_polygon(area.polygon);
+    for (auto& obstacle : area.obstacles)
+    {
+      reproject_polygon(obstacle.polygon);
+    }
+  }
+
+  // Where the old datum origin lands in the new frame == the translation
+  // every point just underwent (to first order) — logged so an operator can
+  // sanity-check the move against how far they physically moved the base.
+  double shift_east = 0.0;
+  double shift_north = 0.0;
+  wgs84::ReprojectEnu(
+      file_datum_lat, file_datum_lon, datum_lat_, datum_lon_, shift_east, shift_north);
+
+  // The dock pose rides with the map. Yaw is unchanged — both old and new
+  // frames are north-aligned ENU, so a datum move is a pure translation.
+  if (docking_pose_set_)
+  {
+    double east = docking_pose_.position.x;
+    double north = docking_pose_.position.y;
+    wgs84::ReprojectEnu(file_datum_lat, file_datum_lon, datum_lat_, datum_lon_, east, north);
+    docking_pose_.position.x = east;
+    docking_pose_.position.y = north;
+
+    const double yaw_rad =
+        2.0 * std::atan2(docking_pose_.orientation.z, docking_pose_.orientation.w);
+    if (!mowgli_interfaces::robot_yaml_scalar::UpdateDockPose(
+            robot_yaml_path_, docking_pose_.position.x, docking_pose_.position.y, yaw_rad))
+    {
+      RCLCPP_WARN(get_logger(),
+                  "Datum migration: could not persist migrated dock pose to %s — "
+                  "file missing or not writable. Pose migrated in-memory only.",
+                  robot_yaml_path_.c_str());
+    }
+
+    geometry_msgs::msg::PoseStamped pose_msg;
+    pose_msg.header.stamp = now();
+    pose_msg.header.frame_id = map_frame_;
+    pose_msg.pose = docking_pose_;
+    docking_pose_pub_->publish(pose_msg);
+
+    {
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      rebuild_dock_polygons();
+      masks_dirty_ = true;
+    }
+  }
+
+  // Re-stamp the file so the migration runs exactly once per datum change.
+  try
+  {
+    save_areas_to_file(path);
+  }
+  catch (const std::exception& ex)
+  {
+    RCLCPP_ERROR(get_logger(),
+                 "Datum migration applied in-memory but re-saving %s FAILED: %s — "
+                 "the migration will re-run (idempotently) on next load.",
+                 path.c_str(),
+                 ex.what());
+  }
+
+  RCLCPP_WARN(get_logger(),
+              "Datum changed (%.9f, %.9f) → (%.9f, %.9f): re-projected %zu area(s) "
+              "and %s dock pose by (%.3f, %.3f) m so the map stays anchored to the "
+              "physical garden (issue #216).",
+              file_datum_lat,
+              file_datum_lon,
+              datum_lat_,
+              datum_lon_,
+              areas_.size(),
+              docking_pose_set_ ? "the" : "no",
+              shift_east,
+              shift_north);
+}
+
+void MapServerNode::apply_area_classifications()
+{
+  std::lock_guard<std::mutex> lock(map_mutex_);
+  const float lawn_val = static_cast<float>(CellType::LAWN);
+  const float no_go_val = static_cast<float>(CellType::NO_GO_ZONE);
+
+  for (const auto& area : areas_)
+  {
+    grid_map::Polygon gm_polygon;
+    for (const auto& pt : area.polygon.points)
+    {
+      gm_polygon.addVertex(
+          grid_map::Position(static_cast<double>(pt.x), static_cast<double>(pt.y)));
+    }
+
+    // Mowing areas are LAWN, not NO_GO_ZONE.
+    for (grid_map::PolygonIterator it(map_, gm_polygon); !it.isPastEnd(); ++it)
+    {
+      map_.at(std::string(layers::CLASSIFICATION), *it) = lawn_val;
+    }
+
+    for (const auto& obstacle : area.obstacles)
+    {
+      grid_map::Polygon obs_gm;
+      for (const auto& pt : obstacle.polygon.points)
+      {
+        obs_gm.addVertex(grid_map::Position(static_cast<double>(pt.x), static_cast<double>(pt.y)));
+      }
+      for (grid_map::PolygonIterator it(map_, obs_gm); !it.isPastEnd(); ++it)
+      {
+        map_.at(std::string(layers::CLASSIFICATION), *it) = no_go_val;
+      }
+    }
+  }
+
+  // Dock body cells → OBSTACLE_PERMANENT. The strip planner stops at
+  // OBSTACLE_PERMANENT, and Smac sees them as lethal — so the robot
+  // never tries to mow into or path through the dock structure.
+  if (has_dock_exclusion_ && dock_body_polygon_.points.size() >= 3)
+  {
+    const float body_val = static_cast<float>(CellType::OBSTACLE_PERMANENT);
+    grid_map::Polygon body_gm;
+    for (const auto& pt : dock_body_polygon_.points)
+    {
+      body_gm.addVertex(grid_map::Position(static_cast<double>(pt.x), static_cast<double>(pt.y)));
+    }
+    for (grid_map::PolygonIterator it(map_, body_gm); !it.isPastEnd(); ++it)
+    {
+      map_.at(std::string(layers::CLASSIFICATION), *it) = body_val;
+    }
+  }
+
+  // Dock approach corridor → DOCKING_AREA. Mowable (strips can traverse),
+  // but flagged so the keepout-mask carve-out and reachability analysis
+  // can identify these cells. Skip cells already marked OBSTACLE_PERMANENT
+  // (body) so the body classification wins where the polygons touch.
+  if (has_dock_exclusion_ && dock_corridor_polygon_.points.size() >= 3)
+  {
+    const float corridor_val = static_cast<float>(CellType::DOCKING_AREA);
+    const float perm_val = static_cast<float>(CellType::OBSTACLE_PERMANENT);
+    grid_map::Polygon corridor_gm;
+    for (const auto& pt : dock_corridor_polygon_.points)
+    {
+      corridor_gm.addVertex(
+          grid_map::Position(static_cast<double>(pt.x), static_cast<double>(pt.y)));
+    }
+    auto& cls = map_[std::string(layers::CLASSIFICATION)];
+    for (grid_map::PolygonIterator it(map_, corridor_gm); !it.isPastEnd(); ++it)
+    {
+      if (cls((*it)(0), (*it)(1)) != perm_val)
+      {
+        cls((*it)(0), (*it)(1)) = corridor_val;
+      }
+    }
+  }
+}
+void MapServerNode::add_area_for_test(
+    const mowgli_interfaces::srv::AddMowingArea::Request::SharedPtr req,
+    mowgli_interfaces::srv::AddMowingArea::Response::SharedPtr res)
+{
+  on_add_area(req, res);
+}
+
+void MapServerNode::get_mowing_area_for_test(
+    const mowgli_interfaces::srv::GetMowingArea::Request::SharedPtr req,
+    mowgli_interfaces::srv::GetMowingArea::Response::SharedPtr res)
+{
+  on_get_mowing_area(req, res);
+}
+
+void MapServerNode::save_areas_for_test(const std::string& path)
+{
+  save_areas_to_file(path);
+}
+
+void MapServerNode::load_areas_for_test(const std::string& path)
+{
+  load_areas_from_file(path);
+}
+
+}  // namespace mowgli_map

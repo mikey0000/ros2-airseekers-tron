@@ -4,6 +4,9 @@ Starts the three hardware drivers plus the bumper safety-routing controller.
 Planner/task nodes (MowgliNext-derived) are layered on top once routing/docking
 nodes land.
 
+All four drivers respawn (2 s delay) so a missing/unplugged serial port does
+not take the stack down; the drivers log the open failure and retry.
+
 Note: bumper_controller subscribes /mower_base/status (MowerBaseDevStatus), which
 is published by the not-yet-ported mower_base node; it starts dormant until that
 lands (the MCU still enforces the instant bumper cutoff regardless).
@@ -24,6 +27,8 @@ def generate_launch_description():
                 'cmd_vel_timeout': 0.5,
             }],
             output='screen',
+            respawn=True,
+            respawn_delay=2.0,
         ),
         Node(
             package='wit_imu_driver',
@@ -33,8 +38,11 @@ def generate_launch_description():
                 'port': '/dev/serial_imu',
                 'rate': 100.0,
                 'frame_id': 'imu_link',
+                'imu_topic': '/imu/data',   # driver default; consumed by ekf/imu_cal
             }],
             output='screen',
+            respawn=True,
+            respawn_delay=2.0,
         ),
         Node(
             package='um960_gps_driver',
@@ -43,9 +51,11 @@ def generate_launch_description():
             parameters=[{
                 'port': '/dev/serial_rtk',
                 'baud': 115200,
-                'frame_id': 'gps',
+                'frame_id': 'gps_link',   # URDF child link (driver default is 'gps')
             }],
             output='screen',
+            respawn=True,
+            respawn_delay=2.0,
         ),
         Node(
             package='bumper_controller',
@@ -57,7 +67,11 @@ def generate_launch_description():
                 'pid_kd': 0.05,
                 'pid_max_angular': 0.5,
                 'pid_tolerance': 0.03,
+                # twist_mux input (mower_teleop/config/twist_mux.yaml), not /cmd_vel.
+                'cmd_vel_topic': '/cmd_vel_bumper',
             }],
             output='screen',
+            respawn=True,
+            respawn_delay=2.0,
         ),
     ])

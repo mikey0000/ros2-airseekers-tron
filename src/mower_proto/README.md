@@ -29,3 +29,9 @@ top-level `import X_pb2` statements into package-relative `from . import X_pb2`.
 The packages consumed by `base_ble` and the MQTT bridge are `common`, `map`, `teleop`,
 `init`, `status` (which transitively pulls in `config`, `task`, `rtk`, `upgrade`,
 `upgrade_mcu`). `msg` carries the app command enum used by the cloud bridge.
+
+## Protobuf version
+
+Generated for protobuf 3.12 (Ubuntu 22.04 Jammy apt `python3-protobuf` 3.12.4, which has no
+`google.protobuf.internal.builder`). Regenerate with the script inside the Jammy dev container
+(`protobuf-compiler` 3.12.4, `/usr/bin/protoc`, repo root mounted); do not generate with a newer protoc.

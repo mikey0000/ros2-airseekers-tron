@@ -29,8 +29,8 @@ import ros_stubs  # noqa: E402  (same directory as this test)
 ros_stubs.install()
 
 from mower_mcu_driver import fake_mcu, mcu_node as mn  # noqa: E402
+from geometry_msgs.msg import Twist  # noqa: E402
 
-from geometry_msgs.msg import TwistStamped  # noqa: E402
 
 
 def _temp_root():
@@ -39,6 +39,7 @@ def _temp_root():
     return tempfile.mkdtemp(prefix='mower_loopback_', dir=preferred)
 
 
+@unittest.skipUnless(ros_stubs.is_stubbed(), 'stub-only test (needs ros_stubs internals; real rclpy present)')
 @unittest.skipUnless(shutil.which('socat'), 'socat is not installed')
 class TestLoopback(unittest.TestCase):
 
@@ -90,9 +91,9 @@ class TestLoopback(unittest.TestCase):
             if now >= next_tx:
                 next_tx = now + 0.05
                 # keep /cmd_vel alive so it does not hit the stale-command timeout
-                cmd = TwistStamped()
-                cmd.twist.linear.x = 0.4
-                cmd.twist.angular.z = 0.1
+                cmd = Twist()
+                cmd.linear.x = 0.4
+                cmd.angular.z = 0.1
                 node._on_cmd_vel(cmd)
                 node._send_speed()
                 node._send_heartbeat()
@@ -105,7 +106,7 @@ class TestLoopback(unittest.TestCase):
         self.assertIsNotNone(node._sensor_info, 'SensorInfo never arrived')
         self.assertTrue(node.published['/battery'], 'no /battery published')
         self.assertAlmostEqual(node.published['/battery'][0].voltage, 24.8, places=3)
-        self.assertTrue(node.published['/imu'], 'module 9 (--imu) did not reach /imu')
+        self.assertTrue(node.published['/mcu/imu'], 'module 9 (--imu) did not reach /mcu/imu')
 
         # host -> MCU -> host round trip: the fake MCU echoes the command as measured speed
         self.assertAlmostEqual(node._meas_linear, 0.4, places=2)

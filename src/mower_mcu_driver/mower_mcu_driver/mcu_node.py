@@ -94,14 +94,21 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, Imu
+from std_msgs.msg import Bool
+from std_srvs.srv import Empty, Trigger
 
 try:  # Optional: only exists once ros2_stack/src/mower_interfaces has been created.
     from mower_interfaces.msg import MowerSensorInfo
 except ImportError:  # pragma: no cover - depends on workspace build order
     MowerSensorInfo = None
+try:
+    from mower_interfaces.msg import MowerBaseDevStatus
+    from mower_interfaces.srv import ChargingControl, CutterControl
+except ImportError:  # pragma: no cover
+    MowerBaseDevStatus = ChargingControl = CutterControl = None
 
 
 # ---------------------------------------------------------------------------
@@ -115,12 +122,12 @@ TYPE_MOWER_ROS = 8      # MCU -> host
 TYPE_HEARTBEAT = 255    # host -> MCU keepalive
 
 MOD_ALL = 0           # MODULE_ALL: addressed to the whole MCU (heartbeat uses this)
-MOD_CHARGE = 3        # not sent yet: /charging service -> ChargeControl is TODO
+MOD_CHARGE = 3        # host->MCU ChargeControl (1 B) via /charging
 MOD_SPEED = 4
 MOD_BATTERY = 5
 MOD_IMU = 9
 MOD_SENSOR = 10
-MOD_CUTTER = 11       # not sent yet: /cutter_control service -> CutterControl is TODO
+MOD_CUTTER = 11       # host->MCU CutterControl (12 B) via /cutter_control
 MOD_VERSION = 12
 MOD_MOTORS = 13
 MOD_CALIB = 18
@@ -129,6 +136,9 @@ MOD_BMS_VERSION = 24
 
 # struct formats, from protocol_definitions_recovered.h (all little-endian, packed)
 SPEED_FMT = '<ff'                 # SpeedData (8):  linear m/s, angular rad/s
+MOTOR_CTRL_FMT = '<BBHH'          # MotorControl (6): enable, direction, speed, position
+CHARGE_FMT = '<B'                 # ChargeControl (1): enable
+SENSOR_CTRL_FMT = '<8B'           # SensorInfoControl (8): per-sensor enable mask (?)
 BATTERY_FMT = '<HhBbbI'           # BatteryInfo (11)
 SENSOR_FMT = '<10B'               # SensorInfo (10)
 IMU_FMT = '<9h'                   # ImuData (18) - pitch, roll, yaw, accx..z, gyrox..z
@@ -259,6 +269,27 @@ def heartbeat_payload(now=None):
                        now.hour, now.minute, now.second, (ms >> 8) & 0xFF, ms & 0xFF)
 
 
+def cutter_payload(cutter_enable, cutter_direction, cutter_speed, height_enable,
+                   height_direction, height_position):
+    """``CutterControl`` = cutter MotorControl + height MotorControl (12 B).
+
+    MotorControl.speed is 0-100 % (the cutter has also been seen with 1000 = raw); position
+    is the 0-100 % height target. Values are clamped to uint16 here, semantics are the
+    MCU's (see docs/mcu_protocol_spec.md section 6).
+    """
+    def u16(v):
+        return max(0, min(0xFFFF, int(v)))
+    cutter = struct.pack(MOTOR_CTRL_FMT, 1 if cutter_enable else 0, 1 if cutter_direction else 0,
+                         u16(cutter_speed), 0)
+    height = struct.pack(MOTOR_CTRL_FMT, 1 if height_enable else 0, 1 if height_direction else 0,
+                         0, u16(height_position))
+    return cutter + height
+
+
+def charge_payload(enable):
+    return struct.pack(CHARGE_FMT, 1 if enable else 0)
+
+
 def speed_payload(linear, angular):
     """Build the 8-byte ``SpeedData`` payload (m/s, rad/s)."""
     return struct.pack(SPEED_FMT, float(linear), float(angular))
@@ -270,6 +301,11 @@ def _diag6(a, b, c, d, e, f):
     for idx, val in enumerate((a, b, c, d, e, f)):
         cov[idx * 6 + idx] = val
     return cov
+
+
+def _diag3(a, b, c):
+    """Row-major 3x3 covariance matrix (``sensor_msgs/Imu`` fields) with ``a..c`` on the diagonal."""
+    return [a, 0.0, 0.0, 0.0, b, 0.0, 0.0, 0.0, c]
 
 
 def _yaw_to_quaternion(yaw):
@@ -365,8 +401,15 @@ class McuNode(Node):
         self.declare_parameter('use_imu_yaw', True)
         self.declare_parameter('linear_scale', 1.0)
         self.declare_parameter('angular_scale', 1.0)
-        self.declare_parameter('linear_max', 1.5)
-        self.declare_parameter('angular_max', 1.5)
+        # Vendor PID clamps body speed to +-0.3 m/s; stay conservative until characterised.
+        self.declare_parameter('linear_max', 0.5)
+        self.declare_parameter('angular_max', 1.0)
+        # Host-side interlock: stop wheels + cutter while lift / e-stop (and optionally
+        # bumper) are asserted, in addition to whatever the MCU firmware enforces.
+        self.declare_parameter('interlock_on_lift', True)
+        self.declare_parameter('interlock_on_stop', True)
+        self.declare_parameter('interlock_on_bumper', False)
+        self.declare_parameter('cutter_default_speed', 100)   # MotorControl.speed (% or raw)
         self.declare_parameter('battery_voltage_scale', 0.1)
         self.declare_parameter('battery_current_scale', 1.0)
 
@@ -389,6 +432,10 @@ class McuNode(Node):
         self.angular_max = float(param('angular_max'))
         self.battery_voltage_scale = float(param('battery_voltage_scale'))
         self.battery_current_scale = float(param('battery_current_scale'))
+        self.interlock_on_lift = bool(param('interlock_on_lift'))
+        self.interlock_on_stop = bool(param('interlock_on_stop'))
+        self.interlock_on_bumper = bool(param('interlock_on_bumper'))
+        self.cutter_default_speed = int(param('cutter_default_speed'))
         speed_cmd_rate = float(param('speed_cmd_rate'))
         odom_rate = float(param('odom_rate'))
 
@@ -420,6 +467,12 @@ class McuNode(Node):
         self._motors = {}                 # motor name -> dict of raw values
         self._mower_sensor_info_pub_warned = False
 
+        self._cutter_cmd = None           # last CutterControl payload sent (bytes) or None
+        self._cutter_requested_on = False # host wants the blade on (re-sent after interlock)
+        self._charging_enabled = False
+        self._interlock_latched = False   # True while an interlock has forced motion off
+        self._estop_latched = False       # host-side e-stop latch (/estop topic), cleared by /clear_estop
+
         # ---- publishers / subscribers -------------------------------------
         sensor_qos = QoSProfile(depth=10,
                                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -427,7 +480,13 @@ class McuNode(Node):
 
         self._battery_pub = self.create_publisher(BatteryState, '/battery', 10)
         self._odom_pub = self.create_publisher(Odometry, '/odom', 10)
-        self._imu_pub = self.create_publisher(Imu, '/imu', sensor_qos)
+        # MCU ImuData is a *copy* of the WIT IMU the MCU receives; the real IMU topic
+        # (/imu/data) is wit_imu_driver's. Keep this one off the main name.
+        self._imu_pub = self.create_publisher(Imu, '/mcu/imu', sensor_qos)
+        self._estop_pub = self.create_publisher(Bool, '/estop', 10)
+        self._status_pub = None
+        if MowerBaseDevStatus is not None:
+            self._status_pub = self.create_publisher(MowerBaseDevStatus, '/mower_base/status', 10)
 
         # /mower_sensor_info only if the interface package has been created; otherwise skip.
         self._sensor_pub = None
@@ -439,9 +498,19 @@ class McuNode(Node):
                 'mower_interfaces not available -> /mower_sensor_info disabled '
                 '(build ros2_stack/src/mower_interfaces and relaunch to enable it)')
 
-        # TODO(estop): passthrough not wired yet, see module docstring.
-        # TODO: the stock node also accepts unstamped geometry_msgs/Twist on /cmd_vel.
-        self.create_subscription(TwistStamped, '/cmd_vel', self._on_cmd_vel, 10)
+        # Humble convention (twist_mux 4.3 / Nav2 Humble): unstamped Twist on /cmd_vel.
+        # /cmd_vel_stamped mirrors the vendor node's second input.
+        self.create_subscription(Twist, '/cmd_vel', self._on_cmd_vel, 10)
+        self.create_subscription(TwistStamped, '/cmd_vel_stamped', self._on_cmd_vel_stamped, 10)
+        self.create_subscription(Bool, '/estop_request', self._on_estop_request, 10)
+
+        # ---- services (vendor base_driver_node contract) ---------------------
+        if CutterControl is not None:
+            self.create_service(CutterControl, '/cutter_control', self._srv_cutter_control)
+        if ChargingControl is not None:
+            self.create_service(ChargingControl, '/charging', self._srv_charging)
+        self.create_service(Empty, '/clear_estop', self._srv_clear_estop)
+        self.create_service(Trigger, '/cutter_off', self._srv_cutter_off)
 
         # ---- timers -------------------------------------------------------
         # Default single-threaded executor: all timers/callbacks touch the serial port, so no
@@ -611,15 +680,15 @@ class McuNode(Node):
             yaw * WIT_RAW_ANGLE_TO_RAD)
         msg.orientation.x, msg.orientation.y = q[0], q[1]
         msg.orientation.z, msg.orientation.w = q[2], q[3]
-        msg.orientation_covariance = _diag6(0.05, 0.05, 0.05, 0.0, 0.0, 0.1)
+        msg.orientation_covariance = _diag3(0.05, 0.05, 0.1)
         msg.angular_velocity.x = gyrox * WIT_RAW_GYRO_TO_RAD
         msg.angular_velocity.y = gyroy * WIT_RAW_GYRO_TO_RAD
         msg.angular_velocity.z = gyroz * WIT_RAW_GYRO_TO_RAD
-        msg.angular_velocity_covariance = _diag6(0.02, 0.02, 0.02, 0.0, 0.0, 0.02)
+        msg.angular_velocity_covariance = _diag3(0.02, 0.02, 0.02)
         msg.linear_acceleration.x = accx * WIT_RAW_ACC_TO_MS2
         msg.linear_acceleration.y = accy * WIT_RAW_ACC_TO_MS2
         msg.linear_acceleration.z = accz * WIT_RAW_ACC_TO_MS2
-        msg.linear_acceleration_covariance = _diag6(0.1, 0.1, 0.1, 0.0, 0.0, 0.0)
+        msg.linear_acceleration_covariance = _diag3(0.1, 0.1, 0.1)
         self._imu_pub.publish(msg)
 
         # Heading source for the odometry dead reckoner (sign convention needs validating
@@ -643,7 +712,9 @@ class McuNode(Node):
         names = ('bumper', 'rain', 'lift', 'stop', 'power_off', 'battery_gate',
                  'cutter_size', 'press_module', 'bumper_r', 'bumper_l')
         self._sensor_info = dict(zip(names, struct.unpack(SENSOR_FMT, payload)))
+        self._apply_interlock()
         self._publish_sensor_info()
+        self._publish_dev_status()
 
     def _on_version(self, payload):
         if len(payload) != struct.calcsize(VERSION_FMT):
@@ -684,6 +755,40 @@ class McuNode(Node):
             return
         self._sensor_pub.publish(msg)
 
+    def _publish_dev_status(self):
+        """``/mower_base/status`` (MowerBaseDevStatus): the compact flag set that
+        bumper_controller and the mission layer consume."""
+        if self._status_pub is None or self._sensor_info is None:
+            return
+        s = self._sensor_info
+        try:
+            msg = MowerBaseDevStatus()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            cutter = self._motors.get('cutter')
+            msg.is_cutting = bool(cutter and abs(cutter['speed']) > 500)
+            now = time.monotonic()
+            linear, angular, measured = self._speed(now)
+            msg.is_moving = bool(measured and (abs(linear) > 1e-2 or abs(angular) > 1e-2))
+            msg.is_cmd_moving = bool(now - self._cmd_stamp < self.cmd_vel_timeout
+                                     and (abs(self._cmd_linear) > 1e-2 or abs(self._cmd_angular) > 1e-2))
+            msg.is_docking_done = bool(self._battery and self._battery.get('dock_ok'))
+            msg.is_charging = bool(self._battery and self._battery.get('dock_ok')
+                                   and self._charging_enabled)
+            msg.bumper_routing_enabled = True
+            msg.battery_gate_open = bool(s['battery_gate'])
+            msg.press_module = bool(s['press_module'])
+            msg.stop_triggered = bool(s['stop']) or self._estop_latched
+            msg.bumper_triggered = bool(s['bumper'] or s['bumper_l'] or s['bumper_r'])
+            msg.left_bumper_triggered = bool(s['bumper_l'])
+            msg.right_bumper_triggered = bool(s['bumper_r'])
+            msg.rain_triggered = bool(s['rain'])
+            msg.lift_triggered = bool(s['lift'])
+        except Exception as exc:  # pragma: no cover - defensive
+            self.get_logger().error('cannot fill MowerBaseDevStatus: %s' % exc,
+                                    throttle_duration_sec=30.0)
+            return
+        self._status_pub.publish(msg)
+
     def _fill_sensor_info(self, msg):
         """Fill every field of ``msg`` from the cached MCU state.
 
@@ -723,9 +828,10 @@ class McuNode(Node):
         _set_if(msg, 'is_cmd_moving',
                 now - self._cmd_stamp < self.cmd_vel_timeout
                 and (abs(self._cmd_linear) > 1e-2 or abs(self._cmd_angular) > 1e-2))
-        # Heuristic: cutter spinning == cutting (no explicit cutter state on this bus yet).
+        # Vendor DevStatus::judgmentCutterStatus: cutting == cutter rpm > 500.
         cutter = self._motors.get('cutter')
-        _set_if(msg, 'is_cutting', bool(cutter and abs(cutter['speed']) > 0))
+        _set_if(msg, 'is_cutting', bool(cutter and abs(cutter['speed']) > 500))
+        _set_if(msg, 'is_docking_done', bool(self._battery and self._battery.get('dock_ok')))
         # TODO: key_pressed, is_fill_light_on, rain_sensor_value, bumper_routing_*,
         # is_docking_done and the MotorInfo sub-messages need sources that are not on this
         # bus (buttons on /dev/keyboard, fill light in the light node, /charging state).
@@ -755,8 +861,11 @@ class McuNode(Node):
 
     # ------------------------------------------------------------------- TX
     def _on_cmd_vel(self, msg):
-        self._cmd_linear, self._cmd_angular = self._map_command(msg.twist)
+        self._cmd_linear, self._cmd_angular = self._map_command(msg)
         self._cmd_stamp = time.monotonic()
+
+    def _on_cmd_vel_stamped(self, msg):
+        self._on_cmd_vel(msg.twist)
 
     def _map_command(self, twist):
         """Simple host-side ``/cmd_vel`` -> ``SpeedData`` mapping.
@@ -786,9 +895,92 @@ class McuNode(Node):
         self._write(build_frame([(TYPE_ROS_MOWER, MOD_SPEED, speed_payload(linear, angular))]))
 
     def _commanded(self):
+        if self._interlock_active() or self._estop_latched:
+            return 0.0, 0.0
         if time.monotonic() - self._cmd_stamp > self.cmd_vel_timeout:
             return 0.0, 0.0
         return self._cmd_linear, self._cmd_angular
+
+    # --------------------------------------------------------------- safety
+    def _interlock_active(self):
+        """True while a configured safety input is asserted (lift / e-stop / bumper)."""
+        s = self._sensor_info
+        if not s:
+            return False
+        if self.interlock_on_lift and s['lift']:
+            return True
+        if self.interlock_on_stop and s['stop']:
+            return True
+        if self.interlock_on_bumper and (s['bumper'] or s['bumper_l'] or s['bumper_r']):
+            return True
+        return False
+
+    def _apply_interlock(self):
+        """Called on every SensorInfo: force the blade off while an interlock is active."""
+        active = self._interlock_active() or self._estop_latched
+        if active and not self._interlock_latched:
+            self._interlock_latched = True
+            self.get_logger().warn('interlock asserted (lift/stop/bumper/estop): wheels + cutter off')
+            self._send_cutter(False, 0)
+        elif not active and self._interlock_latched:
+            self._interlock_latched = False
+            self.get_logger().info('interlock released; cutter stays OFF until re-requested')
+            self._cutter_requested_on = False
+        self._estop_pub.publish(Bool(data=bool(active)))
+
+    def _send_cutter(self, enable, speed, height_position=None):
+        payload = cutter_payload(enable, False, speed if enable else 0,
+                                 height_position is not None, False,
+                                 height_position if height_position is not None else 0)
+        self._cutter_cmd = payload
+        self._write(build_frame([(TYPE_ROS_MOWER, MOD_CUTTER, payload)]))
+
+    def _on_estop_request(self, msg):
+        if msg.data and not self._estop_latched:
+            self._estop_latched = True
+            self.get_logger().error('host e-stop requested: latching motion + cutter off')
+            self._send_cutter(False, 0)
+            self._write(build_frame([(TYPE_ROS_MOWER, MOD_SPEED, speed_payload(0.0, 0.0))]))
+        self._apply_interlock()
+
+    # --------------------------------------------------------------- services
+    def _srv_cutter_control(self, req, resp):
+        """mower_interfaces/CutterControl: {MotorControl cutter, MotorControl height}."""
+        if self._interlock_active() or self._estop_latched:
+            self.get_logger().warn('cutter_control refused: interlock active')
+            resp.result = False
+            return resp
+        cutter_on = bool(req.cutter.enable)
+        speed = int(req.cutter.speed) if req.cutter.speed else self.cutter_default_speed
+        height = int(req.height.position) if req.height.enable else None
+        self._cutter_requested_on = cutter_on
+        self._send_cutter(cutter_on, speed, height)
+        self.get_logger().info('cutter %s speed=%d height=%s'
+                               % ('ON' if cutter_on else 'OFF', speed, height))
+        resp.result = True
+        return resp
+
+    def _srv_cutter_off(self, req, resp):
+        self._cutter_requested_on = False
+        self._send_cutter(False, 0)
+        resp.success = True
+        resp.message = 'cutter off'
+        return resp
+
+    def _srv_charging(self, req, resp):
+        self._charging_enabled = bool(req.enable_charging)
+        self._write(build_frame([(TYPE_ROS_MOWER, MOD_CHARGE, charge_payload(self._charging_enabled))]))
+        self.get_logger().info('charging %s' % ('enabled' if self._charging_enabled else 'disabled'))
+        resp.result = True
+        return resp
+
+    def _srv_clear_estop(self, req, resp):
+        """Clear the host-side e-stop latch. Vendor also sent an MCU frame here (module
+        10 = SensorInfoControl, exact payload unrecovered) - not replicated until verified."""
+        self._estop_latched = False
+        self.get_logger().info('host e-stop latch cleared')
+        self._apply_interlock()
+        return resp
 
     def _speed(self, now):
         """Best available body velocity as ``(linear, angular, measured)``.
@@ -850,7 +1042,8 @@ class McuNode(Node):
     # -------------------------------------------------------------- shutdown
     def shutdown(self):
         if self._ser is not None:
-            # Politely stop the wheels before dropping the link.
+            # Politely stop the wheels and the blade before dropping the link.
+            self._write(build_frame([(TYPE_ROS_MOWER, MOD_CUTTER, cutter_payload(False, False, 0, False, False, 0))]))
             self._write(build_frame([(TYPE_ROS_MOWER, MOD_SPEED, speed_payload(0.0, 0.0))]))
             try:
                 self._ser.close()

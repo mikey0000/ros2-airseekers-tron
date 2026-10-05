@@ -1,9 +1,11 @@
 """Tests for camera_info_builder against the recovered Metoak calibration."""
 
 import os
+from pathlib import Path
 import unittest
 
 import numpy as np
+import pytest
 
 from stereo_vio_bridge.camera_info_builder import (
     camera_info_dict,
@@ -14,9 +16,15 @@ from stereo_vio_bridge.camera_info_builder import (
     rodrigues,
 )
 
-CAL = os.path.normpath(os.path.join(
-    os.path.dirname(__file__), '..', '..', '..', '..',
-    'ros2_port_handoff', '08_calibration_identity'))
+# <repo>/ros2_stack/src/stereo_vio_bridge/test/this_file -> <repo>/ros2_port_handoff
+CAL = os.path.join(
+    str(Path(__file__).resolve().parents[4]),
+    'ros2_port_handoff', '08_calibration_identity')
+
+if not os.path.isdir(CAL):
+    # Not mounted when only ros2_stack is bind-mounted (e.g. the dev container).
+    pytest.skip('calibration handoff dir not available: %s' % CAL,
+                allow_module_level=True)
 
 
 class TestLoadCamera(unittest.TestCase):

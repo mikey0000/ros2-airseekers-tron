@@ -68,18 +68,19 @@ navsat_transform_node:
     # Do not echo a filtered NavSatFix on /gps/filtered; diagnostics come
     # from gps_gate and /fix_status instead.
     publish_filtered_gps: false
-    # Do not block bringup while the RTK session converges — gps_gate drops
-    # fixes until they are trustworthy anyway.
+    # Map origin (datum). The launch files own this: nav2.launch.py takes the
+    # datum_lat / datum_lon / datum_yaw launch args (deg, deg, rad ENU; forwarded by
+    # mower.launch.py). When both lat and lon are non-zero the launch OVERRIDES the two
+    # keys below with wait_for_datum: true and datum: [lat, lon, yaw]. When they are left
+    # at 0.0 (unset) the launch logs a WARN and this file's fallback applies: the FIRST
+    # fix becomes the origin, which moves every boot. Fine for first bring-up, wrong for
+    # repeatable zones. The same lat/lon must be in config/gui/mowgli_robot.yaml
+    # (datum_lat/datum_lon), both = the dock position, or the GUI map is misaligned.
+    # Do not pin the datum in this file; there is one source of truth (the launch args).
     wait_for_datum: false
-    # datum: [lat, lon, yaw]  The three fields are latitude, longitude (in
-    #                         decimal degrees) and heading (radians, ENU:
-    #                         0 = east). UNSET and wait_for_datum: false
-    #                         means the FIRST fix becomes the datum — fine
-    #                         for a first bring-up, wrong for repeatable
-    #                         field boundaries. To pin it: set
-    #                         wait_for_datum: true plus datum here, or call
-    #                         the /datum service at bringup (see
-    #                         docs/localization.md).
+    # datum: [lat, lon, yaw]  latitude, longitude (decimal degrees), heading (radians,
+    #                         ENU: 0 = east). Set by the launch args, see above. A
+    #                         running node can also be told via the /datum service.
     # utm_zone: "31T"         auto-detected by default; pin it if the mower
     #                         operates near a UTM zone boundary
     # use_local_cartesian: false  true = tangent-plane ENU projection around

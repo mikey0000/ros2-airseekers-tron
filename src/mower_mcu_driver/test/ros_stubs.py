@@ -79,6 +79,12 @@ class Node:
         self.subscriptions[topic] = callback
         return callback
 
+    def create_service(self, srv_type, name, callback):
+        if not hasattr(self, 'services'):
+            self.services = {}
+        self.services[name] = callback
+        return callback
+
     def create_timer(self, period, callback):
         self.timers.append((period, callback))
         return types.SimpleNamespace(period=period, callback=callback)
@@ -206,6 +212,15 @@ def _mod(name):
     return module
 
 
+def is_stubbed():
+    """True when ``rclpy`` in ``sys.modules`` is this module's stand-in (not real ROS).
+
+    ``install()`` only returns True on the call that registers the stubs, so use this for
+    skip decisions that must hold for every test module.
+    """
+    return getattr(sys.modules.get('rclpy'), '__file__', None) is None
+
+
 def install():
     """Register the stubs, but never shadow a real ROS installation.
 
@@ -239,10 +254,32 @@ def install():
 
     _mod('geometry_msgs')
     _mod('geometry_msgs.msg').TwistStamped = TwistStamped
+    _mod('geometry_msgs.msg').Twist = _Twist
     _mod('nav_msgs')
     _mod('nav_msgs.msg').Odometry = Odometry
     _mod('sensor_msgs')
     sensor_msgs = _mod('sensor_msgs.msg')
     sensor_msgs.BatteryState = BatteryState
     sensor_msgs.Imu = Imu
+
+    class Bool:
+        def __init__(self, data=False):
+            self.data = data
+
+    _mod('std_msgs')
+    _mod('std_msgs.msg').Bool = Bool
+
+    class _Srv:
+        class Request:
+            pass
+
+        class Response:
+            def __init__(self):
+                self.success = False
+                self.message = ''
+
+    _mod('std_srvs')
+    std_srvs = _mod('std_srvs.srv')
+    std_srvs.Empty = _Srv
+    std_srvs.Trigger = _Srv
     return True

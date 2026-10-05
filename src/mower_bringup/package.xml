@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_bringup</name>
+  <version>0.1.0</version>
+  <description>
+    Launch-only package for the Airseekers Tron ROS 2 stack. Installs the
+    stack-level launch/ and config/ trees (symlinked from the ros2_stack root)
+    so `ros2 launch mower_bringup mower.launch.py` is the single entry point.
+  </description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>foxglove_bridge</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
+  <exec_depend>mower_mcu_driver</exec_depend>
+  <exec_depend>wit_imu_driver</exec_depend>
+  <exec_depend>um960_gps_driver</exec_depend>
+  <exec_depend>bumper_controller</exec_depend>
+  <exec_depend>mower_control</exec_depend>
+  <exec_depend>mower_localization</exec_depend>
+  <!-- Optional groups (toggled by launch args; not hard deps so the package
+       builds before they exist): mower_teleop, mower_gui_bridge,
+       mower_navigation. -->
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

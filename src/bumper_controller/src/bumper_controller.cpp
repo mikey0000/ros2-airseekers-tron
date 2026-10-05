@@ -13,15 +13,15 @@ constexpr double kPi = 3.14159265358979323846;
 double BumperController::Pid::calc(double setpoint, double measured, double dt) {
     if (dt <= 0.0) return 0.0;
     const double error = setpoint - measured;
-    integral_ += error * dt;
-    const double deriv = (error - prev_error_) / dt;
-    double out = kp * error + ki * integral_ + kd * deriv;
+    integral += error * dt;
+    const double deriv = (error - prev_error) / dt;
+    double out = kp * error + ki * integral + kd * deriv;
 
-    if (out > out_max_)      out = out_max_;
-    else if (out < out_min_) out = out_min_;
+    if (out > out_max)      out = out_max;
+    else if (out < out_min) out = out_min;
     // (else: not saturated — keep the integral as-is)
 
-    prev_error_ = error;
+    prev_error = error;
     return out;
 }
 
@@ -34,9 +34,13 @@ double BumperController::angularDiff(double a, double b) {
     return std::remainder(b - a, 2.0 * kPi);
 }
 
+BumperController::BumperController(rclcpp::Node& node)
+    : BumperController(node, Config()) {}
+
 BumperController::BumperController(rclcpp::Node& node, Config cfg)
     : node_(node), cfg_(cfg),
-      cmd_vel_pub_(node_.create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10)),
+      cmd_vel_pub_(node_.create_publisher<geometry_msgs::msg::Twist>(
+          node_.declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel_bumper"), 10)),
       odom_sub_(node_.create_subscription<nav_msgs::msg::Odometry>(
           "/odom", 10, [this](const nav_msgs::msg::Odometry::SharedPtr m) { onOdom(m); })) {
     // Heading PID tuning, overridable via node parameters (same names as the
@@ -91,12 +95,9 @@ bool BumperController::spinOnce() {
     }
     last_spin_time_ = now;
 
-    geometry_msgs::msg::Twist t;
-
     if (rotate_counter_ == 0) {
         // Phase 1: back up in reverse for a fixed duration.
-        t.linear.x = cfg_.back_speed;
-        cmd_vel_pub_->publish(t);
+        publishTwist(cfg_.back_speed, 0.0);
         back_time_ += dt;
         const double back_duration = cfg_.back_distance / std::fabs(cfg_.back_speed);
         if (back_time_ >= back_duration) {
@@ -112,10 +113,7 @@ bool BumperController::spinOnce() {
     // computed angular command.
     double w = 0.0;
     const double err = spinRotate(dt, &w);
-    geometry_msgs::msg::Twist rt;
-    rt.linear.x = 0.0;
-    rt.angular.z = w;
-    cmd_vel_pub_->publish(rt);
+    publishTwist(0.0, w);
     if (std::fabs(err) < 1e-3 && !rotate_active_) {
         rotate_counter_--;
         if (rotate_counter_ <= 0) {
@@ -162,9 +160,13 @@ void BumperController::enterBackingUp() {
 void BumperController::finishToIdle() {
     state_ = State::IDLE;
     stopRotate();
+    publishTwist(0.0, 0.0);
+}
+
+void BumperController::publishTwist(double linear, double angular) {
     geometry_msgs::msg::Twist t;
-    t.linear.x = 0.0;
-    t.angular.z = 0.0;
+    t.linear.x = linear;
+    t.angular.z = angular;
     cmd_vel_pub_->publish(t);
 }
 

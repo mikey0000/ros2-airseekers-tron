@@ -1,0 +1,16 @@
+<library path="mowgli_nav2_plugins">
+  <class
+    name="mowgli_nav2_plugins/PathProgressGoalChecker"
+    type="mowgli_nav2_plugins::PathProgressGoalChecker"
+    base_class_type="nav2_core::GoalChecker">
+    <description>
+      Coverage-aware goal checker. Fires only after the controller has
+      monotonically tracked at least `progress_threshold` (default 95
+      percent) of the FTC-republished plan's poses AND is within
+      xy/yaw tolerance of the goal pose. Prevents the SimpleGoalChecker
+      false-positive where a coverage path's final pose happens to lie
+      near the perimeter, completing the action during headland mowing
+      with under 2 percent coverage.
+    </description>
+  </class>
+</library>

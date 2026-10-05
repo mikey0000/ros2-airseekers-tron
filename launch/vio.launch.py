@@ -1,4 +1,9 @@
-"""Run the OpenVINS VIO replacement: stereo_vio_bridge producer + ov_msckf consumer."""
+"""Run the OpenVINS VIO replacement: stereo_vio_bridge producer + ov_msckf consumer.
+
+OpenVINS configs live in config/vio/ (estimator_config.yaml + kalibr_imu_chain.yaml +
+kalibr_imucam_chain.yaml). OpenVINS loads them from config_path (a file); its YamlParser
+resolves the kalibr_* siblings relative to that file's directory.
+"""
 import os
 
 from launch import LaunchDescription
@@ -22,8 +27,7 @@ def generate_launch_description():
             output="screen",
             parameters=[{
                 "config_path": os.path.join(
-                    stack_root, "..", "ros2_port_handoff", "14_vio_replacement",
-                    "open_vins", "estimator_config.yaml"),
+                    stack_root, "config", "vio", "estimator_config.yaml"),
             }],
         ),
     ])

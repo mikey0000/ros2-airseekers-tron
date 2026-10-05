@@ -1,0 +1,1359 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  main_tree.xml — Mowgli BehaviorTree.CPP v4 main tree
+
+  State constants (HighLevelStatus.msg):
+    HIGH_LEVEL_STATE_NULL           = 0
+    HIGH_LEVEL_STATE_IDLE           = 1
+    HIGH_LEVEL_STATE_AUTONOMOUS     = 2
+    HIGH_LEVEL_STATE_RECORDING      = 3
+    HIGH_LEVEL_STATE_MANUAL_MOWING  = 4
+
+  HighLevelControl commands (HighLevelControl.srv):
+    COMMAND_START      = 1
+    COMMAND_HOME       = 2
+    COMMAND_RECORD_AREA = 3   (area recording)
+    COMMAND_S2         = 4   (mow next area)
+    COMMAND_MANUAL_MOW = 7
+-->
+<root BTCPP_format="4" main_tree_to_execute="MowgliMain">
+
+  <BehaviorTree ID="MowgliMain">
+    <ReactiveSequence name="Root">
+
+      <!-- ================================================================
+           GUARD 1: Emergency (always checked, highest priority)
+           Polls every 1s. If the robot is placed back on the dock
+           (charging detected), automatically send an emergency release
+           to the firmware. The firmware is the safety authority and
+           will only clear the latch if the physical trigger (lift/stop
+           button) is no longer asserted.
+           ================================================================ -->
+      <Fallback name="EmergencyGuard">
+        <Inverter><IsEmergency/></Inverter>
+        <Sequence name="EmergencyHandler">
+          <SetMowerEnabled enabled="false"/>
+          <StopMoving/>
+          <PublishHighLevelStatus state="0" state_name="EMERGENCY"/>
+          <Fallback name="AutoResetOrWait">
+            <!-- If charging (on dock), auto-reset emergency -->
+            <Sequence name="DockAutoReset">
+              <IsCharging/>
+              <ResetEmergency/>
+              <WaitForDuration duration_sec="1.0"/>
+            </Sequence>
+            <!-- Not on dock — just wait and re-check -->
+            <WaitForDuration duration_sec="1.0"/>
+          </Fallback>
+          <!-- Terminate the handler with FAILURE so EmergencyGuard (this
+               Fallback) returns FAILURE WHILE emergency is still active, halting
+               the Root ReactiveSequence before MainLogic. Without it
+               AutoResetOrWait returns SUCCESS once its 1 s wait elapses, the
+               Fallback succeeds, and the Root advanced into MainLogic for one
+               tick per cycle — flapping status and even issuing a blade-ENABLE
+               command in the ManualMowing branch during an active emergency
+               (firmware ignores it, but it's a real status/command flap). The
+               stop + blade-off + EMERGENCY status above still run every tick
+               before this. -->
+          <AlwaysFailure/>
+        </Sequence>
+      </Fallback>
+
+      <!-- ================================================================
+           GUARD 1.5: Sensor safety (SAFETY_REVIEW_2026-07-23 A-C2 + A-H1)
+           Two faults, one response — halt mowing with the blade OFF:
+             * IsScanStale: the LiDAR / scan-filter chain died mid-mow.
+               collision_monitor's source_timeout zeroes cmd_vel but nothing
+               cut the blade or told the tree — the robot idled blade-on and
+               blind. Inert on no-LiDAR installs (no scan ever received).
+             * IsCollisionStopSustained (15 s): collision_monitor has held
+               STOP long past IsObstacleStuck's backoff window — the robot is
+               parked against something (possibly someone) with the blade
+               still spinning, because the monitor raises no firmware
+               emergency and FollowStrip::onHalted never ran.
+           Halting the Root here runs FollowStrip::onHalted (goal cancel +
+           blade off); when the fault clears the tree resumes and the next
+           dispatch re-enables the blade. Short-circuits (like BoundaryGuard)
+           while charging, docking, and in operator-driven modes (manual mow 7,
+           recording 3/5/6) — halting Root there breaks docking/recording, and
+           the operator is the safety in manual modes. Firmware remains the
+           sole hard e-stop authority (invariant 9); this guard is the
+           software-side blade-off that was missing.
+           The halt is a PAUSE, not a failure: MarkGuardHalt flags the
+           interrupted pass so GetNextUnmowedArea does not charge the
+           re-dispatch to the per-area no-progress budget. Field 2026-09-07/08:
+           a flaky LiDAR serial link tripped IsScanStale every few seconds and
+           three halts in 25 s exhausted the five attempts — the mow
+           "completed" with 0 swaths. A permanently dead scanner is still held
+           here, blade off, for as long as the fault lasts.
+           ================================================================ -->
+      <ReactiveFallback name="SensorSafetyGuard">
+        <IsCharging/>
+        <IsDocking/>
+        <IsCommand command="7"/>
+        <IsCommand command="3"/>
+        <IsCommand command="5"/>
+        <IsCommand command="6"/>
+        <Inverter>
+          <Fallback name="SensorFault">
+            <!-- 20 s (was 1.0 — field 2026-09-12): a 1–2 s LiDAR dropout every
+                 15–20 s halted the Root each time (replan + transit + spin-up)
+                 and the robot never mowed. Short dropouts are now handled
+                 INSIDE FollowStrip (scan_pause.hpp: blade OFF at 1.0 s, goal
+                 kept, blade back after 0.5 s of fresh scans; collision_monitor's
+                 source_timeout 1.5 s already holds the wheels). This Root halt
+                 is the second stage, for a scanner that is really gone. Must
+                 stay UNDER controller_server's movement_time_allowance (30 s)
+                 so a long outage ends in this clean cursor resume, not in FTC's
+                 "Failed to make progress" abort. -->
+            <IsScanStale max_age_sec="20.0"/>
+            <!-- 60 s (was 15 — field 2026-07-23): must exceed IsObstacleStuck's
+                 full backoff sequence (~45-50 s) or this guard preempts the
+                 recovery machinery. Freshness-gated (max_state_age_sec) so a
+                 halted tree can't deadlock on the stale STOP latch. -->
+            <IsCollisionStopSustained min_duration_sec="60.0" max_state_age_sec="3.0"/>
+          </Fallback>
+        </Inverter>
+        <Sequence name="SensorFaultHandler">
+          <!-- FIRST child on purpose: the Root is already halted the tick
+               this handler starts, but the ReactiveFallback halts this
+               Sequence the moment the fault clears — a sub-1.5 s blip would
+               never get past StopMoving (0.5 s) + WaitForDuration (1 s) to a
+               marker placed at the end, and the pass would be charged after
+               all. Pure context write, no motion; idempotent across re-ticks. -->
+          <MarkGuardHalt reason="scan_stale"/>
+          <SetMowerEnabled enabled="false"/>
+          <StopMoving/>
+          <WaitForDuration duration_sec="1.0"/>
+          <AlwaysFailure/>
+        </Sequence>
+      </ReactiveFallback>
+
+      <!-- ================================================================
+           GUARD 2: Two-tier boundary violation
+             * Lethal violation (outside area by more than
+               lethal_boundary_margin_m, default 0.5m in map_server_node):
+               blade + motors operating this far outside the authorised
+               zone can cause real damage — emergency stop, wait for
+               operator. No automatic recovery.
+             * Soft violation (outside area but within the margin):
+               attempt to navigate back to the known-inside dock pose.
+               If Nav2 can route us back, normal mowing resumes. If it
+               can't inside two attempts, escalate to the lethal path.
+           The old behaviour was "BackUp 1m up to 5 times", which pushed
+           the robot FURTHER along whatever direction it just crossed
+           into — today's run ended with the robot ~50 cm past the
+           east edge of the polygon, and each recovery BackUp drove it
+           another 30 cm in the same wrong direction.
+           ================================================================ -->
+      <!-- ReactiveFallback re-evaluates from child 0 every tick, so
+           IsCharging becoming true mid-wait (e.g. operator redocks the
+           robot) aborts the in-progress lethal WaitForDuration and
+           releases the guard. A plain Fallback would stick on the
+           RUNNING child and never re-check charging. -->
+      <ReactiveFallback name="BoundaryGuard">
+        <!-- Short-circuit while charging: the robot is physically on the
+             dock and cannot drive off, the blade is off, and non-RTK GPS
+             drift on idle can falsely put the reported pose outside the
+             polygon. No reason to run any boundary handler in that state. -->
+        <IsCharging/>
+        <!-- Short-circuit during manual mowing (COMMAND_MANUAL_MOW = 7),
+             the WHOLE area-recording lifecycle (COMMAND_RECORD_AREA = 3,
+             COMMAND_RECORD_FINISH = 5, COMMAND_RECORD_CANCEL = 6), and going
+             home (COMMAND_HOME = 2). In all these modes the robot is expected
+             to lie outside the mowing polygon (joystick area for manual/record,
+             dock for home), so a boundary handler would fire spuriously and
+             cancel DockRobot mid-approach, which is what was breaking
+             auto-redock. The blade is still governed by firmware safety, and
+             collision_monitor still stops for physical obstacles.
+
+             5 and 6 MUST be whitelisted alongside 3: recording drives a new
+             perimeter OUTSIDE the existing mowing polygon, so IsBoundaryViolation
+             is true by the time the user finishes/cancels. Without 5/6 here, the
+             instant the command flips from 3, this ReactiveFallback stops
+             short-circuiting, engages SoftBoundaryHandler, and halts the Root
+             ReactiveSequence before MainLogic -> RecordingSequence is reached —
+             halting RecordArea (onHalted clears trajectory_) so the finish/cancel
+             is never processed and the recorded area is silently lost. Matches
+             the RecordingCommandGuard below, which already accepts 3/5/6. -->
+        <IsCommand command="7"/>
+        <IsCommand command="3"/>
+        <IsCommand command="5"/>
+        <IsCommand command="6"/>
+        <IsCommand command="2"/>
+        <!-- Short-circuit the BLADE-OFF dock transit at the END of a mowing
+             run (COMMAND_START = 1). When mowing completes (or a rain /
+             low-battery dock fires mid-run) the tree runs DockRobot while
+             current_command is STILL 1 — ClearCommand only fires after the
+             robot is docked. The dock sits at/outside the perimeter, so the
+             dock APPROACH asserts /boundary_violation; without this exemption
+             the ReactiveFallback stops short-circuiting, engages
+             SoftBoundaryHandler, and halts the Root ReactiveSequence before
+             MainLogic — which cancels the in-flight DockRobot (onHalted) and
+             strands the robot short of the dock. This is the command-1 analogue
+             of the command-2 (HOME) whitelist above.
+
+             SAFETY: this is provably limited to the blade-OFF transit. IsDocking
+             is true ONLY while a DockRobot action is running (its onStart→
+             onHalted lifecycle owns ctx->docking_active); every DockRobot is
+             entered only after SetMowerEnabled(false) and can NEVER overlap the
+             blade-on FollowStrip subtree. So blade-ON mowing keeps FULL boundary
+             protection (IsDocking is false there → this child fails → the guard
+             falls through to Soft/LethalBoundaryHandler as before). -->
+        <Sequence name="DockTransitExempt">
+          <IsCommand command="1"/>
+          <IsDocking/>
+        </Sequence>
+        <Inverter><IsBoundaryViolation/></Inverter>
+
+        <!-- Lethal path: stop immediately, latch -->
+        <Sequence name="LethalBoundaryHandler">
+          <IsLethalBoundaryViolation/>
+          <SetMowerEnabled enabled="false"/>
+          <StopMoving/>
+          <PublishHighLevelStatus state="0" state_name="BOUNDARY_EMERGENCY_STOP"/>
+          <!-- Hold here forever — operator intervention required. A long
+               wait prevents the tree from re-ticking and potentially
+               re-issuing goals; the emergency status is visible in the
+               GUI so the user knows to recover manually. -->
+          <WaitForDuration duration_sec="3600.0"/>
+          <!-- Belt-and-braces: the 3600 s wait above returns RUNNING so the
+               guard already blocks, but do not LEAN on that. If the wait
+               ever elapses (or is shortened) a bare Sequence would return
+               SUCCESS and let the Root advance into MainLogic while the
+               lethal latch is still asserted. -->
+          <AlwaysFailure/>
+        </Sequence>
+
+        <!-- Soft path: stop, then route back to a known-inside pose -->
+        <Sequence name="SoftBoundaryHandler">
+          <SetMowerEnabled enabled="false"/>
+          <StopMoving/>
+          <PublishHighLevelStatus state="2" state_name="BOUNDARY_RECOVERY"/>
+          <Fallback name="RecoverOrEscalate">
+            <!-- Navigate back to the nearest in-area pose. map_server_node's
+                 /get_recovery_point picks the closest polygon edge, offsets
+                 ~0.8m inward, and faces the robot toward the area. This
+                 stays at the mowing location instead of driving all the
+                 way home, and avoids the RPP-plans-a-reverse-leg behaviour
+                 of DockRobot-based recovery. Two tries before escalating. -->
+            <RetryUntilSuccessful num_attempts="2" name="RecoveryRetry">
+              <Sequence name="NavigateBackInside">
+                <NavigateInsideBoundary/>
+                <!-- Succeed only if Nav2 actually put us back inside a
+                     defined area. -->
+                <Inverter><IsBoundaryViolation/></Inverter>
+              </Sequence>
+            </RetryUntilSuccessful>
+            <!-- Recovery failed — treat as lethal going forward. -->
+            <Sequence name="EscalateToEmergency">
+              <SetMowerEnabled enabled="false"/>
+              <StopMoving/>
+              <PublishHighLevelStatus state="0" state_name="BOUNDARY_EMERGENCY_STOP"/>
+              <WaitForDuration duration_sec="3600.0"/>
+            </Sequence>
+          </Fallback>
+          <!-- Terminate with FAILURE so the Root ReactiveSequence is halted
+               for THIS tick rather than falling straight into MainLogic the
+               instant RecoverOrEscalate succeeds. Costs exactly one tick:
+               the recovery cleared /boundary_violation, so on the next tick
+               the Inverter<IsBoundaryViolation> child short-circuits the
+               guard and the tree proceeds normally. Without it a successful
+               NavigateBackInside returns SUCCESS up through this Sequence
+               and re-enters MowingSequence from its FIRST node in the same
+               tick — the boundary-recovery analogue of the LocalizationGuard
+               restart documented above. -->
+          <AlwaysFailure/>
+        </Sequence>
+      </ReactiveFallback>
+
+      <!-- ================================================================
+           GUARD 2b: Localization quality (reactive)
+           Pauses autonomous motion while the fused σ_xy is too high to
+           trust (hysteresis latched in behavior_tree_node's odometry
+           callback: pause above loc_sigma_pause_m, resume below
+           loc_sigma_resume_m). Field incident 2026-08-02: RTK fell back
+           to plain GPS (σ ≈ 1.5 m) for >60 s and FTC kept steering on the
+           drifting estimate until the robot physically left the area and
+           BoundaryGuard tripped. Exemptions mirror BoundaryGuard: on the
+           charger the pose is gauge-pinned; manual/recording modes are
+           operator-supervised; HOME + the blade-off dock transit must not
+           be stranded mid-return by a GPS outage (docking itself is
+           charger-detection based).
+           Like SensorSafetyGuard, this pause must never FAIL the mow:
+           MarkGuardHalt flags the interrupted pass so GetNextUnmowedArea
+           re-dispatches the area without charging its no-progress budget
+           (field 2026-09-07/08 — repeated "Localization degraded … pausing"
+           halts retired the area at 0 swaths).
+           ================================================================ -->
+      <ReactiveFallback name="LocalizationGuard">
+        <IsCharging/>
+        <IsCommand command="7"/>
+        <IsCommand command="3"/>
+        <IsCommand command="5"/>
+        <IsCommand command="6"/>
+        <IsCommand command="2"/>
+        <Sequence name="LocDockTransitExempt">
+          <IsCommand command="1"/>
+          <IsDocking/>
+        </Sequence>
+        <Inverter><IsLocalizationDegraded/></Inverter>
+
+        <!-- Hold in place until σ recovers: blade off, wheels stopped.
+             The ReactiveFallback re-evaluates IsLocalizationDegraded every
+             tick, so the guard releases within one tick of the hysteresis
+             clearing and the resume-cursor machinery continues the strip. -->
+        <Sequence name="LocalizationDegradedHandler">
+          <!-- FIRST child, same reasoning as SensorFaultHandler: the
+               ReactiveFallback halts this Sequence as soon as σ recovers, so
+               a marker after the 2 s WaitForDuration would miss every short
+               pause. Pure context write, no motion; idempotent. -->
+          <MarkGuardHalt reason="localization_degraded"/>
+          <SetMowerEnabled enabled="false"/>
+          <StopMoving/>
+          <PublishHighLevelStatus state="2" state_name="WAITING_FOR_RTK"/>
+          <WaitForDuration duration_sec="2.0"/>
+          <!-- Terminate with FAILURE so LocalizationGuard returns FAILURE
+               WHILE localization is still degraded, halting the Root
+               ReactiveSequence before MainLogic — same contract as
+               EmergencyGuard / SensorSafetyGuard / RainGuard / BatteryGuard.
+               Without it the 2 s WaitForDuration returns SUCCESS, the
+               ReactiveFallback succeeds, and the Root advances into
+               MainLogic -> MowingSequence for one tick per cycle. That
+               restarts MowingSequence from its FIRST node every 2 s:
+               observed in the field 2026-08-18 as PREFLIGHT_CHECK +
+               UNDOCKING status flapping (249.788 WAITING_FOR_RTK + 2.0 s
+               -> 251.887 PREFLIGHT_CHECK), and since each restart is
+               halted ~1 s later at the UndockOrSkip wait, the tree can
+               NEVER reach the coverage branch while sigma flaps — a
+               livelock, not just a status flap. On recovery the run then
+               re-entered from the top instead of resuming the strip
+               (issues #459, #445). The stop + blade-off + status above
+               still run every tick before this. -->
+          <AlwaysFailure/>
+        </Sequence>
+      </ReactiveFallback>
+
+      <!-- ================================================================
+           GUARD 2c: Repeat-dig obstruction (reactive)
+           The hardware bridge latches /hardware_bridge/dig_escalated after
+           dig_escalate_count dig latches inside dig_escalate_radius_m within
+           dig_escalate_window_s. That is NOT a dig to route around, it is an
+           obstruction the robot cannot resolve on its own.
+
+           Field capture 2026-09-04 (issue #500): the robot wedged against a
+           physical object and latched SEVENTEEN times — five of them in 23 s
+           inside a 6 cm square around (-5.39, 11.85) — then kept latching for
+           5.5 more minutes while the chassis crawled 20 cm, with the blade
+           RPM collapsing to 0 and recovering repeatedly. The bridge's
+           per-event response is correct and unchanged (hard stop on the wire
+           + bounded reverse), and map_server's 0.60 m pending keepout is
+           correct too, but neither can break the loop: the robot is not
+           re-entering a mapped cell, the next planned manoeuvre simply aims
+           it back at the same physical object.
+
+           So the mission has to stop, which is THIS layer's job — the bridge
+           only ever reduces motion and deliberately commands nothing extra.
+           Exemptions mirror BoundaryGuard: on the charger the latch is
+           already cleared; command 0 has no mission to stop; HOME (2) and the
+           manual/recording modes (3/5/6/7) are how the operator recovers the
+           robot and must never be blocked by this guard.
+           ================================================================ -->
+      <ReactiveFallback name="DigObstructionGuard">
+        <IsCharging/>
+        <IsCommand command="0"/>
+        <IsCommand command="2"/>
+        <IsCommand command="3"/>
+        <IsCommand command="5"/>
+        <IsCommand command="6"/>
+        <IsCommand command="7"/>
+        <Inverter><IsDigEscalated/></Inverter>
+
+        <!-- Blade off, wheels stopped, operator-visible reason. state="1"
+             (IDLE) is deliberate: the firmware turns it into a wheel + blade
+             hard stop for as long as the hold lasts. The bridge clears the
+             latch when the robot reaches the charger OR once the fused pose
+             is 2x dig_escalate_radius_m away from the escalation point, so
+             the robot holds here until the operator recalls it (COMMAND_HOME,
+             which first drops the dig keepouts under the robot — see
+             HomeSequence) or lifts it clear and presses Play — it cannot
+             quietly resume into the same object. -->
+        <Sequence name="DigObstructionHandler">
+          <SetMowerEnabled enabled="false"/>
+          <StopMoving/>
+          <PublishHighLevelStatus state="1" state_name="DIG_OBSTRUCTION"/>
+          <WaitForDuration duration_sec="5.0"/>
+          <!-- Terminate with FAILURE so the Root ReactiveSequence is halted
+               before MainLogic while the latch holds — same contract as
+               EmergencyGuard / BoundaryGuard / LocalizationGuard. Without it
+               the wait returns SUCCESS and the tree re-enters MowingSequence
+               from its first node every 5 s, which is precisely the
+               reverse-and-retry loop this guard exists to end. -->
+          <AlwaysFailure/>
+        </Sequence>
+      </ReactiveFallback>
+
+      <!-- ================================================================
+           GUARD 3: GPS quality adaptation (reactive)
+           ================================================================ -->
+      <Fallback name="GPSModeSelector">
+        <Sequence name="PreciseMode">
+          <IsGPSFixed/>
+          <SetNavMode mode="precise"/>
+        </Sequence>
+        <SetNavMode mode="degraded"/>
+      </Fallback>
+
+      <!-- ================================================================
+           GUARD 4: Nav2 resume (reactive, idempotent)
+           If idle_nav2_suspend is enabled, the Nav2 lifecycle stack is
+           PAUSEd by IdleSequence while parked on the dock to save the
+           Pi's idle thermal budget (the costmaps otherwise loop flat-out
+           even docked). This guard RESUMEs it before any motion branch
+           runs: it does NOTHING while idle-on-dock (charging AND no
+           command pending) so it never fights IdleSequence's PAUSE, and
+           otherwise ensures the stack is active again. SetNav2Lifecycle
+           only issues a manage_nodes call on a real transition (it tracks
+           the suspend state on the shared context), and is a pure no-op
+           when idle_nav2_suspend is disabled — so this guard is free in
+           the default configuration. The downstream Nav2ReadyPoll in
+           MowingSequence still blocks motion until lifecycle_manager
+           reports active, guaranteeing collision_monitor is back up
+           before the robot drives. Always returns SUCCESS so the root
+           ReactiveSequence proceeds to MainLogic. -->
+      <Fallback name="Nav2ResumeGuard">
+        <Sequence name="StayIdleSuspended">
+          <IsCharging/>
+          <IsCommand command="0"/>
+        </Sequence>
+        <SetNav2Lifecycle command="RESUME"/>
+      </Fallback>
+
+      <!-- ================================================================
+           MAIN LOGIC
+           Priority: critical battery → mow → home → record → idle
+           ================================================================ -->
+      <Fallback name="MainLogic">
+
+        <!-- ============================================================
+             a. Critical battery — emergency dock, charge, recover.
+             Navigation failure is non-fatal (stay where we are).
+
+             Entry is at battery_critical_pct (default 10 %). The robot docks
+             and HOLDS on the charger until the pack reaches battery_full_pct
+             (default 95 %, the SAME resume level as the BatteryGuard loop
+             below) — NOT the old 30 % recovery threshold — giving a wide
+             HYSTERESIS band (enter 10 %, resume 95 %) so it never flaps at
+             the entry boundary and never resumes mowing on a near-empty pack.
+
+             AUTO-CONTINUE (fixes "stuck after critical charge"): once charged
+             we undock (BackUp) and fall through WITHOUT EndSession /
+             ClearCommand, so current_command stays 1 and MowingSequence
+             resumes coverage from the saved cursor on the very next tick —
+             mirroring BatteryGuard's resume tail. A critical-battery event
+             therefore PAUSES-AND-CONTINUES the run instead of ending it.
+             IsChargingProgressing still guards against a dead charger so we
+             don't wait forever on a broken dock; only a DEAD CHARGER ends the
+             session (CriticalChargerFailed → EndSession) and aborts the branch
+             with FAILURE so the undock/resume tail is skipped.
+             ============================================================ -->
+        <Sequence name="CriticalBatteryDock">
+          <IsBatteryLow threshold="{battery_critical_pct}" voltage_threshold="{battery_critical_voltage}"/>
+          <SetMowerEnabled enabled="false"/>
+          <StopMoving/>
+          <PublishHighLevelStatus state="2" state_name="CRITICAL_BATTERY_DOCKING"/>
+          <SaveObstacles/>
+          <ClearCostmap/>
+          <Fallback name="CriticalNavOrStop">
+            <DockRobot dock_id="home_dock" dock_type="simple_charging_dock"/>
+            <!-- Docking failed — stay stopped, battery is critical -->
+            <Sequence>
+              <PublishHighLevelStatus state="0" state_name="CRITICAL_BATTERY_NAV_FAILED"/>
+              <AlwaysSuccess/>
+            </Sequence>
+          </Fallback>
+          <!-- Hold on the charger until the pack charges to the resume level
+               (battery_full_pct, 95 %). Each 5 s wait re-ticks the loop so a
+               fresh battery sample is sampled; IsBatteryAbove exits the loop
+               the moment we clear battery_full_pct. A stalled charger trips
+               IsChargingProgressing → CriticalChargerFailed, which ends the
+               session and aborts the branch so we don't sit here forever.
+
+               MANUAL RESUME: the operator can press Play (COMMAND_START)
+               during this hold to resume the mow before the pack is full.
+               The handler flags it and IsManualResumeRequested consumes it —
+               but it is honoured ONLY above battery_manual_resume_pct
+               (battery_manual_resume_percent, default 30 %); below the floor
+               the request is refused (WARN) and the hold continues, so a
+               critical pack can never be forced back onto the lawn. The
+               5 s tick keeps a Play press from waiting up to a full 30 s.
+
+               BOUND: 5760 attempts x 5.0 s = 8 h (unchanged from the former
+               960 x 30 s). -->
+          <PublishHighLevelStatus state="1" state_name="CRITICAL_BATTERY_CHARGING"/>
+          <Fallback name="CriticalChargeOrAbort">
+            <RetryUntilSuccessful num_attempts="5760">
+              <Sequence>
+                <IsChargingProgressing/>
+                <Fallback>
+                  <IsBatteryAbove threshold="{battery_full_pct}"/>
+                  <IsManualResumeRequested min_battery_pct="{battery_manual_resume_pct}"/>
+                  <Sequence>
+                    <WaitForDuration duration_sec="5.0"/>
+                    <AlwaysFailure/>
+                  </Sequence>
+                </Fallback>
+              </Sequence>
+            </RetryUntilSuccessful>
+            <!-- Charger looks dead — END the session (never resume mowing on a
+                 critical pack) and terminate this branch with FAILURE so the
+                 undock/resume tail below is skipped and the robot stays docked
+                 in a settled state instead of a frozen one. -->
+            <Sequence name="CriticalChargerFailed">
+              <PublishHighLevelStatus state="1" state_name="CHARGER_FAILED"/>
+              <EndSession/>
+              <ClearCommand/>
+              <AlwaysFailure/>
+            </Sequence>
+          </Fallback>
+          <!-- Recovered to the resume level — AUTO-CONTINUE. Undock (BackUp,
+               not opennav UndockRobot: isDocked() is fragile with RTK drift at
+               the dock) and fall through WITHOUT EndSession/ClearCommand, so
+               current_command stays 1 and MowingSequence resumes coverage from
+               the saved cursor on the next tick. Mirrors BatteryGuard's tail. -->
+          <IsResumeUndockAllowed max_attempts="3"/>
+          <PublishHighLevelStatus state="2" state_name="RESUMING_UNDOCKING"/>
+          <BackUp backup_dist="{undock_distance}" backup_speed="{undock_speed}"/>
+          <PublishHighLevelStatus state="2" state_name="MOWING"/>
+        </Sequence>
+
+        <!-- ============================================================
+             b. Mowing (COMMAND_START = 1)
+             ============================================================ -->
+        <Sequence name="MowingSequence">
+          <IsCommand command="1"/>
+
+          <!-- Wait for Nav2 to be fully active. Polled check: finishes in
+               ~50 ms once the four lifecycle_manager_navigation nodes
+               (bt_navigator / controller / planner / behavior) are all
+               active; retries once per second for up to 60 s on ARM cold
+               boot. Previously this was a hardcoded 30 s sleep inside the
+               on-dock path only — which (a) wasted time when Nav2 was
+               already ready, and (b) let the off-dock path issue goals
+               into a half-up Nav2 stack, observed as bt_navigator stuck
+               inactive → instant NavigateToPose rejections → skip-cascade
+               drives the robot right out of the mowing area. -->
+          <PublishHighLevelStatus state="2" state_name="PREFLIGHT_CHECK"/>
+          <Fallback name="Nav2ReadyOrProceed">
+            <RetryUntilSuccessful num_attempts="60" name="Nav2ReadyPoll">
+              <Fallback>
+                <Nav2Active timeout_sec="0.5"/>
+                <Sequence>
+                  <WaitForDuration duration_sec="1.0"/>
+                  <AlwaysFailure/>
+                </Sequence>
+              </Fallback>
+            </RetryUntilSuccessful>
+            <!-- Timeout: proceed anyway with a warning. BoundaryGuard and
+                 the emergency latch still apply; we'd rather let the run
+                 fail fast at the first goal than freeze before starting. -->
+            <AlwaysSuccess/>
+          </Fallback>
+
+          <!-- Undock: only if currently charging (on dock).
+               If already undocked, skip entirely. -->
+          <PublishHighLevelStatus state="2" state_name="UNDOCKING"/>
+          <WaitForDuration duration_sec="1.0"/>
+          <Fallback name="UndockOrSkip">
+            <!-- Not on dock: the dock_yaw injection (hardware_bridge →
+                 /gnss/heading → dock_yaw_to_set_pose.py) never fired, so
+                 the global EKF has a random initial yaw. Drive forward 1 m
+                 and derive yaw from the GPS track direction. Guarded by
+                 yaw_seeded_this_session so a ReactiveSequence halt/resume
+                 cycle does not re-trigger the forward drive mid-session. -->
+            <Sequence name="NotDockedBranch">
+              <Inverter><IsCharging/></Inverter>
+              <PublishHighLevelStatus state="2" state_name="CALIBRATING_HEADING"/>
+              <SeedYawFromMotion distance_m="1.0" speed_ms="0.2" timeout_sec="30.0"/>
+              <!-- Drop stale obstacle marks projected during the pre-seed
+                   forward drive: while the EKF yaw was random the scans
+                   went into the costmap at the wrong orientation, and
+                   obstacle_layer has observation_persistence=0 but only
+                   clears via raytracing as the robot moves past. Clearing
+                   now guarantees Nav2 sees a fresh view once the seed has
+                   landed. -->
+              <ClearCostmap/>
+            </Sequence>
+            <!-- On dock — wait for GPS, save map, then undock. IsCharging
+                 gate ensures we only run the docked-undock path when the
+                 robot is physically on the dock. Previously this branch
+                 could fire as a fallback when NotDockedBranch failed,
+                 which was dangerous — 1 m BackUp from a mid-polygon
+                 pose frequently pushed us outside the boundary. -->
+            <Sequence name="UndockSequence">
+              <IsCharging/>
+              <!-- Pre-undock preflight gate: battery OK, TF chain healthy,
+                   mowing/coverage services up, and GPS at least RTK-corrected
+                   (min_gps_fix_type=2). It deliberately does NOT require RTK
+                   Fixed here: the dock cradle's partial sky obstruction / metal
+                   canopy commonly pins the F9P at RTK Float while parked, and
+                   Float collapses to fix_type=2 through the Universal GNSS flag
+                   pipeline (navsat_fix_adapter maps only true Fixed→GBAS_FIX;
+                   Float/DGPS→STATUS_FIX). Requiring Fixed here was a chicken-
+                   and-egg: the robot must undock into the open to ACQUIRE Fixed,
+                   but the gate blocked the undock. RTK Fixed is instead enforced
+                   AFTER undock by WaitForGpsFix(min_fix_type=4) below — "wait
+                   Fixed once undocked, not before". 120×1s retries then the
+                   sequence fails and falls through to UndockFailed. -->
+              <PublishHighLevelStatus state="2" state_name="PREFLIGHT_CHECK"/>
+              <RetryUntilSuccessful num_attempts="120">
+                <Fallback>
+                  <PreFlightCheck min_battery="20.0" min_gps_fix_type="2" tf_timeout_sec="0.5"/>
+                  <Sequence>
+                    <WaitForDuration duration_sec="1.0"/>
+                    <AlwaysFailure/>
+                  </Sequence>
+                </Fallback>
+              </RetryUntilSuccessful>
+              <PublishHighLevelStatus state="2" state_name="UNDOCKING"/>
+              <RecordUndockStart/>
+              <ClearCostmap/>
+              <!-- BackUp via Nav2 behavior_server instead of
+                   opennav_docking's UndockRobot: opennav's isDocked() uses
+                   a geometric distance to the dock pose that is fragile
+                   when RTK drifts briefly near the metal canopy. BackUp is
+                   deterministic — reverse at the given speed for the
+                   given distance. undock_distance must be > 0.5 m so
+                   CalibrateHeadingFromUndock has enough GPS displacement
+                   to resolve the initial heading accurately. -->
+              <BackUp backup_dist="{undock_distance}" backup_speed="{undock_speed}"/>
+              <!-- Wait for RTK Fixed after undock. The dock often has a
+                   metal canopy that attenuates GPS; once the robot is 2 m
+                   out the F9P should re-acquire quickly. Timeout proceeds
+                   anyway at degraded precision rather than freeze. -->
+              <WaitForGpsFix timeout_sec="20.0" min_fix_type="4"/>
+              <!-- Refine the EKF yaw from GPS-verified backward motion:
+                   heading = atan2(-dy, -dx). Sync, no extra motion.
+                   Fails UndockSequence if GPS barely moved (robot stuck on
+                   dock) so the BT retries the whole undock. -->
+              <PublishHighLevelStatus state="2" state_name="CALIBRATING_HEADING"/>
+              <CalibrateHeadingFromUndock min_displacement_m="0.5"/>
+              <!-- Clear costmaps again after undock — dock structure must be
+                   cleared before navigation starts. -->
+              <ClearCostmap/>
+            </Sequence>
+            <!-- Undock failed — abort -->
+            <Sequence name="UndockFailed">
+              <StopMoving/>
+              <PublishHighLevelStatus state="1" state_name="UNDOCK_FAILED"/>
+              <ClearCommand/>
+              <AlwaysFailure/>
+            </Sequence>
+          </Fallback>
+
+          <!-- Record if it was raining at start — user chose to mow in rain -->
+          <WasRainingAtStart/>
+
+          <!-- Wait for obstacle detection before starting -->
+          <WaitForDuration duration_sec="3.0"/>
+
+          <!-- ════════════════════════════════════════════════════════
+               CELL-BASED STRIP COVERAGE
+               Each iteration: get next strip → transit → mow strip.
+               No full-path pre-planning. Obstacles handled dynamically
+               by Nav2 costmap. Progress tracked in mow_progress grid.
+               ════════════════════════════════════════════════════════ -->
+          <PublishHighLevelStatus state="2" state_name="MOWING"/>
+
+          <ReactiveSequence name="MowingCommandGuard">
+          <IsCommand command="1"/>
+
+          <Fallback name="StripCoverageWithRecovery">
+
+            <ReactiveSequence name="StripGuards">
+
+              <!-- Reactive rain check.
+                   IsNewRain returns FAILURE outright when rain_mode == 0
+                   (operator disabled rain handling); it also debounces by
+                   rain_debounce_sec before tripping. The dock round trip
+                   only runs in rain_mode >= 2 ("dock-and-pause"); mode 1
+                   ("pause-in-place") stops the blade and waits the rain
+                   out where the robot stands. -->
+              <Fallback name="RainGuard">
+                <Inverter><IsNewRain/></Inverter>
+                <Sequence name="RainHandle">
+                  <SetMowerEnabled enabled="false"/>
+                  <StopMoving/>
+                  <Fallback name="RainDockBranch">
+                    <Inverter><IsRainModeAtLeast mode="2"/></Inverter>
+                    <Sequence name="RainDockSequence">
+                      <PublishHighLevelStatus state="2" state_name="RAIN_DETECTED_DOCKING"/>
+                      <ClearCostmap/>
+                      <Fallback name="RainNavOrStay">
+                        <DockRobot dock_id="home_dock" dock_type="simple_charging_dock"/>
+                        <AlwaysSuccess/>
+                      </Fallback>
+                    </Sequence>
+                  </Fallback>
+                  <PublishHighLevelStatus state="1" state_name="RAIN_WAITING"/>
+                  <Fallback name="RainWaitOrTimeout">
+                    <RetryUntilSuccessful num_attempts="1440">
+                      <Fallback>
+                        <Inverter><IsRainDetected/></Inverter>
+                        <Sequence>
+                          <WaitForDuration duration_sec="30.0"/>
+                          <AlwaysFailure/>
+                        </Sequence>
+                      </Fallback>
+                    </RetryUntilSuccessful>
+                    <Sequence name="RainTimeout">
+                      <PublishHighLevelStatus state="1" state_name="RAIN_TIMEOUT"/>
+                      <ClearCommand/>
+                      <AlwaysFailure/>
+                    </Sequence>
+                  </Fallback>
+                  <!-- Resume: only undock if we actually docked above
+                       (rain_mode >= 2). Otherwise we stayed in place and
+                       can resume directly. -->
+                  <Fallback name="RainResume">
+                    <Inverter><IsRainModeAtLeast mode="2"/></Inverter>
+                    <Sequence name="RainResumeFromDock">
+                      <IsResumeUndockAllowed max_attempts="3"/>
+                      <PublishHighLevelStatus state="2" state_name="RESUMING_AFTER_RAIN"/>
+                      <WaitForDuration duration_sec="1.0"/>
+                      <Fallback name="RainResumeUndock">
+                        <!-- BackUp instead of UndockRobot: opennav_docking isDocked()
+                       uses geometric distance to dock pose which fails with
+                       RTK drift near the dock canopy. BackUp reliably reverses
+                       off the dock via Nav2 behavior_server. -->
+                        <BackUp backup_dist="{undock_distance}" backup_speed="{undock_speed}"/>
+                        <Sequence>
+                          <RecordResumeUndockFailure/>
+                          <ClearCommand/>
+                          <AlwaysFailure/>
+                        </Sequence>
+                      </Fallback>
+                    </Sequence>
+                  </Fallback>
+                  <PublishHighLevelStatus state="2" state_name="MOWING"/>
+                </Sequence>
+              </Fallback>
+
+              <!-- Reactive battery check -->
+              <Fallback name="BatteryGuard">
+                <Inverter><NeedsDocking threshold="{battery_low_pct}"/></Inverter>
+                <Sequence name="BatteryDockAndResume">
+                  <SetMowerEnabled enabled="false"/>
+                  <StopMoving/>
+                  <PublishHighLevelStatus state="2" state_name="LOW_BATTERY_DOCKING"/>
+                  <ClearCostmap/>
+                  <DockRobot dock_id="home_dock" dock_type="simple_charging_dock"/>
+                  <PublishHighLevelStatus state="1" state_name="CHARGING"/>
+                  <!-- Charge hold until battery_full_pct. MANUAL RESUME: a Play
+                       press (COMMAND_START) during this hold is flagged by the
+                       handler and consumed by IsManualResumeRequested, which
+                       honours it only above battery_manual_resume_pct
+                       (battery_manual_resume_percent, default 30 %) — below the
+                       floor it is refused (WARN) and the hold continues. The
+                       5 s tick keeps a Play press from waiting up to 30 s.
+
+                       BOUND: 5760 attempts x 5.0 s = 8 h (unchanged from the
+                       former 960 x 30 s). -->
+                  <Fallback name="ChargeOrAbort">
+                    <RetryUntilSuccessful num_attempts="5760">
+                      <Sequence>
+                        <IsChargingProgressing/>
+                        <Fallback>
+                          <IsBatteryAbove threshold="{battery_full_pct}"/>
+                          <IsManualResumeRequested min_battery_pct="{battery_manual_resume_pct}"/>
+                          <Sequence>
+                            <WaitForDuration duration_sec="5.0"/>
+                            <AlwaysFailure/>
+                          </Sequence>
+                        </Fallback>
+                      </Sequence>
+                    </RetryUntilSuccessful>
+                    <Sequence name="ChargerFailed">
+                      <PublishHighLevelStatus state="1" state_name="CHARGER_FAILED"/>
+                      <ClearCommand/>
+                      <AlwaysFailure/>
+                    </Sequence>
+                  </Fallback>
+                  <IsResumeUndockAllowed max_attempts="3"/>
+                  <PublishHighLevelStatus state="2" state_name="RESUMING_UNDOCKING"/>
+                  <WaitForDuration duration_sec="1.0"/>
+                  <Fallback name="ResumeUndockOrAbort">
+                    <!-- BackUp instead of UndockRobot: opennav_docking isDocked()
+                   uses geometric distance to dock pose which fails with
+                   RTK drift near the dock canopy. BackUp reliably reverses
+                   off the dock via Nav2 behavior_server. -->
+              <BackUp backup_dist="{undock_distance}" backup_speed="{undock_speed}"/>
+                    <Sequence>
+                      <RecordResumeUndockFailure/>
+                      <ClearCommand/>
+                      <AlwaysFailure/>
+                    </Sequence>
+                  </Fallback>
+                  <PublishHighLevelStatus state="2" state_name="MOWING"/>
+                </Sequence>
+              </Fallback>
+
+              <!-- Manual charge guard: the operator has physically put the
+                   mower back on the dock mid-mow, OUTSIDE a cycle driven by
+                   RainGuard or BatteryGuard (battery not low, no rain). Without
+                   this guard the coverage loop keeps running and republishing
+                   MOWING at a robot that cannot go anywhere, until the pack
+                   finally sags to battery_low_pct and BatteryGuard's
+                   auto-continue undocks it - an undock nobody asked for. So:
+                   blade off, stop, publish CHARGING, and hold until the
+                   operator physically lifts the mower off again.
+
+                   ENTRY IS DEBOUNCED (stable_for_sec="3.0"), and it matters
+                   what the <Inverter> makes of a debounced condition:
+
+                     not charging        IsCharging FAILURE -> Inverter SUCCESS
+                                         -> Fallback SUCCESS on the first child.
+                                         The guard costs one condition tick and
+                                         mowing continues. This is the case
+                                         99.9 % of the time.
+                     charging < 3.0 s    IsCharging still FAILURE (the window
+                                         has not elapsed) -> Inverter SUCCESS
+                                         -> mowing continues. This is how a
+                                         transient is ridden out.
+                     charging >= 3.0 s   IsCharging SUCCESS -> Inverter FAILURE
+                                         -> the handler below engages.
+
+                   i.e. the inverted debounced condition reads "not (charging,
+                   settled)", which is exactly the pass-through predicate we
+                   want, and it errs in the direction that keeps mowing rather
+                   than the direction that stops it.
+
+                   The debounce exists because the firmware charger bit is not
+                   clean: it stays high ~100 ms into a BackUp undock (CLAUDE.md
+                   invariant 11) and it can bounce when the mower brushes the
+                   dock contacts while mowing a swath that passes close to the
+                   station. Every other <IsCharging/> in this tree treats a
+                   transient as harmless; here a single flickered sample would
+                   cost a real blade stop and a CHARGING/MOWING status round
+                   trip mid-mow. StripGuards is a ReactiveSequence, so this node
+                   is re-ticked every tick and the window genuinely accumulates.
+                   stable_for_sec defaults to 0.0 (raw bit), so the other ten
+                   <IsCharging/> call sites in this tree are untouched.
+
+                   The EXIT condition inside the retry loop below is
+                   deliberately left RAW. It is a different node instance with
+                   its own independent window, so a debounced exit would read
+                   FAILURE on its very first tick (window just started) and
+                   release the guard immediately - the opposite of the intent.
+                   Raw is also what we want on the way out: resume the moment
+                   the operator takes the mower off. -->
+              <Fallback name="ManualChargeGuard">
+                <Inverter><IsCharging stable_for_sec="3.0"/></Inverter>
+                <Sequence name="ManualChargeHandler">
+                  <SetMowerEnabled enabled="false"/>
+                  <StopMoving/>
+                  <PublishHighLevelStatus state="1" state_name="CHARGING"/>
+                  <!-- Wait for the operator to take the mower off the dock. No
+                       battery-threshold auto-undock here on purpose: the
+                       operator docked it, so the operator undocks it.
+
+                       BOUND: 17280 attempts x 5.0 s = 24 h. On expiry
+                       RetryUntilSuccessful returns FAILURE, so
+                       ManualChargeHandler fails -> ManualChargeGuard fails ->
+                       the StripGuards ReactiveSequence fails -> the parent
+                       "StripCoverageWithRecovery" Fallback falls through to its
+                       other child, CoverageEnded. In other words: after a full
+                       day parked on the dock, the run is treated as FINISHED.
+
+                       That is the intended outcome, not an accident. A mower
+                       that has sat on its dock for 24 h is not mid-mow any
+                       more: the coverage plan and the mow_progress grid are
+                       stale, and the operator's intent has plainly changed.
+                       Ending the session drops the robot back into the normal
+                       docked/idle state, from which the scheduler or the
+                       operator starts a fresh, freshly-planned run. The
+                       alternative - waiting forever - would pin the BT in this
+                       branch across days and silently swallow every scheduled
+                       mow, with no status anywhere saying why. -->
+                  <RetryUntilSuccessful num_attempts="17280">
+                    <Fallback>
+                      <Inverter><IsCharging/></Inverter>
+                      <Sequence>
+                        <WaitForDuration duration_sec="5.0"/>
+                        <AlwaysFailure/>
+                      </Sequence>
+                    </Fallback>
+                  </RetryUntilSuccessful>
+                  <PublishHighLevelStatus state="2" state_name="MOWING"/>
+                </Sequence>
+              </Fallback>
+
+              <!-- Multi-area coverage loop.
+                   Outer loop: iterate through all mowing areas.
+                   Per area: PlanCoverageArea asks mowgli_coverage's
+                   plan_coverage action for the plan. The result carries an
+                   EXPLICIT segment list (headland rings + straight
+                   serpentine swaths — GUI/resume bookkeeping only) AND the
+                   hole-free, continuous drivable_subpaths that FollowStrip
+                   actually drives: mowgli_nav2_plugins/FTCController tracks
+                   each sub-path end-to-end as ONE FollowCoveragePath goal
+                   (one PRE_ROTATE pivot to the sub-path-start heading, then
+                   FTC tracks tightly through the connector arcs), using a
+                   pose cursor — not per-segment dispatch. Progress is
+                   recorded per pose index, so a FollowStrip retry resumes
+                   mid-sub-path from the furthest pose reached, not from a
+                   segment boundary.
+                   GetNextUnmowedArea returns FAILURE when all areas are
+                   done. PlanCoverageArea on a too-small/planning-failed
+                   area returns FAILURE → outer AreaUnreachable → AreaLoop
+                   advances. -->
+              <Repeat num_cycles="100" name="AreaLoop">
+                <Sequence name="MowOneArea">
+                  <GetNextUnmowedArea area_index="{current_area_index}"/>
+                  <!-- ONE PlanCoverageArea per area per session (no
+                       replan), but multiple FollowStrip retries on the
+                       SAME plan (resume at the furthest pose reached along
+                       the drivable_subpaths concatenation). The coverage
+                       geometry (operation_width, headland_width, passes,
+                       insets) lives in coverage_server's parameters,
+                       injected at launch from mowgli_robot.yaml. -->
+                  <Fallback name="MowOrSkipArea">
+                    <Sequence name="PlanThenFollow">
+                      <PublishHighLevelStatus state="2" state_name="PLANNING"/>
+                      <PlanCoverageArea
+                          area_index="{current_area_index}"/>
+                      <!-- Obstacle-aware transit to the coverage path start.
+                           On a re-plan pass (AreaLoop re-enters an area that
+                           still has un-mowed cells), the remaining region can
+                           lie BEHIND a large obstacle the FTC follower cannot
+                           reach in a straight carrot line — it would just
+                           abort against the obstacle and the region behind it
+                           would never be mowed (field: "toute une partie du
+                           jardin pas faite"). TransitToStrip routes the robot
+                           AROUND the obstacle via the Nav2 global planner
+                           (Smac + the enabled global obstacle_layer), then
+                           FollowStrip mows from there. Soft: if the start is
+                           genuinely unreachable (walled off), fall through and
+                           let FollowStrip try from the closest pose; the
+                           no-progress guard in GetNextUnmowedArea then retires
+                           the area after a pass with no coverage gain (so a
+                           truly unreachable region doesn't loop forever, and a
+                           DYNAMIC obstacle that later clears is picked up on a
+                           subsequent pass). -->
+                      <Fallback name="TransitToCoverageStart">
+                        <Sequence name="TransitAroundObstacles">
+                          <PublishHighLevelStatus state="2" state_name="TRANSIT"/>
+                          <!-- Blade off while circumnavigating; FollowStrip
+                               re-enables it when mowing resumes. -->
+                          <SetMowerEnabled enabled="false"/>
+                          <TransitToStrip/>
+                        </Sequence>
+                        <AlwaysSuccess/>
+                      </Fallback>
+                      <RetryUntilSuccessful num_attempts="5" name="FollowStripRetry">
+                        <Fallback name="MowOrRecover">
+                        <Sequence name="MowPath">
+                          <PublishHighLevelStatus state="2" state_name="MOWING"/>
+                          <FollowStrip/>
+                        </Sequence>
+                        <!-- Start-pose blocked recovery (issue #487).
+                             Every blade-off sub-path transit was refused by
+                             the Nav2 planner with START_OCCUPIED and NOTHING
+                             was mowed: the robot is STANDING on a lethal or
+                             keepout cell (2026-08-24: it undocked into the
+                             inflated keepout of a 0.25 m obstacle circle), so
+                             no plan exists from here regardless of the goal.
+                             That is NOT an unmowable field — a second attempt
+                             13 min later mowed the same area to 100 %.
+
+                             Non-motion recovery only: stop, clear the
+                             costmaps, wait for a fresh update, then bubble up
+                             FAILURE so FollowStripRetry re-ticks FollowStrip.
+                             Be honest about the clear: it only helps when the
+                             lethal cell came from a TRANSIENT obstacle_layer
+                             reading. A keepout zone is a static costmap
+                             FILTER — ClearEntireCostmap does not touch it, so
+                             the retry from an unchanged pose will fail again
+                             and GetNextUnmowedArea's bounded exemption
+                             (kMaxStartBlockedAttempts) eventually retires the
+                             area rather than looping.
+
+                             SAFETY — the optional escape motion (issue #487
+                             follow-up, option B) is disabled by default after
+                             the 2026-09-09 field bag showed repeated direction
+                             guesses leading into a boundary violation. When a
+                             site explicitly enables it, EscapeStartBlocked nudges
+                             the robot OPPOSITE the last motion it was actually
+                             commanded to make, bounded to
+                             start_blocked_escape_distance (0.40 m default) AND
+                             start_blocked_escape_timeout_s (6 s default). That
+                             one signal gets both field cases right: after an
+                             undock the robot REVERSED into the spot, so the
+                             escape drives FORWARD; mid-mow it arrived driving
+                             forward, so the escape REVERSES onto ground it
+                             occupied seconds ago. If the direction is unknown,
+                             stale or ~zero it commands NOTHING and this branch
+                             behaves exactly as it did before the motion
+                             existed. The blade is switched off AND verified
+                             off first, and the command is published on
+                             /cmd_vel_nav so it passes through
+                             collision_monitor and the LOWEST-priority
+                             twist_mux lane like every other autonomous
+                             motion — teleop and the emergency lane override it
+                             instantly, and the STM32 remains the sole
+                             emergency-stop authority.
+
+                             Placed FIRST in MowOrRecover because
+                             IsCoverageStartBlocked is an exact, consumed
+                             signal, while IsObstacleStuck below would also
+                             match a robot that has simply not moved. -->
+                        <Sequence name="StartPoseBlockedRetry">
+                          <IsCoverageStartBlocked/>
+                          <PublishHighLevelStatus state="2"
+                                                  state_name="START_POSE_BLOCKED"/>
+                          <SetMowerEnabled enabled="false"/>
+                          <StopMoving/>
+                          <EscapeStartBlocked/>
+                          <ClearCostmap/>
+                          <WaitForDuration duration_sec="2.0"/>
+                          <AlwaysFailure/>
+                        </Sequence>
+                        <!-- Obstacle wedge recovery: BackUp + ClearCostmap
+                             then bubble up FAILURE so RetryUntilSuccessful
+                             re-ticks FollowStrip, which resumes at the
+                             furthest pose reached along the current
+                             drivable_subpaths sub-path. -->
+                        <Sequence name="StuckBackoff">
+                          <IsObstacleStuck min_duration_sec="4.0"
+                                           max_count="3"
+                                           cooldown_sec="8.0"/>
+                          <PublishHighLevelStatus state="2"
+                                                  state_name="OBSTACLE_BACKOFF"/>
+                          <SetMowerEnabled enabled="false"/>
+                          <BackUp backup_dist="0.40" backup_speed="0.15"/>
+                          <ClearCostmap/>
+                          <AlwaysFailure/>
+                        </Sequence>
+                        <!-- Dynamic-obstacle clear gate: ClearCostmap +
+                             brief wait, then re-tick FollowStrip on the
+                             same path. -->
+                        <Sequence name="DynamicObstacleSkip">
+                          <WasRecentlyInCollisionStop max_age_sec="10.0"/>
+                          <PublishHighLevelStatus state="2"
+                                                  state_name="DYNAMIC_OBSTACLE_CLEARED"/>
+                          <SetMowerEnabled enabled="false"/>
+                          <StopMoving/>
+                          <ClearCostmap/>
+                          <WaitForDuration duration_sec="1.0"/>
+                          <AlwaysFailure/>
+                        </Sequence>
+                        </Fallback>
+                      </RetryUntilSuccessful>
+                    </Sequence>
+                    <!-- Fallback to here on PlanCoverageArea FAILURE
+                         (empty path / planning error) OR after the 5
+                         FollowStrip retries are exhausted. Either way,
+                         mark the area attempted and advance. -->
+                    <Sequence name="AreaUnreachable">
+                      <PublishHighLevelStatus state="2" state_name="AREA_UNREACHABLE"/>
+                      <SetMowerEnabled enabled="false"/>
+                      <StopMoving/>
+                      <AlwaysSuccess/>
+                    </Sequence>
+                  </Fallback>
+                </Sequence>
+              </Repeat>
+
+            </ReactiveSequence>
+
+            <!-- The AreaLoop exited. Distinguish a NORMAL completion (every
+                 area mowed → GetNextUnmowedArea set coverage_all_complete) from
+                 a genuine failure (transient service error, unreachable areas,
+                 no areas defined). The two used to share the FailedCoverageDock
+                 path, so a fully-successful run always reported
+                 COVERAGE_FAILED_DOCKING and the MOWING_COMPLETE terminal was
+                 dead. -->
+            <Fallback name="CoverageEnded">
+
+              <!-- Normal completion → MOWING_COMPLETE and dock. -->
+              <Sequence name="CoverageCompleteDock">
+                <IsCoverageComplete/>
+                <SetMowerEnabled enabled="false"/>
+                <!-- state=2 (AUTONOMOUS), NOT 1 (IDLE). The firmware hard-stops the
+                     wheels whenever the forwarded high-level mode is IDLE
+                     (cpp_main.cpp motors_handler: "else if
+                     main_eOpenmowerStatus == OPENMOWER_STATUS_IDLE ->
+                     hard_stop"). Publishing IDLE here froze the wheels for
+                     the DockRobot drive that follows, so a completed run
+                     could never reach the dock and DockRobot never returned.
+                     state_name still reads MOWING_COMPLETE for the GUI, and
+                     IDLE_DOCKED below remains the real idle transition. This
+                     matches FailedCoverageDock, which already publishes
+                     state=2 before its own dock. -->
+                <PublishHighLevelStatus state="2" state_name="MOWING_COMPLETE"/>
+                <SaveObstacles/>
+                <ClearCostmap/>
+                <Fallback name="CompleteNavOrStop">
+                  <DockRobot dock_id="home_dock" dock_type="simple_charging_dock"/>
+                  <Sequence>
+                    <PublishHighLevelStatus state="0" state_name="NAV_TO_DOCK_FAILED"/>
+                    <AlwaysSuccess/>
+                  </Sequence>
+                </Fallback>
+                <PublishHighLevelStatus state="1" state_name="IDLE_DOCKED"/>
+                <EndSession/>
+                <ClearCommand/>
+              </Sequence>
+
+              <!-- Genuine coverage failure — dock gracefully. -->
+              <Sequence name="FailedCoverageDock">
+                <SetMowerEnabled enabled="false"/>
+                <PublishHighLevelStatus state="2" state_name="COVERAGE_FAILED_DOCKING"/>
+                <ClearCostmap/>
+                <Fallback name="FailedCoverageNavOrStop">
+                  <DockRobot dock_id="home_dock" dock_type="simple_charging_dock"/>
+                  <Sequence>
+                    <PublishHighLevelStatus state="0" state_name="NAV_TO_DOCK_FAILED"/>
+                    <AlwaysSuccess/>
+                  </Sequence>
+                </Fallback>
+                <PublishHighLevelStatus state="1" state_name="IDLE_DOCKED"/>
+                <EndSession/>
+                <ClearCommand/>
+              </Sequence>
+            </Fallback>
+          </Fallback>
+          </ReactiveSequence>
+
+          <!-- Mowing complete — dock. Mirrors HomeSequence's robustness:
+               * ReactiveSequence re-checks IsCommand(1) every tick, so a
+                 new operator command (HOME, cancel, delete-maps, …) halts
+                 the in-flight DockRobot instead of holding the BT hostage
+                 for the full retry budget. The plain parent <Sequence>
+                 only evaluates IsCommand(1) on entry, so without this
+                 wrapper the terminal dock was un-interruptible — the
+                 "Mowing Complete, nothing responds" lockup.
+               * ReactiveFallback(IsCharging) short-circuits the moment the
+                 charging pins engage, even if opennav_docking hasn't
+                 concluded yet (GPS drift near the dock).
+               * Fallback(DockRobot / NAV_TO_DOCK_FAILED+AlwaysSuccess)
+                 guarantees we fall through to ClearCommand even when the
+                 dock action ultimately fails — otherwise current_command
+                 stayed latched at 1 and the BT re-entered the terminal
+                 dock forever.
+               ClearCostmap runs after SaveObstacles: persist what we
+               learned, then wipe stale marks so the nav-to-staging
+               approach isn't walled off by residual obstacle cells (fresh
+               scans re-populate real obstacles immediately). -->
+          <ReactiveSequence name="MowingCompleteSequence">
+            <IsCommand command="1"/>
+            <Sequence name="MowingCompleteAction">
+              <SetMowerEnabled enabled="false"/>
+              <!-- state=2 (AUTONOMOUS), NOT 1 (IDLE) - the firmware hard-stops
+                   the wheels while the forwarded HL mode is IDLE, which would
+                   freeze the DockRobot drive below. See CoverageCompleteDock. -->
+              <PublishHighLevelStatus state="2" state_name="MOWING_COMPLETE"/>
+              <SaveObstacles/>
+              <ClearCostmap/>
+              <ReactiveFallback name="MowingCompleteOrDocked">
+                <IsCharging/>
+                <Fallback name="MowingCompleteDockOrStop">
+                  <DockRobot dock_id="home_dock" dock_type="simple_charging_dock"/>
+                  <Sequence>
+                    <PublishHighLevelStatus state="0" state_name="NAV_TO_DOCK_FAILED"/>
+                    <AlwaysSuccess/>
+                  </Sequence>
+                </Fallback>
+              </ReactiveFallback>
+              <PublishHighLevelStatus state="1" state_name="IDLE_DOCKED"/>
+              <EndSession/>
+              <ClearCommand/>
+            </Sequence>
+          </ReactiveSequence>
+        </Sequence>
+
+        <!-- ============================================================
+             c. Home (COMMAND_HOME = 2)
+             Wrapped in a ReactiveSequence with IsCommand(2) at the top:
+             if the user sends any other command (including 0 / cancel)
+             while DockRobot is mid-flight, the guard returns FAILURE and
+             the running action is halted via onHalted() — so the BT does
+             not hold the user hostage for up to ~5 min of dock retries.
+             The inner <Sequence> keeps memory semantics so StopMoving and
+             the other one-shot setup steps don't re-fire each tick.
+             ============================================================ -->
+        <ReactiveSequence name="HomeSequence">
+          <IsCommand command="2"/>
+          <Sequence name="HomeAction">
+            <SetMowerEnabled enabled="false"/>
+            <StopMoving/>
+            <!-- ReactiveFallback re-evaluates IsCharging every tick. If the
+                 charging pins engage mid-DockRobot (robot physically reaches
+                 the dock but opennav_docking hasn't concluded yet — common
+                 with GPS drift near the dock), IsCharging returns SUCCESS,
+                 the running DockRobot is halted, and we fall through to
+                 IDLE_DOCKED. A plain Fallback would stick on the RUNNING
+                 DockRobot child until it terminates on its own (up to
+                 ~5 min of retries), leaving the BT stuck in RETURNING_HOME
+                 even though the robot is already charging. -->
+            <ReactiveFallback name="HomeOrAlreadyDocked">
+              <IsCharging/>
+              <Sequence name="NavigateHome">
+                <PublishHighLevelStatus state="2" state_name="RETURNING_HOME"/>
+                <!-- DIG_OBSTRUCTION exit (issue #500, field report 2026-09-14).
+                     Three same-spot dig latches leave up to three 0.60 m PENDING
+                     keepouts stamped under and around the robot, so this dock
+                     transit's Smac plan starts in a lethal cell (START_OCCUPIED)
+                     and the operator's HOME never moves. Drop the proposals that
+                     touch the footprint BEFORE planning; farther proposals and
+                     accepted keepouts stay, and the dig detector stays armed on
+                     the way out. ForceSuccess: a robot that is not escalated
+                     (IsDigEscalated fails) goes home exactly as before. -->
+                <ForceSuccess>
+                  <Sequence name="FreeDigKeepoutsIfEscalated">
+                    <IsDigEscalated/>
+                    <DiscardNearbyDigKeepouts/>
+                  </Sequence>
+                </ForceSuccess>
+                <SaveObstacles/>
+                <!-- Wipe stale obstacle cells so the nav-to-staging dock
+                     approach isn't walled off (see MowingCompleteSequence). -->
+                <ClearCostmap/>
+                <Fallback name="HomeNavOrStop">
+                  <DockRobot dock_id="home_dock" dock_type="simple_charging_dock"/>
+                  <Sequence>
+                    <PublishHighLevelStatus state="0" state_name="NAV_TO_DOCK_FAILED"/>
+                    <AlwaysSuccess/>
+                  </Sequence>
+                </Fallback>
+              </Sequence>
+            </ReactiveFallback>
+            <PublishHighLevelStatus state="1" state_name="IDLE_DOCKED"/>
+            <EndSession/>
+            <ClearCommand/>
+          </Sequence>
+        </ReactiveSequence>
+
+        <!-- ============================================================
+             d. Recording (COMMAND_S1 = 3 = COMMAND_RECORD_AREA)
+             User drives robot along boundary. The RecordArea node
+             samples positions at area_record_rate_hz and publishes a
+             live trajectory preview. When the user presses "Finish" (command 5) the
+             trajectory is simplified with Douglas-Peucker and saved
+             as a mowing area. "Cancel" (command 6) discards it.
+             ============================================================ -->
+        <!-- ReactiveSequence with a Fallback guard accepting commands 3/5/6.
+             History: a plain <Sequence> here re-evaluated IsCommand(3) every
+             tick, so the moment the user pressed "Finish" (command 5) the
+             guard failed and the sequence halted RecordArea via onHalted(),
+             which cleared trajectory_ before save_area() ever ran — every
+             finished recording silently dropped its points. We previously
+             switched to <SequenceWithMemory>, but combined with the
+             non-reactive parent <Fallback name="MainLogic"> that introduced
+             a worse regression: after RecordArea returned FAILURE on cancel,
+             the memorised guard plus the parent's tick-from-running-child
+             behaviour caused the sequence to silently re-enter RecordArea
+             without a new command — and after a few cycles the BT itself
+             went silent (mutex contention with the HLC service handler that
+             also writes ctx->current_command).
+             The right shape is reactive WITH a widened guard: re-evaluate
+             every tick, but accept any of 3 (start), 5 (finish), 6 (cancel)
+             so RecordArea stays RUNNING long enough for its onRunning()
+             handler in recording_nodes.cpp:73 to see the finish/cancel
+             command, save (or discard) the polygon, clear current_command,
+             and return SUCCESS/FAILURE cleanly. Command 2 (HOME) is
+             deliberately NOT in the guard — that triggers a halt and
+             fallthrough to HomeSequence, which is the desired
+             "abort recording and dock" behaviour. -->
+        <ReactiveSequence name="RecordingSequence">
+          <Fallback name="RecordingCommandGuard">
+            <IsCommand command="3"/>
+            <IsCommand command="5"/>
+            <IsCommand command="6"/>
+          </Fallback>
+          <PublishHighLevelStatus state="3" state_name="RECORDING"/>
+          <!-- simplification_tolerance / record_rate_hz come from
+               mowgli_robot.yaml via behavior_tree_node's blackboard (they were
+               hardcoded at 0.2 m / 2 Hz, which cost a field recording all but
+               24 vertices of a 38 m perimeter). min_vertices / min_area stay
+               hardcoded: they are degenerate-polygon guards, not resolution
+               knobs, and nothing sane wants them retuned. -->
+          <RecordArea
+            simplification_tolerance="{area_simplification_tolerance}"
+            min_vertices="3"
+            min_area="1.0"
+            record_rate_hz="{area_record_rate_hz}"
+            is_exclusion_zone="false"/>
+          <PublishHighLevelStatus state="1" state_name="RECORDING_COMPLETE"/>
+          <EndSession/>
+          <ClearCommand/>
+        </ReactiveSequence>
+
+        <!-- ============================================================
+             e. Manual Mowing (COMMAND_MANUAL_MOW = 7)
+             Teleop via /cmd_vel_teleop (twist_mux priority).
+             Collision_monitor remains active. GPS/SLAM continues.
+
+             Blade is enabled here by the BT (not the GUI) because the
+             firmware forcibly zeroes target_blade_on_off whenever its
+             mirrored HL mode is IDLE/NULL (cpp_main.cpp on_hl_state).
+             The GUI used to send mow_enabled=1 immediately after
+             Command=7, but the firmware had not yet received the
+             MANUAL_MOWING mode update, so it zeroed the blade. Driving
+             the blade on AFTER PublishHighLevelStatus(4) guarantees the
+             firmware sees MANUAL_MOWING first, then the blade command.
+
+             ReactiveSequence is used deliberately: on every tick it
+             re-evaluates IsCommand from the first child, even while
+             WaitForDuration is running. When the user presses Home
+             (command changes from 7 to 2), IsCommand returns FAILURE,
+             the ReactiveSequence halts WaitForDuration and returns
+             FAILURE, allowing the Fallback to select HomeSequence on
+             the very next tick. On exit, the following sequence (Home
+             or Idle) calls SetMowerEnabled(false) which stops the blade.
+             ============================================================ -->
+        <ReactiveSequence name="ManualMowingSequence">
+          <IsCommand command="7"/>
+          <PublishHighLevelStatus state="4" state_name="MANUAL_MOWING"/>
+          <SetMowerEnabled enabled="true"/>
+          <WaitForDuration duration_sec="0.5"/>
+        </ReactiveSequence>
+
+        <!-- ============================================================
+             f. Stop-in-place / hold (COMMAND_STOP = 8)
+             ============================================================
+             "Stop Manual" and "Pause" route here (NOT COMMAND_HOME, which
+             drives to the dock). Halt motion + mower off and stay put while
+             the command is latched at 8. Unlike IdleSequence this does NOT
+             PAUSE the Nav2 lifecycle, so a paused mission can resume promptly.
+             ReactiveSequence so a new command (e.g. START/HOME) deselects this
+             branch on the next tick. -->
+        <ReactiveSequence name="StopHoldSequence">
+          <IsCommand command="8"/>
+          <SetMowerEnabled enabled="false"/>
+          <StopMoving/>
+          <PublishHighLevelStatus state="1" state_name="IDLE"/>
+          <WaitForDuration duration_sec="0.5"/>
+        </ReactiveSequence>
+
+        <!-- ============================================================
+             g. Idle default
+             ============================================================ -->
+        <Sequence name="IdleSequence">
+          <SetMowerEnabled enabled="false"/>
+          <StopMoving/>
+          <PublishHighLevelStatus state="1" state_name="IDLE"/>
+          <!-- Suspend the Nav2 lifecycle stack to drop idle CPU/thermal load
+               (no-op unless idle_nav2_suspend is enabled; self-gated on
+               charging so it only fires when physically docked, where the
+               robot cannot move and the firmware is the safety authority).
+               RESUMEd by Nav2ResumeGuard before any motion branch runs. -->
+          <SetNav2Lifecycle command="PAUSE"/>
+          <WaitForDuration duration_sec="0.5"/>
+        </Sequence>
+
+      </Fallback>
+    </ReactiveSequence>
+  </BehaviorTree>
+
+</root>

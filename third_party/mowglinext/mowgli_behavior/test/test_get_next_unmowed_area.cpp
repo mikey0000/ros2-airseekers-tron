@@ -1,0 +1,1026 @@
+// Copyright 2026 Mowgli Project
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+// SPDX-License-Identifier: GPL-3.0
+/**
+ * @file test_get_next_unmowed_area.cpp
+ * @brief Regression test: the mow-selection path SKIPS navigation-only areas.
+ *
+ * GetNextUnmowedArea iterates the map's areas via get_mowing_area. A
+ * navigation-only zone (is_navigation_area=true) is a transit corridor, not a
+ * mowing target — the blades must never run inside it. map_server still returns
+ * these areas (success=true) because the obstacle tracker needs their geometry,
+ * so the skip lives on the BT selection side. These tests stand up a REAL
+ * in-process get_mowing_area service (no robot, no mocked interfaces) and tick
+ * the StatefulActionNode to verify a nav-only area is never selected.
+ *
+ * It also covers TARGETED runs (~/start_in_area, "mow only this area"): the
+ * single-area constraint is session state, so a run must not roll over into
+ * another area when the BT re-enters MowingSequence after the requested area
+ * completes (field regression, 2026-08-24).
+ */
+
+#include <chrono>
+#include <filesystem>
+#include <map>
+#include <memory>
+#include <string>
+#include <thread>
+
+#include <rclcpp/rclcpp.hpp>
+
+#include "behaviortree_cpp/bt_factory.h"
+#include "mowgli_behavior/bt_context.hpp"
+#include "mowgli_behavior/coverage_nodes.hpp"
+#include "mowgli_behavior/coverage_orientation_service.hpp"
+#include "mowgli_behavior/coverage_persistence.hpp"
+#include "mowgli_behavior/status_nodes.hpp"
+#include "mowgli_interfaces/srv/get_mowing_area.hpp"
+#include <gtest/gtest.h>
+
+using mowgli_behavior::BTContext;
+using mowgli_behavior::clearSingleAreaMode;
+using mowgli_behavior::EndSession;
+using mowgli_behavior::GetNextUnmowedArea;
+using mowgli_behavior::MarkGuardHalt;
+using GetMowingArea = mowgli_interfaces::srv::GetMowingArea;
+
+// ---------------------------------------------------------------------------
+// Global ROS2 init/shutdown
+// ---------------------------------------------------------------------------
+
+class RclcppEnvironment : public ::testing::Environment
+{
+public:
+  void SetUp() override
+  {
+    if (!rclcpp::ok())
+    {
+      rclcpp::init(0, nullptr);
+    }
+  }
+  void TearDown() override
+  {
+    rclcpp::shutdown();
+  }
+};
+
+::testing::Environment* const rclcpp_env =
+    ::testing::AddGlobalTestEnvironment(new RclcppEnvironment());
+
+// ---------------------------------------------------------------------------
+// One entry the fake map_server returns per index: name + nav-only flag.
+// index past the last entry → success=false (matches real map_server).
+// ---------------------------------------------------------------------------
+struct AreaEntry
+{
+  std::string name;
+  bool is_navigation_area;
+};
+
+class GetNextUnmowedAreaTest : public ::testing::Test
+{
+protected:
+  std::shared_ptr<BTContext> ctx;
+  BT::Blackboard::Ptr blackboard;
+  BT::BehaviorTreeFactory factory;
+  rclcpp::Node::SharedPtr server_node;
+  rclcpp::Service<GetMowingArea>::SharedPtr service;
+  rclcpp::executors::SingleThreadedExecutor executor;
+  std::map<uint32_t, AreaEntry> areas;
+
+  void SetUp() override
+  {
+    ctx = std::make_shared<BTContext>();
+    ctx->node = rclcpp::Node::make_shared("test_get_next_unmowed_area");
+    ctx->helper_node = rclcpp::Node::make_shared("test_get_next_unmowed_area_helper");
+
+    blackboard = BT::Blackboard::create();
+    blackboard->set("context", ctx);
+
+    factory.registerNodeType<GetNextUnmowedArea>("GetNextUnmowedArea");
+    factory.registerNodeType<EndSession>("EndSession");
+    factory.registerNodeType<MarkGuardHalt>("MarkGuardHalt");
+
+    server_node = rclcpp::Node::make_shared("fake_map_server");
+    service = server_node->create_service<GetMowingArea>(
+        "/map_server_node/get_mowing_area",
+        [this](const std::shared_ptr<GetMowingArea::Request> req,
+               std::shared_ptr<GetMowingArea::Response> resp)
+        {
+          auto it = areas.find(req->index);
+          if (it == areas.end())
+          {
+            resp->success = false;  // index past the last defined area
+            return;
+          }
+          resp->area.name = it->second.name;
+          resp->area.is_navigation_area = it->second.is_navigation_area;
+          resp->success = true;
+        });
+
+    executor.add_node(ctx->helper_node);
+    executor.add_node(server_node);
+  }
+
+  /// Wait for the helper-side client to discover the fake service.
+  void waitForService()
+  {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+      executor.spin_some();
+      auto client =
+          ctx->helper_node->create_client<GetMowingArea>("/map_server_node/get_mowing_area");
+      if (client->service_is_ready())
+      {
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    FAIL() << "fake get_mowing_area service was never discovered";
+  }
+
+  /// Tick the node to completion, spinning the executor between ticks so the
+  /// async service round-trips complete. Returns the terminal status.
+  BT::NodeStatus tickToCompletion(BT::Tree& tree)
+  {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    BT::NodeStatus status = BT::NodeStatus::RUNNING;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+      status = tree.tickOnce();
+      if (status != BT::NodeStatus::RUNNING)
+      {
+        break;
+      }
+      executor.spin_some();
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return status;
+  }
+
+  BT::Tree makeTree(uint32_t max_areas)
+  {
+    const std::string xml =
+        "<root BTCPP_format=\"4\"><BehaviorTree ID=\"MainTree\">"
+        "<GetNextUnmowedArea max_areas=\"" +
+        std::to_string(max_areas) +
+        "\" area_index=\"{area_index}\"/>"
+        "</BehaviorTree></root>";
+    return factory.createTreeFromText(xml, blackboard);
+  }
+
+  /// A bare <EndSession/> tree — the real session-boundary node, so the
+  /// "cleared at session end" assertion exercises production code rather than
+  /// a hand-rolled reset.
+  BT::Tree makeEndSessionTree()
+  {
+    const std::string xml =
+        "<root BTCPP_format=\"4\"><BehaviorTree ID=\"MainTree\">"
+        "<EndSession/>"
+        "</BehaviorTree></root>";
+    return factory.createTreeFromText(xml, blackboard);
+  }
+
+  /// A bare <MarkGuardHalt reason="..."/> tree — the real guard-handler node,
+  /// so the guard-halted exemption is driven the way main_tree.xml drives it.
+  BT::Tree makeMarkGuardHaltTree(const std::string& reason)
+  {
+    const std::string xml =
+        "<root BTCPP_format=\"4\"><BehaviorTree ID=\"MainTree\">"
+        "<MarkGuardHalt reason=\"" +
+        reason +
+        "\"/>"
+        "</BehaviorTree></root>";
+    return factory.createTreeFromText(xml, blackboard);
+  }
+
+  /// Simulate "a guard halted the tree mid-pass": tick the real MarkGuardHalt
+  /// node the way SensorFaultHandler / LocalizationDegradedHandler do.
+  void guardHaltsTree(const std::string& reason = "scan_stale")
+  {
+    auto halt_tree = makeMarkGuardHaltTree(reason);
+    ASSERT_EQ(halt_tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+// A navigation-only area at index 0 followed by a mowing area at index 1: the
+// selection must SKIP index 0 and pick index 1.
+TEST_F(GetNextUnmowedAreaTest, SkipsNavigationOnlyAreaAndSelectsMowingArea)
+{
+  areas[0] = {"front_path", /*is_navigation_area=*/true};
+  areas[1] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+
+  uint32_t selected = 99;
+  ASSERT_TRUE(blackboard->get("area_index", selected));
+  EXPECT_EQ(selected, 1u) << "must skip the nav-only area 0 and select mowing area 1";
+  EXPECT_EQ(ctx->current_area, 1);
+  // The skipped nav area is marked attempted so it is not re-evaluated.
+  EXPECT_GT(ctx->attempted_areas.count(0u), 0u);
+}
+
+// The ONLY area is navigation-only: nothing is mowable → FAILURE, and the nav
+// area is never selected.
+TEST_F(GetNextUnmowedAreaTest, NavigationOnlyAreaIsNeverMowed)
+{
+  areas[0] = {"perimeter_corridor", /*is_navigation_area=*/true};
+  waitForService();
+
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(ctx->current_area, -1) << "no area should have been selected for mowing";
+  EXPECT_GT(ctx->attempted_areas.count(0u), 0u);
+}
+
+// Control: an ordinary mowing area at index 0 is selected as before (the skip
+// must not regress normal selection).
+TEST_F(GetNextUnmowedAreaTest, SelectsMowingAreaAtIndexZero)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+
+  uint32_t selected = 99;
+  ASSERT_TRUE(blackboard->get("area_index", selected));
+  EXPECT_EQ(selected, 0u);
+  EXPECT_EQ(ctx->current_area, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #487 — a START_OCCUPIED pass must not retire the area.
+//
+// FollowStrip sets ctx->start_blocked_area when a whole pass ended with every
+// blade-off sub-path transit refused because the ROBOT'S OWN pose is a lethal
+// or keepout cell and ZERO swaths were mowed. Such a pass never had a chance to
+// make progress; charging it to the no-progress retirement counter is what
+// forfeited a mowable field at 0 % coverage on 2026-08-24.
+// ---------------------------------------------------------------------------
+
+// Before the fix, kMaxAreaAttempts (5) consecutive zero-progress dispatches
+// retired the area. With the exemption, five start-blocked dispatches all still
+// select the area.
+TEST_F(GetNextUnmowedAreaTest, StartBlockedPassesDoNotBurnTheNoProgressBudget)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  for (uint32_t attempt = 0; attempt < BTContext::kMaxAreaAttempts; ++attempt)
+  {
+    // Simulate the previous FollowStrip pass ending start-pose-blocked.
+    ctx->start_blocked_area = 0u;
+    auto tree = makeTree(/*max_areas=*/5);
+    EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS)
+        << "dispatch " << attempt << " must still select the area";
+    EXPECT_EQ(ctx->current_area, 0) << "dispatch " << attempt;
+  }
+  EXPECT_EQ(ctx->attempted_areas.count(0u), 0u)
+      << "a run of START_OCCUPIED passes must not retire a mowable area (#487)";
+}
+
+// ...but the exemption is BOUNDED. A robot genuinely parked on a lethal cell
+// forever must still give up and dock rather than loop.
+TEST_F(GetNextUnmowedAreaTest, StartBlockedExemptionIsBoundedSoTheAreaStillRetires)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  const uint32_t kMaxDispatches =
+      BTContext::kMaxStartBlockedAttempts + BTContext::kMaxAreaAttempts + 2;
+  bool retired = false;
+  for (uint32_t attempt = 0; attempt < kMaxDispatches && !retired; ++attempt)
+  {
+    ctx->start_blocked_area = 0u;
+    auto tree = makeTree(/*max_areas=*/5);
+    tickToCompletion(tree);
+    retired = ctx->attempted_areas.count(0u) > 0;
+  }
+  EXPECT_TRUE(retired) << "the start-blocked exemption must be bounded — an area the robot can "
+                          "never plan from has to retire so the session can dock";
+}
+
+// The flag describes ONE finished pass and is consumed by the dispatch that
+// reads it, so a single blocked pass buys exactly one exemption.
+TEST_F(GetNextUnmowedAreaTest, StartBlockedFlagIsConsumedByOneDispatch)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  ctx->start_blocked_area = 0u;
+  auto tree = makeTree(/*max_areas=*/5);
+  ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+
+  EXPECT_FALSE(ctx->start_blocked_area.has_value());
+  EXPECT_EQ(ctx->area_start_blocked_count[0u], 1u);
+  EXPECT_EQ(ctx->area_attempt_count[0u], 0u)
+      << "the exempted dispatch must not have advanced the no-progress counter";
+}
+
+// ---------------------------------------------------------------------------
+// Field 2026-09-07/08 — a pass INTERRUPTED by a Root guard must not retire
+// the area.
+//
+// With an intermittent LiDAR serial link IsScanStale (SensorSafetyGuard)
+// halted the Root every few seconds. Each halt interrupts FollowStrip ("area 0
+// interrupted at pose N — resume cursor saved") and the next dispatch charged
+// the re-dispatch to the no-progress budget: three scan-stale halts in 25 s
+// exhausted kMaxAreaAttempts, the mow "completed" with 0 swaths and the robot
+// sat on the lawn. LocalizationGuard pauses did the same. The guard handlers
+// now tick MarkGuardHalt, which GetNextUnmowedArea consumes as "this pass was
+// a pause, not a failure".
+// ---------------------------------------------------------------------------
+
+// MarkGuardHalt records its reason in the context and always succeeds; it is
+// idempotent across the handler's per-tick re-runs.
+TEST_F(GetNextUnmowedAreaTest, MarkGuardHaltRecordsTheReason)
+{
+  ASSERT_FALSE(ctx->guard_halted_reason.has_value());
+
+  guardHaltsTree("scan_stale");
+  ASSERT_TRUE(ctx->guard_halted_reason.has_value());
+  EXPECT_EQ(*ctx->guard_halted_reason, "scan_stale");
+
+  // The handler re-ticks every cycle while the fault holds — same result.
+  guardHaltsTree("scan_stale");
+  ASSERT_TRUE(ctx->guard_halted_reason.has_value());
+  EXPECT_EQ(*ctx->guard_halted_reason, "scan_stale");
+
+  // A different guard overwrites the tag (the last halt describes the pass).
+  guardHaltsTree("localization_degraded");
+  ASSERT_TRUE(ctx->guard_halted_reason.has_value());
+  EXPECT_EQ(*ctx->guard_halted_reason, "localization_degraded");
+}
+
+// (a) A single guard-halted pass is not charged and re-selects the same area.
+TEST_F(GetNextUnmowedAreaTest, GuardHaltedPassIsNotChargedAndReselectsTheArea)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  // First dispatch of the session — the normal charging path (attempt 1/5).
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+    ASSERT_EQ(ctx->current_area, 0);
+    ASSERT_EQ(ctx->area_attempt_count[0u], 1u);
+  }
+
+  // IsScanStale halts the Root mid-pass; FollowStrip saves its cursor.
+  guardHaltsTree("scan_stale");
+
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  uint32_t selected = 99;
+  ASSERT_TRUE(blackboard->get("area_index", selected));
+  EXPECT_EQ(selected, 0u) << "the interrupted area must be re-dispatched";
+  EXPECT_EQ(ctx->current_area, 0);
+  EXPECT_EQ(ctx->area_attempt_count[0u], 1u)
+      << "a guard-interrupted pass must NOT advance the no-progress counter";
+  EXPECT_EQ(ctx->area_guard_halt_count[0u], 1u);
+}
+
+// (b) The field incident: FIVE consecutive guard-halted passes (one more than
+// the three that killed the 2026-09-07 mow) still do not retire the area.
+TEST_F(GetNextUnmowedAreaTest, RepeatedGuardHaltsDoNotBurnTheNoProgressBudget)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  for (uint32_t halt = 0; halt < BTContext::kMaxAreaAttempts; ++halt)
+  {
+    guardHaltsTree(halt % 2 == 0 ? "scan_stale" : "localization_degraded");
+    auto tree = makeTree(/*max_areas=*/5);
+    EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS)
+        << "dispatch after guard halt " << halt << " must still select the area";
+    EXPECT_EQ(ctx->current_area, 0) << "halt " << halt;
+  }
+  EXPECT_EQ(ctx->attempted_areas.count(0u), 0u)
+      << "a run of guard pauses must not retire a mowable area";
+  EXPECT_LT(ctx->area_attempt_count[0u], BTContext::kMaxAreaAttempts);
+  EXPECT_EQ(ctx->area_attempt_count[0u], 0u)
+      << "none of the guard-interrupted passes may be charged";
+  EXPECT_EQ(ctx->area_guard_halt_count[0u], BTContext::kMaxAreaAttempts);
+}
+
+// (c) The flag describes ONE finished pass: it is consumed by the dispatch
+// that reads it, and the following (uninterrupted) no-progress pass IS
+// charged as before.
+TEST_F(GetNextUnmowedAreaTest, GuardHaltFlagIsConsumedSoTheNextPlainPassIsCharged)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  guardHaltsTree("scan_stale");
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  }
+  EXPECT_FALSE(ctx->guard_halted_reason.has_value()) << "must be consumed by the dispatch";
+  EXPECT_EQ(ctx->area_attempt_count[0u], 0u);
+
+  // The pass that follows ends without a guard halt and without progress.
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  }
+  EXPECT_EQ(ctx->area_attempt_count[0u], 1u)
+      << "an ordinary no-progress pass must still be charged (first dispatch counts 1)";
+
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  }
+  EXPECT_EQ(ctx->area_attempt_count[0u], 2u)
+      << "the exemption must not linger past the one dispatch that consumed it";
+}
+
+// (d) ...and the exemption is BOUNDED by kMaxGuardHaltedPasses: past it the
+// normal charging path takes over so a pathological flap cannot loop forever.
+// (A permanently dead sensor never reaches this — the guard holds the tree.)
+TEST_F(GetNextUnmowedAreaTest, GuardHaltExemptionStopsAtTheCap)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  for (uint32_t halt = 0; halt < BTContext::kMaxGuardHaltedPasses; ++halt)
+  {
+    guardHaltsTree("scan_stale");
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS) << "exempted halt " << halt;
+  }
+  ASSERT_EQ(ctx->area_guard_halt_count[0u], BTContext::kMaxGuardHaltedPasses);
+  ASSERT_EQ(ctx->area_attempt_count[0u], 0u);
+
+  // Cap reached: guard-halted passes now fall through to the charging path.
+  const uint32_t kMaxDispatches = BTContext::kMaxAreaAttempts + 2;
+  bool retired = false;
+  for (uint32_t attempt = 0; attempt < kMaxDispatches && !retired; ++attempt)
+  {
+    guardHaltsTree("scan_stale");
+    auto tree = makeTree(/*max_areas=*/5);
+    tickToCompletion(tree);
+    EXPECT_FALSE(ctx->guard_halted_reason.has_value())
+        << "the flag must be consumed on the charging path too (attempt " << attempt << ")";
+    retired = ctx->attempted_areas.count(0u) > 0;
+  }
+  EXPECT_TRUE(retired) << "past kMaxGuardHaltedPasses the no-progress budget must apply again";
+  EXPECT_EQ(ctx->area_guard_halt_count[0u], BTContext::kMaxGuardHaltedPasses)
+      << "the exemption counter must not grow past the cap";
+}
+
+// EndSession is the session boundary: a guard halt that ended one session
+// must not exempt the next session's first dispatch.
+TEST_F(GetNextUnmowedAreaTest, EndSessionClearsGuardHaltBookkeeping)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  guardHaltsTree("localization_degraded");
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  }
+  ASSERT_EQ(ctx->area_guard_halt_count[0u], 1u);
+  guardHaltsTree("localization_degraded");  // halted again on the way to the dock
+
+  auto end_tree = makeEndSessionTree();
+  ASSERT_EQ(end_tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_FALSE(ctx->guard_halted_reason.has_value());
+  EXPECT_TRUE(ctx->area_guard_halt_count.empty());
+
+  // Next session: the first dispatch is charged normally (1/5).
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(ctx->area_attempt_count[0u], 1u);
+}
+
+// ---------------------------------------------------------------------------
+// Targeted run (~/start_in_area): mow ONE area, then stop — no roll-over.
+//
+// Field log 2026-08-24: "StartInArea: received area=1" → "targeted run — mowing
+// only area 1 (single-area mode)" → ~56 min of mowing → "area 0 selected" with
+// NO targeted-run line. The BT re-enters MowingSequence when the targeted area
+// completes, so GetNextUnmowedArea::onStart() runs again; the clip used to live
+// only in members onStart() resets plus a one-shot optional consumed on the
+// first entry, so the second entry iterated from area 0 and the robot mowed an
+// area the operator never selected.
+// ---------------------------------------------------------------------------
+
+// The regression itself: the dispatch that follows the targeted area's
+// completion must NOT select another area.
+TEST_F(GetNextUnmowedAreaTest, TargetedRunDoesNotRollOverToTheNextArea)
+{
+  areas[0] = {"front_lawn", /*is_navigation_area=*/false};
+  areas[1] = {"back_lawn", /*is_navigation_area=*/false};
+  areas[2] = {"side_strip", /*is_navigation_area=*/false};
+  waitForService();
+
+  // Operator picks area 1 in the GUI (~/start_in_area).
+  ctx->target_area_index = 1;
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(ctx->current_area, 1);
+  }
+  // The one-shot request is consumed, but the constraint is now session state.
+  EXPECT_FALSE(ctx->target_area_index.has_value());
+  ASSERT_TRUE(ctx->single_area_target.has_value());
+  EXPECT_EQ(*ctx->single_area_target, 1u);
+
+  // FollowStrip mows area 1 to completion, and the BT re-enters MowingSequence.
+  ctx->completed_areas.insert(1u);
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::FAILURE)
+        << "a targeted run must end after its area, not roll over to another";
+  }
+  EXPECT_EQ(ctx->current_area, 1) << "no other area may be selected for mowing";
+  uint32_t selected = 99;
+  ASSERT_TRUE(blackboard->get("area_index", selected));
+  EXPECT_EQ(selected, 1u);
+  // FAILURE + coverage_all_complete is the CLEAN exit: the tree routes it to
+  // MOWING_COMPLETE + dock (CoverageCompleteDock), not COVERAGE_FAILED_DOCKING.
+  EXPECT_TRUE(ctx->coverage_all_complete)
+      << "a finished targeted run must dock via MOWING_COMPLETE, not report a coverage failure";
+}
+
+// An explicitly targeted area is re-mown even when it is already marked
+// completed/attempted this session (the operator asked for it on purpose).
+TEST_F(GetNextUnmowedAreaTest, TargetedRunReMowsAnAlreadyCompletedArea)
+{
+  areas[0] = {"front_lawn", /*is_navigation_area=*/false};
+  areas[1] = {"back_lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  ctx->completed_areas.insert(1u);
+  ctx->attempted_areas.insert(1u);
+
+  ctx->target_area_index = 1;
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS)
+      << "an explicit re-mow request must clear the stale completed/attempted flags";
+  EXPECT_EQ(ctx->current_area, 1);
+}
+
+// ...but that erase is tied to the ONE-SHOT request, not to the session flag:
+// repeating it on every onStart() would wipe the completion the targeted area
+// just earned and re-mow it forever.
+TEST_F(GetNextUnmowedAreaTest, TargetedRunDoesNotReMowItsOwnCompletedArea)
+{
+  areas[0] = {"front_lawn", /*is_navigation_area=*/false};
+  areas[1] = {"back_lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  ctx->target_area_index = 1;
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  }
+  ctx->completed_areas.insert(1u);
+
+  // Two further re-entries: both must end the run, never re-select area 1.
+  for (int i = 0; i < 2; ++i)
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::FAILURE) << "re-entry " << i;
+    EXPECT_GT(ctx->completed_areas.count(1u), 0u)
+        << "the targeted area's completion must survive re-entry " << i;
+  }
+}
+
+// A plain COMMAND_START after a targeted run iterates all areas again. The
+// clear is production code (clearSingleAreaMode), called by the
+// ~/high_level_control handler on COMMAND_START.
+TEST_F(GetNextUnmowedAreaTest, PlainStartAfterATargetedRunIteratesAllAreas)
+{
+  areas[0] = {"front_lawn", /*is_navigation_area=*/false};
+  areas[1] = {"back_lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  ctx->target_area_index = 1;
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+    ASSERT_EQ(ctx->current_area, 1);
+  }
+  ctx->completed_areas.insert(1u);
+
+  // Operator presses the ordinary "Start" button — same session (no EndSession,
+  // as after a low-battery dock + resume).
+  clearSingleAreaMode(*ctx);
+
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(ctx->current_area, 0) << "a plain start must resume normal all-areas iteration";
+}
+
+TEST_F(GetNextUnmowedAreaTest, EndSessionStillClearsCommandWhenPhasePersistenceFails)
+{
+  const auto path = std::string(::testing::TempDir()) + "/end_session_phase_failure.txt";
+  ctx->coverage_resume_path = path;
+  ctx->current_command = 1;
+  ctx->area_resume_pose_index[0] = 42;
+  ctx->cross_hatch[0].begin(true);
+  ctx->cross_hatch[0].used = true;
+  ASSERT_TRUE(mowgli_behavior::saveCoverageResumeState(*ctx));
+  ASSERT_TRUE(std::filesystem::create_directory(path + ".tmp"));
+
+  factory.registerNodeType<mowgli_behavior::ClearCommand>("ClearCommand");
+  auto end_tree = factory.createTreeFromText(
+      "<root BTCPP_format=\"4\"><BehaviorTree ID=\"End\">"
+      "<Sequence><EndSession/><ClearCommand/></Sequence>"
+      "</BehaviorTree></root>",
+      blackboard);
+  EXPECT_EQ(end_tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(ctx->current_command, 0);
+  EXPECT_TRUE(ctx->area_resume_pose_index.empty());
+  EXPECT_TRUE(ctx->cross_hatch[0].next_perpendicular);
+  EXPECT_TRUE(std::filesystem::remove(path + ".tmp"));
+
+  BTContext restarted;
+  restarted.coverage_resume_path = path;
+  EXPECT_FALSE(mowgli_behavior::loadCoverageResumeState(restarted));
+  EXPECT_EQ(restarted.current_command, 0);
+  EXPECT_TRUE(restarted.area_resume_pose_index.empty());
+  std::filesystem::remove(path);
+}
+
+// EndSession is the session boundary: the single-area clip dies there with the
+// other per-session sets, so the next session starts unconstrained.
+TEST_F(GetNextUnmowedAreaTest, EndSessionClearsSingleAreaMode)
+{
+  areas[0] = {"front_lawn", /*is_navigation_area=*/false};
+  areas[1] = {"back_lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  ctx->target_area_index = 1;
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+    ASSERT_TRUE(ctx->single_area_target.has_value());
+  }
+
+  auto end_tree = makeEndSessionTree();
+  ASSERT_EQ(end_tree.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_FALSE(ctx->single_area_target.has_value());
+  EXPECT_FALSE(ctx->target_area_index.has_value());
+
+  // Next session: normal iteration from area 0.
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(ctx->current_area, 0);
+}
+
+TEST_F(GetNextUnmowedAreaTest, CrossHatchPhaseReachesPlannerAndEndSessionAdvancesIt)
+{
+  using Plan = mowgli_behavior::PlanCoverageArea::PlanCoverage;
+  std::vector<Plan::Goal> goals;
+  auto action = rclcpp_action::create_server<Plan>(
+      server_node,
+      "/plan_coverage",
+      [&goals](const auto&, const std::shared_ptr<const Plan::Goal> goal)
+      {
+        goals.push_back(*goal);
+        return rclcpp_action::GoalResponse::REJECT;
+      },
+      [](const auto&)
+      {
+        return rclcpp_action::CancelResponse::ACCEPT;
+      },
+      [](const auto&) {});
+  executor.add_node(ctx->node);
+  factory.registerNodeType<mowgli_behavior::PlanCoverageArea>("PlanCoverageArea");
+  areas[0] = {"lawn", false};
+  waitForService();
+  ctx->mow_cross_hatch = true;
+  auto plan = factory.createTreeFromText(
+      "<root BTCPP_format=\"4\"><BehaviorTree ID=\"Test\"><PlanCoverageArea/>"
+      "</BehaviorTree></root>",
+      blackboard);
+  for (double angle : {-1.0, 25.0})
+  {
+    blackboard->set("mow_angle_deg", angle);
+    EXPECT_EQ(tickToCompletion(plan), BT::NodeStatus::FAILURE);  // fake server rejects
+    ASSERT_FALSE(goals.empty());
+    EXPECT_DOUBLE_EQ(goals.back().mow_angle_deg, angle);
+    EXPECT_FALSE(goals.back().perpendicular);
+    ctx->cross_hatch[0].used = true;  // simulate coverage having started
+    auto end = makeEndSessionTree();
+    EXPECT_EQ(end.tickOnce(), BT::NodeStatus::SUCCESS);
+    EXPECT_EQ(tickToCompletion(plan), BT::NodeStatus::FAILURE);
+    EXPECT_TRUE(goals.back().perpendicular);
+    EXPECT_EQ(tickToCompletion(plan), BT::NodeStatus::FAILURE);  // same-session replan
+    EXPECT_TRUE(goals.back().perpendicular);
+    ctx->cross_hatch[0].used = true;
+    EXPECT_EQ(end.tickOnce(), BT::NodeStatus::SUCCESS);
+  }
+}
+
+TEST_F(GetNextUnmowedAreaTest, SelectedAreaOnlyAdvancesThatArea)
+{
+  ctx->mow_cross_hatch = true;
+  ctx->single_area_target = 2u;
+  ctx->cross_hatch[0].begin(true);  // planned but not mowed
+  ctx->cross_hatch[2].begin(true);
+  ctx->cross_hatch[2].used = true;
+  auto end = makeEndSessionTree();
+  ASSERT_EQ(end.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_FALSE(ctx->single_area_target.has_value());
+  EXPECT_FALSE(ctx->cross_hatch[0].begin(true));
+  EXPECT_TRUE(ctx->cross_hatch[2].begin(true));
+  // A subsequent all-areas run advances each used area independently.
+  ctx->cross_hatch[0].used = true;
+  ctx->cross_hatch[2].used = true;
+  ASSERT_EQ(end.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_TRUE(ctx->cross_hatch[0].next());
+  EXPECT_FALSE(ctx->cross_hatch[2].next());
+}
+
+TEST_F(GetNextUnmowedAreaTest, OrientationServiceEditsNextWithoutChangingActivePlan)
+{
+  using Service = mowgli_interfaces::srv::CoverageOrientation;
+  ctx->coverage_resume_path = ::testing::TempDir() + "/cross_hatch_service.txt";
+  ctx->mow_cross_hatch = true;
+  ctx->node->declare_parameter<double>("mow_angle_deg", 25.0);
+  ctx->cross_hatch[2].begin(true);
+  ctx->cross_hatch[2].used = true;
+  areas[2] = {"Back", false};
+  mowgli_behavior::CoverageOrientationService service(*ctx->node, ctx);
+  auto orientation_tick = ctx->node->create_wall_timer(std::chrono::milliseconds(10),
+                                                       [&]()
+                                                       {
+                                                         service.processPending();
+                                                       });
+  executor.add_node(ctx->node);
+  auto client =
+      server_node->create_client<Service>("/test_get_next_unmowed_area/coverage_orientation");
+  ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(5)));
+  auto req = std::make_shared<Service::Request>();
+  req->area_index = 2;
+  auto call = [&]()
+  {
+    auto future = client->async_send_request(req);
+    EXPECT_EQ(executor.spin_until_future_complete(future, std::chrono::seconds(5)),
+              rclcpp::FutureReturnCode::SUCCESS);
+    return future.get();
+  };
+  auto status = call();
+  ASSERT_TRUE(status->success);
+  EXPECT_TRUE(status->next_perpendicular);
+  EXPECT_DOUBLE_EQ(status->base_angle_deg, 25.0);
+  req->set_next = true;
+  req->perpendicular = false;
+  status = call();
+  ASSERT_TRUE(status->success);
+  EXPECT_TRUE(status->current_active);
+  EXPECT_FALSE(status->current_perpendicular);
+  EXPECT_FALSE(status->next_perpendicular);
+  auto end = makeEndSessionTree();
+  end.tickOnce();
+  EXPECT_FALSE(ctx->cross_hatch[2].begin(true));
+  // Persistence failure must not pretend the requested change was saved.
+  req->perpendicular = true;
+  const auto path = ctx->coverage_resume_path;
+  std::filesystem::create_directory(path + ".tmp");
+  EXPECT_FALSE(call()->success);
+  EXPECT_FALSE(ctx->cross_hatch[2].next());
+  BTContext disk;
+  disk.coverage_resume_path = path;
+  ASSERT_TRUE(loadCoverageResumeState(disk));
+  EXPECT_FALSE(disk.cross_hatch.at(2).next());
+  std::filesystem::remove(path + ".tmp");
+  std::filesystem::remove(path);
+  ctx->coverage_resume_path.clear();
+  req->perpendicular = true;
+  EXPECT_FALSE(call()->success);
+  EXPECT_FALSE(ctx->cross_hatch[2].next());
+}
+
+TEST_F(GetNextUnmowedAreaTest, OrientationRequestsValidateOriginalMapIdsBeforeMutating)
+{
+  using Service = mowgli_interfaces::srv::CoverageOrientation;
+  areas = {{0, {"Front", false}}, {1, {"Passage", true}}, {2, {"Back", false}}};
+  ctx->coverage_resume_path = ::testing::TempDir() + "/cross_hatch_validation.txt";
+  std::filesystem::remove(ctx->coverage_resume_path);
+  mowgli_behavior::CoverageOrientationService orientation(*ctx->node, ctx);
+  auto timer = ctx->node->create_wall_timer(std::chrono::milliseconds(10),
+                                            [&]()
+                                            {
+                                              orientation.processPending();
+                                            });
+  executor.add_node(ctx->node);
+  auto client =
+      server_node->create_client<Service>("/test_get_next_unmowed_area/coverage_orientation");
+  ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(5)));
+  waitForService();
+  for (const uint32_t index : {1u, 3u, UINT32_MAX, 1u})
+  {
+    auto request = std::make_shared<Service::Request>();
+    request->area_index = index;
+    request->set_next = true;
+    request->perpendicular = true;
+    auto future = client->async_send_request(request);
+    ASSERT_EQ(executor.spin_until_future_complete(future, std::chrono::seconds(5)),
+              rclcpp::FutureReturnCode::SUCCESS);
+    EXPECT_FALSE(future.get()->success);
+    EXPECT_TRUE(ctx->cross_hatch.empty());
+    EXPECT_FALSE(std::filesystem::exists(ctx->coverage_resume_path));
+  }
+  for (const uint32_t index : {0u, 2u})
+  {
+    auto request = std::make_shared<Service::Request>();
+    request->area_index = index;
+    request->set_next = true;
+    request->perpendicular = true;
+    auto future = client->async_send_request(request);
+    ASSERT_EQ(executor.spin_until_future_complete(future, std::chrono::seconds(5)),
+              rclcpp::FutureReturnCode::SUCCESS);
+    EXPECT_TRUE(future.get()->success);
+    EXPECT_TRUE(ctx->cross_hatch.at(index).next());
+  }
+  std::filesystem::remove(ctx->coverage_resume_path);
+}
+
+TEST_F(GetNextUnmowedAreaTest, OrientationQueueDefersWritesAndOrdersThemAfterSessionEnd)
+{
+  using Service = mowgli_interfaces::srv::CoverageOrientation;
+  areas[2] = {"Back", false};
+  ctx->coverage_resume_path = ::testing::TempDir() + "/cross_hatch_queue.txt";
+  ctx->mow_cross_hatch = true;
+  ctx->cross_hatch[2].begin(true);
+  ctx->cross_hatch[2].used = true;
+  mowgli_behavior::CoverageOrientationService orientation(*ctx->node, ctx);
+  executor.add_node(ctx->node);
+  auto client =
+      server_node->create_client<Service>("/test_get_next_unmowed_area/coverage_orientation");
+  ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(5)));
+  waitForService();
+  auto request = std::make_shared<Service::Request>();
+  request->area_index = 2;
+  request->set_next = true;
+  request->perpendicular = false;
+  auto first = client->async_send_request(request);
+  EXPECT_EQ(executor.spin_until_future_complete(first, std::chrono::milliseconds(100)),
+            rclcpp::FutureReturnCode::TIMEOUT);
+  EXPECT_FALSE(ctx->cross_hatch[2].next_override.has_value());
+  auto end = makeEndSessionTree();
+  ASSERT_EQ(end.tickOnce(), BT::NodeStatus::SUCCESS);
+  ASSERT_TRUE(ctx->cross_hatch[2].next());
+  auto timer = ctx->node->create_wall_timer(std::chrono::milliseconds(10),
+                                            [&]()
+                                            {
+                                              orientation.processPending();
+                                            });
+  ASSERT_EQ(executor.spin_until_future_complete(first, std::chrono::seconds(5)),
+            rclcpp::FutureReturnCode::SUCCESS);
+  ASSERT_TRUE(first.get()->success);
+  EXPECT_FALSE(ctx->cross_hatch[2].next());
+  BTContext disk;
+  disk.coverage_resume_path = ctx->coverage_resume_path;
+  ASSERT_TRUE(loadCoverageResumeState(disk));
+  EXPECT_FALSE(disk.cross_hatch.at(2).next());
+  EXPECT_EQ(disk.current_command, 0u);
+  // A later write must win; reads are serialized behind the same queue.
+  request->perpendicular = true;
+  auto second = client->async_send_request(request);
+  request = std::make_shared<Service::Request>();
+  request->area_index = 2;
+  auto read = client->async_send_request(request);
+  ASSERT_EQ(executor.spin_until_future_complete(read, std::chrono::seconds(5)),
+            rclcpp::FutureReturnCode::SUCCESS);
+  EXPECT_TRUE(second.get()->success);
+  EXPECT_TRUE(read.get()->next_perpendicular);
+  std::filesystem::remove(ctx->coverage_resume_path);
+}
+
+TEST_F(GetNextUnmowedAreaTest, FollowStripLatchesCoverageEvenWithoutBladeService)
+{
+  using Follow = mowgli_behavior::FollowStrip::Nav2FollowPath;
+  auto action = rclcpp_action::create_server<Follow>(
+      server_node,
+      "/follow_path",
+      [](const auto&, const auto&)
+      {
+        return rclcpp_action::GoalResponse::REJECT;
+      },
+      [](const auto&)
+      {
+        return rclcpp_action::CancelResponse::ACCEPT;
+      },
+      [](const auto&) {});
+  ctx->current_area = 2;
+  ctx->mow_cross_hatch = true;
+  ctx->cross_hatch[2].begin(true);
+  // FollowStrip::onStart measures the gap to the first unit through the TF
+  // buffer (blade spin-up deferral, ae6d5780). An empty buffer means "no pose"
+  // and takes the safe path, exactly like the live stack before the first TF.
+  ctx->tf_buffer = std::make_shared<tf2_ros::Buffer>(ctx->node->get_clock());
+  nav_msgs::msg::Path path;
+  path.header.frame_id = "map";
+  path.poses.resize(2);
+  path.poses[1].pose.position.x = 1.0;
+  ctx->current_strip_subpaths = {path};
+  factory.registerNodeType<mowgli_behavior::FollowStrip>("FollowStrip");
+  auto tree = factory.createTreeFromText(
+      "<root BTCPP_format=\"4\"><BehaviorTree ID=\"Test\"><FollowStrip/></BehaviorTree></root>",
+      blackboard);
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+  EXPECT_TRUE(ctx->cross_hatch[2].used);
+  tree.haltTree();  // blade-off does not change the latch
+  EXPECT_TRUE(ctx->cross_hatch[2].used);
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);  // repeated startup is idempotent
+  tree.haltTree();
+  auto end = makeEndSessionTree();
+  EXPECT_EQ(end.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(end.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_TRUE(ctx->cross_hatch[2].next());
+  EXPECT_EQ(ctx->cross_hatch.size(), 1u);
+}
+
+TEST_F(GetNextUnmowedAreaTest, OrientationUnavailableMapRejectsWithoutCreatingState)
+{
+  using Service = mowgli_interfaces::srv::CoverageOrientation;
+  service.reset();
+  mowgli_behavior::CoverageOrientationService orientation(*ctx->node, ctx);
+  auto timer = ctx->node->create_wall_timer(std::chrono::milliseconds(10),
+                                            [&]()
+                                            {
+                                              orientation.processPending();
+                                            });
+  executor.add_node(ctx->node);
+  auto client =
+      server_node->create_client<Service>("/test_get_next_unmowed_area/coverage_orientation");
+  ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(5)));
+  auto request = std::make_shared<Service::Request>();
+  request->set_next = true;
+  auto future = client->async_send_request(request);
+  ASSERT_EQ(executor.spin_until_future_complete(future, std::chrono::seconds(5)),
+            rclcpp::FutureReturnCode::SUCCESS);
+  EXPECT_FALSE(future.get()->success);
+  EXPECT_TRUE(ctx->cross_hatch.empty());
+}
+
+TEST_F(GetNextUnmowedAreaTest, OrientationQueueIsBoundedAndDestructionRepliesToDeferredClients)
+{
+  using Service = mowgli_interfaces::srv::CoverageOrientation;
+  auto orientation = std::make_unique<mowgli_behavior::CoverageOrientationService>(*ctx->node, ctx);
+  // Service callbacks may run concurrently with the tick owner. With no ticks,
+  // no request may mutate context, even on a multi-threaded executor.
+  executor.remove_node(ctx->helper_node);
+  executor.remove_node(server_node);
+  rclcpp::executors::MultiThreadedExecutor multi(rclcpp::ExecutorOptions(), 2);
+  multi.add_node(ctx->node);
+  multi.add_node(ctx->helper_node);
+  multi.add_node(server_node);
+  auto client =
+      server_node->create_client<Service>("/test_get_next_unmowed_area/coverage_orientation",
+                                          rclcpp::ServicesQoS().keep_last(64));
+  ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(5)));
+  std::vector<rclcpp::Client<Service>::FutureAndRequestId> futures;
+  std::thread spin(
+      [&]()
+      {
+        multi.spin();
+      });
+  for (int i = 0; i < 40; ++i)
+  {
+    auto request = std::make_shared<Service::Request>();
+    request->set_next = true;
+    futures.push_back(client->async_send_request(request));
+  }
+  // The last request can only complete via the busy response; the first 32
+  // must remain pending until the owner runs or the service is destroyed.
+  const auto ready = futures.back().wait_for(std::chrono::seconds(5));
+  multi.cancel();
+  spin.join();
+  ASSERT_EQ(ready, std::future_status::ready);
+  EXPECT_FALSE(futures.back().get()->success);
+  EXPECT_EQ(futures.front().wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+  EXPECT_TRUE(ctx->cross_hatch.empty());
+  orientation.reset();
+  ASSERT_EQ(multi.spin_until_future_complete(futures.front(), std::chrono::seconds(5)),
+            rclcpp::FutureReturnCode::SUCCESS);
+  EXPECT_FALSE(futures.front().get()->success);
+}

@@ -9,12 +9,12 @@ rosbag analysis.
 
 Subscribed topics
 -----------------
-``/cmd_vel_raw``   geometry_msgs/TwistStamped   unshaped command in (twist_mux,
+``/cmd_vel_raw``   geometry_msgs/Twist          unshaped command in (twist_mux,
                                                      teleop, Nav2, ...)
 
 Published topics
 ---------------
-``/cmd_vel``       geometry_msgs/TwistStamped   slew-limited command out; this
+``/cmd_vel``       geometry_msgs/Twist          slew-limited command out; this
                                                      is what ``mower_mcu_driver``
                                                      subscribes to
 
@@ -50,7 +50,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import Twist
 
 
 class CmdVelSlewNode(Node):
@@ -81,9 +81,9 @@ class CmdVelSlewNode(Node):
         qos = QoSProfile(depth=10,
                          reliability=QoSReliabilityPolicy.RELIABLE,
                          history=QoSHistoryPolicy.KEEP_LAST)
-        self.create_subscription(TwistStamped, '/cmd_vel_raw',
+        self.create_subscription(Twist, '/cmd_vel_raw',
                                  self._on_cmd_vel_raw, qos)
-        self._pub = self.create_publisher(TwistStamped, '/cmd_vel', qos)
+        self._pub = self.create_publisher(Twist, '/cmd_vel', qos)
 
         self.create_timer(1.0 / self._rate, self._tick)
         self.get_logger().info(
@@ -119,25 +119,23 @@ class CmdVelSlewNode(Node):
             self._cur_ang = 0.0
             tgt_lin, tgt_ang = 0.0, 0.0
         else:
-            tgt_lin = self._tgt_msg.twist.linear.x
-            tgt_ang = self._tgt_msg.twist.angular.z
+            tgt_lin = self._tgt_msg.linear.x
+            tgt_ang = self._tgt_msg.angular.z
             self._cur_lin = self._slew(self._cur_lin, tgt_lin,
                                        self._max_linear_accel, dt)
             self._cur_ang = self._slew(self._cur_ang, tgt_ang,
                                        self._max_angular_accel, dt)
 
-        out = TwistStamped()
-        out.header.stamp = now.to_msg()
-        out.header.frame_id = self._frame_id
+        out = Twist()
         if self._tgt_msg is not None:
             # Pass through every component we do not shape.
-            src = self._tgt_msg.twist
-            out.twist.linear.y = src.linear.y
-            out.twist.linear.z = src.linear.z
-            out.twist.angular.x = src.angular.x
-            out.twist.angular.y = src.angular.y
-        out.twist.linear.x = self._cur_lin
-        out.twist.angular.z = self._cur_ang
+            src = self._tgt_msg
+            out.linear.y = src.linear.y
+            out.linear.z = src.linear.z
+            out.angular.x = src.angular.x
+            out.angular.y = src.angular.y
+        out.linear.x = self._cur_lin
+        out.angular.z = self._cur_ang
         self._pub.publish(out)
 
         # Exact echo: full float precision, one line per published command.

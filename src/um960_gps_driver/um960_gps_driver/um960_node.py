@@ -46,12 +46,15 @@ FIX_BEARING_IDS = frozenset({"BESTNAV", "BESTNAVA"})
 FIXED_POS_TYPES = frozenset({1, 10, 11, 12, 17, 19})
 
 # NMEA GGA quality -> sensor_msgs/NavSatStatus.STATUS_*.
+# Humble only knows NO_FIX(-1) / FIX(0) / SBAS_FIX(1) / GBAS_FIX(2). Follow the
+# nmea_navsat_driver convention: differential -> SBAS_FIX, RTK fixed *and* float ->
+# GBAS_FIX (the gate distinguishes them by position covariance), dead reckoning -> FIX.
 STATUS_BY_QUALITY = {
     0: NavSatStatus.STATUS_NO_FIX,
     1: NavSatStatus.STATUS_FIX,
-    2: NavSatStatus.STATUS_GBAS_FIX,
-    4: NavSatStatus.STATUS_FIX,
-    5: NavSatStatus.STATUS_FIX,
+    2: NavSatStatus.STATUS_SBAS_FIX,
+    4: NavSatStatus.STATUS_GBAS_FIX,
+    5: NavSatStatus.STATUS_GBAS_FIX,
     6: NavSatStatus.STATUS_FIX,
 }
 
