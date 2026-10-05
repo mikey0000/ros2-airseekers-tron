@@ -1,26 +1,19 @@
 # base_keys
 
-Reads the mower's top-panel buttons from an evdev `/dev/input` node and publishes
-`mower_interfaces/MowerBaseButtonInfo` on `/mower_base/button_info`.
+Top-panel buttons for the Airseekers Tron. The node reads the `key input` evdev device (`/dev/input/event5`, vendor path `/dev/keyboard`) and publishes on:
+- `/mower_base/button_info` (`MowerBaseButtonInfo`);
+- `/mower_base/key_pressed` (`std_msgs/UInt8`).
 
-## Run
+It also maps keys to actions:
+- power short calls `/clear_estop`;
+- start/pause sends `HighLevelControl` START or STOP;
+- dock sends HOME;
+- power long only logs by default.
+
+The full key table, vendor behaviour and parameters are in [`docs/buttons.md`](../../docs/buttons.md).
 
 ```bash
-ros2 run base_keys base_keys_node \
-  --ros-args -p device:=/dev/input/event0 -p long_press_ms:=3000
+ros2 run base_keys base_keys_node                         # auto-detects the device
+ros2 run base_keys base_keys_node --ros-args -p actions_enabled:=false   # publish only
+python3 -m pytest -q src/base_keys/test                   # no ROS / evdev needed
 ```
-
-## Keycode mapping — must be confirmed on device
-
-The physical keycode → semantic mapping was not recoverable from the stripped binary.
-Defaults are:
-
-| Parameter | Default | Key |
-|---|---|---|
-| `key_work_pause` | `119` | `KEY_PAUSE` |
-| `key_go_docking` | `102` | `KEY_HOME` |
-| `key_power` | `116` | `KEY_POWER` |
-| `long_press_ms` | `3000` | short/long power threshold |
-
-Confirm with `evtest` on the mower (press each button and read the `EV_KEY` code) and
-override via parameters.

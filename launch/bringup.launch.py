@@ -10,13 +10,21 @@ not take the stack down; the drivers log the open failure and retry.
 Note: bumper_controller subscribes /mower_base/status (MowerBaseDevStatus), which
 is published by the not-yet-ported mower_base node; it starts dormant until that
 lands (the MCU still enforces the instant bumper cutoff regardless).
+
+base_keys (``keys:=true``, default) reads the top-panel buttons from the "key input"
+evdev device and maps them to /clear_estop and HighLevelControl (docs/buttons.md).
 """
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument('keys', default_value='true',
+                              description='Start the top-panel button node (base_keys).'),
         Node(
             package='mower_mcu_driver',
             executable='mcu_node',
@@ -69,6 +77,21 @@ def generate_launch_description():
                 'pid_tolerance': 0.03,
                 # twist_mux input (mower_teleop/config/twist_mux.yaml), not /cmd_vel.
                 'cmd_vel_topic': '/cmd_vel_bumper',
+            }],
+            output='screen',
+            respawn=True,
+            respawn_delay=2.0,
+        ),
+        Node(
+            package='base_keys',
+            executable='base_keys_node',
+            name='base_keys',
+            condition=IfCondition(LaunchConfiguration('keys')),
+            parameters=[{
+                'device_name': 'key input',     # /dev/input/event5 (vendor: /dev/keyboard)
+                'long_press_ms': 3000,
+                'debounce_ms': 50,
+                'power_long_action': 'log_only',
             }],
             output='screen',
             respawn=True,

@@ -4,15 +4,19 @@
   <name>base_keys</name>
   <version>0.1.0</version>
   <description>
-    Airseekers Tron top-panel button driver (evdev) — publishes
-    mower_interfaces/MowerBaseButtonInfo on /mower_base/button_info.
+    Airseekers Tron top-panel button driver (evdev "key input" device) — publishes
+    mower_interfaces/MowerBaseButtonInfo on /mower_base/button_info and the
+    key_pressed bitmask on /mower_base/key_pressed, and maps keys to actions
+    (/clear_estop, HighLevelControl START/STOP/HOME).
   </description>
   <maintainer email="michael@example.com">michael</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>mower_interfaces</depend>
+  <depend>mowgli_interfaces</depend>
 
   <test_depend>python3-pytest</test_depend>
 

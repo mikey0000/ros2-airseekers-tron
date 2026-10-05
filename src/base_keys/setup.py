@@ -8,13 +8,13 @@ setup(
     packages=[package_name],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name, ['package.xml', 'README.md']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='michael',
     maintainer_email='michael@example.com',
-    description='Airseekers Tron top-panel button driver (evdev -> MowerBaseButtonInfo).',
+    description='Airseekers Tron top-panel buttons (evdev -> MowerBaseButtonInfo + key actions).',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
