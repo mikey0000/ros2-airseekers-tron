@@ -328,3 +328,15 @@ perception = IncludeLaunchDescription(
    arm64 mediamtx image.
 8. Conflicts with the vendor services if any are still enabled (`base_cameras`,
    `mower-webcam`, `mower-cam-keeper`, port 8080).
+
+## Verified on the mower (2026-10-06)
+
+- `rknn-toolkit-lite2` 2.3.0 + `librknnrt.so` 2.3.0 (mounted from `/userdata/ros2/lib`): `best_large_0208.rknn`
+  loads, `init_runtime(NPU_CORE_0_1_2)` succeeds, inference on a 640x480x3 uint8 input takes **86 ms**
+  and returns the expected 9 outputs `[1,64,80,60] [1,22,80,60] [1,1,80,60] ... [1,64,20,15] [1,22,20,15] [1,1,20,15]`.
+  RKNN driver 0.9.8.
+- Side cameras (`/dev/left_oa_camera` = video53, `/dev/right_oa_camera` = video44) expose UYVY/NV16/NV61/NV21
+  up to 1920x1080 (stepwise) but `v4l2_camera` fails with "Failed requesting pixel format: Invalid argument":
+  the rkisp pipeline must be configured (media-ctl / rkaiq) before the capture node can set a format. Open.
+- Rear camera (`/dev/rear_camera` = video62) is MJPG-only (1920x1080 ... 640x480), so `rear_driver` defaults to
+  the OpenCV MJPEG path in `mower_cameras`.
