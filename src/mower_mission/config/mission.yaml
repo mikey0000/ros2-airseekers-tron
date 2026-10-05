@@ -75,7 +75,7 @@ behavior_tree_node:
     dock_action_timeout_s: 400.0
 
     # --- persistence / output ---------------------------------------------
-    coverage_resume_path: ~/.ros/mower_mission/coverage_resume.txt
+    coverage_resume_path: /ros2_ws/maps/coverage_resume.txt   # compose mounts /userdata/ros2/maps here (persistent)
     map_frame: map
     status_rate_hz: 1.0
     zero_burst_s: 0.5                 # /cmd_vel_emergency zero burst on stop / emergency
