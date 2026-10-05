@@ -1,0 +1,1045 @@
+"""Mission state machine tests (no ROS).
+
+Every effect list produced by the FSM goes through :meth:`Harness._apply`,
+which simulates the blade and asserts the blade invariants on every step:
+
+* the blade is never commanded on while a transit / dock / undock / backup
+  action is started;
+* whenever a status is published while the blade is on, the state is
+  MOWING (2, while following) or MANUAL_MOWING (4).
+"""
+
+import random
+
+import pytest
+
+from mower_mission import mission_fsm as f
+from mower_mission.resume import ResumeCursor
+
+MOVING_ACTIONS = (f.ACT_NAV, f.ACT_DOCK, f.ACT_UNDOCK, f.ACT_BACKUP)
+
+
+def square(x0, y0, size):
+    return {'name': 'a', 'outer': [(x0, y0), (x0 + size, y0), (x0 + size, y0 + size),
+                                   (x0, y0 + size)], 'obstacles': [],
+            'is_navigation_area': False}
+
+
+def line(x0, y0, x1, y1, n=11):
+    return [(x0 + (x1 - x0) * k / (n - 1), y0 + (y1 - y0) * k / (n - 1), 0.0) for k in range(n)]
+
+
+class Harness:
+    def __init__(self, cursor=None, **params):
+        self.t = 0.0
+        self.fsm = f.MissionFSM(f.Params.from_dict(params), cursor=cursor, now=0.0)
+        i = self.fsm.inputs
+        i.emergency_stamp = 0.0
+        i.battery_percent = 80.0
+        i.fix_type = 3
+        i.pose = (0.0, 0.0, 0.0)
+        self.blade = False
+        self.fx = []
+        self.silent = False
+        self.areas = [square(0, 0, 5)]
+        self.saved = None
+        self._apply(self.fsm.initial_effects(0.0))
+        self.tick()
+
+    # ---- effect sink with invariant checks ---------------------------
+    def _apply(self, fx):
+        for e in fx:
+            self.fx.append(e)
+            if isinstance(e, f.BladeOn):
+                self.blade = True
+                assert f.blade_allowed(self.fsm) or self.fsm.phase in ('MOWING', 'MANUAL_MOWING')
+            elif isinstance(e, f.BladeOff):
+                self.blade = False
+            elif isinstance(e, f.StartAction) and e.name in MOVING_ACTIONS:
+                assert not self.blade, 'blade on while starting %s' % e.name
+            elif isinstance(e, f.PublishStatus) and self.blade:
+                assert e.status['state_name'] in ('MOWING', 'MANUAL_MOWING'), e.status
+            elif isinstance(e, f.SaveResume):
+                self.saved = e.text
+            elif isinstance(e, f.Log):
+                assert not e.text.startswith('safety:'), e.text
+        if self.blade:
+            assert f.blade_allowed(self.fsm), (self.fsm.phase, self.fsm.mission)
+        return fx
+
+    # ---- drivers -------------------------------------------------------
+    def tick(self, dt=0.1, n=1):
+        for _ in range(n):
+            self.t += dt
+            if not self.silent:
+                self.fsm.inputs.emergency_stamp = self.t
+            self._apply(self.fsm.tick(self.t))
+
+    def cmd(self, c):
+        ok, fx = self.fsm.command(c, self.t)
+        self._apply(fx)
+        return ok
+
+    def mark(self):
+        return len(self.fx)
+
+    def since(self, mark, kind=None):
+        return [e for e in self.fx[mark:] if kind is None or isinstance(e, kind)]
+
+    def pending_action(self, name=None):
+        a = self.fsm._action
+        assert a is not None, 'no pending action'
+        if name is not None:
+            assert a.name == name, a.name
+        return a
+
+    def goal(self, name):
+        a = self.pending_action(name)
+        for e in reversed(self.fx):
+            if isinstance(e, f.StartAction) and e.token == a.token:
+                return e.goal
+        raise AssertionError('goal not found')
+
+    def finish(self, name, outcome=f.SUCCEEDED, result=None, arrive=True):
+        a = self.pending_action(name)
+        if arrive and outcome == f.SUCCEEDED and name == f.ACT_FOLLOW:
+            for p in self.goal(name)['poses']:       # drive the path to its end
+                self.fsm.inputs.pose = (p[0], p[1], 0.0)
+                self.tick(dt=0.01)
+        self._apply(self.fsm.on_action_result(a.token, outcome, result or {}, self.t))
+
+    def answer_services(self):
+        """Answer pending get_mowing_area / add_area calls from ``self.areas``."""
+        for _ in range(50):
+            s = self.fsm._service
+            if s is None:
+                return
+            req = None
+            for e in reversed(self.fx):
+                if isinstance(e, f.CallService) and e.token == s.token:
+                    req = e
+                    break
+            if req.name == f.SRV_GET_AREA:
+                idx = req.request['index']
+                if idx < len(self.areas):
+                    resp = (True, {'success': True, 'area': self.areas[idx]})
+                else:
+                    resp = (True, {'success': False})
+            else:
+                self.add_area_req = req.request
+                resp = (True, {'success': True})
+            self._apply(self.fsm.on_service_result(s.token, *resp, now=self.t))
+
+    @property
+    def name(self):
+        return self.fsm.phase
+
+    def statuses(self, mark=0):
+        return [e.status['state_name'] for e in self.since(mark, f.PublishStatus)]
+
+
+def plan(subpaths):
+    return {'success': True, 'drivable_subpaths': subpaths,
+            'full_path': [p for sp in subpaths for p in sp]}
+
+
+def start_until_planning(h):
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'WAITING_FOR_RTK'
+    h.tick()
+    assert h.name == 'PLANNING'
+
+
+def follow_current(h, cutting=True):
+    """Blade spin-up confirmed, then follow_path succeeds."""
+    h.fsm.inputs.is_cutting = cutting
+    h.tick()
+    h.finish(f.ACT_FOLLOW)
+
+
+# =====================================================================
+# basics / emergency
+# =====================================================================
+def test_initial_idle():
+    h = Harness()
+    assert (h.fsm.state, h.name) == (1, 'IDLE')
+
+
+def test_idle_docked_and_charging_names():
+    h = Harness()
+    h.fsm.inputs.docked = True
+    h.tick()
+    assert h.name == 'IDLE_DOCKED'
+    h.fsm.inputs.is_charging = True
+    h.tick()
+    assert h.name == 'CHARGING'
+
+
+def test_emergency_silence_then_recovers_to_idle():
+    h = Harness()
+    h.silent = True
+    h.tick(n=19)
+    assert h.name == 'IDLE'
+    m = h.mark()
+    h.tick(n=3)
+    assert h.name == 'EMERGENCY' and h.fsm.state == 0
+    assert h.since(m, f.ZeroBurst) and h.since(m, f.BladeOff) and h.since(m, f.CancelActions)
+    h.silent = False
+    h.tick()
+    assert h.name == 'IDLE'
+
+
+def test_emergency_refuses_commands_except_stop_and_reset():
+    h = Harness()
+    h.fsm.inputs.emergency_active = True
+    h.tick()
+    assert h.name == 'EMERGENCY'
+    for c in (f.CMD_START, f.CMD_HOME, f.CMD_RECORD_AREA, f.CMD_MANUAL_MOW):
+        assert not h.cmd(c)
+    m = h.mark()
+    assert h.cmd(f.CMD_STOP)
+    assert h.name == 'EMERGENCY'
+    assert h.cmd(f.CMD_RESET_EMERGENCY)
+    calls = h.since(m, f.CallService)
+    assert [c.name for c in calls] == [f.SRV_CLEAR_ESTOP]
+
+
+def test_lift_from_mower_base_is_an_emergency():
+    h = Harness()
+    h.fsm.inputs.lift = True
+    h.tick()
+    assert h.name == 'EMERGENCY' and 'lift' in h.fsm.sub_state
+
+
+def test_unsupported_commands():
+    h = Harness()
+    assert not h.cmd(f.CMD_DELETE_MAPS)
+    assert not h.cmd(f.CMD_S2)
+
+
+# =====================================================================
+# manual mowing
+# =====================================================================
+def test_manual_mow_publishes_state_4_before_blade_on():
+    h = Harness()
+    m = h.mark()
+    assert h.cmd(f.CMD_MANUAL_MOW)
+    seq = [type(e) for e in h.since(m) if isinstance(e, (f.PublishStatus, f.BladeOn))]
+    assert seq == [f.PublishStatus, f.BladeOn]
+    assert h.since(m, f.PublishStatus)[0].status['state'] == 4
+    assert h.blade
+
+
+def test_manual_mow_stop_turns_blade_off_first():
+    h = Harness()
+    h.cmd(f.CMD_MANUAL_MOW)
+    m = h.mark()
+    assert h.cmd(f.CMD_STOP)
+    kinds = [type(e) for e in h.since(m) if isinstance(e, (f.BladeOff, f.PublishStatus))]
+    assert kinds[0] is f.BladeOff
+    assert h.since(m, f.ZeroBurst)
+    assert h.name == 'IDLE' and not h.blade
+
+
+def test_manual_mow_then_record_blade_off_first():
+    h = Harness()
+    h.cmd(f.CMD_MANUAL_MOW)
+    m = h.mark()
+    assert h.cmd(f.CMD_RECORD_AREA)
+    assert isinstance(h.since(m, (f.BladeOff, f.PublishStatus))[0], f.BladeOff)
+    assert h.name == 'RECORDING' and not h.blade
+
+
+def test_manual_mow_emergency_blade_off_and_no_return_to_manual():
+    h = Harness()
+    h.cmd(f.CMD_MANUAL_MOW)
+    h.fsm.inputs.emergency_active = True
+    h.tick()
+    assert h.name == 'EMERGENCY' and not h.blade
+    h.fsm.inputs.emergency_active = False
+    h.tick()
+    assert h.name == 'IDLE' and not h.blade
+
+
+def test_manual_mow_refused_while_autonomous():
+    h = Harness()
+    start_until_planning(h)
+    assert not h.cmd(f.CMD_MANUAL_MOW)
+    assert not h.cmd(f.CMD_RECORD_AREA)
+
+
+# =====================================================================
+# recording
+# =====================================================================
+def drive_rectangle(h, w=4.0, d=3.0, step=0.1):
+    pts = []
+    for x in range(int(w / step)):
+        pts.append((x * step, 0.0))
+    for y in range(int(d / step)):
+        pts.append((w, y * step))
+    for x in range(int(w / step), 0, -1):
+        pts.append((x * step, d))
+    for y in range(int(d / step), 0, -1):
+        pts.append((0.0, y * step))
+    for p in pts:
+        h.fsm.inputs.pose = (p[0], p[1], 0.0)
+        h.tick()
+
+
+def test_recording_samples_and_drops_close_points():
+    h = Harness()
+    assert h.cmd(f.CMD_RECORD_AREA)
+    assert h.name == 'RECORDING' and h.fsm.state == 3
+    for k in range(10):                     # 4 mm steps, < 5 cm in total: dropped
+        h.fsm.inputs.pose = (0.004 * k, 0.0, 0.0)
+        h.tick()
+    assert len(h.fsm._track) == 1
+    h.fsm.inputs.pose = (0.2, 0.0, 0.0)
+    m = h.mark()
+    h.tick()
+    assert len(h.fsm._track) == 2
+    assert h.since(m, f.PublishTrajectory)[-1].points == [(0.0, 0.0), (0.2, 0.0)]
+
+
+def test_record_finish_saves_simplified_area():
+    h = Harness()
+    h.areas = [square(0, 0, 5), dict(square(10, 0, 2), is_navigation_area=True)]
+    h.cmd(f.CMD_RECORD_AREA)
+    drive_rectangle(h)
+    assert h.cmd(f.CMD_RECORD_FINISH)
+    h.answer_services()
+    req = h.add_area_req
+    assert req['name'] == 'Area 2' and req['is_navigation_area'] is False
+    assert len(req['polygon']) == 4
+    assert h.name == 'RECORDING_COMPLETE' and h.fsm.state == 1
+    h.tick(dt=1.0, n=6)
+    assert h.name == 'IDLE'
+
+
+def test_record_finish_too_small_is_rejected():
+    h = Harness()
+    h.cmd(f.CMD_RECORD_AREA)
+    drive_rectangle(h, w=0.5, d=0.5)
+    assert not h.cmd(f.CMD_RECORD_FINISH)
+    assert h.name == 'IDLE' and 'rejected' in h.fsm.sub_state
+
+
+def test_record_cancel_discards():
+    h = Harness()
+    h.cmd(f.CMD_RECORD_AREA)
+    drive_rectangle(h)
+    m = h.mark()
+    assert h.cmd(f.CMD_RECORD_CANCEL)
+    assert h.name == 'IDLE' and not h.since(m, f.CallService)
+    assert h.fsm._track == []
+
+
+def test_record_add_area_failure_keeps_polygon_in_fallback_file():
+    h = Harness()
+    h.cmd(f.CMD_RECORD_AREA)
+    drive_rectangle(h)
+    h.cmd(f.CMD_RECORD_FINISH)
+    for _ in range(3):                      # get_mowing_area + add_area both unavailable
+        s = h.fsm._service
+        if s is None:
+            break
+        h._apply(h.fsm.on_service_result(s.token, False, {}, h.t))
+    fb = h.since(0, f.SaveRecordingFallback)
+    assert fb and fb[0].name == 'Area 1' and len(fb[0].points) == 4
+    assert h.name == 'IDLE'
+
+
+def test_record_finish_or_cancel_without_recording_refused():
+    h = Harness()
+    assert not h.cmd(f.CMD_RECORD_FINISH)
+    assert not h.cmd(f.CMD_RECORD_CANCEL)
+
+
+# =====================================================================
+# start / preflight
+# =====================================================================
+@pytest.mark.parametrize('setup, reason', [
+    (dict(battery_percent=15.0), 'battery'),
+    (dict(battery_percent=None), 'battery level unknown'),
+    (dict(docked=True, fix_type=0), 'no GNSS fix'),
+    (dict(rain=True), 'rain'),
+])
+def test_preflight_failures(setup, reason):
+    h = Harness()
+    for k, v in setup.items():
+        setattr(h.fsm.inputs, k, v)
+    m = h.mark()
+    assert not h.cmd(f.CMD_START)
+    assert 'PREFLIGHT_CHECK' in h.statuses(m)
+    assert h.name in ('IDLE', 'IDLE_DOCKED') and reason in h.fsm.sub_state
+    assert h.fsm.mission is None
+
+
+def test_start_fails_cleanly_without_map_server():
+    h = Harness()
+    assert h.cmd(f.CMD_START)
+    s = h.fsm._service
+    h._apply(h.fsm.on_service_result(s.token, False, {}, h.t))
+    assert h.name == 'IDLE' and 'get_mowing_area unavailable' in h.fsm.sub_state
+    assert h.fsm.mission is None and not h.since(0, f.StartAction)
+
+
+def test_start_with_no_areas_fails():
+    h = Harness()
+    h.areas = []
+    h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'IDLE' and 'no mowing areas' in h.fsm.sub_state
+
+
+def test_start_docked_undocks_and_fails_cleanly_without_server():
+    h = Harness()
+    h.fsm.inputs.docked = True
+    h.tick()
+    h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'UNDOCKING'
+    g = h.goal(f.ACT_UNDOCK)
+    assert g['distance_m'] == 0.8 and g['wait_for_rtk'] is False
+    h.finish(f.ACT_UNDOCK, f.UNAVAILABLE)
+    assert h.name == 'UNDOCK_FAILED' and 'undock action server unavailable' in h.fsm.sub_state
+    h.tick(dt=1.0, n=6)
+    assert h.name == 'IDLE_DOCKED' and h.fsm.mission is None
+
+
+def test_undock_then_rtk_then_planning_skips_navigation_areas():
+    h = Harness()
+    h.areas = [dict(square(20, 0, 2), is_navigation_area=True), square(0, 0, 5)]
+    h.fsm.inputs.docked = True
+    h.fsm.inputs.fix_type = 2
+    h.tick()
+    h.cmd(f.CMD_START)
+    h.answer_services()
+    h.fsm.inputs.docked = False
+    h.finish(f.ACT_UNDOCK)
+    assert h.name == 'WAITING_FOR_RTK'
+    h.tick(n=5)
+    assert h.name == 'WAITING_FOR_RTK'
+    h.fsm.inputs.fix_type = 3
+    h.tick()
+    assert h.name == 'PLANNING' and h.fsm.mission.area_idx == 1
+    assert h.goal(f.ACT_PLAN)['outer_boundary'] == square(0, 0, 5)['outer']
+
+
+def test_rtk_timeout_aborts_and_docks():
+    h = Harness(rtk_timeout_s=5.0)
+    h.fsm.inputs.fix_type = 2
+    h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick(dt=1.0, n=6)
+    assert h.name == 'COVERAGE_FAILED_DOCKING'
+    assert h.goal(f.ACT_DOCK)['use_vision'] is True
+
+
+def test_plan_server_absent_aborts_then_dock_absent():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.UNAVAILABLE)
+    assert h.name == 'COVERAGE_FAILED_DOCKING' and 'plan_coverage' in h.fsm.sub_state
+    h.finish(f.ACT_DOCK, f.UNAVAILABLE)
+    assert h.name == 'NAV_TO_DOCK_FAILED'
+    h.tick(dt=1.0, n=6)
+    assert h.name == 'IDLE' and h.fsm.mission is None
+
+
+def test_planning_failure_skips_area():
+    h = Harness()
+    h.areas = [square(0, 0, 5), square(10, 0, 5)]
+    start_until_planning(h)
+    m = h.mark()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, {'success': False, 'message': 'degenerate polygon'})
+    assert 'AREA_UNREACHABLE' in h.statuses(m)
+    assert h.name == 'PLANNING' and h.fsm.mission.area_idx == 1
+
+
+# =====================================================================
+# mowing
+# =====================================================================
+def test_full_mow_happy_path_with_transit():
+    h = Harness()
+    h.areas = [square(0, 0, 5), square(10, 0, 5)]
+    start_until_planning(h)
+    sp0 = line(0.2, 0, 4, 0)                 # starts 0.2 m away: no transit
+    sp1 = line(4, 2, 0, 2)                   # 2 m away: transit
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp0, sp1]))
+    assert h.since(0, f.PublishPlan)[-1].poses[0] == sp0[0]
+    assert h.name == 'MOWING' and h.blade
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowCoveragePath'
+    assert g['goal_checker_id'] == 'coverage_goal_checker'
+    assert g['poses'] == sp0
+    h.fsm.inputs.pose = (4, 0, 0)
+    m = h.mark()
+    h.finish(f.ACT_FOLLOW)
+    assert h.name == 'TRANSIT' and not h.blade
+    assert isinstance(h.since(m, (f.BladeOff, f.StartAction))[0], f.BladeOff)
+    st = h.fsm.status()
+    assert st['completed_swaths'] == 1 and st['total_swaths'] == 2
+    assert 40 < st['coverage_percent'] < 60
+    assert h.goal(f.ACT_NAV)['pose'][:2] == (4, 2)
+    h.fsm.inputs.pose = (4, 2, 0)
+    h.finish(f.ACT_NAV)
+    assert h.name == 'MOWING'
+    follow_current(h)
+    # second area
+    assert h.name == 'PLANNING' and h.fsm.mission.area_idx == 1
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(4, 2.3, 10, 2.3)]))
+    assert h.name == 'TRANSIT' and not h.blade    # robot ended area 0 at (0, 2)
+    h.finish(f.ACT_NAV)
+    follow_current(h)
+    m = h.mark()
+    assert h.name == 'RETURNING_HOME'
+    assert 'MOWING_COMPLETE' in h.statuses(m - 10)
+    assert not h.blade and not h.fsm.cursor.available
+    h.fsm.inputs.docked = True
+    h.fsm.inputs.is_charging = True
+    h.finish(f.ACT_DOCK)
+    assert h.name == 'CHARGING' and h.fsm.state == 1
+
+
+def test_close_subpaths_keep_blade_on_without_new_spinup():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0), line(4, 0.3, 0, 0.3)]))
+    follow_current(h)
+    h.fsm.inputs.pose = (4, 0, 0)
+    # first finish happened with pose (0,0): next start (4, 0.3) is far -> transit.
+    assert h.name in ('TRANSIT', 'MOWING')
+    if h.name == 'TRANSIT':
+        h.finish(f.ACT_NAV)
+        h.tick()
+    assert h.fsm._action.name == f.ACT_FOLLOW
+
+
+def test_adjacent_subpath_no_transit():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0), line(4, 0.3, 0, 0.3)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.inputs.pose = (4.0, 0.0, 0.0)
+    m = h.mark()
+    h.finish(f.ACT_FOLLOW)
+    assert not h.since(m, f.BladeOff) and not h.since(m, f.BladeOn)
+    assert h.pending_action(f.ACT_FOLLOW) and h.blade
+
+
+def test_blade_start_retries_then_aborts():
+    h = Harness(blade_confirm_timeout_s=5.0, blade_retry_pause_s=1.0)
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    m = h.mark()
+    h.tick(dt=0.5, n=40)
+    assert len(h.since(m, f.BladeOn)) == 2       # 1 at plan + 2 retries = 3 total
+    assert len(h.since(0, f.BladeOn)) == 3
+    assert h.name == 'COVERAGE_FAILED_DOCKING' and 'blade did not start' in h.fsm.sub_state
+    assert not h.blade
+
+
+def test_blade_confirmed_on_second_attempt():
+    h = Harness(blade_confirm_timeout_s=5.0, blade_retry_pause_s=1.0)
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    h.tick(dt=0.5, n=13)                     # first attempt failed, pause, second started
+    assert len(h.since(0, f.BladeOn)) == 2 and h.fsm._action is None
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    assert h.pending_action(f.ACT_FOLLOW)
+
+
+def test_follow_abort_retries_once_from_nearest_then_skips():
+    h = Harness()
+    start_until_planning(h)
+    sp0, sp1 = line(0, 0, 5, 0, n=11), line(5, 0.3, 0, 0.3)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp0, sp1]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.inputs.pose = (2.1, 0.1, 0.0)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    g = h.goal(f.ACT_FOLLOW)                 # within 0.6 m: no transit, blade stays on
+    assert g['poses'][0] == sp0[4]
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.fsm.mission.skipped == 1 and h.fsm.mission.sub_i == 1
+    assert h.fsm.status()['skipped_swaths'] == 1
+
+
+def test_progress_tracking_never_jumps_to_adjacent_lap():
+    h = Harness()
+    start_until_planning(h)
+    lap1 = line(0, 0, 4, 0, n=41)
+    lap2 = line(4, 0.15, 0, 0.15, n=41)
+    sp = lap1 + lap2                          # one sub-path, two adjacent laps
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp, line(0, 3, 4, 3)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    for x in (0.5, 1.0, 1.5):                 # robot drives lap 1 slightly towards lap 2
+        h.fsm.inputs.pose = (x, 0.1, 0.0)
+        h.tick()
+    assert h.fsm.mission.progress_local == 15
+    st = h.fsm.status()
+    assert st['current_path_index'] == 15 and 10 < st['coverage_percent'] < 20
+    h.cmd(f.CMD_STOP)
+    assert ResumeCursor.loads(h.saved).areas[0].resume_index == 15
+
+
+def test_mowing_complete_reports_final_counts():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    m = h.mark()
+    follow_current(h)
+    done = [e.status for e in h.since(m, f.PublishStatus)
+            if e.status['state_name'] == 'MOWING_COMPLETE'][0]
+    assert done['completed_swaths'] == 1 and done['coverage_percent'] == 100.0
+
+
+def test_premature_follow_success_continues_from_progress():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 5, 0, n=11)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.inputs.pose = (1.5, 0.0, 0.0)
+    h.tick()
+    h.finish(f.ACT_FOLLOW, arrive=False)      # goal checker fired at 1.5 m of 5 m
+    assert h.name == 'MOWING' and h.fsm.cursor.areas[0].completed == set()
+    assert h.goal(f.ACT_FOLLOW)['poses'][0][0] == 1.5
+    h.finish(f.ACT_FOLLOW)                    # now really at the end
+    assert h.name == 'RETURNING_HOME'
+
+
+def test_long_subpath_is_followed_in_chunks():
+    h = Harness(follow_chunk_m=10.0)
+    start_until_planning(h)
+    sp = line(0, 0, 30, 0, n=301)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    goals = []
+    for _ in range(5):
+        if h.fsm._action is None or h.fsm._action.name != f.ACT_FOLLOW:
+            break
+        goals.append(h.goal(f.ACT_FOLLOW)['poses'])
+        h.finish(f.ACT_FOLLOW)
+    assert len(goals) == 3 and all(geo_len(g) <= 10.0 + 1e-6 for g in goals)
+    assert goals[1][0] == goals[0][-1] and goals[-1][-1] == sp[-1]
+    assert h.name == 'RETURNING_HOME' and h.fsm.cursor.available is False
+
+
+def geo_len(poses):
+    from mower_mission.geometry import path_length
+    return path_length(poses)
+
+
+def test_premature_success_retries_exhausted_skips_subpath():
+    h = Harness(follow_premature_retries=2)
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 5, 0, n=11), line(0, 3, 5, 3)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    for _ in range(3):
+        h.finish(f.ACT_FOLLOW, arrive=False)
+    assert h.fsm.mission.skipped == 1 and h.fsm.mission.sub_i == 1
+    assert h.fsm.cursor.areas[0].completed == set()
+
+
+def test_transit_failure_skips_subpath():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3), line(0, 0, 4, 0)]))
+    assert h.name == 'TRANSIT'
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert h.fsm.mission.sub_i == 1 and h.fsm.mission.skipped == 1
+    assert h.name == 'MOWING'
+
+
+def test_follow_server_absent_aborts_mission():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.finish(f.ACT_FOLLOW, f.UNAVAILABLE)
+    assert h.name == 'COVERAGE_FAILED_DOCKING' and not h.blade
+
+
+def test_action_watchdog_timeout_counts_as_failure():
+    h = Harness(follow_timeout_s=10.0)
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    m = h.mark()
+    h.tick(dt=1.0, n=12)
+    assert h.since(m, f.CancelActions)
+    assert h.fsm.mission.retry_used
+
+
+def test_stale_results_are_ignored():
+    h = Harness()
+    start_until_planning(h)
+    tok = h.pending_action(f.ACT_PLAN).token
+    h.cmd(f.CMD_STOP)
+    fx = h.fsm.on_action_result(tok, f.SUCCEEDED, plan([line(0, 0, 1, 0)]), h.t)
+    assert fx == [] and h.name == 'IDLE'
+
+
+# =====================================================================
+# stop / resume / home
+# =====================================================================
+def mow_first_subpath_then_stop(h):
+    start_until_planning(h)
+    sps = [line(0, 0, 4, 0), line(4, 1, 0, 1), line(0, 2, 4, 2)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(sps))
+    follow_current(h)                        # sub-path 0 done
+    assert h.name == 'TRANSIT'
+    h.fsm.inputs.pose = (4, 1, 0)
+    h.finish(f.ACT_NAV)
+    h.tick()                                 # following sub-path 1
+    h.fsm.inputs.pose = (2.05, 1.0, 0.0)
+    m = h.mark()
+    assert h.cmd(f.CMD_STOP)
+    return sps, m
+
+
+def test_stop_keeps_resume_cursor():
+    h = Harness()
+    sps, m = mow_first_subpath_then_stop(h)
+    assert h.name == 'IDLE' and not h.blade
+    assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst)
+    assert h.since(m, f.PublishResumeAvailable)[-1].available
+    cur = ResumeCursor.loads(h.saved)
+    assert cur.current_command == 1 and cur.current_area == 0
+    assert cur.areas[0].completed == {0}
+    assert cur.areas[0].resume_index == 11 + 5     # sub-path 1, nearest pose 5
+
+
+def test_start_after_stop_resumes_from_cursor():
+    h = Harness()
+    sps, _ = mow_first_subpath_then_stop(h)
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(sps))
+    assert h.fsm.mission.sub_i == 1 and h.fsm.mission.start_local == 5
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['poses'][0] == sps[1][5]
+
+
+def test_resume_cursor_survives_restart_via_file():
+    h = Harness()
+    sps, _ = mow_first_subpath_then_stop(h)
+    h2 = Harness(cursor=ResumeCursor.loads(h.saved))
+    assert h2.since(0, f.PublishStatus)
+    start_until_planning(h2)
+    h2.finish(f.ACT_PLAN, f.SUCCEEDED, plan(sps))
+    assert (h2.fsm.mission.sub_i, h2.fsm.mission.start_local) == (1, 5)
+
+
+def test_resume_discarded_when_plan_changes():
+    h = Harness()
+    sps, _ = mow_first_subpath_then_stop(h)
+    start_until_planning(h)
+    changed = [line(0, 0, 4.5, 0)] + sps[1:]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(changed))
+    assert (h.fsm.mission.sub_i, h.fsm.mission.start_local) == (0, 0)
+    assert h.fsm.cursor.areas[0].completed == set()
+
+
+def test_clear_coverage_resume():
+    h = Harness()
+    mow_first_subpath_then_stop(h)
+    ok, msg, fx = h.fsm.clear_resume(h.t)
+    h._apply(fx)
+    assert ok and any(isinstance(e, f.DeleteResume) for e in fx)
+    assert not h.fsm.cursor.available
+    start_until_planning(h)
+    assert h.fsm.mission.resume is False
+
+
+def test_clear_coverage_resume_refused_while_mowing():
+    h = Harness()
+    start_until_planning(h)
+    ok, _msg, _fx = h.fsm.clear_resume(h.t)
+    assert not ok
+
+
+def test_home_mid_mission_docks_and_keeps_cursor():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0), line(0, 2, 4, 2)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    m = h.mark()
+    assert h.cmd(f.CMD_HOME)
+    assert h.name == 'RETURNING_HOME' and not h.blade
+    assert isinstance(h.since(m, (f.BladeOff, f.StartAction))[0], f.BladeOff)
+    assert h.pending_action(f.ACT_DOCK)
+    assert h.fsm.cursor.available
+    h.fsm.inputs.docked = True
+    h.finish(f.ACT_DOCK)
+    assert h.name == 'IDLE_DOCKED'
+
+
+def test_home_when_already_docked():
+    h = Harness()
+    h.fsm.inputs.docked = True
+    h.tick()
+    assert h.cmd(f.CMD_HOME)
+    assert h.name == 'IDLE_DOCKED' and h.fsm._action is None
+
+
+def test_emergency_mid_mission_not_auto_resumed():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    m = h.mark()
+    h.fsm.inputs.emergency_active = True
+    h.tick()
+    assert h.name == 'EMERGENCY' and not h.blade
+    assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst)
+    h.fsm.inputs.emergency_active = False
+    h.tick(n=5)
+    assert h.name == 'IDLE' and h.fsm.mission is None and h.fsm.cursor.available
+
+
+def test_start_in_area_single_target():
+    h = Harness()
+    h.areas = [square(0, 0, 5), square(10, 0, 5), square(20, 0, 5)]
+    ok, fx = h.fsm.start_in_area(2, h.t)
+    h._apply(fx)
+    assert ok
+    h.answer_services()
+    h.tick()
+    assert h.fsm.mission.area_idx == 2 and h.fsm.mission.queue == []
+    ok, fx = h.fsm.start_in_area(7, h.t)
+    assert not ok
+
+
+def test_start_in_area_missing_area_fails():
+    h = Harness()
+    ok, fx = h.fsm.start_in_area(5, h.t)
+    h._apply(fx)
+    h.answer_services()
+    assert h.name == 'IDLE' and 'area 5 does not exist' in h.fsm.sub_state
+
+
+# =====================================================================
+# rain / battery / boundary guards
+# =====================================================================
+def mowing(h, **kw):
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0), line(0, 2, 4, 2)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    assert h.pending_action(f.ACT_FOLLOW)
+
+
+def test_rain_docks_waits_and_resumes():
+    h = Harness(rain_delay_minutes=1.0, rain_debounce_s=1.0)
+    mowing(h)
+    h.fsm.inputs.rain = True
+    h.tick(n=5)
+    assert h.name == 'MOWING'                # debounce
+    h.tick(n=6)
+    assert h.name == 'RAIN_DETECTED_DOCKING' and not h.blade
+    h.fsm.inputs.docked = True
+    h.finish(f.ACT_DOCK)
+    assert h.name == 'RAIN_WAITING' and h.fsm.state == 1
+    h.tick(dt=10.0, n=10)                    # still raining
+    assert h.name == 'RAIN_WAITING'
+    h.fsm.inputs.rain = False
+    h.tick(dt=10.0, n=3)
+    h.fsm.inputs.rain = True                 # rain again resets the timer
+    h.tick()
+    h.fsm.inputs.rain = False
+    h.tick(dt=10.0, n=5)
+    assert h.name == 'RAIN_WAITING'
+    h.tick(dt=10.0, n=3)
+    assert h.name == 'PREFLIGHT_CHECK'       # resumed: enumerating areas
+    h.answer_services()
+    assert h.name == 'UNDOCKING'
+
+
+def test_rain_mode_0_ignores_rain():
+    h = Harness(rain_mode=0)
+    mowing(h)
+    h.fsm.inputs.rain = True
+    h.tick(n=50)
+    assert h.name == 'MOWING'
+
+
+def test_low_battery_docks_charges_and_resumes():
+    h = Harness()
+    mowing(h)
+    h.fsm.inputs.battery_percent = 19.0
+    h.tick()
+    assert h.name == 'LOW_BATTERY_DOCKING' and not h.blade
+    h.fsm.inputs.docked = True
+    h.fsm.inputs.is_charging = True
+    h.finish(f.ACT_DOCK)
+    assert h.name == 'CHARGING'
+    h.fsm.inputs.battery_percent = 90.0
+    h.tick(n=10)
+    assert h.name == 'CHARGING'
+    h.fsm.inputs.battery_percent = 96.0
+    h.tick()
+    h.answer_services()
+    assert h.name == 'UNDOCKING'
+
+
+def test_stop_cancels_charge_resume():
+    h = Harness()
+    mowing(h)
+    h.fsm.inputs.battery_percent = 10.0
+    h.tick()
+    h.fsm.inputs.docked = True
+    h.finish(f.ACT_DOCK)
+    h.cmd(f.CMD_STOP)
+    h.fsm.inputs.battery_percent = 100.0
+    h.tick(n=5)
+    assert h.name == 'IDLE_DOCKED' and h.fsm.mission is None
+
+
+def test_lethal_boundary_violation_latches():
+    h = Harness()
+    mowing(h)
+    h.fsm.inputs.lethal_boundary_violation = True
+    h.tick()
+    assert h.name == 'BOUNDARY_EMERGENCY_STOP' and h.fsm.state == 0 and not h.blade
+    h.fsm.inputs.lethal_boundary_violation = False
+    h.tick(n=5)
+    assert h.name == 'BOUNDARY_EMERGENCY_STOP'
+    assert not h.cmd(f.CMD_START)
+    assert h.cmd(f.CMD_STOP)
+    assert h.name == 'IDLE'
+
+
+def test_boundary_violation_pauses_and_resumes():
+    h = Harness()
+    mowing(h)
+    h.fsm.inputs.boundary_violation = True
+    m = h.mark()
+    h.tick()
+    assert h.name == 'BOUNDARY_PAUSED' and not h.blade
+    assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst)
+    h.fsm.inputs.boundary_violation = False
+    h.tick()
+    assert h.name == 'MOWING' and h.blade      # spin-up again, then follow
+    h.tick()
+    assert h.pending_action(f.ACT_FOLLOW)
+
+
+def test_boundary_violation_recovery_transits_then_latch():
+    h = Harness(boundary_recover_after_s=3.0, boundary_max_recoveries=2)
+    mowing(h)                                # sub-path 0: (0,0) -> (4,0)
+    h.fsm.inputs.pose = (1.0, -0.2, 0.0)
+    h.fsm.inputs.boundary_violation = True
+    h.tick()
+    assert h.name == 'BOUNDARY_PAUSED'
+    h.tick(dt=1.0, n=3)
+    assert h.name == 'TRANSIT' and not h.blade
+    target = h.goal(f.ACT_NAV)['pose']
+    assert target[0] >= 1.0 + 0.95 - 1e-9    # >= 1 m ahead of the nearest pose (1.2, 0)
+    h.tick(n=5)
+    assert h.name == 'TRANSIT'               # soft violation does not stop a blade-off transit
+    h.finish(f.ACT_NAV)                      # arrived, but still flagged outside
+    assert h.name == 'BOUNDARY_PAUSED' and not h.blade
+    h.tick(dt=1.0, n=3)
+    h.finish(f.ACT_NAV)
+    assert h.name == 'BOUNDARY_PAUSED'
+    h.tick(dt=1.0, n=3)
+    assert h.name == 'BOUNDARY_EMERGENCY_STOP' and h.fsm.state == 0
+
+
+def test_boundary_recovery_transit_success_resumes_mowing():
+    h = Harness()
+    mowing(h)
+    h.fsm.inputs.pose = (1.0, -0.2, 0.0)
+    h.fsm.inputs.boundary_violation = True
+    h.tick()
+    h.tick(dt=1.0, n=3)
+    h.fsm.inputs.boundary_violation = False
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.finish(f.ACT_NAV)
+    assert h.name == 'MOWING' and h.blade
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['poses'][0][0] >= 2.0 - 1e-9
+
+
+# =====================================================================
+# misc
+# =====================================================================
+def test_shutdown_turns_blade_off():
+    h = Harness()
+    h.cmd(f.CMD_MANUAL_MOW)
+    fx = h._apply(h.fsm.shutdown(h.t))
+    kinds = {type(e) for e in fx}
+    assert {f.BladeOff, f.CancelActions, f.ZeroBurst} <= kinds and not h.blade
+
+
+def test_without_docking_server_undock_uses_backup_and_charging():
+    h = Harness(use_docking_server=False)
+    h.fsm.inputs.docked = True
+    h.tick()
+    h.cmd(f.CMD_START)
+    m = h.mark()
+    h.answer_services()
+    calls = [c for c in h.since(m, f.CallService) if c.name == f.SRV_CHARGING]
+    assert calls and calls[0].request == {'enable': False}
+    assert h.goal(f.ACT_BACKUP)['distance_m'] == 0.8
+
+
+def test_start_is_idempotent_while_running():
+    h = Harness()
+    start_until_planning(h)
+    tok = h.pending_action(f.ACT_PLAN).token
+    assert h.cmd(f.CMD_START)
+    assert h.pending_action(f.ACT_PLAN).token == tok
+
+
+def test_random_sequences_keep_blade_invariant():
+    rng = random.Random(1234)
+    cmds = [f.CMD_START, f.CMD_HOME, f.CMD_RECORD_AREA, f.CMD_RECORD_FINISH,
+            f.CMD_RECORD_CANCEL, f.CMD_MANUAL_MOW, f.CMD_STOP, f.CMD_RESET_EMERGENCY]
+    outcomes = [f.SUCCEEDED] * 4 + [f.ABORTED, f.UNAVAILABLE, f.REJECTED]
+    for _run in range(30):
+        h = Harness(rain_debounce_s=0.0, rain_delay_minutes=0.01)
+        h.areas = [square(0, 0, 5), square(10, 0, 5)]
+        for _step in range(300):
+            r = rng.random()
+            i = h.fsm.inputs
+            if r < 0.08:
+                h.cmd(rng.choice(cmds))
+            elif r < 0.12:
+                i.emergency_active = rng.random() < 0.3
+            elif r < 0.15:
+                i.rain = rng.random() < 0.3
+            elif r < 0.18:
+                i.battery_percent = rng.choice([10.0, 50.0, 99.0])
+            elif r < 0.21:
+                i.boundary_violation = rng.random() < 0.3
+                i.lethal_boundary_violation = rng.random() < 0.05
+            elif r < 0.25:
+                i.is_cutting = rng.random() < 0.8
+                i.docked = rng.random() < 0.2
+            elif r < 0.30:
+                i.pose = (rng.uniform(0, 5), rng.uniform(0, 5), 0.0)
+            elif r < 0.45 and h.fsm._action is not None:
+                a = h.fsm._action
+                res = {}
+                if a.name == f.ACT_PLAN:
+                    res = plan([line(0, 0, 4, 0), line(0, 2, 4, 2)])
+                h._apply(h.fsm.on_action_result(a.token, rng.choice(outcomes), res, h.t))
+            elif r < 0.55:
+                h.answer_services()
+            h.tick(dt=rng.choice([0.1, 1.0, 10.0]))

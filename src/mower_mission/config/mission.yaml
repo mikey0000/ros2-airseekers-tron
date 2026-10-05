@@ -1,0 +1,82 @@
+# mower_mission parameters (node name: behavior_tree_node).
+# Keep floats written as floats (30.0, not 30): rclpy refuses a type change.
+behavior_tree_node:
+  ros__parameters:
+    tick_hz: 10.0                     # guard + phase evaluation rate (upstream BT tick)
+
+    # --- emergency -------------------------------------------------------
+    emergency_timeout_s: 2.0          # /hardware_bridge/emergency silence => emergency
+
+    # --- battery ---------------------------------------------------------
+    battery_low_percent: 20.0         # preflight minimum and dock-to-charge threshold (vendor 20 %)
+    battery_full_percent: 95.0        # charge hold ends here, then mowing resumes
+
+    # --- GNSS ------------------------------------------------------------
+    preflight_min_fix_type_docked: 1  # GnssStatus.fix_type needed to START from the dock
+    rtk_fix_type: 3                   # WAITING_FOR_RTK needs RTK fixed
+    rtk_timeout_s: 120.0              # then the run is aborted (and the mower docks)
+
+    # --- rain ------------------------------------------------------------
+    rain_mode: 1                      # 0 ignore, 1 dock and wait
+    rain_debounce_s: 2.0
+    rain_delay_minutes: 30.0          # dry time before resuming
+
+    # --- docking ---------------------------------------------------------
+    use_docking_server: true          # false: undock with /backup + /charging, dock = nav to dock_pose
+    undock_distance_m: 0.8            # vendor undock_point (0.8, 0)
+    undock_speed_mps: 0.15
+    dock_use_vision: true
+    dock_timeout_s: 180.0             # passed in the Dock goal
+    use_dock_pose: false              # only used when use_docking_server is false
+    dock_pose_x: 0.0
+    dock_pose_y: 0.0
+    dock_pose_yaw: 0.0
+
+    # --- coverage --------------------------------------------------------
+    mow_angle_deg: -1.0               # < 0 = planner picks (minimum swath count)
+    transit_gap_m: 0.6                # blade-off /navigate_to_pose transit beyond this gap
+    follow_controller_id: FollowCoveragePath
+    follow_goal_checker_id: coverage_goal_checker
+    max_areas: 200
+
+    # --- blade (vendor OpenCutterCheck) -----------------------------------
+    require_blade_confirmation: true  # wait for MowerBaseDevStatus.is_cutting before following
+    blade_confirm_timeout_s: 5.0
+    blade_start_attempts: 3
+    blade_retry_pause_s: 2.0
+    blade_spinup_s: 2.0               # fixed wait when confirmation is disabled
+
+    # --- boundary ----------------------------------------------------------
+    boundary_recover_after_s: 3.0     # soft violation while MOWING: pause this long, then ...
+    boundary_max_recoveries: 2        # ... up to this many blade-off recovery transits per sub-path
+    boundary_recovery_advance_m: 1.0  # recovery target: this far ahead on the sub-path; then latch
+    progress_window_m: 3.0            # progress / resume pose search window ahead on the path (m)
+    follow_end_tolerance_m: 1.0       # follow_path "succeeded" with more path left => continue from progress
+    follow_premature_retries: 3
+    follow_chunk_m: 25.0              # FollowPath goals are split into chunks of at most this length (0 = off)
+    follow_chunk_clearance_m: 0.5     # a chunk's final pose stays this far from its earlier poses
+
+    # --- recording ---------------------------------------------------------
+    record_rate_hz: 10.0
+    record_min_spacing_m: 0.05
+    record_simplify_tolerance_m: 0.05
+    record_min_area_m2: 1.0
+    record_max_points: 50000
+    recording_fallback_dir: ~/.ros/mower_mission/recordings   # polygon kept here if add_area fails
+
+    # --- timeouts ----------------------------------------------------------
+    result_display_s: 5.0             # UNDOCK_FAILED / NAV_TO_DOCK_FAILED / RECORDING_COMPLETE shown this long
+    server_wait_timeout_s: 3.0        # wait_for_server / wait_for_service before "unavailable"
+    service_timeout_s: 10.0
+    plan_timeout_s: 120.0
+    undock_timeout_s: 180.0
+    transit_timeout_s: 300.0
+    follow_timeout_s: 3600.0
+    dock_action_timeout_s: 400.0
+
+    # --- persistence / output ---------------------------------------------
+    coverage_resume_path: ~/.ros/mower_mission/coverage_resume.txt
+    map_frame: map
+    status_rate_hz: 1.0
+    zero_burst_s: 0.5                 # /cmd_vel_emergency zero burst on stop / emergency
+    zero_burst_rate_hz: 20.0

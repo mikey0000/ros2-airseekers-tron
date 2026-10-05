@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_mission</name>
+  <version>0.1.0</version>
+  <description>
+    Mission layer for the Airseekers Tron mower, served as /behavior_tree_node so the
+    MowgliNext GUI drives it unchanged: COMMAND_START/HOME/STOP, area recording, manual
+    mowing, coverage resume, rain / battery / boundary / emergency guards and blade
+    interlocks. A pure-Python state machine ported from MowgliNext mowgli_behavior.
+  </description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>mower_interfaces</exec_depend>
+  <exec_depend>mowgli_interfaces</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

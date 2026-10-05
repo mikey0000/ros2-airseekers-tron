@@ -14,7 +14,7 @@ map_server_node:
     odom_topic: /odometry/filtered_map
     status_topic: /mower_base/status
     gps_status_topic: /gps/status
-    soft_boundary_margin_m: 0.0
+    soft_boundary_margin_m: 0.3  # headland ring runs on the polygon edge; 0.0 pauses every outer lap
     lethal_boundary_margin_m: 0.5
     boundary_debounce_samples: 3
     require_charging: true

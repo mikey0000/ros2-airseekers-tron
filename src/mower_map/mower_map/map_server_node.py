@@ -69,7 +69,7 @@ PARAMS = {
     'mow_progress_publish_period_s': 2.0,
     # boundary
     'boundary_check_rate_hz': 5.0,
-    'soft_boundary_margin_m': 0.0,
+    'soft_boundary_margin_m': 0.3,
     'lethal_boundary_margin_m': 0.5,
     'boundary_debounce_samples': 3,
     'boundary_recovery_offset_m': 0.8,

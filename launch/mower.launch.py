@@ -38,7 +38,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
@@ -72,6 +72,8 @@ def generate_launch_description() -> LaunchDescription:
         arg('maps_dir', '/ros2_ws/maps', 'areas.dat / dock_pose.yaml directory (compose mounts /userdata/ros2/maps).'),
         arg('coverage', 'true', 'Include mower_coverage_bridge (planner + /plan_coverage action).'),
         arg('docking', 'true', 'Include mower_docking/docking.launch.py (dock/undock actions).'),
+        arg('mission', 'true', 'Include mower_mission/mission.launch.py (the /behavior_tree_node mission layer). '
+            'When true, gui_bridge runs with serve_high_level:=false.'),
         arg('cameras', 'true', 'Include cameras.launch.py (OA + rear v4l2_camera).'),
         arg('video', 'false', 'web_video_server MJPEG on :8080 (source for the RTSP relay).'),
         arg('perception', 'false', 'Include mower_vision/perception.launch.py (det_ros + obstacle_guard).'),
@@ -128,12 +130,21 @@ def generate_launch_description() -> LaunchDescription:
         condition=enabled('teleop'),
     )
 
+    # gui_bridge's stub high-level state machine is only used when the real mission node is off.
     gui_bridge = Node(
         package='mower_gui_bridge',
         executable='gui_bridge',
         name='gui_bridge',
         output='screen',
+        parameters=[{'serve_high_level': PythonExpression(
+            ["'", LaunchConfiguration('mission'), "' != 'true'"])}],
         condition=enabled('gui_bridge'),
+    )
+
+    mission = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution(
+            [FindPackageShare('mower_mission'), 'launch', 'mission.launch.py'])),
+        condition=enabled('mission'),
     )
 
     foxglove = Node(
@@ -213,5 +224,5 @@ def generate_launch_description() -> LaunchDescription:
         + [drivers, robot_state_publisher, static_map_odom]
         + control
         + [teleop, gui_bridge, foxglove, localization, navigation,
-           map_server, coverage, docking, cameras, perception]
+           map_server, coverage, docking, mission, cameras, perception]
     )

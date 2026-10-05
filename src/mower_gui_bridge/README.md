@@ -106,6 +106,22 @@ emergency is active. Other fields: `battery_percent` (0..100), `gps_quality_perc
    state. It keeps serving the `/hardware_bridge/*` hardware facade, the GNSS and
    odometry relays, and `set_datum`.
 
+### Running with the real mission node (`mower_mission`)
+
+The real mission layer is `src/mower_mission` (`ros2 launch mower_mission
+mission.launch.py`). It runs as node `behavior_tree_node` and serves all of
+`/behavior_tree_node/*` itself: START/HOME/STOP, recording, manual mowing, the
+coverage resume cursor, and the rain, battery, boundary and emergency guards. Start
+this bridge next to it with `serve_high_level:=false`, for example `ros2 run
+mower_gui_bridge gui_bridge --ros-args -p serve_high_level:=false`. If you leave it
+at true, both nodes serve the same services and topics. With `false` the bridge
+stops serving that namespace. It still publishes `/hardware_bridge/emergency` and
+`/hardware_bridge/status`, which the mission node uses for its emergency and rain
+guards. It still gates the GUI's blade button (`/hardware_bridge/mower_control`) on
+the mission node's `high_level_status`. It still forces the cutter off on the rising
+edge of an emergency. The mission node switches the blade itself through
+`/cutter_control` and `/cutter_off`.
+
 ## Parameters
 
 Every topic and service name above is a parameter: `*_topic` / `*_service` (see
