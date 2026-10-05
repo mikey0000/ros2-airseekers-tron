@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bumper_controller</name>
+  <version>0.1.0</version>
+  <description>Bumper obstacle-avoidance controller (back-up + rotate-clear state machine).
+    Reimplementation of libbumper_controller.so; reads MowerBaseDevStatus and issues
+    /cmd_vel, publishing /bumper_cloud and the bumper routing status. The heading PID
+    is inlined so the package has no pid_controller dependency.</description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>mower_interfaces</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

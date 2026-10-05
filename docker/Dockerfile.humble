@@ -30,6 +30,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-humble-control-toolbox \
       ros-humble-serial-driver \
       ros-humble-fields2cover \
+      libceres-dev \
+      ros-humble-cv-bridge \
+      ros-humble-image-transport \
       python3-colcon-common-extensions \
       python3-rosdep \
       python3-vcstool \

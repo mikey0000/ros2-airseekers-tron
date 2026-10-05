@@ -11,7 +11,7 @@ constexpr double kPi = 3.14159265358979323846;
 }  // namespace
 
 double BumperController::Pid::calc(double setpoint, double measured, double dt) {
-    if (dt <= 0.0) return out_min < 0.0 ? 0.0 : out_min;
+    if (dt <= 0.0) return 0.0;
     const double error = setpoint - measured;
     integral_ += error * dt;
     const double deriv = (error - prev_error_) / dt;
