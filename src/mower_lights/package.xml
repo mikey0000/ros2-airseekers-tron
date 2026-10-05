@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_lights</name>
+  <version>0.1.0</version>
+  <description>
+    Airseekers Tron status LEDs (WS2812 chain on /dev/spidev3.0): ROS 2 port of the vendor
+    mower_light_sound LightManager. Serves the vendor-shaped /light_control service, publishes
+    /light_info, and maps the mission state to vendor light modes automatically.
+  </description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>mower_lights_interfaces</depend>
+  <depend>mower_interfaces</depend>
+  <depend>mowgli_interfaces</depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

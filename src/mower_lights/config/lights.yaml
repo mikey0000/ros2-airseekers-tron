@@ -1,0 +1,24 @@
+# Defaults for mower_lights/light_controller (all also settable from the launch file).
+light_controller:
+  ros__parameters:
+    auto_mode: true
+    dry_run: false
+    spi_device: /dev/spidev3.0
+    spi_speed_hz: 8000000
+    spi_mode: 0
+    spi_bits_per_word: 8
+    spi_stats_dir: /sys/class/spi_master/spi3/statistics
+    sn_path: /meta/sn
+    front_led_num: 0        # 0 = derive from SN like the vendor (fallback 14)
+    top_led_num: 27
+    buffer_leds: 60
+    brightness: 100
+    frame_rate_hz: 25.0
+    lane_rate_hz: 20.0
+    startup_mode: 6         # PowerOn
+    shutdown_mode: 7        # PowerOff
+    shutdown_anim_s: 2.0
+    low_battery_percent: 20.0
+    charge_full_percent: 100.0
+    warn_hold_s: 2.0
+    status_timeout_s: 5.0
