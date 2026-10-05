@@ -95,17 +95,23 @@ class Harness:
 
     TOPICS = ("/fix", "/vel", "/heading", "/fix_status", "/nmea")
 
-    def __init__(self, publish_nmea=False, device=None):
+    def __init__(self, publish_nmea=False, device=None, extra_params=None):
         self.master, slave = pty.openpty()
         self.device = device or os.ttyname(slave)
         os.close(slave)
+        params = {
+            "port": self.device,
+            "baud": 115200,
+            "publish_nmea": publish_nmea,
+            "publish_rate_hz": 50.0,
+            "fix_timeout_s": 0.5,
+            # Never pick up a real /userdata/mower/ntrip.yaml from the test host.
+            "ntrip_config_file": "",
+        }
+        params.update(extra_params or {})
         self.node = Um960Node(
             parameter_overrides=[
-                rclpy.parameter.Parameter("port", value=self.device),
-                rclpy.parameter.Parameter("baud", value=115200),
-                rclpy.parameter.Parameter("publish_nmea", value=publish_nmea),
-                rclpy.parameter.Parameter("publish_rate_hz", value=50.0),
-                rclpy.parameter.Parameter("fix_timeout_s", value=0.5),
+                rclpy.parameter.Parameter(name, value=value) for name, value in params.items()
             ]
         )
         # The reader thread opens the port asynchronously; nothing written to the

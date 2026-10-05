@@ -48,13 +48,16 @@ do_sync() {
 }
 
 do_image() {
-  # BuildKit is off: the device kernel lacks CONFIG_POSIX_MQUEUE (see docs/deployment.md)
-  compose "build 2>&1 | tail -5"
+  # BuildKit is off: the device kernel lacks CONFIG_POSIX_MQUEUE (see docs/deployment.md).
+  # Logs live outside $REMOTE_DIR: `sync` uses --delete and would remove them.
+  remote "mkdir -p /userdata/ros2/logs"
+  compose "build 2>&1 | tee /userdata/ros2/logs/image_build.log | tail -5"
 }
 
 do_build() {
   # 4 GB RAM, no swap: keep both colcon and make at 2 jobs; rosidl + Fields2Cover are the heavy bits.
-  compose "run --rm mower_humble bash -c 'source /opt/ros/humble/setup.bash && cd /work && MAKEFLAGS=-j2 colcon build --symlink-install --parallel-workers 2 --event-handlers console_cohesion+ --packages-skip $SKIP_PKGS 2>&1 | tail -40'"
+  remote "mkdir -p /userdata/ros2/logs"
+  compose "run --rm mower_humble bash -c 'source /opt/ros/humble/setup.bash && cd /work && MAKEFLAGS=-j2 colcon build --symlink-install --parallel-workers 2 --event-handlers console_cohesion+ --packages-skip $SKIP_PKGS 2>&1 | tee /userdata/ros2/logs/colcon_build.log | tail -40'"
 }
 
 case "${1:-}" in

@@ -4,6 +4,7 @@ import errno
 import os
 import select
 import termios
+import time
 from typing import List, Optional
 
 # termios speed constant lookup; B115200 etc. exist on Linux.
@@ -121,6 +122,35 @@ class SerialPort:
             return os.write(self._fd, data)
         except OSError as exc:
             raise SerialError("write to %s failed: %s" % (self.device, exc)) from exc
+
+    def write_all(self, data: bytes, timeout: float = 1.0) -> int:
+        """Write every byte (the fd is non-blocking), waiting up to ``timeout`` s.
+
+        Used for RTCM injection: a partial write would cut an RTCM frame in half.
+        """
+        fd = self._fd
+        if fd is None:
+            raise SerialError("port %s is not open" % self.device)
+        view = memoryview(data)
+        written = 0
+        deadline = time.monotonic() + timeout
+        while written < len(view):
+            try:
+                written += os.write(fd, view[written:])
+                continue
+            except (BlockingIOError, InterruptedError):
+                pass
+            except OSError as exc:
+                raise SerialError("write to %s failed: %s" % (self.device, exc)) from exc
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SerialError("write to %s timed out after %d/%d bytes"
+                                  % (self.device, written, len(view)))
+            try:
+                select.select([], [fd], [], remaining)
+            except (OSError, ValueError) as exc:
+                raise SerialError("write to %s failed: %s" % (self.device, exc)) from exc
+        return written
 
     def write_line(self, line: str) -> int:
         return self.write((line.rstrip("\r\n") + "\r\n").encode("ascii", errors="ignore"))

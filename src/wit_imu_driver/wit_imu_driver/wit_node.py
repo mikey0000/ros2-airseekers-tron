@@ -62,7 +62,9 @@ class WitImuNode(Node):
         self.publish_tf = bool(g('publish_tf'))
         self.stale_warn_s = float(g('stale_warn_s'))
 
-        qos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT,
+        # RELIABLE: robot_localization's ekf_node / navsat subscribe with the default (reliable)
+        # profile; a BEST_EFFORT publisher is incompatible and they would never receive IMU data.
+        qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE,
                          history=QoSHistoryPolicy.KEEP_LAST, depth=10)
         self.imu_pub = self.create_publisher(Imu, g('imu_topic'), qos)
         self.temp_pub = self.create_publisher(Float32, '/imu/temperature_c', qos)

@@ -33,3 +33,46 @@ um960_node:
     # `MODE ROVER` / `CONFIG ...` / `BESTNAVA 5`. Fill in only if you are
     # deliberately reconfiguring the module.
     config_commands: []
+
+    # --- RTK corrections: choosing the correction source ---
+    # ""     auto (default): "ntrip" if ntrip_config_file has ntrip_enable: true,
+    #        otherwise "lora".
+    # "lora" vendor RTK base station -> LoRa -> rtk_rover board -> UM960. The host
+    #        never writes corrections; it can only pair the radio (set_lora).
+    # "ntrip" host NTRIP client -> RTCM written into this serial port; the rover GGA
+    #        is uploaded to the caster every ntrip_gga_interval_s.
+    # "none" no corrections (single point / SBAS only).
+    correction_source: ""
+
+    # NTRIP caster. Keep credentials OUT of this file: put them in a separate params
+    # file (config/um960_secrets.yaml is git-ignored; see um960_secrets.example.yaml)
+    # or in the vendor file below.
+    ntrip_host: ""
+    ntrip_port: 2101
+    ntrip_mountpoint: ""
+    ntrip_user: ""
+    ntrip_password: ""
+    ntrip_version: 2              # 2 = NTRIP 2.0 (HTTP/1.1), 1 = NTRIP 1.0 (ICY 200 OK)
+    ntrip_gga_interval_s: 10.0    # 0 disables the GGA upload (single-base mountpoints)
+    ntrip_no_data_timeout_s: 20.0 # reconnect when the caster goes silent this long
+    ntrip_reconnect_max_s: 30.0   # backoff ceiling (also used after auth failures)
+    ntrip_fallback_lat: 0.0       # position sent to a VRS caster before the first fix
+    ntrip_fallback_lon: 0.0       # (0/0 = none: wait for the receiver)
+    # Vendor credentials file, read only when ntrip_host (or correction_source) is
+    # empty. Keys: ntrip_enable, ntrip_ip, ntrip_port, ntrip_user, ntrip_passwd,
+    # ntrip_mountpoint. Set to "" to ignore it.
+    ntrip_config_file: "/userdata/mower/ntrip.yaml"
+    # Written on every (re)connect in ntrip mode only: switches the rtk_rover board
+    # from LoRa to host-injected RTCM (vendor UnicoreGps::switchNRTK).
+    ntrip_rover_commands: ["$GNRTK,ON*69"]
+
+    # --- diagnostics ---
+    corrections_topic: "/gps/corrections"  # 1 Hz JSON
+    corrections_stale_s: 10.0              # older corrections => corr_flow=stale
+
+    # --- vendor LoRa pairing (/mower_gps_node/set_lora, called by base_ble) ---
+    set_lora_service: "/mower_gps_node/set_lora"
+    # false: set_lora only logs the $GLIST/$GNCON commands it would send and returns
+    # false. true: writes them to this port like the vendor driver (unverified on
+    # hardware - see docs/um960.md).
+    lora_pairing_enabled: false

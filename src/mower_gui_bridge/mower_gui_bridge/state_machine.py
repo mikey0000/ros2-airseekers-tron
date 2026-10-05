@@ -241,6 +241,44 @@ CAP_VERTICAL_ACCURACY = 16
 CAP_SATELLITES_USED = 128
 CAP_SATELLITES_VISIBLE = 256
 CAP_DIFFERENTIAL_CORRECTIONS = 1024
+CAP_CORRECTIONS_ACTIVE = 2048
+CAP_CORRECTION_AGE = 4096
+CAP_CORRECTION_TRANSPORT = 33554432
+CAP_CORRECTION_FLOW = 67108864
+
+CORRECTION_TRANSPORT_STATUS_UNKNOWN = 0
+CORRECTION_TRANSPORT_STATUS_DISCONNECTED = 1
+CORRECTION_TRANSPORT_STATUS_CONNECTING = 2
+CORRECTION_TRANSPORT_STATUS_CONNECTED = 3
+CORRECTION_TRANSPORT_STATUS_STREAMING = 4
+CORRECTION_TRANSPORT_STATUS_RECONNECTING = 5
+CORRECTION_TRANSPORT_STATUS_FAILED = 6
+
+CORRECTION_FLOW_STATUS_UNKNOWN = 0
+CORRECTION_FLOW_STATUS_IDLE = 1
+CORRECTION_FLOW_STATUS_WAITING = 2
+CORRECTION_FLOW_STATUS_ACTIVE = 3
+CORRECTION_FLOW_STATUS_STALE = 4
+CORRECTION_FLOW_STATUS_INVALID = 5
+
+# ``corr=`` states of um960_gps_driver's NTRIP client -> transport status.
+_TRANSPORT_BY_STATE = {
+    'off': CORRECTION_TRANSPORT_STATUS_DISCONNECTED,
+    'connecting': CORRECTION_TRANSPORT_STATUS_CONNECTING,
+    'connected': CORRECTION_TRANSPORT_STATUS_CONNECTED,
+    'streaming': CORRECTION_TRANSPORT_STATUS_STREAMING,
+    'reconnecting': CORRECTION_TRANSPORT_STATUS_RECONNECTING,
+    'auth_failed': CORRECTION_TRANSPORT_STATUS_FAILED,
+    'bad_mountpoint': CORRECTION_TRANSPORT_STATUS_FAILED,
+    'error': CORRECTION_TRANSPORT_STATUS_FAILED,
+}
+_FLOW_BY_TOKEN = {
+    'idle': CORRECTION_FLOW_STATUS_IDLE,
+    'waiting': CORRECTION_FLOW_STATUS_WAITING,
+    'active': CORRECTION_FLOW_STATUS_ACTIVE,
+    'stale': CORRECTION_FLOW_STATUS_STALE,
+    'invalid': CORRECTION_FLOW_STATUS_INVALID,
+}
 
 # sensor_msgs/NavSatStatus / NavSatFix constants
 NAVSAT_NO_FIX = -1
@@ -278,10 +316,13 @@ def parse_fix_status(text):
     Example: ``um960=connected quality=RTK_FIXED sats=21/28 hdop=0.70 age=0.10s``.
     Returns a dict with keys ``connected`` (bool|None), ``solution`` (upper-case
     token from ``solution=`` or ``quality=``, or None), ``sats_used``,
-    ``sats_total`` (int|None), ``hdop`` (float|None).
+    ``sats_total`` (int|None), ``hdop`` (float|None), and the correction tokens
+    ``corr_src`` / ``corr`` / ``corr_flow`` (lower-case str|None), ``corr_age``,
+    ``corr_rate`` and the receiver's own ``diff_age`` (float seconds|None).
     """
     out = {'connected': None, 'solution': None, 'sats_used': None,
-           'sats_total': None, 'hdop': None}
+           'sats_total': None, 'hdop': None, 'corr_src': None, 'corr': None,
+           'corr_flow': None, 'corr_age': None, 'corr_rate': None, 'diff_age': None}
     if not text:
         return out
     kv = {}
@@ -306,7 +347,19 @@ def parse_fix_status(text):
             out['hdop'] = float(kv['hdop'])
         except ValueError:
             pass
+    for key in ('corr_src', 'corr', 'corr_flow'):
+        if key in kv:
+            out[key] = kv[key].lower()
+    for key in ('corr_age', 'corr_rate', 'diff_age'):
+        if key in kv:
+            out[key] = _leading_float(kv[key])
     return out
+
+
+def _leading_float(text):
+    """``'0.5s'`` / ``'230B/s'`` -> float, or None."""
+    match = re.match(r'[-+]?\d+(?:\.\d*)?', text)
+    return float(match.group(0)) if match else None
 
 
 def classify_solution(token):
@@ -396,6 +449,11 @@ def derive_gnss_status(navsat_status, covariance=None, covariance_type=COVARIANC
         out['satellites_visible'] = int(parsed['sats_total'])
         val |= CAP_SATELLITES_VISIBLE
 
+    _derive_corrections(out, parsed)
+    cap |= CAP_CORRECTIONS_ACTIVE | CAP_CORRECTION_AGE | CAP_CORRECTION_TRANSPORT \
+        | CAP_CORRECTION_FLOW
+    val |= out.pop('_corr_value_flags')
+
     if covariance is not None and covariance_type != COVARIANCE_TYPE_UNKNOWN \
             and len(covariance) >= 9:
         h = max(float(covariance[0]), float(covariance[4]))
@@ -410,3 +468,51 @@ def derive_gnss_status(navsat_status, covariance=None, covariance_type=COVARIANC
     out['capability_flags'] = cap
     out['value_flags'] = val
     return out
+
+
+def _derive_corrections(out, parsed):
+    """Fill the GnssStatus correction fields from the ``corr*`` tokens.
+
+    * ``correction_source``: ``ntrip`` / ``lora`` / ``none`` ('' when unknown).
+    * ``correction_transport_status``: NTRIP client state; the LoRa radio link is
+      invisible to the host, so it stays UNKNOWN (no value flag) for ``lora``.
+    * ``correction_flow_status``: the driver's ``corr_flow`` (NTRIP: age of the last
+      CRC-valid RTCM frame; LoRa: the receiver's differential age).
+    * ``corrections_active``: flow ACTIVE.
+    * ``correction_age_s``: the receiver's own ``diff_age`` when it reports one (what
+      the solution actually uses), else the driver's ``corr_age``.
+    Adds the private key ``_corr_value_flags`` (popped by the caller).
+    """
+    val = 0
+    src = parsed.get('corr_src')
+    state = parsed.get('corr')
+    flow_token = parsed.get('corr_flow')
+    out['correction_source'] = src if src in ('ntrip', 'lora', 'none') else ''
+    out['correction_transport_status'] = CORRECTION_TRANSPORT_STATUS_UNKNOWN
+    out['correction_response_accepted'] = False
+    out['correction_flow_status'] = CORRECTION_FLOW_STATUS_UNKNOWN
+    out['corrections_active'] = False
+    out['correction_age_s'] = 0.0
+
+    if src == 'ntrip' and state in _TRANSPORT_BY_STATE:
+        out['correction_transport_status'] = _TRANSPORT_BY_STATE[state]
+        out['correction_response_accepted'] = state in ('connected', 'streaming')
+        val |= CAP_CORRECTION_TRANSPORT
+    elif src == 'none':
+        out['correction_transport_status'] = CORRECTION_TRANSPORT_STATUS_DISCONNECTED
+        val |= CAP_CORRECTION_TRANSPORT
+
+    if flow_token in _FLOW_BY_TOKEN:
+        out['correction_flow_status'] = _FLOW_BY_TOKEN[flow_token]
+        val |= CAP_CORRECTION_FLOW
+    if src is not None:
+        out['corrections_active'] = flow_token == 'active'
+        val |= CAP_CORRECTIONS_ACTIVE
+
+    age = parsed.get('diff_age')
+    if age is None:
+        age = parsed.get('corr_age')
+    if age is not None and math.isfinite(age) and age >= 0.0:
+        out['correction_age_s'] = float(age)
+        val |= CAP_CORRECTION_AGE
+    out['_corr_value_flags'] = val

@@ -1,0 +1,2 @@
+# Real NTRIP credentials: never commit them (see docs/um960.md).
+config/um960_secrets.yaml
