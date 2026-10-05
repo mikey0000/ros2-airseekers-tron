@@ -10,8 +10,6 @@ ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8 ROS_DISTRO=humble
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-humble-nav2-bringup \
       ros-humble-robot-localization \
-      ros-humble-control-toolbox \
-      ros-humble-serial-driver \
       ros-humble-fields2cover \
       ros-humble-grid-map-ros \
       ros-humble-grid-map-msgs \
@@ -40,7 +38,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3-shapely \
       python3-pyproj \
       python3-transforms3d \
-      libserial-dev \
       build-essential cmake git \
     && rm -rf /var/lib/apt/lists/*
 

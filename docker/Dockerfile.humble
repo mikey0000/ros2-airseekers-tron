@@ -23,8 +23,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # - ros-humble-ros-base: explicit even though ros-base image already contains it
 # - nav2-bringup: Nav2 bringup/launch (replaces Noetic move_base/navfn per migration doc)
 # - robot-localization: ekf_node + navsat_transform_node (launch/nav2.launch.py)
-# - control-toolbox: replaces ros-noetic-control-toolbox usage
-# - serial: pyserial + asio serial driver (Humble name is serial-driver, not "serial")
+# - serial: python3-serial only (drivers are Python over termios/pyserial)
 # - grid-map-*, behaviortree-cpp: MowgliNext map server / mission layer
 # - twist-mux: velocity arbitration (mower_teleop)
 # - foxglove-bridge: WebSocket telemetry on :8765 (launch/mower.launch.py).
@@ -40,8 +39,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-humble-ros-base \
       ros-humble-nav2-bringup \
       ros-humble-robot-localization \
-      ros-humble-control-toolbox \
-      ros-humble-serial-driver \
       ros-humble-fields2cover \
       ros-humble-grid-map-ros \
       ros-humble-grid-map-msgs \
@@ -70,7 +67,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3-shapely \
       python3-pyproj \
       python3-transforms3d \
-      libserial-dev \
       build-essential \
       cmake \
       git \
