@@ -149,6 +149,18 @@ Without the ImuData stream the MCU reports `lift=1` continuously (observed on 20
 mower on the ground); vendor captures with the stream never show `lift=1`. `mower_mcu_driver`
 therefore forwards `/imu/data` as ImuData (`forward_imu`, 45 Hz).
 
+## 10c. Lift logic (cutter fw 0.6.36, from the re-decompiled firmware, 2026-10-06)
+
+The CUTTER (gateway) board computes `lift`, not the chassis. Inputs: two hall sensors (PC5 && PD12 both
+HIGH = lifted, ~250 ms debounce) and the host-forwarded `ImuData` (module 9): out of window when
+pitch outside ~[-36.8, +40.1] deg or |roll| > ~38.5 deg (int16 counts, deg*32767/180). While out of
+window `lift` is re-asserted every tick. Auto-clear only within ~17 s of assertion; after that it is
+LATCHED and only the host `SensorInfoControl` frame (module 10, type 0, 8 bytes: byte2=lift, byte3=stop,
+byte4=power_off, others ignored; all-zero = clear) or a power cycle releases it, and only while the
+IMU is in-window and the hall pair is released. Host `SpeedData` is ignored while `lift` or `stop` is set.
+Upright must be forwarded as pitch ~ 0, roll ~ 0 (a 180 deg roll offset keeps lift on permanently).
+Verified on the mower 2026-10-06: clear frame with the IMU in-window released a latched lift.
+
 ## 11. Heartbeat & failsafe — known vs unknown
 
 **Known:** `TYPE_HEARTBEAT` (255) carries an 8-byte wall-clock timestamp; the host side has `DevHealthHandler::{updateHeartbeat, checkHeartbeat}`; the MCU enforces estop / lift / bumper cut-offs itself.

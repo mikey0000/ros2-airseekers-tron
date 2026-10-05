@@ -441,11 +441,13 @@ class McuNode(Node):
         self.declare_parameter('forward_imu', True)
         self.declare_parameter('forward_imu_topic', '/imu/data')
         self.declare_parameter('forward_imu_rate', 45.0)
-        # The vendor host sends roll ~ -178 deg with the mower upright (tap capture: roll -32360
-        # counts, accz +1 g), i.e. the MCU's ImuData convention has roll offset by 180 deg from
-        # the WIT frame we publish. The MCU uses this attitude for tilt/lift detection: with a
-        # plain 0 deg roll it reports the mower as lifted.
-        self.declare_parameter('forward_imu_roll_offset_deg', 180.0)
+        # Cutter firmware 0.6.36 lift logic (mcu_decompile analysis 2026-10-06): lift is asserted
+        # while |pitch| > ~37 deg or |roll| > ~38 deg of the forwarded ImuData (int16 pitch, roll
+        # in deg*32767/180), plus two hall sensors; once latched > ~17 s only the module-10 clear
+        # frame (or a power cycle) releases it, and only while the IMU is inside the window.
+        # Upright must therefore be sent as pitch ~ 0, roll ~ 0. Offsets exist only for a sensor
+        # mounted in a different orientation than the WIT frame assumes.
+        self.declare_parameter('forward_imu_roll_offset_deg', 0.0)
         self.declare_parameter('forward_imu_pitch_offset_deg', 0.0)
         self.declare_parameter('battery_voltage_scale', 0.1)
         self.declare_parameter('battery_current_scale', 1.0)
