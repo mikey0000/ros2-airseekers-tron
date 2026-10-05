@@ -130,15 +130,23 @@ first, then cutter off, before every transit, dock and pause. The vendor local H
 WebSocket on 13345; the MowgliNext GUI replaces it, but it remains the reference for an
 Airseekers-app-compatible surface later.
 
-## Hardware bring-up checklist (needs the mower, wheels up, blade off)
+## Hardware bring-up (mower on the ground, 2026-10-06)
 
-- Characterise the MCU heartbeat period and failsafe timeout (currently a 100 ms guess in `mcu_node`).
-- Verify `CutterControl` speed and position scales (percent versus raw 1000) and `is_cutting` RPM threshold.
-- Verify 11-byte WIT frames on `/dev/serial_imu` and the configured rate.
-- Confirm UM960 GGA quality tokens and that RTK fixed yields `GBAS_FIX` with small covariance.
-- Confirm `/dev/video` indices for the stereo and rear cameras; fix the `/dev/video11` versus `/dev/video22` discrepancy.
-- Confirm the foxglove subprotocol handshake from the GUI container to `foxglove_bridge` 3.5.0.
-- Recover the e-stop clear wire format (vendor sends module 10; payload unknown). Until then `/clear_estop` only clears the host latch.
+Verified live on the mower with the stack running from Docker (`mower:humble`, `/userdata/ros2_stack`):
+
+- Serial links: MCU 67-100 Hz sensor/speed frames, battery 22.0 V, firmware v0.6.36 / v0.6.34; WIT IMU 100 Hz
+  on `/imu/data` (RELIABLE QoS, the EKF receives it); UM960 10 Hz, 29 satellites, rover board in LoRa mode
+  ("network RTK OFF" = default); EKF 30 Hz; GUI on :4006 connected to foxglove and the relay.
+- Heartbeat period 100 ms confirmed (vendor tap). The vendor forwards IMU to the MCU (~44 Hz): implemented.
+- Lift flag: cutter firmware latches it after ~17 s; released on the mower by the module-10 clear frame with
+  the IMU forwarded as pitch/roll ~0 (`docs/mcu_protocol_spec.md` 10c). `/clear_estop` does exactly that.
+- Drive: `/cmd_vel_teleop` 0.1 m/s for 2 s moved the mower; MCU measured 0.07-0.11 m/s, both motors drew current,
+  clean stop. Chain GUI/relay -> twist_mux -> cmd_vel_slew -> MCU proven on hardware.
+- NPU: `best_large_0208.rknn` loads with runtime 2.3.0, inference 86 ms, 9 outputs as det_ros expects.
+- Power key = `/dev/input/event5` ("key input") `KEY_P` (25); `base_keys` is being wired to it.
+
+Still to verify: cutter command (speed/height scale), rain/bumper/stop inputs, RTK fix with the LoRa base or NTRIP,
+dock contact (`is_docking_done`) and charging, side cameras through the rkisp pipeline, rear camera stream.
 
 ## Open risks
 
