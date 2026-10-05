@@ -9,7 +9,6 @@ find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
-# Core subset only (see docs/interfaces_map.md for the full ROS1 -> ROS2 mapping).
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MotorStatus.msg"
   "msg/MotorInfo.msg"
@@ -18,10 +17,16 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ControlInfo.msg"
   "msg/MowerBaseDevStatus.msg"
   "msg/PlannerOption.msg"
+  "msg/MowerBaseButtonInfo.msg"
+  "msg/MotorControl.msg"
+  "msg/MowerBaseDevInfo.msg"
+  "msg/BatteryHealthInfo.msg"
   "srv/PlannerTaskSet.srv"
+  "srv/BumperControl.srv"
+  "srv/CutterControl.srv"
+  "srv/ChargingControl.srv"
   DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs nav_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)
-
 ament_package()

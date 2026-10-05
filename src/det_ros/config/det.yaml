@@ -1,0 +1,38 @@
+# det_ros — YOLOv8 detection (best_large_0208.rknn, 22 classes).
+# Class order is fixed by the model and must match the export exactly
+# (see mower_docs/03-yolo-perception.md and src/mower_perception/det_ros/model/best_large_list.txt).
+det_ros:
+  ros__parameters:
+    model_path: "model/best_large_0208.rknn"
+    # Model input is 480 wide x 640 tall (read from the .rknn static shape
+    # [1,3,640,480] NCHW). img_size is [width, height].
+    img_size: [480, 640]
+    obj_thresh: 0.25
+    nms_thresh: 0.45
+    core_mask: "0"            # NPU core 0 (seg_ros uses core 1)
+    left_topic: "/left_oa_camera/image_raw"
+    right_topic: "/right_oa_camera/image_raw"
+    publish_annotated: true
+    classes:
+      - person
+      - dog
+      - cat
+      - sports ball
+      - hedgehog
+      - rabbit
+      - stone
+      - hoe
+      - shovel
+      - manhole
+      - brick
+      - trashbin
+      - toycars
+      - potted plant
+      - cans
+      - bottle
+      - book
+      - backpack
+      - wood
+      - chair
+      - trunk
+      - dock

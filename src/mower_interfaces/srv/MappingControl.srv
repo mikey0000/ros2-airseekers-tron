@@ -1,0 +1,14 @@
+# 调用参数
+# command: start  开始建图
+#          save   保存建图
+#          cancel 取消建图
+# map_name:  command为save的时候需要传地图名
+#
+# 返回结果
+# result: 0: 成功, 其他: 错误码
+# messages: 信息, e.g. 错误信息
+string command
+string map_name
+---
+int32 result
+string messages

@@ -1,0 +1,24 @@
+# udev rules — Airseekers Tron camera symlinks (documentation + reproducible install).
+#
+# These symlinks already exist on the stock mower (vendor udev rules, see
+# ros2_port_handoff/09_platform/udev-symlinks.txt):
+#   /dev/left_oa_camera  -> video53  (left  obstacle-avoidance, MIPI-CSI)
+#   /dev/right_oa_camera -> video44  (right obstacle-avoidance, MIPI-CSI)
+#   /dev/rear_camera     -> video62  (USB UVC rear camera)
+#
+# The RK3588S MIPI-CSI nodes are enumerated by the Rockchip ISP driver, so the exact
+# videoN number can shift between boots/kernels. The rules below pin the names by the
+# V4L2 card/name attribute instead of a hardcoded device number — adjust the ATTR{}
+# match to what `udevadm info -a -n /dev/video44` reports on this unit, then
+#
+#   sudo cp 99-mower-cameras.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+
+# Left OA camera (MIPI-CSI stream cif_mipi_id0-ish). Confirm the exact KERNEL/DRIVER.
+SUBSYSTEM=="video4linux", ATTR{name}=="rkisp_*", KERNELS=="cif_mipi_id0", SYMLINK+="left_oa_camera"
+
+# Right OA camera.
+SUBSYSTEM=="video4linux", ATTR{name}=="rkisp_*", KERNELS=="cif_mipi_id1", SYMLINK+="right_oa_camera"
+
+# Rear camera (USB UVC, vendor 32e6:9221).
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="32e6", ATTRS{idProduct}=="9221", SYMLINK+="rear_camera"

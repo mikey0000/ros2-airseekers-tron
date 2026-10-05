@@ -1,0 +1,7 @@
+string sn
+uint16 addr
+# 数值范围 1-75
+uint8 channel
+string area
+---
+bool result

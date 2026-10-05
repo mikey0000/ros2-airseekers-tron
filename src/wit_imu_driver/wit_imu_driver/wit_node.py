@@ -13,6 +13,29 @@ import tf2_ros
 from geometry_msgs.msg import TransformStamped
 
 
+# WIT-Motion JY61P scaling convention (matches mower_mcu_driver):
+# 32768 raw counts == 180 deg == pi rad (angle), 16 g (acc), 2000 dps (gyro).
+WIT_RAW_ANGLE_TO_RAD = math.radians(180.0) / 32768.0
+WIT_RAW_GYRO_TO_RAD = math.radians(2000.0) / 32768.0
+WIT_RAW_ACC_TO_MS2 = 16.0 * 9.80665 / 32768.0
+
+
+def euler_to_quaternion(roll, pitch, yaw):
+    """Body-fixed ZYX rotation (roll, pitch, yaw in radians) -> (x, y, z, w)."""
+    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
+    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+    return (sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+            cr * cp * cy + sr * sp * sy)
+
+
+def diag3(a, b, c):
+    """Row-major 3x3 covariance matrix with ``a, b, c`` on the diagonal."""
+    return [a, 0.0, 0.0, 0.0, b, 0.0, 0.0, 0.0, c]
+
+
 class WitImuNode(Node):
     def __init__(self):
         super().__init__('wit_imu_driver')
@@ -49,10 +72,11 @@ class WitImuNode(Node):
         # IMU message
         self.imu_msg = Imu()
         self.imu_msg.header.frame_id = self.frame_id
-        # orientation covariance (identity-like, unset = zeros)
-        self.imu_msg.orientation_covariance = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        self.imu_msg.angular_velocity_covariance = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        self.imu_msg.linear_acceleration_covariance = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        # Covariances: nonzero so downstream filters (EKF, navsat_transform) actually
+        # consume these fields. Magnitudes mirror mower_mcu_driver's WIT convention.
+        self.imu_msg.orientation_covariance = diag3(0.05, 0.05, 0.05)
+        self.imu_msg.angular_velocity_covariance = diag3(0.02, 0.02, 0.02)
+        self.imu_msg.linear_acceleration_covariance = diag3(0.1, 0.1, 0.1)
 
         # Temperature message
         self.temp_msg = Float32()
@@ -66,7 +90,7 @@ class WitImuNode(Node):
         self.accel = {'x': None, 'y': None, 'z': None}
         self.gyro = {'x': None, 'y': None, 'z': None}
         self.mag = {'x': None, 'y': None, 'z': None}
-        self.angle = {'p': None, 'y': None, 'r': None}
+        self.angle = {'roll': None, 'pitch': None, 'yaw': None}
         self.packet_count_by_type = {0x51: 0, 0x52: 0, 0x53: 0, 0x54: 0, 0x55: 0}
 
         # Timer for publishing at specified rate
@@ -137,10 +161,10 @@ class WitImuNode(Node):
                 if all(self.gyro.values()):
                     self.fill_gyro_from_tracked()
 
-            elif msg_type == 0x53:  # Angle
+            elif msg_type == 0x53:  # Angle (three packets: roll, pitch, yaw)
                 value = ((hi << 8) | lo) if ((hi << 8) | lo) < 32768 else ((hi << 8) | lo) - 65536
                 mod = self.packet_count_by_type[0x53] % 3
-                axis = ['p', 'y', 'r'][mod]  # roll, pitch, yaw
+                axis = ['roll', 'pitch', 'yaw'][mod]
                 self.angle[axis] = value
                 self.packet_count_by_type[0x53] += 1
                 if all(self.angle.values()):
@@ -166,35 +190,35 @@ class WitImuNode(Node):
         return data
 
     def fill_accel_from_tracked(self):
-        """Fill IMU accel fields from tracked packet data."""
-        # Convert raw values to g: +/-16g range
-        # Assuming 16-bit values with sensitivity: e.g., 2mg/LSB -> 0.002g/LSB
-        # Or more commonly for JY61P: the raw 16-bit maps directly to +/-16g
-        # where 32768 = 16g, so 1 LSB = 16/32768 g = 0.00048828125 g
-        # But typically the datasheet says the raw value is already in g * 100 or similar.
-        # Let's use: value_in_g = raw * (16.0 / 32768.0)
-        scale = 16.0 / 32768.0
-        self.imu_msg.linear_acceleration.x = self.accel['x'] * scale
-        self.imu_msg.linear_acceleration.y = self.accel['y'] * scale
-        self.imu_msg.linear_acceleration.z = self.accel['z'] * scale
+        """Fill Imu linear acceleration (m/s^2). Raw 32768 == 16 g."""
+        self.imu_msg.linear_acceleration.x = self.accel['x'] * WIT_RAW_ACC_TO_MS2
+        self.imu_msg.linear_acceleration.y = self.accel['y'] * WIT_RAW_ACC_TO_MS2
+        self.imu_msg.linear_acceleration.z = self.accel['z'] * WIT_RAW_ACC_TO_MS2
 
     def fill_gyro_from_tracked(self):
-        """Fill IMU gyro fields from tracked packet data.
-        +/-2000 dps range: 1 LSB = 2000/32768 dps"""
-        scale = 2000.0 / 32768.0
-        # Convert dps to rad/s for ROS2 Imu message
-        # 1 dps = pi/180 rad/s
-        dps_to_rad_s = math.pi / 180.0
-        self.imu_msg.angular_velocity.x = self.gyro['x'] * scale * dps_to_rad_s
-        self.imu_msg.angular_velocity.y = self.gyro['y'] * scale * dps_to_rad_s
-        self.imu_msg.angular_velocity.z = self.gyro['z'] * scale * dps_to_rad_s
+        """Fill Imu angular velocity (rad/s). Raw 32768 == 2000 dps."""
+        self.imu_msg.angular_velocity.x = self.gyro['x'] * WIT_RAW_GYRO_TO_RAD
+        self.imu_msg.angular_velocity.y = self.gyro['y'] * WIT_RAW_GYRO_TO_RAD
+        self.imu_msg.angular_velocity.z = self.gyro['z'] * WIT_RAW_GYRO_TO_RAD
 
     def fill_angle_from_tracked(self):
-        """Store angle data as covariance or as linear acceleration placeholder.
-        Angles are roll/pitch/yaw in degrees typically."""
-        # For now, just log; angles could be converted to quaternion later
+        """Convert the JY61P 0x53 roll/pitch/yaw frame into Imu.orientation.
+
+        Raw angle counts span +/-180 deg over 32768 (WIT_RAW_ANGLE_TO_RAD). Without this,
+        /imu.orientation stays all-zeros and the downstream EKF / navsat_transform heading
+        is undefined.
+        """
+        roll = self.angle['roll'] * WIT_RAW_ANGLE_TO_RAD
+        pitch = self.angle['pitch'] * WIT_RAW_ANGLE_TO_RAD
+        yaw = self.angle['yaw'] * WIT_RAW_ANGLE_TO_RAD
+        x, y, z, w = euler_to_quaternion(roll, pitch, yaw)
+        self.imu_msg.orientation.x = x
+        self.imu_msg.orientation.y = y
+        self.imu_msg.orientation.z = z
+        self.imu_msg.orientation.w = w
         self.get_logger().debug(
-            f'Angles - roll: {self.angle["p"]}°, pitch: {self.angle["y"]}°, yaw: {self.angle["r"]}°'
+            f'Angles - roll: {math.degrees(roll):.2f}°, '
+            f'pitch: {math.degrees(pitch):.2f}°, yaw: {math.degrees(yaw):.2f}°'
         )
 
     def read_serial(self):

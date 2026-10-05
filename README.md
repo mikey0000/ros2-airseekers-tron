@@ -9,6 +9,22 @@ Source assets (read-only, do NOT modify):
 Write all new files under ros2_stack/ only.
 Do NOT run anything on the actual mower (192.168.1.105); no apt changes, no flashing, no systemctl.
 
+## Perception / VSLAM / NPU
+
+Metoak VIO is replaced by **OpenVINS**; YOLOv8 + PP-LiteSeg run on the RK3588S NPU.
+Full plan + blockers in [docs/perception_vio.md](docs/perception_vio.md). Packages:
+
+| Package | What |
+|---|---|
+| `mower_rknn` | shared rknn-toolkit-lite2 wrapper + preprocess |
+| `det_ros` | YOLOv8 `best_*_0208.rknn` → `/ai/det/detections` |
+| `seg_ros` | PP-LiteSeg `pplite-seg…6cls.rknn` → `/ai/seg/{mask,traversability}` |
+| `stereo_vio_bridge` | Metoak stereo + ICM-42600 IMU → `/vio/*` (VIO input) |
+
+OpenVINS configs live in `../ros2_port_handoff/14_vio_replacement/open_vins/`; the clone is
+in `../ros2_port_handoff/13_open_source_upstreams/open_vins/`. OA/rear camera bringup is
+`launch/cameras.launch.py`.
+
 ## Next batch
 
 Localization and control, merged from `docs/mowglinext_baseline.md` §3, §4.3, §6 and §7.2.

@@ -1,0 +1,13 @@
+# seg_ros — PP-LiteSeg terrain segmentation (pplite-seg_20260630-1-6cls.rknn, 6 classes).
+# Class order fixed by the model (see src/mower_perception/seg_ros/src/ppseg.cc):
+#   0 other, 1 grass, 2 passway, 3 soil, 4 obstacle, 5 shrub
+seg_ros:
+  ros__parameters:
+    model_path: "model/pplite-seg_20260630-1-6cls.rknn"
+    # Model input is 640 wide x 480 tall (read from the .rknn static shape
+    # [1,3,480,640] NCHW). img_size is [width, height].
+    img_size: [640, 480]
+    core_mask: "1"            # NPU core 1 (det_ros uses core 0)
+    left_topic: "/left_oa_camera/image_raw"
+    right_topic: "/right_oa_camera/image_raw"
+    publish_overlay: true

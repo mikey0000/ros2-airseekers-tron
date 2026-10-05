@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_proto</name>
+  <version>0.1.0</version>
+  <description>Generated Python protobuf bindings for the Airseekers Tron mower protocol
+    (regenerated from mower_docs/reference/proto/*.proto). Used by base_ble and the MQTT
+    bridge to parse/serialize BLE and cloud payloads.</description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>python3-protobuf</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,3 @@
+std_msgs/Header header
+uint8 battery_temperature
+uint64 battery_error
