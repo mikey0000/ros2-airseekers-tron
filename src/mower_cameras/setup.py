@@ -16,9 +16,9 @@ setup(
     zip_safe=True,
     maintainer='michael',
     maintainer_email='michael@example.com',
-    description=('Minimal V4L2 camera driver for the Airseekers Tron mower: '
-                 'front Metoak stereo (/dev/video11) split into /vio/left + '
-                 '/vio/right, rear UVC (/dev/rear_camera) as /rear_camera.'),
+    description=('OpenCV/V4L2 fallback camera driver for the Airseekers Tron: '
+                 'rear UVC MJPEG (/rear_camera/image_raw, opt-in) and debug Metoak '
+                 'stereo split (/vio/{left,right}/image_raw, opt-in).'),
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={

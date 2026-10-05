@@ -7,6 +7,7 @@ find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(action_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -28,7 +29,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PlanCoverage.srv"
   "srv/MappingControl.srv"
   "srv/SetLoRa.srv"
-  DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs nav_msgs
+  "action/Dock.action"
+  "action/Undock.action"
+  DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs nav_msgs action_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)

@@ -31,7 +31,8 @@ else
   RSYNC_RSH="ssh -o StrictHostKeyChecking=accept-new"
 fi
 remote() { "${SSH[@]}" "$MOWER_USER@$MOWER_HOST" "$@"; }
-compose() { remote "cd $REMOTE_DIR && DOCKER_BUILDKIT=0 docker compose -f docker/docker-compose.yml $( [ -f "$STACK_ROOT/docker/docker-compose.gui.yml" ] && echo -f docker/docker-compose.gui.yml ) $*"; }
+# Extra compose fragments: GUI always (if present), video relay with VIDEO=1
+compose() { remote "cd $REMOTE_DIR && DOCKER_BUILDKIT=0 docker compose -f docker/docker-compose.yml $( [ -f "$STACK_ROOT/docker/docker-compose.gui.yml" ] && echo -f docker/docker-compose.gui.yml ) $( [ "${VIDEO:-0}" = 1 ] && echo -f docker/docker-compose.video.yml ) $*"; }
 
 do_sync() {
   remote "mkdir -p $REMOTE_DIR"

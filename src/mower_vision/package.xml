@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_vision</name>
+  <version>0.1.0</version>
+  <description>
+    Consumers of the NPU perception outputs for the Airseekers Tron. obstacle_guard turns
+    det_ros detections (vision_msgs/Detection2DArray) into /vision/obstacle_close and, when
+    stop_on_close is set, a zero-twist burst on /cmd_vel_emergency plus a /cutter_off call.
+    Also ships perception.launch.py (det_ros + seg_ros + obstacle_guard) and fake_camera,
+    a synthetic image publisher for dev hosts.
+  </description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <!-- det_ros / seg_ros are only resolved by perception.launch.py when enabled. -->
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

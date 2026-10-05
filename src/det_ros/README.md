@@ -8,7 +8,7 @@ shipped `.rknn` models on the NPU via `rknn-toolkit-lite2`.
 | Model | Classes | Input | Size |
 |---|---|---|---|
 | `best_large_0208.rknn` | 22 (see `config/det.yaml`) | **480×640** (W×H) int8 NHWC | 28.8 MB |
-| `best_small_0208.rknn` | 2 (`stone`, `leaf`) | 480×640 int8 NHWC | 11.1 MB |
+| `best_small_0208.rknn` | 1 (class tensor is 1 channel; label not recovered) | 480×640 int8 NHWC | 11.1 MB |
 
 Input shape was recovered directly from the `.rknn` static metadata
 (`shape [1,3,640,480]` NCHW → 640 tall × 480 wide) — **not** the 640×640 square the
@@ -24,8 +24,10 @@ earlier docs guessed. The node letterboxes to this size and maps boxes back.
 | out | `/ai/det/image_annotated` | `sensor_msgs/Image` (bgr8, debug) |
 
 The `Detection2DArray.header.frame_id` carries the source camera frame so the planner/OF
-layer can tell left from right. Detection `results[i].id` is the class name; `class_id`
-is the integer index.
+layer can tell left from right. Each detection's `results[i].hypothesis.class_id` is the
+class **name** (index as a string only when no class list is known), `score` the
+confidence; `bbox` is in source-image pixels (Humble `vision_msgs` 4.x layout).
+`mower_vision/obstacle_guard` is the first consumer (danger-zone stop).
 
 ## OA obstacle contract (to reconcile)
 
@@ -38,10 +40,14 @@ deliberately standard so it stays reusable.
 ## Run
 
 ```bash
-ros2 run det_ros det_ros \
-  --ros-args -p model_path:=model/best_large_0208.rknn \
-  -p core_mask:="0"
+# models: scripts/install_models.sh  ->  /userdata/ros2/models/*.rknn on the device
+ros2 launch mower_vision perception.launch.py            # det + seg + obstacle_guard
+ros2 run det_ros det_ros --ros-args --params-file $(ros2 pkg prefix det_ros)/share/det_ros/config/det.yaml \
+  -p models_dir:=/some/other/dir -p dry_run:=true
 ```
+
+Without `rknnlite` or the model file the node logs one FATAL line naming the fix and
+exits 1; with `dry_run:=true` it stays up and publishes nothing.
 
 ## NPU core allocation
 
@@ -53,6 +59,8 @@ Matches the original split (det on core 0, seg pinned to core 1).
 
 ## Prerequisite
 
-`rknn-toolkit-lite2` (aarch64, matches on-device `librknnrt` 2.1.0) must be installed in
-the Humble container — see `mower_rknn` package README. The import is guarded so the
-package still imports (and logs a clear error) away from the NPU.
+`rknn-toolkit-lite2` **2.3.0** (aarch64, cp310; the models were compiled with toolkit
+2.3.0) installed in the Humble container (`docker/Dockerfile.humble`), and a matching
+`librknnrt.so` bind-mounted at `/usr/lib/librknnrt.so` — see `docs/cameras_and_video.md`.
+`best_small_0208.rknn` is a single-class model (class tensors are 1 channel wide), not the
+2-class `stone`/`leaf` model earlier notes assumed.

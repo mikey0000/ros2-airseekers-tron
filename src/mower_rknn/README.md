@@ -1,17 +1,22 @@
 # mower_rknn — shared RK3588S NPU helpers
 
-Thin wrapper over Rockchip's on-device runtime (`rknn-toolkit-lite2`, matching the
-mower's `librknnrt` 2.1.0 — see `mower_docs/10-hardware.md`). Used by `det_ros` and
-`seg_ros`.
+Thin wrapper over Rockchip's on-device runtime (`rknn-toolkit-lite2`). Used by `det_ros`
+and `seg_ros`. Also: model-path resolution (`resolve_model_path`: device path
+`/userdata/ros2/models/<file>`, then `models_dir`) and the shared startup policy
+(`prepare_runner`: clear fatal error, or `dry_run`).
 
 ## Install (inside the Humble aarch64 container)
 
-`rknn-toolkit-lite2` is a Rockchip pip package for the target platform; pin the lite
-runtime to match `librknnrt` 2.1.0:
+Version: the shipped `.rknn` models were compiled with toolkit **2.3.0** (stock rootfs
+`librknnrt` is 2.1.0, the vendor workspace bundles 2.2.0). `docker/Dockerfile.humble`
+installs the 2.3.0 wheel from `airockchip/rknn-toolkit2` (guarded):
 
 ```bash
-pip install rknn-toolkit-lite2
+pip3 install https://github.com/airockchip/rknn-toolkit2/raw/v2.3.0/rknn-toolkit-lite2/packages/rknn_toolkit_lite2-2.3.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
 ```
+
+The wheel does not contain `librknnrt.so`; bind-mount one at `/usr/lib/librknnrt.so`
+(see `docs/cameras_and_video.md`; `scripts/install_models.sh --runtime` fetches 2.3.0).
 
 The import in `rknn_runner.py` is guarded: on a non-NPU host (CI / x86 dev box) the
 package still imports and raises a clear `RknnUnavailable` only when a model is actually

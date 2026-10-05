@@ -23,6 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-humble-cv-bridge \
       ros-humble-image-transport \
       ros-humble-tf-transformations \
+      ros-humble-vision-msgs \
+      ros-humble-web-video-server \
       ros-humble-behaviortree-cpp \
       libceres-dev \
       libeigen3-dev \

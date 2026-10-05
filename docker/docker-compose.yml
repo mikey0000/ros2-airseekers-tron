@@ -34,6 +34,10 @@ services:
       # Persistent state on the device's /userdata partition: calibration
       # (imu_cal -> /userdata/ros2/calibration/imu_calibration.yaml) and maps.
       - /userdata/ros2:/userdata/ros2
+      # NPU runtime for det_ros/seg_ros: run scripts/install_models.sh --runtime first, then uncomment.
+      # - /userdata/ros2/lib/librknnrt.so:/usr/lib/librknnrt.so:ro
+      # Vendor NTRIP credentials file (optional, read by um960_gps_driver when set)
+      - /userdata/mower:/userdata/mower:ro
       # MowgliNext map_server default map directory.
       - /userdata/ros2/maps:/ros2_ws/maps
     devices:

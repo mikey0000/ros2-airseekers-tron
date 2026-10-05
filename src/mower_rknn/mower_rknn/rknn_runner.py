@@ -1,7 +1,10 @@
 """``rknn_runner`` — a small, forgiving wrapper around ``rknn-toolkit-lite2``.
 
-The mower ships ``librknnrt`` 2.1.0 (see `mower_docs/10-hardware.md`) and the deployment
-toolkit is ``rknn-toolkit-lite2`` (on-device). We use ``rknnlite.api.RKNNLite`` here, not
+Runtime versions: the stock rootfs ships ``/usr/lib/librknnrt.so`` 2.1.0
+(`mower_docs/10-hardware.md`), the vendor workspace bundles 2.2.0
+(``rknn2_runtime/librknn_api/aarch64``), and the shipped ``.rknn`` models were compiled
+with toolkit **2.3.0**. Install ``rknn-toolkit-lite2`` 2.3.0 and bind-mount a 2.3.0
+``librknnrt.so`` (see ``docs/cameras_and_video.md``). We use ``rknnlite.api.RKNNLite`` here, not
 the host-side ``rknn.api.RKNN`` (that one needs the full toolkit + a PC).
 
 The import is guarded so the package imports on any host (CI / non-NPU dev box) and only
@@ -30,6 +33,8 @@ except Exception as _e:  # noqa: BLE001
     _RKNNLite = None
     _HAVE_RKNN = False
     _IMPORT_ERROR = _e
+else:
+    _IMPORT_ERROR = None
 
 
 # NPU core bitmask values (same numbering as the C API: 0=1, 1=2, 2=4).
@@ -54,7 +59,8 @@ class RknnRunner:
             raise RknnUnavailable(
                 "rknn-toolkit-lite2 is not importable on this host "
                 f"({_IMPORT_ERROR}). Run inside the aarch64 Humble container on "
-                "the mower (librknnrt 2.1.0).")
+                "the mower with rknn-toolkit-lite2 2.3.0 installed and librknnrt.so "
+                "bind-mounted at /usr/lib/librknnrt.so (docs/cameras_and_video.md).")
 
         self.model_path = model_path
         self.verbose = verbose

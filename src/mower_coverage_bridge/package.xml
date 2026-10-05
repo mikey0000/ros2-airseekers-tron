@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_coverage_bridge</name>
+  <version>0.1.0</version>
+  <description>
+    Adapter action server: serves the MowgliNext /plan_coverage action
+    (mowgli_interfaces/action/PlanCoverage) on top of the mower_coverage
+    /coverage/plan service (Fields2Cover 2.1). Splits the planner's single
+    nav_msgs/Path into ring/swath segments and drivable sub-paths separated by
+    blade-off transits (gap > kSegmentTransitGapM = 0.6 m).
+  </description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>mower_interfaces</depend>
+  <depend>mowgli_interfaces</depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>mower_coverage</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

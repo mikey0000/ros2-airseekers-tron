@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from typing import Tuple
 
-import cv2
 import numpy as np
+
+# cv2 is imported lazily so the package (and its pure helpers) import on hosts
+# without OpenCV (CI / host pytest).
 
 
 def letterbox(img_bgr: np.ndarray, size: Tuple[int, int],
@@ -21,6 +23,8 @@ def letterbox(img_bgr: np.ndarray, size: Tuple[int, int],
     side that was scaled; ``pad_x/pad_y`` are the left/top padding added, so a detection
     box in resized space maps back with ``(x - pad_x)/scale``.
     """
+    import cv2
+
     w, h = size
     ih, iw = img_bgr.shape[:2]
     scale = min(w / iw, h / ih)
@@ -35,5 +39,7 @@ def letterbox(img_bgr: np.ndarray, size: Tuple[int, int],
 
 def bgr_to_rgb_nhwc(img_bgr: np.ndarray) -> np.ndarray:
     """BGR -> RGB and layout to H,W,C (NHWC) uint8. No normalisation/mean subtraction."""
+    import cv2
+
     rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     return np.ascontiguousarray(rgb)

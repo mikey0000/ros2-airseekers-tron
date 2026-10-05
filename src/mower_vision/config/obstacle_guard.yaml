@@ -1,0 +1,20 @@
+# obstacle_guard: det_ros detections -> /vision/obstacle_close (+ optional stop).
+# Danger zone: bbox bottom edge below y_frac*image_height AND bbox width > w_frac*image_width.
+obstacle_guard:
+  ros__parameters:
+    detections_topic: /ai/det/detections
+    # Classes the guard reacts to (names from det_ros/labels.py, best_large_0208.rknn).
+    whitelist: [person, dog, cat, hedgehog, rabbit]
+    min_score: 0.4
+    y_frac: 0.6
+    w_frac: 0.15
+    # Detection2DArray carries no image size: OA cameras are 1920x1080 (cameras.launch.py).
+    image_width: 1920
+    image_height: 1080
+    hold_s: 0.5               # per-camera debounce
+    stop_on_close: false      # true: 1 s zero burst on /cmd_vel_emergency + /cutter_off
+    burst_s: 1.0
+    burst_rate_hz: 20.0
+    emergency_topic: /cmd_vel_emergency
+    cutter_off_service: /cutter_off
+    publish_markers: true

@@ -7,20 +7,32 @@ Publishes per-camera:
 - a class-index mask (``sensor_msgs/Image``, mono8, indices 0..5),
 - a traversability mask (mono8, 255 navigable / 0 obstacle) for the planner,
 - a colour debug overlay (bgr8).
+
+Startup mirrors ``det_ros`` (``mower_rknn.startup``): ``model_path`` defaults to
+``/userdata/ros2/models/pplite-seg_20260630-1-6cls.rknn``, ``models_dir`` is the
+fallback directory, and ``dry_run:=true`` keeps the node alive without NPU/model.
 """
 
 from __future__ import annotations
 
+import sys
+import time
 from typing import List
 
-import cv2
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
 
-from mower_rknn import RknnRunner, RknnUnavailable, bgr_to_rgb_nhwc
+try:
+    import cv2
+    from cv_bridge import CvBridge
+    _DEP_ERROR = None
+except ImportError as _exc:  # pragma: no cover - depends on the image
+    _DEP_ERROR = _exc
+
+from mower_rknn import NpuStartupError, bgr_to_rgb_nhwc, prepare_runner
 from seg_ros.ppseg_postprocess import (argmax_mask, colorize, resize_mask,
                                        traversability_mask)
 
@@ -30,7 +42,11 @@ class SegRosNode(Node):
         super().__init__('seg_ros')
 
         # ---- parameters ----
-        self.declare_parameter('model_path', 'model/pplite-seg_20260630-1-6cls.rknn')
+        self.declare_parameter('model_path',
+                               '/userdata/ros2/models/pplite-seg_20260630-1-6cls.rknn')
+        self.declare_parameter('models_dir', '')
+        self.declare_parameter('dry_run', False)
+        self.declare_parameter('max_rate_hz', 5.0)  # per camera; 0 = every frame
         self.declare_parameter('img_size', [640, 480])  # [width, height]
         self.declare_parameter('core_mask', '1')
         self.declare_parameter('left_topic', '/left_oa_camera/image_raw')
@@ -39,13 +55,15 @@ class SegRosNode(Node):
 
         self.model_path = self.get_parameter('model_path').value
         self.img_size = tuple(int(v) for v in self.get_parameter('img_size').value)
-        self.core_mask = self.get_parameter('core_mask').value
+        self.core_mask = str(self.get_parameter('core_mask').value)
+        self.max_rate_hz = float(self.get_parameter('max_rate_hz').value)
+        self._last = {}
 
-        try:
-            self.runner = RknnRunner(self.model_path, core_mask=self.core_mask)
-        except RknnUnavailable as exc:
-            self.get_logger().fatal(str(exc))
-            raise
+        self.runner = prepare_runner(
+            self.get_logger(), self.model_path, self.get_parameter('models_dir').value,
+            self.core_mask, bool(self.get_parameter('dry_run').value))
+        if self.runner is None:
+            return  # dry_run
 
         self.bridge = CvBridge()
         qos = rclpy.qos.QoSProfile(depth=10)
@@ -55,20 +73,26 @@ class SegRosNode(Node):
         self.subs: List = []
         for topic in (self.get_parameter('left_topic').value,
                       self.get_parameter('right_topic').value):
-            self.subs.append(self.create_subscription(
-                Image, topic, self._make_cb(topic), qos))
+            if topic:
+                self.subs.append(self.create_subscription(
+                    Image, topic, self._make_cb(topic), rclpy.qos.qos_profile_sensor_data))
 
         self.get_logger().info(
-            'seg_ros up: model=%s, core_mask=%s, %dx%d',
-            self.model_path, self.core_mask, *self.img_size)
+            f'seg_ros up: core_mask={self.core_mask}, '
+            f'input {self.img_size[0]}x{self.img_size[1]}, max {self.max_rate_hz} Hz/camera')
 
     def _make_cb(self, topic):
         def cb(msg: Image):
-            frame = msg.header.frame_id or topic.strip('/').replace('/', '_')
+            if self.max_rate_hz > 0.0:
+                now = time.monotonic()
+                if now - self._last.get(topic, 0.0) < 1.0 / self.max_rate_hz:
+                    return
+                self._last[topic] = now
+            frame = msg.header.frame_id or topic.strip('/').split('/')[0]
             try:
                 bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             except Exception as exc:  # noqa: BLE001
-                self.get_logger().warn('decode failed on %s: %s', topic, exc)
+                self.get_logger().warning(f'decode failed on {topic}: {exc}')
                 return
             self._segment(bgr, frame, msg.header.stamp)
         return cb
@@ -105,16 +129,27 @@ class SegRosNode(Node):
 
 
 def main(args=None):
+    if _DEP_ERROR is not None:
+        print(f'[seg_ros] FATAL: missing dependency ({_DEP_ERROR}); install '
+              'ros-humble-cv-bridge / python3-opencv (docker/Dockerfile.humble).',
+              file=sys.stderr)
+        sys.exit(2)
     rclpy.init(args=args)
-    node = SegRosNode()
+    try:
+        node = SegRosNode()
+    except NpuStartupError as exc:
+        rclpy.logging.get_logger('seg_ros').fatal(str(exc))
+        rclpy.try_shutdown()
+        sys.exit(1)
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.runner.release()
+        if node.runner is not None:
+            node.runner.release()
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

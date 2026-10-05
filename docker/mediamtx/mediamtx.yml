@@ -1,0 +1,88 @@
+# mediamtx: RTSP (:8554) + WebRTC (:8889) relay of the mower cameras for Home Assistant /
+# Frigate / browsers. Used by docker/docker-compose.video.yml (network_mode: host).
+#
+#   rtsp://<mower>:8554/rear        H.264 (RTSP, TCP or UDP)
+#   http://<mower>:8889/rear        WebRTC player page (WHEP at /rear/whep)
+#
+# Source (default, "ros"): the MJPEG stream of web_video_server
+# (cameras.launch.py web_video_server:=true) -> ffmpeg libx264 -> RTSP publish into
+# mediamtx. It reads ROS topics, so it never competes with v4l2_camera for /dev/video*.
+# Encoding is on demand: ffmpeg only runs while at least one RTSP/WebRTC client is
+# connected and stops 10 s after the last one leaves.
+#
+# CPU (RK3588S A76/A55, software libx264 ultrafast/zerolatency; estimates, NOT measured):
+#   1280x720 @ 10 fps  ~ 35-60 % of one core  (default below)
+#   1920x1080 @ 15 fps ~ 100-150 %           (raise width/height/fps at your own cost)
+# plus web_video_server's JPEG encode of the ROS image (~15-30 % at 720p10).
+# The RK3588 hardware encoder (rkvenc via /dev/mpp_service) is NOT reachable from this
+# image: stock ffmpeg has no rkmpp encoder and Rockchip exposes no V4L2 M2M encoder, so
+# h264_v4l2m2m does not apply. See docs/cameras_and_video.md for the direct-device option.
+
+logLevel: info
+
+# --- protocols: RTSP + WebRTC only (keeps 8888/1935/8890 free) ---
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp, udp]
+rtpAddress: :8000
+rtcpAddress: :8001
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: ''
+# With network_mode: host the LAN address is detected automatically; list it here if
+# WebRTC clients on another subnet cannot connect.
+webrtcAdditionalHosts: []
+
+hls: no
+rtmp: no
+srt: no
+api: no
+metrics: no
+playback: no
+moq: no                 # mediamtx >= 1.21 (would otherwise open 8892/8893)
+
+pathDefaults:
+  # all paths are fed by ffmpeg running inside this container
+  source: publisher
+
+paths:
+  rear:
+    runOnDemand: >-
+      ffmpeg -hide_banner -loglevel warning
+      -f mpjpeg -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5
+      -i "http://127.0.0.1:8080/stream?topic=/rear_camera/image_raw&type=mjpeg&quality=70&width=1280&height=720"
+      -an -vf fps=10 -pix_fmt yuv420p
+      -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline
+      -g 20 -b:v 1500k -maxrate 2000k -bufsize 2000k
+      -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnDemandRestart: yes
+    runOnDemandStartTimeout: 15s
+    runOnDemandCloseAfter: 10s
+
+  # Front-left OA camera (same mechanism; topic from cameras.launch.py).
+  left_oa:
+    runOnDemand: >-
+      ffmpeg -hide_banner -loglevel warning
+      -f mpjpeg -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5
+      -i "http://127.0.0.1:8080/stream?topic=/left_oa_camera/image_raw&type=mjpeg&quality=70&width=1280&height=720"
+      -an -vf fps=10 -pix_fmt yuv420p
+      -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline
+      -g 20 -b:v 1500k -maxrate 2000k -bufsize 2000k
+      -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnDemandRestart: yes
+    runOnDemandStartTimeout: 15s
+    runOnDemandCloseAfter: 10s
+
+  # Option B (direct device, NOT default): ffmpeg opens the UVC camera itself and copies
+  # its MJPEG -> needs the ROS rear camera OFF (cameras.launch.py rear_driver:=none), since
+  # a V4L2 capture device can be streamed by one process only. Uncomment + add the device
+  # to the compose file.
+  # rear_direct:
+  #   runOnDemand: >-
+  #     ffmpeg -hide_banner -loglevel warning
+  #     -f v4l2 -input_format mjpeg -video_size 1280x720 -framerate 15 -i /dev/rear_camera
+  #     -an -pix_fmt yuv420p -c:v libx264 -preset ultrafast -tune zerolatency
+  #     -g 30 -b:v 2000k -f rtsp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+  #   runOnDemandRestart: yes

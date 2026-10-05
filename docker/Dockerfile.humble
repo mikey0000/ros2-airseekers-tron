@@ -93,3 +93,21 @@ RUN echo 'source /opt/ros/humble/setup.bash 2>/dev/null || true; \
 [ -f /work/install/setup.bash ] && source /work/install/setup.bash || true' >> /root/.bashrc
 
 CMD ["bash"]
+
+# ---- cameras / NPU vision (appended; see docs/cameras_and_video.md) ----
+# vision_msgs: det_ros output + mower_vision/obstacle_guard input.
+# web_video_server: MJPEG over HTTP :8080 (cameras.launch.py web_video_server:=true),
+#   also the source of the RTSP/WebRTC relay (docker/docker-compose.video.yml).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-humble-vision-msgs \
+      ros-humble-web-video-server \
+    && rm -rf /var/lib/apt/lists/*
+# rknn-toolkit-lite2 (rknnlite.api.RKNNLite) for det_ros/seg_ros, aarch64 cp310, from the
+# official airockchip/rknn-toolkit2 repo (rockchip-linux/rknn-toolkit2 stops at 1.6.0).
+# 2.3.0 = the toolkit the shipped .rknn models were compiled with. librknnrt.so is NOT in
+# the wheel: bind-mount a matching one at /usr/lib/librknnrt.so (compose). Guarded: an
+# unreachable URL only prints a warning (det_ros/seg_ros then exit with a clear error).
+ARG RKNN_LITE2_VERSION=2.3.0
+RUN pip3 install --no-cache-dir \
+      "https://github.com/airockchip/rknn-toolkit2/raw/v${RKNN_LITE2_VERSION}/rknn-toolkit-lite2/packages/rknn_toolkit_lite2-${RKNN_LITE2_VERSION}-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
+    || echo "WARNING: rknn-toolkit-lite2 ${RKNN_LITE2_VERSION} not installed (wheel unreachable)"

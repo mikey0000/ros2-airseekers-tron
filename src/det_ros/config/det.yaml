@@ -3,7 +3,14 @@
 # (see mower_docs/03-yolo-perception.md and src/mower_perception/det_ros/model/best_large_list.txt).
 det_ros:
   ros__parameters:
-    model_path: "model/best_large_0208.rknn"
+    # Device path (scripts/install_models.sh copies the .rknn files there). If missing,
+    # <models_dir>/<basename> is tried (launch arg models_dir in
+    # mower_vision/launch/perception.launch.py).
+    model_path: "/userdata/ros2/models/best_large_0208.rknn"
+    models_dir: ""
+    # true: no rknnlite / no model -> stay alive, publish nothing (instead of exit 1)
+    dry_run: false
+    max_rate_hz: 10.0         # per camera; NPU+Python budget, 0 = every frame
     # Model input is 480 wide x 640 tall (read from the .rknn static shape
     # [1,3,640,480] NCHW). img_size is [width, height].
     img_size: [480, 640]

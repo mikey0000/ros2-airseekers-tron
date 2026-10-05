@@ -13,13 +13,15 @@ VSLAM, and NPU.
 | `det_ros` + `libdet.so` (YOLOv8) | `det_ros` (Python, rknn-lite) | `src/det_ros/` |
 | `seg_ros`/`seg_oacam`/`libppseg.so` (PP-LiteSeg) | `seg_ros` (Python, rknn-lite) | `src/seg_ros/` |
 | `libMoGeneralSDK` + `mo_simor.ko` (Metoak SDK) | **bypassed** — V4L2 + recovered calib | `src/stereo_vio_bridge/` |
-| `base_cameras` (V4L2 manager) | `v4l2_camera` + `launch/cameras.launch.py` | `launch/` |
+| `base_cameras` (V4L2 manager) | `v4l2_camera` + `launch/cameras.launch.py` (rear MJPEG fallback: `mower_cameras`) | `launch/`, `src/mower_cameras/` |
+| closed OA consumer of `det_ros` | `mower_vision/obstacle_guard` (danger-zone stop) | `src/mower_vision/` |
+| `web_video_server` (MJPEG for the app) | `web_video_server` (+ mediamtx RTSP/WebRTC relay) | `launch/cameras.launch.py`, `docker/docker-compose.video.yml` |
 
 ## Data flow
 
 ```
 Metoak stereo front ──(V4L2)──> stereo_vio_bridge ──/vio/imu,/vio/{left,right}/image_raw──> OpenVINS ──/ov_msckf/...──> TF /odom-in-vio
-left_oa_camera  ──(V4L2)──> det_ros (YOLOv8) ──/ai/det/detections──> (obstacle avoidance — TODO)
+left_oa_camera  ──(V4L2)──> det_ros (YOLOv8) ──/ai/det/detections──> obstacle_guard ──/vision/obstacle_close, /cmd_vel_emergency, /cutter_off
                       └────> seg_ros (PP-LiteSeg) ──/ai/seg/{mask,traversability}──> (planner — TODO)
 right_oa_camera ──(V4L2)──> det_ros + seg_ros
 ```
@@ -123,15 +125,24 @@ rkaiq (`camera_engine_rkaiq`) + `gc2093_MY_default.json` installed — see
    resolve it on arm64. Configs are ready in `14_vio_replacement/open_vins/`.
 2. **IMU rate** — `stereo_vio_bridge` emits IMU on the image tick (~10 Hz); VIO wants
    ~200 Hz. Configure the ICM-40608 IIO hrtimer/buffer (`update_rate: 200` assumed).
-3. **Obstacle-avoidance consumer** — `det_ros`/`seg_ros` publish standard
-   `vision_msgs`/Image surfaces; the node that turns these into drive commands is still
-   to be written (the closed OA/fusion nodes used vendor-specific pointcloud topics).
+3. **Obstacle-avoidance consumer** — first consumer done: `mower_vision/obstacle_guard`
+   (whitelisted classes in an image-space danger zone -> `/vision/obstacle_close`, optional
+   zero burst on `/cmd_vel_emergency` + `/cutter_off`). A planner-level avoidance (steer
+   around, not just stop) is still to be written. Thresholds are untuned (no field data).
 4. **`seg_ros` fusion** — the original fused seg masks into obstacle pointclouds via a
    per-camera `points.txt` monocular-depth mapping; that fusion step (`fusion_ros_node`)
    needs a replacement or a drop decision.
 
 ## Prerequisites in the container
 
-- `rknn-toolkit-lite2` (aarch64, matches `librknnrt` 2.1.0) — see `src/mower_rknn/README.md`.
-- `ros-humble-v4l2-camera`, `ros-humble-vision-msgs`, `ros-humble-cv-bridge`
-  (the latter two ship with ros-base; `vision_msgs` is in `common_interfaces`).
+Full deploy steps (models, runtime, compose lines, video feeds): `docs/cameras_and_video.md`.
+
+- `rknn-toolkit-lite2` **2.3.0** (aarch64 cp310; the `.rknn` models were compiled with
+  toolkit 2.3.0, the stock `/usr/lib/librknnrt.so` is 2.1.0 and the vendor workspace copy
+  2.2.0) + a matching `librknnrt.so` bind-mounted at `/usr/lib/librknnrt.so`.
+  Appended to `docker/Dockerfile.humble` (guarded pip install).
+- `ros-humble-v4l2-camera`, `ros-humble-cv-bridge` (already in the image),
+  `ros-humble-vision-msgs` and `ros-humble-web-video-server` (appended to
+  `docker/Dockerfile.humble`; `vision_msgs` is NOT part of ros-base, and is also missing
+  from `Dockerfile.dev-amd64`).
+- Models on the device: `scripts/install_models.sh` -> `/userdata/ros2/models/`.

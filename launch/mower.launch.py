@@ -68,6 +68,14 @@ def generate_launch_description() -> LaunchDescription:
         arg('foxglove_port', '8765', 'foxglove_bridge WebSocket port.'),
         arg('localization', 'true', 'Include nav2.launch.py localization (gps_gate, navsat, ekf).'),
         arg('navigation', 'false', 'Include mower_navigation/navigation.launch.py (Nav2).'),
+        arg('map_server', 'true', 'Include mower_map/map_server.launch.py (zones, keepout mask, dock pose).'),
+        arg('maps_dir', '/ros2_ws/maps', 'areas.dat / dock_pose.yaml directory (compose mounts /userdata/ros2/maps).'),
+        arg('coverage', 'true', 'Include mower_coverage_bridge (planner + /plan_coverage action).'),
+        arg('docking', 'true', 'Include mower_docking/docking.launch.py (dock/undock actions).'),
+        arg('cameras', 'true', 'Include cameras.launch.py (OA + rear v4l2_camera).'),
+        arg('video', 'false', 'web_video_server MJPEG on :8080 (source for the RTSP relay).'),
+        arg('perception', 'false', 'Include mower_vision/perception.launch.py (det_ros + obstacle_guard).'),
+        arg('stop_on_close', 'false', 'obstacle_guard: zero burst + cutter off on a close obstacle.'),
         arg('datum_lat', '0.0', 'Map origin (GPS datum) latitude, deg. Dock position; must match '
             'config/gui/mowgli_robot.yaml. 0.0/0.0 = unset (first fix).'),
         arg('datum_lon', '0.0', 'Map origin (GPS datum) longitude, deg (see datum_lat).'),
@@ -162,9 +170,48 @@ def generate_launch_description() -> LaunchDescription:
         condition=enabled('navigation'),
     )
 
+    map_server = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution(
+            [FindPackageShare('mower_map'), 'launch', 'map_server.launch.py'])),
+        launch_arguments={
+            'maps_dir': LaunchConfiguration('maps_dir'),
+            # Keeps the GUI's dock_pose_x/y/yaw in sync (config/gui is mounted into the GUI container).
+            'robot_yaml_path': os.path.join(stack_root, 'config', 'gui', 'mowgli_robot.yaml'),
+            'datum_lat': LaunchConfiguration('datum_lat'),
+            'datum_lon': LaunchConfiguration('datum_lon'),
+        }.items(),
+        condition=enabled('map_server'),
+    )
+
+    coverage = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution(
+            [FindPackageShare('mower_coverage_bridge'), 'launch', 'coverage_bridge.launch.py'])),
+        condition=enabled('coverage'),
+    )
+
+    docking = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution(
+            [FindPackageShare('mower_docking'), 'launch', 'docking.launch.py'])),
+        condition=enabled('docking'),
+    )
+
+    cameras = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(launch_dir, 'cameras.launch.py')),
+        launch_arguments={'web_video_server': LaunchConfiguration('video')}.items(),
+        condition=enabled('cameras'),
+    )
+
+    perception = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution(
+            [FindPackageShare('mower_vision'), 'launch', 'perception.launch.py'])),
+        launch_arguments={'stop_on_close': LaunchConfiguration('stop_on_close')}.items(),
+        condition=enabled('perception'),
+    )
+
     return LaunchDescription(
         arguments
         + [drivers, robot_state_publisher, static_map_odom]
         + control
-        + [teleop, gui_bridge, foxglove, localization, navigation]
+        + [teleop, gui_bridge, foxglove, localization, navigation,
+           map_server, coverage, docking, cameras, perception]
     )

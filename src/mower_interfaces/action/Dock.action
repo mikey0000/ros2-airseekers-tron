@@ -1,0 +1,12 @@
+# Drive onto the charging dock. Approach pose comes from the map server's docking_pose
+# (or the vendor GeoJSON undock_point); the final metres are vision-guided (rear camera
+# ArUco) and confirmed by MowerBaseDevStatus.is_docking_done (debounced), then /charging on.
+bool use_vision true          # false = dead-reckon the final approach (no marker)
+float32 timeout_s 180.0
+---
+bool success
+string message
+---
+string state                  # NAV_TO_APPROACH | SEARCHING | DOCKING | FINAL_DOCKING | RETRY | CHARGING
+float32 distance_m            # remaining distance to the contacts, when known
+uint8 retries

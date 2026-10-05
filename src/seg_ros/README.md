@@ -35,10 +35,15 @@ Input shape recovered from the `.rknn` static metadata (`shape [1,3,480,640]` NC
 ## Run
 
 ```bash
-ros2 run seg_ros seg_ros \
-  --ros-args -p model_path:=model/pplite-seg_20260630-1-6cls.rknn \
-  -p core_mask:="1"
+# models: scripts/install_models.sh -> /userdata/ros2/models/ on the device
+ros2 launch mower_vision perception.launch.py seg:=true
+ros2 run seg_ros seg_ros --ros-args -p models_dir:=/some/dir -p core_mask:="1" -p dry_run:=true
 ```
+
+Default `model_path` is `/userdata/ros2/models/pplite-seg_20260630-1-6cls.rknn`;
+`models_dir` is tried with the same basename when that is missing. No `rknnlite` / no
+model: one FATAL line + exit 1, or with `dry_run:=true` alive and silent. Runtime
+requirements (rknn-toolkit-lite2 2.3.0 + `librknnrt.so`): `docs/cameras_and_video.md`.
 
 ## OA fusion note
 

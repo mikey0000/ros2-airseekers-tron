@@ -1,0 +1,24 @@
+# Parameters for mower_map map_server_node (see README.md for the full list).
+map_server_node:
+  ros__parameters:
+    maps_dir: /ros2_ws/maps
+    map_frame: map
+    base_frame: base_footprint
+    blade_frame: blade_link
+    resolution: 0.1
+    mask_margin: 2.0
+    obstacle_margin: 0.0
+    lethal_outside_areas: true
+    dock_keepout: true
+    blade_radius: 0.15
+    odom_topic: /odometry/filtered_map
+    status_topic: /mower_base/status
+    gps_status_topic: /gps/status
+    soft_boundary_margin_m: 0.0
+    lethal_boundary_margin_m: 0.5
+    boundary_debounce_samples: 3
+    require_charging: true
+    require_rtk_accuracy: true
+    require_yaw_converged: true
+    dock_set_gps_accuracy_max_m: 0.04
+    dock_gates_override: false

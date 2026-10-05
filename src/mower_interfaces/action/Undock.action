@@ -1,0 +1,12 @@
+# Leave the dock: /charging off, then back up `distance_m` straight at `speed_mps`
+# (vendor: 0.8 m along +X from the dock origin), then wait for an RTK fix if requested.
+float32 distance_m 0.8
+float32 speed_mps 0.15
+bool wait_for_rtk true
+float32 rtk_timeout_s 120.0
+---
+bool success
+string message
+---
+string state                  # CHARGER_OFF | BACKING_UP | WAITING_FOR_RTK
+float32 travelled_m

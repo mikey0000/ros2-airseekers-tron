@@ -1,21 +1,28 @@
-# mower_cameras defaults — mirrored from ros2_port_handoff/08_calibration_identity/
-# base_cameras_config/mower_cameras.yaml (rear 1920x1080 @ 30 fps) and the OpenVINS
-# stereo config (14_vio_replacement/config/stereo_imu_config.yaml: 640x480, freq 10).
+# mower_cameras (OpenCV fallback driver) defaults. Both producers are OFF by default:
+#   * OA + rear cameras: canonical producer is v4l2_camera in launch/cameras.launch.py
+#     (rear_driver:=opencv switches the rear camera to this node instead).
+#   * Metoak stereo (/vio/{left,right}/image_raw): canonical producer is
+#     stereo_vio_bridge (launch/vio.launch.py). enable_stereo is a debug fallback only;
+#     never run it together with stereo_vio_bridge (same device, same topics).
 #
-# Device map (ros2_port_handoff/README.md hardware table):
-#   /dev/videoSimor (video11)   Metoak front stereo, side-by-side frames
-#   /dev/rear_camera (video62)  rear USB UVC webcam (32e6:9221)
+# Device map (ros2_port_handoff/09_platform/udev-symlinks.txt, README hardware table):
+#   /dev/videoSimor (video11)   Metoak front stereo raw, side-by-side frames
+#   /dev/videoIsp   (video22)   Metoak ISP node (SDK path, stereo_vio_bridge source_mode:=sdk)
+#   /dev/rear_camera -> video62 rear USB UVC webcam (32e6:9221), MJPEG 1920x1080@30
 #
-# The stereo device delivers one side-by-side frame; the node splits it in half,
-# so `width`/`height` below are the *total* capture size (each eye is width/2).
-# Set `left_device`/`right_device` instead to use two independent V4L2 devices.
+# The stereo device delivers one side-by-side frame; width/height are the *total*
+# capture size (each eye is width/2).
 
 mower_cameras:
   ros__parameters:
+    enable_stereo: false
+    enable_rear: false
+
     stereo_device: '/dev/video11'
     left_device: ''
     right_device: ''
     rear_device: '/dev/rear_camera'
+    rear_camera_info_file: ''   # cameras.launch.py passes share/mower_bringup/config/cameras/rear_camera_info.yaml
 
     width: 640
     height: 480
@@ -23,7 +30,8 @@ mower_cameras:
     rear_width: 1920
     rear_height: 1080
     rear_fps: 30.0
+    rear_fourcc: 'MJPG'
 
-    publish_compressed: true
+    publish_compressed: false
     jpeg_quality: 80
     mono: false

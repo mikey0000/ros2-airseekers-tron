@@ -4,13 +4,12 @@
   <name>mower_cameras</name>
   <version>0.1.0</version>
   <description>
-    Minimal V4L2 camera driver for the Airseekers Tron mower. Opens the front
-    Metoak stereo module (/dev/videoSimor -&gt; video11, side-by-side frames)
-    and the rear USB UVC camera (/dev/rear_camera -&gt; video62) via
-    cv2.VideoCapture and publishes /vio/left, /vio/right and /rear_camera as
-    sensor_msgs/Image (bgr8, or mono8 when mono:=true), plus optional JPEG
-    CompressedImage streams on &lt;topic&gt;/compressed. No cv_bridge: frames
-    cross the OpenCV/ROS boundary as raw bytes.
+    OpenCV/V4L2 fallback camera driver for the Airseekers Tron. Both outputs are
+    opt-in: enable_rear publishes the rear USB UVC camera (/dev/rear_camera, MJPEG
+    1920x1080) as /rear_camera/image_raw + camera_info (used when
+    cameras.launch.py rear_driver:=opencv, because v4l2_camera cannot decode MJPEG);
+    enable_stereo splits the Metoak side-by-side stereo into /vio/left/image_raw and
+    /vio/right/image_raw (debug fallback for stereo_vio_bridge, never both).
   </description>
 
   <maintainer email="michael@example.com">michael</maintainer>
@@ -20,6 +19,7 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

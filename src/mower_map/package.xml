@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_map</name>
+  <version>0.1.0</version>
+  <description>
+    Zone/map server for the Airseekers Tron: Python port of the MowgliNext mowgli_map
+    map_server_node contract (areas, obstacles, dock pose, areas.dat persistence,
+    Nav2 keepout mask + filter info, mow-progress grid, boundary violation) plus an
+    importer for the vendor map.geojson.
+  </description>
+  <maintainer email="michael.arthur@gameglass.gg">michael</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>mower_interfaces</exec_depend>
+  <exec_depend>mowgli_interfaces</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

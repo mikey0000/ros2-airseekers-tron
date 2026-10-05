@@ -1,0 +1,72 @@
+# mower_docking parameters. Vendor sources in brackets:
+#  [cfg]  src/mower_charge/param/cfg.yaml
+#  [dc]   src/mower_task/mower_bt_nodes/config/dock_controller.yaml
+#  [bin]  libmower_charge_core.so (docking::marker ctor, disassembled)
+#  [doc]  docs/audit_2026-10-05/vendor_mission_layer.md s5
+mower_docking:
+  ros__parameters:
+    cmd_vel_topic: /cmd_vel_docking          # twist_mux lane, priority 15, timeout 0.5 s
+    odom_topic: /odom
+    status_topic: /mower_base/status
+    dock_pose_topic: /map_server_node/docking_pose   # latched PoseStamped (map frame)
+    gps_status_topic: /gps/status                    # mowgli_interfaces/GnssStatus
+    image_topic: /rear_camera/image_raw
+    camera_info_topic: /rear_camera/camera_info
+    charging_service: /charging
+    navigate_action: /navigate_to_pose
+    map_frame: map
+    base_frame: base_link
+
+    control_rate_hz: 20.0
+    stop_burst_s: 0.5              # zeros published on every exit
+    odom_timeout_s: 0.5            # older odom -> time * speed fallback
+    status_timeout_s: 1.0          # stale /mower_base/status while moving -> abort
+    contact_debounce_samples: 3    # [cfg] is_dock_done_num: 3
+
+    dock_pose: [0.0, 0.0, 0.0]     # fallback [x, y, yaw] in map; [doc] dock = map origin
+    approach_distance: 0.8         # [doc] undock_point (0.8, 0)
+    skip_nav_to_approach: false    # bench: assume the robot already sits at the approach pose
+    nav_timeout_s: 120.0
+    nav_server_wait_s: 5.0
+
+    aruco_dictionary: DICT_4X4_50  # [bin] getPredefinedDictionary(0)
+    marker_size: 0.04              # [bin] marker_size_ = 0.04f ("square width 4 cm")
+    marker_id: -1                  # -1 = any id
+    # Pose of the rear camera OPTICAL frame in base_link: x y z roll pitch yaw.
+    # = URDF rear_camera_joint (config/urdf/mower.urdf.xacro). TODO(calib).
+    rear_camera_T_base: [-0.201, 0.0, 0.25, -1.5707963, 0.0, 1.5707963]
+    max_detection_rate_hz: 10.0
+    search_timeout_s: 15.0         # no usable marker -> dead-reckon
+    max_lateral_error: 0.5         # [doc] reject estimate worse than 0.5 m
+    max_yaw_error_deg: 25.0        # [doc] ... or 25 deg
+    marker_timeout_s: 0.5
+    max_lost_frames: 20            # control ticks without a usable marker -> RETRY
+    # Distance from the marker plane to base_link (rear axle) along the marker
+    # normal when the robot sits on the contacts. PLACEHOLDER - calibrate (README).
+    docked_marker_offset: 0.45
+
+    max_speed: 0.15                # hard-capped at 0.15 in code
+    final_speed: 0.05              # [dc] FinalDock linear_max 0.05
+    slow_distance: 0.3             # remaining <= 0.3 m -> final_speed
+    slow_zone: 0.3                 # linear ramp 0.15 -> 0.05 m/s between 0.6 and 0.3 m
+    final_zone: 0.2                # remaining <= 0.2 m -> FINAL_DOCKING (straight reverse);
+    #                                vendor final_distance_to_dock_ 0.2 (dock_controller.h)
+    k_lateral: 1.5
+    max_approach_angle: 0.35
+    kp_heading: 0.8
+    kd_heading: 0.0
+    max_angular: 0.3               # [dc] Undocking angular_max 0.3
+    heading_hold_kp: 1.0
+    docking_timeout_s: 60.0        # [doc] "Docking timeout > 60s, retrying"
+    final_timeout_s: 10.0          # [doc] FINAL_DOCKING 10 s ...
+    final_max_distance: 0.30       # [doc] ... / 30 cm -> RETRY
+    blind_extra_distance: 0.1      # dead-reckon approach_distance + 0.1 m
+    blind_timeout_margin_s: 10.0
+    max_retries: 3                 # then DOCK_MAXOUT ([doc] notice 900053)
+    retry_forward_distance: 0.3
+    retry_speed: 0.1
+    retry_timeout_s: 15.0
+    charging_timeout_s: 5.0
+
+    undock_direction: 1.0          # +1 = leave forwards (robot reversed onto the dock)
+    undock_max_speed: 0.3          # [dc] Undocking linear_max 0.3

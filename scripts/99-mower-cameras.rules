@@ -1,24 +1,31 @@
-# udev rules — Airseekers Tron camera symlinks (documentation + reproducible install).
+# udev rules: Airseekers Tron camera symlinks (reproducible install of the stock names).
 #
-# These symlinks already exist on the stock mower (vendor udev rules, see
-# ros2_port_handoff/09_platform/udev-symlinks.txt):
-#   /dev/left_oa_camera  -> video53  (left  obstacle-avoidance, MIPI-CSI)
-#   /dev/right_oa_camera -> video44  (right obstacle-avoidance, MIPI-CSI)
-#   /dev/rear_camera     -> video62  (USB UVC rear camera)
+# Verified against the stock unit:
+#   ros2_port_handoff/07_system_config/udev/mower.rules   (vendor rules, copied below)
+#   ros2_port_handoff/09_platform/udev-symlinks.txt       (live result)
+#     /dev/left_oa_camera  -> video53   (left  obstacle-avoidance, GC2093 MIPI via rkisp)
+#     /dev/right_oa_camera -> video44   (right obstacle-avoidance, GC2093 MIPI via rkisp)
+#     /dev/rear_camera     -> video62   (USB UVC "FHD webcam" 32e6:9221 on port 2-1)
 #
-# The RK3588S MIPI-CSI nodes are enumerated by the Rockchip ISP driver, so the exact
-# videoN number can shift between boots/kernels. The rules below pin the names by the
-# V4L2 card/name attribute instead of a hardcoded device number — adjust the ATTR{}
-# match to what `udevadm info -a -n /dev/video44` reports on this unit, then
+# The stock rules already exist on the mower, so installing this file is only needed on a
+# re-flashed rootfs. The MIPI rules pin kernel node numbers exactly as the vendor does
+# (the rkisp/rkcif node numbering is fixed by the device tree on this BSP); the rear rule
+# pins USB port 2-1 interface 0 and video index 0 (the UVC metadata node is index 1).
 #
-#   sudo cp 99-mower-cameras.rules /etc/udev/rules.d/
-#   sudo udevadm control --reload && sudo udevadm trigger
+#   sudo cp scripts/99-mower-cameras.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=video4linux
+#   ls -l /dev/left_oa_camera /dev/right_oa_camera /dev/rear_camera
+#
+# The rear camera's USB power is switched by GPIO 113 (perception_vio.md); if
+# /dev/rear_camera is missing, check that gpio first.
 
-# Left OA camera (MIPI-CSI stream cif_mipi_id0-ish). Confirm the exact KERNEL/DRIVER.
-SUBSYSTEM=="video4linux", ATTR{name}=="rkisp_*", KERNELS=="cif_mipi_id0", SYMLINK+="left_oa_camera"
+SUBSYSTEM=="video4linux", KERNEL=="video53", SYMLINK+="left_oa_camera", MODE="0666"
+SUBSYSTEM=="video4linux", KERNEL=="video44", SYMLINK+="right_oa_camera", MODE="0666"
+SUBSYSTEM=="video4linux", KERNELS=="2-1:1.0", SUBSYSTEMS=="usb", ATTR{index}=="0", SYMLINK+="rear_camera", MODE="0666"
 
-# Right OA camera.
-SUBSYSTEM=="video4linux", ATTR{name}=="rkisp_*", KERNELS=="cif_mipi_id1", SYMLINK+="right_oa_camera"
-
-# Rear camera (USB UVC, vendor 32e6:9221).
-SUBSYSTEM=="video4linux", ATTRS{idVendor}=="32e6", ATTRS{idProduct}=="9221", SYMLINK+="rear_camera"
+# Port-independent alternative for the rear camera (if it is moved to another USB port):
+# SUBSYSTEM=="video4linux", ATTRS{idVendor}=="32e6", ATTRS{idProduct}=="9221", ATTR{index}=="0", SYMLINK+="rear_camera", MODE="0666"
+#
+# Do NOT match the OA cameras by ATTR{name}=="rkisp_*": every rkisp instance exposes
+# several nodes (mainpath, selfpath, bypass, iqtool, ...) that all match, and the symlink
+# would land on whichever enumerates last.

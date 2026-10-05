@@ -1,0 +1,24 @@
+# RTSP / WebRTC video relay for the mower (Home Assistant, Frigate, browsers).
+# Run from ros2_stack/ on the mower, next to the main stack:
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.video.yml up -d
+# or on its own:
+#   docker compose -f docker/docker-compose.video.yml up -d
+#
+# Requires web_video_server on :8080 (cameras.launch.py web_video_server:=true).
+# Feeds:  rtsp://<mower>:8554/rear   rtsp://<mower>:8554/left_oa
+#         http://<mower>:8889/rear   (WebRTC player)
+# Ports used on the host network: 8554/tcp (RTSP), 8000-8001/udp (RTP/RTCP),
+# 8889/tcp (WebRTC HTTP), 8189/udp (WebRTC ICE).
+services:
+  mediamtx:
+    # Verified with v1.21.1 (config loads, RTSP H.264 + WebRTC page served from a
+    # web_video_server MJPEG source). Pin to 1.21.1-ffmpeg if a later release rejects a key.
+    image: bluenviron/mediamtx:latest-ffmpeg
+    container_name: mower_mediamtx
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    # Option B (direct device capture, see mediamtx.yml rear_direct) also needs:
+    # devices:
+    #   - /dev/rear_camera:/dev/rear_camera

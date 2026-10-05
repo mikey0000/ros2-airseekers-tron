@@ -1,0 +1,330 @@
+# Cameras, NPU vision and video feeds
+
+This covers the OA and rear cameras, the NPU detection and segmentation nodes, the
+`obstacle_guard` safety consumer, and the MJPEG/RTSP/WebRTC feeds. The front Metoak
+stereo module belongs to VIO (`launch/vio.launch.py`, `stereo_vio_bridge`), so it is not
+covered here. See `docs/perception_vio.md`.
+
+## 1. Devices and topics
+
+The stock udev rules are in `ros2_port_handoff/07_system_config/udev/mower.rules`. The live
+symlinks are in `09_platform/udev-symlinks.txt`. `scripts/99-mower-cameras.rules`
+reproduces them.
+
+| Camera | Device (symlink → node) | Sensor / format (vendor config) | Producer (canonical) | Topics |
+|---|---|---|---|---|
+| left OA | `/dev/left_oa_camera` → `video53` | GC2093 MIPI via rkisp, UYVY 1920x1080 @ 15 | `v4l2_camera` (`cameras.launch.py`) | `/left_oa_camera/image_raw`, `/left_oa_camera/camera_info` |
+| right OA | `/dev/right_oa_camera` → `video44` | GC2093 MIPI via rkisp, UYVY 1920x1080 @ 15 | `v4l2_camera` | `/right_oa_camera/image_raw`, `/right_oa_camera/camera_info` |
+| rear | `/dev/rear_camera` → `video62` | USB UVC "FHD webcam" 32e6:9221, MJPEG 1920x1080 @ 30 | `v4l2_camera` (`rear_driver:=v4l2`, default) or `mower_cameras` (`rear_driver:=opencv`) | `/rear_camera/image_raw`, `/rear_camera/camera_info` |
+| Metoak stereo | `/dev/video11` (`videoSimor`), `/dev/video22` (`videoIsp`, SDK) | side-by-side | `stereo_vio_bridge` (`vio.launch.py`) | `/vio/{left,right}/image_raw` |
+
+- Calibration comes from `config/cameras/<camera>_info.yaml`, which is installed to
+  `share/mower_bringup/config/cameras/`. `cameras.launch.py` passes
+  `camera_info_url:=file://<that dir>/<camera>_info.yaml`. You can override the directory
+  with `camera_info_dir:=`. All three files are vendor copies with the same intrinsics; the
+  rear file is the vendor `usb_cam_info.yaml`.
+- `output_encoding:=bgr8` is the default. The driver converts UYVY or YUYV once, so
+  `det_ros` and `seg_ros` (which both subscribe) decode it with `cv_bridge`. Use
+  `yuv422` to save driver CPU at the cost of per-subscriber conversion.
+- Only one process can stream a V4L2 device:
+  - `mower_cameras` is off by default (`enable_rear` and `enable_stereo` are both `false`).
+    `rear_driver:=opencv` swaps the rear producer; it does not add a second one.
+  - `mower_cameras`' stereo output is now `/vio/{left,right}/image_raw`, the same topic
+    names that OpenVINS consumes. It is a debug fallback, and you must never run it
+    together with `stereo_vio_bridge`.
+  - On a stock rootfs, the vendor `base_cameras` node, `mower-webcam.service` and
+    `mower-cam-keeper.service` own the same devices and port 8080. Stop them before you
+    start the Humble cameras.
+- The rear camera's limitation: in `v4l2_camera` 0.6.2 (Humble), the only input formats
+  are YUYV, UYVY and GREY. MJPEG is not supported. The UVC webcam does 1080p30 only as
+  MJPEG; YUYV at 1080p is usually about 5 fps over USB 2. You have three choices:
+  - Keep `rear_driver:=v4l2` and lower `rear_width` and `rear_height` (the calibration is
+    1080p).
+  - Use `rear_driver:=opencv` (MJPEG decoded by OpenCV at full rate, more CPU).
+  - Use `rear_driver:=none`.
+
+  Run `v4l2-ctl -d /dev/rear_camera --list-formats-ext` on the mower first.
+- The rear USB power is gated by GPIO 113. The OA cameras need the rkaiq IQ file:
+  `scripts/setup_camera_iq.sh`.
+
+### `cameras.launch.py` arguments
+
+`left_oa_camera`, `right_oa_camera` (true), `rear_driver` (`v4l2|opencv|none`), and
+`<camera>_device`. Size and format: `oa_width`, `oa_height`, `oa_pixel_format`
+(1920/1080/UYVY) and `rear_width`, `rear_height`, `rear_pixel_format` (1920/1080/YUYV).
+Also `output_encoding` (bgr8), `camera_info_dir`, `web_video_server` (false) and
+`video_port` (8080).
+
+## 2. Models (deploy flow)
+
+The models are the `.rknn` files in `ros2_port_handoff/11_perception_models/`. There is no
+source for them. Header metadata:
+
+| File | Used by | Toolkit | Input (NCHW) | Notes |
+|---|---|---|---|---|
+| `best_large_0208.rknn` | `det_ros` (default) | 2.3.0 | `[1,3,640,480]` | 22 classes (`det_ros/labels.py`) |
+| `best_small_0208.rknn` | — | 2.3.0 | `[1,3,640,480]` | class tensors are 1 channel wide, so it is a single-class model with an unknown label |
+| `pplite-seg_20260630-1-6cls.rknn` | `seg_ros` (default) | 2.3.0 | `[1,3,480,640]` | 6 classes |
+| `pplite-seg_20260606.rknn` | — | 2.3.0 | `[1,3,480,640]` | older seg |
+| `model_1.rknn` | — | 2.3.2 | `[1,3,224,224]` | light classifier |
+
+Deploy flow, in addition to `scripts/deploy_to_mower.sh sync|image|build`:
+
+```bash
+./scripts/install_models.sh                 # rsync models -> airseekers@192.168.1.105:/userdata/ros2/models/
+./scripts/install_models.sh --runtime       # + librknnrt.so 2.3.0 -> /userdata/ros2/lib/librknnrt.so
+./scripts/install_models.sh --local DIR     # local copy (then models_dir:=DIR)
+./scripts/install_models.sh --dry-run       # show the commands
+```
+
+The default `model_path` for `det_ros` and `seg_ros` is `/userdata/ros2/models/<file>`.
+`docker-compose.yml` already bind-mounts `/userdata/ros2`. When that file is missing, the
+node tries `<models_dir>/<basename>`, where `models_dir` is a parameter and also a launch
+argument of `perception.launch.py`.
+
+## 3. NPU runtime requirements
+
+- **Python runtime:** `rknn-toolkit-lite2` **2.3.0** (aarch64, cp310), from
+  `airockchip/rknn-toolkit2`. `rockchip-linux/rknn-toolkit2` stops at 1.6.0.
+  `docker/Dockerfile.humble` installs it as an appended step. That step is guarded, so an
+  unreachable URL only prints a warning. The wheel's dependencies are `numpy` (the system
+  1.21.5 satisfies it), `psutil` and `ruamel.yaml`; aarch64 wheels exist for both.
+- **C runtime `librknnrt.so`:** the wheel does not include it, so it must be bind-mounted
+  at `/usr/lib/librknnrt.so`. The versions involved:
+
+  | Source | Version |
+  |---|---|
+  | Stock rootfs `/usr/lib/librknnrt.so` (`mower_docs/10-hardware.md`) | 2.1.0 |
+  | Vendor workspace copy (`rknn2_runtime/librknn_api/aarch64/librknnrt.so`) | 2.2.0 |
+  | Toolkit that compiled the models | 2.3.0 |
+
+  Use the 2.3.0 runtime:
+
+  ```yaml
+  # docker/docker-compose.yml, service mower_humble, volumes:
+        - /userdata/ros2/lib/librknnrt.so:/usr/lib/librknnrt.so:ro   # 2.3.0 from install_models.sh --runtime
+  ```
+
+  Alternative: the stock runtime (2.1.0). It is older than the models, so expect a
+  version warning or an init failure.
+
+  ```yaml
+        - /usr/lib/librknnrt.so:/usr/lib/librknnrt.so:ro
+  ```
+
+  To check a library's version: `strings <lib> | grep 'librknnrt version'`. The kernel
+  driver is RKNPU v0.9.8.
+- **Device nodes:** the container is `privileged` with `/dev:/dev`, so the RKNPU device
+  (`/dev/dri/renderD*` or `/dev/rknpu`, depending on the BSP) is visible.
+- **ROS packages:** `ros-humble-vision-msgs` and `ros-humble-web-video-server` are
+  appended to `Dockerfile.humble`. `vision_msgs` was not in either image.
+  `Dockerfile.dev-amd64` still lacks both. Add them there too if dev images should run
+  `det_ros` and `obstacle_guard`; the verification below installed them at run time.
+- **Startup behaviour:**
+  - If `rknnlite` or the model is missing, `det_ros` and `seg_ros` log one FATAL line that
+    names the fix, then exit 1.
+  - With `dry_run:=true`, the node logs one WARN, stays alive and publishes nothing.
+  - If `vision_msgs` or `cv_bridge` is missing, the node exits 2 with an install hint.
+- **NPU cores:** `det_ros` uses core 0, `seg_ros` uses core 1.
+- **Frame-rate caps:** `max_rate_hz` defaults to 10 for det and 5 for seg, per camera.
+
+## 4. Perception and `obstacle_guard`
+
+```bash
+ros2 launch mower_vision perception.launch.py                  # det + obstacle_guard (seg:=false)
+ros2 launch mower_vision perception.launch.py seg:=true stop_on_close:=true models_dir:=/userdata/ros2/models
+```
+
+### `det_ros` output
+
+`det_ros` publishes `/ai/det/detections` as `vision_msgs/Detection2DArray` (Humble 4.x
+layout):
+
+- `header.frame_id` is the camera frame (`left_oa_camera` or `right_oa_camera`).
+- Each detection's `results[0].hypothesis.class_id` is the class name and `score` is the
+  confidence.
+- `bbox` is in source-image pixels.
+
+It also publishes `/ai/det/image_annotated`.
+
+### `obstacle_guard`
+
+Config: `src/mower_vision/config/obstacle_guard.yaml`.
+
+- **Classes:** whitelist `[person, dog, cat, hedgehog, rabbit]` with `min_score` 0.4. Set
+  `whitelist: ['*']` to react to all classes.
+- **Close rule:** a detection is close when its bbox bottom edge is greater than
+  `y_frac`·H (0.6) **and** its bbox width is greater than `w_frac`·W (0.15).
+  `image_width` and `image_height` default to 1920x1080, because `Detection2DArray`
+  carries no image size.
+- **Debounce:** `hold_s` (0.5 s) per camera. The overall state is true when either camera
+  is close.
+- **Output:** `/vision/obstacle_close` (`std_msgs/Bool`), published on every detection
+  frame and when the hold expires.
+- **Markers:** `/vision/obstacle_markers` (`visualization_msgs/ImageMarker`, LINE_LIST in
+  image pixels). Red means close, yellow means whitelisted, grey is other, and the blue
+  line is the danger-zone edge. In Foxglove, add it as an annotation topic on the camera
+  Image panel.
+- **`stop_on_close`:** defaults to false, so it only logs a warning. When it is true, the
+  rising edge of the close state triggers two actions:
+  - Zero `Twist` messages on `/cmd_vel_emergency` at 20 Hz for `burst_s` (1 s). This is
+    the twist_mux emergency input (priority 100, 0.2 s timeout).
+  - One `std_srvs/Trigger` call to `/cutter_off` (`mower_mcu_driver`).
+
+  If the obstacle stays in view after the burst, `obstacle_guard` does not send another
+  burst. A new burst needs a new rising edge, which happens after the hold expires.
+
+## 5. Video feeds
+
+| Feed | URL | Port | Source |
+|---|---|---|---|
+| MJPEG (HTTP) | `http://<mower>:8080/stream?topic=/rear_camera/image_raw` (also `&width=1280&height=720&quality=70`) | 8080/tcp | `web_video_server` (`cameras.launch.py web_video_server:=true`) |
+| Snapshot | `http://<mower>:8080/snapshot?topic=/rear_camera/image_raw` | 8080/tcp | same |
+| Topic list | `http://<mower>:8080/` | 8080/tcp | same |
+| RTSP H.264 | `rtsp://<mower>:8554/rear`, `rtsp://<mower>:8554/left_oa` | 8554/tcp, 8000-8001/udp | mediamtx (`docker/docker-compose.video.yml`) |
+| WebRTC | `http://<mower>:8889/rear` (WHEP `/rear/whep`) | 8889/tcp, 8189/udp | mediamtx |
+
+The ports don't clash with the rest of the stack: Foxglove uses 8765, the teleop
+WebSocket 8766 and the GUI 4006. HLS, RTMP, SRT, the API and MoQ are disabled in
+`mediamtx.yml`.
+
+### Default RTSP path: from ROS
+
+mediamtx starts an ffmpeg on demand. ffmpeg reads the `web_video_server` MJPEG at 720p,
+encodes it with `libx264` (ultrafast, zerolatency, baseline, 10 fps, about 1.5 Mbit/s) and
+publishes `rtsp://127.0.0.1:8554/<path>`. The encode runs only while an RTSP or WebRTC
+client is connected, and stops 10 s after the last one leaves.
+
+This path never touches `/dev/video*`, so it can't conflict with `v4l2_camera`.
+
+```bash
+# on the mower, from /userdata/ros2_stack
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.video.yml up -d
+```
+
+CPU estimate for the RK3588S (not measured on the mower):
+
+| Load | Estimate |
+|---|---|
+| `libx264` 720p10 | about 35-60 % of one A76 core |
+| `libx264` 1080p15 | about 100-150 % |
+| `web_video_server` JPEG encode at 720p10 | about 15-30 % |
+| `v4l2_camera` YUYV→bgr8 at 1080p | about 10-20 % per camera |
+
+The RK3588 hardware encoder (rkvenc through `/dev/mpp_service`) is not used:
+
+- The stock ffmpeg in the mediamtx image has no `h264_rkmpp`.
+- Rockchip exposes no V4L2 M2M encoder, so `h264_v4l2m2m` does not apply.
+- `09_platform/dev_nodes.txt` lists no encoder nodes; it was filtered to tty, i2c and
+  video.
+
+Using the hardware encoder would need a ffmpeg-rockchip build with `/dev/mpp_service`,
+`/dev/rga` and `/dev/dri` passed through.
+
+### Option B: direct device (not the default)
+
+The `rear_direct` block is commented out in `mediamtx.yml`. In this option, ffmpeg opens
+`/dev/rear_camera` itself with `-f v4l2 -input_format mjpeg`. CPU is lower, because there
+is no ROS conversion and no JPEG re-encode. The cost is that the ROS rear camera must be
+off (`rear_driver:=none`), because a device can be streamed by only one process. It also
+needs the `devices:` entry in the compose file.
+
+### Home Assistant and Frigate
+
+- **Home Assistant:** use the Generic Camera integration with the stream source
+  `rtsp://<mower>:8554/rear`. Alternatively, use the MJPEG IP Camera integration with the
+  `:8080/stream?...` URL.
+- **Frigate:**
+
+  ```yaml
+  cameras:
+    mower_rear:
+      ffmpeg:
+        inputs:
+          - path: rtsp://<mower>:8554/rear
+            roles: [detect, record]
+      detect: {width: 1280, height: 720, fps: 5}
+  ```
+
+## 6. Integration (coordinator)
+
+`launch/mower.launch.py` is not edited here. These are the include lines for it:
+
+```python
+# arguments
+arg('cameras', 'true', 'Include cameras.launch.py (OA + rear v4l2_camera).'),
+arg('video', 'false', 'web_video_server MJPEG on :8080 (source for RTSP relay).'),
+arg('perception', 'false', 'Include mower_vision/perception.launch.py (det_ros + obstacle_guard).'),
+arg('stop_on_close', 'false', 'obstacle_guard: zero burst + cutter off on close obstacle.'),
+
+cameras = IncludeLaunchDescription(
+    PythonLaunchDescriptionSource(os.path.join(launch_dir, 'cameras.launch.py')),
+    launch_arguments={'web_video_server': LaunchConfiguration('video')}.items(),
+    condition=enabled('cameras'),
+)
+perception = IncludeLaunchDescription(
+    PythonLaunchDescriptionSource(PathJoinSubstitution(
+        [FindPackageShare('mower_vision'), 'launch', 'perception.launch.py'])),
+    launch_arguments={'stop_on_close': LaunchConfiguration('stop_on_close')}.items(),
+    condition=enabled('perception'),
+)
+# ... + [cameras, perception] in the returned LaunchDescription
+```
+
+## 7. Verified off-robot (amd64 dev container `mower:humble-dev-amd64`)
+
+- `colcon build` succeeded for `mower_cameras`, `det_ros`, `seg_ros`, `mower_rknn`,
+  `mower_vision` and `mower_bringup`.
+- `ros2 launch mower_bringup cameras.launch.py` ran. It produced the three namespaced
+  nodes and the topics `/{left_oa_camera,right_oa_camera,rear_camera}/{image_raw,camera_info}`.
+  The generated parameter files were correct:
+  - `image_size` was the int array `[1920,1080]`.
+  - `camera_info_url` was `file:///…/share/mower_bringup/config/cameras/…`.
+  - `video_device` was the udev symlink.
+  The nodes then logged "Failed opening device", as expected without hardware.
+  `rear_driver:=opencv` started `mower_cameras` with `enable_rear=True` and the installed
+  rear calibration path.
+- pytest passed on the host and in the container.
+- `det_ros` and `seg_ros` without `rknnlite` logged one FATAL line and exited 1.
+  `dry_run:=true` stayed alive. `perception.launch.py dry_run:=true seg:=true` brought up
+  all three nodes.
+- `obstacle_guard` fake run with `stop_on_close:=true`:
+  - Input was a synthetic `person` `Detection2DArray` with its bottom edge at 1000 px and
+    a width of 400 px.
+  - Results: `/vision/obstacle_close` was true, 21 zero `Twist` messages arrived on
+    `/cmd_vel_emergency` (1 s at 20 Hz), a fake `/cutter_off` server received the call,
+    and one `ImageMarker` with 10 points was published.
+  - The same box labelled `stone` gave false.
+- Video chain:
+  - `mower_vision fake_camera` published 1280x720 on `/rear_camera/image_raw`.
+    `web_video_server` (installed with apt) served the snapshot (HTTP 200, `image/jpeg`)
+    and the `multipart/x-mixed-replace` MJPEG stream.
+  - mediamtx v1.21.1 with `docker/mediamtx/mediamtx.yml` served
+    `rtsp://127.0.0.1:8554/rear` as H.264 Constrained Baseline 1280x720 at 10 fps, read by
+    an ffmpeg client. The WebRTC page on `:8889/rear` answered.
+
+## 8. Only testable on the mower
+
+1. Whether the real devices open with these formats:
+   - OA: UYVY 1920x1080 through rkisp, which needs `gc2093.ko`, rkaiq and the IQ file.
+   - Rear: YUYV 1080p. It may not be offered, or only at about 5 fps; if so, use
+     `rear_driver:=opencv` or a lower size.
+2. Whether the udev numbering (`video53`, `video44`, `video62`) holds after a re-flash or
+   kernel change.
+3. NPU inference end to end:
+   - `rknnlite` 2.3.0 with the bind-mounted `librknnrt.so` (2.3.0 versus the stock
+     2.1.0).
+   - Model load and `core_mask`.
+   - That the det input really is 480 wide by 640 tall in RGB (the old code fed BGR; it
+     now feeds RGB).
+   - The output layout that the postprocess assumes.
+   - The class order of `best_large`.
+4. Real latency and CPU of det and seg at 1080p from Python (`max_rate_hz` caps).
+5. The `obstacle_guard` thresholds (`y_frac`, `w_frac`, `min_score`) on real footage. Also
+   that twist_mux honours the burst, and that `/cutter_off` reaches the MCU.
+6. The arm64 image build of the appended Dockerfile lines (the wheel URL from the device
+   network, and apt for `vision-msgs` and `web-video-server`).
+7. Video CPU cost on the RK3588S, WebRTC through the LAN (ICE on 8189/udp), and the
+   arm64 mediamtx image.
+8. Conflicts with the vendor services if any are still enabled (`base_cameras`,
+   `mower-webcam`, `mower-cam-keeper`, port 8080).
