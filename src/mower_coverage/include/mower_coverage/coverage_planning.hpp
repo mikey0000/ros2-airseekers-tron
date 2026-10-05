@@ -6,9 +6,11 @@
 // out; everything between is f2c::types.
 //
 // Replaces the vendor's GPL polygon_coverage stack (CGAL decomposition +
-// Mono/GkMa GTSP solver). Three F2C calls do all the work: ConstHL headlands,
-// BruteForce swaths, BoustrophedonOrder sorting. No turn planning — the mower
-// is diff-drive and pivots in place between segments.
+// Mono/GkMa GTSP solver). F2C does the geometry (ConstHL headlands, BruteForce
+// swaths); the drive order is our own: clipped swath pieces are grouped into
+// boustrophedon cells, the cells ordered for the fewest transits, and the
+// ring starts chained back from the first swath. No turn planning — the
+// mower is diff-drive and pivots in place between segments.
 
 #pragma once
 
@@ -24,9 +26,13 @@ namespace mower_coverage {
 using Point2D = std::pair<double, double>;
 
 struct CoveragePlan {
-  // Densified closed loops (first == last), outermost pass first.
+  // Closed loops (first == last; polygon corners plus the inserted start
+  // point), in drive order: the outer-boundary run (outermost pass first),
+  // then one run per hole (ring on the hole first, then outward). The last
+  // ring starts and ends at its point closest to the first swath.
   std::vector<std::vector<Point2D>> rings;
-  // {start, end} pairs in serpentine (boustrophedon) drive order.
+  // {start, end} pairs in drive order: serpentine within each boustrophedon
+  // cell, cells ordered for the fewest gaps > 0.6 m.
   std::vector<std::pair<Point2D, Point2D>> swaths;
   // Swath heading actually used (radians); for auto plans, the angle chosen.
   double swath_angle_rad = 0.0;

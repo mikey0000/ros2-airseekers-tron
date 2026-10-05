@@ -169,9 +169,10 @@ std::vector<Point2D> ringToLoop(const f2c::types::LinearRing& ring) {
 
 // F2C closes every concentric ring at the SAME polygon corner, so the
 // ring->ring junction demands a ~90-112 deg heading change across an
-// op_width gap. Rotate each loop to start mid-longest-edge before filling:
-// the junction then happens mid-straight, which a diff-drive pivot tracks
-// cleanly.
+// op_width gap. With no swaths to aim at, start the first loop mid-longest-
+// edge: the junction then happens mid-straight, which a diff-drive pivot
+// tracks cleanly. (With swaths, rotateLoopToPoint chains the ring starts back
+// from the first swath instead.)
 std::vector<Point2D> rotateToLongestEdgeMid(const std::vector<Point2D>& loop) {
   if (loop.size() < 4) {
     return loop;
@@ -308,6 +309,372 @@ double signedArea(const std::vector<Point2D>& loop) {
   return 0.5 * a;
 }
 
+// ---------------------------------------------------------------------------
+// Drive-order optimisation: headland rings and swath pieces.
+// ---------------------------------------------------------------------------
+
+// Mirrors the bridge / mission layer's join threshold
+// (mowgli_interfaces::coverage_geometry::kSegmentTransitGapM, inclusive): a
+// gap above it between one segment's end and the next one's start becomes a
+// blade-off Nav2 transit.
+constexpr double kTransitGapM = 0.6;
+// Cost added per transit when ordering, so the order first minimises the
+// NUMBER of transits and only then the metres driven between segments.
+constexpr double kTransitPenaltyM = 1000.0;
+// A sweep-line piece continues the boustrophedon cell of the single piece it
+// overlaps on the previous sweep line only if neither end moves further than
+// this along the swath axis. A bigger jump (an L-shaped notch reached
+// side-on) would put a long connector into the serpentine; cutting the cell
+// there lets the cell ordering pick entries that avoid it.
+constexpr double kCellJumpM = 1.0;
+// Exact (Held-Karp) cell ordering up to this many cells, greedy above. 10
+// cells x 4 entries is ~1.6 M transitions: a few ms.
+constexpr size_t kMaxExactCells = 10;
+// Sweep lines whose lateral offsets differ by less than this are one line.
+constexpr double kSweepLineTolM = 1e-3;
+// Snap a ring start onto an existing vertex within this distance, so no
+// other pose of the ring sits within the bridge's 1 mm closure tolerance of
+// the start (that would end the ring early in the splitter).
+constexpr double kRingSnapTolM = 0.005;
+
+using Seg = std::pair<Point2D, Point2D>;
+
+double gapCost(double d) { return d + (d > kTransitGapM ? kTransitPenaltyM : 0.0); }
+
+struct LoopHit {
+  size_t edge = 0;  // edge index i: loop[i] -> loop[i + 1]
+  double t = 0.0;   // position along the edge, [0, 1]
+  Point2D p{0.0, 0.0};
+  double d = std::numeric_limits<double>::max();
+};
+
+// Closest point on a closed loop (first == last) to q.
+LoopHit closestOnLoop(const std::vector<Point2D>& loop, const Point2D& q) {
+  LoopHit best;
+  for (size_t i = 0; i + 1 < loop.size(); ++i) {
+    const Point2D& a = loop[i];
+    const Point2D& b = loop[i + 1];
+    const double dx = b.first - a.first;
+    const double dy = b.second - a.second;
+    const double len2 = dx * dx + dy * dy;
+    double t = 0.0;
+    if (len2 > 1e-18) {
+      t = ((q.first - a.first) * dx + (q.second - a.second) * dy) / len2;
+      t = std::max(0.0, std::min(1.0, t));
+    }
+    const Point2D p{a.first + t * dx, a.second + t * dy};
+    const double d = dist(p, q);
+    if (d < best.d) {
+      best = {i, t, p, d};
+    }
+  }
+  return best;
+}
+
+double loopToLoopDist(const std::vector<Point2D>& a, const std::vector<Point2D>& b) {
+  double best = std::numeric_limits<double>::max();
+  for (const auto& p : a) {
+    best = std::min(best, closestOnLoop(b, p).d);
+  }
+  for (const auto& p : b) {
+    best = std::min(best, closestOnLoop(a, p).d);
+  }
+  return best;
+}
+
+// Re-start a closed loop (first == last) at its point closest to `target`.
+// The new start is inserted on its edge unless it lies within kRingSnapTolM
+// of a vertex, in which case that vertex becomes the start. Re-closed.
+std::vector<Point2D> rotateLoopToPoint(const std::vector<Point2D>& loop,
+                                       const Point2D& target) {
+  if (loop.size() < 4) {
+    return loop;
+  }
+  const size_t n = loop.size() - 1;  // open vertex count
+  const LoopHit hit = closestOnLoop(loop, target);
+  std::vector<Point2D> out;
+  out.reserve(loop.size() + 1);
+  const Point2D& a = loop[hit.edge];
+  const Point2D& b = loop[hit.edge + 1];
+  if (dist(hit.p, a) < kRingSnapTolM || dist(hit.p, b) < kRingSnapTolM) {
+    const size_t s = (dist(hit.p, a) <= dist(hit.p, b)) ? hit.edge : (hit.edge + 1) % n;
+    for (size_t k = 0; k <= n; ++k) {
+      out.push_back(loop[(s + k) % n]);
+    }
+    return out;
+  }
+  out.push_back(hit.p);
+  for (size_t k = 1; k <= n; ++k) {
+    out.push_back(loop[(hit.edge + k) % n]);
+  }
+  out.push_back(hit.p);
+  return out;
+}
+
+// Ray-casting point-in-polygon on a closed loop.
+bool pointInLoop(const Point2D& p, const std::vector<Point2D>& loop) {
+  bool inside = false;
+  for (size_t i = 0; i + 1 < loop.size(); ++i) {
+    const Point2D& a = loop[i];
+    const Point2D& b = loop[i + 1];
+    if ((a.second > p.second) != (b.second > p.second)) {
+      const double x =
+          a.first + (p.second - a.second) * (b.first - a.first) / (b.second - a.second);
+      if (x > p.first) {
+        inside = !inside;
+      }
+    }
+  }
+  return inside;
+}
+
+// One boustrophedon cell: consecutive sweep lines, one piece each, every
+// piece overlapping exactly the piece before it (no split / merge event in
+// between). A serpentine over such a cell only ever steps one op_width
+// sideways between swaths.
+struct SweepCell {
+  std::vector<Seg> lines;  // {lo end, hi end} along the swath axis, sweep order
+  // Per entry option (bit 0: sweep the lines in reverse, bit 1: start the
+  // first line at its hi end): entry / exit point and the cost of the
+  // in-cell connectors.
+  Point2D entry[4];
+  Point2D exit[4];
+  double internal[4] = {0.0, 0.0, 0.0, 0.0};
+};
+
+std::vector<Seg> cellSwaths(const SweepCell& cell, int opt) {
+  const bool reverse = (opt & 1) != 0;
+  const bool hi_start = (opt & 2) != 0;
+  const size_t k = cell.lines.size();
+  std::vector<Seg> out;
+  out.reserve(k);
+  for (size_t j = 0; j < k; ++j) {
+    const Seg& line = cell.lines[reverse ? k - 1 - j : j];
+    const bool from_lo = ((j % 2) == 0) != hi_start;
+    out.push_back(from_lo ? Seg{line.first, line.second} : Seg{line.second, line.first});
+  }
+  return out;
+}
+
+void finalizeCell(SweepCell& cell) {
+  for (int opt = 0; opt < 4; ++opt) {
+    const std::vector<Seg> sw = cellSwaths(cell, opt);
+    cell.entry[opt] = sw.front().first;
+    cell.exit[opt] = sw.back().second;
+    double c = 0.0;
+    for (size_t j = 1; j < sw.size(); ++j) {
+      c += gapCost(dist(sw[j - 1].second, sw[j].first));
+    }
+    cell.internal[opt] = c;
+  }
+}
+
+// Group the clipped swath pieces of ONE swath set (one angle) into
+// boustrophedon cells. This is the boustrophedon cell decomposition done on
+// the pieces themselves: a new cell starts wherever the sweep splits (one
+// piece overlaps two on the next line, e.g. at a hole or a notch), merges, or
+// jumps (kCellJumpM). Working on the actual pieces, not on a polygon
+// decomposition, keeps the swath geometry (spacing, clipping) exactly as
+// generated across cell borders.
+std::vector<SweepCell> buildSweepCells(const std::vector<Seg>& pieces, double op_width) {
+  std::vector<SweepCell> cells;
+  if (pieces.empty()) {
+    return cells;
+  }
+  const Seg& ref = pieces.front();
+  const double rl = dist(ref.first, ref.second);
+  const double ux = (ref.second.first - ref.first.first) / rl;
+  const double uy = (ref.second.second - ref.first.second) / rl;
+  struct P {
+    Seg seg;  // lo -> hi
+    double n, tlo, thi;
+  };
+  std::vector<P> ps;
+  ps.reserve(pieces.size());
+  for (const auto& s : pieces) {
+    const double ta = s.first.first * ux + s.first.second * uy;
+    const double tb = s.second.first * ux + s.second.second * uy;
+    const double na = -s.first.first * uy + s.first.second * ux;
+    const double nb = -s.second.first * uy + s.second.second * ux;
+    P p;
+    p.n = 0.5 * (na + nb);
+    if (ta <= tb) {
+      p.seg = s;
+      p.tlo = ta;
+      p.thi = tb;
+    } else {
+      p.seg = {s.second, s.first};
+      p.tlo = tb;
+      p.thi = ta;
+    }
+    ps.push_back(p);
+  }
+  std::sort(ps.begin(), ps.end(), [](const P& a, const P& b) {
+    return a.n != b.n ? a.n < b.n : a.tlo < b.tlo;
+  });
+  // Sweep lines (ranks) by lateral offset.
+  std::vector<std::vector<size_t>> ranks;
+  std::vector<double> rank_n;
+  for (size_t i = 0; i < ps.size(); ++i) {
+    if (rank_n.empty() || ps[i].n - rank_n.back() > kSweepLineTolM) {
+      ranks.emplace_back();
+      rank_n.push_back(ps[i].n);
+    }
+    ranks.back().push_back(i);
+  }
+  auto overlaps = [&](size_t a, size_t b) {
+    return std::min(ps[a].thi, ps[b].thi) - std::max(ps[a].tlo, ps[b].tlo) > 1e-6;
+  };
+  std::vector<size_t> cell_of(ps.size(), 0);
+  for (size_t r = 0; r < ranks.size(); ++r) {
+    const bool adjacent = r > 0 && rank_n[r] - rank_n[r - 1] <= 1.5 * op_width;
+    for (size_t q : ranks[r]) {
+      size_t pred = 0;
+      size_t n_pred = 0;
+      if (adjacent) {
+        for (size_t p : ranks[r - 1]) {
+          if (overlaps(p, q)) {
+            pred = p;
+            ++n_pred;
+          }
+        }
+      }
+      bool join = false;
+      if (n_pred == 1) {
+        size_t n_succ = 0;
+        for (size_t q2 : ranks[r]) {
+          n_succ += overlaps(pred, q2) ? 1 : 0;
+        }
+        join = n_succ == 1 && std::abs(ps[q].tlo - ps[pred].tlo) <= kCellJumpM &&
+               std::abs(ps[q].thi - ps[pred].thi) <= kCellJumpM;
+      }
+      if (join) {
+        cell_of[q] = cell_of[pred];
+      } else {
+        cell_of[q] = cells.size();
+        cells.emplace_back();
+      }
+      cells[cell_of[q]].lines.push_back(ps[q].seg);
+    }
+  }
+  for (auto& c : cells) {
+    finalizeCell(c);
+  }
+  return cells;
+}
+
+struct CellOrder {
+  std::vector<std::pair<size_t, int>> seq;  // (cell, entry option) in drive order
+  double cost = 0.0;
+};
+
+// Order the cells and pick each one's entry so the whole swath sequence has
+// the fewest transits, then the shortest gaps. `start_loop` (the last
+// headland ring, nullable) is free to start anywhere, so the first entry is
+// charged its distance to the loop. Exact Held-Karp DP for <= kMaxExactCells
+// cells; nearest-neighbour above that.
+CellOrder orderCells(const std::vector<SweepCell>& cells,
+                     const std::vector<Point2D>* start_loop) {
+  CellOrder best;
+  const size_t m = cells.size();
+  if (m == 0) {
+    return best;
+  }
+  const size_t S = 4 * m;
+  std::vector<double> start(S, 0.0);
+  std::vector<double> internal(S, 0.0);
+  for (size_t s = 0; s < S; ++s) {
+    const SweepCell& c = cells[s / 4];
+    const int opt = static_cast<int>(s % 4);
+    internal[s] = c.internal[opt];
+    if (start_loop != nullptr) {
+      start[s] = gapCost(closestOnLoop(*start_loop, c.entry[opt]).d);
+    }
+  }
+  auto trans = [&](size_t a, size_t b) {
+    return gapCost(dist(cells[a / 4].exit[a % 4], cells[b / 4].entry[b % 4]));
+  };
+  const double inf = std::numeric_limits<double>::infinity();
+
+  if (m <= kMaxExactCells) {
+    const size_t full = (size_t{1} << m) - 1;
+    std::vector<double> dp((full + 1) * S, inf);
+    std::vector<int> parent((full + 1) * S, -1);
+    for (size_t s = 0; s < S; ++s) {
+      dp[(size_t{1} << (s / 4)) * S + s] = start[s] + internal[s];
+    }
+    for (size_t mask = 1; mask <= full; ++mask) {
+      for (size_t s = 0; s < S; ++s) {
+        const double cur = dp[mask * S + s];
+        if (cur == inf || !(mask & (size_t{1} << (s / 4)))) {
+          continue;
+        }
+        for (size_t s2 = 0; s2 < S; ++s2) {
+          const size_t bit = size_t{1} << (s2 / 4);
+          if (mask & bit) {
+            continue;
+          }
+          const double nd = cur + trans(s, s2) + internal[s2];
+          const size_t idx = (mask | bit) * S + s2;
+          if (nd < dp[idx]) {
+            dp[idx] = nd;
+            parent[idx] = static_cast<int>(s);
+          }
+        }
+      }
+    }
+    size_t last = 0;
+    double best_cost = inf;
+    for (size_t s = 0; s < S; ++s) {
+      if (dp[full * S + s] < best_cost) {
+        best_cost = dp[full * S + s];
+        last = s;
+      }
+    }
+    best.cost = best_cost;
+    size_t mask = full;
+    int s = static_cast<int>(last);
+    while (s >= 0) {
+      best.seq.emplace_back(static_cast<size_t>(s) / 4, s % 4);
+      const int p = parent[mask * S + static_cast<size_t>(s)];
+      mask &= ~(size_t{1} << (static_cast<size_t>(s) / 4));
+      s = p;
+    }
+    std::reverse(best.seq.begin(), best.seq.end());
+    return best;
+  }
+
+  // Greedy nearest neighbour.
+  std::vector<bool> used(m, false);
+  int prev = -1;
+  for (size_t step = 0; step < m; ++step) {
+    size_t pick = 0;
+    double pick_cost = inf;
+    for (size_t s = 0; s < S; ++s) {
+      if (used[s / 4]) {
+        continue;
+      }
+      const double c = (prev < 0 ? start[s] : trans(static_cast<size_t>(prev), s)) + internal[s];
+      if (c < pick_cost) {
+        pick_cost = c;
+        pick = s;
+      }
+    }
+    used[pick / 4] = true;
+    best.cost += pick_cost;
+    best.seq.emplace_back(pick / 4, static_cast<int>(pick % 4));
+    prev = static_cast<int>(pick);
+  }
+  return best;
+}
+
+// A run of concentric headland rings driven back to back: around the outer
+// boundary (outermost first) or around one hole (hole edge first, outward).
+struct RingGroup {
+  std::vector<std::vector<Point2D>> loops;
+  bool hole = false;
+};
+
 }  // namespace
 
 f2c::types::LinearRing makeCleanRing(const std::vector<Point2D>& raw) {
@@ -369,7 +736,6 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
   f2c::hg::ConstHL hl;
   f2c::sg::BruteForce bf;
   bf.setStepAngle(kAutoAngleStepRad);
-  f2c::rp::BoustrophedonOrder order;
 
   f2c::types::Cells field_cells;
   field_cells.addGeometry(field);
@@ -380,22 +746,73 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
   // planning cell in BOTH generators, so without the term every pass sits
   // op_width/2 too deep and "mow to the edge" undercuts by ~8 cm at shipped
   // defaults.
+  //
+  // Holes are obstacles (trees, beds, the dock), so they do NOT get the "mow
+  // onto the line" treatment: grow each hole by op_width/2 first, which
+  // cancels the -op_width/2 dilation for the holes only. The first ring
+  // around a hole then runs border_inset + op_width/2 outside it — the blade
+  // edge touches the obstacle edge but never overhangs it — and everything
+  // inward (hole rings, mainland, swaths) moves out with it.
+  f2c::types::Cells hl_field = field_cells;
+  if (field.size() > 1) {
+    f2c::types::Cells grown;
+    for (size_t i = 1; i < field.size(); ++i) {
+      grown.addGeometry(f2c::types::Cell::buffer(
+          f2c::types::Cell(field.getGeometry(i)), op_width / 2.0));
+    }
+    hl_field = f2c::types::Cells(f2c::types::Cell(field.getGeometry(0)))
+                   .difference(grown.unionCascaded());
+  }
   f2c::types::Cells safe_cells =
-      hl.generateHeadlands(field_cells, border_inset - op_width / 2.0);
+      hl.generateHeadlands(hl_field, border_inset - op_width / 2.0);
 
-  // Headland rings, outermost pass first (dir_out2in). v2.1.0 returns
-  // std::vector<F2CCells> — one Cells per pass, rings as its cells — so the
-  // rings come back directly (v3 returns chained 2-point segments that must
-  // be re-stitched; do not port that).
+  // Headland rings. v2.1.0 returns std::vector<F2CCells> — one Cells per
+  // pass, outermost pass first (dir_out2in) — with each pass's rings as its
+  // cells (v3 returns chained 2-point segments that must be re-stitched; do
+  // not port that). A pass cell's EXTERIOR ring runs along the field
+  // boundary; its INTERIOR rings run around the holes: pass k sits
+  // border_inset + op_width/2 + (k - 1) * op_width OUTSIDE the recorded hole
+  // (the outer pass k sits border_inset + (k - 1) * op_width inside the
+  // recorded boundary; see the hole growth above). Rings are
+  // grouped into concentric runs (outer: outside-in; hole: hole edge first,
+  // outward, so the run ends next to the mainland) by containment against
+  // the previous pass, which survives a pass splitting into several cells or
+  // a hole ring merging with its neighbour.
+  std::vector<RingGroup> groups;
   if (n_rings > 0 && safe_cells.size() > 0) {
     std::vector<f2c::types::Cells> passes =
         hl.generateHeadlandSwaths(safe_cells, op_width, n_rings,
                                   /*dir_out2in=*/true);
-    for (const auto& pass : passes) {
+    for (size_t k = 0; k < passes.size(); ++k) {
+      const f2c::types::Cells& pass = passes[k];
       for (size_t i = 0; i < pass.size(); ++i) {
-        const f2c::types::LinearRing ring =
-            pass.getGeometry(i).getGeometry(0);  // cell's exterior ring
-        plan.rings.push_back(rotateToLongestEdgeMid(ringToLoop(ring)));
+        const f2c::types::Cell pc = pass.getGeometry(i);
+        for (size_t r = 0; r < pc.size(); ++r) {
+          std::vector<Point2D> loop = ringToLoop(pc.getGeometry(r));
+          if (loop.size() < 4) {
+            continue;
+          }
+          const bool hole = r > 0;
+          RingGroup* target = nullptr;
+          for (auto& g : groups) {
+            if (g.hole != hole || g.loops.size() != k) {
+              continue;
+            }
+            // Outer pass k lies inside outer pass k-1; hole pass k encloses
+            // hole pass k-1.
+            const bool nested = hole ? pointInLoop(g.loops.back().front(), loop)
+                                     : pointInLoop(loop.front(), g.loops.back());
+            if (nested) {
+              target = &g;
+              break;
+            }
+          }
+          if (target == nullptr) {
+            groups.push_back(RingGroup{{}, hole});
+            target = &groups.back();
+          }
+          target->loops.push_back(std::move(loop));
+        }
       }
     }
   }
@@ -403,7 +820,8 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
   // Mainland: the field left inside the headland rings. Skipped entirely when
   // n_rings == 0 — never call buffer(-0.0): upstream that is a real buffer
   // pass, not a no-op, and it can re-node the polygon and drop marginal
-  // parts.
+  // parts. Holes grow by the same band, so the hole rings' strip is a
+  // keep-out for the swaths.
   f2c::types::Cells mainland;
   if (n_rings > 0 && safe_cells.size() > 0) {
     mainland = hl.generateHeadlands(safe_cells, n_rings * op_width);
@@ -432,8 +850,11 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
     plan.drops.push_back("drivable region degenerate; swath ends not clipped");
   }
 
-  // Straight serpentine swaths per mainland cell.
+  // Straight swaths per mainland cell, clipped to the drivable region, then
+  // grouped into boustrophedon cells (one swath set = one angle per mainland
+  // cell, so cells never mix angles).
   double swath_strip_area = 0.0;
+  std::vector<SweepCell> sweep_cells;
   for (size_t i = 0; i < mainland.size(); ++i) {
     const f2c::types::Cell cell = mainland.getGeometry(i);
     f2c::types::Swaths sw;
@@ -447,10 +868,9 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
       f2c::obj::NSwath n_swath_objective;  // F2C 2.x takes a non-const reference
       sw = bf.generateBestSwaths(n_swath_objective, op_width, cell);
     }
-    f2c::types::Swaths sorted = order.genSortedSwaths(sw);
-    for (size_t s = 0; s < sorted.size(); ++s) {
-      const f2c::types::Swath& swath = sorted[s];
-      const f2c::types::LineString line = swath.getPath();
+    std::vector<Seg> pieces;
+    for (size_t s = 0; s < sw.size(); ++s) {
+      const f2c::types::LineString line = sw[s].getPath();
       if (line.size() < 2) {
         plan.drops.push_back("dropped swath with < 2 points");
         continue;
@@ -459,17 +879,105 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
       const f2c::types::Point p1 = line.getGeometry(line.size() - 1);
       const Point2D a{p0.getX(), p0.getY()};
       const Point2D b{p1.getX(), p1.getY()};
-      const std::vector<std::pair<Point2D, Point2D>> pieces =
-          clip_swaths ? clipSwathToDrivable(drivable, a, b)
-                      : std::vector<std::pair<Point2D, Point2D>>{{a, b}};
-      for (const auto& piece : pieces) {
+      const std::vector<Seg> clipped =
+          clip_swaths ? clipSwathToDrivable(drivable, a, b) : std::vector<Seg>{{a, b}};
+      for (const auto& piece : clipped) {
         const double len = dist(piece.first, piece.second);
         if (len < min_swath_length) {
           plan.drops.push_back(fmtDrop("swath len=", len, "<", min_swath_length));
           continue;
         }
-        plan.swaths.push_back(piece);
+        pieces.push_back(piece);
         swath_strip_area += len * op_width;
+      }
+    }
+    std::vector<SweepCell> cs = buildSweepCells(pieces, op_width);
+    sweep_cells.insert(sweep_cells.end(), cs.begin(), cs.end());
+  }
+
+  // Drive order. F2C 2.1's BoustrophedonOrder sorts ALL pieces of a swath
+  // set by sweep line, so on a concave field or around a hole it alternates
+  // between the pieces of every line and each step is a transit. Instead:
+  //   1. order the boustrophedon cells and pick each one's entry corner
+  //      (orderCells: fewest transits, then shortest gaps);
+  //   2. serpentine inside each cell;
+  //   3. the outermost outer ring run goes first; when there are hole ring
+  //      runs, the one whose last ring lets the swaths start closest goes
+  //      last, the others in nearest-neighbour order in between;
+  //   4. chain the ring starts BACKWARDS from the first swath: the last ring
+  //      starts (and so ends) at its point closest to the first swath start,
+  //      each earlier ring at its point closest to the next ring's start.
+  //      Concentric rings then hand over with a one-op_width sideways step
+  //      and the last ring hands over to the first swath without a transit.
+  std::vector<size_t> group_order;
+  CellOrder swath_order;
+  if (groups.empty()) {
+    swath_order = orderCells(sweep_cells, nullptr);
+  } else {
+    size_t last = 0;
+    if (groups.size() == 1) {
+      swath_order = orderCells(sweep_cells, &groups[0].loops.back());
+    } else {
+      double best = std::numeric_limits<double>::infinity();
+      for (size_t g = 1; g < groups.size(); ++g) {
+        CellOrder co = orderCells(sweep_cells, &groups[g].loops.back());
+        if (co.cost < best) {
+          best = co.cost;
+          swath_order = std::move(co);
+          last = g;
+        }
+      }
+    }
+    group_order.push_back(0);
+    std::vector<bool> used(groups.size(), false);
+    used[0] = true;
+    used[last] = true;
+    for (size_t step = 1; step + 1 < groups.size(); ++step) {
+      const std::vector<Point2D>& from = groups[group_order.back()].loops.back();
+      size_t pick = 0;
+      double pick_d = std::numeric_limits<double>::infinity();
+      for (size_t g = 0; g < groups.size(); ++g) {
+        if (used[g]) {
+          continue;
+        }
+        const double d = loopToLoopDist(from, groups[g].loops.front());
+        if (d < pick_d) {
+          pick_d = d;
+          pick = g;
+        }
+      }
+      used[pick] = true;
+      group_order.push_back(pick);
+    }
+    if (last != 0) {
+      group_order.push_back(last);
+    }
+  }
+
+  for (const auto& [c, opt] : swath_order.seq) {
+    for (const Seg& s : cellSwaths(sweep_cells[c], opt)) {
+      plan.swaths.push_back(s);
+    }
+  }
+
+  for (size_t g : group_order) {
+    for (const auto& loop : groups[g].loops) {
+      plan.rings.push_back(loop);
+    }
+  }
+  if (!plan.rings.empty()) {
+    if (!plan.swaths.empty()) {
+      Point2D target = plan.swaths.front().first;
+      for (size_t r = plan.rings.size(); r-- > 0;) {
+        plan.rings[r] = rotateLoopToPoint(plan.rings[r], target);
+        target = plan.rings[r].front();
+      }
+    } else {
+      // Rings only: start mid-longest-edge (a ring->ring junction mid-
+      // straight, not at a corner), then chain forwards.
+      plan.rings[0] = rotateToLongestEdgeMid(plan.rings[0]);
+      for (size_t r = 1; r < plan.rings.size(); ++r) {
+        plan.rings[r] = rotateLoopToPoint(plan.rings[r], plan.rings[r - 1].back());
       }
     }
   }
