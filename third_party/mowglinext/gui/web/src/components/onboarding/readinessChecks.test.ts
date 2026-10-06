@@ -8,6 +8,12 @@ import {
     type ReadinessSnapshot,
     type ReadinessState,
 } from "./readinessChecks.ts";
+import en from "../../i18n/locales/en.json";
+import {
+    loraWaitingLiveSample,
+    noCorrectionsSample,
+    ntripStreamingSample,
+} from "../../test/gnssCorrectionSamples.ts";
 
 const NOW = 1_000_000;
 
@@ -33,6 +39,8 @@ function passingSnapshot(overrides: Partial<ReadinessSnapshot> = {}): ReadinessS
         gnss: {
             rtk_mode: GnssStatusConstants.RTK_MODE_FIXED,
             correction_stream_status: GnssStatusConstants.CORRECTION_STREAM_STATUS_ACTIVE,
+            capability_flags: GnssStatusConstants.CAP_CORRECTION_STREAM,
+            value_flags: GnssStatusConstants.CAP_CORRECTION_STREAM,
         },
         fusion: freshFusion({total_nodes: "42", cov_xx: "0.0009", cov_yy: "0.0009"}),
         calibration: calibration(true, true, true),
@@ -93,6 +101,8 @@ describe("NTRIP corrections check (recommended)", () => {
             gnss: {
                 rtk_mode: GnssStatusConstants.RTK_MODE_FIXED,
                 correction_stream_status: GnssStatusConstants.CORRECTION_STREAM_STATUS_WAITING,
+                capability_flags: GnssStatusConstants.CAP_CORRECTION_STREAM,
+                value_flags: GnssStatusConstants.CAP_CORRECTION_STREAM,
             },
         });
         expect(stateOf(computeReadinessChecks(snap), "corrections")).toBe("pending");
@@ -103,6 +113,8 @@ describe("NTRIP corrections check (recommended)", () => {
             gnss: {
                 rtk_mode: GnssStatusConstants.RTK_MODE_FIXED,
                 correction_stream_status: GnssStatusConstants.CORRECTION_STREAM_STATUS_ERROR,
+                capability_flags: GnssStatusConstants.CAP_CORRECTION_STREAM,
+                value_flags: GnssStatusConstants.CAP_CORRECTION_STREAM,
             },
         });
         expect(stateOf(computeReadinessChecks(snap), "corrections")).toBe("fail");
@@ -113,6 +125,8 @@ describe("NTRIP corrections check (recommended)", () => {
             gnss: {
                 rtk_mode: GnssStatusConstants.RTK_MODE_FIXED,
                 correction_stream_status: GnssStatusConstants.CORRECTION_STREAM_STATUS_ERROR,
+                capability_flags: GnssStatusConstants.CAP_CORRECTION_STREAM,
+                value_flags: GnssStatusConstants.CAP_CORRECTION_STREAM,
             },
         });
         const failing = requiredFailingChecks(computeReadinessChecks(snap));
@@ -245,5 +259,38 @@ describe("requiredFailingChecks gating", () => {
         expect(failing).toEqual(expect.arrayContaining(["firmware", "datum"]));
         expect(failing).not.toContain("corrections");
         expect(failing).not.toContain("localizerConfidence");
+    });
+});
+
+describe("Corrections check with source-owned fields", () => {
+    const check = (gnss: ReadinessSnapshot["gnss"]) =>
+        computeReadinessChecks(passingSnapshot({gnss})).find((c) => c.id === "corrections")!;
+
+    it("is pending with a pair-the-base CTA for the live LoRa waiting sample", () => {
+        const c = check(loraWaitingLiveSample);
+        expect(c.state).toBe("pending");
+        expect(c.labelKey).toBe("corrections.readinessCheck");
+        expect(c.ctaKey).toBe("corrections.readinessCtaLora");
+        expect(c.valueText).toBe(`${en.corrections.source.lora} · ${en.corrections.state.waiting}`);
+    });
+
+    it("passes for NTRIP streaming active corrections", () => {
+        const c = check(ntripStreamingSample);
+        expect(c.state).toBe("pass");
+        expect(c.ctaKey).toBeUndefined();
+    });
+
+    it("stays pending with the NTRIP CTA when corrections are off", () => {
+        const c = check(noCorrectionsSample);
+        expect(c.state).toBe("pending");
+        expect(c.ctaKey).toBe("onboardingPage.readinessCtaFixNtrip");
+    });
+
+    it("fails on stale LoRa data", () => {
+        const c = check({
+            ...loraWaitingLiveSample,
+            correction_flow_status: GnssStatusConstants.CORRECTION_FLOW_STATUS_STALE,
+        });
+        expect(c.state).toBe("fail");
     });
 });

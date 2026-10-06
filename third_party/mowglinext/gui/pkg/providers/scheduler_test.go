@@ -212,6 +212,7 @@ func TestCheckSchedules_TriggersHighLevelControl(t *testing.T) {
 	now := time.Now()
 	sched := schedule{
 		ID:         "sched-1",
+		Area:       -1, // no area bound: plain COMMAND_START
 		Time:       now.Format("15:04"),
 		DaysOfWeek: []int{int(now.Weekday())},
 		Enabled:    true,
@@ -230,6 +231,32 @@ func TestCheckSchedules_TriggersHighLevelControl(t *testing.T) {
 	req, ok := ros.ServiceCalls[0].Req.(*mowgli.HighLevelControlReq)
 	require.True(t, ok, "request should be *mowgli.HighLevelControlReq")
 	assert.Equal(t, uint8(1), req.Command, "COMMAND_START must be 1")
+}
+
+func TestCheckSchedules_AreaScheduleCallsStartInArea(t *testing.T) {
+	ros := types.NewMockRosProvider()
+	db := types.NewMockDBProvider()
+
+	now := time.Now()
+	storeSchedule(t, db, schedule{
+		ID:         "sched-area",
+		Area:       2,
+		Time:       now.Format("15:04"),
+		DaysOfWeek: []int{int(now.Weekday())},
+		Enabled:    true,
+	})
+
+	s := buildScheduler(ros, db)
+	s.lastHighLevelState = 1 // IDLE
+	s.lastEmergency = false
+
+	s.checkSchedules()
+
+	require.Len(t, ros.ServiceCalls, 1)
+	assert.Equal(t, "/behavior_tree_node/start_in_area", ros.ServiceCalls[0].Service)
+	req, ok := ros.ServiceCalls[0].Req.(*mowgli.StartInAreaReq)
+	require.True(t, ok, "request should be *mowgli.StartInAreaReq")
+	assert.Equal(t, uint8(2), req.Area)
 }
 
 func TestCheckSchedules_DisabledScheduleSkipped(t *testing.T) {

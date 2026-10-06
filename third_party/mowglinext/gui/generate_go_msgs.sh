@@ -11,6 +11,7 @@
 #   - sensor     (sensor_msgs)
 #   - std        (std_msgs)
 #   - visualization (visualization_msgs)
+#   - vision     (vision_msgs, 2D detections only)
 #   - mowgli     (mowgli_interfaces)
 #
 # Usage:
@@ -185,6 +186,42 @@ geometry_msgs/Point[] points
 MSG
 cat > "$STD_MSGS/visualization_msgs/MarkerArray.msg" <<'MSG'
 Marker[] markers
+MSG
+
+# vision_msgs (Humble, v4.x) — only the 2D detection subset the GUI consumes
+# (/ai/det/detections). BoundingBox2D/Pose2D/Point2D are vision_msgs' own
+# types, not geometry_msgs/Pose2D.
+mkdir -p "$STD_MSGS/vision_msgs"
+cat > "$STD_MSGS/vision_msgs/Point2D.msg" <<'MSG'
+float64 x
+float64 y
+MSG
+cat > "$STD_MSGS/vision_msgs/Pose2D.msg" <<'MSG'
+Point2D position
+float64 theta
+MSG
+cat > "$STD_MSGS/vision_msgs/BoundingBox2D.msg" <<'MSG'
+Pose2D center
+float64 size_x
+float64 size_y
+MSG
+cat > "$STD_MSGS/vision_msgs/ObjectHypothesis.msg" <<'MSG'
+string class_id
+float64 score
+MSG
+cat > "$STD_MSGS/vision_msgs/ObjectHypothesisWithPose.msg" <<'MSG'
+ObjectHypothesis hypothesis
+geometry_msgs/PoseWithCovariance pose
+MSG
+cat > "$STD_MSGS/vision_msgs/Detection2D.msg" <<'MSG'
+std_msgs/Header header
+ObjectHypothesisWithPose[] results
+BoundingBox2D bbox
+string id
+MSG
+cat > "$STD_MSGS/vision_msgs/Detection2DArray.msg" <<'MSG'
+std_msgs/Header header
+Detection2D[] detections
 MSG
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -444,6 +481,9 @@ generate_package "sensor_msgs" "sensor" "$STD_MSGS/sensor_msgs" "$MSGS_DIR/senso
 
 # std package
 generate_package "std_msgs" "std" "$STD_MSGS/std_msgs" "$MSGS_DIR/std/types_generated.go"
+
+# vision package (vision_msgs 2D detections)
+generate_package "vision_msgs" "vision" "$STD_MSGS/vision_msgs" "$MSGS_DIR/vision/types_generated.go"
 
 # visualization package
 VIS_BODY=""

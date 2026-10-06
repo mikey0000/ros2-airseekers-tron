@@ -11,8 +11,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mowglinext/mowglinext/pkg/types"
 	"github.com/gin-gonic/gin"
+	"github.com/mowglinext/mowglinext/pkg/msgs/mowgli"
+	"github.com/mowglinext/mowglinext/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -449,6 +450,12 @@ func TestPostImportOpenMower_MnDatumConfiguredWhenDatumSet(t *testing.T) {
 
 func TestPostImportOpenMower_ApplyCallsClearAddSaveAndDock(t *testing.T) {
 	mock := types.NewMockRosProvider()
+	// set_docking_point must answer success=true or the import reports failure.
+	mock.ServiceResponder = func(_ string, _ any, res any) {
+		if r, ok := res.(*mowgli.SetDockingPointRes); ok {
+			r.Success = true
+		}
+	}
 	router := setupImportRouter(mock, nil)
 
 	body := []byte(`{"map": ` + sampleOpenMowerMap + `, "apply": true}`)

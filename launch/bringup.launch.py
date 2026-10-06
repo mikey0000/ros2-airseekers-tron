@@ -17,17 +17,48 @@ evdev device and maps them to /clear_estop and HighLevelControl (docs/buttons.md
 mower_lights (``lights:=true``, default) drives the WS2812 status LEDs on /dev/spidev3.0
 like the vendor mower_light_sound node: serves /light_control and maps the mission state
 to vendor light modes (docs/lights.md). ``lights_dry_run:=true`` computes frames only.
+
+``um960_params_file`` (default empty) is an extra parameters file for um960_gps_driver,
+applied after the built-in values; mower.launch.py fills it with the NTRIP caster and
+correction source saved in the GUI settings.
 """
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
+UM960_PARAMS = {
+    'port': '/dev/serial_rtk',
+    'baud': 115200,
+    'frame_id': 'gps_link',   # URDF child link (driver default is 'gps')
+}
+
+
+def _um960(context):
+    """um960_gps_driver, plus um960_params_file when one is given."""
+    parameters = [UM960_PARAMS]
+    extra = LaunchConfiguration('um960_params_file').perform(context).strip()
+    if extra:
+        parameters.append(extra)
+    return [Node(
+        package='um960_gps_driver',
+        executable='um960_node',
+        name='um960_gps_driver',
+        parameters=parameters,
+        output='screen',
+        respawn=True,
+        respawn_delay=2.0,
+    )]
+
+
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument('um960_params_file', default_value='',
+                              description='Extra um960_gps_driver parameters file (GUI NTRIP '
+                                          'settings); empty = none.'),
         DeclareLaunchArgument('keys', default_value='true',
                               description='Start the top-panel button node (base_keys).'),
         DeclareLaunchArgument('lights', default_value='true',
@@ -61,19 +92,7 @@ def generate_launch_description():
             respawn=True,
             respawn_delay=2.0,
         ),
-        Node(
-            package='um960_gps_driver',
-            executable='um960_node',
-            name='um960_gps_driver',
-            parameters=[{
-                'port': '/dev/serial_rtk',
-                'baud': 115200,
-                'frame_id': 'gps_link',   # URDF child link (driver default is 'gps')
-            }],
-            output='screen',
-            respawn=True,
-            respawn_delay=2.0,
-        ),
+        OpaqueFunction(function=_um960),
         Node(
             package='bumper_controller',
             executable='bumper_controller_node',

@@ -181,6 +181,12 @@ class Pixels:
         if 0 <= idx < self.n:
             self.buf[3 * idx:3 * idx + 3] = bytes(color_bytes(color, value, self.brightness))
 
+    def fill(self, start: int, count: int, color: int, value: int) -> None:
+        """``set_pin(start + i, color, value) for i in range(count)`` in one slice write."""
+        a, b = max(0, start), min(self.n, start + count)
+        if b > a:
+            self.buf[3 * a:3 * b] = bytes(color_bytes(color, value, self.brightness)) * (b - a)
+
     def get(self, idx: int) -> Tuple[int, int, int]:
         return tuple(self.buf[3 * idx:3 * idx + 3])
 
@@ -233,25 +239,31 @@ SPI_RESET_BYTES = 100     # leading and trailing zero bytes (100 us low)
 SPI_FRAME_LEN = 0x668     # 1640 = 100 + 60*24 + 100
 
 
+# One 8-byte SPI pattern per colour byte value (MSB first): a frame is 180 table lookups
+# instead of 1440 per-bit Python steps.
+_ENCODE_TABLE = tuple(bytes(SPI_BIT_ONE if (v >> bit) & 1 else SPI_BIT_ZERO
+                            for bit in range(7, -1, -1)) for v in range(256))
+_DECODE_TABLE = {enc: v for v, enc in enumerate(_ENCODE_TABLE)}
+_RESET = bytes(SPI_RESET_BYTES)
+
+
 def encode_frame(buf: bytes, leds: int = BUFFER_LEDS) -> bytes:
     """Each colour bit -> one SPI byte, MSB first, bytes in buffer order (G,R,B)."""
-    out = bytearray(SPI_RESET_BYTES)
-    for i in range(leds):
-        for byte in buf[3 * i:3 * i + 3]:
-            for bit in range(7, -1, -1):
-                out.append(SPI_BIT_ONE if (byte >> bit) & 1 else SPI_BIT_ZERO)
-    out.extend(bytes(SPI_RESET_BYTES))
-    return bytes(out)
+    return b''.join((_RESET, b''.join(map(_ENCODE_TABLE.__getitem__, buf[:3 * leds])),
+                     _RESET))
 
 
 def decode_frame(frame: bytes, leds: int = BUFFER_LEDS) -> bytes:
     """Inverse of encode_frame (tests / readback of what was clocked out)."""
-    data = frame[SPI_RESET_BYTES:SPI_RESET_BYTES + 24 * leds]
+    data = bytes(frame[SPI_RESET_BYTES:SPI_RESET_BYTES + 24 * leds])
     out = bytearray()
     for i in range(0, len(data), 8):
-        v = 0
-        for b in data[i:i + 8]:
-            v = (v << 1) | (1 if b == SPI_BIT_ONE else 0)
+        chunk = data[i:i + 8]
+        v = _DECODE_TABLE.get(chunk)
+        if v is None:
+            v = 0
+            for b in chunk:
+                v = (v << 1) | (1 if b == SPI_BIT_ONE else 0)
         out.append(v)
     return bytes(out)
 
@@ -278,9 +290,7 @@ Pattern = Iterator[Step]
 
 
 def const_light(px: Pixels, area: int, color: int, value: int) -> None:
-    s = px.start_pin(area)
-    for i in range(px.fill_count(area)):
-        px.set_pin(s + i, color, value)
+    px.fill(px.start_pin(area), px.fill_count(area), color, value)
 
 
 def p_const(px, area, color, value=FULL) -> Pattern:
@@ -293,22 +303,18 @@ def p_breathe(px, area, color, step_ms=30) -> Pattern:
     s, n = px.start_pin(area), px.fill_count(area)
     for k in range(0x14, 0x45):              # 20..68 up
         yield Wait(step_ms)
-        for i in range(n):
-            px.set_pin(s + i, color, RESPIRATION_LAMP_TABLE[k])
+        px.fill(s, n, color, RESPIRATION_LAMP_TABLE[k])
     for k in range(0x44, 0x14, -1):          # 68..21 down
         yield Wait(step_ms)
-        for i in range(n):
-            px.set_pin(s + i, color, RESPIRATION_LAMP_TABLE[k])
+        px.fill(s, n, color, RESPIRATION_LAMP_TABLE[k])
 
 
 def p_flicker(px, area, color, step_ms, count, value=FULL) -> Pattern:
     s, n = px.start_pin(area), px.fill_count(area)
     for _ in range(count):
-        for i in range(n):
-            px.set_pin(s + i, color, value)
+        px.fill(s, n, color, value)
         yield Wait(step_ms)
-        for i in range(n):
-            px.set_pin(s + i, OFF, value)
+        px.fill(s, n, OFF, value)
         yield Wait(step_ms)
 
 

@@ -131,10 +131,89 @@ export function paramShortName(name: string): string {
   return parts.length ? parts[parts.length - 1] : name;
 }
 
-/** paramMeta returns curated metadata, defaulting unknown params to expert/Other. */
-export function paramMeta(name: string): ParamMeta {
+// ── Per-profile overlays ─────────────────────────────────────────────────
+// A robot whose ROS stack differs from MowgliNext names its parameters
+// differently (the Airseekers Tron mission node is /behavior_tree_node with
+// undock_distance_m, battery_low_percent, ...). Without an overlay all of
+// them fall through to expert/Other and the basic tier is nearly empty.
+//
+// Overlay keys are either node-qualified ("behavior_tree_node.rtk_timeout_s",
+// matched against the full name without its leading '/') or a bare short
+// name. Qualified keys are preferred: short names collide across nodes
+// (desired_linear_vel exists on two controller plugins). Overlay entries win
+// over the shared catalog, and only for the profile that declares them.
+
+const pm = (key: string, tier: ParamTier, group: string, unit?: string): ParamMeta => ({
+  label: `paramBindings.catalog.${key}.label`,
+  description: `paramBindings.catalog.${key}.description`,
+  tier, group, unit,
+});
+
+const TRON_OVERLAY: Record<string, ParamMeta> = {
+  // Mission layer (src/mower_mission/config/mission.yaml), /behavior_tree_node.
+  "behavior_tree_node.battery_low_percent": pm("battery_low_percent", "basic", "Mission", "%"),
+  "behavior_tree_node.battery_full_percent": pm("battery_full_percent", "basic", "Mission", "%"),
+  "behavior_tree_node.rtk_timeout_s": pm("rtk_timeout_s", "basic", "Mission", "s"),
+  "behavior_tree_node.rain_mode": pm("rain_mode", "basic", "Mission"),
+  "behavior_tree_node.rain_delay_minutes": pm("rain_delay_minutes", "basic", "Mission", "min"),
+  "behavior_tree_node.undock_distance_m": pm("undock_distance_m", "basic", "Docking", "m"),
+  "behavior_tree_node.undock_speed_mps": pm("undock_speed_mps", "basic", "Docking", "m/s"),
+  "behavior_tree_node.mow_angle_deg": pm("mow_angle_deg", "basic", "Coverage", "°"),
+  "behavior_tree_node.transit_gap_m": pm("transit_gap_m", "basic", "Coverage", "m"),
+  "behavior_tree_node.rain_debounce_s": pm("rain_debounce_s", "middle", "Mission", "s"),
+  "behavior_tree_node.preflight_min_fix_type_docked": pm("preflight_min_fix_type_docked", "middle", "Mission"),
+  "behavior_tree_node.rtk_fix_type": pm("rtk_fix_type", "middle", "Mission"),
+  "behavior_tree_node.dock_timeout_s": pm("dock_timeout_s", "middle", "Docking", "s"),
+  "behavior_tree_node.dock_use_vision": pm("dock_use_vision", "middle", "Docking"),
+  "behavior_tree_node.use_docking_server": pm("use_docking_server", "middle", "Docking"),
+  "behavior_tree_node.require_blade_confirmation": pm("require_blade_confirmation", "middle", "Mission"),
+  "behavior_tree_node.follow_chunk_m": pm("follow_chunk_m", "middle", "Coverage", "m"),
+  "behavior_tree_node.boundary_recover_after_s": pm("boundary_recover_after_s", "middle", "Mission", "s"),
+  "behavior_tree_node.boundary_max_recoveries": pm("boundary_max_recoveries", "middle", "Mission"),
+  // Nav2 controllers (src/mower_navigation/config/nav2_params.yaml).
+  "controller_server.FollowCoveragePath.desired_linear_vel": pm("mowing_desired_linear_vel", "basic", "Coverage", "m/s"),
+  "controller_server.FollowPath.desired_linear_vel": pm("transit_desired_linear_vel", "basic", "Coverage", "m/s"),
+  // Coverage planner adapter (mower_coverage_bridge).
+  "coverage_server.operation_width": pm("operation_width", "basic", "Coverage", "m"),
+  // Vision docking (src/mower_docking/config/docking.yaml).
+  "mower_docking.approach_distance": pm("approach_distance", "basic", "Docking", "m"),
+  "mower_docking.undock_max_speed": pm("undock_max_speed", "middle", "Docking", "m/s"),
+  "mower_docking.max_retries": pm("max_retries", "middle", "Docking"),
+  // UM960 corrections.
+  "um960_gps_driver.correction_source": pm("correction_source", "middle", "GNSS"),
+  // Teleop relay clamps (mower_teleop); the joystick caps never exceed them.
+  "cmd_vel_ws_relay.max_linear": pm("teleop_max_linear", "middle", "Teleop", "m/s"),
+  "cmd_vel_ws_relay.max_angular": pm("teleop_max_angular", "middle", "Teleop", "rad/s"),
+};
+
+/** Catalog overlays keyed by robot profile id (mower_model). Stock profiles have none. */
+export const PROFILE_CATALOG_OVERLAYS: Readonly<Record<string, Readonly<Record<string, ParamMeta>>>> = {
+  AirseekersTron: TRON_OVERLAY,
+};
+
+/** Groups only overlays use; their labels live under paramBindings.groups. */
+const OVERLAY_GROUPS = new Set(["Mission", "Teleop"]);
+
+/** i18n key of a group heading. */
+export function paramGroupLabelKey(group: string): string {
+  return OVERLAY_GROUPS.has(group) ? `paramBindings.groups.${group}` : `paramGroups.${group}`;
+}
+
+function overlayMeta(name: string, profileId: string | null | undefined): ParamMeta | undefined {
+  const overlay = profileId ? PROFILE_CATALOG_OVERLAYS[profileId] : undefined;
+  if (!overlay) return undefined;
+  const qualified = name.replace(/^\/+/, "");
+  return overlay[qualified] ?? overlay[paramShortName(name)];
+}
+
+/**
+ * paramMeta returns curated metadata, defaulting unknown params to
+ * expert/Other. With a profile id, that profile's overlay wins.
+ */
+export function paramMeta(name: string, profileId?: string | null): ParamMeta {
   const short = paramShortName(name);
   return (
+    overlayMeta(name, profileId) ??
     CATALOG[short] ?? {
       label: short,
       description: "paramCatalog.uncurated.description",

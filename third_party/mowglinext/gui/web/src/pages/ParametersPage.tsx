@@ -7,8 +7,9 @@ import {useApi} from "../hooks/useApi.ts";
 import {useIsMobile} from "../hooks/useIsMobile.ts";
 import {ContentType} from "../api/Api.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
+import {useRobotProfile} from "../hooks/useRobotProfile.ts";
 import {
-  paramMeta, ParamTier, TIER_ORDER, TIER_LABEL, TIER_RANK,
+  paramMeta, paramGroupLabelKey, ParamTier, TIER_ORDER, TIER_LABEL, TIER_RANK,
 } from "../components/settings/paramCatalog.ts";
 
 interface RosParameter {
@@ -39,17 +40,19 @@ const isDangerParam = (name: string): boolean => DANGER_RE.test(name);
 // ParamRow renders one editable parameter. Memoised so editing one row does not
 // re-render the whole (potentially 300-row) list.
 function ParamRow({
-  param, onCommit, disabled, isMobile,
+  param, onCommit, disabled, isMobile, profileId,
 }: {
   param: RosParameter;
-  onCommit: (name: string, value: unknown) => Promise<void>;
+  onCommit: (name: string, value: unknown, type?: string) => Promise<void>;
   disabled: boolean;
   isMobile: boolean;
+  /** Active robot profile: selects its catalog overlay. */
+  profileId?: string;
 }) {
   const {t} = useTranslation();
   const {colors} = useThemeMode();
   const {modal} = App.useApp();
-  const meta = paramMeta(param.name);
+  const meta = paramMeta(param.name, profileId);
   const danger = isDangerParam(param.name);
   const [value, setValue] = useState<unknown>(param.value);
   const [saving, setSaving] = useState(false);
@@ -60,11 +63,11 @@ function ParamRow({
   const commit = useCallback(async (next: unknown) => {
     setSaving(true);
     try {
-      await onCommit(param.name, next);
+      await onCommit(param.name, next, param.type);
     } finally {
       setSaving(false);
     }
-  }, [onCommit, param.name]);
+  }, [onCommit, param.name, param.type]);
 
   // Coerce the pending value before it reaches a LIVE ROS2 param. Clearing an
   // InputNumber yields null — committing that would blank a live parameter, so
@@ -177,6 +180,8 @@ export const ParametersPage = () => {
   const {notification} = App.useApp();
   const {colors} = useThemeMode();
   const isMobile = useIsMobile();
+  const {profile} = useRobotProfile();
+  const profileId = profile.value;
 
   const [params, setParams] = useState<RosParameter[]>([]);
   const [loading, setLoading] = useState(true);
@@ -205,12 +210,15 @@ export const ParametersPage = () => {
 
   useEffect(() => { fetchParams(); }, [fetchParams]);
 
-  const commit = useCallback(async (name: string, value: unknown) => {
+  const commit = useCallback(async (name: string, value: unknown, type?: string) => {
     try {
+      // Echo the type the bridge reported ("float64" for a double): without
+      // it the bridge sends a whole number such as 25 as an integer, which a
+      // node that declared a double refuses.
       await guiApi.request({
         path: "/params", method: "POST", format: "json",
         type: ContentType.Json,
-        body: {parameters: [{name, value}]},
+        body: {parameters: [type ? {name, value, type} : {name, value}]},
       });
       setParams((prev) => prev.map((p) => (p.name === name ? {...p, value} : p)));
       notification.success({message: t("parametersPage.updateSuccess", {name}), duration: 2});
@@ -226,7 +234,7 @@ export const ParametersPage = () => {
     const q = search.trim().toLowerCase();
     const byGroup = new Map<string, RosParameter[]>();
     for (const p of params) {
-      const meta = paramMeta(p.name);
+      const meta = paramMeta(p.name, profileId);
       if (TIER_RANK[meta.tier] > maxRank) continue;
       if (q && !p.name.toLowerCase().includes(q) && !t(meta.label).toLowerCase().includes(q)) continue;
       const list = byGroup.get(meta.group) ?? [];
@@ -234,7 +242,7 @@ export const ParametersPage = () => {
       byGroup.set(meta.group, list);
     }
     return Array.from(byGroup.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [params, tier, search, t]);
+  }, [params, tier, search, t, profileId]);
 
   const shownCount = groups.reduce((n, [, list]) => n + list.length, 0);
 
@@ -304,12 +312,12 @@ export const ParametersPage = () => {
           defaultActiveKey={groups.map(([g]) => g)}
           items={groups.map(([group, list]) => ({
             key: group,
-            label: <span style={{fontWeight: 600}}>{t(`paramGroups.${group}`)} <Tag style={{marginLeft: 6}}>{list.length}</Tag></span>,
+            label: <span style={{fontWeight: 600}}>{t(paramGroupLabelKey(group))} <Tag style={{marginLeft: 6}}>{list.length}</Tag></span>,
             children: (
               <div style={{opacity: editsEnabled ? 1 : 0.55}}>
                 {list.map((p) => (
                   <ParamRow key={p.name} param={p} onCommit={commit}
-                            disabled={!editsEnabled} isMobile={isMobile}/>
+                            disabled={!editsEnabled} isMobile={isMobile} profileId={profileId}/>
                 ))}
               </div>
             ),

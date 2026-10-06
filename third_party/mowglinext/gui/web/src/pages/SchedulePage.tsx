@@ -1,4 +1,4 @@
-import {App, Switch, Tag, TimePicker, Tooltip} from "antd";
+import {App, Select, Switch, TimePicker, Tooltip} from "antd";
 import {useCallback, useEffect, useRef, useState} from "react";
 import {useTranslation} from "react-i18next";
 import type {TFunction} from "i18next";
@@ -27,6 +27,7 @@ const DAY_KEYS = ["dayMon", "dayTue", "dayWed", "dayThu", "dayFri", "daySat", "d
 const DAY_LETTER_KEYS = ["letterSun", "letterMon", "letterTue", "letterWed", "letterThu", "letterFri", "letterSat"] as const;
 
 function areaLabel(t: TFunction, index: number, name: string | undefined): string {
+  if (index < 0) return t('schedulePage.appliesToAllAreas');
   return name ? `${index + 1}. ${name}` : t('schedulePage.areaLabel', {index: index + 1});
 }
 
@@ -88,7 +89,7 @@ export const SchedulePage = () => {
     try {
       await guiApi.request({
         path: "/schedules", method: "POST",
-        body: {area: 0, time: "09:00", daysOfWeek: [1, 2, 3, 4, 5], enabled: false, ...body},
+        body: {area: -1, time: "09:00", daysOfWeek: [1, 2, 3, 4, 5], enabled: false, ...body},
         format: "json",
       });
       await fetchSchedules();
@@ -235,11 +236,19 @@ export const SchedulePage = () => {
             checked={sched.enabled}
             onChange={(checked) => handleUpdate({...sched, enabled: checked})}
           />
-          {/* The backend always issues a full COMMAND_START (see scheduler.go),
-              so the per-schedule area is never honoured. Surface a read-only
-              note instead of a misleading selector; the data field is kept for
-              forward-compat. */}
-          <Tag style={{marginLeft: 'auto'}}>{t('schedulePage.appliesToAllAreas')}</Tag>
+          {/* area -1 = all areas (plain start); >= 0 starts mowing in that area. */}
+          <Select
+            size="small"
+            style={{marginLeft: 'auto', minWidth: 140}}
+            value={sched.area}
+            onChange={(area: number) => handleUpdate({...sched, area})}
+            options={[
+              {value: -1, label: t('schedulePage.appliesToAllAreas')},
+              ...workingAreas.map((name, i) => ({value: i, label: areaLabel(t, i, name)})),
+              // Keep a saved area selectable even before the map has loaded.
+              ...(sched.area >= workingAreas.length ? [{value: sched.area, label: areaLabel(t, sched.area, undefined)}] : []),
+            ]}
+          />
         </div>
         <TimePicker
           value={dayjs(sched.time, "HH:mm")}

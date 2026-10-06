@@ -258,15 +258,80 @@ class TestMcuNode(unittest.TestCase):
         self.assertAlmostEqual(linear, -0.3, places=1)
         self.assertAlmostEqual(angular, 0.3, places=1)
 
-    def test_pid_disabled_at_idle_puts_exactly_zero_on_the_wire(self):
-        """The vendor sends no SpeedData while idle; we at worst send a true 0,0."""
+    def test_proportional_brake_at_idle(self):
+        """pid_enabled=false with non-zero measured speed: send -brake_gain * measured.
+
+        The MCU treats SpeedData(0,0) as 'coast', so we brake proportionally when
+        commanded is 0 but measured is non-zero.  This is provably stable.
+        """
         self.assertFalse(self.node.pid_enabled)
-        self.node._meas_linear = 0.2                        # feedback must not leak through
+        self.node._meas_linear = 0.2
         self.node._meas_angular = -0.4
+        self.node._meas_stamp = time.monotonic()
+        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
+        self.node._send_speed()
+        (_, _, payload), = drain_tx(self.node._ser)
+        linear, angular = struct.unpack(mn.SPEED_FMT, payload)
+        brake = self.node.get_parameter('brake_gain').value
+        self.assertAlmostEqual(linear, -brake * 0.2, places=5)
+        self.assertAlmostEqual(angular, -brake * (-0.4), places=5)
+
+    def test_no_brake_when_already_at_rest(self):
+        """When measured speed is 0 and commanded is 0, output is exactly 0,0."""
+        self.assertFalse(self.node.pid_enabled)
+        self.node._meas_linear = 0.0
+        self.node._meas_angular = 0.0
         self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
         self.node._send_speed()
         (_, _, payload), = drain_tx(self.node._ser)
         self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+
+    def test_brake_deadband_sends_exact_zero_on_noise(self):
+        """Measured speed inside the deadband (sensor noise at rest) -> exact 0,0, no brake."""
+        self.node._meas_linear = 0.01
+        self.node._meas_angular = -0.03
+        self.node._meas_stamp = time.monotonic()
+        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
+        self.node._send_speed()
+        (_, _, payload), = drain_tx(self.node._ser)
+        self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+
+    def test_brake_not_applied_on_stale_measurement(self):
+        """A stale measured speed must not drive the brake."""
+        self.node._meas_linear = 0.3
+        self.node._meas_stamp = time.monotonic() - (self.node.speed_timeout + 1.0)
+        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
+        self.node._send_speed()
+        (_, _, payload), = drain_tx(self.node._ser)
+        self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+
+    def test_disabling_stream_sends_one_final_zero(self):
+        """Turning the stream off must leave the MCU with a 0,0 setpoint, not the last command."""
+        self.node._on_cmd_vel(cmd_vel(0.3, 0.0))
+        self.node._send_speed()
+        drain_tx(self.node._ser)
+        self.node._params['speed_stream_enabled'] = False
+        self.node._send_speed()
+        frames = drain_tx(self.node._ser)
+        self.assertEqual([m for (_, m, _) in frames], [mn.MOD_SPEED])
+        self.assertEqual(struct.unpack(mn.SPEED_FMT, frames[0][2]), (0.0, 0.0))
+        self.node._send_speed()
+        self.assertEqual(drain_tx(self.node._ser), [])
+
+    def test_speed_stream_disabled_sends_no_speed_frame(self):
+        """speed_stream_enabled=false -> no SpeedData leaves the host (vendor idle wire)."""
+        # ros_stubs has no set_parameters(); poke the backing store the param reads.
+        self.node._params['speed_stream_enabled'] = False
+        self.node._on_cmd_vel(cmd_vel(0.4, 0.1))
+        self.node._send_speed()
+        frames = drain_tx(self.node._ser)
+        # The transition itself emits exactly one 0,0 frame (never leave a setpoint latched);
+        # the commanded 0.4/0.1 must not reach the wire, and later cycles send nothing.
+        self.assertEqual([m for (_, m, _) in frames], [mn.MOD_SPEED])
+        self.assertEqual(struct.unpack(mn.SPEED_FMT, frames[0][2]), (0.0, 0.0))
+        self.node._send_speed()
+        self.assertEqual(drain_tx(self.node._ser), [])
+        self.assertFalse(self.node._speed_streaming)
 
     def test_stale_cmd_vel_sends_zero_speed(self):
         self.node._on_cmd_vel(cmd_vel(0.7, 0.2))

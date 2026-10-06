@@ -15,7 +15,17 @@ Notes
 - One Imu message is published per received 0x53 angle frame (the last frame of each
   WIT output burst), so the ROS rate follows the sensor's configured rate exactly.
 - ``publish_tf`` defaults to False: robot_state_publisher owns base_link->imu_link.
+
+CPU (RK3588): serial bytes are read by a plain thread blocked in ``select`` on the tty fd
+(no 200 Hz rclpy poll timer: each executor wake costs 1.5-4 ms of Python here), and
+``/imu/data`` + ``/imu/temperature_c`` are published as pre-serialized CDR bytes
+(:mod:`wit_imu_driver.imu_cdr`, byte-identical to rclpy serialization, unit tested;
+``fast_publish:=false`` restores the typed path). The executor only serves the 5 s health
+timer and the parameter services.
 """
+import os
+import select
+import threading
 import time
 
 import serial
@@ -29,6 +39,7 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32
 import tf2_ros
 
+from wit_imu_driver.imu_cdr import ImuSerializer, float32_bytes
 from wit_imu_driver.wit_protocol import (
     CMD_SAVE, CMD_UNLOCK, TYPE_ANGLE, WitParser, cmd_set_output, cmd_set_rate,
     euler_to_quaternion)
@@ -54,6 +65,10 @@ class WitImuNode(Node):
         self.declare_parameter('angular_velocity_covariance', 0.005)
         self.declare_parameter('linear_acceleration_covariance', 0.05)
         self.declare_parameter('stale_warn_s', 1.0)
+        self.declare_parameter('fast_publish', True)        # pre-serialized CDR publish
+        # after the first byte of a burst, wait this long before reading so the whole
+        # acc+gyro+angle burst (33 bytes = 2.9 ms @115200) is read in one go (0 = off)
+        self.declare_parameter('read_coalesce_s', 0.003)
 
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self.port, self.baud, self.frame_id = g('port'), int(g('baud')), g('frame_id')
@@ -77,6 +92,14 @@ class WitImuNode(Node):
         la = float(g('linear_acceleration_covariance'))
         self.linear_acceleration_cov = _diag3(la, la, la)
 
+        self.fast_publish = bool(g('fast_publish'))
+        self.read_coalesce_s = max(0.0, float(g('read_coalesce_s')))
+        self._temp_check = 0.0
+        self._temp_subs = True
+        self._imu_ser = ImuSerializer(self.frame_id, self.orientation_cov,
+                                      self.angular_velocity_cov,
+                                      self.linear_acceleration_cov)
+
         self.parser = WitParser()
         self.ser = None
         self._last_open_attempt = 0.0
@@ -84,7 +107,9 @@ class WitImuNode(Node):
         self._published = 0
         self._last_stale_warn = 0.0
 
-        self.create_timer(0.005, self._poll)          # 200 Hz serial poll
+        self._stop = threading.Event()
+        self._reader = threading.Thread(target=self._read_loop, name='wit_reader', daemon=True)
+        self._reader.start()
         self.create_timer(5.0, self._health)
         self.get_logger().info('wit_imu_driver: %s @ %d, publishing %s (frame %s)'
                                % (self.port, self.baud, g('imu_topic'), self.frame_id))
@@ -115,23 +140,51 @@ class WitImuNode(Node):
         except KeyError:
             self.get_logger().error('unsupported WIT rate %s; leaving sensor config alone' % rate)
 
-    def _poll(self):
-        if self.ser is None:
-            self._open()
-            return
-        try:
-            n = self.ser.in_waiting
-            if n <= 0:
-                return
-            data = self.ser.read(n)
-        except (serial.SerialException, OSError) as exc:
-            self.get_logger().error('serial read failed: %s; reopening' % exc)
+    def _close_serial(self):
+        ser, self.ser = self.ser, None
+        if ser is not None:
             try:
-                self.ser.close()
-            except Exception:
+                ser.close()
+            except Exception:  # noqa: BLE001
                 pass
-            self.ser = None
-            return
+
+    def _read_loop(self):
+        """Serial reader thread: block in select() on the tty, feed whatever arrived."""
+        ctx = self.context
+        while not self._stop.is_set() and ctx.ok():
+            if self.ser is None:
+                self._open()
+                if self.ser is None:
+                    self._stop.wait(0.5)
+                    continue
+            try:
+                fd = self.ser.fileno()
+                ready, _, _ = select.select([fd], [], [], 0.5)
+                if not ready:
+                    continue
+                if self.read_coalesce_s:
+                    time.sleep(self.read_coalesce_s)
+                data = os.read(fd, 4096)
+                if not data:   # readable but empty: the device went away
+                    raise OSError('EOF on %s' % self.port)
+            except BlockingIOError:
+                continue
+            except (serial.SerialException, OSError, ValueError, TypeError) as exc:
+                if self._stop.is_set():
+                    break
+                self.get_logger().error('serial read failed: %s; reopening' % exc)
+                self._close_serial()
+                continue
+            try:
+                self._feed(data)
+            except Exception as exc:  # noqa: BLE001 - keep reading
+                if self._stop.is_set() or not ctx.ok():
+                    break
+                self.get_logger().error('IMU frame handling failed: %r' % exc,
+                                        throttle_duration_sec=10.0)
+        self._close_serial()
+
+    def _feed(self, data):
         for ftype in self.parser.feed(data):
             self._last_frame_mono = time.monotonic()
             if ftype == TYPE_ANGLE and self.parser.sample.complete:
@@ -140,15 +193,36 @@ class WitImuNode(Node):
     # ---------------------------------------------------------------- publish
     def _publish(self):
         s = self.parser.sample
+        quat = s.quat if s.quat is not None else euler_to_quaternion(*s.rpy)
+        if self.fast_publish and self.tf_broadcaster is None:
+            stamp_ns = self.get_clock().now().nanoseconds
+            try:
+                self.imu_pub.publish(self._imu_ser.serialize(stamp_ns, quat, s.gyro, s.acc))
+                # /imu/temperature_c: only serialized + sent while somebody listens
+                if s.temperature_c is not None and self._temp_wanted():
+                    self.temp_pub.publish(float32_bytes(s.temperature_c))
+                self._published += 1
+                return
+            except TypeError:   # rclpy without publish(bytes): use the typed path from now on
+                self.fast_publish = False
+        self._publish_typed(s, quat)
+
+    def _temp_wanted(self):
+        now = time.monotonic()
+        if now >= self._temp_check:      # graph query at most once per second
+            self._temp_check = now + 1.0
+            try:
+                self._temp_subs = self.temp_pub.get_subscription_count() > 0
+            except AttributeError:       # test doubles
+                self._temp_subs = True
+        return self._temp_subs
+
+    def _publish_typed(self, s, quat):
         stamp = self.get_clock().now().to_msg()
         msg = Imu()
         msg.header.stamp = stamp
         msg.header.frame_id = self.frame_id
-        if s.quat is not None:
-            msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w = s.quat
-        else:
-            msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w = \
-                euler_to_quaternion(*s.rpy)
+        msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w = quat
         msg.orientation_covariance = self.orientation_cov
         msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z = s.gyro
         msg.angular_velocity_covariance = self.angular_velocity_cov
@@ -177,6 +251,12 @@ class WitImuNode(Node):
                                    % (age, self.parser.bad_checksums))
         elif self.parser.bad_checksums:
             self.get_logger().debug('frames ok, %d bad checksums total' % self.parser.bad_checksums)
+
+    def destroy_node(self):
+        self._stop.set()
+        if self._reader.is_alive():
+            self._reader.join(timeout=2.0)
+        super().destroy_node()
 
 
 def main(args=None):

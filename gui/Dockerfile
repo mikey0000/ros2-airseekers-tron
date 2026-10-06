@@ -50,8 +50,8 @@ FROM --platform=$BUILDPLATFORM node:22 AS build-web
 ARG BUILD_REVISION
 ARG BUILD_VERSION
 ARG BUILD_TIME
-# Tron build-time switches (see web/src/tronFeatures.ts)
-ARG VITE_TRON_FEATURES=1
+# The Tron UI trim is runtime (ROBOT_PROFILE / mower_model, see web/src/constants/profileGates.ts).
+# Build-time only: skip the first-run redirect to the onboarding wizard (read by AppShell.tsx).
 ARG VITE_SKIP_ONBOARDING=1
 WORKDIR /web
 COPY web/package.json web/yarn.lock web/.npmrc ./
@@ -59,7 +59,7 @@ RUN yarn install --frozen-lockfile --network-timeout 600000
 COPY web/ ./
 # `yarn build` = tsc && vite build (no lint / tests)
 RUN VITE_BUILD_REVISION="$BUILD_REVISION" VITE_BUILD_VERSION="$BUILD_VERSION" VITE_BUILD_TIME="$BUILD_TIME" \
-    VITE_TRON_FEATURES="$VITE_TRON_FEATURES" VITE_SKIP_ONBOARDING="$VITE_SKIP_ONBOARDING" \
+    VITE_SKIP_ONBOARDING="$VITE_SKIP_ONBOARDING" \
     yarn build \
  && find dist/assets -type f \( -name '*.js' -o -name '*.css' -o -name '*.json' -o -name '*.svg' -o -name '*.wasm' \) \
       -size +1024c -exec gzip -9 -k {} +

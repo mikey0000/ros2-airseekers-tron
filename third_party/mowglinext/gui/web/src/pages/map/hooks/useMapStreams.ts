@@ -26,6 +26,7 @@ import { useRobotDescription } from "../../../hooks/useRobotDescription.ts";
 import {useLatestThrottle} from "./useLatestThrottle.ts";
 import {useThemeMode} from "../../../theme/ThemeContext.tsx";
 import {MAP_RENDER_BUDGETS} from "./mapRenderBudget.ts";
+import {useProfileGates} from "../../../hooks/useProfileGates.ts";
 
 export type MowProgressImage = GridImage;
 
@@ -75,6 +76,13 @@ export function useMapStreams({
 
     const highLevelStatus = useHighLevelStatus();
     const {displayMode} = useThemeMode();
+    // LiDAR scan + LiDAR-map layers only exist on a robot with a LiDAR
+    // (profile gate "feature:lidar"). Strict: nothing is subscribed until the
+    // robot profile is known. Ref so the start sites below read it fresh.
+    const {isVisibleStrict} = useProfileGates();
+    const lidarLayers = isVisibleStrict("feature:lidar");
+    const lidarLayersRef = useRef(lidarLayers);
+    lidarLayersRef.current = lidarLayers;
     const renderBudget = MAP_RENDER_BUDGETS[displayMode];
 
     // Robot geometry from the /robot_description URDF — single source of truth
@@ -367,10 +375,10 @@ export function useMapStreams({
             mapStream.start("/api/mowglinext/subscribe/map");
             pathStream.start("/api/mowglinext/subscribe/path");
             planStream.start("/api/mowglinext/subscribe/plan");
-            lidarStream.start("/api/mowglinext/subscribe/lidar");
+            if (lidarLayersRef.current) lidarStream.start("/api/mowglinext/subscribe/lidar");
             obstaclesStream.start("/api/mowglinext/subscribe/obstacles");
             mowProgress.stream.start("/api/mowglinext/subscribe/mowProgress");
-            lidarMap.stream.start("/api/mowglinext/subscribe/lidarMap");
+            if (lidarLayersRef.current) lidarMap.stream.start("/api/mowglinext/subscribe/lidarMap");
         }
     }, [editMap]);
 
@@ -433,12 +441,30 @@ export function useMapStreams({
         mapStream.start("/api/mowglinext/subscribe/map");
         pathStream.start("/api/mowglinext/subscribe/path");
         planStream.start("/api/mowglinext/subscribe/plan");
-        lidarStream.start("/api/mowglinext/subscribe/lidar");
+        if (lidarLayersRef.current) lidarStream.start("/api/mowglinext/subscribe/lidar");
         obstaclesStream.start("/api/mowglinext/subscribe/obstacles");
         mowProgress.stream.start("/api/mowglinext/subscribe/mowProgress");
-            lidarMap.stream.start("/api/mowglinext/subscribe/lidarMap");
+        if (lidarLayersRef.current) lidarMap.stream.start("/api/mowglinext/subscribe/lidarMap");
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [settings["datum_lon"], settings["datum_lat"]]);
+
+    // The robot profile arrives after mount: start the LiDAR streams once it
+    // says there is a LiDAR (if the other streams are running), and drop them
+    // and their layers when it says there is none.
+    useEffect(() => {
+        if (!lidarLayers) {
+            lidarStream.stop();
+            lidarRender.cancel();
+            lidarMap.stream.stop();
+            lidarMap.cancel();
+            setLidarCollection({type: "FeatureCollection", features: []});
+            return;
+        }
+        if (editMap || settings["datum_lon"] == undefined || settings["datum_lat"] == undefined) return;
+        lidarStream.start("/api/mowglinext/subscribe/lidar");
+        lidarMap.stream.start("/api/mowglinext/subscribe/lidarMap");
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [lidarLayers]);
 
     // Cleanup all streams on unmount
     useEffect(() => {
@@ -469,7 +495,7 @@ export function useMapStreams({
         plan,
         lidarCollection,
         mowProgressImage: mowProgress.image,
-        lidarMapImage: lidarMap.image,
+        lidarMapImage: lidarLayers ? lidarMap.image : null,
         highLevelStatus,
         joyStream,
     };

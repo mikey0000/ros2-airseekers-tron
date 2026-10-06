@@ -15,6 +15,7 @@ import { useThemeMode } from "../theme/ThemeContext.tsx";
 import { SettingsSection, useSettingsManager } from "../hooks/useSettingsManager.ts";
 import { restartRos2 } from "../utils/containers.ts";
 import { useContainerRestart } from "../hooks/useContainerRestart.ts";
+import { useGate } from "../hooks/useProfileGates.ts";
 import { SettingsNav } from "../components/settings/SettingsNav.tsx";
 import { HardwareSection } from "../components/settings/HardwareSection.tsx";
 import { DriveMotorSection } from "../components/settings/DriveMotorSection.tsx";
@@ -68,6 +69,7 @@ export const SettingsPage = () => {
         advancedKeys,
         setSearchQuery,
         matchesSearch,
+        isSettingKeyHidden,
         handleChange,
         handleBulkChange,
         isSectionDirty,
@@ -81,6 +83,10 @@ export const SettingsPage = () => {
         revert,
         gpsRestarting,
     } = useSettingsManager();
+    // "Restart ROS2" is a `docker restart` of the ROS2 container: only offered
+    // on robots with a Docker host. Elsewhere the banner says to restart the
+    // robot's software instead of showing a button that cannot work.
+    const canRestartRos2 = useGate("feature:restart_ros2");
 
     // Long-running: container restart + rosbridge reconnect. Disable button
     // until ROS2 is reachable again to avoid duplicate-click restart storms.
@@ -110,11 +116,11 @@ export const SettingsPage = () => {
         if (!searchQuery) return sections;
         return sections.filter(
             (section) =>
-                section.keys.some((key) => matchesSearch(key)) ||
+                section.keys.some((key) => !isSettingKeyHidden(key) && matchesSearch(key)) ||
                 matchesSearch("", t(section.label)) ||
                 matchesSearch("", t(section.description)),
         );
-    }, [sections, searchQuery, matchesSearch, t]);
+    }, [sections, searchQuery, matchesSearch, isSettingKeyHidden, t]);
 
     const requestedSection = searchParams.get('section') ?? 'hardware';
     const activeSection = visibleSections.find(section => section.id === requestedSection)?.id
@@ -312,7 +318,8 @@ export const SettingsPage = () => {
                         type="warning"
                         showIcon
                         message={t("settingsPage.restartRequired")}
-                        action={
+                        description={canRestartRos2 ? undefined : t("profileGating.restartRequiredManual")}
+                        action={canRestartRos2 &&
                             <Button
                                 size="small"
                                 type="primary"
@@ -441,7 +448,7 @@ export const SettingsPage = () => {
                     </Button>
                 )}
                 <div style={{ flex: 1 }} />
-                <Button
+                {canRestartRos2 && <Button
                     icon={<ReloadOutlined />}
                     onClick={confirmRestartRos2}
                     size="small"
@@ -449,7 +456,7 @@ export const SettingsPage = () => {
                     disabled={ros2Restart.pending}
                 >
                     {ros2Restart.pending ? ros2Restart.pendingLabel : t("settingsPage.restartRos2")}
-                </Button>
+                </Button>}
             </div>}
         </div>
     );

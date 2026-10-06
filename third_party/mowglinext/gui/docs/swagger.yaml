@@ -120,6 +120,8 @@ definitions:
     type: object
   api.ContainerListResponse:
     properties:
+      available:
+        type: boolean
       containers:
         items:
           $ref: '#/definitions/api.Container'

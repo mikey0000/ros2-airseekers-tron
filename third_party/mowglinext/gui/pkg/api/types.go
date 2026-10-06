@@ -27,5 +27,9 @@ type Container struct {
 }
 
 type ContainerListResponse struct {
+	// Available is false when this host has no reachable Docker daemon (the
+	// stack runs natively); Containers is then empty. Not an error: the Logs
+	// page falls back to the /rosout stream.
+	Available  bool        `json:"available"`
 	Containers []Container `json:"containers"`
 }

@@ -7,7 +7,9 @@ import { useContainerRestart } from "./useContainerRestart.ts";
 import { getQuaternionFromHeading } from "../utils/map.tsx";
 import { ContentType } from "../api/Api.ts";
 import { valuesMatch } from "../utils/settingsValues.ts";
-import { isTronHidden } from "../tronFeatures.ts";
+import { useProfileGates } from "./useProfileGates.ts";
+import { isGateId, isGateVisible } from "../constants/profileGates.ts";
+import type { RobotProfile } from "../constants/robotProfiles.ts";
 
 /** A section that saves outside mowgli_robot.yaml but wants the page's Save button. */
 export interface ExternalSaver {
@@ -50,11 +52,7 @@ export type SectionMeta = {
     keys: string[];
 };
 
-// tron: hidden sections keep their keys claimed (so they stay out of
-// AdvancedSection) but are not listed in the Settings nav.
-const tronVisible = (s: SectionMeta) => !isTronHidden(`settings:${s.id}`);
-
-const SECTION_DEFINITIONS: SectionMeta[] = [
+export const SECTION_DEFINITIONS: SectionMeta[] = [
     {
         id: "updates",
         label: "settingsSections.updates.label",
@@ -304,12 +302,30 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
         keys: [],
     },
 ];
-const VISIBLE_SECTION_DEFINITIONS = SECTION_DEFINITIONS.filter(tronVisible);
+/**
+ * Sections listed in the Settings nav. A section gated by the robot profile
+ * ("settings:<id>" in constants/profileGates.ts) is left out for a robot
+ * without the feature, or for everyone while the profile is loading
+ * (`profile === null`). Its keys stay claimed by SECTION_DEFINITIONS, so they
+ * never leak into AdvancedSection's free-form editor.
+ */
+export function visibleSections(profile: RobotProfile | null): SectionMeta[] {
+    return SECTION_DEFINITIONS.filter((s) => {
+        const gate = `settings:${s.id}`;
+        if (!isGateId(gate)) return true;
+        return profile !== null && isGateVisible(profile, gate);
+    });
+}
 
 export const useSettingsManager = () => {
     const { t } = useTranslation();
     const guiApi = useApi();
     const { notification } = App.useApp();
+    const { profile, loading: profileLoading, isSettingKeyHidden } = useProfileGates();
+    const sections = useMemo(
+        () => visibleSections(profileLoading ? null : profile),
+        [profile, profileLoading],
+    );
     const [savedValues, setSavedValues] = useState<Record<string, any>>({});
     const [localValues, setLocalValues] = useState<Record<string, any>>({});
     // Schema defaults = the GUI's source of "default value" for each key.
@@ -755,7 +771,9 @@ export const useSettingsManager = () => {
     );
 
     return {
-        sections: VISIBLE_SECTION_DEFINITIONS, // tron: tronFeatures.ts
+        sections,
+        /** Settings key the active robot does not use; sections skip its field. */
+        isSettingKeyHidden,
         values: localValues,
         savedValues,
         defaults,

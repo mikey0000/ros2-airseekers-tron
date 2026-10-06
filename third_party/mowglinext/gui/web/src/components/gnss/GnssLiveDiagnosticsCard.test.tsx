@@ -4,6 +4,7 @@ import type { ComponentProps } from "react";
 import { describe, expect, it } from "vitest";
 import en from "../../i18n/locales/en.json";
 import { gnssStatusSamples } from "../../test/mocks.tsx";
+import { loraWaitingLiveSample } from "../../test/gnssCorrectionSamples.ts";
 import { GnssLiveDiagnosticsCard } from "./GnssLiveDiagnosticsCard.tsx";
 
 const renderCard = (
@@ -97,5 +98,26 @@ describe("GnssLiveDiagnosticsCard", () => {
     it("renders a not-seen MSM state explicitly", () => {
         renderCard("msm_summary_not_seen");
         expect(screen.getByText(en.settingsGnssLiveStatus.msmStateNotSeen)).toBeInTheDocument();
+    });
+
+    it("renders the source-owned correction fields for the live LoRa sample", () => {
+        render(
+            <App>
+                <GnssLiveDiagnosticsCard gnssStatus={loraWaitingLiveSample} />
+            </App>,
+        );
+
+        expect(screen.getByTestId("gnss-corrections-tag")).toHaveTextContent(
+            `${en.corrections.source.lora} · ${en.corrections.state.waiting}`,
+        );
+        expect(screen.getByText(en.settingsGnssLiveStatus.correctionMsmSectionTitle)).toBeInTheDocument();
+        expect(screen.getByText(en.corrections.sourceLabel)).toBeInTheDocument();
+        expect(screen.getByText(en.corrections.source.lora)).toBeInTheDocument();
+        expect(screen.getByText(en.corrections.state.waiting)).toBeInTheDocument();
+        expect(screen.getByText(en.corrections.transport.radioNotObservable)).toBeInTheDocument();
+        expect(screen.getByText(en.corrections.age)).toBeInTheDocument();
+        expect(screen.getAllByText(en.corrections.ageUnknown).length).toBeGreaterThan(0);
+        // correction_stream_status is not supported by this backend, so no legacy row.
+        expect(screen.queryByText(en.diagnosticsPage.correctionStreamStatus)).not.toBeInTheDocument();
     });
 });

@@ -24,6 +24,7 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
   <!-- optional at runtime: provides SetLoRa for /mower_gps_node/set_lora -->
   <exec_depend>mower_interfaces</exec_depend>
 

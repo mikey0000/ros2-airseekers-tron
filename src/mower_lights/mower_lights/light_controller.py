@@ -11,20 +11,28 @@ Subs     /behavior_tree_node/high_level_status  mowgli_interfaces/HighLevelStatu
 
 Hardware: WS2812 chain on /dev/spidev3.0 (see docs/lights.md). Never commands motion
 or the cutter.
+
+CPU (RK3588): the inputs are only consumed by the 5 Hz auto tick, so they are *sampled*
+subscriptions of a :class:`sub_pump.SubscriptionPump` (depth 1, newest message taken when
+the tick runs; /mower_base/status alone is 100 Hz and cost one executor wake per message
+before). The auto tick and the state publisher run on a plain ``PeriodicRunner`` thread;
+the executor only serves /light_control and the parameter services.
 """
 import json
+import threading
 import time
 
 import rclpy
 import rclpy.executors
 from rclpy.node import Node
-from rclpy.qos import QoSProfile
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from std_msgs.msg import Int32, String
 
 from mower_lights_interfaces.srv import LightControl
 
 from . import led_hw
 from . import lights_logic as ll
+from .sub_pump import PeriodicRunner, SubscriptionPump, flat_parser
 
 try:
     from mowgli_interfaces.msg import Emergency, HighLevelStatus
@@ -69,6 +77,7 @@ DEFAULTS = {
     'warn_hold_s': 2.0,
     'status_timeout_s': 5.0,
     'auto_period_s': 0.2,
+    'keepalive_s': 1.0,            # re-send an unchanged frame this often (0 = never)
 }
 
 
@@ -100,7 +109,8 @@ class LightController(Node):
         self._err_logged = 0.0
         self.engine = led_hw.LightEngine(backend, pixels, int(g('startup_mode')),
                                          float(g('frame_rate_hz')), float(g('lane_rate_hz')),
-                                         on_error=self._on_hw_error)
+                                         on_error=self._on_hw_error,
+                                         keepalive_s=float(g('keepalive_s')))
         try:
             self.engine.start()
         except OSError as e:
@@ -123,17 +133,35 @@ class LightController(Node):
         self.state_pub = self.create_publisher(String, '~/state', 10)
         self.srv = self.create_service(LightControl, g('service_name'), self._on_service)
 
-        qos = QoSProfile(depth=10)
-        if HighLevelStatus is not None:
-            self.create_subscription(HighLevelStatus, g('high_level_status_topic'), self._on_hl, qos)
-            self.create_subscription(Emergency, g('emergency_topic'), self._on_emergency, qos)
-        if MowerBaseDevStatus is not None:
-            self.create_subscription(MowerBaseDevStatus, g('base_status_topic'), self._on_base, qos)
-        if BatteryState is not None:
-            self.create_subscription(BatteryState, g('battery_topic'), self._on_battery, qos)
+        # Inputs: latest-value state read by the auto tick -> sampled (newest message only).
+        self._lock = threading.Lock()          # auto tick vs. service handler
+        self._pump = SubscriptionPump(self, 'lights_inputs') if SubscriptionPump.available() \
+            else None
+        self._base_sub = None
 
-        self.create_timer(float(g('auto_period_s')), self._auto_tick)
-        self.create_timer(1.0 / max(0.1, float(g('state_rate_hz'))), self._publish_state)
+        def sub(msg_type, topic, cb, flat=False, best_effort=False):
+            if self._pump is None:
+                return self.create_subscription(msg_type, topic, cb, QoSProfile(depth=10))
+            qos = QoSProfile(depth=1)
+            if best_effort:     # no per-message ACKNACK traffic for a 100 Hz sampled input
+                qos.reliability = QoSReliabilityPolicy.BEST_EFFORT
+            return self._pump.subscribe(msg_type, topic, cb, qos, sampled=True,
+                                        parser=flat_parser(msg_type) if flat else None)
+
+        if HighLevelStatus is not None:
+            sub(HighLevelStatus, g('high_level_status_topic'), self._on_hl)
+            sub(Emergency, g('emergency_topic'), self._on_emergency)
+        if MowerBaseDevStatus is not None:
+            self._base_sub = sub(MowerBaseDevStatus, g('base_status_topic'), self._on_base,
+                                 flat=True, best_effort=True)
+        if BatteryState is not None:
+            sub(BatteryState, g('battery_topic'), self._on_battery)
+
+        self._periodic = PeriodicRunner(self, [
+            (float(g('auto_period_s')), self._auto_tick),
+            (1.0 / max(0.1, float(g('state_rate_hz'))), self._publish_state),
+        ], 'lights_periodic')
+        self._periodic.start()
 
     # ------------------------------------------------------------------ inputs
     def _on_hl(self, m):
@@ -170,10 +198,19 @@ class LightController(Node):
     def _on_service(self, req, resp):
         mode = int(req.mode.light_mode)
         self.get_logger().info('service recv: %d' % mode)
-        self._apply(mode, 'service')
+        with self._lock:
+            if self._pump is not None and self._base_sub is not None:
+                self._pump.poll((self._base_sub,))   # fresh is_cutting for the cutter gate
+            self._apply(mode, 'service')
         return resp
 
     def _auto_tick(self):
+        with self._lock:
+            if self._pump is not None:
+                self._pump.poll()
+            self._auto_tick_locked()
+
+    def _auto_tick_locked(self):
         if not self._startup_done:
             # let the PowerOn animation finish (it hands over to Idle itself)
             if self.engine.mode == ll.POWER_ON:
@@ -220,6 +257,9 @@ class LightController(Node):
                                    % (st['mode'], st['mode_name'], st['top'], st['tail']))
 
     def shutdown_lights(self):
+        self._periodic.stop()
+        if self._pump is not None:
+            self._pump.stop()
         mode = int(self.g('shutdown_mode'))
         try:
             self.engine.play_blocking(mode, float(self.g('shutdown_anim_s')))

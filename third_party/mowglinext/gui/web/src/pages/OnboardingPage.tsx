@@ -10,7 +10,7 @@ import {
     RocketOutlined, SettingOutlined, GlobalOutlined,
     AimOutlined, ThunderboltOutlined, CheckCircleOutlined,
     ArrowLeftOutlined, ArrowRightOutlined, SaveOutlined,
-    EnvironmentOutlined, WifiOutlined, CheckOutlined,
+    EnvironmentOutlined, WifiOutlined, CheckOutlined, HomeOutlined,
 } from "@ant-design/icons";
 import { useThemeMode } from "../theme/ThemeContext.tsx";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -22,12 +22,15 @@ import { useImuYawCalibration } from "../hooks/useImuYawCalibration.ts";
 import { useFirmwareStatus } from "../hooks/useFirmwareStatus.ts";
 import { GnssStatusConstants } from "../types/ros.ts";
 import { CompassOutlined } from "@ant-design/icons";
-import { deriveGpsStatus, gnssReceiverLabel, isGnssFixType } from "../utils/gpsStatus.ts";
+import { deriveCorrectionSummary, deriveGpsStatus, gnssReceiverLabel, isGnssFixType } from "../utils/gpsStatus.ts";
 import { ReadinessStep } from "../components/onboarding/ReadinessStep.tsx";
 import {
-    STEP_FIRMWARE, STEP_NTRIP, STEP_GPS, STEP_DATUM,
-    STEP_CALIBRATION, STEP_COMPLETE, STEP_COUNT,
+    onboardingStepsFor,
+    SETTINGS_STEPS,
+    type OnboardingStepId,
 } from "../components/onboarding/steps.ts";
+import { refreshRobotProfile, useRobotProfile } from "../hooks/useRobotProfile.ts";
+import { VisionDockCard } from "../components/settings/VisionDockCard.tsx";
 import { RobotComponentEditor } from "../components/RobotComponentEditor.tsx";
 import { FlashBoardComponent } from "../components/FlashBoardComponent.tsx";
 import { MOWER_MODELS } from "../constants/mowerModels.ts";
@@ -304,8 +307,8 @@ const GpsStep: React.FC<GpsStepProps> = ({ values, onChange, gpsRestarting, onPe
     const detectedReceiver = gnssReceiverLabel(gnssStatus);
     // A typo'd NTRIP credential otherwise reads as "GPS FIX" forever with no
     // explanation — surface whether RTCM corrections are actually flowing.
-    const correctionsActive =
-        gnssStatus?.correction_stream_status === GnssStatusConstants.CORRECTION_STREAM_STATUS_ACTIVE;
+    // Source-agnostic (NTRIP stream or radio base), like the readiness check.
+    const correctionsActive = deriveCorrectionSummary(gnssStatus).tone === "success";
     const selectedSignalProfile = normalizeGnssSignalProfile(values.gnss_signal_profile);
     const selectedExecutionBaud = (() => {
         const value = normalizeGnssString(values.gnss_execution_baud).toLowerCase();
@@ -958,6 +961,28 @@ const FirmwareStep: React.FC<{ onNext: () => void; autoFlash?: boolean; mowerMod
     );
 };
 
+// ── Dock (vision-docking robots) ────────────────────────────────────────
+//
+// Charger-contact robots capture the dock pose during the calibration drive.
+// A robot that docks on a camera marker only needs to know roughly where its
+// dock is: place it on the map or take the robot's position while it sits on
+// the dock.
+
+const DockStep: React.FC<RobotModelStepProps> = ({ values, onChange }) => {
+    const { t } = useTranslation();
+    return (
+        <div style={{ maxWidth: 760, margin: "0 auto" }}>
+            <Title level={4}>
+                <HomeOutlined /> {t("onboardingProfile.dockTitle")}
+            </Title>
+            <Paragraph type="secondary">
+                {t("onboardingProfile.dockIntro")}
+            </Paragraph>
+            <VisionDockCard values={values} onChange={onChange} />
+        </div>
+    );
+};
+
 // ── Step 8: Complete ────────────────────────────────────────────────────
 //
 // The final "Complete" step is now the readiness gate — see
@@ -987,32 +1012,39 @@ const FirmwareStep: React.FC<{ onNext: () => void; autoFlash?: boolean; mowerMod
 //   7. Calibration — drives the robot to learn IMU mounting, pitch/roll, mag,
 //      and (if on the dock) the dock pose.
 //   8. Complete
+//
+// Which of these a robot gets depends on its profile (onboardingStepsFor in
+// components/onboarding/steps.ts): no firmware step without an STM32 board, no
+// NTRIP/GPS steps without the GNSS sidecar, no calibration drive without
+// calibrate_imu_yaw_node, and a Dock step for vision-docking robots.
 
-const STEP_ICONS = [
-    <RocketOutlined />,
-    <SettingOutlined />,
-    <ThunderboltOutlined />,
-    <WifiOutlined />,
-    <GlobalOutlined />,
-    <EnvironmentOutlined />,
-    <AimOutlined />,
-    <CompassOutlined />,
-    <CheckCircleOutlined />,
-];
+const STEP_ICONS: Record<OnboardingStepId, React.ReactNode> = {
+    welcome: <RocketOutlined />,
+    robotModel: <SettingOutlined />,
+    firmware: <ThunderboltOutlined />,
+    ntrip: <WifiOutlined />,
+    gps: <GlobalOutlined />,
+    datum: <EnvironmentOutlined />,
+    sensors: <AimOutlined />,
+    calibration: <CompassOutlined />,
+    dock: <HomeOutlined />,
+    complete: <CheckCircleOutlined />,
+};
 
 // i18n key strings resolved with t() at render time (see stepItems / mobile
 // header). NTRIP / GPS / Datum stay technical tokens via their en values.
-const STEP_TITLES = [
-    "onboardingPage.stepWelcome",
-    "onboardingPage.stepRobotModel",
-    "onboardingPage.stepFirmware",
-    "onboardingPage.stepNtrip",
-    "onboardingPage.stepGps",
-    "onboardingPage.stepDatum",
-    "onboardingPage.stepSensors",
-    "onboardingPage.stepCalibration",
-    "onboardingPage.stepComplete",
-];
+const STEP_TITLES: Record<OnboardingStepId, string> = {
+    welcome: "onboardingPage.stepWelcome",
+    robotModel: "onboardingPage.stepRobotModel",
+    firmware: "onboardingPage.stepFirmware",
+    ntrip: "onboardingPage.stepNtrip",
+    gps: "onboardingPage.stepGps",
+    datum: "onboardingPage.stepDatum",
+    sensors: "onboardingPage.stepSensors",
+    calibration: "onboardingPage.stepCalibration",
+    dock: "onboardingProfile.stepDock",
+    complete: "onboardingPage.stepComplete",
+};
 
 const OnboardingWizard: React.FC = () => {
     const { t } = useTranslation();
@@ -1028,8 +1060,23 @@ const OnboardingWizard: React.FC = () => {
     const [searchParams] = useSearchParams();
     const deepLinkFirmware = searchParams.get("step") === "firmware";
     const autoFlash = deepLinkFirmware && searchParams.get("flash") === "1";
-    const [currentStep, setCurrentStep] = useState(deepLinkFirmware ? STEP_FIRMWARE : 0);
     const [localValues, setLocalValues] = useState<Record<string, any>>({});
+    // The steps follow the robot profile. A model picked in this wizard but
+    // not saved yet wins over the saved one, so choosing a model reshapes the
+    // remaining steps at once. Only an actual change counts: the loaded value
+    // may be the schema default, which must not mask the ROBOT_PROFILE env.
+    const pickedModel =
+        savedValues && localValues.mower_model !== savedValues.mower_model
+            ? localValues.mower_model
+            : undefined;
+    const { profile } = useRobotProfile(pickedModel);
+    const steps = onboardingStepsFor(profile);
+    // Track the step by id, so a profile change (and with it the step list)
+    // never moves the operator to a different screen. A deep link to a step
+    // this robot does not have opens the welcome step.
+    const [currentStepId, setCurrentStepId] = useState<OnboardingStepId>(deepLinkFirmware ? "firmware" : "welcome");
+    const currentIndex = Math.max(0, steps.indexOf(currentStepId));
+    const currentStep = steps[currentIndex];
     const [saving, setSaving] = useState(false);
     const gpsRestart = useContainerRestart({
         pendingLabel: t('onboardingPage.gpsRestarting'),
@@ -1052,7 +1099,7 @@ const OnboardingWizard: React.FC = () => {
     // Snapshot GPS-affecting fields whenever the user enters the GPS step,
     // so we can compare on Next and decide whether to auto-restart mowgli-gps.
     useEffect(() => {
-        if (currentStep === STEP_GPS) {
+        if (currentStep === "gps") {
             const snap: Record<string, any> = {};
             for (const k of GPS_RESTART_KEYS) snap[k] = localValues[k];
             gpsSnapshotRef.current = snap;
@@ -1068,18 +1115,18 @@ const OnboardingWizard: React.FC = () => {
     }, []);
 
     // Deep-links back into an in-wizard step (used by the readiness CTAs).
-    const jumpToStep = useCallback((idx: number) => setCurrentStep(idx), []);
+    const jumpToStep = useCallback((id: OnboardingStepId) => setCurrentStepId(id), []);
 
-    // Step indices are single-sourced in components/onboarding/steps.ts so the
+    // Steps are single-sourced in components/onboarding/steps.ts so the
     // wizard and the readiness gate never drift.
     const handleNext = useCallback(async () => {
         // Save settings when leaving any config step that mutates settings
-        // values: Robot Model (1), NTRIP (3), GPS (4), Datum (5), Sensors (6),
-        // Calibration (7). Apply-from-calibration writes through onChange but
+        // values (SETTINGS_STEPS: Robot Model, NTRIP, GPS, Datum, Sensors,
+        // Calibration). Apply-from-calibration writes through onChange but
         // does not auto-save; this is the one batch save point.
         // Datum required-guard: a (0,0) or unset origin silently breaks every
         // later mow, so block leaving the Datum step until it is captured.
-        if (currentStep === STEP_DATUM) {
+        if (currentStep === "datum") {
             const lat = localValues.datum_lat;
             const lon = localValues.datum_lon;
             const datumSet =
@@ -1094,19 +1141,19 @@ const OnboardingWizard: React.FC = () => {
             }
             setDatumError(false);
         }
-        const isConfigStep =
-            currentStep === 1 ||
-            (currentStep >= STEP_NTRIP && currentStep <= STEP_CALIBRATION);
-        if (isConfigStep) {
+        if (SETTINGS_STEPS.has(currentStep)) {
             setSaving(true);
             await saveValues(localValues);
             setSaving(false);
+            // A new mower_model is a new profile: re-resolve it so the rest of
+            // the app (and this wizard, once the pick is saved) follows it.
+            if (currentStep === "robotModel") void refreshRobotProfile(guiApi);
         }
         // Leaving the GPS step: if any GPS/NTRIP/serial field actually
         // changed vs the snapshot taken on entry, bounce the GPS container
         // so the new config is applied. Without this the user has to know
         // to click "Restart GPS" before "Set Datum" can ever see RTK Fix.
-        if (currentStep === STEP_GPS && gpsSnapshotRef.current) {
+        if (currentStep === "gps" && gpsSnapshotRef.current) {
             const snap = gpsSnapshotRef.current;
             let changed = false;
             for (const k of GPS_RESTART_KEYS) {
@@ -1119,41 +1166,44 @@ const OnboardingWizard: React.FC = () => {
                 await gpsRestart.run(() => restartGps(guiApi));
             }
         }
-        setCurrentStep((s) => Math.min(s + 1, STEP_TITLES.length - 1));
-    }, [currentStep, localValues, saveValues, guiApi, gpsRestart, notification, t]);
+        setCurrentStepId(steps[Math.min(currentIndex + 1, steps.length - 1)]);
+    }, [currentStep, currentIndex, steps, localValues, saveValues, guiApi, gpsRestart, notification, t]);
 
     const handlePrev = useCallback(() => {
-        setCurrentStep((s) => Math.max(s - 1, 0));
-    }, []);
+        setCurrentStepId(steps[Math.max(currentIndex - 1, 0)]);
+    }, [currentIndex, steps]);
 
-    const isFirstStep = currentStep === 0;
-    const isLastStep = currentStep === STEP_COMPLETE;
-    const isFirmwareStep = currentStep === STEP_FIRMWARE;
+    const isFirstStep = currentIndex === 0;
+    const isLastStep = currentStep === "complete";
+    const isFirmwareStep = currentStep === "firmware";
 
-    const stepItems = STEP_TITLES.map((title, i) => ({ title: t(title), icon: STEP_ICONS[i] }));
+    const stepItems = steps.map((id) => ({ title: t(STEP_TITLES[id]), icon: STEP_ICONS[id] }));
 
     const stepContent = (
         <>
-            {currentStep === 0 && <WelcomeStep onNext={handleNext} />}
-            {currentStep === 1 && <RobotModelStep values={localValues} onChange={handleChange} />}
-            {currentStep === 2 && <FirmwareStep onNext={handleNext} autoFlash={autoFlash} mowerModel={localValues.mower_model} />}
-            {currentStep === 3 && <NtripStep values={localValues} onChange={handleChange} />}
-            {currentStep === 4 && (
+            {currentStep === "welcome" && <WelcomeStep onNext={handleNext} />}
+            {currentStep === "robotModel" && <RobotModelStep values={localValues} onChange={handleChange} />}
+            {currentStep === "firmware" && <FirmwareStep onNext={handleNext} autoFlash={autoFlash} mowerModel={localValues.mower_model} />}
+            {currentStep === "ntrip" && <NtripStep values={localValues} onChange={handleChange} />}
+            {currentStep === "gps" && (
                 <GpsStep
                     values={localValues}
                     onChange={handleChange}
                     gpsRestarting={gpsRestarting}
-                    onJumpToNtrip={() => jumpToStep(STEP_NTRIP)}
+                    onJumpToNtrip={() => jumpToStep("ntrip")}
                     onPersistGnssSettings={(settings) => savePartialValues(settings, {
                         silentSuccess: true,
                         errorMessage: t("onboardingPage.persistGnssError"),
                     })}
                 />
             )}
-            {currentStep === 5 && <DatumStep values={localValues} onChange={handleChange} gpsRestarting={gpsRestarting} requiredError={datumError} />}
-            {currentStep === 6 && <SensorStep values={localValues} onChange={handleChange} />}
-            {currentStep === 7 && <ImuYawStep values={localValues} onChange={handleChange} />}
-            {currentStep === 8 && <ReadinessStep values={localValues} onJumpToStep={jumpToStep} />}
+            {currentStep === "datum" && <DatumStep values={localValues} onChange={handleChange} gpsRestarting={gpsRestarting} requiredError={datumError} />}
+            {currentStep === "sensors" && <SensorStep values={localValues} onChange={handleChange} />}
+            {currentStep === "calibration" && <ImuYawStep values={localValues} onChange={handleChange} />}
+            {currentStep === "dock" && <DockStep values={localValues} onChange={handleChange} />}
+            {currentStep === "complete" && (
+                <ReadinessStep values={localValues} profile={profile} steps={steps} onJumpToStep={jumpToStep} />
+            )}
         </>
     );
 
@@ -1177,13 +1227,13 @@ const OnboardingWizard: React.FC = () => {
                 </Button>
                 <Button
                     type="primary"
-                    icon={currentStep === STEP_DATUM ? <SaveOutlined /> : <ArrowRightOutlined />}
+                    icon={currentStep === "datum" ? <SaveOutlined /> : <ArrowRightOutlined />}
                     onClick={handleNext}
                     loading={saving || loading || gpsRestarting}
                 >
                     {gpsRestarting
                         ? t("onboardingPage.restartingGps")
-                        : currentStep === STEP_DATUM
+                        : currentStep === "datum"
                             ? t("onboardingPage.saveAndFinish")
                             : t("onboardingPage.next")}
                 </Button>
@@ -1194,7 +1244,7 @@ const OnboardingWizard: React.FC = () => {
     // Mobile: a cramped 8-icon horizontal stepper reads badly, so show a compact
     // "Step N of M · Title" header with a progress bar instead.
     if (isMobile) {
-        const pct = Math.round(((currentStep + 1) / STEP_TITLES.length) * 100);
+        const pct = Math.round(((currentIndex + 1) / steps.length) * 100);
         return (
             <Row gutter={[0, 12]}>
                 <Col span={24}>
@@ -1205,15 +1255,15 @@ const OnboardingWizard: React.FC = () => {
                                 <Text strong style={{ fontSize: 15 }}>{t(STEP_TITLES[currentStep])}</Text>
                             </Space>
                             <Text type="secondary" style={{ fontSize: 12 }}>
-                                {t("onboardingPage.stepCounter", { current: currentStep + 1, total: STEP_TITLES.length })}
+                                {t("onboardingPage.stepCounter", { current: currentIndex + 1, total: steps.length })}
                             </Text>
                         </div>
                         <div
                             role="progressbar"
-                            aria-label={t("onboardingPage.stepCounter", { current: currentStep + 1, total: STEP_COUNT })}
-                            aria-valuenow={currentStep + 1}
+                            aria-label={t("onboardingPage.stepCounter", { current: currentIndex + 1, total: steps.length })}
+                            aria-valuenow={currentIndex + 1}
                             aria-valuemin={1}
-                            aria-valuemax={STEP_COUNT}
+                            aria-valuemax={steps.length}
                             style={{ height: 4, borderRadius: 2, background: colors.border, overflow: "hidden" }}
                         >
                             <div style={{ height: "100%", width: `${pct}%`, background: colors.accent, transition: "width .3s ease" }} />
@@ -1236,7 +1286,7 @@ const OnboardingWizard: React.FC = () => {
             <Col flex="0 0 220px">
                 <Steps
                     direction="vertical"
-                    current={currentStep}
+                    current={currentIndex}
                     items={stepItems}
                     style={{ position: "sticky", top: 8 }}
                 />

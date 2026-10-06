@@ -79,6 +79,9 @@ const STATE_ALIASES: Record<string, string> = {
   'CRITICAL_BATTERY_CHARGING': 'CHARGING',
   'COVERAGE_FAILED_DOCKING': 'RETURNING_HOME',
   'PLANNING': 'MOWING',
+  // Tron mission_fsm pause states: the cycle is held, not finished.
+  'WAITING_FOR_RTK': 'MOWING',
+  'BOUNDARY_PAUSED': 'MOWING',
   'DYNAMIC_OBSTACLE_CLEARED': 'OBSTACLE_BACKOFF',
   // #487: coverage refused because the robot's OWN pose is a lethal/keepout
   // cell. Same family as an obstacle wedge from the operator's point of view.

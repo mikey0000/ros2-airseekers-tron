@@ -18,7 +18,7 @@ const { Text } = Typography;
 // SVG coordinate system: 1 metre = SCALE pixels
 const SCALE = 500;
 
-type SensorId = "lidar" | "imu" | "gps";
+export type SensorId = "lidar" | "imu" | "gps";
 
 type SensorConfig = {
     x: number;
@@ -124,9 +124,17 @@ const compassBearingToYawRad = (bearing: number): number => {
 type Props = {
     values: Record<string, any>;
     onChange: (name: string, value: any) => void;
+    /** Sensors this robot does not have (e.g. no LiDAR); not drawn or edited. */
+    hiddenSensors?: readonly SensorId[];
+    /** Offer the calibrate_imu_yaw_node auto-calibration button (default true). */
+    imuYawCalibration?: boolean;
 };
 
-export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
+export const RobotComponentEditor: React.FC<Props> = ({ values, onChange, hiddenSensors, imuYawCalibration = true }) => {
+    const sensors = useMemo(
+        () => (hiddenSensors?.length ? SENSORS.filter((s) => !hiddenSensors.includes(s.id)) : SENSORS),
+        [hiddenSensors],
+    );
     const { t } = useTranslation();
     const { colors, mode } = useThemeMode();
     const isMobile = useIsMobile();
@@ -796,13 +804,13 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                             {gridLines}
                             {scaleLabels}
                             {robotBody}
-                            {[...SENSORS].reverse().map(renderSensor)}
+                            {[...sensors].reverse().map(renderSensor)}
                         </svg>
                     </div>
                 </Col>
 
                 <Col xs={24} lg={10}>
-                    {SENSORS.map((meta) => {
+                    {sensors.map((meta) => {
                         const val = getSensorValue(meta);
                         const sensorColor = mode === "dark" ? meta.colorDark : meta.color;
                         return (
@@ -857,7 +865,7 @@ export const RobotComponentEditor: React.FC<Props> = ({ values, onChange }) => {
                                     {meta.yawKey && (
                                         <Col span={12}>
                                             <Text type="secondary" style={{ fontSize: 11 }}>{t("robotComponentEditor.yaw")}</Text>
-                                            {meta.id === "imu" ? (
+                                            {meta.id === "imu" && imuYawCalibration ? (
                                                 <Space.Compact style={{ width: "100%" }}>
                                                     <InputNumber
                                                         value={roundTo(radToDeg(val.yaw), 1)}

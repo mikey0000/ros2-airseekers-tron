@@ -26,6 +26,7 @@ export interface ApiContainer {
 }
 
 export interface ApiContainerListResponse {
+  available?: boolean;
   containers?: ApiContainer[];
 }
 

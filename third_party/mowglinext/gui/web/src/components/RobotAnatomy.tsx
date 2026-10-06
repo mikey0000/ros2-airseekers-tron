@@ -2,6 +2,8 @@ import {useState} from "react";
 import {useTranslation} from "react-i18next";
 import type {TFunction} from "i18next";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
+import {DEFAULT_ROBOT_PROFILE, type PerceptionKind, type RobotProfile} from "../constants/robotProfiles.ts";
+import type {CameraFreshness} from "../utils/cameraFreshness.ts";
 
 /**
  * Top-down schematic of the robot. Each part is hoverable; hovering surfaces
@@ -21,6 +23,8 @@ export interface AnatomyInputs {
   imuOk: boolean;
   /** undefined = no live scan-freshness signal available → shown as "unknown". */
   lidarOk?: boolean;
+  /** Image-topic freshness of the profile's cameras (camera perception only). */
+  cameras?: CameraFreshness;
   wheelLeftRpm: number;
   wheelRightRpm: number;
   bladeOn: boolean;
@@ -28,7 +32,16 @@ export interface AnatomyInputs {
   dockCharging: boolean;
 }
 
-type Part = 'gps' | 'imu' | 'lidar' | 'battery' | 'blade' | 'wheelL' | 'wheelR' | 'motor' | 'dock' | 'rain';
+type Part = 'gps' | 'imu' | 'lidar' | 'cameras' | 'battery' | 'blade' | 'wheelL' | 'wheelR' | 'motor' | 'dock' | 'rain';
+
+/**
+ * Parts drawn for a robot. The obstacle sensor follows profile.perception:
+ * a LiDAR puck, the camera cluster, or nothing.
+ */
+export function anatomyParts(perception: PerceptionKind): Part[] {
+  const sensor: Part[] = perception === 'lidar' ? ['lidar'] : perception === 'camera' ? ['cameras'] : [];
+  return ['gps', ...sensor, 'imu', 'battery', 'blade', 'wheelL', 'wheelR', 'motor', 'dock', 'rain'];
+}
 
 type PartTone = 'ok' | 'warn' | 'unknown';
 
@@ -53,6 +66,16 @@ function partInfo(part: Part, inputs: AnatomyInputs, t: TFunction): PartInfo {
       return inputs.lidarOk === undefined
         ? {label: 'LiDAR', value: t('robotAnatomy.unknown'), tone: 'unknown'}
         : {label: 'LiDAR', value: inputs.lidarOk ? t('robotAnatomy.streaming') : t('robotAnatomy.noScan'), tone: boolTone(inputs.lidarOk)};
+    case 'cameras': {
+      const c = inputs.cameras;
+      const label = t('profileGating.anatomyCameras', {count: c?.total ?? 0});
+      if (!c || c.reporting === 0) return {label, value: t('robotAnatomy.unknown'), tone: 'unknown'};
+      return {
+        label,
+        value: t('profileGating.anatomyCamerasLive', {live: c.live, total: c.total}),
+        tone: boolTone(c.live === c.total),
+      };
+    }
     case 'battery':
       return {
         label: t('robotAnatomy.battery'),
@@ -80,11 +103,15 @@ function partInfo(part: Part, inputs: AnatomyInputs, t: TFunction): PartInfo {
 
 interface RobotAnatomyProps {
   inputs: AnatomyInputs;
+  /** Robot profile; decides the part list. Defaults to a stock (LiDAR) robot. */
+  profile?: RobotProfile;
 }
 
-export function RobotAnatomy({inputs}: RobotAnatomyProps) {
+export function RobotAnatomy({inputs, profile = DEFAULT_ROBOT_PROFILE}: RobotAnatomyProps) {
   const {colors} = useThemeMode();
   const {t} = useTranslation();
+  const parts = anatomyParts(profile.perception);
+  const has = (p: Part) => parts.includes(p);
   const [hover, setHover] = useState<Part | null>(null);
   const active: Part = hover ?? 'battery';
   const info = partInfo(active, inputs, t);
@@ -147,11 +174,19 @@ export function RobotAnatomy({inputs}: RobotAnatomyProps) {
           </g>
 
           {/* LiDAR (front) */}
-          <g onMouseEnter={handleEnter('lidar')} onMouseLeave={handleLeave} style={{cursor: 'pointer'}}>
+          {has('lidar') && <g onMouseEnter={handleEnter('lidar')} onMouseLeave={handleLeave} style={{cursor: 'pointer'}}>
             <circle cx={160} cy={86} r={9} fill={fill('lidar')} stroke={stroke('lidar')} strokeWidth={sw('lidar')}/>
             <circle cx={160} cy={86} r={4} fill={stroke('lidar')} opacity={0.6}/>
             <text x={186} y={89} fontSize={9} fill={colors.textDim}>LiDAR</text>
-          </g>
+          </g>}
+
+          {/* Cameras (front pair + rear), one hover target */}
+          {has('cameras') && <g data-testid="anatomy-cameras" onMouseEnter={handleEnter('cameras')} onMouseLeave={handleLeave} style={{cursor: 'pointer'}}>
+            <rect x={140} y={80} width={12} height={9} rx={2} fill={fill('cameras')} stroke={stroke('cameras')} strokeWidth={sw('cameras')}/>
+            <rect x={168} y={80} width={12} height={9} rx={2} fill={fill('cameras')} stroke={stroke('cameras')} strokeWidth={sw('cameras')}/>
+            <rect x={222} y={192} width={12} height={9} rx={2} fill={fill('cameras')} stroke={stroke('cameras')} strokeWidth={sw('cameras')}/>
+            <text x={186} y={89} fontSize={9} fill={colors.textDim}>{t('profileGating.anatomyCameras', {count: profile.cameras.length})}</text>
+          </g>}
 
           {/* IMU (center) */}
           <g onMouseEnter={handleEnter('imu')} onMouseLeave={handleLeave} style={{cursor: 'pointer'}}>

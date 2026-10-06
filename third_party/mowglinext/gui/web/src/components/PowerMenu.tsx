@@ -5,6 +5,7 @@ import {useTranslation} from "react-i18next";
 import {useApi} from "../hooks/useApi.ts";
 import {useMowerAction} from "./MowerActions.tsx";
 import {restartMowgliStack} from "../utils/containers.ts";
+import {useFeature} from "../hooks/useRobotProfile.ts";
 
 // Shared existing power flow: the battery menu and Diagnostics differ only in
 // their trigger and menu entries, not in handlers, confirmation or reconnect UI.
@@ -13,6 +14,8 @@ export function PowerMenu({children, hostOnly = false}: {children: ReactElement;
     const guiApi = useApi();
     const {notification, modal} = App.useApp();
     const mowerAction = useMowerAction();
+    // The "restart the board" entry resets the STM32; a robot without one has no such board.
+    const hasStm32 = useFeature('stm32_firmware');
     const rebootBoardAction = mowerAction("reboot_board", {});
     // A power action that takes the backend/host down — whole-stack "Restart
     // Mowgli" OR "Restart the Host" — shows this blocking overlay;
@@ -131,7 +134,7 @@ export function PowerMenu({children, hostOnly = false}: {children: ReactElement;
             icon: <SettingOutlined/>,
             label: t('mowerStatus.advanced'),
             children: [
-                {
+                ...(hasStm32 ? [{
                     key: "reboot-board",
                     icon: <ReloadOutlined/>,
                     label: t('mowerStatus.restartBoard'),
@@ -139,7 +142,7 @@ export function PowerMenu({children, hostOnly = false}: {children: ReactElement;
                         t('mowerStatus.restartBoard'),
                         t('mowerStatus.restartBoardConfirm'),
                         rebootBoardAction),
-                },
+                }] : []),
                 ...hostItems,
             ],
         },

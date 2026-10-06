@@ -262,10 +262,11 @@ class V4L2Capture:
         return buf, planes
 
     # ---- streaming
-    def read(self, timeout=2.0):
-        """Dequeue one frame; returns ``(data: bytes, sequence: int)``.
+    def dequeue(self, timeout=2.0):
+        """Wait for and dequeue one filled buffer; returns ``(index, bytesused, sequence)``.
 
-        Raises ``TimeoutError`` if no frame arrives within ``timeout`` seconds.
+        The buffer belongs to the caller until :meth:`requeue` (``view`` gives zero-copy
+        access to it). Raises ``TimeoutError`` if no frame arrives within ``timeout`` s.
         """
         while True:
             r, _, _ = select.select([self.fd], [], [], timeout)
@@ -277,11 +278,27 @@ class V4L2Capture:
             except BlockingIOError:
                 continue
             used = planes[0].bytesused if self.mplane else buf.bytesused
-            try:
-                data = self.maps[buf.index][:used]   # copy out, then give the buffer back
-            finally:
-                _ioctl(self.fd, VIDIOC_QBUF, buf)
-            return data, buf.sequence
+            return buf.index, used, buf.sequence
+
+    def requeue(self, index):
+        buf, _planes = self._new_buf(index)
+        _ioctl(self.fd, VIDIOC_QBUF, buf)
+
+    def view(self, index, used):
+        """Zero-copy ``memoryview`` of a dequeued buffer (valid until ``requeue``)."""
+        return memoryview(self.maps[index])[:used]
+
+    def read(self, timeout=2.0):
+        """Dequeue one frame; returns ``(data: bytes, sequence: int)`` (a copy).
+
+        Raises ``TimeoutError`` if no frame arrives within ``timeout`` seconds.
+        """
+        index, used, seq = self.dequeue(timeout)
+        try:
+            data = self.maps[index][:used]   # copy out, then give the buffer back
+        finally:
+            self.requeue(index)
+        return data, seq
 
     def close(self):
         if self.streaming:
@@ -304,17 +321,54 @@ class V4L2Capture:
             self.fd = None
 
 
-def to_bgr(data, width, height, bytesperline, pixel_format):
-    """Convert one captured buffer to a BGR ``numpy`` image (``None`` if undecodable)."""
+def _decimate_422(img, k, pixel_format):
+    """Pick every ``k``-th pixel of a packed 4:2:2 image ``(h, w, 2)`` (rows and columns),
+    keeping it packed (chroma of the even output pixel's source macropixel). Returns a
+    contiguous ``(h // k, w // k, 2)`` array; ``k`` must divide ``h`` and ``2 * k`` ``w``."""
+    h, w = img.shape[:2]
+    rows = img[::k].reshape(h // k, w // (2 * k), 4 * k)   # groups of k macropixels
+    # UYVY: U Y0 V Y1 -> U, Y(px 2mk), V, Y(px (2m+1)k);  YUYV: Y0 U Y1 V
+    cols = [0, 1, 2, 2 * k + 1] if pixel_format == 'UYVY' else [0, 1, 2 * k, 3]
+    return rows[:, :, cols].reshape(h // k, w // k, 2)
+
+
+def output_size(width, height, pixel_format, scale):
+    """Size :func:`to_bgr` produces for ``scale`` (integer decimation factor, 4:2:2 only)."""
+    k = int(scale)
+    if k > 1 and pixel_format in ('UYVY', 'YUYV') and height % k == 0 and width % (2 * k) == 0:
+        return width // k, height // k
+    return width, height
+
+
+def to_bgr(data, width, height, bytesperline, pixel_format, dst=None, scale=1):
+    """Convert one captured buffer (bytes or a zero-copy memoryview) to a BGR ``numpy``
+    image (``None`` if undecodable).
+
+    ``dst``: optional preallocated ``(h, w, 3)`` uint8 array the conversion writes into
+    (e.g. the data region of a pre-serialized Image). ``scale``: integer decimation for
+    packed 4:2:2 input, applied *before* the colour conversion (k**2 less work; see
+    :func:`output_size`); other formats ignore it.
+    """
     import cv2
     import numpy as np
     buf = np.frombuffer(data, dtype=np.uint8)
     if pixel_format in ('MJPG', 'JPEG'):
-        return cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        if img is not None and dst is not None and dst.shape == img.shape:
+            np.copyto(dst, img)
+            return dst
+        return img
     if pixel_format in ('UYVY', 'YUYV'):
-        img = buf[:bytesperline * height].reshape(height, bytesperline)[:, :width * 2]
-        img = img.reshape(height, width, 2)
+        if len(buf) < bytesperline * (height - 1) + 2 * width:
+            return None     # short buffer (truncated frame)
+        # strided view (no copy even when bytesperline > 2 * width)
+        img = np.lib.stride_tricks.as_strided(
+            buf, shape=(height, width, 2), strides=(bytesperline, 2, 1), writeable=False)
+        if output_size(width, height, pixel_format, scale) != (width, height):
+            img = _decimate_422(img, int(scale), pixel_format)
         code = cv2.COLOR_YUV2BGR_UYVY if pixel_format == 'UYVY' else cv2.COLOR_YUV2BGR_YUYV
+        if dst is not None and dst.shape == img.shape[:2] + (3,):
+            return cv2.cvtColor(img, code, dst=dst)
         return cv2.cvtColor(img, code)
     if pixel_format in ('NV12', 'NV21'):
         img = buf[:bytesperline * height * 3 // 2].reshape(height * 3 // 2, bytesperline)

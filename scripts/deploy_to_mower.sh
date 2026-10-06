@@ -42,7 +42,11 @@ do_sync() {
     --exclude third_party/mowglinext/gui/web/node_modules/ \
     --exclude third_party/mowglinext/gui/web/dist/ \
     --exclude third_party/mowglinext/gui/mowglinext \
+    --exclude config/gui/mowgli_robot.yaml \
     "$STACK_ROOT/" "$MOWER_USER@$MOWER_HOST:$REMOTE_DIR/"
+  # config/gui/mowgli_robot.yaml is DEVICE-OWNED (datum, GUI-saved settings): never overwrite it;
+  # seed it from the repo copy only when the device has none.
+  remote "[ -f $REMOTE_DIR/config/gui/mowgli_robot.yaml ] || cp $REMOTE_DIR/config/gui/mowgli_robot.yaml.seed $REMOTE_DIR/config/gui/mowgli_robot.yaml 2>/dev/null || true"
   # open_vins is a relative symlink into ../ros2_port_handoff which is not synced: drop it remotely
   remote "rm -f $REMOTE_DIR/src/open_vins"
 }

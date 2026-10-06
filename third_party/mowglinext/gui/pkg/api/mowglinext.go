@@ -77,14 +77,14 @@ func topicSubscribeInterval(topic string) (int, bool) {
 	switch topic {
 	case "gps", "gnssStatus", "pose", "imu", "ticks", "wheelOdom", "lidar":
 		return 100, true
-	case "fusionRaw", "cogHeading", "magYaw", "obstacles":
+	case "fusionRaw", "cogHeading", "magYaw", "obstacles", "detections":
 		return 200, true
 	case "mowProgress", "lidarMap":
 		return 500, true // large OccupancyGrid — throttle hard
 	case "diagnostics", "status", "highLevelStatus", "btLog", "map",
 		"path", "plan", "power", "emergency", "dockingSensor",
 		"robotDescription", "recordingTrajectory",
-		"coverageResumeAvailable",
+		"coverageResumeAvailable", "visionObstacleClose",
 		"fusionDiag", "dockCalibrationStatus":
 		return -1, true
 	default:
@@ -236,14 +236,29 @@ func ReplaceMapRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 	})
 }
 
+// errDockingPointRejected is returned when the map server answered the
+// set_docking_point call with success=false: it refuses a GPS capture without
+// a good enough RTK accuracy and a motion-derived heading outside its gate.
+// The SetDockingPoint response carries no message, so the text is fixed.
+var errDockingPointRejected = errors.New("docking point rejected by the map server: " +
+	"GPS accuracy or heading check failed, wait for an RTK fix and retry")
+
 // setDockingPointInternal is the ROS-side call shared by the public
-// POST handler and the OpenMower importer. Single service round-trip,
-// no wrapping logic.
+// POST handler and the OpenMower importer. Single service round-trip; a
+// rejection by the map server (success=false) is reported as an error rather
+// than swallowed, so the caller never believes an unsaved dock was stored.
 func setDockingPointInternal(ctx context.Context, provider types.IRosProvider, req *mowgli.SetDockingPointReq) error {
 	if req == nil {
 		return errors.New("setDockingPointInternal: nil request")
 	}
-	return provider.CallService(ctx, "/map_server_node/set_docking_point", req, &mowgli.SetDockingPointRes{}, "mowgli_interfaces/srv/SetDockingPoint")
+	var res mowgli.SetDockingPointRes
+	if err := provider.CallService(ctx, "/map_server_node/set_docking_point", req, &res, "mowgli_interfaces/srv/SetDockingPoint"); err != nil {
+		return err
+	}
+	if !res.Success {
+		return errDockingPointRejected
+	}
+	return nil
 }
 
 // SetDockingPointRoute set the docking point
@@ -255,6 +270,7 @@ func setDockingPointInternal(ctx context.Context, provider types.IRosProvider, r
 // @Produce  json
 // @Param CallReq body mowgli.SetDockingPointReq true "request body"
 // @Success 200 {object} OkResponse
+// @Failure 409 {object} ErrorResponse "map server rejected the dock (GPS accuracy / heading gate)"
 // @Failure 500 {object} ErrorResponse
 // @Router /mowglinext/map/docking [post]
 func SetDockingPointRoute(group *gin.RouterGroup, provider types.IRosProvider) {
@@ -268,7 +284,11 @@ func SetDockingPointRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 			return
 		}
 		if err := setDockingPointInternal(ctx, provider, &CallReq); err != nil {
-			c.JSON(500, ErrorResponse{Error: err.Error()})
+			status := 500
+			if errors.Is(err, errDockingPointRejected) {
+				status = 409 // the request was valid but the robot is not in a state to accept it
+			}
+			c.JSON(status, ErrorResponse{Error: err.Error()})
 			return
 		}
 		c.JSON(200, OkResponse{})

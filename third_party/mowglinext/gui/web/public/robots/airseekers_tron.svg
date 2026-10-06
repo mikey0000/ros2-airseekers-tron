@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300" role="img" aria-label="Airseekers Tron, top view (placeholder illustration)">
+  <title>Airseekers Tron (placeholder illustration, front is up)</title>
+  <g fill="none" stroke="#8aa0a6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">
+    <!-- rear drive wheels -->
+    <rect x="18" y="190" width="18" height="64" rx="6" fill="#2b3a3f"/>
+    <rect x="164" y="190" width="18" height="64" rx="6" fill="#2b3a3f"/>
+    <!-- front omni wheels -->
+    <rect x="22" y="40" width="14" height="40" rx="6" fill="#2b3a3f"/>
+    <rect x="164" y="40" width="14" height="40" rx="6" fill="#2b3a3f"/>
+    <path d="M24 52h10M24 60h10M24 68h10M166 52h10M166 60h10M166 68h10" stroke-width="1.5"/>
+    <!-- body, 0.70 x 0.55 ratio on a 156 x 245 plate -->
+    <rect x="30" y="25" width="140" height="250" rx="40" fill="#1f2a2e"/>
+    <!-- blade disc -->
+    <circle cx="100" cy="170" r="42" fill="#263b32" stroke="#52c41a"/>
+    <path d="M100 130l8 40-8 40-8-40z M60 170l40-8 40 8-40 8z" stroke="#52c41a" stroke-width="1.5" opacity=".6"/>
+    <circle cx="100" cy="170" r="5" fill="#52c41a" stroke="none"/>
+  </g>
+  <!-- camera glyphs: left, right, rear -->
+  <g fill="#1677ff" stroke="#c9d6da" stroke-width="1.5">
+    <circle cx="52" cy="40" r="7"/>
+    <circle cx="148" cy="40" r="7"/>
+    <circle cx="100" cy="262" r="7"/>
+  </g>
+  <g fill="#c9d6da">
+    <circle cx="52" cy="40" r="2.5"/><circle cx="148" cy="40" r="2.5"/><circle cx="100" cy="262" r="2.5"/>
+  </g>
+  <path d="M100 8l-8 12h16z" fill="#8aa0a6"/>
+</svg>

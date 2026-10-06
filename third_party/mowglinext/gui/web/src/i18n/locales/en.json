@@ -71,7 +71,7 @@
     "browserStale": "This browser is using a different web build from the server",
     "reloadBrowser": "Refresh browser",
     "installedSoftware": "Installed software",
-    "noContainers": "No Mowgli containers could be identified",
+    "noContainers": "No stack containers could be identified",
     "mainboard": "Mainboard firmware",
     "firmwareMeaning": "Compatibility is checked against the robot software's protocol. It does not mean the firmware is the latest release. Disconnected or stale values are last known readings.",
     "protocol": "Protocol",
@@ -92,9 +92,35 @@
     "built": "Built at (UTC)",
     "architecture": "Architecture",
     "metadataUnavailable": "Image metadata is unavailable; the reference and state are still shown.",
-    "components": {"robot": "Robot software", "gui": "Web interface", "gps": "GPS", "lidar": "LiDAR", "mqtt": "MQTT", "watchtower": "Watchtower", "mavros": "MAVROS", "ntrip": "NTRIP", "vesc": "VESC", "tfluna-front": "Front TF-Luna", "tfluna-edge": "Edge TF-Luna"},
-    "containerStates": {"running": "Running", "exited": "Stopped", "created": "Created", "restarting": "Restarting", "paused": "Paused", "dead": "Dead", "removing": "Removing"},
-    "firmwareStates": {"waiting": "Waiting for live status", "disconnected": "Disconnected", "stale": "Status is stale", "compatible": "Protocol compatible", "incompatible": "Protocol incompatible"}
+    "components": {
+      "robot": "Robot software",
+      "gui": "Web interface",
+      "gps": "GPS",
+      "lidar": "LiDAR",
+      "mqtt": "MQTT",
+      "watchtower": "Watchtower",
+      "mavros": "MAVROS",
+      "ntrip": "NTRIP",
+      "vesc": "VESC",
+      "tfluna-front": "Front TF-Luna",
+      "tfluna-edge": "Edge TF-Luna"
+    },
+    "containerStates": {
+      "running": "Running",
+      "exited": "Stopped",
+      "created": "Created",
+      "restarting": "Restarting",
+      "paused": "Paused",
+      "dead": "Dead",
+      "removing": "Removing"
+    },
+    "firmwareStates": {
+      "waiting": "Waiting for live status",
+      "disconnected": "Disconnected",
+      "stale": "Status is stale",
+      "compatible": "Protocol compatible",
+      "incompatible": "Protocol incompatible"
+    }
   },
   "systemPower": {
     "title": "Host",
@@ -119,6 +145,14 @@
     "onboarding": "Onboarding",
     "more": "More",
     "close": "Close"
+  },
+  "routeError": {
+    "notFoundTitle": "Page not found",
+    "notFoundBody": "There is no page at {{path}}.",
+    "errorTitle": "Something went wrong",
+    "errorBody": "This page failed to load. If the GUI was just updated, reloading usually fixes it.",
+    "goHome": "Go to Home",
+    "reload": "Reload"
   },
   "pageMeta": {
     "home": {
@@ -229,18 +263,18 @@
     "emergencyStop": "Emergency stop"
   },
   "mowerStatus": {
-    "restartingMowgli": "Restarting Mowgli…",
+    "restartingMowgli": "Restarting the robot stack…",
     "mowgliRestarted": "Mowgli restarted",
-    "mowgliRestartFailed": "Mowgli restart failed",
+    "mowgliRestartFailed": "Robot stack restart failed",
     "restarting": "Restarting…",
     "restartFailed": "Restart failed",
     "shuttingDown": "Shutting down…",
     "shutdownFailed": "Shutdown failed",
     "confirm": "Confirm",
     "cancel": "Cancel",
-    "restartMowgli": "Restart Mowgli",
-    "restartMowgliConfirm": "This restarts the entire Mowgli stack (ROS2, GPS, LiDAR, and this web GUI) — like the mowgli-restart command. The page will disconnect briefly and reload automatically when the GUI is back.",
-    "restartingStackTitle": "Restarting Mowgli…",
+    "restartMowgli": "Restart the robot stack",
+    "restartMowgliConfirm": "This restarts the entire robot stack (ROS2, GNSS and this web GUI) — like the mowgli-restart command. The page will disconnect briefly and reload automatically when the GUI is back.",
+    "restartingStackTitle": "Restarting the robot stack…",
     "restartingStackBody": "Restarting the whole stack. This page will reconnect and reload automatically when the GUI is back.",
     "rebootingPiTitle": "Rebooting the Host…",
     "rebootingPiBody": "The Host is rebooting. This page will reconnect and reload automatically when it's back (this can take a minute or two).",
@@ -307,6 +341,8 @@
     "stateRainTimeout": "Rain delay exceeded",
     "stateResuming": "Resuming",
     "stateResumingStart": "Resuming start",
+    "stateWaitingForRtk": "Waiting for RTK fix",
+    "stateBoundaryPaused": "Paused at boundary",
     "stateBoundaryRecovery": "Boundary recovery",
     "stateEmergencyStop": "Emergency stop",
     "stateBoundaryAlert": "Boundary alert",
@@ -469,6 +505,7 @@
     "firmwareDebugTitle": "Debug Firmware",
     "firmwareDebugOffTitle": "Firmware diagnostics are disabled.",
     "firmwareDebugOffBody": "Enable the switch to ask the STM32 and hardware_bridge to emit firmware-only diagnostic lines.",
+    "firmwareDebugOffBodyGeneric": "Enable the switch to ask the motor controller firmware and hardware_bridge to emit firmware-only diagnostic lines.",
     "firmwareDebugConnecting": "Connecting to firmware diagnostics…",
     "firmwareDebugWaiting": "Waiting for firmware diagnostic lines…",
     "firmwareDebugStreamError": "Firmware diagnostic stream unavailable.",
@@ -643,6 +680,7 @@
     "gyroBias": "Gyro bias (rad/s)",
     "impliedPitchRoll": "Implied pitch/roll",
     "noImuCalibration": "No imu_calibration.txt yet — hardware_bridge will auto-calibrate on the next dock.",
+    "noImuCalibrationGeneric": "No imu_calibration.txt yet — the motor controller will auto-calibrate on the next dock.",
     "magnetometerCalibration": "Magnetometer calibration",
     "disabled": "Disabled",
     "enableAndRun": "Enable & run",
@@ -750,10 +788,10 @@
     "headlineChargingPrefix": "Charging · ",
     "headlinePercent": "{{value}} %",
     "emergencyStop": "Emergency stop",
-    "headlineIdlePrefix": "Mowgli is ",
+    "headlineIdlePrefix": "{{robotName}} is ",
     "headlineIdleEmphasis": "idle",
     "headlineIdleSuffix": ".",
-    "headlineMowingPrefix": "Mowgli is ",
+    "headlineMowingPrefix": "{{robotName}} is ",
     "headlineMowingEmphasis": "mowing",
     "headlineMowingSuffix": ".",
     "sublineMoving": "Moving at {{gps}} · {{area}}",
@@ -763,8 +801,8 @@
     "sublineIdle": "Tap Play to start a mow, or let the schedule take over.",
     "emergencyConfirmBody": "This triggers the hardware emergency stop (blades + movement). Re-arm manually afterwards. Continue?",
     "cancel": "Cancel",
-    "mowgliMowing": "Mowgli is mowing",
-    "mowgliCharging": "Mowgli charging",
+    "mowgliMowing": "{{robotName}} is mowing",
+    "mowgliCharging": "{{robotName}} charging",
     "welcomeBack": "Welcome back",
     "orbMowing": "Mowing",
     "orbCharging": "Charging",
@@ -774,8 +812,8 @@
     "greetingMorning": "Hello",
     "greetingAfternoon": "Good afternoon",
     "greetingEvening": "Good evening",
-    "mowgliWithZone": "Mowgli · {{area}}",
-    "mowgliNoZone": "Mowgli · no zone",
+    "mowgliWithZone": "{{robotName}} · {{area}}",
+    "mowgliNoZone": "{{robotName}} · no zone",
     "battery": "battery",
     "coverageProgress": "Area coverage · {{pct}} %",
     "liveMap": "Live map",
@@ -923,7 +961,7 @@
     "skipStepDesc": "If you have already calibrated this robot from the Diagnostics page (or know your imu_yaw value), use the Next button. Otherwise you can calibrate later from Diagnostics — but until you do, the robot will drift in odom and may dock at an angle. The readiness check on the final step flags this as still required.",
     "flashFirmware": "Flash Firmware",
     "firmwareTitle": "Firmware",
-    "firmwareIntro": "If this is a new build, you need to flash the Mowgli firmware onto your motherboard. If your firmware is already up to date, you can skip this step.",
+    "firmwareIntro": "If this is a new build, you need to flash the motor controller firmware onto your motherboard. If your firmware is already up to date, you can skip this step.",
     "skipAlreadyFlashed": "Skip — Already Flashed",
     "flashWarningTitle": "Flashing will rewrite your motherboard firmware",
     "flashWarningDesc": "Make sure your mower is connected via USB and powered on. Wrong voltage settings can damage hardware.",
@@ -1137,7 +1175,7 @@
     "statMowingHint": "remaining today",
     "statWeather": "Weather",
     "statWeatherHint": "sunny · dry",
-    "heroZoneLabel": "Mowgli · South garden zone",
+    "heroZoneLabel": "{{robotName}} · South garden zone",
     "heroRemainingPrefix": "Still",
     "heroRemainingValue": "{{minutes}} min",
     "heroRemainingSuffix": "until home.",
@@ -1205,7 +1243,7 @@
   },
   "quickControls": {
     "title": "Controls",
-    "headlinePrefix": "Mowgli, ready to",
+    "headlinePrefix": "{{robotName}}, ready to",
     "headlineEmphasis": "go",
     "statusActive": "Active",
     "statusPaused": "Paused",
@@ -1730,7 +1768,7 @@
   "mapPage": {
     "mapboxTokenMissingDetail": "Set VITE_MAPBOX_TOKEN to display the map tiles.",
     "mapboxTokenMissingTitle": "Map token missing",
-    "noDatumDetail": "Waiting for a GPS datum. Configure it during onboarding or once the receiver has a fix.",
+    "noDatumDetail": "The datum is the map origin. Set it from the current GPS fix (needs a good fix near the dock), or enter latitude and longitude manually in Settings.",
     "noDatumTitle": "No GPS datum yet"
   },
   "mapJoystick": {
@@ -2112,6 +2150,10 @@
       "label": "Sabo MOWiT 500F",
       "description": "Large professional mower (775x535mm), 32cm cutting width."
     },
+    "AirseekersTron": {
+      "label": "Airseekers Tron",
+      "description": "ROS 2 port with three cameras, vision docking and LoRa RTK. Placeholder dimensions: measure before use."
+    },
     "CUSTOM": {
       "label": "Custom Robot",
       "description": "Manually configure all hardware parameters for a custom build."
@@ -2154,6 +2196,7 @@
     "savedLiveDescription": "Saving stores these in mowgli_robot.yaml and pushes them to the drive controller immediately — no ROS2 restart needed. They persist across reboots: on every boot the robot re-sends the saved values to the firmware. (The firmware itself has no storage, so it runs its built-in defaults only for the brief moment before the controller reconnects, then re-validates and clamps the values you saved.)",
     "wheelVelocityPid": "Wheel Velocity PID",
     "wheelVelocityPidDescription": "Closed-loop gains the STM32 firmware uses to track each wheel's commanded speed. Higher Kp/Ki give stiffer tracking; too high causes oscillation or overshoot. Kd is normally 0.",
+    "wheelVelocityPidDescriptionGeneric": "Closed-loop gains the motor controller firmware uses to track each wheel's commanded speed. Higher Kp/Ki give stiffer tracking; too high causes oscillation or overshoot. Kd is normally 0.",
     "kpTooltip": "Proportional gain (PWM per m/s)",
     "kiTooltip": "Integral gain (PWM per m/s·s) — bridges the static-friction deadband",
     "kdTooltip": "Derivative gain (PWM per m/s²) — 0 disables",
@@ -2499,8 +2542,10 @@
   "settingsSafety": {
     "alertMessage": "Safety settings protect the robot and its surroundings",
     "alertDescription": "The STM32 firmware is the sole safety authority: it cuts the blade on lift, tilt and emergency stop, and none of that is configurable from this page. There is nothing to edit here.",
+    "alertDescriptionGeneric": "The motor controller firmware is the sole safety authority: it cuts the blade on lift, tilt and emergency stop, and none of that is configurable from this page. There is nothing to edit here.",
     "firmwareOwnedTitle": "Handled by the firmware",
     "firmwareOwnedDescription": "Lift and tilt detection, the emergency-stop latch and the blade cut-out all live in the STM32 firmware, which decides on its own physical thresholds. The GUI cannot relax, delay or bypass any of them, so no control is offered here.",
+    "firmwareOwnedDescriptionGeneric": "Lift and tilt detection, the emergency-stop latch and the blade cut-out all live in the motor controller firmware, which decides on its own physical thresholds. The GUI cannot relax, delay or bypass any of them, so no control is offered here.",
     "temperatureThresholdsNote": "Blade-motor temperature is measured and reported only — no layer of the stack stops the blade on temperature. The warning and error thresholds used by the diagnostics (motor_temp_warn_c and motor_temp_error_c, in mowgli_monitoring/config/diagnostics.yaml) can be edited on the Parameters page."
   },
   "settingsObstacles": {
@@ -3012,8 +3057,8 @@
     "zoneProgress": "Zone progress",
     "pause": "Pause",
     "home": "Home",
-    "mowgliIsParked": "Mowgli is parked",
-    "mowgliIsReady": "Mowgli is ready",
+    "mowgliIsParked": "{{robotName}} is parked",
+    "mowgliIsReady": "{{robotName}} is ready",
     "outOnLawnPrefix": "Out on the lawn at ",
     "allRestedPrefix": "All rested at ",
     "idleOffDockHint": "Tap Home to send the robot back to the dock, or Start to mow from here.",
@@ -3427,7 +3472,10 @@
     "topicsDescription": "Full JSON schema and command codes are documented in docs/MQTT_CONTROL.md."
   },
   "settingsSections": {
-    "updates": {"label": "Updates", "description": "Installed versions, update sources and recovery"},
+    "updates": {
+      "label": "Updates",
+      "description": "Installed versions, update sources and recovery"
+    },
     "appearance": {
       "label": "Appearance",
       "description": "Visual richness, energy use and timestamp display on this device"
@@ -3484,7 +3532,10 @@
       "label": "Rain",
       "description": "Rain detection behavior and delay"
     },
-    "notifications": {"label": "Notifications", "description": "Push messages to your phone: zone start/finish, stuck, emergency, rain, battery"},
+    "notifications": {
+      "label": "Notifications",
+      "description": "Push messages to your phone: zone start/finish, stuck, emergency, rain, battery"
+    },
     "irrisense": {
       "label": "IrriSense",
       "description": "Soil moisture from your IrriSense Cloud garden: skip scheduled mows on wet grass"
@@ -3611,11 +3662,9 @@
     "imageReference": "image reference",
     "reviewCustom": "Review custom images",
     "customInstallAccept": "Install this custom mix. I understand the risks and have recovery access.",
-
     "built": "Built",
     "published": "Published",
     "buildDatesHelp": "Built is the installed image timestamp; Published is when the release was published.",
-
     "componentSourceHelp": "Choose compatible component versions from published releases in the same repository and branch. For another repository, branch image or Docker tag, use Custom images.",
     "summaryUnknown": "Unknown",
     "summaryCustom": "Custom",
@@ -3641,8 +3690,11 @@
     "noCompatibleComponent": "No compatible alternative is published for this component.",
     "componentReview": "{{component}}: custom version {{version}}",
     "diagnostics": "Diagnostics and manual image comparison",
-    "compatibility": {"source": "Different source", "contract": "Incompatible contract", "platform": "Unavailable for this platform"},
-
+    "compatibility": {
+      "source": "Different source",
+      "contract": "Incompatible contract",
+      "platform": "Unavailable for this platform"
+    },
     "selectionPending": "Installer hardware choices have changed. Review installation to apply the container changes.",
     "selectionHelp": "Containers follow your saved installer hardware choices.",
     "hardware": {
@@ -3669,8 +3721,19 @@
     "returnMatched": "Review matched release",
     "mixedReview": "Custom combination: GUI {{version}}; other components use the base release.",
     "observedAt": "Docker observed: {{time}}",
-    "identities": {"matched": "Matched release", "mixed": "Custom mix", "drifted": "Installation changed", "custom": "Existing/custom installation", "unverified": "Installed version unverified", "unknown": "Installed version unavailable"},
-    "health": {"healthy": "Running / checks passing", "degraded": "Stopped or unhealthy", "unknown": "Unknown"},
+    "identities": {
+      "matched": "Matched release",
+      "mixed": "Custom mix",
+      "drifted": "Installation changed",
+      "custom": "Existing/custom installation",
+      "unverified": "Installed version unverified",
+      "unknown": "Installed version unavailable"
+    },
+    "health": {
+      "healthy": "Running / checks passing",
+      "degraded": "Stopped or unhealthy",
+      "unknown": "Unknown"
+    },
     "resetSource": "Reset changes",
     "agentNotice": "An update to the host updater is available",
     "title": "Updates and recovery",
@@ -3750,5 +3813,276 @@
     "componentsToUpdate": "Components",
     "backupHelp": "Settings and maps are backed up before installation. Mainboard firmware is unchanged.",
     "unavailableHelp": "Automatic updates need the host updater installed. Advanced contains installed versions and manual image comparisons."
+  },
+  "datum": {
+    "setFromGps": "Set datum from current GPS fix",
+    "openPositioning": "Enter manually in Settings",
+    "setFromGpsSuccess": "Datum set to {{lat}}, {{lon}}",
+    "unparseableReply": "The mower replied with an unexpected message: {{message}}"
+  },
+  "corrections": {
+    "label": "Corrections",
+    "sourceLabel": "Source",
+    "flowLabel": "Data flow",
+    "transportLabel": "Link",
+    "age": "Age",
+    "ageValue": "{{age}} s",
+    "ageUnknown": "—",
+    "noneConfigured": "No correction source",
+    "readinessCheck": "RTK corrections",
+    "readinessCtaLora": "Pair / power the LoRa base station",
+    "source": {
+      "ntrip": "NTRIP",
+      "lora": "LoRa base",
+      "none": "None"
+    },
+    "state": {
+      "active": "receiving data",
+      "waiting": "waiting for data",
+      "idle": "idle",
+      "inactive": "not active",
+      "stale": "data stale",
+      "staleWithAge": "data stale (age {{age}} s)",
+      "invalid": "invalid data",
+      "unavailable": "unavailable",
+      "error": "error",
+      "disabled": "disabled",
+      "unknown": "Unknown"
+    },
+    "transport": {
+      "unknown": "Unknown",
+      "disconnected": "Disconnected",
+      "connecting": "Connecting",
+      "connected": "Connected (no data yet)",
+      "streaming": "Streaming",
+      "reconnecting": "Reconnecting",
+      "failed": "Failed",
+      "radioNotObservable": "Radio link status not observable"
+    },
+    "lora": {
+      "title": "Correction source: LoRa base",
+      "intro": "RTK corrections come from a base station over a LoRa radio link. The robot only sees whether correction data reaches the receiver, not the radio link itself.",
+      "pairButton": "Pair base station",
+      "pairTitle": "Pair LoRa base station",
+      "pairIntro": "Enter the values printed on the base station or shown by its app. The robot's GNSS driver sends them to the radio board.",
+      "sn": "Base serial number",
+      "addr": "Radio address",
+      "channel": "Channel (1–75)",
+      "area": "Frequency region",
+      "areaAuto": "Automatic (from serial number)",
+      "pairSubmit": "Pair",
+      "pairSuccess": "Pairing request accepted. Corrections should arrive within a minute if the base station is powered.",
+      "pairRejected": "The GNSS driver did not accept the pairing request. Pairing may be disabled on this robot, or LoRa is not the active correction source.",
+      "pairFailed": "Pairing failed: {{error}}",
+      "ntripHidden": "NTRIP settings are hidden because corrections currently come from a LoRa base station.",
+      "showNtrip": "Show NTRIP settings",
+      "hideNtrip": "Hide NTRIP settings"
+    }
+  },
+  "robotProfiles": {
+    "AirseekersTron": {
+      "label": "Airseekers Tron",
+      "description": "ROS 2 port with three cameras, vision docking and LoRa RTK. Placeholder dimensions: measure before use."
+    },
+    "cameras": {
+      "left": "Left camera",
+      "right": "Right camera",
+      "rear": "Rear camera"
+    }
+  },
+  "perception": {
+    "title": "Perception",
+    "recheck": "Re-check",
+    "raw": "Raw",
+    "annotated": "Annotated",
+    "stopTile": "Stop this stream",
+    "startTile": "Start this stream",
+    "tilePaused": "Stream stopped",
+    "streamError": "Stream failed to load",
+    "detections": "Detections",
+    "obstacleClose": "Obstacle close",
+    "obstacleClear": "Path clear",
+    "noDetections": "No detection data yet",
+    "count": "Objects",
+    "classes": "Classes",
+    "maxScore": "Best confidence",
+    "camera": "Camera",
+    "pause": "Pause streams",
+    "fps": "Frames/s",
+    "quality": "JPEG quality",
+    "oneAtATime": "One stream at a time on small screens to spare the robot's CPU.",
+    "loadFailed": "Could not load the camera list from the backend.",
+    "noCameras": "No cameras are configured for this robot.",
+    "unavailable": "The camera stream server is not reachable.",
+    "hiddenPaused": "Streams are paused while this tab is hidden."
+  },
+  "profileGating": {
+    "navPerception": "Perception",
+    "perceptionSubtitle": "Live camera streams and detections",
+    "restartRequiredManual": "This robot's software cannot be restarted from here. Restart the robot (or its ROS 2 service) to apply the saved changes.",
+    "ledsUnavailable": "This robot has no status LED strip.",
+    "batteryReportedPercent": "This robot reports its own charge percentage. The displayed percentage comes from the robot, not from the voltage thresholds below.",
+    "anatomyCameras": "Cameras ({{count}})",
+    "anatomyCamerasLive": "{{live}}/{{total}} streaming"
+  },
+  "paramBindings": {
+    "notUsed": "Not used by this robot",
+    "notUsedTooltip": "Saved in the settings file, but nothing on this robot reads it: changing it has no effect.",
+    "groups": {
+      "Mission": "Mission",
+      "Teleop": "Manual driving"
+    },
+    "apply": {
+      "applied": "Applied to the running robot: {{keys}}",
+      "onRestart": "Takes effect after the next restart: {{keys}}",
+      "failed": "Saved, but not applied live: {{keys}}"
+    },
+    "catalog": {
+      "battery_low_percent": {
+        "label": "Low battery",
+        "description": "Below this charge the mower will not start and a running mow returns to the dock to charge."
+      },
+      "battery_full_percent": {
+        "label": "Charge until",
+        "description": "Charging holds until this level, then an interrupted mow resumes."
+      },
+      "rtk_timeout_s": {
+        "label": "RTK wait timeout",
+        "description": "How long a run waits for an RTK fixed solution before it is aborted and the mower docks."
+      },
+      "rain_mode": {
+        "label": "Rain mode",
+        "description": "0 ignores rain, 1 docks and waits for dry weather."
+      },
+      "rain_delay_minutes": {
+        "label": "Rain delay",
+        "description": "Dry time required before mowing resumes after rain."
+      },
+      "rain_debounce_s": {
+        "label": "Rain debounce",
+        "description": "The rain sensor must stay wet this long before it counts."
+      },
+      "undock_distance_m": {
+        "label": "Undock distance",
+        "description": "Distance driven away from the dock when leaving it."
+      },
+      "undock_speed_mps": {
+        "label": "Undock speed",
+        "description": "Speed used to drive off the dock."
+      },
+      "mow_angle_deg": {
+        "label": "Mowing angle",
+        "description": "Swath direction. A negative value lets the planner choose the angle with the fewest swaths."
+      },
+      "transit_gap_m": {
+        "label": "Transit gap",
+        "description": "Gaps in the mowing path longer than this are driven with the blade off."
+      },
+      "preflight_min_fix_type_docked": {
+        "label": "Minimum fix to start",
+        "description": "GNSS fix type needed to start a run from the dock (1 GPS, 3 RTK fixed)."
+      },
+      "rtk_fix_type": {
+        "label": "Required RTK fix",
+        "description": "Fix type the mower waits for before mowing."
+      },
+      "dock_timeout_s": {
+        "label": "Docking timeout",
+        "description": "Time allowed for one docking attempt."
+      },
+      "dock_use_vision": {
+        "label": "Vision docking",
+        "description": "Align on the dock marker with the rear camera."
+      },
+      "use_docking_server": {
+        "label": "Use docking server",
+        "description": "Dock and undock with the docking action server instead of plain navigation."
+      },
+      "require_blade_confirmation": {
+        "label": "Confirm blade start",
+        "description": "Wait for the motor board to report the blade running before following a path."
+      },
+      "follow_chunk_m": {
+        "label": "Path chunk length",
+        "description": "Long paths are sent to the controller in pieces of at most this length (0 = off)."
+      },
+      "boundary_recover_after_s": {
+        "label": "Boundary pause",
+        "description": "After a soft boundary violation while mowing, pause this long before recovering."
+      },
+      "boundary_max_recoveries": {
+        "label": "Boundary recoveries",
+        "description": "Recovery transits allowed per sub-path before it is skipped."
+      },
+      "mowing_desired_linear_vel": {
+        "label": "Mowing speed",
+        "description": "Target speed of the coverage controller while mowing."
+      },
+      "transit_desired_linear_vel": {
+        "label": "Transit speed",
+        "description": "Target speed of the controller between areas and to the dock."
+      },
+      "operation_width": {
+        "label": "Swath spacing",
+        "description": "Distance between neighbouring swaths: the cut width minus the overlap."
+      },
+      "approach_distance": {
+        "label": "Dock approach distance",
+        "description": "Staging point in front of the dock where the camera search starts."
+      },
+      "undock_max_speed": {
+        "label": "Undock top speed",
+        "description": "Speed limit of the docking server while leaving the dock."
+      },
+      "max_retries": {
+        "label": "Docking retries",
+        "description": "Docking attempts before giving up."
+      },
+      "correction_source": {
+        "label": "Correction source",
+        "description": "Where RTK corrections come from: lora (base station radio), ntrip (internet caster) or none."
+      },
+      "teleop_max_linear": {
+        "label": "Teleop speed limit",
+        "description": "The robot clamps manual driving to this speed; the joystick never asks for more."
+      },
+      "teleop_max_angular": {
+        "label": "Teleop turn rate limit",
+        "description": "The robot clamps manual turning to this rate; the joystick never asks for more."
+      }
+    }
+  },
+  "onboardingProfile": {
+    "stepDock": "Dock",
+    "dockTitle": "Dock position",
+    "dockIntro": "This robot finds its dock with a camera marker, so it only needs to know roughly where the dock is. Place the dock on the map, or park the robot on its dock and take its current position.",
+    "noDockerRestartHint": "This robot does not run in Docker, so the GUI cannot restart its ROS stack. Restart the robot (or its ROS service) to apply the new settings."
+  },
+  "logsRosout": {
+    "sourceLabel": "Log source",
+    "sourceContainers": "Containers",
+    "sourceRosout": "ROS log",
+    "allNodes": "All nodes",
+    "nodeFilter": "Filter by node",
+    "pause": "Pause",
+    "resume": "Resume ({{count}} new)",
+    "copy": "Copy",
+    "copied": "Copied {{count}} lines",
+    "copyFailed": "Could not copy to the clipboard",
+    "dockerUnavailable": "No Docker daemon on this host: showing the ROS log (/rosout) instead of container logs."
+  },
+  "visionDock": {
+    "title": "Dock position (vision docking)",
+    "description": "The robot drives to this position, then aligns on the dock marker with its camera. A rough position is enough.",
+    "heading": "Heading",
+    "notSet": "Dock position not set",
+    "placeOnMap": "Place dock on map",
+    "placeOnMapHint": "On the map: Edit Map, then Place dock point. Click where the dock is, set its heading, then Save Map.",
+    "setFromRobot": "Set dock = current robot pose",
+    "setFromRobotConfirmTitle": "Use the robot's current position?",
+    "setFromRobotConfirm": "The robot must be sitting on its dock. The stored dock heading is kept; set it on the map if needed.",
+    "setFromRobotDone": "Dock position saved",
+    "setFromRobotFailed": "Could not set the dock position",
+    "storedPose": "Stored at X {{x}} m, Y {{y}} m."
   }
 }

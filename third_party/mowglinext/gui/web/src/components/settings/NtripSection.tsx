@@ -7,6 +7,9 @@ import {useIsMobile} from "../../hooks/useIsMobile.ts";
 import {useThemeMode} from "../../theme/ThemeContext.tsx";
 import {NTRIP_PROVIDERS, NTRIP_PROVIDER_BY_ID, PUBLIC_SOURCETABLE_PROVIDERS, providerForHost, NtripProvider} from "./ntripProviders.ts";
 import {NtripStationMap, MapStation} from "./NtripStationMap.tsx";
+import {useGnssStatus} from "../../hooks/useGnssStatus.ts";
+import {deriveCorrectionSummary, isLoraCorrectionsSupported} from "../../utils/gpsStatus.ts";
+import {GnssCorrectionSourceCard} from "./GnssCorrectionSourceCard.tsx";
 
 const {Text, Paragraph} = Typography;
 
@@ -27,7 +30,37 @@ interface Props {
 // NtripSection: pick a provider, then a base station (from a map or list). The
 // caster host/port and free-network credentials are filled in automatically, so
 // the operator normally never types a host or a password.
-export const NtripSection: React.FC<Props> = ({values, onChange}) => {
+export const NtripSection: React.FC<Props> = (props) => {
+  const {t} = useTranslation();
+  const gnssStatus = useGnssStatus();
+  const [showNtrip, setShowNtrip] = useState(false);
+  // Corrections may come from a radio (LoRa) base instead of an NTRIP caster.
+  // TODO(robot-profile): also require useRobotProfile().features.lora_corrections.
+  const loraActive = isLoraCorrectionsSupported(gnssStatus);
+  if (!loraActive) {
+    return <NtripConfigCard {...props}/>;
+  }
+  return (
+    <>
+      <GnssCorrectionSourceCard summary={deriveCorrectionSummary(gnssStatus)}/>
+      <Alert
+        type="info"
+        showIcon
+        style={{marginBottom: 16}}
+        message={t("corrections.lora.ntripHidden")}
+        action={
+          <Button size="small" onClick={() => setShowNtrip((v) => !v)}>
+            {showNtrip ? t("corrections.lora.hideNtrip") : t("corrections.lora.showNtrip")}
+          </Button>
+        }
+      />
+      {showNtrip && <NtripConfigCard {...props}/>}
+    </>
+  );
+};
+
+// NtripConfigCard: the caster/provider/mountpoint editor.
+const NtripConfigCard: React.FC<Props> = ({values, onChange}) => {
   const guiApi = useApi();
   const {t} = useTranslation();
   const {colors} = useThemeMode();

@@ -150,6 +150,21 @@ func TestDBProvider_GetWithEnvFallback(t *testing.T) {
 	assert.Equal(t, "http://test:11311", string(val))
 }
 
+func TestDBProvider_RobotProfileEnvFallback(t *testing.T) {
+	t.Setenv("DB_PATH", t.TempDir())
+	db := NewDBProvider()
+
+	// No env and no default: callers fall through to the schema default.
+	t.Setenv("ROBOT_PROFILE", "")
+	_, err := db.Get("robot.profile")
+	assert.Error(t, err)
+
+	t.Setenv("ROBOT_PROFILE", "AirseekersTron")
+	val, err := db.Get("robot.profile")
+	require.NoError(t, err)
+	assert.Equal(t, "AirseekersTron", string(val))
+}
+
 func TestDBProvider_GetWithDefault(t *testing.T) {
 	dir := t.TempDir()
 	os.Setenv("DB_PATH", dir)

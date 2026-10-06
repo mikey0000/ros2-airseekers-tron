@@ -9,6 +9,7 @@ import {
 import {useTranslation} from "react-i18next";
 import {useThemeMode} from "../../theme/ThemeContext.tsx";
 import {useDiagnostics} from "../../hooks/useDiagnostics.ts";
+import {useGate} from "../../hooks/useProfileGates.ts";
 
 const {Text, Paragraph, Link} = Typography;
 
@@ -99,6 +100,8 @@ export const LocalizationSection: React.FC<Props> = ({values, onChange}) => {
     const {diagnostics} = useDiagnostics();
     const lidarDiag = useMemo(() => pickLidarDiagnostic(diagnostics ?? {}), [diagnostics]);
     const badge = lidarBadge(lidarDiag, lidarEnabled);
+    // No LiDAR on this robot: neither LiDAR group applies.
+    const hasLidar = useGate("feature:lidar");
 
     return (
         <div>
@@ -122,6 +125,7 @@ export const LocalizationSection: React.FC<Props> = ({values, onChange}) => {
                 }
             />
 
+            {hasLidar && <>
             {/* ── Group A: LiDAR for obstacle avoidance ─────────────────────── */}
             <Card
                 size="small"
@@ -201,6 +205,7 @@ export const LocalizationSection: React.FC<Props> = ({values, onChange}) => {
                     );
                 })}
             </Card>
+            </>}
 
             {/* ── Group C: Other yaw sources ──────────────────────────────── */}
             <Card

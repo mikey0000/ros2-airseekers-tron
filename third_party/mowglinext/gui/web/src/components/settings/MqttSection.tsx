@@ -3,6 +3,8 @@ import { Alert, Card, Col, Form, Input, InputNumber, Row, Space, Switch, Typogra
 import { WifiOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
+import { useRobotProfile } from "../../hooks/useRobotProfile.ts";
+import { defaultMqttTopicPrefix, UPSTREAM_MQTT_TOPIC_PREFIX } from "../../constants/profileGates.ts";
 
 const { Text, Paragraph } = Typography;
 
@@ -32,6 +34,18 @@ export const MqttSection: React.FC<Props> = ({
     // backend prunes any value equal to that default, so this MUST agree with
     // it — see the mqtt_enabled description in mower_config.schema.json.
     const enabled = values.mqtt_enabled ?? false;
+    // Stock robots publish under "mowgli"; other robots default to their
+    // profile id. The schema/bridge default stays "mowgli", so a non-stock
+    // default is written into the yaml when the bridge is switched on.
+    const { profile } = useRobotProfile();
+    const prefixDefault = defaultMqttTopicPrefix(profile);
+    const prefix = values.mqtt_topic_prefix || prefixDefault;
+    const handleEnabledChange = (v: boolean) => {
+        onChange("mqtt_enabled", v);
+        if (v && !values.mqtt_topic_prefix && prefixDefault !== UPSTREAM_MQTT_TOPIC_PREFIX) {
+            onChange("mqtt_topic_prefix", prefixDefault);
+        }
+    };
 
     const label = (key: string, text: string) => (
         <SettingFieldLabel
@@ -59,7 +73,7 @@ export const MqttSection: React.FC<Props> = ({
                     </div>
                     <Switch
                         checked={enabled}
-                        onChange={(checked) => onChange("mqtt_enabled", checked)}
+                        onChange={handleEnabledChange}
                         aria-label={t("settingsMqtt.bridge")}
                     />
                 </div>
@@ -142,7 +156,7 @@ export const MqttSection: React.FC<Props> = ({
                                         <Input
                                             value={values.mqtt_topic_prefix}
                                             onChange={(e) => onChange("mqtt_topic_prefix", e.target.value)}
-                                            placeholder="mowgli"
+                                            placeholder={prefixDefault}
                                         />
                                     </Form.Item>
                                 </Col>
@@ -156,10 +170,10 @@ export const MqttSection: React.FC<Props> = ({
                         </Paragraph>
                         <Space direction="vertical" size={2} style={{ width: "100%" }}>
                             <Text code style={{ fontSize: 12 }}>
-                                {(values.mqtt_topic_prefix || "mowgli")}/{"{status,power,emergency,high_level_status,gps,diagnostics,available}"}
+                                {prefix}/{"{status,power,emergency,high_level_status,gps,diagnostics,available}"}
                             </Text>
                             <Text code style={{ fontSize: 12 }}>
-                                {(values.mqtt_topic_prefix || "mowgli")}/command
+                                {prefix}/command
                             </Text>
                         </Space>
                     </Card>

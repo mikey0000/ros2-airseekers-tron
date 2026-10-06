@@ -6,11 +6,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	types2 "github.com/mowglinext/mowglinext/pkg/types"
 	"github.com/docker/docker/api/types"
+	dockerclient "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	types2 "github.com/mowglinext/mowglinext/pkg/types"
 	"github.com/samber/lo"
 	"io"
 	"log"
@@ -29,7 +30,7 @@ func ContainersRoutes(r *gin.RouterGroup, provider types2.IDockerProvider) {
 //
 // @Name list
 // @Summary list all containers
-// @Description list all containers
+// @Description list all containers; `available` is false (and the list empty) when the host has no reachable Docker daemon
 // @Tags containers
 // @Produce  json
 // @Success 200 {object} ContainerListResponse
@@ -39,10 +40,14 @@ func ContainerListRoutes(group *gin.RouterGroup, provider types2.IDockerProvider
 	group.GET("/", func(c *gin.Context) {
 		containers, err := provider.ContainerList(c.Request.Context())
 		if err != nil {
+			if IsDockerUnavailable(err) {
+				c.JSON(200, ContainerListResponse{Available: false, Containers: []Container{}})
+				return
+			}
 			c.JSON(500, ErrorResponse{Error: err.Error()})
 			return
 		}
-		c.JSON(200, ContainerListResponse{Containers: lo.Map(containers, func(container types.Container, idx int) Container {
+		c.JSON(200, ContainerListResponse{Available: true, Containers: lo.Map(containers, func(container types.Container, idx int) Container {
 			if container.Labels == nil {
 				container.Labels = map[string]string{}
 			}
@@ -58,6 +63,14 @@ func ContainerListRoutes(group *gin.RouterGroup, provider types2.IDockerProvider
 			}
 		})})
 	})
+}
+
+// IsDockerUnavailable reports whether err means "this host has no Docker
+// daemon to talk to" (no socket, daemon down) as opposed to a failing request
+// against a running daemon. Robots that run the stack natively hit the former
+// on every call, which is a configuration, not a fault.
+func IsDockerUnavailable(err error) bool {
+	return err != nil && dockerclient.IsErrConnectionFailed(err)
 }
 
 // ContainerCommandRoutes execute a command on a container

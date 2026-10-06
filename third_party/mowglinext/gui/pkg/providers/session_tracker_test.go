@@ -192,3 +192,29 @@ func TestSessionTracker_RecordsShortEmergency(t *testing.T) {
 		t.Fatalf("expected error status, got %q", got[0].Status)
 	}
 }
+
+// A mission pause (RTK lost, boundary pause, replanning) must not split the
+// session: repeated non-autonomous ticks in these states keep it open.
+func TestSessionTracker_PauseStatesDoNotSplitSession(t *testing.T) {
+	for _, pause := range []string{"PLANNING", "WAITING_FOR_RTK", "BOUNDARY_PAUSED"} {
+		t.Run(pause, func(t *testing.T) {
+			db := types.NewMockDBProvider()
+			s := newTrackerNoGoroutine(db)
+
+			s.OnHighLevelStatus(status(2, "MOWING", false))
+			s.sessionStart = time.Now().UTC().Add(-60 * time.Second)
+			s.OnHighLevelStatus(status(1, pause, false))
+			s.OnHighLevelStatus(status(1, pause, false))
+			if !s.inSession {
+				t.Fatalf("session closed during %s", pause)
+			}
+			s.OnHighLevelStatus(status(2, "MOWING", false))
+			s.OnHighLevelStatus(status(1, "IDLE_DOCKED", false))
+			s.OnHighLevelStatus(status(1, "IDLE_DOCKED", false))
+
+			if got := loadStoredSessions(t, db); len(got) != 1 {
+				t.Fatalf("expected 1 session across the %s pause, got %d", pause, len(got))
+			}
+		})
+	}
+}

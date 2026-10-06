@@ -68,7 +68,9 @@ import {yawFromQuaternion, rollFromQuaternion, pitchFromQuaternion, wrapDeg180} 
 import {useApi} from "../hooks/useApi.ts";
 import {useFusionGraphDiagnostics} from "../hooks/useFusionGraphDiagnostics.ts";
 import {useRosbag, RosbagRecording} from "../hooks/useRosbag.ts";
-import {isTronHidden} from "../tronFeatures.ts";
+import {useProfileGates} from "../hooks/useProfileGates.ts";
+import {useFeature} from "../hooks/useRobotProfile.ts";
+import {cameraFreshness} from "../utils/cameraFreshness.ts";
 import {useFirmwareDebugLogs} from "../hooks/useFirmwareDebugLogs.ts";
 import {useMowerAction} from "../components/MowerActions.tsx";
 import {useImu} from "../hooks/useImu.ts";
@@ -195,13 +197,24 @@ export const DiagnosticsPage = () => {
     const guiApi = useApi();
     const wheelRpm = useWheelRpm({wheelRadiusM: settings?.wheel_radius ?? 0.04475});
     const {stats: fusionStats} = useFusionGraphDiagnostics();
-    const rosbag = useRosbag(!isTronHidden('feature:rosbag'));
+    // Profile gates: a robot without Docker, an STM32 board, fusion_graph,
+    // calibrate_imu_yaw_node or a LiDAR gets no card or button that would
+    // drive them (constants/profileGates.ts).
+    const {profile, isVisible, isVisibleStrict} = useProfileGates();
+    const hasStm32 = useFeature('stm32_firmware');
+    const hasRosbag = isVisibleStrict('feature:rosbag');
+    const hasContainers = isVisible('feature:containers');
+    const hasFirmwareDebug = isVisible('feature:firmware_debug');
+    const hasFusionGraph = isVisible('feature:fusion_graph');
+    const hasImuYawCalibration = isVisible('feature:imu_yaw_calibration');
+    const hasLidar = isVisible('feature:lidar');
+    const rosbag = useRosbag(hasRosbag);
 
     // ── derived values ───────────────────────────────────────────────────────
 
     const batteryPercent = useMemo(
-        () => computeBatteryPercent(highLevelStatus.battery_percent, power.v_battery, settings),
-        [highLevelStatus.battery_percent, power.v_battery, settings],
+        () => computeBatteryPercent(highLevelStatus.battery_percent, power.v_battery, settings, profile.battery),
+        [highLevelStatus.battery_percent, power.v_battery, settings, profile.battery],
     );
 
     const gpsFix = useMemo(() => deriveGpsStatus(gnssStatus), [gnssStatus]);
@@ -217,7 +230,8 @@ export const DiagnosticsPage = () => {
     const pitch = pitchFromQuaternion(qx, qy, qz, qw);
     const poseZ = pose.pose?.pose?.position?.z ?? 0;
 
-    const allContainersOk = !snapshot?.containers?.length || snapshot.containers.every(c => c.state === "running");
+    // No Docker host: there are no containers to be unhealthy.
+    const allContainersOk = !hasContainers || !snapshot?.containers?.length || snapshot.containers.every(c => c.state === "running");
     const gpsAccuracy = displayHorizontalAccuracyM(gnssStatus);
     const gpsFixValid = gnssStatus.fix_valid ?? false;
     const gpsOk = gpsFixValid && gpsAccuracy !== undefined && gpsAccuracy <= 0.1;
@@ -325,10 +339,10 @@ export const DiagnosticsPage = () => {
         <Card size="small" style={{marginBottom: 12}}>
             <Flex wrap gap="small" align="center">
                 <Typography.Text type="secondary" style={{fontSize: 12, marginRight: 4}}>{t('diagnosticsPage.statusLabel')}</Typography.Text>
-                <HealthBadge
+                {hasContainers && <HealthBadge
                     label={allContainersOk ? t('diagnosticsPage.containersOk') : t('diagnosticsPage.containerProblem')}
                     color={allContainersOk ? "success" : "error"}
-                />
+                />}
                 <HealthBadge
                     label={t('diagnosticsPage.gpsBadge', {value: gpsFixType})}
                     color={gpsOk ? "success" : gpsWarn ? "warning" : "error"}
@@ -419,6 +433,7 @@ export const DiagnosticsPage = () => {
         imuYawDeg: yaw,
         imuOk: imuAlive,
         lidarOk: lidarEnabled === false ? false : (lidarStreaming ? true : undefined),
+        cameras: cameraFreshness(profile.cameras, diagnostics?.status, nowMs),
         // Mowgli is rear-axle drive: only the rear wheels are encoded (the
         // fronts are unencoded casters whose RPM is always 0).
         wheelLeftRpm: wheelRpm.rl,
@@ -481,9 +496,9 @@ export const DiagnosticsPage = () => {
     const sectionSystem = (
         <Row gutter={[12, 12]}>
             <Col span={24}>
-                <RobotAnatomy inputs={anatomyInputs}/>
+                <RobotAnatomy inputs={anatomyInputs} profile={profile}/>
             </Col>
-            <Col span={24}>
+            {hasContainers && <Col span={24}>
                 <Card
                     title={<Space><CloudServerOutlined/> {t('diagnosticsPage.containers')}</Space>}
                     size="small"
@@ -516,8 +531,13 @@ export const DiagnosticsPage = () => {
                         locale={{emptyText: t('diagnosticsPage.noContainerData')}}
                     />
                 </Card>
-            </Col>
-            <Col xs={24} lg={8}>
+            </Col>}
+            {!hasContainers && snapshotError && (
+                <Col span={24}>
+                    <Alert type="error" showIcon message={t('diagnosticsPage.snapshotErrorTitle')} description={snapshotError}/>
+                </Col>
+            )}
+            <Col xs={24} lg={hasFirmwareDebug ? 8 : 24}>
                 <Card title={<Space><DashboardOutlined/> CPU</Space>} size="small" style={{height: "100%"}}>
                     <Statistic
                         title={t('diagnosticsPage.cpuUsage')}
@@ -539,7 +559,7 @@ export const DiagnosticsPage = () => {
                     />
                 </Card>
             </Col>
-            <Col xs={24} lg={16}>
+            {hasFirmwareDebug && <Col xs={24} lg={16}>
                 <Card
                     size="small"
                     style={{height: "100%"}}
@@ -569,7 +589,7 @@ export const DiagnosticsPage = () => {
                                 {t("diagnosticsPage.firmwareDebugOffTitle")}
                             </Typography.Text>
                             <Typography.Text type="secondary">
-                                {t("diagnosticsPage.firmwareDebugOffBody")}
+                                {t(hasStm32 ? "diagnosticsPage.firmwareDebugOffBody" : "diagnosticsPage.firmwareDebugOffBodyGeneric")}
                             </Typography.Text>
                         </div>
                     ) : (
@@ -611,7 +631,7 @@ export const DiagnosticsPage = () => {
                         </div>
                     )}
                 </Card>
-            </Col>
+            </Col>}
             <Col span={24}>
                 <SystemPowerCard/>
             </Col>
@@ -747,7 +767,7 @@ export const DiagnosticsPage = () => {
     const rosbagActive = rosbag.status?.active ?? false;
     const rosbagRecordings = rosbag.status?.recordings ?? [];
 
-    const sectionRosbag = isTronHidden('feature:rosbag') ? null : (
+    const sectionRosbag = !hasRosbag ? null : (
         <Row gutter={[12, 12]}>
             <Col span={24}>
                 <Card
@@ -935,7 +955,7 @@ export const DiagnosticsPage = () => {
 
     // LiDAR map anchor (optional scan-to-map particle filter). null when the
     // running node predates it, in which case the tile group is not rendered.
-    const lidarAnchor = deriveLidarAnchor(fv);
+    const lidarAnchor = hasLidar ? deriveLidarAnchor(fv) : null;
     const LIDAR_ANCHOR_STATE_LABEL = {
         off: "diagnosticsPage.lidarAnchorStateOff",
         waitingForMap: "diagnosticsPage.lidarAnchorStateWaitingForMap",
@@ -953,7 +973,7 @@ export const DiagnosticsPage = () => {
         ? `${t(LIDAR_ANCHOR_STATE_LABEL[lidarAnchor.stateKey])}${lidarAnchor.isShadow ? ` ${t('diagnosticsPage.lidarAnchorShadowSuffix')}` : ""}`
         : null;
 
-    const sectionFusionGraph = (
+    const sectionFusionGraph = !hasFusionGraph ? null : (
         <Row gutter={[12, 12]}>
             <Col span={24}>
                 <Card
@@ -1555,7 +1575,7 @@ export const DiagnosticsPage = () => {
                             {dockCal?.present ? t('diagnosticsPage.present') : t('diagnosticsPage.missing')}
                         </Tag>
                     }
-                    actions={[
+                    actions={hasImuYawCalibration ? [
                         <Button
                             key="run"
                             size="small"
@@ -1566,7 +1586,7 @@ export const DiagnosticsPage = () => {
                         >
                             {t('diagnosticsPage.runCalibration')}
                         </Button>,
-                    ]}
+                    ] : undefined}
                 >
                     {dockCal?.present && !dockCal?.error ? (
                         <Descriptions size="small" column={1}>
@@ -1595,7 +1615,7 @@ export const DiagnosticsPage = () => {
                             {imuCal?.present ? t('diagnosticsPage.present') : t('diagnosticsPage.missing')}
                         </Tag>
                     }
-                    actions={[
+                    actions={hasImuYawCalibration ? [
                         <Button
                             key="run"
                             size="small"
@@ -1606,7 +1626,7 @@ export const DiagnosticsPage = () => {
                         >
                             {t('diagnosticsPage.runCalibration')}
                         </Button>,
-                    ]}
+                    ] : undefined}
                 >
                     {imuCal?.present && !imuCal?.error ? (
                         <Descriptions size="small" column={1}>
@@ -1629,7 +1649,7 @@ export const DiagnosticsPage = () => {
                         <Alert type="error" showIcon message={imuCal.error}/>
                     ) : (
                         <Typography.Text type="secondary" style={{fontSize: 12}}>
-                            {t('diagnosticsPage.noImuCalibration')}
+                            {t(hasStm32 ? 'diagnosticsPage.noImuCalibration' : 'diagnosticsPage.noImuCalibrationGeneric')}
                         </Typography.Text>
                     )}
                 </Card>
@@ -1643,7 +1663,7 @@ export const DiagnosticsPage = () => {
                             {magCal?.present ? t('diagnosticsPage.present') : t('diagnosticsPage.disabled')}
                         </Tag>
                     }
-                    actions={[
+                    actions={hasImuYawCalibration ? [
                         <Button
                             key="run"
                             size="small"
@@ -1654,7 +1674,7 @@ export const DiagnosticsPage = () => {
                         >
                             {t('diagnosticsPage.enableAndRun')}
                         </Button>,
-                    ]}
+                    ] : undefined}
                 >
                     {magCal?.present && !magCal?.error ? (
                         <Descriptions size="small" column={1}>
@@ -1959,11 +1979,11 @@ export const DiagnosticsPage = () => {
                             label: <Space><CompassOutlined/> {t('diagnosticsPage.tabLocalization')}</Space>,
                             children: sectionLocalization,
                         },
-                        {
+                        ...(sectionFusionGraph ? [{
                             key: "fusion_graph",
                             label: <Space><CompassOutlined/> {t('diagnosticsPage.fusionGraphShort')}</Space>,
                             children: sectionFusionGraph,
-                        },
+                        }] : []),
                         {
                             key: "heading_sources",
                             label: <Space><CompassOutlined/> {t('diagnosticsPage.headingSourcesShort')}</Space>,

@@ -247,3 +247,114 @@ def test_interface_msg_constants_match_logic():
     assert len(consts) == 29
     for name, value in consts.items():
         assert getattr(ll, name) == value, name
+
+
+# ------------------------------------------------------------------ CPU-lean engine
+def _encode_reference(buf, leds=ll.BUFFER_LEDS):
+    """The original per-bit encoder (libws_2812 rgb_to_send_buffer_all)."""
+    out = bytearray(ll.SPI_RESET_BYTES)
+    for i in range(leds):
+        for byte in buf[3 * i:3 * i + 3]:
+            for bit in range(7, -1, -1):
+                out.append(ll.SPI_BIT_ONE if (byte >> bit) & 1 else ll.SPI_BIT_ZERO)
+    out.extend(bytes(ll.SPI_RESET_BYTES))
+    return bytes(out)
+
+
+def test_table_encoder_equals_reference():
+    import random
+    rnd = random.Random(7)
+    for _ in range(50):
+        buf = bytes(rnd.randrange(256) for _ in range(180))
+        assert ll.encode_frame(buf) == _encode_reference(buf)
+        assert ll.decode_frame(ll.encode_frame(buf)) == buf
+    assert ll.encode_frame(bytes(range(256))[:180], 20) == _encode_reference(bytes(range(180)), 20)
+
+
+def test_fill_equals_set_pin():
+    a, b = px14(), px14()
+    for start, count in ((0, 28), (28, 27), (50, 20), (-3, 5)):
+        for i in range(count):
+            a.set_pin(start + i, ll.YELLOW, 77)
+        b.fill(start, count, ll.YELLOW, 77)
+        assert a.snapshot() == b.snapshot()
+
+
+def _wait_mode(eng, mode, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while eng.mode != mode and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return eng.mode == mode
+
+
+def test_static_pattern_sends_only_keepalives():
+    be = led_hw.FakeBackend()
+    eng = led_hw.LightEngine(be, px14(), initial_mode=ll.WARN_SENSOR_TRIGGED,
+                             frame_rate_hz=25.0, lane_rate_hz=20.0, keepalive_s=0.5)
+    eng.start()
+    try:
+        time.sleep(0.4)                            # render + send the red frame
+        n0 = len(be.frames)
+        time.sleep(1.2)
+        n1 = len(be.frames)
+        red = ll.decode_frame(be.last_frame)
+        assert all(tuple(red[3 * k:3 * k + 3]) == (0, 120, 0) for k in range(55))
+        assert 1 <= n1 - n0 <= 3                   # keep-alives only (0.5 s), not 25 Hz
+        # a static lane is woken by a request (no 20 Hz polling needed)
+        eng.request(ll.TASK_PAUSE)                 # yellow, priority 3 > 2: no preempt
+        deadline = time.monotonic() + 1.0
+        yellow = (120, 120, 0)
+        while time.monotonic() < deadline:
+            buf = ll.decode_frame(be.last_frame)
+            if tuple(buf[0:3]) == yellow and tuple(buf[3 * 30:3 * 30 + 3]) == yellow:
+                break
+            time.sleep(0.01)
+        buf = ll.decode_frame(be.last_frame)
+        assert tuple(buf[0:3]) == yellow and tuple(buf[3 * 30:3 * 30 + 3]) == yellow
+    finally:
+        eng.stop()
+
+
+def test_idle_breathing_frames_follow_table():
+    be = led_hw.FakeBackend()
+    eng = led_hw.LightEngine(be, px14(), initial_mode=ll.IDLE, frame_rate_hz=25.0,
+                             lane_rate_hz=20.0, keepalive_s=1.0)
+    eng.start()
+    try:
+        time.sleep(1.5)
+    finally:
+        eng.stop()
+    levels = set()
+    for f in be.frames[1:]:
+        buf = ll.decode_frame(f)
+        top, tail = buf[3 * 28:3 * 55], buf[0:3 * 28]
+        for area in (top, tail):
+            px = {tuple(area[i:i + 3]) for i in range(0, len(area), 3)}
+            assert len(px) == 1                   # whole area one white level
+            v = px.pop()
+            assert v[0] == v[1] == v[2]
+            levels.add(v[0])
+    assert levels <= set(ll.RESPIRATION_LAMP_TABLE)
+    assert len(levels) >= 10                      # it is breathing
+    assert 20 <= len(be.frames) <= 1.5 * 25 + 3   # capped at frame_rate_hz
+
+
+def test_power_on_then_interrupt_preempts_running_pattern():
+    be = led_hw.FakeBackend()
+    eng = led_hw.LightEngine(be, px14(), initial_mode=ll.POWER_ON, frame_rate_hz=50.0,
+                             lane_rate_hz=20.0)
+    eng.start()
+    try:
+        assert _wait_mode(eng, ll.IDLE)
+        time.sleep(0.3)                            # breathing (interruptible waits)
+        t0 = time.monotonic()
+        eng.request(ll.ROBOT_UNUSUAL)              # red flicker, prio 2: preempts Idle
+        red = (0, 120, 0)
+        while time.monotonic() - t0 < 1.0:
+            buf = ll.decode_frame(be.last_frame)
+            if tuple(buf[3 * 28:3 * 28 + 3]) == red and tuple(buf[0:3]) == red:
+                break
+            time.sleep(0.005)
+        assert time.monotonic() - t0 < 0.3
+    finally:
+        eng.stop()

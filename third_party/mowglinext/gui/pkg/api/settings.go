@@ -1377,7 +1377,7 @@ func GetSettingsYAMLDefaults(r *gin.RouterGroup, dbProvider types.IDBProvider) g
 // @Accept json
 // @Produce json
 // @Param settings body map[string]interface{} true "flat key-value settings map"
-// @Success 200 {object} OkResponse
+// @Success 200 {object} SettingsSaveResponse
 // @Failure 400 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /settings/yaml [post]
@@ -1440,6 +1440,24 @@ func PostSettingsYAML(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRou
 		// also how "reset to default" persists — the field is written with
 		// its default value from the form, and pruned here.
 		prunedKeys := sparsifyFlat(existing, defaults)
+		// An explicit null delete must also leave the nested output:
+		// nestToROS2YAML clones the on-disk tree and would resurrect it.
+		for key, value := range payload {
+			if value == nil {
+				prunedKeys[key] = true
+			}
+		}
+		// A robot profile with a settings -> ROS parameter binding table
+		// (param_bindings.go) keeps explicitly saved bound keys even at the
+		// schema default: its stack falls back to its own package default,
+		// not the schema's, when the key is absent.
+		profileID := saveProfileID(dbProvider, payload)
+		if table, ok := paramBindingTableFor(profileID); ok {
+			for key, value := range pinnedBoundValues(table, payload) {
+				existing[key] = value
+				delete(prunedKeys, key)
+			}
+		}
 		// Retired keys have no schema default left, so sparsifyFlat cannot see
 		// them — scrub them explicitly (issue #195).
 		for key := range retiredParamKeys {
@@ -1480,6 +1498,8 @@ func PostSettingsYAML(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRou
 		}
 
 		log.Printf("Saved mowgli_robot.yaml (%d bytes)", len(out)+len(header))
-		c.JSON(200, OkResponse{})
+		c.JSON(200, SettingsSaveResponse{
+			ParamBindings: applyParamBindingsAfterSave(c, profileID, payload),
+		})
 	})
 }

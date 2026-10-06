@@ -4,7 +4,8 @@ import {useEmergency} from "../hooks/useEmergency.ts";
 import {usePower} from "../hooks/usePower.ts";
 import {useGnssStatus} from "../hooks/useGnssStatus.ts";
 import {useSettings} from "../hooks/useSettings.ts";
-import {computeBatteryPercent} from "../utils/battery.ts";
+import {useRobotProfile} from "../hooks/useRobotProfile.ts";
+import {computeBatteryPercentOrNull} from "../utils/battery.ts";
 import {deriveGpsStatus} from "../utils/gpsStatus.ts";
 import {PowerMenu} from "./PowerMenu.tsx";
 import {useMowerAction} from "./MowerActions.tsx";
@@ -37,6 +38,7 @@ export const MowerStatus = () => {
     const power = usePower();
     const gnss = useGnssStatus();
     const {settings} = useSettings();
+    const {profile} = useRobotProfile();
 
     // Derive state with fallbacks
     const isEmergency = highLevelStatus.emergency ?? emergencyData.active_emergency ?? false;
@@ -60,8 +62,8 @@ export const MowerStatus = () => {
         gpsStatus.fixType === "GPS_FIX" ? colors.warning :
         colors.danger;
 
-    const batteryPercent = computeBatteryPercent(
-        highLevelStatus.battery_percent, power.v_battery, settings,
+    const batteryPercent = computeBatteryPercentOrNull(
+        highLevelStatus, power.v_battery, settings, profile.battery,
     );
 
     const isMowing = stateNum === 2 || stateNum === 3 || stateNum === 4;
@@ -160,7 +162,7 @@ export const MowerStatus = () => {
                                 fontSize: 13,
                             }}/>
                             <Typography.Text style={{fontSize: 12, color: colors.text}}>
-                                {batteryPercent}%
+                                {batteryPercent == null ? "--" : `${batteryPercent}%`}
                             </Typography.Text>
                         </Space>
                     </Button>

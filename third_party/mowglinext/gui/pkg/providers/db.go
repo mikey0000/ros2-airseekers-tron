@@ -39,6 +39,9 @@ var EnvFallbacks = map[string]string{
 	// Tron port: lets a headless deploy skip the onboarding wizard
 	// (read by GET /api/settings/status) without writing the DB first.
 	"onboarding.completed": "ONBOARDING_COMPLETED",
+	// Robot profile used until mowgli_robot.yaml sets mower_model
+	// (read by GET /api/robot/profile).
+	"robot.profile": "ROBOT_PROFILE",
 }
 var Defaults = map[string]string{
 	"system.api.addr":             ":4006",

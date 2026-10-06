@@ -3,13 +3,16 @@ import { Card, Descriptions, Space, Tag, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 import { GnssStatus, GnssStatusConstants } from "../../types/ros.ts";
 import {
+    correctionAgeLabel,
+    correctionSummaryLabel,
+    correctionTransportLabel,
+    deriveCorrectionSummary,
     deriveGpsStatus,
-    gnssCorrectionStreamStatusLabel,
     gnssReceiverLabel,
     hasGnssCapability,
 } from "../../utils/gpsStatus.ts";
 import {
-    correctionStreamTagColor,
+    correctionToneTagColor,
     liveStatusTagColor,
     rtkModeTagColor,
 } from "./gnssPresentation.ts";
@@ -33,7 +36,15 @@ export const GnssLiveStatusSummaryCard: React.FC<Props> = ({
     const receiverFamily = normalizeGnssString(selectedReceiverFamily) || "auto";
     const receiverLabel = detectedReceiver !== "GNSS" ? detectedReceiver : receiverFamily;
     const backendLabel = normalizeGnssString(gnssStatus?.backend) || unknownLabel;
-    const correctionStreamLabel = gnssCorrectionStreamStatusLabel(gnssStatus) ?? unknownLabel;
+    const corrections = deriveCorrectionSummary(gnssStatus);
+    const correctionsTitle = corrections.origin === "stream"
+        ? t("settingsGnssLiveStatus.correctionStream")
+        : t("corrections.label");
+    const correctionsDetail = corrections.origin === "typed" && corrections.source !== "none"
+        ? [correctionTransportLabel(corrections), `${t("corrections.age")} ${correctionAgeLabel(corrections)}`]
+            .filter(Boolean)
+            .join(" · ")
+        : undefined;
     const rtkModeLabel = (() => {
         if (!hasGnssCapability(gnssStatus, GnssStatusConstants.CAP_RTK_MODE)) {
             return unknownLabel;
@@ -64,10 +75,17 @@ export const GnssLiveStatusSummaryCard: React.FC<Props> = ({
                         <Tag color={rtkModeTagColor(gnssStatus?.rtk_mode)}>{rtkModeLabel}</Tag>
                     </Space>
                     <Space size={4}>
-                        <Text type="secondary">{t("settingsGnssLiveStatus.correctionStream")}</Text>
-                        <Tag color={correctionStreamTagColor(gnssStatus?.correction_stream_status)}>{correctionStreamLabel}</Tag>
+                        <Text type="secondary">{correctionsTitle}</Text>
+                        <Tag color={correctionToneTagColor(corrections.tone)} data-testid="gnss-corrections-tag">
+                            {correctionSummaryLabel(corrections)}
+                        </Tag>
                     </Space>
                 </Space>
+                {correctionsDetail && (
+                    <Text type="secondary" style={{ fontSize: 12 }} data-testid="gnss-corrections-detail">
+                        {correctionsDetail}
+                    </Text>
+                )}
 
                 <Descriptions size="small" column={{ xs: 1, sm: 2 }}>
                     <Descriptions.Item label={t("settingsGnssLiveStatus.detectedReceiver")}>

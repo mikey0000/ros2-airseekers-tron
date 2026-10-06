@@ -39,12 +39,12 @@ const DEFAULTS: RobotGeometry = {
  *   - base_link visual <box size="L W H"/> for chassis dimensions
  *   - base_link visual <origin xyz="cx 0 ..."/> for chassis center offset
  *   - left_wheel_joint <origin xyz="xoff y 0"/> for wheel offset and track
- *   - left_wheel_link <cylinder radius="R" length="W"/> for wheel size
+ *   - left_wheel_joint's child link <cylinder radius="R" length="W"/> for wheel size
  *   - blade_link <cylinder radius="R"/> for blade radius
  *   - front_left_caster_joint <origin xyz="x y z"/> for caster position
  *   - front_left_caster_link <cylinder radius="R"/> for caster radius
  */
-const parseUrdf = (xml: string): RobotGeometry => {
+export const parseUrdf = (xml: string): RobotGeometry => {
     const result = { ...DEFAULTS };
 
     try {
@@ -64,6 +64,19 @@ const parseUrdf = (xml: string): RobotGeometry => {
                 }
             }
             return null;
+        };
+
+        // Helper: resolve the child link name of a <joint name="...">, so URDFs
+        // that name the link differently (e.g. "left_wheel") still resolve.
+        const jointChild = (jointName: string, fallback: string): string => {
+            const joints = doc.getElementsByTagName("joint");
+            for (let i = 0; i < joints.length; i++) {
+                if (joints[i].getAttribute("name") === jointName) {
+                    const child = joints[i].getElementsByTagName("child")[0];
+                    return child?.getAttribute("link") || fallback;
+                }
+            }
+            return fallback;
         };
 
         // Helper: find first <cylinder> inside a <link name="..."> visual
@@ -119,14 +132,14 @@ const parseUrdf = (xml: string): RobotGeometry => {
         }
 
         // Wheel dimensions from link cylinder
-        const wheelCyl = linkCylinder("left_wheel_link");
+        const wheelCyl = linkCylinder(jointChild("left_wheel_joint", "left_wheel_link"));
         if (wheelCyl) {
             result.wheelRadius = wheelCyl.radius;
             result.wheelWidth = wheelCyl.length;
         }
 
         // Blade radius
-        const bladeCyl = linkCylinder("blade_link");
+        const bladeCyl = linkCylinder(jointChild("blade_joint", "blade_link"));
         if (bladeCyl) {
             result.bladeRadius = bladeCyl.radius;
         }
@@ -137,7 +150,7 @@ const parseUrdf = (xml: string): RobotGeometry => {
             result.casterXOffset = casterOrigin[0];
             result.casterTrack = Math.abs(casterOrigin[1]) * 2;
         }
-        const casterCyl = linkCylinder("front_left_caster_link");
+        const casterCyl = linkCylinder(jointChild("front_left_caster_joint", "front_left_caster_link"));
         if (casterCyl) {
             result.casterRadius = casterCyl.radius;
         }

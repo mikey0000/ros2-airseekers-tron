@@ -10,7 +10,7 @@ own container, `mower_gui`, next to `mower_humble`.
 | Image build | `gui/Dockerfile` (context `third_party/mowglinext/gui`), `gui/build.sh` |
 | Compose overlay | `docker/docker-compose.gui.yml` |
 | GUI settings file | `config/gui/mowgli_robot.yaml` |
-| Tron feature flags | `third_party/mowglinext/gui/web/src/tronFeatures.ts` |
+| Profile gating | `third_party/mowglinext/gui/web/src/constants/profileGates.ts` (+ `robotProfiles.ts`) |
 | ROS-side adapter | `src/mower_gui_bridge/` — see `src/mower_gui_bridge/README.md` |
 
 ## Build and run
@@ -99,28 +99,47 @@ Known gaps / notes:
   updater, remote access, firmware flashing, container restarts) still exist
   and return errors when called — there is no docker socket or openocd.
 
-## Hidden pages (Tron trim)
+## Profile gating (Tron trim)
 
-`web/src/tronFeatures.ts` exports `TRON_HIDDEN_PAGES`; each upstream file got a
-one-line `isTronHidden(...)` check, nothing was deleted. Hidden:
+What the GUI shows is decided at runtime by the active robot profile
+(`web/src/constants/robotProfiles.ts`), not by a build flag. The profile is
+`mower_model` from `mowgli_robot.yaml`, else the `ROBOT_PROFILE` env fallback
+(`pkg/providers/db.go`; `docker/docker-compose.gui.yml` sets
+`ROBOT_PROFILE=AirseekersTron`), else the schema default. `GET /api/robot/profile`
+reports it. A stock MowgliNext robot has every feature, so it sees exactly the
+upstream UI; Tron switches off the features it lacks and the matching UI
+disappears. Nothing was deleted, only not rendered.
 
-| Id | What | Why |
-|----|------|-----|
-| `/onboarding` | onboarding wizard route + nav entry (and the redirect to it) | its firmware/GNSS steps shell out to openocd/platformio/docker |
-| `settings:updates` | Settings → Updates (host updater) | docker image pulls |
-| `settings:remote_access` | Settings → Remote access (Tailscale sidecar) | creates a container over the docker socket |
-| `settings:drive_motor` | Settings → Drive motor (FF / PID auto-tuning) | `docker exec mowgli-ros2`; Tron motor params live elsewhere |
-| `feature:firmware_flash` | dashboard "flash firmware" CTA | openocd |
-| `feature:gnss_configurator` | GNSS receiver plan/apply/factory-reset card (Settings → Positioning, expert mode) | `mowgli-gps` container |
-| `feature:host_updater` | running-version footer in the side rail / "More" sheet | host updater |
-| `feature:rosbag` | Diagnostics → rosbag recorder | `docker exec mowgli-ros2` |
+`web/src/constants/profileGates.ts` maps each gate id to the features it needs
+(`useProfileGates()` / `useGate()` in the components, `navItems.ts` for the nav).
+Gates hidden on Tron:
 
-Hidden settings sections keep their keys "claimed", so they do not leak into
-Settings → Advanced. Build-time switches: `VITE_TRON_FEATURES=0` restores stock
-upstream behaviour, `VITE_SKIP_ONBOARDING=1` (default in `gui/Dockerfile`)
-disables the onboarding redirect. Independently, the backend reports
-onboarding complete when `ONBOARDING_COMPLETED=true` (added to `EnvFallbacks`
-in `pkg/providers/db.go`; read by `GET /api/settings/status`).
+| Id | What | Needs |
+|----|------|-------|
+| `settings:updates` | Settings → Updates (host updater) | `docker_host` |
+| `settings:remote_access` | Settings → Remote access (Tailscale sidecar) | `docker_host` |
+| `settings:drive_motor` | Settings → Drive motor (FF / PID auto-tuning) | `drive_tuning` |
+| `settings:leds` | Settings → LEDs | `status_leds` |
+| `feature:firmware_flash` | dashboard "flash firmware" CTA | `stm32_firmware` |
+| `feature:firmware_debug` | Diagnostics firmware-debug card | `stm32_firmware` |
+| `feature:gnss_configurator` | GNSS receiver plan/apply/factory-reset card | `gnss_sidecar` |
+| `feature:host_updater` | running-version footer / updates links | `docker_host` |
+| `feature:rosbag`, `feature:containers`, `feature:restart_ros2` | Diagnostics rosbag, container table, Settings "Restart ROS2" | `docker_host` |
+| `feature:lidar` | LiDAR settings, scan / LiDAR-map layers | `lidar` |
+| `feature:fusion_graph`, `feature:imu_yaw_calibration`, `feature:dock_calibration` | their diagnostics / buttons / wizard | the same-named feature |
+
+`/perception` is the reverse: additive, shown only with `cameras`. The onboarding
+wizard is no longer gated: it is profile-aware and skips the firmware / GNSS
+receiver steps on a robot without them. Hidden settings sections keep their
+keys "claimed", so they do not leak into Settings → Advanced. Strings that name
+the robot use `useRobotName()`; STM32-specific wording is chosen with
+`useFeature('stm32_firmware')`.
+
+The only build-time switch left is `VITE_SKIP_ONBOARDING=1` (default in
+`gui/Dockerfile`), which disables the first-run redirect to the wizard.
+Independently, the backend reports onboarding complete when
+`ONBOARDING_COMPLETED=true` (added to `EnvFallbacks` in `pkg/providers/db.go`;
+read by `GET /api/settings/status`).
 
 Other upstream Tron edits: `third_party/mowglinext/gui/.dockerignore` excludes
 the 40 MB `openmower-gui` artifact.
@@ -164,10 +183,24 @@ from the GUI (Settings or the "set datum" button, which calls
 `/navsat_to_absolute_pose/set_datum`) unless the navsat config is changed to
 match — edit both files together and restart the stack.
 
+## GUI changes for upstreaming
+
+The GUI work is being prepared as upstream PRs to MowgliNext; the plan, the
+task table (T01-T43) and the PR grouping are in `docs/gui_tasklist.md`. Done in
+the vendored tree so far, by PR group: PR-1 generic bugs (route error element /
+404, battery percent, scheduler and session fixes), PR-2 profile foundation
+(`robotProfiles.ts`, `profileGates.ts`, `useRobotName`, vendor-neutral strings),
+PR-3 Tron profile and hardware gating, PR-4 GNSS corrections presentation, PR-5
+camera perception (`/perception`), PR-6 settings-to-ROS parameter bindings, PR-7
+docking and datum (vision dock, dock-point rejection surfaced by the API), PR-8
+ops (rosout logs page, diagnostics without Docker), plus the profile-aware
+onboarding wizard (T42). Each group still has to be extracted onto its own
+branch off the upstream commit.
+
 ## Licence
 
 The GUI is GPLv3 (`third_party/mowglinext/LICENSE`). The image and our
-modifications (`tronFeatures.ts`, the flag checks, the `db.go` env fallback,
+modifications (the profile gating, the flag checks, the `db.go` env fallback,
 `gui/Dockerfile`) are a derivative work: if the image or the mower firmware
 containing it is **distributed** to anyone, the complete corresponding source
 (including these modifications and build scripts) must be offered under GPLv3.

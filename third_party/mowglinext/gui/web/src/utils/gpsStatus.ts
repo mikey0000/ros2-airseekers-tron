@@ -115,7 +115,11 @@ export function gnssBaselineSolutionStatusLabel(gnssStatus: GnssStatus | undefin
 }
 
 export function gnssCorrectionStreamStatusLabel(gnssStatus: GnssStatus | undefined | null): string | undefined {
-    switch (gnssStatus?.correction_stream_status) {
+    return correctionStreamStatusLabel(gnssStatus?.correction_stream_status);
+}
+
+function correctionStreamStatusLabel(status: number | undefined): string | undefined {
+    switch (status) {
         case GnssStatusConstants.CORRECTION_STREAM_STATUS_UNKNOWN:
             return i18n.t("gpsStatus.correctionStreamUnknown");
         case GnssStatusConstants.CORRECTION_STREAM_STATUS_IDLE:
@@ -435,4 +439,291 @@ export function gnssReceiverLabel(gnssStatus: GnssStatus | undefined | null): st
     }
 
     return "GNSS";
+}
+
+// ── GNSS correction summary ─────────────────────────────────────────────
+//
+// GnssStatus carries two generations of correction telemetry:
+//   * the source-owned fields (correction_source, correction_flow_status,
+//     correction_transport_status, corrections_active, correction_age_s),
+//     gated by CAP_CORRECTION_FLOW / CAP_CORRECTION_TRANSPORT /
+//     CAP_CORRECTIONS_ACTIVE / CAP_CORRECTION_AGE;
+//   * the legacy diagnostics-derived correction_stream_status, gated by
+//     CAP_CORRECTION_STREAM.
+// deriveCorrectionSummary folds both into one source-agnostic view (NTRIP,
+// a radio/LoRa base, or no corrections at all) that the cards and the
+// readiness check render. The source-owned fields win; the legacy stream
+// status is consulted only when CAP_CORRECTION_STREAM is set.
+
+/** Where RTCM corrections come from. "other" carries the raw string in `sourceRaw`. */
+export type CorrectionSource = "ntrip" | "lora" | "none" | "other" | "unknown";
+
+/** Coarse correction health, independent of the source. */
+export type CorrectionState =
+    | "active"
+    | "waiting"
+    | "idle"
+    | "inactive"
+    | "stale"
+    | "invalid"
+    | "unavailable"
+    | "error"
+    | "disabled"
+    | "unknown";
+
+export type CorrectionTone = "success" | "warning" | "error" | "neutral";
+
+export interface CorrectionSummary {
+    /** "typed": source-owned fields; "stream": legacy correction_stream_status; "none": nothing reported. */
+    origin: "typed" | "stream" | "none";
+    source: CorrectionSource;
+    /** Trimmed correction_source as published (may be empty). */
+    sourceRaw: string;
+    state: CorrectionState;
+    tone: CorrectionTone;
+    /** correction_flow_status when the sample carries a value for it. */
+    flowStatus?: number;
+    /** Legacy correction_stream_status when CAP_CORRECTION_STREAM is set and valued. */
+    streamStatus?: number;
+    /** correction_transport_status when the sample carries a value for it. */
+    transportStatus?: number;
+    /**
+     * The backend can report a transport but has no current value — e.g. a
+     * LoRa radio link that the host cannot observe. Render "not observable",
+     * not "unknown error".
+     */
+    transportUnobservable: boolean;
+    /** corrections_active when known. */
+    active?: boolean;
+    /** Correction age in seconds when known. */
+    ageS?: number;
+}
+
+const TYPED_CORRECTION_CAPABILITIES =
+    GnssStatusConstants.CAP_CORRECTION_FLOW |
+    GnssStatusConstants.CAP_CORRECTION_TRANSPORT |
+    GnssStatusConstants.CAP_CORRECTIONS_ACTIVE;
+
+function normalizeCorrectionSource(raw: string): CorrectionSource {
+    switch (raw.toLowerCase()) {
+        case "":
+            return "unknown";
+        case "ntrip":
+            return "ntrip";
+        case "lora":
+            return "lora";
+        case "none":
+            return "none";
+        default:
+            return "other";
+    }
+}
+
+function toneForCorrectionState(state: CorrectionState): CorrectionTone {
+    switch (state) {
+        case "active":
+            return "success";
+        case "waiting":
+        case "idle":
+        case "inactive":
+            return "warning";
+        case "stale":
+        case "invalid":
+        case "unavailable":
+        case "error":
+            return "error";
+        default:
+            return "neutral";
+    }
+}
+
+// Wire values are plain numbers; lookup tables avoid comparing them against the const enum.
+const CORRECTION_STATE_BY_FLOW: Record<number, CorrectionState> = {
+    [GnssStatusConstants.CORRECTION_FLOW_STATUS_ACTIVE]: "active",
+    [GnssStatusConstants.CORRECTION_FLOW_STATUS_WAITING]: "waiting",
+    [GnssStatusConstants.CORRECTION_FLOW_STATUS_IDLE]: "idle",
+    [GnssStatusConstants.CORRECTION_FLOW_STATUS_STALE]: "stale",
+    [GnssStatusConstants.CORRECTION_FLOW_STATUS_INVALID]: "invalid",
+};
+
+const TRANSPORT_LABEL_KEYS: Record<number, string> = {
+    [GnssStatusConstants.CORRECTION_TRANSPORT_STATUS_DISCONNECTED]: "corrections.transport.disconnected",
+    [GnssStatusConstants.CORRECTION_TRANSPORT_STATUS_CONNECTING]: "corrections.transport.connecting",
+    [GnssStatusConstants.CORRECTION_TRANSPORT_STATUS_CONNECTED]: "corrections.transport.connected",
+    [GnssStatusConstants.CORRECTION_TRANSPORT_STATUS_STREAMING]: "corrections.transport.streaming",
+    [GnssStatusConstants.CORRECTION_TRANSPORT_STATUS_RECONNECTING]: "corrections.transport.reconnecting",
+    [GnssStatusConstants.CORRECTION_TRANSPORT_STATUS_FAILED]: "corrections.transport.failed",
+};
+
+function stateFromFlow(flow: number): CorrectionState {
+    return CORRECTION_STATE_BY_FLOW[flow] ?? "unknown";
+}
+
+function stateFromStream(stream: number | undefined): CorrectionState {
+    switch (stream) {
+        case GnssStatusConstants.CORRECTION_STREAM_STATUS_ACTIVE:
+            return "active";
+        case GnssStatusConstants.CORRECTION_STREAM_STATUS_WAITING:
+            return "waiting";
+        case GnssStatusConstants.CORRECTION_STREAM_STATUS_IDLE:
+            return "idle";
+        case GnssStatusConstants.CORRECTION_STREAM_STATUS_UNAVAILABLE:
+            return "unavailable";
+        case GnssStatusConstants.CORRECTION_STREAM_STATUS_ERROR:
+            return "error";
+        default:
+            return "unknown";
+    }
+}
+
+/** Pure: no i18n. See CorrectionSummary for the field semantics. */
+export function deriveCorrectionSummary(gnssStatus: GnssStatus | undefined | null): CorrectionSummary {
+    const sourceRaw = gnssStatus?.correction_source?.trim() ?? "";
+    const source = normalizeCorrectionSource(sourceRaw);
+    const typed = ((gnssStatus?.capability_flags ?? 0) & TYPED_CORRECTION_CAPABILITIES) !== 0;
+    const hasStream = hasGnssCapability(gnssStatus, GnssStatusConstants.CAP_CORRECTION_STREAM);
+    const streamStatus = hasStream && hasGnssValue(gnssStatus, GnssStatusConstants.CAP_CORRECTION_STREAM)
+        ? gnssStatus?.correction_stream_status
+        : undefined;
+    const streamState = stateFromStream(streamStatus);
+
+    const base: CorrectionSummary = {
+        origin: "none",
+        source,
+        sourceRaw,
+        state: "unknown",
+        tone: "neutral",
+        transportUnobservable: false,
+    };
+
+    if (!typed) {
+        if (!hasStream) {
+            return base;
+        }
+        return {
+            ...base,
+            origin: "stream",
+            state: streamState,
+            tone: toneForCorrectionState(streamState),
+            streamStatus,
+        };
+    }
+
+    const flowStatus = hasGnssValue(gnssStatus, GnssStatusConstants.CAP_CORRECTION_FLOW)
+        ? gnssStatus?.correction_flow_status
+        : undefined;
+    const transportStatus = hasGnssValue(gnssStatus, GnssStatusConstants.CAP_CORRECTION_TRANSPORT)
+        ? gnssStatus?.correction_transport_status
+        : undefined;
+    const active = hasGnssValue(gnssStatus, GnssStatusConstants.CAP_CORRECTIONS_ACTIVE)
+        ? gnssStatus?.corrections_active
+        : undefined;
+    const rawAge = readGnssNumber(gnssStatus, GnssStatusConstants.CAP_CORRECTION_AGE, gnssStatus?.correction_age_s);
+    const ageS = rawAge !== undefined && Number.isFinite(rawAge) && rawAge >= 0 ? rawAge : undefined;
+    const transportUnobservable =
+        hasGnssCapability(gnssStatus, GnssStatusConstants.CAP_CORRECTION_TRANSPORT) && transportStatus === undefined;
+
+    let state: CorrectionState;
+    if (source === "none") {
+        state = "disabled";
+    } else if (flowStatus !== undefined) {
+        state = stateFromFlow(flowStatus);
+    } else if (active === true) {
+        state = "active";
+    } else if (active === false) {
+        state = "inactive";
+    } else {
+        state = "unknown";
+    }
+    // A failed transport explains a missing flow better than "waiting".
+    if (state !== "active" && state !== "disabled" &&
+        transportStatus === GnssStatusConstants.CORRECTION_TRANSPORT_STATUS_FAILED) {
+        state = "error";
+    }
+    // Typed fields present but silent: an older adapter may still mirror the legacy stream.
+    if (state === "unknown" && streamState !== "unknown") {
+        state = streamState;
+    }
+
+    return {
+        ...base,
+        origin: "typed",
+        state,
+        streamStatus,
+        tone: toneForCorrectionState(state),
+        flowStatus,
+        transportStatus,
+        transportUnobservable,
+        active,
+        ageS,
+    };
+}
+
+/**
+ * Whether the LoRa base-station card (status + pairing) applies.
+ *
+ * TODO(robot-profile): gate on `useRobotProfile().features.lora_corrections`
+ * once the profile hook lands; until then the live source is the signal.
+ */
+export function isLoraCorrectionsSupported(gnssStatus: GnssStatus | undefined | null): boolean {
+    return deriveCorrectionSummary(gnssStatus).source === "lora";
+}
+
+export function correctionSourceLabel(summary: CorrectionSummary): string | undefined {
+    switch (summary.source) {
+        case "ntrip":
+            return i18n.t("corrections.source.ntrip");
+        case "lora":
+            return i18n.t("corrections.source.lora");
+        case "none":
+            return i18n.t("corrections.source.none");
+        case "other":
+            return summary.sourceRaw;
+        default:
+            return undefined;
+    }
+}
+
+export function correctionAgeLabel(summary: CorrectionSummary): string {
+    return summary.ageS !== undefined
+        ? i18n.t("corrections.ageValue", {age: summary.ageS.toFixed(1)})
+        : i18n.t("corrections.ageUnknown");
+}
+
+export function correctionStateLabel(summary: CorrectionSummary): string {
+    if (summary.state === "stale" && summary.ageS !== undefined) {
+        return i18n.t("corrections.state.staleWithAge", {age: summary.ageS.toFixed(0)});
+    }
+    return i18n.t(`corrections.state.${summary.state}`);
+}
+
+export function correctionTransportLabel(summary: CorrectionSummary): string | undefined {
+    if (summary.transportStatus === undefined) {
+        if (!summary.transportUnobservable) {
+            return undefined;
+        }
+        return summary.source === "lora"
+            ? i18n.t("corrections.transport.radioNotObservable")
+            : i18n.t("corrections.transport.unknown");
+    }
+    return i18n.t(TRANSPORT_LABEL_KEYS[summary.transportStatus] ?? "corrections.transport.unknown");
+}
+
+/**
+ * One-line headline, e.g. "LoRa base · waiting for data". Legacy-only samples
+ * keep the established correction-stream wording.
+ */
+export function correctionSummaryLabel(summary: CorrectionSummary): string {
+    if (summary.origin === "none") {
+        return i18n.t("corrections.state.unknown");
+    }
+    if (summary.origin === "stream") {
+        return correctionStreamStatusLabel(summary.streamStatus) ?? i18n.t("gpsStatus.correctionStreamUnknown");
+    }
+    if (summary.source === "none") {
+        return i18n.t("corrections.noneConfigured");
+    }
+    const sourceLabel = correctionSourceLabel(summary);
+    const stateLabel = correctionStateLabel(summary);
+    return sourceLabel ? `${sourceLabel} · ${stateLabel}` : stateLabel;
 }

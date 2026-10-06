@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useRef, useState} from "react";
 import type {TwistStamped} from "../../../types/ros.ts";
 import type {IJoystickUpdateEvent} from "react-joystick-component/build/lib/Joystick";
+import {useTeleopLimits} from "./useTeleopLimits.ts";
 
 const JOY_SEND_INTERVAL_MS = 100;
 // How long a sustained non-MANUAL_MOWING state must persist before we tear
@@ -9,11 +10,11 @@ const JOY_SEND_INTERVAL_MS = 100;
 // joystick socket mid-drive — only a genuine, sustained exit should.
 const MANUAL_EXIT_DEBOUNCE_MS = 1200;
 // Teleop velocity caps — raw joystick values are in [-1, 1] (normalized by
-// react-joystick-component). Multiplied at this layer (before twist_mux) so
-// Nav2 autonomous speeds are unaffected. Tuned for precise manual control:
-// at 1.0 m/s the robot was too twitchy on grass.
-const MAX_LINEAR_MPS = 0.25;
-const MAX_ANGULAR_RAD_S = 0.6;
+// react-joystick-component) and multiplied at this layer (before twist_mux),
+// so Nav2 autonomous speeds are unaffected. The caps come from the robot
+// profile (`profile.teleop`, stock 0.25 m/s / 0.6 rad/s: at 1.0 m/s the robot
+// was too twitchy on grass), lowered to a robot-side relay clamp when one is
+// reported (see useTeleopLimits.ts).
 
 interface UseManualModeOptions {
     mowerAction: (action: string, params: Record<string, unknown>) => () => Promise<void>;
@@ -23,6 +24,11 @@ interface UseManualModeOptions {
 
 export function useManualMode({mowerAction, joyStream, stateName}: UseManualModeOptions) {
     const [manualMode, setManualMode] = useState(() => stateName === "MANUAL_MOWING");
+    const limits = useTeleopLimits();
+    const limitsRef = useRef(limits);
+    useEffect(() => {
+        limitsRef.current = {maxLinear: limits.maxLinear, maxAngular: limits.maxAngular};
+    }, [limits.maxLinear, limits.maxAngular]);
     const exitTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
     // LATCH + DEBOUNCE manual mode. Entering MANUAL_MOWING latches it ON
@@ -100,8 +106,9 @@ export function useManualMode({mowerAction, joyStream, stateName}: UseManualMode
     };
 
     const handleJoyMove = useCallback((event: IJoystickUpdateEvent) => {
-        const linear = (event.y ?? 0) * MAX_LINEAR_MPS;
-        const angular = (event.x ?? 0) * -1 * MAX_ANGULAR_RAD_S;
+        const {maxLinear, maxAngular} = limitsRef.current;
+        const linear = (event.y ?? 0) * maxLinear;
+        const angular = (event.x ?? 0) * -1 * maxAngular;
         const msg: TwistStamped = {
             header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
             twist: {linear: {x: linear, y: 0, z: 0}, angular: {z: angular, x: 0, y: 0}},

@@ -28,6 +28,13 @@ read from ``datum_env_file`` (DATUM_LAT=/DATUM_LON=, written by the GUI's
 "set datum from GPS" via gui_bridge set_datum) at launch time; if that file is
 missing too they become 0.0 (= unset, first fix is the origin).
 
+GUI settings: ``robot_settings_file`` (default config/gui/mowgli_robot.yaml, the
+file the MowgliNext GUI saves) is read at launch; the settings bound to ROS
+parameters for this robot (launch/robot_settings.py: speeds, cut width, mission
+thresholds, docking approach, NTRIP caster) override the package defaults of
+the mission, Nav2, docking, coverage and um960 nodes. Keys missing from the
+file keep the package defaults; ``robot_settings_file:=''`` disables this.
+
 Velocity chain: teleop/Nav2/bumper -> twist_mux -> /cmd_vel_raw -> cmd_vel_slew
 -> /cmd_vel -> mower_mcu_driver.
 
@@ -38,6 +45,7 @@ where they are not built.
 """
 
 import os
+import sys
 
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, LogInfo,
@@ -48,6 +56,9 @@ from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitut
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import robot_settings  # noqa: E402  (launch/robot_settings.py, installed alongside)
 
 
 DEFAULT_DATUM_ENV = '/userdata/ros2/datum.env'
@@ -101,12 +112,83 @@ def _resolve_datum(context):
             LogInfo(msg='map datum %s,%s from %s' % (lat, lon, source))]
 
 
+# Settings target -> (package whose share holds the base params file, its
+# path below share/, launch configuration handed to the include as params_file).
+SETTINGS_PARAM_FILES = {
+    'behavior_tree_node': ('mower_mission', 'config/mission.yaml', 'mission_params_file'),
+    'mower_docking': ('mower_docking', 'config/docking.yaml', 'docking_params_file'),
+    'controller_server': ('mower_navigation', 'config/nav2_params.yaml', 'nav2_params_file'),
+}
+# Targets that get an overlay file instead (the node has no params_file).
+SETTINGS_OVERLAYS = {'um960_gps_driver': 'um960_params_file'}
+DEFAULT_CUT_WIDTH_M = '0.20'
+
+
+def _share_file(package, rel):
+    from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
+    try:
+        return os.path.join(get_package_share_directory(package), rel)
+    except PackageNotFoundError:
+        return None
+
+
+def _apply_robot_settings(context):
+    """Map the GUI's bound settings onto node parameters (see robot_settings.py)."""
+    path = LaunchConfiguration('robot_settings_file').perform(context).strip()
+    settings = robot_settings.load_settings(path)
+    values, warnings = robot_settings.bound_values(settings)
+    actions = [LogInfo(msg='robot settings: ' + w) for w in warnings]
+
+    # Defaults: the packages' own files, no um960 overlay.
+    for target, (package, rel, config) in SETTINGS_PARAM_FILES.items():
+        actions.append(SetLaunchConfiguration(config, _share_file(package, rel) or ''))
+    for config in SETTINGS_OVERLAYS.values():
+        actions.append(SetLaunchConfiguration(config, ''))
+
+    cut_width = LaunchConfiguration('cut_width_m').perform(context).strip()
+    if not cut_width:
+        launch_values = values.pop('launch', {})
+        cut_width = str(launch_values.get('cut_width_m', DEFAULT_CUT_WIDTH_M))
+        actions.append(SetLaunchConfiguration('cut_width_m', cut_width))
+    else:
+        values.pop('launch', None)
+
+    if not values:
+        actions.append(LogInfo(msg='robot settings: none bound in %s (package defaults)'
+                                   % (path or 'no robot_settings_file')))
+        return actions
+    out_dir = robot_settings.make_out_dir()
+    for target, params in values.items():
+        if target in SETTINGS_PARAM_FILES:
+            package, rel, config = SETTINGS_PARAM_FILES[target]
+            base = _share_file(package, rel)
+            if base is None or not os.path.isfile(base):
+                actions.append(LogInfo(msg='robot settings: %s not installed, %s ignored'
+                                           % (package, sorted(params))))
+                continue
+            doc = robot_settings.merged_params_document(base, target, params)
+        elif target in SETTINGS_OVERLAYS:
+            config = SETTINGS_OVERLAYS[target]
+            doc = robot_settings.overlay_document(target, params)
+        else:
+            continue
+        written = robot_settings.write_params_file(doc, out_dir, target + '.yaml')
+        actions.append(SetLaunchConfiguration(config, written))
+        shown = {k: ('***' if 'password' in k else v) for k, v in params.items()}
+        actions.append(LogInfo(msg='robot settings: /%s %s (from %s)' % (target, shown, path)))
+    return actions
+
+
 def generate_launch_description() -> LaunchDescription:
     # Sibling launch files and the URDF: resolve relative to this file so it
     # works both from the source tree and from share/mower_bringup/.
     launch_dir = os.path.dirname(os.path.abspath(__file__))
     stack_root = os.path.dirname(launch_dir)
     default_urdf = os.path.join(stack_root, 'config', 'urdf', 'mower.urdf.xacro')
+    # The live GUI settings file (realpath: an install tree may hold a copy).
+    default_robot_settings = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+        'config', 'gui', 'mowgli_robot.yaml')
 
     def arg(name, default, description):
         return DeclareLaunchArgument(name, default_value=default, description=description)
@@ -128,8 +210,9 @@ def generate_launch_description() -> LaunchDescription:
         arg('map_server', 'true', 'Include mower_map/map_server.launch.py (zones, keepout mask, dock pose).'),
         arg('maps_dir', '/ros2_ws/maps', 'areas.dat / dock_pose.yaml directory (compose mounts /userdata/ros2/maps).'),
         arg('coverage', 'true', 'Include mower_coverage_bridge (planner + /plan_coverage action).'),
-        arg('cut_width_m', '0.20', 'Blade cut width, m (URDF cutter disc radius 0.10; TODO: measure '
-            'the blade). Swath spacing = cut_width_m - swath_overlap_m.'),
+        arg('cut_width_m', '', 'Blade cut width, m. Empty = the GUI tool_width from '
+            'robot_settings_file, else 0.20 (URDF cutter disc radius 0.10; TODO: measure the '
+            'blade). Swath spacing = cut_width_m - swath_overlap_m.'),
         arg('swath_overlap_m', '0.02', 'Overlap between neighbouring coverage swaths, m.'),
         arg('docking', 'true', 'Include mower_docking/docking.launch.py (dock/undock actions).'),
         arg('mission', 'true', 'Include mower_mission/mission.launch.py (the /behavior_tree_node mission layer). '
@@ -147,12 +230,17 @@ def generate_launch_description() -> LaunchDescription:
             'datum_lat/datum_lon.'),
         arg('datum_yaw', '0.0', 'Map origin heading, rad ENU (0 = east).'),
         arg('urdf_file', default_urdf, 'xacro robot description.'),
+        arg('robot_settings_file', default_robot_settings,
+            'GUI settings (mowgli_robot.yaml); bound keys override package defaults '
+            '(launch/robot_settings.py). Empty = package defaults only.'),
         arg('imu_calibration_file', '/userdata/ros2/calibration/imu_calibration.yaml',
             'imu_cal persisted bias file (on the device /userdata partition).'),
     ]
 
     drivers = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(launch_dir, 'bringup.launch.py')),
+        # NTRIP caster / correction source from the GUI settings (empty = none).
+        launch_arguments={'um960_params_file': LaunchConfiguration('um960_params_file')}.items(),
         condition=enabled('drivers'),
     )
 
@@ -215,6 +303,8 @@ def generate_launch_description() -> LaunchDescription:
     mission = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution(
             [FindPackageShare('mower_mission'), 'launch', 'mission.launch.py'])),
+        # mission.yaml with the GUI's bound settings merged in (_apply_robot_settings).
+        launch_arguments={'params_file': LaunchConfiguration('mission_params_file')}.items(),
         condition=enabled('mission'),
     )
 
@@ -249,6 +339,7 @@ def generate_launch_description() -> LaunchDescription:
     navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution(
             [FindPackageShare('mower_navigation'), 'launch', 'navigation.launch.py'])),
+        launch_arguments={'params_file': LaunchConfiguration('nav2_params_file')}.items(),
         condition=enabled('navigation'),
     )
 
@@ -278,6 +369,7 @@ def generate_launch_description() -> LaunchDescription:
     docking = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution(
             [FindPackageShare('mower_docking'), 'launch', 'docking.launch.py'])),
+        launch_arguments={'params_file': LaunchConfiguration('docking_params_file')}.items(),
         condition=enabled('docking'),
     )
 
@@ -296,7 +388,8 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription(
         arguments
-        + [OpaqueFunction(function=_resolve_datum)]
+        + [OpaqueFunction(function=_resolve_datum),
+           OpaqueFunction(function=_apply_robot_settings)]
         + [drivers, robot_state_publisher, static_map_odom]
         + control
         + [teleop, gui_bridge, foxglove, localization, navigation,

@@ -170,16 +170,27 @@ func (s *SchedulerProvider) checkSchedules() {
 		logrus.Infof("Scheduler: triggering autonomous mowing for schedule %s (area %d)", sched.ID, sched.Area)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err = s.rosProvider.CallService(
-			ctx,
-			"/behavior_tree_node/high_level_control",
-			&mowgli.HighLevelControlReq{Command: 1}, // 1 = COMMAND_START
-			&mowgli.HighLevelControlRes{},
-		)
+		if sched.Area >= 0 {
+			// A schedule bound to an area mows that area only.
+			err = s.rosProvider.CallService(
+				ctx,
+				"/behavior_tree_node/start_in_area",
+				&mowgli.StartInAreaReq{Area: uint8(sched.Area)},
+				&mowgli.StartInAreaRes{},
+				"mowgli_interfaces/srv/StartInArea",
+			)
+		} else {
+			err = s.rosProvider.CallService(
+				ctx,
+				"/behavior_tree_node/high_level_control",
+				&mowgli.HighLevelControlReq{Command: 1}, // 1 = COMMAND_START
+				&mowgli.HighLevelControlRes{},
+			)
+		}
 		cancel()
 
 		if err != nil {
-			logrus.Errorf("Scheduler: failed to call high_level_control for schedule %s: %v", sched.ID, err)
+			logrus.Errorf("Scheduler: failed to start schedule %s: %v", sched.ID, err)
 			continue
 		}
 

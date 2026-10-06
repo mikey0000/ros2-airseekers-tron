@@ -20,7 +20,9 @@ OA cameras (verified 2026-10-06): GC2093 -> rkcif -> rkisp ``rkisp_mainpath``. T
 reader, mplane-aware) instead. The media graph is already linked at boot and the host's
 ``rkaiq_3A.service`` (``/usr/bin/rkaiq_3A_server``) runs AE/AWB; nothing else is needed on
 the host (``scripts/setup_cameras_device.sh check`` verifies it). Sensor rate is 30 fps;
-``oa_fps`` caps publishing (vendor: UYVY 1920x1080 @ 15 fps). ``det_ros``/``seg_ros``
+``oa_fps`` caps publishing (default 10; vendor: UYVY 1920x1080 @ 15 fps). Frames are only
+converted while somebody subscribes (``oa_on_demand``); ``oa_publish_width`` optionally
+decimates before the conversion. ``det_ros``/``seg_ros``
 consume ``/{left,right}_oa_camera/image_raw`` (bgr8).
 
 Rear camera: UVC webcam (32e6:9221), MJPG only (1920x1080 .. 640x480, 30 fps).
@@ -86,6 +88,8 @@ def _oa_cam(name, condition):
             'camera_info_file': PathJoinSubstitution([LC('camera_info_dir'),
                                                       f'{name}_info.yaml']),
             'publish_compressed': ParameterValue(LC('oa_compressed'), value_type=bool),
+            'publish_width': ParameterValue(LC('oa_publish_width'), value_type=int),
+            'publish_on_demand': ParameterValue(LC('oa_on_demand'), value_type=bool),
         }],
     )
 
@@ -126,8 +130,18 @@ def generate_launch_description():
                               choices=['mower_cameras', 'v4l2_camera'],
                               description='OA producer: mower_cameras/v4l2_cam (works on the '
                                           'rkisp mplane nodes) | v4l2_camera (does not).'),
-        DeclareLaunchArgument('oa_fps', default_value='15.0',
-                              description='OA publish-rate cap (sensor runs 30 fps).'),
+        DeclareLaunchArgument('oa_fps', default_value='10.0',
+                              description='OA publish-rate cap (sensor runs 30 fps; det_ros '
+                                          'max_rate_hz is 10).'),
+        DeclareLaunchArgument('oa_publish_width', default_value='0',
+                              description='OA image_raw width (integer decimation of the '
+                                          'capture before colour conversion, camera_info '
+                                          'scaled to match; 960 = ~1/4 CPU). 0 = native. '
+                                          'det_ros accepts any size, but obstacle_guard '
+                                          'image_width/height must then match.'),
+        DeclareLaunchArgument('oa_on_demand', default_value='true',
+                              description='OA: convert/publish only while image_raw, '
+                                          'compressed or camera_info has subscribers.'),
         DeclareLaunchArgument('oa_compressed', default_value='false'),
         DeclareLaunchArgument('left_oa_camera_device', default_value='/dev/left_oa_camera'),
         DeclareLaunchArgument('right_oa_camera_device', default_value='/dev/right_oa_camera'),

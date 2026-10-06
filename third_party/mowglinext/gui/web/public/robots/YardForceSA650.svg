@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300" role="img" aria-label="Robot mower, top view (generic illustration)">
+  <title>Robot mower (generic illustration, front is up)</title>
+  <g fill="none" stroke="#8aa0a6" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round">
+    <rect x="22" y="170" width="16" height="70" rx="6" fill="#2b3a3f"/>
+    <rect x="162" y="170" width="16" height="70" rx="6" fill="#2b3a3f"/>
+    <circle cx="56" cy="64" r="9" fill="#2b3a3f"/>
+    <circle cx="144" cy="64" r="9" fill="#2b3a3f"/>
+    <path d="M44 270 C 30 270 28 240 30 170 C 32 100 36 50 62 36 C 82 26 118 26 138 36 C 164 50 168 100 170 170 C 172 240 170 270 156 270 Z" fill="#1f2a2e"/>
+    <circle cx="100" cy="160" r="38" stroke="#52c41a" stroke-dasharray="6 5"/>
+    <circle cx="100" cy="160" r="4" fill="#52c41a" stroke="none"/>
+    <rect x="84" y="215" width="32" height="22" rx="5"/>
+  </g>
+  <path d="M100 8l-8 12h16z" fill="#8aa0a6"/>
+</svg>

@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import {createHashRouter, RouterProvider,} from "react-router-dom";
+import {createHashRouter, Navigate, RouterProvider,} from "react-router-dom";
 import AppShell from "./components/AppShell.tsx";
 import {App, ConfigProvider, theme} from "antd";
 import {Spinner} from "./components/Spinner.tsx";
@@ -9,7 +9,9 @@ import {ThemeProvider, useThemeMode} from "./theme/ThemeContext.tsx";
 import {NotificationCenterProvider} from "./hooks/useNotificationCenter.tsx";
 import {TimeFormatProvider} from "./hooks/useTimeFormat.tsx";
 import "./i18n";
-import {isTronHidden} from "./tronFeatures.ts";
+import {ProfileRoute} from "./components/ProfileRoute.tsx";
+import {isGateId} from "./constants/profileGates.ts";
+import {NotFoundPage, RouteErrorPage} from "./components/RouteFallbacks.tsx";
 
 // Lazy-load each page so the first paint only ships the shell + the route
 // the user actually opens. Everything else streams in on demand.
@@ -22,6 +24,7 @@ const SchedulePage     = React.lazy(() => import("./pages/SchedulePage.tsx"));
 const DiagnosticsPage  = React.lazy(() => import("./pages/DiagnosticsPage.tsx"));
 const StatisticsPage   = React.lazy(() => import("./pages/StatisticsPage.tsx"));
 const ParametersPage   = React.lazy(() => import("./pages/ParametersPage.tsx"));
+const PerceptionPage   = React.lazy(() => import("./pages/PerceptionPage.tsx"));
 const ConceptRoot      = React.lazy(() => import("./concept/ConceptRoot.tsx"));
 
 const router = createHashRouter([
@@ -34,7 +37,10 @@ const router = createHashRouter([
     {
         path: "/",
         element: <AppShell/>,
-        children: [
+        // Shell-level failures render without the shell; page failures are
+        // caught per route below so the side-rail stays usable.
+        errorElement: <RouteErrorPage/>,
+        children: [...[
             {
                 element: <SettingsPage/>,
                 path: "/settings",
@@ -70,8 +76,23 @@ const router = createHashRouter([
             {
                 element: <ParametersPage/>,
                 path: "/parameters",
-            }
-        ].filter((r) => !isTronHidden(r.path)), // tron: tronFeatures.ts
+            },
+            {
+                element: <PerceptionPage/>,
+                path: "/perception",
+            },
+        ]
+            // Profile-gated pages stay registered (the router is built once,
+            // before the robot profile is known) but render the 404 on a
+            // robot without the feature. See constants/profileGates.ts.
+            .map((r) => isGateId(r.path)
+                ? {...r, element: <ProfileRoute gate={r.path}>{r.element}</ProfileRoute>}
+                : r)
+            .map((r) => ({...r, errorElement: <RouteErrorPage/>})),
+            // `/` must win over the catch-all, which would otherwise match it.
+            {index: true, element: <Navigate to="/mowglinext" replace/>},
+            {path: "*", element: <NotFoundPage/>, errorElement: <RouteErrorPage/>},
+        ],
     },
 ]);
 

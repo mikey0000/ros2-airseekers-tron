@@ -15,10 +15,11 @@
             "YardForce900ECO",
             "LUV1000RI",
             "Sabo",
+            "AirseekersTron",
             "CUSTOM"
           ],
           "default": "YardForce500",
-          "description": "The type of mower you are using."
+          "description": "The type of mower you are using. It also selects the GUI robot profile (which screens apply to this robot); when unset, the ROBOT_PROFILE environment variable of the GUI container decides."
         },
         "wheel_radius": {
           "type": "number",
@@ -1003,6 +1004,18 @@
           "minimum": 0.0,
           "maximum": 10.0,
           "description": "Radius (m) around the dock pose, in every direction, exempt from Transit Boundary Margin above -- so the dock approach carries no bias at all, not just \"never blocked\". Only takes effect once a dock pose is set; widen it if your dock sees a lot of GNSS drift (e.g. under a canopy)."
+        }
+      }
+    },
+    "perception_settings": {
+      "title": "Perception",
+      "type": "object",
+      "properties": {
+        "camera_stream_base_url": {
+          "type": "string",
+          "title": "Camera Stream Base URL",
+          "default": "http://localhost:8080",
+          "description": "Base URL of the web_video_server (MJPEG over HTTP) that the GUI proxies under /api/cameras. Seen from the GUI container (host networking: localhost). Only used on robots with cameras."
         }
       }
     }

@@ -1,7 +1,9 @@
 import {mowingAreaIndex} from "../utils/mapAreaIndex.ts";
 import "@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css";
 import {useApi} from "../hooks/useApi.ts";
-import {App} from "antd";
+import {App, Button} from "antd";
+import {useNavigate} from "react-router-dom";
+import {datumErrorDetail, requestDatumFromGps} from "../utils/datumGps.ts";
 import turfArea from "@turf/area";
 import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {useTranslation} from "react-i18next";
@@ -56,6 +58,8 @@ const DYN_OBSTACLE_INTERACTIVE_LAYERS = ['dyn-obstacle-fill'];
 export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const {notification} = App.useApp();
     const {t} = useTranslation();
+    const navigate = useNavigate();
+    const [datumBusy, setDatumBusy] = useState(false);
     const {colors, displayMode} = useThemeMode();
     const isMobile = useIsMobile();
     const mowerAction = useMowerAction()
@@ -695,7 +699,27 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // Centered message panel used for the missing-token and missing-datum
     // states — a plain, translated explanation instead of an eternal spinner
     // or a broken map.
-    const CenteredMessage: React.FC<{title: string; detail?: string}> = ({title, detail}) => (
+    // Set the datum from the current GPS fix (same set_datum flow as Settings ->
+    // Positioning), persist it to the robot config, then reload so the map
+    // picks up the new origin.
+    const setDatumFromGps = async () => {
+        setDatumBusy(true);
+        try {
+            const {lat, lon} = await requestDatumFromGps(guiApi);
+            const saved = await guiApi.settings.yamlCreate({datum_lat: lat, datum_lon: lon});
+            if (saved.error) throw new Error((saved.error as any).error);
+            notification.success({message: t('datum.setFromGpsSuccess', {lat: lat.toFixed(7), lon: lon.toFixed(7)})});
+            window.location.reload();
+        } catch (e: unknown) {
+            notification.error({
+                message: t('settingsPositioning.datumGpsFailed'),
+                description: datumErrorDetail(e, (raw) => t('datum.unparseableReply', {message: raw || '-'})),
+            });
+            setDatumBusy(false);
+        }
+    };
+
+    const CenteredMessage: React.FC<{title: string; detail?: string; children?: React.ReactNode}> = ({title, detail, children}) => (
         <div style={{
             width: '100%',
             height: '100%',
@@ -713,6 +737,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         }}>
             <div style={{fontSize: compact ? 14 : 16, fontWeight: 600, color: colors.text}}>{title}</div>
             {detail && <div style={{fontSize: compact ? 12 : 14}}>{detail}</div>}
+            {children}
         </div>
     );
 
@@ -726,7 +751,14 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         return <CenteredMessage
             title={t('mapPage.noDatumTitle')}
             detail={t('mapPage.noDatumDetail')}
-        />;
+        >
+            <div style={{display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 8}}>
+                <Button type="primary" size={compact ? 'small' : 'middle'} loading={datumBusy}
+                        onClick={setDatumFromGps}>{t('datum.setFromGps')}</Button>
+                <Button size={compact ? 'small' : 'middle'}
+                        onClick={() => navigate('/settings?section=positioning')}>{t('datum.openPositioning')}</Button>
+            </div>
+        </CenteredMessage>;
     }
     if (compact) {
         return (

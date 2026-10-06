@@ -4,7 +4,10 @@ import { HomeOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { useThemeMode } from "../../theme/ThemeContext.tsx";
 import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
+import { DockingKindOnly } from "./DockingKindOnly.tsx";
 import { DockCalibrationCard } from "./DockCalibrationCard.tsx";
+import { VisionDockCard } from "./VisionDockCard.tsx";
+import { useGate } from "../../hooks/useProfileGates.ts";
 
 const { Text, Paragraph } = Typography;
 
@@ -19,6 +22,11 @@ type Props = {
 export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden, hasDefault, onReset }) => {
     const { colors } = useThemeMode();
     const { t } = useTranslation();
+    // Profile gate "feature:dock_calibration": the CalibrateDock wizard drives
+    // onto charger contacts. A robot that docks another way (profile.docking,
+    // e.g. "vision_marker") renders its own calibration card at the gate point
+    // below instead.
+    const hasDockCalibration = useGate("feature:dock_calibration");
     const fieldLabel = (key: string, label: React.ReactNode) => (
         <SettingFieldLabel
             settingKey={key}
@@ -32,7 +40,13 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
         <div>
             {/* One-click dock calibration — the unified surface that replaces the
                 old separate IMU-yaw modal + onboarding ImuYawStep. */}
-            <DockCalibrationCard />
+            {/* GATE POINT (dock calibration): charger-contact robots get the
+                CalibrateDock wizard; vision-docking robots plug their card in
+                here, e.g. `profile.docking === "vision_marker" && <VisionDockCard/>`. */}
+            {hasDockCalibration && <DockCalibrationCard />}
+            <DockingKindOnly kind="vision_marker">
+                <VisionDockCard values={values} onChange={onChange} />
+            </DockingKindOnly>
             <Card size="small" style={{ marginBottom: 16 }}>
                 <Space direction="vertical" size={12} style={{ width: "100%" }}>
                     <div>
@@ -76,14 +90,17 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                                     />
                                 </Form.Item>
                             </Col>
-                            <Col xs={24} sm={12}>
-                                <Form.Item label={fieldLabel("dock_use_charger_detection", t('dockingSection.chargerDetection'))} tooltip={t('dockingSection.chargerDetectionTooltip')}>
-                                    <Switch
-                                        checked={values.dock_use_charger_detection ?? true}
-                                        onChange={(v) => onChange("dock_use_charger_detection", v)}
-                                    />
-                                </Form.Item>
-                            </Col>
+                            {/* Charger-contact docking only (profile.docking). */}
+                            <DockingKindOnly kind="charger_contacts">
+                                <Col xs={24} sm={12}>
+                                    <Form.Item label={fieldLabel("dock_use_charger_detection", t('dockingSection.chargerDetection'))} tooltip={t('dockingSection.chargerDetectionTooltip')}>
+                                        <Switch
+                                            checked={values.dock_use_charger_detection ?? true}
+                                            onChange={(v) => onChange("dock_use_charger_detection", v)}
+                                        />
+                                    </Form.Item>
+                                </Col>
+                            </DockingKindOnly>
                         </Row>
                     </Form>
 
@@ -110,26 +127,32 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                                                     />
                                                 </Form.Item>
                                             </Col>
-                                            <Col xs={24} sm={12}>
-                                                <Form.Item label={fieldLabel("dock_charging_threshold", t('dockingSection.chargingThreshold'))} tooltip={t('dockingSection.chargingThresholdTooltip')}>
-                                                    <InputNumber
-                                                        value={values.dock_charging_threshold}
-                                                        onChange={(v) => onChange("dock_charging_threshold", v)}
-                                                        min={0.05} max={1.0} step={0.05} precision={2}
-                                                        style={{ width: "100%" }} addonAfter="A"
-                                                    />
-                                                </Form.Item>
-                                            </Col>
-                                            <Col xs={24} sm={12}>
-                                                <Form.Item label={fieldLabel("dock_approach_overshoot", t('dockingSection.approachOvershoot'))} tooltip={t('dockingSection.approachOvershootTooltip')}>
-                                                    <InputNumber
-                                                        value={values.dock_approach_overshoot}
-                                                        onChange={(v) => onChange("dock_approach_overshoot", v)}
-                                                        min={0} max={0.3} step={0.01} precision={2}
-                                                        style={{ width: "100%" }} addonAfter="m"
-                                                    />
-                                                </Form.Item>
-                                            </Col>
+                                            {/* Charger-contact docking only (profile.docking). */}
+                                            <DockingKindOnly kind="charger_contacts">
+                                                <Col xs={24} sm={12}>
+                                                    <Form.Item label={fieldLabel("dock_charging_threshold", t('dockingSection.chargingThreshold'))} tooltip={t('dockingSection.chargingThresholdTooltip')}>
+                                                        <InputNumber
+                                                            value={values.dock_charging_threshold}
+                                                            onChange={(v) => onChange("dock_charging_threshold", v)}
+                                                            min={0.05} max={1.0} step={0.05} precision={2}
+                                                            style={{ width: "100%" }} addonAfter="A"
+                                                        />
+                                                    </Form.Item>
+                                                </Col>
+                                            </DockingKindOnly>
+                                            {/* Charger-contact docking only (profile.docking). */}
+                                            <DockingKindOnly kind="charger_contacts">
+                                                <Col xs={24} sm={12}>
+                                                    <Form.Item label={fieldLabel("dock_approach_overshoot", t('dockingSection.approachOvershoot'))} tooltip={t('dockingSection.approachOvershootTooltip')}>
+                                                        <InputNumber
+                                                            value={values.dock_approach_overshoot}
+                                                            onChange={(v) => onChange("dock_approach_overshoot", v)}
+                                                            min={0} max={0.3} step={0.01} precision={2}
+                                                            style={{ width: "100%" }} addonAfter="m"
+                                                        />
+                                                    </Form.Item>
+                                                </Col>
+                                            </DockingKindOnly>
                                             <Col xs={24} sm={12}>
                                                 <Form.Item label={fieldLabel("dock_pose_yaw_sigma_rad", t('dockingSection.baseHeadingUncertainty'))} tooltip={t('dockingSection.baseHeadingUncertaintyTooltip')}>
                                                     <InputNumber

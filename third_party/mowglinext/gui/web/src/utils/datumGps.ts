@@ -23,6 +23,8 @@ export const requestDatumFromGps = async (
     guiApi: GuiApi,
 ): Promise<{ lat: number; lon: number }> => {
     const res = await guiApi.mowglinext.callCreate("set_datum", {});
+    // The API layer turns a Trigger reply with success=false into an error
+    // carrying the service message, so it surfaces here with the reason.
     if (res.error) throw new Error((res.error as any).error);
     const msg: string = (res.data as any)?.message ?? "";
     const parts = msg.split(",");
@@ -34,4 +36,17 @@ export const requestDatumFromGps = async (
         }
     }
     throw new DatumParseError(msg);
+};
+
+/**
+ * Human-readable detail for a failed set_datum call: the service message for
+ * API errors, or the raw reply (translated via `unparseable`) when the reply
+ * could not be parsed as "lat,lon".
+ */
+export const datumErrorDetail = (
+    e: unknown,
+    unparseable: (rawMessage: string) => string,
+): string => {
+    if (e instanceof DatumParseError) return unparseable(e.rawMessage);
+    return e instanceof Error ? e.message : String(e);
 };

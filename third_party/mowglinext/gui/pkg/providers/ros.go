@@ -67,6 +67,28 @@ var topicMap = map[string]topicDef{
 	// mag_yaw_publisher.py in mowgli_localization.
 	"cogHeading": {"/imu/cog_heading", "sensor_msgs/msg/Imu"},
 	"magYaw":     {"/imu/mag_yaw", "sensor_msgs/msg/Imu"},
+	// Camera perception (robots whose profile has the `cameras` feature).
+	// visionObstacleClose is a std_msgs/Bool latch from the vision obstacle
+	// guard: true while a detected obstacle is inside the stop distance.
+	// detections carries vision_msgs/Detection2DArray; adaptDetections reduces
+	// it server-side to {count, classes[], max_score, stamp, frame_id} so the
+	// browser never sees per-box hypotheses/poses (see vision.go).
+	"visionObstacleClose": {"/vision/obstacle_close", "std_msgs/msg/Bool"},
+	"detections":          {"/ai/det/detections", "vision_msgs/msg/Detection2DArray"},
+	// ROS 2 log aggregation topic (rcl_interfaces/Log). Feeds the Logs page on
+	// hosts without a Docker socket (see pkg/api/rosout.go). Every message is
+	// a distinct log line, so it is delivered through a queue, never coalesced
+	// (see queuedTopics).
+	"rosout": {"/rosout", "rcl_interfaces/msg/Log"},
+}
+
+// queuedTopics lists logical keys whose subscribers must see every message, in
+// order, rather than only the latest one: their messages are events (log
+// lines), not state. The value caps the per-subscriber backlog; past it the
+// oldest pending messages are dropped so a stalled consumer cannot grow memory
+// without bound. The throttle interval does not apply to these topics.
+var queuedTopics = map[string]int{
+	"rosout": 2000,
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +108,11 @@ type RosSubscriber struct {
 	interval    time.Duration // min spacing between deliveries; 0 = unthrottled
 	close       chan struct{}
 	wake        chan struct{} // buffered(1) new-message signal
+
+	// Queue mode (queueCap > 0): every message is kept, in order, up to
+	// queueCap pending ones; see newQueuedRosSubscriber.
+	queueCap int
+	queue    [][]byte
 }
 
 // NewRosSubscriber creates and starts a RosSubscriber. interval is the minimum
@@ -105,12 +132,35 @@ func NewRosSubscriber(topic, id string, interval time.Duration, cb func(msg []by
 	return r
 }
 
+// newQueuedRosSubscriber is NewRosSubscriber for event topics: instead of
+// coalescing to the latest message it delivers every message in arrival order,
+// keeping at most queueCap undelivered ones (the oldest are dropped first).
+func newQueuedRosSubscriber(topic, id string, queueCap int, cb func(msg []byte)) *RosSubscriber {
+	r := &RosSubscriber{
+		Topic:    topic,
+		Id:       id,
+		cb:       cb,
+		close:    make(chan struct{}),
+		wake:     make(chan struct{}, 1),
+		queueCap: queueCap,
+	}
+	go r.run()
+	return r
+}
+
 // Publish stores msg as the next message to be delivered and signals the
 // delivery loop. If a previous message has not yet been consumed it is silently
 // overwritten (coalesce to latest). Never blocks.
 func (r *RosSubscriber) Publish(msg []byte) {
 	r.mtx.Lock()
-	r.nextMessage = msg
+	if r.queueCap > 0 {
+		if len(r.queue) >= r.queueCap {
+			r.queue = append(r.queue[:0], r.queue[len(r.queue)-r.queueCap+1:]...)
+		}
+		r.queue = append(r.queue, msg)
+	} else {
+		r.nextMessage = msg
+	}
 	r.mtx.Unlock()
 	select {
 	case r.wake <- struct{}{}:
@@ -146,6 +196,13 @@ func (r *RosSubscriber) run() {
 			}
 		}
 
+		if r.queueCap > 0 {
+			if !r.drainQueue() {
+				return
+			}
+			continue
+		}
+
 		r.mtx.Lock()
 		msg := r.nextMessage
 		r.nextMessage = nil
@@ -154,6 +211,28 @@ func (r *RosSubscriber) run() {
 		if msg != nil {
 			r.cb(msg)
 			lastDeliver = time.Now()
+		}
+	}
+}
+
+// drainQueue delivers every queued message in order. It returns false when the
+// subscriber was closed meanwhile.
+func (r *RosSubscriber) drainQueue() bool {
+	for {
+		r.mtx.Lock()
+		batch := r.queue
+		r.queue = nil
+		r.mtx.Unlock()
+		if len(batch) == 0 {
+			return true
+		}
+		for _, msg := range batch {
+			select {
+			case <-r.close:
+				return false
+			default:
+			}
+			r.cb(msg)
 		}
 	}
 }
@@ -217,6 +296,7 @@ var foxgloveAdapters = map[string]func([]byte) ([]byte, error){
 	"gnssStatus": adaptGnssStatus,
 	"pose":       adaptPose,
 	"lidar":      adaptLidar,
+	"detections": adaptDetections,
 }
 
 // upstreamDecimationMs caps the rate at which high-frequency topics are
@@ -236,6 +316,7 @@ var upstreamDecimationMs = map[string]int{
 	"gnssStatus": 80,
 	"cogHeading": 150,
 	"magYaw":     150,
+	"detections": 150,
 }
 
 // NewRosProvider constructs a RosProvider, reads the foxglove URL from the
@@ -526,8 +607,12 @@ func (r *RosProvider) Subscribe(topic string, id string, intervalMs int, cb func
 		r.subscribers[topic] = make(map[string]*RosSubscriber)
 	}
 	if _, exists := r.subscribers[topic][id]; !exists {
-		interval := time.Duration(intervalMs) * time.Millisecond
-		r.subscribers[topic][id] = NewRosSubscriber(topic, id, interval, cb)
+		if queueCap := queuedTopics[topic]; queueCap > 0 {
+			r.subscribers[topic][id] = newQueuedRosSubscriber(topic, id, queueCap, cb)
+		} else {
+			interval := time.Duration(intervalMs) * time.Millisecond
+			r.subscribers[topic][id] = NewRosSubscriber(topic, id, interval, cb)
+		}
 	}
 
 	// Subscribe upstream on first listener for this logical key. Safe to call

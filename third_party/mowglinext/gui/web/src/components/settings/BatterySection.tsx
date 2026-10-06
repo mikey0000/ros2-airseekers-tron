@@ -1,10 +1,11 @@
 import React, { useMemo } from "react";
-import { Card, Col, Form, InputNumber, Row, Space, Typography } from "antd";
+import { Alert, Card, Col, Form, InputNumber, Row, Space, Typography } from "antd";
 import { ThunderboltOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { useThemeMode } from "../../theme/ThemeContext.tsx";
 import { usePower } from "../../hooks/usePower.ts";
 import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
+import { useRobotProfile } from "../../hooks/useRobotProfile.ts";
 
 const { Text, Paragraph } = Typography;
 
@@ -130,9 +131,12 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
         />
     );
 
-    const fullV = values.battery_full_voltage ?? 28.5;
-    const emptyV = values.battery_empty_voltage ?? 24.0;
-    const criticalV = values.battery_critical_voltage ?? 23.0;
+    // Gauge window: yaml value, else the robot profile's thresholds, else the
+    // historical fallbacks.
+    const { profile } = useRobotProfile();
+    const fullV = values.battery_full_voltage ?? profile.battery.fullV ?? 28.5;
+    const emptyV = values.battery_empty_voltage ?? profile.battery.emptyV ?? 24.0;
+    const criticalV = values.battery_critical_voltage ?? profile.battery.criticalV ?? 23.0;
 
     return (
         <div>
@@ -147,6 +151,10 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                             {t("settingsBattery.batteryThresholdsDescription")}
                         </Paragraph>
                     </div>
+
+                    {profile.battery.preferReportedPercent && (
+                        <Alert type="info" showIcon message={t("profileGating.batteryReportedPercent")} />
+                    )}
 
                     {/* Visual gauge */}
                     <div style={{

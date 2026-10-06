@@ -22,7 +22,8 @@ import {
 import { GnssSignalProfileHelp } from "./GnssSignalProfileHelp.tsx";
 import { UniversalGnssAdvancedSettings } from "./UniversalGnssAdvancedSettings.tsx";
 import { GnssReceiverActionsCard } from "./GnssReceiverActionsCard.tsx";
-import { isTronHidden } from "../../tronFeatures.ts";
+import { datumErrorDetail, requestDatumFromGps } from "../../utils/datumGps.ts";
+import { useGate } from "../../hooks/useProfileGates.ts";
 import { GnssSerialDeviceConfigField } from "./GnssSerialDeviceConfigField.tsx";
 
 const { Text, Paragraph } = Typography;
@@ -53,6 +54,7 @@ export const PositioningSection: React.FC<Props> = ({
     const { notification } = App.useApp();
     const [datumLoading, setDatumLoading] = useState(false);
     const [expertMode, setExpertMode] = useState(false);
+    const hasGnssSidecar = useGate("feature:gnss_configurator");
     const gnssStatus = useGnssStatus();
     const gpsStatus = deriveGpsStatus(gnssStatus);
     const detectedReceiver = gnssReceiverLabel(gnssStatus);
@@ -70,17 +72,15 @@ export const PositioningSection: React.FC<Props> = ({
     const setDatumFromGps = async () => {
         setDatumLoading(true);
         try {
-            const res = await guiApi.mowglinext.callCreate("set_datum", {});
-            if (res.error) throw new Error(res.error.error);
-            const msg: string = (res.data as any)?.message ?? "";
-            const parts = msg.split(",");
-            if (parts.length === 2) {
-                onChange("datum_lat", parseFloat(parts[0]));
-                onChange("datum_lon", parseFloat(parts[1]));
-                notification.success({ message: t("settingsPositioning.datumSetFromGps") });
-            }
-        } catch (e: any) {
-            notification.error({ message: t("settingsPositioning.datumGpsFailed"), description: e.message });
+            const { lat, lon } = await requestDatumFromGps(guiApi);
+            onChange("datum_lat", lat);
+            onChange("datum_lon", lon);
+            notification.success({ message: t("settingsPositioning.datumSetFromGps") });
+        } catch (e: unknown) {
+            notification.error({
+                message: t("settingsPositioning.datumGpsFailed"),
+                description: datumErrorDetail(e, (raw) => t("datum.unparseableReply", { message: raw || "-" })),
+            });
         } finally {
             setDatumLoading(false);
         }
@@ -368,7 +368,7 @@ export const PositioningSection: React.FC<Props> = ({
                 changes. The signal profile is a receiver-flash setting: it only
                 reaches the receiver via Plan & Apply here, not via a plain
                 Save/restart. */}
-            {expertMode && !isTronHidden('feature:gnss_configurator') && (
+            {expertMode && hasGnssSidecar && (
                 <GnssReceiverActionsCard
                     isDirty={isDirty}
                     saving={saving}

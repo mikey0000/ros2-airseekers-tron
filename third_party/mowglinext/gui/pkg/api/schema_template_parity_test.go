@@ -71,6 +71,10 @@ var schemaDefaultsWithNoTemplateEntry = map[string]string{
 	// the same reason as map_save_on_dock above: previously-installed YAMLs may
 	// still carry the key and the schema also validates/flattens those files.
 	"path_spacing": "dead knob, template line deleted 2026-09-05; no ROS2 consumer",
+
+	// Read only by gui/pkg/api/cameras.go (the GUI's MJPEG proxy target) —
+	// not a ROS2 parameter, so there is no template line.
+	"camera_stream_base_url": "GUI-only camera proxy target (cameras.go), not a ROS2 parameter",
 }
 
 // findSchemaTemplateDivergence compares schemaDefaults against the

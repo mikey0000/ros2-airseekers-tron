@@ -5,8 +5,29 @@ import { useTranslation } from "react-i18next";
 import { useThemeMode } from "../../theme/ThemeContext.tsx";
 import { MOWER_MODELS } from "../../constants/mowerModels.ts";
 import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
+import { useProfileGates } from "../../hooks/useProfileGates.ts";
 
 const { Text, Paragraph } = Typography;
+
+// Model card picture: /robots/<file>.jpg (owner photo) -> /robots/<file>.svg
+// (bundled illustration) -> nothing. See public/robots/README.md.
+const ROBOT_IMAGE_FILE: Record<string, string> = { AirseekersTron: "airseekers_tron" };
+
+const RobotModelImage: React.FC<{ id: string }> = ({ id }) => {
+    const file = ROBOT_IMAGE_FILE[id] ?? id;
+    const sources = [`/robots/${file}.jpg`, `/robots/${file}.svg`];
+    const [idx, setIdx] = useState(0);
+    if (idx >= sources.length) return null;
+    return (
+        <img
+            src={sources[idx]}
+            alt=""
+            data-testid={`robot-image-${id}`}
+            onError={() => setIdx((i) => i + 1)}
+            style={{ width: "100%", height: 72, objectFit: "contain", marginBottom: 4 }}
+        />
+    );
+};
 
 type Props = {
     values: Record<string, any>;
@@ -30,6 +51,10 @@ export const HardwareSection: React.FC<Props> = ({
     const { modal } = App.useApp();
     const [showAdvanced, setShowAdvanced] = useState(false);
     const selectedModel = values.mower_model || "YardForce500";
+    // Keys the robot profile marks unused (e.g. encoder/PID/caster keys that
+    // only feed STM32 odometry on a robot whose motor MCU computes /odom).
+    const { isSettingKeyHidden } = useProfileGates();
+    const shown = (key: string) => !isSettingKeyHidden(key);
 
     const fieldLabel = (key: string, label: React.ReactNode) => (
         <SettingFieldLabel
@@ -96,6 +121,7 @@ export const HardwareSection: React.FC<Props> = ({
                                         styles={{ body: { padding: "8px 12px" } }}
                                     >
                                         <Space direction="vertical" size={2} style={{ width: "100%" }}>
+                                            {model.value !== "CUSTOM" && <RobotModelImage id={model.value} />}
                                             <Space size={4}>
                                                 <Text strong style={{ fontSize: 12 }}>{t(model.label)}</Text>
                                                 {model.tag && <Tag color="green" style={{ fontSize: 10 }}>{t(model.tag)}</Tag>}
@@ -160,6 +186,7 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        {shown("ticks_per_meter") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("ticks_per_meter", t("settingsHardware.encoderTicksPerMeter"))} tooltip={t("settingsHardware.encoderTicksPerMeterTooltip")}>
                                 <InputNumber
@@ -169,6 +196,7 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                     </Row>
                 </Form>
             </Card>
@@ -231,6 +259,7 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        {shown("chassis_mass_kg") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("chassis_mass_kg", t("settingsHardware.mass"))}>
                                 <InputNumber
@@ -241,6 +270,7 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("wheel_width", t("settingsHardware.wheelWidth"))}>
                                 <InputNumber
@@ -261,6 +291,7 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        {shown("caster_radius") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("caster_radius", t("settingsHardware.casterRadius"))}>
                                 <InputNumber
@@ -271,6 +302,8 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("caster_track") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("caster_track", t("settingsHardware.casterTrack"))}>
                                 <InputNumber
@@ -281,6 +314,7 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                     </Row>
                 </Form>
             </Card>

@@ -1685,6 +1685,9 @@ const docTemplate = `{
         "api.ContainerListResponse": {
             "type": "object",
             "properties": {
+                "available": {
+                    "type": "boolean"
+                },
                 "containers": {
                     "type": "array",
                     "items": {

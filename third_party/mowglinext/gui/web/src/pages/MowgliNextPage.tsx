@@ -19,8 +19,9 @@ import {useMowingMap} from "../hooks/useMowingMap.ts";
 import {useMowProgress} from "../hooks/useMowProgress.ts";
 import {useFusionOdom} from "../hooks/useFusionOdom.ts";
 import {rasterizeMowProgress} from "../utils/mowProgress.ts";
+import {useRobotName} from "../hooks/useRobotName.ts";
 import {useMowerAction} from "../components/MowerActions.tsx";
-import {computeBatteryPercent} from "../utils/battery.ts";
+import {computeBatteryPercentOrNull} from "../utils/battery.ts";
 import {deriveGpsStatus} from "../utils/gpsStatus.ts";
 import {deriveIsMoving} from "../utils/mowerMotion.ts";
 
@@ -36,7 +37,8 @@ import {WeatherChip} from "../concept/components/WeatherChip.tsx";
 import {useWeather} from "../hooks/useWeather.ts";
 import {NoiseTexture} from "../concept/components/NoiseTexture.tsx";
 import {staggerParent, riseFade, popIn, springSnap} from "../concept/motion.ts";
-import {isTronHidden} from "../tronFeatures.ts";
+import {useGate} from "../hooks/useProfileGates.ts";
+import {useRobotProfile} from "../hooks/useRobotProfile.ts";
 
 /**
  * Real-data Dashboard, rebuilt on top of the /concept components.
@@ -54,11 +56,12 @@ function useMowerData() {
   const gnss = useGnssStatus();
   const emergency = useEmergency();
   const {settings} = useSettings();
+  const {profile} = useRobotProfile();
 
   const isCharging = highLevelStatus.is_charging ?? status.is_charging ?? false;
   const isEmergency = highLevelStatus.emergency ?? emergency.active_emergency ?? false;
-  const batteryPercent = computeBatteryPercent(
-    highLevelStatus.battery_percent, power.v_battery, settings,
+  const batteryPercent = computeBatteryPercentOrNull(
+    highLevelStatus, power.v_battery, settings, profile.battery,
   );
   const gpsStatus = deriveGpsStatus(gnss);
 
@@ -94,19 +97,21 @@ function useMowerData() {
     isMoving,
     toolWidth: (settings?.tool_width as number | undefined) ?? 0.18,
     currentAreaIndex: highLevelStatus.current_area ?? null,
-    currentArea: highLevelStatus.current_area != null
+    currentArea: highLevelStatus.current_area != null && highLevelStatus.current_area >= 0
       ? t('mowgliNextPage.areaN', {number: highLevelStatus.current_area + 1})
       : undefined,
     // Firmware <-> image compatibility (from the hardware_bridge handshake).
     // null until the first Status arrives, so the health card stays quiet
     // rather than flashing a false "incompatible" on load.
     firmwareCompatible: status.firmware_compatible ?? null,
-    firmwareVersion: status.firmware_version ?? "",
+    // The i18n strings add their own "v" prefix; strip one the bridge may include.
+    firmwareVersion: (status.firmware_version ?? "").replace(/^v/i, ""),
   };
 }
 
 export const MowgliNextPage = () => {
   const {t} = useTranslation();
+  const robotName = useRobotName();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
   const {modal, notification} = App.useApp();
@@ -230,16 +235,16 @@ export const MowgliNextPage = () => {
             WebkitBackgroundClip: 'text', backgroundClip: 'text',
             WebkitTextFillColor: 'transparent', color: 'transparent',
           }}>{t('mowgliNextPage.headlineMinutes', {value: remainingMin})}</span>{t('mowgliNextPage.headlineUntilHomeSuffix')}</>
-        : <>{t('mowgliNextPage.headlineMowingPrefix')}<em style={{fontStyle: 'italic', color: 'var(--lime, #7CFFB2)'}}>{t('mowgliNextPage.headlineMowingEmphasis')}</em>{t('mowgliNextPage.headlineMowingSuffix')}</>)
+        : <>{t('mowgliNextPage.headlineMowingPrefix', {robotName})}<em style={{fontStyle: 'italic', color: 'var(--lime, #7CFFB2)'}}>{t('mowgliNextPage.headlineMowingEmphasis')}</em>{t('mowgliNextPage.headlineMowingSuffix')}</>)
     : data.state === "CHARGING"
       ? <>{t('mowgliNextPage.headlineChargingPrefix')}<span style={{
           background: 'var(--grad-primary, linear-gradient(135deg, #7CFFB2, #2BAA66))',
           WebkitBackgroundClip: 'text', backgroundClip: 'text',
           WebkitTextFillColor: 'transparent', color: 'transparent',
-        }}>{t('mowgliNextPage.headlinePercent', {value: Math.round(data.battery)})}</span></>
+        }}>{t('mowgliNextPage.headlinePercent', {value: Math.round(data.battery ?? 0)})}</span></>
       : data.emergency
         ? <span style={{color: 'var(--rose, #FF6B7A)'}}>{t('mowgliNextPage.emergencyStop')}</span>
-        : <>{t('mowgliNextPage.headlineIdlePrefix')}<em style={{fontStyle: 'italic', color: 'var(--lime, #7CFFB2)'}}>{t('mowgliNextPage.headlineIdleEmphasis')}</em>{t('mowgliNextPage.headlineIdleSuffix')}</>;
+        : <>{t('mowgliNextPage.headlineIdlePrefix', {robotName})}<em style={{fontStyle: 'italic', color: 'var(--lime, #7CFFB2)'}}>{t('mowgliNextPage.headlineIdleEmphasis')}</em>{t('mowgliNextPage.headlineIdleSuffix')}</>;
 
   const subline = data.isMoving
     ? t('mowgliNextPage.sublineMoving', {gps: data.gpsLabel.toLowerCase(), area: data.currentArea ?? t('mowgliNextPage.activeZone')})
@@ -322,7 +327,7 @@ export const MowgliNextPage = () => {
               color: 'var(--ink, #ECFFF4)', fontWeight: 400,
               letterSpacing: '-0.02em', lineHeight: 1.05, marginTop: 4,
             }}>
-              {data.isMoving ? t('mowgliNextPage.mowgliMowing') : data.charging ? t('mowgliNextPage.mowgliCharging') : t('mowgliNextPage.welcomeBack')}
+              {data.isMoving ? t('mowgliNextPage.mowgliMowing', {robotName}) : data.charging ? t('mowgliNextPage.mowgliCharging', {robotName}) : t('mowgliNextPage.welcomeBack')}
             </div>
           </div>
           <StatusOrb
@@ -398,6 +403,7 @@ function HeroCard({
   data, phase, actions, headline, subline, coveragePct, todayMowedM2, totalArea, large,
 }: HeroCardProps) {
   const {t} = useTranslation();
+  const robotName = useRobotName();
   return (
     <GlassCard variant="glow" padding={0}>
       <div style={{
@@ -413,7 +419,7 @@ function HeroCard({
               fontSize: 11, color: 'var(--lime, #7CFFB2)', fontWeight: 700,
               letterSpacing: '0.12em', textTransform: 'uppercase',
             }}>
-              {data.currentArea ? t('mowgliNextPage.mowgliWithZone', {area: data.currentArea}) : t('mowgliNextPage.mowgliNoZone')}
+              {data.currentArea ? t('mowgliNextPage.mowgliWithZone', {robotName, area: data.currentArea}) : t('mowgliNextPage.mowgliNoZone', {robotName})}
             </div>
             <h1 className="mn-display" style={{
               fontSize: large ? 38 : 30,
@@ -431,7 +437,7 @@ function HeroCard({
             </p>
           </div>
           <BatteryRing
-            percent={data.battery}
+            percent={data.battery ?? 0}
             size={large ? 156 : 124}
             thickness={large ? 11 : 9}
             charging={data.charging}
@@ -440,7 +446,7 @@ function HeroCard({
               fontSize: large ? 38 : 30, fontWeight: 400, lineHeight: 1,
               color: 'var(--ink, #ECFFF4)', letterSpacing: '-0.02em',
             }}>
-              {Math.round(data.battery)}
+              {data.battery == null ? '--' : Math.round(data.battery)}
             </div>
             <div style={{
               fontSize: 10, color: 'rgba(236,255,244,0.42)',
@@ -639,6 +645,8 @@ function HealthCard({data}: {data: ReturnType<typeof useMowerData>}) {
   const {t} = useTranslation();
   const navigate = useNavigate();
   const weather = useWeather();
+  const canFlashFirmware = useGate('feature:firmware_flash');
+  const hasHostUpdater = useGate('settings:updates');
   const rows: HealthRow[] = [
     {k: t('mowgliNextPage.gpsSignal'),         ok: data.gps > 0,           note: data.gpsLabel},
     {k: data.rain ? t('mowgliNextPage.rainDetectedRow') : t('mowgliNextPage.noRain'),
@@ -662,7 +670,7 @@ function HealthCard({data}: {data: ReturnType<typeof useMowerData>}) {
         : t('mowgliNextPage.firmwareReflash', {version: data.firmwareVersion || '?'}),
       // When incompatible, offer a one-click jump to the flash screen (opens the
       // onboarding firmware step with the prebuilt flash form ready to go).
-      action: (data.firmwareCompatible || isTronHidden('feature:firmware_flash')) ? undefined : (
+      action: (data.firmwareCompatible || !canFlashFirmware) ? undefined : (
         <Button
           type="primary"
           size="small"
@@ -706,7 +714,7 @@ function HealthCard({data}: {data: ReturnType<typeof useMowerData>}) {
           </div>
         ))}
       </div>
-      {!isTronHidden('settings:updates') && <Button type="link" onClick={() => navigate('/settings?section=updates')} style={{paddingLeft: 0, marginTop: 10}}>
+      {hasHostUpdater && <Button type="link" onClick={() => navigate('/settings?section=updates')} style={{paddingLeft: 0, marginTop: 10}}>
         {t('updates.title')}
       </Button>}
     </GlassCard>

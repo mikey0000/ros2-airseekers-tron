@@ -4,6 +4,12 @@ import { Card, Col, Descriptions, Row, Space, Statistic, Tag, Typography } from 
 import { useTranslation } from "react-i18next";
 import { GnssStatus, GnssStatusConstants } from "../../types/ros.ts";
 import {
+    correctionAgeLabel,
+    correctionSourceLabel,
+    correctionStateLabel,
+    correctionSummaryLabel,
+    correctionTransportLabel,
+    deriveCorrectionSummary,
     deriveGpsStatus,
     gnssBaselineSolutionStatusLabel,
     gnssCorrectionStreamStatusLabel,
@@ -16,6 +22,7 @@ import {
 import {
     clampRatio,
     correctionStreamTagColor,
+    correctionToneTagColor,
     GNSS_CN0_FULL_SCALE_DB_HZ,
     liveStatusTagColor,
     rtkModeTagColor,
@@ -61,6 +68,9 @@ export const GnssLiveDiagnosticsCard: React.FC<Props> = ({
     const receiverLabel = gnssReceiverLabel(gnssStatus);
     const backendLabel = normalizeGnssString(gnssStatus?.backend) || t("diagnosticsPage.unknownLower");
     const correctionStreamLabel = gnssCorrectionStreamStatusLabel(gnssStatus) ?? unknownLabel;
+    const corrections = deriveCorrectionSummary(gnssStatus);
+    const hasTypedCorrections = corrections.origin === "typed";
+    const correctionTransport = correctionTransportLabel(corrections);
     const baselineSolutionStatus = gnssBaselineSolutionStatusLabel(gnssStatus);
     const rtkModeLabel = (() => {
         if (!hasGnssCapability(gnssStatus, GnssStatusConstants.CAP_RTK_MODE)) {
@@ -161,6 +171,7 @@ export const GnssLiveDiagnosticsCard: React.FC<Props> = ({
         hasGnssCapability(gnssStatus, GnssStatusConstants.CAP_INTERFERENCE_STATUS) ||
         hasGnssCapability(gnssStatus, GnssStatusConstants.CAP_JAMMING_STATUS);
     const showCorrectionSection =
+        hasTypedCorrections ||
         hasGnssCapability(gnssStatus, GnssStatusConstants.CAP_CORRECTION_STREAM) ||
         hasMsmSummary;
     const showBaselineSection =
@@ -191,8 +202,14 @@ export const GnssLiveDiagnosticsCard: React.FC<Props> = ({
                         <Tag color={rtkModeTagColor(gnssStatus?.rtk_mode)}>{rtkModeLabel}</Tag>
                     </Space>
                     <Space size={4}>
-                        <Text type="secondary">{t("diagnosticsPage.correctionStreamStatus")}</Text>
-                        <Tag color={correctionStreamTagColor(gnssStatus?.correction_stream_status)}>{correctionStreamLabel}</Tag>
+                        <Text type="secondary">
+                            {corrections.origin === "stream"
+                                ? t("diagnosticsPage.correctionStreamStatus")
+                                : t("corrections.label")}
+                        </Text>
+                        <Tag color={correctionToneTagColor(corrections.tone)} data-testid="gnss-corrections-tag">
+                            {correctionSummaryLabel(corrections)}
+                        </Tag>
                     </Space>
                 </Space>
 
@@ -318,6 +335,29 @@ export const GnssLiveDiagnosticsCard: React.FC<Props> = ({
                     <Space direction="vertical" size={8} style={{ width: "100%" }}>
                         <Text strong>{t("settingsGnssLiveStatus.correctionMsmSectionTitle")}</Text>
                         <Descriptions size="small" column={{ xs: 1, sm: 2 }}>
+                            {hasTypedCorrections && (
+                                <Descriptions.Item label={t("corrections.sourceLabel")}>
+                                    {correctionSourceLabel(corrections) ?? unknownLabel}
+                                </Descriptions.Item>
+                            )}
+                            {hasTypedCorrections && (
+                                <Descriptions.Item label={t("corrections.flowLabel")}>
+                                    <Tag color={correctionToneTagColor(corrections.tone)}>
+                                        {correctionStateLabel(corrections)}
+                                    </Tag>
+                                </Descriptions.Item>
+                            )}
+                            {hasTypedCorrections && correctionTransport && (
+                                <Descriptions.Item label={t("corrections.transportLabel")}>
+                                    {correctionTransport}
+                                </Descriptions.Item>
+                            )}
+                            {hasTypedCorrections &&
+                                hasGnssCapability(gnssStatus, GnssStatusConstants.CAP_CORRECTION_AGE) && (
+                                <Descriptions.Item label={t("corrections.age")}>
+                                    {correctionAgeLabel(corrections)}
+                                </Descriptions.Item>
+                            )}
                             {hasGnssCapability(gnssStatus, GnssStatusConstants.CAP_CORRECTION_STREAM) && (
                                 <Descriptions.Item label={t("diagnosticsPage.correctionStreamStatus")}>
                                     <Tag color={correctionStreamTagColor(gnssStatus?.correction_stream_status)}>

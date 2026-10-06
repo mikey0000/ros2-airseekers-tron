@@ -42,6 +42,7 @@ try:
 except ImportError:  # pragma: no cover - cv2/numpy live in the ROS 2 image
     cv2 = np = None
 
+from mower_cameras.image_cdr import ImageCdr
 from mower_cameras.v4l2_node import CaptureLoop, to_compressed_msg
 
 STEREO_FRAME_ID = 'vio_camera'
@@ -91,6 +92,31 @@ def split_side_by_side(frame):
     """Split a side-by-side stereo frame into ``(left, right)`` halves."""
     half = frame.shape[1] // 2
     return frame[:, :half], frame[:, half:2 * half]
+
+
+def scale_camera_info(info, width, height):
+    """``info`` rescaled to ``width``x``height`` (same object if the size already matches,
+    ``None`` if the aspect ratio differs, i.e. it is not a full-FOV scale)."""
+    if info is None or (info.width, info.height) == (width, height):
+        return info
+    sx, sy = width / info.width, height / info.height
+    if abs(sx - sy) > 1e-3:
+        return None
+    scaled = CameraInfo()
+    scaled.header.frame_id = info.header.frame_id
+    scaled.width, scaled.height = width, height
+    scaled.distortion_model, scaled.d, scaled.r = info.distortion_model, info.d, info.r
+    k, pm = list(info.k), list(info.p)
+    for i in (0, 1, 2):
+        k[i] *= sx
+        pm[i] *= sx
+    for i in (3, 4, 5):
+        k[i] *= sy
+        pm[4 + i - 3] *= sy
+    pm[3] *= sx
+    pm[7] *= sy
+    scaled.k, scaled.p = k, pm
+    return scaled
 
 
 def load_camera_info(path, frame_id=''):
@@ -143,6 +169,10 @@ class CameraNode(Node):
         self.declare_parameter('publish_compressed', False)
         self.declare_parameter('jpeg_quality', 80)
         self.declare_parameter('mono', False)
+        # rear: decode/publish only while image_raw / compressed / camera_info has
+        # subscribers (web_video_server, foxglove subscribe on demand)
+        self.declare_parameter('publish_on_demand', True)
+        self.declare_parameter('fast_publish', True)     # pre-serialized Image (bytes)
 
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.enable_stereo = bool(p('enable_stereo'))
@@ -150,6 +180,10 @@ class CameraNode(Node):
         self.publish_compressed = bool(p('publish_compressed'))
         self.jpeg_quality = int(p('jpeg_quality'))
         self.mono = bool(p('mono'))
+        self.on_demand = bool(p('publish_on_demand'))
+        self.fast_publish = bool(p('fast_publish'))
+        self.rear_opencv = p('rear_backend') == 'opencv'
+        self._rear_img = None
 
         qos = rclpy.qos.qos_profile_sensor_data
         self.cap_left = self.cap_right = self.cap_rear = None
@@ -189,7 +223,8 @@ class CameraNode(Node):
                 self.rear_loop = CaptureLoop(
                     self.get_logger(), p('rear_device'), p('rear_width'), p('rear_height'),
                     p('rear_fourcc'), p('rear_fps'), self._on_rear_frame,
-                    backend=p('rear_backend'), name='cap:rear')
+                    backend=p('rear_backend'), name='cap:rear',
+                    want=self._rear_wanted if self.on_demand else None)
                 self.rear_loop.start()
                 self.create_timer(10.0, self._rear_watchdog)
                 self._rear_seen = 0
@@ -265,49 +300,77 @@ class CameraNode(Node):
     def _scaled_rear_info(self, width, height):
         """Rear camera_info, rescaled if the capture mode has the calibration's aspect."""
         info = self.rear_info
-        if info is None or (info.width, info.height) == (width, height):
-            return info
-        sx, sy = width / info.width, height / info.height
-        if abs(sx - sy) > 1e-3:
-            return None
-        scaled = CameraInfo()
-        scaled.header.frame_id = info.header.frame_id
-        scaled.width, scaled.height = width, height
-        scaled.distortion_model, scaled.d, scaled.r = info.distortion_model, info.d, info.r
-        k, pm = list(info.k), list(info.p)
-        for i in (0, 1, 2):
-            k[i] *= sx
-            pm[i] *= sx
-        for i in (3, 4, 5):
-            k[i] *= sy
-            pm[4 + i - 3] *= sy
-        pm[3] *= sx
-        pm[7] *= sy
-        scaled.k, scaled.p = k, pm
-        self.get_logger().info(
-            f'rear camera_info scaled {info.width}x{info.height} -> {width}x{height} '
-            '(assumes the UVC mode is a full-FOV scale of the calibrated mode)')
+        scaled = scale_camera_info(info, width, height)
+        if scaled is not None and scaled is not info:
+            self.get_logger().info(
+                f'rear camera_info scaled {info.width}x{info.height} -> {width}x{height} '
+                '(assumes the UVC mode is a full-FOV scale of the calibrated mode)')
         return scaled
 
-    def _on_rear_frame(self, data, cap):
-        """Capture-thread callback: ``data`` is JPEG bytes (v4l2) or a BGR image (opencv)."""
-        stamp = self.get_clock().now().to_msg()
-        jpeg = None
-        if self.get_parameter('rear_backend').value == 'opencv':
+    @staticmethod
+    def _subscribed(pub):
+        return pub is not None and pub.get_subscription_count() > 0
+
+    def _rear_wanted(self):
+        return (self._subscribed(self.rear_pub) or self._subscribed(self.rear_comp_pub)
+                or (self.rear_info is not None and self._subscribed(self.rear_info_pub)))
+
+    def _rear_raw(self, now, data, cap):
+        """Decode + publish /rear_camera/image_raw; returns the BGR frame."""
+        if self.rear_opencv:
             frame = data
+        elif self.fast_publish and cap.pixel_format in ('MJPG', 'JPEG', 'UYVY', 'YUYV'):
+            img = self._rear_img
+            if img is None or (img.width, img.height) != (cap.width, cap.height):
+                img = self._rear_img = ImageCdr(REAR_FRAME_ID, cap.height, cap.width)
+            from mower_cameras.v4l2 import to_bgr
+            frame = to_bgr(data, cap.width, cap.height, cap.bytesperline, cap.pixel_format,
+                           dst=img.image)
+            if frame is None:
+                raise ValueError('undecodable rear frame (corrupt JPEG?)')
+            if frame.shape == img.image.shape:
+                if frame.ctypes.data != img.image.ctypes.data:
+                    img.image[...] = frame
+                try:
+                    self.rear_pub.publish(img.serialize(now.nanoseconds))
+                    return frame
+                except TypeError:       # rclpy without publish(bytes)
+                    self.fast_publish = False
         else:
-            jpeg = data if cap.pixel_format == 'MJPG' else None
             from mower_cameras.v4l2 import to_bgr
             frame = to_bgr(data, cap.width, cap.height, cap.bytesperline, cap.pixel_format)
             if frame is None:
                 raise ValueError('undecodable rear frame (corrupt JPEG?)')
-        self.rear_pub.publish(_to_image(stamp, REAR_FRAME_ID, frame))
-        if self.rear_comp_pub is not None:
+        self.rear_pub.publish(_to_image(now.to_msg(), REAR_FRAME_ID, frame))
+        return frame
+
+    def _on_rear_frame(self, data, cap):
+        """Capture-thread callback: ``data`` is JPEG bytes / a buffer view (v4l2) or a BGR
+        image (opencv)."""
+        now = self.get_clock().now()
+        stamp = now.to_msg()
+        od = self.on_demand
+        want_raw = not od or self._subscribed(self.rear_pub)
+        want_comp = self.rear_comp_pub is not None and (
+            not od or self._subscribed(self.rear_comp_pub))
+        jpeg = None
+        if not self.rear_opencv and cap.pixel_format == 'MJPG':
+            jpeg = data
+        frame = self._rear_raw(now, data, cap) if want_raw else None
+        if want_comp:
+            if jpeg is None and frame is None:
+                frame = self._rear_raw_frame_only(data, cap)
             comp = (to_compressed_msg(stamp, REAR_FRAME_ID, jpeg) if jpeg is not None
                     else _to_compressed(stamp, REAR_FRAME_ID, frame, self.jpeg_quality))
             if comp is not None:
                 self.rear_comp_pub.publish(comp)
-        h, w = frame.shape[:2]
+        if self.rear_info is None or not (not od or want_raw or want_comp
+                                          or self._subscribed(self.rear_info_pub)):
+            return
+        if frame is not None:
+            h, w = frame.shape[:2]
+        else:
+            w, h = cap.width, cap.height     # v4l2 backend: negotiated size
         if not hasattr(self, '_rear_info_wh') or self._rear_info_wh != (w, h):
             self._rear_info_wh = (w, h)
             self._rear_info_out = self._scaled_rear_info(w, h)
@@ -315,11 +378,20 @@ class CameraNode(Node):
             self._rear_info_out.header.stamp = stamp
             self.rear_info_pub.publish(self._rear_info_out)
 
+    def _rear_raw_frame_only(self, data, cap):
+        if self.rear_opencv:
+            return data
+        from mower_cameras.v4l2 import to_bgr
+        frame = to_bgr(data, cap.width, cap.height, cap.bytesperline, cap.pixel_format)
+        if frame is None:
+            raise ValueError('undecodable rear frame (corrupt JPEG?)')
+        return frame
+
     def _rear_watchdog(self):
-        n = self.rear_loop.frames
+        n = self.rear_loop.captured
         if n == self._rear_seen:
             self.get_logger().warning(
-                'rear camera: no frame published in the last 10 s (%s %dx%d %s); see the '
+                'rear camera: no frame captured in the last 10 s (%s %dx%d %s); see the '
                 'capture thread log above' % (self.get_parameter('rear_device').value,
                                               self.get_parameter('rear_width').value,
                                               self.get_parameter('rear_height').value,

@@ -1,7 +1,9 @@
 import React from "react";
-import { Badge, Button, Space, Tooltip } from "antd";
+import { Badge, Button, Space, Tag, Tooltip } from "antd";
 import { UndoOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
+import { useRobotProfile } from "../../hooks/useRobotProfile.ts";
+import { isKeyUsedByRobot } from "../../constants/paramBindings.ts";
 
 type Props = {
     /** The parameter key this label is for (e.g. "mowing_speed"). */
@@ -25,6 +27,10 @@ type Props = {
  *     the value is overridden AND a default exists.
  * When no default is known (canReset === false) it renders the label plainly,
  * so it is safe to use everywhere regardless of whether the key has a default.
+ *
+ * On a robot profile with a settings -> ROS parameter binding table
+ * (constants/paramBindings.ts) a key that nothing on the robot reads gets a
+ * "not used by this robot" tag; stock profiles never show it.
  */
 export const SettingFieldLabel: React.FC<Props> = ({
     settingKey,
@@ -34,6 +40,8 @@ export const SettingFieldLabel: React.FC<Props> = ({
     onReset,
 }) => {
     const { t } = useTranslation();
+    const { profile } = useRobotProfile();
+    const unused = !isKeyUsedByRobot(profile, settingKey);
     const showReset = canReset && overridden && !!onReset;
     const overriddenText = t("settingsReset.overridden", "Overridden — differs from default");
     return (
@@ -51,6 +59,13 @@ export const SettingFieldLabel: React.FC<Props> = ({
                 </Tooltip>
             ) : null}
             <span>{label}</span>
+            {unused ? (
+                <Tooltip title={t("paramBindings.notUsedTooltip")}>
+                    <Tag style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: "16px" }}>
+                        {t("paramBindings.notUsed")}
+                    </Tag>
+                </Tooltip>
+            ) : null}
             {showReset ? (
                 <Tooltip title={t("settingsReset.resetToDefault", "Reset to default")}>
                     <Button

@@ -2,6 +2,7 @@ import React from "react";
 import { Alert, Card, Typography } from "antd";
 import { WarningOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
+import { useFeature } from "../../hooks/useRobotProfile.ts";
 
 const { Paragraph } = Typography;
 
@@ -38,6 +39,7 @@ type Props = {
  */
 export const SafetySection: React.FC<Props> = () => {
     const { t } = useTranslation();
+    const hasStm32 = useFeature("stm32_firmware");
     return (
         <div>
             <Alert
@@ -45,13 +47,13 @@ export const SafetySection: React.FC<Props> = () => {
                 showIcon
                 icon={<WarningOutlined />}
                 message={t("settingsSafety.alertMessage")}
-                description={t("settingsSafety.alertDescription")}
+                description={t(hasStm32 ? "settingsSafety.alertDescription" : "settingsSafety.alertDescriptionGeneric")}
                 style={{ marginBottom: 16 }}
             />
 
             <Card size="small" title={t("settingsSafety.firmwareOwnedTitle")} style={{ marginBottom: 16 }}>
                 <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                    {t("settingsSafety.firmwareOwnedDescription")}
+                    {t(hasStm32 ? "settingsSafety.firmwareOwnedDescription" : "settingsSafety.firmwareOwnedDescriptionGeneric")}
                 </Paragraph>
                 <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
                     {t("settingsSafety.temperatureThresholdsNote")}

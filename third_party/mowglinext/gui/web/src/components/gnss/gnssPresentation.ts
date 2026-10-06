@@ -1,4 +1,4 @@
-import type { GpsFixType } from "../../utils/gpsStatus.ts";
+import type { CorrectionTone, GpsFixType } from "../../utils/gpsStatus.ts";
 import { GnssStatusConstants } from "../../types/ros.ts";
 
 export const GNSS_CN0_FULL_SCALE_DB_HZ = 45;
@@ -56,4 +56,18 @@ export function clampRatio(numerator: number | undefined, denominator: number | 
         return undefined;
     }
     return Math.min(1, Math.max(0, numerator / denominator));
+}
+
+/** antd Tag colour for a CorrectionSummary tone (see deriveCorrectionSummary). */
+export function correctionToneTagColor(tone: CorrectionTone) {
+    switch (tone) {
+        case "success":
+            return "success";
+        case "warning":
+            return "warning";
+        case "error":
+            return "error";
+        default:
+            return undefined;
+    }
 }

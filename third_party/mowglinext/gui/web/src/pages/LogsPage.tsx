@@ -1,4 +1,4 @@
-import {App, Input, Select, Space} from "antd";
+import {Alert, App, Input, Segmented, Select, Space} from "antd";
 import {useEffect, useMemo, useRef, useState} from "react";
 import {useTranslation} from "react-i18next";
 import AsyncButton from "../components/AsyncButton.tsx";
@@ -9,8 +9,24 @@ import {useIsMobile} from "../hooks/useIsMobile";
 import {appendCappedBatch, createLogBatcher, type LogBatcher} from "./logBatcher.ts";
 import {useTimeFormat} from "../hooks/useTimeFormat.tsx";
 import {parseLogTimestamp, type LogTimestampSource} from "../utils/logTime.ts";
+import {useFeature} from "../hooks/useRobotProfile.ts";
+import {
+    acceptRosoutRecord,
+    distinctNodes,
+    formatLinesForCopy,
+    parseRosoutFrame,
+    rosLevelToSeverity,
+    type RosoutCursor,
+    type Severity,
+} from "./rosoutLog.ts";
 
-type Severity = 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'OTHER';
+/**
+ * Where log lines come from: a Docker container's stdout/stderr (needs the
+ * Docker socket, profile feature `docker_host`), or the ROS 2 /rosout topic,
+ * which every node publishes to and which works on any host.
+ */
+type LogSource = 'containers' | 'rosout';
+const ROSOUT_STREAM_URI = '/api/rosout/stream';
 
 const LEVEL_PATTERN = /\b(ERROR|ERR|FATAL|CRITICAL|WARN(?:ING)?|INFO|DEBUG|TRACE)\b/i;
 // ESC is a control character by definition -- an ANSI escape matcher cannot
@@ -38,6 +54,8 @@ interface ParsedLog {
     /** Epoch ms, parsed once at ingest — never re-parsed during render. */
     tsMs: number;
     tsSource: LogTimestampSource;
+    /** Publishing node (rosout source only). */
+    node?: string;
 }
 
 const LEVEL_OPTIONS: { value: Severity; label: string }[] = [
@@ -68,25 +86,79 @@ export const LogsPage = () => {
     const guiApi = useApi();
     const {notification} = App.useApp();
     const isMobile = useIsMobile();
+    const dockerHost = useFeature('docker_host');
     const [containers, setContainers] = useState<ContainerList[]>([]);
     const [containerId, setContainerId] = useState<string | undefined>(undefined);
+    // false once GET /containers reports no reachable Docker daemon; undefined
+    // until asked (an older backend without the field counts as available).
+    const [dockerAvailable, setDockerAvailable] = useState<boolean | undefined>(undefined);
+    const [chosenSource, setChosenSource] = useState<LogSource | null>(null);
     const [logs, setLogs] = useState<ParsedLog[]>([]);
     const [levels, setLevels] = useState<Severity[]>(DEFAULT_LEVELS);
+    const [nodes, setNodes] = useState<string[]>([]);
     const [search, setSearch] = useState('');
     const [autoScroll, setAutoScroll] = useState(true);
+    // Paused: lines keep arriving but are held back, so the view stays still
+    // while reading; resuming appends them. Distinct from autoScroll, which
+    // only stops following the tail.
+    const [paused, setPaused] = useState(false);
+    const [heldCount, setHeldCount] = useState(0);
+    const pausedRef = useRef(false);
+    const heldRef = useRef<ParsedLog[]>([]);
     const nextIdRef = useRef(0);
+    const rosoutCursorRef = useRef<RosoutCursor>(null);
     const listRef = useRef<HTMLDivElement | null>(null);
     const batcherRef = useRef<LogBatcher<ParsedLog> | null>(null);
     if (batcherRef.current === null) {
         batcherRef.current = createLogBatcher<ParsedLog>((batch) => {
+            if (pausedRef.current) {
+                heldRef.current = appendCappedBatch(heldRef.current, batch, MAX_LINES);
+                setHeldCount(heldRef.current.length);
+                return;
+            }
             setLogs(prev => appendCappedBatch(prev, batch, MAX_LINES));
         }, LOG_BATCH_INTERVAL_MS);
     }
 
+    const canUseContainers = dockerHost && dockerAvailable !== false;
+    const source: LogSource = chosenSource === 'rosout' || !canUseContainers ? 'rosout' : 'containers';
+    const sourceRef = useRef<LogSource>(source);
+    sourceRef.current = source;
+
     const resetLogs = () => {
         batcherRef.current?.reset();
         nextIdRef.current = 0;
+        heldRef.current = [];
+        setHeldCount(0);
         setLogs([]);
+    };
+
+    const togglePaused = () => {
+        const next = !pausedRef.current;
+        pausedRef.current = next;
+        setPaused(next);
+        if (!next && heldRef.current.length > 0) {
+            const held = heldRef.current;
+            heldRef.current = [];
+            setHeldCount(0);
+            setLogs(prev => appendCappedBatch(prev, held, MAX_LINES));
+        }
+    };
+
+    const ingestRosout = (frame: string) => {
+        const record = parseRosoutFrame(frame);
+        if (!record) return;
+        const verdict = acceptRosoutRecord(rosoutCursorRef.current, record);
+        rosoutCursorRef.current = verdict.cursor;
+        if (!verdict.accept) return;
+        batcherRef.current?.push({
+            id: nextIdRef.current++,
+            plain: record.msg,
+            severity: rosLevelToSeverity(record.level),
+            tsMs: record.stamp_ms,
+            tsSource: 'ros',
+            node: record.node,
+        });
     };
     // useWS.onClose fires for BOTH server-side drops and our own stop()/container
     // switches. Flag the deliberate ones so we don't surface an error toast for
@@ -103,6 +175,10 @@ export const LogsPage = () => {
         },
         () => { /* connected */ },
         (line, first) => {
+            if (sourceRef.current === 'rosout') {
+                ingestRosout(line);
+                return;
+            }
             if (first) resetLogs();
             const stripped = line.replace(ANSI_REGEX, '');
             // Parse ONCE here, at ingest. Doing it in the render map or the
@@ -123,6 +199,14 @@ export const LogsPage = () => {
         try {
             const res = await guiApi.containers.containersList();
             if (res.error) throw new Error(res.error.error);
+            // No Docker daemon on this host: not an error, the page falls
+            // back to /rosout.
+            if (res.data.available === false) {
+                setDockerAvailable(false);
+                setContainers([]);
+                return;
+            }
+            setDockerAvailable(true);
             const options = res.data.containers?.flatMap<ContainerList>((c) => {
                 if (!c.names || !c.id) return [];
                 const name = c.names[0].replace("/", "");
@@ -143,15 +227,23 @@ export const LogsPage = () => {
         }
     }
 
-    useEffect(() => { listContainers(); }, []);
+    useEffect(() => {
+        if (dockerHost) void listContainers();
+    }, [dockerHost]);
 
     useEffect(() => {
+        if (source === 'rosout') {
+            resetLogs();
+            rosoutCursorRef.current = null;
+            stream.start(ROSOUT_STREAM_URI);
+            return () => { intentionalStopRef.current = true; stream?.stop(); };
+        }
         if (!containerId) return;
         resetLogs();
         stream.start(`/api/containers/${containerId}/logs`);
         // Switching containers (or unmounting) closes the socket on purpose.
         return () => { intentionalStopRef.current = true; stream?.stop(); };
-    }, [containerId]);
+    }, [source, containerId]);
 
     useEffect(() => () => batcherRef.current?.reset(), []);
 
@@ -183,6 +275,10 @@ export const LogsPage = () => {
     };
 
     const selectedContainer = containers.find(c => c.value === containerId);
+    const nodeOptions = useMemo(
+        () => source === 'rosout' ? distinctNodes(logs).map(n => ({value: n, label: n})) : [],
+        [logs, source],
+    );
 
     // Issue #207 moved the timestamp out of the line body and into its own
     // rendered column, so `plain` no longer contains it and a search for
@@ -193,12 +289,15 @@ export const LogsPage = () => {
     // without it), and an ordinary word search must not pay that.
     const filtered = useMemo(() => {
         const levelSet = new Set(levels);
+        const nodeSet = source === 'rosout' && nodes.length > 0 ? new Set(nodes) : null;
         const q = search.trim().toLowerCase();
         const searchesTime = q !== '' && QUERY_HAS_DIGIT.test(q);
         return logs.filter(l => {
             if (!levelSet.has(l.severity)) return false;
+            if (nodeSet && (!l.node || !nodeSet.has(l.node))) return false;
             if (!q) return true;
             if (l.plain.toLowerCase().includes(q)) return true;
+            if (l.node?.toLowerCase().includes(q)) return true;
             if (!searchesTime) return false;
             // Raw epochs, as pasted from a bug report or an older ROS console.
             if (String(Math.floor(l.tsMs / 1000)).includes(q)) return true;
@@ -211,7 +310,20 @@ export const LogsPage = () => {
         });
         // formatLogTime is a useCallback keyed on timeZoneMode: without it in
         // the deps, toggling UTC would leave a stale filter result on screen.
-    }, [logs, levels, search, formatLogTime]);
+    }, [logs, levels, nodes, source, search, formatLogTime]);
+
+    const copyVisible = async () => {
+        const text = formatLinesForCopy(filtered, (ms) => formatLogTime(ms, {withMillis: true}));
+        try {
+            await navigator.clipboard.writeText(text);
+            notification.success({message: t('logsRosout.copied', {count: filtered.length})});
+        } catch (e: unknown) {
+            notification.error({
+                message: t('logsRosout.copyFailed'),
+                description: e instanceof Error ? e.message : String(e),
+            });
+        }
+    };
 
     const counts = useMemo(() => {
         const c: Record<Severity, number> = {ERROR: 0, WARN: 0, INFO: 0, DEBUG: 0, OTHER: 0};
@@ -248,34 +360,64 @@ export const LogsPage = () => {
 
     return (
         <div style={{display: 'flex', flexDirection: 'column', gap: 12, height: '100%'}}>
-            {/* Container picker + lifecycle controls */}
+            {dockerHost && dockerAvailable === false && (
+                <Alert type="info" showIcon message={t('logsRosout.dockerUnavailable')} style={{flexShrink: 0}}/>
+            )}
+            {/* Source switch, then the container picker + lifecycle controls or the node filter */}
             <div style={{
                 display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 8,
                 alignItems: isMobile ? 'stretch' : 'center',
                 background: colors.bgCard, borderRadius: 12, padding: 12, flexShrink: 0,
             }}>
-                <Select<string>
-                    options={containers}
-                    value={containerId}
-                    style={{flex: 1, minWidth: isMobile ? undefined : 200}}
-                    onSelect={(value) => setContainerId(value)}
-                    placeholder={t('logsPage.selectContainer')}
-                />
-                <Space size={8} style={{flexShrink: 0}}>
-                    {selectedContainer?.status === "started" && (
-                        <>
-                            <AsyncButton onAsyncClick={commandContainer("restart")} size={isMobile ? "middle" : "small"}>{t('logsPage.restart')}</AsyncButton>
-                            <AsyncButton
-                                disabled={selectedContainer.labels.app === "gui"}
-                                onAsyncClick={commandContainer("stop")}
-                                size={isMobile ? "middle" : "small"}
-                            >{t('logsPage.stop')}</AsyncButton>
-                        </>
-                    )}
-                    {selectedContainer?.status === "stopped" && (
-                        <AsyncButton onAsyncClick={commandContainer("start")} size={isMobile ? "middle" : "small"}>{t('logsPage.start')}</AsyncButton>
-                    )}
-                </Space>
+                {canUseContainers && (
+                    <Segmented<LogSource>
+                        value={source}
+                        onChange={(value) => setChosenSource(value)}
+                        options={[
+                            {value: 'containers', label: t('logsRosout.sourceContainers')},
+                            {value: 'rosout', label: t('logsRosout.sourceRosout')},
+                        ]}
+                        aria-label={t('logsRosout.sourceLabel')}
+                    />
+                )}
+                {source === 'rosout' ? (
+                    <Select<string[]>
+                        mode="multiple"
+                        allowClear
+                        options={nodeOptions}
+                        value={nodes}
+                        onChange={(value) => setNodes(value)}
+                        style={{flex: 1, minWidth: isMobile ? undefined : 200}}
+                        placeholder={t('logsRosout.allNodes')}
+                        aria-label={t('logsRosout.nodeFilter')}
+                        maxTagCount="responsive"
+                    />
+                ) : (
+                    <Select<string>
+                        options={containers}
+                        value={containerId}
+                        style={{flex: 1, minWidth: isMobile ? undefined : 200}}
+                        onSelect={(value) => setContainerId(value)}
+                        placeholder={t('logsPage.selectContainer')}
+                    />
+                )}
+                {source === 'containers' && (
+                    <Space size={8} style={{flexShrink: 0}}>
+                        {selectedContainer?.status === "started" && (
+                            <>
+                                <AsyncButton onAsyncClick={commandContainer("restart")} size={isMobile ? "middle" : "small"}>{t('logsPage.restart')}</AsyncButton>
+                                <AsyncButton
+                                    disabled={selectedContainer.labels.app === "gui"}
+                                    onAsyncClick={commandContainer("stop")}
+                                    size={isMobile ? "middle" : "small"}
+                                >{t('logsPage.stop')}</AsyncButton>
+                            </>
+                        )}
+                        {selectedContainer?.status === "stopped" && (
+                            <AsyncButton onAsyncClick={commandContainer("start")} size={isMobile ? "middle" : "small"}>{t('logsPage.start')}</AsyncButton>
+                        )}
+                    </Space>
+                )}
             </div>
 
             {/* Filter chips + search */}
@@ -346,6 +488,29 @@ export const LogsPage = () => {
                         {autoScroll ? `↓ ${t('logsPage.live')}` : `↓ ${t('logsPage.paused')}`}
                     </button>
                     <button
+                        onClick={togglePaused}
+                        aria-pressed={paused}
+                        style={{
+                            padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 600,
+                            border: `1px solid ${paused ? colors.warning : colors.border}`,
+                            background: paused ? `${colors.warning}1f` : 'transparent',
+                            color: paused ? colors.warning : colors.textDim,
+                            cursor: 'pointer',
+                        }}
+                    >
+                        {paused ? t('logsRosout.resume', {count: heldCount}) : t('logsRosout.pause')}
+                    </button>
+                    <button
+                        onClick={() => void copyVisible()}
+                        disabled={filtered.length === 0}
+                        style={{
+                            padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 600,
+                            border: `1px solid ${colors.border}`, background: 'transparent',
+                            color: colors.textDim, cursor: filtered.length === 0 ? 'default' : 'pointer',
+                            opacity: filtered.length === 0 ? 0.5 : 1,
+                        }}
+                    >{t('logsRosout.copy')}</button>
+                    <button
                         onClick={resetLogs}
                         style={{
                             padding: '4px 10px', borderRadius: 999, fontSize: 12, fontWeight: 600,
@@ -414,6 +579,9 @@ export const LogsPage = () => {
                                 }}>
                                     {line.severity}
                                 </span>
+                            )}
+                            {line.node && (
+                                <span style={{color: colors.textDim, marginRight: 8}}>[{line.node}]</span>
                             )}
                             <span>{line.plain}</span>
                         </div>

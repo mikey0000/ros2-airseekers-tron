@@ -28,26 +28,24 @@ import {
     type ReadinessState,
     type WorkingAreaLike,
 } from "./readinessChecks.ts";
-import {STEP_CALIBRATION, STEP_DATUM, STEP_FIRMWARE, STEP_GPS, STEP_NTRIP} from "./steps.ts";
+import {
+    readinessCheckApplies,
+    resolveReadinessCta,
+    type OnboardingStepId,
+} from "./steps.ts";
+import {hasFeature, type RobotProfile} from "../../constants/robotProfiles.ts";
 
 const {Text} = Typography;
 
 interface ReadinessStepProps {
     values: Record<string, unknown>;
-    /** Deep-links back to an in-wizard step (wraps the wizard's setCurrentStep). */
-    onJumpToStep: (idx: number) => void;
+    /** The robot profile the wizard runs for; drops checks it cannot pass. */
+    profile: RobotProfile;
+    /** The wizard's steps for this profile (CTA targets must be among them). */
+    steps: readonly OnboardingStepId[];
+    /** Deep-links back to an in-wizard step. */
+    onJumpToStep: (id: OnboardingStepId) => void;
 }
-
-/** Maps a check's CTA target to an in-wizard step index (or null for routes). */
-const CTA_STEP_INDEX: Record<ReadinessCtaTarget, number | null> = {
-    gps: STEP_GPS,
-    ntrip: STEP_NTRIP,
-    datum: STEP_DATUM,
-    firmware: STEP_FIRMWARE,
-    calibration: STEP_CALIBRATION,
-    diagnostics: null,
-    map: null,
-};
 
 function stateIcon(check: ReadinessCheck): React.ReactNode {
     if (check.state === "pass") {
@@ -62,7 +60,7 @@ function stateIcon(check: ReadinessCheck): React.ReactNode {
         : <InfoCircleTwoTone twoToneColor="#1677ff" />;
 }
 
-export const ReadinessStep: React.FC<ReadinessStepProps> = ({values, onJumpToStep}) => {
+export const ReadinessStep: React.FC<ReadinessStepProps> = ({values, profile, steps, onJumpToStep}) => {
     const {t} = useTranslation();
     const {colors} = useThemeMode();
     const guiApi = useApi();
@@ -88,20 +86,20 @@ export const ReadinessStep: React.FC<ReadinessStepProps> = ({values, onJumpToSte
             values,
             workingArea: (map.working_area ?? undefined) as WorkingAreaLike[] | undefined,
             nowMs: Date.now(),
-        }),
-        [gnssStatus, fusion, calibration, firmwareCompatible, values, map.working_area],
+        }).filter((check) => readinessCheckApplies(check.id, profile)),
+        [gnssStatus, fusion, calibration, firmwareCompatible, values, map.working_area, profile],
     );
 
     const requiredFailing = requiredFailingChecks(checks);
     const gated = requiredFailing.length > 0;
 
-    const runCta = (target: ReadinessCtaTarget) => {
-        const stepIndex = CTA_STEP_INDEX[target];
-        if (stepIndex !== null) {
-            onJumpToStep(stepIndex);
+    const runCta = (check: ReadinessCheck, target: ReadinessCtaTarget) => {
+        const resolved = resolveReadinessCta(target, check.id, steps);
+        if ("step" in resolved) {
+            onJumpToStep(resolved.step);
             return;
         }
-        navigate(target === "map" ? "/map" : "/diagnostics");
+        navigate(resolved.route);
     };
 
     const commit = async () => {
@@ -111,8 +109,13 @@ export const ReadinessStep: React.FC<ReadinessStepProps> = ({values, onJumpToSte
             // Mark onboarding done in the DB so the wizard doesn't redirect again,
             // then restart ROS2 (picks up the new mowgli_robot.yaml) and the GUI.
             await fetch(`${httpBase()}/api/settings/status`, {method: "POST"});
-            await restartRos2(guiApi);
-            await restartGui(guiApi);
+            // Restarting goes through the Docker socket; a robot without one
+            // runs its stack natively and applies the settings on its next
+            // start (see the hint on the result screen).
+            if (hasFeature(profile, "docker_host")) {
+                await restartRos2(guiApi);
+                await restartGui(guiApi);
+            }
             setCommitted(true);
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
@@ -164,6 +167,14 @@ export const ReadinessStep: React.FC<ReadinessStepProps> = ({values, onJumpToSte
                     </Button>,
                 ]}
             >
+                {!hasFeature(profile, "docker_host") && (
+                    <Alert
+                        type="info"
+                        showIcon
+                        message={t("onboardingProfile.noDockerRestartHint")}
+                        style={{maxWidth: 500, margin: "0 auto 12px", textAlign: "left"}}
+                    />
+                )}
                 {error && (
                     <Alert
                         type="warning"
@@ -206,7 +217,7 @@ export const ReadinessStep: React.FC<ReadinessStepProps> = ({values, onJumpToSte
                                         key="cta"
                                         type="link"
                                         size="small"
-                                        onClick={() => runCta(check.ctaTarget!)}
+                                        onClick={() => runCta(check, check.ctaTarget!)}
                                     >
                                         {t(check.ctaKey!)}
                                     </Button>,

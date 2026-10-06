@@ -1,5 +1,9 @@
-import {GnssStatus, GnssStatusConstants} from "../../types/ros.ts";
-import {deriveGpsStatus, gnssCorrectionStreamStatusLabel} from "../../utils/gpsStatus.ts";
+import {GnssStatus} from "../../types/ros.ts";
+import {
+    correctionSummaryLabel,
+    deriveCorrectionSummary,
+    deriveGpsStatus,
+} from "../../utils/gpsStatus.ts";
 import type {FusionGraphStats} from "../../hooks/useFusionGraphDiagnostics.ts";
 import type {CalibrationStatus} from "../../hooks/useCalibrationStatus.ts";
 
@@ -95,25 +99,22 @@ function rtkCheck(snap: ReadinessSnapshot): ReadinessCheck {
 }
 
 function correctionsCheck(snap: ReadinessSnapshot): ReadinessCheck {
-    const status = snap.gnss?.correction_stream_status;
-    let state: ReadinessState;
-    if (status === GnssStatusConstants.CORRECTION_STREAM_STATUS_ACTIVE) {
-        state = "pass";
-    } else if (
-        status === GnssStatusConstants.CORRECTION_STREAM_STATUS_ERROR ||
-        status === GnssStatusConstants.CORRECTION_STREAM_STATUS_UNAVAILABLE
-    ) {
-        state = "fail";
-    } else {
-        state = "pending";
-    }
+    // Source-agnostic: NTRIP, a radio (LoRa) base, or the legacy stream summary.
+    const summary = deriveCorrectionSummary(snap.gnss);
+    const state: ReadinessState =
+        summary.tone === "success" ? "pass" : summary.tone === "error" ? "fail" : "pending";
+    const isLora = summary.source === "lora";
     return {
         id: "corrections",
         required: false,
         state,
-        labelKey: "onboardingPage.readinessCheckCorrections",
-        valueText: gnssCorrectionStreamStatusLabel(snap.gnss),
-        ctaKey: state === "pass" ? undefined : "onboardingPage.readinessCtaFixNtrip",
+        labelKey: isLora ? "corrections.readinessCheck" : "onboardingPage.readinessCheckCorrections",
+        valueText: summary.origin === "none" ? undefined : correctionSummaryLabel(summary),
+        ctaKey: state === "pass"
+            ? undefined
+            : isLora
+                ? "corrections.readinessCtaLora"
+                : "onboardingPage.readinessCtaFixNtrip",
         ctaTarget: "ntrip",
     };
 }

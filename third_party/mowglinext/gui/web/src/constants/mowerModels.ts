@@ -132,6 +132,25 @@ export const MOWER_MODELS: MowerModel[] = [
         },
     },
     {
+        // Airseekers Tron (ROS 2 port). PLACEHOLDER geometry copied from
+        // config/urdf/mower.urdf.xacro (chassis 0.70 x 0.50 @ x=0.12, wheel r 0.10,
+        // track 2 x 0.24, cutter disc r 0.10 -> tool_width 0.20): placeholder,
+        // measure on the robot (owner's figures 0.53 m track / 0.30 m cut disagree).
+        // Battery thresholds and STM32-only keys (ticks_per_meter, caster_*, mass)
+        // are deliberately absent. No template counterpart, so the parity guard
+        // (which only compares the template's own mower_model) does not apply.
+        value: "AirseekersTron",
+        label: "mowerModels.AirseekersTron.label",
+        description: "mowerModels.AirseekersTron.description",
+        defaults: {
+            wheel_radius: 0.1, wheel_track: 0.48, wheel_x_offset: 0.0,
+            wheel_width: 0.05, chassis_height: 0.2,
+            blade_radius: 0.1, tool_width: 0.2,
+            gps_x: 0.0, gps_y: 0.0, gps_z: 0.3,
+            chassis_length: 0.70, chassis_width: 0.50, chassis_center_x: 0.12,
+        },
+    },
+    {
         value: "CUSTOM",
         label: "mowerModels.CUSTOM.label",
         description: "mowerModels.CUSTOM.description",

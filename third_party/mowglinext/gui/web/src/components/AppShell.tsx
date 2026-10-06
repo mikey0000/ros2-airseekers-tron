@@ -1,10 +1,8 @@
-import {type ReactNode, useEffect, useMemo, useState} from "react";
+import {type ReactNode, Suspense, useEffect, useMemo, useState} from "react";
 import {useMatches, useNavigate, useOutlet} from "react-router-dom";
 import {AnimatePresence, motion, LayoutGroup} from "framer-motion";
-import {
-  Home, Map as MapIcon, Calendar, Compass, Settings, Terminal, Rocket, Activity,
-  MoreHorizontal, X, SlidersHorizontal,
-} from "lucide-react";
+import {Spin} from "antd";
+import {MoreHorizontal, X} from "lucide-react";
 
 import {useTranslation} from "react-i18next";
 
@@ -25,7 +23,11 @@ import {BRAND_GRADIENT} from "../theme/colors.ts";
 import {httpBase} from "../utils/apiHost.ts";
 import {KEYFRAMES_CSS} from "./dashboard";
 import "../concept/concept.css";
-import {isTronHidden, SKIP_ONBOARDING} from "../tronFeatures.ts";
+import {useGate, useProfileGates} from "../hooks/useProfileGates.ts";
+import {filterNavItems, type NavItem} from "./navItems.ts";
+
+/** Build-time escape hatch: never redirect to the onboarding wizard. */
+const SKIP_ONBOARDING = import.meta.env.VITE_SKIP_ONBOARDING === '1';
 
 /**
  * Premium tech-garden shell shared by the whole app.
@@ -37,25 +39,8 @@ import {isTronHidden, SKIP_ONBOARDING} from "../tronFeatures.ts";
  * All surfaces inherit the /concept tokens (data-concept scope on body).
  */
 
-interface NavItem {
-  key: string;            // path
-  labelKey: string;       // i18n key
-  shortLabelKey?: string; // for the bottom-nav
-  icon: typeof Home;
-  showInBottom?: boolean;
-}
-
-const NAV: NavItem[] = [
-  {key: '/mowglinext',  labelKey: 'nav.home',        shortLabelKey: 'nav.home',      icon: Home,     showInBottom: true},
-  {key: '/map',         labelKey: 'nav.map',                                          icon: MapIcon,  showInBottom: true},
-  {key: '/schedule',    labelKey: 'nav.schedule',    shortLabelKey: 'nav.schedule',  icon: Calendar, showInBottom: true},
-  {key: '/diagnostics', labelKey: 'nav.diagnostics', shortLabelKey: 'nav.diagShort', icon: Activity, showInBottom: true},
-  {key: '/statistics',  labelKey: 'nav.stats',                                        icon: Compass,  showInBottom: false},
-  {key: '/settings',    labelKey: 'nav.settings',                                     icon: Settings, showInBottom: false},
-  {key: '/parameters',  labelKey: 'nav.parameters',                                   icon: SlidersHorizontal, showInBottom: false},
-  {key: '/logs',        labelKey: 'nav.logs',                                         icon: Terminal, showInBottom: false},
-  {key: '/onboarding',  labelKey: 'nav.onboarding',                                   icon: Rocket,   showInBottom: false},
-].filter(n => !isTronHidden(n.key)); // tron: tronFeatures.ts
+// Nav entries live in ./navItems.ts; the ones whose path is a profile gate
+// (constants/profileGates.ts) only show on robots that have the feature.
 
 // Title falls back to the nav label key where they coincide; statistics has a
 // fuller title than its short nav label.
@@ -68,6 +53,7 @@ const PAGE_META: Record<string, {titleKey: string; subtitleKey?: string}> = {
   '/settings':    {titleKey: 'nav.settings',             subtitleKey: 'pageMeta.settings.subtitle'},
   '/parameters':  {titleKey: 'nav.parameters',           subtitleKey: 'pageMeta.parameters.subtitle'},
   '/logs':        {titleKey: 'nav.logs',                 subtitleKey: 'pageMeta.logs.subtitle'},
+  '/perception':  {titleKey: 'profileGating.navPerception', subtitleKey: 'profileGating.perceptionSubtitle'},
   '/onboarding':  {titleKey: 'nav.onboarding'},
 };
 
@@ -77,6 +63,10 @@ export function AppShell() {
   const navigate = useNavigate();
   const route = useMatches();
   const isMobile = useIsMobile();
+  // Strict: a robot without a page never shows its entry, not even while
+  // its profile is still loading.
+  const {isVisibleStrict: gateVisible, loading: profileLoading} = useProfileGates();
+  const nav = useMemo(() => filterNavItems(gateVisible), [gateVisible]);
 
   const currentPath = route.length > 1 ? route[1].pathname : '/mowglinext';
   const metaKeys = PAGE_META[currentPath];
@@ -97,7 +87,8 @@ export function AppShell() {
   // Onboarding gate (kept from the previous Root)
   const [configChecked, setConfigChecked] = useState(false);
   useEffect(() => {
-    if (configChecked || SKIP_ONBOARDING) return; // tron: tronFeatures.ts
+    // Wait for the robot profile first (the wizard is profile-aware).
+    if (configChecked || SKIP_ONBOARDING || profileLoading) return;
     (async () => {
       try {
         const res = await fetch(`${httpBase()}/api/settings/status`);
@@ -108,7 +99,7 @@ export function AppShell() {
       } catch { /* ignore */ }
       setConfigChecked(true);
     })();
-  }, [configChecked, currentPath, navigate]);
+  }, [configChecked, currentPath, navigate, profileLoading]);
 
   // Auto-notifications hook (BT-state derived push notifications)
   const {highLevelStatus} = useHighLevelStatus();
@@ -123,8 +114,8 @@ export function AppShell() {
 
   // Bottom-nav items: the primary destinations live in the bar; the rest are
   // reachable through a "More" overflow sheet so nothing is unreachable on mobile.
-  const bottomItems = useMemo(() => NAV.filter(n => n.showInBottom), []);
-  const overflowItems = useMemo(() => NAV.filter(n => !n.showInBottom), []);
+  const bottomItems = useMemo(() => nav.filter(n => n.showInBottom), [nav]);
+  const overflowItems = useMemo(() => nav.filter(n => !n.showInBottom), [nav]);
   const [moreOpen, setMoreOpen] = useState(false);
 
   // iOS "Add to Home Screen" hint — only ever shows on iOS Safari outside
@@ -139,7 +130,7 @@ export function AppShell() {
         // prevents focused selects from shifting this frame horizontally.
         height: '100%', background: colors.bgBase, overflow: 'clip',
       }}>
-        <style>{KEYFRAMES_CSS}</style>
+        <style>{KEYFRAMES_CSS + PAGE_ENTER_CSS}</style>
         <AuroraBackdrop/>
         <LiveStatusStrip/>
 
@@ -210,11 +201,11 @@ export function AppShell() {
       background: colors.bgBase,
       position: 'relative',
     }}>
-      <style>{KEYFRAMES_CSS}</style>
+      <style>{KEYFRAMES_CSS + PAGE_ENTER_CSS}</style>
       <AuroraBackdrop/>
 
       <DesktopSideRail
-        items={NAV}
+        items={nav}
         activePath={currentPath}
         onNavigate={(k) => navigate({pathname: k})}
       />
@@ -277,32 +268,44 @@ function AuroraBackdrop() {
   );
 }
 
+// Page entry animation. Deliberately plain CSS rather than framer-motion's
+// AnimatePresence: with mode="wait" the next page was only mounted once the
+// previous page's exit animation reported completion, so whenever frame
+// callbacks stalled (background or occluded tab, throttled kiosk/WebView,
+// automation) the header followed the route while the body stayed frozen on
+// the page that was exiting — and a freshly loaded page stayed at its initial
+// opacity:0/translateY state. CSS animations run on the document timeline, so
+// a late frame simply paints the finished state, and the route swap itself no
+// longer waits on any animation.
+const PAGE_ENTER_CSS = `
+@keyframes mn-page-enter { from { opacity: 0; transform: translateY(10px); } }
+.mn-page-enter { animation: mn-page-enter 0.28s cubic-bezier(0.2, 0.7, 0.2, 1); }
+@media (prefers-reduced-motion: reduce) { .mn-page-enter { animation: none; } }
+`;
+
 function AnimatedOutlet({currentPath}: {currentPath: string}) {
-  // Snapshot the outlet ELEMENT here instead of rendering a live <Outlet/>.
-  // AnimatePresence (mode="wait") keeps the outgoing motion.div mounted while
-  // it fades out; a live <Outlet/> inside it subscribes to router context and
-  // re-renders the exiting div with the NEW route's content — a redirect
-  // during initial load then leaves the page blank or stuck mid-fade. With
-  // useOutlet() the element is captured per render/location, so the cached
-  // exiting div keeps the OLD page and the freshly keyed div gets the new one.
   const outlet = useOutlet();
   // Scrolling pages must grow with their content so main's bottom padding
   // follows the final control instead of sitting behind overflowing children.
   // Map and logs own their viewport layout and still need a definite height.
   const fillViewport = currentPath === '/map' || currentPath === '/logs';
   return (
-    <AnimatePresence mode="wait">
-      <motion.div
-        key={currentPath}
-        initial={{opacity: 0, y: 10}}
-        animate={{opacity: 1, y: 0}}
-        exit={{opacity: 0, y: -6}}
-        transition={{duration: 0.28, ease: [0.2, 0.7, 0.2, 1]}}
-        style={{minHeight: '100%', height: fillViewport ? '100%' : undefined}}
-      >
+    // Keyed by path: each page mounts fresh (as before) and replays the entry
+    // animation. Exactly one wrapper exists at a time, so no outgoing page can
+    // sit above the new one and push it down.
+    <div
+      key={currentPath}
+      className="mn-page-enter"
+      data-testid="page-outlet"
+      style={{minHeight: '100%', height: fillViewport ? '100%' : undefined}}
+    >
+      {/* Pages are React.lazy chunks. Suspend here, inside the shell, rather
+          than at the root boundary above RouterProvider, which would swap the
+          whole app (rail and header included) for a full-screen spinner. */}
+      <Suspense fallback={<div style={{display: 'flex', justifyContent: 'center', padding: 48}}><Spin size="large"/></div>}>
         {outlet}
-      </motion.div>
-    </AnimatePresence>
+      </Suspense>
+    </div>
   );
 }
 
@@ -318,6 +321,7 @@ interface RailProps {
 function DesktopSideRail({items, activePath, onNavigate}: RailProps) {
   const {t} = useTranslation();
   const navigate = useNavigate();
+  const hostUpdater = useGate('feature:host_updater');
   return (
     <aside style={{
       position: 'fixed', top: 0, bottom: 0, left: 0, width: 88,
@@ -394,7 +398,7 @@ function DesktopSideRail({items, activePath, onNavigate}: RailProps) {
           })}
         </nav>
       </LayoutGroup>
-      {!isTronHidden('feature:host_updater') && <RunningVersionSummary onClick={() => void navigate('/settings?section=updates')}/>}
+      {hostUpdater && <RunningVersionSummary onClick={() => void navigate('/settings?section=updates')}/>}
     </aside>
   );
 }
@@ -507,6 +511,7 @@ interface MoreSheetProps {
 function MobileMoreSheet({open, items, activePath, onClose, onNavigate}: MoreSheetProps) {
   const {t} = useTranslation();
   const navigate = useNavigate();
+  const hostUpdater = useGate('feature:host_updater');
   const {displayMode} = useThemeMode();
 
   // Escape closes the sheet (keyboard parity with the backdrop tap / X button).
@@ -567,7 +572,7 @@ function MobileMoreSheet({open, items, activePath, onClose, onNavigate}: MoreShe
                   </button>
                 );
               })}
-              {!isTronHidden('feature:host_updater') && <RunningVersionSummary mobile onClick={() => { onClose(); void navigate('/settings?section=updates'); }}/>}
+              {hostUpdater && <RunningVersionSummary mobile onClick={() => { onClose(); void navigate('/settings?section=updates'); }}/>}
 
             </div>
           </motion.div>

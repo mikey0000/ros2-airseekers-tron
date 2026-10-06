@@ -198,7 +198,8 @@ func (s *SessionTracker) OnHighLevelStatus(msg []byte) {
 	// that return trip is not part of the mowing session — counting it would inflate
 	// the session distance/duration and turn a failed docking into an "error" session.
 	isMowing := status.State == 2 && status.StateName != "MOWING_COMPLETE"
-	wasMowing := prevState == "MOWING" || prevState == "TRANSIT" || prevState == "RECOVERING" || prevState == "RESUMING_AFTER_RAIN" || prevState == "RESUMING_UNDOCKING"
+	wasMowing := prevState == "MOWING" || prevState == "TRANSIT" || prevState == "RECOVERING" || prevState == "RESUMING_AFTER_RAIN" || prevState == "RESUMING_UNDOCKING" ||
+		prevState == "PLANNING" || prevState == "WAITING_FOR_RTK" || prevState == "BOUNDARY_PAUSED"
 
 	// Start session
 	if isMowing && !s.inSession {

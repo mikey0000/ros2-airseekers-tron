@@ -5,64 +5,6 @@ export const FONT = "'Satoshi', 'Inter', -apple-system, BlinkMacSystemFont, sans
 export const DISPLAY_FONT = "'Instrument Serif', 'Iowan Old Style', Georgia, serif";
 export const MONO_FONT = "'Space Grotesk', 'JetBrains Mono', ui-monospace, monospace";
 
-// Every state_name listed here must match a string emitted by main_tree.xml
-// (grep PublishHighLevelStatus). 'tone' drives the HeroCard palette:
-//   info     = calm / resting / success-ish steady states
-//   primary  = active motion (mowing, transit, undocking, recovery)
-//   warning  = non-fatal anomaly that still needs operator awareness
-//   success  = terminal success (completion, charging-done banners)
-//   danger   = emergency / blocking failure
-// `label`/`friendly` hold i18n key strings (under the `mowerStates` namespace),
-// resolved at render time via `t(...)` — see StatePill.tsx. `tone` stays inline
-// because it drives the palette, not copy.
-export const MOWER_STATES: Record<string, { label: string; tone: 'info' | 'primary' | 'warning' | 'success' | 'danger'; friendly: string }> = {
-  // Idle / docked family
-  IDLE_DOCKED:                { label: 'mowerStates.IDLE_DOCKED.label',                 tone: 'info',    friendly: 'mowerStates.IDLE_DOCKED.friendly' },
-  IDLE:                       { label: 'mowerStates.IDLE.label',                        tone: 'info',    friendly: 'mowerStates.IDLE.friendly' },
-  CHARGING:                   { label: 'mowerStates.CHARGING.label',                    tone: 'success', friendly: 'mowerStates.CHARGING.friendly' },
-
-  // Autonomous mowing cycle
-  PREFLIGHT_CHECK:            { label: 'mowerStates.PREFLIGHT_CHECK.label',             tone: 'info',    friendly: 'mowerStates.PREFLIGHT_CHECK.friendly' },
-  UNDOCKING:                  { label: 'mowerStates.UNDOCKING.label',                   tone: 'primary', friendly: 'mowerStates.UNDOCKING.friendly' },
-  CALIBRATING_HEADING:        { label: 'mowerStates.CALIBRATING_HEADING.label',         tone: 'info',    friendly: 'mowerStates.CALIBRATING_HEADING.friendly' },
-  MOWING:                     { label: 'mowerStates.MOWING.label',                      tone: 'primary', friendly: 'mowerStates.MOWING.friendly' },
-  TRANSIT:                    { label: 'mowerStates.TRANSIT.label',                     tone: 'primary', friendly: 'mowerStates.TRANSIT.friendly' },
-  SKIP_STRIP:                 { label: 'mowerStates.SKIP_STRIP.label',                  tone: 'info',    friendly: 'mowerStates.SKIP_STRIP.friendly' },
-  RETURNING_HOME:             { label: 'mowerStates.RETURNING_HOME.label',              tone: 'primary', friendly: 'mowerStates.RETURNING_HOME.friendly' },
-  MOWING_COMPLETE:            { label: 'mowerStates.MOWING_COMPLETE.label',             tone: 'success', friendly: 'mowerStates.MOWING_COMPLETE.friendly' },
-
-  // Recording
-  RECORDING:                  { label: 'mowerStates.RECORDING.label',                   tone: 'primary', friendly: 'mowerStates.RECORDING.friendly' },
-  RECORDING_COMPLETE:         { label: 'mowerStates.RECORDING_COMPLETE.label',          tone: 'success', friendly: 'mowerStates.RECORDING_COMPLETE.friendly' },
-
-  // Manual
-  MANUAL_MOWING:              { label: 'mowerStates.MANUAL_MOWING.label',               tone: 'primary', friendly: 'mowerStates.MANUAL_MOWING.friendly' },
-
-  // Battery
-  LOW_BATTERY_DOCKING:        { label: 'mowerStates.LOW_BATTERY_DOCKING.label',         tone: 'warning', friendly: 'mowerStates.LOW_BATTERY_DOCKING.friendly' },
-  CRITICAL_BATTERY_DOCKING:   { label: 'mowerStates.CRITICAL_BATTERY_DOCKING.label',    tone: 'warning', friendly: 'mowerStates.CRITICAL_BATTERY_DOCKING.friendly' },
-  CRITICAL_BATTERY_NAV_FAILED:{ label: 'mowerStates.CRITICAL_BATTERY_NAV_FAILED.label', tone: 'danger',  friendly: 'mowerStates.CRITICAL_BATTERY_NAV_FAILED.friendly' },
-
-  // Rain
-  RAIN_DETECTED_DOCKING:      { label: 'mowerStates.RAIN_DETECTED_DOCKING.label',       tone: 'warning', friendly: 'mowerStates.RAIN_DETECTED_DOCKING.friendly' },
-  RAIN_WAITING:               { label: 'mowerStates.RAIN_WAITING.label',                tone: 'warning', friendly: 'mowerStates.RAIN_WAITING.friendly' },
-  RAIN_TIMEOUT:               { label: 'mowerStates.RAIN_TIMEOUT.label',                tone: 'warning', friendly: 'mowerStates.RAIN_TIMEOUT.friendly' },
-  RESUMING_AFTER_RAIN:        { label: 'mowerStates.RESUMING_AFTER_RAIN.label',         tone: 'primary', friendly: 'mowerStates.RESUMING_AFTER_RAIN.friendly' },
-
-  // Recovery / transitions
-  RESUMING_UNDOCKING:         { label: 'mowerStates.RESUMING_UNDOCKING.label',          tone: 'primary', friendly: 'mowerStates.RESUMING_UNDOCKING.friendly' },
-  BOUNDARY_RECOVERY:          { label: 'mowerStates.BOUNDARY_RECOVERY.label',           tone: 'warning', friendly: 'mowerStates.BOUNDARY_RECOVERY.friendly' },
-
-  // Failures / emergencies
-  EMERGENCY:                  { label: 'mowerStates.EMERGENCY.label',                   tone: 'danger',  friendly: 'mowerStates.EMERGENCY.friendly' },
-  BOUNDARY_EMERGENCY_STOP:    { label: 'mowerStates.BOUNDARY_EMERGENCY_STOP.label',     tone: 'danger',  friendly: 'mowerStates.BOUNDARY_EMERGENCY_STOP.friendly' },
-  DIG_OBSTRUCTION:            { label: 'mowerStates.DIG_OBSTRUCTION.label',             tone: 'danger',  friendly: 'mowerStates.DIG_OBSTRUCTION.friendly' },
-  UNDOCK_FAILED:              { label: 'mowerStates.UNDOCK_FAILED.label',               tone: 'warning', friendly: 'mowerStates.UNDOCK_FAILED.friendly' },
-  CHARGER_FAILED:             { label: 'mowerStates.CHARGER_FAILED.label',              tone: 'warning', friendly: 'mowerStates.CHARGER_FAILED.friendly' },
-  NAV_TO_DOCK_FAILED:         { label: 'mowerStates.NAV_TO_DOCK_FAILED.label',          tone: 'danger',  friendly: 'mowerStates.NAV_TO_DOCK_FAILED.friendly' },
-  COVERAGE_FAILED_DOCKING:    { label: 'mowerStates.COVERAGE_FAILED_DOCKING.label',     tone: 'warning', friendly: 'mowerStates.COVERAGE_FAILED_DOCKING.friendly' },
-};
-
 export const fmt = {
   v: (n: number | undefined) => n == null ? '--' : `${n.toFixed(2)} V`,
   a: (n: number | undefined) => n == null ? '--' : `${n.toFixed(2)} A`,

@@ -13,6 +13,17 @@ V4L2 reader in ``mower_cameras.v4l2`` (single- and multi-planar, so it works on 
 rkisp ``rkisp_mainpath`` nodes that ``v4l2_camera`` cannot drive), logs every failure and
 re-opens the device with back-off. ``fps`` throttles publishing (frames above the rate
 are dropped *before* colour conversion); 0 publishes every frame.
+
+CPU (RK3588, 1080p UYVY): the colour conversion is the cost, so
+
+* ``publish_on_demand`` (default true): a frame is only converted/published while
+  ``image_raw`` (or ``compressed`` / ``camera_info``) has subscribers (det_ros, seg_ros,
+  web_video_server and foxglove subscribe on demand); otherwise the buffer is dequeued and
+  given straight back, never copied;
+* frames are converted straight from the mmap'ed V4L2 buffer into a pre-serialized Image
+  (:mod:`mower_cameras.image_cdr`) and published as bytes (``fast_publish``);
+* ``publish_width`` (0 = native) decimates packed 4:2:2 input by an integer factor
+  *before* conversion (1920 -> 960: ~1/4 of the work); ``camera_info`` is scaled to match.
 """
 from __future__ import annotations
 
@@ -26,6 +37,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
 from mower_cameras import v4l2
+from mower_cameras.image_cdr import ImageCdr
 
 
 def to_image_msg(stamp, frame_id, frame):
@@ -73,13 +85,16 @@ class CaptureLoop(threading.Thread):
     """
 
     def __init__(self, logger, device, width, height, pixel_format, fps, on_frame,
-                 backend='v4l2', name='capture'):
+                 backend='v4l2', name='capture', want=None):
         super().__init__(daemon=True, name=name)
         self.log = logger
         self.device, self.width, self.height = device, int(width), int(height)
         self.pixel_format, self.fps, self.backend = pixel_format, float(fps), backend
         self.on_frame = on_frame
+        self.want = want            # () -> bool: is anybody interested in this frame?
         self.stop_evt = threading.Event()
+        self.skipped = 0
+        self.captured = 0           # frames dequeued (published or skipped)
         self.frames = 0
         self.cap = None
 
@@ -117,6 +132,16 @@ class CaptureLoop(threading.Thread):
                 pass
             self.cap = None
 
+    def _keep(self, last_pub, period):
+        """Decide before touching the pixels: rate cap, then subscriber interest."""
+        now = time.monotonic()
+        if period and now - last_pub < period * 0.9:
+            return None
+        if self.want is not None and not self.want():
+            self.skipped += 1
+            return None
+        return now
+
     def run(self):
         backoff, fails, last_pub = 1.0, 0, 0.0
         period = 1.0 / self.fps if self.fps > 0 else 0.0
@@ -130,14 +155,15 @@ class CaptureLoop(threading.Thread):
                     self.stop_evt.wait(backoff)
                     backoff = min(backoff * 2, 30.0)
                     continue
+            index = None
             try:
                 if self.backend == 'opencv':
-                    ok, data = self.cap.read()
-                    if not ok:
-                        raise OSError('cv2 read() returned False')
+                    if not self.cap.grab():          # no decode until retrieve()
+                        raise OSError('cv2 grab() returned False')
                 else:
-                    data, _seq = self.cap.read(timeout=2.0)
+                    index, used, _seq = self.cap.dequeue(timeout=2.0)
                 fails = 0
+                self.captured += 1
             except Exception as exc:  # noqa: BLE001
                 fails += 1
                 self.log.warning(f'{self.device}: read failed ({fails}): {exc}')
@@ -147,17 +173,33 @@ class CaptureLoop(threading.Thread):
                     self.stop_evt.wait(backoff)
                     backoff = min(backoff * 2, 30.0)
                 continue
-            now = time.monotonic()
-            if period and now - last_pub < period * 0.9:
-                continue
-            last_pub = now
             try:
-                self.on_frame(data, self.cap)
-                if self.frames == 0:
-                    self.log.info(f'{self.device}: streaming')
-                self.frames += 1
-            except Exception as exc:  # noqa: BLE001
-                self.log.error(f'{self.device}: frame handling failed: {exc}')
+                now = self._keep(last_pub, period)
+                if now is None:
+                    continue
+                if self.backend == 'opencv':
+                    ok, data = self.cap.retrieve()
+                    if not ok:
+                        continue
+                else:
+                    data = self.cap.view(index, used)   # zero-copy, valid until requeue
+                last_pub = now
+                try:
+                    self.on_frame(data, self.cap)
+                    if self.frames == 0:
+                        self.log.info(f'{self.device}: streaming')
+                    self.frames += 1
+                except Exception as exc:  # noqa: BLE001
+                    self.log.error(f'{self.device}: frame handling failed: {exc}')
+                finally:
+                    data = None
+            finally:
+                if index is not None:
+                    try:
+                        self.cap.requeue(index)
+                    except OSError as exc:
+                        self.log.warning(f'{self.device}: requeue failed: {exc}; re-opening')
+                        self._close()
         self._close()
 
 
@@ -175,11 +217,27 @@ class V4L2CamNode(Node):
         d('publish_raw', True)
         d('publish_compressed', False)
         d('jpeg_quality', 80)
+        d('publish_on_demand', True)    # convert/publish only while somebody subscribes
+        d('publish_width', 0)           # 0 = native; else width/publish_width must be an int
+        d('fast_publish', True)         # pre-serialized Image (bytes) publishing
         p = lambda n: self.get_parameter(n).value  # noqa: E731
 
         self.frame_id = p('frame_id') or self.get_namespace().strip('/') or 'camera'
         self.publish_raw = bool(p('publish_raw'))
         self.jpeg_quality = int(p('jpeg_quality'))
+        self.on_demand = bool(p('publish_on_demand'))
+        self.fast_publish = bool(p('fast_publish'))
+        pw = int(p('publish_width'))
+        self.scale = 1
+        if 0 < pw < int(p('width')):
+            if int(p('width')) % pw:
+                self.get_logger().warning(f'publish_width {pw} does not divide width '
+                                          f'{p("width")}: publishing native size')
+            else:
+                self.scale = int(p('width')) // pw
+        self._img = None            # ImageCdr for the current output size
+        self._info_out = None       # camera_info scaled to the output size (or None)
+        self._info_wh = None
         qos = rclpy.qos.qos_profile_sensor_data
         self.raw_pub = self.create_publisher(Image, 'image_raw', qos) if self.publish_raw \
             else None
@@ -197,50 +255,101 @@ class V4L2CamNode(Node):
 
         self.loop = CaptureLoop(self.get_logger(), p('video_device'), p('width'), p('height'),
                                 p('pixel_format'), p('fps'), self._on_frame, 'v4l2',
-                                name=f'cap:{self.frame_id}')
+                                name=f'cap:{self.frame_id}',
+                                want=self._wanted if self.on_demand else None)
         self.loop.start()
         self.create_timer(10.0, self._report)
         self._last_frames, self._last_t = 0, time.monotonic()
         self.get_logger().info(
             f'v4l2_cam {p("video_device")} {p("width")}x{p("height")} {p("pixel_format")} '
-            f'fps<={p("fps")} raw={self.publish_raw} compressed={self.comp_pub is not None}')
+            f'fps<={p("fps")} raw={self.publish_raw} compressed={self.comp_pub is not None} '
+            f'on_demand={self.on_demand} scale=1/{self.scale} fast={self.fast_publish}')
+
+    @staticmethod
+    def _subscribed(pub):
+        return pub is not None and pub.get_subscription_count() > 0
+
+    def _wanted(self):
+        return (self._subscribed(self.raw_pub) or self._subscribed(self.comp_pub)
+                or (self.info is not None and self._subscribed(self.info_pub)))
+
+    def _publish_raw(self, stamp_ns, data, cap):
+        """Convert ``data`` straight into the pre-serialized Image and publish it."""
+        ow, oh = v4l2.output_size(cap.width, cap.height, cap.pixel_format, self.scale)
+        img = self._img
+        if img is None or (img.width, img.height) != (ow, oh):
+            img = self._img = ImageCdr(self.frame_id, oh, ow)
+        frame = v4l2.to_bgr(data, cap.width, cap.height, cap.bytesperline, cap.pixel_format,
+                            dst=img.image, scale=self.scale)
+        if frame is None:
+            raise ValueError('undecodable frame')
+        if frame.ndim != 3 or frame.shape != img.image.shape:
+            return frame, False     # mono etc.: typed path
+        if frame.ctypes.data != img.image.ctypes.data:
+            img.image[...] = frame
+        self.raw_pub.publish(img.serialize(stamp_ns))
+        return img.image, True
 
     def _on_frame(self, data, cap):
         import cv2
-        stamp = self.get_clock().now().to_msg()
+        now = self.get_clock().now()
+        stamp = now.to_msg()
         fmt = cap.pixel_format
+        od = self.on_demand
+        want_raw = self.raw_pub is not None and (not od or self._subscribed(self.raw_pub))
+        want_comp = self.comp_pub is not None and (not od or self._subscribed(self.comp_pub))
         frame = None
-        if self.raw_pub is not None or (self.comp_pub is not None and fmt != 'MJPG'):
-            frame = v4l2.to_bgr(data, cap.width, cap.height, cap.bytesperline, fmt)
-            if frame is None:
-                raise ValueError('undecodable frame')
-        if self.raw_pub is not None:
-            self.raw_pub.publish(to_image_msg(stamp, self.frame_id, frame))
-        if self.comp_pub is not None:
-            if fmt == 'MJPG':
+        if want_raw:
+            published = False
+            if self.fast_publish:
+                try:
+                    frame, published = self._publish_raw(now.nanoseconds, data, cap)
+                except TypeError:   # rclpy without publish(bytes)
+                    self.fast_publish = False
+            if not published:
+                if frame is None:
+                    frame = v4l2.to_bgr(data, cap.width, cap.height, cap.bytesperline, fmt,
+                                        scale=self.scale)
+                    if frame is None:
+                        raise ValueError('undecodable frame')
+                self.raw_pub.publish(to_image_msg(stamp, self.frame_id, frame))
+        if want_comp:
+            if fmt == 'MJPG' and self.scale == 1:
                 jpeg = data
             else:
+                if frame is None:
+                    frame = v4l2.to_bgr(data, cap.width, cap.height, cap.bytesperline, fmt,
+                                        scale=self.scale)
+                    if frame is None:
+                        raise ValueError('undecodable frame')
                 ok, buf = cv2.imencode('.jpg', frame,
                                        [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality])
                 jpeg = buf.tobytes() if ok else None
             if jpeg is not None:
                 self.comp_pub.publish(to_compressed_msg(stamp, self.frame_id, jpeg))
-        if self.info is not None:
-            if (self.info.width, self.info.height) == (cap.width, cap.height):
-                self.info.header.stamp = stamp
-                self.info_pub.publish(self.info)
-            elif not getattr(self, '_info_warned', False):
-                self._info_warned = True
-                self.get_logger().warning(
-                    f'camera_info is {self.info.width}x{self.info.height} but capture is '
-                    f'{cap.width}x{cap.height}: not publishing camera_info')
+        if self.info is not None and (not od or want_raw or want_comp
+                                      or self._subscribed(self.info_pub)):
+            wh = v4l2.output_size(cap.width, cap.height, fmt, self.scale)
+            if wh != self._info_wh:
+                self._info_wh = wh
+                from mower_cameras.camera_node import scale_camera_info
+                self._info_out = scale_camera_info(self.info, *wh)
+                if self._info_out is None:
+                    self.get_logger().warning(
+                        f'camera_info is {self.info.width}x{self.info.height} but the output '
+                        f'is {wh[0]}x{wh[1]} (different aspect): not publishing camera_info')
+                elif wh != (self.info.width, self.info.height):
+                    self.get_logger().info(f'camera_info scaled to {wh[0]}x{wh[1]}')
+            if self._info_out is not None:
+                self._info_out.header.stamp = stamp
+                self.info_pub.publish(self._info_out)
 
     def _report(self):
-        now, n = time.monotonic(), self.loop.frames
+        now, n = time.monotonic(), self.loop.captured
         rate = (n - self._last_frames) / (now - self._last_t)
         self._last_frames, self._last_t = n, now
         if rate < 1.0:
-            self.get_logger().warning(f'{self.frame_id}: {rate:.1f} fps published (stalled?)')
+            self.get_logger().warning(f'{self.frame_id}: {rate:.1f} fps captured (stalled?)')
 
     def destroy_node(self):
         self.loop.stop()

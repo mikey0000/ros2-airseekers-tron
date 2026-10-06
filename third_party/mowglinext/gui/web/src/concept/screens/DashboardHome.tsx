@@ -16,6 +16,7 @@ import {ProgressRibbon} from "../components/ProgressRibbon";
 import {NoiseTexture} from "../components/NoiseTexture";
 import {riseFade, staggerParent, popIn, springSnap} from "../motion";
 import {useViewport} from "../useViewport";
+import {useRobotName} from "../../hooks/useRobotName.ts";
 
 /**
  * Dashboard Home -- showpiece.
@@ -208,6 +209,7 @@ function HeroCard({
   battery, remainingMin, coverage, todayMowedM2, totalArea, phase, setPhase, large,
 }: HeroCardProps) {
   const {t} = useTranslation();
+  const robotName = useRobotName();
   return (
     <GlassCard variant="glow" padding={0}>
       <div style={{
@@ -228,7 +230,7 @@ function HeroCard({
               fontSize: 11, color: "var(--lime)", fontWeight: 700,
               letterSpacing: "0.12em", textTransform: "uppercase",
             }}>
-              {t('dashboardHome.heroZoneLabel')}
+              {t('dashboardHome.heroZoneLabel', {robotName})}
             </div>
             <h1 className="display" style={{
               fontSize: large ? 42 : 32,

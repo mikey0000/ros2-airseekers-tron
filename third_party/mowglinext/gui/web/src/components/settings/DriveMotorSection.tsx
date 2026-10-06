@@ -19,6 +19,7 @@ import {
 import { DashboardOutlined, FileTextOutlined, HistoryOutlined } from "@ant-design/icons";
 import type { TFunction } from "i18next";
 import { useDockingSensor } from "../../hooks/useDockingSensor.ts";
+import { useFeature } from "../../hooks/useRobotProfile.ts";
 import { useDriveTuning } from "../../hooks/useDriveTuning.ts";
 import { useEmergency } from "../../hooks/useEmergency.ts";
 import { useStatus } from "../../hooks/useStatus.ts";
@@ -108,6 +109,7 @@ const pickPersistedDriveValues = (report: Record<string, any> | undefined) => {
 
 export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPersistedValues }) => {
     const { t } = useTranslation();
+    const hasStm32 = useFeature("stm32_firmware");
     const { formatAbsolute } = useTimeFormat();
     // "never" rather than the em-dash placeholder: an absent calibration
     // timestamp means the job has not run, not that the value is unreadable.
@@ -484,7 +486,7 @@ export const DriveMotorSection: React.FC<Props> = ({ values, onChange, acceptPer
                             {t("settingsDriveMotor.wheelVelocityPid")}
                         </Text>
                         <Paragraph type="secondary" style={{ margin: "4px 0 0" }}>
-                            {t("settingsDriveMotor.wheelVelocityPidDescription")}
+                            {t(hasStm32 ? "settingsDriveMotor.wheelVelocityPidDescription" : "settingsDriveMotor.wheelVelocityPidDescriptionGeneric")}
                         </Paragraph>
                     </div>
                     <Form layout="vertical" size="small">

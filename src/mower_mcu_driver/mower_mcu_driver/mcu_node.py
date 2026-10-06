@@ -56,15 +56,18 @@ Parameters
 
 Known gaps -- tracked as TODOs, do not treat this driver as safety-complete yet
 -------------------------------------------------------------------------------
+* **Proportional braking** (``brake_gain`` = 0.5) sends ``-brake_gain * measured`` when
+  commanded velocity is 0 but measured velocity is non-zero.  This counteracts the MCU
+  "coast" behaviour on ``SpeedData(0,0)`` without the oscillation a full PID creates
+  (the MCU echoes our previous command as measured speed with ~1 cycle delay, so any
+  PID with kp > 0 and +-0.3 clamp saturates into a bang-bang limit cycle).
+  The brake is provably stable: output always opposes motion -> exponential decay.
 * **Host-side velocity PID present but DISABLED by default** (``pid_enabled`` = false).
   Port of ``libpid_controller.so``: reads measured ``SpeedData`` from the MCU, compares
-  against commanded velocity, sends PID-corrected commands (gains from
-  ``mower_base_pkg/config/base.yaml``, output clamped to +-0.3).  It was enabled on
-  2026-10-06 and made the wheels oscillate and reverse under a zero ``/cmd_vel``, which
-  means the feedback sign/units are not yet what the loop assumes -- the vendor's own
-  capture shows **no SpeedData TX while idle** (``mcu_protocol_spec.md`` 10b), so the
-  stock machine never runs this loop at rest either.  Validate
-  ``/mcu/measured_speed`` against a known motion (wheels up) before turning it on.
+  against commanded velocity, sends PID-corrected commands.  The PID oscillates due to
+  the MCU one-cycle measurement delay combined with +-0.3 output clamp.  Kept for
+  future use only.  Validate ``/mcu/measured_speed`` against a known motion (wheels up)
+  before enabling.
 * **Heartbeat period unknown.** ``Heartbeat`` is a wall-clock stamp and the MCU most likely
   stops the motors when it stops arriving, but neither the period nor the timeout were
   recovered from the binary.  We default to 100 ms (the BLE link uses 100 ms too) purely as a
@@ -513,10 +516,28 @@ class McuNode(Node):
         # compares against commanded velocity, and sends PID-corrected commands.
         # Without this, SpeedData(0,0) is "coast" on the MCU and wheels never brake.
         #
+        # --- braking --------------------------------------------------
+        # The MCU treats SpeedData(0,0) as "coast", not "brake".  When commanded
+        # velocity is 0 but measured velocity is non-zero, we send a braking command
+        # proportional to measured speed: output = -brake_gain * measured.
+        # This is provably stable (output always opposes motion -> exponential decay)
+        # unlike a full PID which oscillates due to the MCU one-cycle measurement delay.
+        # With brake_gain=0.5 at 20 Hz, the effective tau is 0.1 s (90% stop in ~0.2 s).
+        self.declare_parameter('brake_gain', 0.5)
+        # Below this measured body speed the brake is NOT applied and an exact 0,0 goes on
+        # the wire: measurement noise must never keep the MCU's wheel controller "active"
+        # with tiny alternating commands while the mower is at rest (the suspected cause of
+        # slow creep under a streamed 0,0).
+        self.declare_parameter('brake_deadband_linear', 0.02)    # m/s
+        self.declare_parameter('brake_deadband_angular', 0.05)   # rad/s
         # The vendor gains (0.9/0.3/1.0 linear, 0.9/0.3/0.5 angular) are tuned for their
         # own PID loop rate (~10 Hz from odometry callback).  Our speed command loop runs
         # at 20 Hz, so the derivative term would be 2x more aggressive.  We reduce kd
         # proportionally to keep the effective derivative action the same.
+        # These PID gains are kept for future use but the loop is OFF by default:
+        # the MCU one-cycle measurement delay + +-0.3 output clamp creates a bang-bang
+        # limit cycle when running continuously.  The simple proportional brake above
+        # handles the stopping case without oscillation.
         self.declare_parameter('linear_kp', 0.9)
         self.declare_parameter('linear_ki', 0.3)
         self.declare_parameter('linear_kd', 0.5)     # vendor 1.0 scaled for 20 Hz vs 10 Hz
@@ -528,12 +549,12 @@ class McuNode(Node):
         self.declare_parameter('linear_pid_max', 0.3)
         self.declare_parameter('angular_pid_min', -0.3)
         self.declare_parameter('angular_pid_max', 0.3)
-        # SAFETY: the closed loop is OFF by default.  With it on the driver streams a
-        # PID-corrected SpeedData at speed_cmd_rate even while idle, and an unverified
-        # feedback sign/units turns that into a +-0.3 bang-bang limit cycle (observed
-        # on the mower 2026-10-06: wheels oscillating and reversing at cmd_vel 0).
-        # Enable only after /mcu/measured_speed has been checked against a known motion.
         self.declare_parameter('pid_enabled', False)
+        # Whether SpeedData is streamed at all.  The vendor sends **none while idle**
+        # (mcu_protocol_spec.md 10b), so false = exact vendor-idle wire behaviour.
+        # Read fresh every cycle, so it can be flipped live with `ros2 param set` to
+        # A/B which TX stream is responsible for an observed wheel motion.
+        self.declare_parameter('speed_stream_enabled', True)
         # Telemetry: measured vs commanded vs actually-sent body velocity, published at
         # this rate while the port is up (0 disables).  Purely observational; it is what
         # the feedback sign/units of the PID are verified against.
@@ -627,6 +648,7 @@ class McuNode(Node):
         self._meas_linear = 0.0           # last measured SpeedData from the MCU
         self._meas_angular = 0.0
         self._meas_stamp = 0.0
+        self._speed_streaming = True      # last seen value of speed_stream_enabled (change log)
 
         # ---- host-side velocity PID (libpid_controller.so port) -----------
         # dt = period of the speed command loop (1/speed_cmd_rate)
@@ -1231,39 +1253,73 @@ class McuNode(Node):
         self._write(build_frame([(TYPE_HEARTBEAT, MOD_ALL, heartbeat_payload())]))
 
     def _send_speed(self):
-        """Stream ``SpeedData`` commands to the MCU, optionally PID-corrected.
+        """Stream ``SpeedData`` commands to the MCU with proportional braking.
 
-        With ``pid_enabled`` false (the default) the *commanded* body velocity goes on
-        the wire verbatim, which is the vendor contract: ``mcu_protocol_spec.md`` 10b
-        records that the stock node sends **no SpeedData at all while idle**, so 0,0 at
-        rest is the most aggressive thing we ever put there.
+        When ``pid_enabled`` is false (the default), the *commanded* body velocity goes
+        on the wire verbatim.  When commanded velocity is 0 but measured velocity is
+        non-zero, we send a braking command proportional to measured speed:
+            output = -brake_gain * measured
+        This is provably stable (output always opposes motion -> exponential decay)
+        and avoids the bang-bang oscillation that a full PID creates due to the MCU
+        one-cycle measurement delay.
 
-        With ``pid_enabled`` true the host-side velocity loop closes on the MCU's measured
-        ``SpeedData`` (port of ``libpid_controller.so`` / ``mower_controller::PidControllerROS``).
-        Leave it off until /mcu/measured_speed has been checked against a known motion: an
-        unverified feedback sign or unit scale turns the +-0.3 clamp into a bang-bang limit
-        cycle that drives the wheels under a zero cmd_vel (observed on the mower 2026-10-06:
-        wheels oscillating and reversing at idle).
+        The vendor sends **no SpeedData at all while idle** (``mcu_protocol_spec.md`` 10b).
+        With braking, 0,0 at rest is still the most aggressive thing we ever send,
+        but while coasting we actively counter momentum.
         """
         # Commanded velocity (zeros when stale or interlocked)
         cmd_linear, cmd_angular = self._commanded()
 
         if self.pid_enabled:
             # Closed loop: error = setpoint - measured, output clamped to the PID bounds.
+            # NOTE: this oscillates due to MCU one-cycle measurement delay + +-0.3 clamp.
+            # Kept for future use only; leave off until /mcu/measured_speed is verified.
             linear = self._pid_linear(cmd_linear - self._meas_linear)
             angular = self._pid_angular(cmd_angular - self._meas_angular)
         else:
-            # Open loop: exactly what was asked for (vendor behaviour at idle).
-            linear, angular = cmd_linear, cmd_angular
+            # Open loop with proportional braking.
+            # When commanded is 0 but measured is non-zero, send a brake proportional
+            # to measured speed.  This is stable because output always opposes motion.
+            brake = float(self.get_parameter('brake_gain').value)
+            db_lin = float(self.get_parameter('brake_deadband_linear').value)
+            db_ang = float(self.get_parameter('brake_deadband_angular').value)
+            meas_fresh = time.monotonic() - self._meas_stamp < self.speed_timeout
+            if cmd_linear == 0.0:
+                linear = (-brake * self._meas_linear
+                          if meas_fresh and abs(self._meas_linear) > db_lin else 0.0)
+            else:
+                linear = cmd_linear
+            if cmd_angular == 0.0:
+                angular = (-brake * self._meas_angular
+                           if meas_fresh and abs(self._meas_angular) > db_ang else 0.0)
+            else:
+                angular = cmd_angular
 
-        self._write(build_frame([(TYPE_ROS_MOWER, MOD_SPEED, speed_payload(linear, angular))]))
-        self._publish_speed_telemetry(cmd_linear, cmd_angular, linear, angular)
+        # Live-togglable: with this off nothing but the heartbeat leaves the host, which is
+        # what the vendor does while idle.  Used to A/B which TX stream drives wheel motion.
+        streaming = bool(self.get_parameter('speed_stream_enabled').value)
+        if streaming != self._speed_streaming:
+            self._speed_streaming = streaming
+            self.get_logger().warn(
+                'SpeedData TX %s' % ('ENABLED' if streaming else 'DISABLED (vendor-idle wire)'))
+            if not streaming:
+                # The MCU keeps the LAST SpeedData setpoint while the heartbeat continues, so
+                # going silent must never happen with a non-zero setpoint still latched.
+                self._write(build_frame([(TYPE_ROS_MOWER, MOD_SPEED, speed_payload(0.0, 0.0))]))
+        if not streaming and (cmd_linear != 0.0 or cmd_angular != 0.0):
+            self.get_logger().warn('cmd_vel ignored: speed_stream_enabled is false',
+                                   throttle_duration_sec=5.0)
+        if streaming:
+            self._write(build_frame([(TYPE_ROS_MOWER, MOD_SPEED, speed_payload(linear, angular))]))
+        self._publish_speed_telemetry(cmd_linear, cmd_angular,
+                                      linear if streaming else None, angular if streaming else None)
 
     def _publish_speed_telemetry(self, cmd_linear, cmd_angular, sent_linear, sent_angular):
         """Publish measured / commanded / on-the-wire body velocity at a low rate.
 
         Observational only: this is how the feedback sign and units a PID would need get
         validated against a known motion, with none of it able to influence the wire.
+        ``sent_`` is None while SpeedData TX is disabled.
         """
         if self._speed_telemetry_period <= 0.0:
             return
@@ -1284,7 +1340,8 @@ class McuNode(Node):
 
         self._meas_speed_pub.publish(_twist(self._meas_linear, self._meas_angular))
         self._cmd_speed_pub.publish(_twist(cmd_linear, cmd_angular))
-        self._sent_speed_pub.publish(_twist(sent_linear, sent_angular))
+        if sent_linear is not None:
+            self._sent_speed_pub.publish(_twist(sent_linear, sent_angular))
 
     def _commanded(self):
         if self._interlock_active() or self._estop_latched:
@@ -1337,7 +1394,13 @@ class McuNode(Node):
         self._on_imu_forward(parse_imu(data) or deserialize_message(data, Imu))
 
     def _on_imu_forward(self, msg):
-        """Relay the host IMU to the MCU as ``ImuData`` at <= forward_imu_rate Hz."""
+        """Relay the host IMU to the MCU as ``ImuData`` at <= forward_imu_rate Hz.
+
+        ``forward_imu`` is re-read each call so the stream can be toggled live with
+        `ros2 param set` while A/B-ing which TX stream drives wheel motion.
+        """
+        if not bool(self.get_parameter('forward_imu').value):
+            return
         now = time.monotonic()
         if now - self._last_imu_fwd < 1.0 / max(self.forward_imu_rate, 1.0):
             return

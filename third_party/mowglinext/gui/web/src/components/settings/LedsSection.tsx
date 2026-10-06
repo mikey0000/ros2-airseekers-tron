@@ -2,6 +2,7 @@ import React from "react";
 import { Alert, Card, Col, Form, Input, InputNumber, Row, Space, Switch, Typography } from "antd";
 import { BulbOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
+import { useGate } from "../../hooks/useProfileGates.ts";
 import { useThemeMode } from "../../theme/ThemeContext.tsx";
 import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
 
@@ -46,6 +47,7 @@ export const LedsSection: React.FC<Props> = ({
     // backend prunes any value equal to that default, so this MUST agree with
     // it — see the led_enabled description in mower_config.schema.json.
     const enabled = values.led_enabled ?? false;
+    const hasLeds = useGate("settings:leds");
 
     const label = (key: string, text: string) => (
         <SettingFieldLabel
@@ -56,6 +58,13 @@ export const LedsSection: React.FC<Props> = ({
             onReset={onReset}
         />
     );
+
+    // The Settings nav already hides this section on a robot without the
+    // mowgli_leds strip (profile gate "settings:leds"); this guards a direct
+    // render so no SPI device fields are offered for hardware that is absent.
+    if (!hasLeds) {
+        return <Alert type="info" showIcon message={t("profileGating.ledsUnavailable")} />;
+    }
 
     return (
         <div>

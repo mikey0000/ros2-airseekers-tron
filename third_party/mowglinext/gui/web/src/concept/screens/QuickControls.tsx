@@ -13,6 +13,7 @@ import {StatusOrb} from "../components/StatusOrb";
 import {NoiseTexture} from "../components/NoiseTexture";
 import {staggerParent, riseFade, springSnap, pressFeedback} from "../motion";
 import {useViewport} from "../useViewport";
+import {useRobotName} from "../../hooks/useRobotName.ts";
 
 /**
  * Quick Controls screen.
@@ -26,6 +27,7 @@ import {useViewport} from "../useViewport";
 
 export function QuickControls() {
   const {t} = useTranslation();
+  const robotName = useRobotName();
   const vp = useViewport();
   const [mode, setMode] = useState<Mode>("eco");
   const [running, setRunning] = useState(true);
@@ -70,7 +72,7 @@ export function QuickControls() {
               fontSize: vp.isAtLeastTablet ? 38 : 28, marginTop: 4,
               fontWeight: 700, letterSpacing: "-0.025em", lineHeight: 1.1,
             }}>
-              {t('quickControls.headlinePrefix')} <em style={{fontStyle: "italic", color: "var(--lime)"}}>{t('quickControls.headlineEmphasis')}</em>.
+              {t('quickControls.headlinePrefix', {robotName})} <em style={{fontStyle: "italic", color: "var(--lime)"}}>{t('quickControls.headlineEmphasis')}</em>.
             </h1>
           </div>
           <StatusOrb tone={running ? "live" : "resting"} size={10} label={running ? t('quickControls.statusActive') : t('quickControls.statusPaused')}/>

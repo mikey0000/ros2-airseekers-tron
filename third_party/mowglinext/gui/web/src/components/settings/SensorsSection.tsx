@@ -3,6 +3,7 @@ import { Card, Col, Form, InputNumber, Row, Switch, Typography } from "antd";
 import { AimOutlined, RadarChartOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { RobotComponentEditor } from "../RobotComponentEditor.tsx";
+import { useProfileGates } from "../../hooks/useProfileGates.ts";
 
 const { Text, Paragraph } = Typography;
 
@@ -13,6 +14,11 @@ type Props = {
 
 export const SensorsSection: React.FC<Props> = ({ values, onChange }) => {
     const { t } = useTranslation();
+    // A robot without a LiDAR (e.g. camera perception) gets no LiDAR toggle
+    // and no LiDAR mount in the placement editor.
+    const { isVisible } = useProfileGates();
+    const hasLidar = isVisible("feature:lidar");
+    const hasImuYawCalibration = isVisible("feature:imu_yaw_calibration");
     const handleLidarToggle = (enabled: boolean) => {
         onChange("lidar_enabled", enabled);
     };
@@ -20,7 +26,7 @@ export const SensorsSection: React.FC<Props> = ({ values, onChange }) => {
     return (
         <div>
             {/* LiDAR toggle */}
-            <Card size="small" style={{ marginBottom: 16 }}>
+            {hasLidar && <Card size="small" style={{ marginBottom: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div>
                         <Text strong style={{ fontSize: 14 }}>
@@ -36,10 +42,15 @@ export const SensorsSection: React.FC<Props> = ({ values, onChange }) => {
                         onChange={handleLidarToggle}
                     />
                 </div>
-            </Card>
+            </Card>}
 
             {/* Sensor placement visual editor */}
-            <RobotComponentEditor values={values} onChange={onChange} />
+            <RobotComponentEditor
+                values={values}
+                onChange={onChange}
+                hiddenSensors={hasLidar ? undefined : ["lidar"]}
+                imuYawCalibration={hasImuYawCalibration}
+            />
 
             {/* IMU bias calibration (hardware_bridge_node, auto-triggered on dock) */}
             <Card size="small" style={{ marginTop: 16 }} title={

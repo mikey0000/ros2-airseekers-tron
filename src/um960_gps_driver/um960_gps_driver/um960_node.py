@@ -19,6 +19,12 @@ RTK corrections (``correction_source``):
            corrections to the port.
     none   no corrections; nothing is ever written except ``config_commands``.
 
+The correction parameters (``correction_source``, ``ntrip_*``, ...) can be changed at
+runtime (``ros2 param set``, or the GUI settings binding): a change restarts the
+corrections - the NTRIP client is stopped and, for ``ntrip``, reconnected with the
+new caster - without touching the serial port. Changes arriving together (one
+SetParameters request) are applied once, ``RECONFIGURE_DEBOUNCE_S`` after the last.
+
 Hardware: Unicore UM960 on /dev/serial_rtk (ttyS4, UART4 @ 0xfeb70000), 115200 8N1.
 """
 
@@ -59,12 +65,30 @@ from .ntrip_client import (
 )
 from .serial_port import SerialError, SerialPort
 
+try:  # rcl_interfaces ships with rclpy; the plain-Python test shim lacks it.
+    from rcl_interfaces.msg import SetParametersResult
+except ImportError:  # pragma: no cover - depends on the environment
+    class SetParametersResult:  # type: ignore[no-redef]
+        def __init__(self, successful: bool = True, reason: str = "") -> None:
+            self.successful = successful
+            self.reason = reason
+
 try:  # mower_interfaces is optional: without it the set_lora service is not offered.
     from mower_interfaces.srv import SetLoRa
 except ImportError:  # pragma: no cover - depends on the workspace
     SetLoRa = None
 
 CORRECTION_SOURCES = ("none", "lora", "ntrip")
+# Parameters read by _init_correction_params(): changing one at runtime restarts the
+# corrections.
+CORRECTION_PARAMS = frozenset({
+    "correction_source", "ntrip_host", "ntrip_port", "ntrip_mountpoint", "ntrip_user",
+    "ntrip_password", "ntrip_gga_interval_s", "ntrip_version", "ntrip_config_file",
+    "ntrip_no_data_timeout_s", "ntrip_reconnect_max_s", "ntrip_fallback_lat",
+    "ntrip_fallback_lon", "ntrip_keepalive_s", "forward_rtcm_without_board_ack",
+    "ntrip_netmode", "corrections_stale_s", "lora_pairing_enabled",
+})
+RECONFIGURE_DEBOUNCE_S = 0.3
 # A raw receiver GGA older than this is not uploaded; a synthesized one is used.
 GGA_MAX_AGE_S = 5.0
 
@@ -214,13 +238,13 @@ class Um960Node(Node):
         self._rtcm_held_bytes = 0
         self._rtcm_held_warned = 0.0
         self._nrtk_thread: Optional[threading.Thread] = None
+        self._nrtk_stop = threading.Event()         # stops the current keepalive thread
         self._lora_pairing: Optional[str] = None    # "addr,channel" from $GNCON
         self.ntrip: Optional[NtripClient] = None
-        if self.correction_source == "ntrip":
-            self.ntrip = NtripClient(
-                self.ntrip_config, self._write_rtcm, self._gga_for_caster,
-                log=self._ntrip_log,
-            )
+        # Runtime reconfiguration of the corrections (see _on_set_parameters).
+        self._reconfigure_lock = threading.Lock()
+        self._reconfigure_timer: Optional[threading.Timer] = None
+        self.corrections_reconfigured = 0           # count, for diagnostics/tests
         self.set_lora_srv = None
         if SetLoRa is not None and hasattr(self, "create_service"):
             self.set_lora_srv = self.create_service(
@@ -238,18 +262,89 @@ class Um960Node(Node):
         # Publishing happens on the ROS executor thread so QoS/timers behave normally.
         self._timer = self.create_timer(1.0 / max(self.publish_rate, 1.0), self._publish_tick)
         self._corrections_timer = self.create_timer(1.0, self.publish_corrections)
-        if self.ntrip is not None:
-            self.get_logger().info(
-                "corrections: NTRIP %s (GGA every %.0fs)"
-                % (self.ntrip_config.describe(), self.ntrip_config.gga_interval_s)
-            )
-            self.ntrip.start()
-            self._nrtk_thread = threading.Thread(
-                target=self._nrtk_keepalive_loop, name="um960_nrtk", daemon=True
-            )
-            self._nrtk_thread.start()
-        else:
-            self.get_logger().info("corrections: %s" % self.correction_source)
+        self._start_corrections()
+        if hasattr(self, "add_on_set_parameters_callback"):
+            self.add_on_set_parameters_callback(self._on_set_parameters)
+
+    # -- corrections: lifecycle ----------------------------------------------------
+    def _start_corrections(self, reason: str = "", runtime: bool = False) -> None:
+        """Start the NTRIP client + rover keepalive for ``correction_source=ntrip``.
+
+        ``runtime``: a reconfiguration while the port may already be open, so the
+        off->on handshake _open_port() does on connect is done here instead.
+        """
+        if self.correction_source != "ntrip":
+            self.get_logger().info("corrections: %s%s" % (self.correction_source, reason))
+            return
+        self.ntrip = NtripClient(
+            self.ntrip_config, self._write_rtcm, self._gga_for_caster, log=self._ntrip_log,
+        )
+        self.get_logger().info(
+            "corrections: NTRIP %s (GGA every %.0fs)%s"
+            % (self.ntrip_config.describe(), self.ntrip_config.gga_interval_s, reason)
+        )
+        port = self._port
+        if runtime and port is not None and port.is_open:
+            # Switched at runtime with the port already open: _open_port() will not
+            # run, so do its off->on handshake here.
+            self._rover_nrtk = None
+            self._nrtk_enable("correction source changed")
+        self.ntrip.start()
+        self._nrtk_stop = threading.Event()
+        self._nrtk_thread = threading.Thread(
+            target=self._nrtk_keepalive_loop, args=(self._nrtk_stop,), name="um960_nrtk",
+            daemon=True,
+        )
+        self._nrtk_thread.start()
+
+    def _stop_corrections(self) -> None:
+        """Stop the NTRIP client and the keepalive thread (port stays open)."""
+        client, self.ntrip = self.ntrip, None
+        if client is not None:
+            client.stop()
+        self._nrtk_stop.set()
+        thread, self._nrtk_thread = self._nrtk_thread, None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+
+    def _on_set_parameters(self, params) -> SetParametersResult:
+        """Validate correction parameter changes and schedule a reconfiguration.
+
+        rclpy (Humble) calls this before the values are stored, so the restart runs
+        a little later on a timer thread and reads them back with get_parameter().
+        """
+        touched = False
+        for param in params:
+            if param.name == "correction_source":
+                value = str(param.value or "").strip().lower()
+                if value not in CORRECTION_SOURCES + ("", "auto"):
+                    return SetParametersResult(
+                        successful=False,
+                        reason="correction_source must be one of none|lora|ntrip (or empty)",
+                    )
+            if param.name in CORRECTION_PARAMS:
+                touched = True
+        if touched and not self._stopping.is_set():
+            with self._reconfigure_lock:
+                if self._reconfigure_timer is not None:
+                    self._reconfigure_timer.cancel()
+                timer = threading.Timer(RECONFIGURE_DEBOUNCE_S, self._reconfigure_corrections)
+                timer.daemon = True
+                self._reconfigure_timer = timer
+                timer.start()
+        return SetParametersResult(successful=True)
+
+    def _reconfigure_corrections(self) -> None:
+        """Re-read the correction parameters and restart the corrections."""
+        with self._reconfigure_lock:
+            self._reconfigure_timer = None
+            if self._stopping.is_set():
+                return
+            previous = self.correction_source
+            self._stop_corrections()
+            self._init_correction_params()
+            self._start_corrections(" (reconfigured; was %s)" % previous, runtime=True)
+            self.corrections_reconfigured += 1
 
     # -- corrections: configuration ------------------------------------------------
     def _init_correction_params(self) -> None:
@@ -375,9 +470,10 @@ class Um960Node(Node):
                                                            "" if ok else " (write FAILED)")
         )
 
-    def _nrtk_keepalive_loop(self) -> None:
+    def _nrtk_keepalive_loop(self, stop: Optional[threading.Event] = None) -> None:
         """Re-send ``$GNRTK,ON*69`` every ``ntrip_keepalive_s``, unconditionally."""
-        while not self._stopping.wait(0.05):
+        stop = stop or threading.Event()
+        while not self._stopping.wait(0.05) and not stop.is_set():
             port = self._port
             if port is None or not port.is_open:
                 continue
@@ -826,10 +922,11 @@ class Um960Node(Node):
         # Stop the reader thread before closing the port so it cannot reopen the
         # device behind our back, then let it wind down.
         self._stopping.set()
-        if self.ntrip is not None:
-            self.ntrip.stop()
-        if self._nrtk_thread is not None:
-            self._nrtk_thread.join(timeout=1.0)
+        with self._reconfigure_lock:
+            if self._reconfigure_timer is not None:
+                self._reconfigure_timer.cancel()
+                self._reconfigure_timer = None
+            self._stop_corrections()
         self._close_port()
         if self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2.0)

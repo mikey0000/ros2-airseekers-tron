@@ -217,6 +217,9 @@ func TestClearMapRoute_Error(t *testing.T) {
 
 func TestSetDockingPointRoute(t *testing.T) {
 	mock := types.NewMockRosProvider()
+	mock.ServiceResponder = func(_ string, _ any, res any) {
+		res.(*mowgli.SetDockingPointRes).Success = true
+	}
 	router := setupMowgliNextRouter(mock)
 
 	payload := map[string]any{
@@ -234,6 +237,39 @@ func TestSetDockingPointRoute(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, mock.ServiceCalls, 1)
 	assert.Equal(t, "/map_server_node/set_docking_point", mock.ServiceCalls[0].Service)
+}
+
+func TestSetDockingPointRoute_Rejected(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	// The map server answers success=false when its GPS accuracy / heading
+	// gates refuse the capture; that must not be reported as a saved dock.
+	mock.ServiceResponder = func(_ string, _ any, res any) {
+		res.(*mowgli.SetDockingPointRes).Success = false
+	}
+	router := setupMowgliNextRouter(mock)
+
+	body, _ := json.Marshal(map[string]any{"use_gps_position": true})
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/map/docking", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code, "body=%s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "rejected")
+	require.Len(t, mock.ServiceCalls, 1)
+}
+
+func TestSetDockingPointRoute_ServiceError(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	mock.ServiceErr = assert.AnError
+	router := setupMowgliNextRouter(mock)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/mowglinext/map/docking", bytes.NewReader([]byte("{}")))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 // dialMultiplex opens the test server's /multiplex WebSocket. Returns the
@@ -349,6 +385,7 @@ func TestTopicSubscribeInterval_CoversKnownSubscriberRouteTopics(t *testing.T) {
 		"path", "plan", "power", "emergency", "dockingSensor",
 		"robotDescription", "recordingTrajectory",
 		"coverageResumeAvailable", "fusionDiag", "dockCalibrationStatus",
+		"visionObstacleClose", "detections",
 	}
 	for _, topic := range knownTopics {
 		interval, known := topicSubscribeInterval(topic)
