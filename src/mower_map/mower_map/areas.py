@@ -584,9 +584,131 @@ def build_keepout_mask(areas: List[Area], spec: GridSpec,
     return mask
 
 
+@dataclass
+class DockCorridor:
+    """Polyline the robot must be able to drive from the dock to the lawn:
+    dock -> approach pose [-> closest point on the nearest area boundary]."""
+    path: List[Point]
+    half_width: float
+    connected: bool          # path reaches an area (or the approach is inside one)
+    gap_m: float             # approach pose -> nearest area boundary (inf: no areas)
+
+    def polygon(self, arc_steps: int = 8) -> Polygon:
+        return capsule_outline(self.path, self.half_width, arc_steps)
+
+
+def dock_corridor(dock: Optional[DockPose], areas: List[Area], approach_distance: float = 0.8,
+                  half_width: float = 0.35, max_len: float = 5.0) -> Optional[DockCorridor]:
+    """Corridor from the dock through its approach pose (dock + approach_distance
+    along the dock yaw, as mower_docking computes it) on to the closest point of
+    the nearest mowing/navigation area boundary. If that gap exceeds ``max_len``
+    the corridor stops at the approach pose (connected=False)."""
+    if dock is None:
+        return None
+    ax = dock.x + approach_distance * math.cos(dock.yaw)
+    ay = dock.y + approach_distance * math.sin(dock.yaw)
+    path = [(dock.x, dock.y), (ax, ay)]
+    best = (0.0, 0.0, math.inf)
+    for area in areas:
+        if len(area.polygon) < 3:
+            continue
+        if point_in_polygon(ax, ay, area.polygon):
+            best = (ax, ay, 0.0)
+            break
+        c = closest_edge_point(ax, ay, area.polygon)
+        if c[2] < best[2]:
+            best = c
+    connected = best[2] <= max(0.0, float(max_len))
+    if connected and best[2] > 1e-6:
+        path.append((best[0], best[1]))
+    return DockCorridor(path, max(0.0, float(half_width)), connected, best[2])
+
+
+def capsule_outline(path: List[Point], half_width: float, arc_steps: int = 8) -> Polygon:
+    """Outline of the points within ``half_width`` of the polyline ``path``
+    (round caps, round outer joins). Exact for straight paths; for a bend the
+    inner side uses the offset-line intersection."""
+    pts = [p for i, p in enumerate(path) if i == 0 or math.hypot(p[0] - path[i - 1][0],
+                                                               p[1] - path[i - 1][1]) > 1e-9]
+    r = half_width
+    if len(pts) == 1:
+        x, y = pts[0]
+        n = 4 * arc_steps
+        return [(x + r * math.cos(2 * math.pi * k / n), y + r * math.sin(2 * math.pi * k / n))
+                for k in range(n)]
+
+    def arc(cx, cy, a0, a1):
+        # counter-clockwise from a0 to a1
+        while a1 < a0:
+            a1 += 2 * math.pi
+        n = max(1, int(math.ceil((a1 - a0) / (math.pi / (2 * arc_steps)))))
+        return [(cx + r * math.cos(a0 + (a1 - a0) * k / n), cy + r * math.sin(a0 + (a1 - a0) * k / n))
+                for k in range(n + 1)]
+
+    def side(seq):
+        """Walk ``seq`` keeping the corridor on the right (offset to the left of travel)."""
+        out = []
+        hd = [math.atan2(b[1] - a[1], b[0] - a[0]) for a, b in zip(seq, seq[1:])]
+        for i in range(len(seq) - 1):
+            a, b = seq[i], seq[i + 1]
+            nx, ny = -math.sin(hd[i]), math.cos(hd[i])
+            if i == 0:
+                out.append((a[0] + r * nx, a[1] + r * ny))
+            if i + 1 < len(hd):
+                turn = math.atan2(math.sin(hd[i + 1] - hd[i]), math.cos(hd[i + 1] - hd[i]))
+                if turn < 0:   # right turn: left side is the outer side -> round join
+                    out.extend(arc(b[0], b[1], hd[i + 1] + math.pi / 2, hd[i] + math.pi / 2)[::-1])
+                else:          # left turn: inner side -> intersection of offsets
+                    half = turn / 2.0
+                    d = r / max(math.cos(half), 1e-3)
+                    ang = hd[i] + math.pi / 2 + half
+                    out.append((b[0] + d * math.cos(ang), b[1] + d * math.sin(ang)))
+            else:
+                out.append((b[0] + r * nx, b[1] + r * ny))
+        return out, hd
+
+    left, hd = side(pts)
+    right, hdr = side(pts[::-1])
+    end, start = pts[-1], pts[0]
+    # clockwise ring: left side forward, front cap, right side back, rear cap
+    ring = left[:-1]
+    ring += arc(end[0], end[1], hd[-1] - math.pi / 2, hd[-1] + math.pi / 2)[::-1]
+    ring += right[1:-1]
+    ring += arc(start[0], start[1], hdr[-1] - math.pi / 2, hdr[-1] + math.pi / 2)[::-1]
+    return ring
+
+
+def _distance_to_segments(px, py, path: List[Point]) -> np.ndarray:
+    best = np.full(np.shape(px), np.inf)
+    for (ax, ay), (bx, by) in zip(path, path[1:] if len(path) > 1 else path):
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        t = 0.0 if l2 <= 0 else np.clip(((px - ax) * dx + (py - ay) * dy) / l2, 0.0, 1.0)
+        best = np.minimum(best, np.hypot(px - (ax + t * dx), py - (ay + t * dy)))
+    return best
+
+
+def free_corridor(grid: np.ndarray, spec: GridSpec, corridor: DockCorridor):
+    """Set every cell whose centre is within half_width of the corridor path FREE."""
+    r = corridor.half_width
+    bb = bounding_box([corridor.path])
+    r0, c0 = spec.index_of(bb[0] - r, bb[1] - r)
+    r1, c1 = spec.index_of(bb[2] + r, bb[3] + r)
+    r0, c0 = max(r0, 0), max(c0, 0)
+    r1, c1 = min(r1, spec.height - 1), min(c1, spec.width - 1)
+    if r0 > r1 or c0 > c1:
+        return
+    xs = spec.origin_x + (np.arange(c0, c1 + 1) + 0.5) * spec.resolution
+    ys = spec.origin_y + (np.arange(r0, r1 + 1) + 0.5) * spec.resolution
+    gx, gy = np.meshgrid(xs, ys)
+    hit = _distance_to_segments(gx, gy, corridor.path) <= r
+    grid[r0:r1 + 1, c0:c1 + 1][hit] = FREE
+
+
 def build_nav_mask(areas: List[Area], spec: GridSpec,
                    nav_margin: float = 0.35,
-                   obstacle_margin: float = 0.10) -> np.ndarray:
+                   obstacle_margin: float = 0.10,
+                   corridor: Optional[DockCorridor] = None) -> np.ndarray:
     """Navigation mask for Nav2's global costmap (static layer / keepout filter).
 
     Different semantics from the mowing mask (build_keepout_mask):
@@ -597,7 +719,9 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
     the robot's own start cell unplannable. ``nav_margin`` (default half the
     footprint width + 0.08 m) lets the robot centre sit on a coverage ring a
     few cm inside the boundary without the footprint touching lethal cells.
-    With no areas at all the mask is free (apart from obstacles)."""
+    ``corridor`` (see dock_corridor) is freed too, so the dock and its
+    approach pose stay reachable when the dock sits outside every area;
+    obstacles still win over it. With no areas at all the mask is free (apart from obstacles)."""
     nav_margin = max(0.0, float(nav_margin))
     if not areas:
         mask = np.full((spec.height, spec.width), FREE, dtype=np.int8)
@@ -605,6 +729,8 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
         mask = np.full((spec.height, spec.width), LETHAL, dtype=np.int8)
         for area in areas:
             _mask_polygon(mask, spec, area.polygon, FREE, nav_margin)
+    if corridor is not None:
+        free_corridor(mask, spec, corridor)
     for area in areas:
         for obs in area.obstacles:
             _mask_polygon(mask, spec, obs.polygon, LETHAL, max(0.0, float(obstacle_margin)))

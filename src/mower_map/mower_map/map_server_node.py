@@ -21,7 +21,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from rclpy.time import Time
 
-from geometry_msgs.msg import Point32, Polygon as PolygonMsg, PoseStamped
+from geometry_msgs.msg import Point32, Polygon as PolygonMsg, PolygonStamped, PoseStamped
 from nav2_msgs.msg import CostmapFilterInfo
 from nav_msgs.msg import OccupancyGrid, Odometry
 from std_msgs.msg import Bool, String
@@ -63,6 +63,12 @@ PARAMS = {
     # by nav_obstacle_margin_m; the dock outline is never lethal here.
     'nav_margin_m': 0.35,              # half footprint width (0.27) + 0.08
     'nav_obstacle_margin_m': 0.10,
+    # dock corridor (nav mask only): capsule of half-width nav_margin_m from the
+    # dock through its approach pose to the nearest area boundary, so docking
+    # still plans when the dock lies outside every drawn area.
+    'dock_corridor_enabled': True,
+    'dock_corridor_max_m': 5.0,        # approach pose -> area gap beyond this: dock capsule only
+    'approach_distance': 0.8,          # same name/default as mower_docking
     # default dock outline (dock-local, m) used when dock_pose.yaml has none;
     # the vendor's type-5 outline (charger plate around the rear axle)
     'dock_outline_x_min': -0.2,
@@ -163,6 +169,7 @@ class MapServerNode(Node):
                                               _latched())
         self.progress_pub = self.create_publisher(OccupancyGrid, '~/mow_progress', _latched())
         self.dock_pub = self.create_publisher(PoseStamped, '~/docking_pose', _latched())
+        self.corridor_pub = self.create_publisher(PolygonStamped, '~/dock_corridor', _latched())
         self.boundary_pub = self.create_publisher(Bool, '~/boundary_violation', 1)
         self.lethal_pub = self.create_publisher(Bool, '~/lethal_boundary_violation', 1)
         self.replan_pub = self.create_publisher(Bool, '~/replan_needed', 1)
@@ -274,6 +281,9 @@ class MapServerNode(Node):
         outline = self.dock_outline_map()
         if outline:
             polys.append(outline)
+        corridor = self.dock_corridor()
+        if corridor is not None:
+            polys.append(corridor.polygon())
         try:
             spec = core.grid_for_polygons(polys, self.resolution, float(self.p('mask_margin')))
         except ValueError as exc:
@@ -286,7 +296,8 @@ class MapServerNode(Node):
         self.mask_pub.publish(self.grid_msg(spec, mask))
         nav_mask = core.build_nav_mask(self.store.areas, spec,
                                        float(self.p('nav_margin_m')),
-                                       float(self.p('nav_obstacle_margin_m')))
+                                       float(self.p('nav_obstacle_margin_m')),
+                                       corridor)
         self.nav_mask_pub.publish(self.grid_msg(spec, nav_mask))
         if spec != self.spec:
             self.progress.resize(spec)
@@ -300,6 +311,29 @@ class MapServerNode(Node):
                                   int((mask == 0).sum()), int((nav_mask == 0).sum())))
         if replan:
             self.replan_pub.publish(Bool(data=True))
+
+    def dock_corridor(self):
+        """Compute the dock corridor and publish its outline (empty polygon when
+        disabled / no dock)."""
+        corridor = None
+        if self.dock is not None and self.p('dock_corridor_enabled'):
+            corridor = core.dock_corridor(self.dock, self.store.areas,
+                                          float(self.p('approach_distance')),
+                                          float(self.p('nav_margin_m')),
+                                          float(self.p('dock_corridor_max_m')))
+            if not corridor.connected and self.store.areas:
+                self.get_logger().warn(
+                    'dock corridor: nearest area is %.2f m from the approach pose (> '
+                    'dock_corridor_max_m %.2f); only the dock->approach capsule is free'
+                    % (corridor.gap_m, float(self.p('dock_corridor_max_m'))))
+        msg = PolygonStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.map_frame
+        if corridor is not None:
+            msg.polygon.points = [Point32(x=float(x), y=float(y), z=0.0)
+                                  for x, y in corridor.polygon()]
+        self.corridor_pub.publish(msg)
+        return corridor
 
     def grid_msg(self, spec, data):
         msg = OccupancyGrid()

@@ -409,3 +409,72 @@ def test_nav_mask_ring_footprint_clear():
 def test_nav_mask_no_areas_is_free():
     spec = core.grid_for_polygons([], 0.1, 2.0)
     assert (core.build_nav_mask([], spec) == core.FREE).all()
+
+
+# ---------------------------------------------------------------- dock corridor
+
+def _far_dock_case(area_x0=2.5):
+    """Dock at (0,0) yaw 0, approach (0.8,0); lawn starts at x=area_x0."""
+    s = core.MapStore()
+    s.add_area('lawn', [(area_x0, -3.0), (area_x0 + 6.0, -3.0),
+                        (area_x0 + 6.0, 3.0), (area_x0, 3.0)])
+    dock = core.DockPose(0.0, 0.0, 0.0)
+    return s, dock
+
+
+def test_dock_corridor_frees_dock_approach_and_gap():
+    s, dock = _far_dock_case(2.5)
+    corridor = core.dock_corridor(dock, s.areas, 0.8, 0.35, 5.0)
+    assert corridor.connected and corridor.gap_m == pytest.approx(1.7)
+    assert corridor.path[-1] == pytest.approx((2.5, 0.0))
+    polys = [a.polygon for a in s.areas] + [corridor.polygon()]
+    spec = core.grid_for_polygons(polys, 0.1, 2.0)
+    without = core.build_nav_mask(s.areas, spec, 0.35, 0.10)
+    nav = core.build_nav_mask(s.areas, spec, 0.35, 0.10, corridor)
+    for x, y in ((0.0, 0.0), (0.8, 0.0), (1.6, 0.0), (0.05, 0.25)):
+        assert _cell(spec, without, x, y) == core.LETHAL
+        assert _cell(spec, nav, x, y) == core.FREE
+    assert _cell(spec, nav, 1.6, 0.6) == core.LETHAL      # outside the half width
+    assert _cell(spec, nav, -0.6, 0.0) == core.LETHAL     # behind the dock
+    # the published outline covers the same points
+    poly = corridor.polygon()
+    for q in ((0.0, 0.0), (0.8, 0.0), (1.6, 0.0)):
+        assert core.point_in_polygon(*q, poly)
+    assert not core.point_in_polygon(1.6, 0.6, poly)
+
+
+def test_dock_corridor_capped():
+    s, dock = _far_dock_case(10.0)
+    corridor = core.dock_corridor(dock, s.areas, 0.8, 0.35, 5.0)
+    assert not corridor.connected and corridor.gap_m == pytest.approx(9.2)
+    assert corridor.path == [(0.0, 0.0), pytest.approx((0.8, 0.0))]
+    spec = core.grid_for_polygons([a.polygon for a in s.areas] + [corridor.polygon()], 0.1, 2.0)
+    nav = core.build_nav_mask(s.areas, spec, 0.35, 0.10, corridor)
+    assert _cell(spec, nav, 0.0, 0.0) == core.FREE
+    assert _cell(spec, nav, 0.8, 0.0) == core.FREE
+    assert _cell(spec, nav, 5.0, 0.0) == core.LETHAL
+
+
+def test_dock_corridor_approach_inside_area():
+    s, dock = _far_dock_case(0.5)
+    corridor = core.dock_corridor(dock, s.areas, 0.8, 0.35, 5.0)
+    assert corridor.connected and corridor.gap_m == 0.0 and len(corridor.path) == 2
+
+
+def test_dock_corridor_mowing_mask_unchanged_and_obstacles_win():
+    s, dock = _far_dock_case(2.5)
+    s.add_obstacle(0, [(1.5, -0.1), (1.7, -0.1), (1.7, 0.1), (1.5, 0.1)], 'rock')
+    corridor = core.dock_corridor(dock, s.areas, 0.8, 0.35, 5.0)
+    spec = core.grid_for_polygons([a.polygon for a in s.areas] + [corridor.polygon()], 0.1, 2.0)
+    outline = [(-0.2, 0.275), (0.2, 0.275), (0.2, -0.275), (-0.2, -0.275)]
+    m1 = core.build_keepout_mask(s.areas, spec, outline, 0.0, True)
+    nav = core.build_nav_mask(s.areas, spec, 0.35, 0.10, corridor)
+    m2 = core.build_keepout_mask(s.areas, spec, outline, 0.0, True)
+    assert np.array_equal(m1, m2)
+    assert _cell(spec, m1, 0.0, 0.0) == core.LETHAL
+    assert _cell(spec, m1, 1.0, 0.0) == core.LETHAL
+    assert _cell(spec, nav, 1.6, 0.0) == core.LETHAL      # obstacle inside the corridor
+
+
+def test_dock_corridor_none_without_dock():
+    assert core.dock_corridor(None, [], 0.8) is None

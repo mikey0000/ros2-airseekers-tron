@@ -12,6 +12,9 @@ map_server_node:
     dock_keepout: true          # mowing mask only; never in /nav_keepout_mask
     nav_margin_m: 0.35          # nav mask: areas grown by half footprint width + 0.08
     nav_obstacle_margin_m: 0.10 # nav mask: obstacles grown by this
+    dock_corridor_enabled: true # nav mask: free dock -> approach -> nearest area capsule
+    dock_corridor_max_m: 5.0    # max approach->area gap bridged by the corridor
+    approach_distance: 0.8      # keep equal to mower_docking approach_distance
     blade_radius: 0.15
     odom_topic: /odometry/filtered_map
     status_topic: /mower_base/status
