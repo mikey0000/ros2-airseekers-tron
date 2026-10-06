@@ -165,3 +165,24 @@ def test_chunk_end_respects_max_length():
     path = [(0.1 * k, 0.0, 0.0) for k in range(300)]
     e = geo.chunk_end(path, 0, 10.0, 0.5)
     assert 99 <= e <= 101
+
+
+def test_area_skip_rows_round_trip():
+    from mower_mission.resume import ResumeCursor
+    cur = ResumeCursor()
+    cur.current_command = 1
+    cur.area(2).skipped = [(6, 8), (30, 34)]
+    text = cur.dumps()
+    assert 'area_skip 2 6 8' in text and 'area_skip 2 30 34' in text
+    back = ResumeCursor.loads(text)
+    assert back.areas[2].skipped == [(6, 8), (30, 34)] and back.available
+
+
+def test_inside_area_respects_holes_and_leave_margin():
+    from mower_mission import geometry as g
+    area = {'outer': [(0, 0), (4, 0), (4, 4), (0, 4)],
+            'obstacles': [[(1, 1), (2, 1), (2, 2), (1, 2)]]}
+    assert g.inside_area((3, 3), area)
+    assert not g.inside_area((1.5, 1.5), area)
+    assert not g.inside_area((4.2, 2), area)
+    assert g.inside_area((4.2, 2), area, leave_m=0.3)

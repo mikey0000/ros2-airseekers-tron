@@ -33,6 +33,9 @@ def line(x0, y0, x1, y1, n=11):
 
 class Harness:
     def __init__(self, cursor=None, **params):
+        # The pre-obstacle-avoidance tests exercise plain follow retries: an unclassified
+        # abort never detours unless a test asks for it.
+        params.setdefault('detour_unclassified_after', -1)
         self.t = 0.0
         self.fsm = f.MissionFSM(f.Params.from_dict(params), cursor=cursor, now=0.0)
         i = self.fsm.inputs
@@ -1886,3 +1889,204 @@ def test_motion_disabled_on_emergency_and_not_restored_by_reset():
     h.tick()
     # emergency cleared -> idle, not back to a motion state
     assert h.name == 'IDLE' and not h.fsm.motion_enabled()
+
+
+# ---------------------------------------------------------------------------
+# obstacle avoidance (/obstacle_policy): dynamic wait, static detour, re-queue
+# ---------------------------------------------------------------------------
+def policy(h, kind, cls=''):
+    i = h.fsm.inputs
+    i.obstacle_kind, i.obstacle_class, i.obstacle_distance = kind, cls, 0.8
+    i.obstacle_stamp = h.t
+
+
+def tick_seen(h, kind, cls, seconds, dt=0.5):
+    """Tick for ``seconds`` with the policy kept fresh."""
+    for _ in range(int(round(seconds / dt))):
+        policy(h, kind, cls)
+        h.tick(dt=dt)
+
+
+def mowing_two_swaths(h):
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    sp0, sp1 = line(0, 0, 10, 0, n=21), line(10, 1, 0, 1, n=21)    # 0.5 m spacing
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp0, sp1]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['poses'][0] == sp0[0]
+    return sp0, sp1
+
+
+def static_abort_and_detour(h, sp0):
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    policy(h, 'static', 'chair')
+    h.tick()
+    m = h.mark()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state and not h.blade
+    assert h.goal(f.ACT_NAV)['pose'][:2] == sp0[8][:2]             # 1 m past pose 6
+    assert not [e for e in h.since(m, f.CallService) if e.name == f.SRV_CLEAR_COSTMAPS]
+    h.fsm.inputs.pose = (4.0, 0.1, 0.0)
+    h.finish(f.ACT_NAV)
+    assert h.name == 'MOWING'
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['poses'][0] == sp0[8]
+    assert h.fsm.cursor.areas[0].skipped == [(6, 8)]
+    assert 'area_skip 0 6 8' in h.saved
+
+
+def test_static_obstacle_detours_and_resumes_beyond_then_requeues_stretch():
+    h = Harness()
+    sp0, sp1 = mowing_two_swaths(h)
+    static_abort_and_detour(h, sp0)
+    h.finish(f.ACT_FOLLOW)                        # rest of sub-path 0
+    h.finish(f.ACT_NAV)                           # transit to sub-path 1
+    h.tick()
+    h.finish(f.ACT_FOLLOW)                        # sub-path 1 -> end-of-area pass
+    assert h.name == 'TRANSIT'                    # blade-off transit to the stretch start
+    assert h.goal(f.ACT_NAV)['pose'][:2] == sp0[6][:2]
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    h.finish(f.ACT_NAV)
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['poses'] == sp0[6:9]
+    h.finish(f.ACT_FOLLOW)
+    assert h.name == 'RETURNING_HOME'             # area complete, all mowed
+    assert not h.fsm.cursor.available
+
+
+def test_skipped_stretch_still_blocked_ends_incomplete():
+    h = Harness()
+    sp0, sp1 = mowing_two_swaths(h)
+    static_abort_and_detour(h, sp0)
+    h.finish(f.ACT_FOLLOW)
+    h.finish(f.ACT_NAV)
+    h.tick()
+    h.finish(f.ACT_FOLLOW)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    h.finish(f.ACT_NAV)
+    h.tick()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)             # chair still there: no retries, no detour
+    assert h.name == 'MOWING_INCOMPLETE'
+    assert h.fsm.sub_state == '1 stretch blocked by obstacles'
+    cur = ResumeCursor.loads(h.saved)
+    assert cur.areas[0].skipped == [(6, 8)] and 0 not in cur.completed_areas
+    assert cur.available and not h.blade
+
+
+def test_dynamic_obstacle_stops_waits_and_resumes_from_last_pose():
+    h = Harness()
+    sp0, _ = mowing_two_swaths(h)
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.tick()
+    m = h.mark()
+    policy(h, 'dynamic', 'dog')
+    h.tick()
+    assert h.since(m, f.ZeroBurst) and h.since(m, f.CancelActions)
+    assert h.name == 'MOWING' and not h.blade and h.fsm._action is None
+    assert h.fsm.sub_state == 'waiting for dog to move (0 s)'
+    tick_seen(h, 'dynamic', 'dog', 5.0)
+    assert h.fsm.sub_state == 'waiting for dog to move (5 s)'
+    h.tick(dt=0.5, n=3)                           # policy stale, clear hold not yet over
+    assert h.fsm._action is None
+    h.tick(dt=0.5, n=4)
+    assert h.fsm.mission.step in ('spinup', 'follow')
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['poses'][0] == sp0[4] and h.blade
+
+
+def test_dynamic_abort_waits_instead_of_counting_a_retry():
+    h = Harness()
+    mowing_two_swaths(h)
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    policy(h, 'dynamic', 'person')
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert 'waiting for person to move' in h.fsm.sub_state
+    assert h.fsm.mission.follow_fails == 0
+
+
+def test_dynamic_timeout_is_treated_as_static_detour():
+    h = Harness(dynamic_wait_s=30.0)
+    sp0, _ = mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    h.tick()
+    tick_seen(h, 'dynamic', 'cat', 30.5)
+    assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state and not h.blade
+    assert h.goal(f.ACT_NAV)['pose'][:2] == sp0[8][:2]
+
+
+def test_dynamic_obstacle_during_transit_waits_then_resends_goal():
+    h = Harness()
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
+    assert h.name == 'TRANSIT'
+    target = h.goal(f.ACT_NAV)['pose']
+    policy(h, 'dynamic', 'person')
+    h.tick()
+    assert h.name == 'TRANSIT' and h.fsm._action is None
+    assert 'waiting for person to move' in h.fsm.sub_state
+    h.tick(dt=0.5, n=7)
+    assert h.goal(f.ACT_NAV)['pose'] == target
+
+
+def test_detour_pose_outside_area_falls_back_to_plain_retry():
+    h = Harness()
+    h.areas = [square(-1, -1, 5)]                 # area ends at x = 4
+    start_until_planning(h)
+    sp0 = line(0, 0, 10, 0, n=21)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp0]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.inputs.pose = (3.5, 0.0, 0.0)
+    policy(h, 'static', 'chair')
+    h.tick()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'MOWING' and 'retry 1/3' in h.fsm.sub_state
+    assert h.fsm.mission.detour is None and h.fsm.cursor.areas[0].skipped == []
+
+
+def test_failed_detour_extends_the_skip_then_retries():
+    h = Harness(detour_max_skip_m=1.5)
+    sp0, _ = mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    policy(h, 'static', 'chair')
+    h.tick()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert h.goal(f.ACT_NAV)['pose'][:2] == sp0[9][:2]             # 1.5 m
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert h.name == 'MOWING' and 'detour failed' in h.fsm.sub_state
+    assert h.fsm.mission.start_local == 6
+
+
+def test_unclassified_abort_detours_after_one_plain_retry():
+    h = Harness(detour_unclassified_after=1)
+    sp0, _ = mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert 'retry 1/3' in h.fsm.sub_state
+    h.tick(dt=1.0, n=4)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state
+
+
+def test_max_detours_per_subpath_limits_detours():
+    h = Harness(max_detours_per_subpath=0)
+    mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    policy(h, 'static', 'chair')
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'MOWING' and 'retry 1/3' in h.fsm.sub_state
+
+
+def test_obstacle_near_subpath_end_skips_the_rest():
+    h = Harness()
+    sp0, sp1 = mowing_two_swaths(h)
+    for x in (2.0, 4.0, 6.0, 8.0, 9.5):
+        h.fsm.inputs.pose = (x, 0.0, 0.0)
+        h.tick()
+    policy(h, 'static', 'trunk')
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.fsm.cursor.areas[0].skipped == [(19, 20)]
+    assert 0 in h.fsm.cursor.areas[0].completed and h.fsm.mission.sub_i == 1

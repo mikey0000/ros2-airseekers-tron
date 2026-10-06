@@ -66,6 +66,7 @@ TOPIC_DEFAULTS = {
     'mower_status_topic': '/mower_base/status',
     'gnss_status_topic': '/gps/status',
     'heading_status_topic': '/heading_aligner/status',   # mower_localization heading_aligner
+    'obstacle_policy_topic': '/obstacle_policy',   # mower_vision obstacle_guard (JSON, 5 Hz)
     'odom_topic': '/odometry/filtered_map',
     'boundary_violation_topic': '/map_server_node/boundary_violation',
     'lethal_boundary_violation_topic': '/map_server_node/lethal_boundary_violation',
@@ -208,6 +209,7 @@ class MissionNode(Node):
         sub(Bool, p['lethal_boundary_violation_topic'], self._on_lethal, 1,
             parser=flat_parser(Bool))
         sub(String, p['heading_status_topic'], self._on_heading, latched)
+        sub(String, p['obstacle_policy_topic'], self._on_obstacle_policy, latched)
         self._hw_rain = self._base_rain = False
         self._hw_charging = self._base_charging = False
 
@@ -398,6 +400,23 @@ class MissionNode(Node):
             i.heading_aligned = bool(st.get('aligned', False))
             i.heading_source = str(st.get('source', 'none'))
             i.heading_stamp = time.monotonic()
+
+    def _on_obstacle_policy(self, msg):
+        """{kind: none|dynamic|static, class, distance_m, bearing_deg}; the receipt time is
+        the freshness stamp (obstacle_guard republishes it at a fixed rate)."""
+        try:
+            st = json.loads(msg.data)
+        except ValueError:
+            return
+        if not isinstance(st, dict):
+            return
+        d = st.get('distance_m')
+        with self._lock:
+            i = self.fsm.inputs
+            i.obstacle_kind = str(st.get('kind', 'none'))
+            i.obstacle_class = str(st.get('class', '') or '')
+            i.obstacle_distance = float(d) if isinstance(d, (int, float)) else None
+            i.obstacle_stamp = time.monotonic()
 
     def _on_gnss(self, msg):
         with self._lock:

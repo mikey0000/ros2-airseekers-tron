@@ -89,6 +89,23 @@ behavior_tree_node:
     follow_chunk_m: 25.0              # FollowPath goals are split into chunks of at most this length (0 = off)
     follow_chunk_clearance_m: 0.5     # a chunk's final pose stays this far from its earlier poses
 
+    # --- obstacle avoidance (/obstacle_policy from mower_vision obstacle_guard) ---
+    # person/dog/cat (dynamic): stop, blade off, wait; everything else (static): on a
+    # follow_path abort, blade-off /navigate_to_pose detour to the swath pose beyond the
+    # obstacle, resume there; skipped stretches are re-tried once at the end of the area.
+    obstacle_avoidance: true
+    obstacle_policy_timeout_s: 1.0    # older /obstacle_policy = none
+    obstacle_static_memory_s: 3.0     # a static class seen this recently explains an abort
+    dynamic_wait_s: 30.0              # then the dynamic obstacle is treated as static (detour)
+    dynamic_clear_hold_s: 2.0         # policy clear this long before resuming
+    detour_skip_m: 1.0                # detour target this far along the sub-path past the robot
+    detour_skip_step_m: 0.5           # detour transit failed: extend the skip by this ...
+    detour_max_skip_m: 3.0            # ... up to this, then a normal follow retry
+    max_detours_per_subpath: 5
+    detour_max_leave_m: 0.0           # detour pose may be this far outside the area ring
+    detour_unclassified_after: 1      # abort without a classified obstacle (stereo/bumper): detour after N plain retries (-1 never)
+    requeue_skipped: true             # end-of-area pass over skipped stretches (blocked -> MOWING_INCOMPLETE)
+
     # --- recording ---------------------------------------------------------
     record_rate_hz: 10.0
     record_min_spacing_m: 0.05

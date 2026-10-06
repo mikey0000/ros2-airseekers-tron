@@ -16,6 +16,13 @@ Publishes:
   frame = camera frame): red = close, yellow = whitelisted, grey = other, blue = danger
   line. Add it as an annotation on the camera image in a Foxglove Image panel.
 
+* ``/obstacle_policy``  ``std_msgs/String`` JSON ``{kind: none|dynamic|static, class,
+  distance_m, bearing_deg}`` (latched, re-published at ``policy_rate_hz``): the closest
+  detection of ANY class with score >= ``min_score``; ``dynamic_classes`` (person, dog,
+  cat) within ``obstacle_stop_range_m`` -> dynamic (mission: stop, blade off, wait),
+  every other class within ``policy_static_range_m`` -> static (mission: detour).
+  Dynamic wins over static. Unranged boxes use the image-space danger zone.
+
 When ``stop_on_close`` is true, on the rising edge of the close state:
 * zero ``geometry_msgs/Twist`` on ``/cmd_vel_emergency`` at ``burst_rate_hz`` for
   ``burst_s`` (twist_mux emergency input, priority 100, timeout 0.2 s);
@@ -24,6 +31,7 @@ When ``stop_on_close`` is true, on the rising edge of the close state:
 
 from __future__ import annotations
 
+import json
 import math
 import sys
 import time
@@ -33,8 +41,9 @@ from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import Point, Twist
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo
-from rclpy.qos import qos_profile_sensor_data
-from std_msgs.msg import Bool, ColorRGBA
+from rclpy.qos import (QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy,
+                       qos_profile_sensor_data)
+from std_msgs.msg import Bool, ColorRGBA, String
 from std_srvs.srv import Trigger
 from visualization_msgs.msg import ImageMarker
 
@@ -44,9 +53,10 @@ try:
 except ImportError as _exc:  # pragma: no cover
     _DEP_ERROR = _exc
 
-from mower_vision.guard_logic import (DEFAULT_CLASSES, DEFAULT_WHITELIST, Box,
-                                      GuardConfig, GuardState, box_outline, class_label,
-                                      classify, danger_line, with_image_size)
+from mower_vision.guard_logic import (DEFAULT_CLASSES, DEFAULT_DYNAMIC, DEFAULT_WHITELIST,
+                                      Box, GuardConfig, GuardState, PolicyConfig,
+                                      PolicyState, box_outline, class_label, classify,
+                                      danger_line, frame_policy, with_image_size)
 
 RED = ColorRGBA(r=1.0, g=0.1, b=0.1, a=1.0)
 YELLOW = ColorRGBA(r=1.0, g=0.85, b=0.0, a=1.0)
@@ -54,15 +64,26 @@ GREY = ColorRGBA(r=0.6, g=0.6, b=0.6, a=1.0)
 BLUE = ColorRGBA(r=0.2, g=0.5, b=1.0, a=1.0)
 
 
-def range_of(det, origin_x=0.0):
-    """Planar range (m) of a det_range-tagged detection, or None when unranged."""
+def _ranged_xy(det, origin_x):
     if not det.results:
         return None
     pose = det.results[0].pose
     if len(pose.covariance) < 1 or not pose.covariance[0] > 0.0:
         return None
     p = pose.pose.position
-    return math.hypot(float(p.x) - origin_x, float(p.y))
+    return float(p.x) - origin_x, float(p.y)
+
+
+def range_of(det, origin_x=0.0):
+    """Planar range (m) of a det_range-tagged detection, or None when unranged."""
+    xy = _ranged_xy(det, origin_x)
+    return None if xy is None else math.hypot(*xy)
+
+
+def bearing_of(det, origin_x=0.0):
+    """Bearing (deg, base_link, left positive) of a ranged detection, or None."""
+    xy = _ranged_xy(det, origin_x)
+    return None if xy is None else math.degrees(math.atan2(xy[1], xy[0]))
 
 
 def boxes_from_msg(msg, classes, origin_x=0.0):
@@ -77,7 +98,8 @@ def boxes_from_msg(msg, classes, origin_x=0.0):
                        cx=float(det.bbox.center.position.x),
                        cy=float(det.bbox.center.position.y),
                        w=float(det.bbox.size_x), h=float(det.bbox.size_y),
-                       range_m=range_of(det, origin_x)))
+                       range_m=range_of(det, origin_x),
+                       bearing_deg=bearing_of(det, origin_x)))
     return out
 
 
@@ -107,6 +129,10 @@ class ObstacleGuard(Node):
         dp('emergency_topic', '/cmd_vel_emergency')
         dp('cutter_off_service', '/cutter_off')
         dp('publish_markers', True)
+        dp('dynamic_classes', list(DEFAULT_DYNAMIC))
+        dp('policy_static_range_m', 1.5)
+        dp('policy_topic', '/obstacle_policy')
+        dp('policy_rate_hz', 5.0)
 
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.classes = [str(c) for c in p('classes')]
@@ -122,6 +148,17 @@ class ObstacleGuard(Node):
         self.state = GuardState(hold_s=float(p('hold_s')), burst_s=float(p('burst_s')))
         self.stop_on_close = bool(p('stop_on_close'))
         self.publish_markers = bool(p('publish_markers'))
+        self.policy_cfg = PolicyConfig(dynamic_classes=[str(c) for c in p('dynamic_classes')],
+                                       min_score=float(p('min_score')),
+                                       dynamic_range_m=float(p('obstacle_stop_range_m')),
+                                       static_range_m=float(p('policy_static_range_m')))
+        self.policy_state = PolicyState(hold_s=float(p('hold_s')))
+        self._policy_period = 1.0 / max(0.5, float(p('policy_rate_hz')))
+        self._policy_t = 0.0
+        self._policy_last = None
+        latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                             reliability=QoSReliabilityPolicy.RELIABLE)
+        self.policy_pub = self.create_publisher(String, p('policy_topic'), latched)
 
         self.close_pub = self.create_publisher(Bool, '/vision/obstacle_close', 10)
         self.marker_pub = self.create_publisher(ImageMarker, '/vision/obstacle_markers', 10)
@@ -178,6 +215,8 @@ class ObstacleGuard(Node):
         boxes = boxes_from_msg(msg, self.classes, self.range_origin_x)
         cfg = self._cfg_for(msg.header.frame_id)
         verdicts = classify(boxes, cfg)
+        self.policy_state.update(msg.header.frame_id or 'camera',
+                                 frame_policy(boxes, self.policy_cfg, cfg), self._now())
         close_now = any(c for _, _, c in verdicts)
         close, rising = self.state.update(msg.header.frame_id or 'camera', close_now,
                                           self._now())
@@ -187,8 +226,17 @@ class ObstacleGuard(Node):
         if self.publish_markers:
             self.marker_pub.publish(self._markers(msg.header, verdicts, cfg))
 
+    def _publish_policy(self, now):
+        pol = self.policy_state.current(now)
+        if pol != self._policy_last or now - self._policy_t >= self._policy_period:
+            if pol != self._policy_last and pol['kind'] != 'none':
+                self.get_logger().info('obstacle policy: %s' % json.dumps(pol))
+            self._policy_last, self._policy_t = pol, now
+            self.policy_pub.publish(String(data=json.dumps(pol)))
+
     def _on_tick(self):
         now = self._now()
+        self._publish_policy(now)
         close, rising = self.state.tick(now)
         if close != self._last_published and self._last_published is not None:
             self._publish_close(close)

@@ -270,7 +270,11 @@ class Inputs:
     heading_aligned: bool = False
     heading_source: str = 'none'
     heading_stamp: Optional[float] = None     # receipt time of the last status
-
+    # /obstacle_policy (mower_vision obstacle_guard, JSON): closest close detection
+    obstacle_kind: str = 'none'         # none | dynamic | static
+    obstacle_class: str = ''
+    obstacle_distance: Optional[float] = None
+    obstacle_stamp: Optional[float] = None    # receipt time of the last policy message
 
 
 @dataclass
@@ -363,6 +367,21 @@ class Params:
     # clamped. The MCU's 0-100 scale is UNVERIFIED on the Tron (see README).
     cutter_height_mm_to_percent: list = field(
         default_factory=lambda: [30.0, 0.0, 90.0, 100.0])
+    # --- obstacle avoidance (/obstacle_policy from obstacle_guard) ---
+    obstacle_avoidance: bool = True     # dynamic stop-and-wait + static swath detours
+    obstacle_policy_timeout_s: float = 1.0    # older policy = 'none'
+    obstacle_static_memory_s: float = 3.0     # a 'static' seen this recently explains an abort
+    dynamic_wait_s: float = 30.0        # person / pet: wait this long, then treat as static
+    dynamic_clear_hold_s: float = 2.0   # policy clear this long before resuming
+    detour_skip_m: float = 1.0          # detour target: this far along the path past the robot
+    detour_skip_step_m: float = 0.5     # ... extended by this when the detour transit fails
+    detour_max_skip_m: float = 3.0      # ... up to this
+    max_detours_per_subpath: int = 5
+    detour_max_leave_m: float = 0.0     # detour pose may lie this far outside the area ring
+    # follow_path abort with no classified obstacle (stereo cloud / bumper marks only):
+    # detour after this many plain retries at the sub-path chunk (-1 = never detour).
+    detour_unclassified_after: int = 1
+    requeue_skipped: bool = True        # re-try detour-skipped stretches at the area end
 
     @classmethod
     def from_dict(cls, d):
@@ -409,6 +428,12 @@ class Mission:
     settings: Optional[dict] = None             # effective settings of the current area
     runs: list = field(default_factory=list)    # [{'angle': deg|-1, 'perpendicular': bool}]
     run_i: int = 0
+    detours: int = 0                            # per sub-path
+    detour: Optional[dict] = None               # in-flight detour {'from', 'to', 'skip', 'why'}
+    stretch: Optional[tuple] = None             # re-queued (abs_from, abs_to) being re-tried
+    stretch_end: Optional[int] = None           # local end index of that stretch
+    requeue: Optional[list] = None              # stretches left in the end-of-area pass
+    blocked: list = field(default_factory=list)  # [(area, abs_from, abs_to)] still blocked
 
 
 @dataclass
@@ -457,6 +482,8 @@ class MissionFSM:
         self._record_name = ''
         self._last_status = None
         self._incomplete_text = ''
+        self._dyn = None                    # dynamic-obstacle wait context
+        self._last_static_t = -1e9
 
     # ==================================================================
     # presentation
@@ -605,6 +632,7 @@ class MissionFSM:
         return tok
 
     def _cancel_all(self, reason):
+        self._dyn = None
         self._action = None
         self._service = None
         self._enum = None
@@ -825,6 +853,10 @@ class MissionFSM:
             self._service = None
             self._log('warn', '%s timed out' % s.name)
             self._handle_service(s, False, {})
+            return
+        if self._policy() == 'static':
+            self._last_static_t = now
+        if self._dynamic_tick():
             return
 
         if ph == 'MANUAL_MOWING':
@@ -1193,7 +1225,7 @@ class MissionFSM:
         while m.queue and m.queue[0] in self.cursor.completed_areas:
             m.queue.pop(0)
         if not m.queue:
-            if m.failed:
+            if m.failed or m.blocked:
                 self._mission_incomplete()
             else:
                 self._mission_complete()     # status still shows the last area's counts
@@ -1204,6 +1236,7 @@ class MissionFSM:
         area = m.areas[idx]
         m.area_idx = idx
         m.sub_i, m.start_local, m.skipped, m.step = 0, 0, 0, None
+        m.requeue, m.stretch, m.stretch_end, m.detour = None, None, None, None
         self.cursor.current_area = idx
         m.settings, m.runs = None, []
         m.run_i = int(self.cursor.area_runs.get(idx, 0))
@@ -1420,6 +1453,7 @@ class MissionFSM:
         m.retry_used = False
         m.transit_fails = m.follow_fails = m.recovery_fails = 0
         m.recovering = False
+        m.detours, m.detour = 0, None
         self._dispatch()
 
     def _dispatch(self, force_transit=False):
@@ -1427,8 +1461,8 @@ class MissionFSM:
         first when its start is farther than ``transit_gap_m``."""
         m = self.mission
         sp = m.subpaths[m.sub_i]
-        if len(sp) - m.start_local < 2:
-            self._subpath_done()
+        if self._seg_last() - m.start_local < 1:
+            self._segment_done()
             return
         target = sp[m.start_local]
         if force_transit or geo.needs_transit(self.inputs.pose, target, self.p.transit_gap_m):
@@ -1502,8 +1536,8 @@ class MissionFSM:
         m.step = 'follow'
         m.progress_local = m.start_local
         sp = m.subpaths[m.sub_i]
-        m.chunk_end = geo.chunk_end(sp, m.start_local, self.p.follow_chunk_m,
-                                    self.p.follow_chunk_clearance_m)
+        m.chunk_end = min(geo.chunk_end(sp, m.start_local, self.p.follow_chunk_m,
+                                        self.p.follow_chunk_clearance_m), self._seg_last())
         self._start_action(ACT_FOLLOW, {
             'poses': list(sp[m.start_local:m.chunk_end + 1]),
             'controller_id': self.p.follow_controller_id,
@@ -1527,6 +1561,9 @@ class MissionFSM:
         """Retries exhausted: remember the sub-path as NOT mowed (it stays out of
         ``completed``, so a resume retries it) and go on with the next one."""
         m = self.mission
+        if m.stretch is not None:
+            self._stretch_blocked(why)
+            return
         m.skipped += 1
         sp = m.subpaths[m.sub_i]
         local = self._track_progress() if m.step == 'follow' else m.start_local
@@ -1568,10 +1605,15 @@ class MissionFSM:
         m = self.mission
         n = sum(1 for x in m.failed if x[1] is not None) + extra_remaining
         reason = m.failed[-1][2] if m.failed else ''
-        txt = '%d of %d sub-paths not mowed' % (n, m.planned_total)
         unplanned = sum(1 for x in m.failed if x[1] is None)
-        if unplanned:
-            txt += ', %d area(s) not planned' % unplanned
+        txt = ''
+        if n or unplanned or not m.blocked:
+            txt = '%d of %d sub-paths not mowed' % (n, m.planned_total)
+            if unplanned:
+                txt += ', %d area(s) not planned' % unplanned
+        if m.blocked:
+            b = blocked_text(len(m.blocked))
+            txt = '%s, %s' % (txt, b) if txt else b
         return txt + (': %s' % reason if reason else '')
 
     def _finish_incomplete(self, text):
@@ -1590,7 +1632,8 @@ class MissionFSM:
     def _mission_incomplete(self):
         m = self.mission
         text = self._not_mowed_text()
-        first = next((x for x in m.failed if x[1] is not None), m.failed[0])
+        first = next((x for x in m.failed if x[1] is not None),
+                     m.failed[0] if m.failed else m.blocked[0])
         self.cursor.current_area = first[0]
         self.mission = None
         self._fx.append(PublishAreaSettings({}))
@@ -1612,11 +1655,20 @@ class MissionFSM:
     def _area_done(self):
         m = self.mission
         ac = self.cursor.area(m.area_idx)
+        if m.requeue is None and ac.skipped and self.p.requeue_skipped:
+            m.requeue = sorted(ac.skipped)
+            self._log('info', 'area %d: re-trying %d stretch(es) skipped by obstacle detours'
+                      % (m.area_idx, len(m.requeue)))
+        if m.requeue:
+            self._next_stretch()
+            return
+        blocked = [b for b in m.blocked if b[0] == m.area_idx]
         failed = [x for x in m.failed if x[0] == m.area_idx and x[1] is not None]
         self._log('info' if not failed else 'warn',
                   'area %d done: %d/%d sub-paths mowed, %d NOT mowed' % (
-                      m.area_idx, len(ac.completed), len(m.subpaths), len(failed)))
-        if failed:
+                      m.area_idx, len(ac.completed), len(m.subpaths), len(failed))
+                  + ('' if not blocked else ', %s' % blocked_text(len(blocked))))
+        if failed or blocked:
             # not complete: keep it out of completed_areas, keep its run index, and
             # point the cursor at the first missing pose so START resumes there.
             if self.blade_on:
@@ -1636,6 +1688,7 @@ class MissionFSM:
             self._persist()
             m.subpaths, m.lengths, m.cum = [], [], []
             m.sub_i, m.start_local, m.skipped, m.step = 0, 0, 0, None
+            m.requeue, m.stretch, m.stretch_end = None, None, None
             self._log('info', 'area %d: run %d/%d (%s)' % (
                 m.area_idx, m.run_i + 1, len(m.runs), m.settings['path_mode']))
             self._plan_run()
@@ -1692,6 +1745,8 @@ class MissionFSM:
             local = m.start_local
             if m.step == 'follow':
                 local = self._track_progress()
+            elif m.detour is not None:
+                local = m.detour['from']     # the skip is recorded only once around
             offs, _ = subpath_offsets(m.subpaths)
             ac = self.cursor.area(m.area_idx)
             ac.resume_index = offs[m.sub_i] + min(local, len(sp) - 1)
@@ -1707,6 +1762,7 @@ class MissionFSM:
     # docking
     # ==================================================================
     def _dock(self, name, purpose, sub=''):
+        self._dyn = None
         self._blade_off('dock')
         if self._action is not None:
             self._fx.append(CancelActions('dock'))
@@ -1870,6 +1926,12 @@ class MissionFSM:
         elif name == ACT_PLAN:
             self._on_plan(outcome, result)
         elif name == ACT_NAV:
+            if m.detour is not None and outcome != UNAVAILABLE:
+                if outcome == SUCCEEDED or self._transit_arrived():
+                    self._detour_done()
+                else:
+                    self._detour_failed(outcome)
+                return
             if outcome == SUCCEEDED:
                 m.recovering = False
                 m.transit_fails = 0
@@ -1907,7 +1969,8 @@ class MissionFSM:
             if outcome == SUCCEEDED:
                 cum = m.cum[m.sub_i]
                 prog = self._track_progress()
-                end = min(m.chunk_end, len(cum) - 1)
+                last = self._seg_last()
+                end = min(m.chunk_end, last)
                 left = cum[end] - cum[min(prog, end)]
                 if left > self.p.follow_end_tolerance_m:
                     # Stock Humble goal checkers only look at the final pose; a coverage
@@ -1924,20 +1987,36 @@ class MissionFSM:
                                                    self.p.follow_premature_retries))
                     self._dispatch()
                     return
-                if end < len(cum) - 1:
+                if end < last:
                     m.start_local = end           # next chunk of the same sub-path
                     m.retry_used = False
                     m.follow_fails = 0
                     self._dispatch()
                     return
-                self._log('info', 'area %d sub-path %d done (%.1f m)' % (
-                    m.area_idx, m.sub_i, cum[-1]))
-                self._subpath_done()
+                if m.stretch is None:
+                    self._log('info', 'area %d sub-path %d done (%.1f m)' % (
+                        m.area_idx, m.sub_i, cum[-1]))
+                self._segment_done()
             elif outcome == UNAVAILABLE:
                 self._mission_failed('/follow_path action server unavailable')
             else:
+                prog = self._track_progress()
+                if self._policy() == 'dynamic':
+                    m.start_local = prog
+                    m.step = None
+                    self._dyn_start('follow')
+                    return
+                if m.stretch is not None:
+                    self._stretch_blocked('follow_path %s at pose %d' % (outcome, prog))
+                    return
+                pf = int(self.p.detour_unclassified_after)
+                static = self._static_recent()
+                if (static or (pf >= 0 and m.follow_fails >= pf)) and self._try_detour(
+                        prog, '%s obstacle' % (self.inputs.obstacle_class or 'static')
+                        if static else 'follow_path %s' % outcome):
+                    return
                 m.follow_fails += 1
-                m.start_local = self._track_progress()
+                m.start_local = prog
                 if m.follow_fails > self.p.follow_retries:
                     self._subpath_failed('follow_path %s %d times (at pose %d)'
                                          % (outcome, m.follow_fails, m.start_local))
@@ -1947,6 +2026,249 @@ class MissionFSM:
                                          m.area_idx, m.sub_i + 1, len(m.subpaths), outcome,
                                          m.start_local, m.follow_fails, self.p.follow_retries,
                                          self.p.transit_retry_delay_s))
+
+    # ==================================================================
+    # obstacle avoidance
+    # ==================================================================
+    def _policy(self):
+        """Fresh /obstacle_policy kind: 'none' | 'dynamic' | 'static'."""
+        i = self.inputs
+        if not self.p.obstacle_avoidance or i.obstacle_stamp is None or \
+                self._now - i.obstacle_stamp > self.p.obstacle_policy_timeout_s:
+            return 'none'
+        return i.obstacle_kind if i.obstacle_kind in ('dynamic', 'static') else 'none'
+
+    def _static_recent(self):
+        return self._policy() == 'static' or \
+            self._now - self._last_static_t <= self.p.obstacle_static_memory_s
+
+    def _seg_last(self):
+        """Last local index of what is being mowed: the sub-path, or a re-queued stretch."""
+        m = self.mission
+        last = len(m.subpaths[m.sub_i]) - 1
+        return last if m.stretch_end is None else min(last, m.stretch_end)
+
+    def _segment_done(self):
+        if self.mission.stretch is not None:
+            self._stretch_done()
+        else:
+            self._subpath_done()
+
+    # ---- dynamic obstacles (person / pet): stop, blade off, wait ----------
+    def _dyn_context(self):
+        m, a = self.mission, self._action
+        if self.phase == 'MOWING' and m is not None and m.step in ('spinup', 'spin_pause',
+                                                                    'follow'):
+            return 'follow'
+        if self.phase == 'TRANSIT' and m is not None and m.step == 'transit' and a is not None:
+            return 'transit'
+        if self.phase in DOCK_PHASES and a is not None and a.purpose == 'dock':
+            return 'dock'
+        return None
+
+    def _dyn_start(self, ctx):
+        m = self.mission
+        cls = self.inputs.obstacle_class or 'obstacle'
+        if m is not None and ctx == 'follow' and m.step == 'follow':
+            m.start_local = self._track_progress()
+        self._dyn = {'ctx': ctx, 'since': self._now, 'clear_since': None, 'cls': cls,
+                     'sub': self.sub_state, 'phase': self.phase, 'purpose': self._dock_purpose}
+        if self._action is not None:
+            self._fx.append(CancelActions('dynamic obstacle: %s' % cls))
+            self._action = None
+        self._blade_off('dynamic obstacle: %s' % cls)
+        self._fx.append(ZeroBurst())
+        if m is not None and ctx in ('follow', 'transit'):
+            m.step = 'dyn_wait'
+        d = self.inputs.obstacle_distance
+        self._log('warn', '%s%s ahead: stopped, blade off, waiting up to %.0f s' % (
+            cls, (' at %.1f m' % d) if d is not None else '', self.p.dynamic_wait_s))
+        self._go(self.phase, 'waiting for %s to move (0 s)' % cls)
+
+    def _dynamic_tick(self):
+        """Returns True when the dynamic-obstacle logic owns this tick."""
+        d, kind = self._dyn, self._policy()
+        if d is None:
+            if kind != 'dynamic':
+                return False
+            ctx = self._dyn_context()
+            if ctx is None:
+                return False
+            self._dyn_start(ctx)
+            return True
+        if kind == 'dynamic':
+            d['clear_since'] = None
+            d['cls'] = self.inputs.obstacle_class or d['cls']
+        elif d['clear_since'] is None:
+            d['clear_since'] = self._now
+        waited = self._now - d['since']
+        if d['clear_since'] is not None and \
+                self._now - d['clear_since'] >= self.p.dynamic_clear_hold_s:
+            self._dyn = None
+            self._log('info', '%s gone for %.1f s: resuming' % (d['cls'],
+                                                                 self.p.dynamic_clear_hold_s))
+            self._dyn_resume(d)
+            return True
+        if waited >= self.p.dynamic_wait_s:
+            self._dyn = None
+            self._dyn_timeout(d)
+            return True
+        sub = 'waiting for %s to move (%d s)' % (d['cls'], int(waited))
+        if sub != self.sub_state:
+            self._go(self.phase, sub)
+        return True
+
+    def _dyn_resume(self, d):
+        m = self.mission
+        if d['ctx'] == 'dock':
+            self._dock(d['phase'], d['purpose'], sub=d['sub'])
+        elif m is None:
+            return
+        elif d['ctx'] == 'transit':
+            m.step = 'transit'
+            self._go(self.phase, d['sub'])
+            self._start_action(ACT_NAV, {'pose': m.transit_target}, self.p.transit_timeout_s)
+        else:
+            m.step = None
+            self._dispatch()
+
+    def _dyn_timeout(self, d):
+        m = self.mission
+        why = '%s did not move within %.0f s' % (d['cls'], self.p.dynamic_wait_s)
+        if d['ctx'] != 'follow' or m is None:
+            # transits / docking: Nav2 plans around the marked obstacle
+            self._log('warn', '%s: continuing (Nav2 plans around it)' % why)
+            self._dyn_resume(d)
+            return
+        self._log('warn', '%s: treating it as a static obstacle' % why)
+        m.step = None
+        if m.stretch is not None:
+            self._stretch_blocked(why)
+        elif not self._try_detour(m.start_local, why):
+            self._subpath_failed(why)
+
+    # ---- static obstacles: blade-off detour to the swath beyond ----------
+    def _try_detour(self, cur, why):
+        m, p = self.mission, self.p
+        if not p.obstacle_avoidance or m.stretch is not None:
+            return False
+        if m.detours >= p.max_detours_per_subpath:
+            self._log('warn', 'area %d sub-path %d: %d detours used (max_detours_per_subpath): '
+                              'no detour' % (m.area_idx, m.sub_i, m.detours))
+            return False
+        return self._detour_send(cur, float(p.detour_skip_m), why)
+
+    def _detour_send(self, cur, skip, why):
+        m, p = self.mission, self.p
+        sp = m.subpaths[m.sub_i]
+        last = self._seg_last()
+        idx = geo.advance_index(sp, cur, skip)
+        if idx >= last:
+            # obstacle on the sub-path end: skip the rest, re-queued at the area end
+            m.detours += 1
+            self._blade_off('obstacle at the sub-path end')
+            self._log('warn', 'area %d sub-path %d: %s within %.1f m of the end: skipping '
+                              'poses %d -> %d' % (m.area_idx, m.sub_i, why, skip, cur, last))
+            self._record_skip(cur, last)
+            m.step = None
+            self._subpath_done()
+            return True
+        if not geo.inside_area(sp[idx], m.areas.get(m.area_idx, {}), p.detour_max_leave_m):
+            self._log('warn', 'area %d sub-path %d: detour pose %d (%.2f, %.2f) outside the '
+                              'area: no detour' % (m.area_idx, m.sub_i, idx, sp[idx][0],
+                                                   sp[idx][1]))
+            return False
+        self._blade_off('detour')
+        m.detour = {'from': cur, 'to': idx, 'skip': skip, 'why': why}
+        m.start_local = idx
+        m.step = 'transit'
+        m.transit_target = (sp[idx][0], sp[idx][1], geo.heading_of(sp, idx))
+        self._log('warn', 'area %d sub-path %d: %s: blade-off detour %d/%d to pose %d '
+                          '(%.1f m ahead)' % (m.area_idx, m.sub_i, why, m.detours + 1,
+                                              p.max_detours_per_subpath, idx, skip))
+        # costmaps are NOT cleared: the global planner must see the obstacle marks
+        self._go('TRANSIT', 'detour around obstacle: area %d sub-path %d/%d' % (
+            m.area_idx, m.sub_i + 1, len(m.subpaths)))
+        self._start_action(ACT_NAV, {'pose': m.transit_target}, p.transit_timeout_s)
+        return True
+
+    def _record_skip(self, lfrom, lto):
+        m = self.mission
+        offs, _ = subpath_offsets(m.subpaths)
+        ac = self.cursor.area(m.area_idx)
+        ac.skipped.append((offs[m.sub_i] + int(lfrom), offs[m.sub_i] + int(lto)))
+        self._persist()
+
+    def _detour_done(self):
+        m = self.mission
+        d, m.detour = m.detour, None
+        m.detours += 1
+        m.transit_fails = m.follow_fails = 0
+        m.recovering = False
+        self._record_skip(d['from'], d['to'])
+        self._log('info', 'detour done: sub-path %d poses %d -> %d skipped (re-tried at the '
+                          'area end)' % (m.sub_i, d['from'], d['to']))
+        self._begin_blade()
+
+    def _detour_failed(self, outcome):
+        m, p = self.mission, self.p
+        d, m.detour = m.detour, None
+        skip = d['skip'] + float(p.detour_skip_step_m)
+        if p.detour_skip_step_m > 0 and skip <= float(p.detour_max_skip_m) + 1e-6:
+            self._log('warn', 'detour transit %s: extending the skip to %.1f m'
+                      % (outcome, skip))
+            if self._detour_send(d['from'], skip, d['why']):
+                return
+        m.start_local = d['from']
+        m.follow_fails += 1
+        if m.follow_fails > p.follow_retries:
+            self._subpath_failed('obstacle could not be bypassed (%s)' % d['why'])
+            return
+        self._schedule_retry('MOWING', 'area %d sub-path %d/%d: detour failed (%s), retry %d/%d '
+                             'in %.0f s' % (m.area_idx, m.sub_i + 1, len(m.subpaths), outcome,
+                                            m.follow_fails, p.follow_retries,
+                                            p.transit_retry_delay_s))
+
+    # ---- end-of-area pass over the skipped stretches ----------------------
+    def _next_stretch(self):
+        m = self.mission
+        ac = self.cursor.area(m.area_idx)
+        fr, to = m.requeue.pop(0)
+        a = absolute_to_local(m.subpaths, fr)
+        b = absolute_to_local(m.subpaths, to)
+        if a is None or b is None or a[0] != b[0] or b[1] <= a[1]:
+            if (fr, to) in ac.skipped:
+                ac.skipped.remove((fr, to))
+                self._persist()
+            self._area_done()
+            return
+        m.stretch, m.stretch_end = (fr, to), b[1]
+        m.sub_i, m.start_local = a
+        m.retry_used, m.premature, m.boundary_recoveries = False, 0, 0
+        m.transit_fails = m.follow_fails = m.recovery_fails = 0
+        m.recovering, m.detour = False, None
+        self._log('info', 'area %d: re-trying skipped stretch sub-path %d poses %d -> %d'
+                  % (m.area_idx, a[0], a[1], b[1]))
+        self._dispatch()
+
+    def _stretch_done(self):
+        m = self.mission
+        ac = self.cursor.area(m.area_idx)
+        if m.stretch in ac.skipped:
+            ac.skipped.remove(m.stretch)
+        self._log('info', 'area %d: skipped stretch %s mowed' % (m.area_idx, m.stretch))
+        m.stretch, m.stretch_end, m.step = None, None, None
+        self._persist()
+        self._area_done()
+
+    def _stretch_blocked(self, why):
+        m = self.mission
+        m.blocked.append((m.area_idx,) + tuple(m.stretch))
+        self._log('warn', 'area %d: stretch %s still blocked (%s): obstacle cannot be bypassed'
+                  % (m.area_idx, m.stretch, why))
+        m.stretch, m.stretch_end, m.step = None, None, None
+        self._blade_off('stretch blocked')
+        self._area_done()
 
     def _handle_service(self, s, ok, resp):
         if s.purpose == 'enum':
@@ -1988,6 +2310,12 @@ class MissionFSM:
                                   'with its current parameters'
                           % (m.area_idx, resp.get('message') or 'unavailable'))
             self._start_plan()
+
+
+def blocked_text(n):
+    """Sub_state for stretches the end-of-area pass could not mow (vendor IotNotice
+    900027 'obstacle cannot be bypassed')."""
+    return '%d stretch%s blocked by obstacles' % (n, '' if n == 1 else 'es')
 
 
 def blade_allowed(fsm):

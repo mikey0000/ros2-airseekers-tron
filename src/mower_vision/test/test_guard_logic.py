@@ -149,3 +149,27 @@ def test_range_of_ranged_detection():
     cov[0] = 0.01
     det.results[0].pose.covariance = cov
     assert range_of(det, 0.466) == pytest.approx(1.0)
+
+
+def test_frame_policy_dynamic_wins_and_static_by_range():
+    from mower_vision.guard_logic import Box, GuardConfig, PolicyConfig, frame_policy
+    g, pc = GuardConfig(), PolicyConfig()
+    chair = Box('chair', 0.8, 100, 100, 10, 10, range_m=1.2, bearing_deg=5.0)
+    dog = Box('dog', 0.8, 100, 100, 10, 10, range_m=0.9)
+    far_dog = Box('dog', 0.8, 100, 100, 10, 10, range_m=1.2)
+    assert frame_policy([chair], pc, g)['kind'] == 'static'
+    assert frame_policy([chair], pc, g)['bearing_deg'] == 5.0
+    assert frame_policy([chair, dog], pc, g) == {'kind': 'dynamic', 'class': 'dog',
+                                                 'distance_m': 0.9, 'bearing_deg': None}
+    assert frame_policy([far_dog], pc, g)['kind'] == 'none'
+    assert frame_policy([Box('chair', 0.1, 1, 1, 1, 1, range_m=0.5)], pc, g)['kind'] == 'none'
+
+
+def test_policy_state_holds_then_clears():
+    from mower_vision.guard_logic import PolicyState
+    st = PolicyState(hold_s=0.5)
+    st.update('l', {'kind': 'static', 'class': 'chair', 'distance_m': 1.0,
+                    'bearing_deg': None}, 0.0)
+    st.update('r', {'kind': 'none', 'class': '', 'distance_m': None, 'bearing_deg': None}, 0.1)
+    assert st.current(0.4)['class'] == 'chair'
+    assert st.current(0.6)['kind'] == 'none'

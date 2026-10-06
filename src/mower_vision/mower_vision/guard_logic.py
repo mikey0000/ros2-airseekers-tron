@@ -28,6 +28,9 @@ DEFAULT_CLASSES: List[str] = [
 ]
 # Living things the mower must never drive into / mow over.
 DEFAULT_WHITELIST: List[str] = ['person', 'dog', 'cat', 'hedgehog', 'rabbit']
+# /obstacle_policy: classes that move away by themselves (mission: stop, blade off, wait).
+# Every other class is static (mission: blade-off detour around it).
+DEFAULT_DYNAMIC: List[str] = ['person', 'dog', 'cat']
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,7 @@ class Box:
     w: float
     h: float
     range_m: Optional[float] = None     # measured range (m), None = unknown
+    bearing_deg: Optional[float] = None  # measured bearing (deg, base_link, left +)
 
     @property
     def x1(self) -> float:
@@ -157,3 +161,67 @@ def box_outline(box: Box) -> List[Tuple[float, float]]:
 def danger_line(cfg: GuardConfig) -> List[Tuple[float, float]]:
     y = cfg.y_frac * cfg.image_height
     return [(0.0, y), (float(cfg.image_width), y)]
+
+
+# ---------------------------------------------------------------------------
+# /obstacle_policy (consumed by mower_mission)
+# ---------------------------------------------------------------------------
+NONE_POLICY = {'kind': 'none', 'class': '', 'distance_m': None, 'bearing_deg': None}
+
+
+@dataclass
+class PolicyConfig:
+    dynamic_classes: Sequence[str] = field(default_factory=lambda: list(DEFAULT_DYNAMIC))
+    min_score: float = 0.4
+    dynamic_range_m: float = 1.0      # dynamic: same reach as the guard stop
+    static_range_m: float = 1.5       # static: a little further (explains a controller abort)
+
+
+def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig) -> dict:
+    """Closest relevant detection of one frame: any dynamic one wins over static ones.
+
+    Ranged boxes count within ``dynamic_range_m`` / ``static_range_m``; unranged ones
+    use the guard's image-space danger zone."""
+    dyn = {c.strip().lower() for c in cfg.dynamic_classes}
+    best = {}
+    for b in boxes:
+        if b.score < cfg.min_score:
+            continue
+        kind = 'dynamic' if b.label.strip().lower() in dyn else 'static'
+        reach = cfg.dynamic_range_m if kind == 'dynamic' else cfg.static_range_m
+        close = (b.range_m <= reach) if b.range_m is not None else in_danger_zone(b, guard_cfg)
+        if not close:
+            continue
+        key = b.range_m if b.range_m is not None else float('inf')
+        cur = best.get(kind)
+        if cur is None or key < cur[0]:
+            best[kind] = (key, b)
+    for kind in ('dynamic', 'static'):
+        if kind in best:
+            b = best[kind][1]
+            return {'kind': kind, 'class': b.label,
+                    'distance_m': None if b.range_m is None else round(b.range_m, 2),
+                    'bearing_deg': None if b.bearing_deg is None else round(b.bearing_deg, 1)}
+    return dict(NONE_POLICY)
+
+
+class PolicyState:
+    """Per-source hold of the last non-none policy (debounces detector flicker); the
+    combined policy prefers dynamic, then the closest."""
+
+    def __init__(self, hold_s: float = 0.5):
+        self.hold_s = float(hold_s)
+        self._last: Dict[str, Tuple[float, dict]] = {}
+
+    def update(self, source: str, policy: dict, now: float) -> None:
+        if policy.get('kind', 'none') != 'none':
+            self._last[source] = (now, dict(policy))
+
+    def current(self, now: float) -> dict:
+        live = [p for t, p in self._last.values() if now - t <= self.hold_s]
+        for kind in ('dynamic', 'static'):
+            cands = [p for p in live if p['kind'] == kind]
+            if cands:
+                return min(cands, key=lambda p: p['distance_m']
+                           if p['distance_m'] is not None else float('inf'))
+        return dict(NONE_POLICY)

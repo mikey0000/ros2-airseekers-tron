@@ -28,3 +28,11 @@ obstacle_guard:
     emergency_topic: /cmd_vel_emergency
     cutter_off_service: /cutter_off
     publish_markers: true
+    # /obstacle_policy (std_msgs/String JSON, latched, policy_rate_hz) for mower_mission:
+    # closest detection of any class; dynamic_classes within obstacle_stop_range_m ->
+    # dynamic (stop, blade off, wait), any other class within policy_static_range_m ->
+    # static (blade-off detour). Unranged boxes use the image-space rule above.
+    dynamic_classes: [person, dog, cat]
+    policy_static_range_m: 1.5
+    policy_topic: /obstacle_policy
+    policy_rate_hz: 5.0
