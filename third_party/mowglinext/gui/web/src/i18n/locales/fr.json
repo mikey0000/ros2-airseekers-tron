@@ -2556,7 +2556,14 @@
     "criticalRecovery": "Récupération critique",
     "criticalRecoveryTooltip": "Quitter l'état batterie critique une fois rechargée au-dessus de ce %. Borne supérieure d'hystérésis, doit être supérieure à Critique.",
     "manualResume": "Reprise manuelle",
-    "manualResumeTooltip": "Appuyer sur Lecture pendant une recharge en cours de session ne reprend la tonte qu'au-dessus de ce %. Doit être supérieur à Faible (accostage), sinon le robot retourne à la base en quelques minutes."
+    "manualResumeTooltip": "Appuyer sur Lecture pendant une recharge en cours de session ne reprend la tonte qu'au-dessus de ce %. Doit être supérieur à Faible (accostage), sinon le robot retourne à la base en quelques minutes.",
+    "chargingBehaviour": "Low battery and charging",
+    "lowAction": "When battery is low",
+    "lowActionTooltip": "What a running mow does when the battery drops below the Low threshold.",
+    "lowActionStop": "Stop where it is (blade off)",
+    "lowActionDock": "Return to dock and charge",
+    "maxCharge": "Max charge level",
+    "maxChargeTooltip": "While docked, charging stops at this level and restarts 5 % below it. 100 % = no limit. A paused mow resumes once this level (or Resume Above, whichever is lower) is reached."
   },
   "settingsSafety": {
     "alertMessage": "Les réglages de sécurité protègent le robot et son environnement",
