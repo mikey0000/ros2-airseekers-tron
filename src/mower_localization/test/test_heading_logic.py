@@ -100,7 +100,7 @@ def test_window_needs_min_distance_and_straight_command():
     assert not s.est.aligned
     s.run(0.3, 0.2, 5.0)        # turning: window discarded
     assert not s.est.aligned
-    s.run(0.1, 0.0, 10.0)       # too slow
+    s.run(0.04, 0.0, 10.0)      # too slow (< min_speed 0.06)
     assert not s.est.aligned
     s.run(0.3, 0.0, 2.5)
     assert s.est.aligned

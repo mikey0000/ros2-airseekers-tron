@@ -13,7 +13,7 @@ describe("driving camera choice", () => {
     it("defaults to the profile's driving camera (Tron: right_oa)", () => {
         const tron = getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID);
         expect(tron.drivingCamera).toBe("right_oa");
-        expect(defaultDrivingCamera(CAMS, tron.drivingCamera)?.id).toBe("front_right");
+        expect(defaultDrivingCamera(CAMS, tron.drivingCamera)?.id).toBe("right_oa");
     });
     it("falls back to a front camera, then the first; none without cameras", () => {
         expect(defaultDrivingCamera(CAMS)?.id).toBe("front_left");
