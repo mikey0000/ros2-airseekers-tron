@@ -3,6 +3,13 @@
 obstacle_guard:
   ros__parameters:
     detections_topic: /ai/det/detections
+    # det_range output: preferred while it publishes (ranged_timeout_s); ranged detections
+    # are close at <= obstacle_stop_range_m from range_origin_x_m (stereo lens x in
+    # base_link), unranged ones use the image-space rule below.
+    ranged_topic: /ai/det/detections_ranged
+    ranged_timeout_s: 1.0
+    obstacle_stop_range_m: 1.0
+    range_origin_x_m: 0.466
     # Classes the guard reacts to (names from det_ros/labels.py, best_large_0208.rknn).
     whitelist: [person, dog, cat, hedgehog, rabbit]
     min_score: 0.4

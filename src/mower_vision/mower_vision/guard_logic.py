@@ -6,6 +6,10 @@ whitelisted class is *close* when
     bbox bottom edge  > y_frac * image_height     (low in the image = near the mower)
     AND bbox width    > w_frac * image_width      (large = near)
 
+When a detection carries a measured range (``Box.range_m``, from ``det_range`` via
+``/ai/det/detections_ranged``) the image-space rule is replaced by
+``range_m <= stop_range_m``; boxes without range keep the image-space heuristic.
+
 A per-camera hold (``hold_s``) debounces flicker: a camera stays "close" for ``hold_s``
 after its last close detection. The overall state is the OR over cameras; a rising edge of
 the overall state triggers the stop actions (zero-twist burst + cutter off).
@@ -34,6 +38,7 @@ class Box:
     cy: float
     w: float
     h: float
+    range_m: Optional[float] = None     # measured range (m), None = unknown
 
     @property
     def x1(self) -> float:
@@ -60,6 +65,7 @@ class GuardConfig:
     min_score: float = 0.4
     image_width: int = 1920
     image_height: int = 1080
+    stop_range_m: float = 1.0
 
 
 def with_image_size(cfg: GuardConfig, width: int, height: int) -> GuardConfig:
@@ -90,12 +96,19 @@ def in_danger_zone(box: Box, cfg: GuardConfig) -> bool:
             and box.w > cfg.w_frac * cfg.image_width)
 
 
+def is_close(box: Box, cfg: GuardConfig) -> bool:
+    """Measured range when present, else the image-space danger zone."""
+    if box.range_m is not None:
+        return box.range_m <= cfg.stop_range_m
+    return in_danger_zone(box, cfg)
+
+
 def classify(boxes: Iterable[Box], cfg: GuardConfig) -> List[Tuple[Box, bool, bool]]:
     """``[(box, relevant, close)]``: relevant = whitelisted and score >= min_score."""
     out = []
     for b in boxes:
         relevant = b.score >= cfg.min_score and is_whitelisted(b.label, cfg.whitelist)
-        out.append((b, relevant, relevant and in_danger_zone(b, cfg)))
+        out.append((b, relevant, relevant and is_close(b, cfg)))
     return out
 
 

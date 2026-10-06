@@ -1,0 +1,21 @@
+# det_range: det_ros detections x Metoak hardware depth -> ranged detections + obstacles.
+det_range:
+  ros__parameters:
+    detections_topic: /ai/det/detections
+    depth_topic: /stereo_depth/depth/image_raw
+    camera_info_topic: /vio/right/camera_info
+    output_topic: /ai/det/detections_ranged
+    obstacles_topic: /ai/det/obstacles
+    obstacle_points_topic: /ai/det/obstacle_points
+    # Only the right colour eye of the front stereo is ranged; the OA cameras have no
+    # extrinsics in config/urdf/mower.urdf.xacro (their detections pass through unranged).
+    stereo_frames: [vio_camera]
+    target_frame: base_link
+    depth_frame: stereo_camera_optical
+    box_frac: 0.5          # sample the central 50 % of the box
+    min_valid_px: 20
+    min_range_m: 0.2
+    max_range_m: 10.0
+    z_guess_m: 2.0
+    sigma_disparity_px: 0.25
+    max_depth_age_s: 0.5

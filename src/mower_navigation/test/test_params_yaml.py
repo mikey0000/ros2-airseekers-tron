@@ -148,6 +148,19 @@ def test_local_costmap_has_no_inflation_layer():
         assert lc[name]["plugin"] != "nav2_costmap_2d::InflationLayer"
 
 
+def test_det_range_obstacle_source():
+    # det_range centroid cloud: marking-only PointCloud2 source, 3 m max range.
+    ol = load()["local_costmap"]["local_costmap"]["ros__parameters"]["obstacle_layer"]
+    assert "det_range" in ol["observation_sources"].split()
+    src = ol["det_range"]
+    assert src["topic"] == "/ai/det/obstacle_points"
+    assert src["data_type"] == "PointCloud2"
+    assert src["marking"] is True and src["clearing"] is False
+    assert src["obstacle_max_range"] == 3.0
+    for name in ol["observation_sources"].split():
+        assert name in ol, f"observation source {name} has no sub-map"
+
+
 def test_lifecycle_order():
     lm = load()["lifecycle_manager_navigation"]["ros__parameters"]
     assert lm["node_names"] == ["controller_server", "planner_server", "behavior_server",

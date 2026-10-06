@@ -119,3 +119,33 @@ def test_with_image_size_fallback_and_marker_line():
     assert with_image_size(base, 0, 0) is base
     assert with_image_size(base, 1920, 1080).image_height == 1080
     assert danger_line(with_image_size(base, 960, 540)) == [(0.0, 324.0), (960.0, 324.0)]
+
+
+def test_measured_range_overrides_image_rule():
+    from dataclasses import replace
+    far_but_big = replace(box(), range_m=2.5)          # image rule says close
+    near_but_small = replace(box(y1=100, y2=300), range_m=0.8)   # image rule says far
+    assert in_danger_zone(far_but_big, CFG) and not any_close([far_but_big], CFG)
+    assert not in_danger_zone(near_but_small, CFG) and any_close([near_but_small], CFG)
+    assert any_close([replace(box(), range_m=1.0)], CFG)        # boundary inclusive
+    assert not any_close([replace(box(), range_m=1.2)], CFG)
+    assert any_close([replace(box(), range_m=1.2)], replace(CFG, stop_range_m=1.5))
+    assert not any_close([replace(box('stone'), range_m=0.3)], CFG)   # still whitelisted only
+    assert any_close([box()], CFG)                      # no range -> image rule fallback
+
+
+def test_range_of_ranged_detection():
+    pytest.importorskip('rclpy')
+    pytest.importorskip('vision_msgs')
+    from vision_msgs.msg import Detection2D, ObjectHypothesisWithPose
+    from mower_vision.obstacle_guard_node import range_of
+    det = Detection2D()
+    assert range_of(det) is None
+    det.results.append(ObjectHypothesisWithPose())
+    assert range_of(det) is None                        # covariance 0 = unranged
+    det.results[0].pose.pose.position.x = 0.466 + 0.6
+    det.results[0].pose.pose.position.y = 0.8
+    cov = [0.0] * 36
+    cov[0] = 0.01
+    det.results[0].pose.covariance = cov
+    assert range_of(det, 0.466) == pytest.approx(1.0)

@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>det_range</name>
+  <version>0.1.0</version>
+  <description>
+    Tags det_ros detections (vision_msgs/Detection2DArray) of the front stereo right eye with
+    a robust range from the Metoak hardware depth (mower_cameras/stereo_depth) and publishes
+    /ai/det/detections_ranged plus the ranged centroids in base_link (PoseArray +
+    PointCloud2 for the Nav2 local costmap).
+  </description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

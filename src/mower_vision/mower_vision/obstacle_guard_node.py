@@ -3,6 +3,13 @@
 Subscribes ``/ai/det/detections`` (``vision_msgs/Detection2DArray`` from ``det_ros``) and
 applies the danger-zone rule in :mod:`mower_vision.guard_logic` to whitelisted classes.
 
+Prefers ``/ai/det/detections_ranged`` (``det_range``: same detections, ranged ones carry
+``results[0].pose.pose.position`` in base_link and ``pose.covariance[0] > 0``): a ranged
+whitelisted detection is close when its planar distance from (``range_origin_x_m``, 0)
+is <= ``obstacle_stop_range_m``; unranged ones keep the image-space rule. While ranged
+messages arrive (within ``ranged_timeout_s``) the raw ``/ai/det/detections`` are ignored;
+otherwise the guard falls back to them.
+
 Publishes:
 * ``/vision/obstacle_close``   ``std_msgs/Bool`` on every detection frame and on hold expiry;
 * ``/vision/obstacle_markers``  ``visualization_msgs/ImageMarker`` (LINE_LIST, image pixels,
@@ -17,6 +24,7 @@ When ``stop_on_close`` is true, on the rising edge of the close state:
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 
@@ -46,7 +54,18 @@ GREY = ColorRGBA(r=0.6, g=0.6, b=0.6, a=1.0)
 BLUE = ColorRGBA(r=0.2, g=0.5, b=1.0, a=1.0)
 
 
-def boxes_from_msg(msg, classes):
+def range_of(det, origin_x=0.0):
+    """Planar range (m) of a det_range-tagged detection, or None when unranged."""
+    if not det.results:
+        return None
+    pose = det.results[0].pose
+    if len(pose.covariance) < 1 or not pose.covariance[0] > 0.0:
+        return None
+    p = pose.pose.position
+    return math.hypot(float(p.x) - origin_x, float(p.y))
+
+
+def boxes_from_msg(msg, classes, origin_x=0.0):
     """``Detection2DArray`` -> ``[Box]`` (best hypothesis per detection)."""
     out = []
     for det in msg.detections:
@@ -57,7 +76,8 @@ def boxes_from_msg(msg, classes):
                        score=float(best.hypothesis.score),
                        cx=float(det.bbox.center.position.x),
                        cy=float(det.bbox.center.position.y),
-                       w=float(det.bbox.size_x), h=float(det.bbox.size_y)))
+                       w=float(det.bbox.size_x), h=float(det.bbox.size_y),
+                       range_m=range_of(det, origin_x)))
     return out
 
 
@@ -66,6 +86,10 @@ class ObstacleGuard(Node):
         super().__init__('obstacle_guard')
         dp = self.declare_parameter
         dp('detections_topic', '/ai/det/detections')
+        dp('ranged_topic', '/ai/det/detections_ranged')   # '' = image-space rule only
+        dp('ranged_timeout_s', 1.0)
+        dp('obstacle_stop_range_m', 1.0)
+        dp('range_origin_x_m', 0.466)   # stereo camera x in base_link: range from the lens
         dp('classes', list(DEFAULT_CLASSES))
         dp('whitelist', list(DEFAULT_WHITELIST))
         dp('y_frac', 0.6)
@@ -90,7 +114,11 @@ class ObstacleGuard(Node):
                                y_frac=float(p('y_frac')), w_frac=float(p('w_frac')),
                                min_score=float(p('min_score')),
                                image_width=int(p('image_width')),
-                               image_height=int(p('image_height')))
+                               image_height=int(p('image_height')),
+                               stop_range_m=float(p('obstacle_stop_range_m')))
+        self.range_origin_x = float(p('range_origin_x_m'))
+        self.ranged_timeout = float(p('ranged_timeout_s'))
+        self._last_ranged = None
         self.state = GuardState(hold_s=float(p('hold_s')), burst_s=float(p('burst_s')))
         self.stop_on_close = bool(p('stop_on_close'))
         self.publish_markers = bool(p('publish_markers'))
@@ -103,14 +131,17 @@ class ObstacleGuard(Node):
         for topic in p('camera_info_topics'):
             self.create_subscription(CameraInfo, str(topic), self._on_info,
                                      qos_profile_sensor_data)
-        self.create_subscription(Detection2DArray, p('detections_topic'), self._on_dets, 10)
+        self.create_subscription(Detection2DArray, p('detections_topic'), self._on_raw, 10)
+        if p('ranged_topic'):
+            self.create_subscription(Detection2DArray, p('ranged_topic'), self._on_ranged, 10)
         self.create_timer(1.0 / float(p('burst_rate_hz')), self._on_tick)
         self._last_published = None
 
         self.get_logger().info(
             f'obstacle_guard up: whitelist={list(self.cfg.whitelist)} y_frac={self.cfg.y_frac} '
             f'w_frac={self.cfg.w_frac} fallback_image={self.cfg.image_width}x{self.cfg.image_height} '
-            f'stop_on_close={self.stop_on_close}')
+            f'stop_on_close={self.stop_on_close} ranged={p("ranged_topic") or "off"} '
+            f'stop_range={self.cfg.stop_range_m} m')
 
     def _on_info(self, msg):
         w, h = int(msg.width), int(msg.height)
@@ -133,8 +164,18 @@ class ObstacleGuard(Node):
         self.close_pub.publish(Bool(data=bool(close)))
         self._last_published = close
 
+    def _on_raw(self, msg):
+        if (self._last_ranged is not None
+                and self._now() - self._last_ranged <= self.ranged_timeout):
+            return          # det_range is up: its republished copy is used instead
+        self._on_dets(msg)
+
+    def _on_ranged(self, msg):
+        self._last_ranged = self._now()
+        self._on_dets(msg)
+
     def _on_dets(self, msg):
-        boxes = boxes_from_msg(msg, self.classes)
+        boxes = boxes_from_msg(msg, self.classes, self.range_origin_x)
         cfg = self._cfg_for(msg.header.frame_id)
         verdicts = classify(boxes, cfg)
         close_now = any(c for _, _, c in verdicts)
