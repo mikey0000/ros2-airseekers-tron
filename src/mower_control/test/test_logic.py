@@ -61,14 +61,24 @@ def test_applied_log_throttled():
     node = _slew_node()
     _step(node, 0.0)
     for k in range(1, 41):                                # 2 s at 20 Hz
+        node._tgt, node._last_cmd_time = (0.2, 0.0, 0.0, 0.0, 0.0, 0.0), 0.05 * k  # commanded
         _step(node, 0.05 * k)
     applied = [t for lvl, t in node.log.lines if t.startswith('cmd_vel applied')]
     assert len(applied) == 2
     node = _slew_node(_log_period=0.0)
     _step(node, 0.0)
     for k in range(1, 41):
+        node._tgt, node._last_cmd_time = (0.2, 0.0, 0.0, 0.0, 0.0, 0.0), 0.05 * k
         _step(node, 0.05 * k)
     assert len([t for _l, t in node.log.lines if t.startswith('cmd_vel applied')]) == 40
+
+
+def test_applied_log_silent_at_rest():
+    node = _slew_node(_log_period=0.0)
+    _step(node, 0.0)
+    for k in range(1, 21):                                # nothing commanded: no chatter
+        _step(node, 0.05 * k)
+    assert not [t for _l, t in node.log.lines if t.startswith('cmd_vel applied')]
 
 
 # ---------------------------------------------------------------------- slip_detector
