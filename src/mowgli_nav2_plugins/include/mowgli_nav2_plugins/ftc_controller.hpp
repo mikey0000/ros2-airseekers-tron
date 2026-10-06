@@ -468,6 +468,12 @@ private:
 
     // Options
     bool forward_only{true};
+    /// PORT (Tron): when the FOLLOWING angular command saturates at
+    /// max_cmd_vel_ang, scale linear.x by max_cmd_vel_ang / |raw angular| so
+    /// the commanded curvature (w/v) is preserved instead of driving a wider
+    /// arc at full speed. Floored at min(min_speed_mps, v). Default false =
+    /// upstream MowgliNext behaviour.
+    bool scale_linear_on_angular_saturation{false};
     /// Legacy: snap to the nearest plan point in setPlan instead of starting at
     /// index 0. OFF by default — on a CLOSED headland ring (start == end) the
     /// snap is ambiguous and could skip the whole ring. See setPlan.

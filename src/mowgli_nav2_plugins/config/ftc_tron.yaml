@@ -1,0 +1,71 @@
+# Proposed FTCController parameters for the Airseekers Tron (0.3 m/s swaths,
+# 0.18 m swath width). NOT loaded by anything: merge into
+# src/mower_navigation/config/nav2_params.yaml under the FTC controller entry
+# (FollowCoveragePathFTC, or FollowCoveragePath when FTC goes live again).
+# Validated in test/test_ftc_tracking_sim.cpp (real FTCController, unicycle
+# with the Tron yaw-rate limit). Only keys that differ from, or matter beyond,
+# the 2026-10-06 live set are commented.
+controller_server:
+  ros__parameters:
+    FollowCoveragePathFTC:
+      plugin: "mowgli_nav2_plugins/FTCController"
+      desired_linear_vel: 0.3        # GUI alias -> speed_fast 0.30, speed_slow 0.24
+      speed_fast: 0.20
+      speed_fast_threshold: 0.5
+      speed_fast_threshold_angle: 10.0
+      speed_slow: 0.16
+      # ROOT CAUSE FIX. The carrot rotates OPEN-LOOP at speed_angular at every
+      # corner. MowgliNext's 45 deg/s (0.79 rad/s) is ~4x what the Tron can turn:
+      # mower_mcu_driver clamps angular to 0.3 rad/s (17 deg/s) and the 10-06 run
+      # delivered ~0.18-0.2 rad/s in turf. 15 deg/s (0.26 rad/s) keeps the carrot
+      # within reach; sim stays < 7 cm cross-track down to 0.15 rad/s delivered.
+      speed_angular: 15.0
+      acceleration: 0.2
+      obstacle_restart_angular_acceleration: 1.0
+      min_speed_mps: 0.10
+      stall_speed_ratio: 0.35
+      stall_grace_s: 0.6
+      stall_crawl_speed: 0.08
+      blade_load_slowdown_enabled: false
+      kp_lon: 1.0
+      ki_lon: 0.0
+      kd_lon: 0.0
+      kp_lat: 1.0
+      ki_lat: 0.0
+      kd_lat: 0.3
+      kp_ang: 1.0                    # pivots: 1.0 x 16 deg = 0.28 rad/s, already at the MCU limit
+      kp_ang_following: 0.8
+      ki_ang: 0.0
+      kd_ang: 0.0
+      derivative_filter_tau: 0.2
+      max_cmd_vel_speed: 0.30
+      # Match the MCU clamp (mower_mcu_driver angular_max 0.3). Anything above is
+      # silently cut downstream and only winds up the PID / slip detector.
+      max_cmd_vel_ang: 0.3
+      # Port-only: when the angular command saturates, scale linear.x down to keep
+      # the commanded curvature (floored at min_speed_mps).
+      scale_linear_on_angular_saturation: true
+      max_goal_distance_error: 0.50
+      # Was 30: PRE_ROTATE exited at -16 deg on 10-06. 15 still pivots little.
+      max_goal_angle_error: 15.0
+      goal_timeout: 10.0
+      max_follow_distance: 2.0
+      forward_only: true
+      check_obstacles: true
+      obstacle_lookahead: 30
+      obstacle_footprint: true
+      use_footprint_clearance: false
+      obstacle_footprint_front_length_m: 0.52
+      require_clear_exit: true
+      obstacle_body_half_width: 0.27
+      obstacle_clearance_margin: 0.05
+      ignore_obstacles_outside_zone: true
+      enable_obstacle_deviation: true
+      max_lateral_deviation: 1.5
+      deviation_step: 0.05
+      deviation_blend_rate: 0.5
+      obstacle_wait_timeout_s: 2.5
+      obstacle_clear_hold_s: 1.5
+      obstacle_reverse_enabled: true
+      obstacle_reverse_max_dist_m: 0.30
+      obstacle_reverse_speed_mps: 0.10

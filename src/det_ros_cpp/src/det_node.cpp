@@ -335,7 +335,7 @@ void CameraWorker::process(const Image &msg) {
   t_npu_cpu_ += c2 - c1;
   t_pre_ += c1 - c_pre0;
   if (++n_stats_ == 100) {
-    RCLCPP_INFO(node_->get_logger(),
+    RCLCPP_DEBUG(node_->get_logger(),
                 "%s: per frame cpu ms: deserialize %.2f, letterbox %.2f, npu call %.2f "
                 "(wall %.1f), decode+nms %.2f",
                 topic_.c_str(), t_deser_ / 100, t_pre_ / 100, t_npu_cpu_ / 100,

@@ -65,7 +65,12 @@ void FTCController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr& pa
   global_point_pub_ =
       node->create_publisher<geometry_msgs::msg::PoseStamped>(plugin_name_ + "/global_point",
                                                               rclcpp::QoS(1));
-  global_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>(plugin_name_ + "/global_plan",
+  // PORT: "~/" so the topic is /controller_server/<plugin>/global_plan, the
+  // PathProgressGoalChecker plan_topic. A bare relative name resolves to
+  // /<plugin>/global_plan on Humble, the checker never saw a plan and fell back
+  // to SimpleGoalChecker semantics after 5 s (2026-10-06 log) — on a closed
+  // ring (start == end) that can end the ring early.
+  global_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>("~/" + plugin_name_ + "/global_plan",
                                                                  rclcpp::QoS(1).transient_local());
   obstacle_marker_pub_ =
       node->create_publisher<visualization_msgs::msg::Marker>(plugin_name_ + "/costmap_marker",
@@ -233,6 +238,8 @@ void FTCController::declareParameters(const rclcpp_lifecycle::LifecycleNode::Sha
 
   // Options
   config_.forward_only = declare_bool("forward_only", true);
+  config_.scale_linear_on_angular_saturation =
+      declare_bool("scale_linear_on_angular_saturation", false);
   // Legacy nearest-point snap in setPlan. OFF by default: on closed headland
   // rings it could skip the entire ring (see setPlan).
   config_.snap_to_nearest_on_set_plan = declare_bool("snap_to_nearest_on_set_plan", false);
@@ -555,6 +562,10 @@ rcl_interfaces::msg::SetParametersResult FTCController::onParameterChange(
       if (reject_invalid(key, p.as_double(), 0.01, 50.0))
         break;
       config_.max_follow_distance = p.as_double();
+    }
+    else if (key == "scale_linear_on_angular_saturation")
+    {
+      config_.scale_linear_on_angular_saturation = p.as_bool();
     }
     else if (key == "forward_only")
     {
@@ -1683,6 +1694,20 @@ void FTCController::calculate_velocity_commands(double dt,
     double ang_speed = angle_error_ * config_.kp_ang_following + i_angle_error_ * config_.ki_ang +
                        d_angle * config_.kd_ang + lat_error_for_steering * config_.kp_lat +
                        i_lat_error_ * config_.ki_lat + d_lat * config_.kd_lat;
+
+    // PORT (Tron): preserve curvature when the angular command saturates.
+    // The Tron cannot deliver more than ~0.2-0.3 rad/s (mower_mcu_driver
+    // angular_max 0.3, less in turf with the blade on). Clamping w alone at
+    // full v turns the commanded arc into a wider one and the robot is carried
+    // off a headland ring at the first corner (2026-10-06 boundary pause).
+    if (config_.scale_linear_on_angular_saturation && !is_stalled_ &&
+        cmd_vel.twist.linear.x > 0.0 && std::abs(ang_speed) > config_.max_cmd_vel_ang &&
+        config_.max_cmd_vel_ang > 0.0)
+    {
+      const double v = cmd_vel.twist.linear.x;
+      const double scaled = v * config_.max_cmd_vel_ang / std::abs(ang_speed);
+      cmd_vel.twist.linear.x = std::max(scaled, std::min(config_.min_speed_mps, v));
+    }
 
     ang_speed = std::clamp(ang_speed, -config_.max_cmd_vel_ang, config_.max_cmd_vel_ang);
     cmd_vel.twist.angular.z = ang_speed;

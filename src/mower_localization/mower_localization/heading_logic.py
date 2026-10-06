@@ -105,7 +105,9 @@ class AlignParams:
         self.float_min_distance = 1.5    # m with RTK float (decimetre noise)
         self.max_window_time = 30.0      # s; a slower window is restarted
         self.max_lateral = 0.08          # m GPS deviation from the chord
-        self.max_imu_yaw_change = math.radians(6.0)   # IMU yaw span inside a window
+        self.max_imu_yaw_change = math.radians(15.0)  # IMU yaw span inside a window: the Tron weaves
+                                                      # ~10 deg when hand-driven; the GPS chord check
+                                                      # (max_lateral) still rejects a curved track
         self.alpha_initial = 0.3
         self.initial_updates = 3         # COG updates that use alpha_initial
         self.alpha = 0.1

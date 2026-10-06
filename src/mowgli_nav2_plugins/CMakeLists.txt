@@ -189,6 +189,16 @@ if(BUILD_TESTING)
     PRIVATE
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   )
+  # Closed-loop unicycle simulation of the real FTCController (Tron MCU clamp).
+  # Localhost-only + private domain: the dev container runs --network host and
+  # must never be visible to the mower's DDS graph.
+  ament_add_gtest(test_ftc_tracking_sim
+    test/test_ftc_tracking_sim.cpp
+    ENV ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=97
+    TIMEOUT 120
+  )
+  target_link_libraries(test_ftc_tracking_sim ${PROJECT_NAME})
+  target_include_directories(test_ftc_tracking_sim SYSTEM PRIVATE ${EIGEN3_INCLUDE_DIRS})
 endif()
 
 # ---------------------------------------------------------------------------
