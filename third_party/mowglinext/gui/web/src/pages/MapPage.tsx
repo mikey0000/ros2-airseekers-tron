@@ -46,6 +46,7 @@ import {useIsMobile} from "../hooks/useIsMobile.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
 import {useAreaSettingsSupport} from "../hooks/useAreaSettings.ts";
 import {MissionStopControls} from "../components/MissionStopControls.tsx";
+import {MissionSubState} from "../components/MissionSubState.tsx";
 import {StartMowSheet, type StartSelection} from "../components/areaSettings/StartMowSheet.tsx";
 import {AreaSettingsDrawer} from "../components/areaSettings/AreaSettingsDrawer.tsx";
 import {mowingAreaChoices} from "../utils/mapAreaIndex.ts";
@@ -1471,6 +1472,13 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     onStart={() => { void mowerActions.onStart(); }}
                     style={{position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 20, maxWidth: 'calc(100% - 32px)'}}
                 />
+                {!editMap && (
+                    <MissionSubState
+                        stateName={highLevelStatus.highLevelStatus.state_name}
+                        subStateName={highLevelStatus.highLevelStatus.sub_state_name}
+                        style={{position: 'absolute', top: 12, left: 16, zIndex: 19, maxWidth: 'min(520px, calc(100% - 32px))'}}
+                    />
+                )}
                 {previewCard}
                 {editMap && !pathTool.editing && features["dock"] instanceof DockFeatureBase && (
                     <DockHeadingPanel

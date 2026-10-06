@@ -381,12 +381,20 @@ func PublisherRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 			return
 		}
 		defer conn.Close()
+		// Liveness: ping + "hb" text frame every second so the browser can
+		// detect a dead link and reconnect, and a dead peer is dropped here
+		// after wsReadTimeout instead of holding the goroutine forever.
+		var writeMu sync.Mutex
+		armReadDeadline(conn)
+		stopHB := startHeartbeat(conn, &writeMu, websocket.TextMessage, []byte(PublishHeartbeat))
+		defer stopHB()
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
 				c.Error(err)
 				break
 			}
+			extendReadDeadline(conn)
 			var msgObj geometry.TwistStamped
 			err = json.Unmarshal(msg, &msgObj)
 			if err != nil {
@@ -525,6 +533,13 @@ func MultiplexRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 			}
 		}()
 
+		// Liveness (see ws_heartbeat.go): the heartbeat frame is a regular
+		// msgpack {topic:"__hb"} frame that no listener subscribes to.
+		hbFrame, _ := msgpack.Marshal(map[string]interface{}{"topic": HeartbeatTopic, "data": nil})
+		armReadDeadline(conn)
+		stopHB := startHeartbeat(conn, &writeMu, websocket.BinaryMessage, hbFrame)
+		defer stopHB()
+
 		type clientMsg struct {
 			Op    string `json:"op"`
 			Topic string `json:"topic"`
@@ -534,6 +549,7 @@ func MultiplexRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 			if err != nil {
 				return
 			}
+			extendReadDeadline(conn)
 			var m clientMsg
 			if err := json.Unmarshal(payload, &m); err != nil {
 				continue

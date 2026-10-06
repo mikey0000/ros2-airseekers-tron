@@ -64,6 +64,10 @@ PARAM_DEFAULTS = {
     'gps_fix_topic': '/gps/fix',
     'gnss_status_topic': '/gps/status',
     'wheel_odom_topic': '/wheel_odom',
+    # /wheel_odom is GUI-only (foxglove_bridge is its sole subscriber) and /odom runs at
+    # ~50 Hz. Every relayed message costs foxglove_bridge a few ms, so the relay is
+    # rate-limited; the GUI only needs ~10 Hz (odometer, readiness, MQTT). 0 = unthrottled.
+    'wheel_odom_rate_hz': 10.0,
     'filtered_map_topic': '/odometry/filtered_map',
     'high_level_status_topic': '/behavior_tree_node/high_level_status',
     'coverage_resume_topic': '/behavior_tree_node/coverage_resume_available',
@@ -180,6 +184,10 @@ class GuiBridgeNode(Node):
         self._gps_fix_pub = self.create_publisher(NavSatFix, p['gps_fix_topic'], 10)
         self._gnss_pub = self.create_publisher(GnssStatus, p['gnss_status_topic'], 10)
         self._wheel_odom_pub = self.create_publisher(Odometry, p['wheel_odom_topic'], 10)
+        rate = float(p['wheel_odom_rate_hz'])
+        # 5 % slack so a 10 Hz cap on a jittery 50 Hz source still yields ~10 Hz.
+        self._wheel_odom_period = 0.95 / rate if rate > 0.0 else 0.0
+        self._wheel_odom_last = -1e9
         self._map_odom_pub = self.create_publisher(Odometry, p['filtered_map_topic'], 10)
         self._estop_req_pub = self.create_publisher(Bool, p['estop_request_topic'], 10)
         self._twist_pub = self.create_publisher(Twist, p['emergency_twist_topic'], 10)
@@ -452,11 +460,23 @@ class GuiBridgeNode(Node):
             self._gnss_fix_type = int(values['fix_type'])
         self._gnss_pub.publish(out)
 
+    def _wheel_odom_due(self):
+        period = self._wheel_odom_period
+        if period <= 0.0:
+            return True
+        now = time.monotonic()
+        if now - self._wheel_odom_last < period:
+            return False
+        self._wheel_odom_last = now
+        return True
+
     def _on_odom(self, msg):
-        self._wheel_odom_pub.publish(msg)
+        if self._wheel_odom_due():
+            self._wheel_odom_pub.publish(msg)
 
     def _on_odom_raw(self, data):
-        self._wheel_odom_pub.publish(data)
+        if self._wheel_odom_due():
+            self._wheel_odom_pub.publish(data)
 
     def _on_filtered(self, msg):
         msg.header.frame_id = self._p['map_frame']

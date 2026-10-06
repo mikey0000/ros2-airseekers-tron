@@ -274,6 +274,10 @@ type RosProvider struct {
 	subscribers        map[string]map[string]*RosSubscriber // logicalKey -> id -> subscriber
 	lastMessage        map[string][]byte                    // logicalKey -> last JSON bytes
 	foxgloveSubscribed map[string]bool                      // logicalKey -> upstream-subscribed?
+	// pendingUnsub holds the deferred upstream unsubscribe for keys whose last
+	// listener left less than unsubscribeLinger ago (guarded by mtx).
+	pendingUnsub      map[string]*time.Timer
+	unsubscribeLinger time.Duration
 
 	// Cached docking pose from map_server_node (guarded by mtx)
 	dockPoseSet bool
@@ -354,6 +358,8 @@ func NewRosProvider(dbProvider types2.IDBProvider) types2.IRosProvider {
 		subscribers:        make(map[string]map[string]*RosSubscriber),
 		lastMessage:        make(map[string][]byte),
 		foxgloveSubscribed: make(map[string]bool),
+		pendingUnsub:       make(map[string]*time.Timer),
+		unsubscribeLinger:  defaultUnsubscribeLinger,
 		dbProvider:         dbProvider,
 		sessionTracker:     NewSessionTracker(dbProvider),
 	}
@@ -373,6 +379,12 @@ func NewRosProvider(dbProvider types2.IDBProvider) types2.IRosProvider {
 // backing logicalKey if it isn't already. No-op for virtual keys (empty
 // MsgType) or unknown keys. Caller must hold r.mtx.
 func (r *RosProvider) ensureFoxgloveSubscribed(logicalKey string) {
+	// A listener came back within the linger window: keep the live upstream
+	// subscription instead of tearing it down and re-creating it.
+	if t, ok := r.pendingUnsub[logicalKey]; ok {
+		t.Stop()
+		delete(r.pendingUnsub, logicalKey)
+	}
 	if r.foxgloveSubscribed[logicalKey] {
 		return
 	}
@@ -411,13 +423,50 @@ func (r *RosProvider) ensureFoxgloveSubscribed(logicalKey string) {
 	logrus.Infof("RosProvider: subscribed to %s as '%s'", def.ROS2Topic, key)
 }
 
-// maybeUnsubscribeFoxglove drops the upstream foxglove subscription for
-// logicalKey if no downstream listeners remain. Caller must hold r.mtx.
+// defaultUnsubscribeLinger is how long an upstream subscription outlives its
+// last downstream listener. Browser pages and the phone's websocket come and go
+// every few seconds (page switches, Wi-Fi roaming, poll-driven hooks); without
+// the linger each flap made foxglove_bridge destroy and re-create the ROS
+// subscription and re-send the latched payload (coverage plan, masks, preview),
+// which showed up in the bridge log as a steady subscribe/unsubscribe churn.
+const defaultUnsubscribeLinger = 30 * time.Second
+
+// maybeUnsubscribeFoxglove schedules the upstream foxglove unsubscribe for
+// logicalKey if no downstream listeners remain; it fires after
+// unsubscribeLinger unless a listener re-subscribes first. Caller must hold r.mtx.
 func (r *RosProvider) maybeUnsubscribeFoxglove(logicalKey string) {
 	if !r.foxgloveSubscribed[logicalKey] {
 		return
 	}
 	if subs := r.subscribers[logicalKey]; len(subs) > 0 {
+		return
+	}
+	if r.unsubscribeLinger <= 0 {
+		r.unsubscribeFoxgloveNow(logicalKey)
+		return
+	}
+	if _, scheduled := r.pendingUnsub[logicalKey]; scheduled {
+		return
+	}
+	var t *time.Timer
+	t = time.AfterFunc(r.unsubscribeLinger, func() {
+		r.mtx.Lock()
+		defer r.mtx.Unlock()
+		if r.pendingUnsub[logicalKey] != t {
+			return // cancelled or superseded
+		}
+		delete(r.pendingUnsub, logicalKey)
+		if len(r.subscribers[logicalKey]) > 0 {
+			return
+		}
+		r.unsubscribeFoxgloveNow(logicalKey)
+	})
+	r.pendingUnsub[logicalKey] = t
+}
+
+// unsubscribeFoxgloveNow drops the upstream subscription. Caller must hold r.mtx.
+func (r *RosProvider) unsubscribeFoxgloveNow(logicalKey string) {
+	if !r.foxgloveSubscribed[logicalKey] {
 		return
 	}
 	def, ok := topicMap[logicalKey]

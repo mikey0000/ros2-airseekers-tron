@@ -11,6 +11,9 @@ export type RouteOrder = typeof ROUTE_ORDERS[number];
 /** Swath-to-swath turn: auto = loop, else reverse-then-curve, else pivot. */
 export const TURN_TYPES = ["auto", "loop", "reverse", "pivot"] as const;
 export type TurnType = typeof TURN_TYPES[number];
+/** Obstacle detection sensitivity: none = bumper only. */
+export const OBSTACLE_DETECTIONS = ["none", "standard", "sensitive"] as const;
+export type ObstacleDetection = typeof OBSTACLE_DETECTIONS[number];
 
 export type AreaSettings = {
     cutter_height_mm: number;
@@ -32,6 +35,7 @@ export type AreaSettings = {
     /** 0 = pivot in place between swaths. */
     min_turn_radius_m: number;
     turn_type: TurnType;
+    obstacle_detection: ObstacleDetection;
 };
 
 export type AreaSettingsKey = keyof AreaSettings;
@@ -52,6 +56,7 @@ export const AREA_SETTINGS_DEFAULTS: AreaSettings = {
     route_spiral_size: 6,
     min_turn_radius_m: 0.5,
     turn_type: "auto",
+    obstacle_detection: "standard",
 };
 
 export const AREA_SETTINGS_RANGES = {
@@ -85,6 +90,7 @@ export function sanitizeAreaSettings(raw: unknown): Partial<AreaSettings> {
         if (k === "path_mode" && !PATH_MODES.includes(v as PathMode)) continue;
         if (k === "route_order" && !ROUTE_ORDERS.includes(v as RouteOrder)) continue;
         if (k === "turn_type" && !TURN_TYPES.includes(v as TurnType)) continue;
+        if (k === "obstacle_detection" && !OBSTACLE_DETECTIONS.includes(v as ObstacleDetection)) continue;
         (out as Record<string, unknown>)[k] = v;
     }
     return out;
@@ -107,6 +113,8 @@ export function invalidAreaSettingKey(s: Partial<AreaSettings>): AreaSettingsKey
             if (!ROUTE_ORDERS.includes(v as RouteOrder)) return k;
         } else if (k === "turn_type") {
             if (!TURN_TYPES.includes(v as TurnType)) return k;
+        } else if (k === "obstacle_detection") {
+            if (!OBSTACLE_DETECTIONS.includes(v as ObstacleDetection)) return k;
         } else if (k === "edge_first") {
             if (typeof v !== "boolean") return k;
         } else if (k === "mow_angle_deg") {

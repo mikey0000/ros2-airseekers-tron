@@ -15,6 +15,7 @@
 // main thread (one msgpack decode vs JSON.parse(envelope)+atob+JSON.parse).
 
 import {unpack} from "msgpackr";
+import {LIVENESS_CHECK_MS, LIVENESS_TIMEOUT_MS, onNetworkRegained, reconnectDelayMs} from "./reconnect.ts";
 
 type Listener = (data: unknown, first: boolean) => void;
 
@@ -40,7 +41,7 @@ interface ClientOp {
     topic: string;
 }
 
-class MultiplexedSocket {
+export class MultiplexedSocket {
     private url: string;
     private ws: WebSocket | null = null;
     private state: "idle" | "connecting" | "open" = "idle";
@@ -49,12 +50,32 @@ class MultiplexedSocket {
     // first=true on the next delivery, then are removed.
     private pendingFirst = new WeakSet<Listener>();
     private reconnectAttempt = 0;
-    private reconnectTimer: number | null = null;
+    private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private statusListeners = new Set<StatusListener>();
     private lastDecodeWarnAt = 0;
+    private livenessTimer: ReturnType<typeof setInterval> | null = null;
+    private lastRxAt = 0;
+    private everOpened = false;
 
-    constructor(url: string) {
+    constructor(url: string, private readonly now: () => number = () => Date.now()) {
         this.url = url;
+        // Wi-Fi back / phone unlocked: retry now instead of waiting for backoff.
+        onNetworkRegained(() => this.retryNow());
+    }
+
+    /** True once the socket has been open at least once (drives "reconnecting"). */
+    wasEverOpen(): boolean {
+        return this.everOpened;
+    }
+
+    /** Skip the pending backoff wait and reconnect immediately. */
+    retryNow(): void {
+        if (this.state !== "idle" || this.listeners.size === 0) return;
+        if (this.reconnectTimer != null) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        this.connect();
     }
 
     /** Current status for the shared connection ("closed" when idle). */
@@ -158,6 +179,9 @@ class MultiplexedSocket {
             }
             this.state = "open";
             this.reconnectAttempt = 0;
+            this.everOpened = true;
+            this.lastRxAt = this.now();
+            this.startLiveness(ws);
             this.notifyStatus();
             // Re-subscribe to every topic that still has listeners.
             for (const topic of this.listeners.keys()) {
@@ -167,6 +191,7 @@ class MultiplexedSocket {
 
         ws.onmessage = (e: MessageEvent) => {
             // MessagePack binary frame → {topic, data: <decoded object>}.
+            this.lastRxAt = this.now();
             let frame: ServerFrame;
             try {
                 if (!(e.data instanceof ArrayBuffer)) return;
@@ -191,19 +216,41 @@ class MultiplexedSocket {
             }
         };
 
-        ws.onerror = () => {
-            try { ws.close(); } catch { /* ignore */ }
-        };
+        ws.onerror = () => this.handleDrop(ws);
+        ws.onclose = () => this.handleDrop(ws);
+    }
 
-        ws.onclose = () => {
-            this.ws = null;
-            this.state = "idle";
-            this.notifyStatus();
-            // Reconnect only if there's still something to listen for.
-            if (this.listeners.size > 0) {
-                this.scheduleReconnect();
+    /**
+     * Forget `ws` and reconnect if anything is still subscribed. Also used by
+     * the liveness watchdog for a half-open socket, whose close handshake
+     * would otherwise take tens of seconds to fire onclose.
+     */
+    private handleDrop(ws: WebSocket): void {
+        if (this.ws !== ws) return;
+        this.ws = null;
+        ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
+        try { ws.close(); } catch { /* ignore */ }
+        this.stopLiveness();
+        this.state = "idle";
+        this.notifyStatus();
+        // Reconnect only if there's still something to listen for.
+        if (this.listeners.size > 0) {
+            this.scheduleReconnect();
+        }
+    }
+
+    private startLiveness(ws: WebSocket): void {
+        this.stopLiveness();
+        this.livenessTimer = setInterval(() => {
+            if (this.ws === ws && this.now() - this.lastRxAt > LIVENESS_TIMEOUT_MS) {
+                this.handleDrop(ws);
             }
-        };
+        }, LIVENESS_CHECK_MS);
+    }
+
+    private stopLiveness(): void {
+        if (this.livenessTimer != null) clearInterval(this.livenessTimer);
+        this.livenessTimer = null;
     }
 
     /**
@@ -227,9 +274,9 @@ class MultiplexedSocket {
 
     private scheduleReconnect(): void {
         if (this.reconnectTimer != null) return;
-        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempt), 30000);
+        const delay = reconnectDelayMs(this.reconnectAttempt);
         this.reconnectAttempt += 1;
-        this.reconnectTimer = window.setTimeout(() => {
+        this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
             this.connect();
         }, delay);

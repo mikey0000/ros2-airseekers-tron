@@ -26,7 +26,7 @@ node packages).
 | `/hardware_bridge/power` | `mowgli_interfaces/Power` | 2 Hz from `/battery` (+ `is_charging`). |
 | `/gps/fix` | `sensor_msgs/NavSatFix` | relay of `/fix` |
 | `/gps/status` | `mowgli_interfaces/GnssStatus` | per `/fix`. FIXED vs FLOAT comes from the `/fix_status` string (`quality=` or `solution=` token). Correction fields come from its `corr_src=` / `corr=` / `corr_flow=` / `corr_age=` tokens (see below). |
-| `/wheel_odom` | `nav_msgs/Odometry` | relay of `/odom` |
+| `/wheel_odom` | `nav_msgs/Odometry` | relay of `/odom`, rate-limited to `wheel_odom_rate_hz` (10 Hz; GUI-only topic) |
 | `/odometry/filtered_map` | `nav_msgs/Odometry` | relay of `/odometry/filtered`, with `frame_id=map` and `child_frame_id=base_footprint` (map == odom identity for now) |
 | `/behavior_tree_node/high_level_status` | `mowgli_interfaces/HighLevelStatus` | on every change + 1 Hz (only when `serve_high_level`) |
 | `/behavior_tree_node/coverage_resume_available` | `std_msgs/Bool` | latched (transient local, depth 1), always `false` (only when `serve_high_level`) |

@@ -245,6 +245,37 @@ def _apply_stereo_costmap(context):
                         '(%s)' % written)]
 
 
+# Topics the MowgliNext GUI reads through foxglove_bridge (gui/pkg/providers/ros.go
+# topicMap + docking_pose). Advertising only these keeps the bridge's graph
+# bookkeeping to ~40 channels instead of ~140. foxglove_all_topics:=true restores
+# the full list for a Foxglove Studio debugging session. The GUI's client-side
+# publishing (/cmd_vel_teleop fallback), service calls and parameter requests are
+# governed by separate whitelists and stay unrestricted.
+FOXGLOVE_GUI_TOPICS = [
+    r'^/hardware_bridge/(status|power|emergency)$',
+    r'^/behavior_tree_node/(high_level_status|recording_trajectory|coverage_resume_available'
+    r'|active_area_settings|preview_summary)$',
+    r'^/behavior_tree_log$',
+    r'^/calibrate_imu_yaw_node/dock_calibration/status$',
+    r'^/gps/(fix|status)$',
+    r'^/odometry/filtered_map$',
+    r'^/wheel_odom$',
+    r'^/wheel_ticks$',
+    r'^/imu/(data|cog_heading|mag_yaw)$',
+    r'^/coverage/full_plan$',
+    r'^/plan$',
+    r'^/scan$',
+    r'^/map_server_node/(mow_progress|area_settings|dock_corridor|docking_pose)$',
+    r'^/fusion_graph/(lidar_map|diagnostics)$',
+    r'^/diagnostics$',
+    r'^/obstacle_tracker/obstacles$',
+    r'^/robot_description$',
+    r'^/vision/obstacle_close$',
+    r'^/ai/det/detections$',
+    r'^/rosout$',
+]
+
+
 def generate_launch_description() -> LaunchDescription:
     # Sibling launch files and the URDF: resolve relative to this file so it
     # works both from the source tree and from share/mower_bringup/.
@@ -274,6 +305,8 @@ def generate_launch_description() -> LaunchDescription:
             '/diagnostics), black-box rosbag dumps to /userdata/ros2/crashes '
             '(docs/crash_recovery.md).'),
         arg('foxglove_port', '8765', 'foxglove_bridge WebSocket port.'),
+        arg('foxglove_all_topics', 'false', 'Advertise every topic on foxglove_bridge '
+            '(Foxglove Studio debugging) instead of only the GUI\'s (FOXGLOVE_GUI_TOPICS).'),
         arg('localization', 'true', 'Include nav2.launch.py localization (gps_gate, navsat, ekf).'),
         arg('navigation', 'true', 'Include mower_navigation/navigation.launch.py (Nav2: bt_navigator, controller/planner/behavior servers, velocity_smoother). Needed by mission and docking (/navigate_to_pose, /follow_path).'),
         arg('map_server', 'true', 'Include mower_map/map_server.launch.py (zones, keepout mask, dock pose).'),
@@ -402,28 +435,39 @@ def generate_launch_description() -> LaunchDescription:
         condition=enabled('mission'),
     )
 
-    foxglove = Node(
-        package='foxglove_bridge',
-        executable='foxglove_bridge',
-        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
-        name='foxglove_bridge',
-        output='screen',
-        parameters=[{
-            'port': ParameterValue(LaunchConfiguration('foxglove_port'), value_type=int),
-            'send_buffer_limit': 10000000,
-            'use_compression': False,
-            # /foxglove_bridge/sysinfo (2 Hz /proc scan) has no subscriber here.
-            # num_threads stays at the default (one per core): 2 threads measured the same
-            # total CPU, and the GUI's blocking parameter requests would then hold up a
-            # larger share of message delivery. The bridge's cost is ~3 ms per delivered
-            # message (most likely each executor wake walking the ~200 parameter/service
-            # clients created for the GUI's parameter requests), so it scales with the
-            # subscribed rate: the GUI's 50 Hz /wheel_odom and 30 Hz /odometry/filtered_map
-            # are ~2/3 of it.
-            'sysinfo': False,
-        }],
-        condition=enabled('foxglove'),
-    )
+    def foxglove_node(topic_whitelist, condition):
+        return Node(
+            package='foxglove_bridge',
+            executable='foxglove_bridge',
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
+            name='foxglove_bridge',
+            output='screen',
+            parameters=[{
+                'port': ParameterValue(LaunchConfiguration('foxglove_port'), value_type=int),
+                'send_buffer_limit': 10000000,
+                'use_compression': False,
+                # /foxglove_bridge/sysinfo (2 Hz /proc scan) has no subscriber here.
+                # num_threads stays at the default (one per core): 2 threads measured the same
+                # total CPU, and the GUI's blocking parameter requests would then hold up a
+                # larger share of message delivery. The bridge's cost is ~3 ms per delivered
+                # message (most likely each executor wake walking the ~200 parameter/service
+                # clients created for the GUI's parameter requests), so it scales with the
+                # subscribed rate. /wheel_odom (GUI-only) is therefore relayed at 10 Hz by
+                # gui_bridge (wheel_odom_rate_hz) instead of the 50 Hz /odom rate.
+                'sysinfo': False,
+                'topic_whitelist': topic_whitelist,
+            }],
+            condition=condition,
+        )
+
+    foxglove_all = PythonExpression([
+        "'", LaunchConfiguration('foxglove'), "'.lower() == 'true' and '",
+        LaunchConfiguration('foxglove_all_topics'), "'.lower() == 'true'"])
+    foxglove_gui = PythonExpression([
+        "'", LaunchConfiguration('foxglove'), "'.lower() == 'true' and '",
+        LaunchConfiguration('foxglove_all_topics'), "'.lower() != 'true'"])
+    foxglove = [foxglove_node(FOXGLOVE_GUI_TOPICS, IfCondition(foxglove_gui)),
+                foxglove_node(['.*'], IfCondition(foxglove_all))]
 
     localization = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(launch_dir, 'nav2.launch.py')),
@@ -535,7 +579,7 @@ def generate_launch_description() -> LaunchDescription:
            OpaqueFunction(function=_apply_stereo_costmap)]
         + [drivers, robot_state_publisher, static_map_odom]
         + control
-        + [teleop, gui_bridge, foxglove, localization, navigation,
+        + [teleop, gui_bridge] + foxglove + [localization, navigation,
            map_server, coverage, docking, mission, cameras, vio, perception, det_range,
            supervisor]
     )

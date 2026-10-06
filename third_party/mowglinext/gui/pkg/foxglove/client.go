@@ -278,6 +278,13 @@ func (c *Client) Subscribe(topic, msgType, id string, cb func(json.RawMessage), 
 func (c *Client) subscribeTopic(topic string) {
 	c.chanMu.Lock()
 	ch, ok := c.channels[topic]
+	if ok && ch.subscriptionID != 0 {
+		// Already subscribed on the bridge (e.g. a re-advertise raced a pending
+		// entry): a second subscribe op would make the bridge deliver every
+		// message twice and leak the first subscription id.
+		c.chanMu.Unlock()
+		return
+	}
 	if ok && c.connected.Load() {
 		subID := c.subIDCounter.Add(1)
 		ch.subscriptionID = subID
@@ -949,4 +956,12 @@ func (c *Client) reconnectLoop(ctx context.Context) {
 		go c.readPump()
 		delay = c.reconnectDelay
 	}
+}
+
+// SubscriberCount reports how many callbacks are registered for topic (one
+// bridge subscription serves all of them). Used by tests and diagnostics.
+func (c *Client) SubscriberCount(topic string) int {
+	c.subMu.RLock()
+	defer c.subMu.RUnlock()
+	return len(c.subscribers[topic])
 }

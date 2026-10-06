@@ -8,6 +8,7 @@ import {
     MOW_ANGLE_AUTO,
     ROUTE_ORDERS,
     TURN_TYPES,
+    OBSTACLE_DETECTIONS,
 } from "../../utils/areaSettings.ts";
 import {PathModeCards} from "./PathModeCards.tsx";
 import {AnglePicker} from "./AnglePicker.tsx";
@@ -161,6 +162,16 @@ export const AreaSettingsForm: React.FC<{
                                  onChange={(v) => typeof v === "number" && set("min_turn_radius_m", v)}/>
                 </Field>
             </>)}
+
+            <Field label={t("areaSettings.obstacleDetection")} custom={c("obstacle_detection")}
+                   hint={t("areaSettings.obstacleDetectionHint")}>
+                <Select data-testid="obstacle-detection" style={{width: "100%"}} disabled={disabled}
+                        value={value.obstacle_detection} onChange={(v) => set("obstacle_detection", v)}
+                        options={OBSTACLE_DETECTIONS.map((o) => ({
+                            value: o,
+                            label: t(`areaSettings.obstacleDetection${o[0].toUpperCase()}${o.slice(1)}`),
+                        }))}/>
+            </Field>
 
             <Field label={t("areaSettings.cutSpeed")} custom={c("cut_speed_mps")} value={t("areaSettings.mps", {value: value.cut_speed_mps.toFixed(2)})}>
                 <Slider min={R.cut_speed_mps.min} max={R.cut_speed_mps.max} step={R.cut_speed_mps.step}

@@ -1,5 +1,4 @@
-import reactUseWebSocketModule from "react-use-websocket";
-import {useEffect, useRef, useState} from "react";
+import {useCallback, useEffect, useRef, useState} from "react";
 import {wsBase} from "../utils/apiHost";
 import {
     getMultiplexedSocket,
@@ -7,9 +6,7 @@ import {
     topicFromSubscribeUri,
     type MultiplexStatus,
 } from "./multiplexedSocket.ts";
-
-// Vite 8 CJS interop may wrap the default export differently at runtime
-const useWebSocket = (reactUseWebSocketModule as unknown as { default: typeof reactUseWebSocketModule }).default ?? reactUseWebSocketModule;
+import {PublishSocket, type PublishSocketStatus} from "./reconnect.ts";
 
 /**
  * useMultiplexStatus — live connection status of the shared multiplex
@@ -21,6 +18,16 @@ export const useMultiplexStatus = (): MultiplexStatus => {
     const [status, setStatus] = useState<MultiplexStatus>(() => getMultiplexedSocket().getStatus());
     useEffect(() => getMultiplexedSocket().onStatusChange(setStatus), []);
     return status;
+};
+
+/**
+ * useMultiplexReconnecting — true while the shared status socket is down after
+ * having been connected (drives the "Reconnecting…" badge). False before the
+ * first connection so a cold page load does not flash the badge.
+ */
+export const useMultiplexReconnecting = (): boolean => {
+    const status = useMultiplexStatus();
+    return status !== "open" && getMultiplexedSocket().wasEverOpen();
 };
 
 /**
@@ -53,43 +60,19 @@ export const useWS = <T>(
     const muxUnsubscribeRef = useRef<(() => void) | null>(null);
     const muxStatusUnsubRef = useRef<(() => void) | null>(null);
 
-    // Publish-side socket (only used for non-subscribe URIs). The state
-    // drives useWebSocket below; the ref mirrors it so teardown() never
-    // closes over a stale value.
-    const [pubUri, setPubUri] = useState<string | null>(null);
-    const pubUriRef = useRef<string | null>(null);
-    const pubFirstRef = useRef(true);
-    const pubDecodeWarnedRef = useRef(false);
-    const ws = useWebSocket(pubUri, {
-        share: true,
-        shouldReconnect: () => true,
-        reconnectAttempts: Infinity,
-        reconnectInterval: (attempt: number) => Math.min(1000 * Math.pow(2, attempt), 30000),
-        onOpen: () => {
-            onInfoRef.current("Stream connected");
-        },
-        onError: () => {
-            onErrorRef.current(new Error("Stream error"));
-        },
-        onClose: () => {
-            onErrorRef.current(new Error("Stream closed"));
-        },
-        onMessage: (e: MessageEvent) => {
-            let decoded: string;
-            try {
-                decoded = atob(e.data);
-            } catch (err) {
-                if (!pubDecodeWarnedRef.current) {
-                    pubDecodeWarnedRef.current = true;
-                    console.warn("useWS: dropping non-base64 frame", {uri: pubUriRef.current}, err);
-                }
-                return;
-            }
-            const isFirst = pubFirstRef.current;
-            if (isFirst) pubFirstRef.current = false;
-            onDataRef.current(decoded as T, isFirst);
-        },
-    });
+    // Publish-side socket (only used for non-subscribe URIs, i.e. the
+    // joystick). See PublishSocket: fast reconnect, liveness watchdog, and
+    // send() drops (never queues) while disconnected.
+    const pubRef = useRef<PublishSocket | null>(null);
+    const pubStatusUnsubRef = useRef<(() => void) | null>(null);
+    const [pubStatus, setPubStatus] = useState<PublishSocketStatus>("idle");
+    useEffect(() => () => {
+        pubStatusUnsubRef.current?.();
+        pubRef.current?.stop();
+    }, []);
+    const sendJsonMessage = useCallback((msg: unknown) => {
+        pubRef.current?.send(msg);
+    }, []);
 
     const teardown = () => {
         if (muxUnsubscribeRef.current) {
@@ -100,14 +83,19 @@ export const useWS = <T>(
             muxStatusUnsubRef.current();
             muxStatusUnsubRef.current = null;
         }
-        if (pubUriRef.current !== null) {
-            pubUriRef.current = null;
-            setPubUri(null);
-            pubFirstRef.current = false;
+        if (pubRef.current) {
+            pubStatusUnsubRef.current?.();
+            pubStatusUnsubRef.current = null;
+            pubRef.current.stop();
+            pubRef.current = null;
+            setPubStatus("idle");
         }
     };
 
     const start = (uri: string) => {
+        // Re-starting the same publish stream (every RECORDING/MANUAL_MOWING
+        // state frame calls start) must keep the live socket, not reconnect.
+        if (pubRef.current && pubRef.current.url === `${wsBase()}${uri}`) return;
         teardown();
 
         if (isMultiplexableSubscribeUri(uri)) {
@@ -138,16 +126,20 @@ export const useWS = <T>(
             return;
         }
 
-        // Publish path: open a dedicated socket as before.
-        pubFirstRef.current = true;
-        pubDecodeWarnedRef.current = false;
-        pubUriRef.current = `${wsBase()}${uri}`;
-        setPubUri(pubUriRef.current);
+        // Publish path: dedicated socket with automatic reconnect.
+        const sock = new PublishSocket(`${wsBase()}${uri}`);
+        pubRef.current = sock;
+        pubStatusUnsubRef.current = sock.onStatusChange((status) => {
+            setPubStatus(status);
+            if (status === "open") onInfoRef.current("Stream connected");
+            else if (status === "reconnecting") onErrorRef.current(new Error("Stream closed"));
+        });
+        sock.start();
     };
 
     const stop = () => {
         teardown();
     };
 
-    return {start, stop, sendJsonMessage: ws.sendJsonMessage};
+    return {start, stop, sendJsonMessage, status: pubStatus};
 };

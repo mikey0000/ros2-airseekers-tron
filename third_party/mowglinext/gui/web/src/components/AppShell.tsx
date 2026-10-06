@@ -10,6 +10,7 @@ import {MowerStatus} from "./MowerStatus.tsx";
 import {NotificationBell} from "./NotificationBell.tsx";
 import {LanguageSwitcher} from "./LanguageSwitcher.tsx";
 import {LiveStatusStrip} from "./LiveStatusStrip.tsx";
+import {ConnectionBadge} from "./ConnectionBadge.tsx";
 import {IOSInstallBanner} from "./IOSInstallBanner.tsx";
 import {useIOSInstallPrompt} from "../hooks/useIOSInstallPrompt.ts";
 import {useAutoNotifications} from "../hooks/useNotificationCenter.tsx";
@@ -133,6 +134,7 @@ export function AppShell() {
         <style>{KEYFRAMES_CSS + PAGE_ENTER_CSS}</style>
         <AuroraBackdrop/>
         <LiveStatusStrip/>
+        <ConnectionBadge/>
 
         <header style={{
           display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between',
@@ -217,6 +219,7 @@ export function AppShell() {
         position: 'relative', zIndex: 1,
       }}>
         <LiveStatusStrip/>
+        <ConnectionBadge/>
         <header style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '18px 32px',

@@ -70,6 +70,8 @@ var areaRouteOrders = map[string]bool{"boustrophedon": true, "snake": true, "spi
 
 var areaTurnTypes = map[string]bool{"auto": true, "loop": true, "reverse": true, "pivot": true}
 
+var areaObstacleDetections = map[string]bool{"none": true, "standard": true, "sensitive": true}
+
 type numRange struct {
 	min, max float64
 	integer  bool
@@ -96,7 +98,7 @@ func validateAreaSettings(s map[string]any) error {
 		if v == nil {
 			// null resets the key to its default (map server merge semantics).
 			if _, known := areaNumericKeys[k]; known || k == "path_mode" || k == "edge_first" ||
-				k == "route_order" || k == "turn_type" {
+				k == "route_order" || k == "turn_type" || k == "obstacle_detection" {
 				continue
 			}
 			return fmt.Errorf("unknown setting %q", k)
@@ -132,6 +134,11 @@ func validateAreaSettings(s map[string]any) error {
 			str, ok := v.(string)
 			if !ok || !areaTurnTypes[str] {
 				return fmt.Errorf("turn_type must be one of auto, loop, reverse, pivot")
+			}
+		case "obstacle_detection":
+			str, ok := v.(string)
+			if !ok || !areaObstacleDetections[str] {
+				return fmt.Errorf("obstacle_detection must be one of none, standard, sensitive")
 			}
 		case "edge_first":
 			if _, ok := v.(bool); !ok {

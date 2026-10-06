@@ -471,7 +471,8 @@ function HeroCard({
             {data.subState && !isLatchedFault(data.state) && (
               <p data-testid="hero-sub-state" style={{
                 fontSize: 12, color: 'var(--lime, #7CFFB2)', marginTop: 6, marginBottom: 0,
-              }}>
+                maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }} title={data.subState}>
                 {data.subState}
               </p>
             )}
