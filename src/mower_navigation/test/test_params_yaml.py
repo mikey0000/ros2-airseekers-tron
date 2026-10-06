@@ -107,7 +107,10 @@ def test_humble_constraints():
     g = doc["global_costmap"]["global_costmap"]["ros__parameters"]
     if "static_layer" in g.get("plugins", []):
         assert g["static_layer"]["map_topic"] in ("/nav_keepout_mask", "/keepout_mask")
-    assert text.count("nav2_costmap_2d::StaticLayer") <= 1
+    # nav mask static_layer + terrain_layer (/map_server_node/terrain_cost), nothing else
+    assert text.count("nav2_costmap_2d::StaticLayer") <= 2
+    if "terrain_layer" in g.get("plugins", []):
+        assert g["terrain_layer"]["map_topic"] == "/map_server_node/terrain_cost"
     assert "map_server" not in doc and "amcl" not in doc
 
 
@@ -142,7 +145,7 @@ def test_transit_rpp_rotation():
     rpp = load()["controller_server"]["ros__parameters"]["FollowPath"]
     assert rpp["use_rotate_to_heading"] is True
     assert rpp["rotate_to_heading_angular_vel"] == 0.5
-    assert 0.5 <= rpp["max_angular_accel"] <= 1.5
+    assert 0.5 <= rpp["max_angular_accel"] <= 4.0   # 3.2 since 2026-10-06 (stalled pivots)
     assert rpp["min_approach_linear_velocity"] == 0.05
     # RPP can only rotate to heading without reversing.
     assert rpp["allow_reversing"] is False
@@ -188,7 +191,7 @@ def test_stereo_obstacle_source():
     src = ol["stereo"]
     assert src["topic"] == "/stereo_depth/points"
     assert src["sensor_frame"] == "stereo_camera_optical"
-    assert src["min_obstacle_height"] == 0.15
+    assert src["min_obstacle_height"] == 0.08   # 0.08 since the 2026-10-06 box test
     assert src["max_obstacle_height"] == 1.2
     assert src["obstacle_max_range"] == 2.0
     assert src["raytrace_max_range"] >= src["obstacle_max_range"]
@@ -225,6 +228,26 @@ def test_stereo_costmap_off_is_bumper_only():
     # original untouched
     assert "stereo" in load()["local_costmap"]["local_costmap"]["ros__parameters"][
         "obstacle_layer"]["observation_sources"].split()
+
+
+def test_nav_mask_static_layer_keeps_soft_band():
+    """mower_map soft band = 90: must not be trinary-collapsed to FREE."""
+    g = load()["global_costmap"]["global_costmap"]["ros__parameters"]
+    st = g["static_layer"]
+    assert st["map_topic"] == "/nav_keepout_mask"
+    assert st["trinary_costmap"] is False
+    assert st.get("lethal_cost_threshold", 100) == 100
+    assert st.get("unknown_cost_value", -1) == -1
+    lethal = st.get("lethal_cost_threshold", 100)
+    assert 0 < round(90 / lethal * 254) < 253          # soft band: plannable, not inscribed
+    # the local costmap has no nav-mask layer (bumper/stereo obstacle_layer only)
+    loc = load()["local_costmap"]["local_costmap"]["ros__parameters"]
+    assert "static_layer" not in loc["plugins"]
+
+
+def test_controller_failure_tolerance_survives_short_blockage():
+    c = load()["controller_server"]["ros__parameters"]
+    assert c["failure_tolerance"] >= 2.0
 
 
 def test_lifecycle_order():

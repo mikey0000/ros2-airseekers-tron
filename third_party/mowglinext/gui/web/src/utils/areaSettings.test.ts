@@ -61,6 +61,15 @@ describe("area patches", () => {
 
 import {extractSlopeDerived} from "./areaSettings.ts";
 
+describe("blade_policy", () => {
+    it("accepts continuous/conservative and rejects others", () => {
+        expect(sanitizeAreaSettings({blade_policy: "conservative"})).toEqual({blade_policy: "conservative"});
+        expect(sanitizeAreaSettings({blade_policy: "always"})).toEqual({});
+        expect(invalidAreaSettingKey({blade_policy: "continuous"})).toBeNull();
+        expect(invalidAreaSettingKey({blade_policy: "always"})).toBe("blade_policy");
+    });
+});
+
 describe("slope settings", () => {
     it("accepts slope_mode / slope_contour_above_deg and drops derived keys", () => {
         expect(sanitizeAreaSettings({slope_mode: "contour", slope_contour_above_deg: 12,

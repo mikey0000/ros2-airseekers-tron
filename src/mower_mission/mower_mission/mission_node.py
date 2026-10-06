@@ -213,6 +213,9 @@ class MissionNode(Node):
         self._mow_progress_pub = self.create_publisher(String, p['mow_progress_topic'], latched)
         # terrain-memory incidents (mower_map map_server_node, docs/terrain_aware_planning.md)
         self._incident_pub = self.create_publisher(String, '/mission/incident', 20)
+        # path-corridor decision on the current obstacle policy (GUI "Why stopped")
+        self._decision_pub = self.create_publisher(String, '/mission/obstacle_decision', latched)
+        self._decision_last = None
         self._mp_plan_id = None       # plan id last published on ~/mow_plan
         self._mp_mission = None       # identity of the mission being timed
         self._mp_t0 = None            # monotonic start of that mission
@@ -479,6 +482,8 @@ class MissionNode(Node):
             i.obstacle_kind = str(st.get('kind', 'none'))
             i.obstacle_class = str(st.get('class', '') or '')
             i.obstacle_distance = float(d) if isinstance(d, (int, float)) else None
+            b = st.get('bearing_deg')
+            i.obstacle_bearing = float(b) if isinstance(b, (int, float)) else None
             i.obstacle_stamp = time.monotonic()
 
     def _on_marker_in_view(self, msg):
@@ -528,6 +533,10 @@ class MissionNode(Node):
             self._pump.poll()
             self._execute(self.fsm.tick(time.monotonic()))
             self._publish_motion_enabled()
+            dec = json.dumps(self.fsm.obstacle_decision, sort_keys=True)
+            if dec != self._decision_last:
+                self._decision_last = dec
+                self._decision_pub.publish(String(data=dec))
 
     def _publish_motion_enabled(self):
         """Latched /motion_enabled: on change, and re-asserted every 1 s."""

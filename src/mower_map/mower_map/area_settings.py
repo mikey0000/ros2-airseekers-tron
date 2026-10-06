@@ -45,6 +45,7 @@ TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
 # stereo costmap only, standard = 1.0 m ranged / near side boxes while turning,
 # sensitive = 1.5 m, lower score, any camera.
 OBSTACLE_DETECTION_LEVELS = ('none', 'standard', 'sensitive')
+BLADE_POLICIES = ('continuous', 'conservative')
 # Slope-aware swath angle (terrain memory, docs/terrain_aware_planning.md), only
 # used while mow_angle_deg is auto: off = planner's own choice; contour = swaths
 # across the fall line; updown = along it; auto = contour at/above
@@ -71,9 +72,10 @@ BUILTIN_DEFAULTS = {
     # catches, so race-track (skip-row) order with 0.5 m smooth turns, pivot last resort.
     'route_order': 'racetrack',
     'route_spiral_size': 6,
-    'min_turn_radius_m': 0.5,
+    'min_turn_radius_m': 0.5,  # >= 0.45: the both-wheel turn shaper's tightest arc is 0.44 m
     'turn_type': 'auto',
     'obstacle_detection': 'standard',
+    'blade_policy': 'continuous',
     'slope_mode': 'off',
     'slope_contour_above_deg': 10.0,
 }
@@ -96,6 +98,7 @@ SPEC = {
     'min_turn_radius_m': ('float', 0.0, 2.0),      # 0 = pivot in place
     'turn_type': ('enum', TURN_TYPES, None),
     'obstacle_detection': ('enum', OBSTACLE_DETECTION_LEVELS, None),
+    'blade_policy': ('enum', BLADE_POLICIES, None),
     'slope_mode': ('enum', SLOPE_MODES, None),
     'slope_contour_above_deg': ('float', 2.0, 30.0),
 }

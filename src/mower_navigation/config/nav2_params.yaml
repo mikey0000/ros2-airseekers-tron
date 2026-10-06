@@ -69,7 +69,12 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5      # diff-drive: no lateral velocity
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    # 2026-10-07 live: 0.3 s let a 1 s blockage ("collision ahead" x3 -> "Controller
+    # patience exceeded") abort the whole transit. Humble controller_server: when
+    # computeVelocityCommands throws it publishes zero cmd_vel and keeps retrying
+    # until failure_tolerance s have passed since the last success, then aborts
+    # (0 = abort at once, -1 = never). The mission adds its own blocked wait on top.
+    failure_tolerance: 2.0
     # Humble key is progress_checker_plugin (singular); Iron+ uses the plural list.
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker", "coverage_goal_checker_ftc"]
@@ -139,13 +144,16 @@ controller_server:
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
+      # cmd_vel_slew turn shaper (both wheels forward, inner >= 0.06 m/s, b = 0.48 m,
+      # outer <= 0.3): r_min = b/2*(v_out+v_in)/(v_out-v_in) = 0.36 m; with the MCU's
+      # |w| <= 0.3 the tightest arc is 0.44 m (v 0.132). Keep every min radius >= 0.44.
       regulated_linear_scaling_min_radius: 0.9
       regulated_linear_scaling_min_speed: 0.15
       use_cost_regulated_linear_velocity_scaling: false
       # Kept true (2026-10-07 transit pivot stall): Humble RPP without rotate-to-heading
       # drives FORWARD when the carrot is behind (curvature ~0) - worse than a slow pivot.
       # The Tron's in-place pivot (0.02-0.08 rad/s on turf) is helped instead by
-      # mower_control/cmd_vel_slew pivot_assist: after 1.5 s of linear 0 / |angular| >= 0.2
+      # mower_control/cmd_vel_slew pivot_assist: after 1.5 s of linear 0 / |angular| >= 0.08
       # in TRANSIT/MOWING it creeps +0.05 m/s (max 0.3 m per pivot), turning the pivot into
       # a tight arc (~0.2 rad/s). progress_checker: 20 s / 0.25 m / 0.5 rad.
       use_rotate_to_heading: true
@@ -506,6 +514,14 @@ global_costmap:
         map_topic: /nav_keepout_mask
         map_subscribe_transient_local: true
         subscribe_to_updates: false
+        # Non-trinary (2026-10-07): the nav mask soft band is 90; trinary would read it
+        # as FREE. 0 -> 0, 90 -> 90/100*254 = 229 (plannable, expensive), >= 100 lethal.
+        # Live check 2026-10-07: the KeepoutFilter (/costmap_filter_info -> this same
+        # mask) already raised the band to 229 (published 89), so this is belt and
+        # braces: same value from either mechanism. The mask has no -1 cells.
+        trinary_costmap: false
+        lethal_cost_threshold: 100
+        unknown_cost_value: -1
         transform_tolerance: 0.5
       # Terrain memory (mower_map map_server_node ~/terrain_cost, latched, same grid as
       # the nav mask): 0..terrain_cost_max (60) from the traction score of cells where

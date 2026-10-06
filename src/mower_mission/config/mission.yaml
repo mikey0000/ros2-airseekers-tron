@@ -48,7 +48,23 @@ behavior_tree_node:
     transit_gap_m: 0.6                # blade-off /navigate_to_pose transit beyond this gap
     transit_arrived_radius_m: 0.3     # transit ABORT/timeout within this of the target = arrived
     transit_retries: 3                # failed transit: re-send (from the current pose) this many times
-    transit_retry_delay_s: 3.0        # wait between retries (costmaps cleared first); also follow retries
+    transit_retry_delay_s: 3.0        # fallback retry wait when transit_retry_backoff_s is empty
+    transit_retry_backoff_s: [3.0, 10.0, 30.0]  # genuine (no collision) transit/follow abort: wait before retry 1/2/3+
+    # abort + "collision ahead" (collision_abort_window_s) or a fresh dynamic/static policy = BLOCKED:
+    # hold (sub_state "path blocked: waiting (N s)"), no retry consumed
+    blocked_wait_s: 60.0              # max blocked wait (transit / follow / docking)
+    blocked_wait_home_s: 120.0        # ... while RETURNING_HOME
+    blocked_resend_s: 5.0             # re-send the goal at most this often ...
+    blocked_clear_s: 3.0              # ... and only once no "collision ahead" was logged for this long
+    requeue_failed_transits: true     # sub-path dropped on transit failure: re-try once in the end-of-area pass
+    # owner 2026-10-07: a ranged detection only stops / waits / detours when it lies in the
+    # corridor along the next lookahead of the current follow/transit path (else advisory,
+    # /mission/obstacle_decision); half-width = robot_width_m/2 + obstacle_path_margin_m
+    obstacle_path_filter: true
+    obstacle_path_lookahead_m: 2.0
+    obstacle_path_margin_m: 0.25
+    robot_width_m: 0.54
+    blade_transit_sample_m: 0.2       # blade_policy continuous: in-area transit check step
     follow_retries: 3                 # follow_path abort/timeout: resume from the last reached pose
     clear_costmaps_on_retry: true     # clear Nav2 global+local costmaps before retries / recoveries
     return_home_on_incomplete: false  # sub-paths not mowed -> MOWING_INCOMPLETE; dock only if true

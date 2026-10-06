@@ -18,6 +18,7 @@ def test_builtin_defaults_match_the_contract():
         'swath_width_m': 0.18, 'edge_margin_m': 0.05, 'edge_first': True, 'repeat': 1, 'alternate_angle_offset_deg': 90.0,
         'route_order': 'racetrack', 'route_spiral_size': 6, 'min_turn_radius_m': 0.5,
         'turn_type': 'auto', 'obstacle_detection': 'standard',
+        'blade_policy': 'continuous',
         'slope_mode': 'off', 'slope_contour_above_deg': 10.0}
     assert s.SLOPE_MODES == ('off', 'auto', 'contour', 'updown')
     assert s.ROUTE_ORDERS == ('boustrophedon', 'snake', 'spiral', 'racetrack')
@@ -39,6 +40,7 @@ def test_builtin_defaults_match_the_contract():
     ('route_spiral_size', 2, 2), ('route_spiral_size', 8.0, 8),
     ('min_turn_radius_m', 0, 0.0), ('min_turn_radius_m', 0.5, 0.5),
     ('turn_type', 'reverse', 'reverse'), ('turn_type', 'pivot', 'pivot'),
+    ('blade_policy', 'continuous', 'continuous'), ('blade_policy', 'conservative', 'conservative'),
     ('slope_mode', 'auto', 'auto'), ('slope_mode', 'contour', 'contour'),
     ('slope_contour_above_deg', 12, 12.0),
     ('swath_width_m', 0.10, 0.10), ('swath_width_m', 0.4, 0.4),
@@ -59,6 +61,7 @@ def test_valid_values_are_normalised(key, value, expect):
     ('mow_angle_deg', float('nan')), ('bogus', 1),
     ('route_order', 'zigzag'), ('route_spiral_size', 1), ('route_spiral_size', 21),
     ('min_turn_radius_m', -0.1), ('min_turn_radius_m', 2.5), ('turn_type', 'omega'),
+    ('blade_policy', 'always'), ('blade_policy', True),
     ('swath_width_m', 0.05), ('swath_width_m', 0.41), ('swath_width_m', 0),
     ('edge_margin_m', -0.01), ('edge_margin_m', 0.51),
 ])

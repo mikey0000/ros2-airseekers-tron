@@ -9,6 +9,7 @@ import {
     ROUTE_ORDERS,
     TURN_TYPES,
     OBSTACLE_DETECTIONS,
+    BLADE_POLICIES,
     type AreaSlopeDerived,
     type SlopeMode,
 } from "../../utils/areaSettings.ts";
@@ -204,6 +205,16 @@ export const AreaSettingsForm: React.FC<{
                         options={OBSTACLE_DETECTIONS.map((o) => ({
                             value: o,
                             label: t(`areaSettings.obstacleDetection${o[0].toUpperCase()}${o.slice(1)}`),
+                        }))}/>
+            </Field>
+
+            <Field label={t("areaSettings.bladePolicy")} custom={c("blade_policy")}
+                   hint={t("areaSettings.bladePolicyHint")}>
+                <Select data-testid="blade-policy" style={{width: "100%"}} disabled={disabled}
+                        value={value.blade_policy} onChange={(v) => set("blade_policy", v)}
+                        options={BLADE_POLICIES.map((o) => ({
+                            value: o,
+                            label: t(`areaSettings.bladePolicy${o[0].toUpperCase()}${o.slice(1)}`),
                         }))}/>
             </Field>
 

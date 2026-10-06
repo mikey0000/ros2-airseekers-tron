@@ -36,6 +36,8 @@ class Harness:
         # The pre-obstacle-avoidance tests exercise plain follow retries: an unclassified
         # abort never detours unless a test asks for it.
         params.setdefault('detour_unclassified_after', -1)
+        # ... and a fixed transit_retry_delay_s (the 3/10/30 s back-off has its own tests)
+        params.setdefault('transit_retry_backoff_s', [])
         self.t = 0.0
         self.fsm = f.MissionFSM(f.Params.from_dict(params), cursor=cursor, now=0.0)
         i = self.fsm.inputs
@@ -52,6 +54,7 @@ class Harness:
         # get_area_settings / coverage set_parameters are answered automatically
         # (area index -> stored settings; None = service unavailable).
         self.auto_settings = True
+        self.blade_policy = 'conservative'   # area setting injected by answer_settings
         self.area_settings = {}
         self.coverage_params_ok = True
         self._answering = False
@@ -68,9 +71,13 @@ class Harness:
             elif isinstance(e, f.BladeOff):
                 self.blade = False
             elif isinstance(e, f.StartAction) and e.name in MOVING_ACTIONS:
-                assert not self.blade, 'blade on while starting %s' % e.name
+                # continuous blade policy: an in-area mission transit / detour may keep it on
+                assert not self.blade or (e.name == f.ACT_NAV and self.fsm.mission is not None
+                                          and self.fsm.mission.blade_transit), \
+                    'blade on while starting %s' % e.name
             elif isinstance(e, f.PublishStatus) and self.blade:
-                assert e.status['state_name'] in ('MOWING', 'MANUAL_MOWING'), e.status
+                assert e.status['state_name'] in ('MOWING', 'MANUAL_MOWING') or (
+                    e.status['state_name'] == 'TRANSIT' and self.fsm._blade_keep_ok()), e.status
             elif isinstance(e, f.SaveResume):
                 self.saved = e.text
             elif isinstance(e, f.Log):
@@ -100,6 +107,9 @@ class Harness:
             req = self._request_of(s.token)
             if req.name == f.SRV_GET_AREA_SETTINGS:
                 st = self.area_settings.get(req.request['index'], {})
+                if st is not None:
+                    # pre-2026-10-07 tests assume the blade-off-on-every-stop behaviour
+                    st = dict({'blade_policy': self.blade_policy}, **st)
                 resp = (False, {}) if st is None else \
                     (True, {'success': True, 'settings_json': json.dumps(st)})
             else:
@@ -1821,8 +1831,14 @@ def test_transit_retries_exhausted_ends_mowing_incomplete_in_place():
     # sub-path 0 not mowed; sub-path 1 (starts at the robot) is mowed
     assert h.fsm.mission.sub_i == 1 and h.fsm.mission.skipped == 1
     assert any('NOT mowed' in str(e) for e in h.fx)
-    m = h.mark()
     follow_current(h)
+    # end-of-area pass: sub-path 0 is re-tried once (same retry policy), then incomplete
+    assert h.name == 'TRANSIT' and h.goal(f.ACT_NAV)['pose'][:2] == (3, 3)
+    m = h.mark()
+    for k in range(4):
+        h.finish(f.ACT_NAV, f.ABORTED)
+        if k < 3:
+            h.tick(dt=1.0, n=4)
     assert h.name == 'MOWING_INCOMPLETE' and h.fsm.state == f.STATE_IDLE
     assert h.fsm.sub_state == '1 of 2 sub-paths not mowed: transit aborted 4 times'
     assert 'MOWING_COMPLETE' not in h.statuses(m)
@@ -1849,7 +1865,7 @@ def test_transit_retries_exhausted_ends_mowing_incomplete_in_place():
 
 
 def test_mowing_incomplete_commands():
-    h = Harness(transit_retries=0)
+    h = Harness(transit_retries=0, requeue_failed_transits=False)
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
     h.finish(f.ACT_NAV, f.ABORTED)
@@ -1861,7 +1877,8 @@ def test_mowing_incomplete_commands():
 
 
 def test_return_home_on_incomplete_docks_and_keeps_reason():
-    h = Harness(transit_retries=0, return_home_on_incomplete=True)
+    h = Harness(transit_retries=0, return_home_on_incomplete=True,
+                requeue_failed_transits=False)
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
     m = h.mark()
@@ -2856,3 +2873,300 @@ def test_marker_in_view_does_not_apply_outside_dock_phases():
     policy(h, 'dynamic', 'person')
     h.tick()
     assert h.fsm._action is None and 'waiting for person' in h.fsm.sub_state
+
+
+# =====================================================================
+# 2026-10-07: blocked waits (collision ahead) / retry back-off / transit re-queue
+# =====================================================================
+def test_transit_abort_with_collision_ahead_waits_without_consuming_retries():
+    """Live: a person in front aborted the transit 4x in 30 s and sub-path 0 was dropped."""
+    h = Harness(transit_retries=3)
+    _two_subpaths_first_needs_transit(h)
+    for _ in range(8):                              # 8 collision aborts, well past 3 retries
+        h.fsm.inputs.collision_stamp = h.t
+        h.finish(f.ACT_NAV, f.ABORTED)
+        assert h.name == 'TRANSIT' and h.fsm.mission.step == 'blocked_wait'
+        assert h.fsm.sub_state.startswith('path blocked: waiting')
+        assert h.fsm.mission.transit_fails == 0 and h.fsm.mission.skipped == 0
+        assert h.fsm._action is None and not h.blade
+        h.tick(dt=0.5, n=4)                         # 2 s: not yet re-sent (< 5 s)
+        assert h.fsm._action is None
+        h.fsm.inputs.collision_stamp = h.t          # still "collision ahead"
+        h.tick(dt=0.5, n=4)                         # 4 s, collision 2 s ago: hold
+        assert h.fsm._action is None
+        h.tick(dt=0.5, n=4)                         # 6 s, clear for 3 s: re-send
+        assert h.pending_action(f.ACT_NAV) and h.goal(f.ACT_NAV)['pose'][:2] == (3, 3)
+    h.fsm.inputs.pose = (3, 3, 0.0)
+    h.finish(f.ACT_NAV)
+    assert h.name == 'MOWING' and h.fsm._blk is None and h.fsm.mission.skipped == 0
+
+
+def test_blocked_wait_sub_state_counts_seconds():
+    h = Harness()
+    _two_subpaths_first_needs_transit(h)
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_NAV, f.ABORTED)
+    h.fsm.inputs.collision_stamp = h.t + 100     # keeps reporting collision
+    h.tick(dt=1.0, n=7)
+    assert h.fsm.sub_state == 'path blocked: waiting (7 s)'
+    assert h.fsm._action is None
+
+
+def test_blocked_transit_gives_up_after_blocked_wait_s_and_requeues():
+    h = Harness(blocked_wait_s=60.0)
+    _two_subpaths_first_needs_transit(h)
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_NAV, f.ABORTED)
+    h.fsm.inputs.collision_stamp = 1e9           # never clears
+    h.tick(dt=1.0, n=59)
+    assert h.fsm.mission.step == 'blocked_wait'
+    h.tick(dt=1.0, n=2)
+    assert any('NOT mowed: path blocked for 60 s' in str(e) for e in h.fx)
+    assert h.fsm.mission.sub_i == 1               # sub-path 1 next ...
+    h.fsm.inputs.collision_stamp = None
+    follow_current(h)
+    # ... then the end-of-area retry of sub-path 0, which now succeeds
+    assert h.name == 'TRANSIT' and h.goal(f.ACT_NAV)['pose'][:2] == (3, 3)
+    h.fsm.inputs.pose = (3, 3, 0.0)
+    h.finish(f.ACT_NAV)
+    m = h.mark()
+    follow_current(h)
+    assert 'MOWING_COMPLETE' in h.statuses(m)
+    assert h.fsm.cursor.available is False
+
+
+def test_blocked_wait_is_longer_while_returning_home():
+    h = Harness(blocked_wait_s=60.0, blocked_wait_home_s=120.0)
+    assert h.cmd(f.CMD_HOME) and h.name == 'RETURNING_HOME'
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_DOCK, f.ABORTED)
+    assert h.name == 'RETURNING_HOME' and h.fsm.sub_state.startswith('path blocked')
+    h.fsm.inputs.collision_stamp = 1e9
+    h.tick(dt=1.0, n=100)
+    assert h.name == 'RETURNING_HOME' and h.fsm._action is None
+    h.fsm.inputs.collision_stamp = h.t
+    h.tick(dt=1.0, n=4)
+    assert h.pending_action(f.ACT_DOCK)          # clear for 3 s and >= 5 s since: re-sent
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_DOCK, f.ABORTED)
+    h.fsm.inputs.collision_stamp = 1e9
+    h.tick(dt=1.0, n=20)
+    assert h.name == 'NAV_TO_DOCK_FAILED' and 'path blocked for 120 s' in h.fsm.sub_state
+
+
+def test_genuine_transit_aborts_back_off_3_10_30():
+    h = Harness(transit_retries=3, transit_retry_backoff_s=[3.0, 10.0, 30.0])
+    _two_subpaths_first_needs_transit(h)
+    for k, delay in enumerate((3, 10, 30), 1):
+        h.finish(f.ACT_NAV, f.ABORTED)
+        assert 'retry %d/3 in %d s' % (k, delay) in h.fsm.sub_state
+        h.tick(dt=0.5, n=2 * delay - 2)
+        assert h.fsm._action is None
+        h.tick(dt=0.5, n=3)
+        assert h.pending_action(f.ACT_NAV)
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert h.fsm.mission.sub_i == 1 and h.fsm.mission.skipped == 1
+
+
+def test_genuine_abort_after_blocked_episode_uses_retry_policy():
+    h = Harness(transit_retries=3)
+    _two_subpaths_first_needs_transit(h)
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_NAV, f.ABORTED)
+    h.tick(dt=1.0, n=6)
+    assert h.pending_action(f.ACT_NAV)
+    h.finish(f.ACT_NAV, f.ABORTED)               # collision 6 s ago (> window): genuine
+    assert 'retry 1/3' in h.fsm.sub_state and h.fsm._blk is None
+
+
+def test_failed_transit_requeue_disabled_ends_incomplete_immediately():
+    h = Harness(transit_retries=0, requeue_failed_transits=False)
+    _two_subpaths_first_needs_transit(h)
+    h.finish(f.ACT_NAV, f.ABORTED)
+    follow_current(h)
+    assert h.name == 'MOWING_INCOMPLETE'
+
+
+def test_follow_abort_with_collision_waits_then_detours_on_second():
+    h = Harness(detour_unclassified_after=1)
+    sp0, _ = mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'MOWING' and h.fsm.sub_state.startswith('path blocked')
+    assert h.fsm.mission.follow_fails == 0 and not h.blade
+    h.tick(dt=1.0, n=6)
+    assert h.pending_action(f.ACT_FOLLOW) or h.fsm.mission.step == 'spinup'
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.inputs.collision_stamp = h.t
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state
+
+
+# =====================================================================
+# 2026-10-07 owner rules: path-relevant obstacles, continuous blade policy
+# =====================================================================
+def _seen_at(h, kind, cls, dist, bearing):
+    i = h.fsm.inputs
+    i.obstacle_kind, i.obstacle_class = kind, cls
+    i.obstacle_distance, i.obstacle_bearing = dist, bearing
+    i.obstacle_stamp = h.t
+
+
+def test_dynamic_off_the_path_corridor_is_advisory_only():
+    h = Harness()
+    mowing_two_swaths(h)
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.tick()
+    m = h.mark()
+    _seen_at(h, 'dynamic', 'person', 1.5, 60.0)   # 1.3 m to the left of the swath
+    h.tick()
+    assert h.fsm._dyn is None and h.fsm.mission.step == 'follow'
+    assert not h.since(m, f.CancelActions)
+    d = h.fsm.obstacle_decision
+    assert d['on_path'] is False and d['action'] == 'advisory' and d['class'] == 'person'
+
+
+def test_dynamic_in_the_path_corridor_still_waits():
+    h = Harness()
+    mowing_two_swaths(h)
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.tick()
+    _seen_at(h, 'dynamic', 'person', 1.2, 5.0)    # ahead, 0.1 m off the swath
+    h.tick()
+    assert h.fsm._dyn is not None and h.fsm.sub_state.startswith('waiting for person')
+    assert h.fsm.obstacle_decision['on_path'] is True
+
+
+def test_dynamic_beyond_the_lookahead_is_advisory():
+    h = Harness(obstacle_path_lookahead_m=2.0)
+    mowing_two_swaths(h)
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.tick()
+    _seen_at(h, 'dynamic', 'dog', 3.5, 0.0)       # on the swath line, 3.5 m ahead
+    h.tick()
+    assert h.fsm._dyn is None
+
+
+def test_static_off_corridor_never_detours():
+    h = Harness(detour_unclassified_after=-1)
+    mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    _seen_at(h, 'static', 'chair', 1.0, 90.0)     # beside the robot
+    h.tick()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.fsm.mission.detour is None and 'retry 1/3' in h.fsm.sub_state
+
+
+def test_detection_without_bearing_counts_as_before():
+    h = Harness()
+    mowing_two_swaths(h)
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.tick()
+    _seen_at(h, 'dynamic', 'dog', 0.8, None)
+    h.tick()
+    assert h.fsm._dyn is not None
+
+
+def _continuous(h):
+    h.blade_policy = 'continuous'
+
+
+def test_continuous_blade_stays_on_through_dynamic_wait_and_resumes():
+    h = Harness()
+    _continuous(h)
+    mowing_two_swaths(h)
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.tick()
+    assert h.blade
+    _seen_at(h, 'dynamic', 'dog', 1.0, 0.0)
+    h.tick()
+    assert h.fsm._dyn is not None and h.blade and h.fsm._action is None
+    h.fsm.inputs.obstacle_stamp = None
+    h.tick(dt=0.5, n=8)
+    assert h.pending_action(f.ACT_FOLLOW) and h.blade
+
+
+def test_continuous_blade_stays_on_through_follow_retry():
+    h = Harness(follow_retries=3)
+    _continuous(h)
+    mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert 'retry 1/3' in h.fsm.sub_state and h.blade
+    h.tick(dt=1.0, n=4)
+    assert h.pending_action(f.ACT_FOLLOW) and h.blade
+
+
+def test_continuous_blade_stays_on_for_in_area_transit_between_subpaths():
+    h = Harness()
+    _continuous(h)
+    sp0, sp1 = mowing_two_swaths(h)
+    h.fsm.inputs.pose = (10.0, 0.0, 0.0)
+    m = h.mark()
+    h.finish(f.ACT_FOLLOW)
+    sp = h.fsm.mission.subpaths[1]
+    h.fsm.inputs.pose = (8.0, 0.0, 0.0)          # 2 m from sp1 start, still in the area
+    # sub-path 1 starts at (10, 1): robot at (10, 0) is within transit_gap? force a gap:
+    assert sp[0][:2] == (10, 1)
+    assert h.blade and not [e for e in h.since(m, f.BladeOff)]
+
+
+def test_continuous_transit_inside_area_keeps_blade_outside_turns_it_off():
+    h = Harness()
+    _continuous(h)
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0), line(4, 5, 0, 5)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.inputs.pose = (4.0, 0.0, 0.0)
+    h.finish(f.ACT_FOLLOW)
+    assert h.name == 'TRANSIT' and h.blade and h.fsm.mission.blade_transit
+    assert f.blade_allowed(h.fsm)
+    h.fsm.inputs.pose = (4.0, 5.0, 0.0)
+    m = h.mark()
+    h.finish(f.ACT_NAV)
+    assert h.name == 'MOWING' and h.blade and h.pending_action(f.ACT_FOLLOW)
+    assert not [e for e in h.since(m, f.BladeOn)]  # never stopped, no re-spin
+
+
+def test_continuous_transit_leaving_the_area_turns_blade_off():
+    h = Harness()
+    _continuous(h)
+    a = {'name': 'L', 'outer': [(-1, -1), (11, -1), (11, 2), (1, 2), (1, 11), (-1, 11)],
+         'obstacles': [], 'is_navigation_area': False}
+    h.areas = [a]
+    start_until_planning(h)
+    # (10, 0) -> (0, 10): the straight segment crosses the notch outside the L
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 10, 0), line(0, 10, 0, 6)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.inputs.pose = (10.0, 0.0, 0.0)
+    h.finish(f.ACT_FOLLOW)
+    assert h.name == 'TRANSIT' and not h.blade and not h.fsm.mission.blade_transit
+
+
+def test_continuous_blade_off_on_boundary_violation_and_stop():
+    h = Harness()
+    _continuous(h)
+    mowing_two_swaths(h)
+    assert h.blade
+    h.fsm.inputs.boundary_violation = True
+    h.tick()
+    assert not h.blade
+    h2 = Harness()
+    _continuous(h2)
+    mowing_two_swaths(h2)
+    assert h2.cmd(f.CMD_STOP) and not h2.blade
+
+
+def test_conservative_policy_keeps_old_blade_off_on_dynamic_wait():
+    h = Harness()
+    mowing_two_swaths(h)                          # harness default: conservative
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.tick()
+    _seen_at(h, 'dynamic', 'dog', 1.0, 0.0)
+    h.tick()
+    assert h.fsm._dyn is not None and not h.blade

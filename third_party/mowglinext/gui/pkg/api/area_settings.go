@@ -83,6 +83,8 @@ func stripDerivedAreaKeys(s map[string]any) {
 	}
 }
 
+var areaBladePolicies = map[string]bool{"continuous": true, "conservative": true}
+
 var areaObstacleDetections = map[string]bool{"none": true, "standard": true, "sensitive": true}
 
 type numRange struct {
@@ -112,7 +114,7 @@ func validateAreaSettings(s map[string]any) error {
 		if v == nil {
 			// null resets the key to its default (map server merge semantics).
 			if _, known := areaNumericKeys[k]; known || k == "path_mode" || k == "edge_first" ||
-				k == "route_order" || k == "turn_type" || k == "obstacle_detection" || k == "slope_mode" {
+				k == "route_order" || k == "turn_type" || k == "obstacle_detection" || k == "blade_policy" || k == "slope_mode" {
 				continue
 			}
 			return fmt.Errorf("unknown setting %q", k)
@@ -153,6 +155,11 @@ func validateAreaSettings(s map[string]any) error {
 			str, ok := v.(string)
 			if !ok || !areaObstacleDetections[str] {
 				return fmt.Errorf("obstacle_detection must be one of none, standard, sensitive")
+			}
+		case "blade_policy":
+			str, ok := v.(string)
+			if !ok || !areaBladePolicies[str] {
+				return fmt.Errorf("blade_policy must be one of continuous, conservative")
 			}
 		case "slope_mode":
 			str, ok := v.(string)
