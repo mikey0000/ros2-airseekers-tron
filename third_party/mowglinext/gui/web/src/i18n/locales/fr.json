@@ -4251,5 +4251,19 @@
     "saveReminder": "Enregistrez la carte pour l’appliquer.",
     "autoDockCorridor": "Couloir automatique de la base",
     "notMowedHint": "Ceci est une zone de navigation (chemin). Le robot la traverse mais ne la tond jamais : elle n’a donc pas de réglages de tonte. Renommez-la ou supprimez-la dans l’éditeur de carte."
+  },
+  "drivePip": {
+    "camera": "Caméra",
+    "reverse": "Marche arrière",
+    "autoReverse": "Caméra arrière auto",
+    "autoReverseHint": "Passer à la caméra arrière en marche arrière",
+    "yolo": "Superposition des détections",
+    "yoloHint": "Afficher les détections YOLO (ajoute de la latence)",
+    "driveView": "Vue conduite",
+    "exitDriveView": "Retour à la carte",
+    "expand": "Afficher la caméra",
+    "collapse": "Masquer la caméra",
+    "noCamera": "En attente de la caméra…",
+    "resize": "Redimensionner"
   }
 }

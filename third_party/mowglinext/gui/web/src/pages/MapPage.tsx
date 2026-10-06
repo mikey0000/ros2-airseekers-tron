@@ -54,6 +54,8 @@ import {markerCorners, selectDockMarker} from "../utils/mapMarker.ts";
 import {useRobotProfile} from "../hooks/useRobotProfile.ts";
 import {hasFeature} from "../constants/robotProfiles.ts";
 import {ManualBladeControl} from "./map/components/ManualBladeControl.tsx";
+import {DrivingCameraPip} from "./map/components/DrivingCameraPip.tsx";
+import {isReversing, useDrivePipPrefs} from "./map/hooks/useDrivingCamera.ts";
 import {PathModal} from "./map/components/PathModal.tsx";
 import {CorridorHatchPattern, CORRIDOR_HATCH_IMAGE} from "./map/components/CorridorHatchPattern.tsx";
 import {usePathTool, type PathDockInput} from "./map/hooks/usePathTool.ts";
@@ -70,6 +72,13 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined || 
 // stable across renders and react-map-gl does not re-bind the query on every
 // render.
 const DYN_OBSTACLE_INTERACTIVE_LAYERS = ['dyn-obstacle-fill', 'dock-corridor-fill'];
+
+/** Drive view: the map shrinks to an inset (top-right, clear of both joystick corners). */
+const DRIVE_VIEW_MAP_INSET: React.CSSProperties = {
+    position: 'absolute', top: 44, right: 12, width: '28%', height: '28%', minWidth: 140, minHeight: 110,
+    zIndex: 45, borderRadius: 8, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.35)',
+    boxShadow: '0 10px 30px -10px rgba(0,0,0,0.7)',
+};
 
 export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const {notification} = App.useApp();
@@ -699,6 +708,21 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         subStateName: highLevelStatus.highLevelStatus.sub_state_name,
         bladeTwoStep,
     });
+    // Manual-drive camera PiP (camera robots only): direction drives the
+    // rear-camera auto switch; drive view swaps camera and map.
+    const hasDriveCamera = hasFeature(robotProfile, "cameras");
+    const {prefs: drivePip, update: updateDrivePip} = useDrivePipPrefs();
+    const [reversing, setReversing] = useState(false);
+    const onJoyMove = useCallback((event: Parameters<typeof handleJoyMove>[0]) => {
+        setReversing(isReversing(event.y));
+        handleJoyMove(event);
+    }, [handleJoyMove]);
+    const onJoyStop = useCallback(() => {
+        setReversing(false);
+        handleJoyStop();
+    }, [handleJoyStop]);
+    const driveView = hasDriveCamera && manualMode && drivePip.driveView && !drivePip.collapsed;
+
 
     // Toggle dock placement mode: re-pressing the button (or pressing Escape)
     // cancels it, so the crosshair cursor is not a one-way trap.
@@ -1094,7 +1118,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                                              bounds: [{lng: map_sw[0], lat: map_sw[1]}, {lng: map_ne[0], lat: map_ne[1]}],
                                                              bearing,
                                                          }}
-                                                         style={{width: '100%', height: '100%'}}
+                                                         style={driveView ? DRIVE_VIEW_MAP_INSET : {width: '100%', height: '100%'}}
                                                          mapStyle={useSatellite ? "mapbox://styles/mapbox/satellite-streets-v12" : "mapbox://styles/mapbox/dark-v11"}
                                                          onLoad={onMapLoad}
                                                          onClick={handleMapClick}
@@ -1292,12 +1316,23 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     <MapImageMarker key={`robot-img-${!!mowProgressImage}-${!!lidarMapImage}`} id={"robot-image"}
                         src={robotMarker?.src ?? ""} corners={robotMarkerCorners}/>
                 </Map> : <Spinner/>}
+                {hasDriveCamera && (
+                    <DrivingCameraPip
+                        manualMode={manualMode}
+                        mobile={isMobile}
+                        reversing={reversing}
+                        drivingCamera={robotProfile.drivingCamera}
+                        reverseCamera={robotProfile.reverseCamera}
+                        prefs={drivePip}
+                        onPrefsChange={updateDrivePip}
+                    />
+                )}
                 <JoystickOverlay
                     visible={highLevelStatus.highLevelStatus.state_name === "RECORDING" || highLevelStatus.highLevelStatus.state_name === "MANUAL_MOWING" || manualMode}
                     isRecording={highLevelStatus.highLevelStatus.state_name === "RECORDING"}
                     mobile={isMobile}
-                    onMove={handleJoyMove}
-                    onStop={handleJoyStop}
+                    onMove={onJoyMove}
+                    onStop={onJoyStop}
                     onFinishRecording={mowerActions.onRecordFinish}
                     onCancelRecording={mowerActions.onRecordCancel}
                     onHome={mowerActions.onHome}

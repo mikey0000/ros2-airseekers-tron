@@ -96,6 +96,13 @@ export type RobotProfile = MowerModel & {
     hiddenSettingKeys: readonly string[];
     teleop: RobotTeleop;
     /**
+     * GET /api/cameras id of the forward-looking camera shown while driving
+     * manually (Map page camera PiP); undefined = first camera with "front".
+     */
+    drivingCamera?: string;
+    /** Camera id auto-selected while reversing (default "rear" when listed). */
+    reverseCamera?: string;
+    /**
      * mowgli_interfaces/Status fields this robot has no sensor for. Its
      * hardware bridge leaves them at 0/false; the UI shows them as not
      * available instead of a fake reading.
@@ -141,6 +148,8 @@ function buildProfile(model: MowerModel, overlay: ProfileOverlay = {}): RobotPro
         hiddenSettingKeys: overlay.hiddenSettingKeys ?? [],
         teleop: overlay.teleop ?? DEFAULT_TELEOP,
         unmeasuredStatusFields: overlay.unmeasuredStatusFields ?? [],
+        drivingCamera: overlay.drivingCamera,
+        reverseCamera: overlay.reverseCamera,
     };
 }
 
@@ -183,6 +192,9 @@ const PROFILE_OVERLAYS: Record<string, ProfileOverlay> = {
             {id: "front_left", label: "robotProfiles.cameras.front_left", topic: "/vio/left/image_raw"},
             {id: "front_right", label: "robotProfiles.cameras.front_right", topic: "/vio/right/image_raw"},
         ],
+        // Map-page drive PiP: the colour right eye of the front stereo pair.
+        drivingCamera: "front_right",
+        reverseCamera: "rear",
         // The cutter board reports one temperature per motor (mower_motor_temperature),
         // no separate ESC temperature; there is no Raspberry Pi, UI board or sound module.
         unmeasuredStatusFields: [

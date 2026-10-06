@@ -4258,5 +4258,19 @@
     "saveReminder": "Save the map to apply it.",
     "autoDockCorridor": "Automatic dock corridor",
     "notMowedHint": "This is a navigation area (path). The robot drives through it but never mows it, so it has no mow settings. Rename or delete it in the map editor."
+  },
+  "drivePip": {
+    "camera": "Camera",
+    "reverse": "Reverse",
+    "autoReverse": "Auto rear camera",
+    "autoReverseHint": "Switch to the rear camera while reversing",
+    "yolo": "Detections overlay",
+    "yoloHint": "Show YOLO detections (adds latency)",
+    "driveView": "Drive view",
+    "exitDriveView": "Back to map",
+    "expand": "Show camera",
+    "collapse": "Hide camera",
+    "noCamera": "Waiting for camera…",
+    "resize": "Resize"
   }
 }
