@@ -426,6 +426,15 @@ class NtripClient:
                     break
                 self._log("warn", "NTRIP %s: %s" % (self.config.describe(), exc))
                 self._set_state(STATE_RECONNECTING, str(exc))
+            except Exception as exc:  # noqa: BLE001 - the client thread must never die
+                if self._stop.is_set():
+                    break
+                try:
+                    self._log("warn", "NTRIP %s: unexpected %s: %s"
+                              % (self.config.describe(), type(exc).__name__, exc))
+                except Exception:  # noqa: BLE001 - logging itself may be the problem
+                    pass
+                self._set_state(STATE_RECONNECTING, str(exc))
             finally:
                 self._close_socket()
             if self._stop.is_set():

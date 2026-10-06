@@ -557,7 +557,18 @@ class Um960Node(Node):
             timer.start()
 
     def _ntrip_log(self, level: str, message: str) -> None:
-        getattr(self.get_logger(), level if level != "warning" else "warn")(message)
+        # One call site per severity: rclpy refuses to change the severity of a
+        # given call site between calls ("Logger severity cannot be changed"),
+        # which killed the NTRIP thread on its first error after a warning.
+        log = self.get_logger()
+        if level == "error":
+            log.error(message)
+        elif level in ("warn", "warning"):
+            log.warn(message)
+        elif level == "debug":
+            log.debug(message)
+        else:
+            log.info(message)
 
     # -- corrections: serial writes ------------------------------------------------
     def _serial_write(self, data: bytes, purpose: str) -> bool:
