@@ -210,3 +210,45 @@ def plan_fingerprint(subpaths):
         h ^= 0xFF
         h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
     return h or 1
+
+
+def point_in_polygon(point, poly):
+    """Even-odd rule; ``poly`` is a ring of (x, y) (closing vertex optional)."""
+    x, y = float(point[0]), float(point[1])
+    inside = False
+    n = len(poly)
+    for k in range(n):
+        x1, y1 = float(poly[k][0]), float(poly[k][1])
+        x2, y2 = float(poly[(k + 1) % n][0]), float(poly[(k + 1) % n][1])
+        if (y1 > y) != (y2 > y):
+            if x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+                inside = not inside
+    return inside
+
+
+def distance_to_ring(point, poly):
+    """Shortest distance from ``point`` to the edges of ring ``poly``."""
+    best = float('inf')
+    n = len(poly)
+    for k in range(n):
+        a, b = poly[k], poly[(k + 1) % n]
+        ax, ay, bx, by = float(a[0]), float(a[1]), float(b[0]), float(b[1])
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        t = 0.0 if l2 <= 0 else max(0.0, min(1.0, ((point[0] - ax) * dx + (point[1] - ay) * dy)
+                                             / l2))
+        best = min(best, math.hypot(point[0] - (ax + t * dx), point[1] - (ay + t * dy)))
+    return best
+
+
+def inside_area(point, area, leave_m=0.0):
+    """``point`` lies in the area (outer ring minus obstacle holes), allowing it to be up
+    to ``leave_m`` outside the outer ring. An area without an outer ring accepts all."""
+    outer = list(area.get('outer') or [])
+    if len(outer) >= 3 and not point_in_polygon(point, outer) \
+            and distance_to_ring(point, outer) > leave_m:
+        return False
+    for hole in area.get('obstacles') or []:
+        if len(hole) >= 3 and point_in_polygon(point, hole):
+            return False
+    return True

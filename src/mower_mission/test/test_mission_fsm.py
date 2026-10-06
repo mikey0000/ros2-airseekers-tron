@@ -1849,7 +1849,7 @@ def test_motion_enabled_in_motion_states_off_dock(phase):
 
 
 @pytest.mark.parametrize('phase', [p for p in MOTION
-                                   if p not in ('UNDOCKING', 'RETURNING_HOME',
+                                   if p not in ('UNDOCKING', 'MANUAL_MOWING', 'RETURNING_HOME',
                                                 'LOW_BATTERY_DOCKING')])
 def test_motion_disabled_when_docked_without_undock(phase):
     h = Harness()
@@ -1867,8 +1867,8 @@ def test_motion_enabled_only_after_explicit_undock():
     h.fsm.inputs.is_charging = True
     h.tick()
     assert h.name == 'CHARGING' and not h.fsm.motion_enabled()
-    h.cmd(f.CMD_MANUAL_MOW)            # teleop while docked: still no motion
-    assert not h.fsm.motion_enabled()
+    h.cmd(f.CMD_MANUAL_MOW)            # manual while docked: the operator may drive off
+    assert h.fsm.motion_enabled()
     h.cmd(f.CMD_STOP)
     h.cmd(f.CMD_START)
     h.answer_services()

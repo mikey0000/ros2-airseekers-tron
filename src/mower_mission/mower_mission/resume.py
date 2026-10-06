@@ -14,6 +14,7 @@ File layout (one record per line, unknown tags ignored, exactly as upstream)::
     completed_areas 1 3
     area <idx> <pose_count> <fingerprint> <resume_pose_index|-1> completed <i> <j> ...
     area_run <idx> <run>            # ours: repeat / cross run in progress (0-based)
+    area_skip <idx> <from> <to>     # ours: stretch skipped by an obstacle detour
 
 ``pose_count`` is the number of poses over all drivable sub-paths of the
 area plan, ``resume_pose_index`` an absolute index into their concatenation,
@@ -27,21 +28,26 @@ HEADER = 'mowgli_coverage_resume v2'
 
 
 class AreaCursor:
-    __slots__ = ('pose_count', 'fingerprint', 'resume_index', 'completed')
+    __slots__ = ('pose_count', 'fingerprint', 'resume_index', 'completed', 'skipped')
 
-    def __init__(self, pose_count=0, fingerprint=0, resume_index=-1, completed=None):
+    def __init__(self, pose_count=0, fingerprint=0, resume_index=-1, completed=None,
+                 skipped=None):
         self.pose_count = int(pose_count)
         self.fingerprint = int(fingerprint)
         self.resume_index = int(resume_index)
         self.completed = set(completed or ())
+        # [(abs_from, abs_to)] pose stretches skipped by an obstacle detour (re-queued
+        # at the end of the area pass)
+        self.skipped = [tuple(s) for s in (skipped or ())]
 
     def __eq__(self, other):
         return isinstance(other, AreaCursor) and all(
             getattr(self, k) == getattr(other, k) for k in self.__slots__)
 
     def __repr__(self):
-        return 'AreaCursor(%d, %d, %d, %r)' % (
-            self.pose_count, self.fingerprint, self.resume_index, sorted(self.completed))
+        return 'AreaCursor(%d, %d, %d, %r, %r)' % (
+            self.pose_count, self.fingerprint, self.resume_index, sorted(self.completed),
+            self.skipped)
 
 
 class ResumeCursor:
@@ -68,7 +74,8 @@ class ResumeCursor:
         a stored resume pose)."""
         return self.current_command == 1 and (
             bool(self.completed_areas)
-            or any(a.completed or a.resume_index >= 0 for a in self.areas.values())
+            or any(a.completed or a.resume_index >= 0 or a.skipped
+                   for a in self.areas.values())
             or any(r > 0 for r in self.area_runs.values()))
 
     def area(self, idx):
@@ -86,6 +93,9 @@ class ResumeCursor:
             out.append(' '.join(
                 ['area', str(idx), str(a.pose_count), str(a.fingerprint), str(a.resume_index),
                  'completed'] + [str(s) for s in sorted(a.completed)]))
+        for idx in sorted(self.areas):
+            for fr, to in self.areas[idx].skipped:
+                out.append('area_skip %d %d %d' % (idx, fr, to))
         for idx in sorted(self.area_runs):
             if self.area_runs[idx] > 0:
                 out.append('area_run %d %d' % (idx, self.area_runs[idx]))
@@ -116,6 +126,8 @@ class ResumeCursor:
                     idx = int(args[0])
                     cur.areas[idx] = AreaCursor(int(args[1]), int(args[2]), int(args[3]),
                                                 {int(s) for s in args[5:]})
+                elif tag == 'area_skip' and len(args) >= 3:
+                    cur.area(int(args[0])).skipped.append((int(args[1]), int(args[2])))
                 elif tag == 'area_run' and len(args) >= 2:
                     cur.area_runs[int(args[0])] = int(args[1])
             except ValueError:

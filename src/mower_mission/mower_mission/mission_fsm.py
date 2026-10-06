@@ -154,7 +154,7 @@ MOTION_PHASES = ('MANUAL_MOWING', 'RECORDING', 'UNDOCKING', 'WAITING_FOR_RTK',
                  'BOUNDARY_PAUSED') + DOCK_PHASES
 # Phases allowed to move while the base reports docked/charging (explicit undock;
 # docking itself ends on the contacts).
-DOCKED_MOTION_PHASES = ('UNDOCKING',) + DOCK_PHASES
+DOCKED_MOTION_PHASES = ('UNDOCKING', 'MANUAL_MOWING') + DOCK_PHASES   # manual: the operator may drive off the dock
 
 
 # ---------------------------------------------------------------------------

@@ -58,7 +58,7 @@ def test_passes_when_enabled():
     lambda g: g.set_status('MOWING_COMPLETE', False),
     lambda g: g.set_status('NAV_TO_DOCK_FAILED', False),
     lambda g: g.set_status('BOUNDARY_EMERGENCY_STOP', False),
-    lambda g: g.set_base(True, True, False, False),       # docked, manual teleop
+    lambda g: (g.set_status('MOWING', False), g.set_base(True, True, False, False)),  # docked, not undocking/manual
     lambda g: g.set_base(False, False, True, False),      # stop button
     lambda g: g.set_base(False, False, False, True),      # lifted
 ])
