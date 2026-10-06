@@ -4,6 +4,18 @@ import {MapArea, Point32} from "../types/ros.ts";
 
 import {transpose} from "../utils/map.tsx";
 
+/**
+ * Path (channel) metadata of a navigation area, as served by the Go backend
+ * (Map.navigation_channels, parallel to navigation_areas) and sent back in
+ * PUT /mowglinext/map (ReplaceMapArea.channel). Map metres, [x, y].
+ * Hand-written: not part of the generated ROS / swagger types.
+ */
+export type AreaChannel = {
+    points: [number, number][];
+    width_m: number;
+};
+export type MapWithChannels = {navigation_channels?: (AreaChannel | null)[]};
+
 export class MowingFeature implements Feature {
     id: string;
     type: 'Feature';
@@ -246,6 +258,29 @@ export class NavigationFeature extends MapAreaFeature {
         this.properties.name = name;
         if (this.area) this.area.name = name;
         return this;
+    }
+
+    /** Path metadata: centreline in display lon/lat + band width (m), or null for a plain polygon. */
+    setChannel(channel: Position[] | null, widthM = 0): NavigationFeature {
+        const p = this.properties as NavigationFeature["properties"] & {channel?: Position[]; channel_width_m?: number};
+        if (channel && channel.length >= 2 && widthM > 0) {
+            p.channel = channel.map((c) => [c[0], c[1]]);
+            p.channel_width_m = widthM;
+        } else {
+            delete p.channel;
+            delete p.channel_width_m;
+        }
+        return this;
+    }
+
+    getChannel(): {points: Position[]; widthM: number} | null {
+        const p = this.properties as {channel?: Position[]; channel_width_m?: number};
+        return p.channel && p.channel.length >= 2 && (p.channel_width_m ?? 0) > 0
+            ? {points: p.channel, widthM: p.channel_width_m as number} : null;
+    }
+
+    isPath(): boolean {
+        return this.getChannel() !== null;
     }
 
     getName(): string {

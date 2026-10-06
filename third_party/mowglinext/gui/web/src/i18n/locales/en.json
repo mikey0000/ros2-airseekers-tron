@@ -1638,7 +1638,10 @@
     "drawPath": "Draw path (drive-only corridor)",
     "drawPathActive": "Click points, double-click to finish (Esc cancels)",
     "connectDock": "Connect nearest area to dock",
-    "connectDockNoDock": "Place the dock first to connect it to an area"
+    "connectDockNoDock": "Place the dock first to connect it to an area",
+    "drawPathToDock": "Path to dock (starts at the dock approach point)",
+    "editPath": "Edit selected path (vertices, width)",
+    "editPathDisabled": "Select one path to edit it"
   },
   "mapShapePicker": {
     "square": "Square",
@@ -4286,8 +4289,6 @@
     "defaultName": "Path {{index}}",
     "width": "Width: {{width}} m",
     "widthLabel": "Path width in metres",
-    "snapToDock": "Snap end to dock",
-    "snapToDockHint": "Ends the path at the dock approach point (0.8 m in front) and then the dock, so the robot arrives straight.",
     "navigationHint": "Paths are navigation areas: the robot may drive through them but never mows them. Remember to save the map.",
     "invalid": "This path is too short to make a corridor.",
     "noDock": "No dock position is set.",
@@ -4297,7 +4298,22 @@
     "dockConnected": "Added a dock path ({{gap}} m to the nearest area).",
     "saveReminder": "Save the map to apply it.",
     "autoDockCorridor": "Automatic dock corridor",
-    "notMowedHint": "This is a navigation area (path). The robot drives through it but never mows it, so it has no mow settings. Rename or delete it in the map editor."
+    "notMowedHint": "This is a navigation area (path). The robot drives through it but never mows it, so it has no mow settings. Rename or delete it in the map editor.",
+    "editTitle": "Edit path",
+    "delete": "Delete path",
+    "startLabel": "Start",
+    "endLabel": "End",
+    "end": {
+      "dock": "dock",
+      "area": "area edge",
+      "inside": "in area",
+      "none": "not connected"
+    },
+    "extendToDock": "Continue into the dock",
+    "extendToDockHint": "The path ends at the dock approach point (0.8 m in front of the charger). Turn on to run the band onto the charger too.",
+    "notConnected": "Not connected: an end does not touch an area or the dock, so the robot cannot use this path to get anywhere. Move the end onto an area edge (it snaps within 0.5 m).",
+    "editHint": "Drag the line's vertices on the map to reshape it (click the line first if the vertices are hidden). Paths are drive-only: never mowed. Save the map afterwards.",
+    "dockPathName": "Dock path"
   },
   "drivePip": {
     "camera": "Camera",

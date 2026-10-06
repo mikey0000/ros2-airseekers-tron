@@ -3,6 +3,7 @@ import {useTranslation} from "react-i18next";
 import type {NotificationInstance} from "antd/es/notification/interface";
 import type {FeatureCollection} from "geojson";
 import type {Map as MapType} from "../../../types/ros.ts";
+import type {AreaChannel} from "../../../types/map.ts";
 import {
     MowingFeature,
     MowingAreaFeature,
@@ -82,6 +83,8 @@ export function useMapFiles({
 
         // Track per-type index counters and map feature ID → index in areas array
         const typeCounters: Record<string, number> = {"area": 0, "navigation": 0};
+        // Path metadata of navigation areas drawn as a polyline (map metres).
+        const channels: Record<string, AreaChannel> = {};
         const featureIndexMap: Record<string, {type: string; index: number}> = {};
 
         for (const f of areaFeatures) {
@@ -104,6 +107,16 @@ export function useMapFiles({
                 name: f.properties?.name ?? '',
                 area: {points},
             };
+            const channel = f instanceof NavigationFeature ? f.getChannel() : null;
+            if (channel) {
+                channels[`${type}-${index}`] = {
+                    points: channel.points.map((c) => {
+                        const p = itranspose(offsetX, offsetY, datum, c[1], c[0]);
+                        return [p[0], p[1]] as [number, number];
+                    }),
+                    width_m: channel.widthM,
+                };
+            }
         }
 
         // Process obstacles and attach them to their parent area. When the
@@ -143,12 +156,14 @@ export function useMapFiles({
             areas: [],
         };
         for (const [type, areasOfType] of Object.entries(areas)) {
-            for (const area of areasOfType) {
+            areasOfType.forEach((area, index) => {
+                const channel = channels[`${type}-${index}`];
                 updateMsg.areas!.push({
                     area,
                     is_navigation_area: type === "navigation",
+                    ...(channel ? {channel} : {}),
                 });
-            }
+            });
         }
 
         if (droppedObstacles.length > 0) {

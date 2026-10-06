@@ -314,6 +314,8 @@ def test_import_vendor_areas_obstacles_dock():
     assert any('dock no-mow zone' in w for w in res.warnings)
     assert len(nav) == 1 and nav[0].name == 'channel A'
     assert core.point_in_polygon(0.0, 0.0, nav[0].polygon)    # dock covered by the channel
+    assert nav[0].channel == [(0.0, 0.0), (0.8, 0.0)]         # centreline kept (re-editable)
+    assert nav[0].channel_width_m == pytest.approx(0.7)
     assert (res.dock.x, res.dock.y, res.dock.yaw) == pytest.approx((0, 0, 0))
     assert len(res.dock.outline) == 4
 
@@ -504,3 +506,85 @@ def test_normalise_polygon_drops_geojson_closing_vertex():
     ring = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 0.0)]
     assert core.normalise_polygon(ring) == ring[:-1]
     assert core.normalise_polygon(ring[:-1]) == ring[:-1]
+
+
+# ---------------------------------------------------------------- path (channel) metadata
+
+LINE = [(0.0, 5.0), (12.0, 5.0), (12.0, 9.5)]
+
+
+def _with_path():
+    s = _store()
+    poly = core.buffer_polyline(LINE, 0.35)
+    s.add_area('Path 1', poly, True)
+    return s
+
+
+def test_set_channel_on_navigation_area_and_roundtrip():
+    s = _with_path()
+    ok, msg = s.set_channel(1, LINE, 0.7)
+    assert ok, msg
+    text = core.format_areas_dat(s.areas)
+    assert 'area_1_channel: 0,5;12,5;12,9.5\n' in text
+    assert 'area_1_channel_width_m: 0.7\n' in text
+    assert 'area_0_channel' not in text           # plain areas carry no keys
+    areas, _ = core.parse_areas_dat(text)
+    assert areas[1].channel == LINE and areas[1].channel_width_m == pytest.approx(0.7)
+    assert areas[0].channel is None
+    s2 = core.MapStore()
+    s2.load(areas)                                 # load keeps the metadata
+    assert s2.areas[1].channel == LINE
+
+
+def test_set_channel_validation_and_clear():
+    s = _with_path()
+    assert not s.set_channel(0, LINE, 0.7)[0]      # mowing area
+    assert not s.set_channel(5, LINE, 0.7)[0]      # bad index
+    assert not s.set_channel(1, LINE[:1], 0.7)[0]  # one point
+    assert not s.set_channel(1, LINE, 0.0)[0]      # width
+    assert not s.set_channel(1, [(0, 0), (float('nan'), 1)], 0.7)[0]
+    assert s.set_channel(1, LINE, 0.7)[0]
+    assert s.set_channel(1, None)[0]
+    assert s.areas[1].channel is None and s.areas[1].channel_width_m == 0.0
+
+
+def test_old_reader_format_unchanged_without_channel():
+    """A file without channel keys parses as before; unknown keys are ignored."""
+    s = _with_path()
+    text = core.format_areas_dat(s.areas)
+    assert '_channel' not in text
+    areas, _ = core.parse_areas_dat(text + 'area_1_channel: 1,1\n')  # 1 point -> ignored
+    assert areas[1].channel is None
+
+
+def test_channel_json_helpers():
+    s = _with_path()
+    assert core.channel_to_json(s.areas[1]) == '{}'
+    s.set_channel(1, LINE, 0.7)
+    obj = json.loads(core.channel_to_json(s.areas[1]))
+    assert obj == {'points': [[0.0, 5.0], [12.0, 5.0], [12.0, 9.5]], 'width_m': 0.7}
+    ok, _, pts, w = core.parse_channel_json(json.dumps(obj))
+    assert ok and pts == LINE and w == 0.7
+    assert core.parse_channel_json('{}')[2] is None
+    assert core.parse_channel_json('')[0]
+    assert not core.parse_channel_json('[1]')[0]
+    assert not core.parse_channel_json('{"points": [[1]]}')[0]
+    assert not core.parse_channel_json('nope')[0]
+
+
+def test_path_band_is_free_in_nav_mask_but_not_mowed():
+    """A path is a navigation area: the band is free in /nav_keepout_mask
+    (the gap between the lawn and a far point becomes drivable) while the
+    mowing side (area list the mission mows) never includes it."""
+    s = _with_path()
+    s.set_channel(1, LINE, 0.7)
+    spec = core.grid_for_polygons([a.polygon for a in s.areas], 0.05, 1.0)
+    nav = core.build_nav_mask(s.areas, spec)
+    # (11, 5) lies outside the 10 m lawn but inside the band
+    cx, cy = int((11.0 - spec.origin_x) / spec.resolution), int((5.0 - spec.origin_y) / spec.resolution)
+    assert nav[cy, cx] == core.FREE
+    # a point beside the band (outside both) stays lethal
+    fx, fy = int((11.0 - spec.origin_x) / spec.resolution), int((8.0 - spec.origin_y) / spec.resolution)
+    assert nav[fy, fx] != core.FREE
+    assert [a.name for a in s.areas if not a.is_navigation] == ['lawn']
+

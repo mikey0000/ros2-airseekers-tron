@@ -8,6 +8,9 @@ package mowgli
 type ReplaceMapArea struct {
 	Area             MapArea `json:"area"`
 	IsNavigationArea bool    `json:"is_navigation_area"`
+	// Optional path metadata (navigation areas drawn as a polyline); sent to
+	// the map server's set_area_channel right after the add_area call.
+	Channel *AreaChannel `json:"channel,omitempty"`
 }
 
 type ReplaceMapReq struct {

@@ -90,6 +90,9 @@ interface MapToolbarMobileProps {
     dockPlacementMode?: boolean;
     onDrawPath?: () => void;
     onConnectDock?: () => void;
+    onDrawPathToDock?: () => void;
+    onEditPath?: () => void;
+    editPathEnabled?: boolean;
     dockAvailable?: boolean;
     stateName?: string;
     highLevelState?: number;
@@ -117,6 +120,7 @@ export const MapToolbarMobile = ({
     onMowArea, onPreviewPlan, settingsAreas, onAreaSettings, selectedFeatureCount = 0, onEditSelectedFeature,
     onDrawPolygon, onDrawShape, onDrawEmoji, onTrash, onCombine, onSubtract, onSplit,
     onPlaceDock, dockPlacementMode, onDrawPath, onConnectDock, dockAvailable,
+    onDrawPathToDock, onEditPath, editPathEnabled,
     stateName, highLevelState, emergency,
     onStart, onHome, onEmergencyOn, onEmergencyOff,
     onAreaRecording, onMowNextArea, onContinueOrPause,
@@ -261,6 +265,8 @@ export const MapToolbarMobile = ({
 
     const editMenuItems: MenuProps["items"] = [
         ...(onDrawPath ? [{key: "drawPath", icon: <NodeIndexOutlined />, label: t("mapToolbarMobile.drawPath")}] : []),
+        ...(onDrawPathToDock ? [{key: "drawPathToDock", icon: <NodeIndexOutlined />, label: t("mapEditorToolbar.drawPathToDock"), disabled: !dockAvailable}] : []),
+        ...(onEditPath ? [{key: "editPath", icon: <NodeIndexOutlined />, label: t("mapEditorToolbar.editPath"), disabled: !editPathEnabled}] : []),
         ...(onConnectDock ? [{key: "connectDock", icon: <ApiOutlined />, label: t("mapToolbarMobile.connectDock"), disabled: !dockAvailable}] : []),
         {key: "editProps", icon: <FormOutlined />, label: t("mapToolbarMobile.editProperties"), disabled: selectedFeatureCount !== 1},
         {key: "combine", icon: <MergeCellsOutlined />, label: t("mapToolbarMobile.combine"), disabled: selectedFeatureCount < 2},
@@ -274,6 +280,8 @@ export const MapToolbarMobile = ({
         switch (key) {
             case "drawPath": onDrawPath?.(); break;
             case "connectDock": onConnectDock?.(); break;
+            case "drawPathToDock": onDrawPathToDock?.(); break;
+            case "editPath": onEditPath?.(); break;
             case "editProps": onEditSelectedFeature?.(); break;
             case "combine": onCombine?.(); break;
             case "subtract": onSubtract?.(); break;

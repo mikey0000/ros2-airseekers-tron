@@ -15,6 +15,8 @@ import {
     AimOutlined,
     NodeIndexOutlined,
     ApiOutlined,
+    HomeOutlined,
+    EditOutlined,
 } from "@ant-design/icons";
 import AsyncButton from "../../../components/AsyncButton.tsx";
 import {ShapePickerDropdown} from "./ShapePickerDropdown.tsx";
@@ -46,6 +48,11 @@ interface MapEditorToolbarProps {
     /** Straight corridor from the dock approach point to the nearest work area. */
     onConnectDock?: () => void;
     dockAvailable?: boolean;
+    /** Path that starts at the dock approach pose. */
+    onDrawPathToDock?: () => void;
+    /** Re-edit the selected path as a line (enabled when exactly one path is selected). */
+    onEditPath?: () => void;
+    editPathEnabled?: boolean;
 }
 
 interface ToolButtonProps {
@@ -99,6 +106,7 @@ export const MapEditorToolbar = ({
     selectedFeatureCount, onSaveMap, onCancel, onUndo, onRedo,
     onDrawPolygon, onDrawShape, onDrawEmoji, onTrash, onCombine, onSubtract, onSplit, onEditSelectedFeature,
     onPlaceDock, dockPlacementMode, onDrawPath, pathDrawing, onConnectDock, dockAvailable,
+    onDrawPathToDock, onEditPath, editPathEnabled,
 }: MapEditorToolbarProps) => {
     const {colors, displayMode} = useThemeMode();
     const {t} = useTranslation();
@@ -169,6 +177,22 @@ export const MapEditorToolbar = ({
                 tooltip={pathDrawing ? t('mapEditorToolbar.drawPathActive') : t('mapEditorToolbar.drawPath')}
                 onClick={onDrawPath}
                 primary={pathDrawing}
+            />
+        )}
+        {onDrawPathToDock && (
+            <ToolButton
+                icon={<HomeOutlined/>}
+                tooltip={dockAvailable ? t('mapEditorToolbar.drawPathToDock') : t('mapEditorToolbar.connectDockNoDock')}
+                onClick={onDrawPathToDock}
+                disabled={!dockAvailable}
+            />
+        )}
+        {onEditPath && (
+            <ToolButton
+                icon={<EditOutlined/>}
+                tooltip={editPathEnabled ? t('mapEditorToolbar.editPath') : t('mapEditorToolbar.editPathDisabled')}
+                onClick={onEditPath}
+                disabled={!editPathEnabled}
             />
         )}
         <ShapePickerDropdown onDrawShape={onDrawShape} onDrawEmoji={onDrawEmoji} placement="bottomLeft">

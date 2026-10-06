@@ -17,6 +17,46 @@ type Map struct {
 	DockX       *float64 `json:"dock_x,omitempty"`
 	DockY       *float64 `json:"dock_y,omitempty"`
 	DockHeading *float64 `json:"dock_heading,omitempty"`
+	// Path (channel) metadata, parallel to NavigationAreas: nil entries are
+	// plain polygon navigation areas. Omitted when the map server does not
+	// serve get_area_channel.
+	NavigationChannels []*AreaChannel `json:"navigation_channels,omitempty"`
+}
+
+// AreaChannel is the centreline (map metres) + band width of a navigation
+// area drawn with the path tool. The area polygon stays the authoritative
+// shape; this only lets the editor re-open the path as a line.
+type AreaChannel struct {
+	Points [][2]float64 `json:"points"`
+	WidthM float64      `json:"width_m"`
+}
+
+// Map server path-metadata services (mower_map; they reuse the
+// mower_interfaces area-settings service types, payload = AreaChannel JSON).
+const (
+	SetAreaChannelService = "/map_server_node/set_area_channel"
+	GetAreaChannelService = "/map_server_node/get_area_channel"
+	SetAreaChannelType    = "mower_interfaces/srv/SetAreaSettings"
+	GetAreaChannelType    = "mower_interfaces/srv/GetAreaSettings"
+)
+
+type SetAreaChannelReq struct {
+	AreaIndex    uint8  `json:"area_index"`
+	SettingsJSON string `json:"settings_json"`
+}
+
+type SetAreaChannelRes struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+type GetAreaChannelReq struct {
+	AreaIndex uint8 `json:"area_index"`
+}
+
+type GetAreaChannelRes struct {
+	Success      bool   `json:"success"`
+	SettingsJSON string `json:"settings_json"`
 }
 
 // DockingSensor - placeholder, may not exist in ROS2 mowgli

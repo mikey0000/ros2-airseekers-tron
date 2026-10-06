@@ -38,6 +38,9 @@ SOURCE_DIG = 2
 OBSTACLE_DEDUP_EPS_M = 0.10
 
 LETHAL = 100
+# Accepted path (channel) width range; the GUI offers 0.5..3.0 m.
+CHANNEL_WIDTH_MIN_M = 0.1
+CHANNEL_WIDTH_MAX_M = 5.0
 FREE = 0
 
 
@@ -60,6 +63,12 @@ class Area:
     polygon: Polygon
     is_navigation: bool = False
     obstacles: List[Obstacle] = field(default_factory=list)
+    # Path ("channel") metadata of a navigation area drawn as a polyline: the
+    # centreline in map metres and the band width. The polygon stays the
+    # authoritative shape (it is what the masks use); this only lets the GUI
+    # re-edit the path as a line. None = a plain polygon area.
+    channel: Optional[Polygon] = None
+    channel_width_m: float = 0.0
 
 
 @dataclass
@@ -155,10 +164,33 @@ class MapStore:
         """Replace the area list (from areas.dat), assigning fresh ids."""
         self.areas = []
         for a in areas:
-            new = Area(a.name, list(a.polygon), a.is_navigation, [])
+            new = Area(a.name, list(a.polygon), a.is_navigation, [],
+                       list(a.channel) if a.channel else None, a.channel_width_m)
             for o in a.obstacles:
                 new.obstacles.append(self._make_obstacle(o.polygon, o.name, o.source, False))
             self.areas.append(new)
+
+    def set_channel(self, area_index: int, points: Optional[Sequence[Sequence[float]]],
+                    width_m: float = 0.0) -> Tuple[bool, str]:
+        """Attach (or with ``points`` None/empty, clear) the path centreline +
+        width of a navigation area. Returns (ok, message)."""
+        if area_index < 0 or area_index >= len(self.areas):
+            return False, 'bad area_index %d' % area_index
+        area = self.areas[area_index]
+        if not points:
+            area.channel, area.channel_width_m = None, 0.0
+            return True, 'channel of area %d cleared' % area_index
+        if not area.is_navigation:
+            return False, 'area %d is not a navigation area' % area_index
+        line = [(float(p[0]), float(p[1])) for p in points]
+        if len(line) < 2 or any(not math.isfinite(v) for p in line for v in p):
+            return False, 'channel needs at least 2 finite points'
+        width_m = float(width_m)
+        if not (CHANNEL_WIDTH_MIN_M <= width_m <= CHANNEL_WIDTH_MAX_M):
+            return False, 'channel width %.2f m outside %.1f..%.1f' % (
+                width_m, CHANNEL_WIDTH_MIN_M, CHANNEL_WIDTH_MAX_M)
+        area.channel, area.channel_width_m = line, width_m
+        return True, 'channel of area %d set (%d points, %.2f m)' % (area_index, len(line), width_m)
 
     def add_obstacle(self, area_index: int, polygon: Polygon, name: str = '',
                      source: int = SOURCE_USER, pending: bool = False) -> Tuple[bool, str]:
@@ -248,6 +280,10 @@ def format_areas_dat(areas: List[Area], datum_lat: float = 0.0, datum_lon: float
         out.append('area_%d_name: %s\n' % (i, _one_line(area.name)))
         out.append('area_%d_polygon: %s\n' % (i, polygon_to_string(area.polygon)))
         out.append('area_%d_is_navigation: %d\n' % (i, 1 if area.is_navigation else 0))
+        if area.channel and len(area.channel) >= 2 and area.channel_width_m > 0:
+            # Optional keys (ignored by readers that do not know them).
+            out.append('area_%d_channel: %s\n' % (i, polygon_to_string(area.channel)))
+            out.append('area_%d_channel_width_m: %g\n' % (i, area.channel_width_m))
         persisted = [o for o in area.obstacles if not o.pending]
         out.append('area_%d_obstacle_count: %d\n' % (i, len(persisted)))
         for j, obs in enumerate(persisted):
@@ -299,12 +335,45 @@ def parse_areas_dat(text: str) -> Tuple[List[Area], Optional[Tuple[float, float]
                     [o.polygon for o in area.obstacles], poly):
                 area.obstacles.append(Obstacle(poly, kv.get(op + '_name', ''),
                                                get_int(op + '_source', SOURCE_USER), False, 0))
+        channel = parse_polygon_string(kv.get(prefix + '_channel', ''))
+        width = get_float(prefix + '_channel_width_m')
+        if len(channel) >= 2 and width is not None and width > 0 and math.isfinite(width):
+            area.channel, area.channel_width_m = channel, width
         if len(area.polygon) >= 3:
             areas.append(area)
 
     lat, lon = get_float('datum_lat'), get_float('datum_lon')
     datum = (lat, lon) if lat is not None and lon is not None else None
     return areas, datum
+
+
+def channel_to_json(area: Area) -> str:
+    """JSON of an area's path metadata for ~/get_area_channel:
+    {"points": [[x, y], ...], "width_m": w}, or "{}" for a plain area."""
+    if not area.channel or len(area.channel) < 2 or area.channel_width_m <= 0:
+        return '{}'
+    return json.dumps({'points': [[round(x, 4), round(y, 4)] for x, y in area.channel],
+                       'width_m': round(area.channel_width_m, 4)})
+
+
+def parse_channel_json(text: str):
+    """Parse the ~/set_area_channel payload. Returns (ok, message, points,
+    width_m); points None means "clear" ("{}" / "" / null points)."""
+    try:
+        obj = json.loads(text) if text and text.strip() else {}
+    except ValueError as exc:
+        return False, 'bad JSON: %s' % exc, None, 0.0
+    if not isinstance(obj, dict):
+        return False, 'expected a JSON object', None, 0.0
+    pts = obj.get('points')
+    if not pts:
+        return True, 'clear', None, 0.0
+    try:
+        points = [(float(p[0]), float(p[1])) for p in pts]
+        width = float(obj.get('width_m', 0.0))
+    except (TypeError, ValueError, IndexError) as exc:
+        return False, 'bad points/width_m: %s' % exc, None, 0.0
+    return True, 'ok', points, width
 
 
 def write_text_atomic(path: str, text: str):
@@ -1076,7 +1145,8 @@ def import_vendor_geojson(data: dict, channel_half_width: float = 0.35,
             poly = buffer_polyline(line, channel_half_width)
             if len(poly) >= 3:
                 nm = str(props(f).get('name') or '')
-                areas.append(Area('channel %s' % nm if nm else 'channel', poly, True, []))
+                areas.append(Area('channel %s' % nm if nm else 'channel', poly, True, [],
+                                  line, 2.0 * channel_half_width))
     return VendorImport(areas, dock, warnings)
 
 

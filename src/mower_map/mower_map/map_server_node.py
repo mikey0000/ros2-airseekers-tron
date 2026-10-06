@@ -213,6 +213,10 @@ class MapServerNode(Node):
         srv(Trigger, '~/reset_mow_progress', self.srv_reset_mow_progress)
         srv(SetAreaSettings, '~/set_area_settings', self.srv_set_area_settings)
         srv(GetAreaSettings, '~/get_area_settings', self.srv_get_area_settings)
+        # Path (channel) metadata of navigation areas, JSON {points, width_m}
+        # in map metres (reuses the area-settings service types).
+        srv(SetAreaSettings, '~/set_area_channel', self.srv_set_area_channel)
+        srv(GetAreaSettings, '~/get_area_channel', self.srv_get_area_channel)
 
         self.tf_buffer = None
         if tf2_ros is not None:
@@ -697,6 +701,28 @@ class MapServerNode(Node):
         res.success = True
         res.message = '%s: %s' % (target, json.dumps(eff, sort_keys=True))
         self.get_logger().info('set_area_settings %s' % res.message)
+        return res
+
+    def srv_set_area_channel(self, req, res):
+        idx = int(req.area_index)
+        ok, msg, points, width = core.parse_channel_json(req.settings_json)
+        if ok:
+            ok, msg = self.store.set_channel(idx, points, width)
+        res.success, res.message = ok, msg
+        if ok:
+            self.persist_best_effort('set_area_channel')
+            self.get_logger().info('set_area_channel: %s' % msg)
+        else:
+            self.get_logger().warn('set_area_channel rejected: %s' % msg)
+        return res
+
+    def srv_get_area_channel(self, req, res):
+        idx = int(req.area_index)
+        if idx >= len(self.store.areas):
+            res.success, res.settings_json = False, '{}'
+            return res
+        res.success = True
+        res.settings_json = core.channel_to_json(self.store.areas[idx])
         return res
 
     def srv_get_area_settings(self, req, res):

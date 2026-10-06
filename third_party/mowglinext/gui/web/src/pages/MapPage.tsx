@@ -8,6 +8,7 @@ import turfArea from "@turf/area";
 import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {useTranslation} from "react-i18next";
 import {MapArea, Map as MapType} from "../types/ros.ts";
+import type {AreaChannel, MapWithChannels} from "../types/map.ts";
 import DrawControl from "../components/DrawControl.tsx";
 import Map, {Layer, Popup, Source} from 'react-map-gl/mapbox';
 import turfCentroid from "@turf/centroid";
@@ -325,7 +326,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         handleTrash, handleCombine,
         handleAreaSelect, handleSubtract, handleSplit,
         handleSaveNewArea, updateMowingArea, cancelAreaModal, deleteFeature,
-        addNavigationAreas,
+        addNavigationAreas, replacePathArea,
     } = useMapEditing({
         features,
         setFeatures,
@@ -348,10 +349,43 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         .filter((r) => r.length >= 4), [features]);
     const navigationCount = useMemo(
         () => Object.values(features).filter((f) => f instanceof NavigationFeature).length, [features]);
+    const deletePathFeature = useCallback((id: string) => {
+        setFeatures((curr) => {
+            const next = {...curr};
+            delete next[id];
+            return next;
+        });
+    }, [setFeatures]);
     const pathTool = usePathTool({
         drawRef, mapInstanceRef, datum, dock: pathDock, workAreaRings, navigationCount,
-        addNavigationAreas, notification,
+        addNavigationAreas, replacePathArea, deleteFeature: deletePathFeature, notification,
     });
+    // "Edit path" is offered when exactly one saved path (navigation area
+    // with centreline metadata) is selected.
+    const selectedPath = useMemo(() => {
+        if (selectedFeatureIds.length !== 1) return null;
+        const f = features[selectedFeatureIds[0]];
+        return f instanceof NavigationFeature && f.isPath() ? f : null;
+    }, [selectedFeatureIds, features]);
+    const {editPath} = pathTool;
+    const handleEditPath = useCallback(() => {
+        if (selectedPath) editPath(selectedPath);
+    }, [selectedPath, editPath]);
+    // Saved paths: translucent band + dashed centreline, drawn above the
+    // editor polygons so they read differently from mowing areas.
+    const pathsCollection = useMemo<FeatureCollection>(() => ({
+        type: "FeatureCollection",
+        features: Object.values(features).flatMap((f) => {
+            if (!(f instanceof NavigationFeature)) return [];
+            const ch = f.getChannel();
+            if (!ch || !f.geometry?.coordinates?.[0]?.length) return [];
+            return [
+                {type: "Feature" as const, id: `${f.id}-band`, geometry: f.geometry, properties: {kind: "band"}},
+                {type: "Feature" as const, id: `${f.id}-line`, properties: {kind: "centerline"},
+                    geometry: {type: "LineString" as const, coordinates: ch.points}},
+            ];
+        }),
+    }), [features]);
     const {onLineCreated: pathOnLineCreated, cancel: pathCancel} = pathTool;
     const onCreateWithPath = useCallback((e: {features: Feature[]}) => {
         if (pathOnLineCreated(e.features)) return;
@@ -393,7 +427,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         let newFeatures: Record<string, MowingFeature> = {}
         if (map) {
             const workingAreas = buildFeatures(map.working_area??[], "area", true)
-            const navigationAreas = buildFeatures(map.navigation_areas??[], "navigation")
+            const navigationAreas = buildFeatures(map.navigation_areas??[], "navigation", false, (map as MapWithChannels).navigation_channels)
             newFeatures = {...workingAreas, ...navigationAreas}
 
             // dock_x/dock_y are optional on the wire. `map?.dock_y!` claimed
@@ -643,7 +677,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         });
     }, []);
 
-    function buildFeatures(areas: MapArea[], type: string, fromLiveMap = false) : Record<string, MowingFeatureBase> {
+    function buildFeatures(areas: MapArea[], type: string, fromLiveMap = false,
+                           channels?: (AreaChannel | null)[]) : Record<string, MowingFeatureBase> {
 
 
         return areas?.flatMap((area, index) : MowingFeatureBase[] => {
@@ -654,6 +689,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             const nfeat = type=="area" ? new MowingAreaFeature(type + "-" + index.toString() + "-area-0", index+1)
                 : new NavigationFeature(type + "-" + index.toString() + "-area-0");//, offsetX, offsetY, datum.
             nfeat.setArea(area, offsetX, offsetY, datum);
+            const ch = channels?.[index];
+            if (nfeat instanceof NavigationFeature && ch && ch.points?.length >= 2) {
+                nfeat.setChannel(ch.points.map(([x, y]) => transpose(offsetX, offsetY, datum, y, x)), ch.width_m);
+            }
             // Preserve source identity separately from editable mowing order.
             // Restored/imported maps cannot target live ROS areas until saved.
             if (fromLiveMap) nfeat.properties.source_working_area_index = index;
@@ -690,7 +729,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     function buildFeaturesFromMap(m: MapType): Record<string, MowingFeature> {
         const newFeatures: Record<string, MowingFeature> = {
             ...buildFeatures(m.working_area ?? [], "area"),
-            ...buildFeatures(m.navigation_areas ?? [], "navigation"),
+            ...buildFeatures(m.navigation_areas ?? [], "navigation", false, (m as MapWithChannels).navigation_channels),
         };
         const dockLonLat = transpose(offsetX, offsetY, datum, m.dock_y ?? 0, m.dock_x ?? 0);
         newFeatures["dock"] = new DockFeatureBase(dockLonLat, m.dock_heading ?? 0);
@@ -1137,17 +1176,20 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 onCancel={deleteFeature}
             />
             <PathModal
-                open={pathTool.draft !== null}
+                open={pathTool.editing}
+                editing={pathTool.editingExisting}
                 name={pathTool.name}
                 width={pathTool.width}
-                dockAvailable={pathTool.dockAvailable}
-                snapToDock={pathTool.snapToDock}
+                start={pathTool.start}
+                end={pathTool.end}
+                extendToDock={pathTool.extendToDock}
                 invalid={pathTool.invalid}
                 onNameChange={pathTool.setName}
                 onWidthChange={pathTool.setWidth}
-                onSnapToDockChange={pathTool.setSnapToDock}
+                onExtendToDockChange={pathTool.setExtendToDock}
                 onSave={pathTool.save}
                 onCancel={pathTool.cancel}
+                onDelete={pathTool.remove}
             />
             <EditAreaModal
                 open={areaModelOpen}
@@ -1316,6 +1358,15 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             {t('mapPath.autoDockCorridor')}
                         </Popup>
                     )}
+                    {/* Saved paths (navigation areas drawn as a line): band + centreline. */}
+                    <Source type={"geojson"} id={"saved-paths"} data={pathsCollection}>
+                        <Layer type={"fill"} id={"saved-path-band"}
+                            filter={['==', ['get', 'kind'], 'band']}
+                            paint={{"fill-color": LAYER_COLORS.dockHeading, "fill-opacity": 0.18}}/>
+                        <Layer type={"line"} id={"saved-path-centerline"}
+                            filter={['==', ['get', 'kind'], 'centerline']}
+                            paint={{"line-color": LAYER_COLORS.dockHeading, "line-width": 2, "line-opacity": 0.9, "line-dasharray": [3, 2]}}/>
+                    </Source>
                     {/* Path tool live preview: buffered corridor + centreline. */}
                     <Source type={"geojson"} id={"path-preview"} data={pathTool.previewCollection}>
                         <Layer type={"fill"} id={"path-preview-fill"}
@@ -1430,6 +1481,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onPlaceDock={handleDockPlacement}
                         dockPlacementMode={dockPlacementMode}
                         onDrawPath={pathTool.startPath}
+                        onDrawPathToDock={pathTool.startPathToDock}
+                        onEditPath={handleEditPath}
+                        editPathEnabled={selectedPath !== null}
                         onConnectDock={pathTool.connectNearestAreaToDock}
                         dockAvailable={pathTool.dockAvailable}
                         onSaveMap={handleSaveMap}
@@ -1474,6 +1528,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onPlaceDock={handleDockPlacement}
                         dockPlacementMode={dockPlacementMode}
                         onDrawPath={pathTool.startPath}
+                        onDrawPathToDock={pathTool.startPathToDock}
+                        onEditPath={handleEditPath}
+                        editPathEnabled={selectedPath !== null}
                         pathDrawing={pathTool.drawing}
                         onConnectDock={pathTool.connectNearestAreaToDock}
                         dockAvailable={pathTool.dockAvailable}

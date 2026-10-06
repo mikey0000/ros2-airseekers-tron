@@ -27,12 +27,34 @@ export interface CorridorOptions {
     join?: CorridorJoin;
     /** Segments used to approximate a full circle for round joins. Default 24. */
     arcSegments?: number;
+    /**
+     * End caps of an open path. "square" (default, like the vendor import in
+     * mower_map) extends each end by half the width, so an end placed on an
+     * area outline overlaps the area by half a width; "flat" stops at the end.
+     */
+    cap?: "square" | "flat";
+}
+
+/** Extend the first and last vertex outward along their segment by `d`. */
+export function extendEnds(points: XY[], d: number): XY[] {
+    if (points.length < 2 || !(d > 0)) return points;
+    const out = points.map((p) => [p[0], p[1]] as XY);
+    const [a, b] = [out[0], out[1]];
+    const l0 = dist(a, b) || 1;
+    out[0] = [a[0] - (b[0] - a[0]) / l0 * d, a[1] - (b[1] - a[1]) / l0 * d];
+    const n = out.length;
+    const [y, z] = [out[n - 2], out[n - 1]];
+    const l1 = dist(y, z) || 1;
+    out[n - 1] = [z[0] + (z[0] - y[0]) / l1 * d, z[1] + (z[1] - y[1]) / l1 * d];
+    return out;
 }
 
 /** Default corridor width (m) — a bit wider than the robot footprint. */
-export const DEFAULT_PATH_WIDTH_M = 0.8;
+export const DEFAULT_PATH_WIDTH_M = 0.7;   // 2 x 0.35 m, the vendor channel half-width
 export const MIN_PATH_WIDTH_M = 0.5;
-export const MAX_PATH_WIDTH_M = 2.0;
+export const MAX_PATH_WIDTH_M = 3.0;
+/** An end within this distance of an area outline / the dock is snapped to it. */
+export const PATH_SNAP_TOLERANCE_M = 0.5;
 /** Same value as mower_docking `approach_distance` / vendor `undock_point`. */
 export const DOCK_APPROACH_DISTANCE_M = 0.8;
 
@@ -148,7 +170,7 @@ export function bufferPolyline(input: XY[], width: number, opts: CorridorOptions
         const k = Math.floor((points.length - 1) / 2);
         parts = [points.slice(0, k + 1), points.slice(k)];
     } else {
-        parts = [points];
+        parts = [(opts.cap ?? "square") === "square" ? extendEnds(points, half) : points];
     }
     const out: XY[][][] = [];
     for (const part of parts) {
@@ -247,6 +269,56 @@ export function dockConnectorPolyline(dock: DockPose, areaRings: XY[][], overlap
     const uy = (b.point[1] - approach[1]) / (b.distance || 1);
     const end: XY = [b.point[0] + ux * overlap, b.point[1] + uy * overlap];
     return {points: dedupeXY([[dock.x, dock.y], approach, end]), areaIndex: b.index, gap: b.distance};
+}
+
+// ---------------------------------------------------------------------------
+// End snapping (areas / dock approach pose)
+// ---------------------------------------------------------------------------
+
+/** How one end of a path is connected. "none" = touches nothing (hint shown). */
+export type PathEndSnap = "dock" | "area" | "inside" | "none";
+
+export interface SnappedPath {
+    points: XY[];
+    start: PathEndSnap;
+    end: PathEndSnap;
+}
+
+/** True when both ends reach an area or the dock. */
+export const isPathConnected = (s: Pick<SnappedPath, "start" | "end">) => s.start !== "none" && s.end !== "none";
+
+function snapEnd(p: XY, areaRings: XY[][], dock: DockPose | null, tol: number): { point: XY; snap: PathEndSnap } {
+    if (dock) {
+        const approach = dockApproachPoint(dock);
+        if (dist(p, approach) <= tol || dist(p, [dock.x, dock.y]) <= tol) return {point: approach, snap: "dock"};
+    }
+    let best: { point: XY; distance: number } | null = null;
+    for (const ring of areaRings) {
+        if (ring.length < 3) continue;
+        if (insideRing(p, ring)) return {point: p, snap: "inside"};
+        const c = closestPointOnRing(p, ring);
+        if (c && (!best || c.distance < best.distance)) best = c;
+    }
+    if (best && best.distance <= tol) return {point: best.point, snap: "area"};
+    return {point: p, snap: "none"};
+}
+
+/**
+ * Snap both ends of a path (local metres): an end within `tol` of the dock
+ * (or its approach point) moves to the dock approach pose; otherwise an end
+ * within `tol` of an area outline moves onto the outline (the square cap then
+ * overlaps the area by half a width). An end already inside an area stays.
+ */
+export function snapPathEnds(input: XY[], areaRings: XY[][], dock: DockPose | null,
+                             tol = PATH_SNAP_TOLERANCE_M): SnappedPath {
+    const points = dedupeXY(input);
+    if (points.length < 2) return {points, start: "none", end: "none"};
+    const s = snapEnd(points[0], areaRings, dock, tol);
+    const e = snapEnd(points[points.length - 1], areaRings, dock, tol);
+    const out = [...points];
+    out[0] = s.point;
+    out[out.length - 1] = e.point;
+    return {points: dedupeXY(out), start: s.snap, end: e.snap};
 }
 
 // ---------------------------------------------------------------------------

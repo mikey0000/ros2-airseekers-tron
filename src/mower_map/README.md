@@ -175,6 +175,62 @@ pitch and quality are dropped.
 | 6 charge_point, 7 undock_point | Dock pose. Position = charge point. Yaw = atan2 from charge point to undock point, which is the heading when leaving. |
 | 8 RTK base | Ignored |
 
+## Paths (channels)
+
+A path is a drive-only connection between areas, or between an area and the
+dock. On the vendor map these are the type-3 "channel" LineStrings. A path is
+stored as an ordinary **navigation area**: its polygon is the centreline
+buffered by half the width with square caps (each end is extended by half a
+width). The map server needs nothing special for it:
+
+- `/nav_keepout_mask` (the Nav2 global costmap mask) frees navigation areas
+  like mowing areas (grown by `nav_margin_m`). This lets Nav2
+  `navigate_to_pose` plan transits along the band, whether between areas or
+  to the dock approach pose. The mission needs no changes.
+- The band is never mowed. The mission and coverage only plan non-navigation
+  areas (`mission_fsm.py`, `is_navigation_area` filter), navigation areas have
+  no mow settings, and `promote_obstacle` refuses them. `/keepout_mask` (the
+  "may be here" mask; nothing in this stack consumes it, Nav2 reads
+  `/nav_keepout_mask`) keeps the upstream semantics, where every area is 0.
+
+To let the GUI re-open a path as a line, `areas.dat` carries two optional
+keys per path. Readers that do not know them ignore them:
+
+```text
+area_3_is_navigation: 1
+area_3_channel: 1.2,-0.4;6.5,-0.4;9.8,2.1      # centreline, map metres
+area_3_channel_width_m: 0.7
+```
+
+| Service | Type (reused) | Payload |
+|---|---|---|
+| `/map_server_node/set_area_channel` | `mower_interfaces/SetAreaSettings` | `area_index` plus `settings_json` `{"points": [[x, y], ...], "width_m": w}`. `{}` clears it. The area must be a navigation area. The call takes 2 or more finite points and a width of 0.1..5 m. It autosaves `areas.dat`. |
+| `/map_server_node/get_area_channel` | `mower_interfaces/GetAreaSettings` | `settings_json` is the JSON above, or `{}` for a plain polygon. `success=false` past the end. |
+
+The GUI map PUT is `clear_map` -> `add_area` x N (+ `set_area_channel` after each path)
+-> `save_areas`. Its 5 s poll adds `get_area_channel` for every navigation area. The
+results go into `Map.navigation_channels`. The vendor import keeps each channel's
+centreline (width = 2 x `--channel-half-width`), so imported channels can also be
+edited as lines.
+
+GUI (Map -> Edit map, left toolbar):
+
+- **Draw path** (node icon): click the vertices, then double-click (or press Enter) to
+  finish. An end within 0.5 m of an area outline snaps onto the outline. The square cap
+  then overlaps the area by half a width. An end within 0.5 m of the dock (or its approach
+  point) snaps to the dock approach pose, which is 0.8 m in front of the charger. An end
+  inside an area stays where it is. If an end touches nothing, the panel shows "not
+  connected". The path is still allowed.
+- **Path to dock** (home icon): the line starts at the dock approach pose. Click towards
+  the area and finish inside it, or on its edge.
+- The path panel (top right) offers the name and the width (0.5..3.0 m, default 0.7 m).
+  It shows how each end is connected. When an end is at the dock, "continue into the dock"
+  extends the band onto the charger. The line's vertices can be dragged on the map while
+  the panel is open. **Save** adds the band, and **Save the map** (toolbar) persists it.
+- **Edit path** (pencil icon, enabled with one path selected) re-opens a saved path as a
+  line. From there you can drag vertices, change the width or name, or **Delete path**.
+- Saved paths show as a translucent band with a dashed centreline.
+
 ## GUI flow
 
 The MowgliNext GUI (via `mower_gui_bridge` / foxglove) does the following:

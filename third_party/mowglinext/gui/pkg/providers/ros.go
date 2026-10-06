@@ -538,6 +538,47 @@ func splitMapAreas(areas []mowgli.MapArea) (working, navigation []mowgli.MapArea
 	return
 }
 
+// fetchNavigationChannels returns the path metadata of every navigation area
+// (parallel to splitMapAreas' navigation slice; nil = plain polygon), or nil
+// when the map server does not serve get_area_channel.
+func (r *RosProvider) fetchNavigationChannels(ctx context.Context, all []mowgli.MapArea) []*mowgli.AreaChannel {
+	var out []*mowgli.AreaChannel
+	found := false
+	for index, area := range all {
+		if !area.IsNavigationArea {
+			continue
+		}
+		var ch *mowgli.AreaChannel
+		if index < 255 {
+			var res mowgli.GetAreaChannelRes
+			req := mowgli.GetAreaChannelReq{AreaIndex: uint8(index)}
+			if err := r.CallService(ctx, mowgli.GetAreaChannelService, &req, &res, mowgli.GetAreaChannelType); err != nil {
+				return nil
+			}
+			ch = parseAreaChannel(res)
+		}
+		if ch != nil {
+			found = true
+		}
+		out = append(out, ch)
+	}
+	if !found {
+		return nil
+	}
+	return out
+}
+
+func parseAreaChannel(res mowgli.GetAreaChannelRes) *mowgli.AreaChannel {
+	if !res.Success || res.SettingsJSON == "" {
+		return nil
+	}
+	var ch mowgli.AreaChannel
+	if err := json.Unmarshal([]byte(res.SettingsJSON), &ch); err != nil || len(ch.Points) < 2 || ch.WidthM <= 0 {
+		return nil
+	}
+	return &ch
+}
+
 func (r *RosProvider) pollMap() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -564,6 +605,7 @@ func (r *RosProvider) pollMap() {
 	}
 
 	workingAreas, navAreas, workingIndices := splitMapAreas(allAreas)
+	navChannels := r.fetchNavigationChannels(ctx, allAreas)
 	if workingAreas == nil {
 		workingAreas = []mowgli.MapArea{}
 	}
@@ -579,6 +621,7 @@ func (r *RosProvider) pollMap() {
 		NavigationAreas:    navAreas,
 		WorkingArea:        workingAreas,
 		WorkingAreaIndices: workingIndices,
+		NavigationChannels: navChannels,
 	}
 	r.addDockPose(&mapData)
 

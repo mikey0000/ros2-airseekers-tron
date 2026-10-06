@@ -25,6 +25,12 @@ import {MowingAreaEdit} from "../utils/types.ts";
 // ---------------------------------------------------------------------------
 
 /** Segment–segment intersection — returns the intersection point or null. */
+/** Path (channel) metadata kept on a navigation area: centreline in display lon/lat + width (m). */
+export interface PathMeta {
+    centerline: Position[];
+    widthM: number;
+}
+
 export function segSegIntersect(
     a1: Position, a2: Position, b1: Position, b2: Position
 ): Position | null {
@@ -249,7 +255,8 @@ export interface UseMapEditingReturn {
     handleSplit: () => void;
 
     // Path tool: add buffered corridor polygons as named navigation areas.
-    addNavigationAreas: (geometries: Polygon[], name: string) => string[];
+    addNavigationAreas: (geometries: Polygon[], name: string, path?: PathMeta) => string[];
+    replacePathArea: (id: string, geometries: Polygon[], name: string, path?: PathMeta) => void;
 
     // Modal action handlers
     handleSaveNewArea: () => void;
@@ -1006,18 +1013,24 @@ export function useMapEditing({
      * drawn with the "navigation" type. A closed loop arrives as two pieces;
      * both get the operator's name with a part suffix. Returns the new ids.
      */
-    const addNavigationAreas = useCallback((geometries: Polygon[], name: string): string[] => {
+    const addNavigationAreas = useCallback((geometries: Polygon[], name: string, path?: PathMeta,
+                                            replaceId?: string): string[] => {
         const ids: string[] = [];
         const valid = geometries.filter((g) => g.type === "Polygon" && (g.coordinates[0]?.length ?? 0) >= 4);
         if (valid.length === 0) return ids;
         setFeatures((currFeatures) => {
             const next = {...currFeatures};
+            if (replaceId) delete next[replaceId];
             valid.forEach((geometry, i) => {
-                const id = getNewId(next, "navigation", null, "area");
+                // An edited path keeps its id (selection / history stay stable).
+                const id = i === 0 && replaceId ? replaceId : getNewId(next, "navigation", null, "area");
                 const nav = new NavigationFeature(id);
                 nav.setGeometry(geometry);
                 const trimmed = name.trim();
                 nav.setName(valid.length > 1 && trimmed ? `${trimmed} (${i + 1}/${valid.length})` : trimmed);
+                // Only a single-band path can be re-edited as a line (a closed
+                // loop arrives as two overlapping halves).
+                if (path && valid.length === 1) nav.setChannel(path.centerline, path.widthM);
                 next[id] = nav;
                 ids.push(id);
             });
@@ -1025,6 +1038,10 @@ export function useMapEditing({
         });
         return ids;
     }, [setFeatures]);
+
+    const replacePathArea = useCallback((id: string, geometries: Polygon[], name: string, path?: PathMeta) => {
+        addNavigationAreas(geometries, name, path, id);
+    }, [addNavigationAreas]);
 
     // -----------------------------------------------------------------------
     // Modal handlers
@@ -1186,6 +1203,7 @@ export function useMapEditing({
 
         // Path tool
         addNavigationAreas,
+        replacePathArea,
 
         // Modal actions
         handleSaveNewArea,

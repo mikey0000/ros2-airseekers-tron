@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useMemo, useRef, useState} from "react";
+import {useCallback, useEffect, useMemo, useReducer, useRef, useState} from "react";
 import {useTranslation} from "react-i18next";
 import type MapboxDraw from "@mapbox/mapbox-gl-draw";
 import type {Map as MapboxMap} from "mapbox-gl";
@@ -6,12 +6,15 @@ import type {Feature, FeatureCollection, Polygon, Position} from "geojson";
 import type {NotificationInstance} from "antd/es/notification/interface";
 import {
     DEFAULT_PATH_WIDTH_M, MAX_PATH_WIDTH_M, MIN_PATH_WIDTH_M,
-    bufferPolyline, dockConnectorPolyline, localToLonLat, lonLatToLocal, snapPathToDock,
-    type DockPose, type XY,
+    bufferPolyline, dockApproachPoint, dockConnectorPolyline, localToLonLat, lonLatToLocal, snapPathEnds,
+    type DockPose, type PathEndSnap, type XY,
 } from "../../../utils/corridor.ts";
+import {initialPathToolState, pathToolReducer} from "./pathToolState.ts";
+import type {PathMeta} from "./useMapEditing.ts";
+import type {NavigationFeature} from "../../../types/map.ts";
 
 const WIDTH_KEY = "mowgli.map.pathWidthM";
-const SNAP_KEY = "mowgli.map.pathSnapToDock";
+const EXTEND_KEY = "mowgli.map.pathExtendToDock";
 
 // Per-viewer conveniences only; storage may be unavailable (private mode).
 function readNumber(key: string, fallback: number): number {
@@ -46,24 +49,45 @@ export interface PathDockInput {
     heading: number;
 }
 
-/** Pure: centreline (with optional dock snap) and corridor polygons in lon/lat. */
+export interface CorridorResult {
+    /** Snapped centreline (lon/lat) — stored as the path's channel metadata. */
+    centerline: Position[];
+    polygons: Polygon[];
+    start: PathEndSnap;
+    end: PathEndSnap;
+}
+
+/**
+ * Pure: snap the ends (area outline / dock approach pose, 0.5 m), optionally
+ * continue a dock-snapped end into the dock itself, and buffer the line into
+ * band polygons (square caps) in lon/lat.
+ */
 export function computeCorridor(
     datum: [number, number, number],
     coords: Position[],
     width: number,
     dock: PathDockInput | null,
-    snap: boolean,
-): { centerline: Position[]; polygons: Polygon[] } {
-    let local: XY[] = coords.map((c) => lonLatToLocal(datum, c));
-    if (snap && dock) {
+    extendToDock: boolean,
+    areaRings: Position[][] = [],
+): CorridorResult {
+    const local: XY[] = coords.map((c) => lonLatToLocal(datum, c));
+    let pose: DockPose | null = null;
+    if (dock) {
         const [dx, dy] = lonLatToLocal(datum, dock.lonLat);
-        local = snapPathToDock(local, {x: dx, y: dy, heading: dock.heading});
+        pose = {x: dx, y: dy, heading: dock.heading};
     }
-    const polygons: Polygon[] = bufferPolyline(local, width).map((rings) => ({
+    const rings = areaRings.map((r) => r.map((p) => lonLatToLocal(datum, p)));
+    const snapped = snapPathEnds(local, rings, pose);
+    let pts = snapped.points;
+    if (extendToDock && pose && pts.length >= 2) {
+        if (snapped.end === "dock") pts = [...pts, [pose.x, pose.y]];
+        if (snapped.start === "dock") pts = [[pose.x, pose.y], ...pts];
+    }
+    const polygons: Polygon[] = bufferPolyline(pts, width).map((rings2) => ({
         type: "Polygon",
-        coordinates: rings.map((r) => r.map((p) => localToLonLat(datum, p))),
+        coordinates: rings2.map((r) => r.map((p) => localToLonLat(datum, p))),
     }));
-    return {centerline: local.map((p) => localToLonLat(datum, p)), polygons};
+    return {centerline: pts.map((p) => localToLonLat(datum, p)), polygons, start: snapped.start, end: snapped.end};
 }
 
 interface UsePathToolOptions {
@@ -71,72 +95,120 @@ interface UsePathToolOptions {
     mapInstanceRef: React.RefObject<MapboxMap | null>;
     datum: [number, number, number];
     dock: PathDockInput | null;
-    /** Work-area outer rings ([lon, lat]) for "connect nearest area to dock". */
+    /** Work-area outer rings ([lon, lat]): snapping targets and "connect nearest area to dock". */
     workAreaRings: Position[][];
     navigationCount: number;
-    addNavigationAreas: (geometries: Polygon[], name: string) => string[];
+    addNavigationAreas: (geometries: Polygon[], name: string, path?: PathMeta) => string[];
+    replacePathArea: (id: string, geometries: Polygon[], name: string, path?: PathMeta) => void;
+    deleteFeature: (id: string) => void;
     notification: NotificationInstance;
 }
 
 export function usePathTool({
-    drawRef, mapInstanceRef, datum, dock, workAreaRings, navigationCount, addNavigationAreas, notification,
+    drawRef, mapInstanceRef, datum, dock, workAreaRings, navigationCount, addNavigationAreas,
+    replacePathArea, deleteFeature, notification,
 }: UsePathToolOptions) {
     const {t} = useTranslation();
-    const [drawing, setDrawing] = useState(false);
-    const [liveCoords, setLiveCoords] = useState<Position[] | null>(null);
-    const [draft, setDraft] = useState<Position[] | null>(null);
-    const [name, setName] = useState("");
-    const [width, setWidthState] = useState(() => readNumber(WIDTH_KEY, DEFAULT_PATH_WIDTH_M));
-    const [snapToDock, setSnapState] = useState(() => readBool(SNAP_KEY, true));
-    const drawingRef = useRef(false);
+    const [state, dispatch] = useReducer(pathToolReducer, undefined,
+        () => initialPathToolState(readNumber(WIDTH_KEY, DEFAULT_PATH_WIDTH_M)));
+    const [extendToDock, setExtendState] = useState(() => readBool(EXTEND_KEY, false));
+    const stateRef = useRef(state);
     useEffect(() => {
-        drawingRef.current = drawing;
-    }, [drawing]);
+        stateRef.current = state;
+    }, [state]);
 
     const setWidth = useCallback((v: number) => {
         const w = Math.min(MAX_PATH_WIDTH_M, Math.max(MIN_PATH_WIDTH_M, v));
-        setWidthState(w);
+        dispatch({type: "width", width: w});
         write(WIDTH_KEY, String(w));
     }, []);
-    const setSnapToDock = useCallback((v: boolean) => {
-        setSnapState(v);
-        write(SNAP_KEY, String(v));
+    const setName = useCallback((name: string) => dispatch({type: "name", name}), []);
+    const setExtendToDock = useCallback((v: boolean) => {
+        setExtendState(v);
+        write(EXTEND_KEY, String(v));
     }, []);
 
-    const startPath = useCallback(() => {
-        setDraft(null);
-        setLiveCoords(null);
-        drawingRef.current = true;
-        setDrawing(true);
-        drawRef.current?.changeMode("draw_line_string");
+    const removeLine = useCallback(() => {
+        const id = stateRef.current.lineId;
+        const draw = drawRef.current;
+        if (draw && id && draw.get(id)) draw.delete(id);
     }, [drawRef]);
 
-    // Live preview while clicking: mapbox-gl-draw keeps the in-progress line
-    // (including the vertex following the cursor) in its store and fires
-    // draw.render on every change. rAF-coalesced so a mousemove storm costs
-    // at most one buffer per frame.
+    const dockApproachLonLat = useCallback((): Position | null => {
+        if (!dock || datum[0] === 0) return null;
+        const [dx, dy] = lonLatToLocal(datum, dock.lonLat);
+        return localToLonLat(datum, dockApproachPoint({x: dx, y: dy, heading: dock.heading}));
+    }, [dock, datum]);
+
+    /** Arm line drawing. `fromDock`: the line starts at the dock approach pose ("Path to dock"). */
+    const startPathImpl = useCallback((fromDock: boolean) => {
+        const draw = drawRef.current;
+        if (!draw) return;
+        removeLine();
+        if (fromDock) {
+            const ap = dockApproachLonLat();
+            if (!ap) {
+                notification.info({message: t("mapPath.noDock")});
+                return;
+            }
+            // A 2-vertex seed line [ap, ap] continued from its end: the first
+            // click adds the second real vertex. Finishing fires draw.create.
+            const [id] = draw.add({type: "Feature", properties: {}, geometry: {type: "LineString", coordinates: [ap, ap]}});
+            dispatch({type: "start", fromDock: true, lineId: id});
+            stateRef.current = {...stateRef.current, phase: "drawing", lineId: id};
+            draw.changeMode("draw_line_string", {featureId: id, from: ap} as never);
+            return;
+        }
+        dispatch({type: "start"});
+        stateRef.current = {...stateRef.current, phase: "drawing", lineId: null};
+        draw.changeMode("draw_line_string");
+    }, [drawRef, removeLine, dockApproachLonLat, notification, t]);
+
+    const startPath = useCallback(() => startPathImpl(false), [startPathImpl]);
+    const startPathToDock = useCallback(() => startPathImpl(true), [startPathImpl]);
+
+    /** Re-open a saved path as an editable line (drag vertices / width / name / delete). */
+    const editPath = useCallback((feature: NavigationFeature) => {
+        const draw = drawRef.current;
+        const ch = feature.getChannel();
+        if (!draw || !ch) return;
+        removeLine();
+        const [lineId] = draw.add({type: "Feature", properties: {}, geometry: {type: "LineString", coordinates: ch.points}});
+        dispatch({type: "editExisting", featureId: feature.id, lineId, coords: ch.points,
+            name: feature.getName(), width: ch.widthM});
+        setTimeout(() => draw.changeMode("direct_select", {featureId: lineId}), 0);
+    }, [drawRef, removeLine]);
+
+    // Follow the line in the draw store: live preview while clicking (the
+    // vertex following the cursor included) and while dragging vertices in
+    // direct_select. rAF-coalesced: at most one buffer per frame.
+    const active = state.phase !== "idle";
     useEffect(() => {
         const map = mapInstanceRef.current;
-        if (!drawing || !map) return;
+        if (!active || !map) return;
         let frame = 0;
         const onRender = () => {
             if (frame) return;
             frame = requestAnimationFrame(() => {
                 frame = 0;
                 const draw = drawRef.current;
-                if (!draw || draw.getMode() !== "draw_line_string") return;
-                const line = draw.getAll().features.find((f) => f.geometry.type === "LineString");
-                const coords = line ? (line.geometry as GeoJSON.LineString).coordinates : [];
-                setLiveCoords(coords.length >= 2 ? coords : null);
+                if (!draw) return;
+                const s = stateRef.current;
+                let line = s.lineId ? draw.get(s.lineId) : undefined;
+                if (!line && s.phase === "drawing" && draw.getMode() === "draw_line_string") {
+                    line = draw.getAll().features.find((f) => f.geometry.type === "LineString");
+                }
+                if (!line || line.geometry.type !== "LineString") return;
+                const coords = (line.geometry).coordinates;
+                if (coords.length >= 2) dispatch({type: "coords", coords});
             });
         };
         // Leaving draw_line_string without finishing (Escape, tool switch)
-        // ends the path tool; finishing goes through onLineCreated first.
+        // aborts; finishing goes through onLineCreated first.
         const onModeChange = (e: { mode?: string }) => {
-            if (e.mode !== "draw_line_string" && drawingRef.current) {
-                drawingRef.current = false;
-                setDrawing(false);
-                setLiveCoords(null);
+            if (e.mode !== "draw_line_string" && stateRef.current.phase === "drawing") {
+                removeLine();
+                dispatch({type: "aborted"});
             }
         };
         map.on("draw.render" as never, onRender);
@@ -146,32 +218,35 @@ export function usePathTool({
             map.off("draw.render" as never, onRender);
             map.off("draw.modechange" as never, onModeChange as never);
         };
-    }, [drawing, drawRef, mapInstanceRef]);
+    }, [active, drawRef, mapInstanceRef, removeLine]);
 
     /**
-     * Wraps the editor's draw.create handler: while the path tool is armed a
-     * finished LineString becomes the path draft (removed from the draw store
-     * — it is only a centreline) and opens the dialog. Returns true when it
-     * consumed the event.
+     * Wraps the editor's draw.create handler: while the path tool is drawing
+     * a finished LineString becomes the path being edited — it stays in the
+     * draw store (direct_select) so its vertices can be dragged, and the path
+     * panel opens. Returns true when it consumed the event.
      */
     const onLineCreated = useCallback((features: Feature[]): boolean => {
-        if (!drawingRef.current) return false;
+        if (stateRef.current.phase !== "drawing") return false;
         const line = features.find((f) => f.geometry?.type === "LineString");
         if (!line) return false;
-        drawRef.current?.delete(String(line.id));
-        drawingRef.current = false;
-        setDrawing(false);
-        setLiveCoords(null);
-        setDraft((line.geometry as GeoJSON.LineString).coordinates);
-        setName(t("mapPath.defaultName", {index: navigationCount + 1}));
+        const lineId = String(line.id);
+        const coords = (line.geometry as GeoJSON.LineString).coordinates;
+        dispatch({type: "lineFinished", lineId, coords,
+            defaultName: stateRef.current.fromDock ? t("mapPath.dockPathName")
+                : t("mapPath.defaultName", {index: navigationCount + 1})});
+        stateRef.current = {...stateRef.current, phase: "editing", lineId};
+        setTimeout(() => {
+            const draw = drawRef.current;
+            if (draw?.get(lineId)) draw.changeMode("direct_select", {featureId: lineId});
+        }, 0);
         return true;
     }, [drawRef, navigationCount, t]);
 
     const corridor = useMemo(() => {
-        const coords = draft ?? liveCoords;
-        if (!coords || datum[0] === 0) return null;
-        return computeCorridor(datum, coords, width, dock, snapToDock);
-    }, [draft, liveCoords, datum, width, dock, snapToDock]);
+        if (!state.coords || state.coords.length < 2 || datum[0] === 0) return null;
+        return computeCorridor(datum, state.coords, state.width, dock, extendToDock, workAreaRings);
+    }, [state.coords, state.width, datum, dock, extendToDock, workAreaRings]);
 
     const previewCollection = useMemo<FeatureCollection>(() => ({
         type: "FeatureCollection",
@@ -188,19 +263,27 @@ export function usePathTool({
     }), [corridor]);
 
     const cancel = useCallback(() => {
-        setDraft(null);
-        setLiveCoords(null);
-        if (drawingRef.current) drawRef.current?.changeMode("simple_select");
-        drawingRef.current = false;
-        setDrawing(false);
-    }, [drawRef]);
+        const wasDrawing = stateRef.current.phase === "drawing";
+        removeLine();
+        dispatch({type: "cancel"});
+        stateRef.current = {...stateRef.current, phase: "idle", lineId: null};
+        const draw = drawRef.current;
+        if (draw && (wasDrawing || draw.getMode() === "direct_select")) draw.changeMode("simple_select");
+    }, [drawRef, removeLine]);
 
     const save = useCallback(() => {
         if (!corridor || corridor.polygons.length === 0) return;
-        addNavigationAreas(corridor.polygons, name);
-        setDraft(null);
-        setLiveCoords(null);
-    }, [corridor, addNavigationAreas, name]);
+        const meta: PathMeta = {centerline: corridor.centerline, widthM: state.width};
+        if (state.editFeatureId) replacePathArea(state.editFeatureId, corridor.polygons, state.name, meta);
+        else addNavigationAreas(corridor.polygons, state.name, meta);
+        cancel();
+    }, [corridor, state.width, state.name, state.editFeatureId, replacePathArea, addNavigationAreas, cancel]);
+
+    const remove = useCallback(() => {
+        const id = stateRef.current.editFeatureId;
+        cancel();
+        if (id) deleteFeature(id);
+    }, [cancel, deleteFeature]);
 
     const connectNearestAreaToDock = useCallback(() => {
         if (!dock || datum[0] === 0) {
@@ -210,27 +293,35 @@ export function usePathTool({
         const [dx, dy] = lonLatToLocal(datum, dock.lonLat);
         const pose: DockPose = {x: dx, y: dy, heading: dock.heading};
         const rings = workAreaRings.map((r) => r.map((p) => lonLatToLocal(datum, p)));
-        const conn = dockConnectorPolyline(pose, rings, width / 2);
+        const conn = dockConnectorPolyline(pose, rings, state.width / 2);
         if (!conn) {
             notification.info({message: t(rings.length ? "mapPath.alreadyConnected" : "mapPath.noWorkArea")});
             return;
         }
-        const polygons: Polygon[] = bufferPolyline(conn.points, width).map((rs) => ({
+        const polygons: Polygon[] = bufferPolyline(conn.points, state.width).map((rs) => ({
             type: "Polygon",
             coordinates: rs.map((r) => r.map((p) => localToLonLat(datum, p))),
         }));
-        addNavigationAreas(polygons, t("mapPath.dockConnectorName"));
+        addNavigationAreas(polygons, t("mapPath.dockConnectorName"),
+            {centerline: conn.points.map((p) => localToLonLat(datum, p)), widthM: state.width});
         notification.success({
             message: t("mapPath.dockConnected", {gap: conn.gap.toFixed(1)}),
             description: t("mapPath.saveReminder"),
         });
-    }, [dock, datum, workAreaRings, width, addNavigationAreas, notification, t]);
+    }, [dock, datum, workAreaRings, state.width, addNavigationAreas, notification, t]);
 
     return {
-        drawing, draft, name, setName, width, setWidth, snapToDock, setSnapToDock,
+        phase: state.phase,
+        drawing: state.phase === "drawing",
+        editing: state.phase === "editing",
+        editingExisting: state.editFeatureId !== null,
+        name: state.name, setName, width: state.width, setWidth,
+        extendToDock, setExtendToDock,
         dockAvailable: dock !== null,
-        invalid: !!draft && (!corridor || corridor.polygons.length === 0),
+        start: corridor?.start ?? "none",
+        end: corridor?.end ?? "none",
+        invalid: state.phase === "editing" && (!corridor || corridor.polygons.length === 0),
         previewCollection,
-        startPath, onLineCreated, cancel, save, connectNearestAreaToDock,
+        startPath, startPathToDock, editPath, onLineCreated, cancel, save, remove, connectNearestAreaToDock,
     };
 }

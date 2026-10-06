@@ -190,7 +190,7 @@ func replaceMapInternal(ctx context.Context, provider types.IRosProvider, req *m
 	if err := provider.CallService(ctx, "/map_server_node/clear_map", &mowgli.ClearMapReq{}, &mowgli.ClearMapRes{}, "std_srvs/srv/Trigger"); err != nil {
 		return err
 	}
-	for _, element := range req.Areas {
+	for i, element := range req.Areas {
 		// Ensure Obstacles is an empty slice, not nil — the bridge rejects
 		// null for repeated fields ("msg is not a list type").
 		if element.Area.Obstacles == nil {
@@ -203,11 +203,33 @@ func replaceMapInternal(ctx context.Context, provider types.IRosProvider, req *m
 		if err := provider.CallService(ctx, "/map_server_node/add_area", &areaReq, &mowgli.AddMowingAreaRes{}, "mowgli_interfaces/srv/AddMowingArea"); err != nil {
 			return err
 		}
+		if element.IsNavigationArea && element.Channel != nil && len(element.Channel.Points) >= 2 && i < 255 {
+			setAreaChannel(ctx, provider, uint8(i), element.Channel)
+		}
 	}
 	if err := provider.CallService(ctx, "/map_server_node/save_areas", &mowgli.ClearMapReq{}, &mowgli.ClearMapRes{}, "std_srvs/srv/Trigger"); err != nil {
 		return fmt.Errorf("areas added but save_areas failed: %w", err)
 	}
 	return nil
+}
+
+// setAreaChannel attaches path metadata to the just-added area. Best effort:
+// a map server without the service still gets the band polygon (the path
+// just cannot be re-edited as a line), so a failure is only logged.
+func setAreaChannel(ctx context.Context, provider types.IRosProvider, index uint8, ch *mowgli.AreaChannel) {
+	payload, err := json.Marshal(ch)
+	if err != nil {
+		return
+	}
+	var res mowgli.SetAreaChannelRes
+	req := mowgli.SetAreaChannelReq{AreaIndex: index, SettingsJSON: string(payload)}
+	if err := provider.CallService(ctx, mowgli.SetAreaChannelService, &req, &res, mowgli.SetAreaChannelType); err != nil {
+		log.Printf("set_area_channel %d failed (path saved as a plain navigation area): %v", index, err)
+		return
+	}
+	if !res.Success {
+		log.Printf("set_area_channel %d rejected: %s", index, res.Message)
+	}
 }
 
 // ReplaceMapRoute clear the map and insert areas
