@@ -164,22 +164,46 @@ ros2 run mower_docking print_marker --id 0 --size 0.04 --dpi 600 -o marker.png
 
 1. **Intrinsics**: `/rear_camera/camera_info` must carry the real K/D. The
    `config/cameras/rear_camera_info.yaml` file holds 1920×1080 plumb_bob values.
-   If you change the resolution, re-calibrate with `camera_calibration`.
+   The stack runs the rear webcam at **640×480 @ 10 Hz** (`cameras.launch.py`); that
+   4:3 mode is the centre 1440×1080 crop of the sensor scaled by 4/9 (measured
+   2026-10-06), and `rear_camera_info_640x480.yaml` holds the K/D derived from the
+   1080p calibration (fx ≈ 685 px, ~1 % accuracy). 16:9 modes are rescaled
+   automatically; any other mode needs its own `rear_camera_info_<w>x<h>.yaml`.
 2. **Extrinsics**: set `rear_camera_T_base` to `[x, y, z, roll, pitch, yaw]`. This is
    the pose of the camera **optical** frame in `base_link`, the same as the URDF
    `rear_camera_joint` (default `-0.201 0 0.25`, rpy `-π/2 0 π/2`: optical Z
    points to −X, image right is +Y). **TODO(calib)**: measure the real mount
    (height, and any downward tilt as extra pitch).
 3. **`docked_marker_offset`** (placeholder 0.45 m):
-   1. Put the robot on the contacts by hand, so that `is_docking_done` is true.
-   2. Start a vision dock goal, or just enable vision, and `ros2 topic echo /mower_docking/marker_pose`.
-   3. Read `-x` of the marker (for a centred marker with yaw ≈ 0). That is the offset.
+   On the Tron the backlit dock marker is **cut off at the top of the rear image while
+   the robot sits on the contacts** (checked 2026-10-06, 0 detections in 30 s), so it
+   cannot be read there. Instead:
+   1. Push the robot straight off the contacts by hand (forwards, motors idle) until
+      `marker_check` (below) detects the marker, e.g. 0.3–0.5 m.
+   2. Measure with a tape how far the robot moved from the docked position (`d`).
+   3. The offset is `(-x) - d`, with `x` the median marker x from `marker_check`.
 
    If the robot stops short (FINAL_DOCKING timeouts), increase the offset. If it
    hits the dock while still in DOCKING, decrease it.
 4. Check the sign conventions: with the marker straight behind, `marker_pose.y ≈ 0`.
    With the marker to the robot's left (+Y), `y > 0`. With the robot heading
    rotated left (CCW), the marker yaw becomes negative.
+
+### Motion-free marker check
+
+`docking_server` only looks at the camera during a goal. `marker_check` runs the same
+detector / extrinsics / gates for a fixed time and commands nothing:
+
+```
+python3 -m mower_docking.marker_check --duration 30 [--save /tmp/marker.png]
+```
+
+It prints the processed and detection rates, the detector time per frame, the median
+marker pose in `base_link` and whether the 0.5 m / 25° gates pass. Expected with the
+marker 0.8 m behind the rear axle, centred and facing the robot: `x ≈ -0.80`,
+`|y| < 0.05`, `|yaw| < 10°`, `gate_ok=True`. On the robot (RK3588, 640×480): ~11 ms per
+frame for the detector. A 4 cm marker is ~35 px wide at 0.8 m, the yaw estimate is then
+the noisy part (a few degrees; `test/test_marker_check.py`).
 
 ## Dock calibration (do this once, and after moving the charger)
 

@@ -119,6 +119,33 @@ def scale_camera_info(info, width, height):
     return scaled
 
 
+def mode_info_path(path, width, height):
+    """Per-capture-mode calibration next to ``path``: ``<stem>_<w>x<h>.yaml``.
+
+    UVC modes with another aspect ratio than the calibrated one (rear webcam: 640x480 vs
+    the 1920x1080 calibration) are a crop + scale of the sensor that cannot be derived
+    from the calibration alone; such a mode gets its own file (``None`` if no path).
+    """
+    if not path:
+        return None
+    import os
+    stem, ext = os.path.splitext(path)
+    return f'{stem}_{int(width)}x{int(height)}{ext or ".yaml"}'
+
+
+def camera_info_for_mode(info, path, width, height, frame_id=''):
+    """``CameraInfo`` for a ``width``x``height`` capture: the mode-specific file
+    (:func:`mode_info_path`) if it exists and matches, else ``info`` rescaled
+    (:func:`scale_camera_info`; ``None`` when the aspect ratio differs)."""
+    import os
+    mode_path = mode_info_path(path, width, height)
+    if mode_path and os.path.isfile(mode_path):
+        mode = load_camera_info(mode_path, frame_id)
+        if (mode.width, mode.height) == (width, height):
+            return mode
+    return scale_camera_info(info, width, height)
+
+
 def load_camera_info(path, frame_id=''):
     """Parse a ``camera_info_manager`` YAML into a ``CameraInfo`` (``None`` if no path)."""
     if not path:
@@ -301,11 +328,20 @@ class CameraNode(Node):
     def _scaled_rear_info(self, width, height):
         """Rear camera_info, rescaled if the capture mode has the calibration's aspect."""
         info = self.rear_info
-        scaled = scale_camera_info(info, width, height)
-        if scaled is not None and scaled is not info:
+        scaled = camera_info_for_mode(info, self.get_parameter('rear_camera_info_file').value,
+                                      width, height, REAR_FRAME_ID)
+        if scaled is None:
+            self.get_logger().warning(
+                f'rear camera_info: no calibration for {width}x{height} (aspect differs from '
+                f'{info.width}x{info.height} and no '
+                f'{mode_info_path(self.get_parameter("rear_camera_info_file").value, width, height)}'
+                '); not publishing camera_info (re-checked every 10 s)',
+                throttle_duration_sec=60.0)
+        elif scaled is not info:
             self.get_logger().info(
-                f'rear camera_info scaled {info.width}x{info.height} -> {width}x{height} '
-                '(assumes the UVC mode is a full-FOV scale of the calibrated mode)')
+                f'rear camera_info {width}x{height}: fx={scaled.k[0]:.1f} fy={scaled.k[4]:.1f} '
+                f'cx={scaled.k[2]:.1f} cy={scaled.k[5]:.1f} (mode file, or a full-FOV rescale '
+                f'of {info.width}x{info.height})')
         return scaled
 
     @staticmethod
@@ -372,8 +408,11 @@ class CameraNode(Node):
             h, w = frame.shape[:2]
         else:
             w, h = cap.width, cap.height     # v4l2 backend: negotiated size
-        if not hasattr(self, '_rear_info_wh') or self._rear_info_wh != (w, h):
+        t = now.nanoseconds * 1e-9
+        if (not hasattr(self, '_rear_info_wh') or self._rear_info_wh != (w, h)
+                or (self._rear_info_out is None and t - self._rear_info_t > 10.0)):
             self._rear_info_wh = (w, h)
+            self._rear_info_t = t
             self._rear_info_out = self._scaled_rear_info(w, h)
         if self._rear_info_out is not None:
             self._rear_info_out.header.stamp = stamp

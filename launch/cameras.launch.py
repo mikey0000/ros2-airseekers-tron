@@ -163,11 +163,14 @@ def generate_launch_description():
         DeclareLaunchArgument('oa_width', default_value='1920'),
         DeclareLaunchArgument('oa_height', default_value='1080'),
         DeclareLaunchArgument('oa_pixel_format', default_value='UYVY'),
-        # Rear: calibration is 1920x1080 (camera_info is rescaled for 16:9 modes). 1280x720
-        # halves the JPEG-decode CPU vs 1080p (~26 vs ~35 ms/frame on the A76 cores).
-        DeclareLaunchArgument('rear_width', default_value='1280'),
-        DeclareLaunchArgument('rear_height', default_value='720'),
-        DeclareLaunchArgument('rear_fps', default_value='15.0',
+        # Rear: calibration is 1920x1080 (camera_info is rescaled for 16:9 modes; 4:3 modes
+        # such as 640x480 are a crop of the sensor and use rear_camera_info_640x480.yaml,
+        # see mower_cameras.camera_node.mode_info_path). 640x480 @ 10 Hz is what docking
+        # (ArUco, mower_docking) and the GUI need; it also shows more of the dock vertically
+        # than 16:9 and costs ~1/4 of the 720p JPEG decode.
+        DeclareLaunchArgument('rear_width', default_value='640'),
+        DeclareLaunchArgument('rear_height', default_value='480'),
+        DeclareLaunchArgument('rear_fps', default_value='10.0',
                               description='Rear publish-rate cap (webcam runs 30 fps).'),
         DeclareLaunchArgument('rear_compressed', default_value='true',
                               description='Also publish /rear_camera/image_raw/compressed '

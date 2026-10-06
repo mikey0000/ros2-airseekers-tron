@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'docking_server = mower_docking.docking_node:main',
             'print_marker = mower_docking.print_marker:main',
+            'marker_check = mower_docking.marker_check:main',
         ],
     },
 )

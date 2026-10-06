@@ -106,3 +106,31 @@ def test_camera_info_scaling():
     assert half.k[0] == pytest.approx(info.k[0] / 2) and half.k[5] == pytest.approx(info.k[5] / 2)
     assert list(half.d) == list(info.d)
     assert scale_camera_info(info, 100, 100) is None
+
+
+def test_camera_info_mode_file(tmp_path):
+    """A 4:3 mode of the 16:9-calibrated rear webcam uses <stem>_<w>x<h>.yaml if present."""
+    pytest.importorskip('rclpy')
+    pytest.importorskip('yaml')
+    from mower_cameras.camera_node import (camera_info_for_mode, load_camera_info,
+                                           mode_info_path)
+    base = tmp_path / 'rear_camera_info.yaml'
+    tmpl = ('image_width: {w}\nimage_height: {h}\ncamera_name: rear_camera\n'
+            'camera_matrix: {{rows: 3, cols: 3, data: [{f}, 0, {cx}, 0, {f}, {cy}, 0, 0, 1]}}\n'
+            'distortion_model: plumb_bob\n'
+            'distortion_coefficients: {{rows: 1, cols: 5, data: [0, 0, 0, 0, 0]}}\n'
+            'rectification_matrix: {{rows: 3, cols: 3, data: [1, 0, 0, 0, 1, 0, 0, 0, 1]}}\n'
+            'projection_matrix: {{rows: 3, cols: 4, data: [{f}, 0, {cx}, 0, 0, {f}, {cy}, 0, '
+            '0, 0, 1, 0]}}\n')
+    base.write_text(tmpl.format(w=1920, h=1080, f=1500.0, cx=960.0, cy=540.0))
+    info = load_camera_info(str(base), 'rear_camera')
+    assert mode_info_path(str(base), 640, 480) == str(tmp_path / 'rear_camera_info_640x480.yaml')
+    assert mode_info_path('', 640, 480) is None
+    # no mode file: 16:9 rescales, 4:3 has no calibration
+    assert camera_info_for_mode(info, str(base), 1280, 720).k[0] == pytest.approx(1000.0)
+    assert camera_info_for_mode(info, str(base), 640, 480) is None
+    (tmp_path / 'rear_camera_info_640x480.yaml').write_text(
+        tmpl.format(w=640, h=480, f=666.0, cx=320.0, cy=240.0))
+    mode = camera_info_for_mode(info, str(base), 640, 480, 'rear_camera')
+    assert (mode.width, mode.height, mode.k[0]) == (640, 480, pytest.approx(666.0))
+    assert mode.header.frame_id == 'rear_camera'

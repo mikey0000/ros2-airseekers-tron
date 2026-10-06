@@ -175,13 +175,14 @@ const (
 //
 // The OA cameras carry det_ros's per-camera overlay (/<ns>/image_annotated,
 // boxes + labels drawn on the 960x540 input); the front stereo eyes come from
-// mower_cameras/stereo_cam (cameras.launch.py stereo:=true, 640x480 bgr8).
+// mower_cameras/stereo_cam (cameras.launch.py stereo:=true, 640x480 bgr8). The rear
+// webcam runs its 4:3 640x480 MJPG mode (cameras.launch.py rear_width/height).
 var defaultCameras = []Camera{
 	{ID: "left_oa", Label: "Left obstacle camera", Topic: "/left_oa_camera/image_raw",
 		AnnotatedTopic: "/left_oa_camera/image_annotated", Width: 640, Height: 360, SourceWidth: 960, SourceHeight: 540},
 	{ID: "right_oa", Label: "Right obstacle camera", Topic: "/right_oa_camera/image_raw",
 		AnnotatedTopic: "/right_oa_camera/image_annotated", Width: 640, Height: 360, SourceWidth: 960, SourceHeight: 540},
-	{ID: "rear", Label: "Rear camera", Topic: "/rear_camera/image_raw", Width: 640, Height: 360},
+	{ID: "rear", Label: "Rear camera", Topic: "/rear_camera/image_raw", Width: 640, Height: 480},
 	{ID: "front_left", Label: "Front stereo left", Topic: "/vio/left/image_raw"},
 	{ID: "front_right", Label: "Front stereo right", Topic: "/vio/right/image_raw"},
 }

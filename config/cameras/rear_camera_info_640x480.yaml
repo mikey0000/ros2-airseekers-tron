@@ -1,0 +1,32 @@
+# Rear webcam (32e6:9221) 640x480 MJPG mode, DERIVED from rear_camera_info.yaml (1920x1080).
+# Measured 2026-10-06 on the docked robot (same static scene, backlit dock marker) at 1280x720
+# and 640x480: the 4:3 mode is the CENTRE 1440x1080 crop of the 1080p image scaled by 4/9
+# (marker edges 1080p x 469.5/1354.5, y 610.5 -> 640x480 x 102/496, y 270; residual ~1 px).
+# => fx,fy,P scaled by 4/9, cx' = (cx - 240) * 4/9, cy' = cy * 4/9. Distortion unchanged
+# (normalized coordinates). Approximate to ~1 %; re-calibrate with a checkerboard if needed.
+image_width: 640
+image_height: 480
+camera_name: rear_camera
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [684.66634, 0.0, 331.68625,
+         0.0, 684.32908, 231.38923,
+         0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.373942, 0.165317, -0.000099, -0.000519, 0.000000]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1., 0., 0.,
+         0., 1., 0.,
+         0., 0., 1.]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [579.09987, 0.0, 334.85929, 0.0,
+         0.0, 651.55569, 230.49402, 0.0,
+         0.0, 0.0, 1.0, 0.0]
