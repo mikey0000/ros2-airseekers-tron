@@ -9,7 +9,9 @@ map_server_node:
     mask_margin: 2.0
     obstacle_margin: 0.0
     lethal_outside_areas: true
-    dock_keepout: true
+    dock_keepout: true          # mowing mask only; never in /nav_keepout_mask
+    nav_margin_m: 0.35          # nav mask: areas grown by half footprint width + 0.08
+    nav_obstacle_margin_m: 0.10 # nav mask: obstacles grown by this
     blade_radius: 0.15
     odom_topic: /odometry/filtered_map
     status_topic: /mower_base/status

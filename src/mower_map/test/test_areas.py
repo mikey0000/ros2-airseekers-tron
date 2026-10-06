@@ -365,3 +365,47 @@ def test_import_live_vendor_sample():
     assert res.dock.yaw == pytest.approx(0.0)
     areas, _ = core.parse_areas_dat(core.format_areas_dat(res.areas))
     assert len(areas) == len(res.areas)
+
+
+# ---------------------------------------------------------------- nav mask
+
+def _cell(spec, mask, x, y):
+    r, c = spec.index_of(x, y)
+    return int(mask[r, c])
+
+
+def test_nav_mask_dilates_areas_and_ignores_dock():
+    s = _store()
+    spec = core.grid_for_polygons([SQUARE], 0.1, 2.0)
+    dock = [(-0.2, 0.275), (0.2, 0.275), (0.2, -0.275), (-0.2, -0.275)]
+    mowing = core.build_keepout_mask(s.areas, spec, dock, 0.0, True)
+    nav = core.build_nav_mask(s.areas, spec, nav_margin=0.35, obstacle_margin=0.10)
+    # dock at the area corner: lethal for mowing, free for navigation
+    assert _cell(spec, mowing, 0.05, 0.05) == core.LETHAL
+    assert _cell(spec, nav, 0.05, 0.05) == core.FREE
+    # just outside the boundary: lethal for mowing, free within nav_margin
+    assert _cell(spec, mowing, -0.25, 5.0) == core.LETHAL
+    assert _cell(spec, nav, -0.25, 5.0) == core.FREE
+    assert _cell(spec, nav, -0.55, 5.0) == core.LETHAL
+    # dock approach pose 0.8 m in front of a dock on the boundary, pointing out
+    assert _cell(spec, nav, 5.0, -0.25) == core.FREE
+    # obstacles grown by obstacle_margin
+    assert _cell(spec, nav, 5.0, 5.0) == core.LETHAL
+    assert _cell(spec, nav, 3.95, 5.0) == core.LETHAL
+    assert _cell(spec, nav, 3.75, 5.0) == core.FREE
+    assert (nav == core.FREE).sum() > (mowing == core.FREE).sum()
+
+
+def test_nav_mask_ring_footprint_clear():
+    """A robot centre 0.09 m inside the boundary keeps its 0.27 m half width
+    on free cells."""
+    s = _store()
+    spec = core.grid_for_polygons([SQUARE], 0.1, 2.0)
+    nav = core.build_nav_mask(s.areas, spec)
+    for dx in np.arange(-0.27, 0.28, 0.05):
+        assert _cell(spec, nav, 0.09 + dx, 2.0) == core.FREE
+
+
+def test_nav_mask_no_areas_is_free():
+    spec = core.grid_for_polygons([], 0.1, 2.0)
+    assert (core.build_nav_mask([], spec) == core.FREE).all()

@@ -7,9 +7,11 @@
   This Behavior Tree replans the global path periodically at 1 Hz through an array of poses continuously
    and it also has recovery actions specific to planning / control as well as general system issues.
 -->
+<!-- mower_navigation: recoveries limited to ClearCostmaps + Wait 2 s, NavigateRecovery retries 2
+     (no Spin/BackUp near the dock; fail fast). See navigate_to_pose_w_replanning_and_recovery.xml. -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="2" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="0.333">
           <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
@@ -32,9 +34,7 @@
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
-          <Spin spin_dist="1.57"/>
-          <Wait wait_duration="5"/>
-          <BackUp backup_dist="0.30" backup_speed="0.05"/>
+          <Wait wait_duration="2"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

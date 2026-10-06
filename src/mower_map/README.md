@@ -49,8 +49,9 @@ ros2 launch mower_map map_server.launch.py maps_dir:=/ros2_ws/maps \
 
 | Topic | Type | QoS | Content |
 |---|---|---|---|
-| `/keepout_mask` | `nav_msgs/OccupancyGrid` | latched | Frame `map`, `resolution` (0.1). Covers every area and the dock outline, plus `mask_margin` (2 m). Outside all areas = 100. Inside any mowing or navigation area = 0. Obstacles (grown by `obstacle_margin`) and the dock outline = 100. With no areas the mask is all 0, apart from the dock outline. |
-| `/costmap_filter_info` | `nav2_msgs/CostmapFilterInfo` | latched | type 0 (keepout), `/keepout_mask`, base 0, multiplier 1 |
+| `/keepout_mask` (mowing mask) | `nav_msgs/OccupancyGrid` | latched | Frame `map`, `resolution` (0.1). Covers every area and the dock outline, plus `mask_margin` (2 m). Outside all areas = 100. Inside any mowing or navigation area = 0. Obstacles (grown by `obstacle_margin`) and the dock outline = 100. With no areas the mask is all 0, apart from the dock outline. | Coverage / mowing semantics; Nav2 does not use it.
+| `/nav_keepout_mask` (navigation mask) | `nav_msgs/OccupancyGrid` | latched | Same grid as `/keepout_mask`. Free = (mowing areas ∪ navigation areas) dilated outward by `nav_margin_m` (0.35 m = half footprint width 0.27 + 0.08) MINUS obstacles dilated by `nav_obstacle_margin_m` (0.10 m); everything else 100. The dock outline is NOT lethal here (it is a mowing exclusion; the robot parks inside it, so a lethal dock would make the start cell unplannable). The margin lets the robot centre run on a coverage ring ~0.09 m inside the boundary and reach the dock approach pose. Used by the Nav2 global costmap static layer and keepout filter. With no areas the mask is all 0 apart from obstacles. |
+| `/costmap_filter_info` | `nav2_msgs/CostmapFilterInfo` | latched | type 0 (keepout), `/nav_keepout_mask`, base 0, multiplier 1 |
 | `/map_server_node/mow_progress` | `nav_msgs/OccupancyGrid` | latched | Same grid as the mask. A cell is 100 where the `blade_link` disc (`blade_radius` 0.15 m) passed while `/mower_base/status.is_cutting`. Republished every 2 s when it changes. |
 | `/map_server_node/docking_pose` | `geometry_msgs/PoseStamped` | latched | Dock pose, frame `map` |
 | `/map_server_node/boundary_violation` | `std_msgs/Bool` | depth 1 | True when the robot is outside all areas by more than `soft_boundary_margin_m` (0) for `boundary_debounce_samples` (3) checks. Checked at `boundary_check_rate_hz` (5). |
@@ -184,10 +185,12 @@ The MowgliNext GUI (via `mower_gui_bridge` / foxglove) does the following:
 
 ## Notes and deviations from upstream
 
-- The dock outline is lethal when `dock_keepout` is true, and it contains the docked robot's
-  own pose. Nav2 therefore cannot plan from the charger. Undocking must reach the undock
-  point (0.8 m ahead) before handing over to Nav2, and docking must take over at the
-  staging pose. Set `dock_keepout:=false` to disable the dock keep-out.
+- Two masks, two semantics. `/keepout_mask` is the MOWING mask: the dock outline is lethal
+  there when `dock_keepout` is true (no cutting over the charger) and everything outside
+  the areas is lethal. `/nav_keepout_mask` is the NAVIGATION mask fed to Nav2: areas grown
+  by `nav_margin_m`, obstacles grown by `nav_obstacle_margin_m`, and the dock outline is
+  never lethal, so Nav2 can plan from the charger, to coverage rings near the boundary and
+  to the docking approach pose (0.8 m ahead of the dock).
 - Not ported: the grid_map classification layers, speed filter, soft-penalty (50) cells,
   dig-event pending proposals (the pending model and its accept/discard paths are there,
   but nothing creates proposals yet), datum migration (a datum mismatch is only logged),

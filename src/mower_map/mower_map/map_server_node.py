@@ -57,7 +57,12 @@ PARAMS = {
     'mask_margin': 2.0,                # lethal ring around the areas' bbox (m)
     'obstacle_margin': 0.0,            # grow obstacles in the mask (m)
     'lethal_outside_areas': True,
-    'dock_keepout': True,              # dock outline lethal in the mask
+    'dock_keepout': True,              # dock outline lethal in the MOWING mask only
+    # navigation mask (/nav_keepout_mask; Nav2 global costmap + keepout filter):
+    # (mowing U navigation areas) grown by nav_margin_m, minus obstacles grown
+    # by nav_obstacle_margin_m; the dock outline is never lethal here.
+    'nav_margin_m': 0.35,              # half footprint width (0.27) + 0.08
+    'nav_obstacle_margin_m': 0.10,
     # default dock outline (dock-local, m) used when dock_pose.yaml has none;
     # the vendor's type-5 outline (charger plate around the rear axle)
     'dock_outline_x_min': -0.2,
@@ -152,6 +157,8 @@ class MapServerNode(Node):
 
         # publishers
         self.mask_pub = self.create_publisher(OccupancyGrid, '/keepout_mask', _latched())
+        self.nav_mask_pub = self.create_publisher(OccupancyGrid, '/nav_keepout_mask',
+                                                  _latched())
         self.info_pub = self.create_publisher(CostmapFilterInfo, '/costmap_filter_info',
                                               _latched())
         self.progress_pub = self.create_publisher(OccupancyGrid, '~/mow_progress', _latched())
@@ -277,14 +284,20 @@ class MapServerNode(Node):
                                        float(self.p('obstacle_margin')),
                                        bool(self.p('lethal_outside_areas')))
         self.mask_pub.publish(self.grid_msg(spec, mask))
+        nav_mask = core.build_nav_mask(self.store.areas, spec,
+                                       float(self.p('nav_margin_m')),
+                                       float(self.p('nav_obstacle_margin_m')))
+        self.nav_mask_pub.publish(self.grid_msg(spec, nav_mask))
         if spec != self.spec:
             self.progress.resize(spec)
             self.spec = spec
         self.progress_dirty = True
         self.publish_progress()
-        self.get_logger().info('keepout mask %dx%d @ %.2f m, origin (%.2f, %.2f), %.0f ms'
+        self.get_logger().info('keepout mask %dx%d @ %.2f m, origin (%.2f, %.2f), %.0f ms; '
+                               'free cells: mowing %d, nav %d'
                                % (spec.width, spec.height, spec.resolution, spec.origin_x,
-                                  spec.origin_y, (time.monotonic() - t0) * 1e3))
+                                  spec.origin_y, (time.monotonic() - t0) * 1e3,
+                                  int((mask == 0).sum()), int((nav_mask == 0).sum())))
         if replan:
             self.replan_pub.publish(Bool(data=True))
 
@@ -307,7 +320,7 @@ class MapServerNode(Node):
         info.header.stamp = self.get_clock().now().to_msg()
         info.header.frame_id = self.map_frame
         info.type = 0
-        info.filter_mask_topic = '/keepout_mask'
+        info.filter_mask_topic = '/nav_keepout_mask'  # Nav2 uses the nav mask
         info.base = 0.0
         info.multiplier = 1.0
         self.info_pub.publish(info)

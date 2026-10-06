@@ -584,6 +584,33 @@ def build_keepout_mask(areas: List[Area], spec: GridSpec,
     return mask
 
 
+def build_nav_mask(areas: List[Area], spec: GridSpec,
+                   nav_margin: float = 0.35,
+                   obstacle_margin: float = 0.10) -> np.ndarray:
+    """Navigation mask for Nav2's global costmap (static layer / keepout filter).
+
+    Different semantics from the mowing mask (build_keepout_mask):
+    free = (mowing areas U navigation areas) dilated outward by ``nav_margin``
+    MINUS obstacles dilated by ``obstacle_margin``. Everything else is 100.
+    The dock outline is deliberately NOT lethal here: it is a mowing
+    exclusion, and the robot parks inside it, so making it lethal would make
+    the robot's own start cell unplannable. ``nav_margin`` (default half the
+    footprint width + 0.08 m) lets the robot centre sit on a coverage ring a
+    few cm inside the boundary without the footprint touching lethal cells.
+    With no areas at all the mask is free (apart from obstacles)."""
+    nav_margin = max(0.0, float(nav_margin))
+    if not areas:
+        mask = np.full((spec.height, spec.width), FREE, dtype=np.int8)
+    else:
+        mask = np.full((spec.height, spec.width), LETHAL, dtype=np.int8)
+        for area in areas:
+            _mask_polygon(mask, spec, area.polygon, FREE, nav_margin)
+    for area in areas:
+        for obs in area.obstacles:
+            _mask_polygon(mask, spec, obs.polygon, LETHAL, max(0.0, float(obstacle_margin)))
+    return mask
+
+
 class ProgressGrid:
     """Mow-progress raster: 0 = not cut, 100 = blade passed while cutting."""
 

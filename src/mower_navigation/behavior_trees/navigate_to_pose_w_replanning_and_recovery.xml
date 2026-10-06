@@ -1,8 +1,14 @@
 
-<!-- mower_navigation: verbatim copy of the Nav2 Humble 1.1.x default tree, with ONE change:
-     FollowPath gets goal_checker_id="general_goal_checker". controller_server loads two goal
-     checkers (general_goal_checker, coverage_goal_checker) and Humble rejects a FollowPath goal
-     with an empty goal_checker_id when more than one is loaded. -->
+<!-- mower_navigation: derived from the Nav2 Humble 1.1.x default tree. Changes:
+     1. FollowPath gets goal_checker_id="general_goal_checker". controller_server loads two goal
+        checkers (general_goal_checker, coverage_goal_checker) and Humble rejects a FollowPath
+        goal with an empty goal_checker_id when more than one is loaded.
+     2. Conservative recoveries: NO Spin and NO BackUp. A mow often starts parked on the dock;
+        a spin there can hit the charger and a blind backup has no rear sensing. Recoveries
+        are only "clear both costmaps" and a short Wait (round-robin).
+     3. Fail fast: NavigateRecovery retries 2 (default 6) and Wait is 2 s (default 5), so a
+        goal that cannot be planned aborts in a few seconds instead of ~35 s. The caller
+        (mission / docking) decides what to do next. -->
 <!--
   This Behavior Tree replans the global path periodically at 1 Hz and it also has
   recovery actions specific to planning / control as well as general system issues.
@@ -10,7 +16,7 @@
 -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
-    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+    <RecoveryNode number_of_retries="2" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
@@ -30,9 +36,7 @@
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
-          <Spin spin_dist="1.57"/>
-          <Wait wait_duration="5"/>
-          <BackUp backup_dist="0.30" backup_speed="0.05"/>
+          <Wait wait_duration="2"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

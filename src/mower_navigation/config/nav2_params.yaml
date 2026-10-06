@@ -267,8 +267,10 @@ local_costmap:
           inf_is_valid: false
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.4
+        # Small inflation: the nav mask already carries the footprint margin;
+        # 0.15 m with steep decay lets the centre run along the boundary.
+        cost_scaling_factor: 10.0
+        inflation_radius: 0.15
 
 global_costmap:
   global_costmap:
@@ -301,14 +303,19 @@ global_costmap:
       filters: ["keepout_filter"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
-        map_topic: /keepout_mask
+        # /nav_keepout_mask = NAVIGATION mask (areas grown by nav_margin_m 0.35,
+        # no dock keepout). /keepout_mask is the mowing mask and made the dock
+        # start cell + perimeter coverage rings lethal (plans failed 2026-10-06).
+        map_topic: /nav_keepout_mask
         map_subscribe_transient_local: true
         subscribe_to_updates: false
         transform_tolerance: 0.5
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.4
+        # Small inflation: the nav mask already carries the footprint margin;
+        # 0.15 m with steep decay lets the centre run along the boundary.
+        cost_scaling_factor: 10.0
+        inflation_radius: 0.15
       # Filter info (/costmap_filter_info) + mask (/keepout_mask) come from the
       # ported MowgliNext map_server_node (or costmap_filter_info_server with
       # use_keepout:=true). With no publisher the filter is idle and does not
