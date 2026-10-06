@@ -114,7 +114,9 @@ behavior_tree_node:
     detour_max_skip_m: 3.0            # ... up to this, then a normal follow retry
     max_detours_per_subpath: 5
     detour_max_leave_m: 0.0           # detour pose may be this far outside the area ring
-    detour_unclassified_after: 1      # abort without a classified obstacle (stereo/bumper): detour after N plain retries (-1 never)
+    detour_unclassified_after: 1      # abort without a ranged static obstacle: detour after N plain retries (-1 never), ONLY if it coincides with a costmap collision abort
+    collision_abort_window_s: 5.0     # controller_server "collision ahead" (/rosout) this recent counts as a costmap collision abort
+    pivot_sub_after_s: 3.0            # sub_state "turning (slow pivot)" after linear 0 / angular != 0 on /cmd_vel_nav this long
     requeue_skipped: true             # end-of-area pass over skipped stretches (blocked -> MOWING_INCOMPLETE)
 
     # --- recording ---------------------------------------------------------

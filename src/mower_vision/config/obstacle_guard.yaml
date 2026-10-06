@@ -45,6 +45,10 @@ obstacle_guard:
     sensitive_stop_range_m: 1.5
     sensitive_min_score: 0.35
     unranged_h_frac: 0.45     # ~person within 1.5 m on the 960x540 OA cameras
+    # STATIC (-> mission detour) needs a RANGED box within policy_static_range_m; an unranged
+    # static-class box only gives the advisory kind "unranged". Owner opt-in: true lets
+    # unranged boxes give "static" at the sensitive level only.
+    sensitive_static_unranged: false
     # Motion relevance (unstamped Twist): front unless only reversing, a side camera only
     # while turning toward it, rear while reversing. '' = every camera always counts.
     cmd_vel_topic: /cmd_vel

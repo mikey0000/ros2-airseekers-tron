@@ -166,6 +166,8 @@ def danger_line(cfg: GuardConfig) -> List[Tuple[float, float]]:
 # ---------------------------------------------------------------------------
 # /obstacle_policy (consumed by mower_mission)
 # ---------------------------------------------------------------------------
+# Priority order. 'unranged' is advisory only (mower_mission ignores it).
+POLICY_KINDS = ('dynamic', 'static', 'unranged')
 NONE_POLICY = {'kind': 'none', 'class': '', 'distance_m': None, 'bearing_deg': None}
 
 
@@ -260,6 +262,12 @@ class PolicyConfig:
     unranged_h_frac: float = 0.45
     level: str = DEFAULT_LEVEL        # none | standard | sensitive
     any_camera: bool = False          # True: every camera counts regardless of motion
+    # STATIC needs a RANGED box within static_range_m (2026-10-07: unranged "shovel" / "hoe"
+    # boxes from the side cameras made the mission detour around nothing). An unranged
+    # static-class box only yields the advisory kind 'unranged' (the mission never acts on
+    # it). True (sensitive level, owner opt-in via LevelTable.sensitive_static_unranged)
+    # lets a tall unranged box produce 'static' again.
+    static_unranged: bool = False
 
 
 @dataclass
@@ -271,6 +279,9 @@ class LevelTable:
     sensitive_min_score: float = 0.35
     static_range_m: float = 1.5
     unranged_h_frac: float = 0.45
+    # Owner opt-in (obstacle_guard param sensitive_static_unranged): at level 'sensitive'
+    # unranged static-class boxes (bbox-height proxy) produce 'static' (-> detours).
+    sensitive_static_unranged: bool = False
 
 
 def level_policy(level: str, base: PolicyConfig, table: LevelTable) -> PolicyConfig:
@@ -278,11 +289,14 @@ def level_policy(level: str, base: PolicyConfig, table: LevelTable) -> PolicyCon
     lvl = level if level in OBSTACLE_LEVELS else DEFAULT_LEVEL
     if lvl == 'sensitive':
         stop, score, anyc = table.sensitive_stop_range_m, table.sensitive_min_score, True
+        sunr = bool(table.sensitive_static_unranged)
     else:
         stop, score, anyc = table.standard_stop_range_m, table.standard_min_score, False
+        sunr = False
     return replace(base, level=lvl, min_score=float(score), dynamic_range_m=float(stop),
                    static_range_m=max(float(table.static_range_m), float(stop)),
-                   unranged_h_frac=float(table.unranged_h_frac), any_camera=anyc)
+                   unranged_h_frac=float(table.unranged_h_frac), any_camera=anyc,
+                   static_unranged=sunr)
 
 
 def camera_counts(role: str, relevant: Optional[set], cfg: PolicyConfig) -> bool:
@@ -309,7 +323,9 @@ def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig
     cameras that matter for the current motion, :class:`MotionState`; None = all), unless
     ``cfg.any_camera`` (sensitive). Ranged boxes count within ``dynamic_range_m`` /
     ``static_range_m``; unranged ones need bbox height >= ``unranged_h_frac`` * image
-    height (``guard_cfg.image_height``)."""
+    height (``guard_cfg.image_height``). A static-class box must be RANGED to give
+    ``static``; a close unranged one gives the advisory ``unranged`` (lowest priority)
+    unless ``cfg.static_unranged``."""
     if not camera_counts(role, relevant, cfg):
         return dict(NONE_POLICY)
     dyn = {c.strip().lower() for c in cfg.dynamic_classes}
@@ -322,11 +338,13 @@ def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig
         close = box_close(b, reach, cfg, float(guard_cfg.image_height))
         if not close:
             continue
+        if kind == 'static' and b.range_m is None and not cfg.static_unranged:
+            kind = 'unranged'
         key = b.range_m if b.range_m is not None else float('inf')
         cur = best.get(kind)
         if cur is None or key < cur[0]:
             best[kind] = (key, b)
-    for kind in ('dynamic', 'static'):
+    for kind in POLICY_KINDS:
         if kind in best:
             b = best[kind][1]
             return {'kind': kind, 'class': b.label,
@@ -349,7 +367,7 @@ class PolicyState:
 
     def current(self, now: float) -> dict:
         live = [p for t, p in self._last.values() if now - t <= self.hold_s]
-        for kind in ('dynamic', 'static'):
+        for kind in POLICY_KINDS:
             cands = [p for p in live if p['kind'] == kind]
             if cands:
                 return min(cands, key=lambda p: p['distance_m']

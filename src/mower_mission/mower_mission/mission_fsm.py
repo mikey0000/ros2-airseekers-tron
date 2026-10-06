@@ -113,6 +113,7 @@ ROUTE_ORDERS = ('boustrophedon', 'snake', 'spiral', 'racetrack')
 TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
 OBSTACLE_DETECTION_LEVELS = ('none', 'standard', 'sensitive')
 STEREO_STALE_SUB = 'sensor stale: stereo depth (%d s)'
+PIVOT_SUB = 'turning (slow pivot)'
 _STEREO_STALE_RE = re.compile(
     rb'/stereo_depth/points observation buffer has not been updated for ([0-9]+(?:\.[0-9]*)?) s')
 
@@ -128,6 +129,23 @@ def parse_stereo_stale(data, logger_name=b'local_costmap'):
         return None
     mo = _STEREO_STALE_RE.search(data)
     return float(mo.group(1)) if mo else None
+
+
+# Controller aborts caused by lethal costmap cells on the path ahead (Humble RPP
+# "RegulatedPurePursuitController detected collision ahead!", FTC "collision detected ...",
+# "lethal footprint collision"). A plain "Failed to make progress" is NOT one (grass stall).
+_COLLISION_MARKERS = (b'collision ahead', b'collision detected', b'lethal footprint collision')
+
+
+def parse_collision_abort(data, logger_name=b'controller_server'):
+    """True when a serialized rcl_interfaces/Log (raw /rosout bytes, or text) from
+    ``logger_name`` reports a costmap collision on the path ahead. Byte search only."""
+    if isinstance(data, str):
+        data = data.encode('utf-8', 'replace')
+    data = bytes(data)
+    if logger_name not in data:
+        return False
+    return any(mk in data for mk in _COLLISION_MARKERS)
 
 
 def coverage_route_params(st):
@@ -333,6 +351,11 @@ class Inputs:
     # for N seconds": last receipt time + N (stale stereo -> controller aborts FollowPath)
     stereo_stale_s: Optional[float] = None
     stereo_stale_stamp: Optional[float] = None
+    # /rosout controller_server collision-ahead abort (parse_collision_abort): receipt time
+    collision_stamp: Optional[float] = None
+    # /cmd_vel_nav (the controller's command): (linear.x, angular.z) + receipt time
+    nav_cmd: Optional[tuple] = None
+    nav_cmd_stamp: Optional[float] = None
 
 
 @dataclass
@@ -456,7 +479,13 @@ class Params:
     detour_max_leave_m: float = 0.0     # detour pose may lie this far outside the area ring
     # follow_path abort with no classified obstacle (stereo cloud / bumper marks only):
     # detour after this many plain retries at the sub-path chunk (-1 = never detour).
+    # 2026-10-07: an unclassified abort detours only when it coincides with a costmap
+    # collision abort (collision_abort_window_s); an unranged class alone never detours.
     detour_unclassified_after: int = 1
+    collision_abort_window_s: float = 5.0
+    # sub_state 'turning (slow pivot)' after the controller commands linear 0 / angular != 0
+    # this long (the Tron pivots at 0.02-0.08 rad/s on turf; the GUI explains the wait)
+    pivot_sub_after_s: float = 3.0
     requeue_skipped: bool = True        # re-try detour-skipped stretches at the area end
 
     @classmethod
@@ -562,6 +591,7 @@ class MissionFSM:
         self._dyn = None                    # dynamic-obstacle wait context
         self._dyn_ignore = None             # post-timeout ignore window (see _dyn_ignored)
         self._last_static_t = -1e9
+        self._pivot_since = None      # start of the current in-place pivot command
         self._preview = None                # running plan preview (see preview_plan)
         self._preview_shown = False         # a preview is drawn on /coverage/full_plan
         self._preview_id = 0
@@ -1179,8 +1209,9 @@ class MissionFSM:
             self._log('warn', '%s timed out' % s.name)
             self._handle_service(s, False, {})
             return
-        if self._policy() == 'static':
+        if self._ranged_static():
             self._last_static_t = now
+        self._pivot_track(now)
         if self._dynamic_tick():
             return
 
@@ -1697,6 +1728,8 @@ class MissionFSM:
                 and self._now - i.stereo_stale_stamp <= self.p.stereo_stale_window_s
                 and not self.sub_state.startswith('waiting for ')):
             return STEREO_STALE_SUB % int(round(i.stereo_stale_s or 0.0))
+        if self.pivoting_slowly() and not self.sub_state.startswith('waiting for '):
+            return PIVOT_SUB + (': ' + self.sub_state if self.sub_state else '')
         return self.sub_state
 
     def obstacle_level(self):
@@ -2417,9 +2450,10 @@ class MissionFSM:
                     return
                 pf = int(self.p.detour_unclassified_after)
                 static = self._static_recent()
-                if (static or (pf >= 0 and m.follow_fails >= pf)) and self._try_detour(
+                collided = self._collision_recent()
+                if (static or (pf >= 0 and m.follow_fails >= pf and collided)) and self._try_detour(
                         prog, '%s obstacle' % (self.inputs.obstacle_class or 'static')
-                        if static else 'follow_path %s' % outcome):
+                        if static else 'follow_path %s (costmap collision ahead)' % outcome):
                     return
                 m.follow_fails += 1
                 m.start_local = prog
@@ -2444,9 +2478,38 @@ class MissionFSM:
             return 'none'
         return i.obstacle_kind if i.obstacle_kind in ('dynamic', 'static') else 'none'
 
+    def _ranged_static(self):
+        """A fresh 'static' policy that may explain an abort: it must carry a range
+        (obstacle_guard only emits ranged statics; an unranged one is accepted only at the
+        'sensitive' level, where the owner can opt in to unranged statics in the guard)."""
+        if self._policy() != 'static':
+            return False
+        return self.inputs.obstacle_distance is not None or self.obstacle_level() == 'sensitive'
+
     def _static_recent(self):
-        return self._policy() == 'static' or \
+        return self._ranged_static() or \
             self._now - self._last_static_t <= self.p.obstacle_static_memory_s
+
+    def _collision_recent(self):
+        c = self.inputs.collision_stamp
+        return c is not None and self._now - c <= self.p.collision_abort_window_s
+
+    def _pivot_track(self, now):
+        """Start time of the current in-place pivot command (fresh /cmd_vel_nav with
+        |linear| < 0.01 and |angular| > 0.01), else None."""
+        i = self.inputs
+        cmd = i.nav_cmd
+        fresh = cmd is not None and i.nav_cmd_stamp is not None and now - i.nav_cmd_stamp <= 1.0
+        if fresh and abs(cmd[0]) < 0.01 and abs(cmd[1]) > 0.01:
+            if getattr(self, '_pivot_since', None) is None:
+                self._pivot_since = now
+        else:
+            self._pivot_since = None
+
+    def pivoting_slowly(self):
+        since = getattr(self, '_pivot_since', None)
+        return (self.phase in ('TRANSIT', 'MOWING') and since is not None
+                and self._now - since > self.p.pivot_sub_after_s)
 
     def _seg_last(self):
         """Last local index of what is being mowed: the sub-path, or a re-queued stretch."""

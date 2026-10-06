@@ -2158,8 +2158,70 @@ def test_unclassified_abort_detours_after_one_plain_retry():
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert 'retry 1/3' in h.fsm.sub_state
     h.tick(dt=1.0, n=4)
+    h.fsm.inputs.collision_stamp = h.t            # controller: "collision ahead"
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state
+    assert 'costmap collision' in h.fsm.mission.detour['why']
+
+
+def test_unclassified_abort_without_costmap_collision_never_detours():
+    h = Harness(detour_unclassified_after=1)
+    sp0, _ = mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    h.fsm.inputs.collision_stamp = -100.0         # stale collision: does not count
+    for k in range(1, 4):
+        h.finish(f.ACT_FOLLOW, f.ABORTED)
+        assert h.fsm.mission.detour is None and 'retry %d/3' % k in h.fsm.sub_state
+        h.tick(dt=1.0, n=4)
+
+
+def test_unranged_static_policy_alone_never_detours():
+    """Live 2026-10-07: {"kind":"static","class":"shovel","distance_m":null} detoured."""
+    h = Harness(detour_unclassified_after=1)
+    sp0, _ = mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    policy(h, 'static', 'shovel')
+    h.fsm.inputs.obstacle_distance = None
+    h.tick()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.fsm.mission.detour is None and 'retry 1/3' in h.fsm.sub_state
+
+
+def test_ranged_static_policy_detours_on_first_abort():
+    h = Harness(detour_unclassified_after=-1)
+    sp0, _ = mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    policy(h, 'static', 'trunk')      # distance 0.8 m
+    h.tick()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'TRANSIT' and 'trunk obstacle' in h.fsm.mission.detour['why']
+
+
+def test_parse_collision_abort():
+    assert f.parse_collision_abort('controller_server RegulatedPurePursuitController '
+                                   'detected collision ahead!')
+    assert f.parse_collision_abort(b'controller_server ... FTCController: collision detected '
+                                   b'along lookahead path.')
+    assert not f.parse_collision_abort('controller_server Failed to make progress')
+    assert not f.parse_collision_abort('local_costmap collision ahead')
+
+
+def test_slow_pivot_sub_state():
+    h = Harness()
+    sp0, _ = mowing_two_swaths(h)
+    base = h.fsm.display_sub_state()
+    i = h.fsm.inputs
+    for _ in range(25):                           # 2.5 s of pivot command: not yet
+        i.nav_cmd, i.nav_cmd_stamp = (0.0, 0.3), h.t
+        h.tick()
+    assert h.fsm.display_sub_state() == base
+    for _ in range(10):
+        i.nav_cmd, i.nav_cmd_stamp = (0.0, -0.3), h.t
+        h.tick()
+    assert h.fsm.display_sub_state().startswith(f.PIVOT_SUB)
+    i.nav_cmd, i.nav_cmd_stamp = (0.2, 0.3), h.t  # arcing again
+    h.tick()
+    assert h.fsm.display_sub_state() == base
 
 
 def test_max_detours_per_subpath_limits_detours():

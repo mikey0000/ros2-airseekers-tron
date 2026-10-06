@@ -20,8 +20,11 @@ Publishes:
   distance_m, bearing_deg}`` (latched, re-published at ``policy_rate_hz``): the closest
   detection of ANY class with score >= ``min_score``; ``dynamic_classes`` (person, dog,
   cat) within ``obstacle_stop_range_m`` -> dynamic (mission: stop, blade off, wait),
-  every other class within ``policy_static_range_m`` -> static (mission: detour).
-  Dynamic wins over static. Unranged boxes use the image-space danger zone.
+  every other class RANGED within ``policy_static_range_m`` -> static (mission: detour).
+  An unranged static-class box (side cameras, stereo ranging failed) only gives the
+  advisory kind ``unranged`` (mission ignores it), unless the owner sets
+  ``sensitive_static_unranged: true`` and the area level is ``sensitive``.
+  Priority dynamic > static > unranged. Unranged dynamic boxes use the bbox-height proxy.
 
 Motion relevance + level (live parameter ``obstacle_detection``: none|standard|sensitive,
 set per area by mower_mission): a camera's detections only count when they matter for the
@@ -152,6 +155,7 @@ class ObstacleGuard(Node):
         dp('sensitive_stop_range_m', 1.5)
         dp('sensitive_min_score', 0.35)
         dp('unranged_h_frac', 0.45)
+        dp('sensitive_static_unranged', False)   # sensitive: unranged boxes may be 'static'
         # motion relevance from the commanded velocity
         dp('cmd_vel_topic', '/cmd_vel')          # '' = every camera always counts
         dp('motion_lin_deadband_mps', 0.03)
@@ -186,7 +190,8 @@ class ObstacleGuard(Node):
             sensitive_stop_range_m=float(p('sensitive_stop_range_m')),
             sensitive_min_score=float(p('sensitive_min_score')),
             static_range_m=float(p('policy_static_range_m')),
-            unranged_h_frac=float(p('unranged_h_frac')))
+            unranged_h_frac=float(p('unranged_h_frac')),
+            sensitive_static_unranged=bool(p('sensitive_static_unranged')))
         self.camera_frames = {CAM_FRONT: [str(x) for x in p('front_frames')],
                               CAM_LEFT: [str(x) for x in p('left_frames')],
                               CAM_RIGHT: [str(x) for x in p('right_frames')],

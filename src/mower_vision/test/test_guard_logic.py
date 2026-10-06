@@ -274,3 +274,49 @@ def test_level_sensitive_range_score_and_any_camera():
 def test_unknown_level_is_standard():
     assert pol('bogus').level == 'standard'
     assert pol('standard').dynamic_range_m == 1.0 and pol('standard').min_score == 0.4
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-07: unranged static boxes ("shovel" distance_m null) must not give 'static'
+# ---------------------------------------------------------------------------
+def unranged(label, h=300):
+    return Box(label, 0.8, 480, 300, 120, h)
+
+
+def test_unranged_static_class_is_advisory_only():
+    for lvl in ('standard', 'sensitive'):
+        p = frame_policy([unranged('shovel')], pol(lvl), G540, CAM_FRONT, None)
+        assert p['kind'] == 'unranged' and p['class'] == 'shovel' and p['distance_m'] is None
+
+
+def test_ranged_static_within_range_still_static_and_wins_over_unranged():
+    trunk = Box('trunk', 0.8, 100, 100, 10, 10, range_m=1.3, bearing_deg=-31.0)
+    p = frame_policy([unranged('hoe'), trunk], pol('standard'), G540, CAM_FRONT, None)
+    assert p == {'kind': 'static', 'class': 'trunk', 'distance_m': 1.3, 'bearing_deg': -31.0}
+    far = Box('trunk', 0.8, 100, 100, 10, 10, range_m=2.0)
+    assert frame_policy([far], pol('standard'), G540, CAM_FRONT, None)['kind'] == 'none'
+
+
+def test_unranged_dynamic_still_dynamic():
+    assert frame_policy([unranged_person()], pol('standard'), G540, CAM_FRONT,
+                        {CAM_FRONT})['kind'] == 'dynamic'
+
+
+def test_sensitive_opt_in_lets_unranged_be_static():
+    from dataclasses import replace as _r
+    t = _r(TABLE, sensitive_static_unranged=True)
+    s = level_policy('sensitive', PolicyConfig(), t)
+    assert frame_policy([unranged('shovel')], s, G540, CAM_FRONT, None)['kind'] == 'static'
+    st = level_policy('standard', PolicyConfig(), t)        # opt-in is sensitive-only
+    assert frame_policy([unranged('shovel')], st, G540, CAM_FRONT, None)['kind'] == 'unranged'
+
+
+def test_policy_state_priority_static_over_unranged():
+    from mower_vision.guard_logic import PolicyState
+    st = PolicyState(hold_s=0.5)
+    st.update('l', {'kind': 'unranged', 'class': 'hoe', 'distance_m': None,
+                    'bearing_deg': None}, 0.0)
+    assert st.current(0.1)['kind'] == 'unranged'
+    st.update('f', {'kind': 'static', 'class': 'trunk', 'distance_m': 1.3,
+                    'bearing_deg': None}, 0.1)
+    assert st.current(0.2)['class'] == 'trunk'

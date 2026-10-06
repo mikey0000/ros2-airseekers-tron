@@ -28,6 +28,11 @@ Parameters
                                   command arrives
 ``rate``               ``20.0``   Hz output/update rate
 ``frame_id``           ``base_link``  frame stamped on the output
+``pivot_assist``       ``true``   creeping pivot (see :class:`PivotAssist`): after
+                                  ``pivot_assist_delay_s`` (1.5) of linear 0 / |angular|
+                                  >= ``pivot_assist_min_angular_radps`` (0.2) in TRANSIT or
+                                  MOWING, add ``pivot_assist_linear_mps`` (0.05) forward, at
+                                  most ``pivot_assist_max_dist_m`` (0.3) per pivot
 ``applied_log_period`` ``1.0``    s between ``cmd_vel applied`` log lines
                                   (0 = every tick)
 
@@ -164,6 +169,61 @@ class DriveShaper:
         return ang
 
 
+# --------------------------------------------------------------------------- pivot assist
+PIVOT_ASSIST_PHASES = frozenset(('TRANSIT', 'MOWING'))
+
+
+class PivotAssist:
+    """Vendor-like "creeping pivot" (pure logic).
+
+    The Tron's casters on turf make in-place pivots unreliable (measured 0.02-0.08 rad/s
+    yaw at 0.3 rad/s commanded; a forward arc reaches ~0.2, docs/analysis/
+    2026-10-06_ring_drift.md). Humble RPP's rotate-to-heading commands linear 0, so after
+    ``delay_s`` of a pure pivot command (|angular| >= ``min_angular``, linear == 0) in a
+    TRANSIT/MOWING phase this adds ``linear`` m/s forward, at most ``max_dist_m`` of
+    commanded travel per pivot (the pivot ends when the command stops being a pivot).
+    Lawn-safe: 0.05 m/s x 6 s at most; the costmap / controller still checks collisions.
+    """
+
+    def __init__(self, enabled=True, linear=0.05, min_angular=0.2, delay_s=1.5,
+                 max_dist_m=0.3):
+        self.enabled = bool(enabled)
+        self.linear = float(linear)
+        self.min_angular = float(min_angular)
+        self.delay_s = float(delay_s)
+        self.max_dist_m = float(max_dist_m)
+        self.reset()
+
+    def reset(self):
+        self.pivot_s = 0.0        # time the current pivot command has lasted
+        self.dist_m = 0.0         # forward creep commanded during it
+        self.active = False
+
+    def apply(self, lin, ang, phase, dt):
+        """Target linear.x for raw target (lin, ang) in mission ``phase``."""
+        pivot = (self.enabled and phase in PIVOT_ASSIST_PHASES and abs(lin) < 1e-3
+                 and abs(ang) >= self.min_angular)
+        if not pivot:
+            self.reset()
+            return lin
+        self.pivot_s += dt
+        if self.pivot_s <= self.delay_s or self.dist_m >= self.max_dist_m:
+            self.active = False
+            return lin
+        self.active = True
+        self.dist_m += self.linear * dt
+        return self.linear
+
+
+PIVOT_PARAMS = {   # node parameter -> PivotAssist kwarg
+    'pivot_assist': 'enabled',
+    'pivot_assist_linear_mps': 'linear',
+    'pivot_assist_min_angular_radps': 'min_angular',
+    'pivot_assist_delay_s': 'delay_s',
+    'pivot_assist_max_dist_m': 'max_dist_m',
+}
+
+
 # --------------------------------------------------------------------------- motion gate
 # Mirrors mower_mission.mission_fsm.MOTION_PHASES / DOCKED_MOTION_PHASES (kept local so
 # mower_control does not depend on mower_mission).
@@ -294,6 +354,11 @@ class CmdVelSlewNode(Node):
         self.declare_parameter('robot_settings_file', default_settings_file())
         for name, (default, _kind) in SHAPER_PARAMS.items():
             self.declare_parameter(name, default)
+        _pa = PivotAssist()
+        for name, attr in PIVOT_PARAMS.items():
+            self.declare_parameter(name, getattr(_pa, attr))
+        self._pivot = PivotAssist(**{attr: self.get_parameter(name).value
+                                     for name, attr in PIVOT_PARAMS.items()})
         overrides = settings_overrides(str(self.get_parameter('robot_settings_file').value))
         if overrides:
             self.set_parameters([Parameter(k, value=v)
@@ -406,6 +471,11 @@ class CmdVelSlewNode(Node):
 
     def _on_set_parameters(self, params):
         for p in params:
+            if p.name in PIVOT_PARAMS:
+                setattr(self._pivot, PIVOT_PARAMS[p.name],
+                        bool(p.value) if p.name == 'pivot_assist' else float(p.value))
+                self.get_logger().info('cmd_vel_slew: %s = %r' % (p.name, p.value))
+        for p in params:
             if p.name not in SHAPER_PARAMS:
                 continue
             kind = SHAPER_PARAMS[p.name][1]
@@ -479,6 +549,8 @@ class CmdVelSlewNode(Node):
             tgt_lin, tgt_ang = 0.0, 0.0
             if getattr(self, '_shaper', None) is not None:
                 self._shaper.reset()
+            if getattr(self, '_pivot', None) is not None:
+                self._pivot.reset()
         else:
             tgt_lin = self._tgt[0]
             tgt_ang = self._tgt[5]
@@ -492,6 +564,17 @@ class CmdVelSlewNode(Node):
                 if shaper.holding != was:
                     self.get_logger().info('heading hold %s (yaw_ref=%s)' % (
                         'engaged' if shaper.holding else 'released', shaper.yaw_ref))
+            pivot = getattr(self, '_pivot', None)
+            if pivot is not None:
+                gate = getattr(self, '_gate', None)
+                was = pivot.active
+                tgt_lin = pivot.apply(tgt_lin, tgt_ang,
+                                      gate.state_name if gate is not None else None, dt)
+                if pivot.active != was:
+                    self.get_logger().info(
+                        'pivot assist %s (%.2f m crept, pivot %.1f s)' % (
+                            'ON: creeping forward' if pivot.active else 'off',
+                            pivot.dist_m, pivot.pivot_s))
             self._cur_lin = slew(self._cur_lin, tgt_lin, self._max_linear_accel, dt)
             self._cur_ang = slew(self._cur_ang, tgt_ang, self._max_angular_accel, dt)
 

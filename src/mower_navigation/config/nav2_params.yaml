@@ -142,6 +142,12 @@ controller_server:
       regulated_linear_scaling_min_radius: 0.9
       regulated_linear_scaling_min_speed: 0.15
       use_cost_regulated_linear_velocity_scaling: false
+      # Kept true (2026-10-07 transit pivot stall): Humble RPP without rotate-to-heading
+      # drives FORWARD when the carrot is behind (curvature ~0) - worse than a slow pivot.
+      # The Tron's in-place pivot (0.02-0.08 rad/s on turf) is helped instead by
+      # mower_control/cmd_vel_slew pivot_assist: after 1.5 s of linear 0 / |angular| >= 0.2
+      # in TRANSIT/MOWING it creeps +0.05 m/s (max 0.3 m per pivot), turning the pivot into
+      # a tight arc (~0.2 rad/s). progress_checker: 20 s / 0.25 m / 0.5 rad.
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.785
       # 3.2: RPP ramps its turn command from the MEASURED yaw rate; with 1.0 and wheels

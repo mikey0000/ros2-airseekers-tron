@@ -97,6 +97,7 @@ TOPIC_DEFAULTS = {
     # Nav2 "observation buffer has not been updated" WARNs -> 'sensor stale' sub_state
     # ('' = off). Taken raw and byte-searched on the 10 Hz tick (no deserialisation).
     'rosout_topic': '/rosout',
+    'nav_cmd_topic': '/cmd_vel_nav',      # '' = no slow-pivot sub_state
     'add_area_service': '/map_server_node/add_area',
     'cutter_control_service': '/cutter_control',
     'cutter_off_service': '/cutter_off',
@@ -226,6 +227,8 @@ class MissionNode(Node):
             sub(Log, p['rosout_topic'], self._on_rosout,
                 QoSProfile(depth=50, reliability=QoSReliabilityPolicy.RELIABLE),
                 raw=True, deliver_all=True)
+        if p['nav_cmd_topic']:
+            sub(Twist, p['nav_cmd_topic'], self._on_nav_cmd, 1, sampled=True, with_receipt=True)
         if p['supervisor_status_topic']:
             sub(String, p['supervisor_status_topic'], self._on_supervisor, latched)
         self._hw_rain = self._base_rain = False
@@ -454,7 +457,15 @@ class MissionNode(Node):
             i.obstacle_distance = float(d) if isinstance(d, (int, float)) else None
             i.obstacle_stamp = time.monotonic()
 
+    def _on_nav_cmd(self, msg, receipt):
+        with self._lock:
+            self.fsm.inputs.nav_cmd = (float(msg.linear.x), float(msg.angular.z))
+            self.fsm.inputs.nav_cmd_stamp = receipt
+
     def _on_rosout(self, data):
+        if fsm_mod.parse_collision_abort(data):
+            with self._lock:
+                self.fsm.inputs.collision_stamp = time.monotonic()
         n = fsm_mod.parse_stereo_stale(data)
         if n is None:
             return
