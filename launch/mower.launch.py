@@ -218,8 +218,13 @@ def generate_launch_description() -> LaunchDescription:
         arg('mission', 'true', 'Include mower_mission/mission.launch.py (the /behavior_tree_node mission layer). '
             'When true, gui_bridge runs with serve_high_level:=false.'),
         arg('cameras', 'true', 'Include cameras.launch.py (OA + rear v4l2_camera).'),
+        arg('stereo', 'true', 'cameras.launch.py: front Metoak stereo via mower_cameras/stereo_cam '
+            '(/vio/{left,right}/image_raw, 5 Hz, on demand). Off when vio is true.'),
+        arg('vio', 'false', 'stereo_vio_bridge owns the stereo device (run launch/vio.launch.py); '
+            'cameras.launch.py then does not start stereo_cam.'),
         arg('video', 'true', 'web_video_server MJPEG on :8080 (GUI camera page via /api/cameras; source for the RTSP relay).'),
-        arg('perception', 'false', 'Include mower_vision/perception.launch.py (det_ros + obstacle_guard).'),
+        arg('perception', 'true', 'Include mower_vision/perception.launch.py (det_ros on both OA cameras + obstacle_guard; seg off). '
+            'det_ros publishes /ai/det/detections and /<camera_ns>/image_annotated (GUI Perception page).'),
         arg('stop_on_close', 'false', 'obstacle_guard: zero burst + cutter off on a close obstacle.'),
         arg('datum_lat', '', 'Map origin (GPS datum) latitude, deg. Dock position; must match '
             'config/gui/mowgli_robot.yaml. Empty = DATUM_LAT from datum_env_file, else 0.0 '
@@ -317,6 +322,15 @@ def generate_launch_description() -> LaunchDescription:
             'port': ParameterValue(LaunchConfiguration('foxglove_port'), value_type=int),
             'send_buffer_limit': 10000000,
             'use_compression': False,
+            # /foxglove_bridge/sysinfo (2 Hz /proc scan) has no subscriber here.
+            # num_threads stays at the default (one per core): 2 threads measured the same
+            # total CPU, and the GUI's blocking parameter requests would then hold up a
+            # larger share of message delivery. The bridge's cost is ~3 ms per delivered
+            # message (most likely each executor wake walking the ~200 parameter/service
+            # clients created for the GUI's parameter requests), so it scales with the
+            # subscribed rate: the GUI's 50 Hz /wheel_odom and 30 Hz /odometry/filtered_map
+            # are ~2/3 of it.
+            'sysinfo': False,
         }],
         condition=enabled('foxglove'),
     )
@@ -375,7 +389,9 @@ def generate_launch_description() -> LaunchDescription:
 
     cameras = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(launch_dir, 'cameras.launch.py')),
-        launch_arguments={'web_video_server': LaunchConfiguration('video')}.items(),
+        launch_arguments={'web_video_server': LaunchConfiguration('video'),
+                          'stereo': LaunchConfiguration('stereo'),
+                          'vio': LaunchConfiguration('vio')}.items(),
         condition=enabled('cameras'),
     )
 

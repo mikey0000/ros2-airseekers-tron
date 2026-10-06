@@ -64,12 +64,12 @@ def parse_string(data):
 
 
 def bool_bytes(value):
-    """Serialized std_msgs/Bool (1 byte, end padded to 4 like Fast-CDR)."""
+    """Serialized std_msgs/Bool (1 byte, end padded to 4 like Fast-CDR; rclpy leaves those
+    padding bytes uninitialised, we zero them)."""
     return _ENCAPSULATION + (b'\x01' if value else b'\x00') + b'\x00\x00\x00'
 
 
 def string_bytes(text):
-    """Serialized std_msgs/String."""
+    """Serialized std_msgs/String (no end padding, like rclpy's serialize_message)."""
     raw = text.encode('utf-8') + b'\0'
-    out = _ENCAPSULATION + struct.pack('<I', len(raw)) + raw
-    return out + b'\0' * (-len(out) % 4)
+    return _ENCAPSULATION + struct.pack('<I', len(raw)) + raw
