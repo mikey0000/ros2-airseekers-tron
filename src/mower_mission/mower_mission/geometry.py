@@ -321,3 +321,52 @@ def inside_area(point, area, leave_m=0.0):
         if len(hole) >= 3 and point_in_polygon(point, hole):
             return False
     return True
+
+
+def simplify_open_path(points, tolerance, min_spacing=1e-3):
+    """Recorded PATH (open polyline): drop repeated points, then Douglas-Peucker.
+    Unlike simplify_ring there is no closure and no overshoot trim: both
+    endpoints are kept where they were driven."""
+    pts = []
+    for p in points:
+        p = (float(p[0]), float(p[1]))
+        if not pts or dist(pts[-1], p) > min_spacing:
+            pts.append(p)
+    return douglas_peucker(pts, tolerance)
+
+
+def buffer_polyline(points, half_width, miter_limit=3.0):
+    """Polygon (ring, not closed) of an open polyline buffered by ``half_width``
+    on each side: left offsets forward, right offsets back, mitred joins
+    (clamped to ``miter_limit`` x half_width) and flat ends. [] for < 2 points."""
+    pts = [(float(p[0]), float(p[1])) for p in points]
+    if len(pts) < 2:
+        return []
+    normals = []
+    for a, b in zip(pts, pts[1:]):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        n = math.hypot(dx, dy) or 1.0
+        normals.append((-dy / n, dx / n))
+    left, right = [], []
+    for i, p in enumerate(pts):
+        if i == 0:
+            nx, ny = normals[0]
+            scale = 1.0
+        elif i == len(pts) - 1:
+            nx, ny = normals[-1]
+            scale = 1.0
+        else:
+            ax, ay = normals[i - 1]
+            bx, by = normals[i]
+            nx, ny = ax + bx, ay + by
+            ln = math.hypot(nx, ny)
+            if ln < 1e-9:
+                nx, ny, scale = ax, ay, 1.0
+            else:
+                nx, ny = nx / ln, ny / ln
+                cos_half = nx * ax + ny * ay
+                scale = min(miter_limit, 1.0 / max(cos_half, 1e-6))
+        d = half_width * scale
+        left.append((p[0] + nx * d, p[1] + ny * d))
+        right.append((p[0] - nx * d, p[1] - ny * d))
+    return left + right[::-1]

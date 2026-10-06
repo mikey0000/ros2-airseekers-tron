@@ -104,6 +104,7 @@ TOPIC_DEFAULTS = {
     'rosout_topic': '/rosout',
     'nav_cmd_topic': '/cmd_vel_nav',      # '' = no slow-pivot sub_state
     'add_area_service': '/map_server_node/add_area',
+    'set_area_channel_service': '/map_server_node/set_area_channel',  # recorded PATHs
     'cutter_control_service': '/cutter_control',
     'cutter_off_service': '/cutter_off',
     'clear_estop_service': '/clear_estop',
@@ -253,6 +254,9 @@ class MissionNode(Node):
                                        callback_group=self._cb), p['get_mowing_area_service']),
             fsm_mod.SRV_ADD_AREA: (cli(AddMowingArea, p['add_area_service'],
                                        callback_group=self._cb), p['add_area_service']),
+            fsm_mod.SRV_SET_CHANNEL: (cli(SetAreaSettings, p['set_area_channel_service'],
+                                          callback_group=self._cb),
+                                      p['set_area_channel_service']),
             fsm_mod.SRV_CLEAR_ESTOP: (cli(Empty, p['clear_estop_service'],
                                           callback_group=self._cb), p['clear_estop_service']),
             fsm_mod.SRV_CHARGING: (cli(ChargingControl, p['charging_service'],
@@ -977,6 +981,9 @@ class MissionNode(Node):
             req.area.is_navigation_area = bool(r['is_navigation_area'])
             req.is_navigation_area = bool(r['is_navigation_area'])
             return req
+        if e.name == fsm_mod.SRV_SET_CHANNEL:
+            return SetAreaSettings.Request(area_index=int(r['index']),
+                                           settings_json=str(r['settings_json']))
         if e.name == fsm_mod.SRV_CHARGING:
             return ChargingControl.Request(enable_charging=bool(r['enable']))
         if e.name == fsm_mod.SRV_CLEAR_ESTOP:
@@ -1006,6 +1013,8 @@ class MissionNode(Node):
                 'is_navigation_area': bool(a.is_navigation_area)}}
         elif e.name == fsm_mod.SRV_ADD_AREA:
             resp = {'success': bool(res.success)}
+        elif e.name == fsm_mod.SRV_SET_CHANNEL:
+            resp = {'success': bool(res.success), 'message': res.message}
         elif e.name == fsm_mod.SRV_GET_AREA_SETTINGS:
             resp = {'success': bool(res.success), 'settings_json': res.settings_json}
         elif e.name == fsm_mod.SRV_SET_PARAMS:

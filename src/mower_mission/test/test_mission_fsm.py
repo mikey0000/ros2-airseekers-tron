@@ -402,6 +402,44 @@ def test_record_add_area_failure_keeps_polygon_in_fallback_file():
     assert h.name == 'IDLE'
 
 
+def test_record_path_saves_open_polyline_as_navigation_band():
+    h = Harness()
+    h.areas = [square(0, 0, 5), dict(square(10, 0, 2), is_navigation_area=True)]
+    assert h.cmd(f.CMD_RECORD_PATH)
+    assert h.name == 'RECORDING' and 'path' in h.fsm.sub_state
+    # an L-shaped drive: 4 m east then 3 m north (open, never closed)
+    for k in range(41):
+        h.fsm.inputs.pose = (k * 0.1, 0.0, 0.0)
+        h.tick()
+    for k in range(1, 31):
+        h.fsm.inputs.pose = (4.0, k * 0.1, 0.0)
+        h.tick()
+    m = h.mark()
+    assert h.cmd(f.CMD_RECORD_FINISH)
+    h.answer_services()
+    calls = {e.name: e.request for e in h.since(m, f.CallService)}
+    add = calls[f.SRV_ADD_AREA]
+    assert add['name'] == 'Path 2' and add['is_navigation_area'] is True
+    assert len(add['polygon']) == 6                     # 3-point line, buffered
+    ch = calls[f.SRV_SET_CHANNEL]
+    assert ch['index'] == 2                             # appended after the 2 areas
+    js = json.loads(ch['settings_json'])
+    assert js['width_m'] == 0.7
+    assert js['points'][0] == [0.0, 0.0] and js['points'][-1] == [4.0, 3.0]
+    assert len(js['points']) == 3
+    assert h.name == 'RECORDING_COMPLETE' and h.fsm.sub_state == 'Path 2'
+
+
+def test_record_path_too_short_is_rejected():
+    h = Harness()
+    h.cmd(f.CMD_RECORD_PATH)
+    for k in range(6):
+        h.fsm.inputs.pose = (k * 0.1, 0.0, 0.0)
+        h.tick()
+    assert not h.cmd(f.CMD_RECORD_FINISH)
+    assert h.name == 'IDLE' and 'rejected' in h.fsm.sub_state
+
+
 def test_record_finish_or_cancel_without_recording_refused():
     h = Harness()
     assert not h.cmd(f.CMD_RECORD_FINISH)
@@ -2744,3 +2782,37 @@ def test_lethal_boundary_ignored_outside_mowing_phases():
         h.tick()
         h.answer_services()
     assert h.name != 'BOUNDARY_EMERGENCY_STOP'
+
+
+def _returning_home():
+    h = Harness(rtk_timeout_s=5.0)
+    h.fsm.inputs.fix_type = 2
+    h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick(dt=1.0, n=6)
+    h.pending_action(f.ACT_DOCK)
+    return h
+
+
+def test_contact_while_dock_action_runs_waits_for_result():
+    h = _returning_home()
+    ph = h.name
+    h.fsm.inputs.docked = True
+    h.tick(dt=1.0, n=5)                       # < dock_contact_grace_s
+    assert h.name == ph and h.pending_action(f.ACT_DOCK)
+    h.finish(f.ACT_DOCK)                      # server confirms
+    assert h.name in f.IDLE_NAMES
+
+
+def test_contact_while_dock_action_hangs_cancels_after_grace():
+    h = _returning_home()
+    h.fsm.inputs.docked = True
+    h.tick(dt=1.0, n=12)
+    assert h.fsm._action is None and h.name in f.IDLE_NAMES
+
+
+def test_dock_failure_with_contacts_counts_as_docked():
+    h = _returning_home()
+    h.fsm.inputs.docked = True
+    h.finish(f.ACT_DOCK, f.ABORTED, {'success': False, 'message': 'DOCK_MAXOUT'})
+    assert h.name in f.IDLE_NAMES

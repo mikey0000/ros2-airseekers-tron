@@ -52,6 +52,9 @@ CMD_STOP = 8
 # Airseekers extension (no MowgliNext equivalent): leave the dock by a short straight
 # drive and stay idle off the dock. 9 is unused by HighLevelControl.srv.
 CMD_UNDOCK = 9
+# Airseekers extension: like RECORD_AREA but the driven trajectory is saved as an open
+# PATH (navigation band with centreline + width, as the GUI "Draw path" tool stores it).
+CMD_RECORD_PATH = 10
 CMD_RESET_EMERGENCY = 254
 CMD_DELETE_MAPS = 255
 
@@ -75,6 +78,7 @@ ACT_FOLLOW = 'follow_path'
 
 SRV_GET_AREA = 'get_mowing_area'
 SRV_ADD_AREA = 'add_area'
+SRV_SET_CHANNEL = 'set_area_channel'
 SRV_CLEAR_ESTOP = 'clear_estop'
 SRV_CHARGING = 'charging'
 SRV_GET_AREA_SETTINGS = 'get_area_settings'   # /map_server_node/get_area_settings
@@ -434,6 +438,8 @@ class Params:
     record_close_radius_m: float = 0.5
     record_min_area_m2: float = 1.0
     record_max_points: int = 50000
+    record_path_width_m: float = 0.7      # default band width of a recorded PATH
+    record_path_min_length_m: float = 1.0
     max_areas: int = 200
     result_display_s: float = 5.0
     service_timeout_s: float = 10.0
@@ -442,6 +448,10 @@ class Params:
     transit_timeout_s: float = 300.0
     follow_timeout_s: float = 3600.0
     dock_action_timeout_s: float = 400.0
+    # Contacts reported while the docking action still runs: wait for its result (the
+    # server stops and confirms on contact); only after this long cancel it and treat the
+    # robot as docked (2026-10-07: the mission flipped while the server was in RETRY).
+    dock_contact_grace_s: float = 10.0
     # --- per-area mowing settings ---
     use_area_settings: bool = True      # read /map_server_node/get_area_settings per area
     cut_width_m: float = 0.20           # blade cut width (display only; spacing = area swath_width_m)
@@ -573,6 +583,7 @@ class MissionFSM:
         self._service = None
         self._emergency = False
         self._dock_purpose = None
+        self._dock_contact_since = None
         self._manual_undocking = False           # standalone UNDOCK (CMD_UNDOCK) in flight
         self._resume_after = None           # None | 'rain' | 'charge'
         self._rain_since = None
@@ -586,6 +597,9 @@ class MissionFSM:
         self._record_poly = None
         self._enum = None                   # {'purpose', 'index', 'areas', 'count'}
         self._record_name = ''
+        self._record_kind = 'area'          # 'area' (closed boundary) | 'path' (open band)
+        self._record_line = None            # simplified centreline of a PATH being saved
+        self._record_index = -1             # area index the PATH gets in the map server
         self._last_status = None
         self._incomplete_text = ''
         self._dyn = None                    # dynamic-obstacle wait context
@@ -1247,6 +1261,20 @@ class MissionFSM:
         elif ph in DISPLAY_NAMES:
             if now - self._phase_since >= self.p.result_display_s:
                 self._go_idle()
+        elif ph in DOCK_PHASES and a is not None and a.purpose == 'dock':
+            if self._at_dock():
+                if self._dock_contact_since is None:
+                    self._dock_contact_since = now
+                    self._log('info', 'dock contacts reported: waiting for the docking result')
+                elif now - self._dock_contact_since >= self.p.dock_contact_grace_s:
+                    self._log('warn', 'docked for %.0f s but the docking action is still '
+                              'running: cancelling it' % self.p.dock_contact_grace_s)
+                    self._fx.append(CancelActions('docked (contacts)'))
+                    self._action = None
+                    self._dock_contact_since = None
+                    self._dock_done()
+            else:
+                self._dock_contact_since = None
         elif ph == 'RAIN_WAITING':
             if i.rain and self.p.rain_mode == 1:
                 self._rain_clear_since = None
@@ -1334,6 +1362,8 @@ class MissionFSM:
             return self._home()
         if cmd == CMD_RECORD_AREA:
             return self._record_start()
+        if cmd == CMD_RECORD_PATH:
+            return self._record_start(kind='path')
         if cmd == CMD_RECORD_FINISH:
             return self._record_finish()
         if cmd == CMD_RECORD_CANCEL:
@@ -2243,18 +2273,22 @@ class MissionFSM:
     # ==================================================================
     # recording (RecordArea port)
     # ==================================================================
-    def _record_start(self):
+    def _record_start(self, kind='area'):
         if self.state == STATE_AUTONOMOUS:
-            self._log('warn', 'RECORD_AREA refused: autonomous run active (STOP first)')
+            self._log('warn', 'RECORD_%s refused: autonomous run active (STOP first)'
+                      % kind.upper())
             return False
         if self.phase == 'RECORDING':
             return True
-        self._leave_current_mode('record area')
+        self._leave_current_mode('record %s' % kind)
         self._blade_off('recording')
         self._track = []
         self._record_poly = None
+        self._record_line = None
+        self._record_kind = kind
         self._last_sample = -1e9
-        self._go('RECORDING', 'drive the boundary with the joystick')
+        self._go('RECORDING', 'drive the path with the joystick' if kind == 'path'
+                 else 'drive the boundary with the joystick')
         self._sample(force=True)
         return True
 
@@ -2281,6 +2315,8 @@ class MissionFSM:
             return False
         if self._record_poly is not None:
             return True
+        if self._record_kind == 'path':
+            return self._record_finish_path()
         n = len(self._track)
         poly = geo.simplify_ring(self._track, self.p.record_simplify_tolerance_m,
                                  close_radius=self.p.record_close_radius_m)
@@ -2303,7 +2339,35 @@ class MissionFSM:
         self._call(SRV_GET_AREA, {'index': 0}, purpose='enum')
         return True
 
-    def _record_save(self, mowing_count):
+    def _record_finish_path(self):
+        n = len(self._track)
+        line = geo.simplify_open_path(self._track, self.p.record_simplify_tolerance_m)
+        length = geo.path_length(line) if len(line) >= 2 else 0.0
+        if len(line) < 2 or length < self.p.record_path_min_length_m:
+            why = 'path is %.2f m long (need %.1f m)' % (length, self.p.record_path_min_length_m)
+            self._log('warn', 'recording rejected: %s' % why)
+            self._track = []
+            self._fx.append(PublishTrajectory([]))
+            self._go_idle('recording rejected: %s' % why)
+            return False
+        self._record_line = line
+        self._record_poly = geo.buffer_polyline(line, self.p.record_path_width_m / 2.0)
+        self._log('info', 'path recording finished: %d samples -> %d points, %.1f m' % (
+            n, len(line), length))
+        self._go('RECORDING', 'saving path')
+        self._enum = {'purpose': 'record', 'index': 0, 'areas': {}, 'count': 0}
+        self._call(SRV_GET_AREA, {'index': 0}, purpose='enum')
+        return True
+
+    def _record_save(self, mowing_count, total_count=None):
+        if self._record_kind == 'path':
+            total = mowing_count if total_count is None else total_count
+            self._record_index = total            # add_area appends at the end
+            self._record_name = 'Path %d' % (total - mowing_count + 1)
+            self._call(SRV_ADD_AREA, {'name': self._record_name,
+                                      'polygon': list(self._record_poly),
+                                      'is_navigation_area': True}, purpose='add_area')
+            return
         name = 'Area %d' % (mowing_count + 1)
         self._record_name = name
         self._call(SRV_ADD_AREA, {'name': name, 'polygon': list(self._record_poly),
@@ -2314,7 +2378,8 @@ class MissionFSM:
         self._track = []
         self._fx.append(PublishTrajectory([]))
         if ok:
-            self._log('info', 'area "%s" saved (%d vertices)' % (self._record_name, len(poly)))
+            self._log('info', '%s "%s" saved (%d vertices)' % (
+                self._record_kind, self._record_name, len(poly)))
             self._go('RECORDING_COMPLETE', self._record_name)
         else:
             self._log('error', 'add_area failed: polygon kept in a fallback file')
@@ -2340,7 +2405,12 @@ class MissionFSM:
         if outcome != SUCCEEDED:
             self._log('warn', '%s finished: %s %s' % (name, outcome, result.get('message', '')))
         if a.purpose == 'dock':
+            self._dock_contact_since = None
             if outcome == SUCCEEDED and (result.get('success', True)):
+                self._dock_done()
+            elif self._at_dock() and outcome != CANCELED:
+                self._log('warn', 'docking action ended %s (%s) but the contacts report '
+                          'docked: treating as docked' % (outcome, result.get('message', '')))
                 self._dock_done()
             else:
                 why = result.get('message') or outcome
@@ -2813,10 +2883,26 @@ class MissionFSM:
                 self._areas_loaded(e['areas'], e['count'])
             else:
                 if self._record_poly is not None:
-                    self._record_save(len(e['areas']))
+                    self._record_save(len(e['areas']), e['count'])
         elif s.purpose == 'add_area':
             if self._record_poly is not None:
-                self._record_saved(ok and bool(resp.get('success', False)))
+                added = ok and bool(resp.get('success', False))
+                if added and self._record_kind == 'path' and self._record_line:
+                    self._call(SRV_SET_CHANNEL, {
+                        'index': self._record_index,
+                        'settings_json': json.dumps({
+                            'points': [[round(x, 3), round(y, 3)] for x, y in self._record_line],
+                            'width_m': float(self.p.record_path_width_m)})},
+                        purpose='set_channel')
+                    return
+                self._record_saved(added)
+        elif s.purpose == 'set_channel':
+            if self._record_poly is not None:
+                if not (ok and resp.get('success', False)):
+                    # the band polygon is saved; only the centreline metadata is missing
+                    self._log('warn', 'set_area_channel failed for "%s": %s' % (
+                        self._record_name, resp.get('message', 'unavailable')))
+                self._record_saved(True)
         elif s.purpose in ('area_settings', 'coverage_params'):
             m = self.mission
             if m is None or self.phase != 'PLANNING' or m.area_idx is None:

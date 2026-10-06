@@ -246,3 +246,23 @@ def test_trim_overshoot_leaves_open_and_short_tracks_alone():
     assert geo.trim_closure_overshoot(u, 0.5) == u
     sq = _densify([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0.3)])  # stops short of the start
     assert geo.trim_closure_overshoot(sq, 0.5) == sq
+
+
+def test_simplify_open_path_keeps_endpoints_no_closure():
+    from mower_mission import geometry as g
+    pts = [(x * 0.1, 0.0) for x in range(30)] + [(3.0, y * 0.1) for y in range(1, 20)]
+    pts += [pts[-1]]                                    # duplicate dropped
+    out = g.simplify_open_path(pts, 0.05)
+    assert out == [(0.0, 0.0), (2.9, 0.0), (3.0, 0.1), (3.0, 1.9)] or (
+        out[0] == (0.0, 0.0) and out[-1] == (3.0, 1.9) and len(out) <= 4)
+
+
+def test_buffer_polyline_band():
+    from mower_mission import geometry as g
+    ring = g.buffer_polyline([(0, 0), (4, 0)], 0.35)
+    assert ring == [(0, 0.35), (4, 0.35), (4, -0.35), (0, -0.35)]
+    assert abs(g.polygon_area(ring) - 4 * 0.7) < 1e-9
+    corner = g.buffer_polyline([(0, 0), (4, 0), (4, 3)], 0.35)
+    assert len(corner) == 6
+    assert abs(corner[1][0] - (4 - 0.35)) < 1e-9 and abs(corner[1][1] - 0.35) < 1e-9
+    assert g.buffer_polyline([(0, 0)], 0.35) == []
