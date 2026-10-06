@@ -53,6 +53,7 @@ from mowgli_interfaces.action import PlanCoverage
 from mowgli_interfaces.msg import Emergency, GnssStatus, HighLevelStatus, MapArea, Status
 from mowgli_interfaces.srv import AddMowingArea, GetMowingArea, HighLevelControl, StartInArea
 
+from mower_mission import activity
 from mower_mission import mission_fsm as fsm_mod
 from mower_mission import mow_progress
 from mower_mission.resume import ResumeCursor
@@ -215,7 +216,14 @@ class MissionNode(Node):
         self._incident_pub = self.create_publisher(String, '/mission/incident', 20)
         # path-corridor decision on the current obstacle policy (GUI "Why stopped")
         self._decision_pub = self.create_publisher(String, '/mission/obstacle_decision', latched)
+        # activity mode for the perception / logging duty cycle (mower_mission/activity.py)
+        self._activity_pub = self.create_publisher(String, '/mission/activity', latched)
+        self._activity_last = None
         self._decision_last = None
+        # stuck guard: escape suppression (latched) + latch reset (slip_detector)
+        self._stuck_suppress_pub = self.create_publisher(Bool, '/stuck_guard/suppress', latched)
+        self._stuck_suppress_pub.publish(Bool(data=False))
+        self._stuck_reset_pub = self.create_publisher(Bool, '/stuck_guard/reset', 10)
         self._mp_plan_id = None       # plan id last published on ~/mow_plan
         self._mp_mission = None       # identity of the mission being timed
         self._mp_t0 = None            # monotonic start of that mission
@@ -238,6 +246,8 @@ class MissionNode(Node):
         sub(GnssStatus, p['gnss_status_topic'], self._on_gnss, 1)
         sub(Odometry, p['odom_topic'], self._on_odom, 1, parser=parse_odometry)
         sub(Bool, p['boundary_violation_topic'], self._on_boundary, 1, parser=flat_parser(Bool))
+        # stuck guard (mower_control slip_detector): latched /stuck
+        sub(Bool, '/stuck', self._on_stuck, latched, parser=flat_parser(Bool))
         sub(Bool, p['lethal_boundary_violation_topic'], self._on_lethal, 1,
             parser=flat_parser(Bool))
         sub(String, p['heading_status_topic'], self._on_heading, latched)
@@ -523,6 +533,10 @@ class MissionNode(Node):
             self.fsm.inputs.pose = (pose.position.x, pose.position.y,
                                     _yaw_from_quat(pose.orientation))
 
+    def _on_stuck(self, msg):
+        with self._lock:
+            self.fsm.inputs.stuck = bool(msg.data)
+
     def _on_boundary(self, msg):
         with self._lock:
             self.fsm.inputs.boundary_violation = bool(msg.data)
@@ -539,10 +553,21 @@ class MissionNode(Node):
             self._pump.poll()
             self._execute(self.fsm.tick(time.monotonic()))
             self._publish_motion_enabled()
+            self._publish_activity()
             dec = json.dumps(self.fsm.obstacle_decision, sort_keys=True)
             if dec != self._decision_last:
                 self._decision_last = dec
                 self._decision_pub.publish(String(data=dec))
+
+    def _publish_activity(self):
+        """Latched /mission/activity, on change only."""
+        i = self.fsm.inputs
+        act = activity.activity_for(self.fsm.phase, bool(i.docked), bool(i.is_charging),
+                                    fsm_mod.MOTION_PHASES)
+        if act != self._activity_last:
+            self.get_logger().info('activity -> %s (%s)' % (act, self.fsm.phase))
+            self._activity_last = act
+            self._activity_pub.publish(String(data=act))
 
     def _publish_motion_enabled(self):
         """Latched /motion_enabled: on change, and re-asserted every 1 s."""
@@ -665,6 +690,16 @@ class MissionNode(Node):
             self._preview_pub.publish(String(data=json.dumps(e.summary, sort_keys=True)))
         elif isinstance(e, f.SaveAlternateCounts):
             self._save_alternate(e.counts)
+        elif isinstance(e, f.DriveCmd):
+            # stuck escape on the highest twist_mux lane; overrides a running zero burst
+            self._burst_until = 0.0
+            t = Twist()
+            t.linear.x, t.angular.z = float(e.linear), float(e.angular)
+            self._twist_pub.publish(t)
+        elif isinstance(e, f.SuppressStuckGuard):
+            self._stuck_suppress_pub.publish(Bool(data=bool(e.active)))
+        elif isinstance(e, f.ResetStuckGuard):
+            self._stuck_reset_pub.publish(Bool(data=True))
         elif isinstance(e, f.RecordIncident):
             self._incident_pub.publish(String(data=json.dumps(
                 {'kind': e.kind, 'x': e.x, 'y': e.y, 'detail': e.detail,

@@ -47,6 +47,7 @@ KINDS = {
     'transit_abort': (0.3, True),    # NavigateToPose aborted / failed
     'subpath_failed': (0.8, True),   # retries exhausted, sub-path not mowed
     'stall_guard': (0.8, True),      # docking stall/dig guard
+    'stuck': (1.0, True),            # stuck guard: commanded motion, EKF pose not moving
     'boundary': (0.0, True),         # soft boundary excursion
     'boundary_lethal': (0.0, True),  # lethal boundary excursion
     'detour': (0.0, True),           # obstacle detour

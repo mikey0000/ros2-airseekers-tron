@@ -349,6 +349,7 @@
     "stateStartFailed": "Échec départ",
     "stateChargerFailed": "Échec chargeur",
     "stateNavigationFailed": "Échec navigation",
+    "stateStuckNeedsHelp": "Bloqué — aide requise",
     "stateCoverageFailed": "Échec couverture"
   },
   "flashBoard": {
@@ -1502,6 +1503,10 @@
     "CHARGER_FAILED": {
       "label": "Échec chargeur",
       "friendly": "Chargeur non détecté"
+    },
+    "STUCK_NEEDS_HELP": {
+      "label": "Bloqué — aide requise",
+      "friendly": "Bloquée : la manœuvre de dégagement a échoué. Dégagez la tondeuse, puis Démarrer, Arrêter ou pilotage manuel"
     },
     "NAV_TO_DOCK_FAILED": {
       "label": "Échec navigation",

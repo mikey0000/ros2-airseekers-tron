@@ -114,6 +114,97 @@ THRESH = dict(gravity=9.81, accel_tolerance=0.5, gyro_variance_max=1e-4,
               accel_variance_max=0.01, gyro_bias_max=0.2, require_gyro_noise=False)
 
 
+def _drive(det, t0, t1, cmd, pose_fn, wheel_v, dt=0.1, suppressed=False):
+    """Feed the detector from t0 to t1; returns the first event (or None)."""
+    ev, t = None, t0
+    while t <= t1 + 1e-9:
+        e = det.update(t, cmd, pose_fn(t), t, wheel_v, suppressed=suppressed)
+        ev = ev or e
+        t += dt
+    return ev
+
+
+def test_stuck_detects_commanded_motion_without_ekf_progress():
+    det = slip_detector.StuckDetector()
+    ev = _drive(det, 0.0, 3.8, (0.2, 0.0), lambda t: (1.0, 2.0, 0.0), 0.0)
+    assert ev is None and not det.stuck                   # window not full yet
+    ev = _drive(det, 3.9, 4.2, (0.2, 0.0), lambda t: (1.0 + 0.001 * t, 2.0, 0.0), 0.0)
+    assert det.stuck and ev['reason'] == 'stuck'
+    assert ev['x'] == pytest.approx(1.0, abs=0.01) and ev['commanded'] == [0.2, 0.0]
+
+
+def test_stuck_pivot_in_place_without_turning():
+    det = slip_detector.StuckDetector()                   # the 2026-10-07 case: w only
+    ev = _drive(det, 0.0, 4.5, (0.0, 0.4), lambda t: (0.0, 0.0, 0.01 * t), 0.0)
+    assert ev and ev['reason'] == 'stuck'
+
+
+def test_no_stuck_when_moving_turning_or_not_commanded():
+    det = slip_detector.StuckDetector()
+    assert _drive(det, 0.0, 10.0, (0.2, 0.0), lambda t: (0.2 * t, 0.0, 0.0), 0.2) is None
+    det = slip_detector.StuckDetector()
+    assert _drive(det, 0.0, 10.0, (0.0, 0.3), lambda t: (0.0, 0.0, 0.3 * t), 0.0) is None
+    det = slip_detector.StuckDetector()
+    assert _drive(det, 0.0, 10.0, (0.0, 0.05), lambda t: (0.0, 0.0, 0.0), 0.0) is None
+    det = slip_detector.StuckDetector()                   # stale EKF pose: no verdict
+    t = 0.0
+    while t < 10.0:
+        assert det.update(t, (0.2, 0.0), (0.0, 0.0, 0.0), 0.0, 0.2) is None
+        t += 0.1
+
+
+def test_spinning_wheel_to_ekf_ratio():
+    det = slip_detector.StuckDetector()
+    # EKF creeps 0.08 m in 4 s (> min progress) while the wheels report 0.8 m
+    ev = _drive(det, 0.0, 4.3, (0.2, 0.0), lambda t: (0.02 * t, 0.0, 0.0), 0.2)
+    assert ev and ev['reason'] == 'spinning' and ev['wheel_m'] > 0.6
+
+
+def test_stuck_clears_on_move_or_suppress():
+    det = slip_detector.StuckDetector()
+    _drive(det, 0.0, 4.5, (0.2, 0.0), lambda t: (0.0, 0.0, 0.0), 0.0)
+    assert det.stuck
+    _drive(det, 4.6, 6.0, (0.0, 0.0), lambda t: (0.2, 0.0, 0.0), 0.0)
+    assert det.stuck                                      # 0.2 m < clear 0.3 m
+    _drive(det, 6.1, 6.2, (0.0, 0.0), lambda t: (0.35, 0.0, 0.0), 0.0)
+    assert not det.stuck
+    _drive(det, 7.0, 11.5, (0.2, 0.0), lambda t: (0.35, 0.0, 0.0), 0.0)
+    assert det.stuck
+    _drive(det, 11.6, 11.7, (-0.1, 0.0), lambda t: (0.35, 0.0, 0.0), 0.0, suppressed=True)
+    assert not det.stuck
+    # while suppressed it never latches
+    assert _drive(det, 12.0, 20.0, (-0.1, 0.0), lambda t: (0.35, 0.0, 0.0), 0.0,
+                  suppressed=True) is None
+
+
+def _stuck_node(det):
+    pub, events = [], []
+    log = _logger()
+    node = types.SimpleNamespace(
+        _stuck=det, _reset_req=False, _cmd=(0.2, 0.0), _ekf_pose=(1.0, 1.0, 0.0), _ekf_t=0.0,
+        _meas=(0.0, 0.0), _suppressed=False, _phase='TRANSIT', _stuck_last=None,
+        get_logger=lambda: log,
+        _stuck_pub=types.SimpleNamespace(publish=lambda b: pub.append(b == slip_detector._DIG_TRUE)),
+        _stuck_event_pub=types.SimpleNamespace(publish=lambda m: events.append(m.data)))
+    return node, pub, events
+
+
+def test_stuck_step_publishes_latch_event_and_reset():
+    import json
+    node, pub, events = _stuck_node(slip_detector.StuckDetector())
+    t = 0.0
+    while t < 4.5:
+        node._ekf_t = t
+        slip_detector.SlipDetectorNode.stuck_step(node, t)
+        t += 0.1
+    assert pub[-1] is True and len(events) == 1
+    ev = json.loads(events[0])
+    assert ev['phase'] == 'TRANSIT' and ev['reason'] == 'stuck' and 'ts' in ev
+    node._reset_req = True
+    slip_detector.SlipDetectorNode.stuck_step(node, t)
+    assert pub[-1] is False
+
+
 def _wit_at_rest(n=100):
     # What the JY61P on the mower reports standing still: gyro exactly 0.0 on all axes,
     # accel ~(-0.61, -0.02, 9.85) with ~0.01-0.02 m/s^2 noise.

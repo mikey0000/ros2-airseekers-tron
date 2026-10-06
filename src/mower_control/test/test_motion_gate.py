@@ -186,3 +186,26 @@ def test_pump_rejects_receipt_without_sampled():
     with pytest.raises(ValueError):
         sub_pump.SubscriptionPump.subscribe(pump, object, '/x', lambda m, r: None, 1,
                                             with_receipt=True)
+
+
+def test_stuck_forces_zero_next_tick_and_releases_after_clear():
+    g = _open_gate(0.0, 'TRANSIT')
+    node = _node(g)
+    _step(node, 0.0)
+    _step(node, 0.02)
+    _cmd(node, 0.04)
+    assert _step(node, 0.05)[0] == pytest.approx(0.3)
+    g.set_stuck(True)                                     # /stuck latched
+    _cmd(node, 0.09)                                      # controller keeps pushing
+    out = _step(node, 0.10)                               # one 20 Hz tick (< 100 ms)
+    assert out[0] == 0.0 and out[5] == 0.0
+    assert g.reason == cs.STUCK_REASON == 'stuck: wheels spinning'
+    for k in range(3, 10):
+        _cmd(node, 0.05 * k - 0.01)
+        out = _step(node, 0.05 * k)
+        assert out[0] == 0.0 and out[5] == 0.0
+    g.set_stuck(False)                                    # escape suppression / moved
+    g.set_motion_enabled(True, 0.5)
+    _step(node, 0.55)                                     # gate re-opens
+    _cmd(node, 0.6)
+    assert _step(node, 0.62)[0] > 0.0

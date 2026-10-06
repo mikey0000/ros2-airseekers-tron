@@ -140,6 +140,21 @@ behavior_tree_node:
     collision_abort_window_s: 5.0     # controller_server "collision ahead" (/rosout) this recent counts as a costmap collision abort
     pivot_sub_after_s: 3.0            # sub_state "turning (slow pivot)" after linear 0 / angular != 0 on /cmd_vel_nav this long
     requeue_skipped: true             # end-of-area pass over skipped stretches (blocked -> MOWING_INCOMPLETE)
+    # stuck guard (mower_control slip_detector /stuck): cancel, blade off, escape on
+    # /cmd_vel_emergency (reverse / forward 30 deg arc / reverse opposite arc), then resume;
+    # too many / failed / same-spot -> STUCK_NEEDS_HELP (STOP / START / MANUAL clear it)
+    stuck_guard: true
+    stuck_max_recoveries: 3
+    stuck_recovery_period_s: 120.0
+    stuck_pause_s: 1.0
+    stuck_step_m: 0.3
+    stuck_step_speed: 0.1
+    stuck_arc_deg: 30.0
+    stuck_step_progress_s: 3.0
+    stuck_step_progress_m: 0.05
+    stuck_escape_m: 0.3
+    stuck_same_spot_m: 0.5
+    stuck_ignore_after_s: 1.0
 
     # --- recording ---------------------------------------------------------
     record_rate_hz: 10.0

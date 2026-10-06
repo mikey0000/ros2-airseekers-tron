@@ -53,6 +53,7 @@ const STATE_LABEL_KEYS: Record<string, string> = {
     CHARGER_FAILED: "stateChargerFailed",
     NAV_TO_DOCK_FAILED: "stateNavigationFailed",
     COVERAGE_FAILED_DOCKING: "stateCoverageFailed",
+    STUCK_NEEDS_HELP: "stateStuckNeedsHelp",
 };
 
 export const stateRenderer = (value: string | undefined) => {

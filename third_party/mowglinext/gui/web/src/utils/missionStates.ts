@@ -41,7 +41,7 @@ export const DOCK_PHASES = [
 
 /** Faults that need operator attention; RESET (254) is offered for these. */
 export const LATCHED_FAULTS = [
-    "BOUNDARY_EMERGENCY_STOP", "NAV_TO_DOCK_FAILED", "EMERGENCY",
+    "BOUNDARY_EMERGENCY_STOP", "NAV_TO_DOCK_FAILED", "EMERGENCY", "STUCK_NEEDS_HELP",
 ] as const;
 
 /** Result states that need operator attention but are not faults (no Reset):
@@ -54,7 +54,8 @@ export const isNotice = (name: N): boolean =>
 
 const ACTIVE_STATES = new Set([HL_STATE_AUTONOMOUS, HL_STATE_RECORDING, HL_STATE_MANUAL_MOWING]);
 const ACTIVE_NAMES = new Set<string>([...MISSION_PHASES, ...DOCK_PHASES, "RECORDING", "MANUAL_MOWING"]);
-const IDLE_START_NAMES = new Set(["IDLE", "IDLE_DOCKED", "MOWING_INCOMPLETE"]);
+// STUCK_NEEDS_HELP (stuck guard gave up): Start / Stop / manual clear it.
+const IDLE_START_NAMES = new Set(["IDLE", "IDLE_DOCKED", "MOWING_INCOMPLETE", "STUCK_NEEDS_HELP"]);
 
 type S = number | undefined | null;
 type N = string | undefined | null;
@@ -69,7 +70,7 @@ export const isLatchedFault = (name: N): boolean =>
 /** "Stop mowing" (Command 8) is offered. STOP is the one command the
  *  BOUNDARY_EMERGENCY_STOP latch accepts besides RESET. */
 export const canStop = (state: S, name: N): boolean =>
-    isMissionActive(state, name) || name === "BOUNDARY_EMERGENCY_STOP";
+    isMissionActive(state, name) || name === "BOUNDARY_EMERGENCY_STOP" || name === "STUCK_NEEDS_HELP";
 
 /** Reset (Command 254) is offered. */
 export const canReset = (name: N): boolean => isLatchedFault(name);

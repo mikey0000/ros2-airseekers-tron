@@ -180,3 +180,10 @@ def test_summary_fields():
     assert s['slope_mow_angle_deg'] == pytest.approx(0.0, abs=1.0) or \
         s['slope_mow_angle_deg'] == pytest.approx(180.0, abs=1.0)
     assert s['slope']['slope_deg'] == pytest.approx(5, abs=0.5)
+
+
+def test_stuck_incident_is_a_traction_kind():
+    assert T.KINDS['stuck'][0] >= 0.8
+    a = T.AreaTerrain('A', SQUARE, t=0)
+    inc = a.add_incident('stuck', 5, 5, 0, 'stuck guard')
+    assert inc['kind'] == 'stuck' and inc['w'] == T.KINDS['stuck'][0]

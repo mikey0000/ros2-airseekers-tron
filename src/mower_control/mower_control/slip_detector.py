@@ -59,6 +59,26 @@ Behaviour
   ``/fix_status`` contains ``RTK_FIXED``; a missing or stale ``/fix_status``
   suppresses the latch and logs a warning.
 
+Stuck guard (2026-10-07 lawn-damage incident: the robot dug a hole for ~45 s
+while Nav2 kept commanding and nothing stopped the wheels)
+-------------------------------------------------------------------------------
+:class:`StuckDetector` (pure logic) runs on the same tick:
+
+* commanded motion (applied ``/cmd_vel`` |v| > ``stuck_cmd_linear`` or |w| >
+  ``stuck_cmd_angular``) held for ``stuck_window_s`` while the RTK-fused EKF
+  pose (``/odometry/filtered_map``) moved < ``stuck_min_progress_m`` and turned
+  < ``stuck_min_heading_deg`` => STUCK (reason ``stuck``);
+* wheel-odometry distance / EKF distance > ``stuck_slip_ratio`` over the window
+  (wheel distance >= ``stuck_slip_min_wheel_m``) => STUCK (reason ``spinning``);
+* ``/stuck`` (std_msgs/Bool, latched) stays true until the EKF pose moved
+  > ``stuck_clear_m`` from where it latched, ``/stuck_guard/suppress`` (Bool,
+  latched; the mission's escape manoeuvre) is true, or ``/stuck_guard/reset``
+  (Bool, any message) arrives; each latch also publishes ``/stuck_event``
+  (String JSON ``{x, y, phase, commanded, ts, reason, ...}``).
+
+``mower_control/cmd_vel_slew`` forces zero while ``/stuck`` is true;
+``mower_mission`` runs the escape / STUCK_NEEDS_HELP logic.
+
 CPU (RK3588): every input is a sampled input of a ``SubscriptionPump`` (depth
 1, read once per tick, newest message only; /odom and /wheel_vel parsed
 straight from the CDR bytes), the loop runs on a ``PeriodicRunner`` thread
@@ -66,6 +86,8 @@ instead of rclpy timers and ``/dig_stall`` is published pre-serialized. The
 node no longer wakes the rclpy executor per message (/odom alone is 50 Hz).
 """
 
+import json
+import math
 import time
 
 import rclpy
@@ -79,10 +101,94 @@ from std_msgs.msg import Bool, String
 
 from mower_control.fast_msgs import (bool_bytes, parse_string, parse_twist,
                                      parse_twist_stamped)
-from mower_control.sub_pump import PeriodicRunner, SubscriptionPump, parse_odometry
+from mower_control.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
+                                    parse_odometry)
 
 _DIG_TRUE = bool_bytes(True)
 _DIG_FALSE = bool_bytes(False)
+
+
+def _wrap(a):
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+class StuckDetector:
+    """Pure stuck / spinning detector (see module docstring). ``update`` returns
+    ``None`` or the event dict of a new latch."""
+
+    def __init__(self, window_s=4.0, min_progress_m=0.05, min_heading_deg=10.0,
+                 cmd_linear=0.03, cmd_angular=0.1, clear_m=0.3, slip_ratio=3.0,
+                 slip_min_wheel_m=0.2, pose_timeout_s=1.0):
+        self.window_s = float(window_s)
+        self.min_progress_m = float(min_progress_m)
+        self.min_heading = math.radians(float(min_heading_deg))
+        self.cmd_linear = float(cmd_linear)
+        self.cmd_angular = float(cmd_angular)
+        self.clear_m = float(clear_m)
+        self.slip_ratio = float(slip_ratio)
+        self.slip_min_wheel_m = float(slip_min_wheel_m)
+        self.pose_timeout_s = float(pose_timeout_s)
+        self.stuck = False
+        self.latch_pose = None
+        self.reason = ''
+        self._buf = []          # [(t, x, y, yaw, wheel_cum)] of the commanded window
+        self._wheel_cum = 0.0
+        self._last_t = None
+
+    def reset(self):
+        self.stuck = False
+        self.latch_pose = None
+        self.reason = ''
+        self._buf = []
+
+    def commanded(self, cmd):
+        return cmd is not None and (abs(cmd[0]) > self.cmd_linear or abs(cmd[1]) > self.cmd_angular)
+
+    def update(self, now, cmd, pose, pose_t, wheel_v, suppressed=False):
+        """``cmd`` (v, w) applied command, ``pose`` (x, y, yaw) EKF map pose received at
+        ``pose_t``, ``wheel_v`` measured wheel linear speed (m/s, None = unknown)."""
+        dt = 0.0 if self._last_t is None else max(0.0, min(0.5, now - self._last_t))
+        self._last_t = now
+        if wheel_v is not None:
+            self._wheel_cum += abs(float(wheel_v)) * dt
+        if suppressed:
+            self.reset()
+            return None
+        fresh = pose is not None and pose_t is not None and now - pose_t <= self.pose_timeout_s
+        if self.stuck:
+            if fresh and math.hypot(pose[0] - self.latch_pose[0],
+                                    pose[1] - self.latch_pose[1]) > self.clear_m:
+                self.reset()
+            return None
+        if not fresh or not self.commanded(cmd):
+            self._buf = []
+            return None
+        self._buf.append((now, pose[0], pose[1], pose[2], self._wheel_cum))
+        while len(self._buf) > 1 and now - self._buf[1][0] >= self.window_s:
+            self._buf.pop(0)
+        t0, x0, y0, yaw0, w0 = self._buf[0]
+        if now - t0 < self.window_s:
+            return None
+        moved = max(math.hypot(b[1] - x0, b[2] - y0) for b in self._buf)
+        turned = max(abs(_wrap(b[3] - yaw0)) for b in self._buf)
+        ekf_d = math.hypot(pose[0] - x0, pose[1] - y0)
+        wheel_d = self._wheel_cum - w0
+        reason = ''
+        if moved < self.min_progress_m and turned < self.min_heading:
+            reason = 'stuck'
+        elif (wheel_d >= self.slip_min_wheel_m
+              and wheel_d > self.slip_ratio * max(ekf_d, 1e-3)):
+            reason = 'spinning'
+        if not reason:
+            return None
+        self.stuck = True
+        self.reason = reason
+        self.latch_pose = (pose[0], pose[1])
+        self._buf = []
+        return {'x': round(pose[0], 3), 'y': round(pose[1], 3), 'reason': reason,
+                'commanded': [round(cmd[0], 3), round(cmd[1], 3)],
+                'ekf_moved_m': round(moved, 3), 'turned_deg': round(math.degrees(turned), 1),
+                'wheel_m': round(wheel_d, 3), 'window_s': self.window_s}
 
 
 class SlipDetectorNode(Node):
@@ -98,6 +204,17 @@ class SlipDetectorNode(Node):
         self.declare_parameter('discovery_timeout', 5.0)
         self.declare_parameter('publish_rate', 10.0)
         self.declare_parameter('fix_timeout', 5.0)
+        # stuck guard (StuckDetector)
+        self.declare_parameter('stuck_guard', True)
+        self.declare_parameter('stuck_window_s', 4.0)
+        self.declare_parameter('stuck_min_progress_m', 0.05)
+        self.declare_parameter('stuck_min_heading_deg', 10.0)
+        self.declare_parameter('stuck_cmd_linear', 0.03)
+        self.declare_parameter('stuck_cmd_angular', 0.1)
+        self.declare_parameter('stuck_clear_m', 0.3)
+        self.declare_parameter('stuck_slip_ratio', 3.0)
+        self.declare_parameter('stuck_slip_min_wheel_m', 0.2)
+        self.declare_parameter('stuck_pose_topic', '/odometry/filtered_map')
 
         self._slip_threshold = float(self.get_parameter('slip_threshold').value)
         self._slip_window = float(self.get_parameter('slip_window').value)
@@ -115,6 +232,19 @@ class SlipDetectorNode(Node):
         self._latched = False
         self._violation_start = None
         self._measured_sub = None
+        gp = lambda n: self.get_parameter(n).value  # noqa: E731
+        self._stuck_enabled = bool(gp('stuck_guard'))
+        self._stuck = StuckDetector(
+            window_s=gp('stuck_window_s'), min_progress_m=gp('stuck_min_progress_m'),
+            min_heading_deg=gp('stuck_min_heading_deg'), cmd_linear=gp('stuck_cmd_linear'),
+            cmd_angular=gp('stuck_cmd_angular'), clear_m=gp('stuck_clear_m'),
+            slip_ratio=gp('stuck_slip_ratio'), slip_min_wheel_m=gp('stuck_slip_min_wheel_m'))
+        self._ekf_pose = None       # (x, y, yaw) of the newest EKF map pose
+        self._ekf_t = None
+        self._suppressed = False
+        self._reset_req = False
+        self._phase = ''
+        self._stuck_last = None
 
         # Latest-value inputs: depth 1, taken only when the tick consumes them.
         self._sample_qos = QoSProfile(depth=1,
@@ -125,6 +255,19 @@ class SlipDetectorNode(Node):
                              parser=parse_twist, sampled=True)
         self._pump.subscribe(String, '/fix_status', self._on_fix_status, self._sample_qos,
                              parser=parse_string, sampled=True, with_receipt=True)
+        latched_in = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                                history=QoSHistoryPolicy.KEEP_LAST,
+                                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+        self._pump.subscribe(Odometry, str(gp('stuck_pose_topic')), self._on_ekf,
+                             self._sample_qos, parser=parse_odometry, sampled=True,
+                             with_receipt=True)
+        self._pump.subscribe(Bool, '/stuck_guard/suppress', self._on_suppress, latched_in,
+                             parser=flat_parser(Bool), sampled=True)
+        self._pump.subscribe(Bool, '/stuck_guard/reset', self._on_reset, self._sample_qos,
+                             parser=flat_parser(Bool), sampled=True)
+        from mowgli_interfaces.msg import HighLevelStatus
+        self._pump.subscribe(HighLevelStatus, '/behavior_tree_node/high_level_status',
+                             self._on_hl, self._sample_qos, sampled=True)
         # Only sampled entries: start() runs no thread, so the measured source can still be
         # added once it is resolved.
         self._pump.start()
@@ -135,6 +278,8 @@ class SlipDetectorNode(Node):
                              history=QoSHistoryPolicy.KEEP_LAST,
                              durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         self._dig_pub = self.create_publisher(Bool, '/dig_stall', dig_qos)
+        self._stuck_pub = self.create_publisher(Bool, '/stuck', dig_qos)
+        self._stuck_event_pub = self.create_publisher(String, '/stuck_event', dig_qos)
 
         # Resolve the measured source (auto-detect /wheel_vel vs /odom) on the same thread
         # as the tick, so the pump is never polled while a subscription is being added.
@@ -164,6 +309,21 @@ class SlipDetectorNode(Node):
 
     def _on_meas_odom(self, msg):
         self._meas = (msg.twist.twist.linear.x, msg.twist.twist.angular.z)
+
+    def _on_ekf(self, msg, receipt):
+        p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self._ekf_pose = (p.x, p.y, yaw)
+        self._ekf_t = receipt
+
+    def _on_suppress(self, msg):
+        self._suppressed = bool(msg.data)
+
+    def _on_reset(self, msg):
+        self._reset_req = True
+
+    def _on_hl(self, msg):
+        self._phase = str(msg.state_name)
 
     def _on_fix_status(self, msg, receipt):
         self._fix_status = msg.data
@@ -200,7 +360,38 @@ class SlipDetectorNode(Node):
     # ------------------------------------------------------------------
     def _tick(self):
         self._pump.poll()
-        self.step(time.monotonic())
+        now = time.monotonic()
+        self.step(now)
+        if getattr(self, '_stuck_enabled', False):
+            self.stuck_step(now)
+
+    def stuck_step(self, now):
+        """Run the StuckDetector at ``now``; publish /stuck every tick, /stuck_event on a latch."""
+        det = self._stuck
+        if self._reset_req:
+            self._reset_req = False
+            if det.stuck:
+                self.get_logger().info('stuck guard: latch reset by the mission')
+            det.reset()
+        was = det.stuck
+        ev = det.update(now, self._cmd, self._ekf_pose, self._ekf_t,
+                        self._meas[0] if self._meas is not None else None,
+                        suppressed=self._suppressed)
+        if ev is not None:
+            ev['phase'] = self._phase
+            ev['ts'] = time.time()
+            self.get_logger().error(
+                'STUCK (%s) at (%.2f, %.2f) in %s: commanded v=%.2f w=%.2f for %.1f s, '
+                'EKF moved %.3f m / %.1f deg, wheels %.2f m -> /stuck latched'
+                % (ev['reason'], ev['x'], ev['y'], ev['phase'], ev['commanded'][0],
+                   ev['commanded'][1], ev['window_s'], ev['ekf_moved_m'], ev['turned_deg'],
+                   ev['wheel_m']))
+            self._stuck_event_pub.publish(String(data=json.dumps(ev, sort_keys=True)))
+        elif was and not det.stuck:
+            self.get_logger().info('stuck guard: cleared (%s)' % (
+                'suppressed for an escape' if self._suppressed else 'robot moved'))
+        self._stuck_last = det.stuck
+        self._stuck_pub.publish(_DIG_TRUE if det.stuck else _DIG_FALSE)
 
     def step(self, now):
         """Evaluate the slip condition at monotonic time ``now`` and publish /dig_stall."""

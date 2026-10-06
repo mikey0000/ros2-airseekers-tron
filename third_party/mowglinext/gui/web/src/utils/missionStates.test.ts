@@ -29,6 +29,7 @@ const MATRIX: [string, number, boolean, boolean, boolean, boolean, boolean, bool
     ["BOUNDARY_EMERGENCY_STOP", 0, false, true, true, true, false, false],
     ["NAV_TO_DOCK_FAILED", 0, false, true, false, true, false, true],
     ["MOWING_INCOMPLETE", 1, false, false, false, false, true, true],
+    ["STUCK_NEEDS_HELP", 1, false, true, true, true, true, true],
 ];
 
 describe("mission state matrix", () => {

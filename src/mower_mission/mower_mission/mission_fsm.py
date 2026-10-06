@@ -203,7 +203,13 @@ STATE_CODES = {
     'COVERAGE_FAILED_DOCKING': STATE_AUTONOMOUS,
     'RECORDING': STATE_RECORDING,
     'MANUAL_MOWING': STATE_MANUAL_MOWING,
+    # stuck guard gave up: latched fault, wheels/blade stopped; STOP / START / MANUAL clear
+    'STUCK_NEEDS_HELP': STATE_IDLE,
 }
+# Phases the stuck guard escapes from (mission transits / mowing, docking).
+STUCK_PHASES = ('TRANSIT', 'MOWING') + ('RETURNING_HOME', 'LOW_BATTERY_DOCKING',
+                                        'RAIN_DETECTED_DOCKING', 'COVERAGE_FAILED_DOCKING')
+STUCK_NEEDS_HELP_SUB = 'stuck: needs help at (%.2f, %.2f)'
 
 IDLE_NAMES = ('IDLE', 'IDLE_DOCKED', 'CHARGING')
 # ~/preview_plan is accepted only here (no mission session, robot at rest)
@@ -331,6 +337,26 @@ class RecordIncident:
 
 
 @dataclass
+class DriveCmd:
+    """Stuck escape: one Twist on /cmd_vel_emergency (highest twist_mux lane)."""
+    linear: float = 0.0
+    angular: float = 0.0
+
+
+@dataclass
+class SuppressStuckGuard:
+    """Latched /stuck_guard/suppress: the slip_detector stuck guard is paused (and its
+    /stuck latch cleared) while the mission drives its own escape."""
+    active: bool
+
+
+@dataclass
+class ResetStuckGuard:
+    """/stuck_guard/reset: clear a /stuck latch (operator STOP / START / MANUAL)."""
+    pass
+
+
+@dataclass
 class Log:
     level: str      # 'info' | 'warn' | 'error'
     text: str
@@ -382,6 +408,8 @@ class Inputs:
     # /cmd_vel_nav (the controller's command): (linear.x, angular.z) + receipt time
     nav_cmd: Optional[tuple] = None
     nav_cmd_stamp: Optional[float] = None
+    # /stuck (slip_detector stuck guard, latched Bool)
+    stuck: bool = False
 
 
 @dataclass
@@ -555,6 +583,25 @@ class Params:
     # this long (the Tron pivots at 0.02-0.08 rad/s on turf; the GUI explains the wait)
     pivot_sub_after_s: float = 3.0
     requeue_skipped: bool = True        # re-try detour-skipped stretches at the area end
+    # --- stuck guard (2026-10-07: the robot dug a hole for 45 s on a return transit) ---
+    # /stuck in STUCK_PHASES: cancel, blade off, wait stuck_pause_s, then escape steps on
+    # /cmd_vel_emergency (reverse / forward arc / reverse opposite arc, stuck_step_m each);
+    # a step aborts without stuck_step_progress_m of EKF progress per stuck_step_progress_s.
+    # Escaped -> clear costmaps, 'stuck' terrain incident, resume. stuck_max_recoveries
+    # within stuck_recovery_period_s, a failed escape, or a new stuck within
+    # stuck_same_spot_m of an escaped spot -> STUCK_NEEDS_HELP.
+    stuck_guard: bool = True
+    stuck_max_recoveries: int = 3
+    stuck_recovery_period_s: float = 120.0
+    stuck_pause_s: float = 1.0
+    stuck_step_m: float = 0.3
+    stuck_step_speed: float = 0.1
+    stuck_arc_deg: float = 30.0
+    stuck_step_progress_s: float = 3.0
+    stuck_step_progress_m: float = 0.05
+    stuck_escape_m: float = 0.3
+    stuck_same_spot_m: float = 0.5
+    stuck_ignore_after_s: float = 1.0   # /stuck ignored this long after an escape
 
     @classmethod
     def from_dict(cls, d):
@@ -673,6 +720,9 @@ class MissionFSM:
         self._preview = None                # running plan preview (see preview_plan)
         self._preview_shown = False         # a preview is drawn on /coverage/full_plan
         self._preview_id = 0
+        self._stk = None                    # stuck escape in progress (see _stuck_tick)
+        self._stuck_hist = []               # [(t, x, y)] stuck spots escaped from
+        self._stuck_ignore_until = -1e9
 
     # ==================================================================
     # presentation
@@ -932,6 +982,7 @@ class MissionFSM:
         if self._emergency or self.phase in ('EMERGENCY', 'BOUNDARY_EMERGENCY_STOP'):
             self._log('warn', 'start_in_area(%d) refused: emergency' % area)
             return False, self._end()
+        self._stuck_operator(CMD_START)
         ok = self._start(single=int(area))
         return ok, self._end()
 
@@ -1244,6 +1295,7 @@ class MissionFSM:
 
     def _guards(self):
         """Returns True when a guard owns this tick (phase logic skipped)."""
+        self._stuck_watch()
         cause = self._emergency_cause()
         if cause:
             if not self._emergency:
@@ -1257,6 +1309,9 @@ class MissionFSM:
             if self.phase == 'EMERGENCY':
                 self._log('info', 'emergency cleared (mowing is not auto-resumed)')
                 self._go_idle('emergency cleared')
+            return True
+
+        if self._stuck_tick():
             return True
 
         i = self.inputs
@@ -1469,6 +1524,7 @@ class MissionFSM:
     # commands
     # ==================================================================
     def _command(self, cmd):
+        self._stuck_operator(cmd)
         if cmd == CMD_RESET_EMERGENCY:
             self._call(SRV_CLEAR_ESTOP, {}, track=False)
             self._log('info', 'reset emergency: /clear_estop requested')
@@ -3364,6 +3420,167 @@ class MissionFSM:
                                   'with its current parameters'
                           % (m.area_idx, resp.get('message') or 'unavailable'))
             self._start_plan()
+
+    # ==================================================================
+    # stuck guard (mower_control slip_detector /stuck -> escape / STUCK_NEEDS_HELP)
+    # ==================================================================
+    def _stuck_steps(self):
+        v = abs(float(self.p.stuck_step_speed))
+        w = v * math.radians(float(self.p.stuck_arc_deg)) / max(0.05, float(self.p.stuck_step_m))
+        return [(-v, 0.0, 'reverse'), (v, w, 'forward arc'), (-v, -w, 'reverse opposite arc')]
+
+    def _stuck_operator(self, cmd):
+        """Operator STOP / START / MANUAL / HOME / UNDOCK: clear STUCK_NEEDS_HELP's
+        history and the slip_detector latch so the next run starts clean."""
+        if self.phase == 'STUCK_NEEDS_HELP' and cmd in (CMD_STOP, CMD_START, CMD_MANUAL_MOW,
+                                                         CMD_HOME, CMD_UNDOCK,
+                                                         CMD_RESET_EMERGENCY):
+            self._log('info', 'stuck: cleared by the operator (command %d)' % cmd)
+            self._stuck_hist = []
+            self._stuck_ignore_until = self._now + float(self.p.stuck_ignore_after_s)
+            self._fx.append(ResetStuckGuard())
+            if cmd != CMD_STOP and cmd != CMD_RESET_EMERGENCY:
+                self._go_idle('stuck cleared')
+
+    def _stuck_watch(self):
+        """Abort an escape when something else took over (emergency, STOP, phase change)."""
+        k = self._stk
+        if k is None:
+            return
+        if self._emergency_cause() or self.phase != k['phase']:
+            self._log('warn', 'stuck escape aborted (%s)' % (
+                self._emergency_cause() or 'state %s' % self.phase))
+            self._stk = None
+            self._fx.append(SuppressStuckGuard(False))
+            self._fx.append(DriveCmd(0.0, 0.0))
+
+    def _stuck_tick(self):
+        """Returns True while the stuck guard owns the tick."""
+        if self._stk is not None:
+            self._stuck_escape_tick()
+            return True
+        i = self.inputs
+        if not (self.p.stuck_guard and i.stuck and self.phase in STUCK_PHASES) \
+                or self._now < self._stuck_ignore_until:
+            return False
+        if self.phase in ('TRANSIT', 'MOWING') and self.mission is None:
+            return False
+        pose = i.pose
+        if pose is None:
+            self._stuck_needs_help('stuck, no pose', (0.0, 0.0))
+            return True
+        horizon = self._now - float(self.p.stuck_recovery_period_s)
+        self._stuck_hist = [h for h in self._stuck_hist if h[0] >= horizon]
+        same = [h for h in self._stuck_hist
+                if math.hypot(h[1] - pose[0], h[2] - pose[1]) <= self.p.stuck_same_spot_m]
+        if same:
+            self._stuck_needs_help('stuck again at the same spot', pose)
+            return True
+        if len(self._stuck_hist) >= int(self.p.stuck_max_recoveries):
+            self._stuck_needs_help('stuck %d times within %.0f s' % (
+                len(self._stuck_hist) + 1, self.p.stuck_recovery_period_s), pose)
+            return True
+        self._log('error', 'STUCK at (%.2f, %.2f) in %s: cancel, blade off, escape %d/%d'
+                  % (pose[0], pose[1], self.phase, len(self._stuck_hist) + 1,
+                     int(self.p.stuck_max_recoveries)))
+        m = self.mission
+        self._stk = {'phase': self.phase, 'origin': (float(pose[0]), float(pose[1])),
+                     'stage': 'pause', 't': self._now, 'step': -1,
+                     'dock_purpose': self._dock_purpose}
+        self._cancel_all('stuck')
+        self._blade_off('stuck')
+        self._fx.append(ZeroBurst())
+        self._fx.append(SuppressStuckGuard(True))
+        if m is not None:
+            if m.step == 'follow':
+                m.start_local = self._track_progress()
+            m.step = None
+        self.sub_state = 'stuck: stopping'
+        return True
+
+    def _stuck_escape_tick(self):
+        k, pose, now = self._stk, self.inputs.pose, self._now
+        if pose is None:
+            self._stk = None
+            self._fx.append(SuppressStuckGuard(False))
+            self._stuck_needs_help('stuck, pose lost during the escape', k['origin'])
+            return
+        if k['stage'] == 'pause':
+            if now - k['t'] < self.p.stuck_pause_s:
+                return
+            self._stuck_next_step(pose)
+            return
+        v, w, name = self._stuck_steps()[k['step']]
+        d = math.hypot(pose[0] - k['start'][0], pose[1] - k['start'][1])
+        if d >= k['best'] + self.p.stuck_step_progress_m:
+            k['best'], k['best_t'] = d, now
+        done = d >= self.p.stuck_step_m
+        stalled = now - k['best_t'] > self.p.stuck_step_progress_s
+        if not done and not stalled:
+            self._fx.append(DriveCmd(v, w))
+            return
+        self._fx.append(DriveCmd(0.0, 0.0))
+        moved = math.hypot(pose[0] - k['origin'][0], pose[1] - k['origin'][1])
+        self._log('info' if done else 'warn', 'stuck escape step %d (%s): %s, %.2f m from the '
+                  'stuck spot' % (k['step'] + 1, name, 'done' if done else
+                                  'no progress in %.0f s' % self.p.stuck_step_progress_s, moved))
+        if done or moved > self.p.stuck_escape_m:
+            self._stuck_escaped(moved)
+        elif k['step'] + 1 < len(self._stuck_steps()):
+            self._stuck_next_step(pose)
+        else:
+            self._stk = None
+            self._fx.append(SuppressStuckGuard(False))
+            self._stuck_needs_help('escape failed', k['origin'])
+
+    def _stuck_next_step(self, pose):
+        k = self._stk
+        k['stage'] = 'drive'
+        k['step'] += 1
+        k['start'] = (float(pose[0]), float(pose[1]))
+        k['best'], k['best_t'] = 0.0, self._now
+        v, w, name = self._stuck_steps()[k['step']]
+        self.sub_state = 'stuck: escape %d/3 (%s)' % (k['step'] + 1, name)
+        self._log('info', 'stuck escape step %d: %s %.2f m at %.2f m/s'
+                  % (k['step'] + 1, name, self.p.stuck_step_m, abs(v)))
+        self._fx.append(DriveCmd(v, w))
+
+    def _stuck_escaped(self, moved):
+        k, self._stk = self._stk, None
+        ox, oy = k['origin']
+        self._stuck_hist.append((self._now, ox, oy))
+        self._stuck_ignore_until = self._now + float(self.p.stuck_ignore_after_s)
+        self._fx.append(SuppressStuckGuard(False))
+        self._fx.append(RecordIncident('stuck', ox, oy, 'stuck guard escape (%s, %.2f m)'
+                                       % (k['phase'], moved)))
+        self._call(SRV_CLEAR_COSTMAPS, {}, track=False)
+        self._log('info', 'stuck: escaped (%.2f m): costmaps cleared, terrain incident at '
+                  '(%.2f, %.2f), resuming %s' % (moved, ox, oy, k['phase']))
+        if k['phase'] in DOCK_PHASES:
+            self._dock(k['phase'], k['dock_purpose'], 'resuming after stuck escape')
+            return
+        m = self.mission
+        if m is None or m.area_idx is None or not m.subpaths:
+            self._go_idle('stuck escape: nothing to resume')
+            return
+        m.detour = None
+        m.start_local = self._track_progress()
+        self._dispatch()
+
+    def _stuck_needs_help(self, why, pose):
+        x, y = float(pose[0]), float(pose[1])
+        self._log('error', 'STUCK_NEEDS_HELP: %s at (%.2f, %.2f): motion stopped, blade off '
+                  '(STOP / START / MANUAL to clear)' % (why, x, y))
+        if self.mission is not None:
+            self._interrupt_mission('stuck')
+        self._cancel_all('stuck')
+        self._blade_off('stuck')
+        self._fx.append(ZeroBurst())
+        self._dock_purpose = None
+        self._resume_after = None
+        self._stk = None
+        self._go('STUCK_NEEDS_HELP', STUCK_NEEDS_HELP_SUB % (x, y))
+
 
 
 def _seg_dist(p, a, b):

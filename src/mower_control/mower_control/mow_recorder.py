@@ -172,9 +172,15 @@ def main(args=None):
             self._hl_type = None
             self._latched = {}        # latched topic -> last (data, t_ns): written at open
 
-            qos = QoSProfile(depth=50, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+            self._qos = QoSProfile(depth=50, reliability=QoSReliabilityPolicy.BEST_EFFORT)
             latched = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
                                  durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+            # Streaming topics (odom, imu, cmd_vel, ...) are subscribed ONLY while a mow is
+            # being recorded: idle/docked the node only listens to the mission status and the
+            # (rare) latched topics, so it costs ~nothing (it used to deserialize-free but
+            # still wake for every 50-100 Hz sample, ~50 % CPU docked).
+            self._stream_specs = []   # (topic, msg_type) subscribed while recording
+            self._stream_subs = []
             for spec in gp('topics'):
                 try:
                     parts = spec.split('|')
@@ -188,12 +194,17 @@ def main(args=None):
                     self._hl_type = msg_type
                 if 'latched' in parts[2:]:
                     self._latched[topic] = None
-                self.create_subscription(msg_type, topic, self._make_cb(topic),
-                                         latched if 'latched' in parts[2:] else qos, raw=True)
+                    self.create_subscription(msg_type, topic, self._make_cb(topic),
+                                             latched, raw=True)
+                elif topic == self._status_topic:
+                    self.create_subscription(msg_type, topic, self._make_cb(topic),
+                                             self._qos, raw=True)
+                else:
+                    self._stream_specs.append((topic, msg_type))
             if self._hl_type is None:
                 self._hl_type = _import_type('mowgli_interfaces/msg/HighLevelStatus')
                 self.create_subscription(self._hl_type, self._status_topic,
-                                         self._make_cb(None), qos, raw=True)
+                                         self._make_cb(None), self._qos, raw=True)
             self._stop = threading.Event()
             self._thread = threading.Thread(target=self._drain, name='mow_recorder',
                                             daemon=True)
@@ -248,12 +259,29 @@ def main(args=None):
                                                         serialization_format='cdr'))
             self._writer, self._current = w, os.path.basename(path)
             self._queue.clear()
+            self._subscribe_streams()
             for topic, last in self._latched.items():
                 if last is not None:
                     w.write(topic, last[0], last[1])
             self.get_logger().info('mow_recorder: recording %s' % path)
 
+        def _subscribe_streams(self):
+            if self._stream_subs:
+                return
+            for topic, msg_type in self._stream_specs:
+                self._stream_subs.append(self.create_subscription(
+                    msg_type, topic, self._make_cb(topic), self._qos, raw=True))
+
+        def _unsubscribe_streams(self):
+            subs, self._stream_subs = self._stream_subs, []
+            for sub in subs:
+                try:
+                    self.destroy_subscription(sub)
+                except Exception:  # noqa: BLE001
+                    pass
+
         def _close(self, why):
+            self._unsubscribe_streams()
             self._flush()
             self._writer = None           # destructor closes the bag + writes metadata
             done, self._current = self._current, None
@@ -276,7 +304,7 @@ def main(args=None):
 
         def _drain(self):
             next_ret = time.monotonic() + 60.0
-            while not self._stop.wait(0.5):
+            while not self._stop.wait(0.5 if self._writer is not None else 1.0):
                 with self._lock:
                     self._flush()
                     if self._writer is not None and time.monotonic() > next_ret:

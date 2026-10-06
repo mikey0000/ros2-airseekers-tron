@@ -369,6 +369,7 @@ MOTION_PHASES = frozenset((
 DOCKED_MOTION_PHASES = frozenset((
     'UNDOCKING', 'MANUAL_MOWING', 'RETURNING_HOME', 'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING',
     'COVERAGE_FAILED_DOCKING'))
+STUCK_REASON = 'stuck: wheels spinning'
 MOTION_ENABLE_MAX_AGE = 3.0   # s: the mission re-asserts /motion_enabled every 1 s
 
 
@@ -395,6 +396,10 @@ class MotionGate:
         self.allowed = False
         self.enabled_since = None
         self.reason = 'no inputs'
+        self.stuck = False              # /stuck (slip_detector stuck guard) latched true
+
+    def set_stuck(self, value):
+        self.stuck = bool(value)
 
     def set_motion_enabled(self, value, now):
         self.motion_enabled = (bool(value), now)
@@ -408,6 +413,10 @@ class MotionGate:
                      'stop': bool(stop), 'lift': bool(lift)}
 
     def _why_not(self, now):
+        if self.stuck:
+            # Stuck guard (2026-10-07 hole-digging incident): stop the wheels whatever the
+            # controller wants; the mission's escape runs with the guard suppressed.
+            return STUCK_REASON
         me = self.motion_enabled
         if me is None:
             return '/motion_enabled not received'
@@ -561,6 +570,12 @@ class CmdVelSlewNode(Node):
                                         reliability=QoSReliabilityPolicy.RELIABLE,
                                         history=QoSHistoryPolicy.KEEP_LAST),
                              sampled=True, with_receipt=True)
+        self._pump.subscribe(Bool, '/stuck', self._on_stuck,
+                             QoSProfile(depth=1,
+                                        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                                        reliability=QoSReliabilityPolicy.RELIABLE,
+                                        history=QoSHistoryPolicy.KEEP_LAST),
+                             parser=flat_parser(Bool), sampled=True)
         self._pump.start()
         self._pub = self.create_publisher(Twist, '/cmd_vel', qos)
         from std_msgs.msg import String
@@ -606,6 +621,9 @@ class CmdVelSlewNode(Node):
 
     def _on_hl(self, msg):
         self._gate.set_status(msg.state_name, msg.emergency)
+
+    def _on_stuck(self, msg):
+        self._gate.set_stuck(msg.data)
 
     def _on_motion_enabled(self, msg, receipt):
         self._gate.set_motion_enabled(msg.data, receipt)
