@@ -111,6 +111,8 @@ AREA_SETTINGS_DEFAULTS = {
     'min_turn_radius_m': 0.5,
     'turn_type': 'auto',
     'obstacle_detection': 'standard',   # none | standard | sensitive (obstacle_guard)
+    'slope_mode': 'off',                # off | auto | contour | updown (terrain memory)
+    'slope_contour_above_deg': 10.0,
 }
 PATH_MODES = ('zigzag', 'cross', 'alternate', 'spiral', 'contour_only')
 ROUTE_ORDERS = ('boustrophedon', 'snake', 'spiral', 'racetrack')
@@ -312,6 +314,16 @@ class DeleteResume:
 class SaveRecordingFallback:
     points: list
     name: str
+
+
+@dataclass
+class RecordIncident:
+    """Terrain-memory incident (published on /mission/incident, JSON; mower_map
+    map_server_node files it into the per-area terrain raster)."""
+    kind: str       # follow_abort | transit_abort | subpath_failed | detour | boundary ...
+    x: Optional[float] = None
+    y: Optional[float] = None
+    detail: str = ''
 
 
 @dataclass
@@ -674,6 +686,13 @@ class MissionFSM:
 
     def _log(self, level, text):
         self._fx.append(Log(level, text))
+
+    def _incident(self, kind, detail=''):
+        """Terrain-memory incident at the current pose (no-op without a pose)."""
+        pose = self.inputs.pose
+        if pose is None:
+            return
+        self._fx.append(RecordIncident(kind, float(pose[0]), float(pose[1]), str(detail)))
 
     def _go(self, name, sub=None):
         if self.blade_on and name not in ('MOWING', 'MANUAL_MOWING'):
@@ -1691,6 +1710,7 @@ class MissionFSM:
     def _merge_settings(self, ok, resp, area_idx=None):
         st = dict(AREA_SETTINGS_DEFAULTS)
         src = 'built-in defaults'
+        got = {}
         if ok and resp.get('success'):
             try:
                 got = json.loads(resp.get('settings_json') or '{}')
@@ -1702,6 +1722,20 @@ class MissionFSM:
         elif self.p.use_area_settings:
             self._log('warn', 'area %d: get_area_settings unavailable: using built-in defaults'
                       % (self.mission.area_idx if area_idx is None else area_idx))
+        # Slope-aware angle (terrain memory): the map server derives
+        # slope_mow_angle_deg for areas with slope_mode != off; used only while
+        # the area's own angle is auto, ahead of the global parameter.
+        if float(st['mow_angle_deg']) < 0.0 and st.get('slope_mode', 'off') != 'off':
+            sa = got.get('slope_mow_angle_deg') if src == 'map_server' else None
+            if isinstance(sa, (int, float)) and not isinstance(sa, bool) and sa >= 0.0:
+                st['mow_angle_deg'] = math.fmod(float(sa), 180.0)
+                self._log('info', 'slope_mode %s: swath angle %.1f deg (%s)'
+                          % (st['slope_mode'], st['mow_angle_deg'],
+                             got.get('slope_angle_why', '')))
+            else:
+                self._log('info', 'slope_mode %s: planner angle kept (%s)'
+                          % (st['slope_mode'], got.get('slope_angle_why', 'no slope angle')
+                             if src == 'map_server' else 'map_server unavailable'))
         # Global mow_angle_deg parameter: fallback for areas left on auto.
         if float(st['mow_angle_deg']) < 0.0 and self.p.mow_angle_deg >= 0.0:
             st['mow_angle_deg'] = float(self.p.mow_angle_deg)
@@ -2038,6 +2072,7 @@ class MissionFSM:
         local = self._track_progress() if m.step == 'follow' else m.start_local
         offs, _ = subpath_offsets(m.subpaths)
         m.failed.append((m.area_idx, m.sub_i, why, offs[m.sub_i] + min(local, len(sp) - 1)))
+        self._incident('subpath_failed', why)
         self._log('warn', 'area %d sub-path %d NOT mowed: %s' % (m.area_idx, m.sub_i, why))
         m.step = None
         m.sub_i += 1
@@ -2483,6 +2518,7 @@ class MissionFSM:
                                         self.p.transit_retry_delay_s))
             else:
                 m.transit_fails += 1
+                self._incident('transit_abort', 'transit %s' % outcome)
                 if m.transit_fails > self.p.transit_retries:
                     self._subpath_failed('transit %s %d times' % (outcome, m.transit_fails))
                     return
@@ -2544,6 +2580,7 @@ class MissionFSM:
                     return
                 m.follow_fails += 1
                 m.start_local = prog
+                self._incident('follow_abort', 'follow_path %s at pose %d' % (outcome, prog))
                 if m.follow_fails > self.p.follow_retries:
                     self._subpath_failed('follow_path %s %d times (at pose %d)'
                                          % (outcome, m.follow_fails, m.start_local))
@@ -2778,6 +2815,8 @@ class MissionFSM:
                                                    sp[idx][1]))
             return False
         self._blade_off('detour')
+        if not m.detour:
+            self._incident('detour', why)
         m.detour = {'from': cur, 'to': idx, 'skip': skip, 'why': why}
         m.start_local = idx
         m.step = 'transit'

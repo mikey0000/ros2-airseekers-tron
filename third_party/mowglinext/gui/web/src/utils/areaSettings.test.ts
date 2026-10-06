@@ -58,3 +58,32 @@ describe("area patches", () => {
         expect([...overriddenKeys({...d, repeat: 2}, d, {cutter_height_mm: 50})]).toEqual(["cutter_height_mm"]);
     });
 });
+
+import {extractSlopeDerived} from "./areaSettings.ts";
+
+describe("slope settings", () => {
+    it("accepts slope_mode / slope_contour_above_deg and drops derived keys", () => {
+        expect(sanitizeAreaSettings({slope_mode: "contour", slope_contour_above_deg: 12,
+            slope_mow_angle_deg: 30, slope_angle_why: "x"}))
+            .toEqual({slope_mode: "contour", slope_contour_above_deg: 12});
+        expect(sanitizeAreaSettings({slope_mode: "diagonal"})).toEqual({});
+        expect(invalidAreaSettingKey({slope_mode: "updown"})).toBeNull();
+        expect(invalidAreaSettingKey({slope_contour_above_deg: 1})).toBe("slope_contour_above_deg");
+        expect(invalidAreaSettingKey({slope_contour_above_deg: 31})).toBe("slope_contour_above_deg");
+    });
+    it("patches never carry the derived keys", () => {
+        const d = {...AREA_SETTINGS_DEFAULTS};
+        const patch = buildAreaPatch({...d, slope_mode: "auto"}, d) as Record<string, unknown>;
+        expect(patch.slope_mode).toBe("auto");
+        expect(patch.slope_contour_above_deg).toBeNull();
+        expect("slope_mow_angle_deg" in patch).toBe(false);
+        expect("slope_angle_why" in patch).toBe(false);
+    });
+    it("extracts the read-only slope angle", () => {
+        expect(extractSlopeDerived({slope_mow_angle_deg: 80, slope_angle_why: "contour"}))
+            .toEqual({slope_mow_angle_deg: 80, slope_angle_why: "contour"});
+        expect(extractSlopeDerived({slope_mow_angle_deg: null, slope_angle_why: "no data"}))
+            .toEqual({slope_mow_angle_deg: null, slope_angle_why: "no data"});
+        expect(extractSlopeDerived({repeat: 1})).toBeNull();
+    });
+});

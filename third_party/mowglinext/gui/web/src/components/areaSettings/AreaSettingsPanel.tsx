@@ -29,7 +29,7 @@ export const AreaSettingsPanel: React.FC<{
     const {t} = useTranslation();
     const api = useApi();
     const {notification} = App.useApp();
-    const {loading, supported, effective, defaults, error, reload} = useAreaSettings(target);
+    const {loading, supported, effective, defaults, derived, error, reload} = useAreaSettings(target);
     const topic = useAreaSettingsTopic(target !== "defaults");
     const isDefaults = target === "defaults";
     const defaultsFull = useMemo(() => effectiveAreaSettings(defaults), [defaults]);
@@ -104,6 +104,7 @@ export const AreaSettingsPanel: React.FC<{
                 </div>
             )}
             <AreaSettingsForm value={draft} disabled={!isDefaults && useDefaults}
+                              slopeDerived={isDefaults ? null : derived}
                               overridden={isDefaults || useDefaults ? undefined
                                   : dirty ? overriddenKeys(draft, defaultsFull) : overridden}
                               onChange={(next) => {

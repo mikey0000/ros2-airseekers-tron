@@ -35,6 +35,7 @@ from mowgli_interfaces.srv import (AddMowingArea, ClearObstacle, GetMowingArea,
 
 from mower_map import area_settings as aset
 from mower_map import areas as core
+from mower_map import terrain as terr
 from mower_map.sub_pump import SubscriptionPump, flat_parser, parse_odometry
 
 try:
@@ -120,6 +121,28 @@ PARAMS = {
     # per-area mowing settings (area_settings.yaml next to areas.dat)
     'area_settings_file': '',          # '' -> <dir of areas_file>/area_settings.yaml
     'area_settings_prune_delay_s': 30.0,   # after clear_map: drop entries of areas not re-added
+    # terrain memory (docs/terrain_aware_planning.md): per-area slope + traction raster
+    # and incident log in <maps_dir>/terrain_<area>.npz/.json
+    'terrain_enabled': True,
+    'terrain_dir': '',                 # '' -> dir of areas_file
+    'terrain_imu_topic': '/imu/data_aligned',
+    'terrain_imu_max_age_s': 0.5,
+    'terrain_tilt_max_deg': 35.0,      # tilt samples beyond this are dropped (lift, bump)
+    'terrain_tilt_max_yaw_rate': 0.6,  # rad/s; turning -> centripetal accel pollutes tilt
+    'terrain_sample_min_move_m': 0.05,  # one tilt sample per this much travel
+    'terrain_roll_offset_deg': 0.0,    # IMU mounting bias (cancels anyway over headings)
+    'terrain_pitch_offset_deg': 0.0,
+    'terrain_dig_topic': '/dig_stall',
+    'terrain_incident_topic': '/mission/incident',
+    'terrain_bad_half_life_days': 21.0,
+    'terrain_slope_half_life_days': 365.0,
+    'terrain_cluster_radius_m': 1.0,
+    'terrain_keepout_margin_m': 0.4,
+    'terrain_save_period_s': 60.0,
+    'terrain_publish_period_s': 10.0,
+    'terrain_cost_threshold': 20.0,    # traction score below this costs nothing
+    'terrain_cost_max': 60,            # nav cost at score 100 (< 65: never lethal)
+    'terrain_slope_min_deg': 3.0,      # slope_mode: flatter -> keep the planner's angle
 }
 
 
@@ -204,6 +227,18 @@ class MapServerNode(Node):
         self.lethal_pub = self.create_publisher(Bool, '~/lethal_boundary_violation', 1)
         self.replan_pub = self.create_publisher(Bool, '~/replan_needed', 1)
         self.settings_pub = self.create_publisher(String, '~/area_settings', _latched())
+        # terrain memory outputs (latched): traction score 0..100 (-1 = never driven),
+        # the Nav2 cost layer (0..terrain_cost_max) and a JSON summary per area.
+        self.terrain_grid_pub = self.create_publisher(OccupancyGrid, '~/terrain_grid', _latched())
+        self.terrain_cost_pub = self.create_publisher(OccupancyGrid, '~/terrain_cost', _latched())
+        self.terrain_summary_pub = self.create_publisher(String, '~/terrain_summary', _latched())
+        self.terrain = {}                    # area name -> terr.AreaTerrain
+        self.terrain_dirty = False           # published layers out of date
+        self._terrain_last_xy = None
+        self._terrain_last_t = None
+        self._dig_latched = False
+        self._lethal_prev = False
+        self._soft_prev = False
 
         # Inputs bypass rclpy.spin (see sub_pump.py): 100 Hz status + 30 Hz odometry + 30 Hz
         # /tf through the executor cost ~40 % of a core while idle. Odometry is handled per
@@ -227,6 +262,18 @@ class MapServerNode(Node):
                        history=QoSHistoryPolicy.KEEP_LAST), lock=lock)
         self._tracker_sub = sub(ObstacleArray, '/obstacle_tracker/obstacles', self.on_tracker,
                                 1, lock=lock, sampled=True)
+        self._imu_sub = None
+        if self.p('terrain_enabled'):
+            from sensor_msgs.msg import Imu
+            self._imu_sub = sub(Imu, self.p('terrain_imu_topic'), self.on_imu, 1, lock=lock,
+                                sampled=True, with_receipt=True)
+            sub(Bool, self.p('terrain_dig_topic'), self.on_dig_stall,
+                QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                           durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                           history=QoSHistoryPolicy.KEEP_LAST), lock=lock)
+            sub(String, self.p('terrain_incident_topic'), self.on_incident, 20, lock=lock)
+        self.imu = None
+        self.imu_time = None
 
         # services
         srv = self._locked_service
@@ -246,6 +293,9 @@ class MapServerNode(Node):
         # in map metres (reuses the area-settings service types).
         srv(SetAreaSettings, '~/set_area_channel', self.srv_set_area_channel)
         srv(GetAreaSettings, '~/get_area_channel', self.srv_get_area_channel)
+        # Terrain memory actions, JSON in settings_json (area_index = area, 255 = all):
+        # {"action": "keepout"|"confirm"|"dismiss"|"clear", "cluster_id": n}
+        srv(SetAreaSettings, '~/terrain_action', self.srv_terrain_action)
 
         self.tf_buffer = None
         if tf2_ros is not None:
@@ -268,6 +318,13 @@ class MapServerNode(Node):
         self.publish_settings()
         self.create_timer(max(0.1, float(self.p('mow_progress_publish_period_s'))),
                           self._locked(self.on_progress_timer))
+        if self.p('terrain_enabled'):
+            self.load_terrain()
+            self.publish_terrain()
+            self.create_timer(max(1.0, float(self.p('terrain_publish_period_s'))),
+                              self._locked(self.on_terrain_publish_timer))
+            self.create_timer(max(5.0, float(self.p('terrain_save_period_s'))),
+                              self._locked(self.on_terrain_save_timer))
         self._pump.start()
         self.get_logger().info('map_server_node up: %d areas from %s, dock %s'
                                % (len(self.store.areas), self.areas_path,
@@ -378,6 +435,10 @@ class MapServerNode(Node):
                                % (spec.width, spec.height, spec.resolution, spec.origin_x,
                                   spec.origin_y, (time.monotonic() - t0) * 1e3,
                                   int((mask == 0).sum()), int((nav_mask == 0).sum())))
+        if self.p('terrain_enabled') and getattr(self, 'terrain', None) is not None \
+                and set(self.terrain) != {a.name for a in self.store.areas if not a.is_navigation}:
+            self.load_terrain()
+            self.terrain_dirty = True
         if replan:
             self.replan_pub.publish(Bool(data=True))
 
@@ -674,6 +735,8 @@ class MapServerNode(Node):
                 self.progress_dirty = True
 
         self.check_return_corridor(x, y, now)
+        if self._imu_sub is not None:
+            self.terrain_sample(x, y, yaw, msg, now)
 
         rate = float(self.p('boundary_check_rate_hz'))
         if self.store.areas and (rate <= 0 or now - self.last_boundary_check >= 1.0 / rate):
@@ -690,6 +753,11 @@ class MapServerNode(Node):
             soft, lethal = self.boundary.update(inside, dist)
             self.boundary_pub.publish(Bool(data=soft))
             self.lethal_pub.publish(Bool(data=lethal))
+            if lethal and not self._lethal_prev:
+                self.terrain_incident('boundary_lethal', x, y, '%.2f m outside' % dist)
+            elif soft and not self._soft_prev and not lethal:
+                self.terrain_incident('boundary', x, y, '%.2f m outside' % dist)
+            self._soft_prev, self._lethal_prev = soft, lethal
             if lethal and self.is_cutting():
                 self.get_logger().error('LETHAL BOUNDARY VIOLATION at (%.2f, %.2f), %.2f m '
                                         'outside' % (x, y, dist),
@@ -908,6 +976,12 @@ class MapServerNode(Node):
             eff = self.settings.effective_defaults()
         elif idx < len(self.store.areas):
             eff = self.settings.effective(self.store.areas[idx].name)
+            # Derived, read-only: the slope-aware swath angle of this area (null =
+            # keep the planner's own). The mission uses it only while
+            # mow_angle_deg is auto (-1) and slope_mode != off.
+            eff = dict(eff)
+            eff['slope_mow_angle_deg'], eff['slope_angle_why'] = self.terrain_mow_angle(
+                self.store.areas[idx].name, eff)
         else:
             res.success = False
             res.settings_json = '{}'
@@ -1107,6 +1181,258 @@ class MapServerNode(Node):
         res.recovery_pose.orientation.z = math.sin(r['yaw'] / 2.0)
         res.recovery_pose.orientation.w = math.cos(r['yaw'] / 2.0)
         res.distance_outside = float(r['distance_outside'])
+        return res
+
+    # ------------------------------------------------------------------
+    # terrain memory (mower_map.terrain; docs/terrain_aware_planning.md)
+    # ------------------------------------------------------------------
+    def terrain_dir(self):
+        return self.p('terrain_dir') or os.path.dirname(os.path.abspath(self.areas_path))
+
+    def terrain_params(self):
+        return {'resolution': self.resolution,
+                'bad_half_life_days': float(self.p('terrain_bad_half_life_days')),
+                'slope_half_life_days': float(self.p('terrain_slope_half_life_days')),
+                'cluster_radius_m': float(self.p('terrain_cluster_radius_m')),
+                'keepout_margin_m': float(self.p('terrain_keepout_margin_m'))}
+
+    def load_terrain(self):
+        """(Re)load the memory of every mowing area; areas that vanished are
+        saved and dropped, new ones loaded from disk (or started empty)."""
+        names = {a.name: a for a in self.store.areas if not a.is_navigation}
+        for name in list(self.terrain):
+            if name not in names:
+                self.save_terrain_area(self.terrain.pop(name))
+        now = time.time()
+        for name, area in names.items():
+            cur = self.terrain.get(name)
+            if cur is not None and cur.polygon == [tuple(p) for p in area.polygon]:
+                continue
+            if cur is not None:
+                self.save_terrain_area(cur)
+            t = terr.AreaTerrain.load(self.terrain_dir(), name, area.polygon,
+                                      self.terrain_params(), now)
+            if getattr(t, 'load_error', None):
+                self.get_logger().warn('terrain %s: unreadable (%s), starting empty'
+                                       % (name, t.load_error))
+            t.decay(now)
+            self.terrain[name] = t
+        self.terrain_dirty = True
+
+    def save_terrain_area(self, t):
+        try:
+            t.save(self.terrain_dir())
+        except OSError as exc:
+            self.get_logger().warn('terrain %s: save failed: %s' % (t.name, exc),
+                                   throttle_duration_sec=60.0)
+
+    def on_terrain_save_timer(self):
+        now = time.time()
+        for t in self.terrain.values():
+            t.decay(now)
+            if t.dirty:
+                self.save_terrain_area(t)
+
+    def on_terrain_publish_timer(self):
+        if self.terrain_dirty:
+            self.publish_terrain()
+
+    def terrain_area_at(self, x, y):
+        """AreaTerrain of the mowing area containing (x, y), else the one whose
+        raster (area + margin) contains it, else None."""
+        best = None
+        for a in self.store.areas:
+            if a.is_navigation or a.name not in self.terrain:
+                continue
+            if core.point_in_polygon(x, y, a.polygon):
+                return self.terrain[a.name]
+            if best is None and self.terrain[a.name].raster.contains(x, y):
+                best = self.terrain[a.name]
+        return best
+
+    def on_imu(self, msg, receipt=None):
+        q = msg.orientation
+        self.imu = terr.rpy_from_quaternion(q.x, q.y, q.z, q.w)[:2] + (msg.angular_velocity.z,)
+        self.imu_time = time.monotonic() if receipt is None else receipt
+
+    def terrain_sample(self, x, y, yaw, odom, now):
+        """One tilt sample per terrain_sample_min_move_m of travel, while moving
+        straight-ish on the ground (not docked / charging, not lifted)."""
+        last = self._terrain_last_xy
+        if last is not None and math.hypot(x - last[0], y - last[1]) < \
+                float(self.p('terrain_sample_min_move_m')):
+            return
+        dt = 0.0 if self._terrain_last_t is None else min(2.0, now - self._terrain_last_t)
+        self._terrain_last_xy, self._terrain_last_t = (x, y), now
+        if last is None:
+            return
+        st = self.status
+        if st is not None and (getattr(st, 'is_charging', False) or
+                               getattr(st, 'lift_triggered', False)):
+            return
+        self._pump.poll((self._imu_sub,))
+        if self.imu is None or now - self.imu_time > float(self.p('terrain_imu_max_age_s')):
+            return
+        roll, pitch, wz = self.imu
+        if abs(wz) > float(self.p('terrain_tilt_max_yaw_rate')):
+            return
+        roll -= math.radians(float(self.p('terrain_roll_offset_deg')))
+        pitch -= math.radians(float(self.p('terrain_pitch_offset_deg')))
+        lim = math.radians(float(self.p('terrain_tilt_max_deg')))
+        if abs(roll) > lim or abs(pitch) > lim:
+            return
+        t = self.terrain_area_at(x, y)
+        if t is None:
+            return
+        gx, gy = terr.tilt_to_gradient(roll, pitch, yaw)
+        if t.raster.add_tilt(x, y, gx, gy):
+            t.raster.add_seen(x, y, dt)
+            t.dirty = True
+            self.terrain_dirty = True
+
+    def on_dig_stall(self, msg):
+        latched = bool(msg.data)
+        if latched and not self._dig_latched and self.pose is not None:
+            self.terrain_incident('dig_stall', self.pose[0], self.pose[1], '/dig_stall latched')
+        self._dig_latched = latched
+
+    def on_incident(self, msg):
+        """/mission/incident JSON {kind, x?, y?, detail?}; pose defaults to the robot."""
+        try:
+            d = json.loads(msg.data)
+        except ValueError:
+            return
+        if not isinstance(d, dict):
+            return
+        x, y = d.get('x'), d.get('y')
+        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            if self.pose is None:
+                return
+            x, y = self.pose[0], self.pose[1]
+        self.terrain_incident(str(d.get('kind', 'unknown')), float(x), float(y),
+                              str(d.get('detail', '')))
+
+    def terrain_incident(self, kind, x, y, detail=''):
+        if not self.p('terrain_enabled'):
+            return None
+        t = self.terrain_area_at(x, y)
+        if t is None:
+            return None
+        inc = t.add_incident(kind, x, y, time.time(), detail)
+        self.terrain_dirty = True
+        self.get_logger().info('terrain incident %s #%d in %s at (%.2f, %.2f): %s'
+                               % (kind, inc['id'], t.name, x, y, detail))
+        return inc
+
+    def terrain_mow_angle(self, name, eff):
+        t = self.terrain.get(name) if self.p('terrain_enabled') else None
+        mode = str(eff.get('slope_mode', 'off'))
+        if mode == 'off':
+            return None, 'slope_mode off'
+        if t is None:
+            return None, 'no terrain memory'
+        inside = self._area_inside_mask(name, t)
+        axis = terr.slope_axis(t.raster, inside, min_cells=t.p['min_slope_cells'],
+                               min_coverage=t.p['min_slope_coverage'])
+        return terr.choose_mow_angle(axis, mode, float(eff.get('slope_contour_above_deg', 10.0)),
+                                     float(self.p('terrain_slope_min_deg')))
+
+    def _area_inside_mask(self, name, t):
+        area = next((a for a in self.store.areas if a.name == name), None)
+        if area is None:
+            return None
+        r = t.raster
+        spec = core.GridSpec(r.origin_x, r.origin_y, r.width, r.height, r.resolution)
+        cx, cy = spec.cell_centres()
+        return core.points_in_polygon(cx.ravel(), cy.ravel(),
+                                      area.polygon).reshape(r.height, r.width)
+
+    def terrain_summary(self):
+        out = {'version': terr.SCHEMA_VERSION, 'stamp': time.time(), 'areas': []}
+        for idx, a in enumerate(self.store.areas):
+            t = self.terrain.get(a.name)
+            if a.is_navigation or t is None:
+                continue
+            eff = self.settings.effective(a.name)
+            s = t.summary(str(eff.get('slope_mode', 'off')),
+                          float(eff.get('slope_contour_above_deg', 10.0)),
+                          self._area_inside_mask(a.name, t))
+            s['area_index'] = idx
+            out['areas'].append(s)
+        return out
+
+    def publish_terrain(self):
+        """Traction grid (score 0..100, -1 never driven and no incident), the nav
+        cost grid and the JSON summary, all on the keepout-mask grid."""
+        import numpy as np
+        spec = self.spec
+        score = np.full((spec.height, spec.width), -1, np.int16)
+        cost = np.zeros((spec.height, spec.width), np.int16)
+        for t in self.terrain.values():
+            sc = t.raster.traction_score()
+            known = np.where((t.raster.seen > 0) | (sc >= 1.0), np.round(sc), -1)
+            terr.stamp_into(score, (spec.origin_x, spec.origin_y), spec.resolution, t.raster,
+                            known)
+            terr.stamp_into(cost, (spec.origin_x, spec.origin_y), spec.resolution, t.raster,
+                            terr.traction_cost(sc, float(self.p('terrain_cost_threshold')),
+                                               int(self.p('terrain_cost_max'))))
+        self.terrain_grid_pub.publish(self.grid_msg(spec, score))
+        self.terrain_cost_pub.publish(self.grid_msg(spec, cost))
+        self.terrain_summary_pub.publish(String(data=json.dumps(self.terrain_summary(),
+                                                               sort_keys=True)))
+        self.terrain_dirty = False
+
+    def srv_terrain_action(self, req, res):
+        try:
+            d = json.loads(req.settings_json or '{}')
+        except ValueError as exc:
+            res.success, res.message = False, 'invalid JSON: %s' % exc
+            return res
+        action = d.get('action')
+        cid = d.get('cluster_id')
+        idx = int(req.area_index)
+        areas = [(i, a) for i, a in enumerate(self.store.areas)
+                 if not a.is_navigation and a.name in self.terrain
+                 and (idx == aset.DEFAULTS_INDEX or i == idx)]
+        if not areas:
+            res.success, res.message = False, 'no terrain memory for area %d' % idx
+            return res
+        if action == 'clear':
+            for _, a in areas:
+                self.terrain[a.name].clear()
+            self.terrain_dirty = True
+            self.on_terrain_save_timer()
+            self.publish_terrain()
+            res.success, res.message = True, 'terrain traction memory cleared'
+            return res
+        if action not in ('keepout', 'confirm', 'dismiss') or not isinstance(cid, int):
+            res.success = False
+            res.message = 'action must be keepout|confirm|dismiss with an int cluster_id, or clear'
+            return res
+        for i, a in areas:
+            t = self.terrain[a.name]
+            cl = next((c for c in t.clusters() if c['id'] == cid), None)
+            if cl is None:
+                continue
+            if action == 'keepout':
+                name = 'terrain #%d (%s)' % (cid, ','.join(sorted(cl['kinds'])))
+                ok, msg = self.store.add_obstacle(i, cl['hull'], name, core.SOURCE_DIG)
+                if not ok:
+                    res.success, res.message = False, 'keep-out rejected: ' + msg
+                    return res
+                t.set_status(cl['ids'], 'keepout')
+                self.rebuild()
+                self.persist_best_effort('terrain keepout')
+                msg = 'cluster %d -> keep-out in area %d (%d points)' % (cid, i, len(cl['hull']))
+            else:
+                t.set_status(cl['ids'], 'confirmed' if action == 'confirm' else 'dismissed')
+                msg = 'cluster %d %sed' % (cid, action.rstrip('e'))
+            self.save_terrain_area(t)
+            self.publish_terrain()
+            self.get_logger().info('terrain: ' + msg)
+            res.success, res.message = True, msg
+            return res
+        res.success, res.message = False, 'no cluster %s' % cid
         return res
 
 

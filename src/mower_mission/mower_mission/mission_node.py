@@ -211,6 +211,8 @@ class MissionNode(Node):
         self._preview_pub = self.create_publisher(String, p['preview_summary_topic'], latched)
         self._mow_plan_pub = self.create_publisher(String, p['mow_plan_topic'], latched)
         self._mow_progress_pub = self.create_publisher(String, p['mow_progress_topic'], latched)
+        # terrain-memory incidents (mower_map map_server_node, docs/terrain_aware_planning.md)
+        self._incident_pub = self.create_publisher(String, '/mission/incident', 20)
         self._mp_plan_id = None       # plan id last published on ~/mow_plan
         self._mp_mission = None       # identity of the mission being timed
         self._mp_t0 = None            # monotonic start of that mission
@@ -648,6 +650,10 @@ class MissionNode(Node):
             self._preview_pub.publish(String(data=json.dumps(e.summary, sort_keys=True)))
         elif isinstance(e, f.SaveAlternateCounts):
             self._save_alternate(e.counts)
+        elif isinstance(e, f.RecordIncident):
+            self._incident_pub.publish(String(data=json.dumps(
+                {'kind': e.kind, 'x': e.x, 'y': e.y, 'detail': e.detail,
+                 'state': self.fsm.phase}, sort_keys=True)))
 
     def _publish_status_now(self):
         with self._lock:

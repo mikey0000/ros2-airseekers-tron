@@ -51,6 +51,11 @@ var topicMap = map[string]topicDef{
 	"emergency":           {"/hardware_bridge/emergency", "mowgli_interfaces/msg/Emergency"}, // safety-critical
 	"lidar":               {"/scan", "sensor_msgs/msg/LaserScan"},                            // large message
 	"mowProgress":         {"/map_server_node/mow_progress", "nav_msgs/msg/OccupancyGrid"},   // mowed-area overlay (large)
+	// Terrain memory (map server): per-cell traction score grid (0..100, -1 =
+	// no data; same grid as mowProgress) and latched JSON summary of slope +
+	// incident clusters per area.
+	"terrainGrid":         {"/map_server_node/terrain_grid", "nav_msgs/msg/OccupancyGrid"},
+	"terrainSummary":      {"/map_server_node/terrain_summary", "std_msgs/msg/String"},
 	"lidarMap":            {"/fusion_graph/lidar_map", "nav_msgs/msg/OccupancyGrid"},         // fusion_graph LiDAR anchor map (large, latched)
 	"diagnostics":         {"/diagnostics", "diagnostic_msgs/msg/DiagnosticArray"},
 	"fusionDiag":          {"/fusion_graph/diagnostics", "diagnostic_msgs/msg/DiagnosticArray"},

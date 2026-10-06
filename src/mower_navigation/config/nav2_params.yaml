@@ -496,7 +496,7 @@ global_costmap:
       # the update bounds, so KeepoutFilter.process() never touches a cell and the
       # costmap stayed all-free (verified on the robot 2026-10-06). In a rolling
       # window StaticLayer re-applies its full extent every cycle.
-      plugins: ["static_layer", "inflation_layer"]
+      plugins: ["static_layer", "terrain_layer", "inflation_layer"]
       filters: ["keepout_filter"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -506,6 +506,20 @@ global_costmap:
         map_topic: /nav_keepout_mask
         map_subscribe_transient_local: true
         subscribe_to_updates: false
+        transform_tolerance: 0.5
+      # Terrain memory (mower_map map_server_node ~/terrain_cost, latched, same grid as
+      # the nav mask): 0..terrain_cost_max (60) from the traction score of cells where
+      # the mower got stuck / slipped (docs/terrain_aware_planning.md). Non-trinary so
+      # 60 -> cost 152 (a detour preference, never lethal: lethal is >= 100 here);
+      # use_maximum so it only ever raises the nav-mask cost.
+      terrain_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        enabled: true
+        map_topic: /map_server_node/terrain_cost
+        map_subscribe_transient_local: true
+        subscribe_to_updates: false
+        trinary_costmap: false
+        use_maximum: true
         transform_tolerance: 0.5
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"

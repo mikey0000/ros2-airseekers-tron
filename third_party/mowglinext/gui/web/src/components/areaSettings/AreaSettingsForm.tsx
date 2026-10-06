@@ -9,6 +9,8 @@ import {
     ROUTE_ORDERS,
     TURN_TYPES,
     OBSTACLE_DETECTIONS,
+    type AreaSlopeDerived,
+    type SlopeMode,
 } from "../../utils/areaSettings.ts";
 import {PathModeCards} from "./PathModeCards.tsx";
 import {AnglePicker} from "./AnglePicker.tsx";
@@ -50,7 +52,9 @@ export const AreaSettingsForm: React.FC<{
     disabled?: boolean;
     /** Keys this area overrides; when given, each field shows custom vs inherited. */
     overridden?: Set<keyof AreaSettings>;
-}> = ({value, onChange, disabled, overridden}) => {
+    /** Read-only slope-derived mow angle from the map server (terrain memory). */
+    slopeDerived?: AreaSlopeDerived | null;
+}> = ({value, onChange, disabled, overridden, slopeDerived}) => {
     const {t} = useTranslation();
     const set = <K extends keyof AreaSettings>(k: K, v: AreaSettings[K]) => onChange({...value, [k]: v});
     const R = AREA_SETTINGS_RANGES;
@@ -90,6 +94,36 @@ export const AreaSettingsForm: React.FC<{
                                      onChange={(v) => typeof v === "number" && set("mow_angle_deg", v)}/>
                     </div>
                 </div>
+            </Field>
+
+            <Field label={t("areaSettings.slopeMode", "Slope-aware angle")} custom={c("slope_mode")}
+                   hint={t("areaSettings.slopeModeHint", "Only used when the mow angle is Auto; needs slope data from earlier mows.")}>
+                <Select data-testid="slope-mode" style={{width: "100%"}} disabled={disabled}
+                        value={value.slope_mode}
+                        onChange={(v: SlopeMode) => set("slope_mode", v)}
+                        options={[
+                            {value: "off", label: t("areaSettings.slopeModeOff", "Off")},
+                            {value: "auto", label: t("areaSettings.slopeModeAuto", "Auto")},
+                            {value: "contour", label: t("areaSettings.slopeModeContour", "Contour (across slope)")},
+                            {value: "updown", label: t("areaSettings.slopeModeUpdown", "Up-down")},
+                        ]}/>
+                {value.slope_mode === "auto" && (
+                    <div style={{display: "flex", alignItems: "center", gap: 8, marginTop: 8}}>
+                        <span style={{fontSize: 12}}>{t("areaSettings.slopeContourAbove", "Contour above")}</span>
+                        <InputNumber data-testid="slope-contour-above" size="small" addonAfter="°" style={{width: 110}}
+                                     min={R.slope_contour_above_deg.min} max={R.slope_contour_above_deg.max}
+                                     step={R.slope_contour_above_deg.step} disabled={disabled}
+                                     value={value.slope_contour_above_deg}
+                                     onChange={(v) => typeof v === "number" && set("slope_contour_above_deg", v)}/>
+                    </div>
+                )}
+                {slopeDerived && (
+                    <div data-testid="slope-derived" style={{fontSize: 12, marginTop: 6}}>
+                        {t("areaSettings.slopeChosen", "Slope angle")}:{" "}
+                        <strong>{slopeDerived.slope_mow_angle_deg === null ? "–" : `${Math.round(slopeDerived.slope_mow_angle_deg)}°`}</strong>
+                        {slopeDerived.slope_angle_why && <span style={{opacity: 0.7}}> ({slopeDerived.slope_angle_why})</span>}
+                    </div>
+                )}
             </Field>
 
             {value.path_mode === "alternate" && (

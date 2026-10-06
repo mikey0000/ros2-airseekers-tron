@@ -70,6 +70,19 @@ var areaRouteOrders = map[string]bool{"boustrophedon": true, "snake": true, "spi
 
 var areaTurnTypes = map[string]bool{"auto": true, "loop": true, "reverse": true, "pivot": true}
 
+var areaSlopeModes = map[string]bool{"off": true, "auto": true, "contour": true, "updown": true}
+
+// areaDerivedKeys are read-only values the map server adds to a GET response
+// (derived from terrain memory). They are dropped from a PUT so a client that
+// echoes the effective settings back does not get rejected.
+var areaDerivedKeys = []string{"slope_mow_angle_deg", "slope_angle_why"}
+
+func stripDerivedAreaKeys(s map[string]any) {
+	for _, k := range areaDerivedKeys {
+		delete(s, k)
+	}
+}
+
 var areaObstacleDetections = map[string]bool{"none": true, "standard": true, "sensitive": true}
 
 type numRange struct {
@@ -89,6 +102,7 @@ var areaNumericKeys = map[string]numRange{
 	"alternate_angle_offset_deg": {0, 180, false},
 	"route_spiral_size":          {2, 20, true},
 	"min_turn_radius_m":          {0, 2, false},
+	"slope_contour_above_deg":    {2, 30, false},
 }
 
 // validateAreaSettings checks every key against the contract. Unknown keys
@@ -98,7 +112,7 @@ func validateAreaSettings(s map[string]any) error {
 		if v == nil {
 			// null resets the key to its default (map server merge semantics).
 			if _, known := areaNumericKeys[k]; known || k == "path_mode" || k == "edge_first" ||
-				k == "route_order" || k == "turn_type" || k == "obstacle_detection" {
+				k == "route_order" || k == "turn_type" || k == "obstacle_detection" || k == "slope_mode" {
 				continue
 			}
 			return fmt.Errorf("unknown setting %q", k)
@@ -139,6 +153,11 @@ func validateAreaSettings(s map[string]any) error {
 			str, ok := v.(string)
 			if !ok || !areaObstacleDetections[str] {
 				return fmt.Errorf("obstacle_detection must be one of none, standard, sensitive")
+			}
+		case "slope_mode":
+			str, ok := v.(string)
+			if !ok || !areaSlopeModes[str] {
+				return fmt.Errorf("slope_mode must be one of off, auto, contour, updown")
 			}
 		case "edge_first":
 			if _, ok := v.(bool); !ok {
@@ -246,6 +265,7 @@ func AreaSettingsRoutes(group *gin.RouterGroup, provider types.IRosProvider) {
 			c.JSON(400, ErrorResponse{Error: "settings is required"})
 			return
 		}
+		stripDerivedAreaKeys(settings)
 		if err := validateAreaSettings(settings); err != nil {
 			c.JSON(400, ErrorResponse{Error: err.Error()})
 			return

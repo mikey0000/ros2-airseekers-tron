@@ -183,3 +183,34 @@ func TestAreaSettings_PutNullResetsAndReturnsEffective(t *testing.T) {
 	w, _ = doAreaSettings(t, types.NewMockRosProvider(), "PUT", "/api/mowglinext/areas/0/settings", map[string]any{"settings": map[string]any{"bogus": nil}})
 	assert.Equal(t, 400, w.Code)
 }
+
+func TestAreaSettings_PutSlopeKeysAndDropsDerived(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	mock.ServiceResponder = func(_ string, _ any, res any) {
+		r := res.(*setAreaSettingsRes)
+		r.Success = true
+		r.Message = `{"slope_mode":"contour"}`
+	}
+	w, _ := doAreaSettings(t, mock, "PUT", "/api/mowglinext/areas/1/settings", map[string]any{"settings": map[string]any{
+		"slope_mode": "contour", "slope_contour_above_deg": 12.5,
+		"slope_mow_angle_deg": 30, "slope_angle_why": "contour",
+	}})
+	require.Equal(t, 200, w.Code)
+	require.Len(t, mock.ServiceCalls, 1)
+	sent := map[string]any{}
+	require.NoError(t, json.Unmarshal([]byte(mock.ServiceCalls[0].Req.(*setAreaSettingsReq).SettingsJSON), &sent))
+	assert.Equal(t, map[string]any{"slope_mode": "contour", "slope_contour_above_deg": 12.5}, sent)
+}
+
+func TestAreaSettings_PutRejectsBadSlope(t *testing.T) {
+	for _, s := range []map[string]any{
+		{"slope_mode": "diagonal"},
+		{"slope_contour_above_deg": 1},
+		{"slope_contour_above_deg": 31},
+	} {
+		mock := types.NewMockRosProvider()
+		w, _ := doAreaSettings(t, mock, "PUT", "/api/mowglinext/areas/0/settings", map[string]any{"settings": s})
+		assert.Equal(t, 400, w.Code, "%v", s)
+		assert.Len(t, mock.ServiceCalls, 0)
+	}
+}

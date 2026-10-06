@@ -14,6 +14,9 @@ export type TurnType = typeof TURN_TYPES[number];
 /** Obstacle detection sensitivity: none = bumper only. */
 export const OBSTACLE_DETECTIONS = ["none", "standard", "sensitive"] as const;
 export type ObstacleDetection = typeof OBSTACLE_DETECTIONS[number];
+/** Slope-aware mow angle (terrain memory; only used when mow_angle_deg is auto). */
+export const SLOPE_MODES = ["off", "auto", "contour", "updown"] as const;
+export type SlopeMode = typeof SLOPE_MODES[number];
 
 export type AreaSettings = {
     cutter_height_mm: number;
@@ -36,7 +39,31 @@ export type AreaSettings = {
     min_turn_radius_m: number;
     turn_type: TurnType;
     obstacle_detection: ObstacleDetection;
+    slope_mode: SlopeMode;
+    /** Contour (across the slope) above this slope in "auto" slope mode, degrees. */
+    slope_contour_above_deg: number;
 };
+
+/**
+ * Read-only values the map server derives from terrain memory and adds to a
+ * GET response. Never sent back (sanitizeAreaSettings drops them; the backend
+ * also strips them from a PUT).
+ */
+export type AreaSlopeDerived = {
+    slope_mow_angle_deg: number | null;
+    slope_angle_why: string;
+};
+
+export function extractSlopeDerived(raw: unknown): AreaSlopeDerived | null {
+    if (!raw || typeof raw !== "object") return null;
+    const r = raw as Record<string, unknown>;
+    if (!("slope_mow_angle_deg" in r) && !("slope_angle_why" in r)) return null;
+    const a = r.slope_mow_angle_deg;
+    return {
+        slope_mow_angle_deg: typeof a === "number" && Number.isFinite(a) ? a : null,
+        slope_angle_why: typeof r.slope_angle_why === "string" ? r.slope_angle_why : "",
+    };
+}
 
 export type AreaSettingsKey = keyof AreaSettings;
 
@@ -57,6 +84,8 @@ export const AREA_SETTINGS_DEFAULTS: AreaSettings = {
     min_turn_radius_m: 0.5,
     turn_type: "auto",
     obstacle_detection: "standard",
+    slope_mode: "off",
+    slope_contour_above_deg: 10,
 };
 
 export const AREA_SETTINGS_RANGES = {
@@ -70,6 +99,7 @@ export const AREA_SETTINGS_RANGES = {
     alternate_angle_offset_deg: {min: 0, max: 180, step: 5},
     route_spiral_size: {min: 2, max: 20, step: 1},
     min_turn_radius_m: {min: 0, max: 2, step: 0.05},
+    slope_contour_above_deg: {min: 2, max: 30, step: 0.5},
 } as const;
 
 export const MOW_ANGLE_AUTO = -1;
@@ -91,6 +121,7 @@ export function sanitizeAreaSettings(raw: unknown): Partial<AreaSettings> {
         if (k === "route_order" && !ROUTE_ORDERS.includes(v as RouteOrder)) continue;
         if (k === "turn_type" && !TURN_TYPES.includes(v as TurnType)) continue;
         if (k === "obstacle_detection" && !OBSTACLE_DETECTIONS.includes(v as ObstacleDetection)) continue;
+        if (k === "slope_mode" && !SLOPE_MODES.includes(v as SlopeMode)) continue;
         (out as Record<string, unknown>)[k] = v;
     }
     return out;
@@ -115,6 +146,8 @@ export function invalidAreaSettingKey(s: Partial<AreaSettings>): AreaSettingsKey
             if (!TURN_TYPES.includes(v as TurnType)) return k;
         } else if (k === "obstacle_detection") {
             if (!OBSTACLE_DETECTIONS.includes(v as ObstacleDetection)) return k;
+        } else if (k === "slope_mode") {
+            if (!SLOPE_MODES.includes(v as SlopeMode)) return k;
         } else if (k === "edge_first") {
             if (typeof v !== "boolean") return k;
         } else if (k === "mow_angle_deg") {

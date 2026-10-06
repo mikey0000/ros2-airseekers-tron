@@ -72,6 +72,9 @@ import {MissionStatusLine} from "./map/components/MissionStatusLine.tsx";
 import {useTopic} from "../hooks/useTopic.ts";
 import {CMD_RECORD_PATH, recordingKind} from "../utils/missionStates.ts";
 import type {AbsolutePose} from "../types/ros.ts";
+import {postTerrainAction, useTerrainSummary} from "../hooks/useTerrain.ts";
+import {TerrainCard} from "./map/components/TerrainCard.tsx";
+import {TERRAIN_STATUS_COLORS} from "../utils/terrain.ts";
 
 
 // Mapbox access token comes from the build env only — no hardcoded fallback.
@@ -83,7 +86,7 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined || 
 // highlight (map polygon → panel row). Module-level so the array identity is
 // stable across renders and react-map-gl does not re-bind the query on every
 // render.
-const DYN_OBSTACLE_INTERACTIVE_LAYERS = ['dyn-obstacle-fill', 'dock-corridor-fill'];
+const DYN_OBSTACLE_INTERACTIVE_LAYERS = ['dyn-obstacle-fill', 'dock-corridor-fill', 'terrain-cluster-circle'];
 
 /** Drive view: the map shrinks to an inset (top-right, clear of both joystick corners). */
 const DRIVE_VIEW_MAP_INSET: React.CSSProperties = {
@@ -289,7 +292,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
 
     const [mowingAreas, setMowingAreas] = useState<{ key: string, label: string, feat: Feature }[]>([])
 
-    const {map, setMap, path, plan, lidarCollection, mowProgressImage, lidarMapImage, highLevelStatus, joyStream, dynamicObstacles, robotMarkerCorners, robotMarker} = useMapStreams({
+    const {map, setMap, path, plan, lidarCollection, mowProgressImage, terrainImage, lidarMapImage, highLevelStatus, joyStream, dynamicObstacles, robotMarkerCorners, robotMarker} = useMapStreams({
         editMap,
         settings,
         offsetX,
@@ -475,6 +478,44 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         }]};
     }, [dockCorridorPts, offsetX, offsetY, datum]);
     const [corridorHover, setCorridorHover] = useState<{lng: number; lat: number} | null>(null);
+    // Terrain memory (map server): incident clusters + per-area slope axis.
+    const terrainSummary = useTerrainSummary(!compact);
+    const [terrainSel, setTerrainSel] = useState<{area: number; id: number} | null>(null);
+    const [terrainCardHidden, setTerrainCardHidden] = useState(false);
+    const terrainCollection = useMemo<FeatureCollection>(() => {
+        const features: Feature[] = [];
+        if (!terrainSummary || datum[0] === 0) return {type: "FeatureCollection", features};
+        const tp = (x: number, y: number) => transpose(offsetX, offsetY, datum, y, x);
+        for (const a of terrainSummary.areas) {
+            for (const c of a.clusters ?? []) {
+                const selected = terrainSel?.area === a.area_index && terrainSel?.id === c.id;
+                const color = TERRAIN_STATUS_COLORS[c.status] ?? "#ff9f1a";
+                features.push({type: "Feature", properties: {kind: "cluster", area_index: a.area_index, cluster_id: c.id,
+                    color, selected: selected ? 1 : 0, label: String(c.n)},
+                    geometry: {type: "Point", coordinates: tp(c.x, c.y)}});
+                if (c.hull && c.hull.length >= 3) {
+                    const ring = c.hull.map(([hx, hy]) => tp(hx, hy));
+                    ring.push(ring[0]);
+                    features.push({type: "Feature", properties: {kind: "hull", color, selected: selected ? 1 : 0},
+                        geometry: {type: "LineString", coordinates: ring}});
+                }
+            }
+            if (a.slope && Number.isFinite(a.slope.axis_deg)) {
+                const pos = (map?.working_area ?? []).findIndex((_, i) => mowingAreaIndex(map, i) === a.area_index);
+                const pts = pos >= 0 ? map?.working_area?.[pos]?.area?.points ?? [] : [];
+                if (pts.length < 3) continue;
+                const cx = pts.reduce((sum, p) => sum + (p.x ?? 0), 0) / pts.length;
+                const cy = pts.reduce((sum, p) => sum + (p.y ?? 0), 0) / pts.length;
+                // axis_deg: map-frame (ENU, CCW from +x) downhill/uphill axis folded to [0, 180).
+                const r = a.slope.axis_deg * Math.PI / 180, L = 3;
+                const dx = Math.cos(r) * L, dy = Math.sin(r) * L;
+                features.push({type: "Feature", properties: {kind: "slope", label: `${a.slope.slope_deg.toFixed(1)}°`},
+                    geometry: {type: "LineString", coordinates: [tp(cx - dx, cy - dy), tp(cx + dx, cy + dy)]}});
+            }
+        }
+        return {type: "FeatureCollection", features};
+    }, [terrainSummary, terrainSel, map, offsetX, offsetY, datum]);
+    const terrainHasData = !!terrainSummary && terrainSummary.areas.some((a) => (a.clusters?.length ?? 0) > 0 || a.slope);
 
     useEffect(() => {
         // Don't rebuild features from stream data while in edit mode —
@@ -913,7 +954,13 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         [features, openAreaSettingsForFeature],
     );
 
-    const handleMapClick = useCallback((e: {lngLat: {lng: number; lat: number}}) => {
+    const handleMapClick = useCallback((e: {lngLat: {lng: number; lat: number}; features?: {properties?: Record<string, unknown> | null}[]}) => {
+        const tc = e.features?.find((f) => f.properties?.kind === "cluster");
+        if (!dockPlacementMode && !editMap && tc) {
+            setTerrainSel({area: Number(tc.properties?.area_index), id: Number(tc.properties?.cluster_id)});
+            setTerrainCardHidden(false);
+            return;
+        }
         if (!dockPlacementMode) {
             if (editMap || !areaSettings.enabled) return;
             const pt: [number, number] = [e.lngLat.lng, e.lngLat.lat];
@@ -1480,6 +1527,16 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             }}/>
                         </Source>
                     )}
+                    {/* Terrain memory: traction score per cell (yellow -> red), just below mow progress. */}
+                    {terrainImage && (
+                        <Source type={"image"} id={"terrain-grid"} url={terrainImage.url} coordinates={terrainImage.coordinates}>
+                            <Layer type={"raster"} id={"terrain-grid-layer"} paint={{
+                                "raster-opacity": 0.75,
+                                "raster-fade-duration": 0,
+                                "raster-resampling": "nearest",
+                            }}/>
+                        </Source>
+                    )}
                     {mowProgressImage && (
                         <Source type={"image"} id={"mow-progress"} url={mowProgressImage.url} coordinates={mowProgressImage.coordinates}>
                             <Layer type={"raster"} id={"mow-progress-layer"} paint={{
@@ -1488,6 +1545,23 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             }}/>
                         </Source>
                     )}
+                    {/* Terrain memory: incident cluster hulls/markers + per-area slope axis. */}
+                    <Source type={"geojson"} id={"terrain-features"} data={terrainCollection}>
+                        <Layer type={"line"} id={"terrain-cluster-hull"} filter={['==', ['get', 'kind'], 'hull']}
+                            paint={{'line-color': ['get', 'color'], 'line-width': ['case', ['==', ['get', 'selected'], 1], 3, 1.5], 'line-dasharray': [2, 2]}}/>
+                        <Layer type={"line"} id={"terrain-slope-line"} filter={['==', ['get', 'kind'], 'slope']}
+                            layout={{'line-cap': 'round'}}
+                            paint={{'line-color': '#4dabf7', 'line-width': 2.5}}/>
+                        <Layer type={"symbol"} id={"terrain-slope-label"} filter={['==', ['get', 'kind'], 'slope']}
+                            layout={{'text-field': ['get', 'label'], 'symbol-placement': 'line-center', 'text-size': 12, 'text-allow-overlap': true}}
+                            paint={{'text-color': '#ffffff', 'text-halo-color': '#1c7ed6', 'text-halo-width': 1.5}}/>
+                        <Layer type={"circle"} id={"terrain-cluster-circle"} filter={['==', ['get', 'kind'], 'cluster']}
+                            paint={{'circle-radius': ['case', ['==', ['get', 'selected'], 1], 9, 7], 'circle-color': ['get', 'color'],
+                                'circle-opacity': 0.9, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': ['case', ['==', ['get', 'selected'], 1], 2.5, 1]}}/>
+                        <Layer type={"symbol"} id={"terrain-cluster-label"} filter={['==', ['get', 'kind'], 'cluster']}
+                            layout={{'text-field': ['get', 'label'], 'text-size': 10, 'text-allow-overlap': true}}
+                            paint={{'text-color': '#000000'}}/>
+                    </Source>
                     {/* Live mow progress on the plan + the robot's actual track (last 5 min). */}
                     <Source type={"geojson"} id={"mow-live"} data={liveCollection}>
                         <Layer type={"line"} id={"mow-live-remaining"} filter={['==', ['get', 'kind'], 'remaining']}
@@ -1592,6 +1666,20 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     </div>
                 )}
                 {previewCard}
+                {!compact && !editMap && terrainSummary && terrainHasData && (terrainCardHidden ? (
+                    <Button size="small" style={{position: 'absolute', zIndex: 15, ...(isMobile ? {top: 64, right: 12} : {top: 72, left: 16})}}
+                            onClick={() => setTerrainCardHidden(false)}>Terrain</Button>
+                ) : (
+                    <div style={{position: 'absolute', zIndex: 15, ...(isMobile ? {top: 64, right: 12} : {top: 72, left: 16}), maxWidth: 340, background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow, borderRadius: 14, padding: '8px 12px'}}>
+                        <TerrainCard
+                            summary={terrainSummary}
+                            selected={terrainSel}
+                            onSelect={setTerrainSel}
+                            onAction={(action, area, id) => postTerrainAction(guiApi, action, area, id)}
+                            onDismiss={() => setTerrainCardHidden(true)}
+                        />
+                    </div>
+                ))}
                 {editMap && !pathTool.editing && features["dock"] instanceof DockFeatureBase && (
                     <DockHeadingPanel
                         heading={(features["dock"] as DockFeatureBase).getHeading()}

@@ -20,6 +20,7 @@ import {
 } from "../../../types/map.ts";
 import { drawLine, drawRobotSilhouette, transpose } from "../../../utils/map.tsx";
 import { rasterizeMowProgress } from "../../../utils/mowProgress.ts";
+import { rasterizeTerrain } from "../../../utils/terrain.ts";
 import { rasterizeLidarMap } from "../../../utils/lidarMap.ts";
 import { GridImage, useGridImageStream } from "./useGridImageStream.ts";
 import { useRobotDescription } from "../../../hooks/useRobotDescription.ts";
@@ -207,6 +208,7 @@ export function useMapStreams({
     // Mow-progress overlay and the LiDAR anchor map are both OccupancyGrids
     // rasterized off the message handler (see useGridImageStream).
     const mowProgress = useGridImageStream(rasterizeMowProgress, offsetX, offsetY, datum);
+    const terrain = useGridImageStream(rasterizeTerrain, offsetX, offsetY, datum);
     const lidarMap = useGridImageStream(rasterizeLidarMap, offsetX, offsetY, datum);
     // Once fusion_graph publishes its LiDAR map the map REPLACES the raw scan
     // points: the points are what the map is built from, and drawing both just
@@ -396,6 +398,7 @@ export function useMapStreams({
             if (lidarLayersRef.current) lidarStream.start("/api/mowglinext/subscribe/lidar");
             obstaclesStream.start("/api/mowglinext/subscribe/obstacles");
             mowProgress.stream.start("/api/mowglinext/subscribe/mowProgress");
+            terrain.stream.start("/api/mowglinext/subscribe/terrainGrid");
             if (lidarLayersRef.current) lidarMap.stream.start("/api/mowglinext/subscribe/lidarMap");
         }
     }, [editMap]);
@@ -462,6 +465,7 @@ export function useMapStreams({
         if (lidarLayersRef.current) lidarStream.start("/api/mowglinext/subscribe/lidar");
         obstaclesStream.start("/api/mowglinext/subscribe/obstacles");
         mowProgress.stream.start("/api/mowglinext/subscribe/mowProgress");
+        terrain.stream.start("/api/mowglinext/subscribe/terrainGrid");
         if (lidarLayersRef.current) lidarMap.stream.start("/api/mowglinext/subscribe/lidarMap");
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [settings["datum_lon"], settings["datum_lat"]]);
@@ -497,7 +501,9 @@ export function useMapStreams({
             lidarRender.cancel();
             obstaclesStream.stop();
             mowProgress.stream.stop();
+            terrain.stream.stop();
             mowProgress.cancel();
+            terrain.cancel();
             lidarMap.stream.stop();
             lidarMap.cancel();
             recordingTrajectoryStream.stop();
@@ -513,6 +519,7 @@ export function useMapStreams({
         plan,
         lidarCollection,
         mowProgressImage: mowProgress.image,
+        terrainImage: terrain.image,
         lidarMapImage: lidarLayers ? lidarMap.image : null,
         highLevelStatus,
         joyStream,

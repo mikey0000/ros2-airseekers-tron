@@ -41,6 +41,10 @@ DEFAULT_TOPICS = [
     '/map_server_node/boundary_status|std_msgs/msg/String',
     '/cmd_vel_slew/gate_status|std_msgs/msg/String|latched',
     '/fix_status|std_msgs/msg/String',
+    # terrain memory inputs (offline re-import of a mow, docs/terrain_aware_planning.md)
+    '/dig_stall|std_msgs/msg/Bool|latched',
+    '/mission/incident|std_msgs/msg/String',
+    '/map_server_node/terrain_summary|std_msgs/msg/String|latched',
 ]
 
 

@@ -8,6 +8,8 @@ import {
     DEFAULTS_INDEX,
     parseStringMsgJson,
     sanitizeAreaSettings,
+    extractSlopeDerived,
+    type AreaSlopeDerived,
 } from "../utils/areaSettings.ts";
 
 /** Merge patch: a key set to null resets it to the default. */
@@ -19,6 +21,8 @@ export type AreaSettingsTarget = number | "defaults";
 export type AreaSettingsResult = {
     supported: boolean;
     settings: Partial<AreaSettings>;
+    /** Read-only slope-derived values (terrain memory), when the map server sends them. */
+    derived?: AreaSlopeDerived | null;
 };
 
 export class AreaSettingsUnsupportedError extends Error {
@@ -43,7 +47,7 @@ export async function fetchAreaSettings(api: Api<unknown>, target: AreaSettingsT
         const res = await api.request<{supported: boolean; settings: unknown}>({
             path: pathFor(target), method: "GET", format: "json",
         });
-        return {supported: res.data?.supported !== false, settings: sanitizeAreaSettings(res.data?.settings)};
+        return {supported: res.data?.supported !== false, settings: sanitizeAreaSettings(res.data?.settings), derived: extractSlopeDerived(res.data?.settings)};
     } catch (e) {
         if ((e as HttpLike)?.status === 501) return {supported: false, settings: {}};
         throw new Error(errorMessage(e));
@@ -131,7 +135,7 @@ export function useAreaSettings(target: AreaSettingsTarget | null) {
     const api = useApi();
     const [state, setState] = useState<{
         loading: boolean; supported: boolean; effective: Partial<AreaSettings>;
-        defaults: Partial<AreaSettings>; error?: string;
+        defaults: Partial<AreaSettings>; derived?: AreaSlopeDerived | null; error?: string;
     }>({loading: true, supported: true, effective: {}, defaults: {}});
     const [nonce, setNonce] = useState(0);
 
@@ -149,6 +153,7 @@ export function useAreaSettings(target: AreaSettingsTarget | null) {
                     supported: defaults.supported && own.supported,
                     defaults: defaults.settings,
                     effective: own.settings,
+                    derived: own.derived ?? null,
                 });
             } catch (e) {
                 if (!cancelled) setState((s) => ({...s, loading: false, error: errorMessage(e)}));

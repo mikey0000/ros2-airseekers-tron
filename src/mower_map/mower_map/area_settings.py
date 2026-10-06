@@ -45,6 +45,11 @@ TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
 # stereo costmap only, standard = 1.0 m ranged / near side boxes while turning,
 # sensitive = 1.5 m, lower score, any camera.
 OBSTACLE_DETECTION_LEVELS = ('none', 'standard', 'sensitive')
+# Slope-aware swath angle (terrain memory, docs/terrain_aware_planning.md), only
+# used while mow_angle_deg is auto: off = planner's own choice; contour = swaths
+# across the fall line; updown = along it; auto = contour at/above
+# slope_contour_above_deg, up/down below.
+SLOPE_MODES = ('off', 'auto', 'contour', 'updown')
 
 BUILTIN_DEFAULTS = {
     'cutter_height_mm': 50,
@@ -69,6 +74,8 @@ BUILTIN_DEFAULTS = {
     'min_turn_radius_m': 0.5,
     'turn_type': 'auto',
     'obstacle_detection': 'standard',
+    'slope_mode': 'off',
+    'slope_contour_above_deg': 10.0,
 }
 
 # key -> (kind, min, max). kind: int | float | bool | enum
@@ -89,6 +96,8 @@ SPEC = {
     'min_turn_radius_m': ('float', 0.0, 2.0),      # 0 = pivot in place
     'turn_type': ('enum', TURN_TYPES, None),
     'obstacle_detection': ('enum', OBSTACLE_DETECTION_LEVELS, None),
+    'slope_mode': ('enum', SLOPE_MODES, None),
+    'slope_contour_above_deg': ('float', 2.0, 30.0),
 }
 
 FILE_NAME = 'area_settings.yaml'
