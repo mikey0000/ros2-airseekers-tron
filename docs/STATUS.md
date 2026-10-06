@@ -148,6 +148,32 @@ Verified live on the mower with the stack running from Docker (`mower:humble`, `
 Still to verify: cutter command (speed/height scale), rain/bumper/stop inputs, RTK fix with the LoRa base or NTRIP,
 dock contact (`is_docking_done`) and charging, side cameras through the rkisp pipeline, rear camera stream.
 
+
+## GUI and operations, later on 2026-10-06
+
+- MowgliNext GUI adapted for Tron in an upstreamable way (see `docs/gui_tasklist.md`, 43 tasks, all but the
+  sim-only verification done): robot profiles (`ROBOT_PROFILE=AirseekersTron` or `mower_model`), feature
+  gating (no LiDAR/STM32/docker UI on Tron), Perception page (camera MJPEG via the GUI's `/api/cameras` proxy
+  to web_video_server :8080, detections, obstacle badge), GNSS corrections cards (LoRa/NTRIP source, flow,
+  age) + LoRa pairing, settings -> ROS parameter bindings (live via foxglove parameters, persisted in the
+  device-owned `config/gui/mowgli_robot.yaml` and loaded by `launch/mower.launch.py`), `/rosout` logs,
+  profile-aware onboarding, vision-dock card, datum set-from-GPS (`set_datum` writes `/userdata/ros2/datum.env`
+  + the GUI yaml and calls robot_localization `/datum`), router/layout fixes. Build: `ARCH=arm64 ./gui/build.sh`,
+  ship with `docker save mower-gui:arm64 | ssh ... docker load`, recreate `mower_gui`.
+- `config/gui/mowgli_robot.yaml` is DEVICE-OWNED: `deploy_to_mower.sh sync` excludes it (seed:
+  `config/gui/mowgli_robot.yaml.seed`).
+- Fast DDS leaks shared-memory segments on every restart; a full host `/dev/shm` (bind-mounted) broke every
+  node and pushed the load to 50. Compose now wipes `/dev/shm/fastrtps_*` before launch.
+- Idle CPU of the Python nodes cut from ~2.6 cores to ~0.5 (`sub_pump.py`: one wait-set thread, sampled
+  inputs, pre-serialized publishing); second pass on cameras/IMU/LEDs and mower_control in progress.
+- MCU driver: proportional brake on measured speed when commanded 0 (gain 0.5, deadband 0.02 m/s /
+  0.05 rad/s, only with fresh measurements), `speed_stream_enabled` toggle (sends one final 0,0 when turned
+  off; the MCU keeps the last setpoint while heartbeats continue). 60 s at rest: exact zeros on the wire, no
+  motor motion, no odometry drift.
+- NTRIP: nothing configured yet (vendor file empty; the vendor source tree only holds the vendor's expired
+  China Mobile CORS test accounts, not usable). Enter the provider in the GUI's NTRIP section (applied live +
+  at boot) or `/userdata/mower/ntrip.yaml`.
+
 ## Open risks
 
 - GPLv3: the GUI and `mowgli_interfaces` are GPL-3.0 with a commercial option. Fine for personal use; a product decision later.
