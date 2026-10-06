@@ -1,5 +1,6 @@
 // Pure-geometry gtests for the mower_coverage planner core, run against the
-// REAL Fields2Cover 2.1.0 library — no robot, no ROS node. The point is to
+// REAL Fields2Cover library (v3 by default, apt 2.1.0 with F2C_V3=OFF) — no
+// robot, no ROS node. The point is to
 // catch a broken plan (empty / out-of-bounds / non-serpentine / hole-crossing)
 // in CI instead of on the robot.
 //
@@ -842,5 +843,48 @@ TEST(CoveragePlanning, PathModesStayBridgeCompatible) {
     for (size_t i = 1; i < segs.size(); ++i) {
       EXPECT_GT(ptDist(segs[i - 1].back(), segs[i].front()), 1e-6);
     }
+  }
+}
+
+// The node plans with border_inset = op_width / 2 + boundary_inset_m (default
+// 0.15): every OUTER ring point and every swath end must then sit at least
+// that far inside the recorded boundary, so tracking error does not put the
+// chassis outside the line.
+TEST(CoveragePlanning, NodeBoundaryInsetKeepsOuterRingInside) {
+  const double op = kNodeOpWidth;
+  const double inset = op / 2.0 + 0.15;
+  const auto plan = mower_coverage::planCoverage(
+      mower_coverage::makeFieldCell(kRect10x6, {}), op, kNodeHeadlandWidth,
+      /*headland_passes=*/2, inset, /*mow_angle_rad=*/-1.0, kMinSwath,
+      mower_coverage::PathMode::kZigzag, /*edge_first=*/true);
+  ASSERT_FALSE(plan.rings.empty());
+  ASSERT_FALSE(plan.swaths.empty());
+  auto edgeDist = [](const Point2D& p) {
+    return std::min({p.first, 10.0 - p.first, p.second, 6.0 - p.second});
+  };
+  double min_ring = 1e9;
+  for (const auto& p : plan.rings.front()) min_ring = std::min(min_ring, edgeDist(p));
+  EXPECT_NEAR(min_ring, inset, 0.01);
+  for (const auto& r : plan.rings)
+    for (const auto& p : r) EXPECT_GE(edgeDist(p), inset - 0.01);
+  for (const auto& s : plan.swaths) {
+    EXPECT_GE(edgeDist(s.first), inset - 0.01);
+    EXPECT_GE(edgeDist(s.second), inset - 0.01);
+  }
+}
+
+// min_turn_radius 0 (diff-drive pivot) inserts nothing; > 0 on F2C v3 yields
+// a Dubins connector whose points stay near the two swath ends.
+TEST(CoveragePlanning, TurnPlannerPivotAndDubins) {
+  EXPECT_TRUE(mower_coverage::planTurn({0, 0}, 0.0, {0, 0.5}, M_PI, 0.18, 0.0).empty());
+  const auto turn =
+      mower_coverage::planTurn({0, 0}, 0.0, {0, 0.5}, M_PI, 0.18, 0.25);
+  if (!mower_coverage::builtWithF2CV3()) {
+    EXPECT_TRUE(turn.empty());
+    return;
+  }
+  ASSERT_GE(turn.size(), 3u);
+  for (const auto& p : turn) {
+    EXPECT_LT(std::hypot(p.first, p.second - 0.25), 1.0);
   }
 }

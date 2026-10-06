@@ -10,6 +10,14 @@
 # No ros1_bridge here on purpose: bridging (Noetic<->Humble, custom mower_msgs)
 # is a separate from-source build; see ../docs/deployment.md.
 
+# Fields2Cover v3 install tree, prebuilt ONCE by docker/fields2cover/Dockerfile
+# (scripts/build_f2c.sh) so this image never compiles F2C. F2C_V3=0 falls back
+# to the apt ros-humble-fields2cover 2.1.0 (then build mower_coverage with
+# --cmake-args -DF2C_V3=OFF). The F2C image must exist locally even when
+# F2C_V3=0 (COPY --from is unconditional; it is ~15 MB).
+ARG F2C_IMAGE=mower-f2c:v3-arm64
+FROM ${F2C_IMAGE} AS f2c
+
 FROM --platform=linux/arm64 ros:humble-ros-base-jammy
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -39,7 +47,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-humble-ros-base \
       ros-humble-nav2-bringup \
       ros-humble-robot-localization \
-      ros-humble-fields2cover \
+      ros-humble-ortools-vendor \
+      libgdal-dev libgeos-dev libtbb-dev libtinyxml2-dev \
       ros-humble-grid-map-ros \
       ros-humble-grid-map-msgs \
       ros-humble-grid-map-cv \
@@ -78,6 +87,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Jammy's python3-websockets (9.1) is broken on Python 3.10 (asyncio Lock(loop=) removed):
 # every connection raises TypeError. The teleop relay / GUI bridge need websockets >= 10.
 RUN pip3 install --no-cache-dir 'websockets>=12,<14'
+
+# Fields2Cover: v3 from the prebuilt layer (default) or apt 2.1 (F2C_V3=0).
+# Never both: the 2.1 deb's unversioned libFields2Cover.so in /opt/ros/humble
+# would shadow v3 through LD_LIBRARY_PATH.
+ARG F2C_V3=1
+COPY --from=f2c /opt/fields2cover /opt/fields2cover
+RUN if [ "$F2C_V3" = 1 ]; then \
+      echo /opt/fields2cover/lib > /etc/ld.so.conf.d/fields2cover.conf && ldconfig; \
+    else \
+      rm -rf /opt/fields2cover && apt-get update \
+      && apt-get install -y --no-install-recommends ros-humble-fields2cover \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 
 # rosdep (guarded: rebuild cache is refreshed at build time, not on device)
 RUN (rosdep init || true) && rosdep update || true

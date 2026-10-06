@@ -119,8 +119,11 @@ class MowerCoverageNode : public rclcpp::Node {
     const double min_swath_length = request->min_swath_length > 0.0
                                         ? request->min_swath_length
                                         : kDefaultMinSwathLength;
-    const double border_inset =
-        std::max(0.0, get_parameter("border_inset_m").as_double());
+    // Outer ring centreline inset from the recorded boundary: the larger of the
+    // absolute border_inset_m and blade-edge boundary_inset_m + half a swath.
+    const double border_inset = std::max(
+        std::max(0.0, get_parameter("border_inset_m").as_double()),
+        op_width / 2.0 + boundary_inset_);
     const double mow_angle_rad =
         request->mow_angle_deg >= 0.0
             ? request->mow_angle_deg * M_PI / 180.0

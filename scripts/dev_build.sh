@@ -10,7 +10,12 @@ STACK_ROOT="$(dirname "$SCRIPT_DIR")"
 IMG=mower:humble-dev-amd64
 cd "$STACK_ROOT"
 if ! docker image inspect "$IMG" >/dev/null 2>&1 || [ "${REBUILD_IMAGE:-0}" = 1 ]; then
-  docker build -f docker/Dockerfile.dev-amd64 -t "$IMG" docker
+  # Fields2Cover v3 layer (built once, ~2 min at -j2); see scripts/build_f2c.sh.
+  docker image inspect mower-f2c:v3-amd64 >/dev/null 2>&1 || ARCH=amd64 "$SCRIPT_DIR/build_f2c.sh"
+  base="ros@$(docker manifest inspect ros:humble-ros-base-jammy | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print(next(m['digest'] for m in d['manifests'] if m['platform'].get('os')=='linux' and m['platform']['architecture']=='amd64'))")"
+  DOCKER_BUILDKIT=0 docker build --build-arg BASE="$base" -f docker/Dockerfile.dev-amd64 -t "$IMG" docker
 fi
 mode="${1:-build}"; shift || true
 run() { docker run --rm -i ${TTY:+-t} --network host -v "$STACK_ROOT":/work -w /work "$IMG" bash -c "source /opt/ros/humble/setup.bash; $*"; }
