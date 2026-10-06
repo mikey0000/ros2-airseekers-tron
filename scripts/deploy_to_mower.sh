@@ -49,6 +49,20 @@ do_sync() {
   remote "[ -f $REMOTE_DIR/config/gui/mowgli_robot.yaml ] || cp $REMOTE_DIR/config/gui/mowgli_robot.yaml.seed $REMOTE_DIR/config/gui/mowgli_robot.yaml 2>/dev/null || true"
   # open_vins is a relative symlink into ../ros2_port_handoff which is not synced: drop it remotely
   remote "rm -f $REMOTE_DIR/src/open_vins"
+  write_deployed_rev
+}
+
+# DEPLOYED_REV: what crash records / scripts/crash_report.sh report as the deployed version
+# (git HEAD + dirty count when this tree is a git checkout, else a content hash of src/ launch/ config/).
+write_deployed_rev() {
+  local rev
+  if git -C "$STACK_ROOT" rev-parse HEAD >/dev/null 2>&1; then
+    rev="git:$(git -C "$STACK_ROOT" rev-parse HEAD) dirty:$(git -C "$STACK_ROOT" status --porcelain | wc -l)"
+  else
+    rev="nogit sha256:$(cd "$STACK_ROOT" && find src launch config scripts -type f ! -path '*/__pycache__/*' \
+          -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)"
+  fi
+  remote "echo '$rev synced $(date -Iseconds) by $(whoami)@$(hostname)' > $REMOTE_DIR/DEPLOYED_REV"
 }
 
 do_image() {

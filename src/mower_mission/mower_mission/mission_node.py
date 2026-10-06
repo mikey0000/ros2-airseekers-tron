@@ -67,6 +67,8 @@ TOPIC_DEFAULTS = {
     'gnss_status_topic': '/gps/status',
     'heading_status_topic': '/heading_aligner/status',   # mower_localization heading_aligner
     'obstacle_policy_topic': '/obstacle_policy',   # mower_vision obstacle_guard (JSON, 5 Hz)
+    # mower_control supervisor (latched JSON): critical_down -> EMERGENCY (docs/crash_recovery.md)
+    'supervisor_status_topic': '/supervisor/status',
     'odom_topic': '/odometry/filtered_map',
     'boundary_violation_topic': '/map_server_node/boundary_violation',
     'lethal_boundary_violation_topic': '/map_server_node/lethal_boundary_violation',
@@ -214,6 +216,8 @@ class MissionNode(Node):
             parser=flat_parser(Bool))
         sub(String, p['heading_status_topic'], self._on_heading, latched)
         sub(String, p['obstacle_policy_topic'], self._on_obstacle_policy, latched)
+        if p['supervisor_status_topic']:
+            sub(String, p['supervisor_status_topic'], self._on_supervisor, latched)
         self._hw_rain = self._base_rain = False
         self._hw_charging = self._base_charging = False
 
@@ -406,6 +410,18 @@ class MissionNode(Node):
             i.heading_aligned = bool(st.get('aligned', False))
             i.heading_source = str(st.get('source', 'none'))
             i.heading_stamp = time.monotonic()
+
+    def _on_supervisor(self, msg):
+        """/supervisor/status: a safety-critical dependency (MCU driver, cmd_vel_slew,
+        twist_mux) that vanished from the graph is an emergency cause (safe stop)."""
+        try:
+            st = json.loads(msg.data)
+            down = [str(n) for n in st.get('critical_down', [])
+                    if str(n).strip('/') != self.get_name()]
+        except (ValueError, AttributeError, TypeError):
+            return
+        with self._lock:
+            self.fsm.inputs.critical_nodes_down = ', '.join(sorted(down))
 
     def _on_obstacle_policy(self, msg):
         """{kind: none|dynamic|static, class, distance_m, bearing_deg}; the receipt time is
@@ -928,6 +944,11 @@ def ros_name_of(e, node):
 
 
 def main(args=None):
+    try:  # crash records (docs/crash_recovery.md); soft dependency on mower_control
+        from mower_control.crash_record import install as _install_crash_record
+        _install_crash_record('behavior_tree_node')
+    except ImportError:
+        pass
     # Keep the context alive on SIGINT/SIGTERM so the blade-off call can still go out.
     rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
 

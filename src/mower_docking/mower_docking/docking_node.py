@@ -614,6 +614,11 @@ class DockingServer(Node):
 
 
 def main(args=None):
+    try:  # crash records -> /userdata/ros2/crashes (docs/crash_recovery.md)
+        from mower_control.crash_record import install as _install_crash_record
+        _install_crash_record('mower_docking')
+    except ImportError:
+        pass
     rclpy.init(args=args)
     node = DockingServer()
     ex = MultiThreadedExecutor(num_threads=6)

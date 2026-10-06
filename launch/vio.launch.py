@@ -51,6 +51,7 @@ def generate_launch_description():
         Node(
             package='stereo_vio_bridge',
             executable='stereo_vio_bridge',
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             name='stereo_vio_bridge',
             output='screen',
             condition=IfCondition(PythonExpression(["'", LC('capture'), "' == 'bridge'"])),
@@ -58,6 +59,7 @@ def generate_launch_description():
         Node(
             package='ov_msckf',
             executable='run_subscribe_msckf',
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             name='run_subscribe_msckf',
             namespace='ov_msckf',
             output='screen',
@@ -77,6 +79,7 @@ def generate_launch_description():
         Node(
             package='stereo_vio_bridge',
             executable='vio_odom_bridge',
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             name='vio_odom_bridge',
             output='screen',
             condition=IfCondition(PythonExpression(["'", LC('vio_imu'), "' != 'metoak'"])),
@@ -89,6 +92,7 @@ def generate_launch_description():
         Node(
             package='stereo_vio_bridge',
             executable='vio_odom_bridge',
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             name='vio_odom_bridge',
             output='screen',
             condition=IfCondition(PythonExpression(["'", LC('vio_imu'), "' == 'metoak'"])),

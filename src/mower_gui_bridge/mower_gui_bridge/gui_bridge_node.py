@@ -912,6 +912,11 @@ class GuiBridgeNode(Node):
 
 
 def main(args=None):
+    try:  # crash records -> /userdata/ros2/crashes (docs/crash_recovery.md)
+        from mower_control.crash_record import install as _install_crash_record
+        _install_crash_record('gui_bridge')
+    except ImportError:
+        pass
     rclpy.init(args=args)
     node = GuiBridgeNode()
     executor = MultiThreadedExecutor(num_threads=4)

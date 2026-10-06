@@ -56,10 +56,12 @@ def generate_launch_description():
             "'", LC('det'), "'.lower() == 'true' and '", LC('det_backend'), "' == '", backend, "'"]))
     det = Node(
         package='det_ros', executable='det_ros', name='det_ros', output='screen',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         condition=det_if('python'), parameters=det_params,
     )
     det_cpp = Node(
         package='det_ros_cpp', executable='det_ros_cpp', name='det_ros', output='screen',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         condition=det_if('cpp'), parameters=det_params,
     )
     # det_backend:=cpp but det_ros_cpp not built/installed -> run the python node instead
@@ -67,18 +69,21 @@ def generate_launch_description():
     if not _have_det_cpp():
         det = Node(
             package='det_ros', executable='det_ros', name='det_ros', output='screen',
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             condition=IfCondition(PythonExpression(["'", LC('det'), "'.lower() == 'true'"])),
             parameters=det_params,
         )
         det_cpp = LogInfo(msg='det_ros_cpp not installed: det_backend falls back to python det_ros')
     seg = Node(
         package='seg_ros', executable='seg_ros', name='seg_ros', output='screen',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         condition=IfCondition(LC('seg')),
         parameters=[PathJoinSubstitution([FindPackageShare('seg_ros'), 'config', 'seg.yaml']),
                     npu_overrides],
     )
     guard = Node(
         package='mower_vision', executable='obstacle_guard', name='obstacle_guard',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         output='screen', condition=IfCondition(LC('obstacle_guard')),
         parameters=[PathJoinSubstitution([FindPackageShare('mower_vision'), 'config',
                                           'obstacle_guard.yaml']),

@@ -43,4 +43,5 @@ def generate_launch_description():
         [DeclareLaunchArgument(name, default_value=default, description=desc)
          for name, default, desc, _ in ARGS]
         + [Node(package='mower_map', executable='map_server_node', name='map_server_node',
+                respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
                 output='screen', parameters=[params_file, overrides])])

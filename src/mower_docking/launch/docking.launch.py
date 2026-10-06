@@ -23,6 +23,7 @@ def generate_launch_description():
         Node(
             package='mower_docking',
             executable='docking_server',
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             name='mower_docking',
             output='screen',
             parameters=[

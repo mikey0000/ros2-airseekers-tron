@@ -91,6 +91,7 @@ def _oa_cam(name, condition):
     return Node(
         package='mower_cameras',
         executable='v4l2_cam',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         namespace=name,                 # -> /<name>/image_raw, /<name>/camera_info
         name=name,
         output='screen',
@@ -115,6 +116,7 @@ def _v4l2_cam(name, size_prefix, fmt_arg, condition):
     return Node(
         package='v4l2_camera',
         executable='v4l2_camera_node',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         namespace=name,                 # -> /<name>/image_raw, /<name>/camera_info
         name=name,
         output='screen',
@@ -264,6 +266,7 @@ def generate_launch_description():
     stereo = Node(
         package='mower_cameras',
         executable='stereo_cam',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='stereo_cam',
         output='screen',
         condition=IfCondition(PythonExpression(
@@ -289,6 +292,7 @@ def generate_launch_description():
     stereo_imu = Node(
         package='mower_cameras',
         executable='stereo_imu',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='stereo_imu',
         output='screen',
         condition=IfCondition(LC('stereo_imu')),
@@ -298,6 +302,7 @@ def generate_launch_description():
     stereo_depth = Node(
         package='mower_cameras',
         executable='stereo_depth',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='stereo_depth',
         output='screen',
         condition=IfCondition(LC('stereo_depth')),
@@ -311,6 +316,7 @@ def generate_launch_description():
     video = Node(
         package='web_video_server',
         executable='web_video_server',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='web_video_server',
         output='screen',
         condition=IfCondition(LC('web_video_server')),

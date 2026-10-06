@@ -184,6 +184,7 @@ def _navsat_transform(context, navsat_config):
     actions.append(Node(
         package="robot_localization",
         executable="navsat_transform_node",
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name="navsat_transform_node",
         output="screen",
         parameters=parameters,
@@ -287,6 +288,7 @@ def generate_launch_description() -> LaunchDescription:
             Node(
                 package="robot_state_publisher",
                 executable="robot_state_publisher",
+                respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
                 name="robot_state_publisher",
                 condition=IfCondition(LaunchConfiguration("use_robot_state_publisher")),
                 parameters=[{
@@ -301,6 +303,7 @@ def generate_launch_description() -> LaunchDescription:
             Node(
                 package="mower_localization",
                 executable="gps_gate",
+                respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
                 name="gps_gate",
                 output="screen",
                 parameters=[{
@@ -337,6 +340,7 @@ def generate_launch_description() -> LaunchDescription:
             Node(
                 package="mower_localization",
                 executable="heading_aligner",
+                respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
                 name="heading_aligner",
                 output="screen",
                 condition=IfCondition(LaunchConfiguration("use_heading_aligner")),
@@ -359,6 +363,7 @@ def generate_launch_description() -> LaunchDescription:
             *[Node(
                 package="robot_localization",
                 executable="ekf_node",
+                respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
                 name="ekf_node",
                 output="screen",
                 condition=cond(LaunchConfiguration("vio")),
@@ -380,6 +385,7 @@ def generate_launch_description() -> LaunchDescription:
             Node(
                 package="mower_localization",
                 executable="vio_gate",
+                respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
                 name="vio_gate",
                 output="screen",
                 condition=IfCondition(LaunchConfiguration("vio")),

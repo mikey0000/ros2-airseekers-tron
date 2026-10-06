@@ -248,6 +248,11 @@ class DetRange(Node):
 
 
 def main(args=None):
+    try:  # crash records -> /userdata/ros2/crashes (docs/crash_recovery.md)
+        from mower_control.crash_record import install as _install_crash_record
+        _install_crash_record('det_range')
+    except ImportError:
+        pass
     if _DEP_ERROR is not None:
         print(f'[det_range] FATAL: {_DEP_ERROR}; install ros-humble-vision-msgs.',
               file=sys.stderr)

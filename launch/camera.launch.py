@@ -41,6 +41,7 @@ def generate_launch_description():
     node = Node(
         package='mower_cameras',
         executable='camera_node',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='mower_cameras',
         output='screen',
         parameters=[{

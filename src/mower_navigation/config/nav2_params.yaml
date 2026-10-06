@@ -531,6 +531,10 @@ lifecycle_manager_navigation:
     use_sim_time: false
     autostart: true
     bond_timeout: 10.0
+    # A server that crashes is respawned by launch (respawn=True); the manager then resets
+    # the stack and re-activates it when all servers are back (docs/crash_recovery.md).
+    attempt_respawn_reconnection: true
+    bond_respawn_max_duration: 30.0   # s; Humble default 10 is short for the RK3588
     # Dependency order; must match navigation.launch.py.
     node_names:
       - controller_server
@@ -544,5 +548,7 @@ lifecycle_manager_costmap_filters:
     use_sim_time: false
     autostart: true
     bond_timeout: 10.0
+    attempt_respawn_reconnection: true
+    bond_respawn_max_duration: 30.0
     node_names:
       - costmap_filter_info_server

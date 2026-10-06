@@ -134,3 +134,9 @@ ARG RKNN_LITE2_VERSION=2.3.0
 RUN pip3 install --no-cache-dir \
       "https://github.com/airockchip/rknn-toolkit2/raw/v${RKNN_LITE2_VERSION}/rknn-toolkit-lite2/packages/rknn_toolkit_lite2-${RKNN_LITE2_VERSION}-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
     || echo "WARNING: rknn-toolkit-lite2 ${RKNN_LITE2_VERSION} not installed (wheel unreachable)"
+# ---- crash analysis (docs/crash_recovery.md) ----
+# gdb: read the core dumps that kernel.core_pattern writes to /userdata/ros2/crashes
+#   (gdb /work/install/<pkg>/lib/<pkg>/<exe> /userdata/ros2/crashes/core.<exe>.<pid>.<t>).
+# elfutils (eu-stack/eu-unstrip): quick backtraces and re-joining split debug files.
+RUN apt-get update && apt-get install -y --no-install-recommends gdb elfutils \
+    && rm -rf /var/lib/apt/lists/*

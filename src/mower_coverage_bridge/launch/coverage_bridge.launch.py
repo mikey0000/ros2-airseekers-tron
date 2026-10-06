@@ -53,6 +53,7 @@ def generate_launch_description():
         Node(
             package='mower_coverage',
             executable='mower_coverage_node',
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             name='mower_coverage_node',
             output='screen',
             parameters=[{
@@ -67,6 +68,7 @@ def generate_launch_description():
         Node(
             package='mower_coverage_bridge',
             executable='coverage_action_server',
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             name='coverage_server',
             output='screen',
             parameters=[{

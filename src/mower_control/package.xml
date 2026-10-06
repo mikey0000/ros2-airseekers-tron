@@ -23,6 +23,10 @@
   <depend>sensor_msgs</depend>
   <depend>mower_interfaces</depend>
   <depend>mowgli_interfaces</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>rcl_interfaces</depend>
+  <exec_depend>rosbag2_py</exec_depend>
 
   <!-- imu_cal persists biases to YAML -->
   <exec_depend>python3-yaml</exec_depend>

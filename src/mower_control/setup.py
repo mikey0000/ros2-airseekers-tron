@@ -24,6 +24,7 @@ setup(
             'cmd_vel_slew = mower_control.cmd_vel_slew:main',
             'slip_detector = mower_control.slip_detector:main',
             'imu_cal = mower_control.imu_cal:main',
+            'supervisor = mower_control.supervisor:main',
         ],
     },
 )

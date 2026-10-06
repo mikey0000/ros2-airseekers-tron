@@ -128,6 +128,11 @@ async def _serve() -> None:
 
 
 def main() -> None:
+    try:  # crash records -> /userdata/ros2/crashes (docs/crash_recovery.md)
+        from mower_control.crash_record import install as _install_crash_record
+        _install_crash_record('cmd_vel_ws_relay')
+    except ImportError:
+        pass
     global _node
     rclpy.init()
     _node = CmdVelRelayNode()

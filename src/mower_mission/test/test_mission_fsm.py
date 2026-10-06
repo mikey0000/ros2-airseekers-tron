@@ -869,6 +869,36 @@ def test_emergency_mid_mission_not_auto_resumed():
     assert h.name == 'IDLE' and h.fsm.mission is None and h.fsm.cursor.available
 
 
+def test_critical_node_down_mid_mission_is_a_safe_stop():
+    """supervisor reports /cmd_vel_slew (or the MCU driver) gone: EMERGENCY, blade off,
+    goals cancelled, zero burst, motion gate closed; not auto-resumed once it respawns."""
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    assert h.fsm.motion_enabled()
+    m = h.mark()
+    h.fsm.inputs.critical_nodes_down = '/cmd_vel_slew'
+    h.tick()
+    assert h.name == 'EMERGENCY' and not h.blade
+    assert 'node down: /cmd_vel_slew' in h.fsm.sub_state
+    assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst) and h.since(m, f.BladeOff)
+    assert not h.fsm.motion_enabled()
+    h.fsm.inputs.critical_nodes_down = ''      # respawned
+    h.tick(n=5)
+    assert h.name == 'IDLE' and h.fsm.mission is None and h.fsm.cursor.available
+    assert not h.fsm.motion_enabled()
+
+
+def test_critical_node_down_refuses_start():
+    h = Harness()
+    h.fsm.inputs.critical_nodes_down = '/mower_mcu_driver'
+    h.tick()
+    assert h.name == 'EMERGENCY'
+    assert not h.cmd(f.CMD_START)
+
+
 def test_start_in_area_single_target():
     h = Harness()
     h.areas = [square(0, 0, 5), square(10, 0, 5), square(20, 0, 5)]

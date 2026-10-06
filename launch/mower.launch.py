@@ -52,7 +52,8 @@ import sys
 
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, LogInfo,
-                            OpaqueFunction, SetLaunchConfiguration)
+                            OpaqueFunction, RegisterEventHandler, SetLaunchConfiguration)
+from launch.event_handlers import OnProcessExit
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
@@ -65,6 +66,51 @@ import robot_settings  # noqa: E402  (launch/robot_settings.py, installed alongs
 
 
 DEFAULT_DATUM_ENV = '/userdata/ros2/datum.env'
+DEFAULT_CRASH_DIR = os.environ.get('MOWER_CRASH_DIR', '/userdata/ros2/crashes')
+# Processes whose death is safety relevant (the supervisor also tells the mission).
+SAFETY_CRITICAL = ('mcu_node', 'cmd_vel_slew', 'twist_mux', 'mission_node')
+
+
+def crash_exit_record(event, crash_dir=DEFAULT_CRASH_DIR, shutting_down=False):
+    """Structured record of one process exit (None for a clean exit or a launch shutdown)."""
+    import json
+    import signal
+    import time
+    rc = event.returncode
+    if shutting_down or rc in (0, None):
+        return None
+    name = getattr(event.action, 'name', None) or os.path.basename(str(event.cmd[0]))
+    exe = os.path.basename(str(event.cmd[0])) if event.cmd else name
+    sig = ''
+    if rc < 0:
+        try:
+            sig = signal.Signals(-rc).name
+        except ValueError:
+            sig = 'signal %d' % -rc
+    rec = {'time': time.strftime('%Y-%m-%dT%H:%M:%S'), 'source': 'launch',
+           'event': 'process_exit', 'process': name, 'executable': exe, 'pid': event.pid,
+           'returncode': rc, 'signal': sig,
+           'core_dump_expected': sig in ('SIGSEGV', 'SIGABRT', 'SIGBUS', 'SIGFPE', 'SIGILL'),
+           'safety_critical': any(c in exe for c in SAFETY_CRITICAL),
+           'respawn': bool(getattr(event.action, '_ExecuteLocal__respawn', False) or
+                           getattr(event.action, '_ExecuteProcess__respawn', False))}
+    try:
+        os.makedirs(crash_dir, exist_ok=True)
+        with open(os.path.join(crash_dir, 'process_exits.jsonl'), 'a', encoding='utf-8') as f:
+            f.write(json.dumps(rec) + '\n')
+    except OSError:
+        pass
+    return rec
+
+
+def _on_process_exit(event, context):
+    rec = crash_exit_record(event, shutting_down=bool(getattr(context, 'is_shutdown', False)))
+    if rec is None:
+        return None
+    return [LogInfo(msg='CRASH %s: process %s (pid %s) exited rc=%s %s%s -> %s/process_exits.jsonl'
+                        % ('[SAFETY-CRITICAL]' if rec['safety_critical'] else '',
+                           rec['process'], rec['pid'], rec['returncode'], rec['signal'],
+                           ' (respawning)' if rec['respawn'] else '', DEFAULT_CRASH_DIR))]
 
 
 def read_datum_env(path):
@@ -224,6 +270,9 @@ def generate_launch_description() -> LaunchDescription:
         arg('teleop', 'true', 'Include mower_teleop/teleop.launch.py (twist_mux + relay).'),
         arg('gui_bridge', 'true', 'Start mower_gui_bridge/gui_bridge.'),
         arg('foxglove', 'true', 'Start foxglove_bridge.'),
+        arg('supervisor', 'true', 'mower_control/supervisor: node liveness (/supervisor/status, '
+            '/diagnostics), black-box rosbag dumps to /userdata/ros2/crashes '
+            '(docs/crash_recovery.md).'),
         arg('foxglove_port', '8765', 'foxglove_bridge WebSocket port.'),
         arg('localization', 'true', 'Include nav2.launch.py localization (gps_gate, navsat, ekf).'),
         arg('navigation', 'true', 'Include mower_navigation/navigation.launch.py (Nav2: bt_navigator, controller/planner/behavior servers, velocity_smoother). Needed by mission and docking (/navigate_to_pose, /follow_path).'),
@@ -286,6 +335,7 @@ def generate_launch_description() -> LaunchDescription:
     robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='robot_state_publisher',
         output='screen',
         parameters=[{
@@ -297,6 +347,7 @@ def generate_launch_description() -> LaunchDescription:
     static_map_odom = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='static_map_odom',
         output='screen',
         arguments=['--x', '0', '--y', '0', '--z', '0',
@@ -307,10 +358,13 @@ def generate_launch_description() -> LaunchDescription:
 
     control = [
         Node(package='mower_control', executable='cmd_vel_slew', name='cmd_vel_slew',
+             respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control')),
         Node(package='mower_control', executable='slip_detector', name='slip_detector',
+             respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control')),
         Node(package='mower_control', executable='imu_cal', name='imu_cal',
+             respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control'),
              parameters=[{'calibration_file': LaunchConfiguration('imu_calibration_file')}]),
     ]
@@ -325,6 +379,7 @@ def generate_launch_description() -> LaunchDescription:
     gui_bridge = Node(
         package='mower_gui_bridge',
         executable='gui_bridge',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='gui_bridge',
         output='screen',
         parameters=[{
@@ -350,6 +405,7 @@ def generate_launch_description() -> LaunchDescription:
     foxglove = Node(
         package='foxglove_bridge',
         executable='foxglove_bridge',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='foxglove_bridge',
         output='screen',
         parameters=[{
@@ -454,6 +510,7 @@ def generate_launch_description() -> LaunchDescription:
     det_range = Node(
         package='det_range',
         executable='det_range',
+        respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='det_range',
         output='screen',
         parameters=[PathJoinSubstitution([FindPackageShare('det_range'), 'config',
@@ -463,13 +520,22 @@ def generate_launch_description() -> LaunchDescription:
              LaunchConfiguration('perception'), "' == 'true'"])),
     )
 
+    supervisor = Node(
+        package='mower_control', executable='supervisor', name='supervisor',
+        respawn=True, respawn_delay=2.0, output='screen', condition=enabled('supervisor'),
+    )
+    # One handler for every process of this launch (includes too): structured crash record.
+    crash_records = RegisterEventHandler(OnProcessExit(on_exit=_on_process_exit))
+
     return LaunchDescription(
         arguments
+        + [crash_records]
         + [OpaqueFunction(function=_resolve_datum),
            OpaqueFunction(function=_apply_robot_settings),
            OpaqueFunction(function=_apply_stereo_costmap)]
         + [drivers, robot_state_publisher, static_map_odom]
         + control
         + [teleop, gui_bridge, foxglove, localization, navigation,
-           map_server, coverage, docking, mission, cameras, vio, perception, det_range]
+           map_server, coverage, docking, mission, cameras, vio, perception, det_range,
+           supervisor]
     )

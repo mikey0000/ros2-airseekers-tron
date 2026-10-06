@@ -27,6 +27,7 @@ def generate_launch_description():
         Node(
             package='twist_mux',
             executable='twist_mux',
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             name='twist_mux',
             output='screen',
             parameters=[mux_params],
@@ -35,6 +36,7 @@ def generate_launch_description():
         Node(
             package='mower_teleop',
             executable='cmd_vel_ws_relay',
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             name='cmd_vel_ws_relay',
             output='screen',
             parameters=[relay_params],

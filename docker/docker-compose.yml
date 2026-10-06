@@ -25,6 +25,11 @@ services:
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       - FASTRTPS_DEFAULT_PROFILES_FILE=/work/install/mower_bringup/share/mower_bringup/config/cameras/fastdds_no_shm.xml
       - DISPLAY=${DISPLAY:-}
+      # Crash recording (docs/crash_recovery.md): persistent ROS logs (per-launch dirs,
+      # retention by scripts/ros_log_cleanup.sh), crash records + black-box dumps + cores.
+      - ROS_LOG_DIR=/userdata/ros2/log
+      - MOWER_CRASH_DIR=/userdata/ros2/crashes
+      - PYTHONFAULTHANDLER=1
     volumes:
       # ROS 2 workspace sources (bind-mount; built inside container by scripts/build.sh)
       - ..:/work
@@ -41,6 +46,10 @@ services:
       - /userdata/mower:/userdata/mower:ro
       # MowgliNext map_server default map directory.
       - /userdata/ros2/maps:/ros2_ws/maps
+    # Core dumps: no size limit for the stack's processes. Where they land is the HOST's
+    # kernel.core_pattern (docker/host/91-ros2-cores.conf -> /userdata/ros2/crashes).
+    ulimits:
+      core: -1
     devices:
       - /dev/ttyS9:/dev/ttyS9     # serial_mower (mower MCU)
       - /dev/ttyS1:/dev/ttyS1     # serial_imu
@@ -57,10 +66,7 @@ services:
     # the stale segments before launching (scripts/shm_gc.sh: removes only fastrtps_* files that no process
     # maps; `fastdds shm clean` is not in the image). A background loop repeats it every 5 min. Note: tmpfs
     # size/shm_size cannot cap this: /dev is bind-mounted from the host, so /dev/shm is the host's 2 GB tmpfs.
-    command: >-
-      bash -lc "source /opt/ros/humble/setup.bash &&
-      source /work/install/setup.bash &&
-      MIN_AGE=0 /work/scripts/shm_gc.sh ;
-      (/work/scripts/shm_gc.sh --loop 300 &) ;
-      exec ros2 launch mower_bringup mower.launch.py"
+    # scripts/stack_entry.sh: ulimit -c, ROS_LOG_DIR + crash dirs, log retention loop, the
+    # shm_gc start + 5 min loop described above, then `exec ros2 launch mower.launch.py`.
+    command: ["/work/scripts/stack_entry.sh"]
     restart: unless-stopped

@@ -51,7 +51,12 @@ def generate_launch_description() -> LaunchDescription:
 
     common = {
         "output": "screen",
-        "respawn": False,
+        # Crash recovery (docs/crash_recovery.md): a crashed server is respawned by launch,
+        # lifecycle_manager_navigation notices the broken bond (bond_timeout), resets the
+        # stack and, with attempt_respawn_reconnection, re-configures + re-activates every
+        # server once all of them are back (bond_respawn_max_duration).
+        "respawn": True,
+        "respawn_delay": 2.0,
         "arguments": ["--ros-args", "--log-level", log_level],
     }
     tf_remaps = [("/tf", "tf"), ("/tf_static", "tf_static")]
@@ -120,7 +125,8 @@ def generate_launch_description() -> LaunchDescription:
             package="nav2_lifecycle_manager", executable="lifecycle_manager",
             name="lifecycle_manager_navigation",
             parameters=[params_file,
-                        {"autostart": autostart, "node_names": LIFECYCLE_NODES}],
+                        {"autostart": autostart, "node_names": LIFECYCLE_NODES,
+                         "attempt_respawn_reconnection": True}],
             **common),
     ]
 
@@ -138,6 +144,7 @@ def generate_launch_description() -> LaunchDescription:
                 parameters=[params_file, {
                     "autostart": autostart,
                     "node_names": ["costmap_filter_info_server"],
+                    "attempt_respawn_reconnection": True,
                 }],
                 **common),
         ])

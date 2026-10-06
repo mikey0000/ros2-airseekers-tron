@@ -306,6 +306,8 @@ class Inputs:
     obstacle_class: str = ''
     obstacle_distance: Optional[float] = None
     obstacle_stamp: Optional[float] = None    # receipt time of the last policy message
+    # /supervisor/status critical_down (comma-joined node names; '' = all alive)
+    critical_nodes_down: str = ''
 
 
 @dataclass
@@ -1022,6 +1024,8 @@ class MissionFSM:
             causes.append('lift')
         if i.stop_button:
             causes.append('stop button')
+        if i.critical_nodes_down:
+            causes.append('node down: %s' % i.critical_nodes_down)
         stamp = i.emergency_stamp if i.emergency_stamp is not None else self._created
         if self._now - stamp > self.p.emergency_timeout_s:
             causes.append('/hardware_bridge/emergency silent > %.1fs' % self.p.emergency_timeout_s)
