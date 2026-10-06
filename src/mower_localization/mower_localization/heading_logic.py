@@ -89,11 +89,12 @@ class AlignParams:
     """Tunables (all angles in degrees in the ROS parameters, radians here)."""
 
     def __init__(self, **kw):
-        self.min_speed = 0.12            # m/s |cmd linear| (the undock runs at 0.15)
+        self.min_speed = 0.06            # m/s |cmd linear|: GUI joystick drives often sit near 0.1; RTK
+                                         # fixed noise (~2 cm) is small against the 0.6 m window
         self.max_turn_rate = 0.25        # rad/s |cmd angular|: joystick jitter is tolerated here;
                                          # straightness is judged from the GPS chord (max_lateral)
                                          # and the gyro (max_gyro_rate, max_imu_yaw_change)
-        self.max_gyro_rate = 0.15        # rad/s |measured yaw rate| while in a window
+        self.max_gyro_rate = 0.5         # rad/s |measured yaw rate|: only a real turn; the Tron wobbles ~0.15 at start
         self.dock_yaw_trusted = False    # the dock yaw in dock_pose.yaml was measured (not 0.0 placeholder)
         self.cmd_timeout = 0.5           # s; older /cmd_vel counts as "stopped"
         self.min_fix_type = 2            # GnssStatus: 2 RTK float, 3 RTK fixed
