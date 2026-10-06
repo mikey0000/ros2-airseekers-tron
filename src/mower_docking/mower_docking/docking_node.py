@@ -29,6 +29,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import Bool
 
 from mower_interfaces.action import Dock, Undock
 from mower_interfaces.msg import MowerBaseDevStatus
@@ -57,6 +58,9 @@ class DockingServer(Node):
         decl('odom_topic', '/odom')
         decl('status_topic', '/mower_base/status')
         decl('dock_pose_topic', '/map_server_node/docking_pose')
+        decl('dock_pose_measured_topic', '/map_server_node/docking_pose_measured')
+        decl('progress_odom_topic', '/odometry/filtered')   # stall guard (fused pose)
+        decl('dig_stall_topic', '/dig_stall')               # slip_detector latch
         decl('gps_status_topic', '/gps/status')
         decl('image_topic', '/rear_camera/image_raw')
         decl('camera_info_topic', '/rear_camera/camera_info')
@@ -110,6 +114,14 @@ class DockingServer(Node):
         decl('retry_speed', dp.retry_speed)
         decl('retry_timeout_s', dp.retry_timeout_s)
         decl('charging_timeout_s', dp.charging_timeout_s)
+        # safety (incident 2026-10-06: blind reverse into a log)
+        decl('allow_blind_docking', dp.allow_blind_docking)
+        decl('blind_marker_max_age_s', dp.blind_marker_max_age_s)
+        decl('dock_pose_measured_override', False)   # bench: treat the dock pose as measured
+        decl('stall_min_cmd', dp.stall_min_cmd)
+        decl('stall_progress_ratio', dp.stall_progress_ratio)
+        decl('stall_timeout_s', dp.stall_timeout_s)
+        decl('use_dig_stall', dp.use_dig_stall)
         # undock
         decl('undock_direction', 1.0)
         decl('undock_max_speed', 0.3)
@@ -130,6 +142,10 @@ class DockingServer(Node):
         self._lift = False
         self._contact = dl.ContactDebouncer(self.get_parameter('contact_debounce_samples').value)
         self._dock_pose_msg: Optional[dl.Pose2D] = None
+        self._dock_measured = False
+        self._dig_stall = False
+        self._progress: Optional[dl.Pose2D] = None
+        self._progress_t = -1e9
         self._rtk_fixed = False
         self._marker: Optional[dl.MarkerObs] = None
         self._cam_K = None
@@ -162,6 +178,8 @@ class DockingServer(Node):
                              reliability=ReliabilityPolicy.RELIABLE,
                              history=HistoryPolicy.KEEP_LAST)
         sub(PoseStamped, p('dock_pose_topic').value, self._on_dock_pose, latched)
+        sub(Bool, p('dock_pose_measured_topic').value, self._on_dock_measured, latched)
+        sub(Bool, p('dig_stall_topic').value, self._on_dig_stall, latched)
         if GnssStatus is not None:
             sub(GnssStatus, p('gps_status_topic').value, self._on_gps, 10)
         else:
@@ -213,6 +231,25 @@ class DockingServer(Node):
             self._dock_pose_msg = pose
         self.get_logger().info('dock pose from %s: (%.3f, %.3f, %.1f deg)' % (
             msg.header.frame_id or '?', pose.x, pose.y, math.degrees(pose.yaw)))
+
+    def _on_dock_measured(self, msg: Bool) -> None:
+        with self._lock:
+            changed = self._dock_measured != bool(msg.data)
+            self._dock_measured = bool(msg.data)
+        if changed:
+            self.get_logger().info('dock pose measured: %s' % bool(msg.data))
+
+    def _on_dig_stall(self, msg: Bool) -> None:
+        with self._lock:
+            self._dig_stall = bool(msg.data)
+
+    def _on_progress_odom(self, msg: Odometry) -> None:
+        q = msg.pose.pose.orientation
+        pose = dl.Pose2D(msg.pose.pose.position.x, msg.pose.pose.position.y,
+                         dl.yaw_from_quaternion(q.x, q.y, q.z, q.w))
+        with self._lock:
+            self._progress = pose
+            self._progress_t = time.monotonic()
 
     def _on_gps(self, msg) -> None:
         with self._lock:
@@ -299,7 +336,10 @@ class DockingServer(Node):
         now = time.monotonic()
         p = self.get_parameter
         with self._lock:
+            fresh_progress = now - self._progress_t <= p('odom_timeout_s').value
             return dl.Snapshot(
+                progress_pose=self._progress if fresh_progress else None,
+                dig_stall=self._dig_stall,
                 t=now,
                 odom=self._odom if now - self._odom_t <= p('odom_timeout_s').value else None,
                 marker=self._marker,
@@ -333,6 +373,9 @@ class DockingServer(Node):
                        parser=parse_odometry)
         pump.subscribe(MowerBaseDevStatus, p('status_topic').value, self._on_status, 20,
                        parser=flat_parser(MowerBaseDevStatus))
+        if p('progress_odom_topic').value:
+            pump.subscribe(Odometry, p('progress_odom_topic').value, self._on_progress_odom, 20,
+                           parser=parse_odometry)
         pump.start()
         self._goal_pump = pump
         while time.monotonic() - t0 < timeout:
@@ -456,6 +499,12 @@ class DockingServer(Node):
             retry_timeout_s=float(p('retry_timeout_s')),
             heading_hold_kp=float(p('heading_hold_kp')),
             charging_timeout_s=float(p('charging_timeout_s')),
+            allow_blind_docking=bool(p('allow_blind_docking')),
+            blind_marker_max_age_s=float(p('blind_marker_max_age_s')),
+            stall_min_cmd=float(p('stall_min_cmd')),
+            stall_progress_ratio=float(p('stall_progress_ratio')),
+            stall_timeout_s=float(p('stall_timeout_s')),
+            use_dig_stall=bool(p('use_dig_stall')),
             gains=g)
 
     def _dock_pose(self) -> dl.Pose2D:
@@ -512,6 +561,8 @@ class DockingServer(Node):
             self._release_inputs()
             with self._lock:
                 self._busy = False
+                self._progress = None
+                self._progress_t = -1e9
 
     def _execute_dock(self, goal_handle):
         req = goal_handle.request
@@ -519,9 +570,15 @@ class DockingServer(Node):
         if use_vision and not self._enable_vision(True):
             use_vision = False
         timeout = float(req.timeout_s) if req.timeout_s > 0 else 180.0
-        machine = dl.DockStateMachine(self._dock_params(), self._dock_pose(), timeout, use_vision)
-        self.get_logger().info('dock goal: use_vision=%s timeout=%.0fs approach=(%.2f, %.2f)' % (
-            use_vision, timeout, machine.approach.x, machine.approach.y))
+        with self._lock:
+            measured = self._dock_measured
+        measured = measured or bool(self.get_parameter('dock_pose_measured_override').value)
+        machine = dl.DockStateMachine(self._dock_params(), self._dock_pose(), timeout, use_vision,
+                                      dock_pose_measured=measured)
+        self.get_logger().info('dock goal: use_vision=%s timeout=%.0fs approach=(%.2f, %.2f) '
+                               'dock_pose_measured=%s allow_blind=%s' % (
+                                   use_vision, timeout, machine.approach.x, machine.approach.y,
+                                   measured, machine.p.allow_blind_docking))
 
         def fb(out):
             f = Dock.Feedback()

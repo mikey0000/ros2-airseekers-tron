@@ -478,3 +478,23 @@ def test_dock_corridor_mowing_mask_unchanged_and_obstacles_win():
 
 def test_dock_corridor_none_without_dock():
     assert core.dock_corridor(None, [], 0.8) is None
+
+
+def test_dock_measured_flag_round_trip(tmp_path):
+    p = str(tmp_path / 'dock_pose.yaml')
+    core.save_dock_file(p, core.DockPose(1.0, 2.0, 0.5, None, measured=True))
+    assert 'dock_pose_measured: true' in open(p).read()
+    assert core.load_dock_file(p).measured is True
+    core.save_dock_file(p, core.DockPose(1.0, 2.0, 0.5))
+    assert 'dock_pose_measured' not in open(p).read()
+    assert core.load_dock_file(p).measured is False
+
+
+def test_placeholder_dock_file_is_not_measured():
+    # the file on the mower before calibration (written by an earlier map_server)
+    text = ('dock_pose_x: 0.000000\ndock_pose_y: 0.000000\ndock_pose_yaw: 0.000000\n'
+            'dock_outline: "0.2,0.275;0.2,-0.275;-0.2,-0.275;-0.2,0.275"\n')
+    d = core.parse_dock_yaml(text)
+    assert d is not None and d.measured is False
+    assert core.parse_dock_yaml(text + 'dock_pose_measured: false\n').measured is False
+    assert core.parse_dock_yaml(text + 'dock_pose_measured: true\n').measured is True

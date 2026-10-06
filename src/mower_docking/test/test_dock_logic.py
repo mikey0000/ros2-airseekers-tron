@@ -244,7 +244,7 @@ class Sim:
 
 
 def blind_params(**kw):
-    p = dl.DockParams(use_vision=False, skip_nav_to_approach=True)
+    p = dl.DockParams(use_vision=False, skip_nav_to_approach=True, allow_blind_docking=True)
     for k, v in kw.items():
         setattr(p, k, v)
     return p
@@ -306,14 +306,15 @@ def test_dock_blind_never_exceeds_speed_limits():
 
 
 def test_dock_vision_off_after_nav_goes_blind():
-    m = dl.DockStateMachine(dl.DockParams(use_vision=False), dl.Pose2D())
+    m = dl.DockStateMachine(dl.DockParams(use_vision=False, allow_blind_docking=True),
+                            dl.Pose2D())
     m.start(dl.Snapshot(t=0.0))
     out = m.step(dl.Snapshot(t=1.0, nav_status='succeeded', odom=dl.Pose2D(0.8, 0, 0)))
     assert out.state == S.FINAL_DOCKING
 
 
 def test_dock_search_timeout_falls_back_to_blind():
-    p = dl.DockParams(skip_nav_to_approach=True, search_timeout_s=2.0)
+    p = dl.DockParams(skip_nav_to_approach=True, search_timeout_s=2.0, allow_blind_docking=True)
     sim = Sim(dl.DockStateMachine(p, dl.Pose2D()))
     sim.start()
     assert sim.states[-1] == S.SEARCHING
@@ -394,7 +395,8 @@ def test_dock_retry_drives_forward():
 
 def test_dock_retry_with_nav_reissues_approach():
     p = dl.DockParams(use_vision=False, final_timeout_s=1.0, blind_timeout_margin_s=0.0,
-                      approach_distance=0.1, blind_extra_distance=0.05)
+                      approach_distance=0.1, blind_extra_distance=0.05,
+                      allow_blind_docking=True)
     m = dl.DockStateMachine(p, dl.Pose2D())
     sim = Sim(m, contact_after=None)
     sim.start()
@@ -538,3 +540,148 @@ def test_undock_rtk_fixed_succeeds():
 
 def test_undock_speed_clamped():
     assert _undock(speed=1.0).speed == pytest.approx(0.3)
+
+
+# ------------------------------------------------- blind gating (incident 2026-10-06)
+def _search_until_timeout(m, marker=None, t_end=16.0, odom=dl.Pose2D(0.8, 0, 0)):
+    out = None
+    t = 0.0
+    while t < t_end:
+        t += 0.05
+        mk = marker(t) if marker else None
+        out = m.step(dl.Snapshot(t=t, marker=mk, odom=odom))
+        if out.done or out.state != S.SEARCHING:
+            break
+    return out
+
+
+def test_no_blind_without_marker_even_when_measured():
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
+                            dock_pose_measured=True)
+    m.start(dl.Snapshot(t=0.0))
+    out = _search_until_timeout(m)
+    assert out.done and not out.success
+    assert out.message.startswith('DOCK_NOT_FOUND') and 'marker not visible' in out.message
+    assert out.linear == 0.0 and out.angular == 0.0
+    assert m.step(dl.Snapshot(t=20.0)).linear == 0.0
+
+
+def _bad_marker(t):
+    # seen, but outside the 25 deg gate -> stays in SEARCHING
+    return dl.MarkerObs(-1.2, 0.0, math.radians(40), stamp=t) if t < 1.0 else None
+
+
+def test_no_blind_with_marker_but_unmeasured_dock():
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
+                            dock_pose_measured=False)
+    m.start(dl.Snapshot(t=0.0))
+    out = _search_until_timeout(m, _bad_marker)
+    assert out.done and out.message.startswith('DOCK_NOT_FOUND')
+    assert 'not measured' in out.message and out.linear == 0.0
+
+
+def test_blind_allowed_with_measured_dock_and_recent_marker():
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
+                            dock_pose_measured=True)
+    m.start(dl.Snapshot(t=0.0))
+    out = _search_until_timeout(m, _bad_marker)
+    assert not out.done and out.state == S.FINAL_DOCKING
+
+
+def test_no_blind_when_marker_too_old():
+    p = dl.DockParams(skip_nav_to_approach=True, blind_marker_max_age_s=5.0)
+    m = dl.DockStateMachine(p, dl.Pose2D(), dock_pose_measured=True)
+    m.start(dl.Snapshot(t=0.0))
+    out = _search_until_timeout(m, _bad_marker)
+    assert out.done and out.message.startswith('DOCK_NOT_FOUND')
+
+
+def test_marker_from_before_the_attempt_does_not_count():
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
+                            dock_pose_measured=True)
+    m.start(dl.Snapshot(t=100.0))
+    old = dl.MarkerObs(-1.2, 0.0, math.radians(40), stamp=99.9)
+    assert not m.blind_allowed(100.0)[0]
+    m.step(dl.Snapshot(t=100.05, marker=old))
+    assert not m.blind_allowed(100.05)[0]
+
+
+def test_vision_off_without_allow_blind_fails_not_found():
+    m = dl.DockStateMachine(dl.DockParams(use_vision=False, skip_nav_to_approach=True),
+                            dl.Pose2D(), dock_pose_measured=True)
+    out = m.start(dl.Snapshot(t=0.0))
+    assert m.state == S.FAILED and out.linear == 0.0
+    assert m.message.startswith('DOCK_NOT_FOUND')
+
+
+# ------------------------------------------------------------ stall guard
+def _docking_machine():
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
+                            dock_pose_measured=True)
+    m.start(dl.Snapshot(t=0.0))
+    mk = dl.MarkerObs(-1.3, 0.0, 0.0, stamp=0.05)
+    out = m.step(dl.Snapshot(t=0.05, marker=mk, progress_pose=dl.Pose2D(1.0, 0, 0)))
+    assert out.state == S.DOCKING
+    return m
+
+
+def test_stall_aborts_when_ekf_does_not_move():
+    m = _docking_machine()
+    t, out = 0.05, None
+    for _ in range(60):
+        t += 0.05
+        mk = dl.MarkerObs(-1.3, 0.0, 0.0, stamp=t)
+        out = m.step(dl.Snapshot(t=t, marker=mk, progress_pose=dl.Pose2D(1.0, 0, 0)))
+        if out.done:
+            break
+    assert out.done and not out.success and out.message.startswith('DOCK_STALLED')
+    assert t < 1.5
+    assert out.linear == 0.0 and out.angular == 0.0
+    # no retry / no further reversing afterwards
+    assert m.step(dl.Snapshot(t=t + 0.05)).linear == 0.0 and m.state == S.FAILED
+
+
+def test_no_stall_when_ekf_follows_the_command():
+    m = _docking_machine()
+    t, x, out = 0.05, 1.0, None
+    for _ in range(60):
+        x -= abs(out.linear) * 0.05 if out else 0.15 * 0.05
+        t += 0.05
+        mk = dl.MarkerObs(-1.3 + (1.0 - x), 0.0, 0.0, stamp=t)
+        out = m.step(dl.Snapshot(t=t, marker=mk, progress_pose=dl.Pose2D(x, 0, 0)))
+        if out.done:
+            break
+    assert not (out.done and out.message.startswith('DOCK_STALLED'))
+
+
+def test_stall_guard_unit():
+    g = dl.StallGuard(0.03, 0.2, 1.0)
+    p = dl.Pose2D(0, 0, 0)
+    assert not any(g.update(0.05 * i, p, -0.1) for i in range(20))
+    assert g.update(1.05, p, -0.1)
+    g.reset()
+    assert not any(g.update(0.05 * i, p, -0.02) for i in range(60))  # below min_cmd
+    assert not any(g.update(0.05 * i, None, -0.1) for i in range(60))  # no fused pose
+
+
+def test_dig_stall_rising_edge_aborts_but_old_latch_is_ignored():
+    m = _docking_machine()
+    out = m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0, 0, stamp=0.1),
+                             dig_stall=True))
+    assert out.done and 'DOCK_STALLED' in out.message and out.linear == 0.0
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
+                            dock_pose_measured=True)
+    m.start(dl.Snapshot(t=0.0, dig_stall=True))
+    out = m.step(dl.Snapshot(t=0.05, marker=dl.MarkerObs(-1.3, 0, 0, stamp=0.05),
+                             dig_stall=True))
+    out = m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0, 0, stamp=0.1),
+                             dig_stall=True))
+    assert not out.done and out.state == S.DOCKING
+
+
+def test_cancel_mid_reverse_outputs_zero():
+    m = _docking_machine()
+    out = m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0, 0, stamp=0.1)))
+    assert out.linear < 0
+    out = m.cancel()
+    assert out.done and out.linear == 0.0 and out.angular == 0.0 and out.message == 'CANCELED'

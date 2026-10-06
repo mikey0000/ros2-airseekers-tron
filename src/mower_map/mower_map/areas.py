@@ -70,6 +70,9 @@ class DockPose:
     # Dock keep-out outline in the DOCK-LOCAL frame (origin = dock pose,
     # +X = dock yaw). None = no outline known.
     outline: Optional[Polygon] = None
+    # True only when the pose was recorded by set_docking_point (robot on the
+    # charger). A file without ``dock_pose_measured`` is the (0,0,0) placeholder.
+    measured: bool = False
 
     def outline_in_map(self) -> Optional[Polygon]:
         if not self.outline or len(self.outline) < 3:
@@ -335,6 +338,8 @@ def format_dock_yaml(dock: DockPose) -> str:
              'dock_pose_yaw: %.6f' % dock.yaw]
     if dock.outline and len(dock.outline) >= 3:
         lines.append('dock_outline: "%s"' % polygon_to_string(dock.outline))
+    if dock.measured:
+        lines.append('dock_pose_measured: true')
     return '\n'.join(lines) + '\n'
 
 
@@ -345,7 +350,8 @@ def parse_dock_yaml(text: str) -> Optional[DockPose]:
         return None
     outline = parse_polygon_string(str(data.get('dock_outline') or '')) or None
     return DockPose(float(data.get('dock_pose_x', 0.0)), float(data.get('dock_pose_y', 0.0)),
-                    float(data.get('dock_pose_yaw', 0.0)), outline)
+                    float(data.get('dock_pose_yaw', 0.0)), outline,
+                    data.get('dock_pose_measured') is True)
 
 
 def save_dock_file(path: str, dock: DockPose):
@@ -841,6 +847,13 @@ def recovery_point(x: float, y: float, areas: List[Area], offset: float = 0.8):
                x=best[0] + offset * nx, y=best[1] + offset * ny,
                yaw=math.atan2(ny, nx), distance_outside=best[2])
     return res
+
+
+def yaw_circular_mean(yaws: Sequence[float]) -> float:
+    """Circular mean of angles (rad); 0.0 for an empty input."""
+    if not yaws:
+        return 0.0
+    return math.atan2(sum(math.sin(y) for y in yaws), sum(math.cos(y) for y in yaws))
 
 
 def yaw_circular_std(yaws: Sequence[float]) -> float:

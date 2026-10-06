@@ -13,6 +13,9 @@ vendor reference is `docs/audit_2026-10-05/vendor_mission_layer.md` section 5.
 | `/odom` (sub) | `nav_msgs/Odometry` | distance travelled and heading hold. If odom is stale (> 0.5 s), the server falls back to integrating time × \|cmd\|. |
 | `/mower_base/status` (sub) | `MowerBaseDevStatus` | `is_docking_done` (debounced over 3 samples), `stop_triggered`, `lift_triggered` |
 | `/map_server_node/docking_pose` (sub, latched) | `geometry_msgs/PoseStamped` | Pose of a docked robot in `map`. The fallback is param `dock_pose`. |
+| `/map_server_node/docking_pose_measured` (sub, latched) | `std_msgs/Bool` | True only after "Set docking point" recorded the pose. Blind final docking needs it. |
+| `/odometry/filtered` (sub, goal only) | `nav_msgs/Odometry` | fused pose for the stall guard (`progress_odom_topic`) |
+| `/dig_stall` (sub, latched) | `std_msgs/Bool` | slip_detector latch; a rising edge during a goal aborts with `DOCK_STALLED` |
 | `/gps/status` (sub) | `mowgli_interfaces/GnssStatus` | `fix_type == 3` means RTK fixed |
 | `/rear_camera/image_raw`, `/rear_camera/camera_info` (sub) | sensor_msgs | Subscribed only while a vision dock runs |
 | `/charging` (client) | `ChargingControl` | enable after contact, disable before undocking |
@@ -33,8 +36,10 @@ NAV_TO_APPROACH ──nav fail / nav_timeout──► FAILED NAV_TO_DOCK_FAILED
 use_vision? ──no──────────────────────────────┐
   │yes                                         │
   ▼                                            ▼
-SEARCHING ──no marker in search_timeout_s──► FINAL_DOCKING (blind: reverse
-  │ marker passes the 0.5 m / 25° gate           approach_distance + 0.1 m on odom)
+SEARCHING ──no usable marker in search_timeout_s──► blind allowed? (see below)
+  │ marker passes the 0.5 m / 25° gate      no ──► FAILED "DOCK_NOT_FOUND: dock not found: <why>"
+  │                                         yes ─► FINAL_DOCKING (blind: reverse
+  │                                                approach_distance + 0.1 m on odom)
   ▼
 DOCKING (reverse, heading/lateral PD, ≤ 0.15 m/s; 0.05 m/s within 0.3 m)
   │ remaining ≤ final_zone (0.2 m)
@@ -52,6 +57,24 @@ RETRY: drive forward retry_forward_distance (0.3 m) at 0.1 m/s, then NAV_TO_APPR
        After max_retries (3): FAILED "DOCK_MAXOUT".
 ```
 
+**Blind final docking** (dead-reckoned reverse without a marker) is allowed only when
+the dock pose is *measured* (`/map_server_node/docking_pose_measured`, see
+"Dock calibration" below) **and** a marker was seen during this attempt within
+`blind_marker_max_age_s` (30 s). Otherwise the goal fails with zero velocity and
+`DOCK_NOT_FOUND: dock not found: marker not visible` (or `...: dock pose not measured`),
+which the mission shows as the NAV_TO_DOCK_FAILED reason. `allow_blind_docking: true`
+restores the vendor behaviour (blind reverse after any search timeout, also for
+`use_vision: false`). Background: on 2026-10-06 the search timed out, the blind reverse
+followed the never-measured (0, 0, yaw 0) placeholder dock pose and drove the robot's
+rear into a log.
+
+**Stall / dig guard** (DOCKING, FINAL_DOCKING, RETRY): if `|cmd| > stall_min_cmd`
+(0.03 m/s) and the fused pose (`/odometry/filtered`) moves less than
+`stall_progress_ratio` (20 %) of the commanded distance over `stall_timeout_s` (1 s),
+or `/dig_stall` rises during the goal, the goal fails with `DOCK_STALLED` and zero
+velocity. There is no retry after a stall (no further reversing). The bumper is at the
+front, so nothing else senses a reverse into an obstacle.
+
 The following guards apply in every state:
 
 - `stop_triggered` or `lift_triggered` aborts with `EMERGENCY_STOP`.
@@ -63,7 +86,7 @@ The robot stays still while the marker is lost. It never reverses on a stale est
 
 Result messages: `DOCKED`, `ALREADY_DOCKED`, `NAV_TO_DOCK_FAILED`, `DOCK_MAXOUT`,
 `DOCK_TIMEOUT`, `EMERGENCY_STOP`, `BASE_STATUS_STALE`, `CHARGER_ENABLE_FAILED`,
-`CANCELED`.
+`CANCELED`, `DOCK_NOT_FOUND: ...`, `DOCK_STALLED: ...`.
 
 Feedback carries `state` and `retries`. `distance_m` is the remaining reverse
 distance: from vision in DOCKING, or from the plan in blind mode. It is -1 when unknown.
@@ -158,6 +181,25 @@ ros2 run mower_docking print_marker --id 0 --size 0.04 --dpi 600 -o marker.png
    With the marker to the robot's left (+Y), `y > 0`. With the robot heading
    rotated left (CCW), the marker yaw becomes negative.
 
+## Dock calibration (do this once, and after moving the charger)
+
+The dock pose is not known until you record it. Until then `dock_pose.yaml` holds the
+(0, 0, yaw 0) placeholder, `docking_pose_measured` is false, the docking server never
+reverses blind, and heading_aligner does not seed the heading from the dock.
+
+1. Make sure RTK is fixed (the GUI shows RTK FIX).
+2. In manual mode, drive the robot onto the charger: reverse straight onto the contacts
+   until the GUI shows it charging.
+3. Press **Set docking point** in the GUI (map server `set_docking_point`). This records
+   the docked position and yaw, writes `dock_pose_measured: true` into
+   `/userdata/ros2/maps/dock_pose.yaml`, and republishes the latched
+   `/map_server_node/docking_pose` and `docking_pose_measured`.
+4. Check the marker: from the approach pose (0.8 m straight out from the docked pose,
+   same heading) the ArUco marker on the charger must be in the rear camera's view, with
+   nothing between. Drive there in manual and run
+   `ros2 topic echo /mower_docking/marker_pose` during a dock goal, or check that a dock
+   reaches DOCKING instead of failing with `DOCK_NOT_FOUND: ... marker not visible`.
+
 ## Parameters
 
 See `config/docking.yaml`. Every value is annotated with its vendor source. The
@@ -175,7 +217,12 @@ key ones are:
 | `max_lateral_error` / `max_yaw_error_deg` | 0.5 / 25 | vendor marker gate |
 | `max_retries` | 3 | then `DOCK_MAXOUT` |
 | `contact_debounce_samples` | 3 | vendor `is_dock_done_num` |
-| `search_timeout_s` | 15 | then dead-reckon |
+| `search_timeout_s` | 15 | then blind (if allowed) or `DOCK_NOT_FOUND` |
+| `allow_blind_docking` | false | true = vendor blind reverse after any search timeout |
+| `blind_marker_max_age_s` | 30 | marker must have been seen this recently (this attempt) for a blind final dock |
+| `dock_pose_measured_override` | false | bench only: treat the dock pose as measured |
+| `stall_min_cmd` / `stall_progress_ratio` / `stall_timeout_s` | 0.03 / 0.2 / 1.0 | stall guard on `/odometry/filtered` |
+| `use_dig_stall` | true | also abort on a `/dig_stall` rising edge |
 
 ## Safety notes
 
@@ -208,6 +255,7 @@ python3 install/mower_docking/share/mower_docking/scripts/bench_fake_base.py --s
 ros2 launch mower_docking docking.launch.py skip_nav_to_approach:=true &
 ros2 action send_goal /mower_docking/undock mower_interfaces/action/Undock \
   "{distance_m: 0.8, speed_mps: 0.15, wait_for_rtk: false}" --feedback
+# blind docking is off by default: set allow_blind_docking: true in docking.yaml for the bench
 ros2 action send_goal /mower_docking/dock mower_interfaces/action/Dock "{use_vision: false}" --feedback
 ```
 

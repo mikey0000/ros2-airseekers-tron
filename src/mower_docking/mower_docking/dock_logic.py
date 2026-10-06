@@ -293,6 +293,48 @@ class Snapshot:
     nav_status: Optional[str] = None         # None|'running'|'succeeded'|'failed'
     charging_result: Optional[bool] = None   # None = pending/not requested
     rtk_fixed: bool = False
+    progress_pose: Optional[Pose2D] = None   # fused pose (/odometry/filtered) for the stall guard
+    dig_stall: bool = False                  # slip_detector /dig_stall (latched Bool)
+
+
+class StallGuard:
+    """Wheel stall / dig detector: commanded speed vs. measured (EKF) progress.
+
+    Over a sliding window of ``timeout_s`` with every sample commanding
+    ``|v| > min_cmd``, stall = measured displacement < ``ratio`` * expected
+    (integral of |v| dt).  A missing ``progress_pose`` restarts the window.
+    """
+
+    def __init__(self, min_cmd: float = 0.03, ratio: float = 0.2, timeout_s: float = 1.0):
+        self.min_cmd = min_cmd
+        self.ratio = ratio
+        self.timeout_s = timeout_s
+        self.reset()
+
+    def reset(self) -> None:
+        self._t0: Optional[float] = None
+        self._p0: Optional[Pose2D] = None
+        self._expected = 0.0
+        self._last_t: Optional[float] = None
+        self.measured = 0.0
+
+    def update(self, t: float, pose: Optional[Pose2D], cmd: float) -> bool:
+        if pose is None or abs(cmd) <= self.min_cmd or self.timeout_s <= 0:
+            self.reset()
+            return False
+        if self._t0 is None:
+            self._t0, self._p0, self._last_t, self._expected = t, pose, t, 0.0
+            return False
+        self._expected += abs(cmd) * max(0.0, t - self._last_t)
+        self._last_t = t
+        self.measured = math.hypot(pose.x - self._p0.x, pose.y - self._p0.y)
+        if t - self._t0 < self.timeout_s:
+            return False
+        if self.measured < self.ratio * self._expected:
+            return True
+        # still moving: restart the window from here
+        self._t0, self._p0, self._expected = t, pose, 0.0
+        return False
 
 
 @dataclass
@@ -332,6 +374,17 @@ class DockParams:
     retry_timeout_s: float = 15.0
     heading_hold_kp: float = 1.0
     charging_timeout_s: float = 5.0
+    # Blind (dead-reckoned) final docking is only allowed when the dock pose was
+    # measured (set_docking_point) AND a marker was seen within
+    # blind_marker_max_age_s during this attempt; allow_blind_docking restores the
+    # vendor behaviour (blind reverse after any search timeout).
+    allow_blind_docking: bool = False
+    blind_marker_max_age_s: float = 30.0
+    # stall / dig guard (DOCKING / FINAL_DOCKING / RETRY)
+    stall_min_cmd: float = 0.03
+    stall_progress_ratio: float = 0.2
+    stall_timeout_s: float = 1.0
+    use_dig_stall: bool = True
     gains: ControllerGains = field(default_factory=ControllerGains)
 
 
@@ -356,6 +409,8 @@ class DockMsg:
     CANCELED = 'CANCELED'
     DOCKED = 'DOCKED'
     ALREADY_DOCKED = 'ALREADY_DOCKED'
+    DOCK_NOT_FOUND = 'DOCK_NOT_FOUND'
+    DOCK_STALLED = 'DOCK_STALLED'
 
 
 class DockStateMachine:
@@ -369,8 +424,14 @@ class DockStateMachine:
     """
 
     def __init__(self, params: DockParams, dock_pose: Pose2D,
-                 goal_timeout_s: float = 180.0, use_vision: Optional[bool] = None):
+                 goal_timeout_s: float = 180.0, use_vision: Optional[bool] = None,
+                 dock_pose_measured: bool = False):
         self.p = params
+        self.dock_pose_measured = bool(dock_pose_measured)
+        self._marker_seen_t: Optional[float] = None
+        self._stall = StallGuard(params.stall_min_cmd, params.stall_progress_ratio,
+                                 params.stall_timeout_s)
+        self._dig_at_start = False
         self.use_vision = params.use_vision if use_vision is None else bool(use_vision)
         self.dock_pose = dock_pose
         self.approach = approach_pose(dock_pose, params.approach_distance)
@@ -403,6 +464,7 @@ class DockStateMachine:
         self._hold_yaw = snap.odom.yaw if snap.odom is not None else None
         self._prev_e = None
         self._prev_t = None
+        self._stall.reset()
 
     def _fail(self, msg: str, snap: Snapshot) -> None:
         if self.state == DockState.NAV_TO_APPROACH:
@@ -415,7 +477,25 @@ class DockStateMachine:
             self._lost = 0
             self._enter(DockState.SEARCHING, snap)
         else:
+            self._try_blind(snap)
+
+    def blind_allowed(self, t: float) -> Tuple[bool, str]:
+        if self.p.allow_blind_docking:
+            return True, ''
+        if not self.dock_pose_measured:
+            return False, 'dock pose not measured (press "Set docking point" while docked)'
+        if self._marker_seen_t is None:
+            return False, 'marker not visible'
+        if t - self._marker_seen_t > self.p.blind_marker_max_age_s:
+            return False, 'marker not seen for %.0f s' % (t - self._marker_seen_t)
+        return True, ''
+
+    def _try_blind(self, snap: Snapshot) -> None:
+        ok, why = self.blind_allowed(snap.t)
+        if ok:
             self._enter_blind(snap)
+        else:
+            self._fail('%s: dock not found: %s' % (DockMsg.DOCK_NOT_FOUND, why), snap)
 
     def _enter_blind(self, snap: Snapshot) -> None:
         self._blind = True
@@ -451,12 +531,17 @@ class DockStateMachine:
         m = snap.marker
         if m is None or snap.t - m.stamp > self.p.marker_timeout_s:
             return None
+        if m.stamp >= self._t_start:
+            self._marker_seen_t = m.stamp if self._marker_seen_t is None \
+                else max(self._marker_seen_t, m.stamp)
         return m
 
     # -- API -------------------------------------------------------------
     def start(self, snap: Snapshot) -> Output:
         self._t_start = snap.t
         self.retries = 0
+        self._marker_seen_t = None
+        self._dig_at_start = bool(snap.dig_stall)
         if snap.contact:
             self.state = DockState.CHARGING
             self._t_state = snap.t
@@ -509,6 +594,16 @@ class DockStateMachine:
             self._remaining = 0.0
             return self._out(requests=[('enable_charging',)])
 
+        if self.state in (DockState.DOCKING, DockState.FINAL_DOCKING, DockState.RETRY):
+            dig = self.p.use_dig_stall and snap.dig_stall and not self._dig_at_start
+            if dig or self._stall.update(snap.t, snap.progress_pose, self._last_cmd):
+                why = 'slip detector /dig_stall' if dig else \
+                    'moved %.2f m while commanding %.2f m/s' % (self._stall.measured,
+                                                                 abs(self._last_cmd))
+                self._fail('%s: wheels stalled in %s (%s)' % (DockMsg.DOCK_STALLED,
+                                                             self.state, why), snap)
+                return self._out()
+
         st = self.state
         el = snap.t - self._t_state
         g = self.p.gains
@@ -534,7 +629,7 @@ class DockStateMachine:
                     self._enter(DockState.DOCKING, snap)
                     return self._out()
             if el > self.p.search_timeout_s:
-                self._enter_blind(snap)
+                self._try_blind(snap)
             return self._out()
 
         if st == DockState.DOCKING:

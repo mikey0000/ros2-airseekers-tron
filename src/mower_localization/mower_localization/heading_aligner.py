@@ -12,6 +12,8 @@ Subscribed
 ``/gps/status``                     mowgli GnssStatus      fix_type (2 float, 3 fixed)
 ``/mower_base/status``              MowerBaseDevStatus     is_charging / is_docking_done
 ``/map_server_node/docking_pose``   PoseStamped (latched)  dock pose; fallback ``dock_pose_file``
+``/map_server_node/docking_pose_measured``  Bool (latched)  dock pose recorded by set_docking_point;
+                                    sets ``dock_yaw_trusted`` (the param = true forces it on)
 
 Published
 ---------
@@ -42,7 +44,7 @@ from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from mower_localization import heading_logic as hl
 from mower_localization.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
@@ -60,6 +62,19 @@ except ImportError:  # pragma: no cover
 DEG_PARAMS = ('max_imu_yaw_change', 'outlier', 'reseed_agree', 'dock_heading_offset',
               'imu_jump', 'sigma_cog', 'sigma_dock', 'sigma_file', 'sigma_file_verified',
               'verify_max_yaw')
+
+
+def _read_dock_measured(path):
+    """True when mower_map's dock_pose.yaml carries ``dock_pose_measured: true``."""
+    try:
+        with open(path) as fh:
+            for line in fh:
+                key, _, value = line.partition(':')
+                if key.strip() == 'dock_pose_measured':
+                    return value.split('#')[0].strip().lower() == 'true'
+    except OSError:
+        pass
+    return False
 
 
 def _read_dock_file(path):
@@ -99,6 +114,7 @@ class HeadingAligner(Node):
         d('base_status_topic', '/mower_base/status')
         d('dock_pose_topic', '/map_server_node/docking_pose')
         d('dock_pose_file', '/ros2_ws/maps/dock_pose.yaml')
+        d('dock_pose_measured_topic', '/map_server_node/docking_pose_measured')
         d('offset_file', '/userdata/ros2/heading_offset.yaml')
         d('use_offset_file', True)
         d('use_dock_seed', True)
@@ -114,6 +130,10 @@ class HeadingAligner(Node):
             v = g(name)
             kw[name] = math.radians(v) if name in DEG_PARAMS else type(value)(v)
         self.est = hl.HeadingEstimator(hl.AlignParams(**kw))
+        # dock_yaw_trusted: param true = forced override; otherwise follows mower_map's
+        # dock_pose_measured flag (topic, file fallback at startup).
+        self._dock_trust_forced = bool(kw.get('dock_yaw_trusted', False))
+        self._dock_measured = False
         self._lock = threading.Lock()
         self._offset_file = g('offset_file')
         self._use_dock = bool(g('use_dock_seed'))
@@ -164,7 +184,11 @@ class HeadingAligner(Node):
                                              parser=flat_parser(MowerBaseDevStatus), **sampled))
         slow.append(self._pump.subscribe(PoseStamped, g('dock_pose_topic'), self._on_dock_pose,
                                          latched, **sampled))
+        slow.append(self._pump.subscribe(Bool, g('dock_pose_measured_topic'),
+                                         self._on_dock_measured, latched, **sampled))
         self._slow_subs = slow
+        if g('dock_pose_file'):
+            self._apply_dock_measured(_read_dock_measured(g('dock_pose_file')), 'file')
         self._dock_logged = None
         dock = _read_dock_file(g('dock_pose_file')) if g('dock_pose_file') else None
         if dock is not None:
@@ -233,6 +257,18 @@ class HeadingAligner(Node):
         q = msg.pose.orientation
         self._set_dock((msg.pose.position.x, msg.pose.position.y,
                         hl.yaw_from_quaternion(q.x, q.y, q.z, q.w)), 'topic')
+
+    def _on_dock_measured(self, msg):
+        self._apply_dock_measured(bool(msg.data), 'topic')
+
+    def _apply_dock_measured(self, measured, origin):
+        changed = measured != self._dock_measured
+        self._dock_measured = measured
+        self.est.p.dock_yaw_trusted = self._dock_trust_forced or measured
+        if changed or origin == 'file':
+            self.get_logger().info('dock pose measured=%s (%s) -> dock_yaw_trusted=%s%s' % (
+                measured, origin, self.est.p.dock_yaw_trusted,
+                ' (forced by param)' if self._dock_trust_forced else ''))
 
     def _set_dock(self, pose, origin):
         x, y, yaw = pose

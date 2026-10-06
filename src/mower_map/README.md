@@ -26,7 +26,7 @@ ros2 launch mower_map map_server.launch.py maps_dir:=/ros2_ws/maps \
 | `/map_server_node/clear_map` | `std_srvs/Trigger` | Drops all areas and resets mow progress, then saves. The dock pose is kept. |
 | `/map_server_node/save_areas` | `std_srvs/Trigger` | Writes `areas.dat`. |
 | `/map_server_node/load_areas` | `std_srvs/Trigger` | Re-reads `areas.dat`. |
-| `/map_server_node/set_docking_point` | `mowgli_interfaces/SetDockingPoint` | Applies the gates below, then sets position (request, or the mean `/odometry/filtered_map` position when `use_gps_position`). Yaw comes from PRESERVE / REQUEST / MOTION. Writes `dock_pose.yaml`, and `robot_yaml_path` if set. Publishes `docking_pose`. |
+| `/map_server_node/set_docking_point` | `mowgli_interfaces/SetDockingPoint` | Applies the gates below, then sets position (request, or the mean `/odometry/filtered_map` position when `use_gps_position`). Yaw comes from PRESERVE / REQUEST / MOTION. Writes `dock_pose.yaml` (with `dock_pose_measured: true` when the yaw is real: MOTION, REQUEST, PRESERVE of a measured yaw, or PRESERVE with `use_gps_position` while the stored yaw is still the placeholder, which captures the docked robot's fused heading), and `robot_yaml_path` if set. Publishes `docking_pose` and `docking_pose_measured`. |
 | `/map_server_node/promote_obstacle` | `mowgli_interfaces/PromoteObstacle` | Lookup order: `pending_id` accepts a pending proposal. Otherwise `polygon` is used as given. Otherwise `obstacle_id` is looked up in the last `/obstacle_tracker/obstacles`. Duplicates (centroid within 10 cm) are a no-op. Navigation areas are refused. |
 | `/map_server_node/discard_obstacle` | `mowgli_interfaces/ClearObstacle` | Drops a PENDING obstacle by `MapObstacleInfo.id`. |
 | `/map_server_node/get_recovery_point` | `mowgli_interfaces/GetRecoveryPoint` | When the robot is outside every area, returns the nearest edge point moved `boundary_recovery_offset_m` further in, plus the distance outside. |
@@ -55,6 +55,7 @@ ros2 launch mower_map map_server.launch.py maps_dir:=/ros2_ws/maps \
 | `/costmap_filter_info` | `nav2_msgs/CostmapFilterInfo` | latched | type 0 (keepout), `/nav_keepout_mask`, base 0, multiplier 1 |
 | `/map_server_node/mow_progress` | `nav_msgs/OccupancyGrid` | latched | Same grid as the mask. A cell is 100 where the `blade_link` disc (`blade_radius` 0.15 m) passed while `/mower_base/status.is_cutting`. Republished every 2 s when it changes. |
 | `/map_server_node/docking_pose` | `geometry_msgs/PoseStamped` | latched | Dock pose, frame `map` |
+| `/map_server_node/docking_pose_measured` | `std_msgs/Bool` | latched | True only when the dock pose was recorded by `set_docking_point` (`dock_pose_measured: true` in `dock_pose.yaml`). False for the (0,0,0) placeholder. mower_docking refuses blind docking and heading_aligner refuses dock heading seeds while it is false. |
 | `/map_server_node/boundary_violation` | `std_msgs/Bool` | depth 1 | True when the robot is outside all areas by more than `soft_boundary_margin_m` (0) for `boundary_debounce_samples` (3) checks. Checked at `boundary_check_rate_hz` (5). |
 | `/map_server_node/lethal_boundary_violation` | `std_msgs/Bool` | depth 1 | True when the robot is outside all areas by more than `lethal_boundary_margin_m` (0.5) |
 | `/map_server_node/replan_needed` | `std_msgs/Bool` | depth 1 | `true` on any area, obstacle or dock change |
@@ -104,6 +105,7 @@ dock_pose_x: 0.000000
 dock_pose_y: 0.000000
 dock_pose_yaw: 0.000000
 dock_outline: "0.2,0.275;0.2,-0.275;-0.2,-0.275;-0.2,0.275"   # dock-local frame
+dock_pose_measured: true   # only written by set_docking_point; absent = placeholder
 ```
 
 When `robot_yaml_path` is set, `set_docking_point` also splices `dock_pose_x/y/yaw` into

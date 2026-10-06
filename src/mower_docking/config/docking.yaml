@@ -68,5 +68,20 @@ mower_docking:
     retry_timeout_s: 15.0
     charging_timeout_s: 5.0
 
+    # Safety (incident 2026-10-06: SEARCHING timed out without a marker, the blind
+    # reverse along the unmeasured (0,0,0) placeholder dock yaw drove into a log).
+    allow_blind_docking: false     # true = vendor behaviour: blind reverse after any search timeout
+    blind_marker_max_age_s: 30.0   # blind final docking only if the dock pose is measured AND
+    #                                a marker was seen this attempt within this age
+    dock_pose_measured_topic: /map_server_node/docking_pose_measured   # latched Bool
+    dock_pose_measured_override: false   # bench only
+    # stall / dig guard in DOCKING / FINAL_DOCKING / RETRY -> FAILED "DOCK_STALLED"
+    progress_odom_topic: /odometry/filtered   # fused pose used to measure real progress
+    stall_min_cmd: 0.03            # m/s; |cmd| above this counts
+    stall_progress_ratio: 0.2      # measured < 20 % of commanded distance ...
+    stall_timeout_s: 1.0           # ... over this window -> stall
+    dig_stall_topic: /dig_stall    # slip_detector latch; a rising edge during the goal = stall
+    use_dig_stall: true
+
     undock_direction: 1.0          # +1 = leave forwards (robot reversed onto the dock)
     undock_max_speed: 0.3          # [dc] Undocking linear_max 0.3

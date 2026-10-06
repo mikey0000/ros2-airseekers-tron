@@ -169,6 +169,9 @@ class MapServerNode(Node):
                                               _latched())
         self.progress_pub = self.create_publisher(OccupancyGrid, '~/mow_progress', _latched())
         self.dock_pub = self.create_publisher(PoseStamped, '~/docking_pose', _latched())
+        # latched: True only when the dock pose was recorded by set_docking_point
+        self.dock_measured_pub = self.create_publisher(Bool, '~/docking_pose_measured',
+                                                       _latched())
         self.corridor_pub = self.create_publisher(PolygonStamped, '~/dock_corridor', _latched())
         self.boundary_pub = self.create_publisher(Bool, '~/boundary_violation', 1)
         self.lethal_pub = self.create_publisher(Bool, '~/lethal_boundary_violation', 1)
@@ -364,6 +367,8 @@ class MapServerNode(Node):
         self.progress_dirty = False
 
     def publish_dock(self):
+        self.dock_measured_pub.publish(
+            Bool(data=bool(self.dock is not None and self.dock.measured)))
         if self.dock is None:
             return
         msg = PoseStamped()
@@ -430,7 +435,12 @@ class MapServerNode(Node):
             if dock.outline is None:
                 dock.outline = self.default_dock_outline()
             self.dock = dock
-            self.publish_dock()
+        if dock is not None and not dock.measured:
+            self.get_logger().warn(
+                'dock pose (%.2f, %.2f, yaw %.2f) is NOT measured (placeholder): docking will '
+                'not reverse blind; drive onto the dock and press "Set docking point"'
+                % (dock.x, dock.y, dock.yaw))
+        self.publish_dock()
 
     # ------------------------------------------------------------------
     # subscriptions
@@ -758,13 +768,28 @@ class MapServerNode(Node):
             x, y = req.docking_pose.position.x, req.docking_pose.position.y
         if req.yaw_source == SetDockingPoint.Request.MOTION:
             yaw = float(req.yaw_rad)
+            measured = True
         elif req.yaw_source == SetDockingPoint.Request.REQUEST:
             q = req.docking_pose.orientation
             yaw = core.yaw_from_quaternion(q.x, q.y, q.z, q.w)
-        else:  # PRESERVE
+            measured = True                  # operator-set heading (map drag)
+        elif old is not None and old.measured:  # PRESERVE a measured yaw
+            yaw, measured = old.yaw, True
+        elif req.use_gps_position and self.recent_poses:
+            # PRESERVE but the stored yaw is the never-measured placeholder: the robot sits
+            # on the dock, so its fused heading (heading_aligner COG/file, never seeded from
+            # an untrusted dock yaw) IS the dock yaw. Not circular while the old pose is
+            # unmeasured, because heading_aligner only seeds from a measured dock.
+            yaw = core.yaw_circular_mean([p[3] for p in self.recent_poses])
+            measured = True
+            self.get_logger().info('set_docking_point: stored dock yaw was a placeholder; '
+                                   'captured the docked heading %.1f deg from %s'
+                                   % (math.degrees(yaw), self.p('odom_topic')))
+        else:  # PRESERVE, nothing measured to preserve
             yaw = old.yaw if old is not None else 0.0
+            measured = False
         outline = old.outline if old is not None and old.outline else self.default_dock_outline()
-        self.dock = core.DockPose(float(x), float(y), float(yaw), outline)
+        self.dock = core.DockPose(float(x), float(y), float(yaw), outline, measured=measured)
         self.publish_dock()
         try:
             core.save_dock_file(self.dock_path, self.dock)
@@ -774,8 +799,8 @@ class MapServerNode(Node):
             if not core.update_robot_yaml_dock_pose(self.p('robot_yaml_path'), self.dock.x,
                                                     self.dock.y, self.dock.yaw):
                 self.get_logger().warn('could not update %s' % self.p('robot_yaml_path'))
-        self.get_logger().info('docking point set: (%.3f, %.3f) yaw %.3f rad'
-                               % (self.dock.x, self.dock.y, self.dock.yaw))
+        self.get_logger().info('docking point set: (%.3f, %.3f) yaw %.3f rad measured=%s'
+                               % (self.dock.x, self.dock.y, self.dock.yaw, self.dock.measured))
         self.rebuild()
         res.success = True
         return res
