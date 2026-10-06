@@ -148,6 +148,17 @@ def test_transit_rpp_rotation():
     assert rpp["allow_reversing"] is False
 
 
+def test_coverage_rpp_respects_drive_yaw_limit():
+    # Ring drift 10-06: RPP must regulate speed so v / R stays within what the
+    # drive delivers in turf (~0.2 rad/s; MCU clamps each axis at 0.3 separately).
+    c = load()["controller_server"]["ros__parameters"]["FollowCoveragePath"]
+    yaw_rate = c["desired_linear_vel"] / c["regulated_linear_scaling_min_radius"]
+    assert c["use_regulated_linear_velocity_scaling"] is True
+    assert yaw_rate <= 0.21
+    assert c["rotate_to_heading_angular_vel"] <= 0.3
+    assert c["min_lookahead_dist"] <= c["lookahead_dist"] <= c["max_lookahead_dist"]
+
+
 def test_local_costmap_has_no_inflation_layer():
     # Humble 1.1.x: InflationLayer stays !isCurrent() after a ClearEntireCostmap
     # when there are no obstacles, and controller_server then waits forever.

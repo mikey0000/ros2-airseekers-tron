@@ -23,6 +23,9 @@ def generate_launch_description():
     transit_gap = LaunchConfiguration('transit_gap_m')
     cut_width = LaunchConfiguration('cut_width_m')
     overlap = LaunchConfiguration('swath_overlap_m')
+    boundary_inset = LaunchConfiguration('boundary_inset_m')
+    turn_radius = LaunchConfiguration('min_turn_radius_m')
+    border_inset = LaunchConfiguration('border_inset_m')
     operation_width = PythonExpression(['float(', cut_width, ') - float(', overlap, ')'])
     return LaunchDescription([
         DeclareLaunchArgument('start_planner', default_value='true',
@@ -34,6 +37,18 @@ def generate_launch_description():
                                           'TODO: measure)'),
         DeclareLaunchArgument('swath_overlap_m', default_value='0.02',
                               description='overlap between neighbouring swaths [m]'),
+        DeclareLaunchArgument('boundary_inset_m', default_value='0.15',
+                              description='outer ring centreline sits operation_width/2 + '
+                                          'this inside the boundary [m]'),
+        DeclareLaunchArgument('min_turn_radius_m', default_value='0.0',
+                              description='0 = pivot between swaths (diff-drive); > 0 = '
+                                          'F2C v3 Dubins turns of this radius'),
+        # 0.20: the outer ring centreline sits 0.20 m inside the recorded line (half swath
+        # 0.09 + ~0.11 m RPP tracking error); 0.0 put it ON the line and every outward
+        # tracking error became a boundary violation (docs/analysis/2026-10-06_ring_drift.md).
+        DeclareLaunchArgument('border_inset_m', default_value='0.20',
+                              description='outer ring centreline pull-back inside the '
+                                          'recorded boundary [m]'),
         Node(
             package='mower_coverage',
             executable='mower_coverage_node',
@@ -42,6 +57,9 @@ def generate_launch_description():
             parameters=[{
                 'cut_width_m': ParameterValue(cut_width, value_type=float),
                 'swath_overlap_m': ParameterValue(overlap, value_type=float),
+                'boundary_inset_m': ParameterValue(boundary_inset, value_type=float),
+                'min_turn_radius_m': ParameterValue(turn_radius, value_type=float),
+                'border_inset_m': ParameterValue(border_inset, value_type=float),
             }],
             condition=IfCondition(start_planner),
         ),

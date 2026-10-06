@@ -14,24 +14,50 @@ find_package(trajectory_msgs REQUIRED)
 find_package(mower_interfaces REQUIRED)
 
 # --- Fields2Cover -------------------------------------------------------------
-# Consumed from the apt package `ros-humble-fields2cover` (2.1.0), NOT from
-# rosdep: there is no `fields2cover` key in any rosdistro index, so it must
-# NOT be a <depend> in package.xml. Install it in the Dockerfile:
-#   apt-get install -y ros-humble-fields2cover
-# That deb pulls ros-humble-ortools-vendor automatically (OR-Tools is a real
-# NEEDED entry on libFields2Cover.so, satisfied at runtime via the vendor
-# package's LD_LIBRARY_PATH), and its CMake config exports find_dependency for
-# GDAL/GEOS/TBB/Eigen/Threads. Do NOT add a find_package(ortools) or any
-# ortools-target workaround — that is only needed for Fields2Cover v3
-# source builds (MowgliNext), not for the apt 2.1.0 config.
-find_package(Fields2Cover 2.1.0 CONFIG REQUIRED)
+# F2C_V3=ON (default): Fields2Cover v3 (3.0.0, upstream `v3.0` branch), built
+#   ONCE per arch by docker/fields2cover/Dockerfile into the image layer
+#   `mower-f2c:v3-<arch>` and copied to /opt/fields2cover by
+#   Dockerfile.humble / Dockerfile.dev-amd64 (never compiled on the mower).
+#   v3 links ortools::ortools PUBLIC but its Fields2CoverConfig.cmake does not
+#   find_dependency(ortools), so define the target here from
+#   ros-humble-ortools-vendor.
+# F2C_V3=OFF: the apt package `ros-humble-fields2cover` (2.1.0) as before.
+#   It installs libFields2Cover.so (no SONAME) + libmatplot into /opt/ros/humble,
+#   which shadows v3 via LD_LIBRARY_PATH, so an image carries only ONE of the
+#   two (Dockerfile.humble build-arg F2C_V3=0 selects apt 2.1).
+#   Fields2Cover is NOT a <depend> in package.xml (no rosdep key).
+option(F2C_V3 "Build against Fields2Cover v3 (/opt/fields2cover)" ON)
+set(F2C_V3_PREFIX "/opt/fields2cover" CACHE PATH "Fields2Cover v3 install prefix")
+if(F2C_V3)
+  find_package(ortools_vendor QUIET)
+  find_package(ortools CONFIG REQUIRED)
+  find_package(Fields2Cover 3.0 CONFIG REQUIRED
+    PATHS ${F2C_V3_PREFIX} NO_DEFAULT_PATH)
+  message(STATUS "mower_coverage: Fields2Cover ${Fields2Cover_VERSION} (v3) from ${Fields2Cover_DIR}")
+else()
+  find_package(Fields2Cover 2.1.0 CONFIG REQUIRED)
+  message(STATUS "mower_coverage: Fields2Cover ${Fields2Cover_VERSION} (apt 2.1 fallback)")
+endif()
 
 # Pure-geometry planner core: no ROS types in its signature, so it is unit
 # testable against the real F2C library with no robot and no ROS node.
 add_library(mower_coverage_core SHARED src/coverage_planning.cpp)
 target_include_directories(mower_coverage_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
-target_link_libraries(mower_coverage_core Fields2Cover::Fields2Cover)
+# v3 source installs export plain `Fields2Cover`; the apt 2.1 deb exports the
+# namespaced target.
+if(TARGET Fields2Cover::Fields2Cover)
+  target_link_libraries(mower_coverage_core Fields2Cover::Fields2Cover)
+else()
+  target_link_libraries(mower_coverage_core Fields2Cover)
+endif()
+if(F2C_V3)
+  target_compile_definitions(mower_coverage_core PUBLIC MOWER_COVERAGE_F2C_V3=1)
+  # F2C headers trip -Wshadow etc.; keep them SYSTEM.
+  target_include_directories(mower_coverage_core SYSTEM PUBLIC ${F2C_V3_PREFIX}/include)
+  set_target_properties(mower_coverage_core PROPERTIES
+    INSTALL_RPATH "${F2C_V3_PREFIX}/lib" BUILD_RPATH "${F2C_V3_PREFIX}/lib")
+endif()
 
 add_executable(mower_coverage_node src/mower_coverage_node.cpp)
 target_link_libraries(mower_coverage_node

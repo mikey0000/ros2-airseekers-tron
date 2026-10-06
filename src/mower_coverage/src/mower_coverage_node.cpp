@@ -16,6 +16,7 @@
 
 #include "mower_coverage/coverage_planning.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <memory>
@@ -32,6 +33,11 @@ constexpr double kDefaultCutWidth = 0.20;         // blade cut width [m]
 constexpr double kDefaultSwathOverlap = 0.02;     // overlap between swaths [m]
 constexpr double kDefaultHeadlandWidth = 0.20;    // desired headland band [m]
 constexpr double kDefaultMinSwathLength = 0.15;   // sliver-drop threshold [m]
+// Extra pull-back of the OUTER ring beyond half a swath [m]. The outermost
+// ring's centreline sits op_width/2 + boundary_inset_m inside the recorded
+// boundary (blade edge boundary_inset_m inside the line). 0.15: the Tron's
+// tracking error put it 9 cm outside the boundary in a field test.
+constexpr double kDefaultBoundaryInset = 0.15;
 constexpr double kDuplicatePoseTol = 1e-6;        // dedupe consecutive poses
 
 double distance(const mower_coverage::Point2D& a, const mower_coverage::Point2D& b) {
@@ -72,14 +78,30 @@ class MowerCoverageNode : public rclcpp::Node {
                    cut_width, overlap, kDefaultCutWidth, kDefaultSwathOverlap);
       default_operation_width_ = kDefaultCutWidth - kDefaultSwathOverlap;
     }
+    // Chassis pull-back of the OUTERMOST driven pass inside the recorded boundary [m].
+    // 0 = the outer ring centreline runs on the recorded line. Read per request, so
+    // `ros2 param set` applies to the next plan. See docs/analysis/2026-10-06_ring_drift.md.
+    declare_parameter<double>("border_inset_m", 0.0);
+    boundary_inset_ =
+        declare_parameter<double>("boundary_inset_m", kDefaultBoundaryInset);
+    if (!(boundary_inset_ >= 0.0)) {
+      RCLCPP_ERROR(get_logger(), "invalid boundary_inset_m=%.3f; using %.3f",
+                   boundary_inset_, kDefaultBoundaryInset);
+      boundary_inset_ = kDefaultBoundaryInset;
+    }
+    // 0 = pivot in place between swaths (diff-drive Tron): straight
+    // connectors. > 0 = F2C v3 Dubins turns of this radius between swaths.
+    min_turn_radius_ = declare_parameter<double>("min_turn_radius_m", 0.0);
     service_ = create_service<mower_interfaces::srv::PlanCoverage>(
         "/coverage/plan",
         std::bind(&MowerCoverageNode::handlePlan, this, std::placeholders::_1,
                   std::placeholders::_2));
     RCLCPP_INFO(get_logger(),
                 "mower_coverage_node ready: service /coverage/plan "
-                "(Fields2Cover headland + swath, default swath spacing %.3f m)",
-                default_operation_width_);
+                "(Fields2Cover %s headland + swath, default swath spacing %.3f m, "
+                "boundary_inset_m %.3f, min_turn_radius_m %.3f)",
+                mower_coverage::builtWithF2CV3() ? "v3" : "2.1",
+                default_operation_width_, boundary_inset_, min_turn_radius_);
   }
 
  private:
@@ -97,6 +119,8 @@ class MowerCoverageNode : public rclcpp::Node {
     const double min_swath_length = request->min_swath_length > 0.0
                                         ? request->min_swath_length
                                         : kDefaultMinSwathLength;
+    const double border_inset =
+        std::max(0.0, get_parameter("border_inset_m").as_double());
     const double mow_angle_rad =
         request->mow_angle_deg >= 0.0
             ? request->mow_angle_deg * M_PI / 180.0
@@ -136,7 +160,7 @@ class MowerCoverageNode : public rclcpp::Node {
     const mower_coverage::CoveragePlan plan =
         mower_coverage::planCoverage(field, op_width, headland_width,
                                      headland_passes,
-                                     /*border_inset=*/0.0,
+                                     border_inset,
                                      mow_angle_rad, min_swath_length, mode,
                                      request->edge_first);
 
@@ -171,8 +195,21 @@ class MowerCoverageNode : public rclcpp::Node {
       }
     };
     auto addSwaths = [&]() {
-      for (const auto& swath : plan.swaths) {
-        segments.push_back({swath.first, swath.second});
+      for (size_t i = 0; i < plan.swaths.size(); ++i) {
+        const auto& swath = plan.swaths[i];
+        std::vector<mower_coverage::Point2D> seg;
+        if (i > 0 && min_turn_radius_ > 0.0) {
+          const auto& prev = plan.swaths[i - 1];
+          seg = mower_coverage::planTurn(
+              prev.second, std::atan2(prev.second.second - prev.first.second,
+                                      prev.second.first - prev.first.first),
+              swath.first, std::atan2(swath.second.second - swath.first.second,
+                                      swath.second.first - swath.first.first),
+              op_width, min_turn_radius_);
+        }
+        seg.push_back(swath.first);
+        seg.push_back(swath.second);
+        segments.push_back(seg);
       }
     };
     if (plan.swaths_first) {
@@ -255,6 +292,8 @@ class MowerCoverageNode : public rclcpp::Node {
 
   rclcpp::Service<mower_interfaces::srv::PlanCoverage>::SharedPtr service_;
   double default_operation_width_ = kDefaultCutWidth - kDefaultSwathOverlap;
+  double boundary_inset_ = kDefaultBoundaryInset;
+  double min_turn_radius_ = 0.0;
 };
 
 int main(int argc, char** argv) {

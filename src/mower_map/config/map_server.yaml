@@ -21,9 +21,13 @@ map_server_node:
     odom_topic: /odometry/filtered_map
     status_topic: /mower_base/status
     gps_status_topic: /gps/status
-    soft_boundary_margin_m: 0.3  # headland ring runs on the polygon edge; 0.0 pauses every outer lap
+    soft_boundary_margin_m: 0.3  # outer ring is now 0.20 m inside the edge (coverage border_inset_m)
     lethal_boundary_margin_m: 0.5
-    boundary_debounce_samples: 3
+    # 10 Hz x 2 samples = 0.2 s (0.06 m at 0.3 m/s) to confirm a soft violation. 5 Hz x 3
+    # (0.6 s, 0.18 m) used up almost the whole 0.2 m soft->lethal gap: run B 10-06 went
+    # soft -> lethal in 0.14 s, so the soft pause never got a chance.
+    boundary_check_rate_hz: 10.0
+    boundary_debounce_samples: 2
     require_charging: true
     require_rtk_accuracy: true
     require_yaw_converged: true

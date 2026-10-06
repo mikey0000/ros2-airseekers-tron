@@ -156,9 +156,11 @@ controller_server:
     FollowCoveragePath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.3
-      lookahead_dist: 0.4
-      min_lookahead_dist: 0.3
-      max_lookahead_dist: 0.6
+      # 0.5/0.4/0.7 (was 0.4/0.3/0.6): the drive lags and caps the yaw rate, and the short
+      # carrot made RPP weave (angular.z sign flips every 1-2 s at 0.3 m/s, 10-06 runs A/B).
+      lookahead_dist: 0.5
+      min_lookahead_dist: 0.4
+      max_lookahead_dist: 0.7
       lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: true
       # mower_mcu_driver clamps angular to 0.3 rad/s (vendor PID clamp): ask for no more.
@@ -169,8 +171,13 @@ controller_server:
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.5
-      regulated_linear_scaling_min_speed: 0.10
+      # Curvature-preserving turns: the MCU clamps linear and angular SEPARATELY (+-0.3) and
+      # the chassis only reaches ~0.1-0.25 rad/s in turf, so RPP must slow down until
+      # v / R <= ~0.2 rad/s itself. min_radius = desired_linear_vel / 0.2 = 1.5 m. At 0.5 m
+      # it asked for 0.4-0.6 rad/s at 0.3 m/s; the robot turned on a >= 1.0-1.5 m radius
+      # and ran wide (docs/analysis/2026-10-06_ring_drift.md).
+      regulated_linear_scaling_min_radius: 1.5
+      regulated_linear_scaling_min_speed: 0.08
       use_cost_regulated_linear_velocity_scaling: false
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.6

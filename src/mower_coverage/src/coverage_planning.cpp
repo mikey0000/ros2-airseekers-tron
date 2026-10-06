@@ -813,10 +813,9 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
   f2c::types::Cells safe_cells =
       hl.generateHeadlands(hl_field, border_inset - op_width / 2.0);
 
-  // Headland rings. v2.1.0 returns std::vector<F2CCells> — one Cells per
-  // pass, outermost pass first (dir_out2in) — with each pass's rings as its
-  // cells (v3 returns chained 2-point segments that must be re-stitched; do
-  // not port that). A pass cell's EXTERIOR ring runs along the field
+  // Headland rings: one Cells per pass, outermost pass first, each pass's
+  // rings as its cells (see the pass loop below for why we do not call
+  // generateHeadlandSwaths). A pass cell's EXTERIOR ring runs along the field
   // boundary; its INTERIOR rings run around the holes: pass k sits
   // border_inset + op_width/2 + (k - 1) * op_width OUTSIDE the recorded hole
   // (the outer pass k sits border_inset + (k - 1) * op_width inside the
@@ -865,8 +864,19 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
       break;
     }
   } else if (n_rings > 0 && safe_cells.size() > 0) {
-    passes = hl.generateHeadlandSwaths(safe_cells, op_width, n_rings,
-                                       /*dir_out2in=*/true);
+    // Pass k = the planning cell shrunk by (k + 1/2) * op_width, outermost
+    // first. This is exactly ConstHL::generateHeadlandSwaths(dir_out2in) in
+    // both F2C 2.1 and v3, but v3 returns each pass as loose 2-point line
+    // sections (MultiLineString) instead of Cells, which loses the
+    // exterior/hole ring split the grouping below needs. Building the passes
+    // from generateHeadlands keeps the rings as polygons on both versions.
+    for (int k = 0; k < n_rings; ++k) {
+      f2c::types::Cells c = hl.generateHeadlands(safe_cells, (k + 0.5) * op_width);
+      if (cellsEmpty(c)) {
+        break;
+      }
+      passes.push_back(c);
+    }
   }
   {
     for (size_t k = 0; k < passes.size(); ++k) {
@@ -956,7 +966,7 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
       plan.swath_angle_rad = longestEdgeAngle(field);
       sw = bf.generateSwaths(plan.swath_angle_rad, op_width, cell);
     } else {
-      f2c::obj::NSwath n_swath_objective;  // F2C 2.x takes a non-const reference
+      f2c::obj::NSwath n_swath_objective;  // v2.x: non-const ref; v3: const ref
       sw = bf.generateBestSwaths(n_swath_objective, op_width, cell);
     }
     std::vector<Seg> pieces;
@@ -1106,6 +1116,50 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
     plan.drops.push_back("empty plan");
   }
   return plan;
+}
+
+bool builtWithF2CV3() {
+#ifdef MOWER_COVERAGE_F2C_V3
+  return true;
+#else
+  return false;
+#endif
+}
+
+std::vector<Point2D> planTurn(const Point2D& from, double from_yaw,
+                              const Point2D& to, double to_yaw,
+                              double robot_width, double min_turn_radius) {
+  std::vector<Point2D> out;
+#ifdef MOWER_COVERAGE_F2C_V3
+  if (!(min_turn_radius > 0.0) || !(robot_width > 0.0)) {
+    return out;
+  }
+  try {
+    f2c::types::Robot robot(robot_width, robot_width);
+    robot.setMinTurningRadius(min_turn_radius);
+    f2c::pp::DubinsCurves dubins;
+    f2c::types::Path turn = dubins.createTurn(
+        robot, f2c::types::Point(from.first, from.second), from_yaw,
+        f2c::types::Point(to.first, to.second), to_yaw);
+    if (turn.size() == 0) {
+      return out;
+    }
+    turn.discretize(0.05);
+    for (const auto& st : turn.getStates()) {
+      const Point2D p{st.point.getX(), st.point.getY()};
+      if (dist(p, from) < 1e-3 || dist(p, to) < 1e-3) {
+        continue;
+      }
+      out.push_back(p);
+    }
+  } catch (const std::exception&) {
+    out.clear();
+  }
+#else
+  (void)from; (void)from_yaw; (void)to; (void)to_yaw;
+  (void)robot_width; (void)min_turn_radius;
+#endif
+  return out;
 }
 
 }  // namespace mower_coverage

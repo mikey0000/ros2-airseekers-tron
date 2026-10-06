@@ -1,4 +1,5 @@
-// Pure-geometry coverage planning on Fields2Cover 2.1.0 (headland + swath).
+// Pure-geometry coverage planning on Fields2Cover (v3 by default, apt 2.1.0
+// with -DF2C_V3=OFF; headland + swath).
 //
 // No ROS types appear in this header: the planner is unit-testable against the
 // real F2C library with no robot and no ROS node. The node
@@ -107,5 +108,18 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
                           double min_swath_length,
                           PathMode mode,
                           bool edge_first);
+
+// Forward turn between the end of one swath (pose `from`, heading from_yaw)
+// and the start of the next (pose `to`, heading to_yaw) with the F2C v3
+// Dubins turn planner, discretised to ~5 cm. Interior points only (from/to
+// excluded). Returns empty when min_turn_radius <= 0 (the default: the Tron
+// is diff-drive and pivots in place, so a straight connector IS its turn),
+// when built against F2C 2.1 (F2C_V3=OFF), or when the planner fails.
+std::vector<Point2D> planTurn(const Point2D& from, double from_yaw,
+                              const Point2D& to, double to_yaw,
+                              double robot_width, double min_turn_radius);
+
+// True when compiled against Fields2Cover v3.
+bool builtWithF2CV3();
 
 }  // namespace mower_coverage
