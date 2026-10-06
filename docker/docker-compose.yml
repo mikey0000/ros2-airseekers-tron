@@ -51,6 +51,9 @@ services:
     # Runs the whole stack (launch/mower.launch.py via mower_bringup). The
     # workspace must already be built in /work/install (scripts/build.sh).
     # For an interactive shell instead: scripts/run_stack.sh shell
+    # Fast DDS leaks its shared-memory segments on every restart; /dev/shm is the HOST tmpfs (bind-mounted
+    # /dev). A full /dev/shm breaks every node (SHM transport errors, UDP fallback, RAM pressure), so wipe
+    # the stale segments before launching. The `fastdds` CLI is not in the image, hence plain rm.
     command: >-
       bash -lc "source /opt/ros/humble/setup.bash &&
       source /work/install/setup.bash &&
