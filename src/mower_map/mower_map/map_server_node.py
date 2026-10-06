@@ -406,6 +406,8 @@ class MapServerNode(Node):
         if ret is not None:
             msg.polygon.points = [Point32(x=float(x), y=float(y), z=0.0)
                                   for x, y in ret.polygon()]
+        self._return_corridor_poly = ret.polygon() if ret is not None else None
+        self._refresh_corridor_polys()
         self.return_corridor_pub.publish(msg)
 
     def check_return_corridor(self, x, y, now):
@@ -447,8 +449,19 @@ class MapServerNode(Node):
         if corridor is not None:
             msg.polygon.points = [Point32(x=float(x), y=float(y), z=0.0)
                                   for x, y in corridor.polygon()]
+        self._dock_corridor_poly = corridor.polygon() if corridor is not None else None
+        self._refresh_corridor_polys()
         self.corridor_pub.publish(msg)
         return corridor
+
+    def _refresh_corridor_polys(self):
+        """Polygons that count as 'inside' for the boundary check besides the areas."""
+        polys = []
+        for poly in (getattr(self, '_dock_corridor_poly', None),
+                     getattr(self, '_return_corridor_poly', None)):
+            if poly:
+                polys.append(poly)
+        self._corridor_polys = polys
 
     def grid_msg(self, spec, data):
         msg = OccupancyGrid()
@@ -669,6 +682,11 @@ class MapServerNode(Node):
             self.boundary.lethal_margin = float(self.p('lethal_boundary_margin_m'))
             self.boundary.debounce_samples = int(self.p('boundary_debounce_samples'))
             inside, dist = core.robot_area_status(x, y, self.store.areas)
+            if not inside and getattr(self, '_corridor_polys', None):
+                # The dock corridor and a return corridor are legitimate places
+                # to be (docked, undocking, coming home): never a violation.
+                if any(core.point_in_polygon(x, y, poly) for poly in self._corridor_polys):
+                    inside, dist = True, 0.0
             soft, lethal = self.boundary.update(inside, dist)
             self.boundary_pub.publish(Bool(data=soft))
             self.lethal_pub.publish(Bool(data=lethal))

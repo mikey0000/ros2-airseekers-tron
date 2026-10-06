@@ -825,6 +825,16 @@ class MissionFSM:
         self._handle_action(a, outcome, result or {})
         return self._end()
 
+    def on_action_feedback(self, token, detail, now=None):
+        """Docking-server feedback detail (e.g. 'searching marker: seen 0.86 m, 3.5 deg')
+        -> sub_state, so the GUI shows the marker visibility while docking."""
+        self._begin(self._now if now is None else now)
+        a = self._action
+        if (a is not None and a.token == token and a.name == ACT_DOCK and detail
+                and self.phase in DOCK_PHASES and self._dyn is None):
+            self.sub_state = str(detail)
+        return self._end()
+
     def on_service_result(self, token, ok, response=None, now=None):
         self._begin(self._now if now is None else now)
         s = self._service
@@ -1109,8 +1119,12 @@ class MissionFSM:
             return True
 
         i = self.inputs
-        if self.phase in ('MOWING', 'TRANSIT', 'BOUNDARY_PAUSED', 'PLANNING') \
-                and self.mission is not None:
+        # Boundary rules apply only where the blade may be on. PLANNING right
+        # after an undock and blade-off TRANSITs (to/from the dock, along drawn
+        # paths, the return corridor) are legitimately outside the mowing areas:
+        # the Nav2 keepout mask bounds them (2026-10-07: a lethal stop fired in
+        # PLANNING on the dock, 3.7 m from the area, before the robot moved).
+        if self.phase in ('MOWING', 'BOUNDARY_PAUSED') and self.mission is not None:
             if i.lethal_boundary_violation:
                 self._boundary_stop('lethal boundary violation')
                 return True

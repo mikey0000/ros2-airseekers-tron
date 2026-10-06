@@ -467,8 +467,9 @@ def test_dock_blind_without_odom_uses_time_fallback():
         out = sim.tick()
         if out.state == S.RETRY:
             break
-    # the fallback integrates |cmd| * dt and stops at approach + 0.1 m
-    assert sim.reversed == pytest.approx(0.9, abs=0.02)
+    # the fallback integrates |cmd| * dt and stops at approach + 0.1 m, then (after the
+    # contact settle) creeps final_extra_creep_m further before the retry
+    assert sim.reversed == pytest.approx(0.9 + 0.15, abs=0.02)
 
 
 # ----------------------------------------------------------------- undock
@@ -685,3 +686,287 @@ def test_cancel_mid_reverse_outputs_zero():
     assert out.linear < 0
     out = m.cancel()
     assert out.done and out.linear == 0.0 and out.angular == 0.0 and out.message == 'CANCELED'
+
+
+# ------------------------------------- approach skip / align / nav fallback (2026-10-07)
+# Live: dock pose yaw 110.7 deg, approach (0.07, -0.52), robot 0.25 m away at another
+# heading -> Nav2 "Failed to make progress" (pivot on turf) -> cancel/re-send loop.
+DOCK_YAW = math.radians(110.7)
+DOCK = dl.Pose2D(0.07 - 0.8 * math.cos(DOCK_YAW), -0.52 - 0.8 * math.sin(DOCK_YAW), DOCK_YAW)
+
+
+def _snap(t, map_pose=None, odom=None, **kw):
+    return dl.Snapshot(t=t, map_pose=map_pose,
+                       odom=odom if odom is not None else map_pose, **kw)
+
+
+def test_goal_near_approach_with_good_heading_skips_nav():
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    out = m.start(_snap(0.0, dl.Pose2D(-0.16 + 0.1, -0.42, DOCK_YAW + math.radians(10))))
+    assert out.state == S.SEARCHING
+    assert not any(r[0] == 'start_nav' for r in out.requests)
+    assert any('skipping Nav2' in n for n in out.notes)
+
+
+def test_goal_near_approach_with_bad_heading_aligns_then_searches():
+    yaw0 = DOCK_YAW - math.radians(70)
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    out = m.start(_snap(0.0, dl.Pose2D(-0.16, -0.42, yaw0)))
+    assert out.state == S.ALIGNING and not out.requests
+    out = m.step(_snap(0.05, dl.Pose2D(-0.16, -0.42, yaw0)))
+    assert out.state == S.ALIGNING
+    assert out.angular == pytest.approx(0.25)          # toward the dock yaw (left)
+    assert out.linear == pytest.approx(0.03)           # creep, no pure pivot
+    assert out.detail.startswith('aligning to dock heading: 70')
+    assert 'marker not visible' in out.detail
+    # heading reaches the tolerance -> SEARCHING
+    out = m.step(_snap(1.0, dl.Pose2D(-0.16, -0.42, DOCK_YAW - math.radians(5))))
+    assert out.state == S.SEARCHING and out.linear == 0.0
+
+
+def test_align_gives_up_on_travel_or_timeout_and_searches():
+    yaw0 = DOCK_YAW + math.radians(90)
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    m.start(_snap(0.0, dl.Pose2D(0.0, -0.5, yaw0)))
+    out = m.step(_snap(0.05, dl.Pose2D(0.0, -0.5, yaw0)))
+    assert out.state == S.ALIGNING and out.angular == pytest.approx(-0.25)   # right
+    out = m.step(_snap(5.0, dl.Pose2D(0.0, -0.05, yaw0)))   # 0.45 m crept, still off
+    assert out.state == S.SEARCHING and any('alignment stopped' in n for n in out.notes)
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    m.start(_snap(0.0, dl.Pose2D(0.0, -0.5, yaw0)))
+    out = m.step(_snap(20.5, dl.Pose2D(0.0, -0.5, yaw0)))
+    assert out.state == S.SEARCHING
+
+
+def test_align_stops_when_marker_enters_gate():
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    yaw0 = DOCK_YAW - math.radians(40)
+    m.start(_snap(0.0, dl.Pose2D(0.07, -0.52, yaw0)))
+    good = dl.MarkerObs(-1.2, 0.05, math.radians(5), stamp=0.1)
+    out = m.step(_snap(0.1, dl.Pose2D(0.07, -0.52, yaw0), marker=good))
+    assert out.state == S.SEARCHING
+    out = m.step(_snap(0.15, dl.Pose2D(0.07, -0.52, yaw0), marker=good))
+    assert out.state == S.DOCKING
+
+
+def test_nav_failure_within_1m_is_treated_as_arrived():
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    far = dl.Pose2D(3.0, 3.0, 0.0)
+    assert m.start(_snap(0.0, far)).requests[0][0] == 'start_nav'
+    near = dl.Pose2D(-0.16 - 0.5, -0.42, DOCK_YAW)          # ~0.73 m, beyond skip radius
+    out = m.step(_snap(20.0, near, nav_status='failed'))
+    assert not out.done and out.state == S.SEARCHING
+    assert any('treating as arrived' in n for n in out.notes)
+    # with the heading off: align instead
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    m.start(_snap(0.0, far))
+    out = m.step(_snap(20.0, dl.Pose2D(-0.16, -0.42, 0.0), nav_status='failed'))
+    assert out.state == S.ALIGNING
+    # nav timeout within 1 m: cancel Nav2, continue
+    m = dl.DockStateMachine(dl.DockParams(nav_timeout_s=5.0), DOCK)
+    m.start(_snap(0.0, far))
+    out = m.step(_snap(6.0, dl.Pose2D(-0.16, -0.42, DOCK_YAW), nav_status='running'))
+    assert out.state == S.SEARCHING and ('cancel_nav',) in out.requests
+
+
+def test_nav_failure_far_retries_once_with_current_yaw_then_fails():
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    far = dl.Pose2D(2.0, 1.0, 0.4)
+    m.start(_snap(0.0, far))
+    out = m.step(_snap(20.0, far, nav_status='failed'))
+    assert out.state == S.NAV_TO_APPROACH and not out.done
+    req = [r for r in out.requests if r[0] == 'start_nav'][0][1]
+    assert (req.x, req.y) == pytest.approx((m.approach.x, m.approach.y))
+    assert req.yaw == pytest.approx(0.4)                    # current yaw: no pivot
+    assert 'current yaw' in out.detail
+    out = m.step(_snap(20.05, far, nav_status='running'))
+    assert out.state == S.NAV_TO_APPROACH
+    out = m.step(_snap(40.0, far, nav_status='failed'))
+    assert out.done and out.message == 'NAV_TO_DOCK_FAILED'
+
+
+def test_relaxed_nav_success_then_aligns():
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    far = dl.Pose2D(2.0, 1.0, 0.4)
+    m.start(_snap(0.0, far))
+    m.step(_snap(20.0, far, nav_status='failed'))
+    m.step(_snap(20.05, far, nav_status='running'))
+    out = m.step(_snap(30.0, dl.Pose2D(m.approach.x, m.approach.y, 0.4),
+                       nav_status='succeeded'))
+    assert out.state == S.ALIGNING
+
+
+def test_detail_reports_marker_visibility():
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D())
+    m.start(dl.Snapshot(t=0.0))
+    out = m.step(dl.Snapshot(t=0.05))
+    assert out.detail == 'searching marker: not visible'
+    # marker 0.86 m behind, robot heading 3.5 deg off the dock axis
+    mk = dl.MarkerObs(-0.86, 0.0, math.radians(-3.5), stamp=0.1)
+    m2 = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D())
+    m2.start(dl.Snapshot(t=0.0))
+    out = m2.step(dl.Snapshot(t=0.1, marker=mk))
+    assert out.state == S.DOCKING
+    assert 'marker seen 0.86 m, 3.5\N{DEGREE SIGN}' in out.detail
+    bad = dl.MarkerObs(-1.2, 0.0, math.radians(40), stamp=0.1)
+    out = m.step(dl.Snapshot(t=0.1, marker=bad))
+    assert out.detail.startswith('searching marker: seen 1.20 m, -40.0\N{DEGREE SIGN}')
+    assert 'outside gate' in out.detail and out.state == S.SEARCHING
+
+
+def _marker_from_pose(x, y, th, off, stamp):
+    """Synthetic marker for a robot at (x, y, th) in the dock frame (docked pose at the
+    origin, heading 0; marker plane `off` behind it, normal +X)."""
+    mx, my = -off - x, -y
+    c, s = math.cos(-th), math.sin(-th)
+    return dl.MarkerObs(c * mx - s * my, s * mx + c * my, -th, stamp=stamp)
+
+
+def test_marker_from_pose_matches_dock_errors():
+    for x, y, th in ((0.75, 0.0, 0.0), (1.0, 0.3, 0.2), (0.6, -0.4, -0.3)):
+        e = dl.dock_errors(_marker_from_pose(x, y, th, 0.45, 0.0), 0.45)
+        assert (e.remaining, e.lateral, e.heading) == pytest.approx((x, y, th), abs=1e-9)
+
+
+@pytest.mark.parametrize('x0,y0,th0', [
+    (1.0, 0.5, math.radians(24)), (1.0, -0.5, math.radians(24)),
+    (0.8, 0.45, -math.radians(24)), (1.4, -0.5, -math.radians(24)), (0.8, 0.0, 0.0)])
+def test_vision_docking_tolerates_gate_edge_start(x0, y0, th0):
+    """Enter SEARCHING at the gate edge (25 deg / 0.5 m): the FSM must end on the contacts
+    (within 3 cm of the axis) using realigns, without consuming retries or failing."""
+    p = dl.DockParams(skip_nav_to_approach=True)
+    m = dl.DockStateMachine(p, dl.Pose2D(), goal_timeout_s=400.0)
+    x, y, th, t, dt = x0, y0, th0, 0.0, 0.05
+    m.start(dl.Snapshot(t=0.0))
+    deb = dl.ContactDebouncer(3)
+    out = None
+    for _ in range(8000):
+        t += dt
+        deb.update(x <= 0.0 and abs(y) < 0.03)
+        mk = _marker_from_pose(x, y, th, p.docked_marker_offset, t) if x > 0.05 else None
+        out = m.step(dl.Snapshot(t=t, odom=dl.Pose2D(x, y, th), marker=mk,
+                                 contact=deb.value, charging_result=True if
+                                 m.state == S.CHARGING else None,
+                                 progress_pose=dl.Pose2D(x, y, th)))
+        if out.done:
+            break
+        x += out.linear * math.cos(th) * dt
+        y += out.linear * math.sin(th) * dt
+        th += out.angular * dt
+        x = max(x, 0.0)
+    assert out.success, (out.message, m.state, x, y, th)
+    assert m.retries == 0
+
+
+def test_reverse_control_turn_first_slows_on_large_heading_error():
+    g = dl.ControllerGains()
+    v_big, _, _ = dl.reverse_control(dl.DockErrors(1.0, 0.0, math.radians(25)), g)
+    v_small, _, _ = dl.reverse_control(dl.DockErrors(1.0, 0.0, math.radians(2)), g)
+    assert -g.max_speed <= v_small < v_big < 0
+    assert abs(v_big) >= g.min_turn_speed
+
+
+# ------------------------- FINAL budget / contact handling / calibration (2026-10-07 Home)
+# Owner saw: reversed onto the pins, then the robot drove forward off them ("undock on
+# touching the pins"); contacts reported 7 s later while the server was in RETRY.
+def _final_machine(**kw):
+    p = dl.DockParams(skip_nav_to_approach=True, **kw)
+    m = dl.DockStateMachine(p, dl.Pose2D(), goal_timeout_s=400.0)
+    m.start(dl.Snapshot(t=0.0, odom=dl.Pose2D(0.65, 0, 0)))
+    mk = dl.MarkerObs(-1.1, 0.0, 0.0, stamp=0.05)          # remaining 0.65
+    assert m.step(dl.Snapshot(t=0.05, marker=mk, odom=dl.Pose2D(0.65, 0, 0))).state == S.DOCKING
+    mk = dl.MarkerObs(-0.6, 0.0, 0.0, stamp=0.1)           # remaining 0.15 -> final
+    out = m.step(dl.Snapshot(t=0.1, marker=mk, odom=dl.Pose2D(0.15, 0, 0)))
+    assert out.state == S.FINAL_DOCKING
+    return m
+
+
+def test_final_budget_settles_then_creeps_before_retry():
+    m = _final_machine()
+    t, x, out, phases = 0.1, 0.15, None, []
+    while t < 40:
+        t += 0.05
+        out = m.step(dl.Snapshot(t=t, odom=dl.Pose2D(x, 0, 0), progress_pose=dl.Pose2D(x, 0, 0)))
+        x += out.linear * 0.05
+        phases.append((round(t, 2), out.state, m._final_phase, out.linear))
+        if out.state == S.RETRY:
+            break
+    settle = [p for p in phases if p[2] == 'settle' and p[1] == S.FINAL_DOCKING]
+    assert settle and all(p[3] == 0.0 for p in settle)
+    assert settle[-1][0] - settle[0][0] >= 3.0 - 0.06
+    creep = [p for p in phases if p[2] == 'creep' and p[1] == S.FINAL_DOCKING and p[3] < 0]
+    assert creep and all(p[3] == pytest.approx(-0.05) for p in creep)
+    assert out.state == S.RETRY
+    # 0.30 final budget + 0.15 creep reversed in total from final entry
+    assert 0.15 - x == pytest.approx(0.45, abs=0.03)
+
+
+def test_contact_during_settle_docks_without_retry():
+    m = _final_machine()
+    t, x = 0.1, 0.15
+    while m._final_phase != 'settle':
+        t += 0.05
+        out = m.step(dl.Snapshot(t=t, odom=dl.Pose2D(x, 0, 0)))
+        x += out.linear * 0.05
+    out = m.step(dl.Snapshot(t=t + 1.0, odom=dl.Pose2D(x, 0, 0), contact=True))
+    assert out.state == S.CHARGING and ('enable_charging',) in out.requests
+    out = m.step(dl.Snapshot(t=t + 1.1, contact=True, charging_result=True))
+    assert out.done and out.success
+
+
+@pytest.mark.parametrize('kind', ['debounced', 'charging'])
+def test_contact_in_retry_stops_forward_and_confirms(kind):
+    sim = Sim(dl.DockStateMachine(blind_params(max_retries=2), dl.Pose2D()), contact_after=None)
+    sim.start()
+    for _ in range(5000):
+        out = sim.tick()
+        if out.state == S.RETRY and out.linear > 0:
+            break
+    assert out.state == S.RETRY and out.linear > 0
+    snap = sim.snap()
+    snap = dl.Snapshot(t=snap.t + 0.05, odom=snap.odom, contact=(kind == 'debounced'),
+                       is_charging=(kind == 'charging'), raw_contact=True)
+    out = sim.m.step(snap)
+    assert out.state == S.CHARGING and out.linear == 0.0 and out.angular == 0.0
+    assert ('enable_charging',) in out.requests
+
+
+def test_raw_contact_in_retry_holds_still():
+    sim = Sim(dl.DockStateMachine(blind_params(max_retries=2), dl.Pose2D()), contact_after=None)
+    sim.start()
+    for _ in range(5000):
+        out = sim.tick()
+        if out.state == S.RETRY and out.linear > 0:
+            break
+    s = sim.snap()
+    out = sim.m.step(dl.Snapshot(t=s.t + 0.05, odom=s.odom, raw_contact=True))
+    assert out.state == S.RETRY and out.linear == 0.0 and out.angular == 0.0
+
+
+def test_contact_during_nav_cancels_nav():
+    m = dl.DockStateMachine(dl.DockParams(), dl.Pose2D())
+    m.start(dl.Snapshot(t=0.0))
+    out = m.step(dl.Snapshot(t=1.0, nav_status='running', contact=True))
+    assert out.state == S.CHARGING and ('cancel_nav',) in out.requests
+
+
+def test_success_reports_calibrated_marker_offset():
+    m = _final_machine()
+    # last marker at stamp 0.1: rem0 = 0.6 (offset 0); robot then reverses 0.10 m more
+    t = 0.1
+    out = None
+    for i in range(1, 41):
+        t += 0.05
+        x = 0.15 - 0.0025 * i                                # 0.10 m in 40 ticks
+        out = m.step(dl.Snapshot(t=t, odom=dl.Pose2D(x, 0, 0)))
+    out = m.step(dl.Snapshot(t=t + 0.05, odom=dl.Pose2D(0.05, 0, 0), contact=True))
+    assert out.state == S.CHARGING and out.calibrated_offset is None
+    out = m.step(dl.Snapshot(t=t + 0.1, contact=True, charging_result=True))
+    assert out.success and out.calibrated_offset == pytest.approx(0.6 - 0.10, abs=1e-6)
+
+
+def test_calibration_rejects_stale_or_absurd():
+    m = _final_machine(calib_max_marker_age_s=1.0)
+    out = m.step(dl.Snapshot(t=5.0, odom=dl.Pose2D(0.1, 0, 0), contact=True))
+    m.step(dl.Snapshot(t=5.05, contact=True, charging_result=True))
+    assert m.calibrated_offset is None

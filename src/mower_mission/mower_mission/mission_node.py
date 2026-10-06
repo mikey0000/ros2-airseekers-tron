@@ -54,6 +54,7 @@ from mowgli_interfaces.msg import Emergency, GnssStatus, HighLevelStatus, MapAre
 from mowgli_interfaces.srv import AddMowingArea, GetMowingArea, HighLevelControl, StartInArea
 
 from mower_mission import mission_fsm as fsm_mod
+from mower_mission import mow_progress
 from mower_mission.resume import ResumeCursor
 from mower_mission.quiet_action import QuietActionClient
 from mower_mission.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
@@ -87,6 +88,10 @@ TOPIC_DEFAULTS = {
     # plan preview: SetAreaSettings request, area_index = area (255 = all, 254 = clear)
     'preview_plan_service': '~/preview_plan',
     'preview_summary_topic': '~/preview_summary',     # latched String JSON
+    # live mow progress for the GUI map (mow_progress.py): latched String JSON
+    'mow_plan_topic': '~/mow_plan',                   # sub-path geometry, on plan change
+    'mow_progress_topic': '~/mow_progress',           # cursor / percent / ETA, 1 Hz
+    'mow_progress_rate_hz': 1.0,
     # clients
     'get_mowing_area_service': '/map_server_node/get_mowing_area',
     'get_area_settings_service': '/map_server_node/get_area_settings',
@@ -203,6 +208,14 @@ class MissionNode(Node):
         self._settings_pub = self.create_publisher(String, p['active_area_settings_topic'],
                                                    latched)
         self._preview_pub = self.create_publisher(String, p['preview_summary_topic'], latched)
+        self._mow_plan_pub = self.create_publisher(String, p['mow_plan_topic'], latched)
+        self._mow_progress_pub = self.create_publisher(String, p['mow_progress_topic'], latched)
+        self._mp_plan_id = None       # plan id last published on ~/mow_plan
+        self._mp_mission = None       # identity of the mission being timed
+        self._mp_t0 = None            # monotonic start of that mission
+        self._mp_last = (None, 0.0)   # (plan_id, mowed_m) of the previous sample
+        self._mp_session_m = 0.0      # metres mowed since the mission started
+        self._mp_policy = {}          # last non-'none' obstacle policy + its time
 
         # Inputs bypass the executor (see sub_pump.py). Every handler only stores the latest
         # value for the FSM, which reads them on the 10 Hz tick (and in status/services), so
@@ -293,6 +306,7 @@ class MissionNode(Node):
             (1.0 / max(1.0, float(self.fsm.p.tick_hz)), self._tick),
             (1.0 / max(0.1, float(p['status_rate_hz'])), self._publish_status_now),
             (1.0 / max(1.0, float(p['zero_burst_rate_hz'])), self._burst_tick),
+            (1.0 / max(0.1, float(p['mow_progress_rate_hz'])), self._publish_mow_progress),
         ], 'mission_periodic')
 
         with self._lock:
@@ -450,6 +464,8 @@ class MissionNode(Node):
         if not isinstance(st, dict):
             return
         d = st.get('distance_m')
+        if st.get('kind', 'none') != 'none':
+            self._mp_policy = dict(st, wall_time=time.time())
         with self._lock:
             i = self.fsm.inputs
             i.obstacle_kind = str(st.get('kind', 'none'))
@@ -629,6 +645,43 @@ class MissionNode(Node):
             st = self.fsm.status()
         self._publish_status(st)
 
+    def _publish_mow_progress(self):
+        """~/mow_plan + ~/mow_progress for the GUI map (read-only view of the FSM)."""
+        try:
+            now = time.monotonic()
+            with self._lock:
+                m = self.fsm.mission
+                if m is not self._mp_mission:
+                    self._mp_mission, self._mp_session_m = m, 0.0
+                    self._mp_t0 = now if m is not None else None
+                    self._mp_last = (None, 0.0)
+                geo = mow_progress.plan_geometry(self.fsm)
+                pid = geo[0] if geo else None
+                i = self.fsm.inputs
+                why = {'obstacle': self._mp_policy or None,
+                       'stereo_stale_s': i.stereo_stale_s if (
+                           i.stereo_stale_stamp is not None
+                           and now - i.stereo_stale_stamp <= 15.0) else None,
+                       'boundary_violation': bool(i.boundary_violation),
+                       'emergency': bool(self.fsm.status().get('emergency')),
+                       'lift': bool(i.lift), 'stop_button': bool(i.stop_button),
+                       'rain': bool(i.rain), 'docked': bool(i.docked),
+                       'critical_nodes_down': i.critical_nodes_down or ''}
+                elapsed = (now - self._mp_t0) if self._mp_t0 is not None else None
+                st = mow_progress.progress(self.fsm, pid, bool(i.is_cutting), elapsed,
+                                           self._mp_session_m, why)
+            last_pid, last_m = self._mp_last
+            if pid is not None and pid == last_pid and st['mowed_m'] > last_m:
+                self._mp_session_m += st['mowed_m'] - last_m
+            self._mp_last = (pid, st['mowed_m'])
+            if geo is not None and pid != self._mp_plan_id:
+                self._mp_plan_id = pid
+                self._mow_plan_pub.publish(String(data=json.dumps(
+                    {'plan_id': pid, 'area': geo[1], 'subpaths': geo[2]})))
+            self._mow_progress_pub.publish(String(data=json.dumps(st, default=str)))
+        except Exception as ex:  # noqa: BLE001 - GUI telemetry must never hurt the mission
+            self.get_logger().warn('mow_progress: %s' % ex, throttle_duration_sec=30.0)
+
     def _publish_status(self, st):
         msg = HighLevelStatus()
         msg.state = int(st['state'])
@@ -729,8 +782,20 @@ class MissionNode(Node):
             self._feed_action(e.token, fsm_mod.REJECTED, {'message': str(exc)})
             return
         self.get_logger().info('sending %s goal' % ros_name)
-        fut = client.send_goal_async(goal)
+        if e.name == fsm_mod.ACT_DOCK:   # relay the docking status detail into sub_state
+            fut = client.send_goal_async(
+                goal, feedback_callback=lambda fb, e=e: self._on_dock_feedback(e, fb))
+        else:
+            fut = client.send_goal_async(goal)
         fut.add_done_callback(lambda f, e=e: self._on_goal_response(e, f))
+
+    def _on_dock_feedback(self, e, fb):
+        text = str(fb.feedback.state)
+        detail = text.split(': ', 1)[1] if ': ' in text else ''
+        if not detail:
+            return
+        with self._lock:
+            self._execute(self.fsm.on_action_feedback(e.token, detail, time.monotonic()))
 
     def _on_goal_response(self, e, fut):
         try:

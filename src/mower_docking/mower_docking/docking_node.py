@@ -123,6 +123,31 @@ class DockingServer(Node):
         decl('stall_progress_ratio', dp.stall_progress_ratio)
         decl('stall_timeout_s', dp.stall_timeout_s)
         decl('use_dig_stall', dp.use_dig_stall)
+        # approach shortcuts / alignment / realign (2026-10-07 pivot-on-turf loop)
+        decl('map_pose_topic', '/odometry/filtered_map')   # map-frame pose ('' = off)
+        decl('approach_skip_radius_m', dp.approach_skip_radius_m)
+        decl('nav_fail_arrived_radius_m', dp.nav_fail_arrived_radius_m)
+        decl('relaxed_nav_retry', dp.relaxed_nav_retry)
+        decl('align_angular', dp.align_angular)
+        decl('align_creep', dp.align_creep)
+        decl('align_max_travel', dp.align_max_travel)
+        decl('align_timeout_s', dp.align_timeout_s)
+        decl('align_tolerance_deg', dp.align_tolerance_deg)
+        decl('docking_gate_scale', dp.docking_gate_scale)
+        decl('final_max_lateral', dp.final_max_lateral)
+        decl('final_max_heading_deg', dp.final_max_heading_deg)
+        decl('max_realigns', dp.max_realigns)
+        decl('realign_forward_distance', dp.realign_forward_distance)
+        decl('turn_slow_err', g.turn_slow_err)
+        decl('contact_settle_s', dp.contact_settle_s)
+        decl('final_extra_creep_m', dp.final_extra_creep_m)
+        decl('calib_max_marker_age_s', dp.calib_max_marker_age_s)
+        decl('calib_min_offset', dp.calib_min_offset)
+        decl('calib_max_offset', dp.calib_max_offset)
+        # measured docked_marker_offset (written after each vision dock, overrides the yaml)
+        decl('calibration_file', '/userdata/ros2/calibration/docking_calibration.yaml')
+        decl('auto_calibrate_marker_offset', True)
+        decl('min_turn_speed', g.min_turn_speed)
         # undock
         decl('undock_direction', 1.0)
         decl('undock_max_speed', 0.3)
@@ -147,6 +172,10 @@ class DockingServer(Node):
         self._dig_stall = False
         self._progress: Optional[dl.Pose2D] = None
         self._progress_t = -1e9
+        self._map_pose: Optional[dl.Pose2D] = None
+        self._raw_contact = False
+        self._is_charging = False
+        self._map_pose_t = -1e9
         self._rtk_fixed = False
         self._marker: Optional[dl.MarkerObs] = None
         self._cam_K = None
@@ -201,6 +230,7 @@ class DockingServer(Node):
             self, Undock, '~/undock', execute_callback=self._execute_undock,
             goal_callback=self._goal_cb, cancel_callback=lambda _g: CancelResponse.ACCEPT,
             callback_group=self._action_group)
+        self._load_calibration()
         self._pump.start()
         self.get_logger().info('docking server ready (~/dock, ~/undock)')
 
@@ -221,6 +251,8 @@ class DockingServer(Node):
     def _on_status(self, msg: MowerBaseDevStatus) -> None:
         with self._lock:
             self._contact.update(bool(msg.is_docking_done))
+            self._raw_contact = bool(msg.is_docking_done)
+            self._is_charging = bool(msg.is_charging)
             self._status_count += 1
             self._stop = bool(msg.stop_triggered)
             self._lift = bool(msg.lift_triggered)
@@ -253,6 +285,14 @@ class DockingServer(Node):
         with self._lock:
             self._progress = pose
             self._progress_t = time.monotonic()
+
+    def _on_map_pose(self, msg: Odometry) -> None:
+        q = msg.pose.pose.orientation
+        pose = dl.Pose2D(msg.pose.pose.position.x, msg.pose.pose.position.y,
+                         dl.yaw_from_quaternion(q.x, q.y, q.z, q.w))
+        with self._lock:
+            self._map_pose = pose
+            self._map_pose_t = time.monotonic()
 
     def _on_gps(self, msg) -> None:
         with self._lock:
@@ -342,6 +382,9 @@ class DockingServer(Node):
             fresh_progress = now - self._progress_t <= p('odom_timeout_s').value
             return dl.Snapshot(
                 progress_pose=self._progress if fresh_progress else None,
+                map_pose=self._map_pose if now - self._map_pose_t <= 1.0 else None,
+                raw_contact=self._raw_contact and now - self._status_t <= 1.0,
+                is_charging=self._is_charging and now - self._status_t <= 1.0,
                 dig_stall=self._dig_stall,
                 t=now,
                 odom=self._odom if now - self._odom_t <= p('odom_timeout_s').value else None,
@@ -379,11 +422,15 @@ class DockingServer(Node):
         if p('progress_odom_topic').value:
             pump.subscribe(Odometry, p('progress_odom_topic').value, self._on_progress_odom, 20,
                            parser=parse_odometry)
+        if p('map_pose_topic').value:
+            pump.subscribe(Odometry, p('map_pose_topic').value, self._on_map_pose, 5,
+                           parser=parse_odometry)
         pump.start()
         self._goal_pump = pump
         while time.monotonic() - t0 < timeout:
             with self._lock:
-                if self._status_count >= self._contact.n and self._odom_t >= t0:
+                map_ok = not p('map_pose_topic').value or self._map_pose_t >= t0
+                if self._status_count >= self._contact.n and self._odom_t >= t0 and map_ok:
                     return
             time.sleep(0.005)
         self.get_logger().warn('fresh odom/status not received within %.1f s of goal start'
@@ -496,7 +543,8 @@ class DockingServer(Node):
             slow_zone=float(p('slow_zone')), final_zone=float(p('final_zone')),
             k_lateral=float(p('k_lateral')), max_approach_angle=float(p('max_approach_angle')),
             kp_heading=float(p('kp_heading')), kd_heading=float(p('kd_heading')),
-            max_angular=float(p('max_angular')))
+            max_angular=float(p('max_angular')),
+            turn_slow_err=float(p('turn_slow_err')), min_turn_speed=float(p('min_turn_speed')))
         return dl.DockParams(
             approach_distance=float(p('approach_distance')),
             skip_nav_to_approach=bool(p('skip_nav_to_approach')),
@@ -524,6 +572,24 @@ class DockingServer(Node):
             stall_progress_ratio=float(p('stall_progress_ratio')),
             stall_timeout_s=float(p('stall_timeout_s')),
             use_dig_stall=bool(p('use_dig_stall')),
+            approach_skip_radius_m=float(p('approach_skip_radius_m')),
+            nav_fail_arrived_radius_m=float(p('nav_fail_arrived_radius_m')),
+            relaxed_nav_retry=bool(p('relaxed_nav_retry')),
+            align_angular=float(p('align_angular')),
+            align_creep=float(p('align_creep')),
+            align_max_travel=float(p('align_max_travel')),
+            align_timeout_s=float(p('align_timeout_s')),
+            align_tolerance_deg=float(p('align_tolerance_deg')),
+            docking_gate_scale=float(p('docking_gate_scale')),
+            final_max_lateral=float(p('final_max_lateral')),
+            final_max_heading_deg=float(p('final_max_heading_deg')),
+            max_realigns=int(p('max_realigns')),
+            realign_forward_distance=float(p('realign_forward_distance')),
+            contact_settle_s=float(p('contact_settle_s')),
+            final_extra_creep_m=float(p('final_extra_creep_m')),
+            calib_max_marker_age_s=float(p('calib_max_marker_age_s')),
+            calib_min_offset=float(p('calib_min_offset')),
+            calib_max_offset=float(p('calib_max_offset')),
             gains=g)
 
     def _dock_pose(self) -> dl.Pose2D:
@@ -535,6 +601,53 @@ class DockingServer(Node):
             self.get_parameter('dock_pose_topic').value, v[:3]))
         return dl.Pose2D(float(v[0]), float(v[1]), float(v[2]))
 
+    def _load_calibration(self) -> None:
+        path = self.get_parameter('calibration_file').value
+        if not path:
+            return
+        try:
+            import yaml
+            with open(path) as f:
+                data = yaml.safe_load(f) or {}
+            off = float(data['docked_marker_offset'])
+        except FileNotFoundError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn('calibration %s unreadable: %s' % (path, exc))
+            return
+        from rclpy.parameter import Parameter
+        self.set_parameters([Parameter('docked_marker_offset', value=off)])
+        self.get_logger().info('docked_marker_offset %.3f m from %s' % (off, path))
+
+    def _save_calibration(self, measured: float) -> None:
+        if not bool(self.get_parameter('auto_calibrate_marker_offset').value):
+            return
+        old = float(self.get_parameter('docked_marker_offset').value)
+        new = 0.5 * (old + measured)          # blend: one noisy dock does not dominate
+        path = self.get_parameter('calibration_file').value
+        from rclpy.parameter import Parameter
+        self.set_parameters([Parameter('docked_marker_offset', value=new)])
+        self.get_logger().info('docked_marker_offset %.3f -> %.3f m (measured %.3f)'
+                               % (old, new, measured))
+        if not path:
+            return
+        try:
+            import os
+            import yaml
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + '.tmp'
+            with open(tmp, 'w') as f:
+                yaml.safe_dump({'docked_marker_offset': round(new, 4),
+                                'last_measured': round(measured, 4),
+                                'updated': time.strftime('%Y-%m-%dT%H:%M:%S')}, f)
+            os.replace(tmp, path)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn('could not write %s: %s' % (path, exc))
+
+    def _log_notes(self, out) -> None:
+        for n in getattr(out, 'notes', None) or ():
+            self.get_logger().info(n)
+
     # ------------------------------------------------------------- execution
     def _run(self, goal_handle, machine, make_feedback, result_type, publish_in):
         rate = float(self.get_parameter('control_rate_hz').value)
@@ -543,6 +656,7 @@ class DockingServer(Node):
         self._charging_result = None
         self._resume_inputs()
         out = machine.start(self._snapshot())
+        self._log_notes(out)
         self._handle(out.requests)
         last_state = None
         try:
@@ -556,6 +670,7 @@ class DockingServer(Node):
                     self.get_logger().info('goal canceled in state %s' % last_state)
                     return result_type(success=False, message=out.message)
                 out = machine.step(self._snapshot())
+                self._log_notes(out)
                 self._handle(out.requests)
                 if publish_in(out.state) or out.done:
                     self._publish_cmd(out.linear, out.angular)
@@ -566,6 +681,8 @@ class DockingServer(Node):
                     break
                 goal_handle.publish_feedback(make_feedback(out))
                 time.sleep(max(0.0, period - (time.monotonic() - tick)))
+            if out.success and getattr(out, 'calibrated_offset', None) is not None:
+                self._save_calibration(float(out.calibrated_offset))
             if out.success:
                 goal_handle.succeed()
             else:
@@ -583,6 +700,8 @@ class DockingServer(Node):
                 self._busy = False
                 self._progress = None
                 self._progress_t = -1e9
+                self._map_pose = None
+                self._map_pose_t = -1e9
 
     def _execute_dock(self, goal_handle):
         req = goal_handle.request
@@ -602,7 +721,8 @@ class DockingServer(Node):
 
         def fb(out):
             f = Dock.Feedback()
-            f.state = out.state
+            # "STATE: detail" -- the mission relays the detail into its sub_state
+            f.state = '%s: %s' % (out.state, out.detail) if out.detail else out.state
             f.distance_m = float(out.remaining) if math.isfinite(out.remaining) else -1.0
             f.retries = int(out.retries)
             return f

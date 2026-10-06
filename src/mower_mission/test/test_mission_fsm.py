@@ -2715,3 +2715,32 @@ def test_stale_stereo_overrides_sub_state_while_driving():
     h.fsm.phase = 'IDLE'
     h.fsm.sub_state = ''
     assert h.fsm.display_sub_state() == ''
+
+
+def test_dock_feedback_detail_becomes_sub_state():
+    h = Harness(rtk_timeout_s=5.0)
+    h.fsm.inputs.fix_type = 2
+    h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick(dt=1.0, n=6)
+    a = h.pending_action(f.ACT_DOCK)
+    h._apply(h.fsm.on_action_feedback(a.token, 'searching marker: not visible', h.t))
+    assert h.fsm.sub_state == 'searching marker: not visible'
+    h._apply(h.fsm.on_action_feedback(a.token + 999, 'stale goal', h.t))   # other token
+    assert h.fsm.sub_state == 'searching marker: not visible'
+    h._apply(h.fsm.on_action_feedback(a.token, '', h.t))                  # empty: kept
+    assert h.fsm.sub_state == 'searching marker: not visible'
+
+
+def test_lethal_boundary_ignored_outside_mowing_phases():
+    """A lethal flag during PLANNING / TRANSIT (e.g. on the dock, 3.7 m from the area)
+    must not latch BOUNDARY_EMERGENCY_STOP: only MOWING / BOUNDARY_PAUSED enforce it."""
+    h = Harness()
+    h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name in ('PLANNING', 'WAITING_FOR_RTK', 'TRANSIT', 'UNDOCKING', 'PREFLIGHT_CHECK')
+    h.fsm.inputs.lethal_boundary_violation = True
+    for _ in range(5):
+        h.tick()
+        h.answer_services()
+    assert h.name != 'BOUNDARY_EMERGENCY_STOP'

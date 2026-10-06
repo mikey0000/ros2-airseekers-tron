@@ -11,6 +11,7 @@ undocking 0.8 m means the contact flips after 0.8 m of reverse on the way back.
       (--with-nav also follows /cmd_vel_nav while the docking lane is idle, like
       twist_mux, and publishes /odometry/filtered plus TF map->odom->base_link
       so Nav2 can run against the fake)
+  Always publishes /odometry/filtered_map (map == odom) for the approach-skip checks.
 """
 import argparse
 import math
@@ -49,6 +50,8 @@ class Fake(Node):
         self.charging = a.start_docked
         self.create_subscription(Twist, '/cmd_vel_docking', self.on_cmd, 10)
         self.odom_pub = self.create_publisher(Odometry, '/odom', 10)
+        # map-frame pose (map == odom here) for the approach-skip / align checks
+        self.map_pub = self.create_publisher(Odometry, '/odometry/filtered_map', 10)
         self.st_pub = self.create_publisher(MowerBaseDevStatus, '/mower_base/status', 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              reliability=ReliabilityPolicy.RELIABLE)
@@ -93,6 +96,9 @@ class Fake(Node):
         o.pose.pose.orientation.w = math.cos(self.yaw / 2)
         o.twist.twist.linear.x, o.twist.twist.angular.z = self.v, self.w
         self.odom_pub.publish(o)
+        o.header.frame_id = 'map'
+        self.map_pub.publish(o)
+        o.header.frame_id = 'odom'
         if self.a.with_nav:
             self.filt_pub.publish(o)
             t = TransformStamped()

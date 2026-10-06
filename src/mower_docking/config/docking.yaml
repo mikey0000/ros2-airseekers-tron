@@ -82,6 +82,38 @@ mower_docking:
     stall_timeout_s: 1.0           # ... over this window -> stall
     dig_stall_topic: /dig_stall    # slip_detector latch; a rising edge during the goal = stall
     use_dig_stall: true
+    # Approach shortcuts (2026-10-07: Nav2 "Failed to make progress" 0.25 m from the approach
+    # pose, the remaining in-place pivot does not turn on turf -> cancel/re-send loop).
+    map_pose_topic: /odometry/filtered_map   # map-frame pose for the distance/yaw checks
+    approach_skip_radius_m: 0.6    # goal starts this close to the approach pose: no Nav2 leg
+    nav_fail_arrived_radius_m: 1.0 # Nav2 fails/times out within this: treat as arrived
+    relaxed_nav_retry: true        # beyond it: one Nav2 retry with the CURRENT yaw (no pivot)
+    # ALIGNING (heading off the dock yaw by more than max_yaw_error_deg): slow turn + creep
+    align_angular: 0.25            # rad/s
+    align_creep: 0.03              # m/s forward while turning
+    align_max_travel: 0.4          # m, then SEARCHING anyway (the marker decides)
+    align_timeout_s: 20.0
+    align_tolerance_deg: 10.0      # stop turning within this of the dock yaw
+    # Reverse controller tolerance for a gate-edge start (25 deg / 0.5 m)
+    turn_slow_err: 0.5             # rad heading-tracking error -> reverse speed at the floor
+    min_turn_speed: 0.04           # m/s reverse creep floor while turning
+    docking_gate_scale: 1.4        # gate widened x1.4 once DOCKING (hysteresis)
+    final_max_lateral: 0.04        # at final_zone still off the axis -> forward realign
+    final_max_heading_deg: 5.0
+    max_realigns: 3                # per goal; does not consume max_retries
+    realign_forward_distance: 0.8
+    # FINAL budget used without contact (2026-10-07 Home: the retry drove forward off the
+    # pins 7 s before the contacts reported): hold, then creep further, only then retry.
+    # Any contact (debounced, or is_charging) in any state stops and confirms; a raw
+    # undebounced contact holds still.
+    contact_settle_s: 3.0
+    final_extra_creep_m: 0.15
+    # docked_marker_offset auto-calibration (last marker distance - distance driven since)
+    auto_calibrate_marker_offset: true
+    calibration_file: /userdata/ros2/calibration/docking_calibration.yaml   # overrides the value above
+    calib_max_marker_age_s: 15.0
+    calib_min_offset: 0.2
+    calib_max_offset: 1.2
 
     undock_direction: 1.0          # +1 = leave forwards (robot reversed onto the dock)
     undock_max_speed: 0.3          # [dc] Undocking linear_max 0.3
