@@ -22,6 +22,7 @@ or with ``dry_run:=true`` stays alive publishing nothing.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from typing import List
 
@@ -60,6 +61,10 @@ class DetRosNode(Node):
         self.declare_parameter('obj_thresh', 0.25)
         self.declare_parameter('nms_thresh', 0.45)
         self.declare_parameter('core_mask', '0')
+        # One NPU context + worker thread per camera, camera i on core_masks[i % len]
+        # (the NPU run is ~100 ms per frame on one core, so cameras sharing a core
+        # serialise). Empty list = every camera on core_mask, one shared context.
+        self.declare_parameter('core_masks', [''])
         self.declare_parameter('left_topic', '/left_oa_camera/image_raw')
         self.declare_parameter('right_topic', '/right_oa_camera/image_raw')
         # Further cameras, same model / NPU core / per-camera rate cap ('' entries ignored).
@@ -77,11 +82,16 @@ class DetRosNode(Node):
         self.classes = self._load_classes()
 
         # ---- model (raises NpuStartupError unless dry_run) ----
+        self.core_masks = [str(c) for c in self.get_parameter('core_masks').value if str(c)]
         self.runner = prepare_runner(
-            self.get_logger(), self.model_path, self.models_dir, self.core_mask,
+            self.get_logger(), self.model_path, self.models_dir,
+            self.core_masks[0] if self.core_masks else self.core_mask,
             bool(self.get_parameter('dry_run').value))
         if self.runner is None:
             return  # dry_run: alive, no subscriptions, no publications
+        self._runners = {(self.core_masks[0] if self.core_masks else self.core_mask): self.runner}
+        self._pub_lock = threading.Lock()
+        self._workers = []
 
         # ---- io ----
         self.bridge = CvBridge()
@@ -95,12 +105,21 @@ class DetRosNode(Node):
         topics = [self.get_parameter('left_topic').value,
                   self.get_parameter('right_topic').value]
         topics += [str(t) for t in self.get_parameter('extra_topics').value]
-        for topic in topics:
-            if topic:
-                self.cam_ann_pubs[topic] = self.create_publisher(
-                    Image, annotated_topic_for(topic), sensor_qos)
-                self.subs.append(self.create_subscription(
-                    Image, topic, self._make_cb(topic), sensor_qos))
+        for i, topic in enumerate(t for t in topics if t):
+            self.cam_ann_pubs[topic] = self.create_publisher(
+                Image, annotated_topic_for(topic), sensor_qos)
+            core = self.core_masks[i % len(self.core_masks)] if self.core_masks else self.core_mask
+            runner = self._runners.get(core)
+            if runner is None:
+                runner = prepare_runner(self.get_logger(), self.model_path, self.models_dir,
+                                        core, False)
+                self._runners[core] = runner
+            worker = _CameraWorker(self, topic, runner)
+            self._workers.append(worker)
+            self.subs.append(self.create_subscription(
+                Image, topic, worker.offer, sensor_qos))
+            self.get_logger().info(f'{topic} -> NPU core_mask {core}')
+            worker.start()
 
         self.get_logger().info(
             f'det_ros up: {len(self.classes)} classes, core_mask={self.core_mask}, '
@@ -124,21 +143,14 @@ class DetRosNode(Node):
 
     # ------------------------------------------------------------------ callback
 
-    def _make_cb(self, topic):
-        def cb(msg: Image):
-            if self.max_rate_hz > 0.0:
-                now = time.monotonic()
-                if now - self._last.get(topic, 0.0) < 1.0 / self.max_rate_hz:
-                    return
-                self._last[topic] = now
-            frame = msg.header.frame_id or topic.strip('/').split('/')[0]
-            try:
-                bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            except Exception as exc:  # noqa: BLE001
-                self.get_logger().warning(f'decode failed on {topic}: {exc}')
-                return
-            self._detect(bgr, frame, msg.header.stamp, self.cam_ann_pubs.get(topic))
-        return cb
+    def _process(self, topic, msg: Image, runner, bridge):
+        frame = msg.header.frame_id or topic.strip('/').split('/')[0]
+        try:
+            bgr = bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warning(f'decode failed on {topic}: {exc}')
+            return
+        self._detect(bgr, frame, msg.header.stamp, self.cam_ann_pubs.get(topic), runner, bridge)
 
     def _to_source(self, box, scale, pad_x, pad_y, w, h):
         inv = 1.0 / scale if scale else 1.0
@@ -148,11 +160,14 @@ class DetRosNode(Node):
         y2 = min(max((box[3] - pad_y) * inv, 0.0), float(h))
         return float(x1), float(y1), float(x2), float(y2)
 
-    def _detect(self, bgr, frame_id: str, stamp, cam_ann_pub=None) -> None:
+    def _detect(self, bgr, frame_id: str, stamp, cam_ann_pub=None, runner=None,
+                bridge=None) -> None:
+        runner = runner or self.runner
+        bridge = bridge or self.bridge
         padded, scale, (pad_x, pad_y) = letterbox(bgr, self.img_size)
         # letterbox keeps BGR; the int8 model was calibrated on RGB NHWC
         tensor = bgr_to_rgb_nhwc(padded)[None, ...]
-        outputs = self.runner.run([tensor])
+        outputs = runner.run([tensor])
 
         boxes, classes, scores = post_process(
             outputs, img_size=self.img_size,
@@ -179,7 +194,8 @@ class DetRosNode(Node):
                 d.results.append(hyp)
                 detections.detections.append(d)
 
-        self.det_pub.publish(detections)
+        with self._pub_lock:
+            self.det_pub.publish(detections)
 
         if not self.get_parameter('publish_annotated').value:
             return
@@ -188,10 +204,11 @@ class DetRosNode(Node):
                    if p is not None and p.get_subscription_count() > 0]
         if not targets:
             return
-        out = self.bridge.cv2_to_imgmsg(self._draw(bgr, src_boxes), encoding='bgr8')
+        out = bridge.cv2_to_imgmsg(self._draw(bgr, src_boxes), encoding='bgr8')
         out.header = detections.header
-        for pub in targets:
-            pub.publish(out)
+        with self._pub_lock:
+            for pub in targets:
+                pub.publish(out)
 
     def _draw(self, bgr, src_boxes):
         import cv2 as _cv2
@@ -202,6 +219,50 @@ class DetRosNode(Node):
                          (int(x1), max(12, int(y1) - 6)),
                          _cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
         return vis
+
+
+class _CameraWorker(threading.Thread):
+    """Latest-frame-wins worker: the subscription callback only stores the newest
+    message (no queueing behind a ~100 ms NPU run); this thread decodes, runs its own
+    NPU context and publishes. RKNN inference and OpenCV release the GIL, so cameras on
+    different cores overlap."""
+
+    def __init__(self, node, topic, runner):
+        super().__init__(daemon=True, name=f'det:{topic}')
+        self.node, self.topic, self.runner = node, topic, runner
+        self.bridge = CvBridge()
+        self.cv = threading.Condition()
+        self.msg = None
+        self.stopped = False
+        self.last = 0.0
+
+    def offer(self, msg):
+        rate = self.node.max_rate_hz
+        if rate > 0.0 and time.monotonic() - self.last < 1.0 / rate:
+            return
+        with self.cv:
+            self.msg = msg
+            self.cv.notify()
+
+    def stop(self):
+        with self.cv:
+            self.stopped = True
+            self.cv.notify()
+
+    def run(self):
+        while True:
+            with self.cv:
+                while self.msg is None and not self.stopped:
+                    self.cv.wait()
+                if self.stopped:
+                    return
+                msg, self.msg = self.msg, None
+            self.last = time.monotonic()
+            try:
+                self.node._process(self.topic, msg, self.runner, self.bridge)
+            except Exception as exc:  # noqa: BLE001
+                self.node.get_logger().error(f'{self.topic}: detection failed: {exc}',
+                                             throttle_duration_sec=10.0)
 
 
 def main(args=None):
@@ -222,8 +283,10 @@ def main(args=None):
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        if node.runner is not None:
-            node.runner.release()
+        for w in getattr(node, '_workers', []):
+            w.stop()
+        for r in getattr(node, '_runners', {}).values():
+            r.release()
         node.destroy_node()
         rclpy.try_shutdown()
 

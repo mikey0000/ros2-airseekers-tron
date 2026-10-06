@@ -100,7 +100,7 @@ def _nms_boxes(boxes, scores, nms_thresh):
     return np.array(keep, dtype=np.int64)
 
 
-def post_process(input_data: List[np.ndarray],
+def post_process_reference(input_data: List[np.ndarray],
                  img_size: Tuple[int, int] = (480, 640),
                  obj_thresh: float = OBJ_THRESH,
                  nms_thresh: float = NMS_THRESH
@@ -155,6 +155,78 @@ def post_process(input_data: List[np.ndarray],
     if not nclasses and not nscores:
         return None, None, None
 
+    return (np.concatenate(nboxes),
+            np.concatenate(nclasses).astype(np.int64),
+            np.concatenate(nscores))
+
+
+_GRID_CACHE = {}
+
+
+def _grid(grid_h: int, grid_w: int):
+    key = (grid_h, grid_w)
+    g = _GRID_CACHE.get(key)
+    if g is None:
+        row, col = np.divmod(np.arange(grid_h * grid_w, dtype=np.int64), grid_w)
+        g = (col.astype(np.float32) + 0.5, row.astype(np.float32) + 0.5)
+        _GRID_CACHE[key] = g
+    return g
+
+
+def post_process(input_data: List[np.ndarray],
+                 img_size: Tuple[int, int] = (480, 640),
+                 obj_thresh: float = OBJ_THRESH,
+                 nms_thresh: float = NMS_THRESH
+                 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    """Same result as :func:`post_process_reference`, ~10x cheaper.
+
+    The reference decodes the DFL box distribution (softmax over 4 x 16 bins) for EVERY
+    grid cell (6300 cells for 480x640) and only then thresholds. Here the class scores are
+    thresholded first and DFL runs only on the few surviving cells; grids are cached.
+    """
+    img_w, img_h = img_size
+    branches = 3
+    per = len(input_data) // branches
+    all_boxes, all_cls, all_scores = [], [], []
+    for i in range(branches):
+        pos_t = input_data[per * i]                       # [1, 4*reg_max, h, w]
+        cls_t = input_data[per * i + 1]                   # [1, C, h, w]
+        _, n_cls, gh, gw = cls_t.shape
+        cls = cls_t.reshape(n_cls, gh * gw)
+        best = cls.argmax(axis=0)
+        best_score = cls[best, np.arange(gh * gw)]
+        idx = np.nonzero(best_score >= obj_thresh)[0]
+        if idx.size == 0:
+            continue
+        reg = pos_t.reshape(4, -1, gh * gw)[:, :, idx].astype(np.float32)  # [4, mc, k]
+        reg = np.exp(reg - reg.max(axis=1, keepdims=True))
+        reg /= reg.sum(axis=1, keepdims=True)
+        mc = reg.shape[1]
+        d = (reg * np.arange(mc, dtype=np.float32)[None, :, None]).sum(axis=1)  # [4, k]
+        gx, gy = _grid(gh, gw)
+        sx, sy = img_w / gw, img_h / gh
+        cx, cy = gx[idx], gy[idx]
+        boxes = np.stack(((cx - d[0]) * sx, (cy - d[1]) * sy,
+                          (cx + d[2]) * sx, (cy + d[3]) * sy), axis=1)
+        all_boxes.append(boxes)
+        all_cls.append(best[idx])
+        all_scores.append(best_score[idx].astype(np.float32))
+    if not all_boxes:
+        return None, None, None
+    boxes = np.concatenate(all_boxes).astype(np.float32)
+    classes = np.concatenate(all_cls)
+    scores = np.concatenate(all_scores)
+
+    nboxes, nclasses, nscores = [], [], []
+    for c in np.unique(classes):
+        inds = np.nonzero(classes == c)[0]
+        keep = _nms_boxes(boxes[inds], scores[inds], nms_thresh)
+        if len(keep):
+            nboxes.append(boxes[inds][keep])
+            nclasses.append(classes[inds][keep])
+            nscores.append(scores[inds][keep])
+    if not nboxes:
+        return None, None, None
     return (np.concatenate(nboxes),
             np.concatenate(nclasses).astype(np.int64),
             np.concatenate(nscores))

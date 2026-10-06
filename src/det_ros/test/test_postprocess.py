@@ -66,3 +66,22 @@ def test_post_process_none_when_empty():
         tensors.extend([box, cls_t, ss])
     boxes, classes, scores = post_process(tensors, img_size=IMG)
     assert boxes is None and classes is None and scores is None
+
+
+def test_fast_post_process_matches_reference():
+    import numpy as np
+    from det_ros.yolo_postprocess import post_process, post_process_reference
+    rng = np.random.default_rng(3)
+    outs = []
+    for gh, gw in ((80, 60), (40, 30), (20, 15)):
+        outs.append(rng.normal(0, 2, (1, 64, gh, gw)).astype(np.float32))
+        cls = rng.random((1, 22, gh, gw)).astype(np.float32) * 0.3
+        cls[0, rng.integers(0, 22, 40), rng.integers(0, gh, 40), rng.integers(0, gw, 40)] = 0.9
+        outs.append(cls)
+        outs.append(np.ones((1, 1, gh, gw), np.float32))
+    a = post_process(outs, (480, 640), 0.25, 0.45)
+    b = post_process_reference(outs, (480, 640), 0.25, 0.45)
+    oa, ob = np.lexsort((a[2], a[1])), np.lexsort((b[2], b[1]))
+    assert np.allclose(a[0][oa], b[0][ob], atol=1e-3)
+    assert (a[1][oa] == b[1][ob]).all()
+    assert np.allclose(a[2][oa], b[2][ob])

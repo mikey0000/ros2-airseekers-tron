@@ -17,6 +17,10 @@ det_ros:
     obj_thresh: 0.25
     nms_thresh: 0.45
     core_mask: "0"            # NPU core 0 (seg_ros uses core 1)
+    # Per-camera NPU core (camera order: left, right, extra_topics...). The ~100 ms
+    # YOLOv8-large run per frame serialised all cameras on core 0 (2.5 Hz each with 3
+    # cameras). seg_ros (core 1) is off by default; if enabled, use ["0", "2", "2"].
+    core_masks: ["0", "1", "2"]
     left_topic: "/left_oa_camera/image_raw"
     right_topic: "/right_oa_camera/image_raw"
     # Front stereo RIGHT eye (colour 640x480, mower_cameras/stereo_cam, frame vio_camera).
