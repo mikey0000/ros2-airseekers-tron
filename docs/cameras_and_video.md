@@ -186,8 +186,13 @@ Config: `src/mower_vision/config/obstacle_guard.yaml`.
   `whitelist: ['*']` to react to all classes.
 - **Close rule:** a detection is close when its bbox bottom edge is greater than
   `y_frac`·H (0.6) **and** its bbox width is greater than `w_frac`·W (0.15).
-  `image_width` and `image_height` default to 1920x1080, because `Detection2DArray`
-  carries no image size.
+  `Detection2DArray` carries no image size, and `det_ros` reports bbox pixels in its
+  input image's space. The guard therefore subscribes to `camera_info_topics`
+  (`/{left,right}_oa_camera/camera_info`, scaled by the camera node) and uses the
+  width/height of the matching `header.frame_id` for every detection frame (logged once per
+  frame as `image size for frame ...`). `image_width`/`image_height` (960x540) are only the
+  fallback until a camera_info arrives. The rule is fractional, so 1920x1080 and 960x540
+  give identical decisions (unit-tested).
 - **Debounce:** `hold_s` (0.5 s) per camera. The overall state is true when either camera
   is close.
 - **Output:** `/vision/obstacle_close` (`std_msgs/Bool`), published on every detection
@@ -399,3 +404,19 @@ perception = IncludeLaunchDescription(
 - Vendor camera services: `rkaiq_3A.service` is active (and is required). `cam.service`
   (Metoak `mo_init.sh`), `mower-webcam.service` and `mower-cam-keeper.service` are
   inactive, which is what we want.
+
+
+## OA image size (960 px by default)
+
+Fast DDS fragmenting 6 MB 1080p bgr8 images was about 75 % of the per-frame camera CPU.
+`cameras.launch.py` now defaults `oa_publish_width:=960` (integer decimation before colour
+conversion, `camera_info` scaled to 960x540, 1.5 MB frames). Expected `v4l2_cam` CPU while
+subscribed: about 42 % -> about 15 % per OA camera. Measured on the mower (10 s `top`, one
+core): 27-38 % for one subscribed camera (`hz` only, 10.02 Hz, other camera idle at 2-7 %),
+and 29-32 % per camera with det_ros consuming both. The reduction is real but smaller than
+estimated: the remaining cost is capture, ISP dequeue and decimation, not DDS. Frames are still only converted while subscribed
+(`oa_on_demand`). `det_ros` letterboxes any input to 480x640, so detection quality is
+unchanged by the downscale apart from the lower input resolution, and its bboxes are now in
+960x540 pixel space. `obstacle_guard` follows `camera_info` (see above). Use
+`oa_publish_width:=0` for native 1920x1080 (e.g. recording full-resolution data); Foxglove
+image panels and `ImageMarker` overlays work at either size.

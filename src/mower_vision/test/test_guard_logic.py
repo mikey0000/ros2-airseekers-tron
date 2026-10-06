@@ -4,7 +4,8 @@ import pytest
 
 from mower_vision.guard_logic import (DEFAULT_CLASSES, DEFAULT_WHITELIST, Box, GuardConfig,
                                       GuardState, any_close, box_outline, class_label,
-                                      classify, danger_line, in_danger_zone, is_whitelisted)
+                                      classify, danger_line, in_danger_zone, is_whitelisted,
+                                      with_image_size)
 
 CFG = GuardConfig(y_frac=0.6, w_frac=0.15, min_score=0.4, image_width=1920, image_height=1080)
 
@@ -97,3 +98,24 @@ def test_config_yaml_whitelist_known():
         p = yaml.safe_load(fh)['obstacle_guard']['ros__parameters']
     assert set(p['whitelist']) <= set(DEFAULT_CLASSES)
     assert p['stop_on_close'] is False
+
+
+def _scaled(b, k):
+    return Box(b.label, b.score, b.cx * k, b.cy * k, b.w * k, b.h * k)
+
+
+@pytest.mark.parametrize('x1,y1,x2,y2', [
+    (800, 500, 1200, 1000), (800, 500, 1000, 1000), (800, 500, 1200, 640),
+    (800, 500, 1200, 650), (0, 0, 288, 700), (0, 0, 290, 700), (100, 100, 400, 300)])
+def test_same_decision_at_1920_and_960(x1, y1, x2, y2):
+    full = with_image_size(GuardConfig(), 1920, 1080)
+    half = with_image_size(GuardConfig(), 960, 540)
+    b = box(x1=x1, y1=y1, x2=x2, y2=y2)
+    assert in_danger_zone(b, full) == in_danger_zone(_scaled(b, 0.5), half)
+
+
+def test_with_image_size_fallback_and_marker_line():
+    base = GuardConfig(image_width=960, image_height=540)
+    assert with_image_size(base, 0, 0) is base
+    assert with_image_size(base, 1920, 1080).image_height == 1080
+    assert danger_line(with_image_size(base, 960, 540)) == [(0.0, 324.0), (960.0, 324.0)]

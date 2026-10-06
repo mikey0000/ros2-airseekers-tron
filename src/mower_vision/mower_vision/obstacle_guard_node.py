@@ -24,6 +24,8 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import Point, Twist
 from rclpy.node import Node
+from sensor_msgs.msg import CameraInfo
+from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Bool, ColorRGBA
 from std_srvs.srv import Trigger
 from visualization_msgs.msg import ImageMarker
@@ -36,7 +38,7 @@ except ImportError as _exc:  # pragma: no cover
 
 from mower_vision.guard_logic import (DEFAULT_CLASSES, DEFAULT_WHITELIST, Box,
                                       GuardConfig, GuardState, box_outline, class_label,
-                                      classify, danger_line)
+                                      classify, danger_line, with_image_size)
 
 RED = ColorRGBA(r=1.0, g=0.1, b=0.1, a=1.0)
 YELLOW = ColorRGBA(r=1.0, g=0.85, b=0.0, a=1.0)
@@ -69,8 +71,11 @@ class ObstacleGuard(Node):
         dp('y_frac', 0.6)
         dp('w_frac', 0.15)
         dp('min_score', 0.4)
-        dp('image_width', 1920)
-        dp('image_height', 1080)
+        # Fallback only: the real size per frame_id comes from camera_info.
+        dp('image_width', 960)
+        dp('image_height', 540)
+        dp('camera_info_topics', ['/left_oa_camera/camera_info',
+                                  '/right_oa_camera/camera_info'])
         dp('hold_s', 0.5)
         dp('stop_on_close', False)
         dp('burst_s', 1.0)
@@ -94,14 +99,31 @@ class ObstacleGuard(Node):
         self.marker_pub = self.create_publisher(ImageMarker, '/vision/obstacle_markers', 10)
         self.twist_pub = self.create_publisher(Twist, p('emergency_topic'), 10)
         self.cutter_cli = self.create_client(Trigger, p('cutter_off_service'))
+        self._sizes = {}  # frame_id -> (w, h) from camera_info
+        for topic in p('camera_info_topics'):
+            self.create_subscription(CameraInfo, str(topic), self._on_info,
+                                     qos_profile_sensor_data)
         self.create_subscription(Detection2DArray, p('detections_topic'), self._on_dets, 10)
         self.create_timer(1.0 / float(p('burst_rate_hz')), self._on_tick)
         self._last_published = None
 
         self.get_logger().info(
             f'obstacle_guard up: whitelist={list(self.cfg.whitelist)} y_frac={self.cfg.y_frac} '
-            f'w_frac={self.cfg.w_frac} image={self.cfg.image_width}x{self.cfg.image_height} '
+            f'w_frac={self.cfg.w_frac} fallback_image={self.cfg.image_width}x{self.cfg.image_height} '
             f'stop_on_close={self.stop_on_close}')
+
+    def _on_info(self, msg):
+        w, h = int(msg.width), int(msg.height)
+        if w <= 0 or h <= 0:
+            return
+        key = msg.header.frame_id
+        if self._sizes.get(key) != (w, h):
+            self._sizes[key] = (w, h)
+            self.get_logger().info(f'image size for frame "{key}": {w}x{h} (camera_info)')
+
+    def _cfg_for(self, frame_id):
+        size = self._sizes.get(frame_id)
+        return with_image_size(self.cfg, *size) if size else self.cfg
 
     @staticmethod
     def _now() -> float:
@@ -113,7 +135,8 @@ class ObstacleGuard(Node):
 
     def _on_dets(self, msg):
         boxes = boxes_from_msg(msg, self.classes)
-        verdicts = classify(boxes, self.cfg)
+        cfg = self._cfg_for(msg.header.frame_id)
+        verdicts = classify(boxes, cfg)
         close_now = any(c for _, _, c in verdicts)
         close, rising = self.state.update(msg.header.frame_id or 'camera', close_now,
                                           self._now())
@@ -121,7 +144,7 @@ class ObstacleGuard(Node):
         if rising:
             self._on_rising(verdicts)
         if self.publish_markers:
-            self.marker_pub.publish(self._markers(msg.header, verdicts))
+            self.marker_pub.publish(self._markers(msg.header, verdicts, cfg))
 
     def _on_tick(self):
         now = self._now()
@@ -146,7 +169,7 @@ class ObstacleGuard(Node):
         else:
             self.get_logger().error('cutter_off service not available')
 
-    def _markers(self, header, verdicts):
+    def _markers(self, header, verdicts, cfg):
         m = ImageMarker()
         m.header = header
         m.ns = 'obstacle_guard'
@@ -156,7 +179,7 @@ class ObstacleGuard(Node):
         m.scale = 3.0
         m.outline_color = BLUE
         pts, cols = [], []
-        for x, y in danger_line(self.cfg):
+        for x, y in danger_line(cfg):
             pts.append(Point(x=x, y=y))
             cols.append(BLUE)
         for box, relevant, close in verdicts:

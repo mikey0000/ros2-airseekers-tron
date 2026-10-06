@@ -133,12 +133,12 @@ def generate_launch_description():
         DeclareLaunchArgument('oa_fps', default_value='10.0',
                               description='OA publish-rate cap (sensor runs 30 fps; det_ros '
                                           'max_rate_hz is 10).'),
-        DeclareLaunchArgument('oa_publish_width', default_value='0',
+        DeclareLaunchArgument('oa_publish_width', default_value='960',
                               description='OA image_raw width (integer decimation of the '
                                           'capture before colour conversion, camera_info '
-                                          'scaled to match; 960 = ~1/4 CPU). 0 = native. '
-                                          'det_ros accepts any size, but obstacle_guard '
-                                          'image_width/height must then match.'),
+                                          'scaled to match; 960 = ~1/4 CPU). 0 = native '
+                                          '1920x1080. det_ros accepts any size; '
+                                          'obstacle_guard follows camera_info.'),
         DeclareLaunchArgument('oa_on_demand', default_value='true',
                               description='OA: convert/publish only while image_raw, '
                                           'compressed or camera_info has subscribers.'),

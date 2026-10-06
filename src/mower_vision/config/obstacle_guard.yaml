@@ -8,9 +8,12 @@ obstacle_guard:
     min_score: 0.4
     y_frac: 0.6
     w_frac: 0.15
-    # Detection2DArray carries no image size: OA cameras are 1920x1080 (cameras.launch.py).
-    image_width: 1920
-    image_height: 1080
+    # Detection2DArray carries no image size: the guard reads it per frame_id from the
+    # camera_info topics below. These are only the fallback until one arrives (OA cameras
+    # publish 960x540 by default, cameras.launch.py oa_publish_width).
+    camera_info_topics: [/left_oa_camera/camera_info, /right_oa_camera/camera_info]
+    image_width: 960
+    image_height: 540
     hold_s: 0.5               # per-camera debounce
     stop_on_close: false      # true: 1 s zero burst on /cmd_vel_emergency + /cutter_off
     burst_s: 1.0

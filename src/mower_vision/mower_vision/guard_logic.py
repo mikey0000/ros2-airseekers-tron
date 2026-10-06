@@ -13,7 +13,7 @@ the overall state triggers the stop actions (zero-twist burst + cutter off).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 # Must match det_ros/labels.py BEST_LARGE_CLASSES (best_large_0208.rknn export order).
@@ -60,6 +60,14 @@ class GuardConfig:
     min_score: float = 0.4
     image_width: int = 1920
     image_height: int = 1080
+
+
+def with_image_size(cfg: GuardConfig, width: int, height: int) -> GuardConfig:
+    """``cfg`` for an actual published image size (bbox pixels are in that image's space);
+    non-positive sizes keep the configured fallback."""
+    if int(width) <= 0 or int(height) <= 0:
+        return cfg
+    return replace(cfg, image_width=int(width), image_height=int(height))
 
 
 def class_label(class_id: str, classes: Sequence[str]) -> str:
