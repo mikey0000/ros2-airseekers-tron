@@ -148,6 +148,9 @@ class DockingServer(Node):
         decl('calibration_file', '/userdata/ros2/calibration/docking_calibration.yaml')
         decl('auto_calibrate_marker_offset', True)
         decl('min_turn_speed', g.min_turn_speed)
+        decl('close_speed', g.close_speed)
+        decl('lateral_slow', g.lateral_slow)
+        decl('marker_median_n', dp.marker_median_n)
         # undock
         decl('undock_direction', 1.0)
         decl('undock_max_speed', 0.3)
@@ -196,6 +199,14 @@ class DockingServer(Node):
             PoseStamped, '~/approach_pose',
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                        reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST))
+        # Owner rule: dock marker in view -> the mission ignores other camera (obstacle)
+        # detections while docking. Latched; false outside an active dock goal.
+        self._marker_in_view_pub = self.create_publisher(
+            Bool, '/mower_docking/marker_in_view',
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                       reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST))
+        self._marker_in_view: Optional[bool] = None
+        self._publish_marker_in_view(False)
         # Inputs bypass the 6-thread executor (see sub_pump.py); the handlers only store under
         # self._lock. Odometry and /mower_base/status are only read by a running goal, so their
         # subscriptions exist only while one runs (_resume_inputs / _release_inputs): even
@@ -544,7 +555,9 @@ class DockingServer(Node):
             k_lateral=float(p('k_lateral')), max_approach_angle=float(p('max_approach_angle')),
             kp_heading=float(p('kp_heading')), kd_heading=float(p('kd_heading')),
             max_angular=float(p('max_angular')),
-            turn_slow_err=float(p('turn_slow_err')), min_turn_speed=float(p('min_turn_speed')))
+            turn_slow_err=float(p('turn_slow_err')), min_turn_speed=float(p('min_turn_speed')),
+            close_speed=min(float(p('close_speed')), 0.15),
+            lateral_slow=float(p('lateral_slow')))
         return dl.DockParams(
             approach_distance=float(p('approach_distance')),
             skip_nav_to_approach=bool(p('skip_nav_to_approach')),
@@ -587,6 +600,7 @@ class DockingServer(Node):
             realign_forward_distance=float(p('realign_forward_distance')),
             contact_settle_s=float(p('contact_settle_s')),
             final_extra_creep_m=float(p('final_extra_creep_m')),
+            marker_median_n=int(p('marker_median_n')),
             calib_max_marker_age_s=float(p('calib_max_marker_age_s')),
             calib_min_offset=float(p('calib_min_offset')),
             calib_max_offset=float(p('calib_max_offset')),
@@ -653,6 +667,13 @@ class DockingServer(Node):
             self.get_logger().info(n)
 
     # ------------------------------------------------------------- execution
+    def _publish_marker_in_view(self, value: bool) -> None:
+        value = bool(value)
+        if value == self._marker_in_view:
+            return
+        self._marker_in_view = value
+        self._marker_in_view_pub.publish(Bool(data=value))
+
     def _run(self, goal_handle, machine, make_feedback, result_type, publish_in):
         rate = float(self.get_parameter('control_rate_hz').value)
         period = 1.0 / rate
@@ -674,6 +695,7 @@ class DockingServer(Node):
                     self.get_logger().info('goal canceled in state %s' % last_state)
                     return result_type(success=False, message=out.message)
                 out = machine.step(self._snapshot())
+                self._publish_marker_in_view(out.marker_in_view)
                 self._log_notes(out)
                 self._handle(out.requests)
                 if publish_in(out.state) or out.done:
@@ -696,6 +718,7 @@ class DockingServer(Node):
         finally:
             if machine.state == dl.DockState.NAV_TO_APPROACH:
                 self._cancel_nav()
+            self._publish_marker_in_view(False)
             self._stop_burst()          # also gives the cancel request time to go out
             self._drop_nav_client()
             self._enable_vision(False)

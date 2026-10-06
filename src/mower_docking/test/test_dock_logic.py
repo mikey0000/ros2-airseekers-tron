@@ -110,8 +110,9 @@ def test_marker_gate():
 def test_reverse_speed_profile():
     g = dl.ControllerGains()
     assert dl.reverse_speed(2.0, g) == pytest.approx(0.15)
-    assert dl.reverse_speed(0.3, g) == pytest.approx(0.05)
-    assert 0.05 < dl.reverse_speed(0.45, g) < 0.15
+    assert dl.reverse_speed(0.3, g) == pytest.approx(0.08)    # close zone, steering on
+    assert dl.reverse_speed(0.3, g, near=0.05) == pytest.approx(0.05)   # blind straight
+    assert 0.08 < dl.reverse_speed(0.45, g) < 0.15
 
 
 def test_reverse_control_is_reverse_and_bounded():
@@ -346,11 +347,20 @@ def test_dock_vision_docking_commands_reverse_then_final():
     out = m.step(dl.Snapshot(t=0.15, marker=dl.MarkerObs(-1.3, 0.1, 0.05, stamp=0.15)))
     assert out.state == S.DOCKING and out.linear < 0
     assert out.remaining == pytest.approx(0.85, abs=0.02)
-    out = m.step(dl.Snapshot(t=0.2, marker=dl.MarkerObs(-0.72, 0.0, 0.0, stamp=0.2)))
-    assert out.state == S.DOCKING and out.linear == pytest.approx(-0.05)  # slow zone
-    out = m.step(dl.Snapshot(t=0.25, marker=dl.MarkerObs(-0.6, 0.0, 0.0, stamp=0.25)))
-    assert out.state == S.FINAL_DOCKING
-    assert out.linear == pytest.approx(-0.05)
+    for i in range(3):   # median of the last 3 observations
+        out = m.step(dl.Snapshot(t=0.2 + 0.05 * i,
+                                 marker=dl.MarkerObs(-0.72, 0.0, 0.0, stamp=0.2 + 0.05 * i)))
+    assert out.state == S.DOCKING and out.linear == pytest.approx(-0.08)  # close zone max
+    # inside final_zone the controller keeps steering (no straight freeze) ...
+    for i in range(3):
+        out = m.step(dl.Snapshot(t=0.4 + 0.05 * i,
+                                 marker=dl.MarkerObs(-0.6, 0.03, 0.03, stamp=0.4 + 0.05 * i)))
+    assert out.state == S.DOCKING and out.linear < 0 and out.angular != 0.0
+    assert out.detail.startswith('docking: 0.1')
+    # ... until the marker is lost: straight on the last docked heading
+    out = m.step(dl.Snapshot(t=0.6))
+    assert out.state == S.FINAL_DOCKING and out.linear == pytest.approx(-0.05)
+    assert 'marker lost' in out.detail
 
 
 def test_dock_lost_frames_trigger_retry():
@@ -875,8 +885,10 @@ def _final_machine(**kw):
     m.start(dl.Snapshot(t=0.0, odom=dl.Pose2D(0.65, 0, 0)))
     mk = dl.MarkerObs(-1.1, 0.0, 0.0, stamp=0.05)          # remaining 0.65
     assert m.step(dl.Snapshot(t=0.05, marker=mk, odom=dl.Pose2D(0.65, 0, 0))).state == S.DOCKING
-    mk = dl.MarkerObs(-0.6, 0.0, 0.0, stamp=0.1)           # remaining 0.15 -> final
+    mk = dl.MarkerObs(-0.6, 0.0, 0.0, stamp=0.1)           # remaining 0.15: still DOCKING
     out = m.step(dl.Snapshot(t=0.1, marker=mk, odom=dl.Pose2D(0.15, 0, 0)))
+    assert out.state == S.DOCKING
+    out = m.step(dl.Snapshot(t=0.1, odom=dl.Pose2D(0.15, 0, 0)))   # marker lost -> final
     assert out.state == S.FINAL_DOCKING
     return m
 
@@ -897,8 +909,8 @@ def test_final_budget_settles_then_creeps_before_retry():
     creep = [p for p in phases if p[2] == 'creep' and p[1] == S.FINAL_DOCKING and p[3] < 0]
     assert creep and all(p[3] == pytest.approx(-0.05) for p in creep)
     assert out.state == S.RETRY
-    # 0.30 final budget + 0.15 creep reversed in total from final entry
-    assert 0.15 - x == pytest.approx(0.45, abs=0.03)
+    # remaining 0.15 + 0.10 overrun + 0.15 creep reversed in total from final entry
+    assert 0.15 - x == pytest.approx(0.40, abs=0.03)
 
 
 def test_contact_during_settle_docks_without_retry():
@@ -970,3 +982,140 @@ def test_calibration_rejects_stale_or_absurd():
     out = m.step(dl.Snapshot(t=5.0, odom=dl.Pose2D(0.1, 0, 0), contact=True))
     m.step(dl.Snapshot(t=5.05, contact=True, charging_result=True))
     assert m.calibrated_offset is None
+
+
+# ------------- continuous correction to contact (2026-10-07 first live dock: arrived
+# 8 cm / 8 deg, two forward realign loops, then a straight FINAL with no steering)
+def _closed_loop(x0, y0, th0, noise_frame=None, **kw):
+    """Full FSM in the dock frame; contact at x <= 0 (x clamped: the dock is a wall).
+    Returns (out, machine, (lateral, heading) at contact, time, details)."""
+    p = dl.DockParams(skip_nav_to_approach=True, **kw)
+    m = dl.DockStateMachine(p, dl.Pose2D(), goal_timeout_s=400.0)
+    x, y, th, t, dt = x0, y0, th0, 0.0, 0.05
+    m.start(dl.Snapshot(t=0.0))
+    deb = dl.ContactDebouncer(3)
+    out, at_contact, details, k, injected = None, None, [], 0, []
+    for _ in range(10000):
+        t += dt
+        k += 1
+        if x <= 0.0 and at_contact is None:
+            at_contact = (y, th)
+        deb.update(x <= 0.0)
+        mk = _marker_from_pose(x, y, th, p.docked_marker_offset, t) if x > 0.05 else None
+        if mk is not None and noise_frame is not None and noise_frame(m):
+            mk = dl.MarkerObs(mk.x, mk.y + 0.25, mk.yaw + 0.3, mk.stamp)   # one wild frame
+            injected.append(t)
+        out = m.step(dl.Snapshot(t=t, odom=dl.Pose2D(x, y, th), marker=mk, contact=deb.value,
+                                 charging_result=True if m.state == S.CHARGING else None,
+                                 progress_pose=dl.Pose2D(x, y, th)))
+        details.append(out.detail)
+        if out.done:
+            break
+        x += out.linear * math.cos(th) * dt
+        y += out.linear * math.sin(th) * dt
+        th += out.angular * dt
+        x = max(x, 0.0)
+    _closed_loop.injected = injected
+    return out, m, at_contact, t, details
+
+
+def test_converges_from_half_metre_8cm_8deg_without_realign():
+    out, m, (lat, hdg), t, details = _closed_loop(0.5, 0.08, math.radians(8))
+    assert out.success and m._realigns == 0 and m.retries == 0
+    assert abs(lat) < 0.02 and abs(math.degrees(hdg)) < 2.0
+    assert t < 15.0
+    assert any(d.startswith('docking: 0.') and 'lateral' in d and '\N{DEGREE SIGN}' in d
+               for d in details)
+
+
+@pytest.mark.parametrize('x0', [0.6, 1.0, 1.4])
+@pytest.mark.parametrize('y0', [-0.3, 0.0, 0.15, 0.3])
+@pytest.mark.parametrize('thd', [-20, 0, 20])
+def test_closed_loop_sweep_converges_at_contact(x0, y0, thd):
+    out, m, at, t, _ = _closed_loop(x0, y0, math.radians(thd))
+    assert out.success and at is not None and m.retries == 0
+    assert abs(at[0]) < 0.02 and abs(math.degrees(at[1])) < 2.0
+    assert m._realigns <= 2 and t < 60.0
+
+
+def test_speed_floor_keeps_stall_guard_armed():
+    g = dl.ControllerGains()
+    p = dl.DockParams()
+    v, _, _ = dl.reverse_control(dl.DockErrors(0.1, 0.3, 0.4), g)
+    assert abs(v) == pytest.approx(g.min_turn_speed) and abs(v) > p.stall_min_cmd
+    v, _, _ = dl.reverse_control(dl.DockErrors(0.25, 0.0, 0.0), g)
+    assert abs(v) == pytest.approx(0.08)
+
+
+def test_moderate_error_at_final_zone_keeps_correcting_no_realign():
+    p = dl.DockParams(skip_nav_to_approach=True)
+    m = dl.DockStateMachine(p, dl.Pose2D())
+    m.start(dl.Snapshot(t=0.0))
+    for i in range(4):   # 0.15 m out, 10 cm / 10 deg off: corrected while reversing
+        out = m.step(dl.Snapshot(t=0.1 * (i + 1), odom=dl.Pose2D(),
+                                 marker=_marker_from_pose(0.15, 0.10, math.radians(10), 0.45,
+                                                          0.1 * (i + 1))))
+    assert out.state == S.DOCKING and out.linear < 0 and m._realigns == 0
+
+
+def test_bad_error_at_final_zone_realigns_at_most_twice():
+    p = dl.DockParams(skip_nav_to_approach=True)
+    m = dl.DockStateMachine(p, dl.Pose2D())
+    m.start(dl.Snapshot(t=0.0))
+    t = 0.0
+    for _ in range(4):
+        m.state, m._t_state = S.DOCKING, t   # force back to DOCKING at the final zone
+        out = None
+        for _ in range(3):
+            t += 0.1
+            out = m.step(dl.Snapshot(t=t, odom=dl.Pose2D(),
+                                     marker=_marker_from_pose(0.15, 0.2, 0.0, 0.45, t)))
+            if out.state != S.DOCKING:
+                break
+    assert m._realigns == 2
+
+
+def test_single_noisy_frame_does_not_trigger_realign():
+    # robot nearly on axis; one wild frame (25 cm / 17 deg) right in the final zone
+    done = []
+
+    def once(mm):
+        if done or not (mm.state == S.DOCKING and 0 < mm._remaining < 0.18):
+            return False
+        done.append(1)
+        return True
+    out, m, at, _, _ = _closed_loop(0.5, 0.02, 0.0, noise_frame=once)
+    assert len(_closed_loop.injected) == 1
+    assert out.success and m._realigns == 0
+    # without the median the same frame would have crossed the realign gate
+    assert 0.25 > dl.DockParams().final_max_lateral
+
+
+def test_overrun_with_marker_in_view_holds_for_contacts():
+    p = dl.DockParams(skip_nav_to_approach=True)
+    m = dl.DockStateMachine(p, dl.Pose2D())
+    m.start(dl.Snapshot(t=0.0))
+    for i in range(3):
+        out = m.step(dl.Snapshot(t=0.1 * (i + 1), odom=dl.Pose2D(),
+                                 marker=_marker_from_pose(-0.12, 0.0, 0.0, 0.45, 0.1 * (i + 1))))
+    assert out.state == S.FINAL_DOCKING and m._final_phase == 'settle' and out.linear == 0.0
+
+
+def test_marker_in_view_flag():
+    p = dl.DockParams(skip_nav_to_approach=True)
+    m = dl.DockStateMachine(p, dl.Pose2D())
+    out = m.start(dl.Snapshot(t=0.0))
+    assert not out.marker_in_view
+    out = m.step(dl.Snapshot(t=0.1))
+    assert not out.marker_in_view                        # searching, nothing seen
+    bad = dl.MarkerObs(-1.2, 0.0, math.radians(60), stamp=0.2)
+    assert not m.step(dl.Snapshot(t=0.2, marker=bad)).marker_in_view   # outside the gate
+    good = _marker_from_pose(0.8, 0.0, 0.0, 0.45, 0.3)
+    assert m.step(dl.Snapshot(t=0.3, marker=good)).marker_in_view
+    assert m.step(dl.Snapshot(t=0.6, marker=good)).marker_in_view       # 0.3 s old
+    assert not m.step(dl.Snapshot(t=0.9, marker=good)).marker_in_view   # stale (> 0.5 s)
+    assert not m.cancel().marker_in_view
+    # vision FINAL (marker lost in the last 0.2 m, settle/creep): flag stays true
+    fm = _final_machine()
+    assert fm.state == S.FINAL_DOCKING
+    assert fm.step(dl.Snapshot(t=5.0, odom=dl.Pose2D(0.1, 0, 0))).marker_in_view

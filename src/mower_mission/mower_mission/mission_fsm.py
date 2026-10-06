@@ -349,6 +349,9 @@ class Inputs:
     obstacle_class: str = ''
     obstacle_distance: Optional[float] = None
     obstacle_stamp: Optional[float] = None    # receipt time of the last policy message
+    # /mower_docking/marker_in_view (latched Bool): owner rule "dock marker in view ->
+    # ignore all other camera detections" while docking
+    dock_marker_in_view: bool = False
     # /supervisor/status critical_down (comma-joined node names; '' = all alive)
     critical_nodes_down: str = ''
     # /rosout local_costmap "/stereo_depth/points observation buffer has not been updated
@@ -2560,7 +2563,17 @@ class MissionFSM:
         if not self.p.obstacle_avoidance or i.obstacle_stamp is None or \
                 self._now - i.obstacle_stamp > self.p.obstacle_policy_timeout_s:
             return 'none'
-        return i.obstacle_kind if i.obstacle_kind in ('dynamic', 'static') else 'none'
+        kind = i.obstacle_kind if i.obstacle_kind in ('dynamic', 'static') else 'none'
+        if i.dock_marker_in_view and self.phase in DOCK_PHASES:
+            # Owner: "if the rear camera has the dock marker in vision, all other camera
+            # detections should be ignored" (2026-10-07: the owner by the dock cancelled
+            # DOCKING twice as 'dynamic obstacle: person'). Bumper/costmap stay active.
+            if kind != 'none' and not getattr(self, '_marker_ignore_logged', False):
+                self._marker_ignore_logged = True
+                self._log('info', 'marker in view: obstacle detections ignored while docking')
+            return 'none'
+        self._marker_ignore_logged = False
+        return kind
 
     def _ranged_static(self):
         """A fresh 'static' policy that may explain an abort: it must carry a range

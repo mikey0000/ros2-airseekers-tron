@@ -2816,3 +2816,43 @@ def test_dock_failure_with_contacts_counts_as_docked():
     h.fsm.inputs.docked = True
     h.finish(f.ACT_DOCK, f.ABORTED, {'success': False, 'message': 'DOCK_MAXOUT'})
     assert h.name in f.IDLE_NAMES
+
+
+# ---- owner rule: dock marker in view -> other camera detections ignored (2026-10-07) ----
+def test_marker_in_view_ignores_person_while_docking():
+    h = Harness()
+    h.fsm.inputs.pose = (1.5, -5.6, 0.0)
+    assert h.cmd(f.CMD_HOME)
+    assert h.name == 'RETURNING_HOME'
+    tok = h.pending_action(f.ACT_DOCK).token
+    h.fsm.inputs.dock_marker_in_view = True
+    m = h.mark()
+    tick_seen(h, 'dynamic', 'person', 5.0)
+    tick_seen(h, 'static', 'chair', 2.0)
+    assert h.name == 'RETURNING_HOME' and h.pending_action(f.ACT_DOCK).token == tok
+    assert not h.since(m, f.CancelActions)
+    logs = [e for e in h.since(m, f.Log) if 'marker in view' in str(e)]
+    assert len(logs) == 1
+    # marker lost: the person policy applies again (stop and wait as before)
+    h.fsm.inputs.dock_marker_in_view = False
+    policy(h, 'dynamic', 'person')
+    h.tick()
+    assert h.fsm._action is None and 'waiting for person' in h.fsm.sub_state
+
+
+def test_marker_in_view_false_waits_as_before():
+    h = Harness()
+    h.fsm.inputs.dock_marker_in_view = False
+    _home_with_person(h)
+
+
+def test_marker_in_view_does_not_apply_outside_dock_phases():
+    h = Harness()
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
+    assert h.name == 'TRANSIT'
+    h.fsm.inputs.dock_marker_in_view = True        # stale flag: must not matter here
+    policy(h, 'dynamic', 'person')
+    h.tick()
+    assert h.fsm._action is None and 'waiting for person' in h.fsm.sub_state

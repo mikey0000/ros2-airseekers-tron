@@ -175,11 +175,13 @@ class ControllerGains:
     final_speed: float = 0.05
     slow_distance: float = 0.3      # remaining <= this -> final_speed
     slow_zone: float = 0.3          # ramp max_speed -> final_speed over this, beyond slow_distance
-    final_zone: float = 0.2         # remaining <= this -> FINAL_DOCKING (straight); vendor
-    #                                 final_distance_to_dock_ = 0.2
-    k_lateral: float = 1.5          # rad of desired heading per metre of lateral error
-    max_approach_angle: float = 0.35
-    kp_heading: float = 0.8
+    final_zone: float = 0.2         # remaining <= this: realign check; a marker lost in here ->
+    #                                 straight reverse on the last heading (vendor 0.2)
+    close_speed: float = 0.08       # m/s max reverse speed within slow_distance (steering on)
+    lateral_slow: float = 0.20      # m lateral error at which the close-zone speed hits the floor
+    k_lateral: float = 7.0          # rad of desired heading per metre of lateral error
+    max_approach_angle: float = 0.5
+    kp_heading: float = 1.5
     kd_heading: float = 0.0
     max_angular: float = 0.3
     # Turn-first: scale the reverse speed down with the heading error so a robot that
@@ -187,14 +189,16 @@ class ControllerGains:
     # short run to the contacts instead of driving further off it. A creep floor keeps
     # the wheels rolling (an in-place pivot does not turn on turf, ring-drift analysis).
     turn_slow_err: float = 0.5      # rad of heading-tracking error at which v hits the floor
-    min_turn_speed: float = 0.04    # m/s reverse creep floor while turning (> stall_min_cmd)
+    min_turn_speed: float = 0.035   # m/s reverse speed floor (> stall_min_cmd 0.03, so the
+    #                                 stall guard stays armed while creeping)
 
 
-def reverse_speed(remaining: float, g: ControllerGains) -> float:
-    """Reverse speed magnitude: final_speed within ``slow_distance`` of the
+def reverse_speed(remaining: float, g: ControllerGains, near: Optional[float] = None) -> float:
+    """Reverse speed magnitude: close_speed within ``slow_distance`` of the
     contacts, ramping up to max_speed over ``slow_zone`` beyond it."""
     frac = clamp((remaining - g.slow_distance) / max(g.slow_zone, 1e-6), 0.0, 1.0)
-    return g.final_speed + (g.max_speed - g.final_speed) * frac
+    near = g.close_speed if near is None else near
+    return near + (g.max_speed - near) * frac
 
 
 def reverse_control(err: DockErrors, g: ControllerGains,
@@ -214,9 +218,14 @@ def reverse_control(err: DockErrors, g: ControllerGains,
     de = 0.0 if prev_heading_err is None or dt <= 0 else wrap_angle(e - prev_heading_err) / dt
     w = clamp(g.kp_heading * e + g.kd_heading * de, -g.max_angular, g.max_angular)
     vmax = reverse_speed(err.remaining, g)
+    frac = 1.0
     if g.turn_slow_err > 0:
         frac = clamp(1.0 - abs(e) / g.turn_slow_err, 0.0, 1.0)
-        vmax = min(vmax, max(g.min_turn_speed, vmax * frac))
+    if err.remaining <= g.slow_distance and g.lateral_slow > 0:
+        # slow and steady near the contacts: the larger the residual offset, the slower,
+        # so the steering gets more travel-per-correction to null it before contact
+        frac = min(frac, clamp(1.0 - abs(err.lateral) / g.lateral_slow, 0.0, 1.0))
+    vmax = min(vmax, max(g.min_turn_speed, vmax * frac))
     return -vmax, w, e
 
 
@@ -364,6 +373,7 @@ class Output:
     detail: str = ''                          # human status (GUI sub_state), incl. marker visibility
     notes: List[str] = field(default_factory=list)       # one-shot log lines for the node
     calibrated_offset: Optional[float] = None  # measured docked_marker_offset (on success)
+    marker_in_view: bool = False               # valid dock marker fresh (or FINAL/creep phase)
 
 
 @dataclass
@@ -414,11 +424,13 @@ class DockParams:
     # DOCKING: once tracking, the marker gate is widened by this factor (hysteresis), so a
     # robot that entered at the gate edge is not dropped while it turns onto the axis.
     docking_gate_scale: float = 1.4
-    # Reaching final_zone still off the axis -> drive forward along the dock heading and
-    # re-approach (does not use a retry), at most max_realigns times per goal.
-    final_max_lateral: float = 0.04
-    final_max_heading_deg: float = 5.0
-    max_realigns: int = 3
+    # Reaching final_zone BADLY off the axis -> drive forward along the dock heading and
+    # re-approach (does not use a retry), at most max_realigns times per goal. Smaller
+    # errors are corrected while reversing (the controller steers all the way to contact).
+    final_max_lateral: float = 0.15
+    final_max_heading_deg: float = 20.0
+    max_realigns: int = 2
+    marker_median_n: int = 3         # gates/decisions use the median of the last N markers
     realign_forward_distance: float = 0.8
     # FINAL_DOCKING budget exhausted without contact (2026-10-07 Home: the retry drove
     # forward off the pins 7 s before the contacts reported): hold still, then creep a bit
@@ -511,6 +523,11 @@ class DockStateMachine:
         self._final_phase_t = 0.0
         self._final_phase_d = 0.0
         self._cal_obs: Optional[Tuple[float, Pose2D, float]] = None  # (rem0, odom, stamp)
+        self._now = 0.0
+        self._valid_marker_t: Optional[float] = None   # stamp of the last in-gate marker
+        self._obs: List[Tuple[float, DockErrors]] = []   # (stamp, errors) for the median
+        self._last_err: Optional[DockErrors] = None      # latest DOCKING observation
+        self._last_err_odom: Optional[Pose2D] = None
         self.calibrated_offset: Optional[float] = None
 
     # -- helpers ---------------------------------------------------------
@@ -565,19 +582,56 @@ class DockStateMachine:
         self._final_timeout = (fast / max(g.max_speed, 1e-3) + slow / max(g.final_speed, 1e-3)
                                + self.p.blind_timeout_margin_s)
 
-    def _enter_vision_final(self, snap: Snapshot) -> None:
+    def _enter_vision_final(self, snap: Snapshot, phase: str = 'reverse') -> None:
+        """Marker lost within final_zone: reverse straight on the last docked heading
+        (dead-reckoned remaining), or (phase 'settle') overran the expected contact
+        point with the marker still in view."""
         self._blind = False
-        self._final_entry_remaining = max(0.0, self._remaining)
+        rem = self._remaining if math.isfinite(self._remaining) else 0.0
+        if self._last_err is not None and self._last_err_odom is not None and \
+                snap.odom is not None:
+            rem = self._last_err.remaining - math.hypot(snap.odom.x - self._last_err_odom.x,
+                                                        snap.odom.y - self._last_err_odom.y)
+        self._final_entry_remaining = max(0.0, rem)
+        hold = None
+        if self._last_err is not None and self._last_err_odom is not None:
+            hold = wrap_angle(self._last_err_odom.yaw - self._last_err.heading)
         self._enter(DockState.FINAL_DOCKING, snap)
-        self._final_phase = 'reverse'
-        self._final_limit = self.p.final_max_distance
+        if hold is not None:
+            self._hold_yaw = hold
+        self._final_phase = phase
+        self._final_phase_t = snap.t
+        self._final_phase_d = 0.0
+        g = self.p.gains
+        # same overrun allowance as the vendor budget (0.30 m from 0.20 m out = 0.10 m)
+        self._final_limit = max(0.0, rem) + max(0.0, self.p.final_max_distance - g.final_zone)
         self._final_timeout = self.p.final_timeout_s
+
+    def _push_obs(self, m: MarkerObs, err: DockErrors) -> None:
+        if self._obs and self._obs[-1][0] == m.stamp:
+            return
+        self._obs.append((m.stamp, err))
+        n = max(1, int(self.p.marker_median_n))
+        del self._obs[:-n]
+
+    def _median_err(self) -> Optional[DockErrors]:
+        if not self._obs:
+            return None
+        def med(vals):
+            v = sorted(vals)
+            k = len(v)
+            return v[k // 2] if k % 2 else 0.5 * (v[k // 2 - 1] + v[k // 2])
+        es = [e for _, e in self._obs]
+        return DockErrors(med([e.remaining for e in es]), med([e.lateral for e in es]),
+                          med([e.heading for e in es]))
 
     def _enter_retry(self, snap: Snapshot, travelled_reverse: float) -> None:
         if self.retries >= self.p.max_retries:
             self._fail(DockMsg.DOCK_MAXOUT, snap)
             return
         self.retries += 1
+        self._obs = []
+        self._last_err = None
         if self.p.skip_nav_to_approach and (self._blind or not self.use_vision):
             # no Nav2 to re-approach: drive back to where the attempt started
             self._retry_distance = min(max(travelled_reverse, self.p.retry_forward_distance),
@@ -595,6 +649,8 @@ class DockStateMachine:
                            ' realign %d/%d' % (err.lateral, math.degrees(err.heading),
                                                self._realigns, self.p.max_realigns))
         self._enter(DockState.RETRY, snap)
+        self._obs = []
+        self._last_err = None
         if snap.odom is not None:
             self._hold_yaw = wrap_angle(snap.odom.yaw - err.heading)   # docked heading in odom
 
@@ -676,7 +732,11 @@ class DockStateMachine:
     # -- API -------------------------------------------------------------
     def start(self, snap: Snapshot) -> Output:
         self._t_start = snap.t
+        self._now = snap.t
         self.retries = 0
+        self._obs = []
+        self._last_err = None
+        self._valid_marker_t = None
         self._marker_seen_t = None
         self._dig_at_start = bool(snap.dig_stall)
         if snap.contact:
@@ -709,7 +769,19 @@ class DockStateMachine:
                       travelled=self._tracker.distance, requests=reqs,
                       detail=self.detail(), notes=notes,
                       calibrated_offset=self.calibrated_offset if self.state ==
-                      DockState.SUCCEEDED else None)
+                      DockState.SUCCEEDED else None,
+                      marker_in_view=self._marker_in_view_now())
+
+    def _marker_in_view_now(self) -> bool:
+        """Owner rule: with the dock marker in view the mission ignores other camera
+        (obstacle) detections. True while an in-gate marker is younger than
+        marker_timeout_s, and throughout vision FINAL_DOCKING (straight / settle / creep)."""
+        if self.state in (DockState.SUCCEEDED, DockState.FAILED, DockState.CHARGING, ''):
+            return False
+        if self.state == DockState.FINAL_DOCKING and not self._blind:
+            return True
+        return self._valid_marker_t is not None and \
+            self._now - self._valid_marker_t <= self.p.marker_timeout_s
 
     def detail(self) -> str:
         """Human-readable status incl. marker visibility (GUI sub_state)."""
@@ -725,13 +797,19 @@ class DockStateMachine:
         if st == DockState.SEARCHING:
             return 'searching marker: %s' % mk
         if st == DockState.DOCKING:
-            return 'reversing onto dock: %s; marker %s' % (rem, mk)
+            e = self._last_err
+            if e is not None and math.isfinite(self._remaining):
+                return 'docking: %.2f m, lateral %.0f cm, %.0f\N{DEGREE SIGN}; marker %s' % (
+                    max(0.0, self._remaining), abs(e.lateral) * 100.0,
+                    abs(math.degrees(e.heading)), mk)
+            return 'docking: %s; marker %s' % (rem, mk)
         if st == DockState.FINAL_DOCKING:
             if self._final_phase == 'settle':
                 return 'final reverse: budget used, waiting for the contacts'
             if self._final_phase == 'creep':
                 return 'final reverse: creeping further for the contacts'
-            return 'final reverse%s: %s' % (' (blind)' if self._blind else '', rem)
+            return 'final reverse%s: %s' % (' (blind)' if self._blind else
+                                             ' (marker lost, last heading)', rem)
         if st == DockState.RETRY:
             return ('realigning %d/%d: forward along dock heading' % (
                 self._realigns, self.p.max_realigns)) if self._realign else \
@@ -754,6 +832,10 @@ class DockStateMachine:
             self._marker_text = 'not visible'
             return
         err = dock_errors(m, self.p.docked_marker_offset)
+        kg = max(1.0, self.p.docking_gate_scale)
+        if marker_gate_ok(err, kg * self.p.max_lateral_error,
+                          kg * math.radians(self.p.max_yaw_error_deg)):
+            self._valid_marker_t = m.stamp
         txt = 'seen %.2f m, %.1f\N{DEGREE SIGN}' % (math.hypot(m.x, m.y),
                                                     math.degrees(err.heading))
         if not marker_gate_ok(err, self.p.max_lateral_error,
@@ -764,6 +846,7 @@ class DockStateMachine:
     def step(self, snap: Snapshot) -> Output:
         if self.state in (DockState.SUCCEEDED, DockState.FAILED):
             return self._out()
+        self._now = snap.t
         travelled = self._tracker.update(snap.t, snap.odom, self._last_cmd)
         self._update_marker_text(snap)
 
@@ -843,10 +926,12 @@ class DockStateMachine:
             m = self._fresh_marker(snap)
             if m is not None:
                 err = dock_errors(m, self.p.docked_marker_offset)
+                self._push_obs(m, err)
                 self._remaining = err.remaining
-                if marker_gate_ok(err, self.p.max_lateral_error,
+                if marker_gate_ok(self._median_err(), self.p.max_lateral_error,
                                   math.radians(self.p.max_yaw_error_deg)):
                     self._lost = 0
+                    self._last_err, self._last_err_odom = err, snap.odom
                     self._enter(DockState.DOCKING, snap)
                     return self._out()
             if el > self.p.search_timeout_s:
@@ -860,9 +945,19 @@ class DockStateMachine:
             m = self._fresh_marker(snap)
             new = m is not None and m.stamp != self._last_marker_stamp
             err = dock_errors(m, self.p.docked_marker_offset) if m is not None else None
+            if err is not None:
+                self._push_obs(m, err)
+            gerr = self._median_err() if err is not None else None
             k = max(1.0, self.p.docking_gate_scale)
-            if err is None or not marker_gate_ok(err, k * self.p.max_lateral_error,
-                                                 k * math.radians(self.p.max_yaw_error_deg)):
+            if gerr is None or not marker_gate_ok(gerr, k * self.p.max_lateral_error,
+                                                  k * math.radians(self.p.max_yaw_error_deg)):
+                if self._last_err is not None and self._last_err.remaining <= g.final_zone:
+                    # lost in the last stretch (too close / occluded): straight on the
+                    # last docked heading, dead-reckoned
+                    self._notes.append('marker lost %.2f m from the contacts: reversing straight'
+                                       ' on the last heading' % self._last_err.remaining)
+                    self._enter_vision_final(snap)
+                    return self._out(-g.final_speed, 0.0)
                 self._lost += 1
                 if self._lost > self.p.max_lost_frames:
                     self._enter_retry(snap, travelled)
@@ -870,15 +965,20 @@ class DockStateMachine:
             if new:
                 self._lost = 0
                 self._last_marker_stamp = m.stamp
+            self._last_err, self._last_err_odom = err, snap.odom
             self._remaining = err.remaining
-            if err.remaining <= g.final_zone:
-                off = abs(err.lateral) > self.p.final_max_lateral or \
-                    abs(err.heading) > math.radians(self.p.final_max_heading_deg)
+            if gerr.remaining <= g.final_zone:
+                off = abs(gerr.lateral) > self.p.final_max_lateral or \
+                    abs(gerr.heading) > math.radians(self.p.final_max_heading_deg)
                 if off and self._realigns < self.p.max_realigns:
-                    self._enter_realign(snap, err)
+                    self._enter_realign(snap, gerr)
                     return self._out()
-                self._enter_vision_final(snap)
-                return self._out(-g.final_speed, 0.0)
+            overrun = max(0.0, self.p.final_max_distance - g.final_zone)
+            if gerr.remaining <= -overrun:
+                self._notes.append('passed the expected contact point by %.2f m with the marker '
+                                   'in view: holding for the contacts' % -gerr.remaining)
+                self._enter_vision_final(snap, phase='settle')
+                return self._out()
             dt = snap.t - self._prev_t if self._prev_t is not None else 0.05
             self._prev_t = snap.t
             v, w, self._prev_e = reverse_control(err, g, self._prev_e, dt)
@@ -914,7 +1014,7 @@ class DockStateMachine:
             if self._blind:
                 left = self._final_limit - travelled
                 self._remaining = max(0.0, left - self.p.blind_extra_distance)
-                speed = reverse_speed(self._remaining, g)
+                speed = reverse_speed(self._remaining, g, near=g.final_speed)   # straight: 0.05
             else:
                 self._remaining = max(0.0, self._final_entry_remaining - travelled)
                 speed = g.final_speed

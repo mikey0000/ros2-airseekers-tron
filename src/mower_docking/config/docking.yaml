@@ -46,14 +46,19 @@ mower_docking:
     docked_marker_offset: 0.45
 
     max_speed: 0.15                # hard-capped at 0.15 in code
-    final_speed: 0.05              # [dc] FinalDock linear_max 0.05
-    slow_distance: 0.3             # remaining <= 0.3 m -> final_speed
+    final_speed: 0.05              # [dc] FinalDock linear_max 0.05 (straight/blind/creep)
+    slow_distance: 0.3             # remaining <= 0.3 m -> close_speed (error-scaled)
     slow_zone: 0.3                 # linear ramp 0.15 -> 0.05 m/s between 0.6 and 0.3 m
-    final_zone: 0.2                # remaining <= 0.2 m -> FINAL_DOCKING (straight reverse);
-    #                                vendor final_distance_to_dock_ 0.2 (dock_controller.h)
-    k_lateral: 1.5
-    max_approach_angle: 0.35
-    kp_heading: 0.8
+    final_zone: 0.2                # remaining <= 0.2 m: realign check; marker lost in here ->
+    #                                straight reverse on the last docked heading (FINAL_DOCKING).
+    #                                The controller otherwise steers on the marker to contact.
+    close_speed: 0.08              # max reverse speed within slow_distance (steering on)
+    lateral_slow: 0.20             # close-zone speed scales down with |lateral| / this, floor below
+    marker_median_n: 3             # gates/realign decisions use the median of the last 3 markers
+    # 2026-10-07 retune (closed-loop sim: 0.5 m out, 8 cm / 8 deg -> <1 mm / <1 deg at contact)
+    k_lateral: 7.0
+    max_approach_angle: 0.5
+    kp_heading: 1.5
     kd_heading: 0.0
     max_angular: 0.3               # [dc] Undocking angular_max 0.3
     heading_hold_kp: 1.0
@@ -96,13 +101,13 @@ mower_docking:
     align_tolerance_deg: 10.0      # stop turning within this of the dock yaw
     # Reverse controller tolerance for a gate-edge start (25 deg / 0.5 m)
     turn_slow_err: 0.5             # rad heading-tracking error -> reverse speed at the floor
-    min_turn_speed: 0.04           # m/s reverse creep floor while turning
+    min_turn_speed: 0.035          # m/s reverse speed floor; > stall_min_cmd so the guard stays armed
     docking_gate_scale: 1.4        # gate widened x1.4 once DOCKING (hysteresis)
-    # 2026-10-07 first live dock: the controller arrives at 6-8 cm / 5-8 deg and the dock
-    # funnel takes that; 4 cm / 5 deg cost two 20 s realign loops.
-    final_max_lateral: 0.07        # at final_zone still off the axis -> forward realign
-    final_max_heading_deg: 8.0
-    max_realigns: 3                # per goal; does not consume max_retries
+    # 2026-10-07 first live dock: two 20 s realign loops for 8 cm / 8 deg. Now the reverse
+    # controller corrects to contact; forward realign only when BADLY off at final_zone.
+    final_max_lateral: 0.15        # median lateral at final_zone beyond this -> forward realign
+    final_max_heading_deg: 20.0
+    max_realigns: 2                # per goal; does not consume max_retries
     realign_forward_distance: 0.8
     # FINAL budget used without contact (2026-10-07 Home: the retry drove forward off the
     # pins 7 s before the contacts reported): hold, then creep further, only then retry.
