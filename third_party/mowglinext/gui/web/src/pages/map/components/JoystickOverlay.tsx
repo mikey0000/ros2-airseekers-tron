@@ -17,11 +17,13 @@ interface JoystickOverlayProps {
     onHome?: () => Promise<void>;
     /** Extra controls beside the stick (two-step manual: the Blades control). */
     sideControls?: React.ReactNode;
+    /** Joystick socket is down and reconnecting: stick input is dropped, show it. */
+    linkDown?: boolean;
 }
 
 export const JoystickOverlay = ({
     visible, isRecording, mobile,
-    onMove, onStop, onFinishRecording, onCancelRecording, onHome, sideControls,
+    onMove, onStop, onFinishRecording, onCancelRecording, onHome, sideControls, linkDown,
 }: JoystickOverlayProps) => {
     const {colors, displayMode} = useThemeMode();
     const {t} = useTranslation();
@@ -70,7 +72,18 @@ export const JoystickOverlay = ({
                 boxShadow: `0 10px 30px -10px rgba(0,0,0,0.6), inset 0 0 24px ${limeAlpha(0.06)}`,
                 backdropFilter: displayMode === 'visual' ? 'blur(8px)' : undefined,
                 WebkitBackdropFilter: displayMode === 'visual' ? 'blur(8px)' : undefined,
+                opacity: linkDown ? 0.55 : 1,
             }}>
+                {linkDown && (
+                    <div role="status" aria-live="polite" data-testid="joystick-reconnecting" style={{
+                        position: "absolute", bottom: "100%", left: "50%", transform: "translate(-50%, -6px)",
+                        whiteSpace: "nowrap", padding: "3px 10px", borderRadius: 999,
+                        background: "rgba(250, 173, 20, 0.95)", color: "#1f1f1f",
+                        fontSize: 12, fontWeight: 600, pointerEvents: "none",
+                    }}>
+                        {t('connection.joystickReconnecting', 'Joystick reconnecting…')}
+                    </div>
+                )}
                 <Joystick
                     size={size}
                     baseColor={baseColor}

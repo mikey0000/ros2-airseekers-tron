@@ -79,4 +79,18 @@ describe('PathModal', () => {
         await userEvent.type(screen.getByLabelText(en.mapPath.name), '{enter}');
         expect(p.onSave).not.toHaveBeenCalled();
     });
+
+    it('renders as a bottom sheet on a phone, without stealing focus', () => {
+        render(<PathModal {...props()} mobile/>);
+        const sheet = screen.getByRole('dialog', {name: en.mapPath.title});
+        expect(sheet).toHaveAttribute('data-layout', 'sheet');
+        expect(sheet).toHaveStyle({position: 'fixed', bottom: '0px'});
+        expect(screen.getByLabelText(en.mapPath.name)).not.toHaveFocus();
+        expect(screen.getByRole('button', {name: en.mapPath.save})).toBeInTheDocument();
+    });
+
+    it('stays a side panel on desktop', () => {
+        render(<PathModal {...props()}/>);
+        expect(screen.getByRole('dialog', {name: en.mapPath.title})).toHaveAttribute('data-layout', 'panel');
+    });
 });

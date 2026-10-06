@@ -83,6 +83,11 @@ class DockPose:
     # True only when the pose was recorded by set_docking_point (robot on the
     # charger). A file without ``dock_pose_measured`` is the (0,0,0) placeholder.
     measured: bool = False
+    # heading_aligner state when the yaw was captured from the fused heading
+    # (on-dock set_docking_point): offset (deg) and quality ('low', 'good', ...,
+    # 'corrected' once dock_yaw_autocorrect applied). None = not recorded.
+    heading_offset_deg_at_set: Optional[float] = None
+    heading_quality_at_set: Optional[str] = None
 
     def outline_in_map(self) -> Optional[Polygon]:
         if not self.outline or len(self.outline) < 3:
@@ -410,6 +415,10 @@ def format_dock_yaml(dock: DockPose) -> str:
         lines.append('dock_outline: "%s"' % polygon_to_string(dock.outline))
     if dock.measured:
         lines.append('dock_pose_measured: true')
+    if dock.heading_offset_deg_at_set is not None:
+        lines.append('heading_offset_deg_at_set: %.3f' % dock.heading_offset_deg_at_set)
+    if dock.heading_quality_at_set:
+        lines.append('heading_quality_at_set: %s' % dock.heading_quality_at_set)
     return '\n'.join(lines) + '\n'
 
 
@@ -419,9 +428,45 @@ def parse_dock_yaml(text: str) -> Optional[DockPose]:
     if not isinstance(data, dict) or 'dock_pose_x' not in data:
         return None
     outline = parse_polygon_string(str(data.get('dock_outline') or '')) or None
+    off = data.get('heading_offset_deg_at_set')
+    qual = data.get('heading_quality_at_set')
     return DockPose(float(data.get('dock_pose_x', 0.0)), float(data.get('dock_pose_y', 0.0)),
                     float(data.get('dock_pose_yaw', 0.0)), outline,
-                    data.get('dock_pose_measured') is True)
+                    data.get('dock_pose_measured') is True,
+                    None if off is None else float(off),
+                    None if qual is None else str(qual))
+
+
+# heading_aligner qualities (heading_logic.HeadingEstimator.quality) that are not
+# trustworthy for capturing a dock yaw from the fused heading.
+HEADING_QUALITY_OK = ('good', 'fair')
+HEADING_QUALITY_CORRECTABLE = ('low', 'poor')
+HEADING_QUALITY_CORRECTED = 'corrected'
+
+
+def heading_quality_low(quality) -> bool:
+    """True when a fused heading of this aligner quality should not be trusted as a
+    dock yaw (warn the operator: drive 2 m straight first)."""
+    return quality not in HEADING_QUALITY_OK
+
+
+def dock_yaw_autocorrect(dock: Optional[DockPose], offset_deg, quality,
+                         source) -> Optional[float]:
+    """Corrected dock yaw (rad) or None.
+
+    A dock yaw captured from the fused heading is imu_yaw + offset. When the offset
+    in use at set time was a low-quality (stale persisted) one and the aligner later
+    reaches a good COG alignment, the true dock yaw is the stored one rotated by
+    (new_offset - offset_at_set). Applies only to a dock whose set-time quality was
+    low/poor (never one already corrected or set with a good heading)."""
+    if dock is None or dock.heading_offset_deg_at_set is None:
+        return None
+    if dock.heading_quality_at_set not in HEADING_QUALITY_CORRECTABLE:
+        return None
+    if offset_deg is None or source != 'cog' or quality != 'good':
+        return None
+    delta = math.radians(float(offset_deg) - dock.heading_offset_deg_at_set)
+    return math.atan2(math.sin(dock.yaw + delta), math.cos(dock.yaw + delta))
 
 
 def save_dock_file(path: str, dock: DockPose):

@@ -189,31 +189,7 @@ export function useMapFiles({
             // calibration service). Saving unconditionally would clobber it.
             const dockFeature = features["dock"];
             if (dockDirty && dockFeature instanceof DockFeatureBase) {
-                const coords = dockFeature.getCoordinates();
-                const rosCoords = itranspose(offsetX, offsetY, datum, coords[1], coords[0]);
-                const heading = dockFeature.getHeading();
-                const quaternionFromHeading = getQuaternionFromHeading(heading);
-                await guiApi.mowglinext.mapDockingCreate({
-                    docking_pose: {
-                        orientation: {
-                            x: quaternionFromHeading.x!,
-                            y: quaternionFromHeading.y!,
-                            z: quaternionFromHeading.z!,
-                            w: quaternionFromHeading.w!,
-                        },
-                        position: {
-                            x: rosCoords[0],
-                            y: rosCoords[1],
-                            z: 0,
-                        },
-                    },
-                    // Manual map-drag: use the dragged coordinates as-is (operator
-                    // placed the dock marker explicitly — do NOT override with GPS).
-                    use_gps_position: false,
-                    // Honour the dragged heading (SetDockingPoint yaw_source REQUEST=1);
-                    // the map-drag yaw is operator-set, never circular.
-                    yaw_source: 1,
-                });
+                await saveDockPose(dockFeature);
                 setDockDirty(false);
             }
 
@@ -230,6 +206,50 @@ export function useMapFiles({
             });
         }
     }
+
+    // set_docking_point with the marker's position and heading as-is.
+    async function saveDockPose(dockFeature: DockFeatureBase) {
+        const coords = dockFeature.getCoordinates();
+        const rosCoords = itranspose(offsetX, offsetY, datum, coords[1], coords[0]);
+        const quaternionFromHeading = getQuaternionFromHeading(dockFeature.getHeading());
+        await guiApi.mowglinext.mapDockingCreate({
+            docking_pose: {
+                orientation: {
+                    x: quaternionFromHeading.x!,
+                    y: quaternionFromHeading.y!,
+                    z: quaternionFromHeading.z!,
+                    w: quaternionFromHeading.w!,
+                },
+                position: {
+                    x: rosCoords[0],
+                    y: rosCoords[1],
+                    z: 0,
+                },
+            },
+            // Manual map-drag / typed heading: use the marker coordinates as-is
+            // (operator placed the dock explicitly — do NOT override with GPS).
+            use_gps_position: false,
+            // Honour the dragged/typed heading (SetDockingPoint yaw_source REQUEST=1);
+            // an operator-set yaw is never circular.
+            yaw_source: 1,
+        });
+    }
+
+    // Dock heading panel "Apply": store only the dock pose, now.
+    const handleApplyDockPose = async () => {
+        const dockFeature = features["dock"];
+        if (!(dockFeature instanceof DockFeatureBase)) return;
+        try {
+            await saveDockPose(dockFeature);
+            setDockDirty(false);
+            notification.success({message: t('dockHeading.saved')});
+        } catch (e: any) {
+            notification.error({
+                message: t('dockHeading.saveFailed'),
+                description: e?.message ?? String(e),
+            });
+        }
+    };
 
     const handleBackupMap = () => {
         const a = document.createElement("a");
@@ -547,6 +567,7 @@ export function useMapFiles({
 
     return {
         handleSaveMap,
+        handleApplyDockPose,
         handleBackupMap,
         handleRestoreMap,
         handleDownloadGeoJSON,

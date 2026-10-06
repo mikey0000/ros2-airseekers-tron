@@ -58,6 +58,7 @@ import {ManualBladeControl} from "./map/components/ManualBladeControl.tsx";
 import {DrivingCameraPip} from "./map/components/DrivingCameraPip.tsx";
 import {isReversing, useDrivePipPrefs} from "./map/hooks/useDrivingCamera.ts";
 import {PathModal} from "./map/components/PathModal.tsx";
+import {DockHeadingPanel} from "./map/components/DockHeadingPanel.tsx";
 import {CorridorHatchPattern, CORRIDOR_HATCH_IMAGE} from "./map/components/CorridorHatchPattern.tsx";
 import {usePathTool, type PathDockInput} from "./map/hooks/usePathTool.ts";
 import {useDockCorridor} from "../hooks/useDockCorridor.ts";
@@ -738,6 +739,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
 
     const {
         handleSaveMap,
+        handleApplyDockPose,
         handleBackupMap,
         handleRestoreMap,
         handleDownloadGeoJSON,
@@ -862,6 +864,17 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         setHasUnsavedChanges(true);
         setDockDirty(true);
     }, [dockPlacementMode, setHasUnsavedChanges, editMap, areaSettings.enabled, features, openAreaSettingsForFeature]);
+
+    // Dock heading panel: rotate the dock marker in place (position kept).
+    const handleDockHeadingChange = useCallback((heading: number) => {
+        setFeatures(prev => {
+            const dock = prev["dock"];
+            if (!(dock instanceof DockFeatureBase)) return prev;
+            return {...prev, dock: new DockFeatureBase(dock.getCoordinates(), heading)};
+        });
+        setHasUnsavedChanges(true);
+        setDockDirty(true);
+    }, [setHasUnsavedChanges]);
 
     // Map → panel side of the two-way obstacle highlight: while the cursor is
     // over a tracked-obstacle polygon, mirror its id into selectedObstacleId so
@@ -1192,6 +1205,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 onSave={pathTool.save}
                 onCancel={pathTool.cancel}
                 onDelete={pathTool.remove}
+                mobile={isMobile}
             />
             <EditAreaModal
                 open={areaModelOpen}
@@ -1440,6 +1454,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     onFinishRecording={mowerActions.onRecordFinish}
                     onCancelRecording={mowerActions.onRecordCancel}
                     onHome={mowerActions.onHome}
+                    linkDown={joyStream.status === "reconnecting" || joyStream.status === "connecting"}
                     sideControls={bladeTwoStep && manualMode ? (
                         <ManualBladeControl
                             bladeOn={bladeOn}
@@ -1457,6 +1472,14 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     style={{position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 20, maxWidth: 'calc(100% - 32px)'}}
                 />
                 {previewCard}
+                {editMap && !pathTool.editing && features["dock"] instanceof DockFeatureBase && (
+                    <DockHeadingPanel
+                        heading={(features["dock"] as DockFeatureBase).getHeading()}
+                        onChange={handleDockHeadingChange}
+                        onApply={handleApplyDockPose}
+                        mobile={isMobile}
+                    />
+                )}
                 {isMobile && (
                     <MapToolbarMobile
                         editMap={editMap}

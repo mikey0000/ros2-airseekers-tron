@@ -1623,7 +1623,9 @@
     "stopManualMowing": "Stop",
     "manualMowing": "Manual Mowing",
     "drawPath": "Draw path",
-    "connectDock": "Connect nearest area to dock"
+    "connectDock": "Connect nearest area to dock",
+    "drawPathToDock": "Path to dock",
+    "editPath": "Edit selected path"
   },
   "mapEditorToolbar": {
     "saveMapUnsaved": "Save Map *",
@@ -4347,5 +4349,32 @@
     "sun": "sun {{deg}}°",
     "notInstalled": "No fill light on this mower: the PWM output the vendor firmware uses does not exist on this board.",
     "unreachable": "Fill light node not reachable"
+  },
+  "dockHeading": {
+    "title": "Dock heading",
+    "label": "Dock heading in degrees (0 = East, 90 = North)",
+    "rotateLeft": "Rotate dock 5° counter-clockwise",
+    "rotateRight": "Rotate dock 5° clockwise",
+    "compassHint": "Points {{point}}. 0° = East, 90° = North, 180° = West, 270° = South (counter-clockwise).",
+    "alignHint": "Setting the dock from the robot? Drive 2 m in a straight line first so the heading is aligned; a heading captured too early is corrected automatically after the next straight drive.",
+    "apply": "Apply heading",
+    "saved": "Dock heading saved",
+    "saveFailed": "Could not save the dock heading",
+    "compass": {
+      "E": "East",
+      "NE": "North-East",
+      "N": "North",
+      "NW": "North-West",
+      "W": "West",
+      "SW": "South-West",
+      "S": "South",
+      "SE": "South-East"
+    },
+    "short": "Dock {{deg}}°",
+    "collapse": "Hide dock heading"
+  },
+  "connection": {
+    "reconnecting": "Reconnecting…",
+    "joystickReconnecting": "Joystick reconnecting…"
   }
 }

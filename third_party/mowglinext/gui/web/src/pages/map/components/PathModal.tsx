@@ -20,6 +20,8 @@ interface PathModalProps {
     onSave: () => void;
     onCancel: () => void;
     onDelete?: () => void;
+    /** Phone layout: full-width bottom sheet above the toolbar, no autofocus. */
+    mobile?: boolean;
 }
 
 const EndTag = ({snap, label}: { snap: PathEndSnap; label: string }) => {
@@ -35,7 +37,7 @@ const EndTag = ({snap, label}: { snap: PathEndSnap; label: string }) => {
  */
 export const PathModal = ({
     open, editing, name, width, start, end, extendToDock, invalid,
-    onNameChange, onWidthChange, onExtendToDockChange, onSave, onCancel, onDelete,
+    onNameChange, onWidthChange, onExtendToDockChange, onSave, onCancel, onDelete, mobile,
 }: PathModalProps) => {
     const {t} = useTranslation();
     if (!open) return null;
@@ -47,7 +49,15 @@ export const PathModal = ({
             title={editing ? t('mapPath.editTitle') : t('mapPath.title')}
             role="dialog"
             aria-label={editing ? t('mapPath.editTitle') : t('mapPath.title')}
-            style={{position: 'absolute', top: 12, right: 12, zIndex: 20, width: 320, maxWidth: 'calc(100vw - 32px)'}}
+            data-layout={mobile ? 'sheet' : 'panel'}
+            style={mobile
+                // Bottom sheet: fixed to the viewport (the map container bleeds
+                // past it on phones), above the mobile toolbar (z 55/56) so
+                // Save/Cancel stay reachable; capped so the line stays visible.
+                ? {position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 60, width: 'auto',
+                    maxHeight: '55vh', overflowY: 'auto', borderRadius: '16px 16px 0 0',
+                    paddingBottom: 'env(safe-area-inset-bottom, 0px)'}
+                : {position: 'absolute', top: 12, right: 12, zIndex: 20, width: 320, maxWidth: 'calc(100vw - 32px)'}}
         >
             <Form layout="vertical">
                 <Form.Item label={t('mapPath.name')} style={{marginBottom: 8}}>
@@ -56,7 +66,7 @@ export const PathModal = ({
                         onChange={(e) => onNameChange(e.target.value)}
                         onPressEnter={() => { if (!invalid) onSave(); }}
                         aria-label={t('mapPath.name')}
-                        autoFocus
+                        autoFocus={!mobile}
                     />
                 </Form.Item>
                 <Form.Item label={t('mapPath.width', {width: width.toFixed(1)})} style={{marginBottom: 8}}>
@@ -89,8 +99,9 @@ export const PathModal = ({
                     {editing && onDelete && (
                         <Button danger onClick={onDelete}>{t('mapPath.delete')}</Button>
                     )}
-                    <Button onClick={onCancel}>{t('mapPath.cancel')}</Button>
-                    <Button type="primary" onClick={onSave} disabled={invalid}>{t('mapPath.save')}</Button>
+                    <Button onClick={onCancel} style={mobile ? {minHeight: 44} : undefined}>{t('mapPath.cancel')}</Button>
+                    <Button type="primary" onClick={onSave} disabled={invalid}
+                            style={mobile ? {minHeight: 44} : undefined}>{t('mapPath.save')}</Button>
                 </Space>
             </Form>
         </Card>

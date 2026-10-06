@@ -112,6 +112,11 @@ PARAMS = {
     'yaw_convergence_threshold_rad': 0.00873,
     'yaw_convergence_window_s': 5.0,
     'yaw_convergence_min_samples': 20,
+    # dock yaw auto-correct: a dock yaw captured from the fused heading while the
+    # heading_aligner quality was low is rotated by (COG offset - set-time offset)
+    # once the aligner reaches a good COG alignment (once per set, same session).
+    'heading_status_topic': '/heading_aligner/status',
+    'dock_yaw_autocorrect': True,
     # per-area mowing settings (area_settings.yaml next to areas.dat)
     'area_settings_file': '',          # '' -> <dir of areas_file>/area_settings.yaml
     'area_settings_prune_delay_s': 30.0,   # after clear_map: drop entries of areas not re-added
@@ -168,6 +173,10 @@ class MapServerNode(Node):
         self.gnss = None
         self.gnss_time = None
         self.pose = None                     # (x, y, yaw, child_frame)
+        self.heading = None                  # last /heading_aligner/status dict
+        # True only for a dock set in THIS session with a low-quality heading: the
+        # offset delta is meaningless across an IMU/aligner restart (yaw zero moves).
+        self._dock_autocorrect_armed = False
         self.pose_time = None
         self.recent_poses = deque()          # (t, x, y, yaw)
         self.blade_offset = None
@@ -212,6 +221,10 @@ class MapServerNode(Node):
         self._gnss_sub = sub(GnssStatus, self.p('gps_status_topic'), self.on_gnss, 1, lock=lock,
                              sampled=True, with_receipt=True)
         sub(Odometry, self.p('odom_topic'), self.on_odom, 10, parser=parse_odometry, lock=lock)
+        sub(String, self.p('heading_status_topic'), self.on_heading_status,
+            QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                       durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                       history=QoSHistoryPolicy.KEEP_LAST), lock=lock)
         self._tracker_sub = sub(ObstacleArray, '/obstacle_tracker/obstacles', self.on_tracker,
                                 1, lock=lock, sampled=True)
 
@@ -539,6 +552,12 @@ class MapServerNode(Node):
                 'dock pose (%.2f, %.2f, yaw %.2f) is NOT measured (placeholder): docking will '
                 'not reverse blind; drive onto the dock and press "Set docking point"'
                 % (dock.x, dock.y, dock.yaw))
+        if dock is not None and dock.heading_quality_at_set in core.HEADING_QUALITY_CORRECTABLE:
+            self.get_logger().warn(
+                'dock yaw was captured with a %s-quality heading (offset %s deg) and was not '
+                'auto-corrected before this restart; the correction is not applied across a '
+                'restart - re-set the docking point after a 2 m straight drive'
+                % (dock.heading_quality_at_set, dock.heading_offset_deg_at_set))
         self.publish_dock()
 
     # ------------------------------------------------------------------
@@ -551,6 +570,51 @@ class MapServerNode(Node):
     def on_gnss(self, msg, receipt=None):
         self.gnss = msg
         self.gnss_time = time.monotonic() if receipt is None else receipt
+
+    def on_heading_status(self, msg):
+        try:
+            st = json.loads(msg.data)
+        except ValueError:
+            return
+        if not isinstance(st, dict):
+            return
+        self.heading = st
+        self.maybe_autocorrect_dock_yaw()
+
+    def maybe_autocorrect_dock_yaw(self):
+        """Rotate a dock yaw captured under a low-quality heading offset once the aligner
+        has a good COG offset (see core.dock_yaw_autocorrect). Once per set."""
+        if not self._dock_autocorrect_armed or not self.p('dock_yaw_autocorrect'):
+            return
+        st = self.heading or {}
+        new_yaw = core.dock_yaw_autocorrect(self.dock, st.get('offset_deg'), st.get('quality'),
+                                            st.get('source'))
+        if new_yaw is None:
+            return
+        self._dock_autocorrect_armed = False
+        old_yaw, old_off = self.dock.yaw, self.dock.heading_offset_deg_at_set
+        self.dock.yaw = float(new_yaw)
+        self.dock.heading_quality_at_set = core.HEADING_QUALITY_CORRECTED
+        self.dock.heading_offset_deg_at_set = float(st['offset_deg'])
+        self.get_logger().warn(
+            'dock yaw auto-corrected: %.1f -> %.1f deg (heading offset at set %.1f deg, '
+            'quality low; COG offset now %.1f deg, quality %s)'
+            % (math.degrees(old_yaw), math.degrees(new_yaw), old_off,
+               float(st['offset_deg']), st.get('quality')))
+        self.store_dock()
+        self.rebuild()
+
+    def store_dock(self):
+        """Publish + persist self.dock (dock_pose.yaml and robot yaml)."""
+        self.publish_dock()
+        try:
+            core.save_dock_file(self.dock_path, self.dock)
+        except OSError as exc:
+            self.get_logger().warn('dock pose applied but not saved: %s' % exc)
+        if self.p('robot_yaml_path'):
+            if not core.update_robot_yaml_dock_pose(self.p('robot_yaml_path'), self.dock.x,
+                                                    self.dock.y, self.dock.yaw):
+                self.get_logger().warn('could not update %s' % self.p('robot_yaml_path'))
 
     def on_tracker(self, msg):
         self.tracker_snapshot = list(msg.obstacles)
@@ -879,6 +943,7 @@ class MapServerNode(Node):
             res.success = False
             return res
         old = self.dock
+        heading_at_set = None                # (offset_deg, quality) when yaw = fused heading
         if req.use_gps_position:
             if not self.recent_poses:
                 self.get_logger().warn('set_docking_point rejected: use_gps_position but no '
@@ -905,6 +970,16 @@ class MapServerNode(Node):
             # unmeasured, because heading_aligner only seeds from a measured dock.
             yaw = core.yaw_circular_mean([p[3] for p in self.recent_poses])
             measured = True
+            st = self.heading or {}
+            heading_at_set = (st.get('offset_deg'), str(st.get('quality') or 'none'))
+            if core.heading_quality_low(heading_at_set[1]):
+                # Accepted anyway (the operator is on the dock now); the yaw is rotated
+                # automatically once the aligner gets a good COG offset.
+                self.get_logger().warn(
+                    'set_docking_point: heading quality is %s (offset %s deg, source %s): '
+                    'the captured dock yaw may be wrong - drive 2 m straight first; it '
+                    'will be auto-corrected after the next good COG alignment'
+                    % (heading_at_set[1], heading_at_set[0], st.get('source')))
             self.get_logger().info('set_docking_point: stored dock yaw was a placeholder; '
                                    'captured the docked heading %.1f deg from %s'
                                    % (math.degrees(yaw), self.p('odom_topic')))
@@ -913,15 +988,21 @@ class MapServerNode(Node):
             measured = False
         outline = old.outline if old is not None and old.outline else self.default_dock_outline()
         self.dock = core.DockPose(float(x), float(y), float(yaw), outline, measured=measured)
-        self.publish_dock()
-        try:
-            core.save_dock_file(self.dock_path, self.dock)
-        except OSError as exc:
-            self.get_logger().warn('dock pose applied but not saved: %s' % exc)
-        if self.p('robot_yaml_path'):
-            if not core.update_robot_yaml_dock_pose(self.p('robot_yaml_path'), self.dock.x,
-                                                    self.dock.y, self.dock.yaw):
-                self.get_logger().warn('could not update %s' % self.p('robot_yaml_path'))
+        if heading_at_set is not None:
+            off, qual = heading_at_set
+            self.dock.heading_offset_deg_at_set = None if off is None else float(off)
+            self.dock.heading_quality_at_set = qual
+        elif (req.yaw_source == SetDockingPoint.Request.PRESERVE and old is not None
+              and old.measured):
+            # yaw preserved: keep its provenance (and a pending auto-correct)
+            self.dock.heading_offset_deg_at_set = old.heading_offset_deg_at_set
+            self.dock.heading_quality_at_set = old.heading_quality_at_set
+        if heading_at_set is not None or req.yaw_source != SetDockingPoint.Request.PRESERVE:
+            # a new yaw: arm the auto-correct only for a fused-heading capture at low quality
+            self._dock_autocorrect_armed = (
+                heading_at_set is not None and self.dock.heading_offset_deg_at_set is not None
+                and self.dock.heading_quality_at_set in core.HEADING_QUALITY_CORRECTABLE)
+        self.store_dock()
         self.get_logger().info('docking point set: (%.3f, %.3f) yaw %.3f rad measured=%s'
                                % (self.dock.x, self.dock.y, self.dock.yaw, self.dock.measured))
         self.rebuild()

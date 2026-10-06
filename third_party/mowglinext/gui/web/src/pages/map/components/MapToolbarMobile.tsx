@@ -37,6 +37,7 @@ import {
     EyeOutlined,
     SettingOutlined,
     LogoutOutlined,
+    HighlightOutlined,
 } from "@ant-design/icons";
 import {canPreviewPlan} from "../../../hooks/usePlanPreview.ts";
 import {PREVIEW_ALL_KEY} from "./MapToolbar.tsx";
@@ -269,9 +270,7 @@ export const MapToolbarMobile = ({
     };
 
     const editMenuItems: MenuProps["items"] = [
-        ...(onDrawPath ? [{key: "drawPath", icon: <NodeIndexOutlined />, label: t("mapToolbarMobile.drawPath")}] : []),
-        ...(onDrawPathToDock ? [{key: "drawPathToDock", icon: <NodeIndexOutlined />, label: t("mapEditorToolbar.drawPathToDock"), disabled: !dockAvailable}] : []),
-        ...(onEditPath ? [{key: "editPath", icon: <NodeIndexOutlined />, label: t("mapEditorToolbar.editPath"), disabled: !editPathEnabled}] : []),
+        // Draw path / Path to dock / Edit path are icon buttons in the cluster.
         ...(onConnectDock ? [{key: "connectDock", icon: <ApiOutlined />, label: t("mapToolbarMobile.connectDock"), disabled: !dockAvailable}] : []),
         {key: "editProps", icon: <FormOutlined />, label: t("mapToolbarMobile.editProperties"), disabled: selectedFeatureCount !== 1},
         {key: "combine", icon: <MergeCellsOutlined />, label: t("mapToolbarMobile.combine"), disabled: selectedFeatureCount < 2},
@@ -283,10 +282,7 @@ export const MapToolbarMobile = ({
 
     const handleEditMenuClick: MenuProps["onClick"] = ({key}: MenuInfo) => {
         switch (key) {
-            case "drawPath": onDrawPath?.(); break;
             case "connectDock": onConnectDock?.(); break;
-            case "drawPathToDock": onDrawPathToDock?.(); break;
-            case "editPath": onEditPath?.(); break;
             case "editProps": onEditSelectedFeature?.(); break;
             case "combine": onCombine?.(); break;
             case "subtract": onSubtract?.(); break;
@@ -389,6 +385,42 @@ export const MapToolbarMobile = ({
                         aria-label={t("mapToolbarMobile.placeDock")}
                         style={touchTarget}
                     />
+
+                    {/* Path tools (drive-only corridors), same handlers as the
+                        desktop MapEditorToolbar. */}
+                    {(onDrawPath || onDrawPathToDock || onEditPath) && (
+                        <Space.Compact size="large">
+                            {onDrawPath && (
+                                <Button
+                                    size="large"
+                                    icon={<NodeIndexOutlined />}
+                                    onClick={onDrawPath}
+                                    aria-label={t("mapToolbarMobile.drawPath")}
+                                    style={touchTarget}
+                                />
+                            )}
+                            {onDrawPathToDock && (
+                                <Button
+                                    size="large"
+                                    icon={<HomeOutlined />}
+                                    onClick={onDrawPathToDock}
+                                    disabled={!dockAvailable}
+                                    aria-label={t("mapToolbarMobile.drawPathToDock")}
+                                    style={touchTarget}
+                                />
+                            )}
+                            {onEditPath && (
+                                <Button
+                                    size="large"
+                                    icon={<HighlightOutlined />}
+                                    onClick={onEditPath}
+                                    disabled={!editPathEnabled}
+                                    aria-label={t("mapToolbarMobile.editPath")}
+                                    style={touchTarget}
+                                />
+                            )}
+                        </Space.Compact>
+                    )}
 
                     {/* Combine/Subtract/Split now live inside this More menu
                         (editMenuItems) to keep the top row uncluttered. */}

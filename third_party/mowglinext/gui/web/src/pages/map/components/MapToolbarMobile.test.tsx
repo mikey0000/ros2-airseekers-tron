@@ -104,4 +104,38 @@ describe("MapToolbarMobile", () => {
       expect(screen.queryByLabelText(en.mapToolbarMobile.undock)).toBeNull();
     }
   });
+
+  it("shows the path tools as icon buttons in the mobile edit toolbar", async () => {
+    const user = userEvent.setup();
+    const onDrawPath = vi.fn();
+    const onDrawPathToDock = vi.fn();
+    const onEditPath = vi.fn();
+    const { rerender } = render(
+      <MapToolbarMobile {...defaultProps} editMap onDrawPath={onDrawPath}
+        onDrawPathToDock={onDrawPathToDock} onEditPath={onEditPath}
+        dockAvailable editPathEnabled={false} />,
+    );
+    const draw = screen.getByRole("button", { name: en.mapToolbarMobile.drawPath });
+    const toDock = screen.getByRole("button", { name: en.mapToolbarMobile.drawPathToDock });
+    const edit = screen.getByRole("button", { name: en.mapToolbarMobile.editPath });
+    expect(edit).toBeDisabled();
+    await user.click(draw);
+    await user.click(toDock);
+    expect(onDrawPath).toHaveBeenCalledOnce();
+    expect(onDrawPathToDock).toHaveBeenCalledOnce();
+
+    rerender(
+      <MapToolbarMobile {...defaultProps} editMap onDrawPath={onDrawPath}
+        onDrawPathToDock={onDrawPathToDock} onEditPath={onEditPath}
+        dockAvailable={false} editPathEnabled />,
+    );
+    expect(screen.getByRole("button", { name: en.mapToolbarMobile.drawPathToDock })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: en.mapToolbarMobile.editPath }));
+    expect(onEditPath).toHaveBeenCalledOnce();
+  });
+
+  it("hides the path tools outside edit mode", () => {
+    render(<MapToolbarMobile {...defaultProps} onDrawPath={vi.fn()} onDrawPathToDock={vi.fn()} onEditPath={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: en.mapToolbarMobile.drawPath })).toBeNull();
+  });
 });

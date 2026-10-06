@@ -1619,7 +1619,9 @@
     "stopManualMowing": "Arrêter",
     "manualMowing": "Tonte manuelle",
     "drawPath": "Tracer un chemin",
-    "connectDock": "Relier la zone la plus proche à la base"
+    "connectDock": "Relier la zone la plus proche à la base",
+    "drawPathToDock": "Chemin vers la station",
+    "editPath": "Modifier le chemin sélectionné"
   },
   "mapEditorToolbar": {
     "saveMapUnsaved": "Enregistrer la carte *",
@@ -4347,5 +4349,32 @@
     "sun": "soleil {{deg}}°",
     "notInstalled": "Aucun éclairage sur cette tondeuse : la sortie PWM utilisée par le firmware d'origine n'existe pas sur cette carte.",
     "unreachable": "Nœud d'éclairage injoignable"
+  },
+  "dockHeading": {
+    "title": "Orientation de la station",
+    "label": "Orientation de la station en degrés (0 = Est, 90 = Nord)",
+    "rotateLeft": "Tourner la station de 5° dans le sens antihoraire",
+    "rotateRight": "Tourner la station de 5° dans le sens horaire",
+    "compassHint": "Direction : {{point}}. 0° = Est, 90° = Nord, 180° = Ouest, 270° = Sud (sens antihoraire).",
+    "alignHint": "Vous enregistrez la station depuis le robot ? Roulez d’abord 2 m en ligne droite pour aligner le cap ; un cap capturé trop tôt est corrigé automatiquement après la prochaine ligne droite.",
+    "apply": "Appliquer l’orientation",
+    "saved": "Orientation de la station enregistrée",
+    "saveFailed": "Impossible d’enregistrer l’orientation de la station",
+    "compass": {
+      "E": "Est",
+      "NE": "Nord-Est",
+      "N": "Nord",
+      "NW": "Nord-Ouest",
+      "W": "Ouest",
+      "SW": "Sud-Ouest",
+      "S": "Sud",
+      "SE": "Sud-Est"
+    },
+    "short": "Station {{deg}}°",
+    "collapse": "Masquer l’orientation de la station"
+  },
+  "connection": {
+    "reconnecting": "Reconnexion…",
+    "joystickReconnecting": "Reconnexion du joystick…"
   }
 }
