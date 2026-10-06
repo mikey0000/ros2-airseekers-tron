@@ -51,6 +51,8 @@ behavior_tree_node:
     clear_costmaps_on_retry: true     # clear Nav2 global+local costmaps before retries / recoveries
     return_home_on_incomplete: false  # sub-paths not mowed -> MOWING_INCOMPLETE; dock only if true
     follow_controller_id: FollowCoveragePath
+    # reverse legs of reverse-then-curve swath turns (RPP allow_reversing, nav2_params.yaml)
+    reverse_controller_id: FollowCoveragePathReverse
     follow_goal_checker_id: coverage_goal_checker
     max_areas: 200
 

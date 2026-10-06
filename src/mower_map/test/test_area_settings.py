@@ -15,7 +15,11 @@ def test_builtin_defaults_match_the_contract():
     assert s.BUILTIN_DEFAULTS == {
         'cutter_height_mm': 50, 'perimeter_laps': 2, 'path_mode': 'zigzag',
         'mow_angle_deg': -1.0, 'cut_speed_mps': 0.3, 'swath_overlap_m': 0.02,
-        'edge_first': True, 'repeat': 1, 'alternate_angle_offset_deg': 90.0}
+        'edge_first': True, 'repeat': 1, 'alternate_angle_offset_deg': 90.0,
+        'route_order': 'racetrack', 'route_spiral_size': 6, 'min_turn_radius_m': 0.5,
+        'turn_type': 'auto'}
+    assert s.ROUTE_ORDERS == ('boustrophedon', 'snake', 'spiral', 'racetrack')
+    assert s.TURN_TYPES == ('auto', 'loop', 'reverse', 'pivot')
     assert s.DEFAULTS_INDEX == 255
     assert s.PATH_MODES == ('zigzag', 'cross', 'alternate', 'spiral', 'contour_only')
 
@@ -29,6 +33,10 @@ def test_builtin_defaults_match_the_contract():
     ('cut_speed_mps', 0.5, 0.5), ('swath_overlap_m', 0.0, 0.0),
     ('edge_first', False, False), ('repeat', 3, 3),
     ('alternate_angle_offset_deg', 45, 45.0),
+    ('route_order', 'boustrophedon', 'boustrophedon'), ('route_order', 'spiral', 'spiral'),
+    ('route_spiral_size', 2, 2), ('route_spiral_size', 8.0, 8),
+    ('min_turn_radius_m', 0, 0.0), ('min_turn_radius_m', 0.5, 0.5),
+    ('turn_type', 'reverse', 'reverse'), ('turn_type', 'pivot', 'pivot'),
 ])
 def test_valid_values_are_normalised(key, value, expect):
     ok, v = s.validate_value(key, value)
@@ -43,6 +51,8 @@ def test_valid_values_are_normalised(key, value, expect):
     ('cut_speed_mps', 0.51), ('cut_speed_mps', 0.0), ('swath_overlap_m', -0.01),
     ('edge_first', 1), ('repeat', 0), ('alternate_angle_offset_deg', 181.0),
     ('mow_angle_deg', float('nan')), ('bogus', 1),
+    ('route_order', 'zigzag'), ('route_spiral_size', 1), ('route_spiral_size', 21),
+    ('min_turn_radius_m', -0.1), ('min_turn_radius_m', 2.5), ('turn_type', 'omega'),
 ])
 def test_invalid_values_are_rejected(key, value):
     ok, msg = s.validate_value(key, value)

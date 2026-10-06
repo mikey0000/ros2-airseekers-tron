@@ -7,6 +7,7 @@ import math
 import pytest
 
 from mower_coverage_bridge import splitter as sp
+from mower_coverage_bridge import splitter
 from mower_coverage_bridge.splitter import SEGMENT_RING, SEGMENT_SWATH
 
 OP = 0.18  # planner default swath spacing
@@ -319,3 +320,60 @@ def test_rings_only_spiral_plan_is_one_subpath():
     assert res.mode == sp.MODE_STRUCTURAL
     assert (res.ring_count, res.swath_count) == (4, 0)
     assert len(res.subpaths) == 1
+
+
+# ---- swath-to-swath turns (pose_flags) ----
+
+def _turn_plan():
+    """One ring-less plan: swath A (0,0)->(2,0), a reverse-then-curve turn,
+    swath B (2,0.36)->(0,0.36), a forward loop, swath C (0,0.72)->(2,0.72)."""
+    pts = [(0.0, 0.0), (2.0, 0.0),
+           (2.2, -0.1), (2.3, -0.15),          # forward arc out
+           (2.25, 0.0), (2.2, 0.2),            # reverse arc
+           (2.15, 0.36),                       # forward onto B
+           (2.0, 0.36), (0.0, 0.36),
+           (-0.3, 0.5), (-0.3, 0.6),           # forward loop
+           (0.0, 0.72), (2.0, 0.72)]
+    flags = [0, 0, 1, 1, 2, 2, 1, 0, 0, 1, 1, 0, 0]
+    return pts, flags
+
+
+def test_strip_turns_restores_the_structural_layout():
+    pts, flags = _turn_plan()
+    base, turns = splitter.strip_turns(pts, flags)
+    assert base == [(0.0, 0.0), (2.0, 0.0), (2.0, 0.36), (0.0, 0.36), (0.0, 0.72), (2.0, 0.72)]
+    assert len(turns) == 2
+    segs, mode = splitter.split_segments(base, 0, 3)
+    assert mode == splitter.MODE_STRUCTURAL and len(segs) == 3
+    # No / bad flags: unchanged.
+    assert splitter.strip_turns(pts, None) == (pts, {})
+    assert splitter.strip_turns(pts, [0]) == (pts, {})
+
+
+def test_turns_join_and_reverse_runs_become_their_own_subpaths():
+    pts, flags = _turn_plan()
+    res = splitter.plan(pts, ring_count=0, swath_count=3, pose_flags=flags)
+    assert res.mode == splitter.MODE_STRUCTURAL
+    kinds = [s.reverse for s in res.subpaths]
+    assert kinds == [False, True, False]
+    fwd1, rev, fwd2 = res.subpaths
+    # forward up to the cusp, reverse from the cusp, forward from the reverse end
+    assert fwd1.points[-1] == (2.3, -0.15) and rev.points[0] == (2.3, -0.15)
+    assert rev.points[-1] == (2.2, 0.2) and fwd2.points[0] == (2.2, 0.2)
+    assert fwd2.points[-1] == (2.0, 0.72)
+    assert (-0.3, 0.5) in fwd2.points          # the forward loop stays in the sub-path
+    assert splitter.transit_gaps(res.subpaths) == [0.0, 0.0]
+    assert 'reverse' in splitter.summary(res)
+
+
+def test_turn_without_flags_is_the_old_pivot_layout():
+    base = [(0.0, 0.0), (2.0, 0.0), (2.0, 0.36), (0.0, 0.36)]
+    res = splitter.plan(base, ring_count=0, swath_count=2, pose_flags=[0, 0, 0, 0])
+    assert len(res.subpaths) == 1 and not res.subpaths[0].reverse
+    assert res.subpaths[0].points == base
+
+
+def test_reverse_yaws_face_against_travel():
+    pts = [(0.0, 0.0), (-1.0, 0.0)]
+    assert splitter.yaws(pts)[0] == pytest.approx(math.pi)
+    assert splitter.yaws(pts, reverse=True)[0] == pytest.approx(0.0)

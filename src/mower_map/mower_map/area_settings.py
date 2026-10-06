@@ -31,6 +31,16 @@ import yaml
 
 DEFAULTS_INDEX = 255
 PATH_MODES = ('zigzag', 'cross', 'alternate', 'spiral', 'contour_only')
+# Swath visiting order (Fields2Cover route planners): boustrophedon = neighbour
+# after neighbour (hairpin turns), snake = skip-row 0,2,4,..,5,3,1 (turns two
+# swaths wide), spiral = F2C SpiralOrder over groups of route_spiral_size swaths.
+# racetrack = tractor "lands": blocks 0,k,1,k+1,.. with rows >= 2 x min_turn_radius_m
+# apart, so every in-block turn is a plain forward U-turn.
+ROUTE_ORDERS = ('boustrophedon', 'snake', 'spiral', 'racetrack')
+# Swath-to-swath turn: auto = forward loop turn, else reverse-then-curve, else
+# pivot; loop = loop turn or pivot; reverse = reverse-curve or pivot; pivot =
+# pivot in place (straight connector, the pre-turn behaviour).
+TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
 
 BUILTIN_DEFAULTS = {
     'cutter_height_mm': 50,
@@ -42,6 +52,12 @@ BUILTIN_DEFAULTS = {
     'edge_first': True,
     'repeat': 1,
     'alternate_angle_offset_deg': 90.0,
+    # Tron defaults (owner, 2026-10-06): pivots tear the lawn when the caster
+    # catches, so race-track (skip-row) order with 0.5 m smooth turns, pivot last resort.
+    'route_order': 'racetrack',
+    'route_spiral_size': 6,
+    'min_turn_radius_m': 0.5,
+    'turn_type': 'auto',
 }
 
 # key -> (kind, min, max). kind: int | float | bool | enum
@@ -55,6 +71,10 @@ SPEC = {
     'edge_first': ('bool', None, None),
     'repeat': ('int', 1, 10),
     'alternate_angle_offset_deg': ('float', 0.0, 180.0),
+    'route_order': ('enum', ROUTE_ORDERS, None),
+    'route_spiral_size': ('int', 2, 20),
+    'min_turn_radius_m': ('float', 0.0, 2.0),      # 0 = pivot in place
+    'turn_type': ('enum', TURN_TYPES, None),
 }
 
 FILE_NAME = 'area_settings.yaml'

@@ -2,8 +2,10 @@
 // + holes + start/goal in, nav_msgs/Path out) backed by the pure-geometry
 // planner in mower_coverage_core (Fields2Cover headland + swath).
 //
-// The plan carries no turn geometry: the mower is diff-drive and pivots in
-// place between segments, so turns are the navigation stack's job.
+// Swath-to-swath turns (route_order / min_turn_radius_m / turn_type) are
+// emitted as extra poses before the swath they lead into and flagged in
+// pose_flags (POSE_TURN / POSE_TURN_REVERSE), so the bridge can strip them
+// for its structural ring/swath split and re-insert them into the sub-paths.
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -91,7 +93,8 @@ class MowerCoverageNode : public rclcpp::Node {
     }
     // 0 = pivot in place between swaths (diff-drive Tron): straight
     // connectors. > 0 = F2C v3 Dubins turns of this radius between swaths.
-    min_turn_radius_ = declare_parameter<double>("min_turn_radius_m", 0.0);
+    // Read per request (request min_turn_radius_m < 0 = this parameter).
+    declare_parameter<double>("min_turn_radius_m", 0.0);
     service_ = create_service<mower_interfaces::srv::PlanCoverage>(
         "/coverage/plan",
         std::bind(&MowerCoverageNode::handlePlan, this, std::placeholders::_1,
@@ -101,7 +104,8 @@ class MowerCoverageNode : public rclcpp::Node {
                 "(Fields2Cover %s headland + swath, default swath spacing %.3f m, "
                 "boundary_inset_m %.3f, min_turn_radius_m %.3f)",
                 mower_coverage::builtWithF2CV3() ? "v3" : "2.1",
-                default_operation_width_, boundary_inset_, min_turn_radius_);
+                default_operation_width_, boundary_inset_,
+                get_parameter("min_turn_radius_m").as_double());
   }
 
  private:
@@ -160,25 +164,45 @@ class MowerCoverageNode : public rclcpp::Node {
             ? request->headland_passes
             : (request->headland_rings == 0 ? -1 : request->headland_rings);
 
+    mower_coverage::RouteOptions route;
+    if (!mower_coverage::parseRouteOrder(request->route_order, &route.order)) {
+      response->success = false;
+      response->message = "unknown route_order '" + request->route_order +
+                          "' (boustrophedon | snake | spiral)";
+      return;
+    }
+    if (!mower_coverage::parseTurnType(request->turn_type, &route.turn_type)) {
+      response->success = false;
+      response->message = "unknown turn_type '" + request->turn_type +
+                          "' (auto | loop | reverse | pivot)";
+      return;
+    }
+    route.spiral_size = std::max(2, static_cast<int>(request->route_spiral_size));
+    route.min_turn_radius = request->min_turn_radius_m >= 0.0
+                                ? request->min_turn_radius_m
+                                : get_parameter("min_turn_radius_m").as_double();
+
     const mower_coverage::CoveragePlan plan =
         mower_coverage::planCoverage(field, op_width, headland_width,
                                      headland_passes,
                                      border_inset,
                                      mow_angle_rad, min_swath_length, mode,
-                                     request->edge_first);
+                                     request->edge_first, route);
 
     // ---- Assemble nav_msgs/Path: transit-in, rings, swaths, transit-out ----
     nav_msgs::msg::Path path;
     path.header.stamp = now();
     path.header.frame_id = frame_id;
 
-    auto addPose = [&](const mower_coverage::Point2D& p, double yaw) {
+    std::vector<uint8_t> flags;
+    auto addPose = [&](const mower_coverage::Point2D& p, double yaw, uint8_t flag = 0) {
       if (!path.poses.empty() &&
           distance({path.poses.back().pose.position.x,
                     path.poses.back().pose.position.y},
                    p) < kDuplicatePoseTol) {
         return;  // zero-length edge — drop
       }
+      flags.push_back(flag);
       geometry_msgs::msg::PoseStamped pose;
       pose.header = path.header;
       pose.pose.position.x = p.first;
@@ -190,29 +214,33 @@ class MowerCoverageNode : public rclcpp::Node {
 
     // The path pieces in drive order: rings (closed loops) then swaths, or
     // swaths then rings when the plan is swaths-first (edge_first = false).
+    // seg_flags parallel to segments: per point 0 mow, 1 turn, 2 reverse turn.
     std::vector<std::vector<mower_coverage::Point2D>> segments;
+    std::vector<std::vector<uint8_t>> seg_flags;
     segments.reserve(plan.rings.size() + plan.swaths.size());
     auto addRings = [&]() {
       for (const auto& ring : plan.rings) {
         segments.push_back(ring);
+        seg_flags.emplace_back(ring.size(), 0);
       }
     };
     auto addSwaths = [&]() {
       for (size_t i = 0; i < plan.swaths.size(); ++i) {
         const auto& swath = plan.swaths[i];
         std::vector<mower_coverage::Point2D> seg;
-        if (i > 0 && min_turn_radius_ > 0.0) {
-          const auto& prev = plan.swaths[i - 1];
-          seg = mower_coverage::planTurn(
-              prev.second, std::atan2(prev.second.second - prev.first.second,
-                                      prev.second.first - prev.first.first),
-              swath.first, std::atan2(swath.second.second - swath.first.second,
-                                      swath.second.first - swath.first.first),
-              op_width, min_turn_radius_);
+        std::vector<uint8_t> fl;
+        if (i < plan.turns.size()) {
+          for (const auto& tp : plan.turns[i].poses) {
+            seg.push_back(tp.p);
+            fl.push_back(tp.reverse ? 2 : 1);
+          }
         }
         seg.push_back(swath.first);
         seg.push_back(swath.second);
+        fl.push_back(0);
+        fl.push_back(0);
         segments.push_back(seg);
+        seg_flags.push_back(fl);
       }
     };
     if (plan.swaths_first) {
@@ -236,11 +264,16 @@ class MowerCoverageNode : public rclcpp::Node {
                                 segments.front().front().first - start.first));
     }
 
-    for (const auto& seg : segments) {
+    for (size_t s = 0; s < segments.size(); ++s) {
+      const auto& seg = segments[s];
       for (size_t i = 0; i < seg.size(); ++i) {
         const auto& p = seg[i];
         const auto& q = seg[(i + 1) % seg.size()];
-        addPose(p, std::atan2(q.second - p.second, q.first - p.first));
+        double yaw = std::atan2(q.second - p.second, q.first - p.first);
+        if (seg_flags[s][i] == 2) {
+          yaw += M_PI;  // reverse: the robot faces against its travel
+        }
+        addPose(p, yaw, seg_flags[s][i]);
       }
     }
 
@@ -269,6 +302,7 @@ class MowerCoverageNode : public rclcpp::Node {
             .count();
 
     response->path = path;
+    response->pose_flags = flags;
     response->total_distance = total_distance;
     response->ring_count = static_cast<uint32_t>(plan.rings.size());
     response->swath_count = static_cast<uint32_t>(plan.swaths.size());
@@ -278,6 +312,16 @@ class MowerCoverageNode : public rclcpp::Node {
     std::string msg = std::string(plan.swaths_first ? "swaths first, " : "") +
                       (request->path_mode.empty() ? std::string("zigzag")
                                                   : request->path_mode) +
+                      (plan.turns.empty()
+                           ? std::string()
+                           : " (route " + (request->route_order.empty()
+                                               ? std::string("boustrophedon")
+                                               : request->route_order) +
+                                 ", turns r=" +
+                                 std::to_string(static_cast<int>(route.min_turn_radius * 100)) +
+                                 "cm: " + std::to_string(plan.loop_turns) + " loop, " +
+                                 std::to_string(plan.reverse_turns) + " reverse-curve, " +
+                                 std::to_string(plan.pivot_turns) + " pivot)") +
                       ": " + std::to_string(plan.rings.size()) + " rings, " +
                       std::to_string(plan.swaths.size()) + " swaths, " +
                       std::to_string(static_cast<int>(total_distance * 100)) +
@@ -296,7 +340,6 @@ class MowerCoverageNode : public rclcpp::Node {
   rclcpp::Service<mower_interfaces::srv::PlanCoverage>::SharedPtr service_;
   double default_operation_width_ = kDefaultCutWidth - kDefaultSwathOverlap;
   double boundary_inset_ = kDefaultBoundaryInset;
-  double min_turn_radius_ = 0.0;
 };
 
 int main(int argc, char** argv) {

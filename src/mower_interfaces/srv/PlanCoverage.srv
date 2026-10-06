@@ -22,11 +22,20 @@ int32   headland_rings -1                 # perimeter laps: -1 = use headland_pa
 string  path_mode "zigzag"                # zigzag | spiral | contour_only ("" = zigzag); cross /
                                           # alternate are mission-level (several zigzag plans)
 bool    edge_first true                   # true: rings, then swaths; false: swaths, then rings
+# Swath order and turns (defaults keep the pre-turn behaviour for old callers).
+string  route_order "boustrophedon"       # boustrophedon | snake (0,2,4..5,3,1) | spiral | racetrack ("" = boustrophedon)
+int32   route_spiral_size 6               # swaths per SpiralOrder block (>= 2)
+float64 min_turn_radius_m -1.0            # < 0 = node param min_turn_radius_m; 0 = pivot in place
+string  turn_type ""                      # auto (loop -> reverse-curve -> pivot) | loop | reverse | pivot ("" = auto)
 ---
 bool   success
 string message
 nav_msgs/Path path                        # transit-in + headland rings + swaths + transit-out
 float64 total_distance                    # [m], including transits
+uint8 POSE_MOW=0                          # ring / swath / straight connector pose
+uint8 POSE_TURN=1                         # forward turn pose (inside the area, blade on)
+uint8 POSE_TURN_REVERSE=2                 # turn pose reached driving BACKWARDS
+uint8[] pose_flags                        # parallel to path.poses (empty from old nodes)
 uint32  ring_count
 uint32  swath_count
 float64 planning_time_s

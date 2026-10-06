@@ -26,6 +26,56 @@ namespace mower_coverage {
 
 using Point2D = std::pair<double, double>;
 
+// Swath visiting order inside each boustrophedon cell (per-area setting
+// `route_order`), via the Fields2Cover v3 route planners.
+enum class RouteOrder {
+  kBoustrophedon,  // 0,1,2,3,...: neighbour after neighbour (hairpin turns)
+  kSnake,          // f2c::rp::SnakeOrder: 0,2,4,...,5,3,1 (turns 2 swaths wide)
+  kSpiral,         // f2c::rp::SpiralOrder(route_spiral_size)
+  kRacetrack,      // blocks of 2k: 0,k,1,k+1,..,k-1,2k-1 with (k-1)*op_width >= 2r,
+                   // so every in-block turn is a plain forward U-turn (tractor "lands")
+};
+
+// Swath-to-swath turn policy (per-area setting `turn_type`). Every candidate
+// turn must stay inside the drivable region (field pulled in by border_inset,
+// holes grown), else the next candidate is tried; a pivot is the last resort.
+enum class TurnType {
+  kAuto,     // forward loop (Dubins) -> reverse-then-curve (Reeds-Shepp) -> pivot
+  kLoop,     // forward loop -> pivot
+  kReverse,  // reverse-then-curve -> pivot
+  kPivot,    // pivot in place (straight connector), the pre-turn behaviour
+};
+
+enum class TurnKind { kNone, kPivot, kLoop, kReverseCurve };
+
+struct TurnPose {
+  Point2D p;
+  bool reverse = false;  // reached by driving backwards
+};
+
+// The turn INTO a swath: poses strictly between the previous swath's end and
+// this swath's start. kPivot / kNone carry no poses (straight connector).
+struct SwathTurn {
+  TurnKind kind = TurnKind::kNone;
+  std::vector<TurnPose> poses;
+};
+
+struct RouteOptions {
+  RouteOrder order = RouteOrder::kBoustrophedon;
+  int spiral_size = 6;
+  double min_turn_radius = 0.0;  // <= 0: pivots only
+  TurnType turn_type = TurnType::kAuto;
+};
+
+bool parseRouteOrder(const std::string& name, RouteOrder* order);  // "" = boustrophedon
+// kRacetrack half-block k for a turn radius: smallest k with (k-1)*w >= 2r, >= 2.
+int racetrackHalfBlock(double op_width, double min_turn_radius);
+bool parseTurnType(const std::string& name, TurnType* type);       // "" = auto
+
+// Drive-sequence permutation of n parallel swaths (indices in sweep order).
+// spiral_size: SpiralOrder block size, or k (half block) for kRacetrack.
+std::vector<size_t> routeOrderPermutation(size_t n, RouteOrder order, int spiral_size);
+
 struct CoveragePlan {
   // Closed loops (first == last; polygon corners plus the inserted start
   // point), in drive order: the outer-boundary run (outermost pass first),
@@ -44,6 +94,12 @@ struct CoveragePlan {
   // Drive order of the two blocks: false = rings, then swaths (edge first,
   // the default); true = swaths, then rings (innermost ring first).
   bool swaths_first = false;
+  // Parallel to swaths: turns[i] is the turn from swath i-1 into swath i
+  // (turns[0] is always kNone). Empty when no turn planning was requested.
+  std::vector<SwathTurn> turns;
+  size_t loop_turns = 0, reverse_turns = 0, pivot_turns = 0;
+  // Pivots across a gap > 0.6 m: the bridge makes those blade-off transits.
+  size_t wide_pivot_turns = 0;
 };
 
 // Path pattern of one plan (per-area mowing setting `path_mode`). The
@@ -107,7 +163,20 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
                           double mow_angle_rad,
                           double min_swath_length,
                           PathMode mode,
-                          bool edge_first);
+                          bool edge_first,
+                          const RouteOptions& route = RouteOptions{});
+
+// kRacetrack falls back to kSnake for the whole plan when that gives fewer
+// wide pivots (racetrack rows are >= 2r apart, so a turn that does not fit in
+// the headland becomes a transit instead of a short pivot); `drops` says so.
+
+// One swath-to-swath turn under `type` (see TurnType). `region` (nullable)
+// is the area the whole turn must stay inside (1 cm tolerance); nullptr skips
+// the containment check. Returns kPivot with no poses when nothing fits.
+SwathTurn planSwathTurn(const Point2D& from, double from_yaw,
+                        const Point2D& to, double to_yaw,
+                        double robot_width, double min_turn_radius, TurnType type,
+                        const f2c::types::Cells* region);
 
 // Forward turn between the end of one swath (pose `from`, heading from_yaw)
 // and the start of the next (pose `to`, heading to_yaw) with the F2C v3

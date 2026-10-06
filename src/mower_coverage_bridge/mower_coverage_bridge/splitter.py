@@ -19,6 +19,13 @@ How ``mower_coverage_node`` lays out that path (``mower_coverage_node.cpp``):
   one swath's end to the next one's start (op_width long, 90 deg off the swath).
 * Optional transit-in / transit-out poses only when has_start / has_goal are
   set; this bridge never sets them.
+* Swath-to-swath TURN poses (route_order / min_turn_radius_m / turn_type) sit
+  between a swath's end and the next swath's start and are flagged in the
+  response's ``pose_flags`` (POSE_TURN = 1, POSE_TURN_REVERSE = 2). They are
+  stripped before the structural split (:func:`strip_turns`), re-inserted
+  when the sub-paths are joined (a planned turn always joins: the planner
+  kept it inside the area), and every run of reverse poses then becomes its
+  own sub-path (:func:`split_reverse`) so the mission can drive it backwards.
 
 A "distance > 0.6 m" rule cannot find swath boundaries on such a path: every
 swath edge is itself metres long. So the primary rule is STRUCTURAL and exact:
@@ -59,6 +66,15 @@ DEFAULT_TURN_SPLIT_DEG = 150.0
 DEFAULT_CLOSURE_TOL_M = 1e-3
 _DUP_TOL_M = 1e-6
 
+# Mirrors mower_interfaces/srv/PlanCoverage Response POSE_* constants.
+POSE_MOW = 0
+POSE_TURN = 1
+POSE_TURN_REVERSE = 2
+# Mirrors mower_coverage kMaxTurnGapM: the planner turns only across gaps up
+# to this; a flagged turn joins its swath to the previous one up to here.
+MAX_TURN_GAP_M = 2.0
+_TURN_KEY_DIGITS = 4
+
 MODE_STRUCTURAL = 'structural'
 MODE_HEURISTIC = 'heuristic'
 
@@ -77,6 +93,10 @@ class Segment:
 class SubPath:
     points: List[Point]
     segment_indices: List[int] = field(default_factory=list)
+    # Per point: True = reached driving BACKWARDS (a reverse turn pose).
+    reverse_flags: List[bool] = field(default_factory=list)
+    # The whole sub-path is driven backwards (after split_reverse).
+    reverse: bool = False
 
     @property
     def length(self) -> float:
@@ -338,16 +358,49 @@ def split_segments(points: Sequence[Point],
 # Joining into drivable sub-paths
 # --------------------------------------------------------------------------
 
+def _turn_key(p: Point):
+    return (round(float(p[0]), _TURN_KEY_DIGITS), round(float(p[1]), _TURN_KEY_DIGITS))
+
+
+def strip_turns(points: Sequence[Point], flags: Optional[Sequence[int]] = None):
+    """Split the planner path into its turn-free layout and the turns.
+
+    Returns (base points, {key of the pose AFTER a turn: [(point, reverse)]}).
+    With no / mismatched flags the path is returned unchanged.
+    """
+    pts = [(float(p[0]), float(p[1])) for p in points]
+    if not flags or len(flags) != len(pts):
+        return pts, {}
+    base: List[Point] = []
+    turns = {}
+    pending: List[Tuple[Point, bool]] = []
+    for p, f in zip(pts, flags):
+        if int(f) in (POSE_TURN, POSE_TURN_REVERSE):
+            pending.append((p, int(f) == POSE_TURN_REVERSE))
+            continue
+        if pending:
+            turns[_turn_key(p)] = pending
+            pending = []
+        base.append(p)
+    return base, turns
+
+
 def join_subpaths(segments: Sequence[Segment],
                   transit_gap_m: float = DEFAULT_TRANSIT_GAP_M,
                   fences: Sequence[Sequence[Point]] = (),
-                  holes: Sequence[Sequence[Point]] = ()) -> List[SubPath]:
+                  holes: Sequence[Sequence[Point]] = (),
+                  turns=None) -> List[SubPath]:
     """Join consecutive segments whose end-to-start gap is <= transit_gap_m.
 
-    The join is a straight connector (the mower is diff-drive and pivots).
-    A connector that crosses a fence edge (e.g. the outer boundary) or a hole
-    also starts a new sub-path, so the blade-off transit routes around it.
+    The join is a straight connector (the mower pivots) unless ``turns``
+    (from :func:`strip_turns`) holds a planned turn into the segment: then the
+    turn poses are inserted and the join is made up to MAX_TURN_GAP_M (the
+    planner already kept the turn inside the area).
+    A straight connector that crosses a fence edge (e.g. the outer boundary)
+    or a hole also starts a new sub-path, so the blade-off transit routes
+    around it.
     """
+    turns = turns or {}
     subs: List[SubPath] = []
     for idx, seg in enumerate(segments):
         if len(seg.points) < 2:
@@ -356,14 +409,66 @@ def join_subpaths(segments: Sequence[Segment],
             last = subs[-1].points[-1]
             first = seg.points[0]
             gap = dist(last, first)
+            turn = turns.get(_turn_key(first))
+            if turn and gap <= MAX_TURN_GAP_M:
+                subs[-1].points.extend(p for p, _ in turn)
+                subs[-1].reverse_flags.extend(r for _, r in turn)
+                subs[-1].points.extend(seg.points)
+                subs[-1].reverse_flags.extend([False] * len(seg.points))
+                subs[-1].segment_indices.append(idx)
+                continue
             if gap <= transit_gap_m and not (
                     gap > _DUP_TOL_M and connector_crosses(last, first, fences, holes)):
                 pts = seg.points[1:] if gap < _DUP_TOL_M else seg.points
                 subs[-1].points.extend(pts)
+                subs[-1].reverse_flags.extend([False] * len(pts))
                 subs[-1].segment_indices.append(idx)
                 continue
-        subs.append(SubPath(list(seg.points), [idx]))
+        subs.append(SubPath(list(seg.points), [idx], [False] * len(seg.points)))
     return subs
+
+
+def split_reverse(subpaths: Sequence[SubPath]) -> List[SubPath]:
+    """Cut every run of reverse poses out into its own sub-path.
+
+    A reverse run p[i..j] becomes the sub-path p[i-1..j] (``reverse=True``,
+    starting at the cusp where the forward motion stopped); the forward
+    motion resumes from p[j]. Consecutive pieces share their cusp pose, so
+    there is no gap (and no transit) between them.
+    """
+    out: List[SubPath] = []
+    for sp in subpaths:
+        flags = sp.reverse_flags if len(sp.reverse_flags) == len(sp.points) \
+            else [False] * len(sp.points)
+        if not any(flags):
+            out.append(sp)
+            continue
+        pts = sp.points
+        start = 0
+        k = 0
+        n = len(pts)
+        first_piece = True
+        while k < n:
+            if not flags[k]:
+                k += 1
+                continue
+            j = k
+            while j + 1 < n and flags[j + 1]:
+                j += 1
+            cusp = max(k - 1, 0)
+            if cusp - start >= 1:
+                out.append(SubPath(list(pts[start:cusp + 1]),
+                                   list(sp.segment_indices) if first_piece else [],
+                                   [False] * (cusp + 1 - start)))
+                first_piece = False
+            out.append(SubPath(list(pts[cusp:j + 1]), [], [True] * (j + 1 - cusp), True))
+            start = j
+            k = j + 1
+        if n - start >= 2:
+            out.append(SubPath(list(pts[start:]),
+                               list(sp.segment_indices) if first_piece else [],
+                               [False] * (n - start)))
+    return out
 
 
 def transit_gaps(subpaths: Sequence[SubPath]) -> List[float]:
@@ -391,8 +496,15 @@ def densify(points: Sequence[Point], step_m: float) -> List[Point]:
     return out
 
 
-def yaws(points: Sequence[Point]) -> List[float]:
-    """Yaw per pose: towards the next pose; the last pose keeps the previous."""
+def yaws(points: Sequence[Point], reverse: bool = False) -> List[float]:
+    """Yaw per pose: towards the next pose; the last pose keeps the previous.
+
+    ``reverse``: the sub-path is driven backwards, so the robot faces AGAINST
+    its travel (yaw + pi); the controller reads the direction from that.
+    """
+    if reverse:
+        return [math.atan2(math.sin(y + math.pi), math.cos(y + math.pi))
+                for y in yaws(points)]
     n = len(points)
     out: List[float] = []
     for i in range(n):
@@ -420,11 +532,14 @@ def plan(points: Sequence[Point],
          turn_split_deg: float = DEFAULT_TURN_SPLIT_DEG,
          fences: Sequence[Sequence[Point]] = (),
          holes: Sequence[Sequence[Point]] = (),
-         swaths_first: bool = False) -> SplitResult:
-    """Full pipeline: segment, then join into drivable sub-paths."""
-    segs, mode = split_segments(points, ring_count, swath_count, transit_gap_m, turn_split_deg,
+         swaths_first: bool = False,
+         pose_flags: Optional[Sequence[int]] = None) -> SplitResult:
+    """Full pipeline: strip turns, segment, join into drivable sub-paths
+    (re-inserting the turns), then cut reverse runs into their own sub-paths."""
+    base, turns = strip_turns(points, pose_flags)
+    segs, mode = split_segments(base, ring_count, swath_count, transit_gap_m, turn_split_deg,
                                 swaths_first=swaths_first)
-    subs = join_subpaths(segs, transit_gap_m, fences, holes)
+    subs = split_reverse(join_subpaths(segs, transit_gap_m, fences, holes, turns))
     return SplitResult(segs, subs, mode)
 
 
@@ -433,9 +548,11 @@ def summary(result: SplitResult) -> str:
     drive = sum(s.length for s in result.subpaths)
     gaps = transit_gaps(result.subpaths)
     ang = swath_angle_deg(result.segments)
-    return ('%d ring(s) + %d swath(s) = %d segment(s) -> %d drivable sub-path(s); '
+    rev = sum(1 for s in result.subpaths if s.reverse)
+    return ('%d ring(s) + %d swath(s) = %d segment(s) -> %d drivable sub-path(s) '
+            '(%d reverse); '
             'segments %.2f m, sub-paths %.2f m (incl. %.2f m connectors), '
             '%d transit(s) %.2f m; swath angle %s; split=%s') % (
         result.ring_count, result.swath_count, len(result.segments), len(result.subpaths),
-        mow, drive, drive - mow, len(gaps), sum(gaps),
+        rev, mow, drive, drive - mow, len(gaps), sum(gaps),
         'n/a' if ang is None else '%.1f deg' % ang, result.mode)

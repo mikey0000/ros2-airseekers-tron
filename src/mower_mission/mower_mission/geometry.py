@@ -248,6 +248,21 @@ def heading_of(poses, i):
     return yaw
 
 
+def is_reverse_subpath(poses):
+    """True when the sub-path is driven BACKWARDS: the coverage bridge gives a
+    reverse turn leg poses that face against the travel (yaw + pi)."""
+    for i in range(len(poses) - 1):
+        if len(poses[i]) < 3:
+            return False
+        dx = poses[i + 1][0] - poses[i][0]
+        dy = poses[i + 1][1] - poses[i][1]
+        if abs(dx) + abs(dy) < 1e-6:
+            continue
+        yaw = float(poses[i][2])
+        return math.cos(yaw) * dx + math.sin(yaw) * dy < 0.0
+    return False
+
+
 def plan_fingerprint(subpaths):
     """64-bit FNV-1a over the millimetre-rounded plan geometry; never 0.
 

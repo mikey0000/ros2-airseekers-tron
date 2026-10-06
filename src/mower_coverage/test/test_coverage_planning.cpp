@@ -888,3 +888,213 @@ TEST(CoveragePlanning, TurnPlannerPivotAndDubins) {
     EXPECT_LT(std::hypot(p.first, p.second - 0.25), 1.0);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Route order (F2C v3 SnakeOrder / SpiralOrder) and swath-to-swath turns.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+mower_coverage::CoveragePlan planRoute(const mower_coverage::RouteOptions& route,
+                                       double side_x = 6.0, double side_y = 3.0,
+                                       int rings = 3) {
+  std::vector<Point2D> rect = {{0, 0}, {side_x, 0}, {side_x, side_y}, {0, side_y}};
+  return mower_coverage::planCoverage(field(rect), 0.18, 0.2, rings, /*border_inset=*/0.24,
+                                      /*mow_angle=*/0.0, 0.15,
+                                      mower_coverage::PathMode::kZigzag, true, route);
+}
+
+double turnLen(const Point2D& a, const mower_coverage::SwathTurn& t, const Point2D& b) {
+  double len = 0.0;
+  Point2D prev = a;
+  for (const auto& tp : t.poses) {
+    len += std::hypot(tp.p.first - prev.first, tp.p.second - prev.second);
+    prev = tp.p;
+  }
+  return len + std::hypot(b.first - prev.first, b.second - prev.second);
+}
+
+}  // namespace
+
+TEST(CoverageRoute, ParseRouteOrderAndTurnType) {
+  mower_coverage::RouteOrder o;
+  EXPECT_TRUE(mower_coverage::parseRouteOrder("", &o));
+  EXPECT_EQ(o, mower_coverage::RouteOrder::kBoustrophedon);
+  EXPECT_TRUE(mower_coverage::parseRouteOrder("snake", &o));
+  EXPECT_EQ(o, mower_coverage::RouteOrder::kSnake);
+  EXPECT_TRUE(mower_coverage::parseRouteOrder("spiral", &o));
+  EXPECT_FALSE(mower_coverage::parseRouteOrder("zigzag", &o));
+  mower_coverage::TurnType t;
+  EXPECT_TRUE(mower_coverage::parseTurnType("", &t));
+  EXPECT_EQ(t, mower_coverage::TurnType::kAuto);
+  EXPECT_TRUE(mower_coverage::parseTurnType("reverse", &t));
+  EXPECT_EQ(t, mower_coverage::TurnType::kReverse);
+  EXPECT_FALSE(mower_coverage::parseTurnType("omega", &t));
+}
+
+TEST(CoverageRoute, SnakePermutationSkipsRows) {
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  using R = mower_coverage::RouteOrder;
+  EXPECT_EQ(mower_coverage::routeOrderPermutation(6, R::kSnake, 0),
+            (std::vector<size_t>{0, 2, 4, 5, 3, 1}));
+  EXPECT_EQ(mower_coverage::routeOrderPermutation(7, R::kSnake, 0),
+            (std::vector<size_t>{0, 2, 4, 6, 5, 3, 1}));
+  EXPECT_EQ(mower_coverage::routeOrderPermutation(2, R::kSnake, 0),
+            (std::vector<size_t>{0, 1}));
+  EXPECT_EQ(mower_coverage::routeOrderPermutation(4, R::kBoustrophedon, 0),
+            (std::vector<size_t>{0, 1, 2, 3}));
+  // Spiral: every index exactly once.
+  auto sp = mower_coverage::routeOrderPermutation(12, R::kSpiral, 6);
+  ASSERT_EQ(sp.size(), 12u);
+  std::vector<size_t> sorted = sp;
+  std::sort(sorted.begin(), sorted.end());
+  for (size_t i = 0; i < 12; ++i) EXPECT_EQ(sorted[i], i);
+  EXPECT_NE(sp, mower_coverage::routeOrderPermutation(12, R::kBoustrophedon, 6));
+}
+
+// Snake plan on a rectangle: consecutive swaths are two op_widths apart
+// (except the one hand-over in the middle), antiparallel, and every swath of
+// the boustrophedon plan is still driven.
+TEST(CoverageRoute, SnakePlanVisitsEveryOtherSwath) {
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  mower_coverage::RouteOptions b, s;
+  s.order = mower_coverage::RouteOrder::kSnake;
+  const auto pb = planRoute(b);
+  const auto ps = planRoute(s);
+  ASSERT_EQ(pb.swaths.size(), ps.swaths.size());
+  ASSERT_GE(ps.swaths.size(), 6u);
+  size_t wide = 0;
+  for (size_t i = 1; i < ps.swaths.size(); ++i) {
+    const double lateral = std::abs(ps.swaths[i].first.second - ps.swaths[i - 1].second.second);
+    EXPECT_LT(lateral, 0.18 * 2 + 1e-3);
+    wide += lateral > 0.18 * 1.5 ? 1 : 0;
+    // antiparallel
+    const double dx0 = ps.swaths[i - 1].second.first - ps.swaths[i - 1].first.first;
+    const double dx1 = ps.swaths[i].second.first - ps.swaths[i].first.first;
+    EXPECT_LT(dx0 * dx1, 0.0);
+  }
+  EXPECT_GE(wide, ps.swaths.size() - 2);
+  EXPECT_TRUE(ps.turns.empty());  // no turn radius: pivots, no turn poses
+}
+
+// Turns: a wide headland (3 rings) leaves room for a 0.5 m loop on snake
+// rows; every turn pose stays inside the inset field; turns go only between
+// close swaths.
+TEST(CoverageRoute, LoopTurnsStayInsideTheInsetField) {
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  mower_coverage::RouteOptions r;
+  r.order = mower_coverage::RouteOrder::kSnake;
+  r.min_turn_radius = 0.5;
+  r.turn_type = mower_coverage::TurnType::kAuto;
+  const auto p = planRoute(r, 8.0, 4.0, 4);
+  ASSERT_EQ(p.turns.size(), p.swaths.size());
+  EXPECT_EQ(p.turns[0].kind, mower_coverage::TurnKind::kNone);
+  EXPECT_GT(p.loop_turns + p.reverse_turns, 0u);
+  for (const auto& t : p.turns) {
+    for (const auto& tp : t.poses) {
+      EXPECT_GE(tp.p.first, 0.24 - 0.02);
+      EXPECT_LE(tp.p.first, 8.0 - 0.24 + 0.02);
+      EXPECT_GE(tp.p.second, 0.24 - 0.02);
+      EXPECT_LE(tp.p.second, 4.0 - 0.24 + 0.02);
+    }
+  }
+}
+
+// No headland room (no rings, swaths end on the inset line): every loop would
+// bulge out of the field, so loop-only falls back to pivots everywhere.
+TEST(CoverageRoute, TurnWithoutRoomFallsBackToPivot) {
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  mower_coverage::RouteOptions r;
+  r.order = mower_coverage::RouteOrder::kSnake;
+  r.min_turn_radius = 0.5;
+  r.turn_type = mower_coverage::TurnType::kLoop;
+  const auto p = planRoute(r, 6.0, 3.0, /*rings=*/-1);
+  ASSERT_GT(p.swaths.size(), 3u);
+  EXPECT_EQ(p.loop_turns, 0u);
+  EXPECT_EQ(p.pivot_turns, p.swaths.size() - 1);
+  for (const auto& t : p.turns) EXPECT_TRUE(t.poses.empty());
+}
+
+// planSwathTurn: loop when unconstrained; inside a tight corridor the loop
+// does not fit and auto falls back to a reverse-then-curve turn (some poses
+// driven backwards); pivot type never produces poses.
+TEST(CoverageRoute, AutoTurnFallsBackLoopReversePivot) {
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  using mower_coverage::TurnKind;
+  using mower_coverage::TurnType;
+  // swath k ends at (0,0) heading +x; swath k+2 starts at (0,0.36) heading -x.
+  const Point2D a{0.0, 0.0}, b{0.0, 0.36};
+  const auto free_turn =
+      mower_coverage::planSwathTurn(a, 0.0, b, M_PI, 0.18, 0.5, TurnType::kAuto, nullptr);
+  EXPECT_EQ(free_turn.kind, TurnKind::kLoop);
+  ASSERT_FALSE(free_turn.poses.empty());
+  for (const auto& tp : free_turn.poses) EXPECT_FALSE(tp.reverse);
+
+  // Corridor: 0.6 m beyond the swath ends, generous sideways.
+  const auto region = mower_coverage::makeFieldCell(
+      {{-5.0, -2.0}, {0.6, -2.0}, {0.6, 2.4}, {-5.0, 2.4}}, {});
+  f2c::types::Cells cells;
+  cells.addGeometry(region);
+  const auto loop_only =
+      mower_coverage::planSwathTurn(a, 0.0, b, M_PI, 0.18, 0.5, TurnType::kLoop, &cells);
+  const auto autot =
+      mower_coverage::planSwathTurn(a, 0.0, b, M_PI, 0.18, 0.5, TurnType::kAuto, &cells);
+  if (loop_only.kind == TurnKind::kPivot) {
+    EXPECT_NE(autot.kind, TurnKind::kLoop);
+  }
+  if (autot.kind == TurnKind::kReverseCurve) {
+    bool any_rev = false;
+    for (const auto& tp : autot.poses) {
+      any_rev |= tp.reverse;
+      EXPECT_LE(tp.p.first, 0.6 + 0.011);
+    }
+    EXPECT_TRUE(any_rev);
+  }
+  // Nothing fits in a 5 cm corridor.
+  const auto tiny = mower_coverage::makeFieldCell(
+      {{-5.0, -0.02}, {0.02, -0.02}, {0.02, 0.38}, {-5.0, 0.38}}, {});
+  f2c::types::Cells tcells;
+  tcells.addGeometry(tiny);
+  const auto none =
+      mower_coverage::planSwathTurn(a, 0.0, b, M_PI, 0.18, 0.5, TurnType::kAuto, &tcells);
+  EXPECT_EQ(none.kind, TurnKind::kPivot);
+  EXPECT_TRUE(none.poses.empty());
+  EXPECT_EQ(mower_coverage::planSwathTurn(a, 0.0, b, M_PI, 0.18, 0.5, TurnType::kPivot,
+                                          nullptr).kind,
+            TurnKind::kPivot);
+  (void)turnLen;
+}
+
+// Race track ("lands"): rows >= 2r apart inside each block, so with enough
+// headland the in-block turns are forward U-turns and nothing pivots.
+TEST(CoverageRoute, RacetrackGivesForwardUTurns) {
+  EXPECT_EQ(mower_coverage::racetrackHalfBlock(0.18, 0.5), 7);
+  EXPECT_EQ(mower_coverage::racetrackHalfBlock(0.18, 0.0), 2);
+  using R = mower_coverage::RouteOrder;
+  EXPECT_EQ(mower_coverage::routeOrderPermutation(6, R::kRacetrack, 3),
+            (std::vector<size_t>{0, 3, 1, 4, 2, 5}));
+  // tail block of 3 after a block of 4 (k = 2): k' = 2
+  EXPECT_EQ(mower_coverage::routeOrderPermutation(7, R::kRacetrack, 2),
+            (std::vector<size_t>{0, 2, 1, 3, 4, 6, 5}));
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  mower_coverage::RouteOptions r;
+  r.order = R::kRacetrack;
+  r.min_turn_radius = 0.5;
+  const auto p = planRoute(r, 10.0, 6.0, 4);
+  EXPECT_GT(p.loop_turns, p.swaths.size() / 2);
+  EXPECT_EQ(p.pivot_turns, 0u);
+}
+
+// Racetrack without headland room would turn its 1.26 m row gaps into
+// transits; the planner falls back to snake (short pivots, no transits).
+TEST(CoverageRoute, RacetrackFallsBackToSnakeWithoutHeadlandRoom) {
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  mower_coverage::RouteOptions r;
+  r.order = mower_coverage::RouteOrder::kRacetrack;
+  r.min_turn_radius = 0.5;
+  const auto p = planRoute(r, 10.0, 6.0, /*rings=*/-1);
+  EXPECT_EQ(p.wide_pivot_turns, 0u);
+  bool said = false;
+  for (const auto& d : p.drops) said |= d.find("used snake") != std::string::npos;
+  EXPECT_TRUE(said);
+}

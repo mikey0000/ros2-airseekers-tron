@@ -434,6 +434,8 @@ bool pointInLoop(const Point2D& p, const std::vector<Point2D>& loop) {
 // sideways between swaths.
 struct SweepCell {
   std::vector<Seg> lines;  // {lo end, hi end} along the swath axis, sweep order
+  // Drive sequence over `lines` (route_order); empty = sweep order.
+  std::vector<size_t> perm;
   // Per entry option (bit 0: sweep the lines in reverse, bit 1: start the
   // first line at its hi end): entry / exit point and the cost of the
   // in-cell connectors.
@@ -449,7 +451,8 @@ std::vector<Seg> cellSwaths(const SweepCell& cell, int opt) {
   std::vector<Seg> out;
   out.reserve(k);
   for (size_t j = 0; j < k; ++j) {
-    const Seg& line = cell.lines[reverse ? k - 1 - j : j];
+    const size_t jj = reverse ? k - 1 - j : j;
+    const Seg& line = cell.lines[cell.perm.size() == k ? cell.perm[jj] : jj];
     const bool from_lo = ((j % 2) == 0) != hi_start;
     out.push_back(from_lo ? Seg{line.first, line.second} : Seg{line.second, line.first});
   }
@@ -476,7 +479,8 @@ void finalizeCell(SweepCell& cell) {
 // jumps (kCellJumpM). Working on the actual pieces, not on a polygon
 // decomposition, keeps the swath geometry (spacing, clipping) exactly as
 // generated across cell borders.
-std::vector<SweepCell> buildSweepCells(const std::vector<Seg>& pieces, double op_width) {
+std::vector<SweepCell> buildSweepCells(const std::vector<Seg>& pieces, double op_width,
+                                       const RouteOptions& route) {
   std::vector<SweepCell> cells;
   if (pieces.empty()) {
     return cells;
@@ -557,7 +561,11 @@ std::vector<SweepCell> buildSweepCells(const std::vector<Seg>& pieces, double op
       cells[cell_of[q]].lines.push_back(ps[q].seg);
     }
   }
+  const int block = route.order == RouteOrder::kRacetrack
+                        ? racetrackHalfBlock(op_width, route.min_turn_radius)
+                        : route.spiral_size;
   for (auto& c : cells) {
+    c.perm = routeOrderPermutation(c.lines.size(), route.order, block);
     finalizeCell(c);
   }
   return cells;
@@ -687,6 +695,103 @@ bool cellsEmpty(const f2c::types::Cells& c) {
   return c.size() == 0 || std::abs(c.area()) < kCollapsedAreaM2;
 }
 
+// Turn containment tolerance and the largest swath-end -> swath-start gap
+// that still gets a turn (a bigger one is a blade-off transit).
+constexpr double kTurnContainTolM = 0.01;
+constexpr double kMaxTurnGapM = 2.0;
+constexpr double kTurnStepM = 0.05;
+
+double segYaw(const Seg& s) {
+  return std::atan2(s.second.second - s.first.second, s.second.first - s.first.first);
+}
+
+#ifdef MOWER_COVERAGE_F2C_V3
+// Expose the protected F2C v3 single-cell sorters (sortSwaths only, without
+// genSortedSwaths' geometric re-sort, which would undo our sweep order).
+struct SnakeSorter : public f2c::rp::SnakeOrder {
+  using f2c::rp::SnakeOrder::sortSwaths;
+};
+struct SpiralSorter : public f2c::rp::SpiralOrder {
+  explicit SpiralSorter(size_t n) : f2c::rp::SpiralOrder(n) {}
+  using f2c::rp::SpiralOrder::sortSwaths;
+};
+
+// One F2C turn (Dubins or Reeds-Shepp), discretised; empty on failure.
+template <class Planner>
+std::vector<TurnPose> f2cTurn(const Point2D& from, double from_yaw, const Point2D& to,
+                              double to_yaw, double robot_width, double radius) {
+  std::vector<TurnPose> out;
+  try {
+    f2c::types::Robot robot(robot_width, robot_width);
+    robot.setMinTurningRadius(radius);
+    Planner planner;
+    f2c::types::Path turn = planner.createTurn(
+        robot, f2c::types::Point(from.first, from.second), from_yaw,
+        f2c::types::Point(to.first, to.second), to_yaw);
+    if (turn.size() == 0) {
+      return out;
+    }
+    turn.discretize(kTurnStepM);
+    for (const auto& st : turn.getStates()) {
+      const Point2D p{st.point.getX(), st.point.getY()};
+      if (!std::isfinite(p.first) || !std::isfinite(p.second)) {
+        return {};
+      }
+      if (dist(p, from) < 1e-3 || dist(p, to) < 1e-3) {
+        continue;
+      }
+      out.push_back({p, st.dir == f2c::types::PathDirection::BACKWARD});
+    }
+  } catch (const std::exception&) {
+    out.clear();
+  }
+  return out;
+}
+#endif
+
+bool turnInside(const Point2D& from, const std::vector<TurnPose>& poses, const Point2D& to,
+                const OGRGeometry* region) {
+  if (region == nullptr) {
+    return true;
+  }
+  OGRLineString line;
+  line.addPoint(from.first, from.second);
+  for (const auto& tp : poses) {
+    line.addPoint(tp.p.first, tp.p.second);
+  }
+  line.addPoint(to.first, to.second);
+  return region->Contains(&line);
+}
+
+SwathTurn planTurnIn(const Point2D& from, double from_yaw, const Point2D& to, double to_yaw,
+                     double robot_width, double radius, TurnType type,
+                     const OGRGeometry* region) {
+  SwathTurn pivot{TurnKind::kPivot, {}};
+  if (!(radius > 0.0) || !(robot_width > 0.0) || type == TurnType::kPivot) {
+    return pivot;
+  }
+#ifdef MOWER_COVERAGE_F2C_V3
+  if (type == TurnType::kAuto || type == TurnType::kLoop) {
+    auto poses = f2cTurn<f2c::pp::DubinsCurves>(from, from_yaw, to, to_yaw, robot_width, radius);
+    if (!poses.empty() && turnInside(from, poses, to, region)) {
+      return {TurnKind::kLoop, std::move(poses)};
+    }
+  }
+  if (type == TurnType::kAuto || type == TurnType::kReverse) {
+    auto poses =
+        f2cTurn<f2c::pp::ReedsSheppCurves>(from, from_yaw, to, to_yaw, robot_width, radius);
+    if (!poses.empty() && turnInside(from, poses, to, region)) {
+      const bool any_rev = std::any_of(poses.begin(), poses.end(),
+                                       [](const TurnPose& tp) { return tp.reverse; });
+      return {any_rev ? TurnKind::kReverseCurve : TurnKind::kLoop, std::move(poses)};
+    }
+  }
+#else
+  (void)from; (void)from_yaw; (void)to; (void)to_yaw; (void)region;
+#endif
+  return pivot;
+}
+
 }  // namespace
 
 f2c::types::LinearRing makeCleanRing(const std::vector<Point2D>& raw) {
@@ -738,6 +843,19 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
                       /*edge_first=*/true);
 }
 
+namespace {
+CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
+                              double op_width,
+                              double headland_width,
+                              int headland_passes,
+                              double border_inset,
+                              double mow_angle_rad,
+                              double min_swath_length,
+                              PathMode mode,
+                              bool edge_first,
+                              const RouteOptions& route);
+}  // namespace
+
 CoveragePlan planCoverage(const f2c::types::Cell& field,
                           double op_width,
                           double headland_width,
@@ -746,7 +864,43 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
                           double mow_angle_rad,
                           double min_swath_length,
                           PathMode mode,
-                          bool edge_first) {
+                          bool edge_first,
+                          const RouteOptions& route) {
+  CoveragePlan plan = planCoverageOnce(field, op_width, headland_width, headland_passes,
+                                       border_inset, mow_angle_rad, min_swath_length, mode,
+                                       edge_first, route);
+  if (route.order != RouteOrder::kRacetrack || plan.wide_pivot_turns == 0) {
+    return plan;
+  }
+  RouteOptions snake = route;
+  snake.order = RouteOrder::kSnake;
+  CoveragePlan alt = planCoverageOnce(field, op_width, headland_width, headland_passes,
+                                      border_inset, mow_angle_rad, min_swath_length, mode,
+                                      edge_first, snake);
+  auto badness = [](const CoveragePlan& p) { return 10 * p.wide_pivot_turns + p.pivot_turns; };
+  if (badness(alt) < badness(plan)) {
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+                  "racetrack: %zu turn(s) did not fit the headland (%zu across wide gaps); "
+                  "used snake order",
+                  plan.pivot_turns, plan.wide_pivot_turns);
+    alt.drops.push_back(buf);
+    return alt;
+  }
+  return plan;
+}
+
+namespace {
+CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
+                              double op_width,
+                              double headland_width,
+                              int headland_passes,
+                              double border_inset,
+                              double mow_angle_rad,
+                              double min_swath_length,
+                              PathMode mode,
+                              bool edge_first,
+                              const RouteOptions& route) {
   CoveragePlan plan;
   if (op_width <= 0.0) {
     plan.drops.push_back("op_width <= 0");
@@ -992,7 +1146,7 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
         swath_strip_area += len * op_width;
       }
     }
-    std::vector<SweepCell> cs = buildSweepCells(pieces, op_width);
+    std::vector<SweepCell> cs = buildSweepCells(pieces, op_width, route);
     sweep_cells.insert(sweep_cells.end(), cs.begin(), cs.end());
   }
 
@@ -1094,6 +1248,34 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
     }
   }
 
+  // Swath-to-swath turns (route.turn_type), each kept inside the drivable
+  // region; a turn that would leave it falls back (loop -> reverse-curve ->
+  // pivot). Only between swaths close enough to be one sub-path anyway.
+  if (!plan.swaths.empty() && route.min_turn_radius > 0.0 &&
+      route.turn_type != TurnType::kPivot) {
+    plan.turns.assign(plan.swaths.size(), SwathTurn{});
+    std::unique_ptr<OGRGeometry> region;
+    if (clip_swaths) {
+      region.reset(drivable.get()->Buffer(kTurnContainTolM));
+    }
+    for (size_t i = 1; i < plan.swaths.size(); ++i) {
+      const Seg& a = plan.swaths[i - 1];
+      const Seg& b = plan.swaths[i];
+      if (dist(a.second, b.first) > kMaxTurnGapM) {
+        continue;  // a transit, not a turn
+      }
+      SwathTurn t = region ? planTurnIn(a.second, segYaw(a), b.first, segYaw(b), op_width,
+                                        route.min_turn_radius, route.turn_type, region.get())
+                           : SwathTurn{TurnKind::kPivot, {}};
+      plan.loop_turns += t.kind == TurnKind::kLoop ? 1 : 0;
+      plan.reverse_turns += t.kind == TurnKind::kReverseCurve ? 1 : 0;
+      plan.pivot_turns += t.kind == TurnKind::kPivot ? 1 : 0;
+      plan.wide_pivot_turns +=
+          (t.kind == TurnKind::kPivot && dist(a.second, b.first) > kTransitGapM) ? 1 : 0;
+      plan.turns[i] = std::move(t);
+    }
+  }
+
   // For auto plans, report the angle actually used (from the first swath).
   if (mow_angle_rad < 0.0 && !plan.swaths.empty()) {
     const auto& s = plan.swaths.front();
@@ -1116,6 +1298,117 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
     plan.drops.push_back("empty plan");
   }
   return plan;
+}
+}  // namespace
+
+bool parseRouteOrder(const std::string& name, RouteOrder* order) {
+  if (name.empty() || name == "boustrophedon") {
+    *order = RouteOrder::kBoustrophedon;
+  } else if (name == "snake") {
+    *order = RouteOrder::kSnake;
+  } else if (name == "spiral") {
+    *order = RouteOrder::kSpiral;
+  } else if (name == "racetrack") {
+    *order = RouteOrder::kRacetrack;
+  } else {
+    *order = RouteOrder::kBoustrophedon;
+    return false;
+  }
+  return true;
+}
+
+bool parseTurnType(const std::string& name, TurnType* type) {
+  if (name.empty() || name == "auto") {
+    *type = TurnType::kAuto;
+  } else if (name == "loop") {
+    *type = TurnType::kLoop;
+  } else if (name == "reverse") {
+    *type = TurnType::kReverse;
+  } else if (name == "pivot") {
+    *type = TurnType::kPivot;
+  } else {
+    *type = TurnType::kAuto;
+    return false;
+  }
+  return true;
+}
+
+int racetrackHalfBlock(double op_width, double min_turn_radius) {
+  if (!(op_width > 0.0) || !(min_turn_radius > 0.0)) {
+    return 2;
+  }
+  return std::max(2, static_cast<int>(std::ceil(2.0 * min_turn_radius / op_width - 1e-9)) + 1);
+}
+
+std::vector<size_t> routeOrderPermutation(size_t n, RouteOrder order, int spiral_size) {
+  std::vector<size_t> perm(n);
+  for (size_t i = 0; i < n; ++i) {
+    perm[i] = i;
+  }
+  if (order == RouteOrder::kRacetrack) {
+    // Blocks of 2k: 0,k,1,k+1,...; a short tail block uses k' = ceil(m/2).
+    const size_t k = static_cast<size_t>(std::max(1, spiral_size));
+    std::vector<size_t> out;
+    out.reserve(n);
+    for (size_t o = 0; o < n; o += 2 * k) {
+      const size_t m = std::min(2 * k, n - o);
+      const size_t kk = (m + 1) / 2;
+      for (size_t j = 0; j < kk; ++j) {
+        out.push_back(o + j);
+        if (j + kk < m) {
+          out.push_back(o + j + kk);
+        }
+      }
+    }
+    return out;
+  }
+#ifdef MOWER_COVERAGE_F2C_V3
+  // SnakeOrder::sortSwaths indexes past the end below 3 swaths; a spiral
+  // block needs at least 2. Short cells keep the sweep order.
+  if (order == RouteOrder::kBoustrophedon || n < 3) {
+    return perm;
+  }
+  f2c::types::Swaths sw;
+  for (size_t i = 0; i < n; ++i) {
+    f2c::types::LineString ls;
+    ls.addPoint(static_cast<double>(i), 0.0);
+    ls.addPoint(static_cast<double>(i), 1.0);
+    f2c::types::Swath s(ls, 1.0);
+    s.setId(static_cast<int>(i));
+    sw.push_back(s);
+  }
+  if (order == RouteOrder::kSnake) {
+    SnakeSorter().sortSwaths(sw);
+  } else {
+    SpiralSorter(static_cast<size_t>(std::max(2, spiral_size))).sortSwaths(sw);
+  }
+  std::vector<size_t> out;
+  std::vector<bool> seen(n, false);
+  for (size_t i = 0; i < sw.size(); ++i) {
+    const int id = sw[i].getId();
+    if (id < 0 || static_cast<size_t>(id) >= n || seen[id]) {
+      return perm;  // not a permutation: keep the sweep order
+    }
+    seen[id] = true;
+    out.push_back(static_cast<size_t>(id));
+  }
+  return out.size() == n ? out : perm;
+#else
+  (void)order; (void)spiral_size;
+  return perm;
+#endif
+}
+
+SwathTurn planSwathTurn(const Point2D& from, double from_yaw,
+                        const Point2D& to, double to_yaw,
+                        double robot_width, double min_turn_radius, TurnType type,
+                        const f2c::types::Cells* region) {
+  std::unique_ptr<OGRGeometry> buf;
+  if (region != nullptr && region->size() > 0 && region->get() != nullptr) {
+    buf.reset(region->get()->Buffer(kTurnContainTolM));
+  }
+  return planTurnIn(from, from_yaw, to, to_yaw, robot_width, min_turn_radius, type,
+                    buf.get());
 }
 
 bool builtWithF2CV3() {

@@ -1130,6 +1130,64 @@ def test_height_percent_table():
     assert [fsm.height_percent(mm) for mm in (30, 45, 60, 75, 90)] == [10, 25, 40, 70, 100]
 
 
+DEFAULT_ROUTE = {'route_order': 'racetrack', 'route_spiral_size': 6,
+                 'min_turn_radius_m': 0.5, 'turn_type': 'auto'}
+
+
+def test_route_and_turn_settings_reach_the_coverage_server():
+    h = Harness()
+    h.area_settings = {0: {'route_order': 'snake', 'route_spiral_size': 8,
+                           'min_turn_radius_m': 0.3, 'turn_type': 'reverse'}}
+    m = h.mark()
+    start_until_planning(h)
+    cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]
+    assert {k: cov[k] for k in DEFAULT_ROUTE} == {
+        'route_order': 'snake', 'route_spiral_size': 8, 'min_turn_radius_m': 0.3,
+        'turn_type': 'reverse'}
+
+
+def test_bad_route_settings_fall_back():
+    h = Harness()
+    h.area_settings = {0: {'route_order': 'zigzag', 'turn_type': 'omega',
+                           'min_turn_radius_m': -1.0, 'route_spiral_size': 0}}
+    m = h.mark()
+    start_until_planning(h)
+    cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]
+    assert cov['route_order'] == 'boustrophedon' and cov['turn_type'] == 'auto'
+    assert cov['min_turn_radius_m'] == 0.0 and cov['route_spiral_size'] == 2
+
+
+def test_reverse_subpath_uses_the_reversing_controller():
+    h = Harness()
+    start_until_planning(h)
+    fwd = [(0.2, 0.0, 0.0), (2.0, 0.0, 0.0), (2.3, -0.15, 0.0)]
+    # reverse leg: travels -x/+y, poses face against the travel
+    rev = [(2.3, -0.15, math.atan2(-0.35, 0.1)), (2.2, 0.2, math.atan2(-0.35, 0.1))]
+    fwd2 = [(2.2, 0.2, math.pi), (0.0, 0.36, math.pi)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([fwd, rev, fwd2]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePath'
+    h.fsm.inputs.pose = (2.3, -0.15, 0.0)
+    h.finish(f.ACT_FOLLOW)
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowCoveragePathReverse' and g['poses'] == rev
+    assert h.name == 'MOWING' and h.blade      # no transit, blade stays on
+    h.fsm.inputs.pose = (2.2, 0.2, -1.3)
+    h.finish(f.ACT_FOLLOW)
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePath'
+
+
+def test_is_reverse_subpath():
+    from mower_mission import geometry as geo
+    assert not geo.is_reverse_subpath([(0, 0, 0.0), (1, 0, 0.0)])
+    assert geo.is_reverse_subpath([(0, 0, 0.0), (-1, 0, 0.0)])
+    assert not geo.is_reverse_subpath([(0, 0), (-1, 0)])
+    assert not geo.is_reverse_subpath([(0, 0, 0.0)])
+
+
 def test_area_settings_applied_before_planning():
     h = Harness()
     h.area_settings = {0: {'path_mode': 'spiral', 'perimeter_laps': 3, 'cut_speed_mps': 0.45,
@@ -1144,7 +1202,8 @@ def test_area_settings_applied_before_planning():
         [{'FollowCoveragePath.desired_linear_vel': 0.45}]
     cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)
     assert cov == [{'operation_width': pytest.approx(0.16), 'headland_rings': 3,
-                    'path_mode': 'spiral', 'mow_angle_deg': 30.0, 'edge_first': False}]
+                    'path_mode': 'spiral', 'mow_angle_deg': 30.0, 'edge_first': False,
+                    **DEFAULT_ROUTE}]
     goal = h.goal(f.ACT_PLAN)
     assert goal['mow_angle_deg'] == 30.0 and goal['perpendicular'] is False
     # order: settings -> height -> coverage params -> plan goal, all blade off
@@ -2147,7 +2206,7 @@ def test_preview_plans_area_without_state_change():
     assert [c.request for c in calls(h, m, f.SRV_GET_AREA_SETTINGS)] == [{'index': 1}]
     assert param_calls(h, f.PARAM_NODE_COVERAGE, m) == [{
         'operation_width': pytest.approx(0.18), 'headland_rings': 3, 'path_mode': 'spiral',
-        'mow_angle_deg': 45.0, 'edge_first': False}]
+        'mow_angle_deg': 45.0, 'edge_first': False, **DEFAULT_ROUTE}]
     # no blade height / cut speed / motion while previewing
     assert not calls(h, m, f.SRV_CUTTER_HEIGHT)
     assert not param_calls(h, f.PARAM_NODE_CONTROLLER, m)

@@ -70,6 +70,14 @@ class CoverageServer(Node):
         p('path_mode', 'zigzag')
         p('mow_angle_deg', -1.0)
         p('edge_first', True)
+        #   route_order        boustrophedon | snake | spiral | racetrack
+        #   route_spiral_size  swaths per SpiralOrder block
+        #   min_turn_radius_m  < 0 = mower_coverage_node's own min_turn_radius_m; 0 = pivots
+        #   turn_type          auto (loop -> reverse-curve -> pivot) | loop | reverse | pivot
+        p('route_order', 'boustrophedon')
+        p('route_spiral_size', 6)
+        p('min_turn_radius_m', -1.0)
+        p('turn_type', 'auto')
         self.add_on_set_parameters_callback(self._on_set_parameters)
 
         self._client_group = ReentrantCallbackGroup()
@@ -101,6 +109,8 @@ class CoverageServer(Node):
         return bool(self.get_parameter(name).value)
 
     _PATH_MODES = ('zigzag', 'cross', 'alternate', 'spiral', 'contour_only')
+    _ROUTE_ORDERS = ('boustrophedon', 'snake', 'spiral', 'racetrack')
+    _TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
 
     def _on_set_parameters(self, params):
         """Validate runtime changes (values are read live per plan)."""
@@ -110,6 +120,20 @@ class CoverageServer(Node):
                 return SetParametersResult(
                     successful=False,
                     reason='path_mode must be one of %s' % ', '.join(self._PATH_MODES))
+            if prm.name == 'route_order' and v not in self._ROUTE_ORDERS:
+                return SetParametersResult(
+                    successful=False,
+                    reason='route_order must be one of %s' % ', '.join(self._ROUTE_ORDERS))
+            if prm.name == 'turn_type' and v not in self._TURN_TYPES:
+                return SetParametersResult(
+                    successful=False,
+                    reason='turn_type must be one of %s' % ', '.join(self._TURN_TYPES))
+            if prm.name == 'route_spiral_size' and not (isinstance(v, int) and 2 <= v <= 50):
+                return SetParametersResult(successful=False,
+                                           reason='route_spiral_size must be an int in 2..50')
+            if prm.name == 'min_turn_radius_m' and not isinstance(v, (int, float)):
+                return SetParametersResult(successful=False,
+                                           reason='min_turn_radius_m must be a number')
             if prm.name == 'headland_rings' and not (isinstance(v, int) and -1 <= v <= 20):
                 return SetParametersResult(successful=False,
                                            reason='headland_rings must be an int in -1..20')
@@ -165,6 +189,10 @@ class CoverageServer(Node):
         req.headland_rings = self._int('headland_rings')
         req.path_mode = self._planner_path_mode()
         req.edge_first = self._bool('edge_first')
+        req.route_order = self._str('route_order')
+        req.route_spiral_size = self._int('route_spiral_size')
+        req.min_turn_radius_m = self._float('min_turn_radius_m')
+        req.turn_type = self._str('turn_type')
 
         done = threading.Event()
         future = self._client.call_async(req)
@@ -200,9 +228,11 @@ class CoverageServer(Node):
         resp, err = self._call_planner(goal, angle)
         if err is None and resp.success and goal.perpendicular and angle < 0.0:
             # AUTO + perpendicular: learn the auto angle, then re-plan at +90 deg.
-            segs, _ = splitter.split_segments(
+            base, _turns = splitter.strip_turns(
                 [(ps.pose.position.x, ps.pose.position.y) for ps in resp.path.poses],
-                resp.ring_count, resp.swath_count, swaths_first=swaths_first)
+                list(resp.pose_flags))
+            segs, _ = splitter.split_segments(
+                base, resp.ring_count, resp.swath_count, swaths_first=swaths_first)
             auto = splitter.swath_angle_deg(segs)
             if auto is not None:
                 angle = (auto + 90.0) % 180.0
@@ -226,7 +256,8 @@ class CoverageServer(Node):
             [(ps.pose.position.x, ps.pose.position.y) for ps in resp.path.poses],
             ring_count=resp.ring_count, swath_count=resp.swath_count,
             transit_gap_m=gap, turn_split_deg=self._float('turn_split_deg'),
-            fences=fences, holes=holes, swaths_first=swaths_first)
+            fences=fences, holes=holes, swaths_first=swaths_first,
+            pose_flags=list(resp.pose_flags))
         if result.mode != splitter.MODE_STRUCTURAL:
             self.get_logger().warn(
                 'planner path did not match its ring/swath counts (%d/%d); '
@@ -247,12 +278,12 @@ class CoverageServer(Node):
         step = self._float('densify_step_m')
         stamp = self.get_clock().now().to_msg()
 
-        def to_path(points):
+        def to_path(points, reverse=False):
             pts = splitter.densify(points, step)
             path = Path()
             path.header.frame_id = frame
             path.header.stamp = stamp
-            for (x, y), yaw in zip(pts, splitter.yaws(pts)):
+            for (x, y), yaw in zip(pts, splitter.yaws(pts, reverse)):
                 ps = PoseStamped()
                 ps.header = path.header
                 ps.pose.position.x = x
@@ -266,7 +297,10 @@ class CoverageServer(Node):
         res.success = True
         res.segments = [to_path(s.points) for s in result.segments]
         res.segment_types = [int(s.kind) for s in result.segments]
-        res.drivable_subpaths = [to_path(s.points) for s in result.subpaths]
+        # A reverse sub-path's poses face against the travel: the mission
+        # drives it with the reversing controller (mower_mission geometry
+        # is_reverse_subpath).
+        res.drivable_subpaths = [to_path(s.points, s.reverse) for s in result.subpaths]
         res.full_path = Path()
         res.full_path.header.frame_id = frame
         res.full_path.header.stamp = stamp

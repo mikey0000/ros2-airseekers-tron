@@ -94,8 +94,22 @@ AREA_SETTINGS_DEFAULTS = {
     'edge_first': True,
     'repeat': 1,
     'alternate_angle_offset_deg': 90.0,
+    'route_order': 'racetrack',
+    'route_spiral_size': 6,
+    'min_turn_radius_m': 0.5,
+    'turn_type': 'auto',
 }
 PATH_MODES = ('zigzag', 'cross', 'alternate', 'spiral', 'contour_only')
+ROUTE_ORDERS = ('boustrophedon', 'snake', 'spiral', 'racetrack')
+TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
+
+
+def coverage_route_params(st):
+    """Swath order / turn settings forwarded to /coverage_server."""
+    return {'route_order': str(st['route_order']),
+            'route_spiral_size': int(st['route_spiral_size']),
+            'min_turn_radius_m': float(st['min_turn_radius_m']),
+            'turn_type': str(st['turn_type'])}
 
 # action outcomes reported by the node
 SUCCEEDED = 'succeeded'
@@ -335,6 +349,9 @@ class Params:
     # when this is true (default: stop in place so the operator can inspect).
     return_home_on_incomplete: bool = False
     follow_controller_id: str = 'FollowCoveragePath'
+    # Sub-paths whose poses face against their travel (reverse turn legs from
+    # the coverage bridge) go to this controller (RPP with allow_reversing).
+    reverse_controller_id: str = 'FollowCoveragePathReverse'
     follow_goal_checker_id: str = 'coverage_goal_checker'
     blade_confirm_timeout_s: float = 5.0
     blade_start_attempts: int = 3
@@ -848,7 +865,8 @@ class MissionFSM:
                 'headland_rings': int(st['perimeter_laps']),
                 'path_mode': str(st['path_mode']),
                 'mow_angle_deg': float(run['angle']),
-                'edge_first': bool(st['edge_first'])}}, purpose='preview_params')
+                'edge_first': bool(st['edge_first']),
+                **coverage_route_params(st)}}, purpose='preview_params')
         elif purpose == 'preview_params':
             cur = pv['cur']
             if not ok:
@@ -1540,6 +1558,14 @@ class MissionFSM:
         # Global mow_angle_deg parameter: fallback for areas left on auto.
         if float(st['mow_angle_deg']) < 0.0 and self.p.mow_angle_deg >= 0.0:
             st['mow_angle_deg'] = float(self.p.mow_angle_deg)
+        if st['route_order'] not in ROUTE_ORDERS:
+            self._log('warn', 'unknown route_order %r: boustrophedon' % st['route_order'])
+            st['route_order'] = 'boustrophedon'
+        if st['turn_type'] not in TURN_TYPES:
+            self._log('warn', 'unknown turn_type %r: auto' % st['turn_type'])
+            st['turn_type'] = 'auto'
+        st['route_spiral_size'] = max(2, int(st['route_spiral_size']))
+        st['min_turn_radius_m'] = max(0.0, float(st['min_turn_radius_m']))
         if st['path_mode'] not in PATH_MODES:
             self._log('warn', 'unknown path_mode %r: zigzag' % st['path_mode'])
             st['path_mode'] = 'zigzag'
@@ -1633,7 +1659,8 @@ class MissionFSM:
             'headland_rings': int(st['perimeter_laps']),
             'path_mode': str(st['path_mode']),
             'mow_angle_deg': float(run['angle']),
-            'edge_first': bool(st['edge_first'])}}, purpose='coverage_params')
+            'edge_first': bool(st['edge_first']),
+            **coverage_route_params(st)}}, purpose='coverage_params')
 
     def _start_plan(self):
         m = self.mission
@@ -1797,7 +1824,8 @@ class MissionFSM:
                                         self.p.follow_chunk_clearance_m), self._seg_last())
         self._start_action(ACT_FOLLOW, {
             'poses': list(sp[m.start_local:m.chunk_end + 1]),
-            'controller_id': self.p.follow_controller_id,
+            'controller_id': (self.p.reverse_controller_id if geo.is_reverse_subpath(sp)
+                              else self.p.follow_controller_id),
             'goal_checker_id': self.p.follow_goal_checker_id}, self.p.follow_timeout_s)
 
     def _subpath_done(self):
