@@ -1052,7 +1052,8 @@ class Um960Node(Node):
         if lat_sigma and lon_sigma and alt_sigma:
             cov = sigma_to_covariance(float(lat_sigma), float(lon_sigma), float(alt_sigma))
         else:
-            cov = hdop_to_covariance(float(fix.get("hdop") or 0.0), int(fix.get("num_sats") or 0))
+            cov = hdop_to_covariance(float(fix.get("hdop") or 0.0), int(fix.get("num_sats") or 0),
+                                     int(fix.get("quality") or 1))
         if not any(cov):
             # No usable accuracy information: advertise "no covariance" rather than
             # a fictitious perfect fix.

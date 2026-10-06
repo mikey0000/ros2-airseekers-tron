@@ -335,3 +335,13 @@ def test_covariance_helpers():
     assert abs(cov[4] - 0.007 ** 2) < 1e-12
     assert abs(cov[8] - 0.012 ** 2) < 1e-12
     assert sigma_to_covariance(0.0, 0.0, 0.0) == [0.0] * 9
+
+
+def test_hdop_covariance_scales_with_fix_quality():
+    from um960_gps_driver.parsers import hdop_to_covariance
+    single = hdop_to_covariance(0.5, 30, 1)[0] ** 0.5
+    flt = hdop_to_covariance(0.5, 30, 5)[0] ** 0.5
+    fixed = hdop_to_covariance(0.5, 30, 4)[0] ** 0.5
+    assert single > flt > fixed
+    assert fixed < 0.04          # an RTK-fixed solution must pass the dock-set gate
+    assert hdop_to_covariance(0.5, 30)[0] == hdop_to_covariance(0.5, 30, 1)[0]

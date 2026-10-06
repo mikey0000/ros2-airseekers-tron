@@ -135,15 +135,23 @@ def _is_sane_position(lat: float, lon: float) -> bool:
     return -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
 
 
-def hdop_to_covariance(hdop: float, sats: int) -> List[float]:
-    """Rough ENU covariance for NavSatFix from HDOP and satellite count.
+# User-equivalent range error [m] per NMEA GGA quality, used when the receiver
+# does not stream its own per-axis sigmas (BESTNAVA). 1.2 m is the usual
+# multi-GNSS single-point figure; DGPS ~0.6; RTK float ~0.25; RTK fixed ~0.02.
+# Without this an RTK-fixed solution was reported at 0.45 m and could never
+# pass the 4 cm dock-set gate or get a sensible EKF weight.
+UERE_BY_QUALITY = {0: 1.2, 1: 1.2, 2: 0.6, 4: 0.02, 5: 0.25, 6: 1.2}
 
-    Uses the common 1.2 m UERE for multi-GNSS receivers. Refined once the Unicore
-    binary/ASCII sigma fields are available (those are used in preference).
+
+def hdop_to_covariance(hdop: float, sats: int, quality: int = 1) -> List[float]:
+    """Rough ENU covariance for NavSatFix from HDOP, satellite count and GGA quality.
+
+    Refined once the Unicore binary/ASCII sigma fields are available (those are
+    used in preference).
     """
     if hdop <= 0.0:
         return []
-    uere = 1.2
+    uere = UERE_BY_QUALITY.get(int(quality), 1.2)
     sigma_h = hdop * uere
     if sats >= 6:
         sigma_h *= 0.9
