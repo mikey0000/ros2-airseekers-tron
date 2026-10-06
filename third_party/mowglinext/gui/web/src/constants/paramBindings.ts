@@ -29,6 +29,8 @@ export const PARAM_BINDING_PROFILES: Readonly<Record<string, ParamBindingProfile
             "undock_speed",
             "battery_low_percent",
             "battery_full_percent",
+            "battery_low_action",
+            "battery_max_charge_percent",
             "rain_mode",
             "rain_delay_minutes",
             "rain_debounce_sec",

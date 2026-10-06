@@ -1447,7 +1447,10 @@ class McuNode(Node):
         self._charging_enabled = bool(req.enable_charging)
         self._write(build_frame([(TYPE_ROS_MOWER, MOD_CHARGE, charge_payload(self._charging_enabled))]))
         self.get_logger().info('charging %s' % ('enabled' if self._charging_enabled else 'disabled'))
-        resp.result = True
+        # mower_interfaces/ChargingControl has an EMPTY response; assigning resp.result raised
+        # AttributeError, which killed mcu_node on every /charging call (respawned with the
+        # flag reset). Set it only if a future interface version adds the field.
+        _set_if(resp, 'result', True)
         return resp
 
     def _srv_clear_estop(self, req, resp):

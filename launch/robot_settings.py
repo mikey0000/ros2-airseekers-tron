@@ -46,6 +46,8 @@ BINDINGS = {
     'undock_speed': ('behavior_tree_node', 'undock_speed_mps', float, None),
     'battery_low_percent': ('behavior_tree_node', 'battery_low_percent', float, None),
     'battery_full_percent': ('behavior_tree_node', 'battery_full_percent', float, None),
+    'battery_low_action': ('behavior_tree_node', 'battery_low_action', str, None),
+    'battery_max_charge_percent': ('behavior_tree_node', 'battery_max_charge_percent', float, None),
     # GUI 0 ignore / 1 dock / 2 dock until dry / 3 pause -> Tron 0 ignore / 1 dock and wait.
     'rain_mode': ('behavior_tree_node', 'rain_mode', int, {0: 0, 1: 1, 2: 1, 3: 1}),
     'rain_delay_minutes': ('behavior_tree_node', 'rain_delay_minutes', float, None),

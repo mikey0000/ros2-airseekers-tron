@@ -126,8 +126,13 @@ var paramBindingTables = map[string]ParamBindingTable{
 			// node reads its parameters once at startup.
 			{Key: "undock_distance", Node: "/behavior_tree_node", Param: "undock_distance_m", Type: ParamTypeDouble},
 			{Key: "undock_speed", Node: "/behavior_tree_node", Param: "undock_speed_mps", Type: ParamTypeDouble},
-			{Key: "battery_low_percent", Node: "/behavior_tree_node", Param: "battery_low_percent", Type: ParamTypeDouble},
-			{Key: "battery_full_percent", Node: "/behavior_tree_node", Param: "battery_full_percent", Type: ParamTypeDouble},
+			// Battery: mission_node applies these four live (on_set_parameters callback).
+			{Key: "battery_low_percent", Node: "/behavior_tree_node", Param: "battery_low_percent", Type: ParamTypeDouble, Live: true},
+			{Key: "battery_full_percent", Node: "/behavior_tree_node", Param: "battery_full_percent", Type: ParamTypeDouble, Live: true},
+			// "stop" = blade off and stay put below battery_low_percent; "dock" = go charge.
+			{Key: "battery_low_action", Node: "/behavior_tree_node", Param: "battery_low_action", Type: ParamTypeString, Live: true},
+			// Charge limit while docked (100 = no limit; re-enables 5 % below).
+			{Key: "battery_max_charge_percent", Node: "/behavior_tree_node", Param: "battery_max_charge_percent", Type: ParamTypeDouble, Live: true},
 			// GUI 0 ignore / 1 dock / 2 dock until dry / 3 pause; Tron 0 ignore / 1 dock and wait.
 			{Key: "rain_mode", Node: "/behavior_tree_node", Param: "rain_mode", Type: ParamTypeInteger,
 				ValueMap: map[string]any{"0": 0, "1": 1, "2": 1, "3": 1}},

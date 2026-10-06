@@ -196,6 +196,7 @@ export const SECTION_DEFINITIONS: SectionMeta[] = [
             "battery_full_voltage", "battery_empty_voltage", "battery_critical_voltage",
             "battery_full_percent", "battery_low_percent", "battery_critical_percent",
             "battery_critical_recovery_percent", "battery_manual_resume_percent",
+            "battery_low_action", "battery_max_charge_percent",
         ],
     },
     {

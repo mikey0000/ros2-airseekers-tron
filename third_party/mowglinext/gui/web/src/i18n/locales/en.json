@@ -2560,7 +2560,14 @@
     "criticalRecovery": "Critical Recovery",
     "criticalRecoveryTooltip": "Leave the critical-battery state once recharged above this %. Hysteresis upper bound, must be greater than Critical.",
     "manualResume": "Manual Resume",
-    "manualResumeTooltip": "Pressing Play while the robot is charging mid-session resumes mowing only above this %. Must be greater than Low (Dock) or the robot re-docks within minutes."
+    "manualResumeTooltip": "Pressing Play while the robot is charging mid-session resumes mowing only above this %. Must be greater than Low (Dock) or the robot re-docks within minutes.",
+    "chargingBehaviour": "Low battery and charging",
+    "lowAction": "When battery is low",
+    "lowActionTooltip": "What a running mow does when the battery drops below the Low threshold.",
+    "lowActionStop": "Stop where it is (blade off)",
+    "lowActionDock": "Return to dock and charge",
+    "maxCharge": "Max charge level",
+    "maxChargeTooltip": "While docked, charging stops at this level and restarts 5 % below it. 100 % = no limit. A paused mow resumes once this level (or Resume Above, whichever is lower) is reached."
   },
   "settingsSafety": {
     "alertMessage": "Safety settings protect the robot and its surroundings",

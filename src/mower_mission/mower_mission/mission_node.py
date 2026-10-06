@@ -161,6 +161,8 @@ class MissionNode(Node):
         self.fsm = fsm_mod.MissionFSM(fsm_mod.Params.from_dict(fsm_params), cursor=cursor,
                                       now=time.monotonic(),
                                       alternate_counts=self._load_alternate())
+        # Battery settings are applied live (GUI Settings -> Battery pushes them).
+        self.add_on_set_parameters_callback(self._on_set_params)
         self._height_percent = None     # last per-area blade height, re-sent with blade ON
         self._inflight = set()          # action tokens sent or being sent
         self._cancelled = set()
@@ -344,6 +346,21 @@ class MissionNode(Node):
             self._hw_charging = bool(msg.is_charging)
             self.fsm.inputs.rain = self._hw_rain or self._base_rain
             self.fsm.inputs.is_charging = self._hw_charging or self._base_charging
+
+    LIVE_PARAMS = ('battery_low_percent', 'battery_full_percent', 'battery_low_action',
+                   'battery_max_charge_percent', 'battery_charge_hysteresis_percent')
+
+    def _on_set_params(self, params):
+        from rcl_interfaces.msg import SetParametersResult
+        for prm in params:
+            if prm.name == 'battery_low_action' and str(prm.value).strip().lower() not in ('stop', 'dock'):
+                return SetParametersResult(successful=False, reason="battery_low_action: stop|dock")
+        with self._lock:
+            for prm in params:
+                if prm.name in self.LIVE_PARAMS:
+                    setattr(self.fsm.p, prm.name, prm.value)
+                    self.get_logger().info('%s -> %s (live)' % (prm.name, prm.value))
+        return SetParametersResult(successful=True)
 
     def _on_battery(self, msg):
         with self._lock:

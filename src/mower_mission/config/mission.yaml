@@ -8,8 +8,11 @@ behavior_tree_node:
     emergency_timeout_s: 2.0          # /hardware_bridge/emergency silence => emergency
 
     # --- battery ---------------------------------------------------------
-    battery_low_percent: 20.0         # preflight minimum and dock-to-charge threshold (vendor 20 %)
+    battery_low_percent: 20.0         # preflight minimum and low-battery threshold (vendor 20 %)
     battery_full_percent: 95.0        # charge hold ends here, then mowing resumes
+    battery_low_action: stop          # below battery_low_percent during a mission: stop (blade off, stay put) | dock
+    battery_max_charge_percent: 100.0 # charge limit while docked (e.g. 80.0); 100 = no limit
+    battery_charge_hysteresis_percent: 5.0  # re-enable charging at max - this
 
     # --- GNSS ------------------------------------------------------------
     preflight_min_fix_type_docked: 1  # GnssStatus.fix_type needed to START from the dock

@@ -928,7 +928,7 @@ def test_rain_mode_0_ignores_rain():
 
 
 def test_low_battery_docks_charges_and_resumes():
-    h = Harness()
+    h = Harness(battery_low_action='dock')
     mowing(h)
     h.fsm.inputs.battery_percent = 19.0
     h.tick()
@@ -947,7 +947,7 @@ def test_low_battery_docks_charges_and_resumes():
 
 
 def test_stop_cancels_charge_resume():
-    h = Harness()
+    h = Harness(battery_low_action='dock')
     mowing(h)
     h.fsm.inputs.battery_percent = 10.0
     h.tick()
@@ -1557,3 +1557,52 @@ def test_transit_abort_beyond_radius_still_skips():
     h.fsm.inputs.pose = (2.6, 3.0, 0.0)           # 0.4 m away
     h.finish(f.ACT_NAV, f.ABORTED)
     assert h.fsm.mission.sub_i == 1 and h.fsm.mission.skipped == 1
+
+
+def test_low_battery_stops_in_place_by_default():
+    h = Harness()
+    mowing(h)
+    h.fsm.inputs.battery_percent = 19.0
+    h.tick()
+    assert h.name == 'IDLE' and not h.blade
+    assert any(isinstance(e, f.ZeroBurst) for e in h.fx)
+
+
+def _charge_calls(h, mark):
+    return [e.request['enable'] for e in h.fx[mark:]
+            if isinstance(e, f.CallService) and e.name == f.SRV_CHARGING]
+
+
+def test_charge_limit_disables_and_reenables_with_hysteresis():
+    h = Harness(battery_max_charge_percent=80.0)
+    h.fsm.inputs.docked = True
+    h.fsm.inputs.battery_percent = 50.0
+    m = len(h.fx)
+    h.tick()
+    assert _charge_calls(h, m) == [True]
+    h.fsm.inputs.battery_percent = 80.0
+    m = len(h.fx)
+    h.tick()
+    assert _charge_calls(h, m) == [False]
+    h.fsm.inputs.battery_percent = 77.0
+    m = len(h.fx)
+    h.tick()
+    assert _charge_calls(h, m) == []
+    h.fsm.inputs.battery_percent = 75.0
+    m = len(h.fx)
+    h.tick()
+    assert _charge_calls(h, m) == [True]
+
+
+def test_charge_resume_waits_for_min_of_full_and_max():
+    h = Harness(battery_low_action='dock', battery_max_charge_percent=80.0)
+    mowing(h)
+    h.fsm.inputs.battery_percent = 19.0
+    h.tick()
+    h.fsm.inputs.docked = True
+    h.finish(f.ACT_DOCK)
+    assert h.name == 'CHARGING'
+    h.fsm.inputs.battery_percent = 80.0
+    h.tick()
+    h.answer_services()
+    assert h.name == 'UNDOCKING'

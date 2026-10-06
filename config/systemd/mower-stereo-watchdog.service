@@ -1,0 +1,13 @@
+[Unit]
+Description=Re-run Metoak mo_init.sh when the front stereo delivers no frames (see scripts/stereo_watchdog.sh)
+After=cam.service docker.service
+Wants=cam.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env bash /userdata/ros2_stack/scripts/stereo_watchdog.sh watch
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

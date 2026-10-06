@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { Alert, Card, Col, Form, InputNumber, Row, Space, Typography } from "antd";
+import { Alert, Card, Col, Form, InputNumber, Row, Select, Space, Typography } from "antd";
 import { ThunderboltOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { useThemeMode } from "../../theme/ThemeContext.tsx";
@@ -216,6 +216,42 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                         </Row>
                     </Form>
                 </Space>
+            </Card>
+
+            {/* Low-battery action + charge limit (Tron mission node) */}
+            <Card size="small" title={t("settingsBattery.chargingBehaviour")} style={{ marginBottom: 16 }}>
+                <Form layout="vertical" size="small">
+                    <Row gutter={[16, 0]}>
+                        <Col xs={12}>
+                            <Form.Item
+                                label={fieldLabel("battery_low_action", <Text style={{ fontSize: 12 }}>{t("settingsBattery.lowAction")}</Text>)}
+                                tooltip={t("settingsBattery.lowActionTooltip")}
+                            >
+                                <Select
+                                    value={values.battery_low_action ?? "stop"}
+                                    onChange={(v) => onChange("battery_low_action", v)}
+                                    options={[
+                                        { value: "stop", label: t("settingsBattery.lowActionStop") },
+                                        { value: "dock", label: t("settingsBattery.lowActionDock") },
+                                    ]}
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={12}>
+                            <Form.Item
+                                label={fieldLabel("battery_max_charge_percent", <Text style={{ color: "#52c41a", fontSize: 12 }}>{t("settingsBattery.maxCharge")}</Text>)}
+                                tooltip={t("settingsBattery.maxChargeTooltip")}
+                            >
+                                <InputNumber
+                                    value={values.battery_max_charge_percent ?? 100}
+                                    onChange={(v) => onChange("battery_max_charge_percent", v)}
+                                    min={50} max={100} step={5} precision={0}
+                                    style={{ width: "100%" }} addonAfter="%"
+                                />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                </Form>
             </Card>
 
             {/* Percentage thresholds */}

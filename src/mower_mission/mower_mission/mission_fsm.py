@@ -263,6 +263,14 @@ class Params:
     emergency_timeout_s: float = 2.0
     battery_low_percent: float = 20.0
     battery_full_percent: float = 95.0
+    # What a running mission does below battery_low_percent:
+    #   'stop' = blade off, zero velocity, stay where it is (IDLE); 'dock' = go charge.
+    battery_low_action: str = 'stop'
+    # Charge limit: while docked, charging is disabled at >= this and re-enabled at
+    # <= this - battery_charge_hysteresis_percent. 100 = no limit. A charge-and-resume
+    # waits for min(battery_full_percent, battery_max_charge_percent).
+    battery_max_charge_percent: float = 100.0
+    battery_charge_hysteresis_percent: float = 5.0
     preflight_min_fix_type_docked: int = 1
     rtk_fix_type: int = FIX_RTK_FIXED
     rtk_timeout_s: float = 120.0
@@ -385,6 +393,8 @@ class MissionFSM:
         self.inputs = Inputs()
         self.cursor = cursor if cursor is not None else ResumeCursor()
         self.phase = 'IDLE'
+        self._charge_req = None   # last charge enable sent while docked (None = not sent)
+        self._charge_req_t = 0.0
         self.sub_state = ''
         self.blade_on = False
         self._plan_shown = False
@@ -488,6 +498,32 @@ class MissionFSM:
             return 'CHARGING' if self.inputs.is_charging else 'IDLE_DOCKED'
         return 'IDLE'
 
+    def _resume_charge_percent(self):
+        return min(float(self.p.battery_full_percent), float(self.p.battery_max_charge_percent))
+
+    def _charge_limit_tick(self):
+        """Keep the MCU charge enable in line with battery_max_charge_percent while
+        docked (also re-enables charging after a stack restart on the dock)."""
+        i = self.inputs
+        if not i.docked:
+            self._charge_req = None
+            return
+        b = i.battery_percent
+        if b is None:
+            return
+        limit = float(self.p.battery_max_charge_percent)
+        # Re-assert "off" every 60 s: the docking server enables charging itself at
+        # the end of a dock and could otherwise override the limit.
+        if b >= limit and (self._charge_req is not False or self._now - self._charge_req_t >= 60.0):
+            self._charge_req, self._charge_req_t = False, self._now
+            self._log('info', 'battery %.0f%% >= max charge %.0f%%: charging disabled' % (b, limit))
+            self._call(SRV_CHARGING, {'enable': False}, track=False)
+        elif b <= limit - float(self.p.battery_charge_hysteresis_percent) \
+                and self._charge_req is not True:
+            self._charge_req, self._charge_req_t = True, self._now
+            self._log('info', 'docked at %.0f%% (max charge %.0f%%): charging enabled' % (b, limit))
+            self._call(SRV_CHARGING, {'enable': True}, track=False)
+
     def _go_idle(self, sub=None):
         self._resume_after = None
         if self._plan_shown:
@@ -538,6 +574,7 @@ class MissionFSM:
     # ==================================================================
     def tick(self, now):
         self._begin(now)
+        self._charge_limit_tick()
         if not self._guards():
             self._run_phase()
         return self._end()
@@ -672,10 +709,20 @@ class MissionFSM:
         b = i.battery_percent
         if b is not None and b < self.p.battery_low_percent and self.phase in MISSION_PHASES \
                 and self.mission is not None:
-            self._log('warn', 'battery %.0f%% < %.0f%%: docking to charge'
+            if str(self.p.battery_low_action).strip().lower() == 'dock':
+                self._log('warn', 'battery %.0f%% < %.0f%%: docking to charge'
+                          % (b, self.p.battery_low_percent))
+                self._interrupt_mission('low battery')
+                self._dock('LOW_BATTERY_DOCKING', 'battery')
+                return True
+            self._log('warn', 'battery %.0f%% < %.0f%%: stopping in place (battery_low_action=stop)'
                       % (b, self.p.battery_low_percent))
             self._interrupt_mission('low battery')
-            self._dock('LOW_BATTERY_DOCKING', 'battery')
+            self._cancel_all('low battery')
+            self._blade_off('low battery')
+            self._fx.append(ZeroBurst())
+            self._dock_purpose = None
+            self._go_idle('low battery %.0f%%: stopped' % b)
             return True
         return False
 
@@ -739,9 +786,9 @@ class MissionFSM:
         if ph in IDLE_NAMES:
             if self._resume_after == 'charge':
                 b = i.battery_percent
-                if b is not None and b >= self.p.battery_full_percent:
-                    self._log('info', 'battery %.0f%% >= %.0f%%: resuming mowing'
-                              % (b, self.p.battery_full_percent))
+                full = self._resume_charge_percent()
+                if b is not None and b >= full:
+                    self._log('info', 'battery %.0f%% >= %.0f%%: resuming mowing' % (b, full))
                     self._resume('charge')
                 elif ph != 'CHARGING':
                     self._go('CHARGING')
@@ -1536,7 +1583,7 @@ class MissionFSM:
             self._resume_after = 'rain'
             self._go('RAIN_WAITING', 'waiting %.0f min after rain' % self.p.rain_delay_minutes)
         elif purpose == 'battery':
-            self._go('CHARGING', 'charging to %.0f%%, then resuming' % self.p.battery_full_percent)
+            self._go('CHARGING', 'charging to %.0f%%, then resuming' % self._resume_charge_percent())
             self._resume_after = 'charge'
         else:
             self._go_idle('docked')
