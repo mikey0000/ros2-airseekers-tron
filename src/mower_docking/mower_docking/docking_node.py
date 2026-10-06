@@ -123,6 +123,11 @@ class DockingServer(Node):
         decl('stall_progress_ratio', dp.stall_progress_ratio)
         decl('stall_timeout_s', dp.stall_timeout_s)
         decl('use_dig_stall', dp.use_dig_stall)
+        decl('stall_turn_radius_m', dp.stall_turn_radius_m)
+        decl('stall_contact_grace_s', dp.stall_contact_grace_s)
+        # failed dock goal, then the base reports is_docking_done within this window while
+        # the server is idle -> enable charging anyway (0 = off)
+        decl('post_fail_contact_s', 10.0)
         # approach shortcuts / alignment / realign (2026-10-07 pivot-on-turf loop)
         decl('map_pose_topic', '/odometry/filtered_map')   # map-frame pose ('' = off)
         decl('approach_skip_radius_m', dp.approach_skip_radius_m)
@@ -586,6 +591,8 @@ class DockingServer(Node):
             stall_progress_ratio=float(p('stall_progress_ratio')),
             stall_timeout_s=float(p('stall_timeout_s')),
             use_dig_stall=bool(p('use_dig_stall')),
+            stall_turn_radius_m=float(p('stall_turn_radius_m')),
+            stall_contact_grace_s=float(p('stall_contact_grace_s')),
             approach_skip_radius_m=float(p('approach_skip_radius_m')),
             nav_fail_arrived_radius_m=float(p('nav_fail_arrived_radius_m')),
             relaxed_nav_retry=bool(p('relaxed_nav_retry')),
@@ -715,6 +722,8 @@ class DockingServer(Node):
                 goal_handle.succeed()
             else:
                 goal_handle.abort()
+                if result_type is Dock.Result:
+                    self._start_post_fail_watch()
             self.get_logger().info('result: success=%s message=%s' % (out.success, out.message))
             return result_type(success=out.success, message=out.message)
         finally:
@@ -731,6 +740,49 @@ class DockingServer(Node):
                 self._progress_t = -1e9
                 self._map_pose = None
                 self._map_pose_t = -1e9
+
+    def _start_post_fail_watch(self) -> None:
+        window = float(self.get_parameter('post_fail_contact_s').value)
+        if window <= 0:
+            return
+        threading.Thread(target=self._post_fail_watch, args=(window,), daemon=True,
+                         name='post_fail_contact').start()
+
+    def _post_fail_watch(self, window: float) -> None:
+        """A failed dock goal whose robot nevertheless ends on the contacts (2026-10-07:
+        DOCK_STALLED, is_docking_done 8 s later): enable charging if the base reports
+        is_docking_done within ``window`` s while no other goal runs."""
+        time.sleep(0.5)    # let _run's finally release the goal inputs
+        state = {'contact': False, 'charging': False}
+        lock = threading.Lock()
+
+        def on_status(msg):
+            with lock:
+                state['contact'] = state['contact'] or bool(msg.is_docking_done)
+                state['charging'] = bool(msg.is_charging)
+        pump = SubscriptionPump(self, 'docking_post_fail')
+        pump.subscribe(MowerBaseDevStatus, self.get_parameter('status_topic').value, on_status,
+                       20, parser=flat_parser(MowerBaseDevStatus))
+        pump.start()
+        try:
+            watch = dl.PostFailWatch(time.monotonic(), window)
+            while rclpy.ok():
+                with self._lock:
+                    busy = self._busy
+                with lock:
+                    contact, charging = state['contact'], state['charging']
+                act = watch.step(time.monotonic(), contact, charging, busy)
+                if act == 'enable':
+                    self.get_logger().warn('is_docking_done after the failed dock goal: '
+                                           'enabling charging')
+                    self._call_charging(True)
+                if act == 'charging':
+                    self.get_logger().info('on the dock after the failed goal: already charging')
+                if act is not None:
+                    return
+                time.sleep(0.1)
+        finally:
+            pump.close()
 
     def _execute_dock(self, goal_handle):
         req = goal_handle.request

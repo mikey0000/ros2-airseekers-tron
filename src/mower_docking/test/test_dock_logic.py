@@ -626,8 +626,8 @@ def test_vision_off_without_allow_blind_fails_not_found():
 
 
 # ------------------------------------------------------------ stall guard
-def _docking_machine():
-    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
+def _docking_machine(**kw):
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True, **kw), dl.Pose2D(),
                             dock_pose_measured=True)
     m.start(dl.Snapshot(t=0.0))
     mk = dl.MarkerObs(-1.3, 0.0, 0.0, stamp=0.05)
@@ -639,14 +639,14 @@ def _docking_machine():
 def test_stall_aborts_when_ekf_does_not_move():
     m = _docking_machine()
     t, out = 0.05, None
-    for _ in range(60):
+    for _ in range(200):
         t += 0.05
         mk = dl.MarkerObs(-1.3, 0.0, 0.0, stamp=t)
         out = m.step(dl.Snapshot(t=t, marker=mk, progress_pose=dl.Pose2D(1.0, 0, 0)))
         if out.done:
             break
     assert out.done and not out.success and out.message.startswith('DOCK_STALLED')
-    assert t < 1.5
+    assert 3.9 < t < 4.6    # ~1 s stall window + 3 s contact grace
     assert out.linear == 0.0 and out.angular == 0.0
     # no retry / no further reversing afterwards
     assert m.step(dl.Snapshot(t=t + 0.05)).linear == 0.0 and m.state == S.FAILED
@@ -679,6 +679,8 @@ def test_dig_stall_rising_edge_aborts_but_old_latch_is_ignored():
     m = _docking_machine()
     out = m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0, 0, stamp=0.1),
                              dig_stall=True))
+    assert not out.done and out.linear == 0.0 and out.angular == 0.0   # contact grace hold
+    out = m.step(dl.Snapshot(t=3.2, dig_stall=True))
     assert out.done and 'DOCK_STALLED' in out.message and out.linear == 0.0
     m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
                             dock_pose_measured=True)
@@ -1151,3 +1153,74 @@ def test_marker_in_view_flag():
     fm = _final_machine()
     assert fm.state == S.FINAL_DOCKING
     assert fm.step(dl.Snapshot(t=5.0, odom=dl.Pose2D(0.1, 0, 0))).marker_in_view
+
+
+# ---- 2026-10-07: stall against the dock before the contact debounce confirmed ----------
+
+def _stall_into_hold(m):
+    t, out = 0.05, None
+    for _ in range(60):
+        t += 0.05
+        out = m.step(dl.Snapshot(t=t, marker=dl.MarkerObs(-1.3, 0, 0, stamp=t),
+                                 progress_pose=dl.Pose2D(1.0, 0, 0)))
+        if m._stall_hold is not None:
+            break
+    assert m._stall_hold is not None and not out.done
+    assert out.linear == 0.0 and out.angular == 0.0
+    return t
+
+
+@pytest.mark.parametrize('contact_kw', [dict(raw_contact=True), dict(contact=True),
+                                        dict(is_charging=True)])
+def test_stall_then_contact_within_grace_docks(contact_kw):
+    m = _docking_machine()
+    t = _stall_into_hold(m)
+    out = m.step(dl.Snapshot(t=t + 0.5, progress_pose=dl.Pose2D(1.0, 0, 0)))
+    assert not out.done and out.linear == 0.0 and out.state == S.DOCKING
+    out = m.step(dl.Snapshot(t=t + 2.0, progress_pose=dl.Pose2D(1.0, 0, 0), **contact_kw))
+    assert out.state == S.CHARGING and ('enable_charging',) in out.requests
+    assert out.linear == 0.0
+    out = m.step(dl.Snapshot(t=t + 2.2, charging_result=True, **contact_kw))
+    assert out.done and out.success and out.state == S.SUCCEEDED
+
+
+def test_stall_without_contact_fails_after_grace():
+    m = _docking_machine(stall_contact_grace_s=3.0)
+    t = _stall_into_hold(m)
+    out = m.step(dl.Snapshot(t=t + 2.9, progress_pose=dl.Pose2D(1.0, 0, 0)))
+    assert not out.done and out.linear == 0.0
+    out = m.step(dl.Snapshot(t=t + 3.05, progress_pose=dl.Pose2D(1.0, 0, 0)))
+    assert out.done and not out.success and out.message.startswith('DOCK_STALLED')
+    assert 'DOCKING' in out.message
+
+
+def test_stall_grace_zero_fails_immediately():
+    m = _docking_machine(stall_contact_grace_s=0.0)
+    t, out = 0.05, None
+    for _ in range(60):
+        t += 0.05
+        out = m.step(dl.Snapshot(t=t, marker=dl.MarkerObs(-1.3, 0, 0, stamp=t),
+                                 progress_pose=dl.Pose2D(1.0, 0, 0)))
+        if out.done:
+            break
+    assert out.done and out.message.startswith('DOCK_STALLED') and t < 1.5
+
+
+def test_stall_guard_counts_pivot_as_progress():
+    g = dl.StallGuard(0.03, 0.2, 1.0, turn_radius=0.2)
+    # commanded 0.07 m/s, the shaper pivots at 0.3 rad/s in place: 0.06 m/s wheel travel
+    trips = [g.update(0.05 * i, dl.Pose2D(0, 0, 0.3 * 0.05 * i), -0.07) for i in range(60)]
+    assert not any(trips)
+    g = dl.StallGuard(0.03, 0.2, 1.0, turn_radius=0.2)
+    trips = [g.update(0.05 * i, dl.Pose2D(0, 0, 0.0), -0.07) for i in range(30)]
+    assert any(trips)
+
+
+def test_post_fail_watch():
+    w = dl.PostFailWatch(0.0, 10.0)
+    assert w.step(1.0, False, False, False) is None
+    assert w.step(8.0, True, False, False) == 'enable'
+    assert dl.PostFailWatch(0.0, 10.0).step(1.0, True, True, False) == 'charging'
+    assert dl.PostFailWatch(0.0, 10.0).step(1.0, True, False, True) == 'abort'
+    w = dl.PostFailWatch(0.0, 10.0)
+    assert w.step(10.5, False, False, False) == 'abort'

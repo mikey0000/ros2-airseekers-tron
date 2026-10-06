@@ -87,6 +87,9 @@ mower_docking:
     stall_timeout_s: 1.0           # ... over this window -> stall
     dig_stall_topic: /dig_stall    # slip_detector latch; a rising edge during the goal = stall
     use_dig_stall: true
+    stall_turn_radius_m: 0.2       # pivot wheel travel (|d yaw| * r) counts as progress
+    stall_contact_grace_s: 3.0     # DOCKING/FINAL stall: hold, wait for ANY contact, then fail
+    post_fail_contact_s: 10.0      # failed goal + is_docking_done within this -> enable charging
     # Approach shortcuts (2026-10-07: Nav2 "Failed to make progress" 0.25 m from the approach
     # pose, the remaining in-place pivot does not turn on turf -> cancel/re-send loop).
     map_pose_topic: /odometry/filtered_map   # map-frame pose for the distance/yaw checks

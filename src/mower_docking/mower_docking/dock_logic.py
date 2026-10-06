@@ -324,12 +324,18 @@ class StallGuard:
     Over a sliding window of ``timeout_s`` with every sample commanding
     ``|v| > min_cmd``, stall = measured displacement < ``ratio`` * expected
     (integral of |v| dt).  A missing ``progress_pose`` restarts the window.
+
+    Pivot tolerance: wheel travel from turning (``|d yaw| * turn_radius``, summed per
+    sample) counts as progress, so a downstream shaper that turns a slow steered
+    command into an in-place pivot (v=0 at the wheels, 2026-10-07) is not a "stall".
     """
 
-    def __init__(self, min_cmd: float = 0.03, ratio: float = 0.2, timeout_s: float = 1.0):
+    def __init__(self, min_cmd: float = 0.03, ratio: float = 0.2, timeout_s: float = 1.0,
+                 turn_radius: float = 0.2):
         self.min_cmd = min_cmd
         self.ratio = ratio
         self.timeout_s = timeout_s
+        self.turn_radius = turn_radius
         self.reset()
 
     def reset(self) -> None:
@@ -337,6 +343,8 @@ class StallGuard:
         self._p0: Optional[Pose2D] = None
         self._expected = 0.0
         self._last_t: Optional[float] = None
+        self._last_yaw: Optional[float] = None
+        self._turned = 0.0
         self.measured = 0.0
 
     def update(self, t: float, pose: Optional[Pose2D], cmd: float) -> bool:
@@ -345,17 +353,44 @@ class StallGuard:
             return False
         if self._t0 is None:
             self._t0, self._p0, self._last_t, self._expected = t, pose, t, 0.0
+            self._last_yaw, self._turned = pose.yaw, 0.0
             return False
         self._expected += abs(cmd) * max(0.0, t - self._last_t)
         self._last_t = t
+        if self._last_yaw is not None:
+            self._turned += abs(wrap_angle(pose.yaw - self._last_yaw)) * self.turn_radius
+        self._last_yaw = pose.yaw
         self.measured = math.hypot(pose.x - self._p0.x, pose.y - self._p0.y)
         if t - self._t0 < self.timeout_s:
             return False
-        if self.measured < self.ratio * self._expected:
+        if self.measured + self._turned < self.ratio * self._expected:
             return True
         # still moving: restart the window from here
-        self._t0, self._p0, self._expected = t, pose, 0.0
+        self._t0, self._p0, self._expected, self._turned = t, pose, 0.0, 0.0
         return False
+
+
+class PostFailWatch:
+    """After a failed dock goal: did the robot end on the contacts anyway?
+
+    ``step`` returns ``'enable'`` (is_docking_done seen, not charging: enable charging),
+    ``'charging'`` (already charging), ``'abort'`` (a new goal runs, or the window
+    expired) or ``None`` (keep watching)."""
+
+    def __init__(self, t0: float, window_s: float):
+        self.t0 = t0
+        self.window_s = window_s
+        self._contact = False
+
+    def step(self, t: float, docking_done: bool, is_charging: bool, busy: bool) -> Optional[str]:
+        if busy:
+            return 'abort'
+        self._contact = self._contact or bool(docking_done)
+        if self._contact or is_charging:
+            return 'charging' if is_charging else 'enable'
+        if t - self.t0 > self.window_s:
+            return 'abort'
+        return None
 
 
 @dataclass
@@ -410,6 +445,12 @@ class DockParams:
     stall_progress_ratio: float = 0.2
     stall_timeout_s: float = 1.0
     use_dig_stall: bool = True
+    stall_turn_radius_m: float = 0.2          # pivot wheel travel = |d yaw| * this (progress)
+    # A stall in DOCKING / FINAL_DOCKING is usually the robot pushing against the dock
+    # before the 3-sample contact debounce confirms (2026-10-07: DOCK_STALLED, then
+    # is_docking_done 8 s later). Hold still this long for ANY contact signal (raw,
+    # debounced, is_charging) before failing DOCK_STALLED.
+    stall_contact_grace_s: float = 3.0
     # Approach-pose shortcuts (2026-10-07: Nav2 "Failed to make progress" 0.25 m from the
     # approach pose because the remaining in-place pivot does not turn on turf).
     approach_skip_radius_m: float = 0.6       # already this close: skip Nav2, align + search
@@ -491,7 +532,8 @@ class DockStateMachine:
         self.dock_pose_measured = bool(dock_pose_measured)
         self._marker_seen_t: Optional[float] = None
         self._stall = StallGuard(params.stall_min_cmd, params.stall_progress_ratio,
-                                 params.stall_timeout_s)
+                                 params.stall_timeout_s, params.stall_turn_radius_m)
+        self._stall_hold: Optional[Tuple[float, str]] = None   # (t, failure message)
         self._dig_at_start = False
         self.use_vision = params.use_vision if use_vision is None else bool(use_vision)
         self.dock_pose = dock_pose
@@ -877,10 +919,28 @@ class DockStateMachine:
             self._notes.append('contact in %s (debounced=%s charging=%s): stopping, confirming'
                                % (self.state, snap.contact, snap.is_charging))
             self._calibrate(snap)
+            self._stall_hold = None
             self.state = DockState.CHARGING
             self._t_state = snap.t
             self._remaining = 0.0
             return self._out(requests=[('enable_charging',)])
+        if self._stall_hold is not None and self.state in moving:
+            t_hold, msg = self._stall_hold
+            if snap.raw_contact:
+                # stalled against the dock: the raw contact is enough here (the robot
+                # cannot push further anyway); confirm through the charging path
+                self._stall_hold = None
+                self._notes.append('contact %.1f s after the stall (raw is_docking_done): '
+                                   'docked' % (snap.t - t_hold))
+                self._calibrate(snap)
+                self.state = DockState.CHARGING
+                self._t_state = snap.t
+                self._remaining = 0.0
+                return self._out(requests=[('enable_charging',)])
+            if snap.t - t_hold >= self.p.stall_contact_grace_s:
+                self._stall_hold = None
+                self._fail(msg, snap)
+            return self._out()   # hold still while waiting for the contacts
         if snap.raw_contact and self.state in moving and self.state != DockState.NAV_TO_APPROACH:
             return self._out()   # raw contact: hold still until the debounce confirms it
 
@@ -890,8 +950,14 @@ class DockStateMachine:
                 why = 'slip detector /dig_stall' if dig else \
                     'moved %.2f m while commanding %.2f m/s' % (self._stall.measured,
                                                                  abs(self._last_cmd))
-                self._fail('%s: wheels stalled in %s (%s)' % (DockMsg.DOCK_STALLED,
-                                                             self.state, why), snap)
+                msg = '%s: wheels stalled in %s (%s)' % (DockMsg.DOCK_STALLED, self.state, why)
+                self._stall.reset()
+                if self.state != DockState.RETRY and self.p.stall_contact_grace_s > 0:
+                    self._stall_hold = (snap.t, msg)
+                    self._notes.append('%s: holding %.1f s for the contacts' % (
+                        msg, self.p.stall_contact_grace_s))
+                    return self._out()
+                self._fail(msg, snap)
                 return self._out()
 
         st = self.state
