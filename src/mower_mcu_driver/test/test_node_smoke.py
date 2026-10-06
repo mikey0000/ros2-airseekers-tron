@@ -258,7 +258,20 @@ class TestMcuNode(unittest.TestCase):
         self.assertAlmostEqual(linear, -0.3, places=1)
         self.assertAlmostEqual(angular, 0.3, places=1)
 
+    def test_brake_is_off_by_default_and_never_acts_while_interlocked(self):
+        self.assertEqual(self.node.get_parameter('brake_gain').value, 0.0)
+        self.node._params['brake_gain'] = 0.5
+        self.node._meas_linear = 0.2
+        self.node._meas_stamp = time.monotonic()
+        self.node._estop_latched = True
+        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
+        self.node._send_speed()
+        (_, _, payload), = drain_tx(self.node._ser)
+        self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+        self.node._estop_latched = False
+
     def test_proportional_brake_at_idle(self):
+        self.node._params['brake_gain'] = 0.5
         """pid_enabled=false with non-zero measured speed: send -brake_gain * measured.
 
         The MCU treats SpeedData(0,0) as 'coast', so we brake proportionally when

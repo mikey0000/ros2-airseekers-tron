@@ -523,7 +523,11 @@ class McuNode(Node):
         # This is provably stable (output always opposes motion -> exponential decay)
         # unlike a full PID which oscillates due to the MCU one-cycle measurement delay.
         # With brake_gain=0.5 at 20 Hz, the effective tau is 0.1 s (90% stop in ~0.2 s).
-        self.declare_parameter('brake_gain', 0.5)
+        # OFF by default (0.0). 2026-10-06 on the mower: lifting the robot tripped the interlock
+        # (command 0) while the brake kept acting on measured-speed noise, which fed back through
+        # the MCU into a sustained slow crawl/turn. The measured-speed semantics (true wheel
+        # speed vs. echo of our command) are still unverified; enable only after that is settled.
+        self.declare_parameter('brake_gain', 0.0)
         # Below this measured body speed the brake is NOT applied and an exact 0,0 goes on
         # the wire: measurement noise must never keep the MCU's wheel controller "active"
         # with tiny alternating commands while the mower is at rest (the suspected cause of
@@ -1284,6 +1288,10 @@ class McuNode(Node):
             db_lin = float(self.get_parameter('brake_deadband_linear').value)
             db_ang = float(self.get_parameter('brake_deadband_angular').value)
             meas_fresh = time.monotonic() - self._meas_stamp < self.speed_timeout
+            # Never brake while an interlock / e-stop holds the command at zero: safety stops must
+            # put an exact 0,0 on the wire, nothing derived from measurements.
+            if self._interlock_active() or self._estop_latched:
+                brake = 0.0
             if cmd_linear == 0.0:
                 linear = (-brake * self._meas_linear
                           if meas_fresh and abs(self._meas_linear) > db_lin else 0.0)
