@@ -62,6 +62,8 @@ class DetRosNode(Node):
         self.declare_parameter('core_mask', '0')
         self.declare_parameter('left_topic', '/left_oa_camera/image_raw')
         self.declare_parameter('right_topic', '/right_oa_camera/image_raw')
+        # Further cameras, same model / NPU core / per-camera rate cap ('' entries ignored).
+        self.declare_parameter('extra_topics', [''])
         self.declare_parameter('publish_annotated', True)
         self.declare_parameter('max_rate_hz', 5.0)  # per camera; 0 = every frame
 
@@ -90,8 +92,10 @@ class DetRosNode(Node):
         self._last = {}
         self.subs: List = []
         self.cam_ann_pubs = {}
-        for topic in (self.get_parameter('left_topic').value,
-                      self.get_parameter('right_topic').value):
+        topics = [self.get_parameter('left_topic').value,
+                  self.get_parameter('right_topic').value]
+        topics += [str(t) for t in self.get_parameter('extra_topics').value]
+        for topic in topics:
             if topic:
                 self.cam_ann_pubs[topic] = self.create_publisher(
                     Image, annotated_topic_for(topic), sensor_qos)

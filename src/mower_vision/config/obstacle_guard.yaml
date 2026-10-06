@@ -11,7 +11,7 @@ obstacle_guard:
     # Detection2DArray carries no image size: the guard reads it per frame_id from the
     # camera_info topics below. These are only the fallback until one arrives (OA cameras
     # publish 960x540 by default, cameras.launch.py oa_publish_width).
-    camera_info_topics: [/left_oa_camera/camera_info, /right_oa_camera/camera_info]
+    camera_info_topics: [/left_oa_camera/camera_info, /right_oa_camera/camera_info, /vio/right/camera_info]
     image_width: 960
     image_height: 540
     hold_s: 0.5               # per-camera debounce

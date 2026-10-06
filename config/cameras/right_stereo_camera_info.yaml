@@ -1,0 +1,30 @@
+# Metoak front stereo, RIGHT eye (cam1), 640x480 colour from /dev/video22 via stereo_cam.
+# Per-unit factory calibration, sn IC17SZ01011
+# (ros2_port_handoff/08_calibration_identity/cam1.yaml; stereo_params Tx = -60.05 mm => cam1
+# is the right eye). Unrectified (rectification = identity); plumb_bob = k1 k2 p1 p2 k3.
+image_width: 640
+image_height: 480
+camera_name: right_stereo_camera
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [448.671997, 0.0, 318.047577,
+         0.0, 448.688690, 238.347107,
+         0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.409014881, 0.199768856, 0.0000428832, 0.000107274, -0.052232463]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [448.671997, 0.0, 318.047577, 0.0,
+         0.0, 448.688690, 238.347107, 0.0,
+         0.0, 0.0, 1.0, 0.0]

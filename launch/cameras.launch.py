@@ -244,6 +244,10 @@ def generate_launch_description():
             'pixel_format': 'YUYV',
             'fps': ParameterValue(LC('stereo_fps'), value_type=float),
             'publish_on_demand': True,
+            # Right eye camera_info: det_ros runs on /vio/right/image_raw and obstacle_guard
+            # sizes its danger zone from camera_info.
+            'right_camera_info_file': PathJoinSubstitution(
+                [LC('camera_info_dir'), 'right_stereo_camera_info.yaml']),
         }],
     )
 

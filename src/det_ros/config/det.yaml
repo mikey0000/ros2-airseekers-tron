@@ -19,6 +19,8 @@ det_ros:
     core_mask: "0"            # NPU core 0 (seg_ros uses core 1)
     left_topic: "/left_oa_camera/image_raw"
     right_topic: "/right_oa_camera/image_raw"
+    # Front stereo RIGHT eye (colour 640x480, mower_cameras/stereo_cam, frame vio_camera).
+    extra_topics: ["/vio/right/image_raw"]
     # /<camera_ns>/image_annotated + /ai/det/image_annotated, drawn only while subscribed
     publish_annotated: true
     classes:
