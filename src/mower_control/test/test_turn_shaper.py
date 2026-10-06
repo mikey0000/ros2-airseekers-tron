@@ -98,7 +98,7 @@ def test_manual_and_idle_untouched(phase):
 
 def test_shape_manual_opt_in():
     ts = TurnShaper(shape_manual=True)
-    assert ts.apply(0.05, 0.3, "MANUAL_MOWING", DT) == (0.0, pytest.approx(0.25))  # one-wheel turn -> proper pivot
+    assert ts.apply(0.05, 0.3, "MANUAL_MOWING", DT) == (0.0, 0.3)  # one-wheel turn -> proper pivot, rate kept
 
 
 def test_long_pivot_never_converted_to_arc():
