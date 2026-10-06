@@ -67,3 +67,11 @@ It produces pre-split 640x480 mono8 + IMU directly from `moLocalGetOneFrame` /
 > kernel bring-up.
 
 Calibration is in `ros2_port_handoff/08_calibration_identity/{cam0,cam1,stereo_params}.yaml`.
+
+## `vio_odom_bridge` (OpenVINS output -> EKF input)
+
+`ros2 run stereo_vio_bridge vio_odom_bridge` converts `/ov_msckf/odomimu` (frame `global`,
+twist in the IMU body) into `/odometry/vio` (frame `odom`, child `base_link`, body twist only,
+variance = max(`cov_scale` x OpenVINS, `min_twist_var`), pose marked unused). Downstream:
+`mower_localization/vio_gate` -> EKF `odom2`. Started by `launch/vio.launch.py`; whole pipeline
+and test plan in `docs/vio.md`.

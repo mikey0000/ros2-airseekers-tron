@@ -44,7 +44,7 @@ class VioOdomBridge(Node):
         d("base_frame", "base_link")
         d("imu_to_base_rpy", [0.0, 0.0, 0.0])
         d("cov_scale", 10.0)        # OpenVINS velocity covariance is optimistic
-        d("min_twist_var", 0.0025)  # (0.05 m/s)^2 floor
+        d("min_twist_var", 0.04)    # (0.2 m/s)^2 floor = half the weight of wheel vx (var 0.02)
         d("max_age_s", 0.5)
         g = lambda n: self.get_parameter(n).value  # noqa: E731
         self.odom_frame = str(g("odom_frame"))

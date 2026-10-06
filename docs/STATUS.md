@@ -21,10 +21,10 @@ OpenVINS clone and is skipped. Pytest, run against stubbed ROS on the host:
 |---|---|
 | `mower_mcu_driver` | 29 |
 | `um960_gps_driver` | 47 |
-| `mower_localization` | 25 |
+| `mower_localization` | 80 |
 | `base_ble` | 14 |
 | `wit_imu_driver` | 8 (new protocol tests) |
-| `stereo_vio_bridge` | 6 |
+| `stereo_vio_bridge` | 10 |
 | `det_ros` | 4 |
 
 Fixes landed the same day as the audit:
@@ -173,6 +173,15 @@ dock contact (`is_docking_done`) and charging, side cameras through the rkisp pi
 - NTRIP: nothing configured yet (vendor file empty; the vendor source tree only holds the vendor's expired
   China Mobile CORS test accounts, not usable). Enter the provider in the GUI's NTRIP section (applied live +
   at boot) or `/userdata/mower/ntrip.yaml`.
+
+## VIO (2026-10-06, disabled by default)
+
+OpenVINS stereo VIO -> `vio_odom_bridge` -> `/odometry/vio` -> `vio_gate` (passes only when RTK
+is not FIXED and VIO is healthy) -> EKF `odom2` (twist vx/vy, low weight) via the
+`config/ekf_vio.yaml` overlay. Off unless `mower.launch.py vio:=true`; the live EKF is unchanged.
+`ov_msckf` is not in the mower image yet (`scripts/build_openvins_mower.sh`, stack stopped).
+Blockers before it is useful: stereo pairs arrive at only 1.7 Hz from `stereo_cam`, the JY61P
+gyro is clamped to 0 at rest, and no daylight/drive bag yet. Details: `docs/vio.md`.
 
 ## Open risks
 
