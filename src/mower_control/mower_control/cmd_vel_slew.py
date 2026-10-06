@@ -164,6 +164,91 @@ class DriveShaper:
         return ang
 
 
+# --------------------------------------------------------------------------- motion gate
+# Mirrors mower_mission.mission_fsm.MOTION_PHASES / DOCKED_MOTION_PHASES (kept local so
+# mower_control does not depend on mower_mission).
+MOTION_PHASES = frozenset((
+    'MANUAL_MOWING', 'RECORDING', 'UNDOCKING', 'WAITING_FOR_RTK', 'PLANNING', 'TRANSIT',
+    'MOWING', 'AREA_UNREACHABLE', 'BOUNDARY_PAUSED', 'RETURNING_HOME',
+    'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING', 'COVERAGE_FAILED_DOCKING'))
+DOCKED_MOTION_PHASES = frozenset((
+    'UNDOCKING', 'RETURNING_HOME', 'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING',
+    'COVERAGE_FAILED_DOCKING'))
+MOTION_ENABLE_MAX_AGE = 3.0   # s: the mission re-asserts /motion_enabled every 1 s
+
+
+class MotionGate:
+    """Last-line wheel interlock (pure logic; times are monotonic seconds).
+
+    Motion is allowed only when ALL hold:
+      * the mission's latched ``/motion_enabled`` is true and fresh (<= 3 s);
+      * the mission state (``high_level_status.state_name``) is a motion phase and
+        ``emergency`` is false;
+      * ``/mower_base/status`` does not report stop_triggered / lift_triggered, and,
+        when it reports docked/charging, the mission is undocking or docking.
+    Unknown inputs (nothing received yet) mean "not allowed".
+
+    ``enabled_since`` is the time the gate last opened: commands received before it
+    are stale and must never be released (lanes have to re-assert after a reset).
+    """
+
+    def __init__(self):
+        self.motion_enabled = None      # (bool, receipt)
+        self.state_name = None
+        self.emergency = True
+        self.base = None                # dict of the MowerBaseDevStatus flags we use
+        self.allowed = False
+        self.enabled_since = None
+        self.reason = 'no inputs'
+
+    def set_motion_enabled(self, value, now):
+        self.motion_enabled = (bool(value), now)
+
+    def set_status(self, state_name, emergency):
+        self.state_name = str(state_name)
+        self.emergency = bool(emergency)
+
+    def set_base(self, docked, charging, stop, lift):
+        self.base = {'docked': bool(docked), 'charging': bool(charging),
+                     'stop': bool(stop), 'lift': bool(lift)}
+
+    def _why_not(self, now):
+        me = self.motion_enabled
+        if me is None:
+            return '/motion_enabled not received'
+        if not me[0]:
+            return 'motion disabled by mission'
+        if now - me[1] > MOTION_ENABLE_MAX_AGE:
+            return '/motion_enabled stale'
+        if self.state_name is None:
+            return 'no mission status'
+        if self.emergency:
+            return 'mission emergency'
+        if self.state_name not in MOTION_PHASES:
+            return 'state %s' % self.state_name
+        b = self.base
+        if b is None:
+            return 'no /mower_base/status'
+        if b['stop']:
+            return 'stop button / estop'
+        if b['lift']:
+            return 'lifted'
+        if (b['docked'] or b['charging']) and self.state_name not in DOCKED_MOTION_PHASES:
+            return 'docked'
+        return ''
+
+    def update(self, now):
+        """Re-evaluate; returns (allowed, changed)."""
+        why = self._why_not(now)
+        allowed = not why
+        changed = allowed != self.allowed
+        if changed and allowed:
+            self.enabled_since = now
+        self.allowed = allowed
+        self.reason = why or 'allowed'
+        return allowed, changed
+
+
 def default_settings_file():
     return os.environ.get('MOWER_ROBOT_SETTINGS_FILE', '/work/config/gui/mowgli_robot.yaml')
 
@@ -249,6 +334,28 @@ class CmdVelSlewNode(Node):
                                         reliability=QoSReliabilityPolicy.RELIABLE,
                                         history=QoSHistoryPolicy.KEEP_LAST),
                              parser=parse_imu, sampled=True, with_receipt=True)
+        # Motion gate inputs (see MotionGate). /mower_base/status is 100 Hz: sampled.
+        from std_msgs.msg import Bool
+        from rclpy.qos import QoSDurabilityPolicy
+        from mower_interfaces.msg import MowerBaseDevStatus
+        from mowgli_interfaces.msg import HighLevelStatus
+        from mower_control.sub_pump import flat_parser
+        self._gate = MotionGate()
+        self._pump.subscribe(MowerBaseDevStatus, '/mower_base/status', self._on_base,
+                             QoSProfile(depth=1,
+                                        reliability=QoSReliabilityPolicy.RELIABLE,
+                                        history=QoSHistoryPolicy.KEEP_LAST),
+                             parser=flat_parser(MowerBaseDevStatus), sampled=True)
+        self._pump.subscribe(HighLevelStatus, '/behavior_tree_node/high_level_status',
+                             self._on_hl, QoSProfile(depth=10,
+                                                     reliability=QoSReliabilityPolicy.RELIABLE,
+                                                     history=QoSHistoryPolicy.KEEP_LAST))
+        self._pump.subscribe(Bool, '/motion_enabled', self._on_motion_enabled,
+                             QoSProfile(depth=1,
+                                        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                                        reliability=QoSReliabilityPolicy.RELIABLE,
+                                        history=QoSHistoryPolicy.KEEP_LAST),
+                             with_receipt=True)
         self._pump.start()
         self._pub = self.create_publisher(Twist, '/cmd_vel', qos)
 
@@ -275,6 +382,16 @@ class CmdVelSlewNode(Node):
         a, b = msg.linear, msg.angular
         self._tgt = (a.x, a.y, a.z, b.x, b.y, b.z)
         self._last_cmd_time = receipt
+
+    def _on_base(self, msg):
+        self._gate.set_base(msg.is_docking_done, msg.is_charging,
+                            msg.stop_triggered, msg.lift_triggered)
+
+    def _on_hl(self, msg):
+        self._gate.set_status(msg.state_name, msg.emergency)
+
+    def _on_motion_enabled(self, msg, receipt):
+        self._gate.set_motion_enabled(msg.data, receipt)
 
     def _on_imu(self, msg, receipt):
         q = msg.orientation
@@ -319,6 +436,21 @@ class CmdVelSlewNode(Node):
 
         stale = (self._last_cmd_time is None or
                  now - self._last_cmd_time > self._cmd_timeout)
+
+        gate = getattr(self, '_gate', None)
+        if gate is not None:
+            allowed, changed = gate.update(now)
+            if changed:
+                self.get_logger().warning('motion gate %s (%s)' % (
+                    'OPEN' if allowed else 'CLOSED', gate.reason))
+            if not allowed:
+                # Forced zero; drop the held command so nothing stale survives.
+                self._tgt = None
+                self._last_cmd_time = None
+                stale = True
+            elif self._last_cmd_time is not None and self._last_cmd_time < gate.enabled_since:
+                # Command predates the gate opening: never release it.
+                stale = True
 
         if stale:
             # Immediate exact stop (MowgliNext cmd_vel_slew): no slewing to zero.

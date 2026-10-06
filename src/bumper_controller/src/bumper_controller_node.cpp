@@ -76,10 +76,15 @@ private:
 
     void onTick() {
         if (!latest_) return;
+        // Never manoeuvre on/at the dock, while charging, with the stop button /
+        // estop latched or the mower lifted (dock contacts + latched interlock
+        // previously left a rotate-clear spinning at -0.5 rad/s forever).
+        const bool suppressed = latest_->is_docking_done || latest_->is_charging ||
+                                latest_->stop_triggered || latest_->lift_triggered;
         ctrl_.update(latest_->bumper_triggered,
                      latest_->left_bumper_triggered,
                      latest_->right_bumper_triggered,
-                     latest_->bumper_routing_enabled, 0.05);
+                     latest_->bumper_routing_enabled, 0.05, suppressed);
         ctrl_.spinOnce();
 
         // Publish the routing state + bumper cloud.

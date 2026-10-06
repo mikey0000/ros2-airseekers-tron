@@ -50,6 +50,8 @@ BumperController::BumperController(rclcpp::Node& node, Config cfg)
     cfg_.pid_kd          = node_.declare_parameter<double>("pid_kd", cfg_.pid_kd);
     cfg_.pid_max_angular = node_.declare_parameter<double>("pid_max_angular", cfg_.pid_max_angular);
     cfg_.pid_tolerance   = node_.declare_parameter<double>("pid_tolerance", cfg_.pid_tolerance);
+    cfg_.max_duration_s  = node_.declare_parameter<double>("max_duration_s", cfg_.max_duration_s);
+    if (cfg_.max_duration_s > 2.0 || cfg_.max_duration_s <= 0.0) cfg_.max_duration_s = 2.0;
 
     pid_.kp = cfg_.pid_kp;
     pid_.ki = cfg_.pid_ki;
@@ -65,13 +67,20 @@ void BumperController::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg) {
 }
 
 bool BumperController::update(bool bumper, bool bumper_l, bool bumper_r,
-                              bool routing_enabled, double /*dt*/) {
+                              bool routing_enabled, double /*dt*/, bool suppressed) {
+    const bool rising = bumper && !prev_bumper_;
+    prev_bumper_ = bumper;
     bumper_ = bumper;
     bumper_l_ = bumper_l;
     bumper_r_ = bumper_r;
     routing_enabled_ = routing_enabled;
+    suppressed_ = suppressed;
 
-    if (bumper_ && routing_enabled_ && state_ == State::IDLE) {
+    if (suppressed_) {
+        if (state_ == State::BACKING_UP) abortToIdle("suppressed (docked/charging/estop/lift)");
+        return false;
+    }
+    if (rising && routing_enabled_ && state_ == State::IDLE) {
         enterBackingUp();
         return true;
     }
@@ -79,21 +88,40 @@ bool BumperController::update(bool bumper, bool bumper_l, bool bumper_r,
 }
 
 void BumperController::injectBumper() {
-    if (routing_enabled_ && state_ == State::IDLE) {
+    if (routing_enabled_ && !suppressed_ && state_ == State::IDLE) {
         enterBackingUp();
     }
 }
 
 bool BumperController::spinOnce() {
-    if (state_ != State::BACKING_UP) return false;
-
     const auto now = node_.get_clock()->now();
-    double dt = 0.02;   // assume a ~50 Hz control timer when no prior tick exists
+    double dt = 0.05;   // nominal 20 Hz node timer when no prior tick exists
     if (last_spin_time_.nanoseconds() != 0) {
         dt = (now - last_spin_time_).seconds();
-        if (dt <= 0.0 || dt > 1.0) dt = 0.02;
+        if (dt <= 0.0 || dt > 1.0) dt = 0.05;
     }
     last_spin_time_ = now;
+    return step(dt);
+}
+
+bool BumperController::step(double dt) {
+    if (state_ != State::BACKING_UP) {
+        // Trailing zero burst after a manoeuvre, then silence.
+        if (zero_ticks_left_ > 0) {
+            zero_ticks_left_--;
+            publishTwist(0.0, 0.0);
+        }
+        return false;
+    }
+    if (suppressed_) {
+        abortToIdle("suppressed");
+        return false;
+    }
+    elapsed_ += dt;
+    if (elapsed_ > cfg_.max_duration_s) {
+        abortToIdle("time bound");
+        return false;
+    }
 
     if (rotate_counter_ == 0) {
         // Phase 1: back up in reverse for a fixed duration.
@@ -108,9 +136,8 @@ bool BumperController::spinOnce() {
         return true;
     }
 
-    // Phase 2: rotating clear. The heading PID drives yaw; it self-deactivates on
-    // convergence. A single /cmd_vel publish carries both the (zero) linear and the
-    // computed angular command.
+    // Phase 2: rotating clear (heading PID); bounded by max_duration_s above, so a
+    // robot that cannot turn (docked, estop, wheels blocked) no longer spins forever.
     double w = 0.0;
     const double err = spinRotate(dt, &w);
     publishTwist(0.0, w);
@@ -120,7 +147,6 @@ bool BumperController::spinOnce() {
             finishToIdle();
             return false;
         }
-        // try a fresh rotation attempt (alternate direction)
         const double sign = (rotate_counter_ % 2 == 0) ? 1.0 : -1.0;
         startRotate(cfg_.rotate_angle * sign);
     }
@@ -154,13 +180,22 @@ double BumperController::spinRotate(double dt, double* w) {
 void BumperController::enterBackingUp() {
     state_ = State::BACKING_UP;
     back_time_ = 0.0;
+    elapsed_ = 0.0;
     rotate_counter_ = 0;
+    zero_ticks_left_ = 0;
 }
 
 void BumperController::finishToIdle() {
     state_ = State::IDLE;
     stopRotate();
+    rotate_counter_ = 0;
     publishTwist(0.0, 0.0);
+    zero_ticks_left_ = cfg_.zero_ticks > 0 ? cfg_.zero_ticks - 1 : 0;
+}
+
+void BumperController::abortToIdle(const char* why) {
+    RCLCPP_WARN(node_.get_logger(), "bumper manoeuvre aborted: %s (%.2f s)", why, elapsed_);
+    finishToIdle();
 }
 
 void BumperController::publishTwist(double linear, double angular) {

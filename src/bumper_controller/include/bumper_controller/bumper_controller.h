@@ -36,20 +36,36 @@ public:
         double pid_kd          = 0.05;
         double pid_max_angular = 0.5;  // rad/s clamp
         double pid_tolerance   = 0.03; // rad convergence threshold
+        // Safety bounds (2026-10 docked-spin fix): the whole manoeuvre (back up +
+        // rotate) is aborted after max_duration_s whatever the heading PID says, and
+        // after it ends zeros are published for zero_ticks ticks, then nothing.
+        double max_duration_s  = 2.0;
+        int    zero_ticks      = 3;
     };
 
     explicit BumperController(rclcpp::Node& node);
     BumperController(rclcpp::Node& node, Config cfg);
 
-    // Call on every sensor update. Returns true when a state transition occurred.
-    bool update(bool bumper, bool bumper_l, bool bumper_r, bool routing_enabled, double dt);
+    // Call on every sensor update. Returns true when a manoeuvre was started.
+    // Triggers only on a RISING edge of `bumper` (a held/stuck contact never
+    // re-triggers). `suppressed` (docked / charging / estop / lift) blocks a start
+    // and aborts a manoeuvre in progress.
+    bool update(bool bumper, bool bumper_l, bool bumper_r, bool routing_enabled,
+                double dt, bool suppressed = false);
 
-    // Inject a synthetic bumper hit (wired to /test_bumper_service).
+    // Inject a synthetic bumper hit (wired to /test_bumper_service); obeys suppression.
     void injectBumper();
 
     // Service the routing loop (call from a timer). Returns true while actively
-    // backing up / rotating.
+    // backing up / rotating. spinOnce() derives dt from the node clock; step(dt)
+    // takes it explicitly (tests).
     bool spinOnce();
+    bool step(double dt);
+
+    // True while this controller is publishing anything (manoeuvre or the short
+    // trailing zero burst); false = silent.
+    bool publishing() const { return state_ == State::BACKING_UP || zero_ticks_left_ > 0; }
+    double elapsed() const { return elapsed_; }
 
     State state() const { return state_; }
     bool  routingEnabled() const { return routing_enabled_; }
@@ -74,6 +90,7 @@ private:
     void publishTwist(double linear, double angular);
     void enterBackingUp();
     void finishToIdle();
+    void abortToIdle(const char* why);
     void startRotate(double delta_yaw);   // relative yaw turn
     void stopRotate();
     double spinRotate(double dt, double* w);  // returns heading error; sets *w (rad/s)
@@ -94,6 +111,10 @@ private:
 
     // back-up progress: seconds elapsed in reverse (drives the fixed back duration)
     double back_time_ = 0.0;
+    double elapsed_ = 0.0;          // whole-manoeuvre time (bounded by max_duration_s)
+    int zero_ticks_left_ = 0;       // trailing zero publishes still owed
+    bool prev_bumper_ = false;      // edge detection
+    bool suppressed_ = false;
     rclcpp::Time last_spin_time_;
 
     std::shared_ptr<rclcpp::Publisher<geometry_msgs::msg::Twist>> cmd_vel_pub_;

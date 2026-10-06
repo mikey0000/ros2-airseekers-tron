@@ -21,6 +21,8 @@
        slip_detector falls back to /odom (nav_msgs/Odometry) from
        mower_mcu_driver. -->
   <depend>sensor_msgs</depend>
+  <depend>mower_interfaces</depend>
+  <depend>mowgli_interfaces</depend>
 
   <!-- imu_cal persists biases to YAML -->
   <exec_depend>python3-yaml</exec_depend>

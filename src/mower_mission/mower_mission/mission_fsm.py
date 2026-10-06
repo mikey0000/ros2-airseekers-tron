@@ -144,6 +144,17 @@ MISSION_PHASES = ('UNDOCKING', 'WAITING_FOR_RTK', 'PLANNING', 'MOWING', 'TRANSIT
                   'AREA_UNREACHABLE', 'BOUNDARY_PAUSED')
 DOCK_PHASES = ('RETURNING_HOME', 'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING',
                'COVERAGE_FAILED_DOCKING')
+# Phases in which the wheels may move (published as latched /motion_enabled and
+# enforced by mower_control/cmd_vel_slew's motion gate). Everything else -- IDLE*,
+# CHARGING, EMERGENCY, BOUNDARY_EMERGENCY_STOP, MOWING_COMPLETE/INCOMPLETE,
+# NAV_TO_DOCK_FAILED, PREFLIGHT_CHECK, RAIN_WAITING, ... -- forces zero.
+# RECORDING is joystick driving (boundary recording) like MANUAL_MOWING.
+MOTION_PHASES = ('MANUAL_MOWING', 'RECORDING', 'UNDOCKING', 'WAITING_FOR_RTK',
+                 'PLANNING', 'TRANSIT', 'MOWING', 'AREA_UNREACHABLE',
+                 'BOUNDARY_PAUSED') + DOCK_PHASES
+# Phases allowed to move while the base reports docked/charging (explicit undock;
+# docking itself ends on the contacts).
+DOCKED_MOTION_PHASES = ('UNDOCKING',) + DOCK_PHASES
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +496,15 @@ class MissionFSM:
             'is_charging': bool(i.is_charging),
             'emergency': self.phase == 'EMERGENCY' or self._emergency,
         }
+
+    def motion_enabled(self):
+        """True only when the wheels may move (see MOTION_PHASES)."""
+        if self._emergency or self.phase not in MOTION_PHASES:
+            return False
+        i = self.inputs
+        if (i.docked or i.is_charging) and self.phase not in DOCKED_MOTION_PHASES:
+            return False
+        return True
 
     # ==================================================================
     # effect helpers

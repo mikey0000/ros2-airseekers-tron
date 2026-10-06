@@ -183,6 +183,10 @@ class MissionNode(Node):
         self._traj_pub = self.create_publisher(Path, p['recording_trajectory_topic'], 10)
         self._plan_pub = self.create_publisher(Path, p['full_plan_topic'], latched)
         self._twist_pub = self.create_publisher(Twist, p['emergency_twist_topic'], 10)
+        # Motion-enable latch (consumed by mower_control/cmd_vel_slew's motion gate).
+        self._motion_pub = self.create_publisher(Bool, '/motion_enabled', latched)
+        self._motion_enabled = None
+        self._motion_pub_t = 0.0
         self._settings_pub = self.create_publisher(String, p['active_area_settings_topic'],
                                                    latched)
 
@@ -421,6 +425,18 @@ class MissionNode(Node):
         with self._lock:
             self._pump.poll()
             self._execute(self.fsm.tick(time.monotonic()))
+            self._publish_motion_enabled()
+
+    def _publish_motion_enabled(self):
+        """Latched /motion_enabled: on change, and re-asserted every 1 s."""
+        en = bool(self.fsm.motion_enabled())
+        now = time.monotonic()
+        if en != self._motion_enabled or now - self._motion_pub_t >= 1.0:
+            if en != self._motion_enabled:
+                self.get_logger().info('motion_enabled -> %s (%s)' % (en, self.fsm.phase))
+            self._motion_enabled = en
+            self._motion_pub_t = now
+            self._motion_pub.publish(Bool(data=en))
 
     def _burst_tick(self):
         if time.monotonic() < self._burst_until:
@@ -433,6 +449,7 @@ class MissionNode(Node):
             self.get_logger().info('high_level_control(%d) -> %s [%s]' % (
                 req.command, ok, self.fsm.phase))
             self._execute(fx)
+            self._publish_motion_enabled()
         resp.success = bool(ok)
         return resp
 
@@ -442,6 +459,7 @@ class MissionNode(Node):
             ok, fx = self.fsm.start_in_area(int(req.area), time.monotonic())
             self.get_logger().info('start_in_area(%d) -> %s' % (req.area, ok))
             self._execute(fx)
+            self._publish_motion_enabled()
         resp.success = bool(ok)
         return resp
 

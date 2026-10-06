@@ -1822,3 +1822,67 @@ def test_boundary_recovery_failures_stop_in_place_incomplete():
     assert ResumeCursor.loads(h.saved).areas[0].completed == set()
     start_until_planning(h)
     assert h.fsm.mission.resume
+
+
+# ---------------------------------------------------------------------------
+# /motion_enabled (wheel motion latch)
+# ---------------------------------------------------------------------------
+NO_MOTION = ('IDLE', 'IDLE_DOCKED', 'CHARGING', 'EMERGENCY', 'BOUNDARY_EMERGENCY_STOP',
+             'MOWING_COMPLETE', 'MOWING_INCOMPLETE', 'NAV_TO_DOCK_FAILED',
+             'PREFLIGHT_CHECK', 'RAIN_WAITING', 'RECORDING_COMPLETE', 'UNDOCK_FAILED')
+MOTION = ('MANUAL_MOWING', 'RECORDING', 'TRANSIT', 'MOWING', 'BOUNDARY_PAUSED',
+          'RETURNING_HOME', 'LOW_BATTERY_DOCKING', 'UNDOCKING')
+
+
+@pytest.mark.parametrize('phase', NO_MOTION)
+def test_motion_disabled_in_non_motion_states(phase):
+    h = Harness()
+    h.fsm.phase = phase
+    assert h.fsm.motion_enabled() is False
+
+
+@pytest.mark.parametrize('phase', MOTION)
+def test_motion_enabled_in_motion_states_off_dock(phase):
+    h = Harness()
+    h.fsm.phase = phase
+    assert h.fsm.motion_enabled() is True
+
+
+@pytest.mark.parametrize('phase', [p for p in MOTION
+                                   if p not in ('UNDOCKING', 'RETURNING_HOME',
+                                                'LOW_BATTERY_DOCKING')])
+def test_motion_disabled_when_docked_without_undock(phase):
+    h = Harness()
+    h.fsm.phase = phase
+    h.fsm.inputs.docked = True
+    assert h.fsm.motion_enabled() is False
+    h.fsm.inputs.docked = False
+    h.fsm.inputs.is_charging = True
+    assert h.fsm.motion_enabled() is False
+
+
+def test_motion_enabled_only_after_explicit_undock():
+    h = Harness()
+    h.fsm.inputs.docked = True
+    h.fsm.inputs.is_charging = True
+    h.tick()
+    assert h.name == 'CHARGING' and not h.fsm.motion_enabled()
+    h.cmd(f.CMD_MANUAL_MOW)            # teleop while docked: still no motion
+    assert not h.fsm.motion_enabled()
+    h.cmd(f.CMD_STOP)
+    h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'UNDOCKING' and h.fsm.motion_enabled()
+
+
+def test_motion_disabled_on_emergency_and_not_restored_by_reset():
+    h = Harness()
+    h.cmd(f.CMD_MANUAL_MOW)
+    assert h.fsm.motion_enabled()
+    h.fsm.inputs.emergency_active = True
+    h.tick()
+    assert h.name == 'EMERGENCY' and not h.fsm.motion_enabled()
+    h.fsm.inputs.emergency_active = False
+    h.tick()
+    # emergency cleared -> idle, not back to a motion state
+    assert h.name == 'IDLE' and not h.fsm.motion_enabled()
