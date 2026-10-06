@@ -90,7 +90,11 @@ class AlignParams:
 
     def __init__(self, **kw):
         self.min_speed = 0.12            # m/s |cmd linear| (the undock runs at 0.15)
-        self.max_turn_rate = 0.05        # rad/s |cmd angular|
+        self.max_turn_rate = 0.25        # rad/s |cmd angular|: joystick jitter is tolerated here;
+                                         # straightness is judged from the GPS chord (max_lateral)
+                                         # and the gyro (max_gyro_rate, max_imu_yaw_change)
+        self.max_gyro_rate = 0.15        # rad/s |measured yaw rate| while in a window
+        self.dock_yaw_trusted = False    # the dock yaw in dock_pose.yaml was measured (not 0.0 placeholder)
         self.cmd_timeout = 0.5           # s; older /cmd_vel counts as "stopped"
         self.min_fix_type = 2            # GnssStatus: 2 RTK float, 3 RTK fixed
         self.max_position_variance = 1.0  # m^2 sanity cap (UM960 reports HDOP-based cov)
@@ -161,6 +165,7 @@ class HeadingEstimator:
         self.imu_yaw = None
         self.imu_t = None
         self.gyro_z = 0.0
+        self.gate_reason = ''
         self.cmd = (0.0, 0.0)
         self.cmd_t = None
         self.fix_type = None
@@ -212,6 +217,7 @@ class HeadingEstimator:
             else round(math.degrees(wrap(self.imu_yaw + self.offset)), 2),
             'docked': self.docked,
             'event': self.last_event,
+            'gate': self.gate_reason,
         }
         if self.last_cog is not None:
             t, cog, meas, dist = self.last_cog
@@ -327,6 +333,10 @@ class HeadingEstimator:
         self.docked = docked
         if not docked or self.dock_yaw is None or self.imu_yaw is None:
             return
+        if not p.dock_yaw_trusted:
+            # An unmeasured dock yaw (0.0 placeholder) seeded a wrong offset once and it was
+            # persisted; refuse to seed until the operator marks the dock yaw as measured.
+            return
         if now - self.docked_since < p.dock_settle:
             return
         cog_fresh = (self.source in (SOURCE_COG, SOURCE_FILE_VERIFIED) and self.updated_at is not None
@@ -355,6 +365,9 @@ class HeadingEstimator:
         ok, direction = self._straight_motion(now, variance)
         w = self._win
         if not ok:
+            if w is not None and len(w.pts) > 1:
+                d0 = math.hypot(w.pts[-1][0] - w.x0, w.pts[-1][1] - w.y0)
+                self.last_event = 'COG window reset after %.2f m: %s' % (d0, self.gate_reason)
             self._win = None
             return None
         if w is None or w.direction != direction or now - w.t0 > p.max_window_time:
@@ -377,16 +390,27 @@ class HeadingEstimator:
         if self.cmd_t is None or now - self.cmd_t > p.cmd_timeout:
             return False, 0
         v, wz = self.cmd
-        if abs(v) < p.min_speed or abs(wz) >= p.max_turn_rate:
+        if abs(v) < p.min_speed:
+            self.gate_reason = 'slow (%.2f m/s < %.2f)' % (abs(v), p.min_speed)
+            return False, 0
+        if abs(wz) >= p.max_turn_rate:
+            self.gate_reason = 'turning (cmd %.2f rad/s)' % wz
             return False, 0
         if self.fix_type is None or self.fix_t is None or now - self.fix_t > p.gps_timeout \
                 or self.fix_type < p.min_fix_type or self.fix_type > 3:
+            self.gate_reason = 'no RTK (fix_type %s)' % self.fix_type
             return False, 0
         if variance is not None and p.max_position_variance > 0 and \
                 variance > p.max_position_variance:
+            self.gate_reason = 'GPS variance %.2f m^2' % variance
             return False, 0
         if self.imu_t is None or now - self.imu_t > p.imu_timeout:
+            self.gate_reason = 'no IMU'
             return False, 0
+        if abs(self.gyro_z) >= p.max_gyro_rate:
+            self.gate_reason = 'turning (gyro %.2f rad/s)' % self.gyro_z
+            return False, 0
+        self.gate_reason = ''
         return True, (1 if v > 0 else -1)
 
     def _finish_window(self, now, w, dx, dy, dist):

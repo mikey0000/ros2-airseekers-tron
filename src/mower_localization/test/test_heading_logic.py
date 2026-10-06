@@ -163,7 +163,7 @@ def test_consistent_outliers_reseed():
 
 
 def test_dock_seed_sign_convention():
-    s = Sim(true_offset_deg=70.0)
+    s = Sim(true_offset_deg=70.0, dock_yaw_trusted=True)
     s.yaw = D(-100.0)            # docked robot heading == dock yaw (faces out of the dock)
     s.est.on_dock_pose(0.0, 0.0, D(-100.0))
     s.run(0.0, 0.0, 0.5)
@@ -180,7 +180,7 @@ def test_dock_seed_sign_convention():
 
 
 def test_dock_seed_does_not_override_fresh_cog_and_wrong_dock_yaw_replaced():
-    s = Sim(true_offset_deg=70.0)
+    s = Sim(true_offset_deg=70.0, dock_yaw_trusted=True)
     s.est.on_dock_pose(0.0, 0.0, D(0.0))    # unmeasured dock yaw; robot really faces 120
     s.yaw = D(120.0)
     s.run(0.0, 0.0, 0.1)
@@ -352,3 +352,35 @@ def test_old_file_without_imu_yaw_stays_file(tmp_path):
     for k in range(5):
         e.on_gps(0.1 + 0.1 * k, 0.0, 0.0, 0.2)
     assert e.source == hl.SOURCE_FILE
+
+
+def test_untrusted_dock_yaw_never_seeds():
+    """A 0.0 placeholder dock yaw once poisoned the persisted offset: no seed unless trusted."""
+    s = Sim(true_offset_deg=70.0)
+    s.est.on_dock_pose(0.0, 0.0, 0.0)
+    s.run(0.0, 0.0, 0.1)
+    s.est.on_docked(s.t, True)
+    s.run(0.0, 0.0, 3.0)
+    s.est.on_docked(s.t, True)
+    assert s.est.source == hl.SOURCE_NONE and not s.est.aligned
+
+
+def test_joystick_jitter_does_not_reset_window():
+    """Small commanded angular jitter (GUI joystick) must not kill the COG window; the
+    straightness check is the GPS chord + gyro."""
+    s = Sim(true_offset_deg=-150.0)
+    steps = 0
+    while steps < 800 and s.est.source != hl.SOURCE_COG:
+        # alternate +-0.12 rad/s commanded jitter while the robot actually drives straight
+        s.est.on_cmd(s.t, 0.3, 0.12 if steps % 2 else -0.12)
+        s.run(0.3, 0.0, 0.1)
+        steps += 1
+    assert s.est.source == hl.SOURCE_COG and abs(s.heading_error()) < 1.0
+
+
+def test_real_turn_resets_window_with_reason():
+    s = Sim(true_offset_deg=-150.0)
+    s.run(0.3, 0.0, 1.0)          # 0.3 m straight, window open
+    s.run(0.3, 0.5, 0.5)          # real turn: gyro 0.5 rad/s
+    assert s.est.source != hl.SOURCE_COG
+    assert 'window reset' in s.est.last_event and 'turning' in s.est.last_event
