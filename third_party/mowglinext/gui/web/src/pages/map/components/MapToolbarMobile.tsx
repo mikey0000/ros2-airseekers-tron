@@ -36,9 +36,12 @@ import {
     ImportOutlined,
     EyeOutlined,
     SettingOutlined,
+    LogoutOutlined,
 } from "@ant-design/icons";
 import {canPreviewPlan} from "../../../hooks/usePlanPreview.ts";
 import {PREVIEW_ALL_KEY} from "./MapToolbar.tsx";
+import {confirmUndock} from "./undockConfirm.ts";
+import {canUndock} from "../../../utils/missionStates.ts";
 import type {MenuInfo} from "rc-menu/lib/interface";
 import AsyncButton from "../../../components/AsyncButton.tsx";
 import type {Feature} from "geojson";
@@ -99,6 +102,8 @@ interface MapToolbarMobileProps {
     emergency?: boolean;
     onStart?: () => Promise<void>;
     onHome?: () => Promise<void>;
+    /** Standalone undock (shown only while docked: IDLE_DOCKED / CHARGING). */
+    onUndock?: () => Promise<void>;
     onEmergencyOn?: () => Promise<void>;
     onEmergencyOff?: () => Promise<void>;
     onAreaRecording?: () => Promise<void>;
@@ -122,12 +127,12 @@ export const MapToolbarMobile = ({
     onPlaceDock, dockPlacementMode, onDrawPath, onConnectDock, dockAvailable,
     onDrawPathToDock, onEditPath, editPathEnabled,
     stateName, highLevelState, emergency,
-    onStart, onHome, onEmergencyOn, onEmergencyOff,
+    onStart, onHome, onUndock, onEmergencyOn, onEmergencyOff,
     onAreaRecording, onMowNextArea, onContinueOrPause,
     onBladeForward, onBladeBackward, onBladeOff,
 }: MapToolbarMobileProps) => {
     const {colors, displayMode} = useThemeMode();
-    const {notification} = App.useApp();
+    const {notification, modal} = App.useApp();
     const {t} = useTranslation();
     const [mowLoading, setMowLoading] = useState(false);
     const [previewLoading, setPreviewLoading] = useState(false);
@@ -429,6 +434,16 @@ export const MapToolbarMobile = ({
                             style={touchTarget}
                         />
                     )
+                )}
+
+                {!isRecording && onUndock && canUndock(stateName) && (
+                    <AsyncButton
+                        size="large"
+                        icon={<LogoutOutlined />}
+                        onAsyncClick={() => confirmUndock(modal, t, onUndock)}
+                        aria-label={t("mapToolbarMobile.undock")}
+                        style={touchTarget}
+                    />
                 )}
 
                 <Button

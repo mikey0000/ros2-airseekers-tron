@@ -16,6 +16,9 @@ export const HL_STATE_MANUAL_MOWING = 4;
 export const CMD_START = 1;
 export const CMD_HOME = 2;
 export const CMD_STOP = 8;
+/** Airseekers mission_fsm CMD_UNDOCK: short straight drive off the dock, then idle.
+ *  Sent through the Go provider's "undock" route. */
+export const CMD_UNDOCK = 9;
 export const CMD_RESET_EMERGENCY = 254;
 
 /** Mission-in-progress phases published by mission_fsm. */
@@ -75,3 +78,12 @@ export const canHome = (_state: S, name: N): boolean =>
 /** STOP asks for a confirm only when the blade is actually spinning on the lawn. */
 export const stopNeedsConfirm = (name: N, bladeOn: boolean | undefined): boolean =>
     !!bladeOn && (name === "MOWING" || name === "MANUAL_MOWING");
+
+/** Resting on the dock (mission FSM / BT idle names while dock contact is reported). */
+export const DOCKED_NAMES = ["IDLE_DOCKED", "CHARGING"] as const;
+
+export const isDocked = (name: N): boolean =>
+    !!name && (DOCKED_NAMES as readonly string[]).includes(name);
+
+/** Undock (Command 9) is offered only while the robot sits on the dock. */
+export const canUndock = (name: N): boolean => isDocked(name);

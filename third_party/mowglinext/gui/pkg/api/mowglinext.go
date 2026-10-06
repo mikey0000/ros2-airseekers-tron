@@ -25,6 +25,10 @@ import (
 // block a delivery goroutine forever; on timeout the connection is closed.
 const wsWriteTimeout = 5 * time.Second
 
+// CommandUndock is the Airseekers high_level_control code for a standalone
+// undock (mower_mission CMD_UNDOCK). Not part of upstream HighLevelControl.srv.
+const CommandUndock uint8 = 9
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize: 1024,
 	// Larger write buffer so big frames (OccupancyGrid, /scan) aren't chopped
@@ -589,7 +593,7 @@ func subscribe(provider types.IRosProvider, c *gin.Context, conn *websocket.Conn
 // @Tags mowglinext
 // @Accept  json
 // @Produce  json
-// @Param command path string true "command to call, could be: high_level_control, emergency, mow_enabled, start_in_area"
+// @Param command path string true "command to call, could be: high_level_control, undock, emergency, mow_enabled, start_in_area"
 // @Param CallReq body map[string]interface{} true "request body"
 // @Success 200 {object} OkResponse
 // @Failure 500 {object} ErrorResponse
@@ -618,6 +622,15 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 				return
 			}
 			err = provider.CallService(ctx, "/behavior_tree_node/high_level_control", &CallReq, &mowgli.HighLevelControlRes{}, "mowgli_interfaces/srv/HighLevelControl")
+		case "undock":
+			// Airseekers: standalone undock (mission_fsm CMD_UNDOCK = 9) — drive
+			// manual_undock_distance_m straight off the dock and idle there. The
+			// mission refuses it unless docked (IDLE_DOCKED / CHARGING).
+			var res mowgli.HighLevelControlRes
+			err = provider.CallService(ctx, "/behavior_tree_node/high_level_control", &mowgli.HighLevelControlReq{Command: CommandUndock}, &res, "mowgli_interfaces/srv/HighLevelControl")
+			if err == nil && !res.Success {
+				err = errors.New("undock refused: the mower must be docked (IDLE_DOCKED or CHARGING)")
+			}
 		case "emergency":
 			var CallReq mowgli.EmergencyStopReq
 			err = c.BindJSON(&CallReq)

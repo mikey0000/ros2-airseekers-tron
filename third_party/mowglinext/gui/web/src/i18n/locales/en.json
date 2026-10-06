@@ -1517,6 +1517,10 @@
     }
   },
   "mapToolbar": {
+    "undock": "Undock",
+    "undockCancel": "Cancel",
+    "undockConfirmTitle": "Undock the mower?",
+    "undockConfirmContent": "The mower will drive about half a metre forward off the dock and stop there (charging stops). Make sure the area in front of the dock is clear.",
     "actionFailed": "Action failed",
     "darkMap": "Dark map",
     "satellite": "Satellite",
@@ -1578,6 +1582,7 @@
     "hide": "Hide"
   },
   "mapToolbarMobile": {
+    "undock": "Undock",
     "areaSettings": "Area mow settings",
     "actionFailed": "Action failed",
     "darkMap": "Dark map",

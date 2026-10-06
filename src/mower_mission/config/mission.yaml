@@ -33,6 +33,7 @@ behavior_tree_node:
     # --- docking ---------------------------------------------------------
     use_docking_server: true          # false: undock with /backup + /charging, dock = nav to dock_pose
     undock_distance_m: 0.8            # vendor undock_point (0.8, 0)
+    manual_undock_distance_m: 0.5     # standalone UNDOCK button (Command 9)
     undock_speed_mps: 0.15
     dock_use_vision: true
     dock_timeout_s: 180.0             # passed in the Dock goal

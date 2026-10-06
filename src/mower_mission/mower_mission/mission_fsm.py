@@ -48,6 +48,9 @@ CMD_RECORD_FINISH = 5
 CMD_RECORD_CANCEL = 6
 CMD_MANUAL_MOW = 7
 CMD_STOP = 8
+# Airseekers extension (no MowgliNext equivalent): leave the dock by a short straight
+# drive and stay idle off the dock. 9 is unused by HighLevelControl.srv.
+CMD_UNDOCK = 9
 CMD_RESET_EMERGENCY = 254
 CMD_DELETE_MAPS = 255
 
@@ -330,6 +333,7 @@ class Params:
     rain_delay_minutes: float = 30.0
     use_docking_server: bool = True
     undock_distance_m: float = 0.8
+    manual_undock_distance_m: float = 0.5    # standalone UNDOCK command (GUI button)
     undock_speed_mps: float = 0.15
     dock_use_vision: bool = True
     dock_timeout_s: float = 180.0
@@ -500,6 +504,7 @@ class MissionFSM:
         self._service = None
         self._emergency = False
         self._dock_purpose = None
+        self._manual_undocking = False           # standalone UNDOCK (CMD_UNDOCK) in flight
         self._resume_after = None           # None | 'rain' | 'charge'
         self._rain_since = None
         self._rain_clear_since = None
@@ -678,6 +683,7 @@ class MissionFSM:
         self._action = None
         self._service = None
         self._enum = None
+        self._manual_undocking = False
         self._fx.append(CancelActions(reason))
 
     def _persist(self):
@@ -1255,6 +1261,8 @@ class MissionFSM:
             return True
         if cmd == CMD_MANUAL_MOW:
             return self._manual_mow()
+        if cmd == CMD_UNDOCK:
+            return self._manual_undock()
         self._log('warn', 'command %d not supported' % cmd)
         return False
 
@@ -1283,6 +1291,7 @@ class MissionFSM:
             self._fx.append(PublishTrajectory([]))
         self._resume_after = None
         self._dock_purpose = None
+        self._manual_undocking = False
         if self.phase != 'EMERGENCY':
             self._go_idle('stopped')
 
@@ -1476,18 +1485,31 @@ class MissionFSM:
         self.mission = None
         self._go_idle('start failed: %s' % reason)
 
-    def _undock(self):
+    def _manual_undock(self):
+        """UNDOCK command: drive straight off the dock, then idle off the dock."""
+        if self.phase not in ('IDLE_DOCKED', 'CHARGING') or not self._at_dock() \
+                or self.mission is not None:
+            self._log('warn', 'UNDOCK refused: not docked (phase %s)' % self.phase)
+            return False
+        self._resume_after = None
+        self._manual_undocking = True
+        self._log('info', 'UNDOCK: driving %.2f m off the dock' % self.p.manual_undock_distance_m)
+        self._undock(self.p.manual_undock_distance_m)
+        return True
+
+    def _undock(self, distance=None):
+        distance = self.p.undock_distance_m if distance is None else float(distance)
         self._blade_off('undock')
         self._go('UNDOCKING', '')
         if self.p.use_docking_server:
             self._start_action(ACT_UNDOCK, {
-                'distance_m': self.p.undock_distance_m,
+                'distance_m': distance,
                 'speed_mps': self.p.undock_speed_mps,
                 'wait_for_rtk': False,
                 'rtk_timeout_s': self.p.rtk_timeout_s}, self.p.undock_timeout_s)
         else:
             self._call(SRV_CHARGING, {'enable': False}, track=False)
-            self._start_action(ACT_BACKUP, {'distance_m': self.p.undock_distance_m,
+            self._start_action(ACT_BACKUP, {'distance_m': distance,
                                             'speed_mps': self.p.undock_speed_mps},
                                self.p.undock_timeout_s)
 
@@ -2206,6 +2228,19 @@ class MissionFSM:
                 if outcome == UNAVAILABLE:
                     why = 'docking action server unavailable'
                 self._dock_failed(why)
+            return
+        if self._manual_undocking and name in (ACT_UNDOCK, ACT_BACKUP):
+            self._manual_undocking = False
+            if outcome == SUCCEEDED and result.get('success', True):
+                self._log('info', 'UNDOCK done: idle off the dock')
+                self._go_idle('undocked')
+            else:
+                why = result.get('message') or outcome
+                if outcome == UNAVAILABLE:
+                    why = '/mower_docking/undock action server unavailable' \
+                        if name == ACT_UNDOCK else '/backup action server unavailable'
+                self._log('error', 'undock failed: %s' % why)
+                self._go('UNDOCK_FAILED', why)
             return
         m = self.mission
         if m is None:

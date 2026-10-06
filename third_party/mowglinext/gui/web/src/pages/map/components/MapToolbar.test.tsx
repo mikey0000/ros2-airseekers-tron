@@ -1,6 +1,7 @@
 import {describe, it, expect, vi, beforeEach} from 'vitest';
 import {render, screen} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import {App as AntApp} from 'antd';
 import {MapToolbar} from './MapToolbar.tsx';
 import en from "../../../i18n/locales/en.json";
 
@@ -163,5 +164,27 @@ describe('MapToolbar', () => {
         expect(screen.queryByText(en.planPreview.button)).not.toBeInTheDocument();
         rerender(<MapToolbar {...defaultProps} stateName="IDLE" />);
         expect(screen.queryByText(en.planPreview.button)).not.toBeInTheDocument();
+    });
+
+    describe('Undock button', () => {
+        const onUndock = vi.fn().mockResolvedValue(undefined);
+        it.each(['IDLE_DOCKED', 'CHARGING'])('is shown when docked (%s), Home stays', (s) => {
+            render(<MapToolbar {...defaultProps} stateName={s} onUndock={onUndock} />);
+            expect(screen.getByText(en.mapToolbar.undock)).toBeInTheDocument();
+            expect(screen.getByText(en.mapToolbar.home)).toBeInTheDocument();
+        });
+        it.each(['IDLE', 'MOWING', 'UNDOCKING', 'RETURNING_HOME', 'RECORDING', 'EMERGENCY'])('is hidden in %s', (s) => {
+            render(<MapToolbar {...defaultProps} stateName={s} onUndock={onUndock} />);
+            expect(screen.queryByText(en.mapToolbar.undock)).not.toBeInTheDocument();
+        });
+        it('asks for confirmation before sending', async () => {
+            render(<AntApp><MapToolbar {...defaultProps} stateName="IDLE_DOCKED" onUndock={onUndock} /></AntApp>);
+            await userEvent.click(screen.getByText(en.mapToolbar.undock));
+            expect(onUndock).not.toHaveBeenCalled();
+            expect((await screen.findAllByText(en.mapToolbar.undockConfirmTitle)).length).toBeGreaterThan(0);
+            const ok = screen.getAllByRole('button', {name: en.mapToolbar.undock});
+            await userEvent.click(ok[ok.length - 1]);
+            expect(onUndock).toHaveBeenCalledTimes(1);
+        });
     });
 });

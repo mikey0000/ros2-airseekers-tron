@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {
-    canHome, canReset, canStart, canStop, isLatchedFault, isMissionActive, isNotice, stopNeedsConfirm,
+    CMD_UNDOCK, canHome, canReset, canUndock, isDocked, canStart, canStop, isLatchedFault, isMissionActive, isNotice, stopNeedsConfirm,
 } from "./missionStates.ts";
 
 // [state_name, numeric state, active, latched, stop, reset, start, home]
@@ -66,5 +66,17 @@ describe("mission state matrix", () => {
         expect(stopNeedsConfirm("MOWING", false)).toBe(false);
         expect(stopNeedsConfirm("TRANSIT", true)).toBe(false);
         expect(stopNeedsConfirm("BOUNDARY_EMERGENCY_STOP", undefined)).toBe(false);
+    });
+});
+
+describe("canUndock", () => {
+    it("is offered only while docked", () => {
+        expect(canUndock("IDLE_DOCKED")).toBe(true);
+        expect(canUndock("CHARGING")).toBe(true);
+        for (const n of ["IDLE", "MOWING", "UNDOCKING", "RETURNING_HOME", "EMERGENCY", "RECORDING", undefined, null, ""]) {
+            expect(canUndock(n)).toBe(false);
+        }
+        expect(isDocked("CHARGING")).toBe(true);
+        expect(CMD_UNDOCK).toBe(9);
     });
 });

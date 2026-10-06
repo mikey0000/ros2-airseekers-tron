@@ -92,4 +92,16 @@ describe("MapToolbarMobile", () => {
     render(<MapToolbarMobile {...defaultProps} />);
     expect(screen.queryByLabelText(en.mapToolbarMobile.areaSettings)).toBeNull();
   });
+
+  it("shows the Undock button only when docked", () => {
+    const onUndock = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(<MapToolbarMobile {...defaultProps} stateName="IDLE_DOCKED" onUndock={onUndock} />);
+    expect(screen.getByLabelText(en.mapToolbarMobile.undock)).toBeInTheDocument();
+    rerender(<MapToolbarMobile {...defaultProps} stateName="CHARGING" onUndock={onUndock} />);
+    expect(screen.getByLabelText(en.mapToolbarMobile.undock)).toBeInTheDocument();
+    for (const s of ["IDLE", "MOWING", "UNDOCKING", "RECORDING"]) {
+      rerender(<MapToolbarMobile {...defaultProps} stateName={s} onUndock={onUndock} />);
+      expect(screen.queryByLabelText(en.mapToolbarMobile.undock)).toBeNull();
+    }
+  });
 });

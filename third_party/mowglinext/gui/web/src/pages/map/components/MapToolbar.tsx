@@ -22,6 +22,7 @@ import {
     ImportOutlined,
     DeleteOutlined,
     EyeOutlined,
+    LogoutOutlined,
 } from "@ant-design/icons";
 import type {MenuInfo} from "rc-menu/lib/interface";
 import {useTranslation} from "react-i18next";
@@ -29,6 +30,8 @@ import AsyncButton from "../../../components/AsyncButton.tsx";
 import AsyncDropDownButton from "../../../components/AsyncDropDownButton.tsx";
 import type {Feature} from "geojson";
 import {canPreviewPlan} from "../../../hooks/usePlanPreview.ts";
+import {canUndock} from "../../../utils/missionStates.ts";
+import {confirmUndock} from "./undockConfirm.ts";
 
 /** Menu key of the "all areas" entry of the Preview plan dropdown. */
 export const PREVIEW_ALL_KEY = "__all__";
@@ -60,6 +63,8 @@ interface MapToolbarProps {
     onTogglePitch?: () => void;
     onStart?: () => Promise<void>;
     onHome?: () => Promise<void>;
+    /** Standalone undock (shown only while docked: IDLE_DOCKED / CHARGING). */
+    onUndock?: () => Promise<void>;
     onEmergencyOn?: () => Promise<void>;
     onEmergencyOff?: () => Promise<void>;
     onAreaRecording?: () => Promise<void>;
@@ -78,12 +83,12 @@ export const MapToolbar = ({
     onManualMode, onStopManualMode,
     onBackupMap, onRestoreMap, onDownloadGeoJSON, onImportOpenMower, onResetMowingProgress,
     onMowArea, onPreviewPlan, pitched, onTogglePitch,
-    onStart, onHome, onEmergencyOn, onEmergencyOff,
+    onStart, onHome, onUndock, onEmergencyOn, onEmergencyOff,
     onAreaRecording, onMowNextArea, onContinueOrPause,
     onBladeForward, onBladeBackward, onBladeOff,
     onRecordFinish, onRecordCancel,
 }: MapToolbarProps) => {
-    const {notification} = App.useApp();
+    const {notification, modal} = App.useApp();
     const {t} = useTranslation();
     // DIG_OBSTRUCTION is a held robot (numeric state IDLE, wheels hard-stopped
     // by firmware): the exits are Play after lifting it clear, or Home — so
@@ -195,6 +200,14 @@ export const MapToolbar = ({
                             onAsyncClick={onStart!}
                         >
                             {t("mapToolbar.start")}
+                        </AsyncButton>
+                    )}
+                    {onUndock && canUndock(stateName) && (
+                        <AsyncButton
+                            icon={<LogoutOutlined />}
+                            onAsyncClick={() => confirmUndock(modal, t, onUndock)}
+                        >
+                            {t("mapToolbar.undock")}
                         </AsyncButton>
                     )}
                     {/* Home (return-to-dock) is always available outside recording

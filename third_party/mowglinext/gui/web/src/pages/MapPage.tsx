@@ -931,6 +931,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             ? () => { setStartSheet({open: true, selection: "all"}); return Promise.resolve(); }
             : mowerAction("high_level_control", {Command: 1}),
         onHome: mowerAction("high_level_control", {Command: 2}),
+        // Go provider "undock" route -> high_level_control Command 9 (mission_fsm CMD_UNDOCK).
+        onUndock: mowerAction("undock"),
         onEmergencyOn: mowerAction("emergency", {Emergency: 1}),
         onEmergencyOff: mowerAction("emergency", {Emergency: 0}),
         onAreaRecording: mowerAction("high_level_control", {Command: 3}),

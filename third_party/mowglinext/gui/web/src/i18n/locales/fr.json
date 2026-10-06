@@ -1513,6 +1513,10 @@
     }
   },
   "mapToolbar": {
+    "undock": "Sortir de la base",
+    "undockCancel": "Annuler",
+    "undockConfirmTitle": "Sortir la tondeuse de la base ?",
+    "undockConfirmContent": "La tondeuse va avancer d'environ un demi-mètre hors de la base puis s'arrêter (la charge s'arrête). Vérifiez que la zone devant la base est dégagée.",
     "actionFailed": "Échec de l'action",
     "darkMap": "Carte sombre",
     "satellite": "Satellite",
@@ -1574,6 +1578,7 @@
     "hide": "Masquer"
   },
   "mapToolbarMobile": {
+    "undock": "Sortir de la base",
     "areaSettings": "Réglages de tonte de la zone",
     "actionFailed": "Échec de l'action",
     "darkMap": "Carte sombre",

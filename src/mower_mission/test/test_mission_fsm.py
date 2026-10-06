@@ -2369,3 +2369,112 @@ def test_edge_margin_forwarded_and_in_preview_summary():
     assert param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]['boundary_inset_m'] == 0.0
     h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan(10.5))
     assert summaries(h, m)[-1]['areas'][0]['edge_margin_m'] == 0.0
+
+
+# =====================================================================
+# standalone UNDOCK (CMD_UNDOCK, GUI "Undock" button)
+# =====================================================================
+def docked_harness(charging=False):
+    h = Harness()
+    h.fsm.inputs.docked = True
+    h.fsm.inputs.is_charging = charging
+    h.tick()
+    assert h.name == ('CHARGING' if charging else 'IDLE_DOCKED')
+    return h
+
+
+def test_undock_command_code_does_not_collide():
+    codes = (f.CMD_START, f.CMD_HOME, f.CMD_RECORD_AREA, f.CMD_S2, f.CMD_RECORD_FINISH,
+             f.CMD_RECORD_CANCEL, f.CMD_MANUAL_MOW, f.CMD_STOP, f.CMD_RESET_EMERGENCY,
+             f.CMD_DELETE_MAPS)
+    assert f.CMD_UNDOCK == 9 and f.CMD_UNDOCK not in codes
+
+
+def test_undock_refused_when_not_docked():
+    h = Harness()
+    assert h.name == 'IDLE'
+    m = h.mark()
+    assert not h.cmd(f.CMD_UNDOCK)
+    assert h.name == 'IDLE' and not h.since(m, f.StartAction)
+
+
+def test_undock_refused_while_manual_mowing_on_dock():
+    h = docked_harness()
+    assert h.cmd(f.CMD_MANUAL_MOW)
+    assert not h.cmd(f.CMD_UNDOCK)
+    assert h.name == 'MANUAL_MOWING'
+
+
+def test_undock_refused_in_emergency():
+    h = docked_harness()
+    h.fsm.inputs.emergency_active = True
+    h.tick()
+    assert not h.cmd(f.CMD_UNDOCK)
+
+
+@pytest.mark.parametrize('charging', [False, True])
+def test_undock_from_dock_drives_manual_distance_and_ends_idle(charging):
+    h = docked_harness(charging)
+    m = h.mark()
+    assert h.cmd(f.CMD_UNDOCK)
+    assert h.name == 'UNDOCKING' and h.fsm.mission is None
+    assert h.since(m, f.BladeOff)
+    g = h.goal(f.ACT_UNDOCK)
+    assert g['distance_m'] == 0.5 and g['speed_mps'] == 0.15 and g['wait_for_rtk'] is False
+    # docked motion gate: UNDOCKING may move while the base still reports docked
+    h.tick(n=3)
+    assert h.name == 'UNDOCKING'
+    h.fsm.inputs.docked = False
+    h.fsm.inputs.is_charging = False
+    h.finish(f.ACT_UNDOCK)
+    assert h.name == 'IDLE' and h.fsm.mission is None
+    h.tick(n=5)
+    assert h.name == 'IDLE'
+    # no charger re-enable once off the dock
+    assert not [c for c in h.since(m, f.CallService)
+                if c.name == f.SRV_CHARGING and c.request.get('enable')]
+
+
+def test_undock_distance_param():
+    h = Harness(manual_undock_distance_m=0.3)
+    h.fsm.inputs.docked = True
+    h.tick()
+    assert h.cmd(f.CMD_UNDOCK)
+    assert h.goal(f.ACT_UNDOCK)['distance_m'] == 0.3
+
+
+def test_undock_backup_fallback_turns_charger_off():
+    h = Harness(use_docking_server=False)
+    h.fsm.inputs.docked = True
+    h.tick()
+    m = h.mark()
+    assert h.cmd(f.CMD_UNDOCK)
+    calls = [c for c in h.since(m, f.CallService) if c.name == f.SRV_CHARGING]
+    assert calls and calls[0].request == {'enable': False}
+    assert h.goal(f.ACT_BACKUP)['distance_m'] == 0.5
+    h.fsm.inputs.docked = False
+    h.finish(f.ACT_BACKUP)
+    assert h.name == 'IDLE'
+
+
+@pytest.mark.parametrize('still_docked', [True, False])
+def test_undock_stop_midway(still_docked):
+    h = docked_harness()
+    assert h.cmd(f.CMD_UNDOCK)
+    h.fsm.inputs.docked = still_docked
+    m = h.mark()
+    assert h.cmd(f.CMD_STOP)
+    assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst)
+    assert h.name == ('IDLE_DOCKED' if still_docked else 'IDLE')
+    assert h.fsm._action is None and not h.fsm._manual_undocking
+    h.tick(n=3)
+    assert h.name == ('IDLE_DOCKED' if still_docked else 'IDLE')
+
+
+def test_undock_failure_shows_then_returns_idle_docked():
+    h = docked_harness()
+    assert h.cmd(f.CMD_UNDOCK)
+    h.finish(f.ACT_UNDOCK, f.UNAVAILABLE)
+    assert h.name == 'UNDOCK_FAILED'
+    h.tick(dt=1.0, n=6)
+    assert h.name == 'IDLE_DOCKED' and h.fsm.mission is None
