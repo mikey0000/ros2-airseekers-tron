@@ -215,7 +215,7 @@ def generate_launch_description():
         DeclareLaunchArgument('stereo_color', default_value='true',
                               description='stereo_cam: also publish <eye>/image_color (bgr8) '
                                           'for det_ros (only while subscribed).'),
-        DeclareLaunchArgument('stereo_color_fps', default_value='3.0'),
+        DeclareLaunchArgument('stereo_color_fps', default_value='5.0'),
         DeclareLaunchArgument('stereo_imu', default_value='true',
                               description='mower_cameras/stereo_imu: Metoak ICM-40608 (IIO) -> '
                                           '/stereo_imu/data.'),

@@ -183,8 +183,8 @@ var defaultCameras = []Camera{
 	{ID: "right_oa", Label: "Right obstacle camera", Topic: "/right_oa_camera/image_raw",
 		AnnotatedTopic: "/right_oa_camera/image_annotated", Width: 640, Height: 360, SourceWidth: 960, SourceHeight: 540},
 	{ID: "rear", Label: "Rear camera", Topic: "/rear_camera/image_raw", Width: 640, Height: 480},
-	{ID: "front_left", Label: "Front stereo left", Topic: "/vio/left/image_raw"},
-	{ID: "front_right", Label: "Front stereo right", Topic: "/vio/right/image_raw"},
+	{ID: "front_left", Label: "Front stereo left", Topic: "/vio/left/image_color"},
+	{ID: "front_right", Label: "Front stereo right", Topic: "/vio/right/image_color"},
 }
 
 // ProfileCameras returns the active robot profile's camera list (nil/empty =
