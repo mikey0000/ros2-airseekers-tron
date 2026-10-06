@@ -828,24 +828,40 @@ def free_corridor(grid: np.ndarray, spec: GridSpec, corridor: DockCorridor,
     grid[r0:r1 + 1, c0:c1 + 1][hit] = value
 
 
+def has_user_path(areas: List[Area]) -> bool:
+    """True when at least one navigation area carries path (channel) metadata,
+    i.e. the user drew a route the planner should follow."""
+    return any(a.is_navigation and a.channel and len(a.channel) >= 2 and a.channel_width_m > 0
+               and len(a.polygon) >= 3 for a in areas)
+
+
 def build_nav_mask(areas: List[Area], spec: GridSpec,
                    nav_margin: float = 0.35,
                    obstacle_margin: float = 0.10,
                    corridor: Optional[DockCorridor] = None,
                    soft_band: float = 0.0,
-                   return_corridor: Optional[DockCorridor] = None) -> np.ndarray:
+                   return_corridor: Optional[DockCorridor] = None,
+                   path_margin: Optional[float] = None,
+                   soft_dock_corridor_with_paths: bool = True) -> np.ndarray:
     """Navigation mask for Nav2's global costmap (static layer / keepout filter).
 
     Different semantics from the mowing mask (build_keepout_mask):
-    free = (mowing areas U navigation areas) dilated outward by ``nav_margin``
-    MINUS obstacles dilated by ``obstacle_margin``. Everything else is 100.
+    free = mowing areas dilated outward by ``nav_margin`` U navigation areas
+    (paths) dilated by ``path_margin`` (None: ``nav_margin``) MINUS obstacles
+    dilated by ``obstacle_margin``. Everything else is 100. A small
+    ``path_margin`` keeps a drawn path a narrow band the planner follows; a
+    large one would merge it into a blob between dock and lawn.
     The dock outline is deliberately NOT lethal here: it is a mowing
     exclusion, and the robot parks inside it, so making it lethal would make
     the robot's own start cell unplannable. ``nav_margin`` (default half the
     footprint width + 0.08 m) lets the robot centre sit on a coverage ring a
     few cm inside the boundary without the footprint touching lethal cells.
     ``corridor`` (see dock_corridor) is freed too, so the dock and its
-    approach pose stay reachable when the dock sits outside every area.
+    approach pose stay reachable when the dock sits outside every area. When
+    the user drew a path (has_user_path) and ``soft_dock_corridor_with_paths``,
+    only the dock -> approach capsule is freed; the automatic approach -> area
+    leg becomes SOFT_COST (90) so the planner prefers the drawn path but can
+    still fall back on the straight line.
     ``soft_band`` > 0: cells outside the free set but within ``soft_band`` of
     it get SOFT_COST (90; the keepout filter scales 0..100 linearly to costmap
     cost, 100 = lethal), so short excursions stay plannable while the planner
@@ -853,20 +869,35 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
     freed like the dock corridor. Obstacles win over everything. With no
     areas at all the mask is free (apart from obstacles)."""
     nav_margin = max(0.0, float(nav_margin))
+    path_margin = nav_margin if path_margin is None else max(0.0, float(path_margin))
     soft_band = max(0.0, float(soft_band))
+
+    def margin_of(area):
+        return path_margin if area.is_navigation else nav_margin
+
+    soft_leg = None
+    hard_corridor = corridor
+    if (corridor is not None and soft_dock_corridor_with_paths and has_user_path(areas)
+            and len(corridor.path) > 2):
+        hard_corridor = DockCorridor(corridor.path[:2], corridor.half_width,
+                                     corridor.connected, corridor.gap_m)
+        soft_leg = DockCorridor(corridor.path[1:], corridor.half_width,
+                                corridor.connected, corridor.gap_m)
     if not areas:
         mask = np.full((spec.height, spec.width), FREE, dtype=np.int8)
     else:
         mask = np.full((spec.height, spec.width), LETHAL, dtype=np.int8)
         if soft_band > 0.0:
             for area in areas:
-                _mask_polygon(mask, spec, area.polygon, SOFT_COST, nav_margin + soft_band)
+                _mask_polygon(mask, spec, area.polygon, SOFT_COST, margin_of(area) + soft_band)
             if corridor is not None:
                 free_corridor(mask, spec, corridor, SOFT_COST, corridor.half_width + soft_band)
+        if soft_leg is not None:
+            free_corridor(mask, spec, soft_leg, SOFT_COST)
         for area in areas:
-            _mask_polygon(mask, spec, area.polygon, FREE, nav_margin)
-    if corridor is not None:
-        free_corridor(mask, spec, corridor)
+            _mask_polygon(mask, spec, area.polygon, FREE, margin_of(area))
+    if hard_corridor is not None:
+        free_corridor(mask, spec, hard_corridor)
     if return_corridor is not None:
         free_corridor(mask, spec, return_corridor)
     for area in areas:

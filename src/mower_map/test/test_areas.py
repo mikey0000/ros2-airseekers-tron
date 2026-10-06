@@ -653,3 +653,62 @@ def test_return_corridor_obstacles_override():
     nav = core.build_nav_mask(s.areas, spec, 0.8, 0.10, None, 1.5, rc)
     assert _cell(spec, nav, 12.5, 5.0) == core.LETHAL
     assert _cell(spec, nav, 15.0, 5.0) == core.FREE
+
+
+def _path_case():
+    """Lawn x 2.5..8.5 (dock (0,0) yaw 0 -> approach (0.8,0) -> gap to x=2.5);
+    a drawn path from the approach curving up via y=2 into the lawn."""
+    s, dock = _far_dock_case(2.5)
+    line = [(0.8, 0.0), (0.8, 2.0), (3.0, 2.0)]
+    s.add_area('Dock path', core.buffer_polyline(line, 0.35), is_navigation=True)
+    ok, _ = s.set_channel(1, line, 0.7)
+    assert ok
+    return s, dock
+
+
+def test_nav_mask_path_margin_only_on_navigation_areas():
+    s, dock = _path_case()
+    spec = core.grid_for_polygons([a.polygon for a in s.areas], 0.1, 3.0)
+    nav = core.build_nav_mask(s.areas, spec, 0.8, 0.10, None, 0.0, None, 0.15)
+    assert _cell(spec, nav, 1.8, 1.0) == core.FREE        # lawn grown by 0.8
+    assert _cell(spec, nav, 1.6, 1.0) == core.LETHAL      # beyond 0.8 of the lawn
+    assert _cell(spec, nav, 0.8, 1.0) == core.FREE        # on the path
+    assert _cell(spec, nav, 0.8 + 0.45, 1.0) == core.FREE  # half width 0.35 + 0.15
+    assert _cell(spec, nav, 0.8 + 0.65, 1.0) == core.LETHAL
+    # default path_margin = nav_margin (old behaviour)
+    old = core.build_nav_mask(s.areas, spec, 0.8, 0.10)
+    assert _cell(spec, old, 0.8 + 0.95, 1.0) == core.FREE
+
+
+def test_dock_corridor_soft_when_user_path_exists():
+    s, dock = _path_case()
+    assert core.has_user_path(s.areas)
+    corridor = core.dock_corridor(dock, s.areas, 0.8, 0.8, 5.0)
+    # approach (0.8, 0) lies inside the path polygon -> 2-point corridor; build a
+    # 3-point one by hand to test the soft leg
+    corridor = core.DockCorridor([(0.0, 0.0), (0.8, 0.0), (2.5, 0.0)], 0.35, True, 1.7)
+    spec = core.grid_for_polygons([a.polygon for a in s.areas] + [corridor.polygon()], 0.1, 3.0)
+    nav = core.build_nav_mask(s.areas, spec, 0.8, 0.10, corridor, 1.5, None, 0.15)
+    assert _cell(spec, nav, 0.0, 0.0) == core.FREE        # dock -> approach capsule free
+    assert _cell(spec, nav, 0.8, 0.0) == core.FREE
+    assert _cell(spec, nav, 1.15, 0.0) == core.FREE       # within 0.35 beyond approach
+    assert _cell(spec, nav, 1.5, -0.1) == core.SOFT_COST  # automatic leg is soft now
+    hard = core.build_nav_mask(s.areas, spec, 0.8, 0.10, corridor, 1.5, None, 0.15, False)
+    assert _cell(spec, hard, 1.5, -0.1) == core.FREE
+    # without a user path the corridor stays free
+    plain = core.MapStore()
+    plain.load([s.areas[0]])
+    assert not core.has_user_path(plain.areas)
+    nav2 = core.build_nav_mask(plain.areas, spec, 0.8, 0.10, corridor, 1.5, None, 0.15)
+    assert _cell(spec, nav2, 1.5, -0.1) == core.FREE
+
+
+def test_soft_leg_without_soft_band_and_mowing_mask_unchanged():
+    s, dock = _path_case()
+    corridor = core.DockCorridor([(0.0, 0.0), (0.8, 0.0), (2.5, 0.0)], 0.35, True, 1.7)
+    spec = core.grid_for_polygons([a.polygon for a in s.areas] + [corridor.polygon()], 0.1, 3.0)
+    m1 = core.build_keepout_mask(s.areas, spec, None, 0.0, True)
+    nav = core.build_nav_mask(s.areas, spec, 0.8, 0.10, corridor, 0.0, None, 0.15)
+    assert _cell(spec, nav, 1.5, -0.1) == core.SOFT_COST
+    assert np.array_equal(m1, core.build_keepout_mask(s.areas, spec, None, 0.0, True))
+    assert _cell(spec, m1, 4.0, 0.0) == core.FREE         # lawn polygon unchanged

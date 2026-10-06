@@ -4327,6 +4327,7 @@
     "dockConnected": "Added a dock path ({{gap}} m to the nearest area).",
     "saveReminder": "Save the map to apply it.",
     "autoDockCorridor": "Automatic dock corridor",
+    "autoDockCorridorFallback": "Automatic dock corridor (fallback: your drawn path is preferred)",
     "notMowedHint": "This is a navigation area (path). The robot drives through it but never mows it, so it has no mow settings. Rename or delete it in the map editor.",
     "editTitle": "Edit path",
     "delete": "Delete path",

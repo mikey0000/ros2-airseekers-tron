@@ -4327,6 +4327,7 @@
     "dockConnected": "Chemin de la base ajouté ({{gap}} m jusqu’à la zone la plus proche).",
     "saveReminder": "Enregistrez la carte pour l’appliquer.",
     "autoDockCorridor": "Couloir automatique de la base",
+    "autoDockCorridorFallback": "Couloir automatique de la base (secours : votre chemin tracé est prioritaire)",
     "notMowedHint": "Ceci est une zone de navigation (chemin). Le robot la traverse mais ne la tond jamais : elle n’a donc pas de réglages de tonte. Renommez-la ou supprimez-la dans l’éditeur de carte.",
     "editTitle": "Modifier le chemin",
     "delete": "Supprimer le chemin",

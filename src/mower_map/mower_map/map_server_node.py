@@ -64,6 +64,14 @@ PARAMS = {
     # by nav_obstacle_margin_m; the dock outline is never lethal here.
     'nav_margin_m': 0.35,              # half footprint width (0.27) + 0.08
     'nav_obstacle_margin_m': 0.10,
+    # navigation areas / drawn paths are grown by this instead of nav_margin_m,
+    # so a drawn path stays a narrow band the planner follows (mowing areas keep
+    # nav_margin_m for recovery/docking from just outside)
+    'path_margin_m': 0.15,
+    # with a user path (navigation area with channel metadata) the automatic
+    # approach -> area leg of the dock corridor costs SOFT_COST (90) instead of
+    # free; the dock -> approach capsule stays free
+    'dock_corridor_soft_with_paths': True,
     # dock corridor (nav mask only): capsule of half-width nav_margin_m from the
     # dock through its approach pose to the nearest area boundary, so docking
     # still plans when the dock lies outside every drawn area.
@@ -395,7 +403,9 @@ class MapServerNode(Node):
         nav_mask = core.build_nav_mask(self.store.areas, spec,
                                        float(self.p('nav_margin_m')),
                                        float(self.p('nav_obstacle_margin_m')),
-                                       corridor, float(self.p('nav_soft_band_m')))
+                                       corridor, float(self.p('nav_soft_band_m')),
+                                       None, float(self.p('path_margin_m')),
+                                       bool(self.p('dock_corridor_soft_with_paths')))
         self.base_nav = (spec, nav_mask)
         ret = None
         self.return_anchor = None
@@ -416,7 +426,8 @@ class MapServerNode(Node):
                                                float(self.p('nav_margin_m')),
                                                float(self.p('nav_obstacle_margin_m')),
                                                corridor, float(self.p('nav_soft_band_m')),
-                                               ret)
+                                               ret, float(self.p('path_margin_m')),
+                                               bool(self.p('dock_corridor_soft_with_paths')))
         if (ret is not None) != self.return_active:
             self.get_logger().info(
                 'return corridor %s' % ('freed: (%.2f, %.2f) -> (%.2f, %.2f), %.2f m'

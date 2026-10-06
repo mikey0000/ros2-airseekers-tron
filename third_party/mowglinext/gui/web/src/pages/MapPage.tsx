@@ -1493,7 +1493,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     {corridorHover && (
                         <Popup longitude={corridorHover.lng} latitude={corridorHover.lat}
                                closeButton={false} closeOnClick={false} anchor="bottom" offset={8}>
-                            {t('mapPath.autoDockCorridor')}
+                            {pathsCollection.features.length > 0
+                                ? t('mapPath.autoDockCorridorFallback')
+                                : t('mapPath.autoDockCorridor')}
                         </Popup>
                     )}
                     {/* Saved paths (navigation areas drawn as a line): band + centreline. */}
