@@ -195,8 +195,8 @@ def test_stereo_obstacle_source():
     assert src["max_obstacle_height"] == 1.2
     assert src["obstacle_max_range"] == 2.0
     assert src["raytrace_max_range"] >= src["obstacle_max_range"]
-    assert src["observation_persistence"] == 0.5
-    assert src["expected_update_rate"] == 1.0
+    assert src["observation_persistence"] == 0.7   # 0.7 since the 2026-10-07 stale-cloud fix
+    assert src["expected_update_rate"] == 1.5   # 1.5 s since the 2026-10-07 stale-cloud fix
     assert src["inf_is_valid"] is False
     assert src["marking"] is True and src["clearing"] is True
     # the layer-wide cap must not cut the source's own band
