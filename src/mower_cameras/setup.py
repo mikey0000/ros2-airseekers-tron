@@ -28,6 +28,7 @@ setup(
             'v4l2_cam = mower_cameras.v4l2_node:main',
             'stereo_cam = mower_cameras.stereo_node:main',
             'stereo_depth = mower_cameras.stereo_depth_node:main',
+            'stereo_imu = mower_cameras.stereo_imu_node:main',
         ],
     },
 )

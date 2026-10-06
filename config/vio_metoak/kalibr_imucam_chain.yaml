@@ -1,0 +1,45 @@
+%YAML:1.0
+
+# Metoak stereo relative to its own IMU (ICM-40608, /stereo_imu/data, frame stereo_camera_imu).
+#
+# FACTORY extrinsics, no hand measurement: body_T_cam0 from the vendor VIO configs
+# (src/mower_localization/vision_localization/config/metoak/sn*_euroc_stereo_imu.yaml, identical
+# across units = mechanical constant): R_CtoI = diag(-1, 1, -1), p_CinI = (0.05143, -0.00453,
+# -0.01503) m; cam1 = body_T_cam0 * T_cam0_cam1 from this unit's factory stereo calibration
+# (sn IC17SZ01011, ros2_port_handoff/08_calibration_identity/stereo_params.yaml). OpenVINS reads
+# T_imu_cam as T_CtoI, which is exactly the vendor's body_T_cam form (no inversion).
+# Checked at rest 2026-10-07: accel (-0.02, -9.78, +0.32) m/s^2 -> IMU y = camera y (down),
+# consistent with this rotation. The same transform is in config/urdf/mower.urdf.xacro
+# (stereo_camera_optical -> stereo_camera_imu).
+#
+# Intrinsics: factory cam0/cam1 (radtan k1 k2 p1 p2; k3 ~ -0.05 dropped, OpenVINS radtan has 4).
+# Images: mono8 640x480, exact-stamp pair at 10 Hz from mower_cameras/stereo_cam.
+# CHECK (docs/vio.md 3.6): T_cam0_cam1 x = -0.060 m puts cam1 LEFT of cam0; if the first daylight
+# run gives negative depths / few stereo matches, swap the two rostopics.
+cam0:
+  T_imu_cam: # R_CtoI, p_CinI  (translation units: meters)
+    - [-1.0, 0.0, 0.0, 0.05143]
+    - [0.0, 1.0, 0.0, -0.00453]
+    - [0.0, 0.0, -1.0, -0.01503]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [1]
+  camera_model: pinhole
+  distortion_model: radtan
+  distortion_coeffs: [-0.4083914161, 0.1972861439, -0.0000793726, 0.0000277763] # k1 k2 p1 p2 (OpenVINS radtan is 4 coeffs; k3 dropped)
+  intrinsics: [449.6371155, 449.6687927, 319.9060974, 240.6614532] # fu fv cu cv
+  resolution: [640, 480]
+  rostopic: /vio/left/image_raw
+
+cam1:
+  T_imu_cam: # body_T_cam1 = body_T_cam0 * T_cam0_cam1 (ros2_port_handoff/14_vio_replacement/generate_vio_config.py)
+    - [-0.999963977, -0.00716914884, -0.00454394301, 0.111478447]
+    - [-0.00718107658, 0.999970799, 0.00261411916, -0.00394337764]
+    - [0.00452506932, 0.00264665539, -0.999986259, -0.0150247656]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [0]
+  camera_model: pinhole
+  distortion_model: radtan
+  distortion_coeffs: [-0.4090148807, 0.1997688562, 0.0000428832, 0.0001072737] # k1 k2 p1 p2
+  intrinsics: [448.6719971, 448.6886902, 318.0475769, 238.3471069] # fu fv cu cv
+  resolution: [640, 480]
+  rostopic: /vio/right/image_raw

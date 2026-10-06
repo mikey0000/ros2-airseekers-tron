@@ -1,0 +1,31 @@
+# Metoak front stereo, LEFT topic (/vio/left/image_raw) = factory cam0, 640x480 from /dev/video22
+# via stereo_cam. Per-unit factory calibration, sn IC17SZ01011
+# (ros2_port_handoff/08_calibration_identity/cam0.yaml). NOTE docs/vio.md 3.6: stereo_params
+# Tx = -60.05 mm puts cam1 LEFT of cam0, so the eye naming may be swapped; verify on a daylight
+# bag before relying on left/right. Unrectified (rectification = identity); plumb_bob = k1 k2 p1 p2 k3.
+image_width: 640
+image_height: 480
+camera_name: left_stereo_camera
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [449.637115, 0.0, 319.906097,
+         0.0, 449.668793, 240.661453,
+         0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.408391416, 0.197286144, -0.0000793726, 0.0000277763, -0.050475519]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [449.637115, 0.0, 319.906097, 0.0,
+         0.0, 449.668793, 240.661453, 0.0,
+         0.0, 0.0, 1.0, 0.0]

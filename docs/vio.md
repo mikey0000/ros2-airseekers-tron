@@ -8,7 +8,7 @@ Do not enable it on the mower until the owner approves (section 6).
 ## 1. Pipeline
 
 ```
-mower_cameras/stereo_cam ──/vio/{left,right}/image_raw (bgr8 640x480, best effort)──┐
+mower_cameras/stereo_cam ──/vio/{left,right}/image_raw (mono8 pair, 10 Hz, §7)───┐
 wit_imu_driver ───────────/imu/data (100 Hz, gravity included)──────────────────────┤
                                                                                      v
                          ov_msckf/run_subscribe_msckf  (OpenVINS, config/vio_wit/)
@@ -27,7 +27,7 @@ wit_imu_driver ───────────/imu/data (100 Hz, gravity inclu
 | Piece | File |
 |---|---|
 | OpenVINS config for the WIT IMU | `config/vio_wit/{estimator_config,kalibr_imu_chain,kalibr_imucam_chain}.yaml` |
-| (old) config for the Metoak ICM-40608 on `/vio/imu` | `config/vio/` (that IMU is not exposed, see 3.4) |
+| OpenVINS config for the Metoak ICM-40608 (`/stereo_imu/data`) | `config/vio_metoak/` (section 7; old `config/vio/` superseded) |
 | OpenVINS patch (image QoS) | `config/vio/patches/0001-ov_msckf-sensor-data-qos-for-images.patch` |
 | arm64 build | `scripts/build_openvins_mower.sh` |
 | Producers launch | `launch/vio.launch.py` (args `capture`, `config_dir`, `cov_scale`) |
@@ -171,6 +171,107 @@ against RTK on re-acquisition (jump size) with and without VIO.
 
 * arm64 build (requires stopping the stack): `scripts/build_openvins_mower.sh build`.
 * Daylight static bag + the 2-min manual drive bag (5.1, 5.2).
-* Stereo pairing/rate fix in `stereo_cam` (3.2) — prerequisite for useful VIO.
-* Decide whether to bind the Metoak ICM-40608 (3.4).
+* ~~Stereo pairing/rate fix in `stereo_cam` (3.2)~~ done 2026-10-07 (section 7.1).
+* ~~Bind the Metoak ICM-40608 (3.4)~~ done 2026-10-07 (section 7.2); persisting the two host
+  settings across reboots needs approval (7.4).
 * Approval to run with `vio:=true` (EKF behaviour changes only then).
+
+## 7. Stereo pair + Metoak IMU, clean room (2026-10-07)
+
+### 7.1 Synchronised 10 Hz mono8 pair (`mower_cameras/stereo_cam`)
+
+* `/vio/{left,right}/image_raw`: mono8 640x480, both eyes cut from ONE `/dev/video22` buffer
+  (Y plane only, no colour conversion, straight into pre-serialised Images), SAME header stamp =
+  V4L2 buffer timestamp (kernel CLOCK_MONOTONIC) mapped to ROS time (`stereo_pair.ClockMap`).
+  `/vio/{left,right}/camera_info` (factory cam0 / cam1) carry the same stamp.
+  `/vio/right/image_color` (bgr8, 3 Hz, only while subscribed) feeds det_ros (`det.yaml`
+  `extra_topics`); `publish_color:false` turns it off. The GUI tiles show the mono8 topics.
+* Rate: `fps` 10 is an average decimation on buffer stamps (`DecimationGate`): the source runs
+  23.8 Hz (XC9080 subdev says 30 fps, trigger IRQ `asic1_trig` 25 Hz), kept frames alternate
+  84/126 ms.
+* **Where the rate was lost** (old node: 2.6/2.1 Hz, 1.7 Hz pairs): not CPU, not capture. The
+  container runs Fast DDS UDP-only (`fastdds_no_shm.xml`) and the host capped socket buffers at
+  `net.core.rmem_max = 212992`: one 300 KB (mono8) / 921 KB (bgr8) image fills a subscriber's
+  receive buffer and the second eye, sent right after it, is dropped. Measured with the new node
+  before/after `rmem_max/wmem_max = 8 MiB`: right eye 2.9 -> 10.0 Hz, exact pairs 2.9 -> 10.01 Hz.
+  `scripts/setup_stereo_host.sh` sets it (runtime only). The old node additionally converted both
+  eyes to BGR in Python and used a 1-slot hand-off that could split pairs.
+* Live (docked, stack running, 40 s): 401 exact-stamp pairs = 10.01 Hz, 0 unpaired, max gap
+  126 ms, 401/401 camera_info stamps match; stamp -> subscriber receipt 25 ms median.
+  CPU `stereo_cam` 7.2 % of one core (incl. 3 Hz colour for det_ros); `stereo_depth` 20.4 %
+  (18.5 % before: unaffected, separate `/dev/video11` node).
+
+### 7.2 Metoak IMU (ICM-40608) -> `/stereo_imu/data` (`mower_cameras/stereo_imu`)
+
+* Why it looked "loaded but not attached": `8-0068` IS bound (i2c driver name `icm40608` =
+  `inv_icm42600_i2c`), but `mo_init.sh` (cam.service) loads the Metoak build of `inv_icm42600`
+  with `Repot_m=1` = **netlink report mode**: samples go to a vendor netlink socket, no IIO
+  device. (`modinfo`: `Repot_m: 0 - iio, 1 - netlink`; `TimeStamp_m: 1 - ktime_get_ts64`.)
+  Unbind/bind fails (`netlink_kernel_create error`, probe -1: the socket leaks); reloading the
+  module with `Repot_m=0` gives `icm40608-gyro` + `icm40608-accel` IIO devices.
+  `scripts/setup_stereo_host.sh` does it (idempotent, `revert` restores netlink mode).
+* Driver quirks found: timestamps are CLOCK_MONOTONIC regardless of `current_timestamp_clock`
+  (says realtime); every sample of one FIFO interrupt group (4-9 samples, ~20 ms) carries the
+  IRQ time; gyro and accel interrupt separately; one read can split a group. `iio_imu.BatchStamper`
+  holds back the open group, spreads closed groups at the ODR estimated over ~8 s (true 200.78 Hz)
+  with a low-gain phase loop (IRQ latency jitter 0.2-3 ms -> 0.15 ms), then gyro/accel are paired.
+* Node: sysfs setup (200 Hz, +-500 dps, +-8 g, x/y/z + timestamp), `/dev/iio:deviceN` buffers
+  (no sysfs polling), gyro bias from the first still 3 s, pre-serialised Imu publishing,
+  best-effort depth-200 QoS. Frame `stereo_camera_imu` (URDF: factory body_T_cam0 inverted).
+* Live (deep-queue subscriber, 30 s): 200.35 Hz, dt p1/median/p99 = 4.89/5.00/5.03 ms, max
+  5.1 ms, 0 non-monotonic. Bias -0.0074/-0.0093/-0.0018 rad/s. At rest: gyro std
+  0.00066/0.00093/0.00061 rad/s (= 4.7e-5/6.6e-5/4.3e-5 rad/s/sqrt(Hz), datasheet 6.6e-5), accel
+  std 0.022/0.019/0.015 m/s^2, mean (-0.024, -9.782, 0.318), |a| 9.787. CPU 7.3 % of one core.
+  Receipt latency 37 ms median (one held-back interrupt group + 4-sample watermark).
+* OpenVINS subscribes IMU with `SensorDataQoS()` (depth 5); IMU leaves in groups of 4-9:
+  `config/vio/patches/0002-ov_msckf-deep-imu-queue.patch` (depth 1000).
+
+### 7.3 Clean-room check (no Metoak SDK)
+
+| VIO needs | Ours | Status |
+|---|---|---|
+| synced stereo pair, 10 Hz | one side-by-side buffer -> both eyes, same stamp | yes, 10.01 Hz, 0 unpaired |
+| mono8 | Y plane of the YUYV/YVYU frame | yes |
+| camera_info / rectification | factory cam0/cam1 K + plumb_bob, stamps match; R/P identity (OpenVINS uses K/D + extrinsics; image_proc stereo rectification would need `stereoRectify` from stereo_params R/T, not done) | yes for OpenVINS |
+| IMU >= 100 Hz | ICM-40608 via kernel IIO, 200 Hz | yes |
+| IMU/image same clock | both kernel CLOCK_MONOTONIC (V4L2 buffer ts / IIO ts), same ClockMap | yes; residual constant offset unknown (below) |
+| hardware disparity | `/dev/video11` decode (stereo_depth) | yes, unchanged |
+
+How the vendor did it (strings of `libMoGeneralSDK.so` 2.7.4.5 and `stereo_ros`): the IMU is
+NOT read over USB/UVC on this MIPI module. The SDK talks to the ICM-406xx from userspace over
+i2c-dev (`/dev/i2c_imu` -> `/dev/i2c-8`, InvenSense eMD `inv_icm406xx_*` incl. FIFO,
+`enable_fsync`, `timestamp_resolution`), applies an IMU rectification matrix stored on the module
+(`moLocalGetImuRectifyParameter`, `IMU_RECT_MATRIX_*`), and aligns image stamps with the frame
+trigger (`MO_ENV_TRIGGER_TIMESTAMP_ADJUST`, `getNearestTimeStamp`; trigger timestamps from
+`mo_trig_flash.ko` -> `/dev/trig_flash`, `asic1_trig` IRQ). `MoUVCMsgManager` exists for UVC
+variants only. `mo_iio_test` shows Metoak also used the IIO path.
+
+What we cannot do (yet) and the compensation:
+* **Exposure-time image stamps / FSYNC.** We stamp at the rkcif buffer (DMA) time, the vendor
+  could tag the trigger. The offset is constant per mode (exposure/2 + readout + ISP); OpenVINS
+  `calib_cam_timeoffset: true` estimates it (stays on in vio_metoak). `/dev/trig_flash` returns
+  EINVAL to plain `read()` (needs an unknown ioctl/size): reverse it if the online estimate is
+  unstable. The IMU stamps carry the mean IRQ latency (~1-2 ms), also absorbed there.
+* **Exposure/gain control.** Not exposed through V4L2 on video22 (the XC9080 runs its own AE;
+  vendor used `mo_asicrw` i2c pokes). Accept auto exposure; `histogram_method: HISTOGRAM`.
+* **IMU factory rectification matrix** (misalignment/scale, in the module EEPROM blob, format
+  unknown): identity used; residual misalignment ~1 deg (dock tilt check). Could be estimated by
+  OpenVINS `calib_imu_intrinsics` on a rich drive, left off.
+* Host settings are runtime-only (7.4).
+
+### 7.4 Persisting across reboot (needs owner approval: vendor/host files)
+
+* `/usr/metoak/metoak/mo_init.sh` line 49: `Repot_m=1` -> `Repot_m=0` (or run
+  `setup_stereo_host.sh` from a unit after `cam.service`).
+* `/etc/sysctl.d/90-ros2-dds.conf`: `net.core.rmem_max=8388608`, `net.core.wmem_max=8388608`.
+Until then: run `sudo /userdata/ros2_stack/scripts/setup_stereo_host.sh` after each boot, then
+restart `mower_humble` (stereo_imu retries with back-off until the IIO devices exist; DDS
+participants keep the buffer size they were created with).
+
+### 7.5 VIO with the Metoak IMU (not enabled)
+
+`vio.launch.py vio_imu:=metoak` -> `config/vio_metoak/` (factory T_imu_cam, `/stereo_imu/data`
+200 Hz, measured noise x2-3) and the bridge with `imu_to_base_rpy [-1.586797, 0, 1.570796]`,
+`imu_xyz_in_base [0.451, -0.0514, 0.2352]` (lever arm removed: turning in place at 0.5 rad/s
+would otherwise read as 0.23 m/s lateral slip). Chain check: the measured IMU gravity maps to
+base (-0.47, -0.02, 9.78) m/s^2 (level in roll, 2.8 deg nose-down on the dock).

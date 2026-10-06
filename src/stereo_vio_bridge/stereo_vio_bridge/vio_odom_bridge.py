@@ -5,8 +5,10 @@ Output is a nav_msgs/Odometry with header.frame_id ``odom`` and child_frame_id
 base_link (``imu_to_base_rpy``; identity for the WIT IMU, which is mounted with base_link
 axes), with a covariance inflated from OpenVINS' own (``cov_scale``, ``min_twist_var``).
 The pose is zero with 1e6 variance: VIO position/yaw are in OpenVINS' drifting
-``global`` frame and are NOT fed to the EKF. The lever arm (omega x r) is ignored:
-the WIT IMU sits at base_link (URDF imu_xyz 0 0 0).
+``global`` frame and are NOT fed to the EKF. The lever arm is removed
+(``v_base = R v_imu - w x imu_xyz_in_base``): zero for the WIT IMU at base_link, 0.45 m for
+the Metoak camera IMU (config/vio_metoak: imu_to_base_rpy [-1.586797, 0, 1.570796],
+imu_xyz_in_base [0.451, -0.0514, 0.2352], from the URDF stereo_camera_imu frame).
 
 Health/gating is ``mower_localization/vio_gate`` downstream. This node only drops
 messages that are older than ``max_age_s`` (OpenVINS stalls) and counts them.
@@ -22,7 +24,7 @@ import rclpy
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 
-from stereo_vio_bridge.odom_convert import (body_twist_covariance, rotate,
+from stereo_vio_bridge.odom_convert import (base_twist, body_twist_covariance,
                                             unused_pose_covariance)
 
 
@@ -43,6 +45,7 @@ class VioOdomBridge(Node):
         d("odom_frame", "odom")
         d("base_frame", "base_link")
         d("imu_to_base_rpy", [0.0, 0.0, 0.0])
+        d("imu_xyz_in_base", [0.0, 0.0, 0.0])   # IMU position in base_link (lever arm)
         d("cov_scale", 10.0)        # OpenVINS velocity covariance is optimistic
         d("min_twist_var", 0.04)    # (0.2 m/s)^2 floor = half the weight of wheel vx (var 0.02)
         d("max_age_s", 0.5)
@@ -50,6 +53,7 @@ class VioOdomBridge(Node):
         self.odom_frame = str(g("odom_frame"))
         self.base_frame = str(g("base_frame"))
         self.r_base_imu = _rpy_matrix(*[float(v) for v in g("imu_to_base_rpy")])
+        self.imu_xyz = [float(v) for v in g("imu_xyz_in_base")]
         self.cov_scale = float(g("cov_scale"))
         self.min_twist_var = float(g("min_twist_var"))
         self.max_age_s = float(g("max_age_s"))
@@ -70,8 +74,8 @@ class VioOdomBridge(Node):
             return
         lin = msg.twist.twist.linear
         ang = msg.twist.twist.angular
-        v = rotate(self.r_base_imu, (lin.x, lin.y, lin.z))
-        w = rotate(self.r_base_imu, (ang.x, ang.y, ang.z))
+        v, w = base_twist(self.r_base_imu, self.imu_xyz, (lin.x, lin.y, lin.z),
+                          (ang.x, ang.y, ang.z))
         out = Odometry()
         out.header.stamp = msg.header.stamp
         out.header.frame_id = self.odom_frame

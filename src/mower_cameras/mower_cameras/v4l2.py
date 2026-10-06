@@ -169,6 +169,8 @@ class V4L2Capture:
         self.fd = os.open(device, os.O_RDWR | os.O_NONBLOCK)
         self.maps = []
         self.streaming = False
+        self.last_timestamp_ns = 0
+        self.last_flags = 0
         try:
             cap = v4l2_capability()
             _ioctl(self.fd, VIDIOC_QUERYCAP, cap)
@@ -278,6 +280,11 @@ class V4L2Capture:
             except BlockingIOError:
                 continue
             used = planes[0].bytesused if self.mplane else buf.bytesused
+            # Driver timestamp of this buffer (rkcif: CLOCK_MONOTONIC at frame end/start,
+            # see buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK); read by stereo_cam.
+            self.last_timestamp_ns = (buf.timestamp.tv_sec * 1_000_000_000
+                                      + buf.timestamp.tv_usec * 1000)
+            self.last_flags = buf.flags
             return buf.index, used, buf.sequence
 
     def requeue(self, index):

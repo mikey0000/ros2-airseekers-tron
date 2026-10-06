@@ -15,8 +15,13 @@ Arguments:
                 stereo_depth / the GUI). bridge: start the legacy stereo_vio_bridge
                 capture node instead (mower.launch.py then tells cameras.launch.py
                 not to start stereo_cam).
-    config_dir  OpenVINS config directory. config/vio_wit (default) = WIT IMU on
-                /imu/data; config/vio = Metoak ICM-40608 on /vio/imu (not exposed).
+    vio_imu     wit (default): WIT JY61P on /imu/data at base_link (config/vio_wit).
+                metoak: the stereo module's own ICM-40608 on /stereo_imu/data
+                (mower_cameras/stereo_imu, 200 Hz, factory cam-IMU extrinsics,
+                config/vio_metoak); vio_odom_bridge then rotates by the
+                stereo_camera_imu -> base_link rotation and removes the 0.45 m lever arm.
+    config_dir  OpenVINS config directory (default config/vio_<vio_imu>).
+                config/vio = old Metoak config on /vio/imu (superseded by vio_metoak).
     cov_scale   multiplier on OpenVINS' velocity variance (VIO weight in the EKF).
 """
 import os
@@ -35,8 +40,11 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('capture', default_value='stereo_cam',
                               description='stereo_cam | bridge (who owns the stereo device).'),
+        DeclareLaunchArgument('vio_imu', default_value='wit',
+                              description='wit | metoak (IMU used by OpenVINS).'),
         DeclareLaunchArgument('config_dir',
-                              default_value=os.path.join(stack_root, 'config', 'vio_wit'),
+                              default_value=[os.path.join(stack_root, 'config', 'vio_'),
+                                             LC('vio_imu')],
                               description='OpenVINS config directory.'),
         DeclareLaunchArgument('cov_scale', default_value='10.0',
                               description='VIO velocity variance multiplier.'),
@@ -71,10 +79,26 @@ def generate_launch_description():
             executable='vio_odom_bridge',
             name='vio_odom_bridge',
             output='screen',
+            condition=IfCondition(PythonExpression(["'", LC('vio_imu'), "' != 'metoak'"])),
             parameters=[{
                 'input_topic': '/ov_msckf/odomimu',
                 'output_topic': '/odometry/vio',
                 'cov_scale': ParameterValue(LC('cov_scale'), value_type=float),
+            }],
+        ),
+        Node(
+            package='stereo_vio_bridge',
+            executable='vio_odom_bridge',
+            name='vio_odom_bridge',
+            output='screen',
+            condition=IfCondition(PythonExpression(["'", LC('vio_imu'), "' == 'metoak'"])),
+            parameters=[{
+                'input_topic': '/ov_msckf/odomimu',
+                'output_topic': '/odometry/vio',
+                'cov_scale': ParameterValue(LC('cov_scale'), value_type=float),
+                # URDF base_link -> stereo_camera_optical -> stereo_camera_imu
+                'imu_to_base_rpy': [-1.586797, 0.0, 1.570796],
+                'imu_xyz_in_base': [0.451, -0.0514, 0.2352],
             }],
         ),
     ])

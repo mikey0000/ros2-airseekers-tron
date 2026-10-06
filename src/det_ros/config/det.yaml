@@ -23,8 +23,9 @@ det_ros:
     core_masks: ["0", "1", "2"]
     left_topic: "/left_oa_camera/image_raw"
     right_topic: "/right_oa_camera/image_raw"
-    # Front stereo RIGHT eye (colour 640x480, mower_cameras/stereo_cam, frame vio_camera).
-    extra_topics: ["/vio/right/image_raw"]
+    # Front stereo RIGHT eye, colour 640x480 (mower_cameras/stereo_cam publish_color, ~3 Hz,
+    # frame vio_camera). /vio/right/image_raw is the mono8 VIO pair at 10 Hz; YOLO wants colour.
+    extra_topics: ["/vio/right/image_color"]
     # /<camera_ns>/image_annotated + /ai/det/image_annotated, drawn only while subscribed
     publish_annotated: true
     classes:

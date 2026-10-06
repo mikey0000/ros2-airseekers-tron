@@ -36,10 +36,14 @@ Rear camera: UVC webcam (32e6:9221), MJPG only (1920x1080 .. 640x480, 30 fps).
 * ``none``: no rear camera.
 
 Front Metoak stereo (``stereo:=true``, default): ``mower_cameras/stereo_cam`` reads the
-side-by-side YUYV 1280x480 frame of ``/dev/video22`` (``/dev/videoIsp``; the ``/dev/video11``
-raw node does not decode without the Metoak SDK) and publishes ``/vio/left/image_raw`` +
-``/vio/right/image_raw`` (bgr8 640x480 each, ``stereo_fps`` <= 5 Hz, on demand: nothing is
-copied unless somebody subscribes). ``stereo_vio_bridge`` (``launch/vio.launch.py``) is the
+side-by-side YUYV 1280x480 frame of ``/dev/video22`` (``/dev/videoIsp``; ``/dev/video11`` is
+the hardware-disparity stream of ``stereo_depth``) and publishes ``/vio/left/image_raw`` +
+``/vio/right/image_raw`` as a synchronised mono8 pair (640x480 each, both eyes from the same
+buffer, same stamp = V4L2 buffer time, ``stereo_fps`` = 10 Hz average) plus
+``/vio/right/image_color`` (bgr8, ``stereo_color_fps``, for det_ros); on demand: nothing is
+copied unless somebody subscribes. ``stereo_imu:=true`` (default) adds ``mower_cameras/stereo_imu``
+(Metoak ICM-40608 via IIO -> ``/stereo_imu/data``, 200 Hz; needs
+``scripts/setup_stereo_host.sh`` on the host once per boot). ``stereo_vio_bridge`` (``launch/vio.launch.py``) is the
 VIO producer of the same topics on the same device, so the two are mutually exclusive:
 pass ``vio:=true`` whenever vio.launch.py runs and stereo_cam is not started.
 
@@ -205,7 +209,17 @@ def generate_launch_description():
         DeclareLaunchArgument('stereo_width', default_value='1280',
                               description='Side-by-side width (each eye = half).'),
         DeclareLaunchArgument('stereo_height', default_value='480'),
-        DeclareLaunchArgument('stereo_fps', default_value='5.0'),
+        DeclareLaunchArgument('stereo_fps', default_value='10.0',
+                              description='stereo_cam mono8 pair rate (average, from a ~25 Hz '
+                                          'source).'),
+        DeclareLaunchArgument('stereo_color', default_value='true',
+                              description='stereo_cam: also publish <eye>/image_color (bgr8) '
+                                          'for det_ros (only while subscribed).'),
+        DeclareLaunchArgument('stereo_color_fps', default_value='3.0'),
+        DeclareLaunchArgument('stereo_imu', default_value='true',
+                              description='mower_cameras/stereo_imu: Metoak ICM-40608 (IIO) -> '
+                                          '/stereo_imu/data.'),
+        DeclareLaunchArgument('stereo_imu_rate', default_value='200.0'),
         DeclareLaunchArgument('stereo_depth', default_value='true',
                               description='mower_cameras/stereo_depth: Metoak hardware disparity '
                                           '(/dev/video11) -> /stereo_depth/points (Nav2 local '
@@ -261,11 +275,24 @@ def generate_launch_description():
             'pixel_format': 'YUYV',
             'fps': ParameterValue(LC('stereo_fps'), value_type=float),
             'publish_on_demand': True,
-            # Right eye camera_info: det_ros runs on /vio/right/image_raw and obstacle_guard
+            'publish_color': ParameterValue(LC('stereo_color'), value_type=bool),
+            'color_fps': ParameterValue(LC('stereo_color_fps'), value_type=float),
+            # Right eye camera_info: det_ros runs on /vio/right/image_color and obstacle_guard
             # sizes its danger zone from camera_info.
+            'left_camera_info_file': PathJoinSubstitution(
+                [LC('camera_info_dir'), 'left_stereo_camera_info.yaml']),
             'right_camera_info_file': PathJoinSubstitution(
                 [LC('camera_info_dir'), 'right_stereo_camera_info.yaml']),
         }],
+    )
+
+    stereo_imu = Node(
+        package='mower_cameras',
+        executable='stereo_imu',
+        name='stereo_imu',
+        output='screen',
+        condition=IfCondition(LC('stereo_imu')),
+        parameters=[{'rate': ParameterValue(LC('stereo_imu_rate'), value_type=float)}],
     )
 
     stereo_depth = Node(
@@ -313,4 +340,4 @@ def generate_launch_description():
                                    ["'", LC('camera_dds_profile'), "' != ''"]))),
     ] + oa_nodes + [rear_v4l2, rear_opencv, stereo, stereo_depth])
 
-    return LaunchDescription(args + [cameras, video])
+    return LaunchDescription(args + [cameras, stereo_imu, video])

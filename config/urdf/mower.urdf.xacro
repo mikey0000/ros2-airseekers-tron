@@ -266,6 +266,20 @@
     <child link="stereo_camera_optical"/>
     <origin xyz="0.466 0 0.240" rpy="-1.5547956 0 -1.5707963"/>
   </joint>
+  <!-- Metoak stereo IMU (ICM-40608 on i2c 8-0068; mower_cameras/stereo_imu -> /stereo_imu/data,
+       frame stereo_camera_imu = the chip's own axes). Factory IMU<->cam0 extrinsic from the vendor
+       VIO configs (src/mower_localization/vision_localization/config/metoak/sn*_euroc_stereo_imu.yaml,
+       body_T_cam0 = [R=diag(-1,1,-1) | p_CinI=(0.05143, -0.00453, -0.01503)], a mechanical constant)
+       inverted to the IMU pose in the camera optical frame: p_IinC = (0.05143, 0.00453, -0.01503),
+       R = Ry(pi). Assumes stereo_camera_optical ~ cam0 (the disparity reference eye; eye order is
+       still to be confirmed, docs/vio.md 3.6). Checked at rest 2026-10-07: accel (-0.03, -9.79,
+       +0.32) m/s^2, i.e. IMU y = camera y (down) and IMU z = -camera z, as this rotation predicts. -->
+  <link name="stereo_camera_imu"/>
+  <joint name="stereo_camera_imu_joint" type="fixed">
+    <parent link="stereo_camera_optical"/>
+    <child link="stereo_camera_imu"/>
+    <origin xyz="0.05143 0.00453 -0.01503" rpy="0 3.14159265 0"/>
+  </joint>
   <!-- OA cameras — frames match cameras.launch.py camera_frame_id. -->
   <xacro:box_sensor name="left_oa_camera" xyz="${oa_cam_xyz}"
                     rpy="0 1.57079 1.57079" size="${sensor_box}" material="purple"/>

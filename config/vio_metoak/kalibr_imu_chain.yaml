@@ -1,0 +1,48 @@
+%YAML:1.0
+
+# Metoak stereo IMU: TDK ICM-40608 on the camera board (i2c 8-0068), mower_cameras/stereo_imu ->
+# /stereo_imu/data, 200 Hz (true ODR 200.78 Hz), frame stereo_camera_imu (chip axes; URDF
+# places it with the factory extrinsic), gravity included, gyro bias removed at start-up
+# (rest window), accel raw. +-500 dps / +-8 g full scale.
+#
+# Noise, measured docked at rest 2026-10-07 (30 s, 200 Hz, stack running, charging):
+#   gyro  std 0.00066 / 0.00093 / 0.00061 rad/s -> density 4.7e-5 / 6.6e-5 / 4.3e-5 rad/s/sqrt(Hz)
+#         (datasheet 0.0038 dps/sqrt(Hz) = 6.6e-5: matches)
+#   accel std 0.022 / 0.019 / 0.015 m/s^2      -> density 1.5e-3 / 1.3e-3 / 1.1e-3 m/s^2/sqrt(Hz)
+#         (datasheet 70 ug/sqrt(Hz) = 6.9e-4; ~2x from dock/charger vibration)
+# Values below are inflated ~3x (gyro) / ~2x (accel) for driving vibration; random walks are
+# datasheet-class guesses (not observable in 30 s): re-identify (Allan) from a long static bag.
+imu0:
+  T_i_b:
+    - [1.0, 0.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+  accelerometer_noise_density: 0.003
+  accelerometer_random_walk: 0.0003
+  gyroscope_noise_density: 0.0002
+  gyroscope_random_walk: 0.00002
+  rostopic: /stereo_imu/data
+  time_offset: 0.0
+  update_rate: 200.0
+  model: "kalibr"
+  Tw:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  R_IMUtoGYRO:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  Ta:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  R_IMUtoACC:
+    - [1.0, 0.0, 0.0]
+    - [0.0, 1.0, 0.0]
+    - [0.0, 0.0, 1.0]
+  Tg:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.0, 0.0]

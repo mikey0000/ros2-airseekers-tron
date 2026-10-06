@@ -22,6 +22,21 @@ def rotate(r: Sequence[Sequence[float]], v: Sequence[float]) -> Tuple[float, flo
     return tuple(sum(r[i][k] * v[k] for k in range(3)) for i in range(3))  # type: ignore
 
 
+def base_twist(r_base_imu: Sequence[Sequence[float]], imu_xyz_in_base: Sequence[float],
+               v_imu: Sequence[float], w_imu: Sequence[float]):
+    """IMU-frame body twist -> base_link twist: ``w_b = R w_i``, ``v_b = R v_i - w_b x r``.
+
+    ``r`` = IMU position in base_link. The lever arm matters for an IMU off the rotation
+    axis: the Metoak IMU sits 0.45 m ahead of base_link, so turning in place at 0.5 rad/s
+    moves it sideways at 0.23 m/s, which is not lateral slip of the robot.
+    """
+    w = rotate(r_base_imu, w_imu)
+    v = rotate(r_base_imu, v_imu)
+    rx, ry, rz = imu_xyz_in_base
+    wxr = (w[1] * rz - w[2] * ry, w[2] * rx - w[0] * rz, w[0] * ry - w[1] * rx)
+    return (v[0] - wxr[0], v[1] - wxr[1], v[2] - wxr[2]), w
+
+
 def body_twist_covariance(ov_twist_cov: Sequence[float], scale: float,
                           floor_var: float) -> List[float]:
     """6x6 row-major twist covariance for the EKF.
