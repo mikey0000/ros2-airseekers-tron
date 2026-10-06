@@ -10,7 +10,9 @@
     `plugin` key (a missing `.plugin` is the "plugin param not defined" failure);
   * frame names match the stack contract;
   * the controller / goal-checker / planner ids the MowgliNext BT requests exist;
-  * no static_layer, no enable_stamped_cmd_vel (Humble);
+  * static_layer only on the keepout mask, no enable_stamped_cmd_vel (Humble);
+  * progress/goal checker, transit RPP and local-costmap layer choices that
+    the first real mow (2026-10-06) showed matter;
   * lifecycle_manager_navigation node order.
 """
 import os
@@ -100,10 +102,50 @@ def test_humble_constraints():
     text = open(PARAMS).read()
     for _, params in ros_param_blocks(doc):
         assert "enable_stamped_cmd_vel" not in params
+    # No /map: a StaticLayer is only allowed on the keepout mask (global costmap).
     g = doc["global_costmap"]["global_costmap"]["ros__parameters"]
-    assert "static_layer" not in g.get("plugins", [])
-    assert "nav2_costmap_2d::StaticLayer" not in text
+    if "static_layer" in g.get("plugins", []):
+        assert g["static_layer"]["map_topic"] in ("/nav_keepout_mask", "/keepout_mask")
+    assert text.count("nav2_costmap_2d::StaticLayer") <= 1
     assert "map_server" not in doc and "amcl" not in doc
+
+
+def test_progress_checker_counts_rotation():
+    c = load()["controller_server"]["ros__parameters"]
+    pc = c[c["progress_checker_plugin"]]
+    assert pc["plugin"] == "nav2_controller::PoseProgressChecker"
+    assert 0 < pc["required_movement_angle"] <= 0.6
+    assert pc["required_movement_radius"] <= 0.3
+    assert pc["movement_time_allowance"] >= 15.0
+
+
+def test_goal_checkers():
+    c = load()["controller_server"]["ros__parameters"]
+    g = c["general_goal_checker"]
+    assert g["plugin"] == "nav2_controller::SimpleGoalChecker"
+    assert g["stateful"] is True
+    assert g["xy_goal_tolerance"] == 0.25 and g["yaw_goal_tolerance"] == 0.5
+    cov = c["coverage_goal_checker"]
+    assert cov["stateful"] is True and cov["xy_goal_tolerance"] <= 0.15
+
+
+def test_transit_rpp_rotation():
+    rpp = load()["controller_server"]["ros__parameters"]["FollowPath"]
+    assert rpp["use_rotate_to_heading"] is True
+    assert rpp["rotate_to_heading_angular_vel"] == 0.5
+    assert 0.5 <= rpp["max_angular_accel"] <= 1.5
+    assert rpp["min_approach_linear_velocity"] == 0.05
+    # RPP can only rotate to heading without reversing.
+    assert rpp["allow_reversing"] is False
+
+
+def test_local_costmap_has_no_inflation_layer():
+    # Humble 1.1.x: InflationLayer stays !isCurrent() after a ClearEntireCostmap
+    # when there are no obstacles, and controller_server then waits forever.
+    lc = load()["local_costmap"]["local_costmap"]["ros__parameters"]
+    assert "inflation_layer" not in lc["plugins"]
+    for name in lc["plugins"]:
+        assert lc[name]["plugin"] != "nav2_costmap_2d::InflationLayer"
 
 
 def test_lifecycle_order():

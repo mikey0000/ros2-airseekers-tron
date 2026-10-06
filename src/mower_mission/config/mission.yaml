@@ -41,6 +41,7 @@ behavior_tree_node:
     # --- coverage --------------------------------------------------------
     mow_angle_deg: -1.0               # < 0 = planner picks; only for areas whose own mow_angle_deg is auto
     transit_gap_m: 0.6                # blade-off /navigate_to_pose transit beyond this gap
+    transit_arrived_radius_m: 0.3     # transit ABORT/timeout within this of the target = arrived
     follow_controller_id: FollowCoveragePath
     follow_goal_checker_id: coverage_goal_checker
     max_areas: 200

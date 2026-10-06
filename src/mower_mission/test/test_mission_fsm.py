@@ -10,6 +10,7 @@ which simulates the blade and asserts the blade invariants on every step:
 """
 
 import json
+import math
 import random
 
 import pytest
@@ -1514,3 +1515,45 @@ def test_no_cog_after_undock_stops_without_navigating():
     assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
     assert h.fsm.mission is None
     assert not h.since(m, f.StartAction)      # no dock / navigate with a wrong heading
+
+
+def test_transit_goal_yaw_is_first_subpath_heading():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 3, 6)]))
+    assert h.name == 'TRANSIT'
+    x, y, yaw = h.goal(f.ACT_NAV)['pose']
+    assert (x, y) == (3, 3)
+    assert abs(yaw - math.pi / 2) < 1e-6
+
+
+def test_transit_abort_near_target_counts_as_arrived():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3), line(0, 0, 4, 0)]))
+    assert h.name == 'TRANSIT'
+    h.fsm.inputs.pose = (3.15, 2.9, 0.0)          # ~0.18 m off, yaw unsettled
+    m = h.mark()
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert h.fsm.mission.sub_i == 0 and h.fsm.mission.skipped == 0
+    assert h.name == 'MOWING'
+    assert any('treating as arrived' in str(e) for e in h.fx[m:])
+
+
+def test_transit_timeout_near_target_counts_as_arrived():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3), line(0, 0, 4, 0)]))
+    h.fsm.inputs.pose = (3.0, 3.25, 0.0)
+    h.tick(dt=h.fsm.p.transit_timeout_s + 1.0)
+    assert h.fsm.mission.sub_i == 0 and h.fsm.mission.skipped == 0
+    assert h.name == 'MOWING'
+
+
+def test_transit_abort_beyond_radius_still_skips():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3), line(0, 0, 4, 0)]))
+    h.fsm.inputs.pose = (2.6, 3.0, 0.0)           # 0.4 m away
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert h.fsm.mission.sub_i == 1 and h.fsm.mission.skipped == 1

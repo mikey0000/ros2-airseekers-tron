@@ -280,6 +280,10 @@ class Params:
     dock_pose: tuple = ()               # (x, y, yaw); only used without docking server
     mow_angle_deg: float = -1.0
     transit_gap_m: float = 0.6
+    # A /navigate_to_pose transit that ABORTs / times out while the robot is
+    # already this close to its target counts as arrived (Nav2 goal checker
+    # tolerances / yaw settling can abort a goal the robot effectively reached).
+    transit_arrived_radius_m: float = 0.3
     follow_controller_id: str = 'FollowCoveragePath'
     follow_goal_checker_id: str = 'coverage_goal_checker'
     blade_confirm_timeout_s: float = 5.0
@@ -354,6 +358,7 @@ class Mission:
     skipped: int = 0
     completed_count: int = 0
     step: Optional[str] = None                  # transit | spinup | spin_pause | follow
+    transit_target: Any = None                  # (x, y, yaw) of the in-flight transit
     boundary_recoveries: int = 0
     premature: int = 0
     chunk_end: int = 0
@@ -1325,7 +1330,8 @@ class MissionFSM:
             self._go('TRANSIT', 'area %d sub-path %d/%d' % (
                 m.area_idx, m.sub_i + 1, len(m.subpaths)))
             yaw = geo.heading_of(sp, m.start_local)
-            self._start_action(ACT_NAV, {'pose': (target[0], target[1], yaw)},
+            m.transit_target = (target[0], target[1], yaw)
+            self._start_action(ACT_NAV, {'pose': m.transit_target},
                                self.p.transit_timeout_s)
         else:
             self._begin_blade()
@@ -1624,6 +1630,14 @@ class MissionFSM:
     # ==================================================================
     # results
     # ==================================================================
+    def _transit_arrived(self):
+        """True when the last transit target is within transit_arrived_radius_m."""
+        m = self.mission
+        tgt = getattr(m, 'transit_target', None) if m is not None else None
+        if tgt is None or self.inputs.pose is None or self.p.transit_arrived_radius_m <= 0:
+            return False
+        return geo.dist(self.inputs.pose, tgt) <= self.p.transit_arrived_radius_m
+
     def _handle_action(self, a, outcome, result):
         name = a.name
         if outcome != SUCCEEDED:
@@ -1659,6 +1673,12 @@ class MissionFSM:
                 self._begin_blade()
             elif outcome == UNAVAILABLE:
                 self._mission_failed('/navigate_to_pose action server unavailable')
+            elif self._transit_arrived():
+                d = geo.dist(self.inputs.pose, m.transit_target)
+                self._log('warn', 'transit %s but robot is %.2f m from the target '
+                                  '(<= %.2f m): treating as arrived'
+                          % (outcome, d, self.p.transit_arrived_radius_m))
+                self._begin_blade()
             else:
                 self._subpath_skipped('transit %s' % outcome)
         elif name == ACT_FOLLOW:
