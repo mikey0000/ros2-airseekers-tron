@@ -89,7 +89,7 @@ func TestAreaSettings_PutValid(t *testing.T) {
 	}
 	settings := map[string]any{
 		"cutter_height_mm": 45, "perimeter_laps": 3, "path_mode": "alternate",
-		"mow_angle_deg": -1, "cut_speed_mps": 0.25, "swath_overlap_m": 0.05,
+		"mow_angle_deg": -1, "cut_speed_mps": 0.25, "swath_overlap_m": 0.05, "swath_width_m": 0.18,
 		"edge_first": false, "repeat": 2, "alternate_angle_offset_deg": 90,
 	}
 	w, out := doAreaSettings(t, mock, "PUT", "/api/mowglinext/areas/1/settings", map[string]any{"settings": settings})
@@ -140,6 +140,11 @@ func TestAreaSettings_PutRejectsOutOfRange(t *testing.T) {
 		{"mow_angle_deg": -0.5},
 		{"cut_speed_mps": 0.6},
 		{"swath_overlap_m": 0.2},
+		{"swath_width_m": 0.05},
+		{"swath_width_m": 0.41},
+		{"swath_width_m": 0},
+		{"edge_margin_m": 0.6},
+		{"edge_margin_m": -0.1},
 		{"edge_first": "yes"},
 		{"repeat": 0},
 		{"repeat": 6},

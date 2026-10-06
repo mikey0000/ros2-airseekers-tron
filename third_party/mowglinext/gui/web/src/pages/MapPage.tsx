@@ -1413,6 +1413,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         historyIndex={historyIndex}
                         editHistoryLength={editHistory.length}
                         mowingAreas={mowingAreas}
+                        settingsAreas={areaSettings.enabled
+                            ? areasList.filter((a) => a.ftype !== 'obstacle').map((a) => ({key: String(a.id), label: a.name}))
+                            : undefined}
+                        onAreaSettings={areaSettings.enabled ? openAreaSettingsById : undefined}
                         selectedFeatureCount={selectedFeatureIds.length}
                         onEditMap={handleEditMap}
                         onEditSelectedFeature={handleEditSelectedFeature}

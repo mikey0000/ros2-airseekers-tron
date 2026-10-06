@@ -64,4 +64,21 @@ describe("AreaSettingsPanel", () => {
         await screen.findByTestId("area-settings-form");
         expect(screen.queryByTestId("use-defaults")).toBeNull();
     });
+
+    it("saves a path width change", async () => {
+        mocks.request.mockImplementation(async ({method}: {method: string}) => {
+            if (method === "PUT") return {data: {supported: true}};
+            return {data: {supported: true, settings: {}}};
+        });
+        render(<AreaSettingsPanel target={2}/>);
+        await screen.findByTestId("area-settings-form");
+        fireEvent.click(screen.getByTestId("use-defaults"));
+        const input = screen.getByTestId("swath-width") as HTMLInputElement;
+        expect(input.value).toBe("0.18");
+        fireEvent.change(input, {target: {value: "0.22"}});
+        fireEvent.blur(input);
+        fireEvent.click(screen.getByTestId("area-settings-save"));
+        await waitFor(() => expect(putBodies()).toHaveLength(1));
+        expect(putBodies()[0].body.settings.swath_width_m).toBeCloseTo(0.22);
+    });
 });

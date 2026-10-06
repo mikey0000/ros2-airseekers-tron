@@ -106,6 +106,23 @@ export const AreaSettingsForm: React.FC<{
                         value={value.perimeter_laps} onChange={(v: number) => set("perimeter_laps", v)}/>
             </Field>
 
+            <Field label={t("areaSettings.swathWidth")} custom={c("swath_width_m")}
+                   hint={t("areaSettings.swathWidthHint")}>
+                <InputNumber data-testid="swath-width" min={R.swath_width_m.min} max={R.swath_width_m.max}
+                             step={R.swath_width_m.step} precision={2} size="small" addonAfter="m"
+                             disabled={disabled} style={{width: 130}}
+                             value={value.swath_width_m}
+                             onChange={(v) => typeof v === "number" && set("swath_width_m", v)}/>
+            </Field>
+
+            <Field label={t("areaSettings.edgeMargin")} custom={c("edge_margin_m")}
+                   hint={t("areaSettings.edgeMarginHint")}>
+                <InputNumber data-testid="edge-margin" min={R.edge_margin_m.min} max={R.edge_margin_m.max}
+                             step={R.edge_margin_m.step} precision={2} size="small" addonAfter="m"
+                             disabled={disabled} style={{width: 130}} value={value.edge_margin_m}
+                             onChange={(v) => typeof v === "number" && set("edge_margin_m", v)}/>
+            </Field>
+
             <Field label={t("areaSettings.edgeFirst")} custom={c("edge_first")} hint={t("areaSettings.edgeFirstHint")}>
                 <Switch checked={value.edge_first} disabled={disabled}
                         onChange={(v) => set("edge_first", v)}/>
@@ -149,14 +166,6 @@ export const AreaSettingsForm: React.FC<{
                 <Slider min={R.cut_speed_mps.min} max={R.cut_speed_mps.max} step={R.cut_speed_mps.step}
                         disabled={disabled} value={value.cut_speed_mps}
                         onChange={(v: number) => set("cut_speed_mps", Math.round(v * 100) / 100)}/>
-            </Field>
-
-            <Field label={t("areaSettings.swathOverlap")} custom={c("swath_overlap_m")}
-                   value={t("areaSettings.cm", {value: Math.round(value.swath_overlap_m * 100)})}>
-                <Slider min={0} max={10} step={1} disabled={disabled}
-                        value={Math.round(value.swath_overlap_m * 100)}
-                        tooltip={{formatter: (v) => `${v} cm`}}
-                        onChange={(v: number) => set("swath_overlap_m", v / 100)}/>
             </Field>
 
             <Field label={t("areaSettings.repeat")} custom={c("repeat")} value={t("areaSettings.times", {count: value.repeat})}>

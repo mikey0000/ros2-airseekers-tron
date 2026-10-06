@@ -1574,6 +1574,7 @@
     "hide": "Masquer"
   },
   "mapToolbarMobile": {
+    "areaSettings": "Réglages de tonte de la zone",
     "actionFailed": "Échec de l'action",
     "darkMap": "Carte sombre",
     "satellite": "Satellite",
@@ -4187,6 +4188,10 @@
     "alternateOffset": "Changement d'angle par tonte",
     "alternateOffsetHint": "Chaque nouvelle tonte tourne les bandes de cet angle.",
     "perimeterLaps": "Tours de bordure",
+    "edgeMargin": "Marge de bordure",
+    "edgeMarginHint": "Distance entre le bord de la lame et la limite enregistrée. Petite = tonte jusqu'au bord.",
+    "swathWidth": "Largeur de passage",
+    "swathWidthHint": "Distance entre les passages de tonte. Plus étroit que la lame = recouvrement ; plus large = bandes non coupées.",
     "edgeFirst": "Bordures d'abord",
     "edgeFirstHint": "Tondre les tours de bordure avant les bandes.",
     "routeOrder": "Ordre des bandes",

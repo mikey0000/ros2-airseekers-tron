@@ -74,4 +74,22 @@ describe("MapToolbarMobile", () => {
 
     expect(defaultProps.onResetMowingProgress).toHaveBeenCalledOnce();
   });
+
+  it("opens area mow settings from the mobile toolbar", async () => {
+    const user = userEvent.setup();
+    const onAreaSettings = vi.fn();
+    render(<MapToolbarMobile {...defaultProps}
+      settingsAreas={[{ key: "a1", label: "Front lawn" }]}
+      onAreaSettings={onAreaSettings} />);
+
+    await user.click(screen.getByLabelText(en.mapToolbarMobile.areaSettings));
+    await user.click(screen.getByText("Front lawn"));
+
+    expect(onAreaSettings).toHaveBeenCalledWith("a1");
+  });
+
+  it("hides the area settings button without areas", () => {
+    render(<MapToolbarMobile {...defaultProps} />);
+    expect(screen.queryByLabelText(en.mapToolbarMobile.areaSettings)).toBeNull();
+  });
 });

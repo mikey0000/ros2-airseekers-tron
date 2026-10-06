@@ -1578,6 +1578,7 @@
     "hide": "Hide"
   },
   "mapToolbarMobile": {
+    "areaSettings": "Area mow settings",
     "actionFailed": "Action failed",
     "darkMap": "Dark map",
     "satellite": "Satellite",
@@ -4187,6 +4188,10 @@
     "alternateOffset": "Angle change per mow",
     "alternateOffsetHint": "Each new mow turns the stripes by this angle.",
     "perimeterLaps": "Perimeter laps",
+    "edgeMargin": "Edge margin",
+    "edgeMarginHint": "How far inside the recorded boundary the blade edge stays. Small = mows right to the edge.",
+    "swathWidth": "Path width",
+    "swathWidthHint": "Distance between mowing passes. Narrower than the blade = overlap; wider = gaps.",
     "edgeFirst": "Edges first",
     "edgeFirstHint": "Mow the perimeter laps before the stripes.",
     "routeOrder": "Stripe order",

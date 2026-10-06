@@ -91,6 +91,8 @@ AREA_SETTINGS_DEFAULTS = {
     'mow_angle_deg': -1.0,
     'cut_speed_mps': 0.3,
     'swath_overlap_m': 0.02,
+    'edge_margin_m': 0.05,      # planner boundary_inset_m (blade edge inside the line)
+    'swath_width_m': 0.18,      # path spacing = planner operation_width (overlap is ignored)
     'edge_first': True,
     'repeat': 1,
     'alternate_angle_offset_deg': 90.0,
@@ -106,7 +108,8 @@ TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
 
 def coverage_route_params(st):
     """Swath order / turn settings forwarded to /coverage_server."""
-    return {'route_order': str(st['route_order']),
+    return {'boundary_inset_m': max(0.0, float(st['edge_margin_m'])),
+            'route_order': str(st['route_order']),
             'route_spiral_size': int(st['route_spiral_size']),
             'min_turn_radius_m': float(st['min_turn_radius_m']),
             'turn_type': str(st['turn_type'])}
@@ -387,7 +390,7 @@ class Params:
     dock_action_timeout_s: float = 400.0
     # --- per-area mowing settings ---
     use_area_settings: bool = True      # read /map_server_node/get_area_settings per area
-    cut_width_m: float = 0.20           # blade cut width; swath spacing = this - swath_overlap_m
+    cut_width_m: float = 0.20           # blade cut width (display only; spacing = area swath_width_m)
     cut_speed_max_mps: float = 0.5
     controller_speed_param: str = 'FollowCoveragePath.desired_linear_vel'
     set_cut_speed: bool = True          # set_parameters on /controller_server per area
@@ -860,8 +863,7 @@ class MissionFSM:
             cur['runs'] = self._build_runs(st, area_name=cur['name'])
             run = cur['runs'][0]
             self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_COVERAGE, 'params': {
-                'operation_width': max(0.01, float(self.p.cut_width_m)
-                                       - float(st['swath_overlap_m'])),
+                'operation_width': self._swath_spacing(st),
                 'headland_rings': int(st['perimeter_laps']),
                 'path_mode': str(st['path_mode']),
                 'mow_angle_deg': float(run['angle']),
@@ -912,8 +914,9 @@ class MissionFSM:
                 'mow_angle_deg': float(cur['runs'][0]['angle']),
                 'perpendicular': bool(cur['runs'][0]['perpendicular']),
                 'runs': len(cur['runs']), 'settings_source': cur['source'],
-                'operation_width_m': round(max(0.01, float(self.p.cut_width_m)
-                                               - float(st['swath_overlap_m'])), 4)}
+                'operation_width_m': round(self._swath_spacing(st), 4),
+                'swath_width_m': round(self._swath_spacing(st), 4),
+                'edge_margin_m': round(max(0.0, float(st['edge_margin_m'])), 4)}
         if not subpaths:
             info['error'] = str(result.get('message') or outcome)
             info.update({'rings': 0, 'swaths': 0, 'length_m': 0.0, 'sub_paths': 0,
@@ -1573,6 +1576,14 @@ class MissionFSM:
         st['perimeter_laps'] = max(0, int(st['perimeter_laps']))
         return st, src
 
+    def _swath_spacing(self, st):
+        """Path spacing (m) = the area's swath_width_m, used as-is (cut_width_m plays no part)."""
+        try:
+            w = float(st.get('swath_width_m') or 0.0)
+        except (TypeError, ValueError):
+            w = 0.0
+        return w if w > 0.0 else AREA_SETTINGS_DEFAULTS['swath_width_m']
+
     def _area_name(self):
         m = self.mission
         return str(m.areas.get(m.area_idx, {}).get('name', ''))
@@ -1644,8 +1655,7 @@ class MissionFSM:
             'run': m.run_i + 1, 'runs': len(m.runs),
             'run_mow_angle_deg': run['angle'], 'run_perpendicular': run['perpendicular'],
             'cutter_height_percent': self.height_percent(m.settings['cutter_height_mm']),
-            'operation_width_m': round(self.p.cut_width_m - float(m.settings['swath_overlap_m']),
-                                       4)})
+            'operation_width_m': round(self._swath_spacing(m.settings), 4)})
         return out
 
     def _plan_run(self):
@@ -1655,7 +1665,7 @@ class MissionFSM:
         self._go('PLANNING', 'area %d %s [%s, run %d/%d]' % (
             m.area_idx, self._area_name(), st['path_mode'], m.run_i + 1, len(m.runs)))
         self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_COVERAGE, 'params': {
-            'operation_width': max(0.01, float(self.p.cut_width_m) - float(st['swath_overlap_m'])),
+            'operation_width': self._swath_spacing(st),
             'headland_rings': int(st['perimeter_laps']),
             'path_mode': str(st['path_mode']),
             'mow_angle_deg': float(run['angle']),

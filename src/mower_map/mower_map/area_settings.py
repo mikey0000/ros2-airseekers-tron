@@ -49,6 +49,12 @@ BUILTIN_DEFAULTS = {
     'mow_angle_deg': -1.0,
     'cut_speed_mps': 0.3,
     'swath_overlap_m': 0.02,
+    # Path (swath) spacing the planner uses directly as operation_width.
+    # swath_overlap_m is still accepted (old files) but no longer used.
+    'swath_width_m': 0.18,
+    # Blade edge distance inside the recorded boundary (planner boundary_inset_m);
+    # small so the whole area is mowed (owner: no uncut band).
+    'edge_margin_m': 0.05,
     'edge_first': True,
     'repeat': 1,
     'alternate_angle_offset_deg': 90.0,
@@ -68,6 +74,8 @@ SPEC = {
     'mow_angle_deg': ('angle', None, None),        # < 0 -> -1 (auto), else folded to [0, 180)
     'cut_speed_mps': ('float', 0.05, 0.5),
     'swath_overlap_m': ('float', 0.0, 0.1),
+    'swath_width_m': ('float', 0.10, 0.40),
+    'edge_margin_m': ('float', 0.0, 0.5),
     'edge_first': ('bool', None, None),
     'repeat': ('int', 1, 10),
     'alternate_angle_offset_deg': ('float', 0.0, 180.0),

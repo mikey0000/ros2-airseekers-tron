@@ -20,6 +20,10 @@ export type AreaSettings = {
     mow_angle_deg: number;
     cut_speed_mps: number;
     swath_overlap_m: number;
+    /** Path (swath) spacing in metres, used directly by the planner. */
+    swath_width_m: number;
+    /** Blade edge distance inside the recorded boundary, metres. */
+    edge_margin_m: number;
     edge_first: boolean;
     repeat: number;
     alternate_angle_offset_deg: number;
@@ -39,6 +43,8 @@ export const AREA_SETTINGS_DEFAULTS: AreaSettings = {
     mow_angle_deg: -1,
     cut_speed_mps: 0.3,
     swath_overlap_m: 0.02,
+    swath_width_m: 0.18,
+    edge_margin_m: 0.05,
     edge_first: true,
     repeat: 1,
     alternate_angle_offset_deg: 90,
@@ -53,6 +59,8 @@ export const AREA_SETTINGS_RANGES = {
     perimeter_laps: {min: 0, max: 4, step: 1},
     cut_speed_mps: {min: 0.1, max: 0.5, step: 0.05},
     swath_overlap_m: {min: 0, max: 0.1, step: 0.01},
+    swath_width_m: {min: 0.10, max: 0.40, step: 0.01},
+    edge_margin_m: {min: 0, max: 0.5, step: 0.01},
     repeat: {min: 1, max: 5, step: 1},
     alternate_angle_offset_deg: {min: 0, max: 180, step: 5},
     route_spiral_size: {min: 2, max: 20, step: 1},

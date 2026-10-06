@@ -35,6 +35,7 @@ import {
     ThunderboltOutlined,
     ImportOutlined,
     EyeOutlined,
+    SettingOutlined,
 } from "@ant-design/icons";
 import {canPreviewPlan} from "../../../hooks/usePlanPreview.ts";
 import {PREVIEW_ALL_KEY} from "./MapToolbar.tsx";
@@ -73,6 +74,9 @@ interface MapToolbarMobileProps {
     onMowArea: (key: string) => Promise<void>;
     /** Plan preview of one area (its menu key) or PREVIEW_ALL_KEY; no mowing. */
     onPreviewPlan?: (key: string) => Promise<void>;
+    /** Areas whose mow settings can be opened (view mode); empty/undefined hides the button. */
+    settingsAreas?: {key: string; label: string}[];
+    onAreaSettings?: (key: string) => void;
     selectedFeatureCount?: number;
     onEditSelectedFeature?: () => void;
     onDrawPolygon?: () => void;
@@ -110,7 +114,7 @@ export const MapToolbarMobile = ({
     onEditMap, onSaveMap, onUndo, onRedo, onToggleSatellite,
     onManualMode, onStopManualMode,
     onBackupMap, onRestoreMap, onDownloadGeoJSON, onUploadGeoJSON, onImportOpenMower, onResetMowingProgress,
-    onMowArea, onPreviewPlan, selectedFeatureCount = 0, onEditSelectedFeature,
+    onMowArea, onPreviewPlan, settingsAreas, onAreaSettings, selectedFeatureCount = 0, onEditSelectedFeature,
     onDrawPolygon, onDrawShape, onDrawEmoji, onTrash, onCombine, onSubtract, onSplit,
     onPlaceDock, dockPlacementMode, onDrawPath, onConnectDock, dockAvailable,
     stateName, highLevelState, emergency,
@@ -460,6 +464,24 @@ export const MapToolbarMobile = ({
                             icon={<EyeOutlined />}
                             loading={previewLoading}
                             aria-label={t("planPreview.button")}
+                            style={touchTarget}
+                        />
+                    </Dropdown>
+                )}
+
+                {onAreaSettings && settingsAreas && settingsAreas.length > 0 && (
+                    <Dropdown
+                        menu={{
+                            items: settingsAreas.map(({key, label}) => ({key, label})),
+                            onClick: ({key}: MenuInfo) => onAreaSettings(key),
+                        }}
+                        trigger={["click"]}
+                        placement="topLeft"
+                    >
+                        <Button
+                            size="large"
+                            icon={<SettingOutlined />}
+                            aria-label={t("mapToolbarMobile.areaSettings")}
                             style={touchTarget}
                         />
                     </Dropdown>

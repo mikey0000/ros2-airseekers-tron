@@ -81,6 +81,8 @@ var areaNumericKeys = map[string]numRange{
 	"mow_angle_deg":              {-1, 360, false},
 	"cut_speed_mps":              {0.1, 0.5, false},
 	"swath_overlap_m":            {0, 0.1, false},
+	"swath_width_m":              {0.10, 0.40, false}, // planner path spacing (m)
+	"edge_margin_m":              {0, 0.5, false},     // blade edge inside the boundary (m)
 	"repeat":                     {1, 5, true},
 	"alternate_angle_offset_deg": {0, 180, false},
 	"route_spiral_size":          {2, 20, true},

@@ -15,7 +15,7 @@ def test_builtin_defaults_match_the_contract():
     assert s.BUILTIN_DEFAULTS == {
         'cutter_height_mm': 50, 'perimeter_laps': 2, 'path_mode': 'zigzag',
         'mow_angle_deg': -1.0, 'cut_speed_mps': 0.3, 'swath_overlap_m': 0.02,
-        'edge_first': True, 'repeat': 1, 'alternate_angle_offset_deg': 90.0,
+        'swath_width_m': 0.18, 'edge_margin_m': 0.05, 'edge_first': True, 'repeat': 1, 'alternate_angle_offset_deg': 90.0,
         'route_order': 'racetrack', 'route_spiral_size': 6, 'min_turn_radius_m': 0.5,
         'turn_type': 'auto'}
     assert s.ROUTE_ORDERS == ('boustrophedon', 'snake', 'spiral', 'racetrack')
@@ -37,6 +37,8 @@ def test_builtin_defaults_match_the_contract():
     ('route_spiral_size', 2, 2), ('route_spiral_size', 8.0, 8),
     ('min_turn_radius_m', 0, 0.0), ('min_turn_radius_m', 0.5, 0.5),
     ('turn_type', 'reverse', 'reverse'), ('turn_type', 'pivot', 'pivot'),
+    ('swath_width_m', 0.10, 0.10), ('swath_width_m', 0.4, 0.4),
+    ('swath_width_m', 0.18, 0.18), ('edge_margin_m', 0, 0.0), ('edge_margin_m', 0.5, 0.5),
 ])
 def test_valid_values_are_normalised(key, value, expect):
     ok, v = s.validate_value(key, value)
@@ -53,6 +55,8 @@ def test_valid_values_are_normalised(key, value, expect):
     ('mow_angle_deg', float('nan')), ('bogus', 1),
     ('route_order', 'zigzag'), ('route_spiral_size', 1), ('route_spiral_size', 21),
     ('min_turn_radius_m', -0.1), ('min_turn_radius_m', 2.5), ('turn_type', 'omega'),
+    ('swath_width_m', 0.05), ('swath_width_m', 0.41), ('swath_width_m', 0),
+    ('edge_margin_m', -0.01), ('edge_margin_m', 0.51),
 ])
 def test_invalid_values_are_rejected(key, value):
     ok, msg = s.validate_value(key, value)
@@ -153,3 +157,12 @@ def test_yaml_round_trip_and_bad_entries(tmp_path):
 
 def test_settings_path_is_next_to_areas_dat():
     assert s.settings_path_for('/ros2_ws/maps/areas.dat') == '/ros2_ws/maps/area_settings.yaml'
+
+
+def test_old_file_with_only_overlap_gets_default_path_width():
+    store, warnings = s.AreaSettingsStore.loads(
+        "version: 1\nareas:\n  Old: {swath_overlap_m: 0.05}\n  New: {swath_width_m: 0.3}\n")
+    assert warnings == []
+    assert store.effective('Old')['swath_width_m'] == 0.18
+    assert store.effective('Old')['swath_overlap_m'] == 0.05   # still accepted, unused
+    assert store.effective('New')['swath_width_m'] == 0.3

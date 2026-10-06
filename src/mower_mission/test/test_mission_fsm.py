@@ -1130,7 +1130,7 @@ def test_height_percent_table():
     assert [fsm.height_percent(mm) for mm in (30, 45, 60, 75, 90)] == [10, 25, 40, 70, 100]
 
 
-DEFAULT_ROUTE = {'route_order': 'racetrack', 'route_spiral_size': 6,
+DEFAULT_ROUTE = {'boundary_inset_m': 0.05, 'route_order': 'racetrack', 'route_spiral_size': 6,
                  'min_turn_radius_m': 0.5, 'turn_type': 'auto'}
 
 
@@ -1142,7 +1142,7 @@ def test_route_and_turn_settings_reach_the_coverage_server():
     start_until_planning(h)
     cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]
     assert {k: cov[k] for k in DEFAULT_ROUTE} == {
-        'route_order': 'snake', 'route_spiral_size': 8, 'min_turn_radius_m': 0.3,
+        'boundary_inset_m': 0.05, 'route_order': 'snake', 'route_spiral_size': 8, 'min_turn_radius_m': 0.3,
         'turn_type': 'reverse'}
 
 
@@ -1201,7 +1201,8 @@ def test_area_settings_applied_before_planning():
     assert param_calls(h, f.PARAM_NODE_CONTROLLER, m) == \
         [{'FollowCoveragePath.desired_linear_vel': 0.45}]
     cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)
-    assert cov == [{'operation_width': pytest.approx(0.16), 'headland_rings': 3,
+    # swath_overlap_m is ignored: spacing = swath_width_m (default 0.18)
+    assert cov == [{'operation_width': pytest.approx(0.18), 'headland_rings': 3,
                     'path_mode': 'spiral', 'mow_angle_deg': 30.0, 'edge_first': False,
                     **DEFAULT_ROUTE}]
     goal = h.goal(f.ACT_PLAN)
@@ -2327,3 +2328,44 @@ def test_preview_survives_result_display_to_idle():
     m = h.mark()
     h.fsm._go_idle('x')
     assert not h.since(m, f.PublishPlan)
+
+
+def test_swath_width_m_sets_operation_width_directly():
+    h = Harness()
+    h.area_settings = {0: {'swath_overlap_m': 0.04, 'swath_width_m': 0.35}}
+    m = h.mark()
+    start_until_planning(h)
+    cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)
+    assert cov[0]['operation_width'] == pytest.approx(0.35)
+
+
+def test_preview_summary_carries_swath_width():
+    h = Harness()
+    h.fsm.inputs.docked = True
+    h.tick()
+    h.areas = [square(0, 0, 5)]
+    h.area_settings = {0: {'swath_width_m': 0.15}}
+    m = h.mark()
+    ok, msg = preview(h, 0)
+    assert ok, msg
+    h.answer_services()
+    assert param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]['operation_width'] == pytest.approx(0.15)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan(10.5))
+    a = summaries(h, m)[-1]['areas'][0]
+    assert a['swath_width_m'] == pytest.approx(0.15)
+    assert a['operation_width_m'] == pytest.approx(0.15)
+
+
+def test_edge_margin_forwarded_and_in_preview_summary():
+    h = Harness()
+    h.fsm.inputs.docked = True
+    h.tick()
+    h.areas = [square(0, 0, 5)]
+    h.area_settings = {0: {'edge_margin_m': 0.0}}
+    m = h.mark()
+    ok, msg = preview(h, 0)
+    assert ok, msg
+    h.answer_services()
+    assert param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]['boundary_inset_m'] == 0.0
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan(10.5))
+    assert summaries(h, m)[-1]['areas'][0]['edge_margin_m'] == 0.0
