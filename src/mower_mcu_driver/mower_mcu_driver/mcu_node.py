@@ -36,7 +36,9 @@ Published topics
 
 Subscribed topics
 -----------------
-``/cmd_vel``            geometry_msgs/TwistStamped         -> ``SpeedData`` (MODULE_SPEED, 4)
+``/cmd_vel``            geometry_msgs/Twist                -> one ``SpeedData`` (MODULE_SPEED, 4)
+                                                           per message (event-driven, see below)
+``/cmd_vel_stamped``    geometry_msgs/TwistStamped         same path (vendor's second input)
 
 Parameters
 ----------
@@ -44,30 +46,29 @@ Parameters
 ``baud`` ``115200``              serial baud rate
 ``odom_frame`` ``odom`` / ``base_frame`` ``base_link`` / ``imu_frame`` ``imu_link`` / ``frame_id`` ``base_link``
 ``heartbeat_period`` ``0.1``     **period is UNKNOWN on hardware** -- see TODO below
-``speed_cmd_rate`` ``20.0``      Hz at which ``SpeedData`` commands are streamed to the MCU
-``cmd_vel_timeout`` ``0.5``      s before a stale ``/cmd_vel`` is replaced by a zero command
+``speed_cmd_rate`` ``20.0``      Hz of the **debug** SpeedData stream (only with ``speed_stream_enabled``)
+``speed_stream_enabled`` ``false`` debug A/B only: stream the last command at ``speed_cmd_rate``
+``cmd_vel_timeout`` ``0.5``      s of ``/cmd_vel`` silence after a non-zero command -> stop sequence
+``stop_frames`` ``3`` / ``stop_frame_spacing_s`` ``0.1``  zero frames of one stop sequence
 ``speed_timeout`` ``0.5``        s before measured ``SpeedData`` is considered stale
 ``odom_rate`` ``50.0``           Hz for ``/odom``
 ``use_imu_yaw`` ``true``         use MCU ``ImuData`` yaw for heading (falls back to integration)
 ``linear_scale`` ``1.0`` / ``angular_scale`` ``1.0``   host-side ``/cmd_vel`` -> ``SpeedData`` map
-``linear_max`` ``1.5`` / ``angular_max`` ``1.5``       clamp (m/s, rad/s)
+``linear_max`` ``0.3`` / ``angular_max`` ``0.3``       clamp (m/s, rad/s; vendor PID clamp)
 ``battery_voltage_scale`` ``0.1``  raw 0.1 V units -> volts (set 1.0 to mimic the stock node)
 ``battery_current_scale`` ``1.0``  raw -> amperes (**unit still unknown (?)**)
 
 Known gaps -- tracked as TODOs, do not treat this driver as safety-complete yet
 -------------------------------------------------------------------------------
-* **Proportional braking** (``brake_gain`` = 0.5) sends ``-brake_gain * measured`` when
-  commanded velocity is 0 but measured velocity is non-zero.  This counteracts the MCU
-  "coast" behaviour on ``SpeedData(0,0)`` without the oscillation a full PID creates
-  (the MCU echoes our previous command as measured speed with ~1 cycle delay, so any
-  PID with kp > 0 and +-0.3 clamp saturates into a bang-bang limit cycle).
-  The brake is provably stable: output always opposes motion -> exponential decay.
-* **Host-side velocity PID present but DISABLED by default** (``pid_enabled`` = false).
-  Port of ``libpid_controller.so``: reads measured ``SpeedData`` from the MCU, compares
-  against commanded velocity, sends PID-corrected commands.  The PID oscillates due to
-  the MCU one-cycle measurement delay combined with +-0.3 output clamp.  Kept for
-  future use only.  Validate ``/mcu/measured_speed`` against a known motion (wheels up)
-  before enabling.
+* **SpeedData TX policy = vendor pass-through + explicit stop** (``docs/wheel_control_semantics.md``
+  section 5).  The vendor ``mower_base_node`` sends exactly one SpeedData per received
+  ``/cmd_vel`` (no timer, no host PID, no brake, nothing while idle).  ``PidControllerROS`` in
+  ``libpid_controller.so`` is NOT a wheel-velocity loop: it is the position-level
+  ``rotate``/``moveStraight`` primitive used by the bumper back-off, publishing ``/cmd_vel``.
+  We add one rule the vendor got from its producers: after a non-zero command, a zero
+  command / ``cmd_vel_timeout`` silence / interlock sends ``stop_frames`` zeros
+  ``stop_frame_spacing_s`` apart, then the wire goes silent again.  Measured SpeedData is
+  telemetry + odometry only and never feeds back into the TX path.
 * **Heartbeat period unknown.** ``Heartbeat`` is a wall-clock stamp and the MCU most likely
   stops the motors when it stops arriving, but neither the period nor the timeout were
   recovered from the binary.  We default to 100 ms (the BLE link uses 100 ms too) purely as a
@@ -88,6 +89,7 @@ Offline test
 """
 
 import array
+import collections
 import fcntl
 import math
 import os
@@ -337,67 +339,6 @@ def speed_payload(linear, angular):
     return struct.pack(SPEED_FMT, float(linear), float(angular))
 
 
-class VelocityPID:
-    """Minimal host-side velocity PID (port of ``libpid_controller.so`` / ``pid.h``).
-
-    The vendor node closes a velocity feedback loop: it reads measured ``SpeedData`` from
-    the MCU, compares against the commanded velocity, and sends PID-corrected speed
-    commands.  Without this loop the MCU treats ``SpeedData(0, 0)`` as "coast" and the
-    wheels never brake.
-
-    This class mirrors the vendor ``PID`` header (``mower_controller/navigation/src/common/pid.h``)
-    with the standard parallel form:
-
-        output = kp * error + ki * integral + kd * (error - last_error) / dt
-
-    with anti-windup (integral clamped to output bounds).
-    """
-
-    def __init__(self, kp, ki, kd, lower_bound, upper_bound, dt):
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-        self.lower_bound = lower_bound
-        self.upper_bound = upper_bound
-        self.dt = dt
-        self.reset()
-
-    def reset(self):
-        self.last_error = 0.0
-        self.integral = 0.0
-        self.output = 0.0
-        self._d_filtered = 0.0
-
-    def __call__(self, error):
-        """Return PID-corrected output for the given error (setpoint - process_value).
-
-        Uses a parallel PID form.  The derivative term uses a small filter to avoid
-        amplifying noise from the MCU's one-cycle measurement delay.
-        """
-        # Proportional
-        p_term = self.kp * error
-
-        # Integral with anti-windup
-        self.integral += self.ki * error * self.dt
-        self.integral = max(
-            self.lower_bound - p_term,
-            min(self.upper_bound - p_term, self.integral),
-        )
-
-        # Derivative with low-pass filter (backward difference, filtered)
-        # The MCU echoes back our previous command with ~1 cycle delay,
-        # so raw D would oscillate.  Smooth it with alpha = dt / (dt + tau).
-        alpha = min(self.dt / (self.dt + 0.02), 0.9)  # tau=20 ms filter
-        self._d_filtered = alpha * (error - self.last_error) / self.dt \
-                           + (1.0 - alpha) * self._d_filtered
-        d_term = self.kd * self._d_filtered
-        self.last_error = error
-
-        self.output = p_term + self.integral + d_term
-        self.output = max(self.lower_bound, min(self.upper_bound, self.output))
-        return self.output
-
-
 def _diag6(a, b, c, d, e, f):
     """Row-major 6x6 covariance matrix with ``a..f`` on the diagonal."""
     cov = [0.0] * 36
@@ -508,60 +449,21 @@ class McuNode(Node):
         self.declare_parameter('use_imu_yaw', True)
         self.declare_parameter('linear_scale', 1.0)
         self.declare_parameter('angular_scale', 1.0)
-        # Vendor PID clamps body speed to +-0.3 m/s; stay conservative until characterised.
-        self.declare_parameter('linear_max', 0.5)
-        self.declare_parameter('angular_max', 1.0)
-        # Host-side velocity PID gains (from mower_base/config/base.yaml).
-        # The vendor node runs a closed-loop PID: reads measured SpeedData from the MCU,
-        # compares against commanded velocity, and sends PID-corrected commands.
-        # Without this, SpeedData(0,0) is "coast" on the MCU and wheels never brake.
-        #
-        # --- braking --------------------------------------------------
-        # The MCU treats SpeedData(0,0) as "coast", not "brake".  When commanded
-        # velocity is 0 but measured velocity is non-zero, we send a braking command
-        # proportional to measured speed: output = -brake_gain * measured.
-        # This is provably stable (output always opposes motion -> exponential decay)
-        # unlike a full PID which oscillates due to the MCU one-cycle measurement delay.
-        # With brake_gain=0.5 at 20 Hz, the effective tau is 0.1 s (90% stop in ~0.2 s).
-        # OFF by default (0.0). 2026-10-06 on the mower: lifting the robot tripped the interlock
-        # (command 0) while the brake kept acting on measured-speed noise, which fed back through
-        # the MCU into a sustained slow crawl/turn. The measured-speed semantics (true wheel
-        # speed vs. echo of our command) are still unverified; enable only after that is settled.
-        self.declare_parameter('brake_gain', 0.0)
-        # Below this measured body speed the brake is NOT applied and an exact 0,0 goes on
-        # the wire: measurement noise must never keep the MCU's wheel controller "active"
-        # with tiny alternating commands while the mower is at rest (the suspected cause of
-        # slow creep under a streamed 0,0).
-        self.declare_parameter('brake_deadband_linear', 0.02)    # m/s
-        self.declare_parameter('brake_deadband_angular', 0.05)   # rad/s
-        # The vendor gains (0.9/0.3/1.0 linear, 0.9/0.3/0.5 angular) are tuned for their
-        # own PID loop rate (~10 Hz from odometry callback).  Our speed command loop runs
-        # at 20 Hz, so the derivative term would be 2x more aggressive.  We reduce kd
-        # proportionally to keep the effective derivative action the same.
-        # These PID gains are kept for future use but the loop is OFF by default:
-        # the MCU one-cycle measurement delay + +-0.3 output clamp creates a bang-bang
-        # limit cycle when running continuously.  The simple proportional brake above
-        # handles the stopping case without oscillation.
-        self.declare_parameter('linear_kp', 0.9)
-        self.declare_parameter('linear_ki', 0.3)
-        self.declare_parameter('linear_kd', 0.5)     # vendor 1.0 scaled for 20 Hz vs 10 Hz
-        self.declare_parameter('angular_kp', 0.9)
-        self.declare_parameter('angular_ki', 0.3)
-        self.declare_parameter('angular_kd', 0.25)   # vendor 0.5 scaled for 20 Hz vs 10 Hz
-        # PID output bounds (vendor clamps to +-0.3 for both)
-        self.declare_parameter('linear_pid_min', -0.3)
-        self.declare_parameter('linear_pid_max', 0.3)
-        self.declare_parameter('angular_pid_min', -0.3)
-        self.declare_parameter('angular_pid_max', 0.3)
-        self.declare_parameter('pid_enabled', False)
-        # Whether SpeedData is streamed at all.  The vendor sends **none while idle**
-        # (mcu_protocol_spec.md 10b), so false = exact vendor-idle wire behaviour.
-        # Read fresh every cycle, so it can be flipped live with `ros2 param set` to
-        # A/B which TX stream is responsible for an observed wheel motion.
-        self.declare_parameter('speed_stream_enabled', True)
-        # Telemetry: measured vs commanded vs actually-sent body velocity, published at
-        # this rate while the port is up (0 disables).  Purely observational; it is what
-        # the feedback sign/units of the PID are verified against.
+        # Vendor PidControllerROS clamps its /cmd_vel output to +-0.3; mirror it until the
+        # wheel scale/sign has been characterised wheels-up.
+        self.declare_parameter('linear_max', 0.3)
+        self.declare_parameter('angular_max', 0.3)
+        # SpeedData TX policy (docs/wheel_control_semantics.md section 5): one frame per
+        # /cmd_vel message; after a non-zero command, a zero / timeout / interlock sends
+        # stop_frames zeros stop_frame_spacing_s apart, then silence. Idle = silence.
+        self.declare_parameter('stop_frames', 3)
+        self.declare_parameter('stop_frame_spacing_s', 0.1)
+        # DEBUG ONLY (A/B experiments): true restores a periodic stream of the last command
+        # at speed_cmd_rate (zeros once stale/interlocked).  Read fresh every tick, so it can
+        # be flipped live with `ros2 param set`; switching it off ends with a stop sequence.
+        self.declare_parameter('speed_stream_enabled', False)
+        # Telemetry: measured vs commanded velocity at this rate (0 disables); /mcu/sent_speed
+        # is published once per SpeedData frame that actually left the host.
         self.declare_parameter('speed_telemetry_rate_hz', 5.0)
         # Host-side interlock: stop wheels + cutter while lift / e-stop (and optionally
         # bumper) are asserted, in addition to whatever the MCU firmware enforces.
@@ -620,7 +522,8 @@ class McuNode(Node):
         self.interlock_on_lift = bool(param('interlock_on_lift'))
         self.interlock_on_stop = bool(param('interlock_on_stop'))
         self.interlock_on_bumper = bool(param('interlock_on_bumper'))
-        self.pid_enabled = bool(param('pid_enabled'))
+        self.stop_frames = max(1, int(param('stop_frames')))
+        self.stop_frame_spacing = float(param('stop_frame_spacing_s'))
         rate = float(param('speed_telemetry_rate_hz'))
         self._speed_telemetry_period = 1.0 / rate if rate > 0 else 0.0
         self._speed_telemetry_t = -1e9
@@ -652,21 +555,22 @@ class McuNode(Node):
         self._meas_linear = 0.0           # last measured SpeedData from the MCU
         self._meas_angular = 0.0
         self._meas_stamp = 0.0
-        self._speed_streaming = True      # last seen value of speed_stream_enabled (change log)
 
-        # ---- host-side velocity PID (libpid_controller.so port) -----------
-        # dt = period of the speed command loop (1/speed_cmd_rate)
-        dt = 1.0 / max(speed_cmd_rate, 1.0)
-        self._pid_linear = VelocityPID(
-            float(param('linear_kp')), float(param('linear_ki')), float(param('linear_kd')),
-            float(param('linear_pid_min')), float(param('linear_pid_max')),
-            dt,
-        )
-        self._pid_angular = VelocityPID(
-            float(param('angular_kp')), float(param('angular_ki')), float(param('angular_kd')),
-            float(param('angular_pid_min')), float(param('angular_pid_max')),
-            dt,
-        )
+        # ---- SpeedData TX state (event-driven; see _speed_tick) ---------------
+        # /cmd_vel callbacks only queue the mapped command and wake the I/O thread, which
+        # writes the frame.  Every queued message produces at most one frame.
+        self._mono = time.monotonic      # injectable for tests
+        self._cmd_queue = collections.deque()
+        self._moving = False              # last frame sent was non-zero
+        self._last_nonzero_t = 0.0        # arrival time of the last non-zero command
+        self._stop_left = 0               # zero frames still owed by the stop sequence
+        self._stop_next_t = 0.0
+        self._streaming = False           # debug stream active (speed_stream_enabled)
+        self._stream_next_t = 0.0
+        self._stream_period = 1.0 / max(speed_cmd_rate, 1.0)
+        self._wake_r, self._wake_w = os.pipe()
+        os.set_blocking(self._wake_r, False)
+        os.set_blocking(self._wake_w, False)
 
         self._imu_yaw = None              # last MCU ImuData heading (rad)
         self._imu_stamp = 0.0
@@ -714,9 +618,8 @@ class McuNode(Node):
                 'mower_interfaces not available -> /mower_sensor_info disabled '
                 '(build ros2_stack/src/mower_interfaces and relaunch to enable it)')
 
-        # Telemetry for the closed-loop question: what the MCU reports it is doing vs
-        # what we asked for vs what we are actually putting on the wire.  Published at
-        # speed_telemetry_rate_hz from _send_speed (cheap: 5 Hz).
+        # Telemetry: what the MCU reports (measured) and what /cmd_vel asked for (commanded)
+        # at speed_telemetry_rate_hz; /mcu/sent_speed once per SpeedData frame on the wire.
         self._meas_speed_pub = self.create_publisher(TwistStamped, '/mcu/measured_speed', 10)
         self._cmd_speed_pub = self.create_publisher(TwistStamped, '/mcu/commanded_speed', 10)
         self._sent_speed_pub = self.create_publisher(TwistStamped, '/mcu/sent_speed', 10)
@@ -768,16 +671,17 @@ class McuNode(Node):
         # blocks in select() on the port and dispatches frames the moment they arrive.
         self._periodic = [
             (self.heartbeat_period, self._send_heartbeat),
-            (1.0 / max(speed_cmd_rate, 1.0), self._send_speed),
+            (0.02, self._speed_tick),          # stop-sequence spacing / cmd_vel timeout
             (1.0 / max(odom_rate, 1.0), self._reckon),
         ]
 
         self.get_logger().info(
             'mower_mcu_driver up: %s @ %d baud, heartbeat every %.0f ms (period UNKNOWN), '
-            'cmd_vel %.0f Hz, odom %.0f Hz, speed loop %s'
-            % (self.port, self.baud, self.heartbeat_period * 1000.0,
-               speed_cmd_rate, odom_rate,
-               'CLOSED (pid_enabled)' if self.pid_enabled else 'open (pid_enabled=false)'))
+            'odom %.0f Hz, SpeedData: one frame per /cmd_vel, clamp %.2f m/s %.2f rad/s, '
+            'stop = %d zeros @ %.0f ms then silence'
+            % (self.port, self.baud, self.heartbeat_period * 1000.0, odom_rate,
+               self.linear_max, self.angular_max, self.stop_frames,
+               self.stop_frame_spacing * 1000.0))
 
     # ------------------------------------------------------------- threading
     def _locked(self, fn):
@@ -823,21 +727,25 @@ class McuNode(Node):
                     with self._lock:
                         self._open_serial()        # rate-limited to one attempt per 2 s
                     if self._ser is None:
-                        time.sleep(min(timeout, 0.05))
+                        select.select([self._wake_r], [], [], min(timeout, 0.05))
                 else:
                     try:
                         fd = ser.fileno()
                     except Exception:  # noqa: BLE001 - port object without an fd
                         fd = None
                     if fd is None:
-                        time.sleep(min(timeout, 0.005))
+                        select.select([self._wake_r], [], [], min(timeout, 0.005))
                         readable = True
                     else:
-                        readable = bool(select.select([fd], [], [], timeout)[0])
+                        ready = select.select([fd, self._wake_r], [], [], timeout)[0]
+                        readable = fd in ready
                     if readable:
                         with self._lock:
                             if self._ser is ser:
                                 self._poll_serial()
+                if self._drain_wake():
+                    with self._lock:
+                        self._speed_tick()         # /cmd_vel arrived: send it right now
                 now = time.monotonic()
                 for idx, (period, fn) in enumerate(self._periodic):
                     if now >= due[idx]:
@@ -1233,18 +1141,30 @@ class McuNode(Node):
 
     # ------------------------------------------------------------------- TX
     def _on_cmd_vel(self, msg):
+        """Queue one SpeedData for this message and wake the I/O thread to send it."""
+        now = self._mono()
         self._cmd_linear, self._cmd_angular = self._map_command(msg)
-        self._cmd_stamp = time.monotonic()
+        self._cmd_stamp = now
+        self._cmd_queue.append((self._cmd_linear, self._cmd_angular, now))
+        try:
+            os.write(self._wake_w, b'x')
+        except (BlockingIOError, OSError):
+            pass                                   # pipe full: a wake is already pending
 
     def _on_cmd_vel_stamped(self, msg):
         self._on_cmd_vel(msg.twist)
 
-    def _map_command(self, twist):
-        """Scale + clamp ``/cmd_vel`` to the PID setpoint range.
+    def _drain_wake(self):
+        try:
+            return bool(os.read(self._wake_r, 4096))
+        except (BlockingIOError, OSError):
+            return False
 
-        The actual closed-loop velocity control is in :meth:`_send_speed` which runs
-        host-side PID (port of ``libpid_controller.so``) against measured SpeedData
-        from the MCU.  This method only maps the user command to the PID setpoint.
+    def _map_command(self, twist):
+        """Scale + clamp ``/cmd_vel`` to the ``SpeedData`` that goes on the wire.
+
+        This is the whole command path: no host PID, no brake (the vendor sends the raw
+        ``float32(lin.x), float32(ang.z)``; we additionally clamp to +-``*_max``).
         """
         linear = float(twist.linear.x) * self.linear_scale
         angular = float(twist.angular.z) * self.angular_scale
@@ -1253,108 +1173,112 @@ class McuNode(Node):
         return linear, angular
 
     def _send_heartbeat(self):
-        """Keepalive.  Fixed period by parameter because the real one is UNKNOWN (see doc)."""
+        """Keepalive every ``heartbeat_period`` (100 ms, confirmed by the vendor tap)."""
         self._write(build_frame([(TYPE_HEARTBEAT, MOD_ALL, heartbeat_payload())]))
 
-    def _send_speed(self):
-        """Stream ``SpeedData`` commands to the MCU with proportional braking.
+    @staticmethod
+    def _is_zero(linear, angular):
+        return abs(linear) <= 1e-6 and abs(angular) <= 1e-6
 
-        When ``pid_enabled`` is false (the default), the *commanded* body velocity goes
-        on the wire verbatim.  When commanded velocity is 0 but measured velocity is
-        non-zero, we send a braking command proportional to measured speed:
-            output = -brake_gain * measured
-        This is provably stable (output always opposes motion -> exponential decay)
-        and avoids the bang-bang oscillation that a full PID creates due to the MCU
-        one-cycle measurement delay.
+    def _send_speed_frame(self, linear, angular):
+        self._write(build_frame([(TYPE_ROS_MOWER, MOD_SPEED, speed_payload(linear, angular))]))
+        self._sent_speed_pub.publish(self._twist_msg(linear, angular))
 
-        The vendor sends **no SpeedData at all while idle** (``mcu_protocol_spec.md`` 10b).
-        With braking, 0,0 at rest is still the most aggressive thing we ever send,
-        but while coasting we actively counter momentum.
+    def _start_stop(self, now, reason):
+        """First zero now, the remaining ``stop_frames - 1`` every ``stop_frame_spacing``."""
+        if self._moving:
+            self.get_logger().info('SpeedData stop (%s): %d zero frames, then silence'
+                                   % (reason, self.stop_frames))
+        self._moving = False
+        self._send_speed_frame(0.0, 0.0)
+        self._stop_left = self.stop_frames - 1
+        self._stop_next_t = now + self.stop_frame_spacing
+
+    def _speed_tick(self, now=None):
+        """SpeedData TX state machine; runs in the I/O thread (wake + every 20 ms).
+
+        * each queued ``/cmd_vel`` -> exactly one frame (vendor pass-through), except
+          zeros while already stopped (idle = silence) and anything while interlocked;
+        * zero after non-zero, ``cmd_vel_timeout`` silence after non-zero, or an interlock
+          engaging while moving -> stop sequence (``stop_frames`` zeros), then silence;
+        * after an interlock clears nothing is sent until a fresh non-zero command.
         """
-        # Commanded velocity (zeros when stale or interlocked)
-        cmd_linear, cmd_angular = self._commanded()
+        if now is None:
+            now = self._mono()
+        blocked = self._interlock_active() or self._estop_latched
 
-        if self.pid_enabled:
-            # Closed loop: error = setpoint - measured, output clamped to the PID bounds.
-            # NOTE: this oscillates due to MCU one-cycle measurement delay + +-0.3 clamp.
-            # Kept for future use only; leave off until /mcu/measured_speed is verified.
-            linear = self._pid_linear(cmd_linear - self._meas_linear)
-            angular = self._pid_angular(cmd_angular - self._meas_angular)
-        else:
-            # Open loop with proportional braking.
-            # When commanded is 0 but measured is non-zero, send a brake proportional
-            # to measured speed.  This is stable because output always opposes motion.
-            brake = float(self.get_parameter('brake_gain').value)
-            db_lin = float(self.get_parameter('brake_deadband_linear').value)
-            db_ang = float(self.get_parameter('brake_deadband_angular').value)
-            meas_fresh = time.monotonic() - self._meas_stamp < self.speed_timeout
-            # Never brake while an interlock / e-stop holds the command at zero: safety stops must
-            # put an exact 0,0 on the wire, nothing derived from measurements.
-            if self._interlock_active() or self._estop_latched:
-                brake = 0.0
-            if cmd_linear == 0.0:
-                linear = (-brake * self._meas_linear
-                          if meas_fresh and abs(self._meas_linear) > db_lin else 0.0)
-            else:
-                linear = cmd_linear
-            if cmd_angular == 0.0:
-                angular = (-brake * self._meas_angular
-                           if meas_fresh and abs(self._meas_angular) > db_ang else 0.0)
-            else:
-                angular = cmd_angular
-
-        # Live-togglable: with this off nothing but the heartbeat leaves the host, which is
-        # what the vendor does while idle.  Used to A/B which TX stream drives wheel motion.
         streaming = bool(self.get_parameter('speed_stream_enabled').value)
-        if streaming != self._speed_streaming:
-            self._speed_streaming = streaming
-            self.get_logger().warn(
-                'SpeedData TX %s' % ('ENABLED' if streaming else 'DISABLED (vendor-idle wire)'))
-            if not streaming:
-                # The MCU keeps the LAST SpeedData setpoint while the heartbeat continues, so
-                # going silent must never happen with a non-zero setpoint still latched.
-                self._write(build_frame([(TYPE_ROS_MOWER, MOD_SPEED, speed_payload(0.0, 0.0))]))
-        if not streaming and (cmd_linear != 0.0 or cmd_angular != 0.0):
-            self.get_logger().warn('cmd_vel ignored: speed_stream_enabled is false',
-                                   throttle_duration_sec=5.0)
+        if streaming != self._streaming:
+            self._streaming = streaming
+            self.get_logger().warn('SpeedData debug stream %s'
+                                   % ('ENABLED (%.0f Hz)' % (1.0 / self._stream_period)
+                                      if streaming else 'DISABLED (event-driven)'))
+            if streaming:
+                self._stream_next_t = now
+            else:
+                # Never leave a non-zero setpoint latched in the MCU when the stream stops.
+                self._cmd_queue.clear()
+                self._start_stop(now, 'debug stream disabled')
         if streaming:
-            self._write(build_frame([(TYPE_ROS_MOWER, MOD_SPEED, speed_payload(linear, angular))]))
-        self._publish_speed_telemetry(cmd_linear, cmd_angular,
-                                      linear if streaming else None, angular if streaming else None)
+            self._cmd_queue.clear()
+            if now >= self._stream_next_t:
+                self._stream_next_t = now + self._stream_period
+                linear, angular = self._commanded()
+                self._send_speed_frame(linear, angular)
+                self._moving = not self._is_zero(linear, angular)
+                self._last_nonzero_t = self._cmd_stamp
+            self._publish_speed_telemetry(now)
+            return
 
-    def _publish_speed_telemetry(self, cmd_linear, cmd_angular, sent_linear, sent_angular):
-        """Publish measured / commanded / on-the-wire body velocity at a low rate.
+        while self._cmd_queue:
+            linear, angular, stamp = self._cmd_queue.popleft()
+            if blocked:
+                self.get_logger().warn('cmd_vel dropped: interlock / e-stop active',
+                                       throttle_duration_sec=5.0)
+                continue
+            if not self._is_zero(linear, angular):
+                self._stop_left = 0                # a new motion command cancels a stop
+                self._send_speed_frame(linear, angular)
+                self._moving = True
+                self._last_nonzero_t = stamp
+            elif self._moving:
+                self._start_stop(now, 'zero cmd_vel')
+            # zero while stopped / stopping: send nothing
 
-        Observational only: this is how the feedback sign and units a PID would need get
-        validated against a known motion, with none of it able to influence the wire.
-        ``sent_`` is None while SpeedData TX is disabled.
-        """
+        if self._moving:
+            if blocked:
+                self._start_stop(now, 'interlock')
+            elif now - self._last_nonzero_t > self.cmd_vel_timeout:
+                self._start_stop(now, 'cmd_vel timeout')
+        if self._stop_left > 0 and now >= self._stop_next_t:
+            self._send_speed_frame(0.0, 0.0)
+            self._stop_left -= 1
+            self._stop_next_t += self.stop_frame_spacing
+        self._publish_speed_telemetry(now)
+
+    def _twist_msg(self, linear, angular):
+        msg = TwistStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.frame_id
+        msg.twist.linear.x = float(linear)
+        msg.twist.angular.z = float(angular)
+        return msg
+
+    def _publish_speed_telemetry(self, now):
+        """Measured and commanded body velocity at ``speed_telemetry_rate_hz`` (observational)."""
         if self._speed_telemetry_period <= 0.0:
             return
-        now = time.monotonic()
         if now - self._speed_telemetry_t < self._speed_telemetry_period:
             return
         self._speed_telemetry_t = now
-
-        stamp = self.get_clock().now().to_msg()
-
-        def _twist(linear, angular):
-            msg = TwistStamped()
-            msg.header.stamp = stamp
-            msg.header.frame_id = self.frame_id
-            msg.twist.linear.x = float(linear)
-            msg.twist.angular.z = float(angular)
-            return msg
-
-        self._meas_speed_pub.publish(_twist(self._meas_linear, self._meas_angular))
-        self._cmd_speed_pub.publish(_twist(cmd_linear, cmd_angular))
-        if sent_linear is not None:
-            self._sent_speed_pub.publish(_twist(sent_linear, sent_angular))
+        self._meas_speed_pub.publish(self._twist_msg(self._meas_linear, self._meas_angular))
+        cmd_linear, cmd_angular = self._commanded()
+        self._cmd_speed_pub.publish(self._twist_msg(cmd_linear, cmd_angular))
 
     def _commanded(self):
         if self._interlock_active() or self._estop_latched:
             return 0.0, 0.0
-        if time.monotonic() - self._cmd_stamp > self.cmd_vel_timeout:
+        if self._mono() - self._cmd_stamp > self.cmd_vel_timeout:
             return 0.0, 0.0
         return self._cmd_linear, self._cmd_angular
 
@@ -1429,8 +1353,8 @@ class McuNode(Node):
             self._estop_latched = True
             self.get_logger().error('host e-stop requested: latching motion + cutter off')
             self._send_cutter(False, 0)
-            self._write(build_frame([(TYPE_ROS_MOWER, MOD_SPEED, speed_payload(0.0, 0.0))]))
         self._apply_interlock()
+        self._speed_tick()                         # stop sequence now if moving (no zero at rest)
 
     # --------------------------------------------------------------- services
     def _srv_cutter_control(self, req, resp):

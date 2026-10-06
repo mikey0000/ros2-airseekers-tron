@@ -105,10 +105,12 @@ struct MCCalib     { u8 calib, left_calib_ret, right_calib_ret; };              
 - The vendor node adds `dev_health::DevHealthHandler::{updateHeartbeat, checkHeartbeat}`, `mower_base::{Motors, PowerManager, DevStatus}`, `factory::FactoryTest`, `sensor/odom.cpp`, `sensor/fill_light.cpp`, and links `libpid_controller.so`, `libbumper_controller.so`, `libbase_imu.so`.
 - Option: link `libmower_sdk.a` directly from the ROS 2 node, or reimplement from the header.
 
-## 9. `/odom` + `/cmd_vel` + PID contract
+## 9. `/odom` + `/cmd_vel` contract (no host wheel PID)
 
-- **Command path:** `/cmd_vel` (and `/cmd_vel_stamped`) → `PowerManager::wheelVelCB` → `SpeedData{linear m/s, angular rad/s}` → `TYPE_ROS_MOWER / MODULE_SPEED`. **The MCU takes linear/angular only** — there is no per-wheel command on the wire.
-- **Feedback path:** MCU publishes measured `SpeedData` at ~60 Hz; the host runs a **wheel-level PID** (`libpid_controller.so`, tuned by the `linear/angular PID` params in `config/base.yaml`) against wheel-velocity feedback and adjusts what it sends to the MCU.
+- **Command path (vendor truth, `docs/wheel_control_semantics.md` §1):** `/cmd_vel` (and `/cmd_vel_stamped`) → `MowerBase::twistCallbackROS` → `MowerOdom::twistCallbackROS` → **exactly one** `SpeedData{float32 linear m/s, float32 angular rad/s}` → `TYPE_ROS_MOWER / MODULE_SPEED` per received message, raw (no clamp, no scaling, no timer, no timeout, no zero sent on its own). Idle = no SpeedData at all (§10b). `PowerManager::wheelVelCB` does **not** transmit; it only sets a "moving" flag for power/charging logic. **The MCU takes linear/angular only** — there is no per-wheel command on the wire.
+- **No host wheel-velocity PID.** An earlier version of this section claimed the host ran a wheel-level PID against wheel-velocity feedback; that was wrong. `libpid_controller.so` (`mower_controller::PidControllerROS`) is a **position-level** primitive (`rotate(angle)` / `moveStraight(dist)`) owned by `BumperController` for the bumper back-off: it reads `/odom`, publishes `/cmd_vel` at 20 Hz clamped to ±0.3, and ends with one zero Twist. Its output re-enters through `/cmd_vel` like any other command. The `linear/angular PID` gains in `config/base.yaml` belong to that primitive.
+- **Measured SpeedData** (MCU → host, ~100 Hz) is used by the vendor only for `/wheel_vel` and odometry (linear only; heading from IMU yaw). Measured angular is never consumed and is unvalidated.
+- **Our driver (`mower_mcu_driver`)** mirrors the pass-through (one frame per `/cmd_vel`, clamped to ±0.3 m/s, ±0.3 rad/s) and adds one explicit stop rule: after a non-zero command, a zero command, 0.5 s of `/cmd_vel` silence or an interlock sends 3 zero frames 100 ms apart, then the wire goes silent. Nothing is fed back from measured speed.
 - **Odometry is computed on the host** (`sensor/odom.cpp`) from `SpeedData` + **IMU yaw** (WIT JY61P on `/dev/serial_imu`, separate UART, 100 Hz / 98 Hz BW via `wit_imu_config.py`), published as `/odom` (`nav_msgs/Odometry`) and `/wheel_vel` (`TwistStamped`) at **100 Hz**. Handles time jumps (`"odom time jump detected %f secs"`) and `/reset_odom` (`"Reset odom to (0, 0)"`).
 - IMU is also published as `/imu` + `/imu/temperature` at 100 Hz (via `libbase_imu.so`).
 
@@ -181,7 +183,7 @@ Verified on the mower 2026-10-06: clear frame with the IMU in-window released a 
 - [ ] Version/BMS → `/mower_base/status`, `dev_base_info` @1 Hz (cutter/chassis versions; rtk is 0.0.0 here).
 - [ ] Factory test: `/factory_test_req` → MCCalib → `/calibration_result`.
 - [ ] All §10 services, incl. `/enable_bumper` → `SendSensorInfoControl`, `/poweroff`, `/fill_light_control` (PWM sysfs).
-- [ ] Params (`config/base.yaml`): ports, baud, rain thresholds (2000/4000), linear/angular PID gains, timeouts (incl. heartbeat).
+- [ ] Params (`config/base.yaml`): ports, baud, rain thresholds (2000/4000), timeouts (incl. heartbeat). (The linear/angular PID gains belong to the bumper back-off position primitive, not to the driver; see §9.)
 - [ ] Auxiliary devices: IMU via `/dev/serial_imu` (WIT 0x55 frames, 100 Hz), rain ADC, keyboard.
 - [ ] Logging: forward MCU `LOG` (ASCII) to ROS logger; optional `mcu.dat` capture.
 - [ ] Safety bring-up: wheels off ground, blade off, characterise heartbeat timeout before any motion test; validate against `mcu_frame_decode.py` (baseline: 172,850 frames, 0 checksum errors).

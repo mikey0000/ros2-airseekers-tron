@@ -228,130 +228,179 @@ class TestMcuNode(unittest.TestCase):
         self.assertIsInstance(msg.cutter_motor.status, FakeStatus)
 
     # ----------------------------------------------------------------- cmd_vel
-    def test_cmd_vel_is_scaled_clamped_and_sent_as_speed_data(self):
-        """Default (pid_enabled=false): scaled + clamped command goes on the wire verbatim."""
+    # SpeedData TX policy (docs/wheel_control_semantics.md 5): one frame per /cmd_vel,
+    # 3 zeros 100 ms apart on stop/timeout/interlock, silence otherwise.
+    def _clock(self, t0=1000.0):
+        self.t = t0
+        self.node._mono = lambda: self.t
+
+    def _speeds(self):
+        return [struct.unpack(mn.SPEED_FMT, p) for (_t, m, p) in drain_tx(self.node._ser)
+                if m == mn.MOD_SPEED]
+
+    def _tick_until(self, t_end, step=0.02):
+        """Run the 20 ms I/O-thread tick up to t_end; return [(t, frame)] sent."""
+        out = []
+        while self.t < t_end - 1e-9:
+            self.t = round(self.t + step, 6)
+            self.node._speed_tick(self.t)
+            out += [(self.t, f) for f in self._speeds()]
+        return out
+
+    def test_defaults_are_event_driven_and_clamped_to_vendor_limits(self):
+        self.assertFalse(self.node.get_parameter('speed_stream_enabled').value)
+        self.assertEqual((self.node.linear_max, self.node.angular_max), (0.3, 0.3))
+        self.assertEqual((self.node.stop_frames, self.node.stop_frame_spacing), (3, 0.1))
+        for gone in ('brake_gain', 'pid_enabled', 'brake_deadband_linear', 'linear_kp'):
+            self.assertNotIn(gone, self.node._params)
+        self.assertFalse(hasattr(mn, 'VelocityPID'))
+
+    def test_cmd_vel_is_scaled_clamped_and_sent_as_one_frame(self):
+        self._clock()
         self.node.linear_scale = 2.0
         self.node.angular_scale = 0.5
-        self.node.linear_max = 1.0
-        self.node.angular_max = 1.0
-        self.assertFalse(self.node.pid_enabled)            # safe default
-
         self.node._on_cmd_vel(cmd_vel(5.0, 10.0))          # both above the clamps
-        self.node._send_speed()
+        self.node._speed_tick(self.t)
         (type_id, mod_id, payload), = drain_tx(self.node._ser)
         self.assertEqual((type_id, mod_id), (mn.TYPE_ROS_MOWER, mn.MOD_SPEED))
         linear, angular = struct.unpack(mn.SPEED_FMT, payload)
-        self.assertAlmostEqual(linear, 1.0)                # clamped to linear_max
-        self.assertAlmostEqual(angular, 1.0)               # clamped to angular_max
+        self.assertAlmostEqual(linear, 0.3)
+        self.assertAlmostEqual(angular, 0.3)
+        self.node._on_cmd_vel(cmd_vel(-0.1, -9.0))
+        self.node._speed_tick(self.t)
+        (lin, ang), = self._speeds()
+        self.assertAlmostEqual(lin, -0.2, places=6)
+        self.assertAlmostEqual(ang, -0.3, places=6)
 
-    def test_pid_enabled_closes_loop_on_measured_speed(self):
-        """pid_enabled=true: the loop corrects against measured SpeedData, clamped to ±0.3."""
-        self.node.pid_enabled = True
-        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))           # idle setpoint
-        # Wheels still turning (this is the state that produced the oscillation on hardware)
-        self.node._meas_linear = 0.2
-        self.node._meas_angular = -0.4
-        self.node._send_speed()
-        (_, _, payload), = drain_tx(self.node._ser)
-        linear, angular = struct.unpack(mn.SPEED_FMT, payload)
-        # error = 0 - measured -> braking output, clamped to the ±0.3 PID bounds
-        self.assertAlmostEqual(linear, -0.3, places=1)
-        self.assertAlmostEqual(angular, 0.3, places=1)
+    def test_one_frame_per_command_no_resend(self):
+        self._clock()
+        for k in range(5):
+            self.node._on_cmd_vel(cmd_vel(0.1, 0.05 * k))
+        self.node._speed_tick(self.t)
+        frames = self._speeds()
+        self.assertEqual(len(frames), 5)
+        self.assertAlmostEqual(frames[-1][1], 0.2, places=6)
+        # nothing is re-sent while commands keep arriving within the timeout
+        self.assertEqual(self._tick_until(self.t + 0.4), [])
+        sent = self.node.published['/mcu/sent_speed']
+        self.assertEqual(len(sent), 5)
 
-    def test_brake_is_off_by_default_and_never_acts_while_interlocked(self):
-        self.assertEqual(self.node.get_parameter('brake_gain').value, 0.0)
-        self.node._params['brake_gain'] = 0.5
-        self.node._meas_linear = 0.2
-        self.node._meas_stamp = time.monotonic()
+    def test_cmd_vel_stamped_takes_the_same_path(self):
+        self._clock()
+        msg = TwistStamped()
+        msg.twist.linear.x = 0.1
+        self.node._on_cmd_vel_stamped(msg)
+        self.node._speed_tick(self.t)
+        self.assertEqual(len(self._speeds()), 1)
+
+    def test_zero_after_motion_sends_three_spaced_zeros_then_silence(self):
+        self._clock()
+        self.node._on_cmd_vel(cmd_vel(0.2, 0.0))
+        self.node._speed_tick(self.t)
+        self.assertEqual(len(self._speeds()), 1)
+        self.t += 0.05
+        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
+        t0 = self.t
+        self.node._speed_tick(self.t)
+        self.assertEqual(self._speeds(), [(0.0, 0.0)])
+        later = self._tick_until(t0 + 2.0)
+        self.assertEqual([f for _t, f in later], [(0.0, 0.0), (0.0, 0.0)])
+        self.assertAlmostEqual(later[0][0] - t0, 0.1, delta=0.021)
+        self.assertAlmostEqual(later[1][0] - later[0][0], 0.1, delta=0.021)
+        # further zeros while stopped: silence
+        for _ in range(3):
+            self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
+            self.node._speed_tick(self.t)
+        self.assertEqual(self._tick_until(self.t + 1.0), [])
+
+    def test_no_zeros_when_already_stopped(self):
+        self._clock()
+        for _ in range(10):
+            self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
+            self.node._speed_tick(self.t)
+        self.assertEqual(self._speeds(), [])
+        self.assertEqual(self._tick_until(self.t + 5.0), [])     # idle = silence
+        self.assertEqual(self.node.published['/mcu/sent_speed'], [])
+
+    def test_cmd_vel_timeout_sends_stop_sequence(self):
+        self._clock()
+        self.node._on_cmd_vel(cmd_vel(0.25, 0.1))
+        self.node._speed_tick(self.t)
+        self.assertEqual(len(self._speeds()), 1)
+        t0 = self.t
+        frames = self._tick_until(t0 + 3.0)
+        self.assertEqual([f for _t, f in frames], [(0.0, 0.0)] * 3)
+        self.assertGreater(frames[0][0] - t0, self.node.cmd_vel_timeout)
+        self.assertLess(frames[0][0] - t0, self.node.cmd_vel_timeout + 0.05)
+
+    def test_new_motion_cancels_pending_stop_zeros(self):
+        self._clock()
+        self.node._on_cmd_vel(cmd_vel(0.2, 0.0))
+        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
+        self.node._speed_tick(self.t)
+        self.assertEqual(len(self._speeds()), 2)
+        self.t += 0.04
+        self.node._on_cmd_vel(cmd_vel(0.1, 0.0))
+        self.node._speed_tick(self.t)
+        self.assertEqual(len(self._speeds()), 1)
+        frames = self._tick_until(self.t + 0.3)
+        self.assertEqual(frames, [])
+
+    def test_interlock_while_moving_stops_and_blocks_until_fresh_command(self):
+        self._clock()
+        self.node._on_cmd_vel(cmd_vel(0.2, 0.0))
+        self.node._speed_tick(self.t)
+        self._speeds()
         self.node._estop_latched = True
-        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
-        self.node._send_speed()
-        (_, _, payload), = drain_tx(self.node._ser)
-        self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+        t0 = self.t
+        frames = self._tick_until(t0 + 1.0)
+        self.assertEqual([f for _t, f in frames], [(0.0, 0.0)] * 3)
+        # commands while interlocked produce nothing
+        self.node._on_cmd_vel(cmd_vel(0.2, 0.0))
+        self.node._speed_tick(self.t)
+        self.assertEqual(self._tick_until(self.t + 1.0), [])
+        # cleared: still silent until a fresh non-zero command
         self.node._estop_latched = False
-
-    def test_proportional_brake_at_idle(self):
-        self.node._params['brake_gain'] = 0.5
-        """pid_enabled=false with non-zero measured speed: send -brake_gain * measured.
-
-        The MCU treats SpeedData(0,0) as 'coast', so we brake proportionally when
-        commanded is 0 but measured is non-zero.  This is provably stable.
-        """
-        self.assertFalse(self.node.pid_enabled)
-        self.node._meas_linear = 0.2
-        self.node._meas_angular = -0.4
-        self.node._meas_stamp = time.monotonic()
+        self.assertEqual(self._tick_until(self.t + 1.0), [])
         self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
-        self.node._send_speed()
-        (_, _, payload), = drain_tx(self.node._ser)
-        linear, angular = struct.unpack(mn.SPEED_FMT, payload)
-        brake = self.node.get_parameter('brake_gain').value
-        self.assertAlmostEqual(linear, -brake * 0.2, places=5)
-        self.assertAlmostEqual(angular, -brake * (-0.4), places=5)
+        self.node._speed_tick(self.t)
+        self.assertEqual(self._speeds(), [])
+        self.node._on_cmd_vel(cmd_vel(0.15, 0.0))
+        self.node._speed_tick(self.t)
+        self.assertEqual(len(self._speeds()), 1)
 
-    def test_no_brake_when_already_at_rest(self):
-        """When measured speed is 0 and commanded is 0, output is exactly 0,0."""
-        self.assertFalse(self.node.pid_enabled)
-        self.node._meas_linear = 0.0
-        self.node._meas_angular = 0.0
-        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
-        self.node._send_speed()
-        (_, _, payload), = drain_tx(self.node._ser)
-        self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+    def test_interlock_at_rest_sends_nothing(self):
+        self._clock()
+        self.node._estop_latched = True
+        self.assertEqual(self._tick_until(self.t + 1.0), [])
 
-    def test_brake_deadband_sends_exact_zero_on_noise(self):
-        """Measured speed inside the deadband (sensor noise at rest) -> exact 0,0, no brake."""
-        self.node._meas_linear = 0.01
-        self.node._meas_angular = -0.03
-        self.node._meas_stamp = time.monotonic()
-        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
-        self.node._send_speed()
-        (_, _, payload), = drain_tx(self.node._ser)
-        self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+    def test_estop_request_while_moving_sends_first_zero_immediately(self):
+        self._clock()
+        self.node._on_cmd_vel(cmd_vel(0.2, 0.0))
+        self.node._speed_tick(self.t)
+        self._speeds()
+        self.node._on_estop_request(types.SimpleNamespace(data=True))
+        self.assertEqual(self._speeds(), [(0.0, 0.0)])
 
-    def test_brake_not_applied_on_stale_measurement(self):
-        """A stale measured speed must not drive the brake."""
-        self.node._meas_linear = 0.3
-        self.node._meas_stamp = time.monotonic() - (self.node.speed_timeout + 1.0)
-        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
-        self.node._send_speed()
-        (_, _, payload), = drain_tx(self.node._ser)
-        self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
-
-    def test_disabling_stream_sends_one_final_zero(self):
-        """Turning the stream off must leave the MCU with a 0,0 setpoint, not the last command."""
-        self.node._on_cmd_vel(cmd_vel(0.3, 0.0))
-        self.node._send_speed()
-        drain_tx(self.node._ser)
+    def test_debug_stream_mode_streams_and_ends_with_stop(self):
+        self._clock()
+        self.node._params['speed_stream_enabled'] = True
+        self.node._on_cmd_vel(cmd_vel(0.1, 0.0))
+        frames = self._tick_until(self.t + 0.3)
+        self.assertGreaterEqual(len(frames), 5)            # ~20 Hz
+        self.assertLessEqual(len(frames), 7)
+        self.assertTrue(all(f == (0.1, 0.0) or abs(f[0] - 0.1) < 1e-6 for _t, f in frames))
         self.node._params['speed_stream_enabled'] = False
-        self.node._send_speed()
-        frames = drain_tx(self.node._ser)
-        self.assertEqual([m for (_, m, _) in frames], [mn.MOD_SPEED])
-        self.assertEqual(struct.unpack(mn.SPEED_FMT, frames[0][2]), (0.0, 0.0))
-        self.node._send_speed()
-        self.assertEqual(drain_tx(self.node._ser), [])
+        frames = self._tick_until(self.t + 1.0)
+        self.assertEqual([f for _t, f in frames], [(0.0, 0.0)] * 3)
+        self.assertEqual(self._tick_until(self.t + 1.0), [])
 
-    def test_speed_stream_disabled_sends_no_speed_frame(self):
-        """speed_stream_enabled=false -> no SpeedData leaves the host (vendor idle wire)."""
-        # ros_stubs has no set_parameters(); poke the backing store the param reads.
-        self.node._params['speed_stream_enabled'] = False
-        self.node._on_cmd_vel(cmd_vel(0.4, 0.1))
-        self.node._send_speed()
-        frames = drain_tx(self.node._ser)
-        # The transition itself emits exactly one 0,0 frame (never leave a setpoint latched);
-        # the commanded 0.4/0.1 must not reach the wire, and later cycles send nothing.
-        self.assertEqual([m for (_, m, _) in frames], [mn.MOD_SPEED])
-        self.assertEqual(struct.unpack(mn.SPEED_FMT, frames[0][2]), (0.0, 0.0))
-        self.node._send_speed()
-        self.assertEqual(drain_tx(self.node._ser), [])
-        self.assertFalse(self.node._speed_streaming)
-
-    def test_stale_cmd_vel_sends_zero_speed(self):
-        self.node._on_cmd_vel(cmd_vel(0.7, 0.2))
-        self.node._cmd_stamp = time.monotonic() - (self.node.cmd_vel_timeout + 1.0)
-        self.node._send_speed()
-        (_, _, payload), = drain_tx(self.node._ser)
-        self.assertEqual(struct.unpack(mn.SPEED_FMT, payload), (0.0, 0.0))
+    def test_measured_and_commanded_telemetry_published(self):
+        self._clock()
+        self._tick_until(self.t + 1.0)
+        self.assertTrue(self.node.published['/mcu/measured_speed'])
+        self.assertTrue(self.node.published['/mcu/commanded_speed'])
+        self.assertEqual(self.node.published['/mcu/sent_speed'], [])
 
     def test_shutdown_sends_zero_speed_before_closing(self):
         self.node._on_cmd_vel(cmd_vel(1.0, 1.0))

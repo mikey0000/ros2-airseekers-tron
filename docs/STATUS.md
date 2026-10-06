@@ -166,10 +166,10 @@ dock contact (`is_docking_done`) and charging, side cameras through the rkisp pi
   node and pushed the load to 50. Compose now wipes `/dev/shm/fastrtps_*` before launch.
 - Idle CPU of the Python nodes cut from ~2.6 cores to ~0.5 (`sub_pump.py`: one wait-set thread, sampled
   inputs, pre-serialized publishing); second pass on cameras/IMU/LEDs and mower_control in progress.
-- MCU driver: proportional brake on measured speed when commanded 0 (gain 0.5, deadband 0.02 m/s /
-  0.05 rad/s, only with fresh measurements), `speed_stream_enabled` toggle (sends one final 0,0 when turned
-  off; the MCU keeps the last setpoint while heartbeats continue). 60 s at rest: exact zeros on the wire, no
-  motor motion, no odometry drift.
+- MCU driver: vendor speed policy (reconstructed from the decompile, `docs/wheel_control_semantics.md`): one raw
+  SpeedData per /cmd_vel, clamp 0.3 m/s / 0.3 rad/s, stop = 3 zero frames 100 ms apart then SILENCE (the vendor
+  host never streamed while idle and ran no wheel PID; our earlier zero stream and brake caused creep/crawl).
+  Verified 60 s at rest: nothing leaves the host, measured speed at noise.
 - NTRIP: nothing configured yet (vendor file empty; the vendor source tree only holds the vendor's expired
   China Mobile CORS test accounts, not usable). Enter the provider in the GUI's NTRIP section (applied live +
   at boot) or `/userdata/mower/ntrip.yaml`.

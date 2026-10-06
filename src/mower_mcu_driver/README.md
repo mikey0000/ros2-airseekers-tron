@@ -29,14 +29,15 @@ host→MCU type 0, MCU→host type 8, heartbeat type 255         all multi-byte 
 | sub | `/cmd_vel` | `geometry_msgs/TwistStamped` | mapped to a `SpeedData` (4) command frame |
 
 Parameters are listed in the module docstring of `mower_mcu_driver/mcu_node.py`
-(`port`, `baud`, `heartbeat_period`, `speed_cmd_rate`, `cmd_vel_timeout`, `linear_scale`,
+(`port`, `baud`, `heartbeat_period`, `cmd_vel_timeout`, `stop_frames`, `stop_frame_spacing_s`,
+`speed_stream_enabled` (debug), `speed_cmd_rate` (debug stream rate), `linear_scale`,
 `angular_scale`, `linear_max`, `angular_max`, `use_imu_yaw`, `*_frame`, battery scaling …).
 
 ## Known gaps (do not treat as safety-complete)
 
 | Gap | Status |
 |---|---|
-| **PID** | The stock node runs a host-side wheel PID from `libpid_controller.so` (gains in `mower_base_pkg/config/base.yaml`). This node only does a linear/angular **scale + clamp** — documented `TODO(port)` in `_map_command()`. |
+| **SpeedData TX** | Vendor pass-through: one SpeedData per `/cmd_vel` message (scale + clamp ±0.3), no host PID (the vendor `libpid_controller.so` is the bumper back-off position primitive, not a wheel loop). After motion, a zero / 0.5 s silence / interlock sends 3 zeros 100 ms apart, then silence. See `docs/wheel_control_semantics.md` §5. |
 | **Heartbeat period** | Unknown on hardware. Defaults to 100 ms (same as the BLE link) as a starting point; the MCU failsafe timeout must be characterised with the wheels off the ground first. Parameter `heartbeat_period`. |
 | **E-stop passthrough** | Not wired. The MCU enforces estop/lift/bumper cut-offs itself; no host→MCU estop frame has been identified. Documented `TODO(estop)`. |
 | Odometry | Open-loop integration, drifts. `/reset_odom` and `/tf` broadcasting not implemented yet. |
