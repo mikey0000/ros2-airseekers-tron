@@ -156,3 +156,15 @@ def test_imu_cdr_matches_rclpy_serialisation():
         ref = serialize_message(m)
         assert len(ours) == len(ref)            # padding bytes differ (rclpy leaves garbage)
         assert deserialize_message(ours, Imu) == m
+
+
+def test_rest_bias_discard_restarts_the_window():
+    from mower_cameras.iio_imu import RestBias
+    b = RestBias(n=10, max_std=0.01)
+    for _ in range(9):
+        b.add((0.5, 0.5, 0.5))                  # a moving start, would pass the std gate
+    b.discard()
+    assert b.windows_rejected == 1
+    for _ in range(10):
+        b.add((0.001, 0.002, 0.003))
+    assert b.bias is not None and abs(b.bias[2] - 0.003) < 1e-12

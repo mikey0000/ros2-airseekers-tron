@@ -512,11 +512,199 @@ class HeadingEstimator:
         self.rejected = []
 
 
+# ---------------------------------------------------------------------- yaw-rate source
+IMU_SOURCES = ('stereo', 'wit', 'auto')
+
+
+def quat_to_matrix(q):
+    """3x3 rotation matrix (row lists) of a unit quaternion (x, y, z, w)."""
+    x, y, z, w = q
+    n = math.sqrt(x * x + y * y + z * z + w * w) or 1.0
+    x, y, z, w = x / n, y / n, z / n, w / n
+    return [[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]]
+
+
+def base_z_row(q_base_sensor):
+    """Row that maps a sensor-frame angular velocity to base_link z:
+    ``wz_base = row . w_sensor`` for ``q_base_sensor`` = TF base_link -> sensor rotation
+    (the sensor frame's orientation expressed in base_link)."""
+    return tuple(quat_to_matrix(q_base_sensor)[2])
+
+
+def imu_stamp(data):
+    """Header stamp (s) of serialized sensor_msgs/Imu (XCDR1 LE)."""
+    sec, nsec = struct.unpack_from('<iI', data, 4)
+    return sec + nsec * 1e-9
+
+
+def imu_gyro(data, pos):
+    """Angular velocity (x, y, z) from serialized Imu at orientation offset ``pos``."""
+    return struct.unpack_from('<3d', data, pos + 8 * (4 + 9))
+
+
+def imu_set_gyro_z(data, pos, gz):
+    out = bytearray(data)
+    _DOUBLE.pack_into(out, pos + 8 * (4 + 9 + 2), gz)
+    return bytes(out)
+
+
+class YawSource:
+    """Continuous 'virtual IMU yaw' for the heading estimator, built from yaw-rate sources.
+
+    ``wit``    the JY61P's own yaw (its deltas). Its firmware clamps small rates to exactly
+               0.0, so slow pivots are invisible and the yaw drifts tens of degrees per mow.
+    ``stereo`` the Metoak ICM-40608 gyro (no clamp, ~7e-5 rad/s/sqrt(Hz)), re-expressed in
+               base_link (``z_row`` from the static TF) and integrated here. A residual z bias is
+               re-estimated whenever the robot rests (wheel odometry + command still,
+               ``rest_settle`` s, then ``rest_window`` s windows; docked = resting too), and
+               the yaw is held while resting (zero-rate update) unless the gyro clearly turns.
+    ``auto``   stereo while it is fresh and bias-calibrated (one rest window done), else WIT.
+
+    The virtual yaw only ever advances by the active source's increment, so switching sources
+    (or a WIT yaw reset while the stereo source is active) never steps it. ``offset`` stays
+    ``yaw_enu - virtual yaw`` exactly like it was ``yaw_enu - WIT yaw``.
+    """
+
+    def __init__(self, mode='auto', z_row=None, stale=0.1, rest_settle=1.0, rest_window=3.0,
+                 rest_alpha=0.5, rest_max_rate=0.02, rest_max_std=0.01, max_dt=0.05):
+        if mode not in IMU_SOURCES:
+            raise ValueError('imu_source must be one of %s' % (IMU_SOURCES,))
+        self.mode = mode
+        self.z_row = z_row
+        self.stale, self.max_dt = stale, max_dt
+        self.rest_settle, self.rest_window = rest_settle, rest_window
+        self.rest_alpha, self.rest_max_rate, self.rest_max_std = (rest_alpha, rest_max_rate,
+                                                                   rest_max_std)
+        self.yaw = None               # virtual yaw (rad, wrapped)
+        self.active = 'wit'
+        self.switches = 0
+        self.wit_yaw = None
+        self.wit_gz = 0.0
+        self.st_t = None              # last stereo sample stamp (sensor clock)
+        self.st_mono = None           # local monotonic time of the last stereo sample
+        self.st_rate = 0.0            # bias-corrected base z rate
+        self.st_raw = 0.0
+        self.bias = 0.0
+        self.bias_windows = 0
+        self.resting = False
+        self._rest_since = None
+        self._acc = []
+        self._acc_t0 = None
+        self._pending_k = None        # virtual - WIT yaw to restore at the first WIT sample
+
+    # ---- state
+    def stereo_fresh(self, now):
+        return self.st_mono is not None and now - self.st_mono <= self.stale
+
+    def calibrated(self):
+        return self.bias_windows > 0
+
+    def select(self, now):
+        if self.mode == 'wit' or self.z_row is None or not self.stereo_fresh(now):
+            want = 'wit'
+        elif self.mode == 'stereo':
+            want = 'stereo'
+        else:
+            want = 'stereo' if self.calibrated() else 'wit'
+        if want != self.active:
+            self.active = want
+            self.switches += 1
+        return want
+
+    def rate(self, now):
+        """Yaw rate (rad/s, base_link z) of the active source."""
+        return self.st_rate if self.select(now) == 'stereo' else self.wit_gz
+
+    def restore(self, saved_virtual, saved_wit):
+        """Continue the persisted virtual yaw: at the first WIT sample the virtual yaw is set
+        to ``wit + (saved_virtual - saved_wit)``, so it moves by exactly what the WIT moved
+        while the stack was down (the continuity check then judges the WIT delta)."""
+        if saved_virtual is None:
+            return
+        self._pending_k = 0.0 if saved_wit is None else wrap(saved_virtual - saved_wit)
+
+    # ---- inputs
+    def on_rest(self, now, resting):
+        """Robot still per wheel odometry and command (or docked)."""
+        if not resting:
+            self.resting = False
+            self._rest_since = None
+            self._acc = []
+            return
+        if self._rest_since is None:
+            self._rest_since = now
+        self.resting = now - self._rest_since >= self.rest_settle
+
+    def on_stereo(self, now, stamp, gyro):
+        if self.z_row is None:
+            return
+        r = self.z_row
+        wz = r[0] * gyro[0] + r[1] * gyro[1] + r[2] * gyro[2]
+        self.st_raw = wz
+        self.st_rate = wz - self.bias
+        dt = None if self.st_t is None else stamp - self.st_t
+        self.st_t, self.st_mono = stamp, now
+        if self.resting:
+            if not self._acc:
+                self._acc_t0 = stamp
+            self._acc.append(wz)
+            if stamp - self._acc_t0 >= self.rest_window:
+                self._finish_rest_window()
+        if dt is None or not 0.0 < dt <= self.max_dt or self.yaw is None:
+            return
+        if self.select(now) != 'stereo':
+            return
+        if self.resting and abs(self.st_rate) < self.rest_max_rate:
+            return                    # zero-rate update: still robot, no yaw random walk
+        self.yaw = wrap(self.yaw + self.st_rate * dt)
+
+    def _finish_rest_window(self):
+        a, self._acc = self._acc, []
+        n = len(a)
+        mean = sum(a) / n
+        std = math.sqrt(max(0.0, sum((v - mean) ** 2 for v in a) / n))
+        if n < 10 or std > self.rest_max_std or abs(mean) > 0.01:
+            return                    # vibration / a hand turning the robot: not a rest window
+        if self.bias_windows == 0:
+            self.bias = mean
+        else:
+            self.bias += self.rest_alpha * (mean - self.bias)
+        self.bias_windows += 1
+
+    def on_wit(self, now, wit_yaw, wit_gz):
+        """Every WIT sample (drives the output). Returns the virtual yaw."""
+        prev, self.wit_yaw, self.wit_gz = self.wit_yaw, wit_yaw, wit_gz
+        if self.yaw is None:
+            k = self._pending_k or 0.0
+            self._pending_k = None
+            self.yaw = wrap(wit_yaw + k)
+            return self.yaw
+        # WIT increment when WIT is active, or while the stereo stream has a gap longer than
+        # max_dt (stereo skips such gaps, see on_stereo; samples come in ~20 ms FIFO bursts)
+        # but is not stale yet: no motion is lost before the switch, none counted twice
+        gap = self.st_mono is None or self.st_mono < now - self.max_dt
+        if prev is not None and (self.select(now) == 'wit' or gap):
+            self.yaw = wrap(self.yaw + wrap(wit_yaw - prev))
+        return self.yaw
+
+    def status(self, now):
+        return {'imu_source': self.mode, 'imu_active': self.select(now),
+                'stereo_fresh': self.stereo_fresh(now),
+                'stereo_bias_dps': round(math.degrees(self.bias), 4),
+                'stereo_bias_windows': self.bias_windows, 'resting': self.resting,
+                'source_switches': self.switches,
+                'virtual_minus_wit_deg': None if (self.yaw is None or self.wit_yaw is None)
+                else round(math.degrees(wrap(self.yaw - self.wit_yaw)), 2)}
+
+
 # ---------------------------------------------------------------------- persistence
 FILE_HEADER = '# mower_localization_heading_offset_v1'
 
 
-def save_offset(path, offset, source, n_cog, now_wall=None, imu_yaw=None, x=None, y=None):
+def save_offset(path, offset, source, n_cog, now_wall=None, imu_yaw=None, x=None, y=None,
+                wit_yaw=None):
     """Atomic write of the offset file (flat YAML). ``imu_yaw`` (rad) and the GPS map
     position ``x``/``y`` at the save make the record verifiable after a restart."""
     path = os.path.abspath(os.path.expanduser(path))
@@ -529,6 +717,9 @@ def save_offset(path, offset, source, n_cog, now_wall=None, imu_yaw=None, x=None
     if imu_yaw is not None and x is not None and y is not None:
         text += 'imu_yaw_rad: %.6f\nimu_yaw_deg: %.3f\nx: %.3f\ny: %.3f\n' % (
             imu_yaw, math.degrees(imu_yaw), x, y)
+        if wit_yaw is not None:
+            # raw JY61P yaw at the save: imu_yaw is the aligner's virtual yaw (YawSource)
+            text += 'wit_yaw_rad: %.6f\n' % wit_yaw
     fd, tmp = tempfile.mkstemp(prefix='.heading_offset.', dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, 'w') as fh:
@@ -549,12 +740,15 @@ def load_offset(path):
 
 
 def load_record(path):
-    """{'offset', 'imu_yaw', 'x', 'y', 'saved_wall'} (missing extras None), or None."""
+    """{'offset', 'imu_yaw', 'x', 'y', 'saved_wall', 'wit_yaw'} (missing extras None), or
+    None. Records written before YawSource have no ``wit_yaw``: their imu_yaw WAS the WIT yaw."""
     off = _load_offset_only(path)
     if off is None:
         return None
-    rec = {'offset': off, 'imu_yaw': None, 'x': None, 'y': None, 'saved_wall': None}
-    keys = {'imu_yaw_rad': 'imu_yaw', 'x': 'x', 'y': 'y', 'saved_wall': 'saved_wall'}
+    rec = {'offset': off, 'imu_yaw': None, 'x': None, 'y': None, 'saved_wall': None,
+           'wit_yaw': None}
+    keys = {'imu_yaw_rad': 'imu_yaw', 'x': 'x', 'y': 'y', 'saved_wall': 'saved_wall',
+            'wit_yaw_rad': 'wit_yaw'}
     with open(os.path.abspath(os.path.expanduser(path))) as fh:
         for line in fh.read().splitlines()[1:]:
             key, _, value = line.partition(':')

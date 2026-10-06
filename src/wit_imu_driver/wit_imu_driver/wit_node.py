@@ -15,6 +15,12 @@ Notes
 - One Imu message is published per received 0x53 angle frame (the last frame of each
   WIT output burst), so the ROS rate follows the sensor's configured rate exactly.
 - ``publish_tf`` defaults to False: robot_state_publisher owns base_link->imu_link.
+- Yaw continuity: this driver publishes the sensor's own yaw untouched (no unwrap, no
+  offset, no zeroing) and by default sends NOTHING to the sensor (``configure_sensor``
+  false; even then only unlock/rate/output/save, never the 0x01 calibration register that
+  zeroes the Z angle). The JY61P yaw therefore survives driver/container restarts and only
+  restarts on a sensor power cycle (measured 2026-10-07: 164.191 deg before a container
+  restart, 164.185 deg after). The first yaw after every open is logged for that check.
 
 CPU (RK3588): serial bytes are read by a plain thread blocked in ``select`` on the tty fd
 (no 200 Hz rclpy poll timer: each executor wake costs 1.5-4 ms of Python here), and
@@ -23,6 +29,7 @@ CPU (RK3588): serial bytes are read by a plain thread blocked in ``select`` on t
 ``fast_publish:=false`` restores the typed path). The executor only serves the 5 s health
 timer and the parameter services.
 """
+import math
 import os
 import select
 import threading
@@ -106,6 +113,7 @@ class WitImuNode(Node):
         self._last_frame_mono = 0.0
         self._published = 0
         self._last_stale_warn = 0.0
+        self._first_yaw_logged = False
 
         self._stop = threading.Event()
         self._reader = threading.Thread(target=self._read_loop, name='wit_reader', daemon=True)
@@ -188,6 +196,11 @@ class WitImuNode(Node):
         for ftype in self.parser.feed(data):
             self._last_frame_mono = time.monotonic()
             if ftype == TYPE_ANGLE and self.parser.sample.complete:
+                if not self._first_yaw_logged:
+                    self._first_yaw_logged = True
+                    self.get_logger().info('first JY61P yaw %.2f deg (sensor-side; continuous '
+                                           'unless the sensor lost power)'
+                                           % math.degrees(self.parser.sample.rpy[2]))
                 self._publish()
 
     # ---------------------------------------------------------------- publish

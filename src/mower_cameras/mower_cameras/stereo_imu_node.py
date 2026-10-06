@@ -32,6 +32,7 @@ from geometry_msgs.msg import Vector3Stamped
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 
 from mower_cameras import iio_imu
@@ -132,6 +133,11 @@ class StereoImuNode(Node):
         d('calibrate_gyro_bias', True)
         d('bias_window_s', 3.0)
         d('bias_max_std', 0.004)         # rad/s; a window noisier than this = moving
+        # wheel odometry gate for the bias window: samples only count while /odom says still
+        # (no /odom seen = std gate only). '' disables.
+        d('bias_odom_topic', '/odom')
+        d('bias_still_speed', 0.01)      # m/s
+        d('bias_still_turn', 0.05)       # rad/s (odom w noise at rest ~0.03)
         # Noise densities measured at rest on the mower 2026-10-07 (200 Hz): see docs/vio.md.
         d('gyro_noise_std', 0.0010)      # rad/s per sample
         d('accel_noise_std', 0.02)       # m/s^2 per sample
@@ -148,6 +154,12 @@ class StereoImuNode(Node):
         self.bias = (iio_imu.RestBias(int(float(p('bias_window_s')) * float(p('rate'))),
                                       float(p('bias_max_std')))
                      if p('calibrate_gyro_bias') else None)
+        self._odom_moving_until = 0.0   # monotonic; > now = moving per /odom
+        self._still_v, self._still_w = float(p('bias_still_speed')), float(p('bias_still_turn'))
+        self._odom_sub = None
+        if self.bias is not None and p('bias_odom_topic'):
+            self._odom_sub = self.create_subscription(Odometry, p('bias_odom_topic'),
+                                                      self._on_odom, 5)
         gv, av = float(p('gyro_noise_std')) ** 2, float(p('accel_noise_std')) ** 2
         self.gcov = [gv, 0.0, 0.0, 0.0, gv, 0.0, 0.0, 0.0, gv]
         self.acov = [av, 0.0, 0.0, 0.0, av, 0.0, 0.0, 0.0, av]
@@ -160,6 +172,11 @@ class StereoImuNode(Node):
         self.thread.start()
         self._t_stats = time.monotonic()
         self.create_timer(30.0, self._log_stats)
+
+    def _on_odom(self, msg):
+        tw = msg.twist.twist
+        if abs(tw.linear.x) > self._still_v or abs(tw.angular.z) > self._still_w:
+            self._odom_moving_until = time.monotonic() + 0.5
 
     # ------------------------------------------------------------------ streaming
     def _open(self):
@@ -230,6 +247,9 @@ class StereoImuNode(Node):
                 self.get_logger().info(f'stereo_imu: IIO timestamps are CLOCK_{clock.upper()}')
             for t, g, a in out:
                 if self.bias is not None and self.bias.bias is None:
+                    if time.monotonic() < self._odom_moving_until:
+                        self.bias.discard()   # wheels moving: not a rest window
+                        continue
                     if self.bias.add(g):
                         self._publish_bias(t if clock == 'realtime' else cmap.to_ros(t))
                     continue        # do not publish an uncalibrated gyro

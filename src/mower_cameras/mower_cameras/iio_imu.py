@@ -134,6 +134,12 @@ class RestBias:
         self.std = None
         self.windows_rejected = 0
 
+    def discard(self):
+        """Drop the window in progress (the robot moved per wheel odometry)."""
+        if self._buf:
+            self._buf = []
+            self.windows_rejected += 1
+
     def add(self, xyz):
         if self.bias is not None:
             return True

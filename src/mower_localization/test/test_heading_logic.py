@@ -384,3 +384,201 @@ def test_real_turn_resets_window_with_reason():
     s.run(0.3, 0.5, 0.5)          # real turn: gyro 0.5 rad/s
     assert s.est.source != hl.SOURCE_COG
     assert 'window reset' in s.est.last_event and 'turning' in s.est.last_event
+
+
+# ---------------------------------------------------------------------- yaw-rate source
+def _q_rpy(r, p, y):
+    return _qmul(
+        _qmul((0.0, 0.0, math.sin(y / 2), math.cos(y / 2)),
+              (0.0, math.sin(p / 2), 0.0, math.cos(p / 2))),
+        (math.sin(r / 2), 0.0, 0.0, math.cos(r / 2)))
+
+
+def _qmul(a, b):
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz)
+
+
+def _matvec(m, v):
+    return tuple(sum(m[i][k] * v[k] for k in range(3)) for i in range(3))
+
+
+# URDF: base_link -> stereo_camera_optical rpy(-1.5547956, 0, -1.5707963),
+#       stereo_camera_optical -> stereo_camera_imu rpy(0, pi, 0)
+Q_BASE_STEREO_IMU = _qmul(_q_rpy(-1.5547956, 0.0, -1.5707963), _q_rpy(0.0, math.pi, 0.0))
+
+
+def test_stereo_axis_map_matches_gravity_at_rest():
+    row = hl.base_z_row(Q_BASE_STEREO_IMU)
+    # measured at rest 2026-10-07 in stereo_camera_imu: specific force (-0.03, -9.79, +0.32)
+    az = sum(r * a for r, a in zip(row, (-0.03, -9.79, 0.32)))
+    assert az == pytest.approx(9.79, abs=0.1)
+    # chip -y is (almost) base up: a CCW base yaw shows as a negative chip-y rate
+    assert row[1] == pytest.approx(-1.0, abs=0.01)
+
+
+def test_stereo_axis_map_round_trip():
+    row = hl.base_z_row(Q_BASE_STEREO_IMU)
+    m = hl.quat_to_matrix(Q_BASE_STEREO_IMU)
+    mt = [[m[j][i] for j in range(3)] for i in range(3)]
+    w_imu = _matvec(mt, (0.0, 0.0, 0.3))         # 0.3 rad/s base yaw, seen by the chip
+    assert sum(r * w for r, w in zip(row, w_imu)) == pytest.approx(0.3, abs=1e-9)
+
+
+class SrcSim:
+    """WIT at 100 Hz with the JY61P small-rate clamp, stereo at 200 Hz (chip frame)."""
+
+    def __init__(self, mode='auto', stereo_bias=0.0, wit_clamp=0.1, **kw):
+        self.row = hl.base_z_row(Q_BASE_STEREO_IMU)
+        m = hl.quat_to_matrix(Q_BASE_STEREO_IMU)
+        self.mt = [[m[j][i] for j in range(3)] for i in range(3)]
+        self.src = hl.YawSource(mode, z_row=self.row, **kw)
+        self.t = 0.0
+        self.yaw = 0.3             # true base yaw
+        self.wit = -1.0            # JY61P yaw (arbitrary zero)
+        self.bias = stereo_bias
+        self.clamp = wit_clamp
+        self.stereo_on = True
+
+    def run(self, w, seconds, rest=False):
+        for k in range(int(round(seconds * 200))):
+            self.t += 0.005
+            self.yaw = hl.wrap(self.yaw + w * 0.005)
+            if abs(w) >= self.clamp:
+                self.wit = hl.wrap(self.wit + w * 0.005)
+            self.src.on_rest(self.t, rest)
+            if self.stereo_on:
+                self.src.on_stereo(self.t, 1000.0 + self.t,
+                                   _matvec(self.mt, (0.0, 0.0, w + self.bias)))
+            if k % 2 == 0:
+                self.src.on_wit(self.t, self.wit, w if abs(w) >= self.clamp else 0.0)
+
+    def tracked(self):
+        """Change of the virtual yaw relative to the true yaw since the start."""
+        return self.src.yaw
+
+
+def test_auto_uses_wit_until_rest_calibrated_then_stereo():
+    s = SrcSim('auto')
+    s.run(0.0, 0.5)
+    assert s.src.select(s.t) == 'wit'
+    s.run(0.0, 5.0, rest=True)                  # settle 1 s + one 3 s window
+    assert s.src.calibrated()
+    assert s.src.select(s.t) == 'stereo'
+
+
+def test_slow_pivot_invisible_to_wit_is_tracked_by_stereo():
+    s = SrcSim('auto')
+    s.run(0.0, 5.0, rest=True)
+    y0 = s.src.yaw
+    s.run(0.05, 20.0)                           # 57 deg at 0.05 rad/s: WIT sees nothing
+    assert hl.wrap(s.src.yaw - y0) == pytest.approx(1.0, abs=D(0.5))
+    w = SrcSim('wit')
+    w.run(0.0, 1.0)
+    y0 = w.src.yaw
+    w.run(0.05, 20.0)
+    assert hl.wrap(w.src.yaw - y0) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_rest_bias_estimated_and_yaw_held_at_rest():
+    s = SrcSim('stereo', stereo_bias=0.004)     # 0.23 deg/s uncorrected
+    s.run(0.0, 0.2)
+    y0 = s.src.yaw
+    s.run(0.0, 60.0, rest=True)
+    assert s.src.bias == pytest.approx(0.004, abs=1e-6)
+    assert abs(hl.wrap(s.src.yaw - y0)) < D(0.3)
+    y1 = s.src.yaw
+    s.run(0.0, 60.0)                            # moving gate: no hold, bias removed
+    assert abs(hl.wrap(s.src.yaw - y1)) < D(0.1)
+
+
+def test_bias_window_rejected_when_rotated_by_hand_at_rest():
+    s = SrcSim('stereo')
+    s.run(0.0, 5.0, rest=True)
+    n = s.src.bias_windows
+    s.run(0.03, 5.0, rest=True)                 # wheels still, robot turned by hand
+    assert s.src.bias_windows == n
+    assert s.src.bias == pytest.approx(0.0, abs=1e-6)
+
+
+def test_wit_reset_does_not_step_virtual_yaw_while_stereo_active():
+    s = SrcSim('auto')
+    s.run(0.0, 5.0, rest=True)
+    y0 = s.src.yaw
+    s.wit = hl.wrap(s.wit + D(110.0))           # JY61P yaw jumps (power blip)
+    s.run(0.0, 1.0)
+    assert abs(hl.wrap(s.src.yaw - y0)) < D(0.1)
+
+
+def test_stereo_silence_falls_back_to_wit_continuously():
+    s = SrcSim('auto', wit_clamp=0.0)
+    s.run(0.0, 5.0, rest=True)
+    s.run(0.3, 2.0)
+    y0, t0 = s.src.yaw, s.yaw
+    s.stereo_on = False
+    s.run(0.3, 2.0)
+    assert s.src.select(s.t) == 'wit'
+    # at most max_dt (50 ms) of motion falls between the last stereo and the first WIT step
+    assert hl.wrap(s.src.yaw - y0) == pytest.approx(hl.wrap(s.yaw - t0), abs=D(1.0))
+    s.stereo_on = True
+    s.run(0.3, 2.0)
+    assert s.src.select(s.t) == 'stereo'
+    assert s.src.switches == 3                   # wit->stereo, stereo->wit, wit->stereo
+
+
+def test_restore_continues_virtual_yaw_by_wit_delta():
+    src = hl.YawSource('wit')
+    src.restore(saved_virtual=D(100.0), saved_wit=D(30.0))
+    assert src.on_wit(0.0, D(32.0), 0.0) == pytest.approx(D(102.0))
+    old = hl.YawSource('auto')                  # pre-YawSource record: imu_yaw was the WIT yaw
+    old.restore(saved_virtual=D(30.0), saved_wit=None)
+    assert old.on_wit(0.0, D(32.0), 0.0) == pytest.approx(D(32.0))
+
+
+def test_offset_record_round_trips_wit_yaw(tmp_path):
+    p = str(tmp_path / 'h.yaml')
+    hl.save_offset(p, 0.5, 'cog', 3, imu_yaw=1.0, x=1.0, y=2.0, wit_yaw=-0.25)
+    rec = hl.load_record(p)
+    assert rec['wit_yaw'] == pytest.approx(-0.25)
+    assert rec['imu_yaw'] == pytest.approx(1.0)
+    hl.save_offset(p, 0.5, 'cog', 3, imu_yaw=1.0, x=1.0, y=2.0)
+    assert hl.load_record(p)['wit_yaw'] is None
+
+
+def test_estimator_on_virtual_yaw_end_to_end():
+    """Aligner wiring: estimator fed the virtual yaw + active rate keeps its offset through
+    a WIT reset while stereo is active (no 'IMU reset, unaligned')."""
+    s = SrcSim('auto')
+    est = hl.HeadingEstimator()
+    est.offset, est.source, est.updated_at = 0.5, hl.SOURCE_COG, 0.0
+    s.run(0.0, 5.0, rest=True)
+    s.wit = hl.wrap(s.wit + D(90.0))
+    for _ in range(100):
+        s.run(0.0, 0.01)
+        est.on_imu(s.t, s.src.yaw, s.src.rate(s.t))
+    assert est.aligned and est.offset == 0.5
+
+
+def test_stereo_fifo_bursts_are_not_double_counted_with_wit():
+    """stereo_imu delivers 4 samples per 20 ms burst; WIT ticks in between must not add."""
+    s = SrcSim('auto', wit_clamp=0.0)
+    s.run(0.0, 5.0, rest=True)
+    src, buf = s.src, []
+    y0, true0 = src.yaw, s.yaw
+    for k in range(4000):                      # 20 s at 0.3 rad/s, 200 Hz true clock
+        s.t += 0.005
+        s.yaw = hl.wrap(s.yaw + 0.3 * 0.005)
+        s.wit = hl.wrap(s.wit + 0.3 * 0.005)
+        buf.append((1000.0 + s.t, _matvec(s.mt, (0.0, 0.0, 0.3))))
+        if len(buf) == 4:
+            for st, g in buf:
+                src.on_stereo(s.t, st, g)
+            buf = []
+        if k % 2 == 0:
+            src.on_wit(s.t, s.wit, 0.3)
+    assert src.switches == 1
+    assert hl.wrap(src.yaw - y0) == pytest.approx(hl.wrap(s.yaw - true0), abs=D(0.5))
