@@ -2090,3 +2090,20 @@ def test_obstacle_near_subpath_end_skips_the_rest():
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert h.fsm.cursor.areas[0].skipped == [(19, 20)]
     assert 0 in h.fsm.cursor.areas[0].completed and h.fsm.mission.sub_i == 1
+
+
+def test_charging_reasserted_when_mcu_stops_charging_on_dock():
+    """An undock stopped on the dock leaves the charger off: re-enable after 10 s."""
+    h = Harness(battery_max_charge_percent=95.0)
+    h.fsm.inputs.docked = True
+    h.fsm.inputs.battery_percent = 40.0
+    h.fsm.inputs.is_charging = True
+    m = len(h.fx)
+    h.tick()
+    assert _charge_calls(h, m) == [True]
+    h.fsm.inputs.is_charging = False          # MCU turned the charger off
+    m = len(h.fx)
+    h.tick(5.0)
+    assert _charge_calls(h, m) == []          # not yet
+    h.tick(6.0)
+    assert _charge_calls(h, m) == [True]

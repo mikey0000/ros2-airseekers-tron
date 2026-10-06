@@ -592,7 +592,12 @@ class MissionFSM:
             self._log('info', 'battery %.0f%% >= max charge %.0f%%: charging disabled' % (b, limit))
             self._call(SRV_CHARGING, {'enable': False}, track=False)
         elif b <= limit - float(self.p.battery_charge_hysteresis_percent) \
-                and self._charge_req is not True:
+                and (self._charge_req is not True
+                     or (not i.is_charging and self.phase in IDLE_NAMES
+                         and self._now - self._charge_req_t >= 10.0)):
+            # Re-assert "on" when the MCU reports not charging 10 s after our
+            # request: an undock (stopped on the dock) or the docking server
+            # turns the charger off behind our back.
             self._charge_req, self._charge_req_t = True, self._now
             self._log('info', 'docked at %.0f%% (max charge %.0f%%): charging enabled' % (b, limit))
             self._call(SRV_CHARGING, {'enable': True}, track=False)

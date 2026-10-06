@@ -26,14 +26,17 @@ find_package(mower_interfaces REQUIRED)
 #   which shadows v3 via LD_LIBRARY_PATH, so an image carries only ONE of the
 #   two (Dockerfile.humble build-arg F2C_V3=0 selects apt 2.1).
 #   Fields2Cover is NOT a <depend> in package.xml (no rosdep key).
-# Default: v3 when its install tree is present (dev image, future mower image),
-# otherwise the apt 2.1 package, so a source sync never breaks a mower build.
-if(EXISTS "/opt/fields2cover/lib/cmake/Fields2Cover")
-  set(_f2c_v3_default ON)
+# Fields2Cover version selection, re-evaluated on EVERY configure (a cached
+# option went stale on the mower: an old "OFF" cache + a v3-only image produced
+# a 2.1-API binary linked to the v3 library -> undefined symbol at start-up).
+# v3 is used when its install tree is present unless F2C_FORCE_21=ON.
+option(F2C_FORCE_21 "Force the apt Fields2Cover 2.1 package even if v3 is installed" OFF)
+if(EXISTS "/opt/fields2cover/lib/cmake/Fields2Cover" AND NOT F2C_FORCE_21)
+  set(F2C_V3 ON)
 else()
-  set(_f2c_v3_default OFF)
+  set(F2C_V3 OFF)
 endif()
-option(F2C_V3 "Build against Fields2Cover v3 (/opt/fields2cover)" ${_f2c_v3_default})
+unset(F2C_V3 CACHE)
 set(F2C_V3_PREFIX "/opt/fields2cover" CACHE PATH "Fields2Cover v3 install prefix")
 if(F2C_V3)
   find_package(ortools_vendor QUIET)
