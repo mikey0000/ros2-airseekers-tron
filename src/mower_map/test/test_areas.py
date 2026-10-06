@@ -712,3 +712,35 @@ def test_soft_leg_without_soft_band_and_mowing_mask_unchanged():
     assert _cell(spec, nav, 1.5, -0.1) == core.SOFT_COST
     assert np.array_equal(m1, core.build_keepout_mask(s.areas, spec, None, 0.0, True))
     assert _cell(spec, m1, 4.0, 0.0) == core.FREE         # lawn polygon unchanged
+
+
+def test_nav_mask_prefer_paths_in_areas():
+    s, dock = _path_case()
+    corridor = core.DockCorridor([(0.0, 0.0), (0.8, 0.0), (2.5, 0.0)], 0.35, True, 1.7)
+    spec = core.grid_for_polygons([a.polygon for a in s.areas] + [corridor.polygon()], 0.1, 3.0)
+    nav = core.build_nav_mask(s.areas, spec, 0.8, 0.10, corridor, 1.5, None, 0.15,
+                              True, True, 40)
+    assert _cell(spec, nav, 5.0, 0.0) == 40               # lawn interior: transit cost
+    assert _cell(spec, nav, 1.8, 1.0) == 40               # lawn margin too
+    assert _cell(spec, nav, 2.9, 2.0) == core.FREE        # path band inside the lawn
+    assert _cell(spec, nav, 0.8, 1.0) == core.FREE        # path band outside the lawn
+    assert _cell(spec, nav, 0.0, 0.0) == core.FREE        # dock -> approach capsule
+    assert _cell(spec, nav, 0.4, 0.0) == core.FREE
+    assert _cell(spec, nav, 1.6, 1.0) == core.SOFT_COST   # soft band unchanged
+    # disabled: lawn is free again
+    off = core.build_nav_mask(s.areas, spec, 0.8, 0.10, corridor, 1.5, None, 0.15, True, False)
+    assert _cell(spec, off, 5.0, 0.0) == core.FREE
+    # without a user path the lawn stays free even when enabled
+    plain = core.MapStore()
+    plain.add_area('Lawn', s.areas[0].polygon)
+    nopath = core.build_nav_mask(plain.areas, spec, 0.8, 0.10, None, 0.0, None, 0.15, True, True)
+    assert _cell(spec, nopath, 5.0, 0.0) == core.FREE
+
+
+def test_return_corridor_treats_transit_cost_as_on_map():
+    s, dock = _path_case()
+    spec = core.grid_for_polygons([a.polygon for a in s.areas], 0.1, 3.0)
+    nav = core.build_nav_mask(s.areas, spec, 0.8, 0.10, None, 1.5, None, 0.15, True, True, 40)
+    assert core.is_free_at(nav, spec, 5.0, 0.0)
+    assert core.return_corridor(5.0, 0.0, nav, spec, 0.35) is None
+    assert not core.is_free_at(nav, spec, 1.6, 1.0)        # soft band still off-map

@@ -842,7 +842,9 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
                    soft_band: float = 0.0,
                    return_corridor: Optional[DockCorridor] = None,
                    path_margin: Optional[float] = None,
-                   soft_dock_corridor_with_paths: bool = True) -> np.ndarray:
+                   soft_dock_corridor_with_paths: bool = True,
+                   prefer_paths_in_areas: bool = False,
+                   area_transit_cost: int = 40) -> np.ndarray:
     """Navigation mask for Nav2's global costmap (static layer / keepout filter).
 
     Different semantics from the mowing mask (build_keepout_mask):
@@ -867,7 +869,11 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
     cost, 100 = lethal), so short excursions stay plannable while the planner
     still prefers the inside. ``return_corridor`` (see return_corridor) is
     freed like the dock corridor. Obstacles win over everything. With no
-    areas at all the mask is free (apart from obstacles)."""
+    areas at all the mask is free (apart from obstacles).
+    ``prefer_paths_in_areas``: when a user path exists, mowing areas (and
+    their ``nav_margin``) cost ``area_transit_cost`` instead of 0 while path
+    bands stay 0, so transits follow a drawn path that runs across the lawn.
+    The cost is uniform inside the areas, so swath-to-swath hops stay straight."""
     nav_margin = max(0.0, float(nav_margin))
     path_margin = nav_margin if path_margin is None else max(0.0, float(path_margin))
     soft_band = max(0.0, float(soft_band))
@@ -894,8 +900,15 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
                 free_corridor(mask, spec, corridor, SOFT_COST, corridor.half_width + soft_band)
         if soft_leg is not None:
             free_corridor(mask, spec, soft_leg, SOFT_COST)
+        area_cost = FREE
+        if prefer_paths_in_areas and has_user_path(areas):
+            area_cost = int(min(max(int(area_transit_cost), 0), LETHAL - 1))
         for area in areas:
-            _mask_polygon(mask, spec, area.polygon, FREE, margin_of(area))
+            if not area.is_navigation:
+                _mask_polygon(mask, spec, area.polygon, area_cost, margin_of(area))
+        for area in areas:
+            if area.is_navigation:
+                _mask_polygon(mask, spec, area.polygon, FREE, margin_of(area))
     if hard_corridor is not None:
         free_corridor(mask, spec, hard_corridor)
     if return_corridor is not None:
@@ -906,10 +919,17 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
     return mask
 
 
+def _on_map(v):
+    """Cells counted as 'on the map' for the return corridor: FREE and the
+    area transit cost (prefer_paths_in_areas), not the soft band / lethal."""
+    v = np.asarray(v).astype(np.int16)
+    return (v >= 0) & (v < SOFT_COST)
+
+
 def nearest_free_point(mask: np.ndarray, spec: GridSpec, x: float, y: float):
     """(fx, fy, dist) of the FREE cell centre closest to (x, y); None when no
     cell is free. (x, y) itself may lie outside the grid."""
-    rows, cols = np.nonzero(mask == FREE)
+    rows, cols = np.nonzero(_on_map(mask))
     if rows.size == 0:
         return None
     cx = spec.origin_x + (cols + 0.5) * spec.resolution
@@ -923,7 +943,7 @@ def is_free_at(mask: np.ndarray, spec: GridSpec, x: float, y: float) -> bool:
     r, c = spec.index_of(x, y)
     if not (0 <= r < spec.height and 0 <= c < spec.width):
         return False
-    return int(mask[r, c]) == FREE
+    return bool(_on_map(mask[r, c]))
 
 
 def return_corridor(x: float, y: float, base_mask: np.ndarray, spec: GridSpec,

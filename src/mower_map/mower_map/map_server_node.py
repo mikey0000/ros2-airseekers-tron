@@ -72,6 +72,10 @@ PARAMS = {
     # approach -> area leg of the dock corridor costs SOFT_COST (90) instead of
     # free; the dock -> approach capsule stays free
     'dock_corridor_soft_with_paths': True,
+    # nav mask: with a user path, mowing areas cost area_transit_cost (0..99)
+    # outside path bands so transits stay on the drawn path
+    'prefer_paths_in_areas': True,
+    'area_transit_cost': 40,
     # dock corridor (nav mask only): capsule of half-width nav_margin_m from the
     # dock through its approach pose to the nearest area boundary, so docking
     # still plans when the dock lies outside every drawn area.
@@ -405,7 +409,9 @@ class MapServerNode(Node):
                                        float(self.p('nav_obstacle_margin_m')),
                                        corridor, float(self.p('nav_soft_band_m')),
                                        None, float(self.p('path_margin_m')),
-                                       bool(self.p('dock_corridor_soft_with_paths')))
+                                       bool(self.p('dock_corridor_soft_with_paths')),
+                                       bool(self.p('prefer_paths_in_areas')),
+                                       int(self.p('area_transit_cost')))
         self.base_nav = (spec, nav_mask)
         ret = None
         self.return_anchor = None
@@ -427,7 +433,9 @@ class MapServerNode(Node):
                                                float(self.p('nav_obstacle_margin_m')),
                                                corridor, float(self.p('nav_soft_band_m')),
                                                ret, float(self.p('path_margin_m')),
-                                               bool(self.p('dock_corridor_soft_with_paths')))
+                                               bool(self.p('dock_corridor_soft_with_paths')),
+                                       bool(self.p('prefer_paths_in_areas')),
+                                       int(self.p('area_transit_cost')))
         if (ret is not None) != self.return_active:
             self.get_logger().info(
                 'return corridor %s' % ('freed: (%.2f, %.2f) -> (%.2f, %.2f), %.2f m'
