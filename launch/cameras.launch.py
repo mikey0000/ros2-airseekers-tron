@@ -195,6 +195,11 @@ def generate_launch_description():
                               description='Side-by-side width (each eye = half).'),
         DeclareLaunchArgument('stereo_height', default_value='480'),
         DeclareLaunchArgument('stereo_fps', default_value='5.0'),
+        DeclareLaunchArgument('stereo_depth', default_value='true',
+                              description='mower_cameras/stereo_depth: Metoak hardware disparity '
+                                          '(/dev/video11) -> /stereo_depth/points (Nav2 local '
+                                          'costmap obstacle source) + depth image.'),
+        DeclareLaunchArgument('stereo_depth_fps', default_value='10.0'),
     ]
 
     def _oa(name):
@@ -242,6 +247,15 @@ def generate_launch_description():
         }],
     )
 
+    stereo_depth = Node(
+        package='mower_cameras',
+        executable='stereo_depth',
+        name='stereo_depth',
+        output='screen',
+        condition=IfCondition(LC('stereo_depth')),
+        parameters=[{'fps': ParameterValue(LC('stereo_depth_fps'), value_type=float)}],
+    )
+
     video = Node(
         package='web_video_server',
         executable='web_video_server',
@@ -272,6 +286,6 @@ def generate_launch_description():
         SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', LC('camera_dds_profile'),
                                condition=IfCondition(PythonExpression(
                                    ["'", LC('camera_dds_profile'), "' != ''"]))),
-    ] + oa_nodes + [rear_v4l2, rear_opencv, stereo])
+    ] + oa_nodes + [rear_v4l2, rear_opencv, stereo, stereo_depth])
 
     return LaunchDescription(args + [cameras, video])

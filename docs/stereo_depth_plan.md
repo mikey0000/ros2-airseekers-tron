@@ -1,6 +1,6 @@
 # Front stereo depth into Nav2 (plan, 2026-10-06)
 
-Status: investigation only; no code yet. Goal: feed Metoak stereo depth into the Nav2 local
+Status: IMPLEMENTED 2026-10-06 (`mower_cameras/stereo_depth_node.py`, `/stereo_depth/points` into the local obstacle_layer). Frame format verified: RGB3 640x360, b0 = disparity bits 0-7, b1&0x0F = bits 8-11, b2 = grey reference image; disparity px = raw12/32; Z_mm = 22698.4/d. Camera pose in the URDF (`stereo_camera_optical`) is from a floor-plane fit; measure the real mount. Original plan below. Goal: feed Metoak stereo depth into the Nav2 local
 costmap `obstacle_layer` as PointCloud2 (user picked this over bbox ground-projection).
 
 ## Findings (read-only probe of the live device + decompile)

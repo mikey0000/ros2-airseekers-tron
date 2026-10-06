@@ -307,7 +307,26 @@ local_costmap:
         footprint_clearing_enabled: false
         max_obstacle_height: 2.0
         combination_method: 1
-        observation_sources: bumper
+        # bumper: contact hits. stereo: Metoak hardware-disparity cloud
+        # (mower_cameras/stereo_depth, frame stereo_camera_optical, 0.2-4 m).
+        observation_sources: bumper stereo
+        stereo:
+          topic: /stereo_depth/points
+          data_type: "PointCloud2"
+          sensor_frame: stereo_camera_optical
+          marking: true
+          clearing: true
+          # Ignore the ground and grass: only returns 8-60 cm above base_link (ground)
+          # mark; the floor fit scatters +-3 cm around 0.
+          min_obstacle_height: 0.08
+          max_obstacle_height: 0.6
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          observation_persistence: 0.0
+          expected_update_rate: 0.0
+          inf_is_valid: false
         bumper:
           topic: /bumper_cloud
           data_type: "PointCloud2"

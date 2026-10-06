@@ -251,6 +251,16 @@
   <!-- Front stereo (Metoak; driver planned). -->
   <xacro:box_sensor name="stereo_camera" xyz="${stereo_cam_xyz}"
                     rpy="1.64061 0 1.57079" size="${sensor_box}" material="yellow"/>
+  <!-- Optical frame of the Metoak hardware disparity (mower_cameras/stereo_depth, ~/points):
+       standard optical axes (z forward, x right, y down). Pose from a floor-plane fit of the
+       live depth cloud on 2026-10-06 (best fit: no pitch, 0.215 m above base_link/ground);
+       the stereo_camera box above keeps the vendor pose. Re-fit after any mount change. -->
+  <link name="stereo_camera_optical"/>
+  <joint name="stereo_camera_optical_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="stereo_camera_optical"/>
+    <origin xyz="0.466 0 0.215" rpy="-1.5707963 0 -1.5707963"/>
+  </joint>
   <!-- OA cameras — frames match cameras.launch.py camera_frame_id. -->
   <xacro:box_sensor name="left_oa_camera" xyz="${oa_cam_xyz}"
                     rpy="0 1.57079 1.57079" size="${sensor_box}" material="purple"/>
