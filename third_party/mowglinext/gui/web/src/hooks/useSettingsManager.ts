@@ -497,7 +497,12 @@ export const useSettingsManager = () => {
             // can decide whether GPS needs an auto-restart and whether we
             // need to refresh map_server's dock pose at runtime.
             const gpsDirty = dirtyKeysRequireGpsRestart(dirtyKeys);
-            const shouldRestartGps = forceGpsRestart || gpsDirty;
+            // A separate GPS container only exists on robots with a Docker-managed GNSS
+            // sidecar; elsewhere (e.g. profiles whose GPS driver takes NTRIP settings live via
+            // parameter bindings) there is nothing to restart and the call would fail with
+            // "Container not found".
+            const gpsSidecar = profile !== null && isGateVisible(profile, "feature:gnss_configurator");
+            const shouldRestartGps = gpsSidecar && (forceGpsRestart || gpsDirty);
             const dockDirty =
                 dirtyKeys.has("dock_pose_x") ||
                 dirtyKeys.has("dock_pose_y") ||
