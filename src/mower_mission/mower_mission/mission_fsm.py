@@ -4,7 +4,8 @@
 # Mission logic ported from MowgliNext mowgli_behavior (GPL-3.0):
 # trees/main_tree.xml (guards, start/mow/home/record/manual sequences),
 # src/coverage_nodes.cpp (FollowStrip: per-sub-path FollowPath, blade-off
-# transits, skip-on-failure), src/coverage_persistence.cpp (resume cursor),
+# transits; ours retries failures and ends in MOWING_INCOMPLETE instead of
+# silently skipping), src/coverage_persistence.cpp (resume cursor),
 # src/recording_nodes.cpp (10 Hz / 5 cm sampling, Douglas-Peucker, add_area),
 # plus the Airseekers vendor cutter interlock (OpenCutterCheck retries).
 """Pure-Python mission state machine of the Tron ``behavior_tree_node``.
@@ -75,6 +76,7 @@ SRV_CHARGING = 'charging'
 SRV_GET_AREA_SETTINGS = 'get_area_settings'   # /map_server_node/get_area_settings
 SRV_SET_PARAMS = 'set_parameters'             # request {'node': ..., 'params': {...}}
 SRV_CUTTER_HEIGHT = 'cutter_height'           # /cutter_control height only, blade off
+SRV_CLEAR_COSTMAPS = 'clear_costmaps'         # Nav2 clear_entirely_{global,local}_costmap
 
 # set_parameters targets (the node maps them to <node>/set_parameters)
 PARAM_NODE_COVERAGE = 'coverage_server'
@@ -114,6 +116,9 @@ STATE_CODES = {
     'RAIN_WAITING': STATE_IDLE,
     'RECORDING_COMPLETE': STATE_IDLE,
     'UNDOCK_FAILED': STATE_IDLE,
+    # latched result: some sub-paths could not be mowed; robot stopped in place,
+    # resume cursor kept (START resumes them). Left by START / HOME / STOP.
+    'MOWING_INCOMPLETE': STATE_IDLE,
     'PREFLIGHT_CHECK': STATE_AUTONOMOUS,
     'UNDOCKING': STATE_AUTONOMOUS,
     'WAITING_FOR_RTK': STATE_AUTONOMOUS,
@@ -292,6 +297,17 @@ class Params:
     # already this close to its target counts as arrived (Nav2 goal checker
     # tolerances / yaw settling can abort a goal the robot effectively reached).
     transit_arrived_radius_m: float = 0.3
+    # A failed (aborted / timed-out) transit is re-sent up to transit_retries times,
+    # transit_retry_delay_s apart (costmaps are cleared first so they can refresh);
+    # Nav2 re-plans from the robot's current pose.  Same delay for follow retries.
+    transit_retries: int = 3
+    transit_retry_delay_s: float = 3.0
+    # FollowPath abort / timeout mid-swath: resume from the last reached pose.
+    follow_retries: int = 3
+    clear_costmaps_on_retry: bool = True
+    # After a sub-path still fails, the session ends in MOWING_INCOMPLETE; dock only
+    # when this is true (default: stop in place so the operator can inspect).
+    return_home_on_incomplete: bool = False
     follow_controller_id: str = 'FollowCoveragePath'
     follow_goal_checker_id: str = 'coverage_goal_checker'
     blade_confirm_timeout_s: float = 5.0
@@ -306,6 +322,7 @@ class Params:
     boundary_recover_after_s: float = 3.0     # pause this long, then a recovery transit
     boundary_max_recoveries: int = 2          # recovery transits per sub-path before latching
     boundary_recovery_advance_m: float = 1.0  # recovery target: this far ahead on the sub-path
+    boundary_recovery_retries: int = 3        # failed recovery transit re-sends, then stop in place
     progress_window_m: float = 3.0      # progress tracking searches this far ahead on the path
     follow_end_tolerance_m: float = 1.0  # FollowPath "success" with more path left = premature
     follow_chunk_m: float = 25.0        # max FollowPath goal length (0 = whole sub-path)
@@ -363,7 +380,14 @@ class Mission:
     start_local: int = 0
     resume_sub: Optional[tuple] = None          # (sub, local) from the cursor
     retry_used: bool = False
-    skipped: int = 0
+    skipped: int = 0                            # sub-paths of the current area NOT mowed
+    transit_fails: int = 0                      # per sub-path
+    follow_fails: int = 0                       # per sub-path / chunk
+    recovering: bool = False                    # the in-flight transit is a boundary recovery
+    recovery_fails: int = 0
+    retry_at: float = 0.0                       # step == 'retry_wait' until this time
+    failed: list = field(default_factory=list)  # [(area, sub|None, reason, abs pose index)]
+    planned_total: int = 0                      # sub-paths planned over the session
     completed_count: int = 0
     step: Optional[str] = None                  # transit | spinup | spin_pause | follow
     transit_target: Any = None                  # (x, y, yaw) of the in-flight transit
@@ -421,6 +445,7 @@ class MissionFSM:
         self._enum = None                   # {'purpose', 'index', 'areas', 'count'}
         self._record_name = ''
         self._last_status = None
+        self._incomplete_text = ''
 
     # ==================================================================
     # presentation
@@ -731,6 +756,9 @@ class MissionFSM:
         self._blade_off('boundary violation')
         self._fx.append(ZeroBurst())
         self._boundary_since = self._now
+        # the robot is usually just outside the nav mask edge: let the costmaps
+        # refresh during boundary_recover_after_s before any recovery transit.
+        self._clear_costmaps()
         pose = self.inputs.pose
         self._log('warn', 'boundary violation at %s: mowing paused, blade off' % (
             '(%.2f, %.2f)' % (pose[0], pose[1]) if pose is not None else 'unknown pose'))
@@ -820,6 +848,10 @@ class MissionFSM:
                     self._heading_failed()
             elif now - self._phase_since > self.p.rtk_timeout_s:
                 self._mission_failed('no RTK fixed within %.0fs' % self.p.rtk_timeout_s)
+        elif ph in ('MOWING', 'TRANSIT') and self.mission is not None \
+                and self.mission.step == 'retry_wait':
+            if now >= self.mission.retry_at:
+                self._retry_fire()
         elif ph == 'MOWING' and self.mission is not None:
             if self.mission.step == 'follow':
                 self._track_progress()
@@ -836,6 +868,7 @@ class MissionFSM:
                                         % m.boundary_recoveries)
                     return
                 m.boundary_recoveries += 1
+                m.recovering, m.recovery_fails = True, 0
                 sp = m.subpaths[m.sub_i]
                 near = self._track_progress()
                 m.start_local = geo.advance_index(sp, near, self.p.boundary_recovery_advance_m)
@@ -1140,7 +1173,10 @@ class MissionFSM:
         while m.queue and m.queue[0] in self.cursor.completed_areas:
             m.queue.pop(0)
         if not m.queue:
-            self._mission_complete()     # status still shows the last area's counts
+            if m.failed:
+                self._mission_incomplete()
+            else:
+                self._mission_complete()     # status still shows the last area's counts
             return
         m.area_idx = None
         m.subpaths, m.lengths, m.cum = [], [], []
@@ -1315,10 +1351,13 @@ class MissionFSM:
             why = result.get('message') or outcome
             self._log('warn', 'area %d: coverage planning failed (%s): skipping it'
                       % (m.area_idx, why))
+            m.failed.append((m.area_idx, None, 'area %d planning failed: %s' % (m.area_idx, why),
+                             -1))
             self._go('AREA_UNREACHABLE', 'area %d: planning failed: %s' % (m.area_idx, why))
             self._next_area()
             return
         m.subpaths = subpaths
+        m.planned_total += len(subpaths)
         m.cum = [geo.cumulative_lengths(sp) for sp in subpaths]
         m.lengths = [c[-1] for c in m.cum]
         full = result.get('full_path') or [p for sp in subpaths for p in sp]
@@ -1359,6 +1398,8 @@ class MissionFSM:
             m.start_local = m.resume_sub[1]
             m.resume_sub = None
         m.retry_used = False
+        m.transit_fails = m.follow_fails = m.recovery_fails = 0
+        m.recovering = False
         self._dispatch()
 
     def _dispatch(self, force_transit=False):
@@ -1462,18 +1503,109 @@ class MissionFSM:
         if self.mission is not None and self.phase in ('MOWING', 'TRANSIT'):
             self._go(self.phase)   # refresh completed_swaths / coverage
 
-    def _subpath_skipped(self, why):
+    def _subpath_failed(self, why):
+        """Retries exhausted: remember the sub-path as NOT mowed (it stays out of
+        ``completed``, so a resume retries it) and go on with the next one."""
         m = self.mission
         m.skipped += 1
-        self._log('warn', 'area %d sub-path %d skipped: %s' % (m.area_idx, m.sub_i, why))
+        sp = m.subpaths[m.sub_i]
+        local = self._track_progress() if m.step == 'follow' else m.start_local
+        offs, _ = subpath_offsets(m.subpaths)
+        m.failed.append((m.area_idx, m.sub_i, why, offs[m.sub_i] + min(local, len(sp) - 1)))
+        self._log('warn', 'area %d sub-path %d NOT mowed: %s' % (m.area_idx, m.sub_i, why))
+        m.step = None
         m.sub_i += 1
         self._next_subpath()
+
+    # ---- retries ---------------------------------------------------------
+    def _clear_costmaps(self):
+        if self.p.clear_costmaps_on_retry:
+            self._call(SRV_CLEAR_COSTMAPS, {}, track=False)
+
+    def _schedule_retry(self, phase, sub):
+        """Blade off, clear the costmaps, wait transit_retry_delay_s, then re-send."""
+        m = self.mission
+        self._blade_off('retry')
+        self._clear_costmaps()
+        m.step = 'retry_wait'
+        m.retry_at = self._now + float(self.p.transit_retry_delay_s)
+        self._log('warn', sub)
+        self._go(phase, sub)
+
+    def _retry_fire(self):
+        m = self.mission
+        m.step = None
+        if m.transit_target is not None and self._transit_arrived() and \
+                (m.recovering or m.transit_fails):
+            self._log('info', 'retry: robot already within %.2f m of the transit target'
+                      % self.p.transit_arrived_radius_m)
+            m.recovering = False
+            self._begin_blade()
+            return
+        self._dispatch(force_transit=m.recovering)
+
+    def _not_mowed_text(self, extra_remaining=0):
+        m = self.mission
+        n = sum(1 for x in m.failed if x[1] is not None) + extra_remaining
+        reason = m.failed[-1][2] if m.failed else ''
+        txt = '%d of %d sub-paths not mowed' % (n, m.planned_total)
+        unplanned = sum(1 for x in m.failed if x[1] is None)
+        if unplanned:
+            txt += ', %d area(s) not planned' % unplanned
+        return txt + (': %s' % reason if reason else '')
+
+    def _finish_incomplete(self, text):
+        """Session over with sub-paths left: latch MOWING_INCOMPLETE (resume kept)."""
+        self._cancel_all('mowing incomplete')
+        self._blade_off('mowing incomplete')
+        self._fx.append(ZeroBurst())
+        self.cursor.current_command = CMD_START
+        self._persist()
+        self._log('warn', 'MOWING_INCOMPLETE: %s (START resumes the missing sub-paths)' % text)
+        self._go('MOWING_INCOMPLETE', text)
+        if self.p.return_home_on_incomplete:
+            self._incomplete_text = text
+            self._dock('RETURNING_HOME', 'incomplete', sub=text)
+
+    def _mission_incomplete(self):
+        m = self.mission
+        text = self._not_mowed_text()
+        first = next((x for x in m.failed if x[1] is not None), m.failed[0])
+        self.cursor.current_area = first[0]
+        self.mission = None
+        self._fx.append(PublishAreaSettings({}))
+        self._finish_incomplete(text)
+
+    def _boundary_recovery_failed(self, why):
+        """Recovery transits keep failing: stop in place, never dock from here."""
+        m = self.mission
+        ac = self.cursor.area(m.area_idx)
+        left = sum(1 for i in range(m.sub_i, len(m.subpaths)) if i not in ac.completed)
+        m.failed.append((m.area_idx, m.sub_i, why, -1))
+        text = self._not_mowed_text(extra_remaining=left - 1)
+        unvisited = len([a for a in m.queue if a not in self.cursor.completed_areas])
+        if unvisited:
+            text += ' (%d more area(s) not started)' % unvisited
+        self._interrupt_mission(why)
+        self._finish_incomplete(text)
 
     def _area_done(self):
         m = self.mission
         ac = self.cursor.area(m.area_idx)
-        self._log('info', 'area %d done: %d/%d sub-paths mowed, %d skipped' % (
-            m.area_idx, len(ac.completed), len(m.subpaths), m.skipped))
+        failed = [x for x in m.failed if x[0] == m.area_idx and x[1] is not None]
+        self._log('info' if not failed else 'warn',
+                  'area %d done: %d/%d sub-paths mowed, %d NOT mowed' % (
+                      m.area_idx, len(ac.completed), len(m.subpaths), len(failed)))
+        if failed:
+            # not complete: keep it out of completed_areas, keep its run index, and
+            # point the cursor at the first missing pose so START resumes there.
+            if self.blade_on:
+                self._blade_off('area finished with failures')
+            ac.resume_index = min(x[3] for x in failed if x[3] >= 0) \
+                if any(x[3] >= 0 for x in failed) else -1
+            self._persist()
+            self._next_area()
+            return
         if m.runs and m.run_i + 1 < len(m.runs):
             # repeat / cross: plan and mow the same area again.
             if self.blade_on:
@@ -1585,6 +1717,8 @@ class MissionFSM:
         elif purpose == 'battery':
             self._go('CHARGING', 'charging to %.0f%%, then resuming' % self._resume_charge_percent())
             self._resume_after = 'charge'
+        elif purpose == 'incomplete':
+            self._go_idle('docked; %s' % self._incomplete_text or 'mowing incomplete')
         else:
             self._go_idle('docked')
 
@@ -1717,6 +1851,8 @@ class MissionFSM:
             self._on_plan(outcome, result)
         elif name == ACT_NAV:
             if outcome == SUCCEEDED:
+                m.recovering = False
+                m.transit_fails = 0
                 self._begin_blade()
             elif outcome == UNAVAILABLE:
                 self._mission_failed('/navigate_to_pose action server unavailable')
@@ -1725,9 +1861,28 @@ class MissionFSM:
                 self._log('warn', 'transit %s but robot is %.2f m from the target '
                                   '(<= %.2f m): treating as arrived'
                           % (outcome, d, self.p.transit_arrived_radius_m))
+                m.recovering = False
                 self._begin_blade()
+            elif m.recovering:
+                m.recovery_fails += 1
+                why = 'boundary recovery transit %s' % outcome
+                if m.recovery_fails > self.p.boundary_recovery_retries:
+                    self._boundary_recovery_failed('%s %d times' % (why, m.recovery_fails))
+                    return
+                self._schedule_retry('TRANSIT', 'area %d sub-path %d/%d: %s, retry %d/%d in %.0f s'
+                                     % (m.area_idx, m.sub_i + 1, len(m.subpaths), why,
+                                        m.recovery_fails, self.p.boundary_recovery_retries,
+                                        self.p.transit_retry_delay_s))
             else:
-                self._subpath_skipped('transit %s' % outcome)
+                m.transit_fails += 1
+                if m.transit_fails > self.p.transit_retries:
+                    self._subpath_failed('transit %s %d times' % (outcome, m.transit_fails))
+                    return
+                self._schedule_retry('TRANSIT', 'area %d sub-path %d/%d: transit %s, retry %d/%d '
+                                     'in %.0f s' % (m.area_idx, m.sub_i + 1, len(m.subpaths),
+                                                    outcome, m.transit_fails,
+                                                    self.p.transit_retries,
+                                                    self.p.transit_retry_delay_s))
         elif name == ACT_FOLLOW:
             if outcome == SUCCEEDED:
                 cum = m.cum[m.sub_i]
@@ -1738,8 +1893,8 @@ class MissionFSM:
                     # Stock Humble goal checkers only look at the final pose; a coverage
                     # path that passes near its own end "succeeds" early.
                     if m.premature >= self.p.follow_premature_retries:
-                        self._subpath_skipped('follow_path keeps reporting success with '
-                                              '%.1f m left' % left)
+                        self._subpath_failed('follow_path keeps reporting success with '
+                                             '%.1f m left' % left)
                         return
                     m.premature += 1
                     m.start_local = prog
@@ -1752,6 +1907,7 @@ class MissionFSM:
                 if end < len(cum) - 1:
                     m.start_local = end           # next chunk of the same sub-path
                     m.retry_used = False
+                    m.follow_fails = 0
                     self._dispatch()
                     return
                 self._log('info', 'area %d sub-path %d done (%.1f m)' % (
@@ -1759,14 +1915,18 @@ class MissionFSM:
                 self._subpath_done()
             elif outcome == UNAVAILABLE:
                 self._mission_failed('/follow_path action server unavailable')
-            elif not m.retry_used:
-                m.retry_used = True
-                m.start_local = self._track_progress()
-                self._log('warn', 'follow_path %s: retrying sub-path %d once from pose %d'
-                          % (outcome, m.sub_i, m.start_local))
-                self._dispatch()
             else:
-                self._subpath_skipped('follow_path %s twice' % outcome)
+                m.follow_fails += 1
+                m.start_local = self._track_progress()
+                if m.follow_fails > self.p.follow_retries:
+                    self._subpath_failed('follow_path %s %d times (at pose %d)'
+                                         % (outcome, m.follow_fails, m.start_local))
+                    return
+                self._schedule_retry('MOWING', 'area %d sub-path %d/%d: follow_path %s at pose %d, '
+                                     'retry %d/%d in %.0f s' % (
+                                         m.area_idx, m.sub_i + 1, len(m.subpaths), outcome,
+                                         m.start_local, m.follow_fails, self.p.follow_retries,
+                                         self.p.transit_retry_delay_s))
 
     def _handle_service(self, s, ok, resp):
         if s.purpose == 'enum':

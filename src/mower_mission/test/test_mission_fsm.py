@@ -604,8 +604,8 @@ def test_blade_confirmed_on_second_attempt():
     assert h.pending_action(f.ACT_FOLLOW)
 
 
-def test_follow_abort_retries_once_from_nearest_then_skips():
-    h = Harness()
+def test_follow_abort_retries_from_nearest_then_fails_subpath():
+    h = Harness(follow_retries=1, transit_retry_delay_s=3.0)
     start_until_planning(h)
     sp0, sp1 = line(0, 0, 5, 0, n=11), line(5, 0.3, 0, 0.3)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp0, sp1]))
@@ -613,11 +613,16 @@ def test_follow_abort_retries_once_from_nearest_then_skips():
     h.tick()
     h.fsm.inputs.pose = (2.1, 0.1, 0.0)
     h.finish(f.ACT_FOLLOW, f.ABORTED)
-    g = h.goal(f.ACT_FOLLOW)                 # within 0.6 m: no transit, blade stays on
+    assert h.name == 'MOWING' and not h.blade and h.fsm._action is None
+    assert 'retry 1/1' in h.fsm.sub_state and 'follow_path aborted' in h.fsm.sub_state
+    h.tick(dt=1.0, n=3)
+    h.tick()                                 # blade spin-up confirmed -> follow
+    g = h.goal(f.ACT_FOLLOW)                 # within 0.6 m: no transit
     assert g['poses'][0] == sp0[4]
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert h.fsm.mission.skipped == 1 and h.fsm.mission.sub_i == 1
     assert h.fsm.status()['skipped_swaths'] == 1
+    assert 0 not in h.fsm.cursor.areas[0].completed
 
 
 def test_progress_tracking_never_jumps_to_adjacent_lap():
@@ -700,8 +705,8 @@ def test_premature_success_retries_exhausted_skips_subpath():
     assert h.fsm.cursor.areas[0].completed == set()
 
 
-def test_transit_failure_skips_subpath():
-    h = Harness()
+def test_transit_failure_without_retries_fails_subpath():
+    h = Harness(transit_retries=0)
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3), line(0, 0, 4, 0)]))
     assert h.name == 'TRANSIT'
@@ -729,7 +734,7 @@ def test_action_watchdog_timeout_counts_as_failure():
     m = h.mark()
     h.tick(dt=1.0, n=12)
     assert h.since(m, f.CancelActions)
-    assert h.fsm.mission.retry_used
+    assert h.fsm.mission.follow_fails == 1 and h.fsm.mission.step == 'retry_wait'
 
 
 def test_stale_results_are_ignored():
@@ -1550,8 +1555,8 @@ def test_transit_timeout_near_target_counts_as_arrived():
     assert h.name == 'MOWING'
 
 
-def test_transit_abort_beyond_radius_still_skips():
-    h = Harness()
+def test_transit_abort_beyond_radius_still_fails():
+    h = Harness(transit_retries=0)
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3), line(0, 0, 4, 0)]))
     h.fsm.inputs.pose = (2.6, 3.0, 0.0)           # 0.4 m away
@@ -1606,3 +1611,214 @@ def test_charge_resume_waits_for_min_of_full_and_max():
     h.tick()
     h.answer_services()
     assert h.name == 'UNDOCKING'
+
+
+def test_stop_while_returning_home_cancels_dock_goal():
+    """GUI Stop (high_level_control 8) during RETURNING_HOME cancels /mower_docking/dock."""
+    h = Harness()
+    assert h.cmd(f.CMD_HOME)
+    assert h.name == 'RETURNING_HOME'
+    tok = h.pending_action(f.ACT_DOCK).token
+    m = h.mark()
+    assert h.cmd(f.CMD_STOP)
+    assert h.since(m, f.CancelActions)
+    assert h.since(m, f.ZeroBurst)
+    assert h.name == 'IDLE' and h.fsm._action is None
+    # the server's late CANCELED result must not turn into NAV_TO_DOCK_FAILED
+    h._apply(h.fsm.on_action_result(tok, f.CANCELED,
+                                    {'success': False, 'message': 'CANCELED'}, h.t))
+    assert h.name == 'IDLE'
+
+
+# =====================================================================
+# retries / MOWING_INCOMPLETE
+# =====================================================================
+def _clears(h, mark=0):
+    return [e for e in h.fx[mark:] if isinstance(e, f.CallService)
+            and e.name == f.SRV_CLEAR_COSTMAPS]
+
+
+def _two_subpaths_first_needs_transit(h):
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3), line(0, 0, 4, 0)]))
+    assert h.name == 'TRANSIT'
+
+
+def test_transit_abort_waits_clears_costmaps_and_resends():
+    h = Harness(transit_retries=3, transit_retry_delay_s=3.0)
+    _two_subpaths_first_needs_transit(h)
+    first = h.pending_action(f.ACT_NAV).token
+    m = h.mark()
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert h.name == 'TRANSIT' and h.fsm._action is None and not h.blade
+    assert 'transit aborted, retry 1/3 in 3 s' in h.fsm.sub_state
+    assert h.fsm.status()['sub_state_name'] == h.fsm.sub_state
+    assert _clears(h, m)
+    h.tick(dt=1.0, n=2)
+    assert h.fsm._action is None                # still waiting
+    h.fsm.inputs.pose = (1.0, 1.0, 0.0)          # robot moved meanwhile
+    h.tick(dt=1.0, n=2)
+    a = h.pending_action(f.ACT_NAV)
+    assert a.token != first and h.goal(f.ACT_NAV)['pose'][:2] == (3, 3)   # same fixed target
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert 'retry 2/3' in h.fsm.sub_state
+    h.tick(dt=1.0, n=4)
+    h.fsm.inputs.pose = (3, 3, 0.0)
+    h.finish(f.ACT_NAV)
+    assert h.name == 'MOWING' and h.fsm.mission.skipped == 0 and h.fsm.mission.sub_i == 0
+
+
+def test_transit_retry_counts_as_arrived_when_within_radius():
+    h = Harness()
+    _two_subpaths_first_needs_transit(h)
+    h.finish(f.ACT_NAV, f.ABORTED)               # (0,0): far from (3,3)
+    h.fsm.inputs.pose = (3.1, 2.9, 0.0)           # drifted in during the wait
+    m = h.mark()
+    h.tick(dt=1.0, n=4)
+    assert h.name == 'MOWING'
+    assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_NAV]
+
+
+def test_transit_retries_exhausted_ends_mowing_incomplete_in_place():
+    h = Harness(transit_retries=3, transit_retry_delay_s=3.0)
+    _two_subpaths_first_needs_transit(h)
+    for k in range(4):
+        h.finish(f.ACT_NAV, f.ABORTED)
+        if k < 3:
+            h.tick(dt=1.0, n=4)
+    # sub-path 0 not mowed; sub-path 1 (starts at the robot) is mowed
+    assert h.fsm.mission.sub_i == 1 and h.fsm.mission.skipped == 1
+    assert any('NOT mowed' in str(e) for e in h.fx)
+    m = h.mark()
+    follow_current(h)
+    assert h.name == 'MOWING_INCOMPLETE' and h.fsm.state == f.STATE_IDLE
+    assert h.fsm.sub_state == '1 of 2 sub-paths not mowed: transit aborted 4 times'
+    assert 'MOWING_COMPLETE' not in h.statuses(m)
+    assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_DOCK]
+    assert h.since(m, f.ZeroBurst) and not h.blade
+    assert h.fsm.cursor.available
+    assert h.since(m, f.PublishResumeAvailable)[-1].available is True
+    cur = ResumeCursor.loads(h.saved)
+    assert cur.available and 0 not in cur.completed_areas
+    assert cur.areas[0].completed == {1} and cur.areas[0].resume_index == 0
+    h.tick(dt=1.0, n=60)                          # latched, not a timed display state
+    assert h.name == 'MOWING_INCOMPLETE'
+    # START resumes only the missing sub-path
+    start_until_planning(h)
+    assert h.fsm.mission.resume
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3), line(0, 0, 4, 0)]))
+    assert h.name == 'TRANSIT' and h.goal(f.ACT_NAV)['pose'][:2] == (3, 3)
+    h.fsm.inputs.pose = (3, 3, 0.0)
+    h.finish(f.ACT_NAV)
+    m = h.mark()
+    follow_current(h)
+    assert 'MOWING_COMPLETE' in h.statuses(m) and h.name == 'RETURNING_HOME'
+    assert not h.fsm.cursor.available
+
+
+def test_mowing_incomplete_commands():
+    h = Harness(transit_retries=0)
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert h.name == 'MOWING_INCOMPLETE'
+    assert h.fsm.sub_state.startswith('1 of 1 sub-paths not mowed: transit aborted')
+    assert h.cmd(f.CMD_HOME) and h.name == 'RETURNING_HOME'
+    assert h.cmd(f.CMD_STOP) and h.name == 'IDLE'
+    assert h.fsm.cursor.available                 # STOP keeps the resume
+
+
+def test_return_home_on_incomplete_docks_and_keeps_reason():
+    h = Harness(transit_retries=0, return_home_on_incomplete=True)
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
+    m = h.mark()
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert 'MOWING_INCOMPLETE' in h.statuses(m)
+    assert h.name == 'RETURNING_HOME' and 'not mowed' in h.fsm.sub_state
+    h.fsm.inputs.docked = True
+    h.finish(f.ACT_DOCK)
+    assert h.name == 'IDLE_DOCKED' and 'not mowed' in h.fsm.sub_state
+    assert h.fsm.cursor.available
+
+
+def test_follow_abort_resumes_from_last_pose_up_to_follow_retries():
+    h = Harness(follow_retries=3, transit_retry_delay_s=3.0)
+    start_until_planning(h)
+    sp = line(0, 0, 10, 0, n=21)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    starts = []
+    for k, x in enumerate((2.0, 3.0, 4.0, 5.0)):
+        h.fsm.inputs.pose = (x, 0.0, 0.0)
+        h.tick()
+        h.finish(f.ACT_FOLLOW, f.ABORTED)
+        if k < 3:
+            assert 'retry %d/3' % (k + 1) in h.fsm.sub_state and not h.blade
+            h.tick(dt=1.0, n=4)
+            starts.append(h.goal(f.ACT_FOLLOW)['poses'][0][0])
+    assert starts == [2.0, 3.0, 4.0]
+    assert h.name == 'MOWING_INCOMPLETE'
+    assert 'follow_path aborted 4 times' in h.fsm.sub_state
+    cur = ResumeCursor.loads(h.saved)
+    assert cur.areas[0].resume_index == 10         # resume at the last reached pose (5 m)
+
+
+def test_planning_failure_ends_incomplete():
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, {'success': False, 'message': 'degenerate polygon'})
+    assert h.name == 'MOWING_INCOMPLETE'
+    assert 'area(s) not planned' in h.fsm.sub_state and 'degenerate' in h.fsm.sub_state
+
+
+def _boundary_paused(h):
+    mowing(h)                                    # sub-path 0: (0,0) -> (4,0)
+    h.fsm.inputs.pose = (1.0, -0.2, 0.0)
+    h.fsm.inputs.boundary_violation = True
+    m = h.mark()
+    h.tick()
+    assert h.name == 'BOUNDARY_PAUSED'
+    assert _clears(h, m)                         # costmaps refresh before the recovery
+    h.tick(dt=1.0, n=3)
+    assert h.name == 'TRANSIT' and h.fsm.mission.recovering
+
+
+def test_boundary_recovery_transit_abort_is_retried():
+    h = Harness(boundary_recovery_retries=3, transit_retry_delay_s=3.0)
+    _boundary_paused(h)
+    target = h.goal(f.ACT_NAV)['pose']
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert h.name == 'TRANSIT' and 'boundary recovery transit aborted, retry 1/3' \
+        in h.fsm.sub_state
+    h.tick(dt=1.0, n=4)
+    assert h.goal(f.ACT_NAV)['pose'] == target
+    h.fsm.inputs.boundary_violation = False
+    h.fsm.inputs.pose = target
+    h.finish(f.ACT_NAV)
+    assert h.name == 'MOWING' and h.fsm.mission.skipped == 0
+
+
+def test_boundary_recovery_failures_stop_in_place_incomplete():
+    """Real-mower regression: the recovery transit aborted, the sub-path was
+    skipped and the mission reported MOWING_COMPLETE and docked."""
+    h = Harness(boundary_recovery_retries=2, transit_retry_delay_s=3.0)
+    _boundary_paused(h)
+    m = h.mark()
+    for k in range(3):
+        h.finish(f.ACT_NAV, f.ABORTED)
+        if k < 2:
+            h.tick(dt=1.0, n=4)
+            assert h.pending_action(f.ACT_NAV)
+    assert h.name == 'MOWING_INCOMPLETE' and not h.blade
+    assert h.fsm.sub_state.startswith('2 of 2 sub-paths not mowed: boundary recovery transit '
+                                      'aborted 3 times')
+    names = h.statuses(m)
+    assert 'MOWING_COMPLETE' not in names and 'RETURNING_HOME' not in names
+    assert 'COVERAGE_FAILED_DOCKING' not in names
+    assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_DOCK]
+    assert h.fsm.cursor.available and h.fsm.mission is None
+    assert ResumeCursor.loads(h.saved).areas[0].completed == set()
+    start_until_planning(h)
+    assert h.fsm.mission.resume

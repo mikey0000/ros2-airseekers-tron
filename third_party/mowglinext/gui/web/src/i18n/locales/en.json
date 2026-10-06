@@ -4231,6 +4231,7 @@
     "failed": "Command failed",
     "faultTitle": "Mower stopped: {{state}}",
     "faultNoReason": "No reason reported.",
+    "incompleteTitle": "Mowing incomplete: some paths were not mowed",
     "reset": "Reset",
     "stoppedTitle": "Mowing stopped",
     "stoppedResumeHint": "Progress was saved: resume where it stopped or start fresh.",

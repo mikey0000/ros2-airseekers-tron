@@ -4231,6 +4231,7 @@
     "failed": "Échec de la commande",
     "faultTitle": "Tondeuse arrêtée : {{state}}",
     "faultNoReason": "Aucune raison signalée.",
+    "incompleteTitle": "Tonte incomplète : certains passages n'ont pas été tondus",
     "reset": "Réinitialiser",
     "stoppedTitle": "Tonte arrêtée",
     "stoppedResumeHint": "La progression est enregistrée : reprenez où elle s'est arrêtée ou recommencez.",

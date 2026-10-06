@@ -35,9 +35,17 @@ export const LATCHED_FAULTS = [
     "BOUNDARY_EMERGENCY_STOP", "NAV_TO_DOCK_FAILED", "EMERGENCY",
 ] as const;
 
+/** Result states that need operator attention but are not faults (no Reset):
+ *  MOWING_INCOMPLETE = some sub-paths could not be mowed, robot stopped in place,
+ *  resume cursor kept. Start/Resume and Home are offered, Stop is not. */
+export const NOTICE_STATES = ["MOWING_INCOMPLETE"] as const;
+
+export const isNotice = (name: N): boolean =>
+    !!name && (NOTICE_STATES as readonly string[]).includes(name);
+
 const ACTIVE_STATES = new Set([HL_STATE_AUTONOMOUS, HL_STATE_RECORDING, HL_STATE_MANUAL_MOWING]);
 const ACTIVE_NAMES = new Set<string>([...MISSION_PHASES, ...DOCK_PHASES, "RECORDING", "MANUAL_MOWING"]);
-const IDLE_START_NAMES = new Set(["IDLE", "IDLE_DOCKED"]);
+const IDLE_START_NAMES = new Set(["IDLE", "IDLE_DOCKED", "MOWING_INCOMPLETE"]);
 
 type S = number | undefined | null;
 type N = string | undefined | null;

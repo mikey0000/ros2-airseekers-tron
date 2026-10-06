@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {
-    canHome, canReset, canStart, canStop, isLatchedFault, isMissionActive, stopNeedsConfirm,
+    canHome, canReset, canStart, canStop, isLatchedFault, isMissionActive, isNotice, stopNeedsConfirm,
 } from "./missionStates.ts";
 
 // [state_name, numeric state, active, latched, stop, reset, start, home]
@@ -28,6 +28,7 @@ const MATRIX: [string, number, boolean, boolean, boolean, boolean, boolean, bool
     ["COVERAGE_FAILED_DOCKING", 2, true, false, true, false, false, true],
     ["BOUNDARY_EMERGENCY_STOP", 0, false, true, true, true, false, false],
     ["NAV_TO_DOCK_FAILED", 0, false, true, false, true, false, true],
+    ["MOWING_INCOMPLETE", 1, false, false, false, false, true, true],
 ];
 
 describe("mission state matrix", () => {
@@ -44,6 +45,13 @@ describe("mission state matrix", () => {
         expect(isMissionActive(2, "OBSTACLE_BACKOFF")).toBe(true);
         expect(canStop(2, "OBSTACLE_BACKOFF")).toBe(true);
         expect(canStart(2, "IDLE")).toBe(false);
+    });
+
+    it("flags MOWING_INCOMPLETE as a notice, not a fault", () => {
+        expect(isNotice("MOWING_INCOMPLETE")).toBe(true);
+        expect(isNotice("MOWING_COMPLETE")).toBe(false);
+        expect(isNotice("NAV_TO_DOCK_FAILED")).toBe(false);
+        expect(isNotice(undefined)).toBe(false);
     });
 
     it("handles missing status", () => {

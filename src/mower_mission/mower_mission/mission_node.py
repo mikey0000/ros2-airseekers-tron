@@ -39,6 +39,7 @@ from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point32, Polygon, PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from nav2_msgs.action import BackUp, FollowPath, NavigateToPose
+from nav2_msgs.srv import ClearEntireCostmap
 from sensor_msgs.msg import BatteryState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
@@ -89,6 +90,8 @@ TOPIC_DEFAULTS = {
     'cutter_off_service': '/cutter_off',
     'clear_estop_service': '/clear_estop',
     'charging_service': '/charging',
+    'clear_global_costmap_service': '/global_costmap/clear_entirely_global_costmap',
+    'clear_local_costmap_service': '/local_costmap/clear_entirely_local_costmap',
     'plan_coverage_action': '/plan_coverage',
     'follow_path_action': '/follow_path',
     'navigate_to_pose_action': '/navigate_to_pose',
@@ -226,6 +229,9 @@ class MissionNode(Node):
                                         srv_name)
         self._cutter_cli = cli(CutterControl, p['cutter_control_service'], callback_group=self._cb)
         self._cutter_off_cli = cli(Trigger, p['cutter_off_service'], callback_group=self._cb)
+        self._clear_costmap_clis = [
+            (cli(ClearEntireCostmap, p[k], callback_group=self._cb), p[k])
+            for k in ('clear_global_costmap_service', 'clear_local_costmap_service')]
 
         act = lambda t, n: (ActionClient(self, t, p[n], callback_group=self._cb), p[n])  # noqa
         self._actions = {
@@ -760,6 +766,15 @@ class MissionNode(Node):
     def _call_service(self, e):
         if e.name == fsm_mod.SRV_CUTTER_HEIGHT:
             self._cutter_height(e)
+            return
+        if e.name == fsm_mod.SRV_CLEAR_COSTMAPS:
+            # fire-and-forget (untracked by the FSM): let the costmaps refresh
+            # before a transit / follow retry or a boundary recovery.
+            for client, ros_name in self._clear_costmap_clis:
+                if client.wait_for_service(timeout_sec=float(self._p['server_wait_timeout_s'])):
+                    client.call_async(ClearEntireCostmap.Request())
+                else:
+                    self.get_logger().warn('service %s not available' % ros_name)
             return
         if e.name == fsm_mod.SRV_SET_PARAMS:
             client, ros_name = self._param_clients[e.request['node']]

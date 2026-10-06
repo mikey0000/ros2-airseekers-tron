@@ -7,7 +7,7 @@ import {useStatus} from "../hooks/useStatus.ts";
 import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts";
 import {
     canReset, canStop, CMD_HOME, CMD_RESET_EMERGENCY, CMD_STOP, isLatchedFault, isMissionActive,
-    stopNeedsConfirm,
+    isNotice, stopNeedsConfirm,
 } from "../utils/missionStates.ts";
 
 interface Props {
@@ -98,6 +98,31 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                                 {t('missionStop.reset')}
                             </Button>
                         )}
+                    </Space>
+                }
+            />
+        );
+    }
+
+    if (isNotice(stateName)) {
+        // MOWING_INCOMPLETE: stopped in place, sub_state says what was not mowed.
+        return (
+            <Alert
+                style={style}
+                type="warning"
+                showIcon
+                data-testid="mission-notice"
+                message={t('missionStop.incompleteTitle')}
+                description={subStateName || t('missionStop.faultNoReason')}
+                action={
+                    <Space direction="vertical">
+                        <Button icon={<HomeOutlined/>} loading={busy === "home"}
+                                onClick={run("home", CMD_HOME)}>
+                            {t('missionStop.returnToDock')}
+                        </Button>
+                        <Button type="primary" icon={<PlayCircleOutlined/>} onClick={onStart}>
+                            {resumeAvailable ? t('missionStop.resumeOrFresh') : t('missionStop.start')}
+                        </Button>
                     </Space>
                 }
             />

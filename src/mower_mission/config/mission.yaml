@@ -45,6 +45,11 @@ behavior_tree_node:
     mow_angle_deg: -1.0               # < 0 = planner picks; only for areas whose own mow_angle_deg is auto
     transit_gap_m: 0.6                # blade-off /navigate_to_pose transit beyond this gap
     transit_arrived_radius_m: 0.3     # transit ABORT/timeout within this of the target = arrived
+    transit_retries: 3                # failed transit: re-send (from the current pose) this many times
+    transit_retry_delay_s: 3.0        # wait between retries (costmaps cleared first); also follow retries
+    follow_retries: 3                 # follow_path abort/timeout: resume from the last reached pose
+    clear_costmaps_on_retry: true     # clear Nav2 global+local costmaps before retries / recoveries
+    return_home_on_incomplete: false  # sub-paths not mowed -> MOWING_INCOMPLETE; dock only if true
     follow_controller_id: FollowCoveragePath
     follow_goal_checker_id: coverage_goal_checker
     max_areas: 200
@@ -77,6 +82,7 @@ behavior_tree_node:
     boundary_recover_after_s: 3.0     # soft violation while MOWING: pause this long, then ...
     boundary_max_recoveries: 2        # ... up to this many blade-off recovery transits per sub-path
     boundary_recovery_advance_m: 1.0  # recovery target: this far ahead on the sub-path; then latch
+    boundary_recovery_retries: 3      # a failing recovery transit is re-sent this often, then stop in place
     progress_window_m: 3.0            # progress / resume pose search window ahead on the path (m)
     follow_end_tolerance_m: 1.0       # follow_path "succeeded" with more path left => continue from progress
     follow_premature_retries: 3
