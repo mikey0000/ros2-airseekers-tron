@@ -123,11 +123,15 @@ class MowerCoverageNode : public rclcpp::Node {
     const double min_swath_length = request->min_swath_length > 0.0
                                         ? request->min_swath_length
                                         : kDefaultMinSwathLength;
+    // Per-area edge margin (request boundary_inset_m >= 0) overrides the node param.
+    const double boundary_inset = request->boundary_inset_m >= 0.0
+                                      ? request->boundary_inset_m
+                                      : boundary_inset_;
     // Outer ring centreline inset from the recorded boundary: the larger of the
-    // absolute border_inset_m and blade-edge boundary_inset_m + half a swath.
+    // absolute border_inset_m and blade-edge boundary_inset + half a swath.
     const double border_inset = std::max(
         std::max(0.0, get_parameter("border_inset_m").as_double()),
-        op_width / 2.0 + boundary_inset_);
+        op_width / 2.0 + boundary_inset);
     const double mow_angle_rad =
         request->mow_angle_deg >= 0.0
             ? request->mow_angle_deg * M_PI / 180.0
@@ -182,6 +186,9 @@ class MowerCoverageNode : public rclcpp::Node {
                                 ? request->min_turn_radius_m
                                 : get_parameter("min_turn_radius_m").as_double();
 
+    route.fill_gaps = true;
+    route.min_gap_area_m2 = 0.01;
+    route.target_inset = boundary_inset;  // blade edge; holes keep the ring keep-out
     const mower_coverage::CoveragePlan plan =
         mower_coverage::planCoverage(field, op_width, headland_width,
                                      headland_passes,
@@ -308,6 +315,21 @@ class MowerCoverageNode : public rclcpp::Node {
     response->swath_count = static_cast<uint32_t>(plan.swaths.size());
     response->planning_time_s = planning_time_s;
     response->success = !path.poses.empty();
+    response->coverage_fraction = plan.coverage_fraction;
+    response->coverage_fraction_before_fill = plan.coverage_fraction_before_fill;
+    response->gap_count = static_cast<uint32_t>(plan.gap_count);
+    response->gap_area_m2 = plan.gap_area_m2;
+    response->fill_swath_count = static_cast<uint32_t>(plan.fill_swaths);
+    for (const auto& g : plan.gaps) {
+      geometry_msgs::msg::Polygon poly;
+      for (size_t i = 0; i + 1 < g.size(); ++i) {  // open ring
+        geometry_msgs::msg::Point32 pt;
+        pt.x = static_cast<float>(g[i].first);
+        pt.y = static_cast<float>(g[i].second);
+        poly.points.push_back(pt);
+      }
+      response->gaps.push_back(poly);
+    }
 
     std::string msg = std::string(plan.swaths_first ? "swaths first, " : "") +
                       (request->path_mode.empty() ? std::string("zigzag")
@@ -326,7 +348,10 @@ class MowerCoverageNode : public rclcpp::Node {
                       std::to_string(plan.swaths.size()) + " swaths, " +
                       std::to_string(static_cast<int>(total_distance * 100)) +
                       " cm, fraction " +
-                      std::to_string(static_cast<int>(plan.planned_fraction * 1000) / 1000.0);
+                      std::to_string(static_cast<int>(plan.planned_fraction * 1000) / 1000.0) +
+                      ", coverage " +
+                      std::to_string(static_cast<int>(plan.coverage_fraction * 10000) / 10000.0) +
+                      " (" + std::to_string(plan.gap_count) + " gaps)";
     for (const auto& d : plan.drops) {
       msg += "; " + d;
     }

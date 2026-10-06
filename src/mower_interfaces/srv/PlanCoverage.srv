@@ -27,6 +27,7 @@ string  route_order "boustrophedon"       # boustrophedon | snake (0,2,4..5,3,1)
 int32   route_spiral_size 6               # swaths per SpiralOrder block (>= 2)
 float64 min_turn_radius_m -1.0            # < 0 = node param min_turn_radius_m; 0 = pivot in place
 string  turn_type ""                      # auto (loop -> reverse-curve -> pivot) | loop | reverse | pivot ("" = auto)
+float64 boundary_inset_m -1.0             # per-area edge margin (blade edge inside the line) [m]; < 0 = node param
 ---
 bool   success
 string message
@@ -39,3 +40,11 @@ uint8[] pose_flags                        # parallel to path.poses (empty from o
 uint32  ring_count
 uint32  swath_count
 float64 planning_time_s
+# Coverage verification (swept op_width footprint vs. the area shrunk by
+# boundary_inset_m, holes grown by the ring keep-out), after gap filling.
+float64 coverage_fraction                 # covered / target area, [0, 1]
+float64 coverage_fraction_before_fill     # same, before the fill passes
+uint32  gap_count                         # uncovered pieces >= min_gap_area_m2
+float64 gap_area_m2                       # total uncovered area (all pieces)
+geometry_msgs/Polygon[] gaps              # uncovered pieces >= min_gap_area_m2
+uint32  fill_swath_count                  # extra fill passes (included in swath_count)

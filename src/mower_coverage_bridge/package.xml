@@ -16,6 +16,7 @@
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>rcl_interfaces</depend>
   <depend>mower_interfaces</depend>
   <depend>mowgli_interfaces</depend>

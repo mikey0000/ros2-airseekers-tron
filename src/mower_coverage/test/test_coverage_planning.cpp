@@ -1098,3 +1098,80 @@ TEST(CoverageRoute, RacetrackFallsBackToSnakeWithoutHeadlandRoom) {
   for (const auto& d : p.drops) said |= d.find("used snake") != std::string::npos;
   EXPECT_TRUE(said);
 }
+
+// ---------------------------------------------------------------------------
+// Coverage verification + gap filling (owner requirement: no gaps).
+// op_width 0.18, blade-edge inset 0.05 -> outer ring centreline at 0.14.
+// ---------------------------------------------------------------------------
+namespace {
+
+CoveragePlan planFilled(const f2c::types::Cell& cell, int rings, bool fill,
+                        mower_coverage::RouteOrder order = mower_coverage::RouteOrder::kBoustrophedon,
+                        double radius = 0.0) {
+  mower_coverage::RouteOptions r;
+  r.order = order;
+  r.min_turn_radius = radius;
+  r.fill_gaps = fill;
+  r.min_gap_area_m2 = 0.01;
+  r.target_inset = 0.05;
+  return mower_coverage::planCoverage(cell, 0.18, 0.2, rings, 0.09 + 0.05, -1.0, 0.15,
+                                      mower_coverage::PathMode::kZigzag, true, r);
+}
+
+void expectFilled(const char* name, const f2c::types::Cell& cell, int rings, double min_frac,
+                  mower_coverage::RouteOrder order = mower_coverage::RouteOrder::kBoustrophedon,
+                  double radius = 0.0) {
+  const CoveragePlan before = planFilled(cell, rings, false, order, radius);
+  const CoveragePlan after = planFilled(cell, rings, true, order, radius);
+  std::printf("[coverage] %-28s before %.4f (%zu gaps, %.4f m2)  after %.4f (%zu gaps, %.4f m2, "
+              "+%zu fill passes)\n",
+              name, before.coverage_fraction, before.gap_count, before.gap_area_m2,
+              after.coverage_fraction, after.gap_count, after.gap_area_m2, after.fill_swaths);
+  EXPECT_GT(after.target_area_m2, 0.0);
+  EXPECT_DOUBLE_EQ(after.coverage_fraction_before_fill, before.coverage_fraction);
+  EXPECT_GE(after.coverage_fraction, min_frac) << name;
+  EXPECT_GE(after.coverage_fraction, before.coverage_fraction - 1e-9);
+  EXPECT_EQ(after.swaths.size(), before.swaths.size() + after.fill_swaths);
+  if (!after.turns.empty()) {
+    EXPECT_EQ(after.turns.size(), after.swaths.size());
+  }
+}
+
+const std::vector<Point2D> kArea1 = {
+    {0.389398, 1.76668}, {0.329541, 2.23991}, {0.141112, 2.43469}, {-0.869764, 2.28123},
+    {-1.55917, 2.01274}, {-2.7828, 1.01557},  {-3.006, 0.657267},  {-3.07431, 0.315402},
+    {-2.90828, -0.904132}, {-2.70292, -1.68169}, {-2.48501, -1.75286}, {-1.37076, -1.00271},
+    {-0.969795, -0.462225}, {-0.657529, 0.252227}, {0.146422, 1.03497}};
+
+}  // namespace
+
+TEST(CoverageGaps, Rectangle305) {
+  expectFilled("rect 3.05x4", field({{0, 0}, {3.05, 0}, {3.05, 4.0}, {0, 4.0}}), 2, 0.995);
+}
+
+TEST(CoverageGaps, LShape) {
+  expectFilled("L-shape", field({{0, 0}, {4, 0}, {4, 1.7}, {1.7, 1.7}, {1.7, 4}, {0, 4}}), 2,
+               0.995);
+}
+
+TEST(CoverageGaps, PolygonWithHole) {
+  expectFilled("rect with hole",
+               mower_coverage::makeFieldCell(square(0, 0, 4), {square(1.5, 1.5, 0.8)}), 2,
+               0.995);
+}
+
+TEST(CoverageGaps, Area1TwoRings) {
+  expectFilled("Area 1, 2 rings", field(kArea1), 2, 0.99);
+}
+
+TEST(CoverageGaps, Area1RacetrackThreeRings) {
+  expectFilled("Area 1, racetrack 3 rings r0.3", field(kArea1), 3,
+               0.99, mower_coverage::RouteOrder::kRacetrack, 0.3);
+}
+
+TEST(CoverageGaps, VerifyReportsGapsWithoutFill) {
+  const CoveragePlan p = planFilled(field({{0, 0}, {3.05, 0}, {3.05, 4.0}, {0, 4.0}}), 2, false);
+  EXPECT_EQ(p.fill_swaths, 0u);
+  EXPECT_LE(p.coverage_fraction, 1.0);
+  EXPECT_EQ(p.gap_count, p.gaps.size());
+}

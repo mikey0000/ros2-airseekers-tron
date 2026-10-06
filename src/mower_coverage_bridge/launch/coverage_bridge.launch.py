@@ -43,10 +43,11 @@ def generate_launch_description():
         DeclareLaunchArgument('min_turn_radius_m', default_value='0.0',
                               description='0 = pivot between swaths (diff-drive); > 0 = '
                                           'F2C v3 Dubins turns of this radius'),
-        # 0.20: the outer ring centreline sits 0.20 m inside the recorded line (half swath
-        # 0.09 + ~0.11 m RPP tracking error); 0.0 put it ON the line and every outward
-        # tracking error became a boundary violation (docs/analysis/2026-10-06_ring_drift.md).
-        DeclareLaunchArgument('border_inset_m', default_value='0.20',
+        # 0.0: the outer ring centreline sits at op_width/2 + boundary_inset_m (the per-area
+        # edge margin, default 0.05) inside the recorded line. The former 0.20 left a ~0.19 m
+        # band uncut all round (owner: "no gaps"); tracking margin now comes from the edge
+        # margin (docs/analysis/2026-10-06_ring_drift.md for the history).
+        DeclareLaunchArgument('border_inset_m', default_value='0.0',
                               description='outer ring centreline pull-back inside the '
                                           'recorded boundary [m]'),
         Node(

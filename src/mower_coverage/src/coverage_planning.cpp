@@ -1,5 +1,6 @@
 #include "mower_coverage/coverage_planning.hpp"
 
+#include <ogr_api.h>
 #include <ogr_geometry.h>
 
 #include <algorithm>
@@ -856,6 +857,367 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
                               const RouteOptions& route);
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// Coverage verification and gap filling (exact OGR/GEOS geometry).
+// ---------------------------------------------------------------------------
+namespace {
+
+using GeomPtr = std::unique_ptr<OGRGeometry>;
+constexpr int kFillIterations = 3;
+constexpr int kMaxPassesPerGap = 8;
+constexpr double kMinFillLenM = 0.03;
+constexpr int kBufQuadSegs = 8;
+// Rectangles of neighbouring swaths share an edge exactly; widen each side by
+// this so float noise does not leave zero-area slivers between them.
+constexpr double kRectPadM = 1e-5;
+
+double geomArea(const OGRGeometry* g) {
+  return g == nullptr ? 0.0 : OGR_G_Area(OGRGeometry::ToHandle(const_cast<OGRGeometry*>(g)));
+}
+
+OGRPolygon* loopPolygon(const std::vector<Point2D>& loop) {
+  auto* poly = new OGRPolygon();
+  auto* r = new OGRLinearRing();
+  for (const auto& p : loop) r->addPoint(p.first, p.second);
+  r->closeRings();
+  poly->addRingDirectly(r);
+  return poly;
+}
+
+// Flat-capped rectangle swept by a segment of width 2*hw.
+OGRGeometry* segRect(const Point2D& a, const Point2D& b, double hw) {
+  const double len = dist(a, b);
+  if (len < 1e-9) {
+    OGRPoint pt(a.first, a.second);
+    return pt.Buffer(hw, kBufQuadSegs);
+  }
+  const double ux = (b.first - a.first) / len, uy = (b.second - a.second) / len;
+  const double nx = -uy * (hw + kRectPadM), ny = ux * (hw + kRectPadM);
+  const double ex = ux * kRectPadM, ey = uy * kRectPadM;
+  return loopPolygon({{a.first - ex + nx, a.second - ey + ny},
+                      {b.first + ex + nx, b.second + ey + ny},
+                      {b.first + ex - nx, b.second + ey - ny},
+                      {a.first - ex - nx, a.second - ey - ny},
+                      {a.first - ex + nx, a.second - ey + ny}});
+}
+
+OGRGeometry* polylineBuffer(const std::vector<Point2D>& pts, double hw) {
+  OGRLineString ls;
+  for (const auto& p : pts) ls.addPoint(p.first, p.second);
+  return ls.Buffer(hw + kRectPadM, kBufQuadSegs);
+}
+
+void addPolys(OGRMultiPolygon* mp, OGRGeometry* g) {  // takes ownership of g
+  if (g == nullptr) return;
+  const auto t = wkbFlatten(g->getGeometryType());
+  if (t == wkbPolygon) {
+    mp->addGeometryDirectly(g);
+    return;
+  }
+  if (auto* gc = dynamic_cast<OGRGeometryCollection*>(g)) {
+    for (int i = 0; i < gc->getNumGeometries(); ++i) {
+      if (wkbFlatten(gc->getGeometryRef(i)->getGeometryType()) == wkbPolygon) {
+        mp->addGeometry(gc->getGeometryRef(i));
+      }
+    }
+  }
+  delete g;
+}
+
+std::vector<const OGRPolygon*> polygonsOf(const OGRGeometry* g) {
+  std::vector<const OGRPolygon*> out;
+  if (g == nullptr) return out;
+  if (wkbFlatten(g->getGeometryType()) == wkbPolygon) {
+    out.push_back(static_cast<const OGRPolygon*>(g));
+  } else if (auto* gc = dynamic_cast<const OGRGeometryCollection*>(g)) {
+    for (int i = 0; i < gc->getNumGeometries(); ++i) {
+      for (auto* p : polygonsOf(gc->getGeometryRef(i))) out.push_back(p);
+    }
+  }
+  return out;
+}
+
+GeomPtr unionAll(OGRMultiPolygon* mp) {  // takes ownership
+  std::unique_ptr<OGRMultiPolygon> own(mp);
+  if (mp->getNumGeometries() == 0) return GeomPtr(new OGRMultiPolygon());
+  return GeomPtr(mp->UnionCascaded());
+}
+
+GeomPtr buildTarget(const f2c::types::Cell& field, double inset, double hole_margin) {
+  GeomPtr outer(loopPolygon(ringToLoop(field.getGeometry(0))));
+  if (!outer->IsValid()) outer.reset(outer->Buffer(0.0));
+  if (inset > 0.0) outer.reset(outer->Buffer(-inset, kBufQuadSegs));
+  if (field.size() > 1) {
+    auto* mp = new OGRMultiPolygon();
+    for (size_t i = 1; i < field.size(); ++i) {
+      OGRGeometry* h = loopPolygon(ringToLoop(field.getGeometry(i)));
+      if (hole_margin > 0.0) {
+        OGRGeometry* g = h->Buffer(hole_margin, kBufQuadSegs);
+        delete h;
+        h = g;
+      }
+      addPolys(mp, h);
+    }
+    GeomPtr holes = unionAll(mp);
+    if (holes) outer.reset(outer->Difference(holes.get()));
+  }
+  return outer;
+}
+
+// Footprint swept by the whole plan.
+GeomPtr planFootprint(const CoveragePlan& plan, double hw) {
+  auto* mp = new OGRMultiPolygon();
+  for (const auto& ring : plan.rings) addPolys(mp, polylineBuffer(ring, hw));
+  for (size_t i = 0; i < plan.swaths.size(); ++i) {
+    const Seg& s = plan.swaths[i];
+    addPolys(mp, segRect(s.first, s.second, hw));
+    if (i == 0) continue;
+    const Seg& prev = plan.swaths[i - 1];
+    std::vector<Point2D> conn{prev.second};
+    if (i < plan.turns.size()) {
+      for (const auto& tp : plan.turns[i].poses) conn.push_back(tp.p);
+    }
+    conn.push_back(s.first);
+    // Turn poses always cut; a straight connector only when it is not a
+    // blade-off transit.
+    if (conn.size() > 2 || dist(prev.second, s.first) <= kTransitGapM) {
+      addPolys(mp, polylineBuffer(conn, hw));
+    }
+  }
+  return unionAll(mp);
+}
+
+// Fills the coverage fields; returns the uncovered geometry.
+GeomPtr evaluate(const OGRGeometry* target, const OGRGeometry* covered, double min_gap,
+                 CoveragePlan* plan) {
+  plan->target_area_m2 = geomArea(target);
+  GeomPtr unc(target->Difference(covered));
+  plan->gap_area_m2 = geomArea(unc.get());
+  plan->coverage_fraction =
+      plan->target_area_m2 > 0.0
+          ? std::max(0.0, 1.0 - plan->gap_area_m2 / plan->target_area_m2)
+          : 1.0;
+  plan->gaps.clear();
+  for (const OGRPolygon* p : polygonsOf(unc.get())) {
+    if (p->get_Area() < min_gap || p->getExteriorRing() == nullptr) continue;
+    std::vector<Point2D> loop;
+    const OGRLinearRing* r = p->getExteriorRing();
+    for (int i = 0; i < r->getNumPoints(); ++i) loop.emplace_back(r->getX(i), r->getY(i));
+    plan->gaps.push_back(std::move(loop));
+  }
+  plan->gap_count = plan->gaps.size();
+  return unc;
+}
+
+// Long-axis angle of the minimum-area bounding rectangle of a polygon.
+double longAxisAngle(const OGRPolygon* poly) {
+  GeomPtr hull(poly->ConvexHull());
+  const auto* hp = dynamic_cast<const OGRPolygon*>(hull.get());
+  if (hp == nullptr || hp->getExteriorRing() == nullptr) return 0.0;
+  const OGRLinearRing* r = hp->getExteriorRing();
+  double best_area = std::numeric_limits<double>::max(), best = 0.0;
+  for (int i = 0; i + 1 < r->getNumPoints(); ++i) {
+    const double th = std::atan2(r->getY(i + 1) - r->getY(i), r->getX(i + 1) - r->getX(i));
+    const double c = std::cos(th), s = std::sin(th);
+    double t0 = 1e18, t1 = -1e18, n0 = 1e18, n1 = -1e18;
+    for (int k = 0; k < r->getNumPoints(); ++k) {
+      const double t = r->getX(k) * c + r->getY(k) * s;
+      const double n = -r->getX(k) * s + r->getY(k) * c;
+      t0 = std::min(t0, t); t1 = std::max(t1, t); n0 = std::min(n0, n); n1 = std::max(n1, n);
+    }
+    if ((t1 - t0) * (n1 - n0) < best_area) {
+      best_area = (t1 - t0) * (n1 - n0);
+      best = (t1 - t0) >= (n1 - n0) ? th : th + M_PI / 2.0;
+    }
+  }
+  return best;
+}
+
+// Straight segments of a line clipped to `region`.
+std::vector<Seg> clipLine(const Point2D& a, const Point2D& b, const OGRGeometry* region) {
+  OGRLineString ls;
+  ls.addPoint(a.first, a.second);
+  ls.addPoint(b.first, b.second);
+  GeomPtr in(region->Intersection(&ls));
+  std::vector<Seg> out;
+  std::vector<const OGRGeometry*> stack{in.get()};
+  while (!stack.empty()) {
+    const OGRGeometry* g = stack.back();
+    stack.pop_back();
+    if (g == nullptr) continue;
+    if (wkbFlatten(g->getGeometryType()) == wkbLineString) {
+      const auto* l = static_cast<const OGRLineString*>(g);
+      if (l->getNumPoints() >= 2) {
+        out.push_back({{l->getX(0), l->getY(0)},
+                       {l->getX(l->getNumPoints() - 1), l->getY(l->getNumPoints() - 1)}});
+      }
+    } else if (auto* gc = dynamic_cast<const OGRGeometryCollection*>(g)) {
+      for (int i = 0; i < gc->getNumGeometries(); ++i) stack.push_back(gc->getGeometryRef(i));
+    }
+  }
+  return out;
+}
+
+// Best single fill pass for the uncovered polygon `gap`: candidate centerlines
+// along the gap's long axis (and the swath axis / its normal), at lateral
+// offsets that keep the footprint over the gap, clipped to `centre_region`
+// (where a centerline may run without the blade leaving the target).
+bool bestFillPass(const OGRGeometry* gap, double hw, double swath_angle,
+                  const OGRGeometry* centre_region, Seg* best_seg, double* best_gain) {
+  std::vector<double> angles;
+  for (const OGRPolygon* p : polygonsOf(gap)) {
+    angles.push_back(longAxisAngle(p));
+    break;
+  }
+  angles.push_back(swath_angle);
+  angles.push_back(swath_angle + M_PI / 2.0);
+  OGREnvelope env;
+  gap->getEnvelope(&env);
+  *best_gain = 0.0;
+  for (const double th : angles) {
+    const double c = std::cos(th), s = std::sin(th);
+    double t0 = 1e18, t1 = -1e18, n0 = 1e18, n1 = -1e18;
+    for (const OGRPolygon* p : polygonsOf(gap)) {
+      const OGRLinearRing* r = p->getExteriorRing();
+      for (int k = 0; r && k < r->getNumPoints(); ++k) {
+        const double t = r->getX(k) * c + r->getY(k) * s;
+        const double n = -r->getX(k) * s + r->getY(k) * c;
+        t0 = std::min(t0, t); t1 = std::max(t1, t); n0 = std::min(n0, n); n1 = std::max(n1, n);
+      }
+    }
+    if (t0 > t1) continue;
+    const double mid = 0.5 * (n0 + n1);
+    std::vector<double> offs{mid, n0 + hw, n1 - hw};
+    for (int k = 1; k <= 4; ++k) {
+      offs.push_back(mid + k * 0.25 * hw);
+      offs.push_back(mid - k * 0.25 * hw);
+    }
+    for (const double n : offs) {
+      const Point2D a{t0 * c - n * s, t0 * s + n * c};
+      const Point2D b{t1 * c - n * s, t1 * s + n * c};
+      for (const Seg& piece : clipLine(a, b, centre_region)) {
+        if (dist(piece.first, piece.second) < kMinFillLenM) continue;
+        GeomPtr rect(segRect(piece.first, piece.second, hw));
+        GeomPtr hit(rect->Intersection(gap));
+        const double gain = geomArea(hit.get());
+        if (gain > *best_gain) {
+          *best_gain = gain;
+          *best_seg = piece;
+        }
+      }
+    }
+  }
+  return *best_gain > 0.0;
+}
+
+void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
+              CoveragePlan* plan) {
+  const double hw = op_width / 2.0;
+  GeomPtr centre_region(target->Buffer(-hw, kBufQuadSegs));
+  GeomPtr covered = planFootprint(*plan, hw);
+  GeomPtr unc = evaluate(target, covered.get(), min_gap, plan);
+  plan->coverage_fraction_before_fill = plan->coverage_fraction;
+  if (!centre_region || geomArea(centre_region.get()) <= 0.0) return;
+  for (int it = 0; it < kFillIterations && plan->gap_count > 0; ++it) {
+    std::vector<Seg> fills;
+    for (const OGRPolygon* gp : polygonsOf(unc.get())) {
+      if (gp->get_Area() < min_gap) continue;
+      GeomPtr rest(gp->clone());
+      for (int k = 0; k < kMaxPassesPerGap && geomArea(rest.get()) >= min_gap; ++k) {
+        Seg seg;
+        double gain = 0.0;
+        if (!bestFillPass(rest.get(), hw, plan->swath_angle_rad, centre_region.get(), &seg,
+                          &gain) ||
+            gain < 0.1 * min_gap) {
+          break;
+        }
+        fills.push_back(seg);
+        GeomPtr rect(segRect(seg.first, seg.second, hw));
+        rest.reset(rest->Difference(rect.get()));
+      }
+    }
+    if (fills.empty()) break;
+    // Append nearest-neighbour from the current last swath end, each pass
+    // started at its nearer end.
+    Point2D cur = plan->swaths.empty() ? (plan->rings.empty() ? fills.front().first
+                                                              : plan->rings.back().back())
+                                       : plan->swaths.back().second;
+    std::vector<bool> used(fills.size(), false);
+    auto* mp = new OGRMultiPolygon();
+    addPolys(mp, covered.release());
+    for (size_t step = 0; step < fills.size(); ++step) {
+      size_t pick = 0;
+      double pd = std::numeric_limits<double>::max();
+      for (size_t i = 0; i < fills.size(); ++i) {
+        if (used[i]) continue;
+        const double d = std::min(dist(cur, fills[i].first), dist(cur, fills[i].second));
+        if (d < pd) { pd = d; pick = i; }
+      }
+      used[pick] = true;
+      Seg s = fills[pick];
+      if (dist(cur, s.second) < dist(cur, s.first)) std::swap(s.first, s.second);
+      if (!plan->swaths.empty() && dist(plan->swaths.back().second, s.first) <= kTransitGapM) {
+        addPolys(mp, polylineBuffer({plan->swaths.back().second, s.first}, hw));
+      }
+      plan->swaths.push_back(s);
+      if (!plan->turns.empty()) plan->turns.push_back(SwathTurn{});
+      addPolys(mp, segRect(s.first, s.second, hw));
+      ++plan->fill_swaths;
+      cur = s.second;
+    }
+    covered = unionAll(mp);
+    unc = evaluate(target, covered.get(), min_gap, plan);
+  }
+  if (plan->fill_swaths > 0 && plan->swaths_first && !plan->rings.empty()) {
+    // Rings follow the swaths: re-chain them from the new last swath end.
+    Point2D t = plan->swaths.back().second;
+    for (auto& ring : plan->rings) {
+      ring = rotateLoopToPoint(ring, t);
+      t = ring.back();
+    }
+  }
+  if (plan->fill_swaths > 0) {
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "gap fill: %zu pass(es), coverage %.4f -> %.4f",
+                  plan->fill_swaths, plan->coverage_fraction_before_fill,
+                  plan->coverage_fraction);
+    plan->drops.push_back(buf);
+  }
+}
+
+}  // namespace
+
+void verifyCoverage(const f2c::types::Cell& field, double op_width, double target_inset,
+                    double hole_margin, double min_gap_area_m2, CoveragePlan* plan) {
+  try {
+    GeomPtr target = buildTarget(field, target_inset, hole_margin);
+    GeomPtr covered = planFootprint(*plan, op_width / 2.0);
+    evaluate(target.get(), covered.get(), min_gap_area_m2, plan);
+  } catch (const std::exception&) {
+    plan->drops.push_back("coverage verification failed");
+  }
+}
+
+namespace {
+void verifyAndFill(const f2c::types::Cell& field, double op_width, double border_inset,
+                   PathMode mode, const RouteOptions& route, CoveragePlan* plan) {
+  const double inset = route.target_inset >= 0.0 ? route.target_inset
+                                                 : std::max(0.0, border_inset - op_width / 2.0);
+  const double hole = route.hole_margin >= 0.0 ? route.hole_margin : border_inset;
+  if (!route.fill_gaps || mode != PathMode::kZigzag) {
+    verifyCoverage(field, op_width, inset, hole, route.min_gap_area_m2, plan);
+    plan->coverage_fraction_before_fill = plan->coverage_fraction;
+    return;
+  }
+  try {
+    GeomPtr target = buildTarget(field, inset, hole);
+    fillGaps(target.get(), op_width, route.min_gap_area_m2, plan);
+  } catch (const std::exception&) {
+    plan->drops.push_back("gap fill failed");
+  }
+}
+}  // namespace
+
 CoveragePlan planCoverage(const f2c::types::Cell& field,
                           double op_width,
                           double headland_width,
@@ -870,6 +1232,7 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
                                        border_inset, mow_angle_rad, min_swath_length, mode,
                                        edge_first, route);
   if (route.order != RouteOrder::kRacetrack || plan.wide_pivot_turns == 0) {
+    verifyAndFill(field, op_width, border_inset, mode, route, &plan);
     return plan;
   }
   RouteOptions snake = route;
@@ -885,8 +1248,10 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
                   "used snake order",
                   plan.pivot_turns, plan.wide_pivot_turns);
     alt.drops.push_back(buf);
+    verifyAndFill(field, op_width, border_inset, mode, route, &alt);
     return alt;
   }
+  verifyAndFill(field, op_width, border_inset, mode, route, &plan);
   return plan;
 }
 

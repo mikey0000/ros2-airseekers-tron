@@ -9,6 +9,7 @@ planner, which is the ``mower_interfaces/srv/PlanCoverage`` service of
 ``splitter.py``.
 """
 
+import json
 import math
 import threading
 import time
@@ -23,6 +24,8 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
+from std_msgs.msg import String
 
 from mower_coverage_bridge import splitter
 
@@ -67,6 +70,8 @@ class CoverageServer(Node):
         #   mow_angle_deg   used only when the goal's mow_angle_deg is < 0 (auto)
         #   edge_first      false = swaths first, then the rings
         p('headland_rings', -1)
+        # Per-area edge margin (blade edge inside the boundary) [m]; < 0 = planner node param.
+        p('boundary_inset_m', -1.0)
         p('path_mode', 'zigzag')
         p('mow_angle_deg', -1.0)
         p('edge_first', True)
@@ -79,6 +84,12 @@ class CoverageServer(Node):
         p('min_turn_radius_m', -1.0)
         p('turn_type', 'auto')
         self.add_on_set_parameters_callback(self._on_set_parameters)
+        # Coverage verification of the last plan (the action result has no
+        # field for it): latched JSON {coverage_fraction, gap_count,
+        # gap_area_m2, gaps: [[[x, y], ...], ...]}.
+        self._quality_pub = self.create_publisher(
+            String, '/coverage/plan_quality',
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         self._client_group = ReentrantCallbackGroup()
         self._client = self.create_client(
@@ -193,6 +204,7 @@ class CoverageServer(Node):
         req.route_spiral_size = self._int('route_spiral_size')
         req.min_turn_radius_m = self._float('min_turn_radius_m')
         req.turn_type = self._str('turn_type')
+        req.boundary_inset_m = self._float('boundary_inset_m')
 
         done = threading.Event()
         future = self._client.call_async(req)
@@ -265,6 +277,7 @@ class CoverageServer(Node):
         if not result.subpaths:
             return self._fail(goal_handle, 'planner path produced no drivable sub-path', t0)
 
+        self._publish_quality(resp)
         res = self._build_result(result, resp)
         res.planning_time_s = time.monotonic() - t0
         summary = splitter.summary(result)
@@ -272,6 +285,24 @@ class CoverageServer(Node):
         self._feedback(goal_handle, 'done: %s' % summary)
         goal_handle.succeed()
         return res
+
+    def _publish_quality(self, resp):
+        frac = float(getattr(resp, 'coverage_fraction', 1.0))
+        q = {
+            'coverage_fraction': frac,
+            'coverage_fraction_before_fill': float(
+                getattr(resp, 'coverage_fraction_before_fill', frac)),
+            'gap_count': int(getattr(resp, 'gap_count', 0)),
+            'gap_area_m2': float(getattr(resp, 'gap_area_m2', 0.0)),
+            'fill_swath_count': int(getattr(resp, 'fill_swath_count', 0)),
+            'gaps': [[[round(pt.x, 3), round(pt.y, 3)] for pt in g.points]
+                     for g in getattr(resp, 'gaps', [])],
+        }
+        self._quality_pub.publish(String(data=json.dumps(q)))
+        if frac < 0.98:
+            self.get_logger().warn(
+                'coverage plan leaves gaps: coverage_fraction %.4f, %d gap(s), %.3f m2' % (
+                    frac, q['gap_count'], q['gap_area_m2']))
 
     def _build_result(self, result, resp):
         frame = self._str('frame_id')

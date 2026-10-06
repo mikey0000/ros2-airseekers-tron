@@ -65,6 +65,16 @@ struct RouteOptions {
   int spiral_size = 6;
   double min_turn_radius = 0.0;  // <= 0: pivots only
   TurnType turn_type = TurnType::kAuto;
+  // Coverage verification / gap filling (see CoveragePlan::coverage_fraction).
+  // fill_gaps: add extra fill passes (ordinary swaths) for uncovered pieces
+  // larger than min_gap_area_m2, up to kFillIterations rounds.
+  bool fill_gaps = false;
+  double min_gap_area_m2 = 0.01;
+  // Target = field shrunk by target_inset (blade edge) minus holes grown by
+  // hole_margin. < 0: derived from border_inset (border_inset - op_width/2,
+  // resp. border_inset: what the rings are built for).
+  double target_inset = -1.0;
+  double hole_margin = -1.0;
 };
 
 bool parseRouteOrder(const std::string& name, RouteOrder* order);  // "" = boustrophedon
@@ -100,7 +110,21 @@ struct CoveragePlan {
   size_t loop_turns = 0, reverse_turns = 0, pivot_turns = 0;
   // Pivots across a gap > 0.6 m: the bridge makes those blade-off transits.
   size_t wide_pivot_turns = 0;
+  // Coverage verification: the swept footprint (every ring / swath / turn /
+  // short connector sweeps op_width) against the target region. Exact OGR
+  // (GEOS) geometry, no raster.
+  double target_area_m2 = 0.0;
+  double coverage_fraction = 0.0;         // covered / target area (after fill)
+  double coverage_fraction_before_fill = 0.0;
+  double gap_area_m2 = 0.0;               // all uncovered area
+  size_t gap_count = 0;                   // pieces >= min_gap_area_m2
+  std::vector<std::vector<Point2D>> gaps; // their exterior rings (closed)
+  size_t fill_swaths = 0;                 // extra passes appended to `swaths`
 };
+
+// Recompute the coverage fields of `plan` (no filling).
+void verifyCoverage(const f2c::types::Cell& field, double op_width, double target_inset,
+                    double hole_margin, double min_gap_area_m2, CoveragePlan* plan);
 
 // Path pattern of one plan (per-area mowing setting `path_mode`). The
 // mission-level modes `cross` (two zigzag plans 90 deg apart) and `alternate`
