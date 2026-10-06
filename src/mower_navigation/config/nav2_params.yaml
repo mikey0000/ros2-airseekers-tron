@@ -159,15 +159,16 @@ controller_server:
       max_lookahead_dist: 0.6
       lookahead_time: 1.5
       use_velocity_scaled_lookahead_dist: true
-      rotate_to_heading_angular_vel: 0.5
+      # mower_mcu_driver clamps angular to 0.3 rad/s (vendor PID clamp): ask for no more.
+      rotate_to_heading_angular_vel: 0.3
       transform_tolerance: 0.5
       min_approach_linear_velocity: 0.05
       approach_velocity_scaling_dist: 0.4
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.6
-      regulated_linear_scaling_min_speed: 0.12
+      regulated_linear_scaling_min_radius: 0.5
+      regulated_linear_scaling_min_speed: 0.10
       use_cost_regulated_linear_velocity_scaling: false
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.6
@@ -186,16 +187,16 @@ controller_server:
     # speed_slow = clamp(0.8 v, min_speed_mps, v). -1 = use the literals.
     FollowCoveragePathFTC:
       plugin: "mowgli_nav2_plugins/FTCController"
-      desired_linear_vel: 0.25
-      speed_fast: 0.20
+      desired_linear_vel: 0.3
+      speed_fast: 0.2
       speed_fast_threshold: 0.5
       speed_fast_threshold_angle: 10.0
       speed_slow: 0.16
-      speed_angular: 45.0
+      speed_angular: 15.0
       acceleration: 0.2
       obstacle_restart_angular_acceleration: 1.0
       # TRON: 0.10 (MowgliNext 0.15) so speed_slow can drop below 0.15 in turns.
-      min_speed_mps: 0.10
+      min_speed_mps: 0.1
       stall_speed_ratio: 0.35
       stall_grace_s: 0.6
       stall_crawl_speed: 0.08
@@ -208,18 +209,18 @@ controller_server:
       kp_lon: 1.0
       ki_lon: 0.0
       kd_lon: 0.0
-      kp_lat: 0.8
+      kp_lat: 1.0
       ki_lat: 0.0
-      kd_lat: 0.5
-      kp_ang: 1.5
-      kp_ang_following: 1.0
+      kd_lat: 0.3
+      kp_ang: 1.0
+      kp_ang_following: 0.8
       ki_ang: 0.0
       kd_ang: 0.0
       derivative_filter_tau: 0.2
-      max_cmd_vel_speed: 0.30
-      max_cmd_vel_ang: 0.8
-      max_goal_distance_error: 0.50
-      max_goal_angle_error: 30.0
+      max_cmd_vel_speed: 0.3
+      max_cmd_vel_ang: 0.3
+      max_goal_distance_error: 0.5
+      max_goal_angle_error: 15.0
       goal_timeout: 10.0
       max_follow_distance: 2.0
       forward_only: true
@@ -241,8 +242,9 @@ controller_server:
       obstacle_wait_timeout_s: 2.5
       obstacle_clear_hold_s: 1.5
       obstacle_reverse_enabled: true
-      obstacle_reverse_max_dist_m: 0.30
-      obstacle_reverse_speed_mps: 0.10
+      obstacle_reverse_max_dist_m: 0.3
+      obstacle_reverse_speed_mps: 0.1
+      scale_linear_on_angular_saturation: true
 
 planner_server:
   ros__parameters:
@@ -364,7 +366,13 @@ local_costmap:
           # and pitch-induced ground rise do not. 2.0 m max range: beyond it the
           # 0.9-deg-per-pixel disparity quantisation and body pitch while driving put
           # the lawn above 0.08 m (the 2026-10-06 "collision ahead" abort).
-          min_obstacle_height: 0.15
+          # min 0.08 (was 0.15, 2026-10-06 box test): stereo_depth already drops points
+          # <0.12 m above its LIVE per-frame ground plane; this height is computed again
+          # against the STATIC URDF pose, which disagrees with the live fit by ~1.4 deg
+          # pitch (2-3 cm at 1 m). A cardboard box at 1.3 m measured 0.08-0.15 m (only
+          # its top edge >0.15), so 0.15 marked it intermittently / not at all. 0.08 only
+          # guards against fit failure; the node's live-plane margin is the real filter.
+          min_obstacle_height: 0.08
           max_obstacle_height: 1.2
           obstacle_max_range: 2.0
           obstacle_min_range: 0.0
