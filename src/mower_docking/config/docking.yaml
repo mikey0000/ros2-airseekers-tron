@@ -98,8 +98,10 @@ mower_docking:
     turn_slow_err: 0.5             # rad heading-tracking error -> reverse speed at the floor
     min_turn_speed: 0.04           # m/s reverse creep floor while turning
     docking_gate_scale: 1.4        # gate widened x1.4 once DOCKING (hysteresis)
-    final_max_lateral: 0.04        # at final_zone still off the axis -> forward realign
-    final_max_heading_deg: 5.0
+    # 2026-10-07 first live dock: the controller arrives at 6-8 cm / 5-8 deg and the dock
+    # funnel takes that; 4 cm / 5 deg cost two 20 s realign loops.
+    final_max_lateral: 0.07        # at final_zone still off the axis -> forward realign
+    final_max_heading_deg: 8.0
     max_realigns: 3                # per goal; does not consume max_retries
     realign_forward_distance: 0.8
     # FINAL budget used without contact (2026-10-07 Home: the retry drove forward off the

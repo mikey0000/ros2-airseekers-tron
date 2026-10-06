@@ -623,8 +623,12 @@ class DockingServer(Node):
         if not bool(self.get_parameter('auto_calibrate_marker_offset').value):
             return
         old = float(self.get_parameter('docked_marker_offset').value)
-        new = 0.5 * (old + measured)          # blend: one noisy dock does not dominate
         path = self.get_parameter('calibration_file').value
+        import os
+        if path and not os.path.exists(path):
+            new = measured                    # first measurement replaces the yaml placeholder
+        else:
+            new = 0.5 * (old + measured)      # later docks blend: one noisy dock does not dominate
         from rclpy.parameter import Parameter
         self.set_parameters([Parameter('docked_marker_offset', value=new)])
         self.get_logger().info('docked_marker_offset %.3f -> %.3f m (measured %.3f)'
