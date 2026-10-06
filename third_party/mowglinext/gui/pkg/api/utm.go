@@ -42,12 +42,8 @@ func utmZoneCentralMeridianDeg(zone int) float64 {
 // (metres), the zone number, and whether the point is in the northern
 // hemisphere. Mirrors RobotLocalization::NavsatConversions::LLtoUTM.
 func llToUTM(lat, lon float64) (northing, easting float64, zone int, north bool) {
-	eccSq := utmWGS84E * utmWGS84E
-
 	// Normalise longitude to [-180, 180).
 	lonTemp := lon + 180 - math.Floor((lon+180)/360)*360 - 180
-	latRad := lat * utmDegRad
-	lonRad := lonTemp * utmDegRad
 
 	zone = int((lonTemp+180)/6) + 1
 	// Norway/Svalbard exceptions (kept for parity with the reference impl).
@@ -66,6 +62,19 @@ func llToUTM(lat, lon float64) (northing, easting float64, zone int, north bool)
 			zone = 37
 		}
 	}
+	north = lat >= 0
+	northing, easting = llToUTMInZone(lat, lonTemp, zone, north)
+	return northing, easting, zone, north
+}
+
+// llToUTMInZone projects WGS84 lat/lon into an explicit UTM zone/hemisphere
+// (the same series as llToUTM, without the automatic zone choice). Used to
+// reproject a GeoTIFF whose CRS pins a zone even where the point lies just
+// outside it.
+func llToUTMInZone(lat, lon float64, zone int, north bool) (northing, easting float64) {
+	eccSq := utmWGS84E * utmWGS84E
+	latRad := lat * utmDegRad
+	lonRad := lon * utmDegRad
 	lonOriginRad := utmZoneCentralMeridianDeg(zone) * utmDegRad
 
 	eccPrimeSq := eccSq / (1 - eccSq)
@@ -84,11 +93,10 @@ func llToUTM(lat, lon float64) (northing, easting float64, zone int, north bool)
 		(5-t+9*c+4*c*c)*a*a*a*a/24+
 		(61-58*t+t*t+600*c-330*eccPrimeSq)*a*a*a*a*a*a/720))
 
-	north = lat >= 0
 	if !north {
 		northing += utmFNS
 	}
-	return northing, easting, zone, north
+	return northing, easting
 }
 
 // utmToLL inverts llToUTM: UTM northing/easting (metres) in the given

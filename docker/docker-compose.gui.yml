@@ -44,8 +44,11 @@ services:
       - GPS_CONTAINER_NAME=
       - MQTT_ENABLED=false
       - HOMEKIT_ENABLED=false
+      # Custom map imagery (drone orthomosaics, docs/custom_imagery.md).
+      - MAP_TILES_DIR=/map_tiles
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /userdata/ros2/gui_db:/db
       - ../config/gui:/mowgli_config
       - /userdata/ros2/maps:/ros2_ws/maps
+      - /userdata/ros2/map_tiles:/map_tiles

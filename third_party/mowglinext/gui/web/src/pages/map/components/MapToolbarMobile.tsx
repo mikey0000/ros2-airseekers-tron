@@ -7,6 +7,7 @@ import {
     UndoOutlined,
     RedoOutlined,
     GlobalOutlined,
+    PictureOutlined,
     EllipsisOutlined,
     SaveOutlined,
     EditOutlined,
@@ -69,6 +70,8 @@ interface MapToolbarMobileProps {
     onUndo: () => void;
     onRedo: () => void;
     onToggleSatellite: () => void;
+    /** Open the custom imagery sheet. */
+    onImagery?: () => void;
     onManualMode: () => Promise<void>;
     onStopManualMode: () => Promise<void>;
     onBackupMap: () => void;
@@ -124,7 +127,7 @@ interface MapToolbarMobileProps {
 export const MapToolbarMobile = ({
     editMap, hasUnsavedChanges, manualMode, useSatellite,
     historyIndex, editHistoryLength, mowingAreas,
-    onEditMap, onSaveMap, onUndo, onRedo, onToggleSatellite,
+    onEditMap, onSaveMap, onUndo, onRedo, onToggleSatellite, onImagery,
     onManualMode, onStopManualMode,
     onBackupMap, onRestoreMap, onDownloadGeoJSON, onUploadGeoJSON, onImportOpenMower, onResetMowingProgress,
     onMowArea, onPreviewPlan, settingsAreas, onAreaSettings, selectedFeatureCount = 0, onEditSelectedFeature,
@@ -234,6 +237,7 @@ export const MapToolbarMobile = ({
 
     const dataMenuItems: MenuProps["items"] = [
         {key: "satellite", icon: <GlobalOutlined />, label: useSatellite ? t("mapToolbarMobile.darkMap") : t("mapToolbarMobile.satellite")},
+        ...(onImagery ? [{key: "imagery", icon: <PictureOutlined />, label: t("imagery.title")}] : []),
         {type: "divider"},
         {key: "areaRecording", icon: <AimOutlined />, label: t("mapToolbarMobile.recordArea")},
         ...(onPathRecording ? [{key: "pathRecording", icon: <NodeIndexOutlined />, label: t("mapToolbarMobile.recordPath")}] : []),
@@ -264,6 +268,7 @@ export const MapToolbarMobile = ({
     const handleMoreClick: MenuProps["onClick"] = ({key}: MenuInfo) => {
         switch (key) {
             case "satellite": onToggleSatellite(); break;
+            case "imagery": onImagery?.(); break;
             case "areaRecording": safeCall(onAreaRecording); break;
             case "pathRecording": safeCall(onPathRecording); break;
             case "mowNext": safeCall(onMowNextArea); break;

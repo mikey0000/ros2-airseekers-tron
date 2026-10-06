@@ -1,7 +1,7 @@
 import {mowingAreaIndex} from "../utils/mapAreaIndex.ts";
 import "@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css";
 import {useApi} from "../hooks/useApi.ts";
-import {App, Button} from "antd";
+import {App, Button, Drawer} from "antd";
 import {useNavigate} from "react-router-dom";
 import {datumErrorDetail, requestDatumFromGps} from "../utils/datumGps.ts";
 import turfArea from "@turf/area";
@@ -75,6 +75,12 @@ import type {AbsolutePose} from "../types/ros.ts";
 import {postTerrainAction, useTerrainSummary} from "../hooks/useTerrain.ts";
 import {TerrainCard} from "./map/components/TerrainCard.tsx";
 import {TERRAIN_STATUS_COLORS} from "../utils/terrain.ts";
+import {useImagery} from "../hooks/useImagery.ts";
+import {ImageryLayers} from "./map/components/ImageryLayers.tsx";
+import {ImageryPanel} from "./map/components/ImageryPanel.tsx";
+import {ImageryAlignMarkers, ImageryAlignPanel} from "./map/components/ImageryAlign.tsx";
+import {useImageryAlign} from "./map/hooks/useImageryAlign.ts";
+import {imageCornersMap, quadToLngLat, type ImageryOverlay} from "../utils/imagery.ts";
 
 
 // Mapbox access token comes from the build env only — no hardcoded fallback.
@@ -210,6 +216,39 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         }
         return [_datumLat, _datumLon, 0]
     }, [_datumLat, _datumLon])
+
+    // Custom imagery overlays (drone orthomosaics etc., docs/custom_imagery.md).
+    const imagery = useImagery();
+    const imageryAlign = useImageryAlign({offsetX, offsetY, datum, update: imagery.update});
+    const [imageryDrawerOpen, setImageryDrawerOpen] = useState(false);
+    const alignPose = useTopic<AbsolutePose>("pose", {}, {throttleMs: 250, enabled: !!imageryAlign.session}).data;
+    const alignRobotXY = useMemo<[number, number] | null>(() => {
+        const x = alignPose.pose?.pose?.position?.x;
+        const y = alignPose.pose?.pose?.position?.y;
+        return typeof x === "number" && typeof y === "number" ? [x, y] : null;
+    }, [alignPose]);
+    const alignRobotFixOk = (alignPose.position_accuracy ?? 99) <= 0.05;
+    const imageryDraft = useMemo(() => imageryAlign.session
+        ? {name: imageryAlign.session.name, placement: imageryAlign.session.placement, opacity: imageryAlign.session.opacity}
+        : null, [imageryAlign.session]);
+    const handleImageryAlign = useCallback((o: ImageryOverlay) => {
+        const c = mapInstanceRef.current?.getCenter();
+        imageryAlign.start(o, c ? imageryAlign.toMap(c.lng, c.lat) : [0, 0]);
+        setImageryDrawerOpen(false);
+    }, [imageryAlign]);
+    const handleImageryZoomTo = useCallback((o: ImageryOverlay) => {
+        const m = mapInstanceRef.current;
+        if (!m) return;
+        let b: [number, number, number, number] | undefined = o.bounds;
+        if (o.kind === "image" && o.placement && o.width && o.height) {
+            const q = quadToLngLat(imageCornersMap(o.placement, o.width, o.height), offsetX, offsetY, datum);
+            const lons = q.map((c) => c[0]);
+            const lats = q.map((c) => c[1]);
+            b = [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)];
+        }
+        if (b) m.fitBounds([[b[0], b[1]], [b[2], b[3]]], {padding: 40, duration: 600});
+        setImageryDrawerOpen(false);
+    }, [offsetX, offsetY, datum]);
 
     // Display-only features (mower, dock, heading, paths) rendered as separate layers
     const displayFeatures = useMemo<GeoJSON.FeatureCollection>(() => {
@@ -955,6 +994,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     );
 
     const handleMapClick = useCallback((e: {lngLat: {lng: number; lat: number}; features?: {properties?: Record<string, unknown> | null}[]}) => {
+        if (imageryAlign.handleMapClick(e.lngLat.lng, e.lngLat.lat)) return;
         const tc = e.features?.find((f) => f.properties?.kind === "cluster");
         if (!dockPlacementMode && !editMap && tc) {
             setTerrainSel({area: Number(tc.properties?.area_index), id: Number(tc.properties?.cluster_id)});
@@ -980,7 +1020,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         });
         setHasUnsavedChanges(true);
         setDockDirty(true);
-    }, [dockPlacementMode, setHasUnsavedChanges, editMap, areaSettings.enabled, features, openAreaSettingsForFeature]);
+    }, [dockPlacementMode, setHasUnsavedChanges, editMap, areaSettings.enabled, features, openAreaSettingsForFeature, imageryAlign]);
 
     // Dock heading panel: rotate the dock marker in place (position kept).
     const handleDockHeadingChange = useCallback((heading: number) => {
@@ -1179,6 +1219,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 >
                     {tileUri ? <Source type={"raster"} id={"custom-raster"} tiles={[tileUri]} tileSize={256}/> : null}
                     {tileUri ? <Layer type={"raster"} source={"custom-raster"} id={"custom-layer"}/> : null}
+                    <ImageryLayers overlays={imagery.overlays} offsetX={offsetX} offsetY={offsetY} datum={datum} draft={imageryDraft}/>
                     <Source type={"geojson"} id={"labels"} data={labelsCollection}/>
                     <Layer type={"symbol"} id={"mower"} source={"labels"} layout={{
                         "text-field": ['get', 'title'],
@@ -1355,10 +1396,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                                          onClick={handleMapClick}
                                                          interactiveLayerIds={DYN_OBSTACLE_INTERACTIVE_LAYERS}
                                                          onMouseMove={handleMapMouseMove}
-                                                         cursor={dockPlacementMode ? 'crosshair' : undefined}
+                                                         cursor={dockPlacementMode || imageryAlign.pick ? 'crosshair' : undefined}
                 >
                     {tileUri ? <Source type={"raster"} id={"custom-raster"} tiles={[tileUri]} tileSize={256}/> : null}
                     {tileUri ? <Layer type={"raster"} source={"custom-raster"} id={"custom-layer"}/> : null}
+                    <ImageryLayers overlays={imagery.overlays} offsetX={offsetX} offsetY={offsetY} datum={datum} draft={imageryDraft}/>
                     <Source type={"geojson"} id={"labels"} data={labelsCollection}/>
                     <Layer type={"symbol"} id={"mower"} source={"labels"} layout={{
                         "text-field": ['get', 'title'],
@@ -1602,6 +1644,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         src={dockMarker?.src ?? ""} corners={dockMarker ? dockMarkerCorners : null}/>
                     <MapImageMarker key={`robot-img-${!!mowProgressImage}-${!!lidarMapImage}`} id={"robot-image"}
                         src={robotMarker?.src ?? ""} corners={robotMarkerCorners}/>
+                    <ImageryAlignMarkers align={imageryAlign} offsetX={offsetX} offsetY={offsetY} datum={datum}/>
                 </Map> : <Spinner/>}
                 {hasDriveCamera && (
                     <DrivingCameraPip
@@ -1725,6 +1768,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onUndo={handleUndo}
                         onRedo={handleRedo}
                         onToggleSatellite={() => setUseSatellite(!useSatellite)}
+                        onImagery={() => setImageryDrawerOpen(true)}
                         onManualMode={handleManualMode}
                         onStopManualMode={handleStopManualMode}
                         onBackupMap={handleBackupMap}
@@ -1832,7 +1876,21 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 onChangeBearing={handleBearing}
                             />
                         </div>
+                        <div style={{borderTop: `1px solid ${colors.borderSubtle}`, padding: 8, maxHeight: '45vh', overflowY: 'auto'}}>
+                            <ImageryPanel imagery={imagery} onAlign={handleImageryAlign} onZoomTo={handleImageryZoomTo}/>
+                        </div>
                     </div>
+                )}
+                {imageryAlign.session && (
+                    <ImageryAlignPanel align={imageryAlign} mobile={isMobile}
+                                       label={imagery.overlays.find((o) => o.name === imageryAlign.session?.name)?.label ?? ""}
+                                       robotXY={alignRobotXY} robotFixOk={alignRobotFixOk}/>
+                )}
+                {isMobile && (
+                    <Drawer placement="bottom" open={imageryDrawerOpen} onClose={() => setImageryDrawerOpen(false)}
+                            title={t('imagery.title')} height="70vh" destroyOnHidden>
+                        <ImageryPanel imagery={imagery} onAlign={handleImageryAlign} onZoomTo={handleImageryZoomTo} bare/>
+                    </Drawer>
                 )}
             </div>
             {areaSettings.enabled && (
