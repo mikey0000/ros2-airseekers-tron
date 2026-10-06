@@ -41,7 +41,7 @@ import {
 import {canPreviewPlan} from "../../../hooks/usePlanPreview.ts";
 import {PREVIEW_ALL_KEY} from "./MapToolbar.tsx";
 import {confirmUndock} from "./undockConfirm.ts";
-import {canUndock} from "../../../utils/missionStates.ts";
+import {canHome, canUndock} from "../../../utils/missionStates.ts";
 import type {MenuInfo} from "rc-menu/lib/interface";
 import AsyncButton from "../../../components/AsyncButton.tsx";
 import type {Feature} from "geojson";
@@ -414,26 +414,27 @@ export const MapToolbarMobile = ({
     return (
         <>
             <div style={toolbarStyle}>
-                {!isRecording && (
-                    isIdle ? (
-                        <AsyncButton
-                            type="primary"
-                            size="large"
-                            icon={<PlayCircleOutlined />}
-                            onAsyncClick={onStart!}
-                            aria-label={t("mapToolbarMobile.start")}
-                            style={touchTarget}
-                        />
-                    ) : (
-                        <AsyncButton
-                            type="primary"
-                            size="large"
-                            icon={<HomeOutlined />}
-                            onAsyncClick={onHome!}
-                            aria-label={t("mapToolbarMobile.home")}
-                            style={touchTarget}
-                        />
-                    )
+                {!isRecording && isIdle && (
+                    <AsyncButton
+                        type="primary"
+                        size="large"
+                        icon={<PlayCircleOutlined />}
+                        onAsyncClick={onStart!}
+                        aria-label={t("mapToolbarMobile.start")}
+                        style={touchTarget}
+                    />
+                )}
+                {/* Home (return to dock) whenever it is allowed, idle included: an
+                    idle robot off the dock must be able to go home. */}
+                {!isRecording && onHome && canHome(highLevelState, stateName) && (
+                    <AsyncButton
+                        type={isIdle ? "default" : "primary"}
+                        size="large"
+                        icon={<HomeOutlined />}
+                        onAsyncClick={onHome!}
+                        aria-label={t("mapToolbarMobile.home")}
+                        style={touchTarget}
+                    />
                 )}
 
                 {!isRecording && onUndock && canUndock(stateName) && (
