@@ -58,7 +58,8 @@ except ImportError:  # pragma: no cover
     MowerBaseDevStatus = None
 
 DEG_PARAMS = ('max_imu_yaw_change', 'outlier', 'reseed_agree', 'dock_heading_offset',
-              'imu_jump', 'sigma_cog', 'sigma_dock', 'sigma_file')
+              'imu_jump', 'sigma_cog', 'sigma_dock', 'sigma_file', 'sigma_file_verified',
+              'verify_max_yaw')
 
 
 def _read_dock_file(path):
@@ -103,6 +104,7 @@ class HeadingAligner(Node):
         d('use_dock_seed', True)
         d('input_rate', 20.0)        # Hz sampling of cmd / gps
         d('status_rate', 1.0)
+        d('persist_period', 30.0)    # s; re-save offset + IMU yaw + position while aligned
         defaults = hl.AlignParams()
         for name, value in vars(defaults).items():
             d(name, float(math.degrees(value)) if name in DEG_PARAMS else value)
@@ -116,13 +118,16 @@ class HeadingAligner(Node):
         self._offset_file = g('offset_file')
         self._use_dock = bool(g('use_dock_seed'))
         self._last_status = None
+        self._persist_period = float(g('persist_period'))
+        self._persisted_at = time.monotonic()
         self._tail = None             # cached orientation offset (frame_id length fixed)
         self._tail_key = None
 
         if g('use_offset_file'):
-            off = hl.load_offset(self._offset_file)
+            rec = hl.load_record(self._offset_file)
+            off = None if rec is None else rec['offset']
             if off is not None:
-                self.est.load_persisted(off, time.monotonic())
+                self.est.load_persisted(off, time.monotonic(), record=rec)
                 self.get_logger().info('persisted heading offset %.1f deg from %s (low quality '
                                        'until dock/COG)' % (math.degrees(off), self._offset_file))
 
@@ -263,10 +268,13 @@ class HeadingAligner(Node):
         with self._lock:
             st = self.est.status(now)
             dirty, self.est.dirty = self.est.dirty, False
-            off, src, n = self.est.offset, self.est.source, self.est.n_cog
-        if dirty and off is not None:
+            rec = self.est.persist_record()
+            src, n = self.est.source, self.est.n_cog
+        if rec is not None and (dirty or now - self._persisted_at >= self._persist_period):
+            self._persisted_at = now
             try:
-                hl.save_offset(self._offset_file, off, src, n)
+                hl.save_offset(self._offset_file, rec[0], src, n, imu_yaw=rec[1], x=rec[2],
+                               y=rec[3])
             except OSError as exc:
                 self.get_logger().warn('cannot persist heading offset: %s' % exc)
         key = (st['aligned'], st['source'], st['offset_deg'], st['quality'], st['event'])
@@ -280,6 +288,17 @@ class HeadingAligner(Node):
     def shutdown(self):
         self._periodic.stop()
         self._pump.stop()
+        # final save so a container restart can verify continuity from the exact
+        # last IMU yaw / position (not one up to persist_period old)
+        with self._lock:
+            rec = self.est.persist_record()
+            src, n = self.est.source, self.est.n_cog
+        if rec is not None:
+            try:
+                hl.save_offset(self._offset_file, rec[0], src, n, imu_yaw=rec[1], x=rec[2],
+                               y=rec[3])
+            except OSError:
+                pass
 
 
 def main(args=None):

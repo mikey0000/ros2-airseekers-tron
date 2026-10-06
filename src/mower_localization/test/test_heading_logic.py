@@ -286,3 +286,69 @@ def test_imu_cdr_against_rclpy():
         == pytest.approx(90.0)
     assert m2.orientation_covariance[8] == pytest.approx(0.002)
     assert m2.angular_velocity.z == 0.25 and m2.header.frame_id == 'imu_link'
+
+
+# ---------------------------------------------------------------- persisted continuity
+def _restart(tmp_path, *, yaw_shift_deg=0.0, move=(0.0, 0.0), age_s=60.0, fix_type=3):
+    """Align on COG, save the record, then 'restart': a new estimator loads it."""
+    path = str(tmp_path / 'heading_offset.yaml')
+    s = Sim(true_offset_deg=-150.0)
+    s.yaw = D(30.0)
+    s.run(0.3, 0.0, 2.2)
+    assert s.est.aligned
+    s.run(0.0, 0.0, 0.5)                    # stop; last GPS position recorded
+    off, imu, x, y = s.est.persist_record()
+    hl.save_offset(path, off, s.est.source, s.est.n_cog, now_wall=1000.0, imu_yaw=imu,
+                   x=x, y=y)
+    rec = hl.load_record(path)
+    assert rec['imu_yaw'] == pytest.approx(imu, abs=1e-5) and rec['saved_wall'] == 1000.0
+    e = hl.HeadingEstimator()
+    e.load_persisted(rec['offset'], 0.0, record=rec, now_wall=1000.0 + age_s)
+    assert e.source == hl.SOURCE_FILE and not e.aligned
+    e.on_imu(0.1, hl.wrap(imu + D(yaw_shift_deg)), 0.0)
+    e.on_fix_type(0.1, fix_type)
+    for k in range(5):
+        e.on_gps(0.1 + 0.1 * k, x + move[0], y + move[1], 0.2)
+    return e
+
+
+def test_persisted_continuity_accepted(tmp_path):
+    e = _restart(tmp_path, yaw_shift_deg=2.0, move=(0.1, -0.1))
+    assert e.source == hl.SOURCE_FILE_VERIFIED and e.aligned
+    assert e.quality(0.1) == 'good'
+    assert math.degrees(e.yaw_sigma(0.1)) == pytest.approx(5.0)
+    assert 'verified' in e.last_event
+
+
+def test_persisted_yaw_jump_rejected(tmp_path):
+    e = _restart(tmp_path, yaw_shift_deg=40.0)
+    assert e.source == hl.SOURCE_FILE and not e.aligned and 'IMU yaw' in e.last_event
+
+
+def test_persisted_moved_rejected(tmp_path):
+    e = _restart(tmp_path, move=(0.6, 0.0))
+    assert e.source == hl.SOURCE_FILE and not e.aligned and 'moved' in e.last_event
+
+
+def test_persisted_stale_rejected(tmp_path):
+    e = _restart(tmp_path, age_s=7 * 3600.0)
+    assert e.source == hl.SOURCE_FILE and not e.aligned
+
+
+def test_persisted_needs_rtk(tmp_path):
+    e = _restart(tmp_path, fix_type=1)
+    assert e.source == hl.SOURCE_FILE and not e.aligned
+
+
+def test_old_file_without_imu_yaw_stays_file(tmp_path):
+    p = str(tmp_path / 'h.yaml')
+    hl.save_offset(p, D(10.0), 'cog', 1)
+    rec = hl.load_record(p)
+    assert rec['imu_yaw'] is None
+    e = hl.HeadingEstimator()
+    e.load_persisted(rec['offset'], 0.0, record=rec)
+    e.on_imu(0.1, 0.0, 0.0)
+    e.on_fix_type(0.1, 3)
+    for k in range(5):
+        e.on_gps(0.1 + 0.1 * k, 0.0, 0.0, 0.2)
+    assert e.source == hl.SOURCE_FILE

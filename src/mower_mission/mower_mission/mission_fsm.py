@@ -53,7 +53,7 @@ CMD_DELETE_MAPS = 255
 FIX_RTK_FIXED = 3
 
 # heading_aligner (mower_localization) sources that count as an absolute heading
-HEADING_ALIGNED_SOURCES = ('dock', 'cog')
+HEADING_ALIGNED_SOURCES = ('dock', 'cog', 'file_verified')
 HEADING_NOT_ALIGNED = 'heading not aligned: drive straight 1 m in manual'
 
 # MANUAL_MOWING sub_state (the GUI reads the blade state from it)

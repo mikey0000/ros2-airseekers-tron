@@ -41,9 +41,10 @@ import time
 
 SOURCE_NONE = 'none'
 SOURCE_FILE = 'file'
+SOURCE_FILE_VERIFIED = 'file_verified'
 SOURCE_DOCK = 'dock'
 SOURCE_COG = 'cog'
-ALIGNED_SOURCES = (SOURCE_DOCK, SOURCE_COG)
+ALIGNED_SOURCES = (SOURCE_DOCK, SOURCE_COG, SOURCE_FILE_VERIFIED)
 
 TWO_PI = 2.0 * math.pi
 
@@ -114,6 +115,13 @@ class AlignParams:
         self.sigma_cog = math.radians(3.0)
         self.sigma_dock = math.radians(5.0)
         self.sigma_file = math.radians(45.0)
+        self.sigma_file_verified = math.radians(5.0)
+        # persisted-offset continuity check (container restart, IMU kept running)
+        self.verify_max_yaw = math.radians(5.0)    # |imu yaw now - imu yaw at save|
+        self.verify_max_move = 0.5                 # m between saved and current GPS xy
+        self.verify_max_age = 6 * 3600.0           # s (wall clock) since the save
+        self.verify_timeout = 30.0                 # s after boot to get IMU + RTK for it
+        self.verify_samples = 5                    # RTK positions averaged for the check
         self.sigma_none = 10.0           # rad: effectively "do not use"
         self.drift_rate = math.radians(1.0) / 60.0   # rad/s yaw drift growth after an update
         for k, v in kw.items():
@@ -163,6 +171,9 @@ class HeadingEstimator:
         self.dock_xy = None
         self._dock_mean = None
         self._win = None
+        self.gps_xy = None           # last RTK (float/fixed) GPS position, map/ENU
+        self._gps_recent = []        # last few RTK positions (the continuity check averages)
+        self._pending = None         # persisted record awaiting the continuity check
 
     # ------------------------------------------------------------------ properties
     @property
@@ -172,7 +183,8 @@ class HeadingEstimator:
     def yaw_sigma(self, now):
         p = self.p
         base = {SOURCE_COG: p.sigma_cog, SOURCE_DOCK: p.sigma_dock,
-                SOURCE_FILE: p.sigma_file}.get(self.source, p.sigma_none)
+                SOURCE_FILE: p.sigma_file,
+                SOURCE_FILE_VERIFIED: p.sigma_file_verified}.get(self.source, p.sigma_none)
         if self.offset is None or self.source == SOURCE_NONE:
             return p.sigma_none
         if self.updated_at is not None and self.source in ALIGNED_SOURCES:
@@ -183,7 +195,7 @@ class HeadingEstimator:
         if not self.aligned:
             return 'low' if self.source == SOURCE_FILE else 'none'
         s = self.yaw_sigma(now)
-        return 'good' if s <= math.radians(5.0) else 'fair' if s <= math.radians(15.0) \
+        return 'good' if s <= math.radians(8.0) else 'fair' if s <= math.radians(15.0) \
             else 'poor'
 
     def status(self, now):
@@ -217,13 +229,60 @@ class HeadingEstimator:
         return yaw_imu if self.offset is None else wrap(yaw_imu + self.offset)
 
     # ------------------------------------------------------------------ persistence
-    def load_persisted(self, offset, now):
-        """Boot seed from the file (never 'aligned')."""
+    def load_persisted(self, offset, now, record=None, now_wall=None):
+        """Boot seed from the file: low-quality 'file' source, upgraded to the aligned
+        'file_verified' when continuity is proven (see :meth:`_try_verify`): the IMU yaw is
+        still where it was at the save (no IMU power cycle: the JY61P keeps integrating
+        through a container restart) and the robot has not moved since."""
         if self.offset is None:
             self.offset = wrap(offset)
             self.source = SOURCE_FILE
             self.updated_at = now
             self.last_event = 'loaded persisted offset (low quality until dock/COG)'
+            rec = record or {}
+            if all(rec.get(k) is not None for k in ('imu_yaw', 'x', 'y', 'saved_wall')):
+                wall = time.time() if now_wall is None else now_wall
+                age = wall - rec['saved_wall']
+                if 0.0 <= age <= self.p.verify_max_age:
+                    self._pending = dict(rec, loaded_at=now)
+                else:
+                    self.last_event += '; not verifiable: saved %.1f h ago' % (age / 3600.0)
+
+    def _try_verify(self, now):
+        rec = self._pending
+        if rec is None:
+            return
+        if now - rec['loaded_at'] > self.p.verify_timeout:
+            self._pending = None
+            self.last_event = 'persisted offset not verified (no IMU/RTK in time)'
+            return
+        if self.imu_yaw is None or len(self._gps_recent) < self.p.verify_samples:
+            return
+        self._pending = None
+        if self.source != SOURCE_FILE:
+            return
+        dyaw = wrap(self.imu_yaw - rec['imu_yaw'])
+        n = len(self._gps_recent)
+        mx = sum(q[0] for q in self._gps_recent) / n
+        my = sum(q[1] for q in self._gps_recent) / n
+        moved = math.hypot(mx - rec['x'], my - rec['y'])
+        if abs(dyaw) > self.p.verify_max_yaw:
+            self.last_event = ('persisted offset rejected: IMU yaw moved %.1f deg since the '
+                               'save (IMU restarted?)' % math.degrees(dyaw))
+        elif moved > self.p.verify_max_move:
+            self.last_event = ('persisted offset rejected: robot moved %.2f m since the save'
+                               % moved)
+        else:
+            self.source = SOURCE_FILE_VERIFIED
+            self.updated_at = now
+            self.last_event = ('persisted offset verified (IMU yaw %+.1f deg, moved %.2f m '
+                               'since the save)' % (math.degrees(dyaw), moved))
+
+    def persist_record(self):
+        """(offset, imu_yaw, x, y) to save while aligned, or None."""
+        if not self.aligned or self.imu_yaw is None or self.gps_xy is None:
+            return None
+        return self.offset, self.imu_yaw, self.gps_xy[0], self.gps_xy[1]
 
     # ------------------------------------------------------------------ inputs
     def on_imu(self, now, yaw, gyro_z, dt=None):
@@ -270,7 +329,7 @@ class HeadingEstimator:
             return
         if now - self.docked_since < p.dock_settle:
             return
-        cog_fresh = (self.source == SOURCE_COG and self.updated_at is not None
+        cog_fresh = (self.source in (SOURCE_COG, SOURCE_FILE_VERIFIED) and self.updated_at is not None
                      and now - self.updated_at < p.cog_stale)
         if cog_fresh:
             return
@@ -288,6 +347,11 @@ class HeadingEstimator:
         """GPS position in the map/ENU frame. Returns a measurement dict when a COG
         window completed (accepted or not), else None."""
         p = self.p
+        if self.fix_type is not None and p.min_fix_type <= self.fix_type <= 3 and \
+                self.fix_t is not None and now - self.fix_t <= max(p.gps_timeout, 1.0):
+            self.gps_xy = (x, y)
+            self._gps_recent = (self._gps_recent + [(x, y)])[-p.verify_samples:]
+            self._try_verify(now)
         ok, direction = self._straight_motion(now, variance)
         w = self._win
         if not ok:
@@ -360,12 +424,13 @@ class HeadingEstimator:
             return
         innov = wrap(meas - self.offset)
         res['innovation'] = innov
-        if self.source == SOURCE_DOCK:
+        if self.source in (SOURCE_DOCK, SOURCE_FILE_VERIFIED):
             if abs(innov) > p.outlier:
-                self._set_cog(now, meas, 'COG replaces dock seed (%.1f deg off: check the dock '
-                                         'pose yaw)' % math.degrees(innov), res)
+                self._set_cog(now, meas, 'COG replaces %s seed (%.1f deg off)'
+                              % (self.source, math.degrees(innov)), res)
             else:
-                self._blend(now, innov, p.alpha_initial, 'COG refines dock seed', res)
+                self._blend(now, innov, p.alpha_initial, 'COG refines %s seed' % self.source,
+                            res)
             return
         # source == cog
         if abs(innov) > p.outlier:
@@ -413,6 +478,7 @@ class HeadingEstimator:
             self._dock_mean = CircularMean()
             self.docked_since = now
         # the old offset is meaningless against the restarted yaw
+        self._pending = None
         self.offset = None
         self.source = SOURCE_NONE
         self.updated_at = None
@@ -423,14 +489,19 @@ class HeadingEstimator:
 FILE_HEADER = '# mower_localization_heading_offset_v1'
 
 
-def save_offset(path, offset, source, n_cog, now_wall=None):
-    """Atomic write of the offset file (flat YAML)."""
+def save_offset(path, offset, source, n_cog, now_wall=None, imu_yaw=None, x=None, y=None):
+    """Atomic write of the offset file (flat YAML). ``imu_yaw`` (rad) and the GPS map
+    position ``x``/``y`` at the save make the record verifiable after a restart."""
     path = os.path.abspath(os.path.expanduser(path))
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    stamp = time.strftime('%Y-%m-%dT%H:%M:%S%z', time.localtime(now_wall or time.time()))
+    wall = time.time() if now_wall is None else now_wall
+    stamp = time.strftime('%Y-%m-%dT%H:%M:%S%z', time.localtime(wall))
     text = ('%s\noffset_rad: %.6f\noffset_deg: %.3f\nsource: %s\ncog_updates: %d\n'
-            'saved_at: \'%s\'\n' % (FILE_HEADER, offset, math.degrees(offset), source, n_cog,
-                                    stamp))
+            'saved_at: \'%s\'\nsaved_wall: %.3f\n' % (FILE_HEADER, offset, math.degrees(offset),
+                                                    source, n_cog, stamp, wall))
+    if imu_yaw is not None and x is not None and y is not None:
+        text += 'imu_yaw_rad: %.6f\nimu_yaw_deg: %.3f\nx: %.3f\ny: %.3f\n' % (
+            imu_yaw, math.degrees(imu_yaw), x, y)
     fd, tmp = tempfile.mkstemp(prefix='.heading_offset.', dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, 'w') as fh:
@@ -446,6 +517,31 @@ def save_offset(path, offset, source, n_cog, now_wall=None):
 
 def load_offset(path):
     """Offset (rad) from the file, or None (missing / malformed)."""
+    rec = load_record(path)
+    return None if rec is None else rec['offset']
+
+
+def load_record(path):
+    """{'offset', 'imu_yaw', 'x', 'y', 'saved_wall'} (missing extras None), or None."""
+    off = _load_offset_only(path)
+    if off is None:
+        return None
+    rec = {'offset': off, 'imu_yaw': None, 'x': None, 'y': None, 'saved_wall': None}
+    keys = {'imu_yaw_rad': 'imu_yaw', 'x': 'x', 'y': 'y', 'saved_wall': 'saved_wall'}
+    with open(os.path.abspath(os.path.expanduser(path))) as fh:
+        for line in fh.read().splitlines()[1:]:
+            key, _, value = line.partition(':')
+            if key.strip() in keys:
+                try:
+                    v = float(value)
+                except ValueError:
+                    continue
+                if math.isfinite(v):
+                    rec[keys[key.strip()]] = v
+    return rec
+
+
+def _load_offset_only(path):
     path = os.path.abspath(os.path.expanduser(path))
     try:
         with open(path) as fh:

@@ -107,7 +107,7 @@ class Harness:
         """heading_aligner status: source none|file|dock|cog; kept fresh by tick()."""
         i = self.fsm.inputs
         i.heading_source = source
-        i.heading_aligned = source in ('dock', 'cog')
+        i.heading_aligned = source in ('dock', 'cog', 'file_verified')
         self.heading_fresh = fresh
         i.heading_stamp = self.t if fresh else None
 
@@ -1456,7 +1456,7 @@ def test_preflight_stale_heading_status_counts_as_unaligned():
     assert f.HEADING_NOT_ALIGNED in h.fsm.sub_state
 
 
-@pytest.mark.parametrize('source', ['dock', 'cog'])
+@pytest.mark.parametrize('source', ['dock', 'cog', 'file_verified'])
 def test_aligned_heading_starts_away_from_dock(source):
     h = Harness()
     h.heading(source)
