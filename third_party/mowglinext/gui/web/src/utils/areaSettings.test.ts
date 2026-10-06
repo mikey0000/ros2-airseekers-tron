@@ -64,9 +64,9 @@ import {extractSlopeDerived} from "./areaSettings.ts";
 describe("blade_policy", () => {
     it("accepts continuous/conservative and rejects others", () => {
         expect(sanitizeAreaSettings({blade_policy: "conservative"})).toEqual({blade_policy: "conservative"});
-        expect(sanitizeAreaSettings({blade_policy: "always"})).toEqual({});
+        expect(sanitizeAreaSettings({blade_policy: "always" as never})).toEqual({});
         expect(invalidAreaSettingKey({blade_policy: "continuous"})).toBeNull();
-        expect(invalidAreaSettingKey({blade_policy: "always"})).toBe("blade_policy");
+        expect(invalidAreaSettingKey({blade_policy: "always" as never})).toBe("blade_policy");
     });
 });
 
