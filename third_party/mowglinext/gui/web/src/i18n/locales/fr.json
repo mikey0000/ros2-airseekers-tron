@@ -1772,6 +1772,18 @@
     "noDatumDetail": "Le datum est l’origine de la carte. Définissez-le depuis la position GPS actuelle (bonne réception requise près de la base) ou saisissez latitude et longitude manuellement dans les paramètres.",
     "noDatumTitle": "Aucun datum GPS pour l’instant"
   },
+  "manualBlade": {
+    "on": "Lames EN MARCHE",
+    "off": "Lames arrêtées",
+    "start": "Démarrer les lames",
+    "holding": "Maintenez…",
+    "starting": "Démarrage…",
+    "startHint": "Maintenez appuyé 1 seconde pour démarrer les lames",
+    "stop": "Arrêter les lames",
+    "startFailed": "Les lames n'ont pas démarré",
+    "refused": "Le robot a refusé de démarrer les lames (sur la base, en charge, soulevé, urgence ou mode manuel inactif).",
+    "stopFailed": "L'arrêt des lames a échoué"
+  },
   "mapJoystick": {
     "finish": "Terminer",
     "cancel": "Annuler",
@@ -4197,5 +4209,20 @@
     "kdTooltip": "Amortissement sur la vitesse de lacet mesurée. Augmentez si le maintien oscille. Par défaut 0,1.",
     "maxLabel": "Correction max",
     "maxTooltip": "Limite de la correction de cap. Par défaut 0,15 rad/s."
+  },
+  "missionStop": {
+    "stop": "Arrêter la tonte",
+    "confirmTitle": "Arrêter la tonte maintenant ?",
+    "confirmBody": "La lame s'arrête et la tondeuse s'immobilise sur place. La progression est enregistrée pour reprendre plus tard.",
+    "cancel": "Continuer la tonte",
+    "failed": "Échec de la commande",
+    "faultTitle": "Tondeuse arrêtée : {{state}}",
+    "faultNoReason": "Aucune raison signalée.",
+    "reset": "Réinitialiser",
+    "stoppedTitle": "Tonte arrêtée",
+    "stoppedResumeHint": "La progression est enregistrée : reprenez où elle s'est arrêtée ou recommencez.",
+    "returnToDock": "Retour à la base",
+    "resumeOrFresh": "Reprendre / recommencer",
+    "start": "Démarrer la tonte"
   }
 }

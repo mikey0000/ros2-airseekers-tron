@@ -26,6 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'gps_gate = mower_localization.gps_gate:main',
+            'heading_aligner = mower_localization.heading_aligner:main',
         ],
     },
 )

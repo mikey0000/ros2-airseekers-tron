@@ -32,17 +32,19 @@ export type FeatureId =
     | "status_leds"         // LED settings section
     | "lora_corrections"    // GNSS corrections over a LoRa base radio
     | "area_settings"       // per-area mowing settings served by the map server
-    | "straight_driving";   // host-side angular trim / deadband / IMU heading hold (cmd_vel_slew)
+    | "straight_driving"    // host-side angular trim / deadband / IMU heading hold (cmd_vel_slew)
+    | "manual_blade_two_step"; // manual mode drives blade-off; blades start as a separate step
 
 export const FEATURE_IDS: readonly FeatureId[] = [
     "stm32_firmware", "gnss_sidecar", "docker_host", "docker_admin", "drive_tuning", "lidar",
     "cameras", "dock_calibration", "fusion_graph", "imu_yaw_calibration",
     "status_leds", "lora_corrections", "area_settings", "straight_driving",
+    "manual_blade_two_step",
 ];
 
 /**
  * Feature set of a stock MowgliNext robot. Everything the GUI shows today is
- * on; the two features that add UI no stock robot has are off.
+ * on; the features that add UI no stock robot has are off.
  */
 export const UPSTREAM_FEATURES: Readonly<Record<FeatureId, boolean>> = {
     stm32_firmware: true,
@@ -59,6 +61,7 @@ export const UPSTREAM_FEATURES: Readonly<Record<FeatureId, boolean>> = {
     lora_corrections: false,
     area_settings: false,
     straight_driving: false,
+    manual_blade_two_step: false,
 };
 
 export type PerceptionKind = "lidar" | "camera" | "none";
@@ -162,6 +165,9 @@ const PROFILE_OVERLAYS: Record<string, ProfileOverlay> = {
             lora_corrections: true,
             area_settings: true,  // map_server_node get/set_area_settings
             straight_driving: true, // mower_control cmd_vel_slew trim / heading hold
+            // mower_mission manual_blade_requires_enable: manual drive starts blade-off,
+            // the map page's Blades control sends mow_enabled (-> ~/manual_blade).
+            manual_blade_two_step: true,
         },
         perception: "camera",
         docking: "vision_marker",

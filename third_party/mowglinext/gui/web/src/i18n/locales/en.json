@@ -1776,6 +1776,18 @@
     "noDatumDetail": "The datum is the map origin. Set it from the current GPS fix (needs a good fix near the dock), or enter latitude and longitude manually in Settings.",
     "noDatumTitle": "No GPS datum yet"
   },
+  "manualBlade": {
+    "on": "Blades ON",
+    "off": "Blades off",
+    "start": "Start blades",
+    "holding": "Keep holding…",
+    "starting": "Starting…",
+    "startHint": "Press and hold for 1 second to start the blades",
+    "stop": "Stop blades",
+    "startFailed": "Blades did not start",
+    "refused": "The robot refused to start the blades (docked, charging, lifted, emergency, or manual mode not active).",
+    "stopFailed": "Stopping the blades failed"
+  },
   "mapJoystick": {
     "finish": "Finish",
     "cancel": "Cancel",
@@ -4197,5 +4209,20 @@
     "kdTooltip": "Damping on the measured yaw rate. Raise if the hold oscillates. Default 0.1.",
     "maxLabel": "Max correction",
     "maxTooltip": "Clamp on the heading-hold steering correction. Default 0.15 rad/s."
+  },
+  "missionStop": {
+    "stop": "Stop mowing",
+    "confirmTitle": "Stop mowing now?",
+    "confirmBody": "The blade stops and the mower halts in place. Progress is saved so you can resume later.",
+    "cancel": "Keep mowing",
+    "failed": "Command failed",
+    "faultTitle": "Mower stopped: {{state}}",
+    "faultNoReason": "No reason reported.",
+    "reset": "Reset",
+    "stoppedTitle": "Mowing stopped",
+    "stoppedResumeHint": "Progress was saved: resume where it stopped or start fresh.",
+    "returnToDock": "Return to dock",
+    "resumeOrFresh": "Resume / start fresh",
+    "start": "Start mowing"
   }
 }

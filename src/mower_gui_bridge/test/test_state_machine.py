@@ -173,3 +173,10 @@ def test_battery_percent_scaling():
     assert sm.battery_percent(73.0) == 73.0
     assert sm.battery_percent(float('nan')) == 0.0
     assert sm.battery_percent(None) == 0.0
+
+
+def test_mower_control_route():
+    assert sm.mower_control_route(False, sm.STATE_MANUAL_MOWING) == sm.ROUTE_MISSION
+    assert sm.mower_control_route(False, sm.STATE_AUTONOMOUS) == sm.ROUTE_CUTTER
+    assert sm.mower_control_route(True, sm.STATE_MANUAL_MOWING) == sm.ROUTE_CUTTER
+    assert sm.mower_control_route(False, sm.STATE_IDLE) == sm.ROUTE_CUTTER

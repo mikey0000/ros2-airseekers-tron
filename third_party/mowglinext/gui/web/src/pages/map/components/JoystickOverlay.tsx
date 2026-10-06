@@ -15,11 +15,13 @@ interface JoystickOverlayProps {
     onFinishRecording?: () => Promise<void>;
     onCancelRecording?: () => Promise<void>;
     onHome?: () => Promise<void>;
+    /** Extra controls beside the stick (two-step manual: the Blades control). */
+    sideControls?: React.ReactNode;
 }
 
 export const JoystickOverlay = ({
     visible, isRecording, mobile,
-    onMove, onStop, onFinishRecording, onCancelRecording, onHome,
+    onMove, onStop, onFinishRecording, onCancelRecording, onHome, sideControls,
 }: JoystickOverlayProps) => {
     const {colors, displayMode} = useThemeMode();
     const {t} = useTranslation();
@@ -79,6 +81,8 @@ export const JoystickOverlay = ({
                     throttle={50}
                 />
             </div>
+
+            {!isRecording && sideControls}
 
             {isRecording && (
                 <div style={{display: "flex", flexDirection: "column", gap: 8, marginBottom: 4}}>

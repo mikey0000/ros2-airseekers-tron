@@ -43,7 +43,7 @@ from sensor_msgs.msg import BatteryState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 from std_msgs.msg import Bool, String
-from std_srvs.srv import Empty, Trigger
+from std_srvs.srv import Empty, SetBool, Trigger
 
 from mower_interfaces.action import Dock, Undock
 from mower_interfaces.msg import MowerBaseDevStatus
@@ -64,6 +64,7 @@ TOPIC_DEFAULTS = {
     'battery_topic': '/battery',
     'mower_status_topic': '/mower_base/status',
     'gnss_status_topic': '/gps/status',
+    'heading_status_topic': '/heading_aligner/status',   # mower_localization heading_aligner
     'odom_topic': '/odometry/filtered_map',
     'boundary_violation_topic': '/map_server_node/boundary_violation',
     'lethal_boundary_violation_topic': '/map_server_node/lethal_boundary_violation',
@@ -76,6 +77,7 @@ TOPIC_DEFAULTS = {
     'high_level_control_service': '~/high_level_control',
     'start_in_area_service': '~/start_in_area',
     'clear_coverage_resume_service': '~/clear_coverage_resume',
+    'manual_blade_service': '~/manual_blade',          # SetBool, MANUAL_MOWING only
     'active_area_settings_topic': '~/active_area_settings',
     # clients
     'get_mowing_area_service': '/map_server_node/get_mowing_area',
@@ -196,6 +198,7 @@ class MissionNode(Node):
         sub(Bool, p['boundary_violation_topic'], self._on_boundary, 1, parser=flat_parser(Bool))
         sub(Bool, p['lethal_boundary_violation_topic'], self._on_lethal, 1,
             parser=flat_parser(Bool))
+        sub(String, p['heading_status_topic'], self._on_heading, latched)
         self._hw_rain = self._base_rain = False
         self._hw_charging = self._base_charging = False
 
@@ -238,6 +241,8 @@ class MissionNode(Node):
         srv(StartInArea, p['start_in_area_service'], self._srv_start_in_area,
             callback_group=self._cb)
         srv(Trigger, p['clear_coverage_resume_service'], self._srv_clear_resume,
+            callback_group=self._cb)
+        srv(SetBool, p['manual_blade_service'], self._srv_manual_blade,
             callback_group=self._cb)
 
         # tick / status / zero-burst on one plain thread (sub_pump.PeriodicRunner) instead of
@@ -356,6 +361,17 @@ class MissionNode(Node):
             i.rain = self._hw_rain or self._base_rain
             i.is_charging = self._hw_charging or self._base_charging
 
+    def _on_heading(self, msg):
+        try:
+            st = json.loads(msg.data)
+        except ValueError:
+            st = {}
+        with self._lock:
+            i = self.fsm.inputs
+            i.heading_aligned = bool(st.get('aligned', False))
+            i.heading_source = str(st.get('source', 'none'))
+            i.heading_stamp = time.monotonic()
+
     def _on_gnss(self, msg):
         with self._lock:
             self.fsm.inputs.fix_type = int(msg.fix_type)
@@ -404,6 +420,14 @@ class MissionNode(Node):
             self.get_logger().info('start_in_area(%d) -> %s' % (req.area, ok))
             self._execute(fx)
         resp.success = bool(ok)
+        return resp
+
+    def _srv_manual_blade(self, req, resp):
+        with self._lock:
+            self._pump.poll()
+            ok, msg, fx = self.fsm.manual_blade(bool(req.data), time.monotonic())
+            self._execute(fx)
+        resp.success, resp.message = bool(ok), msg
         return resp
 
     def _srv_clear_resume(self, req, resp):

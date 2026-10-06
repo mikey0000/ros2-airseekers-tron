@@ -28,6 +28,8 @@ import {deriveIsMoving} from "../utils/mowerMotion.ts";
 import {GlassCard} from "../concept/components/GlassCard.tsx";
 import {BatteryRing} from "../concept/components/BatteryRing.tsx";
 import {StatusOrb} from "../concept/components/StatusOrb.tsx";
+import {MissionStopControls} from "../components/MissionStopControls.tsx";
+import {isLatchedFault} from "../utils/missionStates.ts";
 import {ActionCluster} from "../concept/components/ActionCluster.tsx";
 import {LiveMapMini} from "../concept/components/LiveMapMini.tsx";
 import type {MiniArea, MiniProgress} from "../concept/components/LiveMapMini.tsx";
@@ -83,6 +85,8 @@ function useMowerData() {
 
   return {
     state: stateName,
+    stateNum,
+    subState: highLevelStatus.sub_state_name ?? "",
     battery: batteryPercent,
     charging: isCharging,
     emergency: isEmergency,
@@ -464,6 +468,13 @@ function HeroCard({
             }}>
               {subline}
             </p>
+            {data.subState && !isLatchedFault(data.state) && (
+              <p data-testid="hero-sub-state" style={{
+                fontSize: 12, color: 'var(--lime, #7CFFB2)', marginTop: 6, marginBottom: 0,
+              }}>
+                {data.subState}
+              </p>
+            )}
             {activeSettings && (
               <div style={{marginTop: 10}} data-testid="hero-active-settings">
                 <div style={{
@@ -537,6 +548,11 @@ function HeroCard({
         <div style={{marginTop: large ? 28 : 22}}>
           <ActionCluster phase={phase} {...actions}/>
         </div>
+        <MissionStopControls
+          state={data.stateNum} stateName={data.state} subStateName={data.subState}
+          onStart={actions.onStart}
+          style={{marginTop: 16}}
+        />
       </div>
     </GlassCard>
   );

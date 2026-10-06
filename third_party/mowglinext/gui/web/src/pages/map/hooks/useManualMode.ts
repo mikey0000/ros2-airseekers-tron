@@ -9,6 +9,14 @@ const JOY_SEND_INTERVAL_MS = 100;
 // blip emits one non-MANUAL tick) must NOT collapse manual mode and kill the
 // joystick socket mid-drive — only a genuine, sustained exit should.
 const MANUAL_EXIT_DEBOUNCE_MS = 1200;
+// After the operator presses Manual, the robot may take a while to report
+// MANUAL_MOWING (slow state tick): keep the UI and joystick up this long
+// before a still-non-manual state may tear it down.
+const MANUAL_ENTRY_GRACE_MS = 5000;
+// Two-step manual mowing (profile feature manual_blade_two_step): the mission
+// publishes the blade state in HighLevelStatus.sub_state_name.
+export const MANUAL_SUB_BLADE_ON = "joystick, blade on";
+export const MANUAL_SUB_BLADE_OFF = "joystick, blade off";
 // Teleop velocity caps — raw joystick values are in [-1, 1] (normalized by
 // react-joystick-component) and multiplied at this layer (before twist_mux),
 // so Nav2 autonomous speeds are unaffected. The caps come from the robot
@@ -20,9 +28,12 @@ interface UseManualModeOptions {
     mowerAction: (action: string, params: Record<string, unknown>) => () => Promise<void>;
     joyStream: { sendJsonMessage: (msg: unknown) => void; start: (uri: string) => void };
     stateName?: string;
+    subStateName?: string;
+    /** Profile feature manual_blade_two_step: entering manual never starts the blade. */
+    bladeTwoStep?: boolean;
 }
 
-export function useManualMode({mowerAction, joyStream, stateName}: UseManualModeOptions) {
+export function useManualMode({mowerAction, joyStream, stateName, subStateName, bladeTwoStep}: UseManualModeOptions) {
     const [manualMode, setManualMode] = useState(() => stateName === "MANUAL_MOWING");
     const limits = useTeleopLimits();
     const limitsRef = useRef(limits);
@@ -30,6 +41,7 @@ export function useManualMode({mowerAction, joyStream, stateName}: UseManualMode
         limitsRef.current = {maxLinear: limits.maxLinear, maxAngular: limits.maxAngular};
     }, [limits.maxLinear, limits.maxAngular]);
     const exitTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const enteredAtRef = useRef<number>(-Infinity);
 
     // LATCH + DEBOUNCE manual mode. Entering MANUAL_MOWING latches it ON
     // immediately; leaving it only tears the UI down after a sustained
@@ -46,10 +58,11 @@ export function useManualMode({mowerAction, joyStream, stateName}: UseManualMode
         }
         // Non-MANUAL frame while latched: arm (or keep) the debounce timer.
         if (manualMode && exitTimerRef.current === undefined) {
+            const grace = enteredAtRef.current + MANUAL_ENTRY_GRACE_MS - Date.now();
             exitTimerRef.current = setTimeout(() => {
                 exitTimerRef.current = undefined;
                 setManualMode(false);
-            }, MANUAL_EXIT_DEBOUNCE_MS);
+            }, Math.max(MANUAL_EXIT_DEBOUNCE_MS, grace));
         }
     }, [stateName, manualMode]);
 
@@ -82,6 +95,12 @@ export function useManualMode({mowerAction, joyStream, stateName}: UseManualMode
         // Joy stream is auto-started by useMapStreams when state becomes MANUAL_MOWING.
         // Send the command first — the BT will transition to MANUAL_MOWING state.
         await mowerAction("high_level_control", {Command: 7})();
+        // Open the joy socket now instead of waiting for the next state frame
+        // (useMapStreams also starts it on MANUAL_MOWING).
+        enteredAtRef.current = Date.now();
+        clearTimeout(exitTimerRef.current);
+        exitTimerRef.current = undefined;
+        joyStream.start("/api/mowglinext/publish/joy");
         // The BT owns the blade: once state=4 (MANUAL_MOWING) it re-ticks
         // SetMowerEnabled(true) ~10 Hz. We deliberately do NOT send mow_enabled=1
         // from the client here — that call races the firmware, which zeroes the
@@ -130,5 +149,22 @@ export function useManualMode({mowerAction, joyStream, stateName}: UseManualMode
         joyStream.sendJsonMessage(msg);
     }, [joyStream, stopJoyInterval]);
 
-    return {manualMode, handleManualMode, handleStopManualMode, handleJoyMove, handleJoyStop};
+    // Two-step blade control (only meaningful with bladeTwoStep): the mission
+    // forwards mow_enabled to ~/manual_blade while MANUAL_MOWING and reports
+    // the result in sub_state_name.
+    const bladeOn = stateName === "MANUAL_MOWING" && subStateName === MANUAL_SUB_BLADE_ON;
+    const canStartBlade = !!bladeTwoStep && stateName === "MANUAL_MOWING" && !bladeOn;
+
+    const handleBladeStart = useCallback(async () => {
+        await mowerAction("mow_enabled", {mow_enabled: 1, mow_direction: 0})();
+    }, [mowerAction]);
+
+    const handleBladeStop = useCallback(async () => {
+        await mowerAction("mow_enabled", {mow_enabled: 0, mow_direction: 0})();
+    }, [mowerAction]);
+
+    return {
+        manualMode, handleManualMode, handleStopManualMode, handleJoyMove, handleJoyStop,
+        bladeOn, canStartBlade, handleBladeStart, handleBladeStop,
+    };
 }

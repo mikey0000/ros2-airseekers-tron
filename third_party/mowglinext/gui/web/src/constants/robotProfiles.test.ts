@@ -41,6 +41,8 @@ describe("robot profiles", () => {
         expect(hasFeature(yf, "cameras")).toBe(false);
         expect(hasFeature(yf, "lora_corrections")).toBe(false);
         expect(hasFeature(yf, "area_settings")).toBe(false);
+        expect(hasFeature(yf, "manual_blade_two_step")).toBe(false);
+        expect(hasFeature(getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID), "manual_blade_two_step")).toBe(true);
     });
 
     it("takes battery thresholds from the preset", () => {

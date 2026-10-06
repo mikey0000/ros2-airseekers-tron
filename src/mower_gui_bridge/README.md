@@ -197,7 +197,12 @@ stops serving that namespace. It still publishes `/hardware_bridge/emergency` an
 guards. It still gates the GUI's blade button (`/hardware_bridge/mower_control`) on
 the mission node's `high_level_status`. It still forces the cutter off on the rising
 edge of an emergency. The mission node switches the blade itself through
-`/cutter_control` and `/cutter_off`.
+`/cutter_control` and `/cutter_off`. While the mission reports MANUAL_MOWING, a GUI
+`mower_control` (mow_enabled) request is forwarded to the mission's
+`/behavior_tree_node/manual_blade` (SetBool, param `manual_blade_service`) instead of
+`/cutter_control`, so the mission tracks the blade (two-step manual mowing,
+`manual_blade_requires_enable`) and applies its interlocks; an OFF request falls back
+to `/cutter_off` if the mission does not answer.
 
 ## Parameters
 

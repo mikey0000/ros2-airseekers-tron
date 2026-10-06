@@ -55,10 +55,11 @@ renders `recording_trajectory` while recording and `/coverage/full_plan`.
 | 3 `RECORD_AREA` | `RECORDING` (state 3, blade off). Samples `/odometry/filtered_map` at 10 Hz and drops points less than 5 cm apart. Publishes `~/recording_trajectory`. |
 | 5 `RECORD_FINISH` | Closes the ring and runs Douglas-Peucker at 0.05 m. Rejects the result if it has fewer than 3 vertices or covers less than 1 m². Counts the areas, then calls `add_area` with name `"Area N"` (N = mowing areas + 1, not a navigation area). Then `RECORDING_COMPLETE` for 5 s, then `IDLE`. If `add_area` fails, the polygon is written to `recording_fallback_dir`. |
 | 6 `RECORD_CANCEL` | Discard the recording, `IDLE`. |
-| 7 `MANUAL_MOW` | Publishes state 4 `MANUAL_MOWING` first, then blade on. Any other command or an emergency turns the blade off first. Refused during an autonomous run. |
+| 7 `MANUAL_MOW` | Publishes state 4 `MANUAL_MOWING` first, then blade on. With `manual_blade_requires_enable` (Tron default) the blade stays OFF (sub_state `joystick, blade off`) until `~/manual_blade`(true). Any other command or an emergency turns the blade off first. Refused during an autonomous run. |
 | 8 `STOP` | Cancel all goals, blade off (`/cutter_off`), 0.5 s zero burst on `/cmd_vel_emergency`, then `IDLE`/`IDLE_DOCKED`. Saves the resume cursor and publishes `coverage_resume_available=true`. Always accepted. During an emergency the state stays `EMERGENCY`. It also clears `BOUNDARY_EMERGENCY_STOP`. |
 | 254 `RESET_EMERGENCY` | Calls `/clear_estop`. It also clears `BOUNDARY_EMERGENCY_STOP`. |
 | `start_in_area(i)` | Like START but only area `i`. It resumes only when the cursor belongs to the same target. |
+| `manual_blade` (SetBool) | MANUAL_MOWING only: true = blade on (refused on emergency / lift / stop button / docked / charging), false = blade off, stays in manual drive. sub_state becomes `joystick, blade on` / `joystick, blade off`. mower_gui_bridge forwards the GUI `mower_control` (mow_enabled) here while MANUAL_MOWING. A docked/charging robot with the blade on turns it off on the next tick. |
 | `clear_coverage_resume` | Deletes the cursor, so the next START is fresh. Refused while a run is active. |
 
 Commands other than STOP and RESET return `false` during `EMERGENCY` and
@@ -160,7 +161,7 @@ when every area is done or by `clear_coverage_resume`.
 Served (node `behavior_tree_node`):
 
 * Services `~/high_level_control` (HighLevelControl), `~/start_in_area` (StartInArea),
-  `~/clear_coverage_resume` (Trigger).
+  `~/clear_coverage_resume` (Trigger), `~/manual_blade` (SetBool).
 * Publishes `~/high_level_status` (on change + 1 Hz), `~/coverage_resume_available` (Bool,
   transient local), `~/recording_trajectory` (Path), `/coverage/full_plan` (Path, transient
   local), `/cmd_vel_emergency` (zero Twist burst), `~/active_area_settings` (String, JSON,
@@ -268,6 +269,7 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 | `transit_gap_m` | 0.6 |
 | `follow_controller_id` / `follow_goal_checker_id` | FollowCoveragePath / coverage_goal_checker |
 | `require_blade_confirmation`, `blade_confirm_timeout_s`, `blade_start_attempts`, `blade_retry_pause_s` | true, 5, 3, 2 |
+| `manual_blade_requires_enable` | false (upstream); `config/mission.yaml` sets true: two-step manual mowing, see `manual_blade` |
 | `progress_window_m` | 3.0 |
 | `follow_end_tolerance_m` / `follow_premature_retries` | 1.0 / 3 |
 | `follow_chunk_m` / `follow_chunk_clearance_m` | 25.0 / 0.5 |

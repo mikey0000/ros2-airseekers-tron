@@ -209,6 +209,32 @@ def imu_status(imu_age, temperature, bias_text, timeout):
     return Status(OK, 'IMU', 'receiving', 'imu', values)
 
 
+def heading_status(status_text):
+    """/heading_aligner/status (JSON) -> ``Heading`` entry; WARN until dock/COG aligned."""
+    if status_text is None:
+        return _status(STALE, 'Heading', 'no /heading_aligner/status', 'heading')
+    try:
+        st = json.loads(status_text)
+    except ValueError:
+        return _status(WARN, 'Heading', 'unparsable status', 'heading', [('Raw', status_text)])
+    off = st.get('offset_deg')
+    values = [('Aligned', 'yes' if st.get('aligned') else 'no'),
+              ('Source', str(st.get('source', '-'))),
+              ('Offset (deg)', _fmt(off, '%.1f')),
+              ('Quality', str(st.get('quality', '-'))),
+              ('Yaw sigma (deg)', _fmt(st.get('yaw_sigma_deg'), '%.1f')),
+              ('COG updates', str(st.get('cog_updates', 0)))]
+    if st.get('heading_deg') is not None:
+        values.append(('Heading ENU (deg)', _fmt(st.get('heading_deg'), '%.1f')))
+    if st.get('event'):
+        values.append(('Last event', str(st['event'])))
+    if st.get('aligned'):
+        return _status(OK, 'Heading', 'aligned (%s, %s)' % (st.get('source'), st.get('quality')),
+                       'heading', values)
+    return _status(WARN, 'Heading', 'not aligned (%s): drive straight 1 m in manual'
+                   % st.get('source', 'none'), 'heading', values)
+
+
 def camera_status(cam, freshness_age, publishers, viewers, timeout):
     """cam: :func:`parse_camera_spec` dict. Named ``<topic> topic status`` for the GUI."""
     name = '%s topic status' % cam['topic']
@@ -257,6 +283,8 @@ def build_statuses(snap, timeout=3.0, alert_on_motor_status=False):
     if 'imu_age' in snap:
         out.append(imu_status(snap.get('imu_age'), snap.get('imu_temperature'),
                               snap.get('imu_bias'), timeout))
+    if 'heading' in snap:
+        out.append(heading_status(snap.get('heading')))
     for cam in snap.get('cameras', ()):
         out.append(camera_status(cam['spec'], cam.get('age'), cam.get('publishers', 0),
                                  cam.get('viewers', 0), timeout))

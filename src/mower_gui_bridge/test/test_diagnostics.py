@@ -155,3 +155,19 @@ def test_optional_entries_only_when_configured():
 def test_key_values():
     assert d.parse_key_values('a=1 bare b=x=y') == {'a': '1', 'b': 'x=y'}
     assert d.parse_key_values(None) == {}
+
+
+def test_heading_status_entry():
+    ok = d.heading_status('{"aligned": true, "source": "cog", "offset_deg": -150.2, '
+                          '"quality": "good", "yaw_sigma_deg": 3.1, "cog_updates": 4, '
+                          '"heading_deg": 87.0, "event": "COG update"}')
+    assert ok.level == d.OK and ok.name == 'tron: Heading' and 'cog' in ok.message
+    vals = dict(ok.values)
+    assert vals['Offset (deg)'] == '-150.2' and vals['Source'] == 'cog'
+    warn = d.heading_status('{"aligned": false, "source": "file", "offset_deg": 10.0}')
+    assert warn.level == d.WARN and 'drive straight 1 m' in warn.message
+    assert d.heading_status(None).level == d.STALE
+    assert d.heading_status('nope').level == d.WARN
+    names = by_name(d.build_statuses(snapshot(heading='{"aligned": false, "source": "none"}')))
+    assert names['tron: Heading'].level == d.WARN
+    assert 'tron: Heading' not in by_name(d.build_statuses(snapshot()))

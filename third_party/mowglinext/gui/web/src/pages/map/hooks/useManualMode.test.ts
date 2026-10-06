@@ -101,6 +101,54 @@ describe('useManualMode', () => {
         });
     });
 
+    it('starts the joy stream on entry and survives a slow state tick', async () => {
+        const {result} = renderHook(
+            ({stateName}: {stateName: string | undefined}) => useManualMode({
+                mowerAction, joyStream: {sendJsonMessage, start: startStream}, stateName,
+            }),
+            {initialProps: {stateName: 'IDLE_DOCKED'}},
+        );
+        await act(async () => {
+            await result.current.handleManualMode();
+        });
+        expect(startStream).toHaveBeenCalledWith('/api/mowglinext/publish/joy');
+        act(() => vi.advanceTimersByTime(3000));
+        expect(result.current.manualMode).toBe(true);
+        act(() => vi.advanceTimersByTime(2100));
+        expect(result.current.manualMode).toBe(false);
+    });
+
+    it('reports the two-step blade state from sub_state and sends mow_enabled', async () => {
+        const {result, rerender} = renderHook(
+            ({subStateName}: {subStateName: string}) => useManualMode({
+                mowerAction, joyStream: {sendJsonMessage, start: startStream},
+                stateName: 'MANUAL_MOWING', subStateName, bladeTwoStep: true,
+            }),
+            {initialProps: {subStateName: 'joystick, blade off'}},
+        );
+        expect(result.current.bladeOn).toBe(false);
+        expect(result.current.canStartBlade).toBe(true);
+        await act(async () => {
+            await result.current.handleBladeStart();
+        });
+        expect(mowerAction).toHaveBeenCalledWith('mow_enabled', {mow_enabled: 1, mow_direction: 0});
+        rerender({subStateName: 'joystick, blade on'});
+        expect(result.current.bladeOn).toBe(true);
+        expect(result.current.canStartBlade).toBe(false);
+        await act(async () => {
+            await result.current.handleBladeStop();
+        });
+        expect(mowerAction).toHaveBeenLastCalledWith('mow_enabled', {mow_enabled: 0, mow_direction: 0});
+    });
+
+    it('never offers a blade start without the two-step feature', () => {
+        const {result} = renderHook(() => useManualMode({
+            mowerAction, joyStream: {sendJsonMessage, start: startStream},
+            stateName: 'MANUAL_MOWING', subStateName: 'joystick, blade off',
+        }));
+        expect(result.current.canStartBlade).toBe(false);
+    });
+
     it('cleans up timers on unmount', async () => {
         const {result, unmount} = renderManualMode();
         await act(async () => {

@@ -24,7 +24,10 @@
 ekf_node:
   ros__parameters:
     # --- filter core -------------------------------------------------------
-    frequency: 30.0         # filter rate; faster than the slowest source
+    frequency: 20.0         # filter rate; faster than the slowest source (GPS 10 Hz).
+                            # 30 Hz missed its deadline on the RK3588 ("Failed to meet
+                            # update rate", 35-50 ms cycles with 100 Hz IMU + 50 Hz odom);
+                            # Nav2's controller runs at 20 Hz anyway.
     sensor_timeout: 0.2     # warn when a fused sensor is stale; 2x the
                             # 10 Hz GPS period so receiver jitter is not a
                             # timeout, but a dead IMU is flagged in 0.2 s
@@ -65,14 +68,24 @@ ekf_node:
     odom0_differential: false
     odom0_queue_size: 10
 
-    # --- IMU, 100 Hz (wit_imu_driver, /imu remapped to /imu/data) ----------
-    # Planar yaw, yaw rate and gravity-removed horizontal acceleration.
-    imu0: /imu/data
+    # --- IMU, 100 Hz: /imu/data_aligned (mower_localization/heading_aligner) --
+    # The raw /imu/data yaw is the JY61P's gyro integral since power-on, i.e.
+    # an arbitrary offset to ENU. heading_aligner republishes it with yaw =
+    # imu yaw + offset (COG / dock / persisted file) and a yaw variance that
+    # reflects the alignment (10 rad sigma while unaligned, so the filter then
+    # effectively ignores the absolute yaw and integrates the yaw rate only).
+    # Yaw is fused ABSOLUTE (imu0_differential false): it is the only absolute
+    # heading source of this filter, and Nav2 needs map-frame heading.
+    # Accelerations are NOT fused: the 6-axis JY61P's gravity-removed
+    # horizontal acceleration is tilt-contaminated noise on a mower, and the
+    # extra 2 states x 100 Hz updates were part of the missed update rate.
+    imu0: /imu/data_aligned
     imu0_config: [false, false, false,  # pose   x, y, z
                   false, false, true,   # pose   roll, pitch, yaw
                   false, false, false,  # twist  x, y, z
                   false, false, true,   # twist  roll, pitch, yaw
-                  true,  true,  false]  # accel  x, y, z
+                  false, false, false]  # accel  x, y, z
+    imu0_differential: false
     imu0_remove_gravitational_acceleration: true
     imu0_queue_size: 10
 

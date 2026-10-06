@@ -27,7 +27,7 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, CameraInfo, Imu, NavSatFix
 from std_msgs.msg import Bool, Float32, String
-from std_srvs.srv import Empty, Trigger
+from std_srvs.srv import Empty, SetBool, Trigger
 
 from mower_interfaces.msg import MowerBaseDevStatus, MowerSensorInfo
 from mower_interfaces.srv import CutterControl
@@ -54,6 +54,8 @@ PARAM_DEFAULTS = {
     'cutter_control_service': '/cutter_control',
     'cutter_off_service': '/cutter_off',
     'clear_estop_service': '/clear_estop',
+    # real mission node: GUI mow_enabled during MANUAL_MOWING goes here
+    'manual_blade_service': '/behavior_tree_node/manual_blade',
     'emergency_twist_topic': '/cmd_vel_emergency',
     # outputs for the GUI
     'status_topic': '/hardware_bridge/status',
@@ -107,6 +109,7 @@ PARAM_DEFAULTS = {
     # someone subscribes, so a 1 Hz temperature reading would cost a 100 Hz stream.
     'imu_temperature_topic': '',
     'imu_bias_status_topic': '/bias_status',
+    'heading_status_topic': '/heading_aligner/status',   # '' = no Heading entry
     'lights_state_topic': '/light_controller/state',   # '' = no lights entry
     # 'id|image_topic|freshness_topic|on_demand' (see diagnostics.parse_camera_spec). Only
     # the small freshness topic is subscribed, and never for on-demand cameras (a
@@ -161,6 +164,7 @@ class GuiBridgeNode(Node):
         self._filtered_time = None
         self._imu_time = None
         self._imu_temperature = None
+        self._heading_status = None
         self._imu_bias = None
         self._lights = None
         self._lights_time = None
@@ -225,6 +229,8 @@ class GuiBridgeNode(Node):
             Trigger, p['cutter_off_service'], callback_group=self._cli_group)
         self._clear_estop_cli = self.create_client(
             Empty, p['clear_estop_service'], callback_group=self._cli_group)
+        self._manual_blade_cli = self.create_client(
+            SetBool, p['manual_blade_service'], callback_group=self._cli_group)
         self._rl_datum_cli = None
         self._GeoPose = None
         if str(p['rl_set_datum_service']):
@@ -413,6 +419,8 @@ class GuiBridgeNode(Node):
     def _on_external_hl(self, msg):
         with self._lock:
             self._external_hl_state = int(msg.state)
+            if self._external_hl_state not in sm.BLADE_STATES:
+                self._cutter_requested = False
 
     def _on_fix_status(self, msg):
         with self._lock:
@@ -600,6 +608,10 @@ class GuiBridgeNode(Node):
             latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
                                  reliability=QoSReliabilityPolicy.RELIABLE)
             sub(String, p['imu_bias_status_topic'], self._on_imu_bias, latched)
+        if str(p['heading_status_topic']):
+            latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                                 reliability=QoSReliabilityPolicy.RELIABLE)
+            sub(String, p['heading_status_topic'], self._on_heading_status, latched)
         for spec in p['diagnostics_cameras'] or []:
             cam = diag.parse_camera_spec(spec)
             if cam is None:
@@ -619,6 +631,9 @@ class GuiBridgeNode(Node):
 
     def _on_imu_bias(self, msg):
         self._imu_bias = msg.data
+
+    def _on_heading_status(self, msg):
+        self._heading_status = msg.data
 
     def _on_lights(self, msg, receipt):
         self._lights, self._lights_time = msg.data, receipt
@@ -675,6 +690,8 @@ class GuiBridgeNode(Node):
             snap['imu_age'] = age(self._imu_time)
             snap['imu_temperature'] = self._imu_temperature
             snap['imu_bias'] = self._imu_bias
+        if str(self._p['heading_status_topic']):
+            snap['heading'] = self._heading_status
         if str(self._p['lights_state_topic']):
             snap['lights'], snap['lights_age'] = self._lights, age(self._lights_time)
         cams = []
@@ -712,6 +729,10 @@ class GuiBridgeNode(Node):
             self.get_logger().warn('mower_control %s' % reason)
             resp.success = False
             return resp
+        with self._lock:
+            route = sm.mower_control_route(self._serve_hl, self._hl_state())
+        if route == sm.ROUTE_MISSION:
+            return self._mower_control_via_mission(enable, resp)
         if not enable:
             self._cutter_requested = False
         res = self._call_wait(self._cutter_cli,
@@ -725,6 +746,21 @@ class GuiBridgeNode(Node):
             # cutter_control refused/unavailable: fall back to the unconditional off.
             self._cutter_off('mower_control fallback')
         self.get_logger().info('mower_control enable=%s -> %s' % (enable, resp.success))
+        return resp
+
+    def _mower_control_via_mission(self, enable, resp):
+        """MANUAL_MOWING under the real mission node: the mission owns the blade."""
+        req = SetBool.Request()
+        req.data = enable
+        res = self._call_wait(self._manual_blade_cli, req, self._p['manual_blade_service'])
+        resp.success = bool(res is not None and res.success)
+        with self._lock:
+            # The mission owns the request; Status.mow_enabled follows is_cutting.
+            self._cutter_requested = False
+        if not resp.success and not enable:
+            self._cutter_off('mower_control fallback (mission manual_blade unavailable)')
+        self.get_logger().info('mower_control enable=%s -> mission manual_blade: %s (%s)' % (
+            enable, resp.success, res.message if res is not None else 'unavailable'))
         return resp
 
     def _srv_emergency_stop(self, req, resp):

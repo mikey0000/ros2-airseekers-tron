@@ -10,6 +10,7 @@ import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts
 import {HighLevelStatusConstants} from "../types/ros.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
 import {useTranslation} from "react-i18next";
+import {canHome, canStart} from "../utils/missionStates.ts";
 import {stringifyValue} from "../utils/stringifyValue.ts";
 
 const ActionsCard = styled(Card)`
@@ -196,8 +197,7 @@ export const MowerActions: React.FC<React.PropsWithChildren<{bare?: boolean}>> =
                     while the BT is AUTONOMOUS (state=2) another COMMAND_START is
                     a no-op at best and re-kicks the mission at worst. Operator
                     should use HOME or STOP instead. */}
-                {highLevelStatus.state !== HighLevelStatusConstants.HIGH_LEVEL_STATE_AUTONOMOUS &&
-                 (highLevelStatus.state_name === "IDLE" || highLevelStatus.state_name === "IDLE_DOCKED") ? (
+                {canStart(highLevelStatus.state, highLevelStatus.state_name) ? (
                     <AsyncButton icon={<PlayCircleOutlined/>} type="primary" key="btnHLC1"
                                  onAsyncClick={mowerAction("high_level_control", {Command: 1})}
                     >{resumeAvailable ? t('mowerActions.resume') : t('mowerActions.start')}</AsyncButton>
@@ -217,8 +217,7 @@ export const MowerActions: React.FC<React.PropsWithChildren<{bare?: boolean}>> =
                 {/* When a prior mow was interrupted, "Start" resumes mid-path; this
                     second button discards that progress and mows from the first
                     line (issue: "starts at 2nd/3rd line"). */}
-                {highLevelStatus.state !== HighLevelStatusConstants.HIGH_LEVEL_STATE_AUTONOMOUS &&
-                 (highLevelStatus.state_name === "IDLE" || highLevelStatus.state_name === "IDLE_DOCKED") &&
+                {canStart(highLevelStatus.state, highLevelStatus.state_name) &&
                  resumeAvailable ? (
                     <AsyncButton icon={<RedoOutlined/>} key="btnHLCFresh"
                                  onAsyncClick={startFresh}
@@ -229,7 +228,7 @@ export const MowerActions: React.FC<React.PropsWithChildren<{bare?: boolean}>> =
                     can recall the robot from anywhere on the lawn — see #175.
                     The click handler injects a confirmation modal in IDLE
                     because the autonomous transit is non-trivial. */}
-                {highLevelStatus.state_name !== "IDLE_DOCKED" ? <AsyncButton icon={<HomeOutlined/>} type="primary" key="btnHLC2"
+                {canHome(highLevelStatus.state, highLevelStatus.state_name) ? <AsyncButton icon={<HomeOutlined/>} type="primary" key="btnHLC2"
                                                                            onAsyncClick={onHomeClick}
                 >{t('mowerActions.returnToDock')}</AsyncButton> : null}
             </Col>

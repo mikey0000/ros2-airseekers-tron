@@ -237,8 +237,17 @@ def generate_launch_description() -> LaunchDescription:
         # Sources. wit_imu_driver publishes /imu/data directly (its imu_topic parameter).
         DeclareLaunchArgument("odom_topic", default_value="/odom",
                               description="From mower_mcu_driver (SpeedData dead reckoning)."),
-        DeclareLaunchArgument("imu_data_topic", default_value="/imu/data",
+        # The EKF/navsat consume the heading-aligned IMU (heading_aligner, below); the raw
+        # /imu/data yaw is gyro-integrated since power-on and arbitrary relative to ENU.
+        DeclareLaunchArgument("raw_imu_topic", default_value="/imu/data",
                               description="From wit_imu_driver (JY61P, frame imu_link)."),
+        DeclareLaunchArgument("imu_data_topic", default_value="/imu/data_aligned",
+                              description="Heading-aligned IMU fused by ekf_node / navsat."),
+        DeclareLaunchArgument("use_heading_aligner", default_value="true",
+                              description="Start mower_localization/heading_aligner."),
+        DeclareLaunchArgument("heading_offset_file",
+                              default_value="/userdata/ros2/heading_offset.yaml",
+                              description="heading_aligner persisted offset."),
         DeclareLaunchArgument("fix_topic", default_value="/fix",
                               description="Raw UM960 fix; gated before the filter sees it."),
         DeclareLaunchArgument("gated_fix_topic", default_value="/fix_gated"),
@@ -312,6 +321,24 @@ def generate_launch_description() -> LaunchDescription:
             #    /odometry/filtered header and child_frame_id.
             # ------------------------------------------------------------------
             OpaqueFunction(function=_navsat_transform, args=[navsat_config]),
+
+            # ------------------------------------------------------------------
+            # 2b. heading_aligner: /imu/data -> /imu/data_aligned with yaw in ENU
+            #     (course-over-ground / dock pose / persisted offset). Publishes
+            #     /heading_aligner/status (latched JSON) for the mission preflight.
+            # ------------------------------------------------------------------
+            Node(
+                package="mower_localization",
+                executable="heading_aligner",
+                name="heading_aligner",
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("use_heading_aligner")),
+                parameters=[{
+                    "imu_topic": LaunchConfiguration("raw_imu_topic"),
+                    "output_topic": LaunchConfiguration("imu_data_topic"),
+                    "offset_file": LaunchConfiguration("heading_offset_file"),
+                }],
+            ),
 
             # ------------------------------------------------------------------
             # 3. ekf_node: /odom + /imu (+ /odometry/gps) -> odom -> base_link at

@@ -80,6 +80,23 @@ def cutter_request_allowed(enable, hl_state, emergency_active):
     return True, 'cutter on'
 
 
+ROUTE_CUTTER = 'cutter'      # drive /cutter_control directly (built-in FSM / autonomous)
+ROUTE_MISSION = 'mission'    # forward to the mission node's ~/manual_blade (SetBool)
+
+
+def mower_control_route(serve_high_level, hl_state):
+    """Where a GUI mow_enabled (``mower_control``) request goes.
+
+    With the real mission node (``serve_high_level`` false) a request during
+    MANUAL_MOWING goes to the mission node, which owns the manual blade state
+    (two-step manual mowing, sub_state, interlocks); everything else keeps the
+    direct /cutter_control path.
+    """
+    if not serve_high_level and hl_state == STATE_MANUAL_MOWING:
+        return ROUTE_MISSION
+    return ROUTE_CUTTER
+
+
 def emergency_summary(estop, stop_triggered, lift_triggered, mcu_stale=False):
     """Fold the raw inputs into Emergency message fields.
 

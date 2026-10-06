@@ -24,6 +24,9 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>mowgli_interfaces</exec_depend>
+  <exec_depend>mower_interfaces</exec_depend>
 
   <!-- ekf_node and navsat_transform_node themselves come from the
        ros-humble-robot-localization apt package (see docs/localization.md);

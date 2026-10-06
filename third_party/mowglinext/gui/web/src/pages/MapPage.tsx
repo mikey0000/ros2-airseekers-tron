@@ -43,6 +43,7 @@ import {JoystickOverlay} from "./map/components/JoystickOverlay.tsx";
 import {useIsMobile} from "../hooks/useIsMobile.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
 import {useAreaSettingsSupport} from "../hooks/useAreaSettings.ts";
+import {MissionStopControls} from "../components/MissionStopControls.tsx";
 import {StartMowSheet, type StartSelection} from "../components/areaSettings/StartMowSheet.tsx";
 import {AreaSettingsDrawer} from "../components/areaSettings/AreaSettingsDrawer.tsx";
 import {mowingAreaChoices} from "../utils/mapAreaIndex.ts";
@@ -50,6 +51,8 @@ import {pointInPolygon} from "../utils/map.tsx";
 import {MapImageMarker} from "./map/components/MapImageMarker.tsx";
 import {markerCorners, selectDockMarker} from "../utils/mapMarker.ts";
 import {useRobotProfile} from "../hooks/useRobotProfile.ts";
+import {hasFeature} from "../constants/robotProfiles.ts";
+import {ManualBladeControl} from "./map/components/ManualBladeControl.tsx";
 
 
 // Mapbox access token comes from the build env only — no hardcoded fallback.
@@ -624,7 +627,16 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     });
 
 
-    const {manualMode, handleManualMode, handleStopManualMode, handleJoyMove, handleJoyStop} = useManualMode({mowerAction, joyStream, stateName: highLevelStatus.highLevelStatus.state_name});
+    const bladeTwoStep = hasFeature(robotProfile, "manual_blade_two_step");
+    const {
+        manualMode, handleManualMode, handleStopManualMode, handleJoyMove, handleJoyStop,
+        bladeOn, canStartBlade, handleBladeStart, handleBladeStop,
+    } = useManualMode({
+        mowerAction, joyStream,
+        stateName: highLevelStatus.highLevelStatus.state_name,
+        subStateName: highLevelStatus.highLevelStatus.sub_state_name,
+        bladeTwoStep,
+    });
 
     // Toggle dock placement mode: re-pressing the button (or pressing Escape)
     // cancels it, so the crosshair cursor is not a one-way trap.
@@ -674,7 +686,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             if (editMap || !areaSettings.enabled) return;
             const pt: [number, number] = [e.lngLat.lng, e.lngLat.lat];
             const hit = Object.values(features).find((f) =>
-                f instanceof MowingAreaFeature && pointInPolygon(pt, f.geometry.coordinates as Position[][]));
+                f instanceof MowingAreaFeature && pointInPolygon(pt, f.geometry.coordinates));
             openAreaSettingsForFeature(hit);
             return;
         }
@@ -1158,6 +1170,21 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     onFinishRecording={mowerActions.onRecordFinish}
                     onCancelRecording={mowerActions.onRecordCancel}
                     onHome={mowerActions.onHome}
+                    sideControls={bladeTwoStep && manualMode ? (
+                        <ManualBladeControl
+                            bladeOn={bladeOn}
+                            canStart={canStartBlade}
+                            onStart={handleBladeStart}
+                            onStop={handleBladeStop}
+                        />
+                    ) : undefined}
+                />
+                <MissionStopControls
+                    state={highLevelStatus.highLevelStatus.state}
+                    stateName={highLevelStatus.highLevelStatus.state_name}
+                    subStateName={highLevelStatus.highLevelStatus.sub_state_name}
+                    onStart={() => { void mowerActions.onStart(); }}
+                    style={{position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 20, maxWidth: 'calc(100% - 32px)'}}
                 />
                 {isMobile && (
                     <MapToolbarMobile
