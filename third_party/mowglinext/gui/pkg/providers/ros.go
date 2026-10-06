@@ -25,8 +25,14 @@ type topicDef struct {
 // their corresponding ROS2 topics and message types.
 // Virtual topics (map) have an empty MsgType and are never sent to
 // foxglove_bridge; they are populated by internal logic instead.
+//
+// Airseekers: status, pose/fusionRaw, emergency and detections read gui_bridge's
+// low-rate /gui/* copies (mower_gui_bridge/gui_relay.py: 2 Hz, 5 Hz, on change + 1 Hz,
+// 2 Hz per camera while subscribed). foxglove_bridge costs a few ms per delivered
+// message per client and has no per-topic rate limit; the originals keep their rates
+// for the motion path.
 var topicMap = map[string]topicDef{
-	"status":          {"/hardware_bridge/status", "mowgli_interfaces/msg/Status"},
+	"status":          {"/gui/status", "mowgli_interfaces/msg/Status"},
 	"highLevelStatus": {"/behavior_tree_node/high_level_status", "mowgli_interfaces/msg/HighLevelStatus"},
 	// One-click dock calibration live status (the GUI's foxglove-friendly
 	// window into the CalibrateDock action — foxglove_bridge has no action op).
@@ -38,8 +44,8 @@ var topicMap = map[string]topicDef{
 	// /odometry/filtered_map; the duplicate key is kept for backwards
 	// compatibility with older GUI components that subscribed to the
 	// "fusionRaw" channel by name.
-	"pose":                {"/odometry/filtered_map", "nav_msgs/msg/Odometry"},
-	"fusionRaw":           {"/odometry/filtered_map", "nav_msgs/msg/Odometry"},
+	"pose":                {"/gui/pose", "nav_msgs/msg/Odometry"},
+	"fusionRaw":           {"/gui/pose", "nav_msgs/msg/Odometry"},
 	"btLog":               {"/behavior_tree_log", "nav2_msgs/msg/BehaviorTreeLog"},
 	"imu":                 {"/imu/data", "sensor_msgs/msg/Imu"},
 	"ticks":               {"/wheel_ticks", "mowgli_interfaces/msg/WheelTick"},
@@ -48,7 +54,7 @@ var topicMap = map[string]topicDef{
 	"path":                {"/coverage/full_plan", "nav_msgs/msg/Path"}, // full F2C coverage plan (headland + all swaths; execution is swath-by-swath)
 	"plan":                {"/plan", "nav_msgs/msg/Path"},               // infrequent event
 	"power":               {"/hardware_bridge/power", "mowgli_interfaces/msg/Power"},
-	"emergency":           {"/hardware_bridge/emergency", "mowgli_interfaces/msg/Emergency"}, // safety-critical
+	"emergency":           {"/gui/emergency", "mowgli_interfaces/msg/Emergency"}, // safety-critical
 	"lidar":               {"/scan", "sensor_msgs/msg/LaserScan"},                            // large message
 	"mowProgress":         {"/map_server_node/mow_progress", "nav_msgs/msg/OccupancyGrid"},   // mowed-area overlay (large)
 	// Terrain memory (map server): per-cell traction score grid (0..100, -1 =
@@ -100,7 +106,7 @@ var topicMap = map[string]topicDef{
 	// it server-side to {count, classes[], max_score, stamp, frame_id} so the
 	// browser never sees per-box hypotheses/poses (see vision.go).
 	"visionObstacleClose": {"/vision/obstacle_close", "std_msgs/msg/Bool"},
-	"detections":          {"/ai/det/detections", "vision_msgs/msg/Detection2DArray"},
+	"detections":          {"/gui/detections", "vision_msgs/msg/Detection2DArray"},
 	// ROS 2 log aggregation topic (rcl_interfaces/Log). Feeds the Logs page on
 	// hosts without a Docker socket (see pkg/api/rosout.go). Every message is
 	// a distinct log line, so it is delivered through a queue, never coalesced

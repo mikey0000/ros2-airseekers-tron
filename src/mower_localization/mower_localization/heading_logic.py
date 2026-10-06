@@ -817,3 +817,8 @@ def imu_rewrite(data, pos, q, yaw_variance):
     _ORIENT.pack_into(out, pos, *q)
     _DOUBLE.pack_into(out, pos + 8 * 4 + 8 * 8, yaw_variance)
     return bytes(out)
+
+
+def activity_low_power(activity):
+    """/mission/activity -> True only for the explicit idle modes (unknown -> active)."""
+    return activity in ('docked_idle', 'idle')

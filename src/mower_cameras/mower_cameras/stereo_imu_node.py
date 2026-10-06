@@ -36,6 +36,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 
 from mower_cameras import iio_imu
+from mower_cameras.activity_gate import ActivityWatch, imu_batch_wait, imu_decimation
 from mower_cameras.stereo_pair import ClockMap
 
 KIND_PREFIX = {'gyro': 'anglvel', 'accel': 'accel'}
@@ -168,6 +169,10 @@ class StereoImuNode(Node):
         self.fast = True
         self.count = 0
         self.stop_evt = threading.Event()
+        # idle: 100 Hz (every 2nd pair) drained in 100 ms bursts; full 200 Hz otherwise
+        self.activity = ActivityWatch(lambda a: self.get_logger().info(
+            f'stereo_imu: activity {a} -> 1/{imu_decimation(self.activity.low_power)} rate'))
+        self.activity.subscribe(self)
         self.thread = threading.Thread(target=self._run, name='iio:stereo_imu', daemon=True)
         self.thread.start()
         self._t_stats = time.monotonic()
@@ -222,7 +227,13 @@ class StereoImuNode(Node):
         last_pub = 0
         min_dt = int(0.5e9 / max(gyro.rate, 1.0))
         last_data = time.monotonic()
+        n_pair = 0
         while not self.stop_evt.is_set():
+            low = self.activity.low_power
+            wait = imu_batch_wait(low)
+            if wait:
+                self.stop_evt.wait(wait)    # let the FIFO fill: fewer wake-ups while idle
+            decim = imu_decimation(low)
             r, _, _ = select.select([gyro.fd, accel.fd], [], [], 1.0)
             if not r:
                 if time.monotonic() - last_data > 3.0:
@@ -257,6 +268,9 @@ class StereoImuNode(Node):
                     b = self.bias.bias
                     g = (g[0] - b[0], g[1] - b[1], g[2] - b[2])
                 stamp = t if clock == 'realtime' else cmap.to_ros(t)
+                n_pair += 1
+                if decim > 1 and n_pair % decim:
+                    continue
                 if stamp < last_pub + min_dt:   # rare kernel near-duplicate stamp
                     stamp = last_pub + min_dt
                 last_pub = stamp

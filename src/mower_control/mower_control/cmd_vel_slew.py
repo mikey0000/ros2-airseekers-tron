@@ -754,8 +754,10 @@ class CmdVelSlewNode(Node):
         src = self._tgt if self._tgt is not None else (0.0,) * 6
         out = (self._cur_lin, src[1], src[2], src[3], src[4], self._cur_ang)
 
-        # Exact echo: full float precision, throttled (see applied_log_period).
-        if now >= self._next_log:
+        # Exact echo: full float precision, throttled (see applied_log_period) and
+        # only while something is commanded: an idle robot said "0.0 / 0.0" once a
+        # second and that line was ~85 % of /rosout.
+        if now >= self._next_log and (self._cur_lin or self._cur_ang or tgt_lin or tgt_ang):
             self._next_log = now + self._log_period
             self.get_logger().info(
                 'cmd_vel applied: linear.x={!r} angular.z={!r} '

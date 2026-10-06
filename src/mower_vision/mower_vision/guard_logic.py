@@ -373,3 +373,16 @@ class PolicyState:
                 return min(cands, key=lambda p: p['distance_m']
                            if p['distance_m'] is not None else float('inf'))
         return dict(NONE_POLICY)
+
+
+# Activity mode (/mission/activity, mower_mission/activity.py): only these two allow an idle
+# duty cycle; anything else (or no message yet) keeps the full rate.
+LOW_POWER_ACTIVITIES = frozenset(('docked_idle', 'idle'))
+
+
+def tick_rate_hz(activity, busy, burst_rate_hz, idle_rate_hz):
+    """Guard tick rate: ``burst_rate_hz`` unless the robot is idle (activity low power) and
+    nothing is pending (``busy`` = close latched or a zero burst running)."""
+    if busy or activity not in LOW_POWER_ACTIVITIES or idle_rate_hz <= 0.0:
+        return float(burst_rate_hz)
+    return min(float(idle_rate_hz), float(burst_rate_hz))

@@ -37,6 +37,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 
 from mower_cameras import v4l2
+from mower_cameras.activity_gate import ActivityWatch, capture_period
 from mower_cameras.image_cdr import ImageCdr
 
 
@@ -92,6 +93,7 @@ class CaptureLoop(threading.Thread):
         self.pixel_format, self.fps, self.backend = pixel_format, float(fps), backend
         self.on_frame = on_frame
         self.want = want            # () -> bool: is anybody interested in this frame?
+        self.period_fn = None       # () -> float: overrides the publish period (idle cap)
         self.stop_evt = threading.Event()
         self.skipped = 0
         self.captured = 0           # frames dequeued (published or skipped)
@@ -135,6 +137,8 @@ class CaptureLoop(threading.Thread):
     def _keep(self, last_pub, period):
         """Decide before touching the pixels: rate cap, then subscriber interest."""
         now = time.monotonic()
+        if self.period_fn is not None:
+            period = self.period_fn()
         if period and now - last_pub < period * 0.9:
             return None
         if self.want is not None and not self.want():
@@ -257,6 +261,12 @@ class V4L2CamNode(Node):
                                 p('pixel_format'), p('fps'), self._on_frame, 'v4l2',
                                 name=f'cap:{self.frame_id}',
                                 want=self._wanted if self.on_demand else None)
+        # idle (docked / parked): 1 fps unless a GUI client watches the compressed stream
+        self._base_period = 1.0 / float(p('fps')) if float(p('fps')) > 0 else 0.0
+        self.activity = ActivityWatch(lambda a: self.get_logger().info(
+            f'{self.frame_id}: activity {a} -> period {self._period():.2f} s'))
+        self.activity.subscribe(self)
+        self.loop.period_fn = self._period
         self.loop.start()
         self.create_timer(10.0, self._report)
         self._last_frames, self._last_t = 0, time.monotonic()
@@ -268,6 +278,10 @@ class V4L2CamNode(Node):
     @staticmethod
     def _subscribed(pub):
         return pub is not None and pub.get_subscription_count() > 0
+
+    def _period(self):
+        return capture_period(self._base_period, self.activity.low_power,
+                              self._subscribed(self.comp_pub))
 
     def _wanted(self):
         return (self._subscribed(self.raw_pub) or self._subscribed(self.comp_pub)

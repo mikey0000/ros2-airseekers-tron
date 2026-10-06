@@ -44,6 +44,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 
+from mower_cameras.activity_gate import ActivityWatch, capture_period
 from mower_cameras.image_cdr import ImageCdr
 from mower_cameras.stereo_pair import ClockMap, DecimationGate, split_luma_into
 from mower_cameras.v4l2 import eye_to_bgr
@@ -114,6 +115,12 @@ class StereoCamNode(Node):
                                 p('pixel_format'), 0.0, self._on_frame, 'v4l2',
                                 name='cap:stereo',
                                 want=self._wanted if self.on_demand else None)
+        # idle (docked / parked): 1 pair/s (stereo_depth, det_ros follow); full rate again
+        # on the next source frame after /mission/activity leaves idle
+        self.activity = ActivityWatch(lambda a: self.get_logger().info(
+            f'stereo_cam: activity {a} (idle cap {"on" if self.activity.low_power else "off"})'))
+        self.activity.subscribe(self)
+        self.loop.period_fn = lambda: capture_period(0.0, self.activity.low_power)
         self.loop.start()
         self._t_stats = time.monotonic()
         self.create_timer(30.0, self._log_stats)

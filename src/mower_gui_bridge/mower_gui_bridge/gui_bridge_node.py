@@ -35,10 +35,11 @@ from mowgli_interfaces.msg import Emergency, GnssStatus, HighLevelStatus, Power,
 from mowgli_interfaces.srv import EmergencyStop, HighLevelControl, MowerControl, StartInArea
 
 from mower_gui_bridge import datum as dt
+from mower_gui_bridge import gui_relay
 from mower_gui_bridge import diagnostics as diag
 from mower_gui_bridge import state_machine as sm
-from mower_gui_bridge.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
-                                        odometry_frames, odometry_with_frames)
+from mower_gui_bridge.sub_pump import (PeriodicRunner, SubscriptionPump, _header,
+                                        flat_parser, odometry_frames, odometry_with_frames)
 
 PARAM_DEFAULTS = {
     # inputs from our stack
@@ -69,6 +70,18 @@ PARAM_DEFAULTS = {
     # rate-limited; the GUI only needs ~10 Hz (odometer, readiness, MQTT). 0 = unthrottled.
     'wheel_odom_rate_hz': 10.0,
     'filtered_map_topic': '/odometry/filtered_map',
+    # GUI-only low-rate copies (gui_relay.py): foxglove_bridge costs a few ms per delivered
+    # message per client and cannot rate-limit, while the originals keep the rates the
+    # motion path needs. The GUI provider subscribes to these instead. '' = off.
+    'gui_pose_topic': '/gui/pose',
+    'gui_pose_rate_hz': 5.0,
+    'gui_status_topic': '/gui/status',
+    'gui_status_rate_hz': 2.0,
+    'gui_emergency_topic': '/gui/emergency',
+    'gui_emergency_rate_hz': 1.0,          # plus immediately on any change
+    'detections_topic': '/ai/det/detections',
+    'gui_detections_topic': '/gui/detections',
+    'gui_detections_rate_hz': 2.0,         # per camera (frame_id); relayed only while subscribed
     'high_level_status_topic': '/behavior_tree_node/high_level_status',
     'coverage_resume_topic': '/behavior_tree_node/coverage_resume_available',
     'mower_control_service': '/hardware_bridge/mower_control',
@@ -189,6 +202,25 @@ class GuiBridgeNode(Node):
         self._wheel_odom_period = 0.95 / rate if rate > 0.0 else 0.0
         self._wheel_odom_last = -1e9
         self._map_odom_pub = self.create_publisher(Odometry, p['filtered_map_topic'], 10)
+
+        def gui_pub(msg_type, key):
+            return self.create_publisher(msg_type, str(p[key]), 10) if str(p[key]) else None
+        self._gui_pose_pub = gui_pub(Odometry, 'gui_pose_topic')
+        self._gui_pose_thr = gui_relay.Throttle(gui_relay.period_for(p['gui_pose_rate_hz']))
+        self._gui_status_pub = gui_pub(Status, 'gui_status_topic')
+        self._gui_status_thr = gui_relay.Throttle(gui_relay.period_for(p['gui_status_rate_hz']))
+        self._gui_emergency_pub = gui_pub(Emergency, 'gui_emergency_topic')
+        self._gui_emergency_thr = gui_relay.Throttle(
+            gui_relay.period_for(p['gui_emergency_rate_hz']))
+        self._gui_emergency_last = None
+        self._gui_det_pub = None
+        if str(p['gui_detections_topic']) and str(p['detections_topic']):
+            from vision_msgs.msg import Detection2DArray
+            self._Detection2DArray = Detection2DArray
+            self._gui_det_pub = self.create_publisher(
+                Detection2DArray, str(p['gui_detections_topic']), 10)
+        self._gui_det_thr = gui_relay.Throttle(gui_relay.period_for(p['gui_detections_rate_hz']))
+        self._gui_det_sub = None
         self._estop_req_pub = self.create_publisher(Bool, p['estop_request_topic'], 10)
         self._twist_pub = self.create_publisher(Twist, p['emergency_twist_topic'], 10)
         if self._serve_hl:
@@ -229,6 +261,12 @@ class GuiBridgeNode(Node):
         self._cameras = []
         if str(p['diagnostics_topic']):
             self._setup_diagnostics_inputs(sub)
+        if self._gui_det_pub is not None:
+            # sampled: no wake per detection; drained by the 4 Hz relay task, and only while
+            # /gui/detections has a subscriber (otherwise flushed).
+            self._gui_det_sub = sub(self._Detection2DArray, str(p['detections_topic']),
+                                    self._on_detections_raw, qos_profile_sensor_data,
+                                    raw=True, sampled=True, deliver_all=True)
 
         # ---- clients -----------------------------------------------------
         self._cutter_cli = self.create_client(
@@ -284,6 +322,8 @@ class GuiBridgeNode(Node):
         if self._diag_pub is not None:
             tasks.append((1.0 / max(0.1, float(p['diagnostics_rate_hz'])),
                           self._publish_diagnostics))
+        if self._gui_det_sub is not None:
+            tasks.append((0.25, self._relay_detections))
         self._periodic = PeriodicRunner(self, tasks, 'gui_bridge_periodic')
         self._pump.start()              # inputs first, then the periodic evaluation
         self._periodic.start()
@@ -489,13 +529,29 @@ class GuiBridgeNode(Node):
         # serialize round trip): relay untouched when the frames already match, otherwise
         # rewrite the two frame strings (ekf publishes odom/base_link).
         if odometry_frames(data) == (self._map_frame, self._base_frame):
-            self._map_odom_pub.publish(data)
-            return
-        out = odometry_with_frames(data, self._map_frame, self._base_frame)
+            out = data
+        else:
+            out = odometry_with_frames(data, self._map_frame, self._base_frame)
         if out is None:
             self._on_filtered(deserialize_message(data, Odometry))
+            return
+        self._map_odom_pub.publish(out)
+        if self._gui_pose_pub is not None and self._gui_pose_thr.due(time.monotonic()):
+            self._gui_pose_pub.publish(out)
+
+    def _on_detections_raw(self, data):
+        try:
+            key = _header(data)[0].frame_id
+        except (ValueError, IndexError, Exception):  # noqa: BLE001
+            key = None
+        if self._gui_det_thr.due(time.monotonic(), key):
+            self._gui_det_pub.publish(data)
+
+    def _relay_detections(self):
+        if self._gui_det_pub.get_subscription_count() > 0:
+            self._pump.poll((self._gui_det_sub,))
         else:
-            self._map_odom_pub.publish(out)
+            self._pump.flush(self._gui_det_sub)
 
     # ------------------------------------------------------------------
     # emergency
@@ -534,6 +590,12 @@ class GuiBridgeNode(Node):
         msg.lift_duration_sec = 0.0
         msg.reason = reason
         self._emergency_pub.publish(msg)
+        if self._gui_emergency_pub is not None:
+            fields = (active, latched, lift, reason)
+            changed = fields != self._gui_emergency_last
+            self._gui_emergency_last = fields
+            if self._gui_emergency_thr.due(time.monotonic(), changed=changed):
+                self._gui_emergency_pub.publish(msg)
 
     # ------------------------------------------------------------------
     # periodic publishers
@@ -566,6 +628,8 @@ class GuiBridgeNode(Node):
                 msg.blade_status_stamp = self._blade_stamp
             msg.firmware_compatible = True
         self._status_pub.publish(msg)
+        if self._gui_status_pub is not None and self._gui_status_thr.due(time.monotonic()):
+            self._gui_status_pub.publish(msg)
 
     def _publish_power(self):
         with self._lock:

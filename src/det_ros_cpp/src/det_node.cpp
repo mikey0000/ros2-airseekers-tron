@@ -13,6 +13,7 @@
 // NMS -> publish.
 #include <time.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -28,6 +29,7 @@
 #include <opencv2/imgproc.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/serialization.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
 
@@ -123,6 +125,8 @@ class DetNode : public rclcpp::Node {
     declare_parameter("extra_topics", std::vector<std::string>{""});
     declare_parameter("publish_annotated", true);
     declare_parameter("max_rate_hz", 5.0);
+    // /mission/activity docked_idle|idle -> cap every camera at this rate (0 = no cap)
+    declare_parameter("idle_max_rate_hz", 1.0);
     // C++ only: write the int8 input straight into NPU memory (pass-through)
     declare_parameter("zero_copy", true);
 
@@ -130,6 +134,16 @@ class DetNode : public rclcpp::Node {
     obj_thresh_ = static_cast<float>(get_parameter("obj_thresh").as_double());
     nms_thresh_ = static_cast<float>(get_parameter("nms_thresh").as_double());
     max_rate_ = get_parameter("max_rate_hz").as_double();
+    idle_rate_ = get_parameter("idle_max_rate_hz").as_double();
+    // latched, reliable: the mission node publishes on change only. Unknown = active.
+    activity_sub_ = create_subscription<std_msgs::msg::String>(
+        "/mission/activity", rclcpp::QoS(1).reliable().transient_local(),
+        [this](std_msgs::msg::String::ConstSharedPtr m) {
+          const bool idle = m->data == "docked_idle" || m->data == "idle";
+          if (idle != idle_.exchange(idle))
+            RCLCPP_INFO(get_logger(), "activity %s -> max %.1f Hz/camera", m->data.c_str(),
+                        rate_cap());
+        });
     auto sz = get_parameter("img_size").as_integer_array();
     if (sz.size() == 2) { img_w_ = static_cast<int>(sz[0]); img_h_ = static_cast<int>(sz[1]); }
     load_classes();
@@ -202,7 +216,7 @@ class DetNode : public rclcpp::Node {
       std::weak_ptr<CameraWorker> ww = w;
       subs_.push_back(create_subscription<Image>(
           topics[i], sensor_qos, [ww, this](std::shared_ptr<rclcpp::SerializedMessage> m) {
-            if (auto s = ww.lock()) s->offer(m, max_rate_);
+            if (auto s = ww.lock()) s->offer(m, rate_cap());
           }));
       w->start();
     }
@@ -221,6 +235,12 @@ class DetNode : public rclcpp::Node {
   float obj_thresh_{0.25f}, nms_thresh_{0.45f};
   int img_w_{480}, img_h_{640};
   double max_rate_{5.0};
+  double idle_rate_{1.0};
+  std::atomic<bool> idle_{false};
+  double rate_cap() const {
+    if (!idle_.load() || idle_rate_ <= 0.0) return max_rate_;
+    return max_rate_ > 0.0 ? std::min(max_rate_, idle_rate_) : idle_rate_;
+  }
   bool publish_annotated() { return get_parameter("publish_annotated").as_bool(); }
 
  private:
@@ -248,6 +268,7 @@ class DetNode : public rclcpp::Node {
   std::string model_path_;
   std::vector<std::shared_ptr<CameraWorker>> workers_;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> subs_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr activity_sub_;
 };
 
 void CameraWorker::offer(std::shared_ptr<rclcpp::SerializedMessage> msg, double max_rate) {

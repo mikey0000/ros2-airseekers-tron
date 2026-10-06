@@ -24,6 +24,7 @@
   <!-- optional at runtime: set_datum forwards to navsat_transform_node /datum when present -->
   <exec_depend>robot_localization</exec_depend>
   <exec_depend>geographic_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

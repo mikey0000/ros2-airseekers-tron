@@ -68,7 +68,7 @@ func TestAdaptDetections_BadJSON(t *testing.T) {
 
 func TestVisionTopicsRegistered(t *testing.T) {
 	assert.Equal(t, topicDef{"/vision/obstacle_close", "std_msgs/msg/Bool"}, topicMap["visionObstacleClose"])
-	assert.Equal(t, topicDef{"/ai/det/detections", "vision_msgs/msg/Detection2DArray"}, topicMap["detections"])
+	assert.Equal(t, topicDef{"/gui/detections", "vision_msgs/msg/Detection2DArray"}, topicMap["detections"])
 	assert.NotNil(t, foxgloveAdapters["detections"])
 }
 

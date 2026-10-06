@@ -143,6 +143,12 @@ class HeadingAligner(Node):
         # base_link z row of R(base<-stereo imu); [] = look it up from TF (stereo frame_id)
         d('stereo_z_row', [0.0])
         d('stereo_stale', 0.1)       # s without stereo samples -> WIT fallback
+        # The 200 Hz stereo IMU is taken in batches (sampled, deliver_all) instead of one
+        # pump wake per sample: every sample is still integrated in stamp order. Must stay
+        # well under stereo_stale; the idle rate applies while /mission/activity is idle.
+        d('stereo_batch_rate', 50.0)
+        d('stereo_batch_rate_idle', 20.0)
+        d('activity_topic', '/mission/activity')
         d('rest_settle', 1.0)        # s still before a rest window starts
         d('rest_window', 3.0)        # s per stereo bias window
         d('rest_max_speed', 0.01)    # m/s |odom v| counted as still
@@ -207,9 +213,13 @@ class HeadingAligner(Node):
         self._pump.subscribe(Imu, g('imu_topic'), self._on_imu, rel, raw=True)
         if self.src.mode != 'wit':
             # best effort: stereo_imu publishes best effort (a reliable reader never matches)
-            self._pump.subscribe(Imu, g('stereo_imu_topic'), self._on_stereo,
-                                 QoSProfile(depth=50, reliability=QoSReliabilityPolicy.BEST_EFFORT,
-                                            history=QoSHistoryPolicy.KEEP_LAST), raw=True)
+            self._stereo_sub = self._pump.subscribe(
+                Imu, g('stereo_imu_topic'), self._on_stereo,
+                QoSProfile(depth=100, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                           history=QoSHistoryPolicy.KEEP_LAST),
+                raw=True, sampled=True, deliver_all=True)
+        else:
+            self._stereo_sub = None
         sampled = dict(sampled=True)
         one = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
                          history=QoSHistoryPolicy.KEEP_LAST)
@@ -239,6 +249,9 @@ class HeadingAligner(Node):
                                          latched, **sampled))
         slow.append(self._pump.subscribe(Bool, g('dock_pose_measured_topic'),
                                          self._on_dock_measured, latched, **sampled))
+        self._low_power = False
+        slow.append(self._pump.subscribe(String, g('activity_topic'), self._on_activity,
+                                         latched, **sampled))
         self._slow_subs = slow
         if g('dock_pose_file'):
             self._apply_dock_measured(_read_dock_measured(g('dock_pose_file')), 'file')
@@ -247,9 +260,12 @@ class HeadingAligner(Node):
         if dock is not None:
             self._set_dock(dock, 'file %s' % g('dock_pose_file'))
 
+        self._stereo_idle_period = 1.0 / max(1.0, float(g('stereo_batch_rate_idle')))
+        self._stereo_polled = 0.0
         self._periodic = PeriodicRunner(self, [
             (1.0 / max(1.0, float(g('input_rate'))), self._fast_tick),
             (0.5, self._slow_tick),
+            (1.0 / max(1.0, float(g('stereo_batch_rate'))), self._stereo_tick),
             (1.0 / max(0.1, float(g('status_rate'))), self._status_tick),
         ], 'heading_aligner_periodic')
         self._pump.start()
@@ -303,6 +319,18 @@ class HeadingAligner(Node):
             return
         with self._lock:
             self.src.on_stereo(now, hl.imu_stamp(data), hl.imu_gyro(data, pos))
+
+    def _stereo_tick(self):
+        if self._stereo_sub is None:
+            return
+        now = time.monotonic()
+        if self._low_power and now - self._stereo_polled < self._stereo_idle_period - 1e-3:
+            return
+        self._stereo_polled = now
+        self._pump.poll([self._stereo_sub])   # _on_stereo takes the lock per sample
+
+    def _on_activity(self, msg):
+        self._low_power = hl.activity_low_power(msg.data)
 
     # ------------------------------------------------------------------ sampled inputs
     def _on_odom(self, msg):

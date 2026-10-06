@@ -320,3 +320,13 @@ def test_policy_state_priority_static_over_unranged():
     st.update('f', {'kind': 'static', 'class': 'trunk', 'distance_m': 1.3,
                     'bearing_deg': None}, 0.1)
     assert st.current(0.2)['class'] == 'trunk'
+
+
+def test_tick_rate_idle_only_when_quiet():
+    from mower_vision.guard_logic import tick_rate_hz
+    assert tick_rate_hz('docked_idle', False, 20.0, 2.0) == 2.0
+    assert tick_rate_hz('idle', False, 20.0, 2.0) == 2.0
+    assert tick_rate_hz('idle', True, 20.0, 2.0) == 20.0
+    for act in (None, '', 'mowing', 'manual', 'docking', 'junk'):
+        assert tick_rate_hz(act, False, 20.0, 2.0) == 20.0
+    assert tick_rate_hz('idle', False, 20.0, 0.0) == 20.0

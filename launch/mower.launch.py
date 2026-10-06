@@ -273,6 +273,10 @@ FOXGLOVE_GUI_TOPICS = [
     r'^/vision/obstacle_close$',
     r'^/ai/det/detections$',
     r'^/rosout$',
+    # gui_bridge's low-rate GUI copies (mower_gui_bridge/gui_relay.py): pose 5 Hz, status
+    # 2 Hz, emergency on change + 1 Hz, detections 2 Hz/camera on demand. The GUI provider
+    # reads these instead of the 20 / 5 / 5 / 15 Hz originals (kept above for older GUIs).
+    r'^/gui/(pose|status|emergency|detections)$',
 ]
 
 

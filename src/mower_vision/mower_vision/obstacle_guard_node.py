@@ -66,6 +66,7 @@ try:
 except ImportError as _exc:  # pragma: no cover
     _DEP_ERROR = _exc
 
+from mower_vision.guard_logic import tick_rate_hz
 from mower_vision.guard_logic import (CAM_FRONT, CAM_LEFT, CAM_REAR, CAM_RIGHT,
                                       DEFAULT_CAMERA_FRAMES, DEFAULT_CLASSES, DEFAULT_DYNAMIC,
                                       DEFAULT_LEVEL, DEFAULT_WHITELIST, OBSTACLE_LEVELS, Box,
@@ -150,6 +151,10 @@ class ObstacleGuard(Node):
         dp('policy_static_range_m', 1.5)
         dp('policy_topic', '/obstacle_policy')
         dp('policy_rate_hz', 5.0)
+        # idle duty cycle: tick rate while /mission/activity is docked_idle|idle and nothing
+        # is latched (0 = always burst_rate_hz). Back to burst_rate_hz on the next message.
+        dp('activity_topic', '/mission/activity')
+        dp('idle_tick_rate_hz', 2.0)
         # per-area level (mower_mission sets it live) + its thresholds
         dp('obstacle_detection', DEFAULT_LEVEL)
         dp('sensitive_stop_range_m', 1.5)
@@ -216,16 +221,27 @@ class ObstacleGuard(Node):
         self.twist_pub = self.create_publisher(Twist, p('emergency_topic'), 10)
         self.cutter_cli = self.create_client(Trigger, p('cutter_off_service'))
         self._sizes = {}  # frame_id -> (w, h) from camera_info
+        # camera_info only supplies the image size: unsubscribe once it is known (it was
+        # deserialized at the camera rate forever).
+        self._info_subs = {}
         for topic in p('camera_info_topics'):
-            self.create_subscription(CameraInfo, str(topic), self._on_info,
-                                     qos_profile_sensor_data)
+            self._info_subs[str(topic)] = self.create_subscription(
+                CameraInfo, str(topic),
+                lambda m, _t=str(topic): self._on_info(m, _t), qos_profile_sensor_data)
         self.create_subscription(Detection2DArray, p('detections_topic'), self._on_raw, 10)
         if p('ranged_topic'):
             self.create_subscription(Detection2DArray, p('ranged_topic'), self._on_ranged, 10)
         self._use_motion = bool(p('cmd_vel_topic'))
         if self._use_motion:
             self.create_subscription(Twist, p('cmd_vel_topic'), self._on_cmd_vel, 10)
-        self.create_timer(1.0 / float(p('burst_rate_hz')), self._on_tick)
+        self._burst_rate = float(p('burst_rate_hz'))
+        self._idle_rate = float(p('idle_tick_rate_hz'))
+        self._activity = None
+        self._tick_rate = self._burst_rate
+        self._timer = self.create_timer(1.0 / self._tick_rate, self._on_tick)
+        if str(p('activity_topic')):
+            self.create_subscription(String, str(p('activity_topic')), self._on_activity,
+                                     latched)
         self._last_published = None
 
         self.get_logger().info(
@@ -262,7 +278,7 @@ class ObstacleGuard(Node):
     def _on_cmd_vel(self, msg):
         self.motion.update(float(msg.linear.x), float(msg.angular.z), self._now())
 
-    def _on_info(self, msg):
+    def _on_info(self, msg, topic=None):
         w, h = int(msg.width), int(msg.height)
         if w <= 0 or h <= 0:
             return
@@ -270,6 +286,22 @@ class ObstacleGuard(Node):
         if self._sizes.get(key) != (w, h):
             self._sizes[key] = (w, h)
             self.get_logger().info(f'image size for frame "{key}": {w}x{h} (camera_info)')
+        sub = self._info_subs.pop(topic, None)
+        if sub is not None:
+            self.destroy_subscription(sub)
+
+    def _on_activity(self, msg):
+        self._activity = str(msg.data)
+        self._retime()
+
+    def _retime(self):
+        now = self._now()
+        busy = bool(self._last_published) or self.state.burst_active(now)
+        rate = tick_rate_hz(self._activity, busy, self._burst_rate, self._idle_rate)
+        if rate != self._tick_rate:
+            self._tick_rate = rate
+            self.destroy_timer(self._timer)
+            self._timer = self.create_timer(1.0 / rate, self._on_tick)
 
     def _cfg_for(self, frame_id):
         size = self._sizes.get(frame_id)
@@ -307,6 +339,8 @@ class ObstacleGuard(Node):
         close, rising = self.state.update(msg.header.frame_id or 'camera', close_now,
                                           self._now())
         self._publish_close(close)
+        if close and self._tick_rate != self._burst_rate:
+            self._retime()
         if rising:
             self._on_rising(verdicts)
         if self.publish_markers:
@@ -330,6 +364,7 @@ class ObstacleGuard(Node):
             self._on_rising([])
         if self.stop_on_close and self.state.burst_active(now):
             self.twist_pub.publish(Twist())
+        self._retime()
 
     def _on_rising(self, verdicts):
         what = ', '.join(f'{b.label}({b.score:.2f})' for b, _, c in verdicts if c) or 'held'

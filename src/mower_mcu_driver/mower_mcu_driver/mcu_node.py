@@ -113,10 +113,11 @@ except ImportError:  # pragma: no cover - ros_stubs
 from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, Imu
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Empty, Trigger
 
 from mower_mcu_driver.rain import RainDetector
+from mower_mcu_driver.rate_gate import ChangeOrPeriodGate, activity_low_power
 
 try:  # real rclpy only (the offline tests run against ros_stubs)
     from rclpy.serialization import deserialize_message
@@ -553,6 +554,10 @@ class McuNode(Node):
         # timeout 0, gui_bridge acts on changes) are published immediately whenever their
         # content changes and otherwise as a keepalive at this rate. 0 = every frame (old).
         self.declare_parameter('sensor_info_rate_hz', 10.0)
+        # /mower_base/status is published per SensorInfo frame (~100 Hz). While
+        # /mission/activity is docked_idle/idle it is limited to this rate; any change of a
+        # field (bumper, lift, stop, dock, ...) is still published at once.
+        self.declare_parameter('status_idle_rate_hz', 10.0)
         self.declare_parameter('estop_rate_hz', 10.0)
         # BatteryInfo.current: 0.1 A units (vendor PowerManager logs raw*100 as mA), positive
         # while discharging (raw 7 off-dock at rest). BatteryState wants negative = discharge.
@@ -745,6 +750,10 @@ class McuNode(Node):
         # /mower_sensor_info.is_fill_light_on like the vendor getFillLightStatus().
         self._fill_light_on = False
         self.create_subscription(Bool, '/fill_light/state', self._on_fill_light_state, latched)
+        self._low_power = False
+        self._status_gate = ChangeOrPeriodGate()
+        self._status_idle_period = 1.0 / max(0.1, float(param('status_idle_rate_hz')))
+        self.create_subscription(String, '/mission/activity', self._on_activity, latched)
 
         # The two 100/50 Hz publishers send pre-serialized CDR (sub_pump serializers, unit
         # tested against rclpy): a typed publish costs ~0.4 ms more CPU here (message object,
@@ -1156,12 +1165,20 @@ class McuNode(Node):
             return
         self._sensor_pub.publish(msg)
 
+    def _on_activity(self, msg):
+        self._low_power = activity_low_power(msg.data)
+
     def _publish_dev_status(self):
         """``/mower_base/status`` (MowerBaseDevStatus): the compact flag set that
         bumper_controller and the mission layer consume."""
         if self._status_pub is None or self._sensor_info is None:
             return
         s = self._sensor_info
+        if self._low_power:
+            # idle: change-or-10 Hz (the typed fallback path below is never rate limited)
+            key = tuple(self._dev_status_values(s).values())
+            if not self._status_gate.allow(key, time.monotonic(), self._status_idle_period):
+                return
         if self._status_ser is not None:
             self._status_pub.publish(self._status_ser(self._dev_status_values(s),
                                                       self._stamp_ns()))
