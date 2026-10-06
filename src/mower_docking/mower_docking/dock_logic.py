@@ -415,11 +415,15 @@ class DockParams:
     approach_skip_radius_m: float = 0.6       # already this close: skip Nav2, align + search
     nav_fail_arrived_radius_m: float = 1.0    # Nav2 failed within this: treat as arrived
     relaxed_nav_retry: bool = True            # beyond it: one Nav2 retry with the current yaw
-    # ALIGNING: slow turn toward the dock yaw (robot creeps forward, pivots do not turn on turf)
-    align_angular: float = 0.25
-    align_creep: float = 0.03
+    # Owner rule (2026-10-07): "go in front of dock, then do an about turn to have the rear
+    # camera face the dock". Nav2 is sent to the approach point FACING the dock (dock yaw +
+    # 180 deg, the natural arrival direction: no end-of-path spin), then ALIGNING pivots
+    # in place (the turn shaper passes proper pivots, |w| >= 0.25) the shorter way round.
+    approach_facing_dock: bool = True
+    align_angular: float = 0.25               # rad/s, true pivot (0.25..0.3)
+    align_creep: float = 0.0                  # m/s forward while turning (0 = pure pivot)
     align_max_travel: float = 0.4
-    align_timeout_s: float = 20.0
+    align_timeout_s: float = 25.0
     align_tolerance_deg: float = 10.0
     # DOCKING: once tracking, the marker gate is widened by this factor (hysteresis), so a
     # robot that entered at the gate edge is not dropped while it turns onto the axis.
@@ -492,6 +496,10 @@ class DockStateMachine:
         self.use_vision = params.use_vision if use_vision is None else bool(use_vision)
         self.dock_pose = dock_pose
         self.approach = approach_pose(dock_pose, params.approach_distance)
+        # Nav2 goal at the approach point: facing the dock (about-turn done by ALIGNING)
+        self.approach_goal = Pose2D(
+            self.approach.x, self.approach.y,
+            wrap_angle(self.approach.yaw + (math.pi if params.approach_facing_dock else 0.0)))
         self.goal_timeout_s = goal_timeout_s
         self.state = ''
         self.retries = 0
@@ -718,7 +726,7 @@ class DockStateMachine:
             return []
         self._relaxed_tried = False
         self._enter(DockState.NAV_TO_APPROACH, snap)
-        return [('start_nav', self.approach)]
+        return [('start_nav', self.approach_goal)]
 
     def _fresh_marker(self, snap: Snapshot) -> Optional[MarkerObs]:
         m = snap.marker
@@ -920,6 +928,7 @@ class DockStateMachine:
                                    'searching' % (math.degrees(abs(err)), travelled, el))
                 self._post_approach(snap)
                 return self._out()
+            # wrap_angle(err) in (-pi, pi]: the sign is the shorter way round
             return self._out(self.p.align_creep, math.copysign(self.p.align_angular, err))
 
         if st == DockState.SEARCHING:

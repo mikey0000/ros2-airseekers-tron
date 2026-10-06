@@ -2875,6 +2875,48 @@ def test_marker_in_view_does_not_apply_outside_dock_phases():
     assert h.fsm._action is None and 'waiting for person' in h.fsm.sub_state
 
 
+# ---- dock zone: the operator stands by the dock; detections there are ignored ----
+def test_dock_zone_ignores_person_while_docking():
+    h = Harness()
+    h.fsm.inputs.dock_pose = (0.39, -1.29, 1.93)
+    h.fsm.inputs.pose = (0.6, -0.3, 0.0)                 # ~1.0 m from the dock
+    assert h.cmd(f.CMD_HOME)
+    tok = h.pending_action(f.ACT_DOCK).token
+    m = h.mark()
+    tick_seen(h, 'dynamic', 'person', 5.0)
+    tick_seen(h, 'static', 'chair', 2.0)
+    assert h.name == 'RETURNING_HOME' and h.pending_action(f.ACT_DOCK).token == tok
+    assert not h.since(m, f.CancelActions)
+    logs = [e for e in h.since(m, f.Log) if 'of the dock' in str(e)]
+    assert len(logs) == 1
+    # leaves the zone: the person policy applies again
+    h.fsm.inputs.pose = (-2.5, 3.5, 0.0)
+    policy(h, 'dynamic', 'person')
+    h.tick()
+    assert h.fsm._action is None and 'waiting for person' in h.fsm.sub_state
+
+
+def test_dock_zone_outside_radius_or_unknown_waits_as_before():
+    h = Harness()
+    h.fsm.inputs.dock_pose = (40.0, 40.0, 0.0)
+    _home_with_person(h)
+    h = Harness()
+    h.fsm.inputs.dock_pose = None
+    _home_with_person(h)
+
+
+def test_dock_zone_does_not_apply_outside_dock_phases():
+    h = Harness()
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
+    assert h.name == 'TRANSIT'
+    h.fsm.inputs.dock_pose = h.fsm.inputs.pose or (0.0, 0.0, 0.0)
+    policy(h, 'dynamic', 'person')
+    h.tick()
+    assert h.fsm._action is None and 'waiting for person' in h.fsm.sub_state
+
+
 # =====================================================================
 # 2026-10-07: blocked waits (collision ahead) / retry back-off / transit re-queue
 # =====================================================================

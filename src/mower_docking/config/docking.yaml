@@ -93,11 +93,16 @@ mower_docking:
     approach_skip_radius_m: 0.6    # goal starts this close to the approach pose: no Nav2 leg
     nav_fail_arrived_radius_m: 1.0 # Nav2 fails/times out within this: treat as arrived
     relaxed_nav_retry: true        # beyond it: one Nav2 retry with the CURRENT yaw (no pivot)
-    # ALIGNING (heading off the dock yaw by more than max_yaw_error_deg): slow turn + creep
-    align_angular: 0.25            # rad/s
-    align_creep: 0.03              # m/s forward while turning
+    # Owner rule: go in front of the dock FACING it (Nav2 goal yaw = dock yaw + 180 deg,
+    # natural arrival, no end-of-path spin), then about-turn in place so the rear camera
+    # faces the dock.
+    approach_facing_dock: true
+    # ALIGNING (heading off the dock yaw by more than max_yaw_error_deg): true pivot, the
+    # shorter way round, until within align_tolerance_deg or the marker is in the gate
+    align_angular: 0.25            # rad/s (turn shaper passes pivots at >= 0.25)
+    align_creep: 0.0               # m/s forward while turning (0 = pure pivot)
     align_max_travel: 0.4          # m, then SEARCHING anyway (the marker decides)
-    align_timeout_s: 20.0
+    align_timeout_s: 25.0
     align_tolerance_deg: 10.0      # stop turning within this of the dock yaw
     # Reverse controller tolerance for a gate-edge start (25 deg / 0.5 m)
     turn_slow_err: 0.5             # rad heading-tracking error -> reverse speed at the floor

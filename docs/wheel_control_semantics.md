@@ -113,12 +113,26 @@ If creep (a) persists under this policy, stopping becomes "3 zeros then silence"
 
 ## Both-wheel turn shaper (cmd_vel_slew, 2026-10-07)
 
-Owner rule: no one-wheel turns, no counter-rotating pivots. `cmd_vel_slew.shape_for_both_wheels`
-(via `TurnShaper`, autonomous phases only, latched `/cmd_vel_slew/shape_status`) widens any
-command whose inner wheel `|v| - |w|*b/2` is below `min_inner_wheel_mps` 0.06 to the tightest
-arc keeping the inner wheel at 0.06 (both wheels same direction; reversing stays reversing),
-lowering `|w|` if the outer wheel would exceed 0.3. Track width b = 0.48 m (URDF
-`drive_track_y` 0.24 x 2). Implied minimum radius r_min = b/2*(v_out+v_in)/(v_out-v_in) =
-0.36 m (outer 0.3 / inner 0.06); with the MCU's |w| <= 0.3 clamp the tightest arc is 0.44 m.
-Converted pivots are capped at 0.3 m of travel, then a true pivot passes for 2 s. The old
-pivot assist is off by default (subsumed).
+Owner rule: "all turns should require both wheels turning". A pivot with counter-rotating
+wheels IS both wheels turning; what is forbidden is the one-wheel zone, an inner wheel at
+0 <= |v_inner| < `min_inner_wheel_mps` (0.06). `cmd_vel_slew.shape_for_both_wheels` (via
+`TurnShaper`, autonomous phases only, latched `/cmd_vel_slew/shape_status`) computes the
+signed inner wheel speed `|v| - |w|*b/2` and, if it lies in (-0.06, +0.06), snaps the
+command to the NEARER legal regime:
+
+- inner in (0, 0.06): the tightest arc keeping the inner wheel at +0.06 (same direction as
+  the outer; reversing stays reversing), lowering `|w|` if the outer wheel would exceed
+  `linear_max` 0.3. Implied minimum radius 0.36 m; 0.44 m with the MCU |w| <= 0.3 clamp.
+- inner in (-0.06, 0] (including slow pure pivots): a pure pivot, v = 0,
+  |w| = max(|w|, 2*0.06/b) = 0.25 rad/s, capped at `angular_max` 0.3 (MCU clamp).
+
+Pure pivots at |w| >= 0.25 pass unchanged. Track width b = 0.48 m (URDF `drive_track_y`
+0.24 x 2).
+
+History: the first version (same day) converted every pivot into a forward arc capped at
+0.3 m of travel (then a 2 s true-pivot fallback). That turned the docking about-turn into
+an r ~ 0.4 m arc that swung the robot past the dock, so the conversion, the 0.3 m cap and
+the `shape_pivot_max_dist_m` / `shape_pivot_fallback_s` parameters were removed. The
+"turn shaper: ..." INFO line is logged only when the regime (pass/arc/pivot) changes, at
+most once per 2 s; the full decision stays on `~/shape_status`. The old pivot assist is
+off by default.

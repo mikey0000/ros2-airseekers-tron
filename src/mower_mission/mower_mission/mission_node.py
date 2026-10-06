@@ -244,6 +244,7 @@ class MissionNode(Node):
         sub(String, p['obstacle_policy_topic'], self._on_obstacle_policy, latched)
         sub(Bool, '/mower_docking/marker_in_view', self._on_marker_in_view, latched,
             parser=flat_parser(Bool))
+        sub(PoseStamped, '/map_server_node/docking_pose', self._on_dock_pose, latched)
         if p['rosout_topic']:
             sub(Log, p['rosout_topic'], self._on_rosout,
                 QoSProfile(depth=50, reliability=QoSReliabilityPolicy.RELIABLE),
@@ -489,6 +490,11 @@ class MissionNode(Node):
     def _on_marker_in_view(self, msg):
         with self._lock:
             self.fsm.inputs.dock_marker_in_view = bool(msg.data)
+
+    def _on_dock_pose(self, msg):
+        with self._lock:
+            self.fsm.inputs.dock_pose = (msg.pose.position.x, msg.pose.position.y,
+                                         _yaw_from_quat(msg.pose.orientation))
 
     def _on_nav_cmd(self, msg, receipt):
         with self._lock:

@@ -128,6 +128,7 @@ class DockingServer(Node):
         decl('approach_skip_radius_m', dp.approach_skip_radius_m)
         decl('nav_fail_arrived_radius_m', dp.nav_fail_arrived_radius_m)
         decl('relaxed_nav_retry', dp.relaxed_nav_retry)
+        decl('approach_facing_dock', dp.approach_facing_dock)
         decl('align_angular', dp.align_angular)
         decl('align_creep', dp.align_creep)
         decl('align_max_travel', dp.align_max_travel)
@@ -588,6 +589,7 @@ class DockingServer(Node):
             approach_skip_radius_m=float(p('approach_skip_radius_m')),
             nav_fail_arrived_radius_m=float(p('nav_fail_arrived_radius_m')),
             relaxed_nav_retry=bool(p('relaxed_nav_retry')),
+            approach_facing_dock=bool(p('approach_facing_dock')),
             align_angular=float(p('align_angular')),
             align_creep=float(p('align_creep')),
             align_max_travel=float(p('align_max_travel')),

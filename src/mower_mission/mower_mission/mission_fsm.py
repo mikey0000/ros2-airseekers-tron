@@ -369,6 +369,8 @@ class Inputs:
     # /mower_docking/marker_in_view (latched Bool): owner rule "dock marker in view ->
     # ignore all other camera detections" while docking
     dock_marker_in_view: bool = False
+    # /map_server_node/docking_pose (latched, map frame): (x, y, yaw) for the dock zone
+    dock_pose: Optional[tuple] = None
     # /supervisor/status critical_down (comma-joined node names; '' = all alive)
     critical_nodes_down: str = ''
     # /rosout local_costmap "/stereo_depth/points observation buffer has not been updated
@@ -512,6 +514,10 @@ class Params:
     # --- obstacle avoidance (/obstacle_policy from obstacle_guard) ---
     obstacle_avoidance: bool = True     # dynamic stop-and-wait + static swath detours
     obstacle_policy_timeout_s: float = 1.0    # older policy = 'none'
+    # Docking phases: within this of the dock pose, camera obstacle detections are ignored
+    # (the operator stands by the dock, 2026-10-07: the goal was cancelled every ~1 s).
+    # Bumper + Nav2 costmap stay active. 0 disables.
+    dock_zone_radius_m: float = 2.0
     obstacle_static_memory_s: float = 3.0     # a 'static' seen this recently explains an abort
     dynamic_wait_s: float = 30.0        # person / pet: wait this long, then treat as static
     # transit / docking (blade off): shorter wait. The operator often stands near the
@@ -2758,6 +2764,13 @@ class MissionFSM:
                 self._log('info', 'marker in view: obstacle detections ignored while docking')
             return 'none'
         self._marker_ignore_logged = False
+        if self.phase in DOCK_PHASES and self._in_dock_zone():
+            if kind != 'none' and not getattr(self, '_zone_ignore_logged', False):
+                self._zone_ignore_logged = True
+                self._log('info', 'within %.1f m of the dock: obstacle detections ignored '
+                          'while docking' % self.p.dock_zone_radius_m)
+            return 'none'
+        self._zone_ignore_logged = False
         if kind != 'none' and self.p.obstacle_path_filter:
             on = self._obstacle_on_path()
             self._decide(kind, on)
@@ -2766,6 +2779,16 @@ class MissionFSM:
         elif kind == 'none' and self.obstacle_decision.get('kind') != 'none':
             self.obstacle_decision = {'kind': 'none'}
         return kind
+
+    def _in_dock_zone(self):
+        """Robot within dock_zone_radius_m of the dock pose (topic, else params.dock_pose)."""
+        pose = self.inputs.pose
+        dock = self.inputs.dock_pose or (tuple(self.p.dock_pose) if len(self.p.dock_pose) >= 2
+                                         else None)
+        r = float(self.p.dock_zone_radius_m)
+        if pose is None or dock is None or r <= 0.0:
+            return False
+        return math.hypot(pose[0] - dock[0], pose[1] - dock[1]) <= r
 
     def _upcoming_path(self):
         """Robot pose + the next obstacle_path_lookahead_m of the current follow /

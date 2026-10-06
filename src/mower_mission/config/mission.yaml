@@ -115,6 +115,7 @@ behavior_tree_node:
     # obstacle, resume there; skipped stretches are re-tried once at the end of the area.
     obstacle_avoidance: true
     obstacle_policy_timeout_s: 1.0    # older /obstacle_policy = none
+    dock_zone_radius_m: 2.0           # docking: ignore camera detections this close to the dock
     obstacle_static_memory_s: 3.0     # a static class seen this recently explains an abort
     dynamic_wait_s: 30.0              # then the dynamic obstacle is treated as static (detour)
     dynamic_wait_transit_s: 15.0      # transit / docking (blade off): wait, then re-send the goal

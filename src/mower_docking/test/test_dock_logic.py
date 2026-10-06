@@ -257,7 +257,7 @@ def test_dock_starts_with_nav_to_approach_request():
     out = m.start(dl.Snapshot(t=0.0))
     assert out.state == S.NAV_TO_APPROACH
     assert out.requests[0][0] == 'start_nav'
-    assert out.requests[0][1] == dl.Pose2D(0.8, 0.0, 0.0)
+    assert out.requests[0][1] == dl.Pose2D(0.8, 0.0, math.pi)   # facing the dock
     assert out.linear == 0.0
 
 
@@ -726,7 +726,7 @@ def test_goal_near_approach_with_bad_heading_aligns_then_searches():
     out = m.step(_snap(0.05, dl.Pose2D(-0.16, -0.42, yaw0)))
     assert out.state == S.ALIGNING
     assert out.angular == pytest.approx(0.25)          # toward the dock yaw (left)
-    assert out.linear == pytest.approx(0.03)           # creep, no pure pivot
+    assert out.linear == 0.0                           # true pivot (legal now)
     assert out.detail.startswith('aligning to dock heading: 70')
     assert 'marker not visible' in out.detail
     # heading reaches the tolerance -> SEARCHING
@@ -745,6 +745,8 @@ def test_align_gives_up_on_travel_or_timeout_and_searches():
     m = dl.DockStateMachine(dl.DockParams(), DOCK)
     m.start(_snap(0.0, dl.Pose2D(0.0, -0.5, yaw0)))
     out = m.step(_snap(20.5, dl.Pose2D(0.0, -0.5, yaw0)))
+    assert out.state == S.ALIGNING                          # timeout is 25 s now
+    out = m.step(_snap(25.5, dl.Pose2D(0.0, -0.5, yaw0)))
     assert out.state == S.SEARCHING
 
 
@@ -757,6 +759,36 @@ def test_align_stops_when_marker_enters_gate():
     assert out.state == S.SEARCHING
     out = m.step(_snap(0.15, dl.Pose2D(0.07, -0.52, yaw0), marker=good))
     assert out.state == S.DOCKING
+
+
+def test_nav_goal_faces_the_dock_then_about_turn_pivot():
+    """Owner rule: go in front of the dock facing it, then about-turn in place."""
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    out = m.start(_snap(0.0, dl.Pose2D(-2.5, 3.5, 0.0)))
+    goal = [r for r in out.requests if r[0] == 'start_nav'][0][1]
+    assert (goal.x, goal.y) == pytest.approx((m.approach.x, m.approach.y))
+    assert dl.wrap_angle(goal.yaw - (DOCK_YAW + math.pi)) == pytest.approx(0.0, abs=1e-9)
+    # arrives facing the dock, 10 deg CCW past exact: 170 deg left is the shorter way
+    arr = dl.Pose2D(m.approach.x, m.approach.y, DOCK_YAW + math.pi + math.radians(10))
+    out = m.step(_snap(30.0, arr, nav_status='succeeded'))
+    assert out.state == S.ALIGNING
+    out = m.step(_snap(30.05, arr))
+    assert out.linear == 0.0 and out.angular == pytest.approx(0.25)
+    arr = dl.Pose2D(m.approach.x, m.approach.y, DOCK_YAW + math.pi - math.radians(10))
+    m2 = dl.DockStateMachine(dl.DockParams(), DOCK)
+    m2.start(_snap(0.0, dl.Pose2D(-2.5, 3.5, 0.0)))
+    m2.step(_snap(30.0, arr, nav_status='succeeded'))
+    out = m2.step(_snap(30.05, arr))
+    assert out.linear == 0.0 and out.angular == pytest.approx(-0.25)   # 170 deg right
+    # about-turn done -> SEARCHING
+    out = m2.step(_snap(45.0, dl.Pose2D(m.approach.x, m.approach.y, DOCK_YAW + 0.05)))
+    assert out.state == S.SEARCHING
+
+
+def test_approach_facing_dock_off_keeps_dock_yaw_goal():
+    m = dl.DockStateMachine(dl.DockParams(approach_facing_dock=False), DOCK)
+    goal = m.start(_snap(0.0, dl.Pose2D(-2.5, 3.5, 0.0))).requests[0][1]
+    assert goal.yaw == pytest.approx(m.approach.yaw)
 
 
 def test_nav_failure_within_1m_is_treated_as_arrived():
