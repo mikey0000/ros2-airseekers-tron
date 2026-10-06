@@ -43,6 +43,14 @@ copied unless somebody subscribes). ``stereo_vio_bridge`` (``launch/vio.launch.p
 VIO producer of the same topics on the same device, so the two are mutually exclusive:
 pass ``vio:=true`` whenever vio.launch.py runs and stereo_cam is not started.
 
+Front stereo hardware depth (``stereo_depth:=true``): ``mower_cameras/stereo_depth`` ->
+``/stereo_depth/points``, noise-filtered and ground-removed (``stereo_ground_fit``, RANSAC
+ground plane per frame; ``stereo_persist_frames`` temporal filter); stats on
+``/stereo_depth/stats``. Whether Nav2 USES that cloud is ``stereo_costmap`` in
+``mower.launch.py`` (it rewrites the nav2 params): ``stereo_costmap:=false`` leaves the
+stereo/det_range sources out of the local costmap (bumper-only) while this node keeps
+running for det_range / the GUI.
+
 ``web_video_server`` (default ``true``) is an MJPEG HTTP server on ``video_port`` (8080):
 ``http://<mower>:8080/stream?topic=/rear_camera/image_raw`` (also the source for the
 RTSP/WebRTC relay in ``docker/docker-compose.video.yml``). The GUI reverse-proxies it as
@@ -200,6 +208,12 @@ def generate_launch_description():
                                           '(/dev/video11) -> /stereo_depth/points (Nav2 local '
                                           'costmap obstacle source) + depth image.'),
         DeclareLaunchArgument('stereo_depth_fps', default_value='10.0'),
+        DeclareLaunchArgument('stereo_ground_fit', default_value='true',
+                              description='stereo_depth: per-frame RANSAC ground plane, points '
+                                          '< 0.12 m above it dropped from ~/points.'),
+        DeclareLaunchArgument('stereo_persist_frames', default_value='2',
+                              description='stereo_depth: voxel must be seen in N consecutive '
+                                          'frames to be published.'),
     ]
 
     def _oa(name):
@@ -257,7 +271,11 @@ def generate_launch_description():
         name='stereo_depth',
         output='screen',
         condition=IfCondition(LC('stereo_depth')),
-        parameters=[{'fps': ParameterValue(LC('stereo_depth_fps'), value_type=float)}],
+        parameters=[{'fps': ParameterValue(LC('stereo_depth_fps'), value_type=float),
+                     'ground_plane_fit': ParameterValue(LC('stereo_ground_fit'),
+                                                        value_type=bool),
+                     'persist_frames': ParameterValue(LC('stereo_persist_frames'),
+                                                      value_type=int)}],
     )
 
     video = Node(

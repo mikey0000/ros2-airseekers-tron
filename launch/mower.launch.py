@@ -22,6 +22,9 @@ Groups (each a launch argument, ``true``/``false``):
                          robot_state_publisher and placeholder Nav2 nodes are
                          switched off here)
     navigation    true   mower_navigation/launch/navigation.launch.py (Nav2)
+    stereo_costmap
+                  true   stereo depth + det_range as local-costmap obstacle
+                         sources; false = bumper-only obstacle layer (safe-off)
 
 Map origin: ``datum_lat``/``datum_lon`` default to '' (unset). Unset values are
 read from ``datum_env_file`` (DATUM_LAT=/DATUM_LON=, written by the GUI's
@@ -179,6 +182,23 @@ def _apply_robot_settings(context):
     return actions
 
 
+def _apply_stereo_costmap(context):
+    """stereo_costmap:=false -> nav2 params without the stereo/det_range costmap sources."""
+    if LaunchConfiguration('stereo_costmap').perform(context).strip().lower() in ('true', '1'):
+        return []
+    import yaml
+    base = LaunchConfiguration('nav2_params_file').perform(context)
+    if not base or not os.path.isfile(base):
+        return [LogInfo(msg='stereo_costmap:=false: no nav2 params file, nothing to change')]
+    with open(base, encoding='utf-8') as f:
+        doc = robot_settings.without_stereo_sources(yaml.safe_load(f))
+    written = robot_settings.write_params_file(doc, robot_settings.make_out_dir(),
+                                               'nav2_params_no_stereo.yaml')
+    return [SetLaunchConfiguration('nav2_params_file', written),
+            LogInfo(msg='stereo_costmap:=false: local costmap obstacle_layer is bumper-only '
+                        '(%s)' % written)]
+
+
 def generate_launch_description() -> LaunchDescription:
     # Sibling launch files and the URDF: resolve relative to this file so it
     # works both from the source tree and from share/mower_bringup/.
@@ -220,11 +240,20 @@ def generate_launch_description() -> LaunchDescription:
         arg('cameras', 'true', 'Include cameras.launch.py (OA + rear v4l2_camera).'),
         arg('stereo', 'true', 'cameras.launch.py: front Metoak stereo via mower_cameras/stereo_cam '
             '(/vio/{left,right}/image_raw, 5 Hz, on demand). Off when vio is true.'),
+        arg('stereo_costmap', 'true', 'Feed the front stereo depth (/stereo_depth/points) and '
+            'det_range into the Nav2 local costmap obstacle_layer. false = bumper-only obstacle '
+            'layer (safe-off switch if the stereo marks the lawn); stereo_depth/det_range keep '
+            'running for the GUI/obstacle_guard.'),
         arg('vio', 'false', 'stereo_vio_bridge owns the stereo device (run launch/vio.launch.py); '
             'cameras.launch.py then does not start stereo_cam.'),
         arg('video', 'true', 'web_video_server MJPEG on :8080 (GUI camera page via /api/cameras; source for the RTSP relay).'),
         arg('perception', 'true', 'Include mower_vision/perception.launch.py (det_ros on both OA cameras + obstacle_guard; seg off). '
             'det_ros publishes /ai/det/detections and /<camera_ns>/image_annotated (GUI Perception page).'),
+        arg('det_range', 'true', 'det_range: range det_ros detections of the front stereo right eye '
+            'with the stereo hardware depth -> /ai/det/detections_ranged (obstacle_guard prefers it), '
+            '/ai/det/obstacles, /ai/det/obstacle_points (local costmap source).'),
+        arg('det_backend', 'cpp', 'det_ros implementation: cpp (det_ros_cpp, RKNN C API) or python '
+            '(det_ros, rknn-toolkit-lite2 fallback). Same node name, params, topics.'),
         arg('stop_on_close', 'false', 'obstacle_guard: zero burst + cutter off on a close obstacle.'),
         arg('datum_lat', '', 'Map origin (GPS datum) latitude, deg. Dock position; must match '
             'config/gui/mowgli_robot.yaml. Empty = DATUM_LAT from datum_env_file, else 0.0 '
@@ -400,16 +429,30 @@ def generate_launch_description() -> LaunchDescription:
     perception = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution(
             [FindPackageShare('mower_vision'), 'launch', 'perception.launch.py'])),
-        launch_arguments={'stop_on_close': LaunchConfiguration('stop_on_close')}.items(),
+        launch_arguments={'stop_on_close': LaunchConfiguration('stop_on_close'),
+                          'det_backend': LaunchConfiguration('det_backend')}.items(),
         condition=enabled('perception'),
+    )
+
+    det_range = Node(
+        package='det_range',
+        executable='det_range',
+        name='det_range',
+        output='screen',
+        parameters=[PathJoinSubstitution([FindPackageShare('det_range'), 'config',
+                                          'det_range.yaml'])],
+        condition=IfCondition(PythonExpression(
+            ["'", LaunchConfiguration('det_range'), "' == 'true' and '",
+             LaunchConfiguration('perception'), "' == 'true'"])),
     )
 
     return LaunchDescription(
         arguments
         + [OpaqueFunction(function=_resolve_datum),
-           OpaqueFunction(function=_apply_robot_settings)]
+           OpaqueFunction(function=_apply_robot_settings),
+           OpaqueFunction(function=_apply_stereo_costmap)]
         + [drivers, robot_state_publisher, static_map_odom]
         + control
         + [teleop, gui_bridge, foxglove, localization, navigation,
-           map_server, coverage, docking, mission, cameras, perception]
+           map_server, coverage, docking, mission, cameras, perception, det_range]
     )

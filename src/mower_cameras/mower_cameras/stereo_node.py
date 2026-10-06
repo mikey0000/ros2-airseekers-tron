@@ -8,8 +8,11 @@ The Metoak module delivers ONE side-by-side frame per exposure. Verified on the 
 * ``/dev/video11`` (``/dev/videoSimor``, rkcif-mipi-lvds2): max 1920x360, raw sensor data
   that does not decode as an image without the Metoak SDK.
 
-The whole frame is decoded YUYV -> bgr8 once and split; each eye is published as
-``bgr8`` 640x480. Capture runs in the shared
+Only the subscribed eye(s) are converted YUYV -> bgr8 (each eye is a contiguous half of
+every row, so the other half is never touched) and published as ``bgr8`` 640x480. The
+capture thread only converts (copies out of the mmap buffer); serialisation/publishing runs
+in a separate publisher thread with a 1-slot "latest frame" hand-off, so a slow rclpy
+publish never stalls the V4L2 dequeue (2026-10-06: right eye fell to 0.8 fps under load). Capture runs in the shared
 :class:`mower_cameras.v4l2_node.CaptureLoop` thread (reconnect, rate cap) and, with
 ``publish_on_demand`` (default), frames are only copied while ``/vio/left|right/image_raw``
 or ``camera_info`` has a subscriber (web_video_server / the GUI Perception page / VIO).
@@ -19,12 +22,14 @@ Never run this together with ``stereo_vio_bridge`` (same device, same topics):
 """
 from __future__ import annotations
 
+import threading
+
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 
-from mower_cameras.v4l2 import split_side_by_side_bgr
+from mower_cameras.v4l2 import eye_to_bgr
 from mower_cameras.v4l2_node import CaptureLoop, to_image_msg
 
 STEREO_FRAME_ID = 'vio_camera'
@@ -61,6 +66,12 @@ class StereoCamNode(Node):
                                 p('pixel_format'), p('fps'), self._on_frame, 'v4l2',
                                 name='cap:stereo',
                                 want=self._wanted if self.on_demand else None)
+        self._slot = None
+        self._slot_cv = threading.Condition()
+        self._stop = False
+        self._pub_thread = threading.Thread(target=self._publish_loop, name='pub:stereo',
+                                            daemon=True)
+        self._pub_thread.start()
         self.loop.start()
         self.get_logger().info(
             f'stereo_cam {p("video_device")} {p("width")}x{p("height")} {p("pixel_format")} '
@@ -87,21 +98,40 @@ class StereoCamNode(Node):
             for info, pub in zip(self.infos, self.info_pubs))
 
     def _on_frame(self, data, cap):
+        """Capture thread: convert only the wanted eyes, hand them to the publisher."""
         stamp = self.get_clock().now().to_msg()
-        eyes = split_side_by_side_bgr(data, cap.width, cap.height, cap.bytesperline,
-                                      cap.pixel_format)
-        if eyes is None:
-            return
-        for eye, pub, info, info_pub in zip(eyes, self.pubs, self.infos, self.info_pubs):
+        bpl = cap.bytesperline or cap.width * 2
+        eyes = [None, None]
+        for i, pub in enumerate(self.pubs):
             if not self.on_demand or self._subscribed(pub):
-                pub.publish(to_image_msg(stamp, self.frame_id, eye))
-            if info is not None:
-                info.header.stamp = stamp
-                info_pub.publish(info)
+                eyes[i] = eye_to_bgr(data, cap.width, cap.height, bpl, cap.pixel_format, i)
+        with self._slot_cv:
+            self._slot = (stamp, eyes)          # newest wins; never blocks capture
+            self._slot_cv.notify()
+
+    def _publish_loop(self):
+        while True:
+            with self._slot_cv:
+                while self._slot is None and not self._stop:
+                    self._slot_cv.wait(0.5)
+                if self._stop:
+                    return
+                stamp, eyes = self._slot
+                self._slot = None
+            for eye, pub, info, info_pub in zip(eyes, self.pubs, self.infos, self.info_pubs):
+                if eye is not None:
+                    pub.publish(to_image_msg(stamp, self.frame_id, eye))
+                if info is not None:
+                    info.header.stamp = stamp
+                    info_pub.publish(info)
 
     def destroy_node(self):
         self.loop.stop()
         self.loop.join(timeout=3.0)
+        with self._slot_cv:
+            self._stop = True
+            self._slot_cv.notify()
+        self._pub_thread.join(timeout=2.0)
         super().destroy_node()
 
 

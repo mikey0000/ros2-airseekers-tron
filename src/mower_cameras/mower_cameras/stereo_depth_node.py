@@ -22,18 +22,35 @@ y down; defined in config/urdf/mower.urdf.xacro):
 
 * ``~/depth/image_raw``  32FC1 metres (0 = invalid), on demand
 * ``~/image_mono``       mono8 reference-eye image, on demand
-* ``~/points``           PointCloud2 xyz float32, decimated, range-limited (Nav2 obstacle
-                         source; always published while anybody subscribes)
+* ``~/points``           PointCloud2 xyz float32, decimated, range-limited, FILTERED: speckle
+                         + neighbour noise removal, ground removed (``ground_plane_fit``),
+                         temporal persistence (``persist_frames``). Only obstacle points
+                         remain (Nav2 obstacle source).
+* ``~/ground_plane``     Float32MultiArray [nx, ny, nz, h, inliers, fit_ok] in the optical
+                         frame (n points down to the ground, h = camera height above it)
+* ``~/stats``            String JSON at 1 Hz: points raw / after noise / after ground /
+                         published, fit ok, ms per frame
+
+Filter details: mower_cameras/depth_filters.py. The prior ground plane comes from TF
+(base_footprint -> frame_id; URDF pose measured from the depth ground plane 2026-10-06)
+with ``ground_prior_height_m`` / ``ground_prior_pitch_up_deg`` as fallback.
 """
 from __future__ import annotations
 
 import array
+import json
+import math
+import time
 
 import numpy as np
 import rclpy
+import rclpy.time
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud2, PointField
+from std_msgs.msg import Float32MultiArray, String
+
+from mower_cameras import depth_filters as dfl
 
 from mower_cameras.v4l2_node import CaptureLoop, to_image_msg
 
@@ -120,14 +137,56 @@ class StereoDepthNode(Node):
         d('min_range_m', 0.2)
         d('max_range_m', 4.0)
         d('publish_on_demand', True)
+        d('cloud_fps', 5.0)              # filtered cloud rate cap (CPU); depth image keeps fps
+        # --- noise filters (before the cloud) ---
+        d('speckle_max_size', 200)       # px; disparity blobs smaller than this are dropped
+        d('speckle_max_diff_px', 1.0)    # disparity step that splits blobs
+        d('min_valid_neighbours', 5)     # of the 3x3 window incl. the pixel itself
+        # --- ground removal ---
+        d('ground_plane_fit', True)      # RANSAC ground plane each frame
+        d('ground_margin_m', 0.12)       # drop points < this above the plane
+        d('ground_base_frame', 'base_footprint')
+        d('ground_prior_height_m', 0.24)      # fallback when TF is unavailable
+        d('ground_prior_pitch_up_deg', 0.92)  # (measured 2026-10-06)
+        d('ground_max_tilt_deg', 8.0)    # fit rejected beyond this from the prior
+        d('ground_max_dh_m', 0.08)
+        # --- temporal ---
+        d('persist_frames', 2)           # voxel seen in N consecutive frames
+        d('persist_voxel_m', 0.10)
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.cfg = {n: p(n) for n in ('frame_id', 'bxf_mm', 'disparity_scale', 'fx', 'fy',
-                                       'cx', 'cy', 'cloud_step', 'min_range_m', 'max_range_m')}
+                                       'cx', 'cy', 'cloud_step', 'min_range_m', 'max_range_m',
+                                       'speckle_max_size', 'speckle_max_diff_px',
+                                       'min_valid_neighbours', 'ground_plane_fit',
+                                       'ground_margin_m', 'ground_max_tilt_deg',
+                                       'ground_max_dh_m')}
         self.on_demand = bool(p('publish_on_demand'))
+        self.ground_base = p('ground_base_frame')
+        cf = float(p('cloud_fps'))
+        self.cloud_period = 0.9 / cf if cf > 0 else 0.0
+        self._last_cloud = 0.0
+        self.prior = dfl.plane_from_pose(p('ground_prior_height_m'),
+                                         math.radians(p('ground_prior_pitch_up_deg')))
+        self.prior_from_tf = False
+        self.plane = self.prior
+        self.persist = dfl.Persistence(p('persist_frames'), p('persist_voxel_m'))
+        self.rng = np.random.default_rng(0)
+        self._stats = {'frames': 0, 'raw': 0, 'denoised': 0, 'obstacle': 0, 'published': 0,
+                       'fit_ok': 0, 'ms': 0.0}
+        self._tf_buf = None
+        try:
+            import tf2_ros
+            self._tf_buf = tf2_ros.Buffer()
+            self._tf_listener = tf2_ros.TransformListener(self._tf_buf, self)
+        except ImportError:  # pragma: no cover
+            self.get_logger().warn('tf2_ros missing: ground prior from parameters')
         qos = rclpy.qos.qos_profile_sensor_data
         self.depth_pub = self.create_publisher(Image, '~/depth/image_raw', qos)
         self.mono_pub = self.create_publisher(Image, '~/image_mono', qos)
         self.cloud_pub = self.create_publisher(PointCloud2, '~/points', qos)
+        self.plane_pub = self.create_publisher(Float32MultiArray, '~/ground_plane', 10)
+        self.stats_pub = self.create_publisher(String, '~/stats', 10)
+        self.create_timer(1.0, self._publish_stats)
         self.loop = CaptureLoop(self.get_logger(), p('video_device'), p('width'), p('height'),
                                 p('pixel_format'), p('fps'), self._on_frame, 'v4l2',
                                 name='cap:simor',
@@ -146,15 +205,94 @@ class StereoDepthNode(Node):
         c = self.cfg
         stamp = self.get_clock().now().to_msg()
         raw, grey = decode_simor(data, cap.width, cap.height, cap.bytesperline or cap.width * 3)
-        z = disparity_to_depth(raw, c['bxf_mm'], c['disparity_scale'])
-        if not self.on_demand or self.cloud_pub.get_subscription_count() > 0:
-            pts = depth_to_points(z, c['fx'], c['fy'], c['cx'], c['cy'], int(c['cloud_step']),
-                                  c['min_range_m'], c['max_range_m'])
+        now = time.monotonic()
+        if (now - self._last_cloud >= self.cloud_period
+                and (not self.on_demand or self.cloud_pub.get_subscription_count() > 0)):
+            self._last_cloud = now
+            pts = self.filtered_points(raw)
             self.cloud_pub.publish(points_msg(stamp, c['frame_id'], pts))
         if not self.on_demand or self.depth_pub.get_subscription_count() > 0:
+            z = disparity_to_depth(raw, c['bxf_mm'], c['disparity_scale'])
             self.depth_pub.publish(depth_image_msg(stamp, c['frame_id'], z))
         if not self.on_demand or self.mono_pub.get_subscription_count() > 0:
             self.mono_pub.publish(to_image_msg(stamp, c['frame_id'], grey))
+
+    def _update_prior_from_tf(self):
+        if self.prior_from_tf or self._tf_buf is None:
+            return
+        try:
+            tf = self._tf_buf.lookup_transform(self.ground_base, self.cfg['frame_id'],
+                                               rclpy.time.Time())
+        except Exception:  # noqa: BLE001 - TF not up yet, keep the parameter prior
+            return
+        q = tf.transform.rotation
+        x, y, zq, w = q.x, q.y, q.z, q.w
+        # third row of R(optical -> base): base z axis expressed in the optical frame
+        up = np.array([2 * (x * zq - y * w), 2 * (y * zq + x * w), 1 - 2 * (x * x + y * y)])
+        n = -up / np.linalg.norm(up)
+        self.prior = (n, float(tf.transform.translation.z))
+        self.plane = self.prior
+        self.prior_from_tf = True
+        # The chain is static (URDF fixed joints): stop deserialising every /tf message in
+        # Python (no need to keep a Python /tf subscription).
+        try:
+            self._tf_listener.unregister()
+        except Exception:  # noqa: BLE001
+            pass
+        self._tf_listener = None
+        self._tf_buf = None
+        self.get_logger().info(f'ground prior from TF: n={np.round(n, 4).tolist()} '
+                               f'h={self.prior[1]:.3f} m')
+
+    def filtered_points(self, raw):
+        """raw disparity -> obstacle-only optical-frame points (noise + ground removed)."""
+        c = self.cfg
+        t0 = time.monotonic()
+        self._update_prior_from_tf()
+        step = int(c['cloud_step'])
+        # Filter at half resolution (the cloud keeps every cloud_step-th pixel anyway):
+        # 4x fewer pixels for speckle/neighbour; speckle area scales by 1/4.
+        sub = 2 if step % 2 == 0 else 1
+        r = raw[::sub, ::sub]
+        r = dfl.speckle_filter(r, int(c['speckle_max_size']) // (sub * sub),
+                               c['speckle_max_diff_px'], c['disparity_scale'])
+        valid = dfl.neighbour_filter(r > 0, int(c['min_valid_neighbours']))
+        r = np.where(valid, r, 0)
+        z = disparity_to_depth(r, c['bxf_mm'], c['disparity_scale'])
+        # pixel u' = u / sub  ->  fx' = fx / sub, cx' = cx / sub
+        pts = depth_to_points(z, c['fx'] / sub, c['fy'] / sub, c['cx'] / sub, c['cy'] / sub,
+                              step // sub, c['min_range_m'], c['max_range_m'])
+        st = self._stats
+        st['frames'] += 1
+        st['denoised'] += len(pts)
+        st['raw'] += int(np.count_nonzero(raw[::step, ::step]))
+        if c['ground_plane_fit']:
+            plane, k, ok = dfl.fit_ground_plane(pts, self.prior,
+                                                max_tilt_deg=c['ground_max_tilt_deg'],
+                                                max_dh_m=c['ground_max_dh_m'], rng=self.rng)
+            self.plane = plane
+            st['fit_ok'] += int(ok)
+            m = Float32MultiArray()
+            m.data = [float(v) for v in plane[0]] + [float(plane[1]), float(k), float(ok)]
+            self.plane_pub.publish(m)
+        pts = dfl.remove_ground(pts, self.plane, c['ground_margin_m'])
+        st['obstacle'] += len(pts)
+        pts = self.persist(pts).astype(np.float32)
+        st['published'] += len(pts)
+        st['ms'] += (time.monotonic() - t0) * 1000.0
+        return pts
+
+    def _publish_stats(self):
+        st = self._stats
+        f = max(st['frames'], 1)
+        out = {'frames': st['frames'], 'fit_ok': st['fit_ok'],
+               'ms_per_frame': round(st['ms'] / f, 1),
+               'plane': [round(float(v), 4) for v in self.plane[0]] + [round(self.plane[1], 3)]}
+        for k in ('raw', 'denoised', 'obstacle', 'published'):
+            out[k + '_per_frame'] = round(st[k] / f, 1)
+        self.stats_pub.publish(String(data=json.dumps(out)))
+        for k in st:
+            st[k] = 0 if k != 'ms' else 0.0
 
     def destroy_node(self):
         self.loop.stop()

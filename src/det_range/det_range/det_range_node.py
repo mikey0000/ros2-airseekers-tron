@@ -84,7 +84,7 @@ class DetRange(Node):
         d('target_frame', 'base_link')
         d('depth_frame', 'stereo_camera_optical')
         # Fallback pose of depth_frame in target_frame until /tf_static arrives (URDF value).
-        d('fallback_xyz', [0.466, 0.0, 0.215])
+        d('fallback_xyz', [0.466, 0.0, 0.240])   # matches the URDF (measured 2026-10-06)
         d('fallback_rpy', [-1.5707963, 0.0, -1.5707963])
         # Reference-eye intrinsics of the depth image (stereo_depth node defaults).
         d('ref_fx', 378.0)

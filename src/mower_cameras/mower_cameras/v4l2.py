@@ -400,3 +400,19 @@ def split_side_by_side_bgr(data, width, height, bytesperline, pixel_format='YUYV
         return None
     half = frame.shape[1] // 2
     return frame[:, :half], frame[:, half:2 * half]
+
+
+def eye_to_bgr(data, width, height, bytesperline, pixel_format, eye):
+    """One eye (0 = left, 1 = right) of a side-by-side packed 4:2:2 frame -> bgr8.
+
+    Converts only that half (each eye = ``width // 2`` px = ``width`` bytes per row, a
+    YUYV/UYVY macropixel boundary), i.e. half the work of :func:`split_side_by_side_bgr`
+    when one eye is wanted. Other formats fall back to the full split.
+    """
+    import numpy as np
+    if pixel_format not in ('YUYV', 'UYVY'):
+        eyes = split_side_by_side_bgr(data, width, height, bytesperline, pixel_format)
+        return None if eyes is None else np.ascontiguousarray(eyes[eye])
+    buf = np.frombuffer(data, dtype=np.uint8)
+    half = width // 2
+    return to_bgr(buf[eye * 2 * half:], half, height, bytesperline, pixel_format)

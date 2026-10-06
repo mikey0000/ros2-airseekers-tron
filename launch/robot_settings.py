@@ -191,3 +191,18 @@ def write_params_file(doc, out_dir, name):
 
 def make_out_dir():
     return tempfile.mkdtemp(prefix='mower_robot_settings_')
+
+
+# Local-costmap observation sources that depend on the front stereo depth. det_range is
+# marking-only and relies on the stereo raytrace for clearing, so it goes with it.
+STEREO_SOURCES = ('stereo', 'det_range')
+
+
+def without_stereo_sources(doc):
+    """Copy of a nav2 params document with the stereo sources removed from the local
+    costmap obstacle_layer (``stereo_costmap:=false``: bumper-only obstacle layer)."""
+    doc = copy.deepcopy(doc)
+    ol = doc['local_costmap']['local_costmap']['ros__parameters']['obstacle_layer']
+    kept = [s for s in str(ol['observation_sources']).split() if s not in STEREO_SOURCES]
+    ol['observation_sources'] = ' '.join(kept)
+    return doc

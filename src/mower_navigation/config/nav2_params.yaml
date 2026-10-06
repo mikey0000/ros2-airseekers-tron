@@ -318,16 +318,25 @@ local_costmap:
           sensor_frame: stereo_camera_optical
           marking: true
           clearing: true
-          # Ignore the ground and grass: only returns 8-60 cm above base_link (ground)
-          # mark; the floor fit scatters +-3 cm around 0.
-          min_obstacle_height: 0.08
-          max_obstacle_height: 0.6
-          obstacle_max_range: 2.5
+          # The cloud is already noise-filtered and ground-removed in stereo_depth
+          # (speckle + neighbour filter, per-frame RANSAC ground plane, points <0.12 m
+          # above it dropped, 2-frame persistence). These limits are the second line:
+          # 0.15-1.2 m above ground marks (a 30 cm box, a person's legs/torso), grass
+          # and pitch-induced ground rise do not. 2.0 m max range: beyond it the
+          # 0.9-deg-per-pixel disparity quantisation and body pitch while driving put
+          # the lawn above 0.08 m (the 2026-10-06 "collision ahead" abort).
+          min_obstacle_height: 0.15
+          max_obstacle_height: 1.2
+          obstacle_max_range: 2.0
           obstacle_min_range: 0.0
           raytrace_max_range: 3.0
           raytrace_min_range: 0.0
-          observation_persistence: 0.0
-          expected_update_rate: 0.0
+          # Stale clouds expire after 0.5 s instead of sticking forever; no cloud for
+          # >1 s marks the layer not-current (controller pauses instead of driving on
+          # stale data). Disable the source with stereo_costmap:=false (mower.launch.py)
+          # to mow bumper-only.
+          observation_persistence: 0.5
+          expected_update_rate: 1.0
           inf_is_valid: false
         det_range:
           topic: /ai/det/obstacle_points
@@ -399,10 +408,15 @@ global_costmap:
         transform_tolerance: 0.5
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Small inflation: the nav mask already carries the footprint margin;
-        # 0.15 m with steep decay lets the centre run along the boundary.
-        cost_scaling_factor: 10.0
-        inflation_radius: 0.15
+        # inflation_radius >= inscribed radius (0.25 m: rear edge 0.23 + padding 0.02)
+        # silences "inflation radius smaller than inscribed radius" (0.26: at exactly
+        # 0.25 the float-computed inscribed radius still wins, verified 2026-10-06). The nav mask
+        # already carries the footprint margin (nav_margin_m 0.35), so the cost decays
+        # very steeply past the inscribed band (cost_scaling_factor 25) and the
+        # keepout / nav-mask behaviour is unchanged. Perimeter reachability checked
+        # 2026-10-06: planner-only dock -> (-1.80, -1.29) succeeds.
+        cost_scaling_factor: 25.0
+        inflation_radius: 0.26
       # Filter info (/costmap_filter_info) + mask (/keepout_mask) come from the
       # ported MowgliNext map_server_node (or costmap_filter_info_server with
       # use_keepout:=true). With no publisher the filter is idle and does not

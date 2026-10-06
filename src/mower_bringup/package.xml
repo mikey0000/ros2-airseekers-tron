@@ -24,6 +24,7 @@
   <exec_depend>um960_gps_driver</exec_depend>
   <exec_depend>bumper_controller</exec_depend>
   <exec_depend>mower_control</exec_depend>
+  <exec_depend>det_range</exec_depend>
   <exec_depend>mower_localization</exec_depend>
   <!-- Optional groups (toggled by launch args; not hard deps so the package
        builds before they exist): mower_teleop, mower_gui_bridge,

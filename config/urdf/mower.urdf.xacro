@@ -252,14 +252,19 @@
   <xacro:box_sensor name="stereo_camera" xyz="${stereo_cam_xyz}"
                     rpy="1.64061 0 1.57079" size="${sensor_box}" material="yellow"/>
   <!-- Optical frame of the Metoak hardware disparity (mower_cameras/stereo_depth, ~/points):
-       standard optical axes (z forward, x right, y down). Pose from a floor-plane fit of the
-       live depth cloud on 2026-10-06 (best fit: no pitch, 0.215 m above base_link/ground);
-       the stereo_camera box above keeps the vendor pose. Re-fit after any mount change. -->
+       standard optical axes (z forward, x right, y down). MEASURED from the depth ground plane
+       on 2026-10-06 (robot at the dock on flat lawn, 10 s / 79 frames of /stereo_depth/points,
+       RANSAC + least-squares plane over 0.4-2.2 m, 115k inliers, residual 9 mm):
+       camera 0.240 m above the ground, pitched UP 0.92 deg, roll 0.03 deg (ignored).
+       The earlier fit (0.215 m, no pitch) put the lawn at -0.02..-0.05 m sinking with range.
+       rpy: pitch-up about base y folds into the optical roll term (-pi/2 + 0.01600).
+       The stereo_camera box above keeps the vendor pose. Re-measure after any mount change
+       (stereo_depth publishes the live fit on /stereo_depth/ground_plane). -->
   <link name="stereo_camera_optical"/>
   <joint name="stereo_camera_optical_joint" type="fixed">
     <parent link="base_link"/>
     <child link="stereo_camera_optical"/>
-    <origin xyz="0.466 0 0.215" rpy="-1.5707963 0 -1.5707963"/>
+    <origin xyz="0.466 0 0.240" rpy="-1.5547956 0 -1.5707963"/>
   </joint>
   <!-- OA cameras — frames match cameras.launch.py camera_frame_id. -->
   <xacro:box_sensor name="left_oa_camera" xyz="${oa_cam_xyz}"

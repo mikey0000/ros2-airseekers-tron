@@ -26,7 +26,8 @@ PARAMS = os.path.join(HERE, "..", "config", "nav2_params.yaml")
 PLUGIN_LIST_KEYS = ("controller_plugins", "goal_checker_plugins", "planner_plugins",
                     "behavior_plugins", "plugins", "filters", "progress_checker_plugins")
 PLUGIN_SINGLE_KEYS = ("progress_checker_plugin",)
-ALLOWED_FRAMES = {"map", "odom", "base_link", "base_footprint"}
+ALLOWED_FRAMES = {"map", "odom", "base_link", "base_footprint",
+                  "stereo_camera_optical"}  # URDF sensor frame (obstacle source)
 
 
 def load():
@@ -126,7 +127,9 @@ def test_goal_checkers():
     assert g["stateful"] is True
     assert g["xy_goal_tolerance"] == 0.25 and g["yaw_goal_tolerance"] == 0.5
     cov = c["coverage_goal_checker"]
-    assert cov["stateful"] is True and cov["xy_goal_tolerance"] <= 0.15
+    # MowgliNext PathProgressGoalChecker: done at progress_threshold of the swath, loose xy.
+    assert cov["plugin"] == "mowgli_nav2_plugins/PathProgressGoalChecker"
+    assert 0.9 <= cov["progress_threshold"] <= 1.0 and cov["xy_goal_tolerance"] <= 0.5
 
 
 def test_transit_rpp_rotation():
@@ -159,6 +162,52 @@ def test_det_range_obstacle_source():
     assert src["obstacle_max_range"] == 3.0
     for name in ol["observation_sources"].split():
         assert name in ol, f"observation source {name} has no sub-map"
+
+
+def test_stereo_obstacle_source():
+    # 2026-10-06: the stereo cloud marked the lawn lethal ("collision ahead" abort).
+    ol = load()["local_costmap"]["local_costmap"]["ros__parameters"]["obstacle_layer"]
+    assert "stereo" in ol["observation_sources"].split()
+    src = ol["stereo"]
+    assert src["topic"] == "/stereo_depth/points"
+    assert src["sensor_frame"] == "stereo_camera_optical"
+    assert src["min_obstacle_height"] == 0.15
+    assert src["max_obstacle_height"] == 1.2
+    assert src["obstacle_max_range"] == 2.0
+    assert src["raytrace_max_range"] >= src["obstacle_max_range"]
+    assert src["observation_persistence"] == 0.5
+    assert src["expected_update_rate"] == 1.0
+    assert src["inf_is_valid"] is False
+    assert src["marking"] is True and src["clearing"] is True
+    # the layer-wide cap must not cut the source's own band
+    assert ol["max_obstacle_height"] >= src["max_obstacle_height"]
+
+
+def _inscribed_radius(gp):
+    pts = yaml.safe_load(gp["footprint"])
+    pad = gp.get("footprint_padding", 0.0)
+    return min(min(abs(x) for x, _ in pts), min(abs(y) for _, y in pts)) + pad
+
+
+def test_global_inflation_covers_inscribed_radius():
+    gp = load()["global_costmap"]["global_costmap"]["ros__parameters"]
+    infl = gp["inflation_layer"]
+    assert infl["inflation_radius"] == 0.26
+    # strictly larger: Nav2 still warns at exactly the (float) inscribed radius
+    assert infl["inflation_radius"] > _inscribed_radius(gp) + 1e-3
+    # steep decay: keepout / nav-mask behaviour unchanged past the inscribed band
+    assert infl["cost_scaling_factor"] >= 20.0
+
+
+def test_stereo_costmap_off_is_bumper_only():
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "launch"))
+    import robot_settings
+    doc = robot_settings.without_stereo_sources(load())
+    ol = doc["local_costmap"]["local_costmap"]["ros__parameters"]["obstacle_layer"]
+    assert ol["observation_sources"].split() == ["bumper"]
+    # original untouched
+    assert "stereo" in load()["local_costmap"]["local_costmap"]["ros__parameters"][
+        "obstacle_layer"]["observation_sources"].split()
 
 
 def test_lifecycle_order():

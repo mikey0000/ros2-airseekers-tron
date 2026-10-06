@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from mower_cameras.v4l2 import split_yuyv_luma
 
@@ -35,3 +36,14 @@ def test_split_side_by_side_bgr_keeps_colour():
     assert left.shape == right.shape == (h, w // 2, 3)
     b, g, r = left[0, 0].astype(int)
     assert r > g + 40 and r > b + 40
+
+
+def test_eye_to_bgr_matches_full_split():
+    import numpy as np
+    from mower_cameras.v4l2 import eye_to_bgr, split_side_by_side_bgr
+    pytest.importorskip('cv2')
+    rng = np.random.default_rng(0)
+    data = rng.integers(0, 255, 480 * 2560, dtype=np.uint8).tobytes()
+    left, right = split_side_by_side_bgr(data, 1280, 480, 2560, 'YUYV')
+    assert np.array_equal(eye_to_bgr(data, 1280, 480, 2560, 'YUYV', 0), left)
+    assert np.array_equal(eye_to_bgr(data, 1280, 480, 2560, 'YUYV', 1), right)
