@@ -4271,6 +4271,7 @@
     "maxTooltip": "Limite de la correction de cap. Par défaut 0,15 rad/s."
   },
   "missionStop": {
+    "stopPlain": "Arrêter",
     "stop": "Arrêter la tonte",
     "confirmTitle": "Arrêter la tonte maintenant ?",
     "confirmBody": "La lame s'arrête et la tondeuse s'immobilise sur place. La progression est enregistrée pour reprendre plus tard.",

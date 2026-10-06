@@ -4271,6 +4271,7 @@
     "maxTooltip": "Clamp on the heading-hold steering correction. Default 0.15 rad/s."
   },
   "missionStop": {
+    "stopPlain": "Stop",
     "stop": "Stop mowing",
     "confirmTitle": "Stop mowing now?",
     "confirmBody": "The blade stops and the mower halts in place. Progress is saved so you can resume later.",

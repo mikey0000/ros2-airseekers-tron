@@ -73,10 +73,13 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
         void sendStop();
     };
 
+    // "Stop mowing" only while the blade may be cutting; a transit, return to
+    // dock, undock or recording is just "Stop".
+    const mowingNow = stateName === "MOWING" || stateName === "MANUAL_MOWING";
     const stopButton = showStop ? (
         <Button danger type="primary" size="large" icon={<StopOutlined/>}
                 loading={busy === "stop"} onClick={onStopClick} data-testid="mission-stop">
-            {t('missionStop.stop')}
+            {mowingNow ? t('missionStop.stop') : t('missionStop.stopPlain')}
         </Button>
     ) : null;
 
