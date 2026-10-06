@@ -193,7 +193,9 @@ const PROFILE_OVERLAYS: Record<string, ProfileOverlay> = {
             {id: "front_right", label: "robotProfiles.cameras.front_right", topic: "/vio/right/image_raw"},
         ],
         // Map-page drive PiP: the colour right eye of the front stereo pair.
-        drivingCamera: "front_right",
+        // right_oa (1080p obstacle camera, 10 Hz) rather than the front stereo eye: the stereo
+        // eye is CPU-starved at ~1 fps while the detector also consumes it. Pick it in the PiP.
+        drivingCamera: "right_oa",
         reverseCamera: "rear",
         // The cutter board reports one temperature per motor (mower_motor_temperature),
         // no separate ESC temperature; there is no Raspberry Pi, UI board or sound module.

@@ -10,9 +10,9 @@ const cam = (id: string): CameraInfo => ({id, label: id, topic: `/${id}`, stream
 const CAMS = ["left_oa", "right_oa", "rear", "front_left", "front_right"].map(cam);
 
 describe("driving camera choice", () => {
-    it("defaults to the profile's driving camera (Tron: front_right)", () => {
+    it("defaults to the profile's driving camera (Tron: right_oa)", () => {
         const tron = getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID);
-        expect(tron.drivingCamera).toBe("front_right");
+        expect(tron.drivingCamera).toBe("right_oa");
         expect(defaultDrivingCamera(CAMS, tron.drivingCamera)?.id).toBe("front_right");
     });
     it("falls back to a front camera, then the first; none without cameras", () => {
