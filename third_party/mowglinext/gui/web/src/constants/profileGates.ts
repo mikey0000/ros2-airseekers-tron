@@ -28,23 +28,25 @@ export const PROFILE_GATES = {
     "/perception": ["cameras"],
 
     // Settings sections
-    "settings:updates": ["docker_host"],        // host updater (docker image pulls)
-    "settings:remote_access": ["docker_host"],  // Tailscale sidecar created over the docker socket
+    "settings:updates": ["docker_admin"],        // host updater (docker image pulls)
+    "settings:remote_access": ["docker_admin"],  // Tailscale sidecar created over the docker socket
     "settings:drive_motor": ["drive_tuning"],   // drive / PID auto-tuning (docker exec)
     "settings:leds": ["status_leds"],           // mowgli_leds SPI strip
+    "settings:straight_driving": ["straight_driving"], // cmd_vel_slew trim / deadband / heading hold
 
     // In-page features
     "feature:firmware_flash": ["stm32_firmware"],      // dashboard "flash firmware" CTA
     "feature:firmware_debug": ["stm32_firmware"],      // Diagnostics firmware-debug log card
     "feature:gnss_configurator": ["gnss_sidecar"],     // GNSS receiver plan/apply/factory-reset card
-    "feature:host_updater": ["docker_host"],           // side-rail running-version / updates links
-    "feature:rosbag": ["docker_host"],                 // Diagnostics rosbag recorder (docker exec)
+    "feature:host_updater": ["docker_admin"],           // side-rail running-version / updates links
+    "feature:rosbag": ["docker_admin"],                 // Diagnostics rosbag recorder (docker exec)
     "feature:containers": ["docker_host"],             // Diagnostics container table + health badge
     "feature:restart_ros2": ["docker_host"],           // Settings "Restart ROS2" (docker restart)
     "feature:lidar": ["lidar"],                        // LiDAR settings, scan + LiDAR-map layers, anchor tiles
     "feature:fusion_graph": ["fusion_graph"],          // /fusion_graph_node/* diagnostics + commands
     "feature:imu_yaw_calibration": ["imu_yaw_calibration"], // /calibrate_imu_yaw_node/* buttons
     "feature:dock_calibration": ["dock_calibration"],  // CalibrateDock wizard (charger contacts)
+    "feature:area_settings": ["area_settings"],        // per-area mow settings panel + Start sheet
 } as const satisfies Record<string, readonly FeatureId[]>;
 
 export type GateId = keyof typeof PROFILE_GATES;

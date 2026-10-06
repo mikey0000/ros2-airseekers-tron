@@ -56,7 +56,8 @@ Parameters
 ``linear_scale`` ``1.0`` / ``angular_scale`` ``1.0``   host-side ``/cmd_vel`` -> ``SpeedData`` map
 ``linear_max`` ``0.3`` / ``angular_max`` ``0.3``       clamp (m/s, rad/s; vendor PID clamp)
 ``battery_voltage_scale`` ``0.1``  raw 0.1 V units -> volts (set 1.0 to mimic the stock node)
-``battery_current_scale`` ``1.0``  raw -> amperes (**unit still unknown (?)**)
+``battery_current_scale`` ``-0.1`` raw 0.1 A, positive = discharging -> ROS amperes (negative
+                                 = discharging, REP/BatteryState convention)
 
 Known gaps -- tracked as TODOs, do not treat this driver as safety-complete yet
 -------------------------------------------------------------------------------
@@ -163,15 +164,72 @@ IMU_FMT = '<9h'                   # ImuData (18) - pitch, roll, yaw, accx..z, gy
 VERSION_FMT = '<9B'               # VersionInfo (9): cutter/chassis/rtk major,minor,patch
 BMS_FMT = '<3B'                   # BMS Version (3)
 CALIB_FMT = '<3B'                 # MCCalib (3)
-MOTOR_FMT = '<hhhbB'              # MotorInfo (8): speed, current, voltage, temperature, status
+MOTOR_FMT = '<hhhbb'              # MotorInfo (8): speed, current, voltage, temperature, status
 HEARTBEAT_FMT = '<8B'             # year, month, day, hour, minute, second, ms_h, ms_l
 MOTOR_NAMES = ('cutter', 'left', 'right', 'height')
+
+# MotorInfo units (docs/mcu_protocol_spec.md "MotorInfo units").  Source: vendor ROS 1
+# mower_msgs/MotorInfo.msg comments (speed rpm, current 10 mA, voltage 10 mV, temp degC) and
+# the vendor mower_base::Motors::infoProcess, which republishes current/voltage as raw/100.
+# Those units hold for the CUTTER board only.  The two drive (chassis) boards use other
+# scalings, so they are converted here into the same message units:
+#   * voltage: raw counts proportional to the battery voltage, ~655 counts/V (two captures:
+#     16245 @ 24.7 V battery, 12798 @ 19.7 V battery) -> treated as 1/655.36 V (Q?.16/100).
+#     Empirical, +-1 %; the vendor node published these as "161 V" (raw/100, a vendor bug).
+#   * current: unknown.  Recovered header says mA; 10 mA would mean 35 A at standstill, so
+#     mA is used (left ~3.6 A / right ~-0.6 A while the drive is holding, status RUNNING).
+#     UNVERIFIED - needs a capture while driving.
+MOTOR_CURRENT_A_PER_COUNT = {'cutter': 0.01, 'left': 0.001, 'right': 0.001, 'height': 0.01}
+MOTOR_VOLTAGE_V_PER_COUNT = {'cutter': 0.01, 'left': 1.0 / 655.36, 'right': 1.0 / 655.36,
+                             'height': 0.01}
+# MotorStatus.status is a SIGNED int8 (vendor mower_msgs/MotorStatus.msg): 0 idle,
+# 1 running (drive boards report 1 whenever enabled, also at standstill), 2 locking,
+# negative = fault.  The old "1 = over-current" reading came from a mis-commented header.
+MOTOR_STATUS_TEXT = {0: 'idle', 1: 'running', 2: 'locking', -1: 'error', -2: 'over-current',
+                     -3: 'over-voltage', -4: 'under-voltage', -5: 'over-temperature',
+                     -6: 'stalled', -7: 'overload'}
 
 # WIT-Motion JY61P scaling convention used by ImuData (marked (?) in the recovered header:
 # angle*32768/180, acc*32768/16 g, gyro*32768/2000 dps).
 WIT_RAW_ANGLE_TO_RAD = math.radians(180.0) / 32768.0
 WIT_RAW_GYRO_TO_RAD = math.radians(2000.0) / 32768.0
 WIT_RAW_ACC_TO_MS2 = 16.0 * 9.80665 / 32768.0
+
+
+def decode_motors(payload):
+    """MODULE_MOTORS payload (32 B) -> {name: dict} in SI units, or None if mis-sized.
+
+    Each dict has ``speed_rpm``, ``current_a``, ``voltage_v``, ``temperature_c``, ``status``
+    (signed MotorStatus code) and ``raw`` (the unpacked wire tuple).  ``height`` is not
+    populated on this hardware (garbage) but is decoded anyway.
+    """
+    size = struct.calcsize(MOTOR_FMT)
+    if len(payload) != size * len(MOTOR_NAMES):
+        return None
+    out = {}
+    for idx, name in enumerate(MOTOR_NAMES):
+        raw = struct.unpack(MOTOR_FMT, payload[idx * size:(idx + 1) * size])
+        speed, current, voltage, temperature, status = raw
+        out[name] = {
+            'speed_rpm': speed,
+            'current_a': current * MOTOR_CURRENT_A_PER_COUNT[name],
+            'voltage_v': voltage * MOTOR_VOLTAGE_V_PER_COUNT[name],
+            'temperature_c': temperature,
+            'status': status,
+            'raw': raw,
+        }
+    return out
+
+
+def _clamp_i16(value):
+    return max(-32768, min(32767, int(round(value))))
+
+
+def motor_msg_fields(si):
+    """SI motor dict -> mower_interfaces/MotorInfo field units (int16 10 mA / 10 mV)."""
+    return {'speed': si['speed_rpm'], 'current': _clamp_i16(si['current_a'] * 100.0),
+            'voltage': _clamp_i16(si['voltage_v'] * 100.0),
+            'temperature': si['temperature_c'], 'status': si['status']}
 
 
 def escape(data):
@@ -490,7 +548,9 @@ class McuNode(Node):
         # content changes and otherwise as a keepalive at this rate. 0 = every frame (old).
         self.declare_parameter('sensor_info_rate_hz', 10.0)
         self.declare_parameter('estop_rate_hz', 10.0)
-        self.declare_parameter('battery_current_scale', 1.0)
+        # BatteryInfo.current: 0.1 A units (vendor PowerManager logs raw*100 as mA), positive
+        # while discharging (raw 7 off-dock at rest). BatteryState wants negative = discharge.
+        self.declare_parameter('battery_current_scale', -0.1)
 
         def param(name):
             return self.get_parameter(name).value
@@ -584,7 +644,8 @@ class McuNode(Node):
         self._sensor_info = None          # last SensorInfo, cached for /mower_sensor_info
         self._versions = {}               # 'cutter'/'chassis'/'rtk' -> (major, minor, patch)
         self._battery = None              # last BatteryInfo dict
-        self._motors = {}                 # motor name -> dict of raw values
+        self._motors = {}                 # motor name -> MotorInfo msg-unit values
+        self._motors_si = {}              # motor name -> decode_motors() SI dict
         self._mower_sensor_info_pub_warned = False
 
         self._cutter_cmd = None           # last CutterControl payload sent (bytes) or None
@@ -880,7 +941,7 @@ class McuNode(Node):
         # /battery sample in 10_ros_live_snapshot shows 247.0 V, i.e. it published the raw
         # value; battery_voltage_scale:=1.0 reproduces that if you need byte-for-byte parity.
         msg.voltage = raw['voltage'] * self.battery_voltage_scale
-        # TODO(unknown): BatteryInfo.current units are unrecovered - mA? 0.1 A?  raw for now.
+        # BatteryInfo.current: 0.1 A, positive = discharging (see battery_current_scale).
         msg.current = raw['current'] * self.battery_current_scale
         msg.percentage = max(0.0, min(100.0, raw['percentage'])) / 100.0
         msg.temperature = float(raw['temperature'])
@@ -960,12 +1021,14 @@ class McuNode(Node):
             self._versions[key] = tuple(vals[idx * 3:idx * 3 + 3])
 
     def _on_motors(self, payload):
-        if len(payload) != struct.calcsize(MOTOR_FMT) * len(MOTOR_NAMES):
+        decoded = decode_motors(payload)
+        if decoded is None:
             return
-        fields = ('speed', 'current', 'voltage', 'temperature', 'status')
-        for idx, name in enumerate(MOTOR_NAMES):
-            chunk = payload[idx * 8:(idx + 1) * 8]
-            self._motors[name] = dict(zip(fields, struct.unpack(MOTOR_FMT, chunk)))
+        self._motors_si = decoded
+        # self._motors holds MowerSensorInfo.MotorInfo units (rpm, 10 mA, 10 mV, degC) with
+        # the drive-board scalings already normalised (see MOTOR_*_PER_COUNT).
+        for name, si in decoded.items():
+            self._motors[name] = motor_msg_fields(si)
 
     def _publish_sensor_info(self):
         """Publish ``/mower_sensor_info`` if the interface package exists.
@@ -1493,8 +1556,7 @@ def _set_if(msg, name, value):
 
 
 # Raw MotorInfo names -> names used by mower_interfaces/MotorInfo (vendor msg uses speed_rpm).
-# TODO: the vendor MotorInfo also nests a MotorStatus message where the wire format has a
-# single uint8; that field needs a converter once the interface package is final.
+# The vendor MotorInfo nests a MotorStatus message; the wire int8 is copied into .status.
 _MOTOR_FIELD_ALIASES = {'speed': 'speed_rpm'}
 
 

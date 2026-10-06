@@ -59,11 +59,30 @@ reproduces them.
 - Large images and DDS: with Fast DDS defaults (512 KiB SHM segment) a best-effort
   6.2 MB bgr8 frame is fragmented and mostly dropped. A synthetic 15 Hz 1080p publisher
   was received at 5.66 Hz. `cameras.launch.py` therefore sets
-  `FASTRTPS_DEFAULT_PROFILES_FILE=config/cameras/fastdds_camera_shm.xml` (a 32 MiB SHM
-  segment) for the camera nodes only (a scoped `GroupAction`). The profile is needed on
+  `FASTRTPS_DEFAULT_PROFILES_FILE=config/cameras/fastdds_camera_shm.xml` (a 16 MiB SHM
+  segment, 8 MiB max message) for the camera nodes only (a scoped `GroupAction`). The profile is needed on
   the publisher only, and with it delivery is 14.95 Hz. Remote (UDP) subscribers are
   still limited by the host's `net.core.rmem_max=212992`, so use `image_raw/compressed`
   off-board.
+- UPDATE 2026-10-06 (current): the SHM transport is disabled for the whole container.
+  `docker-compose.yml` sets `FASTRTPS_DEFAULT_PROFILES_FILE=.../config/cameras/fastdds_no_shm.xml`
+  (UDPv4 only) and `cameras.launch.py` defaults `camera_dds_profile` to the same file, so
+  /dev/shm stays at 0 bytes (was 145 MB per run, 1 GB after several restarts). Measured on the
+  mower over UDP loopback: OA ~7-9 Hz, rear ~13 Hz, /mower_base/status 99.8 Hz. The old SHM
+  profile `fastdds_camera_shm.xml` is kept for A/B (pass `camera_dds_profile:=` that file
+  and remove the compose env). The section below describes that SHM-era analysis.
+- /dev/shm budget (SHM era, measured 2026-10-06): only the 4 camera publisher processes (2x v4l2_cam,
+  camera_node, stereo_cam) get the profile, so only they own large segments (formerly 4 x
+  32 MiB). Every other participant (~27) owns a default 512 KiB segment (549,408 B files) plus
+  per-participant port/lock files (52,416 B + 32 B x3); one clean run is ~150 files / ~145 MB and
+  stays flat. Subscribers map every segment but allocate nothing. The 890 files / 1 GB seen was
+  leakage across restarts (Fast DDS 2.6 does not unlink segments of killed participants; each
+  restart adds ~145 MB), not growth within a run. `scripts/shm_gc.sh` (run by the compose command
+  at start with MIN_AGE=0, then every 5 min) removes only `fastrtps_*` files that no process maps
+  and no fd holds. It only sees this container's PID namespace: do not run other Fast DDS
+  containers on the same host /dev/shm. compose `shm_size`/tmpfs cannot cap this because /dev is
+  bind-mounted from the host. Note the compose `command` change needs `docker compose up -d`
+  (recreate), not just `docker restart`.
 - The rear USB power is gated by GPIO 113.
 
 ### `cameras.launch.py` arguments

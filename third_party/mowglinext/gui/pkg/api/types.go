@@ -32,4 +32,6 @@ type ContainerListResponse struct {
 	// page falls back to the /rosout stream.
 	Available  bool        `json:"available"`
 	Containers []Container `json:"containers"`
+	// Names are the configured stack container names (ROS_/GPS_/GUI_CONTAINER_NAME).
+	Names ContainerNames `json:"names"`
 }

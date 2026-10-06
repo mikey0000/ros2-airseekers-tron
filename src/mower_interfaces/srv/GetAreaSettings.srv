@@ -1,0 +1,11 @@
+# Per-area mowing settings (served by mower_map map_server_node at
+# /map_server_node/get_area_settings).
+#
+# area_index  index as in /map_server_node/get_mowing_area; 255 = the defaults.
+# settings_json  the EFFECTIVE settings: the area's own values merged over the
+#                defaults, every key present (see SetAreaSettings.srv). For 255,
+#                the defaults themselves.
+uint8 area_index
+---
+bool success
+string settings_json

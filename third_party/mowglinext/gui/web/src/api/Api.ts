@@ -28,6 +28,13 @@ export interface ApiContainer {
 export interface ApiContainerListResponse {
   available?: boolean;
   containers?: ApiContainer[];
+  names?: ApiContainerNames;
+}
+
+export interface ApiContainerNames {
+  ros?: string;
+  gps?: string;
+  gui?: string;
 }
 
 export interface ApiErrorResponse {

@@ -779,7 +779,12 @@
     "rosbagDeleteFailed": "Impossible de supprimer l'enregistrement",
     "rosbagDeleteConfirmTitle": "Supprimer l'enregistrement ?",
     "rosbagDeleteConfirmBody": "Ceci supprime définitivement l'enregistrement {{name}} du robot. Action irréversible.",
-    "gpsWrongfix": "Rejets GPS mauvais-fix : {{count}}"
+    "gpsWrongfix": "Rejets GPS mauvais-fix : {{count}}",
+    "escCurrent": "Courant ESC",
+    "localizationHealth": "État de la localisation",
+    "localizationHealthHint": "Diagnostics de l'estimateur d'état, du GNSS et de l'IMU, tels que publiés sur /diagnostics.",
+    "noLocalizationDiagnostics": "Aucun diagnostic de localisation reçu pour le moment.",
+    "imuCalibrationFromDiagnostics": "Signalé par les diagnostics de l'IMU : {{state}}."
   },
   "mowgliNextPage": {
     "headlineUntilHomePrefix": "Encore ",
@@ -3018,7 +3023,8 @@
     "hoverAPart": "Survolez une pièce",
     "legend": "Vert = sain, ambre = à surveiller.",
     "motorTemps": "moteur {{motor}} °C · ESC {{esc}} °C",
-    "unknown": "Inconnu"
+    "unknown": "Inconnu",
+    "motorTempOnly": "moteur {{motor}} °C"
   },
   "dashboardHeroCard": {
     "mowerNeedsYou": "La tondeuse a besoin de vous",
@@ -3484,6 +3490,10 @@
       "label": "Moteurs",
       "description": "Gains PID de vitesse de roue du firmware et feedforward (appliqués en direct)"
     },
+    "straight_driving": {
+      "label": "Conduite en ligne droite",
+      "description": "Trim angulaire, zone morte du joystick et maintien de cap IMU (appliqués en direct)"
+    },
     "ntrip": {
       "label": "Corrections NTRIP",
       "description": "Réseau de correction RTK et station de base — à configurer avant le GPS"
@@ -3887,7 +3897,9 @@
     "cameras": {
       "left": "Caméra gauche",
       "right": "Caméra droite",
-      "rear": "Caméra arrière"
+      "rear": "Caméra arrière",
+      "front_left": "Stéréo avant gauche",
+      "front_right": "Stéréo avant droite"
     }
   },
   "perception": {
@@ -3914,7 +3926,24 @@
     "loadFailed": "Impossible de charger la liste des caméras depuis le backend.",
     "noCameras": "Aucune caméra n'est configurée pour ce robot.",
     "unavailable": "Le serveur de flux caméra est injoignable.",
-    "hiddenPaused": "Les flux sont en pause tant que cet onglet est masqué."
+    "hiddenPaused": "Les flux sont en pause tant que cet onglet est masqué (petits écrans uniquement).",
+    "health": {
+      "live": "En direct",
+      "stale": "Figé",
+      "waiting": "En attente",
+      "absent": "Ne publie pas"
+    },
+    "fpsUnit": "i/s",
+    "frameAge": "il y a {{age}} s",
+    "latestFrame": "Dernière image :",
+    "nothingDetected": "Les images sont analysées, rien n'est détecté.",
+    "class": "Classe",
+    "score": "Score",
+    "histogram": "Détecté depuis l'ouverture de la page",
+    "messagesSeen_one": "{{count}} image analysée",
+    "messagesSeen_other": "{{count}} images analysées",
+    "snapshotMode": "instantanés",
+    "snapshotModeHint": "Images interrogées une par une : le navigateur n'autorise que quelques flux en direct par serveur."
   },
   "profileGating": {
     "navPerception": "Perception",
@@ -4084,5 +4113,89 @@
     "setFromRobotDone": "Position de la base enregistrée",
     "setFromRobotFailed": "Impossible de définir la position de la base",
     "storedPose": "Enregistrée en X {{x}} m, Y {{y}} m."
+  },
+  "areaSettings": {
+    "title": "Réglages de tonte",
+    "defaultsTitle": "Réglages de tonte par défaut",
+    "defaultsHint": "Chaque zone de tonte utilise ces réglages sauf si elle a les siens. Enregistrés sur le robot.",
+    "notSupported": "Réglages par zone non pris en charge par ce robot",
+    "notSupportedHint": "Le serveur de carte de ce robot ne propose pas encore de réglages par zone. La tonte utilise les réglages globaux.",
+    "loadFailed": "Impossible de charger les réglages de tonte",
+    "saveFailed": "Impossible d'enregistrer les réglages de tonte",
+    "saved": "Réglages de tonte enregistrés",
+    "retry": "Réessayer",
+    "invalid": "Valeur invalide pour {{key}}",
+    "useDefaults": "Utiliser les réglages par défaut",
+    "useDefaultsHint": "Suivre les réglages de tonte par défaut du robot pour cette zone.",
+    "save": "Enregistrer",
+    "cutterHeight": "Hauteur de coupe",
+    "pathMode": "Motif de tonte",
+    "pathModes": {
+      "zigzag": "Zigzag",
+      "cross": "Croisé",
+      "alternate": "Alterné",
+      "spiral": "Spirale",
+      "contour_only": "Bordures seules"
+    },
+    "mowAngle": "Direction de tonte",
+    "mowAngleHint": "Direction des bandes, 0° = nord. Auto suit le bord le plus long.",
+    "auto": "Auto",
+    "alternateOffset": "Changement d'angle par tonte",
+    "alternateOffsetHint": "Chaque nouvelle tonte tourne les bandes de cet angle.",
+    "perimeterLaps": "Tours de bordure",
+    "edgeFirst": "Bordures d'abord",
+    "edgeFirstHint": "Tondre les tours de bordure avant les bandes.",
+    "cutSpeed": "Vitesse de tonte",
+    "swathOverlap": "Recouvrement des bandes",
+    "repeat": "Passages",
+    "mm": "{{value}} mm",
+    "mps": "{{value}} m/s",
+    "cm": "{{value}} cm",
+    "times_one": "{{count}} passage",
+    "times_other": "{{count}} passages",
+    "chipHeight": "Coupe {{value}} mm",
+    "chipAngle": "{{value}}°",
+    "chipAngleAuto": "Angle auto",
+    "chipLaps_one": "{{count}} tour",
+    "chipLaps_other": "{{count}} tours",
+    "chipDefaults": "Par défaut",
+    "active": "Tonte avec",
+    "activeFor": "Tonte de {{area}} avec",
+    "custom": "Personnalisé",
+    "inherited": "Par défaut",
+    "run": "passage {{run}}/{{runs}}"
+  },
+  "startSheet": {
+    "title": "Lancer la tonte",
+    "what": "Que tondre",
+    "allAreas": "Toutes les zones",
+    "oneArea": "Une zone",
+    "settings": "Réglages",
+    "edit": "Modifier",
+    "heightOverride": "Hauteur de coupe pour cette tonte",
+    "repeatOverride": "Passages pour cette tonte",
+    "overrideSavedArea": "Les nouvelles valeurs sont enregistrées pour cette zone avant le départ.",
+    "overrideSavedDefaults": "Les nouvelles valeurs sont enregistrées dans les réglages par défaut avant le départ (les zones avec leurs propres réglages les conservent).",
+    "progress": "La tonte précédente a été interrompue",
+    "start": "Démarrer",
+    "cancel": "Annuler",
+    "failed": "Impossible de lancer la tonte"
+  },
+  "settingsStraightDriving": {
+    "intro": "Corrections côté hôte de la consigne de rotation, juste avant la carte moteur. La boucle de couple par roue tourne dans le firmware ; ces réglages modifient ce qui lui est demandé. Tous sont désactivés par défaut et s'appliquent en direct à l'enregistrement.",
+    "trimCard": "Trim et zone morte",
+    "trimLabel": "Trim angulaire",
+    "trimTooltip": "Vitesse de rotation ajoutée en roulant, signée selon le sens de marche. Si le robot tire seul à gauche de r rad/s, saisissez -r (à droite : +r). 0 = désactivé.",
+    "deadbandLabel": "Zone morte angulaire",
+    "deadbandTooltip": "Les consignes de rotation inférieures à cette valeur sont traitées comme une ligne droite en roulant, pour que la dérive du joystick ne fasse pas zigzaguer le robot. Essayez 0,05. 0 = désactivé.",
+    "holdCard": "Maintien de cap",
+    "holdDescription": "En roulant sans consigne de rotation, le cap IMU à cet instant est verrouillé et le robot y revient (correction maximale limitée). Tourner à nouveau ou s'arrêter le libère.",
+    "holdEnable": "Maintenir le cap en ligne droite",
+    "kpLabel": "Kp",
+    "kpTooltip": "Correction (rad/s) par radian d'écart de cap. Par défaut 1,0.",
+    "kdLabel": "Kd",
+    "kdTooltip": "Amortissement sur la vitesse de lacet mesurée. Augmentez si le maintien oscille. Par défaut 0,1.",
+    "maxLabel": "Correction max",
+    "maxTooltip": "Limite de la correction de cap. Par défaut 0,15 rad/s."
   }
 }

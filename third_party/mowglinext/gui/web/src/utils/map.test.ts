@@ -1,5 +1,5 @@
 import {describe, it, expect} from 'vitest';
-import {dedupePoints, getQuaternionFromHeading, transpose, itranspose} from './map.tsx';
+import {dedupePoints, getQuaternionFromHeading, transpose, itranspose, pointInPolygon} from './map.tsx';
 
 describe('dedupePoints', () => {
     it('returns empty array for empty input', () => {
@@ -137,5 +137,18 @@ describe('transpose / itranspose', () => {
         const [x, y] = itranspose(offsetX, offsetY, datum, lat, lon);
         expect(x).toBeCloseTo(20, 0);
         expect(y).toBeCloseTo(10, 0);
+    });
+});
+
+describe("pointInPolygon", () => {
+    const square = [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]];
+    it("hits the inside and misses the outside", () => {
+        expect(pointInPolygon([5, 5], square)).toBe(true);
+        expect(pointInPolygon([15, 5], square)).toBe(false);
+    });
+    it("excludes holes", () => {
+        const withHole = [...square, [[4, 4], [6, 4], [6, 6], [4, 6], [4, 4]]];
+        expect(pointInPolygon([5, 5], withHole)).toBe(false);
+        expect(pointInPolygon([2, 2], withHole)).toBe(true);
     });
 });

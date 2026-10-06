@@ -146,6 +146,14 @@ var paramBindingTables = map[string]ParamBindingTable{
 			// NTRIP off means the vendor LoRa base on this robot.
 			{Key: "ntrip_enabled", Node: "/um960_gps_driver", Param: "correction_source", Type: ParamTypeString, Live: true,
 				ValueMap: map[string]any{"true": "ntrip", "false": "lora"}},
+			// Straight-line driving (src/mower_control cmd_vel_slew, the last stage
+			// before the MCU): trim / joystick deadband / IMU heading hold.
+			{Key: "angular_trim_radps", Node: "/cmd_vel_slew", Param: "angular_trim_radps", Type: ParamTypeDouble, Live: true},
+			{Key: "angular_deadband_radps", Node: "/cmd_vel_slew", Param: "angular_deadband_radps", Type: ParamTypeDouble, Live: true},
+			{Key: "heading_hold", Node: "/cmd_vel_slew", Param: "heading_hold", Type: ParamTypeBool, Live: true},
+			{Key: "heading_hold_kp", Node: "/cmd_vel_slew", Param: "heading_hold_kp", Type: ParamTypeDouble, Live: true},
+			{Key: "heading_hold_kd", Node: "/cmd_vel_slew", Param: "heading_hold_kd", Type: ParamTypeDouble, Live: true},
+			{Key: "heading_hold_max_radps", Node: "/cmd_vel_slew", Param: "heading_hold_max_radps", Type: ParamTypeDouble, Live: true},
 		},
 		GuiKeys: []string{
 			"mower_model", "datum_lat", "datum_lon", "datum_alt",

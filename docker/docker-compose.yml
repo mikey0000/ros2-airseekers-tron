@@ -23,6 +23,7 @@ services:
       - ROS_DISTRO=humble
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/work/install/mower_bringup/share/mower_bringup/config/cameras/fastdds_no_shm.xml
       - DISPLAY=${DISPLAY:-}
     volumes:
       # ROS 2 workspace sources (bind-mount; built inside container by scripts/build.sh)
@@ -53,9 +54,13 @@ services:
     # For an interactive shell instead: scripts/run_stack.sh shell
     # Fast DDS leaks its shared-memory segments on every restart; /dev/shm is the HOST tmpfs (bind-mounted
     # /dev). A full /dev/shm breaks every node (SHM transport errors, UDP fallback, RAM pressure), so wipe
-    # the stale segments before launching. The `fastdds` CLI is not in the image, hence plain rm.
+    # the stale segments before launching (scripts/shm_gc.sh: removes only fastrtps_* files that no process
+    # maps; `fastdds shm clean` is not in the image). A background loop repeats it every 5 min. Note: tmpfs
+    # size/shm_size cannot cap this: /dev is bind-mounted from the host, so /dev/shm is the host's 2 GB tmpfs.
     command: >-
       bash -lc "source /opt/ros/humble/setup.bash &&
       source /work/install/setup.bash &&
-      ros2 launch mower_bringup mower.launch.py"
+      MIN_AGE=0 /work/scripts/shm_gc.sh ;
+      (/work/scripts/shm_gc.sh --loop 300 &) ;
+      exec ros2 launch mower_bringup mower.launch.py"
     restart: unless-stopped

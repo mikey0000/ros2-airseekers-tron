@@ -13,12 +13,14 @@ File layout (one record per line, unknown tags ignored, exactly as upstream)::
     current_area 0
     completed_areas 1 3
     area <idx> <pose_count> <fingerprint> <resume_pose_index|-1> completed <i> <j> ...
+    area_run <idx> <run>            # ours: repeat / cross run in progress (0-based)
 
 ``pose_count`` is the number of poses over all drivable sub-paths of the
 area plan, ``resume_pose_index`` an absolute index into their concatenation,
 and the ``completed`` indices are drivable sub-path indices (upstream calls
-the same units "swaths").  Cross-hatch rows are not written (we do not
-alternate the mow angle) and are skipped when read.
+the same units "swaths").  Upstream cross-hatch rows are not written and are
+skipped when read; our own ``area_run`` row (repeat / cross / alternate run in
+progress) is ignored by upstream readers.
 """
 
 HEADER = 'mowgli_coverage_resume v2'
@@ -51,6 +53,7 @@ class ResumeCursor:
         self.current_area = -1
         self.completed_areas = set()
         self.areas = {}
+        self.area_runs = {}             # area idx -> run index in progress (repeat / cross)
 
     def __eq__(self, other):
         return isinstance(other, ResumeCursor) and self.__dict__ == other.__dict__
@@ -65,7 +68,8 @@ class ResumeCursor:
         a stored resume pose)."""
         return self.current_command == 1 and (
             bool(self.completed_areas)
-            or any(a.completed or a.resume_index >= 0 for a in self.areas.values()))
+            or any(a.completed or a.resume_index >= 0 for a in self.areas.values())
+            or any(r > 0 for r in self.area_runs.values()))
 
     def area(self, idx):
         return self.areas.setdefault(int(idx), AreaCursor())
@@ -82,6 +86,9 @@ class ResumeCursor:
             out.append(' '.join(
                 ['area', str(idx), str(a.pose_count), str(a.fingerprint), str(a.resume_index),
                  'completed'] + [str(s) for s in sorted(a.completed)]))
+        for idx in sorted(self.area_runs):
+            if self.area_runs[idx] > 0:
+                out.append('area_run %d %d' % (idx, self.area_runs[idx]))
         return '\n'.join(out) + '\n'
 
     @classmethod
@@ -109,6 +116,8 @@ class ResumeCursor:
                     idx = int(args[0])
                     cur.areas[idx] = AreaCursor(int(args[1]), int(args[2]), int(args[3]),
                                                 {int(s) for s in args[5:]})
+                elif tag == 'area_run' and len(args) >= 2:
+                    cur.area_runs[int(args[0])] = int(args[1])
             except ValueError:
                 continue  # malformed row: skip it, like upstream
         return cur

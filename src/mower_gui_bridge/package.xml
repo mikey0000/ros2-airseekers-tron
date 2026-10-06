@@ -18,6 +18,7 @@
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav_msgs</depend>
+  <depend>diagnostic_msgs</depend>
   <depend>mower_interfaces</depend>
   <depend>mowgli_interfaces</depend>
   <!-- optional at runtime: set_datum forwards to navsat_transform_node /datum when present -->

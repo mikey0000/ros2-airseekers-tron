@@ -9,7 +9,9 @@ Input is the pose sequence of the ``nav_msgs/Path`` returned by
 How ``mower_coverage_node`` lays out that path (``mower_coverage_node.cpp``):
 
 * NOT densified. Every pose is a polygon vertex or a swath end point.
-* Headland rings first, outermost first. Each ring is a closed loop whose LAST
+* Headland rings first, outermost first (unless the plan was requested with
+  ``edge_first = false``: then the swaths come first and the rings after them,
+  innermost first; pass ``swaths_first=True``). Each ring is a closed loop whose LAST
   pose repeats the FIRST (``rotateToLongestEdgeMid`` re-closes it), so a ring
   ends exactly where it started.
 * Then the swaths in serpentine order, each EXACTLY two poses (start, end).
@@ -285,15 +287,29 @@ def split_segments(points: Sequence[Point],
                    swath_count: Optional[int] = None,
                    transit_gap_m: float = DEFAULT_TRANSIT_GAP_M,
                    turn_split_deg: float = DEFAULT_TURN_SPLIT_DEG,
-                   closure_tol_m: float = DEFAULT_CLOSURE_TOL_M) -> Tuple[List[Segment], str]:
+                   closure_tol_m: float = DEFAULT_CLOSURE_TOL_M,
+                   swaths_first: bool = False) -> Tuple[List[Segment], str]:
     """Split the planner path into ring and swath segments.
 
     Returns (segments, mode) where mode is MODE_STRUCTURAL when the planner's
     ring/swath counts matched the pose layout exactly, else MODE_HEURISTIC.
+
+    ``swaths_first``: the plan was requested with ``edge_first = false``, so
+    the node laid out the ``2 * swath_count`` swath poses FIRST and the rings
+    after them. Needs both counts; segments come back in drive order.
     """
     pts = _dedup(points)
     if len(pts) < 2:
         return [], MODE_STRUCTURAL
+    if swaths_first and swath_count is not None and ring_count is not None \
+            and swath_count > 0 and len(pts) >= 2 * swath_count:
+        head = pts[:2 * swath_count]
+        rings, rest_i = detect_rings(pts[2 * swath_count:], ring_count, closure_tol_m)
+        if len(rings) == ring_count and rest_i == len(pts) - 2 * swath_count:
+            segs = [Segment(SEGMENT_SWATH, [head[2 * i], head[2 * i + 1]])
+                    for i in range(swath_count)]
+            segs += [Segment(SEGMENT_RING, r) for r in rings]
+            return segs, MODE_STRUCTURAL
     rings, rest_i = detect_rings(pts, ring_count, closure_tol_m)
     rest = pts[rest_i:]
     rings_ok = ring_count is None or len(rings) == ring_count
@@ -403,9 +419,11 @@ def plan(points: Sequence[Point],
          transit_gap_m: float = DEFAULT_TRANSIT_GAP_M,
          turn_split_deg: float = DEFAULT_TURN_SPLIT_DEG,
          fences: Sequence[Sequence[Point]] = (),
-         holes: Sequence[Sequence[Point]] = ()) -> SplitResult:
+         holes: Sequence[Sequence[Point]] = (),
+         swaths_first: bool = False) -> SplitResult:
     """Full pipeline: segment, then join into drivable sub-paths."""
-    segs, mode = split_segments(points, ring_count, swath_count, transit_gap_m, turn_split_deg)
+    segs, mode = split_segments(points, ring_count, swath_count, transit_gap_m, turn_split_deg,
+                                swaths_first=swaths_first)
     subs = join_subpaths(segs, transit_gap_m, fences, holes)
     return SplitResult(segs, subs, mode)
 

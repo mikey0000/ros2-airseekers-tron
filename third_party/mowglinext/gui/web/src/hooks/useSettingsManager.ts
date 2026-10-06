@@ -26,6 +26,7 @@ export type SettingsSection =
     | "appearance"
     | "hardware"
     | "drive_motor"
+    | "straight_driving"
     | "ntrip"
     | "positioning"
     | "sensors"
@@ -87,6 +88,16 @@ export const SECTION_DEFINITIONS: SectionMeta[] = [
         keys: [
             "wheel_pid_kp", "wheel_pid_ki", "wheel_pid_kd",
             "wheel_pid_integral_limit", "wheel_pid_pwm_per_mps",
+        ],
+    },
+    {
+        id: "straight_driving",
+        label: "settingsSections.straight_driving.label",
+        icon: "aim",
+        description: "settingsSections.straight_driving.description",
+        keys: [
+            "angular_trim_radps", "angular_deadband_radps", "heading_hold",
+            "heading_hold_kp", "heading_hold_kd", "heading_hold_max_radps",
         ],
     },
     {

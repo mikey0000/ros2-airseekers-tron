@@ -41,13 +41,13 @@ func ContainerListRoutes(group *gin.RouterGroup, provider types2.IDockerProvider
 		containers, err := provider.ContainerList(c.Request.Context())
 		if err != nil {
 			if IsDockerUnavailable(err) {
-				c.JSON(200, ContainerListResponse{Available: false, Containers: []Container{}})
+				c.JSON(200, ContainerListResponse{Available: false, Containers: []Container{}, Names: CurrentContainerNames()})
 				return
 			}
 			c.JSON(500, ErrorResponse{Error: err.Error()})
 			return
 		}
-		c.JSON(200, ContainerListResponse{Available: true, Containers: lo.Map(containers, func(container types.Container, idx int) Container {
+		c.JSON(200, ContainerListResponse{Available: true, Names: CurrentContainerNames(), Containers: lo.Map(containers, func(container types.Container, idx int) Container {
 			if container.Labels == nil {
 				container.Labels = map[string]string{}
 			}

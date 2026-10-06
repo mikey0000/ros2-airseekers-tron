@@ -1,3 +1,4 @@
+import {AreaDefaultsCard} from "../components/areaSettings/AreaDefaultsCard.tsx";
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
@@ -19,6 +20,7 @@ import { useGate } from "../hooks/useProfileGates.ts";
 import { SettingsNav } from "../components/settings/SettingsNav.tsx";
 import { HardwareSection } from "../components/settings/HardwareSection.tsx";
 import { DriveMotorSection } from "../components/settings/DriveMotorSection.tsx";
+import { StraightDrivingSection } from "../components/settings/StraightDrivingSection.tsx";
 import { NtripSection } from "../components/settings/NtripSection.tsx";
 import { PositioningSection } from "../components/settings/PositioningSection.tsx";
 import { SensorsSection } from "../components/settings/SensorsSection.tsx";
@@ -156,6 +158,8 @@ export const SettingsPage = () => {
                         acceptPersistedValues={acceptPersistedValues}
                     />
                 );
+            case "straight_driving":
+                return <StraightDrivingSection values={values} onChange={handleChange} />;
             case "ntrip":
                 return <NtripSection values={values} onChange={handleChange} />;
             case "positioning":
@@ -180,14 +184,17 @@ export const SettingsPage = () => {
                 return <LocalizationSection values={values} onChange={handleChange} />;
             case "mowing":
                 return (
-                    <MowingSection
-                        values={values}
-                        onChange={handleChange}
-                        isOverridden={isOverridden}
-                        hasDefault={hasDefault}
-                        onReset={resetToDefault}
-                        defaults={defaults}
-                    />
+                    <>
+                        <MowingSection
+                            values={values}
+                            onChange={handleChange}
+                            isOverridden={isOverridden}
+                            hasDefault={hasDefault}
+                            onReset={resetToDefault}
+                            defaults={defaults}
+                        />
+                        <AreaDefaultsCard/>
+                    </>
                 );
             case "docking":
                 return (

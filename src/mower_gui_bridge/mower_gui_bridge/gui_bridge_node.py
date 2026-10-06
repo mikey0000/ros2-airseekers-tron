@@ -18,13 +18,15 @@ import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+from rclpy.qos import (QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy,
+                       qos_profile_sensor_data)
 from rclpy.serialization import deserialize_message
 
 from geometry_msgs.msg import Twist
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import BatteryState, NavSatFix
-from std_msgs.msg import Bool, String
+from sensor_msgs.msg import BatteryState, CameraInfo, Imu, NavSatFix
+from std_msgs.msg import Bool, Float32, String
 from std_srvs.srv import Empty, Trigger
 
 from mower_interfaces.msg import MowerBaseDevStatus, MowerSensorInfo
@@ -33,6 +35,7 @@ from mowgli_interfaces.msg import Emergency, GnssStatus, HighLevelStatus, Power,
 from mowgli_interfaces.srv import EmergencyStop, HighLevelControl, MowerControl, StartInArea
 
 from mower_gui_bridge import datum as dt
+from mower_gui_bridge import diagnostics as diag
 from mower_gui_bridge import state_machine as sm
 from mower_gui_bridge.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
                                         odometry_frames, odometry_with_frames)
@@ -94,6 +97,27 @@ PARAM_DEFAULTS = {
     'service_timeout_s': 1.5,
     # stub mission layer; set false once a real behavior_tree_node exists
     'serve_high_level': True,
+    # hardware diagnostics (diagnostics.py) as diagnostic_msgs/DiagnosticArray ('' = off)
+    'diagnostics_topic': '/diagnostics',
+    'diagnostics_rate_hz': 1.0,
+    'diagnostics_timeout_s': 3.0,      # an input older than this is reported stale
+    'diagnostics_motor_status_alerts': True,    # WARN on negative (fault) MotorStatus codes
+    'imu_topic': '/imu/data',          # '' = no IMU entry
+    # '' by default: wit_imu_driver only publishes /imu/temperature_c (at 100 Hz) while
+    # someone subscribes, so a 1 Hz temperature reading would cost a 100 Hz stream.
+    'imu_temperature_topic': '',
+    'imu_bias_status_topic': '/bias_status',
+    'lights_state_topic': '/light_controller/state',   # '' = no lights entry
+    # 'id|image_topic|freshness_topic|on_demand' (see diagnostics.parse_camera_spec). Only
+    # the small freshness topic is subscribed, and never for on-demand cameras (a
+    # subscriber would make them capture).
+    'diagnostics_cameras': [
+        'left|/left_oa_camera/image_raw|/left_oa_camera/camera_info|0',
+        'right|/right_oa_camera/image_raw|/right_oa_camera/camera_info|0',
+        'rear|/rear_camera/image_raw||1',
+        'front_left|/vio/left/image_raw||1',
+        'front_right|/vio/right/image_raw||1',
+    ],
 }
 
 
@@ -124,12 +148,23 @@ class GuiBridgeNode(Node):
         self._estop = False
         self._fix_status = None
         self._fix_status_time = None
+        self._fix_status_raw = None
         self._last_fix = None           # (status, lat, lon, alt, monotonic receipt time)
         self._gnss_quality = 0.0
+        self._gnss_fix_type = None
         self._cutter_requested = False
         self._blade_stamp = None
         self._emergency_active = False
         self._emergency_fields = (False, False, False, '')
+        self._sensor_time = None
+        self._battery_time = None
+        self._filtered_time = None
+        self._imu_time = None
+        self._imu_temperature = None
+        self._imu_bias = None
+        self._lights = None
+        self._lights_time = None
+        self._camera_times = {}
 
         self._srv_group = ReentrantCallbackGroup()
         self._cli_group = ReentrantCallbackGroup()
@@ -177,6 +212,11 @@ class GuiBridgeNode(Node):
         sub(String, p['fix_status_topic'], self._on_fix_status, 10)
         sub(Odometry, p['odom_topic'], self._on_odom_raw, 10, raw=True)
         sub(Odometry, p['filtered_odom_topic'], self._on_filtered_raw, 10, raw=True)
+        self._diag_pub = None
+        self._diag_sampled = []
+        self._cameras = []
+        if str(p['diagnostics_topic']):
+            self._setup_diagnostics_inputs(sub)
 
         # ---- clients -----------------------------------------------------
         self._cutter_cli = self.create_client(
@@ -227,6 +267,9 @@ class GuiBridgeNode(Node):
             tasks.append((1.0 / max(0.1, float(p['high_level_rate_hz'])),
                           self._publish_high_level))
             self._publish_high_level()
+        if self._diag_pub is not None:
+            tasks.append((1.0 / max(0.1, float(p['diagnostics_rate_hz'])),
+                          self._publish_diagnostics))
         self._periodic = PeriodicRunner(self, tasks, 'gui_bridge_periodic')
         self._pump.start()              # inputs first, then the periodic evaluation
         self._periodic.start()
@@ -351,10 +394,12 @@ class GuiBridgeNode(Node):
     def _on_sensor(self, msg):
         with self._lock:
             self._sensor = msg
+            self._sensor_time = time.monotonic()
 
     def _on_battery(self, msg):
         with self._lock:
             self._battery = msg
+            self._battery_time = time.monotonic()
 
     def _on_estop(self, msg):
         changed = False
@@ -372,6 +417,7 @@ class GuiBridgeNode(Node):
     def _on_fix_status(self, msg):
         with self._lock:
             self._fix_status = sm.parse_fix_status(msg.data)
+            self._fix_status_raw = msg.data
             self._fix_status_time = time.monotonic()
 
     def _on_fix(self, msg):
@@ -395,6 +441,7 @@ class GuiBridgeNode(Node):
             setattr(out, key, value)
         with self._lock:
             self._gnss_quality = float(values['quality_percent'])
+            self._gnss_fix_type = int(values['fix_type'])
         self._gnss_pub.publish(out)
 
     def _on_odom(self, msg):
@@ -409,6 +456,7 @@ class GuiBridgeNode(Node):
         self._map_odom_pub.publish(msg)
 
     def _on_filtered_raw(self, data):
+        self._filtered_time = time.monotonic()
         # Same output as _on_filtered, done on the serialized bytes (no deserialize /
         # serialize round trip): relay untouched when the frames already match, otherwise
         # rewrite the two frame strings (ekf publishes odom/base_link).
@@ -530,6 +578,127 @@ class GuiBridgeNode(Node):
             msg.is_charging = bool(base.is_charging) if base is not None else False
             msg.emergency = self._emergency_active
         self._hl_pub.publish(msg)
+
+    # ------------------------------------------------------------------
+    # hardware diagnostics (/diagnostics, see diagnostics.py)
+    # ------------------------------------------------------------------
+    def _setup_diagnostics_inputs(self, sub):
+        """Low-rate, sampled inputs used only by the 1 Hz diagnostics publisher."""
+        p = self._p
+        self._diag_pub = self.create_publisher(DiagnosticArray, p['diagnostics_topic'], 10)
+        sensor_qos = qos_profile_sensor_data          # best effort matches any publisher
+
+        def sampled(msg_type, topic, callback, **kw):
+            if str(topic):
+                self._diag_sampled.append(sub(msg_type, topic, callback, sensor_qos,
+                                              sampled=True, with_receipt=True, **kw))
+
+        sampled(Imu, p['imu_topic'], self._on_imu_receipt, raw=True)
+        sampled(Float32, p['imu_temperature_topic'], self._on_imu_temperature)
+        sampled(String, p['lights_state_topic'], self._on_lights)
+        if str(p['imu_bias_status_topic']):
+            latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                                 reliability=QoSReliabilityPolicy.RELIABLE)
+            sub(String, p['imu_bias_status_topic'], self._on_imu_bias, latched)
+        for spec in p['diagnostics_cameras'] or []:
+            cam = diag.parse_camera_spec(spec)
+            if cam is None:
+                self.get_logger().warn('ignoring malformed diagnostics_cameras entry %r' % spec)
+                continue
+            self._cameras.append(cam)
+            if cam['freshness_topic'] and not cam['on_demand']:
+                sampled(CameraInfo, cam['freshness_topic'],
+                        lambda _d, receipt, _id=cam['id']: self._on_camera_frame(_id, receipt),
+                        raw=True)
+
+    def _on_imu_receipt(self, _data, receipt):
+        self._imu_time = receipt
+
+    def _on_imu_temperature(self, msg, _receipt):
+        self._imu_temperature = float(msg.data)
+
+    def _on_imu_bias(self, msg):
+        self._imu_bias = msg.data
+
+    def _on_lights(self, msg, receipt):
+        self._lights, self._lights_time = msg.data, receipt
+
+    def _on_camera_frame(self, cam_id, receipt):
+        self._camera_times[cam_id] = receipt
+
+    @staticmethod
+    def _motor_dict(motor):
+        if motor is None:
+            return None
+        status = getattr(motor, 'status', None)
+        return {'speed_rpm': int(getattr(motor, 'speed_rpm', 0)),
+                'current': int(getattr(motor, 'current', 0)),
+                'voltage': int(getattr(motor, 'voltage', 0)),
+                'temperature': int(getattr(motor, 'temperature', 0)),
+                'status': int(getattr(status, 'status', 0) if status is not None else 0)}
+
+    def _diagnostics_snapshot(self):
+        now = time.monotonic()
+
+        def age(t):
+            return None if t is None else max(0.0, now - t)
+
+        self._pump.poll(self._diag_sampled)
+        with self._lock:
+            sensor, batt, base = self._sensor, self._battery, self._base
+            snap = {'base_age': age(self._base_time), 'sensor_age': age(self._sensor_time),
+                    'battery_age': age(self._battery_time),
+                    'fix_status': self._fix_status_raw,
+                    'fix_status_age': age(self._fix_status_time),
+                    'filtered_age': age(self._filtered_time),
+                    'datum': self._datum, 'fix_type': self._gnss_fix_type}
+            last_fix = self._last_fix
+        if sensor is not None:
+            snap['sensor'] = {k: getattr(sensor, k, None) for k in (
+                'cutter_board_version', 'chassis_board_version', 'rtk_board_version',
+                'mower_package_version', 'bumper_triggered', 'lift_triggered',
+                'stop_triggered', 'rain_triggered', 'is_charging', 'is_cutting',
+                'is_docking_done', 'battery_error', 'battery_temperature')}
+            for key in ('cutter_motor', 'left_motor', 'right_motor'):
+                snap['sensor'][key] = self._motor_dict(getattr(sensor, key, None))
+        if batt is not None:
+            charging = (base is not None and bool(base.is_charging)) or \
+                batt.power_supply_status == BatteryState.POWER_SUPPLY_STATUS_CHARGING
+            snap['battery'] = {'voltage': float(batt.voltage), 'current': float(batt.current),
+                               'percentage': float(batt.percentage),
+                               'temperature': float(batt.temperature), 'charging': charging}
+        if last_fix is not None:
+            snap['fix'] = {'status': last_fix[0], 'lat': last_fix[1], 'lon': last_fix[2],
+                           'alt': last_fix[3]}
+            snap['fix_age'] = age(last_fix[4])
+        if str(self._p['imu_topic']):
+            snap['imu_age'] = age(self._imu_time)
+            snap['imu_temperature'] = self._imu_temperature
+            snap['imu_bias'] = self._imu_bias
+        if str(self._p['lights_state_topic']):
+            snap['lights'], snap['lights_age'] = self._lights, age(self._lights_time)
+        cams = []
+        for cam in self._cameras:
+            topic = cam['topic']
+            cams.append({'spec': cam, 'age': age(self._camera_times.get(cam['id'])),
+                         'publishers': self.count_publishers(topic),
+                         'viewers': self.count_subscribers(topic)})
+        snap['cameras'] = cams
+        return snap
+
+    def _publish_diagnostics(self):
+        statuses = diag.build_statuses(
+            self._diagnostics_snapshot(), float(self._p['diagnostics_timeout_s']),
+            bool(self._p['diagnostics_motor_status_alerts']))
+        out = DiagnosticArray()
+        out.header.stamp = self._now()
+        for st in statuses:
+            ds = DiagnosticStatus()
+            ds.level = bytes([st.level])
+            ds.name, ds.message, ds.hardware_id = st.name, st.message, st.hardware_id
+            ds.values = [KeyValue(key=k, value=v) for k, v in st.values]
+            out.status.append(ds)
+        self._diag_pub.publish(out)
 
     # ------------------------------------------------------------------
     # services

@@ -148,7 +148,8 @@ class CameraNode(Node):
         # ---- devices ----
         # /dev/video11 = /dev/videoSimor raw side-by-side (same default as
         # stereo_vio_bridge v4l2 mode). /dev/video22 (/dev/videoIsp) is the ISP node the
-        # Metoak SDK opens (stereo_vio_bridge source_mode:=sdk) -- not usable here.
+        # Metoak SDK opens; it streams YUYV 1280x480 side-by-side grey and is what
+        # mower_cameras/stereo_cam (the default front-stereo producer) reads.
         self.declare_parameter('stereo_device', '/dev/video11')
         self.declare_parameter('left_device', '')
         self.declare_parameter('right_device', '')

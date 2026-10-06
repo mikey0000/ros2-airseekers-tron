@@ -156,6 +156,7 @@ class TestMcuNode(unittest.TestCase):
         self.assertEqual(len(published), 1)
         msg = published[0]
         self.assertAlmostEqual(msg.voltage, 24.8)          # 0.1 V raw units
+        self.assertAlmostEqual(msg.current, -0.5)          # 0.1 A, +raw = discharging
         self.assertAlmostEqual(msg.percentage, 0.99)
         self.assertEqual(msg.temperature, 15.0)
         self.assertTrue(msg.present)

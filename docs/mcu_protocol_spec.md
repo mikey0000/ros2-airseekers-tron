@@ -84,18 +84,45 @@ struct ImuData     { i16 pitch, roll, yaw, accx, accy, accz, gyrox, gyroy, gyroz
 ```c
 struct SensorInfo { u8 bumper/*any*/, rain, lift, stop/*big red button*/, power_off, battery_gate,
                       cutter_size/*0 ?,1 small,2 big*/, press_module(?), bumper_r, bumper_l; };  // 10 B, 0/1 flags
-struct BatteryInfo { u16 voltage/*0.1 V: live 248 @ 99%*/; i16 current/*units (?)*/; u8 percentage;
+struct BatteryInfo { u16 voltage/*0.1 V: live 248 @ 99%*/; i16 current/*0.1 A, + = discharging*/; u8 percentage;
                      i8 dock_ok/*1 on dock (?)*/; i8 temperature/*°C*/; u32 error/*bitfield→battery_error u64*/; }; // 11 B
-struct MotorInfo { i16 speed/*units TBD, rpm? (?)*/; i16 current/*mA? live left -90 right -141 at rest (?)*/;
-                   i16 voltage/*scaling differs per board: cutter 2478, L/R 16245 (?)*/;
-                   i8 temperature/*°C*/; u8 status; };                                            // 8 B
-// status: 0 normal, 1 overcurrent, 2 overvoltage, 3 undervoltage, 4 overheat, 5 stalled
+struct MotorInfo { i16 speed/*rpm*/; i16 current/*cutter 10 mA; drive boards see below*/;
+                   i16 voltage/*cutter 10 mV; drive boards see below*/;
+                   i8 temperature/*°C*/; i8 status/*signed MotorStatus*/; };                      // 8 B
+// status (vendor mower_msgs/MotorStatus.msg, int8): 0 idle, 1 running, 2 locking, -1 error,
+//   -2 over-current, -3 over-voltage, -4 under-voltage, -5 over-heat, -6 stall, -7 overload.
+//   Drive boards report 1 (running) whenever enabled, including at standstill.
 struct MotorsInfo { MotorInfo cutter_motor, left_motor, right_motor, height_motor; };            // 32 B; height_motor shows garbage — not populated on this HW
 struct Version     { u8 major, minor, patch; };
 struct VersionInfo { Version cutter_board, chassis_board, rtk_board; };                          // 9 B; rtk_board = 0.0.0 (RTK is on /dev/serial_rtk)
 struct MCCalib     { u8 calib, left_calib_ret, right_calib_ret; };                             // 3 B, factory motor calibration
 // MODULE_LOG: raw ASCII string payload
 ```
+
+#### MotorInfo / BatteryInfo units (verified 2026-10-06 against live frames)
+
+Layout `<hhhbb` per motor (DWARF `mower_sdk::protocol::MotorInfo`, size 8), order
+cutter, left, right, height. Captured at rest (battery 19.7 V, off dock):
+
+```
+motors  00000000 b107 1e 00 | 0000 fe0d fe31 28 01 | 0000 97fd fe31 22 01 | ef4c 60ea 0000 00 00
+battery c500 0700 1f 00 20 00000000   -> 19.7 V, +0.7 A (discharging), 31 %, dock 0, 32 °C, err 0
+```
+
+| field | cutter board | left/right drive boards |
+|---|---|---|
+| speed | rpm | rpm |
+| current | 10 mA (vendor msg comment; vendor node publishes raw/100) | **unverified**; treated as mA (raw 3582 / -617 at standstill while holding; 10 mA would be 35 A) |
+| voltage | 10 mV (1969 = 19.69 V) | ~655.36 counts/V, empirical: 16245 @ 24.7 V, 12798 @ 19.7 V battery (vendor published these as "161 V") |
+| temperature | °C | °C |
+| status | signed MotorStatus | signed MotorStatus (1 = running at rest) |
+
+`height_motor` is garbage on this hardware. `mcu_node.decode_motors()` returns SI (A, V, °C);
+`/mower_sensor_info` keeps the `mower_interfaces/MotorInfo` int16 units (10 mA, 10 mV) with the
+drive-board scalings normalised into them. `/battery` is SI with BatteryState sign
+(negative = discharging): `current = raw * -0.1`. Source for 0.1 A: vendor
+`PowerManager::batteryInfoProcess` logs `current*100` (mA) and `FUN_004044a4` classifies by sign.
+
 
 ## 8. SDK API to mirror (from `nm`/DWARF of `libmower_sdk.a`; ROS-independent, glog+pthread only)
 
@@ -190,4 +217,4 @@ Verified on the mower 2026-10-06: clear frame with the IMU in-window released a 
 
 ## 13. Open questions (marked `?` above)
 
-Heartbeat period/timeout & failsafe behaviour; `BatteryInfo.current` units; `MotorInfo.speed/current/voltage` units & per-board scaling; module id 7 semantics; `SensorInfoControl` exact semantics (enable mask?); whether `SendImuData` is required by the MCU; `MotorControl.speed` scale for the cutter (1000 seen); `Heartbeat.year` epoch offset (2000?); `press_module` meaning.
+Heartbeat period/timeout & failsafe behaviour; drive-board `MotorInfo.current` units (needs a capture while driving); module id 7 semantics; `SensorInfoControl` exact semantics (enable mask?); whether `SendImuData` is required by the MCU; `MotorControl.speed` scale for the cutter (1000 seen); `Heartbeat.year` epoch offset (2000?); `press_module` meaning.

@@ -16,7 +16,8 @@ export interface AnatomyInputs {
   batteryPct: number;
   vBattery: number;
   motorTempC: number;
-  escTempC: number;
+  /** undefined: the robot has no ESC temperature sensor. */
+  escTempC?: number;
   gpsLabel: string;
   gpsOk: boolean;
   imuYawDeg: number;
@@ -91,7 +92,9 @@ function partInfo(part: Part, inputs: AnatomyInputs, t: TFunction): PartInfo {
     case 'motor':
       return {
         label: t('robotAnatomy.motors'),
-        value: t('robotAnatomy.motorTemps', {motor: inputs.motorTempC.toFixed(0), esc: inputs.escTempC.toFixed(0)}),
+        value: inputs.escTempC === undefined
+          ? t('robotAnatomy.motorTempOnly', {motor: inputs.motorTempC.toFixed(0)})
+          : t('robotAnatomy.motorTemps', {motor: inputs.motorTempC.toFixed(0), esc: inputs.escTempC.toFixed(0)}),
         tone: boolTone(inputs.motorTempC < 55),
       };
     case 'dock':
@@ -228,7 +231,7 @@ export function RobotAnatomy({inputs, profile = DEFAULT_ROBOT_PROFILE}: RobotAna
           </g>
 
           {/* Drive motors */}
-          <g onMouseEnter={handleEnter('motor')} onMouseLeave={handleLeave} style={{cursor: 'pointer'}}>
+          <g data-testid="anatomy-motor" onMouseEnter={handleEnter('motor')} onMouseLeave={handleLeave} style={{cursor: 'pointer'}}>
             <circle cx={90} cy={120} r={7} fill={fill('motor')} stroke={stroke('motor')} strokeWidth={sw('motor')}/>
             <circle cx={230} cy={120} r={7} fill={fill('motor')} stroke={stroke('motor')} strokeWidth={sw('motor')}/>
           </g>

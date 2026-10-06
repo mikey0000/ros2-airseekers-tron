@@ -163,7 +163,8 @@ Served (node `behavior_tree_node`):
   `~/clear_coverage_resume` (Trigger).
 * Publishes `~/high_level_status` (on change + 1 Hz), `~/coverage_resume_available` (Bool,
   transient local), `~/recording_trajectory` (Path), `/coverage/full_plan` (Path, transient
-  local), `/cmd_vel_emergency` (zero Twist burst).
+  local), `/cmd_vel_emergency` (zero Twist burst), `~/active_area_settings` (String, JSON,
+  transient local; see below).
 
 Inputs:
 
@@ -177,7 +178,8 @@ Inputs:
 
 Clients:
 
-* `/map_server_node/{get_mowing_area,add_area}`
+* `/map_server_node/{get_mowing_area,add_area,get_area_settings}`
+* `/coverage_server/set_parameters`, `/controller_server/set_parameters` (per-area settings)
 * `/plan_coverage`
 * `/follow_path`
 * `/navigate_to_pose`
@@ -192,6 +194,64 @@ Missing servers do not hang the node. Each goal or call waits `server_wait_timeo
 in a worker thread and then reports `unavailable`. The state machine then fails the step
 cleanly, and `sub_state_name` says which server was missing. Every action also has a
 watchdog timeout (`*_timeout_s`); on expiry the goal is cancelled and treated as an abort.
+
+## Per-area mowing settings
+
+Before PLANNING an area the node reads its effective settings from
+`/map_server_node/get_area_settings` (index = the `get_mowing_area` index; see
+`mower_map/README.md` for the keys). If that service is unavailable the built-in defaults
+are used (logged). An area left on auto angle falls back to the global `mow_angle_deg`
+parameter. Then, with the blade off:
+
+1. **Blade height**: `/cutter_control` with `cutter.enable=false`, `height.enable=true`,
+   `height.position` = `cutter_height_mm` mapped through `cutter_height_mm_to_percent`
+   (flattened `(mm, percent)` pairs, piecewise linear, clamped; default `[30, 0, 90, 100]`,
+   i.e. 30 mm -> 0 %, 90 mm -> 100 %). **The MCU's height percent scale is unverified**: the
+   Tron firmware takes a 0-100 "position" but nobody has measured which end is low or
+   whether it is linear; measure and fix the table before trusting the numbers. Every later
+   blade-ON command repeats the same `height.position` (enable=true), because what the MCU
+   does with `height.enable=false` is unknown too.
+2. **Cut speed**: `set_parameters` on `/controller_server`
+   `FollowCoveragePath.desired_linear_vel` = `cut_speed_mps`, capped at `cut_speed_max_mps`
+   (0.5). Fire and forget: without Nav2 it just logs.
+3. **Coverage parameters**: `set_parameters` on `/coverage_server`: `operation_width` =
+   `cut_width_m` (0.20) - `swath_overlap_m`, `headland_rings` = `perimeter_laps`,
+   `path_mode`, `mow_angle_deg` (of this run), `edge_first`. The plan goal is sent when this
+   call returns; if it fails the plan goes out anyway with the bridge's current parameters
+   (logged).
+4. **PlanCoverage** goal with the run's `mow_angle_deg` / `perpendicular`.
+
+Runs: each area is planned and mowed once per run, in order:
+
+* `zigzag`, `spiral`, `contour_only`: `repeat` runs at the same angle.
+* `cross`: two plans per repeat, at the angle and the angle + 90 deg.
+* `alternate`: `repeat` runs, the angle turned by `alternate_angle_offset_deg` on every run,
+  continuing across sessions: the number of finished alternate runs per area name is kept in
+  `alternate_state_path` (JSON).
+* On an AUTO angle (-1) a +90 deg turn is sent as the goal's `perpendicular=true` (the bridge
+  learns the auto angle and re-plans at +90); any other turn uses the offset from 0 deg (map
+  x axis).
+
+Between runs the blade goes off and the area's resume cursor row is reset; the run in
+progress is stored as an extra `area_run <idx> <run>` line in the resume file (ignored by
+upstream readers), so a STOP / rain / battery resume continues the same run. The PLANNING
+sub-state reads `area <i> <name> [<path_mode>, run k/n]`.
+
+`~/active_area_settings` (latched `std_msgs/String`) carries the active settings as JSON:
+every settings key plus `area_index`, `area_name`, `run`, `runs`, `run_mow_angle_deg`,
+`run_perpendicular`, `cutter_height_percent`, `operation_width_m`. It is `{}` when no
+session is running.
+
+| Parameter | Default |
+|---|---|
+| `use_area_settings` | true (false: built-in defaults, no `get_area_settings` call) |
+| `cut_width_m` | 0.20 |
+| `cut_speed_max_mps` | 0.5 |
+| `controller_speed_param` | `FollowCoveragePath.desired_linear_vel` |
+| `set_cut_speed` / `set_cutter_height` | true / true |
+| `cutter_height_mm_to_percent` | `[30.0, 0.0, 90.0, 100.0]` (unverified MCU scale) |
+| `alternate_state_path` | `~/.ros/mower_mission/alternate_counts.json` (yaml: `/ros2_ws/maps/mission_alternate_counts.json`) |
+| `get_area_settings_service`, `coverage_server_node`, `controller_server_node`, `active_area_settings_topic` | `/map_server_node/get_area_settings`, `/coverage_server`, `/controller_server`, `~/active_area_settings` |
 
 ## Parameters
 

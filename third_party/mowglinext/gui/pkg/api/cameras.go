@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net"
@@ -36,6 +37,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -60,6 +62,11 @@ type Camera struct {
 	// one is given.
 	Width  int `json:"width,omitempty"`
 	Height int `json:"height,omitempty"`
+	// SourceWidth/SourceHeight optionally give the published image size the
+	// detector's pixel boxes refer to (for the client-side box overlay on a
+	// resized stream). 0 = assume the box coordinates match the stream size.
+	SourceWidth  int `json:"sourceWidth,omitempty"`
+	SourceHeight int `json:"sourceHeight,omitempty"`
 	// QoSProfile is web_video_server's subscription QoS preset
 	// (default | system_default | sensor_data | services_default). Empty =
 	// sensor_data: a best-effort subscriber matches both best-effort camera
@@ -73,6 +80,46 @@ type CameraInfo struct {
 	Camera
 	StreamURL   string `json:"streamUrl"`
 	SnapshotURL string `json:"snapshotUrl"`
+	HealthURL   string `json:"healthUrl"`
+	// Status says whether the camera's topics exist right now.
+	Status CameraStatus `json:"status"`
+}
+
+// CameraStatus is the per-camera publisher state of GET /api/cameras.
+//
+// Listed comes from web_video_server's topic index (it lists image topics that
+// exist in the ROS graph); Raw/Annotated health come from the frames this
+// proxy relayed recently. State folds both into one word for the UI:
+//
+//	"publishing"      a frame was relayed within cameraStaleAfter
+//	"stale"           frames were relayed before, but none recently
+//	"listed"          the topic exists but nothing was streamed yet
+//	"not_publishing"  the topic is not in the graph
+//	"unknown"         web_video_server did not answer
+type CameraStatus struct {
+	State           string       `json:"state"`
+	Listed          bool         `json:"listed"`
+	AnnotatedListed bool         `json:"annotatedListed"`
+	Raw             *TopicHealth `json:"raw,omitempty"`
+	Annotated       *TopicHealth `json:"annotated,omitempty"`
+}
+
+// TopicHealth is the frame rate and last-frame age measured by the proxy on
+// one topic (as delivered by web_video_server, before the per-viewer fps cap).
+type TopicHealth struct {
+	Topic string `json:"topic"`
+	// FPS over the last cameraHealthWindow (0 = fewer than two frames).
+	FPS float64 `json:"fps"`
+	// LastFrameAgeMs is the age of the newest frame; nil = never streamed.
+	LastFrameAgeMs *int64 `json:"lastFrameAgeMs"`
+	// Viewers is the number of open proxied streams on this topic.
+	Viewers int `json:"viewers"`
+}
+
+// CameraHealthResponse is the body of GET /api/cameras/:id/health.
+type CameraHealthResponse struct {
+	ID     string       `json:"id"`
+	Status CameraStatus `json:"status"`
 }
 
 // CamerasResponse is the body of GET /api/cameras.
@@ -125,11 +172,18 @@ const (
 // nor a robot profile provides one. It matches the Airseekers Tron camera
 // stack (ros2_stack/launch/cameras.launch.py + det_ros); robots without these
 // topics simply see black tiles, and should set CAMERAS / a profile instead.
+//
+// The OA cameras carry det_ros's per-camera overlay (/<ns>/image_annotated,
+// boxes + labels drawn on the 960x540 input); the front stereo eyes come from
+// mower_cameras/stereo_cam (cameras.launch.py stereo:=true, 640x480 bgr8).
 var defaultCameras = []Camera{
-	{ID: "left_oa", Label: "Left obstacle camera", Topic: "/left_oa_camera/image_raw", Width: 640, Height: 360},
-	{ID: "right_oa", Label: "Right obstacle camera", Topic: "/right_oa_camera/image_raw", Width: 640, Height: 360},
+	{ID: "left_oa", Label: "Left obstacle camera", Topic: "/left_oa_camera/image_raw",
+		AnnotatedTopic: "/left_oa_camera/image_annotated", Width: 640, Height: 360, SourceWidth: 960, SourceHeight: 540},
+	{ID: "right_oa", Label: "Right obstacle camera", Topic: "/right_oa_camera/image_raw",
+		AnnotatedTopic: "/right_oa_camera/image_annotated", Width: 640, Height: 360, SourceWidth: 960, SourceHeight: 540},
 	{ID: "rear", Label: "Rear camera", Topic: "/rear_camera/image_raw", Width: 640, Height: 360},
-	{ID: "detections", Label: "Detections (annotated)", Topic: "/ai/det/image_annotated", Width: 640, Height: 360},
+	{ID: "front_left", Label: "Front stereo left", Topic: "/vio/left/image_raw"},
+	{ID: "front_right", Label: "Front stereo right", Topic: "/vio/right/image_raw"},
 }
 
 // ProfileCameras returns the active robot profile's camera list (nil/empty =
@@ -255,19 +309,69 @@ var (
 	cameraProbeTimeout = 700 * time.Millisecond
 )
 
-func probeCameraServer(ctx context.Context, base string) bool {
+// probeCameraServer fetches web_video_server's index page. ok is false when
+// the server did not answer; topics is the set of image topics it lists (nil
+// when the page could not be parsed, e.g. a non-web_video_server answer).
+func probeCameraServer(ctx context.Context, base string) (ok bool, topics map[string]bool) {
 	ctx, cancel := context.WithTimeout(ctx, cameraProbeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/", nil)
 	if err != nil {
-		return false
+		return false, nil
 	}
 	resp, err := cameraSnapshotClient.Do(req)
 	if err != nil {
-		return false
+		return false, nil
 	}
-	_ = resp.Body.Close()
-	return true
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return true, parseVideoServerTopics(string(body))
+}
+
+// parseVideoServerTopics extracts the topic names of web_video_server's
+// "Available ROS Topics" index (`<li>/topic<ul>...`). nil = not that page.
+func parseVideoServerTopics(body string) map[string]bool {
+	if !strings.Contains(body, "Available ROS Topics") {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, chunk := range strings.Split(body, "<li>")[1:] {
+		if i := strings.Index(chunk, "<ul>"); i > 0 && strings.HasPrefix(chunk, "/") {
+			out[chunk[:i]] = true
+		}
+	}
+	return out
+}
+
+// cameraStatus combines the topic index and the proxy's frame statistics.
+func cameraStatus(cam Camera, reachable bool, topics map[string]bool, now time.Time) CameraStatus {
+	st := CameraStatus{Raw: cameraStats.health(cam.Topic, now)}
+	if cam.AnnotatedTopic != "" {
+		st.Annotated = cameraStats.health(cam.AnnotatedTopic, now)
+	}
+	if topics != nil {
+		st.Listed = topics[cam.Topic]
+		st.AnnotatedListed = cam.AnnotatedTopic != "" && topics[cam.AnnotatedTopic]
+	}
+	fresh := func(h *TopicHealth) bool {
+		return h != nil && h.LastFrameAgeMs != nil && *h.LastFrameAgeMs < cameraStaleAfter.Milliseconds()
+	}
+	seen := func(h *TopicHealth) bool { return h != nil && h.LastFrameAgeMs != nil }
+	switch {
+	case fresh(st.Raw) || fresh(st.Annotated):
+		st.State = "publishing"
+	case !reachable:
+		st.State = "unknown"
+	case topics != nil && !st.Listed:
+		st.State = "not_publishing"
+	case seen(st.Raw) || seen(st.Annotated):
+		st.State = "stale"
+	case topics == nil:
+		st.State = "unknown"
+	default:
+		st.State = "listed"
+	}
+	return st
 }
 
 // CameraRoutes registers the camera registry and proxy routes.
@@ -276,6 +380,31 @@ func CameraRoutes(r *gin.RouterGroup, dbProvider types.IDBProvider) {
 	GetCameras(group, dbProvider)
 	GetCameraStream(group, dbProvider)
 	GetCameraSnapshot(group, dbProvider)
+	GetCameraHealth(group, dbProvider)
+}
+
+// GetCameraHealth reports the measured frame rate and last-frame age.
+//
+// @Summary camera stream health
+// @Description fps and last-frame age measured by the MJPEG proxy (raw and annotated topic), plus whether web_video_server lists the topics
+// @Tags cameras
+// @Produce  json
+// @Param id path string true "camera id"
+// @Success 200 {object} CameraHealthResponse
+// @Failure 404 {object} CameraErrorResponse
+// @Router /cameras/{id}/health [get]
+func GetCameraHealth(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRoutes {
+	return r.GET("/:id/health", func(c *gin.Context) {
+		cfg := resolveCameraConfig(dbProvider)
+		cam, ok := cfg.find(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusNotFound, CameraErrorResponse{Error: fmt.Sprintf("unknown camera %q", c.Param("id"))})
+			return
+		}
+		reachable, topics := probeCameraServer(c.Request.Context(), cfg.BaseURL)
+		setNoCacheHeaders(c)
+		c.JSON(http.StatusOK, CameraHealthResponse{ID: cam.ID, Status: cameraStatus(cam, reachable, topics, time.Now())})
+	})
 }
 
 // GetCameras lists the configured cameras.
@@ -296,15 +425,19 @@ func GetCameras(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRoutes {
 				Quality: cameraDefaultQuality, FPS: cameraDefaultFPS, MaxFPS: cameraMaxFPS,
 			},
 		}
+		reachable, topics := probeCameraServer(c.Request.Context(), cfg.BaseURL)
+		now := time.Now()
 		for _, cam := range cfg.Cameras {
 			esc := url.PathEscape(cam.ID)
 			out.Cameras = append(out.Cameras, CameraInfo{
 				Camera:      cam,
 				StreamURL:   "/api/cameras/" + esc + "/stream",
 				SnapshotURL: "/api/cameras/" + esc + "/snapshot",
+				HealthURL:   "/api/cameras/" + esc + "/health",
+				Status:      cameraStatus(cam, reachable, topics, now),
 			})
 		}
-		out.Available = probeCameraServer(c.Request.Context(), cfg.BaseURL)
+		out.Available = reachable
 		if !out.Available {
 			out.Hint = cameraUnavailableHint(cfg.BaseURL)
 		}
@@ -493,7 +626,11 @@ func GetCameraStream(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRout
 			_ = copyFlushing(c.Writer, resp.Body)
 			return
 		}
-		_ = relayMJPEG(c.Writer, resp.Body, boundary, req.fps, time.Now)
+		done := cameraStats.open(req.topic)
+		defer done()
+		_ = relayMJPEG(c.Writer, resp.Body, boundary, req.fps, time.Now, func(t time.Time) {
+			cameraStats.frame(req.topic, t)
+		})
 	})
 }
 
@@ -528,6 +665,8 @@ func GetCameraSnapshot(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRo
 		if ct == "" {
 			ct = "image/jpeg"
 		}
+		// Snapshot-polling tiles feed the same health statistics as streams.
+		cameraStats.frame(req.topic, time.Now())
 		setNoCacheHeaders(c)
 		c.DataFromReader(http.StatusOK, resp.ContentLength, ct, io.LimitReader(resp.Body, cameraMaxFrameBytes), nil)
 	})
@@ -563,7 +702,10 @@ func copyFlushing(w flushWriter, src io.Reader) error {
 // that arrive sooner than 1/fps after the last forwarded one (fps <= 0 keeps
 // every frame). Each forwarded frame is written and flushed whole. It returns
 // when the upstream ends or a write fails (browser closed the tab).
-func relayMJPEG(w flushWriter, src io.Reader, boundary string, fps float64, now func() time.Time) error {
+//
+// onFrame (optional) is called for every upstream frame, forwarded or not, so
+// the health statistics measure the source rate rather than the viewer cap.
+func relayMJPEG(w flushWriter, src io.Reader, boundary string, fps float64, now func() time.Time, onFrame func(time.Time)) error {
 	var minGap time.Duration
 	if fps > 0 {
 		// 10% slack so a 15 fps source capped at 5 fps keeps every 3rd frame
@@ -586,6 +728,9 @@ func relayMJPEG(w flushWriter, src io.Reader, boundary string, fps float64, now 
 			return err
 		}
 		t := now()
+		if onFrame != nil {
+			onFrame(t)
+		}
 		if minGap > 0 && !last.IsZero() && t.Sub(last) < minGap {
 			continue
 		}
@@ -609,4 +754,96 @@ func relayMJPEG(w flushWriter, src io.Reader, boundary string, fps float64, now 
 		}
 		w.Flush()
 	}
+}
+
+// ---- proxy frame statistics ----
+
+const (
+	cameraHealthWindow = 3 * time.Second
+	cameraStaleAfter   = 3 * time.Second
+)
+
+type topicFrames struct {
+	times   []time.Time // within cameraHealthWindow of the newest
+	last    time.Time
+	viewers int
+}
+
+type cameraFrameStats struct {
+	mu     sync.Mutex
+	topics map[string]*topicFrames
+}
+
+var cameraStats = &cameraFrameStats{topics: map[string]*topicFrames{}}
+
+func (s *cameraFrameStats) get(topic string) *topicFrames {
+	tf := s.topics[topic]
+	if tf == nil {
+		tf = &topicFrames{}
+		s.topics[topic] = tf
+	}
+	return tf
+}
+
+// open registers a viewer; the returned func unregisters it.
+func (s *cameraFrameStats) open(topic string) func() {
+	s.mu.Lock()
+	s.get(topic).viewers++
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		s.get(topic).viewers--
+		s.mu.Unlock()
+	}
+}
+
+func (s *cameraFrameStats) frame(topic string, t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tf := s.get(topic)
+	// Several viewers relay the same frames: count a frame once (frames of one
+	// camera are >= ~30 ms apart).
+	if !tf.last.IsZero() && t.Sub(tf.last) < 15*time.Millisecond && tf.viewers > 1 {
+		return
+	}
+	tf.last = t
+	tf.times = append(tf.times, t)
+	cut := 0
+	for cut < len(tf.times) && t.Sub(tf.times[cut]) > cameraHealthWindow {
+		cut++
+	}
+	tf.times = tf.times[cut:]
+}
+
+// health returns the statistics of one topic (age nil = never streamed).
+func (s *cameraFrameStats) health(topic string, now time.Time) *TopicHealth {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h := &TopicHealth{Topic: topic}
+	tf := s.topics[topic]
+	if tf == nil {
+		return h
+	}
+	h.Viewers = tf.viewers
+	if tf.last.IsZero() {
+		return h
+	}
+	age := now.Sub(tf.last).Milliseconds()
+	h.LastFrameAgeMs = &age
+	n := 0
+	var first time.Time
+	for _, t := range tf.times {
+		if now.Sub(t) <= cameraHealthWindow {
+			if n == 0 {
+				first = t
+			}
+			n++
+		}
+	}
+	if n >= 2 {
+		if span := tf.last.Sub(first).Seconds(); span > 0 {
+			h.FPS = math.Round(float64(n-1)/span*10) / 10
+		}
+	}
+	return h
 }

@@ -22,6 +22,8 @@ FollowPath goal; a :class:`BladeOff` precedes every transit, dock, undock,
 stop, emergency and shutdown.
 """
 
+import json
+import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -62,6 +64,28 @@ SRV_GET_AREA = 'get_mowing_area'
 SRV_ADD_AREA = 'add_area'
 SRV_CLEAR_ESTOP = 'clear_estop'
 SRV_CHARGING = 'charging'
+SRV_GET_AREA_SETTINGS = 'get_area_settings'   # /map_server_node/get_area_settings
+SRV_SET_PARAMS = 'set_parameters'             # request {'node': ..., 'params': {...}}
+SRV_CUTTER_HEIGHT = 'cutter_height'           # /cutter_control height only, blade off
+
+# set_parameters targets (the node maps them to <node>/set_parameters)
+PARAM_NODE_COVERAGE = 'coverage_server'
+PARAM_NODE_CONTROLLER = 'controller_server'
+
+# Per-area mowing settings (mower_map area_settings.py BUILTIN_DEFAULTS; used
+# when /map_server_node/get_area_settings is unavailable or leaves a key out).
+AREA_SETTINGS_DEFAULTS = {
+    'cutter_height_mm': 50,
+    'perimeter_laps': 2,
+    'path_mode': 'zigzag',
+    'mow_angle_deg': -1.0,
+    'cut_speed_mps': 0.3,
+    'swath_overlap_m': 0.02,
+    'edge_first': True,
+    'repeat': 1,
+    'alternate_angle_offset_deg': 90.0,
+}
+PATH_MODES = ('zigzag', 'cross', 'alternate', 'spiral', 'contour_only')
 
 # action outcomes reported by the node
 SUCCEEDED = 'succeeded'
@@ -162,6 +186,16 @@ class PublishTrajectory:
 
 
 @dataclass
+class PublishAreaSettings:
+    settings: dict          # active settings of the area being planned / mowed (JSON-able)
+
+
+@dataclass
+class SaveAlternateCounts:
+    counts: dict            # area name -> completed alternate runs (angle rotation step)
+
+
+@dataclass
 class PublishResumeAvailable:
     available: bool
 
@@ -258,6 +292,17 @@ class Params:
     transit_timeout_s: float = 300.0
     follow_timeout_s: float = 3600.0
     dock_action_timeout_s: float = 400.0
+    # --- per-area mowing settings ---
+    use_area_settings: bool = True      # read /map_server_node/get_area_settings per area
+    cut_width_m: float = 0.20           # blade cut width; swath spacing = this - swath_overlap_m
+    cut_speed_max_mps: float = 0.5
+    controller_speed_param: str = 'FollowCoveragePath.desired_linear_vel'
+    set_cut_speed: bool = True          # set_parameters on /controller_server per area
+    set_cutter_height: bool = True      # /cutter_control height per area
+    # mm -> MCU height percent, flattened (mm, percent) pairs, piecewise linear,
+    # clamped. The MCU's 0-100 scale is UNVERIFIED on the Tron (see README).
+    cutter_height_mm_to_percent: list = field(
+        default_factory=lambda: [30.0, 0.0, 90.0, 100.0])
 
     @classmethod
     def from_dict(cls, d):
@@ -293,6 +338,9 @@ class Mission:
     premature: int = 0
     chunk_end: int = 0
     left_dock: bool = False
+    settings: Optional[dict] = None             # effective settings of the current area
+    runs: list = field(default_factory=list)    # [{'angle': deg|-1, 'perpendicular': bool}]
+    run_i: int = 0
 
 
 @dataclass
@@ -306,8 +354,9 @@ class _Pending:
 class MissionFSM:
     """See module docstring."""
 
-    def __init__(self, params=None, cursor=None, now=0.0):
+    def __init__(self, params=None, cursor=None, now=0.0, alternate_counts=None):
         self.p = params if isinstance(params, Params) else Params.from_dict(params)
+        self.alternate_counts = dict(alternate_counts or {})
         self.inputs = Inputs()
         self.cursor = cursor if cursor is not None else ResumeCursor()
         self.phase = 'IDLE'
@@ -938,12 +987,155 @@ class MissionFSM:
         m.area_idx = idx
         m.sub_i, m.start_local, m.skipped, m.step = 0, 0, 0, None
         self.cursor.current_area = idx
-        self._go('PLANNING', 'area %d %s' % (idx, area.get('name', '')))
+        m.settings, m.runs = None, []
+        m.run_i = int(self.cursor.area_runs.get(idx, 0))
+        if self.p.use_area_settings:
+            self._go('PLANNING', 'area %d %s: loading settings' % (idx, area.get('name', '')))
+            self._call(SRV_GET_AREA_SETTINGS, {'index': idx}, purpose='area_settings')
+        else:
+            self._on_area_settings(False, {})
+
+    # ------------------------------------------------------------------
+    # per-area mowing settings
+    # ------------------------------------------------------------------
+    def height_percent(self, mm):
+        """cutter_height_mm -> MCU percent via cutter_height_mm_to_percent."""
+        flat = [float(v) for v in (self.p.cutter_height_mm_to_percent or [])]
+        pts = sorted(zip(flat[0::2], flat[1::2]))
+        if not pts:
+            return 0
+        mm = float(mm)
+        if mm <= pts[0][0]:
+            pct = pts[0][1]
+        elif mm >= pts[-1][0]:
+            pct = pts[-1][1]
+        else:
+            pct = pts[-1][1]
+            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+                if x0 <= mm <= x1:
+                    pct = y0 + (y1 - y0) * (mm - x0) / (x1 - x0) if x1 > x0 else y1
+                    break
+        return int(round(max(0.0, min(100.0, pct))))
+
+    def _merge_settings(self, ok, resp):
+        st = dict(AREA_SETTINGS_DEFAULTS)
+        src = 'built-in defaults'
+        if ok and resp.get('success'):
+            try:
+                got = json.loads(resp.get('settings_json') or '{}')
+                if isinstance(got, dict):
+                    st.update({k: v for k, v in got.items() if k in st and v is not None})
+                    src = 'map_server'
+            except ValueError:
+                self._log('warn', 'area settings: bad JSON from get_area_settings, using defaults')
+        elif self.p.use_area_settings:
+            self._log('warn', 'area %d: get_area_settings unavailable: using built-in defaults'
+                      % self.mission.area_idx)
+        # Global mow_angle_deg parameter: fallback for areas left on auto.
+        if float(st['mow_angle_deg']) < 0.0 and self.p.mow_angle_deg >= 0.0:
+            st['mow_angle_deg'] = float(self.p.mow_angle_deg)
+        if st['path_mode'] not in PATH_MODES:
+            self._log('warn', 'unknown path_mode %r: zigzag' % st['path_mode'])
+            st['path_mode'] = 'zigzag'
+        st['repeat'] = max(1, int(st['repeat']))
+        st['perimeter_laps'] = max(0, int(st['perimeter_laps']))
+        return st, src
+
+    def _area_name(self):
+        m = self.mission
+        return str(m.areas.get(m.area_idx, {}).get('name', ''))
+
+    def _build_runs(self, st):
+        """One entry per PlanCoverage goal of this area, in mowing order.
+
+        cross: two plans per repeat, the second at +90 deg. alternate: the
+        angle turns by alternate_angle_offset_deg on every run, continuing
+        across sessions (alternate_counts). On an AUTO angle a +90 deg turn is
+        the goal's ``perpendicular`` flag (the bridge learns the auto angle);
+        any other turn is taken from 0 deg (the map x axis).
+        """
+        base = float(st['mow_angle_deg'])
+        mode = st['path_mode']
+        n = int(st['repeat'])
+
+        def run(rot):
+            rot = math.fmod(rot, 180.0)
+            if base >= 0.0:
+                return {'angle': math.fmod(base + rot, 180.0), 'perpendicular': False}
+            if abs(rot) < 1e-6:
+                return {'angle': -1.0, 'perpendicular': False}
+            if abs(rot - 90.0) < 1e-6:
+                return {'angle': -1.0, 'perpendicular': True}
+            return {'angle': rot, 'perpendicular': False}
+
+        if mode == 'cross':
+            return [r for _ in range(n) for r in (run(0.0), run(90.0))]
+        if mode == 'alternate':
+            off = float(st['alternate_angle_offset_deg'])
+            done = int(self.alternate_counts.get(self._area_name(), 0))
+            return [run((done + k) * off) for k in range(n)]
+        return [run(0.0) for _ in range(n)]
+
+    def _on_area_settings(self, ok, resp):
+        m = self.mission
+        st, src = self._merge_settings(ok, resp)
+        m.settings = st
+        m.runs = self._build_runs(st)
+        if m.run_i >= len(m.runs):
+            m.run_i = 0
+        pct = self.height_percent(st['cutter_height_mm'])
+        speed = min(float(st['cut_speed_mps']), float(self.p.cut_speed_max_mps))
+        self._log('info', 'area %d %s: settings (%s) %s; blade height %d mm -> %d %%, '
+                          'cut speed %.2f m/s, %d run(s)'
+                  % (m.area_idx, self._area_name(), src, json.dumps(st, sort_keys=True),
+                     int(st['cutter_height_mm']), pct, speed, len(m.runs)))
+        if self.p.set_cutter_height:
+            # Blade is off here (PLANNING); height only, before any mowing.
+            self._call(SRV_CUTTER_HEIGHT, {'height_mm': int(st['cutter_height_mm']),
+                                           'percent': pct}, track=False)
+        if self.p.set_cut_speed:
+            self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER,
+                                        'params': {self.p.controller_speed_param: speed}},
+                       track=False)
+        self._plan_run()
+
+    def active_settings(self):
+        """JSON-able active settings (latched ~/active_area_settings)."""
+        m = self.mission
+        if m is None or m.settings is None or not m.runs:
+            return {}
+        run = m.runs[m.run_i]
+        out = dict(m.settings)
+        out.update({
+            'area_index': m.area_idx, 'area_name': self._area_name(),
+            'run': m.run_i + 1, 'runs': len(m.runs),
+            'run_mow_angle_deg': run['angle'], 'run_perpendicular': run['perpendicular'],
+            'cutter_height_percent': self.height_percent(m.settings['cutter_height_mm']),
+            'operation_width_m': round(self.p.cut_width_m - float(m.settings['swath_overlap_m']),
+                                       4)})
+        return out
+
+    def _plan_run(self):
+        m = self.mission
+        st, run = m.settings, m.runs[m.run_i]
+        self._fx.append(PublishAreaSettings(self.active_settings()))
+        self._go('PLANNING', 'area %d %s [%s, run %d/%d]' % (
+            m.area_idx, self._area_name(), st['path_mode'], m.run_i + 1, len(m.runs)))
+        self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_COVERAGE, 'params': {
+            'operation_width': max(0.01, float(self.p.cut_width_m) - float(st['swath_overlap_m'])),
+            'headland_rings': int(st['perimeter_laps']),
+            'path_mode': str(st['path_mode']),
+            'mow_angle_deg': float(run['angle']),
+            'edge_first': bool(st['edge_first'])}}, purpose='coverage_params')
+
+    def _start_plan(self):
+        m = self.mission
+        area, run = m.areas[m.area_idx], m.runs[m.run_i]
         self._start_action(ACT_PLAN, {
             'outer_boundary': list(area.get('outer', [])),
             'obstacles': [list(o) for o in area.get('obstacles', [])],
-            'mow_angle_deg': self.p.mow_angle_deg,
-            'perpendicular': False}, self.p.plan_timeout_s)
+            'mow_angle_deg': float(run['angle']),
+            'perpendicular': bool(run['perpendicular'])}, self.p.plan_timeout_s)
 
     def _on_plan(self, outcome, result):
         m = self.mission
@@ -1118,6 +1310,25 @@ class MissionFSM:
         ac = self.cursor.area(m.area_idx)
         self._log('info', 'area %d done: %d/%d sub-paths mowed, %d skipped' % (
             m.area_idx, len(ac.completed), len(m.subpaths), m.skipped))
+        if m.runs and m.run_i + 1 < len(m.runs):
+            # repeat / cross: plan and mow the same area again.
+            if self.blade_on:
+                self._blade_off('area run finished')
+            m.run_i += 1
+            self.cursor.area_runs[m.area_idx] = m.run_i
+            self.cursor.areas[m.area_idx] = AreaCursor()
+            self._persist()
+            m.subpaths, m.lengths, m.cum = [], [], []
+            m.sub_i, m.start_local, m.skipped, m.step = 0, 0, 0, None
+            self._log('info', 'area %d: run %d/%d (%s)' % (
+                m.area_idx, m.run_i + 1, len(m.runs), m.settings['path_mode']))
+            self._plan_run()
+            return
+        if m.settings is not None and m.settings['path_mode'] == 'alternate':
+            name = self._area_name()
+            self.alternate_counts[name] = int(self.alternate_counts.get(name, 0)) + len(m.runs)
+            self._fx.append(SaveAlternateCounts(dict(self.alternate_counts)))
+        self.cursor.area_runs.pop(m.area_idx, None)
         self.cursor.completed_areas.add(m.area_idx)
         ac.resume_index = -1
         self._persist()
@@ -1127,6 +1338,7 @@ class MissionFSM:
         self._blade_off('mowing complete')
         self._go('MOWING_COMPLETE', '')
         self.mission = None
+        self._fx.append(PublishAreaSettings({}))
         self._log('info', 'all areas mowed: returning home')
         self.cursor = ResumeCursor()
         self._fx.append(DeleteResume())
@@ -1161,6 +1373,8 @@ class MissionFSM:
         self.cursor.current_command = CMD_START
         self._persist()
         self._log('info', 'mowing interrupted (%s): resume cursor saved' % why)
+        if m.settings is not None:
+            self._fx.append(PublishAreaSettings({}))
         self.mission = None
 
     # ==================================================================
@@ -1394,6 +1608,18 @@ class MissionFSM:
         elif s.purpose == 'add_area':
             if self._record_poly is not None:
                 self._record_saved(ok and bool(resp.get('success', False)))
+        elif s.purpose in ('area_settings', 'coverage_params'):
+            m = self.mission
+            if m is None or self.phase != 'PLANNING' or m.area_idx is None:
+                return
+            if s.purpose == 'area_settings':
+                self._on_area_settings(ok, resp)
+                return
+            if not ok:
+                self._log('warn', 'area %d: /coverage_server set_parameters failed (%s): planning '
+                                  'with its current parameters'
+                          % (m.area_idx, resp.get('message') or 'unavailable'))
+            self._start_plan()
 
 
 def blade_allowed(fsm):

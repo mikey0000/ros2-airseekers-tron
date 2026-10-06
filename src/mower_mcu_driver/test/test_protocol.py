@@ -155,3 +155,50 @@ class TestAgainstReferenceDecoder(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+# --------------------------------------------------------------- MotorInfo / BatteryInfo
+# Raw MODULE_MOTORS / MODULE_BATTERY payloads captured on the mower at rest, 2026-10-06.
+CAPTURED_MOTORS = (
+    '00000000b1071e000000fe0dfe312801000097fdfe312201ef4c60ea00000000',
+    '00000000b2071e000000f10df231280100006afdf2312201310060ea00000000',
+)
+CAPTURED_BATTERY = 'c50007001f002000000000'
+
+
+def test_decode_captured_motors_si():
+    m = mn.decode_motors(bytes.fromhex(CAPTURED_MOTORS[0]))
+    cut, left, right = m['cutter'], m['left'], m['right']
+    assert cut['raw'] == (0, 0, 1969, 30, 0)
+    assert abs(cut['voltage_v'] - 19.69) < 1e-6 and cut['current_a'] == 0.0
+    assert cut['temperature_c'] == 30 and cut['status'] == 0
+    assert left['raw'] == (0, 3582, 12798, 40, 1)
+    assert right['raw'] == (0, -617, 12798, 34, 1)
+    for drive in (left, right):
+        # drive bus voltage tracks the 19.7 V battery (and the 19.69 V cutter reading)
+        assert 19.0 < drive['voltage_v'] < 20.2
+        assert abs(drive['current_a']) < 5.0
+        assert mn.MOTOR_STATUS_TEXT[drive['status']] == 'running'
+    assert abs(left['current_a'] - 3.582) < 1e-9 and abs(right['current_a'] + 0.617) < 1e-9
+
+
+def test_decode_captured_motors_second_frame_and_msg_units():
+    m = mn.decode_motors(bytes.fromhex(CAPTURED_MOTORS[1]))
+    f = mn.motor_msg_fields(m['left'])
+    # MowerSensorInfo.MotorInfo units: 10 mA, 10 mV
+    assert f['current'] == 357 and 1940 < f['voltage'] < 1960 and f['status'] == 1
+    assert mn.motor_msg_fields(m['cutter'])['voltage'] == 1970
+
+
+def test_decode_motors_rejects_bad_length():
+    assert mn.decode_motors(b'\x00' * 31) is None
+
+
+def test_motor_status_is_signed():
+    payload = struct.pack(mn.MOTOR_FMT, 0, 0, 0, 0, -2) * 4
+    assert mn.MOTOR_STATUS_TEXT[mn.decode_motors(payload)['cutter']['status']] == 'over-current'
+
+
+def test_captured_battery_layout():
+    v, i, pct, dock, temp, err = struct.unpack(mn.BATTERY_FMT, bytes.fromhex(CAPTURED_BATTERY))
+    assert (v, i, pct, dock, temp, err) == (197, 7, 31, 0, 32, 0)

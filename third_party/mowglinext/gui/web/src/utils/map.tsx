@@ -61,6 +61,17 @@ export function isRingInsidePolygon(
 }
 
 /**
+ * True when `pt` lies inside the polygon's outer ring and outside every hole.
+ * Used to resolve a map click to the mowing area under the cursor.
+ */
+export function pointInPolygon(pt: [number, number], rings: number[][][] | undefined): boolean {
+    if (!rings || rings.length === 0) return false;
+    const [outer, ...holes] = rings;
+    const p = [pt] as number[][];
+    return isRingInsidePolygon(p, outer) && !holes.some((h) => isRingInsidePolygon(p, h));
+}
+
+/**
  * Robot silhouette polygons in [lon, lat], derived from the URDF geometry
  * (/robot_description) so the map robot matches the sensors-page model exactly
  * — chassis box + the two drive wheels + the blade disc — instead of a plain

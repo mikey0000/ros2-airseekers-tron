@@ -673,7 +673,19 @@ CellOrder orderCells(const std::vector<SweepCell>& cells,
 struct RingGroup {
   std::vector<std::vector<Point2D>> loops;
   bool hole = false;
+  size_t last_pass = 0;  // pass index of loops.back()
 };
+
+// Spiral: hard cap on the ring count (a 100 m wide field at 0.18 m is ~280).
+constexpr int kMaxSpiralRings = 2000;
+// Spiral: a cell of an offset pass smaller than this is "collapsed".
+constexpr double kCollapsedAreaM2 = 1e-6;
+// Spiral: bisection steps for the collapse offset of the last ring.
+constexpr int kCollapseBisectSteps = 30;
+
+bool cellsEmpty(const f2c::types::Cells& c) {
+  return c.size() == 0 || std::abs(c.area()) < kCollapsedAreaM2;
+}
 
 }  // namespace
 
@@ -697,6 +709,23 @@ f2c::types::Cell makeFieldCell(const std::vector<Point2D>& boundary,
   return cell;
 }
 
+bool parsePathMode(const std::string& name, PathMode* mode) {
+  if (name.empty() || name == "zigzag" || name == "cross" || name == "alternate") {
+    *mode = PathMode::kZigzag;
+    return true;
+  }
+  if (name == "spiral") {
+    *mode = PathMode::kSpiral;
+    return true;
+  }
+  if (name == "contour_only") {
+    *mode = PathMode::kContourOnly;
+    return true;
+  }
+  *mode = PathMode::kZigzag;
+  return false;
+}
+
 CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
                                double op_width,
                                double headland_width,
@@ -704,6 +733,20 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
                                double border_inset,
                                double mow_angle_rad,
                                double min_swath_length) {
+  return planCoverage(field, op_width, headland_width, headland_passes, border_inset,
+                      mow_angle_rad, min_swath_length, PathMode::kZigzag,
+                      /*edge_first=*/true);
+}
+
+CoveragePlan planCoverage(const f2c::types::Cell& field,
+                          double op_width,
+                          double headland_width,
+                          int headland_passes,
+                          double border_inset,
+                          double mow_angle_rad,
+                          double min_swath_length,
+                          PathMode mode,
+                          bool edge_first) {
   CoveragePlan plan;
   if (op_width <= 0.0) {
     plan.drops.push_back("op_width <= 0");
@@ -725,13 +768,17 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
   // rings and the mainland all depend on it. Three-way contract on
   // headland_passes: <0 none (swaths mow to the boundary), ==0 auto
   // (ceil(headland_width / op_width), floored at 1), >0 forced.
-  const int n_rings =
+  int n_rings =
       (headland_passes < 0)
           ? 0
           : ((headland_passes > 0)
                  ? headland_passes
                  : std::max(1, static_cast<int>(
                                std::ceil(headland_width / op_width - 1e-9))));
+  if (mode == PathMode::kContourOnly) {
+    n_rings = std::max(1, n_rings);  // a contour plan with no contour is empty
+  }
+  const bool want_swaths = mode == PathMode::kZigzag;
 
   f2c::hg::ConstHL hl;
   f2c::sg::BruteForce bf;
@@ -779,10 +826,49 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
   // the previous pass, which survives a pass splitting into several cells or
   // a hole ring merging with its neighbour.
   std::vector<RingGroup> groups;
-  if (n_rings > 0 && safe_cells.size() > 0) {
-    std::vector<f2c::types::Cells> passes =
-        hl.generateHeadlandSwaths(safe_cells, op_width, n_rings,
-                                  /*dir_out2in=*/true);
+  std::vector<f2c::types::Cells> passes;
+  if (mode == PathMode::kSpiral && safe_cells.size() > 0) {
+    // Concentric inward rings: pass k is the boundary of the planning cell
+    // shrunk by (k + 1/2) * op_width — the same offsets generateHeadlandSwaths
+    // uses for headland rings, continued until the cell collapses.
+    double prev_d = -0.5 * op_width;
+    for (int k = 0; k < kMaxSpiralRings; ++k) {
+      const double d = (k + 0.5) * op_width;
+      f2c::types::Cells c = hl.generateHeadlands(safe_cells, d);
+      if (!cellsEmpty(c)) {
+        passes.push_back(c);
+        prev_d = d;
+        continue;
+      }
+      // Collapsed between prev_d and d. The centre strip (width up to 2 *
+      // (collapse - prev_d) - op_width) is left uncovered by the last ring;
+      // add one more ring half a swath outside the collapse offset (its
+      // inside is then within reach of the blade) unless the gap is tiny.
+      double lo = std::max(prev_d, 0.0);
+      double hi = d;
+      for (int it = 0; it < kCollapseBisectSteps; ++it) {
+        const double mid = 0.5 * (lo + hi);
+        if (cellsEmpty(hl.generateHeadlands(safe_cells, mid))) {
+          hi = mid;
+        } else {
+          lo = mid;
+        }
+      }
+      if (lo - prev_d > 0.5 * op_width + 0.02) {
+        double f = std::max(lo - 0.5 * op_width, prev_d + 0.1 * op_width);
+        f = std::max(1e-3, std::min(f, lo - 0.005));
+        f2c::types::Cells last = hl.generateHeadlands(safe_cells, f);
+        if (!cellsEmpty(last)) {
+          passes.push_back(last);
+        }
+      }
+      break;
+    }
+  } else if (n_rings > 0 && safe_cells.size() > 0) {
+    passes = hl.generateHeadlandSwaths(safe_cells, op_width, n_rings,
+                                       /*dir_out2in=*/true);
+  }
+  {
     for (size_t k = 0; k < passes.size(); ++k) {
       const f2c::types::Cells& pass = passes[k];
       for (size_t i = 0; i < pass.size(); ++i) {
@@ -795,7 +881,9 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
           const bool hole = r > 0;
           RingGroup* target = nullptr;
           for (auto& g : groups) {
-            if (g.hole != hole || g.loops.size() != k) {
+            // Continue a run only from the previous pass (a run that started
+            // late, after a split, continues too).
+            if (k == 0 || g.hole != hole || g.last_pass != k - 1) {
               continue;
             }
             // Outer pass k lies inside outer pass k-1; hole pass k encloses
@@ -808,10 +896,11 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
             }
           }
           if (target == nullptr) {
-            groups.push_back(RingGroup{{}, hole});
+            groups.push_back(RingGroup{{}, hole, k});
             target = &groups.back();
           }
           target->loops.push_back(std::move(loop));
+          target->last_pass = k;
         }
       }
     }
@@ -823,7 +912,9 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
   // parts. Holes grow by the same band, so the hole rings' strip is a
   // keep-out for the swaths.
   f2c::types::Cells mainland;
-  if (n_rings > 0 && safe_cells.size() > 0) {
+  if (!want_swaths) {
+    // spiral / contour_only: rings only, no mainland swaths.
+  } else if (n_rings > 0 && safe_cells.size() > 0) {
     mainland = hl.generateHeadlands(safe_cells, n_rings * op_width);
   } else {
     mainland = safe_cells;
@@ -965,7 +1056,18 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
       plan.rings.push_back(loop);
     }
   }
-  if (!plan.rings.empty()) {
+  if (!plan.rings.empty() && !plan.swaths.empty() && !edge_first) {
+    // Swaths first, then the rings innermost first: the innermost ring
+    // borders the mainland, so it starts next to the last swath end and each
+    // later ring next to the previous ring's end (one op_width step out).
+    std::reverse(plan.rings.begin(), plan.rings.end());
+    plan.swaths_first = true;
+    Point2D target = plan.swaths.back().second;
+    for (auto& ring : plan.rings) {
+      ring = rotateLoopToPoint(ring, target);
+      target = ring.back();
+    }
+  } else if (!plan.rings.empty()) {
     if (!plan.swaths.empty()) {
       Point2D target = plan.swaths.front().first;
       for (size_t r = plan.rings.size(); r-- > 0;) {

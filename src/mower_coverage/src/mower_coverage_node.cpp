@@ -119,11 +119,26 @@ class MowerCoverageNode : public rclcpp::Node {
     auto field = mower_coverage::makeFieldCell(
         polygonToPoints(request->boundary), holes);
 
+    mower_coverage::PathMode mode = mower_coverage::PathMode::kZigzag;
+    if (!mower_coverage::parsePathMode(request->path_mode, &mode)) {
+      response->success = false;
+      response->message = "unknown path_mode '" + request->path_mode +
+                          "' (zigzag | spiral | contour_only)";
+      return;
+    }
+    // headland_rings (per-area perimeter_laps): -1 = keep headland_passes,
+    // 0 = no rings, > 0 = exactly that many.
+    const int headland_passes =
+        request->headland_rings < 0
+            ? request->headland_passes
+            : (request->headland_rings == 0 ? -1 : request->headland_rings);
+
     const mower_coverage::CoveragePlan plan =
-        mower_coverage::planBoustrophedon(field, op_width, headland_width,
-                                           request->headland_passes,
-                                           /*border_inset=*/0.0,
-                                           mow_angle_rad, min_swath_length);
+        mower_coverage::planCoverage(field, op_width, headland_width,
+                                     headland_passes,
+                                     /*border_inset=*/0.0,
+                                     mow_angle_rad, min_swath_length, mode,
+                                     request->edge_first);
 
     // ---- Assemble nav_msgs/Path: transit-in, rings, swaths, transit-out ----
     nav_msgs::msg::Path path;
@@ -146,14 +161,26 @@ class MowerCoverageNode : public rclcpp::Node {
       path.poses.push_back(pose);
     };
 
-    // The path pieces in drive order: rings (closed loops) then swaths.
+    // The path pieces in drive order: rings (closed loops) then swaths, or
+    // swaths then rings when the plan is swaths-first (edge_first = false).
     std::vector<std::vector<mower_coverage::Point2D>> segments;
     segments.reserve(plan.rings.size() + plan.swaths.size());
-    for (const auto& ring : plan.rings) {
-      segments.push_back(ring);
-    }
-    for (const auto& swath : plan.swaths) {
-      segments.push_back({swath.first, swath.second});
+    auto addRings = [&]() {
+      for (const auto& ring : plan.rings) {
+        segments.push_back(ring);
+      }
+    };
+    auto addSwaths = [&]() {
+      for (const auto& swath : plan.swaths) {
+        segments.push_back({swath.first, swath.second});
+      }
+    };
+    if (plan.swaths_first) {
+      addSwaths();
+      addRings();
+    } else {
+      addRings();
+      addSwaths();
     }
 
     // Optional transit from the mower's start position to the first pose.
@@ -208,7 +235,10 @@ class MowerCoverageNode : public rclcpp::Node {
     response->planning_time_s = planning_time_s;
     response->success = !path.poses.empty();
 
-    std::string msg = std::to_string(plan.rings.size()) + " rings, " +
+    std::string msg = std::string(plan.swaths_first ? "swaths first, " : "") +
+                      (request->path_mode.empty() ? std::string("zigzag")
+                                                  : request->path_mode) +
+                      ": " + std::to_string(plan.rings.size()) + " rings, " +
                       std::to_string(plan.swaths.size()) + " swaths, " +
                       std::to_string(static_cast<int>(total_distance * 100)) +
                       " cm, fraction " +

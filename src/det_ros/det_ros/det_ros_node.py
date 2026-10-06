@@ -7,7 +7,11 @@ YOLOv8 ``.rknn`` model (``best_large_0208.rknn`` = 22 classes) on the RK3588S NP
 Publishes per-camera detections as ``vision_msgs/Detection2DArray`` on
 ``/ai/det/detections`` (header.frame_id = source camera frame; each result's
 ``hypothesis.class_id`` is the class *name*, ``score`` the confidence; bbox in source
-image pixels) plus a debug annotated ``bgr8`` image on ``/ai/det/image_annotated``.
+image pixels) plus annotated ``bgr8`` images (boxes + labels + scores drawn, same size as
+the input): one per camera on ``/<camera_ns>/image_annotated`` (e.g.
+``/left_oa_camera/image_annotated``, what the GUI perception page streams) and the merged
+debug topic ``/ai/det/image_annotated``. Annotation is on demand: a frame is drawn and
+encoded only when one of those topics has a subscriber (same pattern as the camera nodes).
 
 Startup (see ``mower_rknn.startup``): ``model_path`` defaults to the device path
 ``/userdata/ros2/models/best_large_0208.rknn``; when it is missing the basename is tried
@@ -35,10 +39,11 @@ except ImportError as _exc:  # pragma: no cover - depends on the image
     _DEP_ERROR = _exc
 
 from mower_rknn import NpuStartupError, bgr_to_rgb_nhwc, letterbox, prepare_runner
-from det_ros.labels import default_classes, label_for
+from det_ros.labels import annotated_topic_for, default_classes, label_for
 from det_ros.yolo_postprocess import post_process
 
 DEFAULT_MODEL = '/userdata/ros2/models/best_large_0208.rknn'
+
 
 
 class DetRosNode(Node):
@@ -58,7 +63,7 @@ class DetRosNode(Node):
         self.declare_parameter('left_topic', '/left_oa_camera/image_raw')
         self.declare_parameter('right_topic', '/right_oa_camera/image_raw')
         self.declare_parameter('publish_annotated', True)
-        self.declare_parameter('max_rate_hz', 10.0)  # per camera; 0 = every frame
+        self.declare_parameter('max_rate_hz', 5.0)  # per camera; 0 = every frame
 
         self.model_path = self.get_parameter('model_path').value
         self.models_dir = self.get_parameter('models_dir').value
@@ -84,9 +89,12 @@ class DetRosNode(Node):
         self.ann_pub = self.create_publisher(Image, '/ai/det/image_annotated', qos)
         self._last = {}
         self.subs: List = []
+        self.cam_ann_pubs = {}
         for topic in (self.get_parameter('left_topic').value,
                       self.get_parameter('right_topic').value):
             if topic:
+                self.cam_ann_pubs[topic] = self.create_publisher(
+                    Image, annotated_topic_for(topic), sensor_qos)
                 self.subs.append(self.create_subscription(
                     Image, topic, self._make_cb(topic), sensor_qos))
 
@@ -125,7 +133,7 @@ class DetRosNode(Node):
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().warning(f'decode failed on {topic}: {exc}')
                 return
-            self._detect(bgr, frame, msg.header.stamp)
+            self._detect(bgr, frame, msg.header.stamp, self.cam_ann_pubs.get(topic))
         return cb
 
     def _to_source(self, box, scale, pad_x, pad_y, w, h):
@@ -136,7 +144,7 @@ class DetRosNode(Node):
         y2 = min(max((box[3] - pad_y) * inv, 0.0), float(h))
         return float(x1), float(y1), float(x2), float(y2)
 
-    def _detect(self, bgr, frame_id: str, stamp) -> None:
+    def _detect(self, bgr, frame_id: str, stamp, cam_ann_pub=None) -> None:
         padded, scale, (pad_x, pad_y) = letterbox(bgr, self.img_size)
         # letterbox keeps BGR; the int8 model was calibrated on RGB NHWC
         tensor = bgr_to_rgb_nhwc(padded)[None, ...]
@@ -169,11 +177,17 @@ class DetRosNode(Node):
 
         self.det_pub.publish(detections)
 
-        if self.get_parameter('publish_annotated').value:
-            vis = self._draw(bgr, src_boxes)
-            out = self.bridge.cv2_to_imgmsg(vis, encoding='bgr8')
-            out.header = detections.header
-            self.ann_pub.publish(out)
+        if not self.get_parameter('publish_annotated').value:
+            return
+        # On demand: draw + encode only for topics somebody listens to.
+        targets = [p for p in (cam_ann_pub, self.ann_pub)
+                   if p is not None and p.get_subscription_count() > 0]
+        if not targets:
+            return
+        out = self.bridge.cv2_to_imgmsg(self._draw(bgr, src_boxes), encoding='bgr8')
+        out.header = detections.header
+        for pub in targets:
+            pub.publish(out)
 
     def _draw(self, bgr, src_boxes):
         import cv2 as _cv2

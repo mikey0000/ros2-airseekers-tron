@@ -24,6 +24,14 @@ export const NewAreaModal = ({open, areaType, areaName, onAreaTypeChange, onArea
             destroyOnClose
         >
             <Form layout="vertical" style={{marginTop: 16}}>
+                {/* Area types, available on every robot profile (no gating):
+                    - workarea: a mowing area (map server working area).
+                    - navigation: a drive-only corridor saved with
+                      is_navigation_area=true; vendor apps call this a
+                      "channel" / "path" between lawns.
+                    - obstacle: a keep-out polygon, parented to the work area
+                      that contains it (useMapEditing.addObstacle).
+                    The dock is placed with the toolbar's dock tool. */}
                 <Form.Item label={t('mapNewArea.areaType')}>
                     <Select
                         value={areaType}

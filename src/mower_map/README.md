@@ -31,6 +31,8 @@ ros2 launch mower_map map_server.launch.py maps_dir:=/ros2_ws/maps \
 | `/map_server_node/discard_obstacle` | `mowgli_interfaces/ClearObstacle` | Drops a PENDING obstacle by `MapObstacleInfo.id`. |
 | `/map_server_node/get_recovery_point` | `mowgli_interfaces/GetRecoveryPoint` | When the robot is outside every area, returns the nearest edge point moved `boundary_recovery_offset_m` further in, plus the distance outside. |
 | `/map_server_node/reset_mow_progress` | `std_srvs/Trigger` | Not in upstream. Zeroes the progress grid, e.g. when a new mow run starts. |
+| `/map_server_node/set_area_settings` | `mower_interfaces/SetAreaSettings` | Not in upstream. Per-area mowing settings, see [Per-area mowing settings](#per-area-mowing-settings). `area_index` as in `get_mowing_area`, 255 = defaults. |
+| `/map_server_node/get_area_settings` | `mower_interfaces/GetAreaSettings` | Not in upstream. The effective settings (area over defaults over built-in, every key present) as JSON; 255 = the defaults. `success=false` past the end. |
 
 `set_docking_point` gates, as in upstream. Every gate is re-read on each call, so
 `ros2 param set` works:
@@ -54,6 +56,7 @@ ros2 launch mower_map map_server.launch.py maps_dir:=/ros2_ws/maps \
 | `/map_server_node/boundary_violation` | `std_msgs/Bool` | depth 1 | True when the robot is outside all areas by more than `soft_boundary_margin_m` (0) for `boundary_debounce_samples` (3) checks. Checked at `boundary_check_rate_hz` (5). |
 | `/map_server_node/lethal_boundary_violation` | `std_msgs/Bool` | depth 1 | True when the robot is outside all areas by more than `lethal_boundary_margin_m` (0.5) |
 | `/map_server_node/replan_needed` | `std_msgs/Bool` | depth 1 | `true` on any area, obstacle or dock change |
+| `/map_server_node/area_settings` | `std_msgs/String` | latched | JSON `{"defaults": {...every key...}, "areas": {"<area name>": {...only the area's own keys...}}}`. Every current area is listed (`{}` = all defaults). Republished on every settings change, area add, load and prune. |
 
 The node subscribes to:
 
@@ -66,6 +69,8 @@ The blade offset is looked up once from TF (odometry `child_frame_id` -> `blade_
 falls back to `blade_offset_x/y` (0.3, 0).
 
 ## Files (in `maps_dir`, default `/ros2_ws/maps`)
+
+**`area_settings.yaml`**: per-area mowing settings, see [Per-area mowing settings](#per-area-mowing-settings).
 
 **`areas.dat`** is byte-compatible with upstream `save_areas_to_file` /
 `load_areas_from_file`, so files can be swapped in either direction. Coordinates are
@@ -105,6 +110,44 @@ that file in place. Comments and layout are kept, the same as upstream
 read from `dock_pose.yaml`, falling back to `robot_yaml_path`. A dock without an outline
 gets the default rectangle from `dock_outline_x_min/x_max/half_width`, which is the vendor
 type-5 outline.
+
+## Per-area mowing settings
+
+Stored in **`area_settings.yaml`** next to `areas.dat` (parameter `area_settings_file`,
+default `<dir of areas_file>/area_settings.yaml`), keyed by area **name** (areas.dat has no
+stable id; two areas with the same name share settings), plus `defaults`:
+
+```yaml
+version: 1
+defaults: {cutter_height_mm: 55}
+areas:
+  Front lawn: {path_mode: spiral, perimeter_laps: 3}
+```
+
+| Key | Type | Range | Default | Meaning |
+|---|---|---|---|---|
+| `cutter_height_mm` | int | 30-90 (Tron) | 50 | blade height; the mission maps it to the MCU percent |
+| `perimeter_laps` | int | 0-4 | 2 | headland rings (vendor perimeter laps) |
+| `path_mode` | string | `zigzag` `cross` `alternate` `spiral` `contour_only` | `zigzag` | vendor TaskUnit path_mode 0 zigzag, 1 cross, 2 alternate zigzag, 3 spiral; `contour_only` = vendor cut_mode 2 |
+| `mow_angle_deg` | float | -1 or 0-180 | -1 (auto) | swath heading; < 0 = auto, >= 180 folded |
+| `cut_speed_mps` | float | 0.05-0.5 | 0.3 | FollowCoveragePath speed while mowing |
+| `swath_overlap_m` | float | 0-0.1 | 0.02 | swath spacing = cut width - this |
+| `edge_first` | bool | | true | false = swaths first, then the perimeter laps |
+| `repeat` | int | 1-10 | 1 | mow the area N times per session |
+| `alternate_angle_offset_deg` | float | 0-180 | 90 | `alternate`: angle step per run (and per session); `cross` is always two passes 90 deg apart |
+
+`set_area_settings` takes a JSON object and **merges** it into the stored values of that
+area (or the defaults for 255): a key set to `null` is removed (back to the default), and
+`{}` clears every value of that area. Unknown keys, wrong types and out-of-range values
+reject the whole request (`success=false`, `message` says why). On success `message` holds
+the effective settings. The file is written atomically and the latched topic republished.
+
+Area edits: the GUI edits areas by `clear_map` + `add_area` of every area. Settings are
+kept across `clear_map`; an area re-added under a **new name with the same polygon** (all
+vertices within 1 cm) takes the old name's settings (rename). Entries whose area has not
+come back `area_settings_prune_delay_s` (30 s) after a `clear_map` are dropped (delete).
+`load_areas` does the same immediately (rename by polygon, then prune). A rename combined
+with a polygon edit loses the settings (they cannot be matched).
 
 ## Importing the vendor map
 

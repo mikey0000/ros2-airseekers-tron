@@ -16,8 +16,8 @@
     <transport_descriptor>
       <transport_id>camera_shm</transport_id>
       <type>SHM</type>
-      <segment_size>33554432</segment_size>
-      <maxMessageSize>16777216</maxMessageSize>
+      <segment_size>16777216</segment_size>
+      <maxMessageSize>8388608</maxMessageSize>
     </transport_descriptor>
     <transport_descriptor>
       <transport_id>camera_udp</transport_id>

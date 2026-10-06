@@ -31,3 +31,12 @@ export function cameraForFrame(cameras: CameraInfo[], frameId?: string): CameraI
         (c.annotatedTopic ?? "").split("/").includes(id) ||
         c.id === id || `${c.id}_camera` === id);
 }
+
+/** A camera's single-frame URL with variant/quality (snapshot-polling tiles). */
+export function buildSnapshotUrl(cam: CameraInfo, p: Pick<StreamParams, "variant" | "quality">): string {
+    const q = new URLSearchParams();
+    if (p.variant === "annotated" && cam.annotatedTopic) q.set("variant", "annotated");
+    q.set("quality", String(Math.round(clamp(p.quality, 1, 100))));
+    const sep = cam.snapshotUrl.includes("?") ? "&" : "?";
+    return `${cam.snapshotUrl}${sep}${q.toString()}`;
+}

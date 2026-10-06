@@ -41,6 +41,12 @@ export const PARAM_BINDING_PROFILES: Readonly<Record<string, ParamBindingProfile
             "ntrip_user",
             "ntrip_password",
             "ntrip_enabled",
+            "angular_trim_radps",
+            "angular_deadband_radps",
+            "heading_hold",
+            "heading_hold_kp",
+            "heading_hold_kd",
+            "heading_hold_max_radps",
         ],
         guiKeys: [
             "mower_model",

@@ -29,6 +29,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PlanCoverage.srv"
   "srv/MappingControl.srv"
   "srv/SetLoRa.srv"
+  "srv/SetAreaSettings.srv"
+  "srv/GetAreaSettings.srv"
   "action/Dock.action"
   "action/Undock.action"
   DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs nav_msgs action_msgs

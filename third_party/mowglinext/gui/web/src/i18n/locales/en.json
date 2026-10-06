@@ -779,7 +779,12 @@
     "rosbagDeleteFailed": "Could not delete recording",
     "rosbagDeleteConfirmTitle": "Delete recording?",
     "rosbagDeleteConfirmBody": "This permanently deletes the recording {{name}} from the robot. This cannot be undone.",
-    "gpsWrongfix": "GPS wrong-fix rejects: {{count}}"
+    "gpsWrongfix": "GPS wrong-fix rejects: {{count}}",
+    "escCurrent": "ESC current",
+    "localizationHealth": "Localisation health",
+    "localizationHealthHint": "Diagnostics of the state estimator, GNSS and IMU, as reported on /diagnostics.",
+    "noLocalizationDiagnostics": "No localisation diagnostics received yet.",
+    "imuCalibrationFromDiagnostics": "Reported by the IMU diagnostics: {{state}}."
   },
   "mowgliNextPage": {
     "headlineUntilHomePrefix": "Just ",
@@ -3022,7 +3027,8 @@
     "hoverAPart": "Hover a part",
     "legend": "Green = healthy, amber = needs attention.",
     "motorTemps": "motor {{motor}} °C · ESC {{esc}} °C",
-    "unknown": "Unknown"
+    "unknown": "Unknown",
+    "motorTempOnly": "motor {{motor}} °C"
   },
   "dashboardHeroCard": {
     "mowerNeedsYou": "Mower needs you",
@@ -3488,6 +3494,10 @@
       "label": "Drive Motor",
       "description": "Firmware wheel-velocity PID gains and feedforward (applied live)"
     },
+    "straight_driving": {
+      "label": "Straight Driving",
+      "description": "Angular trim, joystick deadband and IMU heading hold (applied live)"
+    },
     "ntrip": {
       "label": "NTRIP Corrections",
       "description": "RTK correction network and base station — set this before GPS"
@@ -3887,7 +3897,9 @@
     "cameras": {
       "left": "Left camera",
       "right": "Right camera",
-      "rear": "Rear camera"
+      "rear": "Rear camera",
+      "front_left": "Front stereo left",
+      "front_right": "Front stereo right"
     }
   },
   "perception": {
@@ -3914,7 +3926,24 @@
     "loadFailed": "Could not load the camera list from the backend.",
     "noCameras": "No cameras are configured for this robot.",
     "unavailable": "The camera stream server is not reachable.",
-    "hiddenPaused": "Streams are paused while this tab is hidden."
+    "hiddenPaused": "Streams are paused while this tab is hidden (small screens only).",
+    "health": {
+      "live": "Live",
+      "stale": "Stale",
+      "waiting": "Waiting",
+      "absent": "Not publishing"
+    },
+    "fpsUnit": "fps",
+    "frameAge": "{{age}} s ago",
+    "latestFrame": "Latest frame:",
+    "nothingDetected": "Frames are being analysed, nothing detected.",
+    "class": "Class",
+    "score": "Score",
+    "histogram": "Detected since page opened",
+    "messagesSeen_one": "{{count}} frame analysed",
+    "messagesSeen_other": "{{count}} frames analysed",
+    "snapshotMode": "snapshots",
+    "snapshotModeHint": "Polled frame by frame: the browser allows only a few live streams per server."
   },
   "profileGating": {
     "navPerception": "Perception",
@@ -4084,5 +4113,89 @@
     "setFromRobotDone": "Dock position saved",
     "setFromRobotFailed": "Could not set the dock position",
     "storedPose": "Stored at X {{x}} m, Y {{y}} m."
+  },
+  "areaSettings": {
+    "title": "Mow settings",
+    "defaultsTitle": "Mowing defaults",
+    "defaultsHint": "Every mowing area uses these settings unless it has its own. Saved on the robot.",
+    "notSupported": "Area settings not supported by this robot",
+    "notSupportedHint": "The map server on this robot does not offer per-area settings yet. Mowing uses the global settings.",
+    "loadFailed": "Could not load the mow settings",
+    "saveFailed": "Could not save the mow settings",
+    "saved": "Mow settings saved",
+    "retry": "Retry",
+    "invalid": "Invalid value for {{key}}",
+    "useDefaults": "Use defaults",
+    "useDefaultsHint": "Follow the robot-wide mowing defaults for this area.",
+    "save": "Save",
+    "cutterHeight": "Blade height",
+    "pathMode": "Mowing pattern",
+    "pathModes": {
+      "zigzag": "Zigzag",
+      "cross": "Cross",
+      "alternate": "Alternate",
+      "spiral": "Spiral",
+      "contour_only": "Edges only"
+    },
+    "mowAngle": "Mowing direction",
+    "mowAngleHint": "Direction of the stripes, 0° = north. Auto follows the longest edge.",
+    "auto": "Auto",
+    "alternateOffset": "Angle change per mow",
+    "alternateOffsetHint": "Each new mow turns the stripes by this angle.",
+    "perimeterLaps": "Perimeter laps",
+    "edgeFirst": "Edges first",
+    "edgeFirstHint": "Mow the perimeter laps before the stripes.",
+    "cutSpeed": "Mowing speed",
+    "swathOverlap": "Stripe overlap",
+    "repeat": "Passes",
+    "mm": "{{value}} mm",
+    "mps": "{{value}} m/s",
+    "cm": "{{value}} cm",
+    "times_one": "{{count}} pass",
+    "times_other": "{{count}} passes",
+    "chipHeight": "Blade {{value}} mm",
+    "chipAngle": "{{value}}°",
+    "chipAngleAuto": "Auto angle",
+    "chipLaps_one": "{{count}} lap",
+    "chipLaps_other": "{{count}} laps",
+    "chipDefaults": "Defaults",
+    "active": "Mowing with",
+    "activeFor": "Mowing {{area}} with",
+    "custom": "Custom",
+    "inherited": "Default",
+    "run": "run {{run}}/{{runs}}"
+  },
+  "startSheet": {
+    "title": "Start mowing",
+    "what": "What to mow",
+    "allAreas": "All areas",
+    "oneArea": "One area",
+    "settings": "Settings",
+    "edit": "Edit",
+    "heightOverride": "Blade height for this run",
+    "repeatOverride": "Passes for this run",
+    "overrideSavedArea": "The new values are saved to this area before starting.",
+    "overrideSavedDefaults": "The new values are saved to the mowing defaults before starting (areas with their own settings keep them).",
+    "progress": "Previous mow was interrupted",
+    "start": "Start",
+    "cancel": "Cancel",
+    "failed": "Could not start mowing"
+  },
+  "settingsStraightDriving": {
+    "intro": "Host-side corrections on the steering command just before it reaches the motor board. The per-wheel torque loop runs inside the firmware; these settings change what it is asked to do. All are off by default and apply live on save.",
+    "trimCard": "Trim and deadband",
+    "trimLabel": "Angular trim",
+    "trimTooltip": "Yaw rate added while driving, signed with the direction of travel. If the robot curves left on its own by r rad/s, enter -r (curving right: +r). 0 = off.",
+    "deadbandLabel": "Angular deadband",
+    "deadbandTooltip": "Steering commands smaller than this are treated as straight while driving, so joystick drift does not make the robot weave. Try 0.05. 0 = off.",
+    "holdCard": "Heading hold",
+    "holdDescription": "When driving with no steering command, the IMU heading at that moment is locked and the robot steers back onto it (max correction clamped). Steering again or stopping releases it.",
+    "holdEnable": "Hold heading when driving straight",
+    "kpLabel": "Kp",
+    "kpTooltip": "Correction (rad/s) per radian of heading error. Default 1.0.",
+    "kdLabel": "Kd",
+    "kdTooltip": "Damping on the measured yaw rate. Raise if the hold oscillates. Default 0.1.",
+    "maxLabel": "Max correction",
+    "maxTooltip": "Clamp on the heading-hold steering correction. Default 0.15 rad/s."
   }
 }

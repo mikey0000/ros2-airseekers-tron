@@ -10,7 +10,7 @@ det_ros:
     models_dir: ""
     # true: no rknnlite / no model -> stay alive, publish nothing (instead of exit 1)
     dry_run: false
-    max_rate_hz: 10.0         # per camera; NPU+Python budget, 0 = every frame
+    max_rate_hz: 5.0          # per camera; NPU+Python budget (~2x10 Hz cost 35-54% CPU), 0 = every frame
     # Model input is 480 wide x 640 tall (read from the .rknn static shape
     # [1,3,640,480] NCHW). img_size is [width, height].
     img_size: [480, 640]
@@ -19,6 +19,7 @@ det_ros:
     core_mask: "0"            # NPU core 0 (seg_ros uses core 1)
     left_topic: "/left_oa_camera/image_raw"
     right_topic: "/right_oa_camera/image_raw"
+    # /<camera_ns>/image_annotated + /ai/det/image_annotated, drawn only while subscribed
     publish_annotated: true
     classes:
       - person

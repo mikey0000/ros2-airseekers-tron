@@ -37,4 +37,16 @@ describe("RobotAnatomy per robot profile", () => {
         fireEvent.mouseEnter(screen.getByTestId("anatomy-cameras"));
         expect(screen.getByText("Unknown")).toBeInTheDocument();
     });
+
+    it("leaves out the ESC temperature when the robot has none", () => {
+        render(<ThemeProvider><RobotAnatomy inputs={{...inputs, motorTempC: 29, escTempC: undefined}}/></ThemeProvider>);
+        fireEvent.mouseEnter(screen.getByTestId("anatomy-motor"));
+        expect(screen.getByText("motor 29 °C")).toBeInTheDocument();
+    });
+
+    it("shows motor and ESC temperatures when both are measured", () => {
+        render(<ThemeProvider><RobotAnatomy inputs={{...inputs, motorTempC: 29, escTempC: 41}}/></ThemeProvider>);
+        fireEvent.mouseEnter(screen.getByTestId("anatomy-motor"));
+        expect(screen.getByText("motor 29 °C · ESC 41 °C")).toBeInTheDocument();
+    });
 });

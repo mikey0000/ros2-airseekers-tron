@@ -21,7 +21,6 @@ import (
 )
 
 const (
-	driveTuningRos2ContainerName = "mowgli-ros2"
 	driveTuningContainerDir      = "/ros2_ws/config/drive_tuning"
 	driveTuningRobotConfigPath   = "/ros2_ws/config/mowgli_robot.yaml"
 	driveTuningBackupFile        = driveTuningContainerDir + "/drive_pid_last_backup.yaml"
@@ -680,11 +679,11 @@ func (m *driveTuningManager) getRos2ContainerDetails(ctx context.Context) (types
 		return types.ContainerDetails{}, err
 	}
 	for _, container := range containers {
-		if containerNameMatches(container, driveTuningRos2ContainerName) {
+		if containerNameMatches(container, ROSContainerName()) {
 			return m.dockerProvider.ContainerInspect(ctx, container.ID)
 		}
 	}
-	return types.ContainerDetails{}, fmt.Errorf("%s container not found", driveTuningRos2ContainerName)
+	return types.ContainerDetails{}, fmt.Errorf("%s container not found", ROSContainerName())
 }
 
 func (m *driveTuningManager) readReport(ctx context.Context, containerID string, reportPath string) (string, *driveTuningReport, error) {

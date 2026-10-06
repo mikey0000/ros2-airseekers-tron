@@ -33,8 +33,6 @@ const TRON_HIDDEN_PAGES_BEFORE = [
 const NEW_TRON_GATES = [
     "settings:leds",
     "feature:firmware_debug",
-    "feature:containers",
-    "feature:restart_ros2",
     "feature:lidar",
     "feature:fusion_graph",
     "feature:imu_yaw_calibration",
@@ -42,7 +40,7 @@ const NEW_TRON_GATES = [
 ];
 
 // Gates for UI no stock robot has ever shown (additive features).
-const ADDITIVE_GATES = ["/perception"];
+const ADDITIVE_GATES = ["/perception", "settings:straight_driving", "feature:area_settings"];
 
 const STOCK_MODELS = MOWER_MODELS.filter((m) => m.value !== AIRSEEKERS_TRON_PROFILE_ID);
 const tron = getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID);

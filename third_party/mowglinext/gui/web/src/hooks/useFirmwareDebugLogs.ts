@@ -25,10 +25,10 @@ const findRos2ContainerId = (containers: Array<{
     id?: string;
     names?: string[];
     labels?: Record<string, string>;
-}>): string | null => {
+}>, rosName?: string): string | null => {
     const ros2 = containers.find((container) => {
         const names = container.names ?? [];
-        if (names.some((name) => name.includes("mowgli-ros2") || name.includes("ros2"))) {
+        if (names.some((name) => (rosName ? name.replace(/^\//, "") === rosName : name.includes("ros2")))) {
             return true;
         }
         return container.labels?.app === "ros2";
@@ -101,7 +101,7 @@ export const useFirmwareDebugLogs = (enabled: boolean) => {
                 if (res.error) {
                     throw new Error(res.error.error);
                 }
-                const containerId = findRos2ContainerId(res.data.containers ?? []);
+                const containerId = findRos2ContainerId(res.data.containers ?? [], res.data.names?.ros);
                 if (!containerId) {
                     throw new Error("ros2_container_not_found");
                 }

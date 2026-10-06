@@ -45,7 +45,9 @@ func newFakeVideoServer(t *testing.T, period time.Duration) *fakeVideoServer {
 	f := &fakeVideoServer{period: period, streamed: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.WriteString(w, "<html>web_video_server</html>")
+		_, _ = io.WriteString(w, `<html><head><title>ROS Streamable Topic List</title></head><body><h1>Available ROS Topics for streaming:</h1><ul>`+
+			`<li>/left_oa_camera/image_raw<ul><li><a href="/stream_viewer?topic=/left_oa_camera/image_raw">Stream Viewer</a></li></ul></li>`+
+			`<li>/rear_camera/image_raw<ul><li><a href="/stream?topic=/rear_camera/image_raw">Stream</a></li></ul></li></ul></body></html>`)
 	})
 	mux.HandleFunc("/snapshot", func(w http.ResponseWriter, r *http.Request) {
 		f.record(r)
@@ -144,15 +146,24 @@ func TestCameras_ListDefault(t *testing.T) {
 	assert.True(t, resp.Available)
 	assert.Empty(t, resp.Hint)
 	assert.Equal(t, CameraStreamDefaults{Quality: 50, FPS: 5, MaxFPS: 15}, resp.Defaults)
-	require.Len(t, resp.Cameras, 4)
+	require.Len(t, resp.Cameras, 5)
 	topics := []string{}
 	for _, c := range resp.Cameras {
 		topics = append(topics, c.Topic)
 	}
 	assert.Equal(t, []string{"/left_oa_camera/image_raw", "/right_oa_camera/image_raw",
-		"/rear_camera/image_raw", "/ai/det/image_annotated"}, topics)
+		"/rear_camera/image_raw", "/vio/left/image_raw", "/vio/right/image_raw"}, topics)
+	assert.Equal(t, "/left_oa_camera/image_annotated", resp.Cameras[0].AnnotatedTopic)
+	assert.Equal(t, "/right_oa_camera/image_annotated", resp.Cameras[1].AnnotatedTopic)
+	assert.Empty(t, resp.Cameras[2].AnnotatedTopic)
 	assert.Equal(t, "/api/cameras/rear/stream", resp.Cameras[2].StreamURL)
 	assert.Equal(t, "/api/cameras/rear/snapshot", resp.Cameras[2].SnapshotURL)
+	assert.Equal(t, "/api/cameras/rear/health", resp.Cameras[2].HealthURL)
+	// Status from the web_video_server topic index.
+	assert.True(t, resp.Cameras[0].Status.Listed)
+	assert.False(t, resp.Cameras[0].Status.AnnotatedListed)
+	assert.Equal(t, "not_publishing", resp.Cameras[1].Status.State)
+	assert.Contains(t, []string{"listed", "publishing", "stale"}, resp.Cameras[2].Status.State)
 }
 
 func TestCameras_ListOverrideEnvAndProfile(t *testing.T) {
@@ -378,7 +389,7 @@ func TestRelayMJPEG_DecimatesToFPS(t *testing.T) {
 		return t
 	}
 	var out recFlusher
-	require.NoError(t, relayMJPEG(&out, &src, testBoundary, 5, now))
+	require.NoError(t, relayMJPEG(&out, &src, testBoundary, 5, now, nil))
 
 	// The relay never writes a closing delimiter (the stream is endless);
 	// add one so the parser sees a clean end.
@@ -400,4 +411,63 @@ func TestRelayMJPEG_DecimatesToFPS(t *testing.T) {
 	}
 	assert.Equal(t, want, got)
 	assert.Equal(t, 5, out.flushes, "one flush per forwarded frame")
+}
+
+func TestParseVideoServerTopics(t *testing.T) {
+	assert.Nil(t, parseVideoServerTopics("<html>nginx</html>"))
+	got := parseVideoServerTopics(`<h1>Available ROS Topics for streaming:</h1><ul><li>/a/image_raw<ul><li><a href="/stream?topic=/a/image_raw">Stream</a></li></ul></li><li>/b/img<ul></ul></li></ul>`)
+	assert.Equal(t, map[string]bool{"/a/image_raw": true, "/b/img": true}, got)
+}
+
+func TestCameraFrameStatsAndStatus(t *testing.T) {
+	stats := &cameraFrameStats{topics: map[string]*topicFrames{}}
+	old := cameraStats
+	cameraStats = stats
+	t.Cleanup(func() { cameraStats = old })
+
+	cam := Camera{ID: "x", Topic: "/x/image_raw", AnnotatedTopic: "/x/image_annotated"}
+	t0 := time.Unix(1000, 0)
+	topics := map[string]bool{"/x/image_raw": true}
+
+	st := cameraStatus(cam, true, topics, t0)
+	assert.Equal(t, "listed", st.State)
+	assert.Nil(t, st.Raw.LastFrameAgeMs)
+	assert.Equal(t, "not_publishing", cameraStatus(cam, true, map[string]bool{}, t0).State)
+	assert.Equal(t, "unknown", cameraStatus(cam, false, nil, t0).State)
+
+	done := stats.open(cam.Topic)
+	for i := 0; i <= 10; i++ { // 10 Hz for 1 s
+		stats.frame(cam.Topic, t0.Add(time.Duration(i)*100*time.Millisecond))
+	}
+	now := t0.Add(1100 * time.Millisecond)
+	st = cameraStatus(cam, true, topics, now)
+	assert.Equal(t, "publishing", st.State)
+	assert.InDelta(t, 10.0, st.Raw.FPS, 0.01)
+	require.NotNil(t, st.Raw.LastFrameAgeMs)
+	assert.Equal(t, int64(100), *st.Raw.LastFrameAgeMs)
+	assert.Equal(t, 1, st.Raw.Viewers)
+	done()
+
+	st = cameraStatus(cam, true, topics, t0.Add(10*time.Second))
+	assert.Equal(t, "stale", st.State)
+	assert.Equal(t, 0.0, st.Raw.FPS)
+	assert.Equal(t, 0, st.Raw.Viewers)
+}
+
+func TestCameras_Health(t *testing.T) {
+	fake := newFakeVideoServer(t, 10*time.Millisecond)
+	router, _ := cameraTestRouter(t, fake.URL)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/cameras/left_oa/health", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp CameraHealthResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "left_oa", resp.ID)
+	assert.True(t, resp.Status.Listed)
+	require.NotNil(t, resp.Status.Annotated)
+	assert.Equal(t, "/left_oa_camera/image_annotated", resp.Status.Annotated.Topic)
+
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/cameras/nope/health", nil))
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }

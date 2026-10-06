@@ -1,0 +1,24 @@
+# Per-area mowing settings (served by mower_map map_server_node at
+# /map_server_node/set_area_settings).
+#
+# area_index    index as in /map_server_node/get_mowing_area (all areas, in
+#               areas.dat order); 255 = the defaults applied to every area
+#               without its own value for a key.
+# settings_json JSON object, every key optional (a missing key = default):
+#   cutter_height_mm            int    30..90, default 50
+#   perimeter_laps              int    0..4, default 2 (headland rings)
+#   path_mode                   string zigzag | cross | alternate | spiral | contour_only
+#   mow_angle_deg               float  -1 = auto (default), else 0..180
+#   cut_speed_mps               float  default 0.3, max 0.5
+#   swath_overlap_m             float  default 0.02
+#   edge_first                  bool   default true (false = swaths, then perimeter)
+#   repeat                      int    default 1
+#   alternate_angle_offset_deg  float  default 90
+# The object REPLACES the stored settings of that area (send {} to reset it to
+# the defaults). Keys set to null are dropped. Unknown keys and out-of-range
+# values are rejected (success=false, message says why).
+uint8 area_index
+string settings_json
+---
+bool success
+string message

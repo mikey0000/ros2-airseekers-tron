@@ -130,6 +130,29 @@ to [0, 180)) appears in `message`.
 | `service_timeout_s` | `30.0` | how long to wait for the plan response before aborting |
 | `operation_width` | `0.0` (launch: `cut_width_m - swath_overlap_m` = 0.18) | swath spacing forwarded to the planner; ≤ 0 = the planner default |
 | `headland_width`, `headland_passes`, `min_swath_length` | `0.0`, `0`, `0.0` | forwarded to the planner; ≤ 0 (passes 0 = auto) means the planner default (0.20 m, auto, 0.15 m) |
+| `headland_rings` | `-1` | per-area perimeter laps, forwarded as `headland_rings`: -1 = use `headland_passes`, 0 = none, > 0 = exactly (validated -1..20) |
+| `path_mode` | `zigzag` | `zigzag` / `cross` / `alternate` (all sent as `zigzag`: cross and alternate are several mission-level zigzag plans), `spiral`, `contour_only`; anything else is refused |
+| `mow_angle_deg` | `-1.0` | used only when the goal's `mow_angle_deg` is < 0 (the goal wins) |
+| `edge_first` | `true` | `false`: the planner lays out the swaths first, then the rings innermost first; the splitter is told so (`swaths_first`) |
+
+The last four are the per-area mowing settings. `behavior_tree_node` (mower_mission) sets
+them with `set_parameters` right before every PlanCoverage goal, together with
+`operation_width` (= `cut_width_m` - the area's `swath_overlap_m`). They stay set until
+the next change, so a goal from another client plans with the last area's pattern. A
+set-parameters callback validates `path_mode`, `headland_rings` and `operation_width` and
+logs every change.
+
+Planner modes (`mower_coverage` `planCoverage`):
+
+* `zigzag`: headland rings + boustrophedon swaths (unchanged).
+* `spiral`: concentric rings at `operation_width` spacing, outermost first (the first one on
+  the recorded line, like a headland ring), until the field collapses; one last ring half a
+  swath outside the collapse offset covers the centre strip. Holes get rings around them
+  like headlands; where the field splits, each part is spiralled. Ring starts are chained
+  (one `operation_width` step), so a plain field is one drivable sub-path. No swaths.
+* `contour_only`: only the `headland_rings` perimeter laps (at least one), no swaths.
+* `edge_first = false`: same rings and swaths; swaths first, then the rings innermost first,
+  chained from the last swath end.
 
 ### Swath width
 
@@ -145,6 +168,10 @@ and update `cut_width_m` together with `cutter_radius` in
 
 All parameters are read again for each goal, so a `ros2 param set` applies
 to the next plan.
+
+`mower_interfaces/srv/PlanCoverage` carries the per-area fields with IDL defaults that
+keep the old behaviour for a client that leaves them alone: `int32 headland_rings -1`,
+`string path_mode "zigzag"` (`""` = zigzag), `bool edge_first true`.
 
 ## Differences from upstream `mowgli_coverage`
 

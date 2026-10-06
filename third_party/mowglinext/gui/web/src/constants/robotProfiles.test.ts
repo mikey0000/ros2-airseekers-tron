@@ -40,6 +40,7 @@ describe("robot profiles", () => {
         expect(hasFeature(yf, "docker_host")).toBe(true);
         expect(hasFeature(yf, "cameras")).toBe(false);
         expect(hasFeature(yf, "lora_corrections")).toBe(false);
+        expect(hasFeature(yf, "area_settings")).toBe(false);
     });
 
     it("takes battery thresholds from the preset", () => {
@@ -61,21 +62,36 @@ describe("robot profiles", () => {
         expect(MOWER_MODELS.map((m) => m.value)).toContain("AirseekersTron");
         expect(tron.defaults).toBe(MOWER_MODELS.find((m) => m.value === "AirseekersTron")!.defaults);
         expect(tron.label).toBe("mowerModels.AirseekersTron.label");
-        for (const off of ["stm32_firmware", "gnss_sidecar", "docker_host", "drive_tuning", "lidar",
+        for (const off of ["stm32_firmware", "gnss_sidecar", "docker_admin", "drive_tuning", "lidar",
             "dock_calibration", "fusion_graph", "imu_yaw_calibration", "status_leds"] as const) {
             expect(hasFeature(tron, off)).toBe(false);
         }
+        expect(hasFeature(tron, "docker_host")).toBe(true);
         expect(hasFeature(tron, "cameras")).toBe(true);
         expect(hasFeature(tron, "lora_corrections")).toBe(true);
+        expect(hasFeature(tron, "area_settings")).toBe(true);
+        expect(hasFeature(tron, "straight_driving")).toBe(true);
         expect(tron.perception).toBe("camera");
         expect(tron.docking).toBe("vision_marker");
         expect(tron.battery.preferReportedPercent).toBe(true);
         expect(tron.battery.fullV).toBeUndefined();
         expect(tron.cameras.map((c) => c.topic)).toEqual([
             "/left_oa_camera/image_raw", "/right_oa_camera/image_raw", "/rear_camera/image_raw",
+            "/vio/left/image_raw", "/vio/right/image_raw",
         ]);
+        expect(tron.cameras[0].annotatedTopic).toBe("/left_oa_camera/image_annotated");
         expect(tron.defaults.wheel_track).toBe(0.48);
         expect(tron.defaults.tool_width).toBe(0.2);
+    });
+
+    it("lists the Status fields a robot cannot measure", () => {
+        expect(getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID).unmeasuredStatusFields).toEqual(
+            expect.arrayContaining(["mower_esc_temperature", "raspberry_pi_power"]));
+        expect(getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID).unmeasuredStatusFields)
+            .not.toContain("mower_motor_temperature");
+        for (const profile of ROBOT_PROFILES.filter((p) => p.value !== AIRSEEKERS_TRON_PROFILE_ID)) {
+            expect(profile.unmeasuredStatusFields).toEqual([]);
+        }
     });
 
     it("defines every feature on every profile", () => {

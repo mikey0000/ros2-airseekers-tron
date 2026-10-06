@@ -272,3 +272,50 @@ def test_real_l_shape_swaths_trimmed_into_pieces():
         idx = sub.segment_indices
         for i, j in zip(idx[:-1], idx[1:]):
             assert sp.dist(res.segments[i].points[-1], res.segments[j].points[0]) <= 0.6
+
+
+# --------------------------------------------------------------------------
+# Per-area settings: edge_first = false (swaths, then rings) and ring-only plans
+# --------------------------------------------------------------------------
+
+def swaths_first_plan():
+    """Swaths first, then the rings innermost first (edge_first = false)."""
+    swaths = serpentine(0.45, 9.55, 0.45, 5)
+    rings = ring(0.27, 0.27, 9.73, 5.73) + ring(0.09, 0.09, 9.91, 5.91)
+    return swaths + rings
+
+
+def test_swaths_first_layout_is_split_structurally():
+    segs, mode = sp.split_segments(swaths_first_plan(), ring_count=2, swath_count=5,
+                                   swaths_first=True)
+    assert mode == sp.MODE_STRUCTURAL
+    assert [s.kind for s in segs] == [SEGMENT_SWATH] * 5 + [SEGMENT_RING] * 2
+    assert all(len(s.points) == 2 for s in segs[:5])
+    assert sp.is_closed(segs[5].points) and sp.is_closed(segs[6].points)
+
+
+def test_swaths_first_flag_ignored_for_count_mismatch():
+    # Wrong counts: falls back to the old rules instead of mis-pairing poses.
+    segs, _mode = sp.split_segments(rect_plan(), ring_count=2, swath_count=5,
+                                    swaths_first=True)
+    assert [s.kind for s in segs][:2] == [SEGMENT_RING, SEGMENT_RING]
+
+
+def test_swaths_first_plan_pipeline_keeps_drive_order():
+    res = sp.plan(swaths_first_plan(), ring_count=2, swath_count=5, swaths_first=True)
+    assert res.mode == sp.MODE_STRUCTURAL
+    assert (res.ring_count, res.swath_count) == (2, 5)
+    assert res.segments[0].kind == SEGMENT_SWATH
+    assert res.segments[-1].kind == SEGMENT_RING
+
+
+def test_rings_only_spiral_plan_is_one_subpath():
+    # spiral / contour_only: rings only, each starting next to the previous end.
+    rings = []
+    for k in range(4):
+        d = 0.09 + k * OP
+        rings += ring(d, d, 10.0 - d, 6.0 - d)
+    res = sp.plan(rings, ring_count=4, swath_count=0)
+    assert res.mode == sp.MODE_STRUCTURAL
+    assert (res.ring_count, res.swath_count) == (4, 0)
+    assert len(res.subpaths) == 1

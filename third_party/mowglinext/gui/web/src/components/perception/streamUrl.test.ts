@@ -33,3 +33,12 @@ describe("cameraForFrame", () => {
         expect(cameraForFrame(cams, undefined)).toBeUndefined();
     });
 });
+
+describe("buildSnapshotUrl", () => {
+    it("adds quality and only a real annotated variant", async () => {
+        const {buildSnapshotUrl} = await import("./streamUrl.ts");
+        expect(buildSnapshotUrl(cam(), {variant: "annotated", quality: 50})).toBe("/api/cameras/left_oa/snapshot?quality=50");
+        expect(buildSnapshotUrl(cam({annotatedTopic: "/x"}), {variant: "annotated", quality: 50}))
+            .toBe("/api/cameras/left_oa/snapshot?variant=annotated&quality=50");
+    });
+});

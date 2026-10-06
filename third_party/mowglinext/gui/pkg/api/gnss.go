@@ -16,7 +16,6 @@ import (
 )
 
 const (
-	gnssContainerName       = "mowgli-gps"
 	gnssConfigPlanBinary    = "/opt/gnss_sidecar/bin/gnss_config_plan"
 	gnssConfigApplyBinary   = "/opt/gnss_sidecar/bin/gnss_config_apply"
 	gnssApplyModeRuntime    = "runtime-only"
@@ -257,7 +256,7 @@ func runApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDBProvider, do
 	if containerDetails.Running {
 		response.StopAttempted = true
 		if err := dockerProvider.ContainerStop(parentCtx, containerDetails.ID); err != nil {
-			return GNSSActionResponse{}, http.StatusInternalServerError, fmt.Errorf("failed to stop %s: %w", gnssContainerName, err)
+			return GNSSActionResponse{}, http.StatusInternalServerError, fmt.Errorf("failed to stop %s: %w", GPSContainerName(), err)
 		}
 	}
 
@@ -332,7 +331,7 @@ func runFactoryResetApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDB
 	if containerDetails.Running {
 		response.StopAttempted = true
 		if err := dockerProvider.ContainerStop(parentCtx, containerDetails.ID); err != nil {
-			return GNSSActionResponse{}, http.StatusInternalServerError, fmt.Errorf("failed to stop %s: %w", gnssContainerName, err)
+			return GNSSActionResponse{}, http.StatusInternalServerError, fmt.Errorf("failed to stop %s: %w", GPSContainerName(), err)
 		}
 	}
 
@@ -606,12 +605,12 @@ func getGPSContainerDetails(ctx context.Context, dockerProvider pkgtypes.IDocker
 	}
 	for _, container := range containers {
 		for _, name := range container.Names {
-			if strings.TrimPrefix(name, "/") == gnssContainerName {
+			if strings.TrimPrefix(name, "/") == GPSContainerName() {
 				return dockerProvider.ContainerInspect(ctx, container.ID)
 			}
 		}
 	}
-	return pkgtypes.ContainerDetails{}, fmt.Errorf("container %s not found", gnssContainerName)
+	return pkgtypes.ContainerDetails{}, fmt.Errorf("container %s not found", GPSContainerName())
 }
 
 func deviceBind(existingBinds []string) string {

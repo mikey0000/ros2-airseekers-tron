@@ -37,6 +37,9 @@ def _install_shim():
         QoSHistoryPolicy=_Policy, QoSDurabilityPolicy=_Policy)
     mod('rclpy.callback_groups', CallbackGroup=_Any)
     mod('rclpy.serialization', deserialize_message=_deserialize)
+    mod('rclpy.parameter', Parameter=_Any)
+    mod('rcl_interfaces')
+    mod('rcl_interfaces.msg', SetParametersResult=_Any)
     for pkg, names in (('geometry_msgs', ('Twist', 'TwistStamped')),
                        ('nav_msgs', ('Odometry',)),
                        ('sensor_msgs', ('Imu',)),

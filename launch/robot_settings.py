@@ -15,7 +15,11 @@ Mechanism, per target node:
 * ``um960_gps_driver``: an overlay yaml with only the bound values
   (bringup.launch.py ``um960_params_file``);
 * the coverage planner: ``tool_width`` becomes the ``cut_width_m`` launch
-  argument (swath spacing = cut width - ``swath_overlap_m``).
+  argument (swath spacing = cut width - ``swath_overlap_m``);
+* ``cmd_vel_slew`` (straight-line trim / deadband / heading hold): the node
+  reads these keys from the same yaml itself at startup (its
+  ``robot_settings_file`` parameter), so mower.launch.py has nothing to pass
+  and skips the target (SELF_LOADED_TARGETS).
 
 Values are coerced to the type the node declared (the GUI writes 30.0 as
 ``30``; rclpy refuses an int for a double parameter).
@@ -56,7 +60,17 @@ BINDINGS = {
     'ntrip_password': ('um960_gps_driver', 'ntrip_password', str, None),
     # NTRIP off means the vendor LoRa base on this robot.
     'ntrip_enabled': ('um960_gps_driver', 'correction_source', str, {True: 'ntrip', False: 'lora'}),
+    # Straight-line driving (mower_control/cmd_vel_slew.py SHAPER_PARAMS; defaults neutral).
+    'angular_trim_radps': ('cmd_vel_slew', 'angular_trim_radps', float, None),
+    'angular_deadband_radps': ('cmd_vel_slew', 'angular_deadband_radps', float, None),
+    'heading_hold': ('cmd_vel_slew', 'heading_hold', bool, None),
+    'heading_hold_kp': ('cmd_vel_slew', 'heading_hold_kp', float, None),
+    'heading_hold_kd': ('cmd_vel_slew', 'heading_hold_kd', float, None),
+    'heading_hold_max_radps': ('cmd_vel_slew', 'heading_hold_max_radps', float, None),
 }
+
+# Targets whose node reads the GUI yaml itself (no params file to render).
+SELF_LOADED_TARGETS = ('cmd_vel_slew',)
 
 
 def load_settings(path):

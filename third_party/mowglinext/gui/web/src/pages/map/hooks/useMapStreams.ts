@@ -27,6 +27,7 @@ import {useLatestThrottle} from "./useLatestThrottle.ts";
 import {useThemeMode} from "../../../theme/ThemeContext.tsx";
 import {MAP_RENDER_BUDGETS} from "./mapRenderBudget.ts";
 import {useProfileGates} from "../../../hooks/useProfileGates.ts";
+import {markerCorners, selectRobotMarker, type MarkerCorners} from "../../../utils/mapMarker.ts";
 
 export type MowProgressImage = GridImage;
 
@@ -79,7 +80,11 @@ export function useMapStreams({
     // LiDAR scan + LiDAR-map layers only exist on a robot with a LiDAR
     // (profile gate "feature:lidar"). Strict: nothing is subscribed until the
     // robot profile is known. Ref so the start sites below read it fresh.
-    const {isVisibleStrict} = useProfileGates();
+    const {isVisibleStrict, profile} = useProfileGates();
+    // Optional profile image marker (e.g. Airseekers Tron top-down picture).
+    // Absent -> the URDF silhouette below, unchanged for stock robots.
+    const robotMarker = React.useMemo(() => selectRobotMarker(profile), [profile]);
+    const [robotMarkerCorners, setRobotMarkerCorners] = useState<MarkerCorners | null>(null);
     const lidarLayers = isVisibleStrict("feature:lidar");
     const lidarLayersRef = useRef(lidarLayers);
     lidarLayersRef.current = lidarLayers;
@@ -103,6 +108,19 @@ export function useMapStreams({
             posY,
             posX
         );
+        if (robotMarker) {
+            const orientation = pose.motion_heading ?? 0;
+            setRobotMarkerCorners(markerCorners(offsetX, offsetY, datum, robotMarker, posX, posY, orientation));
+            setFeatures((oldFeatures) => {
+                const next: Record<string, MowingFeature> = {};
+                for (const [k, f] of Object.entries(oldFeatures)) {
+                    if (k !== "mower" && !k.startsWith("mower-")) next[k] = f;
+                }
+                next.mower = new MowerFeatureBase(mower_lonlat);
+                return next;
+            });
+            return;
+        }
         setFeatures((oldFeatures) => {
             const orientation = pose.motion_heading ?? 0;
             const line = drawLine(offsetX, offsetY, datum, posY, posX, orientation);
@@ -498,5 +516,7 @@ export function useMapStreams({
         lidarMapImage: lidarLayers ? lidarMap.image : null,
         highLevelStatus,
         joyStream,
+        robotMarker,
+        robotMarkerCorners: robotMarker ? robotMarkerCorners : null,
     };
 }

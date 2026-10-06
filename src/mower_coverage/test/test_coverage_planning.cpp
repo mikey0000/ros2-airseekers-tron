@@ -350,9 +350,15 @@ CoveragePlan planNode(const std::vector<Point2D>& boundary,
 // The path pieces in the node's drive order: rings (closed loops), then
 // swaths (two poses each).
 std::vector<std::vector<Point2D>> driveSegments(const CoveragePlan& plan) {
-  std::vector<std::vector<Point2D>> segs(plan.rings.begin(), plan.rings.end());
+  std::vector<std::vector<Point2D>> segs;
+  if (!plan.swaths_first) {
+    segs.assign(plan.rings.begin(), plan.rings.end());
+  }
   for (const auto& s : plan.swaths) {
     segs.push_back({s.first, s.second});
+  }
+  if (plan.swaths_first) {
+    segs.insert(segs.end(), plan.rings.begin(), plan.rings.end());
   }
   return segs;
 }
@@ -581,4 +587,260 @@ TEST(CoveragePlanning, ManyHolesStillPlanAndStayOutOfHoles) {
   // Report, not a hard bound beyond "far fewer than one per hole crossing".
   RecordProperty("transits", transits);
   EXPECT_LT(transits, 30) << total << " m";
+}
+
+// ---------------------------------------------------------------------------
+// Path modes (per-area settings): spiral, contour_only, edge_first = false.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+CoveragePlan planMode(const std::vector<Point2D>& boundary,
+                      const std::vector<std::vector<Point2D>>& holes,
+                      mower_coverage::PathMode mode, int headland_passes = 0,
+                      bool edge_first = true, double angle_deg = -1.0) {
+  const double angle_rad = angle_deg >= 0.0 ? angle_deg * M_PI / 180.0 : -1.0;
+  return mower_coverage::planCoverage(
+      mower_coverage::makeFieldCell(boundary, holes), kNodeOpWidth,
+      kNodeHeadlandWidth, headland_passes, /*border_inset=*/0.0, angle_rad,
+      kMinSwath, mode, edge_first);
+}
+
+// Fraction of the field (boundary minus holes, sampled on a `step` grid)
+// within `reach` of the driven segments (each segment as a polyline; the
+// connectors between segments are not counted).
+double coveredFraction(const CoveragePlan& plan, const std::vector<Point2D>& boundary,
+                       const std::vector<std::vector<Point2D>>& holes, double reach,
+                       double step = 0.05) {
+  double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const auto& p : boundary) {
+    x0 = std::min(x0, p.first);
+    y0 = std::min(y0, p.second);
+    x1 = std::max(x1, p.first);
+    y1 = std::max(y1, p.second);
+  }
+  std::vector<std::pair<Point2D, Point2D>> edges;
+  for (const auto& seg : driveSegments(plan)) {
+    for (size_t i = 0; i + 1 < seg.size(); ++i) {
+      edges.push_back({seg[i], seg[i + 1]});
+    }
+  }
+  size_t total = 0;
+  size_t covered = 0;
+  for (double x = x0 + step / 2; x < x1; x += step) {
+    for (double y = y0 + step / 2; y < y1; y += step) {
+      const Point2D p{x, y};
+      if (!pointInPolygon(p, boundary, 0.0)) {
+        continue;
+      }
+      bool in_hole = false;
+      for (const auto& h : holes) {
+        in_hole = in_hole || pointInPolygon(p, h, 0.0);
+      }
+      if (in_hole) {
+        continue;
+      }
+      ++total;
+      for (const auto& e : edges) {
+        if (pointSegDist(p, e.first, e.second) <= reach) {
+          ++covered;
+          break;
+        }
+      }
+    }
+  }
+  return total > 0 ? static_cast<double>(covered) / static_cast<double>(total) : 0.0;
+}
+
+// Largest distance any driven pose (ring vertex / swath end) or edge sample
+// lies OUTSIDE the boundary or INSIDE a hole band (signed, > 0 = violation).
+double worstOvershoot(const CoveragePlan& plan, const std::vector<Point2D>& boundary,
+                      const std::vector<std::vector<Point2D>>& holes, double hole_clear) {
+  double worst = -1e9;
+  for (const auto& seg : driveSegments(plan)) {
+    for (size_t i = 0; i + 1 < seg.size(); ++i) {
+      for (int k = 0; k <= 10; ++k) {
+        const double t = k / 10.0;
+        const Point2D p{seg[i].first + t * (seg[i + 1].first - seg[i].first),
+                        seg[i].second + t * (seg[i + 1].second - seg[i].second)};
+        worst = std::max(worst, signedDistToPolygon(p, boundary));
+        for (const auto& h : holes) {
+          worst = std::max(worst, hole_clear - signedDistToPolygon(p, h));
+        }
+      }
+    }
+  }
+  return worst;
+}
+
+}  // namespace
+
+TEST(CoveragePlanning, ParsePathMode) {
+  using mower_coverage::PathMode;
+  PathMode m = PathMode::kSpiral;
+  EXPECT_TRUE(mower_coverage::parsePathMode("", &m));
+  EXPECT_EQ(m, PathMode::kZigzag);
+  for (const char* z : {"zigzag", "cross", "alternate"}) {
+    EXPECT_TRUE(mower_coverage::parsePathMode(z, &m));
+    EXPECT_EQ(m, PathMode::kZigzag);
+  }
+  EXPECT_TRUE(mower_coverage::parsePathMode("spiral", &m));
+  EXPECT_EQ(m, PathMode::kSpiral);
+  EXPECT_TRUE(mower_coverage::parsePathMode("contour_only", &m));
+  EXPECT_EQ(m, PathMode::kContourOnly);
+  EXPECT_FALSE(mower_coverage::parsePathMode("diagonal", &m));
+}
+
+// planCoverage(kZigzag, edge_first) is exactly planBoustrophedon.
+TEST(CoveragePlanning, ZigzagModeMatchesBoustrophedon) {
+  const auto a = planNode(kLShape, {}, 135.0);
+  const auto b = planMode(kLShape, {}, mower_coverage::PathMode::kZigzag, 0, true, 135.0);
+  ASSERT_EQ(a.rings.size(), b.rings.size());
+  ASSERT_EQ(a.swaths.size(), b.swaths.size());
+  for (size_t i = 0; i < a.swaths.size(); ++i) {
+    EXPECT_NEAR(ptDist(a.swaths[i].first, b.swaths[i].first), 0.0, 1e-9);
+    EXPECT_NEAR(ptDist(a.swaths[i].second, b.swaths[i].second), 0.0, 1e-9);
+  }
+  EXPECT_FALSE(b.swaths_first);
+}
+
+// Spiral on a rectangle: rings only, outermost on the recorded line, each
+// next ring one op_width inside, chained without a transit, covering the
+// whole field including the centre strip, never leaving the field.
+TEST(CoveragePlanning, SpiralRectangleCoversFieldWithoutTransits) {
+  const auto plan = planMode(kRect10x6, {}, mower_coverage::PathMode::kSpiral);
+  ASSERT_TRUE(plan.swaths.empty());
+  // 6 m wide / 0.18 m = 16.7 rings to the centre line.
+  EXPECT_GE(plan.rings.size(), 16u);
+  EXPECT_LE(plan.rings.size(), 18u);
+  // Outside-in: ring k is (about) k * op_width + 0 inside the boundary.
+  for (size_t k = 0; k + 1 < plan.rings.size(); ++k) {
+    double min_d = 1e9;
+    for (const auto& p : plan.rings[k]) {
+      min_d = std::min(min_d, distToPolygonEdge(p, kRect10x6));
+    }
+    EXPECT_NEAR(min_d, k * kNodeOpWidth, 1e-3) << "ring " << k;
+  }
+  EXPECT_EQ(countTransits(plan), 0);
+  EXPECT_LT(worstOvershoot(plan, kRect10x6, {}, 0.0), 1e-6);
+  EXPECT_GE(coveredFraction(plan, kRect10x6, {}, 0.5 * kNodeOpWidth + 1e-3), 0.995);
+  EXPECT_GE(plan.planned_fraction, 0.95);
+}
+
+// Spiral around a hole: no pass enters the hole or its half-swath band, the
+// field around it is still covered, and the drive stays mostly continuous.
+TEST(CoveragePlanning, SpiralRespectsHoles) {
+  const auto plan = planMode(kRect10x6, {kHole2x2}, mower_coverage::PathMode::kSpiral);
+  ASSERT_TRUE(plan.swaths.empty());
+  ASSERT_FALSE(plan.rings.empty());
+  EXPECT_LT(worstOvershoot(plan, kRect10x6, {kHole2x2}, 0.5 * kNodeOpWidth), 1e-3);
+  EXPECT_GE(coveredFraction(plan, kRect10x6, {kHole2x2}, 0.5 * kNodeOpWidth + 1e-3), 0.97);
+  double total = 0.0;
+  const int transits = countTransits(plan, &total);
+  RecordProperty("transits", transits);
+  EXPECT_LE(transits, 6) << total << " m";
+}
+
+TEST(CoveragePlanning, SpiralLShapeCoversBothArms) {
+  const auto plan = planMode(kLShape, {}, mower_coverage::PathMode::kSpiral);
+  ASSERT_TRUE(plan.swaths.empty());
+  EXPECT_LT(worstOvershoot(plan, kLShape, {}, 0.0), 1e-6);
+  EXPECT_GE(coveredFraction(plan, kLShape, {}, 0.5 * kNodeOpWidth + 1e-3), 0.98);
+  EXPECT_LE(countTransits(plan), 3);
+}
+
+// A field narrower than one swath still gets one ring.
+TEST(CoveragePlanning, SpiralNarrowFieldStillPlans) {
+  const std::vector<Point2D> strip = {{0, 0}, {5, 0}, {5, 0.15}, {0, 0.15}};
+  const auto plan = planMode(strip, {}, mower_coverage::PathMode::kSpiral);
+  ASSERT_FALSE(plan.rings.empty());
+  EXPECT_LT(worstOvershoot(plan, strip, {}, 0.0), 1e-6);
+}
+
+// contour_only: exactly headland_passes rings (at least one), no swaths,
+// the vendor's "edge only" mode.
+TEST(CoveragePlanning, ContourOnlyDrivesOnlyThePerimeterLaps) {
+  for (int laps : {1, 3}) {
+    const auto plan =
+        planMode(kRect10x6, {}, mower_coverage::PathMode::kContourOnly, laps);
+    EXPECT_TRUE(plan.swaths.empty());
+    ASSERT_EQ(plan.rings.size(), static_cast<size_t>(laps));
+    EXPECT_EQ(countTransits(plan), 0);
+    EXPECT_LT(worstOvershoot(plan, kRect10x6, {}, 0.0), 1e-6);
+    // The outer lap runs ON the line, so the covered band along the edge is
+    // (laps - 1/2) * op_width wide; nothing inside it is mown.
+    const double frac = coveredFraction(plan, kRect10x6, {}, 0.5 * kNodeOpWidth + 1e-3);
+    const double b = (laps - 0.5) * kNodeOpWidth;
+    const double band = 1.0 - (10.0 - 2 * b) * (6.0 - 2 * b) / 60.0;
+    EXPECT_NEAR(frac, band, 0.02) << laps << " laps";
+  }
+  // headland_passes -1 (no rings) still gives the one contour lap.
+  const auto one = planMode(kRect10x6, {}, mower_coverage::PathMode::kContourOnly, -1);
+  EXPECT_EQ(one.rings.size(), 1u);
+  // Holes get their laps too.
+  const auto holed =
+      planMode(kRect10x6, {kHole2x2}, mower_coverage::PathMode::kContourOnly, 2);
+  EXPECT_EQ(holed.rings.size(), 4u);
+  EXPECT_LT(worstOvershoot(holed, kRect10x6, {kHole2x2}, 0.5 * kNodeOpWidth), 1e-3);
+}
+
+// edge_first = false: the same swaths and rings, swaths driven first, then
+// the rings innermost first, each chained from the previous end — no extra
+// transit compared to edge first.
+TEST(CoveragePlanning, EdgeLastDrivesSwathsThenRingsInsideOut) {
+  const auto first = planMode(kRect10x6, {}, mower_coverage::PathMode::kZigzag, 2, true);
+  const auto last = planMode(kRect10x6, {}, mower_coverage::PathMode::kZigzag, 2, false);
+  EXPECT_FALSE(first.swaths_first);
+  EXPECT_TRUE(last.swaths_first);
+  ASSERT_EQ(last.rings.size(), 2u);
+  EXPECT_EQ(last.swaths.size(), first.swaths.size());
+  // Innermost ring first.
+  auto edge_d = [&](const std::vector<Point2D>& ring) {
+    double d = 1e9;
+    for (const auto& p : ring) {
+      d = std::min(d, distToPolygonEdge(p, kRect10x6));
+    }
+    return d;
+  };
+  EXPECT_NEAR(edge_d(last.rings[0]), kNodeOpWidth, 1e-3);
+  EXPECT_NEAR(edge_d(last.rings[1]), 0.0, 1e-3);
+  // Hand-over: last swath -> first ring and ring -> ring are short steps.
+  EXPECT_LT(ptDist(last.swaths.back().second, last.rings.front().front()), kTransitGap);
+  EXPECT_NEAR(ptDist(last.rings[0].back(), last.rings[1].front()), kNodeOpWidth, 1e-6);
+  EXPECT_EQ(countTransits(last), countTransits(first));
+  EXPECT_LT(worstOvershoot(last, kRect10x6, {}, 0.0), 1e-6);
+  EXPECT_NEAR(coveredFraction(last, kRect10x6, {}, 0.5 * kNodeOpWidth + 1e-3),
+              coveredFraction(first, kRect10x6, {}, 0.5 * kNodeOpWidth + 1e-3), 1e-9);
+
+  // With a hole: still the same pieces, swaths first, hole rings included.
+  const auto holed =
+      planMode(kRect10x6, {kHole2x2}, mower_coverage::PathMode::kZigzag, 2, false);
+  EXPECT_TRUE(holed.swaths_first);
+  EXPECT_EQ(holed.rings.size(), 4u);
+  EXPECT_LE(countTransits(holed), 4);
+}
+
+// Every mode keeps the bridge's pose-layout contract (closed rings whose
+// start appears nowhere else, distinct segment joints).
+TEST(CoveragePlanning, PathModesStayBridgeCompatible) {
+  using mower_coverage::PathMode;
+  for (const auto& plan :
+       {planMode(kRect10x6, {}, PathMode::kSpiral),
+        planMode(kRect10x6, {kHole2x2}, PathMode::kSpiral),
+        planMode(kLShape, {}, PathMode::kSpiral),
+        planMode(kRect10x6, {kHole2x2}, PathMode::kContourOnly, 2),
+        planMode(kRect10x6, {kHole2x2}, PathMode::kZigzag, 2, false),
+        planMode(kLShape, {}, PathMode::kZigzag, 2, false, 135.0)}) {
+    for (const auto& ring : plan.rings) {
+      ASSERT_GE(ring.size(), 4u);
+      EXPECT_LT(ptDist(ring.front(), ring.back()), 1e-9);
+      for (size_t i = 1; i + 1 < ring.size(); ++i) {
+        EXPECT_GT(ptDist(ring[i], ring.front()), 1e-3);
+      }
+    }
+    const auto segs = driveSegments(plan);
+    for (size_t i = 1; i < segs.size(); ++i) {
+      EXPECT_GT(ptDist(segs[i - 1].back(), segs[i].front()), 1e-6);
+    }
+  }
 }

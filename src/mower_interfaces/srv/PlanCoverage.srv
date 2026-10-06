@@ -17,6 +17,11 @@ float64 headland_width                    # desired headland band [m]; <= 0 -> 0
 int32   headland_passes                   # -1 = none, 0 = auto (ceil(headland_width/operation_width)), >0 = forced
 float64 mow_angle_deg                     # swath heading [deg]; < 0 = auto (fewest swaths)
 float64 min_swath_length                  # drop swaths shorter than this [m]; <= 0 -> 0.15
+# Per-area mowing settings (defaults keep the pre-settings behaviour).
+int32   headland_rings -1                 # perimeter laps: -1 = use headland_passes, 0 = none, >0 = exactly
+string  path_mode "zigzag"                # zigzag | spiral | contour_only ("" = zigzag); cross /
+                                          # alternate are mission-level (several zigzag plans)
+bool    edge_first true                   # true: rings, then swaths; false: swaths, then rings
 ---
 bool   success
 string message

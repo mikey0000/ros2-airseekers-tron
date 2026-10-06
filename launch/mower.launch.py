@@ -21,7 +21,7 @@ Groups (each a launch argument, ``true``/``false``):
                          navsat_transform_node, ekf_node (its own
                          robot_state_publisher and placeholder Nav2 nodes are
                          switched off here)
-    navigation    false  mower_navigation/launch/navigation.launch.py (Nav2)
+    navigation    true   mower_navigation/launch/navigation.launch.py (Nav2)
 
 Map origin: ``datum_lat``/``datum_lon`` default to '' (unset). Unset values are
 read from ``datum_env_file`` (DATUM_LAT=/DATUM_LON=, written by the GUI's
@@ -206,7 +206,7 @@ def generate_launch_description() -> LaunchDescription:
         arg('foxglove', 'true', 'Start foxglove_bridge.'),
         arg('foxglove_port', '8765', 'foxglove_bridge WebSocket port.'),
         arg('localization', 'true', 'Include nav2.launch.py localization (gps_gate, navsat, ekf).'),
-        arg('navigation', 'false', 'Include mower_navigation/navigation.launch.py (Nav2).'),
+        arg('navigation', 'true', 'Include mower_navigation/navigation.launch.py (Nav2: bt_navigator, controller/planner/behavior servers, velocity_smoother). Needed by mission and docking (/navigate_to_pose, /follow_path).'),
         arg('map_server', 'true', 'Include mower_map/map_server.launch.py (zones, keepout mask, dock pose).'),
         arg('maps_dir', '/ros2_ws/maps', 'areas.dat / dock_pose.yaml directory (compose mounts /userdata/ros2/maps).'),
         arg('coverage', 'true', 'Include mower_coverage_bridge (planner + /plan_coverage action).'),

@@ -9,6 +9,7 @@ contract (see README.md). Geometry and persistence live in
 import array
 import math
 import functools
+import json
 import os
 import threading
 import time
@@ -23,14 +24,16 @@ from rclpy.time import Time
 from geometry_msgs.msg import Point32, Polygon as PolygonMsg, PoseStamped
 from nav2_msgs.msg import CostmapFilterInfo
 from nav_msgs.msg import OccupancyGrid, Odometry
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
 from mower_interfaces.msg import MowerBaseDevStatus
+from mower_interfaces.srv import GetAreaSettings, SetAreaSettings
 from mowgli_interfaces.msg import GnssStatus, MapArea, MapObstacleInfo, ObstacleArray
 from mowgli_interfaces.srv import (AddMowingArea, ClearObstacle, GetMowingArea,
                                    GetRecoveryPoint, PromoteObstacle, SetDockingPoint)
 
+from mower_map import area_settings as aset
 from mower_map import areas as core
 from mower_map.sub_pump import SubscriptionPump, flat_parser, parse_odometry
 
@@ -88,6 +91,9 @@ PARAMS = {
     'yaw_convergence_threshold_rad': 0.00873,
     'yaw_convergence_window_s': 5.0,
     'yaw_convergence_min_samples': 20,
+    # per-area mowing settings (area_settings.yaml next to areas.dat)
+    'area_settings_file': '',          # '' -> <dir of areas_file>/area_settings.yaml
+    'area_settings_prune_delay_s': 30.0,   # after clear_map: drop entries of areas not re-added
 }
 
 
@@ -119,6 +125,11 @@ class MapServerNode(Node):
         self.resolution = float(self.p('resolution'))
 
         self.store = core.MapStore()
+        self.settings_path = self.p('area_settings_file') or \
+            aset.settings_path_for(self.areas_path)
+        self.settings = aset.AreaSettingsStore()
+        self._cleared_areas = []             # (name, polygon) before the last clear_map
+        self._prune_timer = None
         self.dock = None                     # core.DockPose
         self.spec = core.grid_for_polygons([], self.resolution, 0.0)
         self.progress = core.ProgressGrid(self.spec)
@@ -148,6 +159,7 @@ class MapServerNode(Node):
         self.boundary_pub = self.create_publisher(Bool, '~/boundary_violation', 1)
         self.lethal_pub = self.create_publisher(Bool, '~/lethal_boundary_violation', 1)
         self.replan_pub = self.create_publisher(Bool, '~/replan_needed', 1)
+        self.settings_pub = self.create_publisher(String, '~/area_settings', _latched())
 
         # Inputs bypass rclpy.spin (see sub_pump.py): 100 Hz status + 30 Hz odometry + 30 Hz
         # /tf through the executor cost ~40 % of a core while idle. Odometry is handled per
@@ -180,6 +192,8 @@ class MapServerNode(Node):
         srv(ClearObstacle, '~/discard_obstacle', self.srv_discard_obstacle)
         srv(GetRecoveryPoint, '~/get_recovery_point', self.srv_get_recovery_point)
         srv(Trigger, '~/reset_mow_progress', self.srv_reset_mow_progress)
+        srv(SetAreaSettings, '~/set_area_settings', self.srv_set_area_settings)
+        srv(GetAreaSettings, '~/get_area_settings', self.srv_get_area_settings)
 
         self.tf_buffer = None
         if tf2_ros is not None:
@@ -197,7 +211,9 @@ class MapServerNode(Node):
 
         self.publish_filter_info()
         self.load_dock()
+        self.load_settings()
         self.load_areas(startup=True)
+        self.publish_settings()
         self.create_timer(max(0.1, float(self.p('mow_progress_publish_period_s'))),
                           self._locked(self.on_progress_timer))
         self._pump.start()
@@ -335,7 +351,9 @@ class MapServerNode(Node):
             if startup:
                 self.rebuild(replan=False)
             return False, str(exc)
+        before = [(a.name, list(a.polygon)) for a in self.store.areas]
         self.store.load(areas)
+        self.sync_settings(before, startup=startup)
         lat, lon = float(self.p('datum_lat')), float(self.p('datum_lon'))
         if datum and (abs(lat) > 1e-9 or abs(lon) > 1e-9) and \
                 (abs(datum[0] - lat) > 1e-8 or abs(datum[1] - lon) > 1e-8):
@@ -465,6 +483,7 @@ class MapServerNode(Node):
                                   len(a.area.points), len(a.obstacles)))
         self.rebuild()
         self.persist_best_effort('add_area')
+        self.settings_area_added(a.name, _poly_from_msg(a.area))
         res.success = True
         return res
 
@@ -487,6 +506,12 @@ class MapServerNode(Node):
         return res
 
     def srv_clear_map(self, req, res):
+        # Keep the area settings: the GUI edits areas by clear_map + add_area
+        # of every area. An area re-added under a new name with the same
+        # polygon takes its settings along (rename); entries whose area is not
+        # back after area_settings_prune_delay_s are dropped (delete).
+        self._cleared_areas = [(a.name, list(a.polygon)) for a in self.store.areas]
+        self.schedule_settings_prune()
         self.store.clear()
         self.progress.reset()
         self.rebuild()
@@ -510,6 +535,123 @@ class MapServerNode(Node):
     def srv_load_areas(self, req, res):
         res.success, res.message = self.load_areas()
         self.get_logger().info(res.message)
+        return res
+
+    # ------------------------------------------------------------------
+    # per-area mowing settings
+    # ------------------------------------------------------------------
+    def area_names(self):
+        return [a.name for a in self.store.areas]
+
+    def load_settings(self):
+        try:
+            self.settings, warnings = aset.load_file(self.settings_path)
+        except (OSError, UnicodeDecodeError) as exc:
+            self.get_logger().error('load %s failed: %s' % (self.settings_path, exc))
+            self.settings, warnings = aset.AreaSettingsStore(), []
+        for w in warnings:
+            self.get_logger().warn('%s: %s' % (self.settings_path, w))
+        self.get_logger().info('area settings: %d area(s) with own values, defaults %s (%s)'
+                               % (len(self.settings.areas), self.settings.defaults or 'built-in',
+                                  self.settings_path))
+
+    def save_settings(self):
+        try:
+            aset.save_file(self.settings_path, self.settings)
+        except OSError as exc:
+            self.get_logger().warn('area settings applied live but save failed: %s' % exc)
+
+    def publish_settings(self):
+        self.settings_pub.publish(String(data=self.settings.snapshot_json(self.area_names())))
+
+    def sync_settings(self, before, startup=False):
+        """After the area list was replaced (load_areas): carry settings of
+        renamed areas over (same polygon), drop entries of deleted areas."""
+        after = [(a.name, list(a.polygon)) for a in self.store.areas]
+        changed = False
+        for old, new in self.settings.carry_over(before, after):
+            self.get_logger().info("area settings moved '%s' -> '%s' (renamed)" % (old, new))
+            changed = True
+        for name in self.settings.prune([n for n, _ in after]):
+            self.get_logger().info("area settings of '%s' dropped (area deleted)" % name)
+            changed = True
+        if changed:
+            self.save_settings()
+        if not startup:
+            self.publish_settings()
+
+    def settings_area_added(self, name, polygon):
+        if name not in self.settings.areas:
+            current = set(self.area_names())
+            for old, old_poly in self._cleared_areas:
+                if old != name and old in self.settings.areas and old not in current \
+                        and aset.polygons_match(old_poly, polygon):
+                    self.settings.rename(old, name)
+                    self.get_logger().info("area settings moved '%s' -> '%s' (renamed)"
+                                           % (old, name))
+                    self.save_settings()
+                    break
+        self.publish_settings()
+
+    def schedule_settings_prune(self):
+        if self._prune_timer is not None:
+            self._prune_timer.cancel()
+            self.destroy_timer(self._prune_timer)
+        self._prune_timer = self.create_timer(
+            max(0.1, float(self.p('area_settings_prune_delay_s'))),
+            self._locked(self.on_settings_prune))
+
+    def on_settings_prune(self):
+        if self._prune_timer is not None:
+            self._prune_timer.cancel()
+            self.destroy_timer(self._prune_timer)
+            self._prune_timer = None
+        self._cleared_areas = []
+        dropped = self.settings.prune(self.area_names())
+        for name in dropped:
+            self.get_logger().info("area settings of '%s' dropped (area deleted)" % name)
+        if dropped:
+            self.save_settings()
+            self.publish_settings()
+
+    def srv_set_area_settings(self, req, res):
+        idx = int(req.area_index)
+        ok, msg, update = aset.parse_json(req.settings_json)
+        if not ok:
+            res.success, res.message = False, msg
+            return res
+        if idx == aset.DEFAULTS_INDEX:
+            self.settings.set_defaults(update)
+            target = 'defaults'
+        elif idx < len(self.store.areas):
+            name = self.store.areas[idx].name
+            self.settings.set_area(name, update)
+            target = "area %d '%s'" % (idx, name)
+        else:
+            res.success = False
+            res.message = 'no area %d (%d areas; 255 = defaults)' % (idx, len(self.store.areas))
+            return res
+        self.save_settings()
+        self.publish_settings()
+        eff = self.settings.effective_defaults() if idx == aset.DEFAULTS_INDEX \
+            else self.settings.effective(self.store.areas[idx].name)
+        res.success = True
+        res.message = '%s: %s' % (target, json.dumps(eff, sort_keys=True))
+        self.get_logger().info('set_area_settings %s' % res.message)
+        return res
+
+    def srv_get_area_settings(self, req, res):
+        idx = int(req.area_index)
+        if idx == aset.DEFAULTS_INDEX:
+            eff = self.settings.effective_defaults()
+        elif idx < len(self.store.areas):
+            eff = self.settings.effective(self.store.areas[idx].name)
+        else:
+            res.success = False
+            res.settings_json = '{}'
+            return res
+        res.success = True
+        res.settings_json = json.dumps(eff, sort_keys=True)
         return res
 
     def srv_reset_mow_progress(self, req, res):

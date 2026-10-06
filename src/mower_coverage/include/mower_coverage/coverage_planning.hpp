@@ -40,7 +40,23 @@ struct CoveragePlan {
   std::vector<std::string> drops;
   // Strip area / field area. Visibility diagnostic, not a coverage guarantee.
   double planned_fraction = 0.0;
+  // Drive order of the two blocks: false = rings, then swaths (edge first,
+  // the default); true = swaths, then rings (innermost ring first).
+  bool swaths_first = false;
 };
+
+// Path pattern of one plan (per-area mowing setting `path_mode`). The
+// mission-level modes `cross` (two zigzag plans 90 deg apart) and `alternate`
+// (zigzag, angle rotated between runs) are plain kZigzag plans here.
+enum class PathMode {
+  kZigzag,       // headland rings + boustrophedon swaths (the original planner)
+  kSpiral,       // concentric inward rings until the field collapses, no swaths
+  kContourOnly,  // only the headland rings (vendor cut_mode 2), no swaths
+};
+
+// "zigzag" / "cross" / "alternate" / "" -> kZigzag, "spiral", "contour_only".
+// Returns false (and kZigzag) for an unknown name.
+bool parsePathMode(const std::string& name, PathMode* mode);
 
 // Build a clean f2c ring from raw boundary vertices: drops vertices within
 // 1 cm of the previous kept one, drops near-collinear spikes, re-closes
@@ -71,5 +87,25 @@ CoveragePlan planBoustrophedon(const f2c::types::Cell& field,
                                double border_inset,
                                double mow_angle_rad,
                                double min_swath_length);
+
+// planBoustrophedon with a path pattern and the ring/swath drive order.
+//
+// kZigzag      identical to planBoustrophedon (edge_first = true).
+// kSpiral      rings at op_width spacing, outermost first, until the field
+//              (minus the hole bands) collapses; a last ring near the medial
+//              axis covers the centre strip. Holes get rings like headlands.
+//              headland_passes is ignored. No swaths.
+// kContourOnly only the headland rings (headland_passes as above, at least 1).
+// edge_first   false: swaths first, then the rings innermost first, chained
+//              forwards from the last swath end. Only matters for kZigzag.
+CoveragePlan planCoverage(const f2c::types::Cell& field,
+                          double op_width,
+                          double headland_width,
+                          int headland_passes,
+                          double border_inset,
+                          double mow_angle_rad,
+                          double min_swath_length,
+                          PathMode mode,
+                          bool edge_first);
 
 }  // namespace mower_coverage

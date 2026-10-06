@@ -1,0 +1,141 @@
+// Per-area mowing settings ("area settings"): the contract shared with the map
+// server (GET/PUT /api/mowglinext/areas/:index/settings, latched
+// /map_server_node/area_settings, /behavior_tree_node/active_area_settings).
+// The backend validates the same ranges; these mirror pkg/api/area_settings.go.
+
+export const PATH_MODES = ["zigzag", "cross", "alternate", "spiral", "contour_only"] as const;
+export type PathMode = typeof PATH_MODES[number];
+
+export type AreaSettings = {
+    cutter_height_mm: number;
+    perimeter_laps: number;
+    path_mode: PathMode;
+    /** -1 = automatic (planner picks the longest-edge angle). */
+    mow_angle_deg: number;
+    cut_speed_mps: number;
+    swath_overlap_m: number;
+    edge_first: boolean;
+    repeat: number;
+    alternate_angle_offset_deg: number;
+};
+
+export type AreaSettingsKey = keyof AreaSettings;
+
+export const AREA_SETTINGS_DEFAULTS: AreaSettings = {
+    cutter_height_mm: 50,
+    perimeter_laps: 2,
+    path_mode: "zigzag",
+    mow_angle_deg: -1,
+    cut_speed_mps: 0.3,
+    swath_overlap_m: 0.02,
+    edge_first: true,
+    repeat: 1,
+    alternate_angle_offset_deg: 90,
+};
+
+export const AREA_SETTINGS_RANGES = {
+    cutter_height_mm: {min: 30, max: 90, step: 5},
+    perimeter_laps: {min: 0, max: 4, step: 1},
+    cut_speed_mps: {min: 0.1, max: 0.5, step: 0.05},
+    swath_overlap_m: {min: 0, max: 0.1, step: 0.01},
+    repeat: {min: 1, max: 5, step: 1},
+    alternate_angle_offset_deg: {min: 0, max: 180, step: 5},
+} as const;
+
+export const MOW_ANGLE_AUTO = -1;
+/** Area index addressing the robot-wide defaults. */
+export const DEFAULTS_INDEX = 255;
+
+const KEYS = Object.keys(AREA_SETTINGS_DEFAULTS) as AreaSettingsKey[];
+
+/** Keep only known keys with a plausible type; anything else is dropped. */
+export function sanitizeAreaSettings(raw: unknown): Partial<AreaSettings> {
+    const out: Partial<AreaSettings> = {};
+    if (!raw || typeof raw !== "object") return out;
+    const r = raw as Record<string, unknown>;
+    for (const k of KEYS) {
+        const v = r[k];
+        const want = typeof AREA_SETTINGS_DEFAULTS[k];
+        if (typeof v !== want) continue;
+        if (k === "path_mode" && !PATH_MODES.includes(v as PathMode)) continue;
+        (out as Record<string, unknown>)[k] = v;
+    }
+    return out;
+}
+
+/** Effective settings: built-in defaults < robot defaults < area overrides. */
+export function effectiveAreaSettings(
+    defaults: Partial<AreaSettings> | null | undefined,
+    overrides?: Partial<AreaSettings> | null,
+): AreaSettings {
+    return {...AREA_SETTINGS_DEFAULTS, ...sanitizeAreaSettings(defaults), ...sanitizeAreaSettings(overrides)};
+}
+
+/** Client-side mirror of the backend validation. Returns the offending key. */
+export function invalidAreaSettingKey(s: Partial<AreaSettings>): AreaSettingsKey | null {
+    for (const [k, v] of Object.entries(s) as [AreaSettingsKey, unknown][]) {
+        if (k === "path_mode") {
+            if (!PATH_MODES.includes(v as PathMode)) return k;
+        } else if (k === "edge_first") {
+            if (typeof v !== "boolean") return k;
+        } else if (k === "mow_angle_deg") {
+            if (typeof v !== "number" || !(v === MOW_ANGLE_AUTO || (v >= 0 && v <= 360))) return k;
+        } else if (k in AREA_SETTINGS_RANGES) {
+            const r = AREA_SETTINGS_RANGES[k as keyof typeof AREA_SETTINGS_RANGES];
+            if (typeof v !== "number" || v < r.min || v > r.max) return k;
+            if (r.step === 1 || k === "cutter_height_mm") {
+                if (!Number.isInteger(v)) return k;
+            }
+        } else {
+            return k;
+        }
+    }
+    return null;
+}
+
+/** Parse a std_msgs/String JSON payload ({data:"..."}) into an object. */
+export function parseStringMsgJson(raw: unknown): Record<string, unknown> | undefined {
+    const data = (raw as {data?: unknown} | null | undefined)?.data;
+    if (typeof data !== "string" || data.trim() === "") return undefined;
+    try {
+        const parsed = JSON.parse(data);
+        return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/** Normalise a compass angle to [0, 360). */
+export function normaliseAngle(deg: number): number {
+    const n = deg % 360;
+    return n < 0 ? n + 360 : n;
+}
+
+/** Angle (deg, 0 = up/north, clockwise) of a point relative to a centre. */
+export function angleFromPoint(dx: number, dy: number): number {
+    return normaliseAngle(Math.round(Math.atan2(dx, -dy) * 180 / Math.PI));
+}
+
+/**
+ * Merge patch saving `draft` as an area's settings: keys that differ from the
+ * defaults are overrides, keys equal to the defaults are reset (null) so the
+ * area keeps following the defaults for them.
+ */
+export function buildAreaPatch(
+    draft: AreaSettings, defaults: AreaSettings,
+): {[K in AreaSettingsKey]?: AreaSettings[K] | null} {
+    const out: Record<string, unknown> = {};
+    for (const k of KEYS) out[k] = draft[k] === defaults[k] ? null : draft[k];
+    return out as {[K in AreaSettingsKey]?: AreaSettings[K] | null};
+}
+
+/**
+ * Keys an area overrides. The latched topic's per-area object is
+ * authoritative; without it, fall back to "differs from the defaults".
+ */
+export function overriddenKeys(
+    effective: AreaSettings, defaults: AreaSettings, topicOverrides?: Partial<AreaSettings>,
+): Set<AreaSettingsKey> {
+    if (topicOverrides) return new Set(Object.keys(sanitizeAreaSettings(topicOverrides)) as AreaSettingsKey[]);
+    return new Set(KEYS.filter((k) => effective[k] !== defaults[k]));
+}

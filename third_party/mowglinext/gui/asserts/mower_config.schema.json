@@ -145,6 +145,52 @@
           "maximum": 600,
           "description": "Open-loop velocity→PWM feedforward scale. Dominant drive term; sets the deadband/idle mapping. Change with care."
         },
+        "angular_trim_radps": {
+          "type": "number",
+          "title": "Straight driving — angular trim",
+          "default": 0.0,
+          "minimum": -0.2,
+          "maximum": 0.2,
+          "description": "Constant yaw rate (rad/s) added while driving (|linear| > 0.02 m/s), signed with the direction of travel. Cancels a steady pull: if the robot curves left (positive yaw rate) by r rad/s, set -r. 0 = off."
+        },
+        "angular_deadband_radps": {
+          "type": "number",
+          "title": "Straight driving — angular deadband",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 0.3,
+          "description": "Angular commands smaller than this (rad/s) are zeroed while driving, so joystick drift does not make the robot weave. 0 = off."
+        },
+        "heading_hold": {
+          "type": "boolean",
+          "title": "Straight driving — heading hold",
+          "default": false,
+          "description": "While driving with no steering command, lock the IMU heading and steer back onto it."
+        },
+        "heading_hold_kp": {
+          "type": "number",
+          "title": "Heading hold — Kp",
+          "default": 1.0,
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Correction in rad/s per rad of heading error."
+        },
+        "heading_hold_kd": {
+          "type": "number",
+          "title": "Heading hold — Kd",
+          "default": 0.1,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Damping on the measured yaw rate (rad/s per rad/s)."
+        },
+        "heading_hold_max_radps": {
+          "type": "number",
+          "title": "Heading hold — max correction",
+          "default": 0.15,
+          "minimum": 0,
+          "maximum": 0.5,
+          "description": "Clamp on the heading-hold correction (rad/s)."
+        },
         "deadband_pwm": {
           "type": "number",
           "title": "Drive Motor Deadband (PWM)",

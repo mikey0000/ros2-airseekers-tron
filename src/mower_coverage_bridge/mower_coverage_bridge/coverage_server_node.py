@@ -18,6 +18,7 @@ from geometry_msgs.msg import Point32, Polygon, PoseStamped
 from mower_interfaces.srv import PlanCoverage as PlanCoverageSrv
 from mowgli_interfaces.action import PlanCoverage
 from nav_msgs.msg import Path
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -58,6 +59,18 @@ class CoverageServer(Node):
         p('headland_width', 0.0)
         p('headland_passes', 0)
         p('min_swath_length', 0.0)
+        # Per-area mowing settings, set by the mission (behavior_tree_node) with
+        # set_parameters right before each PlanCoverage goal and forwarded to
+        # the /coverage/plan request. They stay set until the next change.
+        #   headland_rings  perimeter laps: -1 = headland_passes, 0 = none, > 0 = exactly
+        #   path_mode       zigzag | spiral | contour_only (cross / alternate = zigzag)
+        #   mow_angle_deg   used only when the goal's mow_angle_deg is < 0 (auto)
+        #   edge_first      false = swaths first, then the rings
+        p('headland_rings', -1)
+        p('path_mode', 'zigzag')
+        p('mow_angle_deg', -1.0)
+        p('edge_first', True)
+        self.add_on_set_parameters_callback(self._on_set_parameters)
 
         self._client_group = ReentrantCallbackGroup()
         self._client = self.create_client(
@@ -86,6 +99,30 @@ class CoverageServer(Node):
 
     def _bool(self, name):
         return bool(self.get_parameter(name).value)
+
+    _PATH_MODES = ('zigzag', 'cross', 'alternate', 'spiral', 'contour_only')
+
+    def _on_set_parameters(self, params):
+        """Validate runtime changes (values are read live per plan)."""
+        for prm in params:
+            v = prm.value
+            if prm.name == 'path_mode' and v not in self._PATH_MODES:
+                return SetParametersResult(
+                    successful=False,
+                    reason='path_mode must be one of %s' % ', '.join(self._PATH_MODES))
+            if prm.name == 'headland_rings' and not (isinstance(v, int) and -1 <= v <= 20):
+                return SetParametersResult(successful=False,
+                                           reason='headland_rings must be an int in -1..20')
+            if prm.name == 'operation_width' and float(v) < 0.0:
+                return SetParametersResult(successful=False,
+                                           reason='operation_width must be >= 0')
+        changed = ', '.join('%s=%r' % (prm.name, prm.value) for prm in params)
+        self.get_logger().info('parameters set: %s' % changed)
+        return SetParametersResult(successful=True)
+
+    def _planner_path_mode(self):
+        mode = self._str('path_mode')
+        return 'zigzag' if mode in ('cross', 'alternate', '') else mode
 
     # ---- action ----
     def _on_goal(self, goal):
@@ -125,6 +162,9 @@ class CoverageServer(Node):
         req.headland_passes = self._int('headland_passes')
         req.mow_angle_deg = float(mow_angle_deg)
         req.min_swath_length = self._float('min_swath_length')
+        req.headland_rings = self._int('headland_rings')
+        req.path_mode = self._planner_path_mode()
+        req.edge_first = self._bool('edge_first')
 
         done = threading.Event()
         future = self._client.call_async(req)
@@ -150,16 +190,19 @@ class CoverageServer(Node):
                 % service, t0)
 
         angle = goal.mow_angle_deg
+        if angle < 0.0 and self._float('mow_angle_deg') >= 0.0:
+            angle = self._float('mow_angle_deg')
+        swaths_first = not self._bool('edge_first')
         if goal.perpendicular and angle >= 0.0:
             angle = (angle + 90.0) % 180.0
         self._feedback(goal_handle, 'planning (mow_angle_deg=%s)' % (
             'auto' if angle < 0.0 else '%.1f' % angle))
         resp, err = self._call_planner(goal, angle)
-        if err is None and resp.success and goal.perpendicular and goal.mow_angle_deg < 0.0:
+        if err is None and resp.success and goal.perpendicular and angle < 0.0:
             # AUTO + perpendicular: learn the auto angle, then re-plan at +90 deg.
             segs, _ = splitter.split_segments(
                 [(ps.pose.position.x, ps.pose.position.y) for ps in resp.path.poses],
-                resp.ring_count, resp.swath_count)
+                resp.ring_count, resp.swath_count, swaths_first=swaths_first)
             auto = splitter.swath_angle_deg(segs)
             if auto is not None:
                 angle = (auto + 90.0) % 180.0
@@ -183,7 +226,7 @@ class CoverageServer(Node):
             [(ps.pose.position.x, ps.pose.position.y) for ps in resp.path.poses],
             ring_count=resp.ring_count, swath_count=resp.swath_count,
             transit_gap_m=gap, turn_split_deg=self._float('turn_split_deg'),
-            fences=fences, holes=holes)
+            fences=fences, holes=holes, swaths_first=swaths_first)
         if result.mode != splitter.MODE_STRUCTURAL:
             self.get_logger().warn(
                 'planner path did not match its ring/swath counts (%d/%d); '

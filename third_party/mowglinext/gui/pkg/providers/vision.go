@@ -9,10 +9,11 @@ import (
 )
 
 // DetectionSummary is the reduced form of a vision_msgs/Detection2DArray that
-// the "detections" topic key delivers to the GUI. Bounding boxes, poses and
-// covariances are dropped server-side: the perception page only needs to know
-// whether something is being detected, what, and how confidently, and a full
-// Detection2DArray at camera rate would be mostly unused JSON on the websocket.
+// the "detections" topic key delivers to the GUI. Poses, covariances and the
+// non-top hypotheses are dropped server-side (a full Detection2DArray at
+// camera rate would be mostly unused JSON on the websocket); each detection
+// keeps its top class, score and axis-aligned box so the perception page can
+// draw them over a raw camera stream.
 type DetectionSummary struct {
 	// Count is the number of detections in the message.
 	Count int `json:"count"`
@@ -25,7 +26,23 @@ type DetectionSummary struct {
 	// FrameId is the header frame (the source camera on multi-camera
 	// detectors such as det_ros).
 	FrameId string `json:"frame_id"`
+	// Boxes are the detections (top hypothesis each), at most maxSummaryBoxes,
+	// best score first.
+	Boxes []DetectionBox `json:"boxes"`
 }
+
+// DetectionBox is one detection: top-left corner and size in source image
+// pixels (det_ros: the camera image it ran on).
+type DetectionBox struct {
+	Class string  `json:"class"`
+	Score float64 `json:"score"`
+	X     float64 `json:"x"`
+	Y     float64 `json:"y"`
+	W     float64 `json:"w"`
+	H     float64 `json:"h"`
+}
+
+const maxSummaryBoxes = 50
 
 // SummarizeDetections reduces a Detection2DArray to a DetectionSummary. For
 // each detection the highest-scoring hypothesis is taken as its class.
@@ -33,6 +50,7 @@ func SummarizeDetections(msg vision.Detection2DArray) DetectionSummary {
 	out := DetectionSummary{
 		Count:   len(msg.Detections),
 		Classes: []string{},
+		Boxes:   []DetectionBox{},
 		Stamp:   msg.Header.Stamp,
 		FrameId: msg.Header.FrameId,
 	}
@@ -48,6 +66,12 @@ func SummarizeDetections(msg vision.Detection2DArray) DetectionSummary {
 			continue
 		}
 		h := det.Results[best].Hypothesis
+		b := det.Bbox
+		out.Boxes = append(out.Boxes, DetectionBox{
+			Class: h.ClassId, Score: h.Score,
+			X: b.Center.Position.X - b.SizeX/2, Y: b.Center.Position.Y - b.SizeY/2,
+			W: b.SizeX, H: b.SizeY,
+		})
 		if h.Score > out.MaxScore {
 			out.MaxScore = h.Score
 		}
@@ -57,6 +81,10 @@ func SummarizeDetections(msg vision.Detection2DArray) DetectionSummary {
 		}
 	}
 	sort.Strings(out.Classes)
+	sort.SliceStable(out.Boxes, func(i, j int) bool { return out.Boxes[i].Score > out.Boxes[j].Score })
+	if len(out.Boxes) > maxSummaryBoxes {
+		out.Boxes = out.Boxes[:maxSummaryBoxes]
+	}
 	return out
 }
 

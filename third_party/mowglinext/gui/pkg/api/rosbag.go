@@ -41,7 +41,6 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	rosbagRos2ContainerName = "mowgli-ros2"
 	// rosbagDefaultDir is the recordings root on the shared mowgli_maps volume.
 	// Mounted at the same path in both mowgli-ros2 and mowgli-gui, so the GUI
 	// reads bags directly. Overridable via ROSBAG_DIR (used by tests).
@@ -109,7 +108,7 @@ func newRosbagManager(docker types.IDockerProvider) *rosbagManager {
 	}
 	return &rosbagManager{
 		docker:        docker,
-		containerName: rosbagRos2ContainerName,
+		containerName: ROSContainerName(),
 		recordingsDir: dir,
 	}
 }

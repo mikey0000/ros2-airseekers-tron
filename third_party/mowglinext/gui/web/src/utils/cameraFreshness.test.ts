@@ -11,7 +11,7 @@ describe("cameraFreshness", () => {
     });
 
     it("reports unknown (nothing reporting) without diagnostics", () => {
-        expect(cameraFreshness(cams, undefined, now)).toEqual({total: 3, live: 0, reporting: 0});
+        expect(cameraFreshness(cams, undefined, now)).toEqual({total: 5, live: 0, reporting: 0});
     });
 
     it("counts topic statuses that are OK and recent", () => {
@@ -20,6 +20,6 @@ describe("cameraFreshness", () => {
             {name: "cams: /right_oa_camera/image_raw topic status", level: 2, receivedAt: now - 1000},
             {name: "x", hardware_id: "rear", level: 1, receivedAt: now - CAMERA_FRESH_MS - 1},
         ];
-        expect(cameraFreshness(cams, statuses, now)).toEqual({total: 3, live: 1, reporting: 3});
+        expect(cameraFreshness(cams, statuses, now)).toEqual({total: 5, live: 1, reporting: 3});
     });
 });

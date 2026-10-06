@@ -21,7 +21,8 @@ import {MOWER_MODELS, type MowerModel} from "./mowerModels.ts";
 export type FeatureId =
     | "stm32_firmware"      // flashable STM32 board + firmware debug log
     | "gnss_sidecar"        // mowgli-gps container (receiver plan/apply/factory reset)
-    | "docker_host"         // Docker socket: updater, rosbag, container logs, remote access sidecar
+    | "docker_host"         // Docker socket: container list/logs/restart (ROS restart)
+    | "docker_admin"        // Docker-driven admin tools: host updater, rosbag recorder, remote access sidecar
     | "drive_tuning"        // drive / PID auto-tuning
     | "lidar"               // LiDAR settings, scan and map-anchor layers
     | "cameras"             // camera streams (perception page)
@@ -29,12 +30,14 @@ export type FeatureId =
     | "fusion_graph"        // fusion_graph_node diagnostics and commands
     | "imu_yaw_calibration" // calibrate_imu_yaw_node
     | "status_leds"         // LED settings section
-    | "lora_corrections";   // GNSS corrections over a LoRa base radio
+    | "lora_corrections"    // GNSS corrections over a LoRa base radio
+    | "area_settings"       // per-area mowing settings served by the map server
+    | "straight_driving";   // host-side angular trim / deadband / IMU heading hold (cmd_vel_slew)
 
 export const FEATURE_IDS: readonly FeatureId[] = [
-    "stm32_firmware", "gnss_sidecar", "docker_host", "drive_tuning", "lidar",
+    "stm32_firmware", "gnss_sidecar", "docker_host", "docker_admin", "drive_tuning", "lidar",
     "cameras", "dock_calibration", "fusion_graph", "imu_yaw_calibration",
-    "status_leds", "lora_corrections",
+    "status_leds", "lora_corrections", "area_settings", "straight_driving",
 ];
 
 /**
@@ -45,6 +48,7 @@ export const UPSTREAM_FEATURES: Readonly<Record<FeatureId, boolean>> = {
     stm32_firmware: true,
     gnss_sidecar: true,
     docker_host: true,
+    docker_admin: true,
     drive_tuning: true,
     lidar: true,
     cameras: false,
@@ -53,6 +57,8 @@ export const UPSTREAM_FEATURES: Readonly<Record<FeatureId, boolean>> = {
     imu_yaw_calibration: true,
     status_leds: true,
     lora_corrections: false,
+    area_settings: false,
+    straight_driving: false,
 };
 
 export type PerceptionKind = "lidar" | "camera" | "none";
@@ -86,7 +92,22 @@ export type RobotProfile = MowerModel & {
     /** Settings keys this robot does not use. A trailing `*` matches a prefix. */
     hiddenSettingKeys: readonly string[];
     teleop: RobotTeleop;
+    /**
+     * mowgli_interfaces/Status fields this robot has no sensor for. Its
+     * hardware bridge leaves them at 0/false; the UI shows them as not
+     * available instead of a fake reading.
+     */
+    unmeasuredStatusFields: readonly UnmeasuredStatusField[];
 };
+
+/** Status fields a robot may lack (see RobotProfile.unmeasuredStatusFields). */
+export type UnmeasuredStatusField =
+    | "mower_esc_temperature"
+    | "mower_esc_current"
+    | "mower_motor_temperature"
+    | "raspberry_pi_power"
+    | "ui_board_available"
+    | "sound_module_available";
 
 /** The profile-less fallback, and the id the schema defaults to. */
 export const DEFAULT_ROBOT_PROFILE_ID = "YardForce500";
@@ -116,6 +137,7 @@ function buildProfile(model: MowerModel, overlay: ProfileOverlay = {}): RobotPro
         cameras: overlay.cameras ?? [],
         hiddenSettingKeys: overlay.hiddenSettingKeys ?? [],
         teleop: overlay.teleop ?? DEFAULT_TELEOP,
+        unmeasuredStatusFields: overlay.unmeasuredStatusFields ?? [],
     };
 }
 
@@ -128,7 +150,8 @@ const PROFILE_OVERLAYS: Record<string, ProfileOverlay> = {
         features: {
             stm32_firmware: false,
             gnss_sidecar: false,
-            docker_host: false,
+            docker_host: true,   // socket mounted: restart ROS 2, container list + logs
+            docker_admin: false, // no host updater / rosbag / remote-access sidecar on Tron
             drive_tuning: false,
             lidar: false,
             cameras: true,
@@ -137,14 +160,27 @@ const PROFILE_OVERLAYS: Record<string, ProfileOverlay> = {
             imu_yaw_calibration: false,
             status_leds: false,
             lora_corrections: true,
+            area_settings: true,  // map_server_node get/set_area_settings
+            straight_driving: true, // mower_control cmd_vel_slew trim / heading hold
         },
         perception: "camera",
         docking: "vision_marker",
         battery: {preferReportedPercent: true},
         cameras: [
-            {id: "left", label: "robotProfiles.cameras.left", topic: "/left_oa_camera/image_raw"},
-            {id: "right", label: "robotProfiles.cameras.right", topic: "/right_oa_camera/image_raw"},
+            // det_ros draws its detections per camera on /<ns>/image_annotated.
+            {id: "left", label: "robotProfiles.cameras.left", topic: "/left_oa_camera/image_raw",
+                annotatedTopic: "/left_oa_camera/image_annotated"},
+            {id: "right", label: "robotProfiles.cameras.right", topic: "/right_oa_camera/image_raw",
+                annotatedTopic: "/right_oa_camera/image_annotated"},
             {id: "rear", label: "robotProfiles.cameras.rear", topic: "/rear_camera/image_raw"},
+            // Metoak front stereo (mower_cameras/stereo_cam, cameras.launch.py stereo:=true).
+            {id: "front_left", label: "robotProfiles.cameras.front_left", topic: "/vio/left/image_raw"},
+            {id: "front_right", label: "robotProfiles.cameras.front_right", topic: "/vio/right/image_raw"},
+        ],
+        // The cutter board reports one temperature per motor (mower_motor_temperature),
+        // no separate ESC temperature; there is no Raspberry Pi, UI board or sound module.
+        unmeasuredStatusFields: [
+            "mower_esc_temperature", "raspberry_pi_power", "ui_board_available", "sound_module_available",
         ],
         // The motor MCU computes /odom itself; these only feed STM32 odometry.
         hiddenSettingKeys: [

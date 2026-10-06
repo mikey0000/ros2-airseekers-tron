@@ -291,8 +291,20 @@ global_costmap:
       height: 50
       resolution: 0.1
       track_unknown_space: false
-      plugins: ["inflation_layer"]
+      # static_layer on /keepout_mask (mower_map map_server_node, latched): the
+      # zone mask (lethal outside the mowing areas / on obstacles) becomes part of
+      # the costmap. Needed on Humble: with only inflation_layer no layer expands
+      # the update bounds, so KeepoutFilter.process() never touches a cell and the
+      # costmap stayed all-free (verified on the robot 2026-10-06). In a rolling
+      # window StaticLayer re-applies its full extent every cycle.
+      plugins: ["static_layer", "inflation_layer"]
       filters: ["keepout_filter"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_topic: /keepout_mask
+        map_subscribe_transient_local: true
+        subscribe_to_updates: false
+        transform_tolerance: 0.5
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0

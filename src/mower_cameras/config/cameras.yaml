@@ -3,7 +3,8 @@
 #   * OA + rear cameras: canonical producer is v4l2_camera in launch/cameras.launch.py
 #     (rear_driver:=opencv switches the rear camera to this node instead).
 #   * Metoak stereo (/vio/{left,right}/image_raw): canonical producer is
-#     stereo_vio_bridge (launch/vio.launch.py). enable_stereo is a debug fallback only;
+#     stereo_vio_bridge (launch/vio.launch.py). enable_stereo is a debug fallback only (the default front-stereo producer is
+#     stereo_cam via cameras.launch.py stereo:=true, /dev/video22 YUYV 1280x480);
 #     never run it together with stereo_vio_bridge (same device, same topics).
 #
 # Device map (ros2_port_handoff/09_platform/udev-symlinks.txt, README hardware table):

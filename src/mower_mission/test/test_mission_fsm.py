@@ -9,6 +9,7 @@ which simulates the blade and asserts the blade invariants on every step:
   MOWING (2, while following) or MANUAL_MOWING (4).
 """
 
+import json
 import random
 
 import pytest
@@ -43,6 +44,12 @@ class Harness:
         self.silent = False
         self.areas = [square(0, 0, 5)]
         self.saved = None
+        # get_area_settings / coverage set_parameters are answered automatically
+        # (area index -> stored settings; None = service unavailable).
+        self.auto_settings = True
+        self.area_settings = {}
+        self.coverage_params_ok = True
+        self._answering = False
         self._apply(self.fsm.initial_effects(0.0))
         self.tick()
 
@@ -65,7 +72,34 @@ class Harness:
                 assert not e.text.startswith('safety:'), e.text
         if self.blade:
             assert f.blade_allowed(self.fsm), (self.fsm.phase, self.fsm.mission)
+        if self.auto_settings and not self._answering:
+            self._answering = True
+            try:
+                self.answer_settings()
+            finally:
+                self._answering = False
         return fx
+
+    def _request_of(self, token):
+        for e in reversed(self.fx):
+            if isinstance(e, f.CallService) and e.token == token:
+                return e
+        raise AssertionError('request not found')
+
+    def answer_settings(self):
+        """Answer a pending get_area_settings / coverage set_parameters call."""
+        for _ in range(10):
+            s = self.fsm._service
+            if s is None or s.name not in (f.SRV_GET_AREA_SETTINGS, f.SRV_SET_PARAMS):
+                return
+            req = self._request_of(s.token)
+            if req.name == f.SRV_GET_AREA_SETTINGS:
+                st = self.area_settings.get(req.request['index'], {})
+                resp = (False, {}) if st is None else \
+                    (True, {'success': True, 'settings_json': json.dumps(st)})
+            else:
+                resp = (self.coverage_params_ok, {})
+            self._apply(self.fsm.on_service_result(s.token, *resp, now=self.t))
 
     # ---- drivers -------------------------------------------------------
     def tick(self, dt=0.1, n=1):
@@ -119,6 +153,9 @@ class Harness:
                 if isinstance(e, f.CallService) and e.token == s.token:
                     req = e
                     break
+            if req.name in (f.SRV_GET_AREA_SETTINGS, f.SRV_SET_PARAMS):
+                self.answer_settings()
+                continue
             if req.name == f.SRV_GET_AREA:
                 idx = req.request['index']
                 if idx < len(self.areas):
@@ -1043,3 +1080,248 @@ def test_random_sequences_keep_blade_invariant():
             elif r < 0.55:
                 h.answer_services()
             h.tick(dt=rng.choice([0.1, 1.0, 10.0]))
+
+
+# =====================================================================
+# per-area mowing settings
+# =====================================================================
+def calls(h, mark=0, name=None):
+    return [e for e in h.since(mark, f.CallService) if name is None or e.name == name]
+
+
+def param_calls(h, node, mark=0):
+    return [e.request['params'] for e in calls(h, mark, f.SRV_SET_PARAMS)
+            if e.request['node'] == node]
+
+
+def mow_area_once(h, sp=None):
+    """PLANNING -> plan with one sub-path from the robot pose -> mowed."""
+    sp = sp or line(0, 0, 4, 0)
+    h.fsm.inputs.pose = (sp[0][0], sp[0][1], 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp]))
+    assert h.name == 'MOWING'
+    follow_current(h)
+
+
+def test_height_percent_table():
+    fsm = f.MissionFSM()
+    assert [fsm.height_percent(mm) for mm in (20, 30, 50, 60, 90, 120)] == [0, 0, 33, 50, 100, 100]
+    fsm = f.MissionFSM({'cutter_height_mm_to_percent': [30.0, 10.0, 60.0, 40.0, 90.0, 100.0]})
+    assert [fsm.height_percent(mm) for mm in (30, 45, 60, 75, 90)] == [10, 25, 40, 70, 100]
+
+
+def test_area_settings_applied_before_planning():
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'spiral', 'perimeter_laps': 3, 'cut_speed_mps': 0.45,
+                           'cutter_height_mm': 60, 'swath_overlap_m': 0.04,
+                           'edge_first': False, 'mow_angle_deg': 30.0}}
+    m = h.mark()
+    start_until_planning(h)
+    assert [c.request for c in calls(h, m, f.SRV_GET_AREA_SETTINGS)] == [{'index': 0}]
+    assert [c.request for c in calls(h, m, f.SRV_CUTTER_HEIGHT)] == \
+        [{'height_mm': 60, 'percent': 50}]
+    assert param_calls(h, f.PARAM_NODE_CONTROLLER, m) == \
+        [{'FollowCoveragePath.desired_linear_vel': 0.45}]
+    cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)
+    assert cov == [{'operation_width': pytest.approx(0.16), 'headland_rings': 3,
+                    'path_mode': 'spiral', 'mow_angle_deg': 30.0, 'edge_first': False}]
+    goal = h.goal(f.ACT_PLAN)
+    assert goal['mow_angle_deg'] == 30.0 and goal['perpendicular'] is False
+    # order: settings -> height -> coverage params -> plan goal, all blade off
+    seq = [type(e).__name__ + ':' + getattr(e, 'name', '') for e in h.since(m)
+           if isinstance(e, (f.CallService, f.StartAction, f.BladeOn))
+           and getattr(e, 'name', '') != f.SRV_GET_AREA]
+    assert seq == ['CallService:get_area_settings', 'CallService:cutter_height',
+                   'CallService:set_parameters', 'CallService:set_parameters',
+                   'StartAction:plan_coverage']
+    pub = h.since(m, f.PublishAreaSettings)[-1].settings
+    assert pub['path_mode'] == 'spiral' and pub['area_index'] == 0
+    assert pub['run'] == 1 and pub['runs'] == 1 and pub['cutter_height_percent'] == 50
+    assert '[spiral, run 1/1]' in h.fsm.sub_state
+
+
+def test_blade_height_command_precedes_blade_on():
+    h = Harness()
+    h.area_settings = {0: {'cutter_height_mm': 80}}
+    m = h.mark()
+    start_until_planning(h)
+    mow_area_once(h)
+    kinds = [e for e in h.since(m) if isinstance(e, f.BladeOn)
+             or (isinstance(e, f.CallService) and e.name == f.SRV_CUTTER_HEIGHT)]
+    assert isinstance(kinds[0], f.CallService) and kinds[0].request['percent'] == 83
+    assert any(isinstance(e, f.BladeOn) for e in kinds[1:])
+
+
+def test_cut_speed_is_capped():
+    h = Harness(cut_speed_max_mps=0.4)
+    h.area_settings = {0: {'cut_speed_mps': 0.5}}
+    m = h.mark()
+    start_until_planning(h)
+    assert param_calls(h, f.PARAM_NODE_CONTROLLER, m) == \
+        [{'FollowCoveragePath.desired_linear_vel': 0.4}]
+
+
+def test_settings_service_unavailable_uses_defaults():
+    h = Harness(mow_angle_deg=15.0)
+    h.area_settings = {0: None}
+    m = h.mark()
+    start_until_planning(h)
+    assert any('get_area_settings unavailable' in e.text for e in h.since(m, f.Log))
+    assert [c.request['percent'] for c in calls(h, m, f.SRV_CUTTER_HEIGHT)] == [33]
+    cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]
+    assert cov['path_mode'] == 'zigzag' and cov['headland_rings'] == 2
+    assert cov['edge_first'] is True and cov['operation_width'] == pytest.approx(0.18)
+    # an auto-angle area falls back to the global mow_angle_deg parameter
+    assert h.goal(f.ACT_PLAN)['mow_angle_deg'] == 15.0
+
+
+def test_coverage_param_failure_still_plans():
+    h = Harness()
+    h.coverage_params_ok = False
+    m = h.mark()
+    start_until_planning(h)
+    assert h.pending_action(f.ACT_PLAN)
+    assert any('set_parameters failed' in e.text for e in h.since(m, f.Log))
+
+
+def test_area_settings_disabled_plans_directly():
+    h = Harness(use_area_settings=False, set_cut_speed=False, set_cutter_height=False)
+    m = h.mark()
+    start_until_planning(h)
+    assert not calls(h, m, f.SRV_GET_AREA_SETTINGS)
+    assert not calls(h, m, f.SRV_CUTTER_HEIGHT)
+    assert not param_calls(h, f.PARAM_NODE_CONTROLLER, m)
+    assert h.pending_action(f.ACT_PLAN)
+
+
+def test_repeat_mows_the_area_n_times():
+    h = Harness()
+    h.area_settings = {0: {'repeat': 3, 'mow_angle_deg': 20.0}}
+    start_until_planning(h)
+    angles = []
+    for run in range(3):
+        assert h.name == 'PLANNING' and '[zigzag, run %d/3]' % (run + 1) in h.fsm.sub_state
+        assert not h.blade
+        angles.append(h.goal(f.ACT_PLAN)['mow_angle_deg'])
+        mow_area_once(h)
+    assert angles == [20.0, 20.0, 20.0]
+    assert h.name == 'RETURNING_HOME'
+    assert len(calls(h, 0, f.SRV_GET_AREA_SETTINGS)) == 1
+    assert len(calls(h, 0, f.SRV_CUTTER_HEIGHT)) == 1
+    assert len(param_calls(h, f.PARAM_NODE_COVERAGE)) == 3
+    assert h.since(0, f.PublishAreaSettings)[-1].settings == {}
+
+
+def test_cross_plans_twice_90_deg_apart():
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0}}
+    h.areas = [square(0, 0, 5), square(10, 0, 5)]
+    start_until_planning(h)
+    g1 = h.goal(f.ACT_PLAN)
+    assert param_calls(h, f.PARAM_NODE_COVERAGE)[-1]['path_mode'] == 'cross'
+    mow_area_once(h)
+    assert h.name == 'PLANNING' and h.fsm.mission.area_idx == 0
+    g2 = h.goal(f.ACT_PLAN)
+    assert (g1['mow_angle_deg'], g2['mow_angle_deg']) == (30.0, 120.0)
+    assert param_calls(h, f.PARAM_NODE_COVERAGE)[-1]['mow_angle_deg'] == 120.0
+    mow_area_once(h)
+    assert h.name == 'PLANNING' and h.fsm.mission.area_idx == 1   # then the next area
+
+
+def test_cross_on_auto_angle_uses_perpendicular_flag():
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'cross', 'repeat': 2}}
+    start_until_planning(h)
+    goals = []
+    for _ in range(4):
+        g = h.goal(f.ACT_PLAN)
+        goals.append((g['mow_angle_deg'], g['perpendicular']))
+        mow_area_once(h)
+    assert goals == [(-1.0, False), (-1.0, True)] * 2
+
+
+def test_alternate_rotates_each_run_and_across_sessions():
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'alternate', 'repeat': 2, 'mow_angle_deg': 10.0,
+                           'alternate_angle_offset_deg': 45.0}}
+    start_until_planning(h)
+    a1 = h.goal(f.ACT_PLAN)['mow_angle_deg']
+    mow_area_once(h)
+    a2 = h.goal(f.ACT_PLAN)['mow_angle_deg']
+    mow_area_once(h)
+    assert (a1, a2) == (10.0, 55.0)
+    saved = h.since(0, f.SaveAlternateCounts)
+    assert saved and saved[-1].counts == {'a': 2}
+    # next session continues the rotation
+    h2 = Harness()
+    h2.fsm.alternate_counts = dict(saved[-1].counts)
+    h2.area_settings = {0: {'path_mode': 'alternate', 'mow_angle_deg': 10.0,
+                            'alternate_angle_offset_deg': 45.0}}
+    start_until_planning(h2)
+    assert h2.goal(f.ACT_PLAN)['mow_angle_deg'] == 100.0
+
+
+def test_alternate_on_auto_angle():
+    h = Harness()
+    h.area_settings = {0: {'path_mode': 'alternate', 'repeat': 3}}
+    start_until_planning(h)
+    goals = []
+    for _ in range(3):
+        g = h.goal(f.ACT_PLAN)
+        goals.append((g['mow_angle_deg'], g['perpendicular']))
+        mow_area_once(h)
+    assert goals == [(-1.0, False), (-1.0, True), (-1.0, False)]
+
+
+def test_resume_continues_the_interrupted_repeat_run():
+    h = Harness()
+    h.area_settings = {0: {'repeat': 2}}
+    start_until_planning(h)
+    mow_area_once(h)
+    assert '[zigzag, run 2/2]' in h.fsm.sub_state
+    sp = line(0, 0, 4, 0)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp, line(4, 0.2, 0, 0.2)]))
+    follow_current(h)                     # first sub-path of run 2 done
+    assert h.cmd(f.CMD_STOP)
+    assert 'area_run 0 1' in h.saved
+    h2 = Harness(cursor=ResumeCursor.loads(h.saved))
+    h2.area_settings = {0: {'repeat': 2}}
+    assert h2.fsm.cursor.available
+    start_until_planning(h2)
+    assert '[zigzag, run 2/2]' in h2.fsm.sub_state
+    h2.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp, line(4, 0.2, 0, 0.2)]))
+    assert h2.fsm.mission.sub_i == 1      # resumes inside run 2
+
+
+def test_settings_reply_after_stop_is_ignored():
+    h = Harness()
+    h.auto_settings = False
+    assert h.cmd(f.CMD_START)
+    for _ in range(5):                       # answer get_mowing_area only
+        s = h.fsm._service
+        if s is None or s.name != f.SRV_GET_AREA:
+            break
+        req = h._request_of(s.token)
+        idx = req.request['index']
+        resp = (True, {'success': True, 'area': h.areas[idx]}) if idx < len(h.areas) \
+            else (True, {'success': False})
+        h._apply(h.fsm.on_service_result(s.token, *resp, now=h.t))
+    h.tick()
+    assert h.name == 'PLANNING' and h.fsm._service.name == f.SRV_GET_AREA_SETTINGS
+    tok = h.fsm._service.token
+    assert h.cmd(f.CMD_STOP)
+    fx = h.fsm.on_service_result(tok, True, {'success': True, 'settings_json': '{}'}, h.t)
+    h._apply(fx)
+    assert not [e for e in fx if isinstance(e, (f.StartAction, f.CallService))]
+    assert h.name == 'IDLE'
+
+
+def test_resume_cursor_area_run_round_trip():
+    cur = ResumeCursor()
+    cur.current_command = 1
+    cur.area_runs = {2: 1, 3: 0}
+    text = cur.dumps()
+    assert 'area_run 2 1' in text and 'area_run 3' not in text
+    back = ResumeCursor.loads(text)
+    assert back.area_runs == {2: 1} and back.available

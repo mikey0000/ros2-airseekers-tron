@@ -1,5 +1,6 @@
 """Node logic without spinning: slew/watchdog, slip latch, IMU window evaluation."""
 
+import math
 import types
 
 import pytest
@@ -162,3 +163,77 @@ def test_retry_backoff_caps_at_ten_minutes():
 def test_validate_calibration_rejects(data, reason):
     with pytest.raises(ValueError, match=reason):
         imu_cal.validate_calibration(data, 0.2)
+
+
+# ---------------------------------------------------------------------- straight-line shaping
+def test_shaper_defaults_are_neutral():
+    sh = cmd_vel_slew.DriveShaper()
+    for lin, ang in ((0.3, 0.0), (0.3, 0.01), (0.0, 0.5), (-0.3, -0.02)):
+        assert sh.shape(lin, ang, yaw=1.0, gyro_z=0.2) == ang
+    assert not sh.holding
+
+
+def test_trim_only_while_driving_and_signed_with_linear():
+    sh = cmd_vel_slew.DriveShaper(angular_trim_radps=0.03)
+    assert sh.shape(0.3, 0.0) == pytest.approx(0.03)
+    assert sh.shape(-0.3, 0.0) == pytest.approx(-0.03)
+    assert sh.shape(0.01, 0.5) == 0.5                     # turning on the spot: untouched
+    assert sh.shape(0.3, 0.2) == pytest.approx(0.23)
+
+
+def test_deadband_zeroes_small_angular_only_while_driving():
+    sh = cmd_vel_slew.DriveShaper(angular_deadband_radps=0.05)
+    assert sh.shape(0.3, 0.04) == 0.0
+    assert sh.shape(0.3, -0.049) == 0.0
+    assert sh.shape(0.3, 0.06) == 0.06
+    assert sh.shape(0.0, 0.04) == 0.04                    # spot turn kept
+
+
+def test_heading_hold_engages_corrects_and_releases():
+    sh = cmd_vel_slew.DriveShaper(heading_hold=True, heading_hold_kp=1.0, heading_hold_kd=0.0,
+                                  angular_deadband_radps=0.05)
+    assert sh.shape(0.3, 0.02, yaw=0.5, gyro_z=0.0) == 0.0   # locks yaw 0.5, no error yet
+    assert sh.holding and sh.yaw_ref == 0.5
+    assert sh.shape(0.3, 0.0, yaw=0.45) == pytest.approx(0.05)  # drifted right: steer left
+    assert sh.shape(0.3, 0.3, yaw=0.45) == 0.3               # operator steers: released
+    assert not sh.holding
+    assert sh.shape(0.3, 0.0, yaw=1.0) == 0.0                # re-locks at the new heading
+    assert sh.yaw_ref == 1.0
+    assert sh.shape(0.02, 0.0, yaw=0.9) == 0.0 and not sh.holding  # stopped: released
+    sh.shape(0.3, 0.0, yaw=0.0)
+    assert sh.shape(0.3, 0.0, yaw=None) == 0.0 and not sh.holding  # stale IMU: released
+
+
+def test_heading_hold_clamp_damping_and_wrap():
+    sh = cmd_vel_slew.DriveShaper(heading_hold=True, heading_hold_kp=2.0, heading_hold_kd=0.5,
+                                  heading_hold_max_radps=0.15)
+    sh.shape(0.3, 0.0, yaw=math.pi - 0.01)
+    assert sh.shape(0.3, 0.0, yaw=-math.pi + 0.01) == pytest.approx(-0.04)  # across +-pi
+    assert sh.shape(0.3, 0.0, yaw=0.0) == pytest.approx(0.15)              # clamped
+    assert sh.shape(0.3, 0.0, yaw=math.pi - 0.01, gyro_z=0.1) == pytest.approx(-0.05)
+    assert sh.shape(0.3, 0.0, yaw=math.pi - 0.01, gyro_z=-10.0) == pytest.approx(0.15)
+
+
+def test_step_applies_shaper_and_resets_on_watchdog():
+    sh = cmd_vel_slew.DriveShaper(heading_hold=True)
+    node = _slew_node(_shaper=sh, _imu=(0.2, 0.0), _imu_time=100.0, _max_angular_accel=100.0)
+    _step(node, 100.0)
+    node._tgt, node._last_cmd_time = (0.3, 0, 0, 0, 0, 0.0), 100.0
+    _step(node, 100.05)
+    assert sh.holding and sh.yaw_ref == 0.2
+    node._imu = (0.1, 0.0)
+    node._imu_time = node._last_cmd_time = 100.1
+    out = _step(node, 100.1)
+    assert out[5] == pytest.approx(0.1)
+    _step(node, 101.0)                                       # stale command: exact stop
+    assert not sh.holding
+
+
+def test_settings_overrides(tmp_path):
+    f = tmp_path / 'robot.yaml'
+    f.write_text('mowgli:\n  ros__parameters:\n    angular_trim_radps: 0.02\n'
+                 '    heading_hold: true\n    heading_hold_kp: 2\n    other: 1\n'
+                 '    angular_deadband_radps: "x"\n')
+    assert cmd_vel_slew.settings_overrides(str(f)) == {
+        'angular_trim_radps': 0.02, 'heading_hold': True, 'heading_hold_kp': 2.0}
+    assert cmd_vel_slew.settings_overrides(str(tmp_path / 'missing.yaml')) == {}

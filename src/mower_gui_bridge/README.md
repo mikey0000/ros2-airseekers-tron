@@ -30,6 +30,7 @@ node packages).
 | `/odometry/filtered_map` | `nav_msgs/Odometry` | relay of `/odometry/filtered`, with `frame_id=map` and `child_frame_id=base_footprint` (map == odom identity for now) |
 | `/behavior_tree_node/high_level_status` | `mowgli_interfaces/HighLevelStatus` | on every change + 1 Hz (only when `serve_high_level`) |
 | `/behavior_tree_node/coverage_resume_available` | `std_msgs/Bool` | latched (transient local, depth 1), always `false` (only when `serve_high_level`) |
+| `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 1 Hz (`diagnostics_rate_hz`; `diagnostics_topic:=''` turns it off). Built by `diagnostics.py`, see [Diagnostics](#diagnostics). |
 | `/estop_request` | `std_msgs/Bool` | `true` on a GUI emergency stop |
 | `/cmd_vel_emergency` | `geometry_msgs/Twist` | one zero twist on `COMMAND_STOP` |
 
@@ -39,6 +40,25 @@ node packages).
 `/fix_status`, `/odom`, `/odometry/filtered`. When `serve_high_level` is false, it
 also subscribes to `/behavior_tree_node/high_level_status`, so the blade interlock
 follows the real mission node's state.
+
+## Diagnostics
+
+`diagnostics.py` (pure Python, unit-tested) turns the bridge's cached inputs into one
+`DiagnosticArray` per second. The GUI's Diagnostics page lists every entry under "ROS
+Diagnostics", raises WARN/ERROR entries as alerts and reads a few of them by name:
+
+| Entry (`name`, `hardware_id`) | Source | Values / level |
+|---|---|---|
+| `tron: MCU link` (`mcu`) | `/mower_base/status`, `/mower_sensor_info` | board firmware versions, bumper/lift/stop/rain/charging/cutting flags. ERROR when `/mower_base/status` is older than `diagnostics_timeout_s` (3 s). |
+| `tron: Battery` (`battery`) | `/battery`, `MowerSensorInfo.battery_error` | voltage, current (raw driver units), %, temperature, error bits, docked. ERROR on error bits, WARN below 15 %. |
+| `tron: Cutter motor`, `tron: Left drive motor`, `tron: Right drive motor` | `MowerSensorInfo.*_motor` | rpm, current (x0.01 A), voltage (x0.01 V), temperature, MotorStatus code. The code only raises WARN with `diagnostics_motor_status_alerts:=true`. NOTE: MotorStatus is a signed int8 (vendor `MotorStatus.msg`): 0 idle, 1 running (drive boards at rest), 2 locking, negative = fault (-2 over-current ... -7 overload); `diagnostics.MOTOR_STATUS_TEXT` still uses the old positive mapping (1 = "over-current") and should alert only on `code < 0` before this is enabled. |
+| `tron: GNSS` (`gnss`) | `/fix`, `/fix_status` | fix type (OK only for RTK fixed), sats, HDOP, correction source/link/flow/age, position. |
+| `tron: Localization` (`localization`) | `/odometry/filtered` receipt, datum in force | ERROR without fresh EKF output, WARN without a datum. |
+| `IMU` (`imu`) | `/imu/data` (sampled, depth 1), `/bias_status`; `/imu/temperature_c` only with `imu_temperature_topic` set (off: the driver publishes it at 100 Hz once subscribed) | data age, temperature, bias-calibration state. Named exactly `IMU` because the GUI's robot anatomy reads that entry. |
+| `<image topic> topic status` (camera id) | `diagnostics_cameras` | Matches the GUI profile cameras (`utils/cameraFreshness.ts`). Always-on cameras: freshness of their small `camera_info`. On-demand cameras (rear, front stereo) are never subscribed (a subscriber would make them capture): publisher present, "idle" while nobody watches. |
+| `tron: Lights` (`lights`) | `/light_controller/state` | mode and per-strip state. |
+
+All extra inputs are sampled at 1 Hz through `sub_pump` (no per-message Python work).
 
 ## Services served
 

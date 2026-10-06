@@ -9,9 +9,11 @@
 # See docs/gui.md. Serves http://<mower-ip>:4006 ; talks to ROS only through
 # foxglove_bridge (ws://localhost:8765) and the teleop relay (8766).
 #
-# Deliberately NOT mounted/granted: /var/run/docker.sock, /dev, privileged,
-# pid: host -- the docker-/openocd-driven GUI tools are hidden in this build
-# and their API routes fail harmlessly.
+# SECURITY: the Docker socket is mounted read-write so the GUI can restart
+# the stack ("Restart ROS 2"), list containers and stream their logs. Access
+# to docker.sock is root-equivalent on the host. Acceptable for a
+# single-owner robot on a private LAN (the GUI API has no auth layer); do not
+# expose port 4006 beyond that. NOT granted: /dev, privileged, pid: host.
 
 services:
   mower_gui:
@@ -34,9 +36,16 @@ services:
       # (host network). Overridden by perception_settings.camera_stream_base_url
       # in mowgli_robot.yaml; camera list override: CAMERAS='[{"id":..,"label":..,"topic":..}]'.
       - CAMERA_STREAM_BASE_URL=http://localhost:8080
+      # Container names the GUI restarts / reads logs from (upstream defaults
+      # are mowgli-ros2 / mowgli-gps / mowgli-gui). Empty GPS = no GPS sidecar.
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - ROS_CONTAINER_NAME=mower_humble
+      - GUI_CONTAINER_NAME=mower_gui
+      - GPS_CONTAINER_NAME=
       - MQTT_ENABLED=false
       - HOMEKIT_ENABLED=false
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - /userdata/ros2/gui_db:/db
       - ../config/gui:/mowgli_config
       - /userdata/ros2/maps:/ros2_ws/maps

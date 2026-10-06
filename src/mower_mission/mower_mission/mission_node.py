@@ -19,6 +19,7 @@ messages into its input snapshot and executes the effects it returns:
 """
 
 import functools
+import json
 import math
 import os
 import signal
@@ -39,12 +40,14 @@ from geometry_msgs.msg import Point32, Polygon, PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from nav2_msgs.action import BackUp, FollowPath, NavigateToPose
 from sensor_msgs.msg import BatteryState
-from std_msgs.msg import Bool
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import SetParameters
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Empty, Trigger
 
 from mower_interfaces.action import Dock, Undock
 from mower_interfaces.msg import MowerBaseDevStatus
-from mower_interfaces.srv import ChargingControl, CutterControl
+from mower_interfaces.srv import ChargingControl, CutterControl, GetAreaSettings
 from mowgli_interfaces.action import PlanCoverage
 from mowgli_interfaces.msg import Emergency, GnssStatus, HighLevelStatus, MapArea, Status
 from mowgli_interfaces.srv import AddMowingArea, GetMowingArea, HighLevelControl, StartInArea
@@ -73,8 +76,12 @@ TOPIC_DEFAULTS = {
     'high_level_control_service': '~/high_level_control',
     'start_in_area_service': '~/start_in_area',
     'clear_coverage_resume_service': '~/clear_coverage_resume',
+    'active_area_settings_topic': '~/active_area_settings',
     # clients
     'get_mowing_area_service': '/map_server_node/get_mowing_area',
+    'get_area_settings_service': '/map_server_node/get_area_settings',
+    'coverage_server_node': '/coverage_server',        # set_parameters target (bridge)
+    'controller_server_node': '/controller_server',    # set_parameters target (Nav2)
     'add_area_service': '/map_server_node/add_area',
     'cutter_control_service': '/cutter_control',
     'cutter_off_service': '/cutter_off',
@@ -91,6 +98,7 @@ TOPIC_DEFAULTS = {
 NODE_DEFAULTS = {
     'map_frame': 'map',
     'coverage_resume_path': '~/.ros/mower_mission/coverage_resume.txt',
+    'alternate_state_path': '~/.ros/mower_mission/alternate_counts.json',
     'recording_fallback_dir': '~/.ros/mower_mission/recordings',
     'server_wait_timeout_s': 3.0,
     'status_rate_hz': 1.0,
@@ -147,8 +155,11 @@ class MissionNode(Node):
 
         self._lock = threading.RLock()
         cursor = self._load_cursor()
+        self._alternate_path = _expand(self._p['alternate_state_path'])
         self.fsm = fsm_mod.MissionFSM(fsm_mod.Params.from_dict(fsm_params), cursor=cursor,
-                                      now=time.monotonic())
+                                      now=time.monotonic(),
+                                      alternate_counts=self._load_alternate())
+        self._height_percent = None     # last per-area blade height, re-sent with blade ON
         self._inflight = set()          # action tokens sent or being sent
         self._cancelled = set()
         self._handles = {}              # token -> ClientGoalHandle
@@ -165,6 +176,8 @@ class MissionNode(Node):
         self._traj_pub = self.create_publisher(Path, p['recording_trajectory_topic'], 10)
         self._plan_pub = self.create_publisher(Path, p['full_plan_topic'], latched)
         self._twist_pub = self.create_publisher(Twist, p['emergency_twist_topic'], 10)
+        self._settings_pub = self.create_publisher(String, p['active_area_settings_topic'],
+                                                   latched)
 
         # Inputs bypass the executor (see sub_pump.py). Every handler only stores the latest
         # value for the FSM, which reads them on the 10 Hz tick (and in status/services), so
@@ -196,7 +209,16 @@ class MissionNode(Node):
                                           callback_group=self._cb), p['clear_estop_service']),
             fsm_mod.SRV_CHARGING: (cli(ChargingControl, p['charging_service'],
                                        callback_group=self._cb), p['charging_service']),
+            fsm_mod.SRV_GET_AREA_SETTINGS: (
+                cli(GetAreaSettings, p['get_area_settings_service'], callback_group=self._cb),
+                p['get_area_settings_service']),
         }
+        self._param_clients = {}
+        for key, pname in ((fsm_mod.PARAM_NODE_COVERAGE, 'coverage_server_node'),
+                           (fsm_mod.PARAM_NODE_CONTROLLER, 'controller_server_node')):
+            srv_name = p[pname].rstrip('/') + '/set_parameters'
+            self._param_clients[key] = (cli(SetParameters, srv_name, callback_group=self._cb),
+                                        srv_name)
         self._cutter_cli = cli(CutterControl, p['cutter_control_service'], callback_group=self._cb)
         self._cutter_off_cli = cli(Trigger, p['cutter_off_service'], callback_group=self._cb)
 
@@ -269,6 +291,24 @@ class MissionNode(Node):
                 pass
             except OSError as exc:
                 self.get_logger().error('cannot remove %s: %s' % (path, exc))
+
+    def _load_alternate(self):
+        try:
+            with open(self._alternate_path, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+            return {str(k): int(v) for k, v in data.items()} if isinstance(data, dict) else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _save_alternate(self, counts):
+        try:
+            os.makedirs(os.path.dirname(self._alternate_path), exist_ok=True)
+            tmp = self._alternate_path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump(counts, fh, sort_keys=True)
+            os.replace(tmp, self._alternate_path)
+        except OSError as exc:
+            self.get_logger().error('cannot write %s: %s' % (self._alternate_path, exc))
 
     def _save_fallback(self, points, name):
         try:
@@ -427,6 +467,10 @@ class MissionNode(Node):
             self._delete_cursor()
         elif isinstance(e, f.SaveRecordingFallback):
             self._save_fallback(e.points, e.name)
+        elif isinstance(e, f.PublishAreaSettings):
+            self._settings_pub.publish(String(data=json.dumps(e.settings, sort_keys=True)))
+        elif isinstance(e, f.SaveAlternateCounts):
+            self._save_alternate(e.counts)
 
     def _publish_status_now(self):
         with self._lock:
@@ -460,7 +504,10 @@ class MissionNode(Node):
             req.cutter.direction = False
             req.cutter.speed = 0          # 0 -> driver default speed
             req.cutter.position = 0
-            req.height.enable = False
+            # Keep the per-area blade height in every blade-ON command (the
+            # MCU's handling of height.enable=false is unverified).
+            req.height.enable = self._height_percent is not None
+            req.height.position = int(self._height_percent or 0)
             if not self._cutter_cli.service_is_ready():
                 self.get_logger().error('blade ON: %s unavailable' %
                                         self._p['cutter_control_service'])
@@ -637,8 +684,46 @@ class MissionNode(Node):
         return {}
 
     # ---- services ----------------------------------------------------------
+    @staticmethod
+    def _param_msg(name, value):
+        v = ParameterValue()
+        if isinstance(value, bool):
+            v.type, v.bool_value = ParameterType.PARAMETER_BOOL, value
+        elif isinstance(value, int):
+            v.type, v.integer_value = ParameterType.PARAMETER_INTEGER, value
+        elif isinstance(value, float):
+            v.type, v.double_value = ParameterType.PARAMETER_DOUBLE, value
+        else:
+            v.type, v.string_value = ParameterType.PARAMETER_STRING, str(value)
+        return Parameter(name=name, value=v)
+
+    def _cutter_height(self, e):
+        """Per-area blade height: /cutter_control with the cutter OFF and
+        height.enable=true (only issued while the blade is off, in PLANNING)."""
+        pct = int(e.request['percent'])
+        self._height_percent = pct
+        if not self._cutter_cli.wait_for_service(
+                timeout_sec=float(self._p['server_wait_timeout_s'])):
+            self.get_logger().warn('blade height: %s unavailable' %
+                                   self._p['cutter_control_service'])
+            return
+        req = CutterControl.Request()
+        req.cutter.enable = False
+        req.height.enable = True
+        req.height.position = pct
+        self.get_logger().info('blade height %d mm -> %d %% (/cutter_control height)'
+                               % (int(e.request['height_mm']), pct))
+        fut = self._cutter_cli.call_async(req)
+        fut.add_done_callback(lambda f: None)
+
     def _call_service(self, e):
-        client, ros_name = self._srv_clients[e.name]
+        if e.name == fsm_mod.SRV_CUTTER_HEIGHT:
+            self._cutter_height(e)
+            return
+        if e.name == fsm_mod.SRV_SET_PARAMS:
+            client, ros_name = self._param_clients[e.request['node']]
+        else:
+            client, ros_name = self._srv_clients[e.name]
         if not client.wait_for_service(timeout_sec=float(self._p['server_wait_timeout_s'])):
             self.get_logger().warn('service %s not available' % ros_name)
             self._feed_service(e.token, False, {})
@@ -668,6 +753,12 @@ class MissionNode(Node):
             return ChargingControl.Request(enable_charging=bool(r['enable']))
         if e.name == fsm_mod.SRV_CLEAR_ESTOP:
             return Empty.Request()
+        if e.name == fsm_mod.SRV_GET_AREA_SETTINGS:
+            return GetAreaSettings.Request(area_index=int(r['index']))
+        if e.name == fsm_mod.SRV_SET_PARAMS:
+            req = SetParameters.Request()
+            req.parameters = [self._param_msg(k, v) for k, v in r['params'].items()]
+            return req
         raise ValueError('unknown service %s' % e.name)
 
     def _on_service_done(self, e, fut):
@@ -687,6 +778,18 @@ class MissionNode(Node):
                 'is_navigation_area': bool(a.is_navigation_area)}}
         elif e.name == fsm_mod.SRV_ADD_AREA:
             resp = {'success': bool(res.success)}
+        elif e.name == fsm_mod.SRV_GET_AREA_SETTINGS:
+            resp = {'success': bool(res.success), 'settings_json': res.settings_json}
+        elif e.name == fsm_mod.SRV_SET_PARAMS:
+            bad = [(prm.name, r.reason) for prm, r in zip(
+                self._make_request(e).parameters, res.results) if not r.successful]
+            if bad:
+                msg = '; '.join('%s: %s' % b for b in bad)
+                self.get_logger().warn('%s refused: %s' % (ros_name_of(e, self), msg))
+                self._feed_service(e.token, False, {'message': msg})
+                return
+            self.get_logger().info('%s: %s' % (ros_name_of(e, self), ', '.join(
+                '%s=%r' % kv for kv in e.request['params'].items())))
         self._feed_service(e.token, True, resp)
 
     def _feed_service(self, token, ok, resp):
@@ -704,6 +807,10 @@ class MissionNode(Node):
         with self._lock:
             self._execute(self.fsm.shutdown(time.monotonic()))
         return [f for f in self._shutdown_futures if not f.done()]
+
+
+def ros_name_of(e, node):
+    return node._param_clients[e.request['node']][1]
 
 
 def main(args=None):

@@ -42,6 +42,14 @@ import {MapEditorToolbar} from "./map/components/MapEditorToolbar.tsx";
 import {JoystickOverlay} from "./map/components/JoystickOverlay.tsx";
 import {useIsMobile} from "../hooks/useIsMobile.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
+import {useAreaSettingsSupport} from "../hooks/useAreaSettings.ts";
+import {StartMowSheet, type StartSelection} from "../components/areaSettings/StartMowSheet.tsx";
+import {AreaSettingsDrawer} from "../components/areaSettings/AreaSettingsDrawer.tsx";
+import {mowingAreaChoices} from "../utils/mapAreaIndex.ts";
+import {pointInPolygon} from "../utils/map.tsx";
+import {MapImageMarker} from "./map/components/MapImageMarker.tsx";
+import {markerCorners, selectDockMarker} from "../utils/mapMarker.ts";
+import {useRobotProfile} from "../hooks/useRobotProfile.ts";
 
 
 // Mapbox access token comes from the build env only — no hardcoded fallback.
@@ -191,6 +199,18 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         return {type: "FeatureCollection", features: feats};
     }, [features, offsetX, offsetY, datum, LAYER_COLORS]);
 
+    // Optional profile dock image (MowerModel.dockMarker); absent -> stock dot.
+    const {profile: robotProfile} = useRobotProfile();
+    const dockMarker = useMemo(() => selectDockMarker(robotProfile), [robotProfile]);
+    const dockMarkerCorners = useMemo(() => {
+        const dock = features["dock"];
+        if (!dockMarker || !(dock instanceof DockFeatureBase) || datum[0] === 0) return null;
+        const c = dock.getCoordinates();
+        const [dx, dy] = itranspose(offsetX, offsetY, datum, c[1], c[0]);
+        return markerCorners(offsetX, offsetY, datum, dockMarker, dx, dy, dock.getHeading());
+    }, [dockMarker, features, offsetX, offsetY, datum]);
+    // Remount the image markers when another image layer appears so they stay on top.
+
     // Layers for the persistent tracked-obstacle polygons (feature_type
     // 'dyn-obstacle', carried in the same display-features source). Rendered as
     // a translucent fill + rose outline + an id label, so the map and the
@@ -232,7 +252,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
 
     const [mowingAreas, setMowingAreas] = useState<{ key: string, label: string, feat: Feature }[]>([])
 
-    const {map, setMap, path, plan, lidarCollection, mowProgressImage, lidarMapImage, highLevelStatus, joyStream, dynamicObstacles} = useMapStreams({
+    const {map, setMap, path, plan, lidarCollection, mowProgressImage, lidarMapImage, highLevelStatus, joyStream, dynamicObstacles, robotMarkerCorners, robotMarker} = useMapStreams({
         editMap,
         settings,
         offsetX,
@@ -623,8 +643,41 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     }, [dockPlacementMode]);
 
 
+    // Area settings (robots whose map server implements them): clicking a
+    // mowing area in view mode — on the map or in the sidebar list — opens its
+    // "Mow settings" panel, and Start opens the Start sheet.
+    const areaSettings = useAreaSettingsSupport();
+    const [settingsArea, setSettingsArea] = useState<{index: number | "defaults"; name?: string; areaName?: string} | null>(null);
+    const [startSheet, setStartSheet] = useState<{open: boolean; selection: StartSelection}>({open: false, selection: "all"});
+    const areaChoices = useMemo(
+        () => mowingAreaChoices(map, (order) => t('mapAreasList.unnamedArea', {order})),
+        [map, t],
+    );
+    const openAreaSettingsForFeature = useCallback((f: MowingFeature | undefined) => {
+        if (!(f instanceof MowingAreaFeature)) return false;
+        const index = mowingAreaIndex(map, f.properties.source_working_area_index);
+        if (index === undefined) return false;
+        setSettingsArea({
+            index,
+            name: f.getLabel(t('mapAreasList.unnamedArea', {order: f.getMowingOrder()})),
+            areaName: map?.working_area?.[f.properties.source_working_area_index ?? -1]?.name,
+        });
+        return true;
+    }, [map, t]);
+    const openAreaSettingsById = useCallback(
+        (id: string) => { openAreaSettingsForFeature(features[id]); },
+        [features, openAreaSettingsForFeature],
+    );
+
     const handleMapClick = useCallback((e: {lngLat: {lng: number; lat: number}}) => {
-        if (!dockPlacementMode) return;
+        if (!dockPlacementMode) {
+            if (editMap || !areaSettings.enabled) return;
+            const pt: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+            const hit = Object.values(features).find((f) =>
+                f instanceof MowingAreaFeature && pointInPolygon(pt, f.geometry.coordinates as Position[][]));
+            openAreaSettingsForFeature(hit);
+            return;
+        }
         setDockPlacementMode(false);
         const coord: [number, number] = [e.lngLat.lng, e.lngLat.lat];
         setFeatures(prev => {
@@ -634,7 +687,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         });
         setHasUnsavedChanges(true);
         setDockDirty(true);
-    }, [dockPlacementMode, setHasUnsavedChanges]);
+    }, [dockPlacementMode, setHasUnsavedChanges, editMap, areaSettings.enabled, features, openAreaSettingsForFeature]);
 
     // Map → panel side of the two-way obstacle highlight: while the cursor is
     // over a tracked-obstacle polygon, mirror its id into selectedObstacleId so
@@ -661,15 +714,22 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     }, [dockDirty, setHasUnsavedChanges]);
 
     // Mower action callbacks shared between desktop and mobile toolbars
+    const useStartSheet = areaSettings.enabled && areaSettings.supported === true;
     const startSelectedArea = (key: string) => {
         const item = mowingAreas.find(item => item.key == key);
         const index = mowingAreaIndex(map, item?.feat?.properties?.index);
         if (index === undefined) return Promise.reject(new Error(t("crossHatch.areaUnavailable")));
+        if (useStartSheet) {
+            setStartSheet({open: true, selection: index});
+            return Promise.resolve();
+        }
         return mowerAction("start_in_area", {area: index})();
     };
 
     const mowerActions = useMemo(() => ({
-        onStart: mowerAction("high_level_control", {Command: 1}),
+        onStart: useStartSheet
+            ? () => { setStartSheet({open: true, selection: "all"}); return Promise.resolve(); }
+            : mowerAction("high_level_control", {Command: 1}),
         onHome: mowerAction("high_level_control", {Command: 2}),
         onEmergencyOn: mowerAction("emergency", {Emergency: 1}),
         onEmergencyOff: mowerAction("emergency", {Emergency: 0}),
@@ -694,7 +754,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         onBladeOff: mowerAction("mow_enabled", {mow_enabled: 0, mow_direction: 0}),
         onRecordFinish: mowerAction("high_level_control", {Command: 5}),
         onRecordCancel: mowerAction("high_level_control", {Command: 6}),
-    }), [mowerAction, highLevelStatus.highLevelStatus.state_name]);
+    }), [mowerAction, highLevelStatus.highLevelStatus.state_name, useStartSheet]);
 
     // Centered message panel used for the missing-token and missing-datum
     // states — a plain, translated explanation instead of an eternal spinner
@@ -818,14 +878,14 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 'line-width': ['get', 'width'],
                             }}/>
                         {/* Dock marker */}
-                        <Layer type={"circle"} id={"dock-halo"}
+                        <Layer type={"circle"} id={"dock-halo"} layout={{visibility: dockMarker ? "none" : "visible"}}
                             filter={['==', ['get', 'feature_type'], 'dock']}
                             paint={{
                                 'circle-radius': 12,
                                 'circle-color': LAYER_COLORS.halo,
                                 'circle-opacity': 0.9,
                             }}/>
-                        <Layer type={"circle"} id={"dock-point"}
+                        <Layer type={"circle"} id={"dock-point"} layout={{visibility: dockMarker ? "none" : "visible"}}
                             filter={['==', ['get', 'feature_type'], 'dock']}
                             paint={{
                                 'circle-radius': 9,
@@ -886,6 +946,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         {/* Persistent tracked-obstacle polygons + id labels (compact overview: no highlight) */}
                         {renderDynObstacleLayers(false)}
                     </Source>
+                    {/* Profile image markers (dock, robot) on top of every other layer. */}
+                    <MapImageMarker key={`dock-img-${!!mowProgressImage}-${!!lidarMapImage}`} id={"dock-image"}
+                        src={dockMarker?.src ?? ""} corners={dockMarker ? dockMarkerCorners : null}/>
+                    <MapImageMarker key={`robot-img-${!!mowProgressImage}-${!!lidarMapImage}`} id={"robot-image"}
+                        src={robotMarker?.src ?? ""} corners={robotMarkerCorners}/>
                 </Map> : <Spinner/>}
             </div>
         );
@@ -977,14 +1042,14 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 'line-width': ['get', 'width'],
                             }}/>
                         {/* Dock marker */}
-                        <Layer type={"circle"} id={"dock-halo"}
+                        <Layer type={"circle"} id={"dock-halo"} layout={{visibility: dockMarker ? "none" : "visible"}}
                             filter={['==', ['get', 'feature_type'], 'dock']}
                             paint={{
                                 'circle-radius': 12,
                                 'circle-color': LAYER_COLORS.halo,
                                 'circle-opacity': 0.9,
                             }}/>
-                        <Layer type={"circle"} id={"dock-point"}
+                        <Layer type={"circle"} id={"dock-point"} layout={{visibility: dockMarker ? "none" : "visible"}}
                             filter={['==', ['get', 'feature_type'], 'dock']}
                             paint={{
                                 'circle-radius': 9,
@@ -1078,6 +1143,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             }}/>
                         </Source>
                     )}
+                    {/* Profile image markers (dock, robot) on top of every other layer. */}
+                    <MapImageMarker key={`dock-img-${!!mowProgressImage}-${!!lidarMapImage}`} id={"dock-image"}
+                        src={dockMarker?.src ?? ""} corners={dockMarker ? dockMarkerCorners : null}/>
+                    <MapImageMarker key={`robot-img-${!!mowProgressImage}-${!!lidarMapImage}`} id={"robot-image"}
+                        src={robotMarker?.src ?? ""} corners={robotMarkerCorners}/>
                 </Map> : <Spinner/>}
                 <JoystickOverlay
                     visible={highLevelStatus.highLevelStatus.state_name === "RECORDING" || highLevelStatus.highLevelStatus.state_name === "MANUAL_MOWING" || manualMode}
@@ -1183,7 +1253,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     <div style={{position: 'absolute', top: 12, right: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 0, width: 240, maxHeight: 'calc(100% - 32px)', background: colors.glassBackground, backdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, WebkitBackdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, borderRadius: 18, border: colors.glassBorder, boxShadow: colors.glassShadow, overflow: 'hidden'}}>
                         <AreasListPanel
                             areas={areasList}
-                            onAreaClick={editMap ? handleAreaSelect : undefined}
+                            onAreaClick={editMap ? handleAreaSelect : (areaSettings.enabled ? openAreaSettingsById : undefined)}
                             onReorder={editMap ? handleReorder : undefined}
                             selectedId={editMap ? selectedFeatureIds[0] : undefined}
                         />
@@ -1211,6 +1281,28 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     </div>
                 )}
             </div>
+            {areaSettings.enabled && (
+                <>
+                    <AreaSettingsDrawer
+                        target={settingsArea?.index ?? null}
+                        title={settingsArea?.name}
+                        areaName={settingsArea?.areaName}
+                        onClose={() => setSettingsArea(null)}
+                    />
+                    <StartMowSheet
+                        open={startSheet.open}
+                        initialSelection={startSheet.selection}
+                        areas={areaChoices}
+                        onClose={() => setStartSheet((s) => ({...s, open: false}))}
+                        onEdit={(target) => setSettingsArea({
+                            index: target,
+                            name: target === "defaults" ? t('areaSettings.defaultsTitle') : areaChoices.find((a) => a.index === target)?.name,
+                            areaName: target === "defaults" ? undefined
+                                : map?.working_area?.[map?.working_area_indices?.indexOf(target) ?? -1]?.name,
+                        })}
+                    />
+                </>
+            )}
             <ImportOpenMowerModal
                 preview={importPreview}
                 onApply={async (omDatumLat, omDatumLon, importDatum) => {

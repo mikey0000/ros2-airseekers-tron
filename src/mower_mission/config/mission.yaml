@@ -33,11 +33,23 @@ behavior_tree_node:
     dock_pose_yaw: 0.0
 
     # --- coverage --------------------------------------------------------
-    mow_angle_deg: -1.0               # < 0 = planner picks (minimum swath count)
+    mow_angle_deg: -1.0               # < 0 = planner picks; only for areas whose own mow_angle_deg is auto
     transit_gap_m: 0.6                # blade-off /navigate_to_pose transit beyond this gap
     follow_controller_id: FollowCoveragePath
     follow_goal_checker_id: coverage_goal_checker
     max_areas: 200
+
+    # --- per-area mowing settings (map_server_node/get_area_settings) -----
+    use_area_settings: true           # false: built-in defaults for every area
+    cut_width_m: 0.20                 # blade width; coverage_server operation_width = this - swath_overlap_m
+    cut_speed_max_mps: 0.5            # cap on an area's cut_speed_mps
+    controller_speed_param: FollowCoveragePath.desired_linear_vel   # set on /controller_server
+    set_cut_speed: true
+    set_cutter_height: true           # /cutter_control height (blade off) before planning an area
+    # cutter_height_mm -> MCU height percent: flattened (mm, percent) pairs, piecewise
+    # linear, clamped. UNVERIFIED: the MCU's 0-100 % height scale has not been measured.
+    cutter_height_mm_to_percent: [30.0, 0.0, 90.0, 100.0]
+    alternate_state_path: /ros2_ws/maps/mission_alternate_counts.json   # path_mode alternate: angle step per area
 
     # --- blade (vendor OpenCutterCheck) -----------------------------------
     require_blade_confirmation: true  # wait for MowerBaseDevStatus.is_cutting before following

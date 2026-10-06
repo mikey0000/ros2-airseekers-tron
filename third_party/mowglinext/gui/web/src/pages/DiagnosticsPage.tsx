@@ -69,6 +69,7 @@ import {useApi} from "../hooks/useApi.ts";
 import {useFusionGraphDiagnostics} from "../hooks/useFusionGraphDiagnostics.ts";
 import {useRosbag, RosbagRecording} from "../hooks/useRosbag.ts";
 import {useProfileGates} from "../hooks/useProfileGates.ts";
+import {diagnosticValue, localizationDiagnostics} from "../utils/diagnosticsLookup.ts";
 import {useFeature} from "../hooks/useRobotProfile.ts";
 import {cameraFreshness} from "../utils/cameraFreshness.ts";
 import {useFirmwareDebugLogs} from "../hooks/useFirmwareDebugLogs.ts";
@@ -208,6 +209,9 @@ export const DiagnosticsPage = () => {
     const hasFusionGraph = isVisible('feature:fusion_graph');
     const hasImuYawCalibration = isVisible('feature:imu_yaw_calibration');
     const hasLidar = isVisible('feature:lidar');
+    // Status fields the robot has no sensor for render as "not available".
+    const measured = (field: (typeof profile.unmeasuredStatusFields)[number]) =>
+        !profile.unmeasuredStatusFields.includes(field);
     const rosbag = useRosbag(hasRosbag);
 
     // ── derived values ───────────────────────────────────────────────────────
@@ -427,7 +431,7 @@ export const DiagnosticsPage = () => {
         batteryPct: batteryPercent,
         vBattery: power.v_battery ?? 0,
         motorTempC: status.mower_motor_temperature ?? 0,
-        escTempC: status.mower_esc_temperature ?? 0,
+        escTempC: measured("mower_esc_temperature") ? status.mower_esc_temperature ?? 0 : undefined,
         gpsLabel: anatomyGps.label,
         gpsOk: anatomyGps.percent >= 50,
         imuYawDeg: yaw,
@@ -1118,7 +1122,54 @@ export const DiagnosticsPage = () => {
         </Row>
     );
 
-    const sectionHeadingSources = (
+    // One collapsible row per /diagnostics entry (ROS Diagnostics card, localisation health).
+    const renderDiagnosticList = (entries: NonNullable<typeof diagnostics.status>) => (
+                <Collapse
+                    size="small"
+                    ghost
+                    items={entries.map((item, idx) => ({
+                        key: idx,
+                        label: (
+                            <Space>
+                                <Tag color={DIAG_LEVEL_COLORS[item.level] ?? "default"}>
+                                    {DIAG_LEVEL_LABEL_KEYS[item.level] ? t(DIAG_LEVEL_LABEL_KEYS[item.level]) : String(item.level)}
+                                </Tag>
+                                <Typography.Text style={{fontSize: 13}}>{item.name}</Typography.Text>
+                                <Typography.Text type="secondary" style={{fontSize: 12}}>{item.message}</Typography.Text>
+                            </Space>
+                        ),
+                        children: item.values && item.values.length > 0 ? (
+                            <div style={{paddingLeft: 8}}>
+                                {item.values.map((kv, i) => (
+                                    <div key={i} style={{display: "flex", gap: 8, fontSize: 12, marginBottom: 2}}>
+                                        <Typography.Text type="secondary">{kv.key}:</Typography.Text>
+                                        <Typography.Text code style={{fontSize: 11}}>{kv.value}</Typography.Text>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <Typography.Text type="secondary" style={{fontSize: 12}}>{t('diagnosticsPage.noKeyValuePairs')}</Typography.Text>
+                        ),
+                    }))}
+                />
+    );
+
+    const localizationEntries = localizationDiagnostics(diagnostics.status);
+    // Without fusion_graph there are no COG / magnetometer heading inputs to
+    // compare; show the localisation chain's own diagnostics instead
+    // (robot_localization, GNSS, IMU).
+    const sectionLocalizationHealth = hasFusionGraph ? null : (
+        <Card title={<Space><CompassOutlined/> {t('diagnosticsPage.localizationHealth')}</Space>} size="small">
+            <Typography.Paragraph type="secondary" style={{fontSize: 12}}>
+                {t('diagnosticsPage.localizationHealthHint')}
+            </Typography.Paragraph>
+            {localizationEntries.length === 0
+                ? <Typography.Text type="secondary">{t('diagnosticsPage.noLocalizationDiagnostics')}</Typography.Text>
+                : renderDiagnosticList(localizationEntries)}
+        </Card>
+    );
+
+    const sectionHeadingSources = !hasFusionGraph ? null : (
         <Row gutter={[12, 12]}>
             <Col span={24}>
                 <Card title={<Space><CompassOutlined/> {t('diagnosticsPage.headingSources')}</Space>} size="small">
@@ -1554,6 +1605,15 @@ export const DiagnosticsPage = () => {
     const imuCal = calibrationStatus?.imu;
     const magCal = calibrationStatus?.mag;
 
+    // Two cards (dock, IMU bias) without calibrate_imu_yaw_node's magnetometer one.
+    const calibrationColLg = hasImuYawCalibration ? 8 : 12;
+    // A robot whose IMU calibration is not the imu_calibration.txt file can
+    // report it in the "IMU" diagnostic instead (key "Bias calibration").
+    const imuBiasReported = diagnosticValue(diagnostics.status, "IMU", "Bias calibration");
+    const imuBiasFromDiagnostics = !imuCal?.present && imuBiasReported !== undefined && imuBiasReported !== "no report"
+        ? imuBiasReported : undefined;
+    const imuBiasOk = imuCal?.present || imuBiasFromDiagnostics === "CALIBRATED";
+
     const sectionCalibrationStatus = (
         <Row gutter={[12, 12]}>
             {calibrationError && (
@@ -1566,7 +1626,7 @@ export const DiagnosticsPage = () => {
                     />
                 </Col>
             )}
-            <Col xs={24} lg={8}>
+            <Col xs={24} lg={calibrationColLg}>
                 <Card
                     title={<Space><CompassOutlined/> {t('diagnosticsPage.dockCalibration')}</Space>}
                     size="small"
@@ -1606,13 +1666,14 @@ export const DiagnosticsPage = () => {
                     )}
                 </Card>
             </Col>
-            <Col xs={24} lg={8}>
+            <Col xs={24} lg={calibrationColLg}>
                 <Card
                     title={<Space><CompassOutlined/> {t('diagnosticsPage.imuBiasCalibration')}</Space>}
                     size="small"
                     extra={
-                        <Tag color={imuCal?.present ? "success" : "warning"}>
-                            {imuCal?.present ? t('diagnosticsPage.present') : t('diagnosticsPage.missing')}
+                        <Tag color={imuBiasOk ? "success" : "warning"}>
+                            {imuCal?.present ? t('diagnosticsPage.present')
+                                : imuBiasFromDiagnostics ?? t('diagnosticsPage.missing')}
                         </Tag>
                     }
                     actions={hasImuYawCalibration ? [
@@ -1647,6 +1708,10 @@ export const DiagnosticsPage = () => {
                         </Descriptions>
                     ) : imuCal?.error ? (
                         <Alert type="error" showIcon message={imuCal.error}/>
+                    ) : imuBiasFromDiagnostics !== undefined ? (
+                        <Typography.Text type="secondary" style={{fontSize: 12}}>
+                            {t('diagnosticsPage.imuCalibrationFromDiagnostics', {state: imuBiasFromDiagnostics})}
+                        </Typography.Text>
                     ) : (
                         <Typography.Text type="secondary" style={{fontSize: 12}}>
                             {t(hasStm32 ? 'diagnosticsPage.noImuCalibration' : 'diagnosticsPage.noImuCalibrationGeneric')}
@@ -1654,7 +1719,7 @@ export const DiagnosticsPage = () => {
                     )}
                 </Card>
             </Col>
-            <Col xs={24} lg={8}>
+            {hasImuYawCalibration && <Col xs={24} lg={8}>
                 <Card
                     title={<Space><CompassOutlined/> {t('diagnosticsPage.magnetometerCalibration')}</Space>}
                     size="small"
@@ -1699,7 +1764,7 @@ export const DiagnosticsPage = () => {
                         </Typography.Text>
                     )}
                 </Card>
-            </Col>
+            </Col>}
         </Row>
     );
 
@@ -1765,7 +1830,9 @@ export const DiagnosticsPage = () => {
                     </Row>
                 </Card>
             </Col>
-            <Col span={24}>
+            {/* WheelTick comes from the STM32 firmware; a robot without it only
+                gets the card once ticks actually arrive (never four empty slots). */}
+            {(hasStm32 || wheelTicks.valid_wheels != null) && <Col span={24}>
                 <Card title={t('diagnosticsPage.perWheelEncoders')} size="small">
                     <Row gutter={[12, 12]}>
                         {[
@@ -1821,7 +1888,7 @@ export const DiagnosticsPage = () => {
                         </Typography.Paragraph>
                     )}
                 </Card>
-            </Col>
+            </Col>}
             <Col span={24}>
                 <Card title={<Space><SoundOutlined/> {t('diagnosticsPage.hardwareStatus')}</Space>} size="small">
                     <Row gutter={[12, 8]}>
@@ -1852,9 +1919,12 @@ export const DiagnosticsPage = () => {
                                 }}
                             />
                         </Col>
-                        <Col xs={12} lg={4}>
+                        {measured("mower_esc_temperature") && <Col xs={12} lg={4}>
                             <Statistic title={t('diagnosticsPage.escTemp')} value={status.mower_esc_temperature} precision={1} suffix="°C"/>
-                        </Col>
+                        </Col>}
+                        {measured("mower_esc_current") && status.mower_esc_current != null && <Col xs={12} lg={4}>
+                            <Statistic title={t('diagnosticsPage.escCurrent')} value={status.mower_esc_current} precision={2} suffix="A"/>
+                        </Col>}
                         <Col xs={12} lg={4}>
                             <Statistic title={t('diagnosticsPage.motorTemp')} value={status.mower_motor_temperature} precision={1} suffix="°C"/>
                         </Col>
@@ -1863,10 +1933,10 @@ export const DiagnosticsPage = () => {
                         </Col>
                     </Row>
                     <Flex wrap gap="small" style={{marginTop: 12}}>
-                        <BoolStatusTag label={t('diagnosticsPage.rpiPower')} ok={!!status.raspberry_pi_power}/>
+                        {measured("raspberry_pi_power") && <BoolStatusTag label={t('diagnosticsPage.rpiPower')} ok={!!status.raspberry_pi_power}/>}
                         <BoolStatusTag label={t('diagnosticsPage.escPower')} ok={!!status.esc_power}/>
-                        <BoolStatusTag label={t('diagnosticsPage.uiBoard')} ok={!!status.ui_board_available}/>
-                        <BoolStatusTag label={t('diagnosticsPage.soundModule')} ok={!!status.sound_module_available}/>
+                        {measured("ui_board_available") && <BoolStatusTag label={t('diagnosticsPage.uiBoard')} ok={!!status.ui_board_available}/>}
+                        {measured("sound_module_available") && <BoolStatusTag label={t('diagnosticsPage.soundModule')} ok={!!status.sound_module_available}/>}
                         <BoolStatusTag label={t('diagnosticsPage.mowEnabled')} ok={!!status.mow_enabled}/>
                     </Flex>
                 </Card>
@@ -1880,36 +1950,7 @@ export const DiagnosticsPage = () => {
         <Card title={t('diagnosticsPage.rosDiagnostics')} size="small">
             {(diagnostics.status ?? []).length === 0 ? (
                 <Typography.Text type="secondary">{t('diagnosticsPage.noDiagnosticMessages')}</Typography.Text>
-            ) : (
-                <Collapse
-                    size="small"
-                    ghost
-                    items={(diagnostics.status ?? []).map((item, idx) => ({
-                        key: idx,
-                        label: (
-                            <Space>
-                                <Tag color={DIAG_LEVEL_COLORS[item.level] ?? "default"}>
-                                    {DIAG_LEVEL_LABEL_KEYS[item.level] ? t(DIAG_LEVEL_LABEL_KEYS[item.level]) : String(item.level)}
-                                </Tag>
-                                <Typography.Text style={{fontSize: 13}}>{item.name}</Typography.Text>
-                                <Typography.Text type="secondary" style={{fontSize: 12}}>{item.message}</Typography.Text>
-                            </Space>
-                        ),
-                        children: item.values && item.values.length > 0 ? (
-                            <div style={{paddingLeft: 8}}>
-                                {item.values.map((kv, i) => (
-                                    <div key={i} style={{display: "flex", gap: 8, fontSize: 12, marginBottom: 2}}>
-                                        <Typography.Text type="secondary">{kv.key}:</Typography.Text>
-                                        <Typography.Text code style={{fontSize: 11}}>{kv.value}</Typography.Text>
-                                    </div>
-                                ))}
-                            </div>
-                        ) : (
-                            <Typography.Text type="secondary" style={{fontSize: 12}}>{t('diagnosticsPage.noKeyValuePairs')}</Typography.Text>
-                        ),
-                    }))}
-                />
-            )}
+            ) : renderDiagnosticList(diagnostics.status ?? [])}
         </Card>
     );
 
@@ -1984,10 +2025,14 @@ export const DiagnosticsPage = () => {
                             label: <Space><CompassOutlined/> {t('diagnosticsPage.fusionGraphShort')}</Space>,
                             children: sectionFusionGraph,
                         }] : []),
-                        {
+                        sectionHeadingSources ? {
                             key: "heading_sources",
                             label: <Space><CompassOutlined/> {t('diagnosticsPage.headingSourcesShort')}</Space>,
                             children: sectionHeadingSources,
+                        } : {
+                            key: "localization_health",
+                            label: <Space><CompassOutlined/> {t('diagnosticsPage.localizationHealth')}</Space>,
+                            children: sectionLocalizationHealth,
                         },
                         {
                             key: "bt",
@@ -2045,6 +2090,7 @@ export const DiagnosticsPage = () => {
                 {sectionLocalization}
                 {sectionFusionGraph}
                 {sectionHeadingSources}
+                {sectionLocalizationHealth}
             </Space>,
         },
         {

@@ -23,3 +23,16 @@ def default_classes(model_path: str):
 
 def label_for(cls_idx: int, classes) -> str:
     return classes[cls_idx] if 0 <= cls_idx < len(classes) else str(cls_idx)
+
+
+def annotated_topic_for(image_topic: str) -> str:
+    """``/left_oa_camera/image_raw`` -> ``/left_oa_camera/image_annotated``.
+
+    The annotated image lives next to the source image in the camera namespace; a
+    topic without a namespace gets ``<topic>_annotated``.
+    """
+    topic = '/' + image_topic.strip('/')
+    ns, _, _name = topic.rpartition('/')
+    if not ns:
+        return topic + '_annotated'
+    return ns + '/image_annotated'

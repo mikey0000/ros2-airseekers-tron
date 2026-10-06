@@ -35,8 +35,13 @@ Rear camera: UVC webcam (32e6:9221), MJPG only (1920x1080 .. 640x480, 30 fps).
   hardware only.
 * ``none``: no rear camera.
 
-The Metoak front stereo is NOT here: ``stereo_vio_bridge`` in ``launch/vio.launch.py``
-owns it (``/vio/{left,right}/image_raw``).
+Front Metoak stereo (``stereo:=true``, default): ``mower_cameras/stereo_cam`` reads the
+side-by-side YUYV 1280x480 frame of ``/dev/video22`` (``/dev/videoIsp``; the ``/dev/video11``
+raw node does not decode without the Metoak SDK) and publishes ``/vio/left/image_raw`` +
+``/vio/right/image_raw`` (bgr8 640x480 each, ``stereo_fps`` <= 5 Hz, on demand: nothing is
+copied unless somebody subscribes). ``stereo_vio_bridge`` (``launch/vio.launch.py``) is the
+VIO producer of the same topics on the same device, so the two are mutually exclusive:
+pass ``vio:=true`` whenever vio.launch.py runs and stereo_cam is not started.
 
 ``web_video_server`` (default ``true``) is an MJPEG HTTP server on ``video_port`` (8080):
 ``http://<mower>:8080/stream?topic=/rear_camera/image_raw`` (also the source for the
@@ -169,8 +174,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'camera_dds_profile',
             default_value=PathJoinSubstitution([share, 'config', 'cameras',
-                                                'fastdds_camera_shm.xml']),
-            description='Fast DDS profile for the camera publishers (32 MiB SHM segment; '
+                                                'fastdds_no_shm.xml']),
+            description='Fast DDS profile for the camera publishers (UDP-only, no /dev/shm; '
                         'without it 6 MB images arrive at ~1/3 rate). "" = RMW default.'),
         DeclareLaunchArgument('web_video_server', default_value='true',
                               description='Start web_video_server (MJPEG over HTTP; the GUI '
@@ -178,6 +183,18 @@ def generate_launch_description():
                                           'Idle cost is ~0: it only subscribes/encodes while a '
                                           'client is streaming.'),
         DeclareLaunchArgument('video_port', default_value='8080'),
+        DeclareLaunchArgument('stereo', default_value='true',
+                              description='Front Metoak stereo via mower_cameras/stereo_cam '
+                                          '(/vio/{left,right}/image_raw, bgr8, on demand). '
+                                          'Ignored when vio:=true.'),
+        DeclareLaunchArgument('vio', default_value='false',
+                              description='true = stereo_vio_bridge (launch/vio.launch.py) '
+                                          'owns the stereo device: do not start stereo_cam.'),
+        DeclareLaunchArgument('stereo_device', default_value='/dev/video22'),
+        DeclareLaunchArgument('stereo_width', default_value='1280',
+                              description='Side-by-side width (each eye = half).'),
+        DeclareLaunchArgument('stereo_height', default_value='480'),
+        DeclareLaunchArgument('stereo_fps', default_value='5.0'),
     ]
 
     def _oa(name):
@@ -208,6 +225,23 @@ def generate_launch_description():
         condition=LaunchConfigurationEquals('rear_driver', 'opencv'),
     )
 
+    stereo = Node(
+        package='mower_cameras',
+        executable='stereo_cam',
+        name='stereo_cam',
+        output='screen',
+        condition=IfCondition(PythonExpression(
+            ["'", LC('stereo'), "' == 'true' and '", LC('vio'), "' != 'true'"])),
+        parameters=[{
+            'video_device': LC('stereo_device'),
+            'width': ParameterValue(LC('stereo_width'), value_type=int),
+            'height': ParameterValue(LC('stereo_height'), value_type=int),
+            'pixel_format': 'YUYV',
+            'fps': ParameterValue(LC('stereo_fps'), value_type=float),
+            'publish_on_demand': True,
+        }],
+    )
+
     video = Node(
         package='web_video_server',
         executable='web_video_server',
@@ -217,7 +251,13 @@ def generate_launch_description():
         parameters=[{
             'port': ParameterValue(LC('video_port'), value_type=int),
             'address': '0.0.0.0',
-            'server_threads': 2,
+            # 1: web_video_server creates image_transport subscribers on the HTTP
+            # threads and pluginlib's ClassLoader is not thread-safe; with 2 threads,
+            # concurrent stream/snapshot requests (the GUI Perception page opens
+            # several at once) left it permanently failing with "Unable to load
+            # plugin for transport 'image_transport/raw_sub'" (seen 2026-10-06).
+            # Streaming itself is asynchronous, one thread serves all viewers.
+            'server_threads': 1,
             'ros_threads': 2,
             'default_stream_type': 'mjpeg',
             # Frame re-publish rate for a stalled topic (-1 = never): avoids
@@ -232,6 +272,6 @@ def generate_launch_description():
         SetEnvironmentVariable('FASTRTPS_DEFAULT_PROFILES_FILE', LC('camera_dds_profile'),
                                condition=IfCondition(PythonExpression(
                                    ["'", LC('camera_dds_profile'), "' != ''"]))),
-    ] + oa_nodes + [rear_v4l2, rear_opencv])
+    ] + oa_nodes + [rear_v4l2, rear_opencv, stereo])
 
     return LaunchDescription(args + [cameras, video])

@@ -1,5 +1,5 @@
 import type {ReactNode} from "react";
-import {useMemo} from "react";
+import {useMemo, useState} from "react";
 import {App, Button} from "antd";
 import {motion} from "framer-motion";
 import {useNavigate} from "react-router-dom";
@@ -39,6 +39,10 @@ import {NoiseTexture} from "../concept/components/NoiseTexture.tsx";
 import {staggerParent, riseFade, popIn, springSnap} from "../concept/motion.ts";
 import {useGate} from "../hooks/useProfileGates.ts";
 import {useRobotProfile} from "../hooks/useRobotProfile.ts";
+import {useActiveAreaSettings, useAreaSettingsSupport} from "../hooks/useAreaSettings.ts";
+import {StartMowSheet} from "../components/areaSettings/StartMowSheet.tsx";
+import {AreaSettingsSummary} from "../components/areaSettings/AreaSettingsSummary.tsx";
+import {mowingAreaChoices} from "../utils/mapAreaIndex.ts";
 
 /**
  * Real-data Dashboard, rebuilt on top of the /concept components.
@@ -284,8 +288,21 @@ export const MowgliNextPage = () => {
     }
   };
 
+  // Robots with per-area settings get the Start sheet (area choice, effective
+  // settings, per-run overrides, resume vs fresh) instead of a bare START.
+  const areaSettings = useAreaSettingsSupport();
+  const useStartSheet = areaSettings.enabled && areaSettings.supported === true;
+  const [startOpen, setStartOpen] = useState(false);
+  const areaChoices = useMemo(
+    () => mowingAreaChoices(map, (order) => t('mapAreasList.unnamedArea', {order})),
+    [map, t],
+  );
+  const activeSettings = useActiveAreaSettings(areaSettings.enabled && data.isMoving);
+
   const actions = {
-    onStart: withFeedback(mowerAction("high_level_control", {Command: 1})),
+    onStart: useStartSheet
+      ? () => setStartOpen(true)
+      : withFeedback(mowerAction("high_level_control", {Command: 1})),
     // Pause = STOP (COMMAND_STOP=8 → StopHoldSequence: mower off, halt in place,
     // Nav2 left up so the mission can resume via START, no dock drive). The
     // separate Home control keeps HOME (Command 2 → return to dock).
@@ -349,6 +366,7 @@ export const MowgliNextPage = () => {
                 headline={headline} subline={subline}
                 coveragePct={coveragePct}
                 todayMowedM2={todayMowedM2} totalArea={totalArea}
+                activeSettings={activeSettings}
               />
             </motion.div>
             <motion.div variants={riseFade}><LiveMapCard polygons={polygons} progress={progress} robot={robotNormalised} dock={dockNormalised} coverage={coveragePct} onViewMap={() => navigate("/map")}/></motion.div>
@@ -364,6 +382,7 @@ export const MowgliNextPage = () => {
                   headline={headline} subline={subline}
                   coveragePct={coveragePct}
                   todayMowedM2={todayMowedM2} totalArea={totalArea}
+                activeSettings={activeSettings}
                   large
                 />
               </motion.div>
@@ -376,6 +395,14 @@ export const MowgliNextPage = () => {
           </div>
         )}
       </motion.div>
+      {areaSettings.enabled && (
+        <StartMowSheet
+          open={startOpen}
+          areas={areaChoices}
+          onClose={() => setStartOpen(false)}
+          onEdit={(target) => navigate(target === "defaults" ? "/settings?section=mowing" : "/map")}
+        />
+      )}
     </div>
   );
 };
@@ -397,10 +424,12 @@ interface HeroCardProps {
   todayMowedM2: number;
   totalArea: number;
   large?: boolean;
+  /** Effective settings of the running mow (area settings robots only). */
+  activeSettings?: ReturnType<typeof useActiveAreaSettings>;
 }
 
 function HeroCard({
-  data, phase, actions, headline, subline, coveragePct, todayMowedM2, totalArea, large,
+  data, phase, actions, headline, subline, coveragePct, todayMowedM2, totalArea, large, activeSettings,
 }: HeroCardProps) {
   const {t} = useTranslation();
   const robotName = useRobotName();
@@ -435,6 +464,26 @@ function HeroCard({
             }}>
               {subline}
             </p>
+            {activeSettings && (
+              <div style={{marginTop: 10}} data-testid="hero-active-settings">
+                <div style={{
+                  fontSize: 10, color: 'rgba(236,255,244,0.42)', fontWeight: 600,
+                  letterSpacing: '0.08em', textTransform: 'uppercase',
+                }}>
+                  {activeSettings.area
+                    ? t('areaSettings.activeFor', {area: activeSettings.area})
+                    : t('areaSettings.active')}
+                  {activeSettings.run !== undefined && activeSettings.runs !== undefined && activeSettings.runs > 0 && (
+                    <span data-testid="hero-run"> · {t('areaSettings.run', {run: activeSettings.run, runs: activeSettings.runs})}</span>
+                  )}
+                </div>
+                <AreaSettingsSummary
+                  settings={activeSettings.runMowAngleDeg !== undefined
+                    ? {...activeSettings, mow_angle_deg: activeSettings.runMowAngleDeg}
+                    : activeSettings}
+                  tone="hero"/>
+              </div>
+            )}
           </div>
           <BatteryRing
             percent={data.battery ?? 0}

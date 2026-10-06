@@ -6,7 +6,13 @@ const ids = (sections: {id: string}[]) => sections.map((s) => s.id);
 
 describe("Settings sections per robot profile", () => {
     it("YardForce500 lists every section, as before profiles", () => {
-        expect(ids(visibleSections(getRobotProfile("YardForce500")))).toEqual(ids(SECTION_DEFINITIONS));
+        // Additive Tron-only section (cmd_vel_slew straight-line driving).
+        expect(ids(visibleSections(getRobotProfile("YardForce500")))).toEqual(
+            ids(SECTION_DEFINITIONS).filter((id) => id !== "straight_driving"));
+    });
+
+    it("shows straight driving on Tron only", () => {
+        expect(ids(visibleSections(getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID)))).toContain("straight_driving");
     });
 
     it("Tron hides today's trim plus the LED section", () => {

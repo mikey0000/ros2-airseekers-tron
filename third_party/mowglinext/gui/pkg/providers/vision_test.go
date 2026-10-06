@@ -39,7 +39,7 @@ func TestAdaptDetections_ReducesToSummary(t *testing.T) {
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(out, &got))
-	assert.ElementsMatch(t, []string{"count", "classes", "max_score", "stamp", "frame_id"}, keys(got),
+	assert.ElementsMatch(t, []string{"count", "classes", "max_score", "stamp", "frame_id", "boxes"}, keys(got),
 		"only the reduced fields may reach the browser")
 	assert.EqualValues(t, 4, got["count"])
 	assert.Equal(t, []any{"chair", "person"}, got["classes"], "sorted, de-duplicated top-1 classes; 'dog' is not a top hypothesis")
@@ -48,12 +48,17 @@ func TestAdaptDetections_ReducesToSummary(t *testing.T) {
 	stamp := got["stamp"].(map[string]any)
 	assert.EqualValues(t, 1700000000, stamp["sec"])
 	assert.EqualValues(t, 5, stamp["nanosec"])
+	boxes := got["boxes"].([]any)
+	require.Len(t, boxes, 3, "detections without results carry no box")
+	assert.Equal(t, map[string]any{"class": "person", "score": 0.81, "x": 7.5, "y": 17.0, "w": 5.0, "h": 6.0}, boxes[0],
+		"best score first, top-left corner from the bbox centre")
+	assert.Equal(t, "chair", boxes[1].(map[string]any)["class"])
 }
 
 func TestAdaptDetections_Empty(t *testing.T) {
 	out, err := adaptDetections([]byte(`{"header":{"stamp":{"sec":1,"nanosec":2},"frame_id":"x"},"detections":[]}`))
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"count":0,"classes":[],"max_score":0,"stamp":{"sec":1,"nanosec":2},"frame_id":"x"}`, string(out))
+	assert.JSONEq(t, `{"count":0,"classes":[],"max_score":0,"stamp":{"sec":1,"nanosec":2},"frame_id":"x","boxes":[]}`, string(out))
 }
 
 func TestAdaptDetections_BadJSON(t *testing.T) {

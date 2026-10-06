@@ -378,3 +378,25 @@ def to_bgr(data, width, height, bytesperline, pixel_format, dst=None, scale=1):
     if pixel_format == 'GREY':
         return buf[:bytesperline * height].reshape(height, bytesperline)[:, :width]
     raise ValueError(f'unsupported pixel format {pixel_format}')
+
+
+def split_yuyv_luma(data, width, height, bytesperline=0):
+    """Side-by-side packed 4:2:2 buffer -> ``(left, right)`` mono8 views of the Y plane.
+
+    Works for YUYV/YVYU (luma on even bytes); ``width`` is the full side-by-side width.
+    """
+    import numpy as np
+    bpl = int(bytesperline) or width * 2
+    buf = np.frombuffer(data, dtype=np.uint8, count=bpl * height).reshape(height, bpl)
+    luma = buf[:, 0:width * 2:2]
+    half = width // 2
+    return luma[:, :half], luma[:, half:2 * half]
+
+
+def split_side_by_side_bgr(data, width, height, bytesperline, pixel_format='YUYV'):
+    """Side-by-side packed frame -> ``(left, right)`` bgr8 halves (full colour decode)."""
+    frame = to_bgr(data, width, height, bytesperline, pixel_format)
+    if frame is None:
+        return None
+    half = frame.shape[1] // 2
+    return frame[:, :half], frame[:, half:2 * half]

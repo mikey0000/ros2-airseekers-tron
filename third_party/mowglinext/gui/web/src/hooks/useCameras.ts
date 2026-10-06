@@ -1,6 +1,25 @@
 import {useCallback, useEffect, useState} from "react";
 import {useApi} from "./useApi.ts";
 
+/** Proxy-measured health of one topic (GET /api/cameras[/:id/health]). */
+export interface TopicHealth {
+    topic: string;
+    fps: number;
+    /** null = never streamed through the proxy. */
+    lastFrameAgeMs: number | null;
+    viewers: number;
+}
+
+export type CameraState = "publishing" | "stale" | "listed" | "not_publishing" | "unknown";
+
+export interface CameraStatus {
+    state: CameraState;
+    listed: boolean;
+    annotatedListed: boolean;
+    raw?: TopicHealth;
+    annotated?: TopicHealth;
+}
+
 export interface CameraInfo {
     id: string;
     label: string;
@@ -8,8 +27,13 @@ export interface CameraInfo {
     annotatedTopic?: string;
     width?: number;
     height?: number;
+    /** Published image size the detector's pixel boxes refer to. */
+    sourceWidth?: number;
+    sourceHeight?: number;
     streamUrl: string;
     snapshotUrl: string;
+    healthUrl?: string;
+    status?: CameraStatus;
 }
 
 export interface CameraStreamDefaults {

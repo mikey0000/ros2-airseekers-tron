@@ -23,12 +23,18 @@
 // ground + wheel visuals) — nothing computes odometry from it — so a wrong
 // value silently offsets every sensor z rather than corrupting distance.
 
+import type {MapMarker} from "../utils/mapMarker.ts";
+
 export type MowerModel = {
     value: string;
     label: string;
     description: string;
     tag?: string;
     defaults: Record<string, number>;
+    /** Top-down image drawn on the map instead of the URDF silhouette. */
+    mapMarker?: MapMarker;
+    /** Image drawn at the dock pose instead of the stock dot. */
+    dockMarker?: MapMarker;
 };
 
 export const MOWER_MODELS: MowerModel[] = [
@@ -149,6 +155,18 @@ export const MOWER_MODELS: MowerModel[] = [
             gps_x: 0.0, gps_y: 0.0, gps_z: 0.3,
             chassis_length: 0.70, chassis_width: 0.50, chassis_center_x: 0.12,
         },
+        // Vendor app map marker (as_robot_new.png, trimmed; nose up). Size is
+        // the vendor's 0.73 m length at the image's own aspect. base_link (rear
+        // axle centre): the vendor image has the nose at the BOTTOM (user-verified on the
+        // live map), so it is turned 180 deg and the axle sits at 0.14 of its height. Big wheels span
+        // 0.72..0.99 of its height -> axle at 0.86.
+        mapMarker: {
+            src: "/robots/airseekers_tron_top.png",
+            widthM: 0.51, lengthM: 0.73, headingOffsetDeg: 180,
+            anchor: {x: 0.5, y: 0.14},
+        },
+        // No dockMarker: the vendor dock asset (public/robots/airseekers_dock.png) is a
+        // charger glyph, not a top-down view, and it covered the robot on the map.
     },
     {
         value: "CUSTOM",

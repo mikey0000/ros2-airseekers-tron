@@ -31,3 +31,12 @@ mowgli:
     dock_pose_x: 0.0
     dock_pose_y: 0.0
     dock_pose_yaw: 0.0
+
+    # Straight-line driving (mower_control cmd_vel_slew; Settings > Straight driving).
+    # Neutral defaults: no trim, no deadband, heading hold off.
+    angular_trim_radps: 0.0
+    angular_deadband_radps: 0.0
+    heading_hold: false
+    heading_hold_kp: 1.0
+    heading_hold_kd: 0.1
+    heading_hold_max_radps: 0.15

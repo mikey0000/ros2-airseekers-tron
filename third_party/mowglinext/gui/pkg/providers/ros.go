@@ -61,6 +61,12 @@ var topicMap = map[string]topicDef{
 	// the GUI offers "Resume" vs "Start fresh" instead of silently resuming (the
 	// "starts at 2nd/3rd line" report).
 	"coverageResumeAvailable": {"/behavior_tree_node/coverage_resume_available", "std_msgs/msg/Bool"},
+	// Per-area mowing settings (robots whose map server implements them).
+	// areaSettings is latched JSON {defaults:{...}, areas:{"<name>":{...}}};
+	// activeAreaSettings is the effective settings JSON the mission publishes
+	// while mowing. Both are std_msgs/String.
+	"areaSettings":       {"/map_server_node/area_settings", "std_msgs/msg/String"},
+	"activeAreaSettings": {"/behavior_tree_node/active_area_settings", "std_msgs/msg/String"},
 	// Synthetic heading sources fused by fusion_graph_node as yaw unary
 	// factors. Both carry sensor_msgs/Imu with only `orientation` and
 	// `orientation_covariance[8]` populated — see cog_to_imu.py and
@@ -316,7 +322,9 @@ var upstreamDecimationMs = map[string]int{
 	"gnssStatus": 80,
 	"cogHeading": 150,
 	"magYaw":     150,
-	"detections": 150,
+	// "detections" is deliberately NOT decimated: det_ros alternates cameras
+	// (frame_id), so a time-based decimation keeps one camera and starves the
+	// other. Its rate is already bounded by det_ros max_rate_hz (5 Hz/camera).
 }
 
 // NewRosProvider constructs a RosProvider, reads the foxglove URL from the

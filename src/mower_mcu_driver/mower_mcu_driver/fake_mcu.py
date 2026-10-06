@@ -53,11 +53,11 @@ except ImportError:
 BATTERY_RAW = (248, 5, 99, 0, 15, 0)      # voltage 0.1V, current(?), %, dock_ok, degC, error
 VERSION_RAW = (0, 6, 36, 0, 6, 34, 0, 9, 50)  # cutter, chassis, rtk
 BMS_RAW = (1, 18, 0)
-MOTORS_RAW = (
-    (0, 0, 2478, 14, 0),     # cutter
-    (0, -1, 16245, 15, 1),   # left
-    (0, -2, 16245, 15, 1),   # right
-    (0, 0, 0, 0, 0),         # height (not populated on this hardware)
+MOTORS_RAW = (                 # captured on the Tron at rest, 2026-10-06 (battery 19.7 V)
+    (0, 0, 1969, 30, 0),       # cutter: 19.69 V, 30 C, idle
+    (0, 3582, 12798, 40, 1),   # left drive: holding (running), voltage ~655 counts/V
+    (0, -617, 12798, 34, 1),   # right drive
+    (19695, -5536, 0, 0, 0),   # height (not populated on this hardware: garbage)
 )
 SENSOR_RAW = (0, 0, 0, 0, 0, 0, 1, 1, 0, 0)   # cutter_size=1 (small), press_module=1
 
