@@ -244,8 +244,13 @@ def generate_launch_description() -> LaunchDescription:
             'det_range into the Nav2 local costmap obstacle_layer. false = bumper-only obstacle '
             'layer (safe-off switch if the stereo marks the lawn); stereo_depth/det_range keep '
             'running for the GUI/obstacle_guard.'),
-        arg('vio', 'false', 'stereo_vio_bridge owns the stereo device (run launch/vio.launch.py); '
-            'cameras.launch.py then does not start stereo_cam.'),
+        arg('vio', 'false', 'Visual-inertial odometry (docs/vio.md): include launch/vio.launch.py '
+            '(OpenVINS + vio_odom_bridge) and run nav2.launch.py with vio:=true (vio_gate + '
+            'config/ekf_vio.yaml). Needs ov_msckf in the image (scripts/build_openvins_mower.sh) '
+            'and owner approval.'),
+        arg('vio_capture', 'stereo_cam', 'With vio:=true, who owns the stereo device: stereo_cam '
+            '(default, cameras.launch.py keeps running it) | bridge (legacy stereo_vio_bridge '
+            'capture node; cameras.launch.py then does not start stereo_cam).'),
         arg('video', 'true', 'web_video_server MJPEG on :8080 (GUI camera page via /api/cameras; source for the RTSP relay).'),
         arg('perception', 'true', 'Include mower_vision/perception.launch.py (det_ros on both OA cameras + obstacle_guard; seg off). '
             'det_ros publishes /ai/det/detections and /<camera_ns>/image_annotated (GUI Perception page).'),
@@ -375,6 +380,7 @@ def generate_launch_description() -> LaunchDescription:
             'datum_lat': LaunchConfiguration('datum_lat'),
             'datum_lon': LaunchConfiguration('datum_lon'),
             'datum_yaw': LaunchConfiguration('datum_yaw'),
+            'vio': LaunchConfiguration('vio'),
         }.items(),
         condition=enabled('localization'),
     )
@@ -422,8 +428,19 @@ def generate_launch_description() -> LaunchDescription:
         PythonLaunchDescriptionSource(os.path.join(launch_dir, 'cameras.launch.py')),
         launch_arguments={'web_video_server': LaunchConfiguration('video'),
                           'stereo': LaunchConfiguration('stereo'),
-                          'vio': LaunchConfiguration('vio')}.items(),
+                          # cameras.launch.py's 'vio' means "stereo_vio_bridge owns the
+                          # device": only for vio:=true vio_capture:=bridge.
+                          'vio': PythonExpression(["'", LaunchConfiguration('vio'),
+                                                   "' == 'true' and '",
+                                                   LaunchConfiguration('vio_capture'),
+                                                   "' == 'bridge'"])}.items(),
         condition=enabled('cameras'),
+    )
+
+    vio = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(launch_dir, 'vio.launch.py')),
+        launch_arguments={'capture': LaunchConfiguration('vio_capture')}.items(),
+        condition=enabled('vio'),
     )
 
     perception = IncludeLaunchDescription(
@@ -454,5 +471,5 @@ def generate_launch_description() -> LaunchDescription:
         + [drivers, robot_state_publisher, static_map_odom]
         + control
         + [teleop, gui_bridge, foxglove, localization, navigation,
-           map_server, coverage, docking, mission, cameras, perception, det_range]
+           map_server, coverage, docking, mission, cameras, vio, perception, det_range]
     )

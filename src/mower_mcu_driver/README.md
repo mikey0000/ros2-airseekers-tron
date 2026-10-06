@@ -42,7 +42,7 @@ Parameters are listed in the module docstring of `mower_mcu_driver/mcu_node.py`
 | **E-stop passthrough** | Not wired. The MCU enforces estop/lift/bumper cut-offs itself; no host→MCU estop frame has been identified. Documented `TODO(estop)`. |
 | Odometry | Open-loop integration, drifts. `/reset_odom` and `/tf` broadcasting not implemented yet. |
 | `/cmd_vel` unstamped | Vendor accepted both `/cmd_vel` (`Twist`) and `/cmd_vel_stamped`; only `TwistStamped` is wired for now. |
-| `MowerSensorInfo` | `key_pressed`, `is_fill_light_on`, `rain_sensor_value`, `bumper_routing_*`, `is_docking_done` have no source on this bus yet. Field assignment is guarded (`_set_if`), so a reduced interface package still works. |
+| `MowerSensorInfo` | `key_pressed`, `rain_sensor_value`, `bumper_routing_*`, `is_docking_done` have no source on this bus yet. Field assignment is guarded (`_set_if`), so a reduced interface package still works. `is_fill_light_on` mirrors `/fill_light/state` from `fill_light_node` (host PWM, see `fill_light.py`). |
 
 ## Build
 

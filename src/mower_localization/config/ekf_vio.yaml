@@ -1,0 +1,31 @@
+# VIO overlay for ekf_node: loaded AFTER config/ekf.yaml, only with vio:=true
+# (launch/nav2.launch.py). With vio:=false (default) this file is not loaded and the
+# live EKF is exactly config/ekf.yaml. Owner approval required before flipping vio:=true
+# on the mower: see docs/vio.md.
+#
+#   /odometry/vio_gated  mower_localization/vio_gate, ~2-10 Hz (stereo pair rate)
+#     = stereo_vio_bridge/vio_odom_bridge(/ov_msckf/odomimu), passed ONLY while RTK is
+#       not FIXED and VIO is warmed-up/healthy/consistent with the wheels.
+#
+# Fused: body VELOCITY vx, vy only (twist row), not position and not yaw:
+#   * VIO position/yaw live in OpenVINS' own drifting "global" frame; fusing them as
+#     absolute would fight /odometry/gps and the aligned IMU yaw when RTK returns.
+#   * vx: wheel odom (odom0) also measures it; VIO adds a slip-free second opinion when
+#     the wheels spin on wet grass.
+#   * vy: the wheels do not measure it (odom0 vy is unfused); VIO observes lateral
+#     slide on slopes, which is exactly the RTK-dropout drift under trees.
+# Weight: the bridge publishes OpenVINS' variance x10 with a (0.05 m/s)^2 floor, so VIO
+# never dominates the wheel vx (whose variance is ~0.001). Raise cov_scale in
+# vio.launch.py to weaken it further.
+ekf_node:
+  ros__parameters:
+    odom2: /odometry/vio_gated
+    odom2_config: [false, false, false,   # pose   x, y, z
+                   false, false, false,   # pose   roll, pitch, yaw
+                   true,  true,  false,   # twist  x, y, z
+                   false, false, false,   # twist  roll, pitch, yaw
+                   false, false, false]   # accel  x, y, z
+    odom2_differential: false
+    odom2_queue_size: 5
+    # Reject VIO velocity that disagrees with the filter by > ~3 sigma (Mahalanobis).
+    odom2_twist_rejection_threshold: 3.0

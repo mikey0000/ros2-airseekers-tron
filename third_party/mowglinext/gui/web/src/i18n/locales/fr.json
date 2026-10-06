@@ -4312,5 +4312,18 @@
     "collapse": "Masquer la caméra",
     "noCamera": "En attente de la caméra…",
     "resize": "Redimensionner"
+  },
+  "settingsFillLight": {
+    "title": "Éclairage (tonte de nuit)",
+    "description": "Projecteur pour tondre dans l'obscurité, piloté par la sortie PWM utilisée par le firmware d'origine. En mode Auto, il s'allume pendant la tonte ou les trajets quand le soleil est couché à l'origine de la carte.",
+    "modeOff": "Éteint",
+    "modeOn": "Allumé",
+    "modeAuto": "Auto",
+    "state": "Éclairage",
+    "lit": "Allumé",
+    "dark": "Éteint",
+    "sun": "soleil {{deg}}°",
+    "notInstalled": "Aucun éclairage sur cette tondeuse : la sortie PWM utilisée par le firmware d'origine n'existe pas sur cette carte.",
+    "unreachable": "Nœud d'éclairage injoignable"
   }
 }

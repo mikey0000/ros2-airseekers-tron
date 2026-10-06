@@ -741,6 +741,10 @@ class McuNode(Node):
             self.create_service(ChargingControl, '/charging', self._locked(self._srv_charging))
         self.create_service(Empty, '/clear_estop', self._locked(self._srv_clear_estop))
         self.create_service(Trigger, '/cutter_off', self._locked(self._srv_cutter_off))
+        # Fill light (host PWM, owned by fill_light_node): mirror its read-back into
+        # /mower_sensor_info.is_fill_light_on like the vendor getFillLightStatus().
+        self._fill_light_on = False
+        self.create_subscription(Bool, '/fill_light/state', self._on_fill_light_state, latched)
 
         # The two 100/50 Hz publishers send pre-serialized CDR (sub_pump serializers, unit
         # tested against rclpy): a typed publish costs ~0.4 ms more CPU here (message object,
@@ -1109,6 +1113,9 @@ class McuNode(Node):
         for name, si in decoded.items():
             self._motors[name] = motor_msg_fields(si)
 
+    def _on_fill_light_state(self, msg):
+        self._fill_light_on = bool(msg.data)
+
     def _publish_sensor_info(self):
         """Publish ``/mower_sensor_info`` if the interface package exists.
 
@@ -1123,7 +1130,7 @@ class McuNode(Node):
         cutter = self._motors.get('cutter')
         linear, angular, _measured = self._speed(now)
         key = (tuple(self._sensor_info.values()), tuple(self._versions.items()),
-               self._rain.triggered,
+               self._rain.triggered, self._fill_light_on,
                (self._battery or {}).get('dock_ok'), (self._battery or {}).get('error'),
                bool(cutter and abs(cutter['speed']) > 500),
                abs(linear) > 1e-2 or abs(angular) > 1e-2,
@@ -1226,6 +1233,7 @@ class McuNode(Node):
         if self._rain.value is not None:
             _set_if(msg, 'rain_sensor_value', max(0, min(0xFFFF, int(self._rain.value))))
         _set_if(msg, 'lift_triggered', bool(s['lift']))
+        _set_if(msg, 'is_fill_light_on', bool(self._fill_light_on))
         _set_if(msg, 'stop_triggered', bool(s['stop']))
         _set_if(msg, 'battery_gate_open', bool(s['battery_gate']))
         _set_if(msg, 'press_module', bool(s['press_module']))
@@ -1257,7 +1265,7 @@ class McuNode(Node):
         cutter = self._motors.get('cutter')
         _set_if(msg, 'is_cutting', bool(cutter and abs(cutter['speed']) > 500))
         _set_if(msg, 'is_docking_done', bool(self._battery and self._battery.get('dock_ok')))
-        # TODO: key_pressed, is_fill_light_on, bumper_routing_*,
+        # TODO: key_pressed, bumper_routing_*,
         # is_docking_done and the MotorInfo sub-messages need sources that are not on this
         # bus (buttons on /dev/keyboard, fill light in the light node, /charging state).
 

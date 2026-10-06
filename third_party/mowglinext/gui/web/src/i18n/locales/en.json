@@ -4312,5 +4312,18 @@
     "collapse": "Hide camera",
     "noCamera": "Waiting for camera…",
     "resize": "Resize"
+  },
+  "settingsFillLight": {
+    "title": "Fill light (night mowing)",
+    "description": "Lamp for mowing in the dark, on the host PWM used by the vendor firmware. Auto turns it on while mowing or in transit when the sun is down at the map origin.",
+    "modeOff": "Off",
+    "modeOn": "On",
+    "modeAuto": "Auto",
+    "state": "Light",
+    "lit": "On",
+    "dark": "Off",
+    "sun": "sun {{deg}}°",
+    "notInstalled": "No fill light on this mower: the PWM output the vendor firmware uses does not exist on this board.",
+    "unreachable": "Fill light node not reachable"
   }
 }

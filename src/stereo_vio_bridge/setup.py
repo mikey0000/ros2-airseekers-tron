@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'stereo_vio_bridge = stereo_vio_bridge.stereo_vio_bridge:main',
+            'vio_odom_bridge = stereo_vio_bridge.vio_odom_bridge:main',
         ],
     },
 )

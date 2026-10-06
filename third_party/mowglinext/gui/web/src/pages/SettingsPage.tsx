@@ -33,6 +33,7 @@ import { ObstaclesSection } from "../components/settings/ObstaclesSection.tsx";
 import { NavigationSection } from "../components/settings/NavigationSection.tsx";
 import { RainSection } from "../components/settings/RainSection.tsx";
 import { LedsSection } from "../components/settings/LedsSection.tsx";
+import { FillLightCard } from "../components/settings/FillLightCard.tsx";
 import { MqttSection } from "../components/settings/MqttSection.tsx";
 import { IrriSenseSection } from "../components/settings/IrriSenseSection.tsx";
 import { RemoteAccessSection } from "../components/settings/RemoteAccessSection.tsx";
@@ -242,13 +243,16 @@ export const SettingsPage = () => {
                 return <RainSection values={values} onChange={handleChange} />;
             case "leds":
                 return (
-                    <LedsSection
-                        values={values}
-                        onChange={handleChange}
-                        isOverridden={isOverridden}
-                        hasDefault={hasDefault}
-                        onReset={resetToDefault}
-                    />
+                    <>
+                        <FillLightCard />
+                        <LedsSection
+                            values={values}
+                            onChange={handleChange}
+                            isOverridden={isOverridden}
+                            hasDefault={hasDefault}
+                            onReset={resetToDefault}
+                        />
+                    </>
                 );
             case "mqtt":
                 return (

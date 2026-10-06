@@ -1,0 +1,42 @@
+%YAML:1.0
+
+# Metoak stereo front relative to the WIT IMU (imu_link == base_link, identity mount,
+# config/urdf/mower.urdf.xacro imu_xyz = 0 0 0).
+#
+# cam0 = base_link -> stereo_camera_optical from the URDF (MEASURED from the depth
+# ground plane: xyz 0.466 0 0.240, rpy -1.5547956 0 -1.5707963), i.e. optical axes
+# (z forward, x right, y down) with a 0.9 deg downward tilt.
+# cam1 = cam0 * T_cam0_cam1, with T_cam0_cam1 taken from the Metoak factory calibration
+# (config/vio/kalibr_imucam_chain.yaml: inv(body_T_cam0) * body_T_cam1).
+#
+# CHECK: T_cam0_cam1 translation is x = -0.060 m, i.e. cam1 sits LEFT of cam0. Either
+# /vio/left is physically the right eye or the factory naming is swapped. If the offline
+# run shows negative-depth / few stereo triangulations, swap the two rostopics.
+# Translation error of the camera mount is a few cm (TODO(calib)); rotation is what matters.
+cam0:
+  T_imu_cam: # T_CtoI = [R_CtoI | p_CinI]
+    - [0.000000027, 0.016000044, 0.999871991, 0.466000000]
+    - [-1.000000000, 0.000000000, 0.000000027, 0.000000000]
+    - [0.000000000, -0.999871991, 0.016000044, 0.240000000]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [1]
+  camera_model: pinhole
+  distortion_model: radtan
+  distortion_coeffs: [-0.4083914161, 0.1972861439, -0.0000793726, 0.0000277763]
+  intrinsics: [449.6371155, 449.6687927, 319.9060974, 240.6614532]
+  resolution: [640, 480]
+  rostopic: /vio/left/image_raw
+
+cam1:
+  T_imu_cam:
+    - [-0.004639361, 0.013353260, 0.999900078, 0.466004151]
+    - [-0.999963977, -0.007169148, -0.004543916, 0.060048447]
+    - [0.007107756, -0.999885140, 0.013386040, 0.239413369]
+    - [0.0, 0.0, 0.0, 1.0]
+  cam_overlaps: [0]
+  camera_model: pinhole
+  distortion_model: radtan
+  distortion_coeffs: [-0.4090148807, 0.1997688562, 0.0000428832, 0.0001072737]
+  intrinsics: [448.6719971, 448.6886902, 318.0475769, 238.3471069]
+  resolution: [640, 480]
+  rostopic: /vio/right/image_raw

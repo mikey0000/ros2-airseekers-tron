@@ -24,6 +24,8 @@ setup(
             'mcu_node = mower_mcu_driver.mcu_node:main',
             # synthetic MCU used by the offline socat loopback test
             'fake_mcu = mower_mcu_driver.fake_mcu:main',
+            # host-PWM fill light (vendor /fill_light_control) + auto mode
+            'fill_light_node = mower_mcu_driver.fill_light_node:main',
         ],
     },
 )

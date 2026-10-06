@@ -133,7 +133,7 @@ import os
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -203,6 +203,7 @@ def generate_launch_description() -> LaunchDescription:
     share = FindPackageShare("mower_localization")
     ekf_config = PathJoinSubstitution([share, "config", "ekf.yaml"])
     navsat_config = PathJoinSubstitution([share, "config", "navsat.yaml"])
+    ekf_vio_config = PathJoinSubstitution([share, "config", "ekf_vio.yaml"])
 
     # The URDF is a stack asset under config/, not a colcon package, so
     # resolve it relative to this file instead of FindPackageShare.
@@ -254,6 +255,12 @@ def generate_launch_description() -> LaunchDescription:
         # Gate thresholds. 100 m^2 is a 10 m sigma: loose enough to admit RTK float, tight
         # enough that a single-point 500 m^2 fix never reaches the filter. Set 0.0 to disable
         # the covariance check, or tighten used_fixes to RTK-fixed only.
+        # Visual-inertial odometry (docs/vio.md). false (default) = the EKF is exactly
+        # config/ekf.yaml and vio_gate is not started. true = vio_gate runs and ekf_node
+        # also loads config/ekf_vio.yaml (odom2 = /odometry/vio_gated, vx/vy only).
+        # The VIO producers (ov_msckf + vio_odom_bridge) are launch/vio.launch.py.
+        DeclareLaunchArgument("vio", default_value="false",
+                              description="Fuse gated VIO velocity into the EKF."),
         DeclareLaunchArgument("min_fix_status", default_value="0",
                               description="NavSatStatus.STATUS_FIX."),
         DeclareLaunchArgument("max_position_covariance", default_value="100.0",
@@ -347,13 +354,16 @@ def generate_launch_description() -> LaunchDescription:
             #    Sole publisher of odom -> base_link.
             #    Node name must stay "ekf_node": config/ekf.yaml is keyed on it.
             # ------------------------------------------------------------------
-            Node(
+            # Two mutually exclusive definitions: vio:=false is byte-for-byte the
+            # pre-VIO node; vio:=true adds the config/ekf_vio.yaml overlay (odom2).
+            *[Node(
                 package="robot_localization",
                 executable="ekf_node",
                 name="ekf_node",
                 output="screen",
+                condition=cond(LaunchConfiguration("vio")),
                 parameters=[
-                    ekf_config,
+                    *configs,
                     {
                         "map_frame": LaunchConfiguration("map_frame"),
                         "odom_frame": LaunchConfiguration("odom_frame"),
@@ -362,6 +372,17 @@ def generate_launch_description() -> LaunchDescription:
                         "imu0": LaunchConfiguration("imu_data_topic"),
                     },
                 ],
+            ) for cond, configs in ((UnlessCondition, [ekf_config]),
+                                    (IfCondition, [ekf_config, ekf_vio_config]))],
+
+            # 4. vio_gate (vio:=true only): /odometry/vio -> /odometry/vio_gated while
+            #    RTK is not FIXED and VIO is healthy. mower_localization/vio_gate.py.
+            Node(
+                package="mower_localization",
+                executable="vio_gate",
+                name="vio_gate",
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("vio")),
             ),
 
             # Nav2 itself (controller/planner/behavior/bt_navigator/velocity_smoother

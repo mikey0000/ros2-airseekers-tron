@@ -750,6 +750,43 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 				c.JSON(200, map[string]interface{}{"message": res.Message})
 				return
 			}
+		case "fill_light", "fill_light_state":
+			// Tron fill light (fill_light_node, host PWM). Body {"mode":"off"|"on"|"auto"};
+			// fill_light_state takes no body. The reply is the node's JSON status.
+			type TriggerRes struct {
+				Success bool   `json:"success"`
+				Message string `json:"message"`
+			}
+			var res TriggerRes
+			if command == "fill_light_state" {
+				err = provider.CallService(ctx, "/fill_light/get_state", &struct{}{}, &res, "std_srvs/srv/Trigger")
+			} else {
+				var body struct {
+					Mode string `json:"mode"`
+				}
+				if err = c.BindJSON(&body); err != nil {
+					c.JSON(400, ErrorResponse{Error: err.Error()})
+					return
+				}
+				switch body.Mode {
+				case "on", "off":
+					err = provider.CallService(ctx, "/fill_light_control", &struct {
+						Data bool `json:"data"`
+					}{body.Mode == "on"}, &res, "std_srvs/srv/SetBool")
+				case "auto":
+					err = provider.CallService(ctx, "/fill_light/set_auto", &struct {
+						Data bool `json:"data"`
+					}{true}, &res, "std_srvs/srv/SetBool")
+				default:
+					c.JSON(400, ErrorResponse{Error: "mode must be off, on or auto"})
+					return
+				}
+			}
+			if err == nil {
+				// success=false (e.g. no PWM channel) is still a valid state report.
+				c.JSON(200, map[string]interface{}{"success": res.Success, "message": res.Message})
+				return
+			}
 		case "reboot_board":
 			// Reboot the STM32 board (NVIC_SystemReset) — recovers a wedged
 			// firmware state (e.g. the IMU emitting NaN) without a power-cycle.

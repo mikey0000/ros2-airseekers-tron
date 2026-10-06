@@ -22,6 +22,7 @@
        package has not been created yet, but declaring it here keeps colcon build order
        correct as soon as it exists in ros2_stack/src/. -->
   <depend>mower_interfaces</depend>
+  <exec_depend>mowgli_interfaces</exec_depend>
 
   <!-- pyserial is preferred; the node falls back to a termios backend when it is absent -->
   <exec_depend>python3-serial</exec_depend>

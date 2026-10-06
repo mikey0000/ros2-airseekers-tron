@@ -65,6 +65,9 @@ def generate_launch_description():
                               description='Start the status-LED node (mower_lights).'),
         DeclareLaunchArgument('lights_dry_run', default_value='false',
                               description='mower_lights: compute frames but do not write SPI.'),
+        DeclareLaunchArgument('fill_light', default_value='true',
+                              description='Start the fill-light node (host PWM, '
+                                          '/fill_light_control, auto at night).'),
         Node(
             package='mower_mcu_driver',
             executable='mcu_node',
@@ -134,6 +137,20 @@ def generate_launch_description():
                 'auto_mode': True,
                 'dry_run': ParameterValue(LaunchConfiguration('lights_dry_run'), value_type=bool),
                 'spi_device': '/dev/spidev3.0',     # WS2812 chain (vendor libws_2812.so)
+            }],
+            output='screen',
+            respawn=True,
+            respawn_delay=2.0,
+        ),
+        Node(
+            package='mower_mcu_driver',
+            executable='fill_light_node',
+            name='fill_light',
+            condition=IfCondition(LaunchConfiguration('fill_light')),
+            parameters=[{
+                # vendor mower_base::FillLight path; absent on this Tron's device tree
+                'pwm_chip_path': '/sys/class/pwm/pwmchip1',
+                'fill_light_auto': True,
             }],
             output='screen',
             respawn=True,
