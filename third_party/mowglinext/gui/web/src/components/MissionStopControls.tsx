@@ -1,6 +1,7 @@
 import React, {useEffect, useState} from "react";
 import {Alert, App, Button, Space} from "antd";
-import {HomeOutlined, PlayCircleOutlined, RedoOutlined, StopOutlined} from "@ant-design/icons";
+import {PlayCircleOutlined, RedoOutlined, StopOutlined} from "@ant-design/icons";
+import {DockIcon} from "./DockIcon.tsx";
 import {useTranslation} from "react-i18next";
 import {useMowerAction} from "./MowerActions.tsx";
 import {useStatus} from "../hooks/useStatus.ts";
@@ -119,7 +120,7 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                 description={subStateName || t('missionStop.faultNoReason')}
                 action={
                     <Space direction="vertical">
-                        <Button icon={<HomeOutlined/>} loading={busy === "home"}
+                        <Button icon={<DockIcon/>} loading={busy === "home"}
                                 onClick={run("home", CMD_HOME)}>
                             {t('missionStop.returnToDock')}
                         </Button>
@@ -148,7 +149,7 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                 description={resumeAvailable ? t('missionStop.stoppedResumeHint') : undefined}
                 action={
                     <Space direction="vertical">
-                        <Button icon={<HomeOutlined/>} loading={busy === "home"}
+                        <Button icon={<DockIcon/>} loading={busy === "home"}
                                 onClick={run("home", CMD_HOME, () => setStopped(false))}>
                             {t('missionStop.returnToDock')}
                         </Button>

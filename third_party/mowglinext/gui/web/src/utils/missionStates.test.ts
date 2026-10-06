@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {
-    CMD_UNDOCK, canHome, canReset, canUndock, isDocked, canStart, canStop, isLatchedFault, isMissionActive, isNotice, stopNeedsConfirm,
+    CMD_UNDOCK, recordingKind, canHome, canReset, canUndock, isDocked, canStart, canStop, isLatchedFault, isMissionActive, isNotice, stopNeedsConfirm,
 } from "./missionStates.ts";
 
 // [state_name, numeric state, active, latched, stop, reset, start, home]
@@ -78,5 +78,14 @@ describe("canUndock", () => {
         }
         expect(isDocked("CHARGING")).toBe(true);
         expect(CMD_UNDOCK).toBe(9);
+    });
+});
+
+describe('recordingKind', () => {
+    it('reads the record kind from the sub_state', () => {
+        expect(recordingKind('RECORDING', 'drive the path with the joystick')).toBe('path');
+        expect(recordingKind('RECORDING', 'saving path')).toBe('path');
+        expect(recordingKind('RECORDING', 'drive the boundary with the joystick')).toBe('area');
+        expect(recordingKind('IDLE', 'path')).toBeNull();
     });
 });

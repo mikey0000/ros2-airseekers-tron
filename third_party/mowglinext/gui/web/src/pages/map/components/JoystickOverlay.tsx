@@ -1,6 +1,7 @@
 import {Joystick} from "react-joystick-component";
 import {IJoystickUpdateEvent} from "react-joystick-component/build/lib/Joystick";
-import {CheckOutlined, CloseOutlined, HomeOutlined} from "@ant-design/icons";
+import {CheckOutlined, CloseOutlined} from "@ant-design/icons";
+import {DockIcon} from "../../../components/DockIcon.tsx";
 import {useTranslation} from "react-i18next";
 import AsyncButton from "../../../components/AsyncButton.tsx";
 import {useThemeMode} from "../../../theme/ThemeContext.tsx";
@@ -9,6 +10,8 @@ import {limeAlpha} from "../../../theme/colors.ts";
 interface JoystickOverlayProps {
     visible: boolean;
     isRecording?: boolean;
+    /** What is being recorded (shown above Finish / Cancel). */
+    recordKind?: "area" | "path" | null;
     mobile?: boolean;
     onMove: (event: IJoystickUpdateEvent) => void;
     onStop: () => void;
@@ -22,7 +25,7 @@ interface JoystickOverlayProps {
 }
 
 export const JoystickOverlay = ({
-    visible, isRecording, mobile,
+    visible, isRecording, recordKind, mobile,
     onMove, onStop, onFinishRecording, onCancelRecording, onHome, sideControls, linkDown,
 }: JoystickOverlayProps) => {
     const {colors, displayMode} = useThemeMode();
@@ -99,6 +102,13 @@ export const JoystickOverlay = ({
 
             {isRecording && (
                 <div style={{display: "flex", flexDirection: "column", gap: 8, marginBottom: 4}}>
+                    <div data-testid="recording-kind" style={{
+                        alignSelf: "flex-start", padding: "3px 10px", borderRadius: 999, fontSize: 12,
+                        fontWeight: 600, background: colors.glassBackground, color: colors.text,
+                        border: `1px solid ${limeAlpha(0.28)}`,
+                    }}>
+                        {recordKind === "path" ? t('mapJoystick.recordingPath') : t('mapJoystick.recordingArea')}
+                    </div>
                     <AsyncButton
                         type="primary"
                         icon={<CheckOutlined/>}
@@ -116,7 +126,7 @@ export const JoystickOverlay = ({
                         {t('mapJoystick.cancel')}
                     </AsyncButton>
                     <AsyncButton
-                        icon={<HomeOutlined/>}
+                        icon={<DockIcon/>}
                         onAsyncClick={onHome!}
                         style={actionButtonStyle}
                     >

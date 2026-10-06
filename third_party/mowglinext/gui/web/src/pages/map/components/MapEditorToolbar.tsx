@@ -15,9 +15,9 @@ import {
     AimOutlined,
     NodeIndexOutlined,
     ApiOutlined,
-    HomeOutlined,
     EditOutlined,
 } from "@ant-design/icons";
+import {DockIcon} from "../../../components/DockIcon.tsx";
 import AsyncButton from "../../../components/AsyncButton.tsx";
 import {ShapePickerDropdown} from "./ShapePickerDropdown.tsx";
 import type {ShapeType} from "../hooks/useMapEditing.ts";
@@ -181,7 +181,7 @@ export const MapEditorToolbar = ({
         )}
         {onDrawPathToDock && (
             <ToolButton
-                icon={<HomeOutlined/>}
+                icon={<DockIcon/>}
                 tooltip={dockAvailable ? t('mapEditorToolbar.drawPathToDock') : t('mapEditorToolbar.connectDockNoDock')}
                 onClick={onDrawPathToDock}
                 disabled={!dockAvailable}

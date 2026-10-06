@@ -88,6 +88,18 @@ describe("MapToolbarMobile", () => {
     expect(onAreaSettings).toHaveBeenCalledWith("a1");
   });
 
+  it("shows labelled Start and Dock buttons and a distinct E-STOP", () => {
+    render(<MapToolbarMobile {...defaultProps} stateName="IDLE" />);
+    expect(screen.getByLabelText(en.mapToolbarMobile.start)).toHaveTextContent(en.mapToolbarMobile.start);
+    expect(screen.getByLabelText(en.mapToolbarMobile.home)).toHaveTextContent("Dock");
+    expect(screen.getByText(en.mapToolbarMobile.stop)).toHaveTextContent("E-STOP");
+  });
+
+  it("hides Dock when already docked", () => {
+    render(<MapToolbarMobile {...defaultProps} stateName="IDLE_DOCKED" />);
+    expect(screen.queryByLabelText(en.mapToolbarMobile.home)).toBeNull();
+  });
+
   it("hides the area settings button without areas", () => {
     render(<MapToolbarMobile {...defaultProps} />);
     expect(screen.queryByLabelText(en.mapToolbarMobile.areaSettings)).toBeNull();

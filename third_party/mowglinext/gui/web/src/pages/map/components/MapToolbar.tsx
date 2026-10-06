@@ -9,7 +9,7 @@ import {
     DownloadOutlined,
     ControlOutlined,
     PlayCircleOutlined,
-    HomeOutlined,
+    StopOutlined,
     WarningOutlined,
     ScissorOutlined,
     AimOutlined,
@@ -23,6 +23,8 @@ import {
     DeleteOutlined,
     EyeOutlined,
     LogoutOutlined,
+    SettingOutlined,
+    NodeIndexOutlined,
 } from "@ant-design/icons";
 import type {MenuInfo} from "rc-menu/lib/interface";
 import {useTranslation} from "react-i18next";
@@ -30,8 +32,10 @@ import AsyncButton from "../../../components/AsyncButton.tsx";
 import AsyncDropDownButton from "../../../components/AsyncDropDownButton.tsx";
 import type {Feature} from "geojson";
 import {canPreviewPlan} from "../../../hooks/usePlanPreview.ts";
-import {canUndock} from "../../../utils/missionStates.ts";
+import {canHome, canUndock} from "../../../utils/missionStates.ts";
 import {confirmUndock} from "./undockConfirm.ts";
+import {confirmAction, dockNeedsConfirm} from "./confirmAction.ts";
+import {DockIcon} from "../../../components/DockIcon.tsx";
 
 /** Menu key of the "all areas" entry of the Preview plan dropdown. */
 export const PREVIEW_ALL_KEY = "__all__";
@@ -59,6 +63,9 @@ interface MapToolbarProps {
     onMowArea: (key: string) => Promise<void>;
     /** Plan preview of one area (its menu key) or PREVIEW_ALL_KEY; no mowing. */
     onPreviewPlan?: (key: string) => Promise<void>;
+    /** Areas whose mow settings can be opened; empty/undefined hides the button. */
+    settingsAreas?: {key: string; label: string}[];
+    onAreaSettings?: (key: string) => void;
     pitched?: boolean;
     onTogglePitch?: () => void;
     onStart?: () => Promise<void>;
@@ -68,6 +75,8 @@ interface MapToolbarProps {
     onEmergencyOn?: () => Promise<void>;
     onEmergencyOff?: () => Promise<void>;
     onAreaRecording?: () => Promise<void>;
+    /** Record an open path (navigation band) by driving with the joystick. */
+    onPathRecording?: () => Promise<void>;
     onMowNextArea?: () => Promise<void>;
     onContinueOrPause?: () => Promise<void>;
     onBladeForward?: () => Promise<void>;
@@ -82,9 +91,9 @@ export const MapToolbar = ({
     onEditMap, onToggleSatellite,
     onManualMode, onStopManualMode,
     onBackupMap, onRestoreMap, onDownloadGeoJSON, onImportOpenMower, onResetMowingProgress,
-    onMowArea, onPreviewPlan, pitched, onTogglePitch,
+    onMowArea, onPreviewPlan, settingsAreas, onAreaSettings, pitched, onTogglePitch,
     onStart, onHome, onUndock, onEmergencyOn, onEmergencyOff,
-    onAreaRecording, onMowNextArea, onContinueOrPause,
+    onAreaRecording, onPathRecording, onMowNextArea, onContinueOrPause,
     onBladeForward, onBladeBackward, onBladeOff,
     onRecordFinish, onRecordCancel,
 }: MapToolbarProps) => {
@@ -111,18 +120,35 @@ export const MapToolbar = ({
         });
     };
 
+    const confirmBlade = (fn?: () => Promise<void>) => confirmAction(modal, {
+        title: t("mapToolbar.bladeConfirmTitle"),
+        content: t("mapToolbar.bladeConfirmContent"),
+        okText: t("mapToolbar.bladeConfirmOk"),
+        cancelText: t("mapToolbar.undockCancel"),
+        danger: true,
+    }, () => fn?.() ?? Promise.resolve());
+    const onDock = () => dockNeedsConfirm(stateName)
+        ? confirmAction(modal, {
+            title: t("mapToolbar.dockConfirmTitle"),
+            content: t("mapToolbar.dockConfirmContent"),
+            okText: t("mapToolbar.home"),
+            cancelText: t("mapToolbar.undockCancel"),
+        }, onHome!)
+        : onHome!();
+
     const moreMenuItems: MenuProps["items"] = [
         {key: "satellite", icon: <GlobalOutlined />, label: useSatellite ? t("mapToolbar.darkMap") : t("mapToolbar.satellite")},
         ...(onTogglePitch
             ? [{key: "pitch", icon: <GlobalOutlined />, label: pitched ? t("mapToolbar.flattenMap") : t("mapToolbar.tilt3dView")} satisfies NonNullable<MenuProps["items"]>[number]]
             : []),
         {type: "divider"},
-        {key: "areaRecording", icon: <AimOutlined />, label: t("mapToolbar.areaRecording")},
+        {key: "areaRecording", icon: <AimOutlined />, label: t("mapToolbar.recordArea")},
+        ...(onPathRecording ? [{key: "pathRecording", icon: <NodeIndexOutlined />, label: t("mapToolbar.recordPath")}] : []),
         {key: "mowNext", icon: <ForwardOutlined />, label: t("mapToolbar.mowNextArea")},
         {key: "continueOrPause", icon: isIdle ? <CaretRightOutlined /> : <PauseOutlined />, label: isIdle ? t("mapToolbar.continue") : t("mapToolbar.pause")},
         {type: "divider"},
         ...(manualMode
-            ? [{key: "stopManual", icon: <HomeOutlined />, label: t("mapToolbar.stopManualMowing"), danger: true} satisfies NonNullable<MenuProps["items"]>[number]]
+            ? [{key: "stopManual", icon: <StopOutlined />, label: t("mapToolbar.stopManualMowing"), danger: true} satisfies NonNullable<MenuProps["items"]>[number]]
             : [{key: "manual", icon: <ControlOutlined />, label: t("mapToolbar.manualMowing")} satisfies NonNullable<MenuProps["items"]>[number]]
         ),
         {type: "divider"},
@@ -151,10 +177,11 @@ export const MapToolbar = ({
             case "manual": safeCall(() => onManualMode()); break;
             case "stopManual": safeCall(() => onStopManualMode()); break;
             case "areaRecording": safeCall(onAreaRecording); break;
+            case "pathRecording": safeCall(onPathRecording); break;
             case "mowNext": safeCall(onMowNextArea); break;
             case "continueOrPause": safeCall(onContinueOrPause); break;
-            case "bladeForward": safeCall(onBladeForward); break;
-            case "bladeBackward": safeCall(onBladeBackward); break;
+            case "bladeForward": safeCall(() => confirmBlade(onBladeForward)); break;
+            case "bladeBackward": safeCall(() => confirmBlade(onBladeBackward)); break;
             case "bladeOff": safeCall(onBladeOff); break;
             case "backup": onBackupMap(); break;
             case "restore": onRestoreMap(); break;
@@ -210,15 +237,17 @@ export const MapToolbar = ({
                             {t("mapToolbar.undock")}
                         </AsyncButton>
                     )}
-                    {/* Home (return-to-dock) is always available outside recording
-                        so the robot can be sent back even while idle off-dock. */}
-                    <AsyncButton
-                        type={isIdle ? "default" : "primary"}
-                        icon={<HomeOutlined />}
-                        onAsyncClick={onHome!}
-                    >
-                        {t("mapToolbar.home")}
-                    </AsyncButton>
+                    {/* Dock (return to dock) whenever it is allowed, idle off-dock
+                        included; hidden when already docked (canHome). */}
+                    {onHome && canHome(highLevelState, stateName) && (
+                        <AsyncButton
+                            type={isIdle ? "default" : "primary"}
+                            icon={<DockIcon />}
+                            onAsyncClick={onDock}
+                        >
+                            {t("mapToolbar.home")}
+                        </AsyncButton>
+                    )}
                 </>
             )}
 
@@ -265,9 +294,21 @@ export const MapToolbar = ({
                 </AsyncDropDownButton>
             )}
 
+            {onAreaSettings && settingsAreas && settingsAreas.length > 0 && (
+                <Dropdown
+                    menu={{
+                        items: settingsAreas.map(({key, label}) => ({key, label})),
+                        onClick: ({key}: MenuInfo) => onAreaSettings(key),
+                    }}
+                    trigger={["click"]}
+                >
+                    <Button icon={<SettingOutlined />}>{t("mapToolbarMobile.areaSettings")}</Button>
+                </Dropdown>
+            )}
+
             <AsyncButton
                 danger={manualMode}
-                icon={manualMode ? <HomeOutlined /> : <ControlOutlined />}
+                icon={manualMode ? <StopOutlined /> : <ControlOutlined />}
                 onAsyncClick={manualMode ? onStopManualMode : onManualMode}
             >
                 {manualMode ? t("mapToolbar.stopManual") : t("mapToolbar.manualMow")}

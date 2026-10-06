@@ -1543,13 +1543,20 @@
     "finishRecording": "Finish Recording",
     "cancelRecording": "Cancel Recording",
     "start": "Start",
-    "home": "Home",
-    "emergencyOn": "Emergency On",
-    "emergencyOff": "Emergency Off",
+    "home": "Dock",
+    "emergencyOn": "Emergency stop",
+    "emergencyOff": "Release emergency stop",
     "mowArea": "Mow area",
     "stopManual": "Stop",
     "manualMow": "Manual Mow",
-    "more": "More"
+    "more": "More",
+    "dockConfirmTitle": "Stop mowing and return to the dock?",
+    "dockConfirmContent": "The robot stops the current area and drives back to the dock. Progress is kept: Start resumes where it stopped.",
+    "bladeConfirmTitle": "Start the blade?",
+    "bladeConfirmContent": "The blade spins up immediately wherever the robot is. Make sure nobody is near it.",
+    "bladeConfirmOk": "Start blade",
+    "recordArea": "Record area (drive the boundary)",
+    "recordPath": "Record path (drive it)"
   },
   "resetMowingProgress": {
     "action": "Reset mowing progress",
@@ -1605,7 +1612,7 @@
     "splitDrawLine": "Split (draw line)",
     "emergencyOff": "Emergency Off",
     "emergencyOn": "Emergency On",
-    "stop": "STOP",
+    "stop": "E-STOP",
     "save": "Save",
     "cancel": "Cancel",
     "undo": "Undo",
@@ -1616,7 +1623,7 @@
     "placeDock": "Place dock",
     "more": "More",
     "start": "Start",
-    "home": "Home",
+    "home": "Dock",
     "editMap": "Edit Map",
     "mowArea": "Mow area",
     "mow": "Mow",
@@ -1625,7 +1632,10 @@
     "drawPath": "Draw path",
     "connectDock": "Connect nearest area to dock",
     "drawPathToDock": "Path to dock",
-    "editPath": "Edit selected path"
+    "editPath": "Edit selected path",
+    "areaSettingsShort": "Areas",
+    "recordArea": "Record area (drive the boundary)",
+    "recordPath": "Record path (drive it)"
   },
   "mapEditorToolbar": {
     "saveMapUnsaved": "Save Map *",
@@ -1827,7 +1837,9 @@
   "mapJoystick": {
     "finish": "Finish",
     "cancel": "Cancel",
-    "home": "Home"
+    "home": "Dock",
+    "recordingArea": "Recording an area boundary",
+    "recordingPath": "Recording a path"
   },
   "mapManualMode": {},
   "mapBearing": {
@@ -4381,5 +4393,46 @@
   "connection": {
     "reconnecting": "Reconnecting…",
     "joystickReconnecting": "Joystick reconnecting…"
+  },
+  "mowProgress": {
+    "title": "Mowing progress",
+    "titleArea": "Mowing {{name}}",
+    "subPath": "Sub-path",
+    "elapsed": "Elapsed",
+    "eta": "Time left",
+    "left": "Length left",
+    "skipped": "Skipped stretches",
+    "legendMowed": "Mowed",
+    "legendCurrent": "Current",
+    "legendRemaining": "To do",
+    "legendSkipped": "Skipped",
+    "legendTrack": "Track (5 min)",
+    "compact": "{{sub}} · {{eta}} left · {{left}} to go"
+  },
+  "whyStopped": {
+    "title": "What the robot is doing",
+    "button": "Why stopped?",
+    "details": "Details",
+    "state": "State",
+    "reason": "Reason",
+    "noReason": "No reason reported",
+    "obstacle": "Last obstacle",
+    "unknownClass": "object",
+    "kind_dynamic": "moving (waits)",
+    "kind_static": "static (detours)",
+    "ago": "{{s}} s ago",
+    "none": "none",
+    "camera": "Camera",
+    "nothingSeen": "nothing detected right now",
+    "costmap": "Costmap",
+    "stereoStale": "stereo depth stale for {{s}} s",
+    "safety": "Safety inputs",
+    "flagEmergency": "emergency latched",
+    "flagLift": "lifted",
+    "flagStopButton": "stop button pressed",
+    "flagBoundary": "outside the boundary",
+    "flagRain": "rain",
+    "flagNodes": "nodes down: {{nodes}}",
+    "allClear": "all clear"
   }
 }

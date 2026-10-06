@@ -166,12 +166,39 @@ describe('MapToolbar', () => {
         expect(screen.queryByText(en.planPreview.button)).not.toBeInTheDocument();
     });
 
+    it('More offers Record area and Record path', async () => {
+        const onAreaRecording = vi.fn().mockResolvedValue(undefined);
+        const onPathRecording = vi.fn().mockResolvedValue(undefined);
+        render(<MapToolbar {...defaultProps} onAreaRecording={onAreaRecording} onPathRecording={onPathRecording} />);
+        await userEvent.click(screen.getByText(en.mapToolbar.more));
+        await userEvent.click(await screen.findByText(en.mapToolbar.recordPath));
+        expect(onPathRecording).toHaveBeenCalledTimes(1);
+        await userEvent.click(screen.getByText(en.mapToolbar.more));
+        await userEvent.click(await screen.findByText(en.mapToolbar.recordArea));
+        expect(onAreaRecording).toHaveBeenCalledTimes(1);
+    });
+
     describe('Undock button', () => {
         const onUndock = vi.fn().mockResolvedValue(undefined);
-        it.each(['IDLE_DOCKED', 'CHARGING'])('is shown when docked (%s), Home stays', (s) => {
+        it.each(['IDLE_DOCKED', 'CHARGING'])('is shown when docked (%s)', (s) => {
             render(<MapToolbar {...defaultProps} stateName={s} onUndock={onUndock} />);
             expect(screen.getByText(en.mapToolbar.undock)).toBeInTheDocument();
+        });
+        it('Dock is hidden when already docked (IDLE_DOCKED), shown while charging', () => {
+            const {rerender} = render(<MapToolbar {...defaultProps} stateName="IDLE_DOCKED" />);
+            expect(screen.queryByText(en.mapToolbar.home)).not.toBeInTheDocument();
+            rerender(<MapToolbar {...defaultProps} stateName="CHARGING" />);
             expect(screen.getByText(en.mapToolbar.home)).toBeInTheDocument();
+        });
+        it('Dock asks before abandoning a mow, not when idle', async () => {
+            const onHome = vi.fn().mockResolvedValue(undefined);
+            render(<AntApp><MapToolbar {...defaultProps} stateName="MOWING" onHome={onHome} /></AntApp>);
+            await userEvent.click(screen.getByText(en.mapToolbar.home));
+            expect(onHome).not.toHaveBeenCalled();
+            expect((await screen.findAllByText(en.mapToolbar.dockConfirmTitle)).length).toBeGreaterThan(0);
+            const ok = screen.getAllByRole('button', {name: en.mapToolbar.home});
+            await userEvent.click(ok[ok.length - 1]);
+            expect(onHome).toHaveBeenCalledTimes(1);
         });
         it.each(['IDLE', 'MOWING', 'UNDOCKING', 'RETURNING_HOME', 'RECORDING', 'EMERGENCY'])('is hidden in %s', (s) => {
             render(<MapToolbar {...defaultProps} stateName={s} onUndock={onUndock} />);

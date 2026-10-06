@@ -304,6 +304,8 @@ def generate_launch_description() -> LaunchDescription:
         arg('supervisor', 'true', 'mower_control/supervisor: node liveness (/supervisor/status, '
             '/diagnostics), black-box rosbag dumps to /userdata/ros2/crashes '
             '(docs/crash_recovery.md).'),
+        arg('mow_recorder', 'true', 'mower_control/mow_recorder: whole-mow rosbag2 per mission '
+            'under /userdata/ros2/mows/<YYYYmmdd-HHMMSS>/ (10 mows / 2 GB retention).'),
         arg('foxglove_port', '8765', 'foxglove_bridge WebSocket port.'),
         arg('foxglove_all_topics', 'false', 'Advertise every topic on foxglove_bridge '
             '(Foxglove Studio debugging) instead of only the GUI\'s (FOXGLOVE_GUI_TOPICS).'),
@@ -568,6 +570,10 @@ def generate_launch_description() -> LaunchDescription:
         package='mower_control', executable='supervisor', name='supervisor',
         respawn=True, respawn_delay=2.0, output='screen', condition=enabled('supervisor'),
     )
+    mow_recorder = Node(
+        package='mower_control', executable='mow_recorder', name='mow_recorder',
+        respawn=True, respawn_delay=2.0, output='screen', condition=enabled('mow_recorder'),
+    )
     # One handler for every process of this launch (includes too): structured crash record.
     crash_records = RegisterEventHandler(OnProcessExit(on_exit=_on_process_exit))
 
@@ -581,5 +587,5 @@ def generate_launch_description() -> LaunchDescription:
         + control
         + [teleop, gui_bridge] + foxglove + [localization, navigation,
            map_server, coverage, docking, mission, cameras, vio, perception, det_range,
-           supervisor]
+           supervisor, mow_recorder]
     )

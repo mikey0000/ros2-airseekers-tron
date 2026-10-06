@@ -19,6 +19,12 @@ export const CMD_STOP = 8;
 /** Airseekers mission_fsm CMD_UNDOCK: short straight drive off the dock, then idle.
  *  Sent through the Go provider's "undock" route. */
 export const CMD_UNDOCK = 9;
+/** Airseekers mission_fsm CMD_RECORD_PATH: record an open path (navigation band) by driving. */
+export const CMD_RECORD_PATH = 10;
+
+/** Which kind of recording the mission runs (from its sub_state text). */
+export const recordingKind = (stateName?: string | null, subState?: string | null): "area" | "path" | null =>
+    stateName === "RECORDING" ? (/\bpath\b/i.test(subState ?? "") ? "path" : "area") : null;
 export const CMD_RESET_EMERGENCY = 254;
 
 /** Mission-in-progress phases published by mission_fsm. */

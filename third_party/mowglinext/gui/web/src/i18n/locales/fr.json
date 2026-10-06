@@ -1539,13 +1539,20 @@
     "finishRecording": "Terminer l'enregistrement",
     "cancelRecording": "Annuler l'enregistrement",
     "start": "Démarrer",
-    "home": "Retour base",
-    "emergencyOn": "Arrêt d'urgence activé",
-    "emergencyOff": "Arrêt d'urgence désactivé",
+    "home": "Base",
+    "emergencyOn": "Arrêt d'urgence",
+    "emergencyOff": "Lever l'arrêt d'urgence",
     "mowArea": "Tondre une zone",
     "stopManual": "Arrêter",
     "manualMow": "Tonte manuelle",
-    "more": "Plus"
+    "more": "Plus",
+    "dockConfirmTitle": "Arrêter la tonte et rentrer à la base ?",
+    "dockConfirmContent": "Le robot arrête la zone en cours et retourne à la base. La progression est conservée : Démarrer reprend là où il s'est arrêté.",
+    "bladeConfirmTitle": "Démarrer la lame ?",
+    "bladeConfirmContent": "La lame démarre immédiatement là où se trouve le robot. Vérifiez que personne n'est à proximité.",
+    "bladeConfirmOk": "Démarrer la lame",
+    "recordArea": "Enregistrer une zone (suivre le bord)",
+    "recordPath": "Enregistrer un chemin (le parcourir)"
   },
   "resetMowingProgress": {
     "action": "Réinitialiser la progression de tonte",
@@ -1601,7 +1608,7 @@
     "splitDrawLine": "Diviser (tracer une ligne)",
     "emergencyOff": "Arrêt d'urgence désactivé",
     "emergencyOn": "Arrêt d'urgence activé",
-    "stop": "STOP",
+    "stop": "URGENCE",
     "save": "Enregistrer",
     "cancel": "Annuler",
     "undo": "Annuler",
@@ -1612,7 +1619,7 @@
     "placeDock": "Placer la base",
     "more": "Plus",
     "start": "Démarrer",
-    "home": "Retour base",
+    "home": "Base",
     "editMap": "Modifier la carte",
     "mowArea": "Tondre une zone",
     "mow": "Tondre",
@@ -1621,7 +1628,10 @@
     "drawPath": "Tracer un chemin",
     "connectDock": "Relier la zone la plus proche à la base",
     "drawPathToDock": "Chemin vers la station",
-    "editPath": "Modifier le chemin sélectionné"
+    "editPath": "Modifier le chemin sélectionné",
+    "areaSettingsShort": "Zones",
+    "recordArea": "Enregistrer une zone (suivre le bord)",
+    "recordPath": "Enregistrer un chemin (le parcourir)"
   },
   "mapEditorToolbar": {
     "saveMapUnsaved": "Enregistrer la carte *",
@@ -1823,7 +1833,9 @@
   "mapJoystick": {
     "finish": "Terminer",
     "cancel": "Annuler",
-    "home": "Retour base"
+    "home": "Base",
+    "recordingArea": "Enregistrement du bord de zone",
+    "recordingPath": "Enregistrement d'un chemin"
   },
   "mapManualMode": {},
   "mapBearing": {
@@ -4381,5 +4393,46 @@
   "connection": {
     "reconnecting": "Reconnexion…",
     "joystickReconnecting": "Reconnexion du joystick…"
+  },
+  "mowProgress": {
+    "title": "Progression de la tonte",
+    "titleArea": "Tonte : {{name}}",
+    "subPath": "Sous-trajet",
+    "elapsed": "Écoulé",
+    "eta": "Temps restant",
+    "left": "Longueur restante",
+    "skipped": "Tronçons sautés",
+    "legendMowed": "Tondu",
+    "legendCurrent": "En cours",
+    "legendRemaining": "À faire",
+    "legendSkipped": "Sauté",
+    "legendTrack": "Trace (5 min)",
+    "compact": "{{sub}} · reste {{eta}} · {{left}} à faire"
+  },
+  "whyStopped": {
+    "title": "Ce que fait le robot",
+    "button": "Pourquoi arrêté ?",
+    "details": "Détails",
+    "state": "État",
+    "reason": "Raison",
+    "noReason": "Aucune raison indiquée",
+    "obstacle": "Dernier obstacle",
+    "unknownClass": "objet",
+    "kind_dynamic": "mobile (attend)",
+    "kind_static": "fixe (contourne)",
+    "ago": "il y a {{s}} s",
+    "none": "aucun",
+    "camera": "Caméra",
+    "nothingSeen": "rien de détecté actuellement",
+    "costmap": "Carte de coût",
+    "stereoStale": "profondeur stéréo périmée depuis {{s}} s",
+    "safety": "Entrées de sécurité",
+    "flagEmergency": "arrêt d'urgence verrouillé",
+    "flagLift": "soulevé",
+    "flagStopButton": "bouton stop pressé",
+    "flagBoundary": "hors limite",
+    "flagRain": "pluie",
+    "flagNodes": "nœuds arrêtés : {{nodes}}",
+    "allClear": "rien à signaler"
   }
 }

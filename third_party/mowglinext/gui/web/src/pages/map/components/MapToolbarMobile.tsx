@@ -24,7 +24,6 @@ import {
     SplitCellsOutlined,
     MinusSquareOutlined,
     PlayCircleOutlined,
-    HomeOutlined,
     WarningOutlined,
     PlusOutlined,
     BorderOutlined,
@@ -38,7 +37,10 @@ import {
     SettingOutlined,
     LogoutOutlined,
     HighlightOutlined,
+    StopOutlined,
 } from "@ant-design/icons";
+import {DockIcon} from "../../../components/DockIcon.tsx";
+import {confirmAction, dockNeedsConfirm} from "./confirmAction.ts";
 import {canPreviewPlan} from "../../../hooks/usePlanPreview.ts";
 import {PREVIEW_ALL_KEY} from "./MapToolbar.tsx";
 import {confirmUndock} from "./undockConfirm.ts";
@@ -108,6 +110,8 @@ interface MapToolbarMobileProps {
     onEmergencyOn?: () => Promise<void>;
     onEmergencyOff?: () => Promise<void>;
     onAreaRecording?: () => Promise<void>;
+    /** Record an open path (navigation band) by driving with the joystick. */
+    onPathRecording?: () => Promise<void>;
     onMowNextArea?: () => Promise<void>;
     onContinueOrPause?: () => Promise<void>;
     onBladeForward?: () => Promise<void>;
@@ -129,7 +133,7 @@ export const MapToolbarMobile = ({
     onDrawPathToDock, onEditPath, editPathEnabled,
     stateName, highLevelState, emergency,
     onStart, onHome, onUndock, onEmergencyOn, onEmergencyOff,
-    onAreaRecording, onMowNextArea, onContinueOrPause,
+    onAreaRecording, onPathRecording, onMowNextArea, onContinueOrPause,
     onBladeForward, onBladeBackward, onBladeOff,
 }: MapToolbarMobileProps) => {
     const {colors, displayMode} = useThemeMode();
@@ -212,10 +216,27 @@ export const MapToolbarMobile = ({
         });
     };
 
+    const confirmBlade = (fn?: () => Promise<void>) => confirmAction(modal, {
+        title: t("mapToolbar.bladeConfirmTitle"),
+        content: t("mapToolbar.bladeConfirmContent"),
+        okText: t("mapToolbar.bladeConfirmOk"),
+        cancelText: t("mapToolbar.undockCancel"),
+        danger: true,
+    }, () => fn?.() ?? Promise.resolve());
+    const onDock = () => dockNeedsConfirm(stateName)
+        ? confirmAction(modal, {
+            title: t("mapToolbar.dockConfirmTitle"),
+            content: t("mapToolbar.dockConfirmContent"),
+            okText: t("mapToolbarMobile.home"),
+            cancelText: t("mapToolbar.undockCancel"),
+        }, onHome!)
+        : onHome!();
+
     const dataMenuItems: MenuProps["items"] = [
         {key: "satellite", icon: <GlobalOutlined />, label: useSatellite ? t("mapToolbarMobile.darkMap") : t("mapToolbarMobile.satellite")},
         {type: "divider"},
-        {key: "areaRecording", icon: <AimOutlined />, label: t("mapToolbarMobile.areaRecording")},
+        {key: "areaRecording", icon: <AimOutlined />, label: t("mapToolbarMobile.recordArea")},
+        ...(onPathRecording ? [{key: "pathRecording", icon: <NodeIndexOutlined />, label: t("mapToolbarMobile.recordPath")}] : []),
         {key: "mowNext", icon: <ForwardOutlined />, label: t("mapToolbarMobile.mowNextArea")},
         {key: "continueOrPause", icon: isIdle ? <CaretRightOutlined /> : <PauseOutlined />, label: isIdle ? t("mapToolbarMobile.continue") : t("mapToolbarMobile.pause")},
         {type: "divider"},
@@ -244,10 +265,11 @@ export const MapToolbarMobile = ({
         switch (key) {
             case "satellite": onToggleSatellite(); break;
             case "areaRecording": safeCall(onAreaRecording); break;
+            case "pathRecording": safeCall(onPathRecording); break;
             case "mowNext": safeCall(onMowNextArea); break;
             case "continueOrPause": safeCall(onContinueOrPause); break;
-            case "bladeForward": safeCall(onBladeForward); break;
-            case "bladeBackward": safeCall(onBladeBackward); break;
+            case "bladeForward": safeCall(() => confirmBlade(onBladeForward)); break;
+            case "bladeBackward": safeCall(() => confirmBlade(onBladeBackward)); break;
             case "bladeOff": safeCall(onBladeOff); break;
             case "backup": onBackupMap(); break;
             case "restore": onRestoreMap(); break;
@@ -402,7 +424,7 @@ export const MapToolbarMobile = ({
                             {onDrawPathToDock && (
                                 <Button
                                     size="large"
-                                    icon={<HomeOutlined />}
+                                    icon={<DockIcon />}
                                     onClick={onDrawPathToDock}
                                     disabled={!dockAvailable}
                                     aria-label={t("mapToolbarMobile.drawPathToDock")}
@@ -446,6 +468,8 @@ export const MapToolbarMobile = ({
     return (
         <>
             <div style={toolbarStyle}>
+                {/* Primary mission controls first, labelled (the owner could not
+                    find an icon-only Home); editing tools sit at the end next to More. */}
                 {!isRecording && isIdle && (
                     <AsyncButton
                         type="primary"
@@ -454,19 +478,23 @@ export const MapToolbarMobile = ({
                         onAsyncClick={onStart!}
                         aria-label={t("mapToolbarMobile.start")}
                         style={touchTarget}
-                    />
+                    >
+                        {t("mapToolbarMobile.start")}
+                    </AsyncButton>
                 )}
-                {/* Home (return to dock) whenever it is allowed, idle included: an
-                    idle robot off the dock must be able to go home. */}
+                {/* Dock (return to dock) whenever it is allowed, idle included: an
+                    idle robot off the dock must be able to go back. */}
                 {!isRecording && onHome && canHome(highLevelState, stateName) && (
                     <AsyncButton
                         type={isIdle ? "default" : "primary"}
                         size="large"
-                        icon={<HomeOutlined />}
-                        onAsyncClick={onHome!}
+                        icon={<DockIcon />}
+                        onAsyncClick={onDock}
                         aria-label={t("mapToolbarMobile.home")}
                         style={touchTarget}
-                    />
+                    >
+                        {t("mapToolbarMobile.home")}
+                    </AsyncButton>
                 )}
 
                 {!isRecording && onUndock && canUndock(stateName) && (
@@ -478,14 +506,6 @@ export const MapToolbarMobile = ({
                         style={touchTarget}
                     />
                 )}
-
-                <Button
-                    size="large"
-                    icon={<EditOutlined />}
-                    onClick={onEditMap}
-                    aria-label={t("mapToolbarMobile.editMap")}
-                    style={touchTarget}
-                />
 
                 <Dropdown
                     menu={{items: mowingAreas, onClick: handleMowClick}}
@@ -502,6 +522,26 @@ export const MapToolbarMobile = ({
                         {t("mapToolbarMobile.mow")}
                     </Button>
                 </Dropdown>
+
+                {onAreaSettings && settingsAreas && settingsAreas.length > 0 && (
+                    <Dropdown
+                        menu={{
+                            items: settingsAreas.map(({key, label}) => ({key, label})),
+                            onClick: ({key}: MenuInfo) => onAreaSettings(key),
+                        }}
+                        trigger={["click"]}
+                        placement="topLeft"
+                    >
+                        <Button
+                            size="large"
+                            icon={<SettingOutlined />}
+                            aria-label={t("mapToolbarMobile.areaSettings")}
+                            style={touchTarget}
+                        >
+                            {t("mapToolbarMobile.areaSettingsShort")}
+                        </Button>
+                    </Dropdown>
+                )}
 
                 {onPreviewPlan && canPreviewPlan(stateName) && (
                     <Dropdown
@@ -525,30 +565,20 @@ export const MapToolbarMobile = ({
                     </Dropdown>
                 )}
 
-                {onAreaSettings && settingsAreas && settingsAreas.length > 0 && (
-                    <Dropdown
-                        menu={{
-                            items: settingsAreas.map(({key, label}) => ({key, label})),
-                            onClick: ({key}: MenuInfo) => onAreaSettings(key),
-                        }}
-                        trigger={["click"]}
-                        placement="topLeft"
-                    >
-                        <Button
-                            size="large"
-                            icon={<SettingOutlined />}
-                            aria-label={t("mapToolbarMobile.areaSettings")}
-                            style={touchTarget}
-                        />
-                    </Dropdown>
-                )}
-
                 <AsyncButton
                     size="large"
                     danger={manualMode}
-                    icon={manualMode ? <HomeOutlined /> : <ControlOutlined />}
+                    icon={manualMode ? <StopOutlined /> : <ControlOutlined />}
                     onAsyncClick={manualMode ? onStopManualMode : onManualMode}
                     aria-label={manualMode ? t("mapToolbarMobile.stopManualMowing") : t("mapToolbarMobile.manualMowing")}
+                    style={touchTarget}
+                />
+
+                <Button
+                    size="large"
+                    icon={<EditOutlined />}
+                    onClick={onEditMap}
+                    aria-label={t("mapToolbarMobile.editMap")}
                     style={touchTarget}
                 />
 

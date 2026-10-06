@@ -71,6 +71,13 @@ var topicMap = map[string]topicDef{
 	// {id, status: planning|ok|failed|cleared, area, rings, swaths, length_m,
 	// inset_m, sub_paths, areas[], segments[{type, points}], transits[]}.
 	"previewSummary": {"/behavior_tree_node/preview_summary", "std_msgs/msg/String"},
+	// Live mow progress (mower_mission/mow_progress.py), both latched JSON:
+	// missionPlan = the current area's drivable sub-paths {plan_id, area, subpaths},
+	// missionProgress = {plan_id, mowed_segments, current_segment, skipped,
+	// percent, sub_path, sub_paths, elapsed_s, eta_s, remaining_m, why, ...}
+	// (pose indices into the concatenated sub-paths), 1 Hz.
+	"missionPlan":     {"/behavior_tree_node/mow_plan", "std_msgs/msg/String"},
+	"missionProgress": {"/behavior_tree_node/mow_progress", "std_msgs/msg/String"},
 	// Latched outline of the dock corridor the map server frees in the
 	// navigation mask (dock -> approach pose -> nearest area). Published by
 	// map servers that implement it; absent elsewhere (the GUI tolerates that).

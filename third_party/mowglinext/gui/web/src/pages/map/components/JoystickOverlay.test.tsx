@@ -36,6 +36,15 @@ describe('JoystickOverlay', () => {
         expect(screen.getByText(en.mapJoystick.home)).toBeTruthy();
     });
 
+    it('shows which kind is being recorded', () => {
+        const {rerender} = render(<JoystickOverlay visible isRecording recordKind="path" onMove={noop} onStop={noop}
+            onFinishRecording={asyncNoop} onCancelRecording={asyncNoop} onHome={asyncNoop}/>);
+        expect(screen.getByTestId('recording-kind').textContent).toBe(en.mapJoystick.recordingPath);
+        rerender(<JoystickOverlay visible isRecording recordKind="area" onMove={noop} onStop={noop}
+            onFinishRecording={asyncNoop} onCancelRecording={asyncNoop} onHome={asyncNoop}/>);
+        expect(screen.getByTestId('recording-kind').textContent).toBe(en.mapJoystick.recordingArea);
+    });
+
     it('does not crash with the mobile layout flag', () => {
         const onMove = vi.fn();
         const {container} = render(

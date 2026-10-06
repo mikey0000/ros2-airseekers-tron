@@ -46,7 +46,6 @@ import {useIsMobile} from "../hooks/useIsMobile.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
 import {useAreaSettingsSupport} from "../hooks/useAreaSettings.ts";
 import {MissionStopControls} from "../components/MissionStopControls.tsx";
-import {MissionSubState} from "../components/MissionSubState.tsx";
 import {StartMowSheet, type StartSelection} from "../components/areaSettings/StartMowSheet.tsx";
 import {AreaSettingsDrawer} from "../components/areaSettings/AreaSettingsDrawer.tsx";
 import {mowingAreaChoices} from "../utils/mapAreaIndex.ts";
@@ -66,6 +65,13 @@ import {useDockCorridor} from "../hooks/useDockCorridor.ts";
 import {clearPlanPreview, requestPlanPreview, usePlanPreview} from "../hooks/usePlanPreview.ts";
 import {PlanPreviewCard} from "./map/components/PlanPreviewCard.tsx";
 import {PREVIEW_ALL_KEY} from "./map/components/MapToolbar.tsx";
+import {useMissionPlan, useMissionProgress} from "../hooks/useMissionProgress.ts";
+import {appendTrack, planStretches, type TrackPoint} from "../utils/missionProgress.ts";
+import {hasLiveProgress, MowProgressCard} from "./map/components/MowProgressCard.tsx";
+import {MissionStatusLine} from "./map/components/MissionStatusLine.tsx";
+import {useTopic} from "../hooks/useTopic.ts";
+import {CMD_RECORD_PATH, recordingKind} from "../utils/missionStates.ts";
+import type {AbsolutePose} from "../types/ros.ts";
 
 
 // Mapbox access token comes from the build env only — no hardcoded fallback.
@@ -110,6 +116,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         previewRing: colors.amber,           // plan preview: headland rings
         previewSwath: colors.mint,           // plan preview: swaths
         previewTransit: colors.auroraViolet, // plan preview: blade-off transits between sub-paths
+        liveMowed: colors.emeraldDeep,       // live progress: plan stretches already mowed
+        liveCurrent: colors.info,            // live progress: the sub-path being mowed now
+        liveRemaining: colors.mint,          // live progress: still to mow (= preview swath colour)
+        liveSkipped: '#FF7A1A',              // live progress: skipped stretches (orange; no theme token)
+        track: colors.text,                  // robot's actual track (last 5 min)
         halo: colors.text,                   // white halo → ink
         labelText: colors.text,              // symbol label text → ink
         labelHalo: colors.bgBase,            // symbol label halo → deep bg
@@ -373,6 +384,36 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const handleEditPath = useCallback(() => {
         if (selectedPath) editPath(selectedPath);
     }, [selectedPath, editPath]);
+    // Path recorded by driving (CMD_RECORD_PATH): when the mission reports
+    // RECORDING_COMPLETE with the new path's name, wait for it in the polled map,
+    // enter edit mode and open the path panel (name / width / connections) on it.
+    const hlState = highLevelStatus.highLevelStatus.state_name;
+    const hlSub = highLevelStatus.highLevelStatus.sub_state_name;
+    const recordKind = recordingKind(hlState, hlSub);
+    const lastRecordKind = useRef<"area" | "path" | null>(null);
+    const [pendingPath, setPendingPath] = useState<{name: string; since: number} | null>(null);
+    useEffect(() => {
+        if (recordKind) lastRecordKind.current = recordKind;
+        else if (hlState === "RECORDING_COMPLETE" && lastRecordKind.current === "path" && hlSub) {
+            lastRecordKind.current = null;
+            setPendingPath({name: hlSub, since: Date.now()});
+        }
+    }, [recordKind, hlState, hlSub]);
+    useEffect(() => {
+        if (!pendingPath || compact) return;
+        const f = Object.values(features).find((x): x is NavigationFeature =>
+            x instanceof NavigationFeature && x.isPath() && x.getName() === pendingPath.name);
+        if (!f) {
+            if (Date.now() - pendingPath.since > 20_000) setPendingPath(null);
+            return;
+        }
+        if (!editMap) {
+            handleEditMap();
+            return;
+        }
+        const timer = setTimeout(() => { editPath(f); setPendingPath(null); }, 300);
+        return () => clearTimeout(timer);
+    }, [pendingPath, features, editMap, handleEditMap, editPath, compact]);
     // Saved paths: translucent band + dashed centreline, drawn above the
     // editor polygons so they read differently from mowing areas.
     const pathsCollection = useMemo<FeatureCollection>(() => ({
@@ -405,6 +446,20 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // replace the plain coverage path while a preview is shown.
     const planPreview = usePlanPreview(!compact);
     const [previewHiddenId, setPreviewHiddenId] = useState<number | null>(null);
+    // Live mow progress (mower_mission mow_progress.py): plan stretches coloured
+    // mowed / current / remaining / skipped, plus the robot's actual track.
+    const missionPlan = useMissionPlan(!compact);
+    const missionProgress = useMissionProgress(!compact);
+    const liveProgress = hasLiveProgress(missionProgress) ? missionProgress : null;
+    const liveStretches = useMemo(() => planStretches(missionPlan, liveProgress), [missionPlan, liveProgress]);
+    const liveDrawn = liveStretches.length > 0;
+    const trackPose = useTopic<AbsolutePose>("pose", {}, {throttleMs: 1000, enabled: !compact}).data;
+    const [track, setTrack] = useState<TrackPoint[]>([]);
+    useEffect(() => {
+        const x = trackPose.pose?.pose?.position?.x;
+        const y = trackPose.pose?.pose?.position?.y;
+        if (typeof x === "number" && typeof y === "number") setTrack((tr) => appendTrack(tr, x, y, Date.now()));
+    }, [trackPose]);
     const previewDrawn = planPreview?.status === "ok" && planPreview.segments.length > 0
         && planPreview.id !== previewHiddenId ? planPreview : null;
     // "Hide" on the card hides the drawn preview too (the latched /coverage/full_plan
@@ -452,7 +507,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 const f = new PathFeature(`preview-transit-${i}`, toLonLat(tr), LAYER_COLORS.previewTransit, 1);
                 newFeatures[f.id] = f;
             });
-        } else if (path?.poses && !previewHidden) {
+        } else if (path?.poses && !previewHidden && !liveDrawn) {
             // Coverage plan: the full F2C route (headland rings + every swath)
             // for the current area (/coverage/full_plan, a nav_msgs/Path).
             // Execution is swath-by-swath, but this shows the whole plan.
@@ -516,7 +571,21 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 Object.entries(old).filter(([k]) => k === "mower" || k.startsWith("mower-"))
             ),
         }))
-    }, [map, path, plan, previewDrawn, previewHidden, offsetX, offsetY, datum, editMap, LAYER_COLORS]);
+    }, [map, path, plan, previewDrawn, previewHidden, liveDrawn, offsetX, offsetY, datum, editMap, LAYER_COLORS]);
+
+    const liveCollection = useMemo<FeatureCollection>(() => {
+        if (datum[0] === 0) return {type: "FeatureCollection", features: []};
+        const toLonLat = (pts: [number, number][]) => pts.map(([x, y]) => transpose(offsetX, offsetY, datum, y, x));
+        const features: Feature[] = liveStretches.map((st, i) => ({
+            type: "Feature", id: `live-${i}`, properties: {kind: st.kind},
+            geometry: {type: "LineString", coordinates: toLonLat(st.points)},
+        }));
+        if (track.length > 1) {
+            features.push({type: "Feature", id: "track", properties: {kind: "track"},
+                geometry: {type: "LineString", coordinates: toLonLat(track.map((p) => [p.x, p.y]))}});
+        }
+        return {type: "FeatureCollection", features};
+    }, [liveStretches, track, offsetX, offsetY, datum]);
 
     // Labels for navigation areas / paths, kept out of labelsCollection so
     // they never show up as mowable areas (mowingAreas is derived from it).
@@ -927,7 +996,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         setPreviewHiddenId(null);
         await requestPlanPreview(guiApi, area);
     };
-    const showPreviewCard = !compact && !editMap && planPreview !== null
+    const progressColors = {mowed: LAYER_COLORS.liveMowed, current: LAYER_COLORS.liveCurrent,
+        remaining: LAYER_COLORS.liveRemaining, skipped: LAYER_COLORS.liveSkipped, track: LAYER_COLORS.track};
+    const liveAreaName = liveProgress
+        ? (areaChoices.find((a) => a.index === liveProgress.area)?.name ?? undefined) : undefined;
+    const showPreviewCard = !compact && !editMap && !liveProgress && planPreview !== null
         && planPreview.status !== "cleared" && planPreview.id !== previewHiddenId;
     const previewCard = showPreviewCard && planPreview ? (
         <div style={{position: 'absolute', zIndex: 15, ...(isMobile ? {top: 64, left: 12} : {bottom: 84, left: 16}), maxWidth: 300, background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow, borderRadius: 14, padding: '8px 12px'}}>
@@ -950,6 +1023,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         onEmergencyOn: mowerAction("emergency", {Emergency: 1}),
         onEmergencyOff: mowerAction("emergency", {Emergency: 0}),
         onAreaRecording: mowerAction("high_level_control", {Command: 3}),
+        onPathRecording: mowerAction("high_level_control", {Command: CMD_RECORD_PATH}),
         onMowNextArea: mowerAction("high_level_control", {Command: 4}),
         // Match MapToolbar's isIdle: the BT publishes IDLE_DOCKED as the
         // primary resting state; "IDLE" without a suffix only appears as the
@@ -1414,6 +1488,24 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             }}/>
                         </Source>
                     )}
+                    {/* Live mow progress on the plan + the robot's actual track (last 5 min). */}
+                    <Source type={"geojson"} id={"mow-live"} data={liveCollection}>
+                        <Layer type={"line"} id={"mow-live-remaining"} filter={['==', ['get', 'kind'], 'remaining']}
+                            layout={{'line-cap': 'round', 'line-join': 'round'}}
+                            paint={{'line-color': LAYER_COLORS.liveRemaining, 'line-width': 2, 'line-opacity': 0.8}}/>
+                        <Layer type={"line"} id={"mow-live-mowed"} filter={['==', ['get', 'kind'], 'mowed']}
+                            layout={{'line-cap': 'round', 'line-join': 'round'}}
+                            paint={{'line-color': LAYER_COLORS.liveMowed, 'line-width': 4}}/>
+                        <Layer type={"line"} id={"mow-live-skipped"} filter={['==', ['get', 'kind'], 'skipped']}
+                            layout={{'line-cap': 'round', 'line-join': 'round'}}
+                            paint={{'line-color': LAYER_COLORS.liveSkipped, 'line-width': 4}}/>
+                        <Layer type={"line"} id={"mow-live-current"} filter={['==', ['get', 'kind'], 'current']}
+                            layout={{'line-cap': 'round', 'line-join': 'round'}}
+                            paint={{'line-color': LAYER_COLORS.liveCurrent, 'line-width': 4}}/>
+                        <Layer type={"line"} id={"mow-live-track"} filter={['==', ['get', 'kind'], 'track']}
+                            layout={{'line-cap': 'round', 'line-join': 'round'}}
+                            paint={{'line-color': LAYER_COLORS.track, 'line-width': 1.5, 'line-opacity': 0.7, 'line-dasharray': [1, 1.5]}}/>
+                    </Source>
                     {/* Raw scan points only until the LiDAR map exists — then the map replaces them. */}
                     {!lidarMapImage && (
                         <Source type={"geojson"} id={"lidar"} data={lidarCollection}>
@@ -1449,6 +1541,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 <JoystickOverlay
                     visible={highLevelStatus.highLevelStatus.state_name === "RECORDING" || highLevelStatus.highLevelStatus.state_name === "MANUAL_MOWING" || manualMode}
                     isRecording={highLevelStatus.highLevelStatus.state_name === "RECORDING"}
+                    recordKind={recordKind}
                     mobile={isMobile}
                     onMove={onJoyMove}
                     onStop={onJoyStop}
@@ -1465,19 +1558,38 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         />
                     ) : undefined}
                 />
-                <MissionStopControls
-                    state={highLevelStatus.highLevelStatus.state}
-                    stateName={highLevelStatus.highLevelStatus.state_name}
-                    subStateName={highLevelStatus.highLevelStatus.sub_state_name}
-                    onStart={() => { void mowerActions.onStart(); }}
-                    style={{position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 20, maxWidth: 'calc(100% - 32px)'}}
-                />
-                {!editMap && (
-                    <MissionSubState
-                        stateName={highLevelStatus.highLevelStatus.state_name}
-                        subStateName={highLevelStatus.highLevelStatus.sub_state_name}
-                        style={{position: 'absolute', top: 12, left: 16, zIndex: 19, maxWidth: 'min(520px, calc(100% - 32px))'}}
-                    />
+                {/* One top stack (no more overlap between the Stop/fault banner and
+                    the sub-state pill): banner, then the always-visible state line
+                    with "Why stopped?" (and, on a phone, the compact progress bar).
+                    Desktop leaves the right 272 px to the areas panel. */}
+                <div style={{position: 'absolute', top: 12, left: isMobile ? 12 : 16, right: isMobile ? 12 : 272,
+                    zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, pointerEvents: 'none'}}>
+                    <div style={{pointerEvents: 'auto', maxWidth: '100%'}}>
+                        <MissionStopControls
+                            state={highLevelStatus.highLevelStatus.state}
+                            stateName={highLevelStatus.highLevelStatus.state_name}
+                            subStateName={highLevelStatus.highLevelStatus.sub_state_name}
+                            onStart={() => { void mowerActions.onStart(); }}
+                        />
+                    </div>
+                    {!editMap && (
+                        <MissionStatusLine
+                            stateName={highLevelStatus.highLevelStatus.state_name}
+                            subStateName={highLevelStatus.highLevelStatus.sub_state_name}
+                            why={missionProgress?.why}
+                            style={{width: isMobile ? '100%' : 'min(560px, 100%)'}}
+                        >
+                            {isMobile && liveProgress && (
+                                <MowProgressCard compact progress={liveProgress} colors={progressColors}/>
+                            )}
+                        </MissionStatusLine>
+                    )}
+                </div>
+                {!isMobile && !editMap && liveProgress && (
+                    <div style={{position: 'absolute', zIndex: 15, bottom: 84, left: 16, maxWidth: 300, background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow, borderRadius: 14, padding: '8px 12px'}}>
+                        <MowProgressCard progress={liveProgress} colors={progressColors}
+                                         areaName={liveAreaName}/>
+                    </div>
                 )}
                 {previewCard}
                 {editMap && !pathTool.editing && features["dock"] instanceof DockFeatureBase && (
@@ -1592,6 +1704,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             onImportOpenMower={() => handleImportOpenMower(setImportPreview, setImportFileText)}
                             onMowArea={startSelectedArea}
                             onPreviewPlan={previewSelectedPlan}
+                            settingsAreas={areaSettings.enabled
+                                ? areasList.filter((a) => a.ftype !== 'obstacle').map((a) => ({key: String(a.id), label: a.name}))
+                                : undefined}
+                            onAreaSettings={areaSettings.enabled ? openAreaSettingsById : undefined}
                             {...mowerActions}
                         />
                     </div>
