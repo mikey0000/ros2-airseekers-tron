@@ -105,12 +105,18 @@ from datetime import datetime
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
+try:
+    from rclpy.qos import QoSDurabilityPolicy
+except ImportError:  # pragma: no cover - ros_stubs
+    QoSDurabilityPolicy = None
 
 from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, Imu
 from std_msgs.msg import Bool
 from std_srvs.srv import Empty, Trigger
+
+from mower_mcu_driver.rain import RainDetector
 
 try:  # real rclpy only (the offline tests run against ros_stubs)
     from rclpy.serialization import deserialize_message
@@ -551,6 +557,15 @@ class McuNode(Node):
         # BatteryInfo.current: 0.1 A units (vendor PowerManager logs raw*100 as mA), positive
         # while discharging (raw 7 off-dock at rest). BatteryState wants negative = discharge.
         self.declare_parameter('battery_current_scale', -0.1)
+        # Rain ADC (vendor DevHealthHandler::rainSensorProcess, see rain.py). Dry reads
+        # ~4092 (pulled up); wet pulls it into [rain_valid_min, rain_wet_below].
+        self.declare_parameter('rain_path', '/dev/rain')
+        self.declare_parameter('rain_poll_hz', 2.0)
+        self.declare_parameter('rain_wet_below', 4000)     # vendor rain_max
+        self.declare_parameter('rain_dry_above', 4000)     # vendor: no hysteresis band
+        self.declare_parameter('rain_valid_min', 2000)     # vendor rain_min (below = fault)
+        self.declare_parameter('rain_debounce_s', 5.0)
+        self.declare_parameter('rain_clear_s', 600.0)
 
         def param(name):
             return self.get_parameter(name).value
@@ -654,6 +669,15 @@ class McuNode(Node):
         self._interlock_latched = False   # True while an interlock has forced motion off
         self._estop_latched = False       # host-side e-stop latch (/estop topic), cleared by /clear_estop
 
+        self._rain = RainDetector(param('rain_wet_below'), param('rain_dry_above'),
+                                  param('rain_valid_min'), param('rain_debounce_s'),
+                                  param('rain_clear_s'),
+                                  window=max(1, int(round(2.0 * float(param('rain_poll_hz'))))))
+        self._rain_path = str(param('rain_path'))
+        self._rain_fd = None
+        self._rain_ok = False             # last sysfs read succeeded
+        self._rain_err_t = 0.0
+
         # ---- publishers / subscribers -------------------------------------
         sensor_qos = QoSProfile(depth=10,
                                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -665,6 +689,12 @@ class McuNode(Node):
         # (/imu/data) is wit_imu_driver's. Keep this one off the main name.
         self._imu_pub = self.create_publisher(Imu, '/mcu/imu', sensor_qos)
         self._estop_pub = self.create_publisher(Bool, '/estop', 10)
+        latched = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                             history=QoSHistoryPolicy.KEEP_LAST)
+        if QoSDurabilityPolicy is not None:
+            latched.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
+        self._rain_pub = self.create_publisher(Bool, '/rain', latched)
+        self._rain_published = None
         self._status_pub = None
         if MowerBaseDevStatus is not None:
             self._status_pub = self.create_publisher(MowerBaseDevStatus, '/mower_base/status', 10)
@@ -735,6 +765,9 @@ class McuNode(Node):
             (0.02, self._speed_tick),          # stop-sequence spacing / cmd_vel timeout
             (1.0 / max(odom_rate, 1.0), self._reckon),
         ]
+        if float(self.get_parameter('rain_poll_hz').value) > 0.0:
+            self._periodic.append((1.0 / float(self.get_parameter('rain_poll_hz').value),
+                                   self._rain_tick))
 
         self.get_logger().info(
             'mower_mcu_driver up: %s @ %d baud, heartbeat every %.0f ms (period UNKNOWN), '
@@ -1013,6 +1046,52 @@ class McuNode(Node):
         self._publish_sensor_info()
         self._publish_dev_status()
 
+    def _rain_flag(self, s):
+        """Host ADC trigger when /dev/rain is readable (vendor overrides the MCU flag with
+        it, DevStatus::setRainStatus); the MCU SensorInfo.rain byte otherwise."""
+        if self._rain.value is not None:
+            return bool(self._rain.triggered)
+        return bool(s['rain'])
+
+    def _read_rain(self):
+        """One sysfs read (pread on a kept-open fd; iio re-samples on every read)."""
+        try:
+            if self._rain_fd is None:
+                self._rain_fd = os.open(self._rain_path, os.O_RDONLY)
+            return int(os.pread(self._rain_fd, 16, 0).strip())
+        except (OSError, ValueError) as exc:
+            if self._rain_fd is not None:
+                try:
+                    os.close(self._rain_fd)
+                except OSError:
+                    pass
+                self._rain_fd = None
+            now = time.monotonic()
+            if self._rain_ok or now - self._rain_err_t > 300.0:
+                self._rain_err_t = now
+                self.get_logger().warn('rain sensor %s unreadable: %s' % (self._rain_path, exc))
+            self._rain_ok = False
+            return None
+
+    def _rain_tick(self):
+        raw = self._read_rain()
+        if raw is None:
+            return
+        self._rain_ok = True
+        before = self._rain.triggered
+        triggered = self._rain.update(raw, time.monotonic())
+        if triggered != before:
+            self.get_logger().warn('rain %s (filtered ADC %d)'
+                                   % ('DETECTED' if triggered else 'cleared', self._rain.value))
+        if triggered != self._rain_published:
+            self._rain_published = triggered
+            msg = Bool()
+            msg.data = triggered
+            self._rain_pub.publish(msg)
+            if before != triggered and self._sensor_info is not None:
+                self._publish_dev_status()
+                self._publish_sensor_info()
+
     def _on_version(self, payload):
         if len(payload) != struct.calcsize(VERSION_FMT):
             return
@@ -1044,6 +1123,7 @@ class McuNode(Node):
         cutter = self._motors.get('cutter')
         linear, angular, _measured = self._speed(now)
         key = (tuple(self._sensor_info.values()), tuple(self._versions.items()),
+               self._rain.triggered,
                (self._battery or {}).get('dock_ok'), (self._battery or {}).get('error'),
                bool(cutter and abs(cutter['speed']) > 500),
                abs(linear) > 1e-2 or abs(angular) > 1e-2,
@@ -1099,7 +1179,7 @@ class McuNode(Node):
             msg.bumper_triggered = bool(s['bumper'] or s['bumper_l'] or s['bumper_r'])
             msg.left_bumper_triggered = bool(s['bumper_l'])
             msg.right_bumper_triggered = bool(s['bumper_r'])
-            msg.rain_triggered = bool(s['rain'])
+            msg.rain_triggered = self._rain_flag(s)
             msg.lift_triggered = bool(s['lift'])
         except Exception as exc:  # pragma: no cover - defensive
             self.get_logger().error('cannot fill MowerBaseDevStatus: %s' % exc,
@@ -1128,7 +1208,7 @@ class McuNode(Node):
             'bumper_triggered': bool(s['bumper'] or s['bumper_l'] or s['bumper_r']),
             'left_bumper_triggered': bool(s['bumper_l']),
             'right_bumper_triggered': bool(s['bumper_r']),
-            'rain_triggered': bool(s['rain']),
+            'rain_triggered': self._rain_flag(s),
             'lift_triggered': bool(s['lift']),
         }
 
@@ -1142,7 +1222,9 @@ class McuNode(Node):
             msg.header.stamp = self.get_clock().now().to_msg()
         s = self._sensor_info
         _set_if(msg, 'bumper_triggered', bool(s['bumper'] or s['bumper_l'] or s['bumper_r']))
-        _set_if(msg, 'rain_triggered', bool(s['rain']))
+        _set_if(msg, 'rain_triggered', self._rain_flag(s))
+        if self._rain.value is not None:
+            _set_if(msg, 'rain_sensor_value', max(0, min(0xFFFF, int(self._rain.value))))
         _set_if(msg, 'lift_triggered', bool(s['lift']))
         _set_if(msg, 'stop_triggered', bool(s['stop']))
         _set_if(msg, 'battery_gate_open', bool(s['battery_gate']))
@@ -1175,7 +1257,7 @@ class McuNode(Node):
         cutter = self._motors.get('cutter')
         _set_if(msg, 'is_cutting', bool(cutter and abs(cutter['speed']) > 500))
         _set_if(msg, 'is_docking_done', bool(self._battery and self._battery.get('dock_ok')))
-        # TODO: key_pressed, is_fill_light_on, rain_sensor_value, bumper_routing_*,
+        # TODO: key_pressed, is_fill_light_on, bumper_routing_*,
         # is_docking_done and the MotorInfo sub-messages need sources that are not on this
         # bus (buttons on /dev/keyboard, fill light in the light node, /charging state).
 
