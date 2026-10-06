@@ -27,8 +27,10 @@ export const NewAreaModal = ({open, areaType, areaName, onAreaTypeChange, onArea
                 {/* Area types, available on every robot profile (no gating):
                     - workarea: a mowing area (map server working area).
                     - navigation: a drive-only corridor saved with
-                      is_navigation_area=true; vendor apps call this a
-                      "channel" / "path" between lawns.
+                      is_navigation_area=true; vendor apps call these
+                      "channels". The toolbar's Path tool draws them as a
+                      polyline buffered to a width (utils/corridor.ts),
+                      optionally snapped to the dock approach.
                     - obstacle: a keep-out polygon, parented to the work area
                       that contains it (useMapEditing.addObstacle).
                     The dock is placed with the toolbar's dock tool. */}

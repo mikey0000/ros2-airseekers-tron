@@ -248,6 +248,9 @@ export interface UseMapEditingReturn {
     handleSubtract: () => void;
     handleSplit: () => void;
 
+    // Path tool: add buffered corridor polygons as named navigation areas.
+    addNavigationAreas: (geometries: Polygon[], name: string) => string[];
+
     // Modal action handlers
     handleSaveNewArea: () => void;
     updateMowingArea: () => void;
@@ -995,6 +998,35 @@ export function useMapEditing({
     }, [selectedFeatureIds, features, notification, drawRef, t]);
 
     // -----------------------------------------------------------------------
+    // Path tool
+    // -----------------------------------------------------------------------
+    /**
+     * Add corridor polygons (already buffered by utils/corridor.ts) as
+     * navigation areas — the same feature class and save path as a polygon
+     * drawn with the "navigation" type. A closed loop arrives as two pieces;
+     * both get the operator's name with a part suffix. Returns the new ids.
+     */
+    const addNavigationAreas = useCallback((geometries: Polygon[], name: string): string[] => {
+        const ids: string[] = [];
+        const valid = geometries.filter((g) => g.type === "Polygon" && (g.coordinates[0]?.length ?? 0) >= 4);
+        if (valid.length === 0) return ids;
+        setFeatures((currFeatures) => {
+            const next = {...currFeatures};
+            valid.forEach((geometry, i) => {
+                const id = getNewId(next, "navigation", null, "area");
+                const nav = new NavigationFeature(id);
+                nav.setGeometry(geometry);
+                const trimmed = name.trim();
+                nav.setName(valid.length > 1 && trimmed ? `${trimmed} (${i + 1}/${valid.length})` : trimmed);
+                next[id] = nav;
+                ids.push(id);
+            });
+            return next;
+        });
+        return ids;
+    }, [setFeatures]);
+
+    // -----------------------------------------------------------------------
     // Modal handlers
     // -----------------------------------------------------------------------
     const handleSaveNewArea = useCallback(() => {
@@ -1065,6 +1097,7 @@ export function useMapEditing({
                 case "navigation":
                     replacement = new NavigationFeature(newId);
                     replacement.setGeometry(geometry);
+                    (replacement as NavigationFeature).setName(curMowingAreaFeature.name ?? "");
                     break;
                 case "obstacle": {
                     const parentArea = Object.values(newFeatures).find(
@@ -1088,6 +1121,8 @@ export function useMapEditing({
                     break;
             }
             newFeatures[newId] = replacement;
+        } else if (oldFeature instanceof NavigationFeature) {
+            oldFeature.setName(curMowingAreaFeature.name ?? "");
         } else if (oldFeature instanceof MowingAreaFeature) {
             oldFeature.setName(curMowingAreaFeature.name);
             if (
@@ -1148,6 +1183,9 @@ export function useMapEditing({
         handleAreaSelect,
         handleSubtract,
         handleSplit,
+
+        // Path tool
+        addNavigationAreas,
 
         // Modal actions
         handleSaveNewArea,

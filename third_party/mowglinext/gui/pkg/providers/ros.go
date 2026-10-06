@@ -67,6 +67,10 @@ var topicMap = map[string]topicDef{
 	// while mowing. Both are std_msgs/String.
 	"areaSettings":       {"/map_server_node/area_settings", "std_msgs/msg/String"},
 	"activeAreaSettings": {"/behavior_tree_node/active_area_settings", "std_msgs/msg/String"},
+	// Latched outline of the dock corridor the map server frees in the
+	// navigation mask (dock -> approach pose -> nearest area). Published by
+	// map servers that implement it; absent elsewhere (the GUI tolerates that).
+	"dockCorridor": {"/map_server_node/dock_corridor", "geometry_msgs/msg/PolygonStamped"},
 	// Synthetic heading sources fused by fusion_graph_node as yaw unary
 	// factors. Both carry sensor_msgs/Imu with only `orientation` and
 	// `orientation_covariance[8]` populated — see cog_to_imu.py and

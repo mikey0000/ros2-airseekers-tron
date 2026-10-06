@@ -55,7 +55,8 @@ export const MapStyle = [
         paint: {
             'fill-color': type_fill_color,
             'fill-outline-color': type_color,
-            'fill-opacity': 0.25,
+            // Navigation areas / paths (drive-only, never mowed) read lighter.
+            'fill-opacity': ['case', ['==', ['get', 'user_feature_type'], 'navigation'], 0.1, 0.25],
         },
     },
 
@@ -73,15 +74,27 @@ export const MapStyle = [
         },
     },
 
-    // Inactive polygon stroke – colored by feature_type, dashed
+    // Inactive polygon stroke – colored by feature_type. Mowing areas and
+    // obstacles are solid; navigation areas / paths get a dashed outline so a
+    // drive-only corridor never reads as lawn.
     {
         id: 'gl-draw-polygon-stroke-inactive',
         type: 'line',
-        filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon']],
+        filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'user_feature_type', 'navigation']],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
             'line-color': type_color,
-            'line-dasharray': [3, 1.5],
+            'line-width': 2,
+        },
+    },
+    {
+        id: 'gl-draw-polygon-stroke-inactive-navigation',
+        type: 'line',
+        filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['==', 'user_feature_type', 'navigation']],
+        layout: { 'line-cap': 'butt', 'line-join': 'round' },
+        paint: {
+            'line-color': type_color,
+            'line-dasharray': [2, 2],
             'line-width': 2,
         },
     },

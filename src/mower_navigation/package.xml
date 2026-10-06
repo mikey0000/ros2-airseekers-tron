@@ -28,6 +28,7 @@
   <exec_depend>nav2_costmap_2d</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>mowgli_nav2_plugins</exec_depend>
 
   <test_depend>python3-yaml</test_depend>
 

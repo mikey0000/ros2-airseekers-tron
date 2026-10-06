@@ -1,0 +1,236 @@
+// Copyright 2026 Mowgli Project
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+#ifndef MOWGLI_NAV2_PLUGINS__OBSTACLE_DEVIATION_HPP_
+#define MOWGLI_NAV2_PLUGINS__OBSTACLE_DEVIATION_HPP_
+
+#include <vector>
+
+#include "geometry_msgs/msg/point.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav2_costmap_2d/costmap_2d.hpp"
+
+namespace mowgli_nav2_plugins
+{
+
+/// Optional second costmap that confines a lateral-OFFSET deviation to the
+/// mowing zone. When `costmap != nullptr`, an offset sample point is also
+/// projected into this costmap's frame (via the affine below) and treated
+/// as blocked if its cell is lethal — so an obstacle-clear side that would
+/// skirt the robot OUT of the zone (zone boundary = lethal in the global
+/// keepout costmap) is rejected. The guard applies ONLY to the offset
+/// checks (chooseDeviationSide / growDeviationUntilClear's non-zero
+/// deviation), never to the nominal-path or findFirstObstacle checks.
+///
+/// The affine maps the OFFSET-sample frame into this boundary costmap's
+/// frame, e.g. boundary_frame (map) <- offset_frame:
+///   bx = tx + cos_yaw * x - sin_yaw * y
+///   by = ty + sin_yaw * x + cos_yaw * y
+///
+/// The SAME struct doubles as a ZONE MASK for the obstacle-DETECTION checks
+/// (issue #517): passed as `zone_mask`, a lethal LOCAL-costmap cell that is
+/// ALSO lethal here (out-of-zone / keepout) is NOT an obstacle — the coverage
+/// path was planned to pass beside it (the hedge the boundary was recorded
+/// along, the tree inside a keepout hole) and never enters it. That is the
+/// opposite direction from the offset guard, and the two are passed as
+/// separate arguments so either can be off independently.
+///
+/// Defined at namespace scope (aliased as ObstacleDeviation::BoundaryGuard)
+/// so the helper signatures can take `= {}` defaults — a nested struct with
+/// default member initializers can't be value-initialised in a default
+/// argument inside its own enclosing class.
+struct BoundaryGuard
+{
+  const nav2_costmap_2d::Costmap2D* costmap{nullptr};
+  double tx{0.0};
+  double ty{0.0};
+  double cos_yaw{1.0};
+  double sin_yaw{0.0};
+
+  /// Is the sample-frame point (x, y) lethal-or-inscribed in this costmap
+  /// (i.e. out-of-zone)? Applies the affine above, then thresholds at
+  /// ObstacleDeviation::kLethalThreshold (zone cells are stamped LETHAL).
+  /// Always false when `costmap == nullptr` or the point is off the grid.
+  bool isLethalAt(double x, double y) const;
+};
+
+/// Pure-function helpers for the FTC controller's obstacle-deviation
+/// behaviour. Kept separate from FTCController so they can be unit-tested
+/// against a synthetic Costmap2D without spinning a full controller.
+class ObstacleDeviation
+{
+public:
+  /// Base-frame footprint polygon (e.g. the value returned by
+  /// nav2_costmap_2d::Costmap2DROS::getRobotFootprint()).
+  using Footprint = std::vector<geometry_msgs::msg::Point>;
+
+  /// Lethal-OR-inscribed cost threshold (nav2_costmap_2d::INSCRIBED_INFLATED_
+  /// OBSTACLE). Used by the LINE-sample (half_width) FALLBACK path, which
+  /// relies on the inscribed-inflation band as a body-width proxy.
+  static constexpr unsigned char kLethalThreshold = 253u;
+
+  /// TRUE-lethal-only threshold (nav2_costmap_2d::LETHAL_OBSTACLE). Used by the
+  /// footprint-polygon model, which samples the actual chassis shape and so no
+  /// longer needs the inscribed band as a proxy — it thresholds on real lethal
+  /// cells only, decoupling FTC from the costmap footprint/inflation radius.
+  static constexpr unsigned char kLethalOnlyThreshold = 254u;
+
+  /// Zone-boundary guard for the lateral-OFFSET checks (see ::BoundaryGuard).
+  using BoundaryGuard = ::mowgli_nav2_plugins::BoundaryGuard;
+
+  /// Zone-masked obstacle test (issue #517), the ONE definition every sampler
+  /// below goes through: a local-costmap cell of cost `local_cost` at
+  /// sample-frame (x, y) is an OBSTACLE iff `local_cost >= threshold` AND the
+  /// same point is NOT lethal in `zone_mask` (out-of-zone / keepout). With no
+  /// mask (`zone_mask.costmap == nullptr`) this is the plain threshold test —
+  /// the pre-#517 behaviour. Rationale: the coverage path ends
+  /// chassis_safety_inset inside the boundary and U-turns there, so the
+  /// lookahead footprints at every row end reach the hedge the boundary was
+  /// recorded along (or the tree inside a keepout hole) — real LiDAR returns,
+  /// but ones the path never drives into. Treating them as obstacles produced
+  /// 71 "lateral deviation needed > max" strip aborts in one 73-min mow.
+  static bool isObstacleCell(unsigned char local_cost,
+                             const BoundaryGuard& zone_mask,
+                             double x,
+                             double y,
+                             unsigned char threshold = kLethalOnlyThreshold);
+
+  /// Sample the robot FOOTPRINT polygon against the costmap at a candidate
+  /// pose. The base-frame `footprint` is rotated by `pose`'s heading, placed at
+  /// `pose`'s position shifted laterally (left of heading) by `center_dev`, and
+  /// its INTERIOR is rasterised on a grid at ≤ costmap-resolution spacing
+  /// (bounding-box + point-in-polygon). Returns true if ANY sampled interior
+  /// cell is an obstacle per isObstacleCell(`threshold`, `zone_mask`), OR —
+  /// when `guard.costmap != nullptr` — lands out-of-zone (lethal in the guard
+  /// costmap). An empty `footprint` returns false (nothing to sample; callers
+  /// fall back to the half_width line model).
+  static bool footprintBlocked(const nav2_costmap_2d::Costmap2D& costmap,
+                               const geometry_msgs::msg::PoseStamped& pose,
+                               double center_dev,
+                               const Footprint& footprint,
+                               const BoundaryGuard& guard = {},
+                               unsigned char threshold = kLethalOnlyThreshold,
+                               const BoundaryGuard& zone_mask = {});
+
+  /// Return a copy of `footprint` widened LATERALLY (in base-frame y) by
+  /// `margin` on each side — every vertex above the polygon centroid's y moves
+  /// +margin, every vertex below moves −margin. Longitudinal (x) extent is left
+  /// untouched. This is the footprint-model equivalent of adding
+  /// obstacle_clearance_margin to a half-width: it buys pass-by room for the
+  /// CLEARANCE search without changing detection reach. `margin <= 0` returns
+  /// `footprint` unchanged.
+  static Footprint expandFootprintLateral(const Footprint& footprint, double margin);
+
+  /// Return a copy of `footprint` clipped to its FRONT `front_length_m` metres
+  /// (base-frame x). Every vertex whose x is behind `max_x - front_length_m` is
+  /// projected forward onto that cut plane, so the rear of the body is dropped
+  /// from the polygon. This is the "less-conservative footprint" middle ground
+  /// (spec Part A): probing the leading part of the chassis for the SKIRT
+  /// clearance search — instead of the full 0.60 m length — stops the footprint
+  /// model refusing every skirtable obstacle (the trailing body always
+  /// overlapping something it has already passed). `front_length_m <= 0`, an
+  /// empty footprint, or a length ≥ the body length returns `footprint`
+  /// unchanged. Detection deliberately keeps the FULL footprint; only the
+  /// clearance search uses the clipped copy.
+  static Footprint clipFootprintFront(const Footprint& footprint, double front_length_m);
+
+  /// Cul-de-sac guard (spec Part A): is the obstacle's FAR edge visible inside
+  /// the lookahead window? Scans path poses [start_idx, start_idx +
+  /// lookahead_count) sampling the NOMINAL (zero-deviation) body (footprint if
+  /// given, else ±half_width line). Returns true when EITHER no obstacle is on
+  /// the nominal line (nothing to skirt) OR a clear pose exists AFTER the first
+  /// blocked pose (the obstacle ends within the window, so a lateral skirt has a
+  /// forward exit). Returns false only when an obstacle is present and stays
+  /// blocked to the end of the window — the wall/pocket case where skirting
+  /// sideways boxes the robot in. No zone guard: this asks purely "does the
+  /// nominal corridor reopen ahead", independent of the mowing-zone boundary.
+  /// `zone_mask` (optional) drops out-of-zone lethals from "blocked" — see
+  /// isObstacleCell. The window is clamped to the path end: poses past the last
+  /// one are never sampled.
+  static bool hasClearExit(const nav2_costmap_2d::Costmap2D& costmap,
+                           const std::vector<geometry_msgs::msg::PoseStamped>& path,
+                           std::size_t start_idx,
+                           int lookahead_count,
+                           double half_width = 0.0,
+                           const Footprint& footprint = {},
+                           const BoundaryGuard& zone_mask = {});
+
+  /// Scan path poses [start_idx, start_idx + lookahead_count) and return the
+  /// first index whose costmap cell is blocked. Returns -1 if none / costmap
+  /// lookup fails. When `footprint` is non-empty, the actual chassis polygon is
+  /// sampled at each pose (true-lethal threshold). Otherwise, when
+  /// `half_width > 0`, each pose is sampled across the robot body span
+  /// (±half_width perpendicular to heading, spacing ≤ costmap resolution,
+  /// lethal-or-inscribed threshold) so an off-centerline obstacle the chassis
+  /// would hit is caught; `half_width == 0` keeps the legacy single-centerline
+  /// sample. `zone_mask` (optional) drops out-of-zone lethals — see
+  /// isObstacleCell. The window is clamped to the path end.
+  static int findFirstObstacleIndex(const nav2_costmap_2d::Costmap2D& costmap,
+                                    const std::vector<geometry_msgs::msg::PoseStamped>& path,
+                                    std::size_t start_idx,
+                                    int lookahead_count,
+                                    double half_width = 0.0,
+                                    const Footprint& footprint = {},
+                                    const BoundaryGuard& zone_mask = {});
+
+  /// Decide which side of `obstacle_pose` is free. Scans perpendicular to
+  /// the obstacle's heading by `step` increments out to `max_search`.
+  /// Returns the smallest signed offset (positive = left, negative = right)
+  /// at which the projected body (footprint if given, else ±half_width line)
+  /// is in clear, in-zone cells. Returns 0.0 if neither side is reachable
+  /// within max_search (caller treats as "give up"). When
+  /// `guard.costmap != nullptr`, a side is only "free" if it is also inside the
+  /// zone boundary (not lethal in the guard costmap).
+  static double chooseDeviationSide(const nav2_costmap_2d::Costmap2D& costmap,
+                                    const geometry_msgs::msg::PoseStamped& obstacle_pose,
+                                    double max_search,
+                                    double step,
+                                    const BoundaryGuard& guard = {},
+                                    double half_width = 0.0,
+                                    const Footprint& footprint = {});
+
+  /// Check whether the laterally-offset path is clear in the lookahead
+  /// window. For each pose in [start_idx, start_idx + lookahead_count), the
+  /// pose is shifted perpendicularly by `deviation` (positive = left of
+  /// path heading) and the body (footprint if given, else ±half_width line) is
+  /// sampled. Returns true if no sampled cell is blocked. When
+  /// `guard.costmap != nullptr`, an offset cell that is out-of-zone (lethal in
+  /// the guard costmap) also counts as blocked. `zone_mask` (optional) drops
+  /// out-of-zone lethals from the LOCAL-cost test — see isObstacleCell; meant
+  /// for the nominal-path (deviation == 0) detection call.
+  static bool isPathClearWithDeviation(const nav2_costmap_2d::Costmap2D& costmap,
+                                       const std::vector<geometry_msgs::msg::PoseStamped>& path,
+                                       std::size_t start_idx,
+                                       int lookahead_count,
+                                       double deviation,
+                                       const BoundaryGuard& guard = {},
+                                       double half_width = 0.0,
+                                       const Footprint& footprint = {},
+                                       const BoundaryGuard& zone_mask = {});
+
+  /// Search for the smallest |deviation| that makes the path clear, starting
+  /// from `initial_deviation` and growing in `step` increments up to
+  /// `max_deviation`. Sign is preserved from `initial_deviation` (or chosen
+  /// fresh by chooseDeviationSide if 0). Returns the chosen deviation, or
+  /// the unchanged max-magnitude value if no clearance found (caller checks
+  /// |result| > max_deviation - step). `guard` and `footprint` are forwarded
+  /// to the offset clearance checks.
+  static double growDeviationUntilClear(const nav2_costmap_2d::Costmap2D& costmap,
+                                        const std::vector<geometry_msgs::msg::PoseStamped>& path,
+                                        std::size_t start_idx,
+                                        int lookahead_count,
+                                        double initial_deviation,
+                                        double max_deviation,
+                                        double step,
+                                        const BoundaryGuard& guard = {},
+                                        double half_width = 0.0,
+                                        const Footprint& footprint = {});
+};
+
+}  // namespace mowgli_nav2_plugins
+
+#endif  // MOWGLI_NAV2_PLUGINS__OBSTACLE_DEVIATION_HPP_

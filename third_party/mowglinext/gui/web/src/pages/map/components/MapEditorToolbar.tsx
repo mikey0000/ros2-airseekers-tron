@@ -13,6 +13,8 @@ import {
     FormOutlined,
     PlusOutlined,
     AimOutlined,
+    NodeIndexOutlined,
+    ApiOutlined,
 } from "@ant-design/icons";
 import AsyncButton from "../../../components/AsyncButton.tsx";
 import {ShapePickerDropdown} from "./ShapePickerDropdown.tsx";
@@ -38,6 +40,12 @@ interface MapEditorToolbarProps {
     onEditSelectedFeature?: () => void;
     onPlaceDock?: () => void;
     dockPlacementMode?: boolean;
+    /** Path tool: click a polyline, saved as a buffered navigation corridor. */
+    onDrawPath?: () => void;
+    pathDrawing?: boolean;
+    /** Straight corridor from the dock approach point to the nearest work area. */
+    onConnectDock?: () => void;
+    dockAvailable?: boolean;
 }
 
 interface ToolButtonProps {
@@ -90,7 +98,7 @@ export const MapEditorToolbar = ({
     hasUnsavedChanges, historyIndex, editHistoryLength,
     selectedFeatureCount, onSaveMap, onCancel, onUndo, onRedo,
     onDrawPolygon, onDrawShape, onDrawEmoji, onTrash, onCombine, onSubtract, onSplit, onEditSelectedFeature,
-    onPlaceDock, dockPlacementMode,
+    onPlaceDock, dockPlacementMode, onDrawPath, pathDrawing, onConnectDock, dockAvailable,
 }: MapEditorToolbarProps) => {
     const {colors, displayMode} = useThemeMode();
     const {t} = useTranslation();
@@ -155,6 +163,14 @@ export const MapEditorToolbar = ({
 
         {/* Drawing tools */}
         <ToolButton icon={<BorderOutlined/>} tooltip={t('mapEditorToolbar.drawPolygon')} onClick={onDrawPolygon}/>
+        {onDrawPath && (
+            <ToolButton
+                icon={<NodeIndexOutlined/>}
+                tooltip={pathDrawing ? t('mapEditorToolbar.drawPathActive') : t('mapEditorToolbar.drawPath')}
+                onClick={onDrawPath}
+                primary={pathDrawing}
+            />
+        )}
         <ShapePickerDropdown onDrawShape={onDrawShape} onDrawEmoji={onDrawEmoji} placement="bottomLeft">
             <Tooltip title={t('mapEditorToolbar.addShape')} placement="right">
                 <button
@@ -195,6 +211,14 @@ export const MapEditorToolbar = ({
             primary={dockPlacementMode}
             glow={dockPlacementMode}
         />
+        {onConnectDock && (
+            <ToolButton
+                icon={<ApiOutlined/>}
+                tooltip={dockAvailable ? t('mapEditorToolbar.connectDock') : t('mapEditorToolbar.connectDockNoDock')}
+                onClick={onConnectDock}
+                disabled={!dockAvailable}
+            />
+        )}
     </div>
     );
 };

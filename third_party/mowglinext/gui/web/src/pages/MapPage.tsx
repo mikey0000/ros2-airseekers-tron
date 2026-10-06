@@ -9,7 +9,8 @@ import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {useTranslation} from "react-i18next";
 import {MapArea, Map as MapType} from "../types/ros.ts";
 import DrawControl from "../components/DrawControl.tsx";
-import Map, {Layer, Source} from 'react-map-gl/mapbox';
+import Map, {Layer, Popup, Source} from 'react-map-gl/mapbox';
+import turfCentroid from "@turf/centroid";
 import type {Map as MapboxMap} from 'mapbox-gl';
 import type {Feature} from 'geojson';
 import {FeatureCollection, Position} from "geojson";
@@ -53,6 +54,10 @@ import {markerCorners, selectDockMarker} from "../utils/mapMarker.ts";
 import {useRobotProfile} from "../hooks/useRobotProfile.ts";
 import {hasFeature} from "../constants/robotProfiles.ts";
 import {ManualBladeControl} from "./map/components/ManualBladeControl.tsx";
+import {PathModal} from "./map/components/PathModal.tsx";
+import {CorridorHatchPattern, CORRIDOR_HATCH_IMAGE} from "./map/components/CorridorHatchPattern.tsx";
+import {usePathTool, type PathDockInput} from "./map/hooks/usePathTool.ts";
+import {useDockCorridor} from "../hooks/useDockCorridor.ts";
 
 
 // Mapbox access token comes from the build env only — no hardcoded fallback.
@@ -64,7 +69,7 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined || 
 // highlight (map polygon → panel row). Module-level so the array identity is
 // stable across renders and react-map-gl does not re-bind the query on every
 // render.
-const DYN_OBSTACLE_INTERACTIVE_LAYERS = ['dyn-obstacle-fill'];
+const DYN_OBSTACLE_INTERACTIVE_LAYERS = ['dyn-obstacle-fill', 'dock-corridor-fill'];
 
 export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const {notification} = App.useApp();
@@ -305,6 +310,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         handleTrash, handleCombine,
         handleAreaSelect, handleSubtract, handleSplit,
         handleSaveNewArea, updateMowingArea, cancelAreaModal, deleteFeature,
+        addNavigationAreas,
     } = useMapEditing({
         features,
         setFeatures,
@@ -314,6 +320,47 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         notification,
         mapInstanceRef,
     });
+
+    // Path tool (drive-only corridors, optionally snapped to the dock).
+    const pathDock = useMemo<PathDockInput | null>(() => {
+        const dock = features["dock"];
+        if (!(dock instanceof DockFeatureBase)) return null;
+        return {lonLat: dock.getCoordinates(), heading: dock.getHeading()};
+    }, [features]);
+    const workAreaRings = useMemo(() => Object.values(features)
+        .filter((f): f is MowingAreaFeature => f instanceof MowingAreaFeature)
+        .map((f) => f.geometry.coordinates[0] ?? [])
+        .filter((r) => r.length >= 4), [features]);
+    const navigationCount = useMemo(
+        () => Object.values(features).filter((f) => f instanceof NavigationFeature).length, [features]);
+    const pathTool = usePathTool({
+        drawRef, mapInstanceRef, datum, dock: pathDock, workAreaRings, navigationCount,
+        addNavigationAreas, notification,
+    });
+    const {onLineCreated: pathOnLineCreated, cancel: pathCancel} = pathTool;
+    const onCreateWithPath = useCallback((e: {features: Feature[]}) => {
+        if (pathOnLineCreated(e.features)) return;
+        onCreate(e);
+    }, [pathOnLineCreated, onCreate]);
+    // Leaving edit mode abandons an in-progress path.
+    useEffect(() => {
+        if (!editMap) pathCancel();
+    }, [editMap, pathCancel]);
+
+    // Automatic dock corridor published by the map server (latched; absent on
+    // map servers that do not implement it -> nothing drawn).
+    const dockCorridorPts = useDockCorridor(!compact);
+    const dockCorridorCollection = useMemo<FeatureCollection>(() => {
+        if (dockCorridorPts.length < 3 || datum[0] === 0) return {type: "FeatureCollection", features: []};
+        const ring = dockCorridorPts.map((p) => transpose(offsetX, offsetY, datum, p.y, p.x));
+        ring.push(ring[0]);
+        return {type: "FeatureCollection", features: [{
+            type: "Feature", id: "dock-corridor", properties: {feature_type: "dock-corridor"},
+            geometry: {type: "Polygon", coordinates: [ring]},
+        }]};
+    }, [dockCorridorPts, offsetX, offsetY, datum]);
+    const [corridorHover, setCorridorHover] = useState<{lng: number; lat: number} | null>(null);
+
     useEffect(() => {
         // Don't rebuild features from stream data while in edit mode —
         // path/plan becoming undefined when streams stop would wipe user edits.
@@ -398,6 +445,21 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             ),
         }))
     }, [map, path, plan, offsetX, offsetY, datum, editMap, LAYER_COLORS]);
+
+    // Labels for navigation areas / paths, kept out of labelsCollection so
+    // they never show up as mowable areas (mowingAreas is derived from it).
+    const navLabelsCollection = useMemo<FeatureCollection>(() => {
+        const navs = Object.values(features).filter((f): f is NavigationFeature => f instanceof NavigationFeature);
+        return {
+            type: "FeatureCollection",
+            features: navs.flatMap((f, i) => {
+                if (!f.geometry?.coordinates?.[0]?.length) return [];
+                const c = turfCentroid(f);
+                c.properties = {title: f.getName() || t('mapAreasList.navigationArea', {index: i + 1})};
+                return [c];
+            }),
+        };
+    }, [features, t]);
 
     useEffect(() => {
         const labels = buildLabels(Object.values(features))
@@ -517,7 +579,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 } else if (f instanceof NavigationFeature) {
                     // Short 1-based ordinal within its own type, not the raw id.
                     const navIdx = arr.slice(0, i).filter(x => x instanceof NavigationFeature).length + 1;
-                    name = t('mapAreasList.navigationArea', {index: navIdx});
+                    name = f.getName() || t('mapAreasList.navigationArea', {index: navIdx});
                 } else if (f instanceof ObstacleFeature) {
                     const obsIdx = arr.slice(0, i).filter(x => x instanceof ObstacleFeature).length + 1;
                     name = t('mapAreasList.obstacleArea', {index: obsIdx});
@@ -660,12 +722,20 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // "Mow settings" panel, and Start opens the Start sheet.
     const areaSettings = useAreaSettingsSupport();
     const [settingsArea, setSettingsArea] = useState<{index: number | "defaults"; name?: string; areaName?: string} | null>(null);
+    // Navigation area / path selected in view mode: the settings panel opens
+    // disabled with a hint, since drive-only areas are never mowed.
+    const [settingsNavName, setSettingsNavName] = useState<string | null>(null);
     const [startSheet, setStartSheet] = useState<{open: boolean; selection: StartSelection}>({open: false, selection: "all"});
     const areaChoices = useMemo(
         () => mowingAreaChoices(map, (order) => t('mapAreasList.unnamedArea', {order})),
         [map, t],
     );
     const openAreaSettingsForFeature = useCallback((f: MowingFeature | undefined) => {
+        if (f instanceof NavigationFeature) {
+            const navIdx = Object.values(features).filter((x) => x instanceof NavigationFeature).indexOf(f) + 1;
+            setSettingsNavName(f.getName() || t('mapAreasList.navigationArea', {index: navIdx}));
+            return true;
+        }
         if (!(f instanceof MowingAreaFeature)) return false;
         const index = mowingAreaIndex(map, f.properties.source_working_area_index);
         if (index === undefined) return false;
@@ -675,7 +745,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             areaName: map?.working_area?.[f.properties.source_working_area_index ?? -1]?.name,
         });
         return true;
-    }, [map, t]);
+    }, [map, t, features]);
     const openAreaSettingsById = useCallback(
         (id: string) => { openAreaSettingsForFeature(features[id]); },
         [features, openAreaSettingsForFeature],
@@ -686,7 +756,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             if (editMap || !areaSettings.enabled) return;
             const pt: [number, number] = [e.lngLat.lng, e.lngLat.lat];
             const hit = Object.values(features).find((f) =>
-                f instanceof MowingAreaFeature && pointInPolygon(pt, f.geometry.coordinates));
+                f instanceof MowingAreaFeature && pointInPolygon(pt, f.geometry.coordinates))
+                ?? Object.values(features).find((f) =>
+                    f instanceof NavigationFeature && pointInPolygon(pt, f.geometry.coordinates));
             openAreaSettingsForFeature(hit);
             return;
         }
@@ -708,10 +780,12 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // obstacle it is empty → clears the highlight. Hovering the overlay panel
     // does not reach the map canvas, so panel-driven highlights are never
     // clobbered here.
-    const handleMapMouseMove = useCallback((e: {features?: Array<{properties?: Record<string, unknown> | null}>}) => {
+    const handleMapMouseMove = useCallback((e: {features?: Array<{properties?: Record<string, unknown> | null}>; lngLat?: {lng: number; lat: number}}) => {
         const hit = e.features?.find(f => f.properties?.feature_type === 'dyn-obstacle');
         const id = hit ? (hit.properties?.obs_id as number) : null;
         setSelectedObstacleId(prev => (prev === id ? prev : id));
+        const corridor = e.features?.some(f => f.properties?.feature_type === 'dock-corridor');
+        setCorridorHover(corridor && e.lngLat ? {lng: e.lngLat.lng, lat: e.lngLat.lat} : null);
     }, []);
 
     // Belt-and-suspenders: any time dockDirty flips to true, ensure
@@ -987,6 +1061,19 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 onSave={handleSaveNewArea}
                 onCancel={deleteFeature}
             />
+            <PathModal
+                open={pathTool.draft !== null}
+                name={pathTool.name}
+                width={pathTool.width}
+                dockAvailable={pathTool.dockAvailable}
+                snapToDock={pathTool.snapToDock}
+                invalid={pathTool.invalid}
+                onNameChange={pathTool.setName}
+                onWidthChange={pathTool.setWidth}
+                onSnapToDockChange={pathTool.setSnapToDock}
+                onSave={pathTool.save}
+                onCancel={pathTool.cancel}
+            />
             <EditAreaModal
                 open={areaModelOpen}
                 area={curMowingAreaFeature}
@@ -1038,7 +1125,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         editMode={editMap}
                         controls={{}}
                         defaultMode="simple_select"
-                        onCreate={onCreate}
+                        onCreate={onCreateWithPath}
                         onUpdate={onUpdate}
                         onCombine={onCombine}
                         onDelete={onDelete}
@@ -1121,6 +1208,50 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             }}/>
                         {/* Persistent tracked-obstacle polygons + id labels + hover/select highlight */}
                         {renderDynObstacleLayers(true)}
+                    </Source>
+                    {/* Navigation area / path names (dimmer than mowing-area labels). */}
+                    <Source type={"geojson"} id={"nav-labels"} data={navLabelsCollection}>
+                        <Layer type={"symbol"} id={"nav-label"} layout={{
+                            "text-field": ['get', 'title'],
+                            "text-size": 11,
+                            "text-allow-overlap": false,
+                        }} paint={{
+                            "text-color": LAYER_COLORS.labelText,
+                            "text-opacity": 0.75,
+                            "text-halo-color": LAYER_COLORS.labelHalo,
+                            "text-halo-width": 1.5,
+                        }}/>
+                    </Source>
+                    {/* Automatic dock corridor from the map server: faint hatch + thin outline. */}
+                    <CorridorHatchPattern color={LAYER_COLORS.labelText}/>
+                    <Source type={"geojson"} id={"dock-corridor"} data={dockCorridorCollection}>
+                        <Layer type={"fill"} id={"dock-corridor-fill"} paint={{
+                            "fill-pattern": CORRIDOR_HATCH_IMAGE,
+                            "fill-opacity": 0.5,
+                        }}/>
+                        <Layer type={"line"} id={"dock-corridor-outline"} paint={{
+                            "line-color": LAYER_COLORS.labelText,
+                            "line-opacity": 0.35,
+                            "line-width": 1,
+                        }}/>
+                    </Source>
+                    {corridorHover && (
+                        <Popup longitude={corridorHover.lng} latitude={corridorHover.lat}
+                               closeButton={false} closeOnClick={false} anchor="bottom" offset={8}>
+                            {t('mapPath.autoDockCorridor')}
+                        </Popup>
+                    )}
+                    {/* Path tool live preview: buffered corridor + centreline. */}
+                    <Source type={"geojson"} id={"path-preview"} data={pathTool.previewCollection}>
+                        <Layer type={"fill"} id={"path-preview-fill"}
+                            filter={['==', ['get', 'kind'], 'corridor']}
+                            paint={{"fill-color": LAYER_COLORS.dockHeading, "fill-opacity": 0.25}}/>
+                        <Layer type={"line"} id={"path-preview-outline"}
+                            filter={['==', ['get', 'kind'], 'corridor']}
+                            paint={{"line-color": LAYER_COLORS.dockHeading, "line-width": 2, "line-dasharray": [2, 2]}}/>
+                        <Layer type={"line"} id={"path-preview-centerline"}
+                            filter={['==', ['get', 'kind'], 'centerline']}
+                            paint={{"line-color": LAYER_COLORS.dockHeading, "line-width": 1, "line-opacity": 0.8}}/>
                     </Source>
                     {/* fusion_graph's LiDAR anchor map (walls as ink, scanned ground as a faint wash). */}
                     {lidarMapImage && (
@@ -1207,6 +1338,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onSplit={handleSplit}
                         onPlaceDock={handleDockPlacement}
                         dockPlacementMode={dockPlacementMode}
+                        onDrawPath={pathTool.startPath}
+                        onConnectDock={pathTool.connectNearestAreaToDock}
+                        dockAvailable={pathTool.dockAvailable}
                         onSaveMap={handleSaveMap}
                         onUndo={handleUndo}
                         onRedo={handleRedo}
@@ -1247,6 +1381,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onEditSelectedFeature={handleEditSelectedFeature}
                         onPlaceDock={handleDockPlacement}
                         dockPlacementMode={dockPlacementMode}
+                        onDrawPath={pathTool.startPath}
+                        pathDrawing={pathTool.drawing}
+                        onConnectDock={pathTool.connectNearestAreaToDock}
+                        dockAvailable={pathTool.dockAvailable}
                     />
                 )}
                 {/* Desktop: View mode — bottom glass toolbar */}
@@ -1312,9 +1450,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 <>
                     <AreaSettingsDrawer
                         target={settingsArea?.index ?? null}
-                        title={settingsArea?.name}
+                        title={settingsNavName ?? settingsArea?.name}
                         areaName={settingsArea?.areaName}
-                        onClose={() => setSettingsArea(null)}
+                        disabledHint={settingsNavName !== null ? t('mapPath.notMowedHint') : undefined}
+                        onClose={() => { setSettingsArea(null); setSettingsNavName(null); }}
                     />
                     <StartMowSheet
                         open={startSheet.open}

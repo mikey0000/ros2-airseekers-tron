@@ -228,10 +228,28 @@ export class MapAreaFeature extends MowingFeatureBase {
 }
 
 
+// A drive-only area (is_navigation_area=true): Nav2 may transit through it but
+// it is never mowed. The map editor's Path tool creates these by buffering a
+// polyline into a corridor (vendor apps call them "channels").
 export class NavigationFeature extends MapAreaFeature {
     constructor(id: string) {
         super(id, 'navigation');
         this.setColor("white");
+    }
+
+    setArea(area: MapArea, offsetX: number, offsetY: number, datum: [number, number, number]) {
+        super.setArea(area, offsetX, offsetY, datum);
+        this.setName(area.name ?? '');
+    }
+
+    setName(name: string): NavigationFeature {
+        this.properties.name = name;
+        if (this.area) this.area.name = name;
+        return this;
+    }
+
+    getName(): string {
+        return this.properties.name ?? '';
     }
 }
 

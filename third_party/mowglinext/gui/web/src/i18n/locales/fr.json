@@ -1592,7 +1592,9 @@
     "mowArea": "Tondre une zone",
     "mow": "Tondre",
     "stopManualMowing": "Arrêter",
-    "manualMowing": "Tonte manuelle"
+    "manualMowing": "Tonte manuelle",
+    "drawPath": "Tracer un chemin",
+    "connectDock": "Relier la zone la plus proche à la base"
   },
   "mapEditorToolbar": {
     "saveMapUnsaved": "Enregistrer la carte *",
@@ -1608,7 +1610,11 @@
     "split": "Diviser (sélectionner 1, tracer une ligne)",
     "editProperties": "Modifier les propriétés",
     "clickToPlaceDock": "Cliquez sur la carte pour placer la base",
-    "placeDockPoint": "Placer le point de base"
+    "placeDockPoint": "Placer le point de base",
+    "drawPath": "Tracer un chemin (couloir de circulation)",
+    "drawPathActive": "Cliquez les points, double-cliquez pour terminer (Échap annule)",
+    "connectDock": "Relier la zone la plus proche à la base",
+    "connectDockNoDock": "Placez d’abord la base pour la relier à une zone"
   },
   "mapShapePicker": {
     "square": "Carré",
@@ -4224,5 +4230,26 @@
     "returnToDock": "Retour à la base",
     "resumeOrFresh": "Reprendre / recommencer",
     "start": "Démarrer la tonte"
+  },
+  "mapPath": {
+    "title": "Nouveau chemin",
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "name": "Nom",
+    "defaultName": "Chemin {{index}}",
+    "width": "Largeur : {{width}} m",
+    "widthLabel": "Largeur du chemin en mètres",
+    "snapToDock": "Terminer sur la base",
+    "snapToDockHint": "Termine le chemin au point d’approche de la base (0,8 m devant) puis à la base, pour que le robot arrive bien droit.",
+    "navigationHint": "Les chemins sont des zones de navigation : le robot peut les traverser mais ne les tond jamais. Pensez à enregistrer la carte.",
+    "invalid": "Ce chemin est trop court pour former un couloir.",
+    "noDock": "Aucune position de base n’est définie.",
+    "noWorkArea": "Aucune zone de tonte à relier à la base.",
+    "alreadyConnected": "Le point d’approche de la base est déjà dans une zone de tonte.",
+    "dockConnectorName": "Chemin de la base",
+    "dockConnected": "Chemin de la base ajouté ({{gap}} m jusqu’à la zone la plus proche).",
+    "saveReminder": "Enregistrez la carte pour l’appliquer.",
+    "autoDockCorridor": "Couloir automatique de la base",
+    "notMowedHint": "Ceci est une zone de navigation (chemin). Le robot la traverse mais ne la tond jamais : elle n’a donc pas de réglages de tonte. Renommez-la ou supprimez-la dans l’éditeur de carte."
   }
 }

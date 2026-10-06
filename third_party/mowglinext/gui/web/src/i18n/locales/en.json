@@ -1596,7 +1596,9 @@
     "mowArea": "Mow area",
     "mow": "Mow",
     "stopManualMowing": "Stop",
-    "manualMowing": "Manual Mowing"
+    "manualMowing": "Manual Mowing",
+    "drawPath": "Draw path",
+    "connectDock": "Connect nearest area to dock"
   },
   "mapEditorToolbar": {
     "saveMapUnsaved": "Save Map *",
@@ -1612,7 +1614,11 @@
     "split": "Split (select 1, draw line)",
     "editProperties": "Edit properties",
     "clickToPlaceDock": "Click on map to place dock",
-    "placeDockPoint": "Place dock point"
+    "placeDockPoint": "Place dock point",
+    "drawPath": "Draw path (drive-only corridor)",
+    "drawPathActive": "Click points, double-click to finish (Esc cancels)",
+    "connectDock": "Connect nearest area to dock",
+    "connectDockNoDock": "Place the dock first to connect it to an area"
   },
   "mapShapePicker": {
     "square": "Square",
@@ -4224,5 +4230,26 @@
     "returnToDock": "Return to dock",
     "resumeOrFresh": "Resume / start fresh",
     "start": "Start mowing"
+  },
+  "mapPath": {
+    "title": "New path",
+    "save": "Save",
+    "cancel": "Cancel",
+    "name": "Name",
+    "defaultName": "Path {{index}}",
+    "width": "Width: {{width}} m",
+    "widthLabel": "Path width in metres",
+    "snapToDock": "Snap end to dock",
+    "snapToDockHint": "Ends the path at the dock approach point (0.8 m in front) and then the dock, so the robot arrives straight.",
+    "navigationHint": "Paths are navigation areas: the robot may drive through them but never mows them. Remember to save the map.",
+    "invalid": "This path is too short to make a corridor.",
+    "noDock": "No dock position is set.",
+    "noWorkArea": "There is no mowing area to connect the dock to.",
+    "alreadyConnected": "The dock approach point is already inside a mowing area.",
+    "dockConnectorName": "Dock path",
+    "dockConnected": "Added a dock path ({{gap}} m to the nearest area).",
+    "saveReminder": "Save the map to apply it.",
+    "autoDockCorridor": "Automatic dock corridor",
+    "notMowedHint": "This is a navigation area (path). The robot drives through it but never mows it, so it has no mow settings. Rename or delete it in the map editor."
   }
 }

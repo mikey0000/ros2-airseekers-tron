@@ -36,7 +36,7 @@ export const EditAreaModal = ({open, area, onChange, onSave, onCancel}: EditArea
                         options={AREA_TYPE_OPTIONS.map((o) => ({value: o.value, label: t(o.labelKey)}))}
                     />
                 </Form.Item>
-                {area.feature_type === 'workarea' && (
+                {(area.feature_type === 'workarea' || area.feature_type === 'navigation') && (
                     <Form.Item label={t('mapEditArea.areaName')}>
                         <Input
                             key="areaname"
