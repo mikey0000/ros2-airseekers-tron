@@ -107,6 +107,7 @@ class Harness:
             "fix_timeout_s": 0.5,
             # Never pick up a real /userdata/mower/ntrip.yaml from the test host.
             "ntrip_config_file": "",
+            "ntrip_settings_file": "",
         }
         params.update(extra_params or {})
         self.node = Um960Node(

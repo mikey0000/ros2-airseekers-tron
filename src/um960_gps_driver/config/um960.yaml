@@ -43,6 +43,19 @@ um960_node:
     #        is uploaded to the caster every ntrip_gga_interval_s.
     # "none" no corrections (single point / SBAS only).
     correction_source: ""
+    # Preferred selector (wins when non-empty): auto | ntrip | lora | none.
+    #   auto: NTRIP while the caster delivers CRC-valid RTCM (and NTRIP is enabled in
+    #   ntrip_settings_file / ntrip_enabled / the vendor file), otherwise the LoRa
+    #   base. Only one source ever feeds the receiver. "" = use correction_source.
+    rtcm_source: ""
+    ntrip_enabled: false          # used only when ntrip_settings_file does not exist
+    # Owner caster settings (enabled, host, port, mountpoint, user, password). Written
+    # (mode 0600) by the driver when the GUI NTRIP card changes a field; re-read
+    # when its mtime changes. Wins over ntrip_host/... and the vendor file.
+    ntrip_settings_file: "/userdata/ros2/ntrip.yaml"
+    ntrip_status_topic: "/ntrip/status"   # 1 Hz JSON, latched (transient local)
+    ntrip_fallback_grace_s: 5.0   # auto: hand back to LoRa this long after the last valid frame
+    ntrip_validate_rtcm: true     # only whole CRC-24Q-valid RTCM3 frames reach the receiver
 
     # NTRIP caster. Keep credentials OUT of this file: put them in a separate params
     # file (config/um960_secrets.yaml is git-ignored; see um960_secrets.example.yaml)

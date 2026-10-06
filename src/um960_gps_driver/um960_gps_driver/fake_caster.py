@@ -39,13 +39,20 @@ class FakeCaster:
 
     def __init__(self, port: int = 0, mountpoint: str = "TEST", user: str = "user",
                  password: str = "pass", mode: str = "v2", frame_period_s: float = 0.05,
-                 close_after: Optional[int] = None, host: str = "127.0.0.1") -> None:
+                 close_after: Optional[int] = None, host: str = "127.0.0.1",
+                 corrupt_every: int = 0, sourcetable: Optional[str] = None) -> None:
         self.mountpoint = mountpoint
         self.user = user
         self.password = password
         self.mode = mode
         self.frame_period_s = frame_period_s
         self.close_after = close_after
+        # Every Nth frame goes out with a broken CRC, preceded by junk bytes.
+        self.corrupt_every = int(corrupt_every)
+        self.corrupt_sent = 0
+        self.sourcetable = sourcetable if sourcetable is not None else (
+            "STR;%s;Test;RTCM 3.2;1005(10),1077(1);2;GPS+GLO;TESTNET;DEU;52.52;13.40;1;0;"
+            "fake;none;B;N;9600;\r\nENDSOURCETABLE\r\n" % mountpoint)
         self.requests: List[str] = []       # raw request heads
         self.uploads: List[str] = []        # lines the client sent after the handshake
         self.upload_times: List[float] = []
@@ -104,7 +111,7 @@ class FakeCaster:
             headers[key.strip().lower()] = value.strip()
 
         if self.mode == "sourcetable" or path.lstrip("/") != self.mountpoint:
-            body = "STR;%s;;RTCM 3.2;;;;;;;;;;;;;;;\r\nENDSOURCETABLE\r\n" % self.mountpoint
+            body = self.sourcetable
             conn.sendall(("SOURCETABLE 200 OK\r\nContent-Type: text/plain\r\n"
                           "Content-Length: %d\r\n\r\n%s" % (len(body), body)).encode())
             return
@@ -136,6 +143,9 @@ class FakeCaster:
         try:
             while not self._stop.is_set():
                 frame = sample_frame(1005 if seq % 2 == 0 else 1077, seq)
+                if self.corrupt_every and seq % self.corrupt_every == self.corrupt_every - 1:
+                    frame = b"junk" + frame[:-1] + bytes([frame[-1] ^ 0xFF])
+                    self.corrupt_sent += 1
                 if chunked:
                     # Split each frame over two chunks so chunk and frame boundaries
                     # do not line up.

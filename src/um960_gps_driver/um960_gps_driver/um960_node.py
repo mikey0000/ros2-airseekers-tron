@@ -7,17 +7,24 @@ Publishes
     /fix_status   std_msgs/msg/String         (human-readable quality/solution summary)
     /nmea         std_msgs/msg/String         (raw ASCII sentences, optional)
     /gps/corrections std_msgs/msg/String      (1 Hz JSON correction-source diagnostics)
+    /ntrip/status std_msgs/msg/String         (1 Hz JSON NTRIP client stats, latched)
 
 Serves
     /mower_gps_node/set_lora  mower_interfaces/srv/SetLoRa (vendor LoRa base pairing)
 
-RTK corrections (``correction_source``):
+RTK corrections (``rtcm_source``; only one source ever feeds RTCM to the UM960):
+    auto   (default) NTRIP while the caster delivers valid RTCM, otherwise the LoRa
+           base. NTRIP is used only when enabled in /userdata/ros2/ntrip.yaml
+           (``ntrip_settings_file``), the ``ntrip_enabled`` parameter or the vendor
+           ntrip.yaml.
     lora   the vendor base station sends RTCM over LoRa to the rtk_rover board, which
-           feeds the UM960 itself; the host only pairs it (set_lora). Default.
+           feeds the UM960 itself; the host only pairs it (set_lora).
     ntrip  a host NTRIP client streams RTCM from a caster into the same serial port
-           and uploads the rover GGA. The only mode in which this node writes
-           corrections to the port.
+           and uploads the rover GGA; the LoRa base is locked out even while the
+           caster is unreachable.
     none   no corrections; nothing is ever written except ``config_commands``.
+The legacy ``correction_source`` (none|lora|ntrip, "" = auto) is used when
+``rtcm_source`` is empty; the GUI NTRIP switch still drives it.
 
 The correction parameters (``correction_source``, ``ntrip_*``, ...) can be changed at
 runtime (``ros2 param set``, or the GUI settings binding): a change restarts the
@@ -38,6 +45,11 @@ import rclpy
 from geometry_msgs.msg import TwistStamped
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+
+try:  # absent from the plain-Python test shim
+    from rclpy.qos import DurabilityPolicy
+except ImportError:  # pragma: no cover - depends on the environment
+    DurabilityPolicy = None
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 from std_msgs.msg import Float32, String
 
@@ -63,6 +75,8 @@ from .ntrip_client import (
     load_vendor_ntrip_file,
     make_gga,
 )
+from .ntrip_client import STATE_CONNECTED, STATE_STREAMING
+from .ntrip_settings import DEFAULT_SETTINGS_FILE, file_mtime, load_settings, save_settings
 from .serial_port import SerialError, SerialPort
 
 try:  # rcl_interfaces ships with rclpy; the plain-Python test shim lacks it.
@@ -79,6 +93,13 @@ except ImportError:  # pragma: no cover - depends on the workspace
     SetLoRa = None
 
 CORRECTION_SOURCES = ("none", "lora", "ntrip")
+RTCM_SOURCES = ("auto", "ntrip", "lora", "none")
+# Live changes of these are also written to ntrip_settings_file (GUI persistence).
+PERSISTED_PARAMS = {
+    "ntrip_host": "host", "ntrip_port": "port", "ntrip_mountpoint": "mountpoint",
+    "ntrip_user": "user", "ntrip_password": "password", "ntrip_enabled": "enabled",
+    "correction_source": "enabled", "rtcm_source": "enabled",
+}
 # Parameters read by _init_correction_params(): changing one at runtime restarts the
 # corrections.
 CORRECTION_PARAMS = frozenset({
@@ -87,6 +108,8 @@ CORRECTION_PARAMS = frozenset({
     "ntrip_no_data_timeout_s", "ntrip_reconnect_max_s", "ntrip_fallback_lat",
     "ntrip_fallback_lon", "ntrip_keepalive_s", "forward_rtcm_without_board_ack",
     "ntrip_netmode", "corrections_stale_s", "lora_pairing_enabled",
+    "rtcm_source", "ntrip_enabled", "ntrip_settings_file", "ntrip_fallback_grace_s",
+    "ntrip_validate_rtcm",
 })
 RECONFIGURE_DEBOUNCE_S = 0.3
 # A raw receiver GGA older than this is not uploaded; a synthesized one is used.
@@ -123,6 +146,11 @@ class Um960Node(Node):
     ``parameter_overrides`` (used by the tests to point the node at a pty).
     """
 
+    _ntrip_active = False
+    _ntrip_switches = 0
+    _rtcm_idle_bytes = 0
+    _persist_error = ""
+
     def __init__(self, **kwargs) -> None:
         super().__init__("um960_node", **kwargs)
 
@@ -148,6 +176,15 @@ class Um960Node(Node):
         # "" = automatic: ntrip if the vendor ntrip.yaml says ntrip_enable: true,
         # otherwise lora (the vendor default).
         self.declare_parameter("correction_source", "")
+        # auto|ntrip|lora|none; "" = derive from correction_source ("" there = auto).
+        self.declare_parameter("rtcm_source", "")
+        self.declare_parameter("ntrip_enabled", False)
+        self.declare_parameter("ntrip_settings_file", DEFAULT_SETTINGS_FILE)
+        self.declare_parameter("ntrip_status_topic", "/ntrip/status")
+        # auto: NTRIP keeps the receiver this long after its last valid RTCM frame
+        # before the LoRa base gets it back.
+        self.declare_parameter("ntrip_fallback_grace_s", 5.0)
+        self.declare_parameter("ntrip_validate_rtcm", True)
         self.declare_parameter("ntrip_host", "")
         self.declare_parameter("ntrip_port", 2101)
         self.declare_parameter("ntrip_mountpoint", "")
@@ -213,6 +250,13 @@ class Um960Node(Node):
         self.corrections_pub = self.create_publisher(
             String, str(self.get_parameter("corrections_topic").value), 10
         )
+        status_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
+                                reliability=ReliabilityPolicy.RELIABLE)
+        if DurabilityPolicy is not None:
+            status_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL  # latched
+        self.ntrip_status_pub = self.create_publisher(
+            String, str(self.get_parameter("ntrip_status_topic").value), status_qos
+        )
 
         self.nmea = NmeaParser()
         self.splitter = Um960StreamSplitter()
@@ -239,6 +283,11 @@ class Um960Node(Node):
         self._rtcm_held_warned = 0.0
         self._nrtk_thread: Optional[threading.Thread] = None
         self._nrtk_stop = threading.Event()         # stops the current keepalive thread
+        self._ntrip_active = False                  # host currently owns the RTCM input
+        self._ntrip_switches = 0                    # auto: NTRIP <-> LoRa hand-overs
+        self._rtcm_idle_bytes = 0                   # valid RTCM not written (not active)
+        self._pending_persist: Dict[str, object] = {}
+        self._persist_error = ""
         self._lora_pairing: Optional[str] = None    # "addr,channel" from $GNCON
         self.ntrip: Optional[NtripClient] = None
         # Runtime reconfiguration of the corrections (see _on_set_parameters).
@@ -262,6 +311,7 @@ class Um960Node(Node):
         # Publishing happens on the ROS executor thread so QoS/timers behave normally.
         self._timer = self.create_timer(1.0 / max(self.publish_rate, 1.0), self._publish_tick)
         self._corrections_timer = self.create_timer(1.0, self.publish_corrections)
+        self._ntrip_status_timer = self.create_timer(1.0, self.publish_ntrip_status)
         self._start_corrections()
         if hasattr(self, "add_on_set_parameters_callback"):
             self.add_on_set_parameters_callback(self._on_set_parameters)
@@ -273,18 +323,22 @@ class Um960Node(Node):
         ``runtime``: a reconfiguration while the port may already be open, so the
         off->on handshake _open_port() does on connect is done here instead.
         """
-        if self.correction_source != "ntrip":
+        self._ntrip_active = False
+        if not self._ntrip_wanted:
             self.get_logger().info("corrections: %s%s" % (self.correction_source, reason))
             return
         self.ntrip = NtripClient(
             self.ntrip_config, self._write_rtcm, self._gga_for_caster, log=self._ntrip_log,
         )
         self.get_logger().info(
-            "corrections: NTRIP %s (GGA every %.0fs)%s"
-            % (self.ntrip_config.describe(), self.ntrip_config.gga_interval_s, reason)
+            "corrections: rtcm_source=%s, NTRIP %s (GGA every %.0fs, config from %s)%s"
+            % (self.rtcm_source, self.ntrip_config.describe(),
+               self.ntrip_config.gga_interval_s, self.ntrip_config_source, reason)
         )
         port = self._port
-        if runtime and port is not None and port.is_open:
+        if self.rtcm_source == "ntrip":
+            self._ntrip_active = True
+        if self.rtcm_source == "ntrip" and runtime and port is not None and port.is_open:
             # Switched at runtime with the port already open: _open_port() will not
             # run, so do its off->on handshake here.
             self._rover_nrtk = None
@@ -322,8 +376,18 @@ class Um960Node(Node):
                         successful=False,
                         reason="correction_source must be one of none|lora|ntrip (or empty)",
                     )
+            if param.name == "rtcm_source":
+                value = str(param.value or "").strip().lower()
+                if value not in RTCM_SOURCES + ("",):
+                    return SetParametersResult(
+                        successful=False,
+                        reason="rtcm_source must be one of auto|ntrip|lora|none (or empty)",
+                    )
             if param.name in CORRECTION_PARAMS:
                 touched = True
+        for param in params:
+            if param.name in PERSISTED_PARAMS:
+                self._pending_persist[param.name] = param.value
         if touched and not self._stopping.is_set():
             with self._reconfigure_lock:
                 if self._reconfigure_timer is not None:
@@ -342,6 +406,7 @@ class Um960Node(Node):
                 return
             previous = self.correction_source
             self._stop_corrections()
+            self._persist_settings()
             self._init_correction_params()
             self._start_corrections(" (reconfigured; was %s)" % previous, runtime=True)
             self.corrections_reconfigured += 1
@@ -349,17 +414,21 @@ class Um960Node(Node):
     # -- corrections: configuration ------------------------------------------------
     def _init_correction_params(self) -> None:
         get = lambda name: self.get_parameter(name).value  # noqa: E731
-        source = str(get("correction_source") or "").strip().lower()
+        legacy = str(get("correction_source") or "").strip().lower()
+        mode = str(get("rtcm_source") or "").strip().lower()
+        if not mode:
+            mode = legacy or "auto"
         host = str(get("ntrip_host") or "").strip()
         port = int(get("ntrip_port") or 2101)
         mount = str(get("ntrip_mountpoint") or "").strip()
         user = str(get("ntrip_user") or "")
         password = str(get("ntrip_password") or "")
+        enabled = bool(get("ntrip_enabled"))
         self.ntrip_config_source = "parameters"
         vendor_file = str(get("ntrip_config_file") or "")
         vendor = None
         netmode = str(get("ntrip_netmode") or "").strip().lower()
-        if vendor_file and (not host or not source):
+        if vendor_file and (not host or mode == "auto"):
             vendor = load_vendor_ntrip_file(vendor_file)
         if vendor is not None:
             if not host and vendor["host"]:
@@ -370,22 +439,39 @@ class Um960Node(Node):
                 password = password or str(vendor["password"])
                 netmode = netmode or str(vendor.get("netmode") or "").lower()
                 self.ntrip_config_source = vendor_file
-            if not source and vendor["enable"]:
-                source = "ntrip"
-        if not source:
-            source = "lora"
-        if source not in CORRECTION_SOURCES:
+            enabled = enabled or bool(vendor["enable"])
+        # The owner's settings file (written from the GUI) wins over both.
+        self.ntrip_settings_file = str(get("ntrip_settings_file") or "")
+        self._settings_mtime = file_mtime(self.ntrip_settings_file) \
+            if self.ntrip_settings_file else None
+        settings = load_settings(self.ntrip_settings_file)
+        if settings is not None:
+            host, port = str(settings["host"]), int(settings["port"])
+            mount, user = str(settings["mountpoint"]), str(settings["user"])
+            password = str(settings["password"])
+            enabled = bool(settings["enabled"])
+            self.ntrip_config_source = self.ntrip_settings_file
+        if mode not in RTCM_SOURCES:
             self.get_logger().error(
-                "correction_source %r unknown (expected none|lora|ntrip); using none" % source
+                "rtcm_source %r unknown (expected auto|ntrip|lora|none); using none" % mode
             )
-            source = "none"
-        if source == "ntrip" and (not host or not mount):
+            mode = "none"
+        if mode == "ntrip" and (not host or not mount):
             self.get_logger().error(
-                "correction_source=ntrip but ntrip_host/ntrip_mountpoint are empty "
-                "(parameters and %s); corrections disabled" % (vendor_file or "no file")
+                "rtcm_source=ntrip but the NTRIP host/mountpoint are empty "
+                "(parameters, %s, %s); corrections disabled"
+                % (self.ntrip_settings_file or "no settings file", vendor_file or "no vendor file")
             )
-            source = "none"
-        self.correction_source = source
+            mode = "none"
+        if mode == "auto" and enabled and (not host or not mount):
+            self.get_logger().warn(
+                "NTRIP enabled but host/mountpoint are empty; using the LoRa base only"
+            )
+        self.rtcm_source = mode
+        self.ntrip_enabled = enabled
+        # Whether an NTRIP client runs at all.
+        self._ntrip_wanted = mode == "ntrip" or (mode == "auto" and enabled
+                                                 and bool(host) and bool(mount))
         if netmode not in NETMODE_DEVICES:
             self.get_logger().warn(
                 "ntrip_netmode %r unknown (4g|wifi|auto); socket left unbound" % netmode
@@ -399,6 +485,7 @@ class Um960Node(Node):
             no_data_timeout_s=float(get("ntrip_no_data_timeout_s")),
             reconnect_max_s=float(get("ntrip_reconnect_max_s")),
             bind_device=NETMODE_DEVICES[netmode],
+            validate_rtcm=bool(get("ntrip_validate_rtcm")),
         )
         self.fallback_lat = float(get("ntrip_fallback_lat") or 0.0)
         self.fallback_lon = float(get("ntrip_fallback_lon") or 0.0)
@@ -406,6 +493,68 @@ class Um960Node(Node):
         self.forward_without_ack = bool(get("forward_rtcm_without_board_ack"))
         self.corrections_stale_s = float(get("corrections_stale_s"))
         self.lora_pairing_enabled = bool(get("lora_pairing_enabled"))
+        self.ntrip_fallback_grace_s = max(0.0, float(get("ntrip_fallback_grace_s")))
+
+    @property
+    def correction_source(self) -> str:
+        """The source currently feeding the receiver: ``ntrip``, ``lora`` or ``none``."""
+        mode = getattr(self, "rtcm_source", "none")
+        if mode == "auto":
+            return "ntrip" if self._ntrip_active else "lora"
+        return mode
+
+    def _persist_settings(self) -> None:
+        """Write live changes of the caster fields to ntrip_settings_file (mode 0600)."""
+        pending, self._pending_persist = self._pending_persist, {}
+        if not pending or not self.ntrip_settings_file:
+            return
+        current = load_settings(self.ntrip_settings_file) or {
+            "enabled": self.ntrip_enabled, "host": self.ntrip_config.host,
+            "port": self.ntrip_config.port, "mountpoint": self.ntrip_config.mountpoint,
+            "user": self.ntrip_config.user, "password": self.ntrip_config.password,
+        }
+        for name, value in pending.items():
+            key = PERSISTED_PARAMS[name]
+            if name in ("correction_source", "rtcm_source"):
+                value = str(value or "").strip().lower()
+                if value in ("", "auto"):
+                    continue
+                current["enabled"] = value == "ntrip"
+            elif key == "enabled":
+                current["enabled"] = bool(value)
+            elif key == "port":
+                current["port"] = int(value or 2101)
+            else:
+                current[key] = str(value or "").strip() if key != "password" else str(value or "")
+        try:
+            save_settings(self.ntrip_settings_file, current)
+            self._persist_error = ""
+            self.get_logger().info(
+                "saved NTRIP settings to %s (enabled=%s, %s@%s:%d/%s, password %s)"
+                % (self.ntrip_settings_file, current["enabled"], current["user"] or "-",
+                   current["host"], int(current["port"]), current["mountpoint"],
+                   "set" if current["password"] else "empty")
+            )
+        except OSError as exc:
+            self._persist_error = str(exc)
+            self.get_logger().error("could not save %s: %s" % (self.ntrip_settings_file, exc))
+
+    def _check_settings_file(self) -> None:
+        """Re-read ntrip_settings_file when it changed on disk (hand edit / other tool)."""
+        if not self.ntrip_settings_file or self._stopping.is_set():
+            return
+        mtime = file_mtime(self.ntrip_settings_file)
+        if mtime == self._settings_mtime:
+            return
+        self._settings_mtime = mtime
+        self.get_logger().info("%s changed; reloading NTRIP settings" % self.ntrip_settings_file)
+        with self._reconfigure_lock:
+            if self._reconfigure_timer is not None:
+                return
+            timer = threading.Timer(RECONFIGURE_DEBOUNCE_S, self._reconfigure_corrections)
+            timer.daemon = True
+            self._reconfigure_timer = timer
+            timer.start()
 
     def _ntrip_log(self, level: str, message: str) -> None:
         getattr(self.get_logger(), level if level != "warning" else "warn")(message)
@@ -446,6 +595,10 @@ class Um960Node(Node):
         RTCM is held (dropped) until the board reports ``$GNRTK,ON`` - as the vendor
         ``rtcmCallback`` does - unless ``forward_rtcm_without_board_ack``.
         """
+        if self.correction_source != "ntrip":
+            # auto mode before the hand-over: the LoRa base still owns the receiver.
+            self._rtcm_idle_bytes += len(data)
+            return
         if not self._rtcm_gate_open():
             self._rtcm_held_bytes += len(data)
             now = time.monotonic()
@@ -470,12 +623,48 @@ class Um960Node(Node):
                                                            "" if ok else " (write FAILED)")
         )
 
+    def _ntrip_should_own(self) -> bool:
+        """auto: NTRIP owns the receiver while valid RTCM arrived within the grace."""
+        client = self.ntrip
+        if client is None:
+            return False
+        if self.rtcm_source == "ntrip":
+            return True
+        if client.state not in (STATE_CONNECTED, STATE_STREAMING):
+            return False
+        last = client.last_frame_time
+        if last is None:
+            return False
+        grace = max(self.ntrip_fallback_grace_s, 0.5)
+        return client._clock() - last <= grace
+
     def _nrtk_keepalive_loop(self, stop: Optional[threading.Event] = None) -> None:
-        """Re-send ``$GNRTK,ON*69`` every ``ntrip_keepalive_s``, unconditionally."""
+        """Hand-over (auto) + ``$GNRTK,ON*69`` every ``ntrip_keepalive_s``."""
         stop = stop or threading.Event()
         while not self._stopping.wait(0.05) and not stop.is_set():
             port = self._port
             if port is None or not port.is_open:
+                continue
+            if self.rtcm_source == "auto":
+                want = self._ntrip_should_own()
+                if want and not self._ntrip_active:
+                    self._ntrip_active = True
+                    self._ntrip_switches += 1
+                    self._rover_nrtk = None
+                    self.get_logger().info("rtcm_source auto: NTRIP delivering, taking over "
+                                           "from the LoRa base")
+                    self._nrtk_enable("NTRIP connected")
+                    continue
+                if not want and self._ntrip_active:
+                    # No OFF command (the vendor never sends one): stopping the
+                    # keep-alive lets the board return to LoRa within ~6 s.
+                    self._ntrip_active = False
+                    self._ntrip_switches += 1
+                    self.get_logger().warn("rtcm_source auto: NTRIP lost (%s); handing the "
+                                           "receiver back to the LoRa base"
+                                           % (self.ntrip.state if self.ntrip else "stopped"))
+                    continue
+            if not self._ntrip_active:
                 continue
             with self._nrtk_lock:
                 if time.monotonic() - self._nrtk_on_sent < self.nrtk_keepalive_s:
@@ -506,7 +695,10 @@ class Um960Node(Node):
         diff_age = fix.get("fix_age")
         diff_age = None if diff_age is None else float(diff_age)
         out: Dict[str, object] = {"source": self.correction_source,
+                                  "rtcm_source": self.rtcm_source,
                                   "receiver_diff_age_s": diff_age}
+        if self.ntrip is not None:
+            out["ntrip_state"] = self.ntrip.state
         if self.correction_source == "ntrip" and self.ntrip is not None:
             stats = self.ntrip.stats()
             out.update(stats)
@@ -565,6 +757,49 @@ class Um960Node(Node):
         clean = {k: (None if isinstance(v, float) and not math.isfinite(v) else v)
                  for k, v in summary.items()}
         self.corrections_pub.publish(String(data=json.dumps(clean, sort_keys=True)))
+
+    def ntrip_status(self) -> Dict[str, object]:
+        """The /ntrip/status payload (never contains the password)."""
+        cfg = self.ntrip_config
+        fix = self.nmea.fix
+        out: Dict[str, object] = {
+            "rtcm_source": self.rtcm_source,
+            "active_source": self.correction_source,
+            "enabled": self.ntrip_enabled,
+            "configured": bool(cfg.host and cfg.mountpoint),
+            "host": cfg.host,
+            "port": cfg.port,
+            "mountpoint": cfg.mountpoint,
+            "user_set": bool(cfg.user),
+            "password_set": bool(cfg.password),
+            "version": cfg.version,
+            "config_from": self.ntrip_config_source,
+            "settings_file": self.ntrip_settings_file,
+            "persist_error": self._persist_error,
+            "switches": self._ntrip_switches,
+            "rover_nrtk": self._rover_nrtk,
+            "rtcm_held_bytes": self._rtcm_held_bytes,
+            "rtcm_idle_bytes": self._rtcm_idle_bytes,
+            "receiver_quality": fix.get("quality_label"),
+            "receiver_solution": fix.get("position_type"),
+            "receiver_diff_age_s": fix.get("fix_age"),
+        }
+        if self.ntrip is not None:
+            stats = self.ntrip.stats()
+            out.update(stats)
+            out["rtcm_age_s"] = stats["frame_age_s"]
+        else:
+            out.update({"state": STATE_OFF, "connected": False, "rate_bps": 0.0,
+                        "bytes_rx": 0, "rtcm_age_s": None, "retries": 0})
+        return out
+
+    def publish_ntrip_status(self) -> None:
+        self._check_settings_file()
+        with self._lock:
+            status = self.ntrip_status()
+        clean = {k: (None if isinstance(v, float) and not math.isfinite(v) else v)
+                 for k, v in status.items()}
+        self.ntrip_status_pub.publish(String(data=json.dumps(clean, sort_keys=True)))
 
     # -- vendor LoRa pairing -------------------------------------------------------
     def _on_set_lora(self, request, response):
@@ -629,6 +864,9 @@ class Um960Node(Node):
                 self.get_logger().info("sent receiver config: %s" % command)
             except SerialError as exc:
                 self.get_logger().warn("failed to send config %r: %s" % (command, exc))
+        if self.rtcm_source == "auto" and self._ntrip_active:
+            # Re-do the hand-over from the keepalive thread once NTRIP is flowing.
+            self._ntrip_active = False
         if self.correction_source == "ntrip":
             # A (re)opened port is an off->on transition: the board may have
             # rebooted or fallen back to LoRa while we were away.

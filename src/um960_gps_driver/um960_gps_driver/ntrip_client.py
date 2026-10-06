@@ -207,29 +207,44 @@ def rtcm3_frame(payload: bytes) -> bytes:
 
 
 class Rtcm3FrameCounter:
-    """Counts complete, CRC-valid RTCM 3 frames in an arbitrary byte stream."""
+    """Splits an arbitrary byte stream into complete, CRC-24Q-valid RTCM 3 frames.
+
+    ``extract()`` returns the valid frames; everything else (bytes before a
+    preamble, false preambles, frames with a bad CRC) is dropped and counted in
+    ``dropped_bytes`` / ``crc_errors``. ``feed()`` is the counting-only variant.
+    """
+
+    MAX_BUFFER = 4 * 1029  # a few maximum-size frames
 
     def __init__(self) -> None:
         self._buf = bytearray()
         self.frames = 0
         self.crc_errors = 0
+        self.dropped_bytes = 0
         self.message_types: Dict[int, int] = {}
 
     def feed(self, data: bytes) -> int:
         """Return the number of valid frames completed by ``data``."""
+        return len(self.extract(data))
+
+    def extract(self, data: bytes) -> List[bytes]:
+        """Return the valid frames completed by ``data`` (in stream order)."""
         self._buf.extend(data)
-        found = 0
+        out: List[bytes] = []
         while True:
             start = self._buf.find(bytes([RTCM3_PREAMBLE]))
             if start < 0:
+                self.dropped_bytes += len(self._buf)
                 self._buf.clear()
                 break
             if start:
+                self.dropped_bytes += start
                 del self._buf[:start]
             if len(self._buf) < 3:
                 break
             if self._buf[1] & 0xFC:
                 # The 6 reserved bits after the preamble must be zero: not a frame.
+                self.dropped_bytes += 1
                 del self._buf[:1]
                 continue
             length = ((self._buf[1] & 0x03) << 8) | self._buf[2]
@@ -239,7 +254,7 @@ class Rtcm3FrameCounter:
             frame = bytes(self._buf[:total])
             crc = (frame[-3] << 16) | (frame[-2] << 8) | frame[-1]
             if crc24q(frame[:-3]) == crc:
-                found += 1
+                out.append(frame)
                 self.frames += 1
                 if length >= 2:
                     msg_type = (frame[3] << 4) | (frame[4] >> 4)
@@ -247,8 +262,9 @@ class Rtcm3FrameCounter:
                 del self._buf[:total]
             else:
                 self.crc_errors += 1
-                del self._buf[:1]  # false preamble: resync on the next 0xD3
-        return found
+                self.dropped_bytes += 1
+                del self._buf[:1]  # false preamble / corrupt frame: resync on the next 0xD3
+        return out
 
 
 # --------------------------------------------------------------------------------------
@@ -261,7 +277,7 @@ class NtripConfig:
                  password: str = "", version: int = 2, gga_interval_s: float = 10.0,
                  connect_timeout_s: float = 5.0, no_data_timeout_s: float = 20.0,
                  reconnect_min_s: float = 1.0, reconnect_max_s: float = 30.0,
-                 bind_device: str = "") -> None:
+                 bind_device: str = "", validate_rtcm: bool = True) -> None:
         self.host = host
         self.port = int(port)
         self.mountpoint = mountpoint
@@ -275,6 +291,8 @@ class NtripConfig:
         self.reconnect_max_s = float(reconnect_max_s)
         # Network interface to bind the socket to (SO_BINDTODEVICE), "" = any.
         self.bind_device = bind_device
+        # True: only complete CRC-24Q-valid RTCM 3 frames reach write_rtcm.
+        self.validate_rtcm = bool(validate_rtcm)
 
     def describe(self) -> str:
         """Log-safe description (never includes the password)."""
@@ -314,6 +332,9 @@ class NtripClient:
         self.last_frame_time: Optional[float] = None
         self.last_gga_time: Optional[float] = None
         self.connected_since: Optional[float] = None
+        self.frames_written = 0
+        self.consecutive_failures = 0
+        self.backoff_s = 0.0
 
     # -- lifecycle -------------------------------------------------------------------
     def start(self) -> None:
@@ -349,14 +370,23 @@ class NtripClient:
                 "age_s": None if self.last_rx_time is None else round(now - self.last_rx_time, 2),
                 "frame_age_s": (None if self.last_frame_time is None
                                 else round(now - self.last_frame_time, 2)),
+                "connected": self.state in (STATE_CONNECTED, STATE_STREAMING),
                 "frames": self._frames.frames,
+                "frames_written": self.frames_written,
                 "crc_errors": self._frames.crc_errors,
+                "dropped_bytes": self._frames.dropped_bytes,
+                "validate_rtcm": self.config.validate_rtcm,
                 "message_types": dict(sorted(self._frames.message_types.items())),
                 "gga_sent": self.gga_sent,
                 "gga_age_s": (None if self.last_gga_time is None
                               else round(now - self.last_gga_time, 2)),
                 "connects": self.connects,
                 "attempts": self.attempts,
+                "retries": self.consecutive_failures,
+                "backoff_s": self.backoff_s,
+                "uptime_s": (round(now - self.connected_since, 1)
+                             if self.connected_since is not None
+                             and self.state in (STATE_CONNECTED, STATE_STREAMING) else None),
                 "last_error": self.last_error,
             }
 
@@ -378,6 +408,8 @@ class NtripClient:
             try:
                 body = self._connect()
                 backoff = self.config.reconnect_min_s  # handshake OK: reset the backoff
+                self.consecutive_failures = 0
+                self.backoff_s = 0.0
                 self._stream(body)
                 if self._stop.is_set():
                     break
@@ -400,6 +432,8 @@ class NtripClient:
                 break
             if self.state not in FAILED_STATES:
                 self._set_state(STATE_RECONNECTING)
+            self.consecutive_failures += 1
+            self.backoff_s = backoff
             self._stop.wait(backoff)
             backoff = min(max(backoff * 2.0, self.config.reconnect_min_s),
                           self.config.reconnect_max_s)
@@ -537,13 +571,23 @@ class NtripClient:
             self.last_rx_time = now
             self._rate.append((now, len(data)))
             self._trim_rate(now)
-            if self._frames.feed(data):
+            frames = self._frames.extract(data)
+            if frames:
                 self.last_frame_time = now
             if self.state != STATE_STREAMING:
                 self.state = STATE_STREAMING
+        if self.config.validate_rtcm:
+            # Only whole, CRC-checked frames reach the receiver; partial frames
+            # wait in the framer for the rest of their bytes.
+            if not frames:
+                return
+            out = b"".join(frames)
+        else:
+            out = data
         try:
-            self._write_rtcm(data)
-            self.bytes_written += len(data)
+            self._write_rtcm(out)
+            self.bytes_written += len(out)
+            self.frames_written += len(frames)
         except Exception as exc:  # noqa: BLE001 - a serial hiccup must not kill the client
             self.write_errors += 1
             if self.write_errors in (1, 10, 100) or self.write_errors % 1000 == 0:
@@ -604,6 +648,8 @@ __all__ = [
     "STATE_ERROR",
     "VENDOR_NTRIP_FILE",
     "load_vendor_ntrip_file",
+    "fetch_sourcetable",
+    "parse_sourcetable",
 ]
 
 
@@ -671,3 +717,94 @@ def load_vendor_ntrip_file(path: str) -> Optional[Dict[str, object]]:
         "mountpoint": _str("ntrip_mountpoint"),
         "netmode": _str("ntrip_netmode"),
     }
+
+
+# --------------------------------------------------------------------------------------
+# sourcetable (mountpoint picker)
+# --------------------------------------------------------------------------------------
+# STR record fields (NTRIP 2.0, RTCM 10410.1 table 7): index -> name.
+_STR_FIELDS = ("type", "mountpoint", "identifier", "format", "format_details", "carrier",
+               "nav_system", "network", "country", "lat", "lon", "nmea", "solution",
+               "generator", "compression", "authentication", "fee", "bitrate", "misc")
+
+
+def parse_sourcetable(text: str) -> Dict[str, List[Dict[str, object]]]:
+    """Parse a caster sourcetable into ``{"streams": [...], "casters": [...], "networks": [...]}``.
+
+    Each stream is a dict keyed by the STR field names; ``lat``/``lon`` are floats
+    (0.0 when missing), ``nmea`` (the stream wants a GGA upload) is a bool and
+    ``bitrate`` an int. Malformed lines are skipped; parsing stops at
+    ``ENDSOURCETABLE``.
+    """
+    streams: List[Dict[str, object]] = []
+    casters: List[Dict[str, object]] = []
+    networks: List[Dict[str, object]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.upper().startswith("ENDSOURCETABLE"):
+            break
+        fields = line.split(";")
+        kind = fields[0].upper()
+        if kind == "STR" and len(fields) >= 2 and fields[1]:
+            rec: Dict[str, object] = {}
+            for i, name in enumerate(_STR_FIELDS):
+                rec[name] = fields[i].strip() if i < len(fields) else ""
+            rec["type"] = "STR"
+            for key in ("lat", "lon"):
+                try:
+                    rec[key] = float(rec[key] or 0.0)
+                except ValueError:
+                    rec[key] = 0.0
+            rec["nmea"] = str(rec["nmea"]) == "1"
+            try:
+                rec["bitrate"] = int(rec["bitrate"] or 0)
+            except ValueError:
+                rec["bitrate"] = 0
+            streams.append(rec)
+        elif kind == "CAS" and len(fields) >= 3:
+            casters.append({"host": fields[1], "port": fields[2],
+                            "identifier": fields[3] if len(fields) > 3 else ""})
+        elif kind == "NET" and len(fields) >= 2:
+            networks.append({"identifier": fields[1],
+                             "operator": fields[2] if len(fields) > 2 else ""})
+    return {"streams": streams, "casters": casters, "networks": networks}
+
+
+def fetch_sourcetable(host: str, port: int = 2101, user: str = "", password: str = "",
+                      version: int = 2, timeout_s: float = 8.0,
+                      max_bytes: int = 4 * 1024 * 1024) -> Dict[str, List[Dict[str, object]]]:
+    """Download and parse the caster sourcetable (``GET /``).
+
+    Raises ``NtripError`` (state ``auth_failed`` / ``error``) or ``OSError``.
+    """
+    sock = socket.create_connection((host, int(port)), timeout=timeout_s)
+    try:
+        sock.settimeout(timeout_s)
+        sock.sendall(build_request(host, int(port), "", user, password, version, None))
+        buf = bytearray()
+        deadline = time.monotonic() + timeout_s
+        while len(buf) < max_bytes and time.monotonic() < deadline:
+            try:
+                chunk = sock.recv(65536)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if b"ENDSOURCETABLE" in buf:
+                break
+    finally:
+        sock.close()
+    head, sep, body = bytes(buf).partition(b"\r\n\r\n")
+    if not sep:
+        raise NtripError(STATE_ERROR, "no response from caster")
+    status, code, headers = parse_response_head(head)
+    if code in (401, 403):
+        raise NtripError(STATE_AUTH_FAILED, "caster refused the credentials (%s)" % status)
+    if code != 200 and not status.upper().startswith("SOURCETABLE"):
+        raise NtripError(STATE_ERROR, "unexpected caster response %r" % status[:80])
+    if "chunked" in headers.get("transfer-encoding", "").lower():
+        body = ChunkedDecoder().feed(body)
+    return parse_sourcetable(body.decode("latin-1", "replace"))

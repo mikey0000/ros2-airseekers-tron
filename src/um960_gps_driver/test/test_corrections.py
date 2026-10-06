@@ -239,10 +239,11 @@ def test_vendor_ntrip_yaml_enables_ntrip_when_source_unset(caster, tmp_path):
     h = Harness(extra_params={"ntrip_config_file": str(path),
                               "forward_rtcm_without_board_ack": True})
     try:
-        assert h.node.correction_source == "ntrip"
+        # rtcm_source auto: NTRIP takes over once the caster delivers valid RTCM.
+        _wait(lambda: h.node.correction_source == "ntrip")
         assert h.node.ntrip_config_source == str(path)
         reader = PtyReader(h.master)
-        _wait(lambda: sample_frame(1005, 0) in reader.poll())
+        _wait(lambda: sample_frame(1005, 10) in reader.poll())
     finally:
         h.close()
 
