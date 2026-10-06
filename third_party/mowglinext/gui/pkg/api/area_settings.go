@@ -66,6 +66,10 @@ var areaPathModes = map[string]bool{
 	"zigzag": true, "cross": true, "alternate": true, "spiral": true, "contour_only": true,
 }
 
+var areaRouteOrders = map[string]bool{"boustrophedon": true, "snake": true, "spiral": true, "racetrack": true}
+
+var areaTurnTypes = map[string]bool{"auto": true, "loop": true, "reverse": true, "pivot": true}
+
 type numRange struct {
 	min, max float64
 	integer  bool
@@ -79,6 +83,8 @@ var areaNumericKeys = map[string]numRange{
 	"swath_overlap_m":            {0, 0.1, false},
 	"repeat":                     {1, 5, true},
 	"alternate_angle_offset_deg": {0, 180, false},
+	"route_spiral_size":          {2, 20, true},
+	"min_turn_radius_m":          {0, 2, false},
 }
 
 // validateAreaSettings checks every key against the contract. Unknown keys
@@ -87,7 +93,8 @@ func validateAreaSettings(s map[string]any) error {
 	for k, v := range s {
 		if v == nil {
 			// null resets the key to its default (map server merge semantics).
-			if _, known := areaNumericKeys[k]; known || k == "path_mode" || k == "edge_first" {
+			if _, known := areaNumericKeys[k]; known || k == "path_mode" || k == "edge_first" ||
+				k == "route_order" || k == "turn_type" {
 				continue
 			}
 			return fmt.Errorf("unknown setting %q", k)
@@ -113,6 +120,16 @@ func validateAreaSettings(s map[string]any) error {
 			str, ok := v.(string)
 			if !ok || !areaPathModes[str] {
 				return fmt.Errorf("path_mode must be one of zigzag, cross, alternate, spiral, contour_only")
+			}
+		case "route_order":
+			str, ok := v.(string)
+			if !ok || !areaRouteOrders[str] {
+				return fmt.Errorf("route_order must be one of boustrophedon, snake, spiral, racetrack")
+			}
+		case "turn_type":
+			str, ok := v.(string)
+			if !ok || !areaTurnTypes[str] {
+				return fmt.Errorf("turn_type must be one of auto, loop, reverse, pivot")
 			}
 		case "edge_first":
 			if _, ok := v.(bool); !ok {

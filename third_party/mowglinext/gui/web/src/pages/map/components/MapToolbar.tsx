@@ -21,12 +21,17 @@ import {
     CloseOutlined,
     ImportOutlined,
     DeleteOutlined,
+    EyeOutlined,
 } from "@ant-design/icons";
 import type {MenuInfo} from "rc-menu/lib/interface";
 import {useTranslation} from "react-i18next";
 import AsyncButton from "../../../components/AsyncButton.tsx";
 import AsyncDropDownButton from "../../../components/AsyncDropDownButton.tsx";
 import type {Feature} from "geojson";
+import {canPreviewPlan} from "../../../hooks/usePlanPreview.ts";
+
+/** Menu key of the "all areas" entry of the Preview plan dropdown. */
+export const PREVIEW_ALL_KEY = "__all__";
 
 interface MowingAreaItem extends MenuItemType {
     feat: Feature;
@@ -49,6 +54,8 @@ interface MapToolbarProps {
     onImportOpenMower: () => void;
     onResetMowingProgress: () => void;
     onMowArea: (key: string) => Promise<void>;
+    /** Plan preview of one area (its menu key) or PREVIEW_ALL_KEY; no mowing. */
+    onPreviewPlan?: (key: string) => Promise<void>;
     pitched?: boolean;
     onTogglePitch?: () => void;
     onStart?: () => Promise<void>;
@@ -70,7 +77,7 @@ export const MapToolbar = ({
     onEditMap, onToggleSatellite,
     onManualMode, onStopManualMode,
     onBackupMap, onRestoreMap, onDownloadGeoJSON, onImportOpenMower, onResetMowingProgress,
-    onMowArea, pitched, onTogglePitch,
+    onMowArea, onPreviewPlan, pitched, onTogglePitch,
     onStart, onHome, onEmergencyOn, onEmergencyOff,
     onAreaRecording, onMowNextArea, onContinueOrPause,
     onBladeForward, onBladeBackward, onBladeOff,
@@ -229,6 +236,21 @@ export const MapToolbar = ({
             >
                 {t("mapToolbar.mowArea")}
             </AsyncDropDownButton>
+
+            {onPreviewPlan && canPreviewPlan(stateName) && (
+                <AsyncDropDownButton
+                    icon={<EyeOutlined />}
+                    menu={{
+                        items: [
+                            {key: PREVIEW_ALL_KEY, label: t("planPreview.allAreas")},
+                            ...mowingAreas.map(({key, label}) => ({key, label})),
+                        ],
+                        onAsyncClick: (e: MenuInfo) => onPreviewPlan(e.key),
+                    }}
+                >
+                    {t("planPreview.button")}
+                </AsyncDropDownButton>
+            )}
 
             <AsyncButton
                 danger={manualMode}

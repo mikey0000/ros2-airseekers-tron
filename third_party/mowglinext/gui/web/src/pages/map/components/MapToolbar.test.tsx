@@ -154,4 +154,14 @@ describe('MapToolbar', () => {
         await user.click(screen.getByText(en.mapToolbar.downloadGeojson));
         expect(defaultProps.onDownloadGeoJSON).toHaveBeenCalled();
     });
+
+    it('shows Preview plan only at rest when the handler is wired', () => {
+        const onPreviewPlan = vi.fn().mockResolvedValue(undefined);
+        const {rerender} = render(<MapToolbar {...defaultProps} stateName="IDLE_DOCKED" onPreviewPlan={onPreviewPlan} />);
+        expect(screen.getByText(en.planPreview.button)).toBeInTheDocument();
+        rerender(<MapToolbar {...defaultProps} stateName="MOWING" onPreviewPlan={onPreviewPlan} />);
+        expect(screen.queryByText(en.planPreview.button)).not.toBeInTheDocument();
+        rerender(<MapToolbar {...defaultProps} stateName="IDLE" />);
+        expect(screen.queryByText(en.planPreview.button)).not.toBeInTheDocument();
+    });
 });

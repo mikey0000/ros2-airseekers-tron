@@ -60,6 +60,9 @@ import {PathModal} from "./map/components/PathModal.tsx";
 import {CorridorHatchPattern, CORRIDOR_HATCH_IMAGE} from "./map/components/CorridorHatchPattern.tsx";
 import {usePathTool, type PathDockInput} from "./map/hooks/usePathTool.ts";
 import {useDockCorridor} from "../hooks/useDockCorridor.ts";
+import {clearPlanPreview, requestPlanPreview, usePlanPreview} from "../hooks/usePlanPreview.ts";
+import {PlanPreviewCard} from "./map/components/PlanPreviewCard.tsx";
+import {PREVIEW_ALL_KEY} from "./map/components/MapToolbar.tsx";
 
 
 // Mapbox access token comes from the build env only — no hardcoded fallback.
@@ -101,6 +104,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         lidarHit: colors.danger,             // lidar hit points (rose)
         lidarMiss: colors.amber,             // lidar miss points (amber)
         coveragePath: colors.mint,           // full F2C coverage plan line (mint)
+        previewRing: colors.amber,           // plan preview: headland rings
+        previewSwath: colors.mint,           // plan preview: swaths
+        previewTransit: colors.auroraViolet, // plan preview: blade-off transits between sub-paths
         halo: colors.text,                   // white halo → ink
         labelText: colors.text,              // symbol label text → ink
         labelHalo: colors.bgBase,            // symbol label halo → deep bg
@@ -359,6 +365,15 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // Automatic dock corridor published by the map server (latched; absent on
     // map servers that do not implement it -> nothing drawn).
     const dockCorridorPts = useDockCorridor(!compact);
+    // Plan preview (POST /mowglinext/plan/preview): typed rings/swaths/transits
+    // replace the plain coverage path while a preview is shown.
+    const planPreview = usePlanPreview(!compact);
+    const [previewHiddenId, setPreviewHiddenId] = useState<number | null>(null);
+    const previewDrawn = planPreview?.status === "ok" && planPreview.segments.length > 0
+        && planPreview.id !== previewHiddenId ? planPreview : null;
+    // "Hide" on the card hides the drawn preview too (the latched /coverage/full_plan
+    // still holds it until the next preview / mission / Clear).
+    const previewHidden = planPreview?.status === "ok" && planPreview.id === previewHiddenId;
     const dockCorridorCollection = useMemo<FeatureCollection>(() => {
         if (dockCorridorPts.length < 3 || datum[0] === 0) return {type: "FeatureCollection", features: []};
         const ring = dockCorridorPts.map((p) => transpose(offsetX, offsetY, datum, p.y, p.x));
@@ -389,7 +404,19 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 newFeatures["dock"] = new DockFeatureBase(dock_lonlat, map.dock_heading ?? 0);
             }
         }
-        if (path?.poses) {
+        if (previewDrawn) {
+            const toLonLat = (pts: [number, number][]) =>
+                pts.map(([x, y]) => transpose(offsetX, offsetY, datum, y, x));
+            previewDrawn.segments.forEach((seg, i) => {
+                const f = new PathFeature(`preview-${seg.type}-${i}`, toLonLat(seg.points),
+                    seg.type === "ring" ? LAYER_COLORS.previewRing : LAYER_COLORS.previewSwath, 2);
+                newFeatures[f.id] = f;
+            });
+            previewDrawn.transits.forEach((tr, i) => {
+                const f = new PathFeature(`preview-transit-${i}`, toLonLat(tr), LAYER_COLORS.previewTransit, 1);
+                newFeatures[f.id] = f;
+            });
+        } else if (path?.poses && !previewHidden) {
             // Coverage plan: the full F2C route (headland rings + every swath)
             // for the current area (/coverage/full_plan, a nav_msgs/Path).
             // Execution is swath-by-swath, but this shows the whole plan.
@@ -453,7 +480,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 Object.entries(old).filter(([k]) => k === "mower" || k.startsWith("mower-"))
             ),
         }))
-    }, [map, path, plan, offsetX, offsetY, datum, editMap, LAYER_COLORS]);
+    }, [map, path, plan, previewDrawn, previewHidden, offsetX, offsetY, datum, editMap, LAYER_COLORS]);
 
     // Labels for navigation areas / paths, kept out of labelsCollection so
     // they never show up as mowable areas (mowingAreas is derived from it).
@@ -835,6 +862,30 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         }
         return mowerAction("start_in_area", {area: index})();
     };
+
+    const previewSelectedPlan = async (key: string) => {
+        let area = -1;
+        if (key !== PREVIEW_ALL_KEY) {
+            const item = mowingAreas.find(item => item.key == key);
+            const index = mowingAreaIndex(map, item?.feat?.properties?.index);
+            if (index === undefined) throw new Error(t("crossHatch.areaUnavailable"));
+            area = index;
+        }
+        setPreviewHiddenId(null);
+        await requestPlanPreview(guiApi, area);
+    };
+    const showPreviewCard = !compact && !editMap && planPreview !== null
+        && planPreview.status !== "cleared" && planPreview.id !== previewHiddenId;
+    const previewCard = showPreviewCard && planPreview ? (
+        <div style={{position: 'absolute', zIndex: 15, ...(isMobile ? {top: 64, left: 12} : {bottom: 84, left: 16}), maxWidth: 300, background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow, borderRadius: 14, padding: '8px 12px'}}>
+            <PlanPreviewCard
+                summary={planPreview}
+                colors={{ring: LAYER_COLORS.previewRing, swath: LAYER_COLORS.previewSwath, transit: LAYER_COLORS.previewTransit}}
+                onClear={() => clearPlanPreview(guiApi)}
+                onDismiss={() => setPreviewHiddenId(planPreview.id)}
+            />
+        </div>
+    ) : null;
 
     const mowerActions = useMemo(() => ({
         onStart: useStartSheet
@@ -1352,6 +1403,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     onStart={() => { void mowerActions.onStart(); }}
                     style={{position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 20, maxWidth: 'calc(100% - 32px)'}}
                 />
+                {previewCard}
                 {isMobile && (
                     <MapToolbarMobile
                         editMap={editMap}
@@ -1388,6 +1440,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onUploadGeoJSON={handleUploadGeoJSON}
                         onImportOpenMower={() => handleImportOpenMower(setImportPreview, setImportFileText)}
                         onMowArea={startSelectedArea}
+                        onPreviewPlan={previewSelectedPlan}
                         stateName={highLevelStatus.highLevelStatus.state_name}
                         highLevelState={highLevelStatus.highLevelStatus.state}
                         emergency={highLevelStatus.highLevelStatus.emergency}
@@ -1444,6 +1497,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             onDownloadGeoJSON={handleDownloadGeoJSON}
                             onImportOpenMower={() => handleImportOpenMower(setImportPreview, setImportFileText)}
                             onMowArea={startSelectedArea}
+                            onPreviewPlan={previewSelectedPlan}
                             {...mowerActions}
                         />
                     </div>

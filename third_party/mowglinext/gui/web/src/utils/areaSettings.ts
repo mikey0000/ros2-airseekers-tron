@@ -5,6 +5,12 @@
 
 export const PATH_MODES = ["zigzag", "cross", "alternate", "spiral", "contour_only"] as const;
 export type PathMode = typeof PATH_MODES[number];
+/** Swath visiting order (Fields2Cover route planner). */
+export const ROUTE_ORDERS = ["boustrophedon", "snake", "spiral", "racetrack"] as const;
+export type RouteOrder = typeof ROUTE_ORDERS[number];
+/** Swath-to-swath turn: auto = loop, else reverse-then-curve, else pivot. */
+export const TURN_TYPES = ["auto", "loop", "reverse", "pivot"] as const;
+export type TurnType = typeof TURN_TYPES[number];
 
 export type AreaSettings = {
     cutter_height_mm: number;
@@ -17,6 +23,11 @@ export type AreaSettings = {
     edge_first: boolean;
     repeat: number;
     alternate_angle_offset_deg: number;
+    route_order: RouteOrder;
+    route_spiral_size: number;
+    /** 0 = pivot in place between swaths. */
+    min_turn_radius_m: number;
+    turn_type: TurnType;
 };
 
 export type AreaSettingsKey = keyof AreaSettings;
@@ -31,6 +42,10 @@ export const AREA_SETTINGS_DEFAULTS: AreaSettings = {
     edge_first: true,
     repeat: 1,
     alternate_angle_offset_deg: 90,
+    route_order: "racetrack",
+    route_spiral_size: 6,
+    min_turn_radius_m: 0.5,
+    turn_type: "auto",
 };
 
 export const AREA_SETTINGS_RANGES = {
@@ -40,6 +55,8 @@ export const AREA_SETTINGS_RANGES = {
     swath_overlap_m: {min: 0, max: 0.1, step: 0.01},
     repeat: {min: 1, max: 5, step: 1},
     alternate_angle_offset_deg: {min: 0, max: 180, step: 5},
+    route_spiral_size: {min: 2, max: 20, step: 1},
+    min_turn_radius_m: {min: 0, max: 2, step: 0.05},
 } as const;
 
 export const MOW_ANGLE_AUTO = -1;
@@ -58,6 +75,8 @@ export function sanitizeAreaSettings(raw: unknown): Partial<AreaSettings> {
         const want = typeof AREA_SETTINGS_DEFAULTS[k];
         if (typeof v !== want) continue;
         if (k === "path_mode" && !PATH_MODES.includes(v as PathMode)) continue;
+        if (k === "route_order" && !ROUTE_ORDERS.includes(v as RouteOrder)) continue;
+        if (k === "turn_type" && !TURN_TYPES.includes(v as TurnType)) continue;
         (out as Record<string, unknown>)[k] = v;
     }
     return out;
@@ -76,6 +95,10 @@ export function invalidAreaSettingKey(s: Partial<AreaSettings>): AreaSettingsKey
     for (const [k, v] of Object.entries(s) as [AreaSettingsKey, unknown][]) {
         if (k === "path_mode") {
             if (!PATH_MODES.includes(v as PathMode)) return k;
+        } else if (k === "route_order") {
+            if (!ROUTE_ORDERS.includes(v as RouteOrder)) return k;
+        } else if (k === "turn_type") {
+            if (!TURN_TYPES.includes(v as TurnType)) return k;
         } else if (k === "edge_first") {
             if (typeof v !== "boolean") return k;
         } else if (k === "mow_angle_deg") {

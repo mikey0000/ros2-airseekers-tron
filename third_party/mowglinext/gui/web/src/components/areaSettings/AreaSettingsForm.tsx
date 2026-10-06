@@ -1,11 +1,13 @@
 import React from "react";
-import {InputNumber, Slider, Switch, Typography} from "antd";
+import {InputNumber, Select, Slider, Switch, Typography} from "antd";
 import {useTranslation} from "react-i18next";
 import {useThemeMode} from "../../theme/ThemeContext.tsx";
 import {
     AREA_SETTINGS_RANGES,
     type AreaSettings,
     MOW_ANGLE_AUTO,
+    ROUTE_ORDERS,
+    TURN_TYPES,
 } from "../../utils/areaSettings.ts";
 import {PathModeCards} from "./PathModeCards.tsx";
 import {AnglePicker} from "./AnglePicker.tsx";
@@ -108,6 +110,40 @@ export const AreaSettingsForm: React.FC<{
                 <Switch checked={value.edge_first} disabled={disabled}
                         onChange={(v) => set("edge_first", v)}/>
             </Field>
+
+            {value.path_mode !== "spiral" && value.path_mode !== "contour_only" && (<>
+                <Field label={t("areaSettings.routeOrder")} custom={c("route_order")} hint={t("areaSettings.routeOrderHint")}>
+                    <Select data-testid="route-order" style={{width: "100%"}} disabled={disabled}
+                            value={value.route_order} onChange={(v) => set("route_order", v)}
+                            options={ROUTE_ORDERS.map((o) => ({
+                                value: o,
+                                label: t(`areaSettings.routeOrder${o[0].toUpperCase()}${o.slice(1)}`),
+                            }))}/>
+                </Field>
+                {value.route_order === "spiral" && (
+                    <Field label={t("areaSettings.routeSpiralSize")} custom={c("route_spiral_size")}>
+                        <InputNumber min={R.route_spiral_size.min} max={R.route_spiral_size.max} step={1}
+                                     precision={0} size="small" disabled={disabled} style={{width: 110}}
+                                     value={value.route_spiral_size}
+                                     onChange={(v) => typeof v === "number" && set("route_spiral_size", v)}/>
+                    </Field>
+                )}
+                <Field label={t("areaSettings.turnType")} custom={c("turn_type")} hint={t("areaSettings.turnTypeHint")}>
+                    <Select data-testid="turn-type" style={{width: "100%"}} disabled={disabled}
+                            value={value.turn_type} onChange={(v) => set("turn_type", v)}
+                            options={TURN_TYPES.map((o) => ({
+                                value: o,
+                                label: t(`areaSettings.turnType${o[0].toUpperCase()}${o.slice(1)}`),
+                            }))}/>
+                </Field>
+                <Field label={t("areaSettings.minTurnRadius")} custom={c("min_turn_radius_m")}
+                       hint={t("areaSettings.minTurnRadiusHint")}>
+                    <InputNumber min={R.min_turn_radius_m.min} max={R.min_turn_radius_m.max}
+                                 step={R.min_turn_radius_m.step} precision={2} size="small" addonAfter="m"
+                                 disabled={disabled} style={{width: 130}} value={value.min_turn_radius_m}
+                                 onChange={(v) => typeof v === "number" && set("min_turn_radius_m", v)}/>
+                </Field>
+            </>)}
 
             <Field label={t("areaSettings.cutSpeed")} custom={c("cut_speed_mps")} value={t("areaSettings.mps", {value: value.cut_speed_mps.toFixed(2)})}>
                 <Slider min={R.cut_speed_mps.min} max={R.cut_speed_mps.max} step={R.cut_speed_mps.step}

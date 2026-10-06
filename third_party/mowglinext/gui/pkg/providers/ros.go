@@ -67,6 +67,10 @@ var topicMap = map[string]topicDef{
 	// while mowing. Both are std_msgs/String.
 	"areaSettings":       {"/map_server_node/area_settings", "std_msgs/msg/String"},
 	"activeAreaSettings": {"/behavior_tree_node/active_area_settings", "std_msgs/msg/String"},
+	// Latched JSON summary of the last plan preview (POST /mowglinext/plan/preview):
+	// {id, status: planning|ok|failed|cleared, area, rings, swaths, length_m,
+	// inset_m, sub_paths, areas[], segments[{type, points}], transits[]}.
+	"previewSummary": {"/behavior_tree_node/preview_summary", "std_msgs/msg/String"},
 	// Latched outline of the dock corridor the map server frees in the
 	// navigation mask (dock -> approach pose -> nearest area). Published by
 	// map servers that implement it; absent elsewhere (the GUI tolerates that).

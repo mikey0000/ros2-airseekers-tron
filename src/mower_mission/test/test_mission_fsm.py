@@ -2107,3 +2107,164 @@ def test_charging_reasserted_when_mcu_stops_charging_on_dock():
     assert _charge_calls(h, m) == []          # not yet
     h.tick(6.0)
     assert _charge_calls(h, m) == [True]
+
+
+# =====================================================================
+# plan preview (~/preview_plan)
+# =====================================================================
+def preview(h, area):
+    ok, msg, fx = h.fsm.preview_plan(area, h.t)
+    h._apply(fx)
+    return ok, msg
+
+
+def typed_plan(x0=0.5):
+    ring = [(x0, x0, 0.0), (4.5, x0, 0.0), (4.5, 4.5, 0.0), (x0, 4.5, 0.0), (x0, x0, 0.0)]
+    s1, s2 = line(1, 1, 4, 1), line(4, 2, 1, 2)
+    return {'success': True, 'drivable_subpaths': [ring, s1 + s2],
+            'segments': [ring, s1, s2], 'segment_types': [f.SEGMENT_RING, f.SEGMENT_SWATH,
+                                                          f.SEGMENT_SWATH],
+            'full_path': ring + s1 + s2, 'ring_count': 1, 'swath_count': 2,
+            'total_distance': 22.0}
+
+
+def summaries(h, mark=0):
+    return [e.summary for e in h.since(mark, f.PublishPreviewSummary)]
+
+
+def test_preview_plans_area_without_state_change():
+    h = Harness()
+    h.fsm.inputs.docked = True
+    h.tick()
+    assert h.name == 'IDLE_DOCKED'
+    h.areas = [square(0, 0, 5), square(10, 0, 5)]
+    h.area_settings = {1: {'path_mode': 'spiral', 'perimeter_laps': 3, 'swath_overlap_m': 0.02,
+                           'edge_first': False, 'mow_angle_deg': 45.0}}
+    m = h.mark()
+    ok, msg = preview(h, 1)
+    assert ok, msg
+    h.answer_services()
+    assert [c.request for c in calls(h, m, f.SRV_GET_AREA_SETTINGS)] == [{'index': 1}]
+    assert param_calls(h, f.PARAM_NODE_COVERAGE, m) == [{
+        'operation_width': pytest.approx(0.18), 'headland_rings': 3, 'path_mode': 'spiral',
+        'mow_angle_deg': 45.0, 'edge_first': False}]
+    # no blade height / cut speed / motion while previewing
+    assert not calls(h, m, f.SRV_CUTTER_HEIGHT)
+    assert not param_calls(h, f.PARAM_NODE_CONTROLLER, m)
+    goal = h.goal(f.ACT_PLAN)
+    assert goal['outer_boundary'] == h.areas[1]['outer'] and goal['mow_angle_deg'] == 45.0
+    assert h.name == 'IDLE_DOCKED' and h.fsm.mission is None
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan(10.5))
+    assert h.name == 'IDLE_DOCKED' and h.fsm.mission is None
+    assert set(h.statuses(m)) <= {'IDLE_DOCKED'}
+    assert not h.since(m, f.BladeOn) and not h.since(m, f.SaveResume)
+    assert not [e for e in h.since(m, f.StartAction) if e.name != f.ACT_PLAN]
+    plans = h.since(m, f.PublishPlan)
+    assert len(plans) == 1 and len(plans[0].poses) == 5 + 22
+    s = summaries(h, m)
+    assert s[0]['status'] == 'planning' and s[0]['area'] == 1
+    last = s[-1]
+    assert last['status'] == 'ok' and last['area'] == 1
+    assert (last['rings'], last['swaths'], last['sub_paths']) == (1, 2, 2)
+    assert last['length_m'] == 22.0
+    assert last['inset_m'] == pytest.approx(0.5)
+    assert [g['type'] for g in last['segments']] == ['ring', 'swath', 'swath']
+    assert len(last['transits']) == 1
+    a = last['areas'][0]
+    assert a['path_mode'] == 'spiral' and a['headland_rings'] == 3 and a['index'] == 1
+    assert a['operation_width_m'] == pytest.approx(0.18)
+    json.dumps(last)
+
+
+def test_preview_all_areas_skips_navigation_and_sums():
+    h = Harness()
+    nav = square(20, 0, 5)
+    nav['is_navigation_area'] = True
+    h.areas = [square(0, 0, 5), nav, square(10, 0, 5)]
+    m = h.mark()
+    assert preview(h, f.PREVIEW_ALL)[0]
+    h.answer_services()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan())
+    h.answer_services()
+    assert h.goal(f.ACT_PLAN)['outer_boundary'] == h.areas[2]['outer']
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan(10.5))
+    last = summaries(h, m)[-1]
+    assert last['status'] == 'ok' and last['area'] == -1
+    assert [a['index'] for a in last['areas']] == [0, 2]
+    assert (last['rings'], last['swaths'], last['length_m']) == (2, 4, 44.0)
+    assert h.name == 'IDLE' and h.fsm._action is None and h.fsm._service is None
+
+
+def test_preview_refused_while_mowing_and_mission_clears_preview():
+    h = Harness()
+    assert preview(h, 0)[0]
+    h.answer_services()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan())
+    assert h.fsm._preview_shown
+    start_until_planning(h)
+    m = h.mark()
+    ok, msg = preview(h, 0)
+    assert not ok and 'mowing session' in msg
+    assert not h.since(m, f.CallService) and not h.since(m, f.StartAction)
+    assert not h.fsm._preview_shown
+    assert h.name == 'PLANNING'
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    assert h.name == 'MOWING'
+    assert not preview(h, f.PREVIEW_ALL)[0]
+    assert not preview(h, f.PREVIEW_CLEAR)[0]
+
+
+def test_preview_refused_in_emergency_and_manual():
+    h = Harness()
+    h.fsm.inputs.emergency_active = True
+    h.tick()
+    assert not preview(h, 0)[0]
+    h.fsm.inputs.emergency_active = False
+    h.tick()
+    assert h.cmd(f.CMD_MANUAL_MOW)
+    assert not preview(h, 0)[0]
+
+
+def test_start_during_preview_drops_it():
+    h = Harness()
+    assert preview(h, 0)[0]
+    assert h.fsm._service.purpose == 'preview_enum'
+    m = h.mark()
+    start_until_planning(h)
+    assert h.fsm._preview is None
+    assert summaries(h, m)[0]['status'] == 'cleared'
+    assert h.fsm.mission is not None
+
+
+def test_preview_failure_and_clear():
+    h = Harness()
+    m = h.mark()
+    assert preview(h, 0)[0]
+    h.answer_services()
+    h.finish(f.ACT_PLAN, f.ABORTED, {'success': False, 'message': 'planner down'})
+    last = summaries(h, m)[-1]
+    assert last['status'] == 'failed' and 'planner down' in last['message']
+    assert not h.since(m, f.PublishPlan)
+    assert preview(h, 7)[0]      # unknown area -> fails after enumeration
+    h.answer_services()
+    assert summaries(h)[-1]['status'] == 'failed'
+    assert preview(h, 0)[0]
+    h.answer_services()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan())
+    m = h.mark()
+    ok, msg = preview(h, f.PREVIEW_CLEAR)
+    assert ok
+    assert [p.poses for p in h.since(m, f.PublishPlan)] == [[]]
+    assert summaries(h, m)[-1]['status'] == 'cleared'
+
+
+def test_preview_survives_result_display_to_idle():
+    h = Harness()
+    h.fsm._plan_shown = True      # left over from a mission
+    assert preview(h, 0)[0]
+    h.answer_services()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan())
+    m = h.mark()
+    h.fsm._go_idle('x')
+    assert not h.since(m, f.PublishPlan)

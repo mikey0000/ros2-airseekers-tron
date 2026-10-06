@@ -34,7 +34,10 @@ import {
     PauseOutlined,
     ThunderboltOutlined,
     ImportOutlined,
+    EyeOutlined,
 } from "@ant-design/icons";
+import {canPreviewPlan} from "../../../hooks/usePlanPreview.ts";
+import {PREVIEW_ALL_KEY} from "./MapToolbar.tsx";
 import type {MenuInfo} from "rc-menu/lib/interface";
 import AsyncButton from "../../../components/AsyncButton.tsx";
 import type {Feature} from "geojson";
@@ -68,6 +71,8 @@ interface MapToolbarMobileProps {
     onImportOpenMower: () => void;
     onResetMowingProgress: () => void;
     onMowArea: (key: string) => Promise<void>;
+    /** Plan preview of one area (its menu key) or PREVIEW_ALL_KEY; no mowing. */
+    onPreviewPlan?: (key: string) => Promise<void>;
     selectedFeatureCount?: number;
     onEditSelectedFeature?: () => void;
     onDrawPolygon?: () => void;
@@ -105,7 +110,7 @@ export const MapToolbarMobile = ({
     onEditMap, onSaveMap, onUndo, onRedo, onToggleSatellite,
     onManualMode, onStopManualMode,
     onBackupMap, onRestoreMap, onDownloadGeoJSON, onUploadGeoJSON, onImportOpenMower, onResetMowingProgress,
-    onMowArea, selectedFeatureCount = 0, onEditSelectedFeature,
+    onMowArea, onPreviewPlan, selectedFeatureCount = 0, onEditSelectedFeature,
     onDrawPolygon, onDrawShape, onDrawEmoji, onTrash, onCombine, onSubtract, onSplit,
     onPlaceDock, dockPlacementMode, onDrawPath, onConnectDock, dockAvailable,
     stateName, highLevelState, emergency,
@@ -117,6 +122,7 @@ export const MapToolbarMobile = ({
     const {notification} = App.useApp();
     const {t} = useTranslation();
     const [mowLoading, setMowLoading] = useState(false);
+    const [previewLoading, setPreviewLoading] = useState(false);
 
     // 44px minimum touch target on every control in the cluster (Apple/WCAG
     // thumb-reach guideline). Applied via a shared style so size="large" AntD
@@ -241,6 +247,12 @@ export const MapToolbarMobile = ({
     const handleMowClick: MenuProps["onClick"] = ({key}: MenuInfo) => {
         setMowLoading(true);
         onMowArea(key).finally(() => setMowLoading(false));
+    };
+
+    const handlePreviewClick: MenuProps["onClick"] = ({key}: MenuInfo) => {
+        if (!onPreviewPlan) return;
+        setPreviewLoading(true);
+        safeCall(() => onPreviewPlan(key).finally(() => setPreviewLoading(false)));
     };
 
     const editMenuItems: MenuProps["items"] = [
@@ -430,6 +442,28 @@ export const MapToolbarMobile = ({
                         {t("mapToolbarMobile.mow")}
                     </Button>
                 </Dropdown>
+
+                {onPreviewPlan && canPreviewPlan(stateName) && (
+                    <Dropdown
+                        menu={{
+                            items: [
+                                {key: PREVIEW_ALL_KEY, label: t("planPreview.allAreas")},
+                                ...mowingAreas.map(({key, label}) => ({key, label})),
+                            ],
+                            onClick: handlePreviewClick,
+                        }}
+                        trigger={["click"]}
+                        placement="topLeft"
+                    >
+                        <Button
+                            size="large"
+                            icon={<EyeOutlined />}
+                            loading={previewLoading}
+                            aria-label={t("planPreview.button")}
+                            style={touchTarget}
+                        />
+                    </Dropdown>
+                )}
 
                 <AsyncButton
                     size="large"

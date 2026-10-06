@@ -137,6 +137,12 @@ STATE_CODES = {
 }
 
 IDLE_NAMES = ('IDLE', 'IDLE_DOCKED', 'CHARGING')
+# ~/preview_plan is accepted only here (no mission session, robot at rest)
+PREVIEW_PHASES = IDLE_NAMES + ('MOWING_COMPLETE', 'MOWING_INCOMPLETE')
+PREVIEW_ALL = 255       # preview_plan area_index: every mowing area
+PREVIEW_CLEAR = 254     # preview_plan area_index: clear the drawn preview
+SEGMENT_RING = 0        # PlanCoverage.Result.SEGMENT_*
+SEGMENT_SWATH = 1
 # transient result states, shown for Params.result_display_s then -> idle
 DISPLAY_NAMES = ('RECORDING_COMPLETE', 'UNDOCK_FAILED', 'NAV_TO_DOCK_FAILED')
 # a mowing session is in progress (rain / battery / boundary guards apply)
@@ -212,6 +218,11 @@ class PublishTrajectory:
 @dataclass
 class PublishAreaSettings:
     settings: dict          # active settings of the area being planned / mowed (JSON-able)
+
+
+@dataclass
+class PublishPreviewSummary:
+    summary: dict           # plan preview summary (latched ~/preview_summary JSON)
 
 
 @dataclass
@@ -485,6 +496,9 @@ class MissionFSM:
         self._incomplete_text = ''
         self._dyn = None                    # dynamic-obstacle wait context
         self._last_static_t = -1e9
+        self._preview = None                # running plan preview (see preview_plan)
+        self._preview_shown = False         # a preview is drawn on /coverage/full_plan
+        self._preview_id = 0
 
     # ==================================================================
     # presentation
@@ -638,6 +652,8 @@ class MissionFSM:
         return tok
 
     def _cancel_all(self, reason):
+        if self._preview is not None:
+            self._preview_finish('failed', 'cancelled: %s' % reason)
         self._dyn = None
         self._action = None
         self._service = None
@@ -691,6 +707,17 @@ class MissionFSM:
         self._log('info', 'coverage resume cleared: next START mows from scratch')
         return True, 'coverage resume cleared', self._end()
 
+    def preview_plan(self, area, now):
+        """``~/preview_plan``: plan area ``area`` (PREVIEW_ALL = every mowing area,
+        PREVIEW_CLEAR = clear the drawn preview) with its current settings, exactly
+        as PLANNING would, WITHOUT starting a mission or changing state. The result
+        goes to /coverage/full_plan (latched) and ~/preview_summary.
+        Returns ``(success, message, effects)``."""
+        self._begin(now)
+        ok, msg = self._preview_request(int(area))
+        self._log('info' if ok else 'warn', 'preview_plan(%d): %s' % (int(area), msg))
+        return ok, msg, self._end()
+
     def on_action_result(self, token, outcome, result=None, now=None):
         self._begin(self._now if now is None else now)
         a = self._action
@@ -724,6 +751,227 @@ class MissionFSM:
         self._fx.append(PublishResumeAvailable(self.cursor.available))
         self._go(self.phase)
         return self._end()
+
+    # ==================================================================
+    # plan preview (~/preview_plan): PLANNING without a mission
+    # ==================================================================
+    def _preview_refusal(self):
+        if self._emergency or self.phase in ('EMERGENCY', 'BOUNDARY_EMERGENCY_STOP'):
+            return 'emergency active'
+        if self.mission is not None:
+            return 'mowing session running'
+        if self.phase not in PREVIEW_PHASES:
+            return 'not idle (%s)' % self.phase
+        if self._enum is not None:
+            return 'busy (loading areas)'
+        if (self._action is not None and self._action.purpose != 'preview') or \
+                (self._service is not None and not str(self._service.purpose).startswith(
+                    'preview_')):
+            return 'busy'
+        return ''
+
+    def _preview_request(self, area):
+        why = self._preview_refusal()
+        if why:
+            return False, 'refused: %s' % why
+        if self._preview is not None:
+            self._preview_drop('superseded by a new preview')
+        if area == PREVIEW_CLEAR:
+            self._preview_drop('cleared', clear=True)
+            return True, 'preview cleared'
+        if area != PREVIEW_ALL and not 0 <= area < int(self.p.max_areas):
+            return False, 'refused: bad area index %d' % area
+        self._preview_id += 1
+        self._preview = {'id': self._preview_id, 'area': -1 if area == PREVIEW_ALL else area,
+                         'index': 0, 'areas': {}, 'queue': [], 'cur': None, 'results': []}
+        self._fx.append(PublishPreviewSummary({
+            'id': self._preview_id, 'status': 'planning', 'area': self._preview['area']}))
+        self._call(SRV_GET_AREA, {'index': 0}, purpose='preview_enum')
+        return True, 'planning preview of %s' % (
+            'all areas' if area == PREVIEW_ALL else 'area %d' % area)
+
+    def _preview_drop(self, why, clear=False):
+        """Forget a running preview (its pending calls become stale) and, when
+        ``clear`` or a preview is drawn, clear /coverage/full_plan + the summary."""
+        pv = self._preview
+        if pv is not None:
+            self._preview = None
+            if self._action is not None and self._action.purpose == 'preview':
+                self._action = None
+                self._fx.append(CancelActions('preview %s' % why))
+            if self._service is not None and str(self._service.purpose).startswith('preview_'):
+                self._service = None
+        if pv is not None or self._preview_shown or clear:
+            if self._preview_shown or clear:
+                self._fx.append(PublishPlan([]))
+            self._preview_shown = False
+            self._fx.append(PublishPreviewSummary({
+                'id': self._preview_id, 'status': 'cleared', 'message': why}))
+
+    def _preview_on_service(self, purpose, ok, resp):
+        pv = self._preview
+        if pv is None:
+            return
+        if purpose == 'preview_enum':
+            if ok and resp.get('success'):
+                a = resp.get('area', {})
+                if not a.get('is_navigation_area', False):
+                    pv['areas'][pv['index']] = a
+                pv['index'] += 1
+                if pv['index'] < self.p.max_areas:
+                    self._call(SRV_GET_AREA, {'index': pv['index']}, purpose='preview_enum')
+                    return
+            if not ok and pv['index'] == 0:
+                self._preview_finish('failed', '/map_server_node/get_mowing_area unavailable')
+                return
+            if pv['area'] >= 0:
+                if pv['area'] not in pv['areas']:
+                    self._preview_finish('failed', 'area %d does not exist or is a navigation '
+                                                   'area' % pv['area'])
+                    return
+                pv['queue'] = [pv['area']]
+            else:
+                pv['queue'] = sorted(pv['areas'])
+            if not pv['queue']:
+                self._preview_finish('failed', 'no mowing areas defined')
+                return
+            self._preview_next()
+        elif purpose == 'preview_settings':
+            cur = pv['cur']
+            st, src = self._merge_settings(ok, resp, area_idx=cur['index'])
+            cur['settings'], cur['source'] = st, src
+            cur['runs'] = self._build_runs(st, area_name=cur['name'])
+            run = cur['runs'][0]
+            self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_COVERAGE, 'params': {
+                'operation_width': max(0.01, float(self.p.cut_width_m)
+                                       - float(st['swath_overlap_m'])),
+                'headland_rings': int(st['perimeter_laps']),
+                'path_mode': str(st['path_mode']),
+                'mow_angle_deg': float(run['angle']),
+                'edge_first': bool(st['edge_first'])}}, purpose='preview_params')
+        elif purpose == 'preview_params':
+            cur = pv['cur']
+            if not ok:
+                self._log('warn', 'preview area %d: /coverage_server set_parameters failed (%s): '
+                                  'planning with its current parameters'
+                          % (cur['index'], resp.get('message') or 'unavailable'))
+            area, run = pv['areas'][cur['index']], cur['runs'][0]
+            self._start_action(ACT_PLAN, {
+                'outer_boundary': list(area.get('outer', [])),
+                'obstacles': [list(o) for o in area.get('obstacles', [])],
+                'mow_angle_deg': float(run['angle']),
+                'perpendicular': bool(run['perpendicular'])}, self.p.plan_timeout_s,
+                purpose='preview')
+
+    def _preview_next(self):
+        pv = self._preview
+        if not pv['queue']:
+            self._preview_finish('ok', '')
+            return
+        idx = pv['queue'].pop(0)
+        pv['cur'] = {'index': idx, 'name': str(pv['areas'][idx].get('name', ''))}
+        if self.p.use_area_settings:
+            self._call(SRV_GET_AREA_SETTINGS, {'index': idx}, purpose='preview_settings')
+        else:
+            self._preview_on_service('preview_settings', False, {})
+
+    def _preview_on_plan(self, outcome, result):
+        pv = self._preview
+        if pv is None:
+            return
+        cur = pv['cur']
+        area = pv['areas'][cur['index']]
+        st = cur['settings']
+        subpaths = []
+        if outcome == SUCCEEDED and result.get('success'):
+            subpaths = [list(sp) for sp in result.get('drivable_subpaths', []) if len(sp) >= 2]
+            if not subpaths:
+                subpaths = [list(sp) for sp in result.get('segments', []) if len(sp) >= 2]
+            if not subpaths and len(result.get('full_path', [])) >= 2:
+                subpaths = [list(result['full_path'])]
+        info = {'index': cur['index'], 'name': cur['name'], 'path_mode': st['path_mode'],
+                'headland_rings': int(st['perimeter_laps']), 'edge_first': bool(st['edge_first']),
+                'mow_angle_deg': float(cur['runs'][0]['angle']),
+                'perpendicular': bool(cur['runs'][0]['perpendicular']),
+                'runs': len(cur['runs']), 'settings_source': cur['source'],
+                'operation_width_m': round(max(0.01, float(self.p.cut_width_m)
+                                               - float(st['swath_overlap_m'])), 4)}
+        if not subpaths:
+            info['error'] = str(result.get('message') or outcome)
+            info.update({'rings': 0, 'swaths': 0, 'length_m': 0.0, 'sub_paths': 0,
+                         'inset_m': None})
+            pv['results'].append((info, [], [], []))
+            self._preview_next()
+            return
+        segs = [list(sp) for sp in result.get('segments', []) if len(sp) >= 2]
+        types = list(result.get('segment_types', []))
+        if len(types) != len(segs):
+            types = []
+        rings = int(result.get('ring_count', types.count(SEGMENT_RING) if types else 0))
+        swaths = int(result.get('swath_count', types.count(SEGMENT_SWATH) if types else 0))
+        length = float(result.get('total_distance') or 0.0) or \
+            sum(geo.path_length(sp) for sp in subpaths)
+        outer = list(area.get('outer', []))
+        probe = [p for s, t in zip(segs, types) if t == SEGMENT_RING for p in s] or \
+            [p for sp in subpaths for p in sp]
+        step = max(1, len(probe) // 400)
+        inset = min((geo.distance_to_ring(p, outer) for p in probe[::step]), default=None) \
+            if len(outer) >= 3 else None
+        info.update({'rings': rings, 'swaths': swaths, 'length_m': round(length, 2),
+                     'sub_paths': len(subpaths),
+                     'inset_m': None if inset is None else round(inset, 3)})
+        full = result.get('full_path') or [p for sp in subpaths for p in sp]
+        pv['results'].append((info, list(full), list(zip(types, segs)), subpaths))
+        self._preview_next()
+
+    def _preview_finish(self, status, message):
+        pv, self._preview = self._preview, None
+        if self._action is not None and self._action.purpose == 'preview':
+            self._action = None
+        if self._service is not None and str(self._service.purpose).startswith('preview_'):
+            self._service = None
+        results = pv['results'] if pv else []
+        infos = [r[0] for r in results]
+        planned = [r for r in results if r[1]]
+        if status == 'ok' and not planned:
+            status = 'failed'
+            message = '; '.join('area %d: %s' % (i['index'], i.get('error', '?'))
+                                for i in infos) or 'nothing planned'
+
+        def pts(seq):
+            return [[round(float(p[0]), 2), round(float(p[1]), 2)] for p in seq]
+
+        full, segments, transits, prev_end = [], [], [], None
+        for _info, path, typed, subpaths in planned:
+            full.extend(path)
+            for t, s in typed:
+                segments.append({'type': 'ring' if t == SEGMENT_RING else 'swath',
+                                 'points': pts(s)})
+            for sp in subpaths:
+                if prev_end is not None and geo.dist(prev_end, sp[0]) > 1e-3:
+                    transits.append(pts([prev_end, sp[0]]))
+                prev_end = sp[-1]
+            if not typed:
+                segments.extend({'type': 'swath', 'points': pts(sp)} for sp in subpaths)
+        insets = [i['inset_m'] for i in infos if i.get('inset_m') is not None]
+        summary = {
+            'id': pv['id'] if pv else self._preview_id, 'status': status,
+            'area': pv['area'] if pv else -1, 'message': message,
+            'areas': infos,
+            'rings': sum(i['rings'] for i in infos), 'swaths': sum(i['swaths'] for i in infos),
+            'length_m': round(sum(i['length_m'] for i in infos), 2),
+            'sub_paths': sum(i['sub_paths'] for i in infos),
+            'inset_m': min(insets) if insets else None,
+            'segments': segments, 'transits': transits}
+        if planned:
+            self._fx.append(PublishPlan(list(full)))
+            self._preview_shown = True
+            self._plan_shown = False    # the mission's _go_idle must not clear the preview
+        self._fx.append(PublishPreviewSummary(summary))
+        self._log('info' if status == 'ok' else 'warn',
+                  'plan preview %s: %d area(s), %d rings, %d swaths, %.1f m%s' % (
+                      status, len(infos), summary['rings'], summary['swaths'],
+                      summary['length_m'], (' (%s)' % message) if message else ''))
 
     # ==================================================================
     # guards (upstream ReactiveSequence), evaluated every tick
@@ -1125,6 +1373,7 @@ class MissionFSM:
                 return True             # already mowing: idempotent
             self._log('warn', 'start_in_area(%d) refused: mowing session running' % single)
             return False
+        self._preview_drop('mission started')
         if self.phase in DOCK_PHASES:
             self._cancel_all('start')
         self._leave_current_mode('start')
@@ -1274,7 +1523,7 @@ class MissionFSM:
                     break
         return int(round(max(0.0, min(100.0, pct))))
 
-    def _merge_settings(self, ok, resp):
+    def _merge_settings(self, ok, resp, area_idx=None):
         st = dict(AREA_SETTINGS_DEFAULTS)
         src = 'built-in defaults'
         if ok and resp.get('success'):
@@ -1287,7 +1536,7 @@ class MissionFSM:
                 self._log('warn', 'area settings: bad JSON from get_area_settings, using defaults')
         elif self.p.use_area_settings:
             self._log('warn', 'area %d: get_area_settings unavailable: using built-in defaults'
-                      % self.mission.area_idx)
+                      % (self.mission.area_idx if area_idx is None else area_idx))
         # Global mow_angle_deg parameter: fallback for areas left on auto.
         if float(st['mow_angle_deg']) < 0.0 and self.p.mow_angle_deg >= 0.0:
             st['mow_angle_deg'] = float(self.p.mow_angle_deg)
@@ -1302,7 +1551,7 @@ class MissionFSM:
         m = self.mission
         return str(m.areas.get(m.area_idx, {}).get('name', ''))
 
-    def _build_runs(self, st):
+    def _build_runs(self, st, area_name=None):
         """One entry per PlanCoverage goal of this area, in mowing order.
 
         cross: two plans per repeat, the second at +90 deg. alternate: the
@@ -1329,7 +1578,8 @@ class MissionFSM:
             return [r for _ in range(n) for r in (run(0.0), run(90.0))]
         if mode == 'alternate':
             off = float(st['alternate_angle_offset_deg'])
-            done = int(self.alternate_counts.get(self._area_name(), 0))
+            done = int(self.alternate_counts.get(
+                self._area_name() if area_name is None else area_name, 0))
             return [run((done + k) * off) for k in range(n)]
         return [run(0.0) for _ in range(n)]
 
@@ -1422,6 +1672,7 @@ class MissionFSM:
         full = result.get('full_path') or [p for sp in subpaths for p in sp]
         self._fx.append(PublishPlan(list(full)))
         self._plan_shown = True
+        self._preview_shown = False
         fp = geo.plan_fingerprint(subpaths)
         _offs, total = subpath_offsets(subpaths)
         ac = self.cursor.areas.get(m.area_idx)
@@ -1904,6 +2155,9 @@ class MissionFSM:
 
     def _handle_action(self, a, outcome, result):
         name = a.name
+        if a.purpose == 'preview':
+            self._preview_on_plan(outcome, result)
+            return
         if outcome != SUCCEEDED:
             self._log('warn', '%s finished: %s %s' % (name, outcome, result.get('message', '')))
         if a.purpose == 'dock':
@@ -2278,6 +2532,9 @@ class MissionFSM:
         self._area_done()
 
     def _handle_service(self, s, ok, resp):
+        if isinstance(s.purpose, str) and s.purpose.startswith('preview_'):
+            self._preview_on_service(s.purpose, ok, resp)
+            return
         if s.purpose == 'enum':
             e = self._enum
             if e is None:

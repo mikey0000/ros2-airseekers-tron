@@ -386,7 +386,7 @@ func TestTopicSubscribeInterval_CoversKnownSubscriberRouteTopics(t *testing.T) {
 		"robotDescription", "recordingTrajectory",
 		"coverageResumeAvailable", "fusionDiag", "dockCalibrationStatus",
 		"visionObstacleClose", "detections",
-		"areaSettings", "activeAreaSettings", "dockCorridor",
+		"areaSettings", "activeAreaSettings", "dockCorridor", "previewSummary",
 	}
 	for _, topic := range knownTopics {
 		interval, known := topicSubscribeInterval(topic)

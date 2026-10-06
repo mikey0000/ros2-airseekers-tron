@@ -48,7 +48,7 @@ from std_srvs.srv import Empty, SetBool, Trigger
 
 from mower_interfaces.action import Dock, Undock
 from mower_interfaces.msg import MowerBaseDevStatus
-from mower_interfaces.srv import ChargingControl, CutterControl, GetAreaSettings
+from mower_interfaces.srv import ChargingControl, CutterControl, GetAreaSettings, SetAreaSettings
 from mowgli_interfaces.action import PlanCoverage
 from mowgli_interfaces.msg import Emergency, GnssStatus, HighLevelStatus, MapArea, Status
 from mowgli_interfaces.srv import AddMowingArea, GetMowingArea, HighLevelControl, StartInArea
@@ -81,6 +81,9 @@ TOPIC_DEFAULTS = {
     'clear_coverage_resume_service': '~/clear_coverage_resume',
     'manual_blade_service': '~/manual_blade',          # SetBool, MANUAL_MOWING only
     'active_area_settings_topic': '~/active_area_settings',
+    # plan preview: SetAreaSettings request, area_index = area (255 = all, 254 = clear)
+    'preview_plan_service': '~/preview_plan',
+    'preview_summary_topic': '~/preview_summary',     # latched String JSON
     # clients
     'get_mowing_area_service': '/map_server_node/get_mowing_area',
     'get_area_settings_service': '/map_server_node/get_area_settings',
@@ -190,6 +193,7 @@ class MissionNode(Node):
         self._motion_pub_t = 0.0
         self._settings_pub = self.create_publisher(String, p['active_area_settings_topic'],
                                                    latched)
+        self._preview_pub = self.create_publisher(String, p['preview_summary_topic'], latched)
 
         # Inputs bypass the executor (see sub_pump.py). Every handler only stores the latest
         # value for the FSM, which reads them on the 10 Hz tick (and in status/services), so
@@ -257,6 +261,8 @@ class MissionNode(Node):
         srv(Trigger, p['clear_coverage_resume_service'], self._srv_clear_resume,
             callback_group=self._cb)
         srv(SetBool, p['manual_blade_service'], self._srv_manual_blade,
+            callback_group=self._cb)
+        srv(SetAreaSettings, p['preview_plan_service'], self._srv_preview_plan,
             callback_group=self._cb)
 
         # tick / status / zero-burst on one plain thread (sub_pump.PeriodicRunner) instead of
@@ -490,6 +496,16 @@ class MissionNode(Node):
         resp.success, resp.message = bool(ok), msg
         return resp
 
+    def _srv_preview_plan(self, req, resp):
+        # Planning only: no state change, no motion. The plan arrives later on
+        # /coverage/full_plan + ~/preview_summary (settings_json is reserved).
+        with self._lock:
+            self._pump.poll()
+            ok, msg, fx = self.fsm.preview_plan(int(req.area_index), time.monotonic())
+            self._execute(fx)
+        resp.success, resp.message = bool(ok), msg
+        return resp
+
     def _srv_clear_resume(self, req, resp):
         with self._lock:
             self._pump.poll()
@@ -553,6 +569,8 @@ class MissionNode(Node):
             self._save_fallback(e.points, e.name)
         elif isinstance(e, f.PublishAreaSettings):
             self._settings_pub.publish(String(data=json.dumps(e.settings, sort_keys=True)))
+        elif isinstance(e, f.PublishPreviewSummary):
+            self._preview_pub.publish(String(data=json.dumps(e.summary, sort_keys=True)))
         elif isinstance(e, f.SaveAlternateCounts):
             self._save_alternate(e.counts)
 
@@ -762,7 +780,10 @@ class MissionNode(Node):
             return {'success': bool(res.success), 'message': res.message,
                     'drivable_subpaths': [self._poses(p) for p in res.drivable_subpaths],
                     'segments': [self._poses(p) for p in res.segments],
-                    'full_path': self._poses(res.full_path)}
+                    'full_path': self._poses(res.full_path),
+                    'segment_types': [int(t) for t in res.segment_types],
+                    'ring_count': int(res.ring_count), 'swath_count': int(res.swath_count),
+                    'total_distance': float(res.total_distance)}
         if name in (fsm_mod.ACT_DOCK, fsm_mod.ACT_UNDOCK):
             return {'success': bool(res.success), 'message': res.message}
         return {}
