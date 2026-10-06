@@ -98,7 +98,7 @@ def test_window_needs_min_distance_and_straight_command():
     s = Sim()
     s.run(0.3, 0.0, 1.5)        # 0.45 m < 0.6
     assert not s.est.aligned
-    s.run(0.3, 0.2, 5.0)        # turning: window discarded
+    s.run(0.3, 0.6, 5.0)        # real turn (gyro > 0.5 rad/s): window discarded
     assert not s.est.aligned
     s.run(0.04, 0.0, 10.0)      # too slow (< min_speed 0.06)
     assert not s.est.aligned
