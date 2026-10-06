@@ -110,6 +110,7 @@ behavior_tree_node:
     record_rate_hz: 10.0
     record_min_spacing_m: 0.05
     record_simplify_tolerance_m: 0.05
+    record_close_radius_m: 0.5        # finish: cut the drive where it passes back within this of its start (overshoot spike)
     record_min_area_m2: 1.0
     record_max_points: 50000
     recording_fallback_dir: ~/.ros/mower_mission/recordings   # polygon kept here if add_area fails

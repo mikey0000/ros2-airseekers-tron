@@ -120,7 +120,9 @@ def _poly_to_msg(poly):
 
 
 def _poly_from_msg(msg):
-    return [(float(p.x), float(p.y)) for p in msg.points]
+    # The GUI sends GeoJSON rings (first vertex repeated at the end); the
+    # stored ring is implicitly closed, so drop the duplicate closing vertex.
+    return core.normalise_polygon((p.x, p.y) for p in msg.points)
 
 
 class MapServerNode(Node):

@@ -76,7 +76,54 @@ def polygon_area(points):
     return abs(s) / 2.0
 
 
-def simplify_ring(points, tolerance, close_eps=None):
+def _closest_on_segment(p, a, b):
+    ax, ay = a
+    dx, dy = b[0] - ax, b[1] - ay
+    len_sq = dx * dx + dy * dy
+    t = 0.0 if len_sq < 1e-12 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / len_sq))
+    return (ax + t * dx, ay + t * dy)
+
+
+def trim_closure_overshoot(points, radius, max_tail_fraction=0.25):
+    """Cut a recorded loop where it comes back past its start.
+
+    Looks at the segments in the last part of the drive (from half the track
+    length on) for the point closest to ``points[0]``. When that point is within
+    ``radius`` and the part of the drive after it (the overshoot) is at most
+    ``max_tail_fraction`` of the track length, the drive ends there instead.
+    Tracks that never return near the start are returned unchanged.
+    """
+    pts = [(float(p[0]), float(p[1])) for p in points]
+    n = len(pts)
+    if n < 4 or radius <= 0:
+        return pts
+    cum = cumulative_lengths(pts)
+    total = cum[-1]
+    if total <= 0:
+        return pts
+    start = pts[0]
+    best = None
+    for i in range(n - 1):
+        if cum[i + 1] < 0.5 * total:
+            continue
+        c = _closest_on_segment(start, pts[i], pts[i + 1])
+        d = dist(c, start)
+        if best is None or d < best[0] - 1e-12:
+            best = (d, i, c)
+    if best is None or best[0] > radius:
+        return pts
+    _, i, c = best
+    tail = dist(pts[i], c)
+    tail = (total - cum[i]) - tail
+    if tail <= 1e-9 or tail > max_tail_fraction * total:
+        return pts
+    out = pts[:i + 1]
+    if dist(out[-1], c) > 1e-9:
+        out.append(c)
+    return out
+
+
+def simplify_ring(points, tolerance, close_eps=None, close_radius=None):
     """Turn a recorded drive into a closed polygon ring.
 
     The track is simplified as a *closed* loop: the first point is appended
@@ -85,10 +132,17 @@ def simplify_ring(points, tolerance, close_eps=None):
     closed; map_server_node does not want a repeated first vertex).  A track
     that already ends within ``close_eps`` of its start loses that last point
     first so it does not produce a zero-length closing edge.
+
+    With ``close_radius`` the drive is first cut where it passes back by its
+    start (``trim_closure_overshoot``): an operator who drives a little past
+    the starting point before pressing finish would otherwise leave a sliver
+    spike where the ring closes back over the already-driven track.
     """
     pts = [(float(p[0]), float(p[1])) for p in points]
     if close_eps is None:
         close_eps = tolerance
+    if close_radius is not None:
+        pts = trim_closure_overshoot(pts, close_radius)
     if len(pts) >= 2 and dist(pts[0], pts[-1]) <= close_eps:
         pts = pts[:-1]
     if len(pts) < 3:

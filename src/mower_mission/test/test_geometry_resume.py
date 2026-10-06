@@ -186,3 +186,63 @@ def test_inside_area_respects_holes_and_leave_margin():
     assert not g.inside_area((1.5, 1.5), area)
     assert not g.inside_area((4.2, 2), area)
     assert g.inside_area((4.2, 2), area, leave_m=0.3)
+
+
+# --- recording closure (overshoot past the start) ---------------------------
+
+# Area 1 as stored on the mower 2026-10-06 (recorded drive, 175 samples ->
+# 16 vertices): the drive passed its start (vertex 0) and stopped ~0.6 m
+# further on, leaving a 175 deg sliver spike where the ring closes.
+_AREA1 = [(0.389398, 1.76668), (0.329541, 2.23991), (0.141112, 2.43469),
+          (-0.869764, 2.28123), (-1.55917, 2.01274), (-2.7828, 1.01557),
+          (-3.006, 0.657267), (-3.07431, 0.315402), (-2.90828, -0.904132),
+          (-2.70292, -1.68169), (-2.48501, -1.75286), (-1.37076, -1.00271),
+          (-0.969795, -0.462225), (-0.657529, 0.252227), (0.146422, 1.03497),
+          (0.671379, 2.31698)]
+
+
+def _densify(poly, step=0.05):
+    out = []
+    for a, b in zip(poly, poly[1:]):
+        n = max(1, int(geo.dist(a, b) / step))
+        out += [(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n) for k in range(n)]
+    out.append(poly[-1])
+    return out
+
+
+def _max_turn_deg(ring):
+    worst = 0.0
+    n = len(ring)
+    for i in range(n):
+        a, b, c = ring[i - 1], ring[i], ring[(i + 1) % n]
+        h1 = math.atan2(b[1] - a[1], b[0] - a[0])
+        h2 = math.atan2(c[1] - b[1], c[0] - b[0])
+        worst = max(worst, abs(math.degrees((h2 - h1 + math.pi) % (2 * math.pi) - math.pi)))
+    return worst
+
+
+def test_simplify_ring_without_trim_reproduces_area1_spike():
+    ring = geo.simplify_ring(_densify(_AREA1), 0.05)
+    assert _max_turn_deg(ring) > 170.0
+
+
+def test_simplify_ring_trims_overshoot_past_start():
+    ring = geo.simplify_ring(_densify(_AREA1), 0.05, close_radius=0.5)
+    assert _max_turn_deg(ring) < 120.0
+    assert all(geo.dist(p, (0.671379, 2.31698)) > 0.3 for p in ring)
+    assert abs(geo.polygon_area(ring) - geo.polygon_area(_AREA1[:-1])) < 0.2
+
+
+def test_trim_overshoot_square():
+    sq = [(0, 0), (2, 0), (2, 2), (0, 2), (0, 0), (0.5, 0)]   # drove 0.5 m past the start
+    track = _densify(sq)
+    ring = geo.simplify_ring(track, 0.05, close_radius=0.5)
+    assert len(ring) == 4
+    assert all(min(geo.dist(p, c) for c in [(0, 0), (2, 0), (2, 2), (0, 2)]) < 0.06 for p in ring)
+
+
+def test_trim_overshoot_leaves_open_and_short_tracks_alone():
+    u = _densify([(0, 0), (3, 0), (3, 3), (2, 3)])            # never returns near the start
+    assert geo.trim_closure_overshoot(u, 0.5) == u
+    sq = _densify([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0.3)])  # stops short of the start
+    assert geo.trim_closure_overshoot(sq, 0.5) == sq

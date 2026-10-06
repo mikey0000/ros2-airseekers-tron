@@ -346,6 +346,7 @@ class Params:
     record_rate_hz: float = 10.0
     record_min_spacing_m: float = 0.05
     record_simplify_tolerance_m: float = 0.05
+    record_close_radius_m: float = 0.5
     record_min_area_m2: float = 1.0
     record_max_points: int = 50000
     max_areas: int = 200
@@ -1846,7 +1847,8 @@ class MissionFSM:
         if self._record_poly is not None:
             return True
         n = len(self._track)
-        poly = geo.simplify_ring(self._track, self.p.record_simplify_tolerance_m)
+        poly = geo.simplify_ring(self._track, self.p.record_simplify_tolerance_m,
+                                 close_radius=self.p.record_close_radius_m)
         if len(poly) < 3 and n >= 3:
             poly = list(self._track)     # upstream: keep raw if DP too aggressive
         area = geo.polygon_area(poly)

@@ -498,3 +498,9 @@ def test_placeholder_dock_file_is_not_measured():
     assert d is not None and d.measured is False
     assert core.parse_dock_yaml(text + 'dock_pose_measured: false\n').measured is False
     assert core.parse_dock_yaml(text + 'dock_pose_measured: true\n').measured is True
+
+
+def test_normalise_polygon_drops_geojson_closing_vertex():
+    ring = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 0.0)]
+    assert core.normalise_polygon(ring) == ring[:-1]
+    assert core.normalise_polygon(ring[:-1]) == ring[:-1]
