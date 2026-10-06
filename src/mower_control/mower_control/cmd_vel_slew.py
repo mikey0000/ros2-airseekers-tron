@@ -355,9 +355,15 @@ class CmdVelSlewNode(Node):
                                         durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
                                         reliability=QoSReliabilityPolicy.RELIABLE,
                                         history=QoSHistoryPolicy.KEEP_LAST),
-                             with_receipt=True)
+                             sampled=True, with_receipt=True)
         self._pump.start()
         self._pub = self.create_publisher(Twist, '/cmd_vel', qos)
+        from std_msgs.msg import String
+        self._gate_pub = self.create_publisher(
+            String, '~/gate_status',
+            QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                       reliability=QoSReliabilityPolicy.RELIABLE,
+                       history=QoSHistoryPolicy.KEEP_LAST))
 
         self._runner = PeriodicRunner(self, [(1.0 / self._rate, self._tick)], 'cmd_vel_slew')
         self._runner.start()
@@ -443,7 +449,21 @@ class CmdVelSlewNode(Node):
             if changed:
                 self.get_logger().warning('motion gate %s (%s)' % (
                     'OPEN' if allowed else 'CLOSED', gate.reason))
+            status = '%s: %s' % ('OPEN' if allowed else 'CLOSED', gate.reason)
+            if status != getattr(self, '_gate_status', None):
+                self._gate_status = status
+                pub = getattr(self, '_gate_pub', None)
+                if pub is not None:
+                    from std_msgs.msg import String
+                    pub.publish(String(data=status))
             if not allowed:
+                tgt = self._tgt
+                if (tgt is not None and (tgt[0] != 0.0 or tgt[5] != 0.0)
+                        and now >= getattr(self, '_next_drop_log', 0.0)):
+                    self._next_drop_log = now + 2.0
+                    self.get_logger().warning(
+                        'motion gate CLOSED (%s): dropping cmd linear.x=%r angular.z=%r'
+                        % (gate.reason, tgt[0], tgt[5]))
                 # Forced zero; drop the held command so nothing stale survives.
                 self._tgt = None
                 self._last_cmd_time = None

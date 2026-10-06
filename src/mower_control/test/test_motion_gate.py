@@ -106,3 +106,83 @@ def test_no_stale_release_on_enable():
     assert _step(node, 1.10)[5] == 0.0                    # still not released
     _cmd(node, 1.12, ang=0.4)                             # fresh command after reset
     assert _step(node, 1.15)[5] == pytest.approx(0.4)
+
+
+def test_live_undock_sequence_from_dock():
+    """Live 2026-10-06 repro: docked+charging, CHARGING -> PREFLIGHT_CHECK -> UNDOCKING,
+    /motion_enabled True, then docking-server backup commands at 20 Hz must pass."""
+    logs = []
+    g = cs.MotionGate()
+    node = _node(g)
+    node.get_logger().warning = logs.append
+    g.set_base(True, True, False, False)
+    g.set_status('CHARGING', False)
+    g.set_motion_enabled(False, 0.0)
+    t = 0.0
+    _step(node, t)
+    for _ in range(5):                                   # idle on the dock
+        t += 0.05
+        assert _step(node, t)[0] == 0.0
+    g.set_status('PREFLIGHT_CHECK', False)
+    g.set_status('UNDOCKING', False)
+    g.set_base(True, False, False, False)                # CHARGER_OFF, still on contacts
+    g.set_motion_enabled(True, t + 0.02)
+    outs = []
+    for i in range(40):                                  # BACKING_UP at 20 Hz
+        t += 0.05
+        _cmd(node, t - 0.01, lin=-0.15, ang=0.0)
+        outs.append(_step(node, t)[0])
+        if i % 10 == 9:
+            g.set_motion_enabled(True, t)                 # 1 s re-assert
+    assert outs[1] == pytest.approx(-0.15)
+    assert all(o == pytest.approx(-0.15) for o in outs[1:])
+
+
+def test_closed_gate_logs_why_when_dropping_nonzero():
+    logs = []
+    node = _node(cs.MotionGate())
+    node.get_logger().warning = logs.append
+    _step(node, 0.0)
+    t = 0.0
+    for _ in range(60):                                  # 3 s of dropped commands
+        t += 0.05
+        _cmd(node, t - 0.01)
+        _step(node, t)
+    drops = [m for m in logs if 'dropping cmd' in m]
+    assert 2 <= len(drops) <= 2 and '/motion_enabled not received' in drops[0]
+
+
+def test_receipt_callbacks_are_sampled():
+    """with_receipt is only honoured on sampled entries; an event entry calls
+    callback(msg) -> TypeError on every message (starved the gate's /motion_enabled)."""
+    import ast
+    import pathlib
+    root = pathlib.Path(cs.__file__).resolve().parents[2]
+    bad = []
+    for path in root.rglob('*.py'):
+        if '/test' in str(path):
+            continue
+        try:
+            tree = ast.parse(path.read_text())
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        for call in ast.walk(tree):
+            if not isinstance(call, ast.Call):
+                continue
+            kw = {k.arg: k.value for k in call.keywords if k.arg}
+            rec = kw.get('with_receipt')
+            if isinstance(rec, ast.Constant) and rec.value is True:
+                smp = kw.get('sampled')
+                if not (isinstance(smp, ast.Constant) and smp.value is True):
+                    bad.append('%s:%d' % (path, call.lineno))
+    assert not bad, bad
+
+
+def test_pump_rejects_receipt_without_sampled():
+    pytest.importorskip('rclpy')
+    from mower_control import sub_pump
+    pump = sub_pump.SubscriptionPump.__new__(sub_pump.SubscriptionPump)
+    pump._thread = None
+    with pytest.raises(ValueError):
+        sub_pump.SubscriptionPump.subscribe(pump, object, '/x', lambda m, r: None, 1,
+                                            with_receipt=True)

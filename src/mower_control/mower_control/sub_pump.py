@@ -123,6 +123,10 @@ class SubscriptionPump:
         """
         if self._thread is not None:
             raise RuntimeError('SubscriptionPump.subscribe() after start()')
+        if with_receipt and not sampled:
+            # Event entries call callback(msg): a receipt callback would raise TypeError
+            # on every message (this silently starved the cmd_vel_slew motion gate).
+            raise ValueError('with_receipt=True requires sampled=True (%s)' % topic)
         sub = self._node.create_subscription(msg_type, topic, callback, qos,
                                              callback_group=self.group, raw=True)
         if raw:
