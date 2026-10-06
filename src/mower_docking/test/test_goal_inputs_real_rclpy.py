@@ -42,6 +42,7 @@ def test_goal_inputs_lifecycle(ctx):
     helper = rclpy.create_node('dock_inputs_feeder')
     status_pub = helper.create_publisher(MowerBaseDevStatus, '/mower_base/status', 10)
     odom_pub = helper.create_publisher(Odometry, '/odom', 10)
+    map_pub = helper.create_publisher(Odometry, '/odometry/filtered_map', 10)  # map pose (approach skip)
     stop = threading.Event()
 
     def feed():
@@ -56,6 +57,7 @@ def test_goal_inputs_lifecycle(ctx):
                 od.pose.pose.position.x = 1.0 + k
                 od.pose.pose.orientation.w = 1.0
                 odom_pub.publish(od)
+                map_pub.publish(od)
             k += 1
             time.sleep(0.01)
 
