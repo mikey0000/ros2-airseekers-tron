@@ -121,6 +121,7 @@ class HeadingAligner(Node):
         self._persist_period = float(g('persist_period'))
         self._persisted_at = time.monotonic()
         self._persisted_xy = None     # position in the last saved record (re-save after 0.3 m)
+        self._persisted_yaw = None    # IMU yaw in the last saved record (re-save after 5 deg)
         self._tail = None             # cached orientation offset (frame_id length fixed)
         self._tail_key = None
 
@@ -274,12 +275,17 @@ class HeadingAligner(Node):
         moved = rec is not None and rec[2] is not None and (
             self._persisted_xy is None
             or math.hypot(rec[2] - self._persisted_xy[0], rec[3] - self._persisted_xy[1]) > 0.3)
-        if rec is not None and (dirty or moved or now - self._persisted_at >= self._persist_period):
+        turned = rec is not None and (
+            self._persisted_yaw is None
+            or abs(hl.wrap(rec[1] - self._persisted_yaw)) > math.radians(5.0))
+        if rec is not None and (dirty or moved or turned
+                                or now - self._persisted_at >= self._persist_period):
             # Save on change, after 0.3 m of travel and periodically: the continuity check on
             # the next boot compares against the LAST resting position, so a restart right
             # after a drive must not see a record from before it.
             self._persisted_at = now
             self._persisted_xy = (rec[2], rec[3]) if rec[2] is not None else self._persisted_xy
+            self._persisted_yaw = rec[1]
             try:
                 hl.save_offset(self._offset_file, rec[0], src, n, imu_yaw=rec[1], x=rec[2],
                                y=rec[3])
