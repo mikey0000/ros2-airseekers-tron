@@ -23,7 +23,10 @@ ARGS = [
     ('blade_frame', 'blade_link', 'cutter frame for mow progress', str),
     ('resolution', '0.1', 'keepout / progress grid resolution (m)', float),
     ('mask_margin', '2.0', 'lethal border around the areas in the mask (m)', float),
-    ('odom_topic', '/odometry/filtered_map', 'map-frame odometry', str),
+    # Named map_odom_topic (not odom_topic): launch arguments share one context across
+    # includes, and launch/nav2.launch.py declares odom_topic=/odom (wheel odometry) for
+    # the EKF. The boundary monitor must see the map-frame EKF pose, never raw /odom.
+    ('map_odom_topic', '/odometry/filtered_map', 'map-frame odometry', str),
     ('dock_gates_override', 'false', 'skip set_docking_point gates (bench only)', bool),
     ('datum_lat', '0.0', 'datum stamp written into areas.dat', float),
     ('datum_lon', '0.0', 'datum stamp written into areas.dat', float),
@@ -35,6 +38,7 @@ def generate_launch_description():
                                'map_server.yaml')
     overrides = {name: ParameterValue(LaunchConfiguration(name), value_type=typ)
                  for name, _, _, typ in ARGS}
+    overrides['odom_topic'] = overrides.pop('map_odom_topic')
     return LaunchDescription(
         [DeclareLaunchArgument(name, default_value=default, description=desc)
          for name, default, desc, _ in ARGS]

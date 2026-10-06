@@ -366,6 +366,8 @@ def generate_launch_description() -> LaunchDescription:
             'robot_yaml_path': os.path.join(stack_root, 'config', 'gui', 'mowgli_robot.yaml'),
             'datum_lat': LaunchConfiguration('datum_lat'),
             'datum_lon': LaunchConfiguration('datum_lon'),
+            # Explicit: the boundary monitor needs the map-frame EKF pose (not /odom).
+            'map_odom_topic': '/odometry/filtered_map',
         }.items(),
         condition=enabled('map_server'),
     )

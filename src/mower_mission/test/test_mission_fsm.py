@@ -39,6 +39,7 @@ class Harness:
         i.battery_percent = 80.0
         i.fix_type = 3
         i.pose = (0.0, 0.0, 0.0)
+        self.heading('cog')
         self.blade = False
         self.fx = []
         self.silent = False
@@ -101,10 +102,20 @@ class Harness:
                 resp = (self.coverage_params_ok, {})
             self._apply(self.fsm.on_service_result(s.token, *resp, now=self.t))
 
+    def heading(self, source, fresh=True):
+        """heading_aligner status: source none|file|dock|cog; kept fresh by tick()."""
+        i = self.fsm.inputs
+        i.heading_source = source
+        i.heading_aligned = source in ('dock', 'cog')
+        self.heading_fresh = fresh
+        i.heading_stamp = self.t if fresh else None
+
     # ---- drivers -------------------------------------------------------
     def tick(self, dt=0.1, n=1):
         for _ in range(n):
             self.t += dt
+            if self.heading_fresh:
+                self.fsm.inputs.heading_stamp = self.t
             if not self.silent:
                 self.fsm.inputs.emergency_stamp = self.t
             self._apply(self.fsm.tick(self.t))
@@ -1325,3 +1336,181 @@ def test_resume_cursor_area_run_round_trip():
     assert 'area_run 2 1' in text and 'area_run 3' not in text
     back = ResumeCursor.loads(text)
     assert back.area_runs == {2: 1} and back.available
+
+
+def test_stop_clears_latched_plan(monkeypatch=None):
+    """STOP after planning publishes an empty /coverage/full_plan so the GUI drops the route."""
+    import inspect
+    src = inspect.getsource(f.MissionFSM._go_idle)
+    assert 'PublishPlan([])' in src
+
+
+# =====================================================================
+# two-step manual mowing (manual_blade_requires_enable)
+# =====================================================================
+def manual_two_step():
+    h = Harness(manual_blade_requires_enable=True)
+    assert h.cmd(f.CMD_MANUAL_MOW)
+    return h
+
+
+def blade_req(h, enable):
+    ok, msg, fx = h.fsm.manual_blade(enable, h.t)
+    h._apply(fx)
+    return ok
+
+
+def test_two_step_manual_enters_blade_off():
+    h = manual_two_step()
+    assert h.name == 'MANUAL_MOWING' and not h.blade
+    assert h.fsm.sub_state == f.SUB_MANUAL_BLADE_OFF
+    assert not h.since(0, f.BladeOn)
+
+
+def test_two_step_manual_blade_on_off_stays_manual():
+    h = manual_two_step()
+    m = h.mark()
+    assert blade_req(h, True)
+    assert h.blade and h.fsm.sub_state == f.SUB_MANUAL_BLADE_ON
+    assert h.since(m, f.PublishStatus)[-1].status['sub_state_name'] == f.SUB_MANUAL_BLADE_ON
+    assert blade_req(h, False)
+    assert not h.blade and h.name == 'MANUAL_MOWING'
+    assert h.fsm.sub_state == f.SUB_MANUAL_BLADE_OFF
+    h.tick(n=5)
+    assert h.name == 'MANUAL_MOWING'
+
+
+def test_manual_blade_refused_outside_manual():
+    h = Harness(manual_blade_requires_enable=True)
+    assert not blade_req(h, True)
+    assert not h.blade and h.name == 'IDLE'
+
+
+@pytest.mark.parametrize('veto', ['docked', 'is_charging', 'lift'])
+def test_manual_blade_vetoes(veto):
+    h = manual_two_step()
+    setattr(h.fsm.inputs, veto, True)
+    assert not blade_req(h, True)
+    assert not h.blade
+
+
+def test_manual_blade_off_when_docked_later():
+    h = manual_two_step()
+    assert blade_req(h, True)
+    h.fsm.inputs.docked = True
+    h.tick()
+    assert not h.blade and h.name == 'MANUAL_MOWING'
+    assert h.fsm.sub_state == f.SUB_MANUAL_BLADE_OFF
+
+
+def test_two_step_stop_and_emergency_turn_blade_off():
+    h = manual_two_step()
+    blade_req(h, True)
+    assert h.cmd(f.CMD_STOP)
+    assert not h.blade and h.name == 'IDLE'
+    h.cmd(f.CMD_MANUAL_MOW)
+    assert not h.blade
+    blade_req(h, True)
+    h.fsm.inputs.emergency_active = True
+    h.tick()
+    assert h.name == 'EMERGENCY' and not h.blade
+
+
+def test_manual_from_docked_drive_only():
+    h = Harness(manual_blade_requires_enable=True)
+    h.fsm.inputs.docked = True
+    h.tick()
+    assert h.cmd(f.CMD_MANUAL_MOW)
+    assert h.name == 'MANUAL_MOWING' and not h.blade
+
+
+def test_upstream_manual_blade_request_off_keeps_manual():
+    h = Harness()
+    h.cmd(f.CMD_MANUAL_MOW)
+    assert h.blade
+    assert blade_req(h, False)
+    assert not h.blade and h.name == 'MANUAL_MOWING'
+
+
+# =====================================================================
+# heading alignment gating (mower_localization/heading_aligner)
+# =====================================================================
+@pytest.mark.parametrize('source', ['none', 'file'])
+def test_preflight_refuses_unaligned_heading_away_from_dock(source):
+    h = Harness()
+    h.heading(source)
+    h.tick()
+    assert not h.cmd(f.CMD_START)
+    assert h.name == 'IDLE' and h.fsm.sub_state == \
+        'preflight failed: heading not aligned: drive straight 1 m in manual'
+    assert h.fsm.mission is None and not h.since(0, f.StartAction)
+
+
+def test_preflight_stale_heading_status_counts_as_unaligned():
+    h = Harness()
+    h.heading('cog', fresh=False)
+    h.fsm.inputs.heading_stamp = h.t
+    h.tick(dt=1.0, n=6)                 # > heading_status_timeout_s
+    assert not h.cmd(f.CMD_START)
+    assert f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+
+
+@pytest.mark.parametrize('source', ['dock', 'cog'])
+def test_aligned_heading_starts_away_from_dock(source):
+    h = Harness()
+    h.heading(source)
+    start_until_planning(h)
+
+
+def test_gate_can_be_disabled():
+    h = Harness(require_heading_alignment=False)
+    h.heading('none')
+    start_until_planning(h)
+
+
+@pytest.mark.parametrize('docked, charging', [(True, False), (False, True)])
+def test_unaligned_at_dock_undocks_first_then_waits_for_cog(docked, charging):
+    h = Harness()
+    h.heading('none')
+    h.fsm.inputs.docked = docked
+    h.fsm.inputs.is_charging = charging
+    h.tick()
+    assert h.cmd(f.CMD_START)          # at the dock the undock seeds the heading
+    h.answer_services()
+    assert h.name == 'UNDOCKING'
+    h.fsm.inputs.docked = h.fsm.inputs.is_charging = False
+    h.finish(f.ACT_UNDOCK)
+    assert h.name == 'WAITING_FOR_RTK'
+    h.tick(n=3)
+    assert h.name == 'WAITING_FOR_RTK' and 'heading' in h.fsm.sub_state
+    assert not h.since(0, f.StartAction) or all(
+        e.name == f.ACT_UNDOCK for e in h.since(0, f.StartAction))
+    h.heading('cog')                     # the undock drive produced a COG measurement
+    h.tick()
+    assert h.name == 'PLANNING'
+
+
+def test_charging_only_still_undocks_aligned():
+    """is_charging without is_docking_done used to go straight to TRANSIT from the dock."""
+    h = Harness()
+    h.fsm.inputs.is_charging = True
+    h.tick()
+    h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'UNDOCKING' and h.goal(f.ACT_UNDOCK)['distance_m'] == 0.8
+
+
+def test_no_cog_after_undock_stops_without_navigating():
+    h = Harness(heading_wait_s=5.0)
+    h.heading('none')
+    h.fsm.inputs.docked = True
+    h.tick()
+    h.cmd(f.CMD_START)
+    h.answer_services()
+    h.fsm.inputs.docked = False
+    h.finish(f.ACT_UNDOCK)
+    m = h.mark()
+    h.tick(dt=1.0, n=7)
+    assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+    assert h.fsm.mission is None
+    assert not h.since(m, f.StartAction)      # no dock / navigate with a wrong heading

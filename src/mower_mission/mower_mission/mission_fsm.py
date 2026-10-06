@@ -52,6 +52,14 @@ CMD_DELETE_MAPS = 255
 
 FIX_RTK_FIXED = 3
 
+# heading_aligner (mower_localization) sources that count as an absolute heading
+HEADING_ALIGNED_SOURCES = ('dock', 'cog')
+HEADING_NOT_ALIGNED = 'heading not aligned: drive straight 1 m in manual'
+
+# MANUAL_MOWING sub_state (the GUI reads the blade state from it)
+SUB_MANUAL_BLADE_ON = 'joystick, blade on'
+SUB_MANUAL_BLADE_OFF = 'joystick, blade off'
+
 # action / service names used in effects (the node maps them to ROS names)
 ACT_UNDOCK = 'undock'
 ACT_DOCK = 'dock'
@@ -242,6 +250,11 @@ class Inputs:
     pose: Optional[tuple] = None        # (x, y, yaw) in map
     boundary_violation: bool = False
     lethal_boundary_violation: bool = False
+    # /heading_aligner/status (latched JSON): aligned + source (none|file|dock|cog)
+    heading_aligned: bool = False
+    heading_source: str = 'none'
+    heading_stamp: Optional[float] = None     # receipt time of the last status
+
 
 
 @dataclass
@@ -253,6 +266,9 @@ class Params:
     preflight_min_fix_type_docked: int = 1
     rtk_fix_type: int = FIX_RTK_FIXED
     rtk_timeout_s: float = 120.0
+    require_heading_alignment: bool = True    # dock|cog heading before any Nav2 motion
+    heading_status_timeout_s: float = 5.0     # older /heading_aligner/status = unaligned
+    heading_wait_s: float = 30.0              # after undock + RTK, wait this long for COG
     rain_mode: int = 1                  # 0 ignore, 1 dock and wait
     rain_debounce_s: float = 2.0
     rain_delay_minutes: float = 30.0
@@ -270,6 +286,10 @@ class Params:
     blade_start_attempts: int = 3
     blade_retry_pause_s: float = 2.0
     require_blade_confirmation: bool = True
+    # MANUAL_MOWING starts blade OFF; the blade runs only after an explicit
+    # manual_blade(True) request (GUI mow_enabled=1). False = upstream behaviour
+    # (blade on as soon as MANUAL_MOW is entered).
+    manual_blade_requires_enable: bool = False
     blade_spinup_s: float = 2.0         # used when confirmation is disabled
     boundary_recover_after_s: float = 3.0     # pause this long, then a recovery transit
     boundary_max_recoveries: int = 2          # recovery transits per sub-path before latching
@@ -362,6 +382,7 @@ class MissionFSM:
         self.phase = 'IDLE'
         self.sub_state = ''
         self.blade_on = False
+        self._plan_shown = False
         self.mission = None
         self._now = now
         self._created = now
@@ -376,6 +397,7 @@ class MissionFSM:
         self._rain_since = None
         self._rain_clear_since = None
         self._boundary_since = None
+        self._heading_wait_since = None
         self._spin_attempt = 0
         self._spin_deadline = 0.0
         self._track = []
@@ -450,6 +472,7 @@ class MissionFSM:
                 self.phase, name, (' (%s)' % self.sub_state) if self.sub_state else ''))
             self.phase = name
             self._phase_since = self._now
+            self._heading_wait_since = None
         st = self.status()
         if st != self._last_status:
             self._last_status = st
@@ -462,6 +485,10 @@ class MissionFSM:
 
     def _go_idle(self, sub=None):
         self._resume_after = None
+        if self._plan_shown:
+            # clear the latched /coverage/full_plan so the GUI stops drawing the route
+            self._plan_shown = False
+            self._fx.append(PublishPlan([]))
         self._go(self._idle_name(), sub)
 
     def _blade_off(self, reason):
@@ -515,6 +542,14 @@ class MissionFSM:
         self._begin(now)
         ok = self._command(int(cmd))
         return ok, self._end()
+
+    def manual_blade(self, enable, now):
+        """Blade on/off request while MANUAL_MOWING (``~/manual_blade``).
+        Returns ``(success, message, effects)``."""
+        self._begin(now)
+        ok, msg = self._manual_blade(bool(enable))
+        self._log('info' if ok else 'warn', 'manual_blade(%s): %s' % (bool(enable), msg))
+        return ok, msg, self._end()
 
     def start_in_area(self, area, now):
         self._begin(now)
@@ -692,6 +727,10 @@ class MissionFSM:
             self._handle_service(s, False, {})
             return
 
+        if ph == 'MANUAL_MOWING':
+            self._manual_tick()
+            return
+
         if ph in IDLE_NAMES:
             if self._resume_after == 'charge':
                 b = i.battery_percent
@@ -716,8 +755,17 @@ class MissionFSM:
                 self._resume('rain')
         elif ph == 'WAITING_FOR_RTK':
             if i.fix_type is not None and i.fix_type >= self.p.rtk_fix_type:
-                self._log('info', 'RTK fixed: planning')
-                self._next_area()
+                if self.heading_ok():
+                    self._log('info', 'RTK fixed, heading aligned (%s): planning'
+                              % i.heading_source)
+                    self._next_area()
+                    return
+                if self._heading_wait_since is None:
+                    self._heading_wait_since = now
+                    self._log('info', 'RTK fixed: waiting for heading alignment')
+                    self._go('WAITING_FOR_RTK', 'waiting for heading alignment')
+                elif now - self._heading_wait_since > self.p.heading_wait_s:
+                    self._heading_failed()
             elif now - self._phase_since > self.p.rtk_timeout_s:
                 self._mission_failed('no RTK fixed within %.0fs' % self.p.rtk_timeout_s)
         elif ph == 'MOWING' and self.mission is not None:
@@ -842,10 +890,53 @@ class MissionFSM:
         if self.phase == 'RECORDING':
             self._leave_current_mode('manual mow')
         self._resume_after = None
+        if self.p.manual_blade_requires_enable:
+            # Two-step manual: drive first; the blade needs manual_blade(True).
+            if self.blade_on:
+                self._blade_off('manual mow (re-entered)')
+            self._go('MANUAL_MOWING', SUB_MANUAL_BLADE_OFF)
+            return True
         # Upstream order: publish state 4 first, then enable the blade.
-        self._go('MANUAL_MOWING', 'joystick, blade on')
+        self._go('MANUAL_MOWING', SUB_MANUAL_BLADE_ON)
         self._blade_on()
         return True
+
+    def _manual_blade_veto(self):
+        """Why the blade may not run in MANUAL_MOWING right now ('' = allowed)."""
+        cause = self._emergency_cause()
+        if cause:
+            return 'emergency: %s' % cause
+        if self.inputs.is_charging:
+            return 'charging'
+        if self.inputs.docked:
+            return 'docked'
+        return ''
+
+    def _manual_blade(self, enable):
+        if self.phase != 'MANUAL_MOWING':
+            return False, 'not in MANUAL_MOWING (%s)' % self.phase
+        if not enable:
+            if self.blade_on:
+                self._blade_off('manual: blades stop requested')
+            self._go('MANUAL_MOWING', SUB_MANUAL_BLADE_OFF)
+            return True, 'blade off'
+        veto = self._manual_blade_veto()
+        if veto:
+            return False, 'refused: %s' % veto
+        if not self.blade_on:
+            self._blade_on()
+        self._go('MANUAL_MOWING', SUB_MANUAL_BLADE_ON)
+        return True, 'blade on'
+
+    def _manual_tick(self):
+        """Two-step manual: a docked / charging robot never keeps the blade on
+        (emergency, lift and stop button are handled by the guards)."""
+        if self.p.manual_blade_requires_enable and self.blade_on:
+            veto = self._manual_blade_veto()
+            if veto:
+                self._log('warn', 'manual: blade off (%s)' % veto)
+                self._blade_off('manual: %s' % veto)
+                self._go('MANUAL_MOWING', SUB_MANUAL_BLADE_OFF)
 
     # ==================================================================
     # start / resume
@@ -863,7 +954,24 @@ class MissionFSM:
         if i.docked and (i.fix_type is None or i.fix_type < self.p.preflight_min_fix_type_docked):
             return 'no GNSS fix (fix_type %s < %d)' % (
                 i.fix_type, self.p.preflight_min_fix_type_docked)
+        if not self._at_dock() and not self.heading_ok():
+            # Undocked: Nav2 would steer with an arbitrary IMU heading. At the dock the
+            # undock (straight drive out along the dock yaw) seeds it instead.
+            return HEADING_NOT_ALIGNED
         return ''
+
+    def _at_dock(self):
+        return bool(self.inputs.docked or self.inputs.is_charging)
+
+    def heading_ok(self):
+        """Absolute heading available (heading_aligner source dock|cog, status fresh)."""
+        if not self.p.require_heading_alignment:
+            return True
+        i = self.inputs
+        if i.heading_stamp is None or self._now - i.heading_stamp > \
+                self.p.heading_status_timeout_s:
+            return False
+        return bool(i.heading_aligned) and i.heading_source in HEADING_ALIGNED_SOURCES
 
     def _start(self, single=None, auto=False):
         if self.phase == 'RECORDING':
@@ -942,7 +1050,9 @@ class MissionFSM:
         self.cursor.current_command = CMD_START
         self._persist()
         self._log('info', 'areas to mow: %s' % queue)
-        if self.inputs.docked:
+        if self._at_dock():
+            # charging but is_docking_done false still means "in the dock": always leave
+            # it with the straight undock (it also yields the course-over-ground heading).
             self._undock()
         else:
             self._go('WAITING_FOR_RTK', '')
@@ -1161,6 +1271,7 @@ class MissionFSM:
         m.lengths = [c[-1] for c in m.cum]
         full = result.get('full_path') or [p for sp in subpaths for p in sp]
         self._fx.append(PublishPlan(list(full)))
+        self._plan_shown = True
         fp = geo.plan_fingerprint(subpaths)
         _offs, total = subpath_offsets(subpaths)
         ac = self.cursor.areas.get(m.area_idx)
@@ -1344,6 +1455,16 @@ class MissionFSM:
         self._fx.append(DeleteResume())
         self._fx.append(PublishResumeAvailable(False))
         self._dock('RETURNING_HOME', 'home')
+
+    def _heading_failed(self):
+        """No absolute heading: stop where we are. Never dock/navigate with Nav2 here, it
+        would steer with the wrong heading."""
+        self._log('error', 'mowing aborted: %s' % HEADING_NOT_ALIGNED)
+        self._interrupt_mission(HEADING_NOT_ALIGNED)
+        self._cancel_all(HEADING_NOT_ALIGNED)
+        self._blade_off(HEADING_NOT_ALIGNED)
+        self._go_idle(HEADING_NOT_ALIGNED)
+        self._last_status = None
 
     def _mission_failed(self, reason):
         self._log('error', 'mowing aborted: %s' % reason)
