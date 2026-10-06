@@ -9,3 +9,5 @@ __pycache__/
 third_party/mowglinext/gui/web/node_modules/
 third_party/mowglinext/gui/web/dist/
 third_party/mowglinext/gui/mowglinext
+third_party/mowglinext/gui/.config/
+**/.pytest_cache/
