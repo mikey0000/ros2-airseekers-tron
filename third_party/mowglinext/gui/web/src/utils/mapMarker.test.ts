@@ -16,7 +16,7 @@ describe("map marker selection", () => {
     it("Airseekers Tron profile carries the vendor images", () => {
         const p = findRobotProfile("AirseekersTron")!;
         expect(selectRobotMarker(p)?.src).toBe("/robots/airseekers_tron_top.png");
-        expect(selectRobotMarker(p)?.anchor).toEqual({x: 0.5, y: 0.14});
+        expect(selectRobotMarker(p)?.anchor).toEqual({x: 0.5, y: 0.86});
         // the vendor dock asset is a glyph, not a top-down view: stock dock marker is kept
         expect(selectDockMarker(p)).toBeUndefined();
     });
