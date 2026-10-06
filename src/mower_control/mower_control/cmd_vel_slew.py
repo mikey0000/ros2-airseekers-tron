@@ -284,7 +284,12 @@ def shape_for_both_wheels(v, w, params=None):
     inner = abs(v) - abs(w) * half
     if inner >= v_min - 1e-9 or inner <= -v_min + 1e-9:
         return v, w, None                     # proper arc or proper pivot
-    if inner <= 0.0:                          # nearer legal regime: pivot
+    if abs(v) < 1e-6:
+        # A pure pivot: both wheels counter-rotate whatever the rate. Never bump it:
+        # the controller's small heading corrections near a goal became 0.25 rad/s
+        # pulses and the robot hunted around the heading (2026-10-07).
+        return v, w, None
+    if inner <= 0.0:                          # one-wheel zone with some forward speed
         aw = min(max(abs(w), v_min / half), w_max)
         info = {'kind': 'pivot', 'r': 0.0, 'inner': -aw * half, 'outer': aw * half}
         return 0.0, math.copysign(aw, w), info

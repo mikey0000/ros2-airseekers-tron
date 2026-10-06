@@ -21,7 +21,14 @@ def test_pivot_passes_as_pivot():
     assert shape_for_both_wheels(0.0, -0.25) == (0.0, -0.25, None)
 
 
-def test_slow_pivot_bumped_to_proper_pivot():
+def test_slow_pivot_passes_unchanged():
+    # Both wheels counter-rotate in any pure pivot: never bump the rate (a bump made
+    # the controller's small heading corrections hunt around the goal heading).
+    v, w, info = shape_for_both_wheels(0.0, 0.1)
+    assert (v, w, info) == (0.0, 0.1, None)
+
+
+def _old_slow_pivot_bumped_to_proper_pivot():
     v, w, info = shape_for_both_wheels(0.0, 0.1)
     assert v == 0.0 and w == pytest.approx(0.25) and info['kind'] == 'pivot'
     assert info['inner'] == pytest.approx(-0.06)
@@ -71,9 +78,9 @@ def test_reverse_docking_leg_keeps_both_wheels_backward():
 def test_docking_commands_in_docking_phase():
     ts = TurnShaper()
     v, w = ts.apply(0.0, 0.25, 'RETURNING_HOME', DT)       # ALIGNING about-turn pivot
-    assert (v, w) == (0.0, 0.25) and ts.status == 'pass'
+    assert (v, w) == (0.0, 0.25) and ts.status == 'pass'  # proper pivot passes
     v, w = ts.apply(0.0, 0.15, 'RETURNING_HOME', DT)       # slow pivot -> bumped
-    assert (v, w) == (0.0, pytest.approx(0.25)) and ts.status.startswith('pivot w=')
+    assert (v, w) == (0.0, pytest.approx(0.15)) and ts.status == 'pass'  # slow pivot passes too
     v, w = ts.apply(0.08, 0.2, 'RETURNING_HOME', DT)       # inner +0.032: arc
     a, b = wheels(v, w)
     assert v > 0 and min(a, b) == pytest.approx(0.06) and ts.status.startswith('arc r=')
@@ -91,7 +98,7 @@ def test_manual_and_idle_untouched(phase):
 
 def test_shape_manual_opt_in():
     ts = TurnShaper(shape_manual=True)
-    assert ts.apply(0.0, 0.1, 'MANUAL_MOWING', DT)[1] == pytest.approx(0.25)
+    assert ts.apply(0.05, 0.3, "MANUAL_MOWING", DT) == (0.0, pytest.approx(0.25))  # one-wheel turn -> proper pivot
 
 
 def test_long_pivot_never_converted_to_arc():
