@@ -53,6 +53,7 @@ renders `recording_trajectory` while recording and `/coverage/full_plan`.
 | 1 `START` | `PREFLIGHT_CHECK`: no emergency, battery known and > `battery_low_percent`, no rain (rain_mode 1), GNSS `fix_type >= 1` when docked. Then the area list is read from `get_mowing_area` (index 0.. until `success=false`, navigation areas skipped). Docked: `UNDOCKING` (`/mower_docking/undock`, 0.8 m, `wait_for_rtk=false`). Then `WAITING_FOR_RTK` (fix_type 3, `rtk_timeout_s`). Then per area: `PLANNING` (`/plan_coverage`, publishes `/coverage/full_plan`), then `MOWING`/`TRANSIT` per `drivable_subpath`. Finally `MOWING_COMPLETE`, then `RETURNING_HOME`, then `IDLE_DOCKED`, or `CHARGING` if it is charging. If a resume cursor exists, START continues from it. A START while a run is active is a no-op that returns `true`. |
 | 2 `HOME` | Blade off, cancel goals, `RETURNING_HOME` via `/mower_docking/dock`. The cursor is kept. |
 | 3 `RECORD_AREA` | `RECORDING` (state 3, blade off). Samples `/odometry/filtered_map` at 10 Hz and drops points less than 5 cm apart. Publishes `~/recording_trajectory`. |
+| 10 `RECORD_PATH` (ours) | Same as RECORD_AREA, but FINISH keeps the drive as an OPEN polyline. Steps: `geometry.simplify_open_path` (Douglas-Peucker, no closure or overshoot trim), rejected below `record_path_min_length_m` (1 m), `add_area` of a navigation area "Path N" whose polygon is the line buffered by `record_path_width_m`/2 (0.7 m band), then `/map_server_node/set_area_channel` with `{points, width_m}`. This is the same storage the GUI "Draw path" tool uses, and the GUI then opens the path panel. |
 | 5 `RECORD_FINISH` | Closes the ring and runs Douglas-Peucker at 0.05 m. Rejects the result if it has fewer than 3 vertices or covers less than 1 m². Counts the areas, then calls `add_area` with name `"Area N"` (N = mowing areas + 1, not a navigation area). Then `RECORDING_COMPLETE` for 5 s, then `IDLE`. If `add_area` fails, the polygon is written to `recording_fallback_dir`. |
 | 6 `RECORD_CANCEL` | Discard the recording, `IDLE`. |
 | 7 `MANUAL_MOW` | Publishes state 4 `MANUAL_MOWING` first, then blade on. With `manual_blade_requires_enable` (Tron default) the blade stays OFF (sub_state `joystick, blade off`) until `~/manual_blade`(true). Any other command or an emergency turns the blade off first. Refused during an autonomous run. |
@@ -165,7 +166,8 @@ Served (node `behavior_tree_node`):
 * Publishes `~/high_level_status` (on change + 1 Hz), `~/coverage_resume_available` (Bool,
   transient local), `~/recording_trajectory` (Path), `/coverage/full_plan` (Path, transient
   local), `/cmd_vel_emergency` (zero Twist burst), `~/active_area_settings` (String, JSON,
-  transient local; see below).
+  transient local; see below), `~/mow_plan` and `~/mow_progress` (String JSON, transient local,
+  live mow progress for the GUI map; see `mower_mission/mow_progress.py`).
 
 Inputs:
 

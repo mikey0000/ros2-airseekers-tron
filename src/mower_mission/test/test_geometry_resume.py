@@ -253,8 +253,9 @@ def test_simplify_open_path_keeps_endpoints_no_closure():
     pts = [(x * 0.1, 0.0) for x in range(30)] + [(3.0, y * 0.1) for y in range(1, 20)]
     pts += [pts[-1]]                                    # duplicate dropped
     out = g.simplify_open_path(pts, 0.05)
-    assert out == [(0.0, 0.0), (2.9, 0.0), (3.0, 0.1), (3.0, 1.9)] or (
-        out[0] == (0.0, 0.0) and out[-1] == (3.0, 1.9) and len(out) <= 4)
+    assert out[0] == (0.0, 0.0) and len(out) <= 4
+    assert abs(out[-1][0] - 3.0) < 1e-9 and abs(out[-1][1] - 1.9) < 1e-9
+    assert all(abs(p[1]) < 1e-9 or abs(p[0] - 3.0) < 1e-9 for p in out)
 
 
 def test_buffer_polyline_band():

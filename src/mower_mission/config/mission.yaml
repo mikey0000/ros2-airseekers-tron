@@ -37,6 +37,7 @@ behavior_tree_node:
     undock_speed_mps: 0.15
     dock_use_vision: true
     dock_timeout_s: 180.0             # passed in the Dock goal
+    dock_contact_grace_s: 10.0        # contacts seen while the dock action still runs: wait this long for its result, then cancel + treat as docked
     use_dock_pose: false              # only used when use_docking_server is false
     dock_pose_x: 0.0
     dock_pose_y: 0.0
@@ -126,6 +127,8 @@ behavior_tree_node:
     record_close_radius_m: 0.5        # finish: cut the drive where it passes back within this of its start (overshoot spike)
     record_min_area_m2: 1.0
     record_max_points: 50000
+    record_path_width_m: 0.7         # CMD_RECORD_PATH (10): band width of a recorded path
+    record_path_min_length_m: 1.0
     recording_fallback_dir: ~/.ros/mower_mission/recordings   # polygon kept here if add_area fails
 
     # --- timeouts ----------------------------------------------------------
