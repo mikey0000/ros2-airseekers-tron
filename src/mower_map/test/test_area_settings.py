@@ -17,7 +17,7 @@ def test_builtin_defaults_match_the_contract():
         'mow_angle_deg': -1.0, 'cut_speed_mps': 0.3, 'swath_overlap_m': 0.02,
         'swath_width_m': 0.18, 'edge_margin_m': 0.05, 'edge_first': True, 'repeat': 1, 'alternate_angle_offset_deg': 90.0,
         'route_order': 'racetrack', 'route_spiral_size': 6, 'min_turn_radius_m': 0.5,
-        'turn_type': 'auto'}
+        'turn_type': 'auto', 'obstacle_detection': 'standard'}
     assert s.ROUTE_ORDERS == ('boustrophedon', 'snake', 'spiral', 'racetrack')
     assert s.TURN_TYPES == ('auto', 'loop', 'reverse', 'pivot')
     assert s.DEFAULTS_INDEX == 255

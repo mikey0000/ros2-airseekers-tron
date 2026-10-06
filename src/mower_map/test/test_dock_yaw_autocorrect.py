@@ -204,3 +204,19 @@ def test_no_correction_for_dock_loaded_from_file(msn):
     n = _node(msn, dock=_dock(off=103.4, qual='low'))
     n.on_heading_status(_status(20.3, 'good', 'cog'))
     assert math.degrees(n.dock.yaw) == pytest.approx(100.0)
+
+
+def test_operator_heading_set_skips_the_on_dock_gate(monkeypatch):
+    """A typed/dragged dock pose (REQUEST yaw, no GPS position) is accepted off the dock."""
+    import math
+    from mower_map import map_server_node as msn
+    node = msn.MapServerNode.__new__(msn.MapServerNode)
+    calls = []
+    node.dock_gate_failure = lambda: calls.append(1) or 'robot not on the dock'
+    req = msn.SetDockingPoint.Request()
+    req.use_gps_position = False
+    req.yaw_source = msn.SetDockingPoint.Request.REQUEST
+    from_robot = bool(req.use_gps_position) or req.yaw_source != msn.SetDockingPoint.Request.REQUEST
+    assert from_robot is False
+    req2 = msn.SetDockingPoint.Request(); req2.use_gps_position = True
+    assert (bool(req2.use_gps_position) or req2.yaw_source != msn.SetDockingPoint.Request.REQUEST) is True

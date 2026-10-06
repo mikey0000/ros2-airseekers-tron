@@ -937,7 +937,12 @@ class MapServerNode(Node):
         return None
 
     def srv_set_docking_point(self, req, res):
-        why = self.dock_gate_failure()
+        # The on-dock / RTK gates protect a pose taken FROM THE ROBOT. An
+        # operator-supplied pose (map drag, typed heading: yaw_source REQUEST
+        # without use_gps_position) needs neither: the robot may be anywhere.
+        from_robot = bool(req.use_gps_position) or \
+            req.yaw_source != SetDockingPoint.Request.REQUEST
+        why = self.dock_gate_failure() if from_robot else None
         if why:
             self.get_logger().warn('set_docking_point rejected: ' + why)
             res.success = False

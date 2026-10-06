@@ -41,6 +41,10 @@ ROUTE_ORDERS = ('boustrophedon', 'snake', 'spiral', 'racetrack')
 # pivot; loop = loop turn or pivot; reverse = reverse-curve or pivot; pivot =
 # pivot in place (straight connector, the pre-turn behaviour).
 TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
+# Vision obstacle reaction (mower_vision obstacle_guard level): none = bumper +
+# stereo costmap only, standard = 1.0 m ranged / near side boxes while turning,
+# sensitive = 1.5 m, lower score, any camera.
+OBSTACLE_DETECTION_LEVELS = ('none', 'standard', 'sensitive')
 
 BUILTIN_DEFAULTS = {
     'cutter_height_mm': 50,
@@ -64,6 +68,7 @@ BUILTIN_DEFAULTS = {
     'route_spiral_size': 6,
     'min_turn_radius_m': 0.5,
     'turn_type': 'auto',
+    'obstacle_detection': 'standard',
 }
 
 # key -> (kind, min, max). kind: int | float | bool | enum
@@ -83,6 +88,7 @@ SPEC = {
     'route_spiral_size': ('int', 2, 20),
     'min_turn_radius_m': ('float', 0.0, 2.0),      # 0 = pivot in place
     'turn_type': ('enum', TURN_TYPES, None),
+    'obstacle_detection': ('enum', OBSTACLE_DETECTION_LEVELS, None),
 }
 
 FILE_NAME = 'area_settings.yaml'
