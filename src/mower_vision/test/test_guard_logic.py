@@ -173,3 +173,104 @@ def test_policy_state_holds_then_clears():
     st.update('r', {'kind': 'none', 'class': '', 'distance_m': None, 'bearing_deg': None}, 0.1)
     assert st.current(0.4)['class'] == 'chair'
     assert st.current(0.6)['kind'] == 'none'
+
+
+# ---------------------------------------------------------------------------
+# motion relevance + obstacle_detection levels
+# ---------------------------------------------------------------------------
+from mower_vision.guard_logic import (CAM_FRONT, CAM_LEFT, CAM_REAR, CAM_RIGHT,  # noqa: E402
+                                      DEFAULT_CAMERA_FRAMES, LevelTable, MotionState,
+                                      PolicyConfig, camera_role, frame_policy, level_policy)
+
+G540 = GuardConfig(image_width=960, image_height=540)
+TABLE = LevelTable()
+
+
+def pol(level):
+    return level_policy(level, PolicyConfig(), TABLE)
+
+
+def unranged_person(h=300, score=0.8):
+    return Box('person', score, 480, 300, 120, h)
+
+
+def test_camera_roles():
+    f = DEFAULT_CAMERA_FRAMES
+    assert camera_role('vio_camera', f) == CAM_FRONT
+    assert camera_role('left_oa_camera', f) == CAM_LEFT
+    assert camera_role('right_oa_camera', f) == CAM_RIGHT
+    assert camera_role('rear_camera', f) == CAM_REAR
+    assert camera_role('mystery', f) == CAM_FRONT
+
+
+def test_motion_relevance():
+    m = MotionState()
+    assert m.relevant(0.0) == {CAM_FRONT}                 # no command: front only
+    m.update(0.3, 0.0, 1.0)
+    assert m.relevant(1.1) == {CAM_FRONT}
+    m.update(0.3, -0.5, 2.0)                              # turning right
+    assert m.relevant(2.1) == {CAM_FRONT, CAM_RIGHT}
+    m.update(0.3, 0.05, 2.2)                              # inside the deadband
+    assert CAM_RIGHT in m.relevant(2.5)                   # held
+    assert CAM_RIGHT not in m.relevant(2.7)               # hold (0.6 s) expired
+    m.update(-0.2, 0.0, 5.0)                              # reversing only
+    assert m.relevant(5.1) == {CAM_REAR}
+
+
+def test_live_bug_right_camera_unranged_person_ignored_while_driving_straight():
+    m = MotionState()
+    m.update(0.3, 0.0, 0.0)
+    p = frame_policy([unranged_person(h=500)], pol('standard'), G540,
+                     CAM_RIGHT, m.relevant(0.1))
+    assert p['kind'] == 'none'
+
+
+def test_standard_side_needs_turn_and_tall_box():
+    m = MotionState()
+    m.update(0.2, -0.4, 0.0)                              # turning toward the right camera
+    rel = m.relevant(0.1)
+    assert frame_policy([unranged_person(h=300)], pol('standard'), G540,
+                        CAM_RIGHT, rel)['kind'] == 'dynamic'          # 300 >= 0.45*540
+    assert frame_policy([unranged_person(h=200)], pol('standard'), G540,
+                        CAM_RIGHT, rel)['kind'] == 'none'             # small = far
+    assert frame_policy([unranged_person(h=300)], pol('standard'), G540,
+                        CAM_LEFT, rel)['kind'] == 'none'              # other side
+
+
+def test_standard_front_ranged_stop_range_and_reverse():
+    near = Box('person', 0.8, 100, 100, 10, 10, range_m=0.9)
+    mid = Box('person', 0.8, 100, 100, 10, 10, range_m=1.3)
+    m = MotionState()
+    m.update(0.3, 0.0, 0.0)
+    assert frame_policy([near], pol('standard'), G540, CAM_FRONT, m.relevant(0.1))['kind'] \
+        == 'dynamic'
+    assert frame_policy([mid], pol('standard'), G540, CAM_FRONT, m.relevant(0.1))['kind'] \
+        == 'none'
+    m.update(-0.2, 0.0, 1.0)
+    assert frame_policy([near], pol('standard'), G540, CAM_FRONT, m.relevant(1.1))['kind'] \
+        == 'none'                                         # reversing: front irrelevant
+    rock = Box('stone', 0.8, 100, 100, 10, 10, range_m=1.3)
+    assert frame_policy([rock], pol('standard'), G540, CAM_FRONT, {CAM_FRONT})['kind'] \
+        == 'static'
+
+
+def test_level_none_never_reports():
+    near = Box('person', 0.99, 100, 100, 10, 10, range_m=0.3)
+    assert frame_policy([near], pol('none'), G540, CAM_FRONT, {CAM_FRONT})['kind'] == 'none'
+    assert frame_policy([near], pol('none'), G540, CAM_FRONT, None)['kind'] == 'none'
+
+
+def test_level_sensitive_range_score_and_any_camera():
+    s = pol('sensitive')
+    assert (s.dynamic_range_m, s.min_score, s.any_camera) == (1.5, 0.35, True)
+    mid = Box('person', 0.37, 100, 100, 10, 10, range_m=1.3)
+    assert frame_policy([mid], s, G540, CAM_FRONT, {CAM_FRONT})['kind'] == 'dynamic'
+    assert frame_policy([mid], pol('standard'), G540, CAM_FRONT, {CAM_FRONT})['kind'] == 'none'
+    # unranged from a side camera counts even driving straight
+    assert frame_policy([unranged_person(h=300)], s, G540, CAM_RIGHT, {CAM_FRONT})['kind'] \
+        == 'dynamic'
+
+
+def test_unknown_level_is_standard():
+    assert pol('bogus').level == 'standard'
+    assert pol('standard').dynamic_range_m == 1.0 and pol('standard').min_score == 0.4

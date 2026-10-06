@@ -17,7 +17,7 @@ import time
 from typing import Optional
 
 import rclpy
-from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -37,6 +37,7 @@ from mower_interfaces.srv import ChargingControl
 
 from mower_docking import dock_logic as dl
 from mower_docking.sub_pump import SubscriptionPump, flat_parser, parse_odometry
+from mower_docking.quiet_action import QuietActionClient
 
 try:
     from mowgli_interfaces.msg import GnssStatus
@@ -187,8 +188,10 @@ class DockingServer(Node):
 
         self._charging_cli = self.create_client(ChargingControl, p('charging_service').value,
                                                 callback_group=self._client_group)
-        self._nav_cli = ActionClient(self, NavigateToPose, p('navigate_action').value,
-                                     callback_group=self._client_group)
+        # NavigateToPose client only while a goal needs it (_nav_client / _drop_nav_client):
+        # its feedback subscription receives bt_navigator's ~100 Hz feedback of EVERY
+        # navigate_to_pose goal (the mission's transits too), which kept this idle node busy.
+        self._nav_cli = None
 
         self._dock_srv = ActionServer(
             self, Dock, '~/dock', execute_callback=self._execute_dock,
@@ -426,7 +429,7 @@ class DockingServer(Node):
         ps.pose.orientation.x, ps.pose.orientation.y = qx, qy
         ps.pose.orientation.z, ps.pose.orientation.w = qz, qw
         self._approach_pub.publish(ps)
-        if not self._nav_cli.wait_for_server(
+        if not self._nav_client().wait_for_server(
                 timeout_sec=float(self.get_parameter('nav_server_wait_s').value)):
             self.get_logger().error('navigate_to_pose server not available')
             self._nav_status = 'failed'
@@ -451,6 +454,22 @@ class DockingServer(Node):
             self._nav_status = 'succeeded' if ok else 'failed'
             self._nav_goal_handle = None
         fut.add_done_callback(on_goal)
+
+    def _nav_client(self):
+        if self._nav_cli is None:
+            self._nav_cli = QuietActionClient(
+                self, NavigateToPose, self.get_parameter('navigate_action').value,
+                callback_group=self._client_group)
+        return self._nav_cli
+
+    def _drop_nav_client(self) -> None:
+        cli, self._nav_cli = self._nav_cli, None
+        self._nav_goal_handle = None
+        if cli is not None:
+            try:
+                cli.destroy()
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warn('nav client destroy failed: %s' % exc)
 
     def _cancel_nav(self) -> None:
         gh = self._nav_goal_handle
@@ -556,7 +575,8 @@ class DockingServer(Node):
         finally:
             if machine.state == dl.DockState.NAV_TO_APPROACH:
                 self._cancel_nav()
-            self._stop_burst()
+            self._stop_burst()          # also gives the cancel request time to go out
+            self._drop_nav_client()
             self._enable_vision(False)
             self._release_inputs()
             with self._lock:

@@ -1241,7 +1241,8 @@ def test_area_settings_applied_before_planning():
     seq = [type(e).__name__ + ':' + getattr(e, 'name', '') for e in h.since(m)
            if isinstance(e, (f.CallService, f.StartAction, f.BladeOn))
            and getattr(e, 'name', '') != f.SRV_GET_AREA]
-    assert seq == ['CallService:get_area_settings', 'CallService:cutter_height',
+    assert seq == ['CallService:get_area_settings', 'CallService:set_parameters',
+                   'CallService:set_parameters', 'CallService:cutter_height',
                    'CallService:set_parameters', 'CallService:set_parameters',
                    'StartAction:plan_coverage']
     pub = h.since(m, f.PublishAreaSettings)[-1].settings
@@ -2579,3 +2580,76 @@ def test_dynamic_new_class_waits_again():
     policy(h, 'dynamic', 'dog')
     h.tick()
     assert h.fsm._action is None and 'waiting for dog' in h.fsm.sub_state
+
+
+# =====================================================================
+# per-area obstacle_detection push + stale stereo sub_state
+# =====================================================================
+@pytest.mark.parametrize('level,points', [('none', False), ('standard', True),
+                                          ('sensitive', True)])
+def test_obstacle_detection_level_pushed_on_area_start(level, points):
+    h = Harness()
+    h.area_settings = {0: {'obstacle_detection': level}}
+    m = h.mark()
+    start_until_planning(h)
+    assert param_calls(h, f.PARAM_NODE_OBSTACLE_GUARD, m) == [{'obstacle_detection': level}]
+    assert param_calls(h, f.PARAM_NODE_DET_RANGE, m) == [{'publish_obstacle_points': points}]
+    assert h.fsm.obstacle_level() == level
+    assert h.since(m, f.PublishAreaSettings)[-1].settings['obstacle_detection'] == level
+
+
+def test_obstacle_detection_defaults_to_standard_and_rejects_unknown():
+    h = Harness()
+    h.area_settings = {0: {'obstacle_detection': 'paranoid'}}
+    m = h.mark()
+    start_until_planning(h)
+    assert param_calls(h, f.PARAM_NODE_OBSTACLE_GUARD, m) == [{'obstacle_detection': 'standard'}]
+
+
+def test_obstacle_detection_push_can_be_disabled():
+    h = Harness(set_obstacle_detection=False)
+    m = h.mark()
+    start_until_planning(h)
+    assert not param_calls(h, f.PARAM_NODE_OBSTACLE_GUARD, m)
+    assert not param_calls(h, f.PARAM_NODE_DET_RANGE, m)
+
+
+def test_sensitive_area_waits_longer_for_dynamic():
+    h = Harness(dynamic_wait_s=30.0, dynamic_wait_sensitive_factor=2.0)
+    h.area_settings = {0: {'obstacle_detection': 'sensitive'}}
+    start_until_planning(h)
+    assert h.fsm._dyn_wait_s('follow') == 60.0
+    h2 = Harness(dynamic_wait_s=30.0)
+    start_until_planning(h2)
+    assert h2.fsm._dyn_wait_s('follow') == 30.0
+
+
+def test_parse_stereo_stale_from_rosout_bytes():
+    text = (b'\x00local_costmap.local_costmap\x00The /stereo_depth/points observation '
+            b'buffer has not been updated for 4.52 seconds, and it should be updated every '
+            b'0.50 seconds.')
+    assert f.parse_stereo_stale(text) == pytest.approx(4.52)
+    assert f.parse_stereo_stale(text.replace(b'local_costmap', b'global_costmap')) is None
+    assert f.parse_stereo_stale(b'local_costmap: something else') is None
+    assert f.parse_stereo_stale('local_costmap.local_costmap The /stereo_depth/points '
+                                'observation buffer has not been updated for 7 seconds') == 7.0
+
+
+def test_stale_stereo_overrides_sub_state_while_driving():
+    h = Harness()
+    start_until_planning(h)
+    h.fsm.phase = 'TRANSIT'
+    h.fsm.sub_state = 'area 0 sub-path 1/2: transit aborted, retry 1/3 in 3 s'
+    i = h.fsm.inputs
+    i.stereo_stale_s, i.stereo_stale_stamp = 5.4, h.t
+    assert h.fsm.status()['sub_state_name'] == 'sensor stale: stereo depth (5 s)'
+    h.tick(dt=2.5)
+    assert h.fsm.display_sub_state().startswith('area 0 sub-path 1/2: transit aborted, retry 1/3')
+    # a dynamic wait keeps its own text
+    i.stereo_stale_stamp = h.t
+    h.fsm.sub_state = 'waiting for person to move (12 s)'
+    assert h.fsm.display_sub_state() == 'waiting for person to move (12 s)'
+    # not while idle
+    h.fsm.phase = 'IDLE'
+    h.fsm.sub_state = ''
+    assert h.fsm.display_sub_state() == ''

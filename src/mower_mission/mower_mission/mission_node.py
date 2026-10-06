@@ -27,7 +27,6 @@ import threading
 import time
 
 import rclpy
-from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -42,6 +41,7 @@ from nav2_msgs.action import BackUp, FollowPath, NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from sensor_msgs.msg import BatteryState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.msg import Log
 from rcl_interfaces.srv import SetParameters
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Empty, SetBool, Trigger
@@ -55,6 +55,7 @@ from mowgli_interfaces.srv import AddMowingArea, GetMowingArea, HighLevelControl
 
 from mower_mission import mission_fsm as fsm_mod
 from mower_mission.resume import ResumeCursor
+from mower_mission.quiet_action import QuietActionClient
 from mower_mission.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
                                     parse_odometry)
 
@@ -91,6 +92,11 @@ TOPIC_DEFAULTS = {
     'get_area_settings_service': '/map_server_node/get_area_settings',
     'coverage_server_node': '/coverage_server',        # set_parameters target (bridge)
     'controller_server_node': '/controller_server',    # set_parameters target (Nav2)
+    'obstacle_guard_node': '/obstacle_guard',          # set_parameters: obstacle_detection
+    'det_range_node': '/det_range',                    # set_parameters: publish_obstacle_points
+    # Nav2 "observation buffer has not been updated" WARNs -> 'sensor stale' sub_state
+    # ('' = off). Taken raw and byte-searched on the 10 Hz tick (no deserialisation).
+    'rosout_topic': '/rosout',
     'add_area_service': '/map_server_node/add_area',
     'cutter_control_service': '/cutter_control',
     'cutter_off_service': '/cutter_off',
@@ -216,6 +222,10 @@ class MissionNode(Node):
             parser=flat_parser(Bool))
         sub(String, p['heading_status_topic'], self._on_heading, latched)
         sub(String, p['obstacle_policy_topic'], self._on_obstacle_policy, latched)
+        if p['rosout_topic']:
+            sub(Log, p['rosout_topic'], self._on_rosout,
+                QoSProfile(depth=50, reliability=QoSReliabilityPolicy.RELIABLE),
+                raw=True, deliver_all=True)
         if p['supervisor_status_topic']:
             sub(String, p['supervisor_status_topic'], self._on_supervisor, latched)
         self._hw_rain = self._base_rain = False
@@ -237,7 +247,9 @@ class MissionNode(Node):
         }
         self._param_clients = {}
         for key, pname in ((fsm_mod.PARAM_NODE_COVERAGE, 'coverage_server_node'),
-                           (fsm_mod.PARAM_NODE_CONTROLLER, 'controller_server_node')):
+                           (fsm_mod.PARAM_NODE_CONTROLLER, 'controller_server_node'),
+                           (fsm_mod.PARAM_NODE_OBSTACLE_GUARD, 'obstacle_guard_node'),
+                           (fsm_mod.PARAM_NODE_DET_RANGE, 'det_range_node')):
             srv_name = p[pname].rstrip('/') + '/set_parameters'
             self._param_clients[key] = (cli(SetParameters, srv_name, callback_group=self._cb),
                                         srv_name)
@@ -247,7 +259,9 @@ class MissionNode(Node):
             (cli(ClearEntireCostmap, p[k], callback_group=self._cb), p[k])
             for k in ('clear_global_costmap_service', 'clear_local_costmap_service')]
 
-        act = lambda t, n: (ActionClient(self, t, p[n], callback_group=self._cb), p[n])  # noqa
+        # QuietActionClient: other goals' feedback (bt_navigator ~100 Hz, controller 20 Hz)
+        # is dropped without an executor dispatch (quiet_action.py).
+        act = lambda t, n: (QuietActionClient(self, t, p[n], callback_group=self._cb), p[n])  # noqa
         self._actions = {
             fsm_mod.ACT_PLAN: act(PlanCoverage, 'plan_coverage_action'),
             fsm_mod.ACT_FOLLOW: act(FollowPath, 'follow_path_action'),
@@ -439,6 +453,14 @@ class MissionNode(Node):
             i.obstacle_class = str(st.get('class', '') or '')
             i.obstacle_distance = float(d) if isinstance(d, (int, float)) else None
             i.obstacle_stamp = time.monotonic()
+
+    def _on_rosout(self, data):
+        n = fsm_mod.parse_stereo_stale(data)
+        if n is None:
+            return
+        with self._lock:
+            self.fsm.inputs.stereo_stale_s = n
+            self.fsm.inputs.stereo_stale_stamp = time.monotonic()
 
     def _on_gnss(self, msg):
         with self._lock:

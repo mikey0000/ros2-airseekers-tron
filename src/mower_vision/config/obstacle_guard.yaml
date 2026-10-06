@@ -36,3 +36,22 @@ obstacle_guard:
     policy_static_range_m: 1.5
     policy_topic: /obstacle_policy
     policy_rate_hz: 5.0
+    # Per-area level, set live by mower_mission from the area's obstacle_detection setting:
+    #   none      = vision policy always kind none (bumper + stereo costmap only)
+    #   standard  = ranged <= obstacle_stop_range_m (min_score); unranged need
+    #               bbox height >= unranged_h_frac*image height; cameras by motion direction
+    #   sensitive = sensitive_stop_range_m / sensitive_min_score, every camera counts
+    obstacle_detection: standard
+    sensitive_stop_range_m: 1.5
+    sensitive_min_score: 0.35
+    unranged_h_frac: 0.45     # ~person within 1.5 m on the 960x540 OA cameras
+    # Motion relevance (unstamped Twist): front unless only reversing, a side camera only
+    # while turning toward it, rear while reversing. '' = every camera always counts.
+    cmd_vel_topic: /cmd_vel
+    motion_lin_deadband_mps: 0.03
+    motion_ang_deadband_rps: 0.15
+    motion_hold_s: 0.6
+    front_frames: [vio_camera]
+    left_frames: [left_oa_camera]
+    right_frames: [right_oa_camera]
+    rear_frames: [rear_camera]   # hook: the rear camera is not run through det_ros yet

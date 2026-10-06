@@ -424,8 +424,14 @@ local_costmap:
           # >1 s marks the layer not-current (controller pauses instead of driving on
           # stale data). Disable the source with stereo_costmap:=false (mower.launch.py)
           # to mow bumper-only.
-          observation_persistence: 0.5
-          expected_update_rate: 1.0
+          # 0.7 (was 0.5): stereo_depth now stamps clouds at the newest odom TF minus 50 ms
+          # (up to 0.3 s old, see stamp_tf_parent there) to dodge the Humble tf2 MessageFilter
+          # deadlock; 0.7 keeps >=2 clouds alive at 4-5 Hz.
+          # expected_update_rate KEPT as a safety gate (no cloud -> controller pauses rather
+          # than driving blind into a wall); the mission surfaces it as sub_state
+          # "sensor stale: stereo depth (N s)" from this costmap's /rosout warning.
+          observation_persistence: 0.7
+          expected_update_rate: 1.5
           inf_is_valid: false
         det_range:
           topic: /ai/det/obstacle_points

@@ -34,3 +34,23 @@ def test_points_optical_axes_and_range():
     assert len(pts) == 2
     by_z = {round(float(p[2]), 3): p for p in pts}
     assert by_z[2.0][0] > 0 and by_z[1.0][1] > 0
+
+
+def _stamper(last_tf_ns, parent='odom'):
+    from types import SimpleNamespace
+    return SimpleNamespace(_stamp_parent=parent, _last_tf_ns=last_tf_ns,
+                           _stamp_margin_ns=50_000_000, _stamp_max_lag_ns=300_000_000)
+
+
+def test_cloud_stamp_never_ahead_of_odom_tf():
+    f = sd.StereoDepthNode.cloud_stamp_ns
+    now = 1_000_000_000_000
+    # TF 20 ms behind now -> stamp 70 ms behind now (transformable on arrival in the costmap)
+    assert f(_stamper(now - 20_000_000), now) == now - 70_000_000
+    # no TF yet / TF too old -> fixed max lag
+    assert f(_stamper(0), now) == now - 300_000_000
+    assert f(_stamper(now - 900_000_000), now) == now - 300_000_000
+    # TF stamped in the future never pushes the cloud ahead of now
+    assert f(_stamper(now + 500_000_000), now) == now
+    # disabled -> old behaviour
+    assert f(_stamper(now - 20_000_000, parent=''), now) == now

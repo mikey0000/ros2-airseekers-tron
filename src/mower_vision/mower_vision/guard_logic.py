@@ -169,19 +169,149 @@ def danger_line(cfg: GuardConfig) -> List[Tuple[float, float]]:
 NONE_POLICY = {'kind': 'none', 'class': '', 'distance_m': None, 'bearing_deg': None}
 
 
+# ---------------------------------------------------------------------------
+# Camera roles + motion relevance (owner rule: "if something is not in front, or to its
+# side while turning, or behind while reversing, it should move")
+# ---------------------------------------------------------------------------
+CAM_FRONT, CAM_LEFT, CAM_RIGHT, CAM_REAR = 'front', 'left', 'right', 'rear'
+CAMERA_ROLES = (CAM_FRONT, CAM_LEFT, CAM_RIGHT, CAM_REAR)
+# Detection2DArray header.frame_id -> role. The rear camera ('rear_camera') is not run
+# through the detector yet; once det_ros publishes it, its boxes count while reversing.
+DEFAULT_CAMERA_FRAMES: Dict[str, List[str]] = {
+    CAM_FRONT: ['vio_camera'],
+    CAM_LEFT: ['left_oa_camera'],
+    CAM_RIGHT: ['right_oa_camera'],
+    CAM_REAR: ['rear_camera'],
+}
+
+
+def camera_role(frame_id: str, frames: Dict[str, Sequence[str]]) -> str:
+    """Role of a detection frame; unknown frames are treated as front (conservative)."""
+    fid = (frame_id or '').strip().lstrip('/')
+    for role in CAMERA_ROLES:
+        if fid in {str(x).strip().lstrip('/') for x in frames.get(role, ())}:
+            return role
+    return CAM_FRONT
+
+
+@dataclass
+class MotionConfig:
+    lin_deadband_mps: float = 0.03    # |v| below this: not driving forward / backward
+    ang_deadband_rps: float = 0.15    # |w| below this: not turning (controller jitter)
+    hold_s: float = 0.6               # a command keeps counting this long after it
+
+
+class MotionState:
+    """Last commanded /cmd_vel (unstamped Twist) -> cameras relevant to the motion."""
+
+    def __init__(self, cfg: Optional[MotionConfig] = None):
+        self.cfg = cfg or MotionConfig()
+        self._last_fwd: Optional[float] = None
+        self._last_rev: Optional[float] = None
+        self._last_left: Optional[float] = None
+        self._last_right: Optional[float] = None
+
+    def update(self, linear_x: float, angular_z: float, now: float) -> None:
+        c = self.cfg
+        if linear_x > c.lin_deadband_mps:
+            self._last_fwd = now
+        elif linear_x < -c.lin_deadband_mps:
+            self._last_rev = now
+        if angular_z > c.ang_deadband_rps:
+            self._last_left = now
+        elif angular_z < -c.ang_deadband_rps:
+            self._last_right = now
+
+    def _recent(self, t: Optional[float], now: float) -> bool:
+        return t is not None and now - t <= self.cfg.hold_s
+
+    def relevant(self, now: float) -> set:
+        """Front counts unless the robot is only reversing (standing still / about to drive
+        off forward keeps the front camera armed); a side counts while turning toward it;
+        rear while reversing."""
+        out = set()
+        rev, fwd = self._recent(self._last_rev, now), self._recent(self._last_fwd, now)
+        if fwd or not rev:
+            out.add(CAM_FRONT)
+        if rev:
+            out.add(CAM_REAR)
+        if self._recent(self._last_left, now):
+            out.add(CAM_LEFT)
+        if self._recent(self._last_right, now):
+            out.add(CAM_RIGHT)
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Per-area obstacle_detection level (mower_mission pushes it as a parameter)
+# ---------------------------------------------------------------------------
+OBSTACLE_LEVELS = ('none', 'standard', 'sensitive')
+DEFAULT_LEVEL = 'standard'
+
+
 @dataclass
 class PolicyConfig:
     dynamic_classes: Sequence[str] = field(default_factory=lambda: list(DEFAULT_DYNAMIC))
     min_score: float = 0.4
     dynamic_range_m: float = 1.0      # dynamic: same reach as the guard stop
     static_range_m: float = 1.5       # static: a little further (explains a controller abort)
+    # Unranged boxes (side cameras, or stereo ranging failed): close when the bbox is at
+    # least this fraction of the image height tall (person ~within 1.5 m).
+    unranged_h_frac: float = 0.45
+    level: str = DEFAULT_LEVEL        # none | standard | sensitive
+    any_camera: bool = False          # True: every camera counts regardless of motion
 
 
-def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig) -> dict:
+@dataclass
+class LevelTable:
+    """Thresholds the levels map to (obstacle_guard parameters)."""
+    standard_stop_range_m: float = 1.0
+    standard_min_score: float = 0.4
+    sensitive_stop_range_m: float = 1.5
+    sensitive_min_score: float = 0.35
+    static_range_m: float = 1.5
+    unranged_h_frac: float = 0.45
+
+
+def level_policy(level: str, base: PolicyConfig, table: LevelTable) -> PolicyConfig:
+    """PolicyConfig for ``level`` (unknown -> standard)."""
+    lvl = level if level in OBSTACLE_LEVELS else DEFAULT_LEVEL
+    if lvl == 'sensitive':
+        stop, score, anyc = table.sensitive_stop_range_m, table.sensitive_min_score, True
+    else:
+        stop, score, anyc = table.standard_stop_range_m, table.standard_min_score, False
+    return replace(base, level=lvl, min_score=float(score), dynamic_range_m=float(stop),
+                   static_range_m=max(float(table.static_range_m), float(stop)),
+                   unranged_h_frac=float(table.unranged_h_frac), any_camera=anyc)
+
+
+def camera_counts(role: str, relevant: Optional[set], cfg: PolicyConfig) -> bool:
+    """Whether a camera's detections may produce a policy at all (level + motion)."""
+    if cfg.level == 'none':
+        return False
+    if cfg.any_camera or relevant is None:
+        return True
+    return role in relevant
+
+
+def box_close(b: Box, reach: float, cfg: PolicyConfig, image_height: float) -> bool:
+    """Ranged: stereo range within ``reach``; unranged: bbox-height proxy."""
+    if b.range_m is not None:
+        return b.range_m <= reach
+    return image_height > 0 and b.h >= cfg.unranged_h_frac * image_height
+
+
+def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig,
+                 role: str = CAM_FRONT, relevant: Optional[set] = None) -> dict:
     """Closest relevant detection of one frame: any dynamic one wins over static ones.
 
-    Ranged boxes count within ``dynamic_range_m`` / ``static_range_m``; unranged ones
-    use the guard's image-space danger zone."""
+    Nothing counts at level ``none`` or when camera ``role`` is not in ``relevant`` (the
+    cameras that matter for the current motion, :class:`MotionState`; None = all), unless
+    ``cfg.any_camera`` (sensitive). Ranged boxes count within ``dynamic_range_m`` /
+    ``static_range_m``; unranged ones need bbox height >= ``unranged_h_frac`` * image
+    height (``guard_cfg.image_height``)."""
+    if not camera_counts(role, relevant, cfg):
+        return dict(NONE_POLICY)
     dyn = {c.strip().lower() for c in cfg.dynamic_classes}
     best = {}
     for b in boxes:
@@ -189,7 +319,7 @@ def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig
             continue
         kind = 'dynamic' if b.label.strip().lower() in dyn else 'static'
         reach = cfg.dynamic_range_m if kind == 'dynamic' else cfg.static_range_m
-        close = (b.range_m <= reach) if b.range_m is not None else in_danger_zone(b, guard_cfg)
+        close = box_close(b, reach, cfg, float(guard_cfg.image_height))
         if not close:
             continue
         key = b.range_m if b.range_m is not None else float('inf')

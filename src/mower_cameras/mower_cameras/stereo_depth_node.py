@@ -138,6 +138,19 @@ class StereoDepthNode(Node):
         d('max_range_m', 4.0)
         d('publish_on_demand', True)
         d('cloud_fps', 5.0)              # filtered cloud rate cap (CPU); depth image keeps fps
+        # --- cloud stamping (Nav2 costmap deadlock workaround, 2026-10-07) ---
+        # Humble tf2_ros 0.25.x: a cloud that is NOT transformable on arrival in the costmap
+        # goes through tf2_ros::Buffer::waitForTransform, which can deadlock against the
+        # costmap's TF listener thread (Buffer mutex vs BufferCore transformable_requests
+        # mutex, lock-order inversion; gdb-confirmed in controller_server). The EKF's
+        # odom->base_link lags wall clock by 5-200 ms, so a cloud stamped now() was ALWAYS
+        # ahead of TF and the obstacle layer froze within ~1 s of every start. Stamp the
+        # cloud at the latest received odom TF time minus a margin: transformable on arrival,
+        # waitForTransform returns immediately and no request is ever left pending.
+        d('stamp_tf_parent', 'odom')     # '' = old behaviour (stamp = now)
+        d('stamp_tf_child', 'base_link')
+        d('stamp_tf_margin_s', 0.05)     # margin under the newest TF stamp
+        d('stamp_max_lag_s', 0.3)        # TF older than this (or none): stamp = now - this
         # --- noise filters (before the cloud) ---
         d('speckle_max_size', 200)       # px; disparity blobs smaller than this are dropped
         d('speckle_max_diff_px', 1.0)    # disparity step that splits blobs
@@ -161,6 +174,16 @@ class StereoDepthNode(Node):
                                        'ground_margin_m', 'ground_max_tilt_deg',
                                        'ground_max_dh_m')}
         self.on_demand = bool(p('publish_on_demand'))
+        self._stamp_parent = str(p('stamp_tf_parent'))
+        self._stamp_child = str(p('stamp_tf_child'))
+        self._stamp_margin_ns = int(float(p('stamp_tf_margin_s')) * 1e9)
+        self._stamp_max_lag_ns = int(float(p('stamp_max_lag_s')) * 1e9)
+        self._last_tf_ns = 0
+        if self._stamp_parent:
+            from tf2_msgs.msg import TFMessage
+            # Own light /tf subscription (only reads the stamp of parent->child), independent
+            # of the ground-prior TF listener that is dropped once the static chain is known.
+            self.create_subscription(TFMessage, '/tf', self._on_tf, 50)
         self.ground_base = p('ground_base_frame')
         cf = float(p('cloud_fps'))
         self.cloud_period = 0.9 / cf if cf > 0 else 0.0
@@ -201,9 +224,27 @@ class StereoDepthNode(Node):
         return any(x.get_subscription_count() > 0
                    for x in (self.depth_pub, self.mono_pub, self.cloud_pub))
 
+    def _on_tf(self, msg):
+        for t in msg.transforms:
+            if t.child_frame_id == self._stamp_child and t.header.frame_id == self._stamp_parent:
+                ns = t.header.stamp.sec * 1_000_000_000 + t.header.stamp.nanosec
+                if ns > self._last_tf_ns:
+                    self._last_tf_ns = ns
+
+    def cloud_stamp_ns(self, now_ns):
+        """Stamp for the cloud: never ahead of the newest odom TF (see stamp_tf_parent)."""
+        if not self._stamp_parent:
+            return now_ns
+        floor = now_ns - self._stamp_max_lag_ns
+        if self._last_tf_ns <= floor:
+            return floor
+        return min(now_ns, self._last_tf_ns - self._stamp_margin_ns)
+
     def _on_frame(self, data, cap):
         c = self.cfg
-        stamp = self.get_clock().now().to_msg()
+        now_ns = self.get_clock().now().nanoseconds
+        s_ns = self.cloud_stamp_ns(now_ns)
+        stamp = rclpy.time.Time(nanoseconds=s_ns).to_msg()
         raw, grey = decode_simor(data, cap.width, cap.height, cap.bytesperline or cap.width * 3)
         now = time.monotonic()
         if (now - self._last_cloud >= self.cloud_period

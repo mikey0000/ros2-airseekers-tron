@@ -104,6 +104,11 @@ behavior_tree_node:
     dynamic_ignore_after_timeout_s: 60.0  # after a timeout: ignore the same class this long ...
     dynamic_ignore_move_m: 1.0        # ... unless the robot moved more than this
     dynamic_clear_hold_s: 2.0         # policy clear this long before resuming
+    # per-area obstacle_detection (none|standard|sensitive) -> /obstacle_guard obstacle_detection
+    # + /det_range publish_obstacle_points (false for none), pushed when an area's settings load
+    set_obstacle_detection: true
+    dynamic_wait_sensitive_factor: 2.0  # sensitive areas: dynamic waits x this
+    stereo_stale_window_s: 2.0        # /rosout stale-stereo WARN this recent -> 'sensor stale' sub_state
     detour_skip_m: 1.0                # detour target this far along the sub-path past the robot
     detour_skip_step_m: 0.5           # detour transit failed: extend the skip by this ...
     detour_max_skip_m: 3.0            # ... up to this, then a normal follow retry

@@ -23,6 +23,14 @@ Publishes:
   every other class within ``policy_static_range_m`` -> static (mission: detour).
   Dynamic wins over static. Unranged boxes use the image-space danger zone.
 
+Motion relevance + level (live parameter ``obstacle_detection``: none|standard|sensitive,
+set per area by mower_mission): a camera's detections only count when they matter for the
+commanded motion (``/cmd_vel``, unstamped Twist): the front stereo (``vio_camera``) unless
+only reversing, a side OA camera only while turning toward that side, the rear camera
+(``rear_frames``; not in the detector yet) while reversing. Unranged boxes need a bbox
+height >= ``unranged_h_frac`` x image height. ``none`` publishes kind none only;
+``sensitive`` uses ``sensitive_stop_range_m`` / ``sensitive_min_score`` and every camera.
+
 When ``stop_on_close`` is true, on the rising edge of the close state:
 * zero ``geometry_msgs/Twist`` on ``/cmd_vel_emergency`` at ``burst_rate_hz`` for
   ``burst_s`` (twist_mux emergency input, priority 100, timeout 0.2 s);
@@ -35,11 +43,13 @@ import json
 import math
 import sys
 import time
+from dataclasses import replace
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import Point, Twist
 from rclpy.node import Node
+from rcl_interfaces.msg import SetParametersResult
 from sensor_msgs.msg import CameraInfo
 from rclpy.qos import (QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy,
                        qos_profile_sensor_data)
@@ -53,10 +63,14 @@ try:
 except ImportError as _exc:  # pragma: no cover
     _DEP_ERROR = _exc
 
-from mower_vision.guard_logic import (DEFAULT_CLASSES, DEFAULT_DYNAMIC, DEFAULT_WHITELIST,
-                                      Box, GuardConfig, GuardState, PolicyConfig,
-                                      PolicyState, box_outline, class_label, classify,
-                                      danger_line, frame_policy, with_image_size)
+from mower_vision.guard_logic import (CAM_FRONT, CAM_LEFT, CAM_REAR, CAM_RIGHT,
+                                      DEFAULT_CAMERA_FRAMES, DEFAULT_CLASSES, DEFAULT_DYNAMIC,
+                                      DEFAULT_LEVEL, DEFAULT_WHITELIST, OBSTACLE_LEVELS, Box,
+                                      GuardConfig, GuardState, LevelTable, MotionConfig,
+                                      MotionState, PolicyConfig, PolicyState, box_outline,
+                                      camera_counts, camera_role, class_label, classify,
+                                      danger_line, frame_policy, level_policy,
+                                      with_image_size)
 
 RED = ColorRGBA(r=1.0, g=0.1, b=0.1, a=1.0)
 YELLOW = ColorRGBA(r=1.0, g=0.85, b=0.0, a=1.0)
@@ -133,6 +147,20 @@ class ObstacleGuard(Node):
         dp('policy_static_range_m', 1.5)
         dp('policy_topic', '/obstacle_policy')
         dp('policy_rate_hz', 5.0)
+        # per-area level (mower_mission sets it live) + its thresholds
+        dp('obstacle_detection', DEFAULT_LEVEL)
+        dp('sensitive_stop_range_m', 1.5)
+        dp('sensitive_min_score', 0.35)
+        dp('unranged_h_frac', 0.45)
+        # motion relevance from the commanded velocity
+        dp('cmd_vel_topic', '/cmd_vel')          # '' = every camera always counts
+        dp('motion_lin_deadband_mps', 0.03)
+        dp('motion_ang_deadband_rps', 0.15)
+        dp('motion_hold_s', 0.6)
+        dp('front_frames', list(DEFAULT_CAMERA_FRAMES[CAM_FRONT]))
+        dp('left_frames', list(DEFAULT_CAMERA_FRAMES[CAM_LEFT]))
+        dp('right_frames', list(DEFAULT_CAMERA_FRAMES[CAM_RIGHT]))
+        dp('rear_frames', list(DEFAULT_CAMERA_FRAMES[CAM_REAR]))
 
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.classes = [str(c) for c in p('classes')]
@@ -152,7 +180,25 @@ class ObstacleGuard(Node):
                                        min_score=float(p('min_score')),
                                        dynamic_range_m=float(p('obstacle_stop_range_m')),
                                        static_range_m=float(p('policy_static_range_m')))
+        self.level_table = LevelTable(
+            standard_stop_range_m=float(p('obstacle_stop_range_m')),
+            standard_min_score=float(p('min_score')),
+            sensitive_stop_range_m=float(p('sensitive_stop_range_m')),
+            sensitive_min_score=float(p('sensitive_min_score')),
+            static_range_m=float(p('policy_static_range_m')),
+            unranged_h_frac=float(p('unranged_h_frac')))
+        self.camera_frames = {CAM_FRONT: [str(x) for x in p('front_frames')],
+                              CAM_LEFT: [str(x) for x in p('left_frames')],
+                              CAM_RIGHT: [str(x) for x in p('right_frames')],
+                              CAM_REAR: [str(x) for x in p('rear_frames')]}
+        self.motion = MotionState(MotionConfig(
+            lin_deadband_mps=float(p('motion_lin_deadband_mps')),
+            ang_deadband_rps=float(p('motion_ang_deadband_rps')),
+            hold_s=float(p('motion_hold_s'))))
         self.policy_state = PolicyState(hold_s=float(p('hold_s')))
+        level = str(p('obstacle_detection'))
+        self._apply_level(level if level in OBSTACLE_LEVELS else DEFAULT_LEVEL)
+        self.add_on_set_parameters_callback(self._on_set_params)
         self._policy_period = 1.0 / max(0.5, float(p('policy_rate_hz')))
         self._policy_t = 0.0
         self._policy_last = None
@@ -171,6 +217,9 @@ class ObstacleGuard(Node):
         self.create_subscription(Detection2DArray, p('detections_topic'), self._on_raw, 10)
         if p('ranged_topic'):
             self.create_subscription(Detection2DArray, p('ranged_topic'), self._on_ranged, 10)
+        self._use_motion = bool(p('cmd_vel_topic'))
+        if self._use_motion:
+            self.create_subscription(Twist, p('cmd_vel_topic'), self._on_cmd_vel, 10)
         self.create_timer(1.0 / float(p('burst_rate_hz')), self._on_tick)
         self._last_published = None
 
@@ -178,7 +227,35 @@ class ObstacleGuard(Node):
             f'obstacle_guard up: whitelist={list(self.cfg.whitelist)} y_frac={self.cfg.y_frac} '
             f'w_frac={self.cfg.w_frac} fallback_image={self.cfg.image_width}x{self.cfg.image_height} '
             f'stop_on_close={self.stop_on_close} ranged={p("ranged_topic") or "off"} '
-            f'stop_range={self.cfg.stop_range_m} m')
+            f'stop_range={self.cfg.stop_range_m} m level={self.policy_cfg.level}')
+
+    def _apply_level(self, level):
+        """Switch the policy / guard thresholds to ``level`` (validated)."""
+        self.policy_cfg = level_policy(level, self.policy_cfg, self.level_table)
+        self.cfg = replace(self.cfg, stop_range_m=self.policy_cfg.dynamic_range_m,
+                           min_score=self.policy_cfg.min_score)
+        self.policy_state = PolicyState(hold_s=self.policy_state.hold_s)  # drop held ones
+
+    def _on_set_params(self, params):
+        for prm in params:
+            if prm.name == 'obstacle_detection':
+                lvl = str(prm.value)
+                if lvl not in OBSTACLE_LEVELS:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='obstacle_detection: %s' % '|'.join(OBSTACLE_LEVELS))
+                if lvl != self.policy_cfg.level:
+                    self._apply_level(lvl)
+                    self.get_logger().info(
+                        'obstacle_detection=%s: stop range %.2f m, min score %.2f, %s' % (
+                            lvl, self.policy_cfg.dynamic_range_m, self.policy_cfg.min_score,
+                            'vision off (bumper + stereo costmap only)' if lvl == 'none'
+                            else 'any camera' if self.policy_cfg.any_camera
+                            else 'cameras by motion direction'))
+        return SetParametersResult(successful=True)
+
+    def _on_cmd_vel(self, msg):
+        self.motion.update(float(msg.linear.x), float(msg.angular.z), self._now())
 
     def _on_info(self, msg):
         w, h = int(msg.width), int(msg.height)
@@ -215,9 +292,13 @@ class ObstacleGuard(Node):
         boxes = boxes_from_msg(msg, self.classes, self.range_origin_x)
         cfg = self._cfg_for(msg.header.frame_id)
         verdicts = classify(boxes, cfg)
+        now = self._now()
+        role = camera_role(msg.header.frame_id, self.camera_frames)
+        relevant = self.motion.relevant(now) if self._use_motion else None
         self.policy_state.update(msg.header.frame_id or 'camera',
-                                 frame_policy(boxes, self.policy_cfg, cfg), self._now())
-        close_now = any(c for _, _, c in verdicts)
+                                 frame_policy(boxes, self.policy_cfg, cfg, role, relevant), now)
+        close_now = (any(c for _, _, c in verdicts)
+                     and camera_counts(role, relevant, self.policy_cfg))
         close, rising = self.state.update(msg.header.frame_id or 'camera', close_now,
                                           self._now())
         self._publish_close(close)

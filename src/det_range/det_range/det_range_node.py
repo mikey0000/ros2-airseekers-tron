@@ -100,6 +100,9 @@ class DetRange(Node):
         d('sigma_disparity_px', 0.25)
         d('max_depth_age_s', 0.5)     # |det stamp - depth stamp| tolerance
         d('depth_ring', 8)
+        # Per-area obstacle_detection=none (set live by mower_mission): publish an EMPTY
+        # obstacle cloud so the costmap gets no detection marks (the buffer stays fresh).
+        d('publish_obstacle_points', True)
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.p = p
         self.stereo_frames = {str(f) for f in p('stereo_frames') if f}
@@ -233,6 +236,8 @@ class DetRange(Node):
             self.n_ranged += 1
         self.pub.publish(msg)
         self.pose_pub.publish(pa)
+        if not bool(p('publish_obstacle_points')):
+            pts = []
         self.cloud_pub.publish(cloud_msg(pa.header, pts))
 
     def _report(self):

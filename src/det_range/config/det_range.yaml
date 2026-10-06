@@ -19,3 +19,4 @@ det_range:
     z_guess_m: 2.0
     sigma_disparity_px: 0.25
     max_depth_age_s: 0.5
+    publish_obstacle_points: true   # false = empty /ai/det/obstacle_points (obstacle_detection none)

@@ -24,6 +24,7 @@ stop, emergency and shutdown.
 """
 
 import json
+import re
 import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -84,6 +85,8 @@ SRV_CLEAR_COSTMAPS = 'clear_costmaps'         # Nav2 clear_entirely_{global,loca
 # set_parameters targets (the node maps them to <node>/set_parameters)
 PARAM_NODE_COVERAGE = 'coverage_server'
 PARAM_NODE_CONTROLLER = 'controller_server'
+PARAM_NODE_OBSTACLE_GUARD = 'obstacle_guard'   # mower_vision: obstacle_detection level
+PARAM_NODE_DET_RANGE = 'det_range'             # publish_obstacle_points (costmap marks)
 
 # Per-area mowing settings (mower_map area_settings.py BUILTIN_DEFAULTS; used
 # when /map_server_node/get_area_settings is unavailable or leaves a key out).
@@ -103,10 +106,28 @@ AREA_SETTINGS_DEFAULTS = {
     'route_spiral_size': 6,
     'min_turn_radius_m': 0.5,
     'turn_type': 'auto',
+    'obstacle_detection': 'standard',   # none | standard | sensitive (obstacle_guard)
 }
 PATH_MODES = ('zigzag', 'cross', 'alternate', 'spiral', 'contour_only')
 ROUTE_ORDERS = ('boustrophedon', 'snake', 'spiral', 'racetrack')
 TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
+OBSTACLE_DETECTION_LEVELS = ('none', 'standard', 'sensitive')
+STEREO_STALE_SUB = 'sensor stale: stereo depth (%d s)'
+_STEREO_STALE_RE = re.compile(
+    rb'/stereo_depth/points observation buffer has not been updated for ([0-9]+(?:\.[0-9]*)?) s')
+
+
+def parse_stereo_stale(data, logger_name=b'local_costmap'):
+    """Seconds N from a serialized rcl_interfaces/Log (raw /rosout CDR bytes, or text) that
+    carries Nav2's "<topic> observation buffer has not been updated for N seconds" for the
+    stereo cloud from ``logger_name``; None otherwise. Byte search only (no deserialize)."""
+    if isinstance(data, str):
+        data = data.encode('utf-8', 'replace')
+    data = bytes(data)
+    if b'observation buffer' not in data or logger_name not in data:
+        return None
+    mo = _STEREO_STALE_RE.search(data)
+    return float(mo.group(1)) if mo else None
 
 
 def coverage_route_params(st):
@@ -308,6 +329,10 @@ class Inputs:
     obstacle_stamp: Optional[float] = None    # receipt time of the last policy message
     # /supervisor/status critical_down (comma-joined node names; '' = all alive)
     critical_nodes_down: str = ''
+    # /rosout local_costmap "/stereo_depth/points observation buffer has not been updated
+    # for N seconds": last receipt time + N (stale stereo -> controller aborts FollowPath)
+    stereo_stale_s: Optional[float] = None
+    stereo_stale_stamp: Optional[float] = None
 
 
 @dataclass
@@ -418,6 +443,11 @@ class Params:
     # Without this the same person re-triggers the wait 0.1 s after the goal is re-sent.
     dynamic_ignore_after_timeout_s: float = 60.0
     dynamic_ignore_move_m: float = 1.0
+    # per-area obstacle_detection: pushed to /obstacle_guard (+ /det_range) on area start
+    set_obstacle_detection: bool = True
+    dynamic_wait_sensitive_factor: float = 2.0   # 'sensitive' areas wait this much longer
+    # a stale-stereo costmap warning seen within this window overrides the sub_state
+    stereo_stale_window_s: float = 2.0
     dynamic_clear_hold_s: float = 2.0   # policy clear this long before resuming
     detour_skip_m: float = 1.0          # detour target: this far along the path past the robot
     detour_skip_step_m: float = 0.5     # ... extended by this when the detour transit fails
@@ -560,7 +590,7 @@ class MissionFSM:
         return {
             'state': self.state,
             'state_name': self.phase,
-            'sub_state_name': self.sub_state,
+            'sub_state_name': self.display_sub_state(),
             'current_area': m.area_idx if m and m.area_idx is not None else -1,
             'current_path': m.sub_i if m and m.area_idx is not None and m.subpaths else -1,
             'current_path_index': (m.progress_local if m.step == 'follow' else m.start_local)
@@ -1609,6 +1639,9 @@ class MissionFSM:
             self._log('warn', 'unknown path_mode %r: zigzag' % st['path_mode'])
             st['path_mode'] = 'zigzag'
         st['repeat'] = max(1, int(st['repeat']))
+        if st['obstacle_detection'] not in OBSTACLE_DETECTION_LEVELS:
+            self._log('warn', 'unknown obstacle_detection %r: standard' % st['obstacle_detection'])
+            st['obstacle_detection'] = 'standard'
         st['perimeter_laps'] = max(0, int(st['perimeter_laps']))
         return st, src
 
@@ -1656,10 +1689,35 @@ class MissionFSM:
             return [run((done + k) * off) for k in range(n)]
         return [run(0.0) for _ in range(n)]
 
+    def display_sub_state(self):
+        """sub_state as reported: a fresh stale-stereo costmap warning wins while driving
+        (Nav2 aborts every FollowPath then; the generic retry text hides the cause)."""
+        i = self.inputs
+        if (self.phase in ('TRANSIT', 'MOWING') and i.stereo_stale_stamp is not None
+                and self._now - i.stereo_stale_stamp <= self.p.stereo_stale_window_s
+                and not self.sub_state.startswith('waiting for ')):
+            return STEREO_STALE_SUB % int(round(i.stereo_stale_s or 0.0))
+        return self.sub_state
+
+    def obstacle_level(self):
+        m = self.mission
+        lvl = (m.settings or {}).get('obstacle_detection') if m is not None else None
+        return lvl if lvl in OBSTACLE_DETECTION_LEVELS else 'standard'
+
+    def _push_obstacle_detection(self, level):
+        if not self.p.set_obstacle_detection:
+            return
+        self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_OBSTACLE_GUARD,
+                                    'params': {'obstacle_detection': str(level)}}, track=False)
+        self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_DET_RANGE,
+                                    'params': {'publish_obstacle_points': level != 'none'}},
+                   track=False)
+
     def _on_area_settings(self, ok, resp):
         m = self.mission
         st, src = self._merge_settings(ok, resp)
         m.settings = st
+        self._push_obstacle_detection(st['obstacle_detection'])
         m.runs = self._build_runs(st)
         if m.run_i >= len(m.runs):
             m.run_i = 0
@@ -2468,7 +2526,10 @@ class MissionFSM:
         return True
 
     def _dyn_wait_s(self, ctx):
-        return float(self.p.dynamic_wait_s if ctx == 'follow' else self.p.dynamic_wait_transit_s)
+        w = float(self.p.dynamic_wait_s if ctx == 'follow' else self.p.dynamic_wait_transit_s)
+        if self.obstacle_level() == 'sensitive':
+            w *= max(1.0, float(self.p.dynamic_wait_sensitive_factor))
+        return w
 
     def _dyn_ignored(self):
         """True while a fresh dynamic detection falls in the post-timeout ignore
