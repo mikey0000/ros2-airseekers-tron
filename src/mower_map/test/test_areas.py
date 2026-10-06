@@ -588,3 +588,68 @@ def test_path_band_is_free_in_nav_mask_but_not_mowed():
     assert nav[fy, fx] != core.FREE
     assert [a.name for a in s.areas if not a.is_navigation] == ['lawn']
 
+
+
+# ---------------------------------------------------------------- soft band / return corridor
+
+def _nav_setup(robot=None, soft_band=1.5):
+    s = core.MapStore()
+    s.add_area('lawn', SQUARE, False, [(HOLE, 'tree', core.SOURCE_USER)])
+    polys = [a.polygon for a in s.areas] + ([[robot]] if robot else [])
+    spec = core.grid_for_polygons(polys, 0.1, 2.0)
+    base = core.build_nav_mask(s.areas, spec, 0.8, 0.10, None, soft_band)
+    return s, spec, base
+
+
+def test_nav_mask_soft_band():
+    s, spec, nav = _nav_setup()
+    assert _cell(spec, nav, 5.0, 5.0) == core.LETHAL          # obstacle
+    assert _cell(spec, nav, 2.0, 2.0) == core.FREE
+    assert _cell(spec, nav, 10.7, 5.0) == core.FREE           # within nav_margin
+    assert _cell(spec, nav, 11.5, 5.0) == core.SOFT_COST      # 0.7 m past the margin
+    assert _cell(spec, nav, 11.95, 5.0) == core.SOFT_COST     # 1.15 m past the margin
+    assert _cell(spec, nav, 11.85, 11.85) == core.LETHAL      # corner: 2.62 m from the area
+    without = core.build_nav_mask(s.areas, spec, 0.8, 0.10)
+    assert _cell(spec, without, 11.5, 5.0) == core.LETHAL     # band disabled by default
+    assert core.SOFT_COST < core.LETHAL
+
+
+def test_return_corridor_freed_from_robot_off_map():
+    robot = (16.0, 5.0)
+    s, spec, base = _nav_setup(robot)
+    assert not core.is_free_at(base, spec, *robot)
+    rc = core.return_corridor(robot[0], robot[1], base, spec, 0.8, 15.0)
+    assert rc is not None and rc.connected
+    assert rc.gap_m == pytest.approx(16.0 - 10.8, abs=0.1)
+    nav = core.build_nav_mask(s.areas, spec, 0.8, 0.10, None, 1.5, rc)
+    for x in np.arange(10.8, 16.0, 0.1):                     # whole line robot -> area free
+        assert _cell(spec, nav, x, 5.0) == core.FREE
+    assert _cell(spec, nav, 16.0, 5.7) == core.FREE           # width 2 * nav_margin
+    assert _cell(spec, nav, 14.0, 7.0) != core.FREE           # outside the capsule
+    assert len(rc.polygon()) > 4
+
+
+def test_return_corridor_none_when_inside_or_in_margin():
+    s, spec, base = _nav_setup()
+    assert core.return_corridor(2.0, 2.0, base, spec, 0.8) is None
+    assert core.return_corridor(10.5, 5.0, base, spec, 0.8) is None
+
+
+def test_return_corridor_too_far_not_connected():
+    robot = (30.0, 5.0)
+    s, spec, base = _nav_setup(robot)
+    rc = core.return_corridor(robot[0], robot[1], base, spec, 0.8, 15.0)
+    assert rc is not None and not rc.connected and rc.gap_m > 15.0
+
+
+def test_return_corridor_obstacles_override():
+    s = core.MapStore()
+    blocker = [(12.0, 4.0), (13.0, 4.0), (13.0, 6.0), (12.0, 6.0)]
+    s.add_area('lawn', SQUARE, False, [(blocker, 'rock', core.SOURCE_USER)])
+    robot = (16.0, 5.0)
+    spec = core.grid_for_polygons([SQUARE, [robot]], 0.1, 2.0)
+    base = core.build_nav_mask(s.areas, spec, 0.8, 0.10, None, 1.5)
+    rc = core.return_corridor(robot[0], robot[1], base, spec, 0.8, 15.0)
+    nav = core.build_nav_mask(s.areas, spec, 0.8, 0.10, None, 1.5, rc)
+    assert _cell(spec, nav, 12.5, 5.0) == core.LETHAL
+    assert _cell(spec, nav, 15.0, 5.0) == core.FREE

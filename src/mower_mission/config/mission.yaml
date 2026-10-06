@@ -100,6 +100,9 @@ behavior_tree_node:
     obstacle_policy_timeout_s: 1.0    # older /obstacle_policy = none
     obstacle_static_memory_s: 3.0     # a static class seen this recently explains an abort
     dynamic_wait_s: 30.0              # then the dynamic obstacle is treated as static (detour)
+    dynamic_wait_transit_s: 15.0      # transit / docking (blade off): wait, then re-send the goal
+    dynamic_ignore_after_timeout_s: 60.0  # after a timeout: ignore the same class this long ...
+    dynamic_ignore_move_m: 1.0        # ... unless the robot moved more than this
     dynamic_clear_hold_s: 2.0         # policy clear this long before resuming
     detour_skip_m: 1.0                # detour target this far along the sub-path past the robot
     detour_skip_step_m: 0.5           # detour transit failed: extend the skip by this ...

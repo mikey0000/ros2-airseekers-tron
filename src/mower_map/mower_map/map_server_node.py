@@ -69,6 +69,16 @@ PARAMS = {
     'dock_corridor_enabled': True,
     'dock_corridor_max_m': 5.0,        # approach pose -> area gap beyond this: dock capsule only
     'approach_distance': 0.8,          # same name/default as mower_docking
+    # soft band (nav mask only): cells outside the free set but within this
+    # distance of it cost SOFT_COST (90 of 100; 100 = lethal) instead of lethal
+    'nav_soft_band_m': 1.5,
+    # return corridor (nav mask only): while the robot pose is outside the free
+    # set (areas + nav_margin_m + dock corridor), free a capsule of half-width
+    # nav_margin_m from the robot to the closest free cell so Nav2 can plan back.
+    'return_corridor_enabled': True,
+    'return_corridor_max_m': 15.0,     # longer gap: warn, no corridor
+    'return_corridor_rebuild_m': 0.5,  # rebuild after the robot moved this far
+    'return_corridor_check_period_s': 1.0,
     # default dock outline (dock-local, m) used when dock_pose.yaml has none;
     # the vendor's type-5 outline (charger plate around the rear axle)
     'dock_outline_x_min': -0.2,
@@ -162,6 +172,10 @@ class MapServerNode(Node):
         self.recent_poses = deque()          # (t, x, y, yaw)
         self.blade_offset = None
         self.last_boundary_check = 0.0
+        self.base_nav = None                 # (spec, nav mask without return corridor)
+        self.return_anchor = None            # robot (x, y) the return corridor was built for
+        self.return_active = False
+        self.last_return_check = 0.0
 
         # publishers
         self.mask_pub = self.create_publisher(OccupancyGrid, '/keepout_mask', _latched())
@@ -175,6 +189,8 @@ class MapServerNode(Node):
         self.dock_measured_pub = self.create_publisher(Bool, '~/docking_pose_measured',
                                                        _latched())
         self.corridor_pub = self.create_publisher(PolygonStamped, '~/dock_corridor', _latched())
+        self.return_corridor_pub = self.create_publisher(PolygonStamped, '~/return_corridor',
+                                                         _latched())
         self.boundary_pub = self.create_publisher(Bool, '~/boundary_violation', 1)
         self.lethal_pub = self.create_publisher(Bool, '~/lethal_boundary_violation', 1)
         self.replan_pub = self.create_publisher(Bool, '~/replan_needed', 1)
@@ -293,6 +309,9 @@ class MapServerNode(Node):
         corridor = self.dock_corridor()
         if corridor is not None:
             polys.append(corridor.polygon())
+        robot = self.return_corridor_robot_xy(polys)
+        if robot is not None:
+            polys.append([robot])
         try:
             spec = core.grid_for_polygons(polys, self.resolution, float(self.p('mask_margin')))
         except ValueError as exc:
@@ -306,7 +325,35 @@ class MapServerNode(Node):
         nav_mask = core.build_nav_mask(self.store.areas, spec,
                                        float(self.p('nav_margin_m')),
                                        float(self.p('nav_obstacle_margin_m')),
-                                       corridor)
+                                       corridor, float(self.p('nav_soft_band_m')))
+        self.base_nav = (spec, nav_mask)
+        ret = None
+        self.return_anchor = None
+        if robot is not None and not core.is_free_at(nav_mask, spec, robot[0], robot[1]):
+            self.return_anchor = robot
+            ret = core.return_corridor(robot[0], robot[1], nav_mask, spec,
+                                       float(self.p('nav_margin_m')),
+                                       float(self.p('return_corridor_max_m')))
+            if ret is not None and not ret.connected:
+                self.get_logger().warn(
+                    'return corridor: robot (%.2f, %.2f) is %.2f m from the navigable map '
+                    '(> return_corridor_max_m %.1f): no corridor, Nav2 cannot plan back'
+                    % (robot[0], robot[1], ret.gap_m, float(self.p('return_corridor_max_m'))),
+                    throttle_duration_sec=30.0)
+                ret = None
+            if ret is not None:
+                nav_mask = core.build_nav_mask(self.store.areas, spec,
+                                               float(self.p('nav_margin_m')),
+                                               float(self.p('nav_obstacle_margin_m')),
+                                               corridor, float(self.p('nav_soft_band_m')),
+                                               ret)
+        if (ret is not None) != self.return_active:
+            self.get_logger().info(
+                'return corridor %s' % ('freed: (%.2f, %.2f) -> (%.2f, %.2f), %.2f m'
+                                        % (ret.path[0] + ret.path[-1] + (ret.gap_m,))
+                                        if ret is not None else 'cleared'))
+        self.return_active = ret is not None
+        self.publish_return_corridor(ret)
         self.nav_mask_pub.publish(self.grid_msg(spec, nav_mask))
         if spec != self.spec:
             self.progress.resize(spec)
@@ -320,6 +367,52 @@ class MapServerNode(Node):
                                   int((mask == 0).sum()), int((nav_mask == 0).sum())))
         if replan:
             self.replan_pub.publish(Bool(data=True))
+
+    def return_corridor_robot_xy(self, polys):
+        """Fresh robot (x, y) for the return corridor, or None (disabled, no
+        areas, stale pose, or implausibly far from the map so the grid would
+        explode)."""
+        if not self.p('return_corridor_enabled') or not self.store.areas:
+            return None
+        if self.pose is None or time.monotonic() - self.pose_time > 2.0:
+            return None
+        x, y = self.pose[0], self.pose[1]
+        bb = core.bounding_box(polys)
+        if bb is None:
+            return None
+        dx = max(bb[0] - x, 0.0, x - bb[2])
+        dy = max(bb[1] - y, 0.0, y - bb[3])
+        if math.hypot(dx, dy) > float(self.p('return_corridor_max_m')) + 5.0:
+            return None
+        return (x, y)
+
+    def publish_return_corridor(self, ret):
+        msg = PolygonStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.map_frame
+        if ret is not None:
+            msg.polygon.points = [Point32(x=float(x), y=float(y), z=0.0)
+                                  for x, y in ret.polygon()]
+        self.return_corridor_pub.publish(msg)
+
+    def check_return_corridor(self, x, y, now):
+        """Rate-limited from on_odom: rebuild the nav mask when the robot left
+        the free set (or moved > return_corridor_rebuild_m while off it), and
+        once more when it is back on a free cell so the corridor is cleared."""
+        if not self.p('return_corridor_enabled') or self.base_nav is None:
+            return
+        if now - self.last_return_check < float(self.p('return_corridor_check_period_s')):
+            return
+        self.last_return_check = now
+        spec, base = self.base_nav
+        if core.is_free_at(base, spec, x, y):
+            if self.return_active:
+                self.rebuild(replan=False)
+            return
+        a = self.return_anchor
+        if a is None or math.hypot(x - a[0], y - a[1]) > \
+                float(self.p('return_corridor_rebuild_m')):
+            self.rebuild(replan=False)
 
     def dock_corridor(self):
         """Compute the dock corridor and publish its outline (empty polygon when
@@ -502,6 +595,8 @@ class MapServerNode(Node):
             if self.progress.stamp_disc(x + c * ox - s * oy, y + s * ox + c * oy,
                                         float(self.p('blade_radius'))):
                 self.progress_dirty = True
+
+        self.check_return_corridor(x, y, now)
 
         rate = float(self.p('boundary_check_rate_hz'))
         if self.store.areas and (rate <= 0 or now - self.last_boundary_check >= 1.0 / rate):

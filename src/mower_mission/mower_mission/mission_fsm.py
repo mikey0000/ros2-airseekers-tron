@@ -408,6 +408,14 @@ class Params:
     obstacle_policy_timeout_s: float = 1.0    # older policy = 'none'
     obstacle_static_memory_s: float = 3.0     # a 'static' seen this recently explains an abort
     dynamic_wait_s: float = 30.0        # person / pet: wait this long, then treat as static
+    # transit / docking (blade off): shorter wait. The operator often stands near the
+    # robot when pressing Home; Nav2's costmap + the controller's collision check still stop it.
+    dynamic_wait_transit_s: float = 15.0
+    # after a wait timed out: ignore further dynamic detections this long (rely on Nav2 /
+    # the costmap marks) unless the robot moved > dynamic_ignore_move_m or the class changed.
+    # Without this the same person re-triggers the wait 0.1 s after the goal is re-sent.
+    dynamic_ignore_after_timeout_s: float = 60.0
+    dynamic_ignore_move_m: float = 1.0
     dynamic_clear_hold_s: float = 2.0   # policy clear this long before resuming
     detour_skip_m: float = 1.0          # detour target: this far along the path past the robot
     detour_skip_step_m: float = 0.5     # ... extended by this when the detour transit fails
@@ -520,6 +528,7 @@ class MissionFSM:
         self._last_status = None
         self._incomplete_text = ''
         self._dyn = None                    # dynamic-obstacle wait context
+        self._dyn_ignore = None             # post-timeout ignore window (see _dyn_ignored)
         self._last_static_t = -1e9
         self._preview = None                # running plan preview (see preview_plan)
         self._preview_shown = False         # a preview is drawn on /coverage/full_plan
@@ -680,6 +689,7 @@ class MissionFSM:
         if self._preview is not None:
             self._preview_finish('failed', 'cancelled: %s' % reason)
         self._dyn = None
+        self._dyn_ignore = None
         self._action = None
         self._service = None
         self._enum = None
@@ -2405,6 +2415,7 @@ class MissionFSM:
         cls = self.inputs.obstacle_class or 'obstacle'
         if m is not None and ctx == 'follow' and m.step == 'follow':
             m.start_local = self._track_progress()
+        self._dyn_ignore = None
         self._dyn = {'ctx': ctx, 'since': self._now, 'clear_since': None, 'cls': cls,
                      'sub': self.sub_state, 'phase': self.phase, 'purpose': self._dock_purpose}
         if self._action is not None:
@@ -2416,7 +2427,7 @@ class MissionFSM:
             m.step = 'dyn_wait'
         d = self.inputs.obstacle_distance
         self._log('warn', '%s%s ahead: stopped, blade off, waiting up to %.0f s' % (
-            cls, (' at %.1f m' % d) if d is not None else '', self.p.dynamic_wait_s))
+            cls, (' at %.1f m' % d) if d is not None else '', self._dyn_wait_s(ctx)))
         self._go(self.phase, 'waiting for %s to move (0 s)' % cls)
 
     def _dynamic_tick(self):
@@ -2426,7 +2437,7 @@ class MissionFSM:
             if kind != 'dynamic':
                 return False
             ctx = self._dyn_context()
-            if ctx is None:
+            if ctx is None or self._dyn_ignored():
                 return False
             self._dyn_start(ctx)
             return True
@@ -2443,13 +2454,38 @@ class MissionFSM:
                                                                  self.p.dynamic_clear_hold_s))
             self._dyn_resume(d)
             return True
-        if waited >= self.p.dynamic_wait_s:
+        if waited >= self._dyn_wait_s(d['ctx']):
             self._dyn = None
             self._dyn_timeout(d)
             return True
         sub = 'waiting for %s to move (%d s)' % (d['cls'], int(waited))
         if sub != self.sub_state:
             self._go(self.phase, sub)
+        return True
+
+    def _dyn_wait_s(self, ctx):
+        return float(self.p.dynamic_wait_s if ctx == 'follow' else self.p.dynamic_wait_transit_s)
+
+    def _dyn_ignored(self):
+        """True while a fresh dynamic detection falls in the post-timeout ignore
+        window (same class, robot moved <= dynamic_ignore_move_m). Logs once."""
+        g = self._dyn_ignore
+        if g is None:
+            return False
+        cls = self.inputs.obstacle_class or 'obstacle'
+        pose = self.inputs.pose
+        moved = 0.0
+        if pose is not None and g['pose'] is not None:
+            moved = math.hypot(pose[0] - g['pose'][0], pose[1] - g['pose'][1])
+        if self._now >= g['until'] or cls != g['cls'] or \
+                moved > float(self.p.dynamic_ignore_move_m):
+            self._dyn_ignore = None
+            return False
+        if not g['logged']:
+            g['logged'] = True
+            self._log('info', 'ignoring %s detections for %.0f s more (wait already timed out; '
+                              'Nav2 / costmap handle it) unless the robot moves > %.1f m'
+                      % (cls, g['until'] - self._now, float(self.p.dynamic_ignore_move_m)))
         return True
 
     def _dyn_resume(self, d):
@@ -2468,7 +2504,11 @@ class MissionFSM:
 
     def _dyn_timeout(self, d):
         m = self.mission
-        why = '%s did not move within %.0f s' % (d['cls'], self.p.dynamic_wait_s)
+        why = '%s did not move within %.0f s' % (d['cls'], self._dyn_wait_s(d['ctx']))
+        pose = self.inputs.pose
+        self._dyn_ignore = {'until': self._now + float(self.p.dynamic_ignore_after_timeout_s),
+                            'cls': d['cls'], 'logged': False,
+                            'pose': (pose[0], pose[1]) if pose is not None else None}
         if d['ctx'] != 'follow' or m is None:
             # transits / docking: Nav2 plans around the marked obstacle
             self._log('warn', '%s: continuing (Nav2 plans around it)' % why)

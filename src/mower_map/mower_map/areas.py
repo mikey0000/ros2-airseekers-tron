@@ -42,6 +42,7 @@ LETHAL = 100
 CHANNEL_WIDTH_MIN_M = 0.1
 CHANNEL_WIDTH_MAX_M = 5.0
 FREE = 0
+SOFT_COST = 90      # nav mask soft band: plannable, but the planner prefers the inside
 
 
 # ---------------------------------------------------------------------------
@@ -763,9 +764,11 @@ def _distance_to_segments(px, py, path: List[Point]) -> np.ndarray:
     return best
 
 
-def free_corridor(grid: np.ndarray, spec: GridSpec, corridor: DockCorridor):
-    """Set every cell whose centre is within half_width of the corridor path FREE."""
-    r = corridor.half_width
+def free_corridor(grid: np.ndarray, spec: GridSpec, corridor: DockCorridor,
+                  value: int = FREE, radius: Optional[float] = None):
+    """Set every cell whose centre is within half_width (or ``radius``) of the
+    corridor path to ``value`` (FREE)."""
+    r = corridor.half_width if radius is None else float(radius)
     bb = bounding_box([corridor.path])
     r0, c0 = spec.index_of(bb[0] - r, bb[1] - r)
     r1, c1 = spec.index_of(bb[2] + r, bb[3] + r)
@@ -777,13 +780,15 @@ def free_corridor(grid: np.ndarray, spec: GridSpec, corridor: DockCorridor):
     ys = spec.origin_y + (np.arange(r0, r1 + 1) + 0.5) * spec.resolution
     gx, gy = np.meshgrid(xs, ys)
     hit = _distance_to_segments(gx, gy, corridor.path) <= r
-    grid[r0:r1 + 1, c0:c1 + 1][hit] = FREE
+    grid[r0:r1 + 1, c0:c1 + 1][hit] = value
 
 
 def build_nav_mask(areas: List[Area], spec: GridSpec,
                    nav_margin: float = 0.35,
                    obstacle_margin: float = 0.10,
-                   corridor: Optional[DockCorridor] = None) -> np.ndarray:
+                   corridor: Optional[DockCorridor] = None,
+                   soft_band: float = 0.0,
+                   return_corridor: Optional[DockCorridor] = None) -> np.ndarray:
     """Navigation mask for Nav2's global costmap (static layer / keepout filter).
 
     Different semantics from the mowing mask (build_keepout_mask):
@@ -795,21 +800,76 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
     footprint width + 0.08 m) lets the robot centre sit on a coverage ring a
     few cm inside the boundary without the footprint touching lethal cells.
     ``corridor`` (see dock_corridor) is freed too, so the dock and its
-    approach pose stay reachable when the dock sits outside every area;
-    obstacles still win over it. With no areas at all the mask is free (apart from obstacles)."""
+    approach pose stay reachable when the dock sits outside every area.
+    ``soft_band`` > 0: cells outside the free set but within ``soft_band`` of
+    it get SOFT_COST (90; the keepout filter scales 0..100 linearly to costmap
+    cost, 100 = lethal), so short excursions stay plannable while the planner
+    still prefers the inside. ``return_corridor`` (see return_corridor) is
+    freed like the dock corridor. Obstacles win over everything. With no
+    areas at all the mask is free (apart from obstacles)."""
     nav_margin = max(0.0, float(nav_margin))
+    soft_band = max(0.0, float(soft_band))
     if not areas:
         mask = np.full((spec.height, spec.width), FREE, dtype=np.int8)
     else:
         mask = np.full((spec.height, spec.width), LETHAL, dtype=np.int8)
+        if soft_band > 0.0:
+            for area in areas:
+                _mask_polygon(mask, spec, area.polygon, SOFT_COST, nav_margin + soft_band)
+            if corridor is not None:
+                free_corridor(mask, spec, corridor, SOFT_COST, corridor.half_width + soft_band)
         for area in areas:
             _mask_polygon(mask, spec, area.polygon, FREE, nav_margin)
     if corridor is not None:
         free_corridor(mask, spec, corridor)
+    if return_corridor is not None:
+        free_corridor(mask, spec, return_corridor)
     for area in areas:
         for obs in area.obstacles:
             _mask_polygon(mask, spec, obs.polygon, LETHAL, max(0.0, float(obstacle_margin)))
     return mask
+
+
+def nearest_free_point(mask: np.ndarray, spec: GridSpec, x: float, y: float):
+    """(fx, fy, dist) of the FREE cell centre closest to (x, y); None when no
+    cell is free. (x, y) itself may lie outside the grid."""
+    rows, cols = np.nonzero(mask == FREE)
+    if rows.size == 0:
+        return None
+    cx = spec.origin_x + (cols + 0.5) * spec.resolution
+    cy = spec.origin_y + (rows + 0.5) * spec.resolution
+    d = np.hypot(cx - x, cy - y)
+    i = int(np.argmin(d))
+    return float(cx[i]), float(cy[i]), float(d[i])
+
+
+def is_free_at(mask: np.ndarray, spec: GridSpec, x: float, y: float) -> bool:
+    r, c = spec.index_of(x, y)
+    if not (0 <= r < spec.height and 0 <= c < spec.width):
+        return False
+    return int(mask[r, c]) == FREE
+
+
+def return_corridor(x: float, y: float, base_mask: np.ndarray, spec: GridSpec,
+                    half_width: float, max_len: float = 15.0) -> Optional[DockCorridor]:
+    """Capsule from the robot (x, y) to the closest FREE cell of ``base_mask``
+    (the nav mask without a return corridor), so a robot driven off the map
+    can always plan back. None when the robot already sits on a free cell or
+    nothing is free. If the gap exceeds ``max_len`` the corridor is returned
+    with connected=False (callers warn and do not free it). The end point is
+    pushed half a cell further into the free set so the capsule overlaps it."""
+    if is_free_at(base_mask, spec, x, y):
+        return None
+    near = nearest_free_point(base_mask, spec, x, y)
+    if near is None:
+        return None
+    fx, fy, d = near
+    if d > 1e-9:
+        ext = 0.5 * spec.resolution / d
+        fx, fy = fx + (fx - x) * ext, fy + (fy - y) * ext
+    connected = d <= max(0.0, float(max_len))
+    return DockCorridor([(float(x), float(y)), (fx, fy)], max(0.0, float(half_width)),
+                        connected, d)
 
 
 class ProgressGrid:

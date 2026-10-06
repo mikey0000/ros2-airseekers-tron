@@ -17,6 +17,9 @@ map_server_node:
     dock_corridor_enabled: true # nav mask: free dock -> approach -> nearest area capsule
     dock_corridor_max_m: 5.0    # max approach->area gap bridged by the corridor
     approach_distance: 0.8      # keep equal to mower_docking approach_distance
+    nav_soft_band_m: 1.5        # nav mask: cells this far outside the free set cost 90 (not lethal)
+    return_corridor_enabled: true  # nav mask: free robot -> nearest free cell while off the map
+    return_corridor_max_m: 15.0 # longer gap: warn, no corridor
     blade_radius: 0.15
     odom_topic: /odometry/filtered_map
     status_topic: /mower_base/status

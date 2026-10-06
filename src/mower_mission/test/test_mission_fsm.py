@@ -2478,3 +2478,74 @@ def test_undock_failure_shows_then_returns_idle_docked():
     assert h.name == 'UNDOCK_FAILED'
     h.tick(dt=1.0, n=6)
     assert h.name == 'IDLE_DOCKED' and h.fsm.mission is None
+
+
+# ---- dynamic-wait timeout: ignore window (no wait / re-send loop) ----------
+def _dock_starts(h, mark=0):
+    return [e for e in h.fx[mark:] if isinstance(e, f.StartAction) and e.name == f.ACT_DOCK]
+
+
+def _home_with_person(h):
+    h.fsm.inputs.pose = (1.5, -5.6, 0.0)
+    assert h.cmd(f.CMD_HOME)
+    assert h.name == 'RETURNING_HOME'
+    policy(h, 'dynamic', 'person')
+    h.tick()
+    assert h.fsm._action is None and 'waiting for person' in h.fsm.sub_state
+
+
+def test_dynamic_wait_is_shorter_while_docking():
+    h = Harness()
+    assert h.fsm.p.dynamic_wait_transit_s == 15.0 and h.fsm.p.dynamic_wait_s == 30.0
+    _home_with_person(h)
+    tick_seen(h, 'dynamic', 'person', 14.0)
+    assert h.fsm._action is None
+    tick_seen(h, 'dynamic', 'person', 1.5)
+    assert h.pending_action(f.ACT_DOCK)
+
+
+def test_dynamic_timeout_then_same_person_ignored_no_loop():
+    h = Harness()
+    _home_with_person(h)
+    m0 = h.mark()
+    tick_seen(h, 'dynamic', 'person', 15.5)
+    assert 'continuing' in ' '.join(str(e) for e in h.since(m0, f.Log))
+    m = h.mark()
+    tok = h.pending_action(f.ACT_DOCK).token
+    tick_seen(h, 'dynamic', 'person', 50.0)        # same person stays in front
+    assert h.name == 'RETURNING_HOME'
+    assert h.pending_action(f.ACT_DOCK).token == tok
+    assert not h.since(m, f.CancelActions) and not _dock_starts(h, m)
+    ignore_logs = [e for e in h.since(m0, f.Log) if 'ignoring person' in str(e)]
+    assert len(ignore_logs) == 1
+
+
+def test_dynamic_ignore_window_expires():
+    h = Harness()
+    _home_with_person(h)
+    tick_seen(h, 'dynamic', 'person', 15.5)
+    tick_seen(h, 'dynamic', 'person', 61.0)
+    assert h.fsm._action is None and 'waiting for person' in h.fsm.sub_state
+
+
+def test_dynamic_after_moving_waits_again():
+    h = Harness()
+    _home_with_person(h)
+    tick_seen(h, 'dynamic', 'person', 15.5)
+    assert h.pending_action(f.ACT_DOCK)
+    h.tick(dt=0.5, n=4)                            # person gone; robot drives 1.5 m
+    h.fsm.inputs.pose = (1.0, -4.2, 0.0)
+    m = h.mark()
+    policy(h, 'dynamic', 'person')
+    h.tick()
+    assert h.since(m, f.CancelActions) and h.fsm._action is None
+    assert 'waiting for person' in h.fsm.sub_state
+
+
+def test_dynamic_new_class_waits_again():
+    h = Harness()
+    _home_with_person(h)
+    tick_seen(h, 'dynamic', 'person', 15.5)
+    policy(h, 'dynamic', 'dog')
+    h.tick()
+    assert h.fsm._action is None and 'waiting for dog' in h.fsm.sub_state
