@@ -246,9 +246,11 @@ PIVOT_PARAMS = {   # node parameter -> PivotAssist kwarg
 # regime: a proper pivot (v = 0, inner <= -min_inner, |w| >= 2*min_inner/b = 0.25 rad/s)
 # or an arc (inner rolling the same way at >= min_inner).
 TRACK_WIDTH_M = 0.48          # 2 x drive_track_y 0.24 (config/urdf/mower.urdf.xacro, vendor)
-SHAPE_PHASES = frozenset((     # autonomous phases only; MANUAL_MOWING/RECORDING untouched
-    'UNDOCKING', 'TRANSIT', 'MOWING', 'BOUNDARY_PAUSED', 'RETURNING_HOME',
-    'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING', 'COVERAGE_FAILED_DOCKING'))
+# Autonomous DRIVING phases only. Docking/undocking are exempt: the marker-guided
+# reverse (-0.05 m/s with small steering) sits in the one-wheel zone and was being
+# snapped to v=0 pivots, so the robot pushed nowhere and the stall guard fired at
+# the contacts (2026-10-07). MANUAL_MOWING/RECORDING untouched.
+SHAPE_PHASES = frozenset(('TRANSIT', 'MOWING', 'BOUNDARY_PAUSED'))
 MANUAL_PHASES = frozenset(('MANUAL_MOWING', 'RECORDING'))
 SHAPE_DEFAULTS = {
     'track_width_m': TRACK_WIDTH_M,

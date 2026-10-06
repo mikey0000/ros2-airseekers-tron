@@ -75,19 +75,20 @@ def test_reverse_docking_leg_keeps_both_wheels_backward():
     assert max(a, b) == pytest.approx(-0.06) and min(a, b) < 0
 
 
-def test_docking_commands_in_docking_phase():
+@pytest.mark.parametrize('phase', ['RETURNING_HOME', 'LOW_BATTERY_DOCKING', 'UNDOCKING'])
+def test_docking_phases_are_exempt(phase):
+    """The marker-guided reverse must reach the MCU as sent: shaping it into pivots
+    left the robot pushing nowhere at the contacts (2026-10-07)."""
     ts = TurnShaper()
-    v, w = ts.apply(0.0, 0.25, 'RETURNING_HOME', DT)       # ALIGNING about-turn pivot
-    assert (v, w) == (0.0, 0.25) and ts.status == 'pass'  # proper pivot passes
-    v, w = ts.apply(0.0, 0.15, 'RETURNING_HOME', DT)       # slow pivot -> bumped
-    assert (v, w) == (0.0, pytest.approx(0.15)) and ts.status == 'pass'  # slow pivot passes too
-    v, w = ts.apply(0.08, 0.2, 'RETURNING_HOME', DT)       # inner +0.032: arc
+    for v, w in ((0.0, 0.15), (0.08, 0.2), (-0.05, -0.05), (-0.035, 0.1), (-0.05, 0.0)):
+        assert ts.apply(v, w, phase, DT) == (v, w) and ts.status == 'pass'
+
+
+def test_transit_arc_shaped():
+    ts = TurnShaper()
+    v, w = ts.apply(0.08, 0.2, 'TRANSIT', DT)       # inner +0.032: one-wheel zone -> arc
     a, b = wheels(v, w)
     assert v > 0 and min(a, b) == pytest.approx(0.06) and ts.status.startswith('arc r=')
-    v, w = ts.apply(-0.05, -0.05, 'LOW_BATTERY_DOCKING', DT)  # reverse with correction
-    a, b = wheels(v, w)
-    assert v < 0 and max(a, b) <= -0.06 + 1e-9
-    assert ts.apply(-0.05, 0.0, 'RETURNING_HOME', DT) == (-0.05, 0.0)  # straight reverse
 
 
 @pytest.mark.parametrize('phase', ['MANUAL_MOWING', 'RECORDING', 'IDLE', None])
