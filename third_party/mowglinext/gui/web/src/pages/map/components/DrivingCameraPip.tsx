@@ -124,7 +124,9 @@ function PipInner({mobile = false, reversing, drivingCamera, reverseCamera, pref
 
     return (
         <div ref={rootRef} data-testid="drive-camera-pip" style={{
-            position: "absolute", ...box, overflow: "hidden", display: "flex", flexDirection: "column",
+            // overflow stays visible here so the camera Select's dropdown (rendered inside this
+            // panel, see getPopupContainer) is not clipped; the video wrapper clips instead.
+            position: "absolute", ...box, display: "flex", flexDirection: "column",
             background: "#111", border: `1px solid ${health === "stale" ? "#ff4d4f" : "rgba(255,255,255,0.25)"}`,
             boxShadow: "0 10px 30px -10px rgba(0,0,0,0.7)", color: "#ddd",
         }}>
@@ -132,15 +134,21 @@ function PipInner({mobile = false, reversing, drivingCamera, reverseCamera, pref
                 height: HEADER_PX, flex: "0 0 auto", display: "flex", alignItems: "center", gap: 6, padding: "0 6px",
                 background: "rgba(0,0,0,0.75)", cursor: full ? "default" : "move", touchAction: "none", fontSize: 12,
             }}>
+                <div onPointerDown={(e) => e.stopPropagation()} style={{minWidth: 0, flex: "1 1 auto", maxWidth: 170}}>
                 <Select
                     size="small"
                     aria-label={t("drivePip.camera")}
                     value={cam?.id}
                     onChange={(id: string) => onPrefsChange({cameraId: id})}
                     options={cameras.map((c) => ({value: c.id, label: c.label}))}
-                    style={{minWidth: 0, flex: "1 1 auto", maxWidth: 170}}
+                    style={{width: "100%"}}
                     popupMatchSelectWidth={false}
+                    // Render the dropdown inside the panel: the map page's overlays (joystick,
+                    // fullscreen drive view) sit above a body-level popup and it was unreachable.
+                    getPopupContainer={() => rootRef.current ?? document.body}
+                    dropdownStyle={{zIndex: 3000}}
                 />
+                </div>
                 {autoSwitched && <Tag color="orange" style={{marginInlineEnd: 0}}>{t("drivePip.reverse")}</Tag>}
                 <Tag color={HEALTH_COLOR[health]} style={{marginInlineEnd: 0}} data-testid="drive-pip-health">
                     {t(`perception.health.${health}`)}
@@ -179,7 +187,7 @@ function PipInner({mobile = false, reversing, drivingCamera, reverseCamera, pref
                 </Tooltip>
             </div>
             {!prefs.collapsed && (
-                <div style={{position: "relative", flex: "1 1 auto", minHeight: 0, display: "flex",
+                <div style={{position: "relative", flex: "1 1 auto", minHeight: 0, display: "flex", overflow: "hidden",
                     alignItems: "center", justifyContent: "center", fontSize: 13, color: "#aaa"}}>
                     {streaming && cam && !failed ? (
                         <img

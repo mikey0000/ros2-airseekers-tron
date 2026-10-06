@@ -1,5 +1,6 @@
 #include "rknn_model.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -153,10 +154,12 @@ void RknnModel::run(std::vector<Tensor> &outs) {
       t.zp = a.zp;
       t.scale = a.scale;
       t.c = static_cast<int>(out_attrs_[i].dims[1]);  // logical C (NCHW attr)
-      t.h = static_cast<int>(a.dims[2]);
-      t.w = static_cast<int>(a.dims[3]);
+      // logical H/W from the NCHW attr; the native W may be padded (15 -> 16 on the
+      // 20x15 head), so the row stride is the larger of native dims[3] / w_stride.
+      t.h = static_cast<int>(out_attrs_[i].dims[2]);
+      t.w = static_cast<int>(out_attrs_[i].dims[3]);
       t.c2 = static_cast<int>(a.dims[4]);
-      t.ws = static_cast<int>(a.w_stride);
+      t.ws = static_cast<int>(std::max(a.dims[3], a.w_stride));
     }
     return;
   }
@@ -201,6 +204,11 @@ std::string RknnModel::describe() const {
     s << " [";
     for (uint32_t d = 0; d < a.n_dims; ++d) s << (d ? "," : "") << a.dims[d];
     s << "]" << (a.type == RKNN_TENSOR_INT8 ? "i8" : "f");
+  }
+  for (auto &a : out_native_) {
+    s << " native[";
+    for (uint32_t d = 0; d < a.n_dims; ++d) s << (d ? "," : "") << a.dims[d];
+    s << " ws=" << a.w_stride << "]";
   }
   return s.str();
 }

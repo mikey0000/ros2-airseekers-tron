@@ -10,7 +10,9 @@ map_server_node:
     obstacle_margin: 0.0
     lethal_outside_areas: true
     dock_keepout: true          # mowing mask only; never in /nav_keepout_mask
-    nav_margin_m: 0.35          # nav mask: areas grown by half footprint width + 0.08
+    nav_margin_m: 0.8           # nav mask: areas grown so recovery/docking can plan from a
+                                # robot that stopped just outside the boundary (soft margin 0.3 m
+                                # + half footprint). The MOWING mask is unaffected.
     nav_obstacle_margin_m: 0.10 # nav mask: obstacles grown by this
     dock_corridor_enabled: true # nav mask: free dock -> approach -> nearest area capsule
     dock_corridor_max_m: 5.0    # max approach->area gap bridged by the corridor

@@ -72,8 +72,8 @@ controller_server:
     failure_tolerance: 0.3
     # Humble key is progress_checker_plugin (singular); Iron+ uses the plural list.
     progress_checker_plugin: "progress_checker"
-    goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker"]
-    controller_plugins: ["FollowPath", "FollowCoveragePath"]
+    goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker", "coverage_goal_checker_ftc"]
+    controller_plugins: ["FollowPath", "FollowCoveragePath", "FollowCoveragePathFTC"]
     # DEVIATION: no path_handler_plugins (Kilted-only API).
 
     # PoseProgressChecker (as MowgliNext): rotating in place counts as progress
@@ -103,12 +103,22 @@ controller_server:
     # src/mowgli_nav2_plugins): fires only after FTC has tracked >= 95 % of the
     # plan it republishes on /controller_server/FollowCoveragePath/global_plan
     # AND the robot is within xy tolerance. Yaw ignored at a swath end.
+    # Coverage goal checker for FollowCoveragePath (RPP): end of the swath within 0.25 m,
+    # yaw ignored. (2026-10-06: the FTC port veered off the first ring on the real mower;
+    # RPP is the fallback until mowgli_nav2_plugins/FTCController is validated.)
     coverage_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 3.14
+      stateful: true
+    # Goal checker for FollowCoveragePathFTC (mowgli_nav2_plugins): fires after FTC has
+    # tracked >= 95 % of the plan it republishes AND the robot is within xy tolerance.
+    coverage_goal_checker_ftc:
       plugin: "mowgli_nav2_plugins/PathProgressGoalChecker"
       progress_threshold: 0.95
       xy_goal_tolerance: 0.50
       yaw_goal_tolerance: 3.14
-      plan_topic: "/controller_server/FollowCoveragePath/global_plan"
+      plan_topic: "/controller_server/FollowCoveragePathFTC/global_plan"
 
     # Transit controller. DEVIATION: plain RPP with use_rotate_to_heading
     # instead of MowgliNext's RotationShim(RPP): one fewer plugin to tune,
@@ -139,13 +149,42 @@ controller_server:
       use_interpolation: true
 
     # Coverage controller (mission.yaml follow_controller_id: FollowCoveragePath).
+    # RegulatedPurePursuit tuned for 0.18 m swaths: short lookahead, no reversing,
+    # slow pivots at swath ends. desired_linear_vel is set live from the area settings.
+    FollowCoveragePath:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.3
+      lookahead_dist: 0.4
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 0.6
+      lookahead_time: 1.5
+      use_velocity_scaled_lookahead_dist: true
+      rotate_to_heading_angular_vel: 0.5
+      transform_tolerance: 0.5
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.4
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      regulated_linear_scaling_min_radius: 0.6
+      regulated_linear_scaling_min_speed: 0.12
+      use_cost_regulated_linear_velocity_scaling: false
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 0.6
+      max_angular_accel: 1.0
+      allow_reversing: false
+      max_robot_pose_search_dist: 10.0
+      use_interpolation: true
+
+    # Alternative coverage controller (select with mission.yaml follow_controller_id:
+    # FollowCoveragePathFTC + follow_goal_checker_id: coverage_goal_checker_ftc).
     # mowgli_nav2_plugins/FTCController (Follow-The-Carrot + decoupled PID),
     # Humble port of MowgliNext's controller. Values from MowgliNext
     # nav2_params_base.yaml unless marked TRON.
     # desired_linear_vel (set from the GUI mowing_speed via robot_settings.py
     # and live by the GUI) is a port-only alias: speed_fast = v,
     # speed_slow = clamp(0.8 v, min_speed_mps, v). -1 = use the literals.
-    FollowCoveragePath:
+    FollowCoveragePathFTC:
       plugin: "mowgli_nav2_plugins/FTCController"
       desired_linear_vel: 0.25
       speed_fast: 0.20

@@ -126,10 +126,16 @@ def test_goal_checkers():
     assert g["plugin"] == "nav2_controller::SimpleGoalChecker"
     assert g["stateful"] is True
     assert g["xy_goal_tolerance"] == 0.25 and g["yaw_goal_tolerance"] == 0.5
-    cov = c["coverage_goal_checker"]
-    # MowgliNext PathProgressGoalChecker: done at progress_threshold of the swath, loose xy.
-    assert cov["plugin"] == "mowgli_nav2_plugins/PathProgressGoalChecker"
-    assert 0.9 <= cov["progress_threshold"] <= 1.0 and cov["xy_goal_tolerance"] <= 0.5
+    cov = c["coverage_goal_checker"]        # for the RPP coverage controller (fallback)
+    assert cov["plugin"] == "nav2_controller::SimpleGoalChecker"
+    assert cov["stateful"] is True and cov["xy_goal_tolerance"] <= 0.25
+    ftc = c["coverage_goal_checker_ftc"]    # MowgliNext PathProgressGoalChecker for FTC
+    assert ftc["plugin"] == "mowgli_nav2_plugins/PathProgressGoalChecker"
+    assert 0.9 <= ftc["progress_threshold"] <= 1.0
+    assert ftc["plan_topic"] == "/controller_server/FollowCoveragePathFTC/global_plan"
+    assert c["FollowCoveragePath"]["plugin"].endswith("RegulatedPurePursuitController")
+    assert c["FollowCoveragePathFTC"]["plugin"] == "mowgli_nav2_plugins/FTCController"
+    assert set(c["controller_plugins"]) >= {"FollowPath", "FollowCoveragePath", "FollowCoveragePathFTC"}
 
 
 def test_transit_rpp_rotation():

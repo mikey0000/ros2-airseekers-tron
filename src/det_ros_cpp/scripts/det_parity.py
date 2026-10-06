@@ -51,6 +51,8 @@ def capture(a):
 
 
 def iou(a, b):
+    if max(abs(x - y) for x, y in zip(a, b)) < 0.5:
+        return 1.0  # identical (also degenerate zero-area boxes clamped to the image edge)
     ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
     iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
     inter = ix * iy
@@ -93,7 +95,10 @@ def compare(a):
     py = {f: py_detect(runner, cv2.imread(f), BEST_LARGE_CLASSES, a) for f in frames}
     runner.release()
 
-    cmd = ['ros2', 'run', 'det_ros_cpp', 'det_ros_cpp', '--ros-args',
+    from ament_index_python.packages import get_package_prefix
+    exe = os.path.join(get_package_prefix('det_ros_cpp'), 'lib', 'det_ros_cpp', 'det_ros_cpp')
+    # the binary itself (not `ros2 run`, whose child survives terminate())
+    cmd = [exe, '--ros-args',
            '-r', '__node:=det_parity_cpp',
            '-r', '/ai/det/detections:=/parity/detections',
            '-r', '/ai/det/image_annotated:=/parity/image_annotated',
@@ -101,6 +106,22 @@ def compare(a):
            '-p', "right_topic:=''", '-p', "extra_topics:=['']", '-p', f"core_masks:=['{a.core}']",
            '-p', 'max_rate_hz:=0.0', '-p', f'obj_thresh:={a.obj}', '-p', f'nms_thresh:={a.nms}']
     proc = subprocess.Popen(cmd)
+    try:
+        _feed(a, frames, py, proc)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def _feed(a, frames, py, proc):
+    import cv2
+    rclpy, Node = _ros()
+    from cv_bridge import CvBridge
+    from sensor_msgs.msg import Image
+    from vision_msgs.msg import Detection2DArray
     rclpy.init()
     n = Node('det_parity')
     br = CvBridge()
@@ -111,14 +132,14 @@ def compare(a):
     t0 = time.monotonic()
     while pub.get_subscription_count() == 0 and time.monotonic() - t0 < 20:
         rclpy.spin_once(n, timeout_sec=0.2)
-    time.sleep(1.0)
+    time.sleep(3.0)
     worst = 0.0
     total = matched = 0
     for i, f in enumerate(frames):
         m = br.cv2_to_imgmsg(cv2.imread(f), 'bgr8')
         m.header.stamp.sec = i + 1
         m.header.frame_id = 'parity'
-        for _ in range(3):  # best effort: resend until answered
+        for _ in range(5):  # best effort: resend until answered
             pub.publish(m)
             t1 = time.monotonic()
             while i + 1 not in got and time.monotonic() - t1 < 2.0:
@@ -144,16 +165,16 @@ def compare(a):
                 worst = max(worst, abs(s - cpp[best[1]][1]))
                 line.append(f'{lab} {s:.3f}/{cpp[best[1]][1]:.3f} iou={best[0]:.3f}')
             else:
-                line.append(f'{lab} {s:.3f} UNMATCHED')
+                line.append(f'{lab} {s:.3f} UNMATCHED py={tuple(round(v, 1) for v in b)} cpp='
+                            + str([tuple(round(v, 1) for v in cb) for cl, cs, cb in cpp if cl == lab]))
         extra = len(cpp) - len(used)
         print(f'{os.path.basename(f)}: py={len(py[f])} cpp={len(cpp)} extra_cpp={extra} | '
               + '; '.join(line))
         total += extra
     print(f'PARITY: matched {matched}/{total} (IoU>={a.iou}), max |score diff| {worst:.4f}')
     rclpy.shutdown()
-    proc.terminate()
-    proc.wait(timeout=10)
-    sys.exit(0 if matched == total else 1)
+    if matched != total:
+        raise SystemExit(1)
 
 
 def main():

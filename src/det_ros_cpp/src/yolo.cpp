@@ -127,8 +127,12 @@ std::vector<Box> nms_per_class(const std::vector<Box> &boxes, float nms_thresh) 
   std::vector<Box> keep;
   for (auto &kv : by_cls) {
     auto &order = kv.second;
+    // numpy `scores.argsort()[::-1]`: ascending (stable for the small per-class arrays
+    // numpy insertion-sorts) then reversed, i.e. among equal (quantised) scores the
+    // LATER candidate wins. Ties are common with int8 scores, so this matters for parity.
     std::stable_sort(order.begin(), order.end(),
-                     [&](int a, int b) { return boxes[a].score > boxes[b].score; });
+                     [&](int a, int b) { return boxes[a].score < boxes[b].score; });
+    std::reverse(order.begin(), order.end());
     std::vector<char> dead(order.size(), 0);
     for (size_t i = 0; i < order.size(); ++i) {
       if (dead[i]) continue;
