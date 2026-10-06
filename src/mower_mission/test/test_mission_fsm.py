@@ -3212,3 +3212,19 @@ def test_conservative_policy_keeps_old_blade_off_on_dynamic_wait():
     _seen_at(h, 'dynamic', 'dog', 1.0, 0.0)
     h.tick()
     assert h.fsm._dyn is not None and not h.blade
+
+
+def test_turn_legs_use_the_leg_goal_checker():
+    """A 0.3 m leg starts inside coverage_goal_checker's 0.25 m xy tolerance and
+    was finished at once (2026-10-07): reverse legs and short chunks get the leg checker."""
+    fsm = f.MissionFSM.__new__(f.MissionFSM)
+    fsm.p = f.Params()
+    leg = fsm.p.turn_leg_goal_checker_id
+    assert leg == 'coverage_leg_goal_checker'
+    assert fsm._follow_goal_checker([(0, 0, 0.0), (-0.3, 0, 0.0)], True) == leg
+    assert fsm._follow_goal_checker([(0, 0, 0.0), (0.8, 0, 0.0)], False) == leg
+    assert fsm._follow_goal_checker([(0, 0, 0.0), (5.0, 0, 0.0)], False) == \
+        fsm.p.follow_goal_checker_id
+    fsm.p.turn_leg_goal_checker_id = ''
+    assert fsm._follow_goal_checker([(0, 0, 0.0), (-0.3, 0, 0.0)], True) == \
+        fsm.p.follow_goal_checker_id

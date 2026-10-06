@@ -47,6 +47,7 @@ add_library(${PROJECT_NAME} SHARED
   src/ftc_controller.cpp
   src/ftc_controller_plugin.cpp
   src/path_progress_goal_checker.cpp
+  src/leg_goal_checker.cpp
 )
 
 target_include_directories(${PROJECT_NAME}
@@ -115,6 +116,11 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 
   find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_leg_goal_checker
+    test/test_leg_goal_checker.cpp
+  )
+  target_link_libraries(test_leg_goal_checker ${PROJECT_NAME})
 
   # PORT: test_lyrical_goal_checker dropped (Kilted-only goal-checker API).
 

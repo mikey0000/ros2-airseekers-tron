@@ -77,7 +77,8 @@ controller_server:
     failure_tolerance: 2.0
     # Humble key is progress_checker_plugin (singular); Iron+ uses the plural list.
     progress_checker_plugin: "progress_checker"
-    goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker", "coverage_goal_checker_ftc"]
+    goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker", "coverage_goal_checker_ftc",
+                           "coverage_leg_goal_checker"]
     controller_plugins: ["FollowPath", "FollowCoveragePath", "FollowCoveragePathFTC",
                          "FollowCoveragePathReverse"]
     # DEVIATION: no path_handler_plugins (Kilted-only API).
@@ -125,6 +126,19 @@ controller_server:
       xy_goal_tolerance: 0.50
       yaw_goal_tolerance: 3.14
       plan_topic: "/controller_server/FollowCoveragePathFTC/global_plan"
+    # Turn legs of the coverage plan (reverse legs and short forward turn pieces, mission
+    # turn_leg_goal_checker_id). 2026-10-07: with coverage_goal_checker (xy 0.25) a 0.3 m
+    # reverse leg was "done" 70 ms after the goal (start already inside tolerance), so the
+    # leg was never driven and RPP pivoted ~180 deg at the swath end instead. Reached only
+    # after >= 70 % of the start-goal distance is travelled AND within 0.08 m / 0.35 rad
+    # (or the robot passed its closest approach within 0.20 m). src/mowgli_nav2_plugins.
+    coverage_leg_goal_checker:
+      plugin: "mowgli_nav2_plugins/LegGoalChecker"
+      progress_fraction: 0.7
+      xy_goal_tolerance: 0.08
+      yaw_goal_tolerance: 0.35
+      overshoot_xy_tolerance: 0.20
+      overshoot_hysteresis: 0.03
 
     # Transit controller. DEVIATION: plain RPP with use_rotate_to_heading
     # instead of MowgliNext's RotationShim(RPP): one fewer plugin to tune,

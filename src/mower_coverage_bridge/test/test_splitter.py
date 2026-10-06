@@ -377,3 +377,20 @@ def test_reverse_yaws_face_against_travel():
     pts = [(0.0, 0.0), (-1.0, 0.0)]
     assert splitter.yaws(pts)[0] == pytest.approx(math.pi)
     assert splitter.yaws(pts, reverse=True)[0] == pytest.approx(0.0)
+
+
+def test_reverse_leg_orientations_face_against_travel_kinematically():
+    """As published (densified + yaws): on a reverse sub-path every pose's
+    heading points AGAINST the next edge (RPP allow_reversing reads the
+    direction from that); forward sub-paths point along it."""
+    pts, flags = _turn_plan()
+    res = splitter.plan(pts, ring_count=0, swath_count=3, pose_flags=flags)
+    assert any(s.reverse for s in res.subpaths)
+    for s in res.subpaths:
+        dense = splitter.densify(s.points, 0.05)
+        ys = splitter.yaws(dense, s.reverse)
+        for i in range(len(dense) - 1):
+            dx = dense[i + 1][0] - dense[i][0]
+            dy = dense[i + 1][1] - dense[i][1]
+            dot = math.cos(ys[i]) * dx + math.sin(ys[i]) * dy
+            assert (dot < 0.0) if s.reverse else (dot > 0.0)

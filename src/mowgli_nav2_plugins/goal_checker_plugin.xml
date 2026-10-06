@@ -13,4 +13,15 @@
       with under 2 percent coverage.
     </description>
   </class>
+  <class
+    name="mowgli_nav2_plugins/LegGoalChecker"
+    type="mowgli_nav2_plugins::LegGoalChecker"
+    base_class_type="nav2_core::GoalChecker">
+    <description>
+      Goal checker for short coverage turn legs: reached only after the robot has
+      travelled progress_fraction of the start-goal distance AND is within a tight
+      xy/yaw tolerance (or has passed its closest approach), so a leg whose start
+      lies inside a loose tolerance is still driven.
+    </description>
+  </class>
 </library>

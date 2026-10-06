@@ -462,6 +462,12 @@ class Params:
     # the coverage bridge) go to this controller (RPP with allow_reversing).
     reverse_controller_id: str = 'FollowCoveragePathReverse'
     follow_goal_checker_id: str = 'coverage_goal_checker'
+    # Turn legs (reverse sub-paths, and any sub-path chunk no longer than
+    # turn_leg_max_m: the forward pieces of a Reeds-Shepp turn) use this checker:
+    # coverage_goal_checker (xy 0.25 m) finishes a 0.3 m leg at its start.
+    # '' = use follow_goal_checker_id for everything.
+    turn_leg_goal_checker_id: str = 'coverage_leg_goal_checker'
+    turn_leg_max_m: float = 1.2
     blade_confirm_timeout_s: float = 5.0
     blade_start_attempts: int = 3
     blade_retry_pause_s: float = 2.0
@@ -2147,11 +2153,21 @@ class MissionFSM:
         sp = m.subpaths[m.sub_i]
         m.chunk_end = min(geo.chunk_end(sp, m.start_local, self.p.follow_chunk_m,
                                         self.p.follow_chunk_clearance_m), self._seg_last())
+        poses = list(sp[m.start_local:m.chunk_end + 1])
+        reverse = geo.is_reverse_subpath(sp)
         self._start_action(ACT_FOLLOW, {
-            'poses': list(sp[m.start_local:m.chunk_end + 1]),
-            'controller_id': (self.p.reverse_controller_id if geo.is_reverse_subpath(sp)
+            'poses': poses,
+            'controller_id': (self.p.reverse_controller_id if reverse
                               else self.p.follow_controller_id),
-            'goal_checker_id': self.p.follow_goal_checker_id}, self.p.follow_timeout_s)
+            'goal_checker_id': self._follow_goal_checker(poses, reverse)},
+            self.p.follow_timeout_s)
+
+    def _follow_goal_checker(self, poses, reverse):
+        """Goal checker for a FollowPath chunk: the leg checker for turn legs."""
+        if self.p.turn_leg_goal_checker_id and (
+                reverse or geo.path_length(poses) <= self.p.turn_leg_max_m):
+            return self.p.turn_leg_goal_checker_id
+        return self.p.follow_goal_checker_id
 
     def _subpath_done(self):
         m = self.mission
