@@ -30,9 +30,18 @@ Parameters
 ``frame_id``           ``base_link``  frame stamped on the output
 ``pivot_assist``       ``true``   creeping pivot (see :class:`PivotAssist`): after
                                   ``pivot_assist_delay_s`` (1.5) of linear 0 / |angular|
-                                  >= ``pivot_assist_min_angular_radps`` (0.2) in TRANSIT or
+                                  >= ``pivot_assist_min_angular_radps`` (0.08) in TRANSIT or
                                   MOWING, add ``pivot_assist_linear_mps`` (0.05) forward, at
                                   most ``pivot_assist_max_dist_m`` (0.3) per pivot
+                                  DEFAULT NOW ``false``: subsumed by the turn shaper
+``turn_shaper``        ``true``   both-wheel turn shaping (see :func:`shape_for_both_wheels`,
+                                  :class:`TurnShaper`) in autonomous phases: inner wheel
+                                  >= ``min_inner_wheel_mps`` (0.06) with ``track_width_m``
+                                  (0.48, URDF) and ``linear_max`` (0.3); pivots become
+                                  forward arcs capped at ``shape_pivot_max_dist_m`` (0.3)
+                                  then a true pivot for ``shape_pivot_fallback_s`` (2.0);
+                                  ``shape_manual`` (false) leaves the joystick untouched.
+                                  Decision latched on ``~/shape_status``
 ``applied_log_period`` ``1.0``    s between ``cmd_vel applied`` log lines
                                   (0 = every tick)
 
@@ -185,7 +194,9 @@ class PivotAssist:
     Lawn-safe: 0.05 m/s x 6 s at most; the costmap / controller still checks collisions.
     """
 
-    def __init__(self, enabled=True, linear=0.05, min_angular=0.2, delay_s=1.5,
+    # min_angular 0.08 (2026-10-07 live): RPP's rotate-to-heading only ramped to 0.16 rad/s
+    # (0.086 achieved) and the old 0.2 threshold never fired; 0.08 completed the turn.
+    def __init__(self, enabled=True, linear=0.05, min_angular=0.08, delay_s=1.5,
                  max_dist_m=0.3):
         self.enabled = bool(enabled)
         self.linear = float(linear)
@@ -222,6 +233,129 @@ PIVOT_PARAMS = {   # node parameter -> PivotAssist kwarg
     'pivot_assist_delay_s': 'delay_s',
     'pivot_assist_max_dist_m': 'max_dist_m',
 }
+
+
+
+# --------------------------------------------------------------------------- both-wheel turn shaper
+# Owner rule (2026-10-07): "all turns should require both wheels turning at different
+# speed" -- no one-wheel turns, no counter-rotating pivots. The MCU mixes (linear, angular)
+# itself (docs/wheel_control_semantics.md), so we shape the pair so the inner wheel keeps
+# rolling the same way as the outer one at >= min_inner_wheel_mps.
+TRACK_WIDTH_M = 0.48          # 2 x drive_track_y 0.24 (config/urdf/mower.urdf.xacro, vendor)
+SHAPE_PHASES = frozenset((     # autonomous phases only; MANUAL_MOWING/RECORDING untouched
+    'UNDOCKING', 'TRANSIT', 'MOWING', 'BOUNDARY_PAUSED', 'RETURNING_HOME',
+    'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING', 'COVERAGE_FAILED_DOCKING'))
+MANUAL_PHASES = frozenset(('MANUAL_MOWING', 'RECORDING'))
+SHAPE_DEFAULTS = {
+    'track_width_m': TRACK_WIDTH_M,
+    'min_inner_wheel_mps': 0.06,
+    'linear_max': 0.3,
+}
+
+
+def shape_for_both_wheels(v, w, params=None):
+    """Shape (v, w) so both wheels roll the same way, the inner one >= min_inner.
+
+    Returns ``(v, w, info)``; ``info`` is None when the command passes unchanged, else a
+    dict ``{'r': radius_m, 'inner': inner_mps, 'outer': outer_mps}``. Pivots (v == 0)
+    become forward arcs; reversing commands (v < 0) keep both wheels backward. Turns too
+    tight for the inner wheel are widened to the tightest arc that keeps it at min_inner
+    (keeping |w| when possible, else lowering |w| so the outer wheel <= linear_max).
+    """
+    p = dict(SHAPE_DEFAULTS)
+    if params:
+        p.update(params)
+    half = 0.5 * float(p['track_width_m'])
+    v_min = float(p['min_inner_wheel_mps'])
+    v_max = float(p['linear_max'])
+    if abs(w) < 1e-6:
+        return v, w, None                     # straight (or stop): both wheels equal
+    if abs(v) - abs(w) * half >= v_min - 1e-9:
+        return v, w, None                     # inner wheel already rolling fast enough
+    sign = -1.0 if v < 0.0 else 1.0
+    aw = abs(w)
+    av = v_min + aw * half
+    if av + aw * half > v_max:                # outer wheel would exceed linear_max
+        aw = max(0.0, (v_max - v_min) / (2.0 * half))
+        av = 0.5 * (v_max + v_min)
+    w_out = math.copysign(aw, w)
+    info = {'r': av / aw if aw > 0.0 else float('inf'),
+            'inner': av - aw * half, 'outer': av + aw * half}
+    return sign * av, w_out, info
+
+
+class TurnShaper:
+    """Stateful wrapper: phase gating + per-pivot distance cap on converted pivots.
+
+    A pure pivot converted to a forward arc may travel at most ``pivot_max_dist_m``; then
+    the true pivot is let through for ``pivot_fallback_s`` (a blocked corner must not run
+    away), then arcs again with a fresh budget. Manual phases pass unless ``shape_manual``.
+    """
+
+    def __init__(self, enabled=True, shape_manual=False, pivot_max_dist_m=0.3,
+                 pivot_fallback_s=2.0, **params):
+        self.enabled = bool(enabled)
+        self.shape_manual = bool(shape_manual)
+        self.pivot_max_dist_m = float(pivot_max_dist_m)
+        self.pivot_fallback_s = float(pivot_fallback_s)
+        self.params = dict(SHAPE_DEFAULTS)
+        self.params.update(params)
+        self.reset()
+
+    def reset(self):
+        self.dist_m = 0.0          # travel commanded while converting the current pivot
+        self.fallback_s = 0.0      # remaining true-pivot pass-through time
+        self.status = 'pass'
+
+    def apply(self, v, w, phase, dt):
+        """Return the shaped (v, w) for raw target (v, w) in mission ``phase``."""
+        active = self.enabled and (phase in SHAPE_PHASES or
+                                   (self.shape_manual and phase in MANUAL_PHASES))
+        if not active:
+            self.reset()
+            return v, w
+        pivot = abs(v) < 1e-3 and abs(w) >= 1e-6
+        if not pivot:
+            self.dist_m = 0.0
+            self.fallback_s = 0.0
+        elif self.fallback_s > 0.0:
+            self.fallback_s -= dt
+            if self.fallback_s <= 0.0:
+                self.dist_m = 0.0
+            self.status = 'pivot fallback (cap %.2f m reached)' % self.pivot_max_dist_m
+            return v, w
+        sv, sw, info = shape_for_both_wheels(v, w, self.params)
+        if info is None:
+            self.status = 'pass'
+            return v, w
+        if pivot:
+            self.dist_m += abs(sv) * dt
+            if self.dist_m >= self.pivot_max_dist_m:
+                self.fallback_s = self.pivot_fallback_s
+        self.status = 'arc r=%.2f m, inner %.2f m/s' % (info['r'], info['inner'])
+        return sv, sw
+
+
+TURN_PARAMS = {   # node parameter -> (TurnShaper attribute / params key, type)
+    'turn_shaper': ('enabled', bool),
+    'shape_manual': ('shape_manual', bool),
+    'track_width_m': ('track_width_m', float),
+    'min_inner_wheel_mps': ('min_inner_wheel_mps', float),
+    'linear_max': ('linear_max', float),
+    'shape_pivot_max_dist_m': ('pivot_max_dist_m', float),
+    'shape_pivot_fallback_s': ('pivot_fallback_s', float),
+}
+TURN_DEFAULTS = {'turn_shaper': True, 'shape_manual': False, 'track_width_m': TRACK_WIDTH_M,
+                 'min_inner_wheel_mps': 0.06, 'linear_max': 0.3,
+                 'shape_pivot_max_dist_m': 0.3, 'shape_pivot_fallback_s': 2.0}
+
+
+def set_turn_param(shaper, name, value):
+    attr, kind = TURN_PARAMS[name]
+    if attr in SHAPE_DEFAULTS:
+        shaper.params[attr] = kind(value)
+    else:
+        setattr(shaper, attr, kind(value))
 
 
 # --------------------------------------------------------------------------- motion gate
@@ -354,9 +488,14 @@ class CmdVelSlewNode(Node):
         self.declare_parameter('robot_settings_file', default_settings_file())
         for name, (default, _kind) in SHAPER_PARAMS.items():
             self.declare_parameter(name, default)
-        _pa = PivotAssist()
+        _pa = PivotAssist(enabled=False)   # subsumed by the TurnShaper (no double creep)
         for name, attr in PIVOT_PARAMS.items():
             self.declare_parameter(name, getattr(_pa, attr))
+        for name, default in TURN_DEFAULTS.items():
+            self.declare_parameter(name, default)
+        self._turn = TurnShaper()
+        for name in TURN_PARAMS:
+            set_turn_param(self._turn, name, self.get_parameter(name).value)
         self._pivot = PivotAssist(**{attr: self.get_parameter(name).value
                                      for name, attr in PIVOT_PARAMS.items()})
         overrides = settings_overrides(str(self.get_parameter('robot_settings_file').value))
@@ -430,6 +569,12 @@ class CmdVelSlewNode(Node):
                        reliability=QoSReliabilityPolicy.RELIABLE,
                        history=QoSHistoryPolicy.KEEP_LAST))
 
+        self._shape_pub = self.create_publisher(
+            String, '~/shape_status',
+            QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                       reliability=QoSReliabilityPolicy.RELIABLE,
+                       history=QoSHistoryPolicy.KEEP_LAST))
+
         self._runner = PeriodicRunner(self, [(1.0 / self._rate, self._tick)], 'cmd_vel_slew')
         self._runner.start()
         self.get_logger().info(
@@ -470,6 +615,10 @@ class CmdVelSlewNode(Node):
         self._imu_time = receipt
 
     def _on_set_parameters(self, params):
+        for p in params:
+            if p.name in TURN_PARAMS and getattr(self, '_turn', None) is not None:
+                set_turn_param(self._turn, p.name, p.value)
+                self.get_logger().info('cmd_vel_slew: %s = %r' % (p.name, p.value))
         for p in params:
             if p.name in PIVOT_PARAMS:
                 setattr(self._pivot, PIVOT_PARAMS[p.name],
@@ -551,6 +700,9 @@ class CmdVelSlewNode(Node):
                 self._shaper.reset()
             if getattr(self, '_pivot', None) is not None:
                 self._pivot.reset()
+            if getattr(self, '_turn', None) is not None:
+                self._turn.reset()
+                CmdVelSlewNode._publish_shape_status(self)
         else:
             tgt_lin = self._tgt[0]
             tgt_ang = self._tgt[5]
@@ -575,6 +727,7 @@ class CmdVelSlewNode(Node):
                         'pivot assist %s (%.2f m crept, pivot %.1f s)' % (
                             'ON: creeping forward' if pivot.active else 'off',
                             pivot.dist_m, pivot.pivot_s))
+            tgt_lin, tgt_ang = CmdVelSlewNode._shape_turn(self, tgt_lin, tgt_ang, dt)
             self._cur_lin = slew(self._cur_lin, tgt_lin, self._max_linear_accel, dt)
             self._cur_ang = slew(self._cur_ang, tgt_ang, self._max_angular_accel, dt)
 
@@ -590,6 +743,27 @@ class CmdVelSlewNode(Node):
                 '(target linear.x={!r} angular.z={!r})'.format(
                     self._cur_lin, self._cur_ang, tgt_lin, tgt_ang))
         return out
+
+    def _shape_turn(self, lin, ang, dt):
+        """Both-wheel turn shaping (see :class:`TurnShaper`); publishes shape_status."""
+        turn = getattr(self, '_turn', None)
+        if turn is None:
+            return lin, ang
+        gate = getattr(self, '_gate', None)
+        lin, ang = turn.apply(lin, ang, gate.state_name if gate is not None else None, dt)
+        CmdVelSlewNode._publish_shape_status(self)
+        return lin, ang
+
+    def _publish_shape_status(self):
+        status = self._turn.status
+        if status != getattr(self, '_shape_status', None):
+            self._shape_status = status
+            if status != 'pass':
+                self.get_logger().info('turn shaper: %s' % status)
+            pub = getattr(self, '_shape_pub', None)
+            if pub is not None:
+                from std_msgs.msg import String
+                pub.publish(String(data=status))
 
     _slew = staticmethod(slew)
 

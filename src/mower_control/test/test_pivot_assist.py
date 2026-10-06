@@ -22,7 +22,7 @@ def test_only_after_delay_in_motion_phase_and_capped():
 
 @pytest.mark.parametrize('lin,ang,phase', [
     (0.0, 0.3, 'IDLE'), (0.0, 0.3, 'RETURNING_HOME'), (0.0, 0.3, None),
-    (0.0, 0.15, 'MOWING'), (0.1, 0.3, 'MOWING'), (-0.1, 0.3, 'TRANSIT')])
+    (0.0, 0.05, 'MOWING'), (0.1, 0.3, 'MOWING'), (-0.1, 0.3, 'TRANSIT')])
 def test_never_outside_a_pure_pivot_in_transit_or_mowing(lin, ang, phase):
     pa = PivotAssist()
     assert all(pa.apply(lin, ang, phase, DT) == lin for _ in range(100))
@@ -80,3 +80,11 @@ def test_sim_pivot_assist_finishes_the_turn_far_sooner_within_cap():
     # A Nav2 PoseProgressChecker (0.25 m or 0.5 rad within 20 s) would not abort the
     # assisted pivot: in any 20 s window it turns > 0.5 rad.
     assert 0.21 * 6.0 + 0.051 * 14.0 > 0.5
+
+
+def test_slow_rotate_to_heading_0_1_radps_triggers_by_default():
+    """Live 2026-10-07: RPP ramped only to 0.16 rad/s; the 0.2 threshold never fired."""
+    pa = PivotAssist()
+    assert pa.min_angular == pytest.approx(0.08)
+    outs = [pa.apply(0.0, 0.1, 'TRANSIT', DT) for _ in range(int(3.0 / DT))]
+    assert outs[int(1.6 / DT)] == pytest.approx(0.05) and pa.active

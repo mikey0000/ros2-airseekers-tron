@@ -110,3 +110,15 @@ If creep (a) persists under this policy, stopping becomes "3 zeros then silence"
 - The chassis runtime speed loop (deadband or integrator at 0) was not located. The next RE target is the handler that consumes the module-4 setpoint arriving from the cutter link.
 - The vendor planner's `/cmd_vel` rate and stop behaviour were not recovered (separate binaries).
 - I did not verify which of the four `createTimer` sites drives the heartbeat at 100 ms.
+
+## Both-wheel turn shaper (cmd_vel_slew, 2026-10-07)
+
+Owner rule: no one-wheel turns, no counter-rotating pivots. `cmd_vel_slew.shape_for_both_wheels`
+(via `TurnShaper`, autonomous phases only, latched `/cmd_vel_slew/shape_status`) widens any
+command whose inner wheel `|v| - |w|*b/2` is below `min_inner_wheel_mps` 0.06 to the tightest
+arc keeping the inner wheel at 0.06 (both wheels same direction; reversing stays reversing),
+lowering `|w|` if the outer wheel would exceed 0.3. Track width b = 0.48 m (URDF
+`drive_track_y` 0.24 x 2). Implied minimum radius r_min = b/2*(v_out+v_in)/(v_out-v_in) =
+0.36 m (outer 0.3 / inner 0.06); with the MCU's |w| <= 0.3 clamp the tightest arc is 0.44 m.
+Converted pivots are capped at 0.3 m of travel, then a true pivot passes for 2 s. The old
+pivot assist is off by default (subsumed).
