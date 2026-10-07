@@ -151,9 +151,8 @@ describe("MapToolbarMobile", () => {
     render(<MapToolbarMobile {...defaultProps} onDrawPath={vi.fn()} onDrawPathToDock={vi.fn()} onEditPath={vi.fn()} />);
     expect(screen.queryByRole("button", { name: en.mapToolbarMobile.drawPath })).toBeNull();
   });
-});
 
-describe('MapToolbarMobile Resume', () => {
+describe('Resume', () => {
     it('shows primary Resume instead of Start when onResume is set, sends it on click', async () => {
         const onResume = vi.fn().mockResolvedValue(undefined);
         render(<AntApp><MapToolbarMobile {...defaultProps as any} stateName="IDLE" onResume={onResume} onStartFresh={vi.fn().mockResolvedValue(undefined)}/></AntApp>);
@@ -165,4 +164,5 @@ describe('MapToolbarMobile Resume', () => {
         render(<AntApp><MapToolbarMobile {...defaultProps as any} stateName="IDLE"/></AntApp>);
         expect(screen.queryByTestId('toolbar-resume')).toBeNull();
     });
+});
 });
