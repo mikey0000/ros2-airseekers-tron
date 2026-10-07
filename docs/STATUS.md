@@ -13,9 +13,9 @@ architecture; everything runs in the Humble container on the stock 20.04 kernel.
 
 ## What exists and works (verified 2026-10-05)
 
-All 16 packages under `src/` build in the amd64 dev image (`docker/Dockerfile.dev-amd64`,
-`scripts/dev_build.sh build|test|shell`), except `src/open_vins`, which is a symlink to the external
-OpenVINS clone and is skipped. Pytest, run against stubbed ROS on the host:
+The 16 packages that were under `src/` on 2026-10-05 (31 now) built in the amd64 dev image (`docker/Dockerfile.dev-amd64`,
+`scripts/dev_build.sh build|test|shell`). OpenVINS is not under `src/`: it is the
+`third_party/open_vins` git submodule (COLCON_IGNOREd), built only by `scripts/build_openvins_mower.sh`. Pytest, run against stubbed ROS on the host:
 
 | Package | Tests |
 |---|---|

@@ -13,8 +13,8 @@ from mower_map import import_vendor_geojson as cli
 
 SQUARE = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
 HOLE = [(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]
-VENDOR_SAMPLE = ('/home/michael/git/airseekers-decompile/ros2_port_handoff/'
-                 '12_excluded_secrets_identity/RobotData/map/24705761407971328/map.geojson')
+# Optional: path to a vendor RobotData/map/<id>/map.geojson pulled off a mower (not in the repo).
+VENDOR_SAMPLE = os.environ.get('MOWER_VENDOR_MAP_SAMPLE', '')
 
 
 def _store():
@@ -359,7 +359,8 @@ def test_cli_writes_files(tmp_path, capsys):
     assert 'dock_pose_x: 0.000000' in robot.read_text()
 
 
-@pytest.mark.skipif(not os.path.exists(VENDOR_SAMPLE), reason='live vendor map not present')
+@pytest.mark.skipif(not os.path.isfile(VENDOR_SAMPLE),
+                    reason='set MOWER_VENDOR_MAP_SAMPLE to a vendor map.geojson')
 def test_import_live_vendor_sample():
     res = core.import_vendor_geojson_file(VENDOR_SAMPLE)
     mow = [a for a in res.areas if not a.is_navigation]

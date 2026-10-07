@@ -94,11 +94,11 @@ topic renames:
 | MowgliNext contract | Type | Our source today | Status |
 |---|---|---|---|
 | `/gps/fix` | `sensor_msgs/NavSatFix` | `um960_gps_driver` → `/fix` (param `fix_topic`) | ✅ rename only (`/fix` → `/gps/fix`). Our publisher is RELIABLE(10); MowgliNext uses `SensorDataQoS` — a RELIABLE pub is compatible with best-effort subs, so this is safe, optionally switch to `SensorDataQoS` for parity |
-| `/imu/data` | `sensor_msgs/Imu` | `wit_imu_driver` → `/imu` (JY61P) | ✅ rename (`/imu` → `/imu/data`). **QoS mismatch:** ours is BEST_EFFORT depth 10; MowgliNext deliberately uses **RELIABLE QoS(10)** even for IMU data. Tighten our publisher if we want bit-exact parity |
-| `/imu/mag_raw` | `sensor_msgs/MagneticField` | `wit_imu_driver` (mag frame 0x54) | ✅ parse-and-publish already implemented (verify enable flag) |
+| `/imu/data` | `sensor_msgs/Imu` | `wit_imu_driver` → `/imu/data` (JY61P, param `imu_topic`) | ✅ same name, and RELIABLE depth 10 like MowgliNext (`wit_node.py:87-91`). Orientation and covariances are filled |
+| `/imu/mag_raw` | `sensor_msgs/MagneticField` | `wit_imu_driver` (mag frame 0x54) | ❌ not published. `wit_protocol.py` parses the 0x54 frame (and the sensor's mag output is off by default in `cmd_set_output`), but `wit_node.py` has no `MagneticField` publisher |
 | `/wheel_odom` | `nav_msgs/Odometry` (`odom`→`base_link`) | `mower_mcu_driver` → `/odom` | ✅ rename; our frames (`odom_frame`/`base_frame` params, default `odom`/`base_link`) already match. Our `/odom` is RELIABLE(10) — fine |
 | `/battery_state` | `sensor_msgs/BatteryState` | `mower_mcu_driver` → `/battery` | ✅ rename (RELIABLE(10) — fine) |
-| `/cmd_vel` (input) | `geometry_msgs/TwistStamped` | `mower_mcu_driver` subscribes `/cmd_vel` | ✅ already the stamped form MowgliNext mandates (its `twist_mux` uses `use_stamped: true`) |
+| `/cmd_vel` (input) | `geometry_msgs/TwistStamped` | `twist_mux` → `/cmd_vel_raw` → `cmd_vel_slew` → `/cmd_vel` → `mower_mcu_driver` | ❌ **unstamped `geometry_msgs/Twist`** end to end: Humble's twist_mux 4.3 has no `use_stamped` (`src/mower_teleop/config/twist_mux.yaml`), `cmd_vel_slew` is `Twist` in/out, and `mcu_node` takes `Twist` on `/cmd_vel` (it also accepts `TwistStamped` on `/cmd_vel_stamped`). Any MowgliNext producer needs a TwistStamped→Twist shim |
 | `/mower_sensor_info`, `/mower_base/status`, `/mower_base/motor_info` | `mower_interfaces/*` | `mower_mcu_driver` | ✅ vendor contract preserved — these are *ours*, no MowgliNext analogue; keep them |
 | `/imu/temperature_c` | `std_msgs/Float32` | `wit_imu_driver` | ✅ extra we keep (MowgliNext has no temperature topic) |
 | `um960` extras `/vel`, `/heading`, `/fix_status`, `/nmea` | `TwistStamped`, `Float32`, `String` | `um960_gps_driver` | ✅ keep as debug/COG sources (`/heading` ≈ COG input for `cog_to_imu`) |
@@ -113,15 +113,16 @@ topic renames:
    `false`, and the URDF provides `base_link → imu_link`. No driver broadcasts TF,
    so MowgliNext Invariant 2 holds.
 
-**Nothing satisfies yet (the MowgliNext-only surface):**
-`/hardware_bridge/status` (`mowgli_interfaces/Status`), `/hardware_bridge/emergency`
-(`Emergency`), `/hardware_bridge/power` (`Power`), `/wheel_ticks`
-(`WheelTick`), `/cmd_vel_applied`, `/hardware_bridge/dig_event`/`dig_escalated`,
-`/gps/status` (`GnssStatus` — ours is a plain `String` on `/fix_status`),
-`/gps/absolute_pose` (`AbsolutePose`), `/rtcm` (`rtcm_msgs/Message`),
-`/odometry/filtered_map`, and driver services `~/mower_control`,
-`~/emergency_stop`, `~/reboot_board`, `~/set_firmware_debug` (plus being a
-client of `~/high_level_control`). Our driver *does* host services now:
+**The MowgliNext-only surface.** Update 2026-10-08: most of it is now served by
+`mower_gui_bridge` (defaults in `gui_bridge_node.py:62-100`): `/hardware_bridge/status`
+(`mowgli_interfaces/Status`), `/hardware_bridge/emergency` (`Emergency`),
+`/hardware_bridge/power` (`Power`), `/gps/fix`, `/gps/status` (`GnssStatus`, converted
+from the driver's `/fix_status` String), `/wheel_odom`, `/odometry/filtered_map`, and the
+services `/hardware_bridge/mower_control`, `/hardware_bridge/emergency_stop` and
+`/hardware_bridge/reboot_board`. **Still not provided:** `/wheel_ticks` (`WheelTick`),
+`/cmd_vel_applied` (`cmd_vel_slew` logs the applied value instead of publishing it),
+`/hardware_bridge/dig_event`/`dig_escalated`, `/gps/absolute_pose` (`AbsolutePose`),
+`/rtcm` (`rtcm_msgs/Message`) and `~/set_firmware_debug`. Our driver *does* host services now:
 `mcu_node` serves `/cutter_control`, `/charging`, `/clear_estop`, `/cutter_off`
 and `/cutter/set_height`, and `mower_gui_bridge` serves the `hardware_bridge` and
 `behavior_tree_node` ones above; the vendor ROS 1 stack's `/cutter_control`,
@@ -160,9 +161,13 @@ publishers above. Remaining: the §3 "nothing satisfies yet" surface.
 ### 4.2 Message schemas
 
 `mowgli_interfaces` (16 msg / 15 srv / 3 action) vs our `mower_interfaces`
-(7 msg / 4 srv — msgs: `MotorStatus`, `MotorInfo`, `MowerBaseMotorsInfo`,
-`MowerSensorInfo`, `ControlInfo`, `MowerBaseDevStatus`, `PlannerOption`;
-srvs: `CutterControl`, `ChargingControl`, `BumperControl`, `PlannerTaskSet`).
+(11 msg / 10 srv / 2 action — msgs: `BatteryHealthInfo`, `ControlInfo`, `MotorControl`,
+`MotorInfo`, `MotorStatus`, `MowerBaseButtonInfo`, `MowerBaseDevInfo`, `MowerBaseDevStatus`,
+`MowerBaseMotorsInfo`, `MowerSensorInfo`, `PlannerOption`; srvs: `BumperControl`,
+`ChargingControl`, `CutterControl`, `GetAreaSettings`, `MappingControl`, `PlanCoverage`,
+`PlannerTaskSet`, `SetAreaSettings`, `SetCutterHeight`, `SetLoRa`; actions: `Dock`, `Undock`).
+Update 2026-10-08: `mowgli_interfaces` itself is now copied into `src/mowgli_interfaces`, so
+the list below is satisfied by that package rather than by additions to `mower_interfaces`.
 To consume MowgliNext packages unmodified, add to `mower_interfaces` (or a
 thin `mowgli_shim` package):
 
@@ -192,16 +197,18 @@ The UM960 sits behind the vendor `rtk_rover` AT32 board + LoRa M4, so
 ### 4.4 Distro / dependency deltas (Lyrical → Humble)
 
 - Nav2: `SmacPlanner2D`, RPP, `RotationShimController`, `keepout_filter`,
-  `collision_monitor`, `twist_mux use_stamped` exist in Humble; **no
-  `opennav_docking`/`docking_server`** in Humble (custom dock state machine in
-  `mower_behavior`); `nav2_msgs/CollisionMonitorState` is newer than Humble;
+  `collision_monitor` exist in Humble; Humble's twist_mux (4.3, what we run) has
+  **no `use_stamped`**, so our `/cmd_vel` chain is unstamped `Twist`. Docking does not use
+  `opennav_docking`: this repo ships its own `mower_docking` package (rclpy action server,
+  `/mower_docking/dock` and `/mower_docking/undock`, ArUco-guided reverse docking), and no
+  image installs `opennav_docking`; `nav2_msgs/CollisionMonitorState` is newer than Humble;
   several costmap YAML keys renamed (`costmap_topic` vs
   `local_costmap_topic`) — wrong keys are *silently ignored*, so check
   `nav2_params_*.yaml` key-by-key.
 - Source builds needed on aarch64: **GTSAM** and **Fields2Cover v3** (upstream
   does exactly this in `gtsam-builder` / `fields2cover-v3-builder` stages —
-  expect long build times). BehaviorTree.CPP v4, grid_map, twist_mux,
-  opennav_docking are apt-installable in Humble.
+  expect long build times). BehaviorTree.CPP v4, grid_map and twist_mux are
+  apt-installable in Humble (twist_mux without `use_stamped`, see above).
 - RMW: upstream runtime uses **`rmw_cyclonedds_cpp`** + `cyclonedds.xml`
   (ARM service discovery without shared-memory issues). Our image pins
   `rmw_fastrtps_cpp`. Both containers on the same host/DOMAIN_ID can mix only
@@ -416,7 +423,7 @@ ros2 topic echo /gps/fix --once
 | 3 | Heartbeat failsafe | Vendor `type=255` timeout behaviour uncharacterised — safety-critical unknown |
 | 4 | UM960 support | universal-gnss has no UM960 parser; our driver is the pragmatic path |
 | 5 | Build time | GTSAM + Fields2Cover v3 source builds on aarch64 are long; cache in a derived image |
-| 6 | QoS | Our IMU publishers are BEST_EFFORT (both drivers); MowgliNext expects RELIABLE(10) on `/imu/data` and `transient_local` on dig events — align in the shim. Our `/battery` and `/odom` are already RELIABLE(10) |
+| 6 | QoS | `wit_imu_driver` publishes `/imu/data` RELIABLE(10), matching MowgliNext; only the MCU's `/mcu/imu` echo is BEST_EFFORT (`mcu_node.py:716-724`). MowgliNext expects `transient_local` on dig events, which we don't publish. Our `/battery` and `/odom` are already RELIABLE(10) |
 | 7 | ~~Duplicate `/imu`~~ | **Closed:** `/imu/data` from `wit_imu_driver`, `/mcu/imu` from `mower_mcu_driver` |
 | 8 | ~~Driver TF~~ | **Closed:** `wit_imu_driver publish_tf:=false`; the URDF owns `base_link → imu_link` |
 | 9 | RAM/CPU | RK3588 already runs the vendor stack + stereo; GTSAM iSAM2 + Nav2 + BT is heavy — budget before full bringup |
@@ -439,5 +446,5 @@ ros2 topic echo /gps/fix --once
 - Our side: `ros2_stack/docker/{Dockerfile.humble,docker-compose.yml}`,
   `ros2_stack/launch/bringup.launch.py`, `ros2_stack/src/{mower_mcu_driver,
   wit_imu_driver,um960_gps_driver}`, `ros2_stack/src/mower_interfaces`
-  (7 msg / 4 srv), and docs `mowglinext_baseline.md`, `interfaces_map.md`,
+  (11 msg / 10 srv / 2 action), and docs `mowglinext_baseline.md`, `interfaces_map.md`,
   `mcu_protocol_spec.md`, `wit_imu.md`, `um960.md`, `deployment.md`

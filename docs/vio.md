@@ -66,8 +66,10 @@ with `stereo_depth` and the GUI.
 
 ## 2. What exists on the mower (2026-10-06)
 
-* `ov_msckf` is **not** in the mower image (`/work/install` has no `ov_*`), and
-  `src/open_vins` on the mower is a dangling symlink (`ros2_port_handoff` is not synced).
+* `ov_msckf` is **not** in the mower image (`/work/install` has no `ov_*`). Sources are the
+  `third_party/open_vins` git submodule (rpng/open_vins, pinned; `git submodule update --init`);
+  `deploy_to_mower.sh sync` does not copy it, `build_openvins_mower.sh` stages a patched copy.
+  (Older trees had a dangling `src/open_vins` symlink here; `sync` removes it.)
 * All build deps are in `mower:humble` (OpenCV 4.5, Eigen, Boost, cv_bridge,
   image_transport, message_filters).
 * `stereo_cam` publishes `/vio/{left,right}/image_raw` (bgr8, best effort, stamped with

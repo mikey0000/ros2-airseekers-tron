@@ -47,16 +47,16 @@ but install both explicitly to be sure.
 Frame tree (REP-105) and who owns each transform
 ======================================================================================
 
-    map                                                   <- NOT PUBLISHED by this stack
-      |        The map frame has no publisher yet. navsat_transform_node only
-      |        broadcasts a transform when broadcast_utm_transform is true, and
-      |        config/navsat.yaml sets it false — so there is no map -> odom
-      |        anchor. Until one lands, everything is odom-framed dead
-      |        reckoning corrected by GPS: continuous, but it starts wherever
-      |        the machine happened to be switched on.
+    map                                                   <- static_map_odom (mower.launch.py)
+      |        Identity map -> odom (Phase A: map == odom), published by the
+      |        static_map_odom node in launch/mower.launch.py when
+      |        publish_static_map_odom:=true (default). There is still no GPS
+      |        anchor: navsat_transform_node only broadcasts a transform when
+      |        broadcast_utm_transform is true, and config/navsat.yaml sets it
+      |        false. Everything is odom-framed dead reckoning corrected by GPS.
       |
     odom                                                  <- ekf_node (publish_tf: true)
-      |        The ONLY transform this stack currently owns.
+      |        Sole publisher of odom -> base_link.
       |
     base_link                                             <- URDF: config/urdf/mower.urdf.xacro
       |        Centre of the REAR DRIVE AXLE, not the chassis centre
@@ -64,12 +64,11 @@ Frame tree (REP-105) and who owns each transform
       |        Published by the robot_state_publisher entry below
       |        (mower_mcu_driver's /odom carries it as child_frame_id).
       |
-      +-- imu_link   WIT JY61P. wit_imu_driver broadcasts base_link ->
-      |             imu_link itself (identity today); the URDF's
-      |             imu_joint is identity on purpose so the two
-      |             publishers agree. TODO(calib): set the real
-      |             mounting offset in the xacro AND drop the driver
-      |             broadcast (handoff_gap_analysis P0 #5).
+      +-- imu_link   WIT JY61P. The URDF owns base_link -> imu_link
+      |             (identity today); wit_imu_driver's publish_tf
+      |             parameter defaults to false and bringup does not
+      |             override it. TODO(calib): set the real mounting
+      |             offset in the xacro.
       +-- gps_link   UM960 antenna. um960_gps_driver stamps /fix with
       |             frame_id "gps_link" (launch/bringup.launch.py
       |             overrides the driver's built-in "gps" default so
@@ -351,7 +350,7 @@ def generate_launch_description() -> LaunchDescription:
 
             # ------------------------------------------------------------------
             # 3. ekf_node: /odom + /imu (+ /odometry/gps) -> odom -> base_link at
-            #    30 Hz, publishing /odometry/filtered (its default topic name) for the
+            #    20 Hz, publishing /odometry/filtered (its default topic name) for the
             #    node above and Nav2.
             #    Sole publisher of odom -> base_link.
             #    Node name must stay "ekf_node": config/ekf.yaml is keyed on it.

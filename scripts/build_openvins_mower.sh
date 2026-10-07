@@ -13,9 +13,10 @@
 #     container capped at 2.5 GB / 2 CPUs (an OOM kills the build, not the host),
 #     -O2 without debug info, GCC's GC tuned to collect early, BUILD_TESTING off.
 #     ov_msckf's Eigen-heavy TUs peak at ~1.2 GB each with these flags.
-#   * Sources: the mower's src/open_vins is a dangling symlink (ros2_port_handoff is not
-#     synced), so a patched copy goes to /userdata/ros2/src_ext/open_vins, outside the
-#     stack's colcon tree. Patches: config/vio/patches/*.patch (image topics use
+#   * Sources: the third_party/open_vins git submodule (pinned upstream rpng/open_vins;
+#     `git submodule update --init` after cloning). third_party/ is COLCON_IGNOREd, so the
+#     normal stack build never compiles it; a patched copy goes to
+#     /userdata/ros2/src_ext/open_vins, outside the stack's colcon tree. Patches: config/vio/patches/*.patch (image topics use
 #     SensorDataQoS, otherwise ov_msckf never receives stereo_cam's best-effort frames).
 #   * Output goes into the stack's install space (/work/install/ov_*), so the normal
 #     `source /work/install/setup.bash` finds ov_msckf; build tree in /userdata/ros2/build_ov.
@@ -24,7 +25,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK_ROOT="$(dirname "$SCRIPT_DIR")"
 MOWER="${MOWER:-root@192.168.1.105}"
 IMAGE="${IMAGE:-mower:humble}"
-OV_SRC="${OV_SRC:-$(cd "$STACK_ROOT/src/open_vins" && pwd -P)}"
+OV_SRC="${OV_SRC:-$STACK_ROOT/third_party/open_vins}"
+[ -f "$OV_SRC/ov_msckf/package.xml" ] || { echo "OpenVINS sources missing at $OV_SRC: run git submodule update --init third_party/open_vins" >&2; exit 1; }
 REMOTE_SRC=/userdata/ros2/src_ext
 REMOTE_BUILD=/userdata/ros2/build_ov
 MIN_AVAIL_MB=3000
