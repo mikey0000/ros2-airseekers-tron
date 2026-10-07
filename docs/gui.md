@@ -137,6 +137,17 @@ the robot use `useRobotName()`; STM32-specific wording is chosen with
 
 The only build-time switch left is `VITE_SKIP_ONBOARDING=1` (default in
 `gui/Dockerfile`), which disables the first-run redirect to the wizard.
+
+The map needs a Mapbox token at build time. Put it in
+`third_party/mowglinext/gui/web/.env` (gitignored; copy `.env.example`):
+
+```
+VITE_MAPBOX_TOKEN=pk.…
+```
+
+Vite reads that file during `yarn build`, and `COPY web/ ./` carries it into the
+Docker build (`.dockerignore`'s `.env` only matches the context root). Without
+it the map page shows a "token missing" panel; there is no hardcoded fallback.
 Independently, the backend reports onboarding complete when
 `ONBOARDING_COMPLETED=true` (added to `EnvFallbacks` in `pkg/providers/db.go`;
 read by `GET /api/settings/status`).

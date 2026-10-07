@@ -11,3 +11,21 @@ third_party/mowglinext/gui/web/dist/
 third_party/mowglinext/gui/mowglinext
 third_party/mowglinext/gui/.config/
 **/.pytest_cache/
+# Secrets / local build config (Vite reads web/.env at build time; see docs/gui.md)
+.env
+.env.*
+!.env.example
+!.env.dist
+!third_party/mowglinext/gui/.env
+# Reproducible build outputs
+*.py[cod]
+*.egg-info/
+.eggs/
+*.o
+*.so
+*.a
+*.tsbuildinfo
+third_party/mowglinext/gui/openmower-gui
+third_party/mowglinext/gui/web/dist-ssr/
+third_party/mowglinext/gui/web/test-results/
+third_party/mowglinext/gui/web/playwright-report/

@@ -87,7 +87,7 @@ import {imageCornersMap, quadToLngLat, type ImageryOverlay} from "../utils/image
 // Mapbox access token comes from the build env only — no hardcoded fallback.
 // When it is missing the page renders a clear error panel instead of a broken
 // (blank) map, so the misconfiguration is obvious rather than silent.
-const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined || "REDACTED_MAPBOX_TOKEN";
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
 
 // Layers the full map queries on hover to drive the two-way obstacle
 // highlight (map polygon → panel row). Module-level so the array identity is
