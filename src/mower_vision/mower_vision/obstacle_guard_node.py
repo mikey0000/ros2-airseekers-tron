@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import math
+import struct
 import sys
 import time
 from dataclasses import replace
@@ -63,8 +64,10 @@ from geometry_msgs.msg import Point, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
+
+from mower_vision.sub_pump import SubscriptionPump, parse_odometry
 from sensor_msgs.msg import CameraInfo
-from rclpy.qos import (QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy,
+from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy,
                        qos_profile_sensor_data)
 from std_msgs.msg import Bool, ColorRGBA, String
 from std_srvs.srv import Trigger
@@ -264,12 +267,24 @@ class ObstacleGuard(Node):
         self.create_subscription(Detection2DArray, p('detections_topic'), self._on_raw, 10)
         if p('ranged_topic'):
             self.create_subscription(Detection2DArray, p('ranged_topic'), self._on_ranged, 10)
+        # /cmd_vel (20 Hz) and /odom (50 Hz) only feed the motion window that is read when a
+        # detection frame or a tick is handled: take them in batches there (with their receive
+        # times) instead of ~70 executor wakes/s, which were most of this node's idle CPU.
+        self._pump = SubscriptionPump(self, 'obstacle_guard_inputs')
+        self._motion_subs = []
         self._use_motion = bool(p('cmd_vel_topic'))
         if self._use_motion:
-            self.create_subscription(Twist, p('cmd_vel_topic'), self._on_cmd_vel, 10)
+            self._motion_subs.append(self._pump.subscribe(
+                Twist, p('cmd_vel_topic'), self._on_cmd_vel,
+                QoSProfile(depth=64, reliability=QoSReliabilityPolicy.RELIABLE,
+                           history=QoSHistoryPolicy.KEEP_LAST),
+                raw=True, sampled=True, deliver_all=True, with_receipt=True))
         if str(p('odom_topic')):
-            self.create_subscription(Odometry, str(p('odom_topic')), self._on_odom,
-                                     qos_profile_sensor_data)
+            # only the newest angular rate is kept (MotionTracker.update_odom)
+            self._motion_subs.append(self._pump.subscribe(
+                Odometry, str(p('odom_topic')), self._on_odom, qos_profile_sensor_data,
+                parser=parse_odometry, sampled=True, with_receipt=True))
+        self._pump.start()
         self._burst_rate = float(p('burst_rate_hz'))
         self._idle_rate = float(p('idle_tick_rate_hz'))
         self._activity = None
@@ -311,11 +326,18 @@ class ObstacleGuard(Node):
                             else 'cameras by motion direction'))
         return SetParametersResult(successful=True)
 
-    def _on_cmd_vel(self, msg):
-        self.motion.update(float(msg.linear.x), float(msg.angular.z), self._now())
+    def _on_cmd_vel(self, data, receipt):
+        if len(data) < 52 or data[0] != 0 or data[1] != 1:   # little-endian CDR Twist
+            return
+        v = struct.unpack_from('<6d', data, 4)
+        self.motion.update(float(v[0]), float(v[5]), receipt)
 
-    def _on_odom(self, msg):
-        self.motion.update_odom(float(msg.twist.twist.angular.z), self._now())
+    def _on_odom(self, msg, receipt):
+        self.motion.update_odom(float(msg.twist.twist.angular.z), receipt)
+
+    def _poll_motion(self):
+        if self._motion_subs:
+            self._pump.poll(self._motion_subs)
 
     def _log_ignored(self, role, ignored, now):
         """INFO once per episode (per camera + class) for a dismissed detection."""
@@ -375,6 +397,7 @@ class ObstacleGuard(Node):
         self._on_dets(msg)
 
     def _on_dets(self, msg):
+        self._poll_motion()
         boxes = boxes_from_msg(msg, self.classes, self.range_origin_x)
         cfg = self._cfg_for(msg.header.frame_id)
         verdicts = classify(boxes, cfg)
@@ -418,6 +441,7 @@ class ObstacleGuard(Node):
             self.policy_pub.publish(String(data=json.dumps(pol)))
 
     def _on_tick(self):
+        self._poll_motion()
         now = self._now()
         self._publish_policy(now)
         close, rising = self.state.tick(now)
