@@ -648,6 +648,7 @@ class Mission:
     chunk_end: int = 0
     left_dock: bool = False
     settings: Optional[dict] = None             # effective settings of the current area
+    height_override_mm: Optional[int] = None    # live deck height change (this mow only)
     runs: list = field(default_factory=list)    # [{'angle': deg|-1, 'perpendicular': bool}]
     run_i: int = 0
     detours: int = 0                            # per sub-path
@@ -1027,6 +1028,35 @@ class MissionFSM:
         if (a is not None and a.token == token and a.name == ACT_DOCK and detail
                 and self.phase in DOCK_PHASES and self._dyn is None):
             self.sub_state = str(detail)
+        return self._end()
+
+    def on_cutter_height(self, mm, now=None):
+        """Commanded deck height from the MCU driver (latched /cutter/height_mm).
+
+        While a mow is running (any phase with a Mission), a height that differs from
+        the current area's effective height is a live change (GUI /cutter/set_height):
+        it overrides ``cutter_height_mm`` for the rest of THIS mow (later sub-path /
+        area plans and blade re-requests) and is NOT persisted to the saved area
+        settings. The echo of the mission's own per-area height equals the effective
+        height and is ignored. Returns the effects (re-latched active settings).
+        """
+        self._begin(self._now if now is None else now)
+        m = self.mission
+        try:
+            hmm = self.height_mm(int(mm))
+        except (TypeError, ValueError):
+            return self._end()
+        if m is None:
+            return self._end()
+        cur = (m.settings or {}).get('cutter_height_mm')
+        if m.settings is not None and cur is not None and self.height_mm(cur) == hmm:
+            return self._end()
+        m.height_override_mm = hmm
+        self._log('info', 'live blade height %d mm (this mow only)' % hmm)
+        if m.settings is not None:
+            m.settings = dict(m.settings, cutter_height_mm=hmm)
+            if m.runs:
+                self._fx.append(PublishAreaSettings(self.active_settings()))
         return self._end()
 
     def on_service_result(self, token, ok, response=None, now=None):
@@ -2012,6 +2042,10 @@ class MissionFSM:
     def _on_area_settings(self, ok, resp):
         m = self.mission
         st, src = self._merge_settings(ok, resp)
+        if m.height_override_mm is not None:
+            # live height change during this mow wins over the saved area height
+            st = dict(st, cutter_height_mm=m.height_override_mm)
+            src = src + ', live height'
         m.settings = st
         self._push_obstacle_detection(st['obstacle_detection'])
         m.runs = self._build_runs(st)

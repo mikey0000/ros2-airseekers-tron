@@ -3257,3 +3257,31 @@ def test_turn_legs_use_the_leg_goal_checker():
     fsm.p.turn_leg_goal_checker_id = ''
     assert fsm._follow_goal_checker([(0, 0, 0.0), (-0.3, 0, 0.0)], True) == \
         fsm.p.follow_goal_checker_id
+
+
+def test_live_cutter_height_overrides_rest_of_mow_only():
+    h = Harness()
+    h.areas = [square(0, 0, 5), square(10, 0, 5)]
+    h.area_settings = {0: {'cutter_height_mm': 60}, 1: {'cutter_height_mm': 40}}
+    # idle: no mission -> ignored
+    h._apply(h.fsm.on_cutter_height(45, h.t))
+    start_until_planning(h)
+    m = h.mark()
+    # echo of the mission's own per-area height is not an override
+    h._apply(h.fsm.on_cutter_height(60, h.t))
+    assert h.fsm.mission.height_override_mm is None
+    assert not h.since(m, f.PublishAreaSettings)
+    # live change (GUI /cutter/set_height) -> effective settings + re-latched topic
+    h._apply(h.fsm.on_cutter_height(75, h.t))
+    assert h.fsm.mission.height_override_mm == 75
+    assert h.fsm.mission.settings['cutter_height_mm'] == 75
+    assert h.since(m, f.PublishAreaSettings)[-1].settings['cutter_height_mm'] == 75
+    # next area keeps the live height instead of its saved 40
+    m = h.mark()
+    mow_area_once(h)
+    h.answer_services()
+    h.tick()
+    assert [c.request for c in calls(h, m, f.SRV_CUTTER_HEIGHT)] == [{'height_mm': 75}]
+    assert h.fsm.mission.settings['cutter_height_mm'] == 75
+    # not persisted: the saved area settings are untouched
+    assert h.area_settings[1] == {'cutter_height_mm': 40}

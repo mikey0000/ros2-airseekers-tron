@@ -43,7 +43,7 @@ from sensor_msgs.msg import BatteryState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.msg import Log
 from rcl_interfaces.srv import SetParameters
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int16, String
 from std_srvs.srv import Empty, SetBool, Trigger
 
 from mower_interfaces.action import Dock, Undock
@@ -251,6 +251,9 @@ class MissionNode(Node):
         sub(Bool, p['lethal_boundary_violation_topic'], self._on_lethal, 1,
             parser=flat_parser(Bool))
         sub(String, p['heading_status_topic'], self._on_heading, latched)
+        # commanded deck height (mcu_node, latched): live height changes during a mow
+        sub(Int16, '/cutter/height_mm', self._on_cutter_height, latched,
+            parser=flat_parser(Int16))
         sub(String, p['obstacle_policy_topic'], self._on_obstacle_policy, latched)
         sub(Bool, '/mower_docking/marker_in_view', self._on_marker_in_view, latched,
             parser=flat_parser(Bool))
@@ -536,6 +539,14 @@ class MissionNode(Node):
     def _on_stuck(self, msg):
         with self._lock:
             self.fsm.inputs.stuck = bool(msg.data)
+
+    def _on_cutter_height(self, msg):
+        with self._lock:
+            fx = self.fsm.on_cutter_height(int(msg.data), time.monotonic())
+            if self.fsm.mission is not None and self.fsm.mission.height_override_mm is not None:
+                # blade-ON requests carry the height: keep them on the live value
+                self._height_mm = self.fsm.mission.height_override_mm
+            self._execute(fx)
 
     def _on_boundary(self, msg):
         with self._lock:

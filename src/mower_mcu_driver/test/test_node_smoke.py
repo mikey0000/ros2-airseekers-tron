@@ -585,6 +585,47 @@ class SafetyAndServicesTest(unittest.TestCase):
                                       types.SimpleNamespace(result=None))
         self.assertEqual(self._last_height()[3], 40)              # remembered height restored
 
+    def _set_height(self, mm):
+        return self.node._srv_set_height(types.SimpleNamespace(height_mm=mm),
+                                         types.SimpleNamespace(ok=None, message='', height_mm=0))
+
+    def test_height_topic_latched_on_startup_and_change(self):
+        pub = self.node.published['/cutter/height_mm']
+        self.assertEqual([m.data for m in pub], [90])
+        self._set_height(55)
+        self._set_height(55)                                       # unchanged -> no repeat
+        self.assertEqual([m.data for m in pub], [90, 55])
+
+    def test_set_height_keeps_blade_on_with_its_speed(self):
+        req = self._height_req(True, 40)
+        req.cutter.speed = 70
+        self.node._srv_cutter_control(req, types.SimpleNamespace(result=None))
+        self.tx.clear()
+        resp = self._set_height(62)
+        self.assertTrue(resp.ok)
+        self.assertEqual(resp.height_mm, 62)
+        payloads = [p for (_t, m, p) in self._frames() if m == mn.MOD_CUTTER]
+        self.assertEqual(struct.unpack('<BBHH', payloads[-1][:6]), (1, 0, 70, 0))
+        self.assertEqual(self._last_height(), (0, 0, 0, 62))
+        self.assertTrue(self.node._cutter_requested_on)
+
+    def test_set_height_blade_off_stays_off_and_clamps(self):
+        resp = self._set_height(5)
+        self.assertTrue(resp.ok)
+        self.assertEqual(resp.height_mm, 30)
+        self.assertIn('clamped', resp.message)
+        payloads = [p for (_t, m, p) in self._frames() if m == mn.MOD_CUTTER]
+        self.assertEqual(payloads[-1][0], 0)
+        self.assertEqual(self._last_height()[3], 30)
+
+    def test_set_height_refused_while_estop(self):
+        self.node._on_estop_request(types.SimpleNamespace(data=True))
+        self.tx.clear()
+        resp = self._set_height(50)
+        self.assertFalse(resp.ok)
+        self.assertEqual(resp.height_mm, 90)
+        self.assertEqual(self._frames(), [])
+
     def test_charging_service_sends_charge_control(self):
         resp = self.node._srv_charging(types.SimpleNamespace(enable_charging=True),
                                        types.SimpleNamespace(result=None))

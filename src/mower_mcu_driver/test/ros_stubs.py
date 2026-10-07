@@ -269,6 +269,13 @@ def install():
     _mod('std_msgs')
     _mod('std_msgs.msg').Bool = Bool
 
+    class Int16:
+        def __init__(self, data=0):
+            self.data = data
+
+    _mod('std_msgs.msg').Int16 = Int16
+    _mod('std_msgs.msg').String = Bool.__class__('String', (), {'__init__': Bool.__init__})
+
     class _Srv:
         class Request:
             pass

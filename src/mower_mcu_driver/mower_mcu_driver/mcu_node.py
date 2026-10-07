@@ -113,7 +113,7 @@ except ImportError:  # pragma: no cover - ros_stubs
 from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, Imu
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int16, String
 from std_srvs.srv import Empty, Trigger
 
 from mower_mcu_driver.rain import RainDetector
@@ -135,6 +135,10 @@ try:
     from mower_interfaces.srv import ChargingControl, CutterControl
 except ImportError:  # pragma: no cover
     MowerBaseDevStatus = ChargingControl = CutterControl = None
+try:
+    from mower_interfaces.srv import SetCutterHeight
+except ImportError:  # pragma: no cover - interfaces built before SetCutterHeight existed
+    SetCutterHeight = None
 
 
 # ---------------------------------------------------------------------------
@@ -693,6 +697,8 @@ class McuNode(Node):
         self._cutter_cmd = None           # last CutterControl payload sent (bytes) or None
         self._height_mm = CUTTER_HEIGHT_DEFAULT_MM   # last requested deck height, always sent
         self._cutter_requested_on = False # host wants the blade on (re-sent after interlock)
+        self._cutter_speed = 0            # speed of the last blade-ON request (for set_height)
+        self._height_published = None     # last value latched on /cutter/height_mm
         self._charging_enabled = False
         self._interlock_latched = False   # True while an interlock has forced motion off
         self._estop_latched = False       # host-side e-stop latch (/estop topic), cleared by /clear_estop
@@ -723,6 +729,10 @@ class McuNode(Node):
             latched.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
         self._rain_pub = self.create_publisher(Bool, '/rain', latched)
         self._rain_published = None
+        # Commanded deck height (no deck-position telemetry exists): latched, published on
+        # startup and whenever the remembered height changes.
+        self._height_pub = self.create_publisher(Int16, '/cutter/height_mm', latched)
+        self._publish_height()
         self._status_pub = None
         if MowerBaseDevStatus is not None:
             self._status_pub = self.create_publisher(MowerBaseDevStatus, '/mower_base/status', 10)
@@ -769,6 +779,9 @@ class McuNode(Node):
             self.create_service(ChargingControl, '/charging', self._locked(self._srv_charging))
         self.create_service(Empty, '/clear_estop', self._locked(self._srv_clear_estop))
         self.create_service(Trigger, '/cutter_off', self._locked(self._srv_cutter_off))
+        if SetCutterHeight is not None:
+            self.create_service(SetCutterHeight, '/cutter/set_height',
+                                self._locked(self._srv_set_height))
         # Fill light (host PWM, owned by fill_light_node): mirror its read-back into
         # /mower_sensor_info.is_fill_light_on like the vendor getFillLightStatus().
         self._fill_light_on = False
@@ -1536,6 +1549,12 @@ class McuNode(Node):
         payload = cutter_payload(enable, False, speed if enable else 0, False, False, h)
         self._cutter_cmd = payload
         self._write(build_frame([(TYPE_ROS_MOWER, MOD_CUTTER, payload)]))
+        self._publish_height()
+
+    def _publish_height(self):
+        if self._height_mm != self._height_published:
+            self._height_published = self._height_mm
+            self._height_pub.publish(Int16(data=int(self._height_mm)))
 
     def _on_imu_forward_raw(self, data):
         if time.monotonic() - self._last_imu_fwd < 1.0 / max(self.forward_imu_rate, 1.0):
@@ -1584,11 +1603,37 @@ class McuNode(Node):
         speed = int(req.cutter.speed) if req.cutter.speed else self.cutter_default_speed
         height = int(req.height.position) if req.height.enable else None
         self._cutter_requested_on = cutter_on
+        if cutter_on:
+            self._cutter_speed = speed
         self._send_cutter(cutter_on, speed, height)
         self.get_logger().info('cutter %s speed=%d height=%d mm%s'
                                % ('ON' if cutter_on else 'OFF', speed, self._height_mm,
                                   '' if height is not None else ' (held)'))
         resp.result = True
+        return resp
+
+    def _srv_set_height(self, req, resp):
+        """mower_interfaces/SetCutterHeight: change only the deck height.
+
+        NOTE /cutter_control is the vendor contract: cutter.enable=false there means blade
+        OFF, so it cannot be used for a height-only change while mowing. This service
+        re-sends the CURRENT blade state (on + its speed, or off) with the new height.
+        """
+        if self._interlock_active() or self._estop_latched:
+            resp.ok = False
+            resp.message = 'refused: interlock / e-stop latched'
+            resp.height_mm = int(self._height_mm)
+            self.get_logger().warn('set_height refused: interlock active')
+            return resp
+        h = clamp_height_mm(req.height_mm)
+        on = bool(self._cutter_requested_on)
+        self._send_cutter(on, self._cutter_speed or self.cutter_default_speed, h)
+        resp.ok = True
+        resp.height_mm = int(self._height_mm)
+        resp.message = 'height %d mm (blade %s)' % (self._height_mm, 'on' if on else 'off')
+        if h != int(req.height_mm):
+            resp.message += ', clamped from %d' % int(req.height_mm)
+        self.get_logger().info('set_height: ' + resp.message)
         return resp
 
     def _srv_cutter_off(self, req, resp):

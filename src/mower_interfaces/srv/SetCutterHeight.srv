@@ -1,0 +1,8 @@
+# Change the deck (blade) height without touching the blade state (mcu_node).
+# height_mm is clamped to the vendor range 30-90 mm. Refused while an interlock /
+# e-stop is latched. The commanded height is latched on /cutter/height_mm.
+int16 height_mm
+---
+bool ok
+string message
+int16 height_mm   # height actually commanded (after clamping); last height when refused
