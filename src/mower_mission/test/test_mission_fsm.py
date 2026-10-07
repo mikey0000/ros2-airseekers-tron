@@ -1230,11 +1230,10 @@ def mow_area_once(h, sp=None):
     follow_current(h)
 
 
-def test_height_percent_table():
+def test_height_mm_passthrough_and_clamp():
     fsm = f.MissionFSM()
-    assert [fsm.height_percent(mm) for mm in (20, 30, 50, 60, 90, 120)] == [0, 0, 33, 50, 100, 100]
-    fsm = f.MissionFSM({'cutter_height_mm_to_percent': [30.0, 10.0, 60.0, 40.0, 90.0, 100.0]})
-    assert [fsm.height_percent(mm) for mm in (30, 45, 60, 75, 90)] == [10, 25, 40, 70, 100]
+    assert [fsm.height_mm(mm) for mm in (0, 20, 30, 50, 60, 90, 120, 55.6)] == \
+        [30, 30, 30, 50, 60, 90, 90, 56]
 
 
 DEFAULT_ROUTE = {'boundary_inset_m': 0.05, 'route_order': 'racetrack', 'route_spiral_size': 6,
@@ -1304,7 +1303,7 @@ def test_area_settings_applied_before_planning():
     start_until_planning(h)
     assert [c.request for c in calls(h, m, f.SRV_GET_AREA_SETTINGS)] == [{'index': 0}]
     assert [c.request for c in calls(h, m, f.SRV_CUTTER_HEIGHT)] == \
-        [{'height_mm': 60, 'percent': 50}]
+        [{'height_mm': 60}]
     assert param_calls(h, f.PARAM_NODE_CONTROLLER, m) == \
         [{'FollowCoveragePath.desired_linear_vel': 0.45}]
     cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)
@@ -1324,7 +1323,8 @@ def test_area_settings_applied_before_planning():
                    'StartAction:plan_coverage']
     pub = h.since(m, f.PublishAreaSettings)[-1].settings
     assert pub['path_mode'] == 'spiral' and pub['area_index'] == 0
-    assert pub['run'] == 1 and pub['runs'] == 1 and pub['cutter_height_percent'] == 50
+    assert pub['run'] == 1 and pub['runs'] == 1 and pub['cutter_height_mm'] == 60
+    assert 'cutter_height_percent' not in pub
     assert '[spiral, run 1/1]' in h.fsm.sub_state
 
 
@@ -1336,7 +1336,7 @@ def test_blade_height_command_precedes_blade_on():
     mow_area_once(h)
     kinds = [e for e in h.since(m) if isinstance(e, f.BladeOn)
              or (isinstance(e, f.CallService) and e.name == f.SRV_CUTTER_HEIGHT)]
-    assert isinstance(kinds[0], f.CallService) and kinds[0].request['percent'] == 83
+    assert isinstance(kinds[0], f.CallService) and kinds[0].request == {'height_mm': 80}
     assert any(isinstance(e, f.BladeOn) for e in kinds[1:])
 
 
@@ -1355,7 +1355,7 @@ def test_settings_service_unavailable_uses_defaults():
     m = h.mark()
     start_until_planning(h)
     assert any('get_area_settings unavailable' in e.text for e in h.since(m, f.Log))
-    assert [c.request['percent'] for c in calls(h, m, f.SRV_CUTTER_HEIGHT)] == [33]
+    assert [c.request['height_mm'] for c in calls(h, m, f.SRV_CUTTER_HEIGHT)] == [50]
     cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]
     assert cov['path_mode'] == 'zigzag' and cov['headland_rings'] == 2
     assert cov['edge_first'] is True and cov['operation_width'] == pytest.approx(0.18)

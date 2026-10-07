@@ -186,7 +186,7 @@ class MissionNode(Node):
                                       alternate_counts=self._load_alternate())
         # Battery settings are applied live (GUI Settings -> Battery pushes them).
         self.add_on_set_parameters_callback(self._on_set_params)
-        self._height_percent = None     # last per-area blade height, re-sent with blade ON
+        self._height_mm = None          # last per-area blade height (mm), re-sent with blade ON
         self._inflight = set()          # action tokens sent or being sent
         self._cancelled = set()
         self._handles = {}              # token -> ClientGoalHandle
@@ -776,8 +776,10 @@ class MissionNode(Node):
             req.cutter.position = 0
             # Keep the per-area blade height in every blade-ON command (the
             # MCU's handling of height.enable=false is unverified).
-            req.height.enable = self._height_percent is not None
-            req.height.position = int(self._height_percent or 0)
+            # position is an absolute deck height in mm (30-90); the MCU driver
+            # holds the last height when none is given here.
+            req.height.enable = self._height_mm is not None
+            req.height.position = int(self._height_mm or 0)
             if not self._cutter_cli.service_is_ready():
                 self.get_logger().error('blade ON: %s unavailable' %
                                         self._p['cutter_control_service'])
@@ -985,8 +987,8 @@ class MissionNode(Node):
     def _cutter_height(self, e):
         """Per-area blade height: /cutter_control with the cutter OFF and
         height.enable=true (only issued while the blade is off, in PLANNING)."""
-        pct = int(e.request['percent'])
-        self._height_percent = pct
+        hmm = int(e.request['height_mm'])
+        self._height_mm = hmm
         if not self._cutter_cli.wait_for_service(
                 timeout_sec=float(self._p['server_wait_timeout_s'])):
             self.get_logger().warn('blade height: %s unavailable' %
@@ -995,9 +997,8 @@ class MissionNode(Node):
         req = CutterControl.Request()
         req.cutter.enable = False
         req.height.enable = True
-        req.height.position = pct
-        self.get_logger().info('blade height %d mm -> %d %% (/cutter_control height)'
-                               % (int(e.request['height_mm']), pct))
+        req.height.position = hmm
+        self.get_logger().info('blade height %d mm (/cutter_control height)' % hmm)
         fut = self._cutter_cli.call_async(req)
         fut.add_done_callback(lambda f: None)
 

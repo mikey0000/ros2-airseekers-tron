@@ -352,12 +352,23 @@ def heartbeat_payload(now=None):
                        now.hour, now.minute, now.second, (ms >> 8) & 0xFF, ms & 0xFF)
 
 
+CUTTER_HEIGHT_MIN_MM = 30
+CUTTER_HEIGHT_MAX_MM = 90
+CUTTER_HEIGHT_DEFAULT_MM = 90     # vendor's resting (CutterOFF) height
+
+
+def clamp_height_mm(mm):
+    """Clamp a deck height to the vendor range (max(30, min(90, mm)))."""
+    return max(CUTTER_HEIGHT_MIN_MM, min(CUTTER_HEIGHT_MAX_MM, int(mm)))
+
+
 def cutter_payload(cutter_enable, cutter_direction, cutter_speed, height_enable,
                    height_direction, height_position):
     """``CutterControl`` = cutter MotorControl + height MotorControl (12 B).
 
-    MotorControl.speed is 0-100 % (the cutter has also been seen with 1000 = raw); position
-    is the 0-100 % height target. Values are clamped to uint16 here, semantics are the
+    MotorControl.speed is 0-100 % (the cutter has also been seen with 1000 = raw); the
+    height motor's position is an ABSOLUTE deck height in mm (vendor range 30-90, bench
+    verified 2026-10-07). Values are clamped to uint16 here, semantics are the
     MCU's (see docs/mcu_protocol_spec.md section 6).
     """
     def u16(v):
@@ -536,6 +547,9 @@ class McuNode(Node):
         self.declare_parameter('interlock_on_stop', True)
         self.declare_parameter('interlock_on_bumper', False)
         self.declare_parameter('cutter_default_speed', 100)   # MotorControl.speed (% or raw)
+        # Deck height sent with blade OFF: 0 = hold the last requested height (default; least
+        # disruptive mid-mow), 30-90 = that height (90 mimics the vendor's CutterOFF).
+        self.declare_parameter('cutter_off_height_mm', 0)
         # Forward the WIT IMU to the MCU like the vendor host (ImuData @ ~44 Hz; see imu_payload).
         self.declare_parameter('forward_imu', True)
         self.declare_parameter('forward_imu_topic', '/imu/data')
@@ -612,6 +626,7 @@ class McuNode(Node):
         self._speed_telemetry_period = 1.0 / rate if rate > 0 else 0.0
         self._speed_telemetry_t = -1e9
         self.cutter_default_speed = int(param('cutter_default_speed'))
+        self.cutter_off_height_mm = int(param('cutter_off_height_mm'))
         self.forward_imu = bool(param('forward_imu'))
         self.forward_imu_rate = float(param('forward_imu_rate'))
         self.forward_imu_roll_offset = math.radians(float(param('forward_imu_roll_offset_deg')))
@@ -676,6 +691,7 @@ class McuNode(Node):
         self._mower_sensor_info_pub_warned = False
 
         self._cutter_cmd = None           # last CutterControl payload sent (bytes) or None
+        self._height_mm = CUTTER_HEIGHT_DEFAULT_MM   # last requested deck height, always sent
         self._cutter_requested_on = False # host wants the blade on (re-sent after interlock)
         self._charging_enabled = False
         self._interlock_latched = False   # True while an interlock has forced motion off
@@ -1501,10 +1517,23 @@ class McuNode(Node):
             self._estop_pub_t = now
             self._estop_pub.publish(Bool(data=bool(active)))
 
-    def _send_cutter(self, enable, speed, height_position=None):
-        payload = cutter_payload(enable, False, speed if enable else 0,
-                                 height_position is not None, False,
-                                 height_position if height_position is not None else 0)
+    def _send_cutter(self, enable, speed, height_mm=None):
+        """Send CutterControl. The height slot always carries an absolute deck height in mm
+        (never 0, which would be out of range / drive the deck to its lowest point).
+
+        ``height_mm`` given: clamp to 30-90 and remember it. Otherwise the remembered height
+        is re-sent; with the blade OFF and ``cutter_off_height_mm`` > 0 that height is sent
+        instead (without overwriting the remembered one). NOTE: the vendor's CutterOFF
+        (behaviors_master/cutter_control.xml) sends 90; we hold the last height by default.
+        Like the vendor (mower_bt_nodes CutterControl::onRunning) the height motor's
+        enable/direction/speed are 0; only position matters.
+        """
+        if height_mm is not None:
+            self._height_mm = clamp_height_mm(height_mm)
+        h = self._height_mm
+        if not enable and height_mm is None and self.cutter_off_height_mm > 0:
+            h = clamp_height_mm(self.cutter_off_height_mm)
+        payload = cutter_payload(enable, False, speed if enable else 0, False, False, h)
         self._cutter_cmd = payload
         self._write(build_frame([(TYPE_ROS_MOWER, MOD_CUTTER, payload)]))
 
@@ -1556,8 +1585,9 @@ class McuNode(Node):
         height = int(req.height.position) if req.height.enable else None
         self._cutter_requested_on = cutter_on
         self._send_cutter(cutter_on, speed, height)
-        self.get_logger().info('cutter %s speed=%d height=%s'
-                               % ('ON' if cutter_on else 'OFF', speed, height))
+        self.get_logger().info('cutter %s speed=%d height=%d mm%s'
+                               % ('ON' if cutter_on else 'OFF', speed, self._height_mm,
+                                  '' if height is not None else ' (held)'))
         resp.result = True
         return resp
 

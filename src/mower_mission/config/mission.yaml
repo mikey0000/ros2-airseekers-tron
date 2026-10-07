@@ -85,9 +85,6 @@ behavior_tree_node:
     controller_speed_param: FollowCoveragePath.desired_linear_vel   # set on /controller_server
     set_cut_speed: true
     set_cutter_height: true           # /cutter_control height (blade off) before planning an area
-    # cutter_height_mm -> MCU height percent: flattened (mm, percent) pairs, piecewise
-    # linear, clamped. UNVERIFIED: the MCU's 0-100 % height scale has not been measured.
-    cutter_height_mm_to_percent: [30.0, 0.0, 90.0, 100.0]
     alternate_state_path: /ros2_ws/maps/mission_alternate_counts.json   # path_mode alternate: angle step per area
 
     # --- blade (vendor OpenCutterCheck) -----------------------------------

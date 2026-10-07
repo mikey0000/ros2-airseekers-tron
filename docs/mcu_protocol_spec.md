@@ -73,8 +73,14 @@ Unescape: `F5 01/02/03` → `A5/5A/F5`; unknown `F5 xx` passes `xx` through (def
 struct Heartbeat   { u8 year(?) /*year-2000?*/, month, day, hour, minute, second, ms_h, ms_l; }; // 8 B, wall clock
 struct SpeedData   { f32 linear;  f32 angular; };   // 8 B: linear m/s, angular rad/s (cmd_vel)
 struct ChargeControl { u8 enable; };                // 1 B: 1=start, 0=stop
-struct MotorControl  { u8 enable; u8 direction/*0 fwd,1 rev*/; u16 speed/*% 0-100, cutter may be raw: 1000 seen (?)*/; u16 position/*% 0-100 height target*/; }; // 6 B
+struct MotorControl  { u8 enable; u8 direction/*0 fwd,1 rev*/; u16 speed/*% 0-100, cutter may be raw: 1000 seen (?)*/; u16 position/*height motor: ABSOLUTE deck height in mm, 30-90*/; }; // 6 B
 struct CutterControl { MotorControl cutter_motor; MotorControl height_motor; };                  // 12 B
+// height_motor.position = absolute deck height in mm (verified on the bench 2026-10-07: 50, 30, 90
+//   moved the deck). Vendor mower_bt_nodes CutterControl::onRunning @0x366e38 clamps
+//   max(30,min(90,mm)), sets position=(int8)mm and leaves height enable/direction/speed 0.
+//   Vendor CutterOFF (behaviors_master/cutter_control.xml) sends 90; CutterON sends the task's
+//   cutter_height. Never send 0. mcu_node holds the last height on blade OFF by default
+//   (param cutter_off_height_mm=90 mimics the vendor).
 struct SensorInfoControl { u8 bumper, rain, lift, stop, power_off, battery_gate, cutter_size, press_module; }; // 8 B, likely per-sensor enable mask (e.g. /enable_bumper) (?)
 struct ImuData     { i16 pitch, roll, yaw, accx, accy, accz, gyrox, gyroy, gyroz; };          // 18 B, WIT scaling (?) angle*32768/180, acc*32768/16g, gyro*32768/2000dps
 ```
@@ -92,7 +98,7 @@ struct MotorInfo { i16 speed/*rpm*/; i16 current/*cutter 10 mA; drive boards see
 // status (vendor mower_msgs/MotorStatus.msg, int8): 0 idle, 1 running, 2 locking, -1 error,
 //   -2 over-current, -3 over-voltage, -4 under-voltage, -5 over-heat, -6 stall, -7 overload.
 //   Drive boards report 1 (running) whenever enabled, including at standstill.
-struct MotorsInfo { MotorInfo cutter_motor, left_motor, right_motor, height_motor; };            // 32 B; height_motor shows garbage — not populated on this HW
+struct MotorsInfo { MotorInfo cutter_motor, left_motor, right_motor, height_motor; };            // 32 B; height_motor shows garbage — not populated on this HW (constant placeholder; no height feedback)
 struct Version     { u8 major, minor, patch; };
 struct VersionInfo { Version cutter_board, chassis_board, rtk_board; };                          // 9 B; rtk_board = 0.0.0 (RTK is on /dev/serial_rtk)
 struct MCCalib     { u8 calib, left_calib_ret, right_calib_ret; };                             // 3 B, factory motor calibration

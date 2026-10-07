@@ -539,6 +539,52 @@ class SafetyAndServicesTest(unittest.TestCase):
         self.assertEqual(payloads[-1][0], 1)
         self.assertEqual(struct.unpack('<H', payloads[-1][2:4])[0], self.node.cutter_default_speed)
 
+    def _height_req(self, cutter_on, height=None):
+        return types.SimpleNamespace(
+            cutter=types.SimpleNamespace(enable=cutter_on, direction=False, speed=0, position=0),
+            height=types.SimpleNamespace(enable=height is not None, direction=False, speed=0,
+                                         position=height or 0))
+
+    def _last_height(self):
+        payloads = [p for (_t, m, p) in self._frames() if m == mn.MOD_CUTTER]
+        return struct.unpack('<BBHH', payloads[-1][6:])
+
+    def test_height_mm_passthrough_and_clamp(self):
+        self.assertEqual(self.node._height_mm, 90)     # vendor resting default
+        for asked, sent in ((50, 50), (30, 30), (90, 90), (10, 30), (120, 90), (0, 30)):
+            self.tx.clear()
+            resp = self.node._srv_cutter_control(self._height_req(False, asked),
+                                                 types.SimpleNamespace(result=None))
+            self.assertTrue(resp.result)
+            # height motor: enable/direction/speed 0, position = absolute mm
+            self.assertEqual(self._last_height(), (0, 0, 0, sent))
+
+    def test_blade_off_holds_last_height(self):
+        self.node._srv_cutter_control(self._height_req(False, 50),
+                                      types.SimpleNamespace(result=None))
+        self.node._srv_cutter_control(self._height_req(True),     # ON, no height given
+                                      types.SimpleNamespace(result=None))
+        self.assertEqual(self._last_height()[3], 50)
+        self.tx.clear()
+        self.node._srv_cutter_off(None, types.SimpleNamespace(success=None, message=''))
+        self.assertEqual(self._last_height()[3], 50)
+        self.tx.clear()
+        self._sensor(lift=1)                                       # interlock cutter-off
+        self.assertEqual(self._last_height()[3], 50)
+
+    def test_blade_off_vendor_height_option(self):
+        self.node.cutter_off_height_mm = 90
+        self.node._srv_cutter_control(self._height_req(True, 40),
+                                      types.SimpleNamespace(result=None))
+        self.assertEqual(self._last_height()[3], 40)
+        self.tx.clear()
+        self.node._srv_cutter_off(None, types.SimpleNamespace(success=None, message=''))
+        self.assertEqual(self._last_height()[3], 90)
+        self.tx.clear()
+        self.node._srv_cutter_control(self._height_req(True),
+                                      types.SimpleNamespace(result=None))
+        self.assertEqual(self._last_height()[3], 40)              # remembered height restored
+
     def test_charging_service_sends_charge_control(self):
         resp = self.node._srv_charging(types.SimpleNamespace(enable_charging=True),
                                        types.SimpleNamespace(result=None))

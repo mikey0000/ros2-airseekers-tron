@@ -145,7 +145,10 @@ Verified live on the mower with the stack running from Docker (`mower:humble`, `
 - NPU: `best_large_0208.rknn` loads with runtime 2.3.0, inference 86 ms, 9 outputs as det_ros expects.
 - Power key = `/dev/input/event5` ("key input") `KEY_P` (25); `base_keys` is being wired to it.
 
-Still to verify: cutter command (speed/height scale), rain/bumper/stop inputs, RTK fix with the LoRa base or NTRIP,
+Cutter height verified 2026-10-07: CutterControl height position is an absolute deck height in mm
+(30-90, vendor-clamped); 50/30/90 moved the deck. height_motor telemetry is a placeholder.
+
+Still to verify: cutter command speed scale, rain/bumper/stop inputs, RTK fix with the LoRa base or NTRIP,
 dock contact (`is_docking_done`) and charging, side cameras through the rkisp pipeline, rear camera stream.
 
 

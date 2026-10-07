@@ -207,11 +207,8 @@ are used (logged). An area left on auto angle falls back to the global `mow_angl
 parameter. Then, with the blade off:
 
 1. **Blade height**: `/cutter_control` with `cutter.enable=false`, `height.enable=true`,
-   `height.position` = `cutter_height_mm` mapped through `cutter_height_mm_to_percent`
-   (flattened `(mm, percent)` pairs, piecewise linear, clamped; default `[30, 0, 90, 100]`,
-   i.e. 30 mm -> 0 %, 90 mm -> 100 %). **The MCU's height percent scale is unverified**: the
-   Tron firmware takes a 0-100 "position" but nobody has measured which end is low or
-   whether it is linear; measure and fix the table before trusting the numbers. Every later
+   `height.position` = `cutter_height_mm` as an absolute deck height in millimetres,
+   clamped to 30-90 like the vendor (verified on the bench 2026-10-07). Every later
    blade-ON command repeats the same `height.position` (enable=true), because what the MCU
    does with `height.enable=false` is unknown too.
 2. **Cut speed**: `set_parameters` on `/controller_server`
@@ -242,7 +239,7 @@ sub-state reads `area <i> <name> [<path_mode>, run k/n]`.
 
 `~/active_area_settings` (latched `std_msgs/String`) carries the active settings as JSON:
 every settings key plus `area_index`, `area_name`, `run`, `runs`, `run_mow_angle_deg`,
-`run_perpendicular`, `cutter_height_percent`, `operation_width_m`. It is `{}` when no
+`run_perpendicular`, `operation_width_m`. It is `{}` when no
 session is running.
 
 | Parameter | Default |
@@ -252,7 +249,6 @@ session is running.
 | `cut_speed_max_mps` | 0.5 |
 | `controller_speed_param` | `FollowCoveragePath.desired_linear_vel` |
 | `set_cut_speed` / `set_cutter_height` | true / true |
-| `cutter_height_mm_to_percent` | `[30.0, 0.0, 90.0, 100.0]` (unverified MCU scale) |
 | `alternate_state_path` | `~/.ros/mower_mission/alternate_counts.json` (yaml: `/ros2_ws/maps/mission_alternate_counts.json`) |
 | `get_area_settings_service`, `coverage_server_node`, `controller_server_node`, `active_area_settings_topic` | `/map_server_node/get_area_settings`, `/coverage_server`, `/controller_server`, `~/active_area_settings` |
 

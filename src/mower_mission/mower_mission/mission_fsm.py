@@ -83,6 +83,8 @@ SRV_CLEAR_ESTOP = 'clear_estop'
 SRV_CHARGING = 'charging'
 SRV_GET_AREA_SETTINGS = 'get_area_settings'   # /map_server_node/get_area_settings
 SRV_SET_PARAMS = 'set_parameters'             # request {'node': ..., 'params': {...}}
+CUTTER_HEIGHT_MIN_MM = 30                    # vendor clamp, MCU height position is mm
+CUTTER_HEIGHT_MAX_MM = 90
 SRV_CUTTER_HEIGHT = 'cutter_height'           # /cutter_control height only, blade off
 SRV_CLEAR_COSTMAPS = 'clear_costmaps'         # Nav2 clear_entirely_{global,local}_costmap
 
@@ -541,10 +543,6 @@ class Params:
     controller_speed_param: str = 'FollowCoveragePath.desired_linear_vel'
     set_cut_speed: bool = True          # set_parameters on /controller_server per area
     set_cutter_height: bool = True      # /cutter_control height per area
-    # mm -> MCU height percent, flattened (mm, percent) pairs, piecewise linear,
-    # clamped. The MCU's 0-100 scale is UNVERIFIED on the Tron (see README).
-    cutter_height_mm_to_percent: list = field(
-        default_factory=lambda: [30.0, 0.0, 90.0, 100.0])
     # --- obstacle avoidance (/obstacle_policy from obstacle_guard) ---
     obstacle_avoidance: bool = True     # dynamic stop-and-wait + static swath detours
     obstacle_policy_timeout_s: float = 1.0    # older policy = 'none'
@@ -1881,24 +1879,12 @@ class MissionFSM:
     # ------------------------------------------------------------------
     # per-area mowing settings
     # ------------------------------------------------------------------
-    def height_percent(self, mm):
-        """cutter_height_mm -> MCU percent via cutter_height_mm_to_percent."""
-        flat = [float(v) for v in (self.p.cutter_height_mm_to_percent or [])]
-        pts = sorted(zip(flat[0::2], flat[1::2]))
-        if not pts:
-            return 0
-        mm = float(mm)
-        if mm <= pts[0][0]:
-            pct = pts[0][1]
-        elif mm >= pts[-1][0]:
-            pct = pts[-1][1]
-        else:
-            pct = pts[-1][1]
-            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
-                if x0 <= mm <= x1:
-                    pct = y0 + (y1 - y0) * (mm - x0) / (x1 - x0) if x1 > x0 else y1
-                    break
-        return int(round(max(0.0, min(100.0, pct))))
+    @staticmethod
+    def height_mm(mm):
+        """cutter_height_mm -> MCU height position: absolute deck height in mm,
+        clamped to the vendor range 30-90 (mower_bt_nodes CutterControl::onRunning)."""
+        return int(round(max(float(CUTTER_HEIGHT_MIN_MM),
+                             min(float(CUTTER_HEIGHT_MAX_MM), float(mm)))))
 
     def _merge_settings(self, ok, resp, area_idx=None):
         st = dict(AREA_SETTINGS_DEFAULTS)
@@ -2031,16 +2017,15 @@ class MissionFSM:
         m.runs = self._build_runs(st)
         if m.run_i >= len(m.runs):
             m.run_i = 0
-        pct = self.height_percent(st['cutter_height_mm'])
+        hmm = self.height_mm(st['cutter_height_mm'])
         speed = min(float(st['cut_speed_mps']), float(self.p.cut_speed_max_mps))
-        self._log('info', 'area %d %s: settings (%s) %s; blade height %d mm -> %d %%, '
+        self._log('info', 'area %d %s: settings (%s) %s; blade height %d mm, '
                           'cut speed %.2f m/s, %d run(s)'
                   % (m.area_idx, self._area_name(), src, json.dumps(st, sort_keys=True),
-                     int(st['cutter_height_mm']), pct, speed, len(m.runs)))
+                     hmm, speed, len(m.runs)))
         if self.p.set_cutter_height:
             # Blade is off here (PLANNING); height only, before any mowing.
-            self._call(SRV_CUTTER_HEIGHT, {'height_mm': int(st['cutter_height_mm']),
-                                           'percent': pct}, track=False)
+            self._call(SRV_CUTTER_HEIGHT, {'height_mm': hmm}, track=False)
         if self.p.set_cut_speed:
             self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER,
                                         'params': {self.p.controller_speed_param: speed}},
@@ -2058,7 +2043,6 @@ class MissionFSM:
             'area_index': m.area_idx, 'area_name': self._area_name(),
             'run': m.run_i + 1, 'runs': len(m.runs),
             'run_mow_angle_deg': run['angle'], 'run_perpendicular': run['perpendicular'],
-            'cutter_height_percent': self.height_percent(m.settings['cutter_height_mm']),
             'operation_width_m': round(self._swath_spacing(m.settings), 4)})
         return out
 
