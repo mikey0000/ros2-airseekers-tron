@@ -118,7 +118,7 @@ class StuckDetector:
 
     def __init__(self, window_s=4.0, min_progress_m=0.05, min_heading_deg=10.0,
                  cmd_linear=0.03, cmd_angular=0.1, clear_m=0.3, slip_ratio=3.0,
-                 slip_min_wheel_m=0.2, pose_timeout_s=1.0):
+                 slip_min_wheel_m=0.2, pose_timeout_s=1.0, gap_s=1.5):
         self.window_s = float(window_s)
         self.min_progress_m = float(min_progress_m)
         self.min_heading = math.radians(float(min_heading_deg))
@@ -128,6 +128,11 @@ class StuckDetector:
         self.slip_ratio = float(slip_ratio)
         self.slip_min_wheel_m = float(slip_min_wheel_m)
         self.pose_timeout_s = float(pose_timeout_s)
+        # Brief sub-threshold / zero command gaps (<= gap_s) do NOT restart the window:
+        # a stalled RPP rotate-to-heading dithers |w| through 0 every ~1 s, which used to
+        # clear the buffer forever (2026-10-07 live incident, no latch for 4+ min).
+        self.gap_s = float(gap_s)
+        self._last_cmd_t = None
         self.stuck = False
         self.latch_pose = None
         self.reason = ''
@@ -140,6 +145,7 @@ class StuckDetector:
         self.latch_pose = None
         self.reason = ''
         self._buf = []
+        self._last_cmd_t = None
 
     def commanded(self, cmd):
         return cmd is not None and (abs(cmd[0]) > self.cmd_linear or abs(cmd[1]) > self.cmd_angular)
@@ -160,9 +166,14 @@ class StuckDetector:
                                     pose[1] - self.latch_pose[1]) > self.clear_m:
                 self.reset()
             return None
-        if not fresh or not self.commanded(cmd):
+        if not fresh:
             self._buf = []
             return None
+        if not self.commanded(cmd):
+            if self._last_cmd_t is None or now - self._last_cmd_t > self.gap_s:
+                self._buf = []
+            return None
+        self._last_cmd_t = now
         self._buf.append((now, pose[0], pose[1], pose[2], self._wheel_cum))
         while len(self._buf) > 1 and now - self._buf[1][0] >= self.window_s:
             self._buf.pop(0)
@@ -214,6 +225,7 @@ class SlipDetectorNode(Node):
         self.declare_parameter('stuck_clear_m', 0.3)
         self.declare_parameter('stuck_slip_ratio', 3.0)
         self.declare_parameter('stuck_slip_min_wheel_m', 0.2)
+        self.declare_parameter('stuck_cmd_gap_s', 1.5)
         self.declare_parameter('stuck_pose_topic', '/odometry/filtered_map')
 
         self._slip_threshold = float(self.get_parameter('slip_threshold').value)
@@ -238,7 +250,8 @@ class SlipDetectorNode(Node):
             window_s=gp('stuck_window_s'), min_progress_m=gp('stuck_min_progress_m'),
             min_heading_deg=gp('stuck_min_heading_deg'), cmd_linear=gp('stuck_cmd_linear'),
             cmd_angular=gp('stuck_cmd_angular'), clear_m=gp('stuck_clear_m'),
-            slip_ratio=gp('stuck_slip_ratio'), slip_min_wheel_m=gp('stuck_slip_min_wheel_m'))
+            slip_ratio=gp('stuck_slip_ratio'), slip_min_wheel_m=gp('stuck_slip_min_wheel_m'),
+            gap_s=gp('stuck_cmd_gap_s'))
         self._ekf_pose = None       # (x, y, yaw) of the newest EKF map pose
         self._ekf_t = None
         self._suppressed = False

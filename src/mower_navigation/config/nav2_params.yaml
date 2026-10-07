@@ -174,7 +174,11 @@ controller_server:
       rotate_to_heading_min_angle: 0.785
       # 3.2: RPP ramps its turn command from the MEASURED yaw rate; with 1.0 and wheels
       # stalled in grass the command sat at 0.07 rad/s forever (rocking in place, 10-06).
-      max_angular_accel: 3.2
+      # 6.4 (was 3.2): RPP ramps from the MEASURED yaw rate; at 3.2 x 0.05 s a stalled
+      # robot could only ask 0.16 rad/s (wheel 0.04 m/s, under the MCU's ~0.06 m/s floor),
+      # so it never broke free and rocked in place (2026-10-07 live incident). 6.4 lets
+      # one 20 Hz cycle reach the 0.3 rad/s clamp from rest.
+      max_angular_accel: 6.4
       allow_reversing: false
       max_robot_pose_search_dist: 10.0
       use_interpolation: true
@@ -212,7 +216,11 @@ controller_server:
       rotate_to_heading_min_angle: 0.6
       # 3.2: RPP ramps its turn command from the MEASURED yaw rate; with 1.0 and wheels
       # stalled in grass the command sat at 0.07 rad/s forever (rocking in place, 10-06).
-      max_angular_accel: 3.2
+      # 6.4 (was 3.2): RPP ramps from the MEASURED yaw rate; at 3.2 x 0.05 s a stalled
+      # robot could only ask 0.16 rad/s (wheel 0.04 m/s, under the MCU's ~0.06 m/s floor),
+      # so it never broke free and rocked in place (2026-10-07 live incident). 6.4 lets
+      # one 20 Hz cycle reach the 0.3 rad/s clamp from rest.
+      max_angular_accel: 6.4
       allow_reversing: false
       max_robot_pose_search_dist: 10.0
       use_interpolation: true
@@ -242,7 +250,11 @@ controller_server:
       regulated_linear_scaling_min_speed: 0.05
       use_cost_regulated_linear_velocity_scaling: false
       use_rotate_to_heading: false
-      max_angular_accel: 3.2
+      # 6.4 (was 3.2): RPP ramps from the MEASURED yaw rate; at 3.2 x 0.05 s a stalled
+      # robot could only ask 0.16 rad/s (wheel 0.04 m/s, under the MCU's ~0.06 m/s floor),
+      # so it never broke free and rocked in place (2026-10-07 live incident). 6.4 lets
+      # one 20 Hz cycle reach the 0.3 rad/s clamp from rest.
+      max_angular_accel: 6.4
       allow_reversing: true
       max_robot_pose_search_dist: 2.0
       use_interpolation: true

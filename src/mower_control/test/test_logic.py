@@ -187,6 +187,38 @@ def test_stuck_clears_on_move_or_suppress():
                   suppressed=True) is None
 
 
+def test_stuck_rearms_after_escape_suppress():
+    """Escape -> suppress false -> commanded + no progress must latch again within 4 s."""
+    det = slip_detector.StuckDetector()
+    _drive(det, 0.0, 4.5, (0.1, 0.2), lambda t: (-1.18, 3.73, 0.0), 0.0)
+    assert det.stuck
+    _drive(det, 4.6, 8.0, (-0.1, 0.0), lambda t: (-1.18, 3.73, 0.0), 0.0, suppressed=True)
+    assert not det.stuck
+    ev = _drive(det, 8.1, 12.3, (0.1, 0.2), lambda t: (-1.18, 3.73, 0.0), 0.0)
+    assert ev and ev['reason'] == 'stuck'
+
+
+def test_stuck_latches_through_dithering_rotate_to_heading():
+    """2026-10-07 live: stalled RPP rotate-to-heading, |w| 0.01-0.3 with sign flips and
+    sub-threshold / zero samples every ~1 s; the window must not restart on each dip."""
+    det = slip_detector.StuckDetector()
+    ws = [-0.155, -0.011, -0.183, 0.176, 0.103, -0.178, -0.049, 0.169, 0.151, 0.040,
+          -0.191, 0.0, 0.081, -0.042, 0.141, -0.070, 0.161, 0.066, -0.056]
+    ev, t = None, 0.0
+    while t < 19.0 and ev is None:
+        w = ws[int(t)]
+        ev = det.update(t, (0.0, w), (-1.18, 3.73, 0.0), t, 0.0)
+        t += 0.05
+    assert ev and ev['reason'] == 'stuck' and t < 8.0
+
+
+def test_stuck_window_restarts_after_a_real_stop():
+    det = slip_detector.StuckDetector()
+    assert _drive(det, 0.0, 3.0, (0.2, 0.0), lambda t: (0.0, 0.0, 0.0), 0.0) is None
+    assert _drive(det, 3.1, 5.0, (0.0, 0.0), lambda t: (0.0, 0.0, 0.0), 0.0) is None
+    assert _drive(det, 5.1, 8.0, (0.2, 0.0), lambda t: (0.0, 0.0, 0.0), 0.0) is None
+
+
 def _stuck_node(det):
     pub, events = [], []
     log = _logger()
