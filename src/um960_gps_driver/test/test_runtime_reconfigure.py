@@ -11,8 +11,11 @@ import time
 import pytest
 
 rclpy = pytest.importorskip("rclpy")
-if not hasattr(rclpy, "parameter"):  # the plain-Python shim from conftest.py
-    pytest.skip("needs ROS 2 rclpy parameter callbacks", allow_module_level=True)
+# The conftest.py shim exposes an attribute called `parameter` that is not a module, so
+# `hasattr(rclpy, "parameter")` is true even without ROS and the import below then fails
+# at *collection* time instead of skipping. Importorskip the submodule: ModuleNotFoundError
+# is an ImportError, so a plain-Python run skips cleanly and a ROS 2 run proceeds.
+pytest.importorskip("rclpy.parameter", reason="needs ROS 2 rclpy parameter callbacks")
 
 from rclpy.parameter import Parameter  # noqa: E402
 
