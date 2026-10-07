@@ -159,6 +159,13 @@ var paramBindingTables = map[string]ParamBindingTable{
 			{Key: "heading_hold_kp", Node: "/cmd_vel_slew", Param: "heading_hold_kp", Type: ParamTypeDouble, Live: true},
 			{Key: "heading_hold_kd", Node: "/cmd_vel_slew", Param: "heading_hold_kd", Type: ParamTypeDouble, Live: true},
 			{Key: "heading_hold_max_radps", Node: "/cmd_vel_slew", Param: "heading_hold_max_radps", Type: ParamTypeDouble, Live: true},
+			// Standard path width (mower_map area_settings.derive_default_swath_width):
+			// default swath_width_m = default_swath_width_m if > 0, else
+			// blade_disc_mm/1000 - swath_overlap_m. map_server_node republishes the
+			// area-settings defaults on a live set; per-area swath_width_m still wins.
+			{Key: "blade_disc_mm", Node: "/map_server_node", Param: "blade_disc_mm", Type: ParamTypeInteger, Live: true},
+			{Key: "swath_overlap_m", Node: "/map_server_node", Param: "swath_overlap_m", Type: ParamTypeDouble, Live: true},
+			{Key: "default_swath_width_m", Node: "/map_server_node", Param: "default_swath_width_m", Type: ParamTypeDouble, Live: true},
 		},
 		GuiKeys: []string{
 			"mower_model", "datum_lat", "datum_lon", "datum_alt",

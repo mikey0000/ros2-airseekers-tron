@@ -173,6 +173,8 @@ export const SECTION_DEFINITIONS: SectionMeta[] = [
             "headland_width", "num_headland_passes", "swath_overlap",
             "chassis_safety_inset", "min_turning_radius", "mow_direction", "mow_cross_hatch",
             "connector_max_headland_passes",
+            // Tron standard path width (PathWidthCard; mower_map map_server_node).
+            "blade_disc_mm", "swath_overlap_m", "default_swath_width_m",
         ],
     },
     {

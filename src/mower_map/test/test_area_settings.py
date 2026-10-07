@@ -110,7 +110,8 @@ def test_snapshot_lists_every_area_and_full_defaults():
     st.set_area('A', {'path_mode': 'cross'})
     snap = json.loads(st.snapshot_json(['A', 'B']))
     assert snap == {'defaults': s.BUILTIN_DEFAULTS,
-                    'areas': {'A': {'path_mode': 'cross'}, 'B': {}}}
+                    'areas': {'A': {'path_mode': 'cross'}, 'B': {}},
+                    'robot_defaults': {}}
 
 
 def test_rename_drop_prune():
@@ -173,3 +174,52 @@ def test_old_file_with_only_overlap_gets_default_path_width():
     assert store.effective('Old')['swath_width_m'] == 0.18
     assert store.effective('Old')['swath_overlap_m'] == 0.05   # still accepted, unused
     assert store.effective('New')['swath_width_m'] == 0.3
+
+
+# ---- robot-wide standard path width (blade disc) ---------------------------
+def test_disc_derived_default_swath_width():
+    d = s.derive_default_swath_width
+    assert d() == pytest.approx(0.18)                       # 220 mm - 0.04
+    assert d(330, 0.04) == pytest.approx(0.29)
+    assert d(220, 0.0) == pytest.approx(0.22)
+    assert d(330, 0.15) == pytest.approx(0.18)
+    assert d(250, 0.04) == pytest.approx(0.18)              # unknown disc -> 220
+    assert d(330, 0.5) == pytest.approx(0.33 - 0.15)        # overlap clamped to 0.15
+    assert d(220, 0.15) == pytest.approx(0.10)              # result clamped to 0.10 min
+    assert d(220, -1) == pytest.approx(0.22)
+    assert d(330, 0.04, 0.25) == pytest.approx(0.25)        # explicit default wins
+    assert d(330, 0.04, 0.0) == pytest.approx(0.29)         # 0 = derive
+    assert d(220, 0.04, 9.0) == pytest.approx(0.40)         # clamped to the range
+
+
+def test_robot_swath_settings_from_yaml(tmp_path):
+    p = tmp_path / 'mowgli_robot.yaml'
+    p.write_text('mowgli:\n  ros__parameters:\n    blade_disc_mm: 330\n    swath_overlap_m: 0.05\n')
+    flat = s.load_robot_yaml_flat(str(p))
+    rs = s.robot_swath_settings(flat)
+    assert rs == {'blade_disc_mm': 330, 'swath_overlap_m': 0.05, 'default_swath_width_m': 0.0}
+    assert s.derive_default_swath_width(**rs) == pytest.approx(0.28)
+    assert s.load_robot_yaml_flat(str(tmp_path / 'missing.yaml')) == {}
+    assert s.robot_swath_settings({}) == s.ROBOT_SWATH_DEFAULTS
+
+
+def test_swath_width_precedence():
+    """per-area > area-file defaults > robot explicit default > disc-derived."""
+    st = s.AreaSettingsStore()
+    st.robot_defaults = {'swath_width_m': s.derive_default_swath_width(330, 0.04)}
+    assert st.effective('A')['swath_width_m'] == pytest.approx(0.29)
+    assert st.effective_defaults()['swath_width_m'] == pytest.approx(0.29)
+    st.robot_defaults = {'swath_width_m': s.derive_default_swath_width(330, 0.04, 0.2)}
+    assert st.effective('A')['swath_width_m'] == pytest.approx(0.2)
+    st.set_defaults({'swath_width_m': 0.21})
+    assert st.effective('A')['swath_width_m'] == pytest.approx(0.21)
+    st.set_area('A', {'swath_width_m': 0.15})
+    assert st.effective('A')['swath_width_m'] == pytest.approx(0.15)
+    assert st.effective('B')['swath_width_m'] == pytest.approx(0.21)
+    # the robot layer is never written to area_settings.yaml
+    st2, _ = s.AreaSettingsStore.loads(st.dumps())
+    assert st2.robot_defaults == {}
+    assert 'swath_width_m' in st2.defaults and st2.defaults['swath_width_m'] == pytest.approx(0.21)
+    snap = st.snapshot(['A', 'B'])
+    assert snap['defaults']['swath_width_m'] == pytest.approx(0.21)
+    assert snap['robot_defaults']['swath_width_m'] == pytest.approx(0.2)

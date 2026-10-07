@@ -10,7 +10,7 @@ import {
     useAreaSettingsTopic,
 } from "../../hooks/useAreaSettings.ts";
 import {
-    type AreaSettings, buildAreaPatch, effectiveAreaSettings, invalidAreaSettingKey, overriddenKeys,
+    type AreaSettings, buildAreaPatch, buildDefaultsBody, effectiveAreaSettings, invalidAreaSettingKey, overriddenKeys,
 } from "../../utils/areaSettings.ts";
 import {AreaSettingsForm} from "./AreaSettingsForm.tsx";
 
@@ -30,8 +30,10 @@ export const AreaSettingsPanel: React.FC<{
     const api = useApi();
     const {notification} = App.useApp();
     const {loading, supported, effective, defaults, derived, error, reload} = useAreaSettings(target);
-    const topic = useAreaSettingsTopic(target !== "defaults");
+    // Also for the defaults card: it carries the robot-wide (blade-disc) standard path width.
+    const topic = useAreaSettingsTopic();
     const isDefaults = target === "defaults";
+    const standardSwathWidth = topic?.robotDefaults.swath_width_m;
     const defaultsFull = useMemo(() => effectiveAreaSettings(defaults), [defaults]);
     const effectiveFull = useMemo(() => effectiveAreaSettings(defaults, effective), [defaults, effective]);
     const topicOverrides = areaName ? topic?.areas[areaName] : undefined;
@@ -71,7 +73,7 @@ export const AreaSettingsPanel: React.FC<{
         }
         setSaving(true);
         try {
-            const body = isDefaults ? draft : useDefaults ? null : buildAreaPatch(draft, defaultsFull);
+            const body = isDefaults ? buildDefaultsBody(draft, effectiveFull, standardSwathWidth) : useDefaults ? null : buildAreaPatch(draft, defaultsFull);
             await saveAreaSettings(api, target, body);
             notification.success({message: t("areaSettings.saved")});
             setDirty(false);
@@ -105,6 +107,8 @@ export const AreaSettingsPanel: React.FC<{
             )}
             <AreaSettingsForm value={draft} disabled={!isDefaults && useDefaults}
                               slopeDerived={isDefaults ? null : derived}
+                              swathDefault={isDefaults ? standardSwathWidth : defaultsFull.swath_width_m}
+                              swathDefaultIsStandard={isDefaults}
                               overridden={isDefaults || useDefaults ? undefined
                                   : dirty ? overriddenKeys(draft, defaultsFull) : overridden}
                               onChange={(next) => {

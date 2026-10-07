@@ -96,3 +96,18 @@ describe("slope settings", () => {
         expect(extractSlopeDerived({repeat: 1})).toBeNull();
     });
 });
+
+import {AREA_SETTINGS_DEFAULTS as D, buildDefaultsBody} from "./areaSettings.ts";
+
+describe("buildDefaultsBody", () => {
+    it("leaves an unchanged swath width out (never pins the disc-derived standard)", () => {
+        const body = buildDefaultsBody({...D, swath_width_m: 0.29, cutter_height_mm: 60}, {...D, swath_width_m: 0.29}, 0.29);
+        expect("swath_width_m" in body).toBe(false);
+        expect(body.cutter_height_mm).toBe(60);
+    });
+    it("sends a changed swath width, null when set back to the standard", () => {
+        expect(buildDefaultsBody({...D, swath_width_m: 0.2}, {...D, swath_width_m: 0.29}, 0.29).swath_width_m).toBe(0.2);
+        expect(buildDefaultsBody({...D, swath_width_m: 0.29}, {...D, swath_width_m: 0.2}, 0.29).swath_width_m).toBeNull();
+        expect(buildDefaultsBody({...D, swath_width_m: 0.29}, {...D, swath_width_m: 0.2}).swath_width_m).toBe(0.29);
+    });
+});

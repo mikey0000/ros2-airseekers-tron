@@ -552,6 +552,20 @@ mowgli:
     # edge margins (harness: 95 % → 100 % on the 9×6 m field). tool_width (the
     # map_server stamp radius) is unchanged. 0 = swaths exactly tool_width apart.
     swath_overlap: 0.02
+    # --- Airseekers Tron standard path width (read by mower_map map_server_node,
+    # live from the GUI; ignored by the stock MowgliNext nodes) ---
+    # blade_disc_mm: cutting disc diameter INCLUDING the blades: 220 = standard
+    # disc, 330 = optional wide disc.
+    # The STANDARD path width (swath_width_m of every area that does not set its
+    # own, and of new areas) is
+    #     default_swath_width_m                       when > 0 (explicit override)
+    #     blade_disc_mm / 1000 - swath_overlap_m      otherwise
+    # clamped to 0.10..0.40 m: 220 mm, 0.04 -> 0.18 m; 330 mm, 0.04 -> 0.29 m.
+    # Precedence: an area's own swath_width_m > area_settings.yaml defaults >
+    # default_swath_width_m > the disc-derived value.
+    blade_disc_mm: 220
+    swath_overlap_m: 0.04           # 0..0.15 m overlap between adjacent passes
+    default_swath_width_m: 0.0      # 0 = derived from the disc
     # min_turning_radius: hard floor on every forward turn-around / corner-fillet
     # arc in the CONTINUOUS coverage path (coverage_server → buildContinuousPath),
     # injected into coverage_server.min_turning_radius — so this is LIVE.

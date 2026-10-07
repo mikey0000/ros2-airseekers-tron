@@ -19,7 +19,9 @@ Mechanism, per target node:
 * ``cmd_vel_slew`` (straight-line trim / deadband / heading hold): the node
   reads these keys from the same yaml itself at startup (its
   ``robot_settings_file`` parameter), so mower.launch.py has nothing to pass
-  and skips the target (SELF_LOADED_TARGETS).
+  and skips the target (SELF_LOADED_TARGETS);
+* ``map_server_node`` (blade disc / swath overlap / default path width): same,
+  read from its ``robot_yaml_path`` (the same GUI yaml) at startup.
 
 Values are coerced to the type the node declared (the GUI writes 30.0 as
 ``30``; rclpy refuses an int for a double parameter).
@@ -69,10 +71,16 @@ BINDINGS = {
     'heading_hold_kp': ('cmd_vel_slew', 'heading_hold_kp', float, None),
     'heading_hold_kd': ('cmd_vel_slew', 'heading_hold_kd', float, None),
     'heading_hold_max_radps': ('cmd_vel_slew', 'heading_hold_max_radps', float, None),
+    # Standard path width (mower_map area_settings.derive_default_swath_width):
+    # default swath_width_m = default_swath_width_m if > 0, else
+    # blade_disc_mm / 1000 - swath_overlap_m. Per-area swath_width_m still wins.
+    'blade_disc_mm': ('map_server_node', 'blade_disc_mm', int, None),
+    'swath_overlap_m': ('map_server_node', 'swath_overlap_m', float, None),
+    'default_swath_width_m': ('map_server_node', 'default_swath_width_m', float, None),
 }
 
 # Targets whose node reads the GUI yaml itself (no params file to render).
-SELF_LOADED_TARGETS = ('cmd_vel_slew',)
+SELF_LOADED_TARGETS = ('cmd_vel_slew', 'map_server_node')
 
 
 def load_settings(path):

@@ -168,7 +168,12 @@ export function useAreaSettings(target: AreaSettingsTarget | null) {
     return {...state, reload};
 }
 
-type AreaSettingsTopic = {defaults: Partial<AreaSettings>; areas: Record<string, Partial<AreaSettings>>};
+type AreaSettingsTopic = {
+    defaults: Partial<AreaSettings>;
+    areas: Record<string, Partial<AreaSettings>>;
+    /** Robot-wide layer under the stored defaults (disc-derived standard swath_width_m). */
+    robotDefaults: Partial<AreaSettings>;
+};
 
 /** Latched /map_server_node/area_settings: full defaults + per-area overrides by name. */
 export function useAreaSettingsTopic(enabled = true): AreaSettingsTopic | null {
@@ -180,7 +185,7 @@ export function useAreaSettingsTopic(enabled = true): AreaSettingsTopic | null {
             const areas: Record<string, Partial<AreaSettings>> = {};
             const rawAreas = d.areas && typeof d.areas === "object" ? d.areas as Record<string, unknown> : {};
             for (const [name, v] of Object.entries(rawAreas)) areas[name] = sanitizeAreaSettings(v);
-            return {defaults: sanitizeAreaSettings(d.defaults), areas};
+            return {defaults: sanitizeAreaSettings(d.defaults), areas, robotDefaults: sanitizeAreaSettings(d.robot_defaults)};
         },
     }).data;
 }

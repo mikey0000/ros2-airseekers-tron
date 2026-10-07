@@ -61,6 +61,9 @@ BUILTIN_DEFAULTS = {
     'swath_overlap_m': 0.02,
     # Path (swath) spacing the planner uses directly as operation_width.
     # swath_overlap_m is still accepted (old files) but no longer used.
+    # This literal is only the fallback: the map server replaces it with the
+    # robot-wide disc-derived default (derive_default_swath_width, layer
+    # AreaSettingsStore.robot_defaults); 0.18 = 220 mm disc - 0.04 m overlap.
     'swath_width_m': 0.18,
     # Blade edge distance inside the recorded boundary (planner boundary_inset_m);
     # small so the whole area is mowed (owner: no uncut band).
@@ -104,6 +107,79 @@ SPEC = {
 }
 
 FILE_NAME = 'area_settings.yaml'
+
+# ---- robot-wide standard path width (GUI settings yaml, mowgli_robot.yaml) ----
+# The Tron ships with a 220 mm cutting disc (blades included); a 330 mm wide
+# disc is optional. The STANDARD path width (the swath_width_m every area uses
+# unless it sets its own) is derived from it:
+#
+#   default swath width = default_swath_width_m          when > 0 (explicit)
+#                       = blade_disc_mm / 1000 - swath_overlap_m   otherwise
+#
+# clamped to the swath_width_m range. Precedence for an area's path spacing:
+# the area's own swath_width_m > area_settings.yaml defaults.swath_width_m >
+# robot default_swath_width_m > disc-derived.
+BLADE_DISCS_MM = (220, 330)
+ROBOT_SWATH_DEFAULTS = {
+    'blade_disc_mm': 220,
+    'swath_overlap_m': 0.04,
+    'default_swath_width_m': 0.0,   # 0 = derive from the disc
+}
+SWATH_OVERLAP_RANGE = (0.0, 0.15)
+
+
+def _num(value, default):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    v = float(value)
+    return v if math.isfinite(v) else default
+
+
+def derive_default_swath_width(blade_disc_mm=220, swath_overlap_m=0.04,
+                               default_swath_width_m=0.0):
+    """Standard path width (m) from the robot-wide settings (see above).
+
+    An unknown disc size falls back to 220 mm; the overlap is clamped to
+    SWATH_OVERLAP_RANGE; the result to the swath_width_m range."""
+    lo, hi = SPEC['swath_width_m'][1], SPEC['swath_width_m'][2]
+    explicit = _num(default_swath_width_m, 0.0)
+    if explicit > 0.0:
+        return round(min(hi, max(lo, explicit)), 4)
+    disc = _num(blade_disc_mm, 220.0)
+    if int(round(disc)) not in BLADE_DISCS_MM:
+        disc = 220.0
+    overlap = min(SWATH_OVERLAP_RANGE[1],
+                  max(SWATH_OVERLAP_RANGE[0], _num(swath_overlap_m, 0.04)))
+    return round(min(hi, max(lo, disc / 1000.0 - overlap)), 4)
+
+
+def robot_swath_settings(flat):
+    """The three robot-wide keys from a flat GUI settings dict (missing = default)."""
+    out = dict(ROBOT_SWATH_DEFAULTS)
+    if isinstance(flat, dict):
+        for k in out:
+            v = flat.get(k)
+            if v is not None and not isinstance(v, bool) and isinstance(v, (int, float)):
+                out[k] = v
+    return out
+
+
+def load_robot_yaml_flat(path):
+    """Flat {key: value} of every ros__parameters block of mowgli_robot.yaml ({} on error)."""
+    if not path:
+        return {}
+    try:
+        with open(path, encoding='utf-8') as fh:
+            doc = yaml.safe_load(fh) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return {}
+    flat = {}
+    if isinstance(doc, dict):
+        for section in doc.values():
+            params = section.get('ros__parameters') if isinstance(section, dict) else None
+            if isinstance(params, dict):
+                flat.update(params)
+    return flat
 
 
 def settings_path_for(areas_path):
@@ -202,10 +278,14 @@ class AreaSettingsStore:
     def __init__(self):
         self.defaults = {}      # overrides of BUILTIN_DEFAULTS
         self.areas = {}         # name -> overrides
+        # Robot-wide layer between BUILTIN_DEFAULTS and the file's defaults
+        # (not saved): {'swath_width_m': derive_default_swath_width(...)}.
+        self.robot_defaults = {}
 
     # ---- queries ------------------------------------------------------
     def effective_defaults(self):
         out = dict(BUILTIN_DEFAULTS)
+        out.update(self.robot_defaults)
         out.update(self.defaults)
         return out
 
@@ -221,7 +301,10 @@ class AreaSettingsStore:
         areas = {n: {} for n in area_names}
         for n, v in self.areas.items():
             areas[n] = dict(v)
-        return {'defaults': self.effective_defaults(), 'areas': areas}
+        # robot_defaults: the robot-wide layer under the file defaults (the
+        # disc-derived standard swath_width_m), so the GUI can tell it apart.
+        return {'defaults': self.effective_defaults(), 'areas': areas,
+                'robot_defaults': dict(self.robot_defaults)}
 
     def snapshot_json(self, area_names=()):
         return json.dumps(self.snapshot(area_names), sort_keys=True)

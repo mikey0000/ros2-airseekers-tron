@@ -104,7 +104,9 @@ AREA_SETTINGS_DEFAULTS = {
     'cut_speed_mps': 0.3,
     'swath_overlap_m': 0.02,
     'edge_margin_m': 0.05,      # planner boundary_inset_m (blade edge inside the line)
-    'swath_width_m': 0.18,      # path spacing = planner operation_width (overlap is ignored)
+    # path spacing = planner operation_width. Fallback only: map_server's defaults carry the
+    # robot-wide disc-derived standard width (blade_disc_mm/1000 - swath_overlap_m, 220 mm -> 0.18)
+    'swath_width_m': 0.18,
     'edge_first': True,
     'repeat': 1,
     'alternate_angle_offset_deg': 90.0,

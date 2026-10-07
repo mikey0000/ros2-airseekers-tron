@@ -49,6 +49,9 @@ export const PARAM_BINDING_PROFILES: Readonly<Record<string, ParamBindingProfile
             "heading_hold_kp",
             "heading_hold_kd",
             "heading_hold_max_radps",
+            "blade_disc_mm",
+            "swath_overlap_m",
+            "default_swath_width_m",
         ],
         guiKeys: [
             "mower_model",

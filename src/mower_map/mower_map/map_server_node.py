@@ -140,6 +140,13 @@ PARAMS = {
     # per-area mowing settings (area_settings.yaml next to areas.dat)
     'area_settings_file': '',          # '' -> <dir of areas_file>/area_settings.yaml
     'area_settings_prune_delay_s': 30.0,   # after clear_map: drop entries of areas not re-added
+    # Robot-wide standard path width (GUI keys of the same name in robot_yaml_path,
+    # which win over these at startup; the GUI also sets them live). The default
+    # swath_width_m = default_swath_width_m if > 0, else blade_disc_mm/1000 -
+    # swath_overlap_m (area_settings.derive_default_swath_width).
+    'blade_disc_mm': 220,              # 220 standard disc | 330 optional wide disc (blades incl.)
+    'swath_overlap_m': 0.04,           # 0..0.15
+    'default_swath_width_m': 0.0,      # 0 = derived from the disc
     # terrain memory (docs/terrain_aware_planning.md): per-area slope + traction raster
     # and incident log in <maps_dir>/terrain_<area>.npz/.json
     'terrain_enabled': True,
@@ -269,6 +276,7 @@ class MapServerNode(Node):
         # to be touched by the single spin thread only, so pump callbacks, services and the
         # timer all run under self._lock now.
         self._lock = threading.RLock()
+        self._init_robot_swath_params()
         self._pump = SubscriptionPump(self, 'map_server_inputs')
         sub = self._pump.subscribe
         lock = self._lock
@@ -891,12 +899,60 @@ class MapServerNode(Node):
     def area_names(self):
         return [a.name for a in self.store.areas]
 
+    ROBOT_SWATH_KEYS = tuple(aset.ROBOT_SWATH_DEFAULTS)
+
+    def _robot_swath_default(self, overrides=None):
+        vals = {k: self.p(k) for k in self.ROBOT_SWATH_KEYS}
+        vals.update(overrides or {})
+        return aset.derive_default_swath_width(**vals)
+
+    def _init_robot_swath_params(self):
+        """GUI yaml values win over the declared defaults; then follow live sets."""
+        from rclpy.parameter import Parameter
+        flat = aset.load_robot_yaml_flat(self.p('robot_yaml_path'))
+        found = {k: v for k, v in aset.robot_swath_settings(flat).items() if k in flat}
+        sets = []
+        for k, v in found.items():
+            if k == 'blade_disc_mm':
+                sets.append(Parameter(k, Parameter.Type.INTEGER, int(round(float(v)))))
+            else:
+                sets.append(Parameter(k, Parameter.Type.DOUBLE, float(v)))
+        if sets:
+            self.set_parameters(sets)
+        self.get_logger().info('standard path width %.3f m (blade_disc_mm %s, swath_overlap_m %s, '
+                               'default_swath_width_m %s; from %s)'
+                               % (self._robot_swath_default(), self.p('blade_disc_mm'),
+                                  self.p('swath_overlap_m'), self.p('default_swath_width_m'),
+                                  sorted(found) or 'node defaults'))
+        self.add_on_set_parameters_callback(self._on_set_robot_swath)
+
+    def _on_set_robot_swath(self, params):
+        from rcl_interfaces.msg import SetParametersResult
+        upd = {}
+        for prm in params:
+            if prm.name not in self.ROBOT_SWATH_KEYS:
+                continue
+            v = prm.value
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return SetParametersResult(successful=False, reason='%s must be a number' % prm.name)
+            if prm.name == 'blade_disc_mm' and int(round(v)) not in aset.BLADE_DISCS_MM:
+                return SetParametersResult(successful=False, reason='blade_disc_mm must be 220 or 330')
+            upd[prm.name] = v
+        if upd:
+            with self._lock:
+                self.settings.robot_defaults = {'swath_width_m': self._robot_swath_default(upd)}
+                self.get_logger().info('standard path width now %.3f m (%s)'
+                                       % (self.settings.robot_defaults['swath_width_m'], upd))
+                self.publish_settings()
+        return SetParametersResult(successful=True)
+
     def load_settings(self):
         try:
             self.settings, warnings = aset.load_file(self.settings_path)
         except (OSError, UnicodeDecodeError) as exc:
             self.get_logger().error('load %s failed: %s' % (self.settings_path, exc))
             self.settings, warnings = aset.AreaSettingsStore(), []
+        self.settings.robot_defaults = {'swath_width_m': self._robot_swath_default()}
         for w in warnings:
             self.get_logger().warn('%s: %s' % (self.settings_path, w))
         self.get_logger().info('area settings: %d area(s) with own values, defaults %s (%s)'

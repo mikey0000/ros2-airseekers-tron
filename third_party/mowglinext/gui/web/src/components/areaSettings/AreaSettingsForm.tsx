@@ -55,7 +55,11 @@ export const AreaSettingsForm: React.FC<{
     overridden?: Set<keyof AreaSettings>;
     /** Read-only slope-derived mow angle from the map server (terrain memory). */
     slopeDerived?: AreaSlopeDerived | null;
-}> = ({value, onChange, disabled, overridden, slopeDerived}) => {
+    /** Path width this form falls back to: the defaults' swath_width_m for an area,
+     *  the blade-disc standard width for the defaults card. Shown in the hint. */
+    swathDefault?: number;
+    swathDefaultIsStandard?: boolean;
+}> = ({value, onChange, disabled, overridden, slopeDerived, swathDefault, swathDefaultIsStandard}) => {
     const {t} = useTranslation();
     const set = <K extends keyof AreaSettings>(k: K, v: AreaSettings[K]) => onChange({...value, [k]: v});
     const R = AREA_SETTINGS_RANGES;
@@ -143,11 +147,14 @@ export const AreaSettingsForm: React.FC<{
             </Field>
 
             <Field label={t("areaSettings.swathWidth")} custom={c("swath_width_m")}
-                   hint={t("areaSettings.swathWidthHint")}>
+                   hint={swathDefault === undefined ? t("areaSettings.swathWidthHint")
+                       : `${t(swathDefaultIsStandard ? "areaSettings.swathWidthStandard" : "areaSettings.swathWidthDefault",
+                           {value: swathDefault.toFixed(2)})} ${t("areaSettings.swathWidthHint")}`}>
                 <InputNumber data-testid="swath-width" min={R.swath_width_m.min} max={R.swath_width_m.max}
                              step={R.swath_width_m.step} precision={2} size="small" addonAfter="m"
                              disabled={disabled} style={{width: 130}}
                              value={value.swath_width_m}
+                             placeholder={swathDefault === undefined ? undefined : swathDefault.toFixed(2)}
                              onChange={(v) => typeof v === "number" && set("swath_width_m", v)}/>
             </Field>
 

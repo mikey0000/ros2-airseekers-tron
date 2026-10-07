@@ -209,6 +209,23 @@ export function buildAreaPatch(
 }
 
 /**
+ * Body for saving the robot-wide area defaults (index 255). Every key is sent
+ * as-is EXCEPT swath_width_m: unchanged from what was loaded -> left out (so a
+ * defaults save never pins the disc-derived standard width into
+ * area_settings.yaml); changed back to the standard width -> null (follow the
+ * blade-disc setting again).
+ */
+export function buildDefaultsBody(
+    draft: AreaSettings, loaded: AreaSettings, standardSwathWidth?: number,
+): {[K in AreaSettingsKey]?: AreaSettings[K] | null} {
+    const out: Record<string, unknown> = {...draft};
+    if (draft.swath_width_m === loaded.swath_width_m) delete out.swath_width_m;
+    else if (standardSwathWidth !== undefined && Math.abs(draft.swath_width_m - standardSwathWidth) < 1e-6)
+        out.swath_width_m = null;
+    return out as {[K in AreaSettingsKey]?: AreaSettings[K] | null};
+}
+
+/**
  * Keys an area overrides. The latched topic's per-area object is
  * authoritative; without it, fall back to "differs from the defaults".
  */

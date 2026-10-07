@@ -2700,7 +2700,21 @@
     "outlineOffset": "Décalage du contour",
     "outlineOffsetTooltip": "Décalage vers l'intérieur depuis la limite",
     "outlineOverlap": "Recouvrement du contour",
-    "outlineOverlapTooltip": "Recouvrement entre le contour et le remplissage"
+    "outlineOverlapTooltip": "Recouvrement entre le contour et le remplissage",
+    "pathWidthTitle": "Largeur de passage standard",
+    "pathWidthHint": "Définit la largeur de passage utilisée par chaque zone qui n'a pas sa propre largeur. Les zones avec leur propre largeur la conservent.",
+    "bladeDisc": "Disque de coupe",
+    "bladeDiscTooltip": "Diamètre du disque de coupe, lames comprises. Le Tron est livré avec le disque de 220 mm ; le disque large de 330 mm est en option.",
+    "bladeDisc220": "220 mm (standard)",
+    "bladeDisc330": "330 mm (large)",
+    "swathOverlapM": "Recouvrement des passages",
+    "swathOverlapMTooltip": "Recouvrement entre passages voisins. Largeur standard = disque - recouvrement.",
+    "defaultSwathWidthOverride": "Largeur imposée",
+    "defaultSwathWidthOverrideTooltip": "Impose une largeur de passage standard fixe au lieu de la déduire du disque. 0 = déduite.",
+    "defaultSwathWidthAuto": "auto",
+    "defaultPathWidth": "Largeur de passage par défaut : {{value}} m",
+    "defaultPathWidthDerived": "(disque {{disc}} mm - recouvrement {{overlap}} m)",
+    "defaultPathWidthExplicit": "(valeur imposée)"
   },
   "settingsNavigation": {
     "goalTolerances": "Tolérances de cible",
@@ -4263,7 +4277,9 @@
     "activeFor": "Tonte de {{area}} avec",
     "custom": "Personnalisé",
     "inherited": "Par défaut",
-    "run": "passage {{run}}/{{runs}}"
+    "run": "passage {{run}}/{{runs}}",
+    "swathWidthDefault": "Par défaut : {{value}} m.",
+    "swathWidthStandard": "Standard selon le disque : {{value}} m."
   },
   "startSheet": {
     "title": "Lancer la tonte",

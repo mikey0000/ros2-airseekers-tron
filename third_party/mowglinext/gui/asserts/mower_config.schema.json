@@ -620,6 +620,32 @@
           "default": 0.2,
           "description": "Pre-shrink the operator polygon by this many metres before F2C plans anything. Defaults to chassis_width / 2 so the chassis edge stays inside the polygon under perfect FTC tracking."
         },
+        "blade_disc_mm": {
+          "type": "integer",
+          "title": "Blade Disc",
+          "enum": [
+            220,
+            330
+          ],
+          "default": 220,
+          "description": "Airseekers Tron cutting disc diameter including the blades, in mm: 220 = standard disc, 330 = optional wide disc. Sets the STANDARD path width (the swath_width_m every area uses unless it sets its own): blade_disc_mm / 1000 - swath_overlap_m, unless default_swath_width_m > 0. Read by mower_map map_server_node (live)."
+        },
+        "swath_overlap_m": {
+          "type": "number",
+          "title": "Swath Overlap",
+          "default": 0.04,
+          "minimum": 0,
+          "maximum": 0.15,
+          "description": "How much adjacent passes overlap (m) in the standard path width = blade_disc_mm / 1000 - swath_overlap_m (220 mm disc, 0.04 -> 0.18 m). Ignored when default_swath_width_m > 0. Per-area path widths are not changed."
+        },
+        "default_swath_width_m": {
+          "type": "number",
+          "title": "Default Path Width Override",
+          "default": 0.0,
+          "minimum": 0,
+          "maximum": 0.4,
+          "description": "Explicit standard path width (m). 0 = derived from the blade disc and swath overlap. Areas with their own path width keep it."
+        },
         "min_turning_radius": {
           "type": "number",
           "title": "Min Turning Radius",

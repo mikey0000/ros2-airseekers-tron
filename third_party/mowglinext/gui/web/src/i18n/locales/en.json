@@ -2704,7 +2704,21 @@
     "outlineOffset": "Outline Offset",
     "outlineOffsetTooltip": "Inward offset from boundary",
     "outlineOverlap": "Outline Overlap",
-    "outlineOverlapTooltip": "Overlap between outline and fill"
+    "outlineOverlapTooltip": "Overlap between outline and fill",
+    "pathWidthTitle": "Standard path width",
+    "pathWidthHint": "Sets the path width every area uses unless it has its own path width. Areas with their own path width keep it.",
+    "bladeDisc": "Blade disc",
+    "bladeDiscTooltip": "Cutting disc diameter including the blades. The Tron ships with the 220 mm disc; the 330 mm wide disc is optional.",
+    "bladeDisc220": "220 mm (standard)",
+    "bladeDisc330": "330 mm (wide)",
+    "swathOverlapM": "Swath overlap",
+    "swathOverlapMTooltip": "How much neighbouring passes overlap. Standard path width = blade disc - overlap.",
+    "defaultSwathWidthOverride": "Path width override",
+    "defaultSwathWidthOverrideTooltip": "Set a fixed standard path width instead of deriving it from the blade disc. 0 = derived.",
+    "defaultSwathWidthAuto": "auto",
+    "defaultPathWidth": "Default path width: {{value}} m",
+    "defaultPathWidthDerived": "({{disc}} mm disc - {{overlap}} m overlap)",
+    "defaultPathWidthExplicit": "(fixed override)"
   },
   "settingsNavigation": {
     "goalTolerances": "Goal Tolerances",
@@ -4263,7 +4277,9 @@
     "activeFor": "Mowing {{area}} with",
     "custom": "Custom",
     "inherited": "Default",
-    "run": "run {{run}}/{{runs}}"
+    "run": "run {{run}}/{{runs}}",
+    "swathWidthDefault": "Default: {{value}} m.",
+    "swathWidthStandard": "Standard from the blade disc: {{value}} m."
   },
   "startSheet": {
     "title": "Start mowing",

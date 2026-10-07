@@ -26,6 +26,7 @@ import { PositioningSection } from "../components/settings/PositioningSection.ts
 import { SensorsSection } from "../components/settings/SensorsSection.tsx";
 import { LocalizationSection } from "../components/settings/LocalizationSection.tsx";
 import { MowingSection } from "../components/settings/MowingSection.tsx";
+import { PathWidthCard } from "../components/settings/PathWidthCard.tsx";
 import { DockingSection } from "../components/settings/DockingSection.tsx";
 import { BatterySection } from "../components/settings/BatterySection.tsx";
 import { SafetySection } from "../components/settings/SafetySection.tsx";
@@ -187,6 +188,14 @@ export const SettingsPage = () => {
                 return (
                     <>
                         <MowingSection
+                            values={values}
+                            onChange={handleChange}
+                            isOverridden={isOverridden}
+                            hasDefault={hasDefault}
+                            onReset={resetToDefault}
+                            defaults={defaults}
+                        />
+                        <PathWidthCard
                             values={values}
                             onChange={handleChange}
                             isOverridden={isOverridden}
