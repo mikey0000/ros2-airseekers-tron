@@ -5,6 +5,7 @@ import type {MapRef} from 'react-map-gl/mapbox';
 import {useEffect, useRef} from "react";
 import type {RefObject} from "react";
 import DirectSelectWithBoxMode from '../modes/DirectSelectWithBoxMode';
+import SafeDrawPolygonMode from '../modes/SafeDrawPolygonMode';
 import SplitLineMode from '../modes/SplitLineMode';
 
 type DrawControlProps = ConstructorParameters<typeof MapboxDraw>[0] & {
@@ -63,6 +64,7 @@ export default function DrawControl(props: DrawControlProps) {
                 ...MapboxDraw.modes,
                 direct_select: DirectSelectWithBoxMode,
                 split_line: SplitLineMode,
+                draw_polygon: SafeDrawPolygonMode,
             }
         }),
         ({map}: {map: MapRef}) => {

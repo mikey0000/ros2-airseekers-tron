@@ -744,3 +744,26 @@ def test_return_corridor_treats_transit_cost_as_on_map():
     assert core.is_free_at(nav, spec, 5.0, 0.0)
     assert core.return_corridor(5.0, 0.0, nav, spec, 0.35) is None
     assert not core.is_free_at(nav, spec, 1.6, 1.0)        # soft band still off-map
+
+
+# --- drawn polygons keep every far-apart corner (square -> triangle bug) ---
+
+def test_normalise_square_keeps_four_corners_ccw_and_cw():
+    sq = [(0, 0), (3, 0), (3, 3), (0, 3), (0, 0)]
+    assert len(core.normalise_polygon(sq)) == 4
+    assert len(core.normalise_polygon(list(reversed(sq)))) == 4
+
+
+def test_normalise_square_last_click_near_first_point_kept():
+    # 4th corner 20 cm from the first: a real corner, not a closing repeat
+    poly = core.normalise_polygon([(0, 0), (3, 0), (3, 3), (0.2, 0.0), (0, 0)])
+    assert len(poly) == 4
+
+
+def test_normalise_drops_only_vertices_within_5cm():
+    poly = core.normalise_polygon([(0, 0), (3, 0), (3.03, 0.0), (3, 3), (0, 3), (0.02, 0.0)])
+    assert poly == [(0.0, 0.0), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0)]
+
+
+def test_normalise_keeps_collinear_points():
+    assert len(core.normalise_polygon([(0, 0), (1.5, 0), (3, 0), (3, 3), (0, 3)])) == 5

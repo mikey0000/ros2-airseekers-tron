@@ -36,6 +36,7 @@ SOURCE_DIG = 2
 # Upstream internal_helpers.hpp kObstacleDedupEpsilonM: two obstacles whose
 # centroids are this close are the same obstacle.
 OBSTACLE_DEDUP_EPS_M = 0.10
+VERTEX_DEDUP_EPS_M = 0.05
 
 LETHAL = 100
 # Accepted path (channel) width range; the GUI offers 0.5..3.0 m.
@@ -97,10 +98,17 @@ class DockPose:
 
 
 def normalise_polygon(points: Iterable[Sequence[float]]) -> Polygon:
-    """Take x/y of each point (ignoring z or vendor extras) and drop a
-    repeated closing vertex."""
-    poly = [(float(p[0]), float(p[1])) for p in points]
-    if len(poly) >= 2 and poly[0] == poly[-1]:
+    """Take x/y of each point (ignoring z or vendor extras), drop a vertex
+    that repeats its predecessor and a repeated closing vertex. "Repeat"
+    means within VERTEX_DEDUP_EPS_M (5 cm): far-apart vertices are never
+    merged, collinear points are never removed."""
+    poly: Polygon = []
+    for p in points:
+        q = (float(p[0]), float(p[1]))
+        if poly and math.hypot(q[0] - poly[-1][0], q[1] - poly[-1][1]) <= VERTEX_DEDUP_EPS_M:
+            continue
+        poly.append(q)
+    if len(poly) >= 2 and math.hypot(poly[0][0] - poly[-1][0], poly[0][1] - poly[-1][1]) <= VERTEX_DEDUP_EPS_M:
         poly.pop()
     return poly
 
