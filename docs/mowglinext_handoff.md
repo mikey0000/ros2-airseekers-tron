@@ -488,18 +488,18 @@ of this handoff.
 | Rear camera | `/dev/rear_camera` → `video62` | `/rear_camera/{image_raw,camera_info}` | Also `http://<mower>:8080/stream?topic=/rear_camera/image_raw` |
 | Stereo IMU | ICM-42600 | `/stereo_imu/data` (via `stereo_imu_node`), bias latched | VIO input — deliberately **not** `/imu/data` |
 | RTK GNSS | UM960 on `ttyS4` (param `port`, default `/dev/serial_rtk`) | `/fix`, `/fix_status`, `/vel`, `/heading`, `/nmea`, `/gps/corrections`, `/ntrip/status`; RTCM in/out | NTRIP client **or** LoRa base; `gps_gate` republishes a fusion-worthy subset as `/fix_gated` |
-| Chassis IMU | WIT JY61P on `ttyS1` | `/imu/data` (100 Hz), `/imu/temperature_c` | Owns `/imu/data`; its `orientation` is a **known open defect** — see below |
+| Chassis IMU | WIT JY61P on `ttyS1` | `/imu/data` (100 Hz), `/imu/temperature_c` | Owns `/imu/data`. EKF consumes `/imu/data_aligned` (see below) |
 | Buttons | `/dev/input/event5` | `/mower_base/button_info`, `/mower_base/key_pressed` | `base_keys` |
 
 A watchdog service re-initialises the stereo when frames stop.
 
-**Known defect that affects you:** `wit_imu_driver` parses the JY61P angle frame
-but never fills `Imu.orientation`, and publishes all-zero covariances.
-`navsat_transform_node` builds its heading from that quaternion, so the GPS
-correction is currently wrong and the EKF over-trusts the IMU. Any fusion you
-run off `/imu/data` inherits this until the driver is fixed — it is item 1 on
-our blocking list. The angular velocity and linear acceleration fields are
-usable.
+**What fusion consumes:** `wit_imu_driver` fills `Imu.orientation` from the JY61P
+0x53 angle frame with realistic per-axis covariances, and `heading_aligner`
+re-publishes it as `/imu/data_aligned` with yaw in ENU (course-over-ground, dock
+pose, persisted offset). `ekf_node` is configured `imu0: /imu/data_aligned`, not
+the raw topic — subscribe to the aligned one too if you want to agree with our
+filter. Caveat that survives any driver fix: the JY61P is a 6-axis unit, so its
+yaw is gyro-integrated and drifts; there is no absolute yaw source yet.
 
 ---
 

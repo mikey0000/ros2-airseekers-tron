@@ -86,32 +86,30 @@ Frame tree (REP-105) and who owns each transform
           stereo depth — planned metoak_stereo_driver, see
           docs/localization_control_plan.md.)
 
-Sole TF ownership (MowgliNext Invariant 2, kept here): the drivers publish no TF
-except the IMU's static mount, ``robot_state_publisher`` owns the URDF's
-fixed-joint frames, and ``ekf_node`` is the only publisher of
-``odom -> base_link``.
+Sole TF ownership (MowgliNext Invariant 2, kept here): no driver broadcasts TF —
+``wit_imu_driver``'s ``publish_tf`` defaults to False — so ``robot_state_publisher``
+owns the URDF's frames (including the IMU's static mount) and ``ekf_node`` is the
+only publisher of ``odom -> base_link``.
 
 ======================================================================================
-BLOCKER: navsat_transform_node needs an IMU orientation that we do not publish
+RESOLVED: navsat_transform_node needs an IMU orientation that we do not publish
 ======================================================================================
 
-``navsat_transform_node`` builds its GPS-to-world transform from the IMU's orientation
-quaternion (or, with ``use_odometry_yaw: true``, from the odometry message). But
-``wit_imu_driver`` never populates ``Imu.orientation`` — ``fill_angle_from_tracked()`` only
-logs the JY61P 0x53 angle frame at debug level and leaves the quaternion at all zeros. It also
-publishes all-zero covariances.
+This used to be the top blocker: ``wit_imu_driver`` left ``Imu.orientation`` at all
+zeros and reported all-zero covariances, so ``navsat_transform_node`` built its
+GPS-to-world transform from a zero quaternion, ``ekf_node`` fused zeros as ``imu0``
+pose yaw, and robot_localization treated every IMU quantity as a perfect measurement.
 
-Consequences, all of them quiet:
+It is fixed in the driver: ``wit_node._publish_typed()`` fills the quaternion from the
+JY61P 0x53 roll/pitch/yaw frame and reports ``orientation_rp_covariance`` (0.02) /
+``orientation_yaw_covariance`` (1.0). The remaining limitation is physical, not a code
+defect — the JY61P is a 6-axis unit, so its yaw is gyro-integrated and drifts. That is
+what ``heading_aligner`` (below, ``/imu/data`` -> ``/imu/data_aligned``) is for: it puts
+yaw in ENU from course-over-ground / dock pose / a persisted offset, and
+``ekf_node`` consumes the aligned topic, not the raw one.
 
-* navsat_transform_node reads a zero quaternion as orientation and produces a wrong heading
-  for the whole GPS correction.
-* ekf_node fusing ``imu0`` pose yaw (``config/ekf.yaml`` enables it) fuses zeros.
-* Zero covariances tell robot_localization every IMU-derived quantity is a perfect
-  measurement, so it over-trusts them.
-
-So localization cannot be trusted until ``wit_imu_driver`` fills ``orientation`` from the
-0x53 roll/pitch/yaw frames as a proper quaternion and reports realistic covariances. Fix that
-driver first, or run this file knowing the GPS correction is garbage. Details in
+Still worth knowing: ``navsat_transform_node`` can also be pointed at the odometry
+heading with ``use_odometry_yaw: true`` if the IMU heading ever needs bypassing. See
 docs/localization_control_plan.md section 3.
 
 ======================================================================================

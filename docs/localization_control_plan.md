@@ -5,18 +5,22 @@ and where the stack actually stands.
 
 | Area | Package | Status |
 |---|---|---|
-| GNSS gate | `mower_localization` (`gps_gate`) | implemented, 25 tests pass, never run on hardware |
-| EKF parameters | `mower_localization` (`config/ekf.yaml`) | written, **blocked on the IMU issue in §3** |
-| GPS fusion | `mower_localization` (`config/navsat.yaml`) | written, **blocked on the same issue** |
+| GNSS gate | `mower_localization` (`gps_gate`) | implemented, tests pass, runs with `localization:=true` |
+| Heading alignment | `mower_localization` (`heading_aligner`) | added since this plan: `/imu/data` → `/imu/data_aligned` (ENU yaw) |
+| EKF parameters | `mower_localization` (`config/ekf.yaml`) | written and running; **the §3 IMU blocker is resolved** |
+| GPS fusion | `mower_localization` (`config/navsat.yaml`) | written and running |
 | Launch wiring | `launch/nav2.launch.py` | localization wired end to end; Nav2 controller block is scaffolding |
-| `cmd_vel` shaping | `mower_control` (`cmd_vel_slew`) | implemented, not wired into bringup |
-| Slip detection | `mower_control` (`slip_detector`) | implemented, not wired into bringup |
-| IMU calibration | `mower_control` (`imu_cal`) | implemented, not wired into bringup |
+| `cmd_vel` shaping | `mower_control` (`cmd_vel_slew`) | implemented, wired into bringup (`control`, default on) |
+| Slip detection | `mower_control` (`slip_detector`) | implemented, wired into bringup |
+| IMU calibration | `mower_control` (`imu_cal`) | implemented, wired into bringup |
 
-Nothing here has touched the mower. `mower_localization` and `mower_control` are new since
-the last commit and were verified with `python3 -m pytest` only — no `rclpy`, no `colcon`,
-no serial port. References to `robot_localization` behaviour below were checked against the
-upstream `humble-devel` source, not from memory.
+**Reconciled with the code on 2026-10-08.** This plan was written before the stack ran on
+the mower; it now does — `localization:=true` and `control:=true` are both default in
+`mower.launch.py`, so `gps_gate`, `heading_aligner`, `navsat_transform_node`, `ekf_node`,
+`cmd_vel_slew`, `slip_detector` and `imu_cal` all start there. Sections below keep the
+original analysis and mark what has since landed as **resolved**. References to
+`robot_localization` behaviour were checked against the upstream `humble-devel` source, not
+from memory.
 
 ---
 
@@ -128,7 +132,7 @@ message.
 | Source | Fused state | Note |
 |---|---|---|
 | `odom0: /odom` (50 Hz) | x, y, vx, vy, yaw rate | Pose yaw deliberately **not** fused: `/odom`'s heading is the JY61P (via `use_imu_yaw`), the same sensor as `imu0`, so fusing both double-counts it. |
-| `imu0: /imu/data` (100 Hz) | yaw, yaw rate, ax, ay | See the blocker below — the yaw it fuses is currently always zero. |
+| `imu0` (100 Hz) | yaw, yaw rate, ax, ay | Set by `nav2.launch.py` to `/imu/data_aligned` (`heading_aligner`), not the raw `/imu/data`. Orientation is filled — the §3 blocker below is resolved. |
 | `odom1: /odometry/gps` (~10 Hz) | x, y | GPS heading is worse than the IMU, so no yaw from it. |
 
 `use_control: false`. `/cmd_vel` goes to the MCU, not the filter; feeding it in would fight
@@ -139,36 +143,39 @@ the firmware's own deadband.
 untrustworthy fixes, and waiting on datum would stall the whole localizer until the RTK
 session converged.
 
-### Blocker: `wit_imu_driver` does not publish an orientation
+### ~~Blocker~~ RESOLVED: `wit_imu_driver` now publishes an orientation
 
-This is the single thing to fix before any of the above means anything.
+This was the single thing to fix before any of the above meant anything, and it is fixed in
+the driver.
 
-`wit_imu_driver` parses the JY61P 0x53 angle frame (roll/pitch/yaw) and then
-`fill_angle_from_tracked()` **only logs it at debug level** — `imu_msg.orientation` is never
-assigned and stays all zeros. It also publishes all-zero covariances for orientation, angular
-velocity and linear acceleration.
+**What it was:** `wit_imu_driver` parsed the JY61P 0x53 angle frame (roll/pitch/yaw) and only
+logged it — `imu_msg.orientation` stayed at all zeros with all-zero covariances. Three
+consequences, all quiet rather than loud: `navsat_transform_node` built its GPS-to-world
+transform from a zero quaternion (wrong heading for the whole GPS correction); `ekf_node`
+fused `imu0` pose **yaw** from zeros while looking healthy on `odom0`'s predicted yaw; and
+zero covariances mean "perfect measurement" to `robot_localization`.
 
-Three consequences, all quiet rather than loud:
+**Where it stands:** `wit_node._publish_typed()` builds the quaternion from the 0x53 frame
+and reports `orientation_rp_covariance` (0.02) and `orientation_yaw_covariance` (1.0). The
+driver also publishes `publish_tf:=false` by default, so the URDF owns `base_link → imu_link`.
 
-- `navsat_transform_node` builds its GPS-to-world transform from that orientation. A zero
-  quaternion yields a wrong heading for the entire GPS correction.
-- `ekf_node` fuses `imu0` pose **yaw** (`ekf.yaml` line 60 enables it) — from zeros. It
-  predicts yaw forward from `odom0`'s yaw rate, so the filter looks healthy while the absolute
-  reference is fiction.
-- Zero covariances mean "perfect measurement" to `robot_localization`, so the filter
-  over-trusts every IMU-derived quantity.
-
-The fix is in the driver, not the configs: build `Imu.orientation` as a quaternion from the
-0x53 frame, and report realistic per-axis covariances. Until then, treat any localization
-output as unvalidated.
+**The remaining limitation is physical, not a defect:** the JY61P is a 6-axis unit, so its
+yaw is gyro-integrated and drifts. That is what `heading_aligner` is for — `/imu/data` →
+`/imu/data_aligned` with yaw in ENU from course-over-ground / dock pose / a persisted offset
+(`/userdata/ros2/heading_offset.yaml`) — and `ekf_node` consumes the aligned topic. An
+absolute yaw source (RTK heading, or `use_odometry_yaw: true`) is still the long-term answer.
 
 Note also that `robot_localization` honours the `sensor_msgs` convention that a `-1` first
 covariance element means "this IMU does not provide orientation" and skips it. Zero is the
-worst possible value: it claims both availability and certainty.
+worst possible value: it claims both availability and certainty — which is why the covariance
+parameters above matter as much as the quaternion.
 
 ### Other open issues
 
-1. **No `map → odom` publisher.** `navsat_transform_node` only broadcasts a transform when
+1. **No *GPS-anchored* `map → odom` publisher.** `mower.launch.py` now starts
+   `static_map_odom` (identity, `publish_static_map_odom:=true` by default), so the
+   transform exists and the tree is complete — but map == odom, i.e. the frame is anchored
+   wherever the machine powered on. `navsat_transform_node` only broadcasts a transform when
    `broadcast_utm_transform` is true, and `navsat.yaml` sets it false. `ekf_node` is
    configured `world_frame: odom`, so per its own documented two-mode behaviour it broadcasts
    `odom → base_link`, not `map → odom`. The consequence is real: the stack localizes in
@@ -177,23 +184,28 @@ worst possible value: it claims both availability and certainty.
    needs this transform. Options are the upstream dual-EKF pair (a second map-frame EKF) or
    turning the UTM broadcast on and treating `utm` as the map frame. Decision deferred until
    `mower_bringup` lands the URDF and `nav2_params.yaml`.
-2. **`/imu` vs `/imu/data`.** `wit_imu_driver` publishes `/imu`; `ekf.yaml`, `imu_cal` and
-   Nav2 all expect `/imu/data`. `nav2.launch.py` remaps it, but only within that file — any
-   node started outside it sees `/imu`. Pick one canonical name and remap at the source.
-3. **Datum is unset.** The first fix becomes the datum, which is fine for a first bring-up
-   and wrong for repeatable field boundaries. Set it in `navsat.yaml` or call the `datum`
-   service.
+2. ~~**`/imu` vs `/imu/data`.**~~ **Resolved:** `wit_imu_driver` publishes `/imu/data`
+   directly (`imu_topic` parameter), and the MCU's copy of the same data lives on
+   `/mcu/imu`. No launch-file remap is needed to agree on a name.
+3. **Datum is unset by default.** Still true on a fresh machine — the first fix becomes the
+   datum, fine for a first bring-up and wrong for repeatable field boundaries. It is now
+   *settable*: `mower.launch.py` takes `datum_lat` / `datum_lon` / `datum_yaw`, falls back to
+   `datum_env_file` (default `/userdata/ros2/datum.env`), and `gui_bridge` serves
+   `/navsat_to_absolute_pose/set_datum` which persists it there.
 4. **`mower_mcu_driver` publishes no TF.** Correct by Invariant 2, but it means `/odom` is a
    message with no matching transform until `ekf_node` runs.
 5. **Magnetic declination is 0.0**, which is wrong for any real site and biases the whole
    heading solution by that angle. Same for the antenna `yaw_offset`. Both are TODOs carried
    in `navsat.yaml`.
-6. **No RTK corrections by default.** NTRIP is out of scope (`docs/um960.md`), so expect
-   single-point fixes (~2.5 m). `gps_gate`'s covariance threshold is the guardrail; anything
-   gating on fix *quality* — the dig detector, for one — should check RTK-fixed status in
-   `/fix_status`, never the filter's own covariance.
-7. **`ros-humble-robot-localization` is not in `docker/Dockerfile.humble`.** Without it the
-   two parameter files have nothing to load them.
+6. **RTK corrections depend on which source is configured.** NTRIP is no longer out of
+   scope — `um960_gps_driver` has a full client (v1/v2, auth, GGA cadence, RTCM CRC-24Q
+   validation, reconnect) writing to the receiver, with `correction_source` defaulting to
+   *auto*: NTRIP if the vendor `ntrip.yaml` enables it, otherwise the LoRa base. Without
+   either, expect single-point fixes (~2.5 m). `gps_gate`'s covariance threshold is the
+   guardrail; anything gating on fix *quality* — the dig detector, for one — should check
+   RTK-fixed status in `/fix_status`, never the filter's own covariance. See `docs/um960.md`.
+7. ~~**`ros-humble-robot-localization` is not in `docker/Dockerfile.humble`.**~~ **Resolved:**
+   added to the image.
 
 ---
 
@@ -243,19 +255,19 @@ worst possible value: it claims both availability and certainty.
 
 ## 5. Next steps, in dependency order
 
-1. **Fix `wit_imu_driver` orientation + covariances** (§3 blocker). Everything downstream
-   inherits this error; no filter tuning matters until it is right.
-2. Decide the `map → odom` topology (§3 item 1) — dual EKF, or `utm` as the map frame.
-3. Settle `/imu` vs `/imu/data` at the source (§3 item 2).
-4. URDF for a Tron chassis variant: `base_link` at the rear axle, `gps` and `imu_link`
-   extrinsics measured rather than guessed. Without a real `base_link → gps` transform,
-   `navsat_transform_node` logs the lookup failure and assumes the receiver sits at the robot
-   origin — a silent lever-arm error.
-5. Measure site declination and the antenna `yaw_offset`; set the datum.
-6. Land `mower_bringup`: URDF, `nav2_params.yaml` (Humble key names checked one by one — a
-   wrong key is silently ignored), `twist_mux` lanes.
-7. Wire `cmd_vel_slew` / `slip_detector` / `imu_cal` into bringup so `/cmd_vel` goes through
-   the shaper.
+1. ~~**Fix `wit_imu_driver` orientation + covariances** (§3 blocker).~~ **Done** — see §3.
+2. **Decide the `map → odom` topology** (§3 item 1) — dual EKF, or `utm` as the map frame.
+   Identity is published today, which is not the same as anchored.
+3. ~~**Settle `/imu` vs `/imu/data` at the source** (§3 item 2).~~ **Done** — `/imu/data` at
+   the source, `/imu/data_aligned` into the filter.
+4. **URDF extrinsics**: `base_link` at the rear axle and the `gps` / `imu_link` frames now
+   exist in `config/urdf/mower.urdf.xacro`, but the lever-arm values are still uncalibrated
+   vendor numbers — a silent lever-arm error until measured.
+5. **Measure site declination and the antenna `yaw_offset`** (both still `0.0` TODO in
+   `navsat.yaml`); datum is settable but unset by default (§3 item 3).
+6. ~~**Land `mower_bringup`**: URDF, `nav2_params.yaml`, `twist_mux` lanes.~~ **Done.**
+7. ~~**Wire `cmd_vel_slew` / `slip_detector` / `imu_cal` into bringup**~~ **Done** — the
+   `control` group, default on.
 8. Validate on a **recorded bag** before any live drive: replay and compare
    `/odometry/filtered` against ground truth, gate behaviour under simulated RTK loss, and
    slip detection from the field-recorded slip captures.

@@ -9,6 +9,27 @@ and a concrete Docker/compose plan to run its stack alongside ours.
 Research date: 2026-10-05. All facts below were re-verified against the local
 clone `/tmp/mowglinext-src` (read-only reference) and our `ros2_stack/`.
 
+> **Status note — 2026-10-08.** The research above stands, but several of *our*
+> facts in it were true only when written. Superseded by the code:
+>
+> - **§3 "Two conflicts" — both resolved.** `wit_imu_driver` now publishes
+>   `/imu/data` directly and `mower_mcu_driver`'s copy is on `/mcu/imu`, so there
+>   is no duplicate name. `wit_imu_driver publish_tf` defaults to `false`, so the
+>   URDF owns `base_link → imu_link`.
+> - **§3 "Our driver hosts no services yet" — false now.** `mcu_node` serves
+>   `/cutter_control`, `/charging`, `/clear_estop`, `/cutter_off`,
+>   `/cutter/set_height`; `mower_gui_bridge` serves the `hardware_bridge` and
+>   `behavior_tree_node` services and publishes `/hardware_bridge/{status,emergency,power}`,
+>   `/gps/{fix,status}`, `/wheel_odom`, `/odometry/filtered_map`.
+> - **§3 `/gps/status` type** — already `mowgli_interfaces/GnssStatus`, converted
+>   from the driver's `/fix_status` String by `mower_gui_bridge`.
+> - **§7 risks 6, 7, 8** — see below; risk 7 and 8 are closed, risk 6 still holds
+>   for the MCU's BEST_EFFORT IMU echo.
+> - Topic names elsewhere in this doc (`wit_imu_driver` → `/imu`, `um960` →
+>   `/fix`) were the pre-rename state.
+>
+> Current state of the integration surface: [`mowglinext_handoff.md`](mowglinext_handoff.md).
+
 ---
 
 ## 1. Repo identity (exact)
@@ -82,19 +103,15 @@ topic renames:
 | `/imu/temperature_c` | `std_msgs/Float32` | `wit_imu_driver` | ✅ extra we keep (MowgliNext has no temperature topic) |
 | `um960` extras `/vel`, `/heading`, `/fix_status`, `/nmea` | `TwistStamped`, `Float32`, `String` | `um960_gps_driver` | ✅ keep as debug/COG sources (`/heading` ≈ COG input for `cog_to_imu`) |
 
-**Two conflicts to resolve before any MowgliNext consumer runs:**
+**Two conflicts to resolve before any MowgliNext consumer runs — both since closed:**
 
-1. **Duplicate `/imu`.** Both `mower_mcu_driver` (MCU `mod 9` IMU sub-packet,
-   BEST_EFFORT) and `wit_imu_driver` (JY61P, BEST_EFFORT) publish `/imu`.
-   MowgliNext expects exactly one `/imu/data`. Recommendation: `wit_imu_driver`
-   (JY61P) owns `/imu/data`; gate `mcu_node`'s `/imu` behind a parameter
-   (e.g. `publish_imu: false`) — *documented here, not changed* (per the
-   no-writes rule on `ros2_stack/src`).
-2. **`wit_imu_driver` broadcasts TF** (`TransformBroadcaster`,
-   `sendTransform` on every timer tick, child `frame_id`). MowgliNext
-   Invariant 2 forbids any driver-side TF — the localizer owns `odom`/`map`
-   frames and IMU extrinsics come from the URDF. Disable our TF broadcast
-   (URDF static transform for `imu_link` instead).
+1. ~~**Duplicate `/imu`.**~~ **Resolved:** `wit_imu_driver` (JY61P) owns
+   `/imu/data` via its `imu_topic` parameter; `mower_mcu_driver`'s copy of the
+   same data (the MCU echoing back what the host forwarded it) publishes on
+   `/mcu/imu`. No name collision.
+2. ~~**`wit_imu_driver` broadcasts TF.**~~ **Resolved:** `publish_tf` defaults to
+   `false`, and the URDF provides `base_link → imu_link`. No driver broadcasts TF,
+   so MowgliNext Invariant 2 holds.
 
 **Nothing satisfies yet (the MowgliNext-only surface):**
 `/hardware_bridge/status` (`mowgli_interfaces/Status`), `/hardware_bridge/emergency`
@@ -104,10 +121,11 @@ topic renames:
 `/gps/absolute_pose` (`AbsolutePose`), `/rtcm` (`rtcm_msgs/Message`),
 `/odometry/filtered_map`, and driver services `~/mower_control`,
 `~/emergency_stop`, `~/reboot_board`, `~/set_firmware_debug` (plus being a
-client of `~/high_level_control`). Our driver hosts no services yet (our
-`mower_interfaces` srv set — `CutterControl`, `ChargingControl`,
-`BumperControl`, `PlannerTaskSet` — is not yet wired to any node); the
-vendor ROS 1 stack's `/cutter_control`, `/clear_estop`, `/charging`,
+client of `~/high_level_control`). Our driver *does* host services now:
+`mcu_node` serves `/cutter_control`, `/charging`, `/clear_estop`, `/cutter_off`
+and `/cutter/set_height`, and `mower_gui_bridge` serves the `hardware_bridge` and
+`behavior_tree_node` ones above; the vendor ROS 1 stack's `/cutter_control`,
+`/clear_estop`, `/charging`,
 `/enable_bumper`, `/reset_odom`, `/poweroff` are the functional equivalents to
 expose.
 
@@ -399,8 +417,8 @@ ros2 topic echo /gps/fix --once
 | 4 | UM960 support | universal-gnss has no UM960 parser; our driver is the pragmatic path |
 | 5 | Build time | GTSAM + Fields2Cover v3 source builds on aarch64 are long; cache in a derived image |
 | 6 | QoS | Our IMU publishers are BEST_EFFORT (both drivers); MowgliNext expects RELIABLE(10) on `/imu/data` and `transient_local` on dig events — align in the shim. Our `/battery` and `/odom` are already RELIABLE(10) |
-| 7 | Duplicate `/imu` | `mower_mcu_driver` and `wit_imu_driver` both publish `/imu`; must be resolved to one `/imu/data` |
-| 8 | Driver TF | `wit_imu_driver` broadcasts TF every tick; MowgliNext Invariant 2 forbids it — move to URDF |
+| 7 | ~~Duplicate `/imu`~~ | **Closed:** `/imu/data` from `wit_imu_driver`, `/mcu/imu` from `mower_mcu_driver` |
+| 8 | ~~Driver TF~~ | **Closed:** `wit_imu_driver publish_tf:=false`; the URDF owns `base_link → imu_link` |
 | 9 | RAM/CPU | RK3588 already runs the vendor stack + stereo; GTSAM iSAM2 + Nav2 + BT is heavy — budget before full bringup |
 
 ---
