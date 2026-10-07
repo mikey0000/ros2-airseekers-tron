@@ -136,3 +136,39 @@ the `shape_pivot_max_dist_m` / `shape_pivot_fallback_s` parameters were removed.
 "turn shaper: ..." INFO line is logged only when the regime (pass/arc/pivot) changes, at
 most once per 2 s; the full decision stays on `~/shape_status`. The old pivot assist is
 off by default.
+
+## Drive at rest (2026-10-07): no host-side release exists
+
+Owner request "disable drive at rest" investigated; **nothing implemented in mcu_node** because
+no host command can de-energise the drives:
+
+* **Vendor host** (`mower_base_node.c`): the complete set of host->MCU sends is SpeedData
+  (`twistCallbackROS` @0x003e6108, MBN 249701), CutterControl (`cutterControlROS` @0x003e38b8,
+  `cutterOff` @0x003e3b34), ChargeControl (`chargeControlROS` @0x00404c98), SensorInfoControl
+  (`poweroffROS` @0x00404b28, `clearEStopROS` @0x00336c50), module 0x12 (`motorCalibration`
+  @0x003a960c), ImuData and Heartbeat (`sendDataToChassisInit` 10 ms timer @0x00337874).
+  SDK wrappers: `SendSpeedData` @0x00460850 ... `SendSensorInfoControl` @0x00460868. There is
+  no enable / brake / release / driver_enable message. The vendor idle state was silence too.
+* **Cutter (gateway) fw** (re-decompile): re-sends SpeedData to the chassis each tick while the
+  SpeedData/heartbeat age counters are <= 200 ticks (`FUN_08014a7c`, `FUN_08014078`); after
+  that it zeroes the setpoint and stops forwarding. Lift/stop -> one zero then stop forwarding.
+  The only other chassis-bound message is module 0x16 (1 B), tied to a latched flag (probably
+  power_off). Nothing carries an enable/brake.
+* **Chassis fw**: MotorStatus = fault code if any fault, else 1 if the motor mode byte != 0,
+  else 0 (`FUN_08016274`, built into MotorsInfo by `FUN_080182ac`). Mode 2 = speed PI loop
+  (kp 0.5, ki 9.0); a zero setpoint keeps mode 2, so status stays 1 and the PI holds zero
+  speed with whatever current it needs. No host-command timeout and no zero-setpoint
+  driver disable were found (decompile incomplete; medium confidence).
+* **Observed 2026-10-07** with the stack idle, docked_idle/idle activity, no SpeedData TX
+  for >600 s (silence already in effect): both drives status 1, left +0.30 A / 35 degC,
+  right -0.94 A / 68 degC (62 degC earlier, still rising). Silence alone does **not**
+  de-energise the drives.
+
+So "status 1 at rest" is the vendor-normal state (the PI holding zero speed doubles as the
+parking brake on the dock and on slopes). The right board's ~1 A hold current and heat are
+an anomaly of that board/wheel, not of the host protocol: the right wheel was the inner
+(reverse) wheel of the turn-shaper pivots and stuck-guard escapes just before the stop
+(stuck incident #50 at (-3.36, 1.09)), so the PI is probably holding a wound-up or
+mechanically pre-loaded wheel (gearbox / grass wrap / wheel against an obstacle). Check it:
+lift the right wheel clear (with the robot off) and spin it by hand, then compare its
+at-rest current after a fresh power cycle.

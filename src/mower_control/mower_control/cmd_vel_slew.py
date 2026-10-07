@@ -44,6 +44,15 @@ Parameters
                                   Decision latched on ``~/shape_status``
 ``applied_log_period`` ``1.0``    s between ``cmd_vel applied`` log lines
                                   (0 = every tick)
+``idle_publish_s``     ``0.5``    s of all-zero output after the last non-zero output
+                                  (or gate status change) that are still published at
+                                  ``rate``; after that nothing is published until the
+                                  output goes non-zero or the gate status changes
+                                  (idle = silence; < 0 = always publish).  The MCU never
+                                  needed the idle zeros: mcu_node drops zeros while
+                                  stopped (3 zero frames, then silence) and sends its own
+                                  heartbeat.  Every /cmd_vel consumer treats a missing or
+                                  stale command as "stopped".
 
 Straight-line shaping (all live-settable, defaults neutral = no behaviour change;
 see :class:`DriveShaper`). Applied to the *target* angular.z before slewing:
@@ -495,6 +504,7 @@ class CmdVelSlewNode(Node):
         self.declare_parameter('rate', 20.0)
         self.declare_parameter('frame_id', 'base_link')
         self.declare_parameter('applied_log_period', 1.0)
+        self.declare_parameter('idle_publish_s', 0.5)
         self.declare_parameter('robot_settings_file', default_settings_file())
         for name, (default, _kind) in SHAPER_PARAMS.items():
             self.declare_parameter(name, default)
@@ -523,6 +533,8 @@ class CmdVelSlewNode(Node):
         self._rate = float(self.get_parameter('rate').value)
         self._frame_id = str(self.get_parameter('frame_id').value)
         self._log_period = float(self.get_parameter('applied_log_period').value)
+        self._idle_publish_s = float(self.get_parameter('idle_publish_s').value)
+        self._active_t = None         # last non-zero output / gate status change (monotonic s)
 
         # Applied (slewed) state, the last raw target, watchdog bookkeeping (monotonic s).
         self._cur_lin = 0.0
@@ -664,9 +676,26 @@ class CmdVelSlewNode(Node):
 
     def _tick(self):
         self._pump.poll()
-        out = self.step(time.monotonic())
-        if out is not None:
+        now = time.monotonic()
+        out = self.step(now)
+        if out is not None and CmdVelSlewNode.should_publish(self, out, now):
             self._pub.publish(twist_bytes(*out))
+
+    def should_publish(self, out, now):
+        """Idle = silence: publish zeros only for ``idle_publish_s`` after the last
+        non-zero output or gate status change, then nothing until either recurs."""
+        hold = getattr(self, '_idle_publish_s', -1.0)
+        gate_status = getattr(self, '_gate_status', None)
+        if any(out) or gate_status != getattr(self, '_idle_gate_status', None):
+            self._idle_gate_status = gate_status
+            self._active_t = now
+            return True
+        if hold < 0.0:
+            return True
+        active_t = getattr(self, '_active_t', None)
+        if active_t is None:
+            self._active_t = active_t = now   # startup: publish the first hold of zeros
+        return now - active_t <= hold
 
     def step(self, now):
         """One loop iteration at monotonic time ``now``; returns the Twist tuple to publish."""
