@@ -39,3 +39,8 @@ def test_unknown_activity_is_active():
     assert a.is_low_power(a.IDLE) and a.is_low_power(a.DOCKED_IDLE)
     for x in (None, '', 'garbage', a.MANUAL, a.MOWING, a.DOCKING):
         assert not a.is_low_power(x)
+
+
+def test_preflight_wakes_sensors_even_docked():
+    from mower_mission import activity
+    assert activity.activity_for('PREFLIGHT_CHECK', docked=True, charging=True) == 'mowing'

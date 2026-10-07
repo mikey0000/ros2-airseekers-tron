@@ -38,7 +38,7 @@ var topicMap = map[string]topicDef{
 	// window into the CalibrateDock action — foxglove_bridge has no action op).
 	"dockCalibrationStatus": {"/calibrate_imu_yaw_node/dock_calibration/status", "mowgli_interfaces/msg/DockCalibrationStatus"},
 	"gps":                   {"/gps/fix", "sensor_msgs/msg/NavSatFix"},
-	"gnssStatus":            {"/gps/status", "mowgli_interfaces/msg/GnssStatus"},
+	"gnssStatus":            {"/gui/gnss_status", "mowgli_interfaces/msg/GnssStatus"},
 	// The robot's global pose comes from fusion_graph_node, the sole
 	// map-frame localizer. "pose" and "fusionRaw" both point at
 	// /odometry/filtered_map; the duplicate key is kept for backwards

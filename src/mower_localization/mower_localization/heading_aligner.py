@@ -16,7 +16,7 @@ angular_velocity.z the active source's base_link yaw rate.
 
 Subscribed
 ----------
-``/imu/data``                       sensor_msgs/Imu        100 Hz, event (pump thread)
+``/imu/data``                       sensor_msgs/Imu        100 Hz, batched (periodic thread)
 ``/stereo_imu/data``                sensor_msgs/Imu        200 Hz, event (best effort)
 ``/odom``                           nav_msgs/Odometry      wheel odometry (rest detection)
 ``/cmd_vel``                        geometry_msgs/Twist    commanded motion (post-mux/slew)
@@ -148,6 +148,12 @@ class HeadingAligner(Node):
         # well under stereo_stale; the idle rate applies while /mission/activity is idle.
         d('stereo_batch_rate', 50.0)
         d('stereo_batch_rate_idle', 20.0)
+        # The 100 Hz WIT input is likewise taken in batches (sampled, deliver_all, each sample
+        # with its own receive time) instead of one pump wake per sample. Active: 100 Hz
+        # polling (<= 10 ms added latency for the EKF); idle (/mission/activity docked_idle /
+        # idle): 10 Hz bursts, the EKF orders by stamp.
+        d('imu_batch_rate', 100.0)
+        d('imu_batch_rate_idle', 10.0)
         d('activity_topic', '/mission/activity')
         d('rest_settle', 1.0)        # s still before a rest window starts
         d('rest_window', 3.0)        # s per stereo bias window
@@ -210,7 +216,11 @@ class HeadingAligner(Node):
         self._status_pub = self.create_publisher(String, g('status_topic'), latched)
 
         self._pump = SubscriptionPump(self, 'heading_aligner_inputs')
-        self._pump.subscribe(Imu, g('imu_topic'), self._on_imu, rel, raw=True)
+        self._imu_sub = self._pump.subscribe(
+            Imu, g('imu_topic'), self._on_imu,
+            QoSProfile(depth=50, reliability=QoSReliabilityPolicy.RELIABLE,
+                       history=QoSHistoryPolicy.KEEP_LAST),
+            raw=True, sampled=True, deliver_all=True, with_receipt=True)
         if self.src.mode != 'wit':
             # best effort: stereo_imu publishes best effort (a reliable reader never matches)
             self._stereo_sub = self._pump.subscribe(
@@ -262,7 +272,10 @@ class HeadingAligner(Node):
 
         self._stereo_idle_period = 1.0 / max(1.0, float(g('stereo_batch_rate_idle')))
         self._stereo_polled = 0.0
+        self._imu_idle_period = 1.0 / max(1.0, float(g('imu_batch_rate_idle')))
+        self._imu_polled = 0.0
         self._periodic = PeriodicRunner(self, [
+            (1.0 / max(1.0, float(g('imu_batch_rate'))), self._imu_tick),
             (1.0 / max(1.0, float(g('input_rate'))), self._fast_tick),
             (0.5, self._slow_tick),
             (1.0 / max(1.0, float(g('stereo_batch_rate'))), self._stereo_tick),
@@ -273,9 +286,16 @@ class HeadingAligner(Node):
         self.get_logger().info('heading_aligner up: %s -> %s' % (g('imu_topic'),
                                                                    g('output_topic')))
 
-    # ------------------------------------------------------------------ IMU (pump thread)
-    def _on_imu(self, data):
+    # ------------------------------------------------------------------ IMU (periodic thread)
+    def _imu_tick(self):
         now = time.monotonic()
+        if self._low_power and now - self._imu_polled < self._imu_idle_period - 1e-3:
+            return
+        self._imu_polled = now
+        with self._lock:     # one lock round per batch, _on_imu runs under it
+            self._pump.poll([self._imu_sub])
+
+    def _on_imu(self, data, now):
         key = bytes(data[12:16])
         if key != self._tail_key:
             self._tail = hl.imu_tail_offset(data)
@@ -284,25 +304,24 @@ class HeadingAligner(Node):
         if pos is None:
             return
         q, gz = hl.imu_fields(data, pos)
-        with self._lock:
-            est = self.est
-            if q == (0.0, 0.0, 0.0, 0.0):
-                out = data           # no orientation at all: pass through
-            else:
-                wit_yaw = hl.yaw_from_quaternion(*q)
-                yaw = self.src.on_wit(now, wit_yaw, gz)
-                rate = self.src.rate(now)
-                est.on_imu(now, yaw, rate)
-                rot = hl.wrap(yaw - wit_yaw)
-                off = est.offset
-                if off is not None:
-                    rot = hl.wrap(rot + off)
-                if rot != 0.0:
-                    q = hl.rotate_yaw(q, rot)
-                s = est.yaw_sigma(now)
-                out = hl.imu_rewrite(data, pos, q, s * s)
-                if rate != gz:
-                    out = hl.imu_set_gyro_z(out, pos, rate)
+        est = self.est           # caller (_imu_tick) holds self._lock
+        if q == (0.0, 0.0, 0.0, 0.0):
+            out = data           # no orientation at all: pass through
+        else:
+            wit_yaw = hl.yaw_from_quaternion(*q)
+            yaw = self.src.on_wit(now, wit_yaw, gz)
+            rate = self.src.rate(now)
+            est.on_imu(now, yaw, rate)
+            rot = hl.wrap(yaw - wit_yaw)
+            off = est.offset
+            if off is not None:
+                rot = hl.wrap(rot + off)
+            if rot != 0.0:
+                q = hl.rotate_yaw(q, rot)
+            s = est.yaw_sigma(now)
+            out = hl.imu_rewrite(data, pos, q, s * s)
+            if rate != gz:
+                out = hl.imu_set_gyro_z(out, pos, rate)
         self._imu_pub.publish(out)
 
     def _on_stereo(self, data):
@@ -317,8 +336,7 @@ class HeadingAligner(Node):
         pos = self._st_tail
         if pos is None:
             return
-        with self._lock:
-            self.src.on_stereo(now, hl.imu_stamp(data), hl.imu_gyro(data, pos))
+        self.src.on_stereo(now, hl.imu_stamp(data), hl.imu_gyro(data, pos))  # lock held
 
     def _stereo_tick(self):
         if self._stereo_sub is None:
@@ -327,7 +345,8 @@ class HeadingAligner(Node):
         if self._low_power and now - self._stereo_polled < self._stereo_idle_period - 1e-3:
             return
         self._stereo_polled = now
-        self._pump.poll([self._stereo_sub])   # _on_stereo takes the lock per sample
+        with self._lock:     # one lock round per batch, _on_stereo runs under it
+            self._pump.poll([self._stereo_sub])
 
     def _on_activity(self, msg):
         self._low_power = hl.activity_low_power(msg.data)

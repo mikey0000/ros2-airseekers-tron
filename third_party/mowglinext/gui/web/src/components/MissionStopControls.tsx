@@ -1,13 +1,13 @@
 import React, {useEffect, useState} from "react";
-import {Alert, App, Button, Space} from "antd";
-import {PlayCircleOutlined, RedoOutlined, StopOutlined} from "@ant-design/icons";
+import {Alert, App, Button, Popover, Space} from "antd";
+import {PlayCircleOutlined, QuestionCircleOutlined, RedoOutlined, StepForwardOutlined, StopOutlined} from "@ant-design/icons";
 import {DockIcon} from "./DockIcon.tsx";
 import {useTranslation} from "react-i18next";
 import {useMowerAction} from "./MowerActions.tsx";
 import {useStatus} from "../hooks/useStatus.ts";
 import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts";
 import {
-    canReset, canStop, CMD_HOME, CMD_RESET_EMERGENCY, CMD_STOP, isLatchedFault, isMissionActive,
+    canHome, canReset, canResume, canStop, CMD_HOME, CMD_START, CMD_RESET_EMERGENCY, CMD_STOP, isLatchedFault, isMissionActive,
     isNotice, stopNeedsConfirm,
 } from "../utils/missionStates.ts";
 
@@ -17,6 +17,8 @@ interface Props {
     subStateName?: string;
     /** Opens the Start sheet (or sends START on robots without one). */
     onStart: () => void;
+    /** "Start fresh" (discard the resume cursor). Defaults to clear_resume + START. */
+    onStartFresh?: () => void;
     style?: React.CSSProperties;
 }
 
@@ -25,7 +27,7 @@ interface Props {
  * with Reset (254) for latched faults, and a post-stop follow-up offering
  * Return to dock / Start-or-Resume. State gating lives in utils/missionStates.
  */
-export const MissionStopControls: React.FC<Props> = ({state, stateName, subStateName, onStart, style}) => {
+export const MissionStopControls: React.FC<Props> = ({state, stateName, subStateName, onStart, onStartFresh, style}) => {
     const {t} = useTranslation();
     const {modal, notification} = App.useApp();
     const mowerAction = useMowerAction();
@@ -33,6 +35,9 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
     const resumeAvailable = useCoverageResumeAvailable();
     const [busy, setBusy] = useState<string | null>(null);
     const [stopped, setStopped] = useState(false);
+    // STUCK_NEEDS_HELP: the owner moves the robot by hand first; Resume appears only
+    // once Reset was pressed in this latch (it clears the stuck guard history).
+    const [stuckReset, setStuckReset] = useState(false);
 
     const active = isMissionActive(state, stateName);
     const fault = isLatchedFault(stateName);
@@ -42,6 +47,9 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
     useEffect(() => {
         if (active || fault) setStopped(false);
     }, [active, fault]);
+    useEffect(() => {
+        if (stateName !== "STUCK_NEEDS_HELP") setStuckReset(false);
+    }, [stateName]);
 
     const run = (key: string, command: number, after?: () => void) => async () => {
         setBusy(key);
@@ -57,6 +65,43 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
             setBusy(null);
         }
     };
+
+    const resumable = canResume(state, stateName, resumeAvailable) &&
+        (stateName !== "STUCK_NEEDS_HELP" || stuckReset);
+    // Resume = START with a cursor present: the mission continues the same area at
+    // the saved sub-path / pose (mission_fsm._start resume path), no Start sheet.
+    const resumeButton = resumable ? (
+        <Button type="primary" size="large" icon={<StepForwardOutlined/>} loading={busy === "resume"}
+                onClick={run("resume", CMD_START, () => setStopped(false))} data-testid="mission-resume">
+            {t('missionStop.resumeMowing')}
+        </Button>
+    ) : null;
+    const startFresh = async () => {
+        setStopped(false);
+        if (onStartFresh) { onStartFresh(); return; }
+        setBusy("fresh");
+        try {
+            await mowerAction("coverage_clear_resume", {})();
+            await mowerAction("high_level_control", {Command: CMD_START})();
+        } catch (e: unknown) {
+            notification.error({message: t('missionStop.failed'), description: e instanceof Error ? e.message : undefined});
+        } finally {
+            setBusy(null);
+        }
+    };
+    const startFreshButton = resumable ? (
+        <Button size="small" type="link" icon={<PlayCircleOutlined/>} loading={busy === "fresh"}
+                onClick={() => void startFresh()} data-testid="mission-start-fresh">
+            {t('missionStop.startFresh')}
+        </Button>
+    ) : null;
+    const whyStopped = (
+        <Popover content={subStateName || t('missionStop.faultNoReason')} trigger="click">
+            <Button size="small" type="link" icon={<QuestionCircleOutlined/>} data-testid="mission-why-stopped">
+                {t('missionStop.whyStopped')}
+            </Button>
+        </Popover>
+    );
 
     const sendStop = run("stop", CMD_STOP, () => setStopped(true));
     const onStopClick = () => {
@@ -92,16 +137,25 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                 showIcon
                 data-testid="mission-fault"
                 message={t('missionStop.faultTitle', {state: stateName})}
-                description={subStateName || t('missionStop.faultNoReason')}
+                description={<>
+                    {subStateName || t('missionStop.faultNoReason')}
+                    {stateName === "STUCK_NEEDS_HELP" && resumeAvailable && !stuckReset && (
+                        <div data-testid="mission-stuck-hint">{t('missionStop.stuckResetFirst')}</div>
+                    )}
+                </>}
                 action={
                     <Space direction="vertical">
                         {stopButton}
                         {canReset(stateName) && (
                             <Button icon={<RedoOutlined/>} loading={busy === "reset"}
-                                    onClick={run("reset", CMD_RESET_EMERGENCY)} data-testid="mission-reset">
+                                    onClick={run("reset", CMD_RESET_EMERGENCY,
+                                        () => { if (stateName === "STUCK_NEEDS_HELP") setStuckReset(true); })}
+                                    data-testid="mission-reset">
                                 {t('missionStop.reset')}
                             </Button>
                         )}
+                        {resumeButton}
+                        {startFreshButton}
                     </Space>
                 }
             />
@@ -124,9 +178,12 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                                 onClick={run("home", CMD_HOME)}>
                             {t('missionStop.returnToDock')}
                         </Button>
-                        <Button type="primary" icon={<PlayCircleOutlined/>} onClick={onStart}>
-                            {resumeAvailable ? t('missionStop.resumeOrFresh') : t('missionStop.start')}
-                        </Button>
+                        {resumeButton ?? (
+                            <Button type="primary" icon={<PlayCircleOutlined/>} onClick={onStart}>
+                                {t('missionStop.start')}
+                            </Button>
+                        )}
+                        {startFreshButton}
                     </Space>
                 }
             />
@@ -137,26 +194,32 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
         return <div style={{display: "flex", justifyContent: "center", ...style}}>{stopButton}</div>;
     }
 
-    if (stopped) {
+    if (stopped || resumable) {
         return (
             <Alert
                 style={style}
                 type="info"
                 showIcon
-                closable
+                closable={!resumable}
                 onClose={() => setStopped(false)}
-                message={t('missionStop.stoppedTitle')}
-                description={resumeAvailable ? t('missionStop.stoppedResumeHint') : undefined}
+                data-testid="mission-stopped"
+                message={resumable && !stopped ? t('missionStop.interruptedTitle') : t('missionStop.stoppedTitle')}
+                description={resumable ? <>{t('missionStop.interruptedHint')} {whyStopped}</> : undefined}
                 action={
                     <Space direction="vertical">
-                        <Button icon={<DockIcon/>} loading={busy === "home"}
-                                onClick={run("home", CMD_HOME, () => setStopped(false))}>
-                            {t('missionStop.returnToDock')}
-                        </Button>
-                        <Button type="primary" icon={<PlayCircleOutlined/>}
-                                onClick={() => { setStopped(false); onStart(); }}>
-                            {resumeAvailable ? t('missionStop.resumeOrFresh') : t('missionStop.start')}
-                        </Button>
+                        {resumeButton}
+                        {canHome(state, stateName) && (
+                            <Button icon={<DockIcon/>} loading={busy === "home"}
+                                    onClick={run("home", CMD_HOME, () => setStopped(false))}>
+                                {t('missionStop.returnToDock')}
+                            </Button>
+                        )}
+                        {resumable ? startFreshButton : (
+                            <Button type="primary" icon={<PlayCircleOutlined/>}
+                                    onClick={() => { setStopped(false); onStart(); }}>
+                                {t('missionStop.start')}
+                            </Button>
+                        )}
                     </Space>
                 }
             />

@@ -4313,7 +4313,13 @@
     "stoppedResumeHint": "La progression est enregistrée : reprenez où elle s'est arrêtée ou recommencez.",
     "returnToDock": "Retour à la base",
     "resumeOrFresh": "Reprendre / recommencer",
-    "start": "Démarrer la tonte"
+    "start": "Démarrer la tonte",
+    "resumeMowing": "Reprendre la tonte",
+    "startFresh": "Recommencer à zéro",
+    "interruptedTitle": "Tonte interrompue",
+    "interruptedHint": "La progression est enregistrée : Reprendre continue la même zone là où elle s'est arrêtée.",
+    "whyStopped": "Pourquoi arrêté ?",
+    "stuckResetFirst": "Dégagez la tondeuse à la main, puis appuyez sur Réinitialiser pour activer Reprendre."
   },
   "mapPath": {
     "title": "Nouveau chemin",

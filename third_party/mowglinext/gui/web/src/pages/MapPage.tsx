@@ -46,6 +46,7 @@ import {useIsMobile} from "../hooks/useIsMobile.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
 import {useAreaSettingsSupport} from "../hooks/useAreaSettings.ts";
 import {MissionStopControls} from "../components/MissionStopControls.tsx";
+import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts";
 import {StartMowSheet, type StartSelection} from "../components/areaSettings/StartMowSheet.tsx";
 import {AreaSettingsDrawer} from "../components/areaSettings/AreaSettingsDrawer.tsx";
 import {mowingAreaChoices} from "../utils/mapAreaIndex.ts";
@@ -70,7 +71,7 @@ import {appendTrack, planStretches, type TrackPoint} from "../utils/missionProgr
 import {hasLiveProgress, MowProgressCard} from "./map/components/MowProgressCard.tsx";
 import {MissionStatusLine} from "./map/components/MissionStatusLine.tsx";
 import {useTopic} from "../hooks/useTopic.ts";
-import {CMD_RECORD_PATH, recordingKind} from "../utils/missionStates.ts";
+import {canResume, CMD_RECORD_PATH, CMD_START, recordingKind} from "../utils/missionStates.ts";
 import type {AbsolutePose} from "../types/ros.ts";
 import {postTerrainAction, useTerrainSummary} from "../hooks/useTerrain.ts";
 import {TerrainCard} from "./map/components/TerrainCard.tsx";
@@ -967,7 +968,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // Navigation area / path selected in view mode: the settings panel opens
     // disabled with a hint, since drive-only areas are never mowed.
     const [settingsNavName, setSettingsNavName] = useState<string | null>(null);
-    const [startSheet, setStartSheet] = useState<{open: boolean; selection: StartSelection}>({open: false, selection: "all"});
+    const [startSheet, setStartSheet] = useState<{open: boolean; selection: StartSelection; mode?: "resume" | "fresh"}>({open: false, selection: "all"});
+    const resumeAvailable = useCoverageResumeAvailable();
     const areaChoices = useMemo(
         () => mowingAreaChoices(map, (order) => t('mapAreasList.unnamedArea', {order})),
         [map, t],
@@ -1104,6 +1106,17 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         onStart: useStartSheet
             ? () => { setStartSheet({open: true, selection: "all"}); return Promise.resolve(); }
             : mowerAction("high_level_control", {Command: 1}),
+        // Resume = plain START: with a cursor the mission resumes the same area at the
+        // saved sub-path / pose (no sheet, no Resume-or-fresh prompt).
+        onResume: canResume(highLevelStatus.highLevelStatus.state, highLevelStatus.highLevelStatus.state_name, resumeAvailable)
+            ? mowerAction("high_level_control", {Command: CMD_START})
+            : undefined,
+        onStartFresh: useStartSheet
+            ? () => { setStartSheet({open: true, selection: "all", mode: "fresh"}); return Promise.resolve(); }
+            : async () => {
+                await mowerAction("coverage_clear_resume", {})();
+                await mowerAction("high_level_control", {Command: CMD_START})();
+            },
         onHome: mowerAction("high_level_control", {Command: 2}),
         // Go provider "undock" route -> high_level_control Command 9 (mission_fsm CMD_UNDOCK).
         onUndock: mowerAction("undock"),
@@ -1131,7 +1144,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         onBladeOff: mowerAction("mow_enabled", {mow_enabled: 0, mow_direction: 0}),
         onRecordFinish: mowerAction("high_level_control", {Command: 5}),
         onRecordCancel: mowerAction("high_level_control", {Command: 6}),
-    }), [mowerAction, highLevelStatus.highLevelStatus.state_name, useStartSheet]);
+    }), [mowerAction, highLevelStatus.highLevelStatus.state, highLevelStatus.highLevelStatus.state_name, useStartSheet, resumeAvailable]);
 
     // Centered message panel used for the missing-token and missing-datum
     // states — a plain, translated explanation instead of an eternal spinner
@@ -1689,6 +1702,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             stateName={highLevelStatus.highLevelStatus.state_name}
                             subStateName={highLevelStatus.highLevelStatus.sub_state_name}
                             onStart={() => { void mowerActions.onStart(); }}
+                            onStartFresh={() => { void mowerActions.onStartFresh(); }}
                         />
                     </div>
                     {!editMap && (
@@ -1905,6 +1919,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     <StartMowSheet
                         open={startSheet.open}
                         initialSelection={startSheet.selection}
+                        initialMode={startSheet.mode ?? "resume"}
                         areas={areaChoices}
                         onClose={() => setStartSheet((s) => ({...s, open: false}))}
                         onEdit={(target) => setSettingsArea({

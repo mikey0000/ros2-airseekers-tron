@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {
-    CMD_UNDOCK, recordingKind, canHome, canReset, canUndock, isDocked, canStart, canStop, isLatchedFault, isMissionActive, isNotice, stopNeedsConfirm,
+    CMD_UNDOCK, canResume, recordingKind, canHome, canReset, canUndock, isDocked, canStart, canStop, isLatchedFault, isMissionActive, isNotice, stopNeedsConfirm,
 } from "./missionStates.ts";
 
 // [state_name, numeric state, active, latched, stop, reset, start, home]
@@ -88,5 +88,19 @@ describe('recordingKind', () => {
         expect(recordingKind('RECORDING', 'saving path')).toBe('path');
         expect(recordingKind('RECORDING', 'drive the boundary with the joystick')).toBe('area');
         expect(recordingKind('IDLE', 'path')).toBeNull();
+    });
+});
+
+describe("canResume", () => {
+    it("offers Resume at rest with a cursor", () => {
+        for (const n of ["IDLE", "IDLE_DOCKED", "CHARGING", "MOWING_INCOMPLETE", "NAV_TO_DOCK_FAILED", "STUCK_NEEDS_HELP"])
+            expect(canResume(1, n, true)).toBe(true);
+    });
+    it("hides Resume without a cursor, while active, or while latched", () => {
+        expect(canResume(1, "IDLE", false)).toBe(false);
+        for (const n of ["MOWING", "TRANSIT", "BOUNDARY_PAUSED", "RETURNING_HOME", "RECORDING"])
+            expect(canResume(2, n, true)).toBe(false);
+        expect(canResume(1, "EMERGENCY", true)).toBe(false);
+        expect(canResume(1, "BOUNDARY_EMERGENCY_STOP", true)).toBe(false);
     });
 });

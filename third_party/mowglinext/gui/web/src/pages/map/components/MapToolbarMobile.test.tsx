@@ -1,3 +1,4 @@
+import {App as AntApp} from "antd";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -150,4 +151,18 @@ describe("MapToolbarMobile", () => {
     render(<MapToolbarMobile {...defaultProps} onDrawPath={vi.fn()} onDrawPathToDock={vi.fn()} onEditPath={vi.fn()} />);
     expect(screen.queryByRole("button", { name: en.mapToolbarMobile.drawPath })).toBeNull();
   });
+});
+
+describe('MapToolbarMobile Resume', () => {
+    it('shows primary Resume instead of Start when onResume is set, sends it on click', async () => {
+        const onResume = vi.fn().mockResolvedValue(undefined);
+        render(<AntApp><MapToolbarMobile {...defaultProps as any} stateName="IDLE" onResume={onResume} onStartFresh={vi.fn().mockResolvedValue(undefined)}/></AntApp>);
+        expect(screen.queryByText(en.mapToolbarMobile.start)).not.toBeInTheDocument();
+        await userEvent.click(screen.getByTestId('toolbar-resume'));
+        expect(onResume).toHaveBeenCalled();
+    });
+    it('no Resume without onResume', () => {
+        render(<AntApp><MapToolbarMobile {...defaultProps as any} stateName="IDLE"/></AntApp>);
+        expect(screen.queryByTestId('toolbar-resume')).toBeNull();
+    });
 });

@@ -63,12 +63,15 @@ PARAM_DEFAULTS = {
     'emergency_topic': '/hardware_bridge/emergency',
     'power_topic': '/hardware_bridge/power',
     'gps_fix_topic': '/gps/fix',
+    # /gps/fix (this relay) is GUI-only (foxglove_bridge is its sole subscriber); the GUI
+    # map marker needs ~2 Hz, the um960 source runs at 10 Hz. 0 = unthrottled.
+    'gps_fix_rate_hz': 2.0,
     'gnss_status_topic': '/gps/status',
     'wheel_odom_topic': '/wheel_odom',
     # /wheel_odom is GUI-only (foxglove_bridge is its sole subscriber) and /odom runs at
     # ~50 Hz. Every relayed message costs foxglove_bridge a few ms, so the relay is
     # rate-limited; the GUI only needs ~10 Hz (odometer, readiness, MQTT). 0 = unthrottled.
-    'wheel_odom_rate_hz': 10.0,
+    'wheel_odom_rate_hz': 5.0,
     'filtered_map_topic': '/odometry/filtered_map',
     # GUI-only low-rate copies (gui_relay.py): foxglove_bridge costs a few ms per delivered
     # message per client and cannot rate-limit, while the originals keep the rates the
@@ -79,6 +82,10 @@ PARAM_DEFAULTS = {
     'gui_status_rate_hz': 2.0,
     'gui_emergency_topic': '/gui/emergency',
     'gui_emergency_rate_hz': 1.0,          # plus immediately on any change
+    # /gps/status keeps 10 Hz for heading_aligner/map_server/docking/mission; the GUI reads
+    # this copy (fix-type changes go out at once).
+    'gui_gnss_status_topic': '/gui/gnss_status',
+    'gui_gnss_status_rate_hz': 2.0,
     'detections_topic': '/ai/det/detections',
     'gui_detections_topic': '/gui/detections',
     'gui_detections_rate_hz': 2.0,         # per camera (frame_id); relayed only while subscribed
@@ -213,6 +220,11 @@ class GuiBridgeNode(Node):
         self._gui_emergency_thr = gui_relay.Throttle(
             gui_relay.period_for(p['gui_emergency_rate_hz']))
         self._gui_emergency_last = None
+        self._gui_gnss_pub = gui_pub(GnssStatus, 'gui_gnss_status_topic')
+        self._gui_gnss_thr = gui_relay.Throttle(
+            gui_relay.period_for(p['gui_gnss_status_rate_hz']))
+        self._gui_gnss_last_fix_type = None
+        self._gps_fix_thr = gui_relay.Throttle(gui_relay.period_for(p['gps_fix_rate_hz']))
         self._gui_det_pub = None
         if str(p['gui_detections_topic']) and str(p['detections_topic']):
             from vision_msgs.msg import Detection2DArray
@@ -477,7 +489,8 @@ class GuiBridgeNode(Node):
             self._fix_status_time = time.monotonic()
 
     def _on_fix(self, msg):
-        self._gps_fix_pub.publish(msg)
+        if self._gps_fix_thr.due(time.monotonic()):
+            self._gps_fix_pub.publish(msg)
         with self._lock:
             self._last_fix = (int(msg.status.status), float(msg.latitude),
                               float(msg.longitude), float(msg.altitude), time.monotonic())
@@ -499,6 +512,12 @@ class GuiBridgeNode(Node):
             self._gnss_quality = float(values['quality_percent'])
             self._gnss_fix_type = int(values['fix_type'])
         self._gnss_pub.publish(out)
+        if self._gui_gnss_pub is not None:
+            fix_type = int(values['fix_type'])
+            changed = fix_type != self._gui_gnss_last_fix_type
+            self._gui_gnss_last_fix_type = fix_type
+            if self._gui_gnss_thr.due(time.monotonic(), changed=changed):
+                self._gui_gnss_pub.publish(out)
 
     def _wheel_odom_due(self):
         period = self._wheel_odom_period

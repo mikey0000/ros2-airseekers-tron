@@ -275,8 +275,9 @@ FOXGLOVE_GUI_TOPICS = [
     r'^/rosout$',
     # gui_bridge's low-rate GUI copies (mower_gui_bridge/gui_relay.py): pose 5 Hz, status
     # 2 Hz, emergency on change + 1 Hz, detections 2 Hz/camera on demand. The GUI provider
-    # reads these instead of the 20 / 5 / 5 / 15 Hz originals (kept above for older GUIs).
-    r'^/gui/(pose|status|emergency|detections)$',
+    # reads these instead of the 20 / 5 / 5 / 15 Hz originals (kept above for older GUIs);
+    # /gui/gnss_status is the 2 Hz copy of the 10 Hz /gps/status.
+    r'^/gui/(pose|status|emergency|detections|gnss_status)$',
 ]
 
 
@@ -459,7 +460,8 @@ def generate_launch_description() -> LaunchDescription:
                 # message (most likely each executor wake walking the ~200 parameter/service
                 # clients created for the GUI's parameter requests), so it scales with the
                 # subscribed rate. /wheel_odom (GUI-only) is therefore relayed at 10 Hz by
-                # gui_bridge (wheel_odom_rate_hz) instead of the 50 Hz /odom rate.
+                # gui_bridge (wheel_odom_rate_hz, 5 Hz) instead of the 50 Hz /odom rate, and the
+                # GUI-only /gps/fix at 2 Hz (gps_fix_rate_hz).
                 'sysinfo': False,
                 'topic_whitelist': topic_whitelist,
             }],

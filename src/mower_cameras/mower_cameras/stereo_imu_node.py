@@ -36,7 +36,9 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
 
 from mower_cameras import iio_imu
-from mower_cameras.activity_gate import ActivityWatch, imu_batch_wait, imu_decimation
+from mower_cameras.activity_gate import ActivityWatch, imu_decimation
+
+IDLE_BLOCK_S = 0.05             # idle FIFO block per wake-up (watermark = rate * this)
 from mower_cameras.stereo_pair import ClockMap
 
 KIND_PREFIX = {'gyro': 'anglvel', 'accel': 'accel'}
@@ -171,12 +173,21 @@ class StereoImuNode(Node):
         self.stop_evt = threading.Event()
         # idle: 100 Hz (every 2nd pair) drained in 100 ms bursts; full 200 Hz otherwise
         self.activity = ActivityWatch(lambda a: self.get_logger().info(
-            f'stereo_imu: activity {a} -> 1/{imu_decimation(self.activity.low_power)} rate'))
+            f'stereo_imu: activity {a} (idle={self.activity.low_power})'))
         self.activity.subscribe(self)
         self.thread = threading.Thread(target=self._run, name='iio:stereo_imu', daemon=True)
         self.thread.start()
         self._t_stats = time.monotonic()
         self.create_timer(30.0, self._log_stats)
+
+    def _drop_odom_sub(self):
+        """Bias known: stop deserialising /odom in Python (only the rest gate used it)."""
+        sub, self._odom_sub = self._odom_sub, None
+        if sub is not None:
+            try:
+                self.destroy_subscription(sub)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _on_odom(self, msg):
         tw = msg.twist.twist
@@ -184,12 +195,17 @@ class StereoImuNode(Node):
             self._odom_moving_until = time.monotonic() + 0.5
 
     # ------------------------------------------------------------------ streaming
-    def _open(self):
+    def _open(self, low=False):
         devs = iio_imu.find_devices(self.p['device_names'])
         if set(devs) != {'gyro', 'accel'}:
             raise OSError('no ICM-406xx/426xx IIO devices (driver in netlink mode? run '
                           'scripts/setup_stereo_host.sh on the host)')
         rate, wm = float(self.p['rate']), int(self.p['watermark'])
+        if low:
+            # idle: lower the HARDWARE rate (half the samples to read / pair / stamp in
+            # Python) and wake once per ~100 ms FIFO block (watermark) instead of per 4.
+            rate = rate / imu_decimation(True)
+            wm = max(wm, int(rate * IDLE_BLOCK_S))
         streams = [IioStream(devs['gyro'], 'gyro', rate, float(self.p['gyro_scale']), 512, wm),
                    IioStream(devs['accel'], 'accel', rate, float(self.p['accel_scale']), 512,
                              wm)]
@@ -202,8 +218,9 @@ class StereoImuNode(Node):
     def _run(self):
         backoff = 1.0
         while not self.stop_evt.is_set():
+            low = self.activity.low_power
             try:
-                streams = self._open()
+                streams = self._open(low)
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().error(f'stereo_imu: {exc}; retry in {backoff:.0f}s')
                 self.stop_evt.wait(backoff)
@@ -211,7 +228,14 @@ class StereoImuNode(Node):
                 continue
             backoff = 1.0
             try:
-                self._stream(streams)
+                self._stream(streams, low)
+                if not self.stop_evt.is_set():
+                    self.get_logger().info(f'stereo_imu: activity {self.activity.activity} '
+                                           f'-> reopening at {"idle" if not low else "full"} rate')
+                    for s in streams:
+                        s.close()
+                    streams = []
+                    continue
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().error(f'stereo_imu: stream failed: {exc}')
             finally:
@@ -219,7 +243,8 @@ class StereoImuNode(Node):
                     s.close()
             self.stop_evt.wait(1.0)
 
-    def _stream(self, streams):
+    def _stream(self, streams, low=False):
+        """Stream until stop or until the activity's power mode differs from ``low``."""
         gyro, accel = streams
         pairer = iio_imu.ImuPairer(tol_ns=int(0.25e9 / max(gyro.rate, 1.0)))
         clock = None
@@ -229,11 +254,8 @@ class StereoImuNode(Node):
         last_data = time.monotonic()
         n_pair = 0
         while not self.stop_evt.is_set():
-            low = self.activity.low_power
-            wait = imu_batch_wait(low)
-            if wait:
-                self.stop_evt.wait(wait)    # let the FIFO fill: fewer wake-ups while idle
-            decim = imu_decimation(low)
+            if self.activity.low_power != low:
+                return                      # reopen at the other rate (~ms)
             r, _, _ = select.select([gyro.fd, accel.fd], [], [], 1.0)
             if not r:
                 if time.monotonic() - last_data > 3.0:
@@ -263,14 +285,13 @@ class StereoImuNode(Node):
                         continue
                     if self.bias.add(g):
                         self._publish_bias(t if clock == 'realtime' else cmap.to_ros(t))
+                        self._drop_odom_sub()
                     continue        # do not publish an uncalibrated gyro
                 if self.bias is not None:
                     b = self.bias.bias
                     g = (g[0] - b[0], g[1] - b[1], g[2] - b[2])
                 stamp = t if clock == 'realtime' else cmap.to_ros(t)
                 n_pair += 1
-                if decim > 1 and n_pair % decim:
-                    continue
                 if stamp < last_pub + min_dt:   # rare kernel near-duplicate stamp
                     stamp = last_pub + min_dt
                 last_pub = stamp

@@ -384,11 +384,11 @@ local_costmap:
     ros__parameters:
       use_sim_time: false
       update_frequency: 10.0
-      publish_frequency: 2.0
+      publish_frequency: 1.0   # idle CPU: GUI-only consumer
       global_frame: odom
       robot_base_frame: base_link
       transform_tolerance: 0.5
-      always_send_full_costmap: true
+      always_send_full_costmap: false
       footprint: "[[0.52, 0.27], [0.52, -0.27], [-0.23, -0.27], [-0.23, 0.27]]"
       footprint_padding: 0.02
       # DEVIATION: 4 x 4 m (MowgliNext 12 x 12) — only bumper hits populate it.
@@ -586,7 +586,7 @@ lifecycle_manager_navigation:
   ros__parameters:
     use_sim_time: false
     autostart: true
-    bond_timeout: 10.0
+    bond_timeout: 4.0
     # A server that crashes is respawned by launch (respawn=True); the manager then resets
     # the stack and re-activates it when all servers are back (docs/crash_recovery.md).
     attempt_respawn_reconnection: true
@@ -603,7 +603,7 @@ lifecycle_manager_costmap_filters:
   ros__parameters:
     use_sim_time: false
     autostart: true
-    bond_timeout: 10.0
+    bond_timeout: 4.0
     attempt_respawn_reconnection: true
     bond_respawn_max_duration: 30.0
     node_names:

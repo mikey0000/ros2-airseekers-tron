@@ -51,6 +51,7 @@ from sensor_msgs.msg import Image, PointCloud2, PointField
 from std_msgs.msg import Float32MultiArray, String
 
 from mower_cameras import depth_filters as dfl
+from mower_cameras.activity_gate import ActivityWatch
 
 from mower_cameras.v4l2_node import CaptureLoop, to_image_msg
 
@@ -166,6 +167,11 @@ class StereoDepthNode(Node):
         # --- temporal ---
         d('persist_frames', 2)           # voxel seen in N consecutive frames
         d('persist_voxel_m', 0.10)
+        # --- idle (/mission/activity docked_idle|idle): close /dev/video11, no maths ---
+        # Nav2 is idle then (no controller running), so the obstacle source's
+        # expected_update_rate gate is irrelevant. Any other activity (incl. UNDOCKING and
+        # PREFLIGHT_CHECK, see mower_mission/activity.py) reopens within ~0.2 s + open time.
+        d('idle_pause', True)
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.cfg = {n: p(n) for n in ('frame_id', 'bxf_mm', 'disparity_scale', 'fx', 'fy',
                                        'cx', 'cy', 'cloud_step', 'min_range_m', 'max_range_m',
@@ -183,7 +189,8 @@ class StereoDepthNode(Node):
             from tf2_msgs.msg import TFMessage
             # Own light /tf subscription (only reads the stamp of parent->child), independent
             # of the ground-prior TF listener that is dropped once the static chain is known.
-            self.create_subscription(TFMessage, '/tf', self._on_tf, 50)
+            self._tf_msg_type = TFMessage
+            self._tf_sub = None
         self.ground_base = p('ground_base_frame')
         cf = float(p('cloud_fps'))
         self.cloud_period = 0.9 / cf if cf > 0 else 0.0
@@ -214,11 +221,31 @@ class StereoDepthNode(Node):
                                 p('pixel_format'), p('fps'), self._on_frame, 'v4l2',
                                 name='cap:simor',
                                 want=self._wanted if self.on_demand else None)
+        self.idle_pause = bool(p('idle_pause'))
+        self.activity = ActivityWatch(self._on_activity)
+        self._on_activity(None)
+        self.activity.subscribe(self)
+        if self.idle_pause:
+            self.loop.pause_fn = lambda: self.activity.low_power
         self.loop.start()
         self.get_logger().info(
             f'stereo_depth {p("video_device")} {p("width")}x{p("height")} fps<={p("fps")} '
             f'bxf={self.cfg["bxf_mm"]} scale={self.cfg["disparity_scale"]} '
             f'-> ~/points, ~/depth/image_raw ({self.cfg["frame_id"]})')
+
+    def _on_activity(self, act):
+        """Drop the Python /tf subscription while paused (it deserialises every /tf msg)."""
+        paused = self.idle_pause and self.activity.low_power if act is not None else False
+        if act is not None:
+            self.get_logger().info(f'stereo_depth: activity {act} -> '
+                                   f'{"paused" if paused else "streaming"}')
+        if not self._stamp_parent:
+            return
+        if paused and self._tf_sub is not None:
+            self.destroy_subscription(self._tf_sub)
+            self._tf_sub = None
+        elif not paused and self._tf_sub is None:
+            self._tf_sub = self.create_subscription(self._tf_msg_type, '/tf', self._on_tf, 50)
 
     def _wanted(self):
         return any(x.get_subscription_count() > 0

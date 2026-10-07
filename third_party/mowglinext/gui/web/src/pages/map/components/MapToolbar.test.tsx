@@ -214,4 +214,18 @@ describe('MapToolbar', () => {
             expect(onUndock).toHaveBeenCalledTimes(1);
         });
     });
+
+describe('Resume', () => {
+    it('shows primary Resume instead of Start when onResume is set, sends it on click', async () => {
+        const onResume = vi.fn().mockResolvedValue(undefined);
+        render(<AntApp><MapToolbar {...defaultProps as any} stateName="IDLE" onResume={onResume} onStartFresh={vi.fn().mockResolvedValue(undefined)}/></AntApp>);
+        expect(screen.queryByText(en.mapToolbar.start)).not.toBeInTheDocument();
+        await userEvent.click(screen.getByTestId('toolbar-resume'));
+        expect(onResume).toHaveBeenCalled();
+    });
+    it('no Resume without onResume', () => {
+        render(<AntApp><MapToolbar {...defaultProps as any} stateName="IDLE"/></AntApp>);
+        expect(screen.queryByTestId('toolbar-resume')).toBeNull();
+    });
+});
 });

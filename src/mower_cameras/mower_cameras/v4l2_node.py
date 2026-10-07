@@ -94,6 +94,10 @@ class CaptureLoop(threading.Thread):
         self.on_frame = on_frame
         self.want = want            # () -> bool: is anybody interested in this frame?
         self.period_fn = None       # () -> float: overrides the publish period (idle cap)
+        # () -> bool: True = device closed, no capture at all (polled every pause_poll_s)
+        self.pause_fn = None
+        self.pause_poll_s = 0.2
+        self.paused = False
         self.stop_evt = threading.Event()
         self.skipped = 0
         self.captured = 0           # frames dequeued (published or skipped)
@@ -150,6 +154,16 @@ class CaptureLoop(threading.Thread):
         backoff, fails, last_pub = 1.0, 0, 0.0
         period = 1.0 / self.fps if self.fps > 0 else 0.0
         while not self.stop_evt.is_set():
+            if self.pause_fn is not None and self.pause_fn():
+                if not self.paused:
+                    self.paused = True
+                    self._close()
+                    self.log.info(f'{self.device}: paused (device closed)')
+                self.stop_evt.wait(self.pause_poll_s)
+                continue
+            if self.paused:
+                self.paused = False
+                self.log.info(f'{self.device}: resuming')
             if self.cap is None:
                 try:
                     self.cap = self._open()

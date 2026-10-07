@@ -16,6 +16,8 @@ type Props = {
     onClose: () => void;
     areas: MowingAreaChoice[];
     initialSelection?: StartSelection;
+    /** Pre-selected Resume / Start fresh choice ("Start fresh" entry points pass fresh). */
+    initialMode?: "resume" | "fresh";
     /** Open the full editor for this target (closes the sheet first). */
     onEdit?: (target: AreaSettingsTarget) => void;
 };
@@ -26,14 +28,14 @@ type Props = {
  * defaults for "All areas" — before START), pick Resume vs Start fresh, then
  * fire the existing START / start_in_area flow.
  */
-export const StartMowSheet: React.FC<Props> = ({open, onClose, areas, initialSelection = "all", onEdit}) => {
+export const StartMowSheet: React.FC<Props> = ({open, onClose, areas, initialSelection = "all", initialMode = "resume", onEdit}) => {
     const {t} = useTranslation();
     const api = useApi();
     const isMobile = useIsMobile();
     const {notification} = App.useApp();
     const resumeAvailable = useCoverageResumeAvailable();
     const [selection, setSelection] = useState<StartSelection>(initialSelection);
-    const [resumeMode, setResumeMode] = useState<"resume" | "fresh">("resume");
+    const [resumeMode, setResumeMode] = useState<"resume" | "fresh">(initialMode);
     const target: AreaSettingsTarget = selection === "all" ? "defaults" : selection;
     const {loading, supported, defaults, effective: stored} = useAreaSettings(open ? target : null);
     const effective = useMemo(() => effectiveAreaSettings(defaults, stored), [defaults, stored]);
@@ -48,9 +50,9 @@ export const StartMowSheet: React.FC<Props> = ({open, onClose, areas, initialSel
     useEffect(() => {
         if (open) {
             setSelection(initialSelection);
-            setResumeMode("resume");
+            setResumeMode(initialMode);
         }
-    }, [open, initialSelection]);
+    }, [open, initialSelection, initialMode]);
     useEffect(() => {
         setHeight(effective.cutter_height_mm);
         setRepeat(effective.repeat);

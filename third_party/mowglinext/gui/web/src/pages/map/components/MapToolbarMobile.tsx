@@ -25,6 +25,7 @@ import {
     SplitCellsOutlined,
     MinusSquareOutlined,
     PlayCircleOutlined,
+    StepForwardOutlined,
     WarningOutlined,
     PlusOutlined,
     BorderOutlined,
@@ -107,6 +108,12 @@ interface MapToolbarMobileProps {
     highLevelState?: number;
     emergency?: boolean;
     onStart?: () => Promise<void>;
+    /** Set when a resume cursor exists and the mission is at rest (canResume): shows the
+     *  primary "Resume mowing" (START from the cursor, no sheet) and moves Start to
+     *  "Start fresh" in More. */
+    onResume?: () => Promise<void>;
+    /** "Start fresh" (More menu, only with onResume): opens the start flow in fresh mode. */
+    onStartFresh?: () => Promise<void>;
     onHome?: () => Promise<void>;
     /** Standalone undock (shown only while docked: IDLE_DOCKED / CHARGING). */
     onUndock?: () => Promise<void>;
@@ -135,7 +142,7 @@ export const MapToolbarMobile = ({
     onPlaceDock, dockPlacementMode, onDrawPath, onConnectDock, dockAvailable,
     onDrawPathToDock, onEditPath, editPathEnabled,
     stateName, highLevelState, emergency,
-    onStart, onHome, onUndock, onEmergencyOn, onEmergencyOff,
+    onStart, onResume, onStartFresh, onHome, onUndock, onEmergencyOn, onEmergencyOff,
     onAreaRecording, onPathRecording, onMowNextArea, onContinueOrPause,
     onBladeForward, onBladeBackward, onBladeOff,
 }: MapToolbarMobileProps) => {
@@ -242,6 +249,9 @@ export const MapToolbarMobile = ({
         {key: "areaRecording", icon: <AimOutlined />, label: t("mapToolbarMobile.recordArea")},
         ...(onPathRecording ? [{key: "pathRecording", icon: <NodeIndexOutlined />, label: t("mapToolbarMobile.recordPath")}] : []),
         {key: "mowNext", icon: <ForwardOutlined />, label: t("mapToolbarMobile.mowNextArea")},
+        ...(onResume && onStartFresh
+            ? [{key: "startFresh", icon: <PlayCircleOutlined />, label: t("missionStop.startFresh")} satisfies NonNullable<MenuProps["items"]>[number]]
+            : []),
         {key: "continueOrPause", icon: isIdle ? <CaretRightOutlined /> : <PauseOutlined />, label: isIdle ? t("mapToolbarMobile.continue") : t("mapToolbarMobile.pause")},
         {type: "divider"},
         {key: "bladeForward", icon: <ThunderboltOutlined />, label: t("mapToolbarMobile.bladeForward")},
@@ -272,6 +282,7 @@ export const MapToolbarMobile = ({
             case "areaRecording": safeCall(onAreaRecording); break;
             case "pathRecording": safeCall(onPathRecording); break;
             case "mowNext": safeCall(onMowNextArea); break;
+            case "startFresh": safeCall(onStartFresh); break;
             case "continueOrPause": safeCall(onContinueOrPause); break;
             case "bladeForward": safeCall(() => confirmBlade(onBladeForward)); break;
             case "bladeBackward": safeCall(() => confirmBlade(onBladeBackward)); break;
@@ -475,7 +486,20 @@ export const MapToolbarMobile = ({
             <div style={toolbarStyle}>
                 {/* Primary mission controls first, labelled (the owner could not
                     find an icon-only Home); editing tools sit at the end next to More. */}
-                {!isRecording && isIdle && (
+                {!isRecording && onResume && (
+                    <AsyncButton
+                        type="primary"
+                        size="large"
+                        icon={<StepForwardOutlined />}
+                        onAsyncClick={onResume}
+                        aria-label={t("missionStop.resumeMowing")}
+                        data-testid="toolbar-resume"
+                        style={touchTarget}
+                    >
+                        {t("missionStop.resumeMowing")}
+                    </AsyncButton>
+                )}
+                {!isRecording && isIdle && !onResume && (
                     <AsyncButton
                         type="primary"
                         size="large"

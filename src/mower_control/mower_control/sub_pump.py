@@ -49,6 +49,82 @@ except ImportError:  # pragma: no cover - very old/new rclpy
     _rclpy = None
 
 
+# ----------------------------------------------------------------------------
+# Opt-in profiler: MOWER_PROFILE=1 (or the executable named in /tmp/mower_profile) profiles every thread of the process (main thread from
+# import of this module, threads started afterwards via a Thread bootstrap hook) with cProfile;
+# SIGUSR1 writes the merged stats to /tmp/<MOWER_PROFILE_NAME or process name>.prof
+# (``python3 -m pstats`` / snakeviz to read). Zero cost when the variable is unset.
+# ----------------------------------------------------------------------------
+_PROFILES = []
+
+
+def _profile_thread():
+    import cProfile
+    prof = cProfile.Profile()
+    _PROFILES.append(prof)
+    prof.enable()
+
+
+def _profile_dump(*_args):
+    import os
+    import pstats
+    import sys as _sys
+    name = os.environ.get('MOWER_PROFILE_NAME') or os.path.basename(_sys.argv[0] or 'python')
+    path = '/tmp/%s.prof' % name
+    stats = None
+    for prof in list(_PROFILES):
+        try:
+            prof.snapshot_stats()  # read while the profilers keep running (GIL held)
+            st = pstats.Stats()
+            st.stats = prof.stats
+            st.get_top_level_stats()
+            if stats is None:
+                stats = st
+            else:
+                stats.add(st)
+        except Exception:  # noqa: BLE001 - best effort diagnostics
+            pass
+    if stats is not None:
+        stats.dump_stats(path)
+
+
+def _profile_install():
+    import os
+    import signal
+    if getattr(threading, '_mower_profiled', False):
+        return
+    if os.environ.get('MOWER_PROFILE') != '1':
+        # Without touching the launch env: list executable names (one per line) in
+        # /tmp/mower_profile (MOWER_PROFILE_FILE) inside the container, then restart it.
+        import sys as _sys
+        try:
+            with open(os.environ.get('MOWER_PROFILE_FILE', '/tmp/mower_profile')) as fh:
+                names = fh.read().split()
+        except OSError:
+            return
+        if os.path.basename(_sys.argv[0] or '') not in names:
+            return
+    threading._mower_profiled = True  # once per process even with several copies imported
+    inner = threading.Thread._bootstrap_inner
+
+    def _bootstrap_inner(self, _inner=inner):
+        try:
+            _profile_thread()
+        except Exception:  # noqa: BLE001 - another profiler active
+            pass
+        _inner(self)
+
+    threading.Thread._bootstrap_inner = _bootstrap_inner
+    try:
+        signal.signal(signal.SIGUSR1, _profile_dump)
+    except ValueError:  # imported off the main thread
+        pass
+    _profile_thread()
+
+
+_profile_install()
+
+
 class _PumpOnlyGroup(CallbackGroup):
     """Callback group that rclpy executors never schedule (the pump owns it)."""
 
@@ -248,7 +324,17 @@ class SubscriptionPump:
                 if taken is None:
                     return
                 try:
-                    self._deliver(e, taken[0])
+                    if e.with_receipt:   # sampled deliver_all: callback(msg, receipt)
+                        age_ns = time.time_ns() - taken[1]['received_timestamp']
+                        receipt = time.monotonic() - max(0, age_ns) * 1e-9
+                        msg = taken[0] if e.convert is None else e.convert(taken[0])
+                        if e.lock is None:
+                            e.callback(msg, receipt)
+                        else:
+                            with e.lock:
+                                e.callback(msg, receipt)
+                    else:
+                        self._deliver(e, taken[0])
                 except Exception as exc:  # noqa: BLE001 - one bad message must not stop inputs
                     self._report(sub, exc)
 

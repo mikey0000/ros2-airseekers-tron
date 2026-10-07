@@ -29,7 +29,9 @@ def activity_for(phase, docked=False, charging=False, motion_phases=()):
         return MANUAL
     if phase in _DOCK_PHASES:
         return DOCKING
-    if phase in motion_phases or phase == 'UNDOCKING':
+    # PREFLIGHT_CHECK wakes the sensors too: area enumeration + planning give the stereo
+    # depth / cameras time to reopen and publish before the first Nav2 goal.
+    if phase in motion_phases or phase in ('UNDOCKING', 'PREFLIGHT_CHECK'):
         return MOWING
     return DOCKED_IDLE if (docked or charging) else IDLE
 

@@ -78,6 +78,19 @@ export const canReset = (name: N): boolean => isLatchedFault(name);
 export const canStart = (state: S, name: N): boolean =>
     state !== HL_STATE_AUTONOMOUS && !!name && IDLE_START_NAMES.has(name);
 
+/** At-rest states where the mission's START resumes the saved coverage cursor
+ *  (same area, same sub-path / pose index; mission_fsm._start with cursor.available).
+ *  EMERGENCY / BOUNDARY_EMERGENCY_STOP refuse START until Reset (then IDLE), so they
+ *  are not here; STUCK_NEEDS_HELP is gated in the banner on a Reset first. */
+export const RESUME_NAMES = [
+    "IDLE", "IDLE_DOCKED", "CHARGING", "MOWING_INCOMPLETE", "NAV_TO_DOCK_FAILED", "STUCK_NEEDS_HELP",
+] as const;
+
+/** The dedicated "Resume mowing" button is offered: mission at rest and a cursor exists. */
+export const canResume = (state: S, name: N, resumeAvailable: boolean | undefined): boolean =>
+    !!resumeAvailable && !isMissionActive(state, name) && !!name &&
+    (RESUME_NAMES as readonly string[]).includes(name);
+
 /** Home is hidden when already docked and while the boundary latch refuses it. */
 export const canHome = (_state: S, name: N): boolean =>
     name !== "IDLE_DOCKED" && name !== "BOUNDARY_EMERGENCY_STOP";

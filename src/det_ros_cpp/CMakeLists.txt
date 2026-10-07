@@ -21,6 +21,11 @@ target_include_directories(det_yolo PUBLIC include)
 set_target_properties(det_yolo PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # librknnrt.so: /usr/lib/librknnrt.so in the container (bind-mounted 2.3.0 runtime)
+# A cached path from another container (e.g. the one-off build container without the
+# bind-mount) would produce "No rule to make target"; re-search when it vanished.
+if(RKNNRT_LIB AND NOT EXISTS "${RKNNRT_LIB}")
+  unset(RKNNRT_LIB CACHE)
+endif()
 find_library(RKNNRT_LIB rknnrt PATHS /usr/lib /userdata/ros2/lib)
 
 if(RKNNRT_LIB)

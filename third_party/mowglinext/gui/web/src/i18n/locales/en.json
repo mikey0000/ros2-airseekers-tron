@@ -4313,7 +4313,13 @@
     "stoppedResumeHint": "Progress was saved: resume where it stopped or start fresh.",
     "returnToDock": "Return to dock",
     "resumeOrFresh": "Resume / start fresh",
-    "start": "Start mowing"
+    "start": "Start mowing",
+    "resumeMowing": "Resume mowing",
+    "startFresh": "Start fresh",
+    "interruptedTitle": "Mowing interrupted",
+    "interruptedHint": "Progress was saved: Resume continues the same area from where it stopped.",
+    "whyStopped": "Why stopped?",
+    "stuckResetFirst": "Move the mower clear by hand, then press Reset to enable Resume."
   },
   "mapPath": {
     "title": "New path",

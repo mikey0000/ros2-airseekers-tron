@@ -24,9 +24,10 @@ node packages).
 | `/hardware_bridge/status` | `mowgli_interfaces/Status` | 5 Hz from `/mower_base/status`, `/mower_sensor_info`. `mower_status=255` while the MCU is alive (status within `mcu_timeout_s`), else 0. `mow_enabled` = blade requested on by us OR `is_cutting`. `mower_motor_rpm` = `cutter_motor.speed_rpm`. `firmware_version` = `cutter_board_version`. `firmware_compatible=true`. |
 | `/hardware_bridge/emergency` | `mowgli_interfaces/Emergency` | 5 Hz always (clamped to at least 2 Hz), plus immediately when `/estop` changes. `active` = `/estop` OR stop button OR lift OR MCU telemetry stale. `latched` = `/estop`. `lift_warning` = lift. |
 | `/hardware_bridge/power` | `mowgli_interfaces/Power` | 2 Hz from `/battery` (+ `is_charging`). |
-| `/gps/fix` | `sensor_msgs/NavSatFix` | relay of `/fix` |
+| `/gps/fix` | `sensor_msgs/NavSatFix` | relay of `/fix`, rate-limited to `gps_fix_rate_hz` (2 Hz; GUI-only topic) |
+| `/gui/gnss_status` | `mowgli_interfaces/GnssStatus` | GUI copy of `/gps/status` at `gui_gnss_status_rate_hz` (2 Hz, fix-type changes at once) |
 | `/gps/status` | `mowgli_interfaces/GnssStatus` | per `/fix`. FIXED vs FLOAT comes from the `/fix_status` string (`quality=` or `solution=` token). Correction fields come from its `corr_src=` / `corr=` / `corr_flow=` / `corr_age=` tokens (see below). |
-| `/wheel_odom` | `nav_msgs/Odometry` | relay of `/odom`, rate-limited to `wheel_odom_rate_hz` (10 Hz; GUI-only topic) |
+| `/wheel_odom` | `nav_msgs/Odometry` | relay of `/odom`, rate-limited to `wheel_odom_rate_hz` (5 Hz; GUI-only topic) |
 | `/odometry/filtered_map` | `nav_msgs/Odometry` | relay of `/odometry/filtered`, with `frame_id=map` and `child_frame_id=base_footprint` (map == odom identity for now) |
 | `/behavior_tree_node/high_level_status` | `mowgli_interfaces/HighLevelStatus` | on every change + 1 Hz (only when `serve_high_level`) |
 | `/behavior_tree_node/coverage_resume_available` | `std_msgs/Bool` | latched (transient local, depth 1), always `false` (only when `serve_high_level`) |

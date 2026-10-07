@@ -558,6 +558,10 @@ class McuNode(Node):
         # /mission/activity is docked_idle/idle it is limited to this rate; any change of a
         # field (bumper, lift, stop, dock, ...) is still published at once.
         self.declare_parameter('status_idle_rate_hz', 10.0)
+        # While /mission/activity is docked_idle/idle the serial RX is drained on this period
+        # instead of waking on every chunk (frames queue in the kernel buffer; /cmd_vel and
+        # the periodic tasks still wake the loop at once). <= 0 disables.
+        self.declare_parameter('rx_idle_period', 0.02)
         self.declare_parameter('estop_rate_hz', 10.0)
         # BatteryInfo.current: 0.1 A units (vendor PowerManager logs raw*100 as mA), positive
         # while discharging (raw 7 off-dock at rest). BatteryState wants negative = discharge.
@@ -663,6 +667,9 @@ class McuNode(Node):
 
         self._sensor_info = None          # last SensorInfo, cached for /mower_sensor_info
         self._versions = {}               # 'cutter'/'chassis'/'rtk' -> (major, minor, patch)
+        self._versions_key = ()           # tuple(self._versions.items()), rebuilt on change
+        self._sensor_payload = None       # raw SensorInfo bytes of self._sensor_info
+        self._motors_payload = None       # raw motors bytes of self._motors
         self._battery = None              # last BatteryInfo dict
         self._motors = {}                 # motor name -> MotorInfo msg-unit values
         self._motors_si = {}              # motor name -> decode_motors() SI dict
@@ -753,6 +760,7 @@ class McuNode(Node):
         self._low_power = False
         self._status_gate = ChangeOrPeriodGate()
         self._status_idle_period = 1.0 / max(0.1, float(param('status_idle_rate_hz')))
+        self._rx_idle_period = float(param('rx_idle_period'))
         self.create_subscription(String, '/mission/activity', self._on_activity, latched)
 
         # The two 100/50 Hz publishers send pre-serialized CDR (sub_pump serializers, unit
@@ -842,6 +850,10 @@ class McuNode(Node):
                         fd = None
                     if fd is None:
                         select.select([self._wake_r], [], [], min(timeout, 0.005))
+                        readable = True
+                    elif self._low_power and self._rx_idle_period > 0.0:
+                        # idle: drain in blocks, not per chunk (one wake per rx_idle_period)
+                        select.select([self._wake_r], [], [], min(timeout, self._rx_idle_period))
                         readable = True
                     else:
                         ready = select.select([fd, self._wake_r], [], [], timeout)[0]
@@ -1052,9 +1064,10 @@ class McuNode(Node):
     def _on_sensor_info(self, payload):
         if len(payload) != struct.calcsize(SENSOR_FMT):
             return
-        names = ('bumper', 'rain', 'lift', 'stop', 'power_off', 'battery_gate',
-                 'cutter_size', 'press_module', 'bumper_r', 'bumper_l')
-        self._sensor_info = dict(zip(names, struct.unpack(SENSOR_FMT, payload)))
+        payload = bytes(payload)
+        if payload != self._sensor_payload:   # 100 Hz, almost always unchanged
+            self._sensor_info = dict(zip(_SENSOR_NAMES, struct.unpack(SENSOR_FMT, payload)))
+            self._sensor_payload = payload
         self._apply_interlock()
         self._publish_sensor_info()
         self._publish_dev_status()
@@ -1111,12 +1124,17 @@ class McuNode(Node):
         vals = struct.unpack(VERSION_FMT, payload)
         for idx, key in enumerate(('cutter', 'chassis', 'rtk')):
             self._versions[key] = tuple(vals[idx * 3:idx * 3 + 3])
+        self._versions_key = tuple(self._versions.items())
 
     def _on_motors(self, payload):
+        payload = bytes(payload)
+        if payload == self._motors_payload:   # unchanged (idle): keep the decoded values
+            return
         decoded = decode_motors(payload)
         if decoded is None:
             return
         self._motors_si = decoded
+        self._motors_payload = payload
         # self._motors holds MowerSensorInfo.MotorInfo units (rpm, 10 mA, 10 mV, degC) with
         # the drive-board scalings already normalised (see MOTOR_*_PER_COUNT).
         for name, si in decoded.items():
@@ -1138,7 +1156,7 @@ class McuNode(Node):
         now = time.monotonic()
         cutter = self._motors.get('cutter')
         linear, angular, _measured = self._speed(now)
-        key = (tuple(self._sensor_info.values()), tuple(self._versions.items()),
+        key = (self._sensor_payload or tuple(self._sensor_info.values()), self._versions_key,
                self._rain.triggered, self._fill_light_on,
                (self._battery or {}).get('dock_ok'), (self._battery or {}).get('error'),
                bool(cutter and abs(cutter['speed']) > 500),
@@ -1647,6 +1665,10 @@ class McuNode(Node):
             except Exception:
                 pass
             self._ser = None
+
+
+_SENSOR_NAMES = ('bumper', 'rain', 'lift', 'stop', 'power_off', 'battery_gate',
+                 'cutter_size', 'press_module', 'bumper_r', 'bumper_l')
 
 
 def _set_if(msg, name, value):
