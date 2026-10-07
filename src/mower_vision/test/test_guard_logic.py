@@ -151,6 +151,10 @@ def test_range_of_ranged_detection():
     assert range_of(det, 0.466) == pytest.approx(1.0)
 
 
+def _core(p):
+    return {k: p[k] for k in ('kind', 'class', 'distance_m', 'bearing_deg')}
+
+
 def test_frame_policy_dynamic_wins_and_static_by_range():
     from mower_vision.guard_logic import Box, GuardConfig, PolicyConfig, frame_policy
     g, pc = GuardConfig(), PolicyConfig()
@@ -159,7 +163,7 @@ def test_frame_policy_dynamic_wins_and_static_by_range():
     far_dog = Box('dog', 0.8, 100, 100, 10, 10, range_m=1.2)
     assert frame_policy([chair], pc, g)['kind'] == 'static'
     assert frame_policy([chair], pc, g)['bearing_deg'] == 5.0
-    assert frame_policy([chair, dog], pc, g) == {'kind': 'dynamic', 'class': 'dog',
+    assert _core(frame_policy([chair, dog], pc, g)) == {'kind': 'dynamic', 'class': 'dog',
                                                  'distance_m': 0.9, 'bearing_deg': None}
     assert frame_policy([far_dog], pc, g)['kind'] == 'none'
     assert frame_policy([Box('chair', 0.1, 1, 1, 1, 1, range_m=0.5)], pc, g)['kind'] == 'none'
@@ -209,10 +213,16 @@ def test_motion_relevance():
     m.update(0.3, 0.0, 1.0)
     assert m.relevant(1.1) == {CAM_FRONT}
     m.update(0.3, -0.5, 2.0)                              # turning right
-    assert m.relevant(2.1) == {CAM_FRONT, CAM_RIGHT}
-    m.update(0.3, 0.05, 2.2)                              # inside the deadband
-    assert CAM_RIGHT in m.relevant(2.5)                   # held
-    assert CAM_RIGHT not in m.relevant(2.7)               # hold (0.6 s) expired
+    assert m.relevant(2.1, strict_sides=False) == {CAM_FRONT, CAM_RIGHT}
+    assert m.relevant(2.1) == {CAM_FRONT}                 # strict: not sustained yet
+    for t in (2.1, 2.2, 2.3, 2.4, 2.5):
+        m.update(0.3, -0.5, t)
+    m.update_odom(-0.4, 2.5)
+    assert m.relevant(2.55) == {CAM_FRONT, CAM_RIGHT}     # 0.5 s + odom turning
+    m.update(0.3, 0.05, 2.6)                              # inside the deadband
+    assert CAM_RIGHT in m.relevant(2.7, strict_sides=False)   # held
+    assert CAM_RIGHT not in m.relevant(3.3, strict_sides=False)  # hold expired
+    assert CAM_RIGHT not in m.relevant(2.7)               # strict: turn broken
     m.update(-0.2, 0.0, 5.0)                              # reversing only
     assert m.relevant(5.1) == {CAM_REAR}
 
@@ -225,15 +235,23 @@ def test_live_bug_right_camera_unranged_person_ignored_while_driving_straight():
     assert p['kind'] == 'none'
 
 
-def test_standard_side_needs_turn_and_tall_box():
+def turning_right(t=1.0):
     m = MotionState()
-    m.update(0.2, -0.4, 0.0)                              # turning toward the right camera
-    rel = m.relevant(0.1)
-    assert frame_policy([unranged_person(h=300)], pol('standard'), G540,
-                        CAM_RIGHT, rel)['kind'] == 'dynamic'          # 300 >= 0.45*540
-    assert frame_policy([unranged_person(h=200)], pol('standard'), G540,
-                        CAM_RIGHT, rel)['kind'] == 'none'             # small = far
-    assert frame_policy([unranged_person(h=300)], pol('standard'), G540,
+    for i in range(int(t * 10) + 1):                      # /cmd_vel at 10 Hz
+        m.update(0.1, -0.4, i * 0.1)
+    m.update_odom(-0.35, t)
+    return m, m.relevant(t + 0.05)
+
+
+def test_standard_side_needs_turn_and_tall_box():
+    m, rel = turning_right()
+    assert CAM_RIGHT in rel
+    p = pol('standard')
+    assert frame_policy([unranged_person(h=350, score=0.8)], p, G540,
+                        CAM_RIGHT, rel)['kind'] == 'dynamic'          # 350 >= 0.6*540
+    assert frame_policy([unranged_person(h=300)], p, G540,
+                        CAM_RIGHT, rel)['kind'] == 'none'             # 56 % < 60 %
+    assert frame_policy([unranged_person(h=350)], p, G540,
                         CAM_LEFT, rel)['kind'] == 'none'              # other side
 
 
@@ -271,6 +289,112 @@ def test_level_sensitive_range_score_and_any_camera():
         == 'dynamic'
 
 
+# ---------------------------------------------------------------------------
+# 2026-10-07 owner rule: "left and right obstacle camera shouldn't affect direct path
+# mowing unless it's close and the mower is turning" (live: side 'cat' 0.63-0.67 unranged
+# during a swath-end pivot cancelled the follow twice)
+# ---------------------------------------------------------------------------
+from mower_vision.guard_logic import Persistence  # noqa: E402
+
+
+def cat(score=0.8, h=350, range_m=None):
+    return Box('cat', score, 480, 300, 120, h, range_m=range_m)
+
+
+def test_straight_swath_side_cat_ignored():
+    m = MotionState()
+    for t in (0.0, 0.5, 1.0):
+        m.update(0.3, 0.0, t)
+        m.update_odom(0.0, t)
+    rel = m.relevant(1.05)
+    per, ign = Persistence(), []
+    for _ in range(3):
+        p = frame_policy([cat(0.95, 500), cat(0.9, 100, range_m=0.4)], pol('standard'), G540,
+                         CAM_RIGHT, rel, persistence=per, source='r', ignored=ign,
+                         motion_reason=m.side_reason(CAM_RIGHT, 1.05))
+        assert p['kind'] == 'none'
+    assert ign and ign[0][1] == 'not turning'
+
+
+def test_brief_command_turn_or_no_odom_ignored():
+    m = MotionState()
+    m.update(0.1, -0.4, 0.0)
+    m.update(0.1, -0.4, 0.3)                              # only 0.3 s of turning
+    m.update_odom(-0.4, 0.3)
+    assert CAM_RIGHT not in m.relevant(0.35)
+    m2 = MotionState()
+    for i in range(11):                                   # sustained, but odom straight
+        m2.update(0.1, -0.4, i * 0.1)
+    m2.update_odom(0.02, 1.0)
+    assert CAM_RIGHT not in m2.relevant(1.05)
+    assert m2.side_reason(CAM_RIGHT, 1.05) == 'not turning (odom)'
+
+
+def test_turning_toward_ranged_cat_within_side_range_is_dynamic():
+    _, rel = turning_right()
+    p = frame_policy([cat(0.7, 100, range_m=0.6)], pol('standard'), G540, CAM_RIGHT, rel,
+                     persistence=Persistence(), source='r')
+    assert p['kind'] == 'dynamic' and p['camera'] == 'right' and p['ranged'] is True
+    assert p['distance_m'] == 0.6 and p['score'] == 0.7
+    far = frame_policy([cat(0.7, 100, range_m=0.9)], pol('standard'), G540, CAM_RIGHT, rel)
+    assert far['kind'] == 'none'                          # > side_stop_range_m 0.8
+
+
+def test_turning_unranged_low_score_cat_ignored():
+    _, rel = turning_right()
+    per, ign = Persistence(), []
+    for _ in range(4):
+        p = frame_policy([cat(0.63, 500)], pol('standard'), G540, CAM_RIGHT, rel,
+                         persistence=per, source='r', ignored=ign)
+        assert p['kind'] == 'none'
+    assert 'score 0.63' in ign[0][1]
+
+
+def test_turning_unranged_confident_tall_cat_needs_two_frames():
+    _, rel = turning_right()
+    per = Persistence()
+    b = cat(0.8, int(0.65 * 540))
+    first = frame_policy([b], pol('standard'), G540, CAM_RIGHT, rel, persistence=per,
+                         source='r')
+    assert first['kind'] == 'none'
+    second = frame_policy([b], pol('standard'), G540, CAM_RIGHT, rel, persistence=per,
+                          source='r')
+    assert second['kind'] == 'dynamic'
+    assert (second['camera'], second['ranged'], second['bbox_h_frac']) == ('right', False, 0.65)
+    # a gap resets persistence
+    frame_policy([], pol('standard'), G540, CAM_RIGHT, rel, persistence=per, source='r')
+    assert frame_policy([b], pol('standard'), G540, CAM_RIGHT, rel, persistence=per,
+                        source='r')['kind'] == 'none'
+
+
+def test_front_unranged_dynamic_needs_score_and_persistence():
+    per = Persistence()
+    lo = unranged_person(h=300, score=0.55)
+    assert frame_policy([lo], pol('standard'), G540, CAM_FRONT, {CAM_FRONT},
+                        persistence=per, source='f')['kind'] == 'none'
+    assert frame_policy([lo], pol('standard'), G540, CAM_FRONT, {CAM_FRONT},
+                        persistence=per, source='f')['kind'] == 'none'
+    hi = unranged_person(h=300, score=0.7)
+    per = Persistence()
+    assert frame_policy([hi], pol('standard'), G540, CAM_FRONT, {CAM_FRONT},
+                        persistence=per, source='f')['kind'] == 'none'
+    assert frame_policy([hi], pol('standard'), G540, CAM_FRONT, {CAM_FRONT},
+                        persistence=per, source='f')['kind'] == 'dynamic'
+    # ranged front rule unchanged: single frame
+    near = Box('cat', 0.45, 100, 100, 10, 10, range_m=0.9)
+    assert frame_policy([near], pol('standard'), G540, CAM_FRONT, {CAM_FRONT},
+                        persistence=Persistence(), source='f')['kind'] == 'dynamic'
+
+
+def test_sensitive_keeps_old_side_behaviour():
+    s = pol('sensitive')
+    m = MotionState()
+    m.update(0.3, 0.0, 0.0)                               # straight swath
+    p = frame_policy([cat(0.63, 250)], s, G540, CAM_RIGHT, m.relevant(0.1),
+                     persistence=Persistence(), source='r')
+    assert p['kind'] == 'dynamic' and p['camera'] == 'right'   # 250 >= 0.45*540, 1 frame
+
+
 def test_unknown_level_is_standard():
     assert pol('bogus').level == 'standard'
     assert pol('standard').dynamic_range_m == 1.0 and pol('standard').min_score == 0.4
@@ -292,7 +416,8 @@ def test_unranged_static_class_is_advisory_only():
 def test_ranged_static_within_range_still_static_and_wins_over_unranged():
     trunk = Box('trunk', 0.8, 100, 100, 10, 10, range_m=1.3, bearing_deg=-31.0)
     p = frame_policy([unranged('hoe'), trunk], pol('standard'), G540, CAM_FRONT, None)
-    assert p == {'kind': 'static', 'class': 'trunk', 'distance_m': 1.3, 'bearing_deg': -31.0}
+    assert _core(p) == {'kind': 'static', 'class': 'trunk', 'distance_m': 1.3,
+                        'bearing_deg': -31.0}
     far = Box('trunk', 0.8, 100, 100, 10, 10, range_m=2.0)
     assert frame_policy([far], pol('standard'), G540, CAM_FRONT, None)['kind'] == 'none'
 

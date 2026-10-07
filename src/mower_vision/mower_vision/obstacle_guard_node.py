@@ -33,6 +33,15 @@ only reversing, a side OA camera only while turning toward that side, the rear c
 (``rear_frames``; not in the detector yet) while reversing. Unranged boxes need a bbox
 height >= ``unranged_h_frac`` x image height. ``none`` publishes kind none only;
 ``sensitive`` uses ``sensitive_stop_range_m`` / ``sensitive_min_score`` and every camera.
+``standard`` side cameras (owner: "left and right obstacle camera shouldn't affect direct
+path mowing unless it's close and the mower is turning"): applied ``/cmd_vel`` turn toward
+that side > ``side_turn_min_radps`` for >= ``side_turn_min_s`` AND ``/odom`` |w| >
+``odom_turn_min_radps``, and the box is ranged within ``side_stop_range_m`` or unranged with
+bbox height >= ``side_unranged_h_frac``, score >= ``side_unranged_min_score`` in
+``persist_frames`` consecutive frames. Unranged front dynamic boxes need score >=
+``front_unranged_min_score`` + persistence. The policy JSON also carries ``camera``,
+``score``, ``bbox_h_frac`` and ``ranged``; dismissed detections log INFO
+``ignored: cat on right camera (...)`` once per episode.
 
 When ``stop_on_close`` is true, on the rising edge of the close state:
 * zero ``geometry_msgs/Twist`` on ``/cmd_vel_emergency`` at ``burst_rate_hz`` for
@@ -51,6 +60,7 @@ from dataclasses import replace
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import Point, Twist
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
 from sensor_msgs.msg import CameraInfo
@@ -71,7 +81,8 @@ from mower_vision.guard_logic import (CAM_FRONT, CAM_LEFT, CAM_REAR, CAM_RIGHT,
                                       DEFAULT_CAMERA_FRAMES, DEFAULT_CLASSES, DEFAULT_DYNAMIC,
                                       DEFAULT_LEVEL, DEFAULT_WHITELIST, OBSTACLE_LEVELS, Box,
                                       GuardConfig, GuardState, LevelTable, MotionConfig,
-                                      MotionState, PolicyConfig, PolicyState, box_outline,
+                                      MotionState, Persistence, PolicyConfig, PolicyState,
+                                      box_outline,
                                       camera_counts, camera_role, class_label, classify,
                                       danger_line, frame_policy, level_policy,
                                       with_image_size)
@@ -166,6 +177,17 @@ class ObstacleGuard(Node):
         dp('motion_lin_deadband_mps', 0.03)
         dp('motion_ang_deadband_rps', 0.15)
         dp('motion_hold_s', 0.6)
+        # standard level side / front-unranged rules (sensitive keeps the old thresholds)
+        dp('odom_topic', '/odom')                # side cameras need odom |w| > odom_turn_min
+        dp('odom_turn_min_radps', 0.1)
+        dp('side_turn_min_radps', 0.15)
+        dp('side_turn_min_s', 0.5)
+        dp('side_stop_range_m', 0.8)
+        dp('side_unranged_h_frac', 0.60)
+        dp('side_unranged_min_score', 0.75)
+        dp('front_unranged_min_score', 0.6)
+        dp('persist_frames', 2)
+        dp('ignored_episode_gap_s', 3.0)         # INFO 'ignored: ...' once per episode
         dp('front_frames', list(DEFAULT_CAMERA_FRAMES[CAM_FRONT]))
         dp('left_frames', list(DEFAULT_CAMERA_FRAMES[CAM_LEFT]))
         dp('right_frames', list(DEFAULT_CAMERA_FRAMES[CAM_RIGHT]))
@@ -196,7 +218,12 @@ class ObstacleGuard(Node):
             sensitive_min_score=float(p('sensitive_min_score')),
             static_range_m=float(p('policy_static_range_m')),
             unranged_h_frac=float(p('unranged_h_frac')),
-            sensitive_static_unranged=bool(p('sensitive_static_unranged')))
+            sensitive_static_unranged=bool(p('sensitive_static_unranged')),
+            side_stop_range_m=float(p('side_stop_range_m')),
+            side_unranged_h_frac=float(p('side_unranged_h_frac')),
+            side_unranged_min_score=float(p('side_unranged_min_score')),
+            front_unranged_min_score=float(p('front_unranged_min_score')),
+            persist_frames=int(p('persist_frames')))
         self.camera_frames = {CAM_FRONT: [str(x) for x in p('front_frames')],
                               CAM_LEFT: [str(x) for x in p('left_frames')],
                               CAM_RIGHT: [str(x) for x in p('right_frames')],
@@ -204,7 +231,13 @@ class ObstacleGuard(Node):
         self.motion = MotionState(MotionConfig(
             lin_deadband_mps=float(p('motion_lin_deadband_mps')),
             ang_deadband_rps=float(p('motion_ang_deadband_rps')),
-            hold_s=float(p('motion_hold_s'))))
+            hold_s=float(p('motion_hold_s')),
+            side_turn_min_radps=float(p('side_turn_min_radps')),
+            side_turn_min_s=float(p('side_turn_min_s')),
+            odom_turn_min_radps=float(p('odom_turn_min_radps'))))
+        self.persistence = Persistence()
+        self._ignored_last = {}     # (camera, class) -> last time it was dismissed
+        self._ignored_gap = float(p('ignored_episode_gap_s'))
         self.policy_state = PolicyState(hold_s=float(p('hold_s')))
         level = str(p('obstacle_detection'))
         self._apply_level(level if level in OBSTACLE_LEVELS else DEFAULT_LEVEL)
@@ -234,6 +267,9 @@ class ObstacleGuard(Node):
         self._use_motion = bool(p('cmd_vel_topic'))
         if self._use_motion:
             self.create_subscription(Twist, p('cmd_vel_topic'), self._on_cmd_vel, 10)
+        if str(p('odom_topic')):
+            self.create_subscription(Odometry, str(p('odom_topic')), self._on_odom,
+                                     qos_profile_sensor_data)
         self._burst_rate = float(p('burst_rate_hz'))
         self._idle_rate = float(p('idle_tick_rate_hz'))
         self._activity = None
@@ -277,6 +313,19 @@ class ObstacleGuard(Node):
 
     def _on_cmd_vel(self, msg):
         self.motion.update(float(msg.linear.x), float(msg.angular.z), self._now())
+
+    def _on_odom(self, msg):
+        self.motion.update_odom(float(msg.twist.twist.angular.z), self._now())
+
+    def _log_ignored(self, role, ignored, now):
+        """INFO once per episode (per camera + class) for a dismissed detection."""
+        for b, reason in ignored:
+            key = (role, b.label)
+            last = self._ignored_last.get(key)
+            self._ignored_last[key] = now
+            if last is None or now - last > self._ignored_gap:
+                self.get_logger().info('ignored: %s on %s camera (%s)'
+                                       % (b.label, role, reason))
 
     def _on_info(self, msg, topic=None):
         w, h = int(msg.width), int(msg.height)
@@ -332,8 +381,19 @@ class ObstacleGuard(Node):
         now = self._now()
         role = camera_role(msg.header.frame_id, self.camera_frames)
         relevant = self.motion.relevant(now) if self._use_motion else None
-        self.policy_state.update(msg.header.frame_id or 'camera',
-                                 frame_policy(boxes, self.policy_cfg, cfg, role, relevant), now)
+        source = msg.header.frame_id or 'camera'
+        motion_reason = ''
+        if role in (CAM_LEFT, CAM_RIGHT) and self._use_motion:
+            motion_reason = self.motion.side_reason(role, now)
+        elif relevant is not None and role not in relevant:
+            motion_reason = 'not moving toward it'
+        ignored = []
+        pol = frame_policy(boxes, self.policy_cfg, cfg, role, relevant,
+                           persistence=self.persistence, source=source, ignored=ignored,
+                           motion_reason=motion_reason)
+        self.policy_state.update(source, pol, now)
+        if ignored:
+            self._log_ignored(role, ignored, now)
         close_now = (any(c for _, _, c in verdicts)
                      and camera_counts(role, relevant, self.policy_cfg))
         close, rising = self.state.update(msg.header.frame_id or 'camera', close_now,
@@ -349,7 +409,10 @@ class ObstacleGuard(Node):
     def _publish_policy(self, now):
         pol = self.policy_state.current(now)
         if pol != self._policy_last or now - self._policy_t >= self._policy_period:
-            if pol != self._policy_last and pol['kind'] != 'none':
+            def key(d):
+                d = d or {}
+                return d.get('kind'), d.get('class'), d.get('camera')
+            if key(pol) != key(self._policy_last) and pol['kind'] != 'none':
                 self.get_logger().info('obstacle policy: %s' % json.dumps(pol))
             self._policy_last, self._policy_t = pol, now
             self.policy_pub.publish(String(data=json.dumps(pol)))

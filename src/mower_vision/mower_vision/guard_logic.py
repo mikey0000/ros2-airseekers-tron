@@ -201,6 +201,14 @@ class MotionConfig:
     lin_deadband_mps: float = 0.03    # |v| below this: not driving forward / backward
     ang_deadband_rps: float = 0.15    # |w| below this: not turning (controller jitter)
     hold_s: float = 0.6               # a command keeps counting this long after it
+    # Side cameras (standard level, owner rule 2026-10-07: "left and right obstacle camera
+    # shouldn't affect direct path mowing unless it's close and the mower is turning"):
+    # the APPLIED /cmd_vel must turn toward that side above side_turn_min_radps
+    # continuously for side_turn_min_s, AND odometry must show the robot actually turning.
+    side_turn_min_radps: float = 0.15
+    side_turn_min_s: float = 0.5
+    odom_turn_min_radps: float = 0.1
+    odom_hold_s: float = 0.5          # older odom = unknown = not turning
 
 
 class MotionState:
@@ -212,6 +220,38 @@ class MotionState:
         self._last_rev: Optional[float] = None
         self._last_left: Optional[float] = None
         self._last_right: Optional[float] = None
+        self._turn_side: Optional[str] = None     # side of the current sustained turn
+        self._turn_since: Optional[float] = None
+        self._turn_last: Optional[float] = None
+        self._odom_w: Optional[float] = None
+        self._odom_t: Optional[float] = None
+
+    def update_odom(self, angular_z: float, now: float) -> None:
+        self._odom_w, self._odom_t = float(angular_z), now
+
+    def odom_turning(self, now: float) -> bool:
+        return (self._odom_t is not None and now - self._odom_t <= self.cfg.odom_hold_s
+                and abs(self._odom_w) > self.cfg.odom_turn_min_radps)
+
+    def sustained_turn(self, side: str, now: float) -> bool:
+        """Commanded turn toward ``side`` above side_turn_min_radps for >= side_turn_min_s
+        (unbroken) and still current (last such command within hold_s)."""
+        c = self.cfg
+        return (self._turn_side == side and self._turn_since is not None
+                and now - self._turn_last <= c.hold_s
+                and self._turn_last - self._turn_since >= c.side_turn_min_s - 1e-9
+                if self._turn_last is not None else False)
+
+    def side_active(self, side: str, now: float) -> bool:
+        return self.sustained_turn(side, now) and self.odom_turning(now)
+
+    def side_reason(self, side: str, now: float) -> str:
+        """Why a side camera does not count right now ('' = it counts)."""
+        if not self.sustained_turn(side, now):
+            return 'not turning'
+        if not self.odom_turning(now):
+            return 'not turning (odom)'
+        return ''
 
     def update(self, linear_x: float, angular_z: float, now: float) -> None:
         c = self.cfg
@@ -223,24 +263,33 @@ class MotionState:
             self._last_left = now
         elif angular_z < -c.ang_deadband_rps:
             self._last_right = now
+        side = (CAM_LEFT if angular_z > c.side_turn_min_radps
+                else CAM_RIGHT if angular_z < -c.side_turn_min_radps else None)
+        if side is None:
+            self._turn_side = self._turn_since = self._turn_last = None
+        else:
+            if side != self._turn_side or self._turn_last is None \
+                    or now - self._turn_last > c.hold_s:
+                self._turn_side, self._turn_since = side, now
+            self._turn_last = now
 
     def _recent(self, t: Optional[float], now: float) -> bool:
         return t is not None and now - t <= self.cfg.hold_s
 
-    def relevant(self, now: float) -> set:
+    def relevant(self, now: float, strict_sides: bool = True) -> set:
         """Front counts unless the robot is only reversing (standing still / about to drive
-        off forward keeps the front camera armed); a side counts while turning toward it;
-        rear while reversing."""
+        off forward keeps the front camera armed); rear while reversing; a side counts only
+        while turning toward it: ``strict_sides`` (standard) = :meth:`side_active` (sustained
+        commanded turn + odometry turning), else any recent command toward it."""
         out = set()
         rev, fwd = self._recent(self._last_rev, now), self._recent(self._last_fwd, now)
         if fwd or not rev:
             out.add(CAM_FRONT)
         if rev:
             out.add(CAM_REAR)
-        if self._recent(self._last_left, now):
-            out.add(CAM_LEFT)
-        if self._recent(self._last_right, now):
-            out.add(CAM_RIGHT)
+        for side, t in ((CAM_LEFT, self._last_left), (CAM_RIGHT, self._last_right)):
+            if self.side_active(side, now) if strict_sides else self._recent(t, now):
+                out.add(side)
         return out
 
 
@@ -268,6 +317,17 @@ class PolicyConfig:
     # it). True (sensitive level, owner opt-in via LevelTable.sensitive_static_unranged)
     # lets a tall unranged box produce 'static' again.
     static_unranged: bool = False
+    # 'standard' strict rules (2026-10-07, side-camera "cat" during swath-end pivots):
+    # side cameras: ranged within side_stop_range_m, or unranged with bbox height >=
+    # side_unranged_h_frac AND score >= side_unranged_min_score AND persistence.
+    # front unranged dynamic: score >= front_unranged_min_score AND persistence.
+    # persist_frames = consecutive frames (same camera + class) a box must qualify in.
+    strict: bool = False
+    side_stop_range_m: float = 0.8
+    side_unranged_h_frac: float = 0.60
+    side_unranged_min_score: float = 0.75
+    front_unranged_min_score: float = 0.6
+    persist_frames: int = 2
 
 
 @dataclass
@@ -282,6 +342,11 @@ class LevelTable:
     # Owner opt-in (obstacle_guard param sensitive_static_unranged): at level 'sensitive'
     # unranged static-class boxes (bbox-height proxy) produce 'static' (-> detours).
     sensitive_static_unranged: bool = False
+    side_stop_range_m: float = 0.8
+    side_unranged_h_frac: float = 0.60
+    side_unranged_min_score: float = 0.75
+    front_unranged_min_score: float = 0.6
+    persist_frames: int = 2
 
 
 def level_policy(level: str, base: PolicyConfig, table: LevelTable) -> PolicyConfig:
@@ -296,7 +361,12 @@ def level_policy(level: str, base: PolicyConfig, table: LevelTable) -> PolicyCon
     return replace(base, level=lvl, min_score=float(score), dynamic_range_m=float(stop),
                    static_range_m=max(float(table.static_range_m), float(stop)),
                    unranged_h_frac=float(table.unranged_h_frac), any_camera=anyc,
-                   static_unranged=sunr)
+                   static_unranged=sunr, strict=(lvl == 'standard'),
+                   side_stop_range_m=float(table.side_stop_range_m),
+                   side_unranged_h_frac=float(table.side_unranged_h_frac),
+                   side_unranged_min_score=float(table.side_unranged_min_score),
+                   front_unranged_min_score=float(table.front_unranged_min_score),
+                   persist_frames=int(table.persist_frames))
 
 
 def camera_counts(role: str, relevant: Optional[set], cfg: PolicyConfig) -> bool:
@@ -315,8 +385,39 @@ def box_close(b: Box, reach: float, cfg: PolicyConfig, image_height: float) -> b
     return image_height > 0 and b.h >= cfg.unranged_h_frac * image_height
 
 
+class Persistence:
+    """Consecutive-frame counter per (source, class): a class seen qualifying in frame N
+    of a source and again in frame N+1 has count 2. A frame without it resets it."""
+
+    def __init__(self):
+        self._n: Dict[Tuple[str, str], int] = {}
+
+    def step(self, source: str, labels: Iterable[str]) -> Dict[str, int]:
+        labels = {str(x).strip().lower() for x in labels}
+        prev = {k: v for k, v in self._n.items() if k[0] == source}
+        for k in prev:
+            del self._n[k]
+        out = {}
+        for lab in labels:
+            n = prev.get((source, lab), 0) + 1
+            self._n[(source, lab)] = n
+            out[lab] = n
+        return out
+
+
+def _policy_dict(kind: str, b: Box, role: str, image_height: float) -> dict:
+    return {'kind': kind, 'class': b.label,
+            'distance_m': None if b.range_m is None else round(b.range_m, 2),
+            'bearing_deg': None if b.bearing_deg is None else round(b.bearing_deg, 1),
+            'camera': role, 'score': round(float(b.score), 2),
+            'bbox_h_frac': round(b.h / image_height, 2) if image_height > 0 else None,
+            'ranged': b.range_m is not None}
+
+
 def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig,
-                 role: str = CAM_FRONT, relevant: Optional[set] = None) -> dict:
+                 role: str = CAM_FRONT, relevant: Optional[set] = None,
+                 persistence: Optional[Persistence] = None, source: str = '',
+                 ignored: Optional[list] = None, motion_reason: str = '') -> dict:
     """Closest relevant detection of one frame: any dynamic one wins over static ones.
 
     Nothing counts at level ``none`` or when camera ``role`` is not in ``relevant`` (the
@@ -325,31 +426,77 @@ def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig
     ``static_range_m``; unranged ones need bbox height >= ``unranged_h_frac`` * image
     height (``guard_cfg.image_height``). A static-class box must be RANGED to give
     ``static``; a close unranged one gives the advisory ``unranged`` (lowest priority)
-    unless ``cfg.static_unranged``."""
-    if not camera_counts(role, relevant, cfg):
-        return dict(NONE_POLICY)
+    unless ``cfg.static_unranged``.
+
+    ``cfg.strict`` (standard level) tightens it: side cameras need a ranged box within
+    ``side_stop_range_m`` or an unranged one with bbox height >= ``side_unranged_h_frac``,
+    score >= ``side_unranged_min_score`` and ``persist_frames`` consecutive frames; an
+    unranged front dynamic needs score >= ``front_unranged_min_score`` and persistence.
+    Persistence is counted in ``persistence`` (keyed by ``source``); None = not required.
+    Whitelisted-relevant boxes dismissed by these rules are appended to ``ignored`` as
+    ``(box, reason)`` (``motion_reason`` explains a camera excluded by motion)."""
+    boxes = list(boxes)
+    ih = float(guard_cfg.image_height)
     dyn = {c.strip().lower() for c in cfg.dynamic_classes}
-    best = {}
+    if not camera_counts(role, relevant, cfg):
+        if persistence is not None:
+            persistence.step(source, ())
+        if ignored is not None and cfg.level != 'none':
+            for b in boxes:
+                if b.score >= cfg.min_score and b.label.strip().lower() in dyn:
+                    ignored.append((b, motion_reason or 'camera not relevant to motion'))
+        return dict(NONE_POLICY)
+    side = role in (CAM_LEFT, CAM_RIGHT)
+    cands = []        # (kind, box, needs_persistence)
     for b in boxes:
         if b.score < cfg.min_score:
             continue
         kind = 'dynamic' if b.label.strip().lower() in dyn else 'static'
         reach = cfg.dynamic_range_m if kind == 'dynamic' else cfg.static_range_m
-        close = box_close(b, reach, cfg, float(guard_cfg.image_height))
+        need_persist = False
+        if cfg.strict and side:
+            if b.range_m is not None:
+                close = b.range_m <= min(reach, cfg.side_stop_range_m)
+                why = 'ranged %.2f m > %.2f m' % (b.range_m, cfg.side_stop_range_m)
+            else:
+                hf = b.h / ih if ih > 0 else 0.0
+                close = (hf >= cfg.side_unranged_h_frac
+                         and b.score >= cfg.side_unranged_min_score)
+                why = 'unranged, score %.2f, height %d%%' % (b.score, round(hf * 100))
+                need_persist = True
+        else:
+            close = box_close(b, reach, cfg, ih)
+            why = 'too far'
+            if close and cfg.strict and b.range_m is None and kind == 'dynamic':
+                if b.score < cfg.front_unranged_min_score:
+                    close = False
+                    why = 'unranged, score %.2f' % b.score
+                need_persist = True
         if not close:
+            if ignored is not None and kind == 'dynamic':
+                ignored.append((b, why))
             continue
         if kind == 'static' and b.range_m is None and not cfg.static_unranged:
             kind = 'unranged'
+        cands.append((kind, b, need_persist))
+    counts = (persistence.step(source, [b.label for _, b, np_ in cands if np_])
+              if persistence is not None else {})
+    best = {}
+    for kind, b, need_persist in cands:
+        if need_persist and persistence is not None:
+            n = counts.get(b.label.strip().lower(), 0)
+            if n < cfg.persist_frames:
+                if ignored is not None and kind == 'dynamic':
+                    ignored.append((b, 'unranged, score %.2f, %d/%d frames'
+                                    % (b.score, n, cfg.persist_frames)))
+                continue
         key = b.range_m if b.range_m is not None else float('inf')
         cur = best.get(kind)
         if cur is None or key < cur[0]:
             best[kind] = (key, b)
     for kind in POLICY_KINDS:
         if kind in best:
-            b = best[kind][1]
-            return {'kind': kind, 'class': b.label,
-                    'distance_m': None if b.range_m is None else round(b.range_m, 2),
-                    'bearing_deg': None if b.bearing_deg is None else round(b.bearing_deg, 1)}
+            return _policy_dict(kind, best[kind][1], role, ih)
     return dict(NONE_POLICY)
 
 

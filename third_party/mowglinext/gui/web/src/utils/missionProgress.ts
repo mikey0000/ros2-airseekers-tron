@@ -19,6 +19,10 @@ export interface ObstaclePolicy {
     class?: string;
     distance_m?: number | null;
     bearing_deg?: number | null;
+    camera?: string;
+    score?: number;
+    bbox_h_frac?: number | null;
+    ranged?: boolean;
     wall_time?: number;
     [k: string]: unknown;
 }

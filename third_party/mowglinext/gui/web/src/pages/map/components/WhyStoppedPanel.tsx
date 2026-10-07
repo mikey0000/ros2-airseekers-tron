@@ -27,6 +27,8 @@ export const WhyStoppedPanel: React.FC<Props> = ({stateName, subState, why, dete
         const parts = [ob.class || t('whyStopped.unknownClass'), t(`whyStopped.kind_${ob.kind}`, {defaultValue: ob.kind})];
         if (typeof ob.distance_m === 'number') parts.push(`${ob.distance_m.toFixed(1)} m`);
         if (typeof ob.bearing_deg === 'number') parts.push(`${Math.round(ob.bearing_deg)}°`);
+        if (ob.camera) parts.push(`${ob.camera} cam${ob.ranged === false ? ' (unranged)' : ''}`);
+        if (typeof ob.score === 'number') parts.push(`score ${ob.score.toFixed(2)}`);
         if (age !== null) parts.push(t('whyStopped.ago', {s: Math.round(age)}));
         lines.push({label: t('whyStopped.obstacle'), value: parts.join(' · ')});
     } else {
