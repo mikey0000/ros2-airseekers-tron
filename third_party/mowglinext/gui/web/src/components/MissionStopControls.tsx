@@ -2,14 +2,18 @@ import React, {useEffect, useState} from "react";
 import {Alert, App, Button, Popover, Space} from "antd";
 import {PlayCircleOutlined, QuestionCircleOutlined, RedoOutlined, StepForwardOutlined, StopOutlined} from "@ant-design/icons";
 import {DockIcon} from "./DockIcon.tsx";
+import {BladeHeightControl} from "./BladeHeightControl.tsx";
 import {useTranslation} from "react-i18next";
 import {useMowerAction} from "./MowerActions.tsx";
 import {useStatus} from "../hooks/useStatus.ts";
 import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts";
 import {
     canHome, canReset, canResume, canStop, CMD_HOME, CMD_START, CMD_RESET_EMERGENCY, CMD_STOP, isLatchedFault, isMissionActive,
-    isNotice, stopNeedsConfirm,
+    isNotice, MISSION_PHASES, stopNeedsConfirm,
 } from "../utils/missionStates.ts";
+
+// Phases of a mow (incl. paused / planning) where the live blade height is offered.
+const BLADE_HEIGHT_PHASES = new Set<string>([...MISSION_PHASES, "MANUAL_MOWING"]);
 
 interface Props {
     state?: number;
@@ -191,7 +195,13 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
     }
 
     if (showStop) {
-        return <div style={{display: "flex", justifyContent: "center", ...style}}>{stopButton}</div>;
+        const bladeHeight = !!stateName && BLADE_HEIGHT_PHASES.has(stateName);
+        return (
+            <div style={{display: "flex", flexDirection: "column", alignItems: "center", gap: 8, ...style}}>
+                {stopButton}
+                {bladeHeight && <BladeHeightControl/>}
+            </div>
+        );
     }
 
     if (stopped || resumable) {

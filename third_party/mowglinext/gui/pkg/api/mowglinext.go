@@ -68,6 +68,7 @@ func MowgliNextRoutes(r *gin.RouterGroup, provider types.IRosProvider) {
 	ClearMapRoute(group, provider)
 	ReplaceMapRoute(group, provider)
 	AreaSettingsRoutes(group, provider)
+	CutterHeightRoutes(group, provider)
 	TerrainRoutes(group, provider)
 	PlanPreviewRoutes(group, provider)
 	SubscriberRoute(group, provider)
@@ -95,7 +96,7 @@ func topicSubscribeInterval(topic string) (int, bool) {
 		"fusionDiag", "dockCalibrationStatus",
 		"areaSettings", "activeAreaSettings", "dockCorridor", "previewSummary",
 		"terrainSummary",
-		"missionPlan", "missionProgress",
+		"missionPlan", "missionProgress", "cutterHeight",
 		// Unthrottled: messages alternate between cameras (frame_id), so a
 		// throttle would starve one of them; det_ros caps the rate itself.
 		"detections":

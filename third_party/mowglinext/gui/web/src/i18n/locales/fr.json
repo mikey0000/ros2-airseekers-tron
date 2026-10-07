@@ -4501,5 +4501,17 @@
       "rotation": "Rotation",
       "resolution": "Taille de pixel"
     }
+  },
+  "bladeHeight": {
+    "label": "Hauteur de coupe",
+    "mm": "{{mm}} mm",
+    "lower": "Abaisser la lame",
+    "raise": "Relever la lame",
+    "applied": "Hauteur de coupe {{mm}} mm",
+    "failed": "Impossible de changer la hauteur de coupe",
+    "saveToArea": "Enregistrer pour la zone",
+    "saveHint": "Conserver cette hauteur dans les réglages de la zone pour les prochaines tontes",
+    "saved": "{{mm}} mm enregistrés pour {{area}}",
+    "emergency": "Arrêt d'urgence verrouillé"
   }
 }

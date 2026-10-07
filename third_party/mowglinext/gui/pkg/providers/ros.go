@@ -78,6 +78,8 @@ var topicMap = map[string]topicDef{
 	// while mowing. Both are std_msgs/String.
 	"areaSettings":       {"/map_server_node/area_settings", "std_msgs/msg/String"},
 	"activeAreaSettings": {"/behavior_tree_node/active_area_settings", "std_msgs/msg/String"},
+	// Commanded deck height in mm (mcu_node, latched; no deck-position telemetry).
+	"cutterHeight": {"/cutter/height_mm", "std_msgs/msg/Int16"},
 	// Latched JSON summary of the last plan preview (POST /mowglinext/plan/preview):
 	// {id, status: planning|ok|failed|cleared, area, rings, swaths, length_m,
 	// inset_m, sub_paths, areas[], segments[{type, points}], transits[]}.

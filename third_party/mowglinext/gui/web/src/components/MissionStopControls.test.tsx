@@ -14,6 +14,8 @@ vi.mock('./MowerActions.tsx', () => ({
 vi.mock('../hooks/useStatus.ts', () => ({useStatus: () => ({mow_enabled: false})}));
 vi.mock('../hooks/useCoverageResumeAvailable.ts', () => ({useCoverageResumeAvailable: () => resumeAvailable}));
 
+vi.mock('./BladeHeightControl.tsx', () => ({BladeHeightControl: () => <div data-testid="blade-height"/>}));
+
 import {MissionStopControls} from './MissionStopControls.tsx';
 
 const renderAt = (stateName: string, state = 1, onStart = vi.fn()) =>
@@ -74,5 +76,15 @@ describe('MissionStopControls Resume', () => {
     it('idle with cursor offers Why stopped?', () => {
         renderAt('IDLE');
         expect(screen.getByTestId('mission-why-stopped')).toBeInTheDocument();
+    });
+});
+
+describe('MissionStopControls blade height', () => {
+    it('offers the live blade height while mowing only', () => {
+        const {unmount} = renderAt('MOWING', 2);
+        expect(screen.getByTestId('blade-height')).toBeInTheDocument();
+        unmount();
+        renderAt('RETURNING_HOME', 2);
+        expect(screen.queryByTestId('blade-height')).toBeNull();
     });
 });

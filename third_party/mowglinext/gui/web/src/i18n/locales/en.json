@@ -4501,5 +4501,17 @@
       "rotation": "Rotation",
       "resolution": "Pixel size"
     }
+  },
+  "bladeHeight": {
+    "label": "Blade height",
+    "mm": "{{mm}} mm",
+    "lower": "Lower the blade",
+    "raise": "Raise the blade",
+    "applied": "Blade height {{mm}} mm",
+    "failed": "Could not change the blade height",
+    "saveToArea": "Save to area",
+    "saveHint": "Store this height in the area's settings for future mows",
+    "saved": "Saved {{mm}} mm to {{area}}",
+    "emergency": "Emergency latched"
   }
 }
