@@ -1048,6 +1048,7 @@ def test_stop_cancels_charge_resume():
 def test_lethal_boundary_violation_latches():
     h = Harness()
     mowing(h)
+    h.fsm.inputs.pose = (20.0, 0.0, 0.0)          # mission pose agrees: outside the area
     h.fsm.inputs.lethal_boundary_violation = True
     h.tick()
     assert h.name == 'BOUNDARY_EMERGENCY_STOP' and h.fsm.state == 0 and not h.blade
@@ -1057,6 +1058,34 @@ def test_lethal_boundary_violation_latches():
     assert not h.cmd(f.CMD_START)
     assert h.cmd(f.CMD_STOP)
     assert h.name == 'IDLE'
+
+
+def test_lethal_held_off_while_mission_pose_inside_area():
+    """2026-10-07: one injected (27, 0) pose made map_server flag lethal while the robot was
+    mowing well inside the lawn."""
+    h = Harness(lethal_disagree_max_s=3.0)
+    mowing(h)
+    h.fsm.inputs.pose = (2.0, 2.0, 0.0)           # inside square(0, 0, 5)
+    h.fsm.inputs.lethal_boundary_violation = True
+    h.tick(n=5)
+    assert h.name == 'MOWING' and h.blade
+    h.fsm.inputs.lethal_boundary_violation = False   # glitch over
+    h.tick()
+    assert h.name == 'MOWING'
+    h.fsm.inputs.lethal_boundary_violation = True    # persistent disagreement: bounded
+    h.tick(n=29)
+    assert h.name == 'MOWING'
+    h.tick(n=3)
+    assert h.name == 'BOUNDARY_EMERGENCY_STOP' and not h.blade
+
+
+def test_lethal_without_mission_pose_stops():
+    h = Harness()
+    mowing(h)
+    h.fsm.inputs.pose = None
+    h.fsm.inputs.lethal_boundary_violation = True
+    h.tick()
+    assert h.name == 'BOUNDARY_EMERGENCY_STOP'
 
 
 def test_boundary_violation_pauses_and_resumes():

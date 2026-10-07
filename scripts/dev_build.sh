@@ -18,7 +18,9 @@ print(next(m['digest'] for m in d['manifests'] if m['platform'].get('os')=='linu
   DOCKER_BUILDKIT=0 docker build --build-arg BASE="$base" -f docker/Dockerfile.dev-amd64 -t "$IMG" docker
 fi
 mode="${1:-build}"; shift || true
-run() { docker run --rm -i ${TTY:+-t} --network host -v "$STACK_ROOT":/work -w /work "$IMG" bash -c "source /opt/ros/humble/setup.bash; $*"; }
+# Host networking + default domain 0 put dev-host test nodes on the robot's DDS graph over the
+# LAN (2026-10-07: a test feeder's /odometry/filtered_map latched a lethal boundary stop).
+run() { docker run --rm -i ${TTY:+-t} --network host -e ROS_LOCALHOST_ONLY=1 -e ROS_DOMAIN_ID="${DEV_ROS_DOMAIN_ID:-77}" -v "$STACK_ROOT":/work -w /work "$IMG" bash -c "source /opt/ros/humble/setup.bash; $*"; }
 case "$mode" in
   shell) TTY=1 run bash ;;
   build) run "colcon build --symlink-install --event-handlers console_cohesion+ $*" ;;

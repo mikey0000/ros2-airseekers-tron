@@ -143,6 +143,8 @@ behavior_tree_node:
     # stuck guard (mower_control slip_detector /stuck): cancel, blade off, escape on
     # /cmd_vel_emergency (reverse / forward 30 deg arc / reverse opposite arc), then resume;
     # too many / failed / same-spot -> STUCK_NEEDS_HELP (STOP / START / MANUAL clear it)
+    lethal_agree_margin_m: 0.5        # map_server lethal held off while the mission pose is inside the area (+margin)
+    lethal_disagree_max_s: 3.0        # ... for at most this long
     stuck_guard: true
     stuck_max_recoveries: 3
     stuck_recovery_period_s: 120.0

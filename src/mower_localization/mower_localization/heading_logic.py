@@ -567,13 +567,18 @@ class YawSource:
     ``yaw_enu - virtual yaw`` exactly like it was ``yaw_enu - WIT yaw``.
     """
 
-    def __init__(self, mode='auto', z_row=None, stale=0.1, rest_settle=1.0, rest_window=3.0,
-                 rest_alpha=0.5, rest_max_rate=0.02, rest_max_std=0.01, max_dt=0.05):
+    def __init__(self, mode='auto', z_row=None, stale=0.3, rest_settle=1.0, rest_window=3.0,
+                 rest_alpha=0.5, rest_max_rate=0.02, rest_max_std=0.01, max_dt=0.05,
+                 stale_exit=0.5):
         if mode not in IMU_SOURCES:
             raise ValueError('imu_source must be one of %s' % (IMU_SOURCES,))
         self.mode = mode
         self.z_row = z_row
+        # Hysteresis: switch TO stereo only with a sample within ``stale`` s, leave it only
+        # once none arrived for ``stale_exit`` s (the stereo IMU arrives in ~50 ms bursts; a
+        # 0.1 s window flapped wit<->stereo every 1-8 s while mowing, 2026-10-07).
         self.stale, self.max_dt = stale, max_dt
+        self.stale_exit = max(stale, stale_exit)
         self.rest_settle, self.rest_window = rest_settle, rest_window
         self.rest_alpha, self.rest_max_rate, self.rest_max_std = (rest_alpha, rest_max_rate,
                                                                    rest_max_std)
@@ -595,14 +600,16 @@ class YawSource:
         self._pending_k = None        # virtual - WIT yaw to restore at the first WIT sample
 
     # ---- state
-    def stereo_fresh(self, now):
-        return self.st_mono is not None and now - self.st_mono <= self.stale
+    def stereo_fresh(self, now, window=None):
+        win = self.stale if window is None else window
+        return self.st_mono is not None and now - self.st_mono <= win
 
     def calibrated(self):
         return self.bias_windows > 0
 
     def select(self, now):
-        if self.mode == 'wit' or self.z_row is None or not self.stereo_fresh(now):
+        window = self.stale_exit if self.active == 'stereo' else self.stale
+        if self.mode == 'wit' or self.z_row is None or not self.stereo_fresh(now, window):
             want = 'wit'
         elif self.mode == 'stereo':
             want = 'stereo'

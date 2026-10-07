@@ -590,6 +590,10 @@ class Params:
     # Escaped -> clear costmaps, 'stuck' terrain incident, resume. stuck_max_recoveries
     # within stuck_recovery_period_s, a failed escape, or a new stuck within
     # stuck_same_spot_m of an escaped spot -> STUCK_NEEDS_HELP.
+    # map_server lethal flag held off while the mission's own pose is inside the current
+    # area's outer ring (+ margin), for at most lethal_disagree_max_s (see _lethal_agrees)
+    lethal_agree_margin_m: float = 0.5
+    lethal_disagree_max_s: float = 3.0
     stuck_guard: bool = True
     stuck_max_recoveries: int = 3
     stuck_recovery_period_s: float = 120.0
@@ -1321,7 +1325,7 @@ class MissionFSM:
         # the Nav2 keepout mask bounds them (2026-10-07: a lethal stop fired in
         # PLANNING on the dock, 3.7 m from the area, before the robot moved).
         if self.phase in ('MOWING', 'BOUNDARY_PAUSED') and self.mission is not None:
-            if i.lethal_boundary_violation:
+            if self._lethal_agrees():          # flag + own-pose cross-check
                 self._boundary_stop('lethal boundary violation')
                 return True
             # A soft violation pauses only while the blade may be on (MOWING); a
@@ -1390,6 +1394,31 @@ class MissionFSM:
         self._resume_after = None
         self._dock_purpose = None
         self._go('EMERGENCY', cause)
+
+    def _lethal_agrees(self):
+        """map_server's lethal flag cross-checked with the mission's own pose: while that
+        pose lies inside the current area's outer ring (+ lethal_agree_margin_m) the flag
+        is held off, for at most lethal_disagree_max_s (an area edited smaller mid-mow must
+        still stop the robot). No pose / no area: trust the flag (2026-10-07 incident: one
+        injected (27, 0) pose latched BOUNDARY_EMERGENCY_STOP)."""
+        if not self.inputs.lethal_boundary_violation:
+            self._lethal_disagree_since = None
+            return False
+        m = self.mission
+        area = m.areas.get(m.area_idx) if m is not None else None
+        pose = self.inputs.pose
+        if area is None or pose is None or not (area.get('outer') or []):
+            return True
+        outer_only = {'outer': area.get('outer')}
+        if not geo.inside_area(pose[:2], outer_only, float(self.p.lethal_agree_margin_m)):
+            self._lethal_disagree_since = None
+            return True
+        since = getattr(self, '_lethal_disagree_since', None)
+        if since is None:
+            self._lethal_disagree_since = since = self._now
+            self._log('warn', 'lethal boundary flag ignored: mission pose (%.2f, %.2f) is inside '
+                      'area %s' % (pose[0], pose[1], m.area_idx))
+        return self._now - since >= float(self.p.lethal_disagree_max_s)
 
     def _boundary_stop(self, why):
         self._log('error', 'BOUNDARY_EMERGENCY_STOP: %s (STOP or RESET_EMERGENCY to clear)' % why)

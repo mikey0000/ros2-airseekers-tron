@@ -142,7 +142,8 @@ class HeadingAligner(Node):
         d('base_frame', 'base_link')
         # base_link z row of R(base<-stereo imu); [] = look it up from TF (stereo frame_id)
         d('stereo_z_row', [0.0])
-        d('stereo_stale', 0.1)       # s without stereo samples -> WIT fallback
+        d('stereo_stale', 0.3)       # stereo sample within this -> may switch to stereo
+        d('stereo_stale_exit', 0.5)  # stereo active: WIT fallback only after this long without
         # The 200 Hz stereo IMU is taken in batches (sampled, deliver_all) instead of one
         # pump wake per sample: every sample is still integrated in stamp order. Must stay
         # well under stereo_stale; the idle rate applies while /mission/activity is idle.
@@ -189,7 +190,7 @@ class HeadingAligner(Node):
         self.src = hl.YawSource(
             g('imu_source'), z_row=tuple(zr) if len(zr) == 3 else None,
             stale=float(g('stereo_stale')), rest_settle=float(g('rest_settle')),
-            rest_window=float(g('rest_window')))
+            rest_window=float(g('rest_window')), stale_exit=float(g('stereo_stale_exit')))
         self._base_frame = g('base_frame')
         self._rest_v, self._rest_w = float(g('rest_max_speed')), float(g('rest_max_turn'))
         self._odom = None             # (t, v, w)

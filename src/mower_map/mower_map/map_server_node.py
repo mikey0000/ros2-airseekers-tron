@@ -113,6 +113,13 @@ PARAMS = {
     'soft_boundary_margin_m': 0.3,
     'lethal_boundary_margin_m': 0.5,
     'boundary_debounce_samples': 3,
+    # lethal must hold this long before ~/lethal_boundary_violation goes True (one bad pose
+    # sample must never latch BOUNDARY_EMERGENCY_STOP; 2026-10-07 incident)
+    'lethal_min_duration_s': 1.0,
+    # map pose plausibility: a pose > pose_jump_max_m from the last accepted one within
+    # pose_jump_window_s is ignored (0 disables)
+    'pose_jump_max_m': 2.0,
+    'pose_jump_window_s': 1.0,
     'boundary_recovery_offset_m': 0.8,
     # set_docking_point gates
     'dock_gates_override': False,      # bench testing: skip every gate
@@ -251,6 +258,9 @@ class MapServerNode(Node):
         self._dig_latched = False
         self._lethal_prev = False
         self._soft_prev = False
+        self._pose_gate = core.PoseJumpGate(float(self.p('pose_jump_max_m')),
+                                            float(self.p('pose_jump_window_s')))
+        self._lethal_filter = core.PersistenceFilter(float(self.p('lethal_min_duration_s')))
 
         # Inputs bypass rclpy.spin (see sub_pump.py): 100 Hz status + 30 Hz odometry + 30 Hz
         # /tf through the executor cost ~40 % of a core while idle. Odometry is handled per
@@ -739,6 +749,15 @@ class MapServerNode(Node):
         yaw = core.yaw_from_quaternion(q.x, q.y, q.z, q.w)
         x, y = msg.pose.pose.position.x, msg.pose.pose.position.y
         now = time.monotonic()
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return
+        self._pose_gate.max_jump_m = float(self.p('pose_jump_max_m'))
+        self._pose_gate.window_s = float(self.p('pose_jump_window_s'))
+        ok, jump = self._pose_gate.check(now, x, y)
+        if not ok:
+            self.get_logger().warn('pose jump ignored (%.2f m) to (%.2f, %.2f)' % (jump, x, y),
+                                   throttle_duration_sec=2.0)
+            return
         self.pose = (x, y, yaw, msg.child_frame_id)
         self.pose_time = now
         self.recent_poses.append((now, x, y, yaw))
@@ -769,7 +788,9 @@ class MapServerNode(Node):
                 # to be (docked, undocking, coming home): never a violation.
                 if any(core.point_in_polygon(x, y, poly) for poly in self._corridor_polys):
                     inside, dist = True, 0.0
-            soft, lethal = self.boundary.update(inside, dist)
+            soft, lethal_raw = self.boundary.update(inside, dist)
+            self._lethal_filter.min_duration_s = float(self.p('lethal_min_duration_s'))
+            lethal = self._lethal_filter.update(now, lethal_raw)
             self.boundary_pub.publish(Bool(data=soft))
             self.lethal_pub.publish(Bool(data=lethal))
             if lethal and not self._lethal_prev:

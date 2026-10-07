@@ -1046,6 +1046,48 @@ class BoundaryClassifier:
         return soft, lethal
 
 
+class PoseJumpGate:
+    """Plausibility gate for the map pose: a pose more than ``max_jump_m`` away from the last
+    accepted one within ``window_s`` of it is rejected (a mower cannot move 2 m in 1 s; an
+    injected or corrupt pose can). Once nothing was accepted for ``window_s`` the next pose
+    is accepted whatever it is, so a genuine relocalization recovers after ``window_s``.
+    """
+
+    def __init__(self, max_jump_m=2.0, window_s=1.0):
+        self.max_jump_m = max_jump_m
+        self.window_s = window_s
+        self._last = None            # (t, x, y) of the last accepted pose
+
+    def check(self, t: float, x: float, y: float):
+        """``(accepted, jump_m)``."""
+        last = self._last
+        if last is not None and t - last[0] < self.window_s:
+            jump = math.hypot(x - last[1], y - last[2])
+            if self.max_jump_m > 0 and jump > self.max_jump_m:
+                return False, jump
+        else:
+            jump = 0.0
+        self._last = (t, x, y)
+        return True, jump
+
+
+class PersistenceFilter:
+    """``update(t, raw) -> bool``: True only once ``raw`` has been True continuously for
+    ``min_duration_s`` (0: immediately). Any False sample resets it."""
+
+    def __init__(self, min_duration_s=1.0):
+        self.min_duration_s = min_duration_s
+        self._since = None
+
+    def update(self, t: float, raw: bool) -> bool:
+        if not raw:
+            self._since = None
+            return False
+        if self._since is None:
+            self._since = t
+        return t - self._since >= self.min_duration_s
+
+
 def recovery_point(x: float, y: float, areas: List[Area], offset: float = 0.8):
     """Port of on_get_recovery_point. Returns dict(success, message, x, y,
     yaw, distance_outside)."""

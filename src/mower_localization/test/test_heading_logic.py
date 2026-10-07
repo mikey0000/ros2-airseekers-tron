@@ -582,3 +582,36 @@ def test_stereo_fifo_bursts_are_not_double_counted_with_wit():
             src.on_wit(s.t, s.wit, 0.3)
     assert src.switches == 1
     assert hl.wrap(src.yaw - y0) == pytest.approx(hl.wrap(s.yaw - true0), abs=D(0.5))
+
+
+def test_stereo_burst_gaps_do_not_flap_source():
+    """2026-10-07: stereo arrives in ~50 ms bursts with occasional longer gaps; the 0.1 s
+    window flapped wit<->stereo every 1-8 s. Enter within 0.3 s, leave only after 0.5 s."""
+    s = SrcSim('auto', wit_clamp=0.0)
+    s.run(0.0, 5.0, rest=True)
+    assert s.src.select(s.t) == 'stereo'
+    n = s.src.switches
+    for gap in (0.12, 0.25, 0.45, 0.2):          # silent stretches shorter than stale_exit
+        s.stereo_on = False
+        s.run(0.2, gap)
+        assert s.src.select(s.t) == 'stereo'
+        s.stereo_on = True
+        s.run(0.2, 0.05)
+    assert s.src.switches == n
+    s.stereo_on = False
+    s.run(0.2, 0.6)                              # really gone
+    assert s.src.select(s.t) == 'wit'
+    s.stereo_on = True
+    s.run(0.2, 0.05)
+    assert s.src.select(s.t) == 'stereo'
+
+
+def test_stereo_enter_window_is_stale_not_stale_exit():
+    src = hl.YawSource('stereo', z_row=(0.0, 0.0, 1.0), stale=0.3, stale_exit=0.5)
+    src.st_mono = 0.0
+    assert src.select(0.29) == 'stereo'
+    src.active = 'wit'
+    assert src.select(0.4) == 'wit'              # 0.4 s old: too old to switch TO stereo
+    src.active = 'stereo'
+    assert src.select(0.4) == 'stereo'           # but not old enough to leave it
+    assert src.select(0.51) == 'wit'

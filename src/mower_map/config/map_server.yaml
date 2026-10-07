@@ -36,6 +36,9 @@ map_server_node:
     # soft -> lethal in 0.14 s, so the soft pause never got a chance.
     boundary_check_rate_hz: 10.0
     boundary_debounce_samples: 2
+    lethal_min_duration_s: 1.0   # lethal must persist this long (one bad pose never latches)
+    pose_jump_max_m: 2.0         # map pose > 2 m from the last accepted one within 1 s: ignored
+    pose_jump_window_s: 1.0
     require_charging: true
     require_rtk_accuracy: true
     require_yaw_converged: true
