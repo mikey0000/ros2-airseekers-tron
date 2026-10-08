@@ -176,19 +176,19 @@ zero SpeedData every `docked_zero_keepalive_period_s` (default 1.0 s) while dock
 * Timeout assumption: the chassis tick period is not recorded in the decompile notes; assumed
   10 ms, so 300 ticks = 3 s and 1 s is a 3x margin. If the verification below fails (currents
   stay up), the tick may be shorter: lower the period (e.g. 0.2 s) before suspecting the theory.
-* Gating (all must hold): `/mission/activity == 'docked_idle'` AND BatteryInfo `dock_ok`
-  (both: activity alone can be stale, dock_ok alone is already true during the final docking
-  approach); no interlock / e-stop (that path stays silent at rest exactly as before); not
-  moving, no stop sequence pending, and no non-zero command within the last period. Debug
-  stream mode bypasses it. Any other activity (docking, undocking, mowing, idle off-dock)
-  stops it; off the dock the 3-zeros-then-silence policy is unchanged.
-* Dock latch (fix 2026-10-08 after a live GUI undock/dock cycle): the docked condition
-  above *latches* and survives the contacts dropping out while parked. Live: 7 min after
-  re-docking, dock_ok fell (driver "keepalive stopped" 9 ms before the BT logged
-  "CHARGING -> IDLE (docked)"), activity became `idle`, the keepalive stopped, and the right
-  drive went back into position hold (1220 counts, 37 -> 43 degC). The latch clears only on
-  a non-zero command or an activity other than `docked_idle`/`idle`; off-dock idle after a
-  mission never latches because the robot moved since the last docked_idle+dock_ok.
+* Gating (final, 2026-10-08, all must hold): `/mission/activity` is `idle` or `docked_idle`
+  (no mission; dock contact is NOT required); no interlock / e-stop (that path stays silent
+  at rest exactly as before); not moving, no stop sequence pending, and no non-zero command
+  within the last period. Debug stream mode bypasses it. Every other activity (docking,
+  undocking, mowing, ...) and an unknown/unpublished activity -> off; there the
+  3-zeros-then-silence policy is unchanged. Rationale: `idle` means no mission; a zero speed
+  setpoint still resists rolling on gentle ground, and a motor cooking in position hold is
+  worse.
+* History: the first version required `docked_idle` AND `dock_ok`; live, dock contacts
+  dropped while parked (BT CHARGING -> IDLE, activity `idle`), the keepalive stopped and the
+  right drive went back into hold (1220 counts, 37 -> 43 degC). A dock latch (ff5219c) did
+  not help when the stack booted with contacts already dropped (activity `idle`, latch never
+  set, right 1148 counts / 55 degC), so dock contact was dropped from the gate entirely.
 * A non-zero `/cmd_vel` is sent immediately as before; the keepalive resumes one period after
   the stop. Start/stop are logged once each, frames are not logged (they do appear on
   `/mcu/sent_speed`).

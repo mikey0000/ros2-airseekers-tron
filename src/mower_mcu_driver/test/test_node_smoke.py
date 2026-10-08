@@ -405,7 +405,7 @@ class TestMcuNode(unittest.TestCase):
         self.assertTrue(self.node.docked_zero_keepalive)
         self.assertAlmostEqual(self.node.docked_zero_keepalive_period, 1.0)
 
-    def test_keepalive_runs_only_when_docked_idle(self):
+    def test_keepalive_runs_only_when_idle_or_docked_idle(self):
         self._clock()
         self._dock()
         frames = self._tick_until(self.t + 3.5)
@@ -413,11 +413,12 @@ class TestMcuNode(unittest.TestCase):
         gaps = [b[0] - a[0] for a, b in zip(frames, frames[1:])]
         for g in gaps:
             self.assertAlmostEqual(g, 1.0, delta=0.021)
-        for activity, dock_ok in (('docked_idle', False), ('idle', True),
-                                  ('undocking', True), ('mowing', True), ('docking', True)):
-            self.node._dock_latched = False                # fresh: never seen docked
+        for activity in ('undocking', 'mowing', 'docking', 'returning', '', None):
+            self._dock(activity, True)
+            self.assertEqual(self._tick_until(self.t + 3.0), [], activity)
+        for activity, dock_ok in (('docked_idle', False), ('idle', True), ('idle', False)):
             self._dock(activity, dock_ok)
-            self.assertEqual(self._tick_until(self.t + 3.0), [], (activity, dock_ok))
+            self.assertEqual(len(self._tick_until(self.t + 3.0)), 3, (activity, dock_ok))
 
     def test_keepalive_survives_contact_loss_while_idle_on_dock(self):
         # live 2026-10-08: dock_ok dropped while parked, mission went CHARGING -> IDLE
@@ -441,7 +442,7 @@ class TestMcuNode(unittest.TestCase):
         self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
         self._tick_until(self.t + 0.5)
         self.node._on_activity(types.SimpleNamespace(data='idle'))
-        self.assertEqual(self._tick_until(self.t + 2.0), [])     # off dock idle: silence
+        self.assertEqual(len(self._tick_until(self.t + 2.0)), 2)  # idle at rest: keepalive
         self.node._on_activity(types.SimpleNamespace(data='docking'))
         for k in range(10):                                 # drive in, contacts flap
             self.node._on_cmd_vel(cmd_vel(0.05, 0.0))
@@ -457,6 +458,14 @@ class TestMcuNode(unittest.TestCase):
         self.assertEqual(len(frames), 3)
         self._dock('idle', False)                           # CHARGING -> IDLE, contacts lost
         self.assertEqual(len(self._tick_until(self.t + 3.0)), 3)
+
+    def test_boot_into_idle_off_contact_runs_after_one_period(self):
+        self._clock()
+        self.node._last_nonzero_t = self.t                 # conservative: a command just now
+        self._dock('idle', False)
+        frames = self._tick_until(self.t + 2.5)
+        self.assertEqual(len(frames), 2)
+        self.assertGreaterEqual(frames[0][0] - 1000.0, 1.0)
 
     def test_keepalive_disabled_by_parameter(self):
         self._clock()
