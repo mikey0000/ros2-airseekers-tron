@@ -546,7 +546,10 @@ class McuNode(Node):
         # chassis falls back to position hold (mode 3, integrating) 300 ticks after the last
         # SpeedData; a zero frame every period keeps it in speed mode with a zero setpoint.
         # Tick period not recorded in the decompile; assumed 10 ms -> 3 s timeout.
-        self.declare_parameter('docked_zero_keepalive', True)
+        # OFF by default: leaving position hold releases the hold torque and the wheels creep
+        # (robot walked off the dock pads, 2026-10-08). Read fresh every tick (ros2 param set
+        # takes effect live).
+        self.declare_parameter('docked_zero_keepalive', False)   # experiments only, see doc
         self.declare_parameter('docked_zero_keepalive_period_s', 1.0)
         # Telemetry: measured vs commanded velocity at this rate (0 disables); /mcu/sent_speed
         # is published once per SpeedData frame that actually left the host.
@@ -627,7 +630,6 @@ class McuNode(Node):
         self._sensor_info_pub_key = None
         self._estop_pub_t = -1e9
         self._estop_pub_value = None
-        self.docked_zero_keepalive = bool(param('docked_zero_keepalive'))
         self.docked_zero_keepalive_period = max(0.05, float(param('docked_zero_keepalive_period_s')))
         self.interlock_on_lift = bool(param('interlock_on_lift'))
         self.interlock_on_stop = bool(param('interlock_on_stop'))
@@ -1492,7 +1494,8 @@ class McuNode(Node):
         dropped contacts reports 'idle'); no interlock / e-stop (silent at rest,
         unchanged); not moving, no stop sequence pending, no non-zero command within
         the last period. Every other activity (docking, undocking, mowing, ...) -> off."""
-        if not self.docked_zero_keepalive or blocked:
+        enabled = bool(self.get_parameter('docked_zero_keepalive').value)
+        if not enabled or blocked:
             return False
         if self._activity not in ('docked_idle', 'idle'):
             return False

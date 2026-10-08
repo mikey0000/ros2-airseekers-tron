@@ -398,11 +398,12 @@ class TestMcuNode(unittest.TestCase):
 
     # ---- docked zero-speed keepalive
     def _dock(self, activity='docked_idle', dock_ok=True):
+        self.node._params['docked_zero_keepalive'] = True   # off by default; tests opt in
         self.node._on_activity(types.SimpleNamespace(data=activity))
         self.node._battery = {'dock_ok': dock_ok}
 
     def test_keepalive_defaults(self):
-        self.assertTrue(self.node.docked_zero_keepalive)
+        self.assertFalse(self.node.get_parameter('docked_zero_keepalive').value)
         self.assertAlmostEqual(self.node.docked_zero_keepalive_period, 1.0)
 
     def test_keepalive_runs_only_when_idle_or_docked_idle(self):
@@ -469,8 +470,13 @@ class TestMcuNode(unittest.TestCase):
 
     def test_keepalive_disabled_by_parameter(self):
         self._clock()
-        self.node.docked_zero_keepalive = False
-        self._dock()
+        self._tick_until(self.t + 0.1)
+        self.node._on_activity(types.SimpleNamespace(data='docked_idle'))
+        self.node._battery = {'dock_ok': True}             # default: off
+        self.assertEqual(self._tick_until(self.t + 3.0), [])
+        self._dock()                                       # live enable ...
+        self.assertEqual(len(self._tick_until(self.t + 1.5)), 2)
+        self.node._params['docked_zero_keepalive'] = False  # ... and live disable
         self.assertEqual(self._tick_until(self.t + 3.0), [])
 
     def test_keepalive_stops_on_undock_and_motion(self):

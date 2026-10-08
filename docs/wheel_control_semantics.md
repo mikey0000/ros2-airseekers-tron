@@ -166,12 +166,22 @@ no host command can de-energise the drives:
 
 ### Docked zero-speed keepalive (2026-10-08, `mcu_node.py` `_docked_keepalive`)
 
+> **Finding (2026-10-08, owner, live): OFF by default, experiments only.** With all-zero
+> frames on `/mcu/sent_speed`, the owner saw the wheels turn at each keepalive ping: leaving
+> position hold for speed mode releases the hold torque and the wheels creep. This matches the
+> timeline: both dock-contact drops (…9582, …9609) happened under the keepalive, i.e. the
+> keepalive walked the robot off the dock pads. `docked_zero_keepalive` now defaults to
+> **false**; the hold current on the dock is accepted (position hold keeps the robot seated).
+> The parameter is read every tick, so `ros2 param set /mower_mcu_driver
+> docked_zero_keepalive true|false` takes effect live (builds before this change only read it
+> at init). The text below describes the mechanism for experiments.
+
 Because the chassis drops to mode-3 position hold 300 ticks after the last SpeedData (see the
 2026-10-08 firmware follow-up below), a wheel displaced while docked (pushed by hand, settling
 onto the dock rails) holds a steady current indefinitely. In mode 2 with a zero setpoint a
 stationary displaced wheel has zero error and no holding current. The driver therefore sends a
 zero SpeedData every `docked_zero_keepalive_period_s` (default 1.0 s) while docked and idle;
-`docked_zero_keepalive` (default true) turns it off.
+`docked_zero_keepalive` (default **false**, see finding above) enables it.
 
 * Timeout assumption: the chassis tick period is not recorded in the decompile notes; assumed
   10 ms, so 300 ticks = 3 s and 1 s is a 3x margin. If the verification below fails (currents
@@ -192,7 +202,7 @@ zero SpeedData every `docked_zero_keepalive_period_s` (default 1.0 s) while dock
 * A non-zero `/cmd_vel` is sent immediately as before; the keepalive resumes one period after
   the stop. Start/stop are logged once each, frames are not logged (they do appear on
   `/mcu/sent_speed`).
-* Verification after the mower_humble restart, docked and untouched: left/right drive currents
+* Original verification idea (superseded by the finding above), docked and untouched: left/right drive currents
   on `/mower_sensor_info` both fall to ~0 counts within a few seconds of the "keepalive
   started" log line, and the right motor temperature falls toward ambient over ~10 min.
 
