@@ -78,6 +78,17 @@ mower_docking:
     allow_blind_docking: false     # true = vendor behaviour: blind reverse after any search timeout
     blind_marker_max_age_s: 30.0   # blind final docking only if the dock pose is measured AND
     #                                a marker was seen this attempt within this age
+    # 2026-10-08: blind reverse after a failed search is OFF in vision mode regardless of the
+    # measured dock pose / earlier sighting (owner: docking is driven by the rear marker).
+    # A search timeout re-approaches (Nav2 + about-turn) up to max_retries, then DOCK_NOT_FOUND.
+    # Bumper during ALIGNING/SEARCHING/DOCKING/FINAL/RETRY (2026-10-08 bike vs front bumper):
+    # stop, wait until the bumper is released AND bumper_controller's manoeuvre
+    # (/mower_base/bumper_routing_status) is idle for bumper_clear_s, then resume from the
+    # current pose (ALIGNING re-plans the about-turn; DOCKING needs a fresh in-gate marker).
+    # Still pressed after bumper_wait_max_s -> DOCK_BLOCKED.
+    bumper_routing_topic: /mower_base/bumper_routing_status
+    bumper_clear_s: 2.0
+    bumper_wait_max_s: 30.0
     dock_pose_measured_topic: /map_server_node/docking_pose_measured   # latched Bool
     dock_pose_measured_override: false   # bench only
     # stall / dig guard in DOCKING / FINAL_DOCKING / RETRY -> FAILED "DOCK_STALLED"

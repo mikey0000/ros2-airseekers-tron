@@ -316,6 +316,7 @@ class Snapshot:
     map_pose: Optional[Pose2D] = None        # robot pose in the map frame (approach skip / align)
     raw_contact: bool = False                # latest undebounced is_docking_done
     is_charging: bool = False                # MowerBaseDevStatus.is_charging
+    bumper: bool = False                     # bumper pressed OR bumper_controller manoeuvring
 
 
 class StallGuard:
@@ -476,6 +477,14 @@ class DockParams:
     final_max_heading_deg: float = 20.0
     max_realigns: int = 2
     marker_median_n: int = 3         # gates/decisions use the median of the last N markers
+    # Bumper during docking (2026-10-08: a bike pressed the front bumper mid-ALIGNING; the
+    # bumper_controller backed off + rotated over the docking lane while the FSM's timers ran
+    # on, the about-turn ended off the approach line, SEARCHING timed out and the robot
+    # reversed BLIND onto the dock). Now: stop, wait until the bumper is released and the
+    # bumper manoeuvre is over for bumper_clear_s (at most bumper_wait_max_s, then
+    # DOCK_BLOCKED), then resume from the current pose (ALIGNING re-plans the about-turn).
+    bumper_clear_s: float = 2.0
+    bumper_wait_max_s: float = 30.0
     realign_forward_distance: float = 0.8
     # FINAL_DOCKING budget exhausted without contact (2026-10-07 Home: the retry drove
     # forward off the pins 7 s before the contacts reported): hold still, then creep a bit
@@ -513,6 +522,7 @@ class DockMsg:
     ALREADY_DOCKED = 'ALREADY_DOCKED'
     DOCK_NOT_FOUND = 'DOCK_NOT_FOUND'
     DOCK_STALLED = 'DOCK_STALLED'
+    DOCK_BLOCKED = 'DOCK_BLOCKED'
 
 
 class DockStateMachine:
@@ -579,6 +589,7 @@ class DockStateMachine:
         self._last_err: Optional[DockErrors] = None      # latest DOCKING observation
         self._last_err_odom: Optional[Pose2D] = None
         self.calibrated_offset: Optional[float] = None
+        self._bump: Optional[dict] = None   # bumper hold: {'t0', 'clear_t', 'state'}
 
     # -- helpers ---------------------------------------------------------
     def _enter(self, state: str, snap: Snapshot) -> None:
@@ -675,13 +686,18 @@ class DockStateMachine:
         return DockErrors(med([e.remaining for e in es]), med([e.lateral for e in es]),
                           med([e.heading for e in es]))
 
-    def _enter_retry(self, snap: Snapshot, travelled_reverse: float) -> None:
+    def _enter_retry(self, snap: Snapshot, travelled_reverse: float,
+                     renav: bool = False) -> None:
         if self.retries >= self.p.max_retries:
             self._fail(DockMsg.DOCK_MAXOUT, snap)
             return
         self.retries += 1
         self._obs = []
         self._last_err = None
+        if renav:
+            # searching (not reversing): nothing to drive forward off, Nav2 re-approach now
+            self._pending.extend(self._go_to_approach(snap, force=True))
+            return
         if self.p.skip_nav_to_approach and (self._blind or not self.use_vision):
             # no Nav2 to re-approach: drive back to where the attempt started
             self._retry_distance = min(max(travelled_reverse, self.p.retry_forward_distance),
@@ -759,16 +775,80 @@ class DockStateMachine:
             self.message = DockMsg.NAV_TO_DOCK_FAILED
         return []
 
-    def _go_to_approach(self, snap: Snapshot) -> List[tuple]:
-        """Nav2 to the approach pose unless already within approach_skip_radius_m."""
+    def _go_to_approach(self, snap: Snapshot, force: bool = False) -> List[tuple]:
+        """Nav2 to the approach pose unless already within approach_skip_radius_m (and not
+        ``force``: a re-approach after a failed search must actually re-position)."""
         d = self._dist_to_approach(snap)
-        if d is not None and self.use_vision and d <= self.p.approach_skip_radius_m:
+        if self.p.skip_nav_to_approach:
+            self._arrive(snap)
+            return []
+        if not force and d is not None and self.use_vision and \
+                d <= self.p.approach_skip_radius_m:
             self._notes.append('%.2f m from the approach pose: skipping Nav2' % d)
             self._arrive(snap)
             return []
         self._relaxed_tried = False
         self._enter(DockState.NAV_TO_APPROACH, snap)
         return [('start_nav', self.approach_goal)]
+
+    # -- bumper hold -------------------------------------------------------
+    def _bumper_hold(self, snap: Snapshot) -> Optional[Output]:
+        """Stop while the bumper is pressed / the bumper manoeuvre runs; resume from the
+        current pose once clear. Returns an Output while holding, None otherwise."""
+        held = (DockState.ALIGNING, DockState.SEARCHING, DockState.DOCKING,
+                DockState.FINAL_DOCKING, DockState.RETRY)
+        if self._bump is None:
+            if not snap.bumper or self.state not in held:
+                return None
+            self._bump = {'t0': snap.t, 'clear_t': None, 'state': self.state}
+            self._notes.append('bumper in %s: stopped, waiting for it to clear (max %.0f s)'
+                               % (self.state, self.p.bumper_wait_max_s))
+            self._stall.reset()
+            return self._out()
+        b = self._bump
+        if snap.bumper:
+            b['clear_t'] = None
+            if snap.t - b['t0'] > self.p.bumper_wait_max_s:
+                self._bump = None
+                self._fail('%s: bumper pressed for %.0f s in %s' % (
+                    DockMsg.DOCK_BLOCKED, snap.t - b['t0'], b['state']), snap)
+            return self._out()
+        if b['clear_t'] is None:
+            b['clear_t'] = snap.t
+        if snap.t - b['clear_t'] < self.p.bumper_clear_s:
+            return self._out()
+        self._bump = None
+        self._resume_after_bumper(snap, b['state'], snap.t - b['t0'])
+        return self._out()
+
+    def _resume_after_bumper(self, snap: Snapshot, st: str, waited: float) -> None:
+        self._notes.append('bumper clear after %.1f s: resuming %s from the current pose'
+                           % (waited, st))
+        self._obs = []
+        self._lost = 0
+        if st in (DockState.ALIGNING, DockState.SEARCHING):
+            # re-plan the about-turn from where the back-off left the robot
+            self._arrive(snap)
+            if self.state == DockState.ALIGNING:
+                return
+            if st == DockState.ALIGNING and self._align_target is not None and \
+                    snap.map_pose is None and snap.odom is not None:
+                err = wrap_angle(self._align_target - snap.odom.yaw)
+                if abs(err) > math.radians(self.p.align_tolerance_deg):
+                    self._enter(DockState.ALIGNING, snap)   # no map pose: keep the odom target
+                    self._heading_left = err
+            return
+        if st == DockState.DOCKING:
+            # the reverse continues only on a fresh in-gate marker; a stale pre-bump
+            # observation must not trigger the dead-reckoned final stretch
+            self._last_err = None
+            self._enter(DockState.DOCKING, snap)
+            return
+        if st == DockState.FINAL_DOCKING:
+            # dead-reckoned stretch invalidated by the back-off: re-approach
+            self._enter_retry(snap, 0.0)
+            return
+        self._enter(st, snap)   # RETRY: forward drive again
 
     def _fresh_marker(self, snap: Snapshot) -> Optional[MarkerObs]:
         m = snap.marker
@@ -943,6 +1023,9 @@ class DockStateMachine:
             return self._out()   # hold still while waiting for the contacts
         if snap.raw_contact and self.state in moving and self.state != DockState.NAV_TO_APPROACH:
             return self._out()   # raw contact: hold still until the debounce confirms it
+        held = self._bumper_hold(snap)
+        if held is not None:
+            return held
 
         if self.state in (DockState.DOCKING, DockState.FINAL_DOCKING, DockState.RETRY):
             dig = self.p.use_dig_stall and snap.dig_stall and not self._dig_at_start
@@ -1010,7 +1093,17 @@ class DockStateMachine:
                     self._enter(DockState.DOCKING, snap)
                     return self._out()
             if el > self.p.search_timeout_s:
-                self._try_blind(snap)
+                if self.p.allow_blind_docking:
+                    self._try_blind(snap)     # explicit vendor mode only
+                else:
+                    # Owner rule: docking is driven by the rear marker; never reverse blind.
+                    # Re-approach (Nav2 to the approach pose, about-turn, search again).
+                    self._notes.append('no usable marker after %.0f s of searching: '
+                                       're-approaching (no blind reverse)' % el)
+                    self._enter_retry(snap, travelled, renav=True)
+                    if self.state == DockState.FAILED:
+                        self.message = '%s: rear marker not found after %d re-approaches' % (
+                            DockMsg.DOCK_NOT_FOUND, self.retries)
             return self._out()
 
         if st == DockState.DOCKING:

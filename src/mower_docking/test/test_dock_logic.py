@@ -566,45 +566,61 @@ def _search_until_timeout(m, marker=None, t_end=16.0, odom=dl.Pose2D(0.8, 0, 0))
     return out
 
 
-def test_no_blind_without_marker_even_when_measured():
-    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
-                            dock_pose_measured=True)
-    m.start(dl.Snapshot(t=0.0))
-    out = _search_until_timeout(m)
-    assert out.done and not out.success
-    assert out.message.startswith('DOCK_NOT_FOUND') and 'marker not visible' in out.message
-    assert out.linear == 0.0 and out.angular == 0.0
-    assert m.step(dl.Snapshot(t=20.0)).linear == 0.0
+def _search_to_end(m, marker=None, t_end=80.0, odom=dl.Pose2D(0.8, 0, 0)):
+    """Step until done; return (last output, all outputs)."""
+    outs, t = [], 0.0
+    while t < t_end:
+        t += 0.05
+        mk = marker(t) if marker else None
+        out = m.step(dl.Snapshot(t=t, marker=mk, odom=odom))
+        outs.append(out)
+        if out.done:
+            break
+    return outs[-1], outs
 
 
+# 2026-10-08 (bike vs bumper mid-ALIGNING, then SEARCHING timed out and the robot reversed
+# BLIND onto the dock): in vision mode a search timeout never starts a reverse, it
+# re-approaches; after max_retries the goal fails DOCK_NOT_FOUND.
 def _bad_marker(t):
     # seen, but outside the 25 deg gate -> stays in SEARCHING
     return dl.MarkerObs(-1.2, 0.0, math.radians(40), stamp=t) if t < 1.0 else None
 
 
-def test_no_blind_with_marker_but_unmeasured_dock():
+@pytest.mark.parametrize('measured,marker', [(True, None), (False, _bad_marker),
+                                             (True, _bad_marker)])
+def test_search_timeout_never_reverses_blind(measured, marker):
     m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
-                            dock_pose_measured=False)
+                            dock_pose_measured=measured)
     m.start(dl.Snapshot(t=0.0))
-    out = _search_until_timeout(m, _bad_marker)
-    assert out.done and out.message.startswith('DOCK_NOT_FOUND')
-    assert 'not measured' in out.message and out.linear == 0.0
+    out, outs = _search_to_end(m, marker)
+    assert all(o.linear >= 0.0 for o in outs)              # never a reverse command
+    assert S.FINAL_DOCKING not in [o.state for o in outs]
+    assert out.done and not out.success and out.message.startswith('DOCK_NOT_FOUND')
+    assert m.retries == m.p.max_retries
+    assert any('re-approaching (no blind reverse)' in n for o in outs for n in o.notes)
 
 
-def test_blind_allowed_with_measured_dock_and_recent_marker():
-    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
-                            dock_pose_measured=True)
-    m.start(dl.Snapshot(t=0.0))
-    out = _search_until_timeout(m, _bad_marker)
-    assert not out.done and out.state == S.FINAL_DOCKING
+def test_search_timeout_reapproaches_with_nav2_even_when_close():
+    p = dl.DockParams(search_timeout_s=1.0)
+    m = dl.DockStateMachine(p, dl.Pose2D(), dock_pose_measured=True)
+    near = dl.Pose2D(m.approach.x, m.approach.y, m.approach.yaw)   # at the approach pose
+    out = m.start(dl.Snapshot(t=0.0, map_pose=near, odom=near))
+    assert out.state == S.SEARCHING and not out.requests           # skip radius: no Nav2
+    t = 0.0
+    while out.state == S.SEARCHING and t < 3.0:
+        t += 0.05
+        out = m.step(dl.Snapshot(t=t, map_pose=near, odom=near))
+    assert out.state == S.NAV_TO_APPROACH and out.linear == 0.0
+    assert any(r[0] == 'start_nav' for r in out.requests) and m.retries == 1
 
 
-def test_no_blind_when_marker_too_old():
-    p = dl.DockParams(skip_nav_to_approach=True, blind_marker_max_age_s=5.0)
+def test_allow_blind_docking_keeps_vendor_fallback():
+    p = dl.DockParams(skip_nav_to_approach=True, allow_blind_docking=True)
     m = dl.DockStateMachine(p, dl.Pose2D(), dock_pose_measured=True)
     m.start(dl.Snapshot(t=0.0))
-    out = _search_until_timeout(m, _bad_marker)
-    assert out.done and out.message.startswith('DOCK_NOT_FOUND')
+    out = _search_until_timeout(m)
+    assert out.state == S.FINAL_DOCKING
 
 
 def test_marker_from_before_the_attempt_does_not_count():
@@ -1224,3 +1240,141 @@ def test_post_fail_watch():
     assert dl.PostFailWatch(0.0, 10.0).step(1.0, True, False, True) == 'abort'
     w = dl.PostFailWatch(0.0, 10.0)
     assert w.step(10.5, False, False, False) == 'abort'
+
+
+# ------------------------------------------- bumper during docking (2026-10-08 bike)
+class _Pivot:
+    """Map == odom pose integrated from the commands (pivot / straight)."""
+
+    def __init__(self, m, pose):
+        self.m, self.pose, self.t, self.outs = m, pose, 0.0, []
+
+    def step(self, bumper=False, marker=None, dt=0.05):
+        self.t += dt
+        out = self.m.step(dl.Snapshot(t=self.t, odom=self.pose, map_pose=self.pose,
+                                      bumper=bumper, marker=marker))
+        p = self.pose
+        self.pose = dl.Pose2D(p.x + out.linear * math.cos(p.yaw) * dt,
+                              p.y + out.linear * math.sin(p.yaw) * dt,
+                              dl.wrap_angle(p.yaw + out.angular * dt))
+        self.outs.append(out)
+        return out
+
+
+def _aligning_machine(**kw):
+    m = dl.DockStateMachine(dl.DockParams(**kw), dl.Pose2D(), dock_pose_measured=True)
+    facing = dl.Pose2D(m.approach.x, m.approach.y, dl.wrap_angle(m.approach.yaw + math.pi))
+    out = m.start(dl.Snapshot(t=0.0, odom=facing, map_pose=facing))
+    assert out.state == S.ALIGNING
+    return m, _Pivot(m, facing)
+
+
+def test_bumper_during_aligning_waits_then_resumes_aligning():
+    m, sim = _aligning_machine()
+    for _ in range(100):                       # ~70 deg of the about-turn
+        out = sim.step()
+    assert out.state == S.ALIGNING and out.angular != 0.0
+    for _ in range(30):                        # bike on the front bumper (1.5 s)
+        out = sim.step(bumper=True)
+        assert out.state == S.ALIGNING and out.linear == 0.0 and out.angular == 0.0
+    # the bumper_controller back-off moved / rotated the robot meanwhile
+    sim.pose = dl.Pose2D(sim.pose.x + 0.2, sim.pose.y + 0.05, dl.wrap_angle(sim.pose.yaw - 0.4))
+    for _ in range(int(m.p.bumper_clear_s / 0.05) - 1):   # clear, waiting
+        out = sim.step()
+        assert out.linear == 0.0 and out.angular == 0.0
+    for _ in range(5):
+        out = sim.step()
+    assert out.state == S.ALIGNING and out.angular != 0.0      # resumed, not reversing
+    assert any('bumper clear' in n for o in sim.outs for n in o.notes)
+    for _ in range(1000):
+        out = sim.step()
+        if out.state != S.ALIGNING:
+            break
+    assert out.state == S.SEARCHING
+    # the re-planned about-turn ends on the dock yaw from the CURRENT pose
+    assert abs(dl.wrap_angle(m.approach.yaw - sim.pose.yaw)) <= math.radians(
+        m.p.align_tolerance_deg) + 0.05
+    assert all(o.linear >= 0.0 for o in sim.outs)
+
+
+def test_bumper_hold_does_not_eat_the_align_budget():
+    m, sim = _aligning_machine(align_timeout_s=10.0)
+    for _ in range(40):
+        sim.step()
+    for _ in range(int(20.0 / 0.05)):          # held 20 s > align_timeout_s
+        out = sim.step(bumper=True)
+    assert out.state == S.ALIGNING
+    for _ in range(int(m.p.bumper_clear_s / 0.05) + 3):
+        out = sim.step()
+    assert out.state == S.ALIGNING and out.angular != 0.0
+
+
+def test_bumper_pressed_too_long_fails_blocked():
+    m, sim = _aligning_machine(bumper_wait_max_s=3.0)
+    out = None
+    for _ in range(100):
+        out = sim.step(bumper=True)
+        if out.done:
+            break
+    assert out.done and out.message.startswith('DOCK_BLOCKED')
+    assert out.linear == 0.0 and out.angular == 0.0
+
+
+def test_cancel_during_bumper_hold():
+    m, sim = _aligning_machine()
+    sim.step(bumper=True)
+    out = m.cancel()
+    assert out.done and out.message == dl.DockMsg.CANCELED and out.linear == 0.0
+
+
+def test_bumper_during_docking_resumes_only_on_fresh_marker():
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True, max_lost_frames=5),
+                            dl.Pose2D(), dock_pose_measured=True)
+    m.start(dl.Snapshot(t=0.0))
+    out = m.step(dl.Snapshot(t=0.05, marker=dl.MarkerObs(-1.3, 0.0, 0.0, stamp=0.05)))
+    assert out.state == S.DOCKING
+    t = 0.05
+    for _ in range(20):
+        t += 0.05
+        out = m.step(dl.Snapshot(t=t, bumper=True, odom=dl.Pose2D(),
+                                 marker=dl.MarkerObs(-1.3, 0.0, 0.0, stamp=t)))
+        assert out.linear == 0.0 and out.angular == 0.0
+    outs = []
+    for _ in range(200):                       # clear, but the marker is gone
+        t += 0.05
+        outs.append(m.step(dl.Snapshot(t=t, odom=dl.Pose2D())))
+    assert all(o.linear >= 0.0 for o in outs)  # no reverse without the marker
+    assert S.RETRY in [o.state for o in outs]
+    assert S.FINAL_DOCKING not in [o.state for o in outs]
+
+
+def test_reverse_never_starts_without_marker_in_gate():
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True, search_timeout_s=2.0),
+                            dl.Pose2D(), dock_pose_measured=True)
+    m.start(dl.Snapshot(t=0.0))
+    t = 0.0
+    for i in range(200):
+        t += 0.05
+        mk = dl.MarkerObs(-1.2, 0.6, 0.0, stamp=t) if i % 2 else None   # outside lateral gate
+        out = m.step(dl.Snapshot(t=t, marker=mk, odom=dl.Pose2D()))
+        assert out.linear >= 0.0 and out.state != S.DOCKING
+        if out.done:
+            break
+
+
+def test_marker_lost_in_reverse_falls_back_to_realign_not_blind():
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True, max_lost_frames=5),
+                            dl.Pose2D(), dock_pose_measured=True)
+    m.start(dl.Snapshot(t=0.0))
+    m.step(dl.Snapshot(t=0.05, marker=dl.MarkerObs(-1.3, 0.0, 0.0, stamp=0.05)))
+    out = m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0.0, 0.0, stamp=0.1)))
+    assert out.state == S.DOCKING and out.linear < 0 and out.marker_in_view
+    states = []
+    t = 0.1
+    for _ in range(40):
+        t += 0.05
+        out = m.step(dl.Snapshot(t=t, odom=dl.Pose2D()))
+        states.append((out.state, out.linear))
+    assert all(v >= 0.0 for _, v in states)
+    assert S.RETRY in [s for s, _ in states] and S.FINAL_DOCKING not in [s for s, _ in states]
+    assert not out.marker_in_view

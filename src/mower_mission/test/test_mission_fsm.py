@@ -2886,6 +2886,30 @@ def test_marker_in_view_ignores_person_while_docking():
     assert h.fsm._action is None and 'waiting for person' in h.fsm.sub_state
 
 
+@pytest.mark.parametrize('kind,cls', [('static', 'chair'), ('static', 'bike'),
+                                      ('dynamic', 'person')])
+def test_marker_in_view_ignores_front_detections_while_reversing(kind, cls):
+    # 2026-10-08: rear marker in view -> front/side camera detections never stop the reverse
+    h = Harness()
+    h.fsm.inputs.pose = (1.5, -5.6, 0.0)          # outside the dock zone
+    assert h.cmd(f.CMD_HOME)
+    tok = h.pending_action(f.ACT_DOCK).token
+    h.fsm.inputs.dock_marker_in_view = True
+    m = h.mark()
+    tick_seen(h, kind, cls, 5.0)
+    assert h.name == 'RETURNING_HOME' and h.pending_action(f.ACT_DOCK).token == tok
+    assert not h.since(m, f.CancelActions)
+
+
+@pytest.mark.parametrize('msg', ['DOCK_BLOCKED: bumper pressed for 31 s in ALIGNING',
+                                 'DOCK_NOT_FOUND: rear marker not found after 3 re-approaches'])
+def test_dock_blocked_or_not_found_stops_without_blind_retry(msg):
+    h = _returning_home()
+    h.finish(f.ACT_DOCK, f.ABORTED, {'success': False, 'message': msg})
+    assert h.name == 'NAV_TO_DOCK_FAILED'
+    assert h.fsm._action is None
+
+
 def test_marker_in_view_false_waits_as_before():
     h = Harness()
     h.fsm.inputs.dock_marker_in_view = False

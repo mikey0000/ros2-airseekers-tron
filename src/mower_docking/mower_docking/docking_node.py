@@ -29,7 +29,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import CameraInfo, Image
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, UInt8
 
 from mower_interfaces.action import Dock, Undock
 from mower_interfaces.msg import MowerBaseDevStatus
@@ -117,6 +117,11 @@ class DockingServer(Node):
         decl('charging_timeout_s', dp.charging_timeout_s)
         # safety (incident 2026-10-06: blind reverse into a log)
         decl('allow_blind_docking', dp.allow_blind_docking)
+        # bumper during docking: stop, wait for it (and bumper_controller's manoeuvre) to
+        # clear, resume from the current pose
+        decl('bumper_routing_topic', '/mower_base/bumper_routing_status')
+        decl('bumper_clear_s', dp.bumper_clear_s)
+        decl('bumper_wait_max_s', dp.bumper_wait_max_s)
         decl('blind_marker_max_age_s', dp.blind_marker_max_age_s)
         decl('dock_pose_measured_override', False)   # bench: treat the dock pose as measured
         decl('stall_min_cmd', dp.stall_min_cmd)
@@ -175,6 +180,9 @@ class DockingServer(Node):
         self._status_count = 0
         self._stop = False
         self._lift = False
+        self._bumper = False
+        self._bumper_routing = False
+        self._bumper_routing_t = -1e9
         self._contact = dl.ContactDebouncer(self.get_parameter('contact_debounce_samples').value)
         self._dock_pose_msg: Optional[dl.Pose2D] = None
         self._dock_measured = False
@@ -273,7 +281,15 @@ class DockingServer(Node):
             self._status_count += 1
             self._stop = bool(msg.stop_triggered)
             self._lift = bool(msg.lift_triggered)
+            self._bumper = bool(getattr(msg, 'bumper_triggered', False) or
+                                getattr(msg, 'left_bumper_triggered', False) or
+                                getattr(msg, 'right_bumper_triggered', False))
             self._status_t = time.monotonic()
+
+    def _on_bumper_routing(self, msg) -> None:
+        with self._lock:
+            self._bumper_routing = int(msg.data) != 0
+            self._bumper_routing_t = time.monotonic()
 
     def _on_dock_pose(self, msg: PoseStamped) -> None:
         q = msg.pose.orientation
@@ -409,6 +425,8 @@ class DockingServer(Node):
                 contact=self._contact.value,
                 status_fresh=now - self._status_t <= p('status_timeout_s').value,
                 stop_triggered=self._stop, lift_triggered=self._lift,
+                bumper=(self._bumper and now - self._status_t <= 1.0) or
+                (self._bumper_routing and now - self._bumper_routing_t <= 1.0),
                 nav_status=self._nav_status, charging_result=self._charging_result,
                 rtk_fixed=self._rtk_fixed)
 
@@ -442,6 +460,9 @@ class DockingServer(Node):
         if p('map_pose_topic').value:
             pump.subscribe(Odometry, p('map_pose_topic').value, self._on_map_pose, 5,
                            parser=parse_odometry)
+        if p('bumper_routing_topic').value:
+            pump.subscribe(UInt8, p('bumper_routing_topic').value, self._on_bumper_routing, 10,
+                           parser=flat_parser(UInt8))
         pump.start()
         self._goal_pump = pump
         while time.monotonic() - t0 < timeout:
@@ -586,6 +607,8 @@ class DockingServer(Node):
             heading_hold_kp=float(p('heading_hold_kp')),
             charging_timeout_s=float(p('charging_timeout_s')),
             allow_blind_docking=bool(p('allow_blind_docking')),
+            bumper_clear_s=float(p('bumper_clear_s')),
+            bumper_wait_max_s=float(p('bumper_wait_max_s')),
             blind_marker_max_age_s=float(p('blind_marker_max_age_s')),
             stall_min_cmd=float(p('stall_min_cmd')),
             stall_progress_ratio=float(p('stall_progress_ratio')),
