@@ -22,6 +22,9 @@ to vendor light modes (docs/lights.md). ``lights_dry_run:=true`` computes frames
 applied after the built-in values; mower.launch.py fills it with the NTRIP caster and
 correction source saved in the GUI settings.
 """
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
@@ -100,7 +103,8 @@ def generate_launch_description():
             package='bumper_controller',
             executable='bumper_controller_node',
             name='bumper_controller',
-            parameters=[{
+            parameters=[os.path.join(get_package_share_directory('bumper_controller'),
+                                     'config', 'bumper_controller.yaml'), {
                 'pid_kp': 0.8,
                 'pid_ki': 0.0,
                 'pid_kd': 0.05,

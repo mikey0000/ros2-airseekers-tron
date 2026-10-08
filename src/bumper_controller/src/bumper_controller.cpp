@@ -2,6 +2,7 @@
 // from the recovered libbumper_controller.so; heading PID inlined).
 #include "bumper_controller/bumper_controller.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace mower_controller {
@@ -52,6 +53,12 @@ BumperController::BumperController(rclcpp::Node& node, Config cfg)
     cfg_.pid_tolerance   = node_.declare_parameter<double>("pid_tolerance", cfg_.pid_tolerance);
     cfg_.max_duration_s  = node_.declare_parameter<double>("max_duration_s", cfg_.max_duration_s);
     if (cfg_.max_duration_s > 2.0 || cfg_.max_duration_s <= 0.0) cfg_.max_duration_s = 2.0;
+    cfg_.dock_backoff_distance = std::clamp(node_.declare_parameter<double>(
+        "dock_backoff_distance", cfg_.dock_backoff_distance), 0.0, 0.3);
+    cfg_.dock_rear_backoff_distance = std::clamp(node_.declare_parameter<double>(
+        "dock_rear_backoff_distance", cfg_.dock_rear_backoff_distance), 0.0, 0.3);
+    cfg_.dock_hold_s = std::clamp(node_.declare_parameter<double>(
+        "dock_hold_s", cfg_.dock_hold_s), 0.0, 2.0);
 
     pid_.kp = cfg_.pid_kp;
     pid_.ki = cfg_.pid_ki;
@@ -67,9 +74,11 @@ void BumperController::onOdom(const nav_msgs::msg::Odometry::SharedPtr msg) {
 }
 
 bool BumperController::update(bool bumper, bool bumper_l, bool bumper_r,
-                              bool routing_enabled, double /*dt*/, bool suppressed) {
-    const bool rising = bumper && !prev_bumper_;
-    prev_bumper_ = bumper;
+                              bool routing_enabled, double /*dt*/, bool suppressed,
+                              bool bumper_rear) {
+    const bool any = bumper || bumper_rear;
+    const bool rising = any && !prev_bumper_;
+    prev_bumper_ = any;
     bumper_ = bumper;
     bumper_l_ = bumper_l;
     bumper_r_ = bumper_r;
@@ -81,7 +90,7 @@ bool BumperController::update(bool bumper, bool bumper_l, bool bumper_r,
         return false;
     }
     if (rising && routing_enabled_ && state_ == State::IDLE) {
-        enterBackingUp();
+        enterBackingUp(bumper, bumper_rear);
         return true;
     }
     return false;
@@ -89,7 +98,7 @@ bool BumperController::update(bool bumper, bool bumper_l, bool bumper_r,
 
 void BumperController::injectBumper() {
     if (routing_enabled_ && !suppressed_ && state_ == State::IDLE) {
-        enterBackingUp();
+        enterBackingUp(true, false);
     }
 }
 
@@ -124,16 +133,31 @@ bool BumperController::step(double dt) {
     }
 
     if (rotate_counter_ == 0) {
-        // Phase 1: back up in reverse for a fixed duration.
-        publishTwist(cfg_.back_speed, 0.0);
-        back_time_ += dt;
-        const double back_duration = cfg_.back_distance / std::fabs(cfg_.back_speed);
-        if (back_time_ >= back_duration) {
+        // Phase 1: straight leg (reverse, or forward on a rear hit while docking) for a
+        // fixed duration, as chosen by decideManoeuvre() at the start.
+        const double leg = (plan_.distance > 0.0 && plan_.speed != 0.0)
+                               ? plan_.distance / std::fabs(plan_.speed) : 0.0;
+        if (back_time_ < leg) {
+            publishTwist(plan_.speed, 0.0);
+            back_time_ += dt;
+            return true;
+        }
+        if (plan_.rotate) {
             rotate_counter_ = cfg_.max_rotates;
             const double sign = (rotate_counter_ % 2 == 0) ? 1.0 : -1.0;
             startRotate(cfg_.rotate_angle * sign);
+            publishTwist(0.0, 0.0);
+            return true;
         }
-        return true;
+        // Docking phases: hold still (zero on the priority lane) so the docking node's
+        // bumper pause/resume re-plans; then go idle.
+        if (hold_time_ < plan_.hold_s) {
+            publishTwist(0.0, 0.0);
+            hold_time_ += dt;
+            return true;
+        }
+        finishToIdle();
+        return false;
     }
 
     // Phase 2: rotating clear (heading PID); bounded by max_duration_s above, so a
@@ -177,7 +201,21 @@ double BumperController::spinRotate(double dt, double* w) {
     return err;
 }
 
-void BumperController::enterBackingUp() {
+void BumperController::enterBackingUp(bool front, bool rear) {
+    DecisionConfig dc;
+    dc.back_distance = cfg_.back_distance;
+    dc.back_speed = cfg_.back_speed;
+    dc.dock_backoff_distance = cfg_.dock_backoff_distance;
+    dc.dock_rear_backoff_distance = cfg_.dock_rear_backoff_distance;
+    dc.dock_hold_s = cfg_.dock_hold_s;
+    plan_ = decideManoeuvre(dock_phase_, front, rear, dc);
+    hold_time_ = 0.0;
+    if (dock_phase_ != DockPhase::NONE) {
+        RCLCPP_WARN(node_.get_logger(),
+                    "bumper in docking phase %d (front=%d rear=%d): %.2f m at %.2f m/s, hold %.1f s",
+                    static_cast<int>(dock_phase_), front, rear, plan_.distance, plan_.speed,
+                    plan_.hold_s);
+    }
     state_ = State::BACKING_UP;
     back_time_ = 0.0;
     elapsed_ = 0.0;

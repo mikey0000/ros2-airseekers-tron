@@ -97,3 +97,44 @@ TEST_F(BumperTest, RoutingDisabledNeverMoves) {
     EXPECT_EQ(tick(true, false, /*routing=*/false), 0u);
     EXPECT_EQ(ctrl_->state(), BumperController::State::IDLE);
 }
+
+TEST_F(BumperTest, DockReversePhaseFrontHitHoldsZero) {
+    ctrl_->setDockPhase(mower_controller::DockPhase::REVERSE);
+    tick(true);
+    int active = 0;
+    for (int i = 0; i < 100; ++i) {
+        tick(false);
+        if (ctrl_->state() == BumperController::State::BACKING_UP) active++;
+    }
+    EXPECT_EQ(ctrl_->state(), BumperController::State::IDLE);
+    EXPECT_GE(active * 0.05, 0.9);       // held ~dock_hold_s
+    EXPECT_LE(active * 0.05, 2.0 + 1e-9);
+    ASSERT_FALSE(msgs_.empty());
+    for (const auto& m : msgs_) {
+        EXPECT_DOUBLE_EQ(m.linear.x, 0.0);
+        EXPECT_DOUBLE_EQ(m.angular.z, 0.0);
+    }
+}
+
+TEST_F(BumperTest, DockApproachPhaseShortReverseNoTurn) {
+    ctrl_->setDockPhase(mower_controller::DockPhase::APPROACH);
+    tick(true);
+    for (int i = 0; i < 100; ++i) tick(false);
+    EXPECT_EQ(ctrl_->state(), BumperController::State::IDLE);
+    double dist = 0.0;
+    for (const auto& m : msgs_) {
+        EXPECT_LE(m.linear.x, 0.0);
+        EXPECT_DOUBLE_EQ(m.angular.z, 0.0);
+        dist += -m.linear.x * 0.05;
+    }
+    EXPECT_NEAR(dist, 0.10, 0.03);
+}
+
+TEST_F(BumperTest, DockPhaseIsLatchedAtStart) {
+    // Phase changes mid-manoeuvre do not alter the running plan.
+    ctrl_->setDockPhase(mower_controller::DockPhase::REVERSE);
+    tick(true);
+    ctrl_->setDockPhase(mower_controller::DockPhase::NONE);
+    for (int i = 0; i < 100; ++i) tick(false);
+    for (const auto& m : msgs_) EXPECT_DOUBLE_EQ(m.linear.x, 0.0);
+}

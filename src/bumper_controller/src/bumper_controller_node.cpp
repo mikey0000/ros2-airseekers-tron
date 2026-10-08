@@ -10,6 +10,7 @@
 #include <optional>
 
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/u_int8.hpp"
 #include "std_srvs/srv/empty.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
@@ -57,6 +58,17 @@ public:
             "/mower_base/status", 10,
             [this](const mower_interfaces::msg::MowerBaseDevStatus::SharedPtr m) { onStatus(m); });
 
+        // Docking FSM state (mower_docking republishes it every control tick while a dock
+        // goal runs, '' when idle). Mission high_level_status only says "docking", not
+        // which docking sub-phase, so this is the phase source. Stale -> NONE (legacy).
+        dock_state_timeout_s_ = declare_parameter<double>("dock_state_timeout_s", 1.0);
+        dock_state_sub_ = create_subscription<std_msgs::msg::String>(
+            declare_parameter<std::string>("dock_state_topic", "/mower_docking/state"), 10,
+            [this](const std_msgs::msg::String::SharedPtr m) {
+                dock_state_ = m->data;
+                dock_state_t_ = now();
+            });
+
         test_bumper_srv_ = create_service<std_srvs::srv::Empty>(
             "/test_bumper_service",
             [this](const std::shared_ptr<std_srvs::srv::Empty::Request>,
@@ -81,6 +93,12 @@ private:
         // previously left a rotate-clear spinning at -0.5 rad/s forever).
         const bool suppressed = latest_->is_docking_done || latest_->is_charging ||
                                 latest_->stop_triggered || latest_->lift_triggered;
+        mower_controller::DockPhase phase = mower_controller::DockPhase::NONE;
+        if (dock_state_t_.nanoseconds() != 0 &&
+            (now() - dock_state_t_).seconds() <= dock_state_timeout_s_) {
+            phase = mower_controller::dockPhaseFromState(dock_state_);
+        }
+        ctrl_.setDockPhase(phase);
         ctrl_.update(latest_->bumper_triggered,
                      latest_->left_bumper_triggered,
                      latest_->right_bumper_triggered,
@@ -101,6 +119,10 @@ private:
     mower_controller::BumperController ctrl_;
     rclcpp::Subscription<mower_interfaces::msg::MowerBaseDevStatus>::SharedPtr status_sub_;
     rclcpp::Service<std_srvs::srv::Empty>::SharedPtr test_bumper_srv_;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr dock_state_sub_;
+    std::string dock_state_;
+    rclcpp::Time dock_state_t_{0, 0, RCL_ROS_TIME};
+    double dock_state_timeout_s_ = 1.0;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
     rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr routing_pub_;
     rclcpp::TimerBase::SharedPtr timer_;

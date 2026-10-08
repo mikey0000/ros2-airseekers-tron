@@ -29,7 +29,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import CameraInfo, Image
-from std_msgs.msg import Bool, UInt8
+from std_msgs.msg import Bool, String, UInt8
 
 from mower_interfaces.action import Dock, Undock
 from mower_interfaces.msg import MowerBaseDevStatus
@@ -220,6 +220,9 @@ class DockingServer(Node):
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                        reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST))
         self._marker_in_view: Optional[bool] = None
+        # Docking FSM state for bumper_controller's docking-aware back-off: republished every
+        # control tick while a Dock goal runs ('' when idle); a stale value means "not docking".
+        self._state_pub = self.create_publisher(String, '/mower_docking/state', 10)
         self._publish_marker_in_view(False)
         # Inputs bypass the 6-thread executor (see sub_pump.py); the handlers only store under
         # self._lock. Odometry and /mower_base/status are only read by a running goal, so their
@@ -727,6 +730,8 @@ class DockingServer(Node):
                     self.get_logger().info('goal canceled in state %s' % last_state)
                     return result_type(success=False, message=out.message)
                 out = machine.step(self._snapshot())
+                if result_type is Dock.Result:
+                    self._state_pub.publish(String(data=str(out.state)))
                 self._publish_marker_in_view(out.marker_in_view)
                 self._log_notes(out)
                 self._handle(out.requests)
@@ -753,6 +758,7 @@ class DockingServer(Node):
             if machine.state == dl.DockState.NAV_TO_APPROACH:
                 self._cancel_nav()
             self._publish_marker_in_view(False)
+            self._state_pub.publish(String(data=''))
             self._stop_burst()          # also gives the cancel request time to go out
             self._drop_nav_client()
             self._enable_vision(False)

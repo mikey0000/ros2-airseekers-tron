@@ -1,0 +1,12 @@
+# bumper_controller parameters (loaded by launch/bringup.launch.py).
+bumper_controller:
+  ros__parameters:
+    # Whole manoeuvre time bound (clamped to <= 2.0 s); zero burst after.
+    max_duration_s: 2.0
+    # Docking-aware back-off (docs/wheel_control_semantics.md, "Bumper during docking").
+    # Phase source: /mower_docking/state (docking FSM state, republished every tick).
+    dock_state_topic: /mower_docking/state
+    dock_state_timeout_s: 1.0        # older state -> treated as not docking (legacy back-off)
+    dock_backoff_distance: 0.10      # m straight reverse, no turn, in NAV_TO_APPROACH/ALIGNING/SEARCHING
+    dock_rear_backoff_distance: 0.15 # m FORWARD on a rear-only hit in DOCKING/FINAL_DOCKING/RETRY
+    dock_hold_s: 1.0                 # s of zero on /cmd_vel_bumper after a docking-phase hit

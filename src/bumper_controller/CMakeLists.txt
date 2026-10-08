@@ -34,6 +34,7 @@ install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION bin)
 install(TARGETS bumper_controller_node
     RUNTIME DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY include/${PROJECT_NAME}/
     DESTINATION include/${PROJECT_NAME})
 
@@ -45,6 +46,8 @@ if(BUILD_TESTING)
   ament_add_gtest(test_bumper_controller test/test_bumper_controller.cpp)
   target_link_libraries(test_bumper_controller ${PROJECT_NAME})
   ament_target_dependencies(test_bumper_controller rclcpp geometry_msgs nav_msgs)
+  ament_add_gtest(test_bumper_decision test/test_bumper_decision.cpp)
+  target_include_directories(test_bumper_decision PRIVATE include)
 endif()
 
 ament_package()

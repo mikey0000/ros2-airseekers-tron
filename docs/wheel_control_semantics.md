@@ -172,3 +172,29 @@ an anomaly of that board/wheel, not of the host protocol: the right wheel was th
 mechanically pre-loaded wheel (gearbox / grass wrap / wheel against an obstacle). Check it:
 lift the right wheel clear (with the robot off) and spin it by hand, then compare its
 at-rest current after a fresh power cycle.
+
+## Bumper during docking (bumper_controller, 2026-10-08)
+
+`bumper_controller` (`src/bumper_controller`, priority lane `/cmd_vel_bumper`, status
+`/mower_base/bumper_routing_status`) picks its manoeuvre from the docking FSM state that
+`mower_docking` republishes on `/mower_docking/state` (std_msgs/String, every control tick
+of a Dock goal, `''` when the goal ends; older than `dock_state_timeout_s` = not docking).
+The mission's `high_level_status` only says "docking", not the sub-phase, so it is not used.
+The decision is the pure function `decideManoeuvre()` in
+`include/bumper_controller/bumper_decision.h`, latched when the manoeuvre starts.
+
+| Docking state | Front bumper | Rear bumper only |
+|---|---|---|
+| none / stale / UNDOCK / mowing / manual | reverse `back_distance` + rotate clear (unchanged) | n/a (same) |
+| NAV_TO_APPROACH, ALIGNING, SEARCHING | straight reverse `dock_backoff_distance` (0.10 m), no turn, then zero for `dock_hold_s` | hold zero `dock_hold_s` |
+| DOCKING, FINAL_DOCKING, RETRY (reversing onto / creeping away from the dock) | **no motion**: zero for `dock_hold_s` | forward `dock_rear_backoff_distance` (0.15 m, away from the dock), then hold |
+
+Front and rear together: hold. The Tron chassis only reports front bumper bits
+(`bumper`, `bumper_l`, `bumper_r`, all on the front strip), so the rear column is never
+taken on this hardware. Unchanged: the 2 s `max_duration_s` bound, the trailing zero
+burst, suppression when docked / charging / stop / lift, rising-edge triggering. During
+the hold, routing status stays 1, so the docking node's bumper pause (`bumper_clear_s`
+after routing goes idle) resumes from the current pose. Parameters:
+`src/bumper_controller/config/bumper_controller.yaml` (`dock_backoff_distance`,
+`dock_rear_backoff_distance` clamped to 0..0.3 m, `dock_hold_s` 0..2 s,
+`dock_state_topic`, `dock_state_timeout_s`).

@@ -19,6 +19,8 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 
+#include "bumper_controller/bumper_decision.h"
+
 namespace mower_controller {
 
 class BumperController {
@@ -41,6 +43,10 @@ public:
         // after it ends zeros are published for zero_ticks ticks, then nothing.
         double max_duration_s  = 2.0;
         int    zero_ticks      = 3;
+        // Docking-aware back-off (see bumper_decision.h for the table).
+        double dock_backoff_distance      = 0.10;  // m, straight reverse in APPROACH phases
+        double dock_rear_backoff_distance = 0.15;  // m, forward on a rear hit while reversing
+        double dock_hold_s                = 1.0;   // s of zero after a docking-phase hit
     };
 
     explicit BumperController(rclcpp::Node& node);
@@ -51,7 +57,12 @@ public:
     // re-triggers). `suppressed` (docked / charging / estop / lift) blocks a start
     // and aborts a manoeuvre in progress.
     bool update(bool bumper, bool bumper_l, bool bumper_r, bool routing_enabled,
-                double dt, bool suppressed = false);
+                double dt, bool suppressed = false, bool bumper_rear = false);
+
+    // Docking phase used for the NEXT manoeuvre start (a running one keeps its plan).
+    void setDockPhase(DockPhase phase) { dock_phase_ = phase; }
+    DockPhase dockPhase() const { return dock_phase_; }
+    const ManoeuvrePlan& plan() const { return plan_; }
 
     // Inject a synthetic bumper hit (wired to /test_bumper_service); obeys suppression.
     void injectBumper();
@@ -88,7 +99,7 @@ private:
     };
 
     void publishTwist(double linear, double angular);
-    void enterBackingUp();
+    void enterBackingUp(bool front, bool rear);
     void finishToIdle();
     void abortToIdle(const char* why);
     void startRotate(double delta_yaw);   // relative yaw turn
@@ -115,6 +126,9 @@ private:
     int zero_ticks_left_ = 0;       // trailing zero publishes still owed
     bool prev_bumper_ = false;      // edge detection
     bool suppressed_ = false;
+    DockPhase dock_phase_ = DockPhase::NONE;
+    ManoeuvrePlan plan_;
+    double hold_time_ = 0.0;
     rclcpp::Time last_spin_time_;
 
     std::shared_ptr<rclcpp::Publisher<geometry_msgs::msg::Twist>> cmd_vel_pub_;
