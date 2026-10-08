@@ -681,6 +681,7 @@ class McuNode(Node):
         self._stream_period = 1.0 / max(speed_cmd_rate, 1.0)
         self._activity = None             # last /mission/activity string
         self._keepalive_on = False        # docked zero keepalive currently active
+        self._dock_latched = False        # docked (see _keepalive_wanted), until motion/undock
         self._keepalive_next_t = 0.0
         self._wake_r, self._wake_w = os.pipe()
         os.set_blocking(self._wake_r, False)
@@ -1469,6 +1470,7 @@ class McuNode(Node):
                 self._stop_left = 0                # a new motion command cancels a stop
                 self._send_speed_frame(linear, angular)
                 self._moving = True
+                self._dock_latched = False         # moved: no longer "known on the dock"
                 self._last_nonzero_t = stamp
             elif self._moving:
                 self._start_stop(now, 'zero cmd_vel')
@@ -1487,18 +1489,22 @@ class McuNode(Node):
         self._publish_speed_telemetry(now)
 
     def _keepalive_wanted(self, now, blocked):
-        """Docked-idle gating, all must hold:
-        enabled; /mission/activity == 'docked_idle' (mission says docked and idle, so no
-        docking/undocking/motion phase) AND BatteryInfo dock_ok (contacts confirm the dock);
-        no interlock / e-stop (that path stays silent at rest, unchanged); not moving, no
-        stop sequence pending, and no non-zero command within the last period."""
-        if not self.docked_zero_keepalive or blocked:
+        """Docked-idle gating. "Docked" latches when /mission/activity == 'docked_idle' AND
+        BatteryInfo dock_ok (both: activity alone can be stale, dock_ok alone is already true
+        on the final docking approach). The latch survives the contacts dropping out
+        (dock_ok flaps / the robot settles off the pads, mission then reports 'idle' while
+        still on the dock) as long as nothing moved; it clears on any non-zero command and
+        any activity other than 'docked_idle'/'idle' (docking, undocking, mowing, ...).
+        Additionally: enabled; no interlock / e-stop (silent at rest, unchanged); not
+        moving, no stop sequence pending, no non-zero command within the last period."""
+        if self._activity not in ('docked_idle', 'idle') or self._moving:
+            self._dock_latched = False
+        elif (self._activity == 'docked_idle' and self._battery
+              and self._battery.get('dock_ok')):
+            self._dock_latched = True
+        if not self.docked_zero_keepalive or blocked or not self._dock_latched:
             return False
-        if self._activity != 'docked_idle':
-            return False
-        if not (self._battery and self._battery.get('dock_ok')):
-            return False
-        if self._moving or self._stop_left > 0:
+        if self._stop_left > 0:
             return False
         return now - self._last_nonzero_t >= self.docked_zero_keepalive_period
 

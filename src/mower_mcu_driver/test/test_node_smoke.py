@@ -415,8 +415,48 @@ class TestMcuNode(unittest.TestCase):
             self.assertAlmostEqual(g, 1.0, delta=0.021)
         for activity, dock_ok in (('docked_idle', False), ('idle', True),
                                   ('undocking', True), ('mowing', True), ('docking', True)):
+            self.node._dock_latched = False                # fresh: never seen docked
             self._dock(activity, dock_ok)
             self.assertEqual(self._tick_until(self.t + 3.0), [], (activity, dock_ok))
+
+    def test_keepalive_survives_contact_loss_while_idle_on_dock(self):
+        # live 2026-10-08: dock_ok dropped while parked, mission went CHARGING -> IDLE
+        self._clock()
+        self._dock()
+        self.assertEqual(len(self._tick_until(self.t + 1.5)), 2)
+        self._dock('idle', False)
+        self.assertEqual(len(self._tick_until(self.t + 3.0)), 3)
+
+    def test_keepalive_resumes_after_undock_dock_cycle(self):
+        """Replay: docked_idle -> undock (mowing, reverse) -> idle -> docking (drive in,
+        zero) -> contacts flap -> docked_idle -> CHARGING->IDLE contact loss."""
+        self._clock()
+        self._dock()
+        self.assertTrue(self._tick_until(self.t + 1.5))
+        self.node._on_activity(types.SimpleNamespace(data='mowing'))
+        for _ in range(10):                                 # undock: reverse
+            self.node._on_cmd_vel(cmd_vel(-0.1, 0.0))
+            self._tick_until(self.t + 0.1)
+        self.node._battery = {'dock_ok': False}
+        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
+        self._tick_until(self.t + 0.5)
+        self.node._on_activity(types.SimpleNamespace(data='idle'))
+        self.assertEqual(self._tick_until(self.t + 2.0), [])     # off dock idle: silence
+        self.node._on_activity(types.SimpleNamespace(data='docking'))
+        for k in range(10):                                 # drive in, contacts flap
+            self.node._on_cmd_vel(cmd_vel(0.05, 0.0))
+            self.node._battery = {'dock_ok': k % 2 == 0}
+            self._tick_until(self.t + 0.1)
+        self.node._on_cmd_vel(cmd_vel(0.0, 0.0))
+        self.node._battery = {'dock_ok': True}
+        self._tick_until(self.t + 0.5)
+        self._dock()                                        # docked_idle (CHARGING)
+        self._tick_until(self.t + 0.6)
+        self.assertTrue(self.node._keepalive_on)
+        frames = self._tick_until(self.t + 3.0)
+        self.assertEqual(len(frames), 3)
+        self._dock('idle', False)                           # CHARGING -> IDLE, contacts lost
+        self.assertEqual(len(self._tick_until(self.t + 3.0)), 3)
 
     def test_keepalive_disabled_by_parameter(self):
         self._clock()

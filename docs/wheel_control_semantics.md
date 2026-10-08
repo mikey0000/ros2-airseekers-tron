@@ -182,6 +182,13 @@ zero SpeedData every `docked_zero_keepalive_period_s` (default 1.0 s) while dock
   moving, no stop sequence pending, and no non-zero command within the last period. Debug
   stream mode bypasses it. Any other activity (docking, undocking, mowing, idle off-dock)
   stops it; off the dock the 3-zeros-then-silence policy is unchanged.
+* Dock latch (fix 2026-10-08 after a live GUI undock/dock cycle): the docked condition
+  above *latches* and survives the contacts dropping out while parked. Live: 7 min after
+  re-docking, dock_ok fell (driver "keepalive stopped" 9 ms before the BT logged
+  "CHARGING -> IDLE (docked)"), activity became `idle`, the keepalive stopped, and the right
+  drive went back into position hold (1220 counts, 37 -> 43 degC). The latch clears only on
+  a non-zero command or an activity other than `docked_idle`/`idle`; off-dock idle after a
+  mission never latches because the robot moved since the last docked_idle+dock_ok.
 * A non-zero `/cmd_vel` is sent immediately as before; the keepalive resumes one period after
   the stop. Start/stop are logged once each, frames are not logged (they do appear on
   `/mcu/sent_speed`).
