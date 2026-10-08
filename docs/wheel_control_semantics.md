@@ -198,3 +198,23 @@ after routing goes idle) resumes from the current pose. Parameters:
 `src/bumper_controller/config/bumper_controller.yaml` (`dock_backoff_distance`,
 `dock_rear_backoff_distance` clamped to 0..0.3 m, `dock_hold_s` 0..2 s,
 `dock_state_topic`, `dock_state_timeout_s`).
+
+### Follow-up 2026-10-08: chassis motor modes from the firmware (chassis 0.6.34)
+
+* Per-motor mode byte setters: `FUN_08010d40` (raw, used with 0 = OFF), `FUN_08010d30` mode 1
+  (current/torque ref), `FUN_08010d5a` mode 2 (speed PI, kp 0.5 ki 9.0), `FUN_08010d4a` mode 3
+  (relative position hold: on entry `FUN_08012e56` latches the current encoder count as the
+  target, gains reloaded, limit 300). Control step `FUN_08013d44`-ish switch @0x08013d74:
+  mode 0 requests motor state 6 (`FUN_08016740(drv,6)`, driver stop), mode 1 has no outer loop.
+* Group API `(*api+8)(cmd,data)` (table in RAM, init data not in the .bin, so the mapping is
+  inferred from use): cmd 0 -> all mode 0 (`FUN_08013280`), cmd 2 -> speed, cmd 3 -> position
+  hold, cmd 4 {1,1} -> motor state 3 (calibration/alignment, `FUN_08013220`).
+* Callers: cmd 0 only while flag +0x102 is set = BMS firmware pass-through update
+  (`FUN_080146c0`, "BMS_V"). Speed (cmd 2) while the SpeedData age counter (`FUN_08017596`,
+  reset by module 8 in `FUN_080179cc` and module 0x52) is < 300 ticks; after that one cmd 3
+  zero = **position hold at the current spot**, re-sent at ~5000 ticks. cmd 4 only from
+  MCCalib (module 0x12) handling. No host frame reaches cmd 0 or cmd 1.
+* Hence at rest on the dock the wheels sit in position hold; a pre-loaded wheel makes the
+  integrator hold a steady current indefinitely (right wheel 2026-10-08: raw -6220 counts,
+  44 degC vs left +2150 / 32 degC, cutter 33 degC ambient, speed 0, docked, charging 4.1 A).
+  No de-energise path exists short of power-off / the BMS-update mode.
