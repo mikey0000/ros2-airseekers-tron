@@ -128,7 +128,13 @@ def test_goal_checkers():
     g = c["general_goal_checker"]
     assert g["plugin"] == "nav2_controller::SimpleGoalChecker"
     assert g["stateful"] is True
-    assert g["xy_goal_tolerance"] == 0.25 and g["yaw_goal_tolerance"] == 0.5
+    assert g["xy_goal_tolerance"] == 0.25
+    # xy-only: a yaw requirement makes RPP hunt between rotate-to-goal-yaw and
+    # rotate-to-carrot at the xy boundary (2026-10-08 bag).
+    assert g["yaw_goal_tolerance"] >= 3.14
+    leg = c["coverage_leg_goal_checker"]
+    # the at-goal reverse shuffle swings 0.02-0.03 m; the overshoot exit must see it
+    assert leg["overshoot_hysteresis"] <= 0.02
     cov = c["coverage_goal_checker"]        # for the RPP coverage controller (fallback)
     assert cov["plugin"] == "nav2_controller::SimpleGoalChecker"
     assert cov["stateful"] is True and cov["xy_goal_tolerance"] <= 0.25
@@ -144,8 +150,14 @@ def test_goal_checkers():
 def test_transit_rpp_rotation():
     rpp = load()["controller_server"]["ros__parameters"]["FollowPath"]
     assert rpp["use_rotate_to_heading"] is True
-    assert rpp["rotate_to_heading_angular_vel"] == 0.5
-    assert 0.5 <= rpp["max_angular_accel"] <= 4.0   # 3.2 since 2026-10-06 (stalled pivots)
+    # <= the MCU clamp (mcu_node angular_max 0.3): more only adds slew dead time.
+    assert rpp["rotate_to_heading_angular_vel"] <= 0.3
+    # RPP windows around the MEASURED rate: a stalled pivot must reach >= 0.25 rad/s in
+    # one 20 Hz cycle (2026-10-07), so max_angular_accel * 0.05 >= 0.25.
+    for name in ("FollowPath", "FollowCoveragePath", "FollowCoveragePathReverse"):
+        c = load()["controller_server"]["ros__parameters"][name]
+        assert c["max_angular_accel"] * 0.05 >= 0.25, name
+        assert c["rotate_to_heading_angular_vel"] <= 0.3, name
     assert rpp["min_approach_linear_velocity"] == 0.05
     # RPP can only rotate to heading without reversing.
     assert rpp["allow_reversing"] is False
@@ -267,3 +279,8 @@ if __name__ == "__main__":
                 failed += 1
                 print(f"FAIL {name}: {e}")
     sys.exit(1 if failed else 0)
+
+
+def test_velocity_smoother_angular_matches_mcu_clamp():
+    vs = load()["velocity_smoother"]["ros__parameters"]
+    assert vs["max_velocity"][2] <= 0.3 and vs["min_velocity"][2] >= -0.3
