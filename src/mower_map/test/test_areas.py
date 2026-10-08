@@ -738,6 +738,45 @@ def test_nav_mask_prefer_paths_in_areas():
     assert _cell(spec, nopath, 5.0, 0.0) == core.FREE
 
 
+def test_nav_mask_path_centre_low_profile():
+    s, dock = _path_case()
+    spec = core.grid_for_polygons([a.polygon for a in s.areas], 0.1, 3.0)
+    nav = core.build_nav_mask(s.areas, spec, 0.8, 0.10, None, 1.5, None, 0.15,
+                              True, True, 60, 30)
+    # vertical leg x=0.8 (y 0..2), outside the lawn: 0 on the centreline,
+    # rising toward the band edge (half width 0.35 + margin 0.15 = 0.5 m)
+    centre = _cell(spec, nav, 0.85, 1.0)
+    mid = _cell(spec, nav, 1.05, 1.0)
+    edge = _cell(spec, nav, 1.25, 1.0)
+    assert centre <= 5
+    assert centre < mid < edge <= 30
+    # symmetric on the other side
+    assert abs(_cell(spec, nav, 0.55, 1.0) - mid) <= 3
+    # lawn interior costs more than any part of the band; soft band untouched
+    assert _cell(spec, nav, 5.0, 0.0) == 60
+    assert _cell(spec, nav, 2.9, 2.0) < 60                # band inside the lawn
+    assert _cell(spec, nav, 1.6, 1.0) == core.SOFT_COST
+    # every band cell stays on the map (return corridor / nearest free point)
+    assert core.is_free_at(nav, spec, 1.25, 1.0)
+    # path_edge_cost 0 keeps the old flat band
+    flat = core.build_nav_mask(s.areas, spec, 0.8, 0.10, None, 1.5, None, 0.15,
+                               True, True, 60, 0)
+    assert _cell(spec, flat, 1.25, 1.0) == core.FREE
+
+
+def test_nav_mask_path_profile_overlap_takes_minimum():
+    s, dock = _path_case()
+    line = [(0.8, 2.0), (0.8, 4.0)]
+    s.add_area('Branch', core.buffer_polyline(line, 0.35), is_navigation=True)
+    ok, _ = s.set_channel(2, line, 0.7)
+    assert ok
+    spec = core.grid_for_polygons([a.polygon for a in s.areas], 0.1, 3.0)
+    nav = core.build_nav_mask(s.areas, spec, 0.8, 0.10, None, 0.0, None, 0.15,
+                              True, True, 60, 30)
+    # (0.85, 2.05) is on both centrelines: stays ~0 whatever the paint order
+    assert _cell(spec, nav, 0.85, 2.05) <= 5
+
+
 def test_return_corridor_treats_transit_cost_as_on_map():
     s, dock = _path_case()
     spec = core.grid_for_polygons([a.polygon for a in s.areas], 0.1, 3.0)

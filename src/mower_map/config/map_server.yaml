@@ -19,7 +19,8 @@ map_server_node:
     dock_corridor_enabled: true # nav mask: free dock -> approach -> nearest area capsule
     dock_corridor_soft_with_paths: true  # user path exists: approach->area leg costs 90, not free
     prefer_paths_in_areas: true # user path exists: mowing areas cost area_transit_cost outside path bands
-    area_transit_cost: 40       # 0..99 (static layer maps 40 -> ~102 < inscribed 253)
+    area_transit_cost: 60       # 0..99 (static layer maps 60 -> ~151 < inscribed 253); > path_edge_cost
+    path_edge_cost: 30          # drawn path band: 0 on the centreline rising to this at the edge (0 = flat)
     dock_corridor_max_m: 5.0    # max approach->area gap bridged by the corridor
     approach_distance: 0.8      # keep equal to mower_docking approach_distance
     nav_soft_band_m: 1.5        # nav mask: cells this far outside the free set cost 90 (not lethal)

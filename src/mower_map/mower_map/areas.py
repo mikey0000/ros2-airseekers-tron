@@ -852,7 +852,8 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
                    path_margin: Optional[float] = None,
                    soft_dock_corridor_with_paths: bool = True,
                    prefer_paths_in_areas: bool = False,
-                   area_transit_cost: int = 40) -> np.ndarray:
+                   area_transit_cost: int = 40,
+                   path_edge_cost: int = 0) -> np.ndarray:
     """Navigation mask for Nav2's global costmap (static layer / keepout filter).
 
     Different semantics from the mowing mask (build_keepout_mask):
@@ -881,7 +882,14 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
     ``prefer_paths_in_areas``: when a user path exists, mowing areas (and
     their ``nav_margin``) cost ``area_transit_cost`` instead of 0 while path
     bands stay 0, so transits follow a drawn path that runs across the lawn.
-    The cost is uniform inside the areas, so swath-to-swath hops stay straight."""
+    The cost is uniform inside the areas, so swath-to-swath hops stay straight.
+    ``path_edge_cost`` > 0: a navigation area with channel metadata (a drawn
+    path with a centreline) gets a centre-low profile instead of a flat FREE
+    band: cost rises linearly from 0 on the centreline to ``path_edge_cost``
+    at half the channel width + ``path_margin`` (and stays there in any
+    polygon part farther out), so the planner follows the middle of the path
+    and does not hug the band edge or cut bends. Keep it below
+    ``area_transit_cost`` so the band edge still beats the lawn."""
     nav_margin = max(0.0, float(nav_margin))
     path_margin = nav_margin if path_margin is None else max(0.0, float(path_margin))
     soft_band = max(0.0, float(soft_band))
@@ -917,6 +925,11 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
         for area in areas:
             if area.is_navigation:
                 _mask_polygon(mask, spec, area.polygon, FREE, margin_of(area))
+        edge = int(min(max(int(path_edge_cost), 0), LETHAL - 1))
+        if edge > 0:
+            for area in areas:
+                if area.is_navigation and area.channel and len(area.channel) >= 2:
+                    _paint_channel_profile(mask, spec, area, path_margin, edge)
     if hard_corridor is not None:
         free_corridor(mask, spec, hard_corridor)
     if return_corridor is not None:
@@ -925,6 +938,30 @@ def build_nav_mask(areas: List[Area], spec: GridSpec,
         for obs in area.obstacles:
             _mask_polygon(mask, spec, obs.polygon, LETHAL, max(0.0, float(obstacle_margin)))
     return mask
+
+
+def _paint_channel_profile(mask: np.ndarray, spec: GridSpec, area: 'Area',
+                           path_margin: float, edge_cost: int):
+    """Overwrite the cells of a drawn path's band (polygon + path_margin)
+    with a cost rising linearly from 0 on the channel centreline to
+    ``edge_cost`` at half width + path_margin (min over overlapping paths)."""
+    band = np.full_like(mask, LETHAL)
+    _mask_polygon(band, spec, area.polygon, FREE, path_margin)
+    rows, cols = np.nonzero(band == FREE)
+    if rows.size == 0:
+        return
+    cx = spec.origin_x + (cols + 0.5) * spec.resolution
+    cy = spec.origin_y + (rows + 0.5) * spec.resolution
+    d = _distance_to_segments(cx, cy, [tuple(p) for p in area.channel])
+    half = max(0.5 * float(area.channel_width_m or 0.0), 0.05) + max(path_margin, 0.0)
+    prof = np.rint(edge_cost * np.clip(d / half, 0.0, 1.0)).astype(np.int16)
+    cur = mask[rows, cols].astype(np.int16)
+    # FREE cells take the profile; cells already graded by an overlapping
+    # path (0 < cur <= edge) keep the cheaper of the two; anything costlier
+    # (not part of any band) is left alone.
+    graded = (cur > FREE) & (cur <= edge_cost)
+    newv = np.where(cur == FREE, prof, np.where(graded, np.minimum(cur, prof), cur))
+    mask[rows, cols] = newv.astype(np.int8)
 
 
 def _on_map(v):

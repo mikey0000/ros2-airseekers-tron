@@ -75,7 +75,14 @@ PARAMS = {
     # nav mask: with a user path, mowing areas cost area_transit_cost (0..99)
     # outside path bands so transits stay on the drawn path
     'prefer_paths_in_areas': True,
-    'area_transit_cost': 40,
+    # 2026-10-08: 40 -> 60 so the lawn costs clearly more than any part of a
+    # graded path band (path_edge_cost), i.e. transits follow drawn paths
+    'area_transit_cost': 60,
+    # drawn paths (channel metadata): cost rises linearly from 0 on the
+    # centreline to this at the band edge (half width + path_margin_m), so
+    # Nav2 follows the middle of the path instead of hugging an edge or
+    # cutting bends (a flat FREE band has no gradient). 0 = flat band.
+    'path_edge_cost': 30,
     # dock corridor (nav mask only): capsule of half-width nav_margin_m from the
     # dock through its approach pose to the nearest area boundary, so docking
     # still plans when the dock lies outside every drawn area.
@@ -429,7 +436,8 @@ class MapServerNode(Node):
                                        None, float(self.p('path_margin_m')),
                                        bool(self.p('dock_corridor_soft_with_paths')),
                                        bool(self.p('prefer_paths_in_areas')),
-                                       int(self.p('area_transit_cost')))
+                                       int(self.p('area_transit_cost')),
+                                       int(self.p('path_edge_cost')))
         self.base_nav = (spec, nav_mask)
         ret = None
         self.return_anchor = None
@@ -453,7 +461,8 @@ class MapServerNode(Node):
                                                ret, float(self.p('path_margin_m')),
                                                bool(self.p('dock_corridor_soft_with_paths')),
                                        bool(self.p('prefer_paths_in_areas')),
-                                       int(self.p('area_transit_cost')))
+                                       int(self.p('area_transit_cost')),
+                                       int(self.p('path_edge_cost')))
         if (ret is not None) != self.return_active:
             self.get_logger().info(
                 'return corridor %s' % ('freed: (%.2f, %.2f) -> (%.2f, %.2f), %.2f m'
