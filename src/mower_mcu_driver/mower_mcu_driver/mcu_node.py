@@ -542,6 +542,12 @@ class McuNode(Node):
         # at speed_cmd_rate (zeros once stale/interlocked).  Read fresh every tick, so it can
         # be flipped live with `ros2 param set`; switching it off ends with a stop sequence.
         self.declare_parameter('speed_stream_enabled', False)
+        # Docked zero-speed keepalive (docs/wheel_control_semantics.md "Drive at rest"): the
+        # chassis falls back to position hold (mode 3, integrating) 300 ticks after the last
+        # SpeedData; a zero frame every period keeps it in speed mode with a zero setpoint.
+        # Tick period not recorded in the decompile; assumed 10 ms -> 3 s timeout.
+        self.declare_parameter('docked_zero_keepalive', True)
+        self.declare_parameter('docked_zero_keepalive_period_s', 1.0)
         # Telemetry: measured vs commanded velocity at this rate (0 disables); /mcu/sent_speed
         # is published once per SpeedData frame that actually left the host.
         self.declare_parameter('speed_telemetry_rate_hz', 5.0)
@@ -621,6 +627,8 @@ class McuNode(Node):
         self._sensor_info_pub_key = None
         self._estop_pub_t = -1e9
         self._estop_pub_value = None
+        self.docked_zero_keepalive = bool(param('docked_zero_keepalive'))
+        self.docked_zero_keepalive_period = max(0.05, float(param('docked_zero_keepalive_period_s')))
         self.interlock_on_lift = bool(param('interlock_on_lift'))
         self.interlock_on_stop = bool(param('interlock_on_stop'))
         self.interlock_on_bumper = bool(param('interlock_on_bumper'))
@@ -671,6 +679,9 @@ class McuNode(Node):
         self._streaming = False           # debug stream active (speed_stream_enabled)
         self._stream_next_t = 0.0
         self._stream_period = 1.0 / max(speed_cmd_rate, 1.0)
+        self._activity = None             # last /mission/activity string
+        self._keepalive_on = False        # docked zero keepalive currently active
+        self._keepalive_next_t = 0.0
         self._wake_r, self._wake_w = os.pipe()
         os.set_blocking(self._wake_r, False)
         os.set_blocking(self._wake_w, False)
@@ -1213,6 +1224,7 @@ class McuNode(Node):
         self._sensor_pub.publish(msg)
 
     def _on_activity(self, msg):
+        self._activity = msg.data
         self._low_power = activity_low_power(msg.data)
 
     def _publish_dev_status(self):
@@ -1471,7 +1483,38 @@ class McuNode(Node):
             self._send_speed_frame(0.0, 0.0)
             self._stop_left -= 1
             self._stop_next_t += self.stop_frame_spacing
+        self._docked_keepalive(now, blocked)
         self._publish_speed_telemetry(now)
+
+    def _keepalive_wanted(self, now, blocked):
+        """Docked-idle gating, all must hold:
+        enabled; /mission/activity == 'docked_idle' (mission says docked and idle, so no
+        docking/undocking/motion phase) AND BatteryInfo dock_ok (contacts confirm the dock);
+        no interlock / e-stop (that path stays silent at rest, unchanged); not moving, no
+        stop sequence pending, and no non-zero command within the last period."""
+        if not self.docked_zero_keepalive or blocked:
+            return False
+        if self._activity != 'docked_idle':
+            return False
+        if not (self._battery and self._battery.get('dock_ok')):
+            return False
+        if self._moving or self._stop_left > 0:
+            return False
+        return now - self._last_nonzero_t >= self.docked_zero_keepalive_period
+
+    def _docked_keepalive(self, now, blocked):
+        want = self._keepalive_wanted(now, blocked)
+        if want != self._keepalive_on:
+            self._keepalive_on = want
+            if want:
+                self._keepalive_next_t = now
+                self.get_logger().info('docked zero-speed keepalive started (zero SpeedData '
+                                       'every %.2f s)' % self.docked_zero_keepalive_period)
+            else:
+                self.get_logger().info('docked zero-speed keepalive stopped')
+        if want and now >= self._keepalive_next_t:
+            self._send_speed_frame(0.0, 0.0)
+            self._keepalive_next_t = now + self.docked_zero_keepalive_period
 
     def _twist_msg(self, linear, angular):
         msg = TwistStamped()

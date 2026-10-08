@@ -396,6 +396,89 @@ class TestMcuNode(unittest.TestCase):
         self.assertEqual([f for _t, f in frames], [(0.0, 0.0)] * 3)
         self.assertEqual(self._tick_until(self.t + 1.0), [])
 
+    # ---- docked zero-speed keepalive
+    def _dock(self, activity='docked_idle', dock_ok=True):
+        self.node._on_activity(types.SimpleNamespace(data=activity))
+        self.node._battery = {'dock_ok': dock_ok}
+
+    def test_keepalive_defaults(self):
+        self.assertTrue(self.node.docked_zero_keepalive)
+        self.assertAlmostEqual(self.node.docked_zero_keepalive_period, 1.0)
+
+    def test_keepalive_runs_only_when_docked_idle(self):
+        self._clock()
+        self._dock()
+        frames = self._tick_until(self.t + 3.5)
+        self.assertEqual([f for _t, f in frames], [(0.0, 0.0)] * 4)   # t+0.02,1.02,2.02,3.02
+        gaps = [b[0] - a[0] for a, b in zip(frames, frames[1:])]
+        for g in gaps:
+            self.assertAlmostEqual(g, 1.0, delta=0.021)
+        for activity, dock_ok in (('docked_idle', False), ('idle', True),
+                                  ('undocking', True), ('mowing', True), ('docking', True)):
+            self._dock(activity, dock_ok)
+            self.assertEqual(self._tick_until(self.t + 3.0), [], (activity, dock_ok))
+
+    def test_keepalive_disabled_by_parameter(self):
+        self._clock()
+        self.node.docked_zero_keepalive = False
+        self._dock()
+        self.assertEqual(self._tick_until(self.t + 3.0), [])
+
+    def test_keepalive_stops_on_undock_and_motion(self):
+        self._clock()
+        self._dock()
+        self.assertEqual(len(self._tick_until(self.t + 1.5)), 2)
+        self.node._on_activity(types.SimpleNamespace(data='undocking'))
+        self.assertEqual(self._tick_until(self.t + 3.0), [])
+        # motion while (still) docked_idle: non-zero takes over, normal stop, then a full
+        # period of quiet before the keepalive resumes
+        self._dock()
+        self._tick_until(self.t + 0.1)
+        self._speeds()
+        self.node._on_cmd_vel(cmd_vel(0.1, 0.0))
+        self.node._speed_tick(self.t)
+        (lin, _ang), = self._speeds()
+        self.assertAlmostEqual(lin, 0.1, places=6)
+        t_cmd = self.t
+        frames = self._tick_until(t_cmd + 0.3)
+        self.assertEqual(frames, [])                       # no zeros while moving
+        frames = self._tick_until(t_cmd + 3.0)
+        stop = [t for t, _f in frames if t - t_cmd < 1.0]
+        self.assertEqual(len(stop), 3)                     # cmd_vel timeout stop sequence
+        ka = [t for t, _f in frames if t - t_cmd >= 1.0]
+        self.assertTrue(ka)
+        self.assertGreaterEqual(ka[0] - t_cmd, self.node.docked_zero_keepalive_period)
+
+    def test_new_cmd_vel_takes_over_immediately_while_docked(self):
+        self._clock()
+        self._dock()
+        self._tick_until(self.t + 0.5)
+        self._speeds()
+        self.node._on_cmd_vel(cmd_vel(0.2, 0.0))
+        self.node._speed_tick(self.t)
+        (lin, _ang), = self._speeds()
+        self.assertAlmostEqual(lin, 0.2, places=6)
+
+    def test_keepalive_never_under_interlock(self):
+        self._clock()
+        self._dock()
+        self.node._estop_latched = True
+        self.assertEqual(self._tick_until(self.t + 3.0), [])
+        self.node._estop_latched = False
+        self.assertEqual(len(self._tick_until(self.t + 1.5)), 2)
+
+    def test_keepalive_logs_start_stop_once(self):
+        self._clock()
+        logs = []
+        self.node.get_logger = lambda: types.SimpleNamespace(
+            info=lambda m, **k: logs.append(m), warn=lambda m, **k: None)
+        self._dock()
+        self._tick_until(self.t + 3.0)
+        self.node._on_activity(types.SimpleNamespace(data='undocking'))
+        self._tick_until(self.t + 3.0)
+        ka = [m for m in logs if 'keepalive' in m]
+        self.assertEqual(len(ka), 2)
+
     def test_measured_and_commanded_telemetry_published(self):
         self._clock()
         self._tick_until(self.t + 1.0)

@@ -164,6 +164,31 @@ no host command can de-energise the drives:
   right -0.94 A / 68 degC (62 degC earlier, still rising). Silence alone does **not**
   de-energise the drives.
 
+### Docked zero-speed keepalive (2026-10-08, `mcu_node.py` `_docked_keepalive`)
+
+Because the chassis drops to mode-3 position hold 300 ticks after the last SpeedData (see the
+2026-10-08 firmware follow-up below), a wheel displaced while docked (pushed by hand, settling
+onto the dock rails) holds a steady current indefinitely. In mode 2 with a zero setpoint a
+stationary displaced wheel has zero error and no holding current. The driver therefore sends a
+zero SpeedData every `docked_zero_keepalive_period_s` (default 1.0 s) while docked and idle;
+`docked_zero_keepalive` (default true) turns it off.
+
+* Timeout assumption: the chassis tick period is not recorded in the decompile notes; assumed
+  10 ms, so 300 ticks = 3 s and 1 s is a 3x margin. If the verification below fails (currents
+  stay up), the tick may be shorter: lower the period (e.g. 0.2 s) before suspecting the theory.
+* Gating (all must hold): `/mission/activity == 'docked_idle'` AND BatteryInfo `dock_ok`
+  (both: activity alone can be stale, dock_ok alone is already true during the final docking
+  approach); no interlock / e-stop (that path stays silent at rest exactly as before); not
+  moving, no stop sequence pending, and no non-zero command within the last period. Debug
+  stream mode bypasses it. Any other activity (docking, undocking, mowing, idle off-dock)
+  stops it; off the dock the 3-zeros-then-silence policy is unchanged.
+* A non-zero `/cmd_vel` is sent immediately as before; the keepalive resumes one period after
+  the stop. Start/stop are logged once each, frames are not logged (they do appear on
+  `/mcu/sent_speed`).
+* Verification after the mower_humble restart, docked and untouched: left/right drive currents
+  on `/mower_sensor_info` both fall to ~0 counts within a few seconds of the "keepalive
+  started" log line, and the right motor temperature falls toward ambient over ~10 min.
+
 So "status 1 at rest" is the vendor-normal state (the PI holding zero speed doubles as the
 parking brake on the dock and on slopes). The right board's ~1 A hold current and heat are
 an anomaly of that board/wheel, not of the host protocol: the right wheel was the inner
