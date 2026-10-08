@@ -55,6 +55,12 @@ mower_docking:
     close_speed: 0.08              # max reverse speed within slow_distance (steering on)
     lateral_slow: 0.20             # close-zone speed scales down with |lateral| / this, floor below
     marker_median_n: 3             # gates/realign decisions use the median of the last 3 markers
+    # 2026-10-08 dusk: lost after max_lost_frames ticks (1 s) -> RETRY loop. Now hold still
+    # (no reverse) and only RETRY once the marker has been lost this long as well.
+    marker_lost_hold_s: 3.0
+    # Gates (max_lateral_error / max_yaw_error_deg, x docking_gate_scale in DOCKING) compare
+    # the heading with the reverse controller's desired approach heading
+    # clamp(k_lateral * lateral, max_approach_angle), not with the raw dock axis.
     # 2026-10-07 retune (closed-loop sim: 0.5 m out, 8 cm / 8 deg -> <1 mm / <1 deg at contact)
     k_lateral: 7.0
     max_approach_angle: 0.5

@@ -120,6 +120,7 @@ class DockingServer(Node):
         # bumper during docking: stop, wait for it (and bumper_controller's manoeuvre) to
         # clear, resume from the current pose
         decl('bumper_routing_topic', '/mower_base/bumper_routing_status')
+        decl('marker_lost_hold_s', dp.marker_lost_hold_s)
         decl('bumper_clear_s', dp.bumper_clear_s)
         decl('bumper_wait_max_s', dp.bumper_wait_max_s)
         decl('blind_marker_max_age_s', dp.blind_marker_max_age_s)
@@ -636,6 +637,7 @@ class DockingServer(Node):
             contact_settle_s=float(p('contact_settle_s')),
             final_extra_creep_m=float(p('final_extra_creep_m')),
             marker_median_n=int(p('marker_median_n')),
+            marker_lost_hold_s=float(p('marker_lost_hold_s')),
             calib_max_marker_age_s=float(p('calib_max_marker_age_s')),
             calib_min_offset=float(p('calib_min_offset')),
             calib_max_offset=float(p('calib_max_offset')),

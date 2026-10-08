@@ -364,7 +364,7 @@ def test_dock_vision_docking_commands_reverse_then_final():
 
 
 def test_dock_lost_frames_trigger_retry():
-    p = dl.DockParams(skip_nav_to_approach=True, max_lost_frames=5)
+    p = dl.DockParams(skip_nav_to_approach=True, max_lost_frames=5, marker_lost_hold_s=0.5)
     m = dl.DockStateMachine(p, dl.Pose2D())
     m.start(dl.Snapshot(t=0.0))
     m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0.0, 0.0, stamp=0.1)))
@@ -1363,7 +1363,8 @@ def test_reverse_never_starts_without_marker_in_gate():
 
 
 def test_marker_lost_in_reverse_falls_back_to_realign_not_blind():
-    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True, max_lost_frames=5),
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True, max_lost_frames=5,
+                                          marker_lost_hold_s=1.0),
                             dl.Pose2D(), dock_pose_measured=True)
     m.start(dl.Snapshot(t=0.0))
     m.step(dl.Snapshot(t=0.05, marker=dl.MarkerObs(-1.3, 0.0, 0.0, stamp=0.05)))
@@ -1378,3 +1379,49 @@ def test_marker_lost_in_reverse_falls_back_to_realign_not_blind():
     assert all(v >= 0.0 for _, v in states)
     assert S.RETRY in [s for s, _ in states] and S.FINAL_DOCKING not in [s for s, _ in states]
     assert not out.marker_in_view
+
+
+# ---------------- 2026-10-08 dusk regression replay (DOCKING -> RETRY loop, DOCK_MAXOUT)
+# Recorded (high_level_status, 1 Hz): at the approach pose "searching marker: seen 0.88 m,
+# -29.0 deg (outside gate: lateral -0.27 m)" for 15 s; in DOCKING "0.60 m, lateral 29 cm,
+# 10 deg" -> "0.47 m, 23 cm, 32 deg (outside gate)" -> "0.43 m, 30 cm, 38 deg" with
+# "marker not visible" on roughly every other second; each goal ended DOCK_MAXOUT /
+# DOCK_NOT_FOUND. docked_marker_offset 0.242.
+def _dusk_visible(t):
+    # detections in bursts: 0.6 s seen, 0.9 s not (worse than the recorded ~50 %)
+    return (t % 1.5) < 0.6
+
+
+@pytest.mark.parametrize('x0,y0,thd', [(0.62, -0.27, -29.0), (0.60, -0.29, -10.0),
+                                       (0.66, -0.36, -10.0), (1.0, 0.30, 38.0)])
+def test_dusk_replay_docks_without_retry_or_blind_reverse(x0, y0, thd):
+    p = dl.DockParams(skip_nav_to_approach=True, docked_marker_offset=0.242)
+    m = dl.DockStateMachine(p, dl.Pose2D(), goal_timeout_s=400.0, dock_pose_measured=True)
+    first = dl.dock_errors(_marker_from_pose(x0, y0, math.radians(thd), 0.242, 0.0), 0.242)
+    if thd == -29.0:   # the recorded reading the old raw gate rejected for 15 s
+        assert not dl.marker_gate_ok(first, p.max_lateral_error,
+                                     math.radians(p.max_yaw_error_deg))
+    x, y, th, t, dt = x0, y0, math.radians(thd), 0.0, 0.05
+    m.start(dl.Snapshot(t=0.0))
+    deb = dl.ContactDebouncer(3)
+    out, lost_moves = None, 0
+    for _ in range(8000):
+        t += dt
+        deb.update(x <= 0.0 and abs(y) < 0.03)
+        vis = x > 0.05 and _dusk_visible(t)
+        mk = _marker_from_pose(x, y, th, 0.242, t) if vis else None
+        out = m.step(dl.Snapshot(t=t, odom=dl.Pose2D(x, y, th), marker=mk,
+                                 contact=deb.value, charging_result=True if
+                                 m.state == S.CHARGING else None,
+                                 progress_pose=dl.Pose2D(x, y, th)))
+        if out.done:
+            break
+        if m.state == S.DOCKING and out.linear < 0 and not out.marker_in_view:
+            lost_moves += 1
+        x += out.linear * math.cos(th) * dt
+        y += out.linear * math.sin(th) * dt
+        th += out.angular * dt
+        x = max(x, 0.0)
+    assert out.success, (out.message, m.state, x, y, th)
+    assert m.retries == 0 and not m._blind
+    assert lost_moves == 0                      # never reverses in DOCKING without the marker

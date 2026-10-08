@@ -169,6 +169,20 @@ def marker_gate_ok(err: DockErrors, max_lateral: float, max_yaw_rad: float) -> b
     return abs(err.lateral) <= max_lateral and abs(err.heading) <= max_yaw_rad
 
 
+def tracking_gate_ok(err: DockErrors, g: 'ControllerGains', max_lateral: float,
+                     max_yaw_rad: float) -> bool:
+    """Marker gate relative to what the reverse controller WANTS: the heading is compared
+    with the controller's desired approach heading h_d = clamp(k_lateral * lateral), not with
+    the dock axis. 2026-10-08 dusk: at the approach pose the robot sat 0.27 m off the axis at
+    -29 deg, i.e. already ON the controller's -28.6 deg approach line, yet the raw 25 deg gate
+    rejected it for 15 s (SEARCHING), and in DOCKING the controller's own approach angle
+    (+ tracking error) pushed the raw heading past the 35 deg widened gate -> 'lost' ->
+    RETRY. With the blind fallback gone this ended in DOCK_MAXOUT / DOCK_NOT_FOUND."""
+    h_d = clamp(g.k_lateral * err.lateral, -g.max_approach_angle, g.max_approach_angle)
+    return abs(err.lateral) <= max_lateral and \
+        abs(wrap_angle(err.heading - h_d)) <= max_yaw_rad
+
+
 @dataclass
 class ControllerGains:
     max_speed: float = 0.15
@@ -477,6 +491,9 @@ class DockParams:
     final_max_heading_deg: float = 20.0
     max_realigns: int = 2
     marker_median_n: int = 3         # gates/decisions use the median of the last N markers
+    # DOCKING: hold still (never reverse) while the marker is lost; RETRY only after it has
+    # been lost for max_lost_frames ticks AND this long (dusk: intermittent detections).
+    marker_lost_hold_s: float = 3.0
     # Bumper during docking (2026-10-08: a bike pressed the front bumper mid-ALIGNING; the
     # bumper_controller backed off + rotated over the docking lane while the FSM's timers ran
     # on, the about-turn ended off the approach line, SEARCHING timed out and the robot
@@ -589,7 +606,8 @@ class DockStateMachine:
         self._last_err: Optional[DockErrors] = None      # latest DOCKING observation
         self._last_err_odom: Optional[Pose2D] = None
         self.calibrated_offset: Optional[float] = None
-        self._bump: Optional[dict] = None   # bumper hold: {'t0', 'clear_t', 'state'}
+        self._bump: Optional[dict] = None
+        self._lost_t = 0.0   # bumper hold: {'t0', 'clear_t', 'state'}
 
     # -- helpers ---------------------------------------------------------
     def _enter(self, state: str, snap: Snapshot) -> None:
@@ -606,6 +624,14 @@ class DockStateMachine:
             self._pending.append(('cancel_nav',))
         self.state = DockState.FAILED
         self.message = msg
+
+    def _gate(self, err: Optional[DockErrors], scale: float = 1.0) -> bool:
+        if err is None:
+            return False
+        k = max(1.0, scale)
+        lat, yaw = k * self.p.max_lateral_error, k * math.radians(self.p.max_yaw_error_deg)
+        # raw dock-axis gate (vendor) OR on the controller's approach line
+        return marker_gate_ok(err, lat, yaw) or tracking_gate_ok(err, self.p.gains, lat, yaw)
 
     def _post_approach(self, snap: Snapshot) -> None:
         if self.use_vision:
@@ -963,13 +989,11 @@ class DockStateMachine:
             return
         err = dock_errors(m, self.p.docked_marker_offset)
         kg = max(1.0, self.p.docking_gate_scale)
-        if marker_gate_ok(err, kg * self.p.max_lateral_error,
-                          kg * math.radians(self.p.max_yaw_error_deg)):
+        if self._gate(err, kg):
             self._valid_marker_t = m.stamp
         txt = 'seen %.2f m, %.1f\N{DEGREE SIGN}' % (math.hypot(m.x, m.y),
                                                     math.degrees(err.heading))
-        if not marker_gate_ok(err, self.p.max_lateral_error,
-                              math.radians(self.p.max_yaw_error_deg)):
+        if not self._gate(err):
             txt += ' (outside gate: lateral %.2f m)' % err.lateral
         self._marker_text = txt
 
@@ -1058,9 +1082,7 @@ class DockStateMachine:
 
         if st == DockState.ALIGNING:
             m = self._fresh_marker(snap)
-            if m is not None and marker_gate_ok(dock_errors(m, self.p.docked_marker_offset),
-                                                self.p.max_lateral_error,
-                                                math.radians(self.p.max_yaw_error_deg)):
+            if m is not None and self._gate(dock_errors(m, self.p.docked_marker_offset)):
                 self._notes.append('marker in gate while aligning: searching')
                 self._post_approach(snap)
                 return self._out()
@@ -1086,8 +1108,7 @@ class DockStateMachine:
                 err = dock_errors(m, self.p.docked_marker_offset)
                 self._push_obs(m, err)
                 self._remaining = err.remaining
-                if marker_gate_ok(self._median_err(), self.p.max_lateral_error,
-                                  math.radians(self.p.max_yaw_error_deg)):
+                if self._gate(self._median_err()):
                     self._lost = 0
                     self._last_err, self._last_err_odom = err, snap.odom
                     self._enter(DockState.DOCKING, snap)
@@ -1117,8 +1138,7 @@ class DockStateMachine:
                 self._push_obs(m, err)
             gerr = self._median_err() if err is not None else None
             k = max(1.0, self.p.docking_gate_scale)
-            if gerr is None or not marker_gate_ok(gerr, k * self.p.max_lateral_error,
-                                                  k * math.radians(self.p.max_yaw_error_deg)):
+            if gerr is None or not self._gate(gerr, k):
                 if self._last_err is not None and self._last_err.remaining <= g.final_zone:
                     # lost in the last stretch (too close / occluded): straight on the
                     # last docked heading, dead-reckoned
@@ -1127,7 +1147,10 @@ class DockStateMachine:
                     self._enter_vision_final(snap)
                     return self._out(-g.final_speed, 0.0)
                 self._lost += 1
-                if self._lost > self.p.max_lost_frames:
+                if self._lost == 1:
+                    self._lost_t = snap.t
+                if self._lost > self.p.max_lost_frames and \
+                        snap.t - self._lost_t >= self.p.marker_lost_hold_s:
                     self._enter_retry(snap, travelled)
                 return self._out()  # hold still while the marker is lost
             if new:
