@@ -153,6 +153,7 @@ behavior_tree_node:
     stuck_step_progress_m: 0.05
     stuck_escape_m: 0.3
     stuck_same_spot_m: 0.5
+    stuck_same_spot_left_m: 1.0
     stuck_ignore_after_s: 1.0
 
     # --- recording ---------------------------------------------------------

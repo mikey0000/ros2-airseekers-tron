@@ -67,8 +67,10 @@ while Nav2 kept commanding and nothing stopped the wheels)
 * commanded motion (applied ``/cmd_vel`` |v| > ``stuck_cmd_linear`` or |w| >
   ``stuck_cmd_angular``) held for ``stuck_window_s`` while the RTK-fused EKF
   pose (``/odometry/filtered_map``) moved < ``stuck_min_progress_m`` and turned
-  < ``stuck_min_heading_deg`` => STUCK (reason ``stuck``);
-* wheel-odometry distance / EKF distance > ``stuck_slip_ratio`` over the window
+  < ``stuck_min_heading_deg`` and its accumulated path stayed under
+  ``stuck_min_path_m`` / ``stuck_min_yaw_path_deg`` (a dithering robot that follows
+  its commands back and forth is not stuck) => STUCK (reason ``stuck``);
+* wheel-odometry distance / EKF path length > ``stuck_slip_ratio`` over the window
   (wheel distance >= ``stuck_slip_min_wheel_m``) => STUCK (reason ``spinning``);
 * ``/stuck`` (std_msgs/Bool, latched) stays true until the EKF pose moved
   > ``stuck_clear_m`` from where it latched, ``/stuck_guard/suppress`` (Bool,
@@ -118,7 +120,8 @@ class StuckDetector:
 
     def __init__(self, window_s=4.0, min_progress_m=0.05, min_heading_deg=10.0,
                  cmd_linear=0.03, cmd_angular=0.1, clear_m=0.3, slip_ratio=3.0,
-                 slip_min_wheel_m=0.2, pose_timeout_s=1.0, gap_s=1.5):
+                 slip_min_wheel_m=0.2, pose_timeout_s=1.0, gap_s=1.5,
+                 min_path_m=0.10, min_yaw_path_deg=20.0, path_sample_s=0.5):
         self.window_s = float(window_s)
         self.min_progress_m = float(min_progress_m)
         self.min_heading = math.radians(float(min_heading_deg))
@@ -132,6 +135,17 @@ class StuckDetector:
         # a stalled RPP rotate-to-heading dithers |w| through 0 every ~1 s, which used to
         # clear the buffer forever (2026-10-07 live incident, no latch for 4+ min).
         self.gap_s = float(gap_s)
+        # Responsiveness (2026-10-08 false latches): an RPP rotate-to-heading / goal approach
+        # that dithers (w or v sign flips every ~1 s) leaves the robot oscillating around its
+        # start pose, so the window's max displacement / max heading change stay under the
+        # thresholds although the body follows every command (IMU / EKF yaw rate tracks w).
+        # 'stuck' therefore also requires the accumulated EKF path to stay small: yaw path
+        # (sum |d yaw|) < min_yaw_path_deg and xy path (chords between samples >= path_sample_s
+        # apart, which filters RTK jitter: ~0.008 m per 4 s parked) < min_path_m. 'spinning'
+        # compares the wheel distance against that path, not the start->end chord.
+        self.min_path_m = float(min_path_m)
+        self.min_yaw_path = math.radians(float(min_yaw_path_deg))
+        self.path_sample_s = float(path_sample_s)
         self._last_cmd_t = None
         self.stuck = False
         self.latch_pose = None
@@ -184,11 +198,13 @@ class StuckDetector:
         turned = max(abs(_wrap(b[3] - yaw0)) for b in self._buf)
         ekf_d = math.hypot(pose[0] - x0, pose[1] - y0)
         wheel_d = self._wheel_cum - w0
+        yaw_path, xy_path = self._paths()
         reason = ''
-        if moved < self.min_progress_m and turned < self.min_heading:
+        if (moved < self.min_progress_m and turned < self.min_heading
+                and yaw_path < self.min_yaw_path and xy_path < self.min_path_m):
             reason = 'stuck'
         elif (wheel_d >= self.slip_min_wheel_m
-              and wheel_d > self.slip_ratio * max(ekf_d, 1e-3)):
+              and wheel_d > self.slip_ratio * max(ekf_d, xy_path, 1e-3)):
             reason = 'spinning'
         if not reason:
             return None
@@ -199,7 +215,19 @@ class StuckDetector:
         return {'x': round(pose[0], 3), 'y': round(pose[1], 3), 'reason': reason,
                 'commanded': [round(cmd[0], 3), round(cmd[1], 3)],
                 'ekf_moved_m': round(moved, 3), 'turned_deg': round(math.degrees(turned), 1),
-                'wheel_m': round(wheel_d, 3), 'window_s': self.window_s}
+                'wheel_m': round(wheel_d, 3), 'window_s': self.window_s,
+                'yaw_path_deg': round(math.degrees(yaw_path), 1), 'path_m': round(xy_path, 3)}
+
+    def _paths(self):
+        """(yaw path rad, xy path m) of the window buffer (xy chords >= path_sample_s apart)."""
+        b = self._buf
+        yaw_path = sum(abs(_wrap(q[3] - p[3])) for p, q in zip(b, b[1:]))
+        xy_path, last = 0.0, b[0]
+        for q in b[1:]:
+            if q[0] - last[0] >= self.path_sample_s or q is b[-1]:
+                xy_path += math.hypot(q[1] - last[1], q[2] - last[2])
+                last = q
+        return yaw_path, xy_path
 
 
 class SlipDetectorNode(Node):
@@ -226,6 +254,8 @@ class SlipDetectorNode(Node):
         self.declare_parameter('stuck_slip_ratio', 3.0)
         self.declare_parameter('stuck_slip_min_wheel_m', 0.2)
         self.declare_parameter('stuck_cmd_gap_s', 1.5)
+        self.declare_parameter('stuck_min_path_m', 0.10)
+        self.declare_parameter('stuck_min_yaw_path_deg', 20.0)
         self.declare_parameter('stuck_pose_topic', '/odometry/filtered_map')
 
         self._slip_threshold = float(self.get_parameter('slip_threshold').value)
@@ -251,7 +281,8 @@ class SlipDetectorNode(Node):
             min_heading_deg=gp('stuck_min_heading_deg'), cmd_linear=gp('stuck_cmd_linear'),
             cmd_angular=gp('stuck_cmd_angular'), clear_m=gp('stuck_clear_m'),
             slip_ratio=gp('stuck_slip_ratio'), slip_min_wheel_m=gp('stuck_slip_min_wheel_m'),
-            gap_s=gp('stuck_cmd_gap_s'))
+            gap_s=gp('stuck_cmd_gap_s'), min_path_m=gp('stuck_min_path_m'),
+            min_yaw_path_deg=gp('stuck_min_yaw_path_deg'))
         self._ekf_pose = None       # (x, y, yaw) of the newest EKF map pose
         self._ekf_t = None
         self._suppressed = False
@@ -395,10 +426,11 @@ class SlipDetectorNode(Node):
             ev['ts'] = time.time()
             self.get_logger().error(
                 'STUCK (%s) at (%.2f, %.2f) in %s: commanded v=%.2f w=%.2f for %.1f s, '
-                'EKF moved %.3f m / %.1f deg, wheels %.2f m -> /stuck latched'
+                'EKF moved %.3f m / %.1f deg (path %.3f m / %.1f deg), wheels %.2f m '
+                '-> /stuck latched'
                 % (ev['reason'], ev['x'], ev['y'], ev['phase'], ev['commanded'][0],
                    ev['commanded'][1], ev['window_s'], ev['ekf_moved_m'], ev['turned_deg'],
-                   ev['wheel_m']))
+                   ev['path_m'], ev['yaw_path_deg'], ev['wheel_m']))
             self._stuck_event_pub.publish(String(data=json.dumps(ev, sort_keys=True)))
         elif was and not det.stuck:
             self.get_logger().info('stuck guard: cleared (%s)' % (

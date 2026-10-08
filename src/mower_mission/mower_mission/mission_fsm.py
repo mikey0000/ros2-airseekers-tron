@@ -605,6 +605,10 @@ class Params:
     stuck_step_progress_m: float = 0.05
     stuck_escape_m: float = 0.3
     stuck_same_spot_m: float = 0.5
+    # 2026-10-08: a new stuck near an escaped spot only means "still stuck there" if the
+    # robot never got further than this from that spot since the escape; after it drove on
+    # (mowing lanes bring it back within 0.5 m) it is a fresh event and gets its own escape.
+    stuck_same_spot_left_m: float = 1.0
     stuck_ignore_after_s: float = 1.0   # /stuck ignored this long after an escape
 
     @classmethod
@@ -726,7 +730,7 @@ class MissionFSM:
         self._preview_shown = False         # a preview is drawn on /coverage/full_plan
         self._preview_id = 0
         self._stk = None                    # stuck escape in progress (see _stuck_tick)
-        self._stuck_hist = []               # [(t, x, y)] stuck spots escaped from
+        self._stuck_hist = []               # [[t, x, y, far]] stuck spots escaped from
         self._stuck_ignore_until = -1e9
 
     # ==================================================================
@@ -3509,6 +3513,9 @@ class MissionFSM:
             self._stuck_escape_tick()
             return True
         i = self.inputs
+        if i.pose is not None:              # how far the robot got from each escaped spot
+            for h in self._stuck_hist:
+                h[3] = max(h[3], math.hypot(h[1] - i.pose[0], h[2] - i.pose[1]))
         if not (self.p.stuck_guard and i.stuck and self.phase in STUCK_PHASES) \
                 or self._now < self._stuck_ignore_until:
             return False
@@ -3521,7 +3528,8 @@ class MissionFSM:
         horizon = self._now - float(self.p.stuck_recovery_period_s)
         self._stuck_hist = [h for h in self._stuck_hist if h[0] >= horizon]
         same = [h for h in self._stuck_hist
-                if math.hypot(h[1] - pose[0], h[2] - pose[1]) <= self.p.stuck_same_spot_m]
+                if math.hypot(h[1] - pose[0], h[2] - pose[1]) <= self.p.stuck_same_spot_m
+                and h[3] < float(self.p.stuck_same_spot_left_m)]
         if same:
             self._stuck_needs_help('stuck again at the same spot', pose)
             return True
@@ -3597,7 +3605,7 @@ class MissionFSM:
     def _stuck_escaped(self, moved):
         k, self._stk = self._stk, None
         ox, oy = k['origin']
-        self._stuck_hist.append((self._now, ox, oy))
+        self._stuck_hist.append([self._now, ox, oy, float(moved)])
         self._stuck_ignore_until = self._now + float(self.p.stuck_ignore_after_s)
         self._fx.append(SuppressStuckGuard(False))
         self._fx.append(RecordIncident('stuck', ox, oy, 'stuck guard escape (%s, %.2f m)'

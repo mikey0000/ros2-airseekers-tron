@@ -109,6 +109,20 @@ def test_stuck_again_at_same_spot_needs_help_without_pushing():
     assert h.name == 'STUCK_NEEDS_HELP' and not drives(h, m)
 
 
+def test_stuck_near_an_old_spot_after_driving_away_escapes_again():
+    """2026-10-08: after an escape the robot mowed on (> 1 m away) and came back down the
+    next lane within 0.5 m of the spot: a fresh event, escape again instead of NEEDS_HELP."""
+    h = Harness()
+    mowing(h)
+    _escape(h, 1.0)
+    h.tick(n=11)
+    for x in (1.5, 2.2, 2.5, 1.6):              # drives on, then returns along a lane
+        h.fsm.inputs.pose = (x, 0.2, 0.0)
+        h.tick()
+    stuck(h, (1.1, 0.2, 0.0))
+    assert h.name != 'STUCK_NEEDS_HELP' and h.fsm._stk is not None
+
+
 def test_stuck_ignored_outside_stuck_phases_and_when_disabled():
     h = Harness()
     h.fsm.inputs.stuck = True
