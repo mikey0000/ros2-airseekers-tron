@@ -308,6 +308,17 @@ Jazzy renamed the polygon threshold and inverted the sense:
 (Use `min_points: N+1` — that is exactly what Jazzy's own alias does, and it
 preserves the author's stated "more than N" intent.)
 
+- **[code]** The `points` **type changed too**. Humble declared it as a
+  `PARAMETER_DOUBLE_ARRAY` and read a **flat** pair list `[x1, y1, x2, y2, …]`
+  (size > 6, even) — what the file had. Jazzy declares it as a
+  `PARAMETER_STRING` and runs `parseVVF`, so it must be
+  `"[[x1, y1], [x2, y2], …]"` (≥ 4 points). Leaving the flat array makes
+  `stop_zone.points` unreadable and **aborts the whole Nav2 bringup** with
+  `parameter 'stop_zone.points' has invalid type: … is of type {string}, setting
+  it to {double_array} is not allowed` (the `…enabled` "not declared" warnings
+  that follow are just the failed `collision_zone_gate` toggles). Fixed in
+  `nav2_params.yaml` L737/L748.
+
 - **[gain]** The Jazzy node adds `state_topic` (default empty). Set
   `state_topic: /collision_monitor_state` (`nav2_msgs/CollisionMonitorState`) to
   surface stop/slowdown state to the GUI (`mowglinext_baseline.md` §6 notes the newer

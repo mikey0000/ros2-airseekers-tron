@@ -16,6 +16,7 @@
   * sensor obstacles in the global costmap + reroute-not-clear BTs (2026-10-09);
   * lifecycle_manager_navigation node order.
 """
+import ast
 import os
 import sys
 
@@ -540,9 +541,10 @@ def test_collision_monitor():
     assert ap["time_before_collision"] >= 1.0
     xmax = {}
     for name in ("stop_zone", "slowdown_zone"):
-        pts = cm[name]["points"]
-        assert len(pts) % 2 == 0 and len(pts) >= 8, name
-        xs = pts[0::2]
+        # Jazzy: PARAMETER_STRING "[[x, y], ...]" (parseVVF); Humble was a flat double array.
+        pts = ast.literal_eval(cm[name]["points"])
+        assert isinstance(pts, list) and len(pts) >= 4 and all(len(p) == 2 for p in pts), name
+        xs = [p[0] for p in pts]
         # zones lie strictly ahead of the footprint front edge (0.52), never over the body
         assert min(xs) >= 0.52, name
         xmax[name] = max(xs)
