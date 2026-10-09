@@ -551,6 +551,11 @@ class McuNode(Node):
         # takes effect live).
         self.declare_parameter('docked_zero_keepalive', False)   # experiments only, see doc
         self.declare_parameter('docked_zero_keepalive_period_s', 1.0)
+        # Docked motor neutral search: when docked_idle, find wheel position where
+        # drive motor current drops near zero (wheels settle in dock curve bottom).
+        self.declare_parameter('docked_motor_neutral', True)
+        self.declare_parameter('docked_neutral_current_threshold_a', 1.5)
+        self.declare_parameter('docked_neutral_search_speed', 0.02)
         # Telemetry: measured vs commanded velocity at this rate (0 disables); /mcu/sent_speed
         # is published once per SpeedData frame that actually left the host.
         self.declare_parameter('speed_telemetry_rate_hz', 5.0)
@@ -637,6 +642,10 @@ class McuNode(Node):
         self._estop_pub_t = -1e9
         self._estop_pub_value = None
         self.docked_zero_keepalive_period = max(0.05, float(param('docked_zero_keepalive_period_s')))
+        # Docked motor neutral search parameters
+        self.docked_motor_neutral = bool(param('docked_motor_neutral'))
+        self.docked_neutral_current_threshold = float(param('docked_neutral_current_threshold_a'))
+        self.docked_neutral_search_speed = float(param('docked_neutral_search_speed'))
         self.interlock_on_lift = bool(param('interlock_on_lift'))
         self.interlock_on_stop = bool(param('interlock_on_stop'))
         self.interlock_on_bumper = bool(param('interlock_on_bumper'))
@@ -690,6 +699,11 @@ class McuNode(Node):
         self._activity = None             # last /mission/activity string
         self._keepalive_on = False        # docked zero keepalive currently active
         self._keepalive_next_t = 0.0
+        # Docked motor current reduction state
+        self._docked_neutral_on = False
+        self._docked_neutral_next_t = 0.0
+        self._docked_neutral_dir = 1      # 1 = forward, -1 = reverse
+        self._docked_neutral_last_current = float('inf')
         self._wake_r, self._wake_w = os.pipe()
         os.set_blocking(self._wake_r, False)
         os.set_blocking(self._wake_w, False)
@@ -1502,6 +1516,7 @@ class McuNode(Node):
             self._stop_left -= 1
             self._stop_next_t += self.stop_frame_spacing
         self._docked_keepalive(now, blocked)
+        self._docked_neutral_search(now, blocked)
         self._publish_speed_telemetry(now)
 
     def _keepalive_wanted(self, now, blocked):
@@ -1533,13 +1548,86 @@ class McuNode(Node):
             self._send_speed_frame(0.0, 0.0)
             self._keepalive_next_t = now + self.docked_zero_keepalive_period
 
-    def _twist_msg(self, linear, angular):
-        msg = TwistStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = self.frame_id
-        msg.twist.linear.x = float(linear)
-        msg.twist.angular.z = float(angular)
-        return msg
+    def _docked_neutral_wanted(self, now, blocked):
+        """True when we should run the motor current reduction: enabled, docked_idle,
+        no interlock/e-stop, not moving, no stop sequence pending.
+        Only triggers when current is ABOVE threshold (not periodically)."""
+        if not self.docked_motor_neutral or blocked:
+            return False
+        if self._activity != 'docked_idle':
+            return False
+        if self._moving or self._stop_left > 0:
+            return False
+        # Only search if current is above threshold (don't re-search if already low)
+        left_current = abs(self._motors_si.get('left', {}).get('current_a', 0.0))
+        right_current = abs(self._motors_si.get('right', {}).get('current_a', 0.0))
+        max_current = max(left_current, right_current)
+        if max_current <= self.docked_neutral_current_threshold:
+            return False
+        return True
+
+    def _docked_neutral_search(self, now, blocked):
+        """Simple search to reduce dock hold current from ~5-6A down to ~1-2A.
+        
+        Uses small pivot nudges (angular velocity) since that rocks both wheels
+        in the dock curve. At zero speed, check current; if above threshold,
+        nudge, wait, measure. If current dropped, continue direction; else reverse.
+        Stops when both motors below threshold (default ~1.5A).
+        Only runs when current is actually above threshold.
+        """
+        want = self._docked_neutral_wanted(now, blocked)
+        if want != self._docked_neutral_on:
+            self._docked_neutral_on = want
+            if want:
+                self.get_logger().info('docked motor current reduction started (target < %.1fA)' %
+                                       self.docked_neutral_current_threshold)
+                self._docked_neutral_dir = 1
+                self._docked_neutral_last_current = float('inf')
+                self._docked_neutral_next_t = now
+            else:
+                self.get_logger().info('docked motor current reduction stopped (below target)')
+
+        if not want:
+            return
+
+        # Get current motor currents (absolute values)
+        left_current = abs(self._motors_si.get('left', {}).get('current_a', 0.0))
+        right_current = abs(self._motors_si.get('right', {}).get('current_a', 0.0))
+        max_current = max(left_current, right_current)
+
+        # Check if we've reduced current enough
+        if max_current <= self.docked_neutral_current_threshold:
+            self.get_logger().info(
+                'docked motor current reduced: left=%.2fA right=%.2fA (target < %.1fA)' %
+                (left_current, right_current, self.docked_neutral_current_threshold))
+            # Hold position (send zero speed)
+            self._send_speed_frame(0.0, 0.0)
+            return
+
+        # Not at target yet - only act if it's time for next attempt
+        if now < self._docked_neutral_next_t:
+            self._send_speed_frame(0.0, 0.0)
+            return
+
+        # Time for a nudge - did the last one help?
+        if self._docked_neutral_last_current != float('inf'):
+            if max_current < self._docked_neutral_last_current:
+                pass  # keep direction - current improved
+            else:
+                self._docked_neutral_dir *= -1  # reverse - current got worse
+
+        self._docked_neutral_last_current = max_current
+
+        # Small pivot nudge (rocks both wheels in dock curve)
+        pivot_speed = self.docked_neutral_search_speed * self._docked_neutral_dir
+        self.get_logger().debug(
+            'docked current nudge: dir=%d pivot=%.4f left=%.2fA right=%.2fA target<%.1fA' %
+            (self._docked_neutral_dir, pivot_speed, left_current, right_current,
+             self.docked_neutral_current_threshold))
+        self._send_speed_frame(0.0, pivot_speed)
+
+        # Long pause before next measurement
+        self._docked_neutral_next_t = now + 5.0
 
     def _publish_speed_telemetry(self, now):
         """Measured and commanded body velocity at ``speed_telemetry_rate_hz`` (observational)."""

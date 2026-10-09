@@ -108,6 +108,7 @@ def _oa_cam(name, condition):
             'publish_compressed': ParameterValue(LC('oa_compressed'), value_type=bool),
             'publish_width': ParameterValue(LC('oa_publish_width'), value_type=int),
             'publish_on_demand': ParameterValue(LC('oa_on_demand'), value_type=bool),
+            'close_when_unused_s': ParameterValue(LC('oa_close_when_unused_s'), value_type=float),
         }],
     )
 
@@ -162,6 +163,10 @@ def generate_launch_description():
                               description='OA: convert/publish only while image_raw, '
                                           'compressed or camera_info has subscribers.'),
         DeclareLaunchArgument('oa_compressed', default_value='false'),
+        DeclareLaunchArgument('oa_close_when_unused_s', default_value='30.0',
+                              description='OA: close the V4L2 device after this many seconds '
+                                          'without subscribers (0 = keep streaming, >0 = close '
+                                          'and reopen on demand; higher = less CPU when idle).'),
         DeclareLaunchArgument('left_oa_camera_device', default_value='/dev/left_oa_camera'),
         DeclareLaunchArgument('right_oa_camera_device', default_value='/dev/right_oa_camera'),
         DeclareLaunchArgument('rear_camera_device', default_value='/dev/rear_camera'),

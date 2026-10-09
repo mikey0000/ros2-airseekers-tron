@@ -51,6 +51,7 @@ import threading
 import time
 
 from mower_control import bag_ring as br
+from rclpy.qos import DurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
 # Curated (2026-10-09, measured on the mower): the first ring recorded 73 topics, 554 msg/s,
 # and its `ros2 bag record` took 46-53 % of one RK3588 core. rosbag2 Jazzy's cost is per
@@ -109,6 +110,9 @@ DEFAULT_TOPICS = [
 
 # 'detour' is a routine decision, not an incident (several per mow); the rest are aborts.
 DEFAULT_PIN_KINDS = ['subpath_failed', 'transit_abort', 'follow_abort', 'stuck']
+
+# Activity states that should disable bag recording to save CPU
+LOW_POWER_ACTIVITIES = frozenset(('docked_idle', 'idle', 'charging'))
 
 
 def _pdeathsig():
@@ -264,8 +268,13 @@ def main(args=None):
             dp('stop_after_idle_s', 5.0)
             dp('max_mows', 10)
             dp('mow_max_gb', 2.0)
+            # Activity gating: auto-disable recording in low-power states
+            dp('activity_gate', True)
             gp = lambda n: self.get_parameter(n).value  # noqa: E731
             self._root = str(gp('root'))
+            self._activity_gate = bool(gp('activity_gate'))
+            self._activity = None
+            self._low_power = False
             self._inc_dir = str(gp('incidents_dir'))
             self._crash_dir = str(gp('crash_dir'))
             topics = [t for t in list(gp('topics')) + list(gp('extra_topics')) if t]
@@ -316,8 +325,13 @@ def main(args=None):
                                          self._on_emergency, qos)
             except (ImportError, AttributeError, ValueError) as exc:
                 self.get_logger().warn('mission/emergency triggers off: %s' % exc)
+            # Activity gate: auto-disable recording in low-power states (docked_idle, idle, charging)
+            if self._activity_gate:
+                activity_qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                                          durability=DurabilityPolicy.TRANSIENT_LOCAL)
+                self.create_subscription(String, '/mission/activity', self._on_activity, activity_qos)
             latched = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
-                                 durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+                                 durability=DurabilityPolicy.TRANSIENT_LOCAL)
             self._status_pub = self.create_publisher(String, '~/status', latched)
             self.create_service(Trigger, '~/pin', self._srv_pin)
             self.create_service(SetBool, '~/enable', self._srv_enable)
@@ -453,6 +467,24 @@ def main(args=None):
         def _on_emergency(self, msg):
             self._pin(self._det.on_emergency(getattr(msg, 'active_emergency', False),
                                              getattr(msg, 'reason', ''), time.monotonic()))
+
+        def _on_activity(self, msg):
+            if not self._activity_gate:
+                return
+            activity = str(msg.data)
+            prev_low_power = self._low_power
+            self._activity = activity
+            self._low_power = activity in LOW_POWER_ACTIVITIES
+            if self._low_power != prev_low_power:
+                self.get_logger().warn('bag_recorder: activity=%s low_power=%s' %
+                                       (activity, self._low_power))
+                # Immediately stop/start recording based on activity
+                if self._low_power:
+                    self.get_logger().info('bag_recorder: low power activity -> stopping recording')
+                    self._switch.set(False, time.monotonic())
+                else:
+                    self.get_logger().info('bag_recorder: active activity -> starting recording')
+                    self._switch.set(True, time.monotonic())
 
         def _srv_pin(self, _req, resp):
             path = self._pin(self._det.manual('bag_recorder/pin service', time.monotonic()))
