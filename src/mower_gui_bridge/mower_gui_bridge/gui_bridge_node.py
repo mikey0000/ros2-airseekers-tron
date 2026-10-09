@@ -70,8 +70,10 @@ PARAM_DEFAULTS = {
     'wheel_odom_topic': '/wheel_odom',
     # /wheel_odom is GUI-only (foxglove_bridge is its sole subscriber) and /odom runs at
     # ~50 Hz. Every relayed message costs foxglove_bridge a few ms, so the relay is
-    # rate-limited; the GUI only needs ~10 Hz (odometer, readiness, MQTT). 0 = unthrottled.
-    'wheel_odom_rate_hz': 5.0,
+    # rate-limited. GUI consumers (2026-10-09): session odometer (sums position deltas, jump
+    # guard 1 m: 2 Hz at 0.5 m/s = 0.25 m steps), updater readiness (3 s freshness), MQTT
+    # retained copy, Diagnostics page numbers. 2 Hz is enough. 0 = unthrottled.
+    'wheel_odom_rate_hz': 2.0,
     'filtered_map_topic': '/odometry/filtered_map',
     # GUI-only low-rate copies (gui_relay.py): foxglove_bridge costs a few ms per delivered
     # message per client and cannot rate-limit, while the originals keep the rates the
@@ -89,6 +91,16 @@ PARAM_DEFAULTS = {
     'detections_topic': '/ai/det/detections',
     'gui_detections_topic': '/gui/detections',
     'gui_detections_rate_hz': 2.0,         # per camera (frame_id); relayed only while subscribed
+    # obstacle_guard's Bool (one per detection frame, ~13 Hz): the GUI badge gets changes
+    # (sampled at 5 Hz) plus a keep-alive at this rate, only while subscribed. '' = off.
+    'obstacle_close_topic': '/vision/obstacle_close',
+    'gui_obstacle_close_topic': '/gui/obstacle_close',
+    'gui_obstacle_close_rate_hz': 1.0,
+    # /diagnostics (~9 Hz from 6 publishers, this node's included) merged per status name into
+    # one DiagnosticArray at this rate, only while subscribed. '' = off.
+    'diagnostics_source_topic': '/diagnostics',
+    'gui_diagnostics_topic': '/gui/diagnostics',
+    'gui_diagnostics_rate_hz': 1.0,
     'high_level_status_topic': '/behavior_tree_node/high_level_status',
     'coverage_resume_topic': '/behavior_tree_node/coverage_resume_available',
     'mower_control_service': '/hardware_bridge/mower_control',
@@ -240,6 +252,15 @@ class GuiBridgeNode(Node):
                 Detection2DArray, str(p['gui_detections_topic']), 10)
         self._gui_det_thr = gui_relay.Throttle(gui_relay.period_for(p['gui_detections_rate_hz']))
         self._gui_det_sub = None
+        self._gui_obstacle_pub = gui_pub(Bool, 'gui_obstacle_close_topic') \
+            if str(p['obstacle_close_topic']) else None
+        self._gui_obstacle_gate = gui_relay.ChangeOrKeepalive(
+            gui_relay.period_for(p['gui_obstacle_close_rate_hz']))
+        self._gui_obstacle_sub = None
+        self._gui_diag_pub = gui_pub(DiagnosticArray, 'gui_diagnostics_topic') \
+            if str(p['diagnostics_source_topic']) else None
+        self._gui_diag_merge = gui_relay.LatestByName()
+        self._gui_diag_sub = None
         self._estop_req_pub = self.create_publisher(Bool, p['estop_request_topic'], 10)
         self._twist_pub = self.create_publisher(Twist, p['emergency_twist_topic'], 10)
         if self._serve_hl:
@@ -286,6 +307,15 @@ class GuiBridgeNode(Node):
             self._gui_det_sub = sub(self._Detection2DArray, str(p['detections_topic']),
                                     self._on_detections_raw, qos_profile_sensor_data,
                                     raw=True, sampled=True, deliver_all=True)
+        if self._gui_obstacle_pub is not None:
+            # sampled newest-only at 5 Hz: <= 5 takes/s instead of a pump wake per frame
+            self._gui_obstacle_sub = sub(Bool, str(p['obstacle_close_topic']),
+                                         self._on_obstacle_close, 1,
+                                         parser=flat_parser(Bool), sampled=True)
+        if self._gui_diag_pub is not None:
+            self._gui_diag_sub = sub(DiagnosticArray, str(p['diagnostics_source_topic']),
+                                     self._on_diagnostics_in, 50, sampled=True,
+                                     deliver_all=True)
 
         # ---- clients -----------------------------------------------------
         self._cutter_cli = self.create_client(
@@ -343,6 +373,11 @@ class GuiBridgeNode(Node):
                           self._publish_diagnostics))
         if self._gui_det_sub is not None:
             tasks.append((0.25, self._relay_detections))
+        if self._gui_obstacle_sub is not None:
+            tasks.append((0.2, self._relay_obstacle_close))
+        if self._gui_diag_sub is not None:
+            tasks.append((1.0 / max(0.1, float(p['gui_diagnostics_rate_hz'])),
+                          self._relay_diagnostics))
         self._periodic = PeriodicRunner(self, tasks, 'gui_bridge_periodic')
         self._pump.start()              # inputs first, then the periodic evaluation
         self._periodic.start()
@@ -580,6 +615,33 @@ class GuiBridgeNode(Node):
             self._pump.poll((self._gui_det_sub,))
         else:
             self._pump.flush(self._gui_det_sub)
+
+    def _on_obstacle_close(self, msg):
+        value = bool(msg.data)
+        if self._gui_obstacle_gate.due(value, time.monotonic()):
+            self._gui_obstacle_pub.publish(Bool(data=value))
+
+    def _relay_obstacle_close(self):
+        if self._gui_obstacle_pub.get_subscription_count() > 0:
+            self._pump.poll((self._gui_obstacle_sub,))
+        else:
+            self._pump.flush(self._gui_obstacle_sub)
+
+    def _on_diagnostics_in(self, msg):
+        for st in msg.status:
+            self._gui_diag_merge.add(st.name, st)
+
+    def _relay_diagnostics(self):
+        if self._gui_diag_pub.get_subscription_count() == 0:
+            self._pump.flush(self._gui_diag_sub)
+            self._gui_diag_merge.take()
+            return
+        self._pump.poll((self._gui_diag_sub,))
+        statuses = self._gui_diag_merge.take()
+        if statuses:
+            out = DiagnosticArray(status=statuses)
+            out.header.stamp = self._now()
+            self._gui_diag_pub.publish(out)
 
     # ------------------------------------------------------------------
     # emergency

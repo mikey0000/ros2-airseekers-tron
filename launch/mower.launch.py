@@ -274,10 +274,8 @@ FOXGLOVE_GUI_TOPICS = [
     r'^/scan$',
     r'^/map_server_node/(mow_progress|area_settings|dock_corridor|docking_pose|route)$',
     r'^/fusion_graph/(lidar_map|diagnostics)$',
-    r'^/diagnostics$',
     r'^/obstacle_tracker/obstacles$',
     r'^/robot_description$',
-    r'^/vision/obstacle_close$',
     r'^/ai/det/detections$',
     r'^/rosout$',
     # mower_alerts/alert_node: theft / lift / incident alerts + heartbeat (JSON String),
@@ -287,7 +285,10 @@ FOXGLOVE_GUI_TOPICS = [
     # 2 Hz, emergency on change + 1 Hz, detections 2 Hz/camera on demand. The GUI provider
     # reads these instead of the 20 / 5 / 5 / 15 Hz originals (kept above for older GUIs);
     # /gui/gnss_status is the 2 Hz copy of the 10 Hz /gps/status.
-    r'^/gui/(pose|status|emergency|detections|gnss_status)$',
+    # 2026-10-09: /gui/obstacle_close (on change + 1 Hz) replaces the 13 Hz
+    # /vision/obstacle_close and /gui/diagnostics (1 Hz, merged per name) the ~9 Hz
+    # /diagnostics; both originals are no longer advertised to the GUI.
+    r'^/gui/(pose|status|emergency|detections|gnss_status|obstacle_close|diagnostics)$',
 ]
 
 
@@ -523,8 +524,8 @@ def generate_launch_description() -> LaunchDescription:
                 # larger share of message delivery. The bridge's cost is ~3 ms per delivered
                 # message (most likely each executor wake walking the ~200 parameter/service
                 # clients created for the GUI's parameter requests), so it scales with the
-                # subscribed rate. /wheel_odom (GUI-only) is therefore relayed at 10 Hz by
-                # gui_bridge (wheel_odom_rate_hz, 5 Hz) instead of the 50 Hz /odom rate, and the
+                # subscribed rate. /wheel_odom (GUI-only) is therefore relayed at 2 Hz by
+                # gui_bridge (wheel_odom_rate_hz) instead of the 50 Hz /odom rate, and the
                 # GUI-only /gps/fix at 2 Hz (gps_fix_rate_hz).
                 'sysinfo': False,
                 'topic_whitelist': topic_whitelist,

@@ -63,7 +63,9 @@ var topicMap = map[string]topicDef{
 	"terrainGrid":         {"/map_server_node/terrain_grid", "nav_msgs/msg/OccupancyGrid"},
 	"terrainSummary":      {"/map_server_node/terrain_summary", "std_msgs/msg/String"},
 	"lidarMap":            {"/fusion_graph/lidar_map", "nav_msgs/msg/OccupancyGrid"},         // fusion_graph LiDAR anchor map (large, latched)
-	"diagnostics":         {"/diagnostics", "diagnostic_msgs/msg/DiagnosticArray"},
+	// gui_bridge's 1 Hz copy of /diagnostics (~9 Hz from 6 publishers), latest status
+	// per name updated in that second; useDiagnostics merges by name as before.
+	"diagnostics":         {"/gui/diagnostics", "diagnostic_msgs/msg/DiagnosticArray"},
 	"fusionDiag":          {"/fusion_graph/diagnostics", "diagnostic_msgs/msg/DiagnosticArray"},
 	"obstacles":           {"/obstacle_tracker/obstacles", "mowgli_interfaces/msg/ObstacleArray"},
 	"robotDescription":    {"/robot_description", "std_msgs/msg/String"},                     // published once
@@ -103,11 +105,13 @@ var topicMap = map[string]topicDef{
 	"magYaw":     {"/imu/mag_yaw", "sensor_msgs/msg/Imu"},
 	// Camera perception (robots whose profile has the `cameras` feature).
 	// visionObstacleClose is a std_msgs/Bool latch from the vision obstacle
-	// guard: true while a detected obstacle is inside the stop distance.
+	// guard: true while a detected obstacle is inside the stop distance. Read
+	// from gui_bridge's /gui/obstacle_close (changes at once, else 1 Hz) instead
+	// of the ~13 Hz original: every message costs foxglove_bridge a few ms.
 	// detections carries vision_msgs/Detection2DArray; adaptDetections reduces
 	// it server-side to {count, classes[], max_score, stamp, frame_id} so the
 	// browser never sees per-box hypotheses/poses (see vision.go).
-	"visionObstacleClose": {"/vision/obstacle_close", "std_msgs/msg/Bool"},
+	"visionObstacleClose": {"/gui/obstacle_close", "std_msgs/msg/Bool"},
 	"detections":          {"/gui/detections", "vision_msgs/msg/Detection2DArray"},
 	// ROS 2 log aggregation topic (rcl_interfaces/Log). Feeds the Logs page on
 	// hosts without a Docker socket (see pkg/api/rosout.go). Every message is

@@ -72,7 +72,8 @@ type SessionTracker struct {
 }
 
 // maxOdomStepM caps the per-sample position delta folded into session distance.
-// At ~12 Hz and mowing speed a real step is a few cm; a larger jump means an
+// /wheel_odom arrives at 2 Hz (gui_bridge wheel_odom_rate_hz): at the 0.5 m/s
+// speed cap a real step is <= 0.25 m (chord of a gentle arc, ~1 % short); a larger jump means an
 // odometry frame reset (node restart) or a dropped burst of samples, not real
 // travel, so it is discarded instead of inflating the odometer.
 const maxOdomStepM = 1.0

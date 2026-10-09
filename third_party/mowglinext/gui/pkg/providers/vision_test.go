@@ -67,7 +67,7 @@ func TestAdaptDetections_BadJSON(t *testing.T) {
 }
 
 func TestVisionTopicsRegistered(t *testing.T) {
-	assert.Equal(t, topicDef{"/vision/obstacle_close", "std_msgs/msg/Bool"}, topicMap["visionObstacleClose"])
+	assert.Equal(t, topicDef{"/gui/obstacle_close", "std_msgs/msg/Bool"}, topicMap["visionObstacleClose"])
 	assert.Equal(t, topicDef{"/gui/detections", "vision_msgs/msg/Detection2DArray"}, topicMap["detections"])
 	assert.NotNil(t, foxgloveAdapters["detections"])
 }
@@ -78,4 +78,15 @@ func keys(m map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// 2026-10-09: the GUI reads gui_bridge's low-rate copies; the raw /diagnostics
+// (~9 Hz) and /vision/obstacle_close (~13 Hz) are no longer whitelisted on
+// foxglove_bridge (launch/mower.launch.py FOXGLOVE_GUI_TOPICS).
+func TestGuiRelayCopiesRegistered(t *testing.T) {
+	assert.Equal(t, topicDef{"/gui/diagnostics", "diagnostic_msgs/msg/DiagnosticArray"}, topicMap["diagnostics"])
+	for key, def := range topicMap {
+		assert.NotEqual(t, "/diagnostics", def.ROS2Topic, key)
+		assert.NotEqual(t, "/vision/obstacle_close", def.ROS2Topic, key)
+	}
 }
