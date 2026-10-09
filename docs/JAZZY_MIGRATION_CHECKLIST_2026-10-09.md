@@ -404,6 +404,22 @@ Split the `log = logger.info if … else logger.warn` sites in
 `base_keys/base_keys_node.py` and `mower_control/supervisor.py` into explicit
 per-severity call sites.
 
+**[done]** `src/mower_teleop/config/twist_mux.yaml` must pin `use_stamped:
+false`. twist_mux **4.5.0 (Jazzy) defaults to stamped** messages when the
+parameter is absent (`"use_stamped" is not declared as parameter, defaulting to
+"true"`), so it subscribed every mux lane as `TwistStamped` and published
+`cmd_vel_out` as `TwistStamped`, while the whole mower command chain is
+unstamped `geometry_msgs/Twist`. Same topic name on two endpoints with different
+types never connects — a silently dropped command, no error. Symptom seen live
+2026-10-10: starting a mow published **+0.15 m/s on `/cmd_vel_docking` at 20 Hz**
+(319 msgs) but `/cmd_vel` and `/mcu/commanded_speed` stayed **0.0000**, so
+`UndockStateMachine` failed `DRIVE_TIMEOUT` after ~15.7 s. Setting
+`use_stamped: false` restores the chain (verified: `/cmd_vel_raw` is `Twist`
+again and a test twist on `/cmd_vel_docking` reaches `/cmd_vel`). Guarded by
+`src/mower_teleop/test/test_twist_mux_config.py`. Decision 2026-10-10: stay
+unstamped `Twist` on Jazzy (Nav2 keeps `enable_stamped_cmd_vel` off in Jazzy
+too); moving the chain to `TwistStamped` is a tracked **Lyrical** item.
+
 **[verify]** rclpy-internal shims documented as "private in Humble, but stable for
 the whole distro":
 - `src/*/*/sub_pump.py` L46 (`try:` around a private rclpy subscription attribute) —

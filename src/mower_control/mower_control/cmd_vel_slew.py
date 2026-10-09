@@ -27,7 +27,7 @@ Parameters
                                   MowgliNext style) and held there until a fresh
                                   command arrives
 ``rate``               ``20.0``   Hz output/update rate
-``frame_id``           ``base_link``  frame stamped on the output
+``frame_id``           ``base_link``  reserved (unstamped Twist has no header)
 ``pivot_assist``       ``true``   creeping pivot (see :class:`PivotAssist`): after
                                   ``pivot_assist_delay_s`` (1.5) of linear 0 / |angular|
                                   >= ``pivot_assist_min_angular_radps`` (0.08) in TRANSIT or
