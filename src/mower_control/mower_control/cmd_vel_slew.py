@@ -29,11 +29,14 @@ Parameters
 ``rate``               ``20.0``   Hz output/update rate
 ``frame_id``           ``base_link``  reserved (unstamped Twist has no header)
 ``pivot_assist``       ``true``   creeping pivot (see :class:`PivotAssist`): after
-                                  ``pivot_assist_delay_s`` (1.5) of linear 0 / |angular|
+                                  ``pivot_assist_delay_s`` (0.8) of linear 0 / |angular|
                                   >= ``pivot_assist_min_angular_radps`` (0.08) in TRANSIT or
-                                  MOWING, add ``pivot_assist_linear_mps`` (0.05) forward, at
-                                  most ``pivot_assist_max_dist_m`` (0.3) per pivot
-                                  DEFAULT NOW ``false``: subsumed by the turn shaper
+                                  MOWING, add ``pivot_assist_linear_mps`` (0.14) forward, at
+                                  most ``pivot_assist_max_dist_m`` (0.3) per pivot. The creep
+                                  must keep the inside wheel >= the turn shaper's
+                                  ``min_inner_wheel_mps`` (>= 0.06 + 0.3*0.24 = 0.132 at
+                                  |w| = 0.3), or shape_for_both_wheels snaps it back to an
+                                  unassisted pure pivot (2026-10-10 live incident)
 ``turn_shaper``        ``true``   both-wheel turn shaping (see :func:`shape_for_both_wheels`,
                                   :class:`TurnShaper`) in autonomous phases: inner wheel
                                   >= ``min_inner_wheel_mps`` (0.06) with ``track_width_m``
@@ -200,12 +203,17 @@ class PivotAssist:
     ``delay_s`` of a pure pivot command (|angular| >= ``min_angular``, linear == 0) in a
     TRANSIT/MOWING phase this adds ``linear`` m/s forward, at most ``max_dist_m`` of
     commanded travel per pivot (the pivot ends when the command stops being a pivot).
-    Lawn-safe: 0.05 m/s x 6 s at most; the costmap / controller still checks collisions.
+    Lawn-safe: 0.14 m/s x ~2.2 s at most (0.3 m cap); the costmap / controller still
+    checks collisions. ``linear`` must be >= 0.06 + |w|*0.24 (0.132 at |w| = 0.3) so the
+    both-wheel turn shaper, which runs after this, keeps the inside wheel out of the MCU
+    deadband and passes the creep as a legal arc; a smaller creep is snapped back to a
+    pure pivot and stalls on turf (2026-10-10 live: rocking in place -> STUCK at
+    (-1.35, 2.90), tie-in below).
     """
 
     # min_angular 0.08 (2026-10-07 live): RPP's rotate-to-heading only ramped to 0.16 rad/s
     # (0.086 achieved) and the old 0.2 threshold never fired; 0.08 completed the turn.
-    def __init__(self, enabled=True, linear=0.05, min_angular=0.08, delay_s=1.5,
+    def __init__(self, enabled=True, linear=0.14, min_angular=0.08, delay_s=0.8,
                  max_dist_m=0.3):
         self.enabled = bool(enabled)
         self.linear = float(linear)
@@ -508,7 +516,11 @@ class CmdVelSlewNode(Node):
         self.declare_parameter('robot_settings_file', default_settings_file())
         for name, (default, _kind) in SHAPER_PARAMS.items():
             self.declare_parameter(name, default)
-        _pa = PivotAssist(enabled=False)   # subsumed by the TurnShaper (no double creep)
+        # Enable the creep (2026-10-10). It must itself keep the inside wheel >= the
+        # shaper's min_inner (>= 0.132 m/s at |w| <= 0.3), or the TurnShaper below would
+        # snap it back to a pure pivot and the pivot would stall on turf. default linear
+        # 0.14 -> inner 0.068 at |w| = 0.3; nav2_params.yaml may override.
+        _pa = PivotAssist()
         for name, attr in PIVOT_PARAMS.items():
             self.declare_parameter(name, getattr(_pa, attr))
         for name, default in TURN_DEFAULTS.items():
