@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fast DDS profile (2026-10-09): shared-memory + UDPv4 for the whole mower_humble container.
+
+  Why: with ~63 nodes in one container the per-message cost of UDP loopback (a socket receive
+  per subscriber per message) dominated idle CPU (most Python nodes ~15 % each, load ~13 on
+  8 cores; bag_recorder measurements in docs/crash_recovery.md). SHM delivers same-host
+  messages without the socket path.
+
+  Why it was off (2026-10-06, fastdds_no_shm.xml): Fast DDS 2.6 leaks its /dev/shm segments on
+  every restart (~145 MB per run with the 16 MiB camera segments) into the HOST tmpfs. Since then
+  scripts/shm_gc.sh removes unmapped segments at stack start and every 5 min. This profile keeps
+  the DEFAULT 512 KiB segment per participant (~63 x 0.5 MiB = ~32 MiB worst case, pages are only
+  committed when written); messages larger than a segment (camera images) go over UDP as before.
+  Rollback: point FASTRTPS_DEFAULT_PROFILES_FILE in docker/docker-compose.yml back at
+  fastdds_no_shm.xml. Watch `df -h /dev/shm` and `free -m` after enabling.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>shm</transport_id>
+      <type>SHM</type>
+      <segment_size>524288</segment_size>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>udp</transport_id>
+      <type>UDPv4</type>
+      <sendBufferSize>8388608</sendBufferSize>
+      <receiveBufferSize>8388608</receiveBufferSize>
+      <maxMessageSize>65500</maxMessageSize>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="shm_udp" is_default_profile="true">
+    <rtps>
+      <useBuiltinTransports>false</useBuiltinTransports>
+      <userTransports>
+        <transport_id>shm</transport_id>
+        <transport_id>udp</transport_id>
+      </userTransports>
+    </rtps>
+  </participant>
+</profiles>

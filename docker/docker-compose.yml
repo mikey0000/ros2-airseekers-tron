@@ -23,7 +23,9 @@ services:
       - ROS_DISTRO=humble
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      - FASTRTPS_DEFAULT_PROFILES_FILE=/work/install/mower_bringup/share/mower_bringup/config/cameras/fastdds_no_shm.xml
+      # 2026-10-09: SHM + UDP (config/cameras/fastdds_shm_udp.xml, read straight from the checkout so no
+      # build is needed); rollback = .../config/cameras/fastdds_no_shm.xml (UDP only, 2026-10-06)
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/work/config/cameras/fastdds_shm_udp.xml
       - DISPLAY=${DISPLAY:-}
       # Crash recording (docs/crash_recovery.md): persistent ROS logs (per-launch dirs,
       # retention by scripts/ros_log_cleanup.sh), crash records + black-box dumps + cores.
