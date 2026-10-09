@@ -397,6 +397,13 @@ cut so the teleop/twist_mux/collision_zone_gate/MCU path is untouched.
 source file is only compiled when `librknnrt.so` is present, so the amd64 dev image
 (no RKNN runtime) never exercised it — the on-device build did.
 
+**[done]** rclpy (Jazzy) now raises `ValueError('Logger severity cannot be changed
+between calls')` when one call site logs at two severities; Humble tolerated it.
+Split the `log = logger.info if … else logger.warn` sites in
+`mower_localization/localization_monitor.py` (`_tick` hit it live),
+`base_keys/base_keys_node.py` and `mower_control/supervisor.py` into explicit
+per-severity call sites.
+
 **[verify]** rclpy-internal shims documented as "private in Humble, but stable for
 the whole distro":
 - `src/*/*/sub_pump.py` L46 (`try:` around a private rclpy subscription attribute) —
