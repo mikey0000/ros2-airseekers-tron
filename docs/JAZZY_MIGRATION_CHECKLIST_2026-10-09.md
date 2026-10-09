@@ -381,6 +381,11 @@ cut so the teleop/twist_mux/collision_zone_gate/MCU path is untouched.
 `os.environ.get('AMENT_PREFIX_PATH', '/opt/ros/jazzy')` → `'/opt/ros/jazzy'`
 (or read `ROS_DISTRO`).
 
+**[done]** `src/det_ros_cpp/src/det_node.cpp` L34 `#include <cv_bridge/cv_bridge.h>`
+→ `cv_bridge/cv_bridge.hpp`: vision_opencv 4.1.0 (Jazzy) renamed the header. This
+source file is only compiled when `librknnrt.so` is present, so the amd64 dev image
+(no RKNN runtime) never exercised it — the on-device build did.
+
 **[verify]** rclpy-internal shims documented as "private in Humble, but stable for
 the whole distro":
 - `src/*/*/sub_pump.py` L46 (`try:` around a private rclpy subscription attribute) —
