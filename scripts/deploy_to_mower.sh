@@ -82,7 +82,9 @@ do_build() {
   # A build/ tree left from the pre-migration Humble container pins /opt/ros/humble in its
   # CMakeCache (gtest_vendor, FastRTPS) and fails configure in the Jazzy image. `sync` never
   # ships build/, so an old on-device tree survives the migration: wipe it once when detected.
-  remote "grep -rqs '/opt/ros/humble' $REMOTE_DIR/build/*/CMakeCache.txt && { echo 'stale Humble build tree -> cleaning build/ install/ log/'; rm -rf $REMOTE_DIR/build $REMOTE_DIR/install $REMOTE_DIR/log; } || true"
+  # The wipe MUST run INSIDE the container: build/ is root-owned, so `remote` (ssh as
+  # $MOWER_USER) gets "Permission denied" deleting it and the stale tree would survive.
+  compose "run --rm mower_jazzy bash -c 'cd /work && grep -rqs /opt/ros/humble build/*/CMakeCache.txt 2>/dev/null && { echo \"stale Humble build tree -> cleaning build/ install/ log/\"; rm -rf build install log; } || true'"
   compose "run --rm mower_jazzy bash -c 'source /opt/ros/jazzy/setup.bash && cd /work && MAKEFLAGS=-j2 colcon build --symlink-install --parallel-workers 2 --event-handlers console_cohesion+ --packages-skip $SKIP_PKGS 2>&1 | tee /userdata/ros2/logs/colcon_build.log | tail -40'"
 }
 
