@@ -4422,7 +4422,7 @@
   },
   "settingsRecorder": {
     "title": "Data recorder",
-    "description": "Always-on rolling black-box recording (the last ~3 GB; incidents and each mow are kept) used for troubleshooting. It costs some CPU (about 10 % of one core). Switching it off also stops per-mow recordings. The setting is remembered across restarts.",
+    "description": "Always-on rolling black-box recording (the last ~3 GB; incidents and each mow are kept) used for troubleshooting. It costs some CPU (about 12-15 % of one core). Switching it off also stops per-mow recordings. The setting is remembered across restarts.",
     "state": "Status",
     "recording": "Recording",
     "pausedLowDisk": "Paused (low disk)",

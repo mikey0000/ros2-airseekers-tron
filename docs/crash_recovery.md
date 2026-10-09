@@ -231,14 +231,32 @@ manual drive, were lost. The 2026-10-08 tuning bags had to be recorded by hand w
 3.0) records all the time:
 
 - **Recorder**: a supervised `ros2 bag record` child. It is the C++ recorder, with no
-  deserialization and no Python per message. It records ~70 non-image topics (`DEFAULT_TOPICS`):
-  - the whole cmd_vel chain with the twist_mux lanes, `/estop` and `/motion_enabled`;
-  - `/odom`, `/odometry/filtered(_map)`, `/tf`, `/tf_static`, `/imu/data_aligned`;
-  - GPS fix and status;
-  - mission status and `/mission/*`, plus `/obstacle_policy`;
+  deserialization and no Python per message. It records a curated set of 54 low-rate topics
+  (`DEFAULT_TOPICS`, ~140 msg/s parked):
+  - the cmd_vel lanes, `/cmd_vel`, slew gate/shape status, `/estop_request`, `/motion_enabled`,
+    `/mcu/{measured,commanded}_speed`;
+  - `/odometry/filtered` (20 Hz), `/odometry/filtered_map` (10 Hz), `/tf_static`, tilt,
+    heading-aligner and localization status;
+  - `/fix`, `/fix_status`, `/ntrip/status`;
+  - mission status and `/mission/*`, `/obstacle_policy`, `/ai/det/detections_ranged`;
   - Nav2 plans, `/local_costmap/costmap` (1 Hz, 120x120) and `/behavior_tree_log`;
-  - `/stereo_depth/stats`, bumper, battery and MCU status, `/hardware_bridge/*`, slip and stuck;
-  - `/diagnostics` and `/rosout`.
+  - bumper/lift (`/mower_sensor_info`), battery, `/hardware_bridge/*`, dig stall, stuck events,
+    docking, lethal boundary, boundary status and terrain summary;
+  - `/diagnostics`.
+
+  **CPU (2026-10-09)**: the first version recorded 73 topics (554 msg/s with `/imu/data_aligned`
+  and `/mower_base/status` at 100 Hz, `/odom` at 50 Hz, `/tf` 30 Hz, `/rosout`) and its
+  `ros2 bag record` measured **46-53 % of one core** on the mower (per-thread `/proc` deltas). The
+  cost is per delivered message (Fast DDS UDP receive, no SHM in this container, plus one rosbag2
+  executor wake that walks every subscription), not bytes; compression mode, the sqlite preset
+  and cache size made no measurable difference. A dev-box benchmark replaying the measured
+  topic rates and sizes (9 publisher processes + 50 padding nodes, Fast DDS UDP-only profile)
+  gave: old set 25-29 % x86 parked / 31 % while driving; curated set **7.2 % parked / 9.1 %
+  driving** (x86). Scaled by the measured mower/x86 ratio (~1.7) that is **~12 % parked,
+  ~15 % driving** on the RK3588. The dropped topics and what still covers them are listed above
+  `DEFAULT_TOPICS`; add any back with `extra_topics` (a 100 Hz topic costs ~8 % of a core).
+  Topic discovery polls every 5 s (`polling_ms`; 1 s cost ~1 %), so a topic appearing late is
+  picked up within 5 s.
 
   Extra topics go in the `extra_topics` parameter. Recording goes to
   `/userdata/ros2/bags/<YYYYmmdd-HHMMSS>/`, with a new session dir on every (re)start. The
@@ -252,9 +270,10 @@ manual drive, were lost. The 2026-10-08 tuning bags had to be recorded by hand w
   - File-mode zstd. Each closed split is compressed once by one rosbag2 thread. This costs about
     tens of ms of one core per minute, gives 3-5x on this data and cuts eMMC writes by the same
     factor. Per-message compression would cost more CPU on 100-byte messages for little gain.
-  - The rate before compression is estimated at ~150 KB/s, dominated by `/odom` at 50 Hz,
-    the IMU at 100 Hz, `/mower_base/status` and `/tf`. **Measure it on the mower**: see
-    `/bag_recorder/status` `ring_bytes`.
+  - Measured 2026-10-09: the old 73-topic set was 181 KB/s before compression (`/plan` 49 KB/s
+    at 0.9 Hz, `/odom` 37 KB/s, IMU 33 KB/s); in the benchmark the zstd ring grew ~12 KB/s with
+    it and ~3.4 KB/s with the curated set (~300 MB/day). See `/bag_recorder/status`
+    `ring_bytes` on the mower.
 - **Pruning**: every 10 s, delete the oldest closed splits while the ring is over `max_total_gb`
   or /userdata has less than `min_free_gb` free. These are never deleted:
   - the split being written;
@@ -292,14 +311,29 @@ manual drive, were lost. The 2026-10-08 tuning bags had to be recorded by hand w
   ```
   A session's `metadata.yaml` lists every split, including pruned ones, so use the per-file
   paths and not the session dir.
+- **On/off at runtime**: `ros2 service call /bag_recorder/enable std_srvs/srv/SetBool
+  "{data: false}"` (or the GUI: Settings > Advanced > Data recorder). Off stops the child with
+  SIGINT (last split closed and compressed) and does not restart it; pruning, pins of what is
+  already recorded and the status keep running. The choice persists in
+  `/userdata/ros2/bag_recorder.json` (`state_file`; `enabled_default` when it does not exist).
+  `/bag_recorder/get_state` (Trigger) returns the status JSON (the GUI uses it).
+- **Per-mow bags (replace `mow_recorder`)**: the separate Python `mow_recorder` measured
+  ~35 % of a core while a mission ran (raw subscriptions to 100 Hz IMU / 50 Hz odom). It is now
+  off by default (launch arg `mow_recorder`, default false). Instead bag_recorder pins every
+  split from 1 split before the mission left IDLE/IDLE_DOCKED/CHARGING to the split being
+  written when it came back (5 s idle) into `/userdata/ros2/mows/<YYYYmmdd-HHMMSS>/`: hard
+  links + `incident.json` (reason `mow`, start, end, files). Retention 10 mows / 2 GB
+  (`max_mows`, `mow_max_gb`). These mows have the curated topic set (no 100 Hz IMU, no `/odom`);
+  `mow_recorder:=true` restores the old recorder and turns the mow pins off. Nothing is pinned
+  while recording is off.
 - **Status**: latched `/bag_recorder/status` (JSON) reports:
-  - recording, session, paused_low_disk;
+  - enabled, recording, session, paused_low_disk, mow (dir being pinned), mow_pins, topics;
   - ring_bytes, free_bytes;
   - restarts, pending_pins, suppressed_triggers.
 
   The child's own output goes to `/userdata/ros2/bags/recorder.log`, which is truncated past
   5 MB.
-- Disk budget on /userdata, worst case: ring 3 GB, pins 1 GB, mows 2 GB (`mow_recorder`),
+- Disk budget on /userdata, worst case: ring 3 GB, pins 1 GB, mows 2 GB (mow pins),
   crashes 2 GB, and the floor of 3 GB kept free.
 
 ## 5. Retention and access

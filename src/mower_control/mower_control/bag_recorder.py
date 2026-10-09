@@ -19,7 +19,13 @@ bags were recorded by hand with ``ros2 bag record``). This node:
   ``pin_prev_splits`` closed splits + split 0 (/tf_static) into
   ``<incidents_dir>/<ts>_<reason>/`` at once, and the current + ``pin_post_splits`` more as
   they close. Hard links (same /userdata filesystem) cost no copy and no space until the ring
-  prunes its own name. Pins have their own cap (``incident_max_gb``, ``max_incidents``).
+  prunes its own name. Pins have their own cap (``incident_max_gb``, ``max_incidents``);
+* pins each mow (mission leaves IDLE/IDLE_DOCKED/CHARGING until back for ``stop_after_idle_s``)
+  into ``<mows_dir>/<ts>/`` the same way (``bag_ring.MowPinner``), replacing the separate
+  ``mow_recorder`` process (~35 % of a core while mowing, 2026-10-09);
+* can be switched off/on at runtime: ``~/enable`` (std_srvs/SetBool; the GUI's Data recorder
+  switch) stops the child cleanly / restarts it; the choice persists in ``state_file``.
+  ``~/get_state`` (Trigger) returns the same JSON as the latched ``~/status``.
 
 Rosbag2 choices (rosbag2 0.15.17 in the image, checked 2026-10-09): storage sqlite3 (mcap is
 not installed: ``ros-humble-rosbag2-storage-mcap`` would need an image rebuild); preset

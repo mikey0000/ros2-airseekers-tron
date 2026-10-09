@@ -4422,7 +4422,7 @@
   },
   "settingsRecorder": {
     "title": "Enregistreur de données",
-    "description": "Enregistrement permanent en boucle de type boîte noire (environ les 3 derniers Go ; les incidents et chaque tonte sont conservés), utilisé pour le dépannage. Il consomme un peu de CPU (environ 10 % d'un cœur). Le désactiver arrête aussi les enregistrements par tonte. Ce réglage est conservé après un redémarrage.",
+    "description": "Enregistrement permanent en boucle de type boîte noire (environ les 3 derniers Go ; les incidents et chaque tonte sont conservés), utilisé pour le dépannage. Il consomme un peu de CPU (environ 12 à 15 % d'un cœur). Le désactiver arrête aussi les enregistrements par tonte. Ce réglage est conservé après un redémarrage.",
     "state": "État",
     "recording": "Enregistrement en cours",
     "pausedLowDisk": "En pause (disque presque plein)",

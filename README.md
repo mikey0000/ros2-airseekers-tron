@@ -114,7 +114,7 @@ because it also lists the arguments of the launch files it includes. The group t
 | `drivers` | `true` | `bringup.launch.py`: `mcu_node`, `wit_node`, `um960_node` (node names `mower_mcu_driver`, `wit_imu_driver`, `um960_gps_driver`), `bumper_controller`, `base_keys`, `light_controller`, `fill_light_node` (respawn 2 s) |
 | `control` | `true` | `cmd_vel_slew` (`/cmd_vel_raw` → `/cmd_vel`), `slip_detector`, `imu_cal` |
 | `supervisor` | `true` | `mower_control/supervisor`: node liveness (`/supervisor/status`), crash records |
-| `mow_recorder` | `true` | `mower_control/mow_recorder`: rosbag2 per mow |
+| `mow_recorder` | `false` | legacy `mower_control/mow_recorder` (rosbag2 per mow); off: `bag_recorder` pins each mow from its ring |
 | `teleop` | `true` | `mower_teleop/teleop.launch.py` (twist_mux + WebSocket relay) |
 | `gui_bridge` | `true` | `mower_gui_bridge/gui_bridge` |
 | `foxglove` | `true` | `foxglove_bridge` on `foxglove_port` (8765); `foxglove_all_topics:=false` advertises only the GUI's topic whitelist |
