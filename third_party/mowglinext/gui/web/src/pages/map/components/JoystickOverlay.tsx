@@ -11,7 +11,7 @@ interface JoystickOverlayProps {
     visible: boolean;
     isRecording?: boolean;
     /** What is being recorded (shown above Finish / Cancel). */
-    recordKind?: "area" | "path" | null;
+    recordKind?: "area" | "path" | "obstacle" | null;
     mobile?: boolean;
     onMove: (event: IJoystickUpdateEvent) => void;
     onStop: () => void;
@@ -107,7 +107,9 @@ export const JoystickOverlay = ({
                         fontWeight: 600, background: colors.glassBackground, color: colors.text,
                         border: `1px solid ${limeAlpha(0.28)}`,
                     }}>
-                        {recordKind === "path" ? t('mapJoystick.recordingPath') : t('mapJoystick.recordingArea')}
+                        {recordKind === "path" ? t('mapJoystick.recordingPath')
+                            : recordKind === "obstacle" ? t('mapJoystick.recordingObstacle')
+                                : t('mapJoystick.recordingArea')}
                     </div>
                     <AsyncButton
                         type="primary"

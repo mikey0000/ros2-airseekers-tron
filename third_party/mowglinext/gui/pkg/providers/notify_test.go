@@ -409,3 +409,112 @@ func mustJSON(t *testing.T, v any) []byte {
 	require.NoError(t, err)
 	return b
 }
+
+// alertProvider builds an enabled ntfy-backed provider with a controllable clock.
+func alertProvider(t *testing.T, mutate func(*NotificationConfig)) (*NotificationProvider, func() []capturedRequest, *time.Time) {
+	t.Helper()
+	srv, requests := newCaptureServer(t, http.StatusOK)
+	db := types.NewMockDBProvider()
+	cfg := DefaultNotificationConfig()
+	cfg.Enabled = true
+	cfg.Channel = NotifyChannelNtfy
+	cfg.NtfyServer = srv.URL
+	cfg.NtfyTopic = "garden"
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	require.NoError(t, SaveNotificationConfig(db, cfg))
+	now := t0
+	p := newNotificationProvider(db, srv.Client(), func() time.Time { return now })
+	return p, requests, &now
+}
+
+func theftAlert(id string) []byte {
+	b, _ := json.Marshal(map[string]any{"type": "alert", "id": id, "incident": "theft_geofence", "kind": "theft",
+		"message": "theftGeofence", "priority": 5, "text": "fallback",
+		"params": map[string]string{"distance": "23 m", "lat": "48.1", "lon": "11.1", "map": "https://maps/x"}})
+	return b
+}
+
+func TestHandleAlert_DeliversTheftAndUnwrapsData(t *testing.T) {
+	p, requests, _ := alertProvider(t, nil)
+	inner := string(theftAlert("theft_geofence-1"))
+	p.HandleAlert(mustJSON(t, map[string]string{"data": inner}))
+	got := requests()
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Body, "THEFT ALERT: the robot moved 23 m")
+	assert.Contains(t, got[0].Body, "48.1, 11.1")
+	assert.Equal(t, 1, p.Status().SentCount)
+}
+
+func TestHandleAlert_AcceptsBareJSON(t *testing.T) {
+	p, requests, _ := alertProvider(t, nil)
+	p.HandleAlert(theftAlert("a-1"))
+	assert.Len(t, requests(), 1)
+}
+
+func TestHandleAlert_RespectsDisabledKind(t *testing.T) {
+	p, requests, _ := alertProvider(t, func(c *NotificationConfig) { c.Events[NotifyEventTheft] = false })
+	p.HandleAlert(theftAlert("a-1"))
+	assert.Empty(t, requests())
+}
+
+func TestHandleAlert_UnknownKindDeliveredWhenEnabled(t *testing.T) {
+	p, requests, _ := alertProvider(t, nil)
+	p.HandleAlert(mustJSON(t, map[string]any{"type": "alert", "id": "x-1", "kind": "novel", "message": "novelThing", "text": "Novel text.", "priority": 9}))
+	got := requests()
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Body, "Novel text.")
+	assert.Contains(t, got[0].Body, `"priority":5`)
+}
+
+func TestHandleAlert_DisabledGloballySendsNothing(t *testing.T) {
+	p, requests, _ := alertProvider(t, func(c *NotificationConfig) { c.Enabled = false })
+	p.HandleAlert(theftAlert("a-1"))
+	assert.Empty(t, requests())
+}
+
+func TestHandleAlert_DropsReplayedID(t *testing.T) {
+	p, requests, _ := alertProvider(t, nil)
+	p.HandleAlert(theftAlert("a-1"))
+	p.HandleAlert(theftAlert("a-1"))
+	assert.Len(t, requests(), 1)
+	p.HandleAlert(theftAlert("a-2"))
+	assert.Len(t, requests(), 2)
+}
+
+func TestHandleAlert_IgnoresGarbage(t *testing.T) {
+	p, requests, _ := alertProvider(t, nil)
+	p.HandleAlert([]byte("not json"))
+	p.HandleAlert([]byte(`{"data":"also not json"}`))
+	p.HandleAlert([]byte(`{"type":"mystery"}`))
+	assert.Empty(t, requests())
+	assert.True(t, p.externalAlertsAt.IsZero(), "garbage must not mark the source live")
+}
+
+func emergencyStatusJSON(emergency bool) []byte {
+	b, _ := json.Marshal(map[string]any{"state": 1, "state_name": "IDLE", "battery_percent": 77, "emergency": emergency})
+	return b
+}
+
+func TestHandleStatus_AlertNodeHeartbeatSuppressesDuplicateEmergency(t *testing.T) {
+	// Without a heartbeat the detector still reports the emergency.
+	p, requests, now := alertProvider(t, nil)
+	p.HandleStatus(emergencyStatusJSON(false))
+	p.HandleStatus(emergencyStatusJSON(true))
+	assert.Len(t, requests(), 1)
+
+	// With a fresh heartbeat it stays quiet.
+	p, requests, now = alertProvider(t, nil)
+	p.HandleStatus(emergencyStatusJSON(false))
+	p.HandleAlert([]byte(`{"type":"heartbeat","active":[]}`))
+	*now = now.Add(5 * time.Second)
+	p.HandleStatus(emergencyStatusJSON(true))
+	assert.Empty(t, requests())
+
+	// A heartbeat older than 30 s no longer counts: the detector is the fallback again.
+	p.HandleStatus(emergencyStatusJSON(false))
+	*now = now.Add(notifyCooldown + 31*time.Second)
+	p.HandleStatus(emergencyStatusJSON(true))
+	assert.Len(t, requests(), 1)
+}

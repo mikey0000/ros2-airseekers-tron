@@ -48,10 +48,12 @@ from std_srvs.srv import Empty, SetBool, Trigger
 
 from mower_interfaces.action import Dock, Undock
 from mower_interfaces.msg import MowerBaseDevStatus
-from mower_interfaces.srv import ChargingControl, CutterControl, GetAreaSettings, SetAreaSettings
+from mower_interfaces.srv import (ChargingControl, CutterControl, GetAreaSettings, PlanRoute,
+                                   SetAreaSettings)
 from mowgli_interfaces.action import PlanCoverage
 from mowgli_interfaces.msg import Emergency, GnssStatus, HighLevelStatus, MapArea, Status
-from mowgli_interfaces.srv import AddMowingArea, GetMowingArea, HighLevelControl, StartInArea
+from mowgli_interfaces.srv import (AddMowingArea, GetMowingArea, HighLevelControl,
+                                   PromoteObstacle, StartInArea)
 
 from mower_mission import activity
 from mower_mission import mission_fsm as fsm_mod
@@ -69,9 +71,11 @@ TOPIC_DEFAULTS = {
     'mower_status_topic': '/mower_base/status',
     'gnss_status_topic': '/gps/status',
     'heading_status_topic': '/heading_aligner/status',   # mower_localization heading_aligner
+    'localization_status_topic': '/localization/status',  # localization_monitor (2026-10-09)
     'obstacle_policy_topic': '/obstacle_policy',   # mower_vision obstacle_guard (JSON, 5 Hz)
     # mower_control supervisor (latched JSON): critical_down -> EMERGENCY (docs/crash_recovery.md)
     'supervisor_status_topic': '/supervisor/status',
+    'tilt_status_topic': '/tilt/status',     # mower_control tilt_monitor ('' = no tilt guard input)
     'odom_topic': '/odometry/filtered_map',
     'boundary_violation_topic': '/map_server_node/boundary_violation',
     'lethal_boundary_violation_topic': '/map_server_node/lethal_boundary_violation',
@@ -96,6 +100,7 @@ TOPIC_DEFAULTS = {
     # clients
     'get_mowing_area_service': '/map_server_node/get_mowing_area',
     'get_area_settings_service': '/map_server_node/get_area_settings',
+    'plan_route_service': '/map_server_node/plan_route',    # route-graph transits
     'coverage_server_node': '/coverage_server',        # set_parameters target (bridge)
     'controller_server_node': '/controller_server',    # set_parameters target (Nav2)
     'obstacle_guard_node': '/obstacle_guard',          # set_parameters: obstacle_detection
@@ -105,6 +110,7 @@ TOPIC_DEFAULTS = {
     'rosout_topic': '/rosout',
     'nav_cmd_topic': '/cmd_vel_nav',      # '' = no slow-pivot sub_state
     'add_area_service': '/map_server_node/add_area',
+    'promote_obstacle_service': '/map_server_node/promote_obstacle',  # recorded NO-GO
     'set_area_channel_service': '/map_server_node/set_area_channel',  # recorded PATHs
     'cutter_control_service': '/cutter_control',
     'cutter_off_service': '/cutter_off',
@@ -251,6 +257,7 @@ class MissionNode(Node):
         sub(Bool, p['lethal_boundary_violation_topic'], self._on_lethal, 1,
             parser=flat_parser(Bool))
         sub(String, p['heading_status_topic'], self._on_heading, latched)
+        sub(String, p['localization_status_topic'], self._on_localization, latched)
         # commanded deck height (mcu_node, latched): live height changes during a mow
         sub(Int16, '/cutter/height_mm', self._on_cutter_height, latched,
             parser=flat_parser(Int16))
@@ -266,6 +273,8 @@ class MissionNode(Node):
             sub(Twist, p['nav_cmd_topic'], self._on_nav_cmd, 1, sampled=True, with_receipt=True)
         if p['supervisor_status_topic']:
             sub(String, p['supervisor_status_topic'], self._on_supervisor, latched)
+        if p['tilt_status_topic']:
+            sub(String, p['tilt_status_topic'], self._on_tilt, latched)
         self._hw_rain = self._base_rain = False
         self._hw_charging = self._base_charging = False
 
@@ -275,6 +284,9 @@ class MissionNode(Node):
                                        callback_group=self._cb), p['get_mowing_area_service']),
             fsm_mod.SRV_ADD_AREA: (cli(AddMowingArea, p['add_area_service'],
                                        callback_group=self._cb), p['add_area_service']),
+            fsm_mod.SRV_PROMOTE_OBSTACLE: (
+                cli(PromoteObstacle, p['promote_obstacle_service'],
+                    callback_group=self._cb), p['promote_obstacle_service']),
             fsm_mod.SRV_SET_CHANNEL: (cli(SetAreaSettings, p['set_area_channel_service'],
                                           callback_group=self._cb),
                                       p['set_area_channel_service']),
@@ -285,6 +297,8 @@ class MissionNode(Node):
             fsm_mod.SRV_GET_AREA_SETTINGS: (
                 cli(GetAreaSettings, p['get_area_settings_service'], callback_group=self._cb),
                 p['get_area_settings_service']),
+            fsm_mod.SRV_PLAN_ROUTE: (cli(PlanRoute, p['plan_route_service'],
+                                         callback_group=self._cb), p['plan_route_service']),
         }
         self._param_clients = {}
         for key, pname in ((fsm_mod.PARAM_NODE_COVERAGE, 'coverage_server_node'),
@@ -467,6 +481,18 @@ class MissionNode(Node):
             i.heading_source = str(st.get('source', 'none'))
             i.heading_stamp = time.monotonic()
 
+    def _on_localization(self, msg):
+        """/localization/status (JSON): ok|degraded|lost drives the localization hold."""
+        try:
+            st = json.loads(msg.data)
+        except ValueError:
+            st = {}
+        with self._lock:
+            i = self.fsm.inputs
+            i.loc_state = str(st.get('state', ''))
+            i.loc_reason = str(st.get('reason', ''))
+            i.loc_stamp = time.monotonic()
+
     def _on_supervisor(self, msg):
         """/supervisor/status: a safety-critical dependency (MCU driver, cmd_vel_slew,
         twist_mux) that vanished from the graph is an emergency cause (safe stop)."""
@@ -478,6 +504,26 @@ class MissionNode(Node):
             return
         with self._lock:
             self.fsm.inputs.critical_nodes_down = ', '.join(sorted(down))
+
+    def _on_tilt(self, msg):
+        """/tilt/status JSON (tilt_logic.TiltBands.status); the receipt time is the
+        freshness stamp (tilt_monitor republishes at 2 Hz)."""
+        try:
+            st = json.loads(msg.data)
+        except ValueError:
+            return
+        if not isinstance(st, dict):
+            return
+
+        def num(v):
+            return float(v) if isinstance(v, (int, float)) else None
+        with self._lock:
+            i = self.fsm.inputs
+            i.tilt_band = str(st.get('band', 'unknown'))
+            i.tilt_roll_deg = num(st.get('roll_deg'))
+            i.tilt_pitch_deg = num(st.get('pitch_deg'))
+            i.tilt_axis = str(st.get('axis', '') or '')
+            i.tilt_stamp = time.monotonic()
 
     def _on_obstacle_policy(self, msg):
         """{kind: none|dynamic|static, class, distance_m, bearing_deg}; the receipt time is
@@ -1020,7 +1066,10 @@ class MissionNode(Node):
         if e.name == fsm_mod.SRV_CLEAR_COSTMAPS:
             # fire-and-forget (untracked by the FSM): let the costmaps refresh
             # before a transit / follow retry or a boundary recovery.
+            want_global = bool((e.request or {}).get('global', True))
             for client, ros_name in self._clear_costmap_clis:
+                if 'global' in ros_name and not want_global:
+                    continue
                 if client.wait_for_service(timeout_sec=float(self._p['server_wait_timeout_s'])):
                     client.call_async(ClearEntireCostmap.Request())
                 else:
@@ -1055,6 +1104,12 @@ class MissionNode(Node):
             req.area.is_navigation_area = bool(r['is_navigation_area'])
             req.is_navigation_area = bool(r['is_navigation_area'])
             return req
+        if e.name == fsm_mod.SRV_PROMOTE_OBSTACLE:
+            req = PromoteObstacle.Request()
+            req.area_index = int(r['area_index'])
+            req.polygon = self._polygon(r['polygon'])
+            req.name = str(r.get('name', ''))
+            return req
         if e.name == fsm_mod.SRV_SET_CHANNEL:
             return SetAreaSettings.Request(area_index=int(r['index']),
                                            settings_json=str(r['settings_json']))
@@ -1064,6 +1119,18 @@ class MissionNode(Node):
             return Empty.Request()
         if e.name == fsm_mod.SRV_GET_AREA_SETTINGS:
             return GetAreaSettings.Request(area_index=int(r['index']))
+        if e.name == fsm_mod.SRV_PLAN_ROUTE:
+            req = PlanRoute.Request()
+            st = r['start']
+            req.start.x, req.start.y = float(st[0]), float(st[1])
+            req.start.theta = float(st[2]) if len(st) > 2 else 0.0
+            req.variation = int(r.get('variation', 0))
+            if r.get('to_dock'):
+                req.to_dock = True
+            else:
+                g = r['goal']
+                req.goal.x, req.goal.y, req.goal.theta = float(g[0]), float(g[1]), float(g[2])
+            return req
         if e.name == fsm_mod.SRV_SET_PARAMS:
             req = SetParameters.Request()
             req.parameters = [self._param_msg(k, v) for k, v in r['params'].items()]
@@ -1087,10 +1154,22 @@ class MissionNode(Node):
                 'is_navigation_area': bool(a.is_navigation_area)}}
         elif e.name == fsm_mod.SRV_ADD_AREA:
             resp = {'success': bool(res.success)}
+        elif e.name == fsm_mod.SRV_PROMOTE_OBSTACLE:
+            resp = {'success': bool(res.success), 'message': res.message}
         elif e.name == fsm_mod.SRV_SET_CHANNEL:
             resp = {'success': bool(res.success), 'message': res.message}
         elif e.name == fsm_mod.SRV_GET_AREA_SETTINGS:
             resp = {'success': bool(res.success), 'settings_json': res.settings_json}
+        elif e.name == fsm_mod.SRV_PLAN_ROUTE:
+            poses = []
+            for ps in res.path.poses:
+                q = ps.pose.orientation
+                poses.append((ps.pose.position.x, ps.pose.position.y,
+                              math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))))
+            resp = {'success': bool(res.success), 'message': res.message, 'poses': poses,
+                    'single_area': int(res.single_area), 'length_m': float(res.length_m),
+                    'path_length_m': float(res.path_length_m)}
         elif e.name == fsm_mod.SRV_SET_PARAMS:
             bad = [(prm.name, r.reason) for prm, r in zip(
                 self._make_request(e).parameters, res.results) if not r.successful]

@@ -70,3 +70,9 @@ services:
     # shm_gc start + 5 min loop described above, then `exec ros2 launch mower.launch.py`.
     command: ["/work/scripts/stack_entry.sh"]
     restart: unless-stopped
+    # Clean stop (power button / host poweroff, docs/buttons.md "Power off"): ros2 launch is PID 1
+    # and shuts down on SIGINT (nodes get SIGINT, then SIGTERM after 5 s); bag_recorder needs up
+    # to 15 s to close the bag. Docker's default is SIGTERM + SIGKILL after 10 s. On a host
+    # poweroff dockerd uses the longest container stop timeout, so this also covers shutdown.
+    stop_signal: SIGINT
+    stop_grace_period: 30s

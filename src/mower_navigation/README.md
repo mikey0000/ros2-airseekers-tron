@@ -5,20 +5,23 @@ This package holds only launch files and config (ament_cmake, Apache-2.0).
 Localization (gps_gate, navsat_transform, ekf) stays in `launch/nav2.launch.py`.
 
 ```bash
-ros2 launch mower_navigation navigation.launch.py            # params_file, use_keepout:=false, autostart:=true
+ros2 launch mower_navigation navigation.launch.py            # params_file, use_keepout:=false, autostart:=true, transit_controller:=mppi|rpp
 python3 src/mower_navigation/test/test_params_yaml.py         # static YAML check (python3 + pyyaml)
+python3 src/mower_navigation/test/nav_stack_smoke.py          # in the dev image, with the stack launched (see its docstring)
 ```
 
 ## Nodes
 
 | Node | Plugins |
 |---|---|
-| `controller_server` (+ `local_costmap`) | `FollowPath`, `FollowCoveragePath` = RegulatedPurePursuit; goal checkers `general_goal_checker` (0.15 m / 0.25 rad), `coverage_goal_checker` (0.10 m, yaw ignored); `progress_checker` = SimpleProgressChecker (0.3 m / 15 s) |
-| `planner_server` (+ `global_costmap`) | `GridBased` = `nav2_navfn_planner/NavfnPlanner` |
+| `controller_server` (+ `local_costmap`) | `FollowPath` = MPPI (transit, since 2026-10-09; `transit_controller:=rpp` puts `FollowPathRPP` back under this id), `FollowPathRPP`, `FollowCoveragePath` = RPP (default coverage), `FollowCoveragePathMPPI`, `FollowCoveragePathFTC`, `FollowCoveragePathReverse`; goal checkers `general_goal_checker`, `coverage_goal_checker`, `coverage_goal_checker_ftc`, `coverage_leg_goal_checker`; `progress_checker` = PoseProgressChecker |
+| `planner_server` (+ `global_costmap`) | `GridBased` = `nav2_smac_planner/SmacPlannerHybrid` (DUBIN, r_min 0.45 m, full footprint check), `GridBasedNavFn` = NavFn (BT fallback) |
 | `behavior_server` | `spin`, `backup`, `drive_on_heading`, `wait` |
 | `bt_navigator` | Humble default trees (copies in `behavior_trees/`, see below) |
-| `velocity_smoother` | OPEN_LOOP, max vel [0.5, 0, 1.0] |
-| `lifecycle_manager_navigation` | autostart; nodes in the order above |
+| `velocity_smoother` | OPEN_LOOP, max vel [0.5, 0, 0.3] |
+| `collision_monitor` | stop_zone / slowdown_zone (forward only) + approach_footprint; sources stereo, bumper |
+| `collision_zone_gate` | plain node: enables the stop/slowdown zones only while driving forward |
+| `lifecycle_manager_navigation` | autostart; nodes in the order above (collision_monitor last) |
 | `costmap_filter_info_server` + `lifecycle_manager_costmap_filters` | only with `use_keepout:=true` |
 
 This package does not start map_server or AMCL.
@@ -31,14 +34,21 @@ Every node uses `robot_base_frame: base_link`. Odometry comes from `/odometry/fi
 Velocity chain (unstamped `geometry_msgs/Twist`):
 
 ```
-controller_server  cmd_vel          -> /cmd_vel_nav_raw
-velocity_smoother  /cmd_vel_nav_raw -> /cmd_vel_nav     (twist_mux nav lane, priority 10, timeout 0.6 s)
-behavior_server    cmd_vel          -> /cmd_vel_nav
+controller_server  cmd_vel               -> /cmd_vel_nav_raw
+velocity_smoother  /cmd_vel_nav_raw      -> /cmd_vel_nav_smoothed
+collision_monitor  /cmd_vel_nav_smoothed -> /cmd_vel_nav   (twist_mux nav lane, priority 10, timeout 0.6 s)
+behavior_server    cmd_vel               -> /cmd_vel_nav
 ```
 
+Docking (`/cmd_vel_docking`), teleop, bumper and emergency lanes do not pass through the
+collision_monitor. Humble's stop/slowdown polygons ignore the direction of travel, so
+`collision_zone_gate` switches them off for reverse legs and pivots (the approach polygon
+is direction-aware and always on). Details in the `collision_monitor` block of
+`config/nav2_params.yaml`.
+
 Costmaps:
-- **Global:** frame `map`, rolling window 50x50 m at 0.1 m. Layers are `inflation_layer` and filter `keepout_filter` (info `/costmap_filter_info`, mask `/keepout_mask`). It has no static layer.
-- **Local:** frame `odom`, rolling window 4x4 m at 0.05 m. Layers are `obstacle_layer` (fed from `/bumper_cloud`, marking only, range 1.0 m, persistence 2 s, footprint clearing off) and `inflation_layer` (radius 0.4, scaling 3.0).
+- **Global:** frame `map`, rolling window 50x50 m at 0.1 m. Layers `static_layer` (`/nav_keepout_mask`), `terrain_layer`, `obstacle_layer` (stereo, stereo_clear, det_range, bumper), `inflation_layer` (0.65 m >= circumscribed radius, scaling 10); filter `keepout_filter`.
+- **Local:** frame `odom`, rolling window 6x6 m at 0.05 m. Layers `obstacle_layer` (bumper, stereo, stereo_clear, det_range), `bounds_keeper` (source-less ObstacleLayer with footprint clearing: keeps the Humble InflationLayer current after a costmap clear) and `inflation_layer` (1.0 m, scaling 4; MPPI's footprint check needs it).
 
 Footprint: `[[0.52,0.27],[0.52,-0.27],[-0.23,-0.27],[-0.23,0.27]]`. It comes from the chassis, wheel and bumper sizes in `config/urdf/mower.urdf.xacro`, measured from base_link.
 
@@ -61,6 +71,5 @@ The `keepout_filter` is always configured. If no `/costmap_filter_info` arrives 
 - **Real `map -> odom`:** it is a static identity today. A GPS datum or localization back-end will publish it later.
 - **Keepout mask source:** `/keepout_mask` will come from the ported MowgliNext `map_server_node`. Nothing publishes it yet.
 - **Docking:** Humble has no `opennav_docking`. Undock = `BackUp`. Docking goes to mower_behavior.
-- **collision_monitor:** there is no scan source, so it would only pass commands through. It is omitted.
-- **FTCController / PathProgressGoalChecker:** waiting on the `mower_nav2_plugins` port.
+- **FTCController:** ported (`src/mowgli_nav2_plugins`, `FollowCoveragePathFTC`), not the default since the 2026-10-06 ring drift.
 - **Custom MowgliNext BTs:** waiting on the mowgli_behavior port.

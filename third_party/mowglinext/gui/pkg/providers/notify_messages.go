@@ -2,13 +2,15 @@ package providers
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
 
 // notifyCatalogue is the server-side wording of every message id, per
-// language. Placeholders: {area} {next} {coverage} {battery} {state} {minutes}.
+// language. Placeholders: {area} {next} {coverage} {battery} {state} {minutes}
+// and, for alert-node messages, {cause} {distance} {lat} {lon} {map} {detail}.
 // An area with no operator name renders as the language's "Zone N".
 var notifyCatalogue = map[string]map[string]string{
 	"en": {
@@ -30,6 +32,19 @@ var notifyCatalogue = map[string]map[string]string{
 		NotifyMsgRainTimeout:     "Rain wait timed out, the mow was abandoned.",
 		NotifyMsgRtkWaiting:      "Waiting for an RTK fix for {minutes}. Mowing is paused until GPS quality recovers.",
 		NotifyMsgRtkRecovered:    "RTK fix recovered, mowing resumes.",
+		NotifyMsgTheftLift:       "THEFT ALERT: the robot was lifted while parked ({state}). Last position: {map}",
+		NotifyMsgTheftGeofence:   "THEFT ALERT: the robot moved {distance} from where it was parked while idle. Last position {lat}, {lon}: {map}",
+		NotifyMsgTheftOutsideMap: "THEFT ALERT: the robot is outside the mapped area while not mowing ({distance} outside). Last position: {map}",
+		NotifyMsgLiftDuringMow:   "Robot LIFTED while mowing: blade and wheels stopped ({state}).",
+		NotifyMsgTiltDuringMow:   "Robot TILTED ({detail}) while mowing: blade and wheels stopped.",
+		NotifyMsgEmergencyStop:   "Emergency stop: {cause} ({state}). Blades and wheels are halted.",
+		NotifyMsgStuck:           "Stuck: the robot could not free itself and needs help ({detail}).",
+		NotifyMsgPathBlocked:     "Path blocked for {minutes}: the robot is waiting for the obstacle to clear ({state}).",
+		NotifyMsgMowIncomplete:   "Mowing incomplete: {detail}. Start again to mow the rest.",
+		NotifyMsgDockFailed:      "Docking failed ({state}): {detail}. Please check on the robot.",
+		NotifyMsgUndockFailed:    "Undocking failed: {detail}.",
+		NotifyMsgBatteryCritical: "Battery critical ({battery}) and the robot is not on the dock ({state}).",
+		NotifyMsgRtkLost:         "RTK fix lost for {minutes} during the mission ({detail}).",
 		NotifyMsgTestNotifcation: "Test notification from your robot. Notifications are working.",
 	},
 	"fr": {
@@ -51,6 +66,19 @@ var notifyCatalogue = map[string]map[string]string{
 		NotifyMsgRainTimeout:     "Attente de fin de pluie dépassée, la tonte est abandonnée.",
 		NotifyMsgRtkWaiting:      "En attente d'un fix RTK depuis {minutes}. La tonte est en pause jusqu'au retour d'un GPS de qualité.",
 		NotifyMsgRtkRecovered:    "Fix RTK retrouvé, la tonte reprend.",
+		NotifyMsgTheftLift:       "ALERTE VOL : le robot a été soulevé alors qu'il était à l'arrêt ({state}). Dernière position : {map}",
+		NotifyMsgTheftGeofence:   "ALERTE VOL : le robot s'est déplacé de {distance} par rapport à son point de stationnement alors qu'il était à l'arrêt. Dernière position {lat}, {lon} : {map}",
+		NotifyMsgTheftOutsideMap: "ALERTE VOL : le robot est en dehors de la zone cartographiée alors qu'il ne tond pas ({distance} à l'extérieur). Dernière position : {map}",
+		NotifyMsgLiftDuringMow:   "Robot SOULEVÉ pendant la tonte : lame et roues arrêtées ({state}).",
+		NotifyMsgTiltDuringMow:   "Robot INCLINÉ ({detail}) pendant la tonte : lame et roues arrêtées.",
+		NotifyMsgEmergencyStop:   "Arrêt d'urgence : {cause} ({state}). Lames et roues arrêtées.",
+		NotifyMsgStuck:           "Coincé : le robot n'a pas réussi à se dégager seul et a besoin d'aide ({detail}).",
+		NotifyMsgPathBlocked:     "Chemin bloqué depuis {minutes} : le robot attend que l'obstacle disparaisse ({state}).",
+		NotifyMsgMowIncomplete:   "Tonte incomplète : {detail}. Relancez la tonte pour finir le reste.",
+		NotifyMsgDockFailed:      "Échec de l'accostage ({state}) : {detail}. Allez voir le robot.",
+		NotifyMsgUndockFailed:    "Échec du départ de la station : {detail}.",
+		NotifyMsgBatteryCritical: "Batterie critique ({battery}) et le robot n'est pas sur la station ({state}).",
+		NotifyMsgRtkLost:         "Fix RTK perdu depuis {minutes} pendant la mission ({detail}).",
 		NotifyMsgTestNotifcation: "Notification de test de votre robot. Les notifications fonctionnent.",
 	},
 }
@@ -74,6 +102,19 @@ var notifyTags = map[string][]string{
 	NotifyMsgRainTimeout:     {"cloud_with_rain"},
 	NotifyMsgRtkWaiting:      {"satellite"},
 	NotifyMsgRtkRecovered:    {"satellite"},
+	NotifyMsgTheftLift:       {"rotating_light"},
+	NotifyMsgTheftGeofence:   {"rotating_light"},
+	NotifyMsgTheftOutsideMap: {"rotating_light"},
+	NotifyMsgLiftDuringMow:   {"warning"},
+	NotifyMsgTiltDuringMow:   {"warning"},
+	NotifyMsgEmergencyStop:   {"rotating_light"},
+	NotifyMsgStuck:           {"warning"},
+	NotifyMsgPathBlocked:     {"warning"},
+	NotifyMsgMowIncomplete:   {"warning"},
+	NotifyMsgDockFailed:      {"warning"},
+	NotifyMsgUndockFailed:    {"warning"},
+	NotifyMsgBatteryCritical: {"battery"},
+	NotifyMsgRtkLost:         {"satellite"},
 	NotifyMsgTestNotifcation: {"bell"},
 }
 
@@ -97,14 +138,19 @@ func RenderNotification(language, title string, ev NotifyEvent) NotifyMessage {
 	}
 	body, ok := catalogue[ev.Message]
 	if !ok {
-		body = ev.Message
+		// An id from a newer alert node: prefer its own sentence over the raw id.
+		if strings.TrimSpace(ev.Text) != "" {
+			body = ev.Text
+		} else {
+			body = ev.Message
+		}
 	}
 	params := resolveAreaNames(catalogue["zoneFallback"], ev.Params)
 	pairs := make([]string, 0, 2*len(params))
 	for k, v := range params {
 		pairs = append(pairs, "{"+k+"}", v)
 	}
-	body = strings.NewReplacer(pairs...).Replace(body)
+	body = tidyRendered(strings.NewReplacer(pairs...).Replace(body))
 	tags := append([]string(nil), notifyTags[ev.Message]...)
 	if tags == nil {
 		tags = []string{}
@@ -119,6 +165,24 @@ func RenderNotification(language, title string, ev NotifyEvent) NotifyMessage {
 		Params:   params,
 		At:       ev.At,
 	}
+}
+
+var (
+	leftoverPlaceholder = regexp.MustCompile(`\{\w+\}`)
+	emptyParens         = regexp.MustCompile(`\s*\(\s*\)`)
+	multiSpace          = regexp.MustCompile(` {2,}`)
+	spaceBeforePunct    = regexp.MustCompile(` +([.,])`)
+)
+
+// tidyRendered cleans up after params the sender did not supply (alert params
+// are an arbitrary subset): a "{x}" with no value must not leak into the push,
+// and the gaps it leaves ("()", doubled spaces, a space before . or ,) are closed up.
+func tidyRendered(body string) string {
+	body = leftoverPlaceholder.ReplaceAllString(body, "")
+	body = emptyParens.ReplaceAllString(body, "")
+	body = multiSpace.ReplaceAllString(body, " ")
+	body = spaceBeforePunct.ReplaceAllString(body, "$1")
+	return strings.TrimSpace(body)
 }
 
 // resolveAreaNames returns a NEW param map where an empty area/next name is

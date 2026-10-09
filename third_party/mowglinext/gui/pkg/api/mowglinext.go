@@ -842,6 +842,36 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 				c.JSON(200, map[string]interface{}{"success": res.Success, "message": res.Message})
 				return
 			}
+		case "bag_recorder", "bag_recorder_state":
+			// Always-on rosbag recorder (bag_recorder node). Body {"enabled":bool};
+			// bag_recorder_state takes no body. The reply is the node's JSON status.
+			type TriggerRes struct {
+				Success bool   `json:"success"`
+				Message string `json:"message"`
+			}
+			var res TriggerRes
+			if command == "bag_recorder_state" {
+				err = provider.CallService(ctx, "/bag_recorder/get_state", &struct{}{}, &res, "std_srvs/srv/Trigger")
+			} else {
+				var body struct {
+					Enabled *bool `json:"enabled"`
+				}
+				if err = c.BindJSON(&body); err != nil {
+					c.JSON(400, ErrorResponse{Error: err.Error()})
+					return
+				}
+				if body.Enabled == nil {
+					c.JSON(400, ErrorResponse{Error: "enabled is required"})
+					return
+				}
+				err = provider.CallService(ctx, "/bag_recorder/enable", &struct {
+					Data bool `json:"data"`
+				}{*body.Enabled}, &res, "std_srvs/srv/SetBool")
+			}
+			if err == nil {
+				c.JSON(200, map[string]interface{}{"success": res.Success, "message": res.Message})
+				return
+			}
 		case "reboot_board":
 			// Reboot the STM32 board (NVIC_SystemReset) — recovers a wedged
 			// firmware state (e.g. the IMU emitting NaN) without a power-cycle.

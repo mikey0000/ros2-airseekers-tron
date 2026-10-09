@@ -134,6 +134,8 @@ PARAM_DEFAULTS = {
     'imu_temperature_topic': '',
     'imu_bias_status_topic': '/bias_status',
     'heading_status_topic': '/heading_aligner/status',   # '' = no Heading entry
+    # 2026-10-09: mower_control tilt_monitor's slope band (ok/caution/limit/critical)
+    'tilt_status_topic': '/tilt/status',   # '' = no Tilt entry
     'lights_state_topic': '/light_controller/state',   # '' = no lights entry
     # 'id|image_topic|freshness_topic|on_demand' (see diagnostics.parse_camera_spec). Only
     # the small freshness topic is subscribed, and never for on-demand cameras (a
@@ -189,6 +191,7 @@ class GuiBridgeNode(Node):
         self._imu_time = None
         self._imu_temperature = None
         self._heading_status = None
+        self._tilt_status = None
         self._imu_bias = None
         self._lights = None
         self._lights_time = None
@@ -208,7 +211,11 @@ class GuiBridgeNode(Node):
         # 5 % slack so a 10 Hz cap on a jittery 50 Hz source still yields ~10 Hz.
         self._wheel_odom_period = 0.95 / rate if rate > 0.0 else 0.0
         self._wheel_odom_last = -1e9
-        self._map_odom_pub = self.create_publisher(Odometry, p['filtered_map_topic'], 10)
+        # 2026-10-09 dual EKF: ekf_map publishes /odometry/filtered_map itself and the launch
+        # points filtered_odom_topic at it; republishing onto our own input would loop.
+        self._relay_map_odom = str(p['filtered_odom_topic']) != str(p['filtered_map_topic'])
+        self._map_odom_pub = self.create_publisher(Odometry, p['filtered_map_topic'], 10) \
+            if self._relay_map_odom else None
 
         def gui_pub(msg_type, key):
             return self.create_publisher(msg_type, str(p[key]), 10) if str(p[key]) else None
@@ -540,7 +547,8 @@ class GuiBridgeNode(Node):
     def _on_filtered(self, msg):
         msg.header.frame_id = self._p['map_frame']
         msg.child_frame_id = self._p['base_frame']
-        self._map_odom_pub.publish(msg)
+        if self._map_odom_pub is not None:
+            self._map_odom_pub.publish(msg)
 
     def _on_filtered_raw(self, data):
         self._filtered_time = time.monotonic()
@@ -554,7 +562,8 @@ class GuiBridgeNode(Node):
         if out is None:
             self._on_filtered(deserialize_message(data, Odometry))
             return
-        self._map_odom_pub.publish(out)
+        if self._map_odom_pub is not None:
+            self._map_odom_pub.publish(out)
         if self._gui_pose_pub is not None and self._gui_pose_thr.due(time.monotonic()):
             self._gui_pose_pub.publish(out)
 
@@ -715,6 +724,10 @@ class GuiBridgeNode(Node):
             latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
                                  reliability=QoSReliabilityPolicy.RELIABLE)
             sub(String, p['heading_status_topic'], self._on_heading_status, latched)
+        if str(p['tilt_status_topic']):
+            latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                                 reliability=QoSReliabilityPolicy.RELIABLE)
+            sub(String, p['tilt_status_topic'], self._on_tilt_status, latched)
         for spec in p['diagnostics_cameras'] or []:
             cam = diag.parse_camera_spec(spec)
             if cam is None:
@@ -737,6 +750,9 @@ class GuiBridgeNode(Node):
 
     def _on_heading_status(self, msg):
         self._heading_status = msg.data
+
+    def _on_tilt_status(self, msg):
+        self._tilt_status = msg.data
 
     def _on_lights(self, msg, receipt):
         self._lights, self._lights_time = msg.data, receipt
@@ -795,6 +811,8 @@ class GuiBridgeNode(Node):
             snap['imu_bias'] = self._imu_bias
         if str(self._p['heading_status_topic']):
             snap['heading'] = self._heading_status
+        if str(self._p['tilt_status_topic']):
+            snap['tilt'] = self._tilt_status
         if str(self._p['lights_state_topic']):
             snap['lights'], snap['lights_age'] = self._lights, age(self._lights_time)
         cams = []

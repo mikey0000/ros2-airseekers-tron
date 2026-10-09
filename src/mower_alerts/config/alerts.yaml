@@ -1,0 +1,36 @@
+# mower_alerts/alert_node. Defaults live in mower_alerts/rules.py (Params) and
+# alert_node.py (TOPIC_DEFAULTS / NODE_DEFAULTS); every key may be overridden here.
+# Delivery channels (Telegram / Pushover / ntfy / webhook) and the per-kind toggles are
+# configured in the GUI: Settings -> Notifications.
+alert_node:
+  ros__parameters:
+    enabled: true
+    tick_hz: 2.0
+    heartbeat_s: 10.0
+    # spam control
+    rate_limit_count: 6           # max alerts per window (priority-5 alerts bypass it)
+    rate_limit_window_s: 600.0
+    clear_s: 30.0                 # an incident re-arms after its condition cleared this long
+    # theft / geofence (armed once parked this long)
+    theft_arm_s: 60.0
+    theft_lift_debounce_s: 2.0
+    theft_repeat_s: 300.0         # position updates while the theft persists
+    theft_max_repeats: 6
+    geofence_radius_m: 10.0       # from the spot where the robot was parked
+    geofence_debounce_s: 10.0
+    geofence_max_accuracy_m: 5.0  # fixes less accurate than this are ignored
+    map_exit_margin_m: 3.0        # outside the mapped area (/keepout_mask) by more than this
+    map_exit_debounce_s: 10.0
+    # lift / tilt while mowing or driving
+    lift_debounce_s: 0.5
+    tilt_enabled: true
+    tilt_max_deg: 35.0
+    tilt_debounce_s: 1.0
+    # mission incidents
+    emergency_debounce_s: 1.0
+    path_blocked_alert_s: 45.0    # mower_mission gives up after blocked_wait_s (60 s)
+    path_blocked_min_interval_s: 600.0
+    rtk_lost_alert_s: 300.0
+    rtk_recovered_s: 10.0
+    battery_critical_pct: 10.0
+    battery_debounce_s: 30.0

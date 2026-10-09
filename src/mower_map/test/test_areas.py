@@ -807,3 +807,74 @@ def test_normalise_drops_only_vertices_within_5cm():
 
 def test_normalise_keeps_collinear_points():
     assert len(core.normalise_polygon([(0, 0), (1.5, 0), (3, 0), (3, 3), (0, 3)])) == 5
+
+
+# --- 2026-10-09 field run 20261008-201401: transit cut across lawn into the MIDDLE of Path 2 ---
+_FIELD = os.path.join(os.path.dirname(__file__), 'data', 'field_2026-10-08_paths.dat')
+
+
+def _field_mask(soft_band):
+    areas, _ = core.load_areas_file(_FIELD)
+    spec = core.grid_for_polygons([a.polygon for a in areas], 0.1, 2.0)
+    mask = core.build_nav_mask(areas, spec, 0.8, 0.10, None, soft_band, None, 0.15, True, True,
+                               60, 30)
+    return spec, mask
+
+
+def _cell(spec, mask, x, y):
+    r, c = spec.index_of(x, y)
+    return int(mask[r, c])
+
+
+def test_field_soft_band_bridged_area1_to_mid_path2():
+    """The old 1.5 m band made the lawn between Area 1 and mid Path 2 plannable (cost 90):
+    the planner joined Path 2 at (-5.4, 4.9) instead of its start (-1.34, 4.41)."""
+    spec, mask = _field_mask(1.5)
+    assert _cell(spec, mask, -4.9, 4.2) == core.SOFT_COST
+
+
+def test_field_no_soft_band_with_paths_forces_path_start():
+    spec, mask = _field_mask(0.0)
+    # the shortcut gap is lethal ...
+    assert _cell(spec, mask, -4.9, 4.2) == core.LETHAL
+    # ... while Path 2's start (inside Area 1's margin) and its band stay plannable
+    assert _cell(spec, mask, -1.34, 4.41) < core.SOFT_COST
+    assert _cell(spec, mask, -5.4, 5.1) < core.SOFT_COST
+
+
+# --- 2026-10-09: dock inside a mowing area = automatic no-go (coverage + route legs) ---
+def _dock_at_origin():
+    return core.DockPose(x=0.0, y=0.0, yaw=0.0,
+                         outline=[(-0.65, -0.275), (-0.25, -0.275), (-0.25, 0.275), (-0.65, 0.275)])
+
+
+def test_dock_nogo_added_only_to_overlapping_mowing_areas():
+    lawn = core.Area(name='lawn', polygon=[(-3, -3), (5, -3), (5, 3), (-3, 3)])
+    far = core.Area(name='far', polygon=[(10, 10), (12, 10), (12, 12), (10, 12)])
+    path = core.Area(name='p', polygon=[(-1, -0.3), (4, -0.3), (4, 0.3), (-1, 0.3)],
+                     is_navigation=True)
+    out = core.with_dock_nogo([lawn, far, path], _dock_at_origin(), 0.15)
+    assert [o.name for o in out[0].obstacles] == [core.DOCK_NOGO_NAME]
+    nogo = out[0].obstacles[0].polygon
+    xs = [p[0] for p in nogo]
+    assert min(xs) == pytest.approx(-0.8) and max(xs) == pytest.approx(-0.1)
+    assert out[1].obstacles == [] and out[2].obstacles == []
+    assert lawn.obstacles == []            # the stored area is never modified
+
+
+def test_dock_nogo_none_without_dock_or_outline():
+    lawn = core.Area(name='lawn', polygon=[(-3, -3), (5, -3), (5, 3), (-3, 3)])
+    assert core.with_dock_nogo([lawn], None)[0].obstacles == []
+    assert core.with_dock_nogo([lawn], core.DockPose(0, 0, 0, outline=None))[0].obstacles == []
+
+
+def test_route_leg_goes_round_the_dock_nogo():
+    from mower_map import route_graph as rg
+    lawn = core.Area(name='lawn', polygon=[(-3, -3), (5, -3), (5, 3), (-3, 3)])
+    dock = _dock_at_origin()
+    areas = core.with_dock_nogo([lawn], dock, 0.15)
+    g = rg.RouteGraph(areas, dock, rg.RouteParams())
+    r = g.plan((-0.45, 2.0, -1.57), (-0.45, -2.0, -1.57))   # straight line crosses the dock
+    poses = r.poses
+    nogo = areas[0].obstacles[0].polygon
+    assert poses and not any(core.point_in_polygon(x, y, nogo) for x, y, _ in poses)

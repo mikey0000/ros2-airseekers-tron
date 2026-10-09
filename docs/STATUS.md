@@ -61,9 +61,10 @@ Driver contract (`mcu_node`): publishes `/odom`, `/battery`, `/mower_sensor_info
 `/estop_request`; serves `/cutter_control` (CutterControl), `/charging` (ChargingControl),
 `/clear_estop` (Empty), `/cutter_off` (Trigger). `wit_node` publishes `/imu/data`. `um960_node`
 publishes `/fix`, `/fix_status`, `/vel`, `/heading`. `gps_gate` republishes `/fix_gated`.
-`ekf_node` publishes `/odometry/filtered` and owns `odom -> base_link`.
+`ekf_node` publishes `/odometry/filtered` and owns `odom -> base_link`; `ekf_map` (dual mode,
+default since 2026-10-09) publishes `/odometry/filtered_map` and owns `map -> odom`.
 
-Frames: `map` (static identity to `odom` for Phase A) -> `odom` (EKF) -> `base_link` (rear axle)
+Frames: `map` (`ekf_map`, GPS-anchored; static identity only with `localization_mode:=single`) -> `odom` (EKF) -> `base_link` (rear axle)
 -> `base_footprint`, `imu_link`, `gps_link`, `blade_link`, `cutter_link`.
 
 GUI adapter (`mower_gui_bridge`, in progress): presents our topics under the names the MowgliNext
@@ -108,6 +109,7 @@ in RECORDING and MANUAL_MOWING with the blade interlocked by the MCU driver.
 **Phase C: docking and scheduling.**
 - Docking: the vendor docks in reverse on an ArUco marker seen by the rear camera (`mower_charge`: search, dock, final straight reverse at 0.05 m/s, retry; contact confirmed by `is_docking_done` debounced over 3 samples, then `/charging true`). Either reimplement that or backport `opennav_docking`. Undock is a `BackUp` of 0.8 m to the vendor `undock_point` (0.8, 0).
 - Scheduler, notifications, statistics, HomeKit and the MQTT bridge in `third_party/mowglinext/mowgli_monitoring` work unchanged once the mission layer emits the real `state_name` set.
+  Status 2026-10-09: notifications, scheduler, statistics, HomeKit and MQTT all live in the GUI backend (`gui/pkg/providers`) and read `/behavior_tree_node/high_level_status`, which `mower_mission` publishes with the real names. `mowgli_monitoring` (C++ `mqtt_bridge_node`, `diagnostics_node`) is not needed: the GUI's embedded MQTT broker and `gui_bridge` diagnostics cover it, so it stays COLCON_IGNOREd. Fixed in the GUI: `LOW_BATTERY_DOCKING` raises the battery notification, the HomeKit switch follows `state == AUTONOMOUS` (the GUI looked for `DOCKING`, which our mission never emits). Theft, lift and incident alerts come from `src/mower_alerts` (`/mower_alerts/events`, see its README). The GUI pushes them as kinds `theft`, `lift` and `gpsLost`, plus `emergency`, `blocked` and `battery`, and forwards them to MQTT `<prefix>/alerts`.
 
 Vendor facts that constrain Phases B and C (details in `docs/audit_2026-10-05/vendor_mission_layer.md`):
 
@@ -144,6 +146,7 @@ Verified live on the mower with the stack running from Docker (`mower:humble`, `
   clean stop. Chain GUI/relay -> twist_mux -> cmd_vel_slew -> MCU proven on hardware.
 - NPU: `best_large_0208.rknn` loads with runtime 2.3.0, inference 86 ms, 9 outputs as det_ros expects.
 - Power key = `/dev/input/event5` ("key input") `KEY_P` (25); `base_keys` is being wired to it.
+- Power button long press (2026-10-09): the vendor kernel module `init_test.ko` times it (KEY_L at 3.0 s, KEY_R + `/usr/bin/sys_close` on release). `base_keys` `power_long_action:=sequence` stops the mower and asks the host helper (`mower-poweroff.path/.service`, `scripts/install_power_button.sh`) to power off. The helper is NOT installed on the mower yet; it installs with `DRY_RUN=1`. See `docs/buttons.md` "Power off".
 
 Cutter height verified 2026-10-07: CutterControl height position is an absolute deck height in mm
 (30-90, vendor-clamped); 50/30/90 moved the deck. height_motor telemetry is a placeholder.
@@ -186,12 +189,110 @@ is not FIXED and VIO is healthy) -> EKF `odom2` (twist vx/vy, low weight) via th
 Blockers before it is useful: stereo pairs arrive at only 1.7 Hz from `stereo_cam`, the JY61P
 gyro is clamped to 0 at rest, and no daylight/drive bag yet. Details: `docs/vio.md`.
 
+## Tilt guard (2026-10-09, not yet run on the mower)
+
+`mower_control/tilt_monitor` (`tilt_logic.py`) turns the IMU roll/pitch into ok/caution/limit/critical
+on `/tilt/status`. The mission slows on caution, backs out and records a `steep` terrain incident on
+limit, and treats critical as an emergency; the monitor also stops on `/cmd_vel_emergency` and calls
+`/cutter_off` itself. The GUI shows it as `tron: Tilt`. Details: `docs/terrain_aware_planning.md` section 7.
+
+## Localization: dual EKF, RTK quality, drift hold (2026-10-09, dev-image tested only)
+
+- `localization_mode:=dual` (default, `mower.launch.py` -> `nav2.launch.py`): `ekf_node` (odom:
+  wheel vx/yaw rate + heading_aligner yaw, NO GPS, continuous) + `ekf_map` (map, 10 Hz: same +
+  `/odometry/gps`) from `config/ekf_dual.yaml`; navsat anchors on `/odometry/filtered_map`, so
+  `/odometry/gps` is map-frame. `ekf_map` owns `map -> odom`; the static identity and the
+  gui_bridge relay run only with `localization_mode:=single` (old config, fallback) or
+  `localization:=false`. Datum args unchanged. VIO (`vio:=true`) feeds both filters
+  (`ekf_dual_vio.yaml`: odom1 in ekf_node, odom2 in ekf_map; no index gaps).
+- Earth-referenced yaw: the UM960 is single-antenna, so `/heading` is only GPHPR (never sent) or
+  VTG course. The yaw source is the existing `heading_aligner` (COG windows on RTK, dock seed,
+  persisted file; stereo-gyro integration between fixes), fused absolute by both filters.
+- `gps_gate quality_covariance` (`rtk_quality.py`): class from `/fix_status`; fixed keeps the
+  receiver sigma (3 cm floor), float x4 with 0.4 m floor, DGPS/single dropped.
+- `localization_monitor` -> `/localization/status` (latched JSON: ok|degraded|lost, rtk class,
+  since_fixed_s, dist_since_fixed_m, est_drift_m = 3 cm + 3 %/m wheel (1.5 %/m with VIO) since
+  the last confirmed FIXED, capped at 0.5 m while float is fused). Budget 0.3 m -> degraded,
+  1.0 m -> lost. `mower_mission` `_loc_hold_tick`: follow/transit stop with the blade off while
+  not ok, resume after 3 s ok, stop in place after 600 s (`loc_*` in mission.yaml).
+- Live checks needed: both EKFs' CPU on the RK3588, map -> odom behaviour on a real RTK
+  fixed/float drive, the drift rates (measure with a float/dropout drive), Nav2 in dual mode.
+
+## Rolling bag ring (2026-10-09, not yet run on the mower)
+
+`mower_control/bag_recorder` (launch arg `bag_recorder`, default on) runs an always-on
+`ros2 bag record`:
+- ~70 non-image topics, 60 s zstd sqlite3 splits in `/userdata/ros2/bags`;
+- pruned to 3 GB, keeping a 3 GB free floor;
+- mission incidents, emergencies and supervisor dumps are pinned (hard links) to
+  `/userdata/ros2/incidents`;
+- pull them with `scripts/deploy_to_mower.sh bags`.
+
+Details are in `docs/crash_recovery.md`, section "Rolling bag ring". Still to measure live:
+- data rate and CPU of the recorder;
+- that `/tf_static` lands in split 0.
+
+## Rear obstacle sensing, dock-aware (2026-10-09, not yet run on the mower)
+
+The rear camera had been left out on purpose. A person standing behind the dock made the
+robot refuse to dock. It is back, with these rules:
+
+- **Detector.** The rear camera goes through det_ros/det_ros_cpp (`extra_topics`). It is
+  gated by `/vision/rear_watch`, so the NPU runs it only while the robot reverses, while it
+  docks (ALIGNING through FINAL_DOCKING), and for 5 s after either.
+- **Range.** There is no rear stereo. det_range ranges rear boxes on the ground plane, from
+  the bbox bottom-centre, the camera_info intrinsics and the URDF pose (`mono_*`).
+  - Accuracy is about 7 % per degree of pitch error at 1 m and about 14 % at 2 m.
+  - The URDF pitch of the rear camera is unmeasured.
+  - Rear points are kept out of the Nav2 costmap cloud.
+- **Decision** (obstacle_guard, `rear_*`):
+  - The rear camera counts only while reversing, while docking in reverse, or for 15 s after
+    a rear hit while the robot is not driving forward.
+  - Only living classes count.
+  - The detection must lie in the reverse corridor: robot half width plus 0.2 m, and 1.2 m
+    back from the rear edge.
+  - While docking with a fresh marker, the corridor runs to the dock and ends 0.25 m before
+    it. Anyone at, beside or behind the charger is ignored.
+- **Effects.**
+  - `/obstacle_policy` with `camera: rear`. Distance and bearing are measured from
+    base_link, so the mission's path filter projects them onto the reverse leg, and the
+    existing dynamic stop, wait and resume applies to reverse coverage legs.
+  - `/vision/rear_blocked`. mower_docking holds on it in SEARCHING, DOCKING and
+    FINAL_DOCKING: it stands still with its timers paused and resumes 1.5 s after the
+    corridor is clear. After 60 s it fails with `DOCK_BLOCKED`.
+  - Undocking drives forward, so the rear camera plays no part in it.
+  - Per-area `obstacle_detection: none` disables all of it.
+- **Verify live:**
+  - The rear camera pitch and height: put a person at 1.0 m and 2.0 m behind the robot and
+    compare the range in `/ai/det/detections_ranged` with the real distance.
+  - Measure `dock_marker_height_m` on the charger.
+  - Check that the model detects people in the rear view.
+  - With someone standing behind the dock, docking must complete. With someone in the
+    corridor, docking must hold and then resume.
+  - Check the NPU and CPU load while the rear camera is gated open.
+
+## Route-graph transits (2026-10-09, sim-tested only)
+
+Mission transits (next sub-path start, end-of-area retries, blocked / dynamic / localization
+re-sends, return to the dock approach) no longer leave the drawn paths to Nav2's grid
+planners: map_server_node `~/plan_route` (`mower_map/route_graph.py`) follows drawn paths along
+their centreline, crosses areas straight or round their inset perimeter (0.35 m clearance,
+obstacle polygons avoided) and joins them only at path ends / junctions; the mission drives
+the route with FollowPath (MPPI) and falls back to `/navigate_to_pose` on no route or a route
+abort. `route_transits: false` restores the old behaviour. Details: `docs/route_graph.md`.
+Live checks: MPPI tracking on narrow paths, the dock approach handover, CPU of a graph build
+on large recorded areas.
+
 ## Open risks
+
+- Grass segmentation (2026-10-09, not yet run on the mower, `nongrass:=false` by default): seg_ros now runs on the front stereo right colour eye, `nongrass_projector` projects its mask onto the ground and map_server_node keeps a confirmed non-grass memory that feeds a SOFT global-costmap layer (`nongrass_layer`). The model was trained on the OA cameras: class quality on the front eye, NPU sharing with det_ros on core 1 and the shadow false-positive rate need a live check (`docs/grass_segmentation.md`).
+
+- Obstacle reroute (2026-10-09, not yet run on the mower): sensor obstacles are now in the global costmap, global inflation is 0.6 m, and the BTs wait and replan instead of clearing. The dock/perimeter reachability and planner CPU need a live re-check (`docs/analysis/2026-10-09_obstacle_reroute.md`).
 
 - GPLv3: the GUI and `mowgli_interfaces` are GPL-3.0 with a commercial option. Fine for personal use; a product decision later.
 - The JY61P yaw is gyro-integrated, not earth-referenced. `navsat_transform` needs `yaw_offset` or a GPS heading source; `/heading` from the UM960 is only useful if it is dual-antenna (unverified).
 - The MCU clear-estop frame is unknown, so a firmware e-stop latch may need a power cycle.
 - MowgliNext mission packages target a newer Nav2 (`DockRobot`, `CollisionMonitorState`), so `mowgli_behavior` cannot be built on Humble as-is.
-- `map -> odom` is a static identity for now. The `datum_lat`/`datum_lon`/`datum_yaw` launch args exist (`nav2.launch.py`, forwarded by `mower.launch.py`);
-  the value is still to be set per site (dock position, same as `config/gui/mowgli_robot.yaml`).
-  `map -> odom` remains static identity.
+- `map -> odom` comes from `ekf_map` since 2026-10-09 (not yet run on the mower). The datum
+  (`datum_lat`/`datum_lon`/`datum_yaw`) is still to be set per site (dock position, same as
+  `config/gui/mowgli_robot.yaml`).

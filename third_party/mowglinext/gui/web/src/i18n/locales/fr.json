@@ -1557,7 +1557,8 @@
     "bladeConfirmContent": "La lame démarre immédiatement là où se trouve le robot. Vérifiez que personne n'est à proximité.",
     "bladeConfirmOk": "Démarrer la lame",
     "recordArea": "Enregistrer une zone (suivre le bord)",
-    "recordPath": "Enregistrer un chemin (le parcourir)"
+    "recordPath": "Enregistrer un chemin (le parcourir)",
+    "recordObstacle": "Enregistrer une zone interdite (en faire le tour)"
   },
   "resetMowingProgress": {
     "action": "Réinitialiser la progression de tonte",
@@ -1636,7 +1637,8 @@
     "editPath": "Modifier le chemin sélectionné",
     "areaSettingsShort": "Zones",
     "recordArea": "Enregistrer une zone (suivre le bord)",
-    "recordPath": "Enregistrer un chemin (le parcourir)"
+    "recordPath": "Enregistrer un chemin (le parcourir)",
+    "recordObstacle": "Enregistrer une zone interdite (en faire le tour)"
   },
   "mapEditorToolbar": {
     "saveMapUnsaved": "Enregistrer la carte *",
@@ -1840,7 +1842,8 @@
     "cancel": "Annuler",
     "home": "Base",
     "recordingArea": "Enregistrement du bord de zone",
-    "recordingPath": "Enregistrement d'un chemin"
+    "recordingPath": "Enregistrement d'un chemin",
+    "recordingObstacle": "Enregistrement d'une zone interdite"
   },
   "mapManualMode": {},
   "mapBearing": {
@@ -3334,15 +3337,23 @@
       },
       "blocked": {
         "label": "Bloqué / coincé",
-        "description": "Roues qui creusent, échec d'accostage ou de navigation : le robot a besoin de vous."
+        "description": "Robot coincé, chemin bloqué, tonte incomplète, échec d'accostage ou de départ de la station : le robot a besoin de vous."
       },
       "emergency": {
         "label": "Arrêt d'urgence",
         "description": "Le verrou d'urgence du firmware s'est déclenché."
       },
+      "theft": {
+        "label": "Vol / géorepérage",
+        "description": "Robot soulevé à l'arrêt, déplacé par rapport à son point de stationnement, ou sorti de la zone cartographiée sans tondre."
+      },
+      "lift": {
+        "label": "Soulèvement / inclinaison en tonte",
+        "description": "Le robot a été soulevé ou renversé pendant la tonte."
+      },
       "battery": {
         "label": "Batterie",
-        "description": "Retour à la station sur batterie faible, et reprise une fois chargé."
+        "description": "Retour à la station sur batterie faible, reprise une fois chargé, et batterie critique loin de la station."
       },
       "rain": {
         "label": "Pluie",
@@ -3351,6 +3362,10 @@
       "waitingForRtk": {
         "label": "En attente de GPS",
         "description": "Pas de fix RTK depuis plus de deux minutes, et son retour."
+      },
+      "gpsLost": {
+        "label": "RTK perdu en tonte",
+        "description": "Pas de fix RTK pendant plusieurs minutes en cours de mission, et son retour."
       }
     },
     "status": "État des envois",
@@ -3995,7 +4010,7 @@
     "annotated": "Annoté",
     "stopTile": "Arrêter ce flux",
     "startTile": "Démarrer ce flux",
-    "tilePaused": "Flux arrêté",
+    "tilePaused": "Pas de flux : appuyez sur lecture pour voir cette caméra",
     "streamError": "Échec du chargement du flux",
     "detections": "Détections",
     "obstacleClose": "Obstacle proche",
@@ -4012,7 +4027,7 @@
     "loadFailed": "Impossible de charger la liste des caméras depuis le backend.",
     "noCameras": "Aucune caméra n'est configurée pour ce robot.",
     "unavailable": "Le serveur de flux caméra est injoignable.",
-    "hiddenPaused": "Les flux sont en pause tant que cet onglet est masqué (petits écrans uniquement).",
+    "hiddenPaused": "Les flux sont en pause tant que cet onglet est masqué.",
     "health": {
       "live": "En direct",
       "stale": "Figé",
@@ -4253,6 +4268,12 @@
     "bladePolicyHint": "continu = la lame continue de tourner pendant les attentes, nouvelles tentatives et transits dans la zone ; elle ne s'arrête que pour arrêt d'urgence/soulèvement/pluie/sortie de la zone/retour à la station. prudent = la lame s'arrête à chaque attente, nouvelle tentative et transit (ancien comportement).",
     "bladePolicyContinuous": "Continu",
     "bladePolicyConservative": "Prudent",
+    "transitVariation": "Variation des trajets",
+    "transitVariationHint": "Varie le trajet de transit d'un passage à l'autre pour ne pas toujours suivre la même trace (ornières des pneus). couloirs = décalage latéral dans le chemin / la zone tracé(e) ; périmètre = alterne la ligne directe et le suivi du bord de la zone (sens horaire, puis antihoraire ; jamais plus de deux fois plus long) ; mixte = alterne entre tous les modes ; aucune = toujours la même ligne.",
+    "transitVariationNone": "Aucune",
+    "transitVariationLanes": "Couloirs",
+    "transitVariationPerimeter": "Périmètre",
+    "transitVariationMixed": "Mixte",
     "turnType": "Type de virage",
     "turnTypeHint": "Tourner sur place peut arracher le gazon ; utilisé seulement si aucun virage plus doux ne tient.",
     "turnTypeAuto": "Auto (boucle, marche arrière, puis sur place)",
@@ -4398,6 +4419,18 @@
     "sun": "soleil {{deg}}°",
     "notInstalled": "Aucun éclairage sur cette tondeuse : la sortie PWM utilisée par le firmware d'origine n'existe pas sur cette carte.",
     "unreachable": "Nœud d'éclairage injoignable"
+  },
+  "settingsRecorder": {
+    "title": "Enregistreur de données",
+    "description": "Enregistrement permanent en boucle de type boîte noire (environ les 3 derniers Go ; les incidents et chaque tonte sont conservés), utilisé pour le dépannage. Il consomme un peu de CPU (environ 10 % d'un cœur). Le désactiver arrête aussi les enregistrements par tonte. Ce réglage est conservé après un redémarrage.",
+    "state": "État",
+    "recording": "Enregistrement en cours",
+    "pausedLowDisk": "En pause (disque presque plein)",
+    "off": "Désactivé",
+    "ring": "Taille de l'enregistrement : {{gb}} Go",
+    "free": "Espace libre : {{gb}} Go",
+    "mowRecording": "Enregistrement de cette tonte en cours",
+    "unreachable": "Enregistreur injoignable (il n'est peut-être pas lancé)"
   },
   "dockHeading": {
     "title": "Orientation de la station",

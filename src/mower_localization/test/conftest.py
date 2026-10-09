@@ -126,6 +126,16 @@ def _install_rclpy_shim() -> None:
     sensor_msgs_msg.NavSatStatus = NavSatStatus
     sensor_msgs.msg = sensor_msgs_msg
 
+    # std_msgs/String: gps_gate's /fix_status input (2026-10-09 quality covariance).
+    class String:
+        def __init__(self, data=""):
+            self.data = data
+
+    std_msgs = types.ModuleType("std_msgs")
+    std_msgs_msg = types.ModuleType("std_msgs.msg")
+    std_msgs_msg.String = String
+    std_msgs.msg = std_msgs_msg
+
     node_mod = types.ModuleType("rclpy.node")
     node_mod.Node = Node
     qos_mod = types.ModuleType("rclpy.qos")
@@ -141,6 +151,8 @@ def _install_rclpy_shim() -> None:
             "rclpy.qos": qos_mod,
             "sensor_msgs": sensor_msgs,
             "sensor_msgs.msg": sensor_msgs_msg,
+            "std_msgs": std_msgs,
+            "std_msgs.msg": std_msgs_msg,
         }
     )
 

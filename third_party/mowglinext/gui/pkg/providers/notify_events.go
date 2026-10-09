@@ -15,9 +15,12 @@ const (
 	NotifyEventMowStopped    = "mowStopped"
 	NotifyEventBlocked       = "blocked"
 	NotifyEventEmergency     = "emergency"
+	NotifyEventTheft         = "theft"
+	NotifyEventLift          = "lift"
 	NotifyEventBattery       = "battery"
 	NotifyEventRain          = "rain"
 	NotifyEventWaitingForRtk = "waitingForRtk"
+	NotifyEventGpsLost       = "gpsLost"
 )
 
 // NotifyEventKinds lists every kind in display order.
@@ -29,9 +32,12 @@ var NotifyEventKinds = []string{
 	NotifyEventMowStopped,
 	NotifyEventBlocked,
 	NotifyEventEmergency,
+	NotifyEventTheft,
+	NotifyEventLift,
 	NotifyEventBattery,
 	NotifyEventRain,
 	NotifyEventWaitingForRtk,
+	NotifyEventGpsLost,
 }
 
 // DefaultNotifyEvents is a fresh install: everything on except the
@@ -66,6 +72,26 @@ const (
 	NotifyMsgTestNotifcation = "test"
 )
 
+// Message ids published by the ROS-side alert node (mower_alerts) on
+// /mower_alerts/events; the GUI only renders them (see HandleAlert).
+// NotifyMsgRtkRecovered is shared: the detector emits it for a waiting-for-RTK
+// wait, the alert node for a mid-mission fix loss.
+const (
+	NotifyMsgTheftLift       = "theftLift"
+	NotifyMsgTheftGeofence   = "theftGeofence"
+	NotifyMsgTheftOutsideMap = "theftOutsideMap"
+	NotifyMsgLiftDuringMow   = "liftDuringMow"
+	NotifyMsgTiltDuringMow   = "tiltDuringMow"
+	NotifyMsgEmergencyStop   = "emergencyStop"
+	NotifyMsgStuck           = "stuck"
+	NotifyMsgPathBlocked     = "pathBlocked"
+	NotifyMsgMowIncomplete   = "mowIncomplete"
+	NotifyMsgDockFailed      = "dockFailed"
+	NotifyMsgUndockFailed    = "undockFailed"
+	NotifyMsgBatteryCritical = "batteryCritical"
+	NotifyMsgRtkLost         = "rtkLost"
+)
+
 // NotifyStatus is the slice of HighLevelStatus the detector reads.
 type NotifyStatus struct {
 	State           int     `json:"state"`
@@ -84,7 +110,10 @@ type NotifyEvent struct {
 	// Params feed the message catalogue: area, areaIndex, coverage, next,
 	// nextIndex, battery, state.
 	Params map[string]string
-	At     time.Time
+	// Text is the sender-supplied English sentence, used only when Message is
+	// not in the catalogue (a newer alert node than this GUI).
+	Text string
+	At   time.Time
 }
 
 // Priorities on ntfy's 1..5 scale (3 = default, 5 = max / bypasses DND).
@@ -123,14 +152,18 @@ var blockedStates = map[string]bool{
 // notion of a session (a recharge pause keeps the session open) so a mid-mow
 // recharge does not produce a second "mowing started".
 type NotifyDetector struct {
-	prevState   string
-	inSession   bool
-	paused      bool
-	currentArea int
-	areaPeak    float32
-	emergency   bool
-	rtkSince    time.Time
-	rtkNotified bool
+	prevState string
+	// awaitingDock: a mow completed and the robot has not yet reached the
+	// dock. The Airseekers mission passes through RETURNING_HOME in between, so
+	// "docked" cannot key on the state right after MOWING_COMPLETE alone.
+	awaitingDock bool
+	inSession    bool
+	paused       bool
+	currentArea  int
+	areaPeak     float32
+	emergency    bool
+	rtkSince     time.Time
+	rtkNotified  bool
 	// lastEventAt is when any event last fired, so the "mowing stopped"
 	// catch-all stays quiet when a specific event just explained the stop
 	// (dig obstruction, emergency, nav failure).
@@ -192,6 +225,11 @@ func (d *NotifyDetector) OnStatus(st NotifyStatus, now time.Time, wantsKind func
 	d.emergency = st.Emergency
 
 	isMowing := st.State == highLevelStateAutonomous && st.StateName != "MOWING_COMPLETE"
+	// The Airseekers mission reports RETURNING_HOME as AUTONOMOUS too; after a
+	// completed mow that is the trip back, not a new session ("mowing started").
+	if d.awaitingDock && st.StateName == "RETURNING_HOME" {
+		isMowing = false
+	}
 
 	if isMowing {
 		d.onMowingTick(st, wantsKind, emit)
@@ -218,6 +256,7 @@ type emitFn func(kind, message string, priority int, params map[string]string)
 
 func (d *NotifyDetector) onMowingTick(st NotifyStatus, wantsKind func(string) bool, emit emitFn) {
 	if !d.inSession {
+		d.awaitingDock = false
 		d.inSession = true
 		d.paused = false
 		d.currentArea = -1
@@ -272,14 +311,17 @@ func (d *NotifyDetector) onStateEntered(st NotifyStatus, prev string, emit emitF
 			params["coverage"] = formatPercent(maxFloat32(d.areaPeak, st.CoveragePercent))
 		}
 		d.endSession()
+		d.awaitingDock = true
 		emit(NotifyEventMowComplete, NotifyMsgMowComplete, notifyPriorityDefault, params)
-	case prev == "MOWING_COMPLETE" && (st.StateName == "CHARGING" || st.StateName == "IDLE_DOCKED"):
+	case d.awaitingDock && (st.StateName == "CHARGING" || st.StateName == "IDLE_DOCKED"):
+		d.awaitingDock = false
 		emit(NotifyEventMowComplete, NotifyMsgDocked, notifyPriorityLow, nil)
 	case st.StateName == "DIG_OBSTRUCTION":
 		emit(NotifyEventBlocked, NotifyMsgDigObstruction, notifyPriorityMax, nil)
 	case blockedStates[st.StateName]:
 		emit(NotifyEventBlocked, NotifyMsgNavFailed, notifyPriorityHigh, nil)
-	case st.StateName == "CRITICAL_BATTERY_DOCKING":
+	// LOW_BATTERY_DOCKING is the Airseekers mission's name for the same state.
+	case st.StateName == "CRITICAL_BATTERY_DOCKING" || st.StateName == "LOW_BATTERY_DOCKING":
 		emit(NotifyEventBattery, NotifyMsgBatteryLow, notifyPriorityDefault, nil)
 	case st.StateName == "RAIN_DETECTED_DOCKING":
 		emit(NotifyEventRain, NotifyMsgRainDetected, notifyPriorityDefault, nil)
@@ -353,10 +395,12 @@ func (d *NotifyDetector) areaParams(nameKey, indexKey string, index int) map[str
 }
 
 // isMowingState mirrors the session tracker's wasMowing set: states in which
-// a following non-mowing tick could still be a transient flip.
+// a following non-mowing tick could still be a transient flip. The Airseekers
+// mission's phases (PLANNING, WAITING_FOR_RTK, BOUNDARY_PAUSED,
+// AREA_UNREACHABLE) belong to a running mow too.
 func isMowingState(name string) bool {
 	switch name {
-	case "MOWING", "TRANSIT", "RECOVERING", "RESUMING_AFTER_RAIN", "RESUMING_UNDOCKING", "UNDOCKING":
+	case "PLANNING", "WAITING_FOR_RTK", "BOUNDARY_PAUSED", "AREA_UNREACHABLE", "MOWING", "TRANSIT", "RECOVERING", "RESUMING_AFTER_RAIN", "RESUMING_UNDOCKING", "UNDOCKING":
 		return true
 	}
 	return false

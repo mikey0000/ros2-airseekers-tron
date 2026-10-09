@@ -16,10 +16,15 @@ decompile ``native_decompile/dec/mower_base_node/mower_base_node.c`` ~240378):
     code 0x32 = 50 KEY_M -> 16 KEY_DOCK_AND_PAUSE    "回充暂停组合键"
     anything else -> "MowerBase: Unknown key code: N"
 
-There is no software long-press timer and no debounce in the vendor code: the
-"key input" device itself reports a short power press as KEY_P and a long one as
-KEY_L. We keep that as the primary path and add an optional software long-press
-on the power key (``long_press_ms``) plus a press debounce.
+There is no software long-press timer and no debounce in the vendor userspace: the
+"key input" device is created by the vendor kernel module ``init_test.ko``, which
+polls the power GPIO every 40 ms and does the timing itself (disassembled
+2026-10-09, docs/buttons.md): released after 2..18 ticks -> KEY_P (press+release
+on release), 19..74 ticks -> nothing ("ignore short press"), 75 ticks (3.0 s,
+still held) -> KEY_L, released after that -> KEY_R + /usr/bin/sys_close,
+> 750 ticks (30 s) -> "stuck", nothing on release. We keep that as the primary
+path; the optional software long-press on KEY_P (``long_press_ms``) never fires
+on this hardware because KEY_P press and release arrive together.
 """
 import re
 import struct
@@ -54,7 +59,9 @@ VENDOR_KEY_GO_DOCKING = 31     # KEY_S
 VENDOR_KEY_POWER_LONG = 38     # KEY_L
 VENDOR_KEY_WORK_PAUSE = 46     # KEY_C
 VENDOR_KEY_DOCK_AND_PAUSE = 50  # KEY_M
-# The device also advertises KEY_R (19); the vendor handler logs it as unknown.
+# KEY_R (19): init_test.ko emits it when a >= 3 s power hold is RELEASED, right before it runs
+# /usr/bin/sys_close; the vendor handler logs it as unknown. We only log it.
+VENDOR_KEY_POWER_LONG_RELEASE = 19
 
 VENDOR_DEVICE_NAME = 'key input'
 VENDOR_DEVICE_PATH = '/dev/keyboard'
@@ -216,7 +223,7 @@ class KeyStateMachine:
 HL_NULL, HL_IDLE, HL_AUTONOMOUS, HL_RECORDING, HL_MANUAL_MOWING = 0, 1, 2, 3, 4
 CMD_START, CMD_HOME, CMD_STOP, CMD_RESET_EMERGENCY = 1, 2, 8, 254
 
-POWER_LONG_ACTIONS = ('log_only', 'poweroff_service', 'shutdown')
+POWER_LONG_ACTIONS = ('log_only', 'sequence', 'poweroff_service', 'shutdown')
 
 
 @dataclass
@@ -231,7 +238,7 @@ class ActionConfig:
 
 @dataclass(frozen=True)
 class Action:
-    kind: str        # 'clear_estop' | 'hlc' | 'poweroff_service' | 'shutdown_hook' | 'log'
+    kind: str        # 'clear_estop' | 'hlc' | 'power_sequence' | 'poweroff_service' | 'shutdown_hook' | 'log'
     arg: int = 0
     note: str = ''
 
@@ -268,6 +275,8 @@ def map_key(bit, hl_state, cfg):
         return [Action('log', note='dock_and_pause: no action (vendor mower_logic ignores it too)')]
     if bit == KEY_POWER_LONG:
         a = cfg.power_long_action
+        if a == 'sequence':
+            return [Action('power_sequence', note='power long -> power-off sequence')]
         if a == 'poweroff_service':
             return [Action('hlc', CMD_STOP, 'power long -> STOP before poweroff'),
                     Action('poweroff_service', note='power long -> /poweroff')]

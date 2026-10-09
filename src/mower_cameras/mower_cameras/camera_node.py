@@ -200,6 +200,9 @@ class CameraNode(Node):
         # rear: decode/publish only while image_raw / compressed / camera_info has
         # subscribers (web_video_server, foxglove subscribe on demand)
         self.declare_parameter('publish_on_demand', True)
+        # on_demand: close the rear device after this long without subscribers (USB
+        # stream off), reopen on the next subscriber; 0 = keep streaming
+        self.declare_parameter('close_when_unused_s', 5.0)
         self.declare_parameter('fast_publish', True)     # pre-serialized Image (bytes)
 
         p = lambda n: self.get_parameter(n).value  # noqa: E731
@@ -252,7 +255,8 @@ class CameraNode(Node):
                     self.get_logger(), p('rear_device'), p('rear_width'), p('rear_height'),
                     p('rear_fourcc'), p('rear_fps'), self._on_rear_frame,
                     backend=p('rear_backend'), name='cap:rear',
-                    want=self._rear_wanted if self.on_demand else None)
+                    want=self._rear_wanted if self.on_demand else None,
+                    close_when_unused_s=p('close_when_unused_s'))
                 self.rear_loop.start()
                 self.create_timer(10.0, self._rear_watchdog)
                 self._rear_seen = 0
@@ -429,7 +433,7 @@ class CameraNode(Node):
 
     def _rear_watchdog(self):
         n = self.rear_loop.captured
-        if n == self._rear_seen:
+        if n == self._rear_seen and not self.rear_loop.paused:   # paused = nobody subscribes
             self.get_logger().warning(
                 'rear camera: no frame captured in the last 10 s (%s %dx%d %s); see the '
                 'capture thread log above' % (self.get_parameter('rear_device').value,

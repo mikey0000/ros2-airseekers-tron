@@ -8,6 +8,9 @@
 #   ./scripts/deploy_to_mower.sh logs      # follow container logs
 #   ./scripts/deploy_to_mower.sh shell     # interactive shell in the running container
 #   ./scripts/deploy_to_mower.sh all       # sync + image + build
+#   ./scripts/deploy_to_mower.sh bags [incidents|ring|all] [DEST]
+#                                          # pull bag_recorder pins (default) / the rolling ring to
+#                                          # DEST (default ../bags/mower) and zstd -d the splits
 #
 # Env: MOWER_HOST (192.168.1.105) MOWER_USER (airseekers) SSHPASS (password; or use ssh keys)
 #      REMOTE_DIR (/userdata/ros2_stack: the root fs on the device is full, /userdata has space)
@@ -17,7 +20,7 @@
 set -euo pipefail
 
 MOWER_HOST="${MOWER_HOST:-192.168.1.105}"
-MOWER_USER="${MOWER_USER:-airseekers}"
+MOWER_USER="${MOWER_USER:-root}"
 REMOTE_DIR="${REMOTE_DIR:-/userdata/ros2_stack}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -79,6 +82,32 @@ do_build() {
   compose "run --rm mower_humble bash -c 'source /opt/ros/humble/setup.bash && cd /work && MAKEFLAGS=-j2 colcon build --symlink-install --parallel-workers 2 --event-handlers console_cohesion+ --packages-skip $SKIP_PKGS 2>&1 | tee /userdata/ros2/logs/colcon_build.log | tail -40'"
 }
 
+# bag_recorder output (mower_control/bag_recorder.py): /userdata/ros2/incidents/<ts>_<reason>/ holds
+# hard-linked zstd splits (each one a complete sqlite3 bag once decompressed), /userdata/ros2/bags/
+# the rolling ring. Read-only on the mower; -H keeps the hard links, no -z (already zstd).
+do_bags() {
+  local what="${1:-incidents}" dest="${2:-$(dirname "$STACK_ROOT")/bags/mower}" src
+  case "$what" in
+    incidents) src=(/userdata/ros2/incidents) ;;
+    ring)      src=(/userdata/ros2/bags) ;;
+    all)       src=(/userdata/ros2/incidents /userdata/ros2/bags) ;;
+    *) echo "bags: incidents|ring|all" >&2; exit 2 ;;
+  esac
+  mkdir -p "$dest"
+  for d in "${src[@]}"; do
+    rsync -aH --info=stats1 -e "$RSYNC_RSH" --exclude '*.db3-wal' --exclude '*.db3-shm' \
+      "$MOWER_USER@$MOWER_HOST:$d" "$dest/"
+  done
+  if command -v zstd >/dev/null; then
+    find "$dest" -name '*.db3.zstd' | while read -r f; do
+      [ -f "${f%.zstd}" ] || zstd -q -d --keep "$f"
+    done
+  else
+    echo "zstd not installed: decompress *.db3.zstd before ros2 bag info/play" >&2
+  fi
+  echo "bags in $dest (ros2 bag info <split>.db3; incident.json in each pin dir)"
+}
+
 case "${1:-}" in
   sync)  do_sync ;;
   image) do_image ;;
@@ -88,5 +117,6 @@ case "${1:-}" in
   down)  compose "down" ;;
   logs)  compose "logs -f --tail 200" ;;
   shell) remote -t "docker exec -it mower_humble bash" ;;
-  *) sed -n 2,14p "$0"; exit 2 ;;
+  bags)  shift; do_bags "$@" ;;
+  *) sed -n 2,17p "$0"; exit 2 ;;
 esac

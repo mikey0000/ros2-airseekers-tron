@@ -1,5 +1,5 @@
 import {beforeEach, describe, expect, it, vi} from "vitest";
-import {fireEvent, render, screen} from "@testing-library/react";
+import {act, fireEvent, render, screen} from "@testing-library/react";
 
 const cameras = vi.hoisted(() => ({value: null as unknown}));
 const detections = vi.hoisted(() => ({
@@ -40,7 +40,12 @@ describe("PerceptionPage", () => {
         detections.close = false;
         detections.value = {data: {count: 0, classes: [], max_score: 0}, lastMessageAt: null};
         detections.enabledArgs = [];
+        window.localStorage.clear();
     });
+
+    const startAll = () => {
+        for (const b of screen.queryAllByRole("button", {name: "Start this stream"})) fireEvent.click(b);
+    };
 
     it("shows the hint and no images when unavailable", () => {
         cameras.value = {...ok(), available: false, hint: "start web_video_server"};
@@ -50,23 +55,58 @@ describe("PerceptionPage", () => {
         expect(detections.enabledArgs.every((e) => e === false)).toBe(true);
     });
 
-    it("streams all three tiles on open, annotated by default when available", () => {
+    it("streams only the first camera on open; others start on demand", () => {
         render(<PerceptionPage/>);
+        expect(document.querySelectorAll("img")).toHaveLength(1);
+        expect(screen.getByAltText("left_oa")).toBeInTheDocument();
+        expect(screen.getAllByRole("button", {name: "Start this stream"})).toHaveLength(2);
+        fireEvent.click(screen.getAllByRole("button", {name: "Start this stream"})[1]);  // rear
+        expect(document.querySelectorAll("img")).toHaveLength(2);
+        expect(screen.getByAltText("rear").getAttribute("src")).toBe("/api/cameras/rear/stream?quality=50&fps=5");
+    });
+
+    it("remembers the started cameras across visits", () => {
+        const {unmount} = render(<PerceptionPage/>);
+        fireEvent.click(screen.getByRole("button", {name: "Stop this stream"}));          // left_oa off
+        fireEvent.click(screen.getAllByRole("button", {name: "Start this stream"})[1]); // right_oa on
+        unmount();
+        render(<PerceptionPage/>);
+        expect([...document.querySelectorAll("img")].map((i) => i.getAttribute("alt"))).toEqual(["right_oa"]);
+    });
+
+    it("streams every started tile, annotated by default when available", () => {
+        render(<PerceptionPage/>);
+        startAll();
         const img = screen.getByAltText("left_oa") as HTMLImageElement;
         expect(img.getAttribute("src")).toBe("/api/cameras/left_oa/stream?variant=annotated&quality=50&fps=5");
         expect(screen.getByAltText("right_oa").getAttribute("src")).toBe("/api/cameras/right_oa/stream?quality=50&fps=5");
         expect(screen.getAllByRole("img").filter((i) => i.tagName === "IMG")).toHaveLength(3);
     });
 
-    it("keeps streaming in a hidden (background) tab on desktop", () => {
-        const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    it("stops every stream in a hidden (background) tab on desktop and resumes when shown", () => {
+        const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
         try {
             render(<PerceptionPage/>);
+            startAll();
             expect(document.querySelectorAll("img")).toHaveLength(3);
-            expect(detections.enabledArgs[detections.enabledArgs.length - 1]).toBe(true);
+            hidden.mockReturnValue(true);
+            act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+            expect(document.querySelectorAll("img")).toHaveLength(0);
+            expect(detections.enabledArgs[detections.enabledArgs.length - 1]).toBe(false);
+            hidden.mockReturnValue(false);
+            act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+            expect(document.querySelectorAll("img")).toHaveLength(3);
         } finally {
             hidden.mockRestore();
         }
+    });
+
+    it("releases the MJPEG connection when a tile stops", () => {
+        render(<PerceptionPage/>);
+        const img = screen.getByAltText("left_oa") as HTMLImageElement;
+        fireEvent.click(screen.getByRole("button", {name: "Stop this stream"}));
+        expect(img.isConnected).toBe(false);
+        expect(img.getAttribute("src")).toMatch(/^data:image\/gif/);   // request aborted
     });
 
     it("pauses a hidden tab on mobile", () => {
@@ -82,6 +122,7 @@ describe("PerceptionPage", () => {
 
     it("per-tile stop removes only that stream", () => {
         render(<PerceptionPage/>);
+        startAll();
         fireEvent.click(screen.getAllByRole("button", {name: "Stop this stream"})[1]);
         expect(document.querySelectorAll("img")).toHaveLength(2);
         expect(screen.queryByAltText("right_oa")).not.toBeInTheDocument();
@@ -91,6 +132,7 @@ describe("PerceptionPage", () => {
         const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => undefined));
         cameras.value = {...ok(), cameras: [...ok().cameras, mk("front_left"), mk("front_right")]};
         render(<PerceptionPage/>);
+        startAll();
         const srcs = [...document.querySelectorAll("img")].map((i) => i.getAttribute("src") ?? "");
         expect(srcs.filter((u) => u.includes("/stream?"))).toHaveLength(3);
         expect(screen.queryByAltText("front_right")).not.toBeInTheDocument(); // until the first snapshot arrives
@@ -106,6 +148,7 @@ describe("PerceptionPage", () => {
 
     it("pause removes every <img>", () => {
         render(<PerceptionPage/>);
+        startAll();
         fireEvent.click(screen.getByRole("switch", {name: "Pause streams"}));
         expect(document.querySelectorAll("img")).toHaveLength(0);
     });

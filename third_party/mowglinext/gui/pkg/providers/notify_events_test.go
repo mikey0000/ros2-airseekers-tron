@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -236,5 +237,72 @@ func TestNotifyCatalogue_EveryMessageInEveryLanguage(t *testing.T) {
 			assert.Containsf(t, catalogue, msg, "language %s lacks message %s", lang, msg)
 		}
 		assert.Contains(t, catalogue, "zoneFallback")
+	}
+}
+
+func TestNotifyDetector_LowBatteryDockingIsBatteryLow(t *testing.T) {
+	d := NewNotifyDetector()
+	d.OnStatus(tick(2, "MOWING", 0, 10), t0, allKinds)
+	evs := d.OnStatus(tick(2, "LOW_BATTERY_DOCKING", 0, 10), t0.Add(time.Second), allKinds)
+	assert.Contains(t, messages(evs), NotifyMsgBatteryLow)
+}
+
+func TestNotifyDetector_AirseekersMissionSequence(t *testing.T) {
+	d := NewNotifyDetector()
+	now := t0
+	var all []string
+	step := func(state int, name string) {
+		now = now.Add(5 * time.Second)
+		all = append(all, messages(d.OnStatus(tick(state, name, 0, 10), now, allKinds))...)
+	}
+	step(1, "IDLE_DOCKED")
+	step(2, "UNDOCKING")
+	step(2, "PLANNING")
+	step(2, "MOWING")
+	step(2, "MOWING_COMPLETE")
+	step(2, "RETURNING_HOME")
+	step(1, "CHARGING")
+	assert.Contains(t, all, NotifyMsgMowStarted)
+	assert.Contains(t, all, NotifyMsgMowComplete)
+	assert.Contains(t, all, NotifyMsgDocked)
+	assert.NotContains(t, all, NotifyMsgMowStopped)
+}
+
+func TestRenderNotification_StripsUnreplacedPlaceholders(t *testing.T) {
+	ev := NotifyEvent{Kind: NotifyEventBlocked, Message: NotifyMsgDockFailed, Priority: 4, Params: map[string]string{"state": "NAV_TO_DOCK_FAILED"}}
+	out := RenderNotification("en", "Mowgli", ev)
+	assert.True(t, strings.HasPrefix(out.Body, "Docking failed (NAV_TO_DOCK_FAILED)"), out.Body)
+	assert.NotContains(t, out.Body, "  ")
+	assert.NotContains(t, out.Body, "{")
+
+	ev = NotifyEvent{Kind: NotifyEventTheft, Message: NotifyMsgTheftLift, Priority: 5, Params: map[string]string{"map": "https://maps/x"}}
+	out = RenderNotification("en", "Mowgli", ev)
+	assert.Equal(t, "THEFT ALERT: the robot was lifted while parked. Last position: https://maps/x", out.Body)
+
+	ev = NotifyEvent{Kind: NotifyEventBlocked, Message: NotifyMsgStuck, Priority: 4}
+	assert.Equal(t, "Stuck: the robot could not free itself and needs help.", RenderNotification("en", "M", ev).Body)
+}
+
+func TestRenderNotification_UnknownIDUsesFallbackText(t *testing.T) {
+	ev := NotifyEvent{Kind: "future", Message: "brandNewThing", Text: "Something new happened.", Params: map[string]string{}}
+	assert.Equal(t, "Something new happened.", RenderNotification("fr", "M", ev).Body)
+	ev.Text = ""
+	assert.Equal(t, "brandNewThing", RenderNotification("fr", "M", ev).Body)
+}
+
+func TestNotifyCatalogue_AlertMessagesPresentEverywhere(t *testing.T) {
+	ids := []string{NotifyMsgTheftLift, NotifyMsgTheftGeofence, NotifyMsgTheftOutsideMap, NotifyMsgLiftDuringMow,
+		NotifyMsgTiltDuringMow, NotifyMsgEmergencyStop, NotifyMsgStuck, NotifyMsgPathBlocked, NotifyMsgMowIncomplete,
+		NotifyMsgDockFailed, NotifyMsgUndockFailed, NotifyMsgBatteryCritical, NotifyMsgRtkLost, NotifyMsgRtkRecovered}
+	for _, id := range ids {
+		for lang, cat := range notifyCatalogue {
+			assert.NotEmptyf(t, cat[id], "%s/%s", lang, id)
+		}
+		assert.NotEmptyf(t, notifyTags[id], "tags %s", id)
+	}
+	d := DefaultNotifyEvents()
+	for _, k := range []string{NotifyEventTheft, NotifyEventLift, NotifyEventGpsLost} {
+		assert.Contains(t, NotifyEventKinds, k)
+		assert.True(t, d[k], k)
 	}
 }

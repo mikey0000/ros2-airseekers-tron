@@ -235,6 +235,51 @@ def heading_status(status_text):
                    % st.get('source', 'none'), 'heading', values)
 
 
+def tilt_status(status_text):
+    """/tilt/status (JSON, mower_control tilt_monitor) -> ``Tilt`` entry (slope band)."""
+    if status_text is None:
+        return _status(STALE, 'Tilt', 'no /tilt/status', 'tilt')
+    try:
+        st = json.loads(status_text)
+    except ValueError:
+        return _status(WARN, 'Tilt', 'unparsable status', 'tilt', [('Raw', status_text)])
+    band = str(st.get('band', 'unknown'))
+    roll, pitch = st.get('roll_deg'), st.get('pitch_deg')
+    axis = st.get('axis') or ''
+    values = [('Band', band),
+              ('Roll (deg)', _fmt(roll, '%.1f')),
+              ('Pitch (deg)', _fmt(pitch, '%.1f')),
+              ('Axis', axis or '-'),
+              ('In band (s)', _fmt(st.get('since_s'), '%.1f')),
+              ('IMU age', _age_text(st.get('imu_age_s')))]
+    thr = st.get('thresholds') or {}
+    for key, label in (('roll', 'Roll thresholds (deg)'), ('pitch', 'Pitch thresholds (deg)')):
+        t = thr.get(key)
+        if t:
+            values.append((label, '/'.join('%.0f' % v for v in t)))
+    if band == 'unknown' or st.get('stale'):
+        return _status(STALE, 'Tilt', 'no IMU (tilt unknown)', 'tilt', values)
+    r, p = float(roll or 0.0), float(pitch or 0.0)
+    if axis == 'roll':
+        deg = r
+    elif axis == 'pitch':
+        deg = p
+    else:
+        deg = r if abs(r) >= abs(p) else p
+    if band == 'ok':
+        return _status(OK, 'Tilt', 'ok (roll %.0f, pitch %.0f deg)' % (r, p), 'tilt', values)
+    if band == 'caution':
+        return _status(WARN, 'Tilt', 'slope caution: slowed (%s %.0f deg)' % (axis or 'tilt', deg),
+                       'tilt', values)
+    if band == 'limit':
+        return _status(WARN, 'Tilt', 'steep slope: stopped / backing out (%s %.0f deg)'
+                       % (axis or 'tilt', deg), 'tilt', values)
+    if band == 'critical':
+        return _status(ERROR, 'Tilt', 'tilt critical: stopped, blade off (%s %.0f deg)'
+                       % (axis or 'tilt', deg), 'tilt', values)
+    return _status(STALE, 'Tilt', 'no IMU (tilt unknown)', 'tilt', values)
+
+
 def camera_status(cam, freshness_age, publishers, viewers, timeout):
     """cam: :func:`parse_camera_spec` dict. Named ``<topic> topic status`` for the GUI."""
     name = '%s topic status' % cam['topic']
@@ -285,6 +330,8 @@ def build_statuses(snap, timeout=3.0, alert_on_motor_status=False):
                               snap.get('imu_bias'), timeout))
     if 'heading' in snap:
         out.append(heading_status(snap.get('heading')))
+    if 'tilt' in snap:
+        out.append(tilt_status(snap.get('tilt')))
     for cam in snap.get('cameras', ()):
         out.append(camera_status(cam['spec'], cam.get('age'), cam.get('publishers', 0),
                                  cam.get('viewers', 0), timeout))

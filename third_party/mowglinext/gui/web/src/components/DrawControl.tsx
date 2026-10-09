@@ -7,6 +7,7 @@ import type {RefObject} from "react";
 import DirectSelectWithBoxMode from '../modes/DirectSelectWithBoxMode';
 import SafeDrawPolygonMode from '../modes/SafeDrawPolygonMode';
 import SplitLineMode from '../modes/SplitLineMode';
+import {drawLayerMove} from '../utils/drawLayerOrder';
 
 type DrawControlProps = ConstructorParameters<typeof MapboxDraw>[0] & {
     position?: ControlPosition;
@@ -99,6 +100,29 @@ export default function DrawControl(props: DrawControlProps) {
             drawRef.current = mp ?? null;
         }
     }, [mp, drawRef]);
+    // Keep the polygons above raster layers that mount later (mow progress, terrain, lidar,
+    // custom imagery): see utils/drawLayerOrder.ts. Deferred like the other layer-order
+    // fixers because moveLayer inside a styledata handler re-fires styledata.
+    useEffect(() => {
+        const m = rawMapRef.current;
+        if (!mp || !m) return;
+        let scheduled = false;
+        const fix = () => {
+            if (scheduled) return;
+            scheduled = true;
+            requestAnimationFrame(() => {
+                scheduled = false;
+                try {
+                    const move = drawLayerMove(m.getStyle()?.layers ?? []);
+                    if (!move) return;
+                    for (const id of move.ids) m.moveLayer(id, move.before);
+                } catch { /* style not ready */ }
+            });
+        };
+        fix();
+        m.on('styledata', fix);
+        return () => { m.off('styledata', fix); };
+    }, [mp]);
     // Sync features into MapboxDraw whenever they change.
     // Uses a delayed sync to handle React StrictMode's mount/unmount/remount cycle,
     // which causes useControl to remove and re-add the control (wiping its internal store).

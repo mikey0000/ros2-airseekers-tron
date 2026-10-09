@@ -329,6 +329,78 @@ func probeCameraServer(ctx context.Context, base string) (ok bool, topics map[st
 	return true, parseVideoServerTopics(string(body))
 }
 
+// cameraProbeFn is the upstream probe used by probeCameraServerCached; tests
+// replace it.
+var cameraProbeFn = probeCameraServer
+
+// cameraProbeTTL is how long a probe result is shared between callers.
+const cameraProbeTTL = 2 * time.Second
+
+// cameraProbeNow is the clock used for cache expiry; tests replace it.
+var cameraProbeNow = time.Now
+
+type probeEntry struct {
+	at     time.Time
+	ok     bool
+	topics map[string]bool
+}
+
+// probeCall is one in-flight upstream probe; done is closed once ok/topics
+// are set.
+type probeCall struct {
+	done   chan struct{}
+	ok     bool
+	topics map[string]bool
+}
+
+var cameraProbeCache = struct {
+	sync.Mutex
+	entries  map[string]probeEntry
+	inflight map[string]*probeCall
+}{
+	entries:  map[string]probeEntry{},
+	inflight: map[string]*probeCall{},
+}
+
+// probeCameraServerCached shares one probeCameraServer result per base URL for
+// cameraProbeTTL, with concurrent callers coalesced onto a single upstream
+// request. The GUI polls /cameras/:id/health once per second for each of five
+// camera tiles, and web_video_server's index page enumerates the whole ROS
+// graph on every hit, so un-cached polling cost ~5 index requests/s and
+// hundreds of TIME_WAIT sockets. The shared probe runs on context.Background()
+// (bounded by cameraProbeTimeout inside the probe) so one caller cancelling
+// does not fail the others; a cancelled waiter just gets (false, nil).
+func probeCameraServerCached(ctx context.Context, base string) (bool, map[string]bool) {
+	c := &cameraProbeCache
+	c.Lock()
+	if e, ok := c.entries[base]; ok && cameraProbeNow().Sub(e.at) < cameraProbeTTL {
+		c.Unlock()
+		return e.ok, e.topics
+	}
+	call, running := c.inflight[base]
+	if !running {
+		call = &probeCall{done: make(chan struct{})}
+		c.inflight[base] = call
+		go func() {
+			ok, topics := cameraProbeFn(context.Background(), base)
+			c.Lock()
+			c.entries[base] = probeEntry{at: cameraProbeNow(), ok: ok, topics: topics}
+			delete(c.inflight, base)
+			c.Unlock()
+			call.ok, call.topics = ok, topics
+			close(call.done)
+		}()
+	}
+	c.Unlock()
+
+	select {
+	case <-call.done:
+		return call.ok, call.topics
+	case <-ctx.Done():
+		return false, nil
+	}
+}
+
 // parseVideoServerTopics extracts the topic names of web_video_server's
 // "Available ROS Topics" index (`<li>/topic<ul>...`). nil = not that page.
 func parseVideoServerTopics(body string) map[string]bool {
@@ -402,7 +474,7 @@ func GetCameraHealth(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRout
 			c.JSON(http.StatusNotFound, CameraErrorResponse{Error: fmt.Sprintf("unknown camera %q", c.Param("id"))})
 			return
 		}
-		reachable, topics := probeCameraServer(c.Request.Context(), cfg.BaseURL)
+		reachable, topics := probeCameraServerCached(c.Request.Context(), cfg.BaseURL)
 		setNoCacheHeaders(c)
 		c.JSON(http.StatusOK, CameraHealthResponse{ID: cam.ID, Status: cameraStatus(cam, reachable, topics, time.Now())})
 	})
@@ -426,7 +498,7 @@ func GetCameras(r *gin.RouterGroup, dbProvider types.IDBProvider) gin.IRoutes {
 				Quality: cameraDefaultQuality, FPS: cameraDefaultFPS, MaxFPS: cameraMaxFPS,
 			},
 		}
-		reachable, topics := probeCameraServer(c.Request.Context(), cfg.BaseURL)
+		reachable, topics := probeCameraServerCached(c.Request.Context(), cfg.BaseURL)
 		now := time.Now()
 		for _, cam := range cfg.Cameras {
 			esc := url.PathEscape(cam.ID)

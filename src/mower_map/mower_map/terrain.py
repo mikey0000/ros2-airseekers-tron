@@ -48,6 +48,10 @@ KINDS = {
     'subpath_failed': (0.8, True),   # retries exhausted, sub-path not mowed
     'stall_guard': (0.8, True),      # docking stall/dig guard
     'stuck': (1.0, True),            # stuck guard: commanded motion, EKF pose not moving
+    # mission tilt guard: tilt_monitor 'limit' band here (2026-10-09). Full traction weight
+    # so ~/terrain_cost steers Nav2 transits / detours around it and the cluster can be
+    # made an owner-confirmed keep-out; the slope raster itself drops samples > 35 deg.
+    'steep': (1.0, True),
     'boundary': (0.0, True),         # soft boundary excursion
     'boundary_lethal': (0.0, True),  # lethal boundary excursion
     'detour': (0.0, True),           # obstacle detour

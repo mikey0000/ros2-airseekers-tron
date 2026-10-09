@@ -102,7 +102,11 @@ func (hc *HomeKitProvider) subscribeToRos() {
 			log.Println(err)
 			return
 		}
-		if status.StateName == "MOWING" || status.StateName == "DOCKING" || status.StateName == "UNDOCKING" {
+		// "On" = the robot is running a mission. Our mission names (MOWING,
+		// TRANSIT, RETURNING_HOME, LOW_BATTERY_DOCKING, ...) are many and
+		// "DOCKING" never occurs, so key on AUTONOMOUS instead of a name list;
+		// MOWING_COMPLETE is autonomous but the job is done.
+		if status.State == 2 && status.StateName != "MOWING_COMPLETE" {
 			hc.mower.Switch.On.SetValue(true)
 		} else {
 			hc.mower.Switch.On.SetValue(false)

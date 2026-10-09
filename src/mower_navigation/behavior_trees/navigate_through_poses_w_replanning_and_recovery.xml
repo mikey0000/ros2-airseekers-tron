@@ -7,8 +7,12 @@
   This Behavior Tree replans the global path periodically at 1 Hz through an array of poses continuously
    and it also has recovery actions specific to planning / control as well as general system issues.
 -->
-<!-- mower_navigation: recoveries limited to ClearCostmaps + Wait 2 s, NavigateRecovery retries 2
-     (no Spin/BackUp near the dock; fail fast). See navigate_to_pose_w_replanning_and_recovery.xml. -->
+<!-- mower_navigation (2026-10-09): ComputePathThroughPoses falls back from GridBased
+     (SmacPlannerHybrid) to GridBasedNavFn, as in navigate_to_pose_w_replanning_and_recovery.xml. -->
+<!-- mower_navigation: recoveries limited to Wait 2 s then ClearCostmaps (RoundRobin, Wait first),
+     NavigateRecovery retries 2 (no Spin/BackUp near the dock; fail fast). FollowPath's context
+     recovery is a 1 s Wait (not ClearLocalCostmap, 2026-10-09) so the replanner routes around
+     the obstacle mark instead of erasing it. See navigate_to_pose_w_replanning_and_recovery.xml. -->
 <root main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="2" name="NavigateRecovery">
@@ -17,24 +21,28 @@
           <RecoveryNode number_of_retries="1" name="ComputePathThroughPoses">
             <ReactiveSequence>
               <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
-              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+              <Fallback name="PlannerWithFallback">
+                <!-- 2026-10-09: NavFn first (see navigate_to_pose_w_replanning_and_recovery.xml) -->
+                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBasedNavFn"/>
+                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+              </Fallback>
             </ReactiveSequence>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
-          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          <Wait name="WaitForReplan-Context" wait_duration="1"/>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
         <RoundRobin name="RecoveryActions">
+          <Wait wait_duration="2"/>
           <Sequence name="ClearingActions">
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
-          <Wait wait_duration="2"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

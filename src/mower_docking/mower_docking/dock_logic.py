@@ -120,6 +120,7 @@ class MarkerObs:
     yaw: float
     stamp: float = 0.0
     marker_id: int = -1
+    z: float = 0.0        # marker centre height in base_link (obstacle_guard dock foot)
 
 
 def marker_in_base(rvec: Sequence[float], tvec: Sequence[float],
@@ -138,7 +139,7 @@ def marker_in_base(rvec: Sequence[float], tvec: Sequence[float],
     p = [p[i] + float(cam_xyz[i]) for i in range(3)]
     r_bm = _matmul(r_bc, r_cm)
     nx, ny = r_bm[0][2], r_bm[1][2]  # marker +Z axis (outward normal)
-    return MarkerObs(p[0], p[1], math.atan2(ny, nx), stamp, marker_id)
+    return MarkerObs(p[0], p[1], math.atan2(ny, nx), stamp, marker_id, p[2])
 
 
 @dataclass(frozen=True)
@@ -331,6 +332,7 @@ class Snapshot:
     raw_contact: bool = False                # latest undebounced is_docking_done
     is_charging: bool = False                # MowerBaseDevStatus.is_charging
     bumper: bool = False                     # bumper pressed OR bumper_controller manoeuvring
+    rear_blocked: bool = False               # obstacle_guard /vision/rear_blocked (fresh)
 
 
 class StallGuard:
@@ -502,6 +504,14 @@ class DockParams:
     # DOCK_BLOCKED), then resume from the current pose (ALIGNING re-plans the about-turn).
     bumper_clear_s: float = 2.0
     bumper_wait_max_s: float = 30.0
+    # Rear obstacle in the dock corridor (2026-10-09, obstacle_guard /vision/rear_blocked:
+    # a living thing BETWEEN the robot and the dock; people at/beside/behind the charger are
+    # already filtered out there). SEARCHING / DOCKING / FINAL_DOCKING hold still (no abort,
+    # state timers and the goal timeout paused) until it has been clear for rear_clear_s,
+    # then continue where they were; blocked longer than rear_wait_max_s -> DOCK_BLOCKED.
+    rear_hold: bool = True
+    rear_clear_s: float = 1.5
+    rear_wait_max_s: float = 60.0
     realign_forward_distance: float = 0.8
     # FINAL_DOCKING budget exhausted without contact (2026-10-07 Home: the retry drove
     # forward off the pins 7 s before the contacts reported): hold still, then creep a bit
@@ -608,6 +618,8 @@ class DockStateMachine:
         self.calibrated_offset: Optional[float] = None
         self._bump: Optional[dict] = None
         self._lost_t = 0.0   # bumper hold: {'t0', 'clear_t', 'state'}
+        self._rear: Optional[dict] = None    # rear obstacle hold: {'t0', 'clear_t', 'state'}
+        self._paused_s = 0.0                 # time spent in rear holds (goal timeout)
 
     # -- helpers ---------------------------------------------------------
     def _enter(self, state: str, snap: Snapshot) -> None:
@@ -847,6 +859,46 @@ class DockStateMachine:
         self._resume_after_bumper(snap, b['state'], snap.t - b['t0'])
         return self._out()
 
+    # -- rear obstacle hold -------------------------------------------------
+    def _rear_hold(self, snap: Snapshot) -> Optional[Output]:
+        """Hold still while obstacle_guard reports a rear obstacle in the dock corridor.
+        Returns an Output while holding, None otherwise (also on the resuming tick, which
+        then runs the state normally with every state timer shifted by the hold)."""
+        held = (DockState.SEARCHING, DockState.DOCKING, DockState.FINAL_DOCKING)
+        if self._rear is None:
+            if not self.p.rear_hold or not snap.rear_blocked or self.state not in held:
+                return None
+            self._rear = {'t0': snap.t, 'clear_t': None, 'state': self.state}
+            self._notes.append('rear obstacle between robot and dock in %s: holding (max %.0f s)'
+                               % (self.state, self.p.rear_wait_max_s))
+            self._stall.reset()
+            return self._out()
+        r = self._rear
+        if snap.rear_blocked:
+            r['clear_t'] = None
+            if snap.t - r['t0'] > self.p.rear_wait_max_s:
+                self._rear = None
+                self._fail('%s: rear obstacle in the dock corridor for %.0f s in %s' % (
+                    DockMsg.DOCK_BLOCKED, snap.t - r['t0'], r['state']), snap)
+            return self._out()
+        if r['clear_t'] is None:
+            r['clear_t'] = snap.t
+        if snap.t - r['clear_t'] < self.p.rear_clear_s:
+            return self._out()
+        held_s = snap.t - r['t0']
+        self._rear = None
+        self._paused_s += held_s
+        # the robot stood still: carry on as if the hold had not happened
+        self._t_state += held_s
+        self._final_phase_t += held_s
+        self._lost_t += held_s
+        self._lost = 0
+        self._prev_t = None
+        self._prev_e = None
+        self._stall.reset()
+        self._notes.append('rear corridor clear after %.1f s: resuming %s' % (held_s, r['state']))
+        return None
+
     def _resume_after_bumper(self, snap: Snapshot, st: str, waited: float) -> None:
         self._notes.append('bumper clear after %.1f s: resuming %s from the current pose'
                            % (waited, st))
@@ -875,6 +927,9 @@ class DockStateMachine:
             self._enter_retry(snap, 0.0)
             return
         self._enter(st, snap)   # RETRY: forward drive again
+
+    def _rear_held_s(self, snap: Snapshot) -> float:
+        return snap.t - self._rear['t0'] if self._rear is not None else 0.0
 
     def _fresh_marker(self, snap: Snapshot) -> Optional[MarkerObs]:
         m = snap.marker
@@ -1012,7 +1067,8 @@ class DockStateMachine:
                                                     DockState.RETRY):
             self._fail(DockMsg.BASE_STATUS_STALE, snap)
             return self._out()
-        if snap.t - self._t_start > self.goal_timeout_s and self.state != DockState.CHARGING:
+        if snap.t - self._t_start - self._paused_s - self._rear_held_s(snap) > \
+                self.goal_timeout_s and self.state != DockState.CHARGING:
             self._fail(DockMsg.DOCK_TIMEOUT, snap)
             return self._out()
         moving = (DockState.SEARCHING, DockState.DOCKING, DockState.FINAL_DOCKING,
@@ -1048,6 +1104,9 @@ class DockStateMachine:
         if snap.raw_contact and self.state in moving and self.state != DockState.NAV_TO_APPROACH:
             return self._out()   # raw contact: hold still until the debounce confirms it
         held = self._bumper_hold(snap)
+        if held is not None:
+            return held
+        held = self._rear_hold(snap)
         if held is not None:
             return held
 

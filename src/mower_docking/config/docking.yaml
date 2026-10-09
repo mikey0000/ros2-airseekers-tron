@@ -95,6 +95,14 @@ mower_docking:
     bumper_routing_topic: /mower_base/bumper_routing_status
     bumper_clear_s: 2.0
     bumper_wait_max_s: 30.0
+    # Rear obstacle (2026-10-09): obstacle_guard publishes /vision/rear_blocked (latched) for a
+    # person/animal in the reverse corridor BETWEEN the robot and the dock (anyone at, beside
+    # or behind the charger is ignored there). SEARCHING/DOCKING/FINAL_DOCKING hold still,
+    # timers paused, resume rear_clear_s after it clears; > rear_wait_max_s -> DOCK_BLOCKED.
+    rear_blocked_topic: /vision/rear_blocked
+    rear_hold: true
+    rear_clear_s: 1.5
+    rear_wait_max_s: 60.0
     dock_pose_measured_topic: /map_server_node/docking_pose_measured   # latched Bool
     dock_pose_measured_override: false   # bench only
     # stall / dig guard in DOCKING / FINAL_DOCKING / RETRY -> FAILED "DOCK_STALLED"

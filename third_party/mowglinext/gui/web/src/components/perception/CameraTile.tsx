@@ -5,6 +5,7 @@ import {useTranslation} from "react-i18next";
 import type {CameraInfo, CameraStatus, TopicHealth} from "../../hooks/useCameras.ts";
 import type {DetectionBox} from "../../hooks/useDetections.ts";
 import type {StreamVariant} from "./streamUrl.ts";
+import {MjpegImg} from "./MjpegImg.tsx";
 
 /** A tile is "stale" when its newest frame is older than this. */
 export const STALE_AFTER_MS = 3000;
@@ -50,8 +51,10 @@ function boxColor(score: number): string {
 
 /**
  * One camera tile. The <img> exists only while `streaming`: unmounting it
- * closes the MJPEG connection, which is what actually stops the CPU cost on
- * the robot (web_video_server encodes per connected viewer).
+ * closes the MJPEG connection (MjpegImg aborts it explicitly), which is what
+ * actually stops the CPU cost on the robot: web_video_server subscribes and
+ * encodes per connected viewer, and the camera driver closes the device once
+ * the topic has no subscriber.
  */
 export function CameraTile({camera, src, streaming, variant, onVariantChange, onToggle, highlight, boxes, status,
                                snapshotSrc, snapshotIntervalMs = 1000}: Props) {
@@ -124,19 +127,21 @@ export function CameraTile({camera, src, streaming, variant, onVariantChange, on
                 </div>
             </div>
             <div style={{position: "relative", aspectRatio: "16 / 9", background: "#111", display: "flex", alignItems: "center", justifyContent: "center", color: "#aaa", fontSize: 13}}>
-                {streaming && !failed && imgSrc ? (
-                    <img
-                        src={imgSrc}
-                        alt={camera.label}
-                        style={{width: "100%", height: "100%", objectFit: "contain"}}
-                        onLoad={(e) => {
+                {streaming && !failed && imgSrc ? (() => {
+                    const imgProps = {
+                        src: imgSrc,
+                        alt: camera.label,
+                        style: {width: "100%", height: "100%", objectFit: "contain" as const},
+                        onLoad: (e: React.SyntheticEvent<HTMLImageElement>) => {
                             const im = e.currentTarget;
                             if (im.naturalWidth) setNatural({w: im.naturalWidth, h: im.naturalHeight});
                             snapshot.onSettled();
-                        }}
-                        onError={() => snapshotSrc ? snapshot.onSettled() : setFailed(true)}
-                    />
-                ) : (
+                        },
+                        onError: () => snapshotSrc ? snapshot.onSettled() : setFailed(true),
+                    };
+                    // MJPEG: MjpegImg aborts the connection on unmount / URL change.
+                    return snapshotSrc ? <img {...imgProps}/> : <MjpegImg {...imgProps}/>;
+                })() : (
                     <span>{failed ? t("perception.streamError") : t("perception.tilePaused")}</span>
                 )}
                 {drawBoxes && (

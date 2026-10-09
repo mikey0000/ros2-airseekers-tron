@@ -1,0 +1,10 @@
+# Docking scenario: the robot waits 1.2 m out of the dock, 5 cm off the dock axis,
+# rear camera (roughly) on the marker. `ros2 run mower_sim scenario dock` drives the real
+# mower_docking (vision on the rendered rear-camera ArUco) onto the contacts.
+name: dock_approach
+datum: {lat: 48.0, lon: 9.0}
+lawn: [[-1.0, -5.0], [12.0, -5.0], [12.0, 5.0], [-1.0, 5.0]]
+dock: {x: 0.0, y: 0.0, yaw: 0.0}
+start: {x: 1.2, y: 0.05, yaw: 0.05}
+obstacles: []
+battery: {voltage: 23.0, percentage: 0.35}

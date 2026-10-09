@@ -28,7 +28,7 @@
   <exec_depend>mower_localization</exec_depend>
   <!-- Optional groups (toggled by launch args; not hard deps so the package
        builds before they exist): mower_teleop, mower_gui_bridge,
-       mower_navigation. -->
+       mower_navigation, mower_alerts. -->
 
   <test_depend>python3-pytest</test_depend>
 

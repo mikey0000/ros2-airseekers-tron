@@ -86,6 +86,8 @@ describe('recordingKind', () => {
     it('reads the record kind from the sub_state', () => {
         expect(recordingKind('RECORDING', 'drive the path with the joystick')).toBe('path');
         expect(recordingKind('RECORDING', 'saving path')).toBe('path');
+        expect(recordingKind('RECORDING', 'drive around the obstacle with the joystick')).toBe('obstacle');
+        expect(recordingKind('RECORDING', 'saving obstacle')).toBe('obstacle');
         expect(recordingKind('RECORDING', 'drive the boundary with the joystick')).toBe('area');
         expect(recordingKind('IDLE', 'path')).toBeNull();
     });

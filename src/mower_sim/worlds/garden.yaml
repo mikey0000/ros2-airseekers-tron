@@ -1,0 +1,19 @@
+# Demo garden for the mower_sim kinematic simulator (docs/simulation.md).
+# Map frame = vendor frame: origin at the dock (base_link on the charger), x out of the dock.
+# x east / y north for the GPS anchor (datum = map origin; lon 9.0 is a UTM central
+# meridian, so navsat_transform's UTM grid is not rotated against the sim's ENU plane).
+name: garden
+datum: {lat: 48.0, lon: 9.0}
+lawn: [[-1.0, -6.0], [19.0, -6.0], [19.0, 6.0], [-1.0, 6.0]]
+dock: {x: 0.0, y: 0.0, yaw: 0.0}
+start: {docked: true}
+obstacles:
+  # unknown to the map: found by the stereo / bumper
+  - {name: box, type: box, x: 6.0, y: 0.3, yaw: 0.3, size_x: 0.6, size_y: 0.6, height: 0.5}
+  - {name: tree, type: cylinder, x: 12.0, y: -3.0, radius: 0.3, height: 2.5}
+  - {name: flower_bed, type: box, x: 15.0, y: 3.5, size_x: 2.0, size_y: 1.0, height: 0.3,
+     known: true}
+  # scripted 'person' crossing the lawn back and forth after 30 s
+  - {name: person, type: cylinder, radius: 0.25, height: 1.7, speed: 0.6, mode: pingpong,
+     start_delay: 30.0, path: [[9.0, 5.0], [9.0, -5.0]]}
+battery: {voltage: 24.6, percentage: 0.85}

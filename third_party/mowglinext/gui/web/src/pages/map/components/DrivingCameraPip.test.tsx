@@ -1,5 +1,5 @@
 import {describe, it, expect, vi, beforeEach} from "vitest";
-import {render, screen} from "@testing-library/react";
+import {act, render, screen} from "@testing-library/react";
 import {DrivingCameraPip} from "./DrivingCameraPip.tsx";
 import {DEFAULT_PREFS} from "../hooks/useDrivingCamera.ts";
 import type {CamerasResponse} from "../../../hooks/useCameras.ts";
@@ -42,6 +42,30 @@ describe("DrivingCameraPip", () => {
         renderPip({prefs: {...DEFAULT_PREFS, collapsed: true}});
         expect(screen.getByTestId("drive-camera-pip")).toBeTruthy();
         expect(screen.queryByTestId("drive-pip-stream")).toBeNull();
+    });
+    it("drops the stream while the tab is hidden and restarts it when shown", () => {
+        const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+        try {
+            renderPip();
+            const img = screen.getByTestId("drive-pip-stream") as HTMLImageElement;
+            hidden.mockReturnValue(true);
+            act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+            expect(screen.queryByTestId("drive-pip-stream")).toBeNull();
+            expect(img.getAttribute("src")).toMatch(/^data:image\/gif/);   // connection aborted
+            hidden.mockReturnValue(false);
+            act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+            expect(screen.getByTestId("drive-pip-stream")).toBeTruthy();
+        } finally {
+            hidden.mockRestore();
+        }
+    });
+    it("releases the old stream when the camera changes", () => {
+        const {rerender} = renderPip();
+        const img = screen.getByTestId("drive-pip-stream") as HTMLImageElement;
+        rerender(<DrivingCameraPip manualMode={true} reversing={true} drivingCamera="front_right"
+                                   prefs={DEFAULT_PREFS} onPrefsChange={vi.fn()}/>);
+        expect(img.getAttribute("src")).toMatch(/^data:image\/gif/);
+        expect(screen.getByTestId("drive-pip-stream").getAttribute("src")).toContain("/rear/");
     });
     it("renders nothing on a robot without cameras", () => {
         cams.data = {...RESP, cameras: []};

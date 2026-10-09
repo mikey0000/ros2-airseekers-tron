@@ -4,15 +4,25 @@
 # (Kilted). Every deviation is marked "DEVIATION:" with the reason. Summary:
 #
 #   * Humble: unstamped Twist everywhere -> no `enable_stamped_cmd_vel` keys.
-#   * No docking_server (opennav_docking is not in Humble), no collision_monitor
-#     in this file yet (velocity chain is controller -> velocity_smoother ->
-#     twist_mux lane), no smoother_server / waypoint_follower / map_server /
-#     map_saver / coverage_server / AMCL.
-#   * FollowCoveragePath = mowgli_nav2_plugins/FTCController and
-#     coverage_goal_checker = mowgli_nav2_plugins/PathProgressGoalChecker, from
-#     the Humble port in src/mowgli_nav2_plugins. FollowPath (transit) stays RPP.
-#   * No LiDAR, no /map: global costmap has no static_layer; local costmap gets
-#     an obstacle_layer fed only by /bumper_cloud.
+#   * No docking_server (opennav_docking is not in Humble), no smoother_server /
+#     waypoint_follower / map_server / map_saver / coverage_server / AMCL.
+#   * Velocity chain (2026-10-09): controller -> velocity_smoother -> collision_monitor
+#     -> /cmd_vel_nav (twist_mux lane 10). Docking (/cmd_vel_docking), teleop, bumper and
+#     emergency lanes do not pass through the collision_monitor.
+#   * Planner (2026-10-09): GridBased = SmacPlannerHybrid (DUBIN, r_min 0.45 m, full
+#     footprint collision check); GridBasedNavFn kept as the BT's fallback planner id.
+#   * Transit FollowPath (2026-10-09) = nav2_mppi_controller (DiffDrive). The previous RPP
+#     transit config is FollowPathRPP; navigation.launch.py transit_controller:=rpp swaps
+#     it back in under the FollowPath id (launch/nav2_param_tools.py).
+#   * Coverage: FollowCoveragePath = RPP (default), FollowCoveragePathMPPI (deviates
+#     around small obstacles and rejoins), FollowCoveragePathFTC (MowgliNext FTC port);
+#     chosen by mission.yaml follow_controller_id.
+#   * No LiDAR, no /map: the global costmap's static_layer is the nav mask
+#     (/nav_keepout_mask), not a SLAM map. Obstacles come from the front stereo
+#     (/stereo_depth/points + the ground-only clearing cloud /stereo_depth/clear_points),
+#     YOLO detections (/ai/det/obstacle_points) and /bumper_cloud, fed to BOTH the
+#     local (controller collision check) and, since 2026-10-09, the global
+#     (planner: route AROUND obstacles) costmap obstacle_layer.
 #
 # Frame contract (fixed):
 #   map --(static identity for now)--> odom --(ekf_node)--> base_link (rear axle)
@@ -46,7 +56,9 @@ bt_navigator:
     # default_nav_to_pose_bt_xml / default_nav_through_poses_bt_xml are injected
     # by navigation.launch.py (absolute paths into this package's
     # behavior_trees/). They are the Humble default trees plus
-    # goal_checker_id="general_goal_checker" on FollowPath (see the XML headers).
+    # goal_checker_id="general_goal_checker" on FollowPath, no Spin/BackUp, and
+    # (2026-10-09) Wait-then-replan instead of ClearLocalCostmap after a FollowPath
+    # failure, so a detour routes around the obstacle mark (see the XML headers).
     # DEVIATION: MowgliNext uses its own custom trees; we use the Humble defaults
     # until mowgli_behavior is ported.
     # DEVIATION: no enable_stamped_cmd_vel (Humble has unstamped Twist only).
@@ -65,6 +77,12 @@ controller_server:
     # DEVIATION: MowgliNext reads /wheel_odom; our velocity feedback is the EKF.
     odom_topic: /odometry/filtered
     # DEVIATION: 20 Hz (MowgliNext 10 Hz): RPP on a 0.3 m/s mower is cheap.
+    # Shared by every controller id. Kept at 20 Hz with MPPI (2026-10-09): the RPP
+    # max_angular_accel / FTC PID tunings assume a 0.05 s cycle. MPPI requires model_dt
+    # >= 1/controller_frequency (Humble Optimizer::setOffset throws otherwise); its
+    # model_dt 0.1 only logs "Controller period is less then model dt" once. If the RK3588
+    # cannot hold 20 Hz with MPPI (controller_server "Control loop missed its desired rate"),
+    # lower MPPI batch_size first, not this.
     controller_frequency: 20.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5      # diff-drive: no lateral velocity
@@ -79,7 +97,11 @@ controller_server:
     progress_checker_plugin: "progress_checker"
     goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker", "coverage_goal_checker_ftc",
                            "coverage_leg_goal_checker"]
-    controller_plugins: ["FollowPath", "FollowCoveragePath", "FollowCoveragePathFTC",
+    # FollowPath = MPPI transit (2026-10-09); FollowPathRPP = the previous RPP transit
+    # (also usable directly as a controller_id); FollowCoveragePathMPPI = MPPI coverage
+    # alternative (mission.yaml follow_controller_id).
+    controller_plugins: ["FollowPath", "FollowPathRPP", "FollowCoveragePath",
+                         "FollowCoveragePathMPPI", "FollowCoveragePathFTC",
                          "FollowCoveragePathReverse"]
     # DEVIATION: no path_handler_plugins (Kilted-only API).
 
@@ -151,10 +173,112 @@ controller_server:
       # 0.03 was never exceeded, 0.015 ends the leg on the first shuffle.
       overshoot_hysteresis: 0.015
 
-    # Transit controller. DEVIATION: plain RPP with use_rotate_to_heading
+    # Transit controller (2026-10-09): MPPI instead of RPP. RPP follows the plan and can only
+    # STOP at an obstacle ("collision ahead" -> abort -> BT replan); MPPI samples around it
+    # on the local costmap (footprint-checked) and rejoins the path, so a person / box on a
+    # transit costs a curve, not an abort + replan. Switch back: navigation.launch.py
+    # transit_controller:=rpp (copies FollowPathRPP over this block at launch).
+    #   * Speed: vx_max 0.3 / wz_max 0.3 = the MCU clamps (each axis clamped separately).
+    #     GUI transit_speed (robot_settings.py -> FollowPath.desired_linear_vel) is mapped to
+    #     vx_max at launch by nav2_param_tools (MPPI has no desired_linear_vel); a LIVE GUI
+    #     change of transit_speed does not reach MPPI (undeclared parameter) - restart.
+    #   * vx_min 0.0: no blind reversing (no rear sensing; the collision_monitor only sees
+    #     ahead). In-place pivots stay possible (cmd_vel_slew turn shaper snaps a slow
+    #     |w| to a proper pivot or an arc with inner wheel >= 0.06 m/s, r >= ~0.36-0.44 m).
+    #   * CPU (RK3588): batch 1000 x 40 steps x 1 iteration at 20 Hz. Horizon 40 x 0.1 s =
+    #     4 s = 1.2 m at 0.3 m/s (a 2 s horizon only sees 0.6 rad of pivot at 0.3 rad/s,
+    #     too short to find the way around a box); the local costmap (+-3 m) covers it.
+    #   * Collision: CostCritic with consider_footprint true on the local costmap, which
+    #     NOW has an inflation layer (radius 1.0 > circumscribed 0.61, see local_costmap):
+    #     without inflation CostCritic skips every pose whose CENTRE cell is free, i.e.
+    #     the 0.52 m nose would never be checked (Humble 1.1.20 cost_critic.cpp score()).
+    #   * No GoalAngleCritic: transit goals end on xy only (general_goal_checker yaw 3.14).
+    FollowPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+      motion_model: "DiffDrive"
+      time_steps: 40
+      model_dt: 0.1
+      batch_size: 1000
+      iteration_count: 1
+      vx_std: 0.1
+      vy_std: 0.0
+      wz_std: 0.2
+      vx_max: 0.3
+      vx_min: 0.0
+      vy_max: 0.0
+      wz_max: 0.3
+      temperature: 0.3
+      gamma: 0.015
+      retry_attempt_limit: 1
+      reset_period: 1.0
+      regenerate_noises: false
+      visualize: false
+      # Path handler: prune ahead ~ the horizon (1.2 m) plus margin.
+      prune_distance: 1.7
+      max_robot_pose_search_dist: 10.0
+      transform_tolerance: 0.5
+      enforce_path_inversion: false
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic",
+                "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 0.5
+        inflation_layer_name: "inflation_layer"
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.0
+      # max_path_occupancy_ratio 0.05: once > 5 % of the local path is in collision /
+      # inscribed space, path alignment switches off and CostCritic + PathFollow steer
+      # around the obstacle (this is the "deviate and rejoin" mechanism).
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 3
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.0
+      # Pivots toward the path when it is behind; forward_preference: the Tron never
+      # reverses on transit.
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        forward_preference: true
+      # Inert while vx_min is 0; keeps reversing expensive if vx_min is ever lowered.
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
+
+    # Previous transit controller (FollowPath until 2026-10-09). Selectable as controller_id
+    # FollowPathRPP, or put back under FollowPath with navigation.launch.py
+    # transit_controller:=rpp. DEVIATION: plain RPP with use_rotate_to_heading
     # instead of MowgliNext's RotationShim(RPP): one fewer plugin to tune,
     # RPP's own rotate-to-heading covers pivots on a diff-drive.
-    FollowPath:
+    FollowPathRPP:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.3
       lookahead_dist: 0.6
@@ -280,6 +404,88 @@ controller_server:
       max_robot_pose_search_dist: 2.0
       use_interpolation: true
 
+    # MPPI coverage alternative (2026-10-09; select with mission.yaml follow_controller_id:
+    # FollowCoveragePathMPPI, goal checker coverage_goal_checker). RPP (FollowCoveragePath)
+    # only STOPS at a box on a swath; this one bends around a small obstacle and rejoins the
+    # swath. Tight tracking: PathAlign 20 / PathFollow 10 hold the 0.18 m swath while the
+    # path is clear; once > 5 % of the local path is blocked PathAlign drops out and
+    # CostCritic + PathFollow take the detour. Low speed (vx_max 0.2) so the pass-by keeps
+    # inside the cut overlap where possible. Not the default: unvalidated on turf; the GUI
+    # mowing_speed binding (FollowCoveragePath.desired_linear_vel) does not reach it.
+    # Same CPU budget as FollowPath (only the active controller computes).
+    FollowCoveragePathMPPI:
+      plugin: "nav2_mppi_controller::MPPIController"
+      motion_model: "DiffDrive"
+      time_steps: 40
+      model_dt: 0.1
+      batch_size: 1000
+      iteration_count: 1
+      vx_std: 0.08
+      vy_std: 0.0
+      wz_std: 0.2
+      vx_max: 0.2
+      vx_min: 0.0
+      vy_max: 0.0
+      wz_max: 0.3
+      temperature: 0.3
+      gamma: 0.015
+      retry_attempt_limit: 1
+      reset_period: 1.0
+      regenerate_noises: false
+      visualize: false
+      prune_distance: 1.2
+      max_robot_pose_search_dist: 2.0
+      transform_tolerance: 0.5
+      enforce_path_inversion: false
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic",
+                "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 0.3
+        inflation_layer_name: "inflation_layer"
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.6
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 20.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 2
+        threshold_to_consider: 0.3
+        offset_from_furthest: 10
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 10.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.6
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        offset_from_furthest: 3
+        threshold_to_consider: 0.3
+        max_angle_to_furthest: 0.6
+        forward_preference: true
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.3
+
     # Alternative coverage controller (select with mission.yaml follow_controller_id:
     # FollowCoveragePathFTC + follow_goal_checker_id: coverage_goal_checker_ftc).
     # mowgli_nav2_plugins/FTCController (Follow-The-Carrot + decoupled PID),
@@ -324,7 +530,9 @@ controller_server:
       max_cmd_vel_ang: 0.3
       max_goal_distance_error: 0.5
       max_goal_angle_error: 15.0
-      goal_timeout: 10.0
+      # 30 (was 10, 2026-10-09 FTC review): a 180 deg PRE_ROTATE at the measured turf pivot
+      # rate (0.02-0.08 rad/s, pivot_assist creep helps) takes well over 10 s and aborted.
+      goal_timeout: 30.0
       max_follow_distance: 2.0
       forward_only: true
       check_obstacles: true
@@ -339,6 +547,10 @@ controller_server:
       obstacle_clearance_margin: 0.05
       ignore_obstacles_outside_zone: true
       enable_obstacle_deviation: true
+      # 2026-10-09 FTC review (unproven, not changed): the deviation zone guard reads the
+      # global costmap, whose zone edge is the nav mask grown by the nav margin (+ inflation),
+      # not the mowing boundary, so a 1.5 m skirt can leave the area. Try 0.3 or
+      # enable_obstacle_deviation false if FTC is re-tested on rings.
       max_lateral_deviation: 1.5
       deviation_step: 0.05
       deviation_blend_rate: 0.5
@@ -353,12 +565,68 @@ planner_server:
   ros__parameters:
     use_sim_time: false
     expected_planner_frequency: 1.0
-    planner_plugins: ["GridBased"]
-    # DEVIATION: NavFn instead of SmacPlanner2D. With an empty global costmap
-    # (inflation + keepout only) NavFn is plenty and has fewer knobs.
-    # allow_unknown true: without a static map every cell outside the keepout
-    # mask is unknown/free.
+    planner_plugins: ["GridBased", "GridBasedNavFn"]
+    # 2026-10-09: GridBased = SmacPlannerHybrid (was NavFn). NavFn plans the robot CENTRE and
+    # only cost >= 253 (lethal + 0.25 m inscribed band) is a wall, so it routed detours
+    # through 0.5-0.58 m gaps the 0.58 m-wide (padded) mower cannot pass; RPP then aborted
+    # "collision ahead" at the gap. Hybrid-A* checks the FULL oriented footprint
+    # (nav2_smac_planner collision_checker.cpp: centre cost >= the circumscribed cost ->
+    # footprintCost() along the polygon, >= 254 = collision; the costmap footprint is a
+    # polygon so getUseRadius() is false), so such a gap has no plan. That shortcut needs
+    # the global inflation_radius >= the circumscribed radius (0.61 m; see inflation_layer).
+    # Known limits:
+    #   * The shortcut only sees INFLATED cost. Cells set only by the keepout_filter (runs
+    #     after inflation_layer) are not inflated; that is why the global costmap now sets
+    #     use_maximum / trinary_costmap at costmap level so the mask itself is in
+    #     static_layer and inflated (see global_costmap; before, a 0.4 m mask gap passed).
+    #   * footprintCost() walks the polygon OUTLINE, so a single 0.1 m lethal cell can slip
+    #     between two expansions inside the 0.75 m-long body; real stereo/bumper obstacles
+    #     span several cells and the inflation keeps the path off them anyway.
+    # DUBIN (forward only, like the robot: no blind reversing). minimum_turning_radius 0.45:
+    # the cmd_vel_slew turn shaper + the MCU |w| <= 0.3 clamp give r_min 0.44 m (see
+    # FollowPathRPP regulated_linear_scaling_min_radius). A goal that needs a pivot (e.g. the
+    # dock approach pose facing away from the robot next to a wall) may have no Dubins path:
+    # the BTs then fall back to GridBasedNavFn (pivot-in-place is the controller's job).
+    # RK3588 sizing: no downsampling (0.1 m is already coarse for a 0.45 m radius = 4.5 cells),
+    # max_planning_time 1.5 s (the BT replans at 1 Hz; a plan that times out returns the
+    # failure and the NavFn fallback runs), analytic expansion every few expansions so an
+    # open lawn plans in a few hundred expansions, lookup_table_size 10 m (the Dubins
+    # heuristic table, 101 x 101 x 72 cells, is built at configure; the 20 m default is 4x it).
+    # cache_obstacle_heuristic false: the global costmap changes at 4 Hz (sensor marks).
+    # allow_unknown true: without a static map every cell outside the keepout mask is
+    # unknown/free (track_unknown_space false, so the costmap holds no unknown cells anyway).
     GridBased:
+      plugin: "nav2_smac_planner/SmacPlannerHybrid"
+      downsample_costmap: false
+      downsampling_factor: 1
+      tolerance: 0.3
+      allow_unknown: true
+      max_iterations: 200000
+      max_on_approach_iterations: 1000
+      max_planning_time: 1.5
+      motion_model_for_search: "DUBIN"
+      angle_quantization_bins: 72
+      analytic_expansion_ratio: 3.5
+      analytic_expansion_max_length: 3.0
+      minimum_turning_radius: 0.45
+      reverse_penalty: 2.0
+      change_penalty: 0.0
+      non_straight_penalty: 1.2
+      cost_penalty: 2.0
+      retrospective_penalty: 0.015
+      lookup_table_size: 10.0
+      cache_obstacle_heuristic: false
+      smooth_path: true
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
+    # Fallback planner id (BT: ComputePathToPose GridBased, else GridBasedNavFn). The previous
+    # GridBased config, unchanged. Centre-point planner: may route through a gap narrower than
+    # the robot; the footprint-checking controllers then refuse it and the mission retries.
+    GridBasedNavFn:
       plugin: "nav2_navfn_planner/NavfnPlanner"
       tolerance: 0.3
       use_astar: false
@@ -390,10 +658,10 @@ behavior_server:
     min_rotational_vel: 0.4
     rotational_acc_lim: 2.0
 
-# Controller output (/cmd_vel_nav_raw) -> velocity_smoother -> /cmd_vel_nav,
-# the twist_mux navigation lane (priority 10, timeout 0.6 s).
-# DEVIATION: MowgliNext routes cmd_vel_nav through collision_monitor; with no
-# scan source a collision_monitor would be a pass-through, so it is omitted.
+# Controller output (/cmd_vel_nav_raw) -> velocity_smoother (/cmd_vel_nav_smoothed)
+# -> collision_monitor -> /cmd_vel_nav, the twist_mux navigation lane (priority 10,
+# timeout 0.6 s). behavior_server still publishes /cmd_vel_nav directly (BackUp/Spin have
+# their own costmap check and are not in our BTs).
 velocity_smoother:
   ros__parameters:
     use_sim_time: false
@@ -414,6 +682,109 @@ velocity_smoother:
     deadband_velocity: [0.01, 0.0, 0.01]
     velocity_timeout: 0.5
 
+# Collision monitor (2026-10-09, Humble 1.1.20 nav2_collision_monitor; param names checked
+# against its source). Last line of defence on the NAV lane only: it sits between
+# velocity_smoother and /cmd_vel_nav, so docking (/cmd_vel_docking, lane 15: the reverse dock
+# and undock), teleop (20), bumper back-up (50) and emergency (100) never pass through it.
+# It sees only what the front stereo / bumper see, and only the LATEST message (no memory:
+# the costmaps remember). Humble semantics that shaped this config:
+#   * stop / slowdown polygons are NOT direction-aware (points inside -> act, whatever the
+#     command). A front stop zone would also freeze a coverage REVERSE leg or a pivot away
+#     from a hedge in front -> deadlock. So stop_zone / slowdown_zone are only enabled while
+#     the robot drives forward (>= 0.08 m/s): mower_navigation/collision_zone_gate toggles
+#     their dynamic `enabled` from the same /cmd_vel_nav_smoothed input. Reverse legs,
+#     pivots and creeping manoeuvres see only approach_footprint.
+#   * approach (APPROACH) IS direction-aware: it simulates the commanded (v, w) for
+#     time_before_collision and scales the whole command (curvature kept) so the footprint
+#     reaches the first obstacle point no sooner than that. Reversing / pivoting AWAY from
+#     a front obstacle is never slowed. Points already inside the footprint at t=0 stop
+#     everything (bumper contact: /bumper_cloud puts x=0.4 m points inside the footprint;
+#     the bumper lane 50 does the escape regardless).
+#   * Stereo blind band: stereo_depth min_range 0.2 m from the camera at x=0.466 -> nothing
+#     is seen closer than x~0.67, i.e. the first ~0.15 m ahead of the 0.52 m nose. The
+#     approach time 2.0 s brings v to <= 0.075 m/s at that band edge and stop_zone ends at
+#     x=0.75 so a forward drive is stopped while the obstacle is still visible.
+#   * A stale source is ignored (WARN "Ignoring the source"), never a stop: no stereo ->
+#     pass-through (the local costmap's stereo expected_update_rate gate pauses the
+#     controller instead). bumper_controller publishes an empty /bumper_cloud heartbeat
+#     (5 Hz) between contacts so the bumper source does not go stale and spam that WARN.
+#   * stereo_costmap:=false (launch/robot_settings.py without_stereo_sources) drops the
+#     stereo source here too (bumper only).
+collision_monitor:
+  ros__parameters:
+    use_sim_time: false
+    base_frame_id: base_link
+    odom_frame_id: odom
+    cmd_vel_in_topic: /cmd_vel_nav_smoothed
+    cmd_vel_out_topic: /cmd_vel_nav
+    transform_tolerance: 0.5
+    # stereo clouds are stamped up to 0.3 s in the past (stereo_depth stamp_tf_parent);
+    # 1.0 s keeps >= 4 clouds at 5 Hz valid without trusting a dead camera for long.
+    source_timeout: 1.0
+    # true: each cloud is moved from its stamp to "now" through odom (up to 0.3 s x 0.3 m/s
+    # = 9 cm of travel otherwise unaccounted for, on a 0.23 m stop band).
+    base_shift_correction: true
+    # zeros are repeated this long after a stop, then the lane goes quiet (twist_mux
+    # timeout 0.6 s; the MCU driver's stop is 3 zero frames then silence).
+    stop_pub_timeout: 1.0
+    polygons: ["stop_zone", "slowdown_zone", "approach_footprint"]
+    # Footprint front edge x=0.52, half width 0.27 (+0.02 costmap padding = 0.29).
+    stop_zone:
+      type: "polygon"
+      points: [0.75, 0.29, 0.75, -0.29, 0.52, -0.29, 0.52, 0.29]
+      action_type: "stop"
+      max_points: 3          # > 3 points inside (single speckles ignored)
+      enabled: true          # forward only: collision_zone_gate
+      visualize: true
+      polygon_pub_topic: "/collision_monitor/stop_zone"
+    # 0.52 -> 1.3 m (0.78 m ahead of the nose), +-0.40 (a corner sweep while arcing).
+    # ratio 0.5: 0.3 -> 0.15 m/s, scales w too (Humble multiplies the whole twist).
+    slowdown_zone:
+      type: "polygon"
+      points: [1.3, 0.40, 1.3, -0.40, 0.52, -0.40, 0.52, 0.40]
+      action_type: "slowdown"
+      slowdown_ratio: 0.5
+      max_points: 3
+      enabled: true          # forward only: collision_zone_gate
+      visualize: true
+      polygon_pub_topic: "/collision_monitor/slowdown_zone"
+    # Footprint from the local costmap (padded), simulated along the command.
+    approach_footprint:
+      type: "polygon"
+      action_type: "approach"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 2.0
+      simulation_time_step: 0.1
+      max_points: 1          # t=0: >= 1 point inside stops; simulated: > 1 point
+      enabled: true
+      visualize: false
+    observation_sources: ["stereo", "bumper"]
+    # Same height band as the costmaps' stereo source (base_link z, ground ~0); the cloud is
+    # already ground-removed and noise-filtered by stereo_depth.
+    stereo:
+      type: "pointcloud"
+      topic: "/stereo_depth/points"
+      min_height: 0.08
+      max_height: 1.2
+      enabled: true
+    bumper:
+      type: "pointcloud"
+      topic: "/bumper_cloud"
+      min_height: -0.5
+      max_height: 0.5
+      enabled: true
+
+# Toggles collision_monitor stop_zone / slowdown_zone (forward-only, see above). Plain node.
+collision_zone_gate:
+  ros__parameters:
+    use_sim_time: false
+    cmd_topic: /cmd_vel_nav_smoothed
+    collision_monitor: collision_monitor
+    zones: ["stop_zone", "slowdown_zone"]
+    forward_on_mps: 0.08     # zones on at linear.x >= this
+    forward_off_mps: 0.06    # ... and off again below this (hysteresis)
+    idle_rearm_s: 1.0        # no command this long -> zones back on (safe default)
+
 local_costmap:
   local_costmap:
     ros__parameters:
@@ -426,23 +797,58 @@ local_costmap:
       always_send_full_costmap: false
       footprint: "[[0.52, 0.27], [0.52, -0.27], [-0.23, -0.27], [-0.23, 0.27]]"
       footprint_padding: 0.02
-      # DEVIATION: 4 x 4 m (MowgliNext 12 x 12) — only bumper hits populate it.
+      # DEVIATION: 6 x 6 m (MowgliNext 12 x 12). 6 (was 4, 2026-10-09): +-3 m covers the
+      # stereo / det_range / clearing ranges (2-3 m) from base_link plus the 0.52 m nose,
+      # so a mark is not dropped off the window edge before the robot reaches it.
+      # 0.05 m: 120 x 120 = 14k cells at 10 Hz, cheap on the RK3588.
       rolling_window: true
-      width: 4
-      height: 4
+      width: 6
+      height: 6
       resolution: 0.05
       track_unknown_space: false
-      # NO inflation_layer here (Humble 1.1.x bug, root cause of the first real
-      # mow stalling): InflationLayer::reset() sets current_=false and only
-      # updateCosts() sets it back, but with no obstacles the layered bounds are
-      # empty so updateCosts() is never called. After any ClearEntireCostmap on
-      # the local costmap (the default BT's FollowPath recovery),
-      # isCurrent() stays false forever and controller_server::computeControl
-      # spins in `while (!costmap_ros_->isCurrent())`: no cmd_vel, and every new
-      # FollowPath goal is just replaced as "pending" ("[follow_path] Aborting
-      # handle." with no other log). RPP collision checking only needs the
-      # lethal bumper cells; the keepout margin lives in the global costmap.
-      plugins: ["obstacle_layer"]
+      # Inflation (2026-10-09). Until now there was NO inflation_layer here because of a
+      # Humble bug, re-checked in the installed 1.1.20 source and STILL PRESENT:
+      # InflationLayer::reset() (inflation_layer.hpp) sets current_=false, and only
+      # updateCosts() sets it back; LayeredCostmap::updateMap() skips updateCosts() when the
+      # layered bounds are empty (no obstacle marked / raytraced this cycle), and reset()
+      # does not set need_reinflation_. So after a ClearEntireCostmap (BT RoundRobin, mission
+      # clear_costmaps_on_retry) with nothing in view, isCurrent() stays false and
+      # controller_server::computeControl spins in `while (!costmap_ros_->isCurrent())`: no
+      # cmd_vel, and a new FollowPath goal is only replaced as "pending" (first real mow).
+      # Workaround: bounds_keeper, an ObstacleLayer with NO sources and footprint clearing
+      # on. ObstacleLayer::updateFootprint() touches the footprint polygon every cycle, so the
+      # bounds are never empty and the inflation layer runs (and turns current) on the next
+      # update after a reset. Its own grid is all FREE and combination_method 1 (max) leaves
+      # the master untouched, so the bumper marks INSIDE the footprint in obstacle_layer
+      # (whose footprint_clearing stays false) survive. Dev image, test/nav_stack_smoke.py
+      # check 4 (2026-10-09): bumper-only obstacle_layer + inflation, no bounds_keeper ->
+      # after clear_entirely_local_costmap no cmd_vel at all (bug reproduced); with
+      # bounds_keeper -> drives 0.18 s after the clear. With a stereo source publishing (even
+      # an empty cloud) the raytrace already touches the bounds, so live the bug bites only
+      # when no clearing source is in use (stereo_costmap:=false, stereo idle/dead).
+      # MPPI needs this inflation: CostCritic/footprint checks are only done for poses whose
+      # centre cell has cost (radius 1.0 > circumscribed 0.61, so any obstacle that the
+      # footprint could touch gives the base_link cell a cost >= the "possibly inscribed"
+      # cost 59). RPP / behaviors / FTC footprint checks use >= 253/254 only, so the gradient
+      # below inscribed does not change them; FTC's path check (>= 253) now also sees the
+      # 0.25 m inscribed band around marks, as upstream MowgliNext (which inflates) intends.
+      plugins: ["obstacle_layer", "bounds_keeper", "inflation_layer"]
+      bounds_keeper:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: ""
+        footprint_clearing_enabled: true
+        combination_method: 1
+      # 1.0 m / 4.0: cost = 252 * exp(-4 (d - 0.25)): 59 at the circumscribed radius 0.61,
+      # 25 at 0.8, 13 at 1.0. Wide and soft (MPPI CostCritic guidance) so MPPI starts bending
+      # around a mark ~0.5 m before the nose would touch it (base_link is the REAR axle).
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        enabled: true
+        inflation_radius: 1.0
+        cost_scaling_factor: 4.0
+        inflate_unknown: false
+        inflate_around_unknown: false
       # Bumper contacts as a marking-only obstacle source. bumper_controller
       # publishes points in base_link at z=0 (x=0.4, y in {-0.2,0,0.2}), i.e.
       # INSIDE the footprint, so footprint_clearing_enabled must be false or the
@@ -457,7 +863,13 @@ local_costmap:
         # (mower_cameras/stereo_depth, frame stereo_camera_optical, 0.2-4 m).
         # det_range: YOLO detections ranged with the stereo depth (centroids in
         # base_link, /ai/det/obstacle_points); marking only, cleared by the stereo raytrace.
-        observation_sources: bumper stereo det_range
+        # stereo_clear (2026-10-09): ground-plane points from stereo_depth, CLEARING only
+        # (the main cloud is ground-removed, so before this the free lawn in front of the
+        # robot was never raytraced and det_range / stale stereo marks lingered).
+        # Same list in the global costmap below; stereo_costmap:=false
+        # (launch/robot_settings.py without_stereo_sources) strips stereo, stereo_clear
+        # and det_range from BOTH costmaps.
+        observation_sources: bumper stereo stereo_clear det_range
         stereo:
           topic: /stereo_depth/points
           data_type: "PointCloud2"
@@ -496,8 +908,35 @@ local_costmap:
           observation_persistence: 0.7
           expected_update_rate: 1.5
           inf_is_valid: false
+        # Ground points (z ~ 0 in base_link, decimated) published by stereo_depth only when
+        # its per-frame ground fit succeeded, same stamp/frame as /stereo_depth/points.
+        # marking false: these are free lawn, never an obstacle. min_obstacle_height -0.5 so
+        # the z ~ 0 points survive the height filter (it applies to clearing sources too).
+        # The ObstacleLayer clears BEFORE it marks in each update, so a cell that is in the
+        # current stereo cloud stays lethal even if a ground ray crosses it.
+        # expected_update_rate 0: the cloud is absent whenever the fit fails; the safety
+        # gate is the stereo source above, not this one.
+        stereo_clear:
+          topic: /stereo_depth/clear_points
+          data_type: "PointCloud2"
+          sensor_frame: stereo_camera_optical
+          marking: false
+          clearing: true
+          min_obstacle_height: -0.5
+          max_obstacle_height: 0.3
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          # 0.5 (was 0.0, review 2026-10-09): with 0 the ObservationBuffer keeps the LAST
+          # cloud forever and re-raytraces it every update, so after a failed ground fit (no new
+          # cloud by design) a stale wedge kept erasing marks. 0.5 > the <=0.3 s stamp lag.
+          observation_persistence: 0.5
+          expected_update_rate: 0.0
+          inf_is_valid: false
         det_range:
-          topic: /ai/det/obstacle_points
+          # odom-frame copy from mower_control/fixed_frame_relay (2026-10-09): never waits for TF
+          topic: /ai/det/obstacle_points_odom
           data_type: "PointCloud2"
           marking: true
           clearing: false
@@ -508,11 +947,15 @@ local_costmap:
           obstacle_min_range: 0.0
           raytrace_max_range: 3.0
           raytrace_min_range: 0.0
-          observation_persistence: 0.0
+          # 1.0 (was 0.0, review 2026-10-09): with 0 the last detection cloud is re-marked every
+          # update (clear-before-mark, so stereo_clear can never erase it); if det stops
+          # publishing that last centroid stays a lethal wall. Expire it after 1 s.
+          observation_persistence: 1.0
           expected_update_rate: 0.0
           inf_is_valid: false
         bumper:
-          topic: /bumper_cloud
+          # odom-frame copy from mower_control/fixed_frame_relay (2026-10-09): never waits for TF
+          topic: /bumper_cloud_odom
           data_type: "PointCloud2"
           marking: true
           clearing: false
@@ -530,30 +973,70 @@ global_costmap:
   global_costmap:
     ros__parameters:
       use_sim_time: false
-      update_frequency: 1.0
+      # 4.0 (was 1.0, 2026-10-09): the obstacle_layer now feeds the planner, and the
+      # mission's detour BT replans at 1 Hz; at 1 Hz a fresh stereo mark could be up to
+      # 1 s old at plan time, i.e. ~0.3 m of travel into a 0.52 m nose. CPU: in a rolling
+      # window the static/terrain layers re-apply their full extent every cycle, so each
+      # update re-inflates the whole 500 x 500 grid (wider radius 0.6 now). If the RK3588
+      # shows planner_server near a core (top -H), drop to 2.0 before touching anything else.
+      update_frequency: 4.0
       publish_frequency: 1.0
+      # map: the planner's frame. map -> odom is a static identity, so the stereo clouds'
+      # stamp workaround (stamped at the newest odom TF - 50 ms, see stereo_depth
+      # stamp_tf_parent) transforms here too; transform_tolerance 0.5 kept for it.
       global_frame: map
       robot_base_frame: base_link
       transform_tolerance: 0.5
       always_send_full_costmap: false
       footprint: "[[0.52, 0.27], [0.52, -0.27], [-0.23, -0.27], [-0.23, 0.27]]"
       footprint_padding: 0.02
-      # No static_layer: there is no /map publisher (no LiDAR, no SLAM). Rolling
-      # window in the GPS-anchored map frame; the keepout mask carries the
-      # field boundary / no-go zones.
+      # No /map publisher (no LiDAR, no SLAM): the static_layer below is the nav mask, not
+      # an occupancy map. Rolling window in the GPS-anchored map frame; the nav mask carries
+      # the field boundary / no-go zones, the obstacle_layer the live sensor obstacles.
       # DEVIATION: 0.1 m resolution, 50 x 50 m (MowgliNext 0.08 m, 70 x 70 m).
       rolling_window: true
       width: 50
       height: 50
       resolution: 0.1
       track_unknown_space: false
+      # 2026-10-09: StaticLayer reads use_maximum, trinary_costmap, lethal_cost_threshold and
+      # unknown_cost_value from the COSTMAP namespace (Humble 1.1.20 static_layer.cpp
+      # onInitialize: node->get_parameter("use_maximum") etc., declared by Costmap2DROS), NOT
+      # from <layer>.<key>. The per-layer keys below were silently ignored, so every
+      # StaticLayer ran trinary (soft band 90 -> FREE) and with OVERWRITE: terrain_layer (same
+      # grid, mostly 0) wiped static_layer, the mask reached the planner only through the
+      # (uninflated) keepout_filter, and Smac skipped its footprint check next to mask walls
+      # (dev image nav_stack_smoke.py check 3: a 0.4 m mask gap was "passable"). Set here they
+      # apply to every StaticLayer (mask, terrain, any later grid layer): max-combined,
+      # non-trinary, and the mask is inflated like any obstacle.
+      # NEEDS A LIVE CHECK: the inflated mask + Smac's footprint check can make goals whose
+      # 0.52 m nose would overhang the lethal mask (0.35 m outside the area) unreachable for
+      # GridBased; the BT then uses GridBasedNavFn (watch for "GridBasedNavFn" plans at the
+      # dock / swath starts on the boundary).
+      use_maximum: true
+      trinary_costmap: false
+      lethal_cost_threshold: 100
+      unknown_cost_value: -1
       # static_layer on /keepout_mask (mower_map map_server_node, latched): the
       # zone mask (lethal outside the mowing areas / on obstacles) becomes part of
       # the costmap. Needed on Humble: with only inflation_layer no layer expands
       # the update bounds, so KeepoutFilter.process() never touches a cell and the
       # costmap stayed all-free (verified on the robot 2026-10-06). In a rolling
       # window StaticLayer re-applies its full extent every cycle.
-      plugins: ["static_layer", "terrain_layer", "inflation_layer"]
+      # obstacle_layer (2026-10-09): until then stereo / YOLO / bumper reached only the
+      # LOCAL costmap, so the mission's detour (navigate_to_pose, NavFn) planned straight
+      # through the obstacle, RPP's collision check aborted "collision ahead" and the
+      # mission paused. Order: masks first, sensor obstacles on top (combination max),
+      # inflation last so it inflates both.
+      # 2026-10-09 (owner: routing stays INSIDE the drawn areas / paths): static_layer is OUT of
+      # the layer list. As a layer its lethal "outside" cells were INFLATED, so the map server
+      # had to grow every area 0.8 m outward to keep edge rings plannable, and transits then cut
+      # corners through that margin (field run 20261008-201401, sim). The nav mask now reaches
+      # the costmap only through keepout_filter (filters run AFTER inflation: uninflated, max-
+      # combined), i.e. a hard robot-CENTRE limit at the drawn edges. terrain_layer /
+      # nongrass_layer (StaticLayers on the same grid) still expand the update bounds to the
+      # whole mask every cycle, which is what the filter needs on Humble (see above).
+      plugins: ["terrain_layer", "nongrass_layer", "obstacle_layer", "inflation_layer"]
       filters: ["keepout_filter"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -586,17 +1069,136 @@ global_costmap:
         trinary_costmap: false
         use_maximum: true
         transform_tolerance: 0.5
+      # Non-grass memory (2026-10-09, docs/grass_segmentation.md): flower beds / gravel /
+      # paving the grass segmentation confirmed (multi-frame, multi-viewpoint) inside mowing
+      # areas with avoid_non_grass on. map_server_node publishes 0..75 (latched, always, zeros
+      # when nothing is confirmed): 75 -> 190, above the nav mask's in-area transit cost
+      # (60 -> 151) and below its soft band (90 -> 229) and the inscribed 253, so transits and
+      # detours prefer lawn but the area never becomes unplannable. Same pattern as
+      # terrain_layer. Coverage swaths are not affected (the controller follows the swath).
+      nongrass_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        enabled: true
+        map_topic: /map_server_node/nongrass_cost
+        map_subscribe_transient_local: true
+        subscribe_to_updates: false
+        trinary_costmap: false
+        use_maximum: true
+        transform_tolerance: 0.5
+      # Live sensor obstacles for the PLANNER (2026-10-09). Same sources as the local
+      # costmap obstacle_layer, but marks persist in the map frame until raytraced free
+      # (stereo / stereo_clear), so an obstacle seen once stays in the plan while the robot
+      # drives around it and it leaves the camera's view.
+      #   * expected_update_rate 0.0 on EVERY source: Humble planner_server waits for
+      #     costmap isCurrent() before each plan; a stale stereo source must not freeze the
+      #     planner (the local costmap's stereo source keeps the stale-data safety gate).
+      #   * footprint_clearing_enabled false: bumper points sit inside the footprint.
+      #   * stereo_costmap:=false strips stereo, stereo_clear and det_range here too.
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        footprint_clearing_enabled: false
+        max_obstacle_height: 2.0
+        combination_method: 1
+        observation_sources: bumper stereo stereo_clear det_range
+        # Height / range band identical to local_costmap stereo (see the reasoning there).
+        stereo:
+          # map-frame copy (2026-10-09): already in this costmap's frame, so the tf2 MessageFilter
+          # never waits for map->odom (that wait froze the planner's costmap under load)
+          topic: /stereo_depth/points_map
+          data_type: "PointCloud2"
+          sensor_frame: stereo_camera_optical
+          marking: true
+          clearing: true
+          min_obstacle_height: 0.08
+          max_obstacle_height: 1.2
+          obstacle_max_range: 2.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          observation_persistence: 0.7
+          expected_update_rate: 0.0
+          inf_is_valid: false
+        # Ground-only clearing cloud (see local_costmap stereo_clear). This is what erases
+        # a false mark in the map frame; without it only rays to obstacle points clear.
+        stereo_clear:
+          # map-frame copy (2026-10-09): already in this costmap's frame, so the tf2 MessageFilter
+          # never waits for map->odom (that wait froze the planner's costmap under load)
+          topic: /stereo_depth/clear_points_map
+          data_type: "PointCloud2"
+          sensor_frame: stereo_camera_optical
+          marking: false
+          clearing: true
+          min_obstacle_height: -0.5
+          max_obstacle_height: 0.3
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          # 0.5 (was 0.0, review 2026-10-09): with 0 the ObservationBuffer keeps the LAST
+          # cloud forever and re-raytraces it every update, so after a failed ground fit (no new
+          # cloud by design) a stale wedge kept erasing marks. 0.5 > the <=0.3 s stamp lag.
+          observation_persistence: 0.5
+          expected_update_rate: 0.0
+          inf_is_valid: false
+        det_range:
+          # map-frame copy from mower_control/fixed_frame_relay (2026-10-09): never waits for TF
+          topic: /ai/det/obstacle_points_map
+          data_type: "PointCloud2"
+          marking: true
+          clearing: false
+          min_obstacle_height: -0.5
+          max_obstacle_height: 2.0
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          # 1.0 (was 0.0, review 2026-10-09): with 0 the last detection cloud is re-marked every
+          # update (clear-before-mark, so stereo_clear can never erase it); if det stops
+          # publishing that last centroid stays a lethal wall. Expire it after 1 s.
+          observation_persistence: 1.0
+          expected_update_rate: 0.0
+          inf_is_valid: false
+        bumper:
+          # map-frame copy from mower_control/fixed_frame_relay (2026-10-09): never waits for TF
+          topic: /bumper_cloud_map
+          data_type: "PointCloud2"
+          marking: true
+          clearing: false
+          min_obstacle_height: -0.5
+          max_obstacle_height: 2.0
+          obstacle_max_range: 1.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 1.5
+          raytrace_min_range: 0.0
+          observation_persistence: 2.0
+          expected_update_rate: 0.0
+          inf_is_valid: false
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # inflation_radius >= inscribed radius (0.25 m: rear edge 0.23 + padding 0.02)
-        # silences "inflation radius smaller than inscribed radius" (0.26: at exactly
-        # 0.25 the float-computed inscribed radius still wins, verified 2026-10-06). The nav mask
-        # already carries the footprint margin (nav_margin_m 0.35), so the cost decays
-        # very steeply past the inscribed band (cost_scaling_factor 25) and the
-        # keepout / nav-mask behaviour is unchanged. Perimeter reachability checked
-        # 2026-10-06: planner-only dock -> (-1.80, -1.29) succeeds.
-        cost_scaling_factor: 25.0
-        inflation_radius: 0.26
+        # 2026-10-09: 0.65 / 10 (was 0.26 / 25). Footprint (padded 0.02): inscribed radius
+        # 0.25 (rear edge 0.23), circumscribed ~0.61 (corner 0.54, 0.29).
+        # cost = 252 * exp(-10 * (d - 0.25)): lethal/inscribed band unchanged (< 0.25 m),
+        # 93 at 0.35 m, 21 at 0.5 m, 8 at 0.6 m, 6 at the circumscribed radius.
+        # 0.65 (>= circumscribed 0.61, not 0.6): SmacPlannerHybrid (and MPPI) only run the full
+        # footprint check where the CENTRE cell cost >= InflationLayer::computeCost(circumscribed)
+        # (= 6 here; computeCost is not clipped at the radius). With a radius below 0.61 a centre
+        # cell 0.60-0.61 m from a mark reads 0 and a corner touching the mark is not checked.
+        # Gaps: the tail only biases the path; WHETHER the robot fits between INFLATED marks
+        # (sensor obstacles) is decided by Smac's oriented-footprint check (gaps narrower than
+        # the 0.58 m padded width are rejected; the old NavFn planned the centre and squeezed
+        # through 0.5-0.58 m gaps). The GridBasedNavFn fallback can still use any gap.
+        # Nav mask: it already carries the footprint margin (nav_margin_m 0.35) and its
+        # soft band reads 229, above the inflation tail (93 at 0.35 m), so the band edge
+        # is unchanged; only the free area within 0.65 m of lethal mask cells gets a small
+        # extra cost (paths drift ~0.1-0.2 m inward from the margin).
+        # NEEDS A LIVE RE-CHECK: perimeter / dock reachability was verified 2026-10-06 with
+        # 0.26 / 25 and NavFn (planner-only dock -> (-1.80, -1.29) succeeds). The lethal set is
+        # unchanged in theory, but Smac checks the real footprint at every heading and must
+        # arrive with the goal heading (Dubins, r 0.45); re-run that plan (and a dock->area
+        # transit) on the mower and note which planner id produced it.
+        cost_scaling_factor: 10.0
+        inflation_radius: 0.65
       # Filter info (/costmap_filter_info) + mask (/keepout_mask) come from the
       # ported MowgliNext map_server_node (or costmap_filter_info_server with
       # use_keepout:=true). With no publisher the filter is idle and does not
@@ -633,6 +1235,7 @@ lifecycle_manager_navigation:
       - behavior_server
       - bt_navigator
       - velocity_smoother
+      - collision_monitor     # 2026-10-09: last, after its input (velocity_smoother)
 
 lifecycle_manager_costmap_filters:
   ros__parameters:

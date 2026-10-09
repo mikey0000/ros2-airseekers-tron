@@ -38,6 +38,12 @@ class Harness:
         params.setdefault('detour_unclassified_after', -1)
         # ... and a fixed transit_retry_delay_s (the 3/10/30 s back-off has its own tests)
         params.setdefault('transit_retry_backoff_s', [])
+        # ... and the detour geometry the detour tests were written for (1.0 / 3.0 m skips;
+        # the shipped 2.0 / 3.5 m defaults have their own test).
+        params.setdefault('detour_skip_m', 1.0)
+        params.setdefault('detour_max_skip_m', 3.0)
+        # ... and Nav2-only transits (route-graph transits, 2026-10-09, have their own tests)
+        params.setdefault('route_transits', False)
         self.t = 0.0
         self.fsm = f.MissionFSM(f.Params.from_dict(params), cursor=cursor, now=0.0)
         i = self.fsm.inputs
@@ -51,6 +57,9 @@ class Harness:
         self.silent = False
         self.areas = [square(0, 0, 5)]
         self.saved = None
+        # promote_obstacle answered from here (recorded no-go zones)
+        self.promote_req = None
+        self.promote_resp = (True, {'success': True, 'message': ''})
         # get_area_settings / coverage set_parameters are answered automatically
         # (area index -> stored settings; None = service unavailable).
         self.auto_settings = True
@@ -187,6 +196,9 @@ class Harness:
                     resp = (True, {'success': True, 'area': self.areas[idx]})
                 else:
                     resp = (True, {'success': False})
+            elif req.name == f.SRV_PROMOTE_OBSTACLE:
+                self.promote_req = req.request
+                resp = self.promote_resp
             else:
                 self.add_area_req = req.request
                 resp = (True, {'success': True})
@@ -454,6 +466,108 @@ def test_record_finish_or_cancel_without_recording_refused():
     h = Harness()
     assert not h.cmd(f.CMD_RECORD_FINISH)
     assert not h.cmd(f.CMD_RECORD_CANCEL)
+
+
+# =====================================================================
+# recording a no-go zone (CMD_RECORD_OBSTACLE)
+# =====================================================================
+def test_record_obstacle_sub_state_announces_obstacle():
+    h = Harness()
+    assert h.cmd(f.CMD_RECORD_OBSTACLE)
+    assert h.name == 'RECORDING' and 'obstacle' in h.fsm.sub_state
+
+
+def test_record_obstacle_saved_under_containing_area():
+    h = Harness()
+    h.areas = [square(0, 0, 5), square(10, 0, 5)]
+    h.fsm.inputs.pose = (11.0, 1.0, 0.0)      # first sample inside area 1
+    assert h.cmd(f.CMD_RECORD_OBSTACLE)
+    for p in [(11.0, 1.0), (12.0, 1.0), (12.0, 2.0), (11.0, 2.0)]:
+        h.fsm.inputs.pose = (p[0], p[1], 0.0)
+        h.tick()
+    m = h.mark()
+    assert h.cmd(f.CMD_RECORD_FINISH)
+    h.answer_services()
+    assert h.promote_req is not None
+    assert h.promote_req['area_index'] == 1            # centroid inside the 2nd area
+    assert h.promote_req['name'] == 'No-go 1'
+    assert len(h.promote_req['polygon']) >= 3
+    calls = {e.name for e in h.since(m, f.CallService)}
+    assert f.SRV_ADD_AREA not in calls                 # a no-go is not a new area
+    assert h.name == 'RECORDING_COMPLETE' and h.fsm.sub_state == 'No-go 1'
+
+
+def test_record_obstacle_outside_every_area_falls_back_to_first_mowing_area():
+    h = Harness()
+    h.areas = [square(0, 0, 5), dict(square(10, 0, 5), is_navigation_area=True)]
+    h.fsm.inputs.pose = (20.0, 1.0, 0.0)      # first sample outside every area
+    assert h.cmd(f.CMD_RECORD_OBSTACLE)
+    for p in [(20.0, 1.0), (21.0, 1.0), (21.0, 2.0), (20.0, 2.0)]:
+        h.fsm.inputs.pose = (p[0], p[1], 0.0)
+        h.tick()
+    assert h.cmd(f.CMD_RECORD_FINISH)
+    h.answer_services()
+    assert h.promote_req is not None
+    # the navigation area is not a legal parent (and the ring is outside both
+    # anyway): the zone lands on the only mowing area
+    assert h.promote_req['area_index'] == 0
+    assert h.name == 'RECORDING_COMPLETE'
+
+
+def test_record_obstacle_min_area_is_its_own_threshold():
+    h = Harness()
+    # 0.64 m^2: below record_min_area_m2 (1.0) but above the obstacle
+    # threshold (record_min_obstacle_area_m2, 0.5) — only the kind matters
+    assert h.cmd(f.CMD_RECORD_OBSTACLE)
+    drive_rectangle(h, w=0.8, d=0.8)
+    assert h.cmd(f.CMD_RECORD_FINISH)
+    h.answer_services()
+    assert h.promote_req is not None and h.name == 'RECORDING_COMPLETE'
+
+
+def test_record_obstacle_too_small_is_rejected():
+    h = Harness()
+    assert h.cmd(f.CMD_RECORD_OBSTACLE)
+    drive_rectangle(h, w=0.4, d=0.4)                  # 0.16 m^2 < 0.5
+    assert not h.cmd(f.CMD_RECORD_FINISH)
+    assert h.name == 'IDLE' and 'rejected' in h.fsm.sub_state
+
+
+def test_record_obstacle_without_any_mowing_area_is_rejected():
+    h = Harness()
+    h.areas = [dict(square(0, 0, 5), is_navigation_area=True)]
+    assert h.cmd(f.CMD_RECORD_OBSTACLE)
+    drive_rectangle(h, w=2.0, d=2.0)
+    m = h.mark()
+    assert h.cmd(f.CMD_RECORD_FINISH)
+    h.answer_services()
+    calls = [e for e in h.since(m, f.CallService) if e.name == f.SRV_PROMOTE_OBSTACLE]
+    assert not calls                                  # nothing to attach it to
+    fb = h.since(m, f.SaveRecordingFallback)
+    assert fb and fb[0].name == 'No-go 1'             # ring kept for manual recovery
+    assert h.name == 'IDLE'
+
+
+def test_record_obstacle_cancel_discards():
+    h = Harness()
+    assert h.cmd(f.CMD_RECORD_OBSTACLE)
+    drive_rectangle(h, w=1.0, d=1.0)
+    m = h.mark()
+    assert h.cmd(f.CMD_RECORD_CANCEL)
+    assert h.name == 'IDLE' and not h.since(m, f.CallService)
+    assert h.fsm._track == [] and h.fsm._record_poly is None
+
+
+def test_record_obstacle_promote_failure_keeps_polygon_in_fallback_file():
+    h = Harness()
+    h.promote_resp = (True, {'success': False, 'message': 'area is a navigation area'})
+    assert h.cmd(f.CMD_RECORD_OBSTACLE)
+    drive_rectangle(h, w=1.0, d=1.0)
+    assert h.cmd(f.CMD_RECORD_FINISH)
+    h.answer_services()
+    fb = h.since(0, f.SaveRecordingFallback)
+    assert fb and len(fb[0].points) >= 3
+    assert h.name == 'IDLE' and 'promote_obstacle' in h.fsm.sub_state
 
 
 # =====================================================================
@@ -1770,6 +1884,27 @@ def test_charge_limit_disables_and_reenables_with_hysteresis():
     assert _charge_calls(h, m) == [True]
 
 
+def test_charge_limit_overrides_docking_server_enable_within_seconds():
+    """Live 2026-10-09: 99 % with limit 95 %: the mission sent "off", the docking server sent
+    "on" 40 ms later at the end of the dock, and the 60 s re-assert let it charge a minute."""
+    h = Harness(battery_max_charge_percent=95.0)
+    h.fsm.inputs.docked = True
+    h.fsm.inputs.battery_percent = 99.0
+    m = len(h.fx)
+    h.tick()
+    assert _charge_calls(h, m) == [False]
+    h.fsm.inputs.is_charging = True               # docking server re-enabled: MCU measures charge
+    m = len(h.fx)
+    h.tick(dt=1.0)
+    assert _charge_calls(h, m) == []              # < 2 s: give the status time to settle
+    h.tick(dt=1.5)
+    assert _charge_calls(h, m) == [False]         # measured charging above the limit: off again
+    h.fsm.inputs.is_charging = False
+    m = len(h.fx)
+    h.tick(dt=10.0)
+    assert _charge_calls(h, m) == []              # not charging: only the 60 s re-assert
+
+
 def test_charge_resume_waits_for_min_of_full_and_max():
     h = Harness(battery_low_action='dock', battery_max_charge_percent=80.0)
     mowing(h)
@@ -1813,6 +1948,21 @@ def _two_subpaths_first_needs_transit(h):
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3), line(0, 0, 4, 0)]))
     assert h.name == 'TRANSIT'
+
+
+def test_retry_clears_local_costmap_only_by_default():
+    """review 2026-10-09: the global costmap keeps the obstacle marks on a retry."""
+    h = Harness()
+    _two_subpaths_first_needs_transit(h)
+    m = len(h.fx)
+    h.finish(f.ACT_NAV, f.ABORTED)
+    c = _clears(h, m)
+    assert c and all(e.request == {'global': False} for e in c)
+    h2 = Harness(clear_global_costmap_on_retry=True)
+    _two_subpaths_first_needs_transit(h2)
+    m = len(h2.fx)
+    h2.finish(f.ACT_NAV, f.ABORTED)
+    assert _clears(h2, m)[0].request == {'global': True}
 
 
 def test_transit_abort_waits_clears_costmaps_and_resends():
@@ -2248,6 +2398,38 @@ def test_unclassified_abort_detours_after_one_plain_retry():
     assert 'costmap collision' in h.fsm.mission.detour['why']
 
 
+def test_unclassified_collision_abort_detours_at_once_with_zero():
+    """2026-10-09 default (detour_unclassified_after 0): the global costmap carries the
+    obstacle, so the first costmap-collision abort detours with no blocked wait."""
+    h = Harness(detour_unclassified_after=0)
+    sp0, _ = mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    h.fsm.inputs.collision_stamp = h.t            # controller: "collision ahead"
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state
+    assert 'path blocked' not in h.fsm.sub_state
+    # review 2026-10-09: an unclassified obstacle may be a child / pet: blade off for the detour
+    assert not h.blade and not h.fsm.blade_on
+
+
+def test_detour_forces_blade_off_even_in_continuous_area():
+    h = Harness(detour_unclassified_after=0)
+    sp0, _ = mowing_two_swaths(h)
+    assert h.blade
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    policy(h, 'static', 'chair')
+    h.tick()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.fsm.mission.detour is not None
+    assert not h.blade and not h.fsm.mission.blade_transit
+
+
+def test_shipped_defaults_detour_two_metres_ahead():
+    p = f.Params()
+    assert p.detour_skip_m == 2.0 and p.detour_unclassified_after == 0
+    assert p.detour_max_skip_m >= p.detour_skip_m
+
+
 def test_unclassified_abort_without_costmap_collision_never_detours():
     h = Harness(detour_unclassified_after=1)
     sp0, _ = mowing_two_swaths(h)
@@ -2287,6 +2469,8 @@ def test_parse_collision_abort():
     assert f.parse_collision_abort(b'controller_server ... FTCController: collision detected '
                                    b'along lookahead path.')
     assert not f.parse_collision_abort('controller_server Failed to make progress')
+    # MPPI: every sampled trajectory collides (2026-10-09)
+    assert f.parse_collision_abort('controller_server Optimizer fail to compute path')
     assert not f.parse_collision_abort('local_costmap collision ahead')
 
 
@@ -3309,3 +3493,406 @@ def test_live_cutter_height_overrides_rest_of_mow_only():
     assert h.fsm.mission.settings['cutter_height_mm'] == 75
     # not persisted: the saved area settings are untouched
     assert h.area_settings[1] == {'cutter_height_mm': 40}
+
+
+# =====================================================================
+# route-graph transits (2026-10-09)
+# =====================================================================
+def _route_h(**params):
+    """Route transits on; sub-path 0 starts at (5, 5), 7 m from the robot at (0, 0)."""
+    h = Harness(route_transits=True, **params)
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
+    assert h.name == 'TRANSIT'
+    return h
+
+
+def _route_resp(poses=None, ok=True, **extra):
+    poses = poses or [(0.0, 0.0, 0.0), (2.5, 2.5, 0.0), (5.0, 5.0, 0.0)]
+    resp = {'success': ok, 'message': 'Path 1 3.0 m' if ok else 'start off graph',
+            'poses': poses if ok else [], 'single_area': -1, 'length_m': 7.0,
+            'path_length_m': 3.0}
+    resp.update(extra)
+    return resp
+
+
+def _answer_route(h, ok=True, resp=None):
+    """Answer the pending plan_route call; returns its request."""
+    s = h.fsm._service
+    assert s is not None and s.name == f.SRV_PLAN_ROUTE
+    req = h._request_of(s.token).request
+    if resp is None:
+        resp = _route_resp(ok=ok)
+    h._apply(h.fsm.on_service_result(s.token, ok, resp, now=h.t))
+    return req
+
+
+def _pending_route_request(h):
+    s = h.fsm._service
+    assert s is not None and s.name == f.SRV_PLAN_ROUTE
+    return h._request_of(s.token).request
+
+
+def test_route_transit_asks_plan_route_then_follows_the_route():
+    h = Harness(route_transits=True)
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    m = h.mark()
+    sp = line(5, 5, 9, 5)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp]))
+    assert h.name == 'TRANSIT' and not h.blade
+    assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_NAV]
+    req = _pending_route_request(h)
+    assert req['start'] == (0.0, 0.0, 0.0) and tuple(req['goal'][:2]) == (5.0, 5.0)
+    assert len(req['goal']) == 3 and 'to_dock' not in req
+    route = [(0.0, 0.0, 0.0), (2.5, 2.5, 0.0), (5.0, 5.0, 0.0)]
+    m = h.mark()
+    _answer_route(h, resp=_route_resp(route))
+    assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_NAV]
+    assert h.fsm._action.purpose == 'route' and h.name == 'TRANSIT'
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowPath'
+    assert g['goal_checker_id'] == 'general_goal_checker'
+    assert g['poses'] == route
+    h.finish(f.ACT_FOLLOW)                           # arrives at the sub-path start
+    assert h.name == 'MOWING' and h.blade
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowCoveragePath' and g['poses'] == sp
+
+
+def test_no_route_falls_back_to_navigate_to_pose():
+    h = _route_h()
+    target = h.fsm.mission.transit_target
+    m = h.mark()
+    _answer_route(h, ok=False)
+    assert h.fsm._action.purpose is None
+    assert h.goal(f.ACT_NAV)['pose'] == target and not h.since(m, f.BladeOn)
+    h.fsm.inputs.pose = (5.0, 5.0, 0.0)
+    h.finish(f.ACT_NAV)
+    assert h.name == 'MOWING'
+
+
+def test_route_service_failure_falls_back_to_navigate_to_pose():
+    h = _route_h()
+    target = h.fsm.mission.transit_target
+    _answer_route(h, ok=False, resp={})
+    assert h.goal(f.ACT_NAV)['pose'] == target
+    assert h.fsm.mission.route_fallback
+
+
+def test_route_service_timeout_falls_back_to_navigate_to_pose():
+    h = _route_h()
+    target = h.fsm.mission.transit_target
+    assert h.fsm._service is not None
+    h.tick(dt=1.0, n=12)                              # past service_timeout_s (10 s)
+    assert h.name == 'TRANSIT'
+    assert h.goal(f.ACT_NAV)['pose'] == target
+
+
+def test_route_abort_without_obstacle_falls_back_without_consuming_a_retry():
+    h = _route_h(transit_retries=3)
+    _answer_route(h)
+    target = h.fsm.mission.transit_target
+    m = h.mark()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'TRANSIT' and h.fsm.mission.transit_fails == 0
+    assert not [e for e in h.since(m, f.CallService) if e.name == f.SRV_PLAN_ROUTE]
+    assert h.goal(f.ACT_NAV)['pose'] == target
+    # the costmap planner keeps the old retry semantics
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert h.fsm.mission.transit_fails == 1 and h.fsm.mission.step == 'retry_wait'
+    assert h.fsm._action is None
+
+
+def test_route_abort_with_collision_ahead_waits_then_resends_route_then_nav():
+    """Obstacle abort: blocked wait, the route is re-sent once (route_blocked_retries 1, a
+    person walked off the path); a second obstacle abort waits and then goes to Nav2."""
+    h = _route_h()
+    _answer_route(h)
+    target = h.fsm.mission.transit_target
+    for k in range(2):
+        h.fsm.inputs.collision_stamp = h.t
+        m = h.mark()
+        h.finish(f.ACT_FOLLOW, f.ABORTED)
+        assert h.name == 'TRANSIT' and h.fsm.mission.step == 'blocked_wait'
+        assert h.fsm._action is None and h.fsm.mission.transit_fails == 0
+        assert not h.since(m, f.StartAction)
+        h.tick(dt=0.5, n=4)                           # 2 s: not yet re-sent
+        assert h.fsm._action is None and h.fsm._service is None
+        m = h.mark()
+        h.tick(dt=0.5, n=8)                           # clear > blocked_clear_s, > resend_s
+        routes = [e for e in h.since(m, f.CallService) if e.name == f.SRV_PLAN_ROUTE]
+        if k == 0:
+            assert len(routes) == 1                   # route again after the first wait
+            _answer_route(h)
+            assert h.fsm._action.purpose == 'route'
+        else:
+            assert not routes
+            assert h.pending_action(f.ACT_NAV) and h.goal(f.ACT_NAV)['pose'] == target
+
+
+def test_route_success_far_from_the_target_falls_back():
+    h = _route_h()
+    _answer_route(h)
+    target = h.fsm.mission.transit_target
+    h.fsm.inputs.pose = (3.0, 3.0, 0.0)               # 2.8 m short of (5, 5)
+    h.finish(f.ACT_FOLLOW, arrive=False)
+    assert h.name == 'TRANSIT' and h.fsm.mission.transit_fails == 0
+    assert h.goal(f.ACT_NAV)['pose'] == target
+
+
+def test_route_success_within_end_tolerance_counts_as_arrived():
+    h = _route_h()
+    _answer_route(h)
+    h.fsm.inputs.pose = (5.0, 4.6, 0.0)               # 0.4 m <= route_end_tolerance_m
+    h.finish(f.ACT_FOLLOW, arrive=False)
+    assert h.name == 'MOWING'
+
+
+def test_route_abort_near_the_target_counts_as_arrived():
+    h = _route_h()
+    _answer_route(h)
+    h.fsm.inputs.pose = (5.0, 4.9, 0.0)               # within transit_arrived_radius_m
+    h.finish(f.ACT_FOLLOW, f.ABORTED, arrive=False)
+    assert h.name == 'MOWING' and h.fsm.mission.transit_fails == 0
+
+
+def test_dynamic_obstacle_during_route_follow_waits_then_asks_plan_route_again():
+    h = _route_h()
+    _answer_route(h)
+    policy(h, 'dynamic', 'person')
+    h.tick()
+    assert h.name == 'TRANSIT' and h.fsm._action is None
+    assert 'waiting for person to move' in h.fsm.sub_state
+    assert not h.fsm.mission.route_fallback
+    m = h.mark()
+    h.tick(dt=0.5, n=7)
+    s = h.fsm._service
+    assert s is not None and s.name == f.SRV_PLAN_ROUTE
+    assert [e for e in h.since(m, f.CallService) if e.name == f.SRV_PLAN_ROUTE]
+    assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_NAV]
+    _answer_route(h)
+    assert h.fsm._action.purpose == 'route'
+
+
+def _route_continuous_in_area(h):
+    """Continuous policy, blade on after sub-path 0, in-area transit to sub-path 1."""
+    h.blade_policy = 'continuous'
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0), line(4, 5, 0, 5)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.inputs.pose = (4.0, 0.0, 0.0)
+    h.finish(f.ACT_FOLLOW)
+    assert h.name == 'TRANSIT' and h.blade and h.fsm.mission.blade_transit
+    assert h.fsm._service is not None and h.fsm._service.name == f.SRV_PLAN_ROUTE
+
+
+def test_continuous_blade_stays_on_when_the_route_stays_in_the_area():
+    h = Harness(route_transits=True)
+    _route_continuous_in_area(h)
+    m = h.mark()
+    _answer_route(h, resp=_route_resp([(4.0, 0.0, 0.0), (4.0, 2.5, 0.0), (4.0, 5.0, 0.0)],
+                                      single_area=h.fsm.mission.area_idx))
+    assert h.fsm._action.purpose == 'route' and h.blade
+    assert not h.since(m, f.BladeOff)
+    assert isinstance(h.since(m, (f.BladeOff, f.StartAction))[0], f.StartAction)
+
+
+def test_continuous_blade_turns_off_before_a_route_that_leaves_the_area():
+    h = Harness(route_transits=True)
+    _route_continuous_in_area(h)
+    m = h.mark()
+    _answer_route(h, resp=_route_resp([(4.0, 0.0, 0.0), (4.0, 2.5, 0.0), (4.0, 5.0, 0.0)],
+                                      single_area=-1))
+    assert not h.blade
+    first = h.since(m, (f.BladeOff, f.StartAction))
+    assert isinstance(first[0], f.BladeOff)
+    assert isinstance(first[1], f.StartAction) and first[1].name == f.ACT_FOLLOW
+    assert h.fsm._action.purpose == 'route'
+
+
+def test_route_transits_disabled_goes_straight_to_navigate_to_pose():
+    h = Harness()
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    m = h.mark()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
+    assert h.name == 'TRANSIT' and h.fsm._action.name == f.ACT_NAV
+    assert not [e for e in h.since(m, f.CallService) if e.name == f.SRV_PLAN_ROUTE]
+
+
+def test_detour_transit_never_asks_plan_route():
+    h = Harness(route_transits=True)
+    sp0, _ = mowing_two_swaths(h)
+    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
+    policy(h, 'static', 'chair')
+    h.tick()
+    m = h.mark()
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state
+    assert h.fsm.mission.detour is not None
+    assert h.goal(f.ACT_NAV)['pose'][:2] == sp0[8][:2]
+    assert not [e for e in h.since(m, f.CallService) if e.name == f.SRV_PLAN_ROUTE]
+
+
+def test_boundary_recovery_transit_never_asks_plan_route():
+    h = Harness(route_transits=True, boundary_recover_after_s=3.0)
+    mowing(h)                                # sub-path 0: (0,0) -> (4,0)
+    h.fsm.inputs.pose = (1.0, -0.2, 0.0)
+    h.fsm.inputs.boundary_violation = True
+    h.tick()
+    assert h.name == 'BOUNDARY_PAUSED'
+    m = h.mark()
+    h.tick(dt=1.0, n=3)
+    assert h.name == 'TRANSIT' and h.fsm.mission.recovering
+    assert h.pending_action(f.ACT_NAV) and h.fsm._action.purpose is None
+    assert not [e for e in h.since(m, f.CallService) if e.name == f.SRV_PLAN_ROUTE]
+
+
+def _home(h):
+    h.fsm.inputs.pose = (1.5, -5.6, 0.0)
+    assert h.cmd(f.CMD_HOME)
+
+
+def test_dock_route_then_docking_server():
+    h = Harness(route_transits=True)
+    m = h.mark()
+    _home(h)
+    assert h.name == 'RETURNING_HOME'
+    assert not [e for e in h.since(m, f.StartAction)]
+    req = _pending_route_request(h)
+    assert req == {'start': (1.5, -5.6, 0.0), 'to_dock': True, 'variation': 0}
+    route = [(1.5, -5.6, 0.0), (1.0, -3.0, 0.0), (0.0, -1.0, 0.0)]
+    _answer_route(h, resp=_route_resp(route))
+    assert h.fsm._action.name == f.ACT_FOLLOW and h.fsm._action.purpose == 'dock_route'
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['poses'] == route and g['controller_id'] == 'FollowPath'
+    h.finish(f.ACT_FOLLOW)
+    assert h.pending_action(f.ACT_DOCK) and h.name == 'RETURNING_HOME'
+
+
+def test_dock_route_unavailable_goes_straight_to_the_docking_server():
+    h = Harness(route_transits=True)
+    _home(h)
+    _answer_route(h, ok=False)
+    assert h.pending_action(f.ACT_DOCK)
+    assert not [e for e in h.fx if isinstance(e, f.StartAction) and e.name == f.ACT_FOLLOW]
+
+
+def test_dock_route_abort_hands_over_to_the_docking_server():
+    h = Harness(route_transits=True)
+    _home(h)
+    _answer_route(h)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert h.name == 'RETURNING_HOME' and h.pending_action(f.ACT_DOCK)
+
+
+def test_route_dock_disabled_goes_straight_to_the_docking_server():
+    h = Harness(route_transits=True, route_dock=False)
+    m = h.mark()
+    _home(h)
+    assert h.pending_action(f.ACT_DOCK)
+    assert not [e for e in h.since(m, f.CallService) if e.name == f.SRV_PLAN_ROUTE]
+
+
+def test_upcoming_path_follows_the_route_not_the_straight_line():
+    h = _route_h()
+    l_route = [(0.0, 0.0, 0.0), (3.0, 0.0, 0.0), (3.0, 2.0, 0.0), (5.0, 2.0, 0.0),
+               (5.0, 5.0, 0.0)]
+    _answer_route(h, resp=_route_resp(l_route))
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    pts = h.fsm._upcoming_path()
+    assert pts[0] == (2.0, 0.0)
+    assert (3.0, 0.0) in pts                         # the corner of the L ...
+    assert any(abs(p[0] - 3.0) < 1e-6 and p[1] > 0.0 for p in pts)   # ... and the north leg
+    # the straight line from (2, 0) to (5, 5) would never stay on x == 3 above y == 0
+
+
+def _hairpin(n1=20, n2=20):
+    """East 2 m, then back west-south (a ~135 deg hairpin at (2, 0)), 0.1 m poses."""
+    a = [(0.1 * i, 0.0, 0.0) for i in range(n1 + 1)]
+    b = [(2.0 - 0.0707 * i, -0.0707 * i, -2.36) for i in range(1, n2 + 1)]
+    return a + b
+
+
+def test_split_route_at_sharp_turns_only():
+    h = _route_h()
+    legs = h.fsm._split_route(_hairpin())
+    assert len(legs) == 2
+    assert abs(legs[0][-1][0] - 2.0) < 0.15 and legs[1][0] == legs[0][-1]
+    straight = [(0.1 * i, 0.0, 0.0) for i in range(30)]
+    assert h.fsm._split_route(straight) == [straight]
+    right_angle = [(0.1 * i, 0.0, 0.0) for i in range(15)] + \
+        [(1.4, -0.1 * i, -1.57) for i in range(1, 15)]
+    assert len(h.fsm._split_route(right_angle)) == 1        # 90 deg < 100: one goal
+    h2 = _route_h(route_split_turn_deg=0.0)
+    assert len(h2.fsm._split_route(_hairpin())) == 1
+
+
+def test_route_hairpin_sent_as_two_legs_then_mows():
+    """v4 sim 2026-10-09: MPPI stalled at the hairpin from a path end into the lawn hop.
+    The route goes out as two FollowPath goals; the second follows the first's success."""
+    h = _route_h()
+    route = [(0.0, 0.0, 0.0)] + [p for p in _hairpin()[1:]]
+    tgt = h.fsm.mission.transit_target
+    route[-1] = (tgt[0], tgt[1], tgt[2])                  # last pose = the sub-path start
+    _answer_route(h, resp=_route_resp(route))
+    g1 = h.goal(f.ACT_FOLLOW)
+    assert h.fsm._action.purpose == 'route' and len(g1['poses']) < len(route)
+    h.finish(f.ACT_FOLLOW)                                # drives leg 1 to its end
+    assert h.name == 'TRANSIT' and h.fsm._action.purpose == 'route'
+    g2 = h.goal(f.ACT_FOLLOW)
+    assert g2['poses'][0] == g1['poses'][-1]
+    sent = 2
+    while h.name == 'TRANSIT':                            # (the jump to the target is a 3rd)
+        h.finish(f.ACT_FOLLOW)
+        sent += 1 if h.name == 'TRANSIT' else 0
+    assert h.name == 'MOWING' and sent >= 2
+
+
+def test_route_leg_success_short_of_its_end_falls_back():
+    h = _route_h()
+    _answer_route(h, resp=_route_resp(_hairpin()))
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)                   # 1 m short of the hairpin
+    h.finish(f.ACT_FOLLOW, arrive=False)
+    assert h.pending_action(f.ACT_NAV)
+
+
+def test_dock_route_legs_then_docking_server():
+    h = Harness(route_transits=True)
+    _home(h)
+    _answer_route(h, resp=_route_resp(_hairpin()))
+    assert h.fsm._action.purpose == 'dock_route'
+    h.finish(f.ACT_FOLLOW)
+    assert h.fsm._action.purpose == 'dock_route'          # second leg
+    h.finish(f.ACT_FOLLOW)
+    assert h.pending_action(f.ACT_DOCK)
+
+
+def test_transit_variation_run_counter_persisted_and_sent():
+    """Each mission start bumps alternate_counts['__transit_run__'] (persisted) and the
+    transits ask plan_route with that run index (per-area transit_variation)."""
+    h = Harness(route_transits=True)
+    h.fsm.alternate_counts[f.MissionFSM.TRANSIT_RUN_KEY] = 4
+    m = h.mark()
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    saved = [e for e in h.since(m) if isinstance(e, f.SaveAlternateCounts)]
+    assert saved and saved[-1].counts[f.MissionFSM.TRANSIT_RUN_KEY] == 5
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
+    assert _pending_route_request(h)['variation'] == 5
+
+
+def test_transit_variation_off_sends_run_zero():
+    h = Harness(route_transits=True, route_variation=False)
+    h.areas = [square(-1, -1, 12)]
+    m = h.mark()
+    start_until_planning(h)
+    assert not [e for e in h.since(m) if isinstance(e, f.SaveAlternateCounts)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
+    assert _pending_route_request(h)['variation'] == 0

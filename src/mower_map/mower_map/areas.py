@@ -573,6 +573,62 @@ def points_in_polygon(px: np.ndarray, py: np.ndarray, poly: Polygon) -> np.ndarr
     return inside
 
 
+def _segments_cross(a, b, c, d) -> bool:
+    def orient(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    d1, d2 = orient(c, d, a), orient(c, d, b)
+    d3, d4 = orient(a, b, c), orient(a, b, d)
+    return (d1 > 0) != (d2 > 0) and (d3 > 0) != (d4 > 0)
+
+
+def polygons_overlap(a: Polygon, b: Polygon) -> bool:
+    """True when two simple polygons share any area (vertex inside / edges cross)."""
+    if len(a) < 3 or len(b) < 3:
+        return False
+    if any(point_in_polygon(x, y, b) for x, y in a) or any(point_in_polygon(x, y, a) for x, y in b):
+        return True
+    for i in range(len(a)):
+        for j in range(len(b)):
+            if _segments_cross(a[i], a[(i + 1) % len(a)], b[j], b[(j + 1) % len(b)]):
+                return True
+    return False
+
+
+DOCK_NOGO_NAME = 'dock (automatic no-go)'
+
+
+def dock_nogo_polygon(dock: Optional['DockPose'], margin: float = 0.15) -> Optional[Polygon]:
+    """The dock outline's dock-local bounding box grown by ``margin``, in the map frame."""
+    if dock is None or not dock.outline or len(dock.outline) < 3:
+        return None
+    xs = [p[0] for p in dock.outline]
+    ys = [p[1] for p in dock.outline]
+    m = max(0.0, float(margin))
+    local = [(min(xs) - m, min(ys) - m), (max(xs) + m, min(ys) - m),
+             (max(xs) + m, max(ys) + m), (min(xs) - m, max(ys) + m)]
+    c, s = math.cos(dock.yaw), math.sin(dock.yaw)
+    return [(dock.x + c * px - s * py, dock.y + s * px + c * py) for px, py in local]
+
+
+def with_dock_nogo(areas: List['Area'], dock: Optional['DockPose'],
+                   margin: float = 0.15) -> List['Area']:
+    """2026-10-09 owner: a mowing area drawn around the dock gets the dock as an automatic
+    no-go zone (coverage never plans over the charger; in-area route legs go round it).
+    Returns COPIES with an extra Obstacle; the stored map is never changed, so the GUI never
+    sees (or saves back) the automatic obstacle. Navigation areas / paths are untouched, and
+    docking / undocking / the dock corridor ignore it (they never read these copies)."""
+    poly = dock_nogo_polygon(dock, margin)
+    if poly is None:
+        return list(areas)
+    out = []
+    for a in areas:
+        if not a.is_navigation and polygons_overlap(a.polygon, poly):
+            a = Area(**{**a.__dict__, 'obstacles': list(a.obstacles) + [
+                Obstacle(polygon=list(poly), name=DOCK_NOGO_NAME, source=SOURCE_USER)]})
+        out.append(a)
+    return out
+
+
 def point_in_polygon(x: float, y: float, poly: Polygon) -> bool:
     return bool(points_in_polygon(np.array([x]), np.array([y]), poly)[0])
 

@@ -170,6 +170,25 @@ class TestMcuNode(unittest.TestCase):
         self.assertEqual(self.node.published['/battery'][0].power_supply_status,
                          ros_stubs.BatteryState.POWER_SUPPLY_STATUS_CHARGING)
 
+    def test_battery_docked_but_discharging_is_not_charging(self):
+        # live 2026-10-09: 98 %, charge limit 95 % -> MCU charger off, -0.7 A on the dock.
+        # The old dock_ok-only status said CHARGING (GUI showed charging past the limit).
+        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_BATTERY,
+                           struct.pack(mn.BATTERY_FMT, 248, 7, 98, 1, 20, 0)))
+        self.assertEqual(self.node.published['/battery'][0].power_supply_status,
+                         ros_stubs.BatteryState.POWER_SUPPLY_STATUS_NOT_CHARGING)
+        self.assertFalse(self.node._charging_now())
+
+    def test_battery_charging_needs_current_above_threshold(self):
+        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_BATTERY,
+                           struct.pack(mn.BATTERY_FMT, 250, -1, 90, 1, 20, 0)))   # +0.1 A trickle
+        self.assertFalse(self.node._charging_now())
+        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_BATTERY,
+                           struct.pack(mn.BATTERY_FMT, 250, -15, 90, 1, 20, 0)))  # +1.5 A
+        self.assertTrue(self.node._charging_now())
+        self.assertEqual(self.node.published['/battery'][-1].power_supply_status,
+                         ros_stubs.BatteryState.POWER_SUPPLY_STATUS_CHARGING)
+
     def test_nothing_published_on_imu_until_module_9_arrives(self):
         inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SENSOR, struct.pack(mn.SENSOR_FMT, *([0] * 10))))
         self.assertEqual(self.node.published['/mcu/imu'], [])
@@ -214,7 +233,8 @@ class TestMcuNode(unittest.TestCase):
         self.assertTrue(msg.bumper_triggered)
         self.assertTrue(msg.stop_triggered)
         self.assertTrue(msg.battery_gate_open)
-        self.assertTrue(msg.is_charging)
+        # 2026-10-09: on the dock but raw current +5 (0.5 A OUT of the battery) = not charging
+        self.assertFalse(msg.is_charging)
         self.assertTrue(msg.is_moving)
         self.assertTrue(msg.is_cmd_moving)
         self.assertEqual(msg.cutter_board_version, 'v0.6.36')

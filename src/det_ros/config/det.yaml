@@ -25,7 +25,16 @@ det_ros:
     right_topic: "/right_oa_camera/image_raw"
     # Front stereo RIGHT eye, colour 640x480 (mower_cameras/stereo_cam publish_color, ~3 Hz,
     # frame vio_camera). /vio/right/image_raw is the mono8 VIO pair at 10 Hz; YOLO wants colour.
-    extra_topics: ["/vio/right/image_color"]
+    # + rear webcam (2026-10-09, frame rear_camera, 640x480 @ 10 Hz): rear obstacle sensing
+    # while reversing / docking. Camera order left, right, front, rear -> core_masks[3 % 3]
+    # = core "0", shared with the left OA camera (only while the rear is gated open).
+    extra_topics: ["/vio/right/image_color", "/rear_camera/image_raw"]
+    # NPU budget: the rear camera runs only while obstacle_guard's /vision/rear_watch is true
+    # (reversing, reverse docking, a few seconds after either). gated_idle_rate_hz > 0 keeps
+    # it subscribed at that rate otherwise (0 = unsubscribed: the rear capture can idle).
+    gated_topics: ["/rear_camera/image_raw"]
+    gate_topic: /vision/rear_watch
+    gated_idle_rate_hz: 0.0
     # /<camera_ns>/image_annotated + /ai/det/image_annotated, drawn only while subscribed
     publish_annotated: true
     classes:

@@ -11,7 +11,8 @@ setup(
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml', 'setup.cfg']),
         ('share/' + package_name + '/config',
-         ['config/ekf.yaml', 'config/ekf_vio.yaml', 'config/navsat.yaml']),
+         ['config/ekf.yaml', 'config/ekf_vio.yaml', 'config/navsat.yaml',
+          'config/ekf_dual.yaml', 'config/ekf_dual_vio.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -28,6 +29,7 @@ setup(
             'gps_gate = mower_localization.gps_gate:main',
             'heading_aligner = mower_localization.heading_aligner:main',
             'vio_gate = mower_localization.vio_gate:main',
+            'localization_monitor = mower_localization.localization_monitor:main',
         ],
     },
 )

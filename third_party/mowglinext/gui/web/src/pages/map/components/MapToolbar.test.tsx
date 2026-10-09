@@ -169,10 +169,14 @@ describe('MapToolbar', () => {
     it('More offers Record area and Record path', async () => {
         const onAreaRecording = vi.fn().mockResolvedValue(undefined);
         const onPathRecording = vi.fn().mockResolvedValue(undefined);
-        render(<MapToolbar {...defaultProps} onAreaRecording={onAreaRecording} onPathRecording={onPathRecording} />);
+        const onObstacleRecording = vi.fn().mockResolvedValue(undefined);
+        render(<MapToolbar {...defaultProps} onAreaRecording={onAreaRecording} onPathRecording={onPathRecording} onObstacleRecording={onObstacleRecording} />);
         await userEvent.click(screen.getByText(en.mapToolbar.more));
         await userEvent.click(await screen.findByText(en.mapToolbar.recordPath));
         expect(onPathRecording).toHaveBeenCalledTimes(1);
+        await userEvent.click(screen.getByText(en.mapToolbar.more));
+        await userEvent.click(await screen.findByText(en.mapToolbar.recordObstacle));
+        expect(onObstacleRecording).toHaveBeenCalledTimes(1);
         await userEvent.click(screen.getByText(en.mapToolbar.more));
         await userEvent.click(await screen.findByText(en.mapToolbar.recordArea));
         expect(onAreaRecording).toHaveBeenCalledTimes(1);

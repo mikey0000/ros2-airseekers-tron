@@ -126,7 +126,7 @@ def generate_launch_description():
                 'device_name': 'key input',     # /dev/input/event5 (vendor: /dev/keyboard)
                 'long_press_ms': 3000,
                 'debounce_ms': 50,
-                'power_long_action': 'log_only',
+                'power_long_action': 'sequence',  # docs/buttons.md "Power off"
             }],
             output='screen',
             respawn=True,

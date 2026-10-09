@@ -1,0 +1,19 @@
+#!/bin/sh
+# /usr/lib/systemd/system-shutdown/mower-mcu-poweroff
+# systemd-shutdown runs this after every filesystem is unmounted or read-only, right before the
+# kernel powers off ($1 = poweroff|reboot|halt|kexec). If mower-poweroff-host armed the marker
+# (power-button shutdown with MCU_POWER_CUT=1), send the vendor /poweroff frame to the mower MCU
+# (PowerManager::poweroffROS: module 10 SensorInfoControl, byte 4 power_off = 1) so it cuts the
+# battery instead of leaving the MCUs powered behind a halted SoC.
+# Frame bytes == mower_mcu_driver build_frame([(0, 10, 00 00 00 00 01 00 00 00)]) (unit-tested).
+[ "$1" = "poweroff" ] || exit 0
+[ -e /run/mower-poweroff/mcu_cut ] || exit 0
+TTY=/dev/ttyS9
+[ -c "$TTY" ] || exit 0
+stty -F "$TTY" 115200 cs8 -cstopb -parenb -crtscts clocal cread raw -echo 2>/dev/null
+echo "mower-mcu-poweroff: sending MCU power-off frame on $TTY" >/dev/kmsg 2>/dev/null
+for i in 1 2 3; do
+    printf '\245\013\010\000\012\000\000\000\000\001\000\000\000\036\132' >"$TTY"
+    sleep 0.2
+done
+exit 0

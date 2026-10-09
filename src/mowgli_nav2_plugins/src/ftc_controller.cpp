@@ -1036,6 +1036,30 @@ geometry_msgs::msg::TwistStamped FTCController::computeVelocityCommands(
                 angle_error_ * 180.0 / M_PI);
     state_entered_time_ = clock_->now();
     current_state_ = new_state;
+
+    // PORT FIX: re-anchor the heading-error unwrap accumulator on entering
+    // FOLLOWING. PRE_ROTATE exits on the WRAPPED angle, but FOLLOWING's P term
+    // uses angle_error_ (the accumulator) directly. If any heading sample
+    // during the pivot fell on the other side of +-pi (path start behind the
+    // robot plus a few degrees of pose noise), the accumulator is off by 2*pi
+    // here: kp_ang_following * 2*pi saturates the angular command and the
+    // robot drives a full loop off the path. Same fix the rotation states
+    // already apply locally (atan2(sin, cos)); last_angle_error_ moves with it
+    // so the derivative sees no step. test_ftc_angle_wrap.cpp.
+    if (new_state == PlannerState::FOLLOWING)
+    {
+      const double wrapped = std::atan2(std::sin(angle_error_), std::cos(angle_error_));
+      if (std::abs(wrapped - angle_error_) > 1e-6)
+      {
+        RCLCPP_WARN(logger_,
+                    "FTCController: heading unwrap re-anchored %.1f -> %.1f deg on FOLLOWING entry.",
+                    angle_error_ * 180.0 / M_PI,
+                    wrapped * 180.0 / M_PI);
+        last_angle_error_ += wrapped - angle_error_;
+        angle_error_ = wrapped;
+        i_angle_error_ = 0.0;
+      }
+    }
   }
 
   // 3. Collision check + lateral-deviation update.

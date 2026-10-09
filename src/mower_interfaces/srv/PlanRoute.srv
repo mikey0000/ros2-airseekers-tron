@@ -1,0 +1,15 @@
+# Route-graph transit plan (2026-10-09, mower_map map_server_node ~/plan_route,
+# docs/route_graph.md): drawn paths followed along their centreline, in-area legs
+# straight or round the area's inset perimeter, all in the map frame.
+geometry_msgs/Pose2D start     # robot pose (map)
+geometry_msgs/Pose2D goal      # transit target (map); ignored when to_dock
+bool to_dock                   # goal = the dock approach pose, facing the dock
+int32 variation                # transit run index (per-area transit_variation); <= 0 = base route
+---
+bool success
+string message                 # reason on failure (off graph / no route), leg summary on success
+nav_msgs/Path path             # map frame, ~0.1 m poses, yaw along the route, last = goal yaw
+int32 single_area              # mowing area index when every leg stays inside it, else -1
+float32 length_m
+float32 path_length_m          # metres along drawn paths / the dock corridor
+string variant                 # transit variation applied ('' = base route)

@@ -345,7 +345,7 @@ The mow recorder now records `/dig_stall`, `/mission/incident` and `~/terrain_su
 | Downhill turn choice (racetrack order, Dubins side), swath-end shortening | mower_coverage | M-L | High | The turn geometry is untested on grass. Do this after the turn work in the roadmap. |
 | SpeedFilter mask | map server + nav2 | S | Med | Check FTC `setSpeedLimit` first. |
 | Pivot assist by traction, `pivot_stall` incident | mower_control | S | Low | |
-| Tilt safety (blade off over X°) | mower_control / mission | S | High | Separate safety item in the roadmap; the raster gives the data. |
+| Tilt safety (blade off over X°) | mower_control / mission | S | High | **done 2026-10-09** (section 7), not yet run on the mower. |
 
 ---
 
@@ -391,3 +391,57 @@ The mow recorder now records `/dig_stall`, `/mission/incident` and `~/terrain_su
 4. Plan a transit across a fake high-cost cell and check the detour.
 5. Set `slope_mode: auto` on the sloped area and compare cross-track RMS and completion
    against the previous mow.
+
+---
+
+## 7. Tilt guard (2026-10-09, not yet run on the mower)
+
+Three bands from the IMU attitude, acted on by the monitor and the mission:
+
+| Band | Roll / pitch (deg, filtered) | Action |
+|---|---|---|
+| caution | >= 15 / 18 | Mission caps `FollowCoveragePath` and `FollowPath` `desired_linear_vel` at `tilt_caution_speed_mps` (0.15). The blade stays on. The cap is restored at ok. |
+| limit | >= 22 / 25 | In mission and docking phases: cancel, blade off, `steep` incident, then back out along the last 2 m driven, at 0.1 m/s on `/cmd_vel_emergency`. Pure pursuit runs forward or reverse, whichever side the track lies on. The back-out stops once the band drops, after 0.3-1.0 m. Then the mission resumes: mowing detours past the spot, transit and docking re-send the goal. In manual: blade off and refused. |
+| critical | >= 30 / 32 | `tilt_monitor` sends zeros on `/cmd_vel_emergency` and calls `/cutter_off` itself. The mission enters EMERGENCY (`tilt critical (...)`), which clears to idle like lift. |
+
+The roll thresholds cover side slope and rollover risk; the pitch thresholds cover up/down.
+Critical stays below the cutter firmware's lift window (|roll| 38.5, pitch -36.8 / +40.1
+deg; `docs/mcu_protocol_spec.md` 10c), so the host stops the mower before the MCU latches lift.
+That latch takes about 17 s and needs a level IMU to clear.
+
+**Filtering** (`mower_control/tilt_logic.py`):
+- Input is the WIT orientation roll and pitch from `/imu/data`. Both are gravity referenced; yaw is not used.
+- A low-pass with tau 0.25 s runs on the body-frame gravity vector, so it is wrap-safe at ±180°.
+- Entering a band needs the filtered value over its threshold continuously for 1.0 / 0.6 / 0.3 s (caution / limit / critical).
+- Leaving a band needs both axes below threshold − 3° for 2 s.
+- A 0.2 s root bump to 35° does not trigger. A step to 33° roll reaches critical in about 0.9 s.
+
+**Mounting:**
+- `mount_roll_offset_deg` and `mount_pitch_offset_deg` are added like mcu_node's `forward_imu_*_offset_deg` and applied as a rotation.
+- The vendor capture read roll ≈ −178° (board inverted relative to the vendor frame). Our `/imu/data` reads ≈ 0 upright (lift clear verified 2026-10-06), so the default is 0.
+- A wrong offset reads ≈ 180°, which is critical. The guard fails safe and the node logs the hint.
+
+**Repeated limits.** These go to `STUCK_NEEDS_HELP` with the sub-state `steep slope: needs help at (x, y)`; STOP, START or MANUAL clears it:
+- a new limit within 0.75 m of a spot already backed out of;
+- more than 3 back-outs in 5 min;
+- still at limit after 1.0 m of back-out;
+- no back-out progress for 3 s.
+
+**Terrain memory.** `steep` is its own incident kind in `terrain.py` `KINDS`, with traction weight 1.0. It arrives on `/mission/incident` like `stuck`, so:
+- `~/terrain_cost` steers Nav2 transits and detours around the spot;
+- the GUI shows it as a cluster that the owner can turn into a keep-out.
+
+Coverage swaths are not re-routed; the keep-out is the planner-side answer. The slope raster
+is unchanged: it still drops samples over 35°.
+
+**Topics:**
+- `/tilt/status` (String JSON, latched, 2 Hz plus every band change) carries `band`, `level`, filtered and raw `roll_deg` / `pitch_deg`, `axis`, `stale`, `imu_age_s`, `since_s` and `thresholds`.
+- The mission reads it, with a 2 s staleness limit. An unknown band does nothing.
+- `gui_bridge` shows it as the diagnostics entry `tron: Tilt` (WARN for caution and limit, ERROR for critical).
+
+**Field checks still open:**
+1. Confirm `/tilt/status` reads about 0 / 0 on level ground, and has the right signs when the left side or the nose is lifted.
+2. Tune the thresholds on the real lawn (the Tron's rated slope is unknown).
+3. Check the RPP live parameter update of `desired_linear_vel` mid-FollowPath.
+4. Check the back-out on grass.
+5. Check that `/cutter_off` is reachable from tilt_monitor.

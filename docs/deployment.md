@@ -1,5 +1,75 @@
 # Deployment — Humble container on the 20.04 (Noetic) mower
 
+## Routine deploy: update a mower that is already set up (2026-10-09)
+
+First-time setup (Docker on the device, udev rules, vendor services stopped) is further down
+("Mower-side setup"). This section is the everyday loop. Everything runs from the dev box; the
+device keeps all data on `/userdata` (its root fs is full).
+
+**Before you start**
+- The mower is **idle on the dock** (GUI: "At base"/"Charging"); `up` restarts every node.
+- Dev box: `sshpass`, `rsync`, docker. Export the login once:
+  `export SSHPASS=<password>`; `MOWER_HOST` (default 192.168.1.105) and `MOWER_USER`
+  (default `root`; set `MOWER_USER=airseekers` if root login is disabled).
+- Run tests first (`./scripts/dev_build.sh test --packages-select <pkgs>`); `sync` ships the
+  working tree **as it is**, including uncommitted edits from any session.
+
+**1. ROS 2 stack** (`scripts/deploy_to_mower.sh`)
+
+```bash
+cd ros2_stack
+./scripts/deploy_to_mower.sh sync     # rsync -> /userdata/ros2_stack (--delete; no build/ install/ log/ .git)
+./scripts/deploy_to_mower.sh image    # ONLY when docker/Dockerfile.humble changed (slow, on the device)
+./scripts/deploy_to_mower.sh build    # colcon build in the container, 2 workers (4 GB RAM); log:
+                                      #   /userdata/ros2/logs/colcon_build.log
+./scripts/deploy_to_mower.sh up       # docker compose up -d (stack + GUI)
+```
+
+Python packages are symlink-installed: a Python-only change needs `sync` + a restart
+(`docker restart mower_humble`); new packages, entry points, C++, `.srv`/`.msg` and launch
+files need `build`. `sync` never overwrites the **device-owned** `config/gui/mowgli_robot.yaml`
+(datum, GUI-saved settings); maps, bags and logs live outside the synced tree in `/userdata/ros2/`.
+
+**2. GUI image** (built on the dev box, the device only loads it)
+
+```bash
+ARCH=arm64 ./gui/build.sh                      # -> mower-gui:arm64 (no QEMU needed)
+docker save mower-gui:arm64 | gzip | sshpass -e ssh $MOWER_USER@$MOWER_HOST 'gunzip | docker load'
+sshpass -e ssh $MOWER_USER@$MOWER_HOST 'cd /userdata/ros2_stack && docker compose \
+  -f docker/docker-compose.yml -f docker/docker-compose.gui.yml up -d --force-recreate mower_gui'
+```
+Hard-refresh the browser (Ctrl+Shift+R) afterwards. `up -d --force-recreate` without a service
+name also recreates `mower_humble`, which is what applies compose changes (stop signal, mounts).
+
+**3. Check it came up**
+- `./scripts/deploy_to_mower.sh logs` (Ctrl-C to leave): no node in a respawn loop, Nav2
+  "Managed nodes are active", `map_server_node: route graph: ...`.
+- GUI http://<mower>:4006: pose, battery, GNSS, mission state; Diagnostics page all green.
+- Inside the container the `ros2` CLI daemon is unreliable: `ros2 daemon stop` first.
+- `./scripts/crash_report.sh` summarises crashes since the deploy.
+
+**4. Switching new behaviour off** (no code change). Launch arguments of `mower.launch.py` go
+on the compose `command:` line in `docker/docker-compose.yml`, e.g.
+`command: ["/work/scripts/stack_entry.sh", "localization_mode:=single", "transit_controller:=rpp"]`,
+then `sync` + `up`. Mission/map options are yaml parameters (`sync` + restart):
+
+| To go back to | Setting |
+|---|---|
+| single EKF + static map->odom | launch `localization_mode:=single` |
+| RPP instead of MPPI for transits | launch `transit_controller:=rpp` |
+| bumper-only obstacles (no stereo) | launch `stereo_costmap:=false` |
+| no rolling bag recorder / alerts | launch `bag_recorder:=false` / `alerts:=false` |
+| Nav2 transits instead of drawn-path routes | `src/mower_mission/config/mission.yaml` `route_transits: false` |
+| no transit variation | mission.yaml `route_variation: false` (or area setting `transit_variation: none`) |
+| no automatic dock no-go in areas | `src/mower_map/config/map_server.yaml` `dock_nogo_in_areas: false` |
+
+**Other one-off installs** (root on the device, documented separately): power-button
+shutdown `scripts/install_power_button.sh` (docs/buttons.md), stereo watchdog
+`scripts/install_stereo_watchdog.sh`, udev rules `scripts/install_udev.sh`.
+
+**Pull data back:** `./scripts/deploy_to_mower.sh bags [incidents|ring|all]` (rolling bag ring /
+incident pins, docs/crash_recovery.md).
+
 ## Kernel / deployment decision (settled — Humble container now, native LTS later)
 
 Two end-states were considered. **Plan: develop in the Humble container on the stock

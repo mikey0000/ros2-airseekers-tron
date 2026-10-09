@@ -1,0 +1,8 @@
+# mower_map dock pose: map frame, metres, ENU yaw (rad).
+# dock_outline is the dock keep-out polygon in the DOCK-LOCAL frame
+# (origin = dock pose, +X = dock yaw), areas.dat polygon syntax.
+dock_pose_x: 0.000000
+dock_pose_y: 0.000000
+dock_pose_yaw: 0.000000
+dock_outline: "-0.65,-0.275;-0.25,-0.275;-0.25,0.275;-0.65,0.275"
+dock_pose_measured: true

@@ -35,6 +35,7 @@ import { NavigationSection } from "../components/settings/NavigationSection.tsx"
 import { RainSection } from "../components/settings/RainSection.tsx";
 import { LedsSection } from "../components/settings/LedsSection.tsx";
 import { FillLightCard } from "../components/settings/FillLightCard.tsx";
+import { RecorderCard } from "../components/settings/RecorderCard.tsx";
 import { MqttSection } from "../components/settings/MqttSection.tsx";
 import { IrriSenseSection } from "../components/settings/IrriSenseSection.tsx";
 import { RemoteAccessSection } from "../components/settings/RemoteAccessSection.tsx";
@@ -295,7 +296,12 @@ export const SettingsPage = () => {
                     />
                 );
             case "advanced":
-                return <AdvancedSection values={values} advancedKeys={advancedKeys} onChange={handleChange} />;
+                return (
+                    <>
+                        <RecorderCard />
+                        <AdvancedSection values={values} advancedKeys={advancedKeys} onChange={handleChange} />
+                    </>
+                );
             default:
                 return null;
         }

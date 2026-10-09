@@ -14,6 +14,12 @@ Calls (each one can be disabled by parameter)
   /clear_estop                           std_srvs/Empty          power short
   /behavior_tree_node/high_level_control mowgli_interfaces/HighLevelControl
   /poweroff                              std_srvs/Empty          power long, only if power_long_action=poweroff_service
+  /cutter_off                            std_srvs/Trigger        power long (sequence)
+  /light_control                         mower_lights_interfaces/LightControl  power long (sequence)
+Publishes (power_long_action=sequence)
+  /estop_request                         std_msgs/Bool           true: mcu_node latches motion + blade off
+Writes (power_long_action=sequence)
+  <power_request_dir>/shutdown_request   JSON read by the host's mower-poweroff.path/.service
 """
 import errno
 import os
@@ -25,13 +31,21 @@ import time
 import rclpy
 from rclpy.node import Node
 
-from std_msgs.msg import UInt8
-from std_srvs.srv import Empty
+from std_msgs.msg import Bool, UInt8
+from std_srvs.srv import Empty, Trigger
 from mower_interfaces.msg import MowerBaseButtonInfo
 from mowgli_interfaces.msg import HighLevelStatus
 from mowgli_interfaces.srv import HighLevelControl
 
 from base_keys import keys_logic as kl
+from base_keys import power_sequence as ps
+from base_keys import poweroff_host as ph
+
+try:
+    from mower_lights_interfaces.msg import LightMode
+    from mower_lights_interfaces.srv import LightControl
+except ImportError:  # pragma: no cover - lights interfaces not built
+    LightMode = LightControl = None
 
 PROC_INPUT_DEVICES = '/proc/bus/input/devices'
 
@@ -123,8 +137,14 @@ class BaseKeysNode(Node):
         dp('on_work_pause', True)
         dp('on_go_docking', True)
         dp('on_dock_and_pause', False)
-        dp('power_long_action', 'log_only')       # log_only | poweroff_service | shutdown
+        dp('power_long_action', 'sequence')       # sequence | log_only | poweroff_service | shutdown
         dp('shutdown_hook_file', '')               # power_long_action=shutdown: file to write (host watches it)
+        # power_long_action=sequence (docs/buttons.md "Power off")
+        dp('power_request_dir', ph.REQUEST_DIR)    # bind-mounted /userdata/ros2/power; host watches it
+        dp('power_settle_s', 3.0)                  # stop -> request delay (vendor slept 3000 ms)
+        dp('power_min_uptime_s', 30.0)             # ignore long presses this early after boot
+        dp('cutter_off_service', '/cutter_off')
+        dp('light_control_service', '/light_control')
         # names
         dp('clear_estop_service', '/clear_estop')
         dp('poweroff_service', '/poweroff')
@@ -164,6 +184,13 @@ class BaseKeysNode(Node):
         self.cli_clear = self.create_client(Empty, g('clear_estop_service'))
         self.cli_poweroff = self.create_client(Empty, g('poweroff_service'))
         self.cli_hlc = self.create_client(HighLevelControl, g('high_level_control_service'))
+        self.power_request_dir = g('power_request_dir')
+        self.power_seq = ps.PowerOffSequencer(settle_s=g('power_settle_s'),
+                                              min_uptime_s=g('power_min_uptime_s'))
+        self.pub_estop = self.create_publisher(Bool, '/estop_request', 10)
+        self.cli_cutter_off = self.create_client(Trigger, g('cutter_off_service'))
+        self.cli_light = (self.create_client(LightControl, g('light_control_service'))
+                          if LightControl is not None else None)
 
         self.q = queue.Queue()
         self.reader = None
@@ -227,6 +254,8 @@ class BaseKeysNode(Node):
         while not self._stop.is_set() and ctx.ok():
             if self.sm.held_bits:
                 timeout = 0.02                       # long-press tick while a key is held
+            elif self.power_seq.busy:
+                timeout = 0.1                        # power-off settle timer
             elif self.reader is None:
                 timeout = max(0.0, self.reopen_period
                               - (time.monotonic() - self._last_open_try))
@@ -267,7 +296,11 @@ class BaseKeysNode(Node):
             bits = self.sm.feed(etype, code, value, t)
             if self.sm.unknown_codes:
                 for c in self.sm.unknown_codes:
-                    self.get_logger().info('unknown key code %d (no mapping)' % c)
+                    if c == kl.VENDOR_KEY_POWER_LONG_RELEASE:
+                        self.get_logger().info('power long press released (KEY_R; the kernel '
+                                               'module now runs /usr/bin/sys_close)')
+                    else:
+                        self.get_logger().info('unknown key code %d (no mapping)' % c)
                 self.sm.unknown_codes.clear()
             for b in bits:
                 self._emit(b)
@@ -275,6 +308,8 @@ class BaseKeysNode(Node):
                 self._publish(0)      # vendor: release -> key 0
         for b in self.sm.tick(now):
             self._emit(b)
+        for step in self.power_seq.tick(now):
+            self._power_step(step)
         if self.reader is None and now - self._last_open_try >= self.reopen_period:
             self._try_open()
 
@@ -325,6 +360,12 @@ class BaseKeysNode(Node):
             log.info(a.note)
             self._call(self.cli_hlc, HighLevelControl.Request(command=a.arg),
                        'high_level_control(%d)' % a.arg)
+        elif a.kind == 'power_sequence':
+            log.warn(a.note)
+            steps = self.power_seq.on_power_long(time.monotonic(), ph.read_uptime(),
+                                                 os.path.isdir(self.power_request_dir))
+            for step in steps:
+                self._power_step(step)
         elif a.kind == 'poweroff_service':
             log.warn(a.note)
             self._call(self.cli_poweroff, Empty.Request(), 'poweroff')
@@ -339,6 +380,37 @@ class BaseKeysNode(Node):
                 log.warn('%s: wrote %s' % (a.note, self.shutdown_hook_file))
             except OSError as e:
                 log.error('shutdown hook write failed: %s' % e)
+
+    def _power_step(self, step):
+        log = self.get_logger()
+        if step.kind == 'log':
+            log.warn(step.note)
+        elif step.kind == 'error':
+            log.error(step.note)
+        elif step.kind == 'estop':
+            log.warn(step.note)
+            self.pub_estop.publish(Bool(data=True))
+        elif step.kind == 'hlc_stop':
+            log.warn(step.note)
+            self._call(self.cli_hlc, HighLevelControl.Request(command=kl.CMD_STOP),
+                       'high_level_control(STOP)')
+        elif step.kind == 'cutter_off':
+            log.warn(step.note)
+            self._call(self.cli_cutter_off, Trigger.Request(), 'cutter_off')
+        elif step.kind == 'light_poweroff':
+            if self.cli_light is not None:
+                self._call(self.cli_light,
+                           LightControl.Request(mode=LightMode(light_mode=LightMode.POWER_OFF)),
+                           'light_control(PowerOff)')
+        elif step.kind == 'write_request':
+            try:
+                path = ph.write_request(ph.make_request(
+                    'base_keys', ph.read_boot_id(), ph.read_uptime(),
+                    hl_state=self.hl_state), self.power_request_dir)
+                log.warn('%s: wrote %s' % (step.note, path))
+            except OSError as e:
+                log.error('power off request write failed: %s' % e)
+                self.power_seq.request_failed()
 
     def destroy_node(self):
         self._stop.set()

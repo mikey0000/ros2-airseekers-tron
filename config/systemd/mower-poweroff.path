@@ -1,0 +1,13 @@
+# Power-button shutdown (docs/buttons.md "Power off"): base_keys (container) or the kernel hook
+# /usr/bin/sys_close writes /userdata/ros2/power/shutdown_request; this starts the handler.
+# Install: scripts/install_power_button.sh (run on the mower host as root).
+[Unit]
+Description=Watch for a power-button shutdown request from the ROS 2 stack
+RequiresMountsFor=/userdata/ros2
+
+[Path]
+PathExists=/userdata/ros2/power/shutdown_request
+Unit=mower-poweroff.service
+
+[Install]
+WantedBy=multi-user.target

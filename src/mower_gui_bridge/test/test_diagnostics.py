@@ -171,3 +171,32 @@ def test_heading_status_entry():
     names = by_name(d.build_statuses(snapshot(heading='{"aligned": false, "source": "none"}')))
     assert names['tron: Heading'].level == d.WARN
     assert 'tron: Heading' not in by_name(d.build_statuses(snapshot()))
+
+
+def test_tilt_status_entry():
+    def js(band, axis='', roll=1.0, pitch=2.0, **kw):
+        import json
+        st = {'band': band, 'level': 0, 'roll_deg': roll, 'pitch_deg': pitch, 'axis': axis,
+              'stale': False, 'imu_age_s': 0.1, 'since_s': 3.0,
+              'thresholds': {'roll': [15, 22, 30], 'pitch': [15, 22, 30]}}
+        st.update(kw)
+        return json.dumps(st)
+
+    ok = d.tilt_status(js('ok'))
+    assert ok.level == d.OK and ok.name == 'tron: Tilt' and 'roll 1, pitch 2' in ok.message
+    vals = dict(ok.values)
+    assert vals['Band'] == 'ok' and vals['Roll (deg)'] == '1.0' and vals['Axis'] == '-'
+    assert vals['Roll thresholds (deg)'] == '15/22/30' and vals['IMU age'] == '0.1 s'
+    c = d.tilt_status(js('caution', 'roll', roll=-16.4))
+    assert c.level == d.WARN and 'slowed' in c.message and '-16' in c.message
+    lim = d.tilt_status(js('limit', 'pitch', pitch=23.0))
+    assert lim.level == d.WARN and 'backing out' in lim.message and 'pitch 23' in lim.message
+    crit = d.tilt_status(js('critical', '', roll=5.0, pitch=-31.0))
+    assert crit.level == d.ERROR and 'blade off' in crit.message and '-31' in crit.message
+    assert d.tilt_status(js('unknown', imu_age_s=None)).level == d.STALE
+    assert d.tilt_status(js('ok', stale=True)).level == d.STALE
+    assert d.tilt_status(None).level == d.STALE
+    assert d.tilt_status('nope').level == d.WARN
+    names = by_name(d.build_statuses(snapshot(tilt=js('caution', 'roll', roll=16.0))))
+    assert names['tron: Tilt'].level == d.WARN
+    assert 'tron: Tilt' not in by_name(d.build_statuses(snapshot()))

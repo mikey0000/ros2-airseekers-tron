@@ -18,6 +18,7 @@ the overall state triggers the stop actions (zero-twist burst + cutter off).
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import math
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 # Must match det_ros/labels.py BEST_LARGE_CLASSES (best_large_0208.rknn export order).
@@ -43,6 +44,8 @@ class Box:
     h: float
     range_m: Optional[float] = None     # measured range (m), None = unknown
     bearing_deg: Optional[float] = None  # measured bearing (deg, base_link, left +)
+    x_m: Optional[float] = None          # ranged position in base_link (m), None = unranged
+    y_m: Optional[float] = None
 
     @property
     def x1(self) -> float:
@@ -275,6 +278,12 @@ class MotionState:
 
     def _recent(self, t: Optional[float], now: float) -> bool:
         return t is not None and now - t <= self.cfg.hold_s
+
+    def reversing(self, now: float) -> bool:
+        return self._recent(self._last_rev, now)
+
+    def forward(self, now: float) -> bool:
+        return self._recent(self._last_fwd, now)
 
     def relevant(self, now: float, strict_sides: bool = True) -> set:
         """Front counts unless the robot is only reversing (standing still / about to drive
@@ -533,3 +542,220 @@ def tick_rate_hz(activity, busy, burst_rate_hz, idle_rate_hz):
     if busy or activity not in LOW_POWER_ACTIVITIES or idle_rate_hz <= 0.0:
         return float(burst_rate_hz)
     return min(float(idle_rate_hz), float(burst_rate_hz))
+
+
+# ---------------------------------------------------------------------------
+# Rear camera: reverse corridor + dock awareness (2026-10-09)
+# ---------------------------------------------------------------------------
+# Owner: rear sensing had been switched off because a person standing behind the dock made
+# the robot refuse to dock. Rule now: while reversing (or docking in reverse) a rear
+# detection only counts when its ground position (det_range mono range, base_link) lies in
+# the CORRIDOR the robot is about to sweep: robot half width + margin either side, from the
+# rear edge back to ``range_m``; while the dock marker is known the corridor runs from the
+# rear edge TO THE DOCK and stops ``dock_margin_m`` short of it, so anybody at, beside or
+# behind the charger is ignored and only something between the robot and the dock holds it.
+
+@dataclass
+class RearConfig:
+    enabled: bool = True
+    # living things -> kind 'dynamic' (mission: stop + wait; docking: hold)
+    classes: Sequence[str] = field(default_factory=lambda: list(DEFAULT_WHITELIST))
+    # opt-in solid classes -> kind 'static' (the rear camera is new to the model: default none)
+    static_classes: Sequence[str] = field(default_factory=list)
+    min_score: float = 0.5
+    rear_edge_x_m: float = -0.25     # robot rear edge in base_link (chassis -0.23 + bumper)
+    half_width_m: float = 0.27       # chassis 0.5 m / wheels at +-0.24 (+0.025)
+    margin_m: float = 0.20           # lateral margin: object half width + mono lateral error
+    range_m: float = 1.2             # corridor length behind the rear edge (no dock known)
+    behind_tol_m: float = 0.10       # a point this far forward of the rear edge still counts
+    dock_margin_m: float = 0.25      # within this of the dock foot (or beyond) = at the dock
+    dock_max_range_m: float = 2.5    # corridor length cap while the dock is known
+    unranged_h_frac: float = 0.50    # unranged box: close when this tall ...
+    unranged_center_frac: float = 0.5  # ... and its centre in the central band of this width
+    persist_frames: int = 2
+
+
+def dock_foot_xy(marker_xyz: Sequence[float], cam_xyz: Sequence[float],
+                 cam_rpy: Sequence[float], marker_height_m: float = -1.0,
+                 ground_z: float = 0.0) -> Tuple[float, float]:
+    """Ground point under the dock marker in base_link, comparable with det_range's mono
+    ranges.
+
+    ``marker_height_m`` < 0: the marker's planar position (PnP, accurate) as is. Known
+    (>= 0, marker centre above the lawn): the foot is rebuilt in the CAMERA frame
+    (PnP position + height along the nominal "down") and intersected with the ground
+    through the same nominal camera pose det_range uses, so a camera pitch error biases
+    the dock foot exactly like the detections (dR ~ R^2/h per rad, ~10 cm/deg at 1.2 m)
+    and "beyond the dock" stays right even with an uncalibrated pitch."""
+    mx, my, mz = (float(v) for v in marker_xyz)
+    if marker_height_m is None or marker_height_m < 0.0:
+        return mx, my
+    r = _rpy(*cam_rpy)
+    t = [float(v) for v in cam_xyz]
+    d = [mx - t[0], my - t[1], mz - t[2]]
+    m_c = [sum(r[i][j] * d[i] for i in range(3)) for j in range(3)]      # R^T d
+    down_c = [-r[2][j] for j in range(3)]                                 # R^T (0,0,-1)
+    f_c = [m_c[j] + marker_height_m * down_c[j] for j in range(3)]
+    rb = [sum(r[i][j] * f_c[j] for j in range(3)) for i in range(3)]      # R f_c
+    if rb[2] >= -1e-6 or t[2] <= ground_z:
+        return mx, my
+    s = (ground_z - t[2]) / rb[2]
+    return t[0] + s * rb[0], t[1] + s * rb[1]
+
+
+def _rpy(roll: float, pitch: float, yaw: float):
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    return [[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+            [-sp, cp * sr, cp * cr]]
+
+
+def rear_corridor(x: float, y: float, cfg: RearConfig,
+                  dock: Optional[Tuple[float, float]] = None) -> Tuple[bool, str]:
+    """Is the ground point (x, y) (base_link) in the reverse corridor? ``dock`` = dock foot
+    (:func:`dock_foot_xy`) when the marker is known: the corridor then points from the rear
+    edge at the dock and ends ``dock_margin_m`` before it (capped at ``dock_max_range_m``).
+    Returns ``(inside, reason)``."""
+    r0x = cfg.rear_edge_x_m
+    if dock is not None:
+        dx, dy = dock[0] - r0x, dock[1]
+        dist = math.hypot(dx, dy)
+        if dist < 1e-6:
+            return False, 'at the dock'
+        ux, uy = dx / dist, dy / dist
+        length = min(dist - cfg.dock_margin_m, cfg.dock_max_range_m)
+    else:
+        ux, uy, length = -1.0, 0.0, cfg.range_m
+    px, py = x - r0x, y
+    along = px * ux + py * uy
+    lat = abs(px * uy - py * ux)
+    half = cfg.half_width_m + cfg.margin_m
+    if lat > half:
+        return False, 'outside the reverse corridor (%.2f m to the side)' % lat
+    if along < -cfg.behind_tol_m:
+        return False, 'beside the robot, not behind it'
+    if along > length:
+        if dock is not None:
+            return False, 'at / behind the dock (%.2f m, dock %.2f m)' % (along, dist)
+        return False, 'too far (%.2f m > %.2f m)' % (along, length)
+    return True, 'in the reverse corridor %.2f m behind' % max(0.0, along)
+
+
+def rear_policy(boxes: Iterable[Box], cfg: RearConfig, image_width: float,
+                image_height: float, dock: Optional[Tuple[float, float]] = None,
+                persistence: Optional[Persistence] = None, source: str = 'rear',
+                ignored: Optional[list] = None) -> dict:
+    """Policy of one rear-camera frame (call only while the rear counts: reversing or
+    docking in reverse). Ranged boxes (``x_m``/``y_m``) must lie in :func:`rear_corridor`.
+    Unranged boxes count only without a known dock (bbox height >= ``unranged_h_frac`` and
+    centre in the central ``unranged_center_frac`` of the image). ``persist_frames``
+    consecutive qualifying frames per class (``persistence``, None = not required).
+    Closest dynamic wins over static. Dismissed boxes of a counted class go to
+    ``ignored`` as ``(box, reason)``."""
+    if not cfg.enabled:
+        if persistence is not None:
+            persistence.step(source, ())
+        return dict(NONE_POLICY)
+    dyn = {c.strip().lower() for c in cfg.classes}
+    stat = {c.strip().lower() for c in cfg.static_classes} - dyn
+    cands = []
+    for b in boxes:
+        lab = b.label.strip().lower()
+        kind = 'dynamic' if lab in dyn else 'static' if lab in stat else None
+        if kind is None or b.score < cfg.min_score:
+            continue
+        if b.x_m is not None and b.y_m is not None:
+            inside, why = rear_corridor(b.x_m, b.y_m, cfg, dock)
+        elif dock is not None:
+            inside, why = False, 'unranged while the dock marker is in view'
+        else:
+            hf = b.h / image_height if image_height > 0 else 0.0
+            off = abs(b.cx - image_width / 2.0) / image_width if image_width > 0 else 1.0
+            inside = hf >= cfg.unranged_h_frac and off <= cfg.unranged_center_frac / 2.0
+            why = 'unranged, height %d%%, %s' % (
+                round(hf * 100), 'central' if off <= cfg.unranged_center_frac / 2.0
+                else 'off-centre')
+        if not inside:
+            if ignored is not None:
+                ignored.append((b, why))
+            continue
+        cands.append((kind, b))
+    counts = (persistence.step(source, [b.label for _, b in cands])
+              if persistence is not None else {})
+    best = {}
+    for kind, b in cands:
+        n = counts.get(b.label.strip().lower(), cfg.persist_frames)
+        if persistence is not None and n < cfg.persist_frames:
+            if ignored is not None:
+                ignored.append((b, '%d/%d frames' % (n, cfg.persist_frames)))
+            continue
+        key = b.range_m if b.range_m is not None else float('inf')
+        if kind not in best or key < best[kind][0]:
+            best[kind] = (key, b)
+    for kind in ('dynamic', 'static'):
+        if kind in best:
+            return _policy_dict(kind, best[kind][1], CAM_REAR, float(image_height))
+    return dict(NONE_POLICY)
+
+
+# /mower_docking/state values in which the robot reverses onto the dock (rear counts and
+# a rear hit holds the docking FSM); ALIGNING additionally arms the detector early.
+DOCK_REVERSE_STATES = frozenset(('SEARCHING', 'DOCKING', 'FINAL_DOCKING'))
+DOCK_ARM_STATES = DOCK_REVERSE_STATES | {'ALIGNING'}
+
+
+class RearRelevance:
+    """When the rear camera counts and when det_ros should run it.
+
+    * counts (``active``): reverse commanded within ``MotionConfig.hold_s`` (MotionState), OR
+      docking in a reverse state, OR a rear hit within ``sticky_s`` while the robot is
+      not driving forward: a hold zeroes /cmd_vel, and without stickiness the rear would
+      stop counting the moment the robot stops -> resume -> hit -> stop oscillation.
+    * ``watch`` (det_ros gate, /vision/rear_watch): active, OR reverse within
+      ``watch_hold_s`` (coverage turns reverse in bursts), OR docking in ALIGNING too.
+    """
+
+    def __init__(self, sticky_s: float = 20.0, watch_hold_s: float = 5.0,
+                 dock_state_timeout_s: float = 1.0):
+        self.sticky_s = float(sticky_s)
+        self.watch_hold_s = float(watch_hold_s)
+        self.dock_state_timeout_s = float(dock_state_timeout_s)
+        self._dock_state = ''
+        self._dock_t: Optional[float] = None
+        self._last_hit: Optional[float] = None
+        self._last_rev: Optional[float] = None
+
+    def update_dock_state(self, state: str, now: float) -> None:
+        self._dock_state, self._dock_t = str(state or ''), now
+
+    def dock_state(self, now: float) -> str:
+        if self._dock_t is None or now - self._dock_t > self.dock_state_timeout_s:
+            return ''
+        return self._dock_state
+
+    def docking_reverse(self, now: float) -> bool:
+        return self.dock_state(now) in DOCK_REVERSE_STATES
+
+    def note_reverse(self, now: float) -> None:
+        self._last_rev = now
+
+    def note_hit(self, now: float) -> None:
+        self._last_hit = now
+
+    def clear_hits(self) -> None:
+        self._last_hit = None
+
+    def active(self, reversing: bool, forward: bool, now: float) -> bool:
+        if reversing or self.docking_reverse(now):
+            return True
+        return (not forward and self._last_hit is not None
+                and now - self._last_hit <= self.sticky_s)
+
+    def watch(self, reversing: bool, forward: bool, now: float) -> bool:
+        if self.active(reversing, forward, now):
+            return True
+        if self.dock_state(now) in DOCK_ARM_STATES:
+            return True
+        return self._last_rev is not None and now - self._last_rev <= self.watch_hold_s

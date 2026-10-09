@@ -99,6 +99,29 @@ func (hc *MqttProvider) subscribeToRos() {
 	hc.subscribeToRosTopic("path", "mqtt-path")
 	hc.subscribeToRosTopic("plan", "mqtt-plan")
 	hc.subscribeToRosTopic("mowingPath", "mqtt-mowing-path")
+	hc.subscribeToAlerts()
+}
+
+// subscribeToAlerts republishes alert-node alerts (not heartbeats) as
+// <prefix>/alerts. Not retained: an alert is an event, and a late subscriber
+// must not be told about a theft from last week. Events are rare, so no
+// throttling sleep like the state topics.
+func (hc *MqttProvider) subscribeToAlerts() {
+	err := hc.rosProvider.Subscribe("alerts", "mqtt-alerts", 0, func(msg []byte) {
+		inner := UnwrapAlertPayload(msg)
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(inner, &head) != nil || head.Type != "alert" {
+			return
+		}
+		if err := hc.server.Publish(hc.prefix+"/alerts", inner, false, 0); err != nil {
+			logrus.Error(xerrors.Errorf("Failed to publish alerts: %w", err))
+		}
+	})
+	if err != nil {
+		logrus.Error(xerrors.Errorf("Failed to subscribe to alerts: %w", err))
+	}
 }
 
 func (hc *MqttProvider) subscribeToRosTopic(topic string, id string) {

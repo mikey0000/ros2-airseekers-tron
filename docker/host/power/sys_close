@@ -1,0 +1,9 @@
+#!/bin/sh
+# /usr/bin/sys_close: called by the vendor kernel module init_test.ko (call_usermodehelper, as
+# root, env HOME=/ PATH=/sbin:/bin:/usr/sbin:/usr/bin) when a >= 3 s power-key hold is RELEASED.
+# The vendor shipped it as an empty bash script. We forward it as a shutdown request so the power
+# button still works when the ROS 2 stack is down; mower-poweroff-host waits KERNEL_GRACE_S for
+# the stack's own request (which comes after it has stopped the mission) before acting.
+# Installed by scripts/install_power_button.sh (original kept as /usr/bin/sys_close.vendor).
+exec /usr/bin/python3 /usr/local/sbin/mower-poweroff-host request --source kernel \
+    >/dev/kmsg 2>&1

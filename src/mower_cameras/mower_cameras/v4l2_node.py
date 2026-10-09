@@ -19,7 +19,10 @@ CPU (RK3588, 1080p UYVY): the colour conversion is the cost, so
 * ``publish_on_demand`` (default true): a frame is only converted/published while
   ``image_raw`` (or ``compressed`` / ``camera_info``) has subscribers (det_ros, seg_ros,
   web_video_server and foxglove subscribe on demand); otherwise the buffer is dequeued and
-  given straight back, never copied;
+  given straight back, never copied. After ``close_when_unused_s`` (5 s) without any
+  subscriber the device itself is closed (no sensor/ISP stream, no 3A, no dequeue) and it
+  is reopened on the next subscriber (polled every 0.2 s); at start-up it is not opened
+  until somebody subscribes;
 * frames are converted straight from the mmap'ed V4L2 buffer into a pre-serialized Image
   (:mod:`mower_cameras.image_cdr`) and published as bytes (``fast_publish``);
 * ``publish_width`` (0 = native) decimates packed 4:2:2 input by an integer factor
@@ -86,7 +89,7 @@ class CaptureLoop(threading.Thread):
     """
 
     def __init__(self, logger, device, width, height, pixel_format, fps, on_frame,
-                 backend='v4l2', name='capture', want=None):
+                 backend='v4l2', name='capture', want=None, close_when_unused_s=0.0):
         super().__init__(daemon=True, name=name)
         self.log = logger
         self.device, self.width, self.height = device, int(width), int(height)
@@ -98,6 +101,12 @@ class CaptureLoop(threading.Thread):
         self.pause_fn = None
         self.pause_poll_s = 0.2
         self.paused = False
+        # With ``want``: close the device once nobody has wanted a frame for this long
+        # (0 = keep streaming and only skip frames). Reopened on the next poll that sees a
+        # subscriber. The device also stays closed at start-up until somebody subscribes.
+        self.close_when_unused_s = float(close_when_unused_s or 0.0)
+        self._unwanted_since = None
+        self.unused = False         # closed because nobody subscribes (vs pause_fn)
         self.stop_evt = threading.Event()
         self.skipped = 0
         self.captured = 0           # frames dequeued (published or skipped)
@@ -138,6 +147,24 @@ class CaptureLoop(threading.Thread):
                 pass
             self.cap = None
 
+    def _closed_for_unused(self, now):
+        """True while the device should stay closed because nobody wants frames.
+
+        Never-wanted-yet counts as unused from the start (no open at boot); once wanted,
+        the device is kept for ``close_when_unused_s`` after the last subscriber left, so
+        a viewer that reconnects (or a 1 Hz snapshot poller) does not cycle the device.
+        """
+        if self.want is None or self.close_when_unused_s <= 0.0:
+            return False
+        if self.want():
+            self._unwanted_since = None
+            return False
+        if self.cap is None:
+            return True             # not open (start-up / closed): stay closed
+        if self._unwanted_since is None:
+            self._unwanted_since = now
+        return now - self._unwanted_since >= self.close_when_unused_s
+
     def _keep(self, last_pub, period):
         """Decide before touching the pixels: rate cap, then subscriber interest."""
         now = time.monotonic()
@@ -154,15 +181,23 @@ class CaptureLoop(threading.Thread):
         backoff, fails, last_pub = 1.0, 0, 0.0
         period = 1.0 / self.fps if self.fps > 0 else 0.0
         while not self.stop_evt.is_set():
-            if self.pause_fn is not None and self.pause_fn():
-                if not self.paused:
-                    self.paused = True
+            forced = self.pause_fn is not None and self.pause_fn()
+            unused = not forced and self._closed_for_unused(time.monotonic())
+            if forced or unused:
+                if not self.paused or self.unused != unused:
+                    self.paused, self.unused = True, unused
+                    was_open = self.cap is not None
                     self._close()
-                    self.log.info(f'{self.device}: paused (device closed)')
+                    if unused:
+                        self.log.info(f'{self.device}: no subscribers'
+                                      f'{" (device closed)" if was_open else ""}; '
+                                      'opening on demand')
+                    else:
+                        self.log.info(f'{self.device}: paused (device closed)')
                 self.stop_evt.wait(self.pause_poll_s)
                 continue
             if self.paused:
-                self.paused = False
+                self.paused, self.unused = False, False
                 self.log.info(f'{self.device}: resuming')
             if self.cap is None:
                 try:
@@ -238,6 +273,9 @@ class V4L2CamNode(Node):
         d('publish_on_demand', True)    # convert/publish only while somebody subscribes
         d('publish_width', 0)           # 0 = native; else width/publish_width must be an int
         d('fast_publish', True)         # pre-serialized Image (bytes) publishing
+        # on_demand: close the device (sensor/ISP stream off) after this many seconds
+        # without subscribers; reopened on the next subscriber (0 = keep it streaming)
+        d('close_when_unused_s', 5.0)
         p = lambda n: self.get_parameter(n).value  # noqa: E731
 
         self.frame_id = p('frame_id') or self.get_namespace().strip('/') or 'camera'
@@ -274,7 +312,8 @@ class V4L2CamNode(Node):
         self.loop = CaptureLoop(self.get_logger(), p('video_device'), p('width'), p('height'),
                                 p('pixel_format'), p('fps'), self._on_frame, 'v4l2',
                                 name=f'cap:{self.frame_id}',
-                                want=self._wanted if self.on_demand else None)
+                                want=self._wanted if self.on_demand else None,
+                                close_when_unused_s=p('close_when_unused_s'))
         # idle (docked / parked): 1 fps unless a GUI client watches the compressed stream
         self._base_period = 1.0 / float(p('fps')) if float(p('fps')) > 0 else 0.0
         self.activity = ActivityWatch(lambda a: self.get_logger().info(
@@ -376,7 +415,7 @@ class V4L2CamNode(Node):
         now, n = time.monotonic(), self.loop.captured
         rate = (n - self._last_frames) / (now - self._last_t)
         self._last_frames, self._last_t = n, now
-        if rate < 1.0:
+        if rate < 1.0 and not self.loop.paused:   # closed on purpose: no subscribers
             self.get_logger().warning(f'{self.frame_id}: {rate:.1f} fps captured (stalled?)')
 
     def destroy_node(self):

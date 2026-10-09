@@ -71,7 +71,7 @@ import {appendTrack, planStretches, type TrackPoint} from "../utils/missionProgr
 import {hasLiveProgress, MowProgressCard} from "./map/components/MowProgressCard.tsx";
 import {MissionStatusLine} from "./map/components/MissionStatusLine.tsx";
 import {useTopic} from "../hooks/useTopic.ts";
-import {canResume, CMD_RECORD_PATH, CMD_START, recordingKind} from "../utils/missionStates.ts";
+import {canResume, CMD_RECORD_PATH, CMD_RECORD_OBSTACLE, CMD_START, recordingKind} from "../utils/missionStates.ts";
 import type {AbsolutePose} from "../types/ros.ts";
 import {postTerrainAction, useTerrainSummary} from "../hooks/useTerrain.ts";
 import {TerrainCard} from "./map/components/TerrainCard.tsx";
@@ -433,7 +433,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const hlState = highLevelStatus.highLevelStatus.state_name;
     const hlSub = highLevelStatus.highLevelStatus.sub_state_name;
     const recordKind = recordingKind(hlState, hlSub);
-    const lastRecordKind = useRef<"area" | "path" | null>(null);
+    const lastRecordKind = useRef<"area" | "path" | "obstacle" | null>(null);
     const [pendingPath, setPendingPath] = useState<{name: string; since: number} | null>(null);
     useEffect(() => {
         if (recordKind) lastRecordKind.current = recordKind;
@@ -1124,6 +1124,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         onEmergencyOff: mowerAction("emergency", {Emergency: 0}),
         onAreaRecording: mowerAction("high_level_control", {Command: 3}),
         onPathRecording: mowerAction("high_level_control", {Command: CMD_RECORD_PATH}),
+        onObstacleRecording: mowerAction("high_level_control", {Command: CMD_RECORD_OBSTACLE}),
         onMowNextArea: mowerAction("high_level_control", {Command: 4}),
         // Match MapToolbar's isIdle: the BT publishes IDLE_DOCKED as the
         // primary resting state; "IDLE" without a suffix only appears as the

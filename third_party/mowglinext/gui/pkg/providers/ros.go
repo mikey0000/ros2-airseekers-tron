@@ -114,6 +114,11 @@ var topicMap = map[string]topicDef{
 	// a distinct log line, so it is delivered through a queue, never coalesced
 	// (see queuedTopics).
 	"rosout": {"/rosout", "rcl_interfaces/msg/Log"},
+	// Operator alerts from the mower_alerts node (theft, lift, stuck, ...):
+	// std_msgs/String whose data is JSON, arriving here as {"data":"..."}. Every
+	// event matters, so it is queued (see queuedTopics) and fed to the push
+	// notifier and MQTT.
+	"alerts": {"/mower_alerts/events", "std_msgs/msg/String"},
 }
 
 // queuedTopics lists logical keys whose subscribers must see every message, in
@@ -123,6 +128,7 @@ var topicMap = map[string]topicDef{
 // without bound. The throttle interval does not apply to these topics.
 var queuedTopics = map[string]int{
 	"rosout": 2000,
+	"alerts": 200,
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +538,8 @@ func (r *RosProvider) fanOut(logicalKey string, msg []byte) {
 			r.notifier.Enqueue(append([]byte(nil), msg...))
 		case "map":
 			r.notifier.EnqueueMap(append([]byte(nil), msg...))
+		case "alerts":
+			r.notifier.EnqueueAlert(append([]byte(nil), msg...))
 		}
 	}
 }

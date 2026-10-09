@@ -1,0 +1,12 @@
+# /etc/default/mower-poweroff: power-button shutdown (docs/buttons.md "Power off").
+# DRY_RUN=1: validate and log every request (journalctl -t mower-poweroff) but never power off.
+DRY_RUN=1
+# MCU_POWER_CUT=1: after the OS has halted, tell the mower MCU to cut the battery (vendor
+# /poweroff frame). Leave 0 until a DRY_RUN=0 test has shown a clean host halt.
+MCU_POWER_CUT=0
+# Requests made earlier than this after boot are ignored (power-on press still held).
+MIN_UPTIME_S=30
+# Requests older than this (kernel uptime clock) are ignored.
+MAX_AGE_S=120
+# Kernel-only request (released hold): wait this long for the stack's own request.
+KERNEL_GRACE_S=6

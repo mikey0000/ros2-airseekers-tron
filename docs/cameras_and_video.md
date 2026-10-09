@@ -104,6 +104,7 @@ reproduces them.
   The GUI proxies it as `:4006/api/cameras/<id>/stream` and `/snapshot` (quality 50,
   640x360, ≤ 5 fps per viewer; see `gui/pkg/api/cameras.go`). web_video_server only
   subscribes and encodes while a client is connected, so the idle cost is about zero.
+  See "On-demand video" below for the whole chain (GUI, web_video_server, drivers).
 
 ## 2. Models (deploy flow)
 
@@ -439,3 +440,56 @@ unchanged by the downscale apart from the lower input resolution, and its bboxes
 960x540 pixel space. `obstacle_guard` follows `camera_info` (see above). Use
 `oa_publish_width:=0` for native 1920x1080 (e.g. recording full-resolution data); Foxglove
 image panels and `ImageMarker` overlays work at either size.
+
+
+## On-demand video (2026-10-09)
+
+Goal: a camera runs, and is encoded, only while somebody consumes it.
+
+Measured on the mower before the change (load average 13 on 8 cores): one desktop browser
+had the Perception page open (it streamed every camera as soon as the page opened, and
+kept streaming in a background tab on desktop): 3 MJPEG streams (left_oa and right_oa
+annotated, rear), plus 1 Hz snapshot polling of both front stereo eyes (tiles beyond the
+third), plus the map PiP at 15 fps, plus 5 health polls/s. Each health poll fetched
+web_video_server's index page, which enumerates the ROS graph, so there were hundreds of
+TIME_WAIT sockets on :8080. web_video_server used about 35 % CPU. No mediamtx relay was
+running, and neither foxglove_bridge nor the bag recorder subscribed to an image topic.
+The OA cameras are also subscribed by det_ros (detection; legitimate), and their
+camera_info by gui_bridge (diagnostics freshness).
+
+The chain now:
+
+1. **GUI** (`gui/web`):
+   - The Perception page streams only the first camera on open. The user starts the
+     others with the tile's play button, and the choice is remembered per browser
+     (`localStorage` `perception.startedCameras`).
+   - Every stream, and the detections feed, stops while the browser tab is hidden (on
+     desktop too) and resumes when the tab is shown again. The map PiP behaves the same.
+   - MJPEG `<img>`s go through `MjpegImg`, which points the element at a `data:` URL when
+     it unmounts or its URL changes. This aborts the HTTP request at once; a merely
+     detached `<img>` can keep loading until it is garbage-collected.
+   - The Go proxy caches the web_video_server index probe for 2 s, so the health polls
+     share one upstream request.
+2. **web_video_server** 3.1.0 (unchanged, verified in the dev image): it subscribes when
+   an HTTP client connects and drops the subscription about 0.5 s after the client leaves.
+   A snapshot subscribes only for that one frame.
+3. **Drivers** (`mower_cameras` `v4l2_cam`, `camera_node` rear, `stereo_cam`; parameter
+   `close_when_unused_s`, default 5 s):
+   - With `publish_on_demand` set, the device is not opened at start-up until a
+     subscriber appears.
+   - The device is closed when the topic has had no subscriber for 5 s. That stops the
+     sensor and ISP stream, the 3A, and the dequeue loop.
+   - The device reopens on the next subscriber. The poll runs every 0.2 s, and then the
+     device open time adds to the delay.
+   - The 5 s linger keeps a reconnecting viewer from cycling the device.
+   - `0` gives the old behaviour: the device keeps streaming, and frames are dequeued and
+     dropped.
+
+Consumers that keep a camera open by design: det_ros (OA cameras and the front right eye,
+at 1 Hz while the mission is idle), det_ros on the rear camera only while
+`/vision/rear_watch` is open, docking (rear, while a vision dock runs), and gui_bridge's
+camera_info freshness check on the OA cameras.
+
+To check on the robot: `GET :4006/api/cameras` shows `viewers` per topic, and the topic
+subscriber list should show no `web_video_server` while no GUI view is open. The driver
+logs `<dev>: no subscribers (device closed); opening on demand` and later `resuming`.

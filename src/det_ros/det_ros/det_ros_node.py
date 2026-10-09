@@ -13,6 +13,11 @@ the input): one per camera on ``/<camera_ns>/image_annotated`` (e.g.
 debug topic ``/ai/det/image_annotated``. Annotation is on demand: a frame is drawn and
 encoded only when one of those topics has a subscriber (same pattern as the camera nodes).
 
+Gated cameras (``gated_topics``, 2026-10-09: the rear camera, NPU budget): subscribed only
+while ``gate_topic`` (std_msgs/Bool, latched; obstacle_guard ``/vision/rear_watch``) is true;
+no message yet = closed. ``gated_idle_rate_hz`` > 0 keeps them subscribed at that rate
+while closed. Same parameters as det_ros_cpp.
+
 Startup (see ``mower_rknn.startup``): ``model_path`` defaults to the device path
 ``/userdata/ros2/models/best_large_0208.rknn``; when it is missing the basename is tried
 in ``models_dir``. Without ``rknnlite`` / the model the node exits with one clear error,
@@ -71,6 +76,9 @@ class DetRosNode(Node):
         self.declare_parameter('extra_topics', [''])
         self.declare_parameter('publish_annotated', True)
         self.declare_parameter('max_rate_hz', 5.0)  # per camera; 0 = every frame
+        self.declare_parameter('gated_topics', [''])
+        self.declare_parameter('gate_topic', '/vision/rear_watch')
+        self.declare_parameter('gated_idle_rate_hz', 0.0)
 
         self.model_path = self.get_parameter('model_path').value
         self.models_dir = self.get_parameter('models_dir').value
@@ -105,6 +113,10 @@ class DetRosNode(Node):
         topics = [self.get_parameter('left_topic').value,
                   self.get_parameter('right_topic').value]
         topics += [str(t) for t in self.get_parameter('extra_topics').value]
+        self.gated = {str(t) for t in self.get_parameter('gated_topics').value if str(t)}
+        self.gated_idle_rate = float(self.get_parameter('gated_idle_rate_hz').value)
+        self.gate_open = False
+        self._gated_subs = {}       # topic -> (worker, subscription or None)
         for i, topic in enumerate(t for t in topics if t):
             self.cam_ann_pubs[topic] = self.create_publisher(
                 Image, annotated_topic_for(topic), sensor_qos)
@@ -115,15 +127,49 @@ class DetRosNode(Node):
                                         core, False)
                 self._runners[core] = runner
             worker = _CameraWorker(self, topic, runner)
+            worker.gated = topic in self.gated
             self._workers.append(worker)
-            self.subs.append(self.create_subscription(
-                Image, topic, worker.offer, sensor_qos))
+            if worker.gated:
+                sub = (self.create_subscription(Image, topic, worker.offer, sensor_qos)
+                       if self.gated_idle_rate > 0.0 else None)
+                self._gated_subs[topic] = (worker, sub)
+            else:
+                self.subs.append(self.create_subscription(
+                    Image, topic, worker.offer, sensor_qos))
             self.get_logger().info(f'{topic} -> NPU core_mask {core}')
             worker.start()
 
+        gate_topic = str(self.get_parameter('gate_topic').value)
+        if self._gated_subs and gate_topic:
+            from std_msgs.msg import Bool
+            self.create_subscription(
+                Bool, gate_topic, lambda m: self.set_gate(bool(m.data)),
+                rclpy.qos.QoSProfile(
+                    depth=1, durability=rclpy.qos.DurabilityPolicy.TRANSIENT_LOCAL,
+                    reliability=rclpy.qos.ReliabilityPolicy.RELIABLE))
         self.get_logger().info(
             f'det_ros up: {len(self.classes)} classes, core_mask={self.core_mask}, '
             f'input {self.img_size[0]}x{self.img_size[1]}, max {self.max_rate_hz} Hz/camera')
+
+    def set_gate(self, open_: bool) -> None:
+        if open_ == self.gate_open:
+            return
+        self.gate_open = open_
+        sensor_qos = rclpy.qos.qos_profile_sensor_data
+        for topic, (worker, sub) in list(self._gated_subs.items()):
+            if open_ and sub is None:
+                sub = self.create_subscription(Image, topic, worker.offer, sensor_qos)
+            elif not open_ and sub is not None and self.gated_idle_rate <= 0.0:
+                self.destroy_subscription(sub)
+                sub = None
+            self._gated_subs[topic] = (worker, sub)
+            self.get_logger().info(f'{topic}: gate {"open" if open_ else "closed"}')
+
+    def rate_for(self, worker) -> float:
+        rate = self.max_rate_hz
+        if getattr(worker, 'gated', False) and not self.gate_open and self.gated_idle_rate > 0:
+            rate = min(rate, self.gated_idle_rate) if rate > 0 else self.gated_idle_rate
+        return rate
 
     # ------------------------------------------------------------------ classes
 
@@ -234,10 +280,11 @@ class _CameraWorker(threading.Thread):
         self.cv = threading.Condition()
         self.msg = None
         self.stopped = False
+        self.gated = False
         self.last = 0.0
 
     def offer(self, msg):
-        rate = self.node.max_rate_hz
+        rate = self.node.rate_for(self)
         if rate > 0.0 and time.monotonic() - self.last < 1.0 / rate:
             return
         with self.cv:

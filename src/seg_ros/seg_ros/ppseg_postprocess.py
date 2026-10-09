@@ -33,6 +33,22 @@ def argmax_mask(logits: np.ndarray) -> np.ndarray:
     return np.argmax(logits, axis=0).astype(np.uint8)
 
 
+def confidence_mask(logits: np.ndarray) -> np.ndarray:
+    """``logits`` ``[C, H, W]`` (or ``[1, C, H, W]``) -> ``[H, W]`` uint8 top-1 softmax
+    probability x 255 (2026-10-09: the non-grass mapper only trusts confident pixels, so a
+    grass shadow or a dry patch the model is unsure about never becomes a non-grass mark).
+
+    softmax max = 1 / sum_i exp(l_i - l_max); computed in float32, one pass per class."""
+    if logits.ndim == 4:
+        logits = logits[0]
+    lg = np.asarray(logits, dtype=np.float32)
+    top = lg.max(axis=0)
+    denom = np.zeros_like(top)
+    for c in range(lg.shape[0]):
+        denom += np.exp(lg[c] - top)
+    return np.clip(np.rint(255.0 / denom), 0, 255).astype(np.uint8)
+
+
 def traversability_mask(class_mask: np.ndarray) -> np.ndarray:
     """Class-index mask -> uint8 traversability (255 = navigable, 0 = obstacle)."""
     trav = np.zeros_like(class_mask, dtype=np.uint8)

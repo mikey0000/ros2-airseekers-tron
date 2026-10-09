@@ -8,7 +8,7 @@ It also maps keys to actions:
 - power short calls `/clear_estop`;
 - start/pause sends `HighLevelControl` START or STOP;
 - dock sends HOME;
-- power long only logs by default.
+- power long (3 s hold, timed by the vendor kernel module) runs the clean power-off sequence: e-stop, mission STOP, cutter off, PowerOff light, then a request to the host helper (`scripts/install_power_button.sh`), which powers the host off and has the MCU cut the battery. See "Power off" in `docs/buttons.md`.
 
 The full key table, vendor behaviour and parameters are in [`docs/buttons.md`](../../docs/buttons.md).
 

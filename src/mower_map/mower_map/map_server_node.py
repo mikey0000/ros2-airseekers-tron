@@ -23,18 +23,20 @@ from rclpy.time import Time
 
 from geometry_msgs.msg import Point32, Polygon as PolygonMsg, PolygonStamped, PoseStamped
 from nav2_msgs.msg import CostmapFilterInfo
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
 from mower_interfaces.msg import MowerBaseDevStatus
-from mower_interfaces.srv import GetAreaSettings, SetAreaSettings
+from mower_interfaces.srv import GetAreaSettings, PlanRoute, SetAreaSettings
 from mowgli_interfaces.msg import GnssStatus, MapArea, MapObstacleInfo, ObstacleArray
 from mowgli_interfaces.srv import (AddMowingArea, ClearObstacle, GetMowingArea,
                                    GetRecoveryPoint, PromoteObstacle, SetDockingPoint)
 
 from mower_map import area_settings as aset
 from mower_map import areas as core
+from mower_map import nongrass_node as ngn
+from mower_map import route_graph as rgraph
 from mower_map import terrain as terr
 from mower_map.sub_pump import SubscriptionPump, flat_parser, parse_odometry
 
@@ -58,6 +60,11 @@ PARAMS = {
     'mask_margin': 2.0,                # lethal ring around the areas' bbox (m)
     'obstacle_margin': 0.0,            # grow obstacles in the mask (m)
     'lethal_outside_areas': True,
+    # 2026-10-09 owner: a mowing area drawn around the dock gets the dock (outline + margin)
+    # as an automatic no-go for coverage (get_mowing_area) and in-area route legs; never stored,
+    # never in the nav mask, ignored by docking.
+    'dock_nogo_in_areas': True,
+    'dock_nogo_margin_m': 0.15,
     'dock_keepout': True,              # dock outline lethal in the MOWING mask only
     # navigation mask (/nav_keepout_mask; Nav2 global costmap + keepout filter):
     # (mowing U navigation areas) grown by nav_margin_m, minus obstacles grown
@@ -68,6 +75,9 @@ PARAMS = {
     # so a drawn path stays a narrow band the planner follows (mowing areas keep
     # nav_margin_m for recovery/docking from just outside)
     'path_margin_m': 0.15,
+    # half-width of the dock corridor and the return corridor (2026-10-09: decoupled from
+    # nav_margin_m, which is now ~0 so routes stay inside the drawn areas / paths)
+    'corridor_half_width_m': 0.35,
     # with a user path (navigation area with channel metadata) the automatic
     # approach -> area leg of the dock corridor costs SOFT_COST (90) instead of
     # free; the dock -> approach capsule stays free
@@ -92,6 +102,12 @@ PARAMS = {
     # soft band (nav mask only): cells outside the free set but within this
     # distance of it cost SOFT_COST (90 of 100; 100 = lethal) instead of lethal
     'nav_soft_band_m': 1.5,
+    # 2026-10-09 (field run 20261008-201401): with a drawn user path the 1.5 m band bridged the
+    # ~1 m of unmapped lawn between Area 1 and the MIDDLE of Path 2, so the planner cut across
+    # instead of entering the path at its start (offline repro: band 1.5 / 0.5 cut across,
+    # 0.3 / 0 follow the path from its start). With user paths the band is this width
+    # instead; a robot that ends up off the map still plans back via the return corridor.
+    'nav_soft_band_with_paths_m': 0.0,
     # return corridor (nav mask only): while the robot pose is outside the free
     # set (areas + nav_margin_m + dock corridor), free a capsule of half-width
     # nav_margin_m from the robot to the closest free cell so Nav2 can plan back.
@@ -177,6 +193,26 @@ PARAMS = {
     'terrain_cost_max': 60,            # nav cost at score 100 (< 65: never lethal)
     'terrain_slope_min_deg': 3.0,      # slope_mode: flatter -> keep the planner's angle
 }
+# 2026-10-09 route-graph transit planner (~/plan_route, docs/route_graph.md): drawn paths
+# along their centreline, in-area legs straight or round the inset perimeter. The graph is
+# rebuilt on the first query after the areas / paths / dock / these params changed.
+PARAMS.update({
+    'route_enabled': True,
+    'route_clearance_m': 0.35,        # in-area legs keep this from area edges / obstacles
+    'route_area_weight': 8.0,         # in-area metres cost this x a path metre (3 -> 8 with mid-path portals)
+    'route_portal_step_m': 0.0,       # mid-path portals; 0 = off (owner: paths end to end)
+    'route_fillet_radius_m': 0.0,     # bends next to path legs rounded; 0 = off (MPPI cut fillets more, sim)
+    'route_corner_margin_m': 0.2,     # in-area bend points this much beyond the clearance
+    'route_nav_area_weight': 1.0,     # navigation polygons without a centreline
+    'route_resample_m': 0.1,
+    'route_dock_facing': True,        # to_dock goal faces the dock (mower_docking approach_facing_dock)
+    # the last route is also published here for the GUI's transit-plan layer (it draws
+    # /plan, which Nav2 only publishes while it plans); '' = only ~/route
+    'route_plan_topic': '/plan',
+})
+
+# non-grass memory from the grass segmentation (2026-10-09, docs/grass_segmentation.md)
+PARAMS.update(ngn.PARAMS)
 
 
 def _latched(depth=1):
@@ -196,7 +232,7 @@ def _poly_from_msg(msg):
     return core.normalise_polygon((p.x, p.y) for p in msg.points)
 
 
-class MapServerNode(Node):
+class MapServerNode(ngn.NonGrassMixin, Node):
 
     def __init__(self, **kwargs):
         super().__init__('map_server_node', **kwargs)
@@ -265,6 +301,11 @@ class MapServerNode(Node):
         self.terrain_grid_pub = self.create_publisher(OccupancyGrid, '~/terrain_grid', _latched())
         self.terrain_cost_pub = self.create_publisher(OccupancyGrid, '~/terrain_cost', _latched())
         self.terrain_summary_pub = self.create_publisher(String, '~/terrain_summary', _latched())
+        self.route_pub = self.create_publisher(Path, '~/route', _latched())
+        self.route_plan_pub = self.create_publisher(Path, self.p('route_plan_topic'), 1) \
+            if self.p('route_plan_topic') else None
+        self._route_graph = None
+        self._route_key = None
         self.terrain = {}                    # area name -> terr.AreaTerrain
         self.terrain_dirty = False           # published layers out of date
         self._terrain_last_xy = None
@@ -309,6 +350,7 @@ class MapServerNode(Node):
                            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
                            history=QoSHistoryPolicy.KEEP_LAST), lock=lock)
             sub(String, self.p('terrain_incident_topic'), self.on_incident, 20, lock=lock)
+        self.nongrass_init(sub, lock, _latched())
         self.imu = None
         self.imu_time = None
 
@@ -331,8 +373,10 @@ class MapServerNode(Node):
         srv(SetAreaSettings, '~/set_area_channel', self.srv_set_area_channel)
         srv(GetAreaSettings, '~/get_area_channel', self.srv_get_area_channel)
         # Terrain memory actions, JSON in settings_json (area_index = area, 255 = all):
-        # {"action": "keepout"|"confirm"|"dismiss"|"clear", "cluster_id": n}
+        # {"action": "keepout"|"confirm"|"dismiss"|"clear", "cluster_id": n}; non-grass
+        # memory: "nongrass_keepout"|"nongrass_dismiss" + cluster_id, "nongrass_clear".
         srv(SetAreaSettings, '~/terrain_action', self.srv_terrain_action)
+        srv(PlanRoute, '~/plan_route', self.srv_plan_route)
 
         self.tf_buffer = None
         if tf2_ros is not None:
@@ -362,6 +406,7 @@ class MapServerNode(Node):
                               self._locked(self.on_terrain_publish_timer))
             self.create_timer(max(5.0, float(self.p('terrain_save_period_s'))),
                               self._locked(self.on_terrain_save_timer))
+        self.nongrass_start(self._locked)
         self._pump.start()
         self.get_logger().info('map_server_node up: %d areas from %s, dock %s'
                                % (len(self.store.areas), self.areas_path,
@@ -432,7 +477,7 @@ class MapServerNode(Node):
         nav_mask = core.build_nav_mask(self.store.areas, spec,
                                        float(self.p('nav_margin_m')),
                                        float(self.p('nav_obstacle_margin_m')),
-                                       corridor, float(self.p('nav_soft_band_m')),
+                                       corridor, self._nav_soft_band(),
                                        None, float(self.p('path_margin_m')),
                                        bool(self.p('dock_corridor_soft_with_paths')),
                                        bool(self.p('prefer_paths_in_areas')),
@@ -444,7 +489,7 @@ class MapServerNode(Node):
         if robot is not None and not core.is_free_at(nav_mask, spec, robot[0], robot[1]):
             self.return_anchor = robot
             ret = core.return_corridor(robot[0], robot[1], nav_mask, spec,
-                                       float(self.p('nav_margin_m')),
+                                       float(self.p('corridor_half_width_m')),
                                        float(self.p('return_corridor_max_m')))
             if ret is not None and not ret.connected:
                 self.get_logger().warn(
@@ -457,7 +502,7 @@ class MapServerNode(Node):
                 nav_mask = core.build_nav_mask(self.store.areas, spec,
                                                float(self.p('nav_margin_m')),
                                                float(self.p('nav_obstacle_margin_m')),
-                                               corridor, float(self.p('nav_soft_band_m')),
+                                               corridor, self._nav_soft_band(),
                                                ret, float(self.p('path_margin_m')),
                                                bool(self.p('dock_corridor_soft_with_paths')),
                                        bool(self.p('prefer_paths_in_areas')),
@@ -485,8 +530,15 @@ class MapServerNode(Node):
                 and set(self.terrain) != {a.name for a in self.store.areas if not a.is_navigation}:
             self.load_terrain()
             self.terrain_dirty = True
+        self.nongrass_sync_areas()
         if replan:
             self.replan_pub.publish(Bool(data=True))
+
+    def _nav_soft_band(self):
+        """nav_soft_band_m, or nav_soft_band_with_paths_m once a drawn user path exists."""
+        if core.has_user_path(self.store.areas):
+            return float(self.p('nav_soft_band_with_paths_m'))
+        return float(self.p('nav_soft_band_m'))
 
     def return_corridor_robot_xy(self, polys):
         """Fresh robot (x, y) for the return corridor, or None (disabled, no
@@ -543,7 +595,7 @@ class MapServerNode(Node):
         if self.dock is not None and self.p('dock_corridor_enabled'):
             corridor = core.dock_corridor(self.dock, self.store.areas,
                                           float(self.p('approach_distance')),
-                                          float(self.p('nav_margin_m')),
+                                          float(self.p('corridor_half_width_m')),
                                           float(self.p('dock_corridor_max_m')))
             if not corridor.connected and self.store.areas:
                 self.get_logger().warn(
@@ -857,7 +909,7 @@ class MapServerNode(Node):
         if idx >= len(self.store.areas):
             res.success = False
             return res
-        area = self.store.areas[idx]
+        area = self._areas_with_dock_nogo()[idx]
         out = MapArea()
         out.name = area.name
         out.area = _poly_to_msg(area.polygon)
@@ -1073,6 +1125,112 @@ class MapServerNode(Node):
             return res
         res.success = True
         res.settings_json = core.channel_to_json(self.store.areas[idx])
+        return res
+
+    # ------------------------------------------------------------------
+    # route graph (2026-10-09)
+    # ------------------------------------------------------------------
+    def route_params(self):
+        return rgraph.RouteParams(
+            clearance_m=float(self.p('route_clearance_m')),
+            area_weight=float(self.p('route_area_weight')),
+            corner_margin_m=float(self.p('route_corner_margin_m')),
+            portal_step_m=float(self.p('route_portal_step_m')),
+            fillet_radius_m=float(self.p('route_fillet_radius_m')),
+            nav_area_weight=float(self.p('route_nav_area_weight')),
+            resample_m=float(self.p('route_resample_m')),
+            approach_distance=float(self.p('approach_distance')),
+            dock_corridor_half_width=float(self.p('corridor_half_width_m')),
+            dock_corridor_max_len=float(self.p('dock_corridor_max_m')))
+
+    def _areas_with_dock_nogo(self):
+        """Areas as coverage / routing see them: mowing areas drawn around the dock carry the
+        dock as an automatic no-go obstacle (copies; the stored map is unchanged)."""
+        if not self.p('dock_nogo_in_areas') or self.dock is None:
+            return self.store.areas
+        if self.dock.outline is None:
+            self.dock.outline = self.default_dock_outline()
+        return core.with_dock_nogo(self.store.areas, self.dock, float(self.p('dock_nogo_margin_m')))
+
+    def route_graph(self):
+        """The RouteGraph of the current map, rebuilt when the areas, paths, obstacles,
+        dock or route parameters changed (cheap key: the areas.dat text)."""
+        params = self.route_params()
+        d = self.dock if self.p('dock_corridor_enabled') else None
+        key = (core.format_areas_dat(self.store.areas),
+               None if d is None else (d.x, d.y, d.yaw), repr(params),
+               bool(self.p('dock_nogo_in_areas')), float(self.p('dock_nogo_margin_m')),
+               None if self.dock is None else tuple(map(tuple, self.dock.outline or [])))
+        if key != self._route_key:
+            t0 = time.monotonic()
+            self._route_graph = rgraph.RouteGraph(self._areas_with_dock_nogo(), d, params)
+            self._route_key = key
+            g = self._route_graph
+            # params in the log line: 2026-10-09 a map_server_node started before a rebuild
+            # kept planning with the old code (26 nodes vs 116); this makes that visible
+            self.get_logger().info('route graph: %d paths, %d areas, %d nodes, %d edges (%.0f ms; '
+                                   'area weight %.1f, portal step %.2f m, overlap step %.2f m)'
+                                   % (len(g.paths), len(g.regions), len(g.xy), len(g.edges),
+                                      (time.monotonic() - t0) * 1e3, params.area_weight,
+                                      params.portal_step_m, params.overlap_step_m))
+        return self._route_graph
+
+    def srv_plan_route(self, req, res):
+        res.single_area = -1
+        if not self.p('route_enabled'):
+            res.success, res.message = False, 'route planner disabled (route_enabled false)'
+            return res
+        if not self.store.areas:
+            res.success, res.message = False, 'no areas'
+            return res
+        try:
+            g = self.route_graph()
+            if req.to_dock:
+                goal = g.dock_goal(bool(self.p('route_dock_facing')))
+                if goal is None:
+                    res.success, res.message = False, 'no dock pose'
+                    return res
+            else:
+                goal = (req.goal.x, req.goal.y, req.goal.theta)
+            t0 = time.monotonic()
+            # per-area transit_variation (area settings), picked by the mission's run index
+            modes = {i: self.settings.effective(a.name).get('transit_variation', 'lanes')
+                     for i, a in enumerate(self.store.areas)}
+            r = g.plan((req.start.x, req.start.y, req.start.theta), goal,
+                       int(getattr(req, 'variation', 0)), modes)
+        except Exception as exc:  # noqa: BLE001 - a planner bug must not kill the map server
+            self.get_logger().error('plan_route failed: %r' % exc)
+            res.success, res.message = False, 'planner error: %s' % exc
+            return res
+        if isinstance(r, str):
+            self.get_logger().info('plan_route: %s' % r)
+            res.success, res.message = False, r
+            return res
+        path = Path()
+        path.header.frame_id = self.map_frame
+        path.header.stamp = self.get_clock().now().to_msg()
+        for x, y, yaw in r.poses:
+            ps = PoseStamped()
+            ps.header = path.header
+            ps.pose.position.x, ps.pose.position.y = float(x), float(y)
+            ps.pose.orientation.z = math.sin(yaw / 2.0)
+            ps.pose.orientation.w = math.cos(yaw / 2.0)
+            path.poses.append(ps)
+        res.success, res.path = True, path
+        res.message = r.summary()
+        res.single_area = int(r.single_area)
+        res.length_m, res.path_length_m = float(r.length_m), float(r.path_length_m)
+        res.variant = r.variant
+        self.get_logger().info('plan_route (%.2f, %.2f) -> (%.2f, %.2f)%s: %s; %.1f m, %d poses, '
+                               '%.0f ms%s' % (req.start.x, req.start.y, goal[0], goal[1],
+                                            ' [dock]' if req.to_dock else '', res.message,
+                                            r.length_m, len(path.poses),
+                                            (time.monotonic() - t0) * 1e3,
+                                            '; variation %d: %s' % (req.variation, r.variant)
+                                            if r.variant else ''))
+        self.route_pub.publish(path)
+        if self.route_plan_pub is not None:
+            self.route_plan_pub.publish(path)
         return res
 
     def srv_get_area_settings(self, req, res):
@@ -1496,6 +1654,9 @@ class MapServerNode(Node):
         action = d.get('action')
         cid = d.get('cluster_id')
         idx = int(req.area_index)
+        if isinstance(action, str) and action.startswith('nongrass_'):
+            res.success, res.message = self.nongrass_action(action, cid, idx)
+            return res
         areas = [(i, a) for i, a in enumerate(self.store.areas)
                  if not a.is_navigation and a.name in self.terrain
                  and (idx == aset.DEFAULTS_INDEX or i == idx)]

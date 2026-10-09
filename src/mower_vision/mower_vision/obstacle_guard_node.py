@@ -43,6 +43,20 @@ bbox height >= ``side_unranged_h_frac``, score >= ``side_unranged_min_score`` in
 ``score``, ``bbox_h_frac`` and ``ranged``; dismissed detections log INFO
 ``ignored: cat on right camera (...)`` once per episode.
 
+Rear camera (2026-10-09, ``rear_frames``; det_ros runs it only while ``/vision/rear_watch``
+is true, det_range ranges it on the ground plane): counts only while reversing (``/cmd_vel``),
+while ``/mower_docking/state`` is a reverse docking state, or for ``rear_sticky_s`` after a
+rear hit while not driving forward (a hold zeroes /cmd_vel). Only living classes
+(``rear_classes``; ``rear_static_classes`` opt-in) in the reverse CORRIDOR count: half width
++ margin, ``rear_range_m`` back from the rear edge; while docking with a fresh dock marker
+(``/mower_docking/marker_pose``, base_link) the corridor runs to the dock and ends
+``rear_dock_margin_m`` before it, so people at / beside / behind the charger are ignored
+(guard_logic.rear_corridor). Outputs: the usual ``/obstacle_policy`` (``camera: rear``,
+distance/bearing from base_link: the mission projects them onto its reverse path) and
+``/vision/rear_blocked`` (latched Bool: a counted rear hit within ``hold_s``; mower_docking
+HOLDS on it). ``/vision/rear_watch`` (latched Bool) gates the detector (NPU budget). Level
+``none`` or ``rear_enabled: false`` disables all of it.
+
 When ``stop_on_close`` is true, on the rising edge of the close state:
 * zero ``geometry_msgs/Twist`` on ``/cmd_vel_emergency`` at ``burst_rate_hz`` for
   ``burst_s`` (twist_mux emergency input, priority 100, timeout 0.2 s);
@@ -60,7 +74,7 @@ from dataclasses import replace
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
-from geometry_msgs.msg import Point, Twist
+from geometry_msgs.msg import Point, PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
@@ -79,13 +93,14 @@ try:
 except ImportError as _exc:  # pragma: no cover
     _DEP_ERROR = _exc
 
-from mower_vision.guard_logic import tick_rate_hz
+from mower_vision.guard_logic import NONE_POLICY, tick_rate_hz
 from mower_vision.guard_logic import (CAM_FRONT, CAM_LEFT, CAM_REAR, CAM_RIGHT,
                                       DEFAULT_CAMERA_FRAMES, DEFAULT_CLASSES, DEFAULT_DYNAMIC,
                                       DEFAULT_LEVEL, DEFAULT_WHITELIST, OBSTACLE_LEVELS, Box,
                                       GuardConfig, GuardState, LevelTable, MotionConfig,
                                       MotionState, Persistence, PolicyConfig, PolicyState,
-                                      box_outline,
+                                      RearConfig, RearRelevance, box_outline, dock_foot_xy,
+                                      rear_policy,
                                       camera_counts, camera_role, class_label, classify,
                                       danger_line, frame_policy, level_policy,
                                       with_image_size)
@@ -96,14 +111,20 @@ GREY = ColorRGBA(r=0.6, g=0.6, b=0.6, a=1.0)
 BLUE = ColorRGBA(r=0.2, g=0.5, b=1.0, a=1.0)
 
 
-def _ranged_xy(det, origin_x):
+def _base_xy(det):
+    """base_link (x, y) of a det_range-tagged detection, or None when unranged."""
     if not det.results:
         return None
     pose = det.results[0].pose
     if len(pose.covariance) < 1 or not pose.covariance[0] > 0.0:
         return None
     p = pose.pose.position
-    return float(p.x) - origin_x, float(p.y)
+    return float(p.x), float(p.y)
+
+
+def _ranged_xy(det, origin_x):
+    xy = _base_xy(det)
+    return None if xy is None else (xy[0] - origin_x, xy[1])
 
 
 def range_of(det, origin_x=0.0):
@@ -125,13 +146,16 @@ def boxes_from_msg(msg, classes, origin_x=0.0):
         if not det.results:
             continue
         best = max(det.results, key=lambda r: r.hypothesis.score)
+        bxy = _base_xy(det)
         out.append(Box(label=class_label(best.hypothesis.class_id, classes),
                        score=float(best.hypothesis.score),
                        cx=float(det.bbox.center.position.x),
                        cy=float(det.bbox.center.position.y),
                        w=float(det.bbox.size_x), h=float(det.bbox.size_y),
                        range_m=range_of(det, origin_x),
-                       bearing_deg=bearing_of(det, origin_x)))
+                       bearing_deg=bearing_of(det, origin_x),
+                       x_m=None if bxy is None else bxy[0],
+                       y_m=None if bxy is None else bxy[1]))
     return out
 
 
@@ -195,6 +219,37 @@ class ObstacleGuard(Node):
         dp('left_frames', list(DEFAULT_CAMERA_FRAMES[CAM_LEFT]))
         dp('right_frames', list(DEFAULT_CAMERA_FRAMES[CAM_RIGHT]))
         dp('rear_frames', list(DEFAULT_CAMERA_FRAMES[CAM_REAR]))
+        # rear camera: reverse corridor + dock awareness (module docstring, guard_logic)
+        dr = RearConfig()
+        dp('rear_enabled', True)
+        dp('rear_classes', list(dr.classes))
+        dp('rear_static_classes', [''])
+        dp('rear_min_score', dr.min_score)
+        dp('rear_edge_x_m', dr.rear_edge_x_m)
+        dp('rear_half_width_m', dr.half_width_m)
+        dp('rear_margin_m', dr.margin_m)
+        dp('rear_range_m', dr.range_m)
+        dp('rear_behind_tol_m', dr.behind_tol_m)
+        dp('rear_dock_margin_m', dr.dock_margin_m)
+        dp('rear_dock_max_range_m', dr.dock_max_range_m)
+        dp('rear_unranged_h_frac', dr.unranged_h_frac)
+        dp('rear_unranged_center_frac', dr.unranged_center_frac)
+        dp('rear_persist_frames', dr.persist_frames)
+        dp('rear_sticky_s', 15.0)
+        dp('rear_watch_hold_s', 5.0)
+        dp('rear_watch_topic', '/vision/rear_watch')
+        dp('rear_blocked_topic', '/vision/rear_blocked')
+        dp('dock_state_topic', '/mower_docking/state')
+        dp('dock_state_timeout_s', 1.0)
+        dp('marker_pose_topic', '/mower_docking/marker_pose')
+        dp('rear_marker_max_age_s', 3.0)
+        # = mower_docking rear_camera_T_base = URDF rear_camera_joint (optical frame pose)
+        dp('rear_camera_T_base', [-0.201, 0.0, 0.25, -1.5707963, 0.0, 1.5707963])
+        dp('rear_ground_z_m', 0.0)
+        # marker centre height above the lawn; < 0 = unknown (use the marker's planar PnP
+        # position as the dock foot). Measured, it makes "behind the dock" immune to the
+        # rear camera's pitch error (guard_logic.dock_foot_xy).
+        dp('dock_marker_height_m', -1.0)
 
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.classes = [str(c) for c in p('classes')]
@@ -239,6 +294,32 @@ class ObstacleGuard(Node):
             side_turn_min_s=float(p('side_turn_min_s')),
             odom_turn_min_radps=float(p('odom_turn_min_radps'))))
         self.persistence = Persistence()
+        self.rear_enabled = bool(p('rear_enabled'))
+        self.rear_cfg = RearConfig(
+            enabled=self.rear_enabled,
+            classes=[str(c) for c in p('rear_classes') if str(c)],
+            static_classes=[str(c) for c in p('rear_static_classes') if str(c)],
+            min_score=float(p('rear_min_score')), rear_edge_x_m=float(p('rear_edge_x_m')),
+            half_width_m=float(p('rear_half_width_m')), margin_m=float(p('rear_margin_m')),
+            range_m=float(p('rear_range_m')), behind_tol_m=float(p('rear_behind_tol_m')),
+            dock_margin_m=float(p('rear_dock_margin_m')),
+            dock_max_range_m=float(p('rear_dock_max_range_m')),
+            unranged_h_frac=float(p('rear_unranged_h_frac')),
+            unranged_center_frac=float(p('rear_unranged_center_frac')),
+            persist_frames=int(p('rear_persist_frames')))
+        self.rear_rel = RearRelevance(sticky_s=float(p('rear_sticky_s')),
+                                      watch_hold_s=float(p('rear_watch_hold_s')),
+                                      dock_state_timeout_s=float(p('dock_state_timeout_s')))
+        ext = [float(v) for v in p('rear_camera_T_base')]
+        self._rear_cam = (ext[0:3], ext[3:6]) if len(ext) == 6 else None
+        self._rear_ground_z = float(p('rear_ground_z_m'))
+        self._marker_h = float(p('dock_marker_height_m'))
+        self._marker_max_age = float(p('rear_marker_max_age_s'))
+        self._marker = None            # (x, y, z, receipt monotonic)
+        self._rear_hit_t = None
+        self._rear_blocked = None
+        self._rear_watch = None
+        self._rear_hold = float(p('hold_s'))
         self._ignored_last = {}     # (camera, class) -> last time it was dismissed
         self._ignored_gap = float(p('ignored_episode_gap_s'))
         self.policy_state = PolicyState(hold_s=float(p('hold_s')))
@@ -294,6 +375,17 @@ class ObstacleGuard(Node):
             self.create_subscription(String, str(p('activity_topic')), self._on_activity,
                                      latched)
         self._last_published = None
+        self.rear_blocked_pub = self.create_publisher(Bool, str(p('rear_blocked_topic')),
+                                                      latched)
+        self.rear_watch_pub = self.create_publisher(Bool, str(p('rear_watch_topic')), latched)
+        if self.rear_enabled:
+            if str(p('dock_state_topic')):
+                self.create_subscription(String, str(p('dock_state_topic')),
+                                         self._on_dock_state, 10)
+            if str(p('marker_pose_topic')):
+                self.create_subscription(PoseStamped, str(p('marker_pose_topic')),
+                                         self._on_marker, 10)
+        self._publish_rear(False, False)
 
         self.get_logger().info(
             f'obstacle_guard up: whitelist={list(self.cfg.whitelist)} y_frac={self.cfg.y_frac} '
@@ -332,6 +424,70 @@ class ObstacleGuard(Node):
         v = struct.unpack_from('<6d', data, 4)
         self.motion.update(float(v[0]), float(v[5]), receipt)
 
+    def _on_dock_state(self, msg):
+        self.rear_rel.update_dock_state(msg.data, self._now())
+
+    def _on_marker(self, msg):
+        q = msg.pose.position
+        self._marker = (float(q.x), float(q.y), float(q.z), self._now())
+
+    def _dock_ref(self, now):
+        """Dock foot (base_link) while docking with a recent marker, else None."""
+        m = self._marker
+        if (m is None or not self.rear_rel.dock_state(now)
+                or now - m[3] > self._marker_max_age or self._rear_cam is None):
+            return None
+        return dock_foot_xy(m[:3], self._rear_cam[0], self._rear_cam[1], self._marker_h,
+                            self._rear_ground_z)
+
+    def _rear_counts(self, now):
+        if not self.rear_enabled or self.policy_cfg.level == 'none':
+            return False
+        return self.rear_rel.active(self.motion.reversing(now), self.motion.forward(now), now)
+
+    def _publish_rear(self, blocked, watch):
+        if blocked != self._rear_blocked:
+            self._rear_blocked = blocked
+            self.rear_blocked_pub.publish(Bool(data=bool(blocked)))
+            self.get_logger().info('rear blocked: %s' % blocked)
+        if watch != self._rear_watch:
+            self._rear_watch = watch
+            self.rear_watch_pub.publish(Bool(data=bool(watch)))
+
+    def _rear_tick(self, now):
+        if self._use_motion and self.motion.reversing(now):
+            self.rear_rel.note_reverse(now)
+        on = self.rear_enabled and self.policy_cfg.level != 'none'
+        blocked = on and self._rear_hit_t is not None and now - self._rear_hit_t <= self._rear_hold
+        watch = on and self.rear_rel.watch(self.motion.reversing(now),
+                                           self.motion.forward(now), now)
+        self._publish_rear(bool(blocked), bool(watch))
+
+    def _rear_frame(self, msg, boxes, cfg, now):
+        """Rear camera frame -> policy (corridor + dock aware)."""
+        source = msg.header.frame_id or 'rear'
+        ignored = []
+        if self._rear_counts(now):
+            pol = rear_policy(boxes, self.rear_cfg, cfg.image_width, cfg.image_height,
+                              dock=self._dock_ref(now), persistence=self.persistence,
+                              source=source, ignored=ignored)
+        else:
+            self.persistence.step(source, ())
+            pol = dict(NONE_POLICY)
+            if self.rear_enabled and self.policy_cfg.level != 'none':
+                for b in boxes:
+                    if (b.score >= self.rear_cfg.min_score and b.label.strip().lower() in
+                            {c.lower() for c in self.rear_cfg.classes}):
+                        ignored.append((b, 'not reversing'))
+        if pol.get('kind', 'none') != 'none':
+            self._rear_hit_t = now
+            self.rear_rel.note_hit(now)
+        self.policy_state.update(source, pol, now)
+        if ignored:
+            self._log_ignored(CAM_REAR, ignored, now)
+        self._rear_tick(now)
+        return pol.get('kind', 'none') != 'none'
+
     def _on_odom(self, msg, receipt):
         self.motion.update_odom(float(msg.twist.twist.angular.z), receipt)
 
@@ -367,7 +523,8 @@ class ObstacleGuard(Node):
 
     def _retime(self):
         now = self._now()
-        busy = bool(self._last_published) or self.state.burst_active(now)
+        busy = (bool(self._last_published) or self.state.burst_active(now)
+                or bool(self._rear_watch) or bool(self._rear_blocked))
         rate = tick_rate_hz(self._activity, busy, self._burst_rate, self._idle_rate)
         if rate != self._tick_rate:
             self._tick_rate = rate
@@ -398,11 +555,24 @@ class ObstacleGuard(Node):
 
     def _on_dets(self, msg):
         self._poll_motion()
-        boxes = boxes_from_msg(msg, self.classes, self.range_origin_x)
+        role = camera_role(msg.header.frame_id, self.camera_frames)
+        # rear: distance/bearing from base_link (the mission projects them from its pose)
+        boxes = boxes_from_msg(msg, self.classes,
+                               0.0 if role == CAM_REAR else self.range_origin_x)
         cfg = self._cfg_for(msg.header.frame_id)
         verdicts = classify(boxes, cfg)
         now = self._now()
-        role = camera_role(msg.header.frame_id, self.camera_frames)
+        if role == CAM_REAR:
+            close_now = self._rear_frame(msg, boxes, cfg, now)
+            close, rising = self.state.update(msg.header.frame_id or 'rear', close_now, now)
+            self._publish_close(close)
+            if close and self._tick_rate != self._burst_rate:
+                self._retime()
+            if rising:
+                self._on_rising(verdicts)
+            if self.publish_markers:
+                self.marker_pub.publish(self._markers(msg.header, verdicts, cfg))
+            return
         relevant = self.motion.relevant(now) if self._use_motion else None
         source = msg.header.frame_id or 'camera'
         motion_reason = ''
@@ -444,6 +614,7 @@ class ObstacleGuard(Node):
         self._poll_motion()
         now = self._now()
         self._publish_policy(now)
+        self._rear_tick(now)
         close, rising = self.state.tick(now)
         if close != self._last_published and self._last_published is not None:
             self._publish_close(close)

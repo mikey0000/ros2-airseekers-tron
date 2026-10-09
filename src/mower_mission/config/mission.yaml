@@ -25,6 +25,14 @@ behavior_tree_node:
     heading_status_timeout_s: 5.0     # stale status = not aligned
     heading_wait_s: 30.0              # after undock + RTK: wait for COG, then stop (no Nav2)
 
+    # --- localization hold (2026-10-09, /localization/status from localization_monitor) ---
+    # Mow follow / transit stop with the blade off while the drift estimate is over budget
+    # (RTK float / dropout on wheel + IMU + VIO); resume after RTK fixed brings it back to ok.
+    loc_hold: true
+    loc_status_timeout_s: 5.0         # stale / never-seen status: no new hold
+    loc_resume_s: 3.0                 # 'ok' this long before resuming
+    loc_hold_max_s: 600.0             # then stop in place (IDLE, resume cursor kept)
+
     # --- rain ------------------------------------------------------------
     rain_mode: 1                      # 0 ignore, 1 dock and wait
     rain_debounce_s: 2.0
@@ -46,6 +54,17 @@ behavior_tree_node:
     # --- coverage --------------------------------------------------------
     mow_angle_deg: -1.0               # < 0 = planner picks; only for areas whose own mow_angle_deg is auto
     transit_gap_m: 0.6                # blade-off /navigate_to_pose transit beyond this gap
+    # 2026-10-09 route graph (docs/route_graph.md): transits drive map_server's plan_route
+    # (drawn paths along their centreline, in-area legs inside the area) via FollowPath and
+    # fall back to /navigate_to_pose on no route / a route abort; false = Nav2 only
+    route_transits: true
+    route_dock: true                  # return-to-dock: route to the approach pose first
+    route_controller_id: FollowPath   # MPPI transit controller
+    route_goal_checker_id: general_goal_checker
+    route_end_tolerance_m: 0.5        # route follow "success" farther from the target = failed
+    route_blocked_retries: 1          # obstacle abort: blocked wait, re-send the route this often, then Nav2
+    route_split_turn_deg: 100.0       # route sent as FollowPath legs split at turns sharper than this
+    route_variation: true             # per-run transit variation (area setting transit_variation)
     transit_arrived_radius_m: 0.3     # transit ABORT/timeout within this of the target = arrived
     transit_retries: 3                # failed transit: re-send (from the current pose) this many times
     transit_retry_delay_s: 3.0        # fallback retry wait when transit_retry_backoff_s is empty
@@ -67,6 +86,10 @@ behavior_tree_node:
     blade_transit_sample_m: 0.2       # blade_policy continuous: in-area transit check step
     follow_retries: 3                 # follow_path abort/timeout: resume from the last reached pose
     clear_costmaps_on_retry: true     # clear Nav2 global+local costmaps before retries / recoveries
+    # false (review 2026-10-09): retries clear only the LOCAL costmap; the global one holds the
+    # stereo / det / bumper marks the replan must avoid (Nav2's BT still clears both as its
+    # last recovery, and a stuck escape clears both).
+    clear_global_costmap_on_retry: false
     return_home_on_incomplete: false  # sub-paths not mowed -> MOWING_INCOMPLETE; dock only if true
     follow_controller_id: FollowCoveragePath
     # reverse legs of reverse-then-curve swath turns (RPP allow_reversing, nav2_params.yaml)
@@ -128,12 +151,19 @@ behavior_tree_node:
     set_obstacle_detection: true
     dynamic_wait_sensitive_factor: 2.0  # sensitive areas: dynamic waits x this
     stereo_stale_window_s: 2.0        # /rosout stale-stereo WARN this recent -> 'sensor stale' sub_state
-    detour_skip_m: 1.0                # detour target this far along the sub-path past the robot
+    # 2.0 (was 1.0, 2026-10-09): the robot stops ~0.3 m short of an obstacle and its footprint
+    # reaches 0.52 m ahead of base_link, so a pose 1.0 m on almost always put the goal footprint
+    # inside the obstacle -> planner failure -> 1.5 / 2.0 / ... each burning a full Nav2
+    # recovery cycle (the long "pause"). 2.0 clears a ~0.5 m deep obstacle at the first try.
+    detour_skip_m: 2.0                # detour target this far along the sub-path past the robot
     detour_skip_step_m: 0.5           # detour transit failed: extend the skip by this ...
-    detour_max_skip_m: 3.0            # ... up to this, then a normal follow retry
+    detour_max_skip_m: 3.5            # ... up to this, then a normal follow retry
     max_detours_per_subpath: 5
     detour_max_leave_m: 0.0           # detour pose may be this far outside the area ring
-    detour_unclassified_after: 1      # abort without a ranged static obstacle: detour after N plain retries (-1 never), ONLY if it coincides with a costmap collision abort
+    # 0 (was 1, 2026-10-09): the global costmap now carries the stereo / det_range / bumper marks,
+    # so the detour plan really goes AROUND the obstacle; detour on the first costmap-collision
+    # abort instead of first holding in "path blocked: waiting" and re-driving into it.
+    detour_unclassified_after: 0      # abort without a ranged static obstacle: detour after N plain retries (-1 never), ONLY if it coincides with a costmap collision abort
     collision_abort_window_s: 5.0     # controller_server "collision ahead" (/rosout) this recent counts as a costmap collision abort
     pivot_sub_after_s: 3.0            # sub_state "turning (slow pivot)" after linear 0 / angular != 0 on /cmd_vel_nav this long
     requeue_skipped: true             # end-of-area pass over skipped stretches (blocked -> MOWING_INCOMPLETE)
@@ -156,12 +186,43 @@ behavior_tree_node:
     stuck_same_spot_left_m: 1.0
     stuck_ignore_after_s: 1.0
 
+    # --- tilt guard (2026-10-09; mower_control tilt_monitor /tilt/status) ----
+    # The monitor filters / debounces the IMU roll + pitch into ok|caution|limit|critical
+    # (thresholds, hysteresis, mount offset: tilt_monitor params, mower_control/tilt_logic.py).
+    # caution: both controllers capped at tilt_caution_speed_mps, blade stays on.
+    # limit (mission / docking phases): cancel, blade off, 'steep' terrain incident, back out
+    #   along the driven track on /cmd_vel_emergency until the band drops (>= min, <= max m),
+    #   then resume (mowing: detour past the spot). Same spot / too many -> STUCK_NEEDS_HELP.
+    #   MANUAL_MOWING: blade off and refused, the operator keeps driving.
+    # critical: emergency cause (tilt_monitor also zeroes /cmd_vel_emergency + /cutter_off).
+    tilt_guard: true
+    tilt_status_timeout_s: 2.0        # older /tilt/status -> band unknown, nothing acted on
+    tilt_caution_speed_mps: 0.15
+    # FollowPath.vx_max (2026-10-09): the transit controller is MPPI now (no desired_linear_vel;
+    # vx_max is a dynamic MPPI param). Use FollowPath.desired_linear_vel with transit_controller:=rpp.
+    tilt_transit_speed_param: FollowPath.vx_max
+    tilt_transit_speed_mps: 0.3       # restored after caution: keep = nav2_params FollowPath
+    tilt_trail_m: 2.0                 # driven track remembered for the back-out
+    tilt_trail_step_m: 0.05
+    tilt_backout_pause_s: 0.5
+    tilt_backout_speed: 0.1
+    tilt_backout_min_m: 0.3
+    tilt_backout_max_m: 1.0
+    tilt_backout_lookahead_m: 0.3
+    tilt_backout_max_w: 0.3
+    tilt_backout_progress_s: 3.0
+    tilt_backout_progress_m: 0.05
+    tilt_max_backouts: 3
+    tilt_backout_period_s: 300.0
+    tilt_same_spot_m: 0.75
+
     # --- recording ---------------------------------------------------------
     record_rate_hz: 10.0
     record_min_spacing_m: 0.05
     record_simplify_tolerance_m: 0.05
     record_close_radius_m: 0.5        # finish: cut the drive where it passes back within this of its start (overshoot spike)
     record_min_area_m2: 1.0
+    record_min_obstacle_area_m2: 0.5   # CMD_RECORD_OBSTACLE (11): min ring of a recorded no-go zone
     record_max_points: 50000
     record_path_width_m: 0.7         # CMD_RECORD_PATH (10): band width of a recorded path
     record_path_min_length_m: 1.0

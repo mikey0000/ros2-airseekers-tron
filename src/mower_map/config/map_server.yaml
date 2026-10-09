@@ -9,21 +9,29 @@ map_server_node:
     mask_margin: 2.0
     obstacle_margin: 0.0
     lethal_outside_areas: true
+    dock_nogo_in_areas: true    # 2026-10-09: a mowing area drawn around the dock gets the dock (+margin) as an
+                                # automatic no-go for coverage + in-area route legs (never stored; docking ignores it)
+    dock_nogo_margin_m: 0.15
     dock_keepout: true          # mowing mask only; never in /nav_keepout_mask
-    nav_margin_m: 0.8           # nav mask: areas grown so recovery/docking can plan from a
-                                # robot that stopped just outside the boundary (soft margin 0.3 m
-                                # + half footprint). The MOWING mask is unaffected.
-    path_margin_m: 0.15         # nav mask: navigation areas / drawn paths grown by this only
-                                # (not nav_margin_m) so the planner follows the drawn band
+    # 2026-10-09 owner: all routing stays INSIDE the drawn areas and paths. The nav mask is now a
+    # robot-CENTRE limit applied uninflated (KeepoutFilter only, nav2_params.yaml), so no outward
+    # growth is needed to reach rings near the edge; was 0.8 (transits cut corners up to 0.8 m
+    # outside: field run 20261008-201401, sim 2026-10-09). Off-map recovery: return corridor.
+    nav_margin_m: 0.05          # GPS-jitter tolerance only
+    path_margin_m: 0.0          # drawn paths: exactly the drawn band (was 0.15)
     nav_obstacle_margin_m: 0.10 # nav mask: obstacles grown by this
     dock_corridor_enabled: true # nav mask: free dock -> approach -> nearest area capsule
     dock_corridor_soft_with_paths: true  # user path exists: approach->area leg costs 90, not free
     prefer_paths_in_areas: true # user path exists: mowing areas cost area_transit_cost outside path bands
     area_transit_cost: 60       # 0..99 (static layer maps 60 -> ~151 < inscribed 253); > path_edge_cost
-    path_edge_cost: 30          # drawn path band: 0 on the centreline rising to this at the edge (0 = flat)
+    path_edge_cost: 10          # path band 0 on the centreline -> this at the edge (was 30: transits left a
+                                # path early to cut across the lawn)
     dock_corridor_max_m: 5.0    # max approach->area gap bridged by the corridor
     approach_distance: 0.8      # keep equal to mower_docking approach_distance
-    nav_soft_band_m: 1.5        # nav mask: cells this far outside the free set cost 90 (not lethal)
+    nav_soft_band_m: 0.0        # no plannable band outside areas / paths (was 1.5)
+    corridor_half_width_m: 0.35 # dock corridor + return corridor half-width (was nav_margin_m)
+    nav_soft_band_with_paths_m: 0.0  # 2026-10-09: with a drawn path the 1.5 m band let transits cut
+                                # across lawn into the MIDDLE of a path (field run 20261008-201401)
     return_corridor_enabled: true  # nav mask: free robot -> nearest free cell while off the map
     return_corridor_max_m: 15.0 # longer gap: warn, no corridor
     blade_radius: 0.15
@@ -45,3 +53,14 @@ map_server_node:
     require_yaw_converged: true
     dock_set_gps_accuracy_max_m: 0.04
     dock_gates_override: false
+    # Non-grass memory (2026-10-09, docs/grass_segmentation.md): /ai/seg/ground_cells from
+    # seg_ros nongrass_projector -> ~/nongrass_cost (Nav2 global nongrass_layer), ~/nongrass_grid,
+    # ~/nongrass_summary. Idle (zeros published) unless the projector runs. Defaults in
+    # mower_map/nongrass_node.py; per-area switch = area setting avoid_non_grass.
+    nongrass_enabled: true
+    nongrass_topic: /ai/seg/ground_cells
+    nongrass_confirm_hits: 3.0
+    nongrass_confirm_ratio: 0.75
+    nongrass_confirm_spread_m: 0.5
+    nongrass_cost_max: 75
+    nongrass_half_life_days: 14.0

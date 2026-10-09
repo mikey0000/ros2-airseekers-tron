@@ -42,6 +42,10 @@ func main() {
 	notificationProvider := providers.NewNotificationProvider(dbProvider)
 	if ros, ok := rosProvider.(*providers.RosProvider); ok {
 		ros.AttachNotifier(notificationProvider)
+		// Keep the alerts topic subscribed for the process lifetime: fanOut only
+		// runs for subscribed topics, and theft/lift pushes must work with no
+		// browser open (same trick as the scheduler's highLevelStatus).
+		_ = ros.Subscribe("alerts", "notify-alerts", 0, func([]byte) {})
 	} else {
 		log.Printf("notifications: ROS provider %T cannot feed status events", rosProvider)
 	}

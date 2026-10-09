@@ -16,6 +16,8 @@ export const OBSTACLE_DETECTIONS = ["none", "standard", "sensitive"] as const;
 export type ObstacleDetection = typeof OBSTACLE_DETECTIONS[number];
 export const BLADE_POLICIES = ["continuous", "conservative"] as const;
 export type BladePolicy = typeof BLADE_POLICIES[number];
+export const TRANSIT_VARIATIONS = ["none", "lanes", "perimeter", "mixed"] as const;
+export type TransitVariation = typeof TRANSIT_VARIATIONS[number];
 /** Slope-aware mow angle (terrain memory; only used when mow_angle_deg is auto). */
 export const SLOPE_MODES = ["off", "auto", "contour", "updown"] as const;
 export type SlopeMode = typeof SLOPE_MODES[number];
@@ -42,6 +44,7 @@ export type AreaSettings = {
     turn_type: TurnType;
     obstacle_detection: ObstacleDetection;
     blade_policy: BladePolicy;
+    transit_variation: TransitVariation;
     slope_mode: SlopeMode;
     /** Contour (across the slope) above this slope in "auto" slope mode, degrees. */
     slope_contour_above_deg: number;
@@ -88,6 +91,7 @@ export const AREA_SETTINGS_DEFAULTS: AreaSettings = {
     turn_type: "auto",
     obstacle_detection: "standard",
     blade_policy: "continuous",
+    transit_variation: "lanes",
     slope_mode: "off",
     slope_contour_above_deg: 10,
 };
@@ -126,6 +130,7 @@ export function sanitizeAreaSettings(raw: unknown): Partial<AreaSettings> {
         if (k === "turn_type" && !TURN_TYPES.includes(v as TurnType)) continue;
         if (k === "obstacle_detection" && !OBSTACLE_DETECTIONS.includes(v as ObstacleDetection)) continue;
         if (k === "blade_policy" && !BLADE_POLICIES.includes(v as BladePolicy)) continue;
+        if (k === "transit_variation" && !TRANSIT_VARIATIONS.includes(v as TransitVariation)) continue;
         if (k === "slope_mode" && !SLOPE_MODES.includes(v as SlopeMode)) continue;
         (out as Record<string, unknown>)[k] = v;
     }
@@ -153,6 +158,8 @@ export function invalidAreaSettingKey(s: Partial<AreaSettings>): AreaSettingsKey
             if (!OBSTACLE_DETECTIONS.includes(v as ObstacleDetection)) return k;
         } else if (k === "blade_policy") {
             if (!BLADE_POLICIES.includes(v as BladePolicy)) return k;
+        } else if (k === "transit_variation") {
+            if (!TRANSIT_VARIATIONS.includes(v as TransitVariation)) return k;
         } else if (k === "slope_mode") {
             if (!SLOPE_MODES.includes(v as SlopeMode)) return k;
         } else if (k === "edge_first") {

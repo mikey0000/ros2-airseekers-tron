@@ -135,3 +135,84 @@ def test_neighbour_filter_counts():
     assert not f.neighbour_filter(m, 2).any()
     m[1:4, 1:4] = True
     assert f.neighbour_filter(m, 5)[2, 2]
+
+
+# --- clearing cloud (ground_clear_points, 2026-10-09) ---------------------------------------
+
+def _points(raw, sub=2, step=4, max_z=4.0):
+    """Denoised optical-frame points + fitted plane, as filtered_points has them pre-removal."""
+    _, plane, ok = _pipeline(raw, sub=sub, step=step, max_z=max_z)
+    r = f.speckle_filter(raw[::sub, ::sub], 200 // (sub * sub), 1.0, SCALE)
+    d = np.where(f.neighbour_filter(r > 0, 5), r, 0).astype(np.float64) / SCALE
+    z = np.zeros_like(d)
+    z[d >= 1] = BXF / d[d >= 1]
+    s = step // sub
+    zs = z[::s, ::s]
+    v, u = np.mgrid[0:z.shape[0]:s, 0:z.shape[1]:s]
+    m = (zs >= 0.2) & (zs <= max_z)
+    zz = zs[m]
+    pts = np.stack([(u[m] - CX / sub) * zz / (FX / sub), (v[m] - CY / sub) * zz / (FX / sub),
+                    zz], axis=1)
+    return pts, plane, ok
+
+
+def _cells(pts, plane, voxel):
+    n = np.asarray(plane[0])
+    e1 = np.array([1.0, 0, 0]) - n[0] * n
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(n, e1)
+    return {tuple(c) for c in np.floor(pts @ np.stack([e1, e2], 1) / voxel).astype(int)}
+
+
+def test_clear_points_are_decimated_ground_in_range():
+    rng = np.random.default_rng(5)
+    pts, plane, ok = _points(_add_speckle(_to_raw(_ground_depth(rng)), rng))
+    assert ok
+    clr = f.ground_clear_points(pts, plane, ok, margin=0.12, min_z=0.2, max_z=3.0, voxel=0.10)
+    assert clr.dtype == np.float32 and clr.shape[1] == 3
+    assert 50 < len(clr) < 2000
+    assert np.all(np.abs(f.heights(clr, plane)) <= 0.12 + 1e-5)
+    assert np.all((clr[:, 2] >= 0.2 - 1e-5) & (clr[:, 2] <= 3.0 + 1e-5))
+    # exactly one point per occupied ground-plane voxel, every in-range ground voxel covered
+    full = pts[(np.abs(f.heights(pts, plane)) <= 0.12) & (pts[:, 2] >= 0.2) & (pts[:, 2] <= 3.0)]
+    assert len(full) > len(clr)
+    assert len(_cells(clr, plane, 0.10)) == len(clr)
+    assert _cells(clr, plane, 0.10) == _cells(full, plane, 0.10)
+    # coarser voxel -> fewer points
+    assert len(f.ground_clear_points(pts, plane, ok, voxel=0.25)) < len(clr)
+
+
+def test_clear_points_exclude_obstacle():
+    rng = np.random.default_rng(6)
+    pts, plane, ok = _points(_to_raw(_add_box(_ground_depth(rng))))
+    assert ok
+    clr = f.ground_clear_points(pts, plane, ok, voxel=0.10)
+    assert len(clr) > 50
+    face = (np.abs(clr[:, 2] - 1.0) < 0.05) & (np.abs(clr[:, 0]) < 0.15)
+    assert np.all(f.heights(clr[face], plane) <= 0.12 + 1e-5)   # only the box's foot, if any
+    obst = f.remove_ground(pts, plane, 0.12)
+    assert len(obst) >= 20
+    # disjoint from the obstacle cloud
+    assert not (set(map(tuple, obst.astype(np.float32))) & set(map(tuple, clr)))
+
+
+def test_clear_points_empty_on_fit_failure():
+    pts, plane, ok = _points(_to_raw(np.full((H, W), 1.0)))   # wall: fit rejected
+    assert not ok
+    assert f.ground_clear_points(pts, plane, ok).shape == (0, 3)
+    rng = np.random.default_rng(7)
+    good, gplane, gok = _points(_to_raw(_ground_depth(rng)))
+    assert gok
+    assert len(f.ground_clear_points(good, gplane, True)) > 0
+    assert f.ground_clear_points(good, gplane, False).shape == (0, 3)   # never on a bad fit
+    assert f.ground_clear_points(np.zeros((0, 3)), gplane, True).shape == (0, 3)
+
+
+def test_precomputed_heights_match():
+    rng = np.random.default_rng(8)
+    pts, plane, ok = _points(_to_raw(_add_box(_ground_depth(rng))))
+    hgt = f.heights(pts, plane)
+    assert np.array_equal(f.remove_ground(pts, plane, 0.12, hgt=hgt),
+                          f.remove_ground(pts, plane, 0.12))
+    assert np.array_equal(f.ground_clear_points(pts, plane, ok, hgt=hgt),
+                          f.ground_clear_points(pts, plane, ok))

@@ -43,6 +43,9 @@ describe('JoystickOverlay', () => {
         rerender(<JoystickOverlay visible isRecording recordKind="area" onMove={noop} onStop={noop}
             onFinishRecording={asyncNoop} onCancelRecording={asyncNoop} onHome={asyncNoop}/>);
         expect(screen.getByTestId('recording-kind').textContent).toBe(en.mapJoystick.recordingArea);
+        rerender(<JoystickOverlay visible isRecording recordKind="obstacle" onMove={noop} onStop={noop}
+            onFinishRecording={asyncNoop} onCancelRecording={asyncNoop} onHome={asyncNoop}/>);
+        expect(screen.getByTestId('recording-kind').textContent).toBe(en.mapJoystick.recordingObstacle);
     });
 
     it('does not crash with the mobile layout flag', () => {

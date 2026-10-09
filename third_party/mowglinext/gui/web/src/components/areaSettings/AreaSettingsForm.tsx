@@ -10,6 +10,7 @@ import {
     TURN_TYPES,
     OBSTACLE_DETECTIONS,
     BLADE_POLICIES,
+    TRANSIT_VARIATIONS,
     type AreaSlopeDerived,
     type SlopeMode,
 } from "../../utils/areaSettings.ts";
@@ -222,6 +223,16 @@ export const AreaSettingsForm: React.FC<{
                         options={BLADE_POLICIES.map((o) => ({
                             value: o,
                             label: t(`areaSettings.bladePolicy${o[0].toUpperCase()}${o.slice(1)}`),
+                        }))}/>
+            </Field>
+
+            <Field label={t("areaSettings.transitVariation")} custom={c("transit_variation")}
+                   hint={t("areaSettings.transitVariationHint")}>
+                <Select data-testid="transit-variation" style={{width: "100%"}} disabled={disabled}
+                        value={value.transit_variation} onChange={(v) => set("transit_variation", v)}
+                        options={TRANSIT_VARIATIONS.map((o) => ({
+                            value: o,
+                            label: t(`areaSettings.transitVariation${o[0].toUpperCase()}${o.slice(1)}`),
                         }))}/>
             </Field>
 

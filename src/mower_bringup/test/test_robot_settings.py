@@ -173,7 +173,8 @@ def test_launch_renders_settings_into_params_files(sample):
     nav = yaml.safe_load(open(cfg['nav2_params_file']))['controller_server']['ros__parameters']
     assert nav['FollowCoveragePath']['desired_linear_vel'] == 0.3
     assert nav['FollowPath']['desired_linear_vel'] == 0.4
-    assert nav['FollowPath']['plugin'].endswith('RegulatedPurePursuitController')
+    # 2026-10-09: transit is MPPI; navigation.launch.py maps desired_linear_vel onto vx_max
+    assert nav['FollowPath']['plugin'].endswith('MPPIController')
     dock = yaml.safe_load(open(cfg['docking_params_file']))['mower_docking']['ros__parameters']
     assert dock['approach_distance'] == 1.0 and dock['max_retries'] == 5
     assert dock['marker_size'] == 0.04

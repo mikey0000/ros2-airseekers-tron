@@ -1,0 +1,38 @@
+# VIO overlay for the dual EKF (2026-10-09): loaded AFTER config/ekf_dual.yaml, only with
+# localization_mode:=dual vio:=true (launch/nav2.launch.py). Same input and weighting as
+# config/ekf_vio.yaml (read that header: body vx/vy only, OpenVINS variance x10 with a
+# (0.2 m/s)^2 floor, passed by vio_gate only while RTK is not FIXED and VIO is healthy).
+#
+# Separate file because robot_localization reads odom0, odom1, ... and stops at the first
+# missing index: the dual odom filter has no GPS input, so VIO is its odom1, while the map
+# filter keeps GPS as odom1 and takes VIO as odom2.
+#
+# Both filters get it: ekf_node so the continuous odom pose (and with it the local costmap
+# and the localization_monitor distance) follows VIO when the wheels slip; ekf_map because
+# that is exactly the filter that has to carry the map pose through RTK float / dropouts
+# (owner: the stereo hardware is meant for continuing during RTK float).
+# VIO yaw is NOT fused: /odometry/vio twist.angular is the raw gyro (odom_convert.py), the
+# same information heading_aligner already integrates (stereo ICM-40608 source).
+ekf_node:
+  ros__parameters:
+    odom1: /odometry/vio_gated
+    odom1_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, false,
+                   false, false, false]
+    odom1_differential: false
+    odom1_queue_size: 5
+    odom1_twist_rejection_threshold: 3.0
+
+ekf_map:
+  ros__parameters:
+    odom2: /odometry/vio_gated
+    odom2_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, false,
+                   false, false, false]
+    odom2_differential: false
+    odom2_queue_size: 5
+    odom2_twist_rejection_threshold: 3.0

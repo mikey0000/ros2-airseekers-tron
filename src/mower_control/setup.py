@@ -26,6 +26,9 @@ setup(
             'imu_cal = mower_control.imu_cal:main',
             'supervisor = mower_control.supervisor:main',
             'mow_recorder = mower_control.mow_recorder:main',
+            'tilt_monitor = mower_control.tilt_monitor:main',
+            'bag_recorder = mower_control.bag_recorder:main',
+            'fixed_frame_relay = mower_control.fixed_frame_relay:main',
         ],
     },
 )

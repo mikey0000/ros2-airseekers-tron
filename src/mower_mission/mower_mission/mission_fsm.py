@@ -55,6 +55,10 @@ CMD_UNDOCK = 9
 # Airseekers extension: like RECORD_AREA but the driven trajectory is saved as an open
 # PATH (navigation band with centreline + width, as the GUI "Draw path" tool stores it).
 CMD_RECORD_PATH = 10
+# Airseekers extension: drive around an obstacle / no-go zone; the ring is saved as a
+# permanent keepout via /map_server_node/promote_obstacle instead of a mowing area.
+# 11 is unused by HighLevelControl.srv.
+CMD_RECORD_OBSTACLE = 11
 CMD_RESET_EMERGENCY = 254
 CMD_DELETE_MAPS = 255
 
@@ -79,6 +83,7 @@ ACT_FOLLOW = 'follow_path'
 SRV_GET_AREA = 'get_mowing_area'
 SRV_ADD_AREA = 'add_area'
 SRV_SET_CHANNEL = 'set_area_channel'
+SRV_PROMOTE_OBSTACLE = 'promote_obstacle'   # /map_server_node/promote_obstacle
 SRV_CLEAR_ESTOP = 'clear_estop'
 SRV_CHARGING = 'charging'
 SRV_GET_AREA_SETTINGS = 'get_area_settings'   # /map_server_node/get_area_settings
@@ -87,6 +92,7 @@ CUTTER_HEIGHT_MIN_MM = 30                    # vendor clamp, MCU height position
 CUTTER_HEIGHT_MAX_MM = 90
 SRV_CUTTER_HEIGHT = 'cutter_height'           # /cutter_control height only, blade off
 SRV_CLEAR_COSTMAPS = 'clear_costmaps'         # Nav2 clear_entirely_{global,local}_costmap
+SRV_PLAN_ROUTE = 'plan_route'                 # /map_server_node/plan_route (route graph)
 
 # set_parameters targets (the node maps them to <node>/set_parameters)
 PARAM_NODE_COVERAGE = 'coverage_server'
@@ -148,7 +154,10 @@ def parse_stereo_stale(data, logger_name=b'local_costmap'):
 # Controller aborts caused by lethal costmap cells on the path ahead (Humble RPP
 # "RegulatedPurePursuitController detected collision ahead!", FTC "collision detected ...",
 # "lethal footprint collision"). A plain "Failed to make progress" is NOT one (grass stall).
-_COLLISION_MARKERS = (b'collision ahead', b'collision detected', b'lethal footprint collision')
+# 2026-10-09: MPPI (transit FollowPath) aborts with "Optimizer fail to compute path" only when
+# its cost critic flags EVERY sampled trajectory as colliding (data.fail_flag), i.e. blocked.
+_COLLISION_MARKERS = (b'collision ahead', b'collision detected', b'lethal footprint collision',
+                      b'Optimizer fail to compute path')
 
 
 def parse_collision_abort(data, logger_name=b'controller_server'):
@@ -414,6 +423,18 @@ class Inputs:
     nav_cmd_stamp: Optional[float] = None
     # /stuck (slip_detector stuck guard, latched Bool)
     stuck: bool = False
+    # /tilt/status (mower_control tilt_monitor, latched JSON): band ok|caution|limit|critical|
+    # unknown, filtered roll / pitch (deg, REP-103), axis that set the band, receipt time
+    tilt_band: str = 'unknown'
+    tilt_roll_deg: Optional[float] = None
+    tilt_pitch_deg: Optional[float] = None
+    tilt_axis: str = ''
+    tilt_stamp: Optional[float] = None
+    # 2026-10-09 /localization/status (mower_localization localization_monitor, latched
+    # JSON): state ok|degraded|lost + reason; loc_stamp = receipt time (None = never seen)
+    loc_state: str = ''
+    loc_reason: str = ''
+    loc_stamp: Optional[float] = None
 
 
 @dataclass
@@ -480,12 +501,43 @@ class Params:
     obstacle_path_lookahead_m: float = 2.0
     obstacle_path_margin_m: float = 0.25
     robot_width_m: float = 0.54
+    # 2026-10-09 route graph (docs/route_graph.md, owner: "a specific path for on paths, a
+    # different navigation ... then path again"): a transit (sub-path start, end-of-area
+    # retry, blocked / dynamic / localization re-send) first asks map_server's plan_route
+    # and drives the route (drawn paths along their centreline, in-area legs inside the
+    # area) with FollowPath; no route (off graph / no connection) or a route follow that
+    # aborts (obstacle, MPPI failure) falls back to /navigate_to_pose (costmap planner inside
+    # the hard nav mask) with the existing blocked / retry semantics. Detours and boundary
+    # recoveries always use /navigate_to_pose. route_dock: return-to-dock first drives the
+    # route to the dock approach pose (facing the dock), then the docking server (which
+    # skips its own Nav2 leg within approach_skip_radius_m).
+    route_transits: bool = True
+    route_dock: bool = True
+    route_controller_id: str = 'FollowPath'          # MPPI transit controller
+    route_goal_checker_id: str = 'general_goal_checker'
+    route_end_tolerance_m: float = 0.5   # route "success" farther from the target = failed
+    # Sim 2026-10-09: the scripted person crossed Path 1, the route aborted (collision ahead)
+    # and the /navigate_to_pose fallback after the wait cut across the lawn into a drawn
+    # obstacle corner. An obstacle abort now waits (blocked wait) and re-sends the ROUTE
+    # this many times per transit; only a further obstacle abort falls back to Nav2 (a
+    # static unknown obstacle on the route: Nav2 plans round its costmap marks).
+    route_blocked_retries: int = 1
+    # Sim 2026-10-09 (v4 map, end-to-end paths): MPPI stalled at the 128 deg hairpin from a
+    # path's end into the lawn hop and the route aborted. The route is sent as separate
+    # FollowPath legs split where it turns more than this (0 = one goal); each next leg
+    # starts with the controller's own turn toward the path.
+    route_split_turn_deg: float = 100.0
+    # 2026-10-09 transit variation (owner: tyre tracks from driving the same line): every
+    # mission start bumps a persisted run counter (alternate_counts['__transit_run__']) that
+    # plan_route uses with each area's transit_variation setting. False = always run 0.
+    route_variation: bool = True
     # in-area blade-on transit / detour: straight segment sampled this finely must stay
     # inside the area polygon (minus its obstacle holes)
     blade_transit_sample_m: float = 0.2
     # FollowPath abort / timeout mid-swath: resume from the last reached pose.
     follow_retries: int = 3
     clear_costmaps_on_retry: bool = True
+    clear_global_costmap_on_retry: bool = False
     # After a sub-path still fails, the session ends in MOWING_INCOMPLETE; dock only
     # when this is true (default: stop in place so the operator can inspect).
     return_home_on_incomplete: bool = False
@@ -523,6 +575,7 @@ class Params:
     record_simplify_tolerance_m: float = 0.05
     record_close_radius_m: float = 0.5
     record_min_area_m2: float = 1.0
+    record_min_obstacle_area_m2: float = 0.5   # CMD_RECORD_OBSTACLE (11): no-go zones are small
     record_max_points: int = 50000
     record_path_width_m: float = 0.7      # default band width of a recorded PATH
     record_path_min_length_m: float = 1.0
@@ -568,16 +621,16 @@ class Params:
     # a stale-stereo costmap warning seen within this window overrides the sub_state
     stereo_stale_window_s: float = 2.0
     dynamic_clear_hold_s: float = 2.0   # policy clear this long before resuming
-    detour_skip_m: float = 1.0          # detour target: this far along the path past the robot
+    detour_skip_m: float = 2.0          # detour target: this far along the path past the robot
     detour_skip_step_m: float = 0.5     # ... extended by this when the detour transit fails
-    detour_max_skip_m: float = 3.0      # ... up to this
+    detour_max_skip_m: float = 3.5      # ... up to this
     max_detours_per_subpath: int = 5
     detour_max_leave_m: float = 0.0     # detour pose may lie this far outside the area ring
     # follow_path abort with no classified obstacle (stereo cloud / bumper marks only):
     # detour after this many plain retries at the sub-path chunk (-1 = never detour).
     # 2026-10-07: an unclassified abort detours only when it coincides with a costmap
     # collision abort (collision_abort_window_s); an unranged class alone never detours.
-    detour_unclassified_after: int = 1
+    detour_unclassified_after: int = 0
     collision_abort_window_s: float = 5.0
     # sub_state 'turning (slow pivot)' after the controller commands linear 0 / angular != 0
     # this long (the Tron pivots at 0.02-0.08 rad/s on turf; the GUI explains the wait)
@@ -610,6 +663,38 @@ class Params:
     # (mowing lanes bring it back within 0.5 m) it is a fresh event and gets its own escape.
     stuck_same_spot_left_m: float = 1.0
     stuck_ignore_after_s: float = 1.0   # /stuck ignored this long after an escape
+    # --- tilt guard (2026-10-09, mower_control tilt_monitor /tilt/status; see _tilt_tick) ---
+    # caution: cap the controller speed (blade stays on). limit: cancel, blade off, 'steep'
+    # terrain incident, back out along the driven track on /cmd_vel_emergency, then resume
+    # (mowing: detour past the spot). critical: an emergency cause (tilt_monitor also stops
+    # on /cmd_vel_emergency and calls /cutter_off itself).
+    tilt_guard: bool = True
+    tilt_status_timeout_s: float = 2.0  # older /tilt/status -> band unknown (no action)
+    tilt_caution_speed_mps: float = 0.15
+    tilt_transit_speed_param: str = 'FollowPath.vx_max'  # MPPI transit (rpp: .desired_linear_vel)
+    tilt_transit_speed_mps: float = 0.3     # restored after caution (nav2_params FollowPath)
+    tilt_trail_m: float = 2.0           # driven track kept for the back-out
+    tilt_trail_step_m: float = 0.05
+    tilt_backout_pause_s: float = 0.5
+    tilt_backout_speed: float = 0.1
+    tilt_backout_min_m: float = 0.3      # back-out at least this far, until the band < limit
+    tilt_backout_max_m: float = 1.0     # still 'limit' after this -> STUCK_NEEDS_HELP
+    tilt_backout_lookahead_m: float = 0.3
+    tilt_backout_max_w: float = 0.3
+    tilt_backout_progress_s: float = 3.0
+    tilt_backout_progress_m: float = 0.05
+    tilt_max_backouts: int = 3          # within tilt_backout_period_s -> STUCK_NEEDS_HELP
+    tilt_backout_period_s: float = 300.0
+    tilt_same_spot_m: float = 0.75      # limit again this close to a backed-out spot -> help
+    # 2026-10-09 localization hold (_loc_hold_tick): a mow follow / transit stops with the
+    # blade off while /localization/status is not 'ok' (RTK float/dropout drift budget
+    # spent) and resumes after loc_resume_s of 'ok'; after loc_hold_max_s it stops in
+    # place (IDLE, resume cursor kept). No status ever received / older than
+    # loc_status_timeout_s = no new hold (localization_monitor off or restarting).
+    loc_hold: bool = True
+    loc_status_timeout_s: float = 5.0
+    loc_resume_s: float = 3.0
+    loc_hold_max_s: float = 600.0
 
     @classmethod
     def from_dict(cls, d):
@@ -667,6 +752,9 @@ class Mission:
     requeue_subs: Optional[list] = None         # failed entries left in the end-of-area pass
     retry_entry: Optional[tuple] = None         # the m.failed entry being re-tried
     blade_transit: bool = False                 # in-flight transit keeps the blade on
+    route_fallback: bool = False                # this transit uses /navigate_to_pose (no route)
+    route_aborts: int = 0                       # route follow aborts of this transit
+    route_poses: Optional[list] = None          # route of the in-flight route transit
 
 
 @dataclass
@@ -701,6 +789,8 @@ class MissionFSM:
         self._service = None
         self._emergency = False
         self._dock_purpose = None
+        self._dock_routed = None            # (phase, purpose) whose dock route already ran
+        self._route_legs = None             # {'legs': [poses...], 'i': n} of a route follow
         self._dock_contact_since = None
         self._manual_undocking = False           # standalone UNDOCK (CMD_UNDOCK) in flight
         self._resume_after = None           # None | 'rain' | 'charge'
@@ -721,6 +811,7 @@ class MissionFSM:
         self._last_status = None
         self._incomplete_text = ''
         self._dyn = None                    # dynamic-obstacle wait context
+        self._loc = None                    # localization hold context (_loc_hold_tick)
         self._blk = None                    # path-blocked wait context (see _blocked)
         self.obstacle_decision = {'kind': 'none'}   # /mission/obstacle_decision (GUI)
         self._dyn_ignore = None             # post-timeout ignore window (see _dyn_ignored)
@@ -732,6 +823,10 @@ class MissionFSM:
         self._stk = None                    # stuck escape in progress (see _stuck_tick)
         self._stuck_hist = []               # [[t, x, y, far]] stuck spots escaped from
         self._stuck_ignore_until = -1e9
+        self._tob = None                    # tilt back-out in progress (see _tilt_tick)
+        self._tilt_hist = []                # [[t, x, y]] steep spots backed out of
+        self._tilt_trail = []               # [(x, y)] recent driven track, oldest first
+        self._tilt_capped = False           # caution speed cap sent to the controller
 
     # ==================================================================
     # presentation
@@ -840,9 +935,13 @@ class MissionFSM:
         if b is None:
             return
         limit = float(self.p.battery_max_charge_percent)
-        # Re-assert "off" every 60 s: the docking server enables charging itself at
-        # the end of a dock and could otherwise override the limit.
-        if b >= limit and (self._charge_req is not False or self._now - self._charge_req_t >= 60.0):
+        # Re-assert "off" every 60 s, and within 2 s whenever the MCU MEASURES charging
+        # (is_charging = dock contacts + current into the battery, mcu_node 2026-10-09): the
+        # docking server enables charging itself at the end of every dock (live 2026-10-09: 99 %,
+        # limit 95 %, enabled 40 ms after our "off"), which the 60 s re-assert let run for a minute.
+        if b >= limit and (self._charge_req is not False
+                           or self._now - self._charge_req_t >= 60.0
+                           or (i.is_charging and self._now - self._charge_req_t >= 2.0)):
             self._charge_req, self._charge_req_t = False, self._now
             self._log('info', 'battery %.0f%% >= max charge %.0f%%: charging disabled' % (b, limit))
             self._call(SRV_CHARGING, {'enable': False}, track=False)
@@ -956,6 +1055,7 @@ class MissionFSM:
         self._service = None
         self._enum = None
         self._manual_undocking = False
+        self._dock_routed = None
         self._fx.append(CancelActions(reason))
 
     def _persist(self):
@@ -1326,6 +1426,8 @@ class MissionFSM:
             causes.append('stop button')
         if i.critical_nodes_down:
             causes.append('node down: %s' % i.critical_nodes_down)
+        if self._tilt_band() == 'critical':
+            causes.append('tilt critical (%s)' % self._tilt_text())
         stamp = i.emergency_stamp if i.emergency_stamp is not None else self._created
         if self._now - stamp > self.p.emergency_timeout_s:
             causes.append('/hardware_bridge/emergency silent > %.1fs' % self.p.emergency_timeout_s)
@@ -1334,6 +1436,7 @@ class MissionFSM:
     def _guards(self):
         """Returns True when a guard owns this tick (phase logic skipped)."""
         self._stuck_watch()
+        self._tilt_watch()
         cause = self._emergency_cause()
         if cause:
             if not self._emergency:
@@ -1350,6 +1453,8 @@ class MissionFSM:
             return True
 
         if self._stuck_tick():
+            return True
+        if self._tilt_tick():
             return True
 
         i = self.inputs
@@ -1487,6 +1592,8 @@ class MissionFSM:
         self._pivot_track(now)
         if self._dynamic_tick():
             return
+        if self._loc_hold_tick():
+            return
         if self._blocked_tick():
             return
 
@@ -1612,6 +1719,8 @@ class MissionFSM:
             return self._record_start()
         if cmd == CMD_RECORD_PATH:
             return self._record_start(kind='path')
+        if cmd == CMD_RECORD_OBSTACLE:
+            return self._record_start(kind='obstacle')
         if cmd == CMD_RECORD_FINISH:
             return self._record_finish()
         if cmd == CMD_RECORD_CANCEL:
@@ -1698,6 +1807,8 @@ class MissionFSM:
             return 'charging'
         if self.inputs.docked:
             return 'docked'
+        if self._tilt_band() in ('limit', 'critical'):
+            return 'steep slope (%s)' % self._tilt_text()
         return ''
 
     def _manual_blade(self, enable):
@@ -1795,6 +1906,7 @@ class MissionFSM:
             self.cursor = ResumeCursor()
             self.cursor.single_area_target = single
         self.mission = Mission(single_area_target=single, resume=resume)
+        self._bump_transit_run()            # each drive varies its transit lines
         self._log('info', '%s%s: enumerating mowing areas' % (
             'resuming' if resume else 'starting',
             (' (area %d only)' % single) if single is not None else ''))
@@ -2027,6 +2139,9 @@ class MissionFSM:
                 and self._now - i.stereo_stale_stamp <= self.p.stereo_stale_window_s
                 and not self.sub_state.startswith('waiting for ')):
             return STEREO_STALE_SUB % int(round(i.stereo_stale_s or 0.0))
+        if (self._tilt_capped and self._tob is None and self._tilt_band() == 'caution'
+                and self.phase in MOTION_PHASES):
+            return 'slope caution (%s): slowed; %s' % (self._tilt_text(), self.sub_state)
         if self.pivoting_slowly() and not self.sub_state.startswith('waiting for '):
             return PIVOT_SUB + (': ' + self.sub_state if self.sub_state else '')
         return self.sub_state
@@ -2059,6 +2174,8 @@ class MissionFSM:
             m.run_i = 0
         hmm = self.height_mm(st['cutter_height_mm'])
         speed = min(float(st['cut_speed_mps']), float(self.p.cut_speed_max_mps))
+        if self._tilt_capped:               # area starts on a slope: keep the caution cap
+            speed = min(speed, float(self.p.tilt_caution_speed_mps))
         self._log('info', 'area %d %s: settings (%s) %s; blade height %d mm, '
                           'cut speed %.2f m/s, %d run(s)'
                   % (m.area_idx, self._area_name(), src, json.dumps(st, sort_keys=True),
@@ -2197,8 +2314,8 @@ class MissionFSM:
                 m.area_idx, m.sub_i + 1, len(m.subpaths)))
             yaw = geo.heading_of(sp, m.start_local)
             m.transit_target = (target[0], target[1], yaw)
-            self._start_action(ACT_NAV, {'pose': m.transit_target},
-                               self.p.transit_timeout_s)
+            m.route_fallback, m.route_aborts = False, 0
+            self._send_transit()
         else:
             self._begin_blade()
 
@@ -2316,8 +2433,12 @@ class MissionFSM:
 
     # ---- retries ---------------------------------------------------------
     def _clear_costmaps(self):
+        # global only when clear_global_costmap_on_retry (review 2026-10-09): the global costmap
+        # now holds the sensor obstacle marks the detour / replan must route around; wiping it
+        # on every retry sent the robot straight back through marks it could no longer see.
         if self.p.clear_costmaps_on_retry:
-            self._call(SRV_CLEAR_COSTMAPS, {}, track=False)
+            self._call(SRV_CLEAR_COSTMAPS, {'global': bool(self.p.clear_global_costmap_on_retry)},
+                       track=False)
 
     def _retry_delay(self, n):
         """Back-off before retry ``n`` (1-based): transit_retry_backoff_s[n-1], the
@@ -2534,16 +2655,60 @@ class MissionFSM:
             self._dock_done()
             return
         if self.p.use_docking_server:
-            self._start_action(ACT_DOCK, {'use_vision': self.p.dock_use_vision,
-                                          'timeout_s': self.p.dock_timeout_s},
-                               self.p.dock_action_timeout_s, purpose='dock')
+            if self.p.route_transits and self.p.route_dock and self.inputs.pose is not None \
+                    and self._dock_routed != (name, purpose):
+                self._call(SRV_PLAN_ROUTE, {'start': tuple(self.inputs.pose), 'to_dock': True,
+                                            'variation': self._transit_run()},
+                           purpose='dock_route')
+                return
+            self._dock_server()
         elif len(self.p.dock_pose) == 3:
             self._start_action(ACT_NAV, {'pose': tuple(self.p.dock_pose)},
                                self.p.transit_timeout_s, purpose='dock')
         else:
             self._dock_failed('no docking server and no dock_pose configured')
 
+    def _dock_server(self):
+        self._start_action(ACT_DOCK, {'use_vision': self.p.dock_use_vision,
+                                      'timeout_s': self.p.dock_timeout_s},
+                           self.p.dock_action_timeout_s, purpose='dock')
+
+    def _dock_route_planned(self, ok, resp):
+        """plan_route(to_dock) answered: drive the route to the approach pose, or (no route)
+        let the docking server navigate there itself."""
+        if self.phase not in DOCK_PHASES or self._action is not None or \
+                self._dock_purpose is None or self.inputs.docked:
+            return
+        poses = resp.get('poses') or []
+        if not (ok and resp.get('success') and len(poses) >= 2):
+            self._dock_routed = (self.phase, self._dock_purpose)
+            self._log('info', 'dock route: %s: the docking server navigates'
+                      % (resp.get('message') or 'plan_route unavailable'))
+            self._dock_server()
+            return
+        legs = self._split_route([tuple(p) for p in poses])
+        self._log('info', 'dock route %.1f m (%d leg%s): %s' % (
+            float(resp.get('length_m', 0.0)), len(legs), '' if len(legs) == 1 else 's',
+            resp.get('message', '')))
+        self._route_legs = {'legs': legs, 'i': 0}
+        self._send_route_leg('dock_route')
+
+    def _dock_route_result(self, outcome):
+        """The dock route ended (any outcome): the docking server takes over from here (an
+        obstacle abort / failure: it plans its own Nav2 leg round it)."""
+        if self._route_next_leg(outcome, 'dock_route'):
+            return
+        self._route_legs = None
+        self._dock_routed = (self.phase, self._dock_purpose)
+        if outcome != SUCCEEDED:
+            self._log('warn', 'dock route follow_path %s: the docking server navigates' % outcome)
+        if self.inputs.docked:
+            self._dock_done()
+            return
+        self._dock_server()
+
     def _dock_done(self):
+        self._dock_routed = None
         self._blk = None
         purpose, self._dock_purpose = self._dock_purpose, None
         if not self.p.use_docking_server:
@@ -2561,6 +2726,7 @@ class MissionFSM:
             self._go_idle('docked')
 
     def _dock_failed(self, why):
+        self._dock_routed = None
         self._blk = None
         self._dock_purpose = None
         self._resume_after = None
@@ -2584,8 +2750,10 @@ class MissionFSM:
         self._record_line = None
         self._record_kind = kind
         self._last_sample = -1e9
-        self._go('RECORDING', 'drive the path with the joystick' if kind == 'path'
-                 else 'drive the boundary with the joystick')
+        hint = {'path': 'drive the path with the joystick',
+                'obstacle': 'drive around the obstacle with the joystick'}.get(
+                    kind, 'drive the boundary with the joystick')
+        self._go('RECORDING', hint)
         self._sample(force=True)
         return True
 
@@ -2620,9 +2788,12 @@ class MissionFSM:
         if len(poly) < 3 and n >= 3:
             poly = list(self._track)     # upstream: keep raw if DP too aggressive
         area = geo.polygon_area(poly)
-        if len(poly) < 3 or area < self.p.record_min_area_m2:
+        # a recorded no-go zone is much smaller than a mowing area: its own minimum
+        min_area = (self.p.record_min_obstacle_area_m2 if self._record_kind == 'obstacle'
+                    else self.p.record_min_area_m2)
+        if len(poly) < 3 or area < min_area:
             why = 'polygon has %d vertices / %.2f m^2 (need 3 and %.1f m^2)' % (
-                len(poly), area, self.p.record_min_area_m2)
+                len(poly), area, min_area)
             self._log('warn', 'recording rejected: %s' % why)
             self._track = []
             self._fx.append(PublishTrajectory([]))
@@ -2631,7 +2802,8 @@ class MissionFSM:
         self._record_poly = poly
         self._log('info', 'recording finished: %d samples -> %d vertices, %.1f m^2' % (
             n, len(poly), area))
-        self._go('RECORDING', 'saving area')
+        self._go('RECORDING', 'saving obstacle' if self._record_kind == 'obstacle'
+                 else 'saving area')
         self._enum = {'purpose': 'record', 'index': 0, 'areas': {}, 'count': 0}
         self._call(SRV_GET_AREA, {'index': 0}, purpose='enum')
         return True
@@ -2656,7 +2828,25 @@ class MissionFSM:
         self._call(SRV_GET_AREA, {'index': 0}, purpose='enum')
         return True
 
-    def _record_save(self, mowing_count, total_count=None):
+    def _record_save(self, mowing_count, total_count=None, areas=None):
+        if self._record_kind == 'obstacle':
+            areas = areas or {}
+            idx = self._record_obstacle_area(areas)
+            if idx is None:
+                # no mowing area to store the keepout under (the server rejects
+                # obstacles on navigation areas) -> keep the ring like add_area failures
+                self._record_name = 'No-go %d' % (mowing_count + 1)
+                self._log('warn', 'cannot save no-go zone: no mowing area to attach it to')
+                self._record_saved(False, failed_service='promote_obstacle')
+                return
+            obstacles = sum(len(a.get('obstacles') or []) for a in areas.values())
+            self._record_index = idx
+            self._record_name = 'No-go %d' % (obstacles + 1)
+            self._call(SRV_PROMOTE_OBSTACLE, {'area_index': idx,
+                                              'polygon': list(self._record_poly),
+                                              'name': self._record_name},
+                       purpose='record_obstacle')
+            return
         if self._record_kind == 'path':
             total = mowing_count if total_count is None else total_count
             self._record_index = total            # add_area appends at the end
@@ -2670,7 +2860,23 @@ class MissionFSM:
         self._call(SRV_ADD_AREA, {'name': name, 'polygon': list(self._record_poly),
                                   'is_navigation_area': False}, purpose='add_area')
 
-    def _record_saved(self, ok):
+    def _record_obstacle_area(self, areas):
+        """Mowing area a recorded no-go zone is stored under: the one containing the
+        ring centroid, else the first mowing area. None when there is none. The
+        containment is soft on purpose — keepout and nav masks paint obstacle
+        polygons by their own geometry, so a zone outside every work area (dock
+        corridor, gap between areas) still holds once stored under any mowing area."""
+        if not areas:
+            return None
+        ring = self._record_poly or []
+        c = (sum(p[0] for p in ring) / len(ring),
+             sum(p[1] for p in ring) / len(ring)) if ring else None
+        for i in sorted(areas):
+            if c is None or geo.point_in_polygon(c, areas[i].get('outer') or []):
+                return i
+        return sorted(areas)[0]
+
+    def _record_saved(self, ok, failed_service='add_area'):
         poly, self._record_poly = self._record_poly, None
         self._track = []
         self._fx.append(PublishTrajectory([]))
@@ -2679,13 +2885,142 @@ class MissionFSM:
                 self._record_kind, self._record_name, len(poly)))
             self._go('RECORDING_COMPLETE', self._record_name)
         else:
-            self._log('error', 'add_area failed: polygon kept in a fallback file')
+            self._log('error', '%s failed: polygon kept in a fallback file' % failed_service)
             self._fx.append(SaveRecordingFallback(list(poly), self._record_name))
-            self._go_idle('add_area failed; polygon saved locally')
+            self._go_idle('%s failed; polygon saved locally' % failed_service)
 
     # ==================================================================
     # results
     # ==================================================================
+    # ---- route-graph transits (2026-10-09, see Params.route_transits) ---------
+    TRANSIT_RUN_KEY = '__transit_run__'
+
+    def _transit_run(self):
+        """Run index for plan_route's transit variation (0 = base route)."""
+        if not self.p.route_variation:
+            return 0
+        return int(self.alternate_counts.get(self.TRANSIT_RUN_KEY, 0))
+
+    def _bump_transit_run(self):
+        if self.p.route_transits and self.p.route_variation:
+            self.alternate_counts[self.TRANSIT_RUN_KEY] = self._transit_run() + 1
+            self._fx.append(SaveAlternateCounts(dict(self.alternate_counts)))
+
+    def _send_transit(self):
+        """(Re-)send the in-flight transit to ``m.transit_target``: the route first, the
+        costmap planner (/navigate_to_pose) once this transit fell back."""
+        m = self.mission
+        m.route_poses = None
+        if self.p.route_transits and not m.route_fallback and m.detour is None \
+                and not m.recovering and self.inputs.pose is not None:
+            self._call(SRV_PLAN_ROUTE, {'start': tuple(self.inputs.pose),
+                                        'goal': tuple(m.transit_target),
+                                        'variation': self._transit_run()}, purpose='route')
+            return
+        self._start_action(ACT_NAV, {'pose': m.transit_target}, self.p.transit_timeout_s)
+
+    def _route_planned(self, ok, resp):
+        m = self.mission
+        if m is None or self.phase != 'TRANSIT' or m.step != 'transit' or \
+                self._action is not None:
+            return                       # superseded (stop, guard, wait) while planning
+        poses = resp.get('poses') or []
+        if not (ok and resp.get('success') and len(poses) >= 2):
+            m.route_fallback = True
+            self._log('info', 'no route (%s): transit via the costmap planner'
+                      % (resp.get('message') or 'plan_route unavailable'))
+            self._start_action(ACT_NAV, {'pose': m.transit_target}, self.p.transit_timeout_s)
+            return
+        if m.blade_transit and int(resp.get('single_area', -1)) != m.area_idx:
+            # the straight segment stays in the area but the route does not (path legs)
+            self._blade_off('route leaves area %d' % m.area_idx)
+        m.route_poses = [tuple(p) for p in poses]
+        legs = self._split_route(m.route_poses)
+        self._log('info', 'route %.1f m (%.1f m on paths, %d leg%s): %s' % (
+            float(resp.get('length_m', 0.0)), float(resp.get('path_length_m', 0.0)),
+            len(legs), '' if len(legs) == 1 else 's', resp.get('message', '')))
+        self._route_legs = {'legs': legs, 'i': 0}
+        self._send_route_leg('route')
+
+    def _split_route(self, poses):
+        """Route poses -> FollowPath legs, split at turns sharper than
+        route_split_turn_deg (measured over 3 poses either side, ~0.3 m)."""
+        th = math.radians(float(self.p.route_split_turn_deg))
+        k = 3
+        if th <= 0 or len(poses) < 2 * k + 2:
+            return [list(poses)]
+
+        def turn(j):
+            a, b, c = poses[j - k], poses[j], poses[j + k]
+            h1 = math.atan2(b[1] - a[1], b[0] - a[0])
+            h2 = math.atan2(c[1] - b[1], c[0] - b[0])
+            return abs(math.atan2(math.sin(h2 - h1), math.cos(h2 - h1)))
+
+        cuts, i = [], k
+        while i < len(poses) - k:
+            if turn(i) >= th:
+                j = max(range(i, min(len(poses) - k, i + 2 * k)), key=turn)
+                cuts.append(j)
+                i = j + 2 * k
+            else:
+                i += 1
+        legs, s0 = [], 0
+        for c in cuts:
+            legs.append(list(poses[s0:c + 1]))
+            s0 = c
+        legs.append(list(poses[s0:]))
+        return [lg for lg in legs if len(lg) >= 2] or [list(poses)]
+
+    def _send_route_leg(self, purpose):
+        rl = self._route_legs
+        self._start_action(ACT_FOLLOW, {'poses': rl['legs'][rl['i']],
+                                        'controller_id': self.p.route_controller_id,
+                                        'goal_checker_id': self.p.route_goal_checker_id},
+                           self.p.transit_timeout_s, purpose=purpose)
+
+    def _route_next_leg(self, outcome, purpose):
+        """A route leg succeeded at its end and another follows: send it. True if sent."""
+        rl, pose = self._route_legs, self.inputs.pose
+        if outcome != SUCCEEDED or rl is None or rl['i'] + 1 >= len(rl['legs']) \
+                or pose is None:
+            return False
+        if geo.dist(pose, rl['legs'][rl['i']][-1]) > self.p.route_end_tolerance_m:
+            return False
+        rl['i'] += 1
+        self._send_route_leg(purpose)
+        return True
+
+    def _route_result(self, outcome):
+        """Route follow ended. Arrived -> mow. An obstacle abort holds first (blocked wait)
+        and re-sends the route up to route_blocked_retries times, then through
+        /navigate_to_pose; any other failure re-sends via /navigate_to_pose at once
+        without consuming a transit retry (those stay for the costmap planner)."""
+        m = self.mission
+        if self._route_next_leg(outcome, 'route'):
+            return
+        self._route_legs = None
+        m.route_poses = None
+        pose = self.inputs.pose
+        d = geo.dist(pose, m.transit_target) if pose is not None else math.inf
+        if (outcome == SUCCEEDED and d <= self.p.route_end_tolerance_m) or \
+                (outcome != UNAVAILABLE and self._transit_arrived()):
+            m.recovering = False
+            m.transit_fails = 0
+            self._blk = None
+            self._begin_blade()
+            return
+        why = ('route follow_path %s' % outcome) if outcome != SUCCEEDED else \
+            'route follow_path succeeded %.2f m from the target' % d
+        m.route_aborts += 1
+        if outcome in (ABORTED, TIMEOUT) and self._blocked_cause():
+            # obstacle: wait, then re-send the route (route_blocked_retries), later Nav2
+            m.route_fallback = m.route_aborts > int(self.p.route_blocked_retries)
+            if self._blocked('transit', why):
+                return
+        m.route_fallback = True
+        self._log('warn', '%s: transit via the costmap planner' % why)
+        self._start_action(ACT_NAV, {'pose': m.transit_target}, self.p.transit_timeout_s)
+
     def _transit_arrived(self):
         """True when the last transit target is within transit_arrived_radius_m."""
         m = self.mission
@@ -2701,6 +3036,9 @@ class MissionFSM:
             return
         if outcome != SUCCEEDED:
             self._log('warn', '%s finished: %s %s' % (name, outcome, result.get('message', '')))
+        if a.purpose == 'dock_route':
+            self._dock_route_result(outcome)
+            return
         if a.purpose == 'dock':
             self._dock_contact_since = None
             if outcome == SUCCEEDED and (result.get('success', True)):
@@ -2733,6 +3071,9 @@ class MissionFSM:
             return
         m = self.mission
         if m is None:
+            return
+        if a.purpose == 'route':
+            self._route_result(outcome)
             return
         if name in (ACT_UNDOCK, ACT_BACKUP):
             if outcome == SUCCEEDED and result.get('success', True):
@@ -2923,6 +3264,21 @@ class MissionFSM:
             return None
         look = float(self.p.obstacle_path_lookahead_m)
         pts = [(pose[0], pose[1])]
+        rp = m.route_poses if m.step == 'transit' else None
+        if rp:
+            # route transit: the corridor follows the route, not the straight line
+            k = min(range(len(rp)), key=lambda j: geo.dist(pose, rp[j]))
+            acc, prev = 0.0, pts[0]
+            for q in rp[k:]:
+                seg = geo.dist(prev, q)
+                if acc + seg > look and seg > 1e-9:
+                    f = (look - acc) / seg
+                    pts.append((prev[0] + (q[0] - prev[0]) * f, prev[1] + (q[1] - prev[1]) * f))
+                    break
+                pts.append((q[0], q[1]))
+                acc += seg
+                prev = q
+            return pts
         if m.step == 'transit' or (self.phase == 'TRANSIT' and m.step in (
                 'dyn_wait', 'blocked_wait', 'retry_wait')):
             t = m.transit_target
@@ -3068,7 +3424,7 @@ class MissionFSM:
             elif b['ctx'] == 'transit':
                 m.step = 'transit'
                 self._go('TRANSIT', b['sub'])
-                self._start_action(ACT_NAV, {'pose': m.transit_target}, self.p.transit_timeout_s)
+                self._send_transit()
             else:
                 m.step = None
                 self._dispatch()
@@ -3131,7 +3487,7 @@ class MissionFSM:
             return 'follow'
         if self.phase == 'TRANSIT' and m is not None and m.step == 'transit' and a is not None:
             return 'transit'
-        if self.phase in DOCK_PHASES and a is not None and a.purpose == 'dock':
+        if self.phase in DOCK_PHASES and a is not None and a.purpose in ('dock', 'dock_route'):
             return 'dock'
         return None
 
@@ -3227,7 +3583,7 @@ class MissionFSM:
         elif d['ctx'] == 'transit':
             m.step = 'transit'
             self._go(self.phase, d['sub'])
-            self._start_action(ACT_NAV, {'pose': m.transit_target}, self.p.transit_timeout_s)
+            self._send_transit()
         else:
             m.step = None
             self._dispatch()
@@ -3250,6 +3606,68 @@ class MissionFSM:
             self._stretch_blocked(why)
         elif not self._try_detour(m.start_local, why):
             self._subpath_failed(why)
+
+    # ---- localization hold (2026-10-09): drift budget spent -> stop, blade off ----
+    def _loc_fresh(self):
+        i = self.inputs
+        return i.loc_stamp is not None and \
+            self._now - i.loc_stamp <= float(self.p.loc_status_timeout_s)
+
+    def _loc_hold_tick(self):
+        """Returns True while the localization hold owns this tick. Reuses the dynamic-
+        obstacle resume path (_dyn_resume), so a held follow re-dispatches from its
+        progress and a held transit re-sends its goal."""
+        m, i, d = self.mission, self.inputs, self._loc
+        if d is not None and (m is None or self.phase != d['phase'] or m.step != 'loc_hold'):
+            self._loc = None                 # another guard / command took over
+            return False
+        if d is None:
+            if not self.p.loc_hold or not self._loc_fresh() or i.loc_state in ('', 'ok'):
+                return False
+            ctx = self._dyn_context()
+            if ctx not in ('follow', 'transit'):
+                return False
+            if ctx == 'follow' and m.step == 'follow':
+                m.start_local = self._track_progress()
+            self._loc = {'ctx': ctx, 'since': self._now, 'ok_since': None, 'sub': self.sub_state,
+                         'phase': self.phase, 'purpose': self._dock_purpose}
+            if self._action is not None:
+                self._fx.append(CancelActions('localization %s' % i.loc_state))
+                self._action = None
+            self._fx.append(ZeroBurst())
+            m.step = 'loc_hold'
+            self._blade_off('localization %s' % i.loc_state)
+            self._log('warn', 'localization %s (%s): stopped, blade off, waiting for RTK fixed'
+                      % (i.loc_state, i.loc_reason or 'no reason'))
+            self._go(self.phase, 'localization %s: holding' % i.loc_state)
+            return True
+        if self._loc_fresh() and i.loc_state == 'ok':
+            if d['ok_since'] is None:
+                d['ok_since'] = self._now
+            if self._now - d['ok_since'] >= float(self.p.loc_resume_s):
+                self._loc = None
+                self._log('info', 'localization ok again after %.0f s: resuming'
+                          % (self._now - d['since']))
+                self._dyn_resume(d)
+                return True
+        else:
+            d['ok_since'] = None
+        held = self._now - d['since']
+        if held >= float(self.p.loc_hold_max_s):
+            self._loc = None
+            why = 'localization not ok for %.0f s (%s)' % (held, i.loc_reason or i.loc_state)
+            self._log('error', '%s: stopping in place' % why)
+            self._interrupt_mission(why)
+            self._cancel_all(why)
+            self._blade_off(why)
+            self._fx.append(ZeroBurst())
+            self._dock_purpose = None
+            self._go_idle(why)
+            return True
+        sub = 'localization %s: holding (%d s)' % (i.loc_state or 'unknown', int(held))
+        if sub != self.sub_state:
+            self._go(self.phase, sub)
+        return True
 
     # ---- static obstacles: blade-off detour to the swath beyond ----------
     def _try_detour(self, cur, why):
@@ -3282,7 +3700,11 @@ class MissionFSM:
                               'area: no detour' % (m.area_idx, m.sub_i, idx, sp[idx][0],
                                                    sp[idx][1]))
             return False
-        self._transit_blade(sp[idx], 'detour')
+        # Blade always OFF on a detour (review 2026-10-09): with detour_unclassified_after 0 the
+        # first "collision ahead" goes straight here, and the obstacle may be a child, pet or
+        # hose that YOLO did not classify; the Nav2 path (not the straight segment
+        # _transit_blade checks) passes within 0.25-0.6 m of it.
+        self._transit_blade(sp[idx], 'detour', force_off=True)
         if not m.detour:
             self._incident('detour', why)
         m.detour = {'from': cur, 'to': idx, 'skip': skip, 'why': why}
@@ -3418,6 +3840,12 @@ class MissionFSM:
         if isinstance(s.purpose, str) and s.purpose.startswith('preview_'):
             self._preview_on_service(s.purpose, ok, resp)
             return
+        if s.purpose == 'route':
+            self._route_planned(ok, resp)
+            return
+        if s.purpose == 'dock_route':
+            self._dock_route_planned(ok, resp)
+            return
         if s.purpose == 'enum':
             e = self._enum
             if e is None:
@@ -3441,7 +3869,14 @@ class MissionFSM:
                 self._areas_loaded(e['areas'], e['count'])
             else:
                 if self._record_poly is not None:
-                    self._record_save(len(e['areas']), e['count'])
+                    self._record_save(len(e['areas']), e['count'], e['areas'])
+        elif s.purpose == 'record_obstacle':
+            if self._record_poly is not None:
+                added = ok and bool(resp.get('success', False))
+                if not added:
+                    self._log('warn', 'promote_obstacle refused: %s'
+                              % (resp.get('message') or 'unavailable'))
+                self._record_saved(added, failed_service='promote_obstacle')
         elif s.purpose == 'add_area':
             if self._record_poly is not None:
                 added = ok and bool(resp.get('success', False))
@@ -3490,6 +3925,7 @@ class MissionFSM:
                                                          CMD_RESET_EMERGENCY):
             self._log('info', 'stuck: cleared by the operator (command %d)' % cmd)
             self._stuck_hist = []
+            self._tilt_hist = []
             self._stuck_ignore_until = self._now + float(self.p.stuck_ignore_after_s)
             self._fx.append(ResetStuckGuard())
             if cmd != CMD_STOP and cmd != CMD_RESET_EMERGENCY:
@@ -3610,7 +4046,7 @@ class MissionFSM:
         self._fx.append(SuppressStuckGuard(False))
         self._fx.append(RecordIncident('stuck', ox, oy, 'stuck guard escape (%s, %.2f m)'
                                        % (k['phase'], moved)))
-        self._call(SRV_CLEAR_COSTMAPS, {}, track=False)
+        self._call(SRV_CLEAR_COSTMAPS, {'global': True}, track=False)
         self._log('info', 'stuck: escaped (%.2f m): costmaps cleared, terrain incident at '
                   '(%.2f, %.2f), resuming %s' % (moved, ox, oy, k['phase']))
         if k['phase'] in DOCK_PHASES:
@@ -3637,6 +4073,232 @@ class MissionFSM:
         self._resume_after = None
         self._stk = None
         self._go('STUCK_NEEDS_HELP', STUCK_NEEDS_HELP_SUB % (x, y))
+
+    # ==================================================================
+    # tilt guard (mower_control tilt_monitor /tilt/status), 2026-10-09
+    # ==================================================================
+    # The monitor owns filtering, debounce and hysteresis; this only acts on its band.
+    # critical -> _emergency_cause; caution -> controller speed cap; limit -> back out
+    # along the track just driven (pure pursuit on /cmd_vel_emergency, either direction),
+    # 'steep' terrain incident, then resume like the stuck escape (mowing: detour past it).
+    def _tilt_band(self):
+        """The monitor's band, or 'unknown' when the guard is off or the status is stale."""
+        i = self.inputs
+        if not self.p.tilt_guard or i.tilt_stamp is None \
+                or self._now - i.tilt_stamp > float(self.p.tilt_status_timeout_s):
+            return 'unknown'
+        return i.tilt_band
+
+    def _tilt_text(self):
+        i = self.inputs
+        r, p = i.tilt_roll_deg, i.tilt_pitch_deg
+        if i.tilt_axis == 'pitch' and p is not None:
+            return 'pitch %.0f deg' % p
+        if r is not None:
+            return 'roll %.0f deg' % r
+        return 'tilt'
+
+    def _tilt_watch(self):
+        """Abort a back-out when something else took over (emergency, STOP, phase change)."""
+        k = self._tob
+        if k is None:
+            return
+        if self._emergency_cause() or self.phase != k['phase']:
+            self._log('warn', 'steep-slope back-out aborted (%s)' % (
+                self._emergency_cause() or 'state %s' % self.phase))
+            self._tob = None
+            self._fx.append(SuppressStuckGuard(False))
+            self._fx.append(DriveCmd(0.0, 0.0))
+
+    def _tilt_trail_add(self):
+        pose = self.inputs.pose
+        if pose is None or self._tob is not None:
+            return
+        tr = self._tilt_trail
+        if tr and math.hypot(pose[0] - tr[-1][0], pose[1] - tr[-1][1]) \
+                < float(self.p.tilt_trail_step_m):
+            return
+        tr.append((float(pose[0]), float(pose[1])))
+        n = int(float(self.p.tilt_trail_m) / max(0.01, float(self.p.tilt_trail_step_m))) + 1
+        del tr[:-n]
+
+    def _tilt_speed(self, band):
+        """Caution cap on the coverage + transit controllers; restored when back to ok.
+        'unknown' keeps the current state (no flapping on a lost status)."""
+        if band == 'unknown':
+            return
+        want = band in ('caution', 'limit', 'critical')
+        if want == self._tilt_capped:
+            return
+        self._tilt_capped = want
+        cap = float(self.p.tilt_caution_speed_mps)
+        m = self.mission
+        params = {}
+        if want:
+            params = {self.p.controller_speed_param: cap,
+                      self.p.tilt_transit_speed_param: cap}
+            self._log('warn', 'slope caution (%s): controller speed capped at %.2f m/s'
+                      % (self._tilt_text(), cap))
+        else:
+            params = {self.p.tilt_transit_speed_param: float(self.p.tilt_transit_speed_mps)}
+            if m is not None and m.settings:
+                params[self.p.controller_speed_param] = min(
+                    float(m.settings.get('cut_speed_mps', AREA_SETTINGS_DEFAULTS['cut_speed_mps'])),
+                    float(self.p.cut_speed_max_mps))
+            self._log('info', 'slope ok: controller speed restored')
+        if self.p.set_cut_speed:
+            self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER, 'params': params},
+                       track=False)
+
+    def _tilt_tick(self):
+        """Returns True while the tilt guard owns the tick."""
+        if not self.p.tilt_guard:
+            return False
+        self._tilt_trail_add()
+        band = self._tilt_band()
+        self._tilt_speed(band)
+        if self._tob is not None:
+            self._tilt_backout_tick(band)
+            return True
+        if band != 'limit':
+            return False
+        if self.phase == 'MANUAL_MOWING':
+            if self.blade_on:               # the operator drives; only the blade is ours
+                self._log('warn', 'manual: blade off (steep slope, %s)' % self._tilt_text())
+                self._blade_off('manual: steep slope')
+                self._go('MANUAL_MOWING', SUB_MANUAL_BLADE_OFF)
+            return False
+        if self.phase not in STUCK_PHASES:
+            return False
+        if self.phase in ('TRANSIT', 'MOWING') and self.mission is None:
+            return False
+        pose = self.inputs.pose
+        if pose is None:
+            self._tilt_needs_help('steep slope, no pose', (0.0, 0.0))
+            return True
+        horizon = self._now - float(self.p.tilt_backout_period_s)
+        self._tilt_hist = [h for h in self._tilt_hist if h[0] >= horizon]
+        if any(math.hypot(h[1] - pose[0], h[2] - pose[1]) <= float(self.p.tilt_same_spot_m)
+               for h in self._tilt_hist):
+            self._tilt_needs_help('steep again at the same spot', pose)
+            return True
+        if len(self._tilt_hist) >= int(self.p.tilt_max_backouts):
+            self._tilt_needs_help('steep %d times within %.0f s' % (
+                len(self._tilt_hist) + 1, self.p.tilt_backout_period_s), pose)
+            return True
+        ox, oy = float(pose[0]), float(pose[1])
+        self._log('error', 'STEEP SLOPE (%s) at (%.2f, %.2f) in %s: cancel, blade off, '
+                  'back out' % (self._tilt_text(), ox, oy, self.phase))
+        m = self.mission
+        follow = m is not None and m.step == 'follow'
+        # back-out path: the driven track, newest first, without the spot itself
+        path = [q for q in reversed(self._tilt_trail)]
+        self._tob = {'phase': self.phase, 'origin': (ox, oy), 'stage': 'pause',
+                     't': self._now, 'path': path, 'i': 0, 'follow': follow,
+                     'dock_purpose': self._dock_purpose, 'best': 0.0, 'best_t': self._now}
+        self._cancel_all('steep slope')
+        self._blade_off('steep slope')
+        self._fx.append(ZeroBurst())
+        self._fx.append(SuppressStuckGuard(True))
+        self._fx.append(RecordIncident('steep', ox, oy, '%s (limit) in %s'
+                                       % (self._tilt_text(), self.phase)))
+        if m is not None:
+            if follow:
+                m.start_local = self._track_progress()
+            m.step = None
+        self.sub_state = 'steep slope (%s): stopping' % self._tilt_text()
+        return True
+
+    def _tilt_backout_cmd(self, pose):
+        """(v, w) toward the next back-out path point: pure pursuit, forward or reverse
+        (whichever side the track lies on), straight reverse once the track is used up."""
+        k, p = self._tob, self.p
+        v0, la = abs(float(p.tilt_backout_speed)), float(p.tilt_backout_lookahead_m)
+        path = k['path']
+        while k['i'] < len(path) and math.hypot(path[k['i']][0] - pose[0],
+                                                path[k['i']][1] - pose[1]) < la:
+            k['i'] += 1
+        if k['i'] >= len(path):
+            return (k.get('v', -v0), 0.0)
+        tx, ty = path[k['i']]
+        dx, dy = tx - pose[0], ty - pose[1]
+        c, s = math.cos(pose[2]), math.sin(pose[2])
+        xr, yr = c * dx + s * dy, -s * dx + c * dy
+        v = v0 if xr > 0 else -v0
+        k['v'] = v
+        wmax = float(p.tilt_backout_max_w)
+        w = max(-wmax, min(wmax, v * 2.0 * yr / max(1e-6, xr * xr + yr * yr)))
+        return v, w
+
+    def _tilt_backout_tick(self, band):
+        k, pose, now, p = self._tob, self.inputs.pose, self._now, self.p
+        if pose is None:
+            self._tob = None
+            self._fx.append(SuppressStuckGuard(False))
+            self._tilt_needs_help('steep slope, pose lost during the back-out', k['origin'])
+            return
+        if k['stage'] == 'pause':
+            if now - k['t'] < float(p.tilt_backout_pause_s):
+                return
+            k['stage'], k['best_t'] = 'drive', now
+            self.sub_state = 'steep slope (%s): backing out' % self._tilt_text()
+            self._log('info', 'steep slope: backing out along %d track points at %.2f m/s'
+                      % (len(k['path']), abs(float(p.tilt_backout_speed))))
+        d = math.hypot(pose[0] - k['origin'][0], pose[1] - k['origin'][1])
+        if d >= k['best'] + float(p.tilt_backout_progress_m):
+            k['best'], k['best_t'] = d, now
+        if band not in ('limit', 'critical') and d >= float(p.tilt_backout_min_m):
+            self._tilt_backed_out(d)
+            return
+        if d >= float(p.tilt_backout_max_m) or now - k['best_t'] > float(p.tilt_backout_progress_s):
+            why = ('still steep after backing out %.2f m' % d if d >= float(p.tilt_backout_max_m)
+                   else 'back-out made no progress in %.0f s' % float(p.tilt_backout_progress_s))
+            self._fx.append(DriveCmd(0.0, 0.0))
+            self._tob = None
+            self._fx.append(SuppressStuckGuard(False))
+            self._tilt_needs_help(why, k['origin'])
+            return
+        self._fx.append(DriveCmd(*self._tilt_backout_cmd(pose)))
+
+    def _tilt_backed_out(self, moved):
+        k, self._tob = self._tob, None
+        ox, oy = k['origin']
+        self._tilt_hist.append([self._now, ox, oy])
+        self._tilt_trail = []
+        self._fx.append(DriveCmd(0.0, 0.0))
+        self._fx.append(SuppressStuckGuard(False))
+        self._log('info', 'steep slope: backed out %.2f m from (%.2f, %.2f), resuming %s'
+                  % (moved, ox, oy, k['phase']))
+        if k['phase'] in DOCK_PHASES:
+            self._dock(k['phase'], k['dock_purpose'], 'resuming after steep-slope back-out')
+            return
+        m = self.mission
+        if m is None or m.area_idx is None or not m.subpaths:
+            self._go_idle('steep-slope back-out: nothing to resume')
+            return
+        if k['phase'] == 'MOWING' and k['follow']:
+            # skip past the spot along the swath (blade-off detour); the 'steep' incident
+            # raises the terrain cost so Nav2's detour / transit plans route around it
+            if not self._try_detour(m.start_local, 'steep slope'):
+                self._subpath_failed('steep slope')
+            return
+        m.detour = None
+        self._dispatch()
+
+    def _tilt_needs_help(self, why, pose):
+        """Like the stuck guard's give-up (same latched phase, same operator clear)."""
+        x, y = float(pose[0]), float(pose[1])
+        self._log('error', 'STUCK_NEEDS_HELP: %s at (%.2f, %.2f): motion stopped, blade off '
+                  '(STOP / START / MANUAL to clear)' % (why, x, y))
+        if self.mission is not None:
+            self._interrupt_mission('steep slope')
+        self._cancel_all('steep slope')
+        self._blade_off('steep slope')
+        self._fx.append(ZeroBurst())
+        self._dock_purpose = None
+        self._resume_after = None
+        self._tob = None
+        self._go('STUCK_NEEDS_HELP', 'steep slope: needs help at (%.2f, %.2f)' % (x, y))
 
 
 

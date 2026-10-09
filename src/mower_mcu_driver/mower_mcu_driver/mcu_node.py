@@ -593,6 +593,11 @@ class McuNode(Node):
         # BatteryInfo.current: 0.1 A units (vendor PowerManager logs raw*100 as mA), positive
         # while discharging (raw 7 off-dock at rest). BatteryState wants negative = discharge.
         self.declare_parameter('battery_current_scale', -0.1)
+        # 2026-10-09: "charging" = on the dock contacts AND measured current >= this (A, ROS sign:
+        # positive = into the battery). Was dock_ok alone, so the GUI said "charging" while the
+        # charge limit (mission battery_max_charge_percent) had the MCU charger off (live: 98 %,
+        # -0.7 A on the dock, /battery status CHARGING).
+        self.declare_parameter('charging_current_min_a', 0.2)
         # Rain ADC (vendor DevHealthHandler::rainSensorProcess, see rain.py). Dry reads
         # ~4092 (pulled up); wet pulls it into [rain_valid_min, rain_wet_below].
         self.declare_parameter('rain_path', '/dev/rain')
@@ -622,6 +627,7 @@ class McuNode(Node):
         self.angular_max = float(param('angular_max'))
         self.battery_voltage_scale = float(param('battery_voltage_scale'))
         self.battery_current_scale = float(param('battery_current_scale'))
+        self.charging_current_min_a = float(param('charging_current_min_a'))
         rate = float(param('sensor_info_rate_hz'))
         self._sensor_info_period = 1.0 / rate if rate > 0 else 0.0
         rate = float(param('estop_rate_hz'))
@@ -1033,6 +1039,14 @@ class McuNode(Node):
         }
         self._publish_battery(self._battery)
 
+    def _charging_now(self, raw=None):
+        """On the dock contacts with current flowing INTO the battery (measured, not the
+        charge-enable request: the MCU obeys /charging false, the old flag did not show it)."""
+        raw = self._battery if raw is None else raw
+        if not raw or not raw.get('dock_ok'):
+            return False
+        return raw.get('current', 0) * self.battery_current_scale >= self.charging_current_min_a
+
     def _publish_battery(self, raw):
         msg = BatteryState()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -1046,9 +1060,12 @@ class McuNode(Node):
         msg.percentage = max(0.0, min(100.0, raw['percentage'])) / 100.0
         msg.temperature = float(raw['temperature'])
         msg.present = True
-        msg.power_supply_status = (BatteryState.POWER_SUPPLY_STATUS_CHARGING
-                                   if raw['dock_ok'] else
-                                   BatteryState.POWER_SUPPLY_STATUS_DISCHARGING)
+        if self._charging_now(raw):
+            msg.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_CHARGING
+        elif raw['dock_ok']:
+            msg.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_NOT_CHARGING
+        else:
+            msg.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_DISCHARGING
         msg.power_supply_health = BatteryState.POWER_SUPPLY_HEALTH_UNKNOWN
         msg.power_supply_technology = BatteryState.POWER_SUPPLY_TECHNOLOGY_UNKNOWN
         self._battery_pub.publish(msg)
@@ -1255,8 +1272,7 @@ class McuNode(Node):
             msg.is_cmd_moving = bool(now - self._cmd_stamp < self.cmd_vel_timeout
                                      and (abs(self._cmd_linear) > 1e-2 or abs(self._cmd_angular) > 1e-2))
             msg.is_docking_done = bool(self._battery and self._battery.get('dock_ok'))
-            msg.is_charging = bool(self._battery and self._battery.get('dock_ok')
-                                   and self._charging_enabled)
+            msg.is_charging = self._charging_now()
             msg.bumper_routing_enabled = True
             msg.battery_gate_open = bool(s['battery_gate'])
             msg.press_module = bool(s['press_module'])
@@ -1285,7 +1301,7 @@ class McuNode(Node):
                                   and (abs(self._cmd_linear) > 1e-2
                                        or abs(self._cmd_angular) > 1e-2)),
             'is_docking_done': dock_ok,
-            'is_charging': bool(dock_ok and self._charging_enabled),
+            'is_charging': self._charging_now(),
             'bumper_routing_enabled': True,
             'battery_gate_open': bool(s['battery_gate']),
             'press_module': bool(s['press_module']),
@@ -1320,7 +1336,7 @@ class McuNode(Node):
         if self._battery:
             _set_if(msg, 'battery_temperature', int(self._battery['temperature']) & 0xFF)
             _set_if(msg, 'battery_error', int(self._battery['error']))
-            _set_if(msg, 'is_charging', bool(self._battery['dock_ok']))
+            _set_if(msg, 'is_charging', self._charging_now())
 
         for key, prefix in (('cutter', 'cutter_board_version'),
                             ('chassis', 'chassis_board_version'),

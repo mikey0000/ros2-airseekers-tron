@@ -75,6 +75,16 @@ or `/dig_stall` rises during the goal, the goal fails with `DOCK_STALLED` and ze
 velocity. There is no retry after a stall (no further reversing). The bumper is at the
 front, so nothing else senses a reverse into an obstacle.
 
+**Rear obstacle hold** (2026-10-09): `obstacle_guard` publishes `/vision/rear_blocked`
+(latched Bool) when a person or animal stands in the reverse corridor BETWEEN the robot and
+the dock (it uses `~/marker_pose`, which now carries the marker height in `z`, to end the
+corridor `rear_dock_margin_m` before the dock; anyone at, beside or behind the charger is
+ignored). In SEARCHING, DOCKING and FINAL_DOCKING the FSM then stands still (no abort, no
+retry). State timers and the goal timeout are paused. It continues where it was once the
+corridor has been clear for `rear_clear_s` (1.5 s). After `rear_wait_max_s` (60 s) it
+fails with `DOCK_BLOCKED: rear obstacle in the dock corridor ...`. Set `rear_hold: false`
+or `rear_blocked_topic: ''` to disable it.
+
 The following guards apply in every state:
 
 - `stop_triggered` or `lift_triggered` aborts with `EMERGENCY_STOP`.

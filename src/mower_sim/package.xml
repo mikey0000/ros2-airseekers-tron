@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_sim</name>
+  <version>0.1.0</version>
+  <description>
+    Headless kinematic simulator for the Airseekers Tron: replaces the hardware drivers
+    (mcu_node, wit_node, um960_node, stereo depth, rear camera) with one rclpy node driven
+    by a world YAML (lawn, dock, static and scripted moving obstacles), so Nav2, the mission,
+    map server, coverage and docking run unmodified without the mower.
+  </description>
+  <maintainer email="michael.arthur@gameglass.gg">michael</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>lifecycle_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>mower_interfaces</exec_depend>
+  <exec_depend>mower_map</exec_depend>
+  <exec_depend>mowgli_interfaces</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>launch_testing</test_depend>
+  <test_depend>launch_testing_ros</test_depend>
+  <test_depend>mower_bringup</test_depend>
+  <test_depend>mower_docking</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

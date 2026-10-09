@@ -205,6 +205,15 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_ftc_tracking_sim ${PROJECT_NAME})
   target_include_directories(test_ftc_tracking_sim SYSTEM PRIVATE ${EIGEN3_INCLUDE_DIRS})
+
+  # PRE_ROTATE -> FOLLOWING hand-off with a 2*pi offset in the heading unwrap.
+  ament_add_gtest(test_ftc_angle_wrap
+    test/test_ftc_angle_wrap.cpp
+    ENV ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=97
+    TIMEOUT 60
+  )
+  target_link_libraries(test_ftc_angle_wrap ${PROJECT_NAME})
+  target_include_directories(test_ftc_angle_wrap SYSTEM PRIVATE ${EIGEN3_INCLUDE_DIRS})
 endif()
 
 # ---------------------------------------------------------------------------

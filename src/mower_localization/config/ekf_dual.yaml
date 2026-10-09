@@ -1,0 +1,152 @@
+# REP-105 dual EKF (2026-10-09, localization item 4): launch/nav2.launch.py
+# localization_mode:=dual (the default). localization_mode:=single keeps the old one-filter
+# config/ekf.yaml + static identity map -> odom (mower.launch.py static_map_odom).
+#
+#   ekf_node  (the odom filter; name kept so supervisor/docs/`ros2 param` habits and the
+#             VIO overlay keep working)  world_frame odom: /odom vx + yaw rate, aligned IMU
+#             yaw + yaw rate (+ gated VIO vx/vy, config/ekf_dual_vio.yaml). NO GPS: the odom
+#             pose is continuous (no metre jumps when RTK corrects it), which is what the
+#             Nav2 controller and local costmap need. Publishes odom -> base_link and
+#             /odometry/filtered (Nav2 odom_topic, docking progress, localization_monitor
+#             distance).
+#   ekf_map   world_frame map: the same inputs + /odometry/gps (navsat_transform_node, fed
+#             by THIS filter's output, so /odometry/gps is in the map frame). Publishes
+#             map -> odom (robot_localization computes it from its map pose and the
+#             ekf_node odom -> base_link TF) and /odometry/filtered_map (remapped in the
+#             launch; the GUI / mission / map_server / docking map-frame pose).
+#
+# Both filters fuse the heading_aligner yaw ABSOLUTE, as robot_localization's own
+# dual_ekf_navsat_example does: map -> odom then carries only the GPS translation
+# correction, and odom keeps the earth-referenced heading Nav2 already relies on. The yaw
+# can step in odom only when heading_aligner re-aligns (first dock/COG seed, an IMU reset);
+# the mission holds Nav2 until it is aligned, and later COG updates are 10 % low-passed.
+#
+# GPS covariance follows the RTK class (gps_gate quality_covariance, rtk_quality.py):
+# fixed ~3 cm, float >= 0.4 m sigma, single dropped. So ekf_map snaps to RTK fixed and
+# leans on wheel + IMU (+ VIO) during float; /localization/status (localization_monitor)
+# turns the dead-reckoning distance into a drift budget the mission holds on.
+#
+# Process noise: identical to config/ekf.yaml in both filters (no data yet to tune them
+# apart; ekf_map's position noise only matters between GPS updates).
+
+ekf_node:
+  ros__parameters:
+    frequency: 20.0         # Nav2's controller runs at 20 Hz; 30 Hz missed its deadline
+                            # on the RK3588 (config/ekf.yaml)
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: true        # odom -> base_link
+    print_diagnostics: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+
+    # wheel odometry: vx + yaw rate only (why: config/ekf.yaml odom0 comments)
+    odom0: /odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  false, false,
+                   false, false, true,
+                   false, false, false]
+    odom0_differential: false
+    odom0_queue_size: 10
+
+    # heading_aligner output: absolute ENU yaw + yaw rate (config/ekf.yaml imu0 comments)
+    imu0: /imu/data_aligned
+    imu0_config: [false, false, false,
+                  false, false, true,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_differential: false
+    imu0_remove_gravitational_acceleration: true
+    imu0_queue_size: 10
+
+    use_control: false
+
+    process_noise_covariance: [0.05, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.05, 0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.06, 0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.03, 0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.06, 0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.02, 0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.025, 0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.025, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.04, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.01, 0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.01, 0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.02, 0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.015]
+
+ekf_map:
+  ros__parameters:
+    frequency: 10.0         # GPS rate; map -> odom only has to follow the 10 Hz fixes, and a
+                            # second 20 Hz filter is CPU the RK3588 does not have spare
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: true        # map -> odom (world_frame == map_frame)
+    # map -> odom stamped this far AHEAD (2026-10-09). At 10 Hz under load the newest map->odom
+    # was regularly older than what Nav2 asked for ("Lookup would require extrapolation into
+    # the future ... 29 ms": controller "Unable to transform robot pose into global plan's
+    # frame"); the usual Nav2/robot_localization remedy for a slow map->odom publisher.
+    transform_time_offset: 0.15
+    print_diagnostics: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: map
+
+    odom0: /odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  false, false,
+                   false, false, true,
+                   false, false, false]
+    odom0_differential: false
+    odom0_queue_size: 10
+
+    imu0: /imu/data_aligned
+    imu0_config: [false, false, false,
+                  false, false, true,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_differential: false
+    imu0_remove_gravitational_acceleration: true
+    imu0_queue_size: 20     # 100 Hz IMU into a 10 Hz filter
+
+    # /odometry/gps: gated fix in the MAP frame, covariance by RTK class (header comment).
+    # x/y only; GPS-derived heading is worse than the aligned IMU yaw.
+    odom1: /odometry/gps
+    odom1_config: [true,  true,  false,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom1_differential: false
+    odom1_queue_size: 10
+    # No odom1_pose_rejection_threshold: robot_localization starts every filter with a 1e-9
+    # pose covariance at (0, 0), so a Mahalanobis gate would reject the first fixes of any
+    # boot away from the datum (and the first fix after a long dropout). Outliers are
+    # handled before the filter: gps_gate drops single/DGPS and floors float at 0.4 m.
+
+    use_control: false
+
+    process_noise_covariance: [0.05, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.05, 0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.06, 0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.03, 0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.06, 0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.02, 0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.025, 0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.025, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.04, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.01, 0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.01, 0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.02, 0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,
+                               0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0,     0.0,     0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.015]

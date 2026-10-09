@@ -70,6 +70,15 @@ describe("blade_policy", () => {
     });
 });
 
+describe("transit_variation", () => {
+    it("accepts none/lanes/perimeter/mixed and rejects others", () => {
+        expect(sanitizeAreaSettings({transit_variation: "perimeter"})).toEqual({transit_variation: "perimeter"});
+        expect(sanitizeAreaSettings({transit_variation: "sometimes" as never})).toEqual({});
+        expect(invalidAreaSettingKey({transit_variation: "mixed"})).toBeNull();
+        expect(invalidAreaSettingKey({transit_variation: "sometimes" as never})).toBe("transit_variation");
+    });
+});
+
 describe("slope settings", () => {
     it("accepts slope_mode / slope_contour_above_deg and drops derived keys", () => {
         expect(sanitizeAreaSettings({slope_mode: "contour", slope_contour_above_deg: 12,

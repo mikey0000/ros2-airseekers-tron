@@ -18,7 +18,7 @@ obstacle_guard:
     # Detection2DArray carries no image size: the guard reads it per frame_id from the
     # camera_info topics below. These are only the fallback until one arrives (OA cameras
     # publish 960x540 by default, cameras.launch.py oa_publish_width).
-    camera_info_topics: [/left_oa_camera/camera_info, /right_oa_camera/camera_info, /vio/right/camera_info]
+    camera_info_topics: [/left_oa_camera/camera_info, /right_oa_camera/camera_info, /vio/right/camera_info, /rear_camera/camera_info]
     image_width: 960
     image_height: 540
     hold_s: 0.5               # per-camera debounce
@@ -58,4 +58,41 @@ obstacle_guard:
     front_frames: [vio_camera]
     left_frames: [left_oa_camera]
     right_frames: [right_oa_camera]
-    rear_frames: [rear_camera]   # hook: the rear camera is not run through det_ros yet
+    rear_frames: [rear_camera]
+    # ---- Rear camera (2026-10-09). Owner: rear sensing was off because a person standing
+    # behind the dock made the robot refuse to dock. Now dock-aware: a rear detection counts
+    # only while reversing / docking in reverse, only for rear_classes, and only when its
+    # ground position (det_range mono range, base_link) is in the reverse CORRIDOR:
+    # |lateral| <= rear_half_width_m + rear_margin_m, from rear_edge_x_m back rear_range_m.
+    # Docking with a fresh marker (/mower_docking/marker_pose, < rear_marker_max_age_s):
+    # the corridor points at the dock and ends rear_dock_margin_m before it -> people at,
+    # beside or behind the charger are ignored; one between robot and dock holds docking
+    # (/vision/rear_blocked -> mower_docking rear_obstacle hold).
+    rear_enabled: true
+    rear_classes: [person, dog, cat, hedgehog, rabbit]   # -> kind dynamic (stop/hold, wait)
+    rear_static_classes: ['']   # opt-in solid classes -> kind static (model untested on rear)
+    rear_min_score: 0.5
+    rear_edge_x_m: -0.25        # rear edge of the robot in base_link (rear axle origin)
+    rear_half_width_m: 0.27
+    rear_margin_m: 0.20         # + object half width + mono lateral error
+    rear_range_m: 1.2           # corridor length behind the rear edge (no dock marker)
+    rear_behind_tol_m: 0.10
+    rear_dock_margin_m: 0.25    # this close to the dock foot (or beyond): "at the dock"
+    rear_dock_max_range_m: 2.5
+    rear_unranged_h_frac: 0.50  # unranged rear box (det_range down): this tall + central;
+    rear_unranged_center_frac: 0.5   # never counts while the dock marker is in view
+    rear_persist_frames: 2      # consecutive frames per class (false positives on a new view)
+    rear_sticky_s: 15.0         # rear keeps counting this long after a hit while stopped
+    rear_watch_hold_s: 5.0      # det_ros keeps the rear camera running this long after reverse
+    rear_watch_topic: /vision/rear_watch      # latched Bool -> det_ros gate_topic
+    rear_blocked_topic: /vision/rear_blocked  # latched Bool -> mower_docking
+    dock_state_topic: /mower_docking/state
+    dock_state_timeout_s: 1.0
+    marker_pose_topic: /mower_docking/marker_pose
+    rear_marker_max_age_s: 3.0  # = docking marker_lost_hold_s (robot holds still meanwhile)
+    rear_camera_T_base: [-0.201, 0.0, 0.25, -1.5707963, 0.0, 1.5707963]   # = mower_docking
+    rear_ground_z_m: 0.0
+    # Marker centre height above the lawn (MEASURE on the charger); -1 = unknown -> the
+    # marker's planar position is the dock foot and rear_dock_margin_m has to absorb the
+    # mono pitch error (~10 cm/deg at 1.2 m). Set, the comparison is pitch-error immune.
+    dock_marker_height_m: -1.0

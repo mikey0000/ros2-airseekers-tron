@@ -1425,3 +1425,149 @@ def test_dusk_replay_docks_without_retry_or_blind_reverse(x0, y0, thd):
     assert out.success, (out.message, m.state, x, y, th)
     assert m.retries == 0 and not m._blind
     assert lost_moves == 0                      # never reverses in DOCKING without the marker
+
+
+# ------------------------------------------- rear obstacle hold (2026-10-09 obstacle_guard)
+def _rear_docking(goal_timeout_s=180.0, **kw):
+    """DOCKING with a valid in-gate marker, reversing (marker 1.3 m behind, no contact)."""
+    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True, **kw), dl.Pose2D(),
+                            goal_timeout_s=goal_timeout_s, dock_pose_measured=True)
+    m.start(dl.Snapshot(t=0.0))
+    out = m.step(dl.Snapshot(t=0.05, marker=dl.MarkerObs(-1.3, 0.0, 0.0, stamp=0.05)))
+    assert out.state == S.DOCKING
+    return m, 0.05
+
+
+def _rear_step(m, t, blocked, marker=True):
+    mk = dl.MarkerObs(-1.3, 0.0, 0.0, stamp=t) if marker else None
+    return m.step(dl.Snapshot(t=t, marker=mk, rear_blocked=blocked, odom=dl.Pose2D()))
+
+
+def _rear_run(m, t, dur, blocked, dt=0.05, marker=True):
+    out, outs = None, []
+    for _ in range(int(round(dur / dt))):
+        t += dt
+        out = _rear_step(m, t, blocked, marker)
+        outs.append(out)
+    return out, t, outs
+
+
+def test_rear_blocked_in_docking_stops_and_notes():
+    m, t = _rear_docking()
+    out = _rear_step(m, t + 0.05, False)
+    assert out.linear < 0.0                     # sanity: reversing before the obstacle
+    out = _rear_step(m, t + 0.1, True)
+    assert out.state == S.DOCKING
+    assert out.linear == 0.0 and out.angular == 0.0
+    assert any('rear obstacle' in n for n in out.notes)
+
+
+def test_rear_hold_outlasts_docking_timeout_then_resumes_after_clear_delay():
+    m, t = _rear_docking(docking_timeout_s=5.0, rear_wait_max_s=60.0, rear_clear_s=1.5)
+    out, t, outs = _rear_run(m, t, 20.0, True)   # 4x docking_timeout_s
+    assert out.state == S.DOCKING and not out.done
+    assert all(o.linear == 0.0 and o.angular == 0.0 and o.state == S.DOCKING for o in outs)
+    # clear: still zero for rear_clear_s ...
+    out, t, outs = _rear_run(m, t, 1.5 - 0.1, False)
+    assert all(o.linear == 0.0 and o.angular == 0.0 and o.state == S.DOCKING for o in outs)
+    # ... then reverses again in DOCKING without RETRY
+    out, t, outs = _rear_run(m, t, 0.5, False)
+    assert out.state == S.DOCKING and out.linear < 0.0
+    assert any('resuming' in n for o in outs for n in o.notes)
+    out, t, outs = _rear_run(m, t, 2.0, False)
+    assert all(o.state == S.DOCKING and not o.done for o in outs)
+
+
+def test_rear_blocked_past_wait_max_fails_dock_blocked():
+    m, t = _rear_docking(rear_wait_max_s=10.0)
+    out, t, outs = _rear_run(m, t, 9.0, True)
+    assert out.state == S.DOCKING and not out.done
+    out, t, outs = _rear_run(m, t, 2.0, True)
+    assert out.done and not out.success
+    assert m.state == S.FAILED
+    assert out.message.startswith('DOCK_BLOCKED')
+    assert 'rear obstacle' in out.message
+    assert out.linear == 0.0
+
+
+def test_rear_hold_time_excluded_from_goal_timeout():
+    m, t = _rear_docking(goal_timeout_s=30.0, rear_wait_max_s=120.0, rear_clear_s=1.5)
+    out, t, _ = _rear_run(m, t, 40.0, True)      # hold longer than the whole goal budget
+    assert not out.done
+    out, t, outs = _rear_run(m, t, 1.5 + 0.5, False)
+    assert not out.done and out.message != 'DOCK_TIMEOUT'
+    assert out.state == S.DOCKING and out.linear < 0.0
+    assert m.state != S.FAILED
+
+
+def test_goal_timeout_still_fires_without_hold():
+    m, t = _rear_docking(goal_timeout_s=30.0)
+    out, t, _ = _rear_run(m, t, 31.0, False)
+    assert out.done and out.message == 'DOCK_TIMEOUT'
+
+
+def test_rear_hold_in_final_docking_keeps_final_budget():
+    m = _final_machine(final_timeout_s=10.0, rear_clear_s=1.5, rear_wait_max_s=60.0)
+    assert m.state == S.FINAL_DOCKING
+    t, odom = 0.1, dl.Pose2D(0.15, 0, 0)
+    out = m.step(dl.Snapshot(t=t + 0.05, odom=odom, rear_blocked=True))
+    t += 0.05
+    assert out.state == S.FINAL_DOCKING and out.linear == 0.0 and out.angular == 0.0
+    for _ in range(int(20.0 / 0.05)):            # 20 s hold > final_timeout_s
+        t += 0.05
+        out = m.step(dl.Snapshot(t=t, odom=odom, rear_blocked=True))
+        assert out.state == S.FINAL_DOCKING and out.linear == 0.0
+    outs = []
+    for _ in range(int(2.0 / 0.05)):             # clear, wait rear_clear_s, resume
+        t += 0.05
+        outs.append(m.step(dl.Snapshot(t=t, odom=odom)))
+    out = outs[-1]
+    assert out.state == S.FINAL_DOCKING
+    assert m._final_phase != 'settle'
+    assert out.linear == pytest.approx(-dl.ControllerGains().final_speed)
+    assert any('resuming' in n for o in outs for n in o.notes)
+
+
+def test_rear_hold_disabled_ignores_rear_blocked():
+    m, t = _rear_docking(rear_hold=False)
+    out, t, outs = _rear_run(m, t, 5.0, True)
+    assert all(o.state == S.DOCKING and o.linear < 0.0 for o in outs)
+    assert not any('rear obstacle' in n for o in outs for n in o.notes)
+
+
+def test_rear_blocked_ignored_in_nav_to_approach():
+    m = dl.DockStateMachine(dl.DockParams(), dl.Pose2D(), dock_pose_measured=True)
+    out = m.start(dl.Snapshot(t=0.0, map_pose=dl.Pose2D(-3.0, 0.0, 0.0), rear_blocked=True))
+    assert m.state == S.NAV_TO_APPROACH
+    for i in range(1, 20):
+        out = m.step(dl.Snapshot(t=0.05 * i, map_pose=dl.Pose2D(-3.0, 0.0, 0.0),
+                                 nav_status='active', rear_blocked=True))
+        assert out.state == S.NAV_TO_APPROACH
+        assert not any('rear obstacle' in n for n in out.notes)
+    assert m._rear is None
+
+
+def test_rear_blocked_ignored_in_retry_which_drives_forward():
+    sim = Sim(dl.DockStateMachine(blind_params(max_retries=1), dl.Pose2D()), contact_after=None)
+    sim.start()
+    for _ in range(5000):
+        out = sim.tick()
+        if out.state == S.RETRY and out.linear > 0:
+            break
+    assert out.state == S.RETRY and out.linear > 0
+    for _ in range(10):
+        sim.t += 0.05
+        s = sim.snap()
+        s.rear_blocked = True
+        out = sim.m.step(s)
+        sim._apply(out)
+        assert out.state == S.RETRY and out.linear > 0
+        assert not any('rear obstacle' in n for n in out.notes)
+    assert sim.m._rear is None
+
+
+def test_marker_in_base_fills_marker_height_z():
+    obs = dl.marker_in_base([0.0, 0.0, 0.0], [0.0, 0.1, 1.2], CAM_XYZ, CAM_RPY)
+    assert obs.x == pytest.approx(-0.201 - 1.2, abs=1e-3)
+    assert obs.y == pytest.approx(0.0, abs=1e-3)
+    assert obs.z == pytest.approx(0.25 - 0.1, abs=1e-3)

@@ -46,6 +46,10 @@ TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
 # sensitive = 1.5 m, lower score, any camera.
 OBSTACLE_DETECTION_LEVELS = ('none', 'standard', 'sensitive')
 BLADE_POLICIES = ('continuous', 'conservative')
+# Transit route variation between runs (2026-10-09, owner: "driving the same line eventually
+# creates tyre tracks"; route_graph.py): none | lanes (sideways offset inside the path band /
+# area) | perimeter (direct vs inset-perimeter CW / CCW in-area legs) | mixed (rotate all).
+TRANSIT_VARIATIONS = ('none', 'lanes', 'perimeter', 'mixed')
 # Slope-aware swath angle (terrain memory, docs/terrain_aware_planning.md), only
 # used while mow_angle_deg is auto: off = planner's own choice; contour = swaths
 # across the fall line; updown = along it; auto = contour at/above
@@ -79,8 +83,14 @@ BUILTIN_DEFAULTS = {
     'turn_type': 'auto',
     'obstacle_detection': 'standard',
     'blade_policy': 'continuous',
+    'transit_variation': 'lanes',
     'slope_mode': 'off',
     'slope_contour_above_deg': 10.0,
+    # Non-grass memory (2026-10-09, docs/grass_segmentation.md): soft Nav2 cost on
+    # flower beds / gravel / paving the grass segmentation confirmed inside this area.
+    # Off = the area's memory still learns but costs nothing (e.g. a lawn with a gravel
+    # path the robot SHOULD cross).
+    'avoid_non_grass': True,
 }
 
 # key -> (kind, min, max). kind: int | float | bool | enum
@@ -102,8 +112,10 @@ SPEC = {
     'turn_type': ('enum', TURN_TYPES, None),
     'obstacle_detection': ('enum', OBSTACLE_DETECTION_LEVELS, None),
     'blade_policy': ('enum', BLADE_POLICIES, None),
+    'transit_variation': ('enum', TRANSIT_VARIATIONS, None),
     'slope_mode': ('enum', SLOPE_MODES, None),
     'slope_contour_above_deg': ('float', 2.0, 30.0),
+    'avoid_non_grass': ('bool', None, None),
 }
 
 FILE_NAME = 'area_settings.yaml'

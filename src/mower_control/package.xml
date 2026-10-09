@@ -27,6 +27,10 @@
   <depend>std_srvs</depend>
   <depend>rcl_interfaces</depend>
   <exec_depend>rosbag2_py</exec_depend>
+  <!-- bag_recorder runs `ros2 bag record` (sqlite3 storage, file-mode zstd) -->
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>rosbag2_storage_default_plugins</exec_depend>
+  <exec_depend>rosbag2_compression_zstd</exec_depend>
 
   <!-- imu_cal persists biases to YAML -->
   <exec_depend>python3-yaml</exec_depend>

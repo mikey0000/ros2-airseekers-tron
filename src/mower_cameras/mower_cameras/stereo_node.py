@@ -74,6 +74,7 @@ class StereoCamNode(Node):
         d('left_camera_info_file', '')
         d('right_camera_info_file', '')
         d('publish_on_demand', True)
+        d('close_when_unused_s', 5.0)   # on_demand: close the device after this long unused
         d('publish_color', False)       # bgr8 on <eye>/image_color (det_ros, debugging)
         d('color_fps', 2.0)
         d('stamp_source', 'buffer')     # buffer (V4L2 driver timestamp) | now (host receive)
@@ -114,7 +115,8 @@ class StereoCamNode(Node):
         self.loop = CaptureLoop(self.get_logger(), p('video_device'), p('width'), p('height'),
                                 p('pixel_format'), 0.0, self._on_frame, 'v4l2',
                                 name='cap:stereo',
-                                want=self._wanted if self.on_demand else None)
+                                want=self._wanted if self.on_demand else None,
+                                close_when_unused_s=p('close_when_unused_s'))
         # idle (docked / parked): 1 pair/s (stereo_depth, det_ros follow); full rate again
         # on the next source frame after /mission/activity leaves idle
         self.activity = ActivityWatch(lambda a: self.get_logger().info(
@@ -220,6 +222,8 @@ class StereoCamNode(Node):
     def _log_stats(self):
         now = time.monotonic()
         dt, self._t_stats = now - self._t_stats, now
+        if self.loop.paused and not self.pairs:
+            return      # device closed: nobody subscribes
         self.get_logger().info(
             f'pairs {self.pairs / dt:.1f} Hz (source {self.source_frames / dt:.1f} Hz, '
             f'replaced {self.replaced})')

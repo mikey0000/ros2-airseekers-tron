@@ -16,6 +16,11 @@ import (
 const (
 	notifySendTimeout = notifyHTTPTimeout
 	notifyQueueDepth  = 256
+	notifyAlertDepth  = 64
+
+	// notifyAlertLiveWindow is how long after the last alert-node message the
+	// node counts as alive (heartbeats arrive every 10 s).
+	notifyAlertLiveWindow = 30 * time.Second
 )
 
 // NotifyDeliveryStatus is what the GUI shows under the settings: did the last
@@ -43,14 +48,22 @@ type NotificationProvider struct {
 	client *http.Client
 	now    func() time.Time
 
-	queue    chan []byte
-	mapQueue chan []byte
+	queue      chan []byte
+	mapQueue   chan []byte
+	alertQueue chan []byte
 
 	mu       sync.RWMutex
 	cfg      NotificationConfig
 	detector *NotifyDetector
 	sender   notifySender
 	status   NotifyDeliveryStatus
+
+	// externalAlertsAt is when the ROS alert node last spoke (alert or 10 s
+	// heartbeat). While it is fresh, the node owns emergency/blocked reporting.
+	externalAlertsAt time.Time
+	// lastAlertID is the last alert delivered, for replay protection only: the
+	// node already debounces, dedupes and rate-limits.
+	lastAlertID string
 }
 
 // NewNotificationProvider loads the config and starts the consumer goroutine.
@@ -68,12 +81,13 @@ func NewIdleNotificationProvider(db types.IDBProvider) *NotificationProvider {
 
 func newNotificationProvider(db types.IDBProvider, client *http.Client, now func() time.Time) *NotificationProvider {
 	p := &NotificationProvider{
-		db:       db,
-		client:   client,
-		now:      now,
-		queue:    make(chan []byte, notifyQueueDepth),
-		mapQueue: make(chan []byte, 4),
-		detector: NewNotifyDetector(),
+		db:         db,
+		client:     client,
+		now:        now,
+		queue:      make(chan []byte, notifyQueueDepth),
+		mapQueue:   make(chan []byte, 4),
+		alertQueue: make(chan []byte, notifyAlertDepth),
+		detector:   NewNotifyDetector(),
 	}
 	p.applyConfig(LoadNotificationConfig(db))
 	return p
@@ -86,6 +100,8 @@ func (p *NotificationProvider) run() {
 			p.HandleStatus(msg)
 		case msg := <-p.mapQueue:
 			p.HandleMap(msg)
+		case msg := <-p.alertQueue:
+			p.HandleAlert(msg)
 		}
 	}
 }
@@ -114,6 +130,107 @@ func (p *NotificationProvider) EnqueueMap(msg []byte) {
 	}
 }
 
+// EnqueueAlert hands a raw /mower_alerts/events message to the consumer.
+// Non-blocking; an alert is dropped (and logged) only if 64 are already pending.
+func (p *NotificationProvider) EnqueueAlert(msg []byte) {
+	select {
+	case p.alertQueue <- msg:
+	default:
+		logrus.Warn("Notifications: alert queue full, dropping alert")
+	}
+}
+
+// alertEnvelope is a std_msgs/String as foxglove delivers it: {"data":"<json>"}.
+type alertEnvelope struct {
+	Data string `json:"data"`
+}
+
+// alertMessage is the alert node's payload (alert or heartbeat).
+type alertMessage struct {
+	Type     string            `json:"type"`
+	ID       string            `json:"id"`
+	Kind     string            `json:"kind"`
+	Message  string            `json:"message"`
+	Priority int               `json:"priority"`
+	Text     string            `json:"text"`
+	Params   map[string]string `json:"params"`
+}
+
+// UnwrapAlertPayload returns the inner JSON of a std_msgs/String message
+// ({"data":"..."}); a payload that is already the inner JSON passes through.
+func UnwrapAlertPayload(raw []byte) []byte {
+	var env alertEnvelope
+	if err := json.Unmarshal(raw, &env); err == nil && env.Data != "" {
+		return []byte(env.Data)
+	}
+	return raw
+}
+
+// HandleAlert delivers one alert from the ROS alert node. The node has already
+// debounced, deduped per incident and rate-limited, so the only GUI-side rule
+// is replay protection (the same id twice in a row, e.g. a replay after a
+// reconnect). Any valid message, heartbeat included, marks the node live so
+// HandleStatus stops duplicating the incidents it reports.
+func (p *NotificationProvider) HandleAlert(raw []byte) {
+	var m alertMessage
+	if err := json.Unmarshal(UnwrapAlertPayload(raw), &m); err != nil {
+		return
+	}
+	if m.Type != "alert" && m.Type != "heartbeat" {
+		return
+	}
+	now := p.now()
+
+	p.mu.Lock()
+	p.externalAlertsAt = now
+	if m.Type != "alert" || m.Message == "" {
+		p.mu.Unlock()
+		return
+	}
+	if m.ID != "" && m.ID == p.lastAlertID {
+		p.mu.Unlock()
+		return
+	}
+	cfg := p.cfg
+	sender := p.sender
+	p.mu.Unlock()
+
+	// Unknown kinds (a newer node) are delivered when notifications are on at
+	// all: EventEnabled would read them as off.
+	if !cfg.Enabled || sender == nil || (isKnownNotifyKind(m.Kind) && !cfg.EventEnabled(m.Kind)) {
+		return
+	}
+	priority := m.Priority
+	if priority == 0 {
+		priority = notifyPriorityDefault
+	}
+	if priority < 1 {
+		priority = 1
+	}
+	if priority > 5 {
+		priority = 5
+	}
+	params := m.Params
+	if params == nil {
+		params = map[string]string{}
+	}
+	p.mu.Lock()
+	p.lastAlertID = m.ID
+	p.mu.Unlock()
+	p.deliver(sender, RenderNotification(cfg.Language, cfg.Title, NotifyEvent{
+		Kind: m.Kind, Message: m.Message, Priority: priority, Params: params, Text: m.Text, At: now,
+	}))
+}
+
+func isKnownNotifyKind(kind string) bool {
+	for _, k := range NotifyEventKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
 // HandleStatus folds one status message and delivers whatever it produced.
 func (p *NotificationProvider) HandleStatus(raw []byte) {
 	var st NotifyStatus
@@ -126,6 +243,7 @@ func (p *NotificationProvider) HandleStatus(raw []byte) {
 	cfg := p.cfg
 	events := p.detector.OnStatus(st, now, cfg.EventEnabled)
 	sender := p.sender
+	alertsLive := !p.externalAlertsAt.IsZero() && now.Sub(p.externalAlertsAt) < notifyAlertLiveWindow
 	p.mu.Unlock()
 
 	if !cfg.Enabled || sender == nil {
@@ -133,6 +251,13 @@ func (p *NotificationProvider) HandleStatus(raw []byte) {
 	}
 	for _, ev := range events {
 		if !cfg.EventEnabled(ev.Kind) {
+			continue
+		}
+		// While the ROS alert node is alive it reports emergency stops and
+		// stuck/blocked incidents itself, with the cause; the detector's
+		// version would be a duplicate push. The detector stays the fallback
+		// when the node is down (no heartbeat for 30 s).
+		if alertsLive && (ev.Kind == NotifyEventEmergency || ev.Kind == NotifyEventBlocked) {
 			continue
 		}
 		p.deliver(sender, RenderNotification(cfg.Language, cfg.Title, ev))

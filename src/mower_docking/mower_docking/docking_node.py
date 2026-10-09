@@ -123,6 +123,11 @@ class DockingServer(Node):
         decl('marker_lost_hold_s', dp.marker_lost_hold_s)
         decl('bumper_clear_s', dp.bumper_clear_s)
         decl('bumper_wait_max_s', dp.bumper_wait_max_s)
+        # rear obstacle hold (obstacle_guard /vision/rear_blocked, latched Bool; '' = off)
+        decl('rear_blocked_topic', '/vision/rear_blocked')
+        decl('rear_hold', dp.rear_hold)
+        decl('rear_clear_s', dp.rear_clear_s)
+        decl('rear_wait_max_s', dp.rear_wait_max_s)
         decl('blind_marker_max_age_s', dp.blind_marker_max_age_s)
         decl('dock_pose_measured_override', False)   # bench: treat the dock pose as measured
         decl('stall_min_cmd', dp.stall_min_cmd)
@@ -184,6 +189,7 @@ class DockingServer(Node):
         self._bumper = False
         self._bumper_routing = False
         self._bumper_routing_t = -1e9
+        self._rear_blocked = False
         self._contact = dl.ContactDebouncer(self.get_parameter('contact_debounce_samples').value)
         self._dock_pose_msg: Optional[dl.Pose2D] = None
         self._dock_measured = False
@@ -239,6 +245,8 @@ class DockingServer(Node):
         sub(PoseStamped, p('dock_pose_topic').value, self._on_dock_pose, latched)
         sub(Bool, p('dock_pose_measured_topic').value, self._on_dock_measured, latched)
         sub(Bool, p('dig_stall_topic').value, self._on_dig_stall, latched)
+        if p('rear_blocked_topic').value:
+            sub(Bool, p('rear_blocked_topic').value, self._on_rear_blocked, latched)
         if GnssStatus is not None:
             sub(GnssStatus, p('gps_status_topic').value, self._on_gps, 10)
         else:
@@ -311,6 +319,13 @@ class DockingServer(Node):
         if changed:
             self.get_logger().info('dock pose measured: %s' % bool(msg.data))
 
+    def _on_rear_blocked(self, msg: Bool) -> None:
+        with self._lock:
+            changed = self._rear_blocked != bool(msg.data)
+            self._rear_blocked = bool(msg.data)
+        if changed and self._busy:
+            self.get_logger().info('rear obstacle in the dock corridor: %s' % bool(msg.data))
+
     def _on_dig_stall(self, msg: Bool) -> None:
         with self._lock:
             self._dig_stall = bool(msg.data)
@@ -373,6 +388,7 @@ class DockingServer(Node):
         ps.header.stamp = msg.header.stamp
         ps.header.frame_id = self.get_parameter('base_frame').value
         ps.pose.position.x, ps.pose.position.y = obs.x, obs.y
+        ps.pose.position.z = obs.z     # obstacle_guard: dock foot for the rear corridor
         qx, qy, qz, qw = dl.quaternion_from_yaw(obs.yaw)
         ps.pose.orientation.x, ps.pose.orientation.y = qx, qy
         ps.pose.orientation.z, ps.pose.orientation.w = qz, qw
@@ -431,6 +447,7 @@ class DockingServer(Node):
                 stop_triggered=self._stop, lift_triggered=self._lift,
                 bumper=(self._bumper and now - self._status_t <= 1.0) or
                 (self._bumper_routing and now - self._bumper_routing_t <= 1.0),
+                rear_blocked=self._rear_blocked,
                 nav_status=self._nav_status, charging_result=self._charging_result,
                 rtk_fixed=self._rtk_fixed)
 
@@ -613,6 +630,9 @@ class DockingServer(Node):
             allow_blind_docking=bool(p('allow_blind_docking')),
             bumper_clear_s=float(p('bumper_clear_s')),
             bumper_wait_max_s=float(p('bumper_wait_max_s')),
+            rear_hold=bool(p('rear_hold')),
+            rear_clear_s=float(p('rear_clear_s')),
+            rear_wait_max_s=float(p('rear_wait_max_s')),
             blind_marker_max_age_s=float(p('blind_marker_max_age_s')),
             stall_min_cmd=float(p('stall_min_cmd')),
             stall_progress_ratio=float(p('stall_progress_ratio')),

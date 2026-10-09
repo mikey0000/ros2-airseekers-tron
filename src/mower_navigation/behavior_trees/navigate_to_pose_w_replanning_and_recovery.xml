@@ -8,7 +8,19 @@
         are only "clear both costmaps" and a short Wait (round-robin).
      3. Fail fast: NavigateRecovery retries 2 (default 6) and Wait is 2 s (default 5), so a
         goal that cannot be planned aborts in a few seconds instead of ~35 s. The caller
-        (mission / docking) decides what to do next. -->
+        (mission / docking) decides what to do next.
+     4. Reroute instead of wipe (2026-10-09). Sensor obstacles now reach the GLOBAL costmap
+        (nav2_params.yaml global obstacle_layer), so the 1 Hz ComputePathToPose plans around
+        them. The stock FollowPath context recovery ClearEntireCostmap(local) erased exactly
+        the stereo/YOLO/bumper mark that made RPP abort "collision ahead", and the robot drove
+        at the obstacle again. It is now a 1 s Wait: PipelineSequence keeps ticking the
+        RateController/planner meanwhile, so FollowPath restarts on a path replanned around
+        the freshly marked obstacle. The top-level RoundRobin likewise Waits 2 s FIRST and
+        clears both costmaps only on the second failure (last resort for a false mark).
+     5. Planner fallback (2026-10-09). GridBased is SmacPlannerHybrid (Dubins, r 0.45 m, full
+        footprint check). A goal that needs a pivot in a tight spot (dock approach pose next
+        to a wall) can have no Dubins path; GridBasedNavFn (the old centre-point planner)
+        then plans and the controller pivots. -->
 <!--
   This Behavior Tree replans the global path periodically at 1 Hz and it also has
   recovery actions specific to planning / control as well as general system issues.
@@ -20,23 +32,28 @@
       <PipelineSequence name="NavigateWithReplanning">
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            <Fallback name="PlannerWithFallback">
+              <!-- 2026-10-09: NavFn (robot centre vs the uninflated keepout mask) first so routes
+                   stay inside the drawn paths; Smac (footprint check) rejects narrow paths / edge rings -->
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBasedNavFn"/>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+            </Fallback>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
-          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+          <Wait name="WaitForReplan-Context" wait_duration="1"/>
         </RecoveryNode>
       </PipelineSequence>
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
         <RoundRobin name="RecoveryActions">
+          <Wait wait_duration="2"/>
           <Sequence name="ClearingActions">
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
             <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
           </Sequence>
-          <Wait wait_duration="2"/>
         </RoundRobin>
       </ReactiveFallback>
     </RecoveryNode>

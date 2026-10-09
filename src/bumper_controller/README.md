@@ -14,7 +14,7 @@ back the mower up a fixed distance, then rotate clear (heading PID), then return
 |---|---|---|
 | `/mower_base/status` | `mower_interfaces/msg/MowerBaseDevStatus` | subscribe (trigger source) |
 | `/cmd_vel` | `geometry_msgs/msg/Twist` | publish (reverse + rotate) |
-| `/bumper_cloud` | `sensor_msgs/msg/PointCloud2` | publish (on trigger) |
+| `/bumper_cloud` | `sensor_msgs/msg/PointCloud2` | publish (20 Hz while triggered; empty cloud at 5 Hz otherwise, 2026-10-09: keeps the collision_monitor source fresh) |
 | `/mower_base/bumper_routing_status` | `std_msgs/msg/UInt8` | publish (0=IDLE, 1=BACKING_UP) |
 | `/odom` | `nav_msgs/msg/Odometry` | subscribe (heading for rotate PID) |
 | `/test_bumper_service` | `std_srvs/srv/Empty` | service (inject synthetic bumper hit) |

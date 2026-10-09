@@ -201,16 +201,30 @@ def make_out_dir():
     return tempfile.mkdtemp(prefix='mower_robot_settings_')
 
 
-# Local-costmap observation sources that depend on the front stereo depth. det_range is
-# marking-only and relies on the stereo raytrace for clearing, so it goes with it.
-STEREO_SOURCES = ('stereo', 'det_range')
+# Costmap observation sources that depend on the front stereo depth. det_range is
+# marking-only and relies on the stereo raytrace for clearing, so it goes with it;
+# stereo_clear is the stereo ground-only clearing cloud (2026-10-09).
+STEREO_SOURCES = ('stereo', 'stereo_clear', 'det_range')
+# Costmaps whose obstacle_layer carries them (the global one since 2026-10-09, so the
+# planner routes around obstacles).
+STEREO_COSTMAPS = ('local_costmap', 'global_costmap')
 
 
 def without_stereo_sources(doc):
-    """Copy of a nav2 params document with the stereo sources removed from the local
-    costmap obstacle_layer (``stereo_costmap:=false``: bumper-only obstacle layer)."""
+    """Copy of a nav2 params document with the stereo sources removed from the local and
+    global costmap obstacle_layer and from the collision_monitor (2026-10-09)
+    (``stereo_costmap:=false``: bumper-only obstacle layers / collision monitor).
+    A costmap without an obstacle_layer is left alone."""
     doc = copy.deepcopy(doc)
-    ol = doc['local_costmap']['local_costmap']['ros__parameters']['obstacle_layer']
-    kept = [s for s in str(ol['observation_sources']).split() if s not in STEREO_SOURCES]
-    ol['observation_sources'] = ' '.join(kept)
+    cm = doc.get('collision_monitor', {}).get('ros__parameters', {})
+    if isinstance(cm.get('observation_sources'), list):
+        cm['observation_sources'] = [s for s in cm['observation_sources']
+                                     if s not in STEREO_SOURCES]
+    for name in STEREO_COSTMAPS:
+        params = doc.get(name, {}).get(name, {}).get('ros__parameters', {})
+        ol = params.get('obstacle_layer')
+        if not isinstance(ol, dict) or 'observation_sources' not in ol:
+            continue
+        kept = [s for s in str(ol['observation_sources']).split() if s not in STEREO_SOURCES]
+        ol['observation_sources'] = ' '.join(kept)
     return doc

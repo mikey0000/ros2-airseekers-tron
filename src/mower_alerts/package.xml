@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_alerts</name>
+  <version>0.1.0</version>
+  <description>
+    Theft / geofence, lift / tilt and mission incident alerts (stuck, path blocked, mowing
+    incomplete, docking failed, emergency stop, RTK lost, battery critical) with debounce,
+    per-incident dedupe and rate limiting. Publishes /mower_alerts/events (JSON), which the
+    MowgliNext GUI backend delivers over the operator's notification channel and MQTT.
+  </description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>mower_interfaces</exec_depend>
+  <exec_depend>mowgli_interfaces</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

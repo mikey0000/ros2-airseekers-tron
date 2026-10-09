@@ -5,6 +5,12 @@
 //   sub  <left_topic>, <right_topic>, <extra_topics...>   sensor_msgs/Image (sensor_data QoS)
 //   pub  /ai/det/detections          vision_msgs/Detection2DArray (class_id = class name)
 //        /<camera_ns>/image_annotated, /ai/det/image_annotated   bgr8, only while subscribed
+//   sub  <gate_topic> (std_msgs/Bool, latched; default /vision/rear_watch from obstacle_guard)
+//
+// Gated cameras (gated_topics, 2026-10-09: the rear camera, NPU budget): subscribed only
+// while the gate is true (no message yet = closed); with gated_idle_rate_hz > 0 they stay
+// subscribed and run at that rate while closed. Unsubscribing also lets the on-demand rear
+// capture stop when nobody else (docking, GUI) watches it.
 //
 // Per camera: the subscription takes the SERIALIZED message and only stores it if the
 // per-camera rate gate (max_rate_hz) lets it through, so skipped 10 Hz frames are never
@@ -13,6 +19,7 @@
 // NMS -> publish.
 #include <time.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -29,6 +36,7 @@
 #include <opencv2/imgproc.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/serialization.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
@@ -129,6 +137,9 @@ class DetNode : public rclcpp::Node {
     declare_parameter("idle_max_rate_hz", 1.0);
     // C++ only: write the int8 input straight into NPU memory (pass-through)
     declare_parameter("zero_copy", true);
+    declare_parameter("gated_topics", std::vector<std::string>{""});
+    declare_parameter("gate_topic", std::string("/vision/rear_watch"));
+    declare_parameter("gated_idle_rate_hz", 0.0);
 
     model_path_ = get_parameter("model_path").as_string();
     obj_thresh_ = static_cast<float>(get_parameter("obj_thresh").as_double());
@@ -206,19 +217,32 @@ class DetNode : public rclcpp::Node {
     }
 
     // ---- io ----
-    auto sensor_qos = rclcpp::SensorDataQoS();
+    sensor_qos_ = rclcpp::SensorDataQoS();
+    auto sensor_qos = sensor_qos_;
+    gated_idle_rate_ = get_parameter("gated_idle_rate_hz").as_double();
+    for (auto &t : str_array("gated_topics"))
+      if (!t.empty()) gated_.push_back(t);
     det_pub_ = create_publisher<Detection2DArray>("/ai/det/detections", 10);
     ann_pub_ = create_publisher<Image>("/ai/det/image_annotated", 10);
     for (size_t i = 0; i < topics.size(); ++i) {
       auto cam_pub = create_publisher<Image>(annotated_topic_for(topics[i]), sensor_qos);
       auto w = std::make_shared<CameraWorker>(this, topics[i], std::move(models[i]), cam_pub);
       workers_.push_back(w);
-      std::weak_ptr<CameraWorker> ww = w;
-      subs_.push_back(create_subscription<Image>(
-          topics[i], sensor_qos, [ww, this](std::shared_ptr<rclcpp::SerializedMessage> m) {
-            if (auto s = ww.lock()) s->offer(m, rate_cap());
-          }));
+      const bool gated = is_gated(topics[i]);
+      gated_flags_.push_back(gated);
+      subs_.push_back(nullptr);
+      if (!gated || gated_idle_rate_ > 0.0) subscribe(i);
+      if (gated)
+        RCLCPP_INFO(get_logger(), "%s: gated by %s (closed: %s)", topics[i].c_str(),
+                    get_parameter("gate_topic").as_string().c_str(),
+                    gated_idle_rate_ > 0.0 ? "reduced rate" : "unsubscribed");
       w->start();
+    }
+    const std::string gate_topic = get_parameter("gate_topic").as_string();
+    if (!gated_.empty() && !gate_topic.empty()) {
+      gate_sub_ = create_subscription<std_msgs::msg::Bool>(
+          gate_topic, rclcpp::QoS(1).reliable().transient_local(),
+          [this](std_msgs::msg::Bool::ConstSharedPtr m) { set_gate(m->data); });
     }
     RCLCPP_INFO(get_logger(),
                 "det_ros_cpp up: %zu classes, %zu cameras, input %dx%d, max %.1f Hz/camera",
@@ -244,6 +268,36 @@ class DetNode : public rclcpp::Node {
   bool publish_annotated() { return get_parameter("publish_annotated").as_bool(); }
 
  private:
+  bool is_gated(const std::string &t) const {
+    return std::find(gated_.begin(), gated_.end(), t) != gated_.end();
+  }
+  // rate for camera i: the activity cap, and gated_idle_rate_ while its gate is closed
+  double cam_rate(size_t i) const {
+    double r = rate_cap();
+    if (gated_flags_[i] && !gate_open_.load() && gated_idle_rate_ > 0.0)
+      r = r > 0.0 ? std::min(r, gated_idle_rate_) : gated_idle_rate_;
+    return r;
+  }
+  void subscribe(size_t i) {
+    if (subs_[i]) return;
+    std::weak_ptr<CameraWorker> ww = workers_[i];
+    subs_[i] = create_subscription<Image>(
+        workers_[i]->topic(), sensor_qos_,
+        [ww, i, this](std::shared_ptr<rclcpp::SerializedMessage> m) {
+          if (auto s = ww.lock()) s->offer(m, cam_rate(i));
+        });
+  }
+  void set_gate(bool open) {
+    if (open == gate_open_.exchange(open)) return;
+    for (size_t i = 0; i < workers_.size(); ++i) {
+      if (!gated_flags_[i]) continue;
+      if (open) subscribe(i);
+      else if (gated_idle_rate_ <= 0.0) subs_[i].reset();
+      RCLCPP_INFO(get_logger(), "%s: gate %s", workers_[i]->topic().c_str(),
+                  open ? "open" : "closed");
+    }
+  }
+
   // by value: range-for over get_parameter(..).as_string_array() would dangle
   std::vector<std::string> str_array(const std::string &name) {
     return get_parameter(name).as_string_array();
@@ -269,6 +323,12 @@ class DetNode : public rclcpp::Node {
   std::vector<std::shared_ptr<CameraWorker>> workers_;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> subs_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr activity_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gate_sub_;
+  std::vector<std::string> gated_;
+  std::vector<bool> gated_flags_;
+  std::atomic<bool> gate_open_{false};
+  double gated_idle_rate_{0.0};
+  rclcpp::QoS sensor_qos_{rclcpp::SensorDataQoS()};
 };
 
 void CameraWorker::offer(std::shared_ptr<rclcpp::SerializedMessage> msg, double max_rate) {

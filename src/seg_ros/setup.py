@@ -12,7 +12,8 @@ setup(
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml', 'setup.cfg']),
         (os.path.join('share', package_name, 'config'),
-         [os.path.join('config', 'seg.yaml')]),
+         [os.path.join('config', 'seg.yaml'),
+          os.path.join('config', 'nongrass_projector.yaml')]),
     ],
     install_requires=['setuptools', 'numpy', 'opencv-python'],
     zip_safe=True,
@@ -24,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'seg_ros = seg_ros.seg_ros_node:main',
+            'nongrass_projector = seg_ros.nongrass_projector_node:main',
         ],
     },
 )

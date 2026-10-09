@@ -7,11 +7,23 @@ seg_ros:
     model_path: "/userdata/ros2/models/pplite-seg_20260630-1-6cls.rknn"
     models_dir: ""
     dry_run: false            # true: no rknnlite / model -> stay alive, publish nothing
-    max_rate_hz: 5.0          # per camera; 0 = every frame
+    # 2 Hz (2026-10-09): the non-grass memory needs a few frames per cell from different
+    # viewpoints, not video rate; at 0.3 m/s a 2 m look-ahead is seen ~13 times. PP-LiteSeg
+    # 640x480 on one NPU core + argmax/softmax in numpy ~ 60-80 ms/frame (estimate, measure).
+    max_rate_hz: 2.0          # per camera; 0 = every frame
     # Model input is 640 wide x 480 tall (read from the .rknn static shape
     # [1,3,480,640] NCHW). img_size is [width, height].
     img_size: [640, 480]
     core_mask: "1"            # NPU core 1 (det_ros uses core 0)
-    left_topic: "/left_oa_camera/image_raw"
-    right_topic: "/right_oa_camera/image_raw"
+    # Camera (2026-10-09): the FRONT STEREO RIGHT COLOUR EYE (frame vio_camera, 640x480 bgr8,
+    # stereo_cam publish_color), not the OA cameras the vendor used. Only that eye has known
+    # intrinsics + extrinsics (cam1.yaml + stereo_params.yaml -> stereo_camera_optical), so only
+    # its mask can be projected onto the ground (nongrass_projector); the OA cameras have no
+    # extrinsics in mower.urdf.xacro and run at 1920x1080 (3 full-res masks/frame on the CPU).
+    # The model was trained on the vendor's OA images: verify the class quality on this eye
+    # live (/ai/seg/image_overlay) before trusting it. Vendor setup: the two OA topics below.
+    left_topic: ""            # vendor: /left_oa_camera/image_raw
+    right_topic: ""           # vendor: /right_oa_camera/image_raw
+    extra_topics: ["/vio/right/image_color"]
     publish_overlay: true
+    publish_confidence: true  # /ai/seg/confidence (top-1 softmax x 255) for nongrass_projector

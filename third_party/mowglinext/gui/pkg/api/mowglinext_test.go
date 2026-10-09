@@ -471,3 +471,56 @@ func TestServiceRoute_CoverageOrientation(t *testing.T) {
 		assert.Contains(t, w.Body.String(), `"next_perpendicular":true`)
 	}
 }
+
+func TestServiceRoute_BagRecorder(t *testing.T) {
+	status := `{"enabled":false,"recording":false}`
+	post := func(mock *types.MockRosProvider, command, body string) *httptest.ResponseRecorder {
+		mock.ServiceResponder = func(_ string, _ any, res any) {
+			msg, _ := json.Marshal(status)
+			_ = json.Unmarshal([]byte(`{"success":true,"message":`+string(msg)+`}`), res)
+		}
+		router := setupMowgliNextRouter(mock)
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/api/mowglinext/call/"+command, bytes.NewReader([]byte(body)))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		return w
+	}
+
+	for _, enabled := range []bool{true, false} {
+		mock := types.NewMockRosProvider()
+		body, want := `{"enabled":false}`, `{"data":false}`
+		if enabled {
+			body, want = `{"enabled":true}`, `{"data":true}`
+		}
+		w := post(mock, "bag_recorder", body)
+		assert.Equal(t, http.StatusOK, w.Code)
+		var reply struct {
+			Success bool   `json:"success"`
+			Message string `json:"message"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &reply))
+		assert.True(t, reply.Success)
+		assert.Equal(t, status, reply.Message)
+		require.Len(t, mock.ServiceCalls, 1)
+		assert.Equal(t, "/bag_recorder/enable", mock.ServiceCalls[0].Service)
+		raw, _ := json.Marshal(mock.ServiceCalls[0].Req)
+		assert.JSONEq(t, want, string(raw))
+	}
+
+	t.Run("missing enabled is 400", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		w := post(mock, "bag_recorder", `{}`)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Empty(t, mock.ServiceCalls)
+	})
+
+	t.Run("state", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		w := post(mock, "bag_recorder_state", `{}`)
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), `"success":true`)
+		require.Len(t, mock.ServiceCalls, 1)
+		assert.Equal(t, "/bag_recorder/get_state", mock.ServiceCalls[0].Service)
+	})
+}

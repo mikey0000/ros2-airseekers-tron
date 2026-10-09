@@ -32,6 +32,16 @@ const type_fill_color: unknown[] = [
     orange, // draft / active / unknown
 ];
 
+// Draw order inside one layer (2026-10-09): mowing areas at the bottom, paths above, obstacles
+// on top. Without a sort key polygons draw in source order, so an obstacle that came before
+// its area was painted over by the area fill and looked like it sat beneath the area.
+export const type_sort_key: unknown[] = [
+    'case',
+    ['==', ['get', 'user_feature_type'], 'obstacle'],   2,
+    ['==', ['get', 'user_feature_type'], 'navigation'], 1,
+    0,
+];
+
 export const MapStyle = [
     // ── Polygon fills ──────────────────────────────────────────────────
 
@@ -52,6 +62,7 @@ export const MapStyle = [
         id: 'gl-draw-polygon-fill-inactive',
         type: 'fill',
         filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon']],
+        layout: { 'fill-sort-key': type_sort_key },
         paint: {
             'fill-color': type_fill_color,
             'fill-outline-color': type_color,
@@ -81,7 +92,7 @@ export const MapStyle = [
         id: 'gl-draw-polygon-stroke-inactive',
         type: 'line',
         filter: ['all', ['==', 'active', 'false'], ['==', '$type', 'Polygon'], ['!=', 'user_feature_type', 'navigation']],
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        layout: { 'line-cap': 'round', 'line-join': 'round', 'line-sort-key': type_sort_key },
         paint: {
             'line-color': type_color,
             'line-width': 2,

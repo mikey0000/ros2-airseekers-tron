@@ -9,6 +9,7 @@ import {ReloadOutlined} from "@ant-design/icons";
 import {useCameras} from "../hooks/useCameras.ts";
 import {useDetections, useVisionObstacleClose} from "../hooks/useDetections.ts";
 import {useIsMobile} from "../hooks/useIsMobile.ts";
+import {usePageVisible} from "../hooks/usePageVisible.ts";
 import {CameraTile} from "../components/perception/CameraTile.tsx";
 import {DetectionPanel} from "../components/perception/DetectionPanel.tsx";
 import {buildSnapshotUrl, buildStreamUrl, cameraForFrame, clamp, type StreamVariant} from "../components/perception/streamUrl.ts";
@@ -41,14 +42,25 @@ function LiveTile(props: Omit<ComponentProps<typeof CameraTile>, "status"> & {ca
     return <CameraTile {...rest} status={status}/>;
 }
 
-function usePageVisible(): boolean {
-    const [visible, setVisible] = useState(typeof document === "undefined" || !document.hidden);
-    useEffect(() => {
-        const h = () => setVisible(!document.hidden);
-        document.addEventListener("visibilitychange", h);
-        return () => document.removeEventListener("visibilitychange", h);
-    }, []);
-    return visible;
+/** Desktop tiles the user started (camera id -> streaming), remembered per browser. */
+const STARTED_KEY = "perception.startedCameras";
+
+function loadStarted(): Record<string, boolean> | null {
+    try {
+        const raw = window.localStorage.getItem(STARTED_KEY);
+        const v: unknown = raw ? JSON.parse(raw) : null;
+        return v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, boolean> : null;
+    } catch {
+        return null;
+    }
+}
+
+function saveStarted(v: Record<string, boolean>): void {
+    try {
+        window.localStorage.setItem(STARTED_KEY, JSON.stringify(v));
+    } catch {
+        // private mode / storage blocked: the choice just is not remembered
+    }
 }
 
 export default function PerceptionPage() {
@@ -63,8 +75,11 @@ export default function PerceptionPage() {
     const [quality, setQuality] = useState<number | null>(null);
     const [fps, setFps] = useState<number | null>(null);
     const [variants, setVariants] = useState<Record<string, StreamVariant>>({});
-    // Tiles the user stopped individually (desktop) / the single selected tile (mobile).
-    const [stopped, setStopped] = useState<Record<string, boolean>>({});
+    // Tiles the user started (desktop; null = default: only the first camera) /
+    // the single selected tile (mobile). Every streaming tile makes the robot
+    // capture, convert and JPEG-encode that camera, so nothing streams unless
+    // it was asked for.
+    const [started, setStarted] = useState<Record<string, boolean> | null>(loadStarted);
     const [selectedId, setSelectedId] = useState<string | null>(null);
 
     const cameras = useMemo(() => (data?.cameras ?? []).slice(0, MAX_TILES), [data]);
@@ -73,10 +88,11 @@ export default function PerceptionPage() {
     const effQuality = quality ?? defaults?.quality ?? 50;
     const effFps = clamp(fps ?? defaults?.fps ?? 5, 1, defaults?.maxFps ?? 15);
 
-    // Streams start as soon as the page opens. A hidden tab only pauses them on
-    // narrow (mobile) screens, to spare battery and the robot's CPU; desktop
-    // and automated/background tabs keep streaming unless the user pauses.
-    const live = available && (pageVisible || !isMobile);
+    // Only the started camera(s) stream, and nothing streams while the tab is
+    // hidden (desktop too): web_video_server then drops its subscription and
+    // the camera driver closes the device, so a forgotten background tab costs
+    // the robot nothing. Streams resume when the tab is shown again.
+    const live = available && pageVisible;
     const detections = useDetections(live);
     const obstacleClose = useVisionObstacleClose(live);
     const history = useDetectionHistory(detections.data, detections.lastMessageAt);
@@ -112,8 +128,14 @@ export default function PerceptionPage() {
         );
     }
 
+    const startedNow = started ?? (cameras[0] ? {[cameras[0].id]: true} : {});
     const isStreaming = (id: string) =>
-        live && !paused && (isMobile ? id === activeSelected : !stopped[id]);
+        live && !paused && (isMobile ? id === activeSelected : !!startedNow[id]);
+    const toggleStarted = (id: string) => {
+        const next = {...startedNow, [id]: !startedNow[id]};
+        setStarted(next);
+        saveStarted(next);
+    };
 
     return (
         <div style={{padding: 16, display: "flex", flexDirection: "column", gap: 16}}>
@@ -175,7 +197,7 @@ export default function PerceptionPage() {
                             streaming={streaming}
                             variant={variant}
                             onVariantChange={(v) => setVariants((s) => ({...s, [cam.id]: v}))}
-                            onToggle={() => isMobile ? setPaused((p) => !p) : setStopped((s) => ({...s, [cam.id]: !s[cam.id]}))}
+                            onToggle={() => isMobile ? setPaused((p) => !p) : toggleStarted(cam.id)}
                             highlight={obstacleClose && cameraForFrame(cameras, detections.data.frame_id)?.id === cam.id}
                         />
                     );
@@ -189,7 +211,7 @@ export default function PerceptionPage() {
                     now={now}
                 />
             </Card>
-            {!pageVisible && isMobile && <Alert type="info" showIcon message={t("perception.hiddenPaused")}/>}
+            {!pageVisible && <Alert type="info" showIcon message={t("perception.hiddenPaused")}/>}
         </div>
     );
 }

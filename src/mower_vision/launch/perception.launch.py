@@ -5,7 +5,12 @@ Needs the camera topics from ``mower_bringup/launch/cameras.launch.py``.
 Args:
   det_backend                  cpp (det_ros_cpp, default) | python (det_ros fallback);
                                both run as node 'det_ros' with det_ros/config/det.yaml
-  det / seg / obstacle_guard   enable each node (seg off by default: nothing consumes it yet)
+  det / seg / obstacle_guard   enable each node (seg off by default; nongrass turns it on)
+  nongrass                     grass segmentation -> non-grass memory (2026-10-09,
+                               docs/grass_segmentation.md): runs seg_ros (front stereo right
+                               colour eye, NPU core 1) + seg_ros/nongrass_projector ->
+                               /ai/seg/ground_cells -> mower_map map_server_node -> Nav2
+                               global nongrass_layer (soft). Default false until verified live.
   models_dir                   fallback directory for the .rknn files when the device path
                                /userdata/ros2/models/<file> is missing ('' = none)
   dry_run                      det/seg stay alive and publish nothing if rknnlite / model
@@ -39,6 +44,7 @@ def generate_launch_description():
         DeclareLaunchArgument('det', default_value='true'),
         DeclareLaunchArgument('det_backend', default_value='cpp'),
         DeclareLaunchArgument('seg', default_value='false'),
+        DeclareLaunchArgument('nongrass', default_value='false'),
         DeclareLaunchArgument('obstacle_guard', default_value='true'),
         DeclareLaunchArgument('models_dir', default_value=''),
         DeclareLaunchArgument('dry_run', default_value='false'),
@@ -74,12 +80,22 @@ def generate_launch_description():
             parameters=det_params,
         )
         det_cpp = LogInfo(msg='det_ros_cpp not installed: det_backend falls back to python det_ros')
+    # seg runs when asked for directly OR when its consumer (nongrass) is on.
+    seg_on = IfCondition(PythonExpression([
+        "'", LC('seg'), "'.lower() == 'true' or '", LC('nongrass'), "'.lower() == 'true'"]))
     seg = Node(
         package='seg_ros', executable='seg_ros', name='seg_ros', output='screen',
         respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
-        condition=IfCondition(LC('seg')),
+        condition=seg_on,
         parameters=[PathJoinSubstitution([FindPackageShare('seg_ros'), 'config', 'seg.yaml']),
                     npu_overrides],
+    )
+    nongrass = Node(
+        package='seg_ros', executable='nongrass_projector', name='nongrass_projector',
+        output='screen', respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
+        condition=IfCondition(LC('nongrass')),
+        parameters=[PathJoinSubstitution([FindPackageShare('seg_ros'), 'config',
+                                          'nongrass_projector.yaml'])],
     )
     guard = Node(
         package='mower_vision', executable='obstacle_guard', name='obstacle_guard',
@@ -89,4 +105,4 @@ def generate_launch_description():
                                           'obstacle_guard.yaml']),
                     {'stop_on_close': ParameterValue(LC('stop_on_close'), value_type=bool)}],
     )
-    return LaunchDescription(args + [det, det_cpp, seg, guard])
+    return LaunchDescription(args + [det, det_cpp, seg, nongrass, guard])

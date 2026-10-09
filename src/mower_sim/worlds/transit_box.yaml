@@ -1,0 +1,11 @@
+# Regression scenario for obstacle rerouting (test/test_scenario_transit_box.py):
+# the robot starts undocked at (1.5, 0) facing +x and is sent to (8.0, 0); a 0.6 m box
+# that is not in the map sits on the straight line at x = 4.8.
+name: transit_box
+datum: {lat: 48.0, lon: 9.0}
+lawn: [[-1.0, -5.0], [12.0, -5.0], [12.0, 5.0], [-1.0, 5.0]]
+dock: {x: 0.0, y: 0.0, yaw: 0.0}
+start: {x: 1.5, y: 0.0, yaw: 0.0}
+obstacles:
+  - {name: box, type: box, x: 4.8, y: 0.0, size_x: 0.6, size_y: 0.6, height: 0.5}
+battery: {voltage: 24.6, percentage: 0.85}

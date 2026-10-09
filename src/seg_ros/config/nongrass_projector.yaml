@@ -1,0 +1,55 @@
+# nongrass_projector (2026-10-09, docs/grass_segmentation.md): seg_ros mask -> ground cells.
+# Output /ai/seg/ground_cells (PointCloud2, map frame) -> mower_map map_server_node non-grass
+# memory -> ~/nongrass_cost -> Nav2 global costmap nongrass_layer (soft, never lethal).
+nongrass_projector:
+  ros__parameters:
+    mask_topic: /ai/seg/mask
+    confidence_topic: /ai/seg/confidence
+    output_topic: /ai/seg/ground_cells
+    odom_topic: /odometry/filtered_map
+    map_frame: map
+    base_frame: base_link
+    # Front stereo right colour eye (seg.yaml extra_topics). Extrinsic = stereo_params.yaml of
+    # sn IC17SZ01011 (X_cam = R X_ref + T: rvec[3] then T[3] in metres), the same values
+    # det_range uses. Re-check both after a stereo module swap.
+    camera_frames: [vio_camera]
+    camera_info_topics: [/vio/right/camera_info]
+    ref_frames: [stereo_camera_optical]
+    cam_from_ref: [-0.0026304218918085098, 0.004534565843641758, -0.0071752071380615234,
+                   -0.060048446655, 0.000586622357, -0.0000052343523]
+    # Live plane fit (stereo_depth); used only within 6 cm / 6 deg of the URDF flat ground.
+    ground_plane_topic: /stereo_depth/ground_plane
+    ground_plane_frame: stereo_camera_optical
+    ground_plane_max_age_s: 1.0
+    ground_plane_max_dh_m: 0.06
+    ground_plane_max_angle_deg: 6.0
+    # Drop pixels that see something standing on the ground (measured depth shorter than the
+    # ground point by > max(8 cm, 10 %)): 3D obstacles are stereo/det_range's job, and flat
+    # projection would smear them far behind their real position.
+    depth_check: true
+    depth_topic: /stereo_depth/depth/image_raw
+    depth_max_dt_s: 0.15
+    depth_tol_m: 0.08
+    depth_tol_frac: 0.10
+    stride_px: 8              # 80 x 60 samples per 640x480 mask
+    cell_m: 0.1               # = mower_map resolution (one vote per map cell per frame)
+    # Range from the camera, horizontal. Near: the nose hides the ground below ~0.4 m. Far:
+    # at 0.24 m camera height a 1 deg pitch error moves a 2 m point by ~0.3 m and the
+    # 0.1 m cell shrinks to a few pixels; beyond 2 m the class quality is also unverified.
+    min_range_m: 0.35
+    max_range_m: 2.0
+    max_lateral_m: 1.5
+    # Only CONFIDENT pixels vote. Non-grass needs 0.8 (shadows / dry grass the model is unsure
+    # about stay silent); grass needs only 0.6 to clear (asymmetric on purpose: a false mark
+    # costs a detour, a missed flower bed only a soft cost the memory catches up with).
+    min_conf_nongrass: 0.8
+    min_conf_grass: 0.6
+    # 0 other (water, gravel, background), 2 passway (paving), 4 obstacle (toys), 5 shrub
+    # (flower beds). 3 soil = worn / dry lawn: counted as GRASS, never as non-grass.
+    nongrass_classes: [0, 2, 4, 5]
+    grass_classes: [1, 3]
+    max_pose_dt_s: 0.1
+    # Parked robot: no votes until it moved 0.15 m or turned 10 deg (one viewpoint must not
+    # confirm a shadow).
+    min_move_m: 0.15
+    min_turn_deg: 10.0

@@ -277,3 +277,79 @@ def chain_to(static: dict, child: str, target: str, max_depth: int = 16):
         acc = compose((r, t), acc)
         frame = parent
     return None
+
+
+# ---------------------------------------------------------------------------
+# Monocular ground-plane range (rear camera, 2026-10-09)
+# ---------------------------------------------------------------------------
+# The rear webcam has no stereo partner: a detection is ranged by intersecting the ray
+# through its bbox BOTTOM-CENTRE pixel (where the object touches the lawn) with the ground
+# plane z = ground_z in base_link (base_footprint == base_link; the front stereo ground fit
+# put the ground at z ~ 0, 2026-10-06), using the camera intrinsics (camera_info K/D) and
+# its URDF pose (rear_camera_joint, 0.25 m above base_link, optical axis level).
+#
+# Accuracy (h = camera height 0.25 m, R = ground range, theta = depression of the ray):
+#   dR/dtheta = (R^2 + h^2) / h, so 1 deg of pitch error (the URDF pitch is unmeasured) is
+#   ~7 % at 1 m and ~14 % at 2 m; +-3 px of bbox-bottom jitter (fy 684 at 640x480) adds
+#   ~1.5 % / ~3 %. A box whose bottom is hidden (behind the dock, cut by the image edge) is
+#   ranged on its lowest VISIBLE point: hidden behind something -> estimated FURTHER away
+#   (correct side for "behind the dock"); cut by the bottom edge -> the estimate is the
+#   closest visible ground (flag ``clipped``; the real object is nearer still). Lawn slope
+#   acts like pitch error. Objects not standing on the ground (bird, ball in flight) range
+#   too far. Variance published = (dR/dtheta * sigma_theta)^2 with
+#   sigma_theta = hypot(sigma_px / fy, sigma_pitch).
+
+
+@dataclass
+class MonoResult:
+    point: Tuple[float, float, float]   # ground point in the base frame (m)
+    range_m: float                      # planar distance from the camera foot point
+    variance: float                     # m^2
+    clipped: bool                       # bbox bottom at the image edge (object nearer)
+
+
+def rpy_matrix(r: float, p: float, y: float) -> np.ndarray:
+    cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
+    return np.array([[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                     [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+                     [-sp, cp * sr, cp * cr]])
+
+
+def ground_ray_point(ray_cam, r_bc: np.ndarray, t_bc, ground_z: float = 0.0,
+                     min_depression_deg: float = 2.0) -> Optional[np.ndarray]:
+    """Intersect a camera-frame ray (optical frame, any length) with z = ground_z in the
+    base frame (camera pose ``r_bc`` / ``t_bc`` in base). None when the ray is not at least
+    ``min_depression_deg`` below the horizon (at or above it: no ground hit / unbounded)."""
+    rb = r_bc @ np.asarray(ray_cam, dtype=float)
+    n = float(np.linalg.norm(rb))
+    t = np.asarray(t_bc, dtype=float)
+    if n <= 0.0 or t[2] <= ground_z:
+        return None
+    if rb[2] > -np.sin(np.radians(min_depression_deg)) * n:
+        return None
+    s = (ground_z - t[2]) / rb[2]
+    return t + s * rb
+
+
+def mono_range_box(cx, cy, w, h, k, d, r_bc: np.ndarray, t_bc, image_height: float = 0.0,
+                   *, ground_z: float = 0.0, min_depression_deg: float = 2.0,
+                   max_range_m: float = 6.0, clip_px: float = 2.0, sigma_px: float = 3.0,
+                   sigma_pitch_deg: float = 1.0) -> Optional[MonoResult]:
+    """Range a bbox (source pixels, centre/size) on the ground plane from its bottom-centre
+    pixel. ``k`` = (fx, fy, cx, cy), ``d`` = plumb_bob. None: ray above/near the horizon or
+    beyond ``max_range_m``."""
+    v = float(cy) + 0.5 * float(h)
+    nrm = undistort_points([[float(cx), v]], k, d)[0]
+    p = ground_ray_point((nrm[0], nrm[1], 1.0), r_bc, t_bc, ground_z, min_depression_deg)
+    if p is None:
+        return None
+    t = np.asarray(t_bc, dtype=float)
+    rng = float(np.hypot(p[0] - t[0], p[1] - t[1]))
+    if rng > max_range_m:
+        return None
+    hc = float(t[2] - ground_z)
+    sig_th = float(np.hypot(sigma_px / max(float(k[1]), 1e-6), np.radians(sigma_pitch_deg)))
+    var = ((rng * rng + hc * hc) / hc * sig_th) ** 2
+    clipped = image_height > 0 and v >= float(image_height) - clip_px
+    return MonoResult(point=(float(p[0]), float(p[1]), float(p[2])), range_m=rng,
+                      variance=float(var), clipped=bool(clipped))

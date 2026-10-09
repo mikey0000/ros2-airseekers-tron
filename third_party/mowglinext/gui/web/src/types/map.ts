@@ -192,9 +192,18 @@ export class MowingFeatureBase extends MowingFeature implements Feature<Polygon>
     }
 
     transpose( points: Point32[], offsetX: number, offsetY: number, datum: [number,number,number]) {
-        this.geometry.coordinates = [points.map((point) => {
+        const ring = points.map((point) => {
             return transpose(offsetX, offsetY, datum, point.y||0, point.x||0)
-        })];
+        });
+        // Close the ring (2026-10-09). The map server stores rings OPEN, and mapbox-gl-draw's
+        // Polygon assumes a closed GeoJSON ring and drops the last coordinate on load
+        // (feature_types/polygon.js: ring.slice(0, -1)), so every load + save lost a corner:
+        // a 4-corner obstacle or area came back as a triangle (owner report, sim map).
+        const first = ring[0], last = ring[ring.length - 1];
+        if (ring.length >= 3 && (first[0] !== last[0] || first[1] !== last[1])) {
+            ring.push([first[0], first[1]]);
+        }
+        this.geometry.coordinates = [ring];
     }
 
 

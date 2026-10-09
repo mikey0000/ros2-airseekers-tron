@@ -26,9 +26,10 @@ Input shape recovered from the `.rknn` static metadata (`shape [1,3,480,640]` NC
 
 | Direction | Topic | Type |
 |---|---|---|
-| in | `/left_oa_camera/image_raw` | `sensor_msgs/Image` |
-| in | `/right_oa_camera/image_raw` | `sensor_msgs/Image` |
+| in | `/vio/right/image_color` (`extra_topics`, default since 2026-10-09) | `sensor_msgs/Image` |
+| in | `/left_oa_camera/image_raw`, `/right_oa_camera/image_raw` (vendor; blank in seg.yaml) | `sensor_msgs/Image` |
 | out | `/ai/seg/mask` | `sensor_msgs/Image` mono8 (class index 0..5) |
+| out | `/ai/seg/confidence` | `sensor_msgs/Image` mono8 (top-1 softmax x 255, same stamp/frame) |
 | out | `/ai/seg/traversability` | `sensor_msgs/Image` mono8 (255 nav / 0 obstacle) |
 | out | `/ai/seg/image_overlay` | `sensor_msgs/Image` bgr8 (debug) |
 
@@ -44,6 +45,16 @@ Default `model_path` is `/userdata/ros2/models/pplite-seg_20260630-1-6cls.rknn`;
 `models_dir` is tried with the same basename when that is missing. No `rknnlite` / no
 model: one FATAL line + exit 1, or with `dry_run:=true` alive and silent. Runtime
 requirements (rknn-toolkit-lite2 2.3.0 + `librknnrt.so`): `docs/cameras_and_video.md`.
+
+## Non-grass projector (2026-10-09)
+
+`nongrass_projector` (`seg_ros/ground_projection.py`, pure + unit-tested) projects the mask of
+the front stereo right colour eye onto the ground and publishes one non-grass / grass vote per
+0.1 m map cell per frame on `/ai/seg/ground_cells` (PointCloud2, map frame). mower_map's
+map_server_node turns the votes into a remembered, confirmed, SOFT Nav2 cost
+(`~/nongrass_cost` -> global costmap `nongrass_layer`). Launch:
+`perception.launch.py nongrass:=true` (also starts seg_ros) or `mower.launch.py nongrass:=true`.
+Design, thresholds and live checks: `docs/grass_segmentation.md`.
 
 ## OA fusion note
 

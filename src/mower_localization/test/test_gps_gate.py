@@ -173,6 +173,9 @@ class TestGpsGateNode:
             node.destroy_node()
 
     def _node(self, **overrides):
+        # The pass-through gate tests below predate the 2026-10-09 fix-quality covariance
+        # (TestQualityCovariance); they run with it off unless a test asks for it.
+        overrides.setdefault("quality_covariance", False)
         if REAL_RCLPY:
             from rclpy.parameter import Parameter
             parameters = [Parameter(n, value=v) for n, v in overrides.items()]
@@ -245,6 +248,125 @@ class TestGpsGateNode:
             subscription = node.subs["/fix"]
             assert subscription.qos["reliability"] == 1  # RELIABLE
             assert subscription.qos["depth"] == 10
+
+
+class TestQualityCovariance:
+    """quality_covariance=True: /fix_status class sets the covariance the EKF sees."""
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self):
+        self._nodes = []
+        yield
+        for node in self._nodes:
+            node.destroy_node()
+
+    def _node(self, **overrides):
+        return TestGpsGateNode._node(self, quality_covariance=True, **overrides)
+
+    @staticmethod
+    def _policy(**kw):
+        from mower_localization.rtk_quality import CovariancePolicy
+        return CovariancePolicy(**kw)
+
+    # (a) pure _apply_quality
+    def test_fixed_floors_at_3cm_and_zeroes_cross_terms(self):
+        from mower_localization.gps_gate import _apply_quality
+        msg = _fix(covariance=[0.0001, 0.5, 0.0, 0.5, 0.0001, 0.0, 0.0, 0.0, 0.7])
+        assert _apply_quality(msg, "fixed", self._policy()) is None
+        assert msg.position_covariance[0] == msg.position_covariance[4] == \
+            pytest.approx(0.0009)
+        assert msg.position_covariance[1] == msg.position_covariance[3] == 0.0
+        assert msg.position_covariance[8] == 0.7     # vertical kept
+        assert msg.position_covariance_type == NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+
+    def test_float_is_inflated_to_floor(self):
+        from mower_localization.gps_gate import _apply_quality
+        msg = _fix(covariance=_diag_covariance(0.01))
+        assert _apply_quality(msg, "float", self._policy()) is None
+        assert msg.position_covariance[0] == msg.position_covariance[4] == \
+            pytest.approx(0.16)
+
+    def test_single_is_rejected_with_reason(self):
+        from mower_localization.gps_gate import _apply_quality
+        msg = _fix(covariance=_diag_covariance(0.01))
+        reason = _apply_quality(msg, "single", self._policy())
+        assert reason is not None and "single" in reason
+
+    def test_unknown_covariance_type_gets_conservative_values(self):
+        from mower_localization.gps_gate import _apply_quality
+        msg = _fix(covariance_type=NavSatFix.COVARIANCE_TYPE_UNKNOWN)
+        assert _apply_quality(msg, "float", self._policy()) is None
+        assert msg.position_covariance[0] == msg.position_covariance[4] == \
+            pytest.approx(0.16)
+        assert msg.position_covariance[8] == pytest.approx(0.64)    # 4x
+        assert msg.position_covariance_type == NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+
+    # (b) node behaviour
+    @staticmethod
+    def _status(text):
+        from std_msgs.msg import String
+        return String(data=text)
+
+    def test_float_status_inflates_fix(self):
+        node = self._node()
+        node._on_fix_status(self._status('um960=connected solution=NARROW_FLOAT'))
+        node._on_fix(_fix(covariance=_diag_covariance(0.01)))
+        assert len(node.fix_pub.msgs) == 1
+        assert node.fix_pub.msgs[0].position_covariance[0] == pytest.approx(0.16)
+
+    def test_fixed_status_keeps_receiver_sigma(self):
+        node = self._node()
+        node._on_fix_status(self._status('solution=NARROW_INT'))
+        node._on_fix(_fix(status=NavSatStatus.STATUS_GBAS_FIX,
+                          covariance=_diag_covariance(0.01)))
+        assert node.fix_pub.msgs[0].position_covariance[0] == pytest.approx(0.01)
+
+    def test_single_status_drops_next_fix(self):
+        node = self._node()
+        node._on_fix_status(self._status('solution=SINGLE'))
+        node._on_fix(_fix(covariance=_diag_covariance(0.01)))
+        assert node.fix_pub.msgs == []
+        assert node.rejected == 1
+
+    def test_no_status_gbas_passes_as_float(self):
+        node = self._node()
+        node._on_fix(_fix(status=NavSatStatus.STATUS_GBAS_FIX,
+                          covariance=_diag_covariance(0.01)))
+        assert node.fix_pub.msgs[0].position_covariance[0] == pytest.approx(0.16)
+
+    def test_no_status_plain_fix_is_dropped(self):
+        node = self._node()
+        node._on_fix(_fix(status=NavSatStatus.STATUS_FIX,
+                          covariance=_diag_covariance(0.01)))
+        assert node.fix_pub.msgs == []
+        assert node.rejected == 1
+
+    def test_stale_status_falls_back_to_navsat_class(self):
+        import time
+        node = self._node()
+        node._on_fix_status(self._status('solution=NARROW_INT'))
+        node._rtk_t = time.monotonic() - 100.0
+        # stale 'fixed' must not be trusted: GBAS -> float floor
+        node._on_fix(_fix(status=NavSatStatus.STATUS_GBAS_FIX,
+                          covariance=_diag_covariance(0.01)))
+        assert node.fix_pub.msgs[0].position_covariance[0] == pytest.approx(0.16)
+        # and a plain fix falls back to single -> dropped
+        node._on_fix(_fix(status=NavSatStatus.STATUS_FIX,
+                          covariance=_diag_covariance(0.01)))
+        assert len(node.fix_pub.msgs) == 1
+
+    def test_stale_text_status_falls_back(self):
+        node = self._node()
+        node._on_fix_status(self._status('STALE no fix'))
+        node._on_fix(_fix(status=NavSatStatus.STATUS_GBAS_FIX,
+                          covariance=_diag_covariance(0.01)))
+        assert node.fix_pub.msgs[0].position_covariance[0] == pytest.approx(0.16)
+
+    def test_loose_single_policy_lets_single_through(self):
+        node = self._node(single_policy="loose")
+        node._on_fix_status(self._status('solution=SINGLE'))
+        node._on_fix(_fix(covariance=_diag_covariance(0.01)))
+        assert node.fix_pub.msgs[0].position_covariance[0] == pytest.approx(9.0)
 
 
 class TestMain:

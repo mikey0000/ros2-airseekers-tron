@@ -21,7 +21,9 @@
 
 namespace {
 
-sensor_msgs::msg::PointCloud2 makeBumperCloud(bool left, bool right, const rclcpp::Time& stamp) {
+// empty = the fields only, width 0: the between-contacts heartbeat (see onTick).
+sensor_msgs::msg::PointCloud2 makeBumperCloud(bool left, bool right, const rclcpp::Time& stamp,
+                                              bool empty = false) {
     sensor_msgs::msg::PointCloud2 cloud;
     cloud.header.stamp = stamp;
     cloud.header.frame_id = "base_link";
@@ -40,9 +42,11 @@ sensor_msgs::msg::PointCloud2 makeBumperCloud(bool left, bool right, const rclcp
         float* p = reinterpret_cast<float*>(cloud.data.data() + (cloud.width - 1) * cloud.point_step);
         p[0] = x; p[1] = y; p[2] = z; p[3] = 1.0f;
     };
-    if (left)  add(0.4f,  0.2f, 0.0f);
-    if (right) add(0.4f, -0.2f, 0.0f);
-    if (!left && !right) add(0.4f, 0.0f, 0.0f);
+    if (!empty) {
+        if (left)  add(0.4f,  0.2f, 0.0f);
+        if (right) add(0.4f, -0.2f, 0.0f);
+        if (!left && !right) add(0.4f, 0.0f, 0.0f);
+    }
     cloud.row_step = cloud.width * cloud.point_step;
     return cloud;
 }
@@ -113,6 +117,15 @@ private:
         if (ctrl_.bumperTriggered()) {
             cloud_pub_->publish(makeBumperCloud(ctrl_.bumperLeft(), ctrl_.bumperRight(),
                                                 get_clock()->now()));
+            heartbeat_tick_ = 0;
+        } else if (++heartbeat_tick_ >= 4) {
+            // 2026-10-09: empty cloud at 5 Hz between contacts. The Nav2 collision_monitor
+            // keeps the LAST message of each source and WARNs "Ignoring the source" on every
+            // velocity command once it is older than source_timeout (1 s): after the first
+            // bump that was a 20 Hz WARN for the rest of the run. Empty clouds mark nothing in
+            // the costmaps (marking-only source, observation_persistence unchanged).
+            heartbeat_tick_ = 0;
+            cloud_pub_->publish(makeBumperCloud(false, false, get_clock()->now(), true));
         }
     }
 
@@ -124,6 +137,7 @@ private:
     rclcpp::Time dock_state_t_{0, 0, RCL_ROS_TIME};
     double dock_state_timeout_s_ = 1.0;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
+    int heartbeat_tick_ = 0;
     rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr routing_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
 

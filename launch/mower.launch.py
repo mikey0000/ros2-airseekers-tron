@@ -8,11 +8,16 @@ Groups (each a launch argument, ``true``/``false``):
     drivers       true   bringup.launch.py: mcu_node, wit_node, um960_node,
                          bumper_controller (respawn, 2 s)
     (always)             robot_state_publisher (config/urdf/mower.urdf.xacro)
+    localization_mode
+                  dual   2026-10-09 REP-105 dual EKF: ekf_map owns the GPS-anchored
+                         map -> odom and publishes /odometry/filtered_map; the
+                         static identity below is NOT started. single = the old
+                         one-filter EKF + static identity map -> odom (fallback)
     publish_static_map_odom
-                  true   identity map -> odom (Phase A: map == odom, until a
-                         GPS-anchored map -> odom publisher lands)
+                  true   identity map -> odom, only when localization_mode is
+                         single or localization is false (benches)
     control       true   mower_control: cmd_vel_slew (/cmd_vel_raw -> /cmd_vel),
-                         slip_detector, imu_cal
+                         slip_detector, imu_cal, tilt_monitor
     teleop        true   mower_teleop/launch/teleop.launch.py (twist_mux +
                          cmd_vel_ws_relay; twist_mux outputs /cmd_vel_raw)
     gui_bridge    true   mower_gui_bridge/gui_bridge
@@ -23,8 +28,9 @@ Groups (each a launch argument, ``true``/``false``):
                          switched off here)
     navigation    true   mower_navigation/launch/navigation.launch.py (Nav2)
     stereo_costmap
-                  true   stereo depth + det_range as local-costmap obstacle
-                         sources; false = bumper-only obstacle layer (safe-off)
+                  true   stereo depth (+ ground clearing cloud) + det_range as
+                         local- and global-costmap obstacle sources; false =
+                         bumper-only obstacle layers (safe-off)
 
 Map origin: ``datum_lat``/``datum_lon`` default to '' (unset). Unset values are
 read from ``datum_env_file`` (DATUM_LAT=/DATUM_LON=, written by the GUI's
@@ -229,7 +235,8 @@ def _apply_robot_settings(context):
 
 
 def _apply_stereo_costmap(context):
-    """stereo_costmap:=false -> nav2 params without the stereo/det_range costmap sources."""
+    """stereo_costmap:=false -> nav2 params without the stereo/stereo_clear/det_range sources
+    in the local and global costmaps and the collision_monitor."""
     if LaunchConfiguration('stereo_costmap').perform(context).strip().lower() in ('true', '1'):
         return []
     import yaml
@@ -241,8 +248,8 @@ def _apply_stereo_costmap(context):
     written = robot_settings.write_params_file(doc, robot_settings.make_out_dir(),
                                                'nav2_params_no_stereo.yaml')
     return [SetLaunchConfiguration('nav2_params_file', written),
-            LogInfo(msg='stereo_costmap:=false: local costmap obstacle_layer is bumper-only '
-                        '(%s)' % written)]
+            LogInfo(msg='stereo_costmap:=false: local + global costmap obstacle_layer and '
+                        'collision_monitor are bumper-only (%s)' % written)]
 
 
 # Topics the MowgliNext GUI reads through foxglove_bridge (gui/pkg/providers/ros.go
@@ -265,7 +272,7 @@ FOXGLOVE_GUI_TOPICS = [
     r'^/coverage/full_plan$',
     r'^/plan$',
     r'^/scan$',
-    r'^/map_server_node/(mow_progress|area_settings|dock_corridor|docking_pose)$',
+    r'^/map_server_node/(mow_progress|area_settings|dock_corridor|docking_pose|route)$',
     r'^/fusion_graph/(lidar_map|diagnostics)$',
     r'^/diagnostics$',
     r'^/obstacle_tracker/obstacles$',
@@ -273,6 +280,9 @@ FOXGLOVE_GUI_TOPICS = [
     r'^/vision/obstacle_close$',
     r'^/ai/det/detections$',
     r'^/rosout$',
+    # mower_alerts/alert_node: theft / lift / incident alerts + heartbeat (JSON String),
+    # pushed by the GUI's notification provider and forwarded to its MQTT broker.
+    r'^/mower_alerts/events$',
     # gui_bridge's low-rate GUI copies (mower_gui_bridge/gui_relay.py): pose 5 Hz, status
     # 2 Hz, emergency on change + 1 Hz, detections 2 Hz/camera on demand. The GUI provider
     # reads these instead of the 20 / 5 / 5 / 15 Hz originals (kept above for older GUIs);
@@ -300,17 +310,38 @@ def generate_launch_description() -> LaunchDescription:
 
     arguments = [
         arg('drivers', 'true', 'Start the serial drivers + bumper_controller.'),
+        arg('localization_mode', 'dual',
+            'dual: ekf_node (odom) + ekf_map (map, RTK) publishes map -> odom and '
+            '/odometry/filtered_map (REP-105). single: old one-filter EKF + static identity '
+            'map -> odom + gui_bridge relaying /odometry/filtered as /odometry/filtered_map.'),
         arg('publish_static_map_odom', 'true',
-            'Publish identity map -> odom (Phase A: map == odom).'),
-        arg('control', 'true', 'Start mower_control (cmd_vel_slew, slip_detector, imu_cal).'),
+            'Publish identity map -> odom when localization_mode is single (or localization '
+            'is false). Never together with ekf_map (two map -> odom owners).'),
+        arg('control', 'true', 'Start mower_control (cmd_vel_slew, slip_detector, imu_cal, tilt_monitor).'),
         arg('teleop', 'true', 'Include mower_teleop/teleop.launch.py (twist_mux + relay).'),
         arg('gui_bridge', 'true', 'Start mower_gui_bridge/gui_bridge.'),
         arg('foxglove', 'true', 'Start foxglove_bridge.'),
         arg('supervisor', 'true', 'mower_control/supervisor: node liveness (/supervisor/status, '
             '/diagnostics), black-box rosbag dumps to /userdata/ros2/crashes '
             '(docs/crash_recovery.md).'),
-        arg('mow_recorder', 'true', 'mower_control/mow_recorder: whole-mow rosbag2 per mission '
-            'under /userdata/ros2/mows/<YYYYmmdd-HHMMSS>/ (10 mows / 2 GB retention).'),
+        arg('alerts', 'true', 'mower_alerts/alert_node: theft / geofence, lift / tilt and '
+            'mission incident alerts on /mower_alerts/events (pushed by the GUI). Thresholds: '
+            'mower_alerts/config/alerts.yaml.'),
+        arg('alerts_anchor_path', '/userdata/ros2/alerts/parked_anchor.json',
+            'Where alert_node keeps the parked GPS position across restarts (theft while '
+            'powered off).'),
+        arg('mow_recorder', 'false', 'Legacy mower_control/mow_recorder (a second, Python '
+            'recorder: ~35 % of a core while mowing, measured 2026-10-09). Off: bag_recorder '
+            'pins each mow from its ring into /userdata/ros2/mows/<YYYYmmdd-HHMMSS>/ instead '
+            '(true here turns those mow pins off).'),
+        arg('bag_recorder', 'true', 'mower_control/bag_recorder: always-on rolling rosbag black box '
+            '(ros2 bag record, 60 s zstd splits, curated ~55 topics) in /userdata/ros2/bags, pruned '
+            'to bag_max_gb and a bag_min_free_gb floor; incidents pinned to '
+            '/userdata/ros2/incidents, each mow to /userdata/ros2/mows. Switchable at runtime '
+            '(/bag_recorder/enable, GUI Settings), persisted in /userdata/ros2/bag_recorder.json.'),
+        arg('bag_max_gb', '3.0', 'bag_recorder ring size cap, GB.'),
+        arg('bag_min_free_gb', '3.0', 'bag_recorder: keep at least this much free on /userdata, GB '
+            '(pauses recording when pruning cannot reach it).'),
         arg('foxglove_port', '8765', 'foxglove_bridge WebSocket port.'),
         arg('foxglove_all_topics', 'false', 'Advertise every topic on foxglove_bridge '
             '(Foxglove Studio debugging) instead of only the GUI\'s (FOXGLOVE_GUI_TOPICS).'),
@@ -329,10 +360,14 @@ def generate_launch_description() -> LaunchDescription:
         arg('cameras', 'true', 'Include cameras.launch.py (OA + rear v4l2_camera).'),
         arg('stereo', 'true', 'cameras.launch.py: front Metoak stereo via mower_cameras/stereo_cam '
             '(/vio/{left,right}/image_raw, 5 Hz, on demand). Off when vio is true.'),
-        arg('stereo_costmap', 'true', 'Feed the front stereo depth (/stereo_depth/points) and '
-            'det_range into the Nav2 local costmap obstacle_layer. false = bumper-only obstacle '
-            'layer (safe-off switch if the stereo marks the lawn); stereo_depth/det_range keep '
+        arg('stereo_costmap', 'true', 'Feed the front stereo depth (/stereo_depth/points, '
+            '/stereo_depth/clear_points) and det_range into the Nav2 local and global costmap '
+            'obstacle_layer and the collision_monitor. false = bumper-only obstacle layers (safe-off '
+            'switch if the stereo marks the lawn); stereo_depth/det_range keep '
             'running for the GUI/obstacle_guard.'),
+        arg('transit_controller', 'mppi', 'navigation.launch.py: what the BT FollowPath id '
+            '(transits, docking approach) runs: mppi (default since 2026-10-09) or rpp (the '
+            'previous RegulatedPurePursuit transit).'),
         arg('vio', 'false', 'Visual-inertial odometry (docs/vio.md): include launch/vio.launch.py '
             '(OpenVINS + vio_odom_bridge) and run nav2.launch.py with vio:=true (vio_gate + '
             'config/ekf_vio.yaml). Needs ov_msckf in the image (scripts/build_openvins_mower.sh) '
@@ -343,6 +378,11 @@ def generate_launch_description() -> LaunchDescription:
         arg('video', 'true', 'web_video_server MJPEG on :8080 (GUI camera page via /api/cameras; source for the RTSP relay).'),
         arg('perception', 'true', 'Include mower_vision/perception.launch.py (det_ros on both OA cameras + obstacle_guard; seg off). '
             'det_ros publishes /ai/det/detections and /<camera_ns>/image_annotated (GUI Perception page).'),
+        arg('nongrass', 'false', 'Grass segmentation -> non-grass memory (docs/grass_segmentation.md): '
+            'perception.launch.py runs seg_ros on the front stereo right colour eye + '
+            'nongrass_projector; map_server_node turns confirmed flower beds / gravel / paving '
+            'into a SOFT Nav2 global cost (nongrass_layer; per-area avoid_non_grass). Off until '
+            'verified live (model trained on the vendor OA cameras).'),
         arg('det_range', 'true', 'det_range: range det_ros detections of the front stereo right eye '
             'with the stereo hardware depth -> /ai/det/detections_ranged (obstacle_guard prefers it), '
             '/ai/det/obstacles, /ai/det/obstacle_points (local costmap source).'),
@@ -384,6 +424,13 @@ def generate_launch_description() -> LaunchDescription:
         }],
     )
 
+    # 2026-10-09: True when nobody else owns map -> odom / /odometry/filtered_map (single
+    # mode, or no localization at all): then the static identity and the gui_bridge relay
+    # stand in, as before the dual EKF.
+    legacy_map_odom = PythonExpression([
+        "'", LaunchConfiguration('localization_mode'), "'.strip().lower() == 'single' or '",
+        LaunchConfiguration('localization'), "'.strip().lower() != 'true'"])
+
     static_map_odom = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -393,7 +440,9 @@ def generate_launch_description() -> LaunchDescription:
         arguments=['--x', '0', '--y', '0', '--z', '0',
                    '--roll', '0', '--pitch', '0', '--yaw', '0',
                    '--frame-id', 'map', '--child-frame-id', 'odom'],
-        condition=enabled('publish_static_map_odom'),
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('publish_static_map_odom'), "'.lower() == 'true' and (",
+            legacy_map_odom, ")"])),
     )
 
     control = [
@@ -401,6 +450,17 @@ def generate_launch_description() -> LaunchDescription:
              respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control')),
         Node(package='mower_control', executable='slip_detector', name='slip_detector',
+             respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
+             output='screen', condition=enabled('control')),
+        # slope / tilt bands -> /tilt/status (mission caution cap + limit back-out) and its
+        # own critical stop on /cmd_vel_emergency + /cutter_off (2026-10-09, tilt_logic.py)
+        Node(package='mower_control', executable='tilt_monitor', name='tilt_monitor',
+             respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
+             output='screen', condition=enabled('control')),
+        # base_link clouds (bumper heartbeat, YOLO obstacle points) republished in odom / map so
+        # the costmaps never wait for a transform (Humble tf2 MessageFilter deadlock froze the
+        # local costmap under load, 2026-10-09; mower_control/fixed_frame_relay.py)
+        Node(package='mower_control', executable='fixed_frame_relay', name='fixed_frame_relay',
              respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control')),
         Node(package='mower_control', executable='imu_cal', name='imu_cal',
@@ -430,6 +490,10 @@ def generate_launch_description() -> LaunchDescription:
             'datum_env_path': LaunchConfiguration('datum_env_file'),
             'datum_lat': ParameterValue(LaunchConfiguration('datum_lat'), value_type=float),
             'datum_lon': ParameterValue(LaunchConfiguration('datum_lon'), value_type=float),
+            # Dual EKF: ekf_map publishes /odometry/filtered_map itself; gui_bridge then reads
+            # it (GUI pose copy, freshness) instead of relaying /odometry/filtered onto it.
+            'filtered_odom_topic': PythonExpression([
+                "'/odometry/filtered' if (", legacy_map_odom, ") else '/odometry/filtered_map'"]),
         }],
         condition=enabled('gui_bridge'),
     )
@@ -489,6 +553,7 @@ def generate_launch_description() -> LaunchDescription:
             'datum_lon': LaunchConfiguration('datum_lon'),
             'datum_yaw': LaunchConfiguration('datum_yaw'),
             'vio': LaunchConfiguration('vio'),
+            'localization_mode': LaunchConfiguration('localization_mode'),
         }.items(),
         condition=enabled('localization'),
     )
@@ -496,7 +561,8 @@ def generate_launch_description() -> LaunchDescription:
     navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution(
             [FindPackageShare('mower_navigation'), 'launch', 'navigation.launch.py'])),
-        launch_arguments={'params_file': LaunchConfiguration('nav2_params_file')}.items(),
+        launch_arguments={'params_file': LaunchConfiguration('nav2_params_file'),
+                          'transit_controller': LaunchConfiguration('transit_controller')}.items(),
         condition=enabled('navigation'),
     )
 
@@ -555,7 +621,8 @@ def generate_launch_description() -> LaunchDescription:
         PythonLaunchDescriptionSource(PathJoinSubstitution(
             [FindPackageShare('mower_vision'), 'launch', 'perception.launch.py'])),
         launch_arguments={'stop_on_close': LaunchConfiguration('stop_on_close'),
-                          'det_backend': LaunchConfiguration('det_backend')}.items(),
+                          'det_backend': LaunchConfiguration('det_backend'),
+                          'nongrass': LaunchConfiguration('nongrass')}.items(),
         condition=enabled('perception'),
     )
 
@@ -580,6 +647,32 @@ def generate_launch_description() -> LaunchDescription:
         package='mower_control', executable='mow_recorder', name='mow_recorder',
         respawn=True, respawn_delay=2.0, output='screen', condition=enabled('mow_recorder'),
     )
+    # 2026-10-09: always-on on-disk ring (docs/crash_recovery.md "Rolling bag ring"). The node
+    # owns the `ros2 bag record` child (restart with backoff, SIGINT on exit, PDEATHSIG), so
+    # launch respawn only covers the node itself.
+    bag_recorder = Node(
+        package='mower_control', executable='bag_recorder', name='bag_recorder',
+        respawn=True, respawn_delay=5.0, output='screen', condition=enabled('bag_recorder'),
+        parameters=[{'root': '/userdata/ros2/bags', 'incidents_dir': '/userdata/ros2/incidents',
+                     'max_total_gb': ParameterValue(LaunchConfiguration('bag_max_gb'),
+                                                    value_type=float),
+                     'min_free_gb': ParameterValue(LaunchConfiguration('bag_min_free_gb'),
+                                                   value_type=float),
+                     # runtime on/off (~/enable, GUI) survives restarts here
+                     'state_file': '/userdata/ros2/bag_recorder.json',
+                     # per-mow pins replace mow_recorder unless that one is turned back on
+                     'mows_dir': '/userdata/ros2/mows',
+                     'mow_pins': ParameterValue(PythonExpression(
+                         ["'", LaunchConfiguration('mow_recorder'), "'.lower() != 'true'"]),
+                         value_type=bool)}],
+    )
+
+    alerts = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution(
+            [FindPackageShare('mower_alerts'), 'launch', 'alerts.launch.py'])),
+        launch_arguments={'anchor_path': LaunchConfiguration('alerts_anchor_path')}.items(),
+        condition=enabled('alerts'),
+    )
     # One handler for every process of this launch (includes too): structured crash record.
     crash_records = RegisterEventHandler(OnProcessExit(on_exit=_on_process_exit))
 
@@ -593,5 +686,5 @@ def generate_launch_description() -> LaunchDescription:
         + control
         + [teleop, gui_bridge] + foxglove + [localization, navigation,
            map_server, coverage, docking, mission, cameras, vio, perception, det_range,
-           supervisor, mow_recorder]
+           supervisor, mow_recorder, bag_recorder, alerts]
     )

@@ -1,0 +1,13 @@
+# Validates /userdata/ros2/power/shutdown_request (same boot, fresh, not right after boot),
+# deletes it, arms the MCU power cut (MCU_POWER_CUT=1), syncs and runs `systemctl poweroff`.
+# DRY_RUN=1 (the installed default) only logs. Config: /etc/default/mower-poweroff.
+# Started by mower-poweroff.path; logs: journalctl -t mower-poweroff
+[Unit]
+Description=Power-button shutdown handler (mower-poweroff-host handle)
+RequiresMountsFor=/userdata/ros2
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/mower-poweroff-host handle
+SyslogIdentifier=mower-poweroff
+TimeoutStartSec=60

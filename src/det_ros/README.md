@@ -49,6 +49,16 @@ ros2 run det_ros det_ros --ros-args --params-file $(ros2 pkg prefix det_ros)/sha
 Without `rknnlite` or the model file the node logs one FATAL line naming the fix and
 exits 1; with `dry_run:=true` it stays up and publishes nothing.
 
+## Rear camera (gated)
+
+`/rear_camera/image_raw` (frame `rear_camera`, 640x480) is the 4th camera
+(`extra_topics`). It feeds rear obstacle sensing while reversing or docking. To save NPU
+time it is in `gated_topics`, so it is subscribed only while `gate_topic`
+(`/vision/rear_watch`, a latched Bool from `obstacle_guard`) is true. No message counts as
+closed. With `gated_idle_rate_hz` > 0 it stays subscribed at that rate instead. The C++
+node (`det_ros_cpp`) takes the same parameters. With `core_masks` `["0","1","2"]` the rear
+camera shares NPU core 0 with the left OA camera.
+
 ## NPU core allocation
 
 - `det_ros` → core 0 (`core_mask: "0"`)

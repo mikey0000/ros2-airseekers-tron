@@ -1561,7 +1561,8 @@
     "bladeConfirmContent": "The blade spins up immediately wherever the robot is. Make sure nobody is near it.",
     "bladeConfirmOk": "Start blade",
     "recordArea": "Record area (drive the boundary)",
-    "recordPath": "Record path (drive it)"
+    "recordPath": "Record path (drive it)",
+    "recordObstacle": "Record no-go zone (drive around it)"
   },
   "resetMowingProgress": {
     "action": "Reset mowing progress",
@@ -1640,7 +1641,8 @@
     "editPath": "Edit selected path",
     "areaSettingsShort": "Areas",
     "recordArea": "Record area (drive the boundary)",
-    "recordPath": "Record path (drive it)"
+    "recordPath": "Record path (drive it)",
+    "recordObstacle": "Record no-go zone (drive around it)"
   },
   "mapEditorToolbar": {
     "saveMapUnsaved": "Save Map *",
@@ -1844,7 +1846,8 @@
     "cancel": "Cancel",
     "home": "Dock",
     "recordingArea": "Recording an area boundary",
-    "recordingPath": "Recording a path"
+    "recordingPath": "Recording a path",
+    "recordingObstacle": "Recording a no-go zone"
   },
   "mapManualMode": {},
   "mapBearing": {
@@ -3338,15 +3341,23 @@
       },
       "blocked": {
         "label": "Stuck / blocked",
-        "description": "Dig obstruction, docking or navigation failure: the robot needs you."
+        "description": "Stuck, path blocked, mowing incomplete, docking or undocking failure: the robot needs you."
       },
       "emergency": {
         "label": "Emergency stop",
         "description": "The firmware emergency latch tripped."
       },
+      "theft": {
+        "label": "Theft / geofence",
+        "description": "Lifted while parked, moved away from where it was parked, or left the mapped area while not mowing."
+      },
+      "lift": {
+        "label": "Lift / tilt while mowing",
+        "description": "The robot was lifted or tipped over during a mow."
+      },
       "battery": {
         "label": "Battery",
-        "description": "Low battery return to the dock, and the resume once charged."
+        "description": "Low battery return to the dock, the resume once charged, and battery critical while away from the dock."
       },
       "rain": {
         "label": "Rain",
@@ -3355,6 +3366,10 @@
       "waitingForRtk": {
         "label": "Waiting for GPS",
         "description": "No RTK fix for more than two minutes, and its recovery."
+      },
+      "gpsLost": {
+        "label": "RTK lost while mowing",
+        "description": "No RTK fix for several minutes during a mission, and its recovery."
       }
     },
     "status": "Delivery status",
@@ -3995,7 +4010,7 @@
     "annotated": "Annotated",
     "stopTile": "Stop this stream",
     "startTile": "Start this stream",
-    "tilePaused": "Stream stopped",
+    "tilePaused": "Not streaming: press play to watch this camera",
     "streamError": "Stream failed to load",
     "detections": "Detections",
     "obstacleClose": "Obstacle close",
@@ -4012,7 +4027,7 @@
     "loadFailed": "Could not load the camera list from the backend.",
     "noCameras": "No cameras are configured for this robot.",
     "unavailable": "The camera stream server is not reachable.",
-    "hiddenPaused": "Streams are paused while this tab is hidden (small screens only).",
+    "hiddenPaused": "Streams are paused while this tab is hidden.",
     "health": {
       "live": "Live",
       "stale": "Stale",
@@ -4253,6 +4268,12 @@
     "bladePolicyHint": "continuous = blade keeps running through waits, retries and in-area transits; stops only for e-stop/lift/rain/leaving the area/docking. conservative = blade stops on every wait, retry and transit (old behaviour).",
     "bladePolicyContinuous": "Continuous",
     "bladePolicyConservative": "Conservative",
+    "transitVariation": "Transit variation",
+    "transitVariationHint": "Varies the transit line between runs so the same track is not driven every time (tyre tracks). lanes = shift sideways inside the drawn path / area; perimeter = alternate the direct line with following the area edge (clockwise, then counter-clockwise; never more than twice as long); mixed = rotate through all; none = always the same line.",
+    "transitVariationNone": "None",
+    "transitVariationLanes": "Lanes",
+    "transitVariationPerimeter": "Perimeter",
+    "transitVariationMixed": "Mixed",
     "turnType": "Turn style",
     "turnTypeHint": "Turning on the spot can tear the lawn; it is only used when nothing smoother fits.",
     "turnTypeAuto": "Auto (loop, reverse, then on the spot)",
@@ -4398,6 +4419,18 @@
     "sun": "sun {{deg}}°",
     "notInstalled": "No fill light on this mower: the PWM output the vendor firmware uses does not exist on this board.",
     "unreachable": "Fill light node not reachable"
+  },
+  "settingsRecorder": {
+    "title": "Data recorder",
+    "description": "Always-on rolling black-box recording (the last ~3 GB; incidents and each mow are kept) used for troubleshooting. It costs some CPU (about 10 % of one core). Switching it off also stops per-mow recordings. The setting is remembered across restarts.",
+    "state": "Status",
+    "recording": "Recording",
+    "pausedLowDisk": "Paused (low disk)",
+    "off": "Off",
+    "ring": "Recording size: {{gb}} GB",
+    "free": "Free space: {{gb}} GB",
+    "mowRecording": "Recording this mow",
+    "unreachable": "Data recorder not reachable (the recorder may not be launched)"
   },
   "dockHeading": {
     "title": "Dock heading",

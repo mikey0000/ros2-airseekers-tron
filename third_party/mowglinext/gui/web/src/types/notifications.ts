@@ -7,9 +7,12 @@ export const NOTIFICATION_EVENT_KINDS = [
     "mowStopped",
     "blocked",
     "emergency",
+    "theft",
+    "lift",
     "battery",
     "rain",
     "waitingForRtk",
+    "gpsLost",
 ] as const;
 
 export type NotificationEventKind = (typeof NOTIFICATION_EVENT_KINDS)[number];

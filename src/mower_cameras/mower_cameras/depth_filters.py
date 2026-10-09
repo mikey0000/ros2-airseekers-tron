@@ -14,6 +14,9 @@ the raw disparity of one frame into an obstacle-only point cloud for the Nav2 lo
                           ground (from TF / URDF), gated to stay within ``max_tilt_deg`` /
                           ``max_dh_m`` of the prior; falls back to the prior.
    ``remove_ground``    — drops points less than ``margin`` above that plane (and below it).
+   ``ground_clear_points`` — the complement (|height| <= ``margin``), range-limited and
+                          decimated to one point per ground-plane voxel: the Nav2 CLEARING
+                          cloud (2026-10-09; empty unless the fit succeeded this frame).
 5. ``Persistence``      — a point is published only if its voxel was also occupied in the
                           previous ``n - 1`` frames (kills single-frame flicker).
 
@@ -119,9 +122,42 @@ def fit_ground_plane(pts, prior, band=0.10, iters=20, inlier_tol=0.03, max_tilt_
     return (n, h), best[0], True
 
 
-def remove_ground(pts, plane, margin=0.12):
-    """Keep only points more than ``margin`` above the ground plane."""
-    return pts[heights(pts, plane) > margin]
+def remove_ground(pts, plane, margin=0.12, hgt=None):
+    """Keep only points more than ``margin`` above the ground plane (``hgt``: precomputed)."""
+    return pts[(heights(pts, plane) if hgt is None else hgt) > margin]
+
+
+def ground_clear_points(pts, plane, fit_ok, margin=0.12, min_z=0.2, max_z=3.0, voxel=0.10,
+                        hgt=None):
+    """Ground points for Nav2 clearing (2026-10-09). Returns Nx3 float32 (N may be 0).
+
+    The obstacle cloud carries no ground, so Nav2's ObstacleLayer (clears only by raytracing
+    to received points) never cleared a mark once its obstacle left. These are the points
+    the fit classified as ground (``|height| <= margin``, the complement of
+    ``remove_ground`` plus the below-plane band), with optical depth z in ``min_z..max_z``,
+    thinned to the first point of each ``voxel`` x ``voxel`` cell of the ground plane (2D
+    key in an in-plane basis, so near/far rows decimate alike; 3 m at 0.10 m -> < ~1500
+    points). Real measured points are kept (not cell centres) so the ray ends on the
+    surface the camera saw. ``fit_ok`` False -> empty: never clear on a prior/rejected
+    plane (a bad plane would label obstacle tops as ground and erase them).
+    """
+    if not fit_ok or len(pts) == 0:
+        return np.zeros((0, 3), np.float32)
+    n, _ = plane
+    if hgt is None:
+        hgt = heights(pts, plane)
+    sel = (np.abs(hgt) <= margin) & (pts[:, 2] >= min_z) & (pts[:, 2] <= max_z)
+    g = pts[sel]
+    if len(g) == 0 or voxel <= 0:
+        return g.astype(np.float32)
+    n = np.asarray(n, np.float64)
+    e1 = np.array([1.0, 0.0, 0.0]) - n[0] * n   # optical x (right) projected into the plane
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(n, e1)                          # ~forward in the plane
+    q = np.floor((g @ np.stack([e1, e2], axis=1)) / float(voxel)).astype(np.int64)
+    q += 1 << 30                                  # +-2^30 cells: pack two in one int64
+    _, first = np.unique((q[:, 0] << 31) | q[:, 1], return_index=True)
+    return g[first].astype(np.float32)
 
 
 class Persistence:

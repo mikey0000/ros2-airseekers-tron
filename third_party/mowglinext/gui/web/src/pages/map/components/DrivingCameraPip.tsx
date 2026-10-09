@@ -6,6 +6,8 @@ import {useCameras, FALLBACK_DEFAULTS} from "../../../hooks/useCameras.ts";
 import {useCameraHealth} from "../../../hooks/useCameraHealth.ts";
 import {tileHealth} from "../../../components/perception/CameraTile.tsx";
 import {buildStreamUrl} from "../../../components/perception/streamUrl.ts";
+import {MjpegImg} from "../../../components/perception/MjpegImg.tsx";
+import {usePageVisible} from "../../../hooks/usePageVisible.ts";
 import {chooseCamera, type DrivePipPrefs} from "../hooks/useDrivingCamera.ts";
 
 const HEADER_PX = 34;
@@ -80,7 +82,10 @@ function PipInner({mobile = false, reversing, drivingCamera, reverseCamera, pref
     const baseRect = prefs.rect ?? defaultRect(container.w, container.h, mobile);
     const rect = clampRect(dragRect ?? baseRect, container.w, container.h);
 
-    const streaming = !prefs.collapsed && !!cam;
+    // No stream while collapsed or while the browser tab is hidden: the robot
+    // only runs a camera while a client is actually looking at it.
+    const pageVisible = usePageVisible();
+    const streaming = !prefs.collapsed && !!cam && pageVisible;
     const variant = prefs.annotated && cam?.annotatedTopic ? "annotated" : "raw";
     const status = useCameraHealth(cam?.healthUrl, streaming, cam?.status);
     const topicHealth = variant === "annotated" ? status?.annotated : status?.raw;
@@ -190,8 +195,7 @@ function PipInner({mobile = false, reversing, drivingCamera, reverseCamera, pref
                 <div style={{position: "relative", flex: "1 1 auto", minHeight: 0, display: "flex", overflow: "hidden",
                     alignItems: "center", justifyContent: "center", fontSize: 13, color: "#aaa"}}>
                     {streaming && cam && !failed ? (
-                        <img
-                            key={`${cam.id}-${variant}`}
+                        <MjpegImg
                             data-testid="drive-pip-stream"
                             src={buildStreamUrl(cam, {variant, quality: defaults.quality, fps: Math.min(DRIVE_FPS, defaults.maxFps)}, defaults)}
                             alt={cam.label}

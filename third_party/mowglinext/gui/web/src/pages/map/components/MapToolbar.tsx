@@ -84,6 +84,7 @@ interface MapToolbarProps {
     onAreaRecording?: () => Promise<void>;
     /** Record an open path (navigation band) by driving with the joystick. */
     onPathRecording?: () => Promise<void>;
+    onObstacleRecording?: () => Promise<void>;
     onMowNextArea?: () => Promise<void>;
     onContinueOrPause?: () => Promise<void>;
     onBladeForward?: () => Promise<void>;
@@ -100,7 +101,7 @@ export const MapToolbar = ({
     onBackupMap, onRestoreMap, onDownloadGeoJSON, onImportOpenMower, onResetMowingProgress,
     onMowArea, onPreviewPlan, settingsAreas, onAreaSettings, pitched, onTogglePitch,
     onStart, onResume, onStartFresh, onHome, onUndock, onEmergencyOn, onEmergencyOff,
-    onAreaRecording, onPathRecording, onMowNextArea, onContinueOrPause,
+    onAreaRecording, onPathRecording, onObstacleRecording, onMowNextArea, onContinueOrPause,
     onBladeForward, onBladeBackward, onBladeOff,
     onRecordFinish, onRecordCancel,
 }: MapToolbarProps) => {
@@ -151,6 +152,7 @@ export const MapToolbar = ({
         {type: "divider"},
         {key: "areaRecording", icon: <AimOutlined />, label: t("mapToolbar.recordArea")},
         ...(onPathRecording ? [{key: "pathRecording", icon: <NodeIndexOutlined />, label: t("mapToolbar.recordPath")}] : []),
+        ...(onObstacleRecording ? [{key: "obstacleRecording", icon: <WarningOutlined />, label: t("mapToolbar.recordObstacle")}] : []),
         {key: "mowNext", icon: <ForwardOutlined />, label: t("mapToolbar.mowNextArea")},
         ...(onResume && onStartFresh
             ? [{key: "startFresh", icon: <PlayCircleOutlined />, label: t("missionStop.startFresh")} satisfies NonNullable<MenuProps["items"]>[number]]
@@ -188,6 +190,7 @@ export const MapToolbar = ({
             case "stopManual": safeCall(() => onStopManualMode()); break;
             case "areaRecording": safeCall(onAreaRecording); break;
             case "pathRecording": safeCall(onPathRecording); break;
+            case "obstacleRecording": safeCall(onObstacleRecording); break;
             case "mowNext": safeCall(onMowNextArea); break;
             case "startFresh": safeCall(onStartFresh); break;
             case "continueOrPause": safeCall(onContinueOrPause); break;

@@ -47,16 +47,19 @@ but install both explicitly to be sure.
 Frame tree (REP-105) and who owns each transform
 ======================================================================================
 
-    map                                                   <- static_map_odom (mower.launch.py)
-      |        Identity map -> odom (Phase A: map == odom), published by the
-      |        static_map_odom node in launch/mower.launch.py when
-      |        publish_static_map_odom:=true (default). There is still no GPS
-      |        anchor: navsat_transform_node only broadcasts a transform when
-      |        broadcast_utm_transform is true, and config/navsat.yaml sets it
-      |        false. Everything is odom-framed dead reckoning corrected by GPS.
+    map                                                   <- ekf_map (localization_mode:=dual)
+      |        2026-10-09, REP-105 dual EKF (default): ekf_map (world_frame map,
+      |        config/ekf_dual.yaml) fuses wheel + aligned IMU + /odometry/gps (RTK,
+      |        covariance by fix class) and publishes map -> odom and
+      |        /odometry/filtered_map. The GPS correction lives in map -> odom; odom
+      |        stays continuous. localization_mode:=single is the old fallback: one
+      |        GPS-fused filter in odom (config/ekf.yaml) + the static identity
+      |        map -> odom from mower.launch.py (static_map_odom), and gui_bridge
+      |        relays /odometry/filtered as /odometry/filtered_map.
+      |        Map origin = the navsat datum (datum_lat/lon/yaw) in both modes.
       |
     odom                                                  <- ekf_node (publish_tf: true)
-      |        Sole publisher of odom -> base_link.
+      |        Sole publisher of odom -> base_link. Dual mode: no GPS in this filter.
       |
     base_link                                             <- URDF: config/urdf/mower.urdf.xacro
       |        Centre of the REAR DRIVE AXLE, not the chassis centre
@@ -130,7 +133,7 @@ import os
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -178,6 +181,18 @@ def _navsat_transform(context, navsat_config):
             "datum": [lat, lon, yaw],
         })
 
+    remappings = [
+        # Its fix input is relative, so this is what points it at the
+        # gate's output rather than the raw fix.
+        ("gps/fix", LaunchConfiguration("gated_fix_topic")),
+        ("imu", LaunchConfiguration("imu_data_topic")),
+    ]
+    if _mode(context) == "dual":
+        # 2026-10-09: anchor on ekf_map, so world_frame (taken from this odometry's header)
+        # is map and /odometry/gps comes out in the map frame for ekf_map + heading_aligner.
+        remappings.append(("odometry/filtered", "/odometry/filtered_map"))
+    # single: ekf_node publishes odometry/filtered under its own default name, which is
+    # already the topic navsat subscribes to.
     actions.append(Node(
         package="robot_localization",
         executable="navsat_transform_node",
@@ -185,16 +200,59 @@ def _navsat_transform(context, navsat_config):
         name="navsat_transform_node",
         output="screen",
         parameters=parameters,
-        remappings=[
-            # Its fix input is relative, so this is what points it at the
-            # gate's output rather than the raw fix.
-            ("gps/fix", LaunchConfiguration("gated_fix_topic")),
-            ("imu", LaunchConfiguration("imu_data_topic")),
-            # ekf_node publishes odometry/filtered under its own default name,
-            # which is already the topic navsat subscribes to. Nothing to remap.
-        ],
+        remappings=remappings,
     ))
     return actions
+
+
+LOCALIZATION_MODES = ("dual", "single")
+
+
+def _mode(context) -> str:
+    mode = LaunchConfiguration("localization_mode").perform(context).strip().lower()
+    if mode not in LOCALIZATION_MODES:
+        raise ValueError("localization_mode must be one of %s, got %r"
+                         % ("|".join(LOCALIZATION_MODES), mode))
+    return mode
+
+
+def _ekf_nodes(context, configs):
+    """The EKF(s) for localization_mode (2026-10-09).
+
+    single: ekf_node = config/ekf.yaml (+ ekf_vio.yaml), GPS fused in odom; mower.launch.py
+            publishes the static identity map -> odom. Byte-for-byte the pre-dual node.
+    dual:   ekf_node (odom filter, no GPS) + ekf_map (map filter, GPS, map -> odom,
+            /odometry/filtered_map) from config/ekf_dual.yaml (+ ekf_dual_vio.yaml).
+    Node names must stay "ekf_node" / "ekf_map": the yaml files are keyed on them.
+    """
+    vio = LaunchConfiguration("vio").perform(context).strip().lower() in ("true", "1")
+    common = {
+        "map_frame": LaunchConfiguration("map_frame"),
+        "odom_frame": LaunchConfiguration("odom_frame"),
+        "base_link_frame": LaunchConfiguration("base_frame"),
+        "odom0": LaunchConfiguration("odom_topic"),
+        "imu0": LaunchConfiguration("imu_data_topic"),
+    }
+
+    def ekf(name, files, remappings=()):
+        return Node(
+            package="robot_localization",
+            executable="ekf_node",
+            respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
+            name=name,
+            output="screen",
+            parameters=[*files, common],
+            remappings=list(remappings),
+        )
+
+    if _mode(context) == "single":
+        return [ekf("ekf_node", [configs["single"]] + ([configs["single_vio"]] if vio else []))]
+    files = [configs["dual"]] + ([configs["dual_vio"]] if vio else [])
+    return [
+        ekf("ekf_node", files),
+        ekf("ekf_map", files, remappings=[
+            ("odometry/filtered", LaunchConfiguration("map_odom_topic"))]),
+    ]
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -202,6 +260,12 @@ def generate_launch_description() -> LaunchDescription:
     ekf_config = PathJoinSubstitution([share, "config", "ekf.yaml"])
     navsat_config = PathJoinSubstitution([share, "config", "navsat.yaml"])
     ekf_vio_config = PathJoinSubstitution([share, "config", "ekf_vio.yaml"])
+    ekf_configs = {
+        "single": ekf_config,
+        "single_vio": ekf_vio_config,
+        "dual": PathJoinSubstitution([share, "config", "ekf_dual.yaml"]),
+        "dual_vio": PathJoinSubstitution([share, "config", "ekf_dual_vio.yaml"]),
+    }
 
     # The URDF is a stack asset under config/, not a colcon package, so
     # resolve it relative to this file instead of FindPackageShare.
@@ -229,7 +293,20 @@ def generate_launch_description() -> LaunchDescription:
         # Frames. These match config/ekf.yaml; override only when the URDF for a specific
         # Tron chassis variant (m2-11..m2-16) says otherwise.
         DeclareLaunchArgument("map_frame", default_value="map",
-                              description="Unpublished today; reserved for the GPS datum."),
+                              description="GPS-anchored frame (ekf_map in dual mode)."),
+        # 2026-10-09 REP-105 dual EKF (item 4). dual (default): ekf_node (odom, no GPS) +
+        # ekf_map (map, RTK) owning map -> odom. single: the old one-filter config with the
+        # static identity map -> odom that mower.launch.py publishes in that mode only.
+        DeclareLaunchArgument("localization_mode", default_value="dual",
+                              description="dual (ekf_node + ekf_map, map -> odom from GPS) | "
+                                          "single (ekf.yaml, static map -> odom)."),
+        DeclareLaunchArgument("map_odom_topic", default_value="/odometry/filtered_map",
+                              description="ekf_map output (dual mode)."),
+        DeclareLaunchArgument("gps_quality_covariance", default_value="true",
+                              description="gps_gate: GPS covariance by RTK class (fixed "
+                                          "tight, float loose, single dropped)."),
+        DeclareLaunchArgument("localization_monitor", default_value="true",
+                              description="Start localization_monitor (/localization/status)."),
         DeclareLaunchArgument("odom_frame", default_value="odom"),
         DeclareLaunchArgument("base_frame", default_value="base_link",
                               description="Rear drive axle centre, per the REP-105 chain."),
@@ -308,6 +385,8 @@ def generate_launch_description() -> LaunchDescription:
                     "output_topic": LaunchConfiguration("gated_fix_topic"),
                     "min_fix_status": _int("min_fix_status"),
                     "max_position_covariance": _float("max_position_covariance"),
+                    "quality_covariance": ParameterValue(
+                        LaunchConfiguration("gps_quality_covariance"), value_type=bool),
                     # used_fixes stays at the package default
                     # (GPS/DGPS/RTK-fixed/RTK-float) unless this deployment must run
                     # RTK-fixed-only.
@@ -349,33 +428,16 @@ def generate_launch_description() -> LaunchDescription:
             ),
 
             # ------------------------------------------------------------------
-            # 3. ekf_node: /odom + /imu (+ /odometry/gps) -> odom -> base_link at
-            #    20 Hz, publishing /odometry/filtered (its default topic name) for the
-            #    node above and Nav2.
+            # 3. ekf_node: /odom + /imu (single: + /odometry/gps) -> odom -> base_link at
+            #    20 Hz, publishing /odometry/filtered (its default topic name) for Nav2.
             #    Sole publisher of odom -> base_link.
-            #    Node name must stay "ekf_node": config/ekf.yaml is keyed on it.
+            #    3b. dual only: ekf_map (+ /odometry/gps) -> map -> odom at 10 Hz and
+            #    /odometry/filtered_map, which navsat_transform_node (2.) anchors on.
+            #    Node names must stay "ekf_node"/"ekf_map": the yaml files are keyed on them.
             # ------------------------------------------------------------------
-            # Two mutually exclusive definitions: vio:=false is byte-for-byte the
-            # pre-VIO node; vio:=true adds the config/ekf_vio.yaml overlay (odom2).
-            *[Node(
-                package="robot_localization",
-                executable="ekf_node",
-                respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
-                name="ekf_node",
-                output="screen",
-                condition=cond(LaunchConfiguration("vio")),
-                parameters=[
-                    *configs,
-                    {
-                        "map_frame": LaunchConfiguration("map_frame"),
-                        "odom_frame": LaunchConfiguration("odom_frame"),
-                        "base_link_frame": LaunchConfiguration("base_frame"),
-                        "odom0": LaunchConfiguration("odom_topic"),
-                        "imu0": LaunchConfiguration("imu_data_topic"),
-                    },
-                ],
-            ) for cond, configs in ((UnlessCondition, [ekf_config]),
-                                    (IfCondition, [ekf_config, ekf_vio_config]))],
+            # Built per localization_mode / vio by _ekf_nodes (single = byte-for-byte the
+            # pre-dual node; dual adds ekf_map).
+            OpaqueFunction(function=_ekf_nodes, args=[ekf_configs]),
 
             # 4. vio_gate (vio:=true only): /odometry/vio -> /odometry/vio_gated while
             #    RTK is not FIXED and VIO is healthy. mower_localization/vio_gate.py.
@@ -386,6 +448,18 @@ def generate_launch_description() -> LaunchDescription:
                 name="vio_gate",
                 output="screen",
                 condition=IfCondition(LaunchConfiguration("vio")),
+            ),
+
+            # 5. localization_monitor (2026-10-09): /localization/status (ok|degraded|lost,
+            #    RTK class, seconds since FIXED, drift estimate) for mower_mission's hold.
+            Node(
+                package="mower_localization",
+                executable="localization_monitor",
+                respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
+                name="localization_monitor",
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("localization_monitor")),
+                parameters=[{"map_odom_topic": LaunchConfiguration("map_odom_topic")}],
             ),
 
             # Nav2 itself (controller/planner/behavior/bt_navigator/velocity_smoother

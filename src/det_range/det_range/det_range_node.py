@@ -15,6 +15,15 @@ eye) are ranged (see :mod:`det_range.geometry`). The OA cameras (``left_oa_camer
 ``right_oa_camera``) have no extrinsics in the URDF, so their detections pass through
 without range.
 
+Monocular frames (``mono_frames``, default ``rear_camera``; 2026-10-09, rear obstacle sensing
+while reversing / docking): no depth image, the bbox bottom-centre is intersected with the
+ground plane (:func:`det_range.geometry.mono_range_box`, accuracy notes there) using the
+camera's ``camera_info`` (``mono_camera_info_topics``, taken once then unsubscribed: a
+camera_info subscriber keeps the on-demand rear capture running) and its pose from
+``/tf_static`` (fallback ``mono_fallback_pose``). Same output encoding as the stereo ranges.
+Mono points stay OUT of ``/ai/det/obstacles`` / ``obstacle_points`` (Nav2 costmap) unless
+``mono_to_costmap``: they are coarse and behind the robot.
+
 Outputs:
 
 * ``/ai/det/detections_ranged``  every input detection, bbox unchanged; ranged ones get
@@ -47,7 +56,8 @@ try:
 except ImportError as _exc:  # pragma: no cover
     _DEP_ERROR = _exc
 
-from det_range.geometry import (StereoModel, chain_to, quat_to_matrix, range_box)
+from det_range.geometry import (StereoModel, chain_to, mono_range_box, quat_to_matrix,
+                                range_box, rpy_matrix)
 from det_range.sub_pump import SubscriptionPump, _header
 
 
@@ -103,6 +113,18 @@ class DetRange(Node):
         # Per-area obstacle_detection=none (set live by mower_mission): publish an EMPTY
         # obstacle cloud so the costmap gets no detection marks (the buffer stays fresh).
         d('publish_obstacle_points', True)
+        # Monocular ground-plane ranging (rear camera, see module docstring)
+        d('mono_frames', ['rear_camera'])
+        d('mono_camera_info_topics', ['/rear_camera/camera_info'])   # parallel to mono_frames
+        # pose of each mono frame in target_frame until /tf_static has it: 6 values per frame
+        # (x y z roll pitch yaw) = URDF rear_camera_joint (TODO(calib) like the URDF)
+        d('mono_fallback_pose', [-0.201, 0.0, 0.25, -1.5707963, 0.0, 1.5707963])
+        d('mono_ground_z_m', 0.0)        # ground plane z in target_frame (base_link)
+        d('mono_max_range_m', 6.0)
+        d('mono_min_depression_deg', 2.0)
+        d('mono_sigma_px', 3.0)
+        d('mono_sigma_pitch_deg', 1.0)
+        d('mono_to_costmap', False)
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.p = p
         self.stereo_frames = {str(f) for f in p('stereo_frames') if f}
@@ -121,6 +143,23 @@ class DetRange(Node):
         r, pi, ya = (float(v) for v in p('fallback_rpy'))
         self._fallback = (self._rpy(r, pi, ya), np.array([x, y, z]))
         self.n_in = self.n_ranged = 0
+        self.n_mono = 0
+        self.mono_frames = [str(f) for f in p('mono_frames') if f]
+        fb = [float(v) for v in p('mono_fallback_pose')]
+        self._mono_fallback = {}
+        for i, f in enumerate(self.mono_frames):
+            v = fb[6 * i:6 * i + 6] if len(fb) >= 6 * (i + 1) else fb[:6]
+            if len(v) == 6:
+                self._mono_fallback[f] = (rpy_matrix(*v[3:6]), np.array(v[0:3]))
+        self._mono_tf = {}
+        self._mono_info = {}          # frame -> (K4, D5, height)
+        self._mono_info_subs = {}
+        topics = [str(t) for t in p('mono_camera_info_topics')]
+        for f, topic in zip(self.mono_frames, topics):
+            if topic:
+                self._mono_info_subs[f] = self.create_subscription(
+                    CameraInfo, topic, lambda m, _f=f: self._on_mono_info(m, _f),
+                    qos_profile_sensor_data)
 
         self.pub = self.create_publisher(Detection2DArray, p('output_topic'), 10)
         self.pose_pub = self.create_publisher(PoseArray, p('obstacles_topic'), 10)
@@ -180,6 +219,42 @@ class DetRange(Node):
                                    f't={np.round(tf[1], 3).tolist()}')
         if tf is not None:
             self._tf = tf
+        for f in self.mono_frames:
+            mt = chain_to(self._static, f, self.target)
+            if mt is not None:
+                if f not in self._mono_tf:
+                    self.get_logger().info(f'{f} -> {self.target} from /tf_static: '
+                                           f't={np.round(mt[1], 3).tolist()}')
+                self._mono_tf[f] = mt
+
+    def _on_mono_info(self, msg, frame):
+        if msg.width <= 0 or len(msg.k) < 9 or msg.k[0] <= 0:
+            return
+        k = (float(msg.k[0]), float(msg.k[4]), float(msg.k[2]), float(msg.k[5]))
+        dd = tuple(float(v) for v in msg.d)[:5] if msg.distortion_model in (
+            'plumb_bob', 'rational_polynomial') else (0.0,) * 5
+        with self._lock:
+            self._mono_info[frame] = (k, dd, float(msg.height))
+        self.get_logger().info(f'{frame} intrinsics from camera_info {msg.width}x{msg.height}: '
+                               f'K={k} (unsubscribing)')
+        sub = self._mono_info_subs.pop(frame, None)
+        if sub is not None:
+            self.destroy_subscription(sub)
+
+    def _mono_range(self, frame, det):
+        info = self._mono_info.get(frame)
+        pose = self._mono_tf.get(frame) or self._mono_fallback.get(frame)
+        if info is None or pose is None:
+            return None
+        p = self.p
+        k, dd, ih = info
+        return mono_range_box(det.bbox.center.position.x, det.bbox.center.position.y,
+                              det.bbox.size_x, det.bbox.size_y, k, dd, pose[0], pose[1], ih,
+                              ground_z=float(p('mono_ground_z_m')),
+                              min_depression_deg=float(p('mono_min_depression_deg')),
+                              max_range_m=float(p('mono_max_range_m')),
+                              sigma_px=float(p('mono_sigma_px')),
+                              sigma_pitch_deg=float(p('mono_sigma_pitch_deg')))
 
     def _depth_for(self, stamp_ns):
         best = None
@@ -207,9 +282,29 @@ class DetRange(Node):
         pa.header.frame_id = self.target
         pts = []
         p = self.p
+        mono = frame in self.mono_frames
         for det in msg.detections:
             if not det.results:
                 det.results.append(ObjectHypothesisWithPose())
+            if mono:
+                mr = self._mono_range(frame, det)
+                if mr is None:
+                    continue
+                r0 = det.results[0]
+                (r0.pose.pose.position.x, r0.pose.pose.position.y,
+                 r0.pose.pose.position.z) = mr.point
+                r0.pose.pose.orientation.w = 1.0
+                cov = [0.0] * 36
+                cov[0] = max(mr.variance, 1e-6)
+                r0.pose.covariance = cov
+                self.n_mono += 1
+                if bool(p('mono_to_costmap')):
+                    pose = Pose()
+                    pose.position = r0.pose.pose.position
+                    pose.orientation.w = 1.0
+                    pa.poses.append(pose)
+                    pts.append(np.asarray(mr.point))
+                continue
             res = None
             if depth is not None:
                 res = range_box(self.model, depth, det.bbox.center.position.x,
@@ -243,7 +338,8 @@ class DetRange(Node):
     def _report(self):
         with self._lock:
             self.get_logger().info(
-                f'{self.n_in} detection msgs, {self.n_ranged} ranged boxes, depth ring '
+                f'{self.n_in} detection msgs, {self.n_ranged} ranged boxes, '
+                f'{self.n_mono} mono-ranged, depth ring '
                 f'{len(self._ring)}, tf={"static" if self._tf is not None else "fallback"}, '
                 f'camera_info={"yes" if self._info_seen else "default cam1"}')
 

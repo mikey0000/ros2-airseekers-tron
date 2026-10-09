@@ -20,3 +20,17 @@ det_range:
     sigma_disparity_px: 0.25
     max_depth_age_s: 0.5
     publish_obstacle_points: true   # false = empty /ai/det/obstacle_points (obstacle_detection none)
+    # Rear camera (2026-10-09): no stereo -> monocular ground-plane range from the bbox
+    # bottom-centre (det_range/geometry.py mono_range_box: ~7 %/m-ish per degree of pitch
+    # error, see the accuracy notes there). Intrinsics from camera_info (taken once), pose
+    # from /tf_static (URDF rear_camera_joint) with this fallback. Kept out of the Nav2
+    # obstacle cloud (mono_to_costmap false); obstacle_guard uses it for the rear corridor.
+    mono_frames: [rear_camera]
+    mono_camera_info_topics: [/rear_camera/camera_info]
+    mono_fallback_pose: [-0.201, 0.0, 0.25, -1.5707963, 0.0, 1.5707963]
+    mono_ground_z_m: 0.0
+    mono_max_range_m: 6.0
+    mono_min_depression_deg: 2.0
+    mono_sigma_px: 3.0
+    mono_sigma_pitch_deg: 1.0
+    mono_to_costmap: false

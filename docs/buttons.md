@@ -27,6 +27,32 @@ The node picks the device in this order:
 
 The node reads raw `struct input_event` (24 bytes) without `python-evdev`. If the device returns an error, EOF or POLLHUP, the node closes it, publishes key 0, forgets held keys, and retries discovery every `reopen_period_s`. It logs the failure reason once rather than on every retry. The device does not need to be grabbed, because the vendor never grabbed it either.
 
+## Kernel module `init_test.ko` (where the timing really happens)
+
+The "key input" device is created by the vendor kernel module
+`/lib/modules/5.10.209/kernel/drivers/init_test.ko` (dmesg `get key 2` / `get key 3-` /
+`input: key input` / `get key 6-` at ~16 s after boot). Disassembled 2026-10-09
+(`input_thread`, capstone): a kthread reads three GPIOs (`gpiod0` = power key, `gpiod1`/`gpiod2`
+= the other keys, decoded as a 2-bit combination) and sleeps `usleep_range(40000, 40000)`, so the
+poll period is **40 ms**. For the power key it counts consecutive pressed ticks in
+`power_key_counter`:
+
+| hold (ticks x 40 ms) | while held | on release |
+|---|---|---|
+| 1 tick (< 80 ms) | nothing | nothing (bounce filter) |
+| 2 to 19 ticks (80 to 760 ms) | nothing | `short press detect`: KEY_P press + release |
+| 20 to 74 ticks (0.8 to 3.0 s) | nothing | `ignore short press detect`: nothing |
+| 75 ticks (**3.0 s**) | `long press detect`: KEY_L press + release, **immediately** | |
+| after a long press | | `long press release`: KEY_R (19) press + release, then `start shutdown process`, `call_usermodehelper("/usr/bin/sys_close", UMH_WAIT_EXEC)` as root on the host, `finish shutdown process` |
+| > 750 ticks (30 s) | counter pinned at 1000, `stuck detect` | nothing (no KEY_R, no sys_close) |
+
+So the 3 s threshold, the debounce and the "stuck button" filter are all in the kernel, KEY_P
+is never emitted for a long hold, and KEY_P press/release always arrive together. On the mower
+`/usr/bin/sys_close` is a 12-byte empty bash script (`#!/bin/bash`): the vendor hook does
+nothing. `/etc/input-event-daemon.conf` maps `P = sys_close` too, but `event_handle.service`
+(input-event-daemon) fails at boot because event5 does not exist yet, so it is inert.
+The other keys emit KEY_C (46), KEY_S (31) and KEY_M (50) as press+release on a GPIO change.
+
 ## Vendor key table
 
 Source: `Buttons::handleKey` (`native_decompile/dec/mower_base_node/mower_base_node.c` around line 240378). The key-name strings were resolved from the binary at `DAT_00480520..60`.
@@ -38,7 +64,7 @@ Source: `Buttons::handleKey` (`native_decompile/dec/mower_base_node/mower_base_n
 | 0x26 = 38 | KEY_L | 8 `KEY_POWER_LONG` | 电源键长按 (power key long press) |
 | 0x2e = 46 | KEY_C | 1 `KEY_WORKING_OR_PAUSE` | 暂停键 (pause key) |
 | 0x32 = 50 | KEY_M | 16 `KEY_DOCK_AND_PAUSE` | 回充暂停组合键 (dock + pause combination) |
-| 19 | KEY_R | not handled. The device exposes it, but the vendor logs `MowerBase: Unknown key code: 19` | |
+| 19 | KEY_R | not handled: release of a >= 3 s power hold (see above). The vendor logs `MowerBase: Unknown key code: 19` | |
 
 Vendor behaviour in `mower_base_node`:
 - Only `type == EV_KEY` is handled.
@@ -77,8 +103,9 @@ When all keys are released, both topics get a `0`. The exception is the power ke
 | power long (8) | `power_long_action` (see below) | `power_long_action` |
 
 `power_long_action` takes one of these values:
-- `log_only` (default): only logs.
+- `log_only`: only logs.
 - `poweroff_service`: sends `STOP`, then calls `/poweroff` (`std_srvs/Empty`) if the service exists, and otherwise logs a warning. Our `mcu_node` does **not** serve `/poweroff` yet. The vendor implementation sends MCU module 10 with `[0,0,0,0,1,0,0,0]`, which cuts power.
+- `sequence` (default, see "Power off" below): the clean power-off sequence.
 - `shutdown`: sends `STOP`, then writes a timestamp to `shutdown_hook_file`. A clean OS shutdown cannot be done from inside the container, and it is **not implemented** here. A host-side unit, e.g. a systemd `.path` unit watching that file on a bind-mounted `/userdata` path that runs `systemctl poweroff`, must be added separately. If `shutdown_hook_file` is empty, the node only logs a warning.
 
 Services are called asynchronously and only if the service is available. Otherwise the node logs `service X not available, skipped`. `actions_enabled:=false` turns off every action and leaves only the publishers.
@@ -100,7 +127,11 @@ Services are called asynchronously and only if the service is available. Otherwi
 | `on_work_pause` | true | START/STOP toggle |
 | `on_go_docking` | true | HOME |
 | `on_dock_and_pause` | false | treat the combo key as go-dock |
-| `power_long_action` | `log_only` | `log_only`, `poweroff_service` or `shutdown` |
+| `power_long_action` | `sequence` | `sequence`, `log_only`, `poweroff_service` or `shutdown` |
+| `power_request_dir` | `/userdata/ros2/power` | `sequence`: where the shutdown request goes (bind-mounted host dir) |
+| `power_settle_s` | 3.0 | `sequence`: delay between the safety stop and the host request (vendor: 3000 ms) |
+| `power_min_uptime_s` | 30.0 | `sequence`: long presses earlier than this after host boot are ignored |
+| `cutter_off_service` / `light_control_service` | `/cutter_off` / `/light_control` | |
 | `shutdown_hook_file` | `''` | file written for `power_long_action=shutdown` |
 | `clear_estop_service` | `/clear_estop` | |
 | `poweroff_service` | `/poweroff` | |
@@ -111,8 +142,43 @@ Services are called asynchronously and only if the service is available. Otherwi
 
 `launch/bringup.launch.py` starts `base_keys` with `respawn=True` and `respawn_delay=2.0`, gated by `keys:=true` (the default). Turn it off with `ros2 launch mower_bringup mower.launch.py keys:=false`, or with `bringup.launch.py keys:=false`.
 
+## Power off (hold the power key for 3 s)
+
+Vendor reference: `mower_logic` on KEY_POWER_LONG did `stopTask(false)`, `sendNotice(900005)`
+(PowerOff voice prompt), sleep 3000 ms, `/poweroff` (MCU module 10 byte 4 = 1, cuts power) and
+`system("shutdown -h now")`, i.e. it cut MCU power while the OS was still shutting down, with no
+charging/dock gate. The kernel module additionally runs `/usr/bin/sys_close` on release (empty).
+
+Our sequence (container side `base_keys`, `power_long_action:=sequence`; host side
+`mower-poweroff.path` / `mower-poweroff.service` / `mower-poweroff-host`):
+
+1. KEY_L at 3.0 s (still held). Ignored if host uptime < `power_min_uptime_s` or a sequence is already running.
+2. Immediately: `/estop_request true` (mcu_node latches zero motion and sends cutter off), `HighLevelControl STOP`, `/cutter_off`, `/light_control PowerOff`.
+3. After `power_settle_s` (3 s): PowerOff light again (the e-stop switched the auto light to WarnSensorTrigged), then `/userdata/ros2/power/shutdown_request` is written atomically (JSON: source, boot_id, uptime_s, wall_time, hl_state).
+4. On release the kernel runs `/usr/bin/sys_close`, which we replace with a forwarder that writes a `source=kernel` request. This path works even when the ROS stack is down. The host handler waits `KERNEL_GRACE_S` (6 s) for the stack's own request before acting on a kernel-only one.
+5. Host: `mower-poweroff.path` (`PathExists`) starts `mower-poweroff.service` -> `mower-poweroff-host handle`. It validates the request (same `boot_id`, so a stale file from an earlier boot never powers off a fresh boot; age < `MAX_AGE_S`; made after `MIN_UPTIME_S`), deletes it, archives it to `/userdata/ros2/power/last_poweroff.json`, arms `/run/mower-poweroff/mcu_cut` if `MCU_POWER_CUT=1`, runs `sync` and then `systemctl poweroff --no-block`. With `DRY_RUN=1` (the installed default) it only logs (`journalctl -t mower-poweroff`).
+6. systemd stops docker (ordered before the `/userdata` unmount). `mower_humble` gets SIGINT with a 30 s grace (`stop_signal`/`stop_grace_period` in `docker/docker-compose.yml`). ros2 launch SIGINTs every node: bag_recorder SIGINTs rosbag2 (metadata written), mow_recorder and mcu_node close (mcu_node sends cutter-off on shutdown), and light_controller plays PowerOff on exit.
+7. After every filesystem is unmounted or read-only, `/usr/lib/systemd/system-shutdown/mower-mcu-poweroff` sends the vendor `/poweroff` frame `A5 0B 08 00 0A 00 00 00 00 01 00 00 00 1E 5A` three times on `/dev/ttyS9`, but only for `poweroff` and only when the marker is armed. The MCU then cuts the battery. A plain `sudo poweroff` over ssh does not cut MCU power.
+
+Docked or charging: no gate. The vendor had none, and holding the key for 3 s is an explicit
+request. Whether the charger re-powers the mower after the MCU cut is untested.
+
+Why the host and not the container: the container is not in the host PID namespace, so it cannot
+run `systemctl poweroff` itself, and the vendor order (MCU cut first, `shutdown -h now` second)
+risks cutting power while `/userdata` is still mounted read-write.
+
+Install on the host (root, after copying the files listed in the script):
+`sudo bash /userdata/ros2_stack/scripts/install_power_button.sh`. It installs with `DRY_RUN=1`
+and `MCU_POWER_CUT=0`; edit `/etc/default/mower-poweroff` to enable each step.
+`--uninstall` restores the vendor `sys_close`.
+
+Unknowns, to settle by live test: whether the MCU cuts power immediately on the frame or after a
+delay, whether it needs anything else (heartbeat), and what happens if the frame is never sent.
+In that last case the SoC halts and the MCUs stay powered; the kernel key module is gone, so only
+the MCU/BMS can turn the mower off.
+
 ## Open points
 
-- KEY_R (19) is exposed by the device, but the vendor does not handle it. The node logs it as `unknown key code 19`.
+- KEY_R (19) marks the release of a long power press. The node logs it.
 - The dock+pause combo (KEY_M) does nothing in the vendor `mower_logic`, and we only log it by default.
-- When the device emits KEY_L for a long hold is decided in firmware or the kernel and has not been measured. We have also not confirmed whether KEY_P is still emitted before it. If it is, a long press would first trigger a power short, i.e. `/clear_estop`. That matches the vendor, which would do the same.
+- Resolved 2026-10-09 from `init_test.ko`: KEY_L fires at 3.0 s while held, and no KEY_P is emitted for a long hold (see the kernel module section).

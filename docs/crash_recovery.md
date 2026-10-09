@@ -188,7 +188,9 @@ logs to their last 5000 lines.
 
 ### Black box: rosbag2 snapshot (`mower_control/blackbox.py`, run by the supervisor)
 
-Humble's `ros2 bag record` has no `--snapshot-mode` (that arrived in Iron). The supervisor
+Humble's `ros2 bag record` had no `--snapshot-mode` when this was written (it arrived in Iron;
+correction 2026-10-09: the rosbag2 0.15.17 in the image does list `--snapshot-mode`, backported,
+but it was never needed: see the rolling ring below). The supervisor
 instead keeps the last **120 s** of these topics in RAM as serialized CDR bytes, with no
 deserialization cost, through the `sub_pump` raw path. Rates are capped per topic and the
 whole buffer is capped at 24 MB, evicting the oldest messages first:
@@ -219,6 +221,86 @@ Each dump creates `/userdata/ros2/crashes/<YYYYmmdd-HHMMSS>_<reason>/` containin
 - copies of the `*.txt` crash records from the last 10 minutes.
 
 The 50 newest dump dirs are kept.
+
+### Rolling bag ring on disk (`mower_control/bag_recorder.py`, 2026-10-09)
+
+The black box above holds 120 s of ~15 rate-capped topics, and `mow_recorder` only records
+while a mission runs, so the minutes before an unflagged incident, or anything docked or in
+manual drive, were lost. The 2026-10-08 tuning bags had to be recorded by hand with `ros2 bag record`.
+`bag_recorder` (launch arg `bag_recorder`, default on; `bag_max_gb` 3.0, `bag_min_free_gb`
+3.0) records all the time:
+
+- **Recorder**: a supervised `ros2 bag record` child. It is the C++ recorder, with no
+  deserialization and no Python per message. It records ~70 non-image topics (`DEFAULT_TOPICS`):
+  - the whole cmd_vel chain with the twist_mux lanes, `/estop` and `/motion_enabled`;
+  - `/odom`, `/odometry/filtered(_map)`, `/tf`, `/tf_static`, `/imu/data_aligned`;
+  - GPS fix and status;
+  - mission status and `/mission/*`, plus `/obstacle_policy`;
+  - Nav2 plans, `/local_costmap/costmap` (1 Hz, 120x120) and `/behavior_tree_log`;
+  - `/stereo_depth/stats`, bumper, battery and MCU status, `/hardware_bridge/*`, slip and stuck;
+  - `/diagnostics` and `/rosout`.
+
+  Extra topics go in the `extra_topics` parameter. Recording goes to
+  `/userdata/ros2/bags/<YYYYmmdd-HHMMSS>/`, with a new session dir on every (re)start. The
+  child is restarted with a 2 to 60 s backoff, gets SIGINT on shutdown (clean close and
+  `metadata.yaml`), and gets PR_SET_PDEATHSIG if the node dies.
+- **Format** (rosbag2 0.15.17; sqlite3 is the only storage in the image, because mcap would need
+  `ros-humble-rosbag2-storage-mcap` and an image rebuild):
+  - 60 s splits, using the sqlite3 `resilient` preset (WAL, synchronous=NORMAL), which survives
+    a power cut.
+  - `--max-cache-size` 1 MiB. The default 100 MiB double buffer would hold about 10 min in RAM.
+  - File-mode zstd. Each closed split is compressed once by one rosbag2 thread. This costs about
+    tens of ms of one core per minute, gives 3-5x on this data and cuts eMMC writes by the same
+    factor. Per-message compression would cost more CPU on 100-byte messages for little gain.
+  - The rate before compression is estimated at ~150 KB/s, dominated by `/odom` at 50 Hz,
+    the IMU at 100 Hz, `/mower_base/status` and `/tf`. **Measure it on the mower**: see
+    `/bag_recorder/status` `ring_bytes`.
+- **Pruning**: every 10 s, delete the oldest closed splits while the ring is over `max_total_gb`
+  or /userdata has less than `min_free_gb` free. These are never deleted:
+  - the split being written;
+  - a split being compressed;
+  - split 0 of the current session, which holds `/tf_static` and the latched topics (Humble has
+    no `--repeat-transient-local`);
+  - splits an incident pin still waits for.
+
+  If the floor cannot be met, recording pauses and resumes at floor + 0.5 GB.
+- **Incident pins**: `/userdata/ros2/incidents/<ts>_<reason>/`.
+  - Triggers:
+    - `/mission/incident` kinds `subpath_failed`, `transit_abort`, `follow_abort` and `stuck`
+      (`detour` is routine);
+    - the mission state entering `EMERGENCY`;
+    - `/hardware_bridge/emergency` rising;
+    - a new supervisor dump dir in `$MOWER_CRASH_DIR` (crash, node down, lethal boundary,
+      docking failed);
+    - `ros2 service call /bag_recorder/pin std_srvs/srv/Trigger`.
+  - There is a 30 s cooldown between pins. `mission_fsm.py` is unchanged.
+  - What a pin holds:
+    - the 2 previous closed splits plus split 0, linked at once;
+    - the current split and 1 more, linked as each one closes. The pin therefore covers about
+      2-3 min before and 1-2 min after the trigger.
+  - The files are **hard links** on the same filesystem: no copy, and no space until the ring
+    prunes its own name.
+  - Pins have their own retention: 50 dirs and 1 GB. Each pin has an `incident.json` with the
+    reason, detail and files.
+- **Reading**: each split is a complete sqlite3 bag once decompressed. The image has no
+  `zstd` CLI. On the dev box:
+  ```
+  ./scripts/deploy_to_mower.sh bags            # incidents -> ../bags/mower, zstd -d
+  ./scripts/deploy_to_mower.sh bags ring       # the whole ring (rsync -aH, wal/shm skipped)
+  ros2 bag info ../bags/mower/incidents/<pin>/<session>__<session>_3.db3
+  ros2 bag play <that .db3>                    # or: ros2 bag reindex <dir> for a merged view
+  ```
+  A session's `metadata.yaml` lists every split, including pruned ones, so use the per-file
+  paths and not the session dir.
+- **Status**: latched `/bag_recorder/status` (JSON) reports:
+  - recording, session, paused_low_disk;
+  - ring_bytes, free_bytes;
+  - restarts, pending_pins, suppressed_triggers.
+
+  The child's own output goes to `/userdata/ros2/bags/recorder.log`, which is truncated past
+  5 MB.
+- Disk budget on /userdata, worst case: ring 3 GB, pins 1 GB, mows 2 GB (`mow_recorder`),
+  crashes 2 GB, and the floor of 3 GB kept free.
 
 ## 5. Retention and access
 
@@ -253,6 +335,7 @@ sha256 over `src/ launch/ config/ scripts/` plus the sync time. Crash records an
 | `src/mower_control/mower_control/supervisor.py` | supervisor node (liveness, diagnostics, black box, dump service) |
 | `src/mower_control/mower_control/supervisor_logic.py` | pure liveness tracker |
 | `src/mower_control/mower_control/blackbox.py` | ring buffer and rosbag2 writer |
+| `src/mower_control/mower_control/bag_recorder.py`, `bag_ring.py` | always-on on-disk bag ring, pruning, incident pins (`test_bag_ring.py`, `test_bag_recorder_process.py`, `mower_bringup/test/test_bag_recorder_launch.py`) |
 | `src/mower_control/mower_control/crash_record.py` | faulthandler and excepthook helper |
 | `src/mower_control/test/test_{blackbox,supervisor_logic,crash_record}.py` | unit tests |
 | `src/mower_mission/…/mission_{node,fsm}.py` | `/supervisor/status` leads to an emergency cause; tests in `test_mission_fsm.py` |

@@ -34,9 +34,21 @@ of bad fixes.  ``NavSatFix`` carries no satellite count, so a
 "satellites used" gate has to live in the driver (the UM960 parsers
 track ``num_sats_used``).
 
-The message is forwarded unchanged (stamp and ``header.frame_id``
-intact) so ``navsat_transform_node``'s TF lookups and latency
-handling keep working.
+The message is forwarded with its stamp and ``header.frame_id`` intact
+so ``navsat_transform_node``'s TF lookups and latency handling keep
+working.
+
+4. 2026-10-09 (``quality_covariance``, default true): the RTK solution
+   class from ``/fix_status`` (:mod:`mower_localization.rtk_quality`;
+   NavSatFix cannot tell fixed from float) sets the horizontal
+   covariance the filter sees: fixed keeps the receiver sigma (3 cm
+   floor), float is inflated x4 with a 0.4 m sigma floor, DGPS/single
+   are dropped (``single_policy: reject``) or given a 3 m floor
+   (``loose``). navsat_transform_node copies this covariance into
+   ``/odometry/gps``, so ``ekf_map`` leans on wheel + IMU (+ VIO) during
+   float instead of chasing decimetre noise. Without a fresh
+   /fix_status the class falls back to the NavSatStatus (GBAS = float).
+   ``quality_covariance: false`` restores the pass-through behaviour.
 
 Parameters
 ----------
@@ -64,6 +76,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import NavSatFix, NavSatStatus
+from std_msgs.msg import String
+
+from mower_localization import rtk_quality as rq
 
 # NavSatStatus values (sensor_msgs/msg/NavSatStatus, ROS 2 Humble):
 #   -1 NO_FIX, 0 FIX (autonomous), 1 SBAS_FIX (differential), 2 GBAS_FIX (RTK fixed/float)
@@ -118,6 +133,35 @@ def _reject_reason(
     return None
 
 
+def _apply_quality(msg: NavSatFix, rtk_class: Optional[str],
+                   policy: rq.CovariancePolicy) -> Optional[str]:
+    """Rewrite ``msg``'s horizontal covariance for its RTK class (in place).
+
+    Returns why the fix must be dropped instead, or ``None``. Pure, like
+    :func:`_reject_reason`. Vertical variance is kept (navsat zero_altitude).
+    """
+    rx = _max_horizontal_covariance(msg)
+    var = rq.fused_variance(rtk_class, rx, policy)
+    if var is None:
+        return "RTK class %s is not fused (single_policy %s)" % (
+            rtk_class, policy.single_policy)
+    cov = list(msg.position_covariance)
+    if msg.position_covariance_type == NavSatFix.COVARIANCE_TYPE_UNKNOWN:
+        cov = [0.0] * 9
+        cov[8] = var * 4.0
+    cov[0] = cov[4] = var
+    cov[1] = cov[3] = 0.0
+    msg.position_covariance = cov
+    msg.position_covariance_type = NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+    return None
+
+
+def _max_horizontal_covariance(msg: NavSatFix) -> Optional[float]:
+    if msg.position_covariance_type == NavSatFix.COVARIANCE_TYPE_UNKNOWN:
+        return None
+    return max(msg.position_covariance[0], msg.position_covariance[4])
+
+
 class GpsGateNode(Node):
     """Republish ``/fix`` on ``/fix_gated`` only when it is a usable fix."""
 
@@ -139,6 +183,21 @@ class GpsGateNode(Node):
         self.used_fixes = frozenset(
             int(value) for value in self.get_parameter("used_fixes").value)
 
+        # 2026-10-09: fix-quality covariance (item 6). Policy keys = rtk_quality fields.
+        self.declare_parameter("quality_covariance", True)
+        self.declare_parameter("fix_status_topic", "/fix_status")
+        self.declare_parameter("fix_status_timeout", 2.0)
+        defaults = rq.CovariancePolicy()
+        for name, value in vars(defaults).items():
+            self.declare_parameter(name, value)
+        self.quality = bool(self.get_parameter("quality_covariance").value)
+        self.fix_status_timeout = float(self.get_parameter("fix_status_timeout").value)
+        self.policy = rq.CovariancePolicy(**{
+            name: type(value)(self.get_parameter(name).value)
+            for name, value in vars(defaults).items()})
+        self._rtk_class: Optional[str] = None
+        self._rtk_t: Optional[float] = None
+
         fix_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
@@ -148,6 +207,10 @@ class GpsGateNode(Node):
             NavSatFix, self.output_topic, fix_qos)
         self.create_subscription(
             NavSatFix, self.input_topic, self._on_fix, fix_qos)
+        if self.quality:
+            self.create_subscription(
+                String, str(self.get_parameter("fix_status_topic").value),
+                self._on_fix_status, fix_qos)
 
         # Counters for bring-up; a diagnostics hookup lands with
         # mower_monitoring (mowglinext_baseline.md section 7.2).
@@ -163,6 +226,20 @@ class GpsGateNode(Node):
                sorted(self.used_fixes) if self.used_fixes else "any"))
 
     # -- gating ----------------------------------------------------------------
+    def _on_fix_status(self, msg: String) -> None:
+        cls = rq.classify_fix_status(msg.data)
+        if cls is not None:
+            self._rtk_class, self._rtk_t = cls, time.monotonic()
+
+    def rtk_class(self, msg: NavSatFix, now: Optional[float] = None) -> str:
+        """Fresh /fix_status class, else the conservative NavSatStatus class."""
+        now = time.monotonic() if now is None else now
+        if (self._rtk_class is not None and self._rtk_t is not None
+                and now - self._rtk_t <= self.fix_status_timeout
+                and self._rtk_class != rq.RTK_STALE):
+            return self._rtk_class
+        return rq.class_from_navsat(msg.status.status)
+
     def _on_fix(self, msg: NavSatFix) -> None:
         self.received += 1
         reason = _reject_reason(
@@ -179,6 +256,14 @@ class GpsGateNode(Node):
                    reason),
                 throttle_duration_sec=WARN_PERIOD_S)
             return
+        if self.quality:
+            cls = self.rtk_class(msg)
+            reason = _apply_quality(msg, cls, self.policy)
+            if reason is not None:
+                self.rejected += 1
+                self.get_logger().warn("dropping fix: %s" % reason,
+                                       throttle_duration_sec=WARN_PERIOD_S)
+                return
         self.passed += 1
         self.fix_pub.publish(msg)
 

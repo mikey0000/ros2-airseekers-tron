@@ -216,3 +216,26 @@ describe('Feature ID conventions', () => {
         expect(obstacle.id).toBe('area-0-obstacle-0');
     });
 });
+
+describe('MowingFeatureBase.transpose ring closing (2026-10-09)', () => {
+    // mapbox-gl-draw drops the last coordinate of every loaded ring (assumes it is closed);
+    // the map server stores rings open, so an unclosed ring lost a corner on each load.
+    const datum: [number, number, number] = [48.0, 9.0, 0];
+    const square = [{x: 0, y: 0, z: 0}, {x: 2, y: 0, z: 0}, {x: 2, y: 1, z: 0}, {x: 0, y: 1, z: 0}];
+
+    it('closes an open ring so draw keeps all four corners', () => {
+        const f = new MowingFeatureBase('obstacle-0', 'obstacle');
+        f.transpose(square, 0, 0, datum);
+        const ring = f.geometry.coordinates[0];
+        expect(ring.length).toBe(5);
+        expect(ring[4]).toEqual(ring[0]);
+        // what mapbox-gl-draw keeps (feature_types/polygon.js: ring.slice(0, -1))
+        expect(ring.slice(0, -1).length).toBe(4);
+    });
+
+    it('does not double-close an already closed ring', () => {
+        const f = new MowingFeatureBase('area-0', 'workarea');
+        f.transpose([...square, square[0]], 0, 0, datum);
+        expect(f.geometry.coordinates[0].length).toBe(5);
+    });
+});

@@ -1,11 +1,14 @@
 """``seg_ros`` — PP-LiteSeg terrain segmentation node for the Airseekers Tron.
 
-Subscribes to the left/right OA camera streams and runs the shipped 6-class
+Subscribes to the configured camera streams (``left_topic``, ``right_topic``,
+``extra_topics``; seg.yaml: the front stereo right colour eye) and runs the shipped 6-class
 `pplite-seg_20260630-1-6cls.rknn` on the RK3588S NPU (pinned to core 1).
 
 Publishes per-camera:
 - a class-index mask (``sensor_msgs/Image``, mono8, indices 0..5),
 - a traversability mask (mono8, 255 navigable / 0 obstacle) for the planner,
+- a confidence mask (mono8, top-1 softmax probability x 255, same size/stamp/frame as the
+  class mask; ``publish_confidence``) for the non-grass mapper (``nongrass_projector``),
 - a colour debug overlay (bgr8).
 
 Startup mirrors ``det_ros`` (``mower_rknn.startup``): ``model_path`` defaults to
@@ -33,8 +36,8 @@ except ImportError as _exc:  # pragma: no cover - depends on the image
     _DEP_ERROR = _exc
 
 from mower_rknn import NpuStartupError, bgr_to_rgb_nhwc, prepare_runner
-from seg_ros.ppseg_postprocess import (argmax_mask, colorize, resize_mask,
-                                       traversability_mask)
+from seg_ros.ppseg_postprocess import (argmax_mask, colorize, confidence_mask,
+                                       resize_mask, traversability_mask)
 
 
 class SegRosNode(Node):
@@ -51,7 +54,11 @@ class SegRosNode(Node):
         self.declare_parameter('core_mask', '1')
         self.declare_parameter('left_topic', '/left_oa_camera/image_raw')
         self.declare_parameter('right_topic', '/right_oa_camera/image_raw')
+        # 2026-10-09: more cameras like det_ros (the front stereo right colour eye has known
+        # extrinsics, so its mask can be projected onto the ground; the OA cameras do not).
+        self.declare_parameter('extra_topics', [''])
         self.declare_parameter('publish_overlay', True)
+        self.declare_parameter('publish_confidence', True)
 
         self.model_path = self.get_parameter('model_path').value
         self.img_size = tuple(int(v) for v in self.get_parameter('img_size').value)
@@ -70,9 +77,11 @@ class SegRosNode(Node):
         self.mask_pub = self.create_publisher(Image, '/ai/seg/mask', qos)
         self.trav_pub = self.create_publisher(Image, '/ai/seg/traversability', qos)
         self.overlay_pub = self.create_publisher(Image, '/ai/seg/image_overlay', qos)
+        self.conf_pub = self.create_publisher(Image, '/ai/seg/confidence', qos)
         self.subs: List = []
-        for topic in (self.get_parameter('left_topic').value,
-                      self.get_parameter('right_topic').value):
+        extra = [t for t in (self.get_parameter('extra_topics').value or []) if t]
+        for topic in [self.get_parameter('left_topic').value,
+                      self.get_parameter('right_topic').value] + extra:
             if topic:
                 self.subs.append(self.create_subscription(
                     Image, topic, self._make_cb(topic), rclpy.qos.qos_profile_sensor_data))
@@ -120,6 +129,11 @@ class SegRosNode(Node):
             m.header.frame_id = frame_id
             return m
 
+        # confidence first: nongrass_projector pairs mask + confidence by stamp and acts on
+        # the mask, so the confidence is already there when the mask arrives.
+        if self.get_parameter('publish_confidence').value:
+            conf = resize_mask(confidence_mask(logits), (w, h))
+            self.conf_pub.publish(imgmsg(conf, 'mono8'))
         self.mask_pub.publish(imgmsg(full_class, 'mono8'))
         self.trav_pub.publish(imgmsg(full_trav, 'mono8'))
 
