@@ -355,7 +355,7 @@ def main(args=None):
     except ImportError:
         pass
     if _DEP_ERROR is not None:
-        print(f'[det_range] FATAL: {_DEP_ERROR}; install ros-humble-vision-msgs.',
+        print(f'[det_range] FATAL: {_DEP_ERROR}; install ros-jazzy-vision-msgs.',
               file=sys.stderr)
         sys.exit(2)
     rclpy.init(args=args)

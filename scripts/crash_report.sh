@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bundle the newest crash evidence into one tar for upload (docs/crash_recovery.md).
-# Run on the mower HOST (docker access: adds the container log) or inside mower_humble.
+# Run on the mower HOST (docker access: adds the container log) or inside mower_jazzy.
 #
 #   scripts/crash_report.sh [CRASH_DIR_ENTRY] [-o OUT.tar.gz]
 #
@@ -9,12 +9,12 @@
 # crash records + faulthandler logs of the last 2 days, core file *names* (cores are big:
 # copy one explicitly if needed), the latest ROS log dir (launch.log + per-node rosout
 # logs, files > 20 MB truncated to their tail), versions (DEPLOYED_REV / git HEAD, image id),
-# and `docker logs --tail 500 mower_humble` when docker is reachable.
+# and `docker logs --tail 500 mower_jazzy` when docker is reachable.
 set -u
 CRASH_DIR=${MOWER_CRASH_DIR:-/userdata/ros2/crashes}
 LOG_DIR=${ROS_LOG_DIR:-/userdata/ros2/log}
 STACK_DIR=${MOWER_STACK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
-CONTAINER=${CONTAINER:-mower_humble}
+CONTAINER=${CONTAINER:-mower_jazzy}
 OUT=""; PICK=""
 while [ $# -gt 0 ]; do
   case "$1" in

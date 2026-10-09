@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # Copyright 2026 ROS 2 port team
 # SPDX-License-Identifier: Apache-2.0
-"""Make the Humble collision_monitor's stop / slowdown zones forward-only.
+"""Make the Jazzy collision_monitor's stop / slowdown zones forward-only.
 
-Humble 1.1.x nav2_collision_monitor STOP / SLOWDOWN polygons act on any command once
+Jazzy 1.3 nav2_collision_monitor STOP / SLOWDOWN polygons act on any command once
 enough points are inside them; they do not look at the direction of travel. A front stop
 zone would therefore also freeze a coverage reverse leg, or a pivot away from a hedge in
 front of the nose (deadlock). This node watches the same command the collision_monitor

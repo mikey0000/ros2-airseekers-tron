@@ -39,7 +39,7 @@ services:
       # Container names the GUI restarts / reads logs from (upstream defaults
       # are mowgli-ros2 / mowgli-gps / mowgli-gui). Empty GPS = no GPS sidecar.
       - DOCKER_HOST=unix:///var/run/docker.sock
-      - ROS_CONTAINER_NAME=mower_humble
+      - ROS_CONTAINER_NAME=mower_jazzy
       - GUI_CONTAINER_NAME=mower_gui
       - GPS_CONTAINER_NAME=
       - MQTT_ENABLED=false

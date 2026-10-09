@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""At-rest IMU bias calibration with a persisted, validated file (ROS 2 Humble).
+"""At-rest IMU bias calibration with a persisted, validated file (ROS 2 Jazzy).
 
 Port of the MowgliNext at-rest bias-calibration pattern -- see
 ``ros2_stack/docs/mowglinext_baseline.md`` section 4.3, item 7: collect IMU

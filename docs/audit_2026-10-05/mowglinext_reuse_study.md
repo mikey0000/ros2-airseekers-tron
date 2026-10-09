@@ -9,7 +9,7 @@ Research was read-only against `/tmp/mowglinext-src` @ `faf658b`. Nothing was mo
 
 1. **`app/` is empty.** `app/mobile/` holds only a stale Vite cache (`.vite/deps/_metadata.json`, `package.json`). `docs/FIRST_BOOT.md:122` lists "a mobile app" as *not shipped*. The mobile story is the GUI as a **PWA** (`gui/web/public/manifest.json`, an iOS add-to-home-screen banner), plus MQTT, HomeKit and push notifications. There is no native app to lift.
 2. **Licence.** The repo is GPLv3 plus a commercial licence (`LICENSE`). GUI files carry no per-file headers. Most C++ files are `GPL-3.0` (headers like "Copyright 2026 Mowgli Project" / "Cedric"). The exception is `mowgli_coverage/package.xml`, which declares **BSD-3-Clause**, but its `.cpp` files carry a bare copyright line and no licence text, so treat it as ambiguous. Anything we lift is GPLv3 for us unless we buy the commercial licence. That decision blocks any product use.
-3. **The GUI's foxglove client offers only subprotocol `foxglove.sdk.v1`** (`gui/pkg/foxglove/client.go:179`). That is the newer SDK-based foxglove_bridge 3.x. I could not check whether `ros-humble-foxglove-bridge` in our snapshot is 3.x or the old 0.8.x, which speaks `foxglove.websocket.v1`. If it is old, add the second subprotocol to that list (one line), and also check JSON client-publish and the services capability.
+3. **The GUI's foxglove client offers only subprotocol `foxglove.sdk.v1`** (`gui/pkg/foxglove/client.go:179`). That is the newer SDK-based foxglove_bridge 3.x. I could not check whether `ros-jazzy-foxglove-bridge` in our snapshot is 3.x or the old 0.8.x, which speaks `foxglove.websocket.v1`. If it is old, add the second subprotocol to that list (one line), and also check JSON client-publish and the services capability.
 4. **The joystick only streams while the mission layer reports `state_name == "RECORDING"` or `"MANUAL_MOWING"`** (`gui/web/src/pages/map/hooks/useMapStreams.ts:377-393`). Joystick drive therefore needs at least a stub `high_level_control` / `high_level_status` server, not just a twist relay.
 5. **The scheduler ignores its own `Area` field.** `gui/pkg/providers/scheduler.go:172-177` stores `schedule.Area` but sends only `HighLevelControl{command:1}`.
 
@@ -161,7 +161,7 @@ The tree XML, `coverage_persistence.cpp`, `recording_nodes.cpp`, `battery_filter
 
 ### 1.6 Zones and map storage: `ros2/src/mowgli_map` (`map_server_node`, `obstacle_tracker_node`)
 
-- **Language:** C++, depends on grid_map (`ros-humble-grid-map-*` is apt-installable).
+- **Language:** C++, depends on grid_map (`ros-jazzy-grid-map-*` is apt-installable).
 - **Licence:** GPL-3.0.
 - **What it does:** area CRUD, `areas.dat` persistence, the Nav2 keepout mask, the mow-progress raster, dock pose, boundary violation, and pending/accepted dig keepouts.
 
@@ -300,7 +300,7 @@ Already planned in `mowglinext_baseline.md` §7.2, so I did not re-audit it. It 
 
 ## 4. Could not verify
 
-- The `ros-humble-foxglove-bridge` version and subprotocol in our snapshot.
+- The `ros-jazzy-foxglove-bridge` version and subprotocol in our snapshot.
 - Whether a Humble opennav_docking build exists.
 - That `mowgli_map` and `mowgli_behavior` actually compile on Humble (only includes and dependencies were inspected).
 - Vendor MCU behaviour for host-initiated e-stop, cutter commands and the heartbeat watchdog. The relay's 125 ms lease assumes a 200 ms firmware watchdog that our MCU may not have.

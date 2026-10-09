@@ -2,16 +2,16 @@
 
 Plan for replacing the vendor's `polygon_coverage_planning` stack (ETH Zürich, ROS 1 Noetic,
 shipped in `ros2_port_handoff/04_full_src_tree/src/mower_planner/coverage_planning/`) with a
-minimal ROS 2 Humble package that runs Fields2Cover headland + swath directly.
+minimal ROS 2 Jazzy package that runs Fields2Cover headland + swath directly.
 
 Status: design only. Nothing built, nothing run on the mower. Every F2C API claim below was
-checked against the actual `ros-humble-fields2cover` 2.1.0 headers and the MowgliNext source,
+checked against the actual `ros-jazzy-fields2cover` 2.1.x headers and the MowgliNext source,
 not from memory.
 
 | Question | Answer |
 |---|---|
-| Fields2Cover apt package | **`ros-humble-fields2cover`** (v2.1.0, arm64 + amd64 in `packages.ros.org/ros2/ubuntu` jammy). `rosdep` has **no** `fields2cover` key, so `package.xml` must not `<depend>fields2cover</depend>` — apt-install it by name in the Dockerfile. |
-| OR-Tools | Pulled in automatically as `ros-humble-ortools-vendor` (a `Depends:` of the F2C deb). Do **not** `find_package(ortools)` — the apt F2C config does not export `ortools::ortools`, unlike MowgliNext's pinned v3 build. |
+| Fields2Cover apt package | **`ros-jazzy-fields2cover`** (v2.1.x, arm64 + amd64 in `packages.ros.org/ros2/ubuntu` noble). `rosdep` has **no** `fields2cover` key, so `package.xml` must not `<depend>fields2cover</depend>` — apt-install it by name in the Dockerfile. |
+| OR-Tools | Pulled in automatically as `ros-jazzy-ortools-vendor` (a `Depends:` of the F2C deb). Do **not** `find_package(ortools)` — the apt F2C config does not export `ortools::ortools`, unlike MowgliNext's pinned v3 build. |
 | Entry point language | **C++17** (`ament_cmake`). Matches both references; the F2C 2.1.0 headers are `cxx_std_17`-clean. |
 | Replaces | `polygon_coverage_geometry` + `polygon_coverage_planners` + `polygon_coverage_solvers` + `polygon_coverage_ros` (~5.9k LOC, GPL, CGAL + Mono/GkMa). |
 | Licence win | F2C is BSD-3. `polygon_coverage_planning` is GPL-3 **and** its GTSP solver is non-commercial-only (see §1). |
@@ -41,7 +41,7 @@ Two blockers are structural, not effort-related:
    (`cs.nott.ac.uk/~pszdk/gtsp_ma_source_codes.zip`, with an ETH polybox mirror), builds C#
    with `make -f MakefileCs` and C++ with `make -f MakefileCpp`, then links
    `${MONO_LIBRARIES}` and symlinks `/usr/lib/libmono-native.so`. That is a Mono + live network
-   fetch on an aarch64 board. It has no place in `docker/Dockerfile.humble`.
+   fetch on an aarch64 board. It has no place in `docker/Dockerfile.jazzy`.
 
 The vendor's own driver (`mower_planning/src/cover_plan/coverage.h`) sits on top of this: it
 maps `geometry_msgs/Polygon` in, calls `PolygonStripmapPlanner::setup()/solve()` with CGAL
@@ -51,14 +51,15 @@ swath stages give, without a GTSP solve at all.
 
 ---
 
-## 2. Fields2Cover on Humble: the facts we verified
+## 2. Fields2Cover: the facts we verified (against the Jammy/Humble debs; re-verify the Noble versions)
 
 Downloaded and inspected `ros-humble-fields2cover_2.1.0-1jammy.20260909.*_{amd64,arm64}.deb`
-and `ros-humble-ortools-vendor_9.9.1-3jammy.*.deb`:
+and `ros-humble-ortools-vendor_9.9.1-3jammy.*.deb`; on Noble the same source ships as
+`ros-jazzy-fields2cover` 2.1.x. Layout below is per-distro (replace `<distro>`):
 
-* **Layout.** Headers → `/opt/ros/humble/include/fields2cover{.h,/…}`;
+* **Layout.** Headers → `/opt/ros/<distro>/include/fields2cover{.h,/…}`;
   `libFields2Cover.so` + bundled `libsteering_functions.so`, `libmatplot.so.1.2.0` →
-  `/opt/ros/humble/lib/<triplet>/`; CMake config → `…/lib/<triplet>/cmake/Fields2Cover/`.
+  `/opt/ros/<distro>/lib/<triplet>/`; CMake config → `…/lib/<triplet>/cmake/Fields2Cover/`.
   Installed size ~16 MB. No `COPY --from` build stage needed.
 * **Target name.** `Fields2Cover::Fields2Cover` (plus `::steering_functions`, `::matplot`).
   Not the bare `Fields2Cover` that `opennav_coverage` links — use the namespaced form.
@@ -72,7 +73,7 @@ and `ros-humble-ortools-vendor_9.9.1-3jammy.*.deb`:
   define that imported target itself"). **That workaround is v3-only. Do not port it.**
   `libortools.so.9` is a real `NEEDED` entry on `libFields2Cover.so`, satisfied at runtime
   because `ortools_vendor`'s `vendor_package.dsv` prepends
-  `/opt/ros/humble/opt/ortools_vendor/lib` to `LD_LIBRARY_PATH`.
+  `/opt/ros/<distro>/opt/ortools_vendor/lib` to `LD_LIBRARY_PATH`.
 * **Version.** `Fields2CoverConfigVersion.cmake` reports `PACKAGE_VERSION "2.1.0"`, and the
   version file only accepts a matching **major**, so `find_package(Fields2Cover 2.1.0 CONFIG
   REQUIRED)` succeeds and a `3.x` pin would fail. Ask for `2.1.0`; do not ask for `3.0.0`.
@@ -213,17 +214,17 @@ otherwise leaves the node wedged unconfigured.
 `on_activate` → `action_server_->activate()` + `createBond()`. Lifecycle parity with the other
 Nav2 servers means `lifecycle_manager_navigation` picks it up with no config change.
 
-**Humble API deltas vs MowgliNext (Lyrical).** Their server will not compile here as-is:
+**Nav2 1.3 API deltas vs MowgliNext (Lyrical).** Their server will not compile here as-is:
 
-| MowgliNext (Lyrical) | Humble |
+| MowgliNext (Lyrical) | Jazzy |
 |---|---|
-| `nav2::LifecycleNode`, `nav2::SimpleActionServer`, `nav2::CallbackReturn` | `nav2_util::…` — `nav2_ros_common` **does not exist in Humble** |
-| `find_package(nav2_ros_common)` | `find_package(nav2_util)` (already implied by `ros-humble-nav2-bringup`) |
+| `nav2::LifecycleNode`, `nav2::SimpleActionServer`, `nav2::CallbackReturn` | `nav2_util::…` — `nav2_ros_common` **does not exist in Jazzy either (Lyrical+)** |
+| `find_package(nav2_ros_common)` | `find_package(nav2_util)` (already implied by `ros-jazzy-nav2-bringup`) |
 | `SimpleActionServer(node, name, cb, goal_received_cb, completion_cb, timeout, spin)` | 6-arg form: `(node, name, cb, completion_cb, timeout, spin)` — **no `GoalReceivedCallback`**, and the last arg is `rcl_action_server_options_t`, not `bool realtime` |
 | `f2c::` v3 types | v2.1.0 `f2c::` types (same namespaces — see §2) |
 
 `activate()`, `deactivate()`, `terminate_current()`, `terminate_all()`, `is_server_active()`,
-`is_cancel_requested()`, `get_current_goal()` all exist on Humble's
+`is_cancel_requested()`, `get_current_goal()` all exist on Jazzy's
 `SimpleActionServer`; `createBond()`/`destroyBond()` on `LifecycleNode`. So the port is
 mechanical.
 
@@ -301,14 +302,14 @@ geometry the chassis could not track. So:
 
 ## 5. Build and test against our Docker image
 
-### 5.1 `docker/Dockerfile.humble`
+### 5.1 `docker/Dockerfile.jazzy`
 
 ```dockerfile
 # Coverage planning (F2C 2.1.0). Brings its own OR-Tools via
-# ros-humble-ortools-vendor and its own GDAL/GEOS/TBB/Eigen dev headers.
+# ros-jazzy-ortools-vendor and its own GDAL/GEOS/TBB/Eigen dev headers.
 # rosdep has NO `fields2cover` key, so this must be a literal apt name.
 RUN apt-get update && apt-get install -y --no-install-releases \
-      ros-humble-fields2cover \
+      ros-jazzy-fields2cover \
     && rm -rf /var/lib/apt/lists/*
 ```
 
@@ -344,7 +345,7 @@ target_link_libraries(mower_coverage_core
 ament_export_dependencies(Fields2Cover nav2_util ...)
 ```
 
-Runtime RPATH: `/opt/ros/humble/lib/<triplet>` is already on `LD_LIBRARY_PATH` and
+Runtime RPATH: `/opt/ros/jazzy/lib/<triplet>` is already on `LD_LIBRARY_PATH` and
 `ortools_vendor` prepends its own lib dir, so unlike MowgliNext's `/opt/fields2cover-300`
 build **no `INSTALL_RPATH` juggling is needed**. (MowgliNext sets `INSTALL_RPATH
 "/opt/fields2cover-300/lib"` on both the lib and the exe because their prefix is outside
@@ -391,11 +392,11 @@ Run:
 
 ```bash
 ./scripts/build.sh --packages-select mower_coverage
-docker compose -f docker/docker-compose.yml run --rm mower_humble \
-  bash -c 'source /opt/ros/humble/setup.bash; cd /work; colcon test --packages-select mower_coverage; colcon test-result --verbose'
+docker compose -f docker/docker-compose.yml run --rm mower_jazzy \
+  bash -c 'source /opt/ros/jazzy/setup.bash; cd /work; colcon test --packages-select mower_coverage; colcon test-result --verbose'
 ```
 
-Expected first-run result: the F2C 2.1.0 headers compile clean under `g++ 11` (jammy). Two
+Expected first-run result: the F2C 2.1.x headers compile clean under the Noble toolchain (`g++ 13`). Two
 upstream v3 issues MowgliNext had to `sed`-patch (`<iomanip>` in `visualizer.cpp`, `<algorithm>`
 in `Graph.cpp`) are **already fixed in 2.1.0** — do not carry the patches.
 
@@ -439,7 +440,7 @@ decision is worth more than the code reuse.
 
 ### Sequencing
 
-1. Add `ros-humble-fields2cover` to `Dockerfile.humble`; confirm
+1. Add `ros-jazzy-fields2cover` to `Dockerfile.jazzy`; confirm
    `find_package(Fields2Cover 2.1.0 CONFIG REQUIRED)` configures inside the container.
 2. Add `PlanCoverage.action` to `mower_interfaces`.
 3. Port the pure-geometry planner + `dedupClosedRing` / `bufferRingOutward`; land the ported

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Per-mow rosbag2 recorder (ROS 2 Humble).
+"""Per-mow rosbag2 recorder (ROS 2 Jazzy).
 
 Replaces the ad-hoc ``/userdata/ros2/logs/rec.py`` CSV recorder (it was started with
 ``docker exec -d`` and so died silently with every container recreate; ``pgrep -f rec.py``
@@ -131,7 +131,7 @@ def pick_storage(available):
 def available_storage():
     """Storage plugins rosbag2 can load in this install (mcap only if installed)."""
     out = {'sqlite3'}
-    prefixes = os.environ.get('AMENT_PREFIX_PATH', '/opt/ros/humble').split(os.pathsep)
+    prefixes = os.environ.get('AMENT_PREFIX_PATH', '/opt/ros/jazzy').split(os.pathsep)
     for p in prefixes:
         if os.path.isdir(os.path.join(p, 'share', 'rosbag2_storage_mcap')):
             out.add('mcap')

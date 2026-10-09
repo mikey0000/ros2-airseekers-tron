@@ -1,42 +1,42 @@
-# Developer image: build + test the Humble workspace on an x86_64 host.
-# Mirrors Dockerfile.humble's package set (plus nav/map/tooling deps added for
+# Developer image: build + test the Jazzy workspace on an x86_64 host.
+# Mirrors Dockerfile.jazzy's package set (plus nav/map/tooling deps added for
 # the mission layer) so a green colcon build here means the arm64 image needs
 # only the same apt lines. NPU (rknn) and Metoak camera packages still require
 # the device.
 # Fields2Cover v3 install tree, prebuilt ONCE by docker/fields2cover/Dockerfile
 # (scripts/build_f2c.sh) so this image never compiles F2C. F2C_V3=0 falls back
-# to the apt ros-humble-fields2cover 2.1.0 (then build mower_coverage with
+# to the apt ros-jazzy-fields2cover 2.1.0 (then build mower_coverage with
 # --cmake-args -DF2C_V3=OFF). The F2C image must exist locally even when
 # F2C_V3=0 (COPY --from is unconditional; it is ~15 MB).
 ARG F2C_IMAGE=mower-f2c:v3-amd64
-# Override when the local ros:humble-ros-base-jammy tag holds another arch.
-ARG BASE=ros:humble-ros-base-jammy
+# Override when the local ros:jazzy-ros-base-noble tag holds another arch.
+ARG BASE=ros:jazzy-ros-base-noble
 FROM ${F2C_IMAGE} AS f2c
 
 FROM ${BASE}
 
-ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8 ROS_DISTRO=humble
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8 ROS_DISTRO=jazzy
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ros-humble-nav2-bringup \
-      ros-humble-robot-localization \
-      ros-humble-ortools-vendor \
+      ros-jazzy-nav2-bringup \
+      ros-jazzy-robot-localization \
+      ros-jazzy-ortools-vendor \
       libgdal-dev libgeos-dev libtbb-dev libtinyxml2-dev \
-      ros-humble-grid-map-ros \
-      ros-humble-grid-map-msgs \
-      ros-humble-grid-map-cv \
-      ros-humble-twist-mux \
-      ros-humble-foxglove-bridge \
-      ros-humble-xacro \
-      ros-humble-robot-state-publisher \
-      ros-humble-joint-state-publisher \
-      ros-humble-v4l2-camera \
-      ros-humble-cv-bridge \
-      ros-humble-image-transport \
-      ros-humble-tf-transformations \
-      ros-humble-vision-msgs \
-      ros-humble-web-video-server \
-      ros-humble-behaviortree-cpp \
+      ros-jazzy-grid-map-ros \
+      ros-jazzy-grid-map-msgs \
+      ros-jazzy-grid-map-cv \
+      ros-jazzy-twist-mux \
+      ros-jazzy-foxglove-bridge \
+      ros-jazzy-xacro \
+      ros-jazzy-robot-state-publisher \
+      ros-jazzy-joint-state-publisher \
+      ros-jazzy-v4l2-camera \
+      ros-jazzy-cv-bridge \
+      ros-jazzy-image-transport \
+      ros-jazzy-tf-transformations \
+      ros-jazzy-vision-msgs \
+      ros-jazzy-web-video-server \
+      ros-jazzy-behaviortree-cpp \
       libceres-dev \
       libeigen3-dev \
       python3-colcon-common-extensions \
@@ -46,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3-pytest \
       python3-protobuf \
       python3-pip \
+      python3-websockets \
       python3-evdev \
       python3-aiohttp \
       python3-shapely \
@@ -54,12 +55,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential cmake git \
     && rm -rf /var/lib/apt/lists/*
 
-# Jammy's python3-websockets (9.1) is broken on Python 3.10 (asyncio Lock(loop=) removed):
-# every connection raises TypeError. The teleop relay needs websockets >= 10.
-RUN pip3 install --no-cache-dir 'websockets>=12,<14'
+# python3-websockets is Noble's 12.x (the teleop relay / GUI bridge need >= 10); the
+# Jammy-era pip pin is gone.
 
 # Fields2Cover: v3 from the prebuilt layer (default) or apt 2.1 (F2C_V3=0).
-# Never both: the 2.1 deb's unversioned libFields2Cover.so in /opt/ros/humble
+# Never both: the 2.1 deb's unversioned libFields2Cover.so in /opt/ros/jazzy
 # would shadow v3 through LD_LIBRARY_PATH.
 ARG F2C_V3=1
 COPY --from=f2c /opt/fields2cover /opt/fields2cover
@@ -67,12 +67,12 @@ RUN if [ "$F2C_V3" = 1 ]; then \
       echo /opt/fields2cover/lib > /etc/ld.so.conf.d/fields2cover.conf && ldconfig; \
     else \
       rm -rf /opt/fields2cover && apt-get update \
-      && apt-get install -y --no-install-recommends ros-humble-fields2cover \
+      && apt-get install -y --no-install-recommends ros-jazzy-fields2cover \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
 
 WORKDIR /work
-RUN echo 'source /opt/ros/humble/setup.bash 2>/dev/null || true; \
+RUN echo 'source /opt/ros/jazzy/setup.bash 2>/dev/null || true; \
 [ -f /work/install/setup.bash ] && source /work/install/setup.bash || true' >> /root/.bashrc
 CMD ["bash"]

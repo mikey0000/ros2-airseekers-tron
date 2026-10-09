@@ -1,7 +1,7 @@
-# GPS fusion — robot_localization navsat_transform_node (ROS 2 Humble).
+# GPS fusion — robot_localization navsat_transform_node (ROS 2 Jazzy).
 #
 # Projects the gated GPS fix into the odom frame so ekf_node can fuse it
-# as a 2D pose. Subscribed topics (Humble defaults) and how this stack
+# as a 2D pose. Subscribed topics (Jazzy defaults) and how this stack
 # wires them:
 #   gps/fix           <- /fix_gated   (mower_localization/gps_gate output;
 #                                      remap, never the raw /fix)

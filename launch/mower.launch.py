@@ -1,4 +1,4 @@
-"""Single entry point for the Airseekers Tron ROS 2 (Humble) stack.
+"""Single entry point for the Airseekers Tron ROS 2 (Jazzy) stack.
 
     ros2 launch mower_bringup mower.launch.py [arg:=value ...]
 
@@ -459,7 +459,7 @@ def generate_launch_description() -> LaunchDescription:
              respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control')),
         # base_link clouds (bumper heartbeat, YOLO obstacle points) republished in odom / map so
-        # the costmaps never wait for a transform (Humble tf2 MessageFilter deadlock froze the
+        # the costmaps never wait for a transform (Jazzy tf2 MessageFilter deadlock froze the
         # local costmap under load, 2026-10-09; mower_control/fixed_frame_relay.py)
         Node(package='mower_control', executable='fixed_frame_relay', name='fixed_frame_relay',
              respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md

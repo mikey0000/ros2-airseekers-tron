@@ -1,6 +1,6 @@
 """sub_pump: CDR fast parsers vs rclpy deserialization, and pump delivery semantics.
 
-Needs a real ROS 2 Humble environment (rclpy + message packages); skipped elsewhere.
+Needs a real ROS 2 Jazzy environment (rclpy + message packages); skipped elsewhere.
 """
 
 import math

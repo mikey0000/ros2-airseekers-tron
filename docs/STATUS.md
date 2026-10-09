@@ -5,11 +5,11 @@ Last updated 2026-10-05. Read this first. The point-in-time audits that fed it a
 
 ## Goal
 
-A working ROS 2 Humble lawn mower on the Tron hardware (RK3588 brain, 6 MCUs over serial, UM960
+A working ROS 2 Jazzy lawn mower on the Tron hardware (RK3588 brain, 6 MCUs over serial, UM960
 RTK, WIT JY61P IMU, Metoak stereo, RK3588 NPU), controlled by the user through the MowgliNext web
 GUI: joystick drive, zone recording and editing, start/pause/home, docking and scheduling. The
 vendor ROS 1 stack is the behavioural reference; MowgliNext supplies the user layer and the mission
-architecture; everything runs in the Humble container on the stock 20.04 kernel.
+architecture; everything runs in the Jazzy container on the stock 20.04 kernel.
 
 ## What exists and works (verified 2026-10-05)
 
@@ -32,7 +32,7 @@ Fixes landed the same day as the audit:
 - `bumper_controller`: compile errors fixed (PID member names, missing `finishToIdle` declaration, generic-lambda service callback, default-arg constructor). It now publishes unstamped `Twist` on its own lane `/cmd_vel_bumper` instead of `/cmd_vel`.
 - `mower_coverage`: Fields2Cover 2.1 API fixes (`get_Area`, non-const `SGObjective&`).
 - `mower_interfaces`: `MappingControl.srv` and `SetLoRa.srv` registered in `CMakeLists.txt`.
-- `gps_gate` and `um960_gps_driver` use the real Humble `NavSatStatus` values. RTK fixed and float map to `GBAS_FIX`, DGPS to `SBAS_FIX`; the gate separates fixed from float by covariance. Launch default `min_fix_status` is 0.
+- `gps_gate` and `um960_gps_driver` use the real ROS 2 `NavSatStatus` values. RTK fixed and float map to `GBAS_FIX`, DGPS to `SBAS_FIX`; the gate separates fixed from float by covariance. Launch default `min_fix_status` is 0.
 - `wit_imu_driver` rewritten for the real 11-byte WIT protocol (`wit_imu_driver/wit_protocol.py`, unit-tested) and publishes `/imu/data` directly. The `/imu` remap in `launch/nav2.launch.py` is gone.
 - `mower_mcu_driver` gained `/cutter_control`, `/charging`, `/clear_estop`, `/cutter_off`, publishes `/mower_base/status` (MowerBaseDevStatus) and `/estop` (Bool), has a host-side lift/stop interlock plus an e-stop latch (`/estop_request`), sends cutter-off on shutdown, moved the placeholder IMU to `/mcu/imu`, and subscribes unstamped `Twist` on `/cmd_vel` (plus `/cmd_vel_stamped`). Default `linear_max` is 0.5 m/s.
 - `base_ble` publishes `Twist` on `/cmd_vel_teleop`, calls `/cutter_control` and `/clear_estop` (Empty).
@@ -42,8 +42,9 @@ Fixes landed the same day as the audit:
 
 ## Architecture and contract
 
-Humble convention throughout: unstamped `geometry_msgs/Twist` on every command topic (Humble
-`twist_mux` 4.3 and Nav2 Humble have no stamped mode).
+Jazzy convention throughout: unstamped `geometry_msgs/Twist` on every command topic
+(`enable_stamped_cmd_vel` stays false; `twist_mux` 4.5 and Nav2 1.3 support stamped twist but
+the whole chain uses unstamped).
 
 Command chain: lanes -> `twist_mux` -> `/cmd_vel_raw` -> `cmd_vel_slew` -> `/cmd_vel` -> `mcu_node`.
 
@@ -75,8 +76,9 @@ GUI hard-codes: `/hardware_bridge/{status,emergency,power}` and services
 covering IDLE, RECORDING (blade off), MANUAL_MOWING (blade on) and STOP with MowgliNext
 `state_name` strings. Blade-on is refused unless the high-level state is 2 or 4.
 
-Ports: GUI `4006`, `foxglove_bridge` `8765` (Humble ships 3.5.0, which speaks `foxglove.sdk.v1`
-as the GUI expects), teleop relay `8766`.
+Ports: GUI `4006`, `foxglove_bridge` `8765` (Jazzy ships 3.6.0; the Go GUI speaks
+`foxglove.sdk.v1`, verified live 2026-10-09 — 3.6.0 negotiates that subprotocol and
+advertises `clientPublish`/`parameters`/`services`), teleop relay `8766`.
 
 ## Completed later the same day (2026-10-05, parallel agents)
 
@@ -84,15 +86,15 @@ All of the following build in the amd64 dev image and were exercised in-containe
 
 - `src/mower_gui_bridge` (`gui_bridge`): the adapter above, 30 tests. Blade-on is refused outside HL states 2/4 or during an emergency; blade-off is never refused; MCU telemetry older than 1 s counts as an emergency. See its README.
 - `src/mower_teleop`: `cmd_vel_ws_relay` (ws :8766, Twist out, clamps 0.5 m/s / 1.0 rad/s, 0.25 s lease) + `twist_mux.yaml` (lanes above, `/estop` lock) + `teleop.launch.py`. Verified: GUI-style JSON frame -> `/cmd_vel_teleop` -> mux -> slew -> `/cmd_vel`, and the `/estop` lock zeroes it.
-- `src/mower_bringup` + `launch/mower.launch.py`: single entry point (drivers, robot_state_publisher, static `map -> odom`, control nodes, teleop, gui_bridge, foxglove_bridge 3.5.0, localization, optional navigation). `docker/docker-compose.yml` now runs it; `Dockerfile.humble` carries every dependency (websockets comes from pip: Jammy's apt 9.1 is broken on Python 3.10). URDF gained `base_footprint` and `blade_link`. `ekf.yaml` int/float covariance fix (rcl refused to load it).
-- `src/mower_navigation`: Humble `nav2_params.yaml` + `navigation.launch.py`; all lifecycle nodes activate; `FollowPath`/`FollowCoveragePath` RPP controllers, `general_goal_checker`/`coverage_goal_checker`, NavFn, behaviors, velocity_smoother -> `/cmd_vel_nav`, keepout filter slot (`use_keepout`).
+- `src/mower_bringup` + `launch/mower.launch.py`: single entry point (drivers, robot_state_publisher, static `map -> odom`, control nodes, teleop, gui_bridge, foxglove_bridge 3.6.0, localization, optional navigation). `docker/docker-compose.yml` now runs it; `Dockerfile.jazzy` carries every dependency (websockets comes from Noble's apt 12.x). URDF gained `base_footprint` and `blade_link`. `ekf.yaml` int/float covariance fix (rcl refused to load it).
+- `src/mower_navigation`: Jazzy `nav2_params.yaml` + `navigation.launch.py`; all lifecycle nodes activate; `FollowPath`/`FollowCoveragePath` RPP controllers, `general_goal_checker`/`coverage_goal_checker`, NavFn, behaviors, velocity_smoother -> `/cmd_vel_nav`, keepout filter slot (`use_keepout`).
 - Datum pinning: `datum_lat`/`datum_lon`/`datum_yaw` launch args on `mower.launch.py` -> `navsat_transform_node` (`wait_for_datum: true` when set). Must match `config/gui/mowgli_robot.yaml`.
 - GUI image: `gui/Dockerfile` + `gui/build.sh` (Go cross-compile + vite on the x86 host, final arm64 stage copies files only; 159 MB), Tron UI trim at runtime from the robot profile (`ROBOT_PROFILE` / `mower_model`, gates in `web/src/constants/profileGates.ts`: Firmware/GNSS/Drive-tuning/Updates/Remote-access/rosbag/LiDAR hidden, Perception shown), `ONBOARDING_COMPLETED` env, `docker/docker-compose.gui.yml`, `docs/gui.md`. Smoke-tested on amd64 and handshake confirmed against foxglove_bridge 3.5.0.
-- `src/mower_proto`: regenerated with protoc 3.12.4 (Jammy apt); `generate_proto.sh` refuses newer protoc.
+- `src/mower_proto`: generated with protoc 3.12.4 (imports on Noble's 3.21.12 runtime); `generate_proto.sh` accepts 3.12.x/3.21.x.
 - `src/mower_coverage`: 3 real planner bugs fixed (swath ends overshot the boundary by op_width/2 with headlands off; wrong `atan2` for the reported angle; longest-edge angle computed on the widened cell). 15/15 gtests.
 - Test suites now pass both on the host (stubs) and under real rclpy in the container: `colcon test` = 188 tests, 0 failures, 21 skipped (stub-only tests skip under rclpy). A real bug surfaced: `mcu_node._on_imu` assigned 36-element covariances to 9-element Imu fields (fixed).
 - `third_party/COLCON_IGNORE`: colcon must not crawl the vendored MowgliNext packages (they target a newer Nav2 and broke the workspace build).
-- `scripts/deploy_to_mower.sh`: rsync to `/userdata/ros2_stack` on the device (root fs is 100 % full, /userdata has 18 GB), image build and low-parallelism colcon build on the mower, up/down/logs/shell. Not yet run: the mower dropped off the LAN during the session (vendor ROS stack was NOT running on it; Docker 26 and an older `mower:humble` image are present).
+- `scripts/deploy_to_mower.sh`: rsync to `/userdata/ros2_stack` on the device (root fs is 100 % full, /userdata has 18 GB), image build and low-parallelism colcon build on the mower, up/down/logs/shell. Not yet run: the mower dropped off the LAN during the session (vendor ROS stack was NOT running on it; Docker 26 and an older `mower:jazzy` image are present).
 
 ## Roadmap
 
@@ -103,7 +105,7 @@ in RECORDING and MANUAL_MOWING with the blade interlocked by the MCU driver.
 **Phase B: zones and coverage.**
 - Port `third_party/mowglinext/mowgli_map` `map_server_node` (grid_map from apt). It owns zone CRUD, `areas.dat` (plain key/value: `datum_lat/lon`, `area_<i>_polygon` in map-frame metres, obstacles), the keepout mask, mow progress and dock pose. Needs `base_footprint` and `blade_link` TF.
 - `/plan_coverage` action adapter (`mowgli_interfaces/action/PlanCoverage`) over our Fields2Cover 2.1 `mower_coverage` service, splitting the path into `drivable_subpaths` at transits.
-- Mission BT: port `mowgli_behavior` `main_tree.xml` minus LiDAR, fusion_graph and `DockRobot` (Humble `nav2_msgs` lacks `DockRobot` and `CollisionMonitorState`), or write our own BT reusing `coverage_persistence.cpp` and the `FollowStrip` blade rules (blade off before any transit over 0.6 m and at every sub-path boundary).
+- Mission BT: port `mowgli_behavior` `main_tree.xml` minus LiDAR, fusion_graph and `DockRobot` (Jazzy's `nav2_msgs` now has `DockRobot` and `CollisionMonitorState`, so the upstream tree is a viable option), or write our own BT reusing `coverage_persistence.cpp` and the `FollowStrip` blade rules (blade off before any transit over 0.6 m and at every sub-path boundary).
 - Nav2 keepout filter fed by `/keepout_mask`.
 
 **Phase C: docking and scheduling.**
@@ -134,7 +136,7 @@ Airseekers-app-compatible surface later.
 
 ## Hardware bring-up (mower on the ground, 2026-10-06)
 
-Verified live on the mower with the stack running from Docker (`mower:humble`, `/userdata/ros2_stack`):
+Verified live on the mower with the stack running from Docker (`mower:jazzy`, `/userdata/ros2_stack`):
 
 - Serial links: MCU 67-100 Hz sensor/speed frames, battery 22.0 V, firmware v0.6.36 / v0.6.34; WIT IMU 100 Hz
   on `/imu/data` (RELIABLE QoS, the EKF receives it); UM960 10 Hz, 29 satellites, rover board in LoRa mode
@@ -292,7 +294,7 @@ on large recorded areas.
 - GPLv3: the GUI and `mowgli_interfaces` are GPL-3.0 with a commercial option. Fine for personal use; a product decision later.
 - The JY61P yaw is gyro-integrated, not earth-referenced. `navsat_transform` needs `yaw_offset` or a GPS heading source; `/heading` from the UM960 is only useful if it is dual-antenna (unverified).
 - The MCU clear-estop frame is unknown, so a firmware e-stop latch may need a power cycle.
-- MowgliNext mission packages target a newer Nav2 (`DockRobot`, `CollisionMonitorState`), so `mowgli_behavior` cannot be built on Humble as-is.
+- MowgliNext mission packages target a newer Nav2 (`DockRobot`, `CollisionMonitorState`): Jazzy has those msgs, but `mowgli_behavior` still assumes the Kilted BT/API set, so it is not built as-is.
 - `map -> odom` comes from `ekf_map` since 2026-10-09 (not yet run on the mower). The datum
   (`datum_lat`/`datum_lon`/`datum_yaw`) is still to be set per site (dock position, same as
   `config/gui/mowgli_robot.yaml`).

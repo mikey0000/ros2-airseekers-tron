@@ -96,7 +96,7 @@ behavior_tree_node:
     reverse_controller_id: FollowCoveragePathReverse
     follow_goal_checker_id: coverage_goal_checker
     # turn legs (reverse sub-paths + chunks <= turn_leg_max_m) need travel before "reached":
-    # mowgli_nav2_plugins/LegGoalChecker ('' = follow_goal_checker_id for all)
+    # mowgli_nav2_plugins::LegGoalChecker ('' = follow_goal_checker_id for all)
     turn_leg_goal_checker_id: coverage_leg_goal_checker
     turn_leg_max_m: 1.2
     max_areas: 200

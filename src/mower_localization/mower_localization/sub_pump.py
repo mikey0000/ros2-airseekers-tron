@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Low-overhead subscription handling for rclpy (ROS 2 Humble).
+"""Low-overhead subscription handling for rclpy (ROS 2 Jazzy).
 
-Why: on the RK3588 every wake of an rclpy Humble executor costs ~1.5-4 ms of pure Python
+Why: on the RK3588 every wake of an rclpy Jazzy executor costs ~1.5-4 ms of pure Python
 (the wait set is rebuilt from every entity of the node, each callback is wrapped in a Task,
 MultiThreadedExecutor additionally hops through a thread pool and re-wakes on its guard
 condition after every callback). Nodes that merely *cache* 100 Hz inputs burned 40-80 % of a
@@ -43,7 +43,7 @@ import types
 from rclpy.callback_groups import CallbackGroup
 from rclpy.serialization import deserialize_message
 
-try:  # private in Humble, but stable for the whole distro
+try:  # private in Jazzy, but stable for the whole distro
     from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 except ImportError:  # pragma: no cover - very old/new rclpy
     _rclpy = None

@@ -1,7 +1,8 @@
 
-<!-- mower_navigation: verbatim copy of the Nav2 Humble 1.1.x default tree, with ONE change:
+<!-- mower_navigation: based on the Nav2 Humble 1.1.x default tree, loaded on Jazzy's
+     BT.CPP v4 (hence BTCPP_format="4"), with ONE change:
      FollowPath gets goal_checker_id="general_goal_checker". controller_server loads two goal
-     checkers (general_goal_checker, coverage_goal_checker) and Humble rejects a FollowPath goal
+     checkers (general_goal_checker, coverage_goal_checker) and Nav2 rejects a FollowPath goal
      with an empty goal_checker_id when more than one is loaded. -->
 <!--
   This Behavior Tree replans the global path periodically at 1 Hz through an array of poses continuously
@@ -13,7 +14,7 @@
      NavigateRecovery retries 2 (no Spin/BackUp near the dock; fail fast). FollowPath's context
      recovery is a 1 s Wait (not ClearLocalCostmap, 2026-10-09) so the replanner routes around
      the obstacle mark instead of erasing it. See navigate_to_pose_w_replanning_and_recovery.xml. -->
-<root main_tree_to_execute="MainTree">
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="2" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">

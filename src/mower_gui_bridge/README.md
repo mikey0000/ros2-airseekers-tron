@@ -233,5 +233,5 @@ Every topic and service name above is a parameter: `*_topic` / `*_service` (see
 
 ```
 python3 -m pytest src/mower_gui_bridge/test     # plain host, no rclpy needed
-colcon test --packages-select mower_gui_bridge  # in the Humble container
+colcon test --packages-select mower_gui_bridge  # in the Jazzy container
 ```

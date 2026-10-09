@@ -140,9 +140,9 @@ Full deploy steps (models, runtime, compose lines, video feeds): `docs/cameras_a
 - `rknn-toolkit-lite2` **2.3.0** (aarch64 cp310; the `.rknn` models were compiled with
   toolkit 2.3.0, the stock `/usr/lib/librknnrt.so` is 2.1.0 and the vendor workspace copy
   2.2.0) + a matching `librknnrt.so` bind-mounted at `/usr/lib/librknnrt.so`.
-  Appended to `docker/Dockerfile.humble` (guarded pip install).
-- `ros-humble-v4l2-camera`, `ros-humble-cv-bridge` (already in the image),
-  `ros-humble-vision-msgs` and `ros-humble-web-video-server` (appended to
-  `docker/Dockerfile.humble`; `vision_msgs` is NOT part of ros-base, and is also missing
+  Appended to `docker/Dockerfile.jazzy` (guarded pip install).
+- `ros-jazzy-v4l2-camera`, `ros-jazzy-cv-bridge` (already in the image),
+  `ros-jazzy-vision-msgs` and `ros-jazzy-web-video-server` (appended to
+  `docker/Dockerfile.jazzy`; `vision_msgs` is NOT part of ros-base, and is also missing
   from `Dockerfile.dev-amd64`).
 - Models on the device: `scripts/install_models.sh` -> `/userdata/ros2/models/`.

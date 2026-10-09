@@ -253,8 +253,8 @@ ros2 topic info /fix_gated       # QoS reliable/10 on both ends
 ## Caveats and TODOs
 
 - **`robot_localization` is not in the Docker image yet.** Add
-  `ros-humble-robot_localization` to the apt list in
-  `docker/Dockerfile.humble`; without it the two parameter files
+  `ros-jazzy-robot_localization` to the apt list in
+  `docker/Dockerfile.jazzy`; without it the two parameter files
   have nothing to load them.
 - **IMU covariances.** `wit_imu_driver` currently publishes
   all-zero IMU covariances, which makes the EKF treat every fused

@@ -15,17 +15,18 @@ PKG_DIR="$HERE"                                               # the python packa
 REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"                  # repo root
 PROTO_DIR="$REPO_ROOT/mower_docs/reference/proto"
 
-# REQUIRED: protoc 3.12.x (Ubuntu 22.04 Jammy `protobuf-compiler`), matching the runtime
-# apt `python3-protobuf` 3.12.4, which has no google.protobuf.internal.builder. Do NOT
-# generate with a newer protoc (>= 3.20 output fails to import on Jammy). Run inside the
-# Jammy dev container with the whole repo mounted (the proto sources live outside
-# ros2_stack/). Note ROS ships a newer protoc (ortools_vendor) earlier on PATH, so we
-# default to /usr/bin/protoc; override with PROTOC=...
+# REQUIRED: protoc matching the runtime. The checked-in files were generated with protoc
+# 3.12.4; they import on Noble's `python3-protobuf` 3.21.12 too (gencode <= runtime).
+# To regenerate, run inside the Noble dev container (`protobuf-compiler` 3.21.12,
+# /usr/bin/protoc) with the whole repo mounted (the proto sources live outside ros2_stack/).
+# Both 3.12.x and 3.21.x produce output that imports on Noble; do NOT generate with a
+# protoc newer than the runtime. Note ROS ships a newer protoc (ortools_vendor) earlier on
+# PATH, so we default to /usr/bin/protoc; override with PROTOC=...
 PROTOC="${PROTOC:-/usr/bin/protoc}"
 command -v "$PROTOC" >/dev/null 2>&1 || { echo "protoc not found: $PROTOC" >&2; exit 1; }
 case "$("$PROTOC" --version)" in
-  "libprotoc 3.12."*) ;;
-  *) echo "need protoc 3.12.x, got: $("$PROTOC" --version)" >&2; exit 1 ;;
+  "libprotoc 3.12."*|"libprotoc 3.21."*) ;;
+  *) echo "need protoc 3.12.x (old images) or 3.21.x (Noble), got: $("$PROTOC" --version)" >&2; exit 1 ;;
 esac
 
 "$PROTOC" -I "$PROTO_DIR" -I /usr/include \

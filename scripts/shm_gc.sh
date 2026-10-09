@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Remove Fast DDS shared-memory leftovers in /dev/shm that no live process maps.
-# Fast DDS 2.6 (Humble) leaks fastrtps_* segments/port files when a participant is killed
+# Fast DDS 2.6 (Jazzy), 2.14 (Jazzy) leaks fastrtps_* segments/port files when a participant is killed
 # (docker restart, SIGKILL, crash). /dev/shm is the HOST tmpfs (bind-mounted /dev) and each
 # run leaves ~145 MB (4 camera publishers x 32 MiB + ~30 x 512 KiB), so ~7 restarts fill 1 GB.
 # Only base segment/port files are candidates (never *_el locks or sem.* of live ports).

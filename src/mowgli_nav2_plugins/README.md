@@ -1,8 +1,8 @@
-# mowgli_nav2_plugins (Humble port)
+# mowgli_nav2_plugins (Jazzy port)
 
 The MowgliNext `FTCController` (follow-the-carrot coverage controller) and
 `PathProgressGoalChecker`, ported from `third_party/mowglinext/mowgli_nav2_plugins`
-(Kilted) to Humble. The control law is unchanged from upstream. The port only
+(Kilted) to Jazzy. The control law is unchanged from upstream. The port only
 changes API, headers and exception types, plus the items below.
 
 ## Port-only changes

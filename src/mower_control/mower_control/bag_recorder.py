@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Always-on rolling rosbag "black box" on disk (2026-10-09, ROS 2 Humble).
+"""Always-on rolling rosbag "black box" on disk (2026-10-09, ROS 2 Jazzy).
 
 Why a third recorder: the supervisor's black box (``blackbox.py``) keeps only 120 s of ~15
 rate-capped topics in RAM and dumps on a trigger; ``mow_recorder`` writes only while a mission
@@ -28,7 +28,7 @@ bags were recorded by hand with ``ros2 bag record``). This node:
   ``~/get_state`` (Trigger) returns the same JSON as the latched ``~/status``.
 
 Rosbag2 choices (rosbag2 0.15.17 in the image, checked 2026-10-09): storage sqlite3 (mcap is
-not installed: ``ros-humble-rosbag2-storage-mcap`` would need an image rebuild); preset
+not installed: ``ros-jazzy-rosbag2-storage-mcap`` would need an image rebuild); preset
 ``resilient`` (WAL + synchronous=NORMAL: a power cut loses at most the last cache flush, not
 the db); ``--max-cache-size`` 1 MiB (the default 100 MiB double buffer would hold ~10 min of
 this topic set in RAM, all lost on a crash, and cost up to 200 MB of the 4 GB); file-mode zstd:
@@ -53,7 +53,7 @@ import time
 from mower_control import bag_ring as br
 
 # Curated (2026-10-09, measured on the mower): the first ring recorded 73 topics, 554 msg/s,
-# and its `ros2 bag record` took 46-53 % of one RK3588 core. rosbag2 Humble's cost is per
+# and its `ros2 bag record` took 46-53 % of one RK3588 core. rosbag2 Jazzy's cost is per
 # delivered message: Fast DDS UDP receive (no SHM in this container) + one executor wake that
 # walks every subscription (~3 us x N per message on x86). Benchmark (dev box, synthetic load
 # replaying the mower's measured topic rates/sizes, scripts in docs/crash_recovery.md "Rolling

@@ -1,67 +1,70 @@
-# ROS 2 Humble (Jammy userland) for the Airseekers mower (aarch64).
+# ROS 2 Jazzy (Noble userland) for the Airseekers mower (aarch64).
 #
 # Context (whole-repo):
 # - ros2_port_handoff/09_platform/os-release.txt: device OS = Ubuntu 20.04.6 LTS (focal)
 # - ros2_port_handoff/09_platform/uname.txt:      kernel 5.10.209, aarch64
 # - ros2_port_handoff/09_platform/dpkg-l.txt + ros_noetic_debs.txt: stock ROS 1 Noetic stack
-# - mower_docs/02-ros2-migration.md: Humble needs 22.04 (jammy) -> containerize, do not upgrade BSP
+# - mower_docs/02-ros2-migration.md: Humble needed 22.04 (jammy); Jazzy needs 24.04 (noble).
+#   The BSP kernel stays 5.10.209 (no reflash): the Noble userland runs on it in the
+#   container, which is how the Humble/Jammy stack already ran.
 #
-# This image runs a Jammy userland on top of the stock 20.04 kernel.
-# No ros1_bridge here on purpose: bridging (Noetic<->Humble, custom mower_msgs)
+# This image runs a Noble userland on top of the stock 20.04 kernel.
+# No ros1_bridge here on purpose: bridging (Noetic<->Jazzy, custom mower_msgs)
 # is a separate from-source build; see ../docs/deployment.md.
 
 # Fields2Cover v3 install tree, prebuilt ONCE by docker/fields2cover/Dockerfile
 # (scripts/build_f2c.sh) so this image never compiles F2C. F2C_V3=0 falls back
-# to the apt ros-humble-fields2cover 2.1.0 (then build mower_coverage with
+# to the apt ros-jazzy-fields2cover 2.1.0 (then build mower_coverage with
 # --cmake-args -DF2C_V3=OFF). The F2C image must exist locally even when
 # F2C_V3=0 (COPY --from is unconditional; it is ~15 MB).
 ARG F2C_IMAGE=mower-f2c:v3-arm64
 FROM ${F2C_IMAGE} AS f2c
 
-FROM --platform=linux/arm64 ros:humble-ros-base-jammy
+FROM --platform=linux/arm64 ros:jazzy-ros-base-noble
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    ROS_DISTRO=humble
+    ROS_DISTRO=jazzy
 
-# Base build/colcon/serial tooling + requested Humble stacks.
+# Base build/colcon/serial tooling + requested Jazzy stacks.
 # Mirrors docker/Dockerfile.dev-amd64 so a green amd64 dev build means this
 # image needs nothing extra.
-# - ros-humble-ros-base: explicit even though ros-base image already contains it
+# - ros-jazzy-ros-base: explicit even though ros-base image already contains it
 # - nav2-bringup: Nav2 bringup/launch (replaces Noetic move_base/navfn per migration doc)
 # - robot-localization: ekf_node + navsat_transform_node (launch/nav2.launch.py)
 # - serial: python3-serial only (drivers are Python over termios/pyserial)
 # - grid-map-*, behaviortree-cpp: MowgliNext map server / mission layer
 # - twist-mux: velocity arbitration (mower_teleop)
 # - foxglove-bridge: WebSocket telemetry on :8765 (launch/mower.launch.py).
-#   Unconditional: present for arm64 Humble (3.5.0).
+#   Unconditional: present for arm64 Jazzy.
 # - xacro, robot/joint-state-publisher: URDF -> /tf (config/urdf/mower.urdf.xacro)
 # - v4l2-camera: OA + rear cameras (launch/cameras.launch.py)
 # - tf-transformations, python3-transforms3d: Python TF math
 # - python3-evdev/protobuf/shapely/pyproj/aiohttp: teleop, mower_proto, coverage,
 #   GUI bridge
-# - python3-pip: for websockets below (NOT apt python3-websockets, see there)
+# - python3-websockets: teleop relay / GUI bridge (Noble ships 12.x; the Jammy 9.1
+#   breakage that forced a pip pin is gone)
 # - colcon: workspace builds
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ros-humble-ros-base \
-      ros-humble-nav2-bringup \
-      ros-humble-robot-localization \
-      ros-humble-ortools-vendor \
+      ros-jazzy-ros-base \
+      ros-jazzy-nav2-bringup \
+      ros-jazzy-robot-localization \
+      ros-jazzy-ortools-vendor \
       libgdal-dev libgeos-dev libtbb-dev libtinyxml2-dev \
-      ros-humble-grid-map-ros \
-      ros-humble-grid-map-msgs \
-      ros-humble-grid-map-cv \
-      ros-humble-behaviortree-cpp \
-      ros-humble-twist-mux \
-      ros-humble-foxglove-bridge \
-      ros-humble-xacro \
-      ros-humble-robot-state-publisher \
-      ros-humble-joint-state-publisher \
-      ros-humble-v4l2-camera \
-      ros-humble-cv-bridge \
-      ros-humble-image-transport \
-      ros-humble-tf-transformations \
+      ros-jazzy-grid-map-ros \
+      ros-jazzy-grid-map-msgs \
+      ros-jazzy-grid-map-cv \
+      ros-jazzy-behaviortree-cpp \
+      ros-jazzy-twist-mux \
+      ros-jazzy-foxglove-bridge \
+      ros-jazzy-xacro \
+      ros-jazzy-robot-state-publisher \
+      ros-jazzy-joint-state-publisher \
+      ros-jazzy-v4l2-camera \
+      ros-jazzy-cv-bridge \
+      ros-jazzy-image-transport \
+      ros-jazzy-tf-transformations \
       libceres-dev \
       libeigen3-dev \
       python3-colcon-common-extensions \
@@ -71,6 +74,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3-pytest \
       python3-pip \
       python3-protobuf \
+      python3-websockets \
       python3-evdev \
       python3-aiohttp \
       python3-shapely \
@@ -84,12 +88,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
-# Jammy's python3-websockets (9.1) is broken on Python 3.10 (asyncio Lock(loop=) removed):
-# every connection raises TypeError. The teleop relay / GUI bridge need websockets >= 10.
-RUN pip3 install --no-cache-dir 'websockets>=12,<14'
+# NOTE: python3-websockets now comes from Noble's apt (12.x); the old Jammy workaround
+# (pip3 install 'websockets>=12,<14', because Jammy's 9.1 broke on Python 3.10) is gone.
 
 # Fields2Cover: v3 from the prebuilt layer (default) or apt 2.1 (F2C_V3=0).
-# Never both: the 2.1 deb's unversioned libFields2Cover.so in /opt/ros/humble
+# Never both: the 2.1 deb's unversioned libFields2Cover.so in /opt/ros/jazzy
 # would shadow v3 through LD_LIBRARY_PATH.
 ARG F2C_V3=1
 COPY --from=f2c /opt/fields2cover /opt/fields2cover
@@ -97,7 +100,7 @@ RUN if [ "$F2C_V3" = 1 ]; then \
       echo /opt/fields2cover/lib > /etc/ld.so.conf.d/fields2cover.conf && ldconfig; \
     else \
       rm -rf /opt/fields2cover && apt-get update \
-      && apt-get install -y --no-install-recommends ros-humble-fields2cover \
+      && apt-get install -y --no-install-recommends ros-jazzy-fields2cover \
       && rm -rf /var/lib/apt/lists/*; \
     fi
 
@@ -111,8 +114,8 @@ WORKDIR /work
 # so only ensure the mount points exist at build time.
 RUN mkdir -p /work/src /work/launch /work/config /userdata/ros2 /ros2_ws/maps
 
-# Convenience: interactive shells source Humble + workspace overlay if built.
-RUN echo 'source /opt/ros/humble/setup.bash 2>/dev/null || true; \
+# Convenience: interactive shells source Jazzy + workspace overlay if built.
+RUN echo 'source /opt/ros/jazzy/setup.bash 2>/dev/null || true; \
 [ -f /work/install/setup.bash ] && source /work/install/setup.bash || true' >> /root/.bashrc
 
 CMD ["bash"]
@@ -122,17 +125,19 @@ CMD ["bash"]
 # web_video_server: MJPEG over HTTP :8080 (cameras.launch.py web_video_server:=true),
 #   also the source of the RTSP/WebRTC relay (docker/docker-compose.video.yml).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ros-humble-vision-msgs \
-      ros-humble-web-video-server \
+      ros-jazzy-vision-msgs \
+      ros-jazzy-web-video-server \
     && rm -rf /var/lib/apt/lists/*
-# rknn-toolkit-lite2 (rknnlite.api.RKNNLite) for det_ros/seg_ros, aarch64 cp310, from the
+# rknn-toolkit-lite2 (rknnlite.api.RKNNLite) for det_ros/seg_ros, aarch64 cp312, from the
 # official airockchip/rknn-toolkit2 repo (rockchip-linux/rknn-toolkit2 stops at 1.6.0).
-# 2.3.0 = the toolkit the shipped .rknn models were compiled with. librknnrt.so is NOT in
-# the wheel: bind-mount a matching one at /usr/lib/librknnrt.so (compose). Guarded: an
-# unreachable URL only prints a warning (det_ros/seg_ros then exit with a clear error).
+# 2.3.0 = the toolkit the shipped .rknn models were compiled with; it ships a cp312 wheel
+# (Noble is Python 3.12) but no cp314 (hence Lyrical/26.04 is a later step). librknnrt.so
+# is NOT in the wheel: bind-mount a matching one at /usr/lib/librknnrt.so (compose).
+# Guarded: an unreachable URL only prints a warning (det_ros/seg_ros then exit with a clear
+# error). --break-system-packages: Noble's PEP 668 marker rejects plain pip3 install.
 ARG RKNN_LITE2_VERSION=2.3.0
-RUN pip3 install --no-cache-dir \
-      "https://github.com/airockchip/rknn-toolkit2/raw/v${RKNN_LITE2_VERSION}/rknn-toolkit-lite2/packages/rknn_toolkit_lite2-${RKNN_LITE2_VERSION}-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
+RUN pip3 install --break-system-packages --no-cache-dir \
+      "https://github.com/airockchip/rknn-toolkit2/raw/v${RKNN_LITE2_VERSION}/rknn-toolkit-lite2/packages/rknn_toolkit_lite2-${RKNN_LITE2_VERSION}-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
     || echo "WARNING: rknn-toolkit-lite2 ${RKNN_LITE2_VERSION} not installed (wheel unreachable)"
 # ---- crash analysis (docs/crash_recovery.md) ----
 # gdb: read the core dumps that kernel.core_pattern writes to /userdata/ros2/crashes

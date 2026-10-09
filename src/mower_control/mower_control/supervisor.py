@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Supervisor: node liveness + black-box recorder for the Tron stack (ROS 2 Humble).
+"""Supervisor: node liveness + black-box recorder for the Tron stack (ROS 2 Jazzy).
 
 Recovery itself is launch's job (``respawn=True`` on every node, Nav2 servers re-activated
 by ``nav2_lifecycle_manager`` with ``attempt_respawn_reconnection``). This node makes

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Goal-only inputs: subscribed for a goal, fresh before it starts, gone afterwards.
 
-Needs a real ROS 2 Humble environment; skipped elsewhere.
+Needs a real ROS 2 Jazzy environment; skipped elsewhere.
 """
 
 import threading

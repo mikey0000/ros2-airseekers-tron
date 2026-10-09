@@ -7,7 +7,7 @@
 #   SSHPASS=... ./scripts/build_openvins_mower.sh verify  # ov_msckf executable present?
 #
 # Why this shape (load-190 incident: never compile C++ inside the running stack):
-#   * REFUSES to run while mower_humble is up: the owner stops it first
+#   * REFUSES to run while mower_jazzy is up: the owner stops it first
 #     (./scripts/deploy_to_mower.sh down), then brings it back with `up` afterwards.
 #   * Low-memory recipe for a 3.9 GB / no-swap RK3588: one colcon worker, make -j1,
 #     container capped at 2.5 GB / 2 CPUs (an OOM kills the build, not the host),
@@ -24,7 +24,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK_ROOT="$(dirname "$SCRIPT_DIR")"
 MOWER="${MOWER:-root@192.168.1.105}"
-IMAGE="${IMAGE:-mower:humble}"
+IMAGE="${IMAGE:-mower:jazzy}"
 OV_SRC="${OV_SRC:-$STACK_ROOT/third_party/open_vins}"
 [ -f "$OV_SRC/ov_msckf/package.xml" ] || { echo "OpenVINS sources missing at $OV_SRC: run git submodule update --init third_party/open_vins" >&2; exit 1; }
 REMOTE_SRC=/userdata/ros2/src_ext
@@ -37,8 +37,8 @@ remote() { sshpass -e ssh "${SSH_OPTS[@]}" "$MOWER" "$@"; }
 
 preflight() {
   echo "== preflight on $MOWER"
-  if remote "docker ps -q -f name=^mower_humble\$ -f status=running" | grep -q .; then
-    echo "REFUSING: mower_humble is running. Stop the stack first (deploy_to_mower.sh down)." >&2
+  if remote "docker ps -q -f name=^mower_jazzy\$ -f status=running" | grep -q .; then
+    echo "REFUSING: mower_jazzy is running. Stop the stack first (deploy_to_mower.sh down)." >&2
     exit 1
   fi
   if remote "docker ps -q -f name=^ov_build\$" | grep -q .; then
@@ -69,7 +69,7 @@ build() {
   echo "== building in one-off container (expect 30-60 min; watch with: ssh $MOWER docker logs -f ov_build)"
   remote "docker run --rm --name ov_build --memory 2500m --memory-swap 2500m --cpus 2 \
       -v /userdata/ros2_stack:/work -v $REMOTE_SRC:/ov_src:ro -v $REMOTE_BUILD:/ov_build \
-      $IMAGE bash -c 'source /opt/ros/humble/setup.bash && export MAKEFLAGS=-j1 && \
+      $IMAGE bash -c 'source /opt/ros/jazzy/setup.bash && export MAKEFLAGS=-j1 && \
         nice -n 10 colcon build --base-paths /ov_src --build-base /ov_build \
           --install-base /work/install --packages-up-to ov_msckf --parallel-workers 1 \
           --event-handlers console_direct+ \

@@ -1,4 +1,4 @@
-# Compose for the mower's Humble container.
+# Compose for the mower's Jazzy (Noble) container.
 # Run from ros2_stack/:  docker compose -f docker/docker-compose.yml <up|build|run ...>
 # Serial map source: ros2_port_handoff/09_platform/dev_nodes.txt + udev-symlinks.txt
 #   serial_mower->ttyS9 (mower MCU, raw 115200) | serial_imu->ttyS1 | serial_rtk->ttyS4
@@ -6,13 +6,13 @@
 #   cameras: video44/53/62 (left_oa_camera / right_oa_camera / rear_camera)
 
 services:
-  mower_humble:
+  mower_jazzy:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.humble
+      dockerfile: docker/Dockerfile.jazzy
       network: host
-    image: mower:humble
-    container_name: mower_humble
+    image: mower:jazzy
+    container_name: mower_jazzy
     platform: linux/arm64
     privileged: true            # needs raw /dev + serial/ioctl access on the BSP kernel
     network_mode: host          # ROS 2 DDS discovery + Foxglove on LAN without port lists
@@ -20,7 +20,7 @@ services:
     stdin_open: true
     tty: true
     environment:
-      - ROS_DISTRO=humble
+      - ROS_DISTRO=jazzy
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       # 2026-10-09: SHM + UDP (config/cameras/fastdds_shm_udp.xml, read straight from the checkout so no

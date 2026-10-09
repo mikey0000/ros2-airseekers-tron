@@ -1,11 +1,11 @@
 # Starts the Airseekers Tron ROS 2 stack at boot. docker/docker-compose.yml's
-# mower_humble service runs `ros2 launch mower_bringup mower.launch.py`
+# mower_jazzy service runs `ros2 launch mower_bringup mower.launch.py`
 # (restart: unless-stopped), so this unit only has to bring compose up/down.
 # The workspace must already be built (scripts/build.sh or deploy_to_mower.sh build) in
 # /userdata/ros2_stack (the deploy target of scripts/deploy_to_mower.sh).
 # Install: scripts/install_mower_service.sh
 [Unit]
-Description=Airseekers Tron ROS 2 Humble stack (Docker, mower_bringup/mower.launch.py)
+Description=Airseekers Tron ROS 2 Jazzy stack (Docker, mower_bringup/mower.launch.py)
 After=docker.service network-online.target
 Wants=network-online.target
 Requires=docker.service

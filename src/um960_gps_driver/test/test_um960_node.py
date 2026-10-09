@@ -3,7 +3,7 @@ check what the node publishes.
 
 These exercise the whole path - termios open, reader thread, mixed ASCII/binary
 stream splitter, parsers and message construction - against a pty pair, so no
-hardware is needed. They run with real ``rclpy`` message types on a ROS 2 Humble
+hardware is needed. They run with real ``rclpy`` message types on a ROS 2 Jazzy
 machine and with the shim from ``conftest.py`` elsewhere.
 """
 

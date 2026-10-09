@@ -30,7 +30,7 @@ export DEV_ROS_DOMAIN_ID=87
 
 # The full stack on the demo garden: robot on the dock, mission idle.
 docker run --rm -it --network host -e ROS_LOCALHOST_ONLY=1 -e ROS_DOMAIN_ID=142 \
-  -v $PWD:/work -w /work mower:humble-dev-amd64 bash -c \
+  -v $PWD:/work -w /work mower:jazzy-dev-amd64 bash -c \
   "source install/setup.bash; ros2 launch mower_bringup sim.launch.py world:=garden"
 
 # Second shell, same ROS_DOMAIN_ID: start a mow (undock -> RTK -> plan -> transit -> mow).

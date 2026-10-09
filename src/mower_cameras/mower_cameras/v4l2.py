@@ -4,7 +4,7 @@ Why this exists (verified on the mower, 2026-10-06):
 
 * The OA cameras (``/dev/left_oa_camera`` -> video53, ``/dev/right_oa_camera`` -> video44)
   are Rockchip ``rkisp_mainpath`` nodes, which are **Video Capture Multiplanar** only.
-  ``v4l2_camera`` 0.6 (Humble) and OpenCV 4.5.4's V4L2 backend only speak single-planar
+  ``v4l2_camera`` 0.7 (Jazzy) and OpenCV 4.5.4's V4L2 backend only speak single-planar
   ``V4L2_BUF_TYPE_VIDEO_CAPTURE``: v4l2_camera then sees no formats, requests "0x0 UYVY"
   (EINVAL) and fails with "Failed mapping device memory".
 * The container has no GStreamer plugins (only coreelements), so ``v4l2src`` is not an option.

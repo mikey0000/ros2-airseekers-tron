@@ -72,7 +72,7 @@ class TestRejectReason:
         assert "min_fix_status" in reason
 
     def test_status_threshold_is_inclusive(self):
-        # Humble: STATUS_FIX (0) passes against min_fix_status 0, STATUS_NO_FIX
+        # Jazzy: STATUS_FIX (0) passes against min_fix_status 0, STATUS_NO_FIX
         # (-1) does not.
         assert _reject_reason(
             _fix(status=0), 0, 100.0, frozenset()) is None
@@ -90,7 +90,7 @@ class TestRejectReason:
             frozenset()) is None
 
     def test_unknown_status_values_are_rejected_by_the_whitelist(self):
-        # A status value Humble does not define (e.g. a driver bug) is
+        # A status value Jazzy does not define (e.g. a driver bug) is
         # numerically >= STATUS_FIX but must not be fused.
         used = frozenset(DEFAULT_USED_FIXES)
         for status in (3, 7, 8):
@@ -133,7 +133,7 @@ class TestRejectReason:
             _fix(status=7), 0, 100.0,
             frozenset()) is None
 
-    def test_default_used_fixes_cover_every_humble_fix(self):
+    def test_default_used_fixes_cover_every_jazzy_fix(self):
         assert DEFAULT_USED_FIXES == (
             NavSatStatus.STATUS_FIX,
             NavSatStatus.STATUS_SBAS_FIX,

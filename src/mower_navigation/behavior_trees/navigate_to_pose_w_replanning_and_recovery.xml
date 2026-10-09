@@ -1,7 +1,8 @@
 
-<!-- mower_navigation: derived from the Nav2 Humble 1.1.x default tree. Changes:
+<!-- mower_navigation: derived from the Nav2 Humble 1.1.x default tree, loaded on Jazzy's
+     BT.CPP v4 (hence BTCPP_format="4"). Changes:
      1. FollowPath gets goal_checker_id="general_goal_checker". controller_server loads two goal
-        checkers (general_goal_checker, coverage_goal_checker) and Humble rejects a FollowPath
+        checkers (general_goal_checker, coverage_goal_checker) and Jazzy rejects a FollowPath
         goal with an empty goal_checker_id when more than one is loaded.
      2. Conservative recoveries: NO Spin and NO BackUp. A mow often starts parked on the dock;
         a spin there can hit the charger and a blind backup has no rear sensing. Recoveries
@@ -26,7 +27,7 @@
   recovery actions specific to planning / control as well as general system issues.
   This will be continuous if a kinematically valid planner is selected.
 -->
-<root main_tree_to_execute="MainTree">
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="2" name="NavigateRecovery">
       <PipelineSequence name="NavigateWithReplanning">

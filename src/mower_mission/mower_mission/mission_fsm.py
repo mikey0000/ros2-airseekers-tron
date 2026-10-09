@@ -151,7 +151,7 @@ def parse_stereo_stale(data, logger_name=b'local_costmap'):
     return float(mo.group(1)) if mo else None
 
 
-# Controller aborts caused by lethal costmap cells on the path ahead (Humble RPP
+# Controller aborts caused by lethal costmap cells on the path ahead (Jazzy RPP
 # "RegulatedPurePursuitController detected collision ahead!", FTC "collision detected ...",
 # "lethal footprint collision"). A plain "Failed to make progress" is NOT one (grass stall).
 # 2026-10-09: MPPI (transit FollowPath) aborts with "Optimizer fail to compute path" only when
@@ -3145,7 +3145,7 @@ class MissionFSM:
                 end = min(m.chunk_end, last)
                 left = cum[end] - cum[min(prog, end)]
                 if left > self.p.follow_end_tolerance_m:
-                    # Stock Humble goal checkers only look at the final pose; a coverage
+                    # Stock Jazzy goal checkers only look at the final pose; a coverage
                     # path that passes near its own end "succeeds" early.
                     if m.premature >= self.p.follow_premature_retries:
                         self._subpath_failed('follow_path keeps reporting success with '

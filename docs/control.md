@@ -1,6 +1,6 @@
 # mower_control — cmd_vel shaping, slip detection, IMU calibration
 
-`mower_control` (ROS 2 Humble, `ros2_stack/src/mower_control`) holds the three
+`mower_control` (ROS 2 Jazzy, `ros2_stack/src/mower_control`) holds the three
 control-support nodes that sit between high-level planners/teleop and the
 hardware drivers. All three are ports of MowgliNext patterns — see
 `ros2_stack/docs/mowglinext_baseline.md` section 4.3 — adapted to the

@@ -1,6 +1,5 @@
 <library path="mowgli_nav2_plugins">
   <class
-    name="mowgli_nav2_plugins/FTCController"
     type="mowgli_nav2_plugins::FTCController"
     base_class_type="nav2_core::Controller">
     <description>

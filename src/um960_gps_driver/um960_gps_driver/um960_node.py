@@ -126,7 +126,7 @@ FIX_BEARING_IDS = frozenset({"BESTNAV", "BESTNAVA"})
 FIXED_POS_TYPES = frozenset({1, 10, 11, 12, 17, 19})
 
 # NMEA GGA quality -> sensor_msgs/NavSatStatus.STATUS_*.
-# Humble only knows NO_FIX(-1) / FIX(0) / SBAS_FIX(1) / GBAS_FIX(2). Follow the
+# Jazzy only knows NO_FIX(-1) / FIX(0) / SBAS_FIX(1) / GBAS_FIX(2). Follow the
 # nmea_navsat_driver convention: differential -> SBAS_FIX, RTK fixed *and* float ->
 # GBAS_FIX (the gate distinguishes them by position covariance), dead reckoning -> FIX.
 STATUS_BY_QUALITY = {
@@ -364,7 +364,7 @@ class Um960Node(Node):
     def _on_set_parameters(self, params) -> SetParametersResult:
         """Validate correction parameter changes and schedule a reconfiguration.
 
-        rclpy (Humble) calls this before the values are stored, so the restart runs
+        rclpy (Jazzy) calls this before the values are stored, so the restart runs
         a little later on a timer thread and reads them back with get_parameter().
         """
         touched = False

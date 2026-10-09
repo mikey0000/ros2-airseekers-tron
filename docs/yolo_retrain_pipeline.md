@@ -203,7 +203,7 @@ inconsistent with the rest of `ros2_stack`. Mitigation: keep the node ROS-agnost
 jpeg_bytes)` tuples, so only `capture_node.py` is ROS-specific and a ~40-line `rospy` sibling
 covers this case. **This is the recommended first cut.**
 
-**B. Direct V4L2 grab from inside the Humble container** (`privileged: true`, `/dev` bind-mounted
+**B. Direct V4L2 grab from inside the Jazzy container** (`privileged: true`, `/dev` bind-mounted
 in `docker/docker-compose.yml`). No ROS involved at all; only valid with the vendor camera node
 stopped. Use it for the calibration set (§6.3), where you want frames the vendor pipeline
 isn't touching.
@@ -219,7 +219,7 @@ do: bridge only `/vio/right/image_raw/compressed`, `/rear_camera/image_raw/compr
 Independent of A/B/C, `/userdata/frames` must be bind-mounted into the container:
 
 ```yaml
-# docker/docker-compose.yml, mower_humble service
+# docker/docker-compose.yml, mower_jazzy service
     volumes:
       - ..:/work
       - /userdata/frames:/userdata/frames     # add; created by setup script, not committed
@@ -818,7 +818,7 @@ de-quantise-and-decode it or approximate the baseline with the vendor node's own
 ### 7.2 On the mower, model still in a scratch location
 
 ```bash
-# 1) run the new .rknn through the same path det_ros uses, from the Humble container
+# 1) run the new .rknn through the same path det_ros uses, from the Jazzy container
 #    (rknn-toolkit-lite2, or the rknn_model_zoo yolov8 python demo) against a fixed
 #    frame set in /userdata/frames/qa/ and diff against the 7.1 fp32 reference
 # 2) NPU load while det_ros still runs the stock model. Rockchip's rknpu debugfs
@@ -880,7 +880,7 @@ planner) intact, which is the only way a new model can change behaviour. Constra
 class list and order, exact input geometry, 9-output head, `rknn-toolkit2` ≤ 2.3.0, model
 path in `param/cfg.yaml`.
 
-**Option B — our own node next to `det_ros`.** Write it in the Humble container with
+**Option B — our own node next to `det_ros`.** Write it in the Jazzy container with
 `rknn-toolkit-lite2` (or C++ against `librknnrt`), subscribe to `/vio/right/image_raw` and
 `/vio/depth/image_raw`, and pin it to the idle NPU core:
 

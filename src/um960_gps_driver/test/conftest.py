@@ -14,7 +14,7 @@ _iso_os.environ['ROS_DOMAIN_ID'] = _iso_os.environ.get('MOWER_TEST_ROS_DOMAIN_ID
 The parser and serial tests run anywhere. The node tests need ``rclpy``; when it is
 not importable (a plain Python environment, no ROS install) a small shim is
 installed so the node's parsing and message-building logic is still exercised. On a
-real ROS 2 Humble machine the genuine message classes are used instead, so the same
+real ROS 2 Jazzy machine the genuine message classes are used instead, so the same
 tests cover the real types.
 """
 

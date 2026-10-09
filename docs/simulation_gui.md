@@ -33,7 +33,7 @@ lines up. map_server reads `areas.dat`/`dock_pose.yaml` from the same directory.
 
 ## Prerequisites (once)
 
-- Docker, and the dev image `mower:humble-dev-amd64`. `dev_build.sh` builds the image
+- Docker, and the dev image `mower:jazzy-dev-amd64`. `dev_build.sh` builds the image
   if it is missing.
 - Our GUI built for amd64 from `third_party/mowglinext/gui`: `./scripts/sim_gui.sh build-gui`
   (= `ARCH=amd64 ./gui/build.sh`, tag `mower-gui:amd64`, a few minutes). Rebuild it after any

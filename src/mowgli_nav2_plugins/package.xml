@@ -7,7 +7,7 @@
     Nav2 controller plugin implementing the Follow-The-Carrot (FTC) algorithm
     with decoupled PID for outdoor mowing robots.
     Ported from ftc_local_planner (mbf_costmap_core / ROS1) to nav2_core (ROS2);
-    this copy is backported from MowgliNext (Kilted) to Nav2 Humble.
+    this copy is backported from MowgliNext (Kilted) to Nav2 Jazzy.
   </description>
   <maintainer email="cedric@mowgli.dev">Cedric</maintainer>
   <license>GPL-3.0</license>

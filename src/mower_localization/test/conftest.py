@@ -15,7 +15,7 @@ The gate-decision logic in ``gps_gate._reject_reason`` is pure and
 runs anywhere. The node tests need ``rclpy``; when it is not
 importable (plain Python, no ROS install) a small shim stands in,
 mirroring ``um960_gps_driver/test/conftest.py`` so the same tests run
-unchanged inside the Humble container.
+unchanged inside the Jazzy container.
 """
 
 import os
@@ -42,7 +42,7 @@ def _install_rclpy_shim() -> None:
             self.frame_id = ""
 
     class NavSatStatus:
-        # Real ROS 2 Humble values (sensor_msgs/msg/NavSatStatus.msg).
+        # Real ROS 2 Jazzy values (sensor_msgs/msg/NavSatStatus.msg).
         STATUS_NO_FIX = -1
         STATUS_FIX = 0
         STATUS_SBAS_FIX = 1

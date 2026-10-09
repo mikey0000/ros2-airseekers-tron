@@ -56,7 +56,7 @@ originally ours, or GPL-3.0(-or-later) and originally yours.
 
 We ported the Airseekers Tron mower (RK3588 brain, Artery AT32 motor MCUs,
 UM960 RTK, WIT IMU, Metoak stereo, RK3588 NPU) from the vendor's ROS 1 stack to
-**ROS 2 Humble**, in Docker, modelled on MowgliNext. 30 packages plus a
+**ROS 2 Jazzy**, in Docker, modelled on MowgliNext. 30 packages plus a
 per-package test suite (per-package test counts in `docs/STATUS.md`),
 one entry point: `ros2 launch mower_bringup mower.launch.py`.
 
@@ -166,13 +166,13 @@ Legend — **Needed**: required for MowgliNext to run on this hardware.
 
 We deliberately keep two workspaces and glue them over DDS rather than merging
 source trees. This is already sketched in `mowglinext_integration.md` §6.
-The YAML below is the **target**, not what runs today: our `mower_humble`
+The YAML below is the **target**, not what runs today: our `mower_jazzy`
 container currently uses `RMW_IMPLEMENTATION=rmw_fastrtps_cpp` with a Fast DDS
 profile (`docker/docker-compose.yml`), so one side has to switch before the two
 stacks can discover each other.
 
 ```yaml
-# mower_humble  — ours: drivers, control, perception, GUI adapter
+# mower_jazzy  — ours: drivers, control, perception, GUI adapter
   network_mode: host
   ipc: host
   environment: [ROS_DOMAIN_ID=0, RMW_IMPLEMENTATION=rmw_cyclonedds_cpp]   # today: rmw_fastrtps_cpp
@@ -187,7 +187,7 @@ stacks can discover each other.
 
 Rules that fall out:
 
-- **One owner per serial device.** Only `mower_humble` may open `ttyS9`
+- **One owner per serial device.** Only `mower_jazzy` may open `ttyS9`
   (chassis), `ttyS1` (IMU), `ttyS4` (RTK). `mowgli_hardware` must be disabled in
   `mowgli_bringup`.
 - **RMW must match** on both sides or you get silent discovery failures. We
@@ -362,7 +362,7 @@ ros2_stack/
 ├── src/                        # 31 packages, 30 in scope (§2, §9)
 ├── third_party/                # mowglinext/ (vendored subset), open_vins/ (submodule); COLCON_IGNOREd
 ├── config/                     # calibration, cameras, gui, systemd, udev, urdf, vio, vio_metoak, vio_wit
-├── docker/                     # Dockerfile.humble, docker-compose{,.gui,.video}.yml, dev-amd64, fields2cover
+├── docker/                     # Dockerfile.jazzy, docker-compose{,.gui,.video}.yml, dev-amd64, fields2cover
 ├── scripts/                    # build.sh, dev_build.sh, deploy_to_mower.sh, run_stack.sh, install_mower_service.sh, …
 └── docs/                       # this file and ~30 others
 ```
@@ -481,7 +481,7 @@ Host is Ubuntu 20.04 with the vendor services present but **stopped** —
 
 | Unit | Purpose |
 |---|---|
-| `mower-ros2.service` | `docker compose … up -d` / `down` for `mower_humble` (example in `config/systemd/`) |
+| `mower-ros2.service` | `docker compose … up -d` / `down` for `mower_jazzy` (example in `config/systemd/`) |
 | `mower-stereo-watchdog.service` | re-runs the Metoak init script when the front stereo delivers no frames |
 
 Docker: data-root `/userdata/docker`, `fuse-overlayfs` storage driver,
@@ -489,7 +489,7 @@ Docker: data-root `/userdata/docker`, `fuse-overlayfs` storage driver,
 `CONFIG_POSIX_MQUEUE`), `DOCKER_BUILDKIT=0`. The workspace is bind-mounted
 `ros2_stack → /work`; the install is symlinked back to `/work/src`, so **editing
 Python and restarting the container is enough — no colcon rebuild.**
-Images: `mower:humble` (device), `mower:humble-dev-amd64` (host dev/CI).
+Images: `mower:jazzy` (device), `mower:jazzy-dev-amd64` (host dev/CI).
 
 ---
 
@@ -696,7 +696,7 @@ calibration files (§0).
 
 Bench, wheels-up, no motion:
 
-1. Start `mower_humble` (our drivers + `gui_bridge`).
+1. Start `mower_jazzy` (our drivers + `gui_bridge`).
 2. Start `mowgli_ros2` with `mowgli_hardware` disabled and the §3.2 remaps.
 3. `ros2 topic echo /gps/fix`, `/imu/data`, `/wheel_odom`, `/battery_state`,
    `/hardware_bridge/status` — if all five appear with sane values, the seam

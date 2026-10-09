@@ -47,7 +47,7 @@ from mower_cameras.image_cdr import ImageCdr
 def to_image_msg(stamp, frame_id, frame):
     """BGR/mono numpy image -> ``Image`` without the per-element rclpy setter check.
 
-    Assigning ``bytes`` to ``Image.data`` makes the Humble rclpy setter validate every
+    Assigning ``bytes`` to ``Image.data`` makes the Jazzy rclpy setter validate every
     element in Python (0.998 s for a 1080p bgr8 frame, measured on the mower); an
     ``array.array('B')`` is accepted as-is (0.005 s).
     """

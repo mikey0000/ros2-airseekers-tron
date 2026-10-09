@@ -277,8 +277,9 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 
 ## Differences from MowgliNext `behavior_tree_node`
 
-* **No behaviour tree.** Humble ships BehaviorTree.CPP v3 and the upstream tree is v4, so the
-  logic is a Python state machine instead. The guard order is the same as upstream's
+* **No behaviour tree (yet).** The logic is a Python state machine instead of upstream's
+  tree. Jazzy's Nav2 does ship BehaviorTree.CPP v4, matching upstream, so a future port to
+  the upstream trees is possible; the guard order here is the same as upstream's
   `ReactiveSequence`.
 * **Not ported:**
   * LiDAR / scan guards, collision monitor, fusion_graph, heading calibration and the escape
@@ -299,7 +300,7 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
   latches `BOUNDARY_EMERGENCY_STOP`. The blade never spins up while the violation is
   flagged. Upstream instead navigates to the map server's `get_recovery_point`, which is not
   part of our contract.
-* **FollowPath goals are chunked, and premature success is caught.** The Humble
+* **FollowPath goals are chunked, and premature success is caught.** The Jazzy
   `coverage_goal_checker` is a stock `SimpleGoalChecker` with 0.10 m tolerance, and it only
   looks at the final pose. A coverage path passes near its own end (closed headland rings,
   a last swath ending at the ring start), so the goal "succeeds" early. Seen live: a 5.6 s

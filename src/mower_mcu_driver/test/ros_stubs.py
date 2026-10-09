@@ -1,6 +1,6 @@
 """Minimal ROS stand-ins so the driver can be imported and smoke-tested without ROS.
 
-``ros:humble`` (and any colcon test environment) provides the real packages; this module only
+``ros:jazzy`` (and any colcon test environment) provides the real packages; this module only
 kicks in when they are missing, which lets the tests in this directory run on a plain host
 with nothing but CPython 3.
 

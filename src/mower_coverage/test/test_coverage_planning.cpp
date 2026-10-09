@@ -5,7 +5,7 @@
 // in CI instead of on the robot.
 //
 // Expectations are pinned to the empirically verified F2C 2.1.0 runtime
-// behavior (probed against ros-humble-fields2cover): generateHeadlands with a
+// behavior (probed against ros-jazzy-fields2cover): generateHeadlands with a
 // negative width DILATES the cell, the outermost driven pass lands on the
 // recorded line, and BoustrophedonOrder chains consecutive swaths.
 

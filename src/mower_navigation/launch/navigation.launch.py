@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Nav2 navigation stack for the Airseekers Tron (ROS 2 Humble).
+"""Nav2 navigation stack for the Airseekers Tron (ROS 2 Jazzy).
 
 Starts controller_server, planner_server, behavior_server, bt_navigator,
 velocity_smoother, collision_monitor (+ its plain-node helper collision_zone_gate) and

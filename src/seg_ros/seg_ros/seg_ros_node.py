@@ -145,7 +145,7 @@ class SegRosNode(Node):
 def main(args=None):
     if _DEP_ERROR is not None:
         print(f'[seg_ros] FATAL: missing dependency ({_DEP_ERROR}); install '
-              'ros-humble-cv-bridge / python3-opencv (docker/Dockerfile.humble).',
+              'ros-jazzy-cv-bridge / python3-opencv (docker/Dockerfile.jazzy).',
               file=sys.stderr)
         sys.exit(2)
     rclpy.init(args=args)

@@ -1,6 +1,5 @@
 <library path="mowgli_nav2_plugins">
   <class
-    name="mowgli_nav2_plugins/PathProgressGoalChecker"
     type="mowgli_nav2_plugins::PathProgressGoalChecker"
     base_class_type="nav2_core::GoalChecker">
     <description>
@@ -14,7 +13,6 @@
     </description>
   </class>
   <class
-    name="mowgli_nav2_plugins/LegGoalChecker"
     type="mowgli_nav2_plugins::LegGoalChecker"
     base_class_type="nav2_core::GoalChecker">
     <description>

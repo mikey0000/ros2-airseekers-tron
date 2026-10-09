@@ -1,4 +1,4 @@
-# twist_mux 4.3.0 (ROS 2 Humble). Messages are geometry_msgs/Twist; there is
+# twist_mux 4.5.0 (ROS 2 Jazzy). Messages are geometry_msgs/Twist; there is
 # no `use_stamped` parameter in this version.
 twist_mux:
   ros__parameters:

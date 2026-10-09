@@ -32,6 +32,7 @@ The packages consumed by `base_ble` and the MQTT bridge are `common`, `map`, `te
 
 ## Protobuf version
 
-Generated for protobuf 3.12 (Ubuntu 22.04 Jammy apt `python3-protobuf` 3.12.4, which has no
-`google.protobuf.internal.builder`). Regenerate with the script inside the Jammy dev container
-(`protobuf-compiler` 3.12.4, `/usr/bin/protoc`, repo root mounted); do not generate with a newer protoc.
+Generated for protobuf 3.12; these files also import on Noble's `python3-protobuf` 3.21.12
+(protobuf runtime >= the gencode version). Regenerate with the script inside the Noble dev
+container (`protobuf-compiler` 3.21.12, `/usr/bin/protoc`, repo root mounted); do not generate
+with a protoc newer than the runtime.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ROS 2 Humble driver node for the Airseekers Tron chassis/cutter MCU serial bus.
+"""ROS 2 Jazzy driver node for the Airseekers Tron chassis/cutter MCU serial bus.
 
 The MCU sits behind ``/dev/serial_mower`` (``ttyS9``, RK3588 UART9, 115200 8N1, no flow
 control).  The cutter board is the gateway: the chassis board (wheels, bumper, lift, stop)
@@ -440,7 +440,7 @@ def _yaw_to_quaternion(yaw):
 class _TermiosSerial:
     """Tiny pyserial-compatible fallback (``read``/``write``/``in_waiting``/``close``).
 
-    ``python3-serial`` may be missing in a freshly pulled ``ros:humble`` image, and the
+    ``python3-serial`` may be missing in a freshly pulled ``ros:jazzy`` image, and the
     offline loopback test only ever talks to a pty - so if pyserial is not importable we
     configure the tty ourselves in raw 8N1 mode with the ``termios`` stdlib module.  On a pty
     the baud rate is meaningless; on a real UART it still gets applied.
@@ -772,7 +772,7 @@ class McuNode(Node):
         self._cmd_speed_pub = self.create_publisher(TwistStamped, '/mcu/commanded_speed', 10)
         self._sent_speed_pub = self.create_publisher(TwistStamped, '/mcu/sent_speed', 10)
 
-        # Humble convention (twist_mux 4.3 / Nav2 Humble): unstamped Twist on /cmd_vel.
+        # Jazzy convention (twist_mux 4.5 / Nav2 Jazzy): unstamped Twist on /cmd_vel.
         # /cmd_vel_stamped mirrors the vendor node's second input.
         # With real rclpy the subscriptions are served by a lean pump thread (see sub_pump.py)
         # instead of the executor; the 100 Hz /imu/data alone cost ~10 % of a core there.

@@ -8,7 +8,7 @@
 controller_server:
   ros__parameters:
     FollowCoveragePathFTC:
-      plugin: "mowgli_nav2_plugins/FTCController"
+      plugin: "mowgli_nav2_plugins::FTCController"
       desired_linear_vel: 0.3        # GUI alias -> speed_fast 0.30, speed_slow 0.24
       speed_fast: 0.20
       speed_fast_threshold: 0.5

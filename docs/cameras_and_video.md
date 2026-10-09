@@ -137,7 +137,7 @@ argument of `perception.launch.py`.
 
 - **Python runtime:** `rknn-toolkit-lite2` **2.3.0** (aarch64, cp310), from
   `airockchip/rknn-toolkit2`. `rockchip-linux/rknn-toolkit2` stops at 1.6.0.
-  `docker/Dockerfile.humble` installs it as an appended step. That step is guarded, so an
+  `docker/Dockerfile.jazzy` installs it as an appended step. That step is guarded, so an
   unreachable URL only prints a warning. The wheel's dependencies are `numpy` (the system
   1.21.5 satisfies it), `psutil` and `ruamel.yaml`; aarch64 wheels exist for both.
 - **C runtime `librknnrt.so`:** the wheel does not include it, so it must be bind-mounted
@@ -152,7 +152,7 @@ argument of `perception.launch.py`.
   Use the 2.3.0 runtime:
 
   ```yaml
-  # docker/docker-compose.yml, service mower_humble, volumes:
+  # docker/docker-compose.yml, service mower_jazzy, volumes:
         - /userdata/ros2/lib/librknnrt.so:/usr/lib/librknnrt.so:ro   # 2.3.0 from install_models.sh --runtime
   ```
 
@@ -167,8 +167,8 @@ argument of `perception.launch.py`.
   driver is RKNPU v0.9.8.
 - **Device nodes:** the container is `privileged` with `/dev:/dev`, so the RKNPU device
   (`/dev/dri/renderD*` or `/dev/rknpu`, depending on the BSP) is visible.
-- **ROS packages:** `ros-humble-vision-msgs` and `ros-humble-web-video-server` are
-  appended to `Dockerfile.humble`. `vision_msgs` was not in either image.
+- **ROS packages:** `ros-jazzy-vision-msgs` and `ros-jazzy-web-video-server` are
+  appended to `Dockerfile.jazzy`. `vision_msgs` was not in either image.
   `Dockerfile.dev-amd64` still lacks both. Add them there too if dev images should run
   `det_ros` and `obstacle_guard`; the verification below installed them at run time.
 - **Startup behaviour:**
@@ -327,7 +327,7 @@ perception = IncludeLaunchDescription(
 # ... + [cameras, perception] in the returned LaunchDescription
 ```
 
-## 7. Verified off-robot (amd64 dev container `mower:humble-dev-amd64`)
+## 7. Verified off-robot (amd64 dev container `mower:jazzy-dev-amd64`)
 
 - `colcon build` succeeded for `mower_cameras`, `det_ros`, `seg_ros`, `mower_rknn`,
   `mower_vision` and `mower_bringup`.
@@ -388,7 +388,7 @@ perception = IncludeLaunchDescription(
   loads, `init_runtime(NPU_CORE_0_1_2)` succeeds, inference on a 640x480x3 uint8 input takes **86 ms**
   and returns the expected 9 outputs `[1,64,80,60] [1,22,80,60] [1,1,80,60] ... [1,64,20,15] [1,22,20,15] [1,1,20,15]`.
   RKNN driver 0.9.8.
-- Cameras (all three streaming in `mower_humble`, measured with `ros2 topic hz`
+- Cameras (all three streaming in `mower_jazzy`, measured with `ros2 topic hz`
   inside the container):
 
   | Topic | Rate | Size / format | Producer CPU (10 s `top`, % of one core) |

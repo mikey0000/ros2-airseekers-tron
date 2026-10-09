@@ -22,7 +22,12 @@
 #include <utility>
 #include <vector>
 
-#include <nav2_core/exceptions.hpp>
+// Nav2 1.3 (Jazzy) split nav2_core/exceptions.hpp: PlannerException now lives in
+// planner_exceptions.hpp and ControllerException in controller_exceptions.hpp. A controller
+// must throw ControllerException — the controller server's dedicated catch. (Humble's
+// controller server used PlannerException throughout, which is why the Humble port threw
+// that type; Jazzy replaced it with ControllerException.)
+#include <nav2_core/controller_exceptions.hpp>
 #include <nav2_costmap_2d/costmap_2d.hpp>
 #include <nav2_util/node_utils.hpp>
 #include <tf2/utils.h>
@@ -67,7 +72,7 @@ void FTCController::configure(const rclcpp_lifecycle::LifecycleNode::WeakPtr& pa
                                                               rclcpp::QoS(1));
   // PORT: "~/" so the topic is /controller_server/<plugin>/global_plan, the
   // PathProgressGoalChecker plan_topic. A bare relative name resolves to
-  // /<plugin>/global_plan on Humble, the checker never saw a plan and fell back
+  // /<plugin>/global_plan on Jazzy, the checker never saw a plan and fell back
   // to SimpleGoalChecker semantics after 5 s (2026-10-06 log) — on a closed
   // ring (start == end) that can end the ring early.
   global_plan_pub_ = node->create_publisher<nav_msgs::msg::Path>("~/" + plugin_name_ + "/global_plan",
@@ -985,7 +990,7 @@ geometry_msgs::msg::TwistStamped FTCController::computeVelocityCommands(
 
   if (is_crashed_)
   {
-    throw nav2_core::PlannerException("FTCController: robot has crashed / collision detected.");
+    throw nav2_core::ControllerException("FTCController: robot has crashed / collision detected.");
   }
 
   if (current_state_ == PlannerState::FINISHED)
@@ -1131,7 +1136,7 @@ geometry_msgs::msg::TwistStamped FTCController::computeVelocityCommands(
       }
       catch (const tf2::TransformException& ex)
       {
-        throw nav2_core::PlannerException(
+        throw nav2_core::ControllerException(
             std::string("FTCController: TF lookup failed (deviation reproject): ") + ex.what());
       }
     }
@@ -1139,7 +1144,7 @@ geometry_msgs::msg::TwistStamped FTCController::computeVelocityCommands(
   else if (checkCollision(config_.obstacle_lookahead))
   {
     is_crashed_ = true;
-    throw nav2_core::PlannerException("FTCController: collision detected along lookahead path.");
+    throw nav2_core::ControllerException("FTCController: collision detected along lookahead path.");
   }
 
   // 4. PID velocity computation.
@@ -1147,7 +1152,7 @@ geometry_msgs::msg::TwistStamped FTCController::computeVelocityCommands(
 
   if (is_crashed_)
   {
-    throw nav2_core::PlannerException(
+    throw nav2_core::ControllerException(
         "FTCController: collision detected during velocity computation.");
   }
 
@@ -1548,7 +1553,7 @@ void FTCController::update_control_point(double dt)
   }
   catch (const tf2::TransformException& ex)
   {
-    throw nav2_core::PlannerException(std::string("FTCController: TF lookup failed: ") +
+    throw nav2_core::ControllerException(std::string("FTCController: TF lookup failed: ") +
                                          ex.what());
   }
 
@@ -1941,7 +1946,7 @@ bool FTCController::waitOrThrowForObstacle(const std::string& reason)
   if (elapsed > config_.obstacle_wait_timeout_s)
   {
     is_crashed_ = true;
-    throw nav2_core::PlannerException(std::string("FTCController: ") + reason +
+    throw nav2_core::ControllerException(std::string("FTCController: ") + reason +
                                          ", aborting strip after " +
                                          std::to_string(static_cast<int>(elapsed)) + "s wait.");
   }

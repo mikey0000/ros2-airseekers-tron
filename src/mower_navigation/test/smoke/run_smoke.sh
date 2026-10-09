@@ -29,7 +29,7 @@ else
   launch_args=""; prep=":"; smoke_args=""
 fi
 docker run --rm --network host -e ROS_LOCALHOST_ONLY=1 -e ROS_DOMAIN_ID=81 -v "$PWD":/work -w /work \
-  mower:humble-dev-amd64 bash -c "source /opt/ros/humble/setup.bash; source install/setup.bash; $prep
+  mower:jazzy-dev-amd64 bash -c "source /opt/ros/jazzy/setup.bash; source install/setup.bash; $prep
   ros2 launch mower_navigation navigation.launch.py $launch_args > /work/log/smoke_launch.log 2>&1 &
   sleep 3
   timeout 480 python3 src/mower_navigation/test/nav_stack_smoke.py --log /work/log/smoke_launch.log $smoke_args

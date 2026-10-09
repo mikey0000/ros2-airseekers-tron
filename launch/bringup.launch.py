@@ -1,4 +1,4 @@
-"""Top-level bringup for the Airseekers Tron ROS 2 (Humble) driver stack.
+"""Top-level bringup for the Airseekers Tron ROS 2 (Jazzy) driver stack.
 
 Starts the three hardware drivers plus the bumper safety-routing controller.
 Planner/task nodes (MowgliNext-derived) are layered on top once routing/docking

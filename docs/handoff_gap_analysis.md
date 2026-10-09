@@ -13,7 +13,7 @@ Nothing outside this file was modified.
 
 `ros2_port_handoff/` is the read-only bundle captured from the mower
 (firmware `v1.3.27-rc.1-tron+20260713`, 2026-10-05, 4,090 files, ~1.1 GB
-incl. the excluded-identity dir). `ros2_stack/` is the ROS 2 Humble port
+incl. the excluded-identity dir). `ros2_stack/` is the ROS 2 Jazzy port
 under construction (git repo, 11 commits, 8 source packages). This document
 inventories each handoff subdirectory against what the stack already contains
 and ends with a prioritised, path-concrete "bring into ros2_stack" list.
@@ -32,7 +32,7 @@ and ends with a prioritised, path-concrete "bring into ros2_stack" list.
 
 Also present: `launch/bringup.launch.py` (the three serial drivers),
 `launch/nav2.launch.py` (`gps_gate` → `navsat_transform_node` → `ekf_node` →
-Nav2 controller/planner + lifecycle), `docker/{Dockerfile.humble,docker-compose.yml}`,
+Nav2 controller/planner + lifecycle), `docker/{Dockerfile.jazzy,docker-compose.yml}`,
 `scripts/{build,run_stack,preflight,setup_mower}.sh`, and an **empty top-level
 `config/` dir**.
 
@@ -254,7 +254,7 @@ Rockchip `librga` 2.x + headers, and a README.
 
 **Already represented:** nothing in `ros2_stack/` — correctly so. These are
 **dockerless by necessity**: they are built for the stock 20.04/aarch64 host
-ABI and the 5.10 BSP kernel, and the Humble container is a Jammy userland.
+ABI and the 5.10 BSP kernel, and the Jazzy container is a Noble userland.
 They must remain on the host (`/usr/metoak`, `/lib/modules/...`); the
 container only needs them if a closed vendor binary is ever run host-side.
 
@@ -579,7 +579,7 @@ completeness, `P2` = full-contract / later phase, `P3` = reference only.
 |---|---|
 | `02_mcu_firmware/` (5.8 MB) | Flashing is forbidden until the driver works; version facts already in `mcu_protocol_spec.md` §1. |
 | `04_full_src_tree/` (202 MB) | Architecture reference only; `install.sh` is the OTA flasher (caution). |
-| `05_driver_binaries/` (54 MB) | Closed binaries needing the 20.04 host ABI; cannot run in the Jammy container. |
+| `05_driver_binaries/` (54 MB) | Closed binaries needing the 20.04 host ABI; cannot run in the Noble container. |
 | `06_vendor_sdks/` (111 MB) | Dockerless host-side SDKs (Metoak OpenCV 4.2, kmods, AP6256 firmware, librga) — wrong ABI for the container; document in `docs/deployment.md` host prerequisites instead. |
 | `09_platform/` (752 KB) | Facts already cited; pending action: `dtc -I dtb -O dts device-tree.dtb > ros2_stack/docs/reference/device-tree.dts`. |
 | `11_perception_models/` (59 MB) | Binary weights; keep in the handoff, reference by path (I/O contract already extracted in `yolo_retrain_pipeline.md`). |

@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""In-memory "black box" for ROS 2 Humble (pure Python; rosbag2_py only inside ``dump``).
+"""In-memory "black box" for ROS 2 Jazzy (pure Python; rosbag2_py only inside ``dump``).
 
-Humble's ``ros2 bag record`` has no snapshot mode (``--snapshot-mode`` is Iron+), so the
-supervisor keeps the last ``window_s`` seconds of a few key topics in RAM as *serialized*
+The supervisor keeps the last ``window_s`` seconds of a few key topics in RAM as *serialized*
 CDR bytes (no deserialization cost) and writes them out as a regular rosbag2 (sqlite3)
-when something goes wrong. The result plays back with ``ros2 bag play <dir>/bag``.
+when something goes wrong. The result plays back with ``ros2 bag play <dir>/bag``. This is
+independent of ``ros2 bag record --snapshot-mode`` (available since Iron/Jazzy): the buffer is
+scoped to the supervisor and only the handful of topics that matter for a crash.
 
 :class:`SnapshotBuffer`
     per-topic ring buffer with a time window, a per-topic minimum period (rate cap) and a

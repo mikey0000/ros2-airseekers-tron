@@ -46,7 +46,7 @@ def turf_yaw_rate(v, w):
 
 
 def rpp_rotate_cmd(heading_err):
-    """Humble RPP rotate_to_heading: linear 0, angular +-0.3 while |err| > min angle."""
+    """Jazzy RPP rotate_to_heading: linear 0, angular +-0.3 while |err| > min angle."""
     if abs(heading_err) > 0.785:
         return 0.0, math.copysign(0.3, heading_err)
     return 0.3, 0.0           # handed back to pure pursuit (end of the pivot)

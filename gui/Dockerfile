@@ -1,5 +1,5 @@
 #
-# MowgliNext web GUI, slimmed for the Airseekers Tron ROS 2 Humble port.
+# MowgliNext web GUI, slimmed for the Airseekers Tron ROS 2 Jazzy port.
 #
 # Build context MUST be third_party/mowglinext/gui (see gui/build.sh):
 #   docker build -f gui/Dockerfile -t mower-gui:latest third_party/mowglinext/gui

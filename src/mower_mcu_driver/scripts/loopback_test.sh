@@ -2,7 +2,7 @@
 # Offline loopback test for mower_mcu_driver: socat pty pair + synthetic MCU + the real node.
 # No mower hardware and no root needed (unless you use --dev).
 #
-# Run it inside the Humble container:
+# Run it inside the Jazzy container:
 #
 #   ./scripts/build.sh                                  # from ros2_stack/
 #   ./scripts/run_stack.sh                              # shell in the container
@@ -35,7 +35,7 @@ for arg in "$@"; do
 done
 
 command -v socat >/dev/null || { echo "socat is required (apt install socat)" >&2; exit 1; }
-command -v ros2  >/dev/null || { echo "ros2 not found - run inside the Humble container" >&2; exit 1; }
+command -v ros2  >/dev/null || { echo "ros2 not found - run inside the Jazzy container" >&2; exit 1; }
 
 TMP_DIR=""
 if [ "$USE_DEV" = 1 ]; then

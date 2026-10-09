@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Slope / tilt monitor (ROS 2 Humble): IMU attitude -> ok / caution / limit / critical.
+"""Slope / tilt monitor (ROS 2 Jazzy): IMU attitude -> ok / caution / limit / critical.
 
 2026-10-09. Band logic, filtering, hysteresis and the mounting correction live in
 ``tilt_logic.py`` (pure, unit tested); this node only feeds it and acts on CRITICAL itself.

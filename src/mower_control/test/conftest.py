@@ -14,7 +14,7 @@ _iso_os.environ['ROS_DOMAIN_ID'] = _iso_os.environ.get('MOWER_TEST_ROS_DOMAIN_ID
 The node logic under test (slew/watchdog step, slip step, IMU window evaluation, fast CDR
 helpers) is exercised directly. When ``rclpy`` is not importable (plain host Python) a small
 shim registers the module names the nodes import, so the same tests run on the host and
-inside the Humble container; tests that need real serialization skip on the shim.
+inside the Jazzy container; tests that need real serialization skip on the shim.
 """
 
 import os

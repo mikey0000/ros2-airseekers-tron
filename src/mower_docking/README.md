@@ -1,6 +1,6 @@
 # mower_docking
 
-Docking / undocking action server for the Airseekers Tron (ROS 2 Humble, rclpy).
+Docking / undocking action server for the Airseekers Tron (ROS 2 Jazzy, rclpy).
 It re-implements the vendor `mower_charge` behaviour: the robot drives in
 reverse onto the charger, guided by the rear camera and an ArUco marker. The
 vendor reference is `docs/audit_2026-10-05/vendor_mission_layer.md` section 5.

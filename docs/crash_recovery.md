@@ -3,7 +3,7 @@
 Owner question: "We need to be able to recover from crashes and record them to fix; what is
 the correct ROS 2 way of doing this?"
 
-Short answer, in the order ROS 2 Humble does it:
+Short answer, in the order ROS 2 Jazzy does it:
 
 1. **Recover**: `launch_ros` restarts processes (`respawn=True, respawn_delay`). Lifecycle
    nodes (Nav2) are put back into ACTIVE by `nav2_lifecycle_manager` using bonds
@@ -46,7 +46,7 @@ A respawned mission starts in IDLE and never resumes a mission by itself. A resp
 ### Nav2 lifecycle nodes
 
 Nav2 servers are lifecycle nodes. A respawned server comes back UNCONFIGURED, so respawn
-alone is not enough. Humble's `nav2_lifecycle_manager` handles the rest. The installed
+alone is not enough. Nav2's `nav2_lifecycle_manager` handles the rest. The installed
 `libnav2_lifecycle_manager_core.so` on the mower contains `attempt_respawn_reconnection`,
 `bond_respawn_max_duration` and `checkBondRespawnConnection`:
 
@@ -56,7 +56,7 @@ alone is not enough. Humble's `nav2_lifecycle_manager` handles the rest. The ins
    `/navigate_to_pose` and `/follow_path` abort and the mission sees an action failure.
 2. With `attempt_respawn_reconnection: true` (now set in `nav2_params.yaml` and in
    `navigation.launch.py`), the manager polls until every server is reachable again, for up
-   to `bond_respawn_max_duration` (30 s, up from the Humble default of 10 s because the
+   to `bond_respawn_max_duration` (30 s, up from the Nav2 default of 10 s because the
    RK3588 is slow to start the servers). It then runs configure and activate again
    ("Successfully re-established connections from server respawns, starting back up").
 3. Limitation: if `lifecycle_manager_navigation` itself crashes and respawns, its autostart
@@ -159,7 +159,7 @@ heading_aligner, vio_gate, cmd_vel_ws_relay, obstacle_guard and supervisor.
 - The size limit is set per process: compose `ulimits: core: -1`, plus `ulimit -c unlimited`
   in `scripts/stack_entry.sh`.
 - `scripts/ros_log_cleanup.sh` keeps cores for 14 days and only the newest 5.
-- Analysis: `gdb` and `elfutils` are added to `docker/Dockerfile.humble`; they become
+- Analysis: `gdb` and `elfutils` are added to `docker/Dockerfile.jazzy`; they become
   available after an image rebuild:
   `gdb /work/install/det_ros_cpp/lib/det_ros_cpp/det_ros_cpp /userdata/ros2/crashes/core.det_ros_cpp.<pid>.<t> -ex bt`.
 - **Symbols trade-off.** On the mower, `mower_coverage` is built `Release` with `-g0`, a
@@ -188,10 +188,8 @@ logs to their last 5000 lines.
 
 ### Black box: rosbag2 snapshot (`mower_control/blackbox.py`, run by the supervisor)
 
-Humble's `ros2 bag record` had no `--snapshot-mode` when this was written (it arrived in Iron;
-correction 2026-10-09: the rosbag2 0.15.17 in the image does list `--snapshot-mode`, backported,
-but it was never needed: see the rolling ring below). The supervisor
-instead keeps the last **120 s** of these topics in RAM as serialized CDR bytes, with no
+`ros2 bag record --snapshot-mode` (available on Jazzy's rosbag2 0.26.11) is not used: the
+supervisor instead keeps the last **120 s** of these topics in RAM as serialized CDR bytes, with no
 deserialization cost, through the `sub_pump` raw path. Rates are capped per topic and the
 whole buffer is capped at 24 MB, evicting the oldest messages first:
 
@@ -263,7 +261,7 @@ manual drive, were lost. The 2026-10-08 tuning bags had to be recorded by hand w
   child is restarted with a 2 to 60 s backoff, gets SIGINT on shutdown (clean close and
   `metadata.yaml`), and gets PR_SET_PDEATHSIG if the node dies.
 - **Format** (rosbag2 0.15.17; sqlite3 is the only storage in the image, because mcap would need
-  `ros-humble-rosbag2-storage-mcap` and an image rebuild):
+  `ros-jazzy-rosbag2-storage-mcap` and an image rebuild):
   - 60 s splits, using the sqlite3 `resilient` preset (WAL, synchronous=NORMAL), which survives
     a power cut.
   - `--max-cache-size` 1 MiB. The default 100 MiB double buffer would hold about 10 min in RAM.
@@ -278,7 +276,7 @@ manual drive, were lost. The 2026-10-08 tuning bags had to be recorded by hand w
   or /userdata has less than `min_free_gb` free. These are never deleted:
   - the split being written;
   - a split being compressed;
-  - split 0 of the current session, which holds `/tf_static` and the latched topics (Humble has
+  - split 0 of the current session, which holds `/tf_static` and the latched topics (rosbag2 has
     no `--repeat-transient-local`);
   - splits an incident pin still waits for.
 
@@ -348,7 +346,7 @@ container. It bundles:
 - the latest ROS log dir (files over 20 MB truncated to their tail);
 - `versions.txt`: `DEPLOYED_REV`, git HEAD if the tree is a git checkout, image id,
   container start time and restart count;
-- on the host, `docker logs --tail 500 mower_humble`.
+- on the host, `docker logs --tail 500 mower_jazzy`.
 
 The tarball is written to `/userdata/ros2/crashes/crash_report_<ts>.tar.gz`:
 
@@ -377,7 +375,7 @@ sha256 over `src/ launch/ config/ scripts/` plus the sync time. Crash records an
 | `scripts/stack_entry.sh` | new container command (ulimit, env, retention loop, shm_gc, launch) |
 | `scripts/ros_log_cleanup.sh`, `scripts/crash_report.sh` | retention and bundling |
 | `docker/docker-compose.yml` | `ROS_LOG_DIR`, `MOWER_CRASH_DIR`, `PYTHONFAULTHANDLER`, `ulimits.core`, `command` |
-| `docker/Dockerfile.humble` | gdb and elfutils |
+| `docker/Dockerfile.jazzy` | gdb and elfutils |
 | `docker/host/91-ros2-cores.conf` | host sysctl for the core pattern |
 
 ## 7. Hand-off: host and container changes (not applied by the agent)
@@ -396,14 +394,14 @@ the mission is IDLE, IDLE_DOCKED or CHARGING.
    that systemd may re-apply its own `50-coredump.conf`; the `91-` prefix sorts later and
    wins.
 2. **Image** (gdb and elfutils; optional, only needed to read cores on the device):
-   `cd /userdata/ros2_stack && DOCKER_BUILDKIT=0 docker compose -f docker/docker-compose.yml build mower_humble`
+   `cd /userdata/ros2_stack && DOCKER_BUILDKIT=0 docker compose -f docker/docker-compose.yml build mower_jazzy`
 3. **Recreate the container** (compose env, ulimits and the `stack_entry.sh` command):
-   `cd /userdata/ros2_stack && docker compose -f docker/docker-compose.yml up -d --force-recreate mower_humble`
+   `cd /userdata/ros2_stack && docker compose -f docker/docker-compose.yml up -d --force-recreate mower_jazzy`
    Then check:
-   `docker exec mower_humble bash -c 'ulimit -c; echo $ROS_LOG_DIR'` should print
+   `docker exec mower_jazzy bash -c 'ulimit -c; echo $ROS_LOG_DIR'` should print
    `unlimited` and `/userdata/ros2/log`, and `ls /userdata/ros2/log` should show the new
    launch dir.
 
 Until step 3, the code changes (respawn, supervisor, black box, Python crash records,
-mission guard) are active after a plain `docker restart mower_humble`. ROS logs stay in
+mission guard) are active after a plain `docker restart mower_jazzy`. ROS logs stay in
 the container and cores still go to systemd-coredump until steps 1 and 3 are done.

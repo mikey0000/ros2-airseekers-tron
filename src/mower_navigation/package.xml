@@ -4,7 +4,7 @@
   <name>mower_navigation</name>
   <version>0.1.0</version>
   <description>
-    Nav2 (Humble 1.1.x) configuration and launch for the Airseekers Tron
+    Nav2 (Jazzy, 1.3.x) configuration and launch for the Airseekers Tron
     GPS/RTK mower: controller_server (RegulatedPurePursuit, FollowPath and
     FollowCoveragePath), planner_server (NavFn), behavior_server,
     bt_navigator, velocity_smoother and lifecycle_manager_navigation.

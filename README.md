@@ -1,6 +1,6 @@
-# Airseekers Tron — ROS 2 (Humble) port stack
+# Airseekers Tron — ROS 2 (Jazzy) port stack
 
-Baseline: MowgliNext (ROS 2 mower stack). Target: runs on the mower via Docker (Humble).
+Baseline: MowgliNext (ROS 2 mower stack). Target: runs on the mower via Docker (Jazzy).
 
 `docs/STATUS.md` is the dated status report; this file is the stable "how the stack is put
 together" overview. Start here, then `--show-args` on the entry point for what is actually
@@ -18,7 +18,7 @@ Write all new files under ros2_stack/ only.
 git clone --recurse-submodules <this repo>     # or, in an existing clone:
 git submodule update --init                    # third_party/open_vins (rpng/open_vins, pinned)
 ./scripts/build_f2c.sh                         # mower-f2c:v3-amd64 (Fields2Cover, fetched from GitHub at a pinned ref)
-ARCH=arm64 ./scripts/build_f2c.sh              # mower-f2c:v3-arm64, needed by docker/Dockerfile.humble
+ARCH=arm64 ./scripts/build_f2c.sh              # mower-f2c:v3-arm64, needed by docker/Dockerfile.jazzy
 ./scripts/dev_build.sh build && ./scripts/dev_build.sh test   # amd64 dev image + colcon
 ./gui/build.sh                                 # GUI image; needs VITE_MAPBOX_TOKEN in
                                                # third_party/mowglinext/gui/web/.env (copy .env.example)
@@ -40,7 +40,7 @@ The stack is deployed and run there — that is the point of the port — but wi
 - **Deploy target is `/userdata/ros2_stack`**, bind-mounted to `/work` in the container.
   The install is symlinked back to `/work/src`, so editing Python and restarting the
   container is enough — no colcon rebuild. Typical change: `rsync` the package, then
-  `docker restart mower_humble`.
+  `docker restart mower_jazzy`.
 - **Never reflash the Artery AT32 MCUs** and never write vendor firmware. The boards keep
   their vendor blobs; only the host side is ours.
 - **No host package changes**: no `apt`, no OS upgrade, no `systemctl` edits — except the
@@ -78,7 +78,7 @@ OpenVINS configs: `config/vio_wit/` (default, `vio_imu:=wit`) and `config/vio_me
 ## Running
 
 **Dev build (x86_64 host, no mower):** `./scripts/dev_build.sh` builds the whole workspace in
-the `mower:humble-dev-amd64` image (`./scripts/dev_build.sh build --packages-select <pkg>`,
+the `mower:jazzy-dev-amd64` image (`./scripts/dev_build.sh build --packages-select <pkg>`,
 `./scripts/dev_build.sh test`, `./scripts/dev_build.sh shell`). Every mode sets
 `ROS_LOCALHOST_ONLY=1` and `ROS_DOMAIN_ID=77` (override with `DEV_ROS_DOMAIN_ID`) — a dev-host
 run must never reach the robot's DDS graph over the LAN (it did once, on 2026-10-07, and
@@ -89,8 +89,8 @@ rsyncs the tree to `/userdata/ros2_stack`, builds the image and runs colcon on t
 (low parallelism, OpenVINS skipped), and starts the stack plus the GUI compose file
 (`VIDEO=1` adds the RTSP relay). Details in [docs/deployment.md](docs/deployment.md).
 
-**Device build (RK3588, arm64):** `./scripts/build.sh` builds `docker/Dockerfile.humble`
-(`mower:humble`, needs the `mower-f2c:v3-arm64` image first: `ARCH=arm64 ./scripts/build_f2c.sh`)
+**Device build (RK3588, arm64):** `./scripts/build.sh` builds `docker/Dockerfile.jazzy`
+(`mower:jazzy`, needs the `mower-f2c:v3-arm64` image first: `ARCH=arm64 ./scripts/build_f2c.sh`)
 and runs colcon inside it. Then either `docker compose -f
 docker/docker-compose.yml up -d` (what `config/systemd/mower-ros2.service.example` does at
 boot; `restart: unless-stopped`) or `./scripts/run_stack.sh [launch args]` in the foreground.
@@ -197,7 +197,7 @@ carries the frame tree with per-transform ownership.
    `wheel_ticks` are not published. See [docs/mowglinext_handoff.md](docs/mowglinext_handoff.md) §3.3.
 4. ~~No URDF~~ — `config/urdf/mower.urdf.xacro` now provides `base_link → gps_link`,
    `base_footprint`, `blade_link` and the sensor/camera frames; the lever-arm values are still uncalibrated vendor numbers.
-5. ~~`ros-humble-robot-localization` missing from `docker/Dockerfile.humble`~~ — added.
+5. ~~`ros-jazzy-robot-localization` missing from `docker/Dockerfile.jazzy`~~ — added.
 
 Resolved since the first status report: `wit_imu_driver` now fills `Imu.orientation` from the
 JY61P 0x53 angle frame with realistic covariances (it used to leave the quaternion at all

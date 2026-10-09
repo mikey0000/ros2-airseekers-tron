@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Deploy / build / run the Humble stack on the mower itself (RK3588, 4 GB RAM, Ubuntu 20.04).
+# Deploy / build / run the Jazzy (Noble) stack on the mower itself (RK3588, 4 GB RAM, Ubuntu 20.04).
 #
 #   ./scripts/deploy_to_mower.sh sync      # rsync this tree -> mower:$REMOTE_DIR (no build artefacts)
-#   ./scripts/deploy_to_mower.sh image     # docker compose build (arm64 Humble image) ON the mower
+#   ./scripts/deploy_to_mower.sh image     # docker compose build (arm64 Jazzy/Noble image) ON the mower
 #   ./scripts/deploy_to_mower.sh build     # colcon build inside the container (low parallelism: 4 GB RAM)
 #   ./scripts/deploy_to_mower.sh up|down   # start / stop the stack (+ GUI if gui compose file exists)
 #   ./scripts/deploy_to_mower.sh logs      # follow container logs
@@ -79,7 +79,11 @@ do_image() {
 do_build() {
   # 4 GB RAM, no swap: keep both colcon and make at 2 jobs; rosidl + Fields2Cover are the heavy bits.
   remote "mkdir -p /userdata/ros2/logs"
-  compose "run --rm mower_humble bash -c 'source /opt/ros/humble/setup.bash && cd /work && MAKEFLAGS=-j2 colcon build --symlink-install --parallel-workers 2 --event-handlers console_cohesion+ --packages-skip $SKIP_PKGS 2>&1 | tee /userdata/ros2/logs/colcon_build.log | tail -40'"
+  # A build/ tree left from the pre-migration Humble container pins /opt/ros/humble in its
+  # CMakeCache (gtest_vendor, FastRTPS) and fails configure in the Jazzy image. `sync` never
+  # ships build/, so an old on-device tree survives the migration: wipe it once when detected.
+  remote "grep -rqs '/opt/ros/humble' $REMOTE_DIR/build/*/CMakeCache.txt && { echo 'stale Humble build tree -> cleaning build/ install/ log/'; rm -rf $REMOTE_DIR/build $REMOTE_DIR/install $REMOTE_DIR/log; } || true"
+  compose "run --rm mower_jazzy bash -c 'source /opt/ros/jazzy/setup.bash && cd /work && MAKEFLAGS=-j2 colcon build --symlink-install --parallel-workers 2 --event-handlers console_cohesion+ --packages-skip $SKIP_PKGS 2>&1 | tee /userdata/ros2/logs/colcon_build.log | tail -40'"
 }
 
 # bag_recorder output (mower_control/bag_recorder.py): /userdata/ros2/incidents/<ts>_<reason>/ holds
@@ -116,7 +120,7 @@ case "${1:-}" in
   up)    remote "mkdir -p /userdata/ros2/maps /userdata/ros2/calibration /userdata/ros2/gui_db"; compose "up -d" ;;
   down)  compose "down" ;;
   logs)  compose "logs -f --tail 200" ;;
-  shell) remote -t "docker exec -it mower_humble bash" ;;
+  shell) remote -t "docker exec -it mower_jazzy bash" ;;
   bags)  shift; do_bags "$@" ;;
   *) sed -n 2,17p "$0"; exit 2 ;;
 esac

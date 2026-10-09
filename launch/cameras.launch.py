@@ -14,7 +14,7 @@ Stock symlinks (``ros2_port_handoff/09_platform/udev-symlinks.txt``):
 ``left_oa_camera -> video53``, ``right_oa_camera -> video44``, ``rear_camera -> video62``.
 
 OA cameras (verified 2026-10-06): GC2093 -> rkcif -> rkisp ``rkisp_mainpath``. These are
-**V4L2 multi-planar** capture nodes; ``v4l2_camera`` 0.6 (Humble) only speaks single-planar
+**V4L2 multi-planar** capture nodes; ``v4l2_camera`` 0.7 (Jazzy) only speaks single-planar
 (it lists no formats, requests "0x0 UYVY" -> EINVAL, then "Failed mapping device memory").
 ``oa_driver:=mower_cameras`` (default) runs ``mower_cameras/v4l2_cam`` (pure-Python mmap
 reader, mplane-aware) instead. The media graph is already linked at boot and the host's

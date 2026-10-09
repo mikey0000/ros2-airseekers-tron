@@ -12,7 +12,7 @@
 #     ("[ENABLED]" in `media-ctl -p`) -- the kernel DT sets these up, no media-ctl -l needed
 #   * nobody else holds the video nodes (one streaming process per V4L2 node)
 #
-# The container (`mower_humble`, --privileged, host network) then just opens the nodes:
+# The container (`mower_jazzy`, --privileged, host network) then just opens the nodes:
 # the OA nodes are V4L2 *multi-planar* (driver rkisp_v6, UYVY/NV16/NV61/NV21/NV12,
 # 32x32..1920x1080, 30 fps), captured by mower_cameras/v4l2_cam.
 #

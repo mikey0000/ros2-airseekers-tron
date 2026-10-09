@@ -20,7 +20,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK_ROOT="$(dirname "$SCRIPT_DIR")"
-IMG="${SIM_IMAGE:-mower:humble-dev-amd64}"
+IMG="${SIM_IMAGE:-mower:jazzy-dev-amd64}"
 # mower-gui:amd64 = built from THIS tree by ./gui/build.sh (ARCH=amd64). mower-gui:latest on a dev
 # box can be a stale older build (2026-10-09: no drawn-path tools), so it is not the default.
 GUI_IMG="${GUI_IMAGE:-mower-gui:amd64}"

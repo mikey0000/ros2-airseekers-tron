@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wheel-slip ("dig") detector with an RTK-fixed gate (ROS 2 Humble).
+"""Wheel-slip ("dig") detector with an RTK-fixed gate (ROS 2 Jazzy).
 
 Port of the MowgliNext ``dig_detector.hpp`` pattern -- see
 ``ros2_stack/docs/mowglinext_baseline.md`` section 4.3, item 8: compare the

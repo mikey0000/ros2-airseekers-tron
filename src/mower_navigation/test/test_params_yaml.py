@@ -10,7 +10,7 @@
     `plugin` key (a missing `.plugin` is the "plugin param not defined" failure);
   * frame names match the stack contract;
   * the controller / goal-checker / planner ids the MowgliNext BT requests exist;
-  * static_layer only on the keepout mask, no enable_stamped_cmd_vel (Humble);
+  * static_layer only on the keepout mask, no enable_stamped_cmd_vel (Jazzy keeps it off);
   * progress/goal checker, transit RPP and local-costmap layer choices that
     the first real mow (2026-10-06) showed matter;
   * sensor obstacles in the global costmap + reroute-not-clear BTs (2026-10-09);
@@ -30,7 +30,8 @@ DOCKING = os.path.join(HERE, "..", "..", "mower_docking", "config", "docking.yam
 
 PLUGIN_LIST_KEYS = ("controller_plugins", "goal_checker_plugins", "planner_plugins",
                     "behavior_plugins", "plugins", "filters", "progress_checker_plugins")
-PLUGIN_SINGLE_KEYS = ("progress_checker_plugin",)
+# Jazzy (Iron+) dropped the singular progress_checker_plugin for the list above.
+PLUGIN_SINGLE_KEYS = ()
 ALLOWED_FRAMES = {"map", "odom", "base_link", "base_footprint",
                   "stereo_camera_optical"}  # URDF sensor frame (obstacle source)
 
@@ -104,11 +105,11 @@ def test_contract_ids():
     # 2026-10-09: GridBased = Smac Hybrid, GridBasedNavFn = the BT's fallback id
     p = doc["planner_server"]["ros__parameters"]
     assert p["planner_plugins"] == ["GridBased", "GridBasedNavFn"]
-    assert p["GridBased"]["plugin"] == "nav2_smac_planner/SmacPlannerHybrid"
-    assert p["GridBasedNavFn"]["plugin"] == "nav2_navfn_planner/NavfnPlanner"
+    assert p["GridBased"]["plugin"] == "nav2_smac_planner::SmacPlannerHybrid"
+    assert p["GridBasedNavFn"]["plugin"] == "nav2_navfn_planner::NavfnPlanner"
 
 
-def test_humble_constraints():
+def test_jazzy_constraints():
     doc = load()
     text = open(PARAMS).read()
     for _, params in ros_param_blocks(doc):
@@ -129,7 +130,7 @@ def test_humble_constraints():
 
 def test_progress_checker_counts_rotation():
     c = load()["controller_server"]["ros__parameters"]
-    pc = c[c["progress_checker_plugin"]]
+    pc = c[c["progress_checker_plugins"][0]]
     assert pc["plugin"] == "nav2_controller::PoseProgressChecker"
     assert 0 < pc["required_movement_angle"] <= 0.6
     assert pc["required_movement_radius"] <= 0.3
@@ -152,11 +153,11 @@ def test_goal_checkers():
     assert cov["plugin"] == "nav2_controller::SimpleGoalChecker"
     assert cov["stateful"] is True and cov["xy_goal_tolerance"] <= 0.25
     ftc = c["coverage_goal_checker_ftc"]    # MowgliNext PathProgressGoalChecker for FTC
-    assert ftc["plugin"] == "mowgli_nav2_plugins/PathProgressGoalChecker"
+    assert ftc["plugin"] == "mowgli_nav2_plugins::PathProgressGoalChecker"
     assert 0.9 <= ftc["progress_threshold"] <= 1.0
     assert ftc["plan_topic"] == "/controller_server/FollowCoveragePathFTC/global_plan"
     assert c["FollowCoveragePath"]["plugin"].endswith("RegulatedPurePursuitController")
-    assert c["FollowCoveragePathFTC"]["plugin"] == "mowgli_nav2_plugins/FTCController"
+    assert c["FollowCoveragePathFTC"]["plugin"] == "mowgli_nav2_plugins::FTCController"
     assert set(c["controller_plugins"]) >= {"FollowPath", "FollowCoveragePath", "FollowCoveragePathFTC"}
 
 
@@ -189,7 +190,7 @@ def test_coverage_rpp_respects_drive_yaw_limit():
 
 
 def test_local_costmap_inflation_with_bounds_keeper():
-    # 2026-10-09: Humble 1.1.20 InflationLayer::reset() leaves current_=false until
+    # 2026-10-09: Nav2 InflationLayer::reset() (present through Humble 1.1.20) leaves current_=false until
     # updateCosts() runs, and LayeredCostmap skips it when the bounds are empty. bounds_keeper
     # (an ObstacleLayer without sources, footprint clearing on) forces non-empty bounds.
     import math
@@ -345,7 +346,7 @@ def test_global_obstacle_layer():
     assert set(sources) == {"stereo", "stereo_clear", "det_range", "bumper"}
     for name in sources:
         assert name in ol, f"observation source {name} has no sub-map"
-        # Humble planner_server waits for isCurrent(): never gate it on a sensor
+        # planner_server waits for isCurrent(): never gate it on a sensor
         assert ol[name]["expected_update_rate"] == 0.0, name
     st = ol["stereo"]
     assert st["marking"] is True and st["clearing"] is True
@@ -397,7 +398,8 @@ def test_bt_reroutes_instead_of_clearing():
             assert not list(root.iter(bad)), (name, bad)
         nav = [n for n in root.iter("RecoveryNode") if n.get("name") == "NavigateRecovery"]
         assert nav and nav[0].get("number_of_retries") == "2", name
-        # Humble 1.1.x Wait port is wait_duration, InputPort<int> ("1.5" would not parse)
+        # Wait port wait_duration is integer-typed in Jazzy (InputPort<int>); Jazzy accepts
+        # a double too, but keep integer literals so both parse.
         for w in root.iter("Wait"):
             assert set(w.attrib) <= {"name", "wait_duration", "server_name",
                                      "server_timeout"}, (name, w.attrib)
@@ -493,7 +495,8 @@ def test_mppi_transit():
     assert cc["inflation_layer_name"] == "inflation_layer"
     lc = load()["local_costmap"]["local_costmap"]["ros__parameters"]
     assert cc["inflation_layer_name"] in lc["plugins"]
-    # Humble Optimizer::setOffset throws when the controller period exceeds model_dt
+    # Jazzy logs a warning when the controller period exceeds model_dt (Jazzy's
+    # Optimizer::setOffset threw); keep the constraint anyway.
     assert c["model_dt"] >= 1.0 / _ctl("controller_frequency") - 1e-9
     assert c["batch_size"] * c["time_steps"] <= 1000 * 56         # RK3588 CPU budget
     assert _ctl("FollowPathRPP")["plugin"].endswith("RegulatedPurePursuitController")
@@ -618,7 +621,7 @@ def test_lifecycle_order():
 
 
 def test_global_static_layer_options_at_costmap_level():
-    # 2026-10-09: Humble StaticLayer reads use_maximum / trinary_costmap / lethal_cost_threshold /
+    # 2026-10-09: StaticLayer reads use_maximum / trinary_costmap / lethal_cost_threshold /
     # unknown_cost_value from the costmap namespace, not <layer>.<key>. Per-layer only, the mask
     # ran trinary (soft band -> FREE) and terrain_layer OVERWROTE it (dev-image smoke check 3).
     g = load()["global_costmap"]["global_costmap"]["ros__parameters"]

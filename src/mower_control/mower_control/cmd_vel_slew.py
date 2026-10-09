@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Slew-rate limiter for ``/cmd_vel`` with a command watchdog (ROS 2 Humble).
+"""Slew-rate limiter for ``/cmd_vel`` with a command watchdog (ROS 2 Jazzy).
 
 Port of the MowgliNext ``cmd_vel_slew.hpp`` pattern -- see
 ``ros2_stack/docs/mowglinext_baseline.md`` section 4.3, item 9: shape the
@@ -196,7 +196,7 @@ class PivotAssist:
 
     The Tron's casters on turf make in-place pivots unreliable (measured 0.02-0.08 rad/s
     yaw at 0.3 rad/s commanded; a forward arc reaches ~0.2, docs/analysis/
-    2026-10-06_ring_drift.md). Humble RPP's rotate-to-heading commands linear 0, so after
+    2026-10-06_ring_drift.md). Jazzy RPP's rotate-to-heading commands linear 0, so after
     ``delay_s`` of a pure pivot command (|angular| >= ``min_angular``, linear == 0) in a
     TRANSIT/MOWING phase this adds ``linear`` m/s forward, at most ``max_dist_m`` of
     commanded travel per pivot (the pivot ends when the command stops being a pivot).

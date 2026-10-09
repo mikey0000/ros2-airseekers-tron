@@ -4,7 +4,7 @@
   <name>mower_docking</name>
   <version>0.1.0</version>
   <description>
-    Docking / undocking action server for the Airseekers Tron (ROS 2 Humble).
+    Docking / undocking action server for the Airseekers Tron (ROS 2 Jazzy).
     Re-implements the vendor mower_charge behaviour: Nav2 to the approach pose,
     rear-camera ArUco (DICT_4X4_50) guided reverse onto the charger, contact
     debounce on is_docking_done, /charging on; undock = charger off, drive away,

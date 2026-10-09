@@ -1,11 +1,11 @@
-# Nav2 parameters for the Airseekers Tron (ROS 2 Humble, Nav2 1.1.x).
+# Nav2 parameters for the Airseekers Tron (ROS 2 Jazzy, Nav2 1.3.x).
 #
 # Translated from third_party/mowglinext/mowgli_bringup/config/nav2_params_base.yaml
 # (Kilted). Every deviation is marked "DEVIATION:" with the reason. Summary:
 #
-#   * Humble: unstamped Twist everywhere -> no `enable_stamped_cmd_vel` keys.
-#   * No docking_server (opennav_docking is not in Humble), no smoother_server /
-#     waypoint_follower / map_server / map_saver / coverage_server / AMCL.
+#   * Jazzy: unstamped Twist everywhere -> `enable_stamped_cmd_vel` stays false.
+#   * No docking_server (opennav_docking now exists on Jazzy, but we use mower_docking),
+#     no smoother_server / waypoint_follower / map_server / map_saver / AMCL.
 #   * Velocity chain (2026-10-09): controller -> velocity_smoother -> collision_monitor
 #     -> /cmd_vel_nav (twist_mux lane 10). Docking (/cmd_vel_docking), teleop, bumper and
 #     emergency lanes do not pass through the collision_monitor.
@@ -55,13 +55,13 @@ bt_navigator:
     transform_tolerance: 0.5
     # default_nav_to_pose_bt_xml / default_nav_through_poses_bt_xml are injected
     # by navigation.launch.py (absolute paths into this package's
-    # behavior_trees/). They are the Humble default trees plus
+    # behavior_trees/). They are the default trees plus
     # goal_checker_id="general_goal_checker" on FollowPath, no Spin/BackUp, and
     # (2026-10-09) Wait-then-replan instead of ClearLocalCostmap after a FollowPath
     # failure, so a detour routes around the obstacle mark (see the XML headers).
-    # DEVIATION: MowgliNext uses its own custom trees; we use the Humble defaults
+    # DEVIATION: MowgliNext uses its own custom trees; we use the Nav2 defaults
     # until mowgli_behavior is ported.
-    # DEVIATION: no enable_stamped_cmd_vel (Humble has unstamped Twist only).
+    # DEVIATION: no enable_stamped_cmd_vel (unstamped Twist only).
 
 bt_navigator_navigate_through_poses_rclcpp_node:
   ros__parameters:
@@ -78,9 +78,9 @@ controller_server:
     odom_topic: /odometry/filtered
     # DEVIATION: 20 Hz (MowgliNext 10 Hz): RPP on a 0.3 m/s mower is cheap.
     # Shared by every controller id. Kept at 20 Hz with MPPI (2026-10-09): the RPP
-    # max_angular_accel / FTC PID tunings assume a 0.05 s cycle. MPPI requires model_dt
-    # >= 1/controller_frequency (Humble Optimizer::setOffset throws otherwise); its
-    # model_dt 0.1 only logs "Controller period is less then model dt" once. If the RK3588
+    # max_angular_accel / FTC PID tunings assume a 0.05 s cycle. MPPI wants model_dt
+    # >= 1/controller_frequency (Jazzy logs a warning; Humble's Optimizer::setOffset
+    # threw); its model_dt 0.1 only logs "Controller period is less then model dt" once. If the RK3588
     # cannot hold 20 Hz with MPPI (controller_server "Control loop missed its desired rate"),
     # lower MPPI batch_size first, not this.
     controller_frequency: 20.0
@@ -88,13 +88,13 @@ controller_server:
     min_y_velocity_threshold: 0.5      # diff-drive: no lateral velocity
     min_theta_velocity_threshold: 0.001
     # 2026-10-07 live: 0.3 s let a 1 s blockage ("collision ahead" x3 -> "Controller
-    # patience exceeded") abort the whole transit. Humble controller_server: when
+    # patience exceeded") abort the whole transit. controller_server: when
     # computeVelocityCommands throws it publishes zero cmd_vel and keeps retrying
     # until failure_tolerance s have passed since the last success, then aborts
     # (0 = abort at once, -1 = never). The mission adds its own blocked wait on top.
     failure_tolerance: 2.0
-    # Humble key is progress_checker_plugin (singular); Iron+ uses the plural list.
-    progress_checker_plugin: "progress_checker"
+    # Jazzy (Iron+) key is the plural list; Humble's singular progress_checker_plugin is gone.
+    progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker", "coverage_goal_checker_ftc",
                            "coverage_leg_goal_checker"]
     # FollowPath = MPPI transit (2026-10-09); FollowPathRPP = the previous RPP transit
@@ -135,13 +135,13 @@ controller_server:
       stateful: true
 
     # Requested by the mission (follow_goal_checker_id: coverage_goal_checker).
-    # mowgli_nav2_plugins/PathProgressGoalChecker (Humble port in
+    # mowgli_nav2_plugins::PathProgressGoalChecker (Jazzy port in
     # src/mowgli_nav2_plugins): fires only after FTC has tracked >= 95 % of the
     # plan it republishes on /controller_server/FollowCoveragePath/global_plan
     # AND the robot is within xy tolerance. Yaw ignored at a swath end.
     # Coverage goal checker for FollowCoveragePath (RPP): end of the swath within 0.25 m,
     # yaw ignored. (2026-10-06: the FTC port veered off the first ring on the real mower;
-    # RPP is the fallback until mowgli_nav2_plugins/FTCController is validated.)
+    # RPP is the fallback until mowgli_nav2_plugins::FTCController is validated.)
     coverage_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
@@ -150,7 +150,7 @@ controller_server:
     # Goal checker for FollowCoveragePathFTC (mowgli_nav2_plugins): fires after FTC has
     # tracked >= 95 % of the plan it republishes AND the robot is within xy tolerance.
     coverage_goal_checker_ftc:
-      plugin: "mowgli_nav2_plugins/PathProgressGoalChecker"
+      plugin: "mowgli_nav2_plugins::PathProgressGoalChecker"
       progress_threshold: 0.95
       xy_goal_tolerance: 0.50
       yaw_goal_tolerance: 3.14
@@ -162,12 +162,12 @@ controller_server:
     # after >= 70 % of the start-goal distance is travelled AND within 0.08 m / 0.35 rad
     # (or the robot passed its closest approach within 0.20 m). src/mowgli_nav2_plugins.
     coverage_leg_goal_checker:
-      plugin: "mowgli_nav2_plugins/LegGoalChecker"
+      plugin: "mowgli_nav2_plugins::LegGoalChecker"
       progress_fraction: 0.7
       xy_goal_tolerance: 0.08
       yaw_goal_tolerance: 0.35
       overshoot_xy_tolerance: 0.20
-      # 0.015 (was 0.03, bag 2026-10-08): at the goal Humble RPP's carrot is < 3.2 cm away,
+      # 0.015 (was 0.03, bag 2026-10-08): at the goal RPP's carrot is < 3.2 cm away,
       # so curvature = 0 and FollowCoveragePathReverse shuffles +-min_approach (0.05 m/s,
       # sign of carrot.x) with a 0.02-0.03 m swing every ~1.3 s, unable to fix a yaw miss;
       # 0.03 was never exceeded, 0.015 ends the leg on the first shuffle.
@@ -191,7 +191,7 @@ controller_server:
     #   * Collision: CostCritic with consider_footprint true on the local costmap, which
     #     NOW has an inflation layer (radius 1.0 > circumscribed 0.61, see local_costmap):
     #     without inflation CostCritic skips every pose whose CENTRE cell is free, i.e.
-    #     the 0.52 m nose would never be checked (Humble 1.1.20 cost_critic.cpp score()).
+    #     the 0.52 m nose would never be checked (CostCritic::score()).
     #   * No GoalAngleCritic: transit goals end on xy only (general_goal_checker yaw 3.14).
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
@@ -286,7 +286,7 @@ controller_server:
       max_lookahead_dist: 0.8
       lookahead_time: 2.0
       use_velocity_scaled_lookahead_dist: true
-      # 0.3 (was 0.5): = the MCU clamp. Humble RPP rotate-to-heading is bang-bang (no
+      # 0.3 (was 0.5): = the MCU clamp. RPP rotate-to-heading is bang-bang (no
       # deceleration), and the 0.5 command had to slew 0.2 rad/s through cmd_vel_slew
       # (1.0 rad/s^2) before the clamped wheel command even started to drop: 0.2 s of extra
       # dead time, overshoot ~0.16 rad vs ~0.10 rad at 0.3 (bag 2026-10-08).
@@ -303,7 +303,7 @@ controller_server:
       regulated_linear_scaling_min_radius: 0.9
       regulated_linear_scaling_min_speed: 0.15
       use_cost_regulated_linear_velocity_scaling: false
-      # Kept true (2026-10-07 transit pivot stall): Humble RPP without rotate-to-heading
+      # Kept true (2026-10-07 transit pivot stall): RPP without rotate-to-heading
       # drives FORWARD when the carrot is behind (curvature ~0) - worse than a slow pivot.
       # The Tron's in-place pivot (0.02-0.08 rad/s on turf) is helped instead by
       # mower_control/cmd_vel_slew pivot_assist: after 1.5 s of linear 0 / |angular| >= 0.08
@@ -371,7 +371,7 @@ controller_server:
     # Reverse legs of reverse-then-curve swath turns (mower_coverage turn_type auto/reverse).
     # The coverage bridge cuts every backwards run into its own short sub-path whose poses
     # face AGAINST the travel; the mission (mission.yaml reverse_controller_id) sends it here.
-    # Humble RPP drives backwards when the carrot is behind the robot (allow_reversing) and
+    # RPP drives backwards when the carrot is behind the robot (allow_reversing) and
     # silently DISABLES reversing if use_rotate_to_heading is also true, hence false here.
     # The leg is straight-ish and < ~0.6 m, so a short lookahead and a slow speed.
     FollowCoveragePathReverse:
@@ -488,14 +488,14 @@ controller_server:
 
     # Alternative coverage controller (select with mission.yaml follow_controller_id:
     # FollowCoveragePathFTC + follow_goal_checker_id: coverage_goal_checker_ftc).
-    # mowgli_nav2_plugins/FTCController (Follow-The-Carrot + decoupled PID),
-    # Humble port of MowgliNext's controller. Values from MowgliNext
+    # mowgli_nav2_plugins::FTCController (Follow-The-Carrot + decoupled PID),
+    # Jazzy port of MowgliNext's controller. Values from MowgliNext
     # nav2_params_base.yaml unless marked TRON.
     # desired_linear_vel (set from the GUI mowing_speed via robot_settings.py
     # and live by the GUI) is a port-only alias: speed_fast = v,
     # speed_slow = clamp(0.8 v, min_speed_mps, v). -1 = use the literals.
     FollowCoveragePathFTC:
-      plugin: "mowgli_nav2_plugins/FTCController"
+      plugin: "mowgli_nav2_plugins::FTCController"
       desired_linear_vel: 0.3
       speed_fast: 0.2
       speed_fast_threshold: 0.5
@@ -596,7 +596,7 @@ planner_server:
     # allow_unknown true: without a static map every cell outside the keepout mask is
     # unknown/free (track_unknown_space false, so the costmap holds no unknown cells anyway).
     GridBased:
-      plugin: "nav2_smac_planner/SmacPlannerHybrid"
+      plugin: "nav2_smac_planner::SmacPlannerHybrid"
       downsample_costmap: false
       downsampling_factor: 1
       tolerance: 0.3
@@ -627,7 +627,7 @@ planner_server:
     # GridBased config, unchanged. Centre-point planner: may route through a gap narrower than
     # the robot; the footprint-checking controllers then refuse it and the mission retries.
     GridBasedNavFn:
-      plugin: "nav2_navfn_planner/NavfnPlanner"
+      plugin: "nav2_navfn_planner::NavfnPlanner"
       tolerance: 0.3
       use_astar: false
       allow_unknown: true
@@ -643,14 +643,17 @@ behavior_server:
     # DEVIATION: no assisted_teleop (not needed; teleop goes through twist_mux).
     behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
     spin:
-      plugin: "nav2_behaviors/Spin"
+      plugin: "nav2_behaviors::Spin"
     backup:
-      plugin: "nav2_behaviors/BackUp"
+      plugin: "nav2_behaviors::BackUp"
     drive_on_heading:
-      plugin: "nav2_behaviors/DriveOnHeading"
+      plugin: "nav2_behaviors::DriveOnHeading"
     wait:
-      plugin: "nav2_behaviors/Wait"
-    global_frame: odom
+      plugin: "nav2_behaviors::Wait"
+    # Jazzy split the frame into local_frame (odom-frame behaviors: spin/backup/wait)
+    # and global_frame (map-frame global behaviors). Humble had only global_frame: odom.
+    local_frame: odom
+    global_frame: map
     robot_base_frame: base_link
     transform_tolerance: 0.5
     simulate_ahead_time: 2.0
@@ -682,12 +685,12 @@ velocity_smoother:
     deadband_velocity: [0.01, 0.0, 0.01]
     velocity_timeout: 0.5
 
-# Collision monitor (2026-10-09, Humble 1.1.20 nav2_collision_monitor; param names checked
+# Collision monitor (2026-10-09, Jazzy 1.3 nav2_collision_monitor; param names checked
 # against its source). Last line of defence on the NAV lane only: it sits between
 # velocity_smoother and /cmd_vel_nav, so docking (/cmd_vel_docking, lane 15: the reverse dock
 # and undock), teleop (20), bumper back-up (50) and emergency (100) never pass through it.
 # It sees only what the front stereo / bumper see, and only the LATEST message (no memory:
-# the costmaps remember). Humble semantics that shaped this config:
+# the costmaps remember). The semantics that shaped this config:
 #   * stop / slowdown polygons are NOT direction-aware (points inside -> act, whatever the
 #     command). A front stop zone would also freeze a coverage REVERSE leg or a pivot away
 #     from a hedge in front -> deadlock. So stop_zone / slowdown_zone are only enabled while
@@ -733,18 +736,18 @@ collision_monitor:
       type: "polygon"
       points: [0.75, 0.29, 0.75, -0.29, 0.52, -0.29, 0.52, 0.29]
       action_type: "stop"
-      max_points: 3          # > 3 points inside (single speckles ignored)
+      min_points: 4          # Jazzy: >= 4 inside (Humble's max_points 3 + 1; single speckles ignored)
       enabled: true          # forward only: collision_zone_gate
       visualize: true
       polygon_pub_topic: "/collision_monitor/stop_zone"
     # 0.52 -> 1.3 m (0.78 m ahead of the nose), +-0.40 (a corner sweep while arcing).
-    # ratio 0.5: 0.3 -> 0.15 m/s, scales w too (Humble multiplies the whole twist).
+    # ratio 0.5: 0.3 -> 0.15 m/s, scales w too (scales the whole twist).
     slowdown_zone:
       type: "polygon"
       points: [1.3, 0.40, 1.3, -0.40, 0.52, -0.40, 0.52, 0.40]
       action_type: "slowdown"
       slowdown_ratio: 0.5
-      max_points: 3
+      min_points: 4
       enabled: true          # forward only: collision_zone_gate
       visualize: true
       polygon_pub_topic: "/collision_monitor/slowdown_zone"
@@ -755,7 +758,7 @@ collision_monitor:
       footprint_topic: "/local_costmap/published_footprint"
       time_before_collision: 2.0
       simulation_time_step: 0.1
-      max_points: 1          # t=0: >= 1 point inside stops; simulated: > 1 point
+      min_points: 2          # Jazzy: t=0 >= 2 inside stops; simulated > 2 (Humble's max_points 1 + 1)
       enabled: true
       visualize: false
     observation_sources: ["stereo", "bumper"]
@@ -807,7 +810,7 @@ local_costmap:
       resolution: 0.05
       track_unknown_space: false
       # Inflation (2026-10-09). Until now there was NO inflation_layer here because of a
-      # Humble bug, re-checked in the installed 1.1.20 source and STILL PRESENT:
+      # Nav2 bug present in Humble 1.1.20 (carried into Jazzy until re-verified):
       # InflationLayer::reset() (inflation_layer.hpp) sets current_=false, and only
       # updateCosts() sets it back; LayeredCostmap::updateMap() skips updateCosts() when the
       # layered bounds are empty (no obstacle marked / raytraced this cycle), and reset()
@@ -900,7 +903,7 @@ local_costmap:
           # stale data). Disable the source with stereo_costmap:=false (mower.launch.py)
           # to mow bumper-only.
           # 0.7 (was 0.5): stereo_depth now stamps clouds at the newest odom TF minus 50 ms
-          # (up to 0.3 s old, see stamp_tf_parent there) to dodge the Humble tf2 MessageFilter
+          # (up to 0.3 s old, see stamp_tf_parent there) to dodge the tf2 MessageFilter
           # deadlock; 0.7 keeps >=2 clouds alive at 4-5 Hz.
           # expected_update_rate KEPT as a safety gate (no cloud -> controller pauses rather
           # than driving blind into a wall); the mission surfaces it as sub_state
@@ -1000,7 +1003,7 @@ global_costmap:
       resolution: 0.1
       track_unknown_space: false
       # 2026-10-09: StaticLayer reads use_maximum, trinary_costmap, lethal_cost_threshold and
-      # unknown_cost_value from the COSTMAP namespace (Humble 1.1.20 static_layer.cpp
+      # unknown_cost_value from the COSTMAP namespace (static_layer.cpp onInitialize
       # onInitialize: node->get_parameter("use_maximum") etc., declared by Costmap2DROS), NOT
       # from <layer>.<key>. The per-layer keys below were silently ignored, so every
       # StaticLayer ran trinary (soft band 90 -> FREE) and with OVERWRITE: terrain_layer (same
@@ -1019,7 +1022,7 @@ global_costmap:
       unknown_cost_value: -1
       # static_layer on /keepout_mask (mower_map map_server_node, latched): the
       # zone mask (lethal outside the mowing areas / on obstacles) becomes part of
-      # the costmap. Needed on Humble: with only inflation_layer no layer expands
+      # the costmap. Needed: with only inflation_layer no layer expands
       # the update bounds, so KeepoutFilter.process() never touches a cell and the
       # costmap stayed all-free (verified on the robot 2026-10-06). In a rolling
       # window StaticLayer re-applies its full extent every cycle.
@@ -1035,7 +1038,7 @@ global_costmap:
       # the costmap only through keepout_filter (filters run AFTER inflation: uninflated, max-
       # combined), i.e. a hard robot-CENTRE limit at the drawn edges. terrain_layer /
       # nongrass_layer (StaticLayers on the same grid) still expand the update bounds to the
-      # whole mask every cycle, which is what the filter needs on Humble (see above).
+      # whole mask every cycle, which is what the filter needs (see above).
       plugins: ["terrain_layer", "nongrass_layer", "obstacle_layer", "inflation_layer"]
       filters: ["keepout_filter"]
       static_layer:
@@ -1089,7 +1092,7 @@ global_costmap:
       # costmap obstacle_layer, but marks persist in the map frame until raytraced free
       # (stereo / stereo_clear), so an obstacle seen once stays in the plan while the robot
       # drives around it and it leaves the camera's view.
-      #   * expected_update_rate 0.0 on EVERY source: Humble planner_server waits for
+      #   * expected_update_rate 0.0 on EVERY source: planner_server waits for
       #     costmap isCurrent() before each plan; a stale stereo source must not freeze the
       #     planner (the local costmap's stereo source keeps the stale-data safety gate).
       #   * footprint_clearing_enabled false: bumper points sit inside the footprint.
@@ -1227,7 +1230,7 @@ lifecycle_manager_navigation:
     # A server that crashes is respawned by launch (respawn=True); the manager then resets
     # the stack and re-activates it when all servers are back (docs/crash_recovery.md).
     attempt_respawn_reconnection: true
-    bond_respawn_max_duration: 30.0   # s; Humble default 10 is short for the RK3588
+    bond_respawn_max_duration: 30.0   # s; default 10 is short for the RK3588
     # Dependency order; must match navigation.launch.py.
     node_names:
       - controller_server

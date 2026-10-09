@@ -5,10 +5,10 @@ and `seg_ros`. Also: model-path resolution (`resolve_model_path`: device path
 `/userdata/ros2/models/<file>`, then `models_dir`) and the shared startup policy
 (`prepare_runner`: clear fatal error, or `dry_run`).
 
-## Install (inside the Humble aarch64 container)
+## Install (inside the Jazzy aarch64 container)
 
 Version: the shipped `.rknn` models were compiled with toolkit **2.3.0** (stock rootfs
-`librknnrt` is 2.1.0, the vendor workspace bundles 2.2.0). `docker/Dockerfile.humble`
+`librknnrt` is 2.1.0, the vendor workspace bundles 2.2.0). `docker/Dockerfile.jazzy`
 installs the 2.3.0 wheel from `airockchip/rknn-toolkit2` (guarded):
 
 ```bash

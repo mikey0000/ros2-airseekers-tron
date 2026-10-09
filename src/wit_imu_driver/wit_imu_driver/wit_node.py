@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WIT-Motion JY61P IMU driver (ROS 2 Humble).
+"""WIT-Motion JY61P IMU driver (ROS 2 Jazzy).
 
 Publishes
     /imu/data            sensor_msgs/Imu   (orientation, angular velocity, linear acceleration)

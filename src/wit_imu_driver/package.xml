@@ -2,7 +2,7 @@
 <package format="3">
   <name>wit_imu_driver</name>
   <version>0.1.0</version>
-  <description>WIT-Motion JY61P IMU driver for ROS 2 Humble</description>
+  <description>WIT-Motion JY61P IMU driver for ROS 2 Jazzy</description>
   <maintainer email="michael@example.com">michael</maintainer>
 
   <license>Apache-2.0</license>

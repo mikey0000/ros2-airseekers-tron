@@ -4,7 +4,7 @@
   <name>mower_mcu_driver</name>
   <version>0.1.0</version>
   <description>
-    ROS 2 Humble driver for the Airseekers Tron chassis/cutter MCU serial protocol
+    ROS 2 Jazzy driver for the Airseekers Tron chassis/cutter MCU serial protocol
     (/dev/serial_mower, 115200 8N1): battery, dead-reckoned odometry, MCU sensor state,
     placeholder IMU and /cmd_vel to SpeedCommand control frames.
   </description>

@@ -197,7 +197,7 @@ def chunk_end(poses, start, max_len, clearance):
     """End index of a FollowPath chunk that starts at ``start``.
 
     A goal checker that only compares the robot with the goal's final pose
-    (Humble's SimpleGoalChecker) declares success as soon as the robot passes
+    (Jazzy's SimpleGoalChecker) declares success as soon as the robot passes
     near that pose, and a coverage path often passes near its own end (closed
     headland rings, a last swath ending where the ring began).  So the chunk
     end ``e`` is the furthest index within ``max_len`` metres of path whose pose

@@ -1,6 +1,6 @@
 """``mower_control/fixed_frame_relay`` - republish robot-frame clouds in odom / map (2026-10-09).
 
-Why: the Humble costmap ObstacleLayer feeds every source through a tf2 MessageFilter. A cloud
+Why: the Jazzy costmap ObstacleLayer feeds every source through a tf2 MessageFilter. A cloud
 that is not transformable into the costmap frame when it arrives goes through
 ``tf2_ros::Buffer::waitForTransform``, which can deadlock (Buffer mutex vs transformable
 requests; gdb-confirmed 2026-10-07). Live 2026-10-09 (load 13 on 8 cores): base_link clouds
