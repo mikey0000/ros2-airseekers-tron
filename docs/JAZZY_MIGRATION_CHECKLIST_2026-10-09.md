@@ -169,6 +169,40 @@ that Humble lacks snapshot mode, so its workaround can be simplified later.
 
 - No changes (GUI is Go/Node/debian:bookworm; Fast DDS profiles are distro-agnostic).
 
+### 1.8 On-device image build — `fuse-overlayfs` + RAM gotcha **[verify]**
+
+The mower kernel (5.10.209) has **no `overlay` module** (`/proc/filesystems`
+lacks `overlay`, no `overlay.ko` under `/lib/modules/5.10.209`), so
+`/etc/docker/daemon.json` pins `"storage-driver": "fuse-overlayfs"` — and focal
+ships only **fuse-overlayfs 0.7.6** (2020-era). Old fuse-overlayfs returns
+**silently truncated reads under load / memory pressure**:
+
+- build #1: `dpkg: error processing archive … (--unpack): parsing file
+  '/var/lib/dpkg/tmp.ci/control' … end of file after field name ''` for ~54 pkgs.
+- build #2: `dpkg: unrecoverable fatal error, aborting: files list file for
+  package 'ros-jazzy-ros-base' is missing final newline`.
+
+Neither is disk (`df` 14 G free), inodes (27 %), nor OOM (`dmesg` clean); and a
+fresh container installing the exact failing subset succeeds (`INSTALL_EXIT=0`)
+→ transient overlay corruption, aggravated by low RAM (3.8 GiB, **no swap**).
+
+**Fix that worked:** stop the running stacks first to free RAM —
+`docker stop mower_humble mower_gui` (mower parked/idle) lifts available memory
+0.9 → 3.5 GiB; then `deploy_to_mower.sh image` builds clean.
+`docker start mower_humble mower_gui` restores them.
+
+**Fallback if it recurs:** build the arm64 image off-box (dev host has native
+`overlay2` + `qemu-aarch64` binfmt + we installed `docker-buildx`):
+
+```
+docker buildx build --platform linux/arm64 \
+  --build-arg F2C_IMAGE=mower-f2c:v3-arm64 \
+  -f docker/Dockerfile.jazzy -t mower:jazzy .
+docker save mower:jazzy | gzip -1 | ssh airseekers@<host> 'gunzip | docker load'
+```
+
+Keep the **colcon** build native on the device (qemu compile is far too slow).
+
 ---
 
 ## 2. Scripts (file-by-file)
