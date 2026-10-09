@@ -346,8 +346,12 @@ class BaseKeysNode(Node):
             return
         res = fut.result()
         ok = getattr(res, 'success', True)
-        (self.get_logger().info if ok else self.get_logger().warn)(
-            '%s -> %s' % (what, 'ok' if ok else 'rejected'))
+        msg = '%s -> %s' % (what, 'ok' if ok else 'rejected')
+        # rclpy (Jazzy) raises if one call site changes severity, so keep these apart.
+        if ok:
+            self.get_logger().info(msg)
+        else:
+            self.get_logger().warn(msg)
 
     def _do(self, a):
         log = self.get_logger()
