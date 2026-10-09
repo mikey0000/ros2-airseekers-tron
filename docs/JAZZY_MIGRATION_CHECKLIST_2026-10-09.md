@@ -213,10 +213,31 @@ already uses `::`):
 | 650 | `nav2_behaviors/DriveOnHeading` | `nav2_behaviors::DriveOnHeading` |
 | 652 | `nav2_behaviors/Wait` | `nav2_behaviors::Wait` |
 
-**Our own plugins are unaffected:** `mowgli_nav2_plugins/*.xml` keep
-`name="mowgli_nav2_plugins/FTCController"` (etc.) while `type` is `...::...`, and
-pluginlib resolves the config string against `name`. So `mowgli_nav2_plugins/...`
-entries (L153, L165, L498) stay as-is.
+**Our own plugins move to `::` as well.** pluginlib resolves a plugin's lookup
+name to the `<class name=...>` attribute when present, **else** the `type`
+(`pluginlib/class_loader_imp.hpp`: *"assuming lookup_name == real class name"*);
+there is no `/`→`::` normalisation. So the two forms are mutually exclusive per
+plugin. The official Jazzy tutorial confirms it: it declares
+`<class type="polygon_plugins::Square" base_class_type="polygon_base::RegularPolygon">`
+with **no** `name`, documents `name` as *optional* ("A lookup name (i.e. magic
+name) used by the class loader"), and its class listing prints
+`Plugin(name='polygon_plugins::Square', …)` — i.e. the lookup name defaults to
+`type`. The migration drops the now-redundant `name="mowgli_nav2_plugins/…"`
+attribute and uses the `type`-only convention, matching Jazzy's own Nav2 plugin
+XMLs (which carry `type="pkg::Class"` with no `name`) and keeping
+`nav2_params.yaml` uniform:
+
+| file | line | id |
+|---|---|---|
+| `src/mowgli_nav2_plugins/ftc_controller_plugin.xml` | 3 | `mowgli_nav2_plugins::FTCController` |
+| `src/mowgli_nav2_plugins/goal_checker_plugin.xml` | 3 / 16 | `mowgli_nav2_plugins::PathProgressGoalChecker` / `::LegGoalChecker` |
+| `src/mower_navigation/config/nav2_params.yaml` | 153 / 165 / 498 | same ids |
+| `src/mower_navigation/test/test_params_yaml.py` | 156 / 160 | same ids |
+
+This intentionally differs from MowgliNext upstream (`third_party/mowglinext`,
+pinned `faf658b`), which keeps `name="mowgli_nav2_plugins/…"` + `/` configs —
+both resolve; `::` is the Nav2/Jazzy convention and removes a legacy optional
+attribute. (Re-verify against `origin/master` if a future port re-syncs the XML.)
 
 ### 3.2 `controller_server` progress checker **[code]**
 
