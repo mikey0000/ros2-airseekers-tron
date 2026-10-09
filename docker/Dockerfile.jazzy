@@ -31,7 +31,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Mirrors docker/Dockerfile.dev-amd64 so a green amd64 dev build means this
 # image needs nothing extra.
 # - ros-jazzy-ros-base: explicit even though ros-base image already contains it
-# - nav2-bringup: Nav2 bringup/launch (replaces Noetic move_base/navfn per migration doc)
+# - navigation2: Nav2 core servers + plugins (controller/planner/bt_navigator/
+#   behaviors/velocity_smoother/collision_monitor/map_server). The mower launches
+#   Nav2 nodes directly (src/mower_navigation/launch/navigation.launch.py), so the
+#   nav2-bringup metapackage is NOT needed: it only adds the Gazebo/RViz/TB3-sim
+#   stack (+~300 debs) the mower never uses.
 # - robot-localization: ekf_node + navsat_transform_node (launch/nav2.launch.py)
 # - serial: python3-serial only (drivers are Python over termios/pyserial)
 # - grid-map-*, behaviortree-cpp: MowgliNext map server / mission layer
@@ -48,7 +52,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # - colcon: workspace builds
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-jazzy-ros-base \
-      ros-jazzy-nav2-bringup \
+      ros-jazzy-navigation2 \
       ros-jazzy-robot-localization \
       ros-jazzy-ortools-vendor \
       libgdal-dev libgeos-dev libtbb-dev libtinyxml2-dev \

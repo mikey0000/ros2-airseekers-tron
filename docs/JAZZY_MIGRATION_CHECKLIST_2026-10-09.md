@@ -72,7 +72,7 @@ before relying on it; **[gain]** = newly available Jazzy capability worth wiring
 | current | Jazzy |
 |---|---|
 | `ros-jazzy-ros-base` | `ros-jazzy-ros-base` |
-| `ros-jazzy-nav2-bringup` | `ros-jazzy-nav2-bringup` |
+| `ros-jazzy-nav2-bringup` | `ros-jazzy-navigation2` *(dropped bringup: the mower launches Nav2 nodes directly, so the Gazebo/RViz/TB3-sim deps it pulls are dead weight — 931→620 debs)* |
 | `ros-jazzy-robot-localization` | `ros-jazzy-robot-localization` |
 | `ros-jazzy-ortools-vendor` | `ros-jazzy-ortools-vendor` **[verify]** |
 | `ros-jazzy-grid-map-ros` / `-msgs` / `-cv` | `ros-jazzy-grid-map-*` |

@@ -219,7 +219,7 @@ Nav2 servers means `lifecycle_manager_navigation` picks it up with no config cha
 | MowgliNext (Lyrical) | Jazzy |
 |---|---|
 | `nav2::LifecycleNode`, `nav2::SimpleActionServer`, `nav2::CallbackReturn` | `nav2_util::…` — `nav2_ros_common` **does not exist in Jazzy either (Lyrical+)** |
-| `find_package(nav2_ros_common)` | `find_package(nav2_util)` (already implied by `ros-jazzy-nav2-bringup`) |
+| `find_package(nav2_ros_common)` | `find_package(nav2_util)` (already implied by `ros-jazzy-navigation2`) |
 | `SimpleActionServer(node, name, cb, goal_received_cb, completion_cb, timeout, spin)` | 6-arg form: `(node, name, cb, completion_cb, timeout, spin)` — **no `GoalReceivedCallback`**, and the last arg is `rcl_action_server_options_t`, not `bool realtime` |
 | `f2c::` v3 types | v2.1.0 `f2c::` types (same namespaces — see §2) |
 

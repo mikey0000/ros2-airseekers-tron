@@ -179,7 +179,7 @@ and mounts `../src → /work/src` (plus `launch/`, `config/`).
 - aarch64 pulls the arm64 image variant automatically; `platform: linux/arm64`
   in compose pins it on mixed-arch build hosts.
 - `foxglove-bridge` install is guarded (`|| skip`) in case an arm64 snapshot
-  lacks it; everything else (`ros-base`, `nav2-bringup`, `control-toolbox`,
+  lacks it; everything else (`ros-base`, `navigation2`, `control-toolbox`,
   `serial-driver`, `colcon`) is a hard dependency.
 
 ## Mower-side setup
