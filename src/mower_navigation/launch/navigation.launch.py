@@ -182,6 +182,17 @@ def generate_launch_description() -> LaunchDescription:
                         {"autostart": autostart, "node_names": LIFECYCLE_NODES,
                          "attempt_respawn_reconnection": True}],
             **common),
+        # Activity-gated lifecycle helper: PAUSE/RESUME the Nav2 nodes (through
+        # lifecycle_manager_navigation's manage_nodes service) at idle/docked_idle,
+        # so it never fights the bond watchdog of the manager itself.
+        Node(
+            package="mower_navigation", executable="activity_gated_lifecycle.py",
+            name="activity_gated_lifecycle_manager",
+            parameters=[{"lifecycle_nodes": LIFECYCLE_NODES,
+                         "lifecycle_manager": "lifecycle_manager_navigation",
+                         "activity_topic": "/mission/activity",
+                         "check_interval_s": 2.0}],
+            **common),
     ]
 
     keepout = GroupAction(
