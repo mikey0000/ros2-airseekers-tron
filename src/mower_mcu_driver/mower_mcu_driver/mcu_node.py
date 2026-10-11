@@ -58,6 +58,19 @@ Parameters
 ``battery_voltage_scale`` ``0.1``  raw 0.1 V units -> volts (set 1.0 to mimic the stock node)
 ``battery_current_scale`` ``-0.1`` raw 0.1 A, positive = discharging -> ROS amperes (negative
                                  = discharging, REP/BatteryState convention)
+``docked_motor_neutral`` ``true`` while ``docked_idle``, nudge one wheel at a time to cut the
+                                 drive hold current (``_docked_neutral_search``); read every
+                                 tick, so ``ros2 param set`` toggles it live
+``docked_neutral_*``             that search's tuning: ``current_threshold_a`` 1.5,
+                                 ``search_speed`` 0.01 / ``min_speed`` 0.002 (wheel m/s),
+                                 ``track_m`` 0.48, ``pulse_s`` 0.5, ``settle_s`` 3.0,
+                                 ``improve_a`` 0.03, ``max_probes`` 20, ``retry_s`` 300,
+                                 ``travel_limit_m`` 0.02 -- each wheel may roll at most this
+                                 far (wheel surface metres, ~0.2 rad) each way from where it
+                                 started, so a noisy climb cannot march the mower off the
+                                 charger pads.  Between nudges the search sends one (0,0)
+                                 and then goes SILENT: streaming zeros keeps the chassis in
+                                 the creeping speed-PI regime (see docs/wheel_control_semantics.md).
 
 Known gaps -- tracked as TODOs, do not treat this driver as safety-complete yet
 -------------------------------------------------------------------------------
@@ -551,11 +564,28 @@ class McuNode(Node):
         # takes effect live).
         self.declare_parameter('docked_zero_keepalive', False)   # experiments only, see doc
         self.declare_parameter('docked_zero_keepalive_period_s', 1.0)
-        # Docked motor neutral search: when docked_idle, find wheel position where
-        # drive motor current drops near zero (wheels settle in dock curve bottom).
+        # Docked motor neutral search: when docked_idle, find the wheel position where
+        # the drive motor current drops near zero (wheels settle in the dock curve bottom).
+        # One wheel is driven at a time: linear = v/2, angular = -/+ v/track, so the MCU's
+        # own differential mix moves ONLY that wheel (see docs/wheel_control_semantics.md).
+        # Speeds below are WHEEL m/s, applied as short pulses; if a wheel never responds
+        # (avg stays flat) raise search_speed toward the ~0.06 m/s one-wheel deadband.
+        # Each wheel may roll at most `travel_limit_m` each way from where it started
+        # (anti-pull-off guard: a noisy/improving climb cannot march the mower off the
+        # charger pads).  Between nudges the search sends ONE (0,0) then goes silent so
+        # the chassis falls back to mode-3 position hold -- streaming zeros every tick
+        # keeps mode-2 speed PI alive and the wheels creep (see "Drive at rest").
         self.declare_parameter('docked_motor_neutral', True)
         self.declare_parameter('docked_neutral_current_threshold_a', 1.5)
-        self.declare_parameter('docked_neutral_search_speed', 0.02)
+        self.declare_parameter('docked_neutral_search_speed', 0.01)    # start step, wheel m/s
+        self.declare_parameter('docked_neutral_min_speed', 0.002)      # smallest step
+        self.declare_parameter('docked_neutral_track_m', 0.48)         # URDF drive_track_y x2
+        self.declare_parameter('docked_neutral_pulse_s', 0.5)          # one nudge lasts (s)
+        self.declare_parameter('docked_neutral_settle_s', 3.0)         # pause to average amps
+        self.declare_parameter('docked_neutral_improve_a', 0.03)       # A drop that counts
+        self.declare_parameter('docked_neutral_max_probes', 20)        # steps per wheel
+        self.declare_parameter('docked_neutral_retry_s', 300.0)        # wait before a new run
+        self.declare_parameter('docked_neutral_travel_limit_m', 0.02)  # max wheel roll each way from start
         # Telemetry: measured vs commanded velocity at this rate (0 disables); /mcu/sent_speed
         # is published once per SpeedData frame that actually left the host.
         self.declare_parameter('speed_telemetry_rate_hz', 5.0)
@@ -642,10 +672,19 @@ class McuNode(Node):
         self._estop_pub_t = -1e9
         self._estop_pub_value = None
         self.docked_zero_keepalive_period = max(0.05, float(param('docked_zero_keepalive_period_s')))
-        # Docked motor neutral search parameters
-        self.docked_motor_neutral = bool(param('docked_motor_neutral'))
+        # Docked motor neutral search parameters (per-wheel hill climb, see
+        # _docked_neutral_search). Speeds are WHEEL m/s, not body linear m/s.
+        # `docked_motor_neutral` is read fresh every tick (live ros2 param set toggle).
         self.docked_neutral_current_threshold = float(param('docked_neutral_current_threshold_a'))
-        self.docked_neutral_search_speed = float(param('docked_neutral_search_speed'))
+        self.docked_neutral_search_speed = max(0.0, float(param('docked_neutral_search_speed')))
+        self.docked_neutral_min_speed = max(1e-6, float(param('docked_neutral_min_speed')))
+        self.docked_neutral_track_m = max(0.05, float(param('docked_neutral_track_m')))
+        self.docked_neutral_pulse_s = max(0.05, float(param('docked_neutral_pulse_s')))
+        self.docked_neutral_settle_s = max(0.2, float(param('docked_neutral_settle_s')))
+        self.docked_neutral_improve_a = max(0.0, float(param('docked_neutral_improve_a')))
+        self.docked_neutral_max_probes = max(1, int(param('docked_neutral_max_probes')))
+        self.docked_neutral_retry_s = max(0.0, float(param('docked_neutral_retry_s')))
+        self.docked_neutral_travel_limit = max(1e-4, float(param('docked_neutral_travel_limit_m')))
         self.interlock_on_lift = bool(param('interlock_on_lift'))
         self.interlock_on_stop = bool(param('interlock_on_stop'))
         self.interlock_on_bumper = bool(param('interlock_on_bumper'))
@@ -699,11 +738,24 @@ class McuNode(Node):
         self._activity = None             # last /mission/activity string
         self._keepalive_on = False        # docked zero keepalive currently active
         self._keepalive_next_t = 0.0
-        # Docked motor current reduction state
+        # Docked motor current reduction state (per-wheel hill climb):
+        # phase = wheel being tuned ('left'/'right'), stage = 'measure' | 'pulse'.
         self._docked_neutral_on = False
-        self._docked_neutral_next_t = 0.0
-        self._docked_neutral_dir = 1      # 1 = forward, -1 = reverse
-        self._docked_neutral_last_current = float('inf')
+        self._docked_neutral_pending = set()
+        self._docked_neutral_phase = None
+        self._docked_neutral_stage = 'measure'
+        self._docked_neutral_dir = 1      # +1 = drive the wheel forward, -1 = reverse
+        self._docked_neutral_step = 0.0   # current wheel-speed step (m/s)
+        self._docked_neutral_last_avg = None
+        self._docked_neutral_best = float('inf')
+        self._docked_neutral_probes = 0
+        self._docked_neutral_acc = 0.0
+        self._docked_neutral_n = 0
+        self._docked_neutral_stage_end = 0.0
+        self._docked_neutral_complete_t = -1e9
+        self._docked_neutral_travel = 0.0   # signed wheel surface travel since phase start (m)
+        self._docked_neutral_stop_sent = True  # (0,0) already sent for this measure window:
+                                               # phase start is silent/held, do not ping a zero
         self._wake_r, self._wake_w = os.pipe()
         os.set_blocking(self._wake_r, False)
         os.set_blocking(self._wake_w, False)
@@ -1551,83 +1603,282 @@ class McuNode(Node):
     def _docked_neutral_wanted(self, now, blocked):
         """True when we should run the motor current reduction: enabled, docked_idle,
         no interlock/e-stop, not moving, no stop sequence pending.
-        Only triggers when current is ABOVE threshold (not periodically)."""
-        if not self.docked_motor_neutral or blocked:
+        Only triggers when current is ABOVE threshold AND not charging.
+        When properly docked and charging, current should be ~0A.
+        If current > 1.5A while docked_idle, the mower is NOT properly seated.
+
+        The completion latch (``_docked_neutral_complete_t``) parks a finished search for
+        ``docked_neutral_retry_s`` so a wheel that cannot reach the threshold is not nudged
+        forever; any structural change (undock, motion, charge, interlock) clears it so a
+        fresh dock session re-probes the wheels."""
+        if not bool(self.get_parameter('docked_motor_neutral').value):
+            self.get_logger().debug('_docked_neutral_wanted: docked_motor_neutral=False')
+            return False
+        if blocked:
+            self._docked_neutral_complete_t = -1e9
+            self.get_logger().debug('_docked_neutral_wanted: blocked=True (interlock=%s estop=%s)' %
+                                    (self._interlock_active(), self._estop_latched))
             return False
         if self._activity != 'docked_idle':
+            self._docked_neutral_complete_t = -1e9
+            self.get_logger().debug('_docked_neutral_wanted: activity=%s' % self._activity)
             return False
         if self._moving or self._stop_left > 0:
+            self._docked_neutral_complete_t = -1e9
+            self.get_logger().debug('_docked_neutral_wanted: moving=%s stop_left=%s' %
+                                    (self._moving, self._stop_left))
             return False
-        # Only search if current is above threshold (don't re-search if already low)
+        # Check if we're charging - if so, we're properly docked, don't move!
+        # When properly docked and charging, current should be ~0A
+        if self._charging_enabled:
+            self._docked_neutral_complete_t = -1e9
+            self.get_logger().debug('_docked_neutral_wanted: charging=True, not searching')
+            return False
+        # After a completed run that could not reach the threshold, stay quiet for
+        # docked_neutral_retry_s instead of nudging forever.
+        if now - self._docked_neutral_complete_t < self.docked_neutral_retry_s:
+            return False
+        # Only search if current is ABOVE threshold AND not charging
         left_current = abs(self._motors_si.get('left', {}).get('current_a', 0.0))
         right_current = abs(self._motors_si.get('right', {}).get('current_a', 0.0))
         max_current = max(left_current, right_current)
+        want = max_current > self.docked_neutral_current_threshold
+        self.get_logger().debug(
+            '_docked_neutral_wanted check: left=%.2fA right=%.2fA max=%.2fA threshold=%.1fA want=%s charging=%s blocked=%s interlock=%s estop=%s activity=%s moving=%s stop_left=%s' %
+            (left_current, right_current, max_current, self.docked_neutral_current_threshold,
+             want, self._charging_enabled, self._interlock_active() or self._estop_latched,
+             self._interlock_active(), self._estop_latched, self._activity,
+             self._moving, self._stop_left))
         if max_current <= self.docked_neutral_current_threshold:
             return False
         return True
 
+    def _docked_neutral_current(self, side):
+        """Latest |current| (A) reported for one drive motor ('left'/'right')."""
+        return abs(self._motors_si.get(side, {}).get('current_a', 0.0))
+
+    def _neutral_cmd(self, side, speed):
+        """(linear, angular) that drives one wheel at ``speed`` m/s, the other near zero.
+
+        The MCU takes linear/angular only and mixes them itself; with track ``t`` the
+        firmware turns that into ``left = linear - angular*t/2`` and
+        ``right = linear + angular*t/2`` (see ``cmd_vel_slew`` /
+        ``docs/wheel_control_semantics.md``).  ``linear = speed/2`` together with
+        ``angular = -/+ speed/t`` therefore moves ``side`` at ``speed`` alone.
+        """
+        half = 0.5 * self.docked_neutral_track_m
+        if side == 'left':
+            return 0.5 * speed, -0.5 * speed / half
+        return 0.5 * speed, 0.5 * speed / half
+
+    def _docked_neutral_begin_phase(self, now):
+        """Arm the hill climb for the phase wheel: fresh baseline, +step, hold still."""
+        self._docked_neutral_stage = 'measure'
+        self._docked_neutral_dir = 1
+        # Read the step fresh so `ros2 param set` retunes a search that is already running.
+        step = float(self.get_parameter('docked_neutral_search_speed').value)
+        self._docked_neutral_step = max(self.docked_neutral_min_speed, step)
+        self._docked_neutral_last_avg = None
+        self._docked_neutral_best = float('inf')
+        self._docked_neutral_probes = 0
+        self._docked_neutral_acc = 0.0
+        self._docked_neutral_n = 0
+        self._docked_neutral_stage_end = now + self.docked_neutral_settle_s
+        # Fresh wheel: it starts where the search found it, silent and (after the chassis
+        # holds) position-latched, so the baseline measure must NOT ping a (0,0) first.
+        # The travel budget starts empty too.  Both the step and the roll budget are read
+        # fresh so `ros2 param set` can retune a search that is already running.
+        self.docked_neutral_travel_limit = max(
+            1e-4, float(self.get_parameter('docked_neutral_travel_limit_m').value))
+        self._docked_neutral_travel = 0.0
+        self._docked_neutral_stop_sent = True
+        self.get_logger().info('docked neutral: tuning %s wheel (step %.4f m/s, '
+                               'roll budget +-%.3f m)'
+                               % (self._docked_neutral_phase, self._docked_neutral_step,
+                                  self.docked_neutral_travel_limit))
+
+    def _docked_neutral_start(self, now):
+        left = self._docked_neutral_current('left')
+        right = self._docked_neutral_current('right')
+        self._docked_neutral_pending = {'left', 'right'}
+        # Start with the wheel that is holding the most current.
+        self._docked_neutral_phase = 'left' if left >= right else 'right'
+        self.get_logger().info(
+            'docked motor current reduction started (target < %.1fA): %s wheel first '
+            '(left=%.2fA right=%.2fA)' %
+            (self.docked_neutral_current_threshold, self._docked_neutral_phase, left, right))
+        self._docked_neutral_begin_phase(now)
+
+    def _docked_neutral_finish_phase(self, now):
+        """Latch this wheel where it is and move to the other, or finish both."""
+        self._send_speed_frame(0.0, 0.0)
+        self.get_logger().info('docked neutral: %s wheel lowest avg %.2fA after %d probes '
+                               '(signed travel %+.3f m)'
+                               % (self._docked_neutral_phase, self._docked_neutral_best,
+                                  self._docked_neutral_probes, self._docked_neutral_travel))
+        self._docked_neutral_pending.discard(self._docked_neutral_phase)
+        if self._docked_neutral_pending:
+            self._docked_neutral_phase = next(iter(self._docked_neutral_pending))
+            self._docked_neutral_begin_phase(now)
+        else:
+            self._docked_neutral_phase = None
+            self._docked_neutral_complete_t = now
+            self._docked_neutral_on = False
+            self.get_logger().info('docked neutral search complete (retry in %.0f s)'
+                                   % self.docked_neutral_retry_s)
+
+    def _docked_neutral_begin_pulse(self, now):
+        """Start one nudge of the tuned wheel, bounded by the anti-pull-off travel budget.
+
+        The wheel may roll at most ``docked_neutral_travel_limit_m`` (wheel surface metres;
+        wheel radius 0.1 m -> 0.02 m ~= 0.2 rad ~= 11 deg) each way from where it started
+        this phase.  If a nudge would breach the budget it is truncated to the remaining
+        travel; once the budget is spent the wheel is locked where it is
+        (``_docked_neutral_finish_phase``) instead of being commanded further, so a noisy
+        or spuriously-improving hill climb cannot march the mower off the charger pads.
+        """
+        step = self._docked_neutral_step
+        dist = step * self.docked_neutral_pulse_s
+        remaining = self.docked_neutral_travel_limit - abs(self._docked_neutral_travel)
+        # The budget is spent when even the smallest nudge the climb uses would not fit.
+        min_nudge = max(step * 0.02,                       # one 20 ms speed tick of travel
+                        self.docked_neutral_min_speed * self.docked_neutral_pulse_s)
+        if remaining < min_nudge:
+            self.get_logger().info(
+                'docked neutral: %s wheel at roll budget %+.3f m - leaving it there'
+                % (self._docked_neutral_phase, self._docked_neutral_travel))
+            self._docked_neutral_finish_phase(now)
+            return
+        if dist > remaining:
+            self.get_logger().info(
+                'docked neutral: %s wheel nudge truncated to remaining %.3f m roll budget'
+                % (self._docked_neutral_phase, remaining))
+            dist = remaining
+        self._docked_neutral_travel += self._docked_neutral_dir * dist
+        self._docked_neutral_stage = 'pulse'
+        self._docked_neutral_stage_end = now + dist / step
+
     def _docked_neutral_search(self, now, blocked):
-        """Simple search to reduce dock hold current from ~5-6A down to ~1-2A.
-        
-        Uses small pivot nudges (angular velocity) since that rocks both wheels
-        in the dock curve. At zero speed, check current; if above threshold,
-        nudge, wait, measure. If current dropped, continue direction; else reverse.
-        Stops when both motors below threshold (default ~1.5A).
-        Only runs when current is actually above threshold.
+        """Per-wheel hill climb that minimises the drive-motor hold current on the dock.
+
+        The MCU accepts linear/angular only, so one wheel is driven at a time via
+        :meth:`_neutral_cmd` (linear = v/2, angular = -/+ v/track).  For the first wheel we
+        take VERY small steps and keep the direction that lowers the average ``|current|``;
+        when it rises we reverse.  A wheel is done at the threshold, after
+        ``docked_neutral_max_probes`` steps, when its roll budget
+        (``docked_neutral_travel_limit_m``, small CW/CCW) is spent, or when the step reaches
+        its floor.  The other wheel is then tuned the same way, after which the search
+        latches off for ``docked_neutral_retry_s``.
+
+        Habitability rules that keep it on the charger:
+        * pulses are streamed while active (the MCU holds the last setpoint: silence would
+          let the wheel roll ~2 s at pulse speed);
+        * between pulses the search sends ONE (0,0) and then goes SILENT -- streaming zeros
+          every tick keeps mode-2 speed PI alive and the wheels creep (2026-10-08 finding,
+          the keepalive walked the robot off the dock pads).  Silence lets the chassis fall
+          back to mode-3 position hold, which locks the wheel while we average its current;
+        * each wheel may roll at most ``travel_limit_m`` from where it started.
         """
         want = self._docked_neutral_wanted(now, blocked)
         if want != self._docked_neutral_on:
             self._docked_neutral_on = want
             if want:
-                self.get_logger().info('docked motor current reduction started (target < %.1fA)' %
-                                       self.docked_neutral_current_threshold)
-                self._docked_neutral_dir = 1
-                self._docked_neutral_last_current = float('inf')
-                self._docked_neutral_next_t = now
+                self._docked_neutral_start(now)
             else:
-                self.get_logger().info('docked motor current reduction stopped (below target)')
+                self.get_logger().info('docked motor current reduction stopped')
+                self._docked_neutral_phase = None
+                self._send_speed_frame(0.0, 0.0)
 
         if not want:
             return
 
-        # Get current motor currents (absolute values)
-        left_current = abs(self._motors_si.get('left', {}).get('current_a', 0.0))
-        right_current = abs(self._motors_si.get('right', {}).get('current_a', 0.0))
-        max_current = max(left_current, right_current)
+        if self._docked_neutral_phase is None:      # (re)arm after a gate gap
+            self._docked_neutral_start(now)
 
-        # Check if we've reduced current enough
-        if max_current <= self.docked_neutral_current_threshold:
-            self.get_logger().info(
-                'docked motor current reduced: left=%.2fA right=%.2fA (target < %.1fA)' %
-                (left_current, right_current, self.docked_neutral_current_threshold))
-            # Hold position (send zero speed)
-            self._send_speed_frame(0.0, 0.0)
+        side = self._docked_neutral_phase
+
+        if self._docked_neutral_stage == 'pulse':
+            # Keep the pulse live every tick: the MCU holds the last setpoint, so silence
+            # would let the cutter keep forwarding the pulse speed for ~2 s and the wheel
+            # would roll far past the intended nudge.  Resending bounds the motion to
+            # exactly pulse_s.
+            speed = self._docked_neutral_step * self._docked_neutral_dir
+            self._send_speed_frame(*self._neutral_cmd(side, speed))
+            if now >= self._docked_neutral_stage_end:
+                self._docked_neutral_stage = 'measure'
+                self._docked_neutral_acc = 0.0
+                self._docked_neutral_n = 0
+                self._docked_neutral_stage_end = now + self.docked_neutral_settle_s
+                self._docked_neutral_stop_sent = False   # the nudge just ended: zero it
             return
 
-        # Not at target yet - only act if it's time for next attempt
-        if now < self._docked_neutral_next_t:
+        # stage == 'measure': zero the setpoint ONCE, then go silent.
+        # Streaming (0,0) every tick keeps the chassis in the speed-PI regime (mode 2)
+        # and the wheels creep -> the mower walks off the dock pads (2026-10-08 finding,
+        # docs/wheel_control_semantics.md "Drive at rest").  A single zero ends the nudge;
+        # the silence that follows lets the chassis fall back to mode-3 position hold,
+        # which locks the wheel in place while we average its hold current.
+        if not self._docked_neutral_stop_sent:
+            self._docked_neutral_stop_sent = True
             self._send_speed_frame(0.0, 0.0)
+        self._docked_neutral_acc += self._docked_neutral_current(side)
+        self._docked_neutral_n += 1
+        if now < self._docked_neutral_stage_end:
             return
 
-        # Time for a nudge - did the last one help?
-        if self._docked_neutral_last_current != float('inf'):
-            if max_current < self._docked_neutral_last_current:
-                pass  # keep direction - current improved
-            else:
-                self._docked_neutral_dir *= -1  # reverse - current got worse
+        avg = self._docked_neutral_acc / max(1, self._docked_neutral_n)
+        self._docked_neutral_acc = 0.0
+        self._docked_neutral_n = 0
 
-        self._docked_neutral_last_current = max_current
+        if self._docked_neutral_last_avg is None:
+            # Baseline at the current, untouched position.
+            self._docked_neutral_last_avg = avg
+            self._docked_neutral_best = min(self._docked_neutral_best, avg)
+            self.get_logger().info('docked neutral: %s wheel baseline %.2fA' % (side, avg))
+            if avg <= self.docked_neutral_current_threshold:
+                self._docked_neutral_finish_phase(now)   # already fine, do not touch it
+                return
+            self._docked_neutral_begin_pulse(now)
+            return
 
-        # Small pivot nudge (rocks both wheels in dock curve)
-        pivot_speed = self.docked_neutral_search_speed * self._docked_neutral_dir
-        self.get_logger().debug(
-            'docked current nudge: dir=%d pivot=%.4f left=%.2fA right=%.2fA target<%.1fA' %
-            (self._docked_neutral_dir, pivot_speed, left_current, right_current,
-             self.docked_neutral_current_threshold))
-        self._send_speed_frame(0.0, pivot_speed)
+        improved = avg < self._docked_neutral_last_avg - self.docked_neutral_improve_a
+        self.get_logger().info(
+            'docked neutral: %s wheel avg %.2fA (was %.2fA, dir %+d, step %.4f) improved=%s'
+            % (side, avg, self._docked_neutral_last_avg, self._docked_neutral_dir,
+               self._docked_neutral_step, improved))
+        self._docked_neutral_last_avg = avg
+        self._docked_neutral_probes += 1
+        if improved:
+            self._docked_neutral_best = min(self._docked_neutral_best, avg)
 
-        # Long pause before next measurement
-        self._docked_neutral_next_t = now + 5.0
+        if avg <= self.docked_neutral_current_threshold:
+            self._docked_neutral_finish_phase(now)
+            return
+        if self._docked_neutral_probes >= self.docked_neutral_max_probes:
+            self._docked_neutral_finish_phase(now)
+            return
+
+        if improved:
+            self._docked_neutral_begin_pulse(now)        # same direction, same step
+            return
+
+        # Current rose: step the other way, smaller, until the step floor.
+        self._docked_neutral_dir *= -1
+        if self._docked_neutral_step <= self.docked_neutral_min_speed:
+            self._docked_neutral_finish_phase(now)
+            return
+        self._docked_neutral_step = max(self.docked_neutral_min_speed,
+                                        self._docked_neutral_step * 0.5)
+        self._docked_neutral_begin_pulse(now)
+
+    def _twist_msg(self, linear, angular):
+        """Create a TwistStamped message."""
+        msg = TwistStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.frame_id
+        msg.twist.linear.x = float(linear)
+        msg.twist.angular.z = float(angular)
+        return msg
 
     def _publish_speed_telemetry(self, now):
         """Measured and commanded body velocity at ``speed_telemetry_rate_hz`` (observational)."""
