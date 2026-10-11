@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-
-	"github.com/vmihailenco/msgpack/v5"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -26,6 +28,33 @@ func setupMowgliNextRouter(provider types.IRosProvider) *gin.Engine {
 	group := r.Group("/api")
 	MowgliNextRoutes(group, provider)
 	return r
+}
+
+func TestObstacleSnapshotRoute(t *testing.T) {
+	orig := obstacleSnapshotsDir
+	obstacleSnapshotsDir = t.TempDir()
+	defer func() { obstacleSnapshotsDir = orig }()
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(obstacleSnapshotsDir, "7.jpg"), []byte("\xff\xd8jpeg-bytes"), 0o644))
+
+	router := setupMowgliNextRouter(types.NewMockRosProvider())
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("GET", "/api/mowglinext/obstacles/7/snapshot", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "image/jpeg", w.Header().Get("Content-Type"))
+	assert.Equal(t, "\xff\xd8jpeg-bytes", w.Body.String())
+
+	// Known-to-be-missing id -> 404 (the panel hides the thumbnail on this).
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("GET", "/api/mowglinext/obstacles/8/snapshot", nil))
+	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	// Non-numeric id -> 400; Atoi also makes path traversal impossible.
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("GET", "/api/mowglinext/obstacles/notanid/snapshot", nil))
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestServiceRoute_HighLevelControl(t *testing.T) {

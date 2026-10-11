@@ -100,6 +100,13 @@ Known gaps / notes:
 * Backend routes for the hidden tools (rosbag, drive tuning, GNSS sidecar,
   updater, remote access, firmware flashing, container restarts) still exist
   and return errors when called — there is no docker socket or openocd.
+* **Obstacle snapshots.** The tracked-obstacle panel shows the annotated front
+  camera frame the `mower_map/obstacle_tracker_node` saved for each obstacle.
+  That is a static file, not a ROS topic: the tracker writes
+  `<maps_dir>/obstacle_snapshots/<id>.jpg` (shared volume, readable here at
+  `/ros2_ws/maps/obstacle_snapshots`) and the backend serves it via
+  `GET /api/mowglinext/obstacles/{id}/snapshot` (`pkg/api/mowglinext.go`). It is
+  a no-op (icon fallback) when snapshots are disabled or the file is absent.
 
 ## Profile gating (Tron trim)
 
@@ -207,7 +214,9 @@ PR-3 Tron profile and hardware gating, PR-4 GNSS corrections presentation, PR-5
 camera perception (`/perception`), PR-6 settings-to-ROS parameter bindings, PR-7
 docking and datum (vision dock, dock-point rejection surfaced by the API), PR-8
 ops (rosout logs page, diagnostics without Docker), plus the profile-aware
-onboarding wizard (T42). Each group still has to be extracted onto its own
+onboarding wizard (T42) and obstacle snapshots (the tracker's per-obstacle
+front-frame JPEGs served by the backend and shown in the tracked-obstacle
+panel, PR-9/T44). Each group still has to be extracted onto its own
 branch off the upstream commit.
 
 ## Licence

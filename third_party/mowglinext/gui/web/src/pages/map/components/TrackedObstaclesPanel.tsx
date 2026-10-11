@@ -1,5 +1,6 @@
 import {StopOutlined, CheckCircleOutlined, CloseCircleOutlined} from "@ant-design/icons";
 import {App, Button} from "antd";
+import {useState} from "react";
 import {useTranslation} from "react-i18next";
 import {useThemeMode} from "../../../theme/ThemeContext.tsx";
 import type {TrackedObstacle} from "../../../types/ros.ts";
@@ -21,6 +22,31 @@ interface TrackedObstaclesPanelProps {
     /// the obstacle id on enter, null on leave.
     onHoverObstacle: (id: number | null) => void;
 }
+
+/// Thumbnail of the annotated front-camera frame the obstacle_tracker saved
+/// when it first saw this obstacle (<snapshot_dir>/<id>.jpg, served by the Go
+/// backend). There is no image while the obstacle is still transient, when
+/// snapshots are disabled, or before the tracker has written the file, so the
+/// red marker icon is shown as the fallback instead. Clicking opens the full
+/// annotated frame.
+const ObstacleThumbnail = ({id, bg}: {id: number; bg: string}) => {
+    const {t} = useTranslation();
+    const [failed, setFailed] = useState(false);
+    if (failed) {
+        return <span style={{color: '#bf0000', fontSize: 16, flexShrink: 0, width: 20}}><StopOutlined /></span>;
+    }
+    const url = `/api/mowglinext/obstacles/${id}/snapshot`;
+    return (
+        <a href={url} target="_blank" rel="noreferrer"
+            title={t('mapTrackedObstacles.snapshotHint')}
+            style={{flexShrink: 0, lineHeight: 0}}>
+            <img src={url} alt={t('mapTrackedObstacles.snapshotAlt', {id})}
+                width={56} height={42}
+                style={{objectFit: 'cover', borderRadius: 4, display: 'block', background: bg}}
+                onError={() => setFailed(true)} />
+        </a>
+    );
+};
 
 /// Lists tracked obstacles published by /obstacle_tracker/obstacles. Each row
 /// has a "Promote" action that calls /map_server_node/promote_obstacle so the
@@ -142,9 +168,7 @@ export const TrackedObstaclesPanel = ({obstacles, obstacleAreaIndex, areaNames, 
                             borderLeft: `3px solid ${isSelected ? '#ff4d4f' : '#bf0000'}`,
                             transition: 'background 0.12s ease',
                         }}>
-                            <span style={{color: '#bf0000', fontSize: 16, flexShrink: 0, width: 20}}>
-                                <StopOutlined />
-                            </span>
+                            <ObstacleThumbnail id={id} bg={colors.bgElevated} />
                             <div style={{flex: 1, minWidth: 0}}>
                                 <div style={{fontWeight: 500, fontSize: 13, color: colors.text}}>
                                     {t('mapTrackedObstacles.obstacleLabel', {id})}

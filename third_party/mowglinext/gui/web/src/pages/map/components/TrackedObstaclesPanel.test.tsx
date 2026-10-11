@@ -41,3 +41,19 @@ describe('tracked obstacle ignore', () => {
         expect(mocks.success).not.toHaveBeenCalled();
     });
 });
+
+describe('tracked obstacle snapshot', () => {
+    it('shows the annotated-frame thumbnail served for the obstacle id', () => {
+        showPanel();
+        const img = screen.getByRole('img', {name: 'Annotated camera frame of obstacle #42'});
+        expect(img).toHaveAttribute('src', '/api/mowglinext/obstacles/42/snapshot');
+        expect(img.closest('a')).toHaveAttribute('href', '/api/mowglinext/obstacles/42/snapshot');
+    });
+
+    it('falls back to the marker icon when the snapshot file is missing', () => {
+        showPanel();
+        fireEvent.error(screen.getByRole('img', {name: 'Annotated camera frame of obstacle #42'}));
+        expect(screen.queryByRole('img', {name: 'Annotated camera frame of obstacle #42'})).not.toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'Promote'})).toBeInTheDocument();
+    });
+});

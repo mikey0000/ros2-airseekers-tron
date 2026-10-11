@@ -1780,7 +1780,9 @@
     "pointsShort_one": "{{count}}pt",
     "pointsShort_other": "{{count}}pt",
     "noContainingArea": "No containing area",
-    "promoteTooltip": "Promote to permanent keepout"
+    "promoteTooltip": "Promote to permanent keepout",
+    "snapshotAlt": "Annotated camera frame of obstacle #{{id}}",
+    "snapshotHint": "What the mower saw when it detected this obstacle"
   },
   "mapEditing": {
     "unableToMatchAreaForObstacle": "Unable to match an area for this obstacle",

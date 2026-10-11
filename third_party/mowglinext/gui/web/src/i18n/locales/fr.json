@@ -1776,7 +1776,9 @@
     "pointsShort_one": "{{count}} pt",
     "pointsShort_other": "{{count}} pt",
     "noContainingArea": "Aucune zone englobante",
-    "promoteTooltip": "Promouvoir en exclusion permanente"
+    "promoteTooltip": "Promouvoir en exclusion permanente",
+    "snapshotAlt": "Image annotée de l'obstacle n° {{id}}",
+    "snapshotHint": "Ce que la tondeuse a vu en détectant cet obstacle"
   },
   "mapEditing": {
     "unableToMatchAreaForObstacle": "Impossible d'associer une zone à cet obstacle",

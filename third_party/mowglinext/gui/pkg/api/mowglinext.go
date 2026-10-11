@@ -9,6 +9,9 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -74,6 +77,47 @@ func MowgliNextRoutes(r *gin.RouterGroup, provider types.IRosProvider) {
 	SubscriberRoute(group, provider)
 	MultiplexRoute(group, provider)
 	PublisherRoute(group, provider)
+	ObstacleSnapshotRoute(group)
+}
+
+// obstacleSnapshotsDir holds the per-obstacle annotated front-frame JPEGs
+// (<id>.jpg) written by mower_map.obstacle_tracker_node. The GUI container
+// mounts the same host maps volume at /ros2_ws/maps (docker-compose), so the
+// files the tracker saves next to areas.dat are readable here (like rosbags/).
+// A var (not const) so tests can point it at a temp dir.
+var obstacleSnapshotsDir = "/ros2_ws/maps/obstacle_snapshots"
+
+// ObstacleSnapshotRoute serves the annotated camera frame saved for a tracked
+// obstacle id (what the mower saw when it first detected it).
+//
+// @Summary obstacle snapshot image
+// @Description whole annotated front camera frame captured when the obstacle was first detected
+// @Tags mowglinext
+// @Produce image/jpeg
+// @Param id path int true "tracked obstacle id"
+// @Success 200 {file} binary
+// @Failure 400 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Router /mowglinext/obstacles/{id}/snapshot [get]
+func ObstacleSnapshotRoute(group *gin.RouterGroup) {
+	group.GET("/obstacles/:id/snapshot", func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil || id < 0 {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid obstacle id"})
+			return
+		}
+		// id is an int, so the filename below cannot escape the directory even
+		// though it ultimately derives from the request path.
+		p := filepath.Join(obstacleSnapshotsDir, strconv.Itoa(id)+".jpg")
+		if _, err := os.Stat(p); err != nil {
+			// No snapshot (transient detection, snapshots disabled, or the
+			// obstacle has gone). The panel just hides the thumbnail.
+			c.JSON(http.StatusNotFound, ErrorResponse{Error: "no snapshot for obstacle"})
+			return
+		}
+		c.Header("Cache-Control", "no-cache")
+		c.File(p)
+	})
 }
 
 // topicSubscribeInterval returns the throttle interval (ms, -1 = unthrottled)
