@@ -155,6 +155,9 @@ DirectSelectWithBoxMode.onSetup = function (opts: any) {
     boxSelecting: false,
     boxStartLocation: null,
     boxSelectElement: undefined,
+    rotating: false,
+    rotationHandleElement: undefined,
+    lastRotationAngle: 0,
   };
 
   this.setSelectedCoordinates(this.pathsToCoordinates(featureId, state.selectedCoordPaths));
@@ -164,6 +167,9 @@ DirectSelectWithBoxMode.onSetup = function (opts: any) {
   this.setActionableState({
     trash: true
   });
+
+  // Render rotation handle
+  this.renderRotationHandle(state);
 
   return state;
 };
@@ -233,6 +239,10 @@ DirectSelectWithBoxMode.onMouseOut = function (state: any) {
 };
 
 DirectSelectWithBoxMode.onMouseDown = DirectSelectWithBoxMode.onTouchStart = function (state: any, e: any) {
+  if (this.isRotationHandle(state, e)) {
+    this.startRotation(state);
+    return;
+  }
   if (isVertex(e)) return this.onVertex(state, e);
   
   if (isShiftDown(e)) {
@@ -247,6 +257,9 @@ DirectSelectWithBoxMode.onMouseDown = DirectSelectWithBoxMode.onTouchStart = fun
 };
 
 DirectSelectWithBoxMode.onDrag = function (state: any, e: any) {
+  if (state.rotating) {
+    return this.updateRotation(state, e);
+  }
   if (state.boxSelecting) {
     return this.whileBoxSelect(state, e)
   }
@@ -331,12 +344,19 @@ DirectSelectWithBoxMode.onMouseUp = DirectSelectWithBoxMode.onTouchEnd = functio
     this.setSelectedCoordinates(this.pathsToCoordinates(state.featureId, state.selectedCoordPaths));
     state.boxStartLocation = null;
 
+    if (state.rotating) {
+      this.stopRotation(state);
+    }
     this.map.dragPan.enable();
 
     // Trigger a re-render of the feature
     state.feature.changed();
 
     return;
+  }
+
+  if (state.rotating) {
+    this.stopRotation(state);
   }
 
   if (state.dragMoving) {
@@ -373,3 +393,113 @@ DirectSelectWithBoxMode.getSelectedVerticesInBox = function (feature: any, minX:
 };
 
 export default DirectSelectWithBoxMode;
+
+// Rotation handle helpers (free transform)
+const ROTATION_HANDLE_ID = "rotation-handle";
+
+DirectSelectWithBoxMode.getCentroid = function (feature: any): [number, number] {
+  const coords = feature.getCoordinates()[0];
+  let cx = 0, cy = 0;
+  for (const c of coords) { cx += c[0]; cy += c[1]; }
+  return [cx / coords.length, cy / coords.length];
+};
+
+DirectSelectWithBoxMode.getRotationHandlePosition = function (state: any): [number, number] {
+  const feature = state.feature;
+  const [cx, cy] = this.getCentroid(feature);
+  const coords = feature.getCoordinates()[0];
+  let maxX = -Infinity, maxY = -Infinity;
+  for (const c of coords) {
+    if (c[0] > maxX) maxX = c[0];
+    if (c[1] > maxY) maxY = c[1];
+  }
+  const radius = Math.max(maxX - cx, maxY - cy) * 1.3;
+  return [cx, cy + radius];
+};
+
+DirectSelectWithBoxMode.renderRotationHandle = function (state: any) {
+  if (state.rotationHandleElement) return;
+  const [hx, hy] = this.getRotationHandlePosition(state);
+  const point = this.map.project([hx, hy]);
+  const el = document.createElement("div");
+  el.id = ROTATION_HANDLE_ID;
+  el.className = "mapboxgl-draw-rotation-handle";
+  el.style.position = "absolute";
+  el.style.width = "16px";
+  el.style.height = "16px";
+  el.style.borderRadius = "50%";
+  el.style.background = "rgba(255, 73, 79, 0.9)";
+  el.style.border = "2px solid white";
+  el.style.cursor = "grab";
+  el.style.transform = "translate(" + (point.x - 8) + "px, " + (point.y - 8) + "px)";
+  el.style.zIndex = "1000";
+  el.style.boxShadow = "0 2px 6px rgba(0,0,0,0.4)";
+  el.title = "Rotate polygon";
+  state.rotationHandleElement = el;
+  this.map.getContainer().appendChild(el);
+};
+
+DirectSelectWithBoxMode.updateRotationHandle = function (state: any) {
+  if (!state.rotationHandleElement) return;
+  const [hx, hy] = this.getRotationHandlePosition(state);
+  const point = this.map.project([hx, hy]);
+  state.rotationHandleElement.style.transform = "translate(" + (point.x - 8) + "px, " + (point.y - 8) + "px)";
+};
+
+DirectSelectWithBoxMode.removeRotationHandle = function (state: any) {
+  if (state.rotationHandleElement) {
+    state.rotationHandleElement.remove();
+    state.rotationHandleElement = undefined;
+  }
+};
+
+DirectSelectWithBoxMode.isRotationHandle = function (state: any, e: any): boolean {
+  if (!state.rotationHandleElement) return false;
+  const point = this.map.project(e.lngLat);
+  const rect = state.rotationHandleElement.getBoundingClientRect();
+  return point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+};
+
+DirectSelectWithBoxMode.rotateFeature = function (state: any, deltaDeg: number) {
+  const feature = state.feature;
+  const coords = feature.getCoordinates()[0];
+  const [cx, cy] = this.getCentroid(feature);
+  const ang = (deltaDeg * Math.PI) / 180;
+  const cos = Math.cos(ang);
+  const sin = Math.sin(ang);
+  const newCoords = coords.map((c: [number, number]) => {
+    const dx = c[0] - cx;
+    const dy = c[1] - cy;
+    return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
+  });
+  feature.setCoordinates([newCoords]);
+  this.renderRotationHandle(state);
+  this.fireUpdate();
+};
+
+DirectSelectWithBoxMode.startRotation = function (state: any) {
+  state.rotating = true;
+  state.rotationStartPoint = null;
+  this.map.dragPan.disable();
+};
+
+DirectSelectWithBoxMode.updateRotation = function (state: any, e: any) {
+  if (!state.rotating) return;
+  const [cx, cy] = this.getCentroid(state.feature);
+  const pt = this.map.project([cx, cy]);
+  const deltaX = e.point.x - pt.x;
+  const deltaY = e.point.y - pt.y;
+  const angle = Math.atan2(deltaX, deltaY) * 180 / Math.PI;
+  const prevAngle = state.lastRotationAngle || 0;
+  const deltaDeg = angle - prevAngle;
+  this.rotateFeature(state, deltaDeg);
+  state.lastRotationAngle = angle;
+};
+
+DirectSelectWithBoxMode.stopRotation = function (state: any) {
+  state.rotating = false;
+  state.rotationStartPoint = null;
+  state.lastRotationAngle = 0;
+  this.map.dragPan.enable();
+};
+
