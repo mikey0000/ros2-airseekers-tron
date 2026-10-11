@@ -132,6 +132,12 @@ NODE_DEFAULTS = {
     'alternate_state_path': '~/.ros/mower_mission/alternate_counts.json',
     'recording_fallback_dir': '~/.ros/mower_mission/recordings',
     'server_wait_timeout_s': 3.0,
+    # Nav2 readiness gate: the activity gate (mower_navigation/activity_gated_lifecycle)
+    # PAUSEs the Nav2 lifecycle stack while the robot is idle, so a navigation started
+    # from idle must wait for the stack to come back ACTIVE before its goal is sent
+    # (upstream MowgliNext equivalent: the Nav2ResumeGuard + Nav2ReadyPoll).
+    'nav2_active_service': '/lifecycle_manager_navigation/is_active',
+    'nav2_ready_timeout_s': 20.0,
     'status_rate_hz': 1.0,
     'zero_burst_s': 0.5,
     'zero_burst_rate_hz': 20.0,
@@ -146,6 +152,12 @@ _STATUS_TO_OUTCOME = {
     GoalStatus.STATUS_CANCELED: fsm_mod.CANCELED,
     GoalStatus.STATUS_ABORTED: fsm_mod.ABORTED,
 }
+
+# Actions backed by the Nav2 lifecycle stack: a goal sent while the activity gate has the
+# stack PAUSEd is rejected instantly ("Action server is inactive"). ACT_PLAN (coverage
+# bridge) and ACT_UNDOCK (open-loop drive off the dock) do not need it.
+_NAV2_ACTIONS = frozenset((fsm_mod.ACT_FOLLOW, fsm_mod.ACT_NAV,
+                           fsm_mod.ACT_DOCK, fsm_mod.ACT_BACKUP))
 
 
 def _yaw_from_quat(q):
@@ -313,6 +325,9 @@ class MissionNode(Node):
         self._clear_costmap_clis = [
             (cli(ClearEntireCostmap, p[k], callback_group=self._cb), p[k])
             for k in ('clear_global_costmap_service', 'clear_local_costmap_service')]
+        # Nav2 lifecycle readiness: the activity gate PAUSEs the stack while the robot is
+        # idle, so nav2-backed goals wait for this to report active (see _await_nav2_ready).
+        self._nav2_active_cli = cli(Trigger, p['nav2_active_service'], callback_group=self._cb)
 
         # QuietActionClient: other goals' feedback (bt_navigator ~100 Hz, controller 20 Hz)
         # is dropped without an executor dispatch (quiet_action.py).
@@ -887,7 +902,59 @@ class MissionNode(Node):
             self._cancelled.discard(token)
             self._execute(self.fsm.on_action_result(token, outcome, result, time.monotonic()))
 
+    def _await_nav2_ready(self, token):
+        """Block this worker thread until the Nav2 lifecycle stack is ACTIVE.
+
+        The activity gate PAUSEs the Nav2 lifecycle nodes while the robot is idle; a goal
+        sent into the still-inactive stack is rejected instantly, so wait for the RESUME
+        to finish. Bounded by ``nav2_ready_timeout_s``; returns early if the goal is
+        cancelled while waiting, and never blocks when the readiness service is absent.
+        """
+        cli = self._nav2_active_cli
+        if not cli.service_is_ready():
+            return                      # no readiness service: behave as before
+        deadline = time.monotonic() + max(0.0, float(self._p['nav2_ready_timeout_s']))
+        waited = False
+        while True:
+            with self._lock:
+                if token in self._cancelled:
+                    return
+            if not cli.service_is_ready():
+                return
+            done = threading.Event()
+            fut = cli.call_async(Trigger.Request())
+            fut.add_done_callback(lambda _f: done.set())
+            # nav2's is_active waits out an in-flight transition before answering, so allow
+            # a whole call up to the remaining budget (do not mistake "slow" for "down").
+            done.wait(max(0.05, deadline - time.monotonic() + 0.5))
+            try:
+                ready = bool(fut.result().success)
+            except Exception:  # noqa: BLE001 - no/invalid answer: poll again
+                ready = False
+            if ready:
+                if waited:
+                    self.get_logger().info('Nav2 stack active')
+                return
+            if not waited:
+                self.get_logger().info(
+                    'Nav2 stack paused; waiting for it to resume before sending the goal')
+                waited = True
+            if time.monotonic() >= deadline:
+                # Send anyway: nav2 may have come back between polls, and if it is really
+                # down the normal reject/timeout path reports it (no hang).
+                self.get_logger().warn('Nav2 stack still paused after %.0fs; sending goal anyway'
+                                       % float(self._p['nav2_ready_timeout_s']))
+                return
+            time.sleep(0.2)
+
     def _send_goal(self, e):
+        if e.name in _NAV2_ACTIONS:
+            self._await_nav2_ready(e.token)
+            with self._lock:
+                if e.token in self._cancelled:
+                    self._inflight.discard(e.token)
+                    self._cancelled.discard(e.token)
+                    return
         client, ros_name = self._actions[e.name]
         if not client.wait_for_server(timeout_sec=float(self._p['server_wait_timeout_s'])):
             self.get_logger().warn('action server %s not available after %.1fs' % (

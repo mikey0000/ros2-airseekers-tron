@@ -231,6 +231,10 @@ behavior_tree_node:
     # --- timeouts ----------------------------------------------------------
     result_display_s: 5.0             # UNDOCK_FAILED / NAV_TO_DOCK_FAILED / RECORDING_COMPLETE shown this long
     server_wait_timeout_s: 3.0        # wait_for_server / wait_for_service before "unavailable"
+    # Nav2 readiness: the activity gate PAUSEs the Nav2 stack while idle, so a nav goal
+    # waits for it to be active again (never longer than this) before being sent.
+    nav2_active_service: /lifecycle_manager_navigation/is_active
+    nav2_ready_timeout_s: 20.0
     service_timeout_s: 10.0
     plan_timeout_s: 120.0
     undock_timeout_s: 180.0

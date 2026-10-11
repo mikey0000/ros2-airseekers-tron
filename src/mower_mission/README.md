@@ -198,6 +198,14 @@ in a worker thread and then reports `unavailable`. The state machine then fails 
 cleanly, and `sub_state_name` says which server was missing. Every action also has a
 watchdog timeout (`*_timeout_s`); on expiry the goal is cancelled and treated as an abort.
 
+The Nav2 lifecycle stack is PAUSEd by the activity gate
+(`mower_navigation/activity_gated_lifecycle`) while the robot is idle. Nav2-backed goals
+(`follow_path`, `navigate_to_pose`, `dock`, `backup`) therefore first wait — up to
+`nav2_ready_timeout_s` (20 s), polling `/lifecycle_manager_navigation/is_active` — for the
+stack to come back active before the goal is sent; a goal sent into a paused stack is
+rejected instantly with "Action server is inactive" (upstream: `Nav2ResumeGuard` +
+`Nav2ReadyPoll`).
+
 ## Per-area mowing settings
 
 Before PLANNING an area the node reads its effective settings from
