@@ -142,6 +142,8 @@ def generate_launch_description() -> LaunchDescription:
         arg('stereo_costmap', 'true', 'Keep the stereo sources in the costmaps (false = '
             'bumper-only, as mower.launch.py stereo_costmap:=false).'),
         arg('map_server', 'true', 'mower_map map_server_node on maps_dir.'),
+        arg('obstacle_tracker', 'true', 'mower_map obstacle_tracker_node: auto-mark reliable '
+            'stereo/YOLO obstacles as permanent keepouts (needs map_server).'),
         arg('coverage', 'true', 'mower_coverage_bridge (planner + /plan_coverage).'),
         arg('docking', 'true', 'mower_docking (dock/undock actions, vision on the rendered '
             'rear-camera marker).'),
@@ -245,6 +247,14 @@ def generate_launch_description() -> LaunchDescription:
                 datum_lat=LaunchConfiguration('datum_lat'),
                 datum_lon=LaunchConfiguration('datum_lon'),
                 map_odom_topic='/odometry/filtered_map'),
+        # Auto obstacle marking; needs map_server for the areas + promote/remove services.
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(PathJoinSubstitution(
+                [FindPackageShare('mower_map'), 'launch', 'obstacle_tracker.launch.py'])),
+            condition=IfCondition(PythonExpression([
+                "'", LaunchConfiguration('obstacle_tracker'), "' == 'true' and '",
+                LaunchConfiguration('map_server'), "' == 'true'"])),
+        ),
         include('mower_coverage_bridge', 'launch/coverage_bridge.launch.py', 'coverage'),
         include('mower_docking', 'launch/docking.launch.py', 'docking',
                 params_file=LaunchConfiguration('docking_params_file')),

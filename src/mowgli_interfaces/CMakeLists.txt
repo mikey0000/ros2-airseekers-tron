@@ -49,6 +49,7 @@ set(srv_files
   "srv/StartInArea.srv"
   "srv/CoverageOrientation.srv"
   "srv/PromoteObstacle.srv"
+  "srv/RemoveObstacle.srv"
 )
 
 # Declare action files

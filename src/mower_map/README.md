@@ -29,6 +29,7 @@ ros2 launch mower_map map_server.launch.py maps_dir:=/ros2_ws/maps \
 | `/map_server_node/set_docking_point` | `mowgli_interfaces/SetDockingPoint` | Applies the gates below, then sets position (request, or the mean `/odometry/filtered_map` position when `use_gps_position`). Yaw comes from PRESERVE / REQUEST / MOTION. Writes `dock_pose.yaml` (with `dock_pose_measured: true` when the yaw is real: MOTION, REQUEST, PRESERVE of a measured yaw, or PRESERVE with `use_gps_position` while the stored yaw is still the placeholder, which captures the docked robot's fused heading), and `robot_yaml_path` if set. Publishes `docking_pose` and `docking_pose_measured`. |
 | `/map_server_node/promote_obstacle` | `mowgli_interfaces/PromoteObstacle` | Lookup order: `pending_id` accepts a pending proposal. Otherwise `polygon` is used as given. Otherwise `obstacle_id` is looked up in the last `/obstacle_tracker/obstacles`. Duplicates (centroid within 10 cm) are a no-op. Navigation areas are refused. |
 | `/map_server_node/discard_obstacle` | `mowgli_interfaces/ClearObstacle` | Drops a PENDING obstacle by `MapObstacleInfo.id`. |
+| `/map_server_node/remove_obstacle` | `mowgli_interfaces/RemoveObstacle` | Not in upstream. Removes an accepted AUTO-tracked keepout (`source == SOURCE_TRACKER`) by `obstacle_id`, else by the nearest centroid within `max_distance_m`. Manual/imported keepouts (`SOURCE_USER`) and dig proposals (`SOURCE_DIG`) are never touched. Called by `obstacle_tracker` once it has verified the object is gone; rebuilds the masks, saves `areas.dat` (the tracker may delete only what it created). |
 | `/map_server_node/get_recovery_point` | `mowgli_interfaces/GetRecoveryPoint` | When the robot is outside every area, returns the nearest edge point moved `boundary_recovery_offset_m` further in, plus the distance outside. |
 | `/map_server_node/reset_mow_progress` | `std_srvs/Trigger` | Not in upstream. Zeroes the progress grid, e.g. when a new mow run starts. |
 | `/map_server_node/set_area_settings` | `mower_interfaces/SetAreaSettings` | Not in upstream. Per-area mowing settings, see [Per-area mowing settings](#per-area-mowing-settings). `area_index` as in `get_mowing_area`, 255 = defaults. |
@@ -68,7 +69,8 @@ The node subscribes to:
 - `/odometry/filtered_map` (`odom_topic`), for robot pose and yaw.
 - `/mower_base/status`, for `is_cutting`, `is_charging` and `is_docking_done`.
 - `/gps/status`.
-- `/obstacle_tracker/obstacles`, cached for `promote_obstacle`.
+- `/obstacle_tracker/obstacles`, cached for `promote_obstacle`; published by
+  `mower_map/obstacle_tracker_node` (auto obstacle marking, below).
 
 The blade offset is looked up once from TF (odometry `child_frame_id` -> `blade_link`). It
 falls back to `blade_offset_x/y` (0.3, 0).
@@ -243,6 +245,81 @@ The MowgliNext GUI (via `mower_gui_bridge` / foxglove) does the following:
   `/map_server_node/docking_pose`.
 - The mow overlay is `/map_server_node/mow_progress`.
 - Obstacle actions call `promote_obstacle` / `discard_obstacle`.
+
+## Auto obstacle marking (`mower_map/obstacle_tracker_node.py`)
+
+The Nav2 costmaps already mark live sensor obstacles (front stereo depth +
+`det_range` YOLO detections + bumper) and the controller deviates around them,
+but those marks are transient: they decay and are raytraced away, so the planner
+re-plans through the same spot next lap. `obstacle_tracker` closes that gap for
+**static** obstacles (the kids' toys, balls, tools left on the lawn): once a
+detection is reliably stable it is promoted to a permanent keepout, and it is
+removed again when the object is gone.
+
+```text
+/stereo_depth/points_map ─┐
+/ai/det/obstacle_points_map ─┤→ cluster → track → promote gate → ~/promote_obstacle
+                              │                     remove gate  → ~/remove_obstacle
+/stereo_depth/clear_points_map ┘                     + /obstacle_tracker/obstacles (GUI)
+```
+
+- **Promote** when a cluster has been associated to the same track for
+  `persistence_age_s` (3 s) with at least `min_observations` (3) updates, a sane
+  radius, a centroid that has not drifted more than `max_track_drift_m` (0.4 m,
+  rejects a swaying bush / slow-moving object) and lies inside a mowing area.
+  The node then calls `/map_server_node/promote_obstacle` (the `obstacle_id`
+  lookup path, so `map_server` stamps it `SOURCE_TRACKER`), which rasterises it
+  into `/nav_keepout_mask` (the Nav2 global costmap keepout filter) and saves
+  `areas.dat`. Every later plan routes around it.
+- **Remove** when a promoted obstacle is verifiably gone: either a
+  `/stereo_depth/clear_points_map` ground point appears in its footprint (the
+  depth camera positively saw bare ground there) or the robot came within
+  `verify_distance_m` (3 m) facing it (`verify_fov_deg` half-cone) and found no
+  obstacle point. After `gone_confirmations` (4) such frames, at least
+  `min_lifetime_s` (5 s) after promotion, the node calls
+  `/map_server_node/remove_obstacle` (centroid match, `SOURCE_TRACKER` only).
+
+Clustering runs on the RAW sensor clouds, not the global costmap: a promoted
+keepout is rendered lethal in that costmap by the keepout filter, so the costmap
+can no longer tell "object still there" from "we painted a keepout here" — the
+removal signal would be impossible and re-detection constant.
+
+Everything is in `config/obstacle_tracker.yaml`; `auto_promote` / `auto_remove`
+turn the two halves off independently (off = monitor + publish only). The GUI
+exposes `auto_promote` as Settings → Obstacles → *Automatically mark obstacles*
+(bound key `obstacle_auto_promote`, live push + read at startup from
+`robot_yaml_path`, like `map_server_node`). Start it
+standalone with `ros2 launch mower_map obstacle_tracker.launch.py` (bringup runs
+it by default as `obstacle_tracker:=true`, gated on `map_server:=true`). The
+published `/obstacle_tracker/obstacles` (`mowgli_interfaces/ObstacleArray`) is
+what `map_server` caches and the GUI reads; `~/markers` draws the footprints
+(orange = transient, blue = promoted). The ROS-free core
+(`mower_map/obstacle_tracker_core.py`) is unit tested without ROS.
+
+**Obstacle snapshots.** The first step a new cluster appears the node saves the
+current *whole annotated front camera frame* (default `snapshot_topic`
+`/vio/right/image_annotated`, the `det_ros` overlay) as
+`<snapshot_dir>/<id>.jpg` (`snapshot_dir` defaults to
+`<maps_dir>/obstacle_snapshots`, e.g. `/ros2_ws/maps/obstacle_snapshots`; JPEG
+quality `snapshot_quality`). So the operator can see *what the mower saw* when it
+marked the obstacle. The GUI serves each file at
+`/api/mowglinext/obstacles/<id>/snapshot` and the tracked-obstacle panel shows it
+as a thumbnail (click for the full frame); a missing file (transient track,
+snapshots off, or an environment with no `det_ros`, e.g. sim) falls back to the
+marker icon. The directory is cleared at startup because ids restart at 1, and a
+file is deleted again when its track goes. `snapshot_enabled: false` or an empty
+`snapshot_topic` disables the feature.
+
+**Tuning.** Promotion reflects "reliable", so the safe default marks anything
+the depth camera + YOLO find as stable (toys, but also rocks and tools — good
+for safety). To mark *only* YOLO object classes, set `obstacle_points_topic`
+to `/ai/det/obstacle_points_map` and `extra_obstacle_points_topic: ""`.
+`persistence_age_s` / `min_observations` raise the confidence bar; `gone_confirmations`
+raises the bar for removal. `~/markers` + `/obstacle_tracker/obstacles` show what
+the tracker currently sees, which is the quickest way to tune a field site.
+Set `only_while_mowing: true` to write keepouts only while the high-level state
+is `AUTONOMOUS`/`MANUAL_MOWING` (off by default: the tracker also marks while
+docked, which is harmless since only in-area objects are eligible).
 
 ## Notes and deviations from upstream
 

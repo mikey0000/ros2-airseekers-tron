@@ -1,0 +1,21 @@
+# RemoveObstacle - remove an auto-tracked keepout (source == SOURCE_TRACKER)
+# from the mowing map without touching manual / imported keepouts, pending dig
+# proposals or navigation areas.
+#
+# The obstacle tracker re-verifies that the physical obstacle is gone (the
+# footprint is repeatedly observed clear / absent) before calling this -
+# map_server trusts the caller's provenance check.
+#
+# Matching precedence:
+#   1. obstacle_id != 0  -> exact session id of a SOURCE_TRACKER keepout.
+#   2. centroid match    -> closest SOURCE_TRACKER keepout whose centroid lies
+#                           within max_distance_m of `centroid`.
+#
+# Obstacles in navigation areas are never eligible, because auto-tracked
+# obstacles can only ever be promoted into mowing areas.
+geometry_msgs/Point centroid
+float64 max_distance_m
+uint32 obstacle_id
+---
+bool success
+string message

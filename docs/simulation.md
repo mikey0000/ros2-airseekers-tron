@@ -134,6 +134,12 @@ static `map -> odom` transform, twist_mux (lanes from
 the device-owned GUI settings are not read), slip_detector and bumper_controller,
 with the same parameters as bringup.
 
+Because there is no `det_ros` in sim there is no annotated camera image, so the
+`obstacle_tracker` produces no per-obstacle snapshot JPEGs (`snapshot_topic` has
+no publisher); it still clusters/tracks/promotes from `/stereo_depth/points_map`
+as usual. Unrelated to obstacles, the GUI's tracked-obstacle panel then shows the
+marker icon instead of a thumbnail.
+
 ## World YAML
 
 A world file has this shape:
