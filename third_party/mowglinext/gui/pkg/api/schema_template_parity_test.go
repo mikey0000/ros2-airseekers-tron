@@ -75,6 +75,12 @@ var schemaDefaultsWithNoTemplateEntry = map[string]string{
 	// Read only by gui/pkg/api/cameras.go (the GUI's MJPEG proxy target) —
 	// not a ROS2 parameter, so there is no template line.
 	"camera_stream_base_url": "GUI-only camera proxy target (cameras.go), not a ROS2 parameter",
+
+	// obstacle_auto_promote is bound to the Airseekers Tron obstacle_tracker
+	// (param_bindings.go AirseekersTron table). The stock MowgliNext template
+	// (mowgli_bringup/config/mowgli_robot.yaml) has no obstacle_tracker node,
+	// so there is no template line to compare the GUI default against.
+	"obstacle_auto_promote": "Tron-only obstacle_tracker binding; no stock template node",
 }
 
 // findSchemaTemplateDivergence compares schemaDefaults against the

@@ -780,6 +780,12 @@
           "title": "Automatically create dig keepouts",
           "description": "Create temporary keepout proposals for detected wheel-slip digs. Disabling this leaves dig detection and recovery active. Restart ROS2 to apply."
         },
+        "obstacle_auto_promote": {
+          "type": "boolean",
+          "default": true,
+          "title": "Automatically mark obstacles",
+          "description": "Turn reliably-detected stereo/YOLO obstacles (toys, balls, tools left on the lawn) into permanent keepout polygons on the map. Off = nothing is added automatically; live obstacle avoidance still runs (the costmaps keep marking and the robot keeps skirting). Existing auto-marked obstacles are still removed once the object is gone. Applied live on save and at startup."
+        },
         "obstacle_margin": {
           "type": "number",
           "title": "Drawn Obstacle Margin",

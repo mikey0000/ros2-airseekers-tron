@@ -14,3 +14,15 @@ describe("dig obstacle setting", () => {
         expect(screen.getByText(/dig detection, stopping and recovery remain active/)).toBeInTheDocument();
     });
 });
+
+describe("auto-mark obstacle setting", () => {
+    it.each([true, false, "false"])("renders %s and toggles the live setting", (value) => {
+        const onChange = vi.fn();
+        render(<ObstaclesSection values={{ obstacle_auto_promote: value }} onChange={onChange} />);
+        const toggle = screen.getByRole("switch", { name: "Automatically mark obstacles" });
+        const enabled = value === true;
+        expect(toggle).toHaveAttribute("aria-checked", String(enabled));
+        fireEvent.click(toggle);
+        expect(onChange).toHaveBeenCalledExactlyOnceWith("obstacle_auto_promote", !enabled);
+    });
+});

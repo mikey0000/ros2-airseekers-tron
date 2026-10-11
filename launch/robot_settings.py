@@ -21,7 +21,9 @@ Mechanism, per target node:
   ``robot_settings_file`` parameter), so mower.launch.py has nothing to pass
   and skips the target (SELF_LOADED_TARGETS);
 * ``map_server_node`` (blade disc / swath overlap / default path width): same,
-  read from its ``robot_yaml_path`` (the same GUI yaml) at startup.
+  read from its ``robot_yaml_path`` (the same GUI yaml) at startup;
+* ``obstacle_tracker`` (auto obstacle marking): same, read from its
+  ``robot_yaml_path`` at startup; the GUI also pushes it live.
 
 Values are coerced to the type the node declared (the GUI writes 30.0 as
 ``30``; rclpy refuses an int for a double parameter).
@@ -77,10 +79,15 @@ BINDINGS = {
     'blade_disc_mm': ('map_server_node', 'blade_disc_mm', int, None),
     'swath_overlap_m': ('map_server_node', 'swath_overlap_m', float, None),
     'default_swath_width_m': ('map_server_node', 'default_swath_width_m', float, None),
+    # Auto obstacle marking (obstacle_tracker_node): promote stably-detected
+    # obstacles into permanent keepouts. No params file target: the node reads
+    # this key from the GUI yaml itself at startup (robot_yaml_path) like
+    # map_server_node, and the GUI pushes it live (param_bindings.go).
+    'obstacle_auto_promote': ('obstacle_tracker', 'auto_promote', bool, None),
 }
 
 # Targets whose node reads the GUI yaml itself (no params file to render).
-SELF_LOADED_TARGETS = ('cmd_vel_slew', 'map_server_node')
+SELF_LOADED_TARGETS = ('cmd_vel_slew', 'map_server_node', 'obstacle_tracker')
 
 
 def load_settings(path):

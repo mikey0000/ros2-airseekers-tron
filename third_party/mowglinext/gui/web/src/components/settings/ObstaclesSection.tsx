@@ -15,7 +15,10 @@ type Props = {
 };
 
 /**
- * Obstacles section — automatic dig keepouts and obstacle-avoidance margins:
+ * Obstacles section — automatic obstacle marking, dig keepouts and
+ * obstacle-avoidance margins:
+ *   - obstacle_auto_promote: let the obstacle tracker turn stably-detected
+ *     stereo/YOLO obstacles into permanent keepout polygons (live toggle),
  *   - obstacle_inflation_radius: local-costmap buffer around LiDAR-seen
  *     obstacles (trunks, legs, walls),
  *   - max_obstacle_avoidance_distance: max lateral detour for coverage
@@ -24,7 +27,8 @@ type Props = {
  *     coverage and transit planning (root zones the 2D LiDAR cannot see),
  *   - obstacle_slowdown_ratio: collision_monitor approach slowdown factor.
  * All keys live in mowgli_robot.yaml (sparse over template) and are injected
- * into map server/Nav2/coverage params at launch — changes need a ROS2 restart.
+ * into map server/Nav2/coverage params at launch — changes need a ROS2 restart,
+ * except obstacle_auto_promote, which the backend pushes live to the tracker.
  */
 export const ObstaclesSection: React.FC<Props> = ({
     values,
@@ -53,6 +57,21 @@ export const ObstaclesSection: React.FC<Props> = ({
                 description={t("settingsObstacles.rootZoneHintDescription")}
                 style={{ marginBottom: 16 }}
             />
+
+            <Card size="small" title={t("settingsObstacles.autoMarkTitle")} style={{ marginBottom: 16 }}>
+                <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
+                    {t("settingsObstacles.autoMarkDescription")}
+                </Paragraph>
+                <Form layout="vertical" size="small">
+                    <Form.Item label={fieldLabel("obstacle_auto_promote", t("settingsObstacles.autoMarkLabel"))}>
+                        <Switch
+                            aria-label={t("settingsObstacles.autoMarkLabel")}
+                            checked={parseBoolish(values.obstacle_auto_promote) ?? false}
+                            onChange={(enabled) => onChange("obstacle_auto_promote", enabled)}
+                        />
+                    </Form.Item>
+                </Form>
+            </Card>
 
             <Card size="small" title={t("settingsObstacles.digKeepouts")} style={{ marginBottom: 16 }}>
                 <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
