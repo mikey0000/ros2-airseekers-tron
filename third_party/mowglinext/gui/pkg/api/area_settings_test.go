@@ -92,6 +92,7 @@ func TestAreaSettings_PutValid(t *testing.T) {
 		"mow_angle_deg": -1, "cut_speed_mps": 0.25, "swath_overlap_m": 0.05, "swath_width_m": 0.18,
 		"edge_first": false, "repeat": 2, "alternate_angle_offset_deg": 90,
 		"obstacle_detection": "sensitive", "blade_policy": "conservative",
+		"transit_variation": "perimeter",
 	}
 	w, out := doAreaSettings(t, mock, "PUT", "/api/mowglinext/areas/1/settings", map[string]any{"settings": settings})
 	require.Equal(t, 200, w.Code, w.Body.String())
@@ -107,6 +108,7 @@ func TestAreaSettings_PutValid(t *testing.T) {
 	assert.Equal(t, float64(45), sent["cutter_height_mm"])
 	assert.Equal(t, "sensitive", sent["obstacle_detection"])
 	assert.Equal(t, "conservative", sent["blade_policy"])
+	assert.Equal(t, "perimeter", sent["transit_variation"])
 }
 
 func TestAreaSettings_PutUseDefaultsSendsEmpty(t *testing.T) {

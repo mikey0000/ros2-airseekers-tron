@@ -72,6 +72,8 @@ var areaTurnTypes = map[string]bool{"auto": true, "loop": true, "reverse": true,
 
 var areaSlopeModes = map[string]bool{"off": true, "auto": true, "contour": true, "updown": true}
 
+var areaTransitVariations = map[string]bool{"none": true, "lanes": true, "perimeter": true, "mixed": true}
+
 // areaDerivedKeys are read-only values the map server adds to a GET response
 // (derived from terrain memory). They are dropped from a PUT so a client that
 // echoes the effective settings back does not get rejected.
@@ -114,7 +116,8 @@ func validateAreaSettings(s map[string]any) error {
 		if v == nil {
 			// null resets the key to its default (map server merge semantics).
 			if _, known := areaNumericKeys[k]; known || k == "path_mode" || k == "edge_first" ||
-				k == "route_order" || k == "turn_type" || k == "obstacle_detection" || k == "blade_policy" || k == "slope_mode" {
+				k == "route_order" || k == "turn_type" || k == "obstacle_detection" || k == "blade_policy" || k == "slope_mode" ||
+				k == "transit_variation" {
 				continue
 			}
 			return fmt.Errorf("unknown setting %q", k)
@@ -165,6 +168,11 @@ func validateAreaSettings(s map[string]any) error {
 			str, ok := v.(string)
 			if !ok || !areaSlopeModes[str] {
 				return fmt.Errorf("slope_mode must be one of off, auto, contour, updown")
+			}
+		case "transit_variation":
+			str, ok := v.(string)
+			if !ok || !areaTransitVariations[str] {
+				return fmt.Errorf("transit_variation must be one of none, lanes, perimeter, mixed")
 			}
 		case "edge_first":
 			if _, ok := v.(bool); !ok {
