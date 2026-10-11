@@ -114,6 +114,33 @@ def test_to_optical_roundtrip():
     assert back == pytest.approx(p)
 
 
+def test_to_map_places_obstacle_in_world():
+    rc = StereoRaycaster()
+    obs, _ = rc.cast(0.0, 0.0, 0.0, [_box(2.5, 0.0)], 0.0)
+    m = rc.to_map(obs, 0.0, 0.0, 0.0)
+    assert m[:, 0].min() == pytest.approx(2.2, abs=0.02)
+    assert np.all(np.abs(m[:, 1]) <= 0.5 + 1e-3)
+    # rotated robot facing +y: the same obstacle now sits at world +y
+    obs2, _ = rc.cast(0.0, 0.0, math.pi / 2, [_box(0.0, 2.5, sx=1.0, sy=0.6)], 0.0)
+    m2 = rc.to_map(obs2, 0.0, 0.0, math.pi / 2)
+    assert m2[:, 1].min() == pytest.approx(2.2, abs=0.02)
+
+
+def test_to_map_translates_with_pose():
+    rc = StereoRaycaster()
+    obs, _ = rc.cast(0.0, 0.0, 0.0, [_box(2.5, 0.0)], 0.0)
+    a = rc.to_map(obs, 0.0, 0.0, 0.0)
+    b = rc.to_map(obs, 10.0, -4.0, 0.0)
+    assert b[:, 0] == pytest.approx(a[:, 0] + 10.0)
+    assert b[:, 1] == pytest.approx(a[:, 1] - 4.0)
+
+
+def test_to_map_empty():
+    rc = StereoRaycaster()
+    out = rc.to_map(np.empty((0, 3), dtype=np.float32), 1.0, 2.0, 0.5)
+    assert len(out) == 0
+
+
 # ---------------------------------------------------------------- bumper
 
 def _bump(ox, oy):

@@ -410,12 +410,16 @@ class SimNode(Node):
         obs, ground = self.stereo.cast(pose.x, pose.y, pose.yaw, self.world.obstacles,
                                        self.sim_time())
         stamp = self.get_clock().now().to_msg()
-        obs_msg = make_cloud(obs, 'stereo_camera_optical', stamp)
-        ground_msg = make_cloud(ground, 'stereo_camera_optical', stamp)
-        self.pub_points.publish(obs_msg)
-        self.pub_clear.publish(ground_msg)
-        self.pub_points_map.publish(obs_msg)
-        self.pub_clear_map.publish(ground_msg)
+        # /points and /clear_points are the camera-optical-frame contract (the local
+        # costmap transforms them via TF). The real stereo_depth_node also publishes
+        # the same clouds already transformed into map (/points_map, /clear_points_map)
+        # for the global costmap + obstacle_tracker; do that here too.
+        self.pub_points.publish(make_cloud(obs, 'stereo_camera_optical', stamp))
+        self.pub_clear.publish(make_cloud(ground, 'stereo_camera_optical', stamp))
+        self.pub_points_map.publish(
+            make_cloud(self.stereo.to_map(obs, pose.x, pose.y, pose.yaw), 'map', stamp))
+        self.pub_clear_map.publish(
+            make_cloud(self.stereo.to_map(ground, pose.x, pose.y, pose.yaw), 'map', stamp))
 
     def _rear_tick(self):
         if self.pub_image.get_subscription_count() == 0:
