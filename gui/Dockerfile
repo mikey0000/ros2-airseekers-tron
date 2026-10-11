@@ -75,16 +75,8 @@ RUN apt-get update \
 # target arch (no QEMU, nothing heavy for a 4 GB arm64 box to do). Its base is a
 # different image from the build-platform sysfiles stage (ubuntu:22.04) so
 # the two arches never share a local tag.
+# The base (debian:bookworm-slim) already contains ca-certificates and tzdata.
 FROM --platform=$TARGETPLATFORM ${RUNTIME_BASE}
-ARG BUILD_VERSION
-# Arch-independent data files only (PEM bundle + zoneinfo).
-COPY --from=sysfiles /etc/ssl/certs /etc/ssl/certs
-COPY --from=sysfiles /usr/share/ca-certificates /usr/share/ca-certificates
-COPY --from=sysfiles /usr/share/zoneinfo /usr/share/zoneinfo
-LABEL org.opencontainers.image.title="mower-gui" \
-      org.opencontainers.image.version="${BUILD_VERSION}" \
-      org.opencontainers.image.licenses="GPL-3.0-only" \
-      org.opencontainers.image.description="MowgliNext GUI (GPLv3) packaged for the Airseekers Tron ROS 2 port"
 COPY --from=build-go /out/mowglinext /app/mowglinext
 COPY --from=build-web /web/dist /app/web
 # getSchema() opens asserts/mower_config.schema.json relative to the CWD
