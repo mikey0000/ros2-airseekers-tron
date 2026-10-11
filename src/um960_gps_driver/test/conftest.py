@@ -83,6 +83,10 @@ def _install_rclpy_shim() -> None:
         def __init__(self, data=0.0):
             self.data = data
 
+    class Bool:
+        def __init__(self, data=False):
+            self.data = data
+
     class Publisher:
         def __init__(self):
             self.msgs = []
@@ -155,6 +159,7 @@ def _install_rclpy_shim() -> None:
     std_msgs_msg = types.ModuleType("std_msgs.msg")
     std_msgs_msg.String = String
     std_msgs_msg.Float32 = Float32
+    std_msgs_msg.Bool = Bool
     std_msgs.msg = std_msgs_msg
 
     geometry_msgs = types.ModuleType("geometry_msgs")

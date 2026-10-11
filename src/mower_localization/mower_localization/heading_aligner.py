@@ -22,6 +22,9 @@ Subscribed
 ``/cmd_vel``                        geometry_msgs/Twist    commanded motion (post-mux/slew)
 ``/odometry/gps``                   nav_msgs/Odometry      navsat output, map/ENU (= odom)
 ``/gps/status``                     mowgli GnssStatus      fix_type (2 float, 3 fixed)
+``/heading``                        std_msgs/Float32       receiver heading (deg, true north)
+``/heading_valid``                  std_msgs/Bool          true when /heading is the dual-antenna
+                                    (GPHPR) solution, i.e. a true absolute heading
 ``/mower_base/status``              MowerBaseDevStatus     is_charging / is_docking_done
 ``/map_server_node/docking_pose``   PoseStamped (latched)  dock pose; fallback ``dock_pose_file``
 ``/map_server_node/docking_pose_measured``  Bool (latched)  dock pose recorded by set_docking_point;
@@ -34,7 +37,7 @@ Published
                              from the alignment quality (huge while unaligned). Bytes are
                              patched in place (no message objects at 100 Hz).
 ``/heading_aligner/status``  std_msgs/String JSON, latched, 1 Hz + on change:
-                             {aligned, source: none|file|dock|cog, offset_deg, quality, ...}
+                             {aligned, source: none|file|dock|cog|rtk, offset_deg, quality, ...}
 
 Persisted: ``offset_file`` (default /userdata/ros2/heading_offset.yaml) on every accepted COG
 update; loaded on boot as the low-quality ``file`` source.
@@ -56,7 +59,7 @@ from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32, String
 
 import tf2_ros
 from rclpy.time import Time
@@ -126,6 +129,9 @@ class HeadingAligner(Node):
         d('cmd_vel_topic', '/cmd_vel')
         d('gps_odom_topic', '/odometry/gps')
         d('gnss_status_topic', '/gps/status')
+        d('heading_topic', '/heading')
+        d('heading_valid_topic', '/heading_valid')
+        d('heading_stale', 0.5)      # s; older /heading is not used as the RTK seed
         d('base_status_topic', '/mower_base/status')
         d('dock_pose_topic', '/map_server_node/docking_pose')
         d('dock_pose_file', '/ros2_ws/maps/dock_pose.yaml')
@@ -199,6 +205,10 @@ class HeadingAligner(Node):
             self._tf_buf = tf2_ros.Buffer()
             self._tf_listener = tf2_ros.TransformListener(self._tf_buf, self, spin_thread=False)
         self._src_logged = None
+        # Latest receiver heading sample: (monotonic time, compass degrees) and its validity.
+        self._heading = None
+        self._heading_valid = False
+        self._heading_stale = float(g('heading_stale'))
 
         if g('use_offset_file'):
             rec = hl.load_record(self._offset_file)
@@ -247,6 +257,10 @@ class HeadingAligner(Node):
                        history=QoSHistoryPolicy.KEEP_LAST),
             parser=parse_odometry, sampled=True, deliver_all=True)
         slow = []
+        slow.append(self._pump.subscribe(Float32, g('heading_topic'), self._on_heading,
+                                         one, **sampled))
+        slow.append(self._pump.subscribe(Bool, g('heading_valid_topic'), self._on_heading_valid,
+                                         one, **sampled))
         if GnssStatus is not None:
             slow.append(self._pump.subscribe(GnssStatus, g('gnss_status_topic'), self._on_gnss,
                                              one, **sampled))
@@ -394,7 +408,19 @@ class HeadingAligner(Node):
             self._report(res)
 
     def _on_gnss(self, msg):
-        self.est.on_fix_type(time.monotonic(), int(msg.fix_type))
+        now = time.monotonic()
+        heading_enu = None
+        if self._heading_valid and self._heading is not None:
+            t, deg = self._heading
+            if now - t <= self._heading_stale:
+                heading_enu = hl.enu_from_compass_deg(deg)
+        self.est.on_fix_type(now, int(msg.fix_type), heading_enu)
+
+    def _on_heading(self, msg):
+        self._heading = (time.monotonic(), float(msg.data))
+
+    def _on_heading_valid(self, msg):
+        self._heading_valid = bool(msg.data)
 
     def _on_base(self, msg):
         docked = bool(msg.is_charging) or bool(msg.is_docking_done)

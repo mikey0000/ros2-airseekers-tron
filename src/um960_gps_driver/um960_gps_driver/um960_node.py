@@ -4,6 +4,8 @@ Publishes
     /fix          sensor_msgs/msg/NavSatFix   (status from NMEA GGA quality + GSA/BESTNAV mode)
     /vel          geometry_msgs/msg/TwistStamped
     /heading      std_msgs/msg/Float32        (degrees, true north, from GPHPR/VTG/RMC)
+    /heading_valid std_msgs/msg/Bool          (true when /heading is the dual-antenna GPHPR
+                                               solution, i.e. a true absolute heading)
     /fix_status   std_msgs/msg/String         (human-readable quality/solution summary)
     /nmea         std_msgs/msg/String         (raw ASCII sentences, optional)
     /gps/corrections std_msgs/msg/String      (1 Hz JSON correction-source diagnostics)
@@ -51,7 +53,7 @@ try:  # absent from the plain-Python test shim
 except ImportError:  # pragma: no cover - depends on the environment
     DurabilityPolicy = None
 from sensor_msgs.msg import NavSatFix, NavSatStatus
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Bool, Float32, String
 
 from .parsers import (
     GSA_FIX_TYPE,
@@ -160,6 +162,7 @@ class Um960Node(Node):
         self.declare_parameter("fix_topic", "/fix")
         self.declare_parameter("vel_topic", "/vel")
         self.declare_parameter("heading_topic", "/heading")
+        self.declare_parameter("heading_valid_topic", "/heading_valid")
         self.declare_parameter("fix_status_topic", "/fix_status")
         self.declare_parameter("nmea_topic", "/nmea")
         self.declare_parameter("publish_nmea", False)
@@ -240,6 +243,9 @@ class Um960Node(Node):
         )
         self.heading_pub = self.create_publisher(
             Float32, str(self.get_parameter("heading_topic").value), fix_qos
+        )
+        self.heading_valid_pub = self.create_publisher(
+            Bool, str(self.get_parameter("heading_valid_topic").value), fix_qos
         )
         self.fix_status_pub = self.create_publisher(
             String, str(self.get_parameter("fix_status_topic").value), fix_qos
@@ -1101,6 +1107,14 @@ class Um960Node(Node):
         # Normalise into [0, 360); both GPHPR and the track angle can arrive negative.
         return Float32(data=float(heading) % 360.0)
 
+    def _build_heading_valid(self) -> Bool:
+        """True when /heading is the receiver's own dual-antenna (GPHPR) heading.
+
+        Only GPHPR is a true absolute heading (valid at rest); the track/course fall-back is
+        just course-over-ground and must not be used as an absolute heading seed.
+        """
+        return Bool(data="heading_deg" in self.nmea.fix)
+
     def _build_status(self) -> str:
         fix = self.nmea.fix
         connected = "connected" if self._connected else "disconnected"
@@ -1146,6 +1160,7 @@ class Um960Node(Node):
             fix_msg = self._build_fix()
             twist_msg = None if fix_msg is None else self._build_twist()
             heading_msg = None if fix_msg is None else self._build_heading()
+            heading_valid_msg = self._build_heading_valid()
             status = self._build_status()
 
         if self._last_fix_time and (now - self._last_fix_time) > self.fix_timeout:
@@ -1166,6 +1181,7 @@ class Um960Node(Node):
             self.vel_pub.publish(twist_msg)
         if heading_msg is not None:
             self.heading_pub.publish(heading_msg)
+        self.heading_valid_pub.publish(heading_valid_msg)
         self.fix_status_pub.publish(String(data=status))
 
     def destroy_node(self) -> bool:

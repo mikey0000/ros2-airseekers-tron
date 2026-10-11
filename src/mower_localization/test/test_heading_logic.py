@@ -162,9 +162,11 @@ def test_consistent_outliers_reseed():
     assert abs(s.heading_error()) < 1.0
 
 
-def test_dock_seed_sign_convention():
+def test_dock_seed_faces_along_the_dock_yaw():
+    # Default dock_heading_offset is 0: mower_map stores a measured dock yaw as the seated
+    # robot's fused heading, so a docked robot faces ALONG the stored dock yaw.
     s = Sim(true_offset_deg=70.0, dock_yaw_trusted=True)
-    s.yaw = D(-100.0)            # docked robot heading == dock yaw (faces out of the dock)
+    s.yaw = D(-100.0)              # docked robot heading == dock yaw
     s.est.on_dock_pose(0.0, 0.0, D(-100.0))
     s.run(0.0, 0.0, 0.5)
     s.est.on_docked(s.t, True)
@@ -173,10 +175,24 @@ def test_dock_seed_sign_convention():
     s.est.on_docked(s.t, True)
     assert s.est.source == hl.SOURCE_DOCK and s.est.aligned
     assert abs(s.heading_error()) < 0.1
-    # undock forward along the dock yaw: COG refines (agrees), source becomes cog
+    # undock forward along the seated heading: COG refines (agrees), source becomes cog
     s.est.on_docked(s.t, False)
     s.run(0.15, 0.0, 6.0)
     assert s.est.source == hl.SOURCE_COG and abs(s.heading_error()) < 1.0
+
+
+def test_dock_seed_opposite_convention_with_pi():
+    # An explicitly configured dock_heading_offset = pi is the "seated robot faces OPPOSITE
+    # the stored dock yaw" convention (only sane for a site whose dock yaw runs reversed).
+    s = Sim(true_offset_deg=70.0, dock_yaw_trusted=True, dock_heading_offset=math.pi)
+    s.yaw = D(-100.0 + 180.0)      # docked robot heading == dock yaw + pi
+    s.est.on_dock_pose(0.0, 0.0, D(-100.0))
+    s.run(0.0, 0.0, 0.5)
+    s.est.on_docked(s.t, True)
+    s.run(0.0, 0.0, 2.5)
+    s.est.on_docked(s.t, True)
+    assert s.est.source == hl.SOURCE_DOCK and s.est.aligned
+    assert abs(s.heading_error()) < 0.1
 
 
 def test_dock_seed_does_not_override_fresh_cog_and_wrong_dock_yaw_replaced():
@@ -363,6 +379,65 @@ def test_untrusted_dock_yaw_never_seeds():
     s.run(0.0, 0.0, 3.0)
     s.est.on_docked(s.t, True)
     assert s.est.source == hl.SOURCE_NONE and not s.est.aligned
+
+
+# ---------------------------------------------------------------- RTK dual-antenna heading
+def test_enu_from_compass_deg_converts_compass_bearings():
+    assert hl.enu_from_compass_deg(0.0) == pytest.approx(math.pi / 2)    # north -> +y
+    assert hl.enu_from_compass_deg(90.0) == pytest.approx(0.0)           # east -> +x
+    assert hl.enu_from_compass_deg(180.0) == pytest.approx(-math.pi / 2)  # south -> -y
+    assert hl.enu_from_compass_deg(270.0) == pytest.approx(math.pi)       # west -> -x
+    assert hl.enu_from_compass_deg(360.0) == pytest.approx(math.pi / 2)
+    assert hl.enu_from_compass_deg(-90.0) == pytest.approx(math.pi)       # wraps
+
+
+def test_rtk_heading_seed_requires_rtk_fixed_and_a_heading():
+    e = hl.HeadingEstimator()
+    e.on_imu(0.1, D(30.0), 0.0)
+    e.on_fix_type(0.2, 2, hl.enu_from_compass_deg(90.0))  # RTK float: not used
+    assert e.source == hl.SOURCE_NONE
+    e.on_fix_type(0.3, 3, None)                           # RTK fixed, no heading: not used
+    assert e.source == hl.SOURCE_NONE
+    e.on_fix_type(0.4, 3, hl.enu_from_compass_deg(90.0))  # RTK fixed + heading: seed
+    assert e.source == hl.SOURCE_RTK and e.aligned
+    # receiver compass 90 deg = east = ENU 0; IMU yaw is +30 deg -> offset must be -30 deg
+    assert math.degrees(hl.wrap(e.offset - D(-30.0))) == pytest.approx(0, abs=1e-6)
+
+
+def test_rtk_heading_blend_is_wrap_safe_near_pi():
+    # Offset near +179 deg and a heading near -179 deg (2 deg apart) must blend towards
+    # +180, never average the raw angles across the branch cut (~ 143 deg here).
+    e = hl.HeadingEstimator()
+    e.on_imu(0.1, 0.0, 0.0)
+    e.on_fix_type(0.2, 3, D(179.0))          # seed the offset at +179 deg
+    assert e.source == hl.SOURCE_RTK
+    e.on_fix_type(0.3, 3, D(-179.0))
+    assert abs(math.degrees(hl.wrap(e.offset - D(179.0)))) < 1.0
+    assert abs(math.degrees(hl.wrap(e.offset - D(143.2)))) > 30.0  # not the raw average
+
+
+def test_rtk_heading_reseeds_without_an_offset():
+    e = hl.HeadingEstimator()
+    e.on_fix_type(0.1, 3, hl.enu_from_compass_deg(0.0))   # no IMU yet: heading parked
+    assert e.source == hl.SOURCE_NONE
+    e.on_imu(0.2, D(10.0), 0.0)
+    e.on_fix_type(0.3, 3, hl.enu_from_compass_deg(0.0))   # north -> ENU +pi/2
+    assert e.source == hl.SOURCE_RTK and e.aligned
+    # offset = wrap(pi/2 - 10 deg)
+    assert math.degrees(hl.wrap(e.offset - D(80.0))) == pytest.approx(0, abs=1e-6)
+
+
+def test_rtk_heading_cannot_jolt_an_aligned_cog_offset():
+    s = Sim(true_offset_deg=10.0)
+    s.run(0.3, 0.0, 2.2)                       # COG aligned
+    assert s.est.source == hl.SOURCE_COG
+    before = s.est.offset
+    off = hl.wrap(s.yaw + D(90.0))              # 90 deg wrong in ENU
+    s.est.on_fix_type(s.t, 3, off)
+    assert s.est.source == hl.SOURCE_COG and s.est.offset == before  # rejected by the gate
+    s.est.on_fix_type(s.t, 3, hl.wrap(s.yaw))   # the true heading: agrees, switches to RTK
+    assert s.est.source == hl.SOURCE_RTK
+    assert abs(s.heading_error()) < 1.0
 
 
 def test_joystick_jitter_does_not_reset_window():

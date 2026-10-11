@@ -19,6 +19,7 @@ um960_node:
     fix_topic: "/fix"
     vel_topic: "/vel"
     heading_topic: "/heading"
+    heading_valid_topic: "/heading_valid"  # Bool: /heading is the dual-antenna (GPHPR) solution
     fix_status_topic: "/fix_status"
     nmea_topic: "/nmea"
     publish_nmea: false    # set true to debug the raw stream or feed an NTRIP client

@@ -9,6 +9,11 @@ Nav2 steers with a heading that can be off by anything up to 180 deg.
 Model: ``yaw_enu = yaw_imu + offset``. :class:`HeadingEstimator` estimates ``offset`` from,
 in priority order:
 
+``rtk``   the receiver's dual-antenna heading (Unicore GPHPR): a true absolute heading, so it is
+          the best seed whenever it is available while RTK is fixed. The receiver reports a
+          compass bearing (degrees, 0 = true north, clockwise); the caller converts it to ENU
+          with :func:`enu_from_compass_deg` before handing it over. A sample is only taken while
+          the fix is RTK fixed and the dual-antenna solution is valid.
 ``cog``   course over ground. While the commanded motion is a straight line
           (|v| >= ``min_speed``, |w| < ``max_turn_rate``) and RTK (float or fixed) is up,
           the GPS displacement is accumulated. After ``min_distance`` m (``float_min_distance``
@@ -20,11 +25,15 @@ in priority order:
           measurement more than ``outlier_deg`` away is rejected, unless ``reseed_after``
           consecutive rejected measurements agree with each other (the IMU yaw jumped). Every
           window is non-overlapping, so long straight runs keep tracking gyro drift.
-``dock``  while docked (is_charging / is_docking_done) and no fresh COG: the robot sits in
-          the dock with its heading equal to the dock pose yaw (mower_docking convention: the
-          robot reverses onto the charger, so docked it faces AWAY from the charger along the
-          dock yaw; undocking drives forward along +X = dock yaw). ``offset = dock_yaw +
-          dock_heading_offset - mean imu yaw``.
+``dock``  while docked (is_charging / is_docking_done) and no fresh COG/RTK: the robot sits in
+          the dock; ``offset = dock_yaw + dock_heading_offset - mean imu yaw``.
+          ``dock_heading_offset`` is the sign between the stored dock yaw and the seated heading
+          (0 when a seated robot faces along the dock yaw, pi when it faces the other way; see
+          the param docs / dock_pose convention in mower_docking). The default is 0 for this
+          fleet: ``mower_map`` stores a measured dock yaw as the seated robot's fused heading,
+          so a seated robot's ENU heading == dock yaw, and ``mower_docking`` navigates on exactly
+          that convention. A pi departure was field-tried and made the docked robot read its
+          heading 180 deg off the measured dock pose (verified 2026-10-11 on the docked Tron).
 ``file``  the persisted offset of the last COG update. Low quality (the IMU yaw restarts at
           an arbitrary value on every IMU power cycle), never counts as aligned.
 
@@ -44,7 +53,8 @@ SOURCE_FILE = 'file'
 SOURCE_FILE_VERIFIED = 'file_verified'
 SOURCE_DOCK = 'dock'
 SOURCE_COG = 'cog'
-ALIGNED_SOURCES = (SOURCE_DOCK, SOURCE_COG, SOURCE_FILE_VERIFIED)
+SOURCE_RTK = 'rtk'
+ALIGNED_SOURCES = (SOURCE_DOCK, SOURCE_COG, SOURCE_RTK, SOURCE_FILE_VERIFIED)
 
 TWO_PI = 2.0 * math.pi
 
@@ -55,6 +65,16 @@ def wrap(a):
     if a <= 0.0:
         a += TWO_PI
     return a - math.pi
+
+
+def enu_from_compass_deg(deg):
+    """Receiver heading (degrees, 0 = true north, clockwise) -> ENU yaw (rad, CCW from east).
+
+    The estimator's offset is ENU: ``yaw_enu = yaw_imu + offset`` with east = 0 and CCW+,
+    while a GNSS compass bearing has north = 0 and increases clockwise. North (0 deg) must
+    therefore map to +pi/2, east (90 deg) to 0 and west (270 deg) to pi.
+    """
+    return wrap(math.pi / 2.0 - math.radians(deg))
 
 
 def yaw_from_quaternion(x, y, z, w):
@@ -115,7 +135,13 @@ class AlignParams:
         self.reseed_after = 3            # consecutive agreeing outliers -> re-seed
         self.reseed_agree = math.radians(10.0)
         self.dock_settle = 2.0           # s docked before seeding
-        self.dock_heading_offset = 0.0   # rad added to the dock yaw (pi if docked facing in)
+        self.dock_heading_offset = 0.0  # rad between the stored dock yaw and the seated heading
+                  # (0 if a seated robot faces along the dock yaw, pi if it faces the other way).
+                  # Default 0: mower_map records dock_pose_yaw as the seated robot's fused heading,
+                  # so docked heading == dock_yaw (mower_docking's convention). pi was wrongly
+                  # field-validated earlier and made the docked robot read 180 deg off the measured
+                  # dock pose (observed live 2026-10-11); only set pi for a site whose stored dock
+                  # yaw deliberately runs opposite the seated heading.
         self.cog_stale = 1800.0          # s; older COG gives way to a dock seed
         self.imu_jump = math.radians(20.0)   # yaw step not explained by the gyro = IMU reset
         # yaw standard deviations advertised on /imu/data_aligned
@@ -191,6 +217,7 @@ class HeadingEstimator:
     def yaw_sigma(self, now):
         p = self.p
         base = {SOURCE_COG: p.sigma_cog, SOURCE_DOCK: p.sigma_dock,
+                SOURCE_RTK: p.sigma_cog,  # RTK heading similar quality to COG
                 SOURCE_FILE: p.sigma_file,
                 SOURCE_FILE_VERIFIED: p.sigma_file_verified}.get(self.source, p.sigma_none)
         if self.offset is None or self.source == SOURCE_NONE:
@@ -315,8 +342,45 @@ class HeadingEstimator:
     def on_cmd(self, now, linear, angular):
         self.cmd, self.cmd_t = (linear, angular), now
 
-    def on_fix_type(self, now, fix_type):
+    def on_fix_type(self, now, fix_type, heading_enu=None):
+        """GNSS fix type plus the receiver's dual-antenna heading, when available.
+
+        ``heading_enu`` is an ENU yaw in radians, already converted from the receiver's
+        compass bearing by the caller (see :func:`enu_from_compass_deg`), or None when there
+        is no valid dual-antenna heading. It is only used while RTK is fixed.
+        """
         self.fix_type, self.fix_t = fix_type, now
+        if heading_enu is None or fix_type != 3 or self.imu_yaw is None:  # RTK fixed only
+            return
+        p = self.p
+        meas = wrap(heading_enu - self.imu_yaw)
+        if self.offset is None or self.source in (SOURCE_NONE, SOURCE_FILE):
+            # Nothing trustworthy yet: the absolute heading is the seed.
+            self.offset = meas
+            self.source = SOURCE_RTK
+            self.updated_at = now
+            self.rejected = []
+            self.dirty = True
+            self.last_event = 'RTK heading seed: offset %.1f deg' % math.degrees(meas)
+            return
+        innov = wrap(meas - self.offset)
+        # Never let a single (possibly bad) dual-antenna sample walk or jolt an established
+        # offset by more than the outlier gate.
+        if abs(innov) > p.outlier:
+            self.last_event = 'RTK heading rejected (%.1f deg off %s)' % (
+                math.degrees(innov), self.source)
+            return
+        if self.source == SOURCE_RTK:
+            # Blend the innovation (wrap-safe: never average across the +/-pi branch cut).
+            self.offset = wrap(self.offset + p.alpha * innov)
+        else:
+            # Take the absolute heading directly - it has passed the outlier gate.
+            self.offset = meas
+        self.source = SOURCE_RTK
+        self.updated_at = now
+        self.rejected = []
+        self.dirty = True
+        self.last_event = 'RTK heading update: offset %.1f deg' % math.degrees(self.offset)
 
     def on_dock_pose(self, x, y, yaw):
         self.dock_xy = (x, y)
@@ -342,7 +406,7 @@ class HeadingEstimator:
             return
         if now - self.docked_since < p.dock_settle:
             return
-        cog_fresh = (self.source in (SOURCE_COG, SOURCE_FILE_VERIFIED) and self.updated_at is not None
+        cog_fresh = (self.source in (SOURCE_COG, SOURCE_RTK, SOURCE_FILE_VERIFIED) and self.updated_at is not None
                      and now - self.updated_at < p.cog_stale)
         if cog_fresh:
             return
