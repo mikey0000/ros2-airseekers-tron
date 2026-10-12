@@ -16,6 +16,7 @@
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
+  <exec_depend>map_msgs</exec_depend>
   <depend>std_msgs</depend>
   <!-- imu_cal subscribes to /imu/data (sensor_msgs/Imu) from wit_imu_driver;
        slip_detector falls back to /odom (nav_msgs/Odometry) from
