@@ -11,6 +11,10 @@ and crossed the lawn. This module plans transits on a graph built from the map i
   followed exactly along that polyline, both ways. The dock -> approach pose leg (and,
   when the approach pose lies outside every area / path, the automatic approach ->
   nearest area leg, as ``areas.dock_corridor``) is a pseudo path ("dock").
+  A centreline stretch that comes within ``clearance_m`` of an obstacle polygon (no-go
+  zone, keepout, the dock no-go unless the path ends at the dock) is cut out of the
+  graph, as are lane offsets that would (review 2026-10-13, B7): such a transit gets no
+  route here and falls back to Nav2, whose costmap carries the keepout mask.
 * **Portals**: a path is entered / left only at its ends that lie in an area (or on its
   edge), at junctions with other paths, or, for a path that passes through an area
   without ending in it, where its centreline crosses the area boundary. The robot never
@@ -45,8 +49,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from mower_map.areas import (Area, DockPose, capsule_outline, distance_to_polygon_edges,
-                             points_in_polygon)
+from mower_map.areas import (DOCK_NOGO_NAME, Area, DockPose, capsule_outline,
+                             distance_to_polygon_edges, points_in_polygon)
 
 Point = Tuple[float, float]
 
@@ -154,6 +158,11 @@ class _Path:
     cum: List[float] = field(default_factory=list)
     splits: List[Tuple[float, int]] = field(default_factory=list)   # (s, node) sorted
     edge_ids: List[int] = field(default_factory=list)                # between splits
+    # obstacles this path must keep clearance_m from (B7, review 2026-10-13): every
+    # obstacle polygon except the dock no-go of a path that ends at the dock
+    obs_polys: List[List[Point]] = field(default_factory=list)
+    obs_edges: Optional[np.ndarray] = None                           # (m, 4)
+    blocked: List[Tuple[float, float]] = field(default_factory=list)  # (s0, s1) dropped
 
     @property
     def length(self):
@@ -331,9 +340,10 @@ class RouteGraph:
         self.regions: List[_Region] = []
         self.paths: List[_Path] = []
         c = float(self.p.clearance_m)
-        obstacles = [[(float(x), float(y)) for x, y in o.polygon]
+        obstacles = [([(float(x), float(y)) for x, y in o.polygon], o.name == DOCK_NOGO_NAME)
                      for a in self.areas for o in a.obstacles if len(o.polygon) >= 3]
-        self._obstacles = [_ccw(o) for o in obstacles]
+        self._obstacles = [_ccw(o) for o, _ in obstacles]
+        self._obstacle_is_dock = [dk for _, dk in obstacles]
         for i, a in enumerate(self.areas):
             if len(a.polygon) < 3:
                 continue
@@ -355,6 +365,7 @@ class RouteGraph:
         self._add_dock_path()
         for pth in self.paths:
             pth.cum = _cumulative(pth.line)
+            self._path_obstacles(pth)
         self._build_paths()
         for reg in self.regions:
             self._build_region(reg)
@@ -613,6 +624,14 @@ class RouteGraph:
                     splits[id(P)].add(s_p)
                     self._tlinks.append((P, s_p, Q, sq))
         self._free_ends = {id(P): self._free_end_list(P) for P in self.paths}
+        # B7 (review 2026-10-13): split every centreline where it comes within clearance_m
+        # of an obstacle (no-go zone, keepout, dock no-go) and drop the blocked pieces, so
+        # the route never drives a path leg through a keepout drawn across the band (the
+        # route falls back to Nav2, which carries the keepout mask, for that stretch)
+        for pth in self.paths:
+            pth.blocked = self._blocked_intervals(pth)
+            for s0, s1 in pth.blocked:
+                splits[id(pth)].update((s0, s1))
         for pth in self.paths:
             ss = sorted(splits[id(pth)])
             merged = []
@@ -622,15 +641,84 @@ class RouteGraph:
             pth.splits = [(s, self._node(_point_at(pth.line, pth.cum, s))) for s in merged]
             pth.edge_ids = []
             for (s0, n0), (s1, n1) in zip(pth.splits, pth.splits[1:]):
-                pth.edge_ids.append(self._edge(n0, n1, PATH, pth.index,
-                                               _sub_line(pth.line, pth.cum, s0, s1),
+                pts = _sub_line(pth.line, pth.cum, s0, s1)
+                if self._path_pts_blocked(pth, pts):
+                    pth.edge_ids.append(None)
+                    continue
+                pth.edge_ids.append(self._edge(n0, n1, PATH, pth.index, pts,
                                                self.p.path_weight, pth.name))
         for P, sp, Q, sq in self._tlinks:
             a = self._split_node(P, sp)
             b = self._split_node(Q, sq)
-            if a != b:
+            if a != b and not self._path_pts_blocked(Q, [self.xy[a], self.xy[b]]) \
+                    and not self._path_pts_blocked(P, [self.xy[a], self.xy[b]]):
                 self._edge(a, b, PATH, Q.index, [self.xy[a], self.xy[b]], self.p.path_weight,
                            Q.name)
+
+    # ---- path keepout clearance (B7) ------------------------------------------
+    def _path_obstacles(self, pth):
+        """Obstacles ``pth`` keeps clearance_m from: all of them, except the dock no-go
+        for the dock pseudo path and for a drawn path with an end at / next to the dock
+        (that path leads onto the charger on purpose)."""
+        c = float(self.p.clearance_m) + float(self.p.tolerance_m)
+        ends = np.array([pth.line[0], pth.line[-1]], dtype=float)
+        polys = []
+        for o, dock in zip(self._obstacles, self._obstacle_is_dock):
+            if dock:
+                if pth.index == -1:
+                    continue
+                near = distance_to_polygon_edges(ends[:, 0], ends[:, 1], o) <= c
+                if near.any() or points_in_polygon(ends[:, 0], ends[:, 1], o).any():
+                    continue
+            polys.append(o)
+        pth.obs_polys = polys
+        pth.obs_edges = np.vstack([_ring_edges(o) for o in polys]) if polys else None
+
+    def _path_pts_blocked(self, pth, pts):
+        """True when the polyline ``pts`` (sampled every sample_m) comes within clearance_m
+        of, or enters, one of ``pth``'s obstacles."""
+        if pth.obs_edges is None or len(pts) == 0:
+            return False
+        d = self._dense(pts, float(self.p.sample_m)) if len(pts) > 1 else list(pts)
+        return bool(self._blocked_mask(pth, np.array(d, dtype=float)).any())
+
+    def _blocked_mask(self, pth, arr):
+        if pth.obs_edges is None or len(arr) == 0:
+            return np.zeros(len(arr), dtype=bool)
+        px, py = arr[:, 0], arr[:, 1]
+        E = pth.obs_edges
+        out = np.zeros(len(arr), dtype=bool)
+        c = float(self.p.clearance_m) - 1e-6
+        for k0 in range(0, len(arr), 512):
+            sl = slice(k0, k0 + 512)
+            d = _pts_seg_dist(px[sl, None], py[sl, None], E[None, :, 0], E[None, :, 1],
+                              E[None, :, 2], E[None, :, 3]).min(axis=1)
+            out[sl] = d < c
+        for o in pth.obs_polys:
+            out |= points_in_polygon(px, py, o)
+        return out
+
+    def _blocked_intervals(self, pth):
+        """Arc-length intervals (s0, s1) of the centreline within clearance_m of an
+        obstacle, widened to the last / first clear sample on either side."""
+        if pth.obs_edges is None or pth.length <= 0:
+            return []
+        step = float(self.p.sample_m)
+        ss = np.append(np.arange(0.0, pth.length, step), pth.length)
+        arr = np.array([_point_at(pth.line, pth.cum, x) for x in ss], dtype=float)
+        bad = self._blocked_mask(pth, arr)
+        out = []
+        i, n = 0, len(ss)
+        while i < n:
+            if not bad[i]:
+                i += 1
+                continue
+            j = i
+            while j + 1 < n and bad[j + 1]:
+                j += 1
+            out.append((float(ss[max(0, i - 1)]), float(ss[min(n - 1, j + 1)])))
+            i = j + 1
+        return out
 
     def _free_end_list(self, P):
         """Ends of P that are lawn portals (2026-10-09 owner rule: paths are driven END TO
@@ -821,17 +909,23 @@ class RouteGraph:
             (s0, n0), (s1, n1) = pth.splits[k], pth.splits[k + 1]
             t = self._node(_point_at(pth.line, pth.cum, s), merge=False)
             adj[t] = []
-            self._edge(t, n0, PATH, pth.index, _sub_line(pth.line, pth.cum, s0, s)[::-1],
-                       self.p.path_weight, pth.name, adj, edges)
-            self._edge(t, n1, PATH, pth.index, _sub_line(pth.line, pth.cum, s, s1),
-                       self.p.path_weight, pth.name, adj, edges)
+            # B7: a query on a blocked piece only joins the clear side(s) of it
+            back = _sub_line(pth.line, pth.cum, s0, s)[::-1]
+            if not self._path_pts_blocked(pth, back):
+                self._edge(t, n0, PATH, pth.index, back, self.p.path_weight, pth.name,
+                           adj, edges)
+            fwd = _sub_line(pth.line, pth.cum, s, s1)
+            if not self._path_pts_blocked(pth, fwd):
+                self._edge(t, n1, PATH, pth.index, fwd, self.p.path_weight, pth.name,
+                           adj, edges)
             for (pp, kk, ss, tt) in splits:       # the other query point on the same edge
                 if pp is pth and kk == k:
                     lo, hi = sorted((s, ss))
                     pts = _sub_line(pth.line, pth.cum, lo, hi)
                     a, b = (t, tt) if s <= ss else (tt, t)
-                    self._edge(a, b, PATH, pth.index, pts, self.p.path_weight, pth.name,
-                               adj, edges)
+                    if not self._path_pts_blocked(pth, pts):
+                        self._edge(a, b, PATH, pth.index, pts, self.p.path_weight,
+                                   pth.name, adj, edges)
             splits.append((pth, k, s, t))
             self._edge(n, t, PATH, pth.index, [q, self.xy[t]], self.p.path_weight, pth.name,
                        adj, edges)
@@ -1051,7 +1145,9 @@ class RouteGraph:
             xs, ys = zip(*out)
             dist = np.array([_project(pth.line, pth.cum, q)[0] for q in out])
             if (dist <= pth.half_width - float(self.p.robot_half_width_m) + 1e-6).all() and \
-                    points_in_polygon(np.array(xs), np.array(ys), pth.polygon).all():
+                    points_in_polygon(np.array(xs), np.array(ys), pth.polygon).all() and \
+                    not self._blocked_mask(pth, np.array(out, dtype=float)).any():
+                # B7: a lane offset that comes within clearance_m of an obstacle is rejected
                 return out, off
         return None, 0.0
 
