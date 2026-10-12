@@ -187,6 +187,23 @@ REJECTED = 'rejected'
 UNAVAILABLE = 'unavailable'   # server not up within the wait timeout
 TIMEOUT = 'timeout'           # FSM watchdog
 
+# A nav2-backed goal the node sent while the Nav2 lifecycle stack was still not active
+# after nav2_ready_timeout_s carries result['nav2_inactive'] (e.g. 'Nav2 stack not active
+# after 20s') when it then failed without ever being accepted (REJECTED / UNAVAILABLE;
+# any failure for the dock action, whose docking server navigates with Nav2). The failure
+# reason then names the real cause instead of a generic docking / transit failure
+# (2026-10-13: a hung nav2 lifecycle manager showed as "Docking failed (NAV_TO_DOCK_FAILED)").
+NAV2_INACTIVE_KEY = 'nav2_inactive'
+NAV2_DOWN = 'navigation stack not active (Nav2 lifecycle not running)'
+
+
+def nav2_down_why(why):
+    """Failure text led by NAV2_DOWN (``why``: the original detail, may be empty)."""
+    why = str(why or '')
+    if why.startswith(NAV2_DOWN):
+        return why
+    return '%s: %s' % (NAV2_DOWN, why) if why else NAV2_DOWN
+
 # state_name -> HighLevelStatus.state (codes as in upstream main_tree.xml)
 STATE_CODES = {
     'EMERGENCY': STATE_NULL,
@@ -3036,6 +3053,10 @@ class MissionFSM:
             return
         if outcome != SUCCEEDED:
             self._log('warn', '%s finished: %s %s' % (name, outcome, result.get('message', '')))
+        nav2_down = outcome != SUCCEEDED and bool(result.get(NAV2_INACTIVE_KEY))
+        if nav2_down:
+            self._log('error', '%s %s: %s (%s)' % (name, outcome, NAV2_DOWN,
+                                                  result.get(NAV2_INACTIVE_KEY)))
         if a.purpose == 'dock_route':
             self._dock_route_result(outcome)
             return
@@ -3054,6 +3075,12 @@ class MissionFSM:
                 why = result.get('message') or outcome
                 if outcome == UNAVAILABLE:
                     why = 'docking action server unavailable'
+                if nav2_down:
+                    # a navigation failure says nothing beyond "Nav2 down"; anything
+                    # else the docking server reported is kept as the detail
+                    nav = outcome in (REJECTED, UNAVAILABLE) or \
+                        str(why).startswith('NAV_TO_DOCK_FAILED')
+                    why = NAV2_DOWN if nav else nav2_down_why(why)
                 self._dock_failed(why)
             return
         if self._manual_undocking and name in (ACT_UNDOCK, ACT_BACKUP):
@@ -3066,11 +3093,19 @@ class MissionFSM:
                 if outcome == UNAVAILABLE:
                     why = '/mower_docking/undock action server unavailable' \
                         if name == ACT_UNDOCK else '/backup action server unavailable'
+                if nav2_down:
+                    why = nav2_down_why(why)
                 self._log('error', 'undock failed: %s' % why)
                 self._go('UNDOCK_FAILED', why)
             return
         m = self.mission
         if m is None:
+            return
+        if nav2_down and name in (ACT_FOLLOW, ACT_NAV):
+            # Retrying / falling back to the costmap planner cannot help while the stack
+            # is down (each attempt waits out nav2_ready_timeout_s again, then every
+            # sub-path is skipped as "transit rejected"): abort with the real cause.
+            self._mission_failed(nav2_down_why('%s %s' % (name, outcome)))
             return
         if a.purpose == 'route':
             self._route_result(outcome)
@@ -3084,6 +3119,8 @@ class MissionFSM:
                 if outcome == UNAVAILABLE:
                     why = '/mower_docking/undock action server unavailable' \
                         if name == ACT_UNDOCK else '/backup action server unavailable'
+                if nav2_down:
+                    why = nav2_down_why(why)
                 self._log('error', 'undock failed: %s' % why)
                 self.mission = None
                 self._go('UNDOCK_FAILED', why)

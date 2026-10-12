@@ -3896,3 +3896,84 @@ def test_transit_variation_off_sends_run_zero():
     assert not [e for e in h.since(m) if isinstance(e, f.SaveAlternateCounts)]
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
     assert _pending_route_request(h)['variation'] == 0
+
+
+# =====================================================================
+# Nav2 stack not active (2026-10-13: a hung nav2 lifecycle manager showed as a
+# generic "Docking failed (NAV_TO_DOCK_FAILED)")
+# =====================================================================
+NAV2_TAG = {f.NAV2_INACTIVE_KEY: 'Nav2 stack not active after 20s'}
+
+
+def test_nav2_down_dock_route_hands_over_then_dock_failure_names_nav2():
+    h = Harness(route_transits=True)
+    _home(h)
+    _answer_route(h)
+    h.finish(f.ACT_FOLLOW, f.REJECTED, dict(NAV2_TAG, message='goal rejected'))
+    # the docking server may still dock by vision from close by: hand over
+    assert h.name == 'RETURNING_HOME' and h.pending_action(f.ACT_DOCK)
+    h.finish(f.ACT_DOCK, f.ABORTED, dict(
+        NAV2_TAG, success=False, message='NAV_TO_DOCK_FAILED: Nav2 navigate_to_pose '
+        'action server unavailable (navigation stack not running)'))
+    assert h.name == 'NAV_TO_DOCK_FAILED'
+    assert h.fsm.sub_state == f.NAV2_DOWN
+    assert h.fsm.status()['sub_state_name'] == f.NAV2_DOWN
+    h.tick(dt=1.0, n=6)                              # the reason outlives the result state
+    assert h.name == 'IDLE' and h.fsm.status()['sub_state_name'] == f.NAV2_DOWN
+
+
+def test_nav2_down_dock_other_failure_keeps_the_docking_detail():
+    h = Harness(route_transits=True, route_dock=False)
+    _home(h)
+    h.finish(f.ACT_DOCK, f.ABORTED, dict(NAV2_TAG, success=False,
+                                         message='DOCK_NOT_FOUND: dock not found: x'))
+    assert h.name == 'NAV_TO_DOCK_FAILED'
+    assert h.fsm.sub_state == f.NAV2_DOWN + ': DOCK_NOT_FOUND: dock not found: x'
+
+
+def test_dock_failure_without_nav2_tag_is_unchanged():
+    h = Harness(route_transits=True, route_dock=False)
+    _home(h)
+    h.finish(f.ACT_DOCK, f.ABORTED, {'success': False, 'message': 'NAV_TO_DOCK_FAILED'})
+    assert h.name == 'NAV_TO_DOCK_FAILED' and h.fsm.sub_state == 'NAV_TO_DOCK_FAILED'
+
+
+def test_nav2_down_route_transit_aborts_the_mission_with_the_cause():
+    h = _route_h()
+    _answer_route(h)
+    m = h.mark()
+    h.finish(f.ACT_FOLLOW, f.REJECTED, dict(NAV2_TAG, message='goal rejected'))
+    # no costmap-planner fallback / transit retries against a stack that is down
+    assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_NAV]
+    assert h.name == 'COVERAGE_FAILED_DOCKING'
+    assert h.fsm.sub_state == f.NAV2_DOWN + ': follow_path rejected'
+    assert h.fsm.cursor.available                   # resume cursor kept
+    _answer_route(h)                                # dock route, then the docking server
+    h.finish(f.ACT_FOLLOW, f.REJECTED, dict(NAV2_TAG))
+    h.finish(f.ACT_DOCK, f.ABORTED, dict(NAV2_TAG, success=False,
+                                         message='NAV_TO_DOCK_FAILED'))
+    assert h.name == 'NAV_TO_DOCK_FAILED' and h.fsm.sub_state == f.NAV2_DOWN
+
+
+def test_nav2_down_navigate_to_pose_transit_aborts_the_mission():
+    h = Harness()
+    h.areas = [square(0, 0, 5)]
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(4, 2, 0, 2)]))
+    assert h.name == 'TRANSIT'
+    h.finish(f.ACT_NAV, f.UNAVAILABLE, dict(NAV2_TAG, message='navigate_to_pose unavailable'))
+    assert h.name == 'COVERAGE_FAILED_DOCKING'
+    assert h.fsm.sub_state == f.NAV2_DOWN + ': navigate_to_pose unavailable'
+
+
+def test_route_rejection_without_nav2_tag_still_falls_back():
+    h = _route_h()
+    _answer_route(h)
+    h.finish(f.ACT_FOLLOW, f.REJECTED, {'message': 'goal rejected'})
+    assert h.name == 'TRANSIT' and h.pending_action(f.ACT_NAV)
+
+
+def test_nav2_down_why():
+    assert f.nav2_down_why('') == f.NAV2_DOWN
+    assert f.nav2_down_why('x') == f.NAV2_DOWN + ': x'
+    assert f.nav2_down_why(f.NAV2_DOWN + ': x') == f.NAV2_DOWN + ': x'

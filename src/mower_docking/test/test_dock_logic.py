@@ -845,6 +845,24 @@ def test_nav_failure_far_retries_once_with_current_yaw_then_fails():
     assert out.done and out.message == 'NAV_TO_DOCK_FAILED'
 
 
+def test_nav_server_unavailable_fails_fast_without_relaxed_retry():
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    far = dl.Pose2D(2.0, 1.0, 0.4)
+    m.start(_snap(0.0, far))
+    out = m.step(_snap(5.0, far, nav_status='unavailable'))
+    assert out.done and not out.success and out.state == S.FAILED
+    assert not [r for r in out.requests if r[0] == 'start_nav']
+    assert out.message.startswith('NAV_TO_DOCK_FAILED: ')
+    assert 'navigate_to_pose action server unavailable' in out.message
+    assert any('unavailable' in n for n in out.notes)
+    # within nav_fail_arrived_radius_m the dock is still tried by vision (no Nav2 needed)
+    m = dl.DockStateMachine(dl.DockParams(), DOCK)
+    m.start(_snap(0.0, far))
+    out = m.step(_snap(5.0, dl.Pose2D(-0.16 - 0.5, -0.42, DOCK_YAW),
+                       nav_status='unavailable'))
+    assert not out.done and out.state == S.SEARCHING
+
+
 def test_relaxed_nav_success_then_aligns():
     m = dl.DockStateMachine(dl.DockParams(), DOCK)
     far = dl.Pose2D(2.0, 1.0, 0.4)

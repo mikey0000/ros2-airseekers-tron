@@ -96,7 +96,9 @@ The robot stays still while the marker is lost. It never reverses on a stale est
 
 Result messages: `DOCKED`, `ALREADY_DOCKED`, `NAV_TO_DOCK_FAILED`, `DOCK_MAXOUT`,
 `DOCK_TIMEOUT`, `EMERGENCY_STOP`, `BASE_STATUS_STALE`, `CHARGER_ENABLE_FAILED`,
-`CANCELED`, `DOCK_NOT_FOUND: ...`, `DOCK_STALLED: ...`.
+`CANCELED`, `DOCK_NOT_FOUND: ...`, `DOCK_STALLED: ...`,
+`NAV_TO_DOCK_FAILED: Nav2 navigate_to_pose action server unavailable (...)` (no Nav2 server
+within `nav_server_wait_s`: fails at once, without the relaxed current-yaw retry).
 
 Feedback carries `state` and `retries`. `distance_m` is the remaining reverse
 distance: from vision in DOCKING, or from the plan in blind mode. It is -1 when unknown.
