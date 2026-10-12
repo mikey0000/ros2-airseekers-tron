@@ -134,8 +134,20 @@ History: the first version (same day) converted every pivot into a forward arc c
 an r ~ 0.4 m arc that swung the robot past the dock, so the conversion, the 0.3 m cap and
 the `shape_pivot_max_dist_m` / `shape_pivot_fallback_s` parameters were removed. The
 "turn shaper: ..." INFO line is logged only when the regime (pass/arc/pivot) changes, at
-most once per 2 s; the full decision stays on `~/shape_status`. The old pivot assist is
-off by default.
+most once per 2 s; the full decision stays on `~/shape_status`.
+
+Pivot assist (`cmd_vel_slew` `PivotAssist`, re-enabled 2026-10-10, b97de97) is **on by
+default**: after 0.8 s of a pure pivot (|w| >= 0.08) in TRANSIT/MOWING it adds 0.14 m/s
+forward (inner wheel +0.068 at |w| = 0.3, a legal arc), at most 0.3 m per pivot. Gated
+(2026-10-13) to FollowPath pivots on the twist_mux navigation lane (never the bumper,
+emergency, teleop or docking lanes, Nav2 Spin/BackUp, or within 5 s of a bumper/emergency
+message), and held while the local costmap has a lethal cell in the creep sweep or a
+front/side vision obstacle is within 1.5 m: the slew is downstream of collision_monitor, so
+nothing else collision-checks the creep. During an assist episode only (creep ramp-up,
+hold and ramp-down) the slew keeps every tick out of the one-wheel zone
+(`slew_both_wheels`): the pivot <-> creep-arc change passes through a stop (w to 0, then v),
+instead of ramping v at full |w| through inner (-0.06, +0.06) for 5-9 ticks. Normal
+MPPI/RPP driving keeps the plain per-axis slew of the shaped target.
 
 ## Drive at rest (2026-10-07): no host-side release exists
 
