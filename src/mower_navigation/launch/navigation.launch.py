@@ -40,7 +40,7 @@ import yaml
 
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, GroupAction, LogInfo, OpaqueFunction,
-                            SetLaunchConfiguration)
+                            SetLaunchConfiguration, TimerAction)
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -175,13 +175,23 @@ def generate_launch_description() -> LaunchDescription:
             name="collision_zone_gate",
             parameters=[params_file],
             **common),
-        Node(
+        # Started 5 s late on purpose (2026-10-13 incident): Jazzy's manager calls each
+        # server's change_state with no timeout, and at container boot (~60 nodes still
+        # discovering) controller_server's configure reply was dropped by rmw_fastrtps
+        # ("failed to send response ... client will not receive response") because the
+        # manager's response reader was not matched yet -> the manager hung for 5.5 h at
+        # "Configuring controller_server". Letting discovery settle first makes that race
+        # much less likely; the activity gate and the mission already treat a not-yet-active
+        # stack as "not ready" (mission waits nav2_ready_timeout_s, the gate retries), and
+        # the gate's bringup watchdog recovers if it happens anyway
+        # (docs/crash_recovery.md). respawn (via common) applies to the manager as well.
+        TimerAction(period=5.0, actions=[Node(
             package="nav2_lifecycle_manager", executable="lifecycle_manager",
             name="lifecycle_manager_navigation",
             parameters=[params_file,
                         {"autostart": autostart, "node_names": LIFECYCLE_NODES,
                          "attempt_respawn_reconnection": True}],
-            **common),
+            **common)]),
         # Activity-gated lifecycle helper: PAUSE/RESUME the Nav2 nodes (through
         # lifecycle_manager_navigation's manage_nodes service) at idle/docked_idle,
         # so it never fights the bond watchdog of the manager itself.
@@ -191,7 +201,10 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[{"lifecycle_nodes": LIFECYCLE_NODES,
                          "lifecycle_manager": "lifecycle_manager_navigation",
                          "activity_topic": "/mission/activity",
-                         "check_interval_s": 2.0}],
+                         "check_interval_s": 2.0,
+                         # Restart a manager hung in a bringup transition (see its
+                         # docstring); 0 disables.
+                         "bringup_watchdog_s": 90.0}],
             **common),
     ]
 

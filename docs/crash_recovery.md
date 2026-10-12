@@ -65,6 +65,32 @@ alone is not enough. Nav2's `nav2_lifecycle_manager` handles the rest. The insta
    container restart or `ros2 service call /lifecycle_manager_navigation/manage_nodes
    nav2_msgs/srv/ManageLifecycleNodes "{command: 3}"` (RESET) followed by `{command: 0}`
    (STARTUP).
+4. Hung bringup (2026-10-13 incident). Jazzy's manager (nav2 1.3.13) calls each server's
+   `change_state` with no timeout and has no `service_timeout` parameter. At container boot
+   (~60 nodes discovering) controller_server configured in 2 s, but rmw_fastrtps dropped the
+   reply ("failed to send response to /controller_server/change_state (timeout)") because the
+   manager's response reader was not matched yet. The manager then blocked for 5.5 h at
+   "Configuring controller_server" and answered none of its services; controller_server stayed
+   inactive, the rest unconfigured, every goal was rejected ("Action server is inactive") and a
+   dock attempt ended NAV_TO_DOCK_FAILED. Mitigations:
+   - `navigation.launch.py` starts `lifecycle_manager_navigation` 5 s late (TimerAction) so
+     discovery settles before its first `change_state`.
+   - The activity gate (`activity_gated_lifecycle.py`) bounds every call: an unanswered
+     `is_active` (10 s), `manage_nodes` (30 s) or SetParameters (5 s) is dropped and retried
+     (before, one lost reply silenced the gate forever). Its idle parameters are now sent only
+     on a change, not every 2 s.
+   - Bringup watchdog in the activity gate (`bringup_watchdog_s`, 90 s, 0 disables): if
+     `is_active` has gone unanswered for 90 s (since the helper or manager started or the
+     service reappeared; any answer resets it, so a slow autostart never trips it), the gate
+     has not paused the stack itself, and `get_state` shows a managed node that is not
+     active, it SIGTERMs the manager and every managed node that is not `unconfigured`
+     (pids from `/proc/*/cmdline` `__node:=<name>`; SIGKILL after 10 s). Launch respawns
+     them unconfigured and autostart reruns (a CONFIGURE on an already configured node would
+     abort it). At most 3 attempts per helper lifetime, backoff 60/120 s; each is logged at
+     ERROR with the node states and pids. If every node is active it only warns.
+   - `collision_zone_gate` retries a refused `stop_zone.enabled`/`slowdown_zone.enabled` set
+     at most every 5 s (an unconfigured collision_monitor has not declared them; the 5 Hz
+     retry wrote 28 MB of "not declared" errors into its log).
 
 ## 2. Safety when a dependency dies
 

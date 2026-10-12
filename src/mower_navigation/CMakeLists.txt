@@ -19,6 +19,8 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_params_yaml test/test_params_yaml.py TIMEOUT 60)
   ament_add_pytest_test(test_nav2_param_tools test/test_nav2_param_tools.py TIMEOUT 60)
   ament_add_pytest_test(test_collision_zone_gate test/test_collision_zone_gate.py TIMEOUT 60)
+  ament_add_pytest_test(test_activity_gated_lifecycle test/test_activity_gated_lifecycle.py
+    TIMEOUT 60)
 endif()
 
 ament_package()
