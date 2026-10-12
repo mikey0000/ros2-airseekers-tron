@@ -4567,5 +4567,8 @@
     "saveHint": "Conserver cette hauteur dans les réglages de la zone pour les prochaines tontes",
     "saved": "{{mm}} mm enregistrés pour {{area}}",
     "emergency": "Arrêt d'urgence verrouillé"
+  },
+  "map": {
+    "rotateHandle": "Glisser pour faire pivoter la zone"
   }
 }

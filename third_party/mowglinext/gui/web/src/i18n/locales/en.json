@@ -4567,5 +4567,8 @@
     "saveHint": "Store this height in the area's settings for future mows",
     "saved": "Saved {{mm}} mm to {{area}}",
     "emergency": "Emergency latched"
+  },
+  "map": {
+    "rotateHandle": "Drag to rotate the area"
   }
 }
