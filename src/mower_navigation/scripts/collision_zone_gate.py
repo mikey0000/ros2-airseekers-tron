@@ -15,9 +15,12 @@ filters (``cmd_topic``, the velocity_smoother output) and sets the zones' dynami
 * back on when no command has arrived for ``idle_rearm_s`` (the safe default).
 
 The direction-aware ``approach`` polygon is never touched. One SetParameters request per
-change; a failed or unanswered (1 s) request is retried on the next command / timer tick,
-and the state is re-sent every ``resync_s`` (a respawned collision_monitor starts from the
-yaml default).
+change, and the state is re-sent every ``resync_s`` (a respawned collision_monitor starts
+from the yaml default). A failed or unanswered (1 s) request is retried no faster than every
+``retry_backoff_s``: while the collision_monitor is unconfigured its zone parameters are not
+declared yet, and retrying at the 5 Hz tick wrote "parameter 'stop_zone.enabled' cannot be
+set because it was not declared" 5x/s into its log for hours (2026-10-13, 28 MB). One WARN
+per failure streak (then throttled), one INFO when a set succeeds again.
 If this node is down the zones keep their last state (yaml default: on).
 """
 
@@ -51,6 +54,31 @@ class ZoneGate:
         return self.wanted
 
 
+class RetryBackoff:
+    """Pure: after a failed set, hold retries off for ``backoff_s``."""
+
+    def __init__(self, backoff_s=5.0):
+        self.backoff_s = float(backoff_s)
+        self.failures = 0
+        self._retry_at = None
+
+    def ready(self, now):
+        return self._retry_at is None or now >= self._retry_at
+
+    def failed(self, now):
+        """Record a failure; True for the first one of a streak (log it)."""
+        self.failures += 1
+        self._retry_at = now + self.backoff_s
+        return self.failures == 1
+
+    def succeeded(self):
+        """Record a success; True if it ends a failure streak."""
+        recovered = self.failures > 0
+        self.failures = 0
+        self._retry_at = None
+        return recovered
+
+
 def main(args=None):
     import rclpy
     from geometry_msgs.msg import Twist
@@ -69,6 +97,7 @@ def main(args=None):
                                  d('forward_off_mps', 0.06).value,
                                  d('idle_rearm_s', 1.0).value)
             self.resync_s = float(d('resync_s', 2.0).value)
+            self.backoff = RetryBackoff(d('retry_backoff_s', 5.0).value)
             self.applied = None     # last state the collision_monitor confirmed
             self.applied_t = 0.0
             self.pending = None     # (state, future, sent monotonic)
@@ -87,6 +116,16 @@ def main(args=None):
                 self.applied = None
             self.sync(self.gate.on_tick(now))
 
+        def failed(self, why):
+            if self.backoff.failed(time.monotonic()):
+                self.get_logger().warn(
+                    'collision_monitor zones.enabled not set (%s); retrying every %.0f s '
+                    '(normal while it is not configured yet)' % (why, self.backoff.backoff_s))
+            else:
+                self.get_logger().warn('collision_monitor still refusing zones.enabled (%s, '
+                                       '%d attempts)' % (why, self.backoff.failures),
+                                       throttle_duration_sec=60.0)
+
         def sync(self, wanted):
             if self.pending is not None:
                 state, fut, sent = self.pending
@@ -95,16 +134,22 @@ def main(args=None):
                         return
                     self.cli.remove_pending_request(fut)
                     self.pending = None
+                    self.failed('no answer in 1 s')
                     return
                 self.pending = None
                 res = fut.result()
                 if res is not None and all(r.successful for r in res.results):
                     self.applied = state
                     self.applied_t = time.monotonic()
+                    if self.backoff.succeeded():
+                        self.get_logger().info('collision_monitor accepted zones.enabled=%s'
+                                               % state)
                 else:
-                    self.get_logger().warn('collision_monitor refused zones.enabled=%s' % state,
-                                           throttle_duration_sec=5.0)
+                    self.failed('; '.join(sorted({r.reason for r in res.results}))
+                                if res is not None else 'no result')
             if wanted == self.applied:
+                return
+            if not self.backoff.ready(time.monotonic()):
                 return
             if not self.cli.service_is_ready():
                 self.get_logger().warn('collision_monitor parameter service not ready',
