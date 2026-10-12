@@ -555,7 +555,7 @@ def _inside_all(route, areas):
     return ok
 
 
-@pytest.mark.parametrize('mode', ['none', 'lanes', 'perimeter', 'mixed'])
+@pytest.mark.parametrize('mode', ['none', 'perimeter', 'mixed'])
 def test_variation_is_deterministic_and_inside(mode):
     areas, dock = _sim_v4()
     g = rg.RouteGraph(areas, dock)
@@ -576,24 +576,21 @@ def test_variation_is_deterministic_and_inside(mode):
         assert len(seen) >= 2                                          # the line does vary
 
 
-def test_lane_offsets_clipped_to_the_band():
-    """A 2 m wide drawn path: lanes of up to 1.0 - 0.29 - 0.03 = 0.68 m; every pose keeps
-    the robot's half width inside the band. A 0.7 m band (0.03 m) has no lanes."""
+def test_path_legs_always_follow_the_centreline():
+    """The 'lanes' variation was removed (2026-10-13, owner: transits follow the drawn
+    path down its centre). Lane offset = band half width - 0.29 - 0.03: 0.03 m on the
+    owner's 0.7 m bands (below the 0.05 m minimum: it never moved), 0.18 / 0.43 m on 1.0 /
+    1.5 m bands (only ever off-centre). Every mode now keeps a path leg on its centreline,
+    and a stale 'lanes' mode is ignored."""
     lawn = core.Area('lawn', [(-1, -6), (19, -6), (19, 6), (-1, 6)])
-    wide = _path('wide', [(0.0, 0.0), (15.0, 0.0)], w=2.0)
-    g = rg.RouteGraph([lawn, wide], None)
-    offs = []
-    for k in range(5):
-        r = g.plan((0.0, 0.0, 0.0), (15.0, 0.0, 0.0), k, {0: 'lanes', 1: 'lanes'})
-        assert isinstance(r, rg.Route)
-        ys = [abs(p[1]) for p in r.poses]
-        assert max(ys) <= 1.0 - 0.29 + 1e-6
-        offs.append(round(max(p[1] for p in r.poses) + min(p[1] for p in r.poses), 2))
-    assert len(set(offs)) >= 3                                         # 0, +a, -a ...
-    narrow = _path('narrow', [(0.0, 0.0), (15.0, 0.0)], w=0.7)
-    g = rg.RouteGraph([lawn, narrow], None)
-    r = g.plan((0.0, 0.0, 0.0), (15.0, 0.0, 0.0), 1, {0: 'lanes', 1: 'lanes'})
-    assert max(abs(p[1]) for p in r.poses) < 1e-6
+    for w in (0.7, 1.0, 1.5, 2.0):
+        wide = _path('wide', [(0.0, 0.0), (15.0, 0.0)], w=w)
+        g = rg.RouteGraph([lawn, wide], None)
+        for mode in ('none', 'perimeter', 'mixed', 'lanes'):
+            for k in range(5):
+                r = g.plan((0.0, 0.0, 0.0), (15.0, 0.0, 0.0), k, {0: mode, 1: mode})
+                assert isinstance(r, rg.Route)
+                assert max(abs(p[1]) for p in r.poses) < 1e-6, (w, mode, k)
 
 
 def test_perimeter_variant_bounded_and_both_directions():
@@ -660,29 +657,3 @@ def test_obstacle_beside_path_band_does_not_block():
     route = g.plan((-3.0, 0.0, 0.0), (15.0, 0.0, 0.0))
     assert isinstance(route, rg.Route), route
     assert any(lg['kind'] == rg.PATH and lg['length'] > 10.0 for lg in route.legs)
-
-
-def test_lane_offset_meeting_an_obstacle_is_rejected():
-    """2 m wide path: lanes may shift up to 0.68 m. A keepout 0.6 m off the centreline
-    leaves the centreline clear (0.6 > 0.35) but the full +0.68 m lane would run into it
-    and the half lane (+0.34 m) would pass 0.26 m from it: both are rejected; the
-    -0.68 m lane away from it is kept."""
-    lawn = core.Area('lawn', [(-1.0, -6.0), (19.0, -6.0), (19.0, 6.0), (-1.0, 6.0)])
-    wide = _path('wide', [(0.0, 0.0), (15.0, 0.0)], w=2.0)
-    holder = core.Area('holder', [(3.0, -40.0), (9.0, -40.0), (9.0, -34.0), (3.0, -34.0)],
-                       obstacles=[_box(7.5, 1.0, 0.4)])                 # bottom edge y 0.6
-    g = rg.RouteGraph([lawn, wide, holder], None)
-    pth = g._path_of(1)
-    assert pth.blocked == []
-    leg = [(0.0, 0.0), (15.0, 0.0)]
-    pts, off = g._lane(leg, pth, 1.0)
-    assert pts is None and off == 0.0
-    pts, off = g._lane(leg, pth, -1.0)
-    assert pts is not None and off < -0.6
-    for k in range(5):
-        r = g.plan((0.0, 0.0, 0.0), (15.0, 0.0, 0.0), k, {0: 'lanes', 1: 'lanes'})
-        assert isinstance(r, rg.Route)
-        xs = np.array([p[0] for p in r.poses])
-        ys = np.array([p[1] for p in r.poses])
-        d = core.distance_to_polygon_edges(xs, ys, holder.obstacles[0].polygon)
-        assert d.min() >= CLR - 1e-6, (k, r.variant)

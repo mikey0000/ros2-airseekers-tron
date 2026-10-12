@@ -1199,7 +1199,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                 goal = (req.goal.x, req.goal.y, req.goal.theta)
             t0 = time.monotonic()
             # per-area transit_variation (area settings), picked by the mission's run index
-            modes = {i: self.settings.effective(a.name).get('transit_variation', 'lanes')
+            modes = {i: self.settings.effective(a.name).get('transit_variation', 'none')
                      for i, a in enumerate(self.store.areas)}
             r = g.plan((req.start.x, req.start.y, req.start.theta), goal,
                        int(getattr(req, 'variation', 0)), modes)

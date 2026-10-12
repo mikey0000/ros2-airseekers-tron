@@ -18,7 +18,7 @@ def test_builtin_defaults_match_the_contract():
         'swath_width_m': 0.18, 'edge_margin_m': 0.05, 'edge_first': True, 'repeat': 1, 'alternate_angle_offset_deg': 90.0,
         'route_order': 'racetrack', 'route_spiral_size': 6, 'min_turn_radius_m': 0.5,
         'turn_type': 'auto', 'obstacle_detection': 'standard',
-        'blade_policy': 'continuous', 'transit_variation': 'lanes',
+        'blade_policy': 'continuous', 'transit_variation': 'none',
         'slope_mode': 'off', 'slope_contour_above_deg': 10.0,
         'avoid_non_grass': True}
     assert s.SLOPE_MODES == ('off', 'auto', 'contour', 'updown')
@@ -43,6 +43,7 @@ def test_builtin_defaults_match_the_contract():
     ('turn_type', 'reverse', 'reverse'), ('turn_type', 'pivot', 'pivot'),
     ('blade_policy', 'continuous', 'continuous'), ('blade_policy', 'conservative', 'conservative'),
     ('transit_variation', 'none', 'none'), ('transit_variation', 'mixed', 'mixed'),
+    ('transit_variation', 'lanes', 'none'),          # retired 2026-10-13 -> migrated
     ('slope_mode', 'auto', 'auto'), ('slope_mode', 'contour', 'contour'),
     ('slope_contour_above_deg', 12, 12.0),
     ('swath_width_m', 0.10, 0.10), ('swath_width_m', 0.4, 0.4),
@@ -226,3 +227,16 @@ def test_swath_width_precedence():
     snap = st.snapshot(['A', 'B'])
     assert snap['defaults']['swath_width_m'] == pytest.approx(0.21)
     assert snap['robot_defaults']['swath_width_m'] == pytest.approx(0.2)
+
+
+def test_retired_lanes_value_migrates_to_none_with_a_warning():
+    """transit_variation 'lanes' (removed 2026-10-13) in a saved file becomes 'none' and
+    the area's other values survive; loads() reports one line per migrated entry."""
+    assert 'lanes' not in s.TRANSIT_VARIATIONS
+    store, warnings = s.AreaSettingsStore.loads(
+        'defaults: {transit_variation: lanes}\n'
+        'areas: {lawn: {transit_variation: lanes, repeat: 2}, back: {repeat: 3}}\n')
+    assert store.defaults == {'transit_variation': 'none'}
+    assert store.areas['lawn'] == {'transit_variation': 'none', 'repeat': 2}
+    assert store.areas['back'] == {'repeat': 3}
+    assert len(warnings) == 2 and all('migrated' in w for w in warnings)

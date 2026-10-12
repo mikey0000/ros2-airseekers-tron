@@ -72,7 +72,8 @@ var areaTurnTypes = map[string]bool{"auto": true, "loop": true, "reverse": true,
 
 var areaSlopeModes = map[string]bool{"off": true, "auto": true, "contour": true, "updown": true}
 
-var areaTransitVariations = map[string]bool{"none": true, "lanes": true, "perimeter": true, "mixed": true}
+// "lanes" was retired 2026-10-13 (path legs always follow the drawn centreline).
+var areaTransitVariations = map[string]bool{"none": true, "perimeter": true, "mixed": true}
 
 // areaDerivedKeys are read-only values the map server adds to a GET response
 // (derived from terrain memory). They are dropped from a PUT so a client that
@@ -172,7 +173,7 @@ func validateAreaSettings(s map[string]any) error {
 		case "transit_variation":
 			str, ok := v.(string)
 			if !ok || !areaTransitVariations[str] {
-				return fmt.Errorf("transit_variation must be one of none, lanes, perimeter, mixed")
+				return fmt.Errorf("transit_variation must be one of none, perimeter, mixed")
 			}
 		case "edge_first":
 			if _, ok := v.(bool); !ok {

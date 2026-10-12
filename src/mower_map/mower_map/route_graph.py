@@ -13,8 +13,7 @@ and crossed the lawn. This module plans transits on a graph built from the map i
   nearest area leg, as ``areas.dock_corridor``) is a pseudo path ("dock").
   A centreline stretch that comes within ``clearance_m`` of an obstacle polygon (no-go
   zone, keepout, the dock no-go unless the path ends at the dock) is cut out of the
-  graph, as are lane offsets that would (review 2026-10-13, B7): such a transit gets no
-  route here and falls back to Nav2, whose costmap carries the keepout mask.
+  graph (review 2026-10-13, B7): such a transit gets no route here and falls back to Nav2, whose costmap carries the keepout mask.
 * **Portals**: a path is entered / left only at its ends that lie in an area (or on its
   edge), at junctions with other paths, or, for a path that passes through an area
   without ending in it, where its centreline crosses the area boundary. The robot never
@@ -91,11 +90,10 @@ class RouteParams:
     # 0 = off since the owner's end-to-end rule (2026-10-09); kept for experiments
     portal_step_m: float = 0.0
     # transit variation (2026-10-09, owner: "driving the same line eventually creates tyre
-    # tracks"): per-area mode none | lanes | perimeter | mixed, picked deterministically by
-    # the run index the mission passes (see RouteGraph._vary)
-    robot_half_width_m: float = 0.29
-    lane_margin_m: float = 0.03        # lanes keep this inside band half width - robot half
-    area_shift_max_m: float = 0.5      # in-area lane: mid waypoint shifted up to this
+    # tracks"): per-area mode none | perimeter | mixed, picked deterministically by the run
+    # index the mission passes (see RouteGraph._vary). Path legs always follow the drawn
+    # centreline: the former 'lanes' mode (sideways offsets inside the band) was removed
+    # 2026-10-13 (a no-op on 0.7 m bands, off-centre on wider ones).
     perimeter_margin_m: float = 0.05   # perimeter ring = area inset by clearance + this
     perimeter_max_factor: float = 2.0  # perimeter variant at most this x the direct leg
     overlap_step_m: float = 0.5    # overlapping paths are joined this often along the overlap    # mid-path portal spacing (0 = ends / junctions only)
@@ -1104,9 +1102,6 @@ class RouteGraph:
         return out
 
     # ---- transit variation ------------------------------------------------
-    LANES = (0.0, 1.0, -1.0, 0.5, -0.5)
-    SHIFTS = (0.0, 1.0, -1.0)
-
     def _region_of(self, idx):
         return next((r for r in self.regions if r.index == idx), None)
 
@@ -1122,59 +1117,6 @@ class RouteGraph:
             out += [(p[0] + (q[0] - p[0]) * k / n, p[1] + (q[1] - p[1]) * k / n)
                     for k in range(1, n + 1)]
         return out
-
-    def _lane(self, pts, pth, frac):
-        """Path leg shifted sideways by frac x the allowed lane offset (band half width -
-        robot half width - lane_margin_m), ramped in / out over 1 m at the leg ends so it
-        still starts / ends on the centreline (ends, junctions). None = no lane fits."""
-        allowed = pth.half_width - float(self.p.robot_half_width_m) - float(self.p.lane_margin_m)
-        L = _polyline_length(pts)
-        if allowed < 0.05 or abs(frac) < 1e-6 or L < 1.0:
-            return None, 0.0
-        d = self._dense(pts)
-        cum = _cumulative(d)
-        taper = min(1.0, L / 3.0)
-        for off in (allowed * frac, 0.5 * allowed * frac):
-            out = []
-            for i, p in enumerate(d):
-                a, b = d[max(0, i - 1)], d[min(len(d) - 1, i + 1)]
-                tl = math.hypot(b[0] - a[0], b[1] - a[1]) or 1.0
-                nx, ny = -(b[1] - a[1]) / tl, (b[0] - a[0]) / tl
-                f = min(1.0, cum[i] / taper, (L - cum[i]) / taper)
-                out.append((p[0] + nx * off * f, p[1] + ny * off * f))
-            xs, ys = zip(*out)
-            dist = np.array([_project(pth.line, pth.cum, q)[0] for q in out])
-            if (dist <= pth.half_width - float(self.p.robot_half_width_m) + 1e-6).all() and \
-                    points_in_polygon(np.array(xs), np.array(ys), pth.polygon).all() and \
-                    not self._blocked_mask(pth, np.array(out, dtype=float)).any():
-                # B7: a lane offset that comes within clearance_m of an obstacle is rejected
-                return out, off
-        return None, 0.0
-
-    def _shift(self, pts, reg, frac):
-        """In-area leg: each straight piece >= 2 m gets a mid waypoint shifted sideways
-        by frac x min(area_shift_max_m, 15 % of its length), kept only if both halves keep
-        the clearance (else half the shift, else none)."""
-        if abs(frac) < 1e-6:
-            return None
-        c = float(self.p.clearance_m)
-        out, changed = [tuple(pts[0])], False
-        for a, b in zip(pts, pts[1:]):
-            L = math.hypot(b[0] - a[0], b[1] - a[1])
-            if L >= 2.0:
-                clr = self._clearance(reg, [a[0], b[0]], [a[1], b[1]])
-                r = min(c, float(clr.min())) if clr.min() > 0 else 0.0
-                nx, ny = -(b[1] - a[1]) / L, (b[0] - a[0]) / L
-                for sh in (frac * min(float(self.p.area_shift_max_m), 0.15 * L),
-                           0.5 * frac * min(float(self.p.area_shift_max_m), 0.15 * L)):
-                    m = ((a[0] + b[0]) / 2 + nx * sh, (a[1] + b[1]) / 2 + ny * sh)
-                    if r > 0 and self._clearance(reg, [m[0]], [m[1]])[0] >= c - 1e-6 and \
-                            self._seg_ok(reg, a, [m], r)[0] and self._seg_ok(reg, m, [b], r)[0]:
-                        out.append(m)
-                        changed = True
-                        break
-            out.append(tuple(b))
-        return out if changed else None
 
     def _inset_ring(self, reg):
         """The area boundary offset inward by clearance + perimeter_margin_m (CCW), or
@@ -1244,65 +1186,48 @@ class RouteGraph:
         return seq
 
     def _vary(self, legs, k, modes):
-        """Apply the per-area transit variation for run index ``k`` to the legs (in place);
-        returns a description. mode per leg from ``modes`` (area index -> mode, default
-        'lanes'): lanes = path legs offset sideways inside their band (cycle 0, +1, -1, +1/2,
-        -1/2 of the allowed offset) and in-area pieces shifted sideways (0, +1, -1);
-        perimeter = in-area legs cycle through direct / inset-ring cw / ccw (only variants
-        <= perimeter_max_factor x the direct length); mixed = run k % 3: direct, lanes
-        (index k // 3), perimeter (index k // 3)."""
+        """Apply the per-area transit variation for run index ``k`` to the in-area legs (in
+        place); returns a description. mode per leg from ``modes`` (area index -> mode,
+        default 'none'): perimeter = in-area legs cycle through direct / inset-ring cw /
+        ccw (only variants <= perimeter_max_factor x the direct length); mixed = run k % 2:
+        direct, perimeter (index k // 2). Path legs are never varied: they follow the
+        drawn centreline (the 'lanes' mode was removed 2026-10-13)."""
         desc = []
         for lg in legs:
-            mode = (modes or {}).get(lg['area'], 'lanes') if lg['area'] >= 0 else 'none'
-            if mode not in ('lanes', 'perimeter', 'mixed'):
+            mode = (modes or {}).get(lg['area'], 'none') if lg['area'] >= 0 else 'none'
+            if mode not in ('perimeter', 'mixed') or lg['kind'] != AREA:
                 continue
-            kind, sub = mode, k
+            sub = k
             if mode == 'mixed':
-                kind = ('none', 'lanes', 'perimeter')[k % 3]
-                sub = k // 3 + (1 if kind == 'lanes' else 0)
-            if lg['kind'] == PATH and kind == 'lanes':
-                pth = self._path_of(lg['area'])
-                if pth is None:
+                if k % 2 == 0:
                     continue
-                pts, off = self._lane(lg['pts'], pth, self.LANES[sub % len(self.LANES)])
-                if pts:
-                    lg['pts'] = pts
-                    desc.append('%s lane %+.2f m' % (lg['name'], off))
-            elif lg['kind'] == AREA:
-                reg = self._region_of(lg['area'])
-                if reg is None:
-                    continue
-                # vary only the core between the first / last points with full clearance
-                # (links to a boundary crossing, a near-edge start / goal stay as they are)
-                full = lg['pts']
-                clr = self._clearance(reg, [q[0] for q in full], [q[1] for q in full])
-                good = [i for i, v in enumerate(clr) if v >= float(self.p.clearance_m) - 1e-6]
-                if len(good) < 2 or good[-1] - good[0] < 1:
-                    continue
-                pre, post = full[:good[0]], full[good[-1] + 1:]
-                lg['pts'] = full[good[0]:good[-1] + 1]
-                if kind == 'lanes':
-                    pts = self._shift(lg['pts'], reg, self.SHIFTS[sub % len(self.SHIFTS)])
-                    if pts:
-                        lg['pts'] = pts
-                        desc.append('%s shift %+d' % (lg['name'], self.SHIFTS[sub % 3]))
-                elif kind == 'perimeter':
-                    direct = _polyline_length(lg['pts'])
-                    cands = [] if mode == 'mixed' else [('direct', None)]
-                    for name, ccw in (('cw', False), ('ccw', True)):
-                        q = self._perimeter(lg['pts'], reg, ccw)
-                        if q and _polyline_length(q) <= float(self.p.perimeter_max_factor) \
-                                * max(direct, 1e-6):
-                            cands.append((name, q))
-                    if not cands:
-                        lg['pts'] = list(pre) + list(lg['pts']) + list(post)
-                        continue
-                    name, q = cands[sub % len(cands)]
-                    if q:
-                        lg['pts'] = q
-                        desc.append('%s perimeter %s' % (lg['name'], name))
-                lg['pts'] = list(pre) + list(lg['pts']) + list(post)
-            lg['length'] = _polyline_length(lg['pts'])
+                sub = k // 2
+            reg = self._region_of(lg['area'])
+            if reg is None:
+                continue
+            # vary only the core between the first / last points with full clearance
+            # (links to a boundary crossing, a near-edge start / goal stay as they are)
+            full = lg['pts']
+            clr = self._clearance(reg, [q[0] for q in full], [q[1] for q in full])
+            good = [i for i, v in enumerate(clr) if v >= float(self.p.clearance_m) - 1e-6]
+            if len(good) < 2 or good[-1] - good[0] < 1:
+                continue
+            pre, post = full[:good[0]], full[good[-1] + 1:]
+            core = full[good[0]:good[-1] + 1]
+            direct = _polyline_length(core)
+            cands = [] if mode == 'mixed' else [('direct', None)]
+            for name, ccw in (('cw', False), ('ccw', True)):
+                q = self._perimeter(core, reg, ccw)
+                if q and _polyline_length(q) <= float(self.p.perimeter_max_factor) \
+                        * max(direct, 1e-6):
+                    cands.append((name, q))
+            if not cands:
+                continue
+            name, q = cands[sub % len(cands)]
+            if q:
+                lg['pts'] = list(pre) + list(q) + list(post)
+                lg['length'] = _polyline_length(lg['pts'])
+                desc.append('%s perimeter %s' % (lg['name'], name))
         return '; '.join(desc)
 
     def _route(self, found, edges, goal, variation=None, modes=None):

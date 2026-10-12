@@ -157,6 +157,8 @@ func TestAreaSettings_PutRejectsOutOfRange(t *testing.T) {
 		{"obstacle_detection": true},
 		{"blade_policy": "always"},
 		{"blade_policy": 1},
+		{"transit_variation": "lanes"}, // retired 2026-10-13
+		{"transit_variation": "sometimes"},
 		{"bogus": 1},
 	}
 	for _, s := range cases {
