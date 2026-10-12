@@ -3,7 +3,9 @@ import DirectSelectWithBoxMode, {type LngLatPair, ROTATION_HANDLE_GAP_PX} from '
 
 type Px = {x: number; y: number};
 type Rect = {left: number; top: number; right: number; bottom: number};
-const {ringCentroid, rotateRings, rotationHandlePixel, isPointInHandle} = DirectSelectWithBoxMode.rotationMath as {
+const {ringCentroid, rotateRings, rotationHandlePixel, isPointInHandle, clampHandlePixel, ringInsideRing} = DirectSelectWithBoxMode.rotationMath as {
+    clampHandlePixel: (c: Px, ideal: Px, w: number, h: number, marginPx?: number) => Px;
+    ringInsideRing: (inner: LngLatPair[], outer: LngLatPair[]) => boolean;
     ringCentroid: (ring: LngLatPair[]) => LngLatPair;
     rotateRings: (rings: LngLatPair[][], center: LngLatPair, angleRad: number) => LngLatPair[][];
     rotationHandlePixel: (c: Px, v: Px[], angleRad?: number, gapPx?: number) => Px;
@@ -126,14 +128,23 @@ describe('rotation gesture on a mapbox-gl-draw polygon', () => {
      * rings (getCoordinates appends the closing vertex, setCoordinates does
      * not strip it) and a map with a linear projection.
      */
-    function setup() {
-        let rings = [square().slice(0, -1)];
-        const feature = {
+    function polygon(id: string, closedRing: LngLatPair[], properties: Record<string, unknown>) {
+        let rings = [closedRing.slice(0, -1)];
+        const f = {
+            id,
             type: 'Polygon',
+            properties,
             getCoordinates: () => rings.map(r => [...r, r[0]]),
             setCoordinates: (c: LngLatPair[][]) => { rings = c; },
-            toGeoJSON: () => ({type: 'Feature', geometry: {type: 'Polygon', coordinates: feature.getCoordinates()}}),
+            toGeoJSON: () => ({id, type: 'Feature', geometry: {type: 'Polygon', coordinates: f.getCoordinates()}}),
+            openRings: () => rings,
         };
+        return f;
+    }
+
+    function setup(properties: Record<string, unknown> = {feature_type: 'workarea'}, others: ReturnType<typeof polygon>[] = []) {
+        const feature = polygon('area-0-area-0', square(), properties);
+        const rings = () => feature.openRings();
         const scale = 1e6;
         const container = document.createElement('div');
         const fire = vi.fn();
@@ -147,11 +158,11 @@ describe('rotation gesture on a mapbox-gl-draw polygon', () => {
         };
         const mode = Object.assign(Object.create(DirectSelectWithBoxMode), {
             map,
-            _ctx: {store: {render: vi.fn()}},
+            _ctx: {store: {render: vi.fn(), getAll: () => [feature, ...others]}},
             getSelected: () => [feature],
         });
-        const state: Record<string, unknown> = {feature, selectedCoordPaths: []};
-        return {mode, state, fire, map, rings: () => rings, feature};
+        const state: Record<string, unknown> = {feature, featureId: feature.id, selectedCoordPaths: []};
+        return {mode, state, fire, map, rings, feature, container};
     }
 
     it('rotates without growing the ring and fires draw.update once at the end', () => {
@@ -163,7 +174,10 @@ describe('rotation gesture on a mapbox-gl-draw polygon', () => {
         expect(el.textContent).toBe('↻');
         expect(el.style.top).toBe('0px');
         expect(el.style.left).toBe('0px');
-        expect(parseInt(el.style.width)).toBeGreaterThanOrEqual(24);
+        expect(parseInt(el.style.width)).toBe(44);
+        const dot = el.firstElementChild as HTMLElement;
+        expect(parseInt(dot.style.width)).toBe(28);
+        expect(dot.style.pointerEvents).toBe('none');
         expect(el.title).toBeTruthy();
 
         // Drag from straight above the centre (500, 400) round to its right.
@@ -205,5 +219,87 @@ describe('rotation gesture on a mapbox-gl-draw polygon', () => {
         expect(state.rotationHandleElement).toBeUndefined();
         expect(map.getContainer().querySelector('#rotation-handle')).toBeNull();
         expect(map.off).toHaveBeenCalledWith('move', expect.any(Function));
+    });
+
+    it('does not offer rotation for a navigation path (properties.channel)', () => {
+        const {mode, state} = setup({feature_type: 'navigation', channel: [[2, LAT], [2.0001, LAT]], channel_width_m: 0.7});
+        mode.renderRotationHandle(state);
+        expect(state.rotationHandleElement).toBeUndefined();
+        expect(mode.canRotate(state)).toBe(false);
+    });
+
+    it('rotates obstacles inside the work area with it and saves them in the same update', () => {
+        const d = 0.00002;
+        const inner = polygon('area-0-obstacle-0', [
+            [2 + d / K, LAT], [2 + 2 * d / K, LAT], [2 + 2 * d / K, LAT + d], [2 + d / K, LAT + d], [2 + d / K, LAT],
+        ], {feature_type: 'obstacle'});
+        const outside = polygon('area-1-obstacle-0', [
+            [3, LAT], [3.0001, LAT], [3.0001, LAT + 0.0001], [3, LAT],
+        ], {feature_type: 'obstacle'});
+        const {mode, state, fire, feature} = setup({feature_type: 'workarea'}, [inner, outside]);
+        const outsideBefore = outside.getCoordinates();
+        mode.startRotation(state, {x: 500, y: 300});
+        mode.updateRotation(state, {point: {x: 600, y: 400}});
+        mode.stopRotation(state);
+        expect(fire).toHaveBeenCalledTimes(1);
+        const ids = (fire.mock.calls[0][1] as {features: {id: string}[]}).features.map(f => f.id);
+        expect(ids).toEqual(['area-0-area-0', 'area-0-obstacle-0']);
+        const ring = inner.getCoordinates()[0];
+        expect(ring).toHaveLength(5);
+        expect(ring[4]).toEqual(ring[0]);
+        expect(ringInsideRing(ring, feature.getCoordinates()[0])).toBe(true);
+        // A quarter turn clockwise moves the east-side obstacle to the south side.
+        expect(ringCentroid(ring)[1]).toBeLessThan(LAT);
+        expect(outside.getCoordinates()).toEqual(outsideBefore);
+    });
+
+    it('does not drag obstacles along when rotating a navigation area', () => {
+        const d = 0.00002;
+        const inner = polygon('o', [[2, LAT], [2 + d, LAT], [2 + d, LAT + d], [2, LAT]], {feature_type: 'obstacle'});
+        const {mode, state} = setup({feature_type: 'navigation'}, [inner]);
+        expect(mode.getChildObstacles(state)).toEqual([]);
+    });
+
+    it('a second touch pointer cancels the rotation and restores the shape', () => {
+        const {mode, state, fire, feature} = setup();
+        const before = feature.getCoordinates();
+        state.rotationPointerId = 1;
+        mode.startRotation(state, {x: 500, y: 300});
+        mode.updateRotation(state, {point: {x: 600, y: 400}});
+        const ev = new Event('pointerdown', {bubbles: true}) as Event & {pointerId: number; pointerType: string};
+        Object.assign(ev, {pointerId: 2, pointerType: 'touch'});
+        document.body.dispatchEvent(ev);
+        expect(state.rotating).toBe(false);
+        expect(fire).not.toHaveBeenCalled();
+        expect(feature.getCoordinates()).toEqual(before);
+    });
+
+    it('clamps the handle inside the visible map when the ideal spot is off screen', () => {
+        const {mode, state, container} = setup();
+        Object.defineProperty(container, 'clientWidth', {value: 1000});
+        Object.defineProperty(container, 'clientHeight', {value: 330});
+        // Centre at (500, 400) is below the 330 px tall view: coordinate clamp.
+        const p = mode.getRotationHandlePixel(state);
+        expect(p.y).toBeGreaterThanOrEqual(56);
+        expect(p.y).toBeLessThanOrEqual(330 - 56);
+    });
+});
+
+describe('clampHandlePixel', () => {
+    it('keeps an on-screen spot as is', () => {
+        expect(clampHandlePixel({x: 200, y: 300}, {x: 200, y: 150}, 400, 800)).toEqual({x: 200, y: 150});
+    });
+    it('pulls an off-screen spot back along the same ray to 56 px from the edge', () => {
+        // Phone-sized map, shape near the top: the ideal spot is above the view.
+        const p = clampHandlePixel({x: 200, y: 120}, {x: 200, y: -80}, 400, 800);
+        expect(p).toEqual({x: 200, y: 56});
+        // Diagonal ray: the point stays on the line from the centre.
+        const q = clampHandlePixel({x: 200, y: 200}, {x: 500, y: -100}, 400, 800);
+        expect(q.x).toBeCloseTo(344, 9);
+        expect(q.y).toBeCloseTo(56, 9);
+        expect((q.x - 200) / (200 - q.y)).toBeCloseTo(1, 9);
+    });
+    it('clamps coordinate-wise when the centre itself is off screen', () => {
+        expect(clampHandlePixel({x: -500, y: 900}, {x: -500, y: 790}, 400, 800)).toEqual({x: 56, y: 744});
     });
 });

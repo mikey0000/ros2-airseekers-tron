@@ -164,6 +164,8 @@ DirectSelectWithBoxMode.onSetup = function (opts: any) {
     rotationStartAngle: 0,
     rotationAngle: 0,
     handleAngle: undefined,
+    rotationChildren: [] as any[],
+    onSecondPointer: undefined as undefined | ((ev: PointerEvent) => void),
     onMapMove: undefined as undefined | (() => void),
     onDocKeyDown: undefined as undefined | ((ev: KeyboardEvent) => void),
   };
@@ -449,8 +451,12 @@ export type PixelPoint = {x: number; y: number};
 export type RectLike = {left: number; top: number; right: number; bottom: number};
 
 const ROTATION_HANDLE_ID = 'rotation-handle';
-/** Rendered size of the handle (>= 24 px touch target). */
+/** Visible circle of the handle. */
 export const ROTATION_HANDLE_SIZE_PX = 28;
+/** Hit target around it (touch guideline size). */
+export const ROTATION_HANDLE_HIT_PX = 44;
+/** Keep the handle this far inside the map container (toolbars, top banner). */
+export const ROTATION_HANDLE_EDGE_PX = 56;
 /** Screen gap between the farthest vertex and the handle. */
 export const ROTATION_HANDLE_GAP_PX = 36;
 /** Default handle direction: straight up on screen (y grows downwards). */
@@ -541,6 +547,47 @@ function isPointInHandle(point: PixelPoint, handleRect: RectLike, containerRect:
   return point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
 }
 
+/**
+ * Keep the handle on screen: if `ideal` lies outside the container shrunk by
+ * `marginPx` on every side, move it back towards `center` along the same ray
+ * to the last point inside. If even the centre is outside (shape mostly off
+ * screen), clamp coordinate-wise to the nearest point inside.
+ */
+function clampHandlePixel(
+  center: PixelPoint, ideal: PixelPoint, width: number, height: number, marginPx: number = ROTATION_HANDLE_EDGE_PX,
+): PixelPoint {
+  const lo = {x: Math.min(marginPx, width / 2), y: Math.min(marginPx, height / 2)};
+  const hi = {x: Math.max(width - marginPx, width / 2), y: Math.max(height - marginPx, height / 2)};
+  const inside = (p: PixelPoint) => p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y;
+  if (inside(ideal)) return ideal;
+  const clamp = (p: PixelPoint) => ({x: Math.min(hi.x, Math.max(lo.x, p.x)), y: Math.min(hi.y, Math.max(lo.y, p.y))});
+  if (!inside(center)) return clamp(ideal);
+  const dx = ideal.x - center.x, dy = ideal.y - center.y;
+  let t = 1;
+  if (dx > 0) t = Math.min(t, (hi.x - center.x) / dx);
+  if (dx < 0) t = Math.min(t, (lo.x - center.x) / dx);
+  if (dy > 0) t = Math.min(t, (hi.y - center.y) / dy);
+  if (dy < 0) t = Math.min(t, (lo.y - center.y) / dy);
+  return clamp({x: center.x + dx * t, y: center.y + dy * t});
+}
+
+/** Even-odd point-in-ring test in lng/lat (fine at garden scale). */
+function pointInRing(pt: LngLatPair, ring: LngLatPair[]): boolean {
+  const pts = openRing(ring);
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** True when every vertex of `inner` lies inside `outer`. */
+function ringInsideRing(inner: LngLatPair[], outer: LngLatPair[]): boolean {
+  const pts = openRing(inner);
+  return pts.length > 0 && pts.every(p => pointInRing(p, outer));
+}
+
 /** Screen-space angle (radians, y down) of `p` around `c`. */
 function screenAngle(c: PixelPoint, p: PixelPoint): number {
   return Math.atan2(p.y - c.y, p.x - c.x);
@@ -554,8 +601,37 @@ function containerPoint(map: any, ev: {clientX: number; clientY: number}): Pixel
 
 // --- mode methods -----------------------------------------------------------
 
+/**
+ * Only plain polygons rotate. A navigation PATH carries its centreline in
+ * `properties.channel` (map_server builds the route graph from it), and the
+ * editor's draw.update handler (useMapEditing.onUpdate) copies geometry only,
+ * so a rotated corridor would be saved with an unrotated centreline. Paths
+ * are therefore not rotatable until that handler also takes the channel.
+ */
 DirectSelectWithBoxMode.canRotate = function (state: any): boolean {
-  return state.feature?.type === Constants.geojsonTypes.POLYGON;
+  const f = state.feature;
+  if (f?.type !== Constants.geojsonTypes.POLYGON) return false;
+  const ch = f.properties?.channel;
+  return !(Array.isArray(ch) && ch.length >= 2);
+};
+
+/**
+ * Obstacles that belong to the selected work area: other draw features of
+ * type obstacle whose outer ring lies inside the area's outer ring. The save
+ * path (useMapFiles) re-parents obstacles by the same containment test, and
+ * the editor's ObstacleFeature keeps its parent link, so rotating them with
+ * the area keeps them inside it.
+ */
+DirectSelectWithBoxMode.getChildObstacles = function (state: any): any[] {
+  if (state.feature?.properties?.feature_type !== 'workarea') return [];
+  const outer: LngLatPair[] = state.feature.getCoordinates()[0];
+  const all: any[] = this._ctx?.store?.getAll?.() ?? [];
+  return all.filter(f =>
+    f !== state.feature &&
+    f.id !== state.featureId &&
+    f.type === Constants.geojsonTypes.POLYGON &&
+    f.properties?.feature_type === 'obstacle' &&
+    ringInsideRing(f.getCoordinates()[0], outer));
 };
 
 /** Centroid of the outer ring (lng/lat). */
@@ -569,16 +645,22 @@ DirectSelectWithBoxMode.getRotationHandlePixel = function (state: any): PixelPoi
   const center = state.rotating && state.rotationCenter ? state.rotationCenter : this.getCentroid(state.feature);
   const c = this.map.project(center);
   const verts = ring.map(v => this.map.project(v));
-  return rotationHandlePixel({x: c.x, y: c.y}, verts.map((p: any) => ({x: p.x, y: p.y})), state.handleAngle ?? HANDLE_UP);
+  const centerPx = {x: c.x, y: c.y};
+  const ideal = rotationHandlePixel(centerPx, verts.map((p: any) => ({x: p.x, y: p.y})), state.handleAngle ?? HANDLE_UP);
+  const el = this.map.getContainer();
+  const w = el.clientWidth, h = el.clientHeight;
+  // An unlaid-out container (0x0, e.g. jsdom) has nothing to clamp to.
+  return w > 0 && h > 0 ? clampHandlePixel(centerPx, ideal, w, h) : ideal;
 };
 
 DirectSelectWithBoxMode.renderRotationHandle = function (state: any) {
   if (state.rotationHandleElement || !this.canRotate(state)) return;
   const size = ROTATION_HANDLE_SIZE_PX;
+  const hit = ROTATION_HANDLE_HIT_PX;
+  // Outer element = transparent 44 px hit target; inner = 28 px visible circle.
   const el = document.createElement('div');
   el.id = ROTATION_HANDLE_ID;
   el.className = 'mapboxgl-draw-rotation-handle';
-  el.textContent = '↻';
   const label = i18n.t('map.rotateHandle');
   el.title = label;
   el.setAttribute('role', 'button');
@@ -587,6 +669,20 @@ DirectSelectWithBoxMode.renderRotationHandle = function (state: any) {
     position: 'absolute',
     top: '0',
     left: '0',
+    width: `${hit}px`,
+    height: `${hit}px`,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'grab',
+    userSelect: 'none',
+    touchAction: 'none',
+    zIndex: '1000',
+  } as Partial<CSSStyleDeclaration>);
+  const dot = document.createElement('div');
+  dot.className = 'mapboxgl-draw-rotation-handle-dot';
+  dot.textContent = '↻';
+  Object.assign(dot.style, {
     width: `${size}px`,
     height: `${size}px`,
     boxSizing: 'border-box',
@@ -600,12 +696,10 @@ DirectSelectWithBoxMode.renderRotationHandle = function (state: any) {
     fontSize: '18px',
     fontWeight: '700',
     lineHeight: '1',
-    cursor: 'grab',
-    userSelect: 'none',
-    touchAction: 'none',
-    zIndex: '1000',
+    pointerEvents: 'none',
     boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
   } as Partial<CSSStyleDeclaration>);
+  el.appendChild(dot);
 
   el.addEventListener('pointerdown', (ev: PointerEvent) => {
     if (ev.button !== undefined && ev.button !== 0) return;
@@ -639,7 +733,7 @@ DirectSelectWithBoxMode.updateRotationHandle = function (state: any) {
   const el = state.rotationHandleElement;
   if (!el) return;
   const p = this.getRotationHandlePixel(state);
-  const half = ROTATION_HANDLE_SIZE_PX / 2;
+  const half = ROTATION_HANDLE_HIT_PX / 2;
   el.style.transform = `translate(${p.x - half}px, ${p.y - half}px)`;
   el.style.cursor = state.rotating ? 'grabbing' : 'grab';
 };
@@ -671,6 +765,9 @@ DirectSelectWithBoxMode.isRotationHandle = function (state: any, e: any): boolea
 DirectSelectWithBoxMode.rotateFeature = function (state: any, angleRad: number) {
   const rotated = rotateRings(state.rotationOrigin, state.rotationCenter, angleRad);
   state.feature.setCoordinates(rotated.map(openRing));
+  for (const child of state.rotationChildren ?? []) {
+    child.feature.setCoordinates(rotateRings(child.origin, state.rotationCenter, angleRad).map(openRing));
+  }
 };
 
 DirectSelectWithBoxMode.startRotation = function (state: any, point: PixelPoint) {
@@ -679,10 +776,21 @@ DirectSelectWithBoxMode.startRotation = function (state: any, point: PixelPoint)
   state.rotating = true;
   state.rotationOrigin = state.feature.getCoordinates().map((r: LngLatPair[]) => r.map(c => [c[0], c[1]]));
   state.rotationCenter = this.getCentroid(state.feature);
+  state.rotationChildren = this.getChildObstacles(state).map((f: any) => ({
+    feature: f,
+    origin: f.getCoordinates().map((r: LngLatPair[]) => r.map(c => [c[0], c[1]])),
+  }));
   const c = this.map.project(state.rotationCenter);
   state.rotationStartAngle = screenAngle(c, point);
   state.rotationAngle = 0;
   this.map.dragPan.disable();
+  // Touch has no Escape: a second finger anywhere cancels the rotation.
+  state.onSecondPointer = (ev: PointerEvent) => {
+    if (state.rotating && ev.pointerId !== state.rotationPointerId && ev.pointerType === 'touch') {
+      this.stopRotation(state, false);
+    }
+  };
+  document.addEventListener('pointerdown', state.onSecondPointer, true);
   this.updateRotationHandle(state);
 };
 
@@ -708,14 +816,25 @@ DirectSelectWithBoxMode.stopRotation = function (state: any, commit = true) {
     try { if (el.hasPointerCapture?.(state.rotationPointerId)) el.releasePointerCapture(state.rotationPointerId); } catch { /* ignore */ }
   }
   state.rotationPointerId = undefined;
+  if (state.onSecondPointer) document.removeEventListener('pointerdown', state.onSecondPointer, true);
+  state.onSecondPointer = undefined;
+  const children: any[] = state.rotationChildren ?? [];
   if (!commit) {
     state.feature.setCoordinates(state.rotationOrigin.map(openRing));
+    for (const child of children) child.feature.setCoordinates(child.origin.map(openRing));
     state.handleAngle = undefined;
     this._ctx.store.render();
   } else if (state.rotationAngle) {
-    // One draw.update per gesture, so the area is saved once.
-    this.fireUpdate();
+    // One draw.update per gesture (area + its obstacles), so it is saved once.
+    this.map.fire(Constants.events.UPDATE, {
+      action: Constants.updateActions.CHANGE_COORDINATES,
+      features: [
+        ...this.getSelected().map((f: any) => f.toGeoJSON()),
+        ...children.map(c => c.feature.toGeoJSON()),
+      ],
+    });
   }
+  state.rotationChildren = [];
   state.rotationOrigin = null;
   state.rotationCenter = null;
   state.rotationAngle = 0;
@@ -724,6 +843,6 @@ DirectSelectWithBoxMode.stopRotation = function (state: any, commit = true) {
 };
 
 
-DirectSelectWithBoxMode.rotationMath = {ringCentroid, rotateRings, rotationHandlePixel, isPointInHandle};
+DirectSelectWithBoxMode.rotationMath = {ringCentroid, rotateRings, rotationHandlePixel, isPointInHandle, clampHandlePixel, ringInsideRing};
 
 export default DirectSelectWithBoxMode;
