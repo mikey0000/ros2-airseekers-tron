@@ -143,9 +143,11 @@ forward (inner wheel +0.068 at |w| = 0.3, a legal arc), at most 0.3 m per pivot.
 emergency, teleop or docking lanes, Nav2 Spin/BackUp, or within 5 s of a bumper/emergency
 message), and held while the local costmap has a lethal cell in the creep sweep or a
 front/side vision obstacle is within 1.5 m: the slew is downstream of collision_monitor, so
-nothing else collision-checks the creep. The slew itself also keeps every tick out of the
-one-wheel zone (`slew_both_wheels`): pivot <-> arc changes pass through a stop (w to 0, then
-v), instead of ramping v at full |w| through inner (-0.06, +0.06) for 5-9 ticks.
+nothing else collision-checks the creep. During an assist episode only (creep ramp-up,
+hold and ramp-down) the slew keeps every tick out of the one-wheel zone
+(`slew_both_wheels`): the pivot <-> creep-arc change passes through a stop (w to 0, then v),
+instead of ramping v at full |w| through inner (-0.06, +0.06) for 5-9 ticks. Normal
+MPPI/RPP driving keeps the plain per-axis slew of the shaped target.
 
 ## Drive at rest (2026-10-07): no host-side release exists
 

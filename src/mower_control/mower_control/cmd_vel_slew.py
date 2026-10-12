@@ -97,9 +97,10 @@ Behaviour
 ---------
 * Fixed-rate loop.  Each tick moves the applied linear.x / angular.z at most
   ``accel * dt`` toward the target; every other twist component passes through
-  unchanged.  While the turn shaper is active the step also never lands in the
-  one-wheel zone (:func:`slew_both_wheels`: a pivot <-> arc change passes through a
-  stop instead).
+  unchanged.  During a pivot-assist episode only (creep ramp-up, hold and
+  ramp-down) the step also never lands in the one-wheel zone
+  (:func:`slew_both_wheels`: the pivot <-> creep-arc change passes through a stop);
+  normal driving is the plain per-axis slew of the turn-shaped target.
 * Every published command is echoed to the log at full float precision (the
   MowgliNext ``/cmd_vel_applied`` idea, as a log line instead of a topic),
   throttled to ``applied_log_period`` (default 1 s; 0 = every tick, the old
@@ -588,13 +589,14 @@ def both_wheels_legal(v, w, params=None):
 def slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
                      params=None):
     """One slew step from (cur_v, cur_w) toward a legal target that never lands in the
-    one-wheel zone (2026-10-13 review: the 0 -> 0.14 creep ramp at |w| = 0.3 spent 5-9
+    one-wheel zone. Used for pivot-assist episodes only (2026-10-13 review: the 0 -> 0.14 creep ramp at |w| = 0.3 spent 5-9
     ticks with the inner wheel in (-0.06, +0.06); 831 of 3251 assisted ticks in the
     10-10/10-11 bags).
 
     The legal set is {pure pivots v = 0} U {inner <= -min} on one side and {straight w = 0}
     U {inner >= +min} on the other; they meet only at a stop, so a continuous pivot <-> arc
-    change passes through (0, 0):
+    change passes through (0, 0) (ramping v and w together cannot avoid it: inner = |v| -
+    |w| b/2 is continuous and must cross (-min, +min) unless w or v is 0):
 
     * pivot side (inner < 0) heading for an arc: v to 0 first, then |w| down to 0 (a slowing
       pure pivot), then the arc side takes over;
@@ -1151,6 +1153,7 @@ class CmdVelSlewNode(Node):
                 self._shaper.reset()
             if getattr(self, '_pivot', None) is not None:
                 self._pivot.reset()
+            self._assist_ramp = False
             if getattr(self, '_turn', None) is not None:
                 self._turn.reset()
                 CmdVelSlewNode._publish_shape_status(self)
@@ -1188,8 +1191,15 @@ class CmdVelSlewNode(Node):
                         self.get_logger().info('pivot assist held: %s' % held)
             tgt_lin, tgt_ang = CmdVelSlewNode._shape_turn(self, tgt_lin, tgt_ang, dt)
             turn = getattr(self, '_turn', None)
-            if turn is not None and turn.is_active(phase):
-                # Both-wheel rule holds for every tick, not only for the target.
+            # Assist episode: from the creep's first tick until the slewed output has
+            # settled on the target again after it (ramp-down / hold / hand-back). Only
+            # then does the slew keep every tick out of the one-wheel zone; normal
+            # MPPI/RPP driving keeps the plain per-axis slew of the shaped target.
+            ramp = bool(pivot is not None and pivot.active) or (
+                getattr(self, '_assist_ramp', False)
+                and (self._cur_lin, self._cur_ang) != (tgt_lin, tgt_ang))
+            self._assist_ramp = ramp
+            if ramp and turn is not None and turn.is_active(phase):
                 self._cur_lin, self._cur_ang = slew_both_wheels(
                     self._cur_lin, self._cur_ang, tgt_lin, tgt_ang,
                     self._max_linear_accel, self._max_angular_accel, dt, turn.params)

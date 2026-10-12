@@ -200,11 +200,11 @@ def _one_wheel(v, w):
 @pytest.mark.parametrize('ang', [0.3, -0.3, 0.25, 0.15, 0.08])
 def test_assisted_pivot_has_no_one_wheel_tick(ang):
     """Review M1 (iii): the 0 -> 0.14 ramp at |w| = 0.3 spent 5-9 ticks in the one-wheel
-    zone (831 of 3251 assisted ticks in the 10-10/10-11 bags). Whole pivot: delay, creep
-    up, 0.3 m cap, back to a pure pivot, and the hand-back to an arc."""
+    zone (831 of 3251 assisted ticks in the 10-10/10-11 bags). Whole assisted pivot:
+    delay, creep up, 0.3 m cap, back to a pure pivot."""
     node = _node()
-    out = run(node, 5.0, ang=ang)
-    out += run(node, 1.0, lin=0.25, ang=0.1, t0=5.0)
+    out = run(node, 5.0, ang=ang)            # delay, creep up, cap, back to a pure pivot
+    assert node._assist_ramp is False        # episode over once settled on the pivot
     bad = [(t, v, w) for t, v, w in out if _one_wheel(v, w)]
     assert not bad
     if abs(ang) * 0.24 + 0.06 <= 0.14 + 1e-9:
@@ -227,3 +227,34 @@ def test_slew_both_wheels_accel_limits_and_reaches_targets():
 def test_normal_arcs_slew_independently():
     assert cs.slew_both_wheels(0.2, 0.1, 0.3, 0.2, 0.5, 1.0, DT) == pytest.approx(
         (0.225, 0.15))
+
+
+def test_held_creep_ramps_down_without_one_wheel_tick():
+    def drop(node, t):
+        if abs(t - 1.6) < 1e-6:
+            _free_costmap(node._assist_gate, t, [(0.7, 0.0)])
+    out = run(_node(), 3.0, each=drop)
+    assert not [o for o in out if _one_wheel(o[1], o[2])]
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_normal_driving_keeps_the_plain_slew(enabled):
+    """Coordinator 2026-10-13: outside an assist episode the slew is exactly the old
+    per-axis slew of the TurnShaper target (no forced stop between pivot and arc)."""
+    node = _node(state='TRANSIT')
+    node._pivot.enabled = enabled
+    seq = [(0.0, 0.3)] * 10 + [(0.25, 0.1)] * 20 + [(0.0, -0.3)] * 10 + [(0.2, 0.5)] * 10
+    v = w = 0.0
+    t = 0.0
+    cs.CmdVelSlewNode.step(node, t)
+    for lin, ang in seq:
+        t = round(t + DT, 6)
+        node._tgt, node._last_cmd_time = (lin, 0.0, 0.0, 0.0, 0.0, ang), t
+        node._assist_gate.note_lane('navigation', t)
+        node._assist_gate.note_controller(t)
+        node._gate.set_motion_enabled(True, t)
+        o = cs.CmdVelSlewNode.step(node, t)
+        sv, sw, _ = cs.shape_for_both_wheels(lin, ang)
+        v, w = cs.slew(v, sv, 0.5, DT), cs.slew(w, sw, 1.0, DT)
+        assert (o[0], o[5]) == pytest.approx((v, w))
+    assert node._assist_ramp is False
