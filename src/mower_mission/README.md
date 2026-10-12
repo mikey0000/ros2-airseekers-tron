@@ -204,7 +204,12 @@ The Nav2 lifecycle stack is PAUSEd by the activity gate
 `nav2_ready_timeout_s` (20 s), polling `/lifecycle_manager_navigation/is_active` — for the
 stack to come back active before the goal is sent; a goal sent into a paused stack is
 rejected instantly with "Action server is inactive" (upstream: `Nav2ResumeGuard` +
-`Nav2ReadyPoll`).
+`Nav2ReadyPoll`). If the stack is still not active after the budget the goal is sent anyway
+(it covers a late resume), and when it then fails without being accepted (rejected / server
+missing; any failure for `dock`) the reason is `navigation stack not active (Nav2 lifecycle
+not running)`: a transit or coverage follow aborts the run at once (no retries, no costmap
+fallback) and the docking failure that follows reports the same cause in `sub_state_name`
+instead of a generic `NAV_TO_DOCK_FAILED`.
 
 ## Per-area mowing settings
 

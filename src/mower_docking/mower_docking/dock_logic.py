@@ -323,7 +323,7 @@ class Snapshot:
     status_fresh: bool = True                # /mower_base/status recently received
     stop_triggered: bool = False
     lift_triggered: bool = False
-    nav_status: Optional[str] = None         # None|'running'|'succeeded'|'failed'
+    nav_status: Optional[str] = None         # None|'running'|'succeeded'|'failed'|'unavailable'
     charging_result: Optional[bool] = None   # None = pending/not requested
     rtk_fixed: bool = False
     progress_pose: Optional[Pose2D] = None   # fused pose (/odometry/filtered) for the stall guard
@@ -535,6 +535,11 @@ class DockState:
     CHARGING = 'CHARGING'
     SUCCEEDED = 'SUCCEEDED'
     FAILED = 'FAILED'
+
+
+# NAV_TO_DOCK_FAILED detail when the navigate_to_pose server is missing (nav_status
+# 'unavailable'): Nav2 is down, not the dock (2026-10-13, a hung nav2 lifecycle manager).
+NAV2_UNAVAILABLE = 'Nav2 navigate_to_pose action server unavailable (navigation stack not running)'
 
 
 class DockMsg:
@@ -790,15 +795,25 @@ class DockStateMachine:
                 return
         self._post_approach(snap)
 
-    def _nav_failed(self, snap: Snapshot, timed_out: bool) -> List[tuple]:
+    def _nav_failed(self, snap: Snapshot, timed_out: bool,
+                    unavailable: bool = False) -> List[tuple]:
         d = self._dist_to_approach(snap)
         reqs: List[tuple] = [('cancel_nav',)] if timed_out else []
-        why = 'timed out' if timed_out else 'failed'
+        why = 'timed out' if timed_out else 'unavailable' if unavailable else 'failed'
         if d is not None and d <= self.p.nav_fail_arrived_radius_m:
             self._notes.append('Nav2 to the approach pose %s %.2f m from it: treating as arrived'
                                % (why, d))
             self._arrive(snap)
             return reqs
+        if unavailable:
+            # No navigate_to_pose server (Nav2 stack not configured / not running): the
+            # relaxed retry would only wait for the same missing server again. Fail now,
+            # naming the cause (the mission shows it as the NAV_TO_DOCK_FAILED reason).
+            self._notes.append('Nav2 navigate_to_pose action server unavailable: '
+                               'not retrying')
+            self.state = DockState.FAILED
+            self.message = '%s: %s' % (DockMsg.NAV_TO_DOCK_FAILED, NAV2_UNAVAILABLE)
+            return []
         if d is not None and self.p.relaxed_nav_retry and not self._relaxed_tried:
             self._relaxed_tried = True
             goal = Pose2D(self.approach.x, self.approach.y, snap.map_pose.yaw)
@@ -1135,6 +1150,8 @@ class DockStateMachine:
                 self._arrive(snap)
             elif snap.nav_status == 'failed':
                 return self._out(requests=self._nav_failed(snap, False))
+            elif snap.nav_status == 'unavailable':
+                return self._out(requests=self._nav_failed(snap, False, unavailable=True))
             elif el > self.p.nav_timeout_s:
                 return self._out(requests=self._nav_failed(snap, True))
             return self._out()

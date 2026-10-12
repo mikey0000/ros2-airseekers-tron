@@ -538,7 +538,7 @@ class DockingServer(Node):
         if not self._nav_client().wait_for_server(
                 timeout_sec=float(self.get_parameter('nav_server_wait_s').value)):
             self.get_logger().error('navigate_to_pose server not available')
-            self._nav_status = 'failed'
+            self._nav_status = 'unavailable'   # Nav2 down: fail without the relaxed retry
             return
         goal = NavigateToPose.Goal()
         goal.pose = ps

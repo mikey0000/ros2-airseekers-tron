@@ -160,6 +160,15 @@ _NAV2_ACTIONS = frozenset((fsm_mod.ACT_FOLLOW, fsm_mod.ACT_NAV,
                            fsm_mod.ACT_DOCK, fsm_mod.ACT_BACKUP))
 
 
+def _nav2_down_explains(name, outcome):
+    """Whether a goal sent while the Nav2 stack was not active failed because of it: a
+    Nav2 server that rejected the goal (inactive) or was missing (unconfigured); for the
+    docking server, which accepts the goal and then navigates with Nav2, any failure."""
+    if outcome in (fsm_mod.REJECTED, fsm_mod.UNAVAILABLE):
+        return True
+    return name == fsm_mod.ACT_DOCK and outcome in (fsm_mod.ABORTED, fsm_mod.TIMEOUT)
+
+
 def _yaw_from_quat(q):
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
@@ -208,6 +217,7 @@ class MissionNode(Node):
         self._inflight = set()          # action tokens sent or being sent
         self._cancelled = set()
         self._handles = {}              # token -> ClientGoalHandle
+        self._nav2_down = {}            # token -> (action name, 'Nav2 stack not active ...')
         self._burst_until = 0.0
         self._shutdown_futures = []
 
@@ -900,6 +910,9 @@ class MissionNode(Node):
             self._inflight.discard(token)
             self._handles.pop(token, None)
             self._cancelled.discard(token)
+            down = self._nav2_down.pop(token, None)
+            if down is not None and _nav2_down_explains(down[0], outcome):
+                result = dict(result or {}, **{fsm_mod.NAV2_INACTIVE_KEY: down[1]})
             self._execute(self.fsm.on_action_result(token, outcome, result, time.monotonic()))
 
     def _await_nav2_ready(self, token):
@@ -909,18 +922,22 @@ class MissionNode(Node):
         sent into the still-inactive stack is rejected instantly, so wait for the RESUME
         to finish. Bounded by ``nav2_ready_timeout_s``; returns early if the goal is
         cancelled while waiting, and never blocks when the readiness service is absent.
+
+        Returns '' when the stack is active (or readiness cannot be checked) and the reason
+        text ('Nav2 stack not active after 20s') when the budget ran out with the stack
+        still not active.
         """
         cli = self._nav2_active_cli
         if not cli.service_is_ready():
-            return                      # no readiness service: behave as before
+            return ''                   # no readiness service: behave as before
         deadline = time.monotonic() + max(0.0, float(self._p['nav2_ready_timeout_s']))
         waited = False
         while True:
             with self._lock:
                 if token in self._cancelled:
-                    return
+                    return ''
             if not cli.service_is_ready():
-                return
+                return ''
             done = threading.Event()
             fut = cli.call_async(Trigger.Request())
             fut.add_done_callback(lambda _f: done.set())
@@ -934,24 +951,32 @@ class MissionNode(Node):
             if ready:
                 if waited:
                     self.get_logger().info('Nav2 stack active')
-                return
+                return ''
             if not waited:
                 self.get_logger().info(
                     'Nav2 stack paused; waiting for it to resume before sending the goal')
                 waited = True
             if time.monotonic() >= deadline:
-                # Send anyway: nav2 may have come back between polls, and if it is really
-                # down the normal reject/timeout path reports it (no hang).
-                self.get_logger().warn('Nav2 stack still paused after %.0fs; sending goal anyway'
-                                       % float(self._p['nav2_ready_timeout_s']))
-                return
+                # The caller still sends the goal: it costs nothing and covers a resume
+                # between polls (the goal is then accepted and runs normally). If the stack
+                # is really down the goal is rejected / its server is missing, and the
+                # returned reason travels with that failure (see _feed_action) so the
+                # mission reports "navigation stack not active" instead of a generic
+                # docking / transit failure (2026-10-13: a hung nav2 lifecycle manager).
+                why = 'Nav2 stack not active after %.0fs' % float(
+                    self._p['nav2_ready_timeout_s'])
+                self.get_logger().error('%s; sending goal anyway' % why)
+                return why
             time.sleep(0.2)
 
     def _send_goal(self, e):
         if e.name in _NAV2_ACTIONS:
-            self._await_nav2_ready(e.token)
+            down = self._await_nav2_ready(e.token)
             with self._lock:
+                if down:
+                    self._nav2_down[e.token] = (e.name, down)
                 if e.token in self._cancelled:
+                    self._nav2_down.pop(e.token, None)
                     self._inflight.discard(e.token)
                     self._cancelled.discard(e.token)
                     return
@@ -966,6 +991,7 @@ class MissionNode(Node):
             if e.token in self._cancelled:
                 self._inflight.discard(e.token)
                 self._cancelled.discard(e.token)
+                self._nav2_down.pop(e.token, None)
                 return
         try:
             goal = self._make_goal(e)

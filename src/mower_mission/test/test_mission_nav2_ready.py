@@ -64,15 +64,37 @@ def test_nav2_ready_waits_for_active():
 
         t0 = time.monotonic() - 10.0                     # now always active
         start = time.monotonic()
-        MissionNode._await_nav2_ready(stub, 2)
+        assert MissionNode._await_nav2_ready(stub, 2) == ''
         assert time.monotonic() - start < 0.3
 
         stub._cancelled.add(3)                           # a cancelled goal must not wait
         start = time.monotonic()
-        MissionNode._await_nav2_ready(stub, 3)
+        assert MissionNode._await_nav2_ready(stub, 3) == ''
         assert time.monotonic() - start < 0.3
+
+        # still not active after the whole budget: the reason is returned, not swallowed
+        t0 = time.monotonic() + 1e6                      # never active
+        stub._p['nav2_ready_timeout_s'] = 1.0
+        start = time.monotonic()
+        assert MissionNode._await_nav2_ready(stub, 4) == 'Nav2 stack not active after 1s'
+        assert 0.9 <= time.monotonic() - start < 4.0
     finally:
         ex.shutdown()
         srv.destroy_node()
         cli_node.destroy_node()
         rclpy.try_shutdown()
+
+
+def test_nav2_down_explains_only_unaccepted_goals_and_docking():
+    from mower_mission import mission_fsm as f
+    from mower_mission.mission_node import _nav2_down_explains
+    for name in (f.ACT_FOLLOW, f.ACT_NAV, f.ACT_BACKUP, f.ACT_DOCK):
+        assert _nav2_down_explains(name, f.REJECTED)
+        assert _nav2_down_explains(name, f.UNAVAILABLE)
+        assert not _nav2_down_explains(name, f.SUCCEEDED)
+        assert not _nav2_down_explains(name, f.CANCELED)
+    # an accepted Nav2 goal means the stack came back: a later abort is not "Nav2 down"
+    assert not _nav2_down_explains(f.ACT_FOLLOW, f.ABORTED)
+    assert not _nav2_down_explains(f.ACT_NAV, f.ABORTED)
+    # the docking server accepts, then navigates with Nav2
+    assert _nav2_down_explains(f.ACT_DOCK, f.ABORTED)
