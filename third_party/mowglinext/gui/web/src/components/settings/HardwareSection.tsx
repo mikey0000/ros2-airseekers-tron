@@ -122,8 +122,10 @@ export const HardwareSection: React.FC<Props> = ({
                                     >
                                         <Space direction="vertical" size={2} style={{ width: "100%" }}>
                                             {model.value !== "CUSTOM" && <RobotModelImage id={model.value} />}
-                                            <Space size={4}>
-                                                <Text strong style={{ fontSize: 12 }}>{t(model.label)}</Text>
+                                            {/* wrap: on a phone the tag drops below the name
+                                                instead of squeezing it to one letter per line. */}
+                                            <Space size={4} wrap style={{ minWidth: 0, maxWidth: "100%" }}>
+                                                <Text strong style={{ fontSize: 12, minWidth: 0 }}>{t(model.label)}</Text>
                                                 {model.tag && <Tag color="green" style={{ fontSize: 10 }}>{t(model.tag)}</Tag>}
                                             </Space>
                                             <Text type="secondary" style={{ fontSize: 11 }}>

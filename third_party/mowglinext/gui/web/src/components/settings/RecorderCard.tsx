@@ -68,7 +68,7 @@ export const RecorderCard: React.FC = () => {
 
     return (
         <Card size="small" title={<Space><DatabaseOutlined />{t("settingsRecorder.title")}</Space>}
-              extra={<Button size="small" icon={<ReloadOutlined />} onClick={refresh} loading={busy} />}
+              extra={<Button size="small" icon={<ReloadOutlined />} onClick={() => void refresh()} loading={busy} />}
               style={{ marginBottom: 16 }}>
             <Paragraph type="secondary" style={{ marginBottom: 12 }}>
                 {t("settingsRecorder.description")}

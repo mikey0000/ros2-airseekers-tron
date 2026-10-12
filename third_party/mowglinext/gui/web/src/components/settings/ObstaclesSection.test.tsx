@@ -26,3 +26,18 @@ describe("auto-mark obstacle setting", () => {
         expect(onChange).toHaveBeenCalledExactlyOnceWith("obstacle_auto_promote", !enabled);
     });
 });
+
+describe("sparse yaml: unset switches show the schema default", () => {
+    it.each([
+        ["obstacle_auto_promote", "Automatically mark obstacles"],
+        ["dig_obstacle_enabled", "Automatically create dig keepouts"],
+    ])("%s absent from values falls back to defaults", (key, name) => {
+        render(<ObstaclesSection values={{}} defaults={{ [key]: true }} onChange={vi.fn()} />);
+        expect(screen.getByRole("switch", { name })).toHaveAttribute("aria-checked", "true");
+    });
+
+    it("an explicit value wins over the default", () => {
+        render(<ObstaclesSection values={{ obstacle_auto_promote: false }} defaults={{ obstacle_auto_promote: true }} onChange={vi.fn()} />);
+        expect(screen.getByRole("switch", { name: "Automatically mark obstacles" })).toHaveAttribute("aria-checked", "false");
+    });
+});

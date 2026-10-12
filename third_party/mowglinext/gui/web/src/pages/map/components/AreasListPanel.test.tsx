@@ -49,3 +49,31 @@ describe('AreasListPanel', () => {
         expect(screen.getByText('1')).toBeInTheDocument();
     });
 });
+
+describe('AreasListPanel markup', () => {
+    const areas: AreaListItem[] = [
+        {id: 'a', name: 'Front Yard', ftype: 'workarea', areaLabel: '45 m²', mowingOrder: 1},
+        {id: 'b', name: 'Back Yard', ftype: 'workarea', areaLabel: '20 m²', mowingOrder: 2},
+    ];
+
+    it('never nests a <button> inside a <button> (reorder controls in a row)', () => {
+        const {container} = render(<AreasListPanel areas={areas} onAreaClick={vi.fn()} onReorder={vi.fn()} />);
+        expect(container.querySelectorAll('button button')).toHaveLength(0);
+        expect(screen.getAllByRole('button', {name: i18n.t('mapAreasList.moveDown')}).length).toBeGreaterThan(0);
+    });
+
+    it('row is keyboard-activatable; reorder does not select the row', async () => {
+        const user = userEvent.setup();
+        const onAreaClick = vi.fn();
+        const onReorder = vi.fn();
+        render(<AreasListPanel areas={areas} onAreaClick={onAreaClick} onReorder={onReorder} />);
+        const row = screen.getByText('Front Yard').closest('[role="button"]') as HTMLElement;
+        row.focus();
+        await user.keyboard('{Enter}');
+        expect(onAreaClick).toHaveBeenCalledWith('a');
+        onAreaClick.mockClear();
+        await user.click(screen.getAllByRole('button', {name: i18n.t('mapAreasList.moveDown')})[0]);
+        expect(onReorder).toHaveBeenCalled();
+        expect(onAreaClick).not.toHaveBeenCalled();
+    });
+});

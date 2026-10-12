@@ -29,13 +29,23 @@ interface TrackedObstaclesPanelProps {
 /// snapshots are disabled, or before the tracker has written the file, so the
 /// red marker icon is shown as the fallback instead. Clicking opens the full
 /// annotated frame.
-const ObstacleThumbnail = ({id, bg}: {id: number; bg: string}) => {
+///
+/// A failure is not sticky: `version` (the obstacle's status + observation
+/// count, it has no update stamp) changing after a 404 retries once with a
+/// cache-busting query, so a snapshot written after the first miss shows up.
+const ObstacleThumbnail = ({id, bg, version}: {id: number; bg: string; version: string}) => {
     const {t} = useTranslation();
-    const [failed, setFailed] = useState(false);
-    if (failed) {
+    const base = `/api/mowglinext/obstacles/${id}/snapshot`;
+    const [failedVersion, setFailedVersion] = useState<string | null>(null);
+    const [url, setUrl] = useState(base);
+    if (failedVersion !== null && failedVersion !== version) {
+        // Adjust state on a prop change (React's documented render-time pattern).
+        setFailedVersion(null);
+        setUrl(`${base}?v=${encodeURIComponent(version)}`);
+    }
+    if (failedVersion !== null) {
         return <span style={{color: '#bf0000', fontSize: 16, flexShrink: 0, width: 20}}><StopOutlined /></span>;
     }
-    const url = `/api/mowglinext/obstacles/${id}/snapshot`;
     return (
         <a href={url} target="_blank" rel="noreferrer"
             title={t('mapTrackedObstacles.snapshotHint')}
@@ -43,7 +53,7 @@ const ObstacleThumbnail = ({id, bg}: {id: number; bg: string}) => {
             <img src={url} alt={t('mapTrackedObstacles.snapshotAlt', {id})}
                 width={56} height={42}
                 style={{objectFit: 'cover', borderRadius: 4, display: 'block', background: bg}}
-                onError={() => setFailed(true)} />
+                onError={() => setFailedVersion(version)} />
         </a>
     );
 };
@@ -168,7 +178,8 @@ export const TrackedObstaclesPanel = ({obstacles, obstacleAreaIndex, areaNames, 
                             borderLeft: `3px solid ${isSelected ? '#ff4d4f' : '#bf0000'}`,
                             transition: 'background 0.12s ease',
                         }}>
-                            <ObstacleThumbnail id={id} bg={colors.bgElevated} />
+                            <ObstacleThumbnail id={id} bg={colors.bgElevated}
+                                version={`${obs.status ?? ''}:${obs.observation_count ?? ''}`} />
                             <div style={{flex: 1, minWidth: 0}}>
                                 <div style={{fontWeight: 500, fontSize: 13, color: colors.text}}>
                                     {t('mapTrackedObstacles.obstacleLabel', {id})}

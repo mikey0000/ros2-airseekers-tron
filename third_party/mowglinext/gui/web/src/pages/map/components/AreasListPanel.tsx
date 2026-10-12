@@ -43,9 +43,18 @@ export const AreasListPanel = ({areas, onAreaClick, onReorder, selectedId}: Area
                     const cfg = TYPE_CONFIG[item.ftype] ?? TYPE_CONFIG.obstacle;
                     const isSelected = selectedId === item.id;
                     return (
-                        <button
+                        // A div, not a <button>: the row contains the reorder <button>s,
+                        // and a button inside a button is invalid HTML.
+                        <div
                             key={item.id}
+                            role="button"
+                            tabIndex={0}
                             onClick={() => onAreaClick?.(item.id)}
+                            onKeyDown={(e) => {
+                                if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return;
+                                e.preventDefault();
+                                onAreaClick?.(item.id);
+                            }}
                             style={{
                                 display: 'flex',
                                 alignItems: 'center',
@@ -145,7 +154,7 @@ export const AreasListPanel = ({areas, onAreaClick, onReorder, selectedId}: Area
                                     </span>
                                 </span>
                             )}
-                        </button>
+                        </div>
                     );
                 })}
             </div>

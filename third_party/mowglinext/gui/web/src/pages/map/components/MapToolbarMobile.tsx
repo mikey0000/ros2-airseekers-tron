@@ -156,8 +156,11 @@ export const MapToolbarMobile = ({
 
     // 44px minimum touch target on every control in the cluster (Apple/WCAG
     // thumb-reach guideline). Applied via a shared style so size="large" AntD
-    // buttons never fall below the floor.
-    const touchTarget: React.CSSProperties = {minWidth: 44, minHeight: 44};
+    // buttons never fall below the floor. flexShrink 0: the explicit minWidth
+    // replaces flex's min-content floor, so without it the row squeezed labelled
+    // buttons to 44 px and they overlapped instead of scrolling.
+    const touchTarget: React.CSSProperties = {minWidth: 44, minHeight: 44, flexShrink: 0};
+    const group: React.CSSProperties = {flexShrink: 0};
 
     const toolbarStyle: React.CSSProperties = {
         // Anchor to the VIEWPORT (fixed), not the map container — that container
@@ -169,10 +172,10 @@ export const MapToolbarMobile = ({
         // the offset from the safe-area inset so it tracks the nav height on
         // notched phones, with a comfortable gap above the nav pill.
         bottom: "calc(env(safe-area-inset-bottom, 0px) + 100px)",
-        // Leave room on the right for the pinned STOP button so the scrolling
-        // cluster never slides under it.
+        // Leave room on the right for the pinned STOP button (12 + 64 + 8 gap)
+        // so the scrolling cluster never slides under it.
         left: 12,
-        right: 80,
+        right: 84,
         // Above the bottom-nav (zIndex 50) so the nav never paints over it.
         zIndex: 55,
         display: "flex",
@@ -183,6 +186,8 @@ export const MapToolbarMobile = ({
         overflowX: "auto",
         overflowY: "hidden",
         WebkitOverflowScrolling: "touch",
+        scrollbarWidth: "thin",
+        overscrollBehaviorX: "contain",
         alignItems: "center",
         background: colors.glassBackground,
         backdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined,
@@ -201,10 +206,17 @@ export const MapToolbarMobile = ({
         bottom: "calc(env(safe-area-inset-bottom, 0px) + 100px)",
         right: 12,
         zIndex: 56,
-        width: 60,
+        width: 64,
         height: 60,
         borderRadius: 18,
         fontWeight: 700,
+        // Icon above the label so "E-STOP" fits inside the 64 px square instead
+        // of spilling past it as a pill over the toolbar's right end.
+        flexDirection: "column",
+        gap: 2,
+        padding: 0,
+        fontSize: 11,
+        lineHeight: 1.1,
         background: emergency ? colors.bgElevated : colors.danger,
         borderColor: colors.danger,
         color: emergency ? colors.danger : colors.text,
@@ -352,9 +364,9 @@ export const MapToolbarMobile = ({
     if (editMap) {
         return (
             <>
-                <div style={toolbarStyle}>
+                <div style={toolbarStyle} data-testid="map-toolbar-mobile">
                     {/* Save / Cancel */}
-                    <Space.Compact size="large">
+                    <Space.Compact size="large" style={group}>
                         <AsyncButton
                             type="primary"
                             size="large"
@@ -374,7 +386,7 @@ export const MapToolbarMobile = ({
                     </Space.Compact>
 
                     {/* Undo / Redo */}
-                    <Space.Compact size="large">
+                    <Space.Compact size="large" style={group}>
                         <Button
                             size="large"
                             icon={<UndoOutlined />}
@@ -394,7 +406,7 @@ export const MapToolbarMobile = ({
                     </Space.Compact>
 
                     {/* Draw / Add shape / Delete */}
-                    <Space.Compact size="large">
+                    <Space.Compact size="large" style={group}>
                         <Button
                             size="large"
                             icon={<BorderOutlined />}
@@ -431,7 +443,7 @@ export const MapToolbarMobile = ({
                     {/* Path tools (drive-only corridors), same handlers as the
                         desktop MapEditorToolbar. */}
                     {(onDrawPath || onDrawPathToDock || onEditPath) && (
-                        <Space.Compact size="large">
+                        <Space.Compact size="large" style={group}>
                             {onDrawPath && (
                                 <Button
                                     size="large"
@@ -487,7 +499,7 @@ export const MapToolbarMobile = ({
     // Finish/Cancel/Home set so they aren't duplicated.
     return (
         <>
-            <div style={toolbarStyle}>
+            <div style={toolbarStyle} data-testid="map-toolbar-mobile">
                 {/* Primary mission controls first, labelled (the owner could not
                     find an icon-only Home); editing tools sit at the end next to More. */}
                 {!isRecording && onResume && (

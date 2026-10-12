@@ -1238,7 +1238,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     <Layer type={"symbol"} id={"mower"} source={"labels"} layout={{
                         "text-field": ['get', 'title'],
                         "text-rotation-alignment": "auto",
-                        "text-allow-overlap": true,
+                        // Collision-checked: a nested area's label wins over its
+                        // parent's (sortKey = m², smallest placed first).
+                        "text-allow-overlap": false,
+                        "symbol-sort-key": ['get', 'sortKey'],
                         "text-anchor": "top"
                     }} paint={{
                         "text-color": LAYER_COLORS.labelText,
@@ -1348,6 +1351,19 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         );
     }
 
+    // Map: inline = inside the status line (view mode); edit mode hides the follow-up.
+    const missionStopControls = (inline: boolean) => (
+        <MissionStopControls
+            state={highLevelStatus.highLevelStatus.state}
+            stateName={highLevelStatus.highLevelStatus.state_name}
+            subStateName={highLevelStatus.highLevelStatus.sub_state_name}
+            onStart={() => { void mowerActions.onStart(); }}
+            onStartFresh={() => { void mowerActions.onStartFresh(); }}
+            compact={inline}
+            showFollowUp={inline}
+        />
+    );
+
     return (
         <div style={{
             // Full-bleed the map across the AppShell's main padding.
@@ -1419,7 +1435,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     <Layer type={"symbol"} id={"mower"} source={"labels"} layout={{
                         "text-field": ['get', 'title'],
                         "text-rotation-alignment": "auto",
-                        "text-allow-overlap": true,
+                        // Collision-checked: a nested area's label wins over its
+                        // parent's (sortKey = m², smallest placed first).
+                        "text-allow-overlap": false,
+                        "symbol-sort-key": ['get', 'sortKey'],
                         "text-anchor": "top"
                     }} paint={{
                         "text-color": LAYER_COLORS.labelText,
@@ -1697,15 +1716,14 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     Desktop leaves the right 272 px to the areas panel. */}
                 <div style={{position: 'absolute', top: 12, left: isMobile ? 12 : 16, right: isMobile ? 12 : 272,
                     zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, pointerEvents: 'none'}}>
-                    <div style={{pointerEvents: 'auto', maxWidth: '100%'}}>
-                        <MissionStopControls
-                            state={highLevelStatus.highLevelStatus.state}
-                            stateName={highLevelStatus.highLevelStatus.state_name}
-                            subStateName={highLevelStatus.highLevelStatus.sub_state_name}
-                            onStart={() => { void mowerActions.onStart(); }}
-                            onStartFresh={() => { void mowerActions.onStartFresh(); }}
-                        />
-                    </div>
+                    {/* One banner: in view mode the stop / resume controls live inside
+                        the status line (compact follow-up row); edit mode keeps only
+                        Stop and fault banners, no interrupted card over the map. */}
+                    {editMap && (
+                        <div style={{pointerEvents: 'auto', maxWidth: '100%'}}>
+                            {missionStopControls(false)}
+                        </div>
+                    )}
                     {!editMap && (
                         <MissionStatusLine
                             stateName={highLevelStatus.highLevelStatus.state_name}
@@ -1713,6 +1731,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             why={missionProgress?.why}
                             style={{width: isMobile ? '100%' : 'min(560px, 100%)'}}
                         >
+                            {missionStopControls(true)}
                             {isMobile && liveProgress && (
                                 <MowProgressCard compact progress={liveProgress} colors={progressColors}/>
                             )}
@@ -1832,7 +1851,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 )}
                 {/* Desktop: View mode — bottom glass toolbar */}
                 {!isMobile && !editMap && (
-                    <div style={{position: 'absolute', bottom: 12, left: 16, right: 16, zIndex: 10, background: colors.glassBackground, backdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, WebkitBackdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, borderRadius: 18, border: colors.glassBorder, boxShadow: colors.glassShadow, padding: '10px 14px'}}>
+                    <div style={{position: 'absolute', bottom: 12, left: 16, right: 272, zIndex: 10, background: colors.glassBackground, backdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, WebkitBackdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, borderRadius: 18, border: colors.glassBorder, boxShadow: colors.glassShadow, padding: '10px 14px'}}>
                         <MapToolbar
                             manualMode={manualMode}
                             useSatellite={useSatellite}

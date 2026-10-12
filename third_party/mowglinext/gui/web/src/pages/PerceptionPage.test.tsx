@@ -77,7 +77,7 @@ describe("PerceptionPage", () => {
     it("streams every started tile, annotated by default when available", () => {
         render(<PerceptionPage/>);
         startAll();
-        const img = screen.getByAltText("left_oa") as HTMLImageElement;
+        const img = screen.getByAltText("left_oa");
         expect(img.getAttribute("src")).toBe("/api/cameras/left_oa/stream?variant=annotated&quality=50&fps=5");
         expect(screen.getByAltText("right_oa").getAttribute("src")).toBe("/api/cameras/right_oa/stream?quality=50&fps=5");
         expect(screen.getAllByRole("img").filter((i) => i.tagName === "IMG")).toHaveLength(3);
@@ -103,7 +103,7 @@ describe("PerceptionPage", () => {
 
     it("releases the MJPEG connection when a tile stops", () => {
         render(<PerceptionPage/>);
-        const img = screen.getByAltText("left_oa") as HTMLImageElement;
+        const img = screen.getByAltText("left_oa");
         fireEvent.click(screen.getByRole("button", {name: "Stop this stream"}));
         expect(img.isConnected).toBe(false);
         expect(img.getAttribute("src")).toMatch(/^data:image\/gif/);   // request aborted

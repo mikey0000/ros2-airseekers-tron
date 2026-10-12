@@ -12,6 +12,9 @@ type Props = {
     isOverridden?: (key: string) => boolean;
     hasDefault?: (key: string) => boolean;
     onReset?: (key: string) => void;
+    /** Schema/template defaults (useSettingsManager's `defaults`): the yaml is
+     *  sparse, so an unset key must show its default, not Off. */
+    defaults?: Record<string, unknown>;
 };
 
 /**
@@ -36,8 +39,10 @@ export const ObstaclesSection: React.FC<Props> = ({
     isOverridden,
     hasDefault,
     onReset,
+    defaults,
 }) => {
     const { t } = useTranslation();
+    const boolSetting = (key: string) => parseBoolish(values[key] ?? defaults?.[key]) ?? false;
     const fieldLabel = (key: string, label: React.ReactNode) => (
         <SettingFieldLabel
             settingKey={key}
@@ -66,7 +71,7 @@ export const ObstaclesSection: React.FC<Props> = ({
                     <Form.Item label={fieldLabel("obstacle_auto_promote", t("settingsObstacles.autoMarkLabel"))}>
                         <Switch
                             aria-label={t("settingsObstacles.autoMarkLabel")}
-                            checked={parseBoolish(values.obstacle_auto_promote) ?? false}
+                            checked={boolSetting("obstacle_auto_promote")}
                             onChange={(enabled) => onChange("obstacle_auto_promote", enabled)}
                         />
                     </Form.Item>
@@ -81,7 +86,7 @@ export const ObstaclesSection: React.FC<Props> = ({
                     <Form.Item label={fieldLabel("dig_obstacle_enabled", t("settingsObstacles.digAutoPromotion"))}>
                         <Switch
                             aria-label={t("settingsObstacles.digAutoPromotion")}
-                            checked={parseBoolish(values.dig_obstacle_enabled) ?? false}
+                            checked={boolSetting("dig_obstacle_enabled")}
                             onChange={(enabled) => onChange("dig_obstacle_enabled", enabled)}
                         />
                     </Form.Item>
