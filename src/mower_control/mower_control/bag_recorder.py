@@ -25,7 +25,16 @@ bags were recorded by hand with ``ros2 bag record``). This node:
   ``mow_recorder`` process (~35 % of a core while mowing, 2026-10-09);
 * can be switched off/on at runtime: ``~/enable`` (std_srvs/SetBool; the GUI's Data recorder
   switch) stops the child cleanly / restarts it; the choice persists in ``state_file``.
-  ``~/get_state`` (Trigger) returns the same JSON as the latched ``~/status``.
+  ``~/get_state`` (Trigger) returns the same JSON as the latched ``~/status``;
+* low power (``activity_gate``, 2e63426 reworked 2026-10-13): while ``/mission/activity`` is
+  ``docked_idle``/``idle`` and no mow is running (and the mission is not in EMERGENCY) the
+  ring is restarted on the short ``low_power_topics`` set (low-rate state/incident topics,
+  no odometry/fix/costmap/diagnostics) so dock/idle incidents still pin data; an empty list
+  pauses recording instead. This pause is NOT the user's switch: it is never persisted and
+  never overrides a GUI off/on. A mow start (high_level_status leaving IDLE, which the
+  mission publishes before ``/mission/activity``) leaves low power at once and the mow pin
+  opens as soon as the full-profile ring is up (retried every tick). Child stops never
+  block the executor (SIGINT, reaped from the tick; SIGKILL after 15 s).
 
 Rosbag2 choices (rosbag2 0.15.17 in the image, checked 2026-10-09): storage sqlite3 (mcap is
 not installed: ``ros-jazzy-rosbag2-storage-mcap`` would need an image rebuild); preset
@@ -51,7 +60,6 @@ import threading
 import time
 
 from mower_control import bag_ring as br
-from rclpy.qos import DurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
 # Curated (2026-10-09, measured on the mower): the first ring recorded 73 topics, 554 msg/s,
 # and its `ros2 bag record` took 46-53 % of one RK3588 core. rosbag2 Jazzy's cost is per
@@ -113,8 +121,27 @@ DEFAULT_TOPICS = [
 # 'detour' is a routine decision, not an incident (several per mow); the rest are aborts.
 DEFAULT_PIN_KINDS = ['subpath_failed', 'transit_abort', 'follow_abort', 'stuck']
 
-# Activity states that should disable bag recording to save CPU
-LOW_POWER_ACTIVITIES = frozenset(('docked_idle', 'idle', 'charging'))
+# /mission/activity modes that allow the low-power ring (mower_mission activity.LOW_POWER;
+# anything else, including no message yet, is active).
+LOW_POWER_ACTIVITIES = frozenset(('docked_idle', 'idle'))
+# Mission states that keep the full ring even when the activity says idle (activity.py maps
+# EMERGENCY to idle; its aftermath is exactly what an incident pin needs).
+FULL_RING_STATES = frozenset(('EMERGENCY',))
+
+# Low-power ring: low-rate state / command / incident topics only (the command chain is
+# silent when parked). What an incident while docked or idle needs, at a fraction of the
+# full set's cost.
+LOW_POWER_TOPICS = [
+    '/cmd_vel_nav', '/cmd_vel_docking', '/cmd_vel_teleop', '/cmd_vel_bumper',
+    '/cmd_vel_emergency', '/cmd_vel', '/cmd_vel_slew/gate_status', '/estop_request',
+    '/motion_enabled', '/tf_static', '/tilt/status', '/localization/status', '/fix_status',
+    '/behavior_tree_node/high_level_status', '/mission/incident', '/mission/activity',
+    '/supervisor/status', '/battery', '/mower_sensor_info', '/rain',
+    '/hardware_bridge/status', '/hardware_bridge/emergency', '/hardware_bridge/power',
+    '/mower_base/key_pressed', '/dig_stall', '/stuck_event', '/mower_docking/state',
+    '/mower_docking/marker_in_view',
+]
+FULL, LOW = 'full', 'low'
 
 
 def _pdeathsig():
@@ -139,11 +166,18 @@ class RecorderProcess:
         self.restarts = 0
         self.backoff_s = 2.0
         self.next_start = 0.0
+        self.profile = None
+        self.stopping = None         # child sent SIGINT by stop_async, not reaped yet
+        self.stop_deadline = None
 
     def running(self):
         return self.proc is not None and self.proc.poll() is None
 
-    def start(self, cmd_for, now, wall):
+    def busy(self):
+        """A stopped child is still closing its bag (no new child until it is gone)."""
+        return self.stopping is not None
+
+    def start(self, cmd_for, now, wall, profile=FULL):
         name = br.session_name(wall)
         path = os.path.join(self.root, name)
         n = 1
@@ -167,6 +201,7 @@ class RecorderProcess:
             log.close()
         self.session = os.path.basename(path)
         self.started = now
+        self.profile = profile
         return path
 
     def poll_exit(self, now):
@@ -182,8 +217,50 @@ class RecorderProcess:
         self.restarts += 1
         return rc
 
+    def stop_async(self, now, timeout_s=15.0):
+        """SIGINT and return at once; :meth:`poll_stopping` reaps it (SIGKILL after
+        ``timeout_s``). Not a crash: no restart is counted."""
+        p, self.proc = self.proc, None
+        if p is None or p.poll() is not None:
+            return
+        try:
+            p.send_signal(signal.SIGINT)
+        except OSError:
+            return
+        if self.stopping is not None:     # one already closing: wait for both at shutdown
+            self.stop_child(self.stopping, 0.0)
+        self.stopping, self.stop_deadline = p, now + timeout_s
+
+    def poll_stopping(self, now):
+        p = self.stopping
+        if p is None:
+            return
+        if p.poll() is not None:
+            self.stopping = None
+        elif now >= self.stop_deadline:
+            try:
+                p.kill()
+            except OSError:
+                pass
+            self.stop_deadline = now + 5.0
+
+    @staticmethod
+    def stop_child(p, timeout_s):
+        try:
+            if p.poll() is None:
+                p.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait(timeout=5.0)
+        except OSError:
+            pass
+
     def stop(self, timeout_s=15.0):
-        """SIGINT (rosbag2 flushes, compresses the last split, writes metadata.yaml)."""
+        """SIGINT (rosbag2 flushes, compresses the last split, writes metadata.yaml) and wait
+        (shutdown only; the node uses :meth:`stop_async`)."""
+        if self.stopping is not None:
+            self.stop_child(self.stopping, timeout_s)
+            self.stopping = None
         p, self.proc = self.proc, None
         if p is None or p.poll() is not None:
             return
@@ -209,13 +286,13 @@ class RecorderSwitch:
         self.enabled = br.load_enabled(state_file, default)
 
     def set(self, enabled, now):
-        """Returns (changed, persisted)."""
+        """The user's choice. Returns (changed, persisted). Never blocks."""
         enabled = bool(enabled)
         changed = enabled != self.enabled
         self.enabled = enabled
         saved = br.save_enabled(self.state_file, enabled)
         if not enabled:
-            self.rec.stop()
+            self.rec.stop_async(now)
         elif changed:
             self.rec.backoff_s = 2.0
             self.rec.next_start = now      # start at the next tick
@@ -223,7 +300,74 @@ class RecorderSwitch:
 
     def due_start(self, paused, now):
         return self.enabled and not paused and not self.rec.running() \
-            and now >= self.rec.next_start
+            and not self.rec.busy() and now >= self.rec.next_start
+
+
+class LowPowerGate:
+    """Non-persisted low-power state (pure). Low power = ``/mission/activity`` is a
+    low-power mode, no mow is running and the mission is not in a FULL_RING_STATE. A mow
+    start (from high_level_status) wins over a late or stale activity."""
+
+    def __init__(self, enabled=True):
+        self.enabled = bool(enabled)
+        self.activity = None
+        self.state = None
+        self.mow = False
+
+    def on_activity(self, activity):
+        self.activity = str(activity)
+
+    def on_state(self, state):
+        self.state = str(state)
+
+    def set_mow(self, active):
+        self.mow = bool(active)
+
+    @property
+    def low_power(self):
+        return (self.enabled and self.activity in LOW_POWER_ACTIVITIES and not self.mow
+                and self.state not in FULL_RING_STATES)
+
+    def profile(self):
+        return LOW if self.low_power else FULL
+
+
+class RingController:
+    """Which child should run (pure, no ROS): the user's switch decides on/off, the
+    low-power gate the topic profile (``LOW`` with no ``low_topics`` = paused). A child of
+    the wrong profile is stopped without blocking; the right one starts once it is gone."""
+
+    def __init__(self, rec, switch, gate, has_low_topics=True):
+        self.rec = rec
+        self.switch = switch
+        self.gate = gate
+        self.has_low_topics = bool(has_low_topics)
+
+    def wanted(self):
+        """Profile that should be recording now, or None."""
+        if not self.switch.enabled:
+            return None
+        prof = self.gate.profile()
+        if prof == LOW and not self.has_low_topics:
+            return None
+        return prof
+
+    def step(self, now, paused=False):
+        """Returns ``(profile_to_start or None, stopped_profile or None)``."""
+        self.rec.poll_stopping(now)
+        want = self.wanted()
+        stopped = None
+        if self.rec.running() and self.rec.profile != want:
+            stopped = self.rec.profile
+            self.rec.stop_async(now)
+            self.rec.next_start = now        # a profile change is not a crash: no backoff
+        if want is not None and self.switch.due_start(paused, now):
+            return want, stopped
+        return None, stopped
+
+    def mow_ready(self):
+        """The full ring is recording: a pending mow pin can open."""
+        return self.rec.running() and self.rec.profile == FULL
 
 
 def main(args=None):
@@ -231,6 +375,7 @@ def main(args=None):
     from rclpy.node import Node
     from rclpy.executors import ExternalShutdownException
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    DurabilityPolicy = QoSDurabilityPolicy
     from std_msgs.msg import String
     from std_srvs.srv import SetBool, Trigger
 
@@ -270,13 +415,15 @@ def main(args=None):
             dp('stop_after_idle_s', 5.0)
             dp('max_mows', 10)
             dp('mow_max_gb', 2.0)
-            # Activity gating: auto-disable recording in low-power states
+            # Low power (docked_idle/idle): short ring on low_power_topics ([''] = pause).
             dp('activity_gate', True)
+            dp('low_power_topics', LOW_POWER_TOPICS)
             gp = lambda n: self.get_parameter(n).value  # noqa: E731
             self._root = str(gp('root'))
             self._activity_gate = bool(gp('activity_gate'))
-            self._activity = None
-            self._low_power = False
+            self._gate = LowPowerGate(self._activity_gate)
+            self._mow_pending = False
+            self._mow_wait_logged = False
             self._inc_dir = str(gp('incidents_dir'))
             self._crash_dir = str(gp('crash_dir'))
             topics = [t for t in list(gp('topics')) + list(gp('extra_topics')) if t]
@@ -292,11 +439,16 @@ def main(args=None):
                 str(gp('storage_preset'))
             self._compressed = bool(comp)
             polling = int(gp('polling_ms'))
-            self._cmd_for = lambda out: br.record_cmd(  # noqa: E731
-                out, self._topics, split_s, cache, comp, storage, preset, polling)
+            self._low_topics = list(dict.fromkeys(t for t in gp('low_power_topics') if t))
+            self._cmd_for = {
+                prof: (lambda out, _t=topics: br.record_cmd(
+                    out, _t, split_s, cache, comp, storage, preset, polling))
+                for prof, topics in ((FULL, self._topics), (LOW, self._low_topics))}
             self._rec = RecorderProcess(self._root, os.path.join(self._root, 'recorder.log'))
             self._switch = RecorderSwitch(self._rec, str(gp('state_file')),
                                           bool(gp('enabled_default')))
+            self._ring = RingController(self._rec, self._switch, self._gate,
+                                        bool(self._low_topics))
             self._mow_pins = bool(gp('mow_pins'))
             self._mows_dir = str(gp('mows_dir'))
             self._mow = br.MowPinner(prev=int(gp('mow_prev_splits')))
@@ -355,20 +507,39 @@ def main(args=None):
         def _on_hl(self, msg):
             state = getattr(msg, 'state_name', '')
             now = time.monotonic()
+            self._gate.on_state(state)
             self._pin(self._det.on_state(state, now))
-            if self._mow_pins:
-                act = self._mow_sess.update(state, now)
-                if act == 'start':
-                    self._mow_start()
-                elif act == 'stop':
+            act = self._mow_sess.update(state, now)
+            if act == 'start':
+                # The mission publishes this before /mission/activity: leave low power now.
+                self._gate.set_mow(True)
+                if self._mow_pins:
+                    self._mow_pending = True
+                    self._mow_wait_logged = False
+                self._tick()
+            elif act == 'stop':
+                self._gate.set_mow(False)
+                self._mow_pending = False
+                if self._mow_pins:
                     self._mow_stop(state)
 
         # ------------------------------------------------------------ per-mow pins
-        def _mow_start(self):
-            if not self._switch.enabled:
-                self.get_logger().info('bag_recorder: mow started, recording disabled: '
-                                       'no mow bag')
+        def _mow_try_start(self):
+            """Open the pending mow pin once the full ring records (retried every tick)."""
+            if not self._mow_pending:
                 return
+            if not self._ring.mow_ready():
+                if not self._mow_wait_logged:
+                    self._mow_wait_logged = True
+                    self.get_logger().info(
+                        'bag_recorder: mow started, waiting for the full ring%s' % (
+                            '' if self._switch.enabled else
+                            ' (recording disabled via ~/enable: no mow bag unless enabled)'))
+                return
+            self._mow_pending = False
+            self._mow_start()
+
+        def _mow_start(self):
             if self._mow.active:            # the previous mow's last split never closed
                 self._mow.close()
             with self._lock:
@@ -434,6 +605,8 @@ def main(args=None):
         # ------------------------------------------------------------ on/off + state
         def _status(self):
             return {'enabled': self._switch.enabled, 'recording': self._rec.running(),
+                    'profile': self._rec.profile if self._rec.running() else None,
+                    'low_power': self._gate.low_power, 'mow_pending': self._mow_pending,
                     'session': self._rec.session, 'paused_low_disk': self._paused,
                     'ring_bytes': self._ring_bytes, 'free_bytes': self._free,
                     'restarts': self._rec.restarts, 'pending_pins': len(self._pins.pending),
@@ -471,22 +644,12 @@ def main(args=None):
                                              getattr(msg, 'reason', ''), time.monotonic()))
 
         def _on_activity(self, msg):
-            if not self._activity_gate:
-                return
-            activity = str(msg.data)
-            prev_low_power = self._low_power
-            self._activity = activity
-            self._low_power = activity in LOW_POWER_ACTIVITIES
-            if self._low_power != prev_low_power:
-                self.get_logger().warn('bag_recorder: activity=%s low_power=%s' %
-                                       (activity, self._low_power))
-                # Immediately stop/start recording based on activity
-                if self._low_power:
-                    self.get_logger().info('bag_recorder: low power activity -> stopping recording')
-                    self._switch.set(False, time.monotonic())
-                else:
-                    self.get_logger().info('bag_recorder: active activity -> starting recording')
-                    self._switch.set(True, time.monotonic())
+            was = self._gate.low_power
+            self._gate.on_activity(msg.data)
+            if self._gate.low_power != was:
+                self.get_logger().info('bag_recorder: activity=%s -> %s ring' % (
+                    msg.data, 'low-power' if self._gate.low_power else 'full'))
+                self._tick()
 
         def _srv_pin(self, _req, resp):
             path = self._pin(self._det.manual('bag_recorder/pin service', time.monotonic()))
@@ -532,14 +695,19 @@ def main(args=None):
                 except OSError:
                     names = []
                 self._pin(self._det.on_crash_dirs(names, now))
-            due_start = self._switch.due_start(self._paused, now)
+            prof, stopped = self._ring.step(now, self._paused)
+            if stopped:
+                self.get_logger().info('bag_recorder: stopping the %s ring (profile change)'
+                                       % stopped)
             # prune before every (re)start too: never open a session on a disk below the floor
-            if due_start or now - self._last_prune >= self._prune_period:
+            if prof or now - self._last_prune >= self._prune_period:
                 self._last_prune = now
                 self._housekeeping(now)
-            if due_start and not self._paused and self._switch.enabled:
-                path = self._rec.start(self._cmd_for, now, time.time())
-                self.get_logger().info('bag_recorder: recording %s' % path)
+            if prof and not self._paused and self._ring.wanted() == prof:
+                path = self._rec.start(self._cmd_for[prof], now, time.time(), prof)
+                self.get_logger().info('bag_recorder: recording %s (%s, %d topics)' % (
+                    path, prof, len(self._topics if prof == FULL else self._low_topics)))
+            self._mow_try_start()
 
         def _housekeeping(self, now):
             with self._lock:
@@ -572,7 +740,7 @@ def main(args=None):
                 self._prune_incidents()
             if starved and not self._paused:
                 self._paused = True
-                self._rec.stop()
+                self._rec.stop_async(now)
                 self.get_logger().error(
                     'bag_recorder: PAUSED: %.2f GB free on %s < floor %.2f GB and nothing left '
                     'to prune' % (free / 1024 ** 3, self._root, self._min_free / 1024 ** 3))
