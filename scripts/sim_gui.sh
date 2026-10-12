@@ -10,7 +10,8 @@
 # Then open http://localhost:4006. Build first:
 #   DEV_ROS_DOMAIN_ID=90 ./scripts/dev_build.sh build --packages-up-to mower_sim mower_bringup
 #
-# Isolation: every ROS process runs with ROS_LOCALHOST_ONLY=1 and SIM_ROS_DOMAIN_ID (default 90),
+# Isolation: every ROS process runs with ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST + ROS_LOCALHOST_ONLY=1
+# (the latter deprecated on Jazzy) and SIM_ROS_DOMAIN_ID (default 90),
 # never domain 0, so nothing joins the robot's DDS graph over the LAN (2026-10-07: a dev-host
 # test feeder latched a lethal boundary stop on the mower). Ports 4006/8765/8766 bind on this
 # host only; nothing here talks to the mower.
@@ -67,7 +68,7 @@ up() {
   [[ -f "$DIR/maps/mowgli_robot.yaml" ]] || cp "$STACK_ROOT/config/gui/mowgli_robot.yaml.seed" "$DIR/maps/mowgli_robot.yaml"
 
   docker run -d --rm --name "$SIM" --network host \
-    -e ROS_LOCALHOST_ONLY=1 -e ROS_DOMAIN_ID="$DOMAIN" \
+    -e ROS_LOCALHOST_ONLY=1 -e ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST -e ROS_DOMAIN_ID="$DOMAIN" \
     -v "$STACK_ROOT":/work -v "$DIR":"$DIR" -w /work "$IMG" bash -c \
     "source install/setup.bash; exec ros2 launch mower_bringup sim.launch.py world:=$world \
      maps_dir:=$DIR/maps foxglove:=true teleop_relay:=true $*" >/dev/null
