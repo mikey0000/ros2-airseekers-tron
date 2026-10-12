@@ -4,8 +4,10 @@ Publishes
     /fix          sensor_msgs/msg/NavSatFix   (status from NMEA GGA quality + GSA/BESTNAV mode)
     /vel          geometry_msgs/msg/TwistStamped
     /heading      std_msgs/msg/Float32        (degrees, true north, from GPHPR/VTG/RMC)
-    /heading_valid std_msgs/msg/Bool          (true when /heading is the dual-antenna GPHPR
-                                               solution, i.e. a true absolute heading)
+    /heading_valid std_msgs/msg/Bool          (true only while publish_rtk_heading is set AND
+                                               the latest GPHPR is < heading_timeout_s old AND
+                                               reports a fixed RTK baseline; false by default:
+                                               the UM960 is single-antenna)
     /fix_status   std_msgs/msg/String         (human-readable quality/solution summary)
     /nmea         std_msgs/msg/String         (raw ASCII sentences, optional)
     /gps/corrections std_msgs/msg/String      (1 Hz JSON correction-source diagnostics)
@@ -163,6 +165,11 @@ class Um960Node(Node):
         self.declare_parameter("vel_topic", "/vel")
         self.declare_parameter("heading_topic", "/heading")
         self.declare_parameter("heading_valid_topic", "/heading_valid")
+        # /heading_valid may only go true on a confirmed dual-antenna receiver (the UM960 is
+        # single-antenna: any GPHPR heading it gives is motion-derived or invalid).
+        self.declare_parameter("publish_rtk_heading", False)
+        # A GPHPR heading older than this is dropped (/heading falls back to the track).
+        self.declare_parameter("heading_timeout_s", 1.0)
         self.declare_parameter("fix_status_topic", "/fix_status")
         self.declare_parameter("nmea_topic", "/nmea")
         self.declare_parameter("publish_nmea", False)
@@ -227,6 +234,16 @@ class Um960Node(Node):
         self.sane_lon = float(self.get_parameter("sane_lon_limit").value)
         self.config_commands = [str(c) for c in self.get_parameter("config_commands").value]
         publish_nmea = bool(self.get_parameter("publish_nmea").value)
+        self.publish_rtk_heading = bool(self.get_parameter("publish_rtk_heading").value)
+        self.heading_timeout = float(self.get_parameter("heading_timeout_s").value)
+        self._hpr_logged = False
+        if not self.publish_rtk_heading:
+            self.get_logger().info(
+                "publish_rtk_heading: false -> /heading_valid stays false: the UM960 is a "
+                "single-antenna receiver, so a GPHPR heading is motion-derived or invalid, "
+                "not an absolute heading. Set it true only on a confirmed dual-antenna "
+                "receiver (docs/um960.md)."
+            )
         self._init_correction_params()
         self.nmea_topic = str(self.get_parameter("nmea_topic").value)
 
@@ -1108,12 +1125,20 @@ class Um960Node(Node):
         return Float32(data=float(heading) % 360.0)
 
     def _build_heading_valid(self) -> Bool:
-        """True when /heading is the receiver's own dual-antenna (GPHPR) heading.
+        """True only for a fresh, fixed-baseline GPHPR heading on a dual-antenna receiver.
 
-        Only GPHPR is a true absolute heading (valid at rest); the track/course fall-back is
-        just course-over-ground and must not be used as an absolute heading seed.
+        Requires ``publish_rtk_heading`` (off by default: the UM960 is single-antenna), a
+        GPHPR younger than ``heading_timeout_s`` and its quality flag = 4 (RTK fixed). The
+        track/course fall-back is course over ground and never valid.
         """
-        return Bool(data="heading_deg" in self.nmea.fix)
+        fixed = self.nmea.heading_is_fixed(self.heading_timeout)
+        if fixed and not self.publish_rtk_heading and not self._hpr_logged:
+            self._hpr_logged = True
+            self.get_logger().info(
+                "receiver sends a fixed GPHPR heading but publish_rtk_heading is false: "
+                "/heading_valid stays false until a dual-antenna install is confirmed"
+            )
+        return Bool(data=bool(fixed and self.publish_rtk_heading))
 
     def _build_status(self) -> str:
         fix = self.nmea.fix
@@ -1157,6 +1182,9 @@ class Um960Node(Node):
             return
         self._last_publish = now
         with self._lock:
+            # A GPHPR heading is only good while the receiver keeps sending it: never
+            # re-publish one sentence forever (it defeated the consumer's stale check).
+            self.nmea.expire_heading(self.heading_timeout)
             fix_msg = self._build_fix()
             twist_msg = None if fix_msg is None else self._build_twist()
             heading_msg = None if fix_msg is None else self._build_heading()

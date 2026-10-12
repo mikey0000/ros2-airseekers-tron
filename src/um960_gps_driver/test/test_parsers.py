@@ -107,10 +107,63 @@ def test_gsa_and_gsv():
     assert parser.fix["satellites_in_view"] == 11
 
 
-def test_gphpr_heading():
-    parser = NmeaParser()
+class _Clock:
+    def __init__(self):
+        self.t = 100.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_gphpr_heading_legacy_layout_records_status():
+    parser = NmeaParser(clock=_Clock())
     parser.feed(_cs("GPHPR,275.34,1,1.2,-0.8"))
     assert parser.fix["heading_deg"] == pytest.approx(275.34)
+    assert parser.fix["heading_status"] == 1
+    assert not parser.heading_is_fixed(1.0)          # single point, not a fixed baseline
+    parser.feed(_cs("GPHPR,275.34,4,1.2,-0.8"))
+    assert parser.heading_is_fixed(1.0)
+
+
+def test_gnhpr_unicore_layout_with_utc_and_quality():
+    parser = NmeaParser(clock=_Clock())
+    parser.feed(_cs("GNHPR,071208.00,274.50,1.20,-0.80,4,20,0.5,0000"))
+    assert parser.fix["heading_deg"] == pytest.approx(274.5)   # not the UTC field
+    assert parser.fix["heading_status"] == 4
+    assert parser.heading_is_fixed(1.0)
+
+
+@pytest.mark.parametrize("sentence", ["GNHPR,071208.00,274.50,1.20,-0.80,0,0,,",
+                                      "GPHPR,275.34,0,1.2,-0.8"])
+def test_gphpr_status_zero_is_not_a_heading(sentence):
+    parser = NmeaParser(clock=_Clock())
+    parser.feed(_cs("GPHPR,100.0,4,0,0"))
+    parser.feed(_cs(sentence))
+    assert "heading_deg" not in parser.fix          # an invalid HPR clears the old one
+    assert parser.fix["heading_status"] == 0
+    assert not parser.heading_is_fixed(1.0)
+
+
+@pytest.mark.parametrize("sentence", ["GNHPR,071208.00,274.50,1.20,-0.80,,20,0.5,0000",
+                                      "GPHPR,275.34,,1.2,-0.8", "GPHPR,275.34"])
+def test_gphpr_empty_status_is_never_fixed(sentence):
+    parser = NmeaParser(clock=_Clock())
+    parser.feed(_cs(sentence))
+    assert parser.fix["heading_status"] is None
+    assert not parser.heading_is_fixed(1.0)
+
+
+def test_gphpr_heading_is_age_stamped_and_expires():
+    clock = _Clock()
+    parser = NmeaParser(clock=clock)
+    parser.feed(_cs("GNHPR,071208.00,274.50,1.20,-0.80,4,20,0.5,0000"))
+    clock.t += 0.9
+    parser.expire_heading(1.0)
+    assert parser.heading_is_fixed(1.0)
+    clock.t += 0.2                                   # no new HPR for 1.1 s
+    assert not parser.heading_is_fixed(1.0)          # stale even before expiry runs
+    parser.expire_heading(1.0)
+    assert "heading_deg" not in parser.fix
 
 
 def test_unicore_ascii_logs():

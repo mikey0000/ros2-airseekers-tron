@@ -381,7 +381,7 @@ def test_untrusted_dock_yaw_never_seeds():
     assert s.est.source == hl.SOURCE_NONE and not s.est.aligned
 
 
-# ---------------------------------------------------------------- RTK dual-antenna heading
+# ---------------------------------------------------------------- RTK (GPHPR) heading
 def test_enu_from_compass_deg_converts_compass_bearings():
     assert hl.enu_from_compass_deg(0.0) == pytest.approx(math.pi / 2)    # north -> +y
     assert hl.enu_from_compass_deg(90.0) == pytest.approx(0.0)           # east -> +x
@@ -391,53 +391,234 @@ def test_enu_from_compass_deg_converts_compass_bearings():
     assert hl.enu_from_compass_deg(-90.0) == pytest.approx(math.pi)       # wraps
 
 
-def test_rtk_heading_seed_requires_rtk_fixed_and_a_heading():
-    e = hl.HeadingEstimator()
-    e.on_imu(0.1, D(30.0), 0.0)
-    e.on_fix_type(0.2, 2, hl.enu_from_compass_deg(90.0))  # RTK float: not used
-    assert e.source == hl.SOURCE_NONE
-    e.on_fix_type(0.3, 3, None)                           # RTK fixed, no heading: not used
-    assert e.source == hl.SOURCE_NONE
-    e.on_fix_type(0.4, 3, hl.enu_from_compass_deg(90.0))  # RTK fixed + heading: seed
-    assert e.source == hl.SOURCE_RTK and e.aligned
-    # receiver compass 90 deg = east = ENU 0; IMU yaw is +30 deg -> offset must be -30 deg
-    assert math.degrees(hl.wrap(e.offset - D(-30.0))) == pytest.approx(0, abs=1e-6)
+def _spherical_tm_grid_bearing_of_true_north(lat, lon):
+    """Grid bearing (deg) of true north on a spherical transverse Mercator (UTM zone)."""
+    zone = int((lon + 180.0) // 6.0) + 1
+    lon0 = zone * 6.0 - 183.0
+
+    def xy(la, lo):
+        p, dl = math.radians(la), math.radians(lo - lon0)
+        return (math.atanh(math.cos(p) * math.sin(dl)),
+                math.atan2(math.tan(p), math.cos(dl)))
+    x0, y0 = xy(lat, lon)
+    x1, y1 = xy(lat + 1e-5, lon)
+    return math.degrees(math.atan2(x1 - x0, y1 - y0))
 
 
-def test_rtk_heading_blend_is_wrap_safe_near_pi():
-    # Offset near +179 deg and a heading near -179 deg (2 deg apart) must blend towards
-    # +180, never average the raw angles across the branch cut (~ 143 deg here).
-    e = hl.HeadingEstimator()
-    e.on_imu(0.1, 0.0, 0.0)
-    e.on_fix_type(0.2, 3, D(179.0))          # seed the offset at +179 deg
-    assert e.source == hl.SOURCE_RTK
-    e.on_fix_type(0.3, 3, D(-179.0))
-    assert abs(math.degrees(hl.wrap(e.offset - D(179.0)))) < 1.0
-    assert abs(math.degrees(hl.wrap(e.offset - D(143.2)))) > 30.0  # not the raw average
+@pytest.mark.parametrize('lat,lon', [(-36.85, 174.76), (48.1, 11.5), (-36.85, 178.9),
+                                     (51.0, 3.0)])
+def test_grid_convergence_matches_transverse_mercator(lat, lon):
+    gamma = hl.utm_grid_convergence_deg(lat, lon)
+    # grid bearing = true bearing - gamma, so true north (0) sits at grid bearing -gamma
+    assert -gamma == pytest.approx(_spherical_tm_grid_bearing_of_true_north(lat, lon),
+                                   abs=1e-3)
+    assert abs(gamma) < 3.5
 
 
-def test_rtk_heading_reseeds_without_an_offset():
-    e = hl.HeadingEstimator()
-    e.on_fix_type(0.1, 3, hl.enu_from_compass_deg(0.0))   # no IMU yet: heading parked
-    assert e.source == hl.SOURCE_NONE
-    e.on_imu(0.2, D(10.0), 0.0)
-    e.on_fix_type(0.3, 3, hl.enu_from_compass_deg(0.0))   # north -> ENU +pi/2
-    assert e.source == hl.SOURCE_RTK and e.aligned
-    # offset = wrap(pi/2 - 10 deg)
-    assert math.degrees(hl.wrap(e.offset - D(80.0))) == pytest.approx(0, abs=1e-6)
+def test_rtk_heading_enu_applies_baseline_yaw_and_convergence():
+    # Antenna baseline mounted 90 deg clockwise of forward: a GPHPR of 100 deg is a robot
+    # bearing of 10 deg true; convergence 1.5 deg makes it 8.5 deg grid.
+    assert hl.rtk_heading_enu(100.0, 90.0, 1.5) == pytest.approx(hl.enu_from_compass_deg(8.5))
+    assert hl.rtk_heading_enu(10.0) == pytest.approx(hl.enu_from_compass_deg(10.0))
+    g = hl.utm_grid_convergence_deg(-36.85, 174.76)
+    assert g == pytest.approx(1.34, abs=0.05)   # Auckland, zone 60: a real 1.3 deg bias
+    # the convergence is applied: robot facing true north reads grid +g in ENU
+    assert math.degrees(hl.rtk_heading_enu(0.0, 0.0, g)) == pytest.approx(90.0 + g)
 
 
-def test_rtk_heading_cannot_jolt_an_aligned_cog_offset():
-    s = Sim(true_offset_deg=10.0)
+def _rtk_sim(**params):
+    """Sim with COG effectively off (huge window) so only the RTK source can align."""
+    params.setdefault('min_distance', 1e6)
+    params.setdefault('float_min_distance', 1e6)
+    return Sim(true_offset_deg=40.0, **params)
+
+
+def _feed_rtk(s, v, w, seconds, err_deg=0.0, every=5):
+    """Run the sim and hand over one RTK sample (true heading + err) every ``every`` ticks."""
+    used = 0
+    for _ in range(int(round(seconds * 10))):
+        s.run(v, w, 0.1)
+        used += 1
+        if used % every == 0:
+            s.est.on_fix_type(s.t, 3, hl.wrap(s.yaw + D(err_deg)))
+
+
+def test_rtk_seed_at_rest_refused_single_antenna():
+    s = _rtk_sim()
+    s.yaw = D(70.0)
+    _feed_rtk(s, 0.0, 0.0, 5.0)
+    assert s.est.source == hl.SOURCE_NONE and s.est.n_rtk == 0
+    assert 'not driving straight' in s.est.rtk_gate
+
+
+def test_rtk_seed_while_driving_forward_needs_consistent_samples():
+    s = _rtk_sim()
+    s.yaw = D(70.0)
+    s.run(0.3, 0.0, 0.5)
+    s.est.on_fix_type(s.t, 3, hl.wrap(s.yaw))
+    assert s.est.source == hl.SOURCE_NONE           # one sample is not a seed
+    _feed_rtk(s, 0.3, 0.0, 2.0)
+    assert s.est.source == hl.SOURCE_RTK and s.est.aligned
+    assert abs(s.heading_error()) < 0.5
+
+
+def test_rtk_inconsistent_samples_do_not_seed():
+    s = _rtk_sim(rtk_dual_antenna=True)
+    s.run(0.0, 0.0, 0.2)
+    for k, err in enumerate((0.0, 40.0, -40.0, 0.0, 40.0)):
+        s.est.on_fix_type(s.t + 0.01 * k, 3, hl.wrap(s.yaw + D(err)))
+    assert s.est.source == hl.SOURCE_NONE
+
+
+def test_rtk_reversing_refused():
+    s = _rtk_sim()
+    s.yaw = D(70.0)
+    _feed_rtk(s, -0.3, 0.0, 3.0)
+    assert s.est.n_rtk == 0 and s.est.rtk_gate == 'reversing'
+
+
+def test_rtk_turning_refused():
+    s = _rtk_sim()
+    _feed_rtk(s, 0.3, 0.6, 3.0)
+    assert s.est.n_rtk == 0 and 'turning' in s.est.rtk_gate
+
+
+def test_rtk_dual_antenna_seeds_at_rest():
+    s = _rtk_sim(rtk_dual_antenna=True)
+    s.yaw = D(-120.0)
+    _feed_rtk(s, 0.0, 0.0, 2.0)
+    assert s.est.source == hl.SOURCE_RTK and abs(s.heading_error()) < 0.5
+
+
+def test_rtk_requires_rtk_fixed():
+    s = _rtk_sim(rtk_dual_antenna=True)
+    s.run(0.0, 0.0, 0.2)
+    for k in range(5):
+        s.est.on_fix_type(s.t + 0.01 * k, 2, hl.wrap(s.yaw))
+    assert s.est.source == hl.SOURCE_NONE and s.est.rtk_gate == 'not RTK fixed'
+
+
+def test_rtk_vs_file_seed_outlier_gate():
+    s = _rtk_sim(rtk_dual_antenna=True)
+    s.est.load_persisted(s.true_offset, 0.0)        # unverifiable file seed, correct value
+    s.run(0.0, 0.0, 0.2)
+    before = s.est.offset
+    s.est.on_fix_type(s.t, 3, hl.wrap(s.yaw + D(90.0)))   # one bad sample
+    assert s.est.source == hl.SOURCE_FILE and s.est.offset == before
+    for k in range(3):                                     # consistent, agrees with the file
+        s.est.on_fix_type(s.t + 0.01 * (k + 1), 3, hl.wrap(s.yaw + D(1.0)))
+    assert s.est.source == hl.SOURCE_RTK and 'confirms file seed' in s.est.last_event
+    assert abs(s.heading_error() - 1.0) < 0.1
+
+
+def test_rtk_replaces_wrong_file_seed_only_after_consistent_samples():
+    s = _rtk_sim(rtk_dual_antenna=True)
+    s.est.load_persisted(hl.wrap(s.true_offset + D(100.0)), 0.0)  # IMU restarted: file wrong
+    s.run(0.0, 0.0, 0.2)
+    s.est.on_fix_type(s.t, 3, hl.wrap(s.yaw))
+    s.est.on_fix_type(s.t + 0.01, 3, hl.wrap(s.yaw))
+    assert s.est.source == hl.SOURCE_FILE
+    s.est.on_fix_type(s.t + 0.02, 3, hl.wrap(s.yaw))
+    assert s.est.source == hl.SOURCE_RTK and 'replaces file seed' in s.est.last_event
+    assert abs(s.heading_error()) < 0.1
+
+
+def test_rtk_waits_for_the_persisted_continuity_check(tmp_path):
+    path = str(tmp_path / 'h.yaml')
+    s = _rtk_sim(rtk_dual_antenna=True)
+    s.run(0.0, 0.0, 0.2)
+    hl.save_offset(path, s.true_offset, 'cog', 3, now_wall=1000.0, imu_yaw=s.imu_yaw(),
+                   x=0.0, y=0.0)
+    s.est.load_persisted(s.true_offset, s.t, record=hl.load_record(path), now_wall=1010.0)
+    for k in range(5):
+        s.est.on_fix_type(s.t + 0.01 * k, 3, hl.wrap(s.yaw + D(20.0)))
+    assert s.est.source == hl.SOURCE_FILE and s.est.n_rtk == 0
+    assert 'continuity' in s.est.rtk_gate
+    for k in range(5):                               # RTK positions run the check
+        s.est.on_gps(s.t + 0.1 + 0.01 * k, 0.0, 0.0, 0.2)
+    assert s.est.source == hl.SOURCE_FILE_VERIFIED
+    s.est.on_fix_type(s.t + 0.15, 3, hl.wrap(s.yaw + D(20.0)))  # now blended, not replaced
+    assert s.est.source == hl.SOURCE_RTK
+    assert abs(s.heading_error() - 2.0) < 0.1
+
+
+def test_rtk_blends_into_cog_and_rejects_outliers():
+    s = Sim(true_offset_deg=10.0, rtk_dual_antenna=True)
     s.run(0.3, 0.0, 2.2)                       # COG aligned
     assert s.est.source == hl.SOURCE_COG
     before = s.est.offset
-    off = hl.wrap(s.yaw + D(90.0))              # 90 deg wrong in ENU
-    s.est.on_fix_type(s.t, 3, off)
-    assert s.est.source == hl.SOURCE_COG and s.est.offset == before  # rejected by the gate
-    s.est.on_fix_type(s.t, 3, hl.wrap(s.yaw))   # the true heading: agrees, switches to RTK
+    s.est.on_fix_type(s.t, 3, hl.wrap(s.yaw + D(90.0)))          # 90 deg wrong
+    assert s.est.source == hl.SOURCE_COG and s.est.offset == before
+    err0 = s.heading_error()
+    s.est.on_fix_type(s.t, 3, hl.wrap(s.yaw + D(err0 + 10.0)))   # 10 deg off, in the gate
     assert s.est.source == hl.SOURCE_RTK
-    assert abs(s.heading_error()) < 1.0
+    assert s.heading_error() == pytest.approx(err0 + 1.0, abs=0.05)   # blended, alpha 0.1
+
+
+def test_rtk_sustained_consistent_outliers_reseed():
+    s = _rtk_sim(rtk_dual_antenna=True)
+    _feed_rtk(s, 0.0, 0.0, 1.5)
+    assert s.est.source == hl.SOURCE_RTK
+    for k in range(9):
+        s.est.on_fix_type(s.t + 0.01 * k, 3, hl.wrap(s.yaw + D(60.0)))
+    assert abs(s.heading_error()) < 0.5
+    s.est.on_fix_type(s.t + 0.1, 3, hl.wrap(s.yaw + D(60.0)))
+    assert 're-seeded' in s.est.last_event and abs(s.heading_error() - 60.0) < 0.5
+
+
+def test_rtk_blend_is_wrap_safe_near_pi():
+    s = _rtk_sim(rtk_dual_antenna=True)
+    s.run(0.0, 0.0, 0.2)
+    imu = s.imu_yaw()
+    for k in range(3):
+        s.est.on_fix_type(s.t + 0.01 * k, 3, hl.wrap(imu + D(179.0)))
+    assert math.degrees(hl.wrap(s.est.offset - D(179.0))) == pytest.approx(0.0, abs=1e-6)
+    s.est.on_fix_type(s.t + 0.1, 3, hl.wrap(imu + D(-179.0)))
+    assert math.degrees(hl.wrap(s.est.offset - D(179.2))) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_rtk_does_not_block_the_dock_seed():
+    s = _rtk_sim(rtk_dual_antenna=True, dock_yaw_trusted=True)
+    s.yaw = D(-100.0)
+    _feed_rtk(s, 0.0, 0.0, 1.5, err_deg=25.0)      # a wrong (25 deg) RTK seed
+    assert s.est.source == hl.SOURCE_RTK
+    s.est.on_dock_pose(0.0, 0.0, D(-100.0))
+    s.est.on_docked(s.t, True)
+    s.run(0.0, 0.0, 2.5)
+    s.est.on_fix_type(s.t, 3, hl.wrap(s.yaw + D(25.0)))   # docked: RTK refused
+    assert s.est.rtk_gate.startswith('docked')
+    s.est.on_docked(s.t, True)
+    assert s.est.source == hl.SOURCE_DOCK and abs(s.heading_error()) < 0.1
+
+
+def test_persist_throttle():
+    th = hl.PersistThrottle(period=30.0, min_change=D(1.0))
+    rec = (D(10.0), D(5.0), 1.0, 2.0)
+    assert not th.due(0.0, None, 'rtk')
+    assert th.due(0.0, rec, 'rtk')
+    th.saved(0.0, rec, 'rtk')
+    # 1 Hz RTK blends at rest, each a fraction of a degree: no rewrite until the period
+    saves = 0
+    off = D(10.0)
+    for t in range(1, 30):
+        off += D(0.02)
+        r = (off, D(5.0), 1.0, 2.0)
+        if th.due(float(t), r, 'rtk'):
+            th.saved(float(t), r, 'rtk')
+            saves += 1
+    assert saves == 0
+    assert th.due(30.0, (off, D(5.0), 1.0, 2.0), 'rtk')                  # periodic
+    assert th.due(5.0, (D(11.5), D(5.0), 1.0, 2.0), 'rtk')               # real change
+    assert th.due(5.0, (D(10.0), D(5.0), 1.0, 2.0), 'cog')               # source change
+    assert th.due(5.0, (D(10.0), D(5.0), 1.5, 2.0), 'rtk')               # moved 0.5 m
+    assert th.due(5.0, (D(10.0), D(11.0), 1.0, 2.0), 'rtk')              # IMU turned 6 deg
+
+
+def test_rtk_status_fields():
+    s = _rtk_sim()
+    _feed_rtk(s, 0.0, 0.0, 1.0)
+    st = s.est.status(s.t)
+    assert st['rtk_updates'] == 0 and 'not driving straight' in st['rtk_gate']
 
 
 def test_joystick_jitter_does_not_reset_window():
