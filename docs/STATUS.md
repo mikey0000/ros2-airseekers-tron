@@ -208,7 +208,9 @@ limit, and treats critical as an emergency; the monitor also stops on `/cmd_vel_
   `localization:=false`. Datum args unchanged. VIO (`vio:=true`) feeds both filters
   (`ekf_dual_vio.yaml`: odom1 in ekf_node, odom2 in ekf_map; no index gaps).
 - Earth-referenced yaw: the UM960 is single-antenna, so `/heading` is only GPHPR (never sent) or
-  VTG course. The yaw source is the existing `heading_aligner` (COG windows on RTK, dock seed,
+  VTG course. `/heading_valid` is gated off (`publish_rtk_heading: false`, 2026-10-13, B8); the
+  aligner's `rtk` source only blends a fresh, fixed GPHPR while driving straight forward (or at
+  rest with `rtk_dual_antenna`), corrected by `rtk_baseline_yaw_deg` and the UTM convergence. The yaw source is the existing `heading_aligner` (COG windows on RTK, dock seed,
   persisted file; stereo-gyro integration between fixes), fused absolute by both filters.
 - `gps_gate quality_covariance` (`rtk_quality.py`): class from `/fix_status`; fixed keeps the
   receiver sigma (3 cm floor), float x4 with 0.4 m floor, DGPS/single dropped.

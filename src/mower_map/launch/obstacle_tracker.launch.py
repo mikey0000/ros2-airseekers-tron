@@ -19,9 +19,12 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 ARGS = [
     # name, default, description, type
-    ('auto_promote', 'true', 'promote stable clusters into the map keepout', bool),
+    # B2 (review 2026-10-13): auto marking is off by default (owner: not ready) and,
+    # when on, only proposes PENDING keepouts while mowing. These launch defaults win over
+    # config/obstacle_tracker.yaml, so they must match it.
+    ('auto_promote', 'false', 'propose stable clusters as pending keepouts (GUI accept)', bool),
     ('auto_remove', 'true', 'remove a keepout once the object is verifiably gone', bool),
-    ('only_while_mowing', 'false', 'only promote while the high-level state is mowing', bool),
+    ('only_while_mowing', 'true', 'only promote while the high-level state is mowing', bool),
     ('obstacle_step_rate', '1.0', 'tracker update / decision rate (Hz)', float),
     ('obstacle_points_topic', '/stereo_depth/points_map', 'ground-removed stereo cloud', str),
     ('extra_obstacle_points_topic', '/ai/det/obstacle_points_map',

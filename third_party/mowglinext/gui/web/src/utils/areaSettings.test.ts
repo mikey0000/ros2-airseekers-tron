@@ -71,8 +71,10 @@ describe("blade_policy", () => {
 });
 
 describe("transit_variation", () => {
-    it("accepts none/lanes/perimeter/mixed and rejects others", () => {
+    it("accepts none/perimeter/mixed and rejects others (lanes retired)", () => {
         expect(sanitizeAreaSettings({transit_variation: "perimeter"})).toEqual({transit_variation: "perimeter"});
+        expect(sanitizeAreaSettings({transit_variation: "lanes" as never})).toEqual({});
+        expect(invalidAreaSettingKey({transit_variation: "lanes" as never})).toBe("transit_variation");
         expect(sanitizeAreaSettings({transit_variation: "sometimes" as never})).toEqual({});
         expect(invalidAreaSettingKey({transit_variation: "mixed"})).toBeNull();
         expect(invalidAreaSettingKey({transit_variation: "sometimes" as never})).toBe("transit_variation");

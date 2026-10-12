@@ -5,8 +5,10 @@ Kept dependency-free on purpose: the serial port is opened with ``termios`` so n
 ``pyserial`` install is needed on the target image.
 """
 
+import re
 import struct
-from typing import Dict, List, Optional, Tuple
+import time
+from typing import Callable, Dict, List, Optional, Tuple
 
 # --------------------------------------------------------------------------------------
 # Fix-quality tables
@@ -73,6 +75,12 @@ UNICORE_SOL_STATUS = {
 
 # The only status for which a position may be published.
 SOL_COMPUTED = 0
+
+# Unicore GPHPR/GNHPR quality flag (same table as GGA quality): 0 invalid, 1 single point,
+# 2 pseudorange differential, 4 RTK fixed (integer ambiguities fixed on the antenna
+# baseline), 5 RTK float, 6 dead reckoning, 7 manual input, 8 simulation.
+HPR_STATUS_FIXED = 4
+_HPR_UTC = re.compile(r"^\d{6}(\.\d*)?$")
 
 # Unicore binary message ids we care about.
 UNICORE_MSG_VERSION = 0x01
@@ -178,7 +186,10 @@ def sigma_to_covariance(lat_sigma: float, lon_sigma: float, alt_sigma: float) ->
 class NmeaParser:
     """Incremental NMEA 0183 / Unicore ASCII sentence parser."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        # Monotonic clock used to age-stamp samples that must not outlive their sentence
+        # (the GPHPR heading); injectable for tests.
+        self.clock = clock
         self.reset()
 
     def reset(self) -> None:
@@ -359,12 +370,46 @@ class NmeaParser:
             self.fix["hdop_from_gst"] = hdop
 
     def parse_gphpr(self, fields: List[str]) -> None:
-        # Unicore $GPHPR,<heading_deg>,<status>,<pitch_deg>,<roll_deg>*cs
+        """Unicore heading/pitch/roll log.
+
+        Unicore layout: ``$GNHPR,<utc hhmmss.ss>,<heading>,<pitch>,<roll>,<QF>,<sats>,<age>,
+        <station>``; QF uses the GGA quality table (4 = baseline RTK fixed). The older
+        4-field form ``$GPHPR,<heading>,<status>,<pitch>,<roll>`` is still accepted. The
+        sample is age-stamped (``heading_mono``) so the node can drop it when no new HPR
+        arrives; a status-0 (invalid) sentence clears the heading instead of storing it.
+        """
         if len(fields) < 2:
             return
-        heading = _to_float(fields[1])
-        if heading is not None:
-            self.fix["heading_deg"] = heading
+        if len(fields) >= 6 or _HPR_UTC.match(fields[1].strip()):
+            heading = _to_float(fields[2]) if len(fields) > 2 else None
+            status = _to_int(fields[5]) if len(fields) > 5 else None
+        else:
+            heading = _to_float(fields[1])
+            status = _to_int(fields[2]) if len(fields) > 2 else None
+        self.fix["heading_status"] = status
+        if heading is None or status == 0:
+            self.fix.pop("heading_deg", None)
+            self.fix.pop("heading_mono", None)
+            return
+        self.fix["heading_deg"] = heading
+        self.fix["heading_mono"] = self.clock()
+
+    def expire_heading(self, max_age_s: float) -> None:
+        """Forget a GPHPR heading older than ``max_age_s`` (the receiver stopped sending)."""
+        stamp = self.fix.get("heading_mono")
+        if stamp is not None and self.clock() - float(stamp) > max_age_s:
+            self.fix.pop("heading_deg", None)
+            self.fix.pop("heading_mono", None)
+
+    def heading_is_fixed(self, max_age_s: float) -> bool:
+        """True when the latest GPHPR is fresh and reports a fixed (integer) RTK baseline."""
+        stamp = self.fix.get("heading_mono")
+        return (
+            self.fix.get("heading_deg") is not None
+            and stamp is not None
+            and self.clock() - float(stamp) <= max_age_s
+            and self.fix.get("heading_status") == HPR_STATUS_FIXED
+        )
 
     # -- Unicore ASCII logs ----------------------------------------------------------
     def parse_bestnav(self, fields: List[str]) -> None:

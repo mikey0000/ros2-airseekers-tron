@@ -8,9 +8,10 @@ This node closes that gap for *static* obstacles (the kids' toys, balls, tools
 left on the lawn): it clusters the ground-removed stereo depth cloud plus the
 YOLO-ranged detections, tracks the clusters across frames and, once one is
 reliably stable, asks ``/map_server_node/promote_obstacle`` to turn it into a
-permanent keepout polygon. The keepout is rasterised into ``/nav_keepout_mask``
-(which the Nav2 global costmap consumes via the keepout filter) and persisted to
-``areas.dat``, so every subsequent plan routes around it.
+PENDING keepout polygon. The keepout is rasterised into ``/nav_keepout_mask``
+(which the Nav2 global costmap consumes via the keepout filter) for this session
+only; the operator accepts it (then it is persisted to ``areas.dat``) or
+discards it (review 2026-10-13, B2).
 
 Symmetrically, when the object is gone the node removes it again: if the depth
 camera positively sees bare ground in the footprint (``/stereo_depth/clear_points_map``)
@@ -20,14 +21,20 @@ keepout is dropped via ``/map_server_node/remove_obstacle``.
 Algorithm (mower_map.obstacle_tracker_core, ROS-free and unit tested):
 
     cluster  ->  track (associate within association_dist_m)
-             ->  promote gate: min_observations, persistence_age_s, radius
-                 bounds, centroid inside a mowing area
+             ->  promote gate: min_observations, persistence_age_s (minutes,
+                 still in view), radius <= 1 m, centroid inside a mowing area,
+                 no ranged person / animal detection near it, mowing
              ->  remove gate: not a physical point anymore, verified
                  clear/absent for gone_confirmations frames, >= min_lifetime_s
 
-Safety defaults: promotion and removal are both enabled here but every gate is
-conservative; only ``SOURCE_TRACKER`` keepouts can be removed, so hand-drawn
-keepouts are never touched. See config/obstacle_tracker.yaml.
+Safety defaults (owner 2026-10-13: "auto obstacle marking should be false by
+default as it's not ready yet"): ``auto_promote`` is off, so the node only
+tracks and publishes candidates; when switched on, promotions are pending
+proposals (never written straight into areas.dat), only while mowing. Only
+``SOURCE_TRACKER`` keepouts can be removed, so hand-drawn keepouts are never
+touched; stored ``SOURCE_TRACKER`` keepouts are re-adopted at startup so an
+accepted one can still be removed once the object is gone. See
+config/obstacle_tracker.yaml.
 
 In:  ``obstacle_points``  (default /stereo_depth/points_map, + det_range points)
      ``clear_points``     (/stereo_depth/clear_points_map)
@@ -35,6 +42,7 @@ In:  ``obstacle_points``  (default /stereo_depth/points_map, + det_range points)
      ``replan_topic``     (/map_server_node/replan_needed)
      ``high_level_status_topic`` (/behavior_tree_node/high_level_status, for only_while_mowing)
      ``snapshot_topic``   (/vio/right/image_annotated, the det_ros front overlay)
+     ``dynamic_detections_topic`` (/ai/det/detections_ranged, person/animal veto)
      ``~/get_areas_service`` (/map_server_node/get_mowing_area)
 Out: /obstacle_tracker/obstacles  (mowgli_interfaces/ObstacleArray, for map_server + GUI)
      ~/markers                   (visualization_msgs/MarkerArray)
@@ -61,11 +69,28 @@ from sensor_msgs.msg import Image, PointCloud2
 from std_msgs.msg import Bool
 from visualization_msgs.msg import Marker, MarkerArray
 
-from mowgli_interfaces.msg import HighLevelStatus, ObstacleArray, TrackedObstacle
+from mowgli_interfaces.msg import (HighLevelStatus, MapObstacleInfo, ObstacleArray,
+                                   TrackedObstacle)
 from mowgli_interfaces.srv import GetMowingArea, PromoteObstacle, RemoveObstacle
 
-from mower_map.obstacle_snapshot import clear_snapshots, sync_snapshots
-from mower_map.obstacle_tracker_core import TrackerCore, TrackerParams
+from mower_map.obstacle_snapshot import prune_snapshots, snapshot_ids, sync_snapshots
+from mower_map.obstacle_tracker_core import TrackerCore, TrackerParams, keepout_entry
+
+try:  # det_ros / det_range output; without vision_msgs the dynamic-class veto is off
+    from vision_msgs.msg import Detection2DArray
+except ImportError:  # pragma: no cover - always present on the robot image
+    Detection2DArray = None
+
+# det_ros/labels.py BEST_LARGE_CLASSES (best_large_0208.rknn export order), as in
+# mower_vision.guard_logic.DEFAULT_CLASSES: maps a bare integer class_id to a name.
+DET_CLASSES = [
+    'person', 'dog', 'cat', 'sports ball', 'hedgehog', 'rabbit', 'stone', 'hoe',
+    'shovel', 'manhole', 'brick', 'trashbin', 'toycars', 'potted plant', 'cans',
+    'bottle', 'book', 'backpack', 'wood', 'chair', 'trunk', 'dock',
+]
+# Classes that move by themselves (guard_logic DEFAULT_WHITELIST: the living things the
+# model knows). A cluster near one of these is never promoted into a keepout.
+DYNAMIC_CLASSES = ['person', 'dog', 'cat', 'hedgehog', 'rabbit']
 
 PARAMS = {
     'enabled': True,
@@ -79,24 +104,24 @@ PARAMS = {
     'markers_topic': '~/markers',
     'cloud_max_age_s': 1.5,        # drop a cloud older than this (monotonic)
     'high_level_fresh_s': 5.0,     # high-level status older than this = unknown
-    'only_while_mowing': False,    # only promote while HIGH_LEVEL_STATE_AUTONOMOUS
+    'only_while_mowing': True,     # only promote while HIGH_LEVEL_STATE_AUTONOMOUS
     'step_rate': 1.0,              # tracker update / decision rate (Hz)
     'publish_markers': True,
     # --- clustering / tracking ---
     'resolution': 0.1,
     'merge_cells': 2,
     'association_dist_m': 0.5,
-    'persistence_age_s': 3.0,
-    'min_observations': 3,
+    'persistence_age_s': 120.0,    # B2: minutes, never a person standing still
+    'min_observations': 10,
     'min_obstacle_radius_m': 0.05,
-    'max_obstacle_radius_m': 5.0,
+    'max_obstacle_radius_m': 1.0,
     'det_radius_m': 0.15,
     'polygon_inflation_m': 0.05,
     'polygon_steps': 12,
     'require_inside_mowing_area': True,
     'max_tracks': 200,
     # --- auto promotion / removal ---
-    'auto_promote': True,
+    'auto_promote': False,         # owner 2026-10-13: not ready -> off by default
     'auto_remove': True,
     'min_lifetime_s': 5.0,
     'gone_confirmations': 4,
@@ -106,6 +131,16 @@ PARAMS = {
     'clear_radius_m': 0.4,
     'transient_timeout_s': 30.0,
     'max_track_drift_m': 0.4,
+    # --- dynamic-class veto (B2): people / animals are never promoted ---
+    # Ranged det_range detections (base_link positions) of these classes, put into the map
+    # frame with the latest odometry; a track within dynamic_veto_radius_m of one is never
+    # promoted. An unranged one blocks every promotion for dynamic_memory_s. '' = off.
+    'dynamic_detections_topic': '/ai/det/detections_ranged',
+    'dynamic_classes': list(DYNAMIC_CLASSES),
+    'det_classes': list(DET_CLASSES),
+    'dynamic_min_score': 0.3,
+    'dynamic_memory_s': 10.0,
+    'dynamic_veto_radius_m': 1.0,
     # --- map_server plumbing ---
     'promote_service': '/map_server_node/promote_obstacle',
     'remove_service': '/map_server_node/remove_obstacle',
@@ -136,7 +171,7 @@ _CORE_KEYS = (
     'require_inside_mowing_area', 'max_tracks', 'auto_promote', 'auto_remove',
     'min_lifetime_s', 'gone_confirmations', 'verify_distance_m', 'verify_fov_deg',
     'present_radius_m', 'clear_radius_m', 'transient_timeout_s',
-    'max_track_drift_m',
+    'max_track_drift_m', 'dynamic_veto_radius_m',
 )
 
 
@@ -163,6 +198,33 @@ def cloud_xy(msg: PointCloud2) -> np.ndarray:
     y = raw[:, offs['y']:offs['y'] + 4].copy().view('<f4').reshape(-1).astype(float)
     out = np.column_stack((x, y))
     return out[np.isfinite(out).all(axis=1)]
+
+
+def dynamic_label(class_id, classes) -> str:
+    """det_ros publishes class names; a bare integer index maps through ``classes``."""
+    cid = str(class_id).strip()
+    if cid.isdigit():
+        idx = int(cid)
+        if 0 <= idx < len(classes):
+            return str(classes[idx]).strip().lower()
+    return cid.lower()
+
+
+def tracker_keepouts(areas_by_index):
+    """``{area_index: MapArea}`` -> ``[(area_index, cx, cy, radius, wanted_id)]`` of the
+    stored SOURCE_TRACKER keepouts (pending or accepted) of the mowing areas."""
+    out = []
+    for i, a in sorted(areas_by_index.items()):
+        if a.is_navigation_area:
+            continue
+        for j, poly in enumerate(a.obstacles):
+            info = a.obstacle_info[j] if j < len(a.obstacle_info) else None
+            if info is None or int(info.source) != MapObstacleInfo.SOURCE_TRACKER:
+                continue
+            entry = keepout_entry(i, [(p.x, p.y) for p in poly.points], info.name)
+            if entry is not None:
+                out.append(entry)
+    return out
 
 
 def yaw_from_quaternion(q) -> float:
@@ -195,6 +257,8 @@ class ObstacleTrackerNode(Node):
         self._robot_pose = None            # (x, y, yaw)
         self._high_state = None            # HighLevelStatus.state
         self._high_time = -1e9
+        self._dynamic = []                 # [(monotonic, x, y)] ranged person/animal, map
+        self._dynamic_unranged_time = -1e9
 
         # mowing areas: (area_index, name, polygon)
         self._areas = ()
@@ -215,6 +279,11 @@ class ObstacleTrackerNode(Node):
         self.create_subscription(Bool, self.p('replan_topic'), self._on_replan, 10)
         self.create_subscription(HighLevelStatus, self.p('high_level_status_topic'),
                                  self._on_high_level, 10)
+        if self.p('dynamic_detections_topic') and Detection2DArray is not None:
+            self.create_subscription(Detection2DArray, self.p('dynamic_detections_topic'),
+                                     self._on_detections, 10)
+        elif self.p('dynamic_detections_topic'):
+            self.get_logger().warn('vision_msgs missing: dynamic-class promotion veto off')
 
         # Per-obstacle snapshots: keep the latest whole annotated front frame
         # (raw buffer only) and JPEG-encode it once per new cluster.
@@ -222,13 +291,18 @@ class ObstacleTrackerNode(Node):
         self._snapshot_frame = None       # (monotonic, bytes, encoding, w, h, step)
         self._snapshot_enabled = (bool(self.p('snapshot_enabled'))
                                   and bool(self.p('snapshot_topic')))
+        # Snapshots of keepouts accepted before a restart are kept (B2): new ids start
+        # above every file on disk; files without a re-adopted track are pruned once the
+        # first area fetch has re-adopted the stored SOURCE_TRACKER keepouts.
+        self._snapshots_pruned = False
         if self._snapshot_enabled:
-            cleared = clear_snapshots(self.p('snapshot_dir'))
+            on_disk = snapshot_ids(self.p('snapshot_dir'))
+            self.core.reserve_ids(max(on_disk) + 1 if on_disk else 1)
             self.create_subscription(Image, self.p('snapshot_topic'),
                                      self._on_snapshot_frame, qos)
             self.get_logger().info(
-                'obstacle snapshots: %s -> %s (cleared %d stale)'
-                % (self.p('snapshot_topic'), self.p('snapshot_dir'), cleared))
+                'obstacle snapshots: %s -> %s (%d kept from before)'
+                % (self.p('snapshot_topic'), self.p('snapshot_dir'), len(on_disk)))
 
         self._obs_pub = self.create_publisher(ObstacleArray, self.p('obstacles_topic'), 1)
         self._marker_pub = self.create_publisher(MarkerArray, self.p('markers_topic'), 1)
@@ -240,9 +314,11 @@ class ObstacleTrackerNode(Node):
         self.create_timer(1.0 / max(0.1, float(self.p('step_rate'))), self._on_step)
         self._replan_refresh_cooldown = 0.0
         self.get_logger().info(
-            'obstacle_tracker up: promote=%s remove=%s, obstacle cloud %s, clear %s'
-            % (self.p('auto_promote'), self.p('auto_remove'),
-               self.p('obstacle_points_topic'), self.p('clear_points_topic') or 'off'))
+            'obstacle_tracker up: promote=%s (pending, only_while_mowing=%s) remove=%s, '
+            'obstacle cloud %s, clear %s, dynamic veto %s'
+            % (self.p('auto_promote'), self.p('only_while_mowing'), self.p('auto_remove'),
+               self.p('obstacle_points_topic'), self.p('clear_points_topic') or 'off',
+               self.p('dynamic_detections_topic') or 'off'))
 
     # ------------------------------------------------------------------
     def p(self, name):
@@ -307,6 +383,39 @@ class ObstacleTrackerNode(Node):
         self._high_state = int(msg.state)
         self._high_time = time.monotonic()
 
+    def _on_detections(self, msg):
+        """Ranged person / animal detections -> map-frame veto points. det_range tags a
+        ranged detection with its base_link position in results[0].pose (covariance[0]
+        > 0); an unranged one blocks every promotion for dynamic_memory_s."""
+        now = time.monotonic()
+        dyn = {str(c).strip().lower() for c in (self.p('dynamic_classes') or [])}
+        classes = list(self.p('det_classes') or [])
+        min_score = float(self.p('dynamic_min_score'))
+        for det in msg.detections:
+            if not det.results:
+                continue
+            best = max(det.results, key=lambda r: r.hypothesis.score)
+            if float(best.hypothesis.score) < min_score:
+                continue
+            if dynamic_label(best.hypothesis.class_id, classes) not in dyn:
+                continue
+            pose = det.results[0].pose
+            ranged = len(pose.covariance) > 0 and pose.covariance[0] > 0.0
+            if not ranged or self._robot_pose is None:
+                self._dynamic_unranged_time = now
+                continue
+            rx, ry, ryaw = self._robot_pose
+            bx, by = float(pose.pose.position.x), float(pose.pose.position.y)
+            c, s = math.cos(ryaw), math.sin(ryaw)
+            self._dynamic.append((now, rx + c * bx - s * by, ry + s * bx + c * by))
+
+    def _dynamic_points(self, now):
+        keep = float(self.p('dynamic_memory_s'))
+        self._dynamic = [d for d in self._dynamic if now - d[0] <= keep][-200:]
+        if not self._dynamic:
+            return np.empty((0, 2))
+        return np.array([(x, y) for _, x, y in self._dynamic], dtype=float)
+
     def _on_snapshot_frame(self, msg):
         # Copy the raw buffer; the JPEG is encoded lazily (once per new cluster)
         # so the idle annotated feed only costs this one copy per frame.
@@ -314,6 +423,8 @@ class ObstacleTrackerNode(Node):
                                 int(msg.width), int(msg.height), int(msg.step))
 
     def _promotion_allowed(self, now):
+        if now - self._dynamic_unranged_time <= float(self.p('dynamic_memory_s')):
+            return False   # a person / animal in view we could not place: hold off
         if not bool(self.p('only_while_mowing')):
             return True
         if now - self._high_time > float(self.p('high_level_fresh_s')):
@@ -331,11 +442,7 @@ class ObstacleTrackerNode(Node):
 
     def _request_area(self, idx):
         if idx > 500:  # paranoia: map_server keeps answering success
-            self._areas = tuple(sorted(
-                (i, a.name, [(pt.x, pt.y) for pt in a.area.points])
-                for i, a in self._areas_acc.items() if not a.is_navigation_area))
-            self._areas_time = time.monotonic()
-            self._areas_inflight = False
+            self._finish_areas()
             return
         req = GetMowingArea.Request()
         req.index = int(idx)
@@ -351,16 +458,34 @@ class ObstacleTrackerNode(Node):
             self._areas_inflight = False
             return
         if resp is None or not resp.success:
-            self._areas = tuple(sorted(
-                (i, a.name, [(pt.x, pt.y) for pt in a.area.points])
-                for i, a in self._areas_acc.items() if not a.is_navigation_area))
-            self._areas_time = time.monotonic()
-            self._areas_inflight = False
+            self._finish_areas()
             self.get_logger().debug('mowing areas: %s'
                                     % ', '.join('%d:%s' % (i, n) for i, n, _ in self._areas))
             return
         self._areas_acc[idx] = resp.area
         self._request_area(idx + 1)
+
+    def _finish_areas(self):
+        self._areas = tuple(sorted(
+            (i, a.name, [(pt.x, pt.y) for pt in a.area.points])
+            for i, a in self._areas_acc.items() if not a.is_navigation_area))
+        self._areas_time = time.monotonic()
+        self._areas_inflight = False
+        # B2: re-adopt stored SOURCE_TRACKER keepouts (accepted before a restart, or a
+        # pending one after a tracker respawn) so they can still be auto-removed.
+        keepouts = tracker_keepouts(self._areas_acc)
+        adopted = self.core.adopt_keepouts(keepouts, time.monotonic())
+        if adopted:
+            self.get_logger().info('re-adopted %d auto-marked keepout(s): #%s'
+                                   % (len(adopted), ', #'.join(str(i) for i in adopted)))
+        if self._snapshot_enabled and not self._snapshots_pruned:
+            live = {t.id for t in self.core.tracks}
+            on_disk = snapshot_ids(self.p('snapshot_dir'))
+            self._snapshot_ids |= on_disk & live      # kept: no re-capture
+            removed = prune_snapshots(self.p('snapshot_dir'), live)
+            self._snapshots_pruned = True
+            self.get_logger().info('obstacle snapshots: kept %d, pruned %d stale'
+                                   % (len(on_disk & live), removed))
 
     # -- service calls --------------------------------------------------
     def _send_promote(self, track_id):
@@ -375,7 +500,8 @@ class ObstacleTrackerNode(Node):
         req = PromoteObstacle.Request()
         req.area_index = int(t.area_index)
         req.obstacle_id = int(t.id)
-        req.name = str(self.p('obstacle_name'))
+        # '#<id>' lets a restart re-adopt the keepout under the same id (its snapshot)
+        req.name = '%s #%d' % (self.p('obstacle_name'), t.id)
         fut = self._promote_cli.call_async(req)
         fut.add_done_callback(lambda f, tid=track_id: self._on_promote(f, tid))
 
@@ -389,7 +515,8 @@ class ObstacleTrackerNode(Node):
             return
         if resp is not None and resp.success:
             self.core.confirm_promoted(track_id, time.monotonic())
-            self.get_logger().info('auto-promoted obstacle #%d: %s' % (track_id, resp.message))
+            self.get_logger().info('auto-proposed obstacle #%d (pending review): %s'
+                                   % (track_id, resp.message))
         else:
             # e.g. map_server had not yet seen the snapshot, or centroid now in
             # a nav area: un-flag so the next step retries.
@@ -449,7 +576,8 @@ class ObstacleTrackerNode(Node):
 
         result = self.core.step(obstacle_pts, now, self._robot_pose, clear_pts, self._areas,
                                 obstacle_fresh=obstacle_fresh, clear_fresh=clear_fresh,
-                                allow_promote=self._promotion_allowed(now))
+                                allow_promote=self._promotion_allowed(now),
+                                dynamic_points=self._dynamic_points(now))
 
         self._publish_tracks(now)
         self._update_snapshots(now)

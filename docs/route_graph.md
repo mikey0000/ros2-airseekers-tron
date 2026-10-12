@@ -123,16 +123,21 @@ Each area has a setting `transit_variation` (area settings, GUI area form):
 
 | Value | Effect on each run |
 |---|---|
-| `none` | Always the base route. |
-| `lanes` (default) | Path legs are shifted sideways inside the drawn band, cycling through 0, +a, -a, +a/2 and -a/2, where a = band half width - 0.29 - 0.03. In-area pieces of 2 m or more get a mid waypoint shifted sideways, cycling through 0, + and -, by up to 0.5 m or 15 % of the piece. |
+| `none` (default) | Always the base route. |
 | `perimeter` | In-area legs cycle through the direct leg and the inset-perimeter ring (clearance + 0.05 m inset), clockwise and counter-clockwise. A ring variant is used only if it is no longer than `perimeter_max_factor` (2) times the direct leg. |
-| `mixed` | Run k % 3 picks the base route, lanes or perimeter. |
+| `mixed` | Even runs take the base route, odd runs the perimeter variants (index k // 2). |
 
-For paths, a = band half width - robot half width 0.29 - margin 0.03:
-- A 0.7 m band gives 0.03 m, below the 0.05 m minimum, so it has no lanes.
-- A 1.5 m band allows lanes of ±0.43 m.
-- The offset tapers to zero over the first and last metre, so a path is still entered and
-  left exactly at its ends and junctions.
+Path legs are never varied: a transit follows a drawn path down its centreline (owner
+objective). The former `lanes` value (2026-10-09..10-13) shifted path legs sideways by up
+to a = band half width - robot half width 0.29 - margin 0.03, and in-area pieces by up to
+0.5 m. It was removed on 2026-10-13 because on the path side it only ever worked against
+centring:
+- 0.7 m bands (every path on the owner's map, field 2026-10-08 and all sim maps): a =
+  0.03 m, below the 0.05 m minimum, so it never moved;
+- 1.0 m band: a = 0.18 m (half lane 0.09 m), 1.5 m band: a = 0.43 m (0.215 m), always
+  off-centre, and with MPPI corner cutting able to leave the band.
+A stored `lanes` is migrated to `none` when map_server loads `area_settings.yaml` (one
+warning line per entry); the GUI and its API no longer offer or accept it.
 
 Every variant keeps the hard rules:
 - the robot centre stays in the band or keeps the clearance in the area;
@@ -147,8 +152,8 @@ mow angles) on every mission start and passes it as `PlanRoute.variation`. Run 0
 route. `route_variation: false` always sends 0. map_server reads each area's setting, logs
 the variant used and returns it in `PlanRoute.variant`.
 
-Sim on the v4 map (garden world without the scripted person, domain 96, default `lanes`;
-both paths are 0.7 m bands, so they have no lanes):
+Sim on the v4 map (garden world without the scripted person, domain 96, then-default
+`lanes`; both paths are 0.7 m bands, so they had no lanes):
 
 | Run | Variant | Lawn hop x at y = -2.5 / -3.5 / -4.5 | Outside every polygon |
 |---|---|---|---|
@@ -158,6 +163,8 @@ both paths are 0.7 m bands, so they have no lanes):
 
 All outside samples are at Path 2's sharp bends (MPPI), not on the varied legs. Between runs
 1 and 2 the tracks are on average 0.43 m apart on the lawn hop and 0.49 m apart in area 1.
+(Historical: these shifts were the in-area half of `lanes`, removed with it on 2026-10-13;
+`perimeter` / `mixed` are the remaining in-area variation.)
 
 Run 1 docked again in the same container, then ran mission 2. That mission crawled (7.5 m in
 440 s) because the host load average was 17 to 30 from other work, so the stereo cloud went

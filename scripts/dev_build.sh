@@ -29,7 +29,7 @@ print(next(m['digest'] for m in d['manifests'] if m['platform'].get('os')=='linu
 fi
 # Host networking + default domain 0 put dev-host test nodes on the robot's DDS graph over the
 # LAN (2026-10-07: a test feeder's /odometry/filtered_map latched a lethal boundary stop).
-run() { docker run --rm -i ${TTY:+-t} --network host -e ROS_LOCALHOST_ONLY=1 -e ROS_DOMAIN_ID="${DEV_ROS_DOMAIN_ID:-77}" -v "$STACK_ROOT":/work -w /work "$IMG" bash -c "source /opt/ros/jazzy/setup.bash; $*"; }
+run() { docker run --rm -i ${TTY:+-t} --network host -e ROS_LOCALHOST_ONLY=1 -e ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST -e ROS_DOMAIN_ID="${DEV_ROS_DOMAIN_ID:-77}" -v "$STACK_ROOT":/work -w /work "$IMG" bash -c "source /opt/ros/jazzy/setup.bash; $*"; }
 # A build/ tree left from another ROS distro (e.g. the Humble -> Jazzy move) pins
 # /opt/ros/humble paths in its CMakeCache (gtest_vendor, FastRTPS) and fails configure
 # inside this image. Stale artifacts are unusable across a distro/ABI change: wipe and

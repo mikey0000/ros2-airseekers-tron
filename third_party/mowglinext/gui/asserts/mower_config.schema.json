@@ -782,9 +782,9 @@
         },
         "obstacle_auto_promote": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "title": "Automatically mark obstacles",
-          "description": "Turn reliably-detected stereo/YOLO obstacles (toys, balls, tools left on the lawn) into permanent keepout polygons on the map. Off = nothing is added automatically; live obstacle avoidance still runs (the costmaps keep marking and the robot keeps skirting). Existing auto-marked obstacles are still removed once the object is gone. Applied live on save and at startup."
+          "description": "Experimental (off by default). While mowing, propose reliably-detected static stereo/YOLO obstacles (toys, balls, tools left on the lawn, seen for minutes, at most 1 m across, never near a detected person or animal) as pending keepouts that you accept or discard; nothing is saved to the map without your approval. Off = nothing is proposed; live obstacle avoidance still runs (the costmaps keep marking and the robot keeps skirting). Existing auto-marked obstacles are still removed once the object is gone. Applied live on save and at startup."
         },
         "obstacle_margin": {
           "type": "number",

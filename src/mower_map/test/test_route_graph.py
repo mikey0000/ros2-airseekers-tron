@@ -555,7 +555,7 @@ def _inside_all(route, areas):
     return ok
 
 
-@pytest.mark.parametrize('mode', ['none', 'lanes', 'perimeter', 'mixed'])
+@pytest.mark.parametrize('mode', ['none', 'perimeter', 'mixed'])
 def test_variation_is_deterministic_and_inside(mode):
     areas, dock = _sim_v4()
     g = rg.RouteGraph(areas, dock)
@@ -576,24 +576,21 @@ def test_variation_is_deterministic_and_inside(mode):
         assert len(seen) >= 2                                          # the line does vary
 
 
-def test_lane_offsets_clipped_to_the_band():
-    """A 2 m wide drawn path: lanes of up to 1.0 - 0.29 - 0.03 = 0.68 m; every pose keeps
-    the robot's half width inside the band. A 0.7 m band (0.03 m) has no lanes."""
+def test_path_legs_always_follow_the_centreline():
+    """The 'lanes' variation was removed (2026-10-13, owner: transits follow the drawn
+    path down its centre). Lane offset = band half width - 0.29 - 0.03: 0.03 m on the
+    owner's 0.7 m bands (below the 0.05 m minimum: it never moved), 0.18 / 0.43 m on 1.0 /
+    1.5 m bands (only ever off-centre). Every mode now keeps a path leg on its centreline,
+    and a stale 'lanes' mode is ignored."""
     lawn = core.Area('lawn', [(-1, -6), (19, -6), (19, 6), (-1, 6)])
-    wide = _path('wide', [(0.0, 0.0), (15.0, 0.0)], w=2.0)
-    g = rg.RouteGraph([lawn, wide], None)
-    offs = []
-    for k in range(5):
-        r = g.plan((0.0, 0.0, 0.0), (15.0, 0.0, 0.0), k, {0: 'lanes', 1: 'lanes'})
-        assert isinstance(r, rg.Route)
-        ys = [abs(p[1]) for p in r.poses]
-        assert max(ys) <= 1.0 - 0.29 + 1e-6
-        offs.append(round(max(p[1] for p in r.poses) + min(p[1] for p in r.poses), 2))
-    assert len(set(offs)) >= 3                                         # 0, +a, -a ...
-    narrow = _path('narrow', [(0.0, 0.0), (15.0, 0.0)], w=0.7)
-    g = rg.RouteGraph([lawn, narrow], None)
-    r = g.plan((0.0, 0.0, 0.0), (15.0, 0.0, 0.0), 1, {0: 'lanes', 1: 'lanes'})
-    assert max(abs(p[1]) for p in r.poses) < 1e-6
+    for w in (0.7, 1.0, 1.5, 2.0):
+        wide = _path('wide', [(0.0, 0.0), (15.0, 0.0)], w=w)
+        g = rg.RouteGraph([lawn, wide], None)
+        for mode in ('none', 'perimeter', 'mixed', 'lanes'):
+            for k in range(5):
+                r = g.plan((0.0, 0.0, 0.0), (15.0, 0.0, 0.0), k, {0: mode, 1: mode})
+                assert isinstance(r, rg.Route)
+                assert max(abs(p[1]) for p in r.poses) < 1e-6, (w, mode, k)
 
 
 def test_perimeter_variant_bounded_and_both_directions():
@@ -614,3 +611,49 @@ def test_perimeter_variant_bounded_and_both_directions():
     ccw = g._perimeter([(2.0, 1.5), (8.0, 1.5)], reg, True)
     assert cw and ccw
     assert rg._polyline_length(ccw) < rg._polyline_length(cw)          # ccw: along y = 0.4
+
+
+# ------------------------------------------- B7 (review 2026-10-13): keepouts on paths
+
+def _keepout_map(obstacle):
+    """Two lawns joined only by a 1 m wide drawn path along y = 0 (x 0 .. 12), and a
+    third lawn the path does not touch, which holds ``obstacle`` (keepouts / no-go zones
+    live in mowing areas; the path band runs across it)."""
+    west = core.Area('west', [(-6.0, -3.0), (0.5, -3.0), (0.5, 3.0), (-6.0, 3.0)])
+    east = core.Area('east', [(11.5, -3.0), (18.0, -3.0), (18.0, 3.0), (11.5, 3.0)])
+    holder = core.Area('holder', [(3.0, -40.0), (9.0, -40.0), (9.0, -34.0), (3.0, -34.0)],
+                       obstacles=[obstacle] if obstacle is not None else [])
+    pth = _path('bridge', [(0.0, 0.0), (12.0, 0.0)], w=1.0)
+    return [west, east, holder, pth]
+
+
+def test_obstacle_across_path_band_blocks_the_leg():
+    """A keepout drawn across the band: the centreline piece within clearance_m of it is
+    dropped, so the path no longer joins the two lawns (the route is refused and the
+    mission falls back to Nav2, which carries the keepout mask)."""
+    free = rg.RouteGraph(_keepout_map(None), None).plan((-3.0, 0.0, 0.0), (15.0, 0.0, 0.0))
+    assert isinstance(free, rg.Route), free
+    assert any(lg['kind'] == rg.PATH for lg in free.legs)
+    g = rg.RouteGraph(_keepout_map(_box(6.0, 0.0, 0.4)), None)
+    pth = g._path_of(3)
+    assert len(pth.blocked) == 1
+    s0, s1 = pth.blocked[0]
+    assert 6.0 - 0.4 - CLR - 0.06 <= s0 <= 6.0 - 0.4 - CLR + 1e-6
+    assert 6.0 + 0.4 + CLR - 1e-6 <= s1 <= 6.0 + 0.4 + CLR + 0.06
+    route = g.plan((-3.0, 0.0, 0.0), (15.0, 0.0, 0.0))
+    assert isinstance(route, str) and 'no route' in route, route
+    # no path edge reaches into the blocked stretch
+    for e in g.edges:
+        if e.kind == rg.PATH:
+            xs = [p[0] for p in e.pts]
+            assert max(xs) <= s0 + 1e-6 or min(xs) >= s1 - 1e-6, e.pts
+
+
+def test_obstacle_beside_path_band_does_not_block():
+    """A keepout next to the band but further than clearance_m from the centreline
+    leaves the path leg intact."""
+    g = rg.RouteGraph(_keepout_map(_box(6.0, 1.5, 0.4)), None)   # edge 1.1 m off
+    assert g._path_of(3).blocked == []
+    route = g.plan((-3.0, 0.0, 0.0), (15.0, 0.0, 0.0))
+    assert isinstance(route, rg.Route), route
+    assert any(lg['kind'] == rg.PATH and lg['length'] > 10.0 for lg in route.legs)

@@ -16,7 +16,8 @@ export const OBSTACLE_DETECTIONS = ["none", "standard", "sensitive"] as const;
 export type ObstacleDetection = typeof OBSTACLE_DETECTIONS[number];
 export const BLADE_POLICIES = ["continuous", "conservative"] as const;
 export type BladePolicy = typeof BLADE_POLICIES[number];
-export const TRANSIT_VARIATIONS = ["none", "lanes", "perimeter", "mixed"] as const;
+// "lanes" retired 2026-10-13: path legs always follow the drawn centreline.
+export const TRANSIT_VARIATIONS = ["none", "perimeter", "mixed"] as const;
 export type TransitVariation = typeof TRANSIT_VARIATIONS[number];
 /** Slope-aware mow angle (terrain memory; only used when mow_angle_deg is auto). */
 export const SLOPE_MODES = ["off", "auto", "contour", "updown"] as const;
@@ -91,7 +92,7 @@ export const AREA_SETTINGS_DEFAULTS: AreaSettings = {
     turn_type: "auto",
     obstacle_detection: "standard",
     blade_policy: "continuous",
-    transit_variation: "lanes",
+    transit_variation: "none",
     slope_mode: "off",
     slope_contour_above_deg: 10,
 };

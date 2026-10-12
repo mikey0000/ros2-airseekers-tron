@@ -9,11 +9,19 @@ Nav2 steers with a heading that can be off by anything up to 180 deg.
 Model: ``yaw_enu = yaw_imu + offset``. :class:`HeadingEstimator` estimates ``offset`` from,
 in priority order:
 
-``rtk``   the receiver's dual-antenna heading (Unicore GPHPR): a true absolute heading, so it is
-          the best seed whenever it is available while RTK is fixed. The receiver reports a
-          compass bearing (degrees, 0 = true north, clockwise); the caller converts it to ENU
-          with :func:`enu_from_compass_deg` before handing it over. A sample is only taken while
-          the fix is RTK fixed and the dual-antenna solution is valid.
+``rtk``   the receiver's GPHPR heading, treated as a measurement, not an oracle. The UM960 is
+          single-antenna, so the driver keeps ``/heading_valid`` false unless
+          ``publish_rtk_heading`` is set (dual-antenna install confirmed) and the sample is
+          fresh with a fixed baseline. The caller converts the compass bearing to a map-frame
+          ENU yaw with :func:`rtk_heading_enu` (antenna baseline yaw + UTM grid convergence)
+          and hands over each sample once. A sample is used only while RTK is fixed, not
+          docked, not before the persisted-offset continuity check has run, and (unless
+          ``rtk_dual_antenna``) only while driving straight FORWARD (the COG gating): a
+          single-antenna heading is the velocity direction. Without an aligned offset
+          ``rtk_seed_samples`` mutually consistent samples are needed to seed; an aligned
+          offset is blended (``rtk_alpha``, wrap-safe) and samples beyond ``outlier_deg``
+          are rejected unless ``rtk_reseed_after`` consecutive ones agree. RTK never counts
+          as a fresh COG for the dock seed.
 ``cog``   course over ground. While the commanded motion is a straight line
           (|v| >= ``min_speed``, |w| < ``max_turn_rate``) and RTK (float or fixed) is up,
           the GPS displacement is accumulated. After ``min_distance`` m (``float_min_distance``
@@ -25,7 +33,7 @@ in priority order:
           measurement more than ``outlier_deg`` away is rejected, unless ``reseed_after``
           consecutive rejected measurements agree with each other (the IMU yaw jumped). Every
           window is non-overlapping, so long straight runs keep tracking gyro drift.
-``dock``  while docked (is_charging / is_docking_done) and no fresh COG/RTK: the robot sits in
+``dock``  while docked (is_charging / is_docking_done) and no fresh COG: the robot sits in
           the dock; ``offset = dock_yaw + dock_heading_offset - mean imu yaw``.
           ``dock_heading_offset`` is the sign between the stored dock yaw and the seated heading
           (0 when a seated robot faces along the dock yaw, pi when it faces the other way; see
@@ -75,6 +83,31 @@ def enu_from_compass_deg(deg):
     therefore map to +pi/2, east (90 deg) to 0 and west (270 deg) to pi.
     """
     return wrap(math.pi / 2.0 - math.radians(deg))
+
+
+def utm_grid_convergence_deg(lat_deg, lon_deg):
+    """UTM meridian convergence (degrees): grid bearing = true bearing - convergence.
+
+    navsat_transform (``use_local_cartesian: false``) builds the map frame on the UTM grid,
+    so map +y is grid north, not true north. ``gamma = atan(tan(lon - lon0) * sin(lat))``
+    with ``lon0`` the zone's central meridian (positive east of it in the north). Typically
+    1-3 deg away from the central meridian.
+    """
+    zone = int(math.floor((lon_deg + 180.0) / 6.0)) % 60 + 1
+    lon0 = zone * 6.0 - 183.0
+    dlon = math.radians(lon_deg - lon0)
+    return math.degrees(math.atan(math.tan(dlon) * math.sin(math.radians(lat_deg))))
+
+
+def rtk_heading_enu(compass_deg, baseline_yaw_deg=0.0, convergence_deg=0.0):
+    """Receiver GPHPR bearing -> robot ENU yaw (rad) in the UTM-grid map frame.
+
+    ``baseline_yaw_deg``: bearing of the antenna baseline relative to the robot's forward
+    axis (clockwise, degrees), so robot true bearing = GPHPR - baseline yaw.
+    ``convergence_deg``: :func:`utm_grid_convergence_deg` at the robot (0 for a true-north
+    map frame).
+    """
+    return enu_from_compass_deg(compass_deg - baseline_yaw_deg - convergence_deg)
 
 
 def yaw_from_quaternion(x, y, z, w):
@@ -142,10 +175,19 @@ class AlignParams:
                   # field-validated earlier and made the docked robot read 180 deg off the measured
                   # dock pose (observed live 2026-10-11); only set pi for a site whose stored dock
                   # yaw deliberately runs opposite the seated heading.
-        self.cog_stale = 1800.0          # s; older COG gives way to a dock seed
+        self.cog_stale = 1800.0          # s; older COG gives way to a dock seed (RTK never
+                                         # counts as fresh here: a wrong RTK seed must not
+                                         # lock out the dock seed)
+        # GPHPR heading (see the module doc). Off at the driver by default (UM960 single-antenna).
+        self.rtk_dual_antenna = False    # true: confirmed dual-antenna, the heading is valid at
+                                         # rest; false: only while driving straight forward
+        self.rtk_alpha = 0.1             # blend of one in-gate sample into an aligned offset
+        self.rtk_seed_samples = 3        # consistent samples needed to seed (none/file)
+        self.rtk_reseed_after = 10       # consecutive agreeing outliers -> re-seed an aligned offset
         self.imu_jump = math.radians(20.0)   # yaw step not explained by the gyro = IMU reset
         # yaw standard deviations advertised on /imu/data_aligned
         self.sigma_cog = math.radians(3.0)
+        self.sigma_rtk = math.radians(3.0)
         self.sigma_dock = math.radians(5.0)
         self.sigma_file = math.radians(45.0)
         self.sigma_file_verified = math.radians(5.0)
@@ -208,6 +250,10 @@ class HeadingEstimator:
         self.gps_xy = None           # last RTK (float/fixed) GPS position, map/ENU
         self._gps_recent = []        # last few RTK positions (the continuity check averages)
         self._pending = None         # persisted record awaiting the continuity check
+        self.n_rtk = 0               # RTK heading samples accepted (seed / blend)
+        self.rtk_gate = ''           # why the last RTK sample was not used
+        self._rtk_seed = []          # consistent-sample buffer while unaligned (offsets)
+        self._rtk_rejected = []      # consecutive outlier samples while aligned (offsets)
 
     # ------------------------------------------------------------------ properties
     @property
@@ -217,7 +263,7 @@ class HeadingEstimator:
     def yaw_sigma(self, now):
         p = self.p
         base = {SOURCE_COG: p.sigma_cog, SOURCE_DOCK: p.sigma_dock,
-                SOURCE_RTK: p.sigma_cog,  # RTK heading similar quality to COG
+                SOURCE_RTK: p.sigma_rtk,
                 SOURCE_FILE: p.sigma_file,
                 SOURCE_FILE_VERIFIED: p.sigma_file_verified}.get(self.source, p.sigma_none)
         if self.offset is None or self.source == SOURCE_NONE:
@@ -248,6 +294,8 @@ class HeadingEstimator:
             'docked': self.docked,
             'event': self.last_event,
             'gate': self.gate_reason,
+            'rtk_updates': self.n_rtk,
+            'rtk_gate': self.rtk_gate,
         }
         if self.last_cog is not None:
             t, cog, meas, dist = self.last_cog
@@ -343,44 +391,94 @@ class HeadingEstimator:
         self.cmd, self.cmd_t = (linear, angular), now
 
     def on_fix_type(self, now, fix_type, heading_enu=None):
-        """GNSS fix type plus the receiver's dual-antenna heading, when available.
+        """GNSS fix type, plus one fresh receiver heading sample when there is one.
 
-        ``heading_enu`` is an ENU yaw in radians, already converted from the receiver's
-        compass bearing by the caller (see :func:`enu_from_compass_deg`), or None when there
-        is no valid dual-antenna heading. It is only used while RTK is fixed.
+        ``heading_enu``: map-frame ENU yaw (rad) from :func:`rtk_heading_enu`, or None. Each
+        receiver sample must be handed over once (see :meth:`on_rtk_heading`).
         """
         self.fix_type, self.fix_t = fix_type, now
-        if heading_enu is None or fix_type != 3 or self.imu_yaw is None:  # RTK fixed only
-            return
+        if heading_enu is not None:
+            self.on_rtk_heading(now, heading_enu)
+
+    def _rtk_refusal(self, now):
+        """Why an RTK heading sample cannot be used now ('' = usable)."""
         p = self.p
+        if self.fix_type != 3 or self.fix_t is None or now - self.fix_t > p.gps_timeout:
+            return 'not RTK fixed'
+        if self.imu_yaw is None or self.imu_t is None or now - self.imu_t > p.imu_timeout:
+            return 'no IMU'
+        if self.docked:
+            return 'docked (dock seed owns the heading)'
+        if self._pending is not None:
+            return 'awaiting the persisted-offset continuity check'
+        if not p.rtk_dual_antenna:
+            # Single antenna: GPHPR is the velocity direction, so only while driving straight
+            # forward (the COG gating); never at rest, never reversing.
+            saved = self.gate_reason
+            ok, direction = self._straight_motion(now, None)
+            why, self.gate_reason = self.gate_reason, saved
+            if not ok:
+                return 'not driving straight (%s)' % (why or 'stopped')
+            if direction < 0:
+                return 'reversing'
+        return ''
+
+    def on_rtk_heading(self, now, heading_enu):
+        """One receiver heading sample (map-frame ENU yaw, rad). Returns True if used."""
+        p = self.p
+        why = self._rtk_refusal(now)
+        if why:
+            self.rtk_gate = why
+            return False
+        self.rtk_gate = ''
         meas = wrap(heading_enu - self.imu_yaw)
         if self.offset is None or self.source in (SOURCE_NONE, SOURCE_FILE):
-            # Nothing trustworthy yet: the absolute heading is the seed.
-            self.offset = meas
-            self.source = SOURCE_RTK
-            self.updated_at = now
-            self.rejected = []
-            self.dirty = True
-            self.last_event = 'RTK heading seed: offset %.1f deg' % math.degrees(meas)
-            return
+            # No trustworthy offset: seed only from several mutually consistent samples. An
+            # unverified file seed is gated like any other: one sample never replaces it.
+            self._rtk_seed = (self._rtk_seed + [meas])[-p.rtk_seed_samples:]
+            mean = _consistent_mean(self._rtk_seed, p.rtk_seed_samples, p.reseed_agree)
+            if mean is None:
+                self.last_event = 'RTK heading sample %d/%d towards a seed' % (
+                    len(self._rtk_seed), p.rtk_seed_samples)
+                return False
+            if self.source == SOURCE_FILE and self.offset is not None:
+                off = wrap(mean - self.offset)
+                why = ('RTK replaces file seed (%.1f deg off)' if abs(off) > p.outlier
+                       else 'RTK seed confirms file seed (%.1f deg off)') % math.degrees(off)
+            else:
+                why = 'RTK heading seed from %d samples' % len(self._rtk_seed)
+            self._rtk_set(now, mean, why)
+            return True
         innov = wrap(meas - self.offset)
-        # Never let a single (possibly bad) dual-antenna sample walk or jolt an established
-        # offset by more than the outlier gate.
         if abs(innov) > p.outlier:
-            self.last_event = 'RTK heading rejected (%.1f deg off %s)' % (
-                math.degrees(innov), self.source)
-            return
-        if self.source == SOURCE_RTK:
-            # Blend the innovation (wrap-safe: never average across the +/-pi branch cut).
-            self.offset = wrap(self.offset + p.alpha * innov)
-        else:
-            # Take the absolute heading directly - it has passed the outlier gate.
-            self.offset = meas
+            # Never let a (possibly bad) sample jolt an established offset; only a sustained,
+            # self-consistent disagreement re-seeds (the IMU yaw really jumped).
+            self._rtk_rejected = (self._rtk_rejected + [meas])[-p.rtk_reseed_after:]
+            mean = _consistent_mean(self._rtk_rejected, p.rtk_reseed_after, p.reseed_agree)
+            if mean is None:
+                self.last_event = 'RTK heading rejected (%.1f deg off %s)' % (
+                    math.degrees(innov), self.source)
+                return False
+            self._rtk_set(now, mean, 're-seeded from %d consistent RTK outliers (%s was %.1f '
+                          'deg off)' % (len(self._rtk_rejected), self.source,
+                                        math.degrees(innov)))
+            return True
+        # Blend the innovation (wrap-safe: never average across the +/-pi branch cut).
+        self._rtk_set(now, wrap(self.offset + p.rtk_alpha * innov),
+                      'RTK heading blended into %s (alpha %.2f, innovation %.1f deg)'
+                      % (self.source, p.rtk_alpha, math.degrees(innov)))
+        return True
+
+    def _rtk_set(self, now, offset, why):
+        self.offset = wrap(offset)
         self.source = SOURCE_RTK
         self.updated_at = now
+        self.n_rtk += 1
         self.rejected = []
+        self._rtk_seed = []
+        self._rtk_rejected = []
         self.dirty = True
-        self.last_event = 'RTK heading update: offset %.1f deg' % math.degrees(self.offset)
+        self.last_event = '%s: offset %.1f deg' % (why, math.degrees(self.offset))
 
     def on_dock_pose(self, x, y, yaw):
         self.dock_xy = (x, y)
@@ -406,8 +504,10 @@ class HeadingEstimator:
             return
         if now - self.docked_since < p.dock_settle:
             return
-        cog_fresh = (self.source in (SOURCE_COG, SOURCE_RTK, SOURCE_FILE_VERIFIED) and self.updated_at is not None
-                     and now - self.updated_at < p.cog_stale)
+        # RTK is deliberately not "fresh" here: a wrong RTK seed must not hold off the dock
+        # seed for cog_stale seconds.
+        cog_fresh = (self.source in (SOURCE_COG, SOURCE_FILE_VERIFIED)
+                     and self.updated_at is not None and now - self.updated_at < p.cog_stale)
         if cog_fresh:
             return
         mean = self._dock_mean.mean() if self._dock_mean and self._dock_mean.n else self.imu_yaw
@@ -574,6 +674,22 @@ class HeadingEstimator:
         self.source = SOURCE_NONE
         self.updated_at = None
         self.rejected = []
+        self._rtk_seed = []
+        self._rtk_rejected = []
+
+
+def _consistent_mean(samples, need, agree):
+    """Circular mean of ``samples`` when there are ``need`` of them, all within ``agree``
+    of the mean; else None."""
+    if len(samples) < need:
+        return None
+    cm = CircularMean()
+    for m in samples:
+        cm.add(m)
+    mean = cm.mean()
+    if all(abs(wrap(m - mean)) <= agree for m in samples):
+        return mean
+    return None
 
 
 # ---------------------------------------------------------------------- yaw-rate source
@@ -802,6 +918,50 @@ def save_offset(path, offset, source, n_cog, now_wall=None, imu_yaw=None, x=None
         except OSError:
             pass
         raise
+
+
+class PersistThrottle:
+    """When to rewrite the offset file (``/userdata`` flash): not on every estimator update.
+
+    Save when there is nothing saved yet, the source changed, the offset moved by at least
+    ``min_change`` (rad) since the last save, the robot moved ``move`` m / the IMU yaw turned
+    ``turn`` rad (the next boot's continuity check compares against the LAST position and
+    yaw), or ``period`` s passed. A sub-threshold update (an RTK/COG blend every second at
+    rest) therefore waits for the periodic save instead of rewriting the file at 1 Hz.
+    """
+
+    def __init__(self, period=30.0, min_change=math.radians(1.0), move=0.3,
+                 turn=math.radians(5.0)):
+        self.period, self.min_change, self.move, self.turn = period, min_change, move, turn
+        self.t = None
+        self.offset = None
+        self.source = None
+        self.xy = None
+        self.yaw = None
+        self.saves = 0
+
+    def due(self, now, rec, source):
+        """``rec`` = :meth:`HeadingEstimator.persist_record` (or None)."""
+        if rec is None:
+            return False
+        offset, yaw, x, y = rec
+        if self.t is None or source != self.source:
+            return True
+        if abs(wrap(offset - self.offset)) >= self.min_change:
+            return True
+        if x is not None and (self.xy is None
+                              or math.hypot(x - self.xy[0], y - self.xy[1]) > self.move):
+            return True
+        if self.yaw is None or abs(wrap(yaw - self.yaw)) > self.turn:
+            return True
+        return now - self.t >= self.period
+
+    def saved(self, now, rec, source):
+        offset, yaw, x, y = rec
+        self.t, self.offset, self.source, self.yaw = now, offset, source, yaw
+        if x is not None:
+            self.xy = (x, y)
+        self.saves += 1
 
 
 def load_offset(path):

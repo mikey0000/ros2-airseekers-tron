@@ -555,104 +555,71 @@ class TestMcuNode(unittest.TestCase):
         ka = [m for m in logs if 'keepalive' in m]
         self.assertEqual(len(ka), 2)
 
-    # ---- docked motor neutral search (one wheel at a time)
-    def _neutral(self, left_a, right_a, settle=0.04, pulse=0.02):
-        """docked_idle, not charging, with the given drive currents (A)."""
+    # ---- docked motor neutral search: RETIRED 2026-10-13 (review B1)
+    # The search sent one-wheel pulses + single zeros on the dock (mode-2 creep regime) and
+    # escalated hold currents live (left 4.65 -> 11.0 A, 2026-10-12). It is gone; the
+    # parameter stays declared (default false) and must never produce a frame.
+    def _hot_dock(self, left_a=12.0, right_a=6.0):
+        """docked_idle, dock contact, charger off, hot drive currents, param forced on."""
         self._clock()
         n = self.node
-        n._activity = 'docked_idle'
+        n._params['docked_motor_neutral'] = True
+        n._on_activity(types.SimpleNamespace(data='docked_idle'))
+        n._battery = {'dock_ok': True, 'current': 7}
         n._charging_enabled = False
-        n.docked_neutral_settle_s = settle
-        n.docked_neutral_pulse_s = pulse
         n._motors_si = {'left': {'current_a': left_a}, 'right': {'current_a': right_a}}
         return n
 
-    def _pulses(self, frames):
-        return [f for _t, f in frames if abs(f[0]) > 1e-9 or abs(f[1]) > 1e-9]
+    def test_neutral_defaults_off_and_tuning_params_gone(self):
+        self.assertFalse(self.node.get_parameter('docked_motor_neutral').value)
+        self.assertEqual([k for k in self.node._params if k.startswith('docked_neutral_')], [])
+        for gone in ('_docked_neutral_search', '_neutral_cmd', '_docked_neutral_wanted'):
+            self.assertFalse(hasattr(self.node, gone), gone)
 
-    def test_neutral_cmd_isolates_one_wheel(self):
-        s = 0.01
-        half = 0.5 * self.node.docked_neutral_track_m
-        for side, driven in (('left', -1), ('right', +1)):
-            lin, ang = self.node._neutral_cmd(side, s)
-            self.assertAlmostEqual(lin - ang * half, s if driven < 0 else 0.0, places=9)
-            self.assertAlmostEqual(lin + ang * half, s if driven > 0 else 0.0, places=9)
+    def test_neutral_enabled_never_sends_a_frame_on_the_dock(self):
+        self._hot_dock()
+        self.assertEqual(self._tick_until(self.t + 700.0, step=0.1), [],
+                         'retired neutral search moved a wheel on the dock')
 
-    def test_neutral_search_tunes_higher_wheel_first_and_reverses_on_rise(self):
-        n = self._neutral(2.0, 0.1)
-        half = 0.5 * n.docked_neutral_track_m
-        self._tick_until(self.t + 0.06)                 # baseline over the settle window
-        self.assertEqual(n._docked_neutral_phase, 'left')
-        frames = self._tick_until(self.t + 0.02)        # first pulse tick
-        (lin, ang), = self._pulses(frames)
-        self.assertAlmostEqual(lin - ang * half, n.docked_neutral_search_speed)   # left wheel
-        self.assertAlmostEqual(lin + ang * half, 0.0)                             # right idle
-        # the nudge RAISED the tuned wheel's current -> next step flips direction
-        n._motors_si = {'left': {'current_a': 2.5}, 'right': {'current_a': 0.1}}
-        self._tick_until(self.t + 0.04)                 # settle ends -> no improvement
-        self.assertEqual(n._docked_neutral_dir, -1)
-        frames = self._tick_until(self.t + 0.02)        # reversed pulse tick
-        (lin, ang), = self._pulses(frames)
-        self.assertLess(lin - ang * half, 0.0)          # now the left wheel goes the other way
+    def test_neutral_gate_flaps_and_retry_window_stay_silent(self):
+        # The old search restarted with a fresh roll budget on every gate flap (<1.5 A for
+        # one tick, activity/latch changes) and every 300 s; none of that may send now.
+        n = self._hot_dock()
+        frames = []
+        for k in range(40):
+            hot = 12.0 if k % 2 == 0 else 0.5
+            n._motors_si = {'left': {'current_a': hot}, 'right': {'current_a': 0.2}}
+            n._on_activity(types.SimpleNamespace(data='docked_idle' if k % 7 else 'idle'))
+            n._params['docked_motor_neutral'] = bool(k % 5)
+            frames += self._tick_until(self.t + 20.0, step=0.1)   # 800 s in total
+        self.assertEqual(frames, [])
 
-    def test_neutral_search_moves_to_the_second_wheel(self):
-        n = self._neutral(2.0, 1.8)
-        self._tick_until(self.t + 0.06)                 # left baseline
-        self.assertEqual(n._docked_neutral_phase, 'left')
-        n._motors_si = {'left': {'current_a': 0.1}, 'right': {'current_a': 1.8}}
-        self._tick_until(self.t + 0.1)                  # left now below target -> latched
-        self.assertEqual(n._docked_neutral_phase, 'right')
+    def test_neutral_enabled_logs_one_warning_per_change(self):
+        self._clock()
+        warns = []
+        self.node.get_logger = lambda: types.SimpleNamespace(
+            info=lambda m, **k: None, warn=lambda m, **k: warns.append(m),
+            debug=lambda m, **k: None)
+        self._hot_dock()
+        self._tick_until(self.t + 5.0)
+        self.assertEqual(len([m for m in warns if 'docked_motor_neutral' in m]), 1)
+        self.node._params['docked_motor_neutral'] = False
+        self._tick_until(self.t + 1.0)
+        self.node._params['docked_motor_neutral'] = True
+        self._tick_until(self.t + 1.0)
+        self.assertEqual(len([m for m in warns if 'docked_motor_neutral' in m]), 2)
 
-    def test_neutral_search_retry_latch_cleared_on_undock(self):
-        n = self._neutral(2.0, 2.0)
-        n._docked_neutral_complete_t = self.t           # search "just finished"
-        self._tick_until(self.t + 0.06)                 # still docked_idle: latch holds
-        self.assertFalse(n._docked_neutral_on)
-        n._activity = 'undocking'                       # structural change clears the latch
-        self._tick_until(self.t + 0.02)
-        self.assertEqual(n._docked_neutral_complete_t, -1e9)
-        n._activity = 'docked_idle'                     # fresh dock re-probes immediately
-        self._tick_until(self.t + 0.02)
-        self.assertTrue(n._docked_neutral_on)
-
-    def test_neutral_pulse_truncated_and_locked_by_travel_budget(self):
-        n = self._neutral(2.0, 0.1)
-        n._params['docked_neutral_travel_limit_m'] = 0.0004   # retuned live on phase arm
-        n._params['docked_neutral_search_speed'] = 0.01
-        n.docked_neutral_pulse_s = 0.05                 # full nudge = 5 mm > the 4 mm budget
-        n._docked_neutral_phase = 'left'
-        n._docked_neutral_pending = {'left', 'right'}
-        n._docked_neutral_begin_phase(self.t)
-        n._docked_neutral_begin_pulse(self.t)
-        self.assertEqual(n._docked_neutral_stage, 'pulse')
-        self.assertAlmostEqual(n._docked_neutral_travel, 0.0004)   # truncated to the budget
-        n._docked_neutral_begin_pulse(self.t + 1.0)     # spent: the wheel is locked in place
-        self.assertEqual(n._docked_neutral_phase, 'right',
-                         'wheel kept rolling past its small CW/CCW roll budget')
-
-    def test_neutral_baseline_is_silent_no_zero_ping(self):
-        n = self._neutral(2.0, 0.1)
-        n.docked_neutral_settle_s = 0.04
-        n.docked_neutral_pulse_s = 0.02
-        frames = [f for _t, f in self._tick_until(self.t + 0.08)]   # baseline, first pulse
-        self.assertTrue(frames)                                     # the first pulse
-        self.assertEqual([f for f in frames if self.node._is_zero(*f)], [],
-                         'the baseline measure must be silent, not a stream of (0,0)')
-
-    def test_neutral_measure_zeroes_once_then_goes_silent(self):
-        n = self._neutral(2.0, 0.1)
-        n.docked_neutral_settle_s = 0.04
-        n.docked_neutral_pulse_s = 0.02
-        self._tick_until(self.t + 0.08)                 # baseline, first pulse sent
-        n._motors_si = {'left': {'current_a': 1.5}, 'right': {'current_a': 0.1}}
-        frames = [f for _t, f in self._tick_until(self.t + 0.3)]
-        zeros = [k for k, f in enumerate(frames) if self.node._is_zero(*f)]
-        self.assertTrue(zeros)
-        for k in zeros:
-            if k > 0:
-                self.assertFalse(self.node._is_zero(*frames[k - 1]),
-                                 'consecutive (0,0): zeros are streamed every tick',
-                                 k)
+    def test_real_cmd_vel_on_hot_dock_gets_exactly_the_stop_policy(self):
+        # Review (d): a /cmd_vel during a search used to get a (0,0) appended in the same
+        # tick. Now: one frame for the command, then the 3-zero stop, then silence.
+        n = self._hot_dock()
+        n._on_cmd_vel(cmd_vel(0.1, 0.0))
+        frames = [f for _t, f in self._tick_until(self.t + 0.04)]
+        self.assertEqual(len(frames), 1)
+        self.assertAlmostEqual(frames[0][0], 0.1, places=6)
+        self.assertTrue(n._moving)
+        frames = [f for _t, f in self._tick_until(self.t + 400.0, step=0.1)]
+        self.assertEqual(frames, [(0.0, 0.0)] * n.stop_frames)
 
     def test_measured_and_commanded_telemetry_published(self):
         self._clock()

@@ -24,6 +24,16 @@ The world's lawn and dock are written to a scratch ``maps_dir`` (fresh temp dir
 unless given) as areas.dat / dock_pose.yaml for map_server_node; GUI-owned files
 (robot yaml, datum.env) also go there, never into config/gui.
 
+Isolation (B6, mower_sim/isolation.py): the launch refuses to start unless
+ROS_DOMAIN_ID is set and not 0 and discovery is localhost-only
+(ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST or ROS_LOCALHOST_ONLY=1), and refuses on
+the mower itself; every node then gets both ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+and ROS_LOCALHOST_ONLY=1. Overrides: MOWER_SIM_ALLOW_LAN=1 (no discovery change),
+MOWER_SIM_ALLOW_ON_ROBOT=1. Each warns loudly.
+
+    ROS_DOMAIN_ID=87 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST ROS_LOCALHOST_ONLY=1 \
+        ros2 launch mower_bringup sim.launch.py
+
 Not started (ports / hardware): foxglove_bridge (``foxglove:=true`` to watch it
 with the GUI or Foxglove Studio), the teleop WebSocket relay (``teleop_relay:=true``),
 cameras, perception, det_range, base_keys, lights, supervisor, mow_recorder.
@@ -35,7 +45,7 @@ import tempfile
 
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, LogInfo,
-                            OpaqueFunction, SetLaunchConfiguration)
+                            OpaqueFunction, SetEnvironmentVariable, SetLaunchConfiguration)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (Command, LaunchConfiguration, PathJoinSubstitution,
@@ -51,6 +61,20 @@ import robot_settings  # noqa: E402  (launch/robot_settings.py, installed alongs
 def _share(package, *rel):
     from ament_index_python.packages import get_package_share_directory
     return os.path.join(get_package_share_directory(package), *rel)
+
+
+def _isolation_guard(context):
+    """B6: refuse a non-isolated graph before any node exists (first action of the launch),
+    then pin localhost-only discovery for every node it starts."""
+    from mower_sim.isolation import check_isolation, lan_allowed
+    env = context.environment
+    warnings = check_isolation('sim.launch.py', env=env)
+    actions = [LogInfo(msg=w) for w in warnings]
+    if not lan_allowed(env):
+        # ROS_LOCALHOST_ONLY is deprecated on Jazzy; set both so every rmw honours it
+        actions += [SetEnvironmentVariable('ROS_AUTOMATIC_DISCOVERY_RANGE', 'LOCALHOST'),
+                    SetEnvironmentVariable('ROS_LOCALHOST_ONLY', '1')]
+    return actions
 
 
 def _prepare_world(context):
@@ -268,7 +292,9 @@ def generate_launch_description() -> LaunchDescription:
     ]
 
     return LaunchDescription(
-        arguments
+        # must stay first: raises before any node is visited
+        [OpaqueFunction(function=_isolation_guard)]
+        + arguments
         + [SetLaunchConfiguration('world_file', ''), SetLaunchConfiguration('datum_lat', '0.0'),
            SetLaunchConfiguration('datum_lon', '0.0'),
            OpaqueFunction(function=_prepare_world)]

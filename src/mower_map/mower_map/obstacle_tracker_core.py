@@ -5,10 +5,12 @@ Clusters obstacle points (the ground-removed stereo depth cloud +
 YOLO-ranged detections, both already in the map frame), tracks the clusters
 across frames and decides:
 
-* **promote** - a cluster is a reliable, static obstacle (seen long enough,
-  often enough, sane size, inside a mowing area) -> the node calls
-  ``/map_server_node/promote_obstacle`` so it becomes a permanent keepout the
-  planner routes around. Persisted to ``areas.dat``.
+* **promote** - a cluster is a reliable, static obstacle (observed over
+  ``persistence_age_s`` - minutes - and still in view, often enough, sane size,
+  inside a mowing area, never near a ranged person / animal detection) -> the
+  node calls ``/map_server_node/promote_obstacle``, which stamps a PENDING
+  keepout (live in the mask for this session, not written to ``areas.dat``)
+  for the operator to accept or discard. Off by default (``auto_promote``).
 
 * **remove** - a *promoted* obstacle that the sensors no longer find: either a
   ground ("clear") point appears in its footprint (the depth camera positively
@@ -29,6 +31,7 @@ constant.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -49,16 +52,21 @@ class TrackerParams:
     resolution: float = 0.1              # clustering grid (m)
     merge_cells: int = 2                 # cells joined across this Chebyshev gap
     association_dist_m: float = 0.5      # cluster <-> track association radius
-    persistence_age_s: float = 3.0       # track must live this long before promotion
-    min_observations: int = 3            # ... and be seen this many updates
+    # B2 (review 2026-10-13): seen over this span (first..last sighting, still in view)
+    # before promotion. Minutes, so a person / pet standing still is never marked.
+    persistence_age_s: float = 120.0
+    min_observations: int = 10           # ... and be seen this many updates
     min_obstacle_radius_m: float = 0.05
-    max_obstacle_radius_m: float = 5.0
+    max_obstacle_radius_m: float = 1.0   # bigger clusters (hedges, people groups) never promote
     det_radius_m: float = 0.15           # footprint assumed for a single-point detection
     polygon_inflation_m: float = 0.05    # safety growth of the promoted polygon
     polygon_steps: int = 12              # vertices of the promoted footprint ring
     require_inside_mowing_area: bool = True
 
-    auto_promote: bool = True
+    auto_promote: bool = False           # owner 2026-10-13: not ready, off by default
+    # a track that ever had a ranged dynamic-class detection (person, dog, cat, ...) within
+    # this distance of its footprint is never promoted
+    dynamic_veto_radius_m: float = 1.0
     auto_remove: bool = True
     min_lifetime_s: float = 5.0          # never remove sooner than this after promoting
     gone_confirmations: int = 4          # consecutive "gone" frames before removal
@@ -140,6 +148,26 @@ def _cluster_centroid_radius(cluster: np.ndarray) -> Tuple[float, float, float]:
     return cx, cy, 0.0
 
 
+def keepout_id(name) -> int:
+    """Tracker id recorded in a promoted keepout's name ('auto: obstacle #17' -> 17,
+    0 when there is none, e.g. the operator renamed it on accept)."""
+    m = re.search(r'#(\d+)\s*$', str(name or ''))
+    return int(m.group(1)) if m else 0
+
+
+def keepout_entry(area_index, polygon, name=''):
+    """A stored SOURCE_TRACKER keepout -> ``(area_index, cx, cy, radius, wanted_id)``
+    for :meth:`TrackerCore.adopt_keepouts` (vertex centroid, farthest vertex), or
+    ``None`` for a degenerate polygon."""
+    pts = [(float(x), float(y)) for x, y in polygon]
+    if len(pts) < 3:
+        return None
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    r = max(math.hypot(p[0] - cx, p[1] - cy) for p in pts)
+    return (int(area_index), cx, cy, r, keepout_id(name))
+
+
 # ---------------------------------------------------------------------------
 # track
 # ---------------------------------------------------------------------------
@@ -162,6 +190,8 @@ class Track:
     gone_votes: int = 0
     area_index: int = -1
     name: str = ''
+    dynamic: bool = False            # a person / animal was detected here: never promote
+    adopted: bool = False            # re-adopted from a stored SOURCE_TRACKER keepout
 
     def footprint_radius(self, p: TrackerParams) -> float:
         return max(self.radius, p.det_radius_m) + p.polygon_inflation_m
@@ -219,7 +249,8 @@ class TrackerCore:
              clear_points: Optional[np.ndarray] = None,
              areas: Sequence[Tuple[int, str, Polygon]] = (),
              obstacle_fresh: bool = True, clear_fresh: bool = True,
-             allow_promote: bool = True) -> Dict[str, list]:
+             allow_promote: bool = True,
+             dynamic_points: Optional[np.ndarray] = None) -> Dict[str, list]:
         """Advance one tracker update.
 
         ``obstacle_points`` (N,2) map frame stereo + detection obstacle points.
@@ -230,7 +261,10 @@ class TrackerCore:
         current; removal votes are only cast from fresh data, so a dead/stale
         sensor can never be read as "the object is gone". ``allow_promote``
         (False when the mower is not mowing, if that gate is enabled) blocks
-        promotion without affecting tracking or removal.
+        promotion without affecting tracking or removal. ``dynamic_points`` (K,2)
+        map-frame positions of recent ranged dynamic-class detections (person,
+        dog, cat, ...): every unpromoted track within ``dynamic_veto_radius_m``
+        of one is flagged and never promoted.
 
         Returns ``{'promote': [track_id, ...], 'remove': [track_id, ...]}``;
         the caller is responsible for the (async) service calls and must call
@@ -241,6 +275,8 @@ class TrackerCore:
             if obstacle_points is not None else np.empty((0, 2))
         clear_points = np.asarray(clear_points, dtype=float).reshape(-1, 2) \
             if clear_points is not None else np.empty((0, 2))
+        dynamic_points = np.asarray(dynamic_points, dtype=float).reshape(-1, 2) \
+            if dynamic_points is not None else np.empty((0, 2))
 
         to_promote: List[int] = []
         to_remove: List[int] = []
@@ -283,9 +319,18 @@ class TrackerCore:
                 if now - t.last_seen > p.transient_timeout_s:
                     self.tracks.remove(t)
                     continue
+                if not t.dynamic and len(dynamic_points) and self._points_within(
+                        dynamic_points, t.cx, t.cy,
+                        t.footprint_radius(p) + p.dynamic_veto_radius_m):
+                    t.dynamic = True
+                # B2: promote only a track still in view (matched this step) whose own
+                # sightings span persistence_age_s - a person who stood still for 10 s
+                # and walked off must not be promoted two minutes later.
                 if (p.auto_promote and allow_promote and not t.promoting
+                        and not t.dynamic and t.id in matched
                         and t.observation_count >= p.min_observations
-                        and now - t.first_seen >= p.persistence_age_s
+                        and t.last_seen - t.first_seen >= p.persistence_age_s
+                        and t.radius <= p.max_obstacle_radius_m
                         and t.area_index >= 0
                         and math.hypot(t.cx - t.origin_cx, t.cy - t.origin_cy)
                         <= p.max_track_drift_m):
@@ -325,6 +370,50 @@ class TrackerCore:
                 to_remove.append(t.id)
 
         return {'promote': to_promote, 'remove': to_remove}
+
+    # -- restart ------------------------------------------------------------
+    def reserve_ids(self, next_id: int) -> None:
+        """New tracks get ids >= ``next_id`` (the node passes one above the snapshot
+        files kept from before a restart, so a new obstacle never reuses one)."""
+        self._next_id = max(self._next_id, int(next_id))
+
+    def adopt_keepouts(self, keepouts, now: float) -> List[int]:
+        """Re-adopt stored ``SOURCE_TRACKER`` keepouts as promoted tracks, so one
+        accepted before a restart can still be auto-removed once the object is gone.
+
+        ``keepouts``: iterable of ``(area_index, cx, cy, footprint_radius, wanted_id)``
+        (``wanted_id`` 0 = any; the node passes the tracker id the keepout was promoted
+        under, so its snapshot file keeps matching). A keepout already covered by a
+        promoted / promoting track within ``association_dist_m`` is skipped; an
+        unpromoted track there is promoted in place. Idempotent: the node calls it on
+        every area refresh. Returns the ids of the tracks adopted now.
+        """
+        p = self.params
+        out: List[int] = []
+        for (area_index, cx, cy, fp_radius, wanted) in keepouts:
+            near = [t for t in self.tracks
+                    if math.hypot(t.cx - cx, t.cy - cy) <= p.association_dist_m]
+            if any(t.promoted or t.promoting for t in near):
+                continue
+            radius = max(0.0, float(fp_radius) - p.polygon_inflation_m)
+            if near:
+                t = min(near, key=lambda q: math.hypot(q.cx - cx, q.cy - cy))
+                t.cx, t.cy, t.radius = float(cx), float(cy), max(t.radius, radius)
+                t.area_index = int(area_index)
+            else:
+                wanted = int(wanted or 0)
+                tid = wanted if wanted > 0 and self.find_track(wanted) is None else self._next_id
+                t = Track(id=tid, cx=float(cx), cy=float(cy), radius=radius,
+                          first_seen=now, last_seen=now,
+                          observation_count=p.min_observations,
+                          origin_cx=float(cx), origin_cy=float(cy),
+                          area_index=int(area_index))
+                self._next_id = max(self._next_id, tid + 1)
+                self.tracks.append(t)
+            t.promoted, t.promoting, t.adopted = True, False, True
+            t.promoted_at, t.gone_votes = now, 0
+            out.append(t.id)
+        return out
 
     # -- service outcomes ---------------------------------------------------
     def confirm_promoted(self, track_id: int, now: float) -> None:

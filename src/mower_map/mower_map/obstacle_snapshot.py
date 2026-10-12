@@ -9,9 +9,11 @@ JPEG keyed by the tracker's obstacle id::
 
 The GUI (``mowglinext``) serves those files back at
 ``/api/mowglinext/obstacles/<id>/snapshot`` so the tracked-obstacle panel can
-show what the mower actually saw. The node clears the directory on startup
-because obstacle ids restart at 1 every run, and drops a file again when its
-track disappears.
+show what the mower actually saw. At startup the node keeps the files: new
+obstacle ids start above the highest one on disk, and once the stored
+``SOURCE_TRACKER`` keepouts are re-adopted (under the id recorded in their
+name) every file without a live track is pruned. A file is dropped again when
+its track disappears.
 
 Everything here is ROS-free (one optional ``cv2`` import) so it can be unit
 tested on a host without a ROS install; when ``cv2`` is missing snapshotting is
@@ -181,3 +183,13 @@ def sync_snapshots(directory, current_ids, saved_ids, frame, now,
         remove_snapshot(directory, tid)
         saved_ids.discard(tid)
     return written
+
+
+def snapshot_ids(directory) -> set:
+    """Ids of the ``<id>.jpg`` snapshots present in ``directory`` (empty on error)."""
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return set()
+    return {int(n[:-len(_SUFFIX)]) for n in names
+            if n.endswith(_SUFFIX) and n[:-len(_SUFFIX)].isdigit()}
