@@ -253,8 +253,16 @@ The Nav2 costmaps already mark live sensor obstacles (front stereo depth +
 but those marks are transient: they decay and are raytraced away, so the planner
 re-plans through the same spot next lap. `obstacle_tracker` closes that gap for
 **static** obstacles (the kids' toys, balls, tools left on the lawn): once a
-detection is reliably stable it is promoted to a permanent keepout, and it is
-removed again when the object is gone.
+detection is reliably stable it is proposed as a pending keepout for the operator
+to accept, and a tracker keepout is removed again when the object is gone.
+
+**Off by default** (review 2026-10-13, B2; owner: "auto obstacle marking should be
+false by default as it's not ready yet"): `auto_promote: false`, so the node only
+tracks and publishes candidates. Switched on, it promotes only while mowing
+(`only_while_mowing: true`), only clusters <= `max_obstacle_radius_m` (1 m) seen
+over `persistence_age_s` (120 s) and still in view, never near a ranged
+person / animal detection, and only as **pending** keepouts (never written
+straight into `areas.dat`).
 
 ```text
 /stereo_depth/points_map ─┐
@@ -263,14 +271,23 @@ removed again when the object is gone.
 /stereo_depth/clear_points_map ┘                     + /obstacle_tracker/obstacles (GUI)
 ```
 
-- **Promote** when a cluster has been associated to the same track for
-  `persistence_age_s` (3 s) with at least `min_observations` (3) updates, a sane
-  radius, a centroid that has not drifted more than `max_track_drift_m` (0.4 m,
-  rejects a swaying bush / slow-moving object) and lies inside a mowing area.
-  The node then calls `/map_server_node/promote_obstacle` (the `obstacle_id`
-  lookup path, so `map_server` stamps it `SOURCE_TRACKER`), which rasterises it
-  into `/nav_keepout_mask` (the Nav2 global costmap keepout filter) and saves
-  `areas.dat`. Every later plan routes around it.
+- **Promote** (when `auto_promote` is on) when the sightings of a track span
+  `persistence_age_s` (120 s) with at least `min_observations` (10) updates, the
+  track is in view now, its radius is within `min/max_obstacle_radius_m`
+  (0.05..1 m), its centroid has not drifted more than `max_track_drift_m` (0.4 m,
+  rejects a swaying bush / slow-moving object) and lies inside a mowing area, no
+  ranged `dynamic_classes` detection (person, dog, cat, hedgehog, rabbit from
+  `dynamic_detections_topic`, placed in the map with the odometry) ever came
+  within `dynamic_veto_radius_m` (1 m) of it, no unranged one was seen in the last
+  `dynamic_memory_s` (10 s), and the mower is mowing. The node then calls
+  `/map_server_node/promote_obstacle` (the `obstacle_id` lookup path, so
+  `map_server` stamps it `SOURCE_TRACKER`) with the name `auto: obstacle #<id>`;
+  map_server adds it as a PENDING keepout: rasterised into `/nav_keepout_mask` for
+  this session but not saved. The operator accepts it (`pending_id`, then it is
+  saved to `areas.dat`) or discards it (`~/discard_obstacle`).
+- **Re-adopt** at startup (and on every area refresh): stored `SOURCE_TRACKER`
+  keepouts become promoted tracks again (under the id in their name), so an
+  accepted one is still auto-removed once the object is gone.
 - **Remove** when a promoted obstacle is verifiably gone: either a
   `/stereo_depth/clear_points_map` ground point appears in its footprint (the
   depth camera positively saw bare ground there) or the robot came within
@@ -306,8 +323,10 @@ marked the obstacle. The GUI serves each file at
 `/api/mowglinext/obstacles/<id>/snapshot` and the tracked-obstacle panel shows it
 as a thumbnail (click for the full frame); a missing file (transient track,
 snapshots off, or an environment with no `det_ros`, e.g. sim) falls back to the
-marker icon. The directory is cleared at startup because ids restart at 1, and a
-file is deleted again when its track goes. `snapshot_enabled: false` or an empty
+marker icon. At startup the files are kept: new ids start above the highest one
+on disk, and after the first area fetch has re-adopted the stored tracker
+keepouts every file without a live track is pruned. A file is deleted again when
+its track goes. `snapshot_enabled: false` or an empty
 `snapshot_topic` disables the feature.
 
 **Tuning.** Promotion reflects "reliable", so the safe default marks anything
@@ -317,9 +336,8 @@ to `/ai/det/obstacle_points_map` and `extra_obstacle_points_topic: ""`.
 `persistence_age_s` / `min_observations` raise the confidence bar; `gone_confirmations`
 raises the bar for removal. `~/markers` + `/obstacle_tracker/obstacles` show what
 the tracker currently sees, which is the quickest way to tune a field site.
-Set `only_while_mowing: true` to write keepouts only while the high-level state
-is `AUTONOMOUS`/`MANUAL_MOWING` (off by default: the tracker also marks while
-docked, which is harmless since only in-area objects are eligible).
+`only_while_mowing: true` (default) proposes keepouts only while the high-level
+state is `AUTONOMOUS`/`MANUAL_MOWING`.
 
 ## Notes and deviations from upstream
 

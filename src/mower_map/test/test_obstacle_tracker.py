@@ -7,6 +7,7 @@ path uses.
 """
 
 import numpy as np
+import pytest
 
 from mower_map import areas as core
 from mower_map.obstacle_tracker_core import (TrackerCore, TrackerParams, cell_clusters,
@@ -18,6 +19,8 @@ P0 = np.array([[5.0, 5.0]])
 
 
 def _core(**kw):
+    # promotion gate tests switch promotion on; the shipped default is off (B2)
+    kw.setdefault('auto_promote', True)
     return TrackerCore(TrackerParams(**kw))
 
 
@@ -266,3 +269,245 @@ def test_remove_obstacle_no_match_is_clean_failure():
     ok, msg = s.remove_obstacle(centroid=(50.0, 50.0), max_dist=0.5,
                                 sources=(core.SOURCE_TRACKER,))
     assert not ok and 'no matching' in msg
+
+
+# ------------------------------------------ B2 (review 2026-10-13): safe defaults
+
+import ast  # noqa: E402
+import os  # noqa: E402
+import types  # noqa: E402
+from unittest import mock  # noqa: E402
+
+import yaml  # noqa: E402
+
+from mower_map import obstacle_snapshot as snap  # noqa: E402
+from mower_map.obstacle_tracker_core import keepout_entry, keepout_id  # noqa: E402
+
+from test_dock_yaw_autocorrect import msn  # noqa: E402,F401 (fixture)
+
+PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _node_params():
+    """obstacle_tracker_node.PARAMS without importing rclpy (literal dict in the source)."""
+    tree = ast.parse(open(os.path.join(PKG, 'mower_map', 'obstacle_tracker_node.py')).read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], 'id', '') == 'PARAMS':
+            out = {}
+            for k, v in zip(node.value.keys, node.value.values):
+                try:
+                    out[k.value] = ast.literal_eval(v)
+                except ValueError:
+                    out[k.value] = None        # list(...) of a module constant
+            return out
+    raise AssertionError('PARAMS not found')
+
+
+def _launch_args():
+    tree = ast.parse(open(os.path.join(PKG, 'launch', 'obstacle_tracker.launch.py')).read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], 'id', '') == 'ARGS':
+            return {e.elts[0].value: e.elts[1].value for e in node.value.elts}
+    raise AssertionError('ARGS not found')
+
+
+def test_defaults_are_safe_everywhere():
+    """auto marking off, mowing only, minutes of persistence, <= 1 m: in the core, the node
+    parameters, the params yaml and the launch args (which win over the yaml)."""
+    core_p = TrackerParams()
+    node_p = _node_params()
+    with open(os.path.join(PKG, 'config', 'obstacle_tracker.yaml')) as fh:
+        yaml_p = yaml.safe_load(fh)['obstacle_tracker']['ros__parameters']
+    launch = _launch_args()
+    assert core_p.auto_promote is False
+    for src in (node_p, yaml_p):
+        assert src['auto_promote'] is False
+        assert src['only_while_mowing'] is True
+        assert src['persistence_age_s'] >= 60.0
+        assert src['max_obstacle_radius_m'] <= 1.0
+    assert core_p.persistence_age_s >= 60.0 and core_p.max_obstacle_radius_m <= 1.0
+    assert launch['auto_promote'] == 'false' and launch['only_while_mowing'] == 'true'
+    for c in ('person', 'dog', 'cat'):
+        assert c in yaml_p['dynamic_classes']
+
+
+def _shipped(**kw):
+    """The shipped tunables with auto_promote switched on (GUI toggle)."""
+    kw.setdefault('auto_promote', True)
+    return TrackerCore(TrackerParams(**kw))
+
+
+PERSON = np.array([[5.0, 5.0], [5.1, 5.05], [5.05, 5.15]])
+
+
+@pytest.mark.parametrize('stand_s', [3, 5, 10])
+def test_person_standing_still_is_never_promoted(stand_s):
+    """A person standing 3-10 s (seen by the stereo cloud every second, ranged by YOLO)
+    then walking off: no promotion, neither while standing nor minutes later."""
+    c = _shipped()
+    t0 = 1000.0
+    for k in range(stand_s + 1):
+        res = c.step(PERSON, now=t0 + k, areas=LAWN, dynamic_points=np.array([[5.05, 5.1]]))
+        assert res['promote'] == []
+    assert all(t.dynamic for t in c.tracks)
+    for k in range(stand_s + 1, 400):
+        assert c.step(np.empty((0, 2)), now=t0 + k, areas=LAWN)['promote'] == []
+    assert c.tracks == []                                    # timed out, never promoted
+
+
+@pytest.mark.parametrize('stand_s', [3, 10])
+def test_undetected_person_standing_briefly_is_never_promoted(stand_s):
+    """Even without a YOLO detection (only the depth cloud), 3-10 s of standing still is far
+    below persistence_age_s, and a track that left view never promotes later."""
+    c = _shipped()
+    for k in range(stand_s + 1):
+        assert c.step(PERSON, now=float(k), areas=LAWN)['promote'] == []
+    for k in range(stand_s + 1, 400):
+        assert c.step(np.empty((0, 2)), now=float(k), areas=LAWN)['promote'] == []
+
+
+def test_dynamic_veto_holds_even_with_a_short_persistence():
+    c = _shipped(persistence_age_s=3.0, min_observations=3)
+    dyn = np.array([[5.6, 5.0]])                             # ranged person 0.6 m away
+    for k in range(60):
+        res = c.step(PERSON, now=float(k), areas=LAWN,
+                     dynamic_points=dyn if k == 2 else None)  # seen once is enough
+        assert res['promote'] == []
+    far = _shipped(persistence_age_s=3.0, min_observations=3)
+    got = []
+    for k in range(5):
+        got += far.step(PERSON, now=float(k), areas=LAWN,
+                        dynamic_points=np.array([[9.0, 9.0]]))['promote']
+    assert got                                               # a person 5 m away: no veto
+
+
+def test_static_blob_promotes_after_minutes_as_pending_only(msn):
+    """A static blob seen every second for > persistence_age_s promotes once; map_server
+    turns the tracker's id-only request into a PENDING keepout that is not written to
+    areas.dat until the operator accepts it."""
+    c = _shipped()
+    blob = np.array([[5.0, 5.0], [5.1, 5.0], [5.0, 5.1]])
+    promoted = []
+    for k in range(0, 200):
+        promoted += c.step(blob, now=float(k), areas=LAWN)['promote']
+        if promoted:
+            break
+    assert len(promoted) == 1 and k >= TrackerParams().persistence_age_s
+    t = c.find_track(promoted[0])
+
+    n = msn.MapServerNode.__new__(msn.MapServerNode)
+    n.store = core.MapStore()
+    n.store.add_area('lawn', SQUARE, False, [])
+    pt = types.SimpleNamespace
+    n.tracker_snapshot = [pt(id=t.id, polygon=pt(points=[pt(x=x, y=y)
+                                                        for x, y in t.footprint(c.params)]))]
+    n._pump = mock.MagicMock()
+    n._tracker_sub = None
+    n.rebuild = mock.MagicMock()
+    n.persist_best_effort = mock.MagicMock()
+    n.get_logger = lambda: mock.MagicMock()
+    req = pt(pending_id=0, polygon=pt(points=[]), obstacle_id=t.id, area_index=t.area_index,
+             name='auto: obstacle #%d' % t.id)
+    res = n.srv_promote_obstacle(req, pt(success=False, message=''))
+    assert res.success and 'pending' in res.message
+    obs = n.store.areas[0].obstacles
+    assert len(obs) == 1 and obs[0].pending and obs[0].source == core.SOURCE_TRACKER
+    n.persist_best_effort.assert_not_called()
+    assert core.parse_areas_dat(core.format_areas_dat(n.store.areas))[0][0].obstacles == []
+    # operator accepts it -> persisted
+    acc = n.srv_promote_obstacle(pt(pending_id=obs[0].id, name='', polygon=pt(points=[]),
+                                    obstacle_id=0, area_index=0),
+                                 pt(success=False, message=''))
+    assert acc.success and not obs[0].pending
+    n.persist_best_effort.assert_called_once()
+
+
+def test_user_polygon_promotion_is_still_permanent(msn):
+    """The GUI's promote (polygon supplied) stays an immediate, persisted keepout."""
+    n = msn.MapServerNode.__new__(msn.MapServerNode)
+    n.store = core.MapStore()
+    n.store.add_area('lawn', SQUARE, False, [])
+    n.rebuild = mock.MagicMock()
+    n.persist_best_effort = mock.MagicMock()
+    n.get_logger = lambda: mock.MagicMock()
+    pt = types.SimpleNamespace
+    poly = pt(points=[pt(x=x, y=y) for x, y in ring_polygon(3.0, 3.0, 0.3, 8)])
+    res = n.srv_promote_obstacle(pt(pending_id=0, polygon=poly, obstacle_id=4, area_index=0,
+                                    name=''), pt(success=False, message=''))
+    assert res.success
+    o = n.store.areas[0].obstacles[0]
+    assert not o.pending and o.source == core.SOURCE_USER
+    n.persist_best_effort.assert_called_once()
+
+
+def test_cluster_over_one_metre_is_rejected():
+    c = _shipped(persistence_age_s=0.0, min_observations=1)
+    g = np.mgrid[-1.2:1.21:0.1, -1.2:1.21:0.1].reshape(2, -1).T
+    disc = g[np.hypot(g[:, 0], g[:, 1]) <= 1.2] + 5.0      # one blob, 1.2 m radius
+    assert len(cluster_points(disc, 0.1, 2)) == 1
+    for k in range(5):
+        assert c.step(disc, now=float(k), areas=LAWN)['promote'] == []
+    assert c.tracks == []
+    # a track that grows past the cap after it formed never promotes either
+    c = _shipped(persistence_age_s=0.0, min_observations=3)
+    c.step(P0, now=0.0, areas=LAWN)
+    c.tracks[0].radius = 1.5
+    for k in range(1, 5):
+        assert c.step(P0, now=float(k), areas=LAWN)['promote'] == []
+
+
+def test_restart_re_adopts_tracker_keepouts():
+    """A keepout promoted (and accepted) before a restart is re-adopted from areas.dat
+    under its tracker id, so the new tracker still removes it once the object is gone;
+    user keepouts are not adopted."""
+    store = core.MapStore()
+    store.add_area('lawn', SQUARE, False, [])
+    store.add_obstacle(0, ring_polygon(5.0, 5.0, 0.25, 12), 'auto: obstacle #17',
+                       core.SOURCE_TRACKER)
+    store.add_obstacle(0, ring_polygon(2.0, 2.0, 0.25, 12), 'tree', core.SOURCE_USER)
+    areas, _ = core.parse_areas_dat(core.format_areas_dat(store.areas))   # restart
+    keepouts = [keepout_entry(i, o.polygon, o.name) for i, a in enumerate(areas)
+                for o in a.obstacles if o.source == core.SOURCE_TRACKER]
+    assert len(keepouts) == 1 and keepouts[0][4] == 17
+
+    c = _shipped(min_lifetime_s=0.0, gone_confirmations=2)
+    c.reserve_ids(30)                      # snapshot files 1..29 kept on disk
+    assert c.adopt_keepouts(keepouts, now=10.0) == [17]
+    assert c.adopt_keepouts(keepouts, now=11.0) == []      # idempotent per refresh
+    t = c.find_track(17)
+    assert t.promoted and t.adopted and abs(t.cx - 5.0) < 1e-6
+    assert abs(t.footprint_radius(c.params) - 0.25) < 0.01
+    clear = np.array([[5.0, 5.0]])
+    assert c.step(np.empty((0, 2)), now=12.0, clear_points=clear, areas=LAWN)['remove'] == []
+    assert c.step(np.empty((0, 2)), now=13.0, clear_points=clear, areas=LAWN)['remove'] == [17]
+    restored = core.MapStore()
+    restored.load(areas)
+    ok, _ = restored.remove_obstacle(centroid=(t.cx, t.cy),
+                                     max_dist=t.footprint_radius(c.params),
+                                     sources=(core.SOURCE_TRACKER,))
+    assert ok and [o.name for o in restored.areas[0].obstacles] == ['tree']
+    # a new obstacle after the restart gets an id above the kept snapshots
+    c.step(np.array([[8.0, 8.0]]), now=14.0, areas=LAWN)
+    assert max(tr.id for tr in c.tracks) >= 30
+
+
+def test_adopt_takes_over_a_live_track_at_the_spot():
+    c = _shipped()
+    c.step(P0, now=0.0, areas=LAWN)
+    tid = c.tracks[0].id
+    assert c.adopt_keepouts([(0, 5.0, 5.0, 0.2, 0)], now=1.0) == [tid]
+    assert len(c.tracks) == 1 and c.tracks[0].promoted
+
+
+def test_keepout_id_parsing():
+    assert keepout_id('auto: obstacle #17') == 17
+    assert keepout_id('apple tree') == 0 and keepout_id(None) == 0
+
+
+def test_snapshot_ids_and_prune_keep_live(tmp_path):
+    for i in (3, 7, 12):
+        (tmp_path / snap.snapshot_filename(i)).write_bytes(b'x')
+    (tmp_path / 'notes.txt').write_text('keep')
+    assert snap.snapshot_ids(str(tmp_path)) == {3, 7, 12}
+    assert snap.prune_snapshots(str(tmp_path), {7}) == 2
+    assert sorted(os.listdir(tmp_path)) == ['7.jpg', 'notes.txt']

@@ -1399,15 +1399,25 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                                'supplied')
                 return res
             poly = _poly_from_msg(match[0].polygon)
-        ok, msg = self.store.add_obstacle(int(req.area_index), poly, req.name, source)
+        # B2 (review 2026-10-13): the id-only path is the tracker's automatic promotion
+        # (the GUI always sends the polygon). It becomes a PENDING proposal - live in the
+        # keepout mask for this session, never written to areas.dat - that the operator
+        # accepts (pending_id) or discards, like a wheel-slip dig keepout.
+        pending = source == core.SOURCE_TRACKER
+        ok, msg = self.store.add_obstacle(int(req.area_index), poly, req.name, source,
+                                          pending=pending)
         if not ok:
             res.success = False
             res.message = 'promotion rejected: ' + msg
             return res
         self.rebuild()
-        self.persist_best_effort('promote_obstacle')
         res.success = True
-        res.message = 'obstacle promoted to permanent keepout for area %d' % req.area_index
+        if pending:
+            res.message = ('tracked obstacle %d proposed as a pending keepout for area %d '
+                           '(accept or discard it)' % (req.obstacle_id, req.area_index))
+        else:
+            self.persist_best_effort('promote_obstacle')
+            res.message = 'obstacle promoted to permanent keepout for area %d' % req.area_index
         self.get_logger().info(res.message)
         return res
 

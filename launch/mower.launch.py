@@ -349,9 +349,11 @@ def generate_launch_description() -> LaunchDescription:
         arg('localization', 'true', 'Include nav2.launch.py localization (gps_gate, navsat, ekf).'),
         arg('navigation', 'true', 'Include mower_navigation/navigation.launch.py (Nav2: bt_navigator, controller/planner/behavior servers, velocity_smoother). Needed by mission and docking (/navigate_to_pose, /follow_path).'),
         arg('map_server', 'true', 'Include mower_map/map_server.launch.py (zones, keepout mask, dock pose).'),
-        arg('obstacle_tracker', 'true', 'Include mower_map/obstacle_tracker_node: auto-mark reliable '
-            'stereo/YOLO obstacles as permanent keepouts during a mow (and remove them once the '
-            'object is gone). Needs map_server; see mower_map/config/obstacle_tracker.yaml.'),
+        arg('obstacle_tracker', 'true', 'Include mower_map/obstacle_tracker_node: tracks '
+            'stereo/YOLO obstacles for the GUI panel. Auto-marking (auto_promote) is OFF by '
+            'default; when switched on (GUI Settings > Obstacles) it proposes pending keepouts '
+            'during a mow for the operator to accept, and removes tracker keepouts once the '
+            'object is gone. Needs map_server; see mower_map/config/obstacle_tracker.yaml.'),
         arg('maps_dir', '/ros2_ws/maps', 'areas.dat / dock_pose.yaml directory (compose mounts /userdata/ros2/maps).'),
         arg('coverage', 'true', 'Include mower_coverage_bridge (planner + /plan_coverage action).'),
         arg('cut_width_m', '', 'Blade cut width, m. Empty = the GUI tool_width from '
