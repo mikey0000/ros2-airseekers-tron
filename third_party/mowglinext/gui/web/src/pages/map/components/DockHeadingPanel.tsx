@@ -15,6 +15,9 @@ export const headingDegToRad = (deg: number): number => {
     return Math.atan2(Math.sin(r), Math.cos(r));
 };
 
+/** Desktop: clear of the 240 px Areas side panel (right 16) plus a 12 px gap. */
+export const DESKTOP_SIDE_PANEL_CLEARANCE = 16 + 240 + 12;
+
 const COMPASS = ["E", "NE", "N", "NW", "W", "SW", "S", "SE"] as const;
 
 /** Nearest compass point of an ENU heading (0 = East, counter-clockwise). */
@@ -38,8 +41,12 @@ interface DockHeadingPanelProps {
 export const DockHeadingPanel = ({heading, onChange, onApply, mobile}: DockHeadingPanelProps) => {
     const {t} = useTranslation();
     const [value, setValue] = useState<number>(headingRadToDeg(heading));
-    // Phones: collapsed to one small button so the panel never hides the map.
-    const [expanded, setExpanded] = useState<boolean>(!mobile);
+    // Starts collapsed to one small button (opened on demand) so entering Edit
+    // Map never pops a card over the map or the side panel.
+    const [expanded, setExpanded] = useState<boolean>(false);
+    const anchor: React.CSSProperties = mobile
+        ? {position: "absolute", top: 64, right: 12, zIndex: 20}
+        : {position: "absolute", bottom: 16, right: DESKTOP_SIDE_PANEL_CLEARANCE, zIndex: 20};
     useEffect(() => { setValue(headingRadToDeg(heading)); }, [heading]);
 
     const commit = (v: number | null) => {
@@ -54,7 +61,7 @@ export const DockHeadingPanel = ({heading, onChange, onApply, mobile}: DockHeadi
             <Button
                 aria-label={t("dockHeading.title")}
                 onClick={() => setExpanded(true)}
-                style={{position: "absolute", top: 64, right: 12, zIndex: 20, minHeight: 44}}
+                style={{...anchor, minHeight: mobile ? 44 : undefined}}
             >
                 {t("dockHeading.short", {deg: value.toFixed(0)})}
             </Button>
@@ -65,15 +72,13 @@ export const DockHeadingPanel = ({heading, onChange, onApply, mobile}: DockHeadi
         <Card
             size="small"
             title={t("dockHeading.title")}
-            extra={mobile ? (
+            extra={
                 <Button type="text" size="small" aria-label={t("dockHeading.collapse")}
                         onClick={() => setExpanded(false)}>✕</Button>
-            ) : undefined}
+            }
             role="group"
             aria-label={t("dockHeading.title")}
-            style={mobile
-                ? {position: "absolute", top: 64, right: 12, zIndex: 20, width: 220}
-                : {position: "absolute", bottom: 16, right: 16, zIndex: 20, width: 260}}
+            style={{...anchor, width: mobile ? 220 : 260}}
             styles={{body: {padding: 8}}}
         >
             <Space.Compact style={{width: "100%"}}>

@@ -7,7 +7,7 @@
 # native amd64: ~2 min wall, ~0.7 GB peak build-container RSS.
 # arm64 on an x86 host: RUN steps execute under qemu-user, so register it once
 #   docker run --privileged --rm tonistiigi/binfmt --install arm64
-# The base is pulled by per-arch digest so the shared ros:humble-ros-base-jammy
+# The base is pulled by per-arch digest so the shared ros:jazzy-ros-base-noble
 # tag is never re-pointed.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,7 +16,7 @@ ARCH="${ARCH:-amd64}"
 MAKE_JOBS="${MAKE_JOBS:-2}"
 TAG="${TAG:-mower-f2c:v3-${ARCH}}"
 if [[ -z "${BASE:-}" ]]; then
-  BASE="ros@$(docker manifest inspect ros:humble-ros-base-jammy | python3 -c "
+  BASE="ros@$(docker manifest inspect ros:jazzy-ros-base-noble | python3 -c "
 import json,sys; d=json.load(sys.stdin)
 print(next(m['digest'] for m in d['manifests'] if m['platform'].get('os')=='linux' and m['platform']['architecture']=='${ARCH}'))")"
 fi

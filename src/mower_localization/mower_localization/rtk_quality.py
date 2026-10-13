@@ -38,7 +38,7 @@ _SINGLE = frozenset({'GPS', 'SINGLE', 'FIXEDHEIGHT', 'DOPPLER_VELOCITY', 'INS',
                      'INS_PSRSP', 'PPP', 'PPP_CONVERGING', 'DR', 'FIX'})
 _NONE = frozenset({'INVALID', 'NONE'})
 
-# sensor_msgs/NavSatStatus (Humble): -1 NO_FIX, 0 FIX, 1 SBAS_FIX, 2 GBAS_FIX
+# sensor_msgs/NavSatStatus (Jazzy): -1 NO_FIX, 0 FIX, 1 SBAS_FIX, 2 GBAS_FIX
 NAVSAT_NO_FIX, NAVSAT_FIX, NAVSAT_SBAS, NAVSAT_GBAS = -1, 0, 1, 2
 
 

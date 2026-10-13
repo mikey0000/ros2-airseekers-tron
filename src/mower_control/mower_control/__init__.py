@@ -1,4 +1,4 @@
-"""Airseekers Tron control-support nodes (ROS 2 Humble).
+"""Airseekers Tron control-support nodes (ROS 2 Jazzy).
 
 MowgliNext-derived patterns: cmd_vel slew limiting with watchdog, wheel-slip
 (dig) detection gated on RTK-fixed, and at-rest IMU bias calibration.

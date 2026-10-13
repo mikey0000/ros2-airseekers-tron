@@ -6,17 +6,19 @@ transit plan, obstacle detours, mow progress and the mission state live at
 http://localhost:4006. The helper script is `scripts/sim_gui.sh`.
 
 > **Keep the sim off the robot's DDS graph.** Every ROS process here must run with
-> `ROS_LOCALHOST_ONLY=1` and a `ROS_DOMAIN_ID` other than 0. With host networking and
+> localhost-only discovery (`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`, plus the deprecated
+> `ROS_LOCALHOST_ONLY=1`) and a `ROS_DOMAIN_ID` other than 0. With host networking and
 > domain 0, dev-box nodes join the mower's graph over the LAN. On 2026-10-07 a dev-host
 > test feeder's `/odometry/filtered_map` latched a lethal boundary stop on the robot.
 > `sim_gui.sh` enforces both settings (domain 90 by default; it refuses 0). Do not start
-> the sim with a bare `ros2 launch` from a shell that has no domain set. Nothing in this
+> the sim with a bare `ros2 launch` from a shell that has no domain set: `sim.launch.py`,
+> `sim_node` and `scenario` refuse to (see [simulation.md](simulation.md#running-it)). Nothing in this
 > guide talks to the mower.
 
 ## How it fits together
 
 ```
-sim container (ROS_DOMAIN_ID=90, ROS_LOCALHOST_ONLY=1, --network host)
+sim container (ROS_DOMAIN_ID=90, localhost-only discovery, --network host)
   sim.launch.py world:=... foxglove:=true teleop_relay:=true maps_dir:=/tmp/mower_sim_gui.90/maps
     foxglove_bridge :8765 (all topics) ─┐
     cmd_vel_ws_relay :8766 ────────────┤
@@ -33,7 +35,7 @@ lines up. map_server reads `areas.dat`/`dock_pose.yaml` from the same directory.
 
 ## Prerequisites (once)
 
-- Docker, and the dev image `mower:humble-dev-amd64`. `dev_build.sh` builds the image
+- Docker, and the dev image `mower:jazzy-dev-amd64`. `dev_build.sh` builds the image
   if it is missing.
 - Our GUI built for amd64 from `third_party/mowglinext/gui`: `./scripts/sim_gui.sh build-gui`
   (= `ARCH=amd64 ./gui/build.sh`, tag `mower-gui:amd64`, a few minutes). Rebuild it after any
@@ -179,7 +181,7 @@ The GUI database in `db/` is throwaway.
 | `foxglove_bridge did not come up` | The launch died. Run `docker logs mower_sim_gui_sim` (the container is `--rm`, so run `up` again and read the log quickly), or run the `docker run ... ros2 launch` line from the script in the foreground. The usual cause is a stale build (`No module named ...`): rebuild. |
 | `port 4006/8765/8766 already in use` | Another sim, an old `mower_gui` container, or Foxglove on this box. Run `./scripts/sim_gui.sh down` and `docker ps`. |
 | GUI loads but shows no pose or state | Check `docker logs mower_sim_gui_gui` for `foxglove: connected`. The GUI and sim must both use host networking. Check that gui_bridge is running: `/gui/pose` comes from gui_bridge, not the sim. |
-| `ros2 topic list` from your own shell shows nothing | You are on a different domain, or without `ROS_LOCALHOST_ONLY=1`. Use `./scripts/sim_gui.sh ros2 ...` (runs inside the sim container), or export `ROS_DOMAIN_ID=90 ROS_LOCALHOST_ONLY=1` in a dev-image shell with `--network host`. Never use domain 0. |
+| `ros2 topic list` from your own shell shows nothing | You are on a different domain, or without `ROS_LOCALHOST_ONLY=1`. Use `./scripts/sim_gui.sh ros2 ...` (runs inside the sim container), or export `ROS_DOMAIN_ID=90 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST ROS_LOCALHOST_ONLY=1` in a dev-image shell with `--network host`. Never use domain 0. |
 | Robot and lawn drawn in the wrong place, or the map is empty | Wrong datum. `curl -s localhost:4006/api/settings/yaml` must show `datum_lat 48`, `datum_lon 9`. The GUI has to read `<SIM_GUI_DIR>/maps/mowgli_robot.yaml`; gui_bridge only rewrites a datum that already has `datum_lat/datum_lon` keys, so the seed copy must exist before launch (the script does this). Never point the GUI at `config/gui/`. |
 | No `/plan` in the GUI | Normal outside TRANSIT or navigation; `/plan` is not latched. |
 | Mission stuck in WAITING_FOR_RTK or preflight with `localization:=ekf` | heading_aligner starts unaligned in ekf mode (see simulation.md, Limitations). Use the default `localization:=sim`. |

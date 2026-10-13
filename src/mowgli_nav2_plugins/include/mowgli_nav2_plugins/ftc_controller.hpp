@@ -79,7 +79,7 @@ public:
   void activate() override;
   void deactivate() override;
 
-  // Humble: setPlan (Kilted: newPathReceived).
+  // Jazzy: setPlan (Kilted: newPathReceived).
   void setPlan(const nav_msgs::msg::Path& path) override;
 
   geometry_msgs::msg::TwistStamped computeVelocityCommands(

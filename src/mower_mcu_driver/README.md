@@ -1,6 +1,6 @@
 # mower_mcu_driver
 
-ROS 2 Humble (ament_python) driver for the **Airseekers Tron chassis/cutter MCU** — the AT32
+ROS 2 Jazzy (ament_python) driver for the **Airseekers Tron chassis/cutter MCU** — the AT32
 board(s) behind `/dev/serial_mower` (`ttyS9`, 115200 8N1). It replaces the stripped vendor
 `mower_base_node` for the serial part of its job: battery, odometry, MCU sensor state, and
 forwarding `/cmd_vel` to the MCU.
@@ -62,7 +62,7 @@ Stop the vendor driver first (`systemctl stop mower-base.service`), wheels off t
 blade off — two writers on one UART garble both.
 
 Serial backend: pyserial (`python3-serial`) when available, otherwise a built-in raw-mode
-`termios` fallback, so the node also runs in a bare `ros:humble` image.
+`termios` fallback, so the node also runs in a bare `ros:jazzy` image.
 
 ## Tests
 

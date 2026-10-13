@@ -152,6 +152,33 @@ describe("MapToolbarMobile", () => {
     expect(screen.queryByRole("button", { name: en.mapToolbarMobile.drawPath })).toBeNull();
   });
 
+describe('scrollable row layout', () => {
+    // Every item keeps its width (no squeeze/overlap); the row scrolls instead,
+    // and E-STOP stays outside the scrolling row, never covered by it.
+    const assertRow = () => {
+        const row = screen.getByTestId('map-toolbar-mobile');
+        expect(row.style.overflowX).toBe('auto');
+        expect(row.style.flexWrap).toBe('nowrap');
+        expect(row.children.length).toBeGreaterThan(3);
+        for (const child of Array.from(row.children)) {
+            expect((child as HTMLElement).style.flexShrink).toBe('0');
+        }
+        const stop = screen.getByText(en.mapToolbarMobile.stop).closest('button')!;
+        expect(row).not.toContainElement(stop);
+        expect(parseInt(row.style.right)).toBeGreaterThanOrEqual(parseInt(stop.style.right) + parseInt(stop.style.width));
+    };
+    it('view mode: no item shrinks, primary Resume comes first', () => {
+        render(<AntApp><MapToolbarMobile {...defaultProps} stateName="IDLE" onResume={vi.fn()} onStartFresh={vi.fn()}
+            onUndock={vi.fn()} settingsAreas={[{key: 'a1', label: 'A'}]} onAreaSettings={vi.fn()}/></AntApp>);
+        assertRow();
+        expect(screen.getByTestId('map-toolbar-mobile').firstElementChild).toBe(screen.getByTestId('toolbar-resume'));
+    });
+    it('edit mode: no item or button group shrinks', () => {
+        render(<AntApp><MapToolbarMobile {...defaultProps} editMap onDrawPath={vi.fn()} onDrawPathToDock={vi.fn()} onEditPath={vi.fn()}/></AntApp>);
+        assertRow();
+    });
+});
+
 describe('Resume', () => {
     it('shows primary Resume instead of Start when onResume is set, sends it on click', async () => {
         const onResume = vi.fn().mockResolvedValue(undefined);

@@ -4,7 +4,7 @@
   <name>mower_localization</name>
   <version>0.1.0</version>
   <description>
-    Localization for the Airseekers Tron mower (ROS 2 Humble). Ships the
+    Localization for the Airseekers Tron mower (ROS 2 Jazzy). Ships the
     robot_localization parameter sets that fuse /odom, /imu/data and the
     navsat_transform_node output of /fix into the REP-105 frame tree
     (map -> odom -> base_link, world_frame odom), and gps_gate, which
@@ -29,7 +29,7 @@
   <exec_depend>mower_interfaces</exec_depend>
 
   <!-- ekf_node and navsat_transform_node themselves come from the
-       ros-humble-robot-localization apt package (see docs/localization.md);
+       ros-jazzy-robot-localization apt package (see docs/localization.md);
        this package only provides their parameters and the gps_gate node. -->
 
   <test_depend>ament_copyright</test_depend>

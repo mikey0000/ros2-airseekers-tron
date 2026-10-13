@@ -52,6 +52,7 @@ export const PARAM_BINDING_PROFILES: Readonly<Record<string, ParamBindingProfile
             "blade_disc_mm",
             "swath_overlap_m",
             "default_swath_width_m",
+            "obstacle_auto_promote",
         ],
         guiKeys: [
             "mower_model",

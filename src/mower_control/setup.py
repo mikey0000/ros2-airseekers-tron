@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer='michael',
     maintainer_email='michael@example.com',
-    description='Airseekers Tron control-support nodes for ROS 2 Humble: cmd_vel '
+    description='Airseekers Tron control-support nodes for ROS 2 Jazzy: cmd_vel '
                 'slew limiter with watchdog, RTK-gated wheel-slip (dig) detector, '
                 'and at-rest IMU bias calibration.',
     license='Apache-2.0',

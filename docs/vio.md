@@ -70,7 +70,7 @@ with `stereo_depth` and the GUI.
   `third_party/open_vins` git submodule (rpng/open_vins, pinned; `git submodule update --init`);
   `deploy_to_mower.sh sync` does not copy it, `build_openvins_mower.sh` stages a patched copy.
   (Older trees had a dangling `src/open_vins` symlink here; `sync` removes it.)
-* All build deps are in `mower:humble` (OpenCV 4.5, Eigen, Boost, cv_bridge,
+* All build deps are in `mower:jazzy` (OpenCV 4.5, Eigen, Boost, cv_bridge,
   image_transport, message_filters).
 * `stereo_cam` publishes `/vio/{left,right}/image_raw` (bgr8, best effort, stamped with
   host time, frame `vio_camera`); nobody publishes `/vio/imu`.
@@ -125,7 +125,7 @@ Never inside the running stack (load-190 incident). With the owner present:
 
 ```bash
 ./scripts/deploy_to_mower.sh down                      # stack STOPPED (mission CHARGING/IDLE_DOCKED)
-SSHPASS=... ./scripts/build_openvins_mower.sh check     # refuses if mower_humble is up / < 3 GB free
+SSHPASS=... ./scripts/build_openvins_mower.sh check     # refuses if mower_jazzy is up / < 3 GB free
 SSHPASS=... ./scripts/build_openvins_mower.sh build     # 30-60 min, one-off container, -j1, 2.5 GB cap
 ./scripts/deploy_to_mower.sh up                         # vio stays off
 ```
@@ -133,7 +133,7 @@ SSHPASS=... ./scripts/build_openvins_mower.sh build     # 30-60 min, one-off con
 The Python side (bridge entry point `vio_odom_bridge`, `vio_gate`, `ekf_vio.yaml` data
 file) needs the usual `colcon build --packages-select stereo_vio_bridge
 mower_localization` (pure Python, fine in the dev image or during the same stop).
-amd64 validation: built in `mower:humble-dev-amd64` (4 min at -j6), patch applied, runs.
+amd64 validation: built in `mower:jazzy-dev-amd64` (4 min at -j6), patch applied, runs.
 
 ## 5. Test plan
 
@@ -267,7 +267,7 @@ What we cannot do (yet) and the compensation:
   `setup_stereo_host.sh` from a unit after `cam.service`).
 * `/etc/sysctl.d/90-ros2-dds.conf`: `net.core.rmem_max=8388608`, `net.core.wmem_max=8388608`.
 Until then: run `sudo /userdata/ros2_stack/scripts/setup_stereo_host.sh` after each boot, then
-restart `mower_humble` (stereo_imu retries with back-off until the IIO devices exist; DDS
+restart `mower_jazzy` (stereo_imu retries with back-off until the IIO devices exist; DDS
 participants keep the buffer size they were created with).
 
 ### 7.5 VIO with the Metoak IMU (not enabled)

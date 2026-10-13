@@ -3,7 +3,7 @@ check what the node publishes.
 
 These exercise the whole path - termios open, reader thread, mixed ASCII/binary
 stream splitter, parsers and message construction - against a pty pair, so no
-hardware is needed. They run with real ``rclpy`` message types on a ROS 2 Humble
+hardware is needed. They run with real ``rclpy`` message types on a ROS 2 Jazzy
 machine and with the shim from ``conftest.py`` elsewhere.
 """
 
@@ -17,7 +17,7 @@ import pytest
 rclpy = pytest.importorskip("rclpy")
 
 from sensor_msgs.msg import NavSatFix, NavSatStatus  # noqa: E402
-from std_msgs.msg import Float32, String  # noqa: E402
+from std_msgs.msg import Bool, Float32, String  # noqa: E402
 
 from um960_gps_driver.parsers import SOL_COMPUTED, crc16_xmodem  # noqa: E402
 from um960_gps_driver.um960_node import Um960Node  # noqa: E402
@@ -93,7 +93,7 @@ class _Recorder:
 class Harness:
     """A pty pair wired to a live Um960Node, with every topic recorded."""
 
-    TOPICS = ("/fix", "/vel", "/heading", "/fix_status", "/nmea")
+    TOPICS = ("/fix", "/vel", "/heading", "/heading_valid", "/fix_status", "/nmea")
 
     def __init__(self, publish_nmea=False, device=None, extra_params=None):
         self.master, slave = pty.openpty()
@@ -255,11 +255,62 @@ def test_heading_is_normalised_to_zero_360(harness):
     assert heading == pytest.approx(330.0, abs=1e-3)
 
 
-def test_gphpr_heading_wins_over_the_track_angle(harness):
-    # GPHPR arrives after the BESTNAV track angle and must take precedence.
-    harness.send(_bestnav_frame(track=87.6) + _cs("GPHPR,275.34,1,1.2,-0.8"))
+HPR_FIXED = _cs("GNHPR,071208.00,275.34,1.20,-0.80,4,20,0.5,0000")
+HPR_SINGLE = _cs("GNHPR,071208.00,275.34,1.20,-0.80,1,20,0.5,0000")
+
+
+def test_gphpr_heading_wins_but_is_not_valid_by_default(harness):
+    # GPHPR arrives after the BESTNAV track angle and takes precedence on /heading, but the
+    # UM960 is single-antenna: /heading_valid stays false unless publish_rtk_heading is set.
+    assert harness.node.publish_rtk_heading is False
+    harness.send(_bestnav_frame(track=87.6) + HPR_FIXED)
     harness.tick()
     assert harness.recorder("/heading").msgs[-1].data == pytest.approx(275.34, abs=1e-3)
+    assert harness.recorder("/heading_valid").msgs[-1].data is False
+
+
+@pytest.fixture
+def rtk_harness():
+    h = Harness(extra_params={"publish_rtk_heading": True})
+    yield h
+    h.close()
+
+
+def test_heading_valid_needs_a_fixed_baseline_status(rtk_harness):
+    rtk_harness.send(_bestnav_frame(track=87.6) + HPR_SINGLE)
+    rtk_harness.tick()
+    assert rtk_harness.recorder("/heading_valid").msgs[-1].data is False
+    rtk_harness.send(_bestnav_frame(track=87.6) + HPR_FIXED)
+    rtk_harness.tick()
+    assert rtk_harness.recorder("/heading_valid").msgs[-1].data is True
+
+
+def test_heading_valid_status_zero_falls_back_to_track(rtk_harness):
+    rtk_harness.send(_bestnav_frame(track=87.6) + HPR_FIXED
+                     + _cs("GNHPR,071209.00,,,,0,0,,"))
+    rtk_harness.tick()
+    assert rtk_harness.recorder("/heading_valid").msgs[-1].data is False
+    assert rtk_harness.recorder("/heading").msgs[-1].data == pytest.approx(87.6, abs=1e-3)
+
+
+def test_one_gphpr_does_not_stay_valid_forever(rtk_harness):
+    rtk_harness.send(_bestnav_frame(track=87.6) + HPR_FIXED)
+    rtk_harness.tick()
+    assert rtk_harness.recorder("/heading_valid").msgs[-1].data is True
+    # no further GPHPR: after heading_timeout_s the sample is dropped, not re-published
+    rtk_harness.node.nmea.fix["heading_mono"] -= 1.5
+    rtk_harness.send(_bestnav_frame(track=87.6))
+    rtk_harness.tick()
+    assert rtk_harness.recorder("/heading_valid").msgs[-1].data is False
+    assert rtk_harness.recorder("/heading").msgs[-1].data == pytest.approx(87.6, abs=1e-3)
+    assert "heading_deg" not in rtk_harness.node.nmea.fix
+
+
+def test_track_fallback_heading_is_not_a_dual_antenna_heading(harness):
+    harness.send(_bestnav_frame(track=87.6))
+    harness.tick()
+    assert harness.recorder("/heading").msgs[-1].data == pytest.approx(87.6, abs=1e-6)
+    assert harness.recorder("/heading_valid").msgs[-1].data is False
 
 
 def test_velocity_falls_back_to_nmea(harness):
@@ -354,4 +405,5 @@ def test_published_message_types(harness):
     harness.tick()
     assert isinstance(harness.recorder("/fix").msgs[-1], NavSatFix)
     assert isinstance(harness.recorder("/heading").msgs[-1], Float32)
+    assert isinstance(harness.recorder("/heading_valid").msgs[-1], Bool)
     assert isinstance(harness.recorder("/fix_status").msgs[-1], String)

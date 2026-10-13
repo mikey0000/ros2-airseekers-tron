@@ -5,7 +5,8 @@
 # latched BOUNDARY_EMERGENCY_STOP. Force localhost-only discovery on a private domain before
 # anything imports rclpy. MOWER_TEST_ROS_DOMAIN_ID overrides the domain.
 import os as _iso_os  # noqa: E402
-_iso_os.environ['ROS_LOCALHOST_ONLY'] = '1'
+_iso_os.environ['ROS_LOCALHOST_ONLY'] = '1'  # deprecated on Jazzy, still honoured
+_iso_os.environ['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
 _iso_os.environ['ROS_DOMAIN_ID'] = _iso_os.environ.get('MOWER_TEST_ROS_DOMAIN_ID', '77')
 # -------------------------------------------------------------------------------------------
 
@@ -14,7 +15,7 @@ _iso_os.environ['ROS_DOMAIN_ID'] = _iso_os.environ.get('MOWER_TEST_ROS_DOMAIN_ID
 The parser and serial tests run anywhere. The node tests need ``rclpy``; when it is
 not importable (a plain Python environment, no ROS install) a small shim is
 installed so the node's parsing and message-building logic is still exercised. On a
-real ROS 2 Humble machine the genuine message classes are used instead, so the same
+real ROS 2 Jazzy machine the genuine message classes are used instead, so the same
 tests cover the real types.
 """
 
@@ -81,6 +82,10 @@ def _install_rclpy_shim() -> None:
 
     class Float32:
         def __init__(self, data=0.0):
+            self.data = data
+
+    class Bool:
+        def __init__(self, data=False):
             self.data = data
 
     class Publisher:
@@ -155,6 +160,7 @@ def _install_rclpy_shim() -> None:
     std_msgs_msg = types.ModuleType("std_msgs.msg")
     std_msgs_msg.String = String
     std_msgs_msg.Float32 = Float32
+    std_msgs_msg.Bool = Bool
     std_msgs.msg = std_msgs_msg
 
     geometry_msgs = types.ModuleType("geometry_msgs")

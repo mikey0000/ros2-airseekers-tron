@@ -19,6 +19,12 @@ um960_node:
     fix_topic: "/fix"
     vel_topic: "/vel"
     heading_topic: "/heading"
+    heading_valid_topic: "/heading_valid"  # Bool: /heading is a fresh, fixed dual-antenna GPHPR
+    # The UM960 is single-antenna: a GPHPR heading from it is motion-derived or invalid, so
+    # /heading_valid stays false until a dual-antenna receiver is confirmed (then true only
+    # for a GPHPR younger than heading_timeout_s with quality flag 4 = baseline RTK fixed).
+    publish_rtk_heading: false
+    heading_timeout_s: 1.0   # drop a GPHPR heading this old (/heading falls back to the track)
     fix_status_topic: "/fix_status"
     nmea_topic: "/nmea"
     publish_nmea: false    # set true to debug the raw stream or feed an NTRIP client

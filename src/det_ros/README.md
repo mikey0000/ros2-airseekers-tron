@@ -26,7 +26,7 @@ earlier docs guessed. The node letterboxes to this size and maps boxes back.
 The `Detection2DArray.header.frame_id` carries the source camera frame so the planner/OF
 layer can tell left from right. Each detection's `results[i].hypothesis.class_id` is the
 class **name** (index as a string only when no class list is known), `score` the
-confidence; `bbox` is in source-image pixels (Humble `vision_msgs` 4.x layout).
+confidence; `bbox` is in source-image pixels (Jazzy `vision_msgs` 4.x layout).
 `mower_vision/obstacle_guard` is the first consumer (danger-zone stop).
 
 ## OA obstacle contract (to reconcile)
@@ -70,7 +70,7 @@ Matches the original split (det on core 0, seg pinned to core 1).
 ## Prerequisite
 
 `rknn-toolkit-lite2` **2.3.0** (aarch64, cp310; the models were compiled with toolkit
-2.3.0) installed in the Humble container (`docker/Dockerfile.humble`), and a matching
+2.3.0) installed in the Jazzy container (`docker/Dockerfile.jazzy`), and a matching
 `librknnrt.so` bind-mounted at `/usr/lib/librknnrt.so` — see `docs/cameras_and_video.md`.
 `best_small_0208.rknn` is a single-class model (class tensors are 1 channel wide), not the
 2-class `stone`/`leaf` model earlier notes assumed.

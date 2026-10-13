@@ -1,7 +1,15 @@
-# twist_mux 4.3.0 (ROS 2 Humble). Messages are geometry_msgs/Twist; there is
-# no `use_stamped` parameter in this version.
+# twist_mux 4.5.0 (ROS 2 Jazzy). Messages are geometry_msgs/Twist.
+# Jazzy's twist_mux DEFAULTS to stamped messages (use_stamped=true) when the
+# parameter is absent ("use_stamped is not declared as parameter, defaulting to
+# true"): it then subscribes TwistStamped lanes and publishes a TwistStamped
+# cmd_vel_out, silently dropping every command from the unstamped chain
+# (cmd_vel_nav, cmd_vel_docking, cmd_vel_teleop, cmd_vel_emergency, bumper).
+# The whole mower chain is unstamped Twist, so pin use_stamped false here.
+# (PR ros-teleop/twist_mux#61 makes this safe: passing it no longer throws an
+# ParameterAlreadyDeclaredException on 4.5.0.)
 twist_mux:
   ros__parameters:
+    use_stamped: false
     # Higher priority overrides lower while its topic is active within timeout.
     topics:
       navigation:

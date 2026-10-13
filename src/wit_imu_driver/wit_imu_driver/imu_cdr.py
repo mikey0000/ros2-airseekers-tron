@@ -1,6 +1,6 @@
 """Pre-serialized (CDR) sensor_msgs/Imu and std_msgs/Float32, ROS-free.
 
-``Publisher.publish(bytes)`` (rclpy Humble ``publish_raw``) skips building the Python
+``Publisher.publish(bytes)`` (rclpy Jazzy ``publish_raw``) skips building the Python
 message, the Python->C conversion and rosidl serialization (~0.4 ms per publish on the
 RK3588). The layout is plain XCDR1 little endian, what rmw_fastrtps/cyclonedds emit; it is
 checked byte-for-byte against ``rclpy.serialization.serialize_message`` in

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Slope / tilt monitor (ROS 2 Humble): IMU attitude -> ok / caution / limit / critical.
+"""Slope / tilt monitor (ROS 2 Jazzy): IMU attitude -> ok / caution / limit / critical.
 
 2026-10-09. Band logic, filtering, hysteresis and the mounting correction live in
 ``tilt_logic.py`` (pure, unit tested); this node only feeds it and acts on CRITICAL itself.
@@ -20,10 +20,17 @@ Published
 ---------
 ``/tilt/status`` std_msgs/String JSON, latched (TRANSIENT_LOCAL depth 1): published on every
                  band change and at ``status_rate_hz`` (contract: ``TiltBands.status``).
-``/cmd_vel_emergency`` geometry_msgs/Twist: zeros for ``zero_burst_s`` on entering CRITICAL
-                 (``critical_stop``). A burst, not a stream: the MCU driver's stop policy is
-                 3 zero frames then silence, and the mission's EMERGENCY (critical is an
-                 emergency cause there) closes the motion gate for every lane anyway.
+``/cmd_vel_emergency`` geometry_msgs/Twist: zeros at ``rate_hz`` from entering CRITICAL
+                 (``critical_stop``) for as long as the band stays critical (or goes unknown
+                 while critical: IMU lost on a slope), then ``critical_hold_s`` more, and at
+                 least ``zero_burst_s`` in all. A stream, not a burst: twist_mux drops the
+                 emergency lane 0.2 s after its last message, so the old 0.5 s burst let the
+                 navigation lane drive again ~0.7 s later unless the mission's EMERGENCY
+                 had closed the motion gate by then (2026-10-13 review). The stop must not
+                 depend on the mission FSM.
+``/estop_request`` std_msgs/Bool ``true`` once on entering CRITICAL when
+                 ``critical_estop_request`` (default false): mcu_node latches motion + blade
+                 off until cleared (GUI / ``/clear_estop``).
 
 Called
 ------
@@ -71,10 +78,15 @@ class TiltMonitorNode(Node):
         dp('emergency_twist_topic', '/cmd_vel_emergency')
         dp('cutter_off_service', '/cutter_off')
         dp('zero_burst_s', 0.5)
+        dp('critical_hold_s', 1.0)
+        dp('critical_estop_request', False)
+        dp('estop_request_topic', '/estop_request')
         gp = lambda n: self.get_parameter(n).value  # noqa: E731
         self._bands = tilt_logic.TiltBands(**{k: gp(k) for k in tilt_logic.DEFAULTS})
         self._critical_stop = bool(gp('critical_stop'))
         self._zero_burst_s = float(gp('zero_burst_s'))
+        self._critical_hold_s = float(gp('critical_hold_s'))
+        self._estop_request = bool(gp('critical_estop_request'))
         self._status_period = 1.0 / max(0.1, float(gp('status_rate_hz')))
 
         self._sample = None          # (receipt monotonic, roll, pitch) of the newest IMU msg
@@ -95,6 +107,9 @@ class TiltMonitorNode(Node):
                              durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         self._status_pub = self.create_publisher(String, str(gp('status_topic')), latched)
         self._twist_pub = self.create_publisher(Twist, str(gp('emergency_twist_topic')), 10)
+        from std_msgs.msg import Bool
+        self._estop_pub = (self.create_publisher(Bool, str(gp('estop_request_topic')), 10)
+                           if self._estop_request else None)
         self._cutter_off = self.create_client(Trigger, str(gp('cutter_off_service')))
         self._runner = PeriodicRunner(
             self, [(1.0 / max(1.0, float(gp('rate_hz'))), self._tick)], 'tilt_monitor')
@@ -142,16 +157,26 @@ class TiltMonitorNode(Node):
                 'tilt: IMU reads |roll| %.0f deg (upside down). If the board is mounted '
                 'inverted set mount_roll_offset_deg: 180; until then this is CRITICAL' % abs(b.roll))
         changed = band != self._band
+        prev = self._band
         if changed:
-            self._on_band(self._band, band)
+            self._on_band(self._band, band, now)
             self._band = band
+        if self._critical_stop and (band == 'critical' or (
+                band == tilt_logic.UNKNOWN and getattr(self, '_stop_latched', False))):
+            # Hold the emergency lane for as long as it is critical (+ hold-off after).
+            self._stop_latched = True
+            self._burst_until = max(self._burst_until, now + self._critical_hold_s)
+        elif getattr(self, '_stop_latched', False) and changed:
+            self._stop_latched = False
+            self.get_logger().warn('tilt: left critical (%s -> %s); emergency stop released '
+                                   'in %.1f s' % (prev, band, max(0.0, self._burst_until - now)))
         if now < self._burst_until:
             self._twist_pub.publish(Twist())
         if changed or now - self._last_status >= self._status_period:
             self._last_status = now
             self._status_pub.publish(String(data=json.dumps(b.status(now), sort_keys=True)))
 
-    def _on_band(self, old, new):
+    def _on_band(self, old, new, now=None):
         b = self._bands
         text = 'tilt band %s -> %s (roll %s, pitch %s deg%s)' % (
             old, new, _deg(b.roll), _deg(b.pitch), ', axis ' + b.axis if b.axis else '')
@@ -162,8 +187,12 @@ class TiltMonitorNode(Node):
         else:
             self.get_logger().info(text)
         if new == 'critical' and self._critical_stop:
-            self._burst_until = time.monotonic() + self._zero_burst_s
+            now = time.monotonic() if now is None else now
+            self._burst_until = max(self._burst_until, now + self._zero_burst_s)
             self._twist_pub.publish(Twist())
+            if getattr(self, '_estop_pub', None) is not None:
+                from std_msgs.msg import Bool
+                self._estop_pub.publish(Bool(data=True))
             if self._cutter_off.service_is_ready():
                 self._cutter_off.call_async(Trigger.Request())
             else:

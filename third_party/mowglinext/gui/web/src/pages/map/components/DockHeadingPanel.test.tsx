@@ -1,7 +1,7 @@
 import {describe, it, expect, vi} from 'vitest';
 import {render, screen, fireEvent} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import {DockHeadingPanel, compassPoint, headingDegToRad, headingRadToDeg} from './DockHeadingPanel.tsx';
+import {DESKTOP_SIDE_PANEL_CLEARANCE, DockHeadingPanel, compassPoint, headingDegToRad, headingRadToDeg} from './DockHeadingPanel.tsx';
 import en from "../../../i18n/locales/en.json";
 import fr from "../../../i18n/locales/fr.json";
 
@@ -21,6 +21,7 @@ describe('DockHeadingPanel', () => {
         const onChange = vi.fn();
         const onApply = vi.fn().mockResolvedValue(undefined);
         render(<DockHeadingPanel heading={0} onChange={onChange} onApply={onApply}/>);
+        await user.click(screen.getByRole('button', {name: en.dockHeading.title}));
         const input = screen.getByLabelText(en.dockHeading.label);
         expect(input).toHaveValue('0.0');
         fireEvent.change(input, {target: {value: '90'}});
@@ -38,6 +39,19 @@ describe('DockHeadingPanel', () => {
         await user.click(screen.getByRole('button', {name: en.dockHeading.title}));
         expect(screen.getByLabelText(en.dockHeading.label)).toHaveValue('180.0');
         expect(screen.getByRole('button', {name: en.dockHeading.apply})).toBeInTheDocument();
+    });
+
+    it('desktop: starts collapsed and stays left of the Areas side panel', async () => {
+        const user = userEvent.setup();
+        render(<DockHeadingPanel heading={0} onChange={vi.fn()} onApply={vi.fn()}/>);
+        expect(screen.queryByLabelText(en.dockHeading.label)).toBeNull();
+        const opener = screen.getByRole('button', {name: en.dockHeading.title});
+        expect(opener.style.right).toBe(`${DESKTOP_SIDE_PANEL_CLEARANCE}px`);
+        await user.click(opener);
+        const card = screen.getByRole('group', {name: en.dockHeading.title});
+        expect(card.style.right).toBe(`${DESKTOP_SIDE_PANEL_CLEARANCE}px`);
+        await user.click(screen.getByRole('button', {name: en.dockHeading.collapse}));
+        expect(screen.queryByLabelText(en.dockHeading.label)).toBeNull();
     });
 
     it('has French strings for every key', () => {

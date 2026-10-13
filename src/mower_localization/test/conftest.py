@@ -5,7 +5,8 @@
 # latched BOUNDARY_EMERGENCY_STOP. Force localhost-only discovery on a private domain before
 # anything imports rclpy. MOWER_TEST_ROS_DOMAIN_ID overrides the domain.
 import os as _iso_os  # noqa: E402
-_iso_os.environ['ROS_LOCALHOST_ONLY'] = '1'
+_iso_os.environ['ROS_LOCALHOST_ONLY'] = '1'  # deprecated on Jazzy, still honoured
+_iso_os.environ['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
 _iso_os.environ['ROS_DOMAIN_ID'] = _iso_os.environ.get('MOWER_TEST_ROS_DOMAIN_ID', '77')
 # -------------------------------------------------------------------------------------------
 
@@ -15,7 +16,7 @@ The gate-decision logic in ``gps_gate._reject_reason`` is pure and
 runs anywhere. The node tests need ``rclpy``; when it is not
 importable (plain Python, no ROS install) a small shim stands in,
 mirroring ``um960_gps_driver/test/conftest.py`` so the same tests run
-unchanged inside the Humble container.
+unchanged inside the Jazzy container.
 """
 
 import os
@@ -42,7 +43,7 @@ def _install_rclpy_shim() -> None:
             self.frame_id = ""
 
     class NavSatStatus:
-        # Real ROS 2 Humble values (sensor_msgs/msg/NavSatStatus.msg).
+        # Real ROS 2 Jazzy values (sensor_msgs/msg/NavSatStatus.msg).
         STATUS_NO_FIX = -1
         STATUS_FIX = 0
         STATUS_SBAS_FIX = 1

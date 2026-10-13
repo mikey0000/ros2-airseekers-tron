@@ -1,4 +1,4 @@
-"""Single entry point for the Airseekers Tron ROS 2 (Humble) stack.
+"""Single entry point for the Airseekers Tron ROS 2 (Jazzy) stack.
 
     ros2 launch mower_bringup mower.launch.py [arg:=value ...]
 
@@ -349,6 +349,11 @@ def generate_launch_description() -> LaunchDescription:
         arg('localization', 'true', 'Include nav2.launch.py localization (gps_gate, navsat, ekf).'),
         arg('navigation', 'true', 'Include mower_navigation/navigation.launch.py (Nav2: bt_navigator, controller/planner/behavior servers, velocity_smoother). Needed by mission and docking (/navigate_to_pose, /follow_path).'),
         arg('map_server', 'true', 'Include mower_map/map_server.launch.py (zones, keepout mask, dock pose).'),
+        arg('obstacle_tracker', 'true', 'Include mower_map/obstacle_tracker_node: tracks '
+            'stereo/YOLO obstacles for the GUI panel. Auto-marking (auto_promote) is OFF by '
+            'default; when switched on (GUI Settings > Obstacles) it proposes pending keepouts '
+            'during a mow for the operator to accept, and removes tracker keepouts once the '
+            'object is gone. Needs map_server; see mower_map/config/obstacle_tracker.yaml.'),
         arg('maps_dir', '/ros2_ws/maps', 'areas.dat / dock_pose.yaml directory (compose mounts /userdata/ros2/maps).'),
         arg('coverage', 'true', 'Include mower_coverage_bridge (planner + /plan_coverage action).'),
         arg('cut_width_m', '', 'Blade cut width, m. Empty = the GUI tool_width from '
@@ -459,7 +464,7 @@ def generate_launch_description() -> LaunchDescription:
              respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control')),
         # base_link clouds (bumper heartbeat, YOLO obstacle points) republished in odom / map so
-        # the costmaps never wait for a transform (Humble tf2 MessageFilter deadlock froze the
+        # the costmaps never wait for a transform (Jazzy tf2 MessageFilter deadlock froze the
         # local costmap under load, 2026-10-09; mower_control/fixed_frame_relay.py)
         Node(package='mower_control', executable='fixed_frame_relay', name='fixed_frame_relay',
              respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
@@ -582,6 +587,27 @@ def generate_launch_description() -> LaunchDescription:
         condition=enabled('map_server'),
     )
 
+    # Auto obstacle marking (2026-10-11): clusters the ground-removed stereo depth cloud +
+    # YOLO-ranged detections, and promotes reliably-stable clusters into the map as permanent
+    # keepouts (map_server ~/promote_obstacle), removing them again once the object is gone
+    # (~/remove_obstacle). Needs map_server for the area polygons + services.
+    obstacle_tracker = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution(
+            [FindPackageShare('mower_map'), 'launch', 'obstacle_tracker.launch.py'])),
+        launch_arguments={
+            # Snapshot JPEGs live under the maps volume so the GUI container
+            # (which mounts the same host dir at /ros2_ws/maps) can serve them.
+            'snapshot_dir': PathJoinSubstitution(
+                [LaunchConfiguration('maps_dir'), 'obstacle_snapshots']),
+            # GUI-bound auto_promote (Settings > Obstacles) is read from the same
+            # mowgli_robot.yaml map_server_node uses; the GUI also pushes it live.
+            'obstacle_robot_yaml_path': os.path.join(stack_root, 'config', 'gui', 'mowgli_robot.yaml'),
+        }.items(),
+        condition=IfCondition(PythonExpression(
+            ["'", LaunchConfiguration('obstacle_tracker'), "' == 'true' and '",
+             LaunchConfiguration('map_server'), "' == 'true'"])),
+    )
+
     coverage = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution(
             [FindPackageShare('mower_coverage_bridge'), 'launch', 'coverage_bridge.launch.py'])),
@@ -686,6 +712,6 @@ def generate_launch_description() -> LaunchDescription:
         + [drivers, robot_state_publisher, static_map_odom]
         + control
         + [teleop, gui_bridge] + foxglove + [localization, navigation,
-           map_server, coverage, docking, mission, cameras, vio, perception, det_range,
-           supervisor, mow_recorder, bag_recorder, alerts]
+           map_server, obstacle_tracker, coverage, docking, mission, cameras, vio, perception,
+           det_range, supervisor, mow_recorder, bag_recorder, alerts]
     )

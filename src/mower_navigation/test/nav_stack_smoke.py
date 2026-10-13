@@ -112,7 +112,7 @@ class World(Node):
         self.bumper_pub = self.create_publisher(PointCloud2, "/bumper_cloud", 5)
         # The nav mask only reaches the global costmap through the KeepoutFilter: in a rolling
         # window the terrain_layer (a second StaticLayer, all zeros) overwrites the static_layer
-        # (Humble ignores use_maximum there). Publish the filter info as map_server_node does.
+        # (Jazzy ignores use_maximum there). Publish the filter info as map_server_node does.
         self.info_pub = self.create_publisher(CostmapFilterInfo, "/costmap_filter_info", latched)
         fi = CostmapFilterInfo()
         fi.header.frame_id = "map"

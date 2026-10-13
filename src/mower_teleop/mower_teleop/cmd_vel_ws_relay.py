@@ -7,7 +7,7 @@ licensed GPL-3.0; this derivative is therefore also GPL-3.0.
 
 Accepts TwistStamped-shaped JSON over WebSocket (default port 8766) and
 publishes an UNSTAMPED geometry_msgs/Twist on /cmd_vel_teleop (twist_mux 4.x
-on Humble consumes Twist).
+on Jazzy consumes Twist).
 
 Wire format (client -> relay, bare JSON frames):
   {"twist": {"linear": {"x": 0.2, "y": 0, "z": 0},

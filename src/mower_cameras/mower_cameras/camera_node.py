@@ -17,7 +17,7 @@ topic                       canonical producer                          this nod
 Why this node still exists:
 
 * ``enable_rear`` (``cameras.launch.py rear_driver:=opencv``): the rear USB UVC webcam
-  (32e6:9221) delivers 1920x1080@30 only as **MJPEG**; ``v4l2_camera`` 0.6 (Humble) cannot
+  (32e6:9221) delivers 1920x1080@30 only as **MJPEG**; ``v4l2_camera`` 0.7 (Jazzy) cannot
   decode MJPEG (YUYV/UYVY/GREY only), so full-rate rear video needs this node. Capture
   runs in a thread (``CaptureLoop``); ``rear_backend`` ``v4l2`` (default: pure-Python mmap
   reader, JPEG passed through to ``compressed``) or ``opencv``. Publishes ``/rear_camera/image_raw`` (bgr8),
@@ -64,7 +64,7 @@ def _to_image(stamp, frame_id, frame):
     msg.encoding = encoding
     frame = np.ascontiguousarray(frame)
     msg.step = int(frame.strides[0])
-    # array.array, not bytes: the Humble rclpy setter range-checks every element of a
+    # array.array, not bytes: the Jazzy rclpy setter range-checks every element of a
     # bytes/list value in Python (0.998 s per 1080p bgr8 frame measured on the mower ->
     # the rear topic ran at ~1 Hz); array.array('B') is taken as-is (0.005 s).
     data = array.array('B')

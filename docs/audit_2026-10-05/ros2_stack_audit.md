@@ -1,7 +1,7 @@
 > Audit date: 2026-10-05. Produced by a Claude Opus subagent (read-only audit of `ros2_stack/`).
 > Point-in-time snapshot: several defects listed here were fixed the same day. See `docs/STATUS.md` for the current state.
 
-# Audit of the Airseekers Tron ROS 2 Humble stack (`/home/michael/git/airseekers-decompile/ros2_stack`)
+# Audit of the Airseekers Tron ROS 2 Jazzy stack (`/home/michael/git/airseekers-decompile/ros2_stack`)
 
 I read the code, configs and launch files and ran the pure-python tests. I did not modify anything, did not run colcon, and did not touch the mower. `jbcontext` was unavailable (MCP connection failed), so all discovery was done with grep and direct reads.
 
@@ -71,13 +71,13 @@ Other repo facts:
 - **Coverage planner wired to Nav2:** no. `/coverage/plan` exists but is unlaunched, and nothing sends its `nav_msgs/Path` to `controller_server`'s `follow_path` action.
 - **Docking behaviour:** none. No `opennav_docking`, `ChargingControl.srv` has no server, and dock pose and charge state are not handled.
 - **Map store (polygons/GeoJSON):** none. There is no zone store and no lat/lon to `map` datum conversion.
-- **User-facing control surface:** effectively none. `base_ble` exists but is unlaunched and its imports are broken. `foxglove_bridge` may be installed (`Dockerfile.humble`, guarded) but is never launched. No HTTP API, no MQTT, no web UI.
+- **User-facing control surface:** effectively none. `base_ble` exists but is unlaunched and its imports are broken. `foxglove_bridge` may be installed (`Dockerfile.jazzy`, guarded) but is never launched. No HTTP API, no MQTT, no web UI.
 - **E-stop / safety chain:** host side, none. Details in step 4.
 
 **Ordered gap list:**
 
 0. **Boot.** `mower-ros2.service.example` runs `compose up -d`, and compose's `command: bash` launches no ROS nodes. `run_stack.sh` only does `ros2 launch <pkg> <file>`, but the top-level `launch/*.py` files belong to no package. Nothing starts the stack at boot.
-1. **Image.** Missing: `ros-humble-robot-localization` (still absent despite `nav2.launch.py:36`), `xacro`, `robot-state-publisher` (explicitly), `v4l2-camera`, `python3-evdev`, rknn-toolkit-lite2, and protobuf ≥3.20. `/userdata` is not mounted, so the `stereo_vio_bridge` calibration directory is missing.
+1. **Image.** Missing: `ros-jazzy-robot-localization` (still absent despite `nav2.launch.py:36`), `xacro`, `robot-state-publisher` (explicitly), `v4l2-camera`, `python3-evdev`, rknn-toolkit-lite2, and protobuf ≥3.20. `/userdata` is not mounted, so the `stereo_vio_bridge` calibration directory is missing.
 2. **Drivers that actually run on Humble:**
    - Fix the `gps_gate` constants and the `um960` RTK status mapping.
    - Fix or verify the WIT 11-byte frame parser.

@@ -12,10 +12,16 @@ type Props = {
     isOverridden?: (key: string) => boolean;
     hasDefault?: (key: string) => boolean;
     onReset?: (key: string) => void;
+    /** Schema/template defaults (useSettingsManager's `defaults`): the yaml is
+     *  sparse, so an unset key must show its default, not Off. */
+    defaults?: Record<string, unknown>;
 };
 
 /**
- * Obstacles section — automatic dig keepouts and obstacle-avoidance margins:
+ * Obstacles section — automatic obstacle marking, dig keepouts and
+ * obstacle-avoidance margins:
+ *   - obstacle_auto_promote: let the obstacle tracker turn stably-detected
+ *     stereo/YOLO obstacles into permanent keepout polygons (live toggle),
  *   - obstacle_inflation_radius: local-costmap buffer around LiDAR-seen
  *     obstacles (trunks, legs, walls),
  *   - max_obstacle_avoidance_distance: max lateral detour for coverage
@@ -24,7 +30,8 @@ type Props = {
  *     coverage and transit planning (root zones the 2D LiDAR cannot see),
  *   - obstacle_slowdown_ratio: collision_monitor approach slowdown factor.
  * All keys live in mowgli_robot.yaml (sparse over template) and are injected
- * into map server/Nav2/coverage params at launch — changes need a ROS2 restart.
+ * into map server/Nav2/coverage params at launch — changes need a ROS2 restart,
+ * except obstacle_auto_promote, which the backend pushes live to the tracker.
  */
 export const ObstaclesSection: React.FC<Props> = ({
     values,
@@ -32,8 +39,10 @@ export const ObstaclesSection: React.FC<Props> = ({
     isOverridden,
     hasDefault,
     onReset,
+    defaults,
 }) => {
     const { t } = useTranslation();
+    const boolSetting = (key: string) => parseBoolish(values[key] ?? defaults?.[key]) ?? false;
     const fieldLabel = (key: string, label: React.ReactNode) => (
         <SettingFieldLabel
             settingKey={key}
@@ -54,6 +63,21 @@ export const ObstaclesSection: React.FC<Props> = ({
                 style={{ marginBottom: 16 }}
             />
 
+            <Card size="small" title={t("settingsObstacles.autoMarkTitle")} style={{ marginBottom: 16 }}>
+                <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
+                    {t("settingsObstacles.autoMarkDescription")}
+                </Paragraph>
+                <Form layout="vertical" size="small">
+                    <Form.Item label={fieldLabel("obstacle_auto_promote", t("settingsObstacles.autoMarkLabel"))}>
+                        <Switch
+                            aria-label={t("settingsObstacles.autoMarkLabel")}
+                            checked={boolSetting("obstacle_auto_promote")}
+                            onChange={(enabled) => onChange("obstacle_auto_promote", enabled)}
+                        />
+                    </Form.Item>
+                </Form>
+            </Card>
+
             <Card size="small" title={t("settingsObstacles.digKeepouts")} style={{ marginBottom: 16 }}>
                 <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
                     {t("settingsObstacles.digKeepoutsDescription")}
@@ -62,7 +86,7 @@ export const ObstaclesSection: React.FC<Props> = ({
                     <Form.Item label={fieldLabel("dig_obstacle_enabled", t("settingsObstacles.digAutoPromotion"))}>
                         <Switch
                             aria-label={t("settingsObstacles.digAutoPromotion")}
-                            checked={parseBoolish(values.dig_obstacle_enabled) ?? false}
+                            checked={boolSetting("dig_obstacle_enabled")}
                             onChange={(enabled) => onChange("dig_obstacle_enabled", enabled)}
                         />
                     </Form.Item>

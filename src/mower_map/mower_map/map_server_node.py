@@ -31,7 +31,8 @@ from mower_interfaces.msg import MowerBaseDevStatus
 from mower_interfaces.srv import GetAreaSettings, PlanRoute, SetAreaSettings
 from mowgli_interfaces.msg import GnssStatus, MapArea, MapObstacleInfo, ObstacleArray
 from mowgli_interfaces.srv import (AddMowingArea, ClearObstacle, GetMowingArea,
-                                   GetRecoveryPoint, PromoteObstacle, SetDockingPoint)
+                                   GetRecoveryPoint, PromoteObstacle, RemoveObstacle,
+                                   SetDockingPoint)
 
 from mower_map import area_settings as aset
 from mower_map import areas as core
@@ -364,6 +365,10 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         srv(SetDockingPoint, '~/set_docking_point', self.srv_set_docking_point)
         srv(PromoteObstacle, '~/promote_obstacle', self.srv_promote_obstacle)
         srv(ClearObstacle, '~/discard_obstacle', self.srv_discard_obstacle)
+        # Remove an AUTO-tracked keepout (SOURCE_TRACKER) once the tracker has
+        # re-verified the physical obstacle is gone. Manual / imported keepouts
+        # and pending dig proposals are never touched (see areas.remove_obstacle).
+        srv(RemoveObstacle, '~/remove_obstacle', self.srv_remove_obstacle)
         srv(GetRecoveryPoint, '~/get_recovery_point', self.srv_get_recovery_point)
         srv(Trigger, '~/reset_mow_progress', self.srv_reset_mow_progress)
         srv(SetAreaSettings, '~/set_area_settings', self.srv_set_area_settings)
@@ -1194,7 +1199,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                 goal = (req.goal.x, req.goal.y, req.goal.theta)
             t0 = time.monotonic()
             # per-area transit_variation (area settings), picked by the mission's run index
-            modes = {i: self.settings.effective(a.name).get('transit_variation', 'lanes')
+            modes = {i: self.settings.effective(a.name).get('transit_variation', 'none')
                      for i, a in enumerate(self.store.areas)}
             r = g.plan((req.start.x, req.start.y, req.start.theta), goal,
                        int(getattr(req, 'variation', 0)), modes)
@@ -1394,15 +1399,25 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                                'supplied')
                 return res
             poly = _poly_from_msg(match[0].polygon)
-        ok, msg = self.store.add_obstacle(int(req.area_index), poly, req.name, source)
+        # B2 (review 2026-10-13): the id-only path is the tracker's automatic promotion
+        # (the GUI always sends the polygon). It becomes a PENDING proposal - live in the
+        # keepout mask for this session, never written to areas.dat - that the operator
+        # accepts (pending_id) or discards, like a wheel-slip dig keepout.
+        pending = source == core.SOURCE_TRACKER
+        ok, msg = self.store.add_obstacle(int(req.area_index), poly, req.name, source,
+                                          pending=pending)
         if not ok:
             res.success = False
             res.message = 'promotion rejected: ' + msg
             return res
         self.rebuild()
-        self.persist_best_effort('promote_obstacle')
         res.success = True
-        res.message = 'obstacle promoted to permanent keepout for area %d' % req.area_index
+        if pending:
+            res.message = ('tracked obstacle %d proposed as a pending keepout for area %d '
+                           '(accept or discard it)' % (req.obstacle_id, req.area_index))
+        else:
+            self.persist_best_effort('promote_obstacle')
+            res.message = 'obstacle promoted to permanent keepout for area %d' % req.area_index
         self.get_logger().info(res.message)
         return res
 
@@ -1415,6 +1430,26 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         self.rebuild()
         res.success = True
         res.message = 'pending obstacle %d discarded' % req.obstacle_id
+        return res
+
+    def srv_remove_obstacle(self, req, res):
+        """Auto-tracked obstacle cleanup: the tracker calls this after it has
+        verified the physical obstacle is gone (footprint observed clear / the
+        robot looked and saw nothing). Restricts removal to SOURCE_TRACKER
+        keepouts so a stale tracker can never delete a hand-drawn keepout."""
+        centroid = (float(req.centroid.x), float(req.centroid.y))
+        max_dist = float(req.max_distance_m) or core.OBSTACLE_DEDUP_EPS_M
+        ok, msg = self.store.remove_obstacle(None, int(req.obstacle_id), centroid, max_dist,
+                                             sources=(core.SOURCE_TRACKER,))
+        if not ok:
+            res.success = False
+            res.message = msg
+            return res
+        self.get_logger().info('auto-tracked keepout removed: %s' % msg)
+        self.rebuild()
+        self.persist_best_effort('remove_obstacle')
+        res.success = True
+        res.message = msg
         return res
 
     def robot_xy(self):

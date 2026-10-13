@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Supervisor: node liveness + black-box recorder for the Tron stack (ROS 2 Humble).
+"""Supervisor: node liveness + black-box recorder for the Tron stack (ROS 2 Jazzy).
 
 Recovery itself is launch's job (``respawn=True`` on every node, Nav2 servers re-activated
 by ``nav2_lifecycle_manager`` with ``attempt_respawn_reconnection``). This node makes
@@ -210,8 +210,12 @@ class Supervisor(Node):
             if ev[0] == 'down':
                 self._ever_down.add(ev[1])
                 critical = ev[1] in self._critical
-                (self.get_logger().error if critical else self.get_logger().warn)(
-                    'node %s DOWN (%s)%s' % (ev[1], ev[2], ' [critical]' if critical else ''))
+                msg = 'node %s DOWN (%s)%s' % (ev[1], ev[2], ' [critical]' if critical else '')
+                # rclpy (Jazzy) raises if one call site changes severity, so keep these apart.
+                if critical:
+                    self.get_logger().error(msg)
+                else:
+                    self.get_logger().warn(msg)
                 self._event_record({'event': 'down', 'node': ev[1], 'reason': ev[2],
                                     'critical': critical})
                 self.request_dump('node_down_%s' % ev[1].strip('/').replace('/', '_'), ev[2])

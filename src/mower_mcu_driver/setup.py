@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer='michael',
     maintainer_email='michael@example.com',
-    description='Airseekers Tron MCU serial driver for ROS 2 Humble '
+    description='Airseekers Tron MCU serial driver for ROS 2 Jazzy '
                 '(/dev/serial_mower protocol: battery, odometry, sensors, cmd_vel).',
     license='Apache-2.0',
     tests_require=['pytest'],

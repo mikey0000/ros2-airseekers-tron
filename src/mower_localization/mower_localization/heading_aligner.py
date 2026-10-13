@@ -22,6 +22,11 @@ Subscribed
 ``/cmd_vel``                        geometry_msgs/Twist    commanded motion (post-mux/slew)
 ``/odometry/gps``                   nav_msgs/Odometry      navsat output, map/ENU (= odom)
 ``/gps/status``                     mowgli GnssStatus      fix_type (2 float, 3 fixed)
+``/heading``                        std_msgs/Float32       receiver heading (deg, true north)
+``/heading_valid``                  std_msgs/Bool          true only for a fresh, fixed GPHPR on a
+                                    confirmed dual-antenna receiver (um960 publish_rtk_heading,
+                                    off by default: the UM960 is single-antenna)
+``/fix``                            sensor_msgs/NavSatFix  lat/lon for the UTM grid convergence
 ``/mower_base/status``              MowerBaseDevStatus     is_charging / is_docking_done
 ``/map_server_node/docking_pose``   PoseStamped (latched)  dock pose; fallback ``dock_pose_file``
 ``/map_server_node/docking_pose_measured``  Bool (latched)  dock pose recorded by set_docking_point;
@@ -34,10 +39,12 @@ Published
                              from the alignment quality (huge while unaligned). Bytes are
                              patched in place (no message objects at 100 Hz).
 ``/heading_aligner/status``  std_msgs/String JSON, latched, 1 Hz + on change:
-                             {aligned, source: none|file|dock|cog, offset_deg, quality, ...}
+                             {aligned, source: none|file|dock|cog|rtk, offset_deg, quality, ...}
 
-Persisted: ``offset_file`` (default /userdata/ros2/heading_offset.yaml) on every accepted COG
-update; loaded on boot as the low-quality ``file`` source.
+Persisted: ``offset_file`` (default /userdata/ros2/heading_offset.yaml) when the source changes,
+the offset moves >= ``persist_min_change`` deg, the robot moves 0.3 m / turns 5 deg, or every
+``persist_period`` s (:class:`heading_logic.PersistThrottle`); loaded on boot as the low-quality
+``file`` source.
 
 CPU: inputs go through sub_pump (no executor wakes); only /imu/data is event-driven, the rest
 are sampled by one PeriodicRunner thread.
@@ -55,8 +62,8 @@ from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
                        QoSReliabilityPolicy)
 from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Imu
-from std_msgs.msg import Bool, String
+from sensor_msgs.msg import Imu, NavSatFix
+from std_msgs.msg import Bool, Float32, String
 
 import tf2_ros
 from rclpy.time import Time
@@ -75,8 +82,8 @@ except ImportError:  # pragma: no cover
     MowerBaseDevStatus = None
 
 DEG_PARAMS = ('max_imu_yaw_change', 'outlier', 'reseed_agree', 'dock_heading_offset',
-              'imu_jump', 'sigma_cog', 'sigma_dock', 'sigma_file', 'sigma_file_verified',
-              'verify_max_yaw')
+              'imu_jump', 'sigma_cog', 'sigma_rtk', 'sigma_dock', 'sigma_file',
+              'sigma_file_verified', 'verify_max_yaw')
 
 
 def _read_dock_measured(path):
@@ -126,6 +133,16 @@ class HeadingAligner(Node):
         d('cmd_vel_topic', '/cmd_vel')
         d('gps_odom_topic', '/odometry/gps')
         d('gnss_status_topic', '/gps/status')
+        d('heading_topic', '/heading')
+        d('heading_valid_topic', '/heading_valid')
+        d('heading_stale', 0.5)      # s; older /heading or /heading_valid is not used
+        # Bearing of the GPS antenna baseline relative to the robot's forward axis (deg,
+        # clockwise): robot bearing = GPHPR - this. Measure on a dual-antenna install.
+        d('rtk_baseline_yaw_deg', 0.0)
+        # The map frame is the UTM grid (navsat use_local_cartesian: false): subtract the
+        # meridian convergence at the robot's /fix from the true-north GPHPR bearing.
+        d('rtk_grid_convergence', True)
+        d('fix_topic', '/fix')
         d('base_status_topic', '/mower_base/status')
         d('dock_pose_topic', '/map_server_node/docking_pose')
         d('dock_pose_file', '/ros2_ws/maps/dock_pose.yaml')
@@ -136,6 +153,7 @@ class HeadingAligner(Node):
         d('input_rate', 20.0)        # Hz sampling of cmd / gps
         d('status_rate', 1.0)
         d('persist_period', 30.0)    # s; re-save offset + IMU yaw + position while aligned
+        d('persist_min_change', 1.0)  # deg of offset change that is saved at once (else periodic)
         d('imu_source', 'auto')      # stereo | wit | auto (stereo when fresh + calibrated)
         d('stereo_imu_topic', '/stereo_imu/data')
         d('odom_topic', '/odom')     # wheel odometry: rest detection for the stereo bias
@@ -177,10 +195,8 @@ class HeadingAligner(Node):
         self._offset_file = g('offset_file')
         self._use_dock = bool(g('use_dock_seed'))
         self._last_status = None
-        self._persist_period = float(g('persist_period'))
-        self._persisted_at = time.monotonic()
-        self._persisted_xy = None     # position in the last saved record (re-save after 0.3 m)
-        self._persisted_yaw = None    # IMU yaw in the last saved record (re-save after 5 deg)
+        self._persist = hl.PersistThrottle(period=float(g('persist_period')),
+                                           min_change=math.radians(float(g('persist_min_change'))))
         self._tail = None             # cached orientation offset (frame_id length fixed)
         self._tail_key = None
         self._st_tail = None
@@ -199,6 +215,15 @@ class HeadingAligner(Node):
             self._tf_buf = tf2_ros.Buffer()
             self._tf_listener = tf2_ros.TransformListener(self._tf_buf, self, spin_thread=False)
         self._src_logged = None
+        # Latest receiver heading sample (monotonic receipt time, compass degrees) and the
+        # latest validity flag (receipt time, bool); each heading sample is used once.
+        self._heading = None
+        self._heading_valid = None
+        self._heading_used_t = None
+        self._heading_stale = float(g('heading_stale'))
+        self._baseline_yaw = float(g('rtk_baseline_yaw_deg'))
+        self._use_convergence = bool(g('rtk_grid_convergence'))
+        self._latlon = None
 
         if g('use_offset_file'):
             rec = hl.load_record(self._offset_file)
@@ -247,6 +272,13 @@ class HeadingAligner(Node):
                        history=QoSHistoryPolicy.KEEP_LAST),
             parser=parse_odometry, sampled=True, deliver_all=True)
         slow = []
+        slow.append(self._pump.subscribe(Float32, g('heading_topic'), self._on_heading,
+                                         one, **sampled))
+        slow.append(self._pump.subscribe(Bool, g('heading_valid_topic'), self._on_heading_valid,
+                                         one, **sampled))
+        if self._use_convergence:
+            slow.append(self._pump.subscribe(NavSatFix, g('fix_topic'), self._on_fix, one,
+                                             **sampled))
         if GnssStatus is not None:
             slow.append(self._pump.subscribe(GnssStatus, g('gnss_status_topic'), self._on_gnss,
                                              one, **sampled))
@@ -394,7 +426,35 @@ class HeadingAligner(Node):
             self._report(res)
 
     def _on_gnss(self, msg):
-        self.est.on_fix_type(time.monotonic(), int(msg.fix_type))
+        now = time.monotonic()
+        self.est.on_fix_type(now, int(msg.fix_type), self._rtk_heading(now))
+
+    def _rtk_heading(self, now):
+        """Map-frame ENU yaw of a fresh, valid, not yet used receiver heading, or None."""
+        hv, hd = self._heading_valid, self._heading
+        if hv is None or hd is None or not hv[1] or hd[0] == self._heading_used_t:
+            return None
+        if now - hv[0] > self._heading_stale or now - hd[0] > self._heading_stale:
+            return None
+        conv = 0.0
+        if self._use_convergence:
+            if self._latlon is None:
+                self.est.rtk_gate = 'no /fix for the grid convergence'
+                return None
+            conv = hl.utm_grid_convergence_deg(*self._latlon)
+        self._heading_used_t = hd[0]
+        return hl.rtk_heading_enu(hd[1], self._baseline_yaw, conv)
+
+    def _on_heading(self, msg):
+        self._heading = (time.monotonic(), float(msg.data))
+
+    def _on_heading_valid(self, msg):
+        self._heading_valid = (time.monotonic(), bool(msg.data))
+
+    def _on_fix(self, msg):
+        if math.isfinite(msg.latitude) and math.isfinite(msg.longitude) and \
+                (msg.latitude != 0.0 or msg.longitude != 0.0):
+            self._latlon = (float(msg.latitude), float(msg.longitude))
 
     def _on_base(self, msg):
         docked = bool(msg.is_charging) or bool(msg.is_docking_done)
@@ -461,24 +521,16 @@ class HeadingAligner(Node):
         with self._lock:
             st = self.est.status(now)
             st.update(self.src.status(now))
-            dirty, self.est.dirty = self.est.dirty, False
+            self.est.dirty = False
             rec = self.est.persist_record()
             src, n = self.est.source, self.est.n_cog
             wit = self.src.wit_yaw
-        moved = rec is not None and rec[2] is not None and (
-            self._persisted_xy is None
-            or math.hypot(rec[2] - self._persisted_xy[0], rec[3] - self._persisted_xy[1]) > 0.3)
-        turned = rec is not None and (
-            self._persisted_yaw is None
-            or abs(hl.wrap(rec[1] - self._persisted_yaw)) > math.radians(5.0))
-        if rec is not None and (dirty or moved or turned
-                                or now - self._persisted_at >= self._persist_period):
-            # Save on change, after 0.3 m of travel and periodically: the continuity check on
-            # the next boot compares against the LAST resting position, so a restart right
-            # after a drive must not see a record from before it.
-            self._persisted_at = now
-            self._persisted_xy = (rec[2], rec[3]) if rec[2] is not None else self._persisted_xy
-            self._persisted_yaw = rec[1]
+        if self._persist.due(now, rec, src):
+            # Save on a source change, a real offset change (>= persist_min_change), after
+            # 0.3 m / 5 deg and periodically: the continuity check on the next boot compares
+            # against the LAST resting position, so a restart right after a drive must not see
+            # a record from before it. Small blends wait for the periodic save (flash wear).
+            self._persist.saved(now, rec, src)
             try:
                 hl.save_offset(self._offset_file, rec[0], src, n, imu_yaw=rec[1], x=rec[2],
                                y=rec[3], wit_yaw=wit)

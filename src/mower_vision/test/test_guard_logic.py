@@ -332,8 +332,12 @@ def test_brief_command_turn_or_no_odom_ignored():
 
 def test_turning_toward_ranged_cat_within_side_range_is_dynamic():
     _, rel = turning_right()
+    per = Persistence()
     p = frame_policy([cat(0.7, 100, range_m=0.6)], pol('standard'), G540, CAM_RIGHT, rel,
-                     persistence=Persistence(), source='r')
+                     persistence=per, source='r')
+    assert p['kind'] == 'none'                            # ranged: 2 frames (2026-10-13)
+    p = frame_policy([cat(0.7, 100, range_m=0.6)], pol('standard'), G540, CAM_RIGHT, rel,
+                     persistence=per, source='r')
     assert p['kind'] == 'dynamic' and p['camera'] == 'right' and p['ranged'] is True
     assert p['distance_m'] == 0.6 and p['score'] == 0.7
     far = frame_policy([cat(0.7, 100, range_m=0.9)], pol('standard'), G540, CAM_RIGHT, rel)
@@ -380,10 +384,13 @@ def test_front_unranged_dynamic_needs_score_and_persistence():
                         persistence=per, source='f')['kind'] == 'none'
     assert frame_policy([hi], pol('standard'), G540, CAM_FRONT, {CAM_FRONT},
                         persistence=per, source='f')['kind'] == 'dynamic'
-    # ranged front rule unchanged: single frame
+    # ranged front: no score floor, but ranged_persist_frames (2) consecutive frames
     near = Box('cat', 0.45, 100, 100, 10, 10, range_m=0.9)
+    per = Persistence()
     assert frame_policy([near], pol('standard'), G540, CAM_FRONT, {CAM_FRONT},
-                        persistence=Persistence(), source='f')['kind'] == 'dynamic'
+                        persistence=per, source='f')['kind'] == 'none'
+    assert frame_policy([near], pol('standard'), G540, CAM_FRONT, {CAM_FRONT},
+                        persistence=per, source='f')['kind'] == 'dynamic'
 
 
 def test_sensitive_keeps_old_side_behaviour():
@@ -455,3 +462,81 @@ def test_tick_rate_idle_only_when_quiet():
     for act in (None, '', 'mowing', 'manual', 'docking', 'junk'):
         assert tick_rate_hz(act, False, 20.0, 2.0) == 20.0
     assert tick_rate_hz('idle', False, 20.0, 0.0) == 20.0
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-13: ranged dynamic persistence (one bad stereo frame stopped the mower)
+# ---------------------------------------------------------------------------
+G480 = GuardConfig(image_width=640, image_height=480)
+
+
+def ranged_person(d, h_frac=0.74, score=0.92, bearing_ok=True):
+    h = h_frac * 480
+    return Box('person', score, 320, 40 + h / 2, 200, h, range_m=d,
+               bearing_deg=-37.0 if bearing_ok else None)
+
+
+def test_ranged_dynamic_single_frame_is_not_a_policy():
+    per, ign = Persistence(), []
+    p = frame_policy([ranged_person(0.91)], pol('standard'), G480, CAM_FRONT, {CAM_FRONT},
+                     persistence=per, source='vio_camera', ignored=ign)
+    assert p['kind'] == 'none'
+    assert ign and ign[0][1] == 'ranged 0.91 m, 1/2 frames'
+
+
+def test_ranged_dynamic_two_consecutive_frames_stop():
+    per = Persistence()
+    frame_policy([ranged_person(0.97, 0.63)], pol('standard'), G480, CAM_FRONT, {CAM_FRONT},
+                 persistence=per, source='vio_camera')
+    p = frame_policy([ranged_person(0.35, 0.96)], pol('standard'), G480, CAM_FRONT,
+                     {CAM_FRONT}, persistence=per, source='vio_camera')
+    assert p['kind'] == 'dynamic' and p['distance_m'] == 0.35 and p['bbox_h_frac'] == 0.96
+
+
+def test_ranged_dynamic_out_of_range_frame_resets():
+    per = Persistence()
+    args = (pol('standard'), G480, CAM_FRONT, {CAM_FRONT})
+    assert frame_policy([ranged_person(0.9)], *args, persistence=per,
+                        source='f')['kind'] == 'none'
+    assert frame_policy([ranged_person(2.0)], *args, persistence=per,   # box-size corrected
+                        source='f')['kind'] == 'none'
+    assert frame_policy([ranged_person(0.9)], *args, persistence=per,
+                        source='f')['kind'] == 'none'
+    assert frame_policy([ranged_person(0.9)], *args, persistence=per,
+                        source='f')['kind'] == 'dynamic'
+
+
+def test_ranged_persistence_is_per_source():
+    per = Persistence()
+    args = (pol('sensitive'), G480, CAM_FRONT, None)
+    frame_policy([ranged_person(0.9)], *args, persistence=per, source='a')
+    assert frame_policy([ranged_person(0.9)], *args, persistence=per,
+                        source='b')['kind'] == 'none'
+    assert frame_policy([ranged_person(0.9)], *args, persistence=per,
+                        source='a')['kind'] == 'dynamic'
+
+
+def test_ranged_persist_frames_one_is_the_old_behaviour():
+    lt = LevelTable(ranged_persist_frames=1)
+    cfg = level_policy('standard', PolicyConfig(), lt)
+    assert cfg.ranged_persist_frames == 1
+    assert frame_policy([ranged_person(0.9)], cfg, G480, CAM_FRONT, {CAM_FRONT},
+                        persistence=Persistence(), source='f')['kind'] == 'dynamic'
+
+
+def test_ranged_static_needs_no_persistence():
+    chair = Box('chair', 0.8, 320, 300, 100, 100, range_m=1.2)
+    assert frame_policy([chair], pol('standard'), G480, CAM_FRONT, {CAM_FRONT},
+                        persistence=Persistence(), source='f')['kind'] == 'static'
+
+
+def test_front_bbox_h_frac_uses_the_front_image_height():
+    # the front eye is 640x480 (camera_info /vio/right/camera_info, frame vio_camera); the
+    # guard's 960x540 fallback is for the OA cameras only
+    cfg = with_image_size(G540, 640, 480)
+    per = Persistence()
+    frame_policy([ranged_person(0.9)], pol('standard'), cfg, CAM_FRONT, {CAM_FRONT},
+                 persistence=per, source='f')
+    p = frame_policy([ranged_person(0.9)], pol('standard'), cfg, CAM_FRONT, {CAM_FRONT},
+                     persistence=per, source='f')
+    assert p['bbox_h_frac'] == 0.74

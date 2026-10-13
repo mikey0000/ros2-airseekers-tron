@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Cancelling a running /mower_docking/dock goal publishes zero velocity immediately.
 
-Needs a real ROS 2 Humble environment; skipped elsewhere. Runs on an isolated
+Needs a real ROS 2 Jazzy environment; skipped elsewhere. Runs on an isolated
 ROS domain and a test-only cmd_vel topic, so it never reaches twist_mux.
 """
 

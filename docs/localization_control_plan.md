@@ -204,7 +204,7 @@ parameters above matter as much as the quaternion.
    either, expect single-point fixes (~2.5 m). `gps_gate`'s covariance threshold is the
    guardrail; anything gating on fix *quality* — the dig detector, for one — should check
    RTK-fixed status in `/fix_status`, never the filter's own covariance. See `docs/um960.md`.
-7. ~~**`ros-humble-robot-localization` is not in `docker/Dockerfile.humble`.**~~ **Resolved:**
+7. ~~**`ros-jazzy-robot-localization` is not in `docker/Dockerfile.jazzy`.**~~ **Resolved:**
    added to the image.
 
 ---

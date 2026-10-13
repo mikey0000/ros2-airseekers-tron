@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Slew-rate limiter for ``/cmd_vel`` with a command watchdog (ROS 2 Humble).
+"""Slew-rate limiter for ``/cmd_vel`` with a command watchdog (ROS 2 Jazzy).
 
 Port of the MowgliNext ``cmd_vel_slew.hpp`` pattern -- see
 ``ros2_stack/docs/mowglinext_baseline.md`` section 4.3, item 9: shape the
@@ -27,13 +27,28 @@ Parameters
                                   MowgliNext style) and held there until a fresh
                                   command arrives
 ``rate``               ``20.0``   Hz output/update rate
-``frame_id``           ``base_link``  frame stamped on the output
+``frame_id``           ``base_link``  reserved (unstamped Twist has no header)
 ``pivot_assist``       ``true``   creeping pivot (see :class:`PivotAssist`): after
-                                  ``pivot_assist_delay_s`` (1.5) of linear 0 / |angular|
+                                  ``pivot_assist_delay_s`` (0.8) of linear 0 / |angular|
                                   >= ``pivot_assist_min_angular_radps`` (0.08) in TRANSIT or
-                                  MOWING, add ``pivot_assist_linear_mps`` (0.05) forward, at
-                                  most ``pivot_assist_max_dist_m`` (0.3) per pivot
-                                  DEFAULT NOW ``false``: subsumed by the turn shaper
+                                  MOWING, add ``pivot_assist_linear_mps`` (0.14) forward, at
+                                  most ``pivot_assist_max_dist_m`` (0.3) per pivot. The creep
+                                  must keep the inside wheel >= the turn shaper's
+                                  ``min_inner_wheel_mps`` (>= 0.06 + 0.3*0.24 = 0.132 at
+                                  |w| = 0.3), or shape_for_both_wheels snaps it back to an
+                                  unassisted pure pivot (2026-10-10 live incident).
+                                  Only for a FollowPath pivot on the twist_mux navigation
+                                  lane (never bumper/emergency/teleop/docking lanes, Nav2
+                                  recoveries, or within ``pivot_assist_holdoff_s`` (5) of a
+                                  bumper/emergency message), and held while the local
+                                  costmap has a lethal cell in the creep sweep
+                                  (``pivot_assist_costmap`` true, ``_lethal`` 100,
+                                  ``_margin_m`` 0.10, costmap older than
+                                  ``_costmap_max_age_s`` 3 = held) or a front/side vision
+                                  obstacle is within ``pivot_assist_obstacle_range_m``
+                                  (1.5): the creep is downstream of collision_monitor and
+                                  nothing else checks it (:class:`PivotAssistGate`).
+                                  Not loaded from any yaml: set live with ros2 param set.
 ``turn_shaper``        ``true``   both-wheel turn shaping (see :func:`shape_for_both_wheels`,
                                   :class:`TurnShaper`) in autonomous phases: inner wheel
                                   >= ``min_inner_wheel_mps`` (0.06) with ``track_width_m``
@@ -82,7 +97,10 @@ Behaviour
 ---------
 * Fixed-rate loop.  Each tick moves the applied linear.x / angular.z at most
   ``accel * dt`` toward the target; every other twist component passes through
-  unchanged.
+  unchanged.  During a pivot-assist episode only (creep ramp-up, hold and
+  ramp-down) the step also never lands in the one-wheel zone
+  (:func:`slew_both_wheels`: the pivot <-> creep-arc change passes through a stop);
+  normal driving is the plain per-axis slew of the turn-shaped target.
 * Every published command is echoed to the log at full float precision (the
   MowgliNext ``/cmd_vel_applied`` idea, as a log line instead of a topic),
   throttled to ``applied_log_period`` (default 1 s; 0 = every tick, the old
@@ -188,6 +206,8 @@ class DriveShaper:
 
 
 # --------------------------------------------------------------------------- pivot assist
+# Mission phases where a creep may be added. Docking/undocking/returning are NOT here (the
+# marker-guided approach and the dock about-turn must reach the MCU as sent).
 PIVOT_ASSIST_PHASES = frozenset(('TRANSIT', 'MOWING'))
 
 
@@ -196,22 +216,39 @@ class PivotAssist:
 
     The Tron's casters on turf make in-place pivots unreliable (measured 0.02-0.08 rad/s
     yaw at 0.3 rad/s commanded; a forward arc reaches ~0.2, docs/analysis/
-    2026-10-06_ring_drift.md). Humble RPP's rotate-to-heading commands linear 0, so after
-    ``delay_s`` of a pure pivot command (|angular| >= ``min_angular``, linear == 0) in a
-    TRANSIT/MOWING phase this adds ``linear`` m/s forward, at most ``max_dist_m`` of
-    commanded travel per pivot (the pivot ends when the command stops being a pivot).
-    Lawn-safe: 0.05 m/s x 6 s at most; the costmap / controller still checks collisions.
+    2026-10-06_ring_drift.md). The Nav2 controllers' rotate-to-heading commands linear 0,
+    so after ``delay_s`` of a pure pivot command (|angular| >= ``min_angular``, linear ==
+    0) in a TRANSIT/MOWING phase this adds ``linear`` m/s forward, at most ``max_dist_m``
+    of commanded travel per pivot (the pivot ends when the command stops being a pivot).
+    0.14 m/s x ~2.2 s at most (0.3 m cap).
+
+    NOT collision-checked upstream: this node is downstream of controller -> smoother ->
+    collision_monitor -> twist_mux, so nothing in Nav2 ever sees the creep. The caller
+    passes two verdicts from :class:`PivotAssistGate`:
+
+    * ``lane_ok`` False (the command is not a FollowPath pivot on the navigation lane:
+      bumper rotate-clear, emergency, teleop, docking, Nav2 Spin recovery, or within the
+      bumper/emergency hold-off) resets the pivot: no creep, the delay restarts;
+    * ``clear`` False (local costmap lethal in the creep sweep, close vision obstacle,
+      inputs stale) holds the creep (no forward command) without resetting the budget.
+
+    ``linear`` must be >= 0.06 + |w|*0.24 (0.132 at |w| = 0.3) so the both-wheel turn
+    shaper keeps the creep as a legal arc; a smaller creep is snapped back to a pure pivot
+    and stalls on turf (2026-10-10 live: rocking in place -> STUCK at (-1.35, 2.90)). The
+    slew then moves between the pivot and the arc through a stop (see
+    :func:`slew_both_wheels`), never through the one-wheel zone.
     """
 
     # min_angular 0.08 (2026-10-07 live): RPP's rotate-to-heading only ramped to 0.16 rad/s
     # (0.086 achieved) and the old 0.2 threshold never fired; 0.08 completed the turn.
-    def __init__(self, enabled=True, linear=0.05, min_angular=0.08, delay_s=1.5,
+    def __init__(self, enabled=True, linear=0.14, min_angular=0.08, delay_s=0.8,
                  max_dist_m=0.3):
         self.enabled = bool(enabled)
         self.linear = float(linear)
         self.min_angular = float(min_angular)
         self.delay_s = float(delay_s)
         self.max_dist_m = float(max_dist_m)
+        self.held = ''            # why the creep is held (clear=False), '' = not held
         self.reset()
 
     def reset(self):
@@ -219,15 +256,21 @@ class PivotAssist:
         self.dist_m = 0.0         # forward creep commanded during it
         self.active = False
 
-    def apply(self, lin, ang, phase, dt):
+    @property
+    def remaining_m(self):
+        return max(0.0, self.max_dist_m - self.dist_m)
+
+    def is_pivot(self, lin, ang, phase):
+        return (self.enabled and phase in PIVOT_ASSIST_PHASES and abs(lin) < 1e-3
+                and abs(ang) >= self.min_angular)
+
+    def apply(self, lin, ang, phase, dt, lane_ok=True, clear=True):
         """Target linear.x for raw target (lin, ang) in mission ``phase``."""
-        pivot = (self.enabled and phase in PIVOT_ASSIST_PHASES and abs(lin) < 1e-3
-                 and abs(ang) >= self.min_angular)
-        if not pivot:
+        if not (lane_ok and self.is_pivot(lin, ang, phase)):
             self.reset()
             return lin
         self.pivot_s += dt
-        if self.pivot_s <= self.delay_s or self.dist_m >= self.max_dist_m:
+        if self.pivot_s <= self.delay_s or self.dist_m >= self.max_dist_m or not clear:
             self.active = False
             return lin
         self.active = True
@@ -243,6 +286,223 @@ PIVOT_PARAMS = {   # node parameter -> PivotAssist kwarg
     'pivot_assist_max_dist_m': 'max_dist_m',
 }
 
+# twist_mux lanes (mower_teleop/config/twist_mux.yaml; test_pivot_assist_gate checks they
+# match): (name, topic, priority, timeout_s).
+TWIST_MUX_LANES = (
+    ('emergency', '/cmd_vel_emergency', 100, 0.2),
+    ('bumper', '/cmd_vel_bumper', 50, 0.5),
+    ('teleop', '/cmd_vel_teleop', 20, 0.5),
+    ('docking', '/cmd_vel_docking', 15, 0.5),
+    ('navigation', '/cmd_vel_nav', 10, 0.6),
+)
+NAV_LANE = 'navigation'
+# controller_server's own output (before velocity_smoother / collision_monitor). Nav2's
+# behavior_server (Spin, BackUp, DriveOnHeading) publishes straight to /cmd_vel_nav, so a
+# nav-lane pivot without a fresh controller command is a recovery, not a FollowPath pivot.
+CONTROLLER_TOPIC = '/cmd_vel_nav_raw'
+
+
+class LaneTracker:
+    """Which twist_mux lane is winning, re-derived from the lanes' receive times (twist_mux
+    4.5 publishes no "active lane" topic): the highest-priority lane heard within its
+    timeout."""
+
+    def __init__(self, lanes=TWIST_MUX_LANES):
+        self.lanes = sorted(lanes, key=lambda lane: -lane[2])
+        self.last = {}
+
+    def note(self, name, t):
+        self.last[name] = t
+
+    def age(self, name, now):
+        t = self.last.get(name)
+        return float('inf') if t is None else now - t
+
+    def active(self, now):
+        for name, _topic, _prio, timeout in self.lanes:
+            if self.age(name, now) <= timeout:
+                return name
+        return None
+
+
+def _int8_bytes(data):
+    """int8[] message field (array('b'), bytes or a list of ints) as raw bytes."""
+    if isinstance(data, (bytes, bytearray)):
+        return bytes(data)
+    tobytes = getattr(data, 'tobytes', None)
+    if tobytes is not None:
+        return tobytes()
+    return bytes(int(v) & 0xFF for v in data)
+
+
+class CostmapWindow:
+    """Latest local costmap (nav_msgs/OccupancyGrid values -1..100, rolling window in
+    ``odom``; origin orientation assumed identity, as Nav2 publishes it) plus its
+    OccupancyGridUpdate patches. Pure logic."""
+
+    def __init__(self):
+        self.res = None
+        self.width = self.height = 0
+        self.ox = self.oy = 0.0
+        self.data = None
+        self.stamp = None
+
+    def set_grid(self, res, width, height, ox, oy, data, t):
+        if res <= 0.0 or len(data) < width * height:
+            return
+        self.res, self.width, self.height = float(res), int(width), int(height)
+        self.ox, self.oy = float(ox), float(oy)
+        self.data = bytearray(_int8_bytes(data))
+        self.stamp = t
+
+    def update(self, x, y, width, height, data, t):
+        if self.data is None:
+            return
+        raw = _int8_bytes(data)
+        if (x < 0 or y < 0 or x + width > self.width or y + height > self.height
+                or len(raw) < width * height):
+            return
+        for row in range(height):
+            dst = (y + row) * self.width + x
+            self.data[dst:dst + width] = raw[row * width:(row + 1) * width]
+        self.stamp = t
+
+    def value(self, x, y):
+        """Cost (-1..100) at odom (x, y); None outside the window or without a grid."""
+        if self.data is None:
+            return None
+        i = int(math.floor((x - self.ox) / self.res))
+        j = int(math.floor((y - self.oy) / self.res))
+        if i < 0 or j < 0 or i >= self.width or j >= self.height:
+            return None
+        v = self.data[j * self.width + i]
+        return v - 256 if v > 127 else v
+
+
+FOOTPRINT_FRONT_X = 0.52      # base_link front edge (nav2_params footprint)
+FOOTPRINT_HALF_Y = 0.27
+
+
+def creep_sweep_points(pose, v, w, dist_m, margin_m=0.10, step=0.05):
+    """odom points covering the front part of the footprint swept along the creep arc
+    (speed ``v``, rate ``w``) for ``dist_m`` + ``margin_m`` of travel."""
+    x, y, yaw = pose
+    pts = []
+    total = max(0.0, dist_m) + margin_m
+    n = max(1, int(math.ceil(total / step)))
+    ds = total / n
+    k = w / v if abs(v) > 1e-6 else 0.0          # curvature, rad per m
+    half = FOOTPRINT_HALF_Y + margin_m
+    xs = [FOOTPRINT_FRONT_X - 0.15 + i * step
+          for i in range(int(round((0.15 + margin_m) / step)) + 1)]
+    ys = [-half + i * step for i in range(int(round(2 * half / step)) + 1)]
+    for s in range(n + 1):
+        c, sn = math.cos(yaw), math.sin(yaw)
+        for bx in xs:
+            for by in ys:
+                pts.append((x + c * bx - sn * by, y + sn * bx + c * by))
+        x += ds * math.cos(yaw + 0.5 * k * ds)
+        y += ds * math.sin(yaw + 0.5 * k * ds)
+        yaw += k * ds
+    return pts
+
+
+class PivotAssistGate:
+    """Lane and collision verdicts for :class:`PivotAssist` (pure logic, monotonic s).
+
+    lane_ok: the navigation lane is winning, the FollowPath controller is publishing
+    (``CONTROLLER_TOPIC`` within ``controller_max_age``: no Spin/BackUp recovery), and no
+    bumper or emergency lane message within ``holdoff_s`` (no creep back toward what was
+    just hit, nor right after a tilt / vision emergency stop).
+
+    clear: nothing lethal in the local costmap in the creep sweep (fresh costmap and
+    odometry required: stale or missing = held), no ``/vision/obstacle_close`` and no
+    dynamic/static ``/obstacle_policy`` within ``obstacle_range_m`` (front/side cameras)
+    in the last ``vision_hold_s``.
+    """
+
+    def __init__(self, lanes=TWIST_MUX_LANES, controller_max_age=0.3, holdoff_s=5.0,
+                 use_costmap=True, costmap_max_age=3.0, odom_max_age=0.5, lethal=100,
+                 margin_m=0.10, vision_hold_s=2.0, obstacle_range_m=1.5):
+        self.lanes = LaneTracker(lanes)
+        self.controller_max_age = float(controller_max_age)
+        self.holdoff_s = float(holdoff_s)
+        self.use_costmap = bool(use_costmap)
+        self.costmap_max_age = float(costmap_max_age)
+        self.odom_max_age = float(odom_max_age)
+        self.lethal = int(lethal)
+        self.margin_m = float(margin_m)
+        self.vision_hold_s = float(vision_hold_s)
+        self.obstacle_range_m = float(obstacle_range_m)
+        self.costmap = CostmapWindow()
+        self.controller_t = None
+        self.pose = None
+        self.pose_t = None
+        self.vision_t = None      # last close-obstacle report
+
+    # inputs
+    def note_lane(self, name, t):
+        self.lanes.note(name, t)
+
+    def note_controller(self, t):
+        self.controller_t = t
+
+    def note_pose(self, x, y, yaw, t):
+        self.pose, self.pose_t = (x, y, yaw), t
+
+    def note_obstacle_close(self, close, t):
+        if close:
+            self.vision_t = t
+
+    def note_policy(self, policy, t):
+        """``/obstacle_policy`` JSON dict (mower_vision obstacle_guard)."""
+        if not isinstance(policy, dict) or policy.get('kind') not in ('dynamic', 'static'):
+            return
+        if policy.get('camera') == 'rear':
+            return                # creep is forward
+        d = policy.get('distance_m')
+        if not isinstance(d, (int, float)) or d <= self.obstacle_range_m:
+            self.vision_t = t     # unranged dynamic counts as close
+
+    # verdicts
+    def lane_verdict(self, now):
+        """(ok, why)."""
+        lane = self.lanes.active(now)
+        if lane != NAV_LANE:
+            return False, 'lane %s' % (lane or 'none')
+        for name in ('bumper', 'emergency'):
+            if self.lanes.age(name, now) <= self.holdoff_s:
+                return False, '%s hold-off' % name
+        if self.controller_t is None or now - self.controller_t > self.controller_max_age:
+            return False, 'not a FollowPath pivot (recovery / no controller cmd)'
+        return True, ''
+
+    def clear_verdict(self, now, v, w, dist_m):
+        """(clear, why) for a creep at (v, w) over ``dist_m``."""
+        if self.vision_t is not None and now - self.vision_t <= self.vision_hold_s:
+            return False, 'vision obstacle close'
+        if not self.use_costmap:
+            return True, ''
+        cm = self.costmap
+        if cm.stamp is None or now - cm.stamp > self.costmap_max_age:
+            return False, 'local costmap stale'
+        if self.pose is None or now - self.pose_t > self.odom_max_age:
+            return False, 'odometry stale'
+        for px, py in creep_sweep_points(self.pose, v, w, dist_m, self.margin_m):
+            c = cm.value(px, py)
+            if c is not None and c >= self.lethal:
+                return False, 'costmap lethal at (%.2f, %.2f)' % (px, py)
+        return True, ''
+
+
+ASSIST_GATE_PARAMS = {   # node parameter -> (PivotAssistGate attribute, type)
+    'pivot_assist_holdoff_s': ('holdoff_s', float),
+    'pivot_assist_costmap': ('use_costmap', bool),
+    'pivot_assist_costmap_max_age_s': ('costmap_max_age', float),
+    'pivot_assist_lethal': ('lethal', int),
+    'pivot_assist_margin_m': ('margin_m', float),
+    'pivot_assist_obstacle_range_m': ('obstacle_range_m', float),
+}
 
 
 # --------------------------------------------------------------------------- both-wheel turn shaper
@@ -315,6 +575,68 @@ def shape_for_both_wheels(v, w, params=None):
     return sign * av, math.copysign(aw, w), info
 
 
+def both_wheels_legal(v, w, params=None):
+    """True unless the inner wheel is in the one-wheel zone (same rule as
+    :func:`shape_for_both_wheels`: straight, pure pivot, inner >= +min or <= -min)."""
+    p = SHAPE_DEFAULTS if params is None else params
+    if abs(w) < 1e-6 or abs(v) < 1e-6:
+        return True
+    v_min = float(p['min_inner_wheel_mps'])
+    inner = abs(v) - abs(w) * 0.5 * float(p['track_width_m'])
+    return inner >= v_min - 1e-9 or inner <= -v_min + 1e-9
+
+
+def slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
+                     params=None):
+    """One slew step from (cur_v, cur_w) toward a legal target that never lands in the
+    one-wheel zone. Used for pivot-assist episodes only (2026-10-13 review: the 0 -> 0.14 creep ramp at |w| = 0.3 spent 5-9
+    ticks with the inner wheel in (-0.06, +0.06); 831 of 3251 assisted ticks in the
+    10-10/10-11 bags).
+
+    The legal set is {pure pivots v = 0} U {inner <= -min} on one side and {straight w = 0}
+    U {inner >= +min} on the other; they meet only at a stop, so a continuous pivot <-> arc
+    change passes through (0, 0) (ramping v and w together cannot avoid it: inner = |v| -
+    |w| b/2 is continuous and must cross (-min, +min) unless w or v is 0):
+
+    * pivot side (inner < 0) heading for an arc: v to 0 first, then |w| down to 0 (a slowing
+      pure pivot), then the arc side takes over;
+    * arc side: |w| is capped at (|v| - min)/(b/2) while v ramps up (straight until |v| >=
+      min); when |w| cannot be shed that fast, it is shed at the full angular rate and |v|
+      is held at min + |w| b/2 until it can.
+
+    Independent per-axis slew whenever its result is already legal (normal driving).
+    """
+    p = dict(SHAPE_DEFAULTS)
+    if params:
+        p.update(params)
+    v1 = slew(cur_v, tgt_v, max_lin_accel, dt)
+    w1 = slew(cur_w, tgt_w, max_ang_accel, dt)
+    if both_wheels_legal(v1, w1, p):
+        return v1, w1
+    half = 0.5 * float(p['track_width_m'])
+    v_min = float(p['min_inner_wheel_mps'])
+    dv, dw = max_lin_accel * dt, max_ang_accel * dt
+    if abs(cur_v) - abs(cur_w) * half < 0.0:          # pivot side
+        vn = slew(cur_v, 0.0, max_lin_accel, dt)
+        if abs(vn) < 1e-6:
+            return 0.0, slew(cur_w, 0.0, max_ang_accel, dt)
+        # still drifting off a counter-rotating pivot: keep it a proper pivot
+        need = (abs(vn) + v_min) / half
+        wn = math.copysign(min(max(abs(w1), need), abs(cur_w) + dw), cur_w)
+        return vn, wn
+    cap = max(0.0, (abs(v1) - v_min) / half)          # arc side
+    wn = max(-cap, min(cap, w1))
+    if abs(wn - cur_w) <= dw + 1e-12:
+        return v1, wn
+    wn = slew(cur_w, 0.0, max_ang_accel, dt)
+    need = v_min + abs(wn) * half
+    sign = math.copysign(1.0, cur_v)
+    same = abs(v1) if v1 * sign > 0.0 else 0.0
+    vn = sign * max(same, need)
+    vn = max(cur_v - dv, min(cur_v + dv, vn))
+    return vn, wn
+
+
 class TurnShaper:
     """Stateful wrapper: phase gating + latched status. Manual phases pass unless
     ``shape_manual``."""
@@ -329,11 +651,13 @@ class TurnShaper:
     def reset(self):
         self.status = 'pass'
 
+    def is_active(self, phase):
+        return self.enabled and (phase in SHAPE_PHASES or
+                                 (self.shape_manual and phase in MANUAL_PHASES))
+
     def apply(self, v, w, phase, dt):
         """Return the shaped (v, w) for raw target (v, w) in mission ``phase``."""
-        active = self.enabled and (phase in SHAPE_PHASES or
-                                   (self.shape_manual and phase in MANUAL_PHASES))
-        if not active:
+        if not self.is_active(phase):
             self.reset()
             return v, w
         sv, sw, info = shape_for_both_wheels(v, w, self.params)
@@ -508,9 +832,21 @@ class CmdVelSlewNode(Node):
         self.declare_parameter('robot_settings_file', default_settings_file())
         for name, (default, _kind) in SHAPER_PARAMS.items():
             self.declare_parameter(name, default)
-        _pa = PivotAssist(enabled=False)   # subsumed by the TurnShaper (no double creep)
+        # Creep on (2026-10-10, owner 2026-10-13: "seems to be working"). It must itself keep
+        # the inside wheel >= the shaper's min_inner (>= 0.132 m/s at |w| <= 0.3), or the
+        # TurnShaper below would snap it back to a pure pivot and the pivot would stall on
+        # turf: linear 0.14 -> inner 0.068 at |w| = 0.3. The launch passes no parameters to
+        # this node and the GUI settings file only carries SHAPER_PARAMS, so these defaults
+        # are what runs; change them live with `ros2 param set /cmd_vel_slew ...`.
+        _pa = PivotAssist()
         for name, attr in PIVOT_PARAMS.items():
             self.declare_parameter(name, getattr(_pa, attr))
+        _ag = PivotAssistGate()
+        for name, (attr, _kind) in ASSIST_GATE_PARAMS.items():
+            self.declare_parameter(name, getattr(_ag, attr))
+        self._assist_gate = PivotAssistGate(**{attr: kind(self.get_parameter(name).value)
+                                               for name, (attr, kind)
+                                               in ASSIST_GATE_PARAMS.items()})
         for name, default in TURN_DEFAULTS.items():
             self.declare_parameter(name, default)
         self._turn = TurnShaper()
@@ -588,6 +924,7 @@ class CmdVelSlewNode(Node):
                                         reliability=QoSReliabilityPolicy.RELIABLE,
                                         history=QoSHistoryPolicy.KEEP_LAST),
                              parser=flat_parser(Bool), sampled=True)
+        self._subscribe_assist_inputs()
         self._pump.start()
         self._pub = self.create_publisher(Twist, '/cmd_vel', qos)
         from std_msgs.msg import String
@@ -613,6 +950,69 @@ class CmdVelSlewNode(Node):
         self.get_logger().info('cmd_vel_slew shaping: %s%s' % (
             {n: getattr(self._shaper, n) for n in SHAPER_PARAMS},
             ' (from %s)' % sorted(overrides) if overrides else ''))
+
+    def _subscribe_assist_inputs(self):
+        """Pivot-assist gate inputs (see :class:`PivotAssistGate`). Lanes are read raw (only
+        their receive time matters) and BEST_EFFORT so they match any publisher QoS: a
+        silently incompatible lane would look idle and let the creep run under it."""
+        import json
+        from std_msgs.msg import Bool, String
+        from nav_msgs.msg import OccupancyGrid, Odometry
+        from rclpy.qos import QoSDurabilityPolicy
+        from mower_control.sub_pump import parse_odometry
+        ag = self._assist_gate
+        lane_qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                              history=QoSHistoryPolicy.KEEP_LAST)
+        for name, topic, _prio, _timeout in TWIST_MUX_LANES:
+            self._pump.subscribe(Twist, topic,
+                                 lambda _m, t, _n=name: ag.note_lane(_n, t), lane_qos,
+                                 raw=True, sampled=True, with_receipt=True)
+        self._pump.subscribe(Twist, CONTROLLER_TOPIC, lambda _m, t: ag.note_controller(t),
+                             lane_qos, raw=True, sampled=True, with_receipt=True)
+
+        def on_odom(msg, t):
+            q = msg.pose.pose.orientation
+            ag.note_pose(msg.pose.pose.position.x, msg.pose.pose.position.y,
+                         yaw_from_quaternion(q.x, q.y, q.z, q.w), t)
+        self._pump.subscribe(Odometry, '/odometry/filtered', on_odom, lane_qos,
+                             parser=parse_odometry, sampled=True, with_receipt=True)
+
+        def on_grid(msg, t):
+            i = msg.info
+            ag.costmap.set_grid(i.resolution, i.width, i.height, i.origin.position.x,
+                                i.origin.position.y, msg.data, t)
+        self._pump.subscribe(OccupancyGrid, '/local_costmap/costmap', on_grid,
+                             QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                                        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                                        history=QoSHistoryPolicy.KEEP_LAST),
+                             sampled=True, with_receipt=True)
+        try:
+            from map_msgs.msg import OccupancyGridUpdate
+        except ImportError:  # full grids only (rolling window: every move republishes it)
+            OccupancyGridUpdate = None
+        if OccupancyGridUpdate is not None:
+            self._pump.subscribe(
+                OccupancyGridUpdate, '/local_costmap/costmap_updates',
+                lambda m, t: ag.costmap.update(m.x, m.y, m.width, m.height, m.data, t),
+                QoSProfile(depth=10, reliability=QoSReliabilityPolicy.RELIABLE,
+                           history=QoSHistoryPolicy.KEEP_LAST),
+                sampled=True, deliver_all=True, with_receipt=True)
+        self._pump.subscribe(Bool, '/vision/obstacle_close',
+                             lambda m, t: ag.note_obstacle_close(m.data, t),
+                             QoSProfile(depth=10, reliability=QoSReliabilityPolicy.RELIABLE,
+                                        history=QoSHistoryPolicy.KEEP_LAST),
+                             sampled=True, deliver_all=True, with_receipt=True)
+
+        def on_policy(msg, t):
+            try:
+                ag.note_policy(json.loads(msg.data), t)
+            except ValueError:
+                pass
+        self._pump.subscribe(String, '/obstacle_policy', on_policy,
+                             QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                                        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                                        history=QoSHistoryPolicy.KEEP_LAST),
+                             sampled=True, with_receipt=True)
 
     def shutdown(self):
         self._runner.stop()
@@ -654,6 +1054,11 @@ class CmdVelSlewNode(Node):
             if p.name in PIVOT_PARAMS:
                 setattr(self._pivot, PIVOT_PARAMS[p.name],
                         bool(p.value) if p.name == 'pivot_assist' else float(p.value))
+                self.get_logger().info('cmd_vel_slew: %s = %r' % (p.name, p.value))
+        for p in params:
+            if p.name in ASSIST_GATE_PARAMS and getattr(self, '_assist_gate', None) is not None:
+                attr, kind = ASSIST_GATE_PARAMS[p.name]
+                setattr(self._assist_gate, attr, kind(p.value))
                 self.get_logger().info('cmd_vel_slew: %s = %r' % (p.name, p.value))
         for p in params:
             if p.name not in SHAPER_PARAMS:
@@ -748,6 +1153,7 @@ class CmdVelSlewNode(Node):
                 self._shaper.reset()
             if getattr(self, '_pivot', None) is not None:
                 self._pivot.reset()
+            self._assist_ramp = False
             if getattr(self, '_turn', None) is not None:
                 self._turn.reset()
                 CmdVelSlewNode._publish_shape_status(self)
@@ -764,20 +1170,42 @@ class CmdVelSlewNode(Node):
                 if shaper.holding != was:
                     self.get_logger().info('heading hold %s (yaw_ref=%s)' % (
                         'engaged' if shaper.holding else 'released', shaper.yaw_ref))
+            gate = getattr(self, '_gate', None)
+            phase = gate.state_name if gate is not None else None
             pivot = getattr(self, '_pivot', None)
             if pivot is not None:
-                gate = getattr(self, '_gate', None)
                 was = pivot.active
-                tgt_lin = pivot.apply(tgt_lin, tgt_ang,
-                                      gate.state_name if gate is not None else None, dt)
+                lane_ok, clear, why = CmdVelSlewNode._assist_verdict(
+                    self, now, tgt_lin, tgt_ang, phase)
+                tgt_lin = pivot.apply(tgt_lin, tgt_ang, phase, dt, lane_ok, clear)
                 if pivot.active != was:
                     self.get_logger().info(
                         'pivot assist %s (%.2f m crept, pivot %.1f s)' % (
                             'ON: creeping forward' if pivot.active else 'off',
                             pivot.dist_m, pivot.pivot_s))
+                held = why if (why and pivot.is_pivot(self._tgt[0], tgt_ang, phase)
+                               and pivot.pivot_s > pivot.delay_s) else ''
+                if held != pivot.held:
+                    pivot.held = held
+                    if held:
+                        self.get_logger().info('pivot assist held: %s' % held)
             tgt_lin, tgt_ang = CmdVelSlewNode._shape_turn(self, tgt_lin, tgt_ang, dt)
-            self._cur_lin = slew(self._cur_lin, tgt_lin, self._max_linear_accel, dt)
-            self._cur_ang = slew(self._cur_ang, tgt_ang, self._max_angular_accel, dt)
+            turn = getattr(self, '_turn', None)
+            # Assist episode: from the creep's first tick until the slewed output has
+            # settled on the target again after it (ramp-down / hold / hand-back). Only
+            # then does the slew keep every tick out of the one-wheel zone; normal
+            # MPPI/RPP driving keeps the plain per-axis slew of the shaped target.
+            ramp = bool(pivot is not None and pivot.active) or (
+                getattr(self, '_assist_ramp', False)
+                and (self._cur_lin, self._cur_ang) != (tgt_lin, tgt_ang))
+            self._assist_ramp = ramp
+            if ramp and turn is not None and turn.is_active(phase):
+                self._cur_lin, self._cur_ang = slew_both_wheels(
+                    self._cur_lin, self._cur_ang, tgt_lin, tgt_ang,
+                    self._max_linear_accel, self._max_angular_accel, dt, turn.params)
+            else:
+                self._cur_lin = slew(self._cur_lin, tgt_lin, self._max_linear_accel, dt)
+                self._cur_ang = slew(self._cur_ang, tgt_ang, self._max_angular_accel, dt)
 
         # Pass through every component we do not shape.
         src = self._tgt if self._tgt is not None else (0.0,) * 6
@@ -793,6 +1221,22 @@ class CmdVelSlewNode(Node):
                 '(target linear.x={!r} angular.z={!r})'.format(
                     self._cur_lin, self._cur_ang, tgt_lin, tgt_ang))
         return out
+
+    def _assist_verdict(self, now, lin, ang, phase):
+        """(lane_ok, clear, why) for the pivot assist; no gate object = never assist."""
+        pivot = self._pivot
+        ag = getattr(self, '_assist_gate', None)
+        if ag is None:
+            return False, False, 'no assist gate'
+        if not pivot.is_pivot(lin, ang, phase):
+            return True, True, ''
+        ok, why = ag.lane_verdict(now)
+        if not ok:
+            return False, False, why
+        if pivot.pivot_s + 1e-9 < pivot.delay_s - 0.25:
+            return True, True, ''          # costmap sweep only near / during the creep
+        clear, why = ag.clear_verdict(now, pivot.linear, ang, pivot.remaining_m)
+        return True, clear, why
 
     def _shape_turn(self, lin, ang, dt):
         """Both-wheel turn shaping (see :class:`TurnShaper`); publishes shape_status."""

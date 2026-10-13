@@ -3,7 +3,7 @@
 The operator web UI is the MowgliNext GUI (Go/gin backend + React/Vite SPA),
 vendored unmodified-except-for-a-few-flags at `third_party/mowglinext/gui/`
 (upstream commit in `third_party/mowglinext/UPSTREAM_COMMIT`). It runs in its
-own container, `mower_gui`, next to `mower_humble`.
+own container, `mower_gui`, next to `mower_jazzy`.
 
 | Piece | Path |
 |-------|------|
@@ -59,8 +59,8 @@ fallbacks in `pkg/providers/db.go`, so a value saved in the bitcask DB wins):
 | Port | Who | What |
 |------|-----|------|
 | 4006/tcp | `mower_gui` | HTTP + WebSocket (SPA, `/api/...`, `/api/mowglinext/multiplex`). **No auth** — LAN only. |
-| 8765/tcp | `mower_humble` (foxglove_bridge) | all topic subscriptions and service calls from the GUI backend |
-| 8766/tcp | `mower_humble` (cmd_vel relay) | teleop/joystick `TwistStamped` JSON relay; falls back to publishing `/cmd_vel_teleop` via foxglove |
+| 8765/tcp | `mower_jazzy` (foxglove_bridge) | all topic subscriptions and service calls from the GUI backend |
+| 8766/tcp | `mower_jazzy` (cmd_vel relay) | teleop/joystick `TwistStamped` JSON relay; falls back to publishing `/cmd_vel_teleop` via foxglove |
 
 Everything is `network_mode: host`, so the GUI reaches both on `localhost`.
 
@@ -86,9 +86,11 @@ The backend survives foxglove being down: it logs and retries the connection
 Known gaps / notes:
 
 * **Foxglove subprotocol.** The GUI's foxglove client offers only
-  `foxglove.sdk.v1` (`pkg/foxglove/client.go`). Our foxglove_bridge is 3.5.0,
-  which speaks it, so this is fine — but an older bridge that only offers
-  `foxglove.websocket.v1` will refuse the handshake and the GUI shows no data.
+  `foxglove.sdk.v1` (`pkg/foxglove/client.go`). Jazzy's foxglove_bridge is 3.6.0
+  (was 3.5.0 on Humble), which speaks it — verified live 2026-10-09: the handshake
+  negotiates `foxglove.sdk.v1` and the bridge advertises `clientPublish`,
+  `parameters`, `parametersSubscribe` and `services`. An older bridge that only
+  offers `foxglove.websocket.v1` would refuse the handshake and the GUI shows no data.
 * **Joystick.** The map page only shows the joystick and streams
   `cmd_vel_teleop` while `high_level_status.state_name` is `RECORDING` or
   `MANUAL_MOWING` (or the GUI's own latched manual mode). The bridge must
@@ -98,6 +100,13 @@ Known gaps / notes:
 * Backend routes for the hidden tools (rosbag, drive tuning, GNSS sidecar,
   updater, remote access, firmware flashing, container restarts) still exist
   and return errors when called — there is no docker socket or openocd.
+* **Obstacle snapshots.** The tracked-obstacle panel shows the annotated front
+  camera frame the `mower_map/obstacle_tracker_node` saved for each obstacle.
+  That is a static file, not a ROS topic: the tracker writes
+  `<maps_dir>/obstacle_snapshots/<id>.jpg` (shared volume, readable here at
+  `/ros2_ws/maps/obstacle_snapshots`) and the backend serves it via
+  `GET /api/mowglinext/obstacles/{id}/snapshot` (`pkg/api/mowglinext.go`). It is
+  a no-op (icon fallback) when snapshots are disabled or the file is absent.
 
 ## Profile gating (Tron trim)
 
@@ -205,7 +214,9 @@ PR-3 Tron profile and hardware gating, PR-4 GNSS corrections presentation, PR-5
 camera perception (`/perception`), PR-6 settings-to-ROS parameter bindings, PR-7
 docking and datum (vision dock, dock-point rejection surfaced by the API), PR-8
 ops (rosout logs page, diagnostics without Docker), plus the profile-aware
-onboarding wizard (T42). Each group still has to be extracted onto its own
+onboarding wizard (T42) and obstacle snapshots (the tracker's per-obstacle
+front-frame JPEGs served by the backend and shown in the tracked-obstacle
+panel, PR-9/T44). Each group still has to be extracted onto its own
 branch off the upstream commit.
 
 ## Licence

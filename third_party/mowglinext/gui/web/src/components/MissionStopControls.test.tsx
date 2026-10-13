@@ -13,6 +13,8 @@ vi.mock('./MowerActions.tsx', () => ({
 }));
 vi.mock('../hooks/useStatus.ts', () => ({useStatus: () => ({mow_enabled: false})}));
 vi.mock('../hooks/useCoverageResumeAvailable.ts', () => ({useCoverageResumeAvailable: () => resumeAvailable}));
+let isMobile = false;
+vi.mock('../hooks/useIsMobile.ts', () => ({useIsMobile: () => isMobile}));
 
 vi.mock('./BladeHeightControl.tsx', () => ({BladeHeightControl: () => <div data-testid="blade-height"/>}));
 
@@ -86,5 +88,54 @@ describe('MissionStopControls blade height', () => {
         unmount();
         renderAt('RETURNING_HOME', 2);
         expect(screen.queryByTestId('blade-height')).toBeNull();
+    });
+});
+
+describe('MissionStopControls narrow layout', () => {
+    beforeEach(() => { resumeAvailable = true; });
+
+    it('desktop keeps the buttons in the side action column', () => {
+        isMobile = false;
+        const {container} = renderAt('IDLE');
+        expect(screen.queryByTestId('mission-alert-stacked')).toBeNull();
+        expect(container.querySelector('.ant-alert-action')).toContainElement(screen.getByTestId('mission-resume'));
+    });
+
+    it('phone stacks the buttons below the text (no side action column)', () => {
+        isMobile = true;
+        const {container} = renderAt('IDLE');
+        const stacked = screen.getByTestId('mission-alert-stacked');
+        expect(container.querySelector('.ant-alert-action')).toBeNull();
+        expect(stacked).toHaveTextContent(en.missionStop.interruptedHint);
+        expect(stacked).toContainElement(screen.getByTestId('mission-resume'));
+        expect(stacked).toContainElement(screen.getByTestId('mission-start-fresh'));
+        isMobile = false;
+    });
+});
+
+describe('MissionStopControls on the map (one banner)', () => {
+    beforeEach(() => { resumeAvailable = true; isMobile = false; });
+    const renderMap = (stateName: string, props: {compact?: boolean; showFollowUp?: boolean}, state = 1) =>
+        render(<AntApp><MissionStopControls state={state} stateName={stateName} subStateName="why" onStart={vi.fn()} {...props}/></AntApp>);
+
+    it('compact: interrupted follow-up is a slim row, not a card, and keeps Resume', () => {
+        const {container} = renderMap('IDLE', {compact: true});
+        expect(container.querySelector('.ant-alert')).toBeNull();
+        expect(screen.getByTestId('mission-stopped')).toHaveTextContent(en.missionStop.interruptedTitle);
+        expect(screen.getByTestId('mission-resume')).toBeInTheDocument();
+        expect(screen.getByTestId('mission-start-fresh')).toBeInTheDocument();
+        // "Why stopped?" comes from the status line around it, not repeated here.
+        expect(screen.queryByTestId('mission-why-stopped')).toBeNull();
+    });
+
+    it('showFollowUp=false (edit mode) hides the interrupted card', () => {
+        renderMap('IDLE', {showFollowUp: false});
+        expect(screen.queryByTestId('mission-stopped')).toBeNull();
+        expect(screen.queryByTestId('mission-resume')).toBeNull();
+    });
+
+    it('showFollowUp=false still shows fault banners and Stop', () => {
+        renderMap('NAV_TO_DOCK_FAILED', {showFollowUp: false});
+        expect(screen.getByTestId('mission-fault')).toBeInTheDocument();
     });
 });

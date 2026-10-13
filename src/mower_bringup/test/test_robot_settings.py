@@ -1,7 +1,7 @@
 """GUI settings -> node parameters at launch (launch/robot_settings.py + mower.launch.py).
 
 The pure helper is tested anywhere with PyYAML. The launch-file part renders
-_apply_robot_settings against a LaunchContext and needs a sourced ROS 2 Humble
+_apply_robot_settings against a LaunchContext and needs a sourced ROS 2 Jazzy
 environment with the workspace built (mower_mission, mower_docking,
 mower_navigation installed); it is skipped otherwise.
 """

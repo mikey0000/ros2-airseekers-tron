@@ -117,10 +117,13 @@ class LocalizationMonitor(Node):
         if not changed and now - self._last_pub < self._status_period:
             return
         if changed:
-            log = self.get_logger().info if st['state'] == lsl.STATE_OK else \
-                self.get_logger().warn
-            log('localization %s -> %s%s' % (self._last_state, st['state'],
-                                             (': ' + st['reason']) if st['reason'] else ''))
+            msg = 'localization %s -> %s%s' % (self._last_state, st['state'],
+                                               (': ' + st['reason']) if st['reason'] else '')
+            # rclpy (Jazzy) raises if one call site changes severity, so keep these apart.
+            if st['state'] == lsl.STATE_OK:
+                self.get_logger().info(msg)
+            else:
+                self.get_logger().warn(msg)
         self._last_state = st['state']
         self._last_pub = now
         self._pub.publish(String(data=json.dumps(st, sort_keys=True)))

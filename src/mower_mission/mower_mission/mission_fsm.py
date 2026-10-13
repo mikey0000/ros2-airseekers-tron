@@ -151,7 +151,7 @@ def parse_stereo_stale(data, logger_name=b'local_costmap'):
     return float(mo.group(1)) if mo else None
 
 
-# Controller aborts caused by lethal costmap cells on the path ahead (Humble RPP
+# Controller aborts caused by lethal costmap cells on the path ahead (Jazzy RPP
 # "RegulatedPurePursuitController detected collision ahead!", FTC "collision detected ...",
 # "lethal footprint collision"). A plain "Failed to make progress" is NOT one (grass stall).
 # 2026-10-09: MPPI (transit FollowPath) aborts with "Optimizer fail to compute path" only when
@@ -186,6 +186,23 @@ CANCELED = 'canceled'
 REJECTED = 'rejected'
 UNAVAILABLE = 'unavailable'   # server not up within the wait timeout
 TIMEOUT = 'timeout'           # FSM watchdog
+
+# A nav2-backed goal the node sent while the Nav2 lifecycle stack was still not active
+# after nav2_ready_timeout_s carries result['nav2_inactive'] (e.g. 'Nav2 stack not active
+# after 20s') when it then failed without ever being accepted (REJECTED / UNAVAILABLE;
+# any failure for the dock action, whose docking server navigates with Nav2). The failure
+# reason then names the real cause instead of a generic docking / transit failure
+# (2026-10-13: a hung nav2 lifecycle manager showed as "Docking failed (NAV_TO_DOCK_FAILED)").
+NAV2_INACTIVE_KEY = 'nav2_inactive'
+NAV2_DOWN = 'navigation stack not active (Nav2 lifecycle not running)'
+
+
+def nav2_down_why(why):
+    """Failure text led by NAV2_DOWN (``why``: the original detail, may be empty)."""
+    why = str(why or '')
+    if why.startswith(NAV2_DOWN):
+        return why
+    return '%s: %s' % (NAV2_DOWN, why) if why else NAV2_DOWN
 
 # state_name -> HighLevelStatus.state (codes as in upstream main_tree.xml)
 STATE_CODES = {
@@ -421,6 +438,10 @@ class Inputs:
     # /cmd_vel_nav (the controller's command): (linear.x, angular.z) + receipt time
     nav_cmd: Optional[tuple] = None
     nav_cmd_stamp: Optional[float] = None
+    # /cmd_vel (applied, after twist_mux: Nav2, docking, emergency): (linear.x, angular.z) +
+    # receipt time; drives the obstacle in-path prediction (2026-10-13)
+    cmd_vel: Optional[tuple] = None
+    cmd_vel_stamp: Optional[float] = None
     # /stuck (slip_detector stuck guard, latched Bool)
     stuck: bool = False
     # /tilt/status (mower_control tilt_monitor, latched JSON): band ok|caution|limit|critical|
@@ -501,6 +522,19 @@ class Params:
     obstacle_path_lookahead_m: float = 2.0
     obstacle_path_margin_m: float = 0.25
     robot_width_m: float = 0.54
+    # 2026-10-13 (person stopped the mower while the robot pivoted toward a detour target:
+    # the straight line to the target is not where the robot goes). Where the mission does
+    # not know the path the controller tracks (/navigate_to_pose transits: detours, gaps,
+    # retries; return-to-dock and docking) the corridor is the robot footprint swept along
+    # its PREDICTED motion: constant applied /cmd_vel (else /cmd_vel_nav) twist, younger than
+    # obstacle_twist_max_age_s, for obstacle_sweep_horizon_s (arc v/w, straight, or pivot).
+    # Footprint: robot_rear_m behind to robot_front_m ahead of base_link, +-robot_width_m/2,
+    # grown by obstacle_path_margin_m. Anything within the circumscribed footprint radius +
+    # margin of the robot is always in the path (standing still / pivoting next to it).
+    obstacle_sweep_horizon_s: float = 2.0
+    obstacle_twist_max_age_s: float = 0.5
+    robot_front_m: float = 0.52       # nav2 footprint front (chassis 0.47 + bumper)
+    robot_rear_m: float = 0.25        # obstacle_guard rear_edge_x_m
     # 2026-10-09 route graph (docs/route_graph.md, owner: "a specific path for on paths, a
     # different navigation ... then path again"): a transit (sub-path start, end-of-area
     # retry, blocked / dynamic / localization re-send) first asks map_server's plan_route
@@ -811,6 +845,7 @@ class MissionFSM:
         self._last_status = None
         self._incomplete_text = ''
         self._dyn = None                    # dynamic-obstacle wait context
+        self._path_eval = None              # last in-path judgement (_obstacle_on_path)
         self._loc = None                    # localization hold context (_loc_hold_tick)
         self._blk = None                    # path-blocked wait context (see _blocked)
         self.obstacle_decision = {'kind': 'none'}   # /mission/obstacle_decision (GUI)
@@ -3036,6 +3071,10 @@ class MissionFSM:
             return
         if outcome != SUCCEEDED:
             self._log('warn', '%s finished: %s %s' % (name, outcome, result.get('message', '')))
+        nav2_down = outcome != SUCCEEDED and bool(result.get(NAV2_INACTIVE_KEY))
+        if nav2_down:
+            self._log('error', '%s %s: %s (%s)' % (name, outcome, NAV2_DOWN,
+                                                  result.get(NAV2_INACTIVE_KEY)))
         if a.purpose == 'dock_route':
             self._dock_route_result(outcome)
             return
@@ -3054,6 +3093,12 @@ class MissionFSM:
                 why = result.get('message') or outcome
                 if outcome == UNAVAILABLE:
                     why = 'docking action server unavailable'
+                if nav2_down:
+                    # a navigation failure says nothing beyond "Nav2 down"; anything
+                    # else the docking server reported is kept as the detail
+                    nav = outcome in (REJECTED, UNAVAILABLE) or \
+                        str(why).startswith('NAV_TO_DOCK_FAILED')
+                    why = NAV2_DOWN if nav else nav2_down_why(why)
                 self._dock_failed(why)
             return
         if self._manual_undocking and name in (ACT_UNDOCK, ACT_BACKUP):
@@ -3066,11 +3111,19 @@ class MissionFSM:
                 if outcome == UNAVAILABLE:
                     why = '/mower_docking/undock action server unavailable' \
                         if name == ACT_UNDOCK else '/backup action server unavailable'
+                if nav2_down:
+                    why = nav2_down_why(why)
                 self._log('error', 'undock failed: %s' % why)
                 self._go('UNDOCK_FAILED', why)
             return
         m = self.mission
         if m is None:
+            return
+        if nav2_down and name in (ACT_FOLLOW, ACT_NAV):
+            # Retrying / falling back to the costmap planner cannot help while the stack
+            # is down (each attempt waits out nav2_ready_timeout_s again, then every
+            # sub-path is skipped as "transit rejected"): abort with the real cause.
+            self._mission_failed(nav2_down_why('%s %s' % (name, outcome)))
             return
         if a.purpose == 'route':
             self._route_result(outcome)
@@ -3084,6 +3137,8 @@ class MissionFSM:
                 if outcome == UNAVAILABLE:
                     why = '/mower_docking/undock action server unavailable' \
                         if name == ACT_UNDOCK else '/backup action server unavailable'
+                if nav2_down:
+                    why = nav2_down_why(why)
                 self._log('error', 'undock failed: %s' % why)
                 self.mission = None
                 self._go('UNDOCK_FAILED', why)
@@ -3145,7 +3200,7 @@ class MissionFSM:
                 end = min(m.chunk_end, last)
                 left = cum[end] - cum[min(prog, end)]
                 if left > self.p.follow_end_tolerance_m:
-                    # Stock Humble goal checkers only look at the final pose; a coverage
+                    # Stock Jazzy goal checkers only look at the final pose; a coverage
                     # path that passes near its own end "succeeds" early.
                     if m.premature >= self.p.follow_premature_retries:
                         self._subpath_failed('follow_path keeps reporting success with '
@@ -3237,6 +3292,7 @@ class MissionFSM:
                           'while docking' % self.p.dock_zone_radius_m)
             return 'none'
         self._zone_ignore_logged = False
+        self._path_eval = None
         if kind != 'none' and self.p.obstacle_path_filter:
             on = self._obstacle_on_path()
             self._decide(kind, on)
@@ -3256,88 +3312,134 @@ class MissionFSM:
             return False
         return math.hypot(pose[0] - dock[0], pose[1] - dock[1]) <= r
 
+    def _fresh_motion(self):
+        """(v, w) of the applied /cmd_vel, else /cmd_vel_nav, younger than
+        obstacle_twist_max_age_s; None when neither is fresh."""
+        i, age = self.inputs, float(self.p.obstacle_twist_max_age_s)
+        for cmd, t in ((i.cmd_vel, i.cmd_vel_stamp), (i.nav_cmd, i.nav_cmd_stamp)):
+            if cmd is not None and t is not None and self._now - t <= age:
+                return float(cmd[0]), float(cmd[1])
+        return None
+
+    def _path_motion(self):
+        """Twist the in-path prediction uses: while a dynamic stop holds, the one captured
+        when it started (the robot is stopped now; judging the wait against "standing
+        still" would call the same person advisory and resume into them), else fresh."""
+        if self._dyn is not None:
+            return self._dyn.get('motion')
+        return self._fresh_motion()
+
     def _upcoming_path(self):
-        """Robot pose + the next obstacle_path_lookahead_m of the current follow /
-        transit path, or None when there is no mission path to judge against."""
+        """How a detection is judged right now, or None (no path to judge against: it
+        counts as before):
+
+        * ``('corridor', pts)``: the path the controller tracks -- the next
+          obstacle_path_lookahead_m of the MOWING sub-path or of a route transit. Kept for
+          these: it is the true path (a pivot at a swath end follows it too).
+        * ``('swept', poses)``: robot poses along the predicted motion (_path_motion) for
+          obstacle_sweep_horizon_s -- /navigate_to_pose transits (detours, gaps, retries)
+          and dock phases while the robot moves (Nav2 plans its own path; the straight line
+          to the target is not where a pivoting robot goes, 2026-10-13).
+        * ``('line', pts)``: straight to the transit target, for a TRANSIT standing still
+          with no prediction (waits, goal just sent): the intended direction.
+
+        While a dynamic stop holds, the kind chosen when it started is kept."""
         m, pose = self.mission, self.inputs.pose
-        if m is None or pose is None or self.phase not in ('MOWING', 'TRANSIT'):
+        if pose is None:
+            return None
+        frozen = self._dyn.get('path') if self._dyn is not None else None
+        motion = self._path_motion()
+        moving = motion is not None and (abs(motion[0]) >= _STILL_V or abs(motion[1]) >= _STILL_W)
+        if frozen == 'swept' and motion is not None:
+            moving = True
+        elif frozen in ('line', 'corridor'):
+            moving = False
+
+        def swept():
+            return 'swept', geo.predict_poses(pose, motion[0], motion[1],
+                                              float(self.p.obstacle_sweep_horizon_s))
+
+        if self.phase in DOCK_PHASES:
+            return swept() if moving else None
+        if m is None or self.phase not in ('MOWING', 'TRANSIT'):
             return None
         look = float(self.p.obstacle_path_lookahead_m)
         pts = [(pose[0], pose[1])]
-        rp = m.route_poses if m.step == 'transit' else None
+        rp = m.route_poses if (m.step == 'transit' or frozen == 'corridor') else None
         if rp:
             # route transit: the corridor follows the route, not the straight line
             k = min(range(len(rp)), key=lambda j: geo.dist(pose, rp[j]))
-            acc, prev = 0.0, pts[0]
-            for q in rp[k:]:
-                seg = geo.dist(prev, q)
-                if acc + seg > look and seg > 1e-9:
-                    f = (look - acc) / seg
-                    pts.append((prev[0] + (q[0] - prev[0]) * f, prev[1] + (q[1] - prev[1]) * f))
-                    break
-                pts.append((q[0], q[1]))
-                acc += seg
-                prev = q
-            return pts
+            return 'corridor', _along(pts, rp[k:], look)
         if m.step == 'transit' or (self.phase == 'TRANSIT' and m.step in (
                 'dyn_wait', 'blocked_wait', 'retry_wait')):
+            if moving:
+                return swept()
             t = m.transit_target
             if t is None:
                 return None
             d = geo.dist(pose, t)
             f = 1.0 if d <= look or d < 1e-6 else look / d
             pts.append((pose[0] + (t[0] - pose[0]) * f, pose[1] + (t[1] - pose[1]) * f))
-            return pts
+            return 'line', pts
         if not m.subpaths or m.sub_i >= len(m.subpaths):
             return None
         sp = m.subpaths[m.sub_i]
         i = m.progress_local if m.step == 'follow' else m.start_local
-        acc = 0.0
-        prev = pts[0]
-        for q in sp[max(0, min(i, len(sp) - 1)):]:
-            seg = geo.dist(prev, q)
-            if acc + seg > look and seg > 1e-9:
-                f = (look - acc) / seg
-                pts.append((prev[0] + (q[0] - prev[0]) * f, prev[1] + (q[1] - prev[1]) * f))
-                break
-            pts.append((q[0], q[1]))
-            acc += seg
-            prev = q
-        return pts
+        return 'corridor', _along(pts, sp[max(0, min(i, len(sp) - 1)):], look)
 
     def _obstacle_on_path(self):
-        """True / False: the ranged detection is / is not in the path corridor;
-        None: cannot tell (unranged, no bearing, no path) -> counts as before."""
+        """True / False: the ranged detection is / is not in the path (see _upcoming_path;
+        anything within the circumscribed footprint + margin always is); None: cannot tell
+        (unranged, no bearing, no path) -> counts as before. Records how it was judged in
+        ``self._path_eval`` (for /mission/obstacle_decision and the dynamic stop)."""
+        self._path_eval = None
         i = self.inputs
         d, b, pose = i.obstacle_distance, i.obstacle_bearing, i.pose
         if d is None or b is None or pose is None:
             return None
-        path = self._upcoming_path()
-        if path is None:
-            return None
         yaw = pose[2] if len(pose) > 2 else 0.0
         a = yaw + math.radians(float(b))
-        ox, oy = pose[0] + d * math.cos(a), pose[1] + d * math.sin(a)
-        half = float(self.p.robot_width_m) / 2.0 + float(self.p.obstacle_path_margin_m)
+        o = (pose[0] + d * math.cos(a), pose[1] + d * math.sin(a))
+        p = self.p
+        hw, margin = float(p.robot_width_m) / 2.0, float(p.obstacle_path_margin_m)
+        front, rear = float(p.robot_front_m), float(p.robot_rear_m)
+        model = self._upcoming_path()
+        self._path_eval = {'path': model[0] if model else None,
+                           'motion': self._path_motion()}
+        if geo.dist(o, pose) <= math.hypot(max(front, rear), hw) + margin:
+            self._path_eval['by'] = 'footprint'
+            return True
+        if model is None:
+            return None
+        kind, pts = model
+        self._path_eval['by'] = kind
+        if kind == 'swept':
+            return geo.swept_hit(o, pts, front, rear, hw, margin)
         best = float('inf')
-        for p0, p1 in zip(path, path[1:] if len(path) > 1 else path):
-            best = min(best, _seg_dist((ox, oy), p0, p1))
-        return best <= half
+        for p0, p1 in zip(pts, pts[1:] if len(pts) > 1 else pts):
+            best = min(best, _seg_dist(o, p0, p1))
+        return best <= hw + margin
 
     def _decide(self, kind, on):
         i = self.inputs
+        ev = getattr(self, '_path_eval', None) or {}
+        mo = ev.get('motion')
         dec = {'kind': kind, 'class': i.obstacle_class, 'distance_m': i.obstacle_distance,
                'bearing_deg': i.obstacle_bearing,
                'on_path': on, 'action': 'advisory' if on is False else 'act',
                'lookahead_m': float(self.p.obstacle_path_lookahead_m),
                'half_width_m': float(self.p.robot_width_m) / 2.0
                + float(self.p.obstacle_path_margin_m),
+               'judged_by': ev.get('by', ev.get('path')),
+               'motion': None if mo is None else [round(mo[0], 2), round(mo[1], 2)],
                'phase': self.phase}
         if on is False and (self.obstacle_decision.get('action') != 'advisory'
                             or self.obstacle_decision.get('class') != dec['class']):
-            self._log('info', '%s %s at %.1f m / %.0f deg is off the path corridor: advisory '
-                              'only' % (kind, dec['class'] or 'obstacle', i.obstacle_distance,
-                                        i.obstacle_bearing))
+            how = {'swept': 'predicted motion v %.2f w %.2f' % tuple(mo) if mo else 'motion',
+                   'line': 'line to the target'}.get(dec['judged_by'], 'path ahead')
+            self._log('info', '%s %s at %.1f m / %.0f deg is off the path corridor (%s): '
+                              'advisory only' % (kind, dec['class'] or 'obstacle',
+                                                 i.obstacle_distance, i.obstacle_bearing, how))
         self.obstacle_decision = dec
 
     def _ranged_static(self):
@@ -3497,8 +3599,12 @@ class MissionFSM:
         if m is not None and ctx == 'follow' and m.step == 'follow':
             m.start_local = self._track_progress()
         self._dyn_ignore = None
+        # the in-path judgement that started the stop (same kind, same twist) keeps judging
+        # the wait: the clear-hold sees the same evaluation the entry did (2026-10-13)
+        ev = getattr(self, '_path_eval', None) or {}
         self._dyn = {'ctx': ctx, 'since': self._now, 'clear_since': None, 'cls': cls,
-                     'sub': self.sub_state, 'phase': self.phase, 'purpose': self._dock_purpose}
+                     'sub': self.sub_state, 'phase': self.phase, 'purpose': self._dock_purpose,
+                     'path': ev.get('path'), 'motion': ev.get('motion')}
         if self._action is not None:
             self._fx.append(CancelActions('dynamic obstacle: %s' % cls))
             self._action = None
@@ -4300,6 +4406,26 @@ class MissionFSM:
         self._tob = None
         self._go('STUCK_NEEDS_HELP', 'steep slope: needs help at (%.2f, %.2f)' % (x, y))
 
+
+
+# below these the robot counts as standing still for the in-path prediction
+_STILL_V = 0.02     # m/s
+_STILL_W = 0.05     # rad/s
+
+
+def _along(pts, poses, look):
+    """``pts`` (starting at the robot) extended along ``poses`` for ``look`` metres."""
+    acc, prev = 0.0, pts[-1]
+    for q in poses:
+        seg = geo.dist(prev, q)
+        if acc + seg > look and seg > 1e-9:
+            f = (look - acc) / seg
+            pts.append((prev[0] + (q[0] - prev[0]) * f, prev[1] + (q[1] - prev[1]) * f))
+            break
+        pts.append((q[0], q[1]))
+        acc += seg
+        prev = q
+    return pts
 
 
 def _seg_dist(p, a, b):

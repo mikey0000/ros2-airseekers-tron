@@ -22,7 +22,7 @@ Missing fields are 0; non-numeric values and bad JSON are rejected (logged, not 
 - `bind` defaults to `0.0.0.0` because the GUI may run in another container
   (network_mode host). There is no authentication; firewall it or use `bind:=127.0.0.1`.
 
-## twist_mux lanes (Humble, twist_mux 4.3.0, geometry_msgs/Twist)
+## twist_mux lanes (Jazzy, twist_mux 4.5.0, geometry_msgs/Twist)
 
 | lane       | topic                | timeout (s) | priority |
 |------------|----------------------|-------------|----------|

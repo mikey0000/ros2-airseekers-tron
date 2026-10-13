@@ -80,7 +80,7 @@ from std_msgs.msg import String
 
 from mower_localization import rtk_quality as rq
 
-# NavSatStatus values (sensor_msgs/msg/NavSatStatus, ROS 2 Humble):
+# NavSatStatus values (sensor_msgs/msg/NavSatStatus, ROS 2 Jazzy):
 #   -1 NO_FIX, 0 FIX (autonomous), 1 SBAS_FIX (differential), 2 GBAS_FIX (RTK fixed/float)
 # um960_gps_driver maps GGA quality 2 -> SBAS_FIX and 4/5 -> GBAS_FIX; RTK fixed vs float
 # is only visible through the position covariance, which is why the gate also checks that.

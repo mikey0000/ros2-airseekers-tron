@@ -315,7 +315,7 @@ class _CameraWorker(threading.Thread):
 def main(args=None):
     if _DEP_ERROR is not None:
         print(f'[det_ros] FATAL: missing ROS dependency ({_DEP_ERROR}); install '
-              'ros-humble-vision-msgs and ros-humble-cv-bridge (docker/Dockerfile.humble).',
+              'ros-jazzy-vision-msgs and ros-jazzy-cv-bridge (docker/Dockerfile.jazzy).',
               file=sys.stderr)
         sys.exit(2)
     rclpy.init(args=args)

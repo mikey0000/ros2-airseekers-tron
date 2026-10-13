@@ -19,6 +19,11 @@ motion phase and re-asserts the latched /motion_enabled. Run the sim with
 publishing /motion_enabled true and /behavior_tree_node/high_level_status with that
 state. With the real mission running pass ``--stub-state ''`` and drive it through
 its own services instead.
+
+Isolation (B6): refuses to start unless the graph is isolated (mower_sim.isolation:
+ROS_DOMAIN_ID != 0 and localhost-only discovery, not on the mower; overrides
+MOWER_SIM_ALLOW_LAN=1 / MOWER_SIM_ALLOW_ON_ROBOT=1). The stub publishers are created
+only once /sim/status has been received, i.e. a sim is on this graph.
 """
 
 from __future__ import annotations
@@ -65,24 +70,32 @@ STATUS_NAMES = {GoalStatus.STATUS_SUCCEEDED: 'SUCCEEDED', GoalStatus.STATUS_ABOR
 
 class ScenarioClient(Node):
     def __init__(self, name='mower_sim_scenario', stub_state=''):
+        # B6: the node itself joins the graph; refuse a non-isolated one (raises IsolationError)
+        from .isolation import check_isolation
+        check_isolation('mower_sim scenario')
         super().__init__(name)
         self.nav = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self.status = None
-        self.create_subscription(String, '/sim/status', self._on_status, 10)
         self.stub_state = stub_state
-        if stub_state:
-            from mowgli_interfaces.msg import HighLevelStatus
-            latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
-                                 reliability=ReliabilityPolicy.RELIABLE)
-            self._motion_pub = self.create_publisher(Bool, '/motion_enabled', latched)
-            self._hl_pub = self.create_publisher(
-                HighLevelStatus, '/behavior_tree_node/high_level_status', 10)
-            self._hl = HighLevelStatus()
-            self._hl.state = HighLevelStatus.HIGH_LEVEL_STATE_AUTONOMOUS
-            self._hl.state_name = stub_state
-            self._hl.emergency = False
-            self.create_timer(0.5, self._stub_tick)
-            self._stub_tick()
+        self._stub_started = False
+        self.create_subscription(String, '/sim/status', self._on_status, 10)
+
+    def _start_stub(self):
+        """Mission stand-in publishers: only after /sim/status proved a sim is on this
+        graph, so a client pointed at a real robot never latches /motion_enabled=true."""
+        from mowgli_interfaces.msg import HighLevelStatus
+        self._stub_started = True
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                             reliability=ReliabilityPolicy.RELIABLE)
+        self._motion_pub = self.create_publisher(Bool, '/motion_enabled', latched)
+        self._hl_pub = self.create_publisher(
+            HighLevelStatus, '/behavior_tree_node/high_level_status', 10)
+        self._hl = HighLevelStatus()
+        self._hl.state = HighLevelStatus.HIGH_LEVEL_STATE_AUTONOMOUS
+        self._hl.state_name = self.stub_state
+        self._hl.emergency = False
+        self.create_timer(0.5, self._stub_tick)
+        self._stub_tick()
 
     def _stub_tick(self):
         self._motion_pub.publish(Bool(data=True))
@@ -92,7 +105,9 @@ class ScenarioClient(Node):
         try:
             self.status = json.loads(msg.data)
         except ValueError:
-            pass
+            return
+        if self.stub_state and not self._stub_started:
+            self._start_stub()
 
     def spin_until(self, pred, timeout):
         end = time.monotonic() + timeout
@@ -259,6 +274,12 @@ def main(argv=None):
     stub = a.stub_state
     if stub is None:
         stub = 'TRANSIT' if a.cmd == 'navigate' else 'RETURNING_HOME'
+    from .isolation import IsolationError, check_isolation
+    try:
+        check_isolation('mower_sim scenario')
+    except IsolationError as e:
+        print('FATAL: %s' % e, file=sys.stderr, flush=True)
+        return 2
     rclpy.init(args=rest)
     node = ScenarioClient(stub_state=stub)
     try:

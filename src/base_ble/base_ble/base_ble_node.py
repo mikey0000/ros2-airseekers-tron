@@ -74,7 +74,7 @@ class BleNode(Node):
         self.drive_timeout_ms = self.get_parameter('drive_timeout_ms').value
 
         # ---- ROS interfaces ----
-        # Teleop lane of twist_mux (unstamped Twist, Humble); never /cmd_vel directly.
+        # Teleop lane of twist_mux (unstamped Twist, Jazzy); never /cmd_vel directly.
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel_teleop', 10)
         self.clear_estop_cli = self.create_client(Empty, '/clear_estop')
         self.cutter_cli = self.create_client(CutterControl, '/cutter_control')

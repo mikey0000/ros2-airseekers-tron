@@ -1,0 +1,88 @@
+# Parameters for mower_map obstacle_tracker_node (auto obstacle marking).
+#
+# See mower_map/obstacle_tracker_node.py + mower_map/obstacle_tracker_core.py.
+# Everything is off the shelf defaults from the module; listed here so the field
+# behaviour is tunable without editing code. An empty value disables that topic.
+obstacle_tracker:
+  ros__parameters:
+    enabled: true
+
+    # --- inputs (map / odom frame) -------------------------------------
+    obstacle_points_topic: /stereo_depth/points_map          # ground-removed stereo cloud
+    extra_obstacle_points_topic: /ai/det/obstacle_points_map # YOLO-ranged detections, map frame ("" = off)
+    clear_points_topic: /stereo_depth/clear_points_map        # ground-first-hit cloud ("" = off)
+    odom_topic: /odometry/filtered_map
+    replan_topic: /map_server_node/replan_needed
+    high_level_status_topic: /behavior_tree_node/high_level_status
+    cloud_max_age_s: 1.5
+
+    # --- outputs / rate ------------------------------------------------
+    obstacles_topic: /obstacle_tracker/obstacles             # map_server + GUI read this
+    markers_topic: ~/markers
+    publish_markers: true
+    step_rate: 1.0
+
+    # --- clustering + tracking -----------------------------------------
+    resolution: 0.1            # clustering grid (m)
+    merge_cells: 2             # join clusters up to this many cells apart
+    association_dist_m: 0.5    # cluster <-> track match radius
+    # B2 (review 2026-10-13): first..last sighting must span this long (and the track
+    # be in view now) before promotion: minutes, so a person / pet standing still for a
+    # while is never marked (was 3.0 s).
+    persistence_age_s: 120.0
+    min_observations: 10       # ... and this many updates (was 3)
+    min_obstacle_radius_m: 0.05
+    max_obstacle_radius_m: 1.0 # bigger clusters never promote (was 5.0: a 10 m ring)
+    det_radius_m: 0.15         # footprint assumed for a single-point YOLO detection
+    polygon_inflation_m: 0.05  # safety growth of the promoted keepout polygon
+    polygon_steps: 12
+    require_inside_mowing_area: true
+    max_tracks: 200
+
+    # --- auto promotion / removal --------------------------------------
+    # Owner 2026-10-13: "auto obstacle marking should be false by default as it's not
+    # ready yet". Off: the node only tracks + publishes candidates (GUI panel). On (GUI
+    # Settings > Obstacles, obstacle_auto_promote): a promotion is a PENDING keepout
+    # (live in the mask this session, not in areas.dat) for the operator to accept or
+    # discard. Stored SOURCE_TRACKER keepouts are re-adopted at startup for removal.
+    auto_promote: false        # promote stable clusters as pending keepouts (was true)
+    auto_remove: true          # drop the keepout when the object is verifiably gone
+    only_while_mowing: true    # only promote while mowing (AUTONOMOUS / MANUAL_MOWING; was false)
+    high_level_fresh_s: 5.0    # high-level status older than this counts as unknown
+    min_lifetime_s: 5.0        # never remove within this long of promoting
+    gone_confirmations: 4      # consecutive "gone" frames (clear ground / looked & absent)
+    verify_distance_m: 3.0     # "looked": robot within this distance of the footprint
+    verify_fov_deg: 60.0       # ... and the footprint within this half-cone of the heading
+    present_radius_m: 0.4      # an obstacle point this close means "still there"
+    clear_radius_m: 0.4        # a ground point this close means "positively gone"
+    transient_timeout_s: 30.0  # drop never-promoted tracks unseen this long
+    max_track_drift_m: 0.4     # reject a track whose centroid drifted further (swaying bush)
+
+    # --- dynamic-class veto (people / animals are never promoted) --------
+    # Ranged det_range detections of these classes are placed in the map with the
+    # latest odometry; a track within dynamic_veto_radius_m of one is never promoted.
+    # An unranged one blocks every promotion for dynamic_memory_s. "" topic = off.
+    # Class names as det_ros/labels.py (mower_vision guard_logic DEFAULT_WHITELIST).
+    dynamic_detections_topic: /ai/det/detections_ranged
+    dynamic_classes: [person, dog, cat, hedgehog, rabbit]
+    dynamic_min_score: 0.3
+    dynamic_memory_s: 10.0
+    dynamic_veto_radius_m: 1.0
+
+    # --- map_server plumbing -------------------------------------------
+    promote_service: /map_server_node/promote_obstacle
+    remove_service: /map_server_node/remove_obstacle
+    get_areas_service: /map_server_node/get_mowing_area
+    obstacle_name: "auto: obstacle"   # sent as "<name> #<track id>" (re-adopt key)
+    areas_refresh_s: 5.0
+
+    # --- obstacle snapshots (whole annotated front frame, shown in the GUI) ---
+    # On a new cluster the tracker saves the latest annotated front camera frame
+    # to <snapshot_dir>/<id>.jpg; the GUI serves /api/mowglinext/obstacles/<id>/snapshot
+    # next to the obstacle. snapshot_dir must be visible to the GUI container too
+    # (maps_dir is mounted at /ros2_ws/maps in both). "" topic = off (sim).
+    snapshot_enabled: true
+    snapshot_topic: /vio/right/image_annotated
+    snapshot_dir: /ros2_ws/maps/obstacle_snapshots
+    snapshot_quality: 80       # JPEG quality (1-100)
+    snapshot_max_age_s: 1.0    # ignore an annotated frame older than this

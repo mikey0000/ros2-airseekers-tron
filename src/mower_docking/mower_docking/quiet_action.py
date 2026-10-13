@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""ActionClient that drops unused feedback without an executor dispatch (rclpy Humble).
+"""ActionClient that drops unused feedback without an executor dispatch (rclpy Jazzy).
 
 An rclpy ActionClient always has a feedback subscription, and the feedback topic carries the
 feedback of EVERY goal of that action, not only ours: bt_navigator publishes NavigateToPose

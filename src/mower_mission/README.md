@@ -198,6 +198,19 @@ in a worker thread and then reports `unavailable`. The state machine then fails 
 cleanly, and `sub_state_name` says which server was missing. Every action also has a
 watchdog timeout (`*_timeout_s`); on expiry the goal is cancelled and treated as an abort.
 
+The Nav2 lifecycle stack is PAUSEd by the activity gate
+(`mower_navigation/activity_gated_lifecycle`) while the robot is idle. Nav2-backed goals
+(`follow_path`, `navigate_to_pose`, `dock`, `backup`) therefore first wait — up to
+`nav2_ready_timeout_s` (20 s), polling `/lifecycle_manager_navigation/is_active` — for the
+stack to come back active before the goal is sent; a goal sent into a paused stack is
+rejected instantly with "Action server is inactive" (upstream: `Nav2ResumeGuard` +
+`Nav2ReadyPoll`). If the stack is still not active after the budget the goal is sent anyway
+(it covers a late resume), and when it then fails without being accepted (rejected / server
+missing; any failure for `dock`) the reason is `navigation stack not active (Nav2 lifecycle
+not running)`: a transit or coverage follow aborts the run at once (no retries, no costmap
+fallback) and the docking failure that follows reports the same cause in `sub_state_name`
+instead of a generic `NAV_TO_DOCK_FAILED`.
+
 ## Per-area mowing settings
 
 Before PLANNING an area the node reads its effective settings from
@@ -277,8 +290,9 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 
 ## Differences from MowgliNext `behavior_tree_node`
 
-* **No behaviour tree.** Humble ships BehaviorTree.CPP v3 and the upstream tree is v4, so the
-  logic is a Python state machine instead. The guard order is the same as upstream's
+* **No behaviour tree (yet).** The logic is a Python state machine instead of upstream's
+  tree. Jazzy's Nav2 does ship BehaviorTree.CPP v4, matching upstream, so a future port to
+  the upstream trees is possible; the guard order here is the same as upstream's
   `ReactiveSequence`.
 * **Not ported:**
   * LiDAR / scan guards, collision monitor, fusion_graph, heading calibration and the escape
@@ -299,7 +313,7 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
   latches `BOUNDARY_EMERGENCY_STOP`. The blade never spins up while the violation is
   flagged. Upstream instead navigates to the map server's `get_recovery_point`, which is not
   part of our contract.
-* **FollowPath goals are chunked, and premature success is caught.** The Humble
+* **FollowPath goals are chunked, and premature success is caught.** The Jazzy
   `coverage_goal_checker` is a stock `SimpleGoalChecker` with 0.10 m tolerance, and it only
   looks at the final pose. A coverage path passes near its own end (closed headland rings,
   a last swath ending at the ring start), so the goal "succeeds" early. Seen live: a 5.6 s

@@ -1,12 +1,13 @@
 import React, {useEffect, useState} from "react";
 import {Alert, App, Button, Popover, Space} from "antd";
-import {PlayCircleOutlined, QuestionCircleOutlined, RedoOutlined, StepForwardOutlined, StopOutlined} from "@ant-design/icons";
+import {CloseOutlined, PlayCircleOutlined, QuestionCircleOutlined, RedoOutlined, StepForwardOutlined, StopOutlined} from "@ant-design/icons";
 import {DockIcon} from "./DockIcon.tsx";
 import {BladeHeightControl} from "./BladeHeightControl.tsx";
 import {useTranslation} from "react-i18next";
 import {useMowerAction} from "./MowerActions.tsx";
 import {useStatus} from "../hooks/useStatus.ts";
 import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts";
+import {useIsMobile} from "../hooks/useIsMobile.ts";
 import {
     canHome, canReset, canResume, canStop, CMD_HOME, CMD_START, CMD_RESET_EMERGENCY, CMD_STOP, isLatchedFault, isMissionActive,
     isNotice, MISSION_PHASES, stopNeedsConfirm,
@@ -24,6 +25,13 @@ interface Props {
     /** "Start fresh" (discard the resume cursor). Defaults to clear_resume + START. */
     onStartFresh?: () => void;
     style?: React.CSSProperties;
+    /** Map page: render the post-stop / interrupted follow-up as one slim button
+     *  row (it sits inside the status line, which already has "Why stopped?")
+     *  instead of a second full-width card over the map. */
+    compact?: boolean;
+    /** false hides the post-stop / interrupted follow-up (Map edit mode); the
+     *  Stop button and fault / notice banners are always shown. */
+    showFollowUp?: boolean;
 }
 
 /**
@@ -31,12 +39,14 @@ interface Props {
  * with Reset (254) for latched faults, and a post-stop follow-up offering
  * Return to dock / Start-or-Resume. State gating lives in utils/missionStates.
  */
-export const MissionStopControls: React.FC<Props> = ({state, stateName, subStateName, onStart, onStartFresh, style}) => {
+export const MissionStopControls: React.FC<Props> = ({state, stateName, subStateName, onStart, onStartFresh, style,
+                                                        compact = false, showFollowUp = true}) => {
     const {t} = useTranslation();
     const {modal, notification} = App.useApp();
     const mowerAction = useMowerAction();
     const status = useStatus();
     const resumeAvailable = useCoverageResumeAvailable();
+    const isMobile = useIsMobile();
     const [busy, setBusy] = useState<string | null>(null);
     const [stopped, setStopped] = useState(false);
     // STUCK_NEEDS_HELP: the owner moves the robot by hand first; Resume appears only
@@ -133,6 +143,20 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
         </Button>
     ) : null;
 
+    // antd puts `action` beside the text; on a phone the buttons then squeeze the
+    // text column to ~1 character per line. Narrow screens stack them below it.
+    const alertBody = (description: React.ReactNode, action: React.ReactNode) => isMobile
+        ? {
+            description: (
+                <div style={{flex: "1 1 auto", minWidth: 0}} data-testid="mission-alert-stacked">
+                    {description}
+                    <div style={{marginTop: 8}}>{action}</div>
+                </div>
+            ),
+            action: undefined,
+        }
+        : {description, action};
+
     if (fault) {
         return (
             <Alert
@@ -141,13 +165,12 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                 showIcon
                 data-testid="mission-fault"
                 message={t('missionStop.faultTitle', {state: stateName})}
-                description={<>
+                {...alertBody(<>
                     {subStateName || t('missionStop.faultNoReason')}
                     {stateName === "STUCK_NEEDS_HELP" && resumeAvailable && !stuckReset && (
                         <div data-testid="mission-stuck-hint">{t('missionStop.stuckResetFirst')}</div>
                     )}
-                </>}
-                action={
+                </>,
                     <Space direction="vertical">
                         {stopButton}
                         {canReset(stateName) && (
@@ -161,7 +184,7 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                         {resumeButton}
                         {startFreshButton}
                     </Space>
-                }
+                )}
             />
         );
     }
@@ -175,8 +198,7 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                 showIcon
                 data-testid="mission-notice"
                 message={t('missionStop.incompleteTitle')}
-                description={subStateName || t('missionStop.faultNoReason')}
-                action={
+                {...alertBody(subStateName || t('missionStop.faultNoReason'),
                     <Space direction="vertical">
                         <Button icon={<DockIcon/>} loading={busy === "home"}
                                 onClick={run("home", CMD_HOME)}>
@@ -189,7 +211,7 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                         )}
                         {startFreshButton}
                     </Space>
-                }
+                )}
             />
         );
     }
@@ -204,7 +226,36 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
         );
     }
 
-    if (stopped || resumable) {
+    if ((stopped || resumable) && showFollowUp) {
+        const title = resumable && !stopped ? t('missionStop.interruptedTitle') : t('missionStop.stoppedTitle');
+        const followUpButtons = <>
+            {resumeButton}
+            {canHome(state, stateName) && (
+                <Button icon={<DockIcon/>} loading={busy === "home"}
+                        onClick={run("home", CMD_HOME, () => setStopped(false))}>
+                    {t('missionStop.returnToDock')}
+                </Button>
+            )}
+            {resumable ? startFreshButton : (
+                <Button type="primary" icon={<PlayCircleOutlined/>}
+                        onClick={() => { setStopped(false); onStart(); }}>
+                    {t('missionStop.start')}
+                </Button>
+            )}
+        </>;
+        if (compact) {
+            return (
+                <div data-testid="mission-stopped" style={{display: "flex", flexWrap: "wrap", alignItems: "center",
+                    gap: 6, minWidth: 0, ...style}}>
+                    <span style={{fontWeight: 600, flex: "1 1 auto", minWidth: 0}}>{title}</span>
+                    {followUpButtons}
+                    {!resumable && (
+                        <Button type="text" size="small" icon={<CloseOutlined/>} aria-label={t('nav.close')}
+                                onClick={() => setStopped(false)}/>
+                    )}
+                </div>
+            );
+        }
         return (
             <Alert
                 style={style}
@@ -213,25 +264,10 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                 closable={!resumable}
                 onClose={() => setStopped(false)}
                 data-testid="mission-stopped"
-                message={resumable && !stopped ? t('missionStop.interruptedTitle') : t('missionStop.stoppedTitle')}
-                description={resumable ? <>{t('missionStop.interruptedHint')} {whyStopped}</> : undefined}
-                action={
-                    <Space direction="vertical">
-                        {resumeButton}
-                        {canHome(state, stateName) && (
-                            <Button icon={<DockIcon/>} loading={busy === "home"}
-                                    onClick={run("home", CMD_HOME, () => setStopped(false))}>
-                                {t('missionStop.returnToDock')}
-                            </Button>
-                        )}
-                        {resumable ? startFreshButton : (
-                            <Button type="primary" icon={<PlayCircleOutlined/>}
-                                    onClick={() => { setStopped(false); onStart(); }}>
-                                {t('missionStop.start')}
-                            </Button>
-                        )}
-                    </Space>
-                }
+                message={title}
+                {...alertBody(resumable ? <>{t('missionStop.interruptedHint')} {whyStopped}</> : undefined,
+                    <Space direction="vertical">{followUpButtons}</Space>
+                )}
             />
         );
     }

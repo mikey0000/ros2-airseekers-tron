@@ -1,15 +1,15 @@
-# Overlay Fields2Cover v3 onto an existing mower:humble image WITHOUT rebuilding
+# Overlay Fields2Cover v3 onto an existing mower:jazzy image WITHOUT rebuilding
 # the whole stack (used for the on-mower native build, 2026-10).
-#   docker build --network host -f docker/Dockerfile.f2c-overlay -t mower:humble-f2c3 docker
-# Mirrors the F2C_V3=1 path of Dockerfile.humble.
-ARG F2C_IMAGE=mower-f2c:3.0.0-arm64
-ARG BASE_IMAGE=mower:humble
+#   docker build --network host -f docker/Dockerfile.f2c-overlay -t mower:jazzy-f2c3 docker
+# Mirrors the F2C_V3=1 path of Dockerfile.jazzy.
+ARG F2C_IMAGE=mower-f2c:v3-arm64
+ARG BASE_IMAGE=mower:jazzy
 FROM ${F2C_IMAGE} AS f2c
 FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
-RUN (dpkg -s ros-humble-fields2cover >/dev/null 2>&1 && apt-get remove -y ros-humble-fields2cover || true) \
+RUN (dpkg -s ros-jazzy-fields2cover >/dev/null 2>&1 && apt-get remove -y ros-jazzy-fields2cover || true) \
     && apt-get update && apt-get install -y --no-install-recommends \
-      ros-humble-ortools-vendor libgdal-dev libgeos-dev libgeos++-dev libtbb-dev libtinyxml2-dev \
+      ros-jazzy-ortools-vendor libgdal-dev libgeos-dev libgeos++-dev libtbb-dev libtinyxml2-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=f2c /opt/fields2cover /opt/fields2cover
 RUN echo /opt/fields2cover/lib > /etc/ld.so.conf.d/fields2cover.conf && ldconfig

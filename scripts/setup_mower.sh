@@ -82,15 +82,15 @@ echo "CAVEAT: Docker configures iptables by default. If you use nftables or a cu
 echo "  iptables setup, you may need to adjust rules after Docker starts. Docker"
 echo "  may clash with existing firewall rules. See: https://docs.docker.com/engine/networking/"
 
-# --- Optionally pre-pull ros:humble-ros-base-jammy ---
+# --- Optionally pre-pull ros:jazzy-ros-base-noble ---
 # Set PRE_PULL=1 to force pull, or leave unset/empty for no pull.
 if [ "${PRE_PULL:-}" = "1" ]; then
-  echo "Pre-pulling ros:humble-ros-base-jammy (linux/arm64) ..."
-  docker pull --platform linux/arm64 ros:humble-ros-base-jammy 2>&1 || {
-    echo "WARN: Pre-pull failed; you may pull manually later: docker pull ros:humble-ros-base-jammy"
+  echo "Pre-pulling ros:jazzy-ros-base-noble (linux/arm64) ..."
+  docker pull --platform linux/arm64 ros:jazzy-ros-base-noble 2>&1 || {
+    echo "WARN: Pre-pull failed; you may pull manually later: docker pull ros:jazzy-ros-base-noble"
   }
 else
-  echo "Skipping pre-pull of ros:humble-ros-base-jammy. Set PRE_PULL=1 to force."
+  echo "Skipping pre-pull of ros:jazzy-ros-base-noble. Set PRE_PULL=1 to force."
 fi
 
 echo "setup_mower.sh complete."

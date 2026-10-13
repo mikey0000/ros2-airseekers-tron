@@ -41,3 +41,34 @@ describe('tracked obstacle ignore', () => {
         expect(mocks.success).not.toHaveBeenCalled();
     });
 });
+
+describe('tracked obstacle snapshot', () => {
+    it('shows the annotated-frame thumbnail served for the obstacle id', () => {
+        showPanel();
+        const img = screen.getByRole('img', {name: 'Annotated camera frame of obstacle #42'});
+        expect(img).toHaveAttribute('src', '/api/mowglinext/obstacles/42/snapshot');
+        expect(img.closest('a')).toHaveAttribute('href', '/api/mowglinext/obstacles/42/snapshot');
+    });
+
+    it('falls back to the marker icon when the snapshot file is missing', () => {
+        showPanel();
+        fireEvent.error(screen.getByRole('img', {name: 'Annotated camera frame of obstacle #42'}));
+        expect(screen.queryByRole('img', {name: 'Annotated camera frame of obstacle #42'})).not.toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'Promote'})).toBeInTheDocument();
+    });
+
+    it('retries a missing snapshot (cache-busted) once the obstacle updates', () => {
+        const panel = (count: number) => <TrackedObstaclesPanel
+            obstacles={[{id: 42, status: 1, observation_count: count}]} obstacleAreaIndex={{42: null}} areaNames={{}}
+            selectedObstacleId={null} onHoverObstacle={() => {}}
+        />;
+        const name = 'Annotated camera frame of obstacle #42';
+        const {rerender} = render(panel(3));
+        fireEvent.error(screen.getByRole('img', {name}));
+        expect(screen.queryByRole('img', {name})).not.toBeInTheDocument();
+        rerender(panel(3));
+        expect(screen.queryByRole('img', {name})).not.toBeInTheDocument();
+        rerender(panel(4));
+        expect(screen.getByRole('img', {name})).toHaveAttribute('src', '/api/mowglinext/obstacles/42/snapshot?v=1%3A4');
+    });
+});

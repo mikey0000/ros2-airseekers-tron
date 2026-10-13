@@ -1,4 +1,4 @@
-# Localization EKF — robot_localization ekf_node (ROS 2 Humble).
+# Localization EKF — robot_localization ekf_node (ROS 2 Jazzy).
 #
 # Fuses the three localization sources of this stack:
 #   /odom          mower_mcu_driver   50 Hz  wheel dead reckoning

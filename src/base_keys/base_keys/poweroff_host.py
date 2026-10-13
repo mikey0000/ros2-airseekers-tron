@@ -3,7 +3,7 @@
 
 This one file is used in two places:
 
-* inside ``mower_humble``: ``base_keys`` imports :func:`make_request` / :func:`write_request`
+* inside ``mower_jazzy``: ``base_keys`` imports :func:`make_request` / :func:`write_request`
   to ask the host for a power-off after the 3 s power-key hold (``power_long_action:=sequence``);
 * on the HOST (Ubuntu 20.04, python3.8, stdlib only): installed as
   ``/usr/local/sbin/mower-poweroff-host`` by ``scripts/install_power_button.sh`` and run by
@@ -24,7 +24,7 @@ Flow (docs/buttons.md "Power off"):
 4. ``mower-poweroff.path`` (PathExists) starts ``mower-poweroff.service`` -> ``handle``: validate
    (same boot_id, request fresh, uptime >= MIN_UPTIME_S), delete + archive the request, arm the
    MCU power cut marker, ``sync``, ``systemctl poweroff --no-block``;
-5. systemd stops docker (mower_humble gets SIGINT, 30 s grace: bag/mow recorders close),
+5. systemd stops docker (mower_jazzy gets SIGINT, 30 s grace: bag/mow recorders close),
    unmounts everything, then ``/usr/lib/systemd/system-shutdown/mower-mcu-poweroff`` sends the
    vendor ``/poweroff`` frame (module 10, byte 4 = 1) so the MCU cuts the battery.
 """

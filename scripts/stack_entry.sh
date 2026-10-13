@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Container entrypoint for mower_humble (docker/docker-compose.yml `command:`).
+# Container entrypoint for mower_jazzy (docker/docker-compose.yml `command:`).
 # Sets up crash recording (docs/crash_recovery.md), cleans Fast DDS shm leftovers, then
 # execs the launch so ros2 launch is the container's main process (respawn lives there).
 # no `set -u`: the ROS setup scripts reference unset variables
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 source /work/install/setup.bash
 
 export MOWER_CRASH_DIR=${MOWER_CRASH_DIR:-/userdata/ros2/crashes}

@@ -1776,7 +1776,9 @@
     "pointsShort_one": "{{count}} pt",
     "pointsShort_other": "{{count}} pt",
     "noContainingArea": "Aucune zone englobante",
-    "promoteTooltip": "Promouvoir en exclusion permanente"
+    "promoteTooltip": "Promouvoir en exclusion permanente",
+    "snapshotAlt": "Image annotée de l'obstacle n° {{id}}",
+    "snapshotHint": "Ce que la tondeuse a vu en détectant cet obstacle"
   },
   "mapEditing": {
     "unableToMatchAreaForObstacle": "Impossible d'associer une zone à cet obstacle",
@@ -2625,6 +2627,9 @@
     "temperatureThresholdsNote": "La température du moteur de lame est uniquement mesurée et rapportée — aucune couche de la pile n’arrête la lame en fonction de la température. Les seuils d’alerte et d’erreur utilisés par les diagnostics (motor_temp_warn_c et motor_temp_error_c, dans mowgli_monitoring/config/diagnostics.yaml) se modifient sur la page Paramètres."
   },
   "settingsObstacles": {
+    "autoMarkTitle": "Obstacles suivis",
+    "autoMarkLabel": "Marquer automatiquement les obstacles",
+    "autoMarkDescription": "Transforme les obstacles détectés de façon fiable (jouets, ballons, outils laissés sur la pelouse) en zones d’exclusion permanentes sur la carte. Désactivé = rien n’est ajouté automatiquement ; l’évitement d’obstacles en direct reste actif. Appliqué immédiatement ; les zones déjà marquées automatiquement sont toujours supprimées une fois l’objet disparu.",
     "digKeepouts": "Obstacles de patinage",
     "digAutoPromotion": "Créer automatiquement des zones d’exclusion de patinage",
     "digKeepoutsDescription": "Crée une zone d’exclusion temporaire lorsqu’un patinage est détecté dans une zone de tonte. Acceptez la proposition sur la carte pour la conserver. Si désactivé, aucune zone d’exclusion de patinage n’est créée ; la détection, l’arrêt et la récupération restent actifs. Enregistrez et redémarrez ROS2 pour appliquer.",
@@ -4269,9 +4274,8 @@
     "bladePolicyContinuous": "Continu",
     "bladePolicyConservative": "Prudent",
     "transitVariation": "Variation des trajets",
-    "transitVariationHint": "Varie le trajet de transit d'un passage à l'autre pour ne pas toujours suivre la même trace (ornières des pneus). couloirs = décalage latéral dans le chemin / la zone tracé(e) ; périmètre = alterne la ligne directe et le suivi du bord de la zone (sens horaire, puis antihoraire ; jamais plus de deux fois plus long) ; mixte = alterne entre tous les modes ; aucune = toujours la même ligne.",
+    "transitVariationHint": "Varie le trajet de transit dans la zone d'un passage à l'autre pour ne pas toujours suivre la même trace (ornières des pneus) ; les chemins tracés sont toujours suivis en leur centre. périmètre = alterne la ligne directe et le suivi du bord de la zone (sens horaire, puis antihoraire ; jamais plus de deux fois plus long) ; mixte = alterne aucune et périmètre ; aucune = toujours la même ligne.",
     "transitVariationNone": "Aucune",
-    "transitVariationLanes": "Couloirs",
     "transitVariationPerimeter": "Périmètre",
     "transitVariationMixed": "Mixte",
     "turnType": "Type de virage",
@@ -4562,5 +4566,8 @@
     "saveHint": "Conserver cette hauteur dans les réglages de la zone pour les prochaines tontes",
     "saved": "{{mm}} mm enregistrés pour {{area}}",
     "emergency": "Arrêt d'urgence verrouillé"
+  },
+  "map": {
+    "rotateHandle": "Glisser pour faire pivoter la zone"
   }
 }

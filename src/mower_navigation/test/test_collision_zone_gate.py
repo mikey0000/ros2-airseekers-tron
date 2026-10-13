@@ -50,3 +50,17 @@ def test_tick_without_command_stays_on():
 def test_off_above_on_rejected():
     with pytest.raises(ValueError):
         ZoneGate(forward_on=0.05, forward_off=0.08)
+
+
+def test_retry_backoff_after_refusal():
+    # 2026-10-13: an unconfigured collision_monitor refused "not declared" at 5 Hz for hours
+    b = _mod.RetryBackoff(5.0)
+    assert b.ready(0.0)
+    assert b.failed(0.0) is True          # first of a streak: log it
+    assert not b.ready(4.9)
+    assert b.ready(5.0)
+    assert b.failed(5.0) is False         # streak continues: throttled
+    assert not b.ready(9.0)
+    assert b.succeeded() is True          # recovered: one INFO line
+    assert b.ready(9.0)
+    assert b.succeeded() is False

@@ -52,6 +52,7 @@ become the upstream feature checks.
 - **PR-6 Settings-to-ROS parameter bindings:** T26, T29, T33.
 - **PR-7 Docking and datum:** T32, T34, T35.
 - **PR-8 Ops:** T36, T37, T43.
+- **PR-9 Obstacle snapshots:** T44 (rides with PR-5; the file route + panel thumbnail).
 
 Stack-side tasks (bridge, mission, launch) stay in this repo and can ship ahead of their GUI PRs.
 
@@ -104,6 +105,8 @@ Size: S ≤ ½ day, M 1-3 days, L > 3 days. "Kind" is GUI or Stack.
 | T41 | Status LEDs, rain and MQTT sections per profile | frontend | `LedsSection.tsx`, `RainSection.tsx`, `MqttSection.tsx`, `mqtt_topic_prefix` default `mowgli` | S | sonnet | T03 | LED section hidden (Tron lights are `src/mower_lights`). The MQTT prefix defaults to the profile id. Rain stays (mission has rain guards). | GUI |
 | T42 | Profile-aware onboarding instead of hiding the route | frontend | `pages/OnboardingPage.tsx` (firmware step l.1139, model step l.147-178, datum l.586-662), `onboarding/steps.ts` | M | opus | T03, T34 | For Tron the wizard skips the firmware and GNSS-config steps and keeps model, datum, dock and first area. `/onboarding` is re-enabled. | GUI |
 | T43 | Robot Anatomy and Diagnostics health copy | frontend | `RobotAnatomy.tsx:45-120`, `en.json` robotAnatomy.* | S | sonnet | T07, T23 | Profile-driven part list. No STM32 wording. | GUI |
+| T44 | Obstacle snapshot thumbnail in the tracked-obstacle panel | backend+frontend | `pkg/api/mowglinext.go` (`ObstacleSnapshotRoute`, `GET /api/mowglinext/obstacles/{id}/snapshot`), `pages/map/components/TrackedObstaclesPanel.tsx` (thumbnail + icon fallback), i18n | S | sonnet | T19 | Each row shows the annotated front frame the obstacle tracker saved (`<maps_dir>/obstacle_snapshots/<id>.jpg`); missing file falls back to the marker icon. Stack side: `src/mower_map/mower_map/obstacle_tracker_node.py` (`snapshot_*` params). | both |
+| T45 | GUI switch for automatic obstacle marking | backend+frontend+stack | schema `obstacle_settings.obstacle_auto_promote`, `pkg/api/param_bindings.go` (Tron: `/obstacle_tracker.auto_promote`, live), `web/src/constants/paramBindings.ts`, `ObstaclesSection.tsx`, `useSettingsManager.ts`, i18n; `launch/robot_settings.py` BINDINGS + `SELF_LOADED_TARGETS`, `mower.launch.py` + `mower_map/launch/obstacle_tracker.launch.py` (`obstacle_robot_yaml_path`), `obstacle_tracker_node.py` (read GUI yaml at startup + `add_on_set_parameters_callback`) | S | opus | T26, T27 | Settings → Obstacles → *Automatically mark obstacles* turns off the (optimistic) promotion of stably-detected obstacles into permanent keepouts. Applied live and at the next boot (node reads `mowgli_robot.yaml` itself, like `map_server_node`). Tracking + the `/obstacle_tracker/obstacles` panel keep working when off. | both |
 
 ## C. GNSS corrections finding
 

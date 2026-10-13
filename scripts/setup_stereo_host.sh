@@ -2,7 +2,7 @@
 # Host prerequisites of the stereo / VIO path. Run on the mower HOST as root (not in the
 # container), once per boot (both settings are runtime-only). Idempotent; reversible.
 #
-# 1. UDP socket buffer cap (net.core.rmem_max / wmem_max -> 8 MiB). mower_humble runs Fast DDS
+# 1. UDP socket buffer cap (net.core.rmem_max / wmem_max -> 8 MiB). mower_jazzy runs Fast DDS
 #    UDP-only (config/cameras/fastdds_no_shm.xml requests 8 MiB buffers) but the kernel clamped
 #    them to 208 KiB: one 300 KB mono8 eye filled a subscriber's buffer and the second eye of
 #    the pair, sent right after it, was dropped (measured 2026-10-07: 10 Hz left, 2.9 Hz right,

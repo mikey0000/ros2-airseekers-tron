@@ -1,6 +1,6 @@
 # mower_control — cmd_vel shaping, slip detection, IMU calibration
 
-`mower_control` (ROS 2 Humble, `ros2_stack/src/mower_control`) holds the three
+`mower_control` (ROS 2 Jazzy, `ros2_stack/src/mower_control`) holds the three
 control-support nodes that sit between high-level planners/teleop and the
 hardware drivers. All three are ports of MowgliNext patterns — see
 `ros2_stack/docs/mowglinext_baseline.md` section 4.3 — adapted to the
@@ -16,9 +16,9 @@ Airseekers Tron topic contract.
 
 ```
 twist_mux / teleop / Nav2
-        │ /cmd_vel_raw (TwistStamped)
+        │ /cmd_vel_raw (Twist)
         ▼
-  cmd_vel_slew ──► /cmd_vel (TwistStamped) ──► mower_mcu_driver ──► MCU
+  cmd_vel_slew ──► /cmd_vel (Twist) ──► mower_mcu_driver ──► MCU
         │                                            │
         │                              /wheel_vel (TwistStamped, vendor stack)
         │                              /odom     (Odometry, mower_mcu_driver)
@@ -36,8 +36,11 @@ wit_imu_driver ──► /imu/data (Imu) ──► imu_cal ──► /bias_statu
 ## cmd_vel_slew
 
 Slew-rate limiter with a command watchdog. Subscribes `/cmd_vel_raw`
-(`geometry_msgs/TwistStamped`), publishes `/cmd_vel`
-(`geometry_msgs/TwistStamped`) — the topic `mower_mcu_driver` subscribes to.
+(`geometry_msgs/Twist`), publishes `/cmd_vel` (`geometry_msgs/Twist`) — the
+topic `mower_mcu_driver` subscribes to (it also accepts `TwistStamped` on
+`/cmd_vel_stamped`). The whole command chain is unstamped `Twist`; Jazzy's
+twist_mux 4.5.0 must be pinned `use_stamped: false` (see
+`docs/JAZZY_MIGRATION_CHECKLIST_2026-10-09.md` §5).
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -45,7 +48,7 @@ Slew-rate limiter with a command watchdog. Subscribes `/cmd_vel_raw`
 | `max_angular_accel` | `1.0` | rad/s² cap on angular.z acceleration |
 | `cmd_timeout` | `0.5` | s after the last `/cmd_vel_raw` before the watchdog fires |
 | `rate` | `20.0` | Hz output/update rate |
-| `frame_id` | `base_link` | frame stamped on the output |
+| `frame_id` | `base_link` | reserved: the unstamped `Twist` output has no header, so the value is currently unused |
 
 Behaviour:
 
@@ -77,7 +80,7 @@ Compares commanded vs measured twist and latches `/dig_stall`
 
 Subscribed topics:
 
-* `/cmd_vel` (`geometry_msgs/TwistStamped`) — output of `cmd_vel_slew`.
+* `/cmd_vel` (`geometry_msgs/Twist`) — output of `cmd_vel_slew`.
 * Measured twist, auto-detected at startup: `/wheel_vel`
   (`geometry_msgs/TwistStamped`, published by the vendor `mower_base` stack)
   if it has a publisher, otherwise `/odom` (`nav_msgs/Odometry`, published by

@@ -248,6 +248,88 @@ def range_box(model: StereoModel, depth: np.ndarray, cx, cy, w, h, *, z_guess: f
                        roi_ref=roi)
 
 
+# ---------------------------------------------------------------------------
+# Class-size plausibility of a stereo range (2026-10-13 false stop)
+# ---------------------------------------------------------------------------
+# ``range_box`` takes the NEAREST self-consistent depth hypothesis (the safe choice for a
+# narrow object seen past by the background). On a lawn that sometimes picks a spurious near
+# disparity inside a person's box: 2026-10-13 09:45 a person several metres away was ranged
+# at 0.97 m / 0.91 m (box 63 % / 74 % of the 480 px frame, not clipped) and the mission
+# stopped. The box height says otherwise: a fully visible object of true height H at depth
+# Z spans H / Z in normalised image coordinates, so Z_size = H / (y2n - y1n).
+#
+# Rule (``check_class_size``), for classes with a height prior only:
+# * box touching the top or bottom of the frame (within ``clip_px``): the visible height is
+#   a LOWER bound of the true one, the prior says nothing -> stereo kept ('clipped'). With
+#   the camera 0.24 m above the lawn and a +-28 deg vertical field, an adult is clipped at
+#   the top at every range below ~2.5 m, so every genuinely close adult lands here.
+# * box >= ``tall_frac`` of the frame height: stereo kept ('tall'; very close, never
+#   second-guessed).
+# * else stereo z < ``min_ratio`` * Z_size: implausibly near -> replaced by Z_size with a
+#   variance of (``size_sigma_frac`` * Z_size)^2 ('implausible'). Otherwise kept ('ok').
+#
+# Direction of the error: Z_size is computed with the NOMINAL height. A shorter subject
+# (child, crouching / sitting adult) makes Z_size too FAR, i.e. the check becomes stricter
+# for it, not looser. What protects such a subject is the ratio: stereo is only overruled
+# when it would need the object to be shorter than min_ratio * nominal (0.8 m for a person
+# with the defaults) to be that near AND fully in view. A fully visible object standing on
+# the lawn at depth Z is at most 0.24 + 0.53 * Z m tall (~0.77 m at 1 m), so in practice:
+# within the guard's 1 m stop range a person box is kept only when clipped or >= 85 % of the
+# frame, and a fully visible person shorter than ~0.8 m within 1 m (a sitting toddler) is
+# ranged by its box height (too far) instead -- the residual risk of this check. The bumper
+# and the Nav2 costmap (stereo point cloud) still see it. Pet heights are small on purpose.
+
+
+DEFAULT_SIZE_CLASSES = ('person', 'dog', 'cat')
+DEFAULT_SIZE_HEIGHTS_M = (1.6, 0.4, 0.25)
+
+
+@dataclass
+class SizeCheck:
+    z: float                  # depth to use (m, optical axis)
+    variance: float           # m^2
+    verdict: str              # ok | clipped | tall | implausible | no_prior
+    z_size: Optional[float]   # depth implied by the box height and the class prior
+
+
+def size_range(model: StereoModel, cx: float, cy: float, h: float,
+               height_m: float) -> Optional[float]:
+    """Depth (m) at which an object ``height_m`` tall spans the box height (pinhole on the
+    undistorted top / bottom centre pixels of the source eye). None when degenerate."""
+    if height_m <= 0.0 or h <= 0.0:
+        return None
+    n = undistort_points([[cx, cy - 0.5 * h], [cx, cy + 0.5 * h]], model.src_k, model.src_d)
+    dy = float(n[1, 1] - n[0, 1])
+    if dy <= 1e-6:
+        return None
+    return float(height_m) / dy
+
+
+def box_clipped(cy: float, h: float, image_height: float, clip_px: float = 3.0) -> bool:
+    """Box touches the top or the bottom edge of the frame (within ``clip_px``)."""
+    return (cy - 0.5 * h <= clip_px
+            or (image_height > 0 and cy + 0.5 * h >= image_height - clip_px))
+
+
+def check_class_size(model: StereoModel, z: float, variance: float, cx: float, cy: float,
+                     h: float, image_height: float, height_m: Optional[float], *,
+                     min_ratio: float = 0.5, clip_px: float = 3.0, tall_frac: float = 0.85,
+                     size_sigma_frac: float = 0.3) -> SizeCheck:
+    """Cross-check a stereo depth ``z`` against the class height prior (see above)."""
+    if not height_m or height_m <= 0.0 or min_ratio <= 0.0:
+        return SizeCheck(z, variance, 'no_prior', None)
+    zs = size_range(model, cx, cy, h, height_m)
+    if zs is None:
+        return SizeCheck(z, variance, 'no_prior', None)
+    if box_clipped(cy, h, image_height, clip_px):
+        return SizeCheck(z, variance, 'clipped', zs)
+    if image_height > 0 and h >= tall_frac * image_height:
+        return SizeCheck(z, variance, 'tall', zs)
+    if z < min_ratio * zs:
+        return SizeCheck(zs, float((size_sigma_frac * zs) ** 2), 'implausible', zs)
+    return SizeCheck(z, variance, 'ok', zs)
+
+
 def quat_to_matrix(x, y, z, w) -> np.ndarray:
     n = x * x + y * y + z * z + w * w
     s = 2.0 / n if n > 0 else 0.0

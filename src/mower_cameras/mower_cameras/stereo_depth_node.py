@@ -167,7 +167,7 @@ class StereoDepthNode(Node):
         d('publish_on_demand', True)
         d('cloud_fps', 5.0)              # filtered cloud rate cap (CPU); depth image keeps fps
         # --- cloud stamping (Nav2 costmap deadlock workaround, 2026-10-07) ---
-        # Humble tf2_ros 0.25.x: a cloud that is NOT transformable on arrival in the costmap
+        # Jazzy tf2_ros 0.25.x: a cloud that is NOT transformable on arrival in the costmap
         # goes through tf2_ros::Buffer::waitForTransform, which can deadlock against the
         # costmap's TF listener thread (Buffer mutex vs BufferCore transformable_requests
         # mutex, lock-order inversion; gdb-confirmed in controller_server). The EKF's
@@ -181,7 +181,7 @@ class StereoDepthNode(Node):
         d('stamp_tf_margin_s', 0.1)      # margin under the newest TF stamp
         # TF older than this (or none yet): NO cloud (2026-10-09; was "stamp = now - this").
         # Live: at boot the clouds came before the EKF's first odom TF, the fallback stamp was
-        # untransformable, and the local costmap's stereo source froze for good (Humble tf2
+        # untransformable, and the local costmap's stereo source froze for good (Jazzy tf2
         # MessageFilter deadlock); depth / mono images are still published (stamp = now).
         d('stamp_max_lag_s', 0.3)
         # Other dynamic transforms the cloud stamp must not be newer than, 'parent:child'
@@ -192,7 +192,7 @@ class StereoDepthNode(Node):
         d('stamp_tf_also', ['map:odom'])
         # Fixed-frame clouds (2026-10-09, live: the costmaps still froze under load 13 because a
         # cloud in the CAMERA frame needs odom/map TF at its stamp, and late TF delivery sends
-        # it through the Humble tf2 MessageFilter wait that deadlocks). ~/points + ~/clear_points
+        # it through the Jazzy tf2 MessageFilter wait that deadlocks). ~/points + ~/clear_points
         # are published already in stamp_tf_parent (odom), stamped exactly at the odom->base_link
         # sample used, and ~/points_map + ~/clear_points_map in map (for the global costmap): the
         # costmap's filter target equals the cloud frame, so it never waits for a transform.

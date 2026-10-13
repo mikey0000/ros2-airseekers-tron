@@ -8,7 +8,7 @@ In:  ``nongrass_topic`` (/ai/seg/ground_cells, PointCloud2 in the map frame from
 Out (latched, on the keepout-mask grid like the terrain layers):
      ``~/nongrass_cost``     0..nongrass_cost_max, Nav2 global costmap ``nongrass_layer``
                              (StaticLayer, non-trinary, use_maximum). ALWAYS published (zeros
-                             when nothing is confirmed or the memory is off): the Humble
+                             when nothing is confirmed or the memory is off): the Jazzy
                              StaticLayer has no costs until its first map.
      ``~/nongrass_grid``     non-grass probability 0..100, -1 never seen (GUI heat map)
      ``~/nongrass_summary``  JSON {version, stamp, areas: [{area, area_index, enabled,

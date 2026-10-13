@@ -61,3 +61,23 @@ describe('map delete confirmation', () => {
         expect(draw.trash).toHaveBeenCalledOnce();
     });
 });
+
+describe('area labels', () => {
+    it('gives a nested (smaller) area a lower placement sort key than its parent', async () => {
+        const {MowingAreaFeature} = await import('../../../types/map');
+        const square = (id: string, half: number) => {
+            const f = new MowingAreaFeature(id, 1);
+            f.geometry = {type: 'Polygon', coordinates: [[[-half, -half], [half, -half], [half, half], [-half, half], [-half, -half]]]};
+            return f;
+        };
+        const options = {
+            features: {}, setFeatures: vi.fn(), editMap: false, mowingAreas: [],
+            drawRef: {current: null}, notification: {}, mapInstanceRef: {current: null},
+        } as unknown as UseMapEditingOptions;
+        const hook = renderHook(() => useMapEditing(options));
+        const [parent, child] = hook.result.current.buildLabels([square('lawn', 0.001), square('heart', 0.0001)]);
+        const sortKey = (label: typeof parent) => label.properties!.sortKey as number;
+        expect(sortKey(child)).toBeLessThan(sortKey(parent));
+        expect(sortKey(parent)).toBeGreaterThan(0);
+    });
+});

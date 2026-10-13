@@ -8,7 +8,7 @@
 det_ros.yolo_postprocess.post_process, exactly what det_ros_node._detect does) and the
 C++ node as a subprocess (topics remapped to /parity/*, so it can run next to the live
 stack), feeds it every frame and matches the detections (same class, IoU) per frame.
-Run inside the mower_humble container with the workspace sourced.
+Run inside the mower_jazzy container with the workspace sourced.
 """
 import argparse
 import glob

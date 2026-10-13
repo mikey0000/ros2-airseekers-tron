@@ -47,9 +47,13 @@ TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
 OBSTACLE_DETECTION_LEVELS = ('none', 'standard', 'sensitive')
 BLADE_POLICIES = ('continuous', 'conservative')
 # Transit route variation between runs (2026-10-09, owner: "driving the same line eventually
-# creates tyre tracks"; route_graph.py): none | lanes (sideways offset inside the path band /
-# area) | perimeter (direct vs inset-perimeter CW / CCW in-area legs) | mixed (rotate all).
-TRANSIT_VARIATIONS = ('none', 'lanes', 'perimeter', 'mixed')
+# creates tyre tracks"; route_graph.py): none | perimeter (direct vs inset-perimeter CW / CCW
+# in-area legs) | mixed (alternate none / perimeter). Path legs always follow the drawn
+# centreline. 'lanes' (sideways offsets inside the band) was removed 2026-10-13: a no-op on
+# 0.7 m bands, off-centre on wider ones; a stored 'lanes' is migrated to 'none' on load.
+TRANSIT_VARIATIONS = ('none', 'perimeter', 'mixed')
+# Retired enum values -> their replacement (accepted on load / set, logged by loads()).
+LEGACY_VALUES = {'transit_variation': {'lanes': 'none'}}
 # Slope-aware swath angle (terrain memory, docs/terrain_aware_planning.md), only
 # used while mow_angle_deg is auto: off = planner's own choice; contour = swaths
 # across the fall line; updown = along it; auto = contour at/above
@@ -83,7 +87,7 @@ BUILTIN_DEFAULTS = {
     'turn_type': 'auto',
     'obstacle_detection': 'standard',
     'blade_policy': 'continuous',
-    'transit_variation': 'lanes',
+    'transit_variation': 'none',
     'slope_mode': 'off',
     'slope_contour_above_deg': 10.0,
     # Non-grass memory (2026-10-09, docs/grass_segmentation.md): soft Nav2 cost on
@@ -208,6 +212,7 @@ def validate_value(key, value):
             return True, value
         return False, '%s must be true or false' % key
     if kind == 'enum':
+        value = LEGACY_VALUES.get(key, {}).get(value, value) if isinstance(value, str) else value
         if isinstance(value, str) and value in lo:
             return True, value
         return False, '%s must be one of %s' % (key, ', '.join(lo))
@@ -380,7 +385,8 @@ class AreaSettingsStore:
 
     @classmethod
     def loads(cls, text):
-        """Parse; invalid entries are dropped. Returns (store, [warnings])."""
+        """Parse; invalid entries are dropped, retired values migrated (LEGACY_VALUES).
+        Returns (store, [warnings])."""
         store, warnings = cls(), []
         try:
             doc = yaml.safe_load(text) or {}
@@ -388,6 +394,13 @@ class AreaSettingsStore:
             return store, ['unreadable: %s' % exc]
         if not isinstance(doc, dict):
             return store, ['not a mapping']
+        raw_areas = doc.get('areas') if isinstance(doc.get('areas'), dict) else {}
+        for where, vals in [('defaults', doc.get('defaults'))] + \
+                [('area %r' % n, v) for n, v in raw_areas.items()]:
+            for key, table in LEGACY_VALUES.items():
+                if isinstance(vals, dict) and vals.get(key) in table:
+                    warnings.append('%s: %s %r migrated to %r (retired value)'
+                                    % (where, key, vals[key], table[vals[key]]))
         ok, msg, d = validate(doc.get('defaults') or {})
         if ok:
             store.defaults = {k: v for k, v in d.items() if v is not None}

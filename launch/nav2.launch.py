@@ -13,34 +13,34 @@ Required apt packages
 
 Localization (this file's core):
 
-    ros-humble-robot-localization    ekf_node, navsat_transform_node
-    ros-humble-nav2-bringup          Nav2 params + lifecycle bringup
-    ros-humble-nav2-controller       RegulatedPurePursuit, RotationShim
-    ros-humble-nav2-planner          SmacPlanner2D
-    ros-humble-nav2-costmap-2d       static + obstacle layers, keepout filter
-    ros-humble-nav2-behaviors        spin, back up, wait
-    ros-humble-nav2-smoother         costmap smoothing
-    ros-humble-nav2-velocity-smoother velocity limits, collision_monitor chain
-    ros-humble-nav2-map-server       static layer source
-    ros-humble-nav2-lifecycle-manager
-    ros-humble-robot-state-publisher URDF frames -> /tf (entry 0 below)
-    ros-humble-xacro                 robot_description preprocessor
-    ros-humble-tf2-ros, ros-humble-tf2-geometry-msgs, ros-humble-geometry2_msgs
+    ros-jazzy-robot-localization    ekf_node, navsat_transform_node
+    ros-jazzy-nav2-bringup          Nav2 params + lifecycle bringup
+    ros-jazzy-nav2-controller       RegulatedPurePursuit, RotationShim
+    ros-jazzy-nav2-planner          SmacPlanner2D
+    ros-jazzy-nav2-costmap-2d       static + obstacle layers, keepout filter
+    ros-jazzy-nav2-behaviors        spin, back up, wait
+    ros-jazzy-nav2-smoother         costmap smoothing
+    ros-jazzy-nav2-velocity-smoother velocity limits, collision_monitor chain
+    ros-jazzy-nav2-map-server       static layer source
+    ros-jazzy-nav2-lifecycle-manager
+    ros-jazzy-robot-state-publisher URDF frames -> /tf (entry 0 below)
+    ros-jazzy-xacro                 robot_description preprocessor
+    ros-jazzy-tf2-ros, ros-jazzy-tf2-geometry-msgs, ros-jazzy-geometry2_msgs
 
-NOT installed, deliberately: ``ros-humble-slam-toolbox``. This is a slam-less stack.
+NOT installed, deliberately: ``ros-jazzy-slam-toolbox``. This is a slam-less stack.
 
-``docker/Dockerfile.humble`` already installs ``ros-humble-ros-base``,
-``ros-humble-nav2-bringup`` and ``ros-humble-control-toolbox``, so the only genuinely new
+``docker/Dockerfile.jazzy`` already installs ``ros-jazzy-ros-base``,
+``ros-jazzy-nav2-bringup`` and ``ros-jazzy-control-toolbox``, so the only genuinely new
 line for this file is:
 
-    apt-get install -y ros-humble-robot-localization
+    apt-get install -y ros-jazzy-robot-localization
 
 That belongs in the image build, not on the device: the host is Ubuntu 20.04/Noetic and
-cannot apt-install Humble (docs/deployment.md).
+cannot apt-install Jazzy (docs/deployment.md).
 
-``ros-humble-robot-state-publisher`` and ``ros-humble-xacro`` (entry 0 below)
-are likewise image dependencies, not yet in ``docker/Dockerfile.humble`` —
-``ros-humble-nav2-bringup`` may pull robot_state_publisher in transitively,
+``ros-jazzy-robot-state-publisher`` and ``ros-jazzy-xacro`` (entry 0 below)
+are likewise image dependencies, not yet in ``docker/Dockerfile.jazzy`` —
+``ros-jazzy-nav2-bringup`` may pull robot_state_publisher in transitively,
 but install both explicitly to be sure.
 
 ======================================================================================

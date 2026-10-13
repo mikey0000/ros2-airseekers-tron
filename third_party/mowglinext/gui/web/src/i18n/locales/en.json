@@ -1780,7 +1780,9 @@
     "pointsShort_one": "{{count}}pt",
     "pointsShort_other": "{{count}}pt",
     "noContainingArea": "No containing area",
-    "promoteTooltip": "Promote to permanent keepout"
+    "promoteTooltip": "Promote to permanent keepout",
+    "snapshotAlt": "Annotated camera frame of obstacle #{{id}}",
+    "snapshotHint": "What the mower saw when it detected this obstacle"
   },
   "mapEditing": {
     "unableToMatchAreaForObstacle": "Unable to match an area for this obstacle",
@@ -2629,6 +2631,9 @@
     "temperatureThresholdsNote": "Blade-motor temperature is measured and reported only — no layer of the stack stops the blade on temperature. The warning and error thresholds used by the diagnostics (motor_temp_warn_c and motor_temp_error_c, in mowgli_monitoring/config/diagnostics.yaml) can be edited on the Parameters page."
   },
   "settingsObstacles": {
+    "autoMarkTitle": "Tracked obstacles",
+    "autoMarkLabel": "Automatically mark obstacles",
+    "autoMarkDescription": "Turn reliably-detected obstacles (toys, balls, tools left on the lawn) into permanent keepout zones on the map. Off = nothing is added automatically; live obstacle avoidance still runs. Applied immediately; existing auto-marked zones are still removed once the object is gone.",
     "digKeepouts": "Dig obstacles",
     "digAutoPromotion": "Automatically create dig keepouts",
     "digKeepoutsDescription": "Create a temporary keepout when wheel slip is detected in a mowing area. Accept the proposal on the map to keep it permanently. When disabled, no dig keepouts are created; dig detection, stopping and recovery remain active. Save and restart ROS2 to apply.",
@@ -4269,9 +4274,8 @@
     "bladePolicyContinuous": "Continuous",
     "bladePolicyConservative": "Conservative",
     "transitVariation": "Transit variation",
-    "transitVariationHint": "Varies the transit line between runs so the same track is not driven every time (tyre tracks). lanes = shift sideways inside the drawn path / area; perimeter = alternate the direct line with following the area edge (clockwise, then counter-clockwise; never more than twice as long); mixed = rotate through all; none = always the same line.",
+    "transitVariationHint": "Varies the in-area transit line between runs so the same track is not driven every time (tyre tracks); drawn paths are always driven down their centre. perimeter = alternate the direct line with following the area edge (clockwise, then counter-clockwise; never more than twice as long); mixed = alternate none and perimeter; none = always the same line.",
     "transitVariationNone": "None",
-    "transitVariationLanes": "Lanes",
     "transitVariationPerimeter": "Perimeter",
     "transitVariationMixed": "Mixed",
     "turnType": "Turn style",
@@ -4562,5 +4566,8 @@
     "saveHint": "Store this height in the area's settings for future mows",
     "saved": "Saved {{mm}} mm to {{area}}",
     "emergency": "Emergency latched"
+  },
+  "map": {
+    "rotateHandle": "Drag to rotate the area"
   }
 }

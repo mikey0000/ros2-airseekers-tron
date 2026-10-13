@@ -45,7 +45,7 @@ export const SettingFieldLabel: React.FC<Props> = ({
     const showReset = canReset && overridden && !!onReset;
     const overriddenText = t("settingsReset.overridden", "Overridden — differs from default");
     return (
-        <Space size={4} align="center">
+        <Space size={4} align="center" wrap>
             {overridden ? (
                 <Tooltip title={overriddenText}>
                     <Badge

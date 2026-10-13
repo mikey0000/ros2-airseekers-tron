@@ -166,6 +166,12 @@ var paramBindingTables = map[string]ParamBindingTable{
 			{Key: "blade_disc_mm", Node: "/map_server_node", Param: "blade_disc_mm", Type: ParamTypeInteger, Live: true},
 			{Key: "swath_overlap_m", Node: "/map_server_node", Param: "swath_overlap_m", Type: ParamTypeDouble, Live: true},
 			{Key: "default_swath_width_m", Node: "/map_server_node", Param: "default_swath_width_m", Type: ParamTypeDouble, Live: true},
+			// Auto obstacle marking (src/mower_map obstacle_tracker_node): promote
+			// stably-detected obstacles into permanent keepouts. The node declares
+			// the parameter up front and applies it in an on_set_parameters
+			// callback, so the toggle takes effect live; its startup value is read
+			// from the GUI yaml itself (robot_yaml_path), like map_server_node.
+			{Key: "obstacle_auto_promote", Node: "/obstacle_tracker", Param: "auto_promote", Type: ParamTypeBool, Live: true},
 		},
 		GuiKeys: []string{
 			"mower_model", "datum_lat", "datum_lon", "datum_alt",

@@ -95,8 +95,11 @@ protected:
     rcl_time_point_value_t now_ns = 1000LL * 1000000000LL;
     (void)rcl_set_ros_time_override(h, now_ns);
 
-    auto costmap =
-        std::make_shared<nav2_costmap_2d::Costmap2DROS>("local_costmap", ns, "local_costmap");
+    // Jazzy's Costmap2DROS ctor gained a required use_sim_time argument (Humble
+    // defaulted it to false). Production nav2_params.yaml runs false; FTC itself
+    // uses the ROS-time-overridden node clock above, not the costmap's.
+    auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
+        "local_costmap", ns, "local_costmap", false);
     costmap->set_parameter(rclcpp::Parameter("plugins", std::vector<std::string>{}));
     costmap->configure();
 

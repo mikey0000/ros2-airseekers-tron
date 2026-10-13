@@ -142,8 +142,9 @@ class SimNode(Node):
         self.pub_vel = P(TwistStamped, '/vel', 10)
         self.pub_points = P(PointCloud2, '/stereo_depth/points', qos_profile_sensor_data)
         self.pub_clear = P(PointCloud2, '/stereo_depth/clear_points', qos_profile_sensor_data)
-        # 2026-10-09: the global costmap reads stereo_depth's map-frame copies; the sim sends the
-        # same camera-frame clouds there (no CPU load in the sim, so the TF wait is harmless)
+        # 2026-10-09: the global costmap and obstacle_tracker read stereo_depth's map-frame copies;
+        # the sim sends the same clouds transformed into map with the GROUND-TRUTH pose
+        # (StereoRaycaster.to_map; optimistic under localization:=ekf, where the real node uses TF)
         self.pub_points_map = P(PointCloud2, '/stereo_depth/points_map', qos_profile_sensor_data)
         self.pub_clear_map = P(PointCloud2, '/stereo_depth/clear_points_map',
                                qos_profile_sensor_data)
@@ -410,12 +411,18 @@ class SimNode(Node):
         obs, ground = self.stereo.cast(pose.x, pose.y, pose.yaw, self.world.obstacles,
                                        self.sim_time())
         stamp = self.get_clock().now().to_msg()
-        obs_msg = make_cloud(obs, 'stereo_camera_optical', stamp)
-        ground_msg = make_cloud(ground, 'stereo_camera_optical', stamp)
-        self.pub_points.publish(obs_msg)
-        self.pub_clear.publish(ground_msg)
-        self.pub_points_map.publish(obs_msg)
-        self.pub_clear_map.publish(ground_msg)
+        # Divergence from the robot: the real stereo_depth_node (fixed_frame_clouds, default
+        # since 2026-10-09) publishes /points and /clear_points already in odom, stamped at
+        # the odom->base_link sample used. The sim still sends them in stereo_camera_optical
+        # stamped now(); the local costmap transforms them via TF, which the sim publishes
+        # synchronously, so the Jazzy tf2 wait the robot avoids does not occur here.
+        # /points_map and /clear_points_map: the same clouds in map (ground truth, see above).
+        self.pub_points.publish(make_cloud(obs, 'stereo_camera_optical', stamp))
+        self.pub_clear.publish(make_cloud(ground, 'stereo_camera_optical', stamp))
+        self.pub_points_map.publish(
+            make_cloud(self.stereo.to_map(obs, pose.x, pose.y, pose.yaw), 'map', stamp))
+        self.pub_clear_map.publish(
+            make_cloud(self.stereo.to_map(ground, pose.x, pose.y, pose.yaw), 'map', stamp))
 
     def _rear_tick(self):
         if self.pub_image.get_subscription_count() == 0:
@@ -467,6 +474,14 @@ class SimNode(Node):
 
 
 def main(args=None):
+    # B6: refuse to join a non-isolated graph (or run on the mower) before any participant exists
+    from .isolation import IsolationError, check_isolation
+    try:
+        check_isolation('mower_sim sim_node')
+    except IsolationError as e:
+        import sys
+        print('FATAL: %s' % e, file=sys.stderr, flush=True)
+        sys.exit(2)
     rclpy.init(args=args)
     node = None
     try:

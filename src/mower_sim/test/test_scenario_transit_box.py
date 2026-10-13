@@ -20,6 +20,7 @@ import unittest
 import pytest
 
 os.environ['ROS_LOCALHOST_ONLY'] = '1'
+os.environ['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
 os.environ['ROS_DOMAIN_ID'] = os.environ.get('MOWER_SIM_ROS_DOMAIN_ID',
                                              str(150 + os.getpid() % 50))
 

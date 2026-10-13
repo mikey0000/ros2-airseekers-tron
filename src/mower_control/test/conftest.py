@@ -5,7 +5,8 @@
 # latched BOUNDARY_EMERGENCY_STOP. Force localhost-only discovery on a private domain before
 # anything imports rclpy. MOWER_TEST_ROS_DOMAIN_ID overrides the domain.
 import os as _iso_os  # noqa: E402
-_iso_os.environ['ROS_LOCALHOST_ONLY'] = '1'
+_iso_os.environ['ROS_LOCALHOST_ONLY'] = '1'  # deprecated on Jazzy, still honoured
+_iso_os.environ['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
 _iso_os.environ['ROS_DOMAIN_ID'] = _iso_os.environ.get('MOWER_TEST_ROS_DOMAIN_ID', '77')
 # -------------------------------------------------------------------------------------------
 
@@ -14,7 +15,7 @@ _iso_os.environ['ROS_DOMAIN_ID'] = _iso_os.environ.get('MOWER_TEST_ROS_DOMAIN_ID
 The node logic under test (slew/watchdog step, slip step, IMU window evaluation, fast CDR
 helpers) is exercised directly. When ``rclpy`` is not importable (plain host Python) a small
 shim registers the module names the nodes import, so the same tests run on the host and
-inside the Humble container; tests that need real serialization skip on the shim.
+inside the Jazzy container; tests that need real serialization skip on the shim.
 """
 
 import os

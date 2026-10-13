@@ -245,6 +245,48 @@ class MapStore:
                     return True
         return False
 
+    def find_obstacle_by_centroid(self, cx: float, cy: float, max_dist: float,
+                                  sources: Optional[Sequence[int]] = None
+                                  ) -> Optional[Tuple[int, Obstacle]]:
+        """Nearest stored obstacle whose centroid is within ``max_dist`` of
+        ``(cx, cy)``, restricted to provenance ``sources`` when given.
+        Returns ``(area_index, obstacle)`` or ``None``."""
+        hit = None
+        best = float(max_dist)
+        for i, area in enumerate(self.areas):
+            for obs in area.obstacles:
+                if sources is not None and obs.source not in sources:
+                    continue
+                ox, oy = polygon_centroid(obs.polygon)
+                d = math.hypot(ox - cx, oy - cy)
+                if d <= best:
+                    best, hit = d, (i, obs)
+        return hit
+
+    def remove_obstacle(self, area_index: Optional[int] = None, obstacle_id: int = 0,
+                        centroid: Optional[Point] = None, max_dist: float = 0.5,
+                        sources: Optional[Sequence[int]] = None) -> Tuple[bool, str]:
+        """Remove ONE stored obstacle. Matched by id first (when ``obstacle_id``
+        is non-zero), then by nearest centroid within ``max_dist``. Only
+        obstacles whose ``source`` is in ``sources`` (``None`` = any source)
+        are eligible. Returns ``(ok, message)``. Mirrors the upstream semantics
+        of a discard, but for accepted (non-pending) keepouts."""
+        if obstacle_id != 0:
+            for i, area in enumerate(self.areas):
+                if area_index is not None and i != area_index:
+                    continue
+                for k, obs in enumerate(area.obstacles):
+                    if obs.id == obstacle_id and (sources is None or obs.source in sources):
+                        del area.obstacles[k]
+                        return True, 'obstacle %d removed from area %d' % (obstacle_id, i)
+        if centroid is not None:
+            hit = self.find_obstacle_by_centroid(centroid[0], centroid[1], max_dist, sources)
+            if hit is not None:
+                i, obs = hit
+                self.areas[i].obstacles.remove(obs)
+                return True, 'obstacle #%d removed from area %d' % (obs.id, i)
+        return False, 'no matching obstacle found'
+
 
 # ---------------------------------------------------------------------------
 # areas.dat (exact upstream format)

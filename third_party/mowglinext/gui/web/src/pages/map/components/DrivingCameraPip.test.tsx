@@ -47,7 +47,7 @@ describe("DrivingCameraPip", () => {
         const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
         try {
             renderPip();
-            const img = screen.getByTestId("drive-pip-stream") as HTMLImageElement;
+            const img = screen.getByTestId("drive-pip-stream");
             hidden.mockReturnValue(true);
             act(() => { document.dispatchEvent(new Event("visibilitychange")); });
             expect(screen.queryByTestId("drive-pip-stream")).toBeNull();
@@ -61,7 +61,7 @@ describe("DrivingCameraPip", () => {
     });
     it("releases the old stream when the camera changes", () => {
         const {rerender} = renderPip();
-        const img = screen.getByTestId("drive-pip-stream") as HTMLImageElement;
+        const img = screen.getByTestId("drive-pip-stream");
         rerender(<DrivingCameraPip manualMode={true} reversing={true} drivingCamera="front_right"
                                    prefs={DEFAULT_PREFS} onPrefsChange={vi.fn()}/>);
         expect(img.getAttribute("src")).toMatch(/^data:image\/gif/);

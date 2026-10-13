@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.8)
 project(mowgli_nav2_plugins)
 
-# Humble port of third_party/mowglinext/mowgli_nav2_plugins (Kilted):
-# rclcpp_lifecycle node, setPlan/3-arg computeVelocityCommands, PlannerException,
+# Jazzy port of third_party/mowglinext/mowgli_nav2_plugins (Kilted):
+# rclcpp_lifecycle node, setPlan/3-arg computeVelocityCommands, ControllerException,
 # 3-arg GoalChecker, no mowgli_interfaces (blade-load slowdown fail-open).
 
 # ---------------------------------------------------------------------------

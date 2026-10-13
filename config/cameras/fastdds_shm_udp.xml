@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Fast DDS profile (2026-10-09): shared-memory + UDPv4 for the whole mower_humble container.
+  Fast DDS profile (2026-10-09): shared-memory + UDPv4 for the whole mower_jazzy container.
 
   Why: with ~63 nodes in one container the per-message cost of UDP loopback (a socket receive
   per subscriber per message) dominated idle CPU (most Python nodes ~15 % each, load ~13 on

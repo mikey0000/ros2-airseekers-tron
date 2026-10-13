@@ -169,3 +169,49 @@ def test_disabled_state_file_survives_restart(tmp_path):
         proc.send_signal(2)
         out, _ = proc.communicate(timeout=20)
     assert 'DISABLED' in out
+
+
+def test_mow_from_dock_hl_before_activity_gets_a_mow_bag(recorder):
+    """Review B5: docked (activity docked_idle -> low-power ring), the mission publishes
+    high_level_status leaving IDLE before /mission/activity: the mow bag must still open
+    (it used to log 'recording disabled' and never retry), and the user's switch stays on."""
+    from std_msgs.msg import String
+    from std_srvs.srv import Trigger
+    from mowgli_interfaces.msg import HighLevelStatus
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    ns, node, tmp, proc = recorder
+    latched = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                         durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+    activity = node.create_publisher(String, '/mission/activity', latched)
+    get_state = node.create_client(Trigger, '/%s/bag_recorder/get_state' % ns)
+    chatter = node.create_publisher(String, '/bagrec_test_chatter', 10)
+    hl = node.create_publisher(HighLevelStatus, '/behavior_tree_node/high_level_status', 10)
+
+    def state():
+        return json.loads(_call(node, get_state, Trigger.Request()).message)
+
+    def publish_for(seconds, st):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            chatter.publish(String(data='x' * 100))
+            hl.publish(HighLevelStatus(state=2, state_name=st))
+            _spin_until(node, lambda: False, 0.1)
+
+    activity.publish(String(data='docked_idle'))
+    publish_for(1.0, 'IDLE_DOCKED')
+    assert _spin_until(node, lambda: state()['profile'] == 'low', 20.0), state()
+    assert state()['enabled'] is True and state()['low_power'] is True
+    publish_for(6.0, 'UNDOCKING')             # HL first, activity still docked_idle
+    st = state()
+    assert st['mow'] is not None and st['profile'] == 'full', st
+    assert st['enabled'] is True
+    activity.publish(String(data='mowing'))
+    publish_for(4.0, 'MOWING')
+    mow_dir = tmp / 'mows' / st['mow']
+    publish_for(6.0, 'IDLE_DOCKED')
+    activity.publish(String(data='docked_idle'))
+    assert _spin_until(node, lambda: state()['mow'] is None, 20.0)
+    files = [f for f in os.listdir(mow_dir) if f.endswith('.zstd')]
+    assert len(files) >= 2, files
+    assert not (tmp / 'state.json').exists() or \
+        json.loads((tmp / 'state.json').read_text())['enabled'] is True

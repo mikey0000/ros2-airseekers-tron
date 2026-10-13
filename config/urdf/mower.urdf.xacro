@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <!--
-  Airseekers Tron — robot description (ROS 2 Humble).
+  Airseekers Tron — robot description (ROS 2 Jazzy).
 
   xacro port of the vendor URDF recovered in
   ros2_port_handoff/08_calibration_identity/mower_base_urdf/mower.urdf

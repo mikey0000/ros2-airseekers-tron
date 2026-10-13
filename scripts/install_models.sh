@@ -4,7 +4,7 @@
 # Source: ros2_port_handoff/11_perception_models/*.rknn (no source; vendor exports,
 #         compiled with rknn-toolkit2 2.3.0, light classifier 2.3.2).
 # Target: /userdata/ros2/models/ on the mower (persistent partition, bind-mounted into the
-#         Humble container by docker/docker-compose.yml as /userdata/ros2).
+#         Jazzy container by docker/docker-compose.yml as /userdata/ros2).
 #
 #   ./scripts/install_models.sh                    # rsync models -> $MOWER_USER@$MOWER_HOST
 #   ./scripts/install_models.sh --runtime          # + download librknnrt.so 2.3.0 ->

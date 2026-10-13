@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ROS 2 Humble driver node for the Airseekers Tron chassis/cutter MCU serial bus.
+"""ROS 2 Jazzy driver node for the Airseekers Tron chassis/cutter MCU serial bus.
 
 The MCU sits behind ``/dev/serial_mower`` (``ttyS9``, RK3588 UART9, 115200 8N1, no flow
 control).  The cutter board is the gateway: the chassis board (wheels, bumper, lift, stop)
@@ -58,6 +58,10 @@ Parameters
 ``battery_voltage_scale`` ``0.1``  raw 0.1 V units -> volts (set 1.0 to mimic the stock node)
 ``battery_current_scale`` ``-0.1`` raw 0.1 A, positive = discharging -> ROS amperes (negative
                                  = discharging, REP/BatteryState convention)
+``docked_motor_neutral`` ``false`` RETIRED (2026-10-13 review B1): declared so old overrides
+                                 do not fail, never sends a frame; ``true`` only logs a
+                                 warning.  The ``docked_neutral_*`` tuning parameters are gone
+                                 (docs/wheel_control_semantics.md "Docked motor neutral search").
 
 Known gaps -- tracked as TODOs, do not treat this driver as safety-complete yet
 -------------------------------------------------------------------------------
@@ -440,7 +444,7 @@ def _yaw_to_quaternion(yaw):
 class _TermiosSerial:
     """Tiny pyserial-compatible fallback (``read``/``write``/``in_waiting``/``close``).
 
-    ``python3-serial`` may be missing in a freshly pulled ``ros:humble`` image, and the
+    ``python3-serial`` may be missing in a freshly pulled ``ros:jazzy`` image, and the
     offline loopback test only ever talks to a pty - so if pyserial is not importable we
     configure the tty ourselves in raw 8N1 mode with the ``termios`` stdlib module.  On a pty
     the baud rate is meaningless; on a real UART it still gets applied.
@@ -551,6 +555,10 @@ class McuNode(Node):
         # takes effect live).
         self.declare_parameter('docked_zero_keepalive', False)   # experiments only, see doc
         self.declare_parameter('docked_zero_keepalive_period_s', 1.0)
+        # Docked motor neutral search: RETIRED 2026-10-13 (review B1, see
+        # _docked_neutral_retired and docs/wheel_control_semantics.md).  The parameter stays
+        # declared (default false) so old overrides do not fail; it never moves a wheel.
+        self.declare_parameter('docked_motor_neutral', False)
         # Telemetry: measured vs commanded velocity at this rate (0 disables); /mcu/sent_speed
         # is published once per SpeedData frame that actually left the host.
         self.declare_parameter('speed_telemetry_rate_hz', 5.0)
@@ -690,6 +698,8 @@ class McuNode(Node):
         self._activity = None             # last /mission/activity string
         self._keepalive_on = False        # docked zero keepalive currently active
         self._keepalive_next_t = 0.0
+        # docked_motor_neutral is retired: only the "warned for value" latch remains.
+        self._docked_neutral_warned = False
         self._wake_r, self._wake_w = os.pipe()
         os.set_blocking(self._wake_r, False)
         os.set_blocking(self._wake_w, False)
@@ -772,7 +782,7 @@ class McuNode(Node):
         self._cmd_speed_pub = self.create_publisher(TwistStamped, '/mcu/commanded_speed', 10)
         self._sent_speed_pub = self.create_publisher(TwistStamped, '/mcu/sent_speed', 10)
 
-        # Humble convention (twist_mux 4.3 / Nav2 Humble): unstamped Twist on /cmd_vel.
+        # Jazzy convention (twist_mux 4.5 / Nav2 Jazzy): unstamped Twist on /cmd_vel.
         # /cmd_vel_stamped mirrors the vendor node's second input.
         # With real rclpy the subscriptions are served by a lean pump thread (see sub_pump.py)
         # instead of the executor; the 100 Hz /imu/data alone cost ~10 % of a core there.
@@ -1502,6 +1512,7 @@ class McuNode(Node):
             self._stop_left -= 1
             self._stop_next_t += self.stop_frame_spacing
         self._docked_keepalive(now, blocked)
+        self._docked_neutral_retired()
         self._publish_speed_telemetry(now)
 
     def _keepalive_wanted(self, now, blocked):
@@ -1533,7 +1544,28 @@ class McuNode(Node):
             self._send_speed_frame(0.0, 0.0)
             self._keepalive_next_t = now + self.docked_zero_keepalive_period
 
+    def _docked_neutral_retired(self):
+        """``docked_motor_neutral`` is RETIRED (2026-10-13 review B1): it is still declared so
+        a stale ``ros2 param set`` / launch override does not fail, but it never sends a
+        frame.  Setting it true logs one warning per change, nothing else.
+
+        Why there is no safe version (docs/wheel_control_semantics.md "Docked motor neutral
+        search"): any SpeedData, zeros included, puts the chassis in speed mode (mode 2) for
+        ~300 ticks; mode 3 re-latches the hold at wherever the wheel is when that window
+        ends.  The only way the hold current drops is the wheel yielding to its load during
+        that mode-2 window, i.e. the creep that walked the robot off the pads on 10-08.  The
+        mission's MotionGate also forbids motion while docked (``/motion_enabled`` is false
+        on the dock), so a correctly gated search could never run."""
+        want = bool(self.get_parameter('docked_motor_neutral').value)
+        if want != self._docked_neutral_warned:
+            self._docked_neutral_warned = want
+            if want:
+                self.get_logger().warn(
+                    'docked_motor_neutral is retired (review 2026-10-13 B1): ignored, no '
+                    'frames are sent on the dock; see docs/wheel_control_semantics.md')
+
     def _twist_msg(self, linear, angular):
+        """Create a TwistStamped message."""
         msg = TwistStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.frame_id

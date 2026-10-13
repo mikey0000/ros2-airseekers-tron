@@ -148,7 +148,7 @@ def plan_prune(sessions, active_session, max_bytes, free_bytes, min_free_bytes, 
     Never deleted: the split being written, a split being compressed, ``protect``
     ((session, index): splits an incident pin still waits for), and split 0 of the active
     session (it holds the one-shot transient-local messages: /tf_static, latched
-    gate/terrain topics; rosbag2 Humble has no --repeat-transient-local).
+    gate/terrain topics; rosbag2 Jazzy has no --repeat-transient-local).
     """
     total = total_bytes(sessions)
     free = free_bytes

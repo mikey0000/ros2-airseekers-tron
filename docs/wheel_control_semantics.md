@@ -134,8 +134,20 @@ History: the first version (same day) converted every pivot into a forward arc c
 an r ~ 0.4 m arc that swung the robot past the dock, so the conversion, the 0.3 m cap and
 the `shape_pivot_max_dist_m` / `shape_pivot_fallback_s` parameters were removed. The
 "turn shaper: ..." INFO line is logged only when the regime (pass/arc/pivot) changes, at
-most once per 2 s; the full decision stays on `~/shape_status`. The old pivot assist is
-off by default.
+most once per 2 s; the full decision stays on `~/shape_status`.
+
+Pivot assist (`cmd_vel_slew` `PivotAssist`, re-enabled 2026-10-10, b97de97) is **on by
+default**: after 0.8 s of a pure pivot (|w| >= 0.08) in TRANSIT/MOWING it adds 0.14 m/s
+forward (inner wheel +0.068 at |w| = 0.3, a legal arc), at most 0.3 m per pivot. Gated
+(2026-10-13) to FollowPath pivots on the twist_mux navigation lane (never the bumper,
+emergency, teleop or docking lanes, Nav2 Spin/BackUp, or within 5 s of a bumper/emergency
+message), and held while the local costmap has a lethal cell in the creep sweep or a
+front/side vision obstacle is within 1.5 m: the slew is downstream of collision_monitor, so
+nothing else collision-checks the creep. During an assist episode only (creep ramp-up,
+hold and ramp-down) the slew keeps every tick out of the one-wheel zone
+(`slew_both_wheels`): the pivot <-> creep-arc change passes through a stop (w to 0, then v),
+instead of ramping v at full |w| through inner (-0.06, +0.06) for 5-9 ticks. Normal
+MPPI/RPP driving keeps the plain per-axis slew of the shaped target.
 
 ## Drive at rest (2026-10-07): no host-side release exists
 
@@ -214,6 +226,68 @@ an anomaly of that board/wheel, not of the host protocol: the right wheel was th
 mechanically pre-loaded wheel (gearbox / grass wrap / wheel against an obstacle). Check it:
 lift the right wheel clear (with the robot off) and spin it by hand, then compare its
 at-rest current after a fresh power cycle.
+
+### Docked motor neutral search (2e63426, e5cf7b3): RETIRED 2026-10-13
+
+`docked_motor_neutral` (default was **true**, live on the mower until this change) tried to
+cut the dock hold current: while `docked_idle`, charger request off and either drive
+> 1.5 A, it nudged one wheel at a time (`linear = v/2, angular = +-v/0.24`, 0.01 m/s for
+0.5 s), sent ONE zero, averaged the current for `settle_s` 3.0 and hill-climbed the
+direction, with a +-2 cm commanded roll budget and a 300 s retry. **Removed.** The
+parameter is still declared (default **false**) so old overrides do not fail; it never
+sends a frame, and `true` only logs one warning. The `docked_neutral_*` parameters are gone.
+
+Why no safe version exists (firmware facts above):
+* Every SpeedData, zeros included, puts the chassis in mode 2 for ~300 ticks; mode 3 then
+  re-latches the hold at the encoder count of that moment. There is no host frame that
+  releases or re-latches the hold without the mode-2 window. The current falls only if the
+  wheel yields to its load during that window: that yield IS the creep that walked the
+  robot off the pads on 10-08. A nudge-and-silence sequence cannot relieve the hold
+  without entering the creep regime.
+* The tick period is still unknown (assumed 10 ms, so 300 ticks = 3 s). `settle_s` 3.0
+  started at the post-nudge zero, so the whole averaging window sat inside mode 2, where a
+  displaced wheel yields and draws little. The baseline was taken silent (mode 3, high), so
+  the first probe nearly always read "improved" (12 of 14 live) and the climb, which starts
+  at `dir = +1` (1677), kept going forward = away from the contacts (the robot reverses
+  onto the dock). Code: settle window armed at the nudge end (1811-1812), one zero (1821-1823).
+* The MotionGate forbids motion while docked (`/motion_enabled` is false on the dock), so
+  a search gated the way every other motion source is gated could never run.
+
+Live record (driver logs in `/userdata/ros2/log`, the container's `ROS_LOG_DIR`): 12 starts
+2026-10-11 16:03 to 2026-10-12 20:12 NZDT, 34 probes (16 "improved"). There were 14 first
+probes after a silent baseline. All 14 were `dir +1` and 12 read "improved" (e.g. 4.18 ->
+0.83 A, 11.93 -> 4.65 A). The relief did not last: 300 s after a "complete" run that
+ended at 0.83 A, the same right wheel was back at 4.18 A. Later probes kept rising, past
+anything seen with plain hold. Left went 11.93 -> 4.65 (mode-2 probe) -> 4.96 -> 6.92 ->
+9.00 -> 11.01 A, and in the run before that 11.82 -> 13.65 -> 14.96 -> 13.90 -> 14.96 ->
+16.97 A. The accepted hold cost is ~6 A. Logged commanded travel per wheel was +0.004 to
++0.010 m, always net forward. The 300 s retry restarted the budget each time, and one
+rerun came 4 s after "search complete".
+
+Review findings, verified in the removed code (line numbers are `mcu_node.py` @7e21777):
+* budget: `_docked_neutral_begin_phase` (1693) reset `_docked_neutral_travel = 0` on each
+  wheel phase and each (re)start. A gate flap (< 1.5 A for one tick, 1652) ran the stop
+  branch (1786-1790) without setting the completion latch, so the next hot tick restarted
+  with a fresh budget; the 300 s latch (1639) did the same after every complete run. Travel was commanded, not
+  measured. Nothing aborted on measured wheel speed, odom or `dock_ok` loss.
+* gating (1603-1654): it checked the param, interlock/e-stop, `docked_idle`, `_moving`
+  and `_charging_enabled`, which is the host request flag. That flag is False after any
+  driver restart and while the charge limit holds the charger off (live: "charging
+  disabled" every 2 s with `dock_ok` true). It did not check `/motion_enabled`, mission
+  EMERGENCY, `dock_ok` or the age of the latched `/mission/activity`. Its frames went
+  straight to `_send_speed_frame`: no twist_mux, no MotionGate, no +-0.3 clamp
+  (1806; `search_speed` was only floored, 679).
+* stop policy: one zero per nudge (1821-1823) instead of the 3-zero stop.
+  `_moving` and `_last_nonzero_t` were never set. A real `/cmd_vel` in the same tick got
+  the search's "stopped" (0,0) appended: the real command sets `_moving`, the gate drops,
+  and the off branch sends a zero (1790) in the same tick. One-wheel moves broke the
+  both-wheels rule. 0.01 m/s sits inside the ~0.06 m/s one-wheel band, so a nudge may not
+  move the wheel at all, but its frames still switch the chassis to mode 2.
+
+Outcome: the dock hold current stays the accepted cost (see "Drive at rest"). Tests:
+`test_node_smoke.py` `test_neutral_*` / `test_real_cmd_vel_on_hot_dock_*`. The param on
+true, hot currents, gate flaps and 800 s of ticks must produce zero frames, and a real
+`/cmd_vel` on the dock gets one frame plus exactly 3 zeros.
 
 ## Bumper during docking (bumper_controller, 2026-10-08)
 

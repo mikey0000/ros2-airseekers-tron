@@ -237,6 +237,7 @@ export const SettingsPage = () => {
                         isOverridden={isOverridden}
                         hasDefault={hasDefault}
                         onReset={resetToDefault}
+                        defaults={defaults}
                     />
                 );
             case "navigation":

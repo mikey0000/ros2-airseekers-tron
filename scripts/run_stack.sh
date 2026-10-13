@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the ROS 2 stack inside the Humble container (foreground, Ctrl-C to stop).
+# Run the ROS 2 stack inside the Jazzy (Noble) container (foreground, Ctrl-C to stop).
 # Usage:
 #   ./scripts/run_stack.sh [launch args]   # ros2 launch mower_bringup mower.launch.py [args]
 #                                          #   e.g. teleop:=false navigation:=true
@@ -23,16 +23,16 @@ if [ -n "${DISPLAY:-}" ]; then
   xhost +local:root >/dev/null 2>&1 || true
 fi
 
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx mower_humble; then
-  echo "WARNING: mower_humble (compose service) is already running the stack." >&2
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx mower_jazzy; then
+  echo "WARNING: mower_jazzy (compose service) is already running the stack." >&2
 fi
 
-ENV_SETUP='source /opt/ros/humble/setup.bash; [ -f /work/install/setup.bash ] && source /work/install/setup.bash'
+ENV_SETUP='source /opt/ros/jazzy/setup.bash; [ -f /work/install/setup.bash ] && source /work/install/setup.bash'
 
 if [ "${1:-}" = "shell" ]; then
-  exec docker compose -f docker/docker-compose.yml run --rm mower_humble \
+  exec docker compose -f docker/docker-compose.yml run --rm mower_jazzy \
     bash -c "$ENV_SETUP; exec bash"
 fi
 
-exec docker compose -f docker/docker-compose.yml run --rm mower_humble \
+exec docker compose -f docker/docker-compose.yml run --rm mower_jazzy \
   bash -c "$ENV_SETUP; exec ros2 launch mower_bringup mower.launch.py \"\$@\"" bash "$@"

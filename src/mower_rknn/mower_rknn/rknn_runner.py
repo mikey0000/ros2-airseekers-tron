@@ -58,7 +58,7 @@ class RknnRunner:
         if not _HAVE_RKNN:
             raise RknnUnavailable(
                 "rknn-toolkit-lite2 is not importable on this host "
-                f"({_IMPORT_ERROR}). Run inside the aarch64 Humble container on "
+                f"({_IMPORT_ERROR}). Run inside the aarch64 Jazzy container on "
                 "the mower with rknn-toolkit-lite2 2.3.0 installed and librknnrt.so "
                 "bind-mounted at /usr/lib/librknnrt.so (docs/cameras_and_video.md).")
 

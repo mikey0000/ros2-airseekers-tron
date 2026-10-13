@@ -49,6 +49,12 @@ obstacle_guard:
     # static-class box only gives the advisory kind "unranged". Owner opt-in: true lets
     # unranged boxes give "static" at the sensitive level only.
     sensitive_static_unranged: false
+    # A RANGED dynamic box (person/dog/cat) must be within range on this many consecutive
+    # frames of the same camera before it yields kind dynamic (2026-10-13: one spurious stereo
+    # frame stopped the mower for a person several metres away). det_ros runs ~5 Hz per
+    # stream: 2 frames = ~0.2-0.4 s, ~0.12 m at 0.3 m/s before a close person stops the
+    # mission. 1 = act on a single frame (old behaviour).
+    ranged_persist_frames: 2
     # Motion relevance (unstamped Twist): front unless only reversing, a side camera only
     # while turning toward it, rear while reversing. '' = every camera always counts.
     cmd_vel_topic: /cmd_vel

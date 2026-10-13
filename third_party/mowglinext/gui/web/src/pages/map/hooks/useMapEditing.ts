@@ -318,6 +318,10 @@ export function useMapEditing({
                 centroidPt.properties.title =
                     feature.getLabel() + `\n${areaLabel}`;
                 centroidPt.properties.index = feature.properties.source_working_area_index;
+                // Label placement priority (symbol-sort-key, lower = placed first):
+                // a small area nested in a larger one keeps its label and the
+                // containing area's label is dropped where the two collide.
+                centroidPt.properties.sortKey = areaSqm;
             }
             centroidPt.id = feature.id;
             return [centroidPt];

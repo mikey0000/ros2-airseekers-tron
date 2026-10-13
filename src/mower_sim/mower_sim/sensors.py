@@ -67,6 +67,23 @@ class StereoRaycaster:
     def to_optical(self, pts_base: np.ndarray) -> np.ndarray:
         return (pts_base - self.t_cam) @ self.r_cam
 
+    def to_map(self, pts_opt: np.ndarray, x: float, y: float, yaw: float) -> np.ndarray:
+        """Optical-frame points -> map frame for a planar base at ``(x, y, yaw)``.
+
+        Mirrors what the real stereo_depth_node does for ``~/points_map`` /
+        ``~/clear_points_map`` (the odom-frame cloud transformed by map<-odom):
+        optical -> base_link (URDF extrinsics) -> map (yaw about z + translate).
+        """
+        if len(pts_opt) == 0:
+            return pts_opt
+        base = np.asarray(pts_opt, dtype=float) @ self.r_cam.T + self.t_cam
+        c, s = math.cos(yaw), math.sin(yaw)
+        out = np.empty_like(base)
+        out[:, 0] = c * base[:, 0] - s * base[:, 1] + x
+        out[:, 1] = s * base[:, 0] + c * base[:, 1] + y
+        out[:, 2] = base[:, 2]
+        return out
+
     def cast(self, x: float, y: float, yaw: float, obstacles: Sequence[Obstacle],
              t: float) -> Tuple[np.ndarray, np.ndarray]:
         """(obstacle points, ground clear points), both Nx3 float32 in the optical frame."""

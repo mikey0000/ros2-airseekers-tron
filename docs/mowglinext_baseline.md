@@ -360,7 +360,7 @@ Actions: `/plan_coverage` (`PlanCoverage`), `/dock_robot`, `/undock_robot`,
 ## 7. Mapping table — MowgliNext package → Airseekers-Tron driver package
 
 Target hardware: MCU on `/dev/serial_mower`, IMU WIT JY61P, GNSS Unicore UM960, Metoak stereo
-camera, RK3588 aarch64, ROS 2 Humble in Docker.
+camera, RK3588 aarch64, ROS 2 Jazzy in Docker.
 
 ### 7.1 This batch (four packages)
 
@@ -390,7 +390,7 @@ camera, RK3588 aarch64, ROS 2 Humble in Docker.
 | — | **new: `metoak_stereo_driver`** | **No MowgliNext analogue at all.** Metoak "Archer" stereo module: `/dev/videoSimor`, `/dev/videoIsp`, OA `video53`/`video44`, I²C-8 (`xc9080` ISP, `icm40608` IMU, `lis2mdl` mag), SDK-only depth (`libMoGeneralSDK`), camera SN `IC17SZ01011`, calibration in `08_calibration_identity/`. Plan: convert depth to an obstacle layer (`pointcloud_to_obstacles` / `sensor_msgs/PointCloud2` → costmap) and/or a MetaOAK obstacle msg. Needs its own package and its own risk register |
 | `firmware/stm32/ros_usbnode` (+ `mowgli_hardware/firmware/*.c`) | **nothing** | Explicitly out of scope: we do not reflash. Only borrow the *C-source-of-truth discipline* for our decoder, and write the Airseekers analogue of `protocol_version_guard.py` |
 | `gui/` | out of scope for now | Vendor HTTP API (`05-maps-and-http-api.md`, `openapi.json`) is the UI contract to preserve |
-| `install/` + `docker/` + `sensors/*/Dockerfile` | `ros2_stack/docker/` | Same pattern: multi-stage `ros:humble-*-base`, GTSAM/F2C builders, Cyclone DDS runtime, compose fragments, `--device /dev/serial_mower -v /dev/serial_imu …` passthrough, on aarch64 |
+| `install/` + `docker/` + `sensors/*/Dockerfile` | `ros2_stack/docker/` | Same pattern: multi-stage `ros:jazzy-*-base`, GTSAM/F2C builders, Cyclone DDS runtime, compose fragments, `--device /dev/serial_mower -v /dev/serial_imu …` passthrough, on aarch64 |
 
 ### 7.3 Interface mapping cheat-sheet (MowgliNext → ours)
 

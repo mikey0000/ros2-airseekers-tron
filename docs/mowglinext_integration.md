@@ -240,8 +240,8 @@ firmware to build. All of `sensors/lidar-*`, `firmware/stm32/`, and
 | Optional | MQTT bridge `:1883` / WS `:9001` (Home Assistant), HomeKit provider, Tailscale/remote-access sidecar, in-GUI updates (Settings → Updates), NTRIP, weather |
 
 For us: the GUI container is optional for bringup — Foxglove Studio can talk to
-`ws://<ip>:8765` directly (our `Dockerfile.humble` already tries to install
-`ros-humble-foxglove-bridge`, guarded). Porting the *vendor* HTTP API
+`ws://<ip>:8765` directly (our `Dockerfile.jazzy` already tries to install
+`ros-jazzy-foxglove-bridge`, guarded). Porting the *vendor* HTTP API
 (`openapi.json`, mower_docs/05) is a separate, later exercise; the GUI's value
 to us now is as a reference for the UI contract and the compose fragment
 patterns.
@@ -251,19 +251,19 @@ patterns.
 ## 6. Concrete plan: run the MowgliNext stack in our Docker Humble image
 
 Goal: build `ros2/src` from `/tmp/mowglinext-src` **inside our existing
-`mower:humble` image** (or a derived image), mount its sources as a Docker
+`mower:jazzy` image** (or a derived image), mount its sources as a Docker
 volume, and run it side-by-side with our driver stack — without touching
 `ros2_stack/src`.
 
-### 6.1 Image additions (extend `docker/Dockerfile.humble`, or a `Dockerfile.mowgli` derived from it)
+### 6.1 Image additions (extend `docker/Dockerfile.jazzy`, or a `Dockerfile.mowgli` derived from it)
 
 ```dockerfile
-FROM mower:humble
+FROM mower:jazzy
 # Humble-apt-able deps (BT.CPP v4, grid_map, twist_mux, docking, Cyclone DDS)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ros-humble-behaviortree-cpp ros-humble-grid-map ros-humble-twist-mux \
-      ros-humble-opennav-docking ros-humble-cyclonedds \
-      ros-humble-rtcm-msgs libeigen3-dev && rm -rf /var/lib/apt/lists/*
+      ros-jazzy-behaviortree-cpp ros-jazzy-grid-map ros-jazzy-twist-mux \
+      ros-jazzy-opennav-docking ros-jazzy-cyclonedds \
+      ros-jazzy-rtcm-msgs libeigen3-dev && rm -rf /var/lib/apt/lists/*
 # GTSAM + Fields2Cover v3 must be built from source for arm64 (long builds;
 # mirror upstream's gtsam-builder / fields2cover-v3-builder stages and cache
 # the results in a derived image, NOT in the runtime container layer).
@@ -310,7 +310,7 @@ volumes:
 
 services:
   # Our existing service, plus the mowgli sources and Cyclone DDS config.
-  mower_humble:
+  mower_jazzy:
     environment:
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp   # must match mowgli_ros2
     volumes:
@@ -325,17 +325,17 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.mowgli        # §6.1
       network: host
-    image: mower:humble-mowgli
+    image: mower:jazzy-mowgli
     container_name: mowgli_ros2
     platform: linux/arm64
     privileged: true
-    network_mode: host          # same LAN DDS domain as mower_humble
+    network_mode: host          # same LAN DDS domain as mower_jazzy
     ipc: host
     stdin_open: true
     tty: true
     environment:
-      - ROS_DISTRO=humble
-      - ROS_DOMAIN_ID=0         # same domain as mower_humble
+      - ROS_DISTRO=jazzy
+      - ROS_DOMAIN_ID=0         # same domain as mower_jazzy
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - UNIVERSAL_GNSS_PATH=/work/mowgli/src/external/universal-gnss
     volumes:
@@ -350,7 +350,7 @@ services:
 ```
 
 > **Port conflict note:** only one container may own each serial device at a
-> time. During MowgliNext bringup, run either `mower_humble`'s drivers or
+> time. During MowgliNext bringup, run either `mower_jazzy`'s drivers or
 > `mowgli_ros2`'s `hardware_bridge_node` against `ttyS9` — never both
 > (baseline §8.1: stop vendor `mower-base`/`mower-logic`/`mower-controller`
 > services too). The end state is **our drivers** feeding **their stack**:
@@ -369,9 +369,9 @@ docker compose -f docker/docker-compose.yml \
                -f docker/docker-compose.mowgli.yml build mowgli_ros2
 docker compose -f docker/docker-compose.yml \
                -f docker/docker-compose.mowgli.yml run --rm mowgli_ros2 \
-  bash -c 'source /opt/ros/humble/setup.bash && \
+  bash -c 'source /opt/ros/jazzy/setup.bash && \
            rosdep install --from-paths /work/mowgli/src --ignore-src \
-             --rosdistro humble -y \
+             --rosdistro jazzy -y \
              --skip-keys "grid_map_core grid_map_ros grid_map_msgs beluga_ros \
                nav2_smac_planner webots_ros2_driver opennav_coverage \
                opennav_coverage_bt opennav_coverage_demo \
@@ -380,15 +380,15 @@ docker compose -f docker/docker-compose.yml \
 
 # 3. Run OUR drivers first (they own the serial links and satisfy §3)
 docker compose -f docker/docker-compose.yml \
-               -f docker/docker-compose.mowgli.yml run --rm mower_humble \
-  bash -c 'source /opt/ros/humble/setup.bash && source /work/install/setup.bash && \
+               -f docker/docker-compose.mowgli.yml run --rm mower_jazzy \
+  bash -c 'source /opt/ros/jazzy/setup.bash && source /work/install/setup.bash && \
            ros2 launch mower_bringup bringup.launch.py'   # (or our launch pkg)
 
 # 4. Then run the MowgliNext consumers against the remapped topics,
 #    with mowgli_hardware disabled in a shim launch file:
 docker compose -f docker/docker-compose.yml \
                -f docker/docker-compose.mowgli.yml run --rm mowgli_ros2 \
-  bash -c 'source /opt/ros/humble/setup.bash && \
+  bash -c 'source /opt/ros/jazzy/setup.bash && \
            source /work/mowgli/install/setup.bash && \
            ros2 launch mowgli_bringup navigation.launch.py'
 
@@ -443,7 +443,7 @@ ros2 topic echo /gps/fix --once
   topic map), `gui/pkg/providers/cmd_vel_relay.go` + `ros2/src/mowgli_bringup/scripts/cmd_vel_ws_relay.py`
   (relay :8766), `gui/Dockerfile` (Go 1.25 + node:22 build stages),
   `gui/web/package.json` (React 19 + Vite + antd/Formily)
-- Our side: `ros2_stack/docker/{Dockerfile.humble,docker-compose.yml}`,
+- Our side: `ros2_stack/docker/{Dockerfile.jazzy,docker-compose.yml}`,
   `ros2_stack/launch/bringup.launch.py`, `ros2_stack/src/{mower_mcu_driver,
   wit_imu_driver,um960_gps_driver}`, `ros2_stack/src/mower_interfaces`
   (11 msg / 10 srv / 2 action), and docs `mowglinext_baseline.md`, `interfaces_map.md`,

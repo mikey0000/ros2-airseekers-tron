@@ -10,7 +10,7 @@
 #   /etc/default/mower-poweroff                         (kept if it already exists)
 #   /usr/lib/systemd/system-shutdown/mower-mcu-poweroff (docker/host/power/)
 #   /usr/bin/sys_close  (vendor kernel-module hook; original saved as /usr/bin/sys_close.vendor)
-#   /userdata/ros2/power/                               (request directory, bind-mounted in mower_humble)
+#   /userdata/ros2/power/                               (request directory, bind-mounted in mower_jazzy)
 # Nothing here powers anything off: the default config is DRY_RUN=1, MCU_POWER_CUT=0.
 set -euo pipefail
 cd "$(dirname "$0")/.."

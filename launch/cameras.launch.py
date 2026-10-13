@@ -14,7 +14,7 @@ Stock symlinks (``ros2_port_handoff/09_platform/udev-symlinks.txt``):
 ``left_oa_camera -> video53``, ``right_oa_camera -> video44``, ``rear_camera -> video62``.
 
 OA cameras (verified 2026-10-06): GC2093 -> rkcif -> rkisp ``rkisp_mainpath``. These are
-**V4L2 multi-planar** capture nodes; ``v4l2_camera`` 0.6 (Humble) only speaks single-planar
+**V4L2 multi-planar** capture nodes; ``v4l2_camera`` 0.7 (Jazzy) only speaks single-planar
 (it lists no formats, requests "0x0 UYVY" -> EINVAL, then "Failed mapping device memory").
 ``oa_driver:=mower_cameras`` (default) runs ``mower_cameras/v4l2_cam`` (pure-Python mmap
 reader, mplane-aware) instead. The media graph is already linked at boot and the host's
@@ -108,6 +108,7 @@ def _oa_cam(name, condition):
             'publish_compressed': ParameterValue(LC('oa_compressed'), value_type=bool),
             'publish_width': ParameterValue(LC('oa_publish_width'), value_type=int),
             'publish_on_demand': ParameterValue(LC('oa_on_demand'), value_type=bool),
+            'close_when_unused_s': ParameterValue(LC('oa_close_when_unused_s'), value_type=float),
         }],
     )
 
@@ -162,6 +163,10 @@ def generate_launch_description():
                               description='OA: convert/publish only while image_raw, '
                                           'compressed or camera_info has subscribers.'),
         DeclareLaunchArgument('oa_compressed', default_value='false'),
+        DeclareLaunchArgument('oa_close_when_unused_s', default_value='30.0',
+                              description='OA: close the V4L2 device after this many seconds '
+                                          'without subscribers (0 = keep streaming, >0 = close '
+                                          'and reopen on demand; higher = less CPU when idle).'),
         DeclareLaunchArgument('left_oa_camera_device', default_value='/dev/left_oa_camera'),
         DeclareLaunchArgument('right_oa_camera_device', default_value='/dev/right_oa_camera'),
         DeclareLaunchArgument('rear_camera_device', default_value='/dev/rear_camera'),

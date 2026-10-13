@@ -21,16 +21,29 @@ cover these. They need no new image, no GPU and no X.
 ## Running it
 
 Everything runs in the dev image and needs no extra packages. Give each run its own
-DDS domain with `--network host` and `ROS_LOCALHOST_ONLY=1`, so two runs, or a run
-and the robot, never share a graph:
+DDS domain with `--network host` and localhost-only discovery
+(`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`; `ROS_LOCALHOST_ONLY=1` is deprecated on
+Jazzy, set both), so two runs, or a run and the robot, never share a graph.
+
+`sim.launch.py`, `sim_node` and `scenario` enforce this (`mower_sim/isolation.py`,
+review B6). They refuse to start when `ROS_DOMAIN_ID` is unset or 0, when discovery
+is not localhost-only (or `ROS_STATIC_PEERS` is set), or on the mower itself (`/userdata` or `/userdata/ros2` is a mount point, or
+`/userdata/ros2_stack` or `/userdata/mower` exists: the robot's data partition and
+its container bind mounts, which dev hosts and the dev image do not have). The robot runs
+domain 0 with LAN discovery: a bare launch there would add a second twist_mux,
+Nav2 and mission, fake odometry, GPS, TF and e-stop, and (with `--stub-state`) a
+latched `/motion_enabled=true` to the live robot. Overrides, each with a loud
+warning: `MOWER_SIM_ALLOW_LAN=1` (skip the domain/discovery checks for a deliberate
+LAN sim on a private domain) and `MOWER_SIM_ALLOW_ON_ROBOT=1`.
 
 ```bash
 export DEV_ROS_DOMAIN_ID=87
 ./scripts/dev_build.sh build --packages-up-to mower_sim mower_bringup
 
 # The full stack on the demo garden: robot on the dock, mission idle.
-docker run --rm -it --network host -e ROS_LOCALHOST_ONLY=1 -e ROS_DOMAIN_ID=142 \
-  -v $PWD:/work -w /work mower:humble-dev-amd64 bash -c \
+docker run --rm -it --network host -e ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
+  -e ROS_LOCALHOST_ONLY=1 -e ROS_DOMAIN_ID=142 \
+  -v $PWD:/work -w /work mower:jazzy-dev-amd64 bash -c \
   "source install/setup.bash; ros2 launch mower_bringup sim.launch.py world:=garden"
 
 # Second shell, same ROS_DOMAIN_ID: start a mow (undock -> RTK -> plan -> transit -> mow).
@@ -53,6 +66,9 @@ run from ground truth, prints one JSON line of metrics, and exits 0 when the run
 passes.
 
 ```bash
+# Every shell (sim and scenario) on the same private, localhost-only domain:
+export ROS_DOMAIN_ID=142 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST ROS_LOCALHOST_ONLY=1
+
 # Obstacle reroute: NavigateToPose past a box that is not in the map.
 ros2 launch mower_bringup sim.launch.py world:=transit_box mission:=false mission_stub:=true
 ros2 run mower_sim scenario navigate --x 8.0 --y 0.0
@@ -134,6 +150,12 @@ static `map -> odom` transform, twist_mux (lanes from
 the device-owned GUI settings are not read), slip_detector and bumper_controller,
 with the same parameters as bringup.
 
+Because there is no `det_ros` in sim there is no annotated camera image, so the
+`obstacle_tracker` produces no per-obstacle snapshot JPEGs (`snapshot_topic` has
+no publisher); it still clusters/tracks/promotes from `/stereo_depth/points_map`
+as usual. Unrelated to obstacles, the GUI's tracked-obstacle panel then shows the
+marker icon instead of a thumbnail.
+
 ## World YAML
 
 A world file has this shape:
@@ -192,7 +214,7 @@ The drive model reproduces these behaviours:
 | mcu_node | Subscribes `/cmd_vel` and `/estop_request` (latches; cleared by `/clear_estop`). Publishes `/odom` 50 Hz, `/mower_base/status` 20 Hz, `/mower_sensor_info` and `/estop` 10 Hz, `/battery` 1 Hz, and latched `/rain` and `/cutter/height_mm`. Serves `/cutter_control`, `/charging`, `/clear_estop`, `/cutter_off` and `/cutter/set_height`. `is_charging` = dock contact AND a prior `/charging true`, as on the robot. Bumper flags come from footprint contact ahead of x = 0.15 m, left or right by side, held 0.3 s. bumper_controller turns them into `/bumper_cloud` and `/cmd_vel_bumper` as usual. |
 | wit_node | `/imu/data` 50 Hz in `imu_link`, with the real driver's covariances. Yaw is the true heading. |
 | um960_node | `/fix` 10 Hz in `gps_link`: status GBAS_FIX (RTK), σ 1.5 cm. `/fix_status`: `quality=RTK_FIXED solution=NARROW_INT`. `/vel`. |
-| stereo_depth | Raycasts a 64x32 grid over 80° x 50° from `stereo_camera_optical` (URDF pose). `/stereo_depth/points` carries obstacle hits at 0.2-4 m. `/stereo_depth/clear_points` carries ground hits up to 3 m, one per 10 cm cell. Both are xyz float32 (point_step 12), use sensor QoS, run at 5 Hz, share a stamp, and are published only while subscribed. |
+| stereo_depth | Raycasts a 64x32 grid over 80° x 50° from `stereo_camera_optical` (URDF pose). `/stereo_depth/points` carries obstacle hits at 0.2-4 m. `/stereo_depth/clear_points` carries ground hits up to 3 m, one per 10 cm cell. Both are xyz float32 (point_step 12), use sensor QoS, run at 5 Hz, share a stamp, and are published only while subscribed. Frames differ from the robot: the real stereo_depth_node (`fixed_frame_clouds`, default since 2026-10-09) publishes `/points` and `/clear_points` in `odom`, stamped at the odom->base_link sample it used; the sim still publishes them in `stereo_camera_optical` stamped now() (the local costmap transforms them; the sim's TF is synchronous, so the robot's tf2 wait problem does not show here). `/stereo_depth/points_map` + `/clear_points_map` carry the same clouds in `map`, transformed with the ground-truth pose (optimistic under `localization:=ekf`). |
 | rear camera | `/rear_camera/image_raw` (mono8, 640x480) and `camera_info` at 10 Hz while subscribed. The intrinsics come from `config/cameras/rear_camera_info_640x480.yaml`, without distortion. The dock's ArUco (DICT_4X4_50, id 0) is rendered with a pinhole model 0.45 m behind the dock pose (docking.yaml `docked_marker_offset`), so mower_docking runs its real detector. |
 | localization (sim mode) | TF `odom -> base_link` and `/odometry/filtered` at 50 Hz. `/heading_aligner/status` latched `{aligned: true, source: dock}`. gui_bridge still derives `/odometry/filtered_map`, `/gps/status` and `/hardware_bridge/*` from these. |
 | (sim only) | `/sim/ground_truth` (Odometry in `map`), `/sim/status` (JSON 10 Hz: pose, twist, clearance, min_clearance, blocked, collisions, last_contact, bumper, docked, charging, cutting, estop, battery), `/sim/markers`. |
