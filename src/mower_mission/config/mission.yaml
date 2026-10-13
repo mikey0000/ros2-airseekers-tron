@@ -24,6 +24,24 @@ behavior_tree_node:
     require_heading_alignment: true   # source dock|cog required before PLANNING/TRANSIT
     heading_status_timeout_s: 5.0     # stale status = not aligned
     heading_wait_s: 30.0              # after undock + RTK: wait for COG, then stop (no Nav2)
+    # Heading calibration drive (2026-10-13). START off the dock without an aligned heading
+    # but with a saved one whose IMU continuity held (aligner file_check yaw_ok: the stack
+    # restarted, only the position check is unproven): once RTK is fixed, drive a short
+    # straight line so the aligner gets a COG fix, then plan as a normal START. Blade off;
+    # Nav2 DriveOnHeading (forward) / BackUp (reverse) on the twist_mux nav lane with their
+    # costmap check; the mission stops it on an obstacle in the line (obstacle_policy),
+    # bumper / e-stop / motion gate act as always. The straight (distance + footprint,
+    # +-cone, robot width) must lie inside one mowing area and outside its keepouts by the
+    # SAVED heading, ahead first, else behind, else START is refused. No saved heading (or
+    # the IMU restarted) -> refused as before: drive 1 m in manual or start from the dock.
+    heading_calibration_drive: true
+    heading_calibration_distance_m: 1.0     # one 0.6 m COG window at RTK fixed + run-up
+    heading_calibration_speed_mps: 0.15
+    heading_calibration_timeout_s: 45.0     # whole drive incl. the Nav2 resume wait
+    heading_calibration_cone_deg: 10.0      # saved-heading error the map check tolerates
+    heading_calibration_settle_s: 3.0       # RTK fixed this long first: the saved heading
+                                            # may verify on its own (no drive needed)
+    heading_calibration_status_wait_s: 3.0  # after the drive: wait this long for the COG fix
 
     # --- localization hold (2026-10-09, /localization/status from localization_monitor) ---
     # Mow follow / transit stop with the blade off while the drift estimate is over budget

@@ -37,7 +37,7 @@ from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point32, Polygon, PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
-from nav2_msgs.action import BackUp, FollowPath, NavigateToPose
+from nav2_msgs.action import BackUp, DriveOnHeading, FollowPath, NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from sensor_msgs.msg import BatteryState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
@@ -127,6 +127,7 @@ TOPIC_DEFAULTS = {
     'dock_action': '/mower_docking/dock',
     'undock_action': '/mower_docking/undock',
     'backup_action': '/backup',
+    'drive_on_heading_action': '/drive_on_heading',   # heading calibration drive (forward)
 }
 
 NODE_DEFAULTS = {
@@ -160,7 +161,7 @@ _STATUS_TO_OUTCOME = {
 # stack PAUSEd is rejected instantly ("Action server is inactive"). ACT_PLAN (coverage
 # bridge) and ACT_UNDOCK (open-loop drive off the dock) do not need it.
 _NAV2_ACTIONS = frozenset((fsm_mod.ACT_FOLLOW, fsm_mod.ACT_NAV,
-                           fsm_mod.ACT_DOCK, fsm_mod.ACT_BACKUP))
+                           fsm_mod.ACT_DOCK, fsm_mod.ACT_BACKUP, fsm_mod.ACT_DRIVE))
 
 
 def _nav2_down_explains(name, outcome):
@@ -355,6 +356,7 @@ class MissionNode(Node):
             fsm_mod.ACT_DOCK: act(Dock, 'dock_action'),
             fsm_mod.ACT_UNDOCK: act(Undock, 'undock_action'),
             fsm_mod.ACT_BACKUP: act(BackUp, 'backup_action'),
+            fsm_mod.ACT_DRIVE: act(DriveOnHeading, 'drive_on_heading_action'),
         }
 
         srv = self.create_service
@@ -510,6 +512,7 @@ class MissionNode(Node):
             i = self.fsm.inputs
             i.heading_aligned = bool(st.get('aligned', False))
             i.heading_source = str(st.get('source', 'none'))
+            i.heading_prior = str(st.get('file_check') or '')
             i.heading_stamp = time.monotonic()
 
     def _on_localization(self, msg):
@@ -1103,8 +1106,10 @@ class MissionNode(Node):
             goal.speed_mps = float(g['speed_mps'])
             goal.wait_for_rtk = bool(g['wait_for_rtk'])
             goal.rtk_timeout_s = float(g['rtk_timeout_s'])
-        elif e.name == fsm_mod.ACT_BACKUP:
-            goal = BackUp.Goal()
+        elif e.name in (fsm_mod.ACT_BACKUP, fsm_mod.ACT_DRIVE):
+            # behavior_server BackUp / DriveOnHeading: straight, own costmap collision
+            # check (simulate_ahead_time), output on the twist_mux nav lane (/cmd_vel_nav)
+            goal = BackUp.Goal() if e.name == fsm_mod.ACT_BACKUP else DriveOnHeading.Goal()
             goal.target.x = float(g['distance_m'])
             goal.speed = float(g['speed_mps'])
             secs = float(g['distance_m']) / max(0.01, float(g['speed_mps'])) + 10.0
