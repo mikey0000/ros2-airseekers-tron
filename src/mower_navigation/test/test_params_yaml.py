@@ -503,6 +503,16 @@ def test_mppi_transit():
     assert _ctl("FollowPathRPP")["plugin"].endswith("RegulatedPurePursuitController")
 
 
+def test_mppi_accel_limits_match_cmd_vel_slew():
+    """2026-10-14: MPPI without ax/az limits planned with the Jazzy defaults (~3 m/s^2)
+    while cmd_vel_slew (the authoritative limiter) allows 0.5 / -0.8 m/s^2, 1.0 rad/s^2."""
+    for name in ("FollowPath", "FollowCoveragePathMPPI"):
+        c = _ctl(name)
+        assert c["ax_max"] == 0.5, name
+        assert c["ax_min"] == -0.8, name
+        assert c["az_max"] == 1.0, name
+
+
 def test_mppi_coverage_alternative():
     c = _ctl("FollowCoveragePathMPPI")
     base = _ctl("FollowPath")
