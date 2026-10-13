@@ -79,10 +79,22 @@ behavior_tree_node:
     # owner 2026-10-07: a ranged detection only stops / waits / detours when it lies in the
     # corridor along the next lookahead of the current follow/transit path (else advisory,
     # /mission/obstacle_decision); half-width = robot_width_m/2 + obstacle_path_margin_m
+    # MOWING sub-paths and route transits use that corridor (the path the controller tracks).
+    # 2026-10-13: /navigate_to_pose transits (detours, gaps, retries) and dock phases instead
+    # sweep the footprint along the PREDICTED motion: constant applied /cmd_vel (else
+    # /cmd_vel_nav) twist younger than obstacle_twist_max_age_s, for obstacle_sweep_horizon_s
+    # (arc / straight / pivot); a TRANSIT standing still with no prediction keeps the line to
+    # the target. Footprint robot_rear_m .. robot_front_m around base_link, +-robot_width_m/2,
+    # grown by obstacle_path_margin_m; within its circumscribed radius + margin = always in the
+    # path. A dynamic stop keeps judging with the twist it started with.
     obstacle_path_filter: true
     obstacle_path_lookahead_m: 2.0
     obstacle_path_margin_m: 0.25
     robot_width_m: 0.54
+    obstacle_sweep_horizon_s: 2.0
+    obstacle_twist_max_age_s: 0.5
+    robot_front_m: 0.52
+    robot_rear_m: 0.25
     blade_transit_sample_m: 0.2       # blade_policy continuous: in-area transit check step
     follow_retries: 3                 # follow_path abort/timeout: resume from the last reached pose
     clear_costmaps_on_retry: true     # clear Nav2 global+local costmaps before retries / recoveries

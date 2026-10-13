@@ -337,6 +337,12 @@ class PolicyConfig:
     side_unranged_min_score: float = 0.75
     front_unranged_min_score: float = 0.6
     persist_frames: int = 2
+    # 2026-10-13 (one bad stereo frame stopped the mower for a person several metres away):
+    # a RANGED dynamic box must be within range on this many consecutive frames of the same
+    # source (every level, every camera; 1 = off). Trade-off: det_ros runs ~5 Hz per stream,
+    # so 2 frames add ~0.2-0.4 s, ~0.06-0.12 m at 0.3 m/s, before a close person stops the
+    # mission (the guard's 1 m reach leaves ~0.5 m in front of the bumper).
+    ranged_persist_frames: int = 2
 
 
 @dataclass
@@ -356,6 +362,7 @@ class LevelTable:
     side_unranged_min_score: float = 0.75
     front_unranged_min_score: float = 0.6
     persist_frames: int = 2
+    ranged_persist_frames: int = 2
 
 
 def level_policy(level: str, base: PolicyConfig, table: LevelTable) -> PolicyConfig:
@@ -375,7 +382,8 @@ def level_policy(level: str, base: PolicyConfig, table: LevelTable) -> PolicyCon
                    side_unranged_h_frac=float(table.side_unranged_h_frac),
                    side_unranged_min_score=float(table.side_unranged_min_score),
                    front_unranged_min_score=float(table.front_unranged_min_score),
-                   persist_frames=int(table.persist_frames))
+                   persist_frames=int(table.persist_frames),
+                   ranged_persist_frames=int(table.ranged_persist_frames))
 
 
 def camera_counts(role: str, relevant: Optional[set], cfg: PolicyConfig) -> bool:
@@ -441,7 +449,9 @@ def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig
     ``side_stop_range_m`` or an unranged one with bbox height >= ``side_unranged_h_frac``,
     score >= ``side_unranged_min_score`` and ``persist_frames`` consecutive frames; an
     unranged front dynamic needs score >= ``front_unranged_min_score`` and persistence.
-    Persistence is counted in ``persistence`` (keyed by ``source``); None = not required.
+    A ranged dynamic box (any level / camera) needs ``ranged_persist_frames`` consecutive
+    frames within range. Persistence is counted in ``persistence`` (keyed by ``source``);
+    None = not required.
     Whitelisted-relevant boxes dismissed by these rules are appended to ``ignored`` as
     ``(box, reason)`` (``motion_reason`` explains a camera excluded by motion)."""
     boxes = list(boxes)
@@ -456,13 +466,13 @@ def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig
                     ignored.append((b, motion_reason or 'camera not relevant to motion'))
         return dict(NONE_POLICY)
     side = role in (CAM_LEFT, CAM_RIGHT)
-    cands = []        # (kind, box, needs_persistence)
+    cands = []        # (kind, box, consecutive frames required; 0 = none)
     for b in boxes:
         if b.score < cfg.min_score:
             continue
         kind = 'dynamic' if b.label.strip().lower() in dyn else 'static'
         reach = cfg.dynamic_range_m if kind == 'dynamic' else cfg.static_range_m
-        need_persist = False
+        need_persist = 0
         if cfg.strict and side:
             if b.range_m is not None:
                 close = b.range_m <= min(reach, cfg.side_stop_range_m)
@@ -472,7 +482,7 @@ def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig
                 close = (hf >= cfg.side_unranged_h_frac
                          and b.score >= cfg.side_unranged_min_score)
                 why = 'unranged, score %.2f, height %d%%' % (b.score, round(hf * 100))
-                need_persist = True
+                need_persist = cfg.persist_frames
         else:
             close = box_close(b, reach, cfg, ih)
             why = 'too far'
@@ -480,11 +490,13 @@ def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig
                 if b.score < cfg.front_unranged_min_score:
                     close = False
                     why = 'unranged, score %.2f' % b.score
-                need_persist = True
+                need_persist = cfg.persist_frames
         if not close:
             if ignored is not None and kind == 'dynamic':
                 ignored.append((b, why))
             continue
+        if kind == 'dynamic' and b.range_m is not None:
+            need_persist = max(need_persist, cfg.ranged_persist_frames)
         if kind == 'static' and b.range_m is None and not cfg.static_unranged:
             kind = 'unranged'
         cands.append((kind, b, need_persist))
@@ -492,12 +504,13 @@ def frame_policy(boxes: Iterable[Box], cfg: PolicyConfig, guard_cfg: GuardConfig
               if persistence is not None else {})
     best = {}
     for kind, b, need_persist in cands:
-        if need_persist and persistence is not None:
+        if need_persist > 1 and persistence is not None:
             n = counts.get(b.label.strip().lower(), 0)
-            if n < cfg.persist_frames:
+            if n < need_persist:
                 if ignored is not None and kind == 'dynamic':
-                    ignored.append((b, 'unranged, score %.2f, %d/%d frames'
-                                    % (b.score, n, cfg.persist_frames)))
+                    what = ('ranged %.2f m' % b.range_m if b.range_m is not None
+                            else 'unranged, score %.2f' % b.score)
+                    ignored.append((b, '%s, %d/%d frames' % (what, n, need_persist)))
                 continue
         key = b.range_m if b.range_m is not None else float('inf')
         cur = best.get(kind)

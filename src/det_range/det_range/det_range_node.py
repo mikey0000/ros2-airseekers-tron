@@ -15,6 +15,13 @@ eye) are ranged (see :mod:`det_range.geometry`). The OA cameras (``left_oa_camer
 ``right_oa_camera``) have no extrinsics in the URDF, so their detections pass through
 without range.
 
+Class-size check (2026-10-13): a stereo range of a class with a height prior
+(``size_check_classes`` / ``size_check_heights_m``: person, dog, cat) that is implausibly NEAR
+for its unclipped box height is replaced by the box-height range with a large variance
+(:func:`det_range.geometry.check_class_size`, rules and limits there). Clipped or very tall
+boxes keep the stereo range. The detection stays ranged, so obstacle_guard and the Nav2 cloud
+see the corrected position.
+
 Monocular frames (``mono_frames``, default ``rear_camera``; 2026-10-09, rear obstacle sensing
 while reversing / docking): no depth image, the bbox bottom-centre is intersected with the
 ground plane (:func:`det_range.geometry.mono_range_box`, accuracy notes there) using the
@@ -56,7 +63,8 @@ try:
 except ImportError as _exc:  # pragma: no cover
     _DEP_ERROR = _exc
 
-from det_range.geometry import (StereoModel, chain_to, mono_range_box, quat_to_matrix,
+from det_range.geometry import (DEFAULT_SIZE_CLASSES, DEFAULT_SIZE_HEIGHTS_M, StereoModel,
+                                chain_to, check_class_size, mono_range_box, quat_to_matrix,
                                 range_box, rpy_matrix)
 from det_range.sub_pump import SubscriptionPump, _header
 
@@ -125,6 +133,16 @@ class DetRange(Node):
         d('mono_sigma_px', 3.0)
         d('mono_sigma_pitch_deg', 1.0)
         d('mono_to_costmap', False)
+        # Class-size plausibility of stereo ranges (geometry.check_class_size, 2026-10-13: a
+        # spurious near disparity on the lawn ranged a person several metres away at 0.91 m).
+        # Parallel lists: class name (det_ros label) -> nominal height (m). Empty = off.
+        d('size_check_classes', list(DEFAULT_SIZE_CLASSES))
+        d('size_check_heights_m', list(DEFAULT_SIZE_HEIGHTS_M))
+        d('size_check_min_ratio', 0.5)     # stereo < ratio * box-height range = implausible
+        d('size_check_clip_px', 3.0)       # box within this of the top/bottom edge = clipped
+        d('size_check_tall_frac', 0.85)    # box >= this fraction of the frame: stereo kept
+        d('size_check_sigma_frac', 0.3)    # replaced range: sigma = this * range
+        d('source_image_height', 480)      # until camera_info gives it
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.p = p
         self.stereo_frames = {str(f) for f in p('stereo_frames') if f}
@@ -143,6 +161,16 @@ class DetRange(Node):
         r, pi, ya = (float(v) for v in p('fallback_rpy'))
         self._fallback = (self._rpy(r, pi, ya), np.array([x, y, z]))
         self.n_in = self.n_ranged = 0
+        self.n_size_rejected = 0
+        self._size_log_t = 0.0
+        self._src_h = float(p('source_image_height'))
+        cls = [str(c).strip().lower() for c in p('size_check_classes') if str(c).strip()]
+        hts = [float(v) for v in p('size_check_heights_m')]
+        if len(cls) != len(hts):
+            self.get_logger().error('size_check_classes / size_check_heights_m differ in '
+                                    'length: class-size check OFF')
+            cls = []
+        self._size_heights = dict(zip(cls, hts))
         self.n_mono = 0
         self.mono_frames = [str(f) for f in p('mono_frames') if f]
         fb = [float(v) for v in p('mono_fallback_pose')]
@@ -202,6 +230,8 @@ class DetRange(Node):
         k = (float(msg.k[0]), float(msg.k[4]), float(msg.k[2]), float(msg.k[5]))
         dd = tuple(float(v) for v in msg.d) if msg.distortion_model in (
             'plumb_bob', 'rational_polynomial') else (0.0,) * 5
+        if msg.height > 0:
+            self._src_h = float(msg.height)
         if (k, dd[:5]) != (self.model.src_k, tuple(self.model.src_d)[:5]):
             self.model.src_k, self.model.src_d = k, dd[:5]
             self.get_logger().info(f'source intrinsics from camera_info: K={k} D={dd[:5]}')
@@ -315,13 +345,14 @@ class DetRange(Node):
                                 sigma_disp_px=float(p('sigma_disparity_px')))
             if res is None:
                 continue
-            xyz = rot @ np.asarray(res.point_ref) + trans
+            point_ref, variance = self._size_checked(det, res)
+            xyz = rot @ np.asarray(point_ref) + trans
             r0 = det.results[0]
             r0.pose.pose.position.x, r0.pose.pose.position.y, r0.pose.pose.position.z = (
                 float(v) for v in xyz)
             r0.pose.pose.orientation.w = 1.0
             cov = [0.0] * 36
-            cov[0] = max(res.variance, 1e-6)
+            cov[0] = max(variance, 1e-6)
             r0.pose.covariance = cov
             pose = Pose()
             pose.position = r0.pose.pose.position
@@ -335,11 +366,44 @@ class DetRange(Node):
             pts = []
         self.cloud_pub.publish(cloud_msg(pa.header, pts))
 
+    def _size_checked(self, det, res):
+        """(point_ref, variance) of a stereo range after the class-size check: an
+        implausibly near range is moved along its ray to the box-height range."""
+        if not self._size_heights or not det.results:
+            return res.point_ref, res.variance
+        best = max(det.results, key=lambda r: r.hypothesis.score)
+        label = str(best.hypothesis.class_id).strip().lower()
+        hm = self._size_heights.get(label)
+        if hm is None:
+            return res.point_ref, res.variance
+        p = self.p
+        b = det.bbox
+        sc = check_class_size(self.model, res.z, res.variance, b.center.position.x,
+                              b.center.position.y, b.size_y, self._src_h, hm,
+                              min_ratio=float(p('size_check_min_ratio')),
+                              clip_px=float(p('size_check_clip_px')),
+                              tall_frac=float(p('size_check_tall_frac')),
+                              size_sigma_frac=float(p('size_check_sigma_frac')))
+        if sc.verdict != 'implausible':
+            return res.point_ref, res.variance
+        self.n_size_rejected += 1
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if now - self._size_log_t >= 2.0:
+            self._size_log_t = now
+            self.get_logger().info(
+                '%s: stereo %.2f m implausible for a %d px tall box (%.0f %% of %d px, not '
+                'clipped; %.1f m nominal -> %.2f m): using the box-height range'
+                % (label, res.z, round(b.size_y), 100.0 * b.size_y / max(self._src_h, 1.0),
+                   self._src_h, hm, sc.z))
+        s = sc.z / res.z if res.z > 0 else 1.0
+        return tuple(float(v) * s for v in res.point_ref), sc.variance
+
     def _report(self):
         with self._lock:
             self.get_logger().info(
                 f'{self.n_in} detection msgs, {self.n_ranged} ranged boxes, '
-                f'{self.n_mono} mono-ranged, depth ring '
+                f'{self.n_mono} mono-ranged, {self.n_size_rejected} stereo ranges replaced '
+                f'by the class-size check, depth ring '
                 f'{len(self._ring)}, tf={"static" if self._tf is not None else "fallback"}, '
                 f'camera_info={"yes" if self._info_seen else "default cam1"}')
 

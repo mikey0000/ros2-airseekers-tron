@@ -287,6 +287,38 @@ abort. `route_transits: false` restores the old behaviour. Details: `docs/route_
 Live checks: MPPI tracking on narrow paths, the dock approach handover, CPU of a graph build
 on large recorded areas.
 
+## Vision false stop fixes (2026-10-13, unit-tested only)
+
+At 09:45 the mission stopped for a person several metres away. The robot was pivoting toward
+a detour target. Stereo ranged the person at 0.97 m and then 0.91 m (box 63 % / 74 % of the
+480 px front frame, not clipped). The mission then logged the same person as off-corridor
+and resumed after 2 s.
+
+- **det_range class-size check** (`size_check_*`). For person (1.6 m), dog (0.4 m) and
+  cat (0.25 m), a stereo range nearer than 0.5 x the box-height range is replaced by the
+  box-height range, with sigma 0.3 x range. Boxes that touch the top or bottom of the frame
+  (within 3 px), or that are >= 85 % of its height, keep the stereo range. Every close adult
+  is clipped by the 0.24 m high camera. Known gap: a fully visible person shorter than about
+  0.8 m within 1 m (a sitting toddler) is ranged too far.
+- **obstacle_guard `ranged_persist_frames: 2`.** A ranged dynamic box must be in range on 2
+  consecutive frames of its camera. This adds about 0.2-0.4 s at ~5 Hz detection.
+  `bbox_h_frac` for the front camera was checked: it uses 640x480 from
+  `/vio/right/camera_info`.
+- **Mission in-path test** (`obstacle_sweep_horizon_s`, `obstacle_twist_max_age_s`,
+  `robot_front_m`, `robot_rear_m`).
+  - MOWING sub-paths and route transits keep the corridor along the known path.
+  - `/navigate_to_pose` transits (detours, gaps, retries) and dock phases sweep the
+    footprint along the predicted motion. This uses the applied `/cmd_vel` (else
+    `/cmd_vel_nav`) held constant for 2 s.
+  - A stationary TRANSIT with no fresh twist keeps the line to the target.
+  - Anything within the circumscribed footprint plus margin (0.84 m) always counts.
+  - A dynamic stop keeps judging with the twist and path kind it started with.
+    `/mission/obstacle_decision` gains `judged_by` and `motion`.
+- **Verify live:**
+  - Look for the det_range "implausible" INFO lines.
+  - Walk up to the robot from the front: it must still stop at about 1 m.
+  - Stand about 1 m to the side of a pivoting robot: the result must be advisory.
+
 ## Open risks
 
 - Grass segmentation (2026-10-09, not yet run on the mower, `nongrass:=false` by default): seg_ros now runs on the front stereo right colour eye, `nongrass_projector` projects its mask onto the ground and map_server_node keeps a confirmed non-grass memory that feeds a SOFT global-costmap layer (`nongrass_layer`). The model was trained on the OA cameras: class quality on the front eye, NPU sharing with det_ros on core 1 and the shadow false-positive rate need a live check (`docs/grass_segmentation.md`).

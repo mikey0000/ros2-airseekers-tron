@@ -3806,7 +3806,8 @@ def test_upcoming_path_follows_the_route_not_the_straight_line():
                (5.0, 5.0, 0.0)]
     _answer_route(h, resp=_route_resp(l_route))
     h.fsm.inputs.pose = (2.0, 0.0, 0.0)
-    pts = h.fsm._upcoming_path()
+    kind, pts = h.fsm._upcoming_path()
+    assert kind == 'corridor'
     assert pts[0] == (2.0, 0.0)
     assert (3.0, 0.0) in pts                         # the corner of the L ...
     assert any(abs(p[0] - 3.0) < 1e-6 and p[1] > 0.0 for p in pts)   # ... and the north leg
@@ -3977,3 +3978,178 @@ def test_nav2_down_why():
     assert f.nav2_down_why('') == f.NAV2_DOWN
     assert f.nav2_down_why('x') == f.NAV2_DOWN + ': x'
     assert f.nav2_down_why(f.NAV2_DOWN + ': x') == f.NAV2_DOWN + ': x'
+
+
+# =====================================================================
+# 2026-10-13: motion-aware in-path test (person stopped the mower while it pivoted
+# toward a detour target, then logged the same person as off-corridor)
+# =====================================================================
+def _transit_toward_lower_right(h, pose=(1.0, 5.0, 0.0)):
+    """TRANSIT (/navigate_to_pose) from ``pose`` to a sub-path start at -36.9 deg."""
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.fsm.inputs.pose = pose
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 2, 9, 2)]))
+    assert h.name == 'TRANSIT' and h.pending_action(f.ACT_NAV)
+    h.fsm.inputs.pose = pose
+    h.tick()
+
+
+def _driving(h, v, w):
+    h.fsm.inputs.cmd_vel, h.fsm.inputs.cmd_vel_stamp = (v, w), h.t
+
+
+def test_0945_person_while_pivoting_in_place_is_advisory():
+    for w in (0.3, -0.3):                         # either way round
+        h = Harness()
+        _transit_toward_lower_right(h)
+        _driving(h, 0.0, w)
+        m = h.mark()
+        _seen_at(h, 'dynamic', 'person', 0.91, -37.0)   # on the line to the target
+        h.tick()
+        assert h.fsm._dyn is None and h.pending_action(f.ACT_NAV), w
+        assert not h.since(m, f.CancelActions)
+        d = h.fsm.obstacle_decision
+        assert d['action'] == 'advisory' and d['judged_by'] == 'swept'
+        assert d['motion'] == [0.0, w]
+
+
+def test_0945_without_a_twist_the_straight_line_still_acts():
+    # no fresh twist while TRANSIT: the line to the target is the intended direction
+    h = Harness()
+    _transit_toward_lower_right(h)
+    _seen_at(h, 'dynamic', 'person', 0.91, -37.0)
+    h.tick()
+    assert h.fsm._dyn is not None and h.fsm.obstacle_decision['judged_by'] == 'line'
+
+
+def test_person_straight_ahead_while_driving_forward_stops():
+    h = Harness()
+    _transit_toward_lower_right(h)
+    _driving(h, 0.2, 0.0)
+    _seen_at(h, 'dynamic', 'person', 0.9, 0.0)
+    h.tick()
+    assert h.fsm._dyn is not None and 'waiting for person' in h.fsm.sub_state
+    assert h.fsm.obstacle_decision['judged_by'] == 'swept'
+
+
+def test_person_beside_while_driving_forward_is_advisory():
+    h = Harness()
+    _transit_toward_lower_right(h)
+    _driving(h, 0.3, 0.0)
+    _seen_at(h, 'dynamic', 'person', 0.95, -40.0)   # 0.61 m to the right of the track
+    h.tick()
+    assert h.fsm._dyn is None
+
+
+def test_person_on_the_inside_of_a_right_turn_stops():
+    h = Harness()
+    _transit_toward_lower_right(h)
+    _driving(h, 0.2, -0.4)                        # arc bends toward the person
+    _seen_at(h, 'dynamic', 'person', 0.9, -37.0)
+    h.tick()
+    assert h.fsm._dyn is not None
+    # the same person while turning LEFT, away from them: advisory
+    h2 = Harness()
+    _transit_toward_lower_right(h2)
+    _driving(h2, 0.2, 0.4)
+    _seen_at(h2, 'dynamic', 'person', 0.9, -37.0)
+    h2.tick()
+    assert h2.fsm._dyn is None
+
+
+def test_standing_still_person_touching_the_robot_stops():
+    h = Harness()
+    _transit_toward_lower_right(h)
+    _driving(h, 0.0, 0.0)
+    _seen_at(h, 'dynamic', 'person', 0.4, 90.0)
+    h.tick()
+    assert h.fsm._dyn is not None
+    assert h.fsm.obstacle_decision['judged_by'] == 'footprint'
+
+
+def test_stale_twist_is_not_a_prediction():
+    h = Harness(obstacle_twist_max_age_s=0.5)
+    _transit_toward_lower_right(h)
+    _driving(h, 0.0, 0.3)
+    h.tick(dt=1.0)                                # twist now 1 s old -> line to the target
+    _seen_at(h, 'dynamic', 'person', 0.91, -37.0)
+    h.tick()
+    assert h.fsm._dyn is not None and h.fsm.obstacle_decision['judged_by'] == 'line'
+
+
+def test_nav_cmd_is_the_fallback_twist():
+    h = Harness()
+    _transit_toward_lower_right(h)
+    h.fsm.inputs.nav_cmd, h.fsm.inputs.nav_cmd_stamp = (0.0, -0.3), h.t
+    _seen_at(h, 'dynamic', 'person', 0.91, -37.0)
+    h.tick()
+    assert h.fsm._dyn is None and h.fsm.obstacle_decision['motion'] == [0.0, -0.3]
+
+
+def test_dynamic_wait_keeps_judging_with_the_entry_twist():
+    # entry while driving at the person; once stopped (zero twist) the same detection must
+    # stay "in path" -- no "stopped" then "advisory" for one person, no resume into them
+    h = Harness()
+    _transit_toward_lower_right(h)
+    _driving(h, 0.2, 0.0)
+    _seen_at(h, 'dynamic', 'person', 0.9, 5.0)
+    h.tick()
+    assert h.fsm._dyn is not None
+    m = h.mark()
+    for _ in range(10):                           # 5 s: robot stopped, person still there
+        _driving(h, 0.0, 0.0)
+        _seen_at(h, 'dynamic', 'person', 0.9, 5.0)
+        h.tick(dt=0.5)
+    assert h.fsm._dyn is not None and h.fsm._dyn['clear_since'] is None
+    assert h.fsm.obstacle_decision['action'] == 'act'
+    assert not [e for e in h.since(m) if 'advisory' in str(e)]
+    # the person walks off: clear hold, then the goal is re-sent
+    h.fsm.inputs.obstacle_stamp = None
+    h.tick(dt=0.5, n=7)
+    assert h.fsm._dyn is None and h.pending_action(f.ACT_NAV)
+
+
+def test_dynamic_wait_person_moving_out_of_the_entry_prediction_clears():
+    h = Harness()
+    _transit_toward_lower_right(h)
+    _driving(h, 0.2, 0.0)
+    _seen_at(h, 'dynamic', 'person', 0.9, 0.0)
+    h.tick()
+    assert h.fsm._dyn is not None
+    for _ in range(6):
+        _seen_at(h, 'dynamic', 'person', 1.5, 60.0)   # stepped aside
+        h.tick(dt=0.5)
+    assert h.fsm._dyn is None and h.pending_action(f.ACT_NAV)
+
+
+def test_mowing_follow_keeps_the_sub_path_corridor():
+    h = Harness()
+    mowing_two_swaths(h)
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.tick()
+    _driving(h, 0.0, 0.5)                         # a pivot does not replace the swath
+    _seen_at(h, 'dynamic', 'person', 1.2, 5.0)
+    h.tick()
+    assert h.fsm._dyn is not None
+    assert h.fsm.obstacle_decision['judged_by'] == 'corridor'
+
+
+def test_swept_prediction_geometry():
+    from mower_mission.geometry import in_footprint, predict_poses, swept_hit
+    poses = predict_poses((0.0, 0.0, 0.0), 0.0, 0.3, 2.0)
+    assert poses[0] == (0.0, 0.0, 0.0) and abs(poses[-1][2] - 0.6) < 1e-9
+    assert all(abs(p[0]) < 1e-12 and abs(p[1]) < 1e-12 for p in poses)
+    st = predict_poses((0.0, 0.0, 0.0), 0.3, 0.0, 2.0)
+    assert abs(st[-1][0] - 0.6) < 1e-9 and abs(st[-1][1]) < 1e-12
+    arc = predict_poses((0.0, 0.0, 0.0), 0.2, -0.4, 2.0)   # radius 0.5 m to the right
+    for x, y, _ in arc:
+        assert abs(math.hypot(x, y + 0.5) - 0.5) < 1e-9
+    # rounded corners: a pivot reaches the corner radius + margin, not further
+    corner = math.hypot(0.52, 0.27) + 0.25
+    full = predict_poses((0.0, 0.0, 0.0), 0.0, 1.0, 10.0)
+    assert len(full) <= 401 and abs(full[-1][2] - 2 * math.pi) < 1e-9
+    assert swept_hit((corner - 0.01, 0.0), full, 0.52, 0.25, 0.27, 0.25)
+    assert not swept_hit((0.0, corner + 0.01), full, 0.52, 0.25, 0.27, 0.25)
+    assert in_footprint((0.77, 0.0), (0.0, 0.0, 0.0), 0.52, 0.25, 0.27, 0.25)
+    assert not in_footprint((0.78, 0.0), (0.0, 0.0, 0.0), 0.52, 0.25, 0.27, 0.25)
