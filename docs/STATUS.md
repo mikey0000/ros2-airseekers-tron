@@ -319,6 +319,76 @@ and resumed after 2 s.
   - Walk up to the robot from the front: it must still stop at about 1 m.
   - Stand about 1 m to the side of a pivoting robot: the result must be advisory.
 
+## Swath-end turns without pivot loops (2026-10-13, unit-tested only)
+
+At 11:25 (54 sub-paths, snake, cross, 2 headland rings, `turn_type auto`) the owner saw what
+looked like 360 deg spins before each new line. No bag; from the log: each K-turn leg started
+with an RPP rotate-to-heading (v 0, w +-0.3). On turf the body turned about 2 deg/s, so the
+stuck guard latched (8.4 deg in 4 s against a 10 deg floor). The escape reversed 0.3 m and
+resent the goal, which started with another pivot, often the other way. Aborts ("collision
+ahead" 298x, "Failed to make progress" 20x) were retried the same way: 7 stuck escapes and 42
+retries in 3 h. Arcs with the inner wheel at 0.06 m/s or more do move the robot.
+
+- **Coverage RPP** (`nav2_params.yaml`):
+  - `FollowCoveragePath` `rotate_to_heading_min_angle` 0.6 -> 1.2 rad. A forward leg starting
+    at a reverse leg's cusp sees its carrot about 0.41 rad round (lookahead 0.4 on the r 0.5
+    turn) plus the yaw the previous leg missed. It is now driven as an arc. Rotate-to-heading
+    stays on for carrots behind the robot (otherwise RPP drives forward, away from them).
+  - `min_approach_linear_velocity` and `regulated_linear_scaling_min_speed` -> 0.14 m/s, on
+    `FollowCoveragePath` and `FollowCoveragePathReverse` (were 0.05/0.08 and 0.05/0.05). Every
+    0.4 m leg is inside the approach distance, so RPP drove it at 0.05-0.1 m/s. The turn shaper
+    then widened the arc (r 0.84 m instead of 0.5, so the leg ended short of its heading) or,
+    at |w| 0.3, snapped it to a pure pivot. At 0.132 m/s or more, any |w| up to 0.3 keeps the
+    inner wheel at 0.06 m/s or more.
+  - `coverage_leg_goal_checker` `yaw_goal_tolerance` 0.35 -> 0.5. Within 8 cm of a forward
+    leg's end, RPP pivots to the goal yaw until this is met.
+  - Unchanged: `max_angular_accel` 6.4 (used only by rotate-to-heading).
+  - FTC (`FollowCoveragePathFTC`) and MPPI coverage are not the default. FTC PRE_ROTATEs at
+    the start of every goal more than `max_goal_angle_error` (15 deg) off, so it is unsuitable
+    for K-turn legs as configured.
+- **Stuck guard** (`slip_detector`): new `stuck_pivot_min_heading_deg` (5). When at least half
+  of the window's commands are pure pivots, a 5 deg heading change in 4 s counts as progress.
+  The 11:25 case (8.4 deg) no longer latches; 1 deg or 4 deg in 4 s still does. The xy and
+  path rules are unchanged; driving keeps the 10 deg floor.
+- **Mission**: new `turn_leg_skip_m` 0.20 and `turn_leg_skip_yaw` 0.5, the same values as the
+  leg checker's overshoot / yaw tolerances. This applies to a retry or stuck-escape resume of
+  a turn leg: a reverse leg, or the forward piece ending at its cusp. If the robot is within
+  0.2 m of the leg's end and within 0.5 rad of its heading, the leg is counted as done and the
+  next leg is sent, instead of a 1-3 pose goal whose first move is a pivot.
+- **"collision ahead" at the headland** (not changed, needs a bag). The local costmap holds
+  only stereo, det_range and bumper marks; there is no area mask. With 2 rings, in a rectangle,
+  a swath ends 0.27 m inside the drivable line, i.e. base_link is 0.41 m from the recorded
+  boundary. The nose (+0.52 m) is therefore about 0.1 m past the boundary. Anything 8 cm or
+  taller at the lawn edge (hedge, bed edging, long uncut grass) is lethal right in front of
+  it. For a pure pivot, RPP's check projects the footprint (corner radius 0.61 m) through
+  1.0 s of rotation, uncut by the carrot distance. Fewer pivots should mean fewer of these
+  aborts.
+- **Planner** (`mower_coverage_node`): new `min_drivable_turn_radius_m` (0.44). A turn radius
+  above 0 but below it (the GUI accepts 0-2 m) is raised to it, with a note in the plan.
+- **What `auto` chose here and why.** `auto` tries a forward Dubins loop, then a Reeds-Shepp
+  reverse turn, then a pivot. Each must stay inside the drivable region (the field pulled in by
+  `border_inset`, 0.14 m).
+  - With 2 rings, a rectangle leaves 0.27 m past the swath ends.
+  - A reverse turn between snake rows (0.36 m apart) needs 0.31 m (r 0.44) or 0.36 m (r 0.5):
+    forward 0.40, reverse 0.70, forward 0.45 m legs.
+  - A forward loop (omega) needs 1.06 m (r 0.44) or 1.23 m (r 0.5).
+  - So this area gets K-turns where an oblique edge leaves extra room, and pivots elsewhere.
+    The test field `kArea1` with 2 rings and r 0.5 gives 4 reverse / 12 pivot turns at angle 0
+    and 2 / 11 at 90 deg, with 0 loops. At r 0.44 it gives 6 reverse / 10 pivot turns at angle 0.
+- **Does a loop fit?** No. A loop between snake rows needs a 7-ring (r 0.44) or 8-ring (r 0.5)
+  headland, i.e. 1.26-1.44 m. Racetrack order (rows 2r apart, forward U-turns) needs room of
+  about r, i.e. 3-4 rings. On `kArea1` with 3-4 rings that gives 2-5 loops, the rest K-turns.
+  `auto` already prefers a loop whenever one fits, so it is left alone. Options for the owner:
+  - 3 rings, which makes every turn a K-turn, no pivots (`kArea1`, r 0.44);
+  - `min_turn_radius_m` nearer 0.44 instead of 0.5, for more K-turns;
+  - racetrack order with 4 rings, for some loops.
+- **Verify live:** watch the turns at the swath ends.
+  - No `rotate-to-heading` at a K-turn leg start.
+  - Fewer `STUCK` latches.
+  - The "turn leg end ... leg done" INFO lines on retries.
+  - A rosbag of a few turns (`/cmd_vel_nav`, `/cmd_vel`, `~/shape_status`, odom) to confirm
+    the 0.14 m/s arcs track on turf.
+
 ## Open risks
 
 - Grass segmentation (2026-10-09, not yet run on the mower, `nongrass:=false` by default): seg_ros now runs on the front stereo right colour eye, `nongrass_projector` projects its mask onto the ground and map_server_node keeps a confirmed non-grass memory that feeds a SOFT global-costmap layer (`nongrass_layer`). The model was trained on the OA cameras: class quality on the front eye, NPU sharing with det_ros on core 1 and the shadow false-positive rate need a live check (`docs/grass_segmentation.md`).
