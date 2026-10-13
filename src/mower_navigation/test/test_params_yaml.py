@@ -687,6 +687,16 @@ def test_velocity_smoother_angular_matches_mcu_clamp():
     assert vs["max_velocity"][2] <= 0.3 and vs["min_velocity"][2] >= -0.3
 
 
+def test_velocity_smoother_wider_than_cmd_vel_slew():
+    """2026-10-14: cmd_vel_slew (0.5 / -0.8 m/s^2, 1.0 rad/s^2) is the single limiter; the
+    smoother must not be tighter or the chain double-smooths."""
+    vs = load()["velocity_smoother"]["ros__parameters"]
+    assert vs["max_accel"][0] >= 1.0 and vs["max_accel"][2] >= 1.0
+    assert vs["max_decel"][0] <= -1.5 and vs["max_decel"][2] <= -1.0
+    assert vs["smoothing_frequency"] == 20.0 and vs["feedback"] == "OPEN_LOOP"
+    assert vs["deadband_velocity"] == [0.01, 0.0, 0.01]
+
+
 def test_nongrass_layer_is_soft_and_below_inflation():
     """2026-10-09 grass segmentation: the non-grass memory is a SOFT preference layer.
     Non-trinary (trinary would read 75 as FREE or, above the threshold, LETHAL), use_maximum

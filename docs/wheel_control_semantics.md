@@ -171,6 +171,11 @@ velocity_smoother -> collision_monitor -> twist_mux -> cmd_vel_slew -> mcu_node)
   twist_mux (re-derived by `LaneTracker`) and commands an exact zero, the output goes to
   zero on that tick, not ramped. The watchdog / motion-gate hard zero is unchanged; a
   nav/teleop/docking zero still ramps at the decel rate.
+* **No double smoothing:** nav2 `velocity_smoother` is widened to max_accel
+  [1.0, 0, 3.0] / max_decel [-1.5, 0, -3.0] (20 Hz, OPEN_LOOP and deadband unchanged) so
+  it no longer stacks a second 0.5 m/s^2 ramp on the slew, and MPPI (`FollowPath`,
+  `FollowCoveragePathMPPI`) plans with the slew's limits: `ax_max` 0.5, `ax_min` -0.8,
+  `az_max` 1.0 (Jazzy defaults were ~3).
 * **Coupled slew:** in turn-shaper phases (`slew_both_wheels_always`, default true)
   `slew_coupled` moves v and w together along the line to the target at the largest
   fraction both axis limits allow, so an arc from rest keeps the target's curvature and

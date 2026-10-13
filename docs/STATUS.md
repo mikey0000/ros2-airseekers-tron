@@ -438,6 +438,27 @@ The owner's 0.05 m/s manual drive was below the COG `min_speed` (0.06).
 - **Verify live:** during a mow, the control shows the area height; -/+ moves the deck
   without stopping the blade. Stop, then START (resume): the deck stays at the live height.
 
+## Wheel smoothness (2026-10-14, unit-tested only)
+
+Velocity chain review (nav2 MPPI -> velocity_smoother -> twist_mux -> cmd_vel_slew ->
+mcu_node); details in `docs/wheel_control_semantics.md` ("Both-wheel turn shaper",
+"Velocity chain limits").
+
+- **Turn-shaper chatter:** a pivot/arc regime latch (`turn_shaper_hysteresis_mps` 0.02,
+  `turn_shaper_latch_ticks` 6) stops the target flipping every tick when the controller
+  sits on the snap boundary (|w| 0.3, v 0.070 -> pivot, 0.075 -> arc).
+- **Stops:** `max_linear_decel` 0.8 (accel stays 0.5), `max_angular_decel` = accel; a zero
+  on the winning emergency/bumper lane (`hard_stop_lanes`) zeroes the output at once.
+- **Arcs from rest:** `slew_both_wheels_always` (true) ramps v and w together in
+  turn-shaper phases (curvature kept, inner wheel never crawling backwards).
+- **Nav2:** MPPI `ax_max` 0.5 / `ax_min` -0.8 / `az_max` 1.0; velocity_smoother widened to
+  accel 1.0 / decel -1.5 so cmd_vel_slew is the single limiter.
+- **Unchanged:** docking stays exempt from the shaper, pivot assist on, zero-speed
+  keepalive off, motion gate and watchdog hard zero.
+- **Verify live:** MPPI transit with tight turns: `~/shape_status` should not alternate
+  pivot/arc each tick; a GUI emergency stop halts on the next tick; nav stops take ~0.4 s
+  from 0.3 m/s instead of 0.6 s.
+
 ## Open risks
 
 - Grass segmentation (2026-10-09, not yet run on the mower, `nongrass:=false` by default): seg_ros now runs on the front stereo right colour eye, `nongrass_projector` projects its mask onto the ground and map_server_node keeps a confirmed non-grass memory that feeds a SOFT global-costmap layer (`nongrass_layer`). The model was trained on the OA cameras: class quality on the front eye, NPU sharing with det_ros on core 1 and the shadow false-positive rate need a live check (`docs/grass_segmentation.md`).
