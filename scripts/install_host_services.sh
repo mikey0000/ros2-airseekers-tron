@@ -27,10 +27,11 @@ UNITS=(mower-stereo-host mower-stereo-watchdog mower-poweroff.path mower-ros2)
 
 status() {
     echo "== host units"
+    local en ac
     for u in "${UNITS[@]}"; do
-        printf '  %-24s enabled=%-9s active=%s\n' "$u" \
-            "$(systemctl is-enabled "$u" 2>/dev/null || echo n/a)" \
-            "$(systemctl is-active "$u" 2>/dev/null || echo n/a)"
+        en=$(systemctl is-enabled "$u" 2>/dev/null || true)
+        ac=$(systemctl is-active "$u" 2>/dev/null || true)
+        printf '  %-24s enabled=%-10s active=%s\n' "$u" "${en:-not-installed}" "${ac:-n/a}"
     done
     echo "== stereo host"; sh scripts/setup_stereo_host.sh status 2>/dev/null || true
     echo "== udev"; ls -l /dev/serial_mower /dev/serial_imu /dev/serial_rtk 2>/dev/null || echo "  serial symlinks missing"
