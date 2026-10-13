@@ -19,6 +19,22 @@ det_range:
     z_guess_m: 2.0
     sigma_disparity_px: 0.25
     max_depth_age_s: 0.5
+    # Class-size check (2026-10-13 false stop: a person several metres away ranged at 0.91 m
+    # by a spurious near disparity on the lawn). For these classes the stereo range is
+    # replaced by the range implied by the box height (pinhole, nominal height below) when
+    # stereo < size_check_min_ratio x that range, unless the box touches the top / bottom of
+    # the frame (within size_check_clip_px: height is only a lower bound) or is >=
+    # size_check_tall_frac of the frame (very close). A subject shorter than nominal makes the
+    # box range too FAR, i.e. stricter: a fully visible person under ~0.8 m (ratio x 1.6 m)
+    # within 1 m, e.g. a sitting toddler, is ranged too far (see det_range/geometry.py).
+    # size_check_min_ratio: 0.0 = off.
+    size_check_classes: [person, dog, cat]
+    size_check_heights_m: [1.6, 0.4, 0.25]
+    size_check_min_ratio: 0.5
+    size_check_clip_px: 3.0
+    size_check_tall_frac: 0.85
+    size_check_sigma_frac: 0.3      # replaced range: sigma = 0.3 x range
+    source_image_height: 480        # right eye; camera_info overrides
     publish_obstacle_points: true   # false = empty /ai/det/obstacle_points (obstacle_detection none)
     # Rear camera (2026-10-09): no stereo -> monocular ground-plane range from the bbox
     # bottom-centre (det_range/geometry.py mono_range_box: ~7 %/m-ish per degree of pitch

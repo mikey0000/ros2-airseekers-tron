@@ -39,7 +39,9 @@ that side > ``side_turn_min_radps`` for >= ``side_turn_min_s`` AND ``/odom`` |w|
 ``odom_turn_min_radps``, and the box is ranged within ``side_stop_range_m`` or unranged with
 bbox height >= ``side_unranged_h_frac``, score >= ``side_unranged_min_score`` in
 ``persist_frames`` consecutive frames. Unranged front dynamic boxes need score >=
-``front_unranged_min_score`` + persistence. The policy JSON also carries ``camera``,
+``front_unranged_min_score`` + persistence. A ranged dynamic box (any level / camera) must be
+within range in ``ranged_persist_frames`` consecutive frames of its camera (2026-10-13: one
+bad stereo frame stopped the mower). The policy JSON also carries ``camera``,
 ``score``, ``bbox_h_frac`` and ``ranged``; dismissed detections log INFO
 ``ignored: cat on right camera (...)`` once per episode.
 
@@ -214,6 +216,7 @@ class ObstacleGuard(Node):
         dp('side_unranged_min_score', 0.75)
         dp('front_unranged_min_score', 0.6)
         dp('persist_frames', 2)
+        dp('ranged_persist_frames', 2)           # ranged dynamic: consecutive frames (1 = off)
         dp('ignored_episode_gap_s', 3.0)         # INFO 'ignored: ...' once per episode
         dp('front_frames', list(DEFAULT_CAMERA_FRAMES[CAM_FRONT]))
         dp('left_frames', list(DEFAULT_CAMERA_FRAMES[CAM_LEFT]))
@@ -281,7 +284,8 @@ class ObstacleGuard(Node):
             side_unranged_h_frac=float(p('side_unranged_h_frac')),
             side_unranged_min_score=float(p('side_unranged_min_score')),
             front_unranged_min_score=float(p('front_unranged_min_score')),
-            persist_frames=int(p('persist_frames')))
+            persist_frames=int(p('persist_frames')),
+            ranged_persist_frames=int(p('ranged_persist_frames')))
         self.camera_frames = {CAM_FRONT: [str(x) for x in p('front_frames')],
                               CAM_LEFT: [str(x) for x in p('left_frames')],
                               CAM_RIGHT: [str(x) for x in p('right_frames')],
