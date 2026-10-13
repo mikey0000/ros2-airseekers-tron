@@ -319,6 +319,30 @@ and resumed after 2 s.
   - Walk up to the robot from the front: it must still stop at about 1 m.
   - Stand about 1 m to the side of a pivoting robot: the result must be advisory.
 
+## Live blade height during a mow (2026-10-13, unit-tested only)
+
+- **Symptom:** the GUI blade height control showed "—" with its -/+ buttons disabled during
+  a mow (and in manual mow), so the deck height could not be changed.
+- **Root cause:** `/cutter/height_mm` (mcu_node, latched; GUI key `cutterHeight`) was never
+  added to `FOXGLOVE_GUI_TOPICS` in `launch/mower.launch.py`, so foxglove_bridge did not
+  advertise it and the control never got a value. The POST route, `/cutter/set_height` and
+  the driver were fine. `/behavior_tree_node/mow_plan|mow_progress` and
+  `/map_server_node/terrain_grid|terrain_summary` were missing the same way and are now
+  streamed. `test_foxglove_whitelist` checks every topic in the GUI's `topicMap`.
+- **Driver:** `/cutter/set_height` re-sends the current blade state (enable + speed) with the
+  new height in one CutterControl frame. The blade is not stopped and the deck moves at once.
+  Whether the MCU ramps the blade on that repeated ON frame is unverified on hardware.
+- **Override rule:** a live height holds for the rest of the mow and is never saved to the
+  area. The mission does not re-send a height mid-area. Later areas of the same mow and a
+  resumed mow use the live height. Before, an interrupt (stop, rain, charge, stuck, e-stop,
+  slope) rebuilt the Mission and the resumed area start re-sent the saved area height. The
+  live height is now kept in the resume cursor (`live_height <mm>` row). A fresh start
+  (resume cleared, or the previous mow completed) uses the area settings again. "Save to
+  area" in the GUI is the only way to change the area setting.
+- **Deploy:** stack sync + container restart. No GUI image rebuild is needed.
+- **Verify live:** during a mow, the control shows the area height; -/+ moves the deck
+  without stopping the blade. Stop, then START (resume): the deck stays at the live height.
+
 ## Open risks
 
 - Grass segmentation (2026-10-09, not yet run on the mower, `nongrass:=false` by default): seg_ros now runs on the front stereo right colour eye, `nongrass_projector` projects its mask onto the ground and map_server_node keeps a confirmed non-grass memory that feeds a SOFT global-costmap layer (`nongrass_layer`). The model was trained on the OA cameras: class quality on the front eye, NPU sharing with det_ros on core 1 and the shadow false-positive rate need a live check (`docs/grass_segmentation.md`).
