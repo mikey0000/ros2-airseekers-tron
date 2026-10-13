@@ -28,6 +28,11 @@ Parameters
 ``max_angular_decel``  = ``max_angular_accel``  rad/s^2, same for angular.z
 ``hard_stop_lanes``    ``['emergency', 'bumper']``  twist_mux lanes whose zero command
                                   (while the lane wins) is applied at once, not ramped
+``slew_both_wheels_always`` ``true``  wherever the turn shaper is active, slew both axes
+                                  together (:func:`slew_coupled`: the target's v/w ratio is
+                                  kept from rest, pivot <-> arc passes through a stop);
+                                  false = the old independent per-axis slew outside
+                                  pivot-assist episodes
 ``cmd_timeout``        ``0.5``    s after the last ``/cmd_vel_raw`` the output is
                                   forced to exactly zero (immediate exact stop,
                                   MowgliNext style) and held there until a fresh
@@ -111,8 +116,11 @@ Behaviour
   ``accel * dt`` toward the target; every other twist component passes through
   unchanged.  During a pivot-assist episode only (creep ramp-up, hold and
   ramp-down) the step also never lands in the one-wheel zone
-  (:func:`slew_both_wheels`: the pivot <-> creep-arc change passes through a stop);
-  normal driving is the plain per-axis slew of the turn-shaped target.
+  (:func:`slew_both_wheels`: the pivot <-> creep-arc change passes through a stop).
+  Other driving in turn-shaper phases uses :func:`slew_coupled` (both axes scaled
+  together, curvature kept) unless ``slew_both_wheels_always`` is false, which gives
+  the plain per-axis slew of the turn-shaped target. Decel (magnitude shrinking toward
+  zero) uses the ``max_*_decel`` rates.
 * Every published command is echoed to the log at full float precision (the
   MowgliNext ``/cmd_vel_applied`` idea, as a log line instead of a topic),
   throttled to ``applied_log_period`` (default 1 s; 0 = every tick, the old
@@ -631,7 +639,8 @@ def both_wheels_legal(v, w, params=None):
 def slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
                      params=None, max_lin_decel=None, max_ang_decel=None):
     """One slew step from (cur_v, cur_w) toward a legal target that never lands in the
-    one-wheel zone. Used for pivot-assist episodes only (2026-10-13 review: the 0 -> 0.14 creep ramp at |w| = 0.3 spent 5-9
+    one-wheel zone. Used for pivot-assist episodes and as the pivot <-> arc fallback of
+    :func:`slew_coupled` (2026-10-13 review: the 0 -> 0.14 creep ramp at |w| = 0.3 spent 5-9
     ticks with the inner wheel in (-0.06, +0.06); 831 of 3251 assisted ticks in the
     10-10/10-11 bags).
 
@@ -685,6 +694,62 @@ def slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, d
     vn = sign * max(same, need)
     vn = sv(cur_v, vn)
     return vn, wn
+
+
+def _axis_rate(cur, tgt, accel, decel):
+    """The rate limit for one axis moving ``cur`` -> ``tgt`` (decel toward zero)."""
+    if decel is None:
+        return accel
+    if cur == 0.0 or ((cur > 0.0) == (tgt > 0.0) and tgt != 0.0 and abs(tgt) >= abs(cur)):
+        return accel
+    if (cur > 0.0) == (tgt > 0.0) or tgt == 0.0:
+        return decel
+    return min(accel, decel)                          # zero crossing within the step
+
+
+def slew_coupled(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
+                 params=None, max_lin_decel=None, max_ang_decel=None):
+    """One slew step that moves both axes together along the straight line from
+    (cur_v, cur_w) to the target, at the largest fraction both axis limits allow
+    (2026-10-14 review): from rest the ratio v/w (the curvature) of the target is kept
+    on every tick and the inner wheel rolls the same way as the outer, instead of the
+    per-axis ramp (v at 0.5, w at 1.0) bending the arc and leaving the inner wheel in
+    the one-wheel zone.
+
+    Accepted when the step is legal (:func:`both_wheels_legal`) or its inner wheel rolls
+    forward (inner >= 0: the unavoidable slow start/end of an arc from/to rest) and
+    neither end is on the pivot side (inner < 0). Otherwise, e.g. pivot <-> arc, the
+    step is :func:`slew_both_wheels`, which passes through a stop.
+    """
+    p = dict(SHAPE_DEFAULTS)
+    if params:
+        p.update(params)
+    dv, dw = tgt_v - cur_v, tgt_w - cur_w
+    lim_v = _axis_rate(cur_v, tgt_v, max_lin_accel, max_lin_decel) * dt
+    lim_w = _axis_rate(cur_w, tgt_w, max_ang_accel, max_ang_decel) * dt
+    frac = 1.0
+    if abs(dv) > lim_v:
+        frac = min(frac, lim_v / abs(dv))
+    if abs(dw) > lim_w:
+        frac = min(frac, lim_w / abs(dw))
+    if frac >= 1.0:
+        nv, nw = tgt_v, tgt_w
+    else:
+        nv, nw = cur_v + frac * dv, cur_w + frac * dw
+    half = 0.5 * float(p['track_width_m'])
+
+    def inner(v, w):
+        return abs(v) - abs(w) * half
+
+    def pivot_side(v, w):
+        return abs(w) > 1e-6 and inner(v, w) < -1e-9
+
+    if both_wheels_legal(nv, nw, p) or (
+            inner(nv, nw) >= -1e-9 and not pivot_side(cur_v, cur_w)
+            and not pivot_side(tgt_v, tgt_w)):
+        return nv, nw
+    return slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
+                            p, max_lin_decel, max_ang_decel)
 
 
 class TurnShaper:
@@ -931,6 +996,7 @@ class CmdVelSlewNode(Node):
         self.declare_parameter('max_angular_decel',
                                float(self.get_parameter('max_angular_accel').value))
         self.declare_parameter('hard_stop_lanes', list(HARD_STOP_LANES))
+        self.declare_parameter('slew_both_wheels_always', True)
         self.declare_parameter('cmd_timeout', 0.5)
         self.declare_parameter('rate', 20.0)
         self.declare_parameter('frame_id', 'base_link')
@@ -974,6 +1040,8 @@ class CmdVelSlewNode(Node):
         self._max_angular_accel = float(self.get_parameter('max_angular_accel').value)
         self._max_linear_decel = float(self.get_parameter('max_linear_decel').value)
         self._max_angular_decel = float(self.get_parameter('max_angular_decel').value)
+        self._slew_both_wheels_always = bool(
+            self.get_parameter('slew_both_wheels_always').value)
         self._hard_stop_lanes = frozenset(
             str(n) for n in self.get_parameter('hard_stop_lanes').value or ())
         self._cmd_timeout = float(self.get_parameter('cmd_timeout').value)
@@ -1308,18 +1376,26 @@ class CmdVelSlewNode(Node):
             ang_dec = getattr(self, '_max_angular_decel', None)
             # Assist episode: from the creep's first tick until the slewed output has
             # settled on the target again after it (ramp-down / hold / hand-back). Only
-            # then does the slew keep every tick out of the one-wheel zone; normal
-            # MPPI/RPP driving keeps the plain per-axis slew of the shaped target.
+            # then does the slew keep every tick out of the one-wheel zone. Other
+            # MPPI/RPP driving in shaper phases uses slew_coupled (curvature kept), or
+            # the plain per-axis slew with slew_both_wheels_always false.
             ramp = bool(pivot is not None and pivot.active) or (
                 getattr(self, '_assist_ramp', False)
                 and (self._cur_lin, self._cur_ang) != (tgt_lin, tgt_ang))
             self._assist_ramp = ramp
+            coupled = (getattr(self, '_slew_both_wheels_always', False)
+                       and turn is not None and turn.is_active(phase))
             if CmdVelSlewNode._hard_stop(self, now):
                 # Emergency / bumper lane commands a stop: exact zero now, no decel ramp.
                 self._cur_lin = self._cur_ang = 0.0
                 self._assist_ramp = False
             elif ramp and turn is not None and turn.is_active(phase):
                 self._cur_lin, self._cur_ang = slew_both_wheels(
+                    self._cur_lin, self._cur_ang, tgt_lin, tgt_ang,
+                    self._max_linear_accel, self._max_angular_accel, dt, turn.params,
+                    lin_dec, ang_dec)
+            elif coupled:
+                self._cur_lin, self._cur_ang = slew_coupled(
                     self._cur_lin, self._cur_ang, tgt_lin, tgt_ang,
                     self._max_linear_accel, self._max_angular_accel, dt, turn.params,
                     lin_dec, ang_dec)

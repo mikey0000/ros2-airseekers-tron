@@ -155,8 +155,8 @@ front/side vision obstacle is within 1.5 m: the slew is downstream of collision_
 nothing else collision-checks the creep. During an assist episode only (creep ramp-up,
 hold and ramp-down) the slew keeps every tick out of the one-wheel zone
 (`slew_both_wheels`): the pivot <-> creep-arc change passes through a stop (w to 0, then v),
-instead of ramping v at full |w| through inner (-0.06, +0.06) for 5-9 ticks. Normal
-MPPI/RPP driving keeps the plain per-axis slew of the shaped target.
+instead of ramping v at full |w| through inner (-0.06, +0.06) for 5-9 ticks. Other
+MPPI/RPP driving uses the coupled slew (see "Velocity chain limits" below).
 
 ## Velocity chain limits (cmd_vel_slew, 2026-10-14)
 
@@ -171,6 +171,14 @@ velocity_smoother -> collision_monitor -> twist_mux -> cmd_vel_slew -> mcu_node)
   twist_mux (re-derived by `LaneTracker`) and commands an exact zero, the output goes to
   zero on that tick, not ramped. The watchdog / motion-gate hard zero is unchanged; a
   nav/teleop/docking zero still ramps at the decel rate.
+* **Coupled slew:** in turn-shaper phases (`slew_both_wheels_always`, default true)
+  `slew_coupled` moves v and w together along the line to the target at the largest
+  fraction both axis limits allow, so an arc from rest keeps the target's curvature and
+  its inner wheel rolls with the outer (it is below 0.06 m/s only in the first ticks
+  from rest, never backwards). Before, v ramped at 0.5 and w at 1.0 separately, which
+  bent the arc during the ramp. Pivot <-> arc changes fall back to `slew_both_wheels`
+  (through a stop). False = the old per-axis slew outside assist episodes; docking and
+  manual phases keep the per-axis slew.
 
 ## Drive at rest (2026-10-07): no host-side release exists
 
