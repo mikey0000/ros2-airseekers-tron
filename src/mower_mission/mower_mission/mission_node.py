@@ -109,6 +109,9 @@ TOPIC_DEFAULTS = {
     # ('' = off). Taken raw and byte-searched on the 10 Hz tick (no deserialisation).
     'rosout_topic': '/rosout',
     'nav_cmd_topic': '/cmd_vel_nav',      # '' = no slow-pivot sub_state
+    # applied twist (twist_mux output: Nav2, docking, emergency) for the obstacle in-path
+    # prediction (fsm Params.obstacle_sweep_horizon_s); '' = /cmd_vel_nav only
+    'motion_cmd_topic': '/cmd_vel',
     'add_area_service': '/map_server_node/add_area',
     'promote_obstacle_service': '/map_server_node/promote_obstacle',  # recorded NO-GO
     'set_area_channel_service': '/map_server_node/set_area_channel',  # recorded PATHs
@@ -293,6 +296,9 @@ class MissionNode(Node):
                 raw=True, deliver_all=True)
         if p['nav_cmd_topic']:
             sub(Twist, p['nav_cmd_topic'], self._on_nav_cmd, 1, sampled=True, with_receipt=True)
+        if p['motion_cmd_topic']:
+            sub(Twist, p['motion_cmd_topic'], self._on_motion_cmd, 1, sampled=True,
+                with_receipt=True)
         if p['supervisor_status_topic']:
             sub(String, p['supervisor_status_topic'], self._on_supervisor, latched)
         if p['tilt_status_topic']:
@@ -584,6 +590,11 @@ class MissionNode(Node):
         with self._lock:
             self.fsm.inputs.nav_cmd = (float(msg.linear.x), float(msg.angular.z))
             self.fsm.inputs.nav_cmd_stamp = receipt
+
+    def _on_motion_cmd(self, msg, receipt):
+        with self._lock:
+            self.fsm.inputs.cmd_vel = (float(msg.linear.x), float(msg.angular.z))
+            self.fsm.inputs.cmd_vel_stamp = receipt
 
     def _on_rosout(self, data):
         if fsm_mod.parse_collision_abort(data):

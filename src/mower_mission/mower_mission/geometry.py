@@ -370,3 +370,51 @@ def buffer_polyline(points, half_width, miter_limit=3.0):
         left.append((p[0] + nx * d, p[1] + ny * d))
         right.append((p[0] - nx * d, p[1] - ny * d))
     return left + right[::-1]
+
+
+# ---------------------------------------------------------------------------
+# Motion prediction for the obstacle in-path test (2026-10-13)
+# ---------------------------------------------------------------------------
+def predict_poses(pose, v, w, horizon_s, step_m=0.05, step_rad=0.05, max_samples=400):
+    """Poses ``(x, y, yaw)`` of a robot at ``pose`` driving constant ``v`` (m/s) / ``w``
+    (rad/s) for ``horizon_s``, sampled every <= ``step_m`` of travel and <= ``step_rad`` of
+    turn (first = ``pose``). An arc of radius v / w; straight when |w| is ~0, a pure
+    rotation when |v| is ~0. The turn is capped at one full revolution."""
+    x0, y0 = float(pose[0]), float(pose[1])
+    th0 = float(pose[2]) if len(pose) > 2 else 0.0
+    t_end = max(0.0, float(horizon_s))
+    v, w = float(v), float(w)
+    if abs(w) * t_end > 2.0 * math.pi:
+        t_end = 2.0 * math.pi / abs(w)
+    n = max(1, int(math.ceil(max(abs(v) * t_end / step_m, abs(w) * t_end / step_rad))))
+    n = min(n, int(max_samples))
+    out = []
+    for k in range(n + 1):
+        t = t_end * k / n
+        th = th0 + w * t
+        if abs(w) < 1e-6:
+            x, y = x0 + v * t * math.cos(th0), y0 + v * t * math.sin(th0)
+        else:
+            r = v / w
+            x = x0 + r * (math.sin(th) - math.sin(th0))
+            y = y0 - r * (math.cos(th) - math.cos(th0))
+        out.append((x, y, th))
+    return out
+
+
+def in_footprint(point, pose, front_m, rear_m, half_width_m, margin_m=0.0):
+    """Point within ``margin_m`` of the robot rectangle at ``pose`` (base_link frame: from
+    ``rear_m`` behind to ``front_m`` ahead, +-``half_width_m``; rounded corners, i.e. the
+    rectangle grown by a disc, so a pivot reaches at most the corner radius + margin)."""
+    th = float(pose[2]) if len(pose) > 2 else 0.0
+    dx, dy = float(point[0]) - float(pose[0]), float(point[1]) - float(pose[1])
+    c, s = math.cos(th), math.sin(th)
+    fx, fy = c * dx + s * dy, -s * dx + c * dy
+    ex = max(-float(rear_m) - fx, 0.0, fx - float(front_m))
+    ey = max(abs(fy) - float(half_width_m), 0.0)
+    return math.hypot(ex, ey) <= float(margin_m)
+
+
+def swept_hit(point, poses, front_m, rear_m, half_width_m, margin_m=0.0):
+    """Point inside the footprint (+ margin) at any of ``poses`` (see predict_poses)."""
+    return any(in_footprint(point, p, front_m, rear_m, half_width_m, margin_m) for p in poses)
