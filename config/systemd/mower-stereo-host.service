@@ -1,0 +1,16 @@
+[Unit]
+Description=Stereo host prerequisites at boot: IIO-mode stereo IMU + 8 MiB DDS socket buffers (scripts/stereo_host_boot.sh)
+# After the vendor camera init (which loads the IMU driver in netlink mode) and before
+# docker starts the stack (socket buffers only apply to sockets created afterwards).
+After=cam.service
+Wants=cam.service
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/env bash /userdata/ros2_stack/scripts/stereo_host_boot.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

@@ -9,6 +9,8 @@
 #    2.9 Hz exact pairs; with 8 MiB: 10.02 Hz pairs, 0 unpaired). Subscribers created before
 #    the change keep their small buffer until restarted.
 #    Persist: echo 'net.core.rmem_max=8388608' + wmem_max into /etc/sysctl.d/90-ros2-dds.conf.
+#    Both settings at every boot: sudo scripts/install_stereo_host_setup.sh (installs
+#    mower-stereo-host.service -> scripts/stereo_host_boot.sh, plus that sysctl file).
 #
 # 2. Metoak stereo IMU (ICM-40608, i2c 8-0068) in IIO mode for mower_cameras/stereo_imu.
 #
