@@ -25,6 +25,7 @@ RESTARTS="${STEREO_WD_RESTARTS:-4}"
 MAX_INITS="${STEREO_WD_MAX_INITS:-3}"
 SETTLE="${STEREO_WD_SETTLE:-30}"
 INIT=/usr/metoak/metoak/mo_init.sh
+SETUP=${SETUP:-/userdata/ros2_stack/scripts/setup_stereo_host.sh}
 PATTERN='rkcif-mipi-lvds3: stream\[0\] start streaming'
 
 log() { echo "[stereo-wd] $*"; }
@@ -56,6 +57,11 @@ while true; do
         inits=$((inits + 1))
         log "stereo dead ($n restarts in ${WINDOW}s): re-running mo_init.sh (${inits}/${MAX_INITS})"
         sh "$INIT" 2>&1 | grep -E 'succeed|error|fail' | sed 's/^/[stereo-wd] mo_init: /'
+        # mo_init.sh reloads the stereo IMU driver in the vendor netlink mode (no IIO
+        # device): put it back the way mower-stereo-host.service set it at boot.
+        if [[ -f "$SETUP" ]]; then
+            sh "$SETUP" iio 2>&1 | sed 's/^/[stereo-wd] imu: /'
+        fi
         sleep "$SETTLE"
     fi
 done
