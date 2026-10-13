@@ -158,6 +158,20 @@ hold and ramp-down) the slew keeps every tick out of the one-wheel zone
 instead of ramping v at full |w| through inner (-0.06, +0.06) for 5-9 ticks. Normal
 MPPI/RPP driving keeps the plain per-axis slew of the shaped target.
 
+## Velocity chain limits (cmd_vel_slew, 2026-10-14)
+
+`cmd_vel_slew` is the authoritative rate limiter of the chain (nav2 MPPI FollowPath ->
+velocity_smoother -> collision_monitor -> twist_mux -> cmd_vel_slew -> mcu_node).
+
+* **Decel:** `max_linear_accel` 0.5 m/s^2 applies while |v| grows, `max_linear_decel`
+  0.8 m/s^2 while it shrinks toward zero (vendor pure pursuit: accel 0.5 / decel 0.8 /
+  angular 1.5, `adaptivePurePursuit.h:23-25`). A sign change decelerates to zero, then
+  accelerates. `max_angular_decel` defaults to `max_angular_accel` (1.0).
+* **Hard stops:** when a `hard_stop_lanes` lane (default `emergency`, `bumper`) wins in
+  twist_mux (re-derived by `LaneTracker`) and commands an exact zero, the output goes to
+  zero on that tick, not ramped. The watchdog / motion-gate hard zero is unchanged; a
+  nav/teleop/docking zero still ramps at the decel rate.
+
 ## Drive at rest (2026-10-07): no host-side release exists
 
 Owner request "disable drive at rest" investigated; **nothing implemented in mcu_node** because

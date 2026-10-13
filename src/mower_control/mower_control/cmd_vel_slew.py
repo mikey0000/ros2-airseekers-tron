@@ -22,6 +22,12 @@ Parameters
 ----------
 ``max_linear_accel``   ``0.5``    m/s^2 cap on linear.x acceleration
 ``max_angular_accel``  ``1.0``    rad/s^2 cap on angular.z acceleration
+``max_linear_decel``   ``0.8``    m/s^2 cap while |linear.x| shrinks toward zero (a sign
+                                  change decelerates to 0, then accelerates); vendor
+                                  pure pursuit used accel 0.5 / decel 0.8
+``max_angular_decel``  = ``max_angular_accel``  rad/s^2, same for angular.z
+``hard_stop_lanes``    ``['emergency', 'bumper']``  twist_mux lanes whose zero command
+                                  (while the lane wins) is applied at once, not ramped
 ``cmd_timeout``        ``0.5``    s after the last ``/cmd_vel_raw`` the output is
                                   forced to exactly zero (immediate exact stop,
                                   MowgliNext style) and held there until a fresh
@@ -146,6 +152,22 @@ def slew(current, target, max_accel, dt):
     if abs(delta) <= max_delta:
         return target
     return current + math.copysign(max_delta, delta)
+
+
+def slew_ad(current, target, max_accel, max_decel, dt):
+    """:func:`slew` with separate rates: ``max_decel`` while the magnitude shrinks toward
+    zero, ``max_accel`` while it grows. A sign change decelerates to zero first, then
+    accelerates for the rest of ``dt``. ``max_decel`` None = ``max_accel``."""
+    if max_decel is None or max_decel == max_accel:
+        return slew(current, target, max_accel, dt)
+    if current == 0.0 or (current > 0.0) == (target > 0.0) and target != 0.0:
+        rate = max_accel if abs(target) >= abs(current) else max_decel
+        return slew(current, target, rate, dt)
+    # toward zero (target 0 or the opposite sign)
+    if abs(current) > max_decel * dt:
+        return current - math.copysign(max_decel * dt, current)
+    rest = dt - abs(current) / max_decel if max_decel > 0.0 else 0.0
+    return slew(0.0, target, max_accel, rest)
 
 
 def wrap_angle(a):
@@ -302,6 +324,9 @@ TWIST_MUX_LANES = (
     ('navigation', '/cmd_vel_nav', 10, 0.6),
 )
 NAV_LANE = 'navigation'
+# A zero command on one of these lanes (while it wins in twist_mux) is applied at once, not
+# ramped down at max_linear_decel (node parameter ``hard_stop_lanes``).
+HARD_STOP_LANES = ('emergency', 'bumper')
 # controller_server's own output (before velocity_smoother / collision_monitor). Nav2's
 # behavior_server (Spin, BackUp, DriveOnHeading) publishes straight to /cmd_vel_nav, so a
 # nav-lane pivot without a fresh controller command is a recovery, not a FollowPath pivot.
@@ -604,7 +629,7 @@ def both_wheels_legal(v, w, params=None):
 
 
 def slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
-                     params=None):
+                     params=None, max_lin_decel=None, max_ang_decel=None):
     """One slew step from (cur_v, cur_w) toward a legal target that never lands in the
     one-wheel zone. Used for pivot-assist episodes only (2026-10-13 review: the 0 -> 0.14 creep ramp at |w| = 0.3 spent 5-9
     ticks with the inner wheel in (-0.06, +0.06); 831 of 3251 assisted ticks in the
@@ -621,36 +646,44 @@ def slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, d
       min); when |w| cannot be shed that fast, it is shed at the full angular rate and |v|
       is held at min + |w| b/2 until it can.
 
-    Independent per-axis slew whenever its result is already legal (normal driving).
+    Independent per-axis slew whenever its result is already legal. Decel rates
+    (``max_*_decel``, None = the accel rate) apply as in :func:`slew_ad`.
     """
     p = dict(SHAPE_DEFAULTS)
     if params:
         p.update(params)
-    v1 = slew(cur_v, tgt_v, max_lin_accel, dt)
-    w1 = slew(cur_w, tgt_w, max_ang_accel, dt)
+
+    def sv(cur, tgt):
+        return slew_ad(cur, tgt, max_lin_accel, max_lin_decel, dt)
+
+    def sw(cur, tgt):
+        return slew_ad(cur, tgt, max_ang_accel, max_ang_decel, dt)
+
+    v1 = sv(cur_v, tgt_v)
+    w1 = sw(cur_w, tgt_w)
     if both_wheels_legal(v1, w1, p):
         return v1, w1
     half = 0.5 * float(p['track_width_m'])
     v_min = float(p['min_inner_wheel_mps'])
-    dv, dw = max_lin_accel * dt, max_ang_accel * dt
+    dw = max_ang_accel * dt
     if abs(cur_v) - abs(cur_w) * half < 0.0:          # pivot side
-        vn = slew(cur_v, 0.0, max_lin_accel, dt)
+        vn = sv(cur_v, 0.0)
         if abs(vn) < 1e-6:
-            return 0.0, slew(cur_w, 0.0, max_ang_accel, dt)
+            return 0.0, sw(cur_w, 0.0)
         # still drifting off a counter-rotating pivot: keep it a proper pivot
         need = (abs(vn) + v_min) / half
         wn = math.copysign(min(max(abs(w1), need), abs(cur_w) + dw), cur_w)
         return vn, wn
     cap = max(0.0, (abs(v1) - v_min) / half)          # arc side
     wn = max(-cap, min(cap, w1))
-    if abs(wn - cur_w) <= dw + 1e-12:
+    if abs(sw(cur_w, wn) - wn) <= 1e-12:
         return v1, wn
-    wn = slew(cur_w, 0.0, max_ang_accel, dt)
+    wn = sw(cur_w, 0.0)
     need = v_min + abs(wn) * half
     sign = math.copysign(1.0, cur_v)
     same = abs(v1) if v1 * sign > 0.0 else 0.0
     vn = sign * max(same, need)
-    vn = max(cur_v - dv, min(cur_v + dv, vn))
+    vn = sv(cur_v, vn)
     return vn, wn
 
 
@@ -893,6 +926,11 @@ class CmdVelSlewNode(Node):
 
         self.declare_parameter('max_linear_accel', 0.5)
         self.declare_parameter('max_angular_accel', 1.0)
+        # Vendor pure pursuit: accel 0.5 / decel 0.8 (adaptivePurePursuit.h:23-25).
+        self.declare_parameter('max_linear_decel', 0.8)
+        self.declare_parameter('max_angular_decel',
+                               float(self.get_parameter('max_angular_accel').value))
+        self.declare_parameter('hard_stop_lanes', list(HARD_STOP_LANES))
         self.declare_parameter('cmd_timeout', 0.5)
         self.declare_parameter('rate', 20.0)
         self.declare_parameter('frame_id', 'base_link')
@@ -934,6 +972,10 @@ class CmdVelSlewNode(Node):
 
         self._max_linear_accel = float(self.get_parameter('max_linear_accel').value)
         self._max_angular_accel = float(self.get_parameter('max_angular_accel').value)
+        self._max_linear_decel = float(self.get_parameter('max_linear_decel').value)
+        self._max_angular_decel = float(self.get_parameter('max_angular_decel').value)
+        self._hard_stop_lanes = frozenset(
+            str(n) for n in self.get_parameter('hard_stop_lanes').value or ())
         self._cmd_timeout = float(self.get_parameter('cmd_timeout').value)
         self._rate = float(self.get_parameter('rate').value)
         self._frame_id = str(self.get_parameter('frame_id').value)
@@ -1012,10 +1054,12 @@ class CmdVelSlewNode(Node):
         self._runner = PeriodicRunner(self, [(1.0 / self._rate, self._tick)], 'cmd_vel_slew')
         self._runner.start()
         self.get_logger().info(
-            'cmd_vel_slew ready: max_linear_accel=%.3f m/s^2, '
-            'max_angular_accel=%.3f rad/s^2, cmd_timeout=%.3f s, rate=%.1f Hz'
-            % (self._max_linear_accel, self._max_angular_accel,
-               self._cmd_timeout, self._rate))
+            'cmd_vel_slew ready: max_linear_accel=%.3f / decel=%.3f m/s^2, '
+            'max_angular_accel=%.3f / decel=%.3f rad/s^2, cmd_timeout=%.3f s, rate=%.1f Hz, '
+            'hard_stop_lanes=%s'
+            % (self._max_linear_accel, self._max_linear_decel, self._max_angular_accel,
+               self._max_angular_decel, self._cmd_timeout, self._rate,
+               sorted(self._hard_stop_lanes)))
         self.get_logger().info('cmd_vel_slew shaping: %s%s' % (
             {n: getattr(self._shaper, n) for n in SHAPER_PARAMS},
             ' (from %s)' % sorted(overrides) if overrides else ''))
@@ -1260,6 +1304,8 @@ class CmdVelSlewNode(Node):
                         self.get_logger().info('pivot assist held: %s' % held)
             tgt_lin, tgt_ang = CmdVelSlewNode._shape_turn(self, tgt_lin, tgt_ang, dt)
             turn = getattr(self, '_turn', None)
+            lin_dec = getattr(self, '_max_linear_decel', None)
+            ang_dec = getattr(self, '_max_angular_decel', None)
             # Assist episode: from the creep's first tick until the slewed output has
             # settled on the target again after it (ramp-down / hold / hand-back). Only
             # then does the slew keep every tick out of the one-wheel zone; normal
@@ -1268,13 +1314,20 @@ class CmdVelSlewNode(Node):
                 getattr(self, '_assist_ramp', False)
                 and (self._cur_lin, self._cur_ang) != (tgt_lin, tgt_ang))
             self._assist_ramp = ramp
-            if ramp and turn is not None and turn.is_active(phase):
+            if CmdVelSlewNode._hard_stop(self, now):
+                # Emergency / bumper lane commands a stop: exact zero now, no decel ramp.
+                self._cur_lin = self._cur_ang = 0.0
+                self._assist_ramp = False
+            elif ramp and turn is not None and turn.is_active(phase):
                 self._cur_lin, self._cur_ang = slew_both_wheels(
                     self._cur_lin, self._cur_ang, tgt_lin, tgt_ang,
-                    self._max_linear_accel, self._max_angular_accel, dt, turn.params)
+                    self._max_linear_accel, self._max_angular_accel, dt, turn.params,
+                    lin_dec, ang_dec)
             else:
-                self._cur_lin = slew(self._cur_lin, tgt_lin, self._max_linear_accel, dt)
-                self._cur_ang = slew(self._cur_ang, tgt_ang, self._max_angular_accel, dt)
+                self._cur_lin = slew_ad(self._cur_lin, tgt_lin, self._max_linear_accel,
+                                        lin_dec, dt)
+                self._cur_ang = slew_ad(self._cur_ang, tgt_ang, self._max_angular_accel,
+                                        ang_dec, dt)
 
         # Pass through every component we do not shape.
         src = self._tgt if self._tgt is not None else (0.0,) * 6
@@ -1290,6 +1343,16 @@ class CmdVelSlewNode(Node):
                 '(target linear.x={!r} angular.z={!r})'.format(
                     self._cur_lin, self._cur_ang, tgt_lin, tgt_ang))
         return out
+
+    def _hard_stop(self, now):
+        """True when a ``hard_stop_lanes`` lane wins in twist_mux and the raw command is an
+        exact zero (the slew applies it at once instead of ramping down)."""
+        lanes = getattr(self, '_hard_stop_lanes', ())
+        ag = getattr(self, '_assist_gate', None)
+        tgt = self._tgt
+        if not lanes or ag is None or tgt is None or tgt[0] != 0.0 or tgt[5] != 0.0:
+            return False
+        return ag.lanes.active(now) in lanes
 
     def _assist_verdict(self, now, lin, ang, phase):
         """(lane_ok, clear, why) for the pivot assist; no gate object = never assist."""
