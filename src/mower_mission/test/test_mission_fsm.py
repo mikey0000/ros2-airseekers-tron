@@ -3795,6 +3795,94 @@ def test_live_cutter_height_overrides_rest_of_mow_only():
     assert h.area_settings[1] == {'cutter_height_mm': 40}
 
 
+def _live_height_then_stop(h, mm=75):
+    """Area height 60; a live GUI change to ``mm`` mid-mow (blade running), then STOP."""
+    h.area_settings = {0: {'cutter_height_mm': 60}}
+    start_until_planning(h)
+    sps = [line(0, 0, 4, 0), line(4, 1, 0, 1), line(0, 2, 4, 2)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(sps))
+    h.fsm.inputs.is_cutting = True
+    h.tick()                                 # following sub-path 0, blade on
+    assert h.name == 'MOWING' and h.blade
+    m = h.mark()
+    h._apply(h.fsm.on_cutter_height(mm, h.t))
+    # applied by the driver already: the mission sends no height of its own mid-mow
+    assert not calls(h, m, f.SRV_CUTTER_HEIGHT)
+    assert h.fsm.mission.height_override_mm == mm and h.blade
+    h.finish(f.ACT_FOLLOW)                   # sub-path 0 done
+    assert not calls(h, m, f.SRV_CUTTER_HEIGHT)
+    h.fsm.inputs.pose = (4, 1, 0)
+    h.finish(f.ACT_NAV)
+    h.tick()                                 # following sub-path 1
+    h.fsm.inputs.pose = (2.05, 1.0, 0.0)
+    assert not calls(h, m, f.SRV_CUTTER_HEIGHT)
+    assert h.cmd(f.CMD_STOP)
+    return sps
+
+
+def _resumed_area_height(h, sps):
+    m = h.mark()
+    start_until_planning(h)
+    h.answer_services()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(sps))
+    return [c.request['height_mm'] for c in calls(h, m, f.SRV_CUTTER_HEIGHT)]
+
+
+def test_live_cutter_height_survives_interrupt_and_resume():
+    """2026-10-13: an interrupt (stop / rain / charge / stuck ...) rebuilds the Mission;
+    the resumed mow must keep the live GUI height, not re-send the area's 60."""
+    h = Harness()
+    sps = _live_height_then_stop(h, 75)
+    assert ResumeCursor.loads(h.saved).live_height_mm == 75
+    assert _resumed_area_height(h, sps) == [75]
+    assert h.fsm.mission.resume and h.fsm.mission.settings['cutter_height_mm'] == 75
+    assert h.area_settings[0] == {'cutter_height_mm': 60}       # never saved to the area
+
+
+def test_live_cutter_height_survives_restart_via_resume_file():
+    h = Harness()
+    sps = _live_height_then_stop(h, 45)
+    h2 = Harness(cursor=ResumeCursor.loads(h.saved))
+    h2.area_settings = {0: {'cutter_height_mm': 60}}
+    assert _resumed_area_height(h2, sps) == [45]
+
+
+def test_live_cutter_height_dropped_on_fresh_start():
+    """A fresh mow (resume cleared / mow finished) uses the saved area height again."""
+    h = Harness()
+    sps = _live_height_then_stop(h, 75)
+    ok, _, fx = h.fsm.clear_resume(h.t)
+    h._apply(fx)
+    assert ok and h.fsm.cursor.live_height_mm is None
+    assert _resumed_area_height(h, sps) == [60]
+    assert h.fsm.mission.height_override_mm is None
+
+
+def test_live_cutter_height_cleared_when_mow_completes():
+    h = Harness()
+    h.area_settings = {0: {'cutter_height_mm': 60}}
+    start_until_planning(h)
+    h._apply(h.fsm.on_cutter_height(75, h.t))
+    mow_area_once(h)
+    h.answer_services()
+    h.tick()
+    assert h.fsm.mission is None and h.fsm.cursor.live_height_mm is None
+    m = h.mark()
+    start_until_planning(h)
+    h.answer_services()
+    assert [c.request['height_mm'] for c in calls(h, m, f.SRV_CUTTER_HEIGHT)] == [60]
+
+
+def test_resume_cursor_live_height_round_trip():
+    cur = ResumeCursor()
+    assert 'live_height' not in cur.dumps()
+    cur.live_height_mm = 65
+    text = cur.dumps()
+    assert 'live_height 65' in text
+    back = ResumeCursor.loads(text)
+    assert back.live_height_mm == 65 and back == cur
+
+
 # =====================================================================
 # route-graph transits (2026-10-09)
 # =====================================================================

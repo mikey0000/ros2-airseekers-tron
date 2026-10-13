@@ -55,3 +55,22 @@ def test_gui_topic_map_uses_the_copies(whitelist):
     assert tm['detections'] == '/gui/detections'
     for key in ('visionObstacleClose', 'diagnostics', 'wheelOdom', 'highLevelStatus'):
         assert _allowed(whitelist, tm[key]), key
+
+
+# Topics in the GUI's topicMap that are deliberately NOT streamed (busy originals the GUI
+# no longer reads; see test_busy_originals_are_not_streamed). Empty today.
+NOT_STREAMED = set()
+
+
+def test_every_gui_topic_is_streamed(whitelist):
+    """2026-10-13: /cutter/height_mm (cutterHeight) was missing, so the GUI blade height
+    control never got a value and its -/+ buttons stayed disabled during a mow."""
+    tm = _topic_map()
+    missing = {k: t for k, t in tm.items() if k not in NOT_STREAMED and not _allowed(whitelist, t)}
+    assert not missing
+
+
+def test_cutter_height_is_streamed(whitelist):
+    assert _topic_map()['cutterHeight'] == '/cutter/height_mm'
+    assert _allowed(whitelist, '/cutter/height_mm')
+    assert not _allowed(whitelist, '/cutter/height_mm_raw')
