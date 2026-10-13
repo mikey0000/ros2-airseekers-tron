@@ -69,7 +69,11 @@ while Nav2 kept commanding and nothing stopped the wheels)
   pose (``/odometry/filtered_map``) moved < ``stuck_min_progress_m`` and turned
   < ``stuck_min_heading_deg`` and its accumulated path stayed under
   ``stuck_min_path_m`` / ``stuck_min_yaw_path_deg`` (a dithering robot that follows
-  its commands back and forth is not stuck) => STUCK (reason ``stuck``);
+  its commands back and forth is not stuck) => STUCK (reason ``stuck``); when at least
+  half of the window's commands are pure pivots (|v| <= ``stuck_cmd_linear``, |w| >
+  ``stuck_cmd_angular``), the heading floor is ``stuck_pivot_min_heading_deg`` (5) instead
+  (2026-10-13: a turf pivot at ~2 deg/s turned 8.4 deg in 4 s and latched against the 10 deg
+  floor; < ~1.2 deg/s still latches);
 * wheel-odometry distance / EKF path length > ``stuck_slip_ratio`` over the window
   (wheel distance >= ``stuck_slip_min_wheel_m``) => STUCK (reason ``spinning``);
 * ``/stuck`` (std_msgs/Bool, latched) stays true until the EKF pose moved
@@ -121,7 +125,8 @@ class StuckDetector:
     def __init__(self, window_s=4.0, min_progress_m=0.05, min_heading_deg=10.0,
                  cmd_linear=0.03, cmd_angular=0.1, clear_m=0.3, slip_ratio=3.0,
                  slip_min_wheel_m=0.2, pose_timeout_s=1.0, gap_s=1.5,
-                 min_path_m=0.10, min_yaw_path_deg=20.0, path_sample_s=0.5):
+                 min_path_m=0.10, min_yaw_path_deg=20.0, path_sample_s=0.5,
+                 pivot_min_heading_deg=5.0):
         self.window_s = float(window_s)
         self.min_progress_m = float(min_progress_m)
         self.min_heading = math.radians(float(min_heading_deg))
@@ -146,6 +151,14 @@ class StuckDetector:
         self.min_path_m = float(min_path_m)
         self.min_yaw_path = math.radians(float(min_yaw_path_deg))
         self.path_sample_s = float(path_sample_s)
+        # Pure pivots on turf (2026-10-13 11:25, swath-end K-turns): the body turns at only
+        # ~2 deg/s under a +-0.3 rad/s command, 8.4 deg in the 4 s window (path 15.2 deg), so
+        # the 10 deg / 20 deg floors latched /stuck and the escape + resend started another
+        # pivot. When >= half the window's commands are pure pivots, a max heading change of
+        # pivot_min_heading_deg is progress (5 deg / 4 s = 1.25 deg/s); a stalled pivot (< ~1
+        # deg/s) still latches. Applies to the max deviation only, not the yaw path, so EKF yaw
+        # jitter cannot add up to it. Never raises the general floor (min() of the two).
+        self.pivot_min_heading = math.radians(float(pivot_min_heading_deg))
         self._last_cmd_t = None
         self.stuck = False
         self.latch_pose = None
@@ -160,6 +173,10 @@ class StuckDetector:
         self.reason = ''
         self._buf = []
         self._last_cmd_t = None
+
+    def is_pivot(self, cmd):
+        """A pure pivot command: no linear part, an angular part above the threshold."""
+        return abs(cmd[0]) <= self.cmd_linear and abs(cmd[1]) > self.cmd_angular
 
     def commanded(self, cmd):
         return cmd is not None and (abs(cmd[0]) > self.cmd_linear or abs(cmd[1]) > self.cmd_angular)
@@ -188,10 +205,11 @@ class StuckDetector:
                 self._buf = []
             return None
         self._last_cmd_t = now
-        self._buf.append((now, pose[0], pose[1], pose[2], self._wheel_cum))
+        self._buf.append((now, pose[0], pose[1], pose[2], self._wheel_cum,
+                          self.is_pivot(cmd)))
         while len(self._buf) > 1 and now - self._buf[1][0] >= self.window_s:
             self._buf.pop(0)
-        t0, x0, y0, yaw0, w0 = self._buf[0]
+        t0, x0, y0, yaw0, w0 = self._buf[0][:5]
         if now - t0 < self.window_s:
             return None
         moved = max(math.hypot(b[1] - x0, b[2] - y0) for b in self._buf)
@@ -199,8 +217,11 @@ class StuckDetector:
         ekf_d = math.hypot(pose[0] - x0, pose[1] - y0)
         wheel_d = self._wheel_cum - w0
         yaw_path, xy_path = self._paths()
+        min_heading = self.min_heading
+        if 2 * sum(1 for b in self._buf if b[5]) >= len(self._buf):
+            min_heading = min(min_heading, self.pivot_min_heading)
         reason = ''
-        if (moved < self.min_progress_m and turned < self.min_heading
+        if (moved < self.min_progress_m and turned < min_heading
                 and yaw_path < self.min_yaw_path and xy_path < self.min_path_m):
             reason = 'stuck'
         elif (wheel_d >= self.slip_min_wheel_m
@@ -256,6 +277,8 @@ class SlipDetectorNode(Node):
         self.declare_parameter('stuck_cmd_gap_s', 1.5)
         self.declare_parameter('stuck_min_path_m', 0.10)
         self.declare_parameter('stuck_min_yaw_path_deg', 20.0)
+        # heading floor while the window is mostly pure pivots (StuckDetector docstring)
+        self.declare_parameter('stuck_pivot_min_heading_deg', 5.0)
         self.declare_parameter('stuck_pose_topic', '/odometry/filtered_map')
 
         self._slip_threshold = float(self.get_parameter('slip_threshold').value)
@@ -282,7 +305,8 @@ class SlipDetectorNode(Node):
             cmd_angular=gp('stuck_cmd_angular'), clear_m=gp('stuck_clear_m'),
             slip_ratio=gp('stuck_slip_ratio'), slip_min_wheel_m=gp('stuck_slip_min_wheel_m'),
             gap_s=gp('stuck_cmd_gap_s'), min_path_m=gp('stuck_min_path_m'),
-            min_yaw_path_deg=gp('stuck_min_yaw_path_deg'))
+            min_yaw_path_deg=gp('stuck_min_yaw_path_deg'),
+            pivot_min_heading_deg=gp('stuck_pivot_min_heading_deg'))
         self._ekf_pose = None       # (x, y, yaw) of the newest EKF map pose
         self._ekf_t = None
         self._suppressed = False

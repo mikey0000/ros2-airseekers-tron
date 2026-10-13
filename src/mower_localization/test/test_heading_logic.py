@@ -356,6 +356,100 @@ def test_persisted_needs_rtk(tmp_path):
     assert e.source == hl.SOURCE_FILE and not e.aligned
 
 
+def _saved_1040(tmp_path):
+    """The 2026-10-13 10:40 record: COG offset saved at rest 5 s before a stack restart
+    (imu yaw 145.9 deg at x -18.06, y -0.45)."""
+    path = str(tmp_path / 'heading_offset.yaml')
+    hl.save_offset(path, D(-62.0), 'cog', 12, now_wall=1000.0, imu_yaw=D(145.9), x=-18.06,
+                   y=-0.45)
+    rec = hl.load_record(path)
+    e = hl.HeadingEstimator()
+    e.load_persisted(rec['offset'], 0.0, record=rec, now_wall=1005.0)
+    assert e.source == hl.SOURCE_FILE and e.status(0.0)['file_check'] == 'pending'
+    return e
+
+
+def _feed(e, t0, n, fix_type, x, y, yaw_deg=145.9, dt=0.2):
+    t = t0
+    for _ in range(n):
+        t += dt
+        e.on_imu(t, D(yaw_deg), 0.0)
+        e.on_fix_type(t, fix_type)
+        e.on_gps(t, x, y, 0.2)
+    return t
+
+
+def test_persisted_1040_float_reconvergence_then_fixed_verifies(tmp_path):
+    """10:40: the receiver re-converged after RTKRESET; the first five positions were
+    float and 1.24 m off. They must not decide the check; fixed ones within 0.1 m do."""
+    e = _saved_1040(tmp_path)
+    t = _feed(e, 0.0, 5, 2, -18.06 + 1.24, -0.45)          # float, 1.24 m off
+    assert e.source == hl.SOURCE_FILE and e.file_check == 'yaw_ok'
+    assert 'waiting for 5 RTK-fixed' in e.last_event
+    t = _feed(e, t, 100, 2, -18.06 + 1.0, -0.45)           # 20 s more of float
+    assert e.source == hl.SOURCE_FILE
+    t = _feed(e, t, 4, 3, -18.0, -0.40)                    # 4 fixed: not yet enough
+    assert e.source == hl.SOURCE_FILE
+    _feed(e, t, 1, 3, -18.0, -0.40)
+    assert e.source == hl.SOURCE_FILE_VERIFIED and e.aligned
+    assert 'verified' in e.last_event and 'RTK fixed' in e.last_event
+    assert e.status(t)['file_check'] == 'verified'
+
+
+def test_persisted_imu_restart_rejected_at_once(tmp_path):
+    """IMU power cycle: yaw 90 deg off is rejected on the first IMU sample, without
+    waiting for any position."""
+    e = _saved_1040(tmp_path)
+    e.on_imu(0.1, D(145.9 + 90.0), 0.0)
+    e.poll_verify(0.1)
+    assert e.source == hl.SOURCE_FILE and not e.aligned
+    assert e.file_check == 'yaw_failed' and 'IMU yaw moved 90.0 deg' in e.last_event
+    _feed(e, 0.1, 10, 3, -18.06, -0.45, yaw_deg=145.9 + 90.0)   # fixed + in place: too late
+    assert e.source == hl.SOURCE_FILE and e.file_check == 'yaw_failed'
+
+
+def test_persisted_fixed_samples_far_away_rejected(tmp_path):
+    e = _saved_1040(tmp_path)
+    _feed(e, 0.0, 5, 3, -18.06 + 1.0, -0.45)
+    assert e.source == hl.SOURCE_FILE and not e.aligned
+    assert 'moved 1.00 m' in e.last_event
+    assert e.file_check == 'yaw_ok'          # still a usable prior (IMU did not restart)
+
+
+def test_persisted_float_only_times_out(tmp_path):
+    e = _saved_1040(tmp_path)
+    t = _feed(e, 0.0, 50, 2, -18.06, -0.45)                  # float, even right in place
+    assert e.source == hl.SOURCE_FILE and e._pending is not None
+    e.poll_verify(e.p.verify_timeout + 1.0)
+    assert e.source == hl.SOURCE_FILE and not e.aligned and e._pending is None
+    assert e.last_event == ('persisted offset not verified: no 5 RTK-fixed positions (got 0) '
+                            'within 180 s')
+    _feed(e, e.p.verify_timeout + 1.0, 5, 3, -18.06, -0.45)  # late fixed: no longer decides
+    assert e.source == hl.SOURCE_FILE and e.file_check == 'yaw_ok'
+    assert t < e.p.verify_timeout
+
+
+def test_persisted_fixed_samples_must_be_consecutive(tmp_path):
+    e = _saved_1040(tmp_path)
+    t = _feed(e, 0.0, 3, 3, -18.06, -0.45)
+    t = _feed(e, t, 1, 2, -17.0, -0.45)                      # dropped to float: restart count
+    t = _feed(e, t, 4, 3, -18.06, -0.45)
+    assert e.source == hl.SOURCE_FILE
+    _feed(e, t, 1, 3, -18.06, -0.45)
+    assert e.source == hl.SOURCE_FILE_VERIFIED
+
+
+def test_min_speed_default_accepts_slow_manual_drive():
+    """2026-10-13: a 0.05 m/s joystick drive never aligned under min_speed 0.06."""
+    assert hl.AlignParams().min_speed == pytest.approx(0.04)
+    s = Sim()
+    s.yaw = D(20.0)
+    s.run(0.05, 0.0, 16.0)
+    assert s.est.aligned and s.est.source == hl.SOURCE_COG
+    assert abs(s.heading_error()) < 1.0
+    assert s.est.status(s.t)['min_speed'] == pytest.approx(0.04)
+
+
 def test_old_file_without_imu_yaw_stays_file(tmp_path):
     p = str(tmp_path / 'h.yaml')
     hl.save_offset(p, D(10.0), 'cog', 1)

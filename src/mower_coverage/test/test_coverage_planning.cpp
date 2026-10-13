@@ -1065,6 +1065,81 @@ TEST(CoverageRoute, AutoTurnFallsBackLoopReversePivot) {
   (void)turnLen;
 }
 
+// 2026-10-13 swath-end turns: a forward loop between snake rows (0.36 m apart) needs
+// ~1.06 m (r 0.44) of room past the swath ends; with 2 headland rings (op 0.18, edge
+// margin 0.05 -> border_inset 0.14) a rectangle leaves 0.27 m, so auto never picks a
+// loop there; 8 rings (1.44 m band) do fit r 0.5 loops and then nothing reverses.
+TEST(CoverageRoute, LoopTurnNeedsAWideHeadland) {
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  using mower_coverage::TurnKind;
+  using mower_coverage::TurnType;
+  const std::vector<Point2D> rect = {{0, 0}, {8, 0}, {8, 5}, {0, 5}};
+  auto plan = [&](int rings) {
+    mower_coverage::RouteOptions r;
+    r.order = mower_coverage::RouteOrder::kSnake;
+    r.min_turn_radius = 0.5;
+    r.turn_type = TurnType::kAuto;
+    return mower_coverage::planCoverage(field(rect), 0.18, 0.2, rings, 0.14, 0.0, 0.15,
+                                        mower_coverage::PathMode::kZigzag, true, r);
+  };
+  const auto two = plan(2);
+  ASSERT_GT(two.swaths.size(), 10u);
+  EXPECT_EQ(two.loop_turns, 0u);
+  double max_x = 0.0;
+  for (const auto& sw : two.swaths) max_x = std::max({max_x, sw.first.first, sw.second.first});
+  EXPECT_NEAR(8.0 - 0.14 - max_x, 0.27, 0.01);       // room past the swath ends
+  const auto eight = plan(8);
+  EXPECT_GT(eight.loop_turns, 0u);
+  EXPECT_EQ(eight.reverse_turns, 0u);
+  EXPECT_EQ(eight.pivot_turns, 0u);
+
+  // Room beyond a swath end (corridor depth) for one snake turn, r 0.44 (the tightest
+  // both-wheel arc): a reverse turn from ~0.31 m, a forward loop only from ~1.06 m.
+  const Point2D a{0.0, 0.0}, b{0.0, 0.36};
+  auto kind_at = [&](double room) {
+    const auto region = mower_coverage::makeFieldCell(
+        {{-5.0, -2.0}, {room, -2.0}, {room, 2.4}, {-5.0, 2.4}}, {});
+    f2c::types::Cells cells;
+    cells.addGeometry(region);
+    return mower_coverage::planSwathTurn(a, 0.0, b, M_PI, 0.18, 0.44, TurnType::kAuto,
+                                         &cells).kind;
+  };
+  EXPECT_EQ(kind_at(0.27), TurnKind::kPivot);
+  EXPECT_EQ(kind_at(0.45), TurnKind::kReverseCurve);
+  EXPECT_EQ(kind_at(1.00), TurnKind::kReverseCurve);
+  EXPECT_EQ(kind_at(1.10), TurnKind::kLoop);
+}
+
+// A turn radius below the tightest drivable arc is raised to it (and said so):
+// the plan equals one requested at that radius.
+TEST(CoverageRoute, TurnRadiusRaisedToTheDrivableMinimum) {
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  mower_coverage::RouteOptions tight;
+  tight.order = mower_coverage::RouteOrder::kSnake;
+  tight.min_turn_radius = 0.25;
+  tight.min_drivable_turn_radius = 0.44;
+  mower_coverage::RouteOptions ref = tight;
+  ref.min_turn_radius = 0.44;
+  const auto p = planRoute(tight, 8.0, 4.0, 4);
+  const auto q = planRoute(ref, 8.0, 4.0, 4);
+  ASSERT_EQ(p.turns.size(), q.turns.size());
+  EXPECT_GT(p.loop_turns + p.reverse_turns, 0u);
+  EXPECT_EQ(p.loop_turns, q.loop_turns);
+  EXPECT_EQ(p.reverse_turns, q.reverse_turns);
+  for (size_t i = 0; i < p.turns.size(); ++i) {
+    EXPECT_EQ(p.turns[i].poses.size(), q.turns[i].poses.size()) << i;
+  }
+  ASSERT_FALSE(p.drops.empty());
+  EXPECT_NE(p.drops.front().find("raised to 0.44"), std::string::npos) << p.drops.front();
+  // not below the minimum, or no turns (pivots only): unchanged, no note
+  for (const auto& d : q.drops) EXPECT_EQ(d.find("raised to"), std::string::npos);
+  mower_coverage::RouteOptions pivots = tight;
+  pivots.min_turn_radius = 0.0;
+  const auto z = planRoute(pivots, 8.0, 4.0, 4);
+  EXPECT_TRUE(z.turns.empty());
+  for (const auto& d : z.drops) EXPECT_EQ(d.find("raised to"), std::string::npos);
+}
+
 // Race track ("lands"): rows >= 2r apart inside each block, so with enough
 // headland the in-block turns are forward U-turns and nothing pivots.
 TEST(CoverageRoute, RacetrackGivesForwardUTurns) {

@@ -165,10 +165,17 @@ controller_server:
       plugin: "mowgli_nav2_plugins::LegGoalChecker"
       progress_fraction: 0.7
       xy_goal_tolerance: 0.08
-      yaw_goal_tolerance: 0.35
+      # 0.5 (was 0.35, 2026-10-13 swath-end pivots): within xy_goal_tolerance of a FORWARD leg's
+      # end RPP (use_rotate_to_heading) turns in place to the goal yaw until this tolerance is
+      # met, a turf pivot at ~2 deg/s. 0.5 lets the next leg take the residual as an arc: its
+      # entry angle (<= 0.5 + ~0.4 rad of the r 0.5 m leg arc at lookahead 0.4) stays under
+      # FollowCoveragePath rotate_to_heading_min_angle (1.2). mission.yaml turn_leg_skip_yaw
+      # uses the same value.
+      yaw_goal_tolerance: 0.5
       overshoot_xy_tolerance: 0.20
       # 0.015 (was 0.03, bag 2026-10-08): at the goal RPP's carrot is < 3.2 cm away,
-      # so curvature = 0 and FollowCoveragePathReverse shuffles +-min_approach (0.05 m/s,
+      # so curvature = 0 and FollowCoveragePathReverse shuffles +-min_approach (0.05 m/s then,
+      # 0.14 since 2026-10-13,
       # sign of carrot.x) with a 0.02-0.03 m swing every ~1.3 s, unable to fix a yaw miss;
       # 0.03 was never exceeded, 0.015 ends the leg on the first shuffle.
       overshoot_hysteresis: 0.015
@@ -343,7 +350,15 @@ controller_server:
       # mower_mcu_driver clamps angular to 0.3 rad/s (vendor PID clamp): ask for no more.
       rotate_to_heading_angular_vel: 0.3
       transform_tolerance: 0.5
-      min_approach_linear_velocity: 0.05
+      # 0.14 (was 0.05, 2026-10-13 swath-end pivots): every K-turn leg (~0.4 m) is inside
+      # approach_velocity_scaling_dist, so RPP drove it at 0.05-0.1 m/s with w = v * k. On an
+      # r 0.5 m leg (k 2) that is inner = v - w*0.24 = 0.026 m/s: cmd_vel_slew's turn shaper
+      # widened it to an r 0.84 m arc, the leg ended ~0.3 rad short of its heading and the
+      # next leg began with a pivot; at v 0.05 / |w| 0.3 (inner < 0) it SNAPPED to a pure
+      # pivot. At v >= 0.132 every |w| <= 0.3 (velocity_smoother clamp) keeps the inner wheel
+      # >= 0.06: a legal arc, r >= 0.44 m (= the shaper's tightest arc at the MCU's 0.3 rad/s).
+      # 0.14 = pivot_assist's creep speed (inner 0.068 at |w| 0.3).
+      min_approach_linear_velocity: 0.14
       approach_velocity_scaling_dist: 0.4
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
@@ -354,10 +369,24 @@ controller_server:
       # it asked for 0.4-0.6 rad/s at 0.3 m/s; the robot turned on a >= 1.0-1.5 m radius
       # and ran wide (docs/analysis/2026-10-06_ring_drift.md).
       regulated_linear_scaling_min_radius: 1.5
-      regulated_linear_scaling_min_speed: 0.08
+      # 0.14 (was 0.08, 2026-10-13): same reason as min_approach_linear_velocity. Below 0.132
+      # a curvature the shaper must widen anyway (it raised v to ~0.13 on every tight arc), or,
+      # at |w| 0.3, one it snaps to a pivot. Still v / R <= 0.2 rad/s for R >= 0.7 m.
+      regulated_linear_scaling_min_speed: 0.14
       use_cost_regulated_linear_velocity_scaling: false
       use_rotate_to_heading: true
-      rotate_to_heading_min_angle: 0.6
+      # 1.2 rad / 69 deg (was 0.6, 2026-10-13 11:25 log: several in-place turns per swath end,
+      # read as 360 deg spins). A forward leg of a reverse (Reeds-Shepp) swath turn starts at
+      # the cusp the reverse leg left: carrot angle = asin(lookahead 0.4 / (2 r 0.5)) ~ 0.41 rad
+      # of leg arc + the heading the last leg missed (coverage_leg_goal_checker yaw 0.5), so
+      # 0.6 made almost every leg (and every retry of one) begin with a 0.3 rad/s pivot that
+      # turns ~2 deg/s on turf, tripped the stuck guard and was resent. Up to 1.2 the leg is
+      # driven as an arc through the turn shaper (r >= 0.44 m, inner wheel >= 0.06 m/s).
+      # Kept true for carrots further round (a transit that arrives facing away): without
+      # rotate-to-heading RPP drives FORWARD away from a carrot behind it (curvature ~0).
+      # Trade-off: a swath start up to 69 deg off now arcs onto the line (up to ~0.3 m
+      # sideways at r 0.44) instead of pivoting.
+      rotate_to_heading_min_angle: 1.2
       # 3.2: RPP ramps its turn command from the MEASURED yaw rate; with 1.0 and wheels
       # stalled in grass the command sat at 0.07 rad/s forever (rocking in place, 10-06).
       # 6.4 (was 3.2): RPP ramps from the MEASURED yaw rate; at 3.2 x 0.05 s a stalled
@@ -387,13 +416,15 @@ controller_server:
       use_velocity_scaled_lookahead_dist: false
       rotate_to_heading_angular_vel: 0.3
       transform_tolerance: 0.5
-      min_approach_linear_velocity: 0.05
+      # 0.14 (was 0.05, 2026-10-13): keeps a reversing arc's inner wheel >= 0.06 m/s at
+      # |w| <= 0.3 (see FollowCoveragePath); at 0.05 the shaper snapped it to a pivot.
+      min_approach_linear_velocity: 0.14
       approach_velocity_scaling_dist: 0.2
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
       regulated_linear_scaling_min_radius: 0.5
-      regulated_linear_scaling_min_speed: 0.05
+      regulated_linear_scaling_min_speed: 0.14   # was 0.05; as min_approach_linear_velocity
       use_cost_regulated_linear_velocity_scaling: false
       use_rotate_to_heading: false
       # 6.4 (was 3.2): RPP ramps from the MEASURED yaw rate; at 3.2 x 0.05 s a stalled

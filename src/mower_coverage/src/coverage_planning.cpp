@@ -1227,13 +1227,31 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
                           double min_swath_length,
                           PathMode mode,
                           bool edge_first,
-                          const RouteOptions& route) {
+                          const RouteOptions& requested) {
+  // Turns tighter than the robot can drive on both wheels would run wide (out of the
+  // headland they were checked against): raise the radius to min_drivable_turn_radius.
+  RouteOptions route = requested;
+  std::string radius_note;
+  if (route.min_turn_radius > 0.0 && route.min_turn_radius < route.min_drivable_turn_radius) {
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+                  "turn radius %.2f m raised to %.2f m (tightest arc both wheels can drive)",
+                  route.min_turn_radius, route.min_drivable_turn_radius);
+    radius_note = buf;
+    route.min_turn_radius = route.min_drivable_turn_radius;
+  }
+  auto noted = [&radius_note](CoveragePlan p) {
+    if (!radius_note.empty()) {
+      p.drops.insert(p.drops.begin(), radius_note);
+    }
+    return p;
+  };
   CoveragePlan plan = planCoverageOnce(field, op_width, headland_width, headland_passes,
                                        border_inset, mow_angle_rad, min_swath_length, mode,
                                        edge_first, route);
   if (route.order != RouteOrder::kRacetrack || plan.wide_pivot_turns == 0) {
     verifyAndFill(field, op_width, border_inset, mode, route, &plan);
-    return plan;
+    return noted(std::move(plan));
   }
   RouteOptions snake = route;
   snake.order = RouteOrder::kSnake;
@@ -1249,10 +1267,10 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
                   plan.pivot_turns, plan.wide_pivot_turns);
     alt.drops.push_back(buf);
     verifyAndFill(field, op_width, border_inset, mode, route, &alt);
-    return alt;
+    return noted(std::move(alt));
   }
   verifyAndFill(field, op_width, border_inset, mode, route, &plan);
-  return plan;
+  return noted(std::move(plan));
 }
 
 namespace {

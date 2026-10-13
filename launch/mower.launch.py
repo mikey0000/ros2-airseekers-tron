@@ -261,7 +261,7 @@ def _apply_stereo_costmap(context):
 FOXGLOVE_GUI_TOPICS = [
     r'^/hardware_bridge/(status|power|emergency)$',
     r'^/behavior_tree_node/(high_level_status|recording_trajectory|coverage_resume_available'
-    r'|active_area_settings|preview_summary)$',
+    r'|active_area_settings|preview_summary|mow_plan|mow_progress)$',
     r'^/behavior_tree_log$',
     r'^/calibrate_imu_yaw_node/dock_calibration/status$',
     r'^/gps/(fix|status)$',
@@ -272,7 +272,14 @@ FOXGLOVE_GUI_TOPICS = [
     r'^/coverage/full_plan$',
     r'^/plan$',
     r'^/scan$',
-    r'^/map_server_node/(mow_progress|area_settings|dock_corridor|docking_pose|route)$',
+    r'^/map_server_node/(mow_progress|area_settings|dock_corridor|docking_pose|route'
+    r'|terrain_grid|terrain_summary)$',
+    # 2026-10-13: mcu_node's latched commanded deck height (GUI topic key cutterHeight). It
+    # was never whitelisted, so the GUI's blade height control stayed at "—" with its -/+
+    # buttons disabled (also in manual mow); the latched mission plan / progress and terrain
+    # topics above were missing the same way. test_foxglove_whitelist checks every topic in
+    # the GUI's topicMap (gui/pkg/providers/ros.go) against this list.
+    r'^/cutter/height_mm$',
     r'^/fusion_graph/(lidar_map|diagnostics)$',
     r'^/obstacle_tracker/obstacles$',
     r'^/robot_description$',

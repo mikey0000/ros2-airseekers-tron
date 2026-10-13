@@ -522,6 +522,33 @@ def test_mppi_coverage_alternative():
     assert _ctl("FollowCoveragePath")["plugin"].endswith("RegulatedPurePursuitController")
 
 
+def test_coverage_turn_legs_drive_as_arcs():
+    """2026-10-13 swath-end pivots. cmd_vel_slew's turn shaper keeps the inner wheel >= 0.06
+    m/s (track 0.48 m, |w| <= 0.3): any slower RPP speed on a curve is widened, or at
+    |w| 0.3 snapped to a pure pivot, so the coverage RPPs' speed floors stay >= 0.132.
+    A K-turn leg's entry angle (leg arc at the min lookahead on the r 0.5 m turn + the yaw
+    the leg checker lets the previous leg miss) must stay under the rotate-to-heading
+    threshold, and the mission's turn-leg skip uses the leg checker's tolerances."""
+    import math
+    inner_min, half, w_max, r_turn = 0.06, 0.24, 0.3, 0.5
+    for name in ("FollowCoveragePath", "FollowCoveragePathReverse"):
+        c = _ctl(name)
+        assert c["min_approach_linear_velocity"] >= inner_min + w_max * half - 1e-9, name
+        assert c["regulated_linear_scaling_min_speed"] >= inner_min + w_max * half - 1e-9, name
+    c = _ctl("FollowCoveragePath")
+    leg = _ctl("coverage_leg_goal_checker")
+    entry = math.asin(min(1.0, c["min_lookahead_dist"] / (2 * r_turn))) + leg["yaw_goal_tolerance"]
+    assert c["use_rotate_to_heading"] is True       # carrot behind: pivot, never drive away
+    assert c["rotate_to_heading_min_angle"] > entry + 0.15
+    assert c["rotate_to_heading_min_angle"] < math.pi / 2
+    assert _ctl("FollowCoveragePathReverse")["use_rotate_to_heading"] is False
+    with open(MISSION) as f:
+        mdoc = yaml.safe_load(f)
+    m = [p for _, p in ros_param_blocks(mdoc) if "turn_leg_skip_m" in p][0]
+    assert m["turn_leg_skip_m"] == leg["overshoot_xy_tolerance"]
+    assert m["turn_leg_skip_yaw"] == leg["yaw_goal_tolerance"]
+
+
 def test_collision_monitor():
     doc = load()
     cm = doc["collision_monitor"]["ros__parameters"]

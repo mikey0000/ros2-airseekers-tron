@@ -18,7 +18,7 @@ import pytest
 from mower_mission import mission_fsm as f
 from mower_mission.resume import ResumeCursor
 
-MOVING_ACTIONS = (f.ACT_NAV, f.ACT_DOCK, f.ACT_UNDOCK, f.ACT_BACKUP)
+MOVING_ACTIONS = (f.ACT_NAV, f.ACT_DOCK, f.ACT_UNDOCK, f.ACT_BACKUP, f.ACT_DRIVE)
 
 
 def square(x0, y0, size):
@@ -1400,6 +1400,94 @@ def test_reverse_subpath_uses_the_reversing_controller():
     assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePath'
 
 
+def _k_turn(h):
+    """swath (+ forward turn arc) -> reverse leg -> forward leg + next swath (2026-10-13)."""
+    start_until_planning(h)
+    fwd = [(0.2, 0.0, 0.0)] + [(1.0 + 0.1 * k, 0.0, 0.0) for k in range(11)]   # ends (2.0, 0)
+    ryaw = math.atan2(-0.35, 0.1)
+    rev = [(2.0, 0.0, ryaw), (1.95, 0.175, ryaw), (1.9, 0.35, ryaw)]
+    fwd2 = [(1.9, 0.35, math.pi), (0.0, 0.36, math.pi)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([fwd, rev, fwd2]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    return fwd, rev, fwd2
+
+
+def test_retry_of_an_all_but_driven_turn_leg_sends_the_next_leg():
+    """11:25: 'follow_path aborted at pose 14, retry 1/3' re-sent a 1-pose goal whose first
+    move was a pivot. Robot 0.1 m short of the cusp, facing within 0.5 rad of the end pose:
+    the reverse leg is sent instead."""
+    h = Harness(transit_retry_delay_s=1.0)
+    fwd, rev, _ = _k_turn(h)
+    h.fsm.inputs.pose = (1.9, 0.02, 0.2)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert 'retry 1/' in h.fsm.sub_state
+    h.tick(dt=0.5, n=3)
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowCoveragePathReverse' and g['poses'] == rev
+    assert 0 in h.fsm.cursor.areas[0].completed
+
+
+def test_retry_of_a_turn_leg_facing_away_is_resent():
+    """Same spot but 1 rad off the end yaw: the leg is not done, it is re-sent."""
+    h = Harness(transit_retry_delay_s=1.0)
+    fwd, rev, _ = _k_turn(h)
+    h.fsm.inputs.pose = (1.9, 0.02, 1.0)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    h.tick(dt=0.5, n=3)
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowCoveragePath' and g['poses'][-1] == fwd[-1]
+
+
+def test_stuck_resume_of_a_driven_reverse_leg_goes_on_to_the_next_leg():
+    """Stuck on a reverse leg (11:25: the turf pivots latched /stuck); the escape (a reverse,
+    i.e. further along this leg) leaves the robot 0.17 m short of its end, facing the leg:
+    the forward leg is sent next, not a re-send of the reverse leg's last poses."""
+    h = Harness()
+    start_until_planning(h)
+    fwd = [(0.2, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    ryaw = math.atan2(-0.45, 0.13)
+    n = 10                                   # 0.052 m steps, (2.0, 0) -> (1.87, 0.45)
+    rev = [(2.0 - 0.13 * k / (n - 1), 0.45 * k / (n - 1), ryaw) for k in range(n)]
+    fwd2 = [(1.87, 0.45, math.pi), (0.0, 0.45, math.pi)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([fwd, rev, fwd2]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.finish(f.ACT_FOLLOW)
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['poses'] == rev
+    h.fsm.inputs.pose = (2.0, 0.0, ryaw)
+    h.fsm.inputs.stuck = True
+    h.tick()
+    h.fsm.inputs.stuck = False
+    h.tick(n=10)
+    ln = math.hypot(0.13, 0.45)
+    ux, uy = -0.13 / ln, 0.45 / ln
+    for k in range(1, 60):
+        h.fsm.inputs.pose = (2.0 + ux * 0.01 * k, uy * 0.01 * k, ryaw)
+        h.tick()
+        if h.fsm._stk is None:
+            break
+    assert h.fsm._stk is None
+    assert 0.12 < math.hypot(h.fsm.inputs.pose[0] - 1.87, h.fsm.inputs.pose[1] - 0.45) < 0.2
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowCoveragePath' and g['poses'] == fwd2
+
+
+def test_turn_leg_skip_off_resends():
+    h = Harness(transit_retry_delay_s=1.0, turn_leg_skip_m=0.0)
+    fwd, rev, _ = _k_turn(h)
+    h.fsm.inputs.pose = (1.9, 0.02, 0.2)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    h.tick(dt=0.5, n=3)
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePath'
+
+
 def test_is_reverse_subpath():
     from mower_mission import geometry as geo
     assert not geo.is_reverse_subpath([(0, 0, 0.0), (1, 0, 0.0)])
@@ -1733,7 +1821,8 @@ def test_preflight_refuses_unaligned_heading_away_from_dock(source):
     h.tick()
     assert not h.cmd(f.CMD_START)
     assert h.name == 'IDLE' and h.fsm.sub_state == \
-        'preflight failed: heading not aligned: drive straight 1 m in manual'
+        'preflight failed: heading not aligned: drive straight 1 m at 0.1 m/s or more in ' \
+        'manual, or start from the dock'
     assert h.fsm.mission is None and not h.since(0, f.StartAction)
 
 
@@ -1805,6 +1894,217 @@ def test_no_cog_after_undock_stops_without_navigating():
     assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
     assert h.fsm.mission is None
     assert not h.since(m, f.StartAction)      # no dock / navigate with a wrong heading
+
+
+# ---------------------------------------------------------------------------
+# heading calibration drive (2026-10-13: START refused on the lawn after a restart)
+# ---------------------------------------------------------------------------
+def hcal_harness(prior='yaw_ok', area=None, **params):
+    """Robot at (0, 0) facing +x off the dock, only a saved 'file' heading."""
+    h = Harness(**params)
+    h.heading('file')
+    h.fsm.inputs.heading_prior = prior
+    h.areas = [area or square(-5, -5, 10)]
+    h.tick()
+    return h
+
+
+def start_hcal(h):
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'WAITING_FOR_RTK'
+    h.tick(dt=1.0, n=4)                  # RTK fixed for heading_calibration_settle_s
+
+
+def test_hcal_ahead_clear_drives_forward_then_plans():
+    h = hcal_harness()
+    m = h.mark()
+    start_hcal(h)
+    goal = h.goal(f.ACT_DRIVE)
+    assert goal == {'distance_m': 1.0, 'speed_mps': 0.15}
+    assert h.name == 'WAITING_FOR_RTK' and 'calibrating heading' in h.fsm.sub_state
+    assert 'forward' in h.fsm.sub_state and h.fsm.motion_enabled() and not h.blade
+    assert [e.name for e in h.since(m, f.StartAction)] == [f.ACT_DRIVE]
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.finish(f.ACT_DRIVE)
+    assert h.name == 'WAITING_FOR_RTK' and 'COG' in h.fsm.sub_state
+    h.heading('cog')                     # the drive produced a COG fix
+    h.tick()
+    assert h.name == 'PLANNING' and h.fsm.mission is not None
+
+
+def test_hcal_ahead_blocked_by_area_edge_reverses():
+    # area ends 1.0 m ahead (the robot front would leave it), 3 m behind
+    h = hcal_harness(area=square(-3.0, -2.0, 4.0))
+    start_hcal(h)
+    assert h.goal(f.ACT_BACKUP) == {'distance_m': 1.0, 'speed_mps': 0.15}
+    assert 'backward' in h.fsm.sub_state
+
+
+def test_hcal_keepout_ahead_reverses():
+    area = square(-5, -5, 10)
+    area['obstacles'] = [[(1.0, -0.5), (1.5, -0.5), (1.5, 0.5), (1.0, 0.5)]]
+    h = hcal_harness(area=area)
+    start_hcal(h)
+    h.pending_action(f.ACT_BACKUP)
+
+
+def test_hcal_nothing_clear_refused_without_moving():
+    h = hcal_harness(area=square(-1.0, -1.0, 2.0))
+    m = h.mark()
+    start_hcal(h)
+    assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+    assert 'no clear 1.0 m straight' in h.fsm.sub_state
+    assert not h.since(m, f.StartAction) and h.fsm.mission is None
+    assert not h.fsm.motion_enabled()
+
+
+@pytest.mark.parametrize('source, prior', [('file', ''), ('file', 'yaw_failed'),
+                                           ('file', 'unverifiable'), ('none', '')])
+def test_hcal_no_usable_prior_refused_at_preflight(source, prior):
+    h = hcal_harness(prior=prior)
+    h.heading(source)
+    h.tick()
+    assert not h.cmd(f.CMD_START)
+    assert h.name == 'IDLE' and h.fsm.sub_state == 'preflight failed: ' + f.HEADING_NOT_ALIGNED
+    assert f.HEADING_NOT_ALIGNED == ('heading not aligned: drive straight 1 m at 0.1 m/s or '
+                                     'more in manual, or start from the dock')
+    assert not h.since(0, f.StartAction)
+
+
+def test_hcal_prior_lost_before_the_drive_refused():
+    h = hcal_harness(prior='pending')
+    assert h.cmd(f.CMD_START)            # pending: may still turn out usable
+    h.answer_services()
+    h.fsm.inputs.heading_prior = 'yaw_failed'   # the IMU had restarted after all
+    h.tick(dt=1.0, n=4)
+    assert h.name == 'IDLE' and 'saved heading not usable' in h.fsm.sub_state
+    assert not h.since(0, f.StartAction)
+
+
+def test_hcal_disabled_refuses_as_before():
+    h = hcal_harness(heading_calibration_drive=False)
+    assert not h.cmd(f.CMD_START)
+    assert f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+
+
+def test_hcal_saved_heading_verifies_while_settling_no_drive():
+    h = hcal_harness()
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick(dt=1.0)
+    h.heading('file_verified')           # 5 RTK-fixed positions arrived
+    h.tick()
+    assert h.name == 'PLANNING'
+    assert not [e for e in h.since(0, f.StartAction) if e.name in MOVING_ACTIONS]
+
+
+def _obstacle(h, kind, distance, bearing, cls='person'):
+    i = h.fsm.inputs
+    i.obstacle_kind, i.obstacle_class = kind, cls
+    i.obstacle_distance, i.obstacle_bearing, i.obstacle_stamp = distance, bearing, h.t
+
+
+def test_hcal_obstacle_in_the_line_stops_the_drive():
+    h = hcal_harness()
+    start_hcal(h)
+    h.fsm.inputs.pose = (0.3, 0.0, 0.0)
+    _obstacle(h, 'dynamic', 3.0, 80.0)   # off the line: advisory, keeps driving
+    h.tick()
+    assert h.fsm._hcal is not None and h.pending_action(f.ACT_DRIVE)
+    m = h.mark()
+    _obstacle(h, 'dynamic', 0.9, 0.0)    # person in front
+    h.tick()
+    assert h.name == 'IDLE' and 'dynamic person in the way' in h.fsm.sub_state
+    assert f.HEADING_NOT_ALIGNED in h.fsm.sub_state and h.fsm.mission is None
+    assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst)
+    assert not h.fsm.motion_enabled() and h.fsm._action is None
+
+
+def test_hcal_aligned_early_stops_the_drive_and_plans():
+    h = hcal_harness()
+    start_hcal(h)
+    tok = h.pending_action(f.ACT_DRIVE).token
+    h.fsm.inputs.pose = (0.7, 0.0, 0.0)
+    m = h.mark()
+    h.heading('cog')                     # one 0.6 m COG window done
+    h.tick()
+    assert [e.reason for e in h.since(m, f.CancelActions)][0] == 'heading aligned'
+    assert h.name == 'PLANNING'
+    # the cancelled goal's late result is stale
+    h._apply(h.fsm.on_action_result(tok, f.CANCELED, {}, h.t))
+    assert h.name == 'PLANNING'
+
+
+def test_hcal_no_cog_after_the_drive_goes_idle():
+    h = hcal_harness()
+    start_hcal(h)
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.finish(f.ACT_DRIVE)
+    h.tick(dt=1.0, n=2)
+    assert h.name == 'WAITING_FOR_RTK'
+    m = h.mark()
+    h.tick(dt=1.0, n=2)
+    assert h.name == 'IDLE' and 'no COG alignment after the drive' in h.fsm.sub_state
+    assert not h.since(m, f.StartAction)       # never docks / navigates on a wrong heading
+
+
+def test_hcal_drive_aborted_or_timed_out_goes_idle():
+    h = hcal_harness()
+    start_hcal(h)
+    h.finish(f.ACT_DRIVE, f.ABORTED)
+    h.tick(dt=1.0, n=4)
+    assert h.name == 'IDLE' and 'drive aborted (obstacle / costmap)' in h.fsm.sub_state
+    h = hcal_harness()
+    start_hcal(h)
+    h.tick(dt=1.0, n=50)                 # heading_calibration_timeout_s watchdog
+    assert h.name == 'IDLE' and 'drive timeout' in h.fsm.sub_state
+    assert h.since(0, f.CancelActions)
+
+
+def test_hcal_rtk_timeout_stays_put_instead_of_docking():
+    h = hcal_harness(rtk_timeout_s=10.0)
+    h.fsm.inputs.fix_type = 2
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    m = h.mark()
+    h.tick(dt=1.0, n=12)
+    assert h.name == 'IDLE' and 'no RTK fixed' in h.fsm.sub_state
+    assert not h.since(m, f.StartAction)
+
+
+def test_hcal_emergency_cancels_and_reset_releases_nothing():
+    h = hcal_harness()
+    start_hcal(h)
+    m = h.mark()
+    h.fsm.inputs.stop_button = True
+    h.tick()
+    assert h.name == 'EMERGENCY' and h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst)
+    assert h.fsm._hcal is None and not h.fsm.motion_enabled()
+    h.fsm.inputs.stop_button = False
+    h.cmd(f.CMD_RESET_EMERGENCY)
+    h.tick(n=5)
+    assert h.name == 'IDLE' and not h.since(m, f.StartAction)
+
+
+def test_hcal_stop_command_cancels():
+    h = hcal_harness()
+    start_hcal(h)
+    m = h.mark()
+    h.cmd(f.CMD_STOP)
+    assert h.name == 'IDLE' and h.since(m, f.CancelActions) and h.fsm._hcal is None
+    h.tick(n=5)
+    assert not h.since(m, f.StartAction)
+
+
+def test_hcal_never_from_the_dock():
+    h = hcal_harness()
+    h.fsm.inputs.docked = True
+    h.tick()
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'UNDOCKING'
+    assert not [e for e in h.since(0, f.StartAction) if e.name == f.ACT_DRIVE]
 
 
 def test_transit_goal_yaw_is_first_subpath_heading():
@@ -3493,6 +3793,94 @@ def test_live_cutter_height_overrides_rest_of_mow_only():
     assert h.fsm.mission.settings['cutter_height_mm'] == 75
     # not persisted: the saved area settings are untouched
     assert h.area_settings[1] == {'cutter_height_mm': 40}
+
+
+def _live_height_then_stop(h, mm=75):
+    """Area height 60; a live GUI change to ``mm`` mid-mow (blade running), then STOP."""
+    h.area_settings = {0: {'cutter_height_mm': 60}}
+    start_until_planning(h)
+    sps = [line(0, 0, 4, 0), line(4, 1, 0, 1), line(0, 2, 4, 2)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(sps))
+    h.fsm.inputs.is_cutting = True
+    h.tick()                                 # following sub-path 0, blade on
+    assert h.name == 'MOWING' and h.blade
+    m = h.mark()
+    h._apply(h.fsm.on_cutter_height(mm, h.t))
+    # applied by the driver already: the mission sends no height of its own mid-mow
+    assert not calls(h, m, f.SRV_CUTTER_HEIGHT)
+    assert h.fsm.mission.height_override_mm == mm and h.blade
+    h.finish(f.ACT_FOLLOW)                   # sub-path 0 done
+    assert not calls(h, m, f.SRV_CUTTER_HEIGHT)
+    h.fsm.inputs.pose = (4, 1, 0)
+    h.finish(f.ACT_NAV)
+    h.tick()                                 # following sub-path 1
+    h.fsm.inputs.pose = (2.05, 1.0, 0.0)
+    assert not calls(h, m, f.SRV_CUTTER_HEIGHT)
+    assert h.cmd(f.CMD_STOP)
+    return sps
+
+
+def _resumed_area_height(h, sps):
+    m = h.mark()
+    start_until_planning(h)
+    h.answer_services()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(sps))
+    return [c.request['height_mm'] for c in calls(h, m, f.SRV_CUTTER_HEIGHT)]
+
+
+def test_live_cutter_height_survives_interrupt_and_resume():
+    """2026-10-13: an interrupt (stop / rain / charge / stuck ...) rebuilds the Mission;
+    the resumed mow must keep the live GUI height, not re-send the area's 60."""
+    h = Harness()
+    sps = _live_height_then_stop(h, 75)
+    assert ResumeCursor.loads(h.saved).live_height_mm == 75
+    assert _resumed_area_height(h, sps) == [75]
+    assert h.fsm.mission.resume and h.fsm.mission.settings['cutter_height_mm'] == 75
+    assert h.area_settings[0] == {'cutter_height_mm': 60}       # never saved to the area
+
+
+def test_live_cutter_height_survives_restart_via_resume_file():
+    h = Harness()
+    sps = _live_height_then_stop(h, 45)
+    h2 = Harness(cursor=ResumeCursor.loads(h.saved))
+    h2.area_settings = {0: {'cutter_height_mm': 60}}
+    assert _resumed_area_height(h2, sps) == [45]
+
+
+def test_live_cutter_height_dropped_on_fresh_start():
+    """A fresh mow (resume cleared / mow finished) uses the saved area height again."""
+    h = Harness()
+    sps = _live_height_then_stop(h, 75)
+    ok, _, fx = h.fsm.clear_resume(h.t)
+    h._apply(fx)
+    assert ok and h.fsm.cursor.live_height_mm is None
+    assert _resumed_area_height(h, sps) == [60]
+    assert h.fsm.mission.height_override_mm is None
+
+
+def test_live_cutter_height_cleared_when_mow_completes():
+    h = Harness()
+    h.area_settings = {0: {'cutter_height_mm': 60}}
+    start_until_planning(h)
+    h._apply(h.fsm.on_cutter_height(75, h.t))
+    mow_area_once(h)
+    h.answer_services()
+    h.tick()
+    assert h.fsm.mission is None and h.fsm.cursor.live_height_mm is None
+    m = h.mark()
+    start_until_planning(h)
+    h.answer_services()
+    assert [c.request['height_mm'] for c in calls(h, m, f.SRV_CUTTER_HEIGHT)] == [60]
+
+
+def test_resume_cursor_live_height_round_trip():
+    cur = ResumeCursor()
+    assert 'live_height' not in cur.dumps()
+    cur.live_height_mm = 65
+    text = cur.dumps()
+    assert 'live_height 65' in text
+    back = ResumeCursor.loads(text)
+    assert back.live_height_mm == 65 and back == cur
 
 
 # =====================================================================

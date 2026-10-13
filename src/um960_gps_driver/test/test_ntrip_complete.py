@@ -239,7 +239,8 @@ def test_auto_hands_over_from_lora_to_ntrip_and_back(harness_mod, tmp_path):
         assert h.node.ntrip_config_source == str(path)
         reader = tc.PtyReader(h.master)
         _wait(lambda: h.node.correction_source == "ntrip")
-        _wait(lambda: reader.poll().startswith(b"RTKRESET\r\n" + lora.NRTK_ON.encode()))
+        # first hand-over after start: ON only (no RTKRESET, rtk_reset_on_start false)
+        _wait(lambda: reader.poll().startswith(lora.NRTK_ON.encode()))
         _wait(lambda: sample_frame(1005, 4) in reader.poll())
         status = h.node.ntrip_status()
         assert status["active_source"] == "ntrip" and status["connected"]

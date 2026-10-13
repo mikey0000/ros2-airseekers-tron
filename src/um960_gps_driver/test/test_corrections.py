@@ -134,8 +134,9 @@ def test_ntrip_handshake_holds_rtcm_until_the_board_acks(caster):
     try:
         reader = PtyReader(h.master)
         h.send(GGA_RTK)
-        # Off->on transition: exactly RTKRESET once, then the 12-char ON command.
-        _wait(lambda: reader.poll().startswith(RESET_ON))
+        # Off->on transition at node start: the 12-char ON command, no RTKRESET (the
+        # running receiver keeps its RTK solution through a stack restart).
+        _wait(lambda: reader.poll().startswith(ON))
         # RTCM arrives from the caster but the board has not said ON: nothing passes.
         _wait(lambda: h.node.correction_summary()["rtcm_held_bytes"] > 0)
         assert b"\xd3" not in reader.poll(0.1)
@@ -152,8 +153,8 @@ def test_ntrip_handshake_holds_rtcm_until_the_board_acks(caster):
         diag = _corrections(h)
         assert diag["rtcm_gate"] == "open" and diag["frames"] >= 2
         assert diag["mountpoint"] == caster.mountpoint and "password" not in json.dumps(diag)
-        assert diag["serial_bytes_written"] > len(RESET_ON)
-        assert reader.poll().count(b"RTKRESET") == 1
+        assert diag["serial_bytes_written"] > len(ON)
+        assert reader.poll().count(b"RTKRESET") == 0
     finally:
         h.close()
 
@@ -162,14 +163,14 @@ def test_ntrip_keepalive_repeats_on_every_period(caster):
     h = Harness(extra_params=_ntrip_params(caster, ntrip_keepalive_s=0.5))
     try:
         reader = PtyReader(h.master)
-        _wait(lambda: reader.poll().startswith(RESET_ON))
+        _wait(lambda: reader.poll().startswith(ON))
         t0 = time.monotonic()
         # Unconditional: the board saying ON does not stop the keep-alive.
         h.send(_cs("GNRTK,ON"))
         _wait(lambda: reader.poll().count(ON) >= 4, timeout=4.0)
         elapsed = time.monotonic() - t0
         assert 1.2 < elapsed < 2.5, elapsed
-        assert reader.poll().count(b"RTKRESET") == 1
+        assert reader.poll().count(b"RTKRESET") == 0
     finally:
         h.close()
 
@@ -178,14 +179,24 @@ def test_board_on_to_off_triggers_reset_and_on(caster):
     h = Harness(extra_params=_ntrip_params(caster))
     try:
         reader = PtyReader(h.master)
-        _wait(lambda: reader.poll().startswith(RESET_ON))
+        _wait(lambda: reader.poll().startswith(ON))
         h.send(_cs("GNRTK,OFF"))   # unknown -> OFF: just the keep-alive, no reset
-        assert reader.poll(0.2).count(b"RTKRESET") == 1
+        assert reader.poll(0.2).count(b"RTKRESET") == 0
         h.send(_cs("GNRTK,ON"))
         reader.data.clear()
         h.send(_cs("GNRTK,OFF"))   # ON -> OFF: RTKRESET + ON again
         _wait(lambda: RESET_ON in reader.poll())
         assert h.node.correction_summary()["rover_nrtk"] == "OFF"
+    finally:
+        h.close()
+
+
+def test_rtk_reset_on_start_restores_the_vendor_reset(caster):
+    h = Harness(extra_params=_ntrip_params(caster, rtk_reset_on_start=True))
+    try:
+        reader = PtyReader(h.master)
+        _wait(lambda: reader.poll().startswith(RESET_ON))
+        assert reader.poll(0.2).count(b"RTKRESET") == 1
     finally:
         h.close()
 

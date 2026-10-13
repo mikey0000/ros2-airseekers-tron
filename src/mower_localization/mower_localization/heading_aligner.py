@@ -39,12 +39,18 @@ Published
                              from the alignment quality (huge while unaligned). Bytes are
                              patched in place (no message objects at 100 Hz).
 ``/heading_aligner/status``  std_msgs/String JSON, latched, 1 Hz + on change:
-                             {aligned, source: none|file|dock|cog|rtk, offset_deg, quality, ...}
+                             {aligned, source: none|file|file_verified|dock|cog|rtk,
+                             offset_deg, quality, gate, min_speed, file_check, ...}.
+                             ``file_check`` (source file): pending | yaw_ok (IMU kept running,
+                             position unproven: a usable prior for the mission's heading
+                             calibration drive) | yaw_failed | unverifiable.
 
 Persisted: ``offset_file`` (default /userdata/ros2/heading_offset.yaml) when the source changes,
 the offset moves >= ``persist_min_change`` deg, the robot moves 0.3 m / turns 5 deg, or every
 ``persist_period`` s (:class:`heading_logic.PersistThrottle`); loaded on boot as the low-quality
-``file`` source.
+``file`` source. The continuity check that upgrades it to ``file_verified`` uses only
+RTK-fixed positions and stays pending for ``verify_timeout`` (180 s) so the receiver can
+re-converge after a restart; the yaw test (IMU restarted?) is decided on the first sample.
 
 CPU: inputs go through sub_pump (no executor wakes); only /imu/data is event-driven, the rest
 are sampled by one PeriodicRunner thread.
@@ -519,6 +525,7 @@ class HeadingAligner(Node):
     def _status_tick(self):
         now = time.monotonic()
         with self._lock:
+            self.est.poll_verify(now)       # the continuity-check timeout needs no input
             st = self.est.status(now)
             st.update(self.src.status(now))
             self.est.dirty = False

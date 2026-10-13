@@ -319,6 +319,125 @@ and resumed after 2 s.
   - Walk up to the robot from the front: it must still stop at about 1 m.
   - Stand about 1 m to the side of a pivoting robot: the result must be advisory.
 
+## Swath-end turns without pivot loops (2026-10-13, unit-tested only)
+
+At 11:25 (54 sub-paths, snake, cross, 2 headland rings, `turn_type auto`) the owner saw what
+looked like 360 deg spins before each new line. No bag; from the log: each K-turn leg started
+with an RPP rotate-to-heading (v 0, w +-0.3). On turf the body turned about 2 deg/s, so the
+stuck guard latched (8.4 deg in 4 s against a 10 deg floor). The escape reversed 0.3 m and
+resent the goal, which started with another pivot, often the other way. Aborts ("collision
+ahead" 298x, "Failed to make progress" 20x) were retried the same way: 7 stuck escapes and 42
+retries in 3 h. Arcs with the inner wheel at 0.06 m/s or more do move the robot.
+
+- **Coverage RPP** (`nav2_params.yaml`):
+  - `FollowCoveragePath` `rotate_to_heading_min_angle` 0.6 -> 1.2 rad. A forward leg starting
+    at a reverse leg's cusp sees its carrot about 0.41 rad round (lookahead 0.4 on the r 0.5
+    turn) plus the yaw the previous leg missed. It is now driven as an arc. Rotate-to-heading
+    stays on for carrots behind the robot (otherwise RPP drives forward, away from them).
+  - `min_approach_linear_velocity` and `regulated_linear_scaling_min_speed` -> 0.14 m/s, on
+    `FollowCoveragePath` and `FollowCoveragePathReverse` (were 0.05/0.08 and 0.05/0.05). Every
+    0.4 m leg is inside the approach distance, so RPP drove it at 0.05-0.1 m/s. The turn shaper
+    then widened the arc (r 0.84 m instead of 0.5, so the leg ended short of its heading) or,
+    at |w| 0.3, snapped it to a pure pivot. At 0.132 m/s or more, any |w| up to 0.3 keeps the
+    inner wheel at 0.06 m/s or more.
+  - `coverage_leg_goal_checker` `yaw_goal_tolerance` 0.35 -> 0.5. Within 8 cm of a forward
+    leg's end, RPP pivots to the goal yaw until this is met.
+  - Unchanged: `max_angular_accel` 6.4 (used only by rotate-to-heading).
+  - FTC (`FollowCoveragePathFTC`) and MPPI coverage are not the default. FTC PRE_ROTATEs at
+    the start of every goal more than `max_goal_angle_error` (15 deg) off, so it is unsuitable
+    for K-turn legs as configured.
+- **Stuck guard** (`slip_detector`): new `stuck_pivot_min_heading_deg` (5). When at least half
+  of the window's commands are pure pivots, a 5 deg heading change in 4 s counts as progress.
+  The 11:25 case (8.4 deg) no longer latches; 1 deg or 4 deg in 4 s still does. The xy and
+  path rules are unchanged; driving keeps the 10 deg floor.
+- **Mission**: new `turn_leg_skip_m` 0.20 and `turn_leg_skip_yaw` 0.5, the same values as the
+  leg checker's overshoot / yaw tolerances. This applies to a retry or stuck-escape resume of
+  a turn leg: a reverse leg, or the forward piece ending at its cusp. If the robot is within
+  0.2 m of the leg's end and within 0.5 rad of its heading, the leg is counted as done and the
+  next leg is sent, instead of a 1-3 pose goal whose first move is a pivot.
+- **"collision ahead" at the headland** (not changed, needs a bag). The local costmap holds
+  only stereo, det_range and bumper marks; there is no area mask. With 2 rings, in a rectangle,
+  a swath ends 0.27 m inside the drivable line, i.e. base_link is 0.41 m from the recorded
+  boundary. The nose (+0.52 m) is therefore about 0.1 m past the boundary. Anything 8 cm or
+  taller at the lawn edge (hedge, bed edging, long uncut grass) is lethal right in front of
+  it. For a pure pivot, RPP's check projects the footprint (corner radius 0.61 m) through
+  1.0 s of rotation, uncut by the carrot distance. Fewer pivots should mean fewer of these
+  aborts.
+- **Planner** (`mower_coverage_node`): new `min_drivable_turn_radius_m` (0.44). A turn radius
+  above 0 but below it (the GUI accepts 0-2 m) is raised to it, with a note in the plan.
+- **What `auto` chose here and why.** `auto` tries a forward Dubins loop, then a Reeds-Shepp
+  reverse turn, then a pivot. Each must stay inside the drivable region (the field pulled in by
+  `border_inset`, 0.14 m).
+  - With 2 rings, a rectangle leaves 0.27 m past the swath ends.
+  - A reverse turn between snake rows (0.36 m apart) needs 0.31 m (r 0.44) or 0.36 m (r 0.5):
+    forward 0.40, reverse 0.70, forward 0.45 m legs.
+  - A forward loop (omega) needs 1.06 m (r 0.44) or 1.23 m (r 0.5).
+  - So this area gets K-turns where an oblique edge leaves extra room, and pivots elsewhere.
+    The test field `kArea1` with 2 rings and r 0.5 gives 4 reverse / 12 pivot turns at angle 0
+    and 2 / 11 at 90 deg, with 0 loops. At r 0.44 it gives 6 reverse / 10 pivot turns at angle 0.
+- **Does a loop fit?** No. A loop between snake rows needs a 7-ring (r 0.44) or 8-ring (r 0.5)
+  headland, i.e. 1.26-1.44 m. Racetrack order (rows 2r apart, forward U-turns) needs room of
+  about r, i.e. 3-4 rings. On `kArea1` with 3-4 rings that gives 2-5 loops, the rest K-turns.
+  `auto` already prefers a loop whenever one fits, so it is left alone. Options for the owner:
+  - 3 rings, which makes every turn a K-turn, no pivots (`kArea1`, r 0.44);
+  - `min_turn_radius_m` nearer 0.44 instead of 0.5, for more K-turns;
+  - racetrack order with 4 rings, for some loops.
+- **Verify live:** watch the turns at the swath ends.
+  - No `rotate-to-heading` at a K-turn leg start.
+  - Fewer `STUCK` latches.
+  - The "turn leg end ... leg done" INFO lines on retries.
+  - A rosbag of a few turns (`/cmd_vel_nav`, `/cmd_vel`, `~/shape_status`, odom) to confirm
+    the 0.14 m/s arcs track on turf.
+## Heading after a restart off the dock (2026-10-13, unit-tested only)
+
+10:40: the stack restarted on the lawn and START was refused ("heading not aligned"). The
+offset saved 5 s earlier was rejected as "moved 1.24 m": the um960 node had sent `RTKRESET`
+and the one-shot continuity check averaged five float positions of the re-convergence.
+The owner's 0.05 m/s manual drive was below the COG `min_speed` (0.06).
+
+- **Continuity check** (`heading_logic._try_verify`): the yaw test is decided first and
+  rejects at once (IMU restarted). The position test uses only 5 consecutive RTK-fixed
+  positions (0.5 m). The check stays pending until decided or `verify_timeout` (30 -> 180 s).
+  Status `file_check`: pending | yaw_ok | yaw_failed | unverifiable | verified.
+- **um960** `rtk_reset_on_start: false`: the first handshake after node start sends only
+  `$GNRTK,ON*69`. Later ON -> OFF edges and source switches still reset.
+- **COG** `min_speed` 0.06 -> 0.04 m/s. The message now says "drive straight 1 m at 0.1 m/s
+  or more in manual, or start from the dock". Diagnostics show the COG gate reason.
+- **Calibration drive** (`heading_calibration_*`, on by default). START off the dock with
+  `file` + `yaw_ok` waits for RTK fixed (+3 s), then drives 1.0 m at 0.15 m/s with the
+  blade off. It uses Nav2 DriveOnHeading, or BackUp when only the line behind is clear.
+  The line (+ footprint, width, +-10 deg) must lie in one mowing area, outside its keepouts.
+  It stops once aligned, on an in-line obstacle, STOP or emergency. It then plans as a
+  normal START. Failure: idle in place, never dock or Nav2 on the unverified heading.
+- **Verify live:**
+  - Restart the stack off the dock: the log should show "verified ... RTK fixed".
+  - Push the robot >0.5 m with the stack down: START drives 1 m, then mows.
+  - With the IMU power-cycled: START is refused (yaw_failed).
+  - Behavior_server output bypasses collision_monitor (its own costmap check only).
+## Live blade height during a mow (2026-10-13, unit-tested only)
+
+- **Symptom:** the GUI blade height control showed "—" with its -/+ buttons disabled during
+  a mow (and in manual mow), so the deck height could not be changed.
+- **Root cause:** `/cutter/height_mm` (mcu_node, latched; GUI key `cutterHeight`) was never
+  added to `FOXGLOVE_GUI_TOPICS` in `launch/mower.launch.py`, so foxglove_bridge did not
+  advertise it and the control never got a value. The POST route, `/cutter/set_height` and
+  the driver were fine. `/behavior_tree_node/mow_plan|mow_progress` and
+  `/map_server_node/terrain_grid|terrain_summary` were missing the same way and are now
+  streamed. `test_foxglove_whitelist` checks every topic in the GUI's `topicMap`.
+- **Driver:** `/cutter/set_height` re-sends the current blade state (enable + speed) with the
+  new height in one CutterControl frame. The blade is not stopped and the deck moves at once.
+  Whether the MCU ramps the blade on that repeated ON frame is unverified on hardware.
+- **Override rule:** a live height holds for the rest of the mow and is never saved to the
+  area. The mission does not re-send a height mid-area. Later areas of the same mow and a
+  resumed mow use the live height. Before, an interrupt (stop, rain, charge, stuck, e-stop,
+  slope) rebuilt the Mission and the resumed area start re-sent the saved area height. The
+  live height is now kept in the resume cursor (`live_height <mm>` row). A fresh start
+  (resume cleared, or the previous mow completed) uses the area settings again. "Save to
+  area" in the GUI is the only way to change the area setting.
+- **Deploy:** stack sync + container restart. No GUI image rebuild is needed.
+- **Verify live:** during a mow, the control shows the area height; -/+ moves the deck
+  without stopping the blade. Stop, then START (resume): the deck stays at the live height.
+
 ## Open risks
 
 - Grass segmentation (2026-10-09, not yet run on the mower, `nongrass:=false` by default): seg_ros now runs on the front stereo right colour eye, `nongrass_projector` projects its mask onto the ground and map_server_node keeps a confirmed non-grass memory that feeds a SOFT global-costmap layer (`nongrass_layer`). The model was trained on the OA cameras: class quality on the front eye, NPU sharing with det_ros on core 1 and the shadow false-positive rate need a live check (`docs/grass_segmentation.md`).
