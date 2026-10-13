@@ -64,6 +64,12 @@ struct RouteOptions {
   RouteOrder order = RouteOrder::kBoustrophedon;
   int spiral_size = 6;
   double min_turn_radius = 0.0;  // <= 0: pivots only
+  // Tightest arc the robot can drive with both wheels moving forward (2026-10-13): a
+  // min_turn_radius > 0 below this is raised to it (noted in CoveragePlan::drops), so a
+  // loop / reverse turn is never planned tighter than it will be driven. mower_coverage_node
+  // passes min_drivable_turn_radius_m (0.44: cmd_vel_slew turn shaper, inner wheel >= 0.06
+  // m/s, track 0.48 m, |w| <= 0.3). 0 = no clamp.
+  double min_drivable_turn_radius = 0.0;
   TurnType turn_type = TurnType::kAuto;
   // Coverage verification / gap filling (see CoveragePlan::coverage_fraction).
   // fill_gaps: add extra fill passes (ordinary swaths) for uncovered pieces

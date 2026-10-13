@@ -95,6 +95,11 @@ class MowerCoverageNode : public rclcpp::Node {
     // connectors. > 0 = F2C v3 Dubins turns of this radius between swaths.
     // Read per request (request min_turn_radius_m < 0 = this parameter).
     declare_parameter<double>("min_turn_radius_m", 0.0);
+    // Turn radii (request or min_turn_radius_m) > 0 below this are raised to it: the
+    // tightest arc cmd_vel_slew's both-wheel turn shaper drives (inner wheel >= 0.06 m/s,
+    // track 0.48 m, |w| <= the MCU's 0.3 rad/s -> r = 0.132 / 0.3 = 0.44 m). The area
+    // setting min_turn_radius_m accepts 0-2 m. 0 = no clamp. Read per request.
+    declare_parameter<double>("min_drivable_turn_radius_m", 0.44);
     service_ = create_service<mower_interfaces::srv::PlanCoverage>(
         "/coverage/plan",
         std::bind(&MowerCoverageNode::handlePlan, this, std::placeholders::_1,
@@ -185,6 +190,8 @@ class MowerCoverageNode : public rclcpp::Node {
     route.min_turn_radius = request->min_turn_radius_m >= 0.0
                                 ? request->min_turn_radius_m
                                 : get_parameter("min_turn_radius_m").as_double();
+    route.min_drivable_turn_radius =
+        std::max(0.0, get_parameter("min_drivable_turn_radius_m").as_double());
 
     route.fill_gaps = true;
     route.min_gap_area_m2 = 0.01;
