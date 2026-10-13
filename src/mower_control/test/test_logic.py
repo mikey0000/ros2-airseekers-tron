@@ -212,6 +212,41 @@ def test_stuck_latches_through_dithering_rotate_to_heading():
     assert ev and ev['reason'] == 'stuck' and t < 8.0
 
 
+def _pivot_1125(det, deg_in_4s, xy_m=0.049, w=-0.15):
+    """2026-10-13 11:25 swath-end pivot: commanded v 0 / w -0.15 for 4 s while the EKF
+    drifted ``xy_m`` (0.050 m logged) and turned ``deg_in_4s`` at a steady rate."""
+    rate = math.radians(deg_in_4s) / 4.0
+    return _drive(det, 0.0, 4.4, (0.0, w),
+                  lambda t: (1.0 + xy_m * min(t, 4.0) / 4.0, 2.0, -rate * t), 0.0)
+
+
+def test_slow_turf_pivot_is_progress():
+    """11:25: 8.4 deg in 4 s (path 15.2 deg) latched /stuck against the 10 deg floor; a
+    pure pivot that turns >= 5 deg per window is progress now."""
+    assert _pivot_1125(slip_detector.StuckDetector(), 8.4) is None
+    assert _pivot_1125(slip_detector.StuckDetector(), 6.0) is None
+    # the old floor (pivot floor = general floor) reproduces the 11:25 latch
+    det = slip_detector.StuckDetector(pivot_min_heading_deg=10.0)
+    ev = _pivot_1125(det, 8.4)
+    assert ev and ev['reason'] == 'stuck' and 8.0 < ev['turned_deg'] < 9.0
+
+
+def test_stalled_pivot_still_latches():
+    """1 deg in 4 s (0.25 deg/s): the pivot is stalled -> stuck."""
+    ev = _pivot_1125(slip_detector.StuckDetector(), 1.0)
+    assert ev and ev['reason'] == 'stuck' and ev['commanded'] == [0.0, -0.15]
+    ev = _pivot_1125(slip_detector.StuckDetector(), 4.0)
+    assert ev and ev['reason'] == 'stuck'
+
+
+def test_pivot_floor_does_not_apply_to_driving():
+    """Driving (v 0.14) that only turns 8 deg without moving keeps the 10 deg floor."""
+    det = slip_detector.StuckDetector()
+    rate = math.radians(8.0) / 4.0
+    ev = _drive(det, 0.0, 4.4, (0.14, 0.1), lambda t: (1.0, 2.0, rate * t), 0.0)
+    assert ev and ev['reason'] == 'stuck'
+
+
 def test_stuck_window_restarts_after_a_real_stop():
     det = slip_detector.StuckDetector()
     assert _drive(det, 0.0, 3.0, (0.2, 0.0), lambda t: (0.0, 0.0, 0.0), 0.0) is None
@@ -584,7 +619,7 @@ def test_old_rule_would_latch_on_the_replays():
     max deviation where the live detector saw 9.9 deg: allow 10.5 deg here."""
     for rows in (_PIVOT_DITHER, _CREEP_SHUFFLE):
         det = slip_detector.StuckDetector(min_path_m=1e9, min_yaw_path_deg=1e9,
-                                          min_heading_deg=10.5)
+                                          min_heading_deg=10.5, pivot_min_heading_deg=10.5)
         assert (_replay(det, rows) or {}).get('reason') == 'stuck'
     det2 = slip_detector.StuckDetector()
     det2._paths = lambda: (0.0, 0.0)

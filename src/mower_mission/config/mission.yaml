@@ -111,6 +111,14 @@ behavior_tree_node:
     # mowgli_nav2_plugins::LegGoalChecker ('' = follow_goal_checker_id for all)
     turn_leg_goal_checker_id: coverage_leg_goal_checker
     turn_leg_max_m: 1.2
+    # 2026-10-13 swath-end pivots: a retry / stuck-escape resume of a turn leg (reverse
+    # sub-path, or the forward piece ending at a reverse leg's cusp) the robot has all but
+    # driven (within turn_leg_skip_m of its end, facing within turn_leg_skip_yaw rad of the end
+    # pose) counts the leg as done and sends the next leg, instead of a 1-3 pose goal whose
+    # first move is a turn in place. = coverage_leg_goal_checker overshoot_xy_tolerance /
+    # yaw_goal_tolerance (nav2_params.yaml). 0 = off.
+    turn_leg_skip_m: 0.20
+    turn_leg_skip_yaw: 0.5
     max_areas: 200
 
     # --- per-area mowing settings (map_server_node/get_area_settings) -----

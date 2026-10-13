@@ -1400,6 +1400,94 @@ def test_reverse_subpath_uses_the_reversing_controller():
     assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePath'
 
 
+def _k_turn(h):
+    """swath (+ forward turn arc) -> reverse leg -> forward leg + next swath (2026-10-13)."""
+    start_until_planning(h)
+    fwd = [(0.2, 0.0, 0.0)] + [(1.0 + 0.1 * k, 0.0, 0.0) for k in range(11)]   # ends (2.0, 0)
+    ryaw = math.atan2(-0.35, 0.1)
+    rev = [(2.0, 0.0, ryaw), (1.95, 0.175, ryaw), (1.9, 0.35, ryaw)]
+    fwd2 = [(1.9, 0.35, math.pi), (0.0, 0.36, math.pi)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([fwd, rev, fwd2]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    return fwd, rev, fwd2
+
+
+def test_retry_of_an_all_but_driven_turn_leg_sends_the_next_leg():
+    """11:25: 'follow_path aborted at pose 14, retry 1/3' re-sent a 1-pose goal whose first
+    move was a pivot. Robot 0.1 m short of the cusp, facing within 0.5 rad of the end pose:
+    the reverse leg is sent instead."""
+    h = Harness(transit_retry_delay_s=1.0)
+    fwd, rev, _ = _k_turn(h)
+    h.fsm.inputs.pose = (1.9, 0.02, 0.2)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    assert 'retry 1/' in h.fsm.sub_state
+    h.tick(dt=0.5, n=3)
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowCoveragePathReverse' and g['poses'] == rev
+    assert 0 in h.fsm.cursor.areas[0].completed
+
+
+def test_retry_of_a_turn_leg_facing_away_is_resent():
+    """Same spot but 1 rad off the end yaw: the leg is not done, it is re-sent."""
+    h = Harness(transit_retry_delay_s=1.0)
+    fwd, rev, _ = _k_turn(h)
+    h.fsm.inputs.pose = (1.9, 0.02, 1.0)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    h.tick(dt=0.5, n=3)
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowCoveragePath' and g['poses'][-1] == fwd[-1]
+
+
+def test_stuck_resume_of_a_driven_reverse_leg_goes_on_to_the_next_leg():
+    """Stuck on a reverse leg (11:25: the turf pivots latched /stuck); the escape (a reverse,
+    i.e. further along this leg) leaves the robot 0.17 m short of its end, facing the leg:
+    the forward leg is sent next, not a re-send of the reverse leg's last poses."""
+    h = Harness()
+    start_until_planning(h)
+    fwd = [(0.2, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    ryaw = math.atan2(-0.45, 0.13)
+    n = 10                                   # 0.052 m steps, (2.0, 0) -> (1.87, 0.45)
+    rev = [(2.0 - 0.13 * k / (n - 1), 0.45 * k / (n - 1), ryaw) for k in range(n)]
+    fwd2 = [(1.87, 0.45, math.pi), (0.0, 0.45, math.pi)]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([fwd, rev, fwd2]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.finish(f.ACT_FOLLOW)
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['poses'] == rev
+    h.fsm.inputs.pose = (2.0, 0.0, ryaw)
+    h.fsm.inputs.stuck = True
+    h.tick()
+    h.fsm.inputs.stuck = False
+    h.tick(n=10)
+    ln = math.hypot(0.13, 0.45)
+    ux, uy = -0.13 / ln, 0.45 / ln
+    for k in range(1, 60):
+        h.fsm.inputs.pose = (2.0 + ux * 0.01 * k, uy * 0.01 * k, ryaw)
+        h.tick()
+        if h.fsm._stk is None:
+            break
+    assert h.fsm._stk is None
+    assert 0.12 < math.hypot(h.fsm.inputs.pose[0] - 1.87, h.fsm.inputs.pose[1] - 0.45) < 0.2
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowCoveragePath' and g['poses'] == fwd2
+
+
+def test_turn_leg_skip_off_resends():
+    h = Harness(transit_retry_delay_s=1.0, turn_leg_skip_m=0.0)
+    fwd, rev, _ = _k_turn(h)
+    h.fsm.inputs.pose = (1.9, 0.02, 0.2)
+    h.finish(f.ACT_FOLLOW, f.ABORTED)
+    h.tick(dt=0.5, n=3)
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePath'
+
+
 def test_is_reverse_subpath():
     from mower_mission import geometry as geo
     assert not geo.is_reverse_subpath([(0, 0, 0.0), (1, 0, 0.0)])

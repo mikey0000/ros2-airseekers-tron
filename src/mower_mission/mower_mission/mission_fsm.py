@@ -586,6 +586,17 @@ class Params:
     # '' = use follow_goal_checker_id for everything.
     turn_leg_goal_checker_id: str = 'coverage_leg_goal_checker'
     turn_leg_max_m: float = 1.2
+    # 2026-10-13 (swath-end pivots, 11:25 log): a follow_path retry ("aborted at pose 14,
+    # retry 1/3") or a stuck-escape resume of a nearly finished turn leg re-sent a 1-3 pose
+    # goal, and RPP's first move toward a carrot a few cm away was a rotation in place (often
+    # the opposite way to the last one). Turn leg here = a reverse sub-path no longer than
+    # turn_leg_max_m, or the forward piece that ends at the cusp of one. When the robot is within turn_leg_skip_m
+    # of that leg's end and faces within turn_leg_skip_yaw (rad) of the end pose's yaw, the leg
+    # counts as driven and the next leg (which starts at that cusp) is sent instead. Mirrors
+    # coverage_leg_goal_checker overshoot_xy_tolerance / yaw_goal_tolerance (nav2_params.yaml),
+    # which would have ended the leg there anyway. 0 = off.
+    turn_leg_skip_m: float = 0.20
+    turn_leg_skip_yaw: float = 0.5
     blade_confirm_timeout_s: float = 5.0
     blade_start_attempts: int = 3
     blade_retry_pause_s: float = 2.0
@@ -2339,6 +2350,8 @@ class MissionFSM:
         if self._seg_last() - m.start_local < 1:
             self._segment_done()
             return
+        if self._turn_leg_driven():
+            return
         target = sp[m.start_local]
         if force_transit or geo.needs_transit(self.inputs.pose, target, self.p.transit_gap_m):
             # SAFETY (FollowStrip): blade off before any dispatch across the gap, unless
@@ -2353,6 +2366,37 @@ class MissionFSM:
             self._send_transit()
         else:
             self._begin_blade()
+
+    def _turn_leg_driven(self):
+        """Skip the rest of a turn leg the robot has already all but driven (see
+        ``turn_leg_skip_m``): done -> True (the next sub-path has been dispatched)."""
+        m, pose = self.mission, self.inputs.pose
+        skip_m = float(self.p.turn_leg_skip_m)
+        if skip_m <= 0.0 or pose is None or len(pose) < 3 or m.stretch is not None:
+            return False
+        sp = m.subpaths[m.sub_i]
+        end = sp[-1]
+        if len(end) < 3:
+            return False
+        leg_max = float(self.p.turn_leg_max_m)
+
+        def reverse_leg(poses):     # a (short) reverse turn leg of the coverage bridge
+            return geo.is_reverse_subpath(poses) and geo.path_length(poses) <= leg_max
+
+        nxt = m.subpaths[m.sub_i + 1] if m.sub_i + 1 < len(m.subpaths) else None
+        cusp_next = nxt is not None and reverse_leg(nxt) and geo.dist(nxt[0], end) <= 0.01
+        if not (reverse_leg(sp) or cusp_next):
+            return False
+        d = geo.dist(pose, end)
+        dyaw = abs(math.atan2(math.sin(pose[2] - end[2]), math.cos(pose[2] - end[2])))
+        if d > skip_m or dyaw > float(self.p.turn_leg_skip_yaw):
+            return False
+        self._log('info', 'area %d sub-path %d: turn leg end %.2f m / %.0f deg away: leg '
+                          'done, next leg from here (no re-send, no turn in place)'
+                  % (m.area_idx, m.sub_i, d, math.degrees(dyaw)))
+        m.step = None
+        self._subpath_done()
+        return True
 
     def _begin_blade(self):
         m = self.mission
