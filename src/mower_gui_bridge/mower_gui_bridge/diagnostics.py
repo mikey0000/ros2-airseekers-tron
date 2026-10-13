@@ -209,6 +209,10 @@ def imu_status(imu_age, temperature, bias_text, timeout):
     return Status(OK, 'IMU', 'receiving', 'imu', values)
 
 
+# Same text as mower_mission.mission_fsm.HEADING_NOT_ALIGNED (no package dependency).
+HEADING_HINT = 'drive straight 1 m at 0.1 m/s or more in manual, or start from the dock'
+
+
 def heading_status(status_text):
     """/heading_aligner/status (JSON) -> ``Heading`` entry; WARN until dock/COG aligned."""
     if status_text is None:
@@ -231,8 +235,14 @@ def heading_status(status_text):
     if st.get('aligned'):
         return _status(OK, 'Heading', 'aligned (%s, %s)' % (st.get('source'), st.get('quality')),
                        'heading', values)
-    return _status(WARN, 'Heading', 'not aligned (%s): drive straight 1 m in manual'
-                   % st.get('source', 'none'), 'heading', values)
+    if st.get('gate'):
+        # why the last manual drive did not count (e.g. 'slow (0.03 m/s < 0.04)')
+        values.append(('COG gate', str(st['gate'])))
+    if st.get('file_check'):
+        values.append(('Saved heading check', str(st['file_check'])))
+    return _status(WARN, 'Heading', 'not aligned (%s): %s' % (st.get('source', 'none'),
+                                                              HEADING_HINT),
+                   'heading', values)
 
 
 def tilt_status(status_text):

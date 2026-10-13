@@ -30,6 +30,18 @@ RTK corrections (``rtcm_source``; only one source ever feeds RTCM to the UM960):
 The legacy ``correction_source`` (none|lora|ntrip, "" = auto) is used when
 ``rtcm_source`` is empty; the GUI NTRIP switch still drives it.
 
+RTKRESET at start (``rtk_reset_on_start``, default false): the vendor handshake sends
+``RTKRESET`` before ``$GNRTK,ON*69`` on every off->on transition. The FIRST handshake after
+this node starts (the port opening, or the first auto hand-over to NTRIP within
+``STARTUP_HANDSHAKE_WINDOW_S``) only sends ``$GNRTK,ON*69``: the UM960 keeps running through
+a stack/container restart, and a reset there throws away a fixed solution for ~25 s of
+single/float re-convergence (2026-10-13 10:40: the persisted-heading continuity check then
+saw float positions 1.24 m off and the robot could not start). Nothing else depends on the
+reset at start: the board switches to network RTK on ``$GNRTK,ON*69`` alone, and RTCM is
+gated on its ``$GNRTK,ON`` reply either way. Later transitions (board ON -> OFF, a runtime
+switch of the correction source, a later auto hand-over, a serial reconnect) still reset,
+as the vendor does, because the reference station may change there.
+
 The correction parameters (``correction_source``, ``ntrip_*``, ...) can be changed at
 runtime (``ros2 param set``, or the GUI settings binding): a change restarts the
 corrections - the NTRIP client is stopped and, for ``ntrip``, reconnected with the
@@ -116,6 +128,9 @@ CORRECTION_PARAMS = frozenset({
     "ntrip_validate_rtcm",
 })
 RECONFIGURE_DEBOUNCE_S = 0.3
+# The first network-RTK handshake this long after node start still counts as "at start"
+# (auto mode hands over once the caster delivers, a few s after start).
+STARTUP_HANDSHAKE_WINDOW_S = 60.0
 # A raw receiver GGA older than this is not uploaded; a synthesized one is used.
 GGA_MAX_AGE_S = 5.0
 
@@ -212,6 +227,9 @@ class Um960Node(Node):
         # $GNRTK,ON*69 on the off->on transition, $GNRTK,ON*69 every keepalive period
         # (the board falls back to LoRa after ~6 s without it).
         self.declare_parameter("ntrip_keepalive_s", 4.0)
+        # false: the first handshake after node start sends only $GNRTK,ON*69 (keeps a
+        # running receiver's RTK fix through a stack restart); true: vendor RTKRESET too.
+        self.declare_parameter("rtk_reset_on_start", False)
         # RTCM is only forwarded while the board reports $GNRTK,ON. true = forward
         # anyway (bench tests without the board).
         self.declare_parameter("forward_rtcm_without_board_ack", False)
@@ -301,6 +319,10 @@ class Um960Node(Node):
         self._last_gga_time = 0.0
         self._rover_nrtk: Optional[str] = None      # "ON"/"OFF" from $GNRTK
         self._nrtk_on_sent = 0.0                    # monotonic time of the last ON
+        # First network-RTK handshake since node start still to come (see the module doc)
+        self._started_mono = time.monotonic()
+        self._startup_handshake = True
+        self.rtk_reset_on_start = bool(self.get_parameter("rtk_reset_on_start").value)
         self._nrtk_lock = threading.Lock()
         self._rtcm_held_bytes = 0
         self._rtcm_held_warned = 0.0
@@ -646,15 +668,30 @@ class Um960Node(Node):
         if not self._serial_write(data, "rtcm"):
             raise SerialError("receiver port not open")
 
-    def _nrtk_enable(self, reason: str) -> None:
-        """Off->on transition: ``RTKRESET`` once, then ``$GNRTK,ON*69``."""
+    def _nrtk_enable(self, reason: str, startup: bool = False) -> None:
+        """Off->on transition: ``RTKRESET`` once, then ``$GNRTK,ON*69``.
+
+        ``startup``: a candidate for the first handshake since node start, which skips
+        the reset unless ``rtk_reset_on_start`` (see the module doc)."""
+        skip = False
+        if startup and self._startup_handshake:
+            self._startup_handshake = False
+            skip = not self.rtk_reset_on_start and \
+                time.monotonic() - self._started_mono <= STARTUP_HANDSHAKE_WINDOW_S
+        else:
+            self._startup_handshake = False
         with self._nrtk_lock:
-            ok = self._serial_write(b"RTKRESET\r\n", "rover")
+            ok = True
+            if not skip:
+                ok = self._serial_write(b"RTKRESET\r\n", "rover")
             ok = self._serial_write((lora.NRTK_ON + "\r\n").encode("ascii"), "rover") and ok
             self._nrtk_on_sent = time.monotonic()
         self.get_logger().info(
-            "network RTK on (%s): sent RTKRESET + %s%s" % (reason, lora.NRTK_ON,
-                                                           "" if ok else " (write FAILED)")
+            "network RTK on (%s): sent %s%s%s" % (
+                reason, "" if skip else "RTKRESET + ", lora.NRTK_ON,
+                " (no RTKRESET at start: keeps the receiver's RTK solution; "
+                "rtk_reset_on_start false)" if skip else "",
+            ) + ("" if ok else " (write FAILED)")
         )
 
     def _ntrip_should_own(self) -> bool:
@@ -687,7 +724,7 @@ class Um960Node(Node):
                     self._rover_nrtk = None
                     self.get_logger().info("rtcm_source auto: NTRIP delivering, taking over "
                                            "from the LoRa base")
-                    self._nrtk_enable("NTRIP connected")
+                    self._nrtk_enable("NTRIP connected", startup=True)
                     continue
                 if not want and self._ntrip_active:
                     # No OFF command (the vendor never sends one): stopping the
@@ -905,7 +942,7 @@ class Um960Node(Node):
             # A (re)opened port is an off->on transition: the board may have
             # rebooted or fallen back to LoRa while we were away.
             self._rover_nrtk = None
-            self._nrtk_enable("port connected")
+            self._nrtk_enable("port connected", startup=True)
         elif self.correction_source == "lora" and self.lora_pairing_enabled:
             # Vendor checkRun(): ask the rover board for its current LoRa pairing.
             self._serial_write((lora.QUERY_PAIRING + "\r\n").encode("ascii"), "lora_pairing")

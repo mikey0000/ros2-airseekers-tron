@@ -18,7 +18,7 @@ import pytest
 from mower_mission import mission_fsm as f
 from mower_mission.resume import ResumeCursor
 
-MOVING_ACTIONS = (f.ACT_NAV, f.ACT_DOCK, f.ACT_UNDOCK, f.ACT_BACKUP)
+MOVING_ACTIONS = (f.ACT_NAV, f.ACT_DOCK, f.ACT_UNDOCK, f.ACT_BACKUP, f.ACT_DRIVE)
 
 
 def square(x0, y0, size):
@@ -1821,7 +1821,8 @@ def test_preflight_refuses_unaligned_heading_away_from_dock(source):
     h.tick()
     assert not h.cmd(f.CMD_START)
     assert h.name == 'IDLE' and h.fsm.sub_state == \
-        'preflight failed: heading not aligned: drive straight 1 m in manual'
+        'preflight failed: heading not aligned: drive straight 1 m at 0.1 m/s or more in ' \
+        'manual, or start from the dock'
     assert h.fsm.mission is None and not h.since(0, f.StartAction)
 
 
@@ -1893,6 +1894,217 @@ def test_no_cog_after_undock_stops_without_navigating():
     assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
     assert h.fsm.mission is None
     assert not h.since(m, f.StartAction)      # no dock / navigate with a wrong heading
+
+
+# ---------------------------------------------------------------------------
+# heading calibration drive (2026-10-13: START refused on the lawn after a restart)
+# ---------------------------------------------------------------------------
+def hcal_harness(prior='yaw_ok', area=None, **params):
+    """Robot at (0, 0) facing +x off the dock, only a saved 'file' heading."""
+    h = Harness(**params)
+    h.heading('file')
+    h.fsm.inputs.heading_prior = prior
+    h.areas = [area or square(-5, -5, 10)]
+    h.tick()
+    return h
+
+
+def start_hcal(h):
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'WAITING_FOR_RTK'
+    h.tick(dt=1.0, n=4)                  # RTK fixed for heading_calibration_settle_s
+
+
+def test_hcal_ahead_clear_drives_forward_then_plans():
+    h = hcal_harness()
+    m = h.mark()
+    start_hcal(h)
+    goal = h.goal(f.ACT_DRIVE)
+    assert goal == {'distance_m': 1.0, 'speed_mps': 0.15}
+    assert h.name == 'WAITING_FOR_RTK' and 'calibrating heading' in h.fsm.sub_state
+    assert 'forward' in h.fsm.sub_state and h.fsm.motion_enabled() and not h.blade
+    assert [e.name for e in h.since(m, f.StartAction)] == [f.ACT_DRIVE]
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.finish(f.ACT_DRIVE)
+    assert h.name == 'WAITING_FOR_RTK' and 'COG' in h.fsm.sub_state
+    h.heading('cog')                     # the drive produced a COG fix
+    h.tick()
+    assert h.name == 'PLANNING' and h.fsm.mission is not None
+
+
+def test_hcal_ahead_blocked_by_area_edge_reverses():
+    # area ends 1.0 m ahead (the robot front would leave it), 3 m behind
+    h = hcal_harness(area=square(-3.0, -2.0, 4.0))
+    start_hcal(h)
+    assert h.goal(f.ACT_BACKUP) == {'distance_m': 1.0, 'speed_mps': 0.15}
+    assert 'backward' in h.fsm.sub_state
+
+
+def test_hcal_keepout_ahead_reverses():
+    area = square(-5, -5, 10)
+    area['obstacles'] = [[(1.0, -0.5), (1.5, -0.5), (1.5, 0.5), (1.0, 0.5)]]
+    h = hcal_harness(area=area)
+    start_hcal(h)
+    h.pending_action(f.ACT_BACKUP)
+
+
+def test_hcal_nothing_clear_refused_without_moving():
+    h = hcal_harness(area=square(-1.0, -1.0, 2.0))
+    m = h.mark()
+    start_hcal(h)
+    assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+    assert 'no clear 1.0 m straight' in h.fsm.sub_state
+    assert not h.since(m, f.StartAction) and h.fsm.mission is None
+    assert not h.fsm.motion_enabled()
+
+
+@pytest.mark.parametrize('source, prior', [('file', ''), ('file', 'yaw_failed'),
+                                           ('file', 'unverifiable'), ('none', '')])
+def test_hcal_no_usable_prior_refused_at_preflight(source, prior):
+    h = hcal_harness(prior=prior)
+    h.heading(source)
+    h.tick()
+    assert not h.cmd(f.CMD_START)
+    assert h.name == 'IDLE' and h.fsm.sub_state == 'preflight failed: ' + f.HEADING_NOT_ALIGNED
+    assert f.HEADING_NOT_ALIGNED == ('heading not aligned: drive straight 1 m at 0.1 m/s or '
+                                     'more in manual, or start from the dock')
+    assert not h.since(0, f.StartAction)
+
+
+def test_hcal_prior_lost_before_the_drive_refused():
+    h = hcal_harness(prior='pending')
+    assert h.cmd(f.CMD_START)            # pending: may still turn out usable
+    h.answer_services()
+    h.fsm.inputs.heading_prior = 'yaw_failed'   # the IMU had restarted after all
+    h.tick(dt=1.0, n=4)
+    assert h.name == 'IDLE' and 'saved heading not usable' in h.fsm.sub_state
+    assert not h.since(0, f.StartAction)
+
+
+def test_hcal_disabled_refuses_as_before():
+    h = hcal_harness(heading_calibration_drive=False)
+    assert not h.cmd(f.CMD_START)
+    assert f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+
+
+def test_hcal_saved_heading_verifies_while_settling_no_drive():
+    h = hcal_harness()
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick(dt=1.0)
+    h.heading('file_verified')           # 5 RTK-fixed positions arrived
+    h.tick()
+    assert h.name == 'PLANNING'
+    assert not [e for e in h.since(0, f.StartAction) if e.name in MOVING_ACTIONS]
+
+
+def _obstacle(h, kind, distance, bearing, cls='person'):
+    i = h.fsm.inputs
+    i.obstacle_kind, i.obstacle_class = kind, cls
+    i.obstacle_distance, i.obstacle_bearing, i.obstacle_stamp = distance, bearing, h.t
+
+
+def test_hcal_obstacle_in_the_line_stops_the_drive():
+    h = hcal_harness()
+    start_hcal(h)
+    h.fsm.inputs.pose = (0.3, 0.0, 0.0)
+    _obstacle(h, 'dynamic', 3.0, 80.0)   # off the line: advisory, keeps driving
+    h.tick()
+    assert h.fsm._hcal is not None and h.pending_action(f.ACT_DRIVE)
+    m = h.mark()
+    _obstacle(h, 'dynamic', 0.9, 0.0)    # person in front
+    h.tick()
+    assert h.name == 'IDLE' and 'dynamic person in the way' in h.fsm.sub_state
+    assert f.HEADING_NOT_ALIGNED in h.fsm.sub_state and h.fsm.mission is None
+    assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst)
+    assert not h.fsm.motion_enabled() and h.fsm._action is None
+
+
+def test_hcal_aligned_early_stops_the_drive_and_plans():
+    h = hcal_harness()
+    start_hcal(h)
+    tok = h.pending_action(f.ACT_DRIVE).token
+    h.fsm.inputs.pose = (0.7, 0.0, 0.0)
+    m = h.mark()
+    h.heading('cog')                     # one 0.6 m COG window done
+    h.tick()
+    assert [e.reason for e in h.since(m, f.CancelActions)][0] == 'heading aligned'
+    assert h.name == 'PLANNING'
+    # the cancelled goal's late result is stale
+    h._apply(h.fsm.on_action_result(tok, f.CANCELED, {}, h.t))
+    assert h.name == 'PLANNING'
+
+
+def test_hcal_no_cog_after_the_drive_goes_idle():
+    h = hcal_harness()
+    start_hcal(h)
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.finish(f.ACT_DRIVE)
+    h.tick(dt=1.0, n=2)
+    assert h.name == 'WAITING_FOR_RTK'
+    m = h.mark()
+    h.tick(dt=1.0, n=2)
+    assert h.name == 'IDLE' and 'no COG alignment after the drive' in h.fsm.sub_state
+    assert not h.since(m, f.StartAction)       # never docks / navigates on a wrong heading
+
+
+def test_hcal_drive_aborted_or_timed_out_goes_idle():
+    h = hcal_harness()
+    start_hcal(h)
+    h.finish(f.ACT_DRIVE, f.ABORTED)
+    h.tick(dt=1.0, n=4)
+    assert h.name == 'IDLE' and 'drive aborted (obstacle / costmap)' in h.fsm.sub_state
+    h = hcal_harness()
+    start_hcal(h)
+    h.tick(dt=1.0, n=50)                 # heading_calibration_timeout_s watchdog
+    assert h.name == 'IDLE' and 'drive timeout' in h.fsm.sub_state
+    assert h.since(0, f.CancelActions)
+
+
+def test_hcal_rtk_timeout_stays_put_instead_of_docking():
+    h = hcal_harness(rtk_timeout_s=10.0)
+    h.fsm.inputs.fix_type = 2
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    m = h.mark()
+    h.tick(dt=1.0, n=12)
+    assert h.name == 'IDLE' and 'no RTK fixed' in h.fsm.sub_state
+    assert not h.since(m, f.StartAction)
+
+
+def test_hcal_emergency_cancels_and_reset_releases_nothing():
+    h = hcal_harness()
+    start_hcal(h)
+    m = h.mark()
+    h.fsm.inputs.stop_button = True
+    h.tick()
+    assert h.name == 'EMERGENCY' and h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst)
+    assert h.fsm._hcal is None and not h.fsm.motion_enabled()
+    h.fsm.inputs.stop_button = False
+    h.cmd(f.CMD_RESET_EMERGENCY)
+    h.tick(n=5)
+    assert h.name == 'IDLE' and not h.since(m, f.StartAction)
+
+
+def test_hcal_stop_command_cancels():
+    h = hcal_harness()
+    start_hcal(h)
+    m = h.mark()
+    h.cmd(f.CMD_STOP)
+    assert h.name == 'IDLE' and h.since(m, f.CancelActions) and h.fsm._hcal is None
+    h.tick(n=5)
+    assert not h.since(m, f.StartAction)
+
+
+def test_hcal_never_from_the_dock():
+    h = hcal_harness()
+    h.fsm.inputs.docked = True
+    h.tick()
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'UNDOCKING'
+    assert not [e for e in h.since(0, f.StartAction) if e.name == f.ACT_DRIVE]
 
 
 def test_transit_goal_yaw_is_first_subpath_heading():

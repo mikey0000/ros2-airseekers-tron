@@ -86,6 +86,11 @@ um960_node:
     # then "$GNRTK,ON*69" every ntrip_keepalive_s (the board falls back to LoRa
     # after ~6 s without it).
     ntrip_keepalive_s: 4.0
+    # false (default): the first handshake after the node starts sends only
+    # "$GNRTK,ON*69", no RTKRESET, so a stack restart keeps the running receiver's RTK
+    # fix (2026-10-13: the reset cost ~25 s of float and blocked the heading check).
+    # Board ON -> OFF and later source switches still send RTKRESET.
+    rtk_reset_on_start: false
     # RTCM is held until the board reports $GNRTK,ON. true = forward anyway (bench
     # tests with a pty / no rover board).
     forward_rtcm_without_board_ack: false

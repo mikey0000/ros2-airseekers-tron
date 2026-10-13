@@ -388,6 +388,32 @@ retries in 3 h. Arcs with the inner wheel at 0.06 m/s or more do move the robot.
   - The "turn leg end ... leg done" INFO lines on retries.
   - A rosbag of a few turns (`/cmd_vel_nav`, `/cmd_vel`, `~/shape_status`, odom) to confirm
     the 0.14 m/s arcs track on turf.
+## Heading after a restart off the dock (2026-10-13, unit-tested only)
+
+10:40: the stack restarted on the lawn and START was refused ("heading not aligned"). The
+offset saved 5 s earlier was rejected as "moved 1.24 m": the um960 node had sent `RTKRESET`
+and the one-shot continuity check averaged five float positions of the re-convergence.
+The owner's 0.05 m/s manual drive was below the COG `min_speed` (0.06).
+
+- **Continuity check** (`heading_logic._try_verify`): the yaw test is decided first and
+  rejects at once (IMU restarted). The position test uses only 5 consecutive RTK-fixed
+  positions (0.5 m). The check stays pending until decided or `verify_timeout` (30 -> 180 s).
+  Status `file_check`: pending | yaw_ok | yaw_failed | unverifiable | verified.
+- **um960** `rtk_reset_on_start: false`: the first handshake after node start sends only
+  `$GNRTK,ON*69`. Later ON -> OFF edges and source switches still reset.
+- **COG** `min_speed` 0.06 -> 0.04 m/s. The message now says "drive straight 1 m at 0.1 m/s
+  or more in manual, or start from the dock". Diagnostics show the COG gate reason.
+- **Calibration drive** (`heading_calibration_*`, on by default). START off the dock with
+  `file` + `yaw_ok` waits for RTK fixed (+3 s), then drives 1.0 m at 0.15 m/s with the
+  blade off. It uses Nav2 DriveOnHeading, or BackUp when only the line behind is clear.
+  The line (+ footprint, width, +-10 deg) must lie in one mowing area, outside its keepouts.
+  It stops once aligned, on an in-line obstacle, STOP or emergency. It then plans as a
+  normal START. Failure: idle in place, never dock or Nav2 on the unverified heading.
+- **Verify live:**
+  - Restart the stack off the dock: the log should show "verified ... RTK fixed".
+  - Push the robot >0.5 m with the stack down: START drives 1 m, then mows.
+  - With the IMU power-cycled: START is refused (yaw_failed).
+  - Behavior_server output bypasses collision_monitor (its own costmap check only).
 
 ## Open risks
 

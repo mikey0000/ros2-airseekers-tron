@@ -44,6 +44,16 @@ in priority order:
           heading 180 deg off the measured dock pose (verified 2026-10-11 on the docked Tron).
 ``file``  the persisted offset of the last COG update. Low quality (the IMU yaw restarts at
           an arbitrary value on every IMU power cycle), never counts as aligned.
+``file_verified`` the persisted offset after the continuity check (:meth:`HeadingEstimator.
+          _try_verify`): the IMU yaw is still where it was at the save (yaw test, decided as
+          soon as there is an IMU sample: a failure rejects at once) AND ``verify_samples``
+          consecutive RTK-FIXED positions average within ``verify_max_move`` of the saved one.
+          Float / single positions are never used for it: right after a stack restart the
+          receiver re-converges (2026-10-13 10:40: the first five float positions sat 1.24 m
+          off and rejected a good offset), so the check stays pending until fixed positions
+          arrive or ``verify_timeout`` expires. ``status()['file_check']`` tells the mission
+          whether a ``file`` offset is still a usable prior (``yaw_ok``: the IMU did not
+          restart, only the position is unproven) for its heading-calibration drive.
 
 The estimator also detects an IMU yaw reset (a step in yaw that the gyro rate does not
 explain) and drops back to unaligned.
@@ -142,8 +152,13 @@ class AlignParams:
     """Tunables (all angles in degrees in the ROS parameters, radians here)."""
 
     def __init__(self, **kw):
-        self.min_speed = 0.06            # m/s |cmd linear|: GUI joystick drives often sit near 0.1; RTK
-                                         # fixed noise (~2 cm) is small against the 0.6 m window
+        self.min_speed = 0.04            # m/s |cmd linear|: GUI joystick drives often sit near 0.05-0.1
+                                         # (2026-10-13: an owner drive at 0.05 never aligned under
+                                         # 0.06). Accuracy does not depend on speed: the window is
+                                         # min_distance (0.6 m) of travel, and RTK fixed noise
+                                         # (~1-2 cm) across 0.6 m is ~2 deg; a slower drive only
+                                         # takes longer (15 s at 0.04) and must stay inside
+                                         # max_window_time
         self.max_turn_rate = 0.25        # rad/s |cmd angular|: joystick jitter is tolerated here;
                                          # straightness is judged from the GPS chord (max_lateral)
                                          # and the gyro (max_gyro_rate, max_imu_yaw_change)
@@ -193,10 +208,13 @@ class AlignParams:
         self.sigma_file_verified = math.radians(5.0)
         # persisted-offset continuity check (container restart, IMU kept running)
         self.verify_max_yaw = math.radians(5.0)    # |imu yaw now - imu yaw at save|
-        self.verify_max_move = 0.5                 # m between saved and current GPS xy
+        self.verify_max_move = 0.5                 # m between saved and current RTK-FIXED xy
         self.verify_max_age = 6 * 3600.0           # s (wall clock) since the save
-        self.verify_timeout = 30.0                 # s after boot to get IMU + RTK for it
-        self.verify_samples = 5                    # RTK positions averaged for the check
+        self.verify_timeout = 180.0                # s after boot to get IMU + RTK fixed for it:
+                                                   # covers an RTK re-convergence after a
+                                                   # receiver reset (~25 s seen, longer under
+                                                   # trees); was 30 s
+        self.verify_samples = 5                    # consecutive RTK-fixed positions averaged
         self.sigma_none = 10.0           # rad: effectively "do not use"
         self.drift_rate = math.radians(1.0) / 60.0   # rad/s yaw drift growth after an update
         for k, v in kw.items():
@@ -248,8 +266,13 @@ class HeadingEstimator:
         self._dock_mean = None
         self._win = None
         self.gps_xy = None           # last RTK (float/fixed) GPS position, map/ENU
-        self._gps_recent = []        # last few RTK positions (the continuity check averages)
+        self._gps_recent = []        # last consecutive RTK-FIXED positions (continuity check)
         self._pending = None         # persisted record awaiting the continuity check
+        # continuity check of a 'file' offset: '' (none loaded), 'unverifiable' (no / old
+        # record), 'pending' (no IMU yet), 'yaw_ok' (IMU did not restart; position pending,
+        # rejected or timed out), 'yaw_failed' (IMU restarted: the offset is meaningless),
+        # 'verified'
+        self.file_check = ''
         self.n_rtk = 0               # RTK heading samples accepted (seed / blend)
         self.rtk_gate = ''           # why the last RTK sample was not used
         self._rtk_seed = []          # consistent-sample buffer while unaligned (offsets)
@@ -296,6 +319,9 @@ class HeadingEstimator:
             'gate': self.gate_reason,
             'rtk_updates': self.n_rtk,
             'rtk_gate': self.rtk_gate,
+            'file_check': self.file_check if self.source in (SOURCE_FILE, SOURCE_FILE_VERIFIED)
+            else '',
+            'min_speed': self.p.min_speed,
         }
         if self.last_cog is not None:
             t, cog, meas, dist = self.last_cog
@@ -323,44 +349,82 @@ class HeadingEstimator:
             self.source = SOURCE_FILE
             self.updated_at = now
             self.last_event = 'loaded persisted offset (low quality until dock/COG)'
+            self.file_check = 'unverifiable'
             rec = record or {}
             if all(rec.get(k) is not None for k in ('imu_yaw', 'x', 'y', 'saved_wall')):
                 wall = time.time() if now_wall is None else now_wall
                 age = wall - rec['saved_wall']
                 if 0.0 <= age <= self.p.verify_max_age:
-                    self._pending = dict(rec, loaded_at=now)
+                    self._pending = dict(rec, loaded_at=now, yaw_ok=False)
+                    self.file_check = 'pending'
                 else:
                     self.last_event += '; not verifiable: saved %.1f h ago' % (age / 3600.0)
 
+    def poll_verify(self, now):
+        """Re-evaluate a pending continuity check (the timeout also expires without input)."""
+        self._try_verify(now)
+
     def _try_verify(self, now):
+        """Continuity check of the persisted offset, pending until decided.
+
+        1. yaw test, as soon as there is an IMU sample (and again at every evaluation):
+           ``|imu yaw now - imu yaw at the save| > verify_max_yaw`` = the IMU restarted ->
+           rejected at once, whatever the position says.
+        2. position test, only on ``verify_samples`` consecutive RTK-FIXED positions (float
+           and single fixes are ignored while the receiver re-converges): mean farther than
+           ``verify_max_move`` from the saved position -> rejected, else verified.
+        3. ``verify_timeout`` after the load without a decision -> not verified (stays 'file').
+        One log line (``last_event``) per outcome."""
         rec = self._pending
         if rec is None:
             return
-        if now - rec['loaded_at'] > self.p.verify_timeout:
-            self._pending = None
-            self.last_event = 'persisted offset not verified (no IMU/RTK in time)'
-            return
-        if self.imu_yaw is None or len(self._gps_recent) < self.p.verify_samples:
-            return
-        self._pending = None
         if self.source != SOURCE_FILE:
+            # a dock / COG / RTK seed replaced the file offset: nothing left to verify
+            self._pending = None
+            self.file_check = ''
             return
-        dyaw = wrap(self.imu_yaw - rec['imu_yaw'])
-        n = len(self._gps_recent)
-        mx = sum(q[0] for q in self._gps_recent) / n
-        my = sum(q[1] for q in self._gps_recent) / n
-        moved = math.hypot(mx - rec['x'], my - rec['y'])
-        if abs(dyaw) > self.p.verify_max_yaw:
-            self.last_event = ('persisted offset rejected: IMU yaw moved %.1f deg since the '
-                               'save (IMU restarted?)' % math.degrees(dyaw))
-        elif moved > self.p.verify_max_move:
-            self.last_event = ('persisted offset rejected: robot moved %.2f m since the save'
-                               % moved)
-        else:
+        p = self.p
+        if self.imu_yaw is not None:
+            dyaw = wrap(self.imu_yaw - rec['imu_yaw'])
+            if abs(dyaw) > p.verify_max_yaw:
+                self._pending = None
+                self.file_check = 'yaw_failed'
+                self.last_event = ('persisted offset rejected: IMU yaw moved %.1f deg since the '
+                                   'save (IMU restarted?)' % math.degrees(dyaw))
+                return
+            if not rec['yaw_ok']:
+                rec['yaw_ok'] = True
+                self.file_check = 'yaw_ok'
+                self.last_event = ('persisted offset: IMU yaw %+.1f deg since the save (ok), '
+                                   'waiting for %d RTK-fixed positions' % (
+                                       math.degrees(dyaw), p.verify_samples))
+        if self.imu_yaw is not None and len(self._gps_recent) >= p.verify_samples:
+            n = len(self._gps_recent)
+            mx = sum(q[0] for q in self._gps_recent) / n
+            my = sum(q[1] for q in self._gps_recent) / n
+            moved = math.hypot(mx - rec['x'], my - rec['y'])
+            self._pending = None
+            if moved > p.verify_max_move:
+                # yaw_ok stays: the offset is still a usable prior for a calibration drive
+                self.last_event = ('persisted offset rejected: robot moved %.2f m since the '
+                                   'save (RTK fixed)' % moved)
+                return
             self.source = SOURCE_FILE_VERIFIED
             self.updated_at = now
+            self.file_check = 'verified'
             self.last_event = ('persisted offset verified (IMU yaw %+.1f deg, moved %.2f m '
-                               'since the save)' % (math.degrees(dyaw), moved))
+                               'since the save, RTK fixed)' % (math.degrees(dyaw), moved))
+            return
+        if now - rec['loaded_at'] > p.verify_timeout:
+            self._pending = None
+            if self.imu_yaw is None:
+                self.file_check = 'unverifiable'
+                what = 'no IMU'
+            else:
+                what = 'no %d RTK-fixed positions (got %d)' % (p.verify_samples,
+                                                               len(self._gps_recent))
+            self.last_event = ('persisted offset not verified: %s within %.0f s'
+                               % (what, p.verify_timeout))
 
     def persist_record(self):
         """(offset, imu_yaw, x, y) to save while aligned, or None."""
@@ -397,6 +461,9 @@ class HeadingEstimator:
         receiver sample must be handed over once (see :meth:`on_rtk_heading`).
         """
         self.fix_type, self.fix_t = fix_type, now
+        if fix_type != 3:
+            self._gps_recent = []        # the continuity check wants CONSECUTIVE fixed positions
+        self._try_verify(now)
         if heading_enu is not None:
             self.on_rtk_heading(now, heading_enu)
 
@@ -527,8 +594,11 @@ class HeadingEstimator:
         if self.fix_type is not None and p.min_fix_type <= self.fix_type <= 3 and \
                 self.fix_t is not None and now - self.fix_t <= max(p.gps_timeout, 1.0):
             self.gps_xy = (x, y)
-            self._gps_recent = (self._gps_recent + [(x, y)])[-p.verify_samples:]
-            self._try_verify(now)
+            if self.fix_type == 3:
+                self._gps_recent = (self._gps_recent + [(x, y)])[-p.verify_samples:]
+            else:
+                self._gps_recent = []
+        self._try_verify(now)
         ok, direction = self._straight_motion(now, variance)
         w = self._win
         if not ok:
@@ -670,6 +740,7 @@ class HeadingEstimator:
             self.docked_since = now
         # the old offset is meaningless against the restarted yaw
         self._pending = None
+        self.file_check = ''
         self.offset = None
         self.source = SOURCE_NONE
         self.updated_at = None
