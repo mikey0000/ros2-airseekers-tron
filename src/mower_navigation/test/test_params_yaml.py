@@ -503,6 +503,16 @@ def test_mppi_transit():
     assert _ctl("FollowPathRPP")["plugin"].endswith("RegulatedPurePursuitController")
 
 
+def test_mppi_accel_limits_match_cmd_vel_slew():
+    """2026-10-14: MPPI without ax/az limits planned with the Jazzy defaults (~3 m/s^2)
+    while cmd_vel_slew (the authoritative limiter) allows 0.5 / -0.8 m/s^2, 1.0 rad/s^2."""
+    for name in ("FollowPath", "FollowCoveragePathMPPI"):
+        c = _ctl(name)
+        assert c["ax_max"] == 0.5, name
+        assert c["ax_min"] == -0.8, name
+        assert c["az_max"] == 1.0, name
+
+
 def test_mppi_coverage_alternative():
     c = _ctl("FollowCoveragePathMPPI")
     base = _ctl("FollowPath")
@@ -675,6 +685,16 @@ if __name__ == "__main__":
 def test_velocity_smoother_angular_matches_mcu_clamp():
     vs = load()["velocity_smoother"]["ros__parameters"]
     assert vs["max_velocity"][2] <= 0.3 and vs["min_velocity"][2] >= -0.3
+
+
+def test_velocity_smoother_wider_than_cmd_vel_slew():
+    """2026-10-14: cmd_vel_slew (0.5 / -0.8 m/s^2, 1.0 rad/s^2) is the single limiter; the
+    smoother must not be tighter or the chain double-smooths."""
+    vs = load()["velocity_smoother"]["ros__parameters"]
+    assert vs["max_accel"][0] >= 1.0 and vs["max_accel"][2] >= 1.0
+    assert vs["max_decel"][0] <= -1.5 and vs["max_decel"][2] <= -1.0
+    assert vs["smoothing_frequency"] == 20.0 and vs["feedback"] == "OPEN_LOOP"
+    assert vs["deadband_velocity"] == [0.01, 0.0, 0.01]
 
 
 def test_nongrass_layer_is_soft_and_below_inflation():

@@ -129,6 +129,15 @@ command to the NEARER legal regime:
 Pure pivots at |w| >= 0.25 pass unchanged. Track width b = 0.48 m (URDF `drive_track_y`
 0.24 x 2).
 
+Regime latch (2026-10-14): the snap boundary is inner = 0, so at |w| = 0.3 a v of 0.070
+snapped to a pivot (v = 0) and 0.075 to an arc (v = 0.132); a controller sitting in that
+band flipped the target every tick. `TurnShaper` now latches the regime (pivot = inner
+wheel backwards, arc = forwards). Changing it needs the raw inner wheel
+`turn_shaper_hysteresis_mps` (0.02) past the boundary, or `turn_shaper_latch_ticks` (6)
+ticks in a row asking for the other regime; meanwhile the command is shaped to the latched
+regime (pivot snap or tightest legal arc). Straight/stop, an exact pure pivot (v = 0) or a
+sign change of v or w release the latch. Hysteresis 0 restores the stateless snap.
+
 History: the first version (same day) converted every pivot into a forward arc capped at
 0.3 m of travel (then a 2 s true-pivot fallback). That turned the docking about-turn into
 an r ~ 0.4 m arc that swung the robot past the dock, so the conversion, the 0.3 m cap and
@@ -146,8 +155,35 @@ front/side vision obstacle is within 1.5 m: the slew is downstream of collision_
 nothing else collision-checks the creep. During an assist episode only (creep ramp-up,
 hold and ramp-down) the slew keeps every tick out of the one-wheel zone
 (`slew_both_wheels`): the pivot <-> creep-arc change passes through a stop (w to 0, then v),
-instead of ramping v at full |w| through inner (-0.06, +0.06) for 5-9 ticks. Normal
-MPPI/RPP driving keeps the plain per-axis slew of the shaped target.
+instead of ramping v at full |w| through inner (-0.06, +0.06) for 5-9 ticks. Other
+MPPI/RPP driving uses the coupled slew (see "Velocity chain limits" below).
+
+## Velocity chain limits (cmd_vel_slew, 2026-10-14)
+
+`cmd_vel_slew` is the authoritative rate limiter of the chain (nav2 MPPI FollowPath ->
+velocity_smoother -> collision_monitor -> twist_mux -> cmd_vel_slew -> mcu_node).
+
+* **Decel:** `max_linear_accel` 0.5 m/s^2 applies while |v| grows, `max_linear_decel`
+  0.8 m/s^2 while it shrinks toward zero (vendor pure pursuit: accel 0.5 / decel 0.8 /
+  angular 1.5, `adaptivePurePursuit.h:23-25`). A sign change decelerates to zero, then
+  accelerates. `max_angular_decel` defaults to `max_angular_accel` (1.0).
+* **Hard stops:** when a `hard_stop_lanes` lane (default `emergency`, `bumper`) wins in
+  twist_mux (re-derived by `LaneTracker`) and commands an exact zero, the output goes to
+  zero on that tick, not ramped. The watchdog / motion-gate hard zero is unchanged; a
+  nav/teleop/docking zero still ramps at the decel rate.
+* **No double smoothing:** nav2 `velocity_smoother` is widened to max_accel
+  [1.0, 0, 3.0] / max_decel [-1.5, 0, -3.0] (20 Hz, OPEN_LOOP and deadband unchanged) so
+  it no longer stacks a second 0.5 m/s^2 ramp on the slew, and MPPI (`FollowPath`,
+  `FollowCoveragePathMPPI`) plans with the slew's limits: `ax_max` 0.5, `ax_min` -0.8,
+  `az_max` 1.0 (Jazzy defaults were ~3).
+* **Coupled slew:** in turn-shaper phases (`slew_both_wheels_always`, default true)
+  `slew_coupled` moves v and w together along the line to the target at the largest
+  fraction both axis limits allow, so an arc from rest keeps the target's curvature and
+  its inner wheel rolls with the outer (it is below 0.06 m/s only in the first ticks
+  from rest, never backwards). Before, v ramped at 0.5 and w at 1.0 separately, which
+  bent the arc during the ramp. Pivot <-> arc changes fall back to `slew_both_wheels`
+  (through a stop). False = the old per-axis slew outside assist episodes; docking and
+  manual phases keep the per-axis slew.
 
 ## Drive at rest (2026-10-07): no host-side release exists
 

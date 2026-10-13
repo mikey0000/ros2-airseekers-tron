@@ -22,6 +22,17 @@ Parameters
 ----------
 ``max_linear_accel``   ``0.5``    m/s^2 cap on linear.x acceleration
 ``max_angular_accel``  ``1.0``    rad/s^2 cap on angular.z acceleration
+``max_linear_decel``   ``0.8``    m/s^2 cap while |linear.x| shrinks toward zero (a sign
+                                  change decelerates to 0, then accelerates); vendor
+                                  pure pursuit used accel 0.5 / decel 0.8
+``max_angular_decel``  = ``max_angular_accel``  rad/s^2, same for angular.z
+``hard_stop_lanes``    ``['emergency', 'bumper']``  twist_mux lanes whose zero command
+                                  (while the lane wins) is applied at once, not ramped
+``slew_both_wheels_always`` ``true``  wherever the turn shaper is active, slew both axes
+                                  together (:func:`slew_coupled`: the target's v/w ratio is
+                                  kept from rest, pivot <-> arc passes through a stop);
+                                  false = the old independent per-axis slew outside
+                                  pivot-assist episodes
 ``cmd_timeout``        ``0.5``    s after the last ``/cmd_vel_raw`` the output is
                                   forced to exactly zero (immediate exact stop,
                                   MowgliNext style) and held there until a fresh
@@ -57,6 +68,12 @@ Parameters
                                   arc or a proper pivot (|w| >= 0.25);
                                   ``shape_manual`` (false) leaves the joystick untouched.
                                   Decision latched on ``~/shape_status``
+``turn_shaper_hysteresis_mps`` ``0.02``  pivot/arc regime latch (see :class:`TurnShaper`):
+                                  a latched regime changes only once the raw inner wheel
+                                  is this far past the inner = 0 boundary (0 = no latch,
+                                  the old stateless snap) or after
+``turn_shaper_latch_ticks``    ``6``     ticks in a row asking for the other regime
+                                  (0 = no time-based release)
 ``applied_log_period`` ``1.0``    s between ``cmd_vel applied`` log lines
                                   (0 = every tick)
 ``idle_publish_s``     ``0.5``    s of all-zero output after the last non-zero output
@@ -99,8 +116,11 @@ Behaviour
   ``accel * dt`` toward the target; every other twist component passes through
   unchanged.  During a pivot-assist episode only (creep ramp-up, hold and
   ramp-down) the step also never lands in the one-wheel zone
-  (:func:`slew_both_wheels`: the pivot <-> creep-arc change passes through a stop);
-  normal driving is the plain per-axis slew of the turn-shaped target.
+  (:func:`slew_both_wheels`: the pivot <-> creep-arc change passes through a stop).
+  Other driving in turn-shaper phases uses :func:`slew_coupled` (both axes scaled
+  together, curvature kept) unless ``slew_both_wheels_always`` is false, which gives
+  the plain per-axis slew of the turn-shaped target. Decel (magnitude shrinking toward
+  zero) uses the ``max_*_decel`` rates.
 * Every published command is echoed to the log at full float precision (the
   MowgliNext ``/cmd_vel_applied`` idea, as a log line instead of a topic),
   throttled to ``applied_log_period`` (default 1 s; 0 = every tick, the old
@@ -140,6 +160,22 @@ def slew(current, target, max_accel, dt):
     if abs(delta) <= max_delta:
         return target
     return current + math.copysign(max_delta, delta)
+
+
+def slew_ad(current, target, max_accel, max_decel, dt):
+    """:func:`slew` with separate rates: ``max_decel`` while the magnitude shrinks toward
+    zero, ``max_accel`` while it grows. A sign change decelerates to zero first, then
+    accelerates for the rest of ``dt``. ``max_decel`` None = ``max_accel``."""
+    if max_decel is None or max_decel == max_accel:
+        return slew(current, target, max_accel, dt)
+    if current == 0.0 or (current > 0.0) == (target > 0.0) and target != 0.0:
+        rate = max_accel if abs(target) >= abs(current) else max_decel
+        return slew(current, target, rate, dt)
+    # toward zero (target 0 or the opposite sign)
+    if abs(current) > max_decel * dt:
+        return current - math.copysign(max_decel * dt, current)
+    rest = dt - abs(current) / max_decel if max_decel > 0.0 else 0.0
+    return slew(0.0, target, max_accel, rest)
 
 
 def wrap_angle(a):
@@ -296,6 +332,9 @@ TWIST_MUX_LANES = (
     ('navigation', '/cmd_vel_nav', 10, 0.6),
 )
 NAV_LANE = 'navigation'
+# A zero command on one of these lanes (while it wins in twist_mux) is applied at once, not
+# ramped down at max_linear_decel (node parameter ``hard_stop_lanes``).
+HARD_STOP_LANES = ('emergency', 'bumper')
 # controller_server's own output (before velocity_smoother / collision_monitor). Nav2's
 # behavior_server (Spin, BackUp, DriveOnHeading) publishes straight to /cmd_vel_nav, so a
 # nav-lane pivot without a fresh controller command is a recovery, not a FollowPath pivot.
@@ -561,9 +600,13 @@ def shape_for_both_wheels(v, w, params=None):
         # pulses and the robot hunted around the heading (2026-10-07).
         return v, w, None
     if inner <= 0.0:                          # one-wheel zone with some forward speed
-        aw = min(max(abs(w), v_min / half), w_max)
-        info = {'kind': 'pivot', 'r': 0.0, 'inner': -aw * half, 'outer': aw * half}
-        return 0.0, math.copysign(aw, w), info
+        return _pivot_snap(w, half, v_min, w_max)
+    return _tight_arc(v, w, half, v_min, v_max)
+
+
+def _tight_arc(v, w, half, v_min, v_max):
+    """The tightest arc in the direction of ``v`` keeping the inner wheel at ``v_min``
+    (lowering |w| so the outer wheel stays <= ``v_max``): ``(v, w, info)``."""
     sign = -1.0 if v < 0.0 else 1.0
     aw = abs(w)
     av = v_min + aw * half
@@ -573,6 +616,13 @@ def shape_for_both_wheels(v, w, params=None):
     info = {'kind': 'arc', 'r': av / aw if aw > 0.0 else float('inf'),
             'inner': av - aw * half, 'outer': av + aw * half}
     return sign * av, math.copysign(aw, w), info
+
+
+def _pivot_snap(w, half, v_min, w_max):
+    """The pure pivot the shaper snaps a one-wheel command to: ``(0, w, info)``."""
+    aw = min(max(abs(w), v_min / half), w_max)
+    info = {'kind': 'pivot', 'r': 0.0, 'inner': -aw * half, 'outer': aw * half}
+    return 0.0, math.copysign(aw, w), info
 
 
 def both_wheels_legal(v, w, params=None):
@@ -587,9 +637,10 @@ def both_wheels_legal(v, w, params=None):
 
 
 def slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
-                     params=None):
+                     params=None, max_lin_decel=None, max_ang_decel=None):
     """One slew step from (cur_v, cur_w) toward a legal target that never lands in the
-    one-wheel zone. Used for pivot-assist episodes only (2026-10-13 review: the 0 -> 0.14 creep ramp at |w| = 0.3 spent 5-9
+    one-wheel zone. Used for pivot-assist episodes and as the pivot <-> arc fallback of
+    :func:`slew_coupled` (2026-10-13 review: the 0 -> 0.14 creep ramp at |w| = 0.3 spent 5-9
     ticks with the inner wheel in (-0.06, +0.06); 831 of 3251 assisted ticks in the
     10-10/10-11 bags).
 
@@ -604,70 +655,183 @@ def slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, d
       min); when |w| cannot be shed that fast, it is shed at the full angular rate and |v|
       is held at min + |w| b/2 until it can.
 
-    Independent per-axis slew whenever its result is already legal (normal driving).
+    Independent per-axis slew whenever its result is already legal. Decel rates
+    (``max_*_decel``, None = the accel rate) apply as in :func:`slew_ad`.
     """
     p = dict(SHAPE_DEFAULTS)
     if params:
         p.update(params)
-    v1 = slew(cur_v, tgt_v, max_lin_accel, dt)
-    w1 = slew(cur_w, tgt_w, max_ang_accel, dt)
+
+    def sv(cur, tgt):
+        return slew_ad(cur, tgt, max_lin_accel, max_lin_decel, dt)
+
+    def sw(cur, tgt):
+        return slew_ad(cur, tgt, max_ang_accel, max_ang_decel, dt)
+
+    v1 = sv(cur_v, tgt_v)
+    w1 = sw(cur_w, tgt_w)
     if both_wheels_legal(v1, w1, p):
         return v1, w1
     half = 0.5 * float(p['track_width_m'])
     v_min = float(p['min_inner_wheel_mps'])
-    dv, dw = max_lin_accel * dt, max_ang_accel * dt
+    dw = max_ang_accel * dt
     if abs(cur_v) - abs(cur_w) * half < 0.0:          # pivot side
-        vn = slew(cur_v, 0.0, max_lin_accel, dt)
+        vn = sv(cur_v, 0.0)
         if abs(vn) < 1e-6:
-            return 0.0, slew(cur_w, 0.0, max_ang_accel, dt)
+            return 0.0, sw(cur_w, 0.0)
         # still drifting off a counter-rotating pivot: keep it a proper pivot
         need = (abs(vn) + v_min) / half
         wn = math.copysign(min(max(abs(w1), need), abs(cur_w) + dw), cur_w)
         return vn, wn
     cap = max(0.0, (abs(v1) - v_min) / half)          # arc side
     wn = max(-cap, min(cap, w1))
-    if abs(wn - cur_w) <= dw + 1e-12:
+    if abs(sw(cur_w, wn) - wn) <= 1e-12:
         return v1, wn
-    wn = slew(cur_w, 0.0, max_ang_accel, dt)
+    wn = sw(cur_w, 0.0)
     need = v_min + abs(wn) * half
     sign = math.copysign(1.0, cur_v)
     same = abs(v1) if v1 * sign > 0.0 else 0.0
     vn = sign * max(same, need)
-    vn = max(cur_v - dv, min(cur_v + dv, vn))
+    vn = sv(cur_v, vn)
     return vn, wn
 
 
-class TurnShaper:
-    """Stateful wrapper: phase gating + latched status. Manual phases pass unless
-    ``shape_manual``."""
+def _axis_rate(cur, tgt, accel, decel):
+    """The rate limit for one axis moving ``cur`` -> ``tgt`` (decel toward zero)."""
+    if decel is None:
+        return accel
+    if cur == 0.0 or ((cur > 0.0) == (tgt > 0.0) and tgt != 0.0 and abs(tgt) >= abs(cur)):
+        return accel
+    if (cur > 0.0) == (tgt > 0.0) or tgt == 0.0:
+        return decel
+    return min(accel, decel)                          # zero crossing within the step
 
-    def __init__(self, enabled=True, shape_manual=False, **params):
+
+def slew_coupled(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
+                 params=None, max_lin_decel=None, max_ang_decel=None):
+    """One slew step that moves both axes together along the straight line from
+    (cur_v, cur_w) to the target, at the largest fraction both axis limits allow
+    (2026-10-14 review): from rest the ratio v/w (the curvature) of the target is kept
+    on every tick and the inner wheel rolls the same way as the outer, instead of the
+    per-axis ramp (v at 0.5, w at 1.0) bending the arc and leaving the inner wheel in
+    the one-wheel zone.
+
+    Accepted when the step is legal (:func:`both_wheels_legal`) or its inner wheel rolls
+    forward (inner >= 0: the unavoidable slow start/end of an arc from/to rest) and
+    neither end is on the pivot side (inner < 0). Otherwise, e.g. pivot <-> arc, the
+    step is :func:`slew_both_wheels`, which passes through a stop.
+    """
+    p = dict(SHAPE_DEFAULTS)
+    if params:
+        p.update(params)
+    dv, dw = tgt_v - cur_v, tgt_w - cur_w
+    lim_v = _axis_rate(cur_v, tgt_v, max_lin_accel, max_lin_decel) * dt
+    lim_w = _axis_rate(cur_w, tgt_w, max_ang_accel, max_ang_decel) * dt
+    frac = 1.0
+    if abs(dv) > lim_v:
+        frac = min(frac, lim_v / abs(dv))
+    if abs(dw) > lim_w:
+        frac = min(frac, lim_w / abs(dw))
+    if frac >= 1.0:
+        nv, nw = tgt_v, tgt_w
+    else:
+        nv, nw = cur_v + frac * dv, cur_w + frac * dw
+    half = 0.5 * float(p['track_width_m'])
+
+    def inner(v, w):
+        return abs(v) - abs(w) * half
+
+    def pivot_side(v, w):
+        return abs(w) > 1e-6 and inner(v, w) < -1e-9
+
+    if both_wheels_legal(nv, nw, p) or (
+            inner(nv, nw) >= -1e-9 and not pivot_side(cur_v, cur_w)
+            and not pivot_side(tgt_v, tgt_w)):
+        return nv, nw
+    return slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, dt,
+                            p, max_lin_decel, max_ang_decel)
+
+
+class TurnShaper:
+    """Stateful wrapper: phase gating, a pivot/arc regime latch and latched status. Manual
+    phases pass unless ``shape_manual``.
+
+    Regime latch (2026-10-14 review): the snap boundary is inner = 0, e.g. at |w| = 0.3
+    v = 0.070 snaps to a pivot (v = 0) and v = 0.075 to an arc (v = 0.132), so a
+    controller sitting in that band flipped the target every tick. A turn command is in
+    the *pivot* regime when its inner wheel runs backwards (inner < 0, pure pivots
+    included; shaped to v = 0) and in the *arc* regime otherwise. Once latched, a change
+    of regime needs the raw inner wheel to be ``hysteresis_mps`` past the boundary
+    (pivot -> arc: inner >= +h; arc -> pivot: inner <= -h) or the other regime to be
+    asked for ``latch_ticks`` ticks in a row (0 = no time-based release). Meanwhile the
+    command is shaped to the latched regime (the pivot snap, or the tightest legal arc),
+    so the output stays legal either way. A straight / stop command, an exact pure
+    pivot (v = 0: a deliberate rotate-to-heading) or a sign change of v or w releases the
+    latch. ``hysteresis_mps`` 0 = the old stateless behaviour.
+    """
+
+    def __init__(self, enabled=True, shape_manual=False, hysteresis_mps=0.02, latch_ticks=6,
+                 **params):
         self.enabled = bool(enabled)
         self.shape_manual = bool(shape_manual)
+        self.hysteresis_mps = float(hysteresis_mps)
+        self.latch_ticks = int(latch_ticks)
         self.params = dict(SHAPE_DEFAULTS)
         self.params.update(params)
         self.reset()
 
     def reset(self):
         self.status = 'pass'
+        self.regime = None        # latched 'pivot' | 'arc' | None
+        self._signs = None        # (sign v, sign w) of the command that set the latch
+        self._pending = 0         # consecutive ticks the other regime was asked for
 
     def is_active(self, phase):
         return self.enabled and (phase in SHAPE_PHASES or
                                  (self.shape_manual and phase in MANUAL_PHASES))
+
+    def _latched(self, v, w, sv, sw, info):
+        """Apply the regime latch to the stateless decision ``(sv, sw, info)``."""
+        if abs(w) < 1e-6 or abs(v) < 1e-6 or self.hysteresis_mps <= 0.0:
+            self.regime = None if abs(w) < 1e-6 else 'pivot'
+            self._signs, self._pending = None, 0
+            return sv, sw, info
+        half = 0.5 * float(self.params['track_width_m'])
+        inner = abs(v) - abs(w) * half
+        want = 'pivot' if inner < 0.0 or sv == 0.0 else 'arc'
+        signs = (math.copysign(1.0, v), math.copysign(1.0, w))
+        if self.regime is None or want == self.regime or signs != self._signs:
+            self.regime, self._signs, self._pending = want, signs, 0
+            return sv, sw, info
+        self._pending += 1
+        h = self.hysteresis_mps
+        if ((want == 'arc' and inner >= h) or (want == 'pivot' and inner <= -h)
+                or (self.latch_ticks > 0 and self._pending >= self.latch_ticks)):
+            self.regime, self._signs, self._pending = want, signs, 0
+            return sv, sw, info
+        v_min = float(self.params['min_inner_wheel_mps'])
+        if self.regime == 'pivot':
+            out = _pivot_snap(w, half, v_min, float(self.params['angular_max']))
+        else:
+            out = _tight_arc(v, w, half, v_min, float(self.params['linear_max']))
+        out[2]['held'] = True
+        return out
 
     def apply(self, v, w, phase, dt):
         """Return the shaped (v, w) for raw target (v, w) in mission ``phase``."""
         if not self.is_active(phase):
             self.reset()
             return v, w
-        sv, sw, info = shape_for_both_wheels(v, w, self.params)
+        sv, sw, info = self._latched(v, w, *shape_for_both_wheels(v, w, self.params))
         if info is None:
             self.status = 'pass'
             return v, w
+        held = ', held' if info.get('held') else ''
         if info['kind'] == 'pivot':
-            self.status = 'pivot w=%.2f rad/s, inner %.2f m/s' % (abs(sw), info['inner'])
+            self.status = 'pivot w=%.2f rad/s, inner %.2f m/s%s' % (
+                abs(sw), info['inner'], held)
         else:
-            self.status = 'arc r=%.2f m, inner %.2f m/s' % (info['r'], info['inner'])
+            self.status = 'arc r=%.2f m, inner %.2f m/s%s' % (info['r'], info['inner'], held)
         return sv, sw
 
 
@@ -678,9 +842,12 @@ TURN_PARAMS = {   # node parameter -> (TurnShaper attribute / params key, type)
     'min_inner_wheel_mps': ('min_inner_wheel_mps', float),
     'linear_max': ('linear_max', float),
     'angular_max': ('angular_max', float),
+    'turn_shaper_hysteresis_mps': ('hysteresis_mps', float),
+    'turn_shaper_latch_ticks': ('latch_ticks', int),
 }
 TURN_DEFAULTS = {'turn_shaper': True, 'shape_manual': False, 'track_width_m': TRACK_WIDTH_M,
-                 'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.3}
+                 'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.3,
+                 'turn_shaper_hysteresis_mps': 0.02, 'turn_shaper_latch_ticks': 6}
 SHAPE_LOG_PERIOD_S = 2.0      # turn-shaper INFO log: on state-kind change, at most every 2 s
 
 
@@ -824,6 +991,12 @@ class CmdVelSlewNode(Node):
 
         self.declare_parameter('max_linear_accel', 0.5)
         self.declare_parameter('max_angular_accel', 1.0)
+        # Vendor pure pursuit: accel 0.5 / decel 0.8 (adaptivePurePursuit.h:23-25).
+        self.declare_parameter('max_linear_decel', 0.8)
+        self.declare_parameter('max_angular_decel',
+                               float(self.get_parameter('max_angular_accel').value))
+        self.declare_parameter('hard_stop_lanes', list(HARD_STOP_LANES))
+        self.declare_parameter('slew_both_wheels_always', True)
         self.declare_parameter('cmd_timeout', 0.5)
         self.declare_parameter('rate', 20.0)
         self.declare_parameter('frame_id', 'base_link')
@@ -865,6 +1038,12 @@ class CmdVelSlewNode(Node):
 
         self._max_linear_accel = float(self.get_parameter('max_linear_accel').value)
         self._max_angular_accel = float(self.get_parameter('max_angular_accel').value)
+        self._max_linear_decel = float(self.get_parameter('max_linear_decel').value)
+        self._max_angular_decel = float(self.get_parameter('max_angular_decel').value)
+        self._slew_both_wheels_always = bool(
+            self.get_parameter('slew_both_wheels_always').value)
+        self._hard_stop_lanes = frozenset(
+            str(n) for n in self.get_parameter('hard_stop_lanes').value or ())
         self._cmd_timeout = float(self.get_parameter('cmd_timeout').value)
         self._rate = float(self.get_parameter('rate').value)
         self._frame_id = str(self.get_parameter('frame_id').value)
@@ -943,10 +1122,12 @@ class CmdVelSlewNode(Node):
         self._runner = PeriodicRunner(self, [(1.0 / self._rate, self._tick)], 'cmd_vel_slew')
         self._runner.start()
         self.get_logger().info(
-            'cmd_vel_slew ready: max_linear_accel=%.3f m/s^2, '
-            'max_angular_accel=%.3f rad/s^2, cmd_timeout=%.3f s, rate=%.1f Hz'
-            % (self._max_linear_accel, self._max_angular_accel,
-               self._cmd_timeout, self._rate))
+            'cmd_vel_slew ready: max_linear_accel=%.3f / decel=%.3f m/s^2, '
+            'max_angular_accel=%.3f / decel=%.3f rad/s^2, cmd_timeout=%.3f s, rate=%.1f Hz, '
+            'hard_stop_lanes=%s'
+            % (self._max_linear_accel, self._max_linear_decel, self._max_angular_accel,
+               self._max_angular_decel, self._cmd_timeout, self._rate,
+               sorted(self._hard_stop_lanes)))
         self.get_logger().info('cmd_vel_slew shaping: %s%s' % (
             {n: getattr(self._shaper, n) for n in SHAPER_PARAMS},
             ' (from %s)' % sorted(overrides) if overrides else ''))
@@ -1191,21 +1372,38 @@ class CmdVelSlewNode(Node):
                         self.get_logger().info('pivot assist held: %s' % held)
             tgt_lin, tgt_ang = CmdVelSlewNode._shape_turn(self, tgt_lin, tgt_ang, dt)
             turn = getattr(self, '_turn', None)
+            lin_dec = getattr(self, '_max_linear_decel', None)
+            ang_dec = getattr(self, '_max_angular_decel', None)
             # Assist episode: from the creep's first tick until the slewed output has
             # settled on the target again after it (ramp-down / hold / hand-back). Only
-            # then does the slew keep every tick out of the one-wheel zone; normal
-            # MPPI/RPP driving keeps the plain per-axis slew of the shaped target.
+            # then does the slew keep every tick out of the one-wheel zone. Other
+            # MPPI/RPP driving in shaper phases uses slew_coupled (curvature kept), or
+            # the plain per-axis slew with slew_both_wheels_always false.
             ramp = bool(pivot is not None and pivot.active) or (
                 getattr(self, '_assist_ramp', False)
                 and (self._cur_lin, self._cur_ang) != (tgt_lin, tgt_ang))
             self._assist_ramp = ramp
-            if ramp and turn is not None and turn.is_active(phase):
+            coupled = (getattr(self, '_slew_both_wheels_always', False)
+                       and turn is not None and turn.is_active(phase))
+            if CmdVelSlewNode._hard_stop(self, now):
+                # Emergency / bumper lane commands a stop: exact zero now, no decel ramp.
+                self._cur_lin = self._cur_ang = 0.0
+                self._assist_ramp = False
+            elif ramp and turn is not None and turn.is_active(phase):
                 self._cur_lin, self._cur_ang = slew_both_wheels(
                     self._cur_lin, self._cur_ang, tgt_lin, tgt_ang,
-                    self._max_linear_accel, self._max_angular_accel, dt, turn.params)
+                    self._max_linear_accel, self._max_angular_accel, dt, turn.params,
+                    lin_dec, ang_dec)
+            elif coupled:
+                self._cur_lin, self._cur_ang = slew_coupled(
+                    self._cur_lin, self._cur_ang, tgt_lin, tgt_ang,
+                    self._max_linear_accel, self._max_angular_accel, dt, turn.params,
+                    lin_dec, ang_dec)
             else:
-                self._cur_lin = slew(self._cur_lin, tgt_lin, self._max_linear_accel, dt)
-                self._cur_ang = slew(self._cur_ang, tgt_ang, self._max_angular_accel, dt)
+                self._cur_lin = slew_ad(self._cur_lin, tgt_lin, self._max_linear_accel,
+                                        lin_dec, dt)
+                self._cur_ang = slew_ad(self._cur_ang, tgt_ang, self._max_angular_accel,
+                                        ang_dec, dt)
 
         # Pass through every component we do not shape.
         src = self._tgt if self._tgt is not None else (0.0,) * 6
@@ -1221,6 +1419,16 @@ class CmdVelSlewNode(Node):
                 '(target linear.x={!r} angular.z={!r})'.format(
                     self._cur_lin, self._cur_ang, tgt_lin, tgt_ang))
         return out
+
+    def _hard_stop(self, now):
+        """True when a ``hard_stop_lanes`` lane wins in twist_mux and the raw command is an
+        exact zero (the slew applies it at once instead of ramping down)."""
+        lanes = getattr(self, '_hard_stop_lanes', ())
+        ag = getattr(self, '_assist_gate', None)
+        tgt = self._tgt
+        if not lanes or ag is None or tgt is None or tgt[0] != 0.0 or tgt[5] != 0.0:
+            return False
+        return ag.lanes.active(now) in lanes
 
     def _assist_verdict(self, now, lin, ang, phase):
         """(lane_ok, clear, why) for the pivot assist; no gate object = never assist."""

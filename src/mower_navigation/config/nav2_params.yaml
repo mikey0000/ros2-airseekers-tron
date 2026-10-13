@@ -214,6 +214,13 @@ controller_server:
       vx_min: 0.0
       vy_max: 0.0
       wz_max: 0.3
+      # Plan with the accelerations the wheels actually get: cmd_vel_slew (mower_control
+      # cmd_vel_slew.py max_linear_accel 0.5 / max_linear_decel 0.8 / max_angular_accel
+      # 1.0) is the authoritative limiter; the Jazzy defaults (~3 m/s^2) let MPPI plan
+      # trajectories the slew then lags behind.
+      ax_max: 0.5
+      ax_min: -0.8
+      az_max: 1.0
       temperature: 0.3
       gamma: 0.015
       retry_attempt_limit: 1
@@ -461,6 +468,9 @@ controller_server:
       vx_min: 0.0
       vy_max: 0.0
       wz_max: 0.3
+      ax_max: 0.5       # = cmd_vel_slew limits, see FollowPath
+      ax_min: -0.8
+      az_max: 1.0
       temperature: 0.3
       gamma: 0.015
       retry_attempt_limit: 1
@@ -712,8 +722,11 @@ velocity_smoother:
     # a reversing turn by (w - 0.3) / 1.0 s in cmd_vel_slew.
     max_velocity: [0.5, 0.0, 0.3]
     min_velocity: [-0.3, 0.0, -0.3]
-    max_accel: [0.5, 0.0, 3.0]    # theta 3.0: do not re-ramp the RPP turn command (see max_angular_accel)
-    max_decel: [-1.0, 0.0, -3.0]
+    # cmd_vel_slew (mower_control) is the authoritative limiter (0.5 accel / 0.8 decel
+    # m/s^2, 1.0 rad/s^2): keep the smoother wider so the two do not stack (2026-10-14:
+    # 0.5 here + 0.5 in the slew lagged every start twice). Rates and deadband unchanged.
+    max_accel: [1.0, 0.0, 3.0]    # theta 3.0: do not re-ramp the RPP turn command (see max_angular_accel)
+    max_decel: [-1.5, 0.0, -3.0]
     odom_topic: /odometry/filtered
     odom_duration: 0.1
     deadband_velocity: [0.01, 0.0, 0.01]

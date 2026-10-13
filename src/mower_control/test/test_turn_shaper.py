@@ -118,3 +118,76 @@ def test_reverse_arcs():
 def test_disabled_is_neutral():
     ts = TurnShaper(enabled=False)
     assert ts.apply(0.0, 0.1, 'TRANSIT', DT) == (0.0, 0.1)
+
+
+# ------------------------------------------------------------- regime latch (2026-10-14)
+def _regime(v):
+    return 'pivot' if v == 0.0 else 'arc'
+
+
+def test_stateless_band_flips_between_pivot_and_arc():
+    """The bug the latch fixes: at |w| = 0.3, 0.070 -> pivot and 0.075 -> arc."""
+    assert shape_for_both_wheels(0.070, 0.3)[2]['kind'] == 'pivot'
+    assert shape_for_both_wheels(0.075, 0.3)[2]['kind'] == 'arc'
+    ts = TurnShaper(hysteresis_mps=0.0)                 # latch off = old behaviour
+    outs = [ts.apply(v, 0.3, 'TRANSIT', DT)[0] for v in (0.070, 0.075) * 10]
+    assert len({_regime(v) for v in outs}) == 2
+
+
+@pytest.mark.parametrize('start', [0.070, 0.075])
+def test_oscillating_band_gives_a_stable_regime(start):
+    ts = TurnShaper()
+    other = 0.145 - start
+    seq = [start, other] * 40 + [start, other, start + 0.001, other - 0.001] * 10
+    outs = [ts.apply(v, 0.3, 'MOWING', DT) for v in seq]
+    regimes = {_regime(v) for v, _w in outs}
+    assert regimes == {_regime(shape_for_both_wheels(start, 0.3)[0])}
+    for v, w in outs:                                    # always a legal both-wheel command
+        a, b = wheels(v, w)
+        assert v == 0.0 or min(abs(a), abs(b)) >= 0.06 - 1e-9
+
+
+def test_latch_releases_past_the_hysteresis():
+    ts = TurnShaper(hysteresis_mps=0.02, latch_ticks=0)
+    assert ts.apply(0.070, 0.3, 'TRANSIT', DT)[0] == 0.0        # pivot (inner -0.002)
+    assert ts.apply(0.085, 0.3, 'TRANSIT', DT)[0] == 0.0        # inner +0.013 < h: held
+    assert 'held' in ts.status
+    v, _w = ts.apply(0.095, 0.3, 'TRANSIT', DT)                  # inner +0.023 >= h: arc
+    assert v == pytest.approx(0.132) and ts.regime == 'arc'
+    v, _w = ts.apply(0.060, 0.3, 'TRANSIT', DT)                  # inner -0.012 > -h: held
+    assert v == pytest.approx(0.132) and 'held' in ts.status
+    assert ts.apply(0.050, 0.3, 'TRANSIT', DT)[0] == 0.0         # inner -0.022: pivot
+
+
+def test_latch_releases_after_n_ticks_of_the_other_regime():
+    ts = TurnShaper(hysteresis_mps=0.02, latch_ticks=6)
+    ts.apply(0.070, 0.3, 'TRANSIT', DT)
+    outs = [ts.apply(0.075, 0.3, 'TRANSIT', DT)[0] for _ in range(8)]
+    assert outs[:5] == [0.0] * 5 and outs[5] == pytest.approx(0.132)
+
+
+def test_latched_legal_arc_held_against_a_slow_pivot_command():
+    """A legal pass-through arc also latches the arc regime."""
+    ts = TurnShaper()
+    assert ts.apply(0.14, 0.3, 'TRANSIT', DT) == (0.14, 0.3)
+    v, w = ts.apply(0.07, 0.3, 'TRANSIT', DT)
+    assert v == pytest.approx(0.132) and w == pytest.approx(0.3)
+
+
+@pytest.mark.parametrize('nxt', [(0.0, 0.3), (0.2, 0.0), (0.07, -0.3), (-0.07, 0.3)])
+def test_pure_pivot_straight_or_sign_change_release_the_latch(nxt):
+    ts = TurnShaper()
+    ts.apply(0.14, 0.3, 'TRANSIT', DT)                           # arc latched
+    v, w = ts.apply(*nxt, 'TRANSIT', DT)
+    assert (v, w) == shape_for_both_wheels(*nxt)[:2]
+
+
+def test_latch_params_are_node_params():
+    from mower_control.cmd_vel_slew import TURN_DEFAULTS, TURN_PARAMS, set_turn_param
+    assert TURN_DEFAULTS['turn_shaper_hysteresis_mps'] == pytest.approx(0.02)
+    assert TURN_DEFAULTS['turn_shaper_latch_ticks'] == 6
+    ts = TurnShaper()
+    set_turn_param(ts, 'turn_shaper_hysteresis_mps', 0.0)
+    set_turn_param(ts, 'turn_shaper_latch_ticks', 3)
+    assert ts.hysteresis_mps == 0.0 and ts.latch_ticks == 3 and set(TURN_PARAMS) >= {
+        'turn_shaper_hysteresis_mps', 'turn_shaper_latch_ticks'}

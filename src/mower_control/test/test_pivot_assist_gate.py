@@ -242,6 +242,7 @@ def test_normal_driving_keeps_the_plain_slew(enabled):
     """Coordinator 2026-10-13: outside an assist episode the slew is exactly the old
     per-axis slew of the TurnShaper target (no forced stop between pivot and arc)."""
     node = _node(state='TRANSIT')
+    node._slew_both_wheels_always = False    # 2026-10-14: the default is now slew_coupled
     node._pivot.enabled = enabled
     seq = [(0.0, 0.3)] * 10 + [(0.25, 0.1)] * 20 + [(0.0, -0.3)] * 10 + [(0.2, 0.5)] * 10
     v = w = 0.0
