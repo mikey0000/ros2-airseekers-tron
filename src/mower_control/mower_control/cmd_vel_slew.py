@@ -57,6 +57,12 @@ Parameters
                                   arc or a proper pivot (|w| >= 0.25);
                                   ``shape_manual`` (false) leaves the joystick untouched.
                                   Decision latched on ``~/shape_status``
+``turn_shaper_hysteresis_mps`` ``0.02``  pivot/arc regime latch (see :class:`TurnShaper`):
+                                  a latched regime changes only once the raw inner wheel
+                                  is this far past the inner = 0 boundary (0 = no latch,
+                                  the old stateless snap) or after
+``turn_shaper_latch_ticks``    ``6``     ticks in a row asking for the other regime
+                                  (0 = no time-based release)
 ``applied_log_period`` ``1.0``    s between ``cmd_vel applied`` log lines
                                   (0 = every tick)
 ``idle_publish_s``     ``0.5``    s of all-zero output after the last non-zero output
@@ -561,9 +567,13 @@ def shape_for_both_wheels(v, w, params=None):
         # pulses and the robot hunted around the heading (2026-10-07).
         return v, w, None
     if inner <= 0.0:                          # one-wheel zone with some forward speed
-        aw = min(max(abs(w), v_min / half), w_max)
-        info = {'kind': 'pivot', 'r': 0.0, 'inner': -aw * half, 'outer': aw * half}
-        return 0.0, math.copysign(aw, w), info
+        return _pivot_snap(w, half, v_min, w_max)
+    return _tight_arc(v, w, half, v_min, v_max)
+
+
+def _tight_arc(v, w, half, v_min, v_max):
+    """The tightest arc in the direction of ``v`` keeping the inner wheel at ``v_min``
+    (lowering |w| so the outer wheel stays <= ``v_max``): ``(v, w, info)``."""
     sign = -1.0 if v < 0.0 else 1.0
     aw = abs(w)
     av = v_min + aw * half
@@ -573,6 +583,13 @@ def shape_for_both_wheels(v, w, params=None):
     info = {'kind': 'arc', 'r': av / aw if aw > 0.0 else float('inf'),
             'inner': av - aw * half, 'outer': av + aw * half}
     return sign * av, math.copysign(aw, w), info
+
+
+def _pivot_snap(w, half, v_min, w_max):
+    """The pure pivot the shaper snaps a one-wheel command to: ``(0, w, info)``."""
+    aw = min(max(abs(w), v_min / half), w_max)
+    info = {'kind': 'pivot', 'r': 0.0, 'inner': -aw * half, 'outer': aw * half}
+    return 0.0, math.copysign(aw, w), info
 
 
 def both_wheels_legal(v, w, params=None):
@@ -638,36 +655,85 @@ def slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, d
 
 
 class TurnShaper:
-    """Stateful wrapper: phase gating + latched status. Manual phases pass unless
-    ``shape_manual``."""
+    """Stateful wrapper: phase gating, a pivot/arc regime latch and latched status. Manual
+    phases pass unless ``shape_manual``.
 
-    def __init__(self, enabled=True, shape_manual=False, **params):
+    Regime latch (2026-10-14 review): the snap boundary is inner = 0, e.g. at |w| = 0.3
+    v = 0.070 snaps to a pivot (v = 0) and v = 0.075 to an arc (v = 0.132), so a
+    controller sitting in that band flipped the target every tick. A turn command is in
+    the *pivot* regime when its inner wheel runs backwards (inner < 0, pure pivots
+    included; shaped to v = 0) and in the *arc* regime otherwise. Once latched, a change
+    of regime needs the raw inner wheel to be ``hysteresis_mps`` past the boundary
+    (pivot -> arc: inner >= +h; arc -> pivot: inner <= -h) or the other regime to be
+    asked for ``latch_ticks`` ticks in a row (0 = no time-based release). Meanwhile the
+    command is shaped to the latched regime (the pivot snap, or the tightest legal arc),
+    so the output stays legal either way. A straight / stop command, an exact pure
+    pivot (v = 0: a deliberate rotate-to-heading) or a sign change of v or w releases the
+    latch. ``hysteresis_mps`` 0 = the old stateless behaviour.
+    """
+
+    def __init__(self, enabled=True, shape_manual=False, hysteresis_mps=0.02, latch_ticks=6,
+                 **params):
         self.enabled = bool(enabled)
         self.shape_manual = bool(shape_manual)
+        self.hysteresis_mps = float(hysteresis_mps)
+        self.latch_ticks = int(latch_ticks)
         self.params = dict(SHAPE_DEFAULTS)
         self.params.update(params)
         self.reset()
 
     def reset(self):
         self.status = 'pass'
+        self.regime = None        # latched 'pivot' | 'arc' | None
+        self._signs = None        # (sign v, sign w) of the command that set the latch
+        self._pending = 0         # consecutive ticks the other regime was asked for
 
     def is_active(self, phase):
         return self.enabled and (phase in SHAPE_PHASES or
                                  (self.shape_manual and phase in MANUAL_PHASES))
+
+    def _latched(self, v, w, sv, sw, info):
+        """Apply the regime latch to the stateless decision ``(sv, sw, info)``."""
+        if abs(w) < 1e-6 or abs(v) < 1e-6 or self.hysteresis_mps <= 0.0:
+            self.regime = None if abs(w) < 1e-6 else 'pivot'
+            self._signs, self._pending = None, 0
+            return sv, sw, info
+        half = 0.5 * float(self.params['track_width_m'])
+        inner = abs(v) - abs(w) * half
+        want = 'pivot' if inner < 0.0 or sv == 0.0 else 'arc'
+        signs = (math.copysign(1.0, v), math.copysign(1.0, w))
+        if self.regime is None or want == self.regime or signs != self._signs:
+            self.regime, self._signs, self._pending = want, signs, 0
+            return sv, sw, info
+        self._pending += 1
+        h = self.hysteresis_mps
+        if ((want == 'arc' and inner >= h) or (want == 'pivot' and inner <= -h)
+                or (self.latch_ticks > 0 and self._pending >= self.latch_ticks)):
+            self.regime, self._signs, self._pending = want, signs, 0
+            return sv, sw, info
+        v_min = float(self.params['min_inner_wheel_mps'])
+        if self.regime == 'pivot':
+            out = _pivot_snap(w, half, v_min, float(self.params['angular_max']))
+        else:
+            out = _tight_arc(v, w, half, v_min, float(self.params['linear_max']))
+        out[2]['held'] = True
+        return out
 
     def apply(self, v, w, phase, dt):
         """Return the shaped (v, w) for raw target (v, w) in mission ``phase``."""
         if not self.is_active(phase):
             self.reset()
             return v, w
-        sv, sw, info = shape_for_both_wheels(v, w, self.params)
+        sv, sw, info = self._latched(v, w, *shape_for_both_wheels(v, w, self.params))
         if info is None:
             self.status = 'pass'
             return v, w
+        held = ', held' if info.get('held') else ''
         if info['kind'] == 'pivot':
-            self.status = 'pivot w=%.2f rad/s, inner %.2f m/s' % (abs(sw), info['inner'])
+            self.status = 'pivot w=%.2f rad/s, inner %.2f m/s%s' % (
+                abs(sw), info['inner'], held)
         else:
-            self.status = 'arc r=%.2f m, inner %.2f m/s' % (info['r'], info['inner'])
+            self.status = 'arc r=%.2f m, inner %.2f m/s%s' % (info['r'], info['inner'], held)
         return sv, sw
 
 
@@ -678,9 +744,12 @@ TURN_PARAMS = {   # node parameter -> (TurnShaper attribute / params key, type)
     'min_inner_wheel_mps': ('min_inner_wheel_mps', float),
     'linear_max': ('linear_max', float),
     'angular_max': ('angular_max', float),
+    'turn_shaper_hysteresis_mps': ('hysteresis_mps', float),
+    'turn_shaper_latch_ticks': ('latch_ticks', int),
 }
 TURN_DEFAULTS = {'turn_shaper': True, 'shape_manual': False, 'track_width_m': TRACK_WIDTH_M,
-                 'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.3}
+                 'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.3,
+                 'turn_shaper_hysteresis_mps': 0.02, 'turn_shaper_latch_ticks': 6}
 SHAPE_LOG_PERIOD_S = 2.0      # turn-shaper INFO log: on state-kind change, at most every 2 s
 
 

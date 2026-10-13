@@ -129,6 +129,15 @@ command to the NEARER legal regime:
 Pure pivots at |w| >= 0.25 pass unchanged. Track width b = 0.48 m (URDF `drive_track_y`
 0.24 x 2).
 
+Regime latch (2026-10-14): the snap boundary is inner = 0, so at |w| = 0.3 a v of 0.070
+snapped to a pivot (v = 0) and 0.075 to an arc (v = 0.132); a controller sitting in that
+band flipped the target every tick. `TurnShaper` now latches the regime (pivot = inner
+wheel backwards, arc = forwards). Changing it needs the raw inner wheel
+`turn_shaper_hysteresis_mps` (0.02) past the boundary, or `turn_shaper_latch_ticks` (6)
+ticks in a row asking for the other regime; meanwhile the command is shaped to the latched
+regime (pivot snap or tightest legal arc). Straight/stop, an exact pure pivot (v = 0) or a
+sign change of v or w release the latch. Hysteresis 0 restores the stateless snap.
+
 History: the first version (same day) converted every pivot into a forward arc capped at
 0.3 m of travel (then a 2 s true-pivot fallback). That turned the docking about-turn into
 an r ~ 0.4 m arc that swung the robot past the dock, so the conversion, the 0.3 m cap and
