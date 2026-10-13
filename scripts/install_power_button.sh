@@ -2,7 +2,8 @@
 # Install the power-button shutdown helper ON THE MOWER HOST (needs root). docs/buttons.md "Power off".
 #
 #   sudo bash /userdata/ros2_stack/scripts/install_power_button.sh            # install (DRY_RUN=1)
-#   sudo bash /userdata/ros2_stack/scripts/install_power_button.sh --uninstall
+#   sudo bash /userdata/ros2_stack/scripts/install_power_button.sh --uninstall          # keeps config + request dir
+#   sudo bash /userdata/ros2_stack/scripts/install_power_button.sh --uninstall --purge  # removes those too
 #
 # Installs:
 #   /usr/local/sbin/mower-poweroff-host                 (src/base_keys/base_keys/poweroff_host.py)
@@ -22,7 +23,15 @@ if [[ ${1:-} == --uninstall ]]; then
     if [[ -f /usr/bin/sys_close.vendor ]]; then mv -f /usr/bin/sys_close.vendor /usr/bin/sys_close; fi
     rm -f /run/mower-poweroff/mcu_cut
     systemctl daemon-reload
-    echo "uninstalled (kept /etc/default/mower-poweroff and /userdata/ros2/power)"
+    if [[ ${2:-} == --purge ]]; then
+        rm -f /etc/default/mower-poweroff
+        # bind-mounted into mower_jazzy: empty it, drop the dir if nothing holds it
+        rm -rf /userdata/ros2/power/* 2>/dev/null || true
+        rmdir /userdata/ros2/power 2>/dev/null || true
+        echo "uninstalled (config and request dir removed)"
+    else
+        echo "uninstalled (kept /etc/default/mower-poweroff and /userdata/ros2/power; --purge removes them)"
+    fi
     exit 0
 fi
 

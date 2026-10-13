@@ -170,7 +170,7 @@ risks cutting power while `/userdata` is still mounted read-write.
 Install on the host (root, after copying the files listed in the script):
 `sudo bash /userdata/ros2_stack/scripts/install_power_button.sh`. It installs with `DRY_RUN=1`
 and `MCU_POWER_CUT=0`; edit `/etc/default/mower-poweroff` to enable each step.
-`--uninstall` restores the vendor `sys_close`.
+`--uninstall` restores the vendor `sys_close` and keeps `/etc/default/mower-poweroff` and `/userdata/ros2/power`; `--uninstall --purge` removes those too (what `install_host_services.sh uninstall` runs).
 
 Unknowns, to settle by live test: whether the MCU cuts power immediately on the frame or after a
 delay, whether it needs anything else (heartbeat), and what happens if the frame is never sent.

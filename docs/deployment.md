@@ -84,11 +84,27 @@ fresh device (or a re-imaged one) needs it installed once. One command does all 
 re-running it after a sync refreshes the unit files and scripts in place:
 
 ```
-sudo /userdata/ros2_stack/scripts/install_host_services.sh          # install / refresh
-sudo /userdata/ros2_stack/scripts/install_host_services.sh status   # check
+sudo /userdata/ros2_stack/scripts/install_host_services.sh            # install / refresh
+sudo /userdata/ros2_stack/scripts/install_host_services.sh status     # units + stereo + udev state
+sudo /userdata/ros2_stack/scripts/install_host_services.sh manifest   # every host path we own, present/absent
+sudo /userdata/ros2_stack/scripts/install_host_services.sh uninstall  # remove ALL of it (vendor state)
 ```
 
-| Piece | Installer | What it does | Check |
+Everything is reversible. Each installer has a matching `--uninstall`, and `uninstall` runs them
+all in reverse order: units stopped, disabled and deleted; the sysctl file deleted; our camera
+udev rules deleted and `mower.rules` put back as found (it is vendor-shipped on the Tron and
+the Noetic stack uses the same `/dev/serial_*` names, so the installer saves a differing
+original as `mower.rules.vendor` and restores it, or leaves an identical one alone); the vendor
+`/usr/bin/sys_close` restored from the saved copy; the power-button config and request dir
+removed; and the live IMU driver reloaded in the vendor netlink mode with the vendor
+208 KiB socket buffers, so the host is back to a fresh-boot-without-us state immediately,
+not only after a reboot. It never touches the vendor units (`cam.service` etc.), docker,
+`/userdata/ros2_stack` or the rest of `/userdata/ros2`, and does not stop the running
+container (the stack just loses the stereo IMU until reinstalled). `manifest` is the
+audit: it lists every host path the installers create and whether it is present, so a
+clean host shows `0/14 present`, a vendor `mower.rules` and the vendor `sys_close`.
+
+| Piece | Installer (`--uninstall` reverses it) | What it does | Check |
 |---|---|---|---|
 | udev rules | `scripts/install_udev.sh` | stable `/dev/serial_mower`, `/dev/serial_imu`, `/dev/serial_rtk`, `/dev/*_camera` symlinks | `ls -l /dev/serial_*` |
 | stereo host setup | `scripts/install_stereo_host_setup.sh` | `mower-stereo-host.service` runs `scripts/stereo_host_boot.sh` once per boot (after `cam.service`, before docker): reloads the Metoak ICM-40608 IMU driver in IIO mode so `stereo_imu` can read it, and raises the UDP socket buffers to 8 MiB for Fast DDS; also writes `/etc/sysctl.d/90-ros2-dds.conf` | `journalctl -u mower-stereo-host`; `scripts/setup_stereo_host.sh status` must say `IIO mode` |
