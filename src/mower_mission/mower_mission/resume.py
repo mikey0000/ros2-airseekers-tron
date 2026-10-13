@@ -15,6 +15,7 @@ File layout (one record per line, unknown tags ignored, exactly as upstream)::
     area <idx> <pose_count> <fingerprint> <resume_pose_index|-1> completed <i> <j> ...
     area_run <idx> <run>            # ours: repeat / cross run in progress (0-based)
     area_skip <idx> <from> <to>     # ours: stretch skipped by an obstacle detour
+    live_height <mm>                # ours: live GUI deck height of this mow (2026-10-13)
 
 ``pose_count`` is the number of poses over all drivable sub-paths of the
 area plan, ``resume_pose_index`` an absolute index into their concatenation,
@@ -60,6 +61,9 @@ class ResumeCursor:
         self.completed_areas = set()
         self.areas = {}
         self.area_runs = {}             # area idx -> run index in progress (repeat / cross)
+        # live deck height set from the GUI during this mow (mm) or None: a resumed mow
+        # (rain / charge / stop / stuck ...) keeps it instead of re-sending the area height
+        self.live_height_mm = None
 
     def __eq__(self, other):
         return isinstance(other, ResumeCursor) and self.__dict__ == other.__dict__
@@ -99,6 +103,8 @@ class ResumeCursor:
         for idx in sorted(self.area_runs):
             if self.area_runs[idx] > 0:
                 out.append('area_run %d %d' % (idx, self.area_runs[idx]))
+        if self.live_height_mm is not None:
+            out.append('live_height %d' % int(self.live_height_mm))
         return '\n'.join(out) + '\n'
 
     @classmethod
@@ -130,6 +136,8 @@ class ResumeCursor:
                     cur.area(int(args[0])).skipped.append((int(args[1]), int(args[2])))
                 elif tag == 'area_run' and len(args) >= 2:
                     cur.area_runs[int(args[0])] = int(args[1])
+                elif tag == 'live_height' and args:
+                    cur.live_height_mm = int(args[0])
             except ValueError:
                 continue  # malformed row: skip it, like upstream
         return cur

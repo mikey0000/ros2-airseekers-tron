@@ -1180,6 +1180,13 @@ class MissionFSM:
         area plans and blade re-requests) and is NOT persisted to the saved area
         settings. The echo of the mission's own per-area height equals the effective
         height and is ignored. Returns the effects (re-latched active settings).
+
+        2026-10-13: the override is also stored in the resume cursor (``live_height``
+        row), so a resumed mow (rain / charge / stop / stuck / e-stop interrupt, which
+        rebuilds the Mission) keeps it instead of re-sending the area's saved height at
+        the resumed area start. A fresh start (new cursor) drops it: the saved area
+        setting is the default again. The GUI's "Save to area" is the only way the area
+        setting itself changes.
         """
         self._begin(self._now if now is None else now)
         m = self.mission
@@ -1193,6 +1200,8 @@ class MissionFSM:
         if m.settings is not None and cur is not None and self.height_mm(cur) == hmm:
             return self._end()
         m.height_override_mm = hmm
+        self.cursor.live_height_mm = hmm
+        self._persist()
         self._log('info', 'live blade height %d mm (this mow only)' % hmm)
         if m.settings is not None:
             m.settings = dict(m.settings, cutter_height_mm=hmm)
@@ -1941,6 +1950,8 @@ class MissionFSM:
             self.cursor = ResumeCursor()
             self.cursor.single_area_target = single
         self.mission = Mission(single_area_target=single, resume=resume)
+        # a resumed mow keeps its live GUI deck height (on_cutter_height)
+        self.mission.height_override_mm = cur.live_height_mm if resume else None
         self._bump_transit_run()            # each drive varies its transit lines
         self._log('info', '%s%s: enumerating mowing areas' % (
             'resuming' if resume else 'starting',
@@ -1976,6 +1987,7 @@ class MissionFSM:
             if m.resume:
                 self._log('info', 'resume cursor has no areas left: starting fresh')
                 self.cursor = ResumeCursor()
+                m.height_override_mm = None     # fresh mow: area heights again
                 self.cursor.single_area_target = m.single_area_target
                 queue = [m.single_area_target] if m.single_area_target is not None \
                     else sorted(areas)
