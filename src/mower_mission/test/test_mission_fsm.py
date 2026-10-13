@@ -1733,7 +1733,8 @@ def test_preflight_refuses_unaligned_heading_away_from_dock(source):
     h.tick()
     assert not h.cmd(f.CMD_START)
     assert h.name == 'IDLE' and h.fsm.sub_state == \
-        'preflight failed: heading not aligned: drive straight 1 m in manual'
+        'preflight failed: heading not aligned: drive straight 1 m at 0.1 m/s or more in ' \
+        'manual, or start from the dock'
     assert h.fsm.mission is None and not h.since(0, f.StartAction)
 
 

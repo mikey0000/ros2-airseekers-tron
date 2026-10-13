@@ -439,6 +439,17 @@ def test_persisted_fixed_samples_must_be_consecutive(tmp_path):
     assert e.source == hl.SOURCE_FILE_VERIFIED
 
 
+def test_min_speed_default_accepts_slow_manual_drive():
+    """2026-10-13: a 0.05 m/s joystick drive never aligned under min_speed 0.06."""
+    assert hl.AlignParams().min_speed == pytest.approx(0.04)
+    s = Sim()
+    s.yaw = D(20.0)
+    s.run(0.05, 0.0, 16.0)
+    assert s.est.aligned and s.est.source == hl.SOURCE_COG
+    assert abs(s.heading_error()) < 1.0
+    assert s.est.status(s.t)['min_speed'] == pytest.approx(0.04)
+
+
 def test_old_file_without_imu_yaw_stays_file(tmp_path):
     p = str(tmp_path / 'h.yaml')
     hl.save_offset(p, D(10.0), 'cog', 1)

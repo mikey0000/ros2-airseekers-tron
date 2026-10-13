@@ -152,8 +152,13 @@ class AlignParams:
     """Tunables (all angles in degrees in the ROS parameters, radians here)."""
 
     def __init__(self, **kw):
-        self.min_speed = 0.06            # m/s |cmd linear|: GUI joystick drives often sit near 0.1; RTK
-                                         # fixed noise (~2 cm) is small against the 0.6 m window
+        self.min_speed = 0.04            # m/s |cmd linear|: GUI joystick drives often sit near 0.05-0.1
+                                         # (2026-10-13: an owner drive at 0.05 never aligned under
+                                         # 0.06). Accuracy does not depend on speed: the window is
+                                         # min_distance (0.6 m) of travel, and RTK fixed noise
+                                         # (~1-2 cm) across 0.6 m is ~2 deg; a slower drive only
+                                         # takes longer (15 s at 0.04) and must stay inside
+                                         # max_window_time
         self.max_turn_rate = 0.25        # rad/s |cmd angular|: joystick jitter is tolerated here;
                                          # straightness is judged from the GPS chord (max_lateral)
                                          # and the gyro (max_gyro_rate, max_imu_yaw_change)
@@ -316,6 +321,7 @@ class HeadingEstimator:
             'rtk_gate': self.rtk_gate,
             'file_check': self.file_check if self.source in (SOURCE_FILE, SOURCE_FILE_VERIFIED)
             else '',
+            'min_speed': self.p.min_speed,
         }
         if self.last_cog is not None:
             t, cog, meas, dist = self.last_cog
