@@ -77,9 +77,29 @@ then `sync` + `up`. Mission/map options are yaml parameters (`sync` + restart):
 | no transit variation | mission.yaml `route_variation: false` (or area setting `transit_variation: none`) |
 | no automatic dock no-go in areas | `src/mower_map/config/map_server.yaml` `dock_nogo_in_areas: false` |
 
-**Other one-off installs** (root on the device, documented separately): power-button
-shutdown `scripts/install_power_button.sh` (docs/buttons.md), stereo watchdog
-`scripts/install_stereo_watchdog.sh`, udev rules `scripts/install_udev.sh`.
+### Host services (one-off, root on the device)
+
+Everything below lives outside the container and survives `deploy_to_mower.sh` syncs, but a
+fresh device (or a re-imaged one) needs it installed once. One command does all of it, and
+re-running it after a sync refreshes the unit files and scripts in place:
+
+```
+sudo /userdata/ros2_stack/scripts/install_host_services.sh          # install / refresh
+sudo /userdata/ros2_stack/scripts/install_host_services.sh status   # check
+```
+
+| Piece | Installer | What it does | Check |
+|---|---|---|---|
+| udev rules | `scripts/install_udev.sh` | stable `/dev/serial_mower`, `/dev/serial_imu`, `/dev/serial_rtk`, `/dev/*_camera` symlinks | `ls -l /dev/serial_*` |
+| stereo host setup | `scripts/install_stereo_host_setup.sh` | `mower-stereo-host.service` runs `scripts/stereo_host_boot.sh` once per boot (after `cam.service`, before docker): reloads the Metoak ICM-40608 IMU driver in IIO mode so `stereo_imu` can read it, and raises the UDP socket buffers to 8 MiB for Fast DDS; also writes `/etc/sysctl.d/90-ros2-dds.conf` | `journalctl -u mower-stereo-host`; `scripts/setup_stereo_host.sh status` must say `IIO mode` |
+| stereo watchdog | `scripts/install_stereo_watchdog.sh` | `mower-stereo-watchdog.service` re-runs the vendor camera init when the front stereo stops streaming, then re-applies IIO mode (the vendor init loads the IMU driver in its netlink mode, which hides it from the stack) | `journalctl -u mower-stereo-watchdog` |
+| power button | `scripts/install_power_button.sh` | `mower-poweroff.path` / `.service`: clean host shutdown from the panel key (docs/buttons.md); ships with `DRY_RUN=1` | `systemctl status mower-poweroff.path` |
+| boot unit (opt-in) | `scripts/install_mower_service.sh` or `install_host_services.sh --boot-unit` | `mower-ros2.service` brings compose up at boot; not needed while docker's restart policy keeps `mower_jazzy` running | `systemctl status mower-ros2` |
+
+Why the stereo host setup matters: without it the heading aligner has no stereo gyro and
+falls back to the WIT JY61P, whose firmware clamps small rates to zero, so slow pivots are
+lost and the heading drifts at every swath end (seen 2026-10-13 after a host reboot: the
+aligner logged `active wit (stereo fresh False)` for a whole mow).
 
 **Pull data back:** `./scripts/deploy_to_mower.sh bags [incidents|ring|all]` (rolling bag ring /
 incident pins, docs/crash_recovery.md).
