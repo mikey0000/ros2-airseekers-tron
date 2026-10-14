@@ -95,6 +95,13 @@ Parameters
                                   RAIN_DETECTED_DOCKING, COVERAGE_FAILED_DOCKING: the
                                   nav-driven transit to the dock); the docking lane is
                                   never shaped either way; false = dock phases unshaped
+``turn_shaper_pivot_instead``  ``true``  task 0.4 (b), run 3: a command in the widening
+                                  zone (0 < inner < min_inner) whose radius |v|/|w| is below
+``turn_shaper_pivot_instead_ratio`` ``0.5`` x the widened arc's radius snaps to the pure
+                                  pivot (v = 0, |w| >= 0.25) instead of the 2-4x wider arc
+                                  that overshot every transit corner; the regime latch holds
+                                  across ratio +- ``turn_shaper_pivot_instead_hysteresis``
+                                  (``0.1``). false = the old widening (revert flag)
 ``applied_log_period`` ``1.0``    s between ``cmd_vel applied`` log lines
                                   (0 = every tick)
 ``idle_publish_s``     ``0.5``    s of all-zero output after the last non-zero output
@@ -607,6 +614,13 @@ SHAPE_DEFAULTS = {
     'angular_max': 0.3,       # MCU clamp
     'pure_pivot': True,       # slow pure rotations join the pivot regime (fix 8)
     'pivot_deadband_rps': 0.03,   # |w| below this in a pure rotation -> (0, 0)
+    # Task 0.4 (b), 2026-10-14 run 3: MPPI asked for slow tight corners (r 0.2-0.3 m) and
+    # _tight_arc widened them to r 0.5-1.0 m, overshooting every corner. A command whose
+    # requested radius |v|/|w| is below pivot_instead_ratio x the radius the widening would
+    # give is turned on the spot instead (pure pivot, |w| >= the 0.25 rad/s floor).
+    'pivot_instead': True,        # False = the old widening (revert flag)
+    'pivot_instead_ratio': 0.5,
+    'pivot_instead_hysteresis': 0.1,  # ratio band the regime latch holds across
 }
 
 
@@ -620,7 +634,10 @@ def shape_for_both_wheels(v, w, params=None):
     * inner >= +min_inner (arc) or <= -min_inner (proper counter-rotating pivot): pass.
     * 0 < inner < min_inner: widen to the tightest arc keeping the inner wheel at
       min_inner (keeping |w| when possible, else lowering |w| so outer <= linear_max);
-      reversing stays reversing.
+      reversing stays reversing. With ``pivot_instead`` (task 0.4 b, default) a request
+      whose radius r_req = |v|/|w| is below ``pivot_instead_ratio`` (0.5) x that widened
+      radius snaps to the pure pivot instead (the corner is turned on the spot, not
+      overshot); ``info['instead']`` is True and ``info['q']`` = r_req / widened radius.
     * -min_inner < inner <= 0 with some speed: snap to a pure pivot, v = 0,
       |w| = max(|w|, 2*min_inner/b) capped at angular_max.
     * pure rotation (v = 0) slower than the pivot floor 2*min_inner/b (0.25 rad/s): both
@@ -660,7 +677,22 @@ def shape_for_both_wheels(v, w, params=None):
         return _pivot_snap(w, half, v_min, w_max)
     if inner <= 0.0:                          # one-wheel zone with some forward speed
         return _pivot_snap(w, half, v_min, w_max)
-    return _tight_arc(v, w, half, v_min, v_max)
+    arc = _tight_arc(v, w, half, v_min, v_max)
+    if p.get('pivot_instead', False):
+        q = pivot_instead_q(v, w, arc[2]['r'])
+        arc[2]['q'] = q
+        if q < float(p.get('pivot_instead_ratio', 0.5)):
+            out = _pivot_snap(w, half, v_min, w_max)
+            out[2]['instead'], out[2]['q'] = True, q
+            return out
+    return arc
+
+
+def pivot_instead_q(v, w, r_widened):
+    """Requested radius |v|/|w| over the radius the widening would give (task 0.4 b)."""
+    if abs(w) < 1e-9 or not (r_widened > 0.0) or math.isinf(r_widened):
+        return float('inf')
+    return (abs(v) / abs(w)) / r_widened
 
 
 def _tight_arc(v, w, half, v_min, v_max):
@@ -922,11 +954,20 @@ class TurnShaper:
             return sv, sw, info
         self._pending += 1
         h = self.hysteresis_mps
-        if ((want == 'arc' and inner >= h) or (want == 'pivot' and inner <= -h)
+        v_min = float(self.params['min_inner_wheel_mps'])
+        # Task 0.4 (b): in the widening zone (0 < inner < min_inner) the pivot / arc choice
+        # is the radius ratio q; the latch holds across pivot_instead_ratio +- hysteresis
+        # so a controller hovering at the threshold does not flip pivot <-> arc.
+        q = info.get('q') if (info and self.params.get('pivot_instead', False)
+                              and 0.0 < inner < v_min) else None
+        ratio = float(self.params.get('pivot_instead_ratio', 0.5))
+        qh = float(self.params.get('pivot_instead_hysteresis', 0.0))
+        to_arc = inner >= h and (q is None or q >= ratio + qh)
+        to_pivot = inner <= -h or (q is not None and q <= ratio - qh)
+        if ((want == 'arc' and to_arc) or (want == 'pivot' and to_pivot)
                 or (self.latch_ticks > 0 and self._pending >= self.latch_ticks)):
             self.regime, self._signs, self._pending = want, signs, 0
             return sv, sw, info
-        v_min = float(self.params['min_inner_wheel_mps'])
         if self.regime == 'pivot':
             out = _pivot_snap(w, half, v_min, float(self.params['angular_max']))
         else:
@@ -951,8 +992,10 @@ class TurnShaper:
             self.status = 'pivot deadband: |w| %.3f < %.3f rad/s -> 0' % (
                 abs(info['w_in']), float(self.params.get('pivot_deadband_rps', 0.0)))
         elif info['kind'] == 'pivot':
-            self.status = 'pivot w=%.2f rad/s, inner %.2f m/s%s' % (
-                abs(sw), info['inner'], held)
+            instead = (', instead of an arc (r_req/r_arc %.2f)' % info['q']
+                       if info.get('instead') else '')
+            self.status = 'pivot w=%.2f rad/s, inner %.2f m/s%s%s' % (
+                abs(sw), info['inner'], instead, held)
         else:
             self.status = 'arc r=%.2f m, inner %.2f m/s%s' % (info['r'], info['inner'], held)
         return sv, sw
@@ -970,12 +1013,17 @@ TURN_PARAMS = {   # node parameter -> (TurnShaper attribute / params key, type)
     'turn_shaper_pure_pivot': ('pure_pivot', bool),
     'turn_shaper_pivot_deadband_rps': ('pivot_deadband_rps', float),
     'turn_shaper_dock_transit': ('dock_transit', bool),
+    'turn_shaper_pivot_instead': ('pivot_instead', bool),
+    'turn_shaper_pivot_instead_ratio': ('pivot_instead_ratio', float),
+    'turn_shaper_pivot_instead_hysteresis': ('pivot_instead_hysteresis', float),
 }
 TURN_DEFAULTS = {'turn_shaper': True, 'shape_manual': False, 'track_width_m': TRACK_WIDTH_M,
                  'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.3,
                  'turn_shaper_hysteresis_mps': 0.02, 'turn_shaper_latch_ticks': 6,
                  'turn_shaper_pure_pivot': True, 'turn_shaper_pivot_deadband_rps': 0.03,
-                 'turn_shaper_dock_transit': True}
+                 'turn_shaper_dock_transit': True, 'turn_shaper_pivot_instead': True,
+                 'turn_shaper_pivot_instead_ratio': 0.5,
+                 'turn_shaper_pivot_instead_hysteresis': 0.1}
 SHAPE_LOG_PERIOD_S = 2.0      # turn-shaper INFO log: on state-kind change, at most every 2 s
 
 

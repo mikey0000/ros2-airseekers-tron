@@ -246,6 +246,10 @@ STATE_CODES = {
 STUCK_PHASES = ('TRANSIT', 'MOWING') + ('RETURNING_HOME', 'LOW_BATTERY_DOCKING',
                                         'RAIN_DETECTED_DOCKING', 'COVERAGE_FAILED_DOCKING')
 STUCK_NEEDS_HELP_SUB = 'stuck: needs help at (%.2f, %.2f)'
+# Task 0.4 (a): autonomous driving phases the hard boundary applies in (the heading
+# calibration drive in WAITING_FOR_RTK too, see _hard_boundary_tick).
+HARD_BOUNDARY_PHASES = ('TRANSIT', 'MOWING') + ('RETURNING_HOME', 'LOW_BATTERY_DOCKING',
+                                                'RAIN_DETECTED_DOCKING', 'COVERAGE_FAILED_DOCKING')
 
 IDLE_NAMES = ('IDLE', 'IDLE_DOCKED', 'CHARGING')
 # ~/preview_plan is accepted only here (no mission session, robot at rest)
@@ -418,6 +422,10 @@ class Inputs:
     pose: Optional[tuple] = None        # (x, y, yaw) in map
     boundary_violation: bool = False
     lethal_boundary_violation: bool = False
+    # /map_server_node/outside_m (Float32, task 0.4 a): distance of the robot centre outside
+    # (mowing areas U drawn paths U dock corridor), 0 inside; outside_stamp = receipt time
+    outside_m: Optional[float] = None
+    outside_stamp: Optional[float] = None
     # /heading_aligner/status (latched JSON): aligned + source (none|file|dock|cog)
     heading_aligned: bool = False
     heading_source: str = 'none'
@@ -580,6 +588,17 @@ class Params:
     # skips its own Nav2 leg within approach_skip_radius_m).
     route_transits: bool = True
     route_dock: bool = True
+    # Task 0.4 (e), run 3: the dock route aborted at (-0.69, 0.04) and the docking server then
+    # drove its own navigate_to_pose to the approach pose across the grass. The docking
+    # server is now started only within dock_server_nav_max_m of the approach pose (dock +
+    # dock_approach_distance_m along the dock yaw, = the dock route's end; mirrors map_server
+    # corridor_half_width_m); farther away the dock route is planned and driven again from
+    # the current pose, at most dock_route_retries more times, then NAV_TO_DOCK_FAILED (the
+    # robot stops where it is). An obstacle abort of the dock route waits (blocked wait)
+    # first. 0 = the old hand-over (the docking server navigates from anywhere).
+    dock_server_nav_max_m: float = 0.35
+    dock_approach_distance_m: float = 0.8     # = map_server / mower_docking approach_distance
+    dock_route_retries: int = 2
     route_controller_id: str = 'FollowPath'          # MPPI transit controller
     route_goal_checker_id: str = 'general_goal_checker'
     route_end_tolerance_m: float = 0.5   # route "success" farther from the target = failed
@@ -603,10 +622,20 @@ class Params:
     # the route from the cusp; at most route_cusp_retries about-turns per cusp (per sub-path
     # transit), then a transit abort (transit_retries; never the costmap planner).
     # 0 retries = the old behaviour (costmap fallback).
-    route_cusp_radius_m: float = 0.5
+    # Task 0.4 (d), run 3: the start abort happened 0.75 m past the junction, outside the old
+    # 0.5 m radius, so the costmap fallback ran again: 0.5 -> 1.0.
+    route_cusp_radius_m: float = 1.0
     route_cusp_angle_rad: float = 2.0
     route_cusp_retries: int = 2
     route_cusp_spin_rps: float = 0.2    # Spin time allowance = |angle| / this + 10 s (turf slip)
+    # Task 0.4 (d), run 3 (owner: "in sharp corners it could reverse and turn rather than
+    # overshoot the corner, the turn itself looks good"): the route is also split at every
+    # corner sharper than this (rad), and before any route leg (transit or dock route) whose
+    # start is within route_cusp_radius_m and whose heading is more than this off the robot's
+    # yaw, the robot stops and pivots in place (Nav2 Spin) to the leg heading, then the leg is
+    # sent. One about-turn per leg; a failed Spin sends the leg anyway (the follow judges).
+    # 0 = off (the controller turns onto the leg itself, splits at route_split_turn_deg only).
+    route_corner_turn_rad: float = 1.5708
     # The costmap-planner fallback (no route: start off the route graph; a route abort away
     # from any cusp) is bounded: once the robot's own distance from the drawn network (the
     # planned route if there was one; 0 inside a mowing area) exceeds this, the fallback is
@@ -661,6 +690,13 @@ class Params:
     # yaw within tolerance stays with the leg goal checker / the skip above. 0 = that cap off.
     turn_leg_done_after_s: float = 20.0
     turn_leg_done_after_rot_rad: float = 6.28
+    # Task 0.4 (f), 2026-10-14 run 3: the 49 m outer ring ends at the cusp of a reverse leg,
+    # so it counted as a turn leg; progress_local jumped to its last pose (the nearest-index
+    # search matched the ring's own end) 4.6 m before the end, the cap fired and 4.6 m of
+    # ring were skipped. True: "end reached" is the distance to the leg end only
+    # (turn_leg_skip_m, never progress_local) and a leg is capped only if its OWN length is
+    # <= turn_leg_max_m (turn_leg_skip keeps its rule). False = the fix 10 rule (revert flag).
+    turn_leg_end_by_distance: bool = True
     # Any sub-path: a follow_path that has not advanced the tracked pose index for this long
     # (Nav2's progress checker is satisfied by looping) is cancelled and handled as a
     # follow_path abort (follow_retries). Waits / holds / escapes cancel the goal, so they
@@ -675,6 +711,40 @@ class Params:
     # (blade on as soon as MANUAL_MOW is entered).
     manual_blade_requires_enable: bool = False
     blade_spinup_s: float = 2.0         # used when confirmation is disabled
+    # --- hard boundary (task 0.4 a; 2026-10-14 run 3: seven transit excursions up to 0.85 m
+    # outside the areas and paths; owner: "going outside the area is an immediate fail") ---
+    # The robot centre more than hard_boundary_m outside (mowing areas U drawn paths U the
+    # dock corridor; map_server ~/outside_m, fresher than hard_boundary_stale_s) in TRANSIT,
+    # MOWING or a dock phase: cancel the goal, zero, blade off, then retrace the driven EKF
+    # track (the last hard_boundary_trail_m, newest first) in reverse at
+    # hard_boundary_retrace_speed_mps on /cmd_vel_emergency until back inside plus
+    # hard_boundary_retrace_extra_m (at most hard_boundary_retrace_max_m, never beyond the
+    # recorded track: no blind reverse). Steering keeps
+    # both wheels rolling backwards (inner wheel >= hard_boundary_min_inner_mps); a heading
+    # error above hard_boundary_pivot_err_rad is turned on the spot first (counter-rotating
+    # pivot at hard_boundary_pivot_rps). Counts as a transit abort (TRANSIT: the transit
+    # retry path; MOWING: the sub-path is resumed; dock phases: the dock is re-run); the
+    # hard_boundary_max_aborts-th excursion of a mission ends in STUCK_NEEDS_HELP (after the
+    # retrace). Still outside after the retrace, no progress, or no pose -> STUCK_NEEDS_HELP.
+    # The heading calibration drive (unverified heading) is only stopped, not retraced.
+    # hard_boundary false = off (revert flag; the MOWING-only soft pause below still runs).
+    hard_boundary: bool = True
+    hard_boundary_m: float = 0.10
+    hard_boundary_stale_s: float = 1.0
+    hard_boundary_max_aborts: int = 2
+    hard_boundary_trail_m: float = 1.5
+    hard_boundary_trail_step_m: float = 0.05
+    hard_boundary_pause_s: float = 0.5
+    hard_boundary_retrace_speed_mps: float = 0.10
+    hard_boundary_retrace_extra_m: float = 0.10
+    hard_boundary_retrace_max_m: float = 1.0
+    hard_boundary_lookahead_m: float = 0.25
+    hard_boundary_min_inner_mps: float = 0.06
+    hard_boundary_track_width_m: float = 0.48     # URDF (cmd_vel_slew TRACK_WIDTH_M)
+    hard_boundary_pivot_err_rad: float = 0.6
+    hard_boundary_pivot_rps: float = 0.3
+    hard_boundary_progress_s: float = 3.0
+    hard_boundary_progress_m: float = 0.05        # driven + 0.24 m x |yaw| turned
     boundary_recover_after_s: float = 3.0     # pause this long, then a recovery transit
     boundary_max_recoveries: int = 2          # recovery transits per sub-path before latching
     boundary_recovery_advance_m: float = 1.0  # recovery target: this far ahead on the sub-path
@@ -912,6 +982,8 @@ class MissionFSM:
         self._emergency = False
         self._dock_purpose = None
         self._dock_routed = None            # (phase, purpose) whose dock route already ran
+        self._dock_route_tries = 0          # dock route re-sends of this dock (task 0.4 e)
+        self._dock_route_end = None         # (x, y) end of the last dock route (approach pose)
         self._route_legs = None             # {'legs': [poses...], 'i': n} of a route follow
         self._dock_contact_since = None
         self._manual_undocking = False           # standalone UNDOCK (CMD_UNDOCK) in flight
@@ -953,6 +1025,9 @@ class MissionFSM:
         self._tilt_hist = []                # [[t, x, y]] steep spots backed out of
         self._tilt_trail = []               # [(x, y)] recent driven track, oldest first
         self._tilt_capped = False           # caution speed cap sent to the controller
+        self._hb = None                     # hard-boundary retrace in progress (task 0.4 a)
+        self._hb_count = 0                  # hard-boundary excursions of this mission
+        self._hb_trail = []                 # [(x, y)] recent driven EKF track, oldest first
 
     # ==================================================================
     # presentation
@@ -1576,6 +1651,7 @@ class MissionFSM:
         """Returns True when a guard owns this tick (phase logic skipped)."""
         self._stuck_watch()
         self._tilt_watch()
+        self._hard_boundary_watch()
         cause = self._emergency_cause()
         if cause:
             if not self._emergency:
@@ -1595,9 +1671,13 @@ class MissionFSM:
             return True
         if self._tilt_tick():
             return True
+        if self._hard_boundary_tick():
+            return True
 
         i = self.inputs
-        # Boundary rules apply only where the blade may be on. PLANNING right
+        # Soft / lethal boundary rules (map_server flags, mowing areas only) apply only where
+        # the blade may be on; the hard boundary above (task 0.4 a, areas U paths U dock
+        # corridor at 0.10 m) covers every autonomous driving phase. PLANNING right
         # after an undock and blade-off TRANSITs (to/from the dock, along drawn
         # paths, the return corridor) are legitimately outside the mowing areas:
         # the Nav2 keepout mask bounds them (2026-10-07: a lethal stop fired in
@@ -1933,6 +2013,7 @@ class MissionFSM:
     def _home(self):
         if self.phase in DOCK_PHASES:
             return True
+        self._hb_count = 0
         self._leave_current_mode('home')
         if self.mission is not None:
             self._interrupt_mission('home')
@@ -2076,6 +2157,8 @@ class MissionFSM:
             self._log('warn', 'start_in_area(%d) refused: mowing session running' % single)
             return False
         self._preview_drop('mission started')
+        if not auto:
+            self._hb_count = 0              # task 0.4 (a): excursions are counted per mission
         if self.phase in DOCK_PHASES:
             self._cancel_all('start')
         self._leave_current_mode('start')
@@ -2532,6 +2615,9 @@ class MissionFSM:
 
         nxt = m.subpaths[m.sub_i + 1] if m.sub_i + 1 < len(m.subpaths) else None
         cusp_next = nxt is not None and reverse_leg(nxt) and geo.dist(nxt[0], sp[-1]) <= 0.01
+        # Task 0.4 (f): this rule stays for turn_leg_skip (distance + yaw, safe on a long
+        # swath ending at a cusp: the 2026-10-13 retry case); the _leg_watch cap no longer
+        # uses it (a 49 m ring ending at a cusp was capped in run 3).
         return reverse_leg(sp) or cusp_next
 
     def _turn_leg_driven(self):
@@ -2561,8 +2647,9 @@ class MissionFSM:
     def _leg_watch(self):
         """Fix 10 (2026-10-14 run 2), called on every MOWING tick while a follow_path runs.
 
-        * Turn-leg end cap: once the leg's end is reached in xy (tracked pose index at the
-          last pose, or within turn_leg_skip_m of the end pose) the leg is done after
+        * Turn-leg end cap: once the leg's end is reached in xy (within turn_leg_skip_m of
+          the end pose; task 0.4 f: never the tracked pose index, which can jump to the last
+          pose early, and only for legs no longer than turn_leg_max_m) the leg is done after
           turn_leg_done_after_s OR turn_leg_done_after_rot_rad of accumulated |yaw change|
           of the map pose, whatever the yaw. A leg whose end yaw is met is left to the
           controller's leg goal checker (and the turn_leg_skip rule on a re-send), as before.
@@ -2576,11 +2663,14 @@ class MissionFSM:
         sp = m.subpaths[m.sub_i]
         key = (m.area_idx, m.sub_i, m.stretch)
         w = m.leg_watch
+        by_dist = bool(p.turn_leg_end_by_distance)
         if w is None or w['key'] != key:
+            short = geo.path_length(sp) <= float(p.turn_leg_max_m)
             w = m.leg_watch = {
                 'key': key, 'reached': None, 'rot': 0.0, 'yaw': None, 'token': None,
                 'idx': None, 'since': self._now,
-                'capped': self._is_turn_leg() or geo.path_length(sp) <= float(p.turn_leg_max_m)}
+                # task 0.4 (f): capped only by the leg's own length
+                'capped': short if by_dist else (self._is_turn_leg() or short)}
         if w['token'] != a.token:            # a new goal (retry / resume): fresh loop timer
             w['token'], w['idx'], w['since'], w['yaw'] = a.token, m.progress_local, self._now, None
         elif m.progress_local != w['idx']:
@@ -2594,7 +2684,9 @@ class MissionFSM:
             if w['reached'] is not None and w['yaw'] is not None:
                 w['rot'] += abs(geo.wrap_angle(float(pose[2]) - w['yaw']))
             w['yaw'] = float(pose[2])
-            at_end = m.progress_local >= len(sp) - 1 or (skip_m > 0.0 and d <= skip_m)
+            # task 0.4 (f): distance only; progress_local can jump to the last pose early
+            at_end = (skip_m > 0.0 and d <= skip_m) or \
+                (not by_dist and m.progress_local >= len(sp) - 1)
             if w['reached'] is None and at_end:
                 w['reached'], w['rot'] = self._now, 0.0
             if w['reached'] is not None:
@@ -3123,18 +3215,56 @@ class MissionFSM:
             self._dock_done()
             return
         if self.p.use_docking_server:
-            if self.p.route_transits and self.p.route_dock and self.inputs.pose is not None \
-                    and self._dock_routed != (name, purpose):
-                self._call(SRV_PLAN_ROUTE, {'start': tuple(self.inputs.pose), 'to_dock': True,
-                                            'variation': self._transit_run()},
-                           purpose='dock_route')
+            if self._dock_route_on() and self._dock_routed != (name, purpose):
+                self._dock_route_tries = 0
+                self._plan_dock_route()
                 return
-            self._dock_server()
+            self._dock_handover()
         elif len(self.p.dock_pose) == 3:
             self._start_action(ACT_NAV, {'pose': tuple(self.p.dock_pose)},
                                self.p.transit_timeout_s, purpose='dock')
         else:
             self._dock_failed('no docking server and no dock_pose configured')
+
+    def _dock_route_on(self):
+        return bool(self.p.route_transits and self.p.route_dock and self.inputs.pose is not None)
+
+    def _plan_dock_route(self):
+        self._call(SRV_PLAN_ROUTE, {'start': tuple(self.inputs.pose), 'to_dock': True,
+                                    'variation': self._transit_run()}, purpose='dock_route')
+
+    def _dock_approach(self):
+        """The docking server's approach pose (dock + dock_approach_distance_m along the dock
+        yaw, as map_server / mower_docking compute it); else the last dock route's end."""
+        d = self.inputs.dock_pose
+        if d is not None and len(d) >= 3:
+            ad = float(self.p.dock_approach_distance_m)
+            return (d[0] + ad * math.cos(d[2]), d[1] + ad * math.sin(d[2]))
+        return getattr(self, '_dock_route_end', None)
+
+    def _dock_handover(self):
+        """Task 0.4 (e): the docking server (whose own navigate_to_pose drives the approach
+        leg across the grass) only within dock_server_nav_max_m of the approach pose. Farther
+        away: plan and drive the dock route again (dock_route_retries), then fail in place."""
+        lim = float(self.p.dock_server_nav_max_m)
+        ap, pose = self._dock_approach(), self.inputs.pose
+        if lim > 0.0 and ap is not None and pose is not None and self._dock_route_on():
+            d = geo.dist(pose, ap)
+            if d > lim:
+                tries = getattr(self, '_dock_route_tries', 0)
+                if tries >= int(self.p.dock_route_retries):
+                    self._dock_failed('dock route did not reach the approach pose (%.2f m away '
+                                      'after %d re-sends); not crossing the lawn: the docking '
+                                      'server navigates only within %.2f m' % (d, tries, lim))
+                    return
+                self._dock_route_tries = tries + 1
+                self._log('warn', 'dock: %.2f m from the approach pose (> %.2f m): driving the '
+                                  'dock route again (%d/%d), not the docking server\'s own '
+                                  'navigation' % (d, lim, tries + 1,
+                                                  int(self.p.dock_route_retries)))
+                self._plan_dock_route()
+                return
+        self._dock_server()
 
     def _dock_server(self):
         self._start_action(ACT_DOCK, {'use_vision': self.p.dock_use_vision,
@@ -3150,10 +3280,11 @@ class MissionFSM:
         poses = resp.get('poses') or []
         if not (ok and resp.get('success') and len(poses) >= 2):
             self._dock_routed = (self.phase, self._dock_purpose)
-            self._log('info', 'dock route: %s: the docking server navigates'
+            self._log('info', 'dock route: %s: handing over to the docking server'
                       % (resp.get('message') or 'plan_route unavailable'))
-            self._dock_server()
+            self._dock_handover()
             return
+        self._dock_route_end = (float(poses[-1][0]), float(poses[-1][1]))
         legs = self._split_route([tuple(p) for p in poses])
         self._log('info', 'dock route %.1f m (%d leg%s): %s' % (
             float(resp.get('length_m', 0.0)), len(legs), '' if len(legs) == 1 else 's',
@@ -3161,22 +3292,37 @@ class MissionFSM:
         self._route_legs = {'legs': legs, 'i': 0}
         self._send_route_leg('dock_route')
 
-    def _dock_route_result(self, outcome):
-        """The dock route ended (any outcome): the docking server takes over from here (an
-        obstacle abort / failure: it plans its own Nav2 leg round it)."""
+    def _dock_route_result(self, outcome, nav2_down=False):
+        """The dock route ended (any outcome): the docking server takes over at the approach
+        pose (task 0.4 e: only within dock_server_nav_max_m of it; farther the route is driven
+        again, see _dock_handover). An obstacle abort waits first (blocked wait, then a fresh
+        dock route). Nav2 down: straight to the docking server (it cannot drive the lawn
+        without Nav2 either, and its failure names the cause)."""
         if self._route_next_leg(outcome, 'dock_route'):
             return
         self._route_legs = None
         self._dock_routed = (self.phase, self._dock_purpose)
-        if outcome != SUCCEEDED:
-            self._log('warn', 'dock route follow_path %s: the docking server navigates' % outcome)
         if self.inputs.docked:
             self._dock_done()
             return
-        self._dock_server()
+        if nav2_down:
+            self._log('warn', 'dock route follow_path %s: Nav2 down, handing over to the '
+                              'docking server' % outcome)
+            self._dock_server()
+            return
+        if outcome != SUCCEEDED:
+            self._log('warn', 'dock route follow_path %s' % outcome)
+            if outcome in (ABORTED, TIMEOUT) and float(self.p.dock_server_nav_max_m) > 0.0 \
+                    and self._blocked_cause():
+                self._dock_routed = None      # the re-send after the wait plans a fresh route
+                if self._blocked('dock', 'dock route %s' % outcome):
+                    return
+                self._dock_routed = (self.phase, self._dock_purpose)
+        self._dock_handover()
 
     def _dock_done(self):
         self._dock_routed = None
+        self._dock_route_end = None
         self._blk = None
         purpose, self._dock_purpose = self._dock_purpose, None
         if not self.p.use_docking_server:
@@ -3491,6 +3637,9 @@ class MissionFSM:
         """Route poses -> FollowPath legs, split at turns sharper than
         route_split_turn_deg (measured over 3 poses either side, ~0.3 m)."""
         th = math.radians(float(self.p.route_split_turn_deg))
+        corner = float(self.p.route_corner_turn_rad)
+        if corner > 0.0:                      # task 0.4 (d): every corner > it is a junction
+            th = corner if th <= 0 else min(th, corner)
         k = 3
         if th <= 0 or len(poses) < 2 * k + 2:
             return [list(poses)]
@@ -3581,7 +3730,9 @@ class MissionFSM:
         rest = m.cusp_resume
         m.cusp_resume = None
         m.route_poses = rest
-        self._route_legs = {'legs': self._split_route(rest), 'i': 0}
+        # the cusp about-turn was this leg's pivot (task 0.4 d: no second one, even after a
+        # failed Spin; the route follow is the judge)
+        self._route_legs = {'legs': self._split_route(rest), 'i': 0, 'turned': 0}
         self._send_route_leg('route')
 
     def _route_cusp_spun(self, outcome):
@@ -3593,8 +3744,64 @@ class MissionFSM:
             self._log('warn', 'route cusp about-turn %s: resuming the route anyway' % outcome)
         self._resume_after_cusp()
 
+    @staticmethod
+    def _leg_heading(leg, look=0.3):
+        """Heading of a route leg's start: chord to the first pose ``look`` m along it."""
+        a = leg[0]
+        for q in leg[1:]:
+            if geo.dist(a, q) >= look:
+                return math.atan2(q[1] - a[1], q[0] - a[0])
+        b = leg[-1]
+        if geo.dist(a, b) < 1e-6:
+            return None
+        return math.atan2(b[1] - a[1], b[0] - a[0])
+
+    def _route_corner_turn(self, purpose):
+        """Task 0.4 (d): before route leg ``i`` (transit or dock route), pivot in place to
+        its heading when that is more than route_corner_turn_rad off the robot's yaw and its
+        start is within route_cusp_radius_m. True = the about-turn was started."""
+        lim, rl, pose = float(self.p.route_corner_turn_rad), self._route_legs, self.inputs.pose
+        if lim <= 0.0 or rl is None or pose is None or len(pose) < 3 or \
+                rl.get('turned') == rl['i']:
+            return False
+        leg = rl['legs'][rl['i']]
+        if len(leg) < 2 or geo.dist(pose, leg[0]) > float(self.p.route_cusp_radius_m):
+            return False
+        heading = self._leg_heading(leg)
+        if heading is None:
+            return False
+        delta = geo.wrap_angle(heading - float(pose[2]))
+        if abs(delta) <= lim:
+            return False
+        rl['turned'], rl['purpose'] = rl['i'], purpose
+        self._log('info', 'route corner at (%.2f, %.2f): stop and pivot %.0f deg to the next '
+                          'leg (%d/%d), then follow it'
+                  % (leg[0][0], leg[0][1], math.degrees(delta), rl['i'] + 1, len(rl['legs'])))
+        self._go(self.phase, 'route corner: pivot %.0f deg' % math.degrees(delta))
+        allowance = abs(delta) / max(0.05, float(self.p.route_cusp_spin_rps)) + 10.0
+        self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
+                           allowance + 5.0, purpose='route_corner')
+        return True
+
+    def _route_corner_spun(self, outcome):
+        """Corner pivot ended (any outcome: the route follow is the judge): send the leg."""
+        rl, m = self._route_legs, self.mission
+        if rl is None:
+            return
+        purpose = rl.get('purpose', 'route')
+        if purpose == 'route':
+            if m is None or self.phase != 'TRANSIT' or m.step != 'transit':
+                return
+        elif self.phase not in DOCK_PHASES or self._dock_purpose is None:
+            return
+        if outcome != SUCCEEDED:
+            self._log('warn', 'route corner pivot %s: following the leg anyway' % outcome)
+        self._send_route_leg(purpose)
+
     def _send_route_leg(self, purpose):
         rl = self._route_legs
+        if self._route_corner_turn(purpose):
+            return
         self._start_action(ACT_FOLLOW, {'poses': rl['legs'][rl['i']],
                                         'controller_id': self.p.route_controller_id,
                                         'goal_checker_id': self.p.route_goal_checker_id},
@@ -3678,7 +3885,10 @@ class MissionFSM:
             self._hcal_result(outcome)
             return
         if a.purpose == 'dock_route':
-            self._dock_route_result(outcome)
+            self._dock_route_result(outcome, nav2_down)
+            return
+        if a.purpose == 'route_corner':
+            self._route_corner_spun(outcome)
             return
         if a.purpose == 'dock':
             self._dock_contact_since = None
@@ -4185,7 +4395,8 @@ class MissionFSM:
             return 'follow'
         if self.phase == 'TRANSIT' and m is not None and m.step == 'transit' and a is not None:
             return 'transit'
-        if self.phase in DOCK_PHASES and a is not None and a.purpose in ('dock', 'dock_route'):
+        if self.phase in DOCK_PHASES and a is not None and a.purpose in ('dock', 'dock_route',
+                                                                         'route_corner'):
             return 'dock'
         return None
 
@@ -4628,6 +4839,7 @@ class MissionFSM:
             self._log('info', 'stuck: cleared by the operator (command %d)' % cmd)
             self._stuck_hist = []
             self._tilt_hist = []
+            self._hb_count = 0
             self._stuck_ignore_until = self._now + float(self.p.stuck_ignore_after_s)
             self._fx.append(ResetStuckGuard())
             if cmd != CMD_STOP and cmd != CMD_RESET_EMERGENCY:
@@ -5002,6 +5214,216 @@ class MissionFSM:
         self._tob = None
         self._go('STUCK_NEEDS_HELP', 'steep slope: needs help at (%.2f, %.2f)' % (x, y))
 
+
+    # ==================================================================
+    # hard boundary (task 0.4 a, 2026-10-14 run 3)
+    # ==================================================================
+    # map_server publishes ~/outside_m: the robot centre's distance outside the mowing
+    # areas U drawn paths U dock corridor (0 inside; the return corridor does NOT count).
+    # Beyond hard_boundary_m in an autonomous driving phase: stop, blade off, reverse along
+    # the driven track until back inside, count it, resume or give up (see Params).
+    def _outside(self):
+        """The fresh ~/outside_m, else None (no check without a recent value)."""
+        i = self.inputs
+        if i.outside_m is None or i.outside_stamp is None or \
+                self._now - i.outside_stamp > float(self.p.hard_boundary_stale_s):
+            return None
+        return float(i.outside_m)
+
+    def _hard_boundary_watch(self):
+        """Abort a retrace when something else took over (emergency, STOP, phase change)."""
+        k = self._hb
+        if k is None:
+            return
+        if self._emergency_cause() or self.phase != k['phase']:
+            self._log('warn', 'boundary retrace aborted (%s)' % (
+                self._emergency_cause() or 'state %s' % self.phase))
+            self._hb = None
+            self._fx.append(SuppressStuckGuard(False))
+            self._fx.append(DriveCmd(0.0, 0.0))
+
+    def _hb_trail_add(self):
+        pose = self.inputs.pose
+        if pose is None:
+            return
+        tr, step = self._hb_trail, max(0.01, float(self.p.hard_boundary_trail_step_m))
+        if tr and math.hypot(pose[0] - tr[-1][0], pose[1] - tr[-1][1]) < step:
+            return
+        tr.append((float(pose[0]), float(pose[1])))
+        del tr[:-(int(float(self.p.hard_boundary_trail_m) / step) + 1)]
+
+    def _hard_boundary_tick(self):
+        """Returns True while the hard boundary owns the tick."""
+        if not self.p.hard_boundary:
+            return False
+        if self._hb is not None:
+            self._hb_retrace_tick()
+            return True
+        self._hb_trail_add()
+        hcal = self.phase == 'WAITING_FOR_RTK' and self._hcal is not None
+        if self.phase not in HARD_BOUNDARY_PHASES and not hcal:
+            return False
+        if self.phase in ('TRANSIT', 'MOWING') and self.mission is None:
+            return False
+        out = self._outside()
+        if out is None or out <= float(self.p.hard_boundary_m):
+            return False
+        pose = self.inputs.pose
+        where = '(%.2f, %.2f)' % (pose[0], pose[1]) if pose is not None else 'unknown pose'
+        if hcal:
+            # unverified heading: no retrace on the EKF track, just stop where it is
+            self._hcal_fail('left the mowing area by %.2f m at %s' % (out, where))
+            return True
+        self._hb_count += 1
+        self._log('error', 'HARD BOUNDARY: %.2f m outside the areas / paths at %s in %s (> %.2f '
+                           'm): cancel, zero, blade off, retrace the driven track (%d/%d this '
+                           'mission)' % (out, where, self.phase, float(self.p.hard_boundary_m),
+                                         self._hb_count, int(self.p.hard_boundary_max_aborts)))
+        if pose is None:
+            self._hb_needs_help('outside the boundary, no pose', (0.0, 0.0))
+            return True
+        m = self.mission
+        follow = m is not None and m.step == 'follow'
+        ox, oy = float(pose[0]), float(pose[1])
+        path = [q for q in reversed(self._hb_trail) if math.hypot(q[0] - ox, q[1] - oy) > 0.02]
+        track = sum(math.hypot(b[0] - a[0], b[1] - a[1])
+                    for a, b in zip([(ox, oy)] + path, path))
+        self._hb = {'track_m': track, 'phase': self.phase, 'origin': (ox, oy), 'stage': 'pause', 't': self._now,
+                    'path': path, 'i': 0, 'follow': follow, 'out0': out,
+                    'dock_purpose': self._dock_purpose, 'driven': 0.0, 'last': tuple(pose),
+                    'prog': 0.0, 'prog_best': 0.0, 'prog_t': self._now, 'inside_at': None}
+        self._cancel_all('hard boundary')
+        self._blade_off('hard boundary')
+        self._fx.append(ZeroBurst())
+        self._fx.append(SuppressStuckGuard(True))
+        self._fx.append(RecordIncident('boundary', ox, oy, 'hard boundary: %.2f m outside in %s'
+                                       % (out, self.phase)))
+        self._loc = None
+        if m is not None:
+            if follow:
+                m.start_local = self._track_progress()
+            m.step = None
+        self._go(self.phase, 'boundary: %.2f m outside, stopping' % out)
+        return True
+
+    def _hb_cmd(self, pose):
+        """(v, w) of the retrace: reverse toward the next track point (pure pursuit on the
+        rear), both wheels rolling backwards (inner >= hard_boundary_min_inner_mps); a large
+        heading error is turned on the spot first (counter-rotating pivot >= 0.25 rad/s);
+        straight reverse over the last lookahead once the track points are used up (the
+        caller stops at the track's length: never a blind reverse beyond the driven track)."""
+        k, p = self._hb, self.p
+        v = -min(abs(float(p.hard_boundary_retrace_speed_mps)), 0.10)   # owner: slow reverse
+        path, la = k['path'], float(p.hard_boundary_lookahead_m)
+        while k['i'] < len(path) and math.hypot(path[k['i']][0] - pose[0],
+                                                path[k['i']][1] - pose[1]) < la:
+            k['i'] += 1
+        if k['i'] >= len(path):
+            return v, 0.0
+        tx, ty = path[k['i']]
+        err = geo.wrap_angle(math.atan2(ty - pose[1], tx - pose[0]) - (float(pose[2]) + math.pi))
+        if abs(err) > float(p.hard_boundary_pivot_err_rad):
+            return 0.0, math.copysign(max(0.25, abs(float(p.hard_boundary_pivot_rps))), err)
+        half = 0.5 * float(p.hard_boundary_track_width_m)
+        wmax = max(0.0, (abs(v) - float(p.hard_boundary_min_inner_mps)) / max(1e-3, half))
+        return v, max(-wmax, min(wmax, 1.5 * err))
+
+    def _hb_stop(self):
+        self._hb = None
+        self._fx.append(DriveCmd(0.0, 0.0))
+        self._fx.append(SuppressStuckGuard(False))
+
+    def _hb_retrace_tick(self):
+        k, pose, now, p = self._hb, self.inputs.pose, self._now, self.p
+        if pose is None:
+            self._hb_stop()
+            self._hb_needs_help('pose lost during the boundary retrace', k['origin'])
+            return
+        if k['stage'] == 'pause':
+            if now - k['t'] < float(p.hard_boundary_pause_s):
+                return
+            k['stage'], k['prog_t'], k['last'] = 'drive', now, tuple(pose)
+            self._go(self.phase, 'boundary: reversing along the driven track')
+            self._log('info', 'boundary: reversing along %d track points at %.2f m/s'
+                      % (len(k['path']), min(abs(float(p.hard_boundary_retrace_speed_mps)),
+                                             0.10)))
+        last = k['last']
+        step = math.hypot(pose[0] - last[0], pose[1] - last[1])
+        turn = abs(geo.wrap_angle(float(pose[2]) - float(last[2])))
+        k['driven'] += step
+        k['prog'] += step + 0.5 * float(p.hard_boundary_track_width_m) * turn
+        k['last'] = tuple(pose)
+        if k['prog'] >= k['prog_best'] + float(p.hard_boundary_progress_m):
+            k['prog_best'], k['prog_t'] = k['prog'], now
+        out = self._outside()
+        if out is not None and out <= 1e-3:
+            if k['inside_at'] is None:
+                k['inside_at'] = k['driven']
+            if k['driven'] - k['inside_at'] >= float(p.hard_boundary_retrace_extra_m) or \
+                    k['i'] >= len(k['path']):
+                self._hb_retraced()
+                return
+        elif out is not None:
+            k['inside_at'] = None
+        if k['driven'] >= min(float(p.hard_boundary_retrace_max_m), k['track_m'] + 0.02):
+            if out is not None and out <= float(p.hard_boundary_m):
+                self._hb_retraced()
+                return
+            self._hb_stop()
+            self._hb_needs_help('still %s outside after reversing %.2f m (driven track %.2f m)'
+                                % ('?' if out is None else '%.2f m' % out, k['driven'],
+                                   k['track_m']), k['origin'])
+            return
+        if now - k['prog_t'] > float(p.hard_boundary_progress_s):
+            self._hb_stop()
+            self._hb_needs_help('boundary retrace made no progress in %.0f s'
+                                % float(p.hard_boundary_progress_s), k['origin'])
+            return
+        self._fx.append(DriveCmd(*self._hb_cmd(pose)))
+
+    def _hb_retraced(self):
+        k = self._hb
+        self._hb_stop()
+        self._hb_trail = []
+        ox, oy = k['origin']
+        n, lim = self._hb_count, int(self.p.hard_boundary_max_aborts)
+        self._log('info', 'boundary: back inside after reversing %.2f m (excursion %d/%d)'
+                  % (k['driven'], n, lim))
+        if n >= lim:
+            self._hb_needs_help('left the boundary %d times in this mission' % n, (ox, oy))
+            return
+        why = 'left the boundary (%.2f m outside)' % k['out0']
+        if k['phase'] in DOCK_PHASES:
+            self._dock(k['phase'], k['dock_purpose'], 'resuming after the boundary retrace')
+            return
+        m = self.mission
+        if m is None or m.area_idx is None or not m.subpaths:
+            self._go_idle('boundary retrace: nothing to resume')
+            return
+        if k['phase'] == 'TRANSIT':
+            if m.detour is not None:
+                self._detour_failed(why)
+                return
+            m.route_fallback = False          # the retry asks for the drawn route again
+            self._transit_abort(why)
+            return
+        m.detour = None
+        self._dispatch()
+
+    def _hb_needs_help(self, why, pose):
+        """Like the stuck guard's give-up (same latched phase, same operator clear)."""
+        x, y = float(pose[0]), float(pose[1])
+        self._log('error', 'STUCK_NEEDS_HELP: %s at (%.2f, %.2f): motion stopped, blade off '
+                  '(STOP / START / MANUAL to clear)' % (why, x, y))
+        if self.mission is not None:
+            self._interrupt_mission('boundary')
+        self._cancel_all('boundary')
+        self._blade_off('boundary')
+        self._fx.append(ZeroBurst())
+        self._dock_purpose = None
+        self._resume_after = None
+        self._hb = None
+        self._go('STUCK_NEEDS_HELP', 'boundary: needs help at (%.2f, %.2f)' % (x, y))
 
 
 # below these the robot counts as standing still for the in-path prediction

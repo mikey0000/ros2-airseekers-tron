@@ -4313,6 +4313,7 @@ def test_dock_route_then_docking_server():
     req = _pending_route_request(h)
     assert req == {'start': (1.5, -5.6, 0.0), 'to_dock': True, 'variation': 0}
     route = [(1.5, -5.6, 0.0), (1.0, -3.0, 0.0), (0.0, -1.0, 0.0)]
+    h.fsm.inputs.pose = (1.5, -5.6, 1.77)       # facing the route (no corner pivot first)
     _answer_route(h, resp=_route_resp(route))
     assert h.fsm._action.name == f.ACT_FOLLOW and h.fsm._action.purpose == 'dock_route'
     g = h.goal(f.ACT_FOLLOW)
@@ -4330,9 +4331,11 @@ def test_dock_route_unavailable_goes_straight_to_the_docking_server():
 
 
 def test_dock_route_abort_hands_over_to_the_docking_server():
+    # task 0.4 (e): an abort is handed over only near the approach pose (the route's end)
     h = Harness(route_transits=True)
     _home(h)
-    _answer_route(h)
+    _answer_route(h)                                 # ends at (5, 5)
+    h.fsm.inputs.pose = (4.8, 4.9, 0.8)              # 0.22 m short of it
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert h.name == 'RETURNING_HOME' and h.pending_action(f.ACT_DOCK)
 
@@ -4376,7 +4379,7 @@ def test_split_route_at_sharp_turns_only():
     right_angle = [(0.1 * i, 0.0, 0.0) for i in range(15)] + \
         [(1.4, -0.1 * i, -1.57) for i in range(1, 15)]
     assert len(h.fsm._split_route(right_angle)) == 1        # 90 deg < 100: one goal
-    h2 = _route_h(route_split_turn_deg=0.0)
+    h2 = _route_h(route_split_turn_deg=0.0, route_corner_turn_rad=0.0)
     assert len(h2.fsm._split_route(_hairpin())) == 1
 
 
@@ -4391,6 +4394,10 @@ def test_route_hairpin_sent_as_two_legs_then_mows():
     g1 = h.goal(f.ACT_FOLLOW)
     assert h.fsm._action.purpose == 'route' and len(g1['poses']) < len(route)
     h.finish(f.ACT_FOLLOW)                                # drives leg 1 to its end
+    # task 0.4 (d): the 135 deg corner is pivoted on the spot before leg 2
+    assert h.name == 'TRANSIT' and h.fsm._action.purpose == 'route_corner'
+    h.fsm.inputs.pose = h.fsm.inputs.pose[:2] + (-2.36,)
+    h.finish(f.ACT_SPIN)
     assert h.name == 'TRANSIT' and h.fsm._action.purpose == 'route'
     g2 = h.goal(f.ACT_FOLLOW)
     assert g2['poses'][0] == g1['poses'][-1]
@@ -4412,9 +4419,12 @@ def test_route_leg_success_short_of_its_end_falls_back():
 def test_dock_route_legs_then_docking_server():
     h = Harness(route_transits=True)
     _home(h)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)                   # at the route start
     _answer_route(h, resp=_route_resp(_hairpin()))
     assert h.fsm._action.purpose == 'dock_route'
     h.finish(f.ACT_FOLLOW)
+    assert h.fsm._action.purpose == 'route_corner'        # task 0.4 (d): pivot first
+    h.finish(f.ACT_SPIN)
     assert h.fsm._action.purpose == 'dock_route'          # second leg
     h.finish(f.ACT_FOLLOW)
     assert h.pending_action(f.ACT_DOCK)

@@ -110,7 +110,9 @@ def test_cruise_and_straight_untouched(v, w):
 
 
 def test_reverse_docking_leg_keeps_both_wheels_backward():
-    sv, sw, info = shape_for_both_wheels(-0.035, 0.1)    # inner +0.011: reverse arc
+    # The widening geometry (task 0.4 b turns this r_req 0.35 m request into a pivot by
+    # default; the docking lane is never shaped at all, see test_docking_phases_are_exempt).
+    sv, sw, info = shape_for_both_wheels(-0.035, 0.1, {'pivot_instead': False})
     a, b = wheels(sv, sw)
     assert sv < 0 and sw == pytest.approx(0.1)
     assert max(a, b) == pytest.approx(-0.06) and min(a, b) < 0
@@ -384,3 +386,98 @@ def test_dock_transit_param_off_restores_phase_exemption():
     set_turn_param(ts, 'turn_shaper_dock_transit', False)
     assert ts.apply(0.016, 0.09, 'RETURNING_HOME', DT, 'navigation') == (0.016, 0.09)
     assert ts.apply(0.08, 0.2, 'TRANSIT', DT, 'navigation') != (0.08, 0.2)
+
+
+# ---------------------------------------------------------------------------------------
+# Task 0.4 (b), 2026-10-14 run 3: pivot instead of widening a tight corner
+# ---------------------------------------------------------------------------------------
+def _widened_r(v, w):
+    from mower_control.cmd_vel_slew import _tight_arc
+    return _tight_arc(v, w, HALF, 0.06, 0.3)[2]['r']
+
+
+@pytest.mark.parametrize('v, w', [(0.04, 0.2), (0.02, 0.1), (0.03, 0.1), (0.05, 0.2),
+                                  (-0.03, 0.1)])
+def test_tight_corner_becomes_pivot_not_wide_arc(v, w):
+    """r_req 0.2-0.3 m (MPPI's slow corners in run 3) -> pivot on the spot, both wheels
+    counter-rotating at >= the 0.25 rad/s floor, instead of a 0.5-1.0 m arc."""
+    sv, sw, info = shape_for_both_wheels(v, w)
+    assert sv == 0.0 and abs(sw) >= 0.25 - 1e-9 and sw * w > 0
+    a, b = wheels(sv, sw)
+    assert a * b < 0 and min(abs(a), abs(b)) >= 0.06 - 1e-9
+    assert info['kind'] == 'pivot'
+
+
+def test_r_req_0_2_corner_is_a_pivot_through_the_shaper():
+    ts = TurnShaper()
+    out = ts.apply(0.04, 0.2, 'TRANSIT', DT, lane='navigation')    # r_req 0.2 m
+    assert out[0] == 0.0 and out[1] == pytest.approx(0.25)
+    out = TurnShaper().apply(0.03, 0.1, 'TRANSIT', DT, lane='navigation')   # r_req 0.3 m
+    assert out[0] == 0.0 and out[1] == pytest.approx(0.25)
+
+
+def test_pivot_instead_marks_the_status():
+    ts = TurnShaper()
+    ts.apply(0.03, 0.1, 'TRANSIT', DT, lane='navigation')
+    assert ts.status.startswith('pivot') and 'instead of an arc' in ts.status
+
+
+@pytest.mark.parametrize('v, w', [(0.05, 0.1), (0.07, 0.2), (0.1, 0.3), (-0.05, 0.1)])
+def test_arcs_at_or_above_the_threshold_are_unchanged(v, w):
+    """r_req >= 0.5 x widened radius: the same tight arc as before task 0.4 (b)."""
+    assert (abs(v) / abs(w)) >= 0.5 * _widened_r(v, w)
+    old = shape_for_both_wheels(v, w, {'pivot_instead': False})
+    new = shape_for_both_wheels(v, w)
+    assert new[:2] == pytest.approx(old[:2]) and new[2]['kind'] == 'arc'
+
+
+def test_pivot_instead_off_restores_widening():
+    from mower_control.cmd_vel_slew import TURN_DEFAULTS, set_turn_param
+    assert TURN_DEFAULTS['turn_shaper_pivot_instead'] is True
+    assert TURN_DEFAULTS['turn_shaper_pivot_instead_ratio'] == pytest.approx(0.5)
+    ts = TurnShaper()
+    set_turn_param(ts, 'turn_shaper_pivot_instead', False)
+    v, w = ts.apply(0.03, 0.1, 'TRANSIT', DT, lane='navigation')
+    assert v > 0.0 and ts.status.startswith('arc r=')
+    assert v / w == pytest.approx(_widened_r(0.03, 0.1))
+
+
+def test_ratio_param_moves_the_threshold():
+    from mower_control.cmd_vel_slew import set_turn_param
+    ts = TurnShaper()
+    set_turn_param(ts, 'turn_shaper_pivot_instead_ratio', 0.2)
+    v, w = ts.apply(0.03, 0.1, 'TRANSIT', DT, lane='navigation')     # q = 0.3 / 0.84
+    assert v > 0.0 and ts.status.startswith('arc r=')
+
+
+def _q(v, w):
+    return (abs(v) / abs(w)) / _widened_r(v, w)
+
+
+def test_no_chatter_across_the_threshold():
+    """A controller hovering just either side of the ratio (q 0.46 / 0.54) keeps one
+    regime: the latch holds across ratio +- hysteresis."""
+    w = 0.1
+    below, above = 0.46 * _widened_r(0.03, w) * w, 0.54 * _widened_r(0.03, w) * w
+    assert _q(below, w) < 0.5 < _q(above, w) < 0.6
+    for first in (below, above):
+        ts = TurnShaper(latch_ticks=0)
+        kinds = set()
+        for k in range(40):
+            v = first if k % 2 == 0 else (above if first == below else below)
+            out = ts.apply(v, w, 'TRANSIT', DT, lane='navigation')
+            kinds.add('pivot' if out[0] == 0.0 else 'arc')
+        assert len(kinds) == 1
+
+
+def test_latch_leaves_the_pivot_once_clearly_past_the_band():
+    w = 0.1
+    ts = TurnShaper(latch_ticks=0)
+    ts.apply(0.03, w, 'TRANSIT', DT, lane='navigation')               # q 0.36: pivot
+    assert ts.regime == 'pivot'
+    v_far = 0.65 * _widened_r(0.05, w) * w                            # q 0.65 > 0.6
+    out = ts.apply(v_far, w, 'TRANSIT', DT, lane='navigation')
+    assert out[0] > 0.0 and ts.regime == 'arc'
+    v_low = 0.35 * _widened_r(0.03, w) * w                            # q 0.35 < 0.4
+    out = ts.apply(v_low, w, 'TRANSIT', DT, lane='navigation')
+    assert out[0] == 0.0 and ts.regime == 'pivot'

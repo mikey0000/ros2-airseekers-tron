@@ -1171,6 +1171,22 @@ def robot_area_status(x: float, y: float, areas: List[Area]) -> Tuple[bool, floa
     return False, best
 
 
+def outside_distance(x: float, y: float, areas: List[Area],
+                     extra_polygons: Sequence[Polygon] = ()) -> float:
+    """Task 0.4 (a): distance of (x, y) outside every area polygon (mowing areas AND drawn
+    navigation paths / channels) and every ``extra_polygons`` entry (the dock corridor);
+    0.0 inside any of them, inf with nothing to compare with. Obstacle holes are ignored
+    (the costmaps keep the robot off them; this is the hard outer rule)."""
+    best = math.inf
+    for poly in [a.polygon for a in areas] + [p for p in extra_polygons if p]:
+        if len(poly) < 3:
+            continue
+        if point_in_polygon(x, y, poly):
+            return 0.0
+        best = min(best, closest_edge_point(x, y, poly)[2])
+    return best
+
+
 class BoundaryClassifier:
     """Port of boundary_classifier.hpp ClassifyBoundary with its debounce
     counter held in the object."""

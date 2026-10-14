@@ -482,7 +482,10 @@ def test_mppi_transit():
     assert c["plugin"] == "nav2_mppi_controller::MPPIController"
     assert c["motion_model"] == "DiffDrive"
     assert 0 < c["vx_max"] <= 0.3 and 0 < c["wz_max"] <= 0.3     # MCU clamps
-    assert c["vx_min"] == 0.0                                    # no blind reversing
+    # task 0.4 (c): a slow reverse to back out of an overshot corner, never faster than
+    # 0.10 m/s (no rear sensing), and forward stays preferred
+    assert -0.10 <= c["vx_min"] < 0.0
+    assert c["PreferForwardCritic"]["enabled"] is True
     critics = c["critics"]
     assert {"CostCritic", "GoalCritic", "PathAlignCritic", "PathFollowCritic",
             "PreferForwardCritic"} <= set(critics)

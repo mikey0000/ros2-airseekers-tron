@@ -24,7 +24,7 @@ from rclpy.time import Time
 from geometry_msgs.msg import Point32, Polygon as PolygonMsg, PolygonStamped, PoseStamped
 from nav2_msgs.msg import CostmapFilterInfo
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32, String
 from std_srvs.srv import Trigger
 
 from mower_interfaces.msg import MowerBaseDevStatus
@@ -295,6 +295,9 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                                                          _latched())
         self.boundary_pub = self.create_publisher(Bool, '~/boundary_violation', 1)
         self.lethal_pub = self.create_publisher(Bool, '~/lethal_boundary_violation', 1)
+        # task 0.4 (a): distance outside areas U drawn paths U dock corridor (0 inside; the
+        # return corridor does not count) for the mission's hard boundary
+        self.outside_pub = self.create_publisher(Float32, '~/outside_m', 1)
         self.replan_pub = self.create_publisher(Bool, '~/replan_needed', 1)
         self.settings_pub = self.create_publisher(String, '~/area_settings', _latched())
         # terrain memory outputs (latched): traction score 0..100 (-1 = never driven),
@@ -862,6 +865,10 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                 # to be (docked, undocking, coming home): never a violation.
                 if any(core.point_in_polygon(x, y, poly) for poly in self._corridor_polys):
                     inside, dist = True, 0.0
+            dock_poly = getattr(self, '_dock_corridor_poly', None)
+            out = core.outside_distance(x, y, self.store.areas, [dock_poly] if dock_poly else [])
+            if math.isfinite(out):
+                self.outside_pub.publish(Float32(data=float(out)))
             soft, lethal_raw = self.boundary.update(inside, dist)
             self._lethal_filter.min_duration_s = float(self.p('lethal_min_duration_s'))
             lethal = self._lethal_filter.update(now, lethal_raw)
