@@ -97,11 +97,15 @@ comparing pivot authority and completion time against the baseline.
 
 `scripts/wheel_bag_metrics.py <mow or incident dir>` computes every metric above from the
 pinned bags (regime flips, one-wheel ticks, lag, stop latency and roll-out, pivot authority,
-peak accel/decel; `--csv` dumps the 20 Hz series for plotting). It needs rosbag2_py, so run it
-in the dev image:
+peak accel/decel; `--csv` dumps the 20 Hz series for plotting). A pin is a directory of bare
+`*.db3.zstd` splits without `metadata.yaml` (hard links out of the ring, renamed), so the
+script reads the sqlite files directly rather than through the rosbag2 reader. Deserialising
+needs rclpy, so it runs in the dev image; decompress on the host first unless the image has
+`zstd` (added to `docker/Dockerfile.dev-amd64`, present after the next image rebuild):
 
 ```sh
 scp -r root@192.168.1.105:/userdata/ros2/mows/<ts> /tmp/mow-<ts>
+zstd -dkq /tmp/mow-<ts>/*.zstd
 docker run --rm -v "$PWD":/work -v /tmp/mow-<ts>:/bag mower:jazzy-dev-amd64 bash -c \
   'source /opt/ros/jazzy/setup.bash && python3 /work/scripts/wheel_bag_metrics.py /bag --csv /bag/series.csv'
 ```
@@ -111,3 +115,41 @@ For each run: bag directory, what was observed, the metrics above, decision (kee
 / tune). Any revert is a parameter flip plus restart; the code paths all keep the old
 behaviour behind their parameters (`turn_shaper_hysteresis_mps: 0.0`,
 `slew_both_wheels_always: false`, `hard_stop_lanes: []`, `max_linear_decel: 0.5`).
+
+## Run 1: 2026-10-14 mow `/userdata/ros2/mows/20261014-021244` (fixes 1, 2, 3, 6, 7 live)
+
+Timeline (bag seconds): mow 8–1120 with a transit abort at 868 and an emergency stop at 1095;
+idle until 2341; 6 s of teleop; second mission from 2357, return + docking 2371–2570 (one
+RETRY at 2547, docked at 2570). 43 splits, 2570 s.
+
+| Metric | Result | Verdict |
+|---|---|---|
+| emergency stop (fix 3) | lane zero → `/cmd_vel` zero 49 ms → MCU 54 ms → measured < 0.01 m/s 453 ms, rolled 0.02 m | fix 3 works (was ~0.6 s / 9 cm) |
+| regime flips (fix 1) | 548 changes, 425 within 1 s; 108 pass→pivot, 132 pass→arc, 90 pivot→pass, 150 arc→pass; only 68 arc↔pivot | latch works for arc↔pivot; the hunting is pass↔pivot/arc, see below |
+| one-wheel ticks on `/cmd_vel` | 4564 ticks with v = 0 and 0 < \|w\| < 0.24 (both wheels under the 0.06 m/s deadband); 151 counter-rotation ticks on the nav lane during the return transit (t ≈ 2424, v 0.016, w 0.09); 123 on the docking lane during the reverse (v −0.035, w ±0.3) | two gaps, below |
+| pivot authority | 0.25–0.30 rad/s commanded, MCU wheel yaw 0.23–0.28, EKF/IMU yaw 0.24 (t 63, 5.7 s) then 0.07–0.17 (ratio 0.24–0.59) | wheels turn, body does not: slip on turf. Raising the clamp (item 5) would not help |
+| arcs | 135 episodes, mean radius 0.64 m; 2533 ramp ticks in (0, 0.06) | as designed by fix 6 |
+| peak accel | `/cmd_vel` −5.4 m/s² (hard stops), MCU measured +0.80 / −1.22 m/s² | fine |
+| lag | cross-correlation says 150 ms but it is dominated by the ramps; sample by sample `/cmd_vel` follows the lane within one 20 Hz tick | metric to be replaced by an edge-based one |
+| goal stops | not measurable: after every goal the nav lane keeps sending v = 0 with w 0.03–0.1 for seconds | depends on the slow-pivot fix |
+
+What the shaper actually does at a turn entry (t 51–64): MPPI dithers between v = 0.01 with
+w ≈ −0.1 (inner < 0, snapped to a 0.25 rad/s pivot) and v = 0.000 with the same w (a pure
+rotation, which `shape_for_both_wheels` passes unchanged and which resets the latch in
+`TurnShaper._latched`). `/cmd_vel` therefore alternates 0.25 / 0.10 rad/s every ~0.3 s. The
+pure-rotation pass-through dates from the 2026-10-07 heading-hunting observation, before the
+latch existed. Minutes 12–13 (t 720–840, the stop-start before the transit abort) are 1300
+ticks of v = 0, \|w\| < 0.24: the controller asked for rotations the wheels cannot deliver.
+
+Decisions:
+- keep fixes 1, 2, 3, 6, 7 as deployed;
+- **next code change (fix 8)**: pure rotations join the pivot regime: v = 0 with 0 < \|w\| <
+  floor snaps to the 0.25 rad/s pivot and is latched like any other pivot (the latch, not a
+  pass-through, is now the guard against 0.25 pulses near a goal); tiny \|w\| below a
+  deadband (≈ 0.03 rad/s) becomes zero;
+- **fix 9**: add `RETURNING_HOME` (nav-driven return transit) to `SHAPE_PHASES`; only the
+  marker-guided docking/undocking phases stay exempt;
+- item 4 confirmed on the docking lane (123 ticks of one wheel forward, one back at
+  −0.035 m/s); apply (b) params first;
+- item 5 stays parked: the slip ratio says more angular rate scrubs more, the creeping pivot
+  assist is the lever.

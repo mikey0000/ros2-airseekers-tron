@@ -18,6 +18,7 @@ FROM ${BASE}
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8 ROS_DISTRO=jazzy
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+      zstd \
       ros-jazzy-navigation2 \
       ros-jazzy-robot-localization \
       ros-jazzy-ortools-vendor \

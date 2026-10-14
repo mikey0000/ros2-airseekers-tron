@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Wheel-smoothness metrics from a black-box rosbag2 (docs/wheel_smoothness_field_tests.md).
 
-Reads the sqlite3 (zstd message-compressed) bags that ``bag_recorder`` pins under
-/userdata/ros2/mows/<ts>/ and /userdata/ros2/incidents/<ts>_<reason>/ and prints, per bag:
+Reads the sqlite3 splits that ``bag_recorder`` pins under /userdata/ros2/mows/<ts>/ and
+/userdata/ros2/incidents/<ts>_<reason>/ (bare ``*.db3.zstd`` files, no metadata.yaml) or a
+complete rosbag2 session directory, and prints, per run:
 
 * regime flips of the turn shaper (``/cmd_vel_slew/shape_status``), and flip bursts
 * one-wheel ticks on ``/cmd_vel`` (inner wheel in (-0.06, 0)) and ramp ticks in (0, 0.06)
@@ -12,18 +13,27 @@ Reads the sqlite3 (zstd message-compressed) bags that ``bag_recorder`` pins unde
 * pivot authority: commanded ``/cmd_vel`` yaw rate vs EKF / MCU yaw rate per pivot episode
 * accel / decel actually commanded on ``/cmd_vel`` and seen on ``/mcu/measured_speed``
 
-Needs rosbag2_py + rclpy, i.e. run it in the dev image (the host has neither):
+The splits are read straight from sqlite (the rosbag2 reader insists on following the split
+chain recorded inside each file, which the pin's renaming breaks). Deserialising needs rclpy +
+the message packages, i.e. run it in the dev image; the dev image has no zstd, so decompress
+on the host first (``zstd -dk`` keeps the originals):
 
-    docker run --rm -v "$PWD":/work -v /path/to/mows:/bags mower:jazzy-dev-amd64 bash -c \\
-      'source /opt/ros/jazzy/setup.bash && python3 /work/scripts/wheel_bag_metrics.py /bags/<ts>'
+    zstd -dkq /path/to/mows/<ts>/*.zstd
+    docker run --rm -v "$PWD":/work -v /path/to/mows/<ts>:/bag mower:jazzy-dev-amd64 bash -c \\
+      'source /opt/ros/jazzy/setup.bash && python3 /work/scripts/wheel_bag_metrics.py /bag'
 
-A pinned mow is a directory of 60 s splits; pass the directory and every split in it is read
-in time order. ``--csv out.csv`` also dumps the resampled 20 Hz command/feedback series.
+If the ``zstandard`` module or the ``zstd`` binary is available where the script runs it
+decompresses the splits itself. Every split under the directory is read, in split order.
+``--csv out.csv`` also dumps the resampled 20 Hz command/feedback series.
 """
 import argparse
 import bisect
 import math
 import os
+import re
+import shutil
+import sqlite3
+import subprocess
 import sys
 
 TRACK_HALF_M = 0.24          # drive_track_y (vendor urdf); inner = |v| - |w| * 0.24
@@ -38,49 +48,94 @@ TOPICS = {
 
 
 # ---------------------------------------------------------------- bag reading
-def bag_dirs(path):
-    """Every rosbag2 directory (has metadata.yaml) under `path`, sorted by name."""
-    if os.path.isfile(os.path.join(path, 'metadata.yaml')):
-        return [path]
-    found = []
-    for root, dirs, files in os.walk(path):
-        if 'metadata.yaml' in files:
-            found.append(root)
-            dirs[:] = []
-    return sorted(found)
+SPLIT_RE = re.compile(r'_(\d+)\.db3$')
+
+
+def _decompress(zst):
+    """`x.db3.zstd` -> `x.db3` next to it; returns the plain path or None if no tool is available."""
+    out = zst[:-len('.zstd')]
+    if os.path.isfile(out):
+        return out
+    try:
+        import zstandard
+        with open(zst, 'rb') as fi, open(out + '.part', 'wb') as fo:
+            zstandard.ZstdDecompressor().copy_stream(fi, fo)
+        os.replace(out + '.part', out)
+        return out
+    except ImportError:
+        pass
+    if shutil.which('zstd'):
+        subprocess.run(['zstd', '-dkq', '-o', out, zst], check=True)
+        return out
+    return None
+
+
+def bag_files(path):
+    """Every sqlite3 split under `path` (a split, a pinned mow/incident dir, or a session dir),
+    in split order. `.zstd` splits are decompressed next to the original when possible."""
+    if os.path.isfile(path):
+        files = [path]
+    else:
+        files = []
+        for root, _dirs, names in os.walk(path):
+            files += [os.path.join(root, n) for n in names if n.endswith('.db3') or n.endswith('.db3.zstd')]
+    plain, missing = [], []
+    for f in files:
+        if f.endswith('.zstd'):
+            out = f[:-len('.zstd')]
+            if out in files or out in plain:
+                continue
+            got = _decompress(f)
+            (plain.append(got) if got else missing.append(f))
+        else:
+            plain.append(f)
+    if missing:
+        print('no zstd decompressor here; on the host run:  zstd -dkq %s/*.zstd' % os.path.dirname(missing[0]))
+        return []
+
+    def key(f):
+        m = SPLIT_RE.search(f)
+        return (os.path.dirname(f), int(m.group(1)) if m else -1, f)
+    return sorted(set(plain), key=key)
 
 
 def read_series(paths):
     """{topic: [(t_s, v, w)]} for twist-like topics, [(t_s, text)] for strings."""
-    import rosbag2_py
     from rclpy.serialization import deserialize_message
     from rosidl_runtime_py.utilities import get_message
     series = {t: [] for t in TOPICS}
+    wanted = [t for t in TOPICS if TOPICS[t] != 'skip']
     for p in paths:
-        # bag_recorder writes zstd message-mode compression: that needs the compression reader
-        compressed = 'compression_format: zstd' in open(os.path.join(p, 'metadata.yaml')).read()
-        reader = (rosbag2_py.SequentialCompressionReader() if compressed
-                  else rosbag2_py.SequentialReader())
-        reader.open(rosbag2_py.StorageOptions(uri=p, storage_id='sqlite3'),
-                    rosbag2_py.ConverterOptions('cdr', 'cdr'))
-        types = {tm.name: tm.type for tm in reader.get_all_topics_and_types()}
-        wanted = [t for t in TOPICS if t in types and TOPICS[t] != 'skip']
-        if not wanted:
-            continue
-        reader.set_filter(rosbag2_py.StorageFilter(topics=wanted))
-        cls = {t: get_message(types[t]) for t in wanted}
-        while reader.has_next():
-            topic, data, t_ns = reader.read_next()
-            msg = deserialize_message(data, cls[topic])
-            t = t_ns * 1e-9
-            kind = TOPICS[topic]
-            if kind == 'string':
-                series[topic].append((t, msg.data))
-            elif kind == 'odom':
-                series[topic].append((t, msg.twist.twist.linear.x, msg.twist.twist.angular.z))
-            else:
-                tw = msg.twist if hasattr(msg, 'twist') else msg     # TwistStamped or Twist
-                series[topic].append((t, tw.linear.x, tw.angular.z))
+        db = sqlite3.connect('file:%s?mode=ro' % p, uri=True)
+        try:
+            topics = {name: (tid, typ) for tid, name, typ in
+                      db.execute('SELECT id, name, type FROM topics') if name in wanted}
+            if not topics:
+                continue
+            cls = {}
+            for name, (tid, typ) in topics.items():
+                try:
+                    cls[tid] = (name, get_message(typ))
+                except (ImportError, AttributeError, ValueError) as exc:
+                    print('skipping %s: cannot import %s (%s)' % (name, typ, exc))
+            if not cls:
+                continue
+            q = ('SELECT topic_id, timestamp, data FROM messages WHERE topic_id IN (%s) ORDER BY timestamp'
+                 % ','.join('?' * len(cls)))
+            for tid, t_ns, data in db.execute(q, list(cls)):
+                topic, mcls = cls[tid]
+                msg = deserialize_message(bytes(data), mcls)
+                t = t_ns * 1e-9
+                kind = TOPICS[topic]
+                if kind == 'string':
+                    series[topic].append((t, msg.data))
+                elif kind == 'odom':
+                    series[topic].append((t, msg.twist.twist.linear.x, msg.twist.twist.angular.z))
+                else:
+                    tw = msg.twist if hasattr(msg, 'twist') else msg     # TwistStamped or Twist
+                    series[topic].append((t, tw.linear.x, tw.angular.z))
+        finally:
+            db.close()
     for s in series.values():
         s.sort(key=lambda r: r[0])
     return series
@@ -309,18 +364,18 @@ def report(series, csv_path=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('bag', help='rosbag2 directory, or a pinned mow/incident directory of splits')
+    ap.add_argument('bag', help='a .db3 split, a pinned mow/incident directory, or a session directory')
     ap.add_argument('--csv', help='also write the resampled 20 Hz series here')
     args = ap.parse_args(argv)
-    paths = bag_dirs(args.bag)
+    paths = bag_files(args.bag)
     if not paths:
-        print('no rosbag2 directories under %s' % args.bag)
+        print('no .db3 splits under %s' % args.bag)
         return 1
-    print('reading %d bag(s) under %s' % (len(paths), args.bag))
+    print('reading %d split(s) under %s' % (len(paths), args.bag))
     try:
         series = read_series(paths)
     except ImportError as exc:
-        print('needs rosbag2_py + rclpy (run inside mower:jazzy-dev-amd64, see --help): %s' % exc)
+        print('needs rclpy + the message packages (run inside mower:jazzy-dev-amd64, see --help): %s' % exc)
         return 1
     report(series, args.csv)
     return 0
