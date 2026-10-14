@@ -77,11 +77,42 @@ def test_per_axis_ramp_bent_the_arc():
     assert len(ratios) > 1
 
 
+def run_lane(node, seq, lane):
+    t = 0.0
+    cs.CmdVelSlewNode.step(node, t)
+    out = []
+    for lin, ang in seq:
+        t = round(t + DT, 6)
+        node._tgt, node._last_cmd_time = (lin, 0.0, 0.0, 0.0, 0.0, ang), t
+        node._assist_gate.note_lane(lane, t)
+        node._gate.set_motion_enabled(True, t)
+        o = cs.CmdVelSlewNode.step(node, t)
+        out.append((o[0], o[5]))
+    return out
+
+
 def test_disabled_outside_shaper_phases():
-    """Manual / docking phases keep the plain per-axis slew (docking stays exempt)."""
-    for state in ('MANUAL_MOWING', 'RETURNING_HOME', 'UNDOCKING'):
+    """Manual / undocking phases keep the plain per-axis slew (docking stays exempt)."""
+    for state in ('MANUAL_MOWING', 'UNDOCKING'):
         out = run(_node(state=state), [(0.2, 0.3)] * 3)
         assert out[0] == pytest.approx((0.025, 0.05))
+
+
+def test_dock_phases_shape_the_nav_lane_only():
+    """Fix 9: the return transit on the navigation lane gets the coupled slew; the same
+    command on the docking lane keeps the plain per-axis slew of the raw command."""
+    for state in ('RETURNING_HOME', 'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING'):
+        out = run(_node(state=state), [(0.2, 0.3)] * 3)
+        assert out[0] == pytest.approx((0.025, 0.0375))          # coupled, ratio 1.5
+        out = run_lane(_node(state=state), [(0.2, 0.3)] * 3, 'docking')
+        assert out[0] == pytest.approx((0.025, 0.05))
+        out = run_lane(_node(state=state), [(-0.05, 0.1)] * 20, 'docking')
+        assert out[-1] == pytest.approx((-0.05, 0.1))             # reverse reaches the MCU
+        node = _node(state=state)
+        out = run_lane(node, [(-0.05, 0.1)] * 20, 'docking')
+        assert node._turn.status == 'pass'
+    out = run(_node(state='RETURNING_HOME'), [(0.016, 0.09)] * 20)
+    assert out[-1] == pytest.approx((0.0, 0.25))                  # snapped to a pivot
 
 
 def test_pivot_to_arc_passes_through_a_stop():

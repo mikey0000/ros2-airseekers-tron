@@ -14,11 +14,22 @@ before it counts as done. Background: `wheel_control_semantics.md`.
 | 3 | `max_linear_decel` 0.8 (vendor value), `max_angular_decel` = angular accel; emergency / bumper lane zero is applied at once (`hard_stop_lanes`) | `cmd_vel_slew.py` | restart |
 | 6 | Both axes ramp together whenever the turn shaper is active (`slew_both_wheels_always` true): an arc from rest keeps its curvature and never puts the inner wheel in (−0.06, 0) | `cmd_vel_slew.py` `slew_coupled` | restart |
 | 7 | nav2 velocity_smoother widened (accel 1.0, decel −1.5) so cmd_vel_slew is the single limiter | `nav2_params.yaml` | restart |
+| 8 | Pure rotations join the pivot regime: v = 0 with 0 < \|w\| < 0.25 snaps to the 0.25 rad/s pivot and is latched like any other pivot (v = 0 no longer resets the latch and is sign-compatible with either v); \|w\| < `turn_shaper_pivot_deadband_rps` (0.03) → (0, 0). Revert: `turn_shaper_pure_pivot: false` | `cmd_vel_slew.py` `shape_for_both_wheels`, `TurnShaper` | yes (`turn_shaper_pure_pivot`, `turn_shaper_pivot_deadband_rps`); the code itself needs a restart |
+| 9 | Dock phases (RETURNING_HOME, LOW_BATTERY_DOCKING, RAIN_DETECTED_DOCKING, COVERAGE_FAILED_DOCKING) shape the nav-driven transit; the shaper is gated on the twist_mux lane: only `/cmd_vel_nav` is shaped, never docking/bumper/emergency/teleop (teleop only with `shape_manual`). Revert: `turn_shaper_dock_transit: false` | `cmd_vel_slew.py` `TurnShaper.is_active`, `NAV_SHAPE_PHASES` | yes (`turn_shaper_dock_transit`); the code itself needs a restart |
 
 Known trade-offs: with 6, the inner wheel may roll forward below 0.06 m/s for the first and
 last ticks of an arc (same direction as the outer wheel, so not a one-wheel pivot); set
 `slew_both_wheels_always: false` to get the old per-axis slew back. Coupled stops from an
 arc are paced by whichever axis hits its decel limit first.
+
+What to look for after 8 and 9 (`wheel_bag_metrics.py`): regime flips at turn entries
+(pass ↔ pivot should be gone), ticks with v = 0 and 0 < \|w\| < 0.24 on `/cmd_vel` (expect
+0), one-wheel ticks on the nav lane during the return transit (expect 0), the docking-lane
+reverse on `/cmd_vel` identical to `/cmd_vel_docking`, and goal stops (the controller's
+v = 0, \|w\| 0.03–0.1 tail now turns at 0.25 rad/s and should end the goal sooner).
+Trade-off of 8: a held arc may continue for up to `turn_shaper_latch_ticks` (6) ticks when
+the controller drops v to 0 at \|w\| < 0.083 rad/s; above that the hysteresis switches to
+the pivot at once.
 
 ## Not changed yet (decide after the baseline runs)
 
@@ -114,7 +125,8 @@ docker run --rm -v "$PWD":/work -v /tmp/mow-<ts>:/bag mower:jazzy-dev-amd64 bash
 For each run: bag directory, what was observed, the metrics above, decision (keep / revert
 / tune). Any revert is a parameter flip plus restart; the code paths all keep the old
 behaviour behind their parameters (`turn_shaper_hysteresis_mps: 0.0`,
-`slew_both_wheels_always: false`, `hard_stop_lanes: []`, `max_linear_decel: 0.5`).
+`slew_both_wheels_always: false`, `hard_stop_lanes: []`, `max_linear_decel: 0.5`,
+`turn_shaper_pure_pivot: false`, `turn_shaper_dock_transit: false`).
 
 ## Run 1: 2026-10-14 mow `/userdata/ros2/mows/20261014-021244` (fixes 1, 2, 3, 6, 7 live)
 

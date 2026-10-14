@@ -453,6 +453,14 @@ mcu_node); details in `docs/wheel_control_semantics.md` ("Both-wheel turn shaper
   turn-shaper phases (curvature kept, inner wheel never crawling backwards).
 - **Nav2:** MPPI `ax_max` 0.5 / `ax_min` -0.8 / `az_max` 1.0; velocity_smoother widened to
   accel 1.0 / decel -1.5 so cmd_vel_slew is the single limiter.
+- **Fix 8/9 (after run 1, branch `fix/pure-pivot-regime`, unit-tested only):** slow pure
+  rotations (v = 0, |w| < 0.25) snap to the 0.25 rad/s pivot and stay in the latched pivot
+  regime (run 1: 0.25/0.10 hunting at turn entries, 4564 sub-deadband rotation ticks);
+  |w| < 0.03 becomes a stop (`turn_shaper_pure_pivot`, `turn_shaper_pivot_deadband_rps`).
+  The nav-driven dock transit (RETURNING_HOME and the other dock phases) is shaped; the
+  shaper now only shapes the twist_mux navigation lane, never docking/bumper/emergency/
+  teleop (`turn_shaper_dock_transit`). Both revert live by parameter; see
+  `docs/wheel_smoothness_field_tests.md`.
 - **Unchanged:** docking stays exempt from the shaper, pivot assist on, zero-speed
   keepalive off, motion gate and watchdog hard zero.
 - **Verify live:** MPPI transit with tight turns: `~/shape_status` should not alternate
