@@ -176,6 +176,14 @@ obstacles:
 battery: {voltage: 24.6, percentage: 0.85}
 ```
 
+A world can instead take its map from a copy of a real `areas.dat`
+(`areas_file`, relative to the world YAML; `areas_select: [Area 1, Dock path, ...]`
+keeps those areas only; `lawn_area` picks the mowing area that becomes the lawn,
+default the first one). The other selected areas follow with their drawn-path
+channels; the file's map obstacles stay map-only. The world's `datum` replaces the
+file's (the polygons are map metres, so the geometry is unchanged). Pair it with the
+real `dock` pose and `start: {docked: true}`.
+
 The map frame is the vendor frame: the origin is at the dock and x points out of it.
 Obstacles are 2.5D: a 2D shape extruded up to `height`. Only `known: true` static
 obstacles go into areas.dat. All the others have to be found by the stereo or the

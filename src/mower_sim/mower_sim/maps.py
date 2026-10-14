@@ -20,7 +20,9 @@ from .world import World, load_world
 def write_maps(world: World, maps_dir: str) -> None:
     from mower_map import areas as A
     os.makedirs(maps_dir, exist_ok=True)
-    lawn = A.Area(name='lawn', polygon=list(world.lawn))
+    lawn = A.Area(name=world.lawn_name, polygon=list(world.lawn))
+    for poly in world.lawn_map_obstacles:
+        lawn.obstacles.append(A.Obstacle(polygon=list(poly)))
     for o in world.obstacles:
         if not o.known or o.moving:
             continue
@@ -29,8 +31,18 @@ def write_maps(world: World, maps_dir: str) -> None:
     for i, a in enumerate(world.extra_areas):
         poly = [(float(p[0]), float(p[1])) for p in a.get('polygon', [])]
         if len(poly) >= 3:
-            out.append(A.Area(name=str(a.get('name', 'area_%d' % (i + 1))), polygon=poly,
-                              is_navigation=bool(a.get('is_navigation', False))))
+            area = A.Area(name=str(a.get('name', 'area_%d' % (i + 1))), polygon=poly,
+                          is_navigation=bool(a.get('is_navigation', False)))
+            channel = a.get('channel')
+            width = float(a.get('channel_width_m', 0.0) or 0.0)
+            if channel and len(channel) >= 2 and width > 0.0:
+                area.channel = [(float(p[0]), float(p[1])) for p in channel]
+                area.channel_width_m = width
+            for o in a.get('map_obstacles') or []:
+                if len(o) >= 3:
+                    area.obstacles.append(A.Obstacle(polygon=[(float(p[0]), float(p[1]))
+                                                              for p in o]))
+            out.append(area)
     A.save_areas_file(os.path.join(maps_dir, 'areas.dat'), out,
                       world.datum_lat, world.datum_lon)
     # vendor dock outline 0.4 x 0.55 m, behind the docked robot (dock-local frame)

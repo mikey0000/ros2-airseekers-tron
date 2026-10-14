@@ -15,6 +15,19 @@ A world is a YAML file (``worlds/*.yaml``)::
          path: [[x, y], ...], speed: 0.6, mode: pingpong|loop|once, start_delay: 0.0}
     battery: {voltage: 25.2, percentage: 0.8}
 
+Instead of ``lawn``/``areas`` a world can take its map from an existing
+mower_map ``areas.dat`` (e.g. a copy of the robot's map)::
+
+    areas_file: areas.dat                 # relative to the world YAML
+    areas_select: [Area 1, Dock path]     # optional: these areas only, in this order
+    lawn_area: Area 1                     # optional: default the first mowing area
+
+The lawn area becomes the world's lawn (area 0 in the sim's areas.dat), the
+other selected areas follow it with their drawn-path channels; map obstacles of
+the selected areas are kept as map obstacles only (not physical). The file's
+own datum is ignored: the world's ``datum`` anchors the map (polygons are map
+metres, so the geometry is unchanged).
+
 Obstacles are 2.5D: a 2D shape extruded from the ground to ``height``. Moving
 obstacles follow ``path`` at ``speed`` (m/s) after ``start_delay`` seconds.
 Map frame == the vendor frame: origin at the dock, x forward out of the dock
@@ -196,6 +209,10 @@ class World:
     battery_voltage: float = 25.2
     battery_percentage: float = 0.8
     name: str = 'world'
+    lawn_name: str = 'lawn'
+    # map-only obstacles of the lawn area (from ``areas_file``): written to areas.dat,
+    # not physical
+    lawn_map_obstacles: List[Polygon] = field(default_factory=list)
 
     def footprint_at(self, x: float, y: float, yaw: float) -> Polygon:
         return transform(FOOTPRINT, x, y, yaw)
@@ -218,10 +235,60 @@ def _pose(d, default: Pose2D) -> Pose2D:
                   float(d.get('yaw', default.yaw)))
 
 
-def world_from_dict(doc: dict, name: str = 'world') -> World:
+def _areas_from_file(doc: dict, base_dir: Optional[str]):
+    """``areas_file`` -> (lawn name, lawn polygon, lawn map obstacles, extra area dicts)."""
+    import os
+    from mower_map import areas as A
+    path = str(doc['areas_file'])
+    if base_dir and not os.path.isabs(path):
+        path = os.path.join(base_dir, path)
+    areas, _datum = A.load_areas_file(path)
+    if not areas:
+        raise ValueError('world: areas_file %s has no areas' % path)
+    select = doc.get('areas_select')
+    if select:
+        by_name = {a.name: a for a in areas}
+        missing = [n for n in select if n not in by_name]
+        if missing:
+            raise ValueError('world: areas_select %s not in %s (has %s)'
+                             % (missing, path, sorted(by_name)))
+        areas = [by_name[n] for n in select]
+    lawn_name = doc.get('lawn_area')
+    if lawn_name is None:
+        lawn_area = next((a for a in areas if not a.is_navigation), None)
+        if lawn_area is None:
+            raise ValueError('world: areas_file %s: no mowing area selected' % path)
+    else:
+        lawn_area = next((a for a in areas if a.name == lawn_name), None)
+        if lawn_area is None:
+            raise ValueError('world: lawn_area %r not among the selected areas' % lawn_name)
+    extra = []
+    for a in areas:
+        if a is lawn_area:
+            continue
+        d = {'name': a.name, 'polygon': [list(p) for p in a.polygon],
+             'is_navigation': a.is_navigation,
+             'map_obstacles': [[list(p) for p in o.polygon] for o in a.obstacles]}
+        if a.channel:
+            d['channel'] = [list(p) for p in a.channel]
+            d['channel_width_m'] = a.channel_width_m
+        extra.append(d)
+    return (lawn_area.name, list(lawn_area.polygon),
+            [list(o.polygon) for o in lawn_area.obstacles], extra)
+
+
+def world_from_dict(doc: dict, name: str = 'world', base_dir: Optional[str] = None) -> World:
     if 'world' in doc and isinstance(doc['world'], dict):
         doc = doc['world']
-    lawn = [(float(p[0]), float(p[1])) for p in doc.get('lawn', [])]
+    lawn_name, lawn_map_obstacles = 'lawn', []
+    extra_areas = list(doc.get('areas') or [])
+    if doc.get('areas_file'):
+        if doc.get('lawn') or doc.get('areas'):
+            raise ValueError('world: areas_file excludes lawn / areas')
+        lawn_name, lawn_raw, lawn_map_obstacles, extra_areas = _areas_from_file(doc, base_dir)
+    else:
+        lawn_raw = doc.get('lawn', [])
+    lawn = [(float(p[0]), float(p[1])) for p in lawn_raw]
     if len(lawn) < 3:
         raise ValueError('world: lawn polygon needs >= 3 points')
     dock = _pose(doc.get('dock'), Pose2D())
@@ -249,10 +316,12 @@ def world_from_dict(doc: dict, name: str = 'world') -> World:
     bat = doc.get('battery') or {}
     return World(lawn=lawn, dock=dock, start=start, start_docked=docked,
                  datum_lat=float(datum.get('lat', 48.0)), datum_lon=float(datum.get('lon', 9.0)),
-                 obstacles=obstacles, extra_areas=list(doc.get('areas') or []),
+                 obstacles=obstacles, extra_areas=extra_areas,
                  battery_voltage=float(bat.get('voltage', 25.2)),
                  battery_percentage=float(bat.get('percentage', 0.8)),
-                 name=str(doc.get('name', name)))
+                 name=str(doc.get('name', name)), lawn_name=str(lawn_name),
+                 lawn_map_obstacles=[[(float(p[0]), float(p[1])) for p in o]
+                                     for o in lawn_map_obstacles])
 
 
 def load_world(path: str) -> World:
@@ -260,7 +329,8 @@ def load_world(path: str) -> World:
     import yaml
     with open(path, encoding='utf-8') as f:
         doc = yaml.safe_load(f) or {}
-    return world_from_dict(doc, os.path.splitext(os.path.basename(path))[0])
+    return world_from_dict(doc, os.path.splitext(os.path.basename(path))[0],
+                           base_dir=os.path.dirname(os.path.abspath(path)))
 
 
 # ---------------------------------------------------------------------------
