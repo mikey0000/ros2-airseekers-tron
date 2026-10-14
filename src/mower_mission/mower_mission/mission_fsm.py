@@ -719,7 +719,8 @@ class Params:
     # track (the last hard_boundary_trail_m, newest first) in reverse at
     # hard_boundary_retrace_speed_mps on /cmd_vel_emergency until back inside plus
     # hard_boundary_retrace_extra_m (at most hard_boundary_retrace_max_m, never beyond the
-    # recorded track: no blind reverse). Steering keeps
+    # recorded track: no blind reverse; inside = a fresh ~/outside_m <= 0, the track / max
+    # running out while still outside or without a fresh reading -> STUCK_NEEDS_HELP). Steering keeps
     # both wheels rolling backwards (inner wheel >= hard_boundary_min_inner_mps); a heading
     # error above hard_boundary_pivot_err_rad is turned on the spot first (counter-rotating
     # pivot at hard_boundary_pivot_rps). Counts as a transit abort (TRANSIT: the transit
@@ -5355,24 +5356,32 @@ class MissionFSM:
         k['last'] = tuple(pose)
         if k['prog'] >= k['prog_best'] + float(p.hard_boundary_progress_m):
             k['prog_best'], k['prog_t'] = k['prog'], now
+        # Success = a fresh ~/outside_m reading inside (<= 1 mm) after reversing
+        # hard_boundary_retrace_extra_m past the re-entry point, or inside when the recorded
+        # track / hard_boundary_retrace_max_m ends first. Never "back inside" on a reading
+        # that is still outside (sim 2026-10-15: the track ran out 0.066 m outside and the
+        # old <= hard_boundary_m test resumed from there), stale or missing.
         out = self._outside()
-        if out is not None and out <= 1e-3:
+        inside = out is not None and out <= 1e-3
+        if inside:
             if k['inside_at'] is None:
                 k['inside_at'] = k['driven']
-            if k['driven'] - k['inside_at'] >= float(p.hard_boundary_retrace_extra_m) or \
-                    k['i'] >= len(k['path']):
+            if k['driven'] - k['inside_at'] >= float(p.hard_boundary_retrace_extra_m):
                 self._hb_retraced()
                 return
-        elif out is not None:
-            k['inside_at'] = None
+        else:
+            k['inside_at'] = None             # outside, or no fresh reading: re-entry unproven
         if k['driven'] >= min(float(p.hard_boundary_retrace_max_m), k['track_m'] + 0.02):
-            if out is not None and out <= float(p.hard_boundary_m):
+            if inside:
                 self._hb_retraced()
                 return
             self._hb_stop()
-            self._hb_needs_help('still %s outside after reversing %.2f m (driven track %.2f m)'
-                                % ('?' if out is None else '%.2f m' % out, k['driven'],
-                                   k['track_m']), k['origin'])
+            self._hb_needs_help('retrace ended still %s after reversing %.2f m (driven track '
+                                '%.2f m, max %.2f m)'
+                                % ('outside by an unknown distance (no fresh outside_m)'
+                                   if out is None else '%.3f m outside' % out, k['driven'],
+                                   k['track_m'], float(p.hard_boundary_retrace_max_m)),
+                                k['origin'])
             return
         if now - k['prog_t'] > float(p.hard_boundary_progress_s):
             self._hb_stop()
@@ -5387,8 +5396,11 @@ class MissionFSM:
         self._hb_trail = []
         ox, oy = k['origin']
         n, lim = self._hb_count, int(self.p.hard_boundary_max_aborts)
-        self._log('info', 'boundary: back inside after reversing %.2f m (excursion %d/%d)'
-                  % (k['driven'], n, lim))
+        past = k['driven'] - k['inside_at'] if k['inside_at'] is not None else 0.0
+        self._log('info', 'boundary: back inside after reversing %.2f m (%.2f m past the '
+                          're-entry%s, excursion %d/%d)'
+                  % (k['driven'], past, '' if past >= float(self.p.hard_boundary_retrace_extra_m)
+                     else ', track / max reached', n, lim))
         if n >= lim:
             self._hb_needs_help('left the boundary %d times in this mission' % n, (ox, oy))
             return

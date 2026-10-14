@@ -281,3 +281,134 @@ def test_no_driven_track_means_no_blind_reverse():
     cmds = run_retrace(h)
     assert sum(abs(v) * 0.1 for v, _ in cmds) <= 0.03 + 1e-9
     assert h.name == 'STUCK_NEEDS_HELP'
+
+
+# --- retrace success = inside + hard_boundary_retrace_extra_m (sim 2026-10-15: the track ran
+# out 0.066 m outside and the retrace logged "back inside" and resumed from there) ---
+
+def run_retrace_with(h, out_of, max_ticks=400):
+    """run_retrace with ~/outside_m from ``out_of(pose)``: a float, or None = no fresh
+    reading this tick (the stamp is left as it was)."""
+    poses = []
+    for _ in range(max_ticks):
+        if h.fsm._hb is None:
+            break
+        m = h.mark()
+        h.tick()
+        dc = h.since(m, f.DriveCmd)
+        x, y, yaw = h.fsm.inputs.pose
+        if dc:
+            v, w = dc[-1].linear, dc[-1].angular
+            yaw += w * 0.1
+            x += v * 0.1 * math.cos(yaw)
+            y += v * 0.1 * math.sin(yaw)
+        h.fsm.inputs.pose = (x, y, yaw)
+        out = out_of((x, y))
+        if out is not None:
+            h.fsm.inputs.outside_m, h.fsm.inputs.outside_stamp = out, h.t
+        poses.append((x, y))
+    return poses
+
+
+def excursion_over_short_track(h, out_of):
+    """Trip at x = 1.95 with only 0.35 m of recorded track behind it (1.60 .. 1.95)."""
+    h.fsm._hb_trail = [(round(1.60 + 0.05 * k, 2), 0.0) for k in range(7)]
+    h.fsm.inputs.pose = (1.95, 0.0, 0.0)
+    h.fsm.inputs.outside_m, h.fsm.inputs.outside_stamp = out_of((1.95, 0.0)), h.t
+    h.tick()
+    assert h.fsm._hb is not None and abs(h.fsm._hb['track_m'] - 0.35) < 1e-6
+
+
+def test_track_running_out_still_outside_is_stuck_not_back_inside():
+    """The recorded track ends 0.066 m outside: no resume, STUCK_NEEDS_HELP, a truthful log."""
+    def out_of(p):
+        return 0.066 + max(0.0, p[0] - 1.60)
+
+    h = transit_h()
+    m = h.mark()
+    excursion_over_short_track(h, out_of)
+    poses = run_retrace_with(h, out_of)
+    assert min(x for x, _ in poses) >= 1.60 - 0.02 - 0.011      # never beyond the track
+    assert h.name == 'STUCK_NEEDS_HELP' and h.fsm._hb is None
+    logs = [e.text for e in h.since(m, f.Log)]
+    assert not any('back inside' in t for t in logs)
+    assert any('retrace ended still 0.066 m outside' in t for t in logs)
+    assert not [e for e in h.since(m, f.StartAction)]           # nothing resumed
+    assert h.fsm.mission is None and not h.fsm.motion_enabled()
+
+
+def test_retrace_resumes_only_after_inside_plus_extra():
+    """Inside at x = 1.80, success only once 0.10 m further (x <= 1.70), then the resume."""
+    def out_of(p):
+        return max(0.0, p[0] - EDGE)
+
+    h = transit_h()
+    m = h.mark()
+    drive_east(h, 1.95)
+    first_inside, done_at = None, None
+    for _ in range(400):
+        if h.fsm._hb is None:
+            done_at = h.fsm.inputs.pose[0]
+            break
+        run_retrace_with(h, out_of, max_ticks=1)
+        if first_inside is None and out_of(h.fsm.inputs.pose) <= 0.0:
+            first_inside = h.fsm.inputs.pose[0]
+    assert first_inside is not None and done_at is not None
+    assert done_at <= first_inside - 0.10 + 0.011               # the extra was reversed
+    assert done_at >= first_inside - 0.10 - 0.02                # and not much more
+    assert h.name == 'TRANSIT' and h.fsm.mission.transit_fails == 1
+    assert any('back inside after reversing' in e.text and '0.10 m past the re-entry' in e.text
+               for e in h.since(m, f.Log))
+
+
+def test_retrace_inside_but_short_of_the_extra_at_the_track_end_resumes():
+    """Inside before the recorded track ends, < 0.10 m of it left: inside is enough (never
+    reverse beyond the track)."""
+    def out_of(p):
+        return max(0.0, p[0] - 1.64)
+
+    h = transit_h()
+    excursion_over_short_track(h, out_of)
+    poses = run_retrace_with(h, out_of)
+    assert min(x for x, _ in poses) >= 1.60 - 0.02 - 0.011
+    assert h.name == 'TRANSIT' and h.fsm.mission.transit_fails == 1
+
+
+def test_missing_outside_distance_during_the_retrace_is_no_false_success():
+    """~/outside_m stops after the trip: the retrace ends at the track end, STUCK."""
+    h = transit_h()
+    m = h.mark()
+    drive_east(h, 1.95)
+    run_retrace_with(h, lambda p: None)
+    assert h.name == 'STUCK_NEEDS_HELP'
+    logs = [e.text for e in h.since(m, f.Log)]
+    assert not any('back inside' in t for t in logs)
+    assert any('no fresh outside_m' in t for t in logs)
+
+
+def test_stale_inside_reading_during_the_retrace_is_no_false_success():
+    """A last reading of 0.0 that is older than hard_boundary_stale_s does not count."""
+    h = transit_h()
+    m = h.mark()
+    excursion_over_short_track(h, lambda p: 0.066 + max(0.0, p[0] - 1.60))
+    h.fsm.inputs.outside_m = 0.0
+    h.fsm.inputs.outside_stamp = h.t - 5.0                      # inside, but stale
+    run_retrace_with(h, lambda p: None)
+    assert h.name == 'STUCK_NEEDS_HELP'
+    assert not any('back inside' in e.text for e in h.since(m, f.Log))
+
+
+def test_outside_reading_after_re_entry_restarts_the_extra():
+    """Inside, then outside again (EKF jitter): the 0.10 m is counted from the last re-entry."""
+    seen = {'n': 0}
+
+    def out_of(p):
+        seen['n'] += 1
+        if 1.70 < p[0] <= 1.75 and seen['n'] % 2:
+            return 0.02                                         # flicker just inside
+        return max(0.0, p[0] - EDGE)
+
+    h = transit_h()
+    drive_east(h, 1.95)
+    run_retrace_with(h, out_of)
+    assert h.name == 'TRANSIT' and h.fsm.inputs.pose[0] <= 1.70 + 1e-6

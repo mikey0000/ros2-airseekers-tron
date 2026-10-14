@@ -233,7 +233,9 @@ behavior_tree_node:
     # dock phase: cancel, zero, blade off, then reverse along the driven EKF track (last
     # hard_boundary_trail_m) at hard_boundary_retrace_speed_mps (<= 0.10, /cmd_vel_emergency)
     # until back inside + hard_boundary_retrace_extra_m (max hard_boundary_retrace_max_m, and
-    # never beyond the recorded track: no blind reverse).
+    # never beyond the recorded track: no blind reverse). Back inside = a fresh ~/outside_m
+    # <= 0 (2026-10-15 sim fix: not <= hard_boundary_m); the track or the max running out
+    # while still outside (or with no fresh outside_m) -> STUCK_NEEDS_HELP, never a resume.
     # Both wheels roll backwards (inner >= hard_boundary_min_inner_mps); a heading error >
     # hard_boundary_pivot_err_rad is turned on the spot first (pivot hard_boundary_pivot_rps).
     # Counts as a transit abort; the hard_boundary_max_aborts-th excursion of a mission (and
