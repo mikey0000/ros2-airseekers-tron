@@ -1,0 +1,162 @@
+# Roadmap, 2026-10-14: from patching to a mower that follows its map
+
+Written after two field runs on 2026-10-14, the strategy review
+(`analysis/2026-10-14_strategy_review.md`) and fixes 1–11 + heading A/B. Rule for everything
+below: **one change-set per field run, measured with `scripts/wheel_bag_metrics.py` and the
+aligner status, with a written pass/fail before the next change-set.** Anything that cannot be
+measured from a bag gets a by-eye criterion written down first.
+
+## 1. Where we are
+
+Verified in the field (keep):
+- Emergency / bumper stops: 24–51 ms to zero, 1–5 cm rolled (was 0.6 s / 9 cm).
+- Sub-deadband pivots: 200 s → 67 s per mow; no sustained ones left.
+- Pivot assist runs on the snapped pivots (127 creeps in run 2).
+- Stereo yaw gaps are bridged and counted; the stale-heading START gate exists.
+- Black box + metrics give a full picture of every run.
+
+Deployed, unit-tested only, field test pending:
+- Fix 10: turn-leg cap (20 s or one rotation at the leg end), per-leg loop guard (90 s).
+- Fix 11: hairpin about-turn (Nav2 Spin) instead of the costmap fallback; fallback bounded to
+  0.35 m from the route.
+
+Open, structural (the reason the runs still fail):
+- A. Heading: single antenna, corrections only on 0.6 m straights at 10 %, gyros ≈ 1 % scale
+  error, so every long pivot session drifts the heading (run 2: −73° → −95°).
+- B. Lane ends: 0.2–0.8 m Reeds-Shepp pieces as separate Nav2 goals with an 8 cm checker,
+  driven by pivots that slip (run 2: 7 minutes on one 0.8 m piece).
+- C. Transit: a free-space fallback that leaves the drawn paths, and a coverage start the
+  route must reach across the grass (run 2: "Dock path 1.1 m, Area 1 1.5 m", the last 1.5 m
+  inside the area are off any drawn path).
+- D. Slope: only a speed cap (caution band) and a back-out (limit band). No slope-aware
+  turning or swath direction; the vendor has SLOPE_BACK turns and slope-scaled velocity.
+- E. Too many knobs: ≈ 550–600 nav/loc keys (vendor ≈ 146), six controllers, three limiters.
+
+## 2. Method
+
+1. **Hypothesis first.** Each task states the failure it removes, the bag metric that proves
+   it, and the number that counts as pass.
+2. **One change-set per run.** Params and code of one task only; everything else frozen.
+3. **Measure, then decide.** Run the metrics, read the aligner series, write the result into
+   `wheel_smoothness_field_tests.md` (run N), decide keep / revert / tune. Reverts are param
+   flips; every task ships with its revert flag.
+4. **Prefer removing to adding.** A task that deletes a behaviour and matches the vendor's
+   running node (`navigation/param/cfg.yaml`) beats one that adds a guard.
+5. **Field runs are short and scripted**: undock → transit → 3–4 swaths with their turns →
+   return → dock, on the closest area, with the slope spot included once per phase.
+6. **Order by leverage**: heading and transit remove failure causes; turns remove most of the
+   shaper's work; pruning last, once behaviour is stable.
+
+## 3. Task list
+
+Legend: [P] parameters only (sync + restart), [C] code, [H] hardware, [D] decision. Each task:
+goal → change → test → pass criterion → revert.
+
+### Phase 0: close out the current change-set (this week)
+
+- [ ] 0.1 [P] Field-test fixes 10 and 11 on the usual short mission.
+      Pass: no leg longer than 20 s after reaching its end; at the dock hairpin a "route cusp …
+      about-turn" line and no `navigate_to_pose` from a cusp; no fallback track > 0.35 m off
+      the route; metrics: time in pivots < 25 % of moving time (run 2: 593 s of 2200).
+      Watch: Spin refusing at the junction (corridor lethal in the local costmap).
+- [ ] 0.2 [P] Raise `coverage_leg_goal_checker.xy_goal_tolerance` 0.08 → 0.12 if 0.1 shows
+      the cap firing on every leg (the cap is a backstop, not the way legs should end).
+- [ ] 0.3 [C] Docs: replace every "vendor" accel/decel citation of `adaptivePurePursuit.h`
+      with the running node's values (0.6 / 1.0 m/s², 2.0 rad/s²; `cfg.yaml:8-9,69-72`).
+
+### Phase 1: heading (open item A)
+
+- [ ] 1.1 [P] Correct like the vendor: COG chord from 0.3 m (not 0.6), gain 0.5 (vendor 0.7),
+      accept windows at ≥ 0.08 m/s on any gently curving track (IMU span ≤ 25°) instead of
+      only straight ones. Params in `heading_aligner`: `min_distance`, `alpha`,
+      `max_imu_yaw_change`, `min_speed`.
+      Test: one mow. Pass: offset moves < 3° per 10 min of mowing (run 2: 6°), innovations
+      centred on 0, no re-seed. Revert: old values.
+- [ ] 1.2 [C] Per-source yaw-rate scale from COG turn pairs (gyro Δyaw / COG Δcourse between
+      consecutive accepted windows, robust median over the mow, applied to the stereo and WIT
+      rates separately; status shows both). Pass: Δ(stereo − WIT) per 360° of rotation < 1°
+      (run 2: 2.3°), pivot sessions no longer move the offset.
+- [ ] 1.3 [D] Dual antenna. The only approach the evidence calls robust on turf (ArduPilot
+      mowers, moving baseline). The universal-gnss path already carries `rtk_dual_antenna`.
+      Decide after 1.1/1.2: if the heading still drifts > 3° per mow, buy a UM982-class
+      receiver and retire the COG machinery to a fallback. Until decided, no more aligner
+      features.
+- [ ] 1.4 [P] Keep the spinning bounded (fix 10 does this) so heading exposure stays small
+      regardless of 1.1–1.3.
+
+### Phase 2: transit and the mow start point (open item C)
+
+- [ ] 2.1 [C] Coverage starts where the drawn path enters the area. The planner's first
+      headland ring is "free to start anywhere" (`coverage_planning.cpp` `orderCells`,
+      `start_loop`); give it the entry pose (the route's last on-path pose) and start the ring
+      at the closest ring point, direction chosen so the ring continues away from the entry.
+      Then the route is dock → path → ring start with no in-area leg.
+      Pass: route log shows no "Area N x m" in-area leg beyond the ring inset; no grass crossed
+      before the blade is on.
+- [ ] 2.2 [C] Drawn paths must reach the area: the GUI / map check warns when a path ends more
+      than `corridor_half_width_m` from the area boundary, and the route graph refuses a
+      route whose last on-path pose is farther than that from the area (today it plans the
+      in-area leg silently).
+- [ ] 2.3 [C] Remove the free-space fallback entirely (vendor and MowgliNext have none): a
+      start off the route graph gets a short straight "to nearest route point" leg bounded by
+      the corridor, else the mission stops and reports where it is. Fix 11's 0.35 m bound
+      becomes the only transit rule. Pass: no `navigate_to_pose` in a mission log.
+- [ ] 2.4 [P] Return to dock the same way: RETURNING_HOME uses the route graph only; the
+      return corridor stays as the costmap mask, not as a planner.
+
+### Phase 3: turns and lane ends (open item B), the real redesign
+
+- [ ] 3.1 [D] Choose the lane-end style per the vendor: arcs by default (0.3 m/s at
+      0.5 rad/s), pivot only when the arc does not fit the drivable region. Decide the arc
+      radius from the shaper floor: r = v / w = 0.6 m at 0.3 / 0.5 (vendor), 0.28 m at
+      0.14 / 0.5 (slow). MowgliNext uses r 0.2 at low speed.
+- [ ] 3.2 [C] One tracker goal per swath pair (swath → turn → swath), the turn included in
+      the path, no per-piece goals; the `coverage_leg_goal_checker` applies only to the last
+      pose of the pair. Keep `FollowCoveragePathReverse` for the K-turn case only.
+      Pass: regime changes per swath < 6; time in pure pivots < 10 % of moving time; no leg
+      cap firing.
+- [ ] 3.3 [P] Angular limits to the vendor's: MCU clamp 0.3 → 0.5 rad/s (wheels-up check
+      first), `velocity_smoother max_velocity[2]`, MPPI `wz_max`, RPP rotate and the shaper
+      floor moved together (field-test doc item 5). Pass: pivot authority ratio > 0.7 on the
+      flat, no turf scrub by eye.
+- [ ] 3.4 [C] Shaper becomes a safety net: with 3.2/3.3 the controller should never emit a
+      one-wheel command; log every shaper intervention as a counter and target zero per mow.
+      Pivot assist stays (vendor TURNCRAWL analogue).
+
+### Phase 4: slope (open item D)
+
+Physical rule to validate first (by eye, wheels-up then on the known −16° roll spot):
+a rear-drive mower with front casters loses the casters downhill when it pivots on a side
+slope; the stable move is to turn with the drive wheels moving, nose rotating through
+the downhill side, and never to stop or reverse pointing straight downhill on wet grass.
+
+- [ ] 4.1 [C] Swath direction per area from the terrain raster (`mower_map/terrain.py` has the
+      slope layer; `terrain_aware_planning.md` §1.1 has the F2C objective hook): above
+      `slope_contour_deg` (start 8°) mow along the contour, so turns happen on the level ends;
+      below it, keep the owner's angle.
+- [ ] 4.2 [C] Slope turn mode (vendor SLOPE_BACK): when the tilt band at a swath end is
+      caution, replace the pivot / K-turn with a reverse-uphill then forward-arc turn
+      (reverse along the swath 0.3 m uphill, arc out with the nose through the downhill side),
+      at the caution speed. Trigger from `/tilt/status` plus the raster's slope at the swath
+      end. Pass: no stuck / slip incident at the slope spot over three runs.
+- [ ] 4.3 [P] Velocity scaling by pitch/roll on the whole path (vendor `SlopeLimitVel`): a
+      continuous cap instead of the two-band step; bands stay for blade-off / back-out.
+- [ ] 4.4 [C] Swath ends never on a steep or low-traction cell: the planner trims or extends
+      a swath by up to one width so its end (where the turn happens) sits on a cell below
+      `slope_turn_max_deg`; else the turn is moved to the other end.
+
+### Phase 5: consolidate (open item E)
+
+- [ ] 5.1 [P] Remove unused controller configs (MPPI coverage, FTC) and the two widened
+      limiters (MPPI model limits back to defaults, `velocity_smoother` off or pass-through);
+      `cmd_vel_slew` is the single limiter at the vendor's 0.6 / 1.0 / 2.0.
+- [ ] 5.2 [C] Fold the aligner down to what Phase 1 leaves: one COG estimator, dock seed,
+      file continuity, scale; drop the rest.
+- [ ] 5.3 Target: nav + localization keys under 300, controllers 2, goal checkers 2.
+
+## 4. Order and cadence
+
+Phase 0 → 1.1 → 2.1 + 2.2 (one run, they are independent of 1.x) → 1.2 → 2.3/2.4 → 1.3
+decision → 3.x (one run each) → 4.x (needs 3.1/3.2 so slope turns are arcs) → 5.x.
+Every run: `scp` the pin, `zstd -dkq`, metrics, aligner series, a "Run N" entry. Stop and
+re-plan whenever a run shows a failure class not in this list.
