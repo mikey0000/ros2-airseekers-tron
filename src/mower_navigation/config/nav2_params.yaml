@@ -189,9 +189,14 @@ controller_server:
     #     GUI transit_speed (robot_settings.py -> FollowPath.desired_linear_vel) is mapped to
     #     vx_max at launch by nav2_param_tools (MPPI has no desired_linear_vel); a LIVE GUI
     #     change of transit_speed does not reach MPPI (undeclared parameter) - restart.
-    #   * vx_min 0.0: no blind reversing (no rear sensing; the collision_monitor only sees
-    #     ahead). In-place pivots stay possible (cmd_vel_slew turn shaper snaps a slow
-    #     |w| to a proper pivot or an arc with inner wheel >= 0.06 m/s, r >= ~0.36-0.44 m).
+    #   * vx_min -0.10 (task 0.4 c, 2026-10-14 run 3: with 0.0 a corner MPPI overshot could
+    #     only be recovered by a wider loop, outside the drawn path): a slow reverse is
+    #     allowed so an overshot corner is backed out of. PreferForwardCritic keeps reversing
+    #     expensive (forward stays the norm). No rear sensing: the collision_monitor only
+    #     sees ahead, so the reverse speed stays at 0.10 m/s. Revert: vx_min 0.0.
+    #     In-place pivots stay possible (cmd_vel_slew turn shaper snaps a slow |w| to a
+    #     proper pivot or an arc with inner wheel >= 0.06 m/s; task 0.4 b: a tight corner
+    #     is pivoted, not widened).
     #   * CPU (RK3588): batch 1000 x 40 steps x 1 iteration at 20 Hz. Horizon 40 x 0.1 s =
     #     4 s = 1.2 m at 0.3 m/s (a 2 s horizon only sees 0.6 rad of pivot at 0.3 rad/s,
     #     too short to find the way around a box); the local costmap (+-3 m) covers it.
@@ -211,7 +216,7 @@ controller_server:
       vy_std: 0.0
       wz_std: 0.2
       vx_max: 0.3
-      vx_min: 0.0
+      vx_min: -0.10
       vy_max: 0.0
       wz_max: 0.3
       # Plan with the accelerations the wheels actually get: cmd_vel_slew (mower_control
@@ -280,7 +285,8 @@ controller_server:
         threshold_to_consider: 0.5
         max_angle_to_furthest: 1.0
         forward_preference: true
-      # Inert while vx_min is 0; keeps reversing expensive if vx_min is ever lowered.
+      # Keeps reversing expensive now that vx_min is -0.10 (task 0.4 c): forward unless
+      # backing out of an overshot corner is clearly cheaper.
       PreferForwardCritic:
         enabled: true
         cost_power: 1
