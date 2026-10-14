@@ -234,3 +234,59 @@ path back to the dock at the start either; driving outside areas / paths is bad"
   between consecutive straight windows, both sources) and a bias from the innovation trend;
   until then every long pivot session costs ~1 % of its rotation in heading. The spinning fix
   (10) removes most of the exposure.
+
+## Run 3: 2026-10-14 05:31 UTC, `/userdata/ros2/mows/20261014-053115` (fixes 10/11 live)
+
+29 min. Owner: "in sharp corners it could reverse and turn rather than overshoot the corner,
+the turn itself looks good. Nearing the last half it started driving outside the area; going
+outside the area is an immediate fail. Docking failed to follow the start of the path again."
+**Verdict: FAIL** (left the area; owner rule).
+
+Outside Area 1 and outside every drawn path polygon (EKF map pose vs `areas.dat`):
+
+| When | State | Max outside |
+|---|---|---|
+| t 37–49 | TRANSIT dock → area (route corner) | 0.85 m |
+| t 182–195 | MOWING outer ring | 0.16 m |
+| t 504–525 | TRANSIT in-area leg | 0.43 m |
+| t 750–764 | TRANSIT in-area leg | 0.33 m |
+| t 1252–1316 | TRANSIT 0.6 m leg → bank, roll 24°, STUCK_NEEDS_HELP, owner drove it out | 0.45 m |
+| t 1561–1568 | TRANSIT in-area leg | 0.57 m |
+| t 1733–1739 | RETURNING_HOME | 0.59 m |
+
+Mowing stays inside (≤ 0.16 m, the outer ring); **every real excursion is a transit**.
+
+Causes, from the bag:
+1. **The turn shaper widens the controller's corners.** MPPI asks for slow tight corners
+   (v 0.02–0.05 m/s, w 0.1–0.2 rad/s: r 0.2–0.3 m). The inner wheel is in (0, 0.06), so the
+   shaper's `_tight_arc` keeps |w| and raises v until the inner wheel is 0.06 m/s: r 0.5–1.0 m
+   (`shape_status` "arc r=0.56 … 0.96 m"). Every corner is driven 2–4× wider than asked:
+   this is the overshoot the owner saw. Fix 9 (dock-transit shaping) extended it to the return.
+2. **Nothing stops a transit outside the area.** `soft_boundary_margin_m` 0.3 acts only in
+   MOWING (`mission_fsm` boundary pause); `lethal_boundary_margin_m` 0.5 never fired
+   (0 episodes). The fix 11 corridor bound applies only to the costmap fallback, not to the
+   MPPI route follow; inside the mowing area it counts as 0.
+3. **MPPI transit cannot reverse** (`vx_min 0.0`), so a corner it overshoots can only be
+   recovered by a wider loop.
+4. **Start**: route abort ("Failed to make progress") at (−3.50, 1.43), 0.75 m past the dock
+   junction after the widened corner, beyond `route_cusp_radius_m` 0.5: no about-turn, costmap
+   fallback again. **Return**: dock route follow aborted after 150 s at (−0.69, 0.04) →
+   "the docking server navigates" → its own `navigate_to_pose` to the approach pose
+   (free space, not the drawn path); fix 11 does not cover the docking server's leg.
+5. **Fix 10 bug**: the 49 m outer ring ends at the cusp of a reverse leg, so it counted as a
+   turn leg; `progress_local` jumped to the last pose while the robot was 4.58 m from the end
+   (the nearest-index search matched the ring's own end), the 20 s cap fired and 4.6 m of
+   ring were skipped (then a 4.6 m transit across the area).
+
+Also measured:
+- Heading was **good**: EKF yaw vs GPS chord median within ±3° all run (offset −96 → −104°
+  over 29 min). The WIT drifted −5°/min; the stereo source was right. The divergence WARN
+  fired every minute because of the WIT; it should name the drifting source.
+- Turn-leg cap fired 3× correctly on short legs; one normal skip. Leg loop guard: no firing.
+- Pivots 7662 ticks ≈ 410 s of 1737 s (24 %, criterion < 25 %); sustained slow pivots 5,
+  longest 0.6 s.
+- Emergency stops 2–53 ms to `/cmd_vel` zero.
+
+Decisions: keep fix 10 (with the bug fixed), keep the cusp about-turn, **revert fix 9 by
+param (`turn_shaper_dock_transit: false`) until the shaper choice below lands**, and make
+the boundary a hard rule (roadmap task 0.4).

@@ -54,13 +54,36 @@ goal → change → test → pass criterion → revert.
 
 ### Phase 0: close out the current change-set (this week)
 
-- [ ] 0.1 [P] Field-test fixes 10 and 11 on the usual short mission.
+- [x] 0.1 [P] (run 3: FAIL, left the area in transit; see field tests run 3) Field-test fixes 10 and 11 on the usual short mission.
       Pass: no leg longer than 20 s after reaching its end; at the dock hairpin a "route cusp …
       about-turn" line and no `navigate_to_pose` from a cusp; no fallback track > 0.35 m off
       the route; metrics: time in pivots < 25 % of moving time (run 2: 593 s of 2200).
       Watch: Spin refusing at the junction (corridor lethal in the local costmap).
 - [ ] 0.2 [P] Raise `coverage_leg_goal_checker.xy_goal_tolerance` 0.08 → 0.12 if 0.1 shows
       the cap firing on every leg (the cap is a backstop, not the way legs should end).
+- [ ] 0.4 [C] **Boundary is a hard rule in every autonomous state** (run 3: seven transit
+      excursions up to 0.85 m). Change-set:
+      (a) mission: robot centre outside (mowing areas ∪ drawn path polygons) by more than
+          `hard_boundary_m` (0.10) in TRANSIT / RETURNING_HOME / MOWING → cancel, zero, then
+          retrace the driven track back inside (reverse along the last 1 m of EKF poses),
+          blade off; count as a transit abort; after 2 → STUCK_NEEDS_HELP. Not a log line.
+      (b) shaper: when the controller asks for a turn tighter than the shaper's widest legal
+          substitute allows, pivot instead of widening: if the requested radius
+          r_req = |v|/|w| is below half the widened radius, snap to the pivot (both wheels,
+          ≥ 0.25 rad/s), so a corner is turned on the spot, not overshot. Owner: "it could
+          reverse and turn rather than overshoot the corner".
+      (c) MPPI transit `vx_min` −0.10 (reverse allowed, `PreferForwardCritic` kept) so an
+          overshot corner is backed out of, not looped around.
+      (d) route-corner about-turn: fix 11's cusp handling for any route corner > 90° with the
+          about-turn done before the corner (stop at the corner, pivot, continue), and
+          `route_cusp_radius_m` 0.5 → 1.0.
+      (e) docking server approach leg: drive the dock route to the approach pose with the
+          route follower; the docking server's own `navigate_to_pose` only within
+          `corridor_half_width_m` of the approach pose.
+      (f) fix 10 bug: "end reached" by distance only (`turn_leg_skip_m`), never by
+          `progress_local`; capped legs only if their own length ≤ `turn_leg_max_m`.
+      Pass: zero samples outside areas ∪ paths by > 0.10 m in a full mow; no
+      `navigate_to_pose` in the log; corners within 0.15 m of the route.
 - [ ] 0.3 [C] Docs: replace every "vendor" accel/decel citation of `adaptivePurePursuit.h`
       with the running node's values (0.6 / 1.0 m/s², 2.0 rad/s²; `cfg.yaml:8-9,69-72`).
 
