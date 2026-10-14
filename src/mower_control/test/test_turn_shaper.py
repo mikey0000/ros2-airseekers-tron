@@ -116,13 +116,15 @@ def test_reverse_docking_leg_keeps_both_wheels_backward():
     assert max(a, b) == pytest.approx(-0.06) and min(a, b) < 0
 
 
+@pytest.mark.parametrize('lane', [None, 'docking'])
 @pytest.mark.parametrize('phase', ['RETURNING_HOME', 'LOW_BATTERY_DOCKING', 'UNDOCKING'])
-def test_docking_phases_are_exempt(phase):
+def test_docking_phases_are_exempt(phase, lane):
     """The marker-guided reverse must reach the MCU as sent: shaping it into pivots
-    left the robot pushing nowhere at the contacts (2026-10-07)."""
+    left the robot pushing nowhere at the contacts (2026-10-07). Lane unknown = the
+    pre-fix-9 phase rule; the docking lane is never shaped."""
     ts = TurnShaper()
     for v, w in ((0.0, 0.15), (0.08, 0.2), (-0.05, -0.05), (-0.035, 0.1), (-0.05, 0.0)):
-        assert ts.apply(v, w, phase, DT) == (v, w) and ts.status == 'pass'
+        assert ts.apply(v, w, phase, DT, lane) == (v, w) and ts.status == 'pass'
 
 
 def test_transit_arc_shaped():
@@ -310,3 +312,66 @@ def test_deadband_releases_the_latch():
     ts = TurnShaper()
     ts.apply(0.0, 0.1, 'MOWING', DT)
     assert ts.apply(0.0, 0.01, 'MOWING', DT) == (0.0, 0.0) and ts.regime is None
+
+
+# ------------------------------------------ return transit shaped on the nav lane (fix 9)
+DOCK_PHASES = ['RETURNING_HOME', 'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING',
+               'COVERAGE_FAILED_DOCKING']
+ALL_PHASES = DOCK_PHASES + ['TRANSIT', 'MOWING', 'BOUNDARY_PAUSED', 'UNDOCKING',
+                            'MANUAL_MOWING', 'RECORDING', 'IDLE', None]
+
+
+@pytest.mark.parametrize('phase', DOCK_PHASES)
+def test_return_transit_on_nav_lane_is_shaped(phase):
+    """2026-10-14 mow t ~ 2424: (0.016, 0.09) on the nav lane in RETURNING_HOME drove
+    151 one-wheel ticks unshaped."""
+    ts = TurnShaper()
+    assert ts.is_active(phase, 'navigation')
+    assert ts.apply(0.016, 0.09, phase, DT, 'navigation') == (0.0, pytest.approx(0.25))
+    assert ts.status.startswith('pivot')
+
+
+@pytest.mark.parametrize('phase', DOCK_PHASES)
+def test_same_command_on_docking_lane_is_not_shaped(phase):
+    ts = TurnShaper()
+    assert not ts.is_active(phase, 'docking')
+    assert ts.apply(0.016, 0.09, phase, DT, 'docking') == (0.016, 0.09)
+    assert ts.status == 'pass'
+
+
+@pytest.mark.parametrize('phase', ['TRANSIT', 'MOWING'])
+@pytest.mark.parametrize('lane', [None, 'navigation'])
+def test_transit_and_mowing_unchanged(phase, lane):
+    ts = TurnShaper()
+    assert ts.apply(0.08, 0.2, phase, DT, lane) == TurnShaper().apply(0.08, 0.2, phase, DT)
+    assert ts.status.startswith('arc r=')
+
+
+@pytest.mark.parametrize('phase', ALL_PHASES)
+def test_docking_lane_reverse_never_shaped(phase):
+    for shape_manual in (False, True):
+        ts = TurnShaper(shape_manual=shape_manual)
+        for _ in range(20):
+            assert ts.apply(-0.05, 0.1, phase, DT, 'docking') == (-0.05, 0.1)
+        assert ts.status == 'pass'
+
+
+@pytest.mark.parametrize('lane', ['bumper', 'emergency', 'teleop', 'docking'])
+@pytest.mark.parametrize('phase', ['TRANSIT', 'MOWING', 'RETURNING_HOME'])
+def test_other_lanes_never_shaped(lane, phase):
+    ts = TurnShaper()
+    assert ts.apply(0.05, 0.3, phase, DT, lane) == (0.05, 0.3)
+
+
+def test_teleop_lane_shaped_only_with_manual_opt_in():
+    assert TurnShaper(shape_manual=True).apply(0.05, 0.3, 'MANUAL_MOWING', DT,
+                                               'teleop') == (0.0, 0.3)
+    assert TurnShaper().apply(0.05, 0.3, 'MANUAL_MOWING', DT, 'teleop') == (0.05, 0.3)
+
+
+def test_lane_switch_to_docking_drops_the_latch():
+    ts = TurnShaper()
+    ts.apply(0.0, 0.1, 'RETURNING_HOME', DT, 'navigation')
+    assert ts.regime == 'pivot'
+    assert ts.apply(-0.05, 0.1, 'RETURNING_HOME', DT, 'docking') == (-0.05, 0.1)
+    assert ts.regime is None and ts.status == 'pass'

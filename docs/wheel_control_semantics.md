@@ -131,6 +131,16 @@ command to the NEARER legal regime:
 Pure pivots at |w| >= 0.25 pass unchanged. Track width b = 0.48 m (URDF `drive_track_y`
 0.24 x 2).
 
+Where it applies (fix 9, 2026-10-14): only commands on the twist_mux navigation lane
+(`/cmd_vel_nav`, the lane is re-derived from the lanes' receive times by `LaneTracker`) in
+TRANSIT, MOWING, BOUNDARY_PAUSED and the dock phases RETURNING_HOME, LOW_BATTERY_DOCKING,
+RAIN_DETECTED_DOCKING, COVERAGE_FAILED_DOCKING. The dock phases all start with a nav-driven
+transit to the dock approach (`MissionFSM._dock()`), which drove 151 one-wheel ticks
+unshaped on 2026-10-14; the marker-guided docking/undocking controller publishes on
+`/cmd_vel_docking` in those same phases and is never shaped, nor are the bumper, emergency
+and teleop lanes (teleop only with `shape_manual`). With no lane heard within its timeout
+the phase-only rule applies (TRANSIT/MOWING/BOUNDARY_PAUSED).
+
 Slow pure rotations (fix 8, 2026-10-14): from 2026-10-07 until fix 8 a pure rotation slower
 than 0.25 rad/s passed unchanged, because snapping it had turned the controller's small
 heading corrections near a goal into 0.25 rad/s pulses (no latch existed then). The

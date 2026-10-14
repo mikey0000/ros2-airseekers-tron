@@ -67,6 +67,14 @@ Parameters
                                   (0.3): inner wheels in the one-wheel zone snap to an
                                   arc or a proper pivot (|w| >= 0.25);
                                   ``shape_manual`` (false) leaves the joystick untouched.
+                                  Only commands on the twist_mux navigation lane are
+                                  shaped (TRANSIT/MOWING/BOUNDARY_PAUSED and, fix 9, the
+                                  nav-driven dock transit in RETURNING_HOME /
+                                  LOW_BATTERY_DOCKING / RAIN_DETECTED_DOCKING /
+                                  COVERAGE_FAILED_DOCKING); docking, bumper, emergency
+                                  and teleop lanes never (teleop only with
+                                  ``shape_manual``); no lane heard = the phase-only rule
+                                  without the dock phases.
                                   Decision latched on ``~/shape_status``
 ``turn_shaper_hysteresis_mps`` ``0.02``  pivot/arc regime latch (see :class:`TurnShaper`):
                                   a latched regime changes only once the raw inner wheel
@@ -574,8 +582,18 @@ TRACK_WIDTH_M = 0.48          # 2 x drive_track_y 0.24 (config/urdf/mower.urdf.x
 # Autonomous DRIVING phases only. Docking/undocking are exempt: the marker-guided
 # reverse (-0.05 m/s with small steering) sits in the one-wheel zone and was being
 # snapped to v=0 pivots, so the robot pushed nowhere and the stall guard fired at
-# the contacts (2026-10-07). MANUAL_MOWING/RECORDING untouched.
+# the contacts (2026-10-07). Since fix 9 the exemption is by twist_mux lane (the docking
+# lane is never shaped) rather than by phase alone. MANUAL_MOWING/RECORDING untouched.
 SHAPE_PHASES = frozenset(('TRANSIT', 'MOWING', 'BOUNDARY_PAUSED'))
+# Fix 9 (2026-10-14 mow: 151 one-wheel ticks on the nav lane during the return transit at
+# t ~ 2424): the dock phases (mower_mission.mission_fsm.DOCK_PHASES) drive a nav transit
+# to the dock approach first. All four enter through MissionFSM._dock() and share that
+# path (plan_route to_dock -> Nav2, or the docking server navigating to its staging pose),
+# then the marker-guided controller takes over on /cmd_vel_docking. So in these phases only
+# commands on the twist_mux navigation lane are shaped; the docking lane never is (see
+# TurnShaper.is_active). UNDOCKING is the docking controller only and stays exempt.
+NAV_SHAPE_PHASES = frozenset(('RETURNING_HOME', 'LOW_BATTERY_DOCKING',
+                              'RAIN_DETECTED_DOCKING', 'COVERAGE_FAILED_DOCKING'))
 MANUAL_PHASES = frozenset(('MANUAL_MOWING', 'RECORDING'))
 SHAPE_DEFAULTS = {
     'track_width_m': TRACK_WIDTH_M,
@@ -847,9 +865,28 @@ class TurnShaper:
         self._signs = None        # (sign v, sign w) of the command that set the latch
         self._pending = 0         # consecutive ticks the other regime was asked for
 
-    def is_active(self, phase):
-        return self.enabled and (phase in SHAPE_PHASES or
-                                 (self.shape_manual and phase in MANUAL_PHASES))
+    def is_active(self, phase, lane=None):
+        """Shape in mission ``phase`` for a command on twist_mux ``lane`` (fix 9).
+
+        * lane None (unknown: no lane heard within its timeout, or no lane tracker): the
+          phase-only rule, ``SHAPE_PHASES`` (+ manual opt-in), as before fix 9;
+        * ``navigation``: ``SHAPE_PHASES``, ``NAV_SHAPE_PHASES`` (the nav-driven return
+          transit) and the manual opt-in;
+        * ``teleop``: only the manual opt-in (``shape_manual`` in MANUAL_MOWING/RECORDING);
+        * ``docking``, ``bumper``, ``emergency`` (and anything else): never. The
+          marker-guided docking reverse (-0.05 m/s, small steering) must reach the MCU as
+          sent (2026-10-07: snapped to pivots, it pushed nowhere at the contacts).
+        """
+        if not self.enabled:
+            return False
+        manual = self.shape_manual and phase in MANUAL_PHASES
+        if lane is None:
+            return phase in SHAPE_PHASES or manual
+        if lane == NAV_LANE:
+            return phase in SHAPE_PHASES or phase in NAV_SHAPE_PHASES or manual
+        if lane == 'teleop':
+            return manual
+        return False
 
     def _latched(self, v, w, sv, sw, info):
         """Apply the regime latch to the stateless decision ``(sv, sw, info)``."""
@@ -892,9 +929,10 @@ class TurnShaper:
         out[2]['held'] = True
         return out
 
-    def apply(self, v, w, phase, dt):
-        """Return the shaped (v, w) for raw target (v, w) in mission ``phase``."""
-        if not self.is_active(phase):
+    def apply(self, v, w, phase, dt, lane=None):
+        """Return the shaped (v, w) for raw target (v, w) in mission ``phase`` on twist_mux
+        ``lane`` (None = unknown, see :meth:`is_active`)."""
+        if not self.is_active(phase, lane):
             self.reset()
             return v, w
         sv, sw, info = self._latched(v, w, *shape_for_both_wheels(v, w, self.params))
@@ -1457,7 +1495,9 @@ class CmdVelSlewNode(Node):
                     pivot.held = held
                     if held:
                         self.get_logger().info('pivot assist held: %s' % held)
-            tgt_lin, tgt_ang = CmdVelSlewNode._shape_turn(self, tgt_lin, tgt_ang, dt)
+            ag = getattr(self, '_assist_gate', None)
+            lane = ag.lanes.active(now) if ag is not None else None
+            tgt_lin, tgt_ang = CmdVelSlewNode._shape_turn(self, tgt_lin, tgt_ang, dt, lane)
             turn = getattr(self, '_turn', None)
             lin_dec = getattr(self, '_max_linear_decel', None)
             ang_dec = getattr(self, '_max_angular_decel', None)
@@ -1471,12 +1511,12 @@ class CmdVelSlewNode(Node):
                 and (self._cur_lin, self._cur_ang) != (tgt_lin, tgt_ang))
             self._assist_ramp = ramp
             coupled = (getattr(self, '_slew_both_wheels_always', False)
-                       and turn is not None and turn.is_active(phase))
+                       and turn is not None and turn.is_active(phase, lane))
             if CmdVelSlewNode._hard_stop(self, now):
                 # Emergency / bumper lane commands a stop: exact zero now, no decel ramp.
                 self._cur_lin = self._cur_ang = 0.0
                 self._assist_ramp = False
-            elif ramp and turn is not None and turn.is_active(phase):
+            elif ramp and turn is not None and turn.is_active(phase, lane):
                 self._cur_lin, self._cur_ang = slew_both_wheels(
                     self._cur_lin, self._cur_ang, tgt_lin, tgt_ang,
                     self._max_linear_accel, self._max_angular_accel, dt, turn.params,
@@ -1533,13 +1573,15 @@ class CmdVelSlewNode(Node):
         clear, why = ag.clear_verdict(now, pivot.linear, ang, pivot.remaining_m)
         return True, clear, why
 
-    def _shape_turn(self, lin, ang, dt):
-        """Both-wheel turn shaping (see :class:`TurnShaper`); publishes shape_status."""
+    def _shape_turn(self, lin, ang, dt, lane=None):
+        """Both-wheel turn shaping (see :class:`TurnShaper`) of a command on twist_mux
+        ``lane`` (None = unknown); publishes shape_status."""
         turn = getattr(self, '_turn', None)
         if turn is None:
             return lin, ang
         gate = getattr(self, '_gate', None)
-        lin, ang = turn.apply(lin, ang, gate.state_name if gate is not None else None, dt)
+        lin, ang = turn.apply(lin, ang, gate.state_name if gate is not None else None, dt,
+                              lane)
         CmdVelSlewNode._publish_shape_status(self)
         return lin, ang
 
