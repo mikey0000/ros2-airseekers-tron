@@ -37,7 +37,7 @@ from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point32, Polygon, PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
-from nav2_msgs.action import BackUp, DriveOnHeading, FollowPath, NavigateToPose
+from nav2_msgs.action import BackUp, DriveOnHeading, FollowPath, NavigateToPose, Spin
 from nav2_msgs.srv import ClearEntireCostmap
 from sensor_msgs.msg import BatteryState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
@@ -128,6 +128,7 @@ TOPIC_DEFAULTS = {
     'undock_action': '/mower_docking/undock',
     'backup_action': '/backup',
     'drive_on_heading_action': '/drive_on_heading',   # heading calibration drive (forward)
+    'spin_action': '/spin',           # route cusp about-turn (behavior_server Spin, fix 11)
 }
 
 NODE_DEFAULTS = {
@@ -161,7 +162,8 @@ _STATUS_TO_OUTCOME = {
 # stack PAUSEd is rejected instantly ("Action server is inactive"). ACT_PLAN (coverage
 # bridge) and ACT_UNDOCK (open-loop drive off the dock) do not need it.
 _NAV2_ACTIONS = frozenset((fsm_mod.ACT_FOLLOW, fsm_mod.ACT_NAV,
-                           fsm_mod.ACT_DOCK, fsm_mod.ACT_BACKUP, fsm_mod.ACT_DRIVE))
+                           fsm_mod.ACT_DOCK, fsm_mod.ACT_BACKUP, fsm_mod.ACT_DRIVE,
+                           fsm_mod.ACT_SPIN))
 
 
 def _nav2_down_explains(name, outcome):
@@ -373,6 +375,7 @@ class MissionNode(Node):
             fsm_mod.ACT_UNDOCK: act(Undock, 'undock_action'),
             fsm_mod.ACT_BACKUP: act(BackUp, 'backup_action'),
             fsm_mod.ACT_DRIVE: act(DriveOnHeading, 'drive_on_heading_action'),
+            fsm_mod.ACT_SPIN: act(Spin, 'spin_action'),
         }
 
         srv = self.create_service
@@ -1132,6 +1135,12 @@ class MissionNode(Node):
             goal.speed = float(g['speed_mps'])
             secs = float(g['distance_m']) / max(0.01, float(g['speed_mps'])) + 10.0
             goal.time_allowance = Duration(sec=int(secs))
+        elif e.name == fsm_mod.ACT_SPIN:
+            # behavior_server Spin: relative pure rotation (odom yaw), own costmap footprint
+            # check, output on the twist_mux nav lane like BackUp / DriveOnHeading
+            goal = Spin.Goal()
+            goal.target_yaw = float(g['angle'])
+            goal.time_allowance = Duration(sec=int(math.ceil(float(g['time_allowance_s']))))
         else:
             raise ValueError('unknown action %s' % e.name)
         return goal

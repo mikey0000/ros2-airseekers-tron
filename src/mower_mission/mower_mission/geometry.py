@@ -418,3 +418,78 @@ def in_footprint(point, pose, front_m, rear_m, half_width_m, margin_m=0.0):
 def swept_hit(point, poses, front_m, rear_m, half_width_m, margin_m=0.0):
     """Point inside the footprint (+ margin) at any of ``poses`` (see predict_poses)."""
     return any(in_footprint(point, p, front_m, rear_m, half_width_m, margin_m) for p in poses)
+
+
+def wrap_angle(a):
+    """``a`` wrapped to (-pi, pi]."""
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+def polyline_distance(point, poses):
+    """Distance from ``point`` to the polyline through ``poses`` (inf when empty)."""
+    if not poses:
+        return float('inf')
+    if len(poses) == 1:
+        return dist(point, poses[0])
+    best = float('inf')
+    px, py = float(point[0]), float(point[1])
+    for k in range(len(poses) - 1):
+        ax, ay = float(poses[k][0]), float(poses[k][1])
+        bx, by = float(poses[k + 1][0]), float(poses[k + 1][1])
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        t = 0.0 if l2 < 1e-12 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / l2))
+        best = min(best, math.hypot(px - (ax + t * dx), py - (ay + t * dy)))
+    return best
+
+
+def _point_at(poses, cum, s):
+    """(x, y) at arc length ``s`` (clamped to the polyline)."""
+    if s <= 0.0:
+        return float(poses[0][0]), float(poses[0][1])
+    for k in range(1, len(poses)):
+        if cum[k] >= s:
+            seg = cum[k] - cum[k - 1]
+            f = 0.0 if seg < 1e-12 else (s - cum[k - 1]) / seg
+            return (float(poses[k - 1][0]) + (float(poses[k][0]) - float(poses[k - 1][0])) * f,
+                    float(poses[k - 1][1]) + (float(poses[k][1]) - float(poses[k - 1][1])) * f)
+    return float(poses[-1][0]), float(poses[-1][1])
+
+
+def route_cusps(poses, angle_rad, window_m=0.3):
+    """Cusps of a route: points where the travel direction reverses by more than
+    ``angle_rad``. The turn at pose ``i`` is the angle between the chord from the point
+    ``window_m`` of path before it and the chord to the point ``window_m`` after it, so a
+    filleted hairpin (a short arc instead of a vertex) counts by its total turn. A run of
+    poses over the threshold is one cusp, at its sharpest pose.
+
+    Returns ``[(i, x, y, heading_after)]``: route index, position and the direction of the
+    route after the cusp (rad)."""
+    if angle_rad <= 0.0 or len(poses) < 3:
+        return []
+    cum = cumulative_lengths(poses)
+    w = max(1e-3, float(window_m))
+    cand = []
+    for i in range(1, len(poses) - 1):
+        s = cum[i]
+        if s < 0.5 * w or cum[-1] - s < 0.5 * w:
+            continue                      # no chord before / after
+        ax, ay = _point_at(poses, cum, s - w)
+        cx, cy = _point_at(poses, cum, s + w)
+        px, py = float(poses[i][0]), float(poses[i][1])
+        if math.hypot(px - ax, py - ay) < 0.25 * w or math.hypot(cx - px, cy - py) < 0.25 * w:
+            continue
+        h1 = math.atan2(py - ay, px - ax)
+        h2 = math.atan2(cy - py, cx - px)
+        turn = abs(wrap_angle(h2 - h1))
+        if turn >= angle_rad:
+            cand.append((i, turn, h2))
+    out, group = [], []
+    for c in cand:
+        if group and cum[c[0]] - cum[group[-1][0]] > w:
+            out.append(max(group, key=lambda g: g[1]))
+            group = []
+        group.append(c)
+    if group:
+        out.append(max(group, key=lambda g: g[1]))
+    return [(i, float(poses[i][0]), float(poses[i][1]), h2) for i, _t, h2 in out]

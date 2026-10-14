@@ -496,6 +496,51 @@ poor `cog` heading and drove its transit 65 deg off.
   If the WIT keeps agreeing with the GPS course and the stereo does not, `imu_source: wit`
   is the fallback.
 
+## Mission: turn-leg cap, leg loop guard, route hairpins (fix 10/11, 2026-10-14, unit-tested only)
+
+Run 2 of 2026-10-14 (`docs/wheel_smoothness_field_tests.md`, "Run 2"): 7 minutes of MPPI
+looping on a 0.8 m turn leg whose last pose was reached with the heading ~10 deg off, and a
+route hairpin at the dock-path / area-path junction where FollowPath stalled and the
+`/navigate_to_pose` fallback drove 0.56 m off the drawn path. Branch
+`fix/mission-turn-legs-hairpin`; tests in `src/mower_mission/test/test_mission_legs.py`.
+
+- **Fix 10, turn-leg completion cap** (`mission_fsm._leg_watch`): once a turn leg's end is
+  reached in xy (tracked pose index at its last pose, or within `turn_leg_skip_m`), the leg is
+  done, next leg from here, after `turn_leg_done_after_s` (20 s) or
+  `turn_leg_done_after_rot_rad` (6.28) of accumulated |yaw change| of the map pose, whatever
+  the yaw (logged once with the reason). Turn leg = reverse leg, forward piece ending at its
+  cusp, or a sub-path <= `turn_leg_max_m`. A met end yaw is left to the leg goal checker and
+  `turn_leg_skip_*` as before.
+- **Fix 10, leg loop guard:** a follow_path whose tracked pose index has not advanced for
+  `leg_loop_abort_s` (90 s) is cancelled and handled as a follow_path abort (follow retries,
+  then the sub-path is skipped). The timer belongs to the goal; dynamic / localization /
+  blocked holds and stuck / tilt escapes cancel the goal, so they never count.
+- **Fix 11, route cusps** (`geometry.route_cusps`, `mission_fsm._route_cusp_turn`): a cusp is
+  where the planned route reverses by more than `route_cusp_angle_rad` (2.0; chord turn over
+  0.3 m either side, so a filleted hairpin counts; sharp route-leg junctions too; a 90 deg
+  corner does not). A route follow abort / timeout within `route_cusp_radius_m` (0.5) of a
+  cusp: pivot in place with Nav2 `Spin` (behavior_server, nav lane, new `spin_action` client)
+  to the route direction after the cusp, then FollowPath on the rest of the route from the
+  cusp ("route cusp at (x, y): about-turn 1/2 then resume route"). After
+  `route_cusp_retries` (2) about-turns at that cusp the abort is a transit abort
+  (`transit_retries`, re-plans the route), never the costmap planner.
+- **Fix 11, bounded fallback** (`_fallback_corridor_tick`): `/navigate_to_pose` remains only
+  for a start off the route graph and a route abort away from any cusp (and the existing
+  obstacle fallback after `route_blocked_retries`). Every tick the robot's own distance from
+  the drawn network is checked (cross-track to the route it replaces; 0 inside a mowing area;
+  the FSM never sees Nav2's plan, so the live pose is the measure); above
+  `transit_fallback_max_offpath_m` (0.35 = map_server `corridor_half_width_m`) the fallback is
+  cancelled as a transit abort ("transit fallback left the corridor by 0.56 m: abort"). An
+  off-graph start that begins farther off is bounded once it gets within the corridor, or
+  when it moves another 0.35 m away.
+- **Not changed:** nav2_params tolerances; the docking-server route (`_dock_route_result`
+  still hands a failed dock route to the docking server's own Nav2 leg).
+- **Verify live:** no leg runs more than ~20 s past its end; no "leg loop guard" abort on a
+  normal mow; at the dock-path hairpin the robot pivots (Spin) and follows the area path,
+  `/navigate_to_pose` only after "no route". Spin collision-checks the footprint against the
+  local costmap: check that it does not refuse the pivot inside the 0.35 m path corridor.
+  Revert flags: `docs/wheel_smoothness_field_tests.md` rows 10 and 11.
+
 ## Open risks
 
 - Grass segmentation (2026-10-09, not yet run on the mower, `nongrass:=false` by default): seg_ros now runs on the front stereo right colour eye, `nongrass_projector` projects its mask onto the ground and map_server_node keeps a confirmed non-grass memory that feeds a SOFT global-costmap layer (`nongrass_layer`). The model was trained on the OA cameras: class quality on the front eye, NPU sharing with det_ros on core 1 and the shadow false-positive rate need a live check (`docs/grass_segmentation.md`).
