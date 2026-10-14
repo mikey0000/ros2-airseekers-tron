@@ -53,3 +53,13 @@ straight legs = 0.99–1.05.
   (it already exists for the file source, 1 m straight, blade off).
 - Field check after the first fix: `virtual_minus_wit_deg` must stay within a few degrees over
   a mow; if the WIT keeps agreeing with the GPS course, `imu_source: wit` is the fallback.
+
+## Status / fixes
+
+Both proposed fixes implemented on branch `fix/heading-gaps`, unit-tested only (dev image:
+666 tests, 0 failures): `5f3a6dc` stereo stamp gaps bridged (WIT rate, else mean stereo rate,
+up to `stereo_max_gap` 1.0 s), one coverage rule against double counting, gap counters in the
+status and the `wit_divergence_warn_deg` WARN; `20c213b` a `cog` heading older than
+`heading_max_cog_age_s` (300 s) or with quality in `heading_reject_quality` (['poor']) runs
+the calibration drive before a START off the dock; `50be8e8` docs/STATUS.md entry. Field
+check above still open.
