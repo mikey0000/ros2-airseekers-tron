@@ -84,6 +84,30 @@ goal → change → test → pass criterion → revert.
           `progress_local`; capped legs only if their own length ≤ `turn_leg_max_m`.
       Pass: zero samples outside areas ∪ paths by > 0.10 m in a full mow; no
       `navigate_to_pose` in the log; corners within 0.15 m of the route.
+      **Implemented on `ws/hard-boundary` (2026-10-14), unit-tested, field test pending (run
+      4; what to look for: `wheel_smoothness_field_tests.md` "Run 4 change-set"):**
+      (a) `map_server` publishes `~/outside_m` (areas ∪ paths ∪ dock corridor, not the return
+          corridor); `mission_fsm._hard_boundary_tick` in TRANSIT / MOWING / dock phases:
+          cancel, zero, blade off, reverse ≤ 0.10 m/s along the last 1.5 m of EKF poses on
+          `/cmd_vel_emergency` (both wheels backwards; > 0.6 rad heading error → pivot
+          ≥ 0.25 rad/s first; never beyond the recorded track), until inside + 0.10 m; then a
+          transit abort (MOWING: sub-path resumed; dock phases: dock re-run). The 2nd
+          excursion of a mission, no progress, still outside → STUCK_NEEDS_HELP. Heading
+          calibration drive: stopped only. Params `hard_boundary_m` 0.10,
+          `hard_boundary_max_aborts` 2, `hard_boundary_retrace_*`, `hard_boundary_trail_m` 1.5.
+          Revert: `hard_boundary: false`.
+      (b) `cmd_vel_slew`: `turn_shaper_pivot_instead` (true), `_ratio` 0.5, `_hysteresis` 0.1.
+          Revert: `turn_shaper_pivot_instead: false`.
+      (c) `nav2_params.yaml` FollowPath `vx_min` −0.10, PreferForwardCritic kept; nothing
+          downstream clamps negative vx. Revert: `vx_min: 0.0`.
+      (d) `route_corner_turn_rad` 1.5708: split at corners > 90°, Spin to the leg heading
+          before a leg > 90° off the robot's yaw (transit and dock route);
+          `route_cusp_radius_m` 1.0. Revert: `route_corner_turn_rad: 0.0`.
+      (e) `dock_server_nav_max_m` 0.35, `dock_route_retries` 2, `dock_approach_distance_m`
+          0.8: the docking server only near the approach pose, else the dock route again,
+          then NAV_TO_DOCK_FAILED in place. Revert: `dock_server_nav_max_m: 0.0`.
+      (f) `turn_leg_end_by_distance` (true): leg end by distance only, cap by own length
+          only (`_is_turn_leg` kept for `turn_leg_skip`). Revert: `false`.
 - [ ] 0.3 [C] Docs: replace every "vendor" accel/decel citation of `adaptivePurePursuit.h`
       with the running node's values (0.6 / 1.0 m/s², 2.0 rad/s²; `cfg.yaml:8-9,69-72`).
 

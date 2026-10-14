@@ -290,3 +290,36 @@ Also measured:
 Decisions: keep fix 10 (with the bug fixed), keep the cusp about-turn, **revert fix 9 by
 param (`turn_shaper_dock_transit: false`) until the shaper choice below lands**, and make
 the boundary a hard rule (roadmap task 0.4).
+
+## Run 4 change-set (roadmap task 0.4: the boundary is a hard rule), branch `ws/hard-boundary`
+
+Unit-tested only (dev container); nothing driven yet. Each item reverts by one parameter.
+
+| | Change | Params (default) | Revert |
+|---|---|---|---|
+| a | Hard boundary: robot centre > `hard_boundary_m` outside areas ∪ drawn paths ∪ dock corridor (`/map_server_node/outside_m`, new) in TRANSIT / MOWING / dock phases → cancel, zero, blade off, `boundary` incident, reverse ≤ 0.10 m/s along the last 1.5 m of EKF poses on `/cmd_vel_emergency` until inside + 0.10 m (both wheels backwards, or a ≥ 0.25 rad/s pivot first), then a transit abort (MOWING: sub-path resumed; dock: re-run). 2nd excursion per mission, no progress, still outside, or no track behind it → STUCK_NEEDS_HELP | `hard_boundary_m` 0.10, `hard_boundary_max_aborts` 2, `hard_boundary_retrace_speed_mps` 0.10, `hard_boundary_trail_m` 1.5, `hard_boundary_retrace_extra_m` 0.10, `hard_boundary_retrace_max_m` 1.0 (mission.yaml) | `hard_boundary: false` |
+| b | Turn shaper: a widening-zone command whose r_req = \|v\|/\|w\| < 0.5 × the widened radius snaps to a pure pivot (v 0, \|w\| ≥ 0.25) instead of the 2–4× wider arc; latch holds across ratio ± 0.1 | `turn_shaper_pivot_instead_ratio` 0.5, `turn_shaper_pivot_instead_hysteresis` 0.1 | `turn_shaper_pivot_instead: false` |
+| c | MPPI transit `FollowPath.vx_min` −0.10 (PreferForwardCritic kept) | nav2_params.yaml | `vx_min: 0.0` |
+| d | Route split at every corner > 90°, and before a route leg (transit or dock route) more than 90° off the robot's yaw: stop, Nav2 Spin to the leg heading, then follow; `route_cusp_radius_m` 0.5 → 1.0 | `route_corner_turn_rad` 1.5708 | `route_corner_turn_rad: 0.0` (+ `route_cusp_radius_m: 0.5`) |
+| e | Docking server only within 0.35 m of the approach pose; farther, the dock route is re-planned and driven again (2×), then NAV_TO_DOCK_FAILED in place; obstacle aborts wait first | `dock_server_nav_max_m` 0.35, `dock_route_retries` 2, `dock_approach_distance_m` 0.8 | `dock_server_nav_max_m: 0.0` |
+| f | Turn-leg cap: end reached only within `turn_leg_skip_m` of the leg end (never `progress_local`), capped only if the leg's own length ≤ `turn_leg_max_m` | — | `turn_leg_end_by_distance: false` |
+
+What to look for in the bag / log:
+- `/map_server_node/outside_m` (now recorded): **pass = no sample > 0.10 m in a full mow**.
+  Every `HARD BOUNDARY` log line and `boundary` incident is a fail of the run (each one
+  pins the bag); check the retrace on `/cmd_vel_emergency`: linear ≤ 0 and ≥ −0.10, no tick
+  with the inner wheel in (−0.06, 0.06) (`wheel_bag_metrics.py` one-wheel count on the
+  emergency lane), and `boundary: back inside after reversing … m` in the log.
+- Corners: `/cmd_vel_slew/shape_status` should show `pivot … instead of an arc` where run 3
+  showed `arc r=0.56 … 0.96 m`; no arc r > 0.5 m on transit corners; route corners within
+  0.15 m of the route (EKF pose vs the plan). Log: `route corner at (x, y): stop and pivot`.
+- MPPI reverse: `/cmd_vel_nav` linear < 0 should be rare and short (backing out of an
+  overshoot, ≥ −0.10).
+- Docking: **no `navigate_to_pose` goal from the docking server farther than 0.35 m from the
+  approach pose**; `dock: … driving the dock route again` instead; the approach / about-turn
+  / marker reverse unchanged.
+- Rings: no `turn leg … leg done` line for a sub-path longer than 1.2 m.
+- Watch: Spin refusing at a corner (the leg is then sent anyway: `route corner pivot …:
+  following the leg anyway`); a hard-boundary trigger at the dock if the dock corridor is
+  missing (dock pose not set); with (b) in place fix 9 (`turn_shaper_dock_transit`, reverted
+  after run 3) can be re-tested.
