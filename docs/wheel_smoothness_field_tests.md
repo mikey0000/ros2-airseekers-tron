@@ -300,7 +300,7 @@ Unit-tested only (dev container); nothing driven yet. Each item reverts by one p
 | a | Hard boundary: robot centre > `hard_boundary_m` outside areas ∪ drawn paths ∪ dock corridor (`/map_server_node/outside_m`, new) in TRANSIT / MOWING / dock phases → cancel, zero, blade off, `boundary` incident, reverse ≤ 0.10 m/s along the last 1.5 m of EKF poses on `/cmd_vel_emergency` until inside + 0.10 m (both wheels backwards, or a ≥ 0.25 rad/s pivot first), then a transit abort (MOWING: sub-path resumed; dock: re-run). 2nd excursion per mission, no progress, still outside, or no track behind it → STUCK_NEEDS_HELP | `hard_boundary_m` 0.10, `hard_boundary_max_aborts` 2, `hard_boundary_retrace_speed_mps` 0.10, `hard_boundary_trail_m` 1.5, `hard_boundary_retrace_extra_m` 0.10, `hard_boundary_retrace_max_m` 1.0 (mission.yaml) | `hard_boundary: false` |
 | b | Turn shaper: a widening-zone command whose r_req = \|v\|/\|w\| < 0.5 × the widened radius snaps to a pure pivot (v 0, \|w\| ≥ 0.25) instead of the 2–4× wider arc; latch holds across ratio ± 0.1 | `turn_shaper_pivot_instead_ratio` 0.5, `turn_shaper_pivot_instead_hysteresis` 0.1 | `turn_shaper_pivot_instead: false` |
 | c | MPPI transit `FollowPath.vx_min` −0.10 (PreferForwardCritic kept) | nav2_params.yaml | `vx_min: 0.0` |
-| d | Route split at every corner > 90°, and before a route leg (transit or dock route) more than 90° off the robot's yaw: stop, Nav2 Spin to the leg heading, then follow; `route_cusp_radius_m` 0.5 → 1.0 | `route_corner_turn_rad` 1.5708 | `route_corner_turn_rad: 0.0` (+ `route_cusp_radius_m: 0.5`) |
+| d | Route split at every corner ≥ 79° (2026-10-15 fix, was > 90°), and before a route leg (transit or dock route) ≥ 79° off the robot's yaw: stop, Nav2 Spin to the leg heading, then follow; the leg into a split corner ends on it (`coverage_leg_goal_checker`); `route_cusp_radius_m` 0.5 → 1.0 | `route_corner_turn_rad` 1.38, `route_corner_goal_checker_id` coverage_leg_goal_checker | `route_corner_turn_rad: 0.0` (+ `route_cusp_radius_m: 0.5`); run 4 threshold: `1.5708`; checker: `''` |
 | e | Docking server only within 0.35 m of the approach pose; farther, the dock route is re-planned and driven again (2×), then NAV_TO_DOCK_FAILED in place; obstacle aborts wait first | `dock_server_nav_max_m` 0.35, `dock_route_retries` 2, `dock_approach_distance_m` 0.8 | `dock_server_nav_max_m: 0.0` |
 | f | Turn-leg cap: end reached only within `turn_leg_skip_m` of the leg end (never `progress_local`), capped only if the leg's own length ≤ `turn_leg_max_m` | — | `turn_leg_end_by_distance: false` |
 
@@ -323,3 +323,67 @@ What to look for in the bag / log:
   following the leg anyway`); a hard-boundary trigger at the dock if the dock corridor is
   missing (dock pose not set); with (b) in place fix 9 (`turn_shaper_dock_transit`, reverted
   after run 3) can be re-tested.
+
+### Sim fixes before the field test (2026-10-15, branch `ws/hb-fixes`)
+
+A sim run on a copy of the real map (`docs/simulation.md`, `areas_file`) found two bugs in
+the change-set above. Both are fixed, unit-tested and re-run in the sim (domain 173,
+`localization:=sim`, `nav2_accdefault.yaml` because of the MPPI accel livelock).
+
+- **(a) the retrace declared "back inside" while still outside.** When the reversed
+  distance reached the recorded track length it resumed if `outside_m <= hard_boundary_m`
+  (sim: "back inside after reversing 0.40 m" at 0.066 m outside, then a resume from there).
+  Now success needs a fresh `~/outside_m` ≤ 0 and `hard_boundary_retrace_extra_m` reversed
+  past the re-entry point, or inside when the track / `hard_boundary_retrace_max_m` ends
+  first. Still outside at the track end, or no fresh `outside_m`, stops in
+  STUCK_NEEDS_HELP (`retrace ended still 0.033 m outside after reversing 0.25 m ...`); never
+  a resume, never a reverse beyond the recorded track. No new parameter (revert of the
+  whole retrace: `hard_boundary: false`). Log on success:
+  `boundary: back inside after reversing 0.34 m (0.10 m past the re-entry, excursion n/N)`.
+  Sim: 3 natural trips on the outer ring all ended 0.10–0.11 m past the ground-truth
+  re-entry and resumed; with a forced 0.2 m trail, one trip ended inside at the track end
+  (resumed) and one 0.031 m outside (STUCK_NEEDS_HELP, no resume). Emergency lane linear
+  −0.10..0, no one-wheel tick, blade off throughout.
+- **(d) drawn 90° corners were not split.** The split compared single 3-pose chords with
+  `> pi/2` (the dock path's drawn 90° corner measures 89.99°), and after a cut skipped 6
+  poses, so a second corner within ~0.5 m was missed. The leg before a split corner ended
+  ~0.2 m short (`general_goal_checker` xy 0.25 m), and the pivot happened there.
+  Now `geometry.route_corners` measures each bend between the straight runs either side
+  (Douglas–Peucker 0.02 m: pose spacing and drawing wobble do not matter, the cut is the
+  vertex pose); every bend over the threshold is its own split however close the next is;
+  same-way smaller bends within 0.3 m add up to one corner; inclusive with 1°. Threshold
+  1.38 rad (79°): an arc of the 0.5 m minimum turn radius cuts a corner of 79.5° by the
+  0.15 m pass limit. The leg into a split corner arrives with its run's yaw and uses
+  `route_corner_goal_checker_id` (`coverage_leg_goal_checker`: 0.08 m, or after the
+  closest approach within 0.20 m). `route_corner_turn_rad: 0.0` still selects the old split.
+
+Sim, real map, dock → Area 1 and RETURNING_HOME (max deviation of the ground truth from the
+planned route within 0.4 m of each drawn vertex while the route was driven; before = run r7
+of the first sim pass, after = two runs):
+
+| Route | Vertex | Bend | Before | After | Stop / pivot after |
+|---|---|---|---|---|---|
+| dock → area | (−0.14, −0.17) | −90° | 0.19 | 0.06 / 0.07 | stopped 0.07–0.08 m from the vertex, pivot −90° (before: no split) |
+| dock → area | (−0.33, 0.12) | +42° | 0.20 | 0.07 / 0.07 | not split (arc) |
+| dock → area | (−2.26, 0.37) | −39° | 0.15 | 0.24 / 0.24 | not split: MPPI cuts it |
+| dock → area | (−3.25, 1.12) | −111° | 0.20 | 0.11 / 0.11 | stopped 0.08 m from the vertex (before 0.24), pivot −130° |
+| dock → area | (−2.15, 1.66) | −57° | 0.22 | 0.20 / 0.20 | not split: MPPI cuts it toward the leg end |
+| area → dock | (−3.25, 1.12) | +86..+120° | 0.20 | 0.10 / 0.13 | stopped 0.03–0.08 m from the vertex (before 0.25), pivot |
+| area → dock | (−2.26, 0.37) | +39° | 0.29 | 0.27 / 0.34 | not split: MPPI cuts it |
+| area → dock | (−0.33, 0.12) | −42° | 0.16 | 0.13 / 0.10 | not split |
+| area → dock | (−0.13, −0.18) | +90° | 0.16 | 0.13 / 0.11 | split, but the robot reached it 66° off the next leg (it had cut the −42° bend), under 79°: no pivot, MPPI arc |
+
+Every split corner is now within 0.15 m. The remaining fails are the 39° and 57° bends,
+which MPPI cuts on the long dock-path leg (0.20–0.34 m); that is controller tracking, not
+the split (a pivot at every 40° bend would cost far more pivot time). Docking: both runs
+ended `DOCK_MAXOUT` after three RETRYs at ~0.3–0.4 m along / +0.06–0.10 m lateral / +26–30°
+heading. The first sim pass (r7) shows the same RETRY pattern and docked on its third
+attempt, so this is the sim docking approach, not the route change; worth a look before
+the field test.
+
+What to look for in the run 4 bag in addition: `route corner at (x, y): stop and pivot` at
+every drawn ~90° corner, the robot stopped within ~0.08 m of the corner before it (EKF
+pose vs the route vertex); `boundary: back inside … (0.10 m past the re-entry …)` or
+`retrace ended still … outside` (then STUCK_NEEDS_HELP), never a resume while
+`/map_server_node/outside_m` > 0.
+
