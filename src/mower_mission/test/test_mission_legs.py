@@ -7,8 +7,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from mower_mission import geometry as geo   # noqa: E402
 from mower_mission import mission_fsm as f   # noqa: E402
-from test_mission_fsm import Harness, mowing, plan, start_until_planning  # noqa: E402
+from test_mission_fsm import (Harness, _answer_route, _route_h, _route_resp, mowing,  # noqa: E402
+                              plan, square, start_until_planning)
 
 
 def logs(h, mark=0):
@@ -224,3 +226,208 @@ def test_loop_guard_does_not_fire_in_a_stuck_escape():
     tok = h.pending_action(f.ACT_FOLLOW).token
     h.tick(dt=1.0, n=80)                         # the resumed goal starts its own timer
     assert h.pending_action(f.ACT_FOLLOW).token == tok
+
+
+# =====================================================================
+# fix 11: route cusps
+# =====================================================================
+def _hairpin170(n1=20, n2=20):
+    """East 2 m, then back at 170 deg (a hairpin at (2, 0)), 0.1 m poses."""
+    a = [(0.1 * i, 0.0, 0.0) for i in range(n1 + 1)]
+    h = math.radians(170.0)
+    b = [(2.0 + 0.1 * i * math.cos(h), 0.1 * i * math.sin(h), h) for i in range(1, n2 + 1)]
+    return a + b
+
+
+def test_route_cusps_hairpin_yes_right_angle_no():
+    c = geo.route_cusps(_hairpin170(), 2.0)
+    assert len(c) == 1
+    i, x, y, after = c[0]
+    assert i == 20 and abs(x - 2.0) < 1e-9 and abs(y) < 1e-9
+    assert abs(geo.wrap_angle(after - math.radians(170.0))) < 0.05
+    corner = [(0.1 * i, 0.0, 0.0) for i in range(21)] + \
+        [(2.0, 0.1 * i, 1.57) for i in range(1, 21)]
+    assert geo.route_cusps(corner, 2.0) == []
+    straight = [(0.1 * i, 0.0, 0.0) for i in range(30)]
+    assert geo.route_cusps(straight, 2.0) == []
+    # filleted hairpin (r 0.1 m arc instead of a vertex): one cusp, on the arc
+    arc = [(2.0 + 0.1 * math.sin(t), 0.1 - 0.1 * math.cos(t), t)
+           for t in [math.pi * k / 6 for k in range(1, 6)]]
+    back = [(2.0 - 0.1 * i, 0.2, math.pi) for i in range(0, 21)]
+    fil = geo.route_cusps(_hairpin170(n2=0) + arc + back, 2.0)
+    assert len(fil) == 1 and abs(fil[0][1] - 2.05) < 0.1
+
+
+def test_route_cusps_of_a_planned_route_include_sharp_leg_junctions():
+    h = _route_h()
+    route = _hairpin170()
+    _answer_route(h, resp=_route_resp(route))
+    cusps = h.fsm.mission.route_cusps
+    assert len(cusps) == 1 and abs(cusps[0][1] - 2.0) < 1e-6
+    assert len(h.fsm._route_legs['legs']) == 2
+
+
+def _abort_at(h, pose, outcome=f.ABORTED):
+    h.fsm.inputs.pose = pose
+    a = h.pending_action(f.ACT_FOLLOW)
+    assert a.purpose == 'route'
+    h._apply(h.fsm.on_action_result(a.token, outcome, {}, h.t))
+
+
+def test_route_abort_at_a_hairpin_turns_about_and_resumes_the_route():
+    h = _route_h()
+    route = _hairpin170()
+    _answer_route(h, resp=_route_resp(route))
+    m = h.mark()
+    _abort_at(h, (1.95, 0.02, 0.0))              # stalled at the junction facing the old leg
+    spin = h.pending_action(f.ACT_SPIN)
+    assert spin.purpose == 'route_cusp'
+    g = h.goal(f.ACT_SPIN)
+    assert abs(g['angle'] - math.radians(170.0)) < 0.05 and g['time_allowance_s'] > 10.0
+    assert any('route cusp at (2.00, 0.00): about-turn 1/2 then resume route' in t
+               for t in logs(h, m))
+    assert 'about-turn 1/2' in h.fsm.sub_state and h.name == 'TRANSIT'
+    h.fsm.inputs.pose = (1.95, 0.02, math.radians(170.0))
+    h.finish(f.ACT_SPIN)
+    a = h.pending_action(f.ACT_FOLLOW)
+    assert a.purpose == 'route'
+    poses = h.goal(f.ACT_FOLLOW)['poses']
+    assert poses[0] == route[20] and poses[-1] == route[-1]
+    assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowPath'
+    assert not starts(h, m, f.ACT_NAV) and h.fsm.mission.transit_fails == 0
+
+    # second abort at the same cusp: second about-turn
+    m = h.mark()
+    _abort_at(h, (1.97, 0.0, 0.1))
+    assert h.pending_action(f.ACT_SPIN)
+    assert any('about-turn 2/2' in t for t in logs(h, m))
+    h.finish(f.ACT_SPIN, f.ABORTED)              # even a failed spin: the route is the judge
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'route'
+    assert h.goal(f.ACT_FOLLOW)['poses'] == route[20:]
+    assert not starts(h, m, f.ACT_NAV)
+
+    # third: about-turns used up -> the transit abort / retry path, still no costmap planner
+    m = h.mark()
+    _abort_at(h, (1.97, 0.0, 0.1))
+    assert h.fsm._action is None and not starts(h, m, f.ACT_NAV)
+    mi = h.fsm.mission
+    assert mi.transit_fails == 1 and mi.step == 'retry_wait'
+    assert 'at a route cusp, retry 1/3' in h.fsm.sub_state
+    assert [e.kind for e in h.since(m, f.RecordIncident)] == ['transit_abort']
+
+
+def test_route_cusp_about_turn_skipped_when_already_facing_the_route():
+    h = _route_h()
+    route = _hairpin170()
+    _answer_route(h, resp=_route_resp(route))
+    m = h.mark()
+    _abort_at(h, (2.0, 0.05, math.radians(165.0)))
+    assert not starts(h, m, f.ACT_SPIN)
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'route'
+    assert h.goal(f.ACT_FOLLOW)['poses'][0] == route[20]
+
+
+def test_route_abort_away_from_any_cusp_falls_back_to_the_costmap_planner():
+    h = _route_h()
+    route = _hairpin170()
+    _answer_route(h, resp=_route_resp(route))
+    target = h.fsm.mission.transit_target
+    m = h.mark()
+    _abort_at(h, (0.0, 0.0, 0.0))                # 2 m from the hairpin
+    assert not starts(h, m, f.ACT_SPIN)
+    assert h.goal(f.ACT_NAV)['pose'] == target and h.fsm.mission.route_fallback
+    assert h.fsm.mission.fallback_ref == [tuple(p) for p in route]
+
+
+def test_route_cusp_retries_zero_restores_the_old_fallback():
+    h = _route_h(route_cusp_retries=0)
+    _answer_route(h, resp=_route_resp(_hairpin170()))
+    m = h.mark()
+    _abort_at(h, (1.95, 0.02, 0.0))
+    assert not starts(h, m, f.ACT_SPIN) and h.pending_action(f.ACT_NAV)
+
+
+def test_off_route_graph_start_falls_back_to_the_costmap_planner():
+    h = _route_h()
+    target = h.fsm.mission.transit_target
+    _answer_route(h, ok=False, resp=_route_resp(ok=False, message='start (0.00, 0.00) is off '
+                                                                   'the route graph'))
+    assert h.goal(f.ACT_NAV)['pose'] == target
+    h.tick(n=20)                                 # inside the mowing area: bound never fires
+    assert h.pending_action(f.ACT_NAV)
+
+
+# ---- the corridor bound of the costmap fallback ----------------------
+def _outside_route_h(**params):
+    """Robot at (0, 0) outside the only mowing area (4..10, 4..10); sub-path from (5, 5)."""
+    h = Harness(route_transits=True, **params)
+    h.areas = [square(4, 4, 6)]
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([[(5.0 + 0.5 * k, 5.0, 0.0) for k in range(9)]]))
+    assert h.name == 'TRANSIT'
+    return h
+
+
+def _diag():
+    return [(0.1 * k, 0.1 * k, math.pi / 4) for k in range(51)]   # (0, 0) -> (5, 5)
+
+
+def test_fallback_leaving_the_corridor_is_cancelled_as_a_transit_abort():
+    h = _outside_route_h()
+    _answer_route(h, resp=_route_resp(_diag()))
+    _abort_at(h, (1.0, 1.0, 0.0))                # no cusp on a straight route: fallback
+    nav = h.pending_action(f.ACT_NAV)
+    h.tick()
+    h.fsm.inputs.pose = (1.2, 0.85, 0.0)         # 0.25 m off the route: fine
+    h.tick(n=5)
+    assert h.fsm._action is nav
+    m = h.mark()
+    h.fsm.inputs.pose = (1.3, 0.7, -0.5)         # 0.42 m off
+    h.tick()
+    assert h.fsm._action is None and h.since(m, f.CancelActions)
+    assert any('transit fallback left the corridor by 0.42 m: abort' in t for t in logs(h, m))
+    mi = h.fsm.mission
+    assert mi.transit_fails == 1 and mi.step == 'retry_wait'
+    assert [e.kind for e in h.since(m, f.RecordIncident)] == ['transit_abort']
+    h.tick(dt=1.0, n=4)                          # the retry asks for the route again
+    assert h.fsm._service is not None and h.fsm._service.name == f.SRV_PLAN_ROUTE
+
+
+def test_fallback_bound_off_keeps_the_fallback():
+    h = _outside_route_h(transit_fallback_max_offpath_m=0.0)
+    _answer_route(h, resp=_route_resp(_diag()))
+    _abort_at(h, (1.0, 1.0, 0.0))
+    nav = h.pending_action(f.ACT_NAV)
+    h.fsm.inputs.pose = (1.6, 0.4, 0.0)
+    h.tick(n=5)
+    assert h.fsm._action is nav
+
+
+def test_off_graph_fallback_is_bounded_once_back_in_the_corridor():
+    """No route (start off the graph, 1.4 m from the area): the bound arms only once the
+    robot is within it (inside the area) or when it moves another 0.35 m farther away."""
+    h = _outside_route_h()
+    h.fsm.inputs.pose = (3.0, 3.0, 0.0)          # 1.41 m from the area corner
+    _answer_route(h, ok=False)
+    nav = h.pending_action(f.ACT_NAV)
+    h.tick()
+    h.fsm.inputs.pose = (3.5, 3.5, 0.0)          # approaching: fine
+    h.tick(n=3)
+    h.fsm.inputs.pose = (4.5, 4.5, 0.0)          # inside the area: armed
+    h.tick(n=3)
+    assert h.fsm._action is nav and h.fsm.mission.fallback_armed
+    m = h.mark()
+    h.fsm.inputs.pose = (4.5, 3.5, 0.0)          # 0.5 m outside the area again
+    h.tick()
+    assert h.fsm._action is None and h.fsm.mission.transit_fails == 1
+    assert any('left the corridor by 0.50 m' in t for t in logs(h, m))
+
+
+def test_off_graph_fallback_moving_away_is_cancelled():
+    h = _outside_route_h()
+    h.fsm.inputs.pose = (3.0, 3.0, 0.0)
+    _answer_route(h, ok=False)
+    h.tick()
+    h.fsm.inputs.pose = (2.7, 2.7, 0.0)          # 1.84 m off > 1.41 + 0.35: cancelled
+    h.tick()
+    assert h.fsm._action is None and h.fsm.mission.transit_fails == 1

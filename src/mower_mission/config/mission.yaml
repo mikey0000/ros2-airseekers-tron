@@ -91,6 +91,26 @@ behavior_tree_node:
     route_end_tolerance_m: 0.5        # route follow "success" farther from the target = failed
     route_blocked_retries: 1          # obstacle abort: blocked wait, re-send the route this often, then Nav2
     route_split_turn_deg: 100.0       # route sent as FollowPath legs split at turns sharper than this
+    # 2026-10-14 fix 11 (run 2: MPPI stalled at the dock-path -> area-path hairpin, the
+    # /navigate_to_pose fallback drove 0.56 m off the drawn path). Route cusp = the route
+    # reverses by more than route_cusp_angle_rad (2.0 ~ 115 deg; a 90 deg corner is not one),
+    # incl. a route-leg junction turning that much. A route follow abort / timeout within
+    # route_cusp_radius_m of a cusp: cancel, pivot in place with Nav2 Spin (behavior_server,
+    # nav lane) to the route direction after the cusp, re-send the route from the cusp. At
+    # most route_cusp_retries about-turns per cusp (per sub-path transit), then a transit
+    # abort (transit_retries) -- never the costmap planner at a cusp. 0 = old fallback.
+    route_cusp_radius_m: 0.5
+    route_cusp_angle_rad: 2.0
+    route_cusp_retries: 2
+    route_cusp_spin_rps: 0.2          # Spin time allowance = |angle| / this + 10 s (turf slip)
+    # The costmap-planner fallback stays only for a start off the route graph and a route
+    # abort away from any cusp, and is bounded: the robot's distance from the drawn network
+    # (cross-track to the route it replaces; 0 inside a mowing area) is checked every tick
+    # and above this the fallback is cancelled and counted as a transit abort. An off-graph
+    # start (already farther off) is bounded once it got within the corridor, or when it
+    # moves this much farther away. Mirrors map_server corridor_half_width_m (0.35).
+    # 0.0 = unbounded.
+    transit_fallback_max_offpath_m: 0.35
     route_variation: true             # per-run transit variation (area setting transit_variation)
     transit_arrived_radius_m: 0.3     # transit ABORT/timeout within this of the target = arrived
     transit_retries: 3                # failed transit: re-send (from the current pose) this many times

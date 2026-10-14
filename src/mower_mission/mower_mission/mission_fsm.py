@@ -81,6 +81,7 @@ ACT_UNDOCK = 'undock'
 ACT_DOCK = 'dock'
 ACT_BACKUP = 'backup'
 ACT_DRIVE = 'drive_on_heading'      # Nav2 behavior_server DriveOnHeading (heading calibration)
+ACT_SPIN = 'spin'                   # Nav2 behavior_server Spin (route cusp about-turn, fix 11)
 ACT_PLAN = 'plan_coverage'
 ACT_NAV = 'navigate_to_pose'
 ACT_FOLLOW = 'follow_path'
@@ -593,6 +594,26 @@ class Params:
     # FollowPath legs split where it turns more than this (0 = one goal); each next leg
     # starts with the controller's own turn toward the path.
     route_split_turn_deg: float = 100.0
+    # 2026-10-14 run 2 (fix 11): MPPI stalled at the dock-path -> area-path hairpin facing the
+    # wrong way, the progress checker aborted, and the /navigate_to_pose fallback drove 0.56 m
+    # off the drawn path. A route cusp is where the route reverses by more than
+    # route_cusp_angle_rad (turn between the 0.3 m chords before / after a pose; a route-leg
+    # junction counts too). A route follow abort / timeout within route_cusp_radius_m of a
+    # cusp: cancel, pivot in place (Nav2 Spin) to the route direction after the cusp, re-send
+    # the route from the cusp; at most route_cusp_retries about-turns per cusp (per sub-path
+    # transit), then a transit abort (transit_retries; never the costmap planner).
+    # 0 retries = the old behaviour (costmap fallback).
+    route_cusp_radius_m: float = 0.5
+    route_cusp_angle_rad: float = 2.0
+    route_cusp_retries: int = 2
+    route_cusp_spin_rps: float = 0.2    # Spin time allowance = |angle| / this + 10 s (turf slip)
+    # The costmap-planner fallback (no route: start off the route graph; a route abort away
+    # from any cusp) is bounded: once the robot's own distance from the drawn network (the
+    # planned route if there was one; 0 inside a mowing area) exceeds this, the fallback is
+    # cancelled and counted as a transit abort. Starting farther off (an off-graph start)
+    # arms it only once the robot got within the bound (or moved this much farther away).
+    # Mirrors map_server corridor_half_width_m. 0 = unbounded.
+    transit_fallback_max_offpath_m: float = 0.35
     # 2026-10-09 transit variation (owner: tyre tracks from driving the same line): every
     # mission start bumps a persisted run counter (alternate_counts['__transit_run__']) that
     # plan_route uses with each area's transit_variation setting. False = always run 0.
@@ -848,6 +869,13 @@ class Mission:
     route_fallback: bool = False                # this transit uses /navigate_to_pose (no route)
     route_aborts: int = 0                       # route follow aborts of this transit
     route_poses: Optional[list] = None          # route of the in-flight route transit
+    route_full: Optional[list] = None           # the planned route (route_cusps index into it)
+    route_cusps: list = field(default_factory=list)   # [(i, x, y, heading_after)] of route_full
+    cusp_turns: dict = field(default_factory=dict)    # cusp (x, y) -> about-turns, per sub-path
+    cusp_resume: Optional[list] = None          # route remainder sent after the about-turn
+    fallback_ref: Optional[list] = None         # route of a costmap fallback (corridor bound)
+    fallback_armed: Optional[bool] = None       # corridor bound active (None = not started)
+    fallback_off0: float = 0.0                  # off-path distance when the fallback started
     leg_watch: Optional[dict] = None            # fix 10 leg-end cap / loop guard state
 
 
@@ -1787,6 +1815,8 @@ class MissionFSM:
                 if self._leg_watch():
                     return
             self._tick_blade()
+        elif ph == 'TRANSIT' and self.mission is not None and self.mission.step == 'transit':
+            self._fallback_corridor_tick()
         elif ph == 'BOUNDARY_PAUSED' and self.mission is not None:
             m = self.mission
             if not i.boundary_violation:
@@ -1817,7 +1847,7 @@ class MissionFSM:
         return {ACT_PLAN: self.p.plan_timeout_s, ACT_UNDOCK: self.p.undock_timeout_s,
                 ACT_BACKUP: self.p.undock_timeout_s, ACT_NAV: self.p.transit_timeout_s,
                 ACT_FOLLOW: self.p.follow_timeout_s,
-                ACT_DOCK: self.p.dock_action_timeout_s}.get(name, 60.0)
+                ACT_DOCK: self.p.dock_action_timeout_s}.get(name, 60.0)   # ACT_SPIN: per goal
 
     # ==================================================================
     # commands
@@ -2460,6 +2490,7 @@ class MissionFSM:
         m.transit_fails = m.follow_fails = m.recovery_fails = 0
         m.recovering = False
         m.detours, m.detour = 0, None
+        m.cusp_turns = {}
         m.leg_watch = None
         self._blk = None
         self._dispatch()
@@ -3348,13 +3379,87 @@ class MissionFSM:
         costmap planner (/navigate_to_pose) once this transit fell back."""
         m = self.mission
         m.route_poses = None
+        m.route_full, m.route_cusps, m.cusp_resume = None, [], None
         if self.p.route_transits and not m.route_fallback and m.detour is None \
                 and not m.recovering and self.inputs.pose is not None:
+            m.fallback_ref = None
             self._call(SRV_PLAN_ROUTE, {'start': tuple(self.inputs.pose),
                                         'goal': tuple(m.transit_target),
                                         'variation': self._transit_run()}, purpose='route')
             return
+        self._start_fallback_nav()
+
+    def _start_fallback_nav(self, ref=None):
+        """/navigate_to_pose to the transit target. A route fallback gets the corridor bound
+        (transit_fallback_max_offpath_m) against ``ref`` (the route it replaces, if any; a
+        re-send keeps the previous one) and the mowing areas."""
+        m = self.mission
+        if ref is not None:
+            m.fallback_ref = [tuple(q) for q in ref]
+        m.fallback_armed = None
         self._start_action(ACT_NAV, {'pose': m.transit_target}, self.p.transit_timeout_s)
+
+    def _offpath(self, pose):
+        """Distance of ``pose`` from the drawn network the fallback must stay on: the route
+        it replaces (cross-track), 0 inside a mowing area (outer ring); inf when there is
+        nothing to compare with."""
+        m = self.mission
+        best = math.inf
+        if m.fallback_ref:
+            best = geo.polyline_distance(pose, m.fallback_ref)
+        for area in (m.areas or {}).values():
+            outer = list(area.get('outer') or [])
+            if len(outer) < 3:
+                continue
+            if geo.point_in_polygon(pose, outer):
+                return 0.0
+            best = min(best, geo.distance_to_ring(pose, outer))
+        return best
+
+    def _fallback_corridor_tick(self):
+        """Fix 11: cancel a costmap-planner route fallback that leaves the drawn network by
+        more than transit_fallback_max_offpath_m (live cross-track of the robot's own pose:
+        the FSM never sees Nav2's planned path) and count it as a transit abort."""
+        m, a, pose = self.mission, self._action, self.inputs.pose
+        lim = float(self.p.transit_fallback_max_offpath_m)
+        if lim <= 0.0 or a is None or a.name != ACT_NAV or not m.route_fallback or \
+                m.detour is not None or m.recovering or pose is None:
+            return
+        off = self._offpath(pose)
+        if math.isinf(off):
+            return
+        if m.fallback_armed is None:          # first tick of this fallback goal
+            m.fallback_armed, m.fallback_off0 = off <= lim, off
+            if not m.fallback_armed:
+                self._log('info', 'transit fallback starts %.2f m off the drawn network: '
+                                  'corridor bound armed once within %.2f m' % (off, lim))
+            return
+        if not m.fallback_armed:
+            if off <= lim:
+                m.fallback_armed = True
+            elif off <= m.fallback_off0 + lim:
+                m.fallback_off0 = min(m.fallback_off0, off)
+                return
+        if off <= lim:
+            return
+        self._log('warn', 'transit fallback left the corridor by %.2f m: abort' % off)
+        self._fx.append(CancelActions('transit fallback left the corridor'))
+        self._action = None
+        self._transit_abort('transit fallback left the corridor (%.2f m)' % off)
+
+    def _transit_abort(self, why):
+        """A failed mission transit: transit_fails, 'transit_abort' incident, then a retry
+        after the back-off or (retries exhausted) the sub-path is dropped."""
+        m = self.mission
+        m.transit_fails += 1
+        self._incident('transit_abort', why)
+        if m.transit_fails > self.p.transit_retries:
+            self._subpath_failed('%s %d times' % (why, m.transit_fails), transit=True)
+            return
+        delay = self._retry_delay(m.transit_fails)
+        self._schedule_retry('TRANSIT', 'area %d sub-path %d/%d: %s, retry %d/%d in %.0f s'
+                             % (m.area_idx, m.sub_i + 1, len(m.subpaths), why,
+                                m.transit_fails, self.p.transit_retries, delay), delay=delay)
 
     def _route_planned(self, ok, resp):
         m = self.mission
@@ -3366,13 +3471,16 @@ class MissionFSM:
             m.route_fallback = True
             self._log('info', 'no route (%s): transit via the costmap planner'
                       % (resp.get('message') or 'plan_route unavailable'))
-            self._start_action(ACT_NAV, {'pose': m.transit_target}, self.p.transit_timeout_s)
+            m.fallback_ref = None
+            self._start_fallback_nav()
             return
         if m.blade_transit and int(resp.get('single_area', -1)) != m.area_idx:
             # the straight segment stays in the area but the route does not (path legs)
             self._blade_off('route leaves area %d' % m.area_idx)
         m.route_poses = [tuple(p) for p in poses]
         legs = self._split_route(m.route_poses)
+        m.route_full = m.route_poses
+        m.route_cusps = self._route_cusps(m.route_poses, legs)
         self._log('info', 'route %.1f m (%.1f m on paths, %d leg%s): %s' % (
             float(resp.get('length_m', 0.0)), float(resp.get('path_length_m', 0.0)),
             len(legs), '' if len(legs) == 1 else 's', resp.get('message', '')))
@@ -3408,6 +3516,83 @@ class MissionFSM:
         legs.append(list(poses[s0:]))
         return [lg for lg in legs if len(lg) >= 2] or [list(poses)]
 
+    def _route_cusps(self, poses, legs):
+        """Cusps of a planned route (geometry.route_cusps at route_cusp_angle_rad) plus the
+        junctions between its FollowPath legs that turn more than that angle."""
+        ang = float(self.p.route_cusp_angle_rad)
+        if ang <= 0.0 or int(self.p.route_cusp_retries) <= 0:
+            return []
+        cusps = list(geo.route_cusps(poses, ang))
+        k = 3
+        for a, b in zip(legs, legs[1:]):
+            if len(a) < 2 or len(b) < 2:
+                continue
+            p0, j, p2 = a[max(0, len(a) - 1 - k)], a[-1], b[min(len(b) - 1, k)]
+            h1 = math.atan2(j[1] - p0[1], j[0] - p0[0])
+            h2 = math.atan2(p2[1] - j[1], p2[0] - j[0])
+            if abs(geo.wrap_angle(h2 - h1)) < ang or \
+                    any(geo.dist(j, (c[1], c[2])) <= 0.3 for c in cusps):
+                continue
+            i = min(range(len(poses)), key=lambda q: geo.dist(poses[q], j))
+            cusps.append((i, float(j[0]), float(j[1]), h2))
+        return sorted(cusps)
+
+    def _route_cusp_turn(self, why):
+        """Fix 11: a route follow abort near a route cusp. None = no cusp within
+        route_cusp_radius_m (the caller goes on as before); True = about-turn started;
+        False = this cusp's about-turns are used up (the caller aborts the transit)."""
+        m, pose, route = self.mission, self.inputs.pose, self.mission.route_full
+        r = float(self.p.route_cusp_radius_m)
+        if not route or not m.route_cusps or pose is None or len(pose) < 3 or r <= 0.0:
+            return None
+        near = [c for c in m.route_cusps if geo.dist(pose, (c[1], c[2])) <= r]
+        if not near:
+            return None
+        i, cx, cy, heading = min(near, key=lambda c: geo.dist(pose, (c[1], c[2])))
+        key = (round(cx, 2), round(cy, 2))
+        n = m.cusp_turns.get(key, 0)
+        limit = int(self.p.route_cusp_retries)
+        if n >= limit:
+            self._log('warn', 'route cusp at (%.2f, %.2f): %s after %d about-turn%s: transit '
+                              'abort (no costmap fallback at a cusp)'
+                      % (cx, cy, why, n, '' if n == 1 else 's'))
+            return False
+        m.cusp_turns[key] = n + 1
+        rest = [tuple(q) for q in route[i:]]
+        if len(rest) < 2:
+            rest = [(cx, cy, heading), tuple(route[-1])]
+        m.cusp_resume = rest
+        m.route_poses = rest
+        delta = geo.wrap_angle(heading - float(pose[2]))
+        self._log('warn', 'route cusp at (%.2f, %.2f): about-turn %d/%d then resume route (%s; '
+                          'turn %.0f deg)' % (cx, cy, n + 1, limit, why, math.degrees(delta)))
+        self._go(self.phase, 'route cusp: about-turn %d/%d' % (n + 1, limit))
+        if abs(delta) < 0.3:                  # already facing the route after the cusp
+            self._resume_after_cusp()
+            return True
+        allowance = abs(delta) / max(0.05, float(self.p.route_cusp_spin_rps)) + 10.0
+        self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
+                           allowance + 5.0, purpose='route_cusp')
+        return True
+
+    def _resume_after_cusp(self):
+        """Send the route remainder after a cusp about-turn as FollowPath legs."""
+        m = self.mission
+        rest = m.cusp_resume
+        m.cusp_resume = None
+        m.route_poses = rest
+        self._route_legs = {'legs': self._split_route(rest), 'i': 0}
+        self._send_route_leg('route')
+
+    def _route_cusp_spun(self, outcome):
+        """About-turn ended (any outcome: the route follow is the judge): resume the route."""
+        m = self.mission
+        if m is None or self.phase != 'TRANSIT' or m.step != 'transit' or not m.cusp_resume:
+            return
+        if outcome != SUCCEEDED:
+            self._log('warn', 'route cusp about-turn %s: resuming the route anyway' % outcome)
+        self._resume_after_cusp()
+
     def _send_route_leg(self, purpose):
         rl = self._route_legs
         self._start_action(ACT_FOLLOW, {'poses': rl['legs'][rl['i']],
@@ -3430,12 +3615,15 @@ class MissionFSM:
     def _route_result(self, outcome):
         """Route follow ended. Arrived -> mow. An obstacle abort holds first (blocked wait)
         and re-sends the route up to route_blocked_retries times, then through
-        /navigate_to_pose; any other failure re-sends via /navigate_to_pose at once
-        without consuming a transit retry (those stay for the costmap planner)."""
+        /navigate_to_pose. An abort / timeout at a route cusp turns about and re-sends the
+        rest of the route (route_cusp_retries), then counts as a transit abort (fix 11).
+        Any other failure re-sends via /navigate_to_pose at once without consuming a
+        transit retry (those stay for the costmap planner, bounded to the corridor)."""
         m = self.mission
         if self._route_next_leg(outcome, 'route'):
             return
         self._route_legs = None
+        route = m.route_poses
         m.route_poses = None
         pose = self.inputs.pose
         d = geo.dist(pose, m.transit_target) if pose is not None else math.inf
@@ -3452,11 +3640,20 @@ class MissionFSM:
         if outcome in (ABORTED, TIMEOUT) and self._blocked_cause():
             # obstacle: wait, then re-send the route (route_blocked_retries), later Nav2
             m.route_fallback = m.route_aborts > int(self.p.route_blocked_retries)
+            if m.route_fallback:
+                m.fallback_ref = route
             if self._blocked('transit', why):
+                return
+        if outcome in (ABORTED, TIMEOUT):
+            turned = self._route_cusp_turn(why)
+            if turned:
+                return
+            if turned is False:
+                self._transit_abort('%s at a route cusp' % why)
                 return
         m.route_fallback = True
         self._log('warn', '%s: transit via the costmap planner' % why)
-        self._start_action(ACT_NAV, {'pose': m.transit_target}, self.p.transit_timeout_s)
+        self._start_fallback_nav(ref=route)
 
     def _transit_arrived(self):
         """True when the last transit target is within transit_arrived_radius_m."""
@@ -3524,7 +3721,7 @@ class MissionFSM:
         m = self.mission
         if m is None:
             return
-        if nav2_down and name in (ACT_FOLLOW, ACT_NAV):
+        if nav2_down and name in (ACT_FOLLOW, ACT_NAV, ACT_SPIN):
             # Retrying / falling back to the costmap planner cannot help while the stack
             # is down (each attempt waits out nav2_ready_timeout_s again, then every
             # sub-path is skipped as "transit rejected"): abort with the real cause.
@@ -3532,6 +3729,9 @@ class MissionFSM:
             return
         if a.purpose == 'route':
             self._route_result(outcome)
+            return
+        if a.purpose == 'route_cusp':
+            self._route_cusp_spun(outcome)
             return
         if name in (ACT_UNDOCK, ACT_BACKUP):
             if outcome == SUCCEEDED and result.get('success', True):
@@ -3584,18 +3784,7 @@ class MissionFSM:
             else:
                 if self._blocked_cause() and self._blocked('transit', 'transit %s' % outcome):
                     return
-                m.transit_fails += 1
-                self._incident('transit_abort', 'transit %s' % outcome)
-                if m.transit_fails > self.p.transit_retries:
-                    self._subpath_failed('transit %s %d times' % (outcome, m.transit_fails),
-                                         transit=True)
-                    return
-                delay = self._retry_delay(m.transit_fails)
-                self._schedule_retry('TRANSIT', 'area %d sub-path %d/%d: transit %s, retry %d/%d '
-                                     'in %.0f s' % (m.area_idx, m.sub_i + 1, len(m.subpaths),
-                                                    outcome, m.transit_fails,
-                                                    self.p.transit_retries, delay),
-                                     delay=delay)
+                self._transit_abort('transit %s' % outcome)
         elif name == ACT_FOLLOW:
             if outcome == SUCCEEDED:
                 self._blk = None
