@@ -424,6 +424,10 @@ class Inputs:
     # status file_check (source file): pending | yaw_ok (IMU kept running: the saved offset
     # is a usable prior) | yaw_failed | unverifiable | '' (see heading_logic._try_verify)
     heading_prior: str = ''
+    # status quality (good|fair|poor|low|none) and the age of the COG heading (s: the older of
+    # last_cog_age_s and age_s, see mission_node._on_heading); None/'' = not reported
+    heading_quality: str = ''
+    heading_cog_age: Optional[float] = None
     # /obstacle_policy (mower_vision obstacle_guard, JSON): closest close detection
     obstacle_kind: str = 'none'         # none | dynamic | static
     obstacle_class: str = ''
@@ -500,6 +504,12 @@ class Params:
     heading_calibration_settle_s: float = 3.0       # RTK fixed this long first (the saved
                                                     # heading may still verify without a drive)
     heading_calibration_status_wait_s: float = 3.0  # after the drive: aligner status latency
+    # 2026-10-14: the second START of the day planned on "aligned (cog)" with quality poor and
+    # a 1200 s old COG fix and drove its transit 65 deg off. A START off the dock with a cog
+    # heading older than heading_max_cog_age_s (0 = no age limit) or with a quality in
+    # heading_reject_quality is treated like the 'file' prior: calibration drive first.
+    heading_max_cog_age_s: float = 300.0
+    heading_reject_quality: list = field(default_factory=lambda: ['poor'])
     rain_mode: int = 1                  # 0 ignore, 1 dock and wait
     rain_debounce_s: float = 2.0
     rain_delay_minutes: float = 30.0
@@ -1726,7 +1736,9 @@ class MissionFSM:
                 self._hcal_tick()
                 return
             if i.fix_type is not None and i.fix_type >= self.p.rtk_fix_type:
-                if self.heading_ok():
+                # a START that came through preflight for a calibration drive plans only on a
+                # fresh heading; the dock path (undock seeds 'dock') is unchanged
+                if self._heading_plan_ok() if self._hcal_wanted else self.heading_ok():
                     self._log('info', 'RTK fixed, heading aligned (%s): planning'
                               % i.heading_source)
                     self._next_area()
@@ -1741,7 +1753,7 @@ class MissionFSM:
                 elif now - self._heading_wait_since > self.p.heading_wait_s:
                     self._heading_failed()
             elif now - self._phase_since > self.p.rtk_timeout_s:
-                if self._hcal_wanted and not self.heading_ok():
+                if self._hcal_wanted and not self._heading_plan_ok():
                     # no dock / Nav2 transit with an unverified heading
                     self._hcal_fail('no RTK fixed within %.0fs' % self.p.rtk_timeout_s)
                 else:
@@ -1952,14 +1964,21 @@ class MissionFSM:
         if i.docked and (i.fix_type is None or i.fix_type < self.p.preflight_min_fix_type_docked):
             return 'no GNSS fix (fix_type %s < %d)' % (
                 i.fix_type, self.p.preflight_min_fix_type_docked)
-        if not self._at_dock() and not self.heading_ok():
-            # Undocked: Nav2 would steer with an arbitrary IMU heading. At the dock the
-            # undock (straight drive out along the dock yaw) seeds it instead.
+        stale = '' if self._at_dock() else self._heading_cog_stale()
+        if not self._at_dock() and (not self.heading_ok() or stale):
+            # Undocked: Nav2 would steer with an arbitrary IMU heading (or a stale COG one,
+            # 2026-10-14). At the dock the undock (straight drive out along the dock yaw)
+            # seeds it instead.
             if self._hcal_prior_ok(('pending', 'yaw_ok')):
                 # a usable saved heading: calibrate by a short straight drive once RTK is
                 # fixed (WAITING_FOR_RTK, _hcal_maybe_start)
+                if stale:
+                    self._log('info', 'heading cog is %s: calibration drive first' % stale)
                 self._hcal_wanted = True
                 return ''
+            if stale:
+                self._log('warn', 'heading cog is %s and no calibration drive: not aligned'
+                          % stale)
             return HEADING_NOT_ALIGNED
         return ''
 
@@ -1975,6 +1994,28 @@ class MissionFSM:
                 self.p.heading_status_timeout_s:
             return False
         return bool(i.heading_aligned) and i.heading_source in HEADING_ALIGNED_SOURCES
+
+    def _heading_cog_stale(self):
+        """Why an aligned 'cog' heading is too old / too poor to plan a START off the dock on
+        ('' = fine, or not a cog heading): last COG fix older than heading_max_cog_age_s, or
+        status quality in heading_reject_quality (2026-10-14). Dock / rtk / file_verified
+        headings are never stale here."""
+        p, i = self.p, self.inputs
+        if not p.require_heading_alignment or i.heading_source != 'cog' \
+                or not i.heading_aligned:
+            return ''
+        why = []
+        age, max_age = i.heading_cog_age, float(p.heading_max_cog_age_s)
+        if max_age > 0.0 and age is not None and age > max_age:
+            why.append('%.0f s old' % age)
+        reject = [str(q) for q in (p.heading_reject_quality or []) if str(q)]
+        if i.heading_quality and i.heading_quality in reject:
+            why.append('quality %s' % i.heading_quality)
+        return ' / '.join(why)
+
+    def _heading_plan_ok(self):
+        """heading_ok() and, for a cog heading, not stale (_heading_cog_stale)."""
+        return self.heading_ok() and not self._heading_cog_stale()
 
     def _start(self, single=None, auto=False):
         if self.phase == 'RECORDING':
@@ -2752,13 +2793,22 @@ class MissionFSM:
     def _hcal_prior_ok(self, checks=('yaw_ok',)):
         """A calibration drive may use the aligner's saved 'file' heading as its prior:
         enabled, status fresh, source file, continuity check state in ``checks`` (yaw_ok =
-        the IMU kept integrating since the save, only the position is unproven)."""
+        the IMU kept integrating since the save, only the position is unproven); or an
+        aligned 'cog' heading that is stale for planning (_heading_cog_stale, 2026-10-14)."""
         p, i = self.p, self.inputs
         if not (p.heading_calibration_drive and p.require_heading_alignment):
             return False
         if i.heading_stamp is None or self._now - i.heading_stamp > p.heading_status_timeout_s:
             return False
+        if i.heading_source == 'cog':
+            return bool(self._heading_cog_stale())
         return i.heading_source == 'file' and i.heading_prior in checks
+
+    def _hcal_prior_text(self):
+        i = self.inputs
+        if i.heading_source == 'cog':
+            return 'cog %s' % (self._heading_cog_stale() or 'fresh')
+        return i.heading_prior or 'unchecked'
 
     def _hcal_reach(self, direction):
         """Length of the straight the robot body sweeps: drive + footprint ahead of it."""
@@ -2812,7 +2862,7 @@ class MissionFSM:
             return
         if not self._hcal_prior_ok():
             self._hcal_fail('saved heading not usable (%s %s)'
-                            % (i.heading_source, i.heading_prior or 'unchecked'), drove=False)
+                            % (i.heading_source, self._hcal_prior_text()), drove=False)
             return
         pose = i.pose
         for direction in (1, -1):
@@ -2830,7 +2880,8 @@ class MissionFSM:
         self._hcal = {'dir': direction, 'start': (pose[0], pose[1]), 'yaw': pose[2],
                       'done_at': None, 'outcome': None}
         self._log('info', 'heading calibration: saved heading %s, driving %.1f m %s at %.2f m/s '
-                          'inside area %d (blade off)' % (i.heading_prior, d, word, v, area))
+                          'inside area %d (blade off)' % (self._hcal_prior_text(), d, word, v,
+                                                          area))
         self._go('WAITING_FOR_RTK', 'calibrating heading: driving %.1f m %s' % (d, word))
         self._start_action(ACT_DRIVE if direction > 0 else ACT_BACKUP,
                            {'distance_m': d, 'speed_mps': v},
@@ -2838,7 +2889,7 @@ class MissionFSM:
 
     def _hcal_tick(self):
         h, i = self._hcal, self.inputs
-        if self.heading_ok():
+        if self._heading_plan_ok():
             if self._action is not None:
                 self._fx.append(CancelActions('heading aligned'))
                 self._action = None
@@ -2872,7 +2923,7 @@ class MissionFSM:
         h = self._hcal
         if h is None:
             return
-        if outcome in (REJECTED, UNAVAILABLE, CANCELED) and not self.heading_ok():
+        if outcome in (REJECTED, UNAVAILABLE, CANCELED) and not self._heading_plan_ok():
             self._hcal_fail('drive %s' % outcome)
             return
         h['done_at'], h['outcome'] = self._now, outcome

@@ -190,6 +190,22 @@ def _expand(path):
     return os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
 
 
+def _cog_age(st):
+    """Age (s) of a 'cog' heading in a /heading_aligner/status dict: the older of
+    last_cog_age_s (last COG measurement, also set by a rejected outlier) and age_s (last
+    accepted offset update); None when neither is reported or the source is not cog."""
+    if st.get('source') != 'cog':
+        return None
+    ages = []
+    for key in ('last_cog_age_s', 'age_s'):
+        try:
+            if st.get(key) is not None:
+                ages.append(float(st[key]))
+        except (TypeError, ValueError):
+            pass
+    return max(ages) if ages else None
+
+
 class MissionNode(Node):
 
     def __init__(self, **kwargs):
@@ -513,6 +529,8 @@ class MissionNode(Node):
             i.heading_aligned = bool(st.get('aligned', False))
             i.heading_source = str(st.get('source', 'none'))
             i.heading_prior = str(st.get('file_check') or '')
+            i.heading_quality = str(st.get('quality') or '')
+            i.heading_cog_age = _cog_age(st)
             i.heading_stamp = time.monotonic()
 
     def _on_localization(self, msg):

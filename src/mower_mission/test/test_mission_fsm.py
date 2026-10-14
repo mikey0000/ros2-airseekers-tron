@@ -2107,6 +2107,163 @@ def test_hcal_never_from_the_dock():
     assert not [e for e in h.since(0, f.StartAction) if e.name == f.ACT_DRIVE]
 
 
+# ---------------------------------------------------------------------------
+# stale / poor COG heading at START (2026-10-14: planned on a 1200 s old, poor cog heading)
+# ---------------------------------------------------------------------------
+def cog_harness(age=1200.0, quality='poor', **params):
+    """Robot at (0, 0) facing +x off the dock, heading_aligner says aligned (cog)."""
+    h = Harness(**params)
+    h.heading('cog')
+    h.fsm.inputs.heading_cog_age = age
+    h.fsm.inputs.heading_quality = quality
+    h.areas = [square(-5, -5, 10)]
+    h.tick()
+    return h
+
+
+def _logs(h, since=0):
+    return [e.text for e in h.since(since, f.Log)]
+
+
+@pytest.mark.parametrize('age, quality, why', [
+    (1200.0, 'poor', '1200 s old / quality poor'),
+    (1200.0, 'good', '1200 s old'),
+    (10.0, 'poor', 'quality poor'),
+])
+def test_stale_cog_at_start_runs_the_calibration_drive_then_plans(age, quality, why):
+    h = cog_harness(age, quality)
+    m = h.mark()
+    start_hcal(h)
+    assert 'heading cog is %s: calibration drive first' % why in _logs(h, m)
+    assert h.goal(f.ACT_DRIVE) == {'distance_m': 1.0, 'speed_mps': 0.15}
+    assert h.name == 'WAITING_FOR_RTK' and 'calibrating heading' in h.fsm.sub_state
+    assert not h.blade
+    assert [e.name for e in h.since(m, f.StartAction)] == [f.ACT_DRIVE]
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.finish(f.ACT_DRIVE)
+    h.tick()
+    assert h.name == 'WAITING_FOR_RTK'           # still the old cog fix: keep waiting
+    h.fsm.inputs.heading_cog_age = 0.5           # the drive produced a fresh COG fix
+    h.fsm.inputs.heading_quality = 'good'
+    h.tick()
+    assert h.name == 'PLANNING' and h.fsm.mission is not None
+
+
+def test_stale_cog_fresh_fix_during_the_drive_stops_it_and_plans():
+    h = cog_harness()
+    start_hcal(h)
+    h.pending_action(f.ACT_DRIVE)
+    h.fsm.inputs.pose = (0.7, 0.0, 0.0)
+    m = h.mark()
+    h.fsm.inputs.heading_cog_age, h.fsm.inputs.heading_quality = 0.2, 'fair'
+    h.tick()
+    assert [e.reason for e in h.since(m, f.CancelActions)][0] == 'heading aligned'
+    assert h.name == 'PLANNING'
+
+
+def test_stale_cog_no_fresh_fix_after_the_drive_goes_idle():
+    h = cog_harness()
+    start_hcal(h)
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.finish(f.ACT_DRIVE)
+    m = h.mark()
+    h.tick(dt=1.0, n=4)
+    assert h.name == 'IDLE' and 'no COG alignment after the drive' in h.fsm.sub_state
+    assert not h.since(m, f.StartAction)
+
+
+def test_stale_cog_no_clear_line_idles_in_place():
+    h = cog_harness()
+    h.areas = [square(-1.0, -1.0, 2.0)]
+    m = h.mark()
+    start_hcal(h)
+    assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+    assert 'no clear 1.0 m straight' in h.fsm.sub_state
+    assert not h.since(m, f.StartAction) and h.fsm.mission is None
+
+
+def test_stale_cog_calibration_disabled_refused():
+    h = cog_harness(heading_calibration_drive=False)
+    assert not h.cmd(f.CMD_START)
+    assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+    assert any('heading cog is 1200 s old / quality poor' in t for t in _logs(h))
+    assert not h.since(0, f.StartAction)
+
+
+@pytest.mark.parametrize('age, quality', [(10.0, 'good'), (299.0, 'fair'), (None, ''),
+                                          (1200.0, 'poor')])
+def test_fresh_good_cog_plans_directly(age, quality):
+    params = {'heading_max_cog_age_s': 0.0, 'heading_reject_quality': []} \
+        if age == 1200.0 else {}       # last case: both checks switched off
+    h = cog_harness(age, quality, **params)
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick()
+    assert h.name == 'PLANNING'
+    assert not [e for e in h.since(0, f.StartAction) if e.name in MOVING_ACTIONS]
+    assert not any('calibration drive first' in t for t in _logs(h))
+
+
+@pytest.mark.parametrize('source', ['dock', 'file_verified', 'rtk'])
+def test_non_cog_sources_ignore_cog_age_and_quality(source):
+    h = cog_harness()
+    h.heading(source)
+    h.fsm.inputs.heading_aligned = True
+    h.tick()
+    assert h.fsm._heading_cog_stale() == ''
+    if source in f.HEADING_ALIGNED_SOURCES:
+        assert h.cmd(f.CMD_START)
+        h.answer_services()
+        h.tick()
+        assert h.name == 'PLANNING'
+        assert not [e for e in h.since(0, f.StartAction) if e.name in MOVING_ACTIONS]
+
+
+def test_stale_cog_start_from_the_dock_undocks_without_calibration_drive():
+    h = cog_harness()
+    h.fsm.inputs.docked = True
+    h.tick()
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'UNDOCKING'
+    h.fsm.inputs.docked = False
+    h.heading('dock')                    # the dock seeded the heading
+    h.fsm.inputs.heading_cog_age = None
+    h.finish(f.ACT_UNDOCK)
+    h.tick()
+    assert h.name == 'PLANNING'
+    assert [e.name for e in h.since(0, f.StartAction) if e.name in MOVING_ACTIONS] == \
+        [f.ACT_UNDOCK]
+
+
+def test_stale_cog_file_source_path_unchanged():
+    h = hcal_harness()
+    h.fsm.inputs.heading_cog_age, h.fsm.inputs.heading_quality = 1200.0, 'low'
+    start_hcal(h)
+    h.pending_action(f.ACT_DRIVE)
+    assert not any('heading cog is' in t for t in _logs(h))
+
+
+def test_stale_cog_ignored_without_required_alignment():
+    h = cog_harness(require_heading_alignment=False)
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick()
+    assert h.name == 'PLANNING'
+    assert not [e for e in h.since(0, f.StartAction) if e.name in MOVING_ACTIONS]
+    assert h.fsm._heading_cog_stale() == ''
+
+
+def test_node_cog_age_from_aligner_status():
+    node = pytest.importorskip('mower_mission.mission_node')
+    assert node._cog_age({'source': 'cog', 'last_cog_age_s': 1200.0, 'age_s': 1250.3}) == \
+        pytest.approx(1250.3)
+    assert node._cog_age({'source': 'cog', 'last_cog_age_s': 2.0, 'age_s': 900.0}) == 900.0
+    assert node._cog_age({'source': 'cog', 'age_s': 12.0}) == 12.0
+    assert node._cog_age({'source': 'cog'}) is None
+    assert node._cog_age({'source': 'dock', 'last_cog_age_s': 1200.0}) is None
+
+
 def test_transit_goal_yaw_is_first_subpath_heading():
     h = Harness()
     start_until_planning(h)
