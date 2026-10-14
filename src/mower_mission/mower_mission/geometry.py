@@ -418,3 +418,9 @@ def in_footprint(point, pose, front_m, rear_m, half_width_m, margin_m=0.0):
 def swept_hit(point, poses, front_m, rear_m, half_width_m, margin_m=0.0):
     """Point inside the footprint (+ margin) at any of ``poses`` (see predict_poses)."""
     return any(in_footprint(point, p, front_m, rear_m, half_width_m, margin_m) for p in poses)
+
+
+def wrap_angle(a):
+    """``a`` wrapped to (-pi, pi]."""
+    return math.atan2(math.sin(a), math.cos(a))
+

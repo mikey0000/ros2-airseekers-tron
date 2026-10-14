@@ -629,6 +629,22 @@ class Params:
     # which would have ended the leg there anyway. 0 = off.
     turn_leg_skip_m: float = 0.20
     turn_leg_skip_yaw: float = 0.5
+    # 2026-10-14 run 2 (fix 10): a 0.8 m Reeds-Shepp turn piece reached its last pose but
+    # neither the leg goal checker (xy 0.08 + yaw 0.5) nor the skip above (0.2 m + 0.5 rad)
+    # was met with the heading ~10 deg off and the pivots slipping: MPPI looped for 7 min
+    # (~4000 deg of rotation). Once a turn leg's end is reached in xy (tracked pose index at
+    # its last pose, or within turn_leg_skip_m of the end pose) the leg is done ("next leg
+    # from here") after turn_leg_done_after_s on the leg OR turn_leg_done_after_rot_rad of
+    # accumulated |yaw change| since, whatever the yaw. Turn leg = reverse leg, the forward
+    # piece ending at a reverse leg's cusp, or a sub-path no longer than turn_leg_max_m. An end
+    # yaw within tolerance stays with the leg goal checker / the skip above. 0 = that cap off.
+    turn_leg_done_after_s: float = 20.0
+    turn_leg_done_after_rot_rad: float = 6.28
+    # Any sub-path: a follow_path that has not advanced the tracked pose index for this long
+    # (Nav2's progress checker is satisfied by looping) is cancelled and handled as a
+    # follow_path abort (follow_retries). Waits / holds / escapes cancel the goal, so they
+    # never count. 0 = off.
+    leg_loop_abort_s: float = 90.0
     blade_confirm_timeout_s: float = 5.0
     blade_start_attempts: int = 3
     blade_retry_pause_s: float = 2.0
@@ -832,6 +848,7 @@ class Mission:
     route_fallback: bool = False                # this transit uses /navigate_to_pose (no route)
     route_aborts: int = 0                       # route follow aborts of this transit
     route_poses: Optional[list] = None          # route of the in-flight route transit
+    leg_watch: Optional[dict] = None            # fix 10 leg-end cap / loop guard state
 
 
 @dataclass
@@ -1767,6 +1784,8 @@ class MissionFSM:
         elif ph == 'MOWING' and self.mission is not None:
             if self.mission.step == 'follow':
                 self._track_progress()
+                if self._leg_watch():
+                    return
             self._tick_blade()
         elif ph == 'BOUNDARY_PAUSED' and self.mission is not None:
             m = self.mission
@@ -2441,6 +2460,7 @@ class MissionFSM:
         m.transit_fails = m.follow_fails = m.recovery_fails = 0
         m.recovering = False
         m.detours, m.detour = 0, None
+        m.leg_watch = None
         self._blk = None
         self._dispatch()
 
@@ -2469,6 +2489,20 @@ class MissionFSM:
         else:
             self._begin_blade()
 
+    def _is_turn_leg(self):
+        """The current sub-path is a turn leg of the turn_leg_skip rule: a (short) reverse
+        leg of the coverage bridge, or the forward piece that ends at the cusp of one."""
+        m = self.mission
+        sp = m.subpaths[m.sub_i]
+        leg_max = float(self.p.turn_leg_max_m)
+
+        def reverse_leg(poses):     # a (short) reverse turn leg of the coverage bridge
+            return geo.is_reverse_subpath(poses) and geo.path_length(poses) <= leg_max
+
+        nxt = m.subpaths[m.sub_i + 1] if m.sub_i + 1 < len(m.subpaths) else None
+        cusp_next = nxt is not None and reverse_leg(nxt) and geo.dist(nxt[0], sp[-1]) <= 0.01
+        return reverse_leg(sp) or cusp_next
+
     def _turn_leg_driven(self):
         """Skip the rest of a turn leg the robot has already all but driven (see
         ``turn_leg_skip_m``): done -> True (the next sub-path has been dispatched)."""
@@ -2480,14 +2514,7 @@ class MissionFSM:
         end = sp[-1]
         if len(end) < 3:
             return False
-        leg_max = float(self.p.turn_leg_max_m)
-
-        def reverse_leg(poses):     # a (short) reverse turn leg of the coverage bridge
-            return geo.is_reverse_subpath(poses) and geo.path_length(poses) <= leg_max
-
-        nxt = m.subpaths[m.sub_i + 1] if m.sub_i + 1 < len(m.subpaths) else None
-        cusp_next = nxt is not None and reverse_leg(nxt) and geo.dist(nxt[0], end) <= 0.01
-        if not (reverse_leg(sp) or cusp_next):
+        if not self._is_turn_leg():
             return False
         d = geo.dist(pose, end)
         dyaw = abs(math.atan2(math.sin(pose[2] - end[2]), math.cos(pose[2] - end[2])))
@@ -2499,6 +2526,78 @@ class MissionFSM:
         m.step = None
         self._subpath_done()
         return True
+
+    def _leg_watch(self):
+        """Fix 10 (2026-10-14 run 2), called on every MOWING tick while a follow_path runs.
+
+        * Turn-leg end cap: once the leg's end is reached in xy (tracked pose index at the
+          last pose, or within turn_leg_skip_m of the end pose) the leg is done after
+          turn_leg_done_after_s OR turn_leg_done_after_rot_rad of accumulated |yaw change|
+          of the map pose, whatever the yaw. A leg whose end yaw is met is left to the
+          controller's leg goal checker (and the turn_leg_skip rule on a re-send), as before.
+        * Loop guard: a follow_path whose tracked pose index has not advanced for
+          leg_loop_abort_s is cancelled and handled as a follow_path abort.
+
+        Returns True when it ended / aborted the follow (the tick is done)."""
+        m, a, pose, p = self.mission, self._action, self.inputs.pose, self.p
+        if a is None or a.name != ACT_FOLLOW or m.step != 'follow' or not m.subpaths:
+            return False
+        sp = m.subpaths[m.sub_i]
+        key = (m.area_idx, m.sub_i, m.stretch)
+        w = m.leg_watch
+        if w is None or w['key'] != key:
+            w = m.leg_watch = {
+                'key': key, 'reached': None, 'rot': 0.0, 'yaw': None, 'token': None,
+                'idx': None, 'since': self._now,
+                'capped': self._is_turn_leg() or geo.path_length(sp) <= float(p.turn_leg_max_m)}
+        if w['token'] != a.token:            # a new goal (retry / resume): fresh loop timer
+            w['token'], w['idx'], w['since'], w['yaw'] = a.token, m.progress_local, self._now, None
+        elif m.progress_local != w['idx']:
+            w['idx'], w['since'] = m.progress_local, self._now
+        # ---- turn-leg end cap ----
+        cap_s, cap_rot = float(p.turn_leg_done_after_s), float(p.turn_leg_done_after_rot_rad)
+        if w['capped'] and m.stretch is None and pose is not None and len(pose) >= 3:
+            end = sp[-1]
+            skip_m = float(p.turn_leg_skip_m)
+            d = geo.dist(pose, end)
+            if w['reached'] is not None and w['yaw'] is not None:
+                w['rot'] += abs(geo.wrap_angle(float(pose[2]) - w['yaw']))
+            w['yaw'] = float(pose[2])
+            at_end = m.progress_local >= len(sp) - 1 or (skip_m > 0.0 and d <= skip_m)
+            if w['reached'] is None and at_end:
+                w['reached'], w['rot'] = self._now, 0.0
+            if w['reached'] is not None:
+                dyaw = abs(geo.wrap_angle(float(pose[2]) - float(end[2]))) if len(end) >= 3 \
+                    else math.inf
+                why = None
+                if cap_s > 0.0 and self._now - w['reached'] >= cap_s:
+                    why = 'time cap: %.0f s since the end was reached' % (self._now - w['reached'])
+                elif cap_rot > 0.0 and w['rot'] >= cap_rot:
+                    why = 'rotation cap: %.0f deg turned since the end was reached' \
+                        % math.degrees(w['rot'])
+                if why is not None:
+                    self._log('warn', 'area %d sub-path %d: turn leg end %.2f m / %.0f deg away (%s): '
+                              'leg done, next leg from here (no re-send, no turn in place)'
+                              % (m.area_idx, m.sub_i, d, math.degrees(min(dyaw, math.pi)), why))
+                    self._fx.append(CancelActions('turn leg done'))
+                    self._action = None
+                    m.step = None
+                    m.leg_watch = None
+                    self._subpath_done()
+                    return True
+        # ---- loop guard ----
+        loop_s = float(p.leg_loop_abort_s)
+        if loop_s > 0.0 and self._now - w['since'] >= loop_s:
+            msg = 'pose %d not advanced for %.0f s (leg loop guard)' % (
+                m.progress_local, self._now - w['since'])
+            self._log('warn', 'area %d sub-path %d: %s: cancelling follow_path, handled as an '
+                              'abort' % (m.area_idx, m.sub_i, msg))
+            self._fx.append(CancelActions('leg loop guard'))
+            self._action = None
+            w['token'] = None
+            self._handle_action(a, ABORTED, {'message': msg})
+            return True
+        return False
 
     def _begin_blade(self):
         m = self.mission
