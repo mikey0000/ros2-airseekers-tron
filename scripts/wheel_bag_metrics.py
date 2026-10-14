@@ -5,7 +5,8 @@ Reads the sqlite3 splits that ``bag_recorder`` pins under /userdata/ros2/mows/<t
 /userdata/ros2/incidents/<ts>_<reason>/ (bare ``*.db3.zstd`` files, no metadata.yaml) or a
 complete rosbag2 session directory, and prints, per run:
 
-* regime flips of the turn shaper (``/cmd_vel_slew/shape_status``), and flip bursts
+* turn regime changes classified from ``/cmd_vel`` (pivot / slow pivot / arc / tight arc /
+  counter-rotation), flip bursts, and sustained slow pivots
 * one-wheel ticks on ``/cmd_vel`` (inner wheel in (-0.06, 0)) and ramp ticks in (0, 0.06)
 * lag ``/cmd_vel_nav`` -> ``/cmd_vel`` -> ``/mcu/commanded_speed`` (cross-correlation of linear.x)
 * stop latency: first zero on an emergency / bumper / nav lane -> zero on ``/cmd_vel`` ->
@@ -229,18 +230,47 @@ def report(series, csv_path=None):
             dur = rows[-1][0] - rows[0][0]
             print('  %-40s %6d msgs  %5.1f Hz' % (t, len(rows), len(rows) / dur if dur > 0 else 0))
 
-    # regime flips
-    shape = series['/cmd_vel_slew/shape_status']
-    kinds = [(t, s.split(' ', 1)[0]) for t, s in shape]
+    # output regimes, classified from /cmd_vel itself. The shaper status string is not a
+    # regime: a legal pivot at or above the 0.25 rad/s floor reads "pass" and a snapped one
+    # "pivot", so counting status changes doubles every pivot (run 2, 2026-10-14).
+    def regime(v, w):
+        if abs(v) < 0.005 and abs(w) < 0.005:
+            return 'stop'
+        if abs(v) < 0.01:
+            return 'pivot' if abs(w) >= 0.2 else 'slowpivot'
+        if abs(w) < 0.02:
+            return 'straight'
+        inner = inner_wheel(v, w)
+        return 'arc' if inner >= MIN_INNER_MPS - 1e-9 else ('counter' if inner < 0.0 else 'tightarc')
+    kinds = [(t, regime(v, w)) for t, v, w in cmd]
     changes = [(kinds[i][0], kinds[i - 1][1], kinds[i][1]) for i in range(1, len(kinds))
                if kinds[i][1] != kinds[i - 1][1]]
-    bursts = sum(1 for i in range(1, len(changes)) if changes[i][0] - changes[i - 1][0] < 1.0)
-    print('== turn shaper: %d regime changes, %d within 1 s of the previous (flip bursts)'
-          % (len(changes), bursts))
-    for t, a, b in changes[:12]:
+    real = [c for c in changes if 'stop' not in c[1:] and 'straight' not in c[1:]]
+    bursts = sum(1 for i in range(1, len(real)) if real[i][0] - real[i - 1][0] < 1.0)
+    counts = {}
+    for _, k in kinds:
+        counts[k] = counts.get(k, 0) + 1
+    print('== /cmd_vel regimes (ticks): %s' % ', '.join('%s %d' % kv for kv in sorted(counts.items())))
+    print('== turn regime changes (pivot/slowpivot/arc/tightarc/counter, stops and straights '
+          'ignored): %d, %d within 1 s of the previous (flip bursts)' % (len(real), bursts))
+    for t, a, b in real[:12]:
         print('  t=%7.1f  %s -> %s' % (t - t0, a, b))
-    if len(changes) > 12:
-        print('  ... %d more' % (len(changes) - 12))
+    if len(real) > 12:
+        print('  ... %d more' % (len(real) - 12))
+    # sustained slow pivots: v = 0 with 0 < |w| < 0.2 for longer than the 0.25 s ramp
+    runs, start, prev = [], None, None
+    for t, k in kinds:
+        if k == 'slowpivot':
+            start = t if start is None else start
+            prev = t
+        elif start is not None:
+            runs.append(prev - start)
+            start = None
+    if start is not None:
+        runs.append(prev - start)
+    long_runs = [r for r in runs if r > 0.3]
+    print('== slow pivots (v = 0, 0 < |w| < 0.2): %d runs, %d longer than 0.3 s, %.1f s total, longest %.1f s'
+          % (len(runs), len(long_runs), sum(runs), max(runs) if runs else 0.0))
 
     # one-wheel ticks
     moving = [r for r in cmd if abs(r[1]) > 1e-6 or abs(r[2]) > 1e-6]
@@ -339,7 +369,7 @@ def report(series, csv_path=None):
         acc, dec = 0.0, 0.0
         for i in range(1, len(rows)):
             dt = rows[i][0] - rows[i - 1][0]
-            if dt <= 0 or dt > 0.5:
+            if dt < 0.02 or dt > 0.5:     # near-duplicate stamps (hard-stop zeros) are not accel
                 continue
             a = (abs(rows[i][col]) - abs(rows[i - 1][col])) / dt
             acc, dec = max(acc, a), min(dec, a)
