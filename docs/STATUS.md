@@ -467,6 +467,35 @@ mcu_node); details in `docs/wheel_control_semantics.md` ("Both-wheel turn shaper
   pivot/arc each tick; a GUI emergency stop halts on the next tick; nav stops take ~0.4 s
   from 0.3 m/s instead of 0.6 s.
 
+## Heading: stereo gap integration + stale-COG calibration drive (2026-10-14, unit-tested only)
+
+The 2026-10-14 mow (`docs/analysis/2026-10-14_heading_drift_mow.md`): the stereo-integrated
+virtual yaw drifted +52 deg against the JY61P while moving (the WIT agreed with the GPS
+course), the mow ended ~60 deg off, and the second START planned on a 1200 s old, quality
+poor `cog` heading and drove its transit 65 deg off.
+
+- **Stereo gaps** (`heading_logic.YawSource`): a stereo stamp gap of 50 ms .. `stereo_max_gap`
+  (1.0 s) is bridged instead of skipped: WIT rate over the same interval x dt (when the WIT
+  covered at least half of it and moved), else the mean of the bracketing stereo rates.
+  One coverage rule: while stereo is active the WIT never adds (it used to fill receive
+  gaps, which a late burst then counted again); when the WIT takes over it starts from the
+  last stereo-covered sample. Gaps over `stereo_max_gap` add nothing. Rest hold unchanged.
+  Status: `stereo_gaps`, `stereo_gap_s`, `stereo_gap_max_s`, `stereo_gaps_wit`,
+  `stereo_dropped`. WARN when `virtual_minus_wit_deg` moves > `wit_divergence_warn_deg` (5)
+  within 60 s with stereo active (at most once a minute).
+- **Stale COG at START** (`mission_fsm._heading_cog_stale`): off the dock, a `cog` heading
+  older than `heading_max_cog_age_s` (300 s; the older of the status `last_cog_age_s` and
+  `age_s`) or with quality in `heading_reject_quality` (['poor']) runs the 2026-10-13
+  calibration drive first ("heading cog is 1200 s old / quality poor: calibration drive
+  first"), then plans once the aligner reports a fresh, acceptable fix. No clear line or
+  drive disabled: refused, idle in place. START from the dock and dock / rtk /
+  file_verified headings are unchanged.
+- **Verify live:** over a mow `virtual_minus_wit_deg` should stay within a few degrees and
+  `stereo_gaps` / `stereo_gap_max_s` show how often bursts were late; no divergence WARN.
+  A START on the lawn > 5 min after the last straight drive should drive 1 m first.
+  If the WIT keeps agreeing with the GPS course and the stereo does not, `imu_source: wit`
+  is the fallback.
+
 ## Open risks
 
 - Grass segmentation (2026-10-09, not yet run on the mower, `nongrass:=false` by default): seg_ros now runs on the front stereo right colour eye, `nongrass_projector` projects its mask onto the ground and map_server_node keeps a confirmed non-grass memory that feeds a SOFT global-costmap layer (`nongrass_layer`). The model was trained on the OA cameras: class quality on the front eye, NPU sharing with det_ros on core 1 and the shadow false-positive rate need a live check (`docs/grass_segmentation.md`).

@@ -42,6 +42,15 @@ behavior_tree_node:
     heading_calibration_settle_s: 3.0       # RTK fixed this long first: the saved heading
                                             # may verify on its own (no drive needed)
     heading_calibration_status_wait_s: 3.0  # after the drive: wait this long for the COG fix
+    # Stale / poor COG heading at START (2026-10-14: the second START planned on "aligned
+    # (cog)" with quality poor and a 1200 s old fix and drove its transit 65 deg off). Off
+    # the dock, a cog heading whose COG age (aligner status: the older of last_cog_age_s and
+    # age_s) exceeds heading_max_cog_age_s, or whose quality is in heading_reject_quality,
+    # is not good enough to plan on: it is treated like the saved 'file' heading above
+    # (calibration drive, then plan; no clear line / drive disabled -> START refused, idle in
+    # place). Dock / rtk / file_verified headings and START from the dock are unaffected.
+    heading_max_cog_age_s: 300.0            # 0 = no age limit
+    heading_reject_quality: ['poor']        # status quality values (good|fair|poor); [''] = none
 
     # --- localization hold (2026-10-09, /localization/status from localization_monitor) ---
     # Mow follow / transit stop with the blade off while the drift estimate is over budget
