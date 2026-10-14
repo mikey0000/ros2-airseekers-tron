@@ -137,7 +137,7 @@ The launch file is installed by mower_bringup next to `mower.launch.py`.
 | `navigation`, `map_server`, `coverage`, `docking`, `mission`, `gui_bridge` | `true` | Each switches the real component on or off. |
 | `mission_stub` | `false` | A scenario client stands in for the mission. gui_bridge then serves no stub high-level state. |
 | `stereo_costmap` | `true` | `false` removes the stereo sources from both costmaps (as in `mower.launch.py`). |
-| `nav2_params_file`, `docking_params_file` | package defaults | Parameter overrides. |
+| `nav2_params_file`, `docking_params_file`, `mission_params_file` | package defaults | Parameter files (a full copy with the values changed). |
 | `stereo`, `stereo_noise_m` | `true`, `0.0` | Synthetic stereo clouds and their range noise. |
 | `min_wheel_speed_mps` | `0.06` | The MCU wheel floor while turning; 0 turns it off. |
 | `rear_marker_size` | `0.04` | Printed size of the rendered dock ArUco. It must equal mower_docking's `marker_size`. |

@@ -104,6 +104,9 @@ def _prepare_world(context):
     if not LaunchConfiguration('docking_params_file').perform(context).strip():
         actions.append(SetLaunchConfiguration(
             'docking_params_file', _share('mower_docking', 'config', 'docking.yaml')))
+    if not LaunchConfiguration('mission_params_file').perform(context).strip():
+        actions.append(SetLaunchConfiguration(
+            'mission_params_file', _share('mower_mission', 'config', 'mission.yaml')))
     nav2 = LaunchConfiguration('nav2_params_file').perform(context).strip()
     if not nav2:
         nav2 = _share('mower_navigation', 'config', 'nav2_params.yaml')
@@ -172,6 +175,7 @@ def generate_launch_description() -> LaunchDescription:
         arg('docking', 'true', 'mower_docking (dock/undock actions, vision on the rendered '
             'rear-camera marker).'),
         arg('docking_params_file', '', 'mower_docking params ("" = its config/docking.yaml).'),
+        arg('mission_params_file', '', 'mower_mission params ("" = its config/mission.yaml).'),
         arg('rear_marker_size', '0.04', 'sim: printed size of the rendered dock ArUco (m); '
             'mower_docking must use the same marker_size.'),
         arg('mission', 'true', 'mower_mission /behavior_tree_node.'),
@@ -282,7 +286,8 @@ def generate_launch_description() -> LaunchDescription:
         include('mower_coverage_bridge', 'launch/coverage_bridge.launch.py', 'coverage'),
         include('mower_docking', 'launch/docking.launch.py', 'docking',
                 params_file=LaunchConfiguration('docking_params_file')),
-        include('mower_mission', 'launch/mission.launch.py', 'mission'),
+        include('mower_mission', 'launch/mission.launch.py', 'mission',
+                params_file=LaunchConfiguration('mission_params_file')),
         Node(package='foxglove_bridge', executable='foxglove_bridge', name='foxglove_bridge',
              output='screen', condition=enabled('foxglove'),
              parameters=[{'port': ParameterValue(LaunchConfiguration('foxglove_port'),
