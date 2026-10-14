@@ -125,9 +125,25 @@ command to the NEARER legal regime:
   `linear_max` 0.3. Implied minimum radius 0.36 m; 0.44 m with the MCU |w| <= 0.3 clamp.
 - inner in (-0.06, 0] (including slow pure pivots): a pure pivot, v = 0,
   |w| = max(|w|, 2*0.06/b) = 0.25 rad/s, capped at `angular_max` 0.3 (MCU clamp).
+- pure rotation (v = 0) with |w| below `turn_shaper_pivot_deadband_rps` (0.03): an exact
+  stop (0, 0), status `pivot deadband: ... -> 0`.
 
 Pure pivots at |w| >= 0.25 pass unchanged. Track width b = 0.48 m (URDF `drive_track_y`
 0.24 x 2).
+
+Slow pure rotations (fix 8, 2026-10-14): from 2026-10-07 until fix 8 a pure rotation slower
+than 0.25 rad/s passed unchanged, because snapping it had turned the controller's small
+heading corrections near a goal into 0.25 rad/s pulses (no latch existed then). The
+2026-10-14 mow showed what that costs: both wheels at |w| < 0.25 run under the MCU's
+0.06 m/s deadband, so the robot does not turn (4564 such ticks, a stop-start that ended in
+a transit abort), and MPPI dithering between v = 0.010 and v = 0.000 at the same w flipped
+`/cmd_vel` between 0.25 and 0.10 rad/s every ~0.3 s (548 regime changes). Now a slow pure
+rotation snaps to the 0.25 pivot like any other one-wheel command, and the regime latch
+(below) is what keeps 0.25 pulses from hunting. `turn_shaper_pure_pivot: false` restores
+the pass-through exactly (live-settable). `both_wheels_legal(..., target=True)` applies
+the same rule to a command; the slew functions keep treating slow pure rotations as legal,
+because a rate-limited ramp into or out of a pivot passes through them with both wheels
+counter-rotating.
 
 Regime latch (2026-10-14): the snap boundary is inner = 0, so at |w| = 0.3 a v of 0.070
 snapped to a pivot (v = 0) and 0.075 to an arc (v = 0.132); a controller sitting in that
@@ -135,8 +151,15 @@ band flipped the target every tick. `TurnShaper` now latches the regime (pivot =
 wheel backwards, arc = forwards). Changing it needs the raw inner wheel
 `turn_shaper_hysteresis_mps` (0.02) past the boundary, or `turn_shaper_latch_ticks` (6)
 ticks in a row asking for the other regime; meanwhile the command is shaped to the latched
-regime (pivot snap or tightest legal arc). Straight/stop, an exact pure pivot (v = 0) or a
-sign change of v or w release the latch. Hysteresis 0 restores the stateless snap.
+regime (pivot snap or tightest legal arc). Straight/stop (including a pure rotation in
+the deadband) or a sign change of v or w release the latch. Hysteresis 0 restores the
+stateless snap. Since fix 8 an exact pure rotation (v = 0) no longer releases the latch: it
+is the pivot regime (inner = -|w| b/2), and v = 0 is compatible with either sign of v, so
+v dithering 0 / +0.01 is not a sign change. An arc latched when v drops to 0 is held as
+the tightest arc for that w in its direction until the hysteresis releases it (at once
+for |w| >= 0.083 rad/s, where inner = -|w| b/2 <= -0.02) or 6 ticks pass. When a pivot
+assist creep stops (cap reached or held for an obstacle), the node resets the latch, so
+the creep arc is never held past the assist.
 
 History: the first version (same day) converted every pivot into a forward arc capped at
 0.3 m of travel (then a 2 s true-pivot fallback). That turned the docking about-turn into
@@ -156,7 +179,10 @@ nothing else collision-checks the creep. During an assist episode only (creep ra
 hold and ramp-down) the slew keeps every tick out of the one-wheel zone
 (`slew_both_wheels`): the pivot <-> creep-arc change passes through a stop (w to 0, then v),
 instead of ramping v at full |w| through inner (-0.06, +0.06) for 5-9 ticks. Other
-MPPI/RPP driving uses the coupled slew (see "Velocity chain limits" below).
+MPPI/RPP driving uses the coupled slew (see "Velocity chain limits" below). The assist runs
+before the turn shaper, on the controller's own |w|: since fix 8 a 0.1 rad/s rotation is
+shaped to a 0.25 pivot and, after 0.8 s, gets the creep like any other pivot; rotations
+under 0.08 rad/s get the 0.25 pivot without a creep.
 
 ## Velocity chain limits (cmd_vel_slew, 2026-10-14)
 

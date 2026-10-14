@@ -21,19 +21,60 @@ def test_pivot_passes_as_pivot():
     assert shape_for_both_wheels(0.0, -0.25) == (0.0, -0.25, None)
 
 
-def test_slow_pivot_passes_unchanged():
-    # Both wheels counter-rotate in any pure pivot: never bump the rate (a bump made
-    # the controller's small heading corrections hunt around the goal heading).
-    v, w, info = shape_for_both_wheels(0.0, 0.1)
-    assert (v, w, info) == (0.0, 0.1, None)
+def test_slow_pivot_passes_unchanged_with_pure_pivot_off():
+    # The 2026-10-07 rule, now behind turn_shaper_pure_pivot: false.
+    p = {'pure_pivot': False}
+    assert shape_for_both_wheels(0.0, 0.1, p) == (0.0, 0.1, None)
+    assert shape_for_both_wheels(0.0, -0.02, p) == (0.0, -0.02, None)
 
 
-def _old_slow_pivot_bumped_to_proper_pivot():
-    v, w, info = shape_for_both_wheels(0.0, 0.1)
-    assert v == 0.0 and w == pytest.approx(0.25) and info['kind'] == 'pivot'
-    assert info['inner'] == pytest.approx(-0.06)
-    v, w, _ = shape_for_both_wheels(0.0, -0.05)
-    assert v == 0.0 and w == pytest.approx(-0.25)
+@pytest.mark.parametrize('w', [0.1, -0.05, 0.03, 0.24])
+def test_slow_pure_rotation_snaps_to_pivot_floor(w):
+    """Fix 8: v = 0 with 0 < |w| < 0.25 left both wheels under the MCU deadband."""
+    v, sw, info = shape_for_both_wheels(0.0, w)
+    assert v == 0.0 and sw == pytest.approx(0.25 if w > 0 else -0.25)
+    assert info['kind'] == 'pivot' and info['inner'] == pytest.approx(-0.06)
+
+
+@pytest.mark.parametrize('w', [0.029, -0.01, 1e-5])
+def test_pure_rotation_below_deadband_is_a_stop(w):
+    v, sw, info = shape_for_both_wheels(0.0, w)
+    assert (v, sw) == (0.0, 0.0) and info['kind'] == 'pivot' and info['deadband']
+    ts = TurnShaper()
+    assert ts.apply(0.0, w, 'TRANSIT', DT) == (0.0, 0.0)
+    assert ts.status.startswith('pivot deadband') and '-> 0' in ts.status
+
+
+@pytest.mark.parametrize('w', [0.25, -0.25, 0.3, 0.5])
+def test_pure_rotation_at_or_above_floor_passes(w):
+    assert shape_for_both_wheels(0.0, w) == (0.0, w, None)
+
+
+def test_pure_pivot_param_off_restores_pass_through():
+    from mower_control.cmd_vel_slew import TURN_DEFAULTS, set_turn_param
+    assert TURN_DEFAULTS['turn_shaper_pure_pivot'] is True
+    assert TURN_DEFAULTS['turn_shaper_pivot_deadband_rps'] == pytest.approx(0.03)
+    ts = TurnShaper()
+    set_turn_param(ts, 'turn_shaper_pure_pivot', False)
+    for w in (0.1, -0.02, 0.2):
+        assert ts.apply(0.0, w, 'TRANSIT', DT) == (0.0, w) and ts.status == 'pass'
+    ts = TurnShaper()                    # old latch rule: a pure pivot releases an arc latch
+    set_turn_param(ts, 'turn_shaper_pure_pivot', False)
+    ts.apply(0.1, 0.08, 'TRANSIT', DT)
+    assert ts.apply(0.0, 0.08, 'TRANSIT', DT) == (0.0, 0.08) and ts.regime == 'pivot'
+    set_turn_param(ts, 'turn_shaper_pivot_deadband_rps', 0.05)
+    assert ts.params['pivot_deadband_rps'] == pytest.approx(0.05)
+
+
+def test_both_wheels_legal_target_rule_for_pure_rotations():
+    from mower_control.cmd_vel_slew import both_wheels_legal
+    for w in (0.25, 0.3, 0.02, 0.0):
+        assert both_wheels_legal(0.0, w, target=True)
+    for w in (0.03, 0.1, 0.24):
+        assert not both_wheels_legal(0.0, w, target=True)
+        assert both_wheels_legal(0.0, w)          # slew ramps pass through slow rotations
+    assert both_wheels_legal(0.0, 0.1, {'track_width_m': 0.48, 'min_inner_wheel_mps': 0.06,
+                                        'pure_pivot': False}, target=True)
 
 
 def test_one_wheel_turn_snapped_to_nearer_regime():
@@ -191,3 +232,81 @@ def test_latch_params_are_node_params():
     set_turn_param(ts, 'turn_shaper_latch_ticks', 3)
     assert ts.hysteresis_mps == 0.0 and ts.latch_ticks == 3 and set(TURN_PARAMS) >= {
         'turn_shaper_hysteresis_mps', 'turn_shaper_latch_ticks'}
+
+
+# ------------------------------------------------ pure rotations join the pivot regime (fix 8)
+def _field_dither(ts, phase='MOWING', seconds=2.0):
+    seq = [(0.010, -0.10), (0.000, -0.10)] * int(seconds / DT / 2)
+    return [ts.apply(v, w, phase, DT) for v, w in seq], seq
+
+
+def test_field_dither_is_one_constant_pivot():
+    """2026-10-14 mow, t 51-64: MPPI alternated (0.010, -0.10) / (0.000, -0.10) and
+    /cmd_vel flipped 0.25 / 0.10 every ~0.3 s. Now: a constant 0.25 rad/s pivot."""
+    ts = TurnShaper()
+    outs, _ = _field_dither(ts)
+    assert len(outs) == 40
+    assert all(o == (0.0, pytest.approx(-0.25)) for o in outs)
+    assert ts.regime == 'pivot'
+    regimes = []
+    ts = TurnShaper()
+    for v, w in [(0.010, -0.10), (0.000, -0.10)] * 20:
+        ts.apply(v, w, 'MOWING', DT)
+        regimes.append(ts.regime)
+    assert set(regimes) == {'pivot'}
+
+
+def test_field_dither_with_pure_pivot_off_hunts():
+    ts = TurnShaper(pure_pivot=False)
+    outs, _ = _field_dither(ts)
+    assert {round(abs(w), 2) for _v, w in outs} == {0.25, 0.1}
+
+
+def test_latched_arc_held_when_v_drops_to_zero_briefly():
+    ts = TurnShaper()                                 # h 0.02, latch_ticks 6
+    assert ts.apply(0.1, 0.08, 'TRANSIT', DT) == (0.1, 0.08)      # legal arc, latched
+    held = [ts.apply(0.0, 0.08, 'TRANSIT', DT) for _ in range(5)]  # inner -0.019 > -h
+    for v, w in held:
+        assert v == pytest.approx(0.06 + 0.08 * HALF) and w == pytest.approx(0.08)
+    assert ts.regime == 'arc' and 'held' in ts.status
+    assert ts.apply(0.1, 0.08, 'TRANSIT', DT) == (0.1, 0.08)      # back to the arc
+    for _ in range(5):
+        ts.apply(0.0, 0.08, 'TRANSIT', DT)
+    assert ts.apply(0.0, 0.08, 'TRANSIT', DT) == (0.0, pytest.approx(0.25))  # 6th: pivot
+    assert ts.regime == 'pivot'
+
+
+def test_reverse_arc_held_backwards_when_v_drops_to_zero():
+    ts = TurnShaper()
+    ts.apply(-0.1, 0.08, 'TRANSIT', DT)
+    v, w = ts.apply(0.0, 0.08, 'TRANSIT', DT)
+    assert v == pytest.approx(-(0.06 + 0.08 * HALF)) and w == pytest.approx(0.08)
+
+
+def test_v_sign_flip_through_zero_still_releases():
+    ts = TurnShaper()
+    ts.apply(0.1, 0.08, 'TRANSIT', DT)                # forward arc
+    ts.apply(0.0, 0.08, 'TRANSIT', DT)                # held, still forward
+    assert ts.apply(-0.1, 0.08, 'TRANSIT', DT) == (-0.1, 0.08)    # reverse: released
+
+
+def test_w_sign_change_releases_the_pivot_latch():
+    ts = TurnShaper()
+    for _ in range(4):
+        assert ts.apply(0.0, -0.10, 'MOWING', DT) == (0.0, pytest.approx(-0.25))
+    assert ts.apply(0.0, 0.10, 'MOWING', DT) == (0.0, pytest.approx(0.25))
+    ts = TurnShaper()
+    ts.apply(0.1, 0.08, 'TRANSIT', DT)                # arc latched
+    assert ts.apply(0.0, -0.08, 'TRANSIT', DT) == (0.0, pytest.approx(-0.25))
+
+
+def test_pivot_latch_released_by_a_real_arc():
+    ts = TurnShaper()
+    ts.apply(0.0, 0.1, 'MOWING', DT)
+    assert ts.apply(0.15, 0.1, 'MOWING', DT) == (0.15, 0.1)        # inner +0.126 >= h
+
+
+def test_deadband_releases_the_latch():
+    ts = TurnShaper()
+    ts.apply(0.0, 0.1, 'MOWING', DT)
+    assert ts.apply(0.0, 0.01, 'MOWING', DT) == (0.0, 0.0) and ts.regime is None
