@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""Wheel-smoothness metrics from a black-box rosbag2 (docs/wheel_smoothness_field_tests.md).
+
+Reads the sqlite3 (zstd message-compressed) bags that ``bag_recorder`` pins under
+/userdata/ros2/mows/<ts>/ and /userdata/ros2/incidents/<ts>_<reason>/ and prints, per bag:
+
+* regime flips of the turn shaper (``/cmd_vel_slew/shape_status``), and flip bursts
+* one-wheel ticks on ``/cmd_vel`` (inner wheel in (-0.06, 0)) and ramp ticks in (0, 0.06)
+* lag ``/cmd_vel_nav`` -> ``/cmd_vel`` -> ``/mcu/commanded_speed`` (cross-correlation of linear.x)
+* stop latency: first zero on an emergency / bumper / nav lane -> zero on ``/cmd_vel`` ->
+  zero on ``/mcu/commanded_speed`` -> measured zero, plus the distance rolled meanwhile
+* pivot authority: commanded ``/cmd_vel`` yaw rate vs EKF / MCU yaw rate per pivot episode
+* accel / decel actually commanded on ``/cmd_vel`` and seen on ``/mcu/measured_speed``
+
+Needs rosbag2_py + rclpy, i.e. run it in the dev image (the host has neither):
+
+    docker run --rm -v "$PWD":/work -v /path/to/mows:/bags mower:jazzy-dev-amd64 bash -c \\
+      'source /opt/ros/jazzy/setup.bash && python3 /work/scripts/wheel_bag_metrics.py /bags/<ts>'
+
+A pinned mow is a directory of 60 s splits; pass the directory and every split in it is read
+in time order. ``--csv out.csv`` also dumps the resampled 20 Hz command/feedback series.
+"""
+import argparse
+import bisect
+import math
+import os
+import sys
+
+TRACK_HALF_M = 0.24          # drive_track_y (vendor urdf); inner = |v| - |w| * 0.24
+MIN_INNER_MPS = 0.06         # cmd_vel_slew min_inner_wheel_mps
+TOPICS = {
+    '/cmd_vel_nav': 'twist', '/cmd_vel_docking': 'twist', '/cmd_vel_teleop': 'twist',
+    '/cmd_vel_bumper': 'twist', '/cmd_vel_emergency': 'twist', '/cmd_vel': 'twist',
+    '/mcu/commanded_speed': 'twist', '/mcu/measured_speed': 'twist',
+    '/odometry/filtered': 'odom', '/cmd_vel_slew/shape_status': 'string',
+    '/cmd_vel_slew/gate_status': 'string', '/behavior_tree_node/high_level_status': 'skip',
+}
+
+
+# ---------------------------------------------------------------- bag reading
+def bag_dirs(path):
+    """Every rosbag2 directory (has metadata.yaml) under `path`, sorted by name."""
+    if os.path.isfile(os.path.join(path, 'metadata.yaml')):
+        return [path]
+    found = []
+    for root, dirs, files in os.walk(path):
+        if 'metadata.yaml' in files:
+            found.append(root)
+            dirs[:] = []
+    return sorted(found)
+
+
+def read_series(paths):
+    """{topic: [(t_s, v, w)]} for twist-like topics, [(t_s, text)] for strings."""
+    import rosbag2_py
+    from rclpy.serialization import deserialize_message
+    from rosidl_runtime_py.utilities import get_message
+    series = {t: [] for t in TOPICS}
+    for p in paths:
+        # bag_recorder writes zstd message-mode compression: that needs the compression reader
+        compressed = 'compression_format: zstd' in open(os.path.join(p, 'metadata.yaml')).read()
+        reader = (rosbag2_py.SequentialCompressionReader() if compressed
+                  else rosbag2_py.SequentialReader())
+        reader.open(rosbag2_py.StorageOptions(uri=p, storage_id='sqlite3'),
+                    rosbag2_py.ConverterOptions('cdr', 'cdr'))
+        types = {tm.name: tm.type for tm in reader.get_all_topics_and_types()}
+        wanted = [t for t in TOPICS if t in types and TOPICS[t] != 'skip']
+        if not wanted:
+            continue
+        reader.set_filter(rosbag2_py.StorageFilter(topics=wanted))
+        cls = {t: get_message(types[t]) for t in wanted}
+        while reader.has_next():
+            topic, data, t_ns = reader.read_next()
+            msg = deserialize_message(data, cls[topic])
+            t = t_ns * 1e-9
+            kind = TOPICS[topic]
+            if kind == 'string':
+                series[topic].append((t, msg.data))
+            elif kind == 'odom':
+                series[topic].append((t, msg.twist.twist.linear.x, msg.twist.twist.angular.z))
+            else:
+                tw = msg.twist if hasattr(msg, 'twist') else msg     # TwistStamped or Twist
+                series[topic].append((t, tw.linear.x, tw.angular.z))
+    for s in series.values():
+        s.sort(key=lambda r: r[0])
+    return series
+
+
+# ---------------------------------------------------------------- helpers
+def resample(rows, t0, t1, hz=20.0, hold_s=0.6):
+    """Zero-order hold onto a fixed grid; a gap longer than hold_s reads as zero (lane silent)."""
+    n = int((t1 - t0) * hz) + 1
+    ts = [r[0] for r in rows]
+    out = []
+    for i in range(n):
+        t = t0 + i / hz
+        k = bisect.bisect_right(ts, t + 1e-6) - 1
+        if k < 0 or t - ts[k] > hold_s:
+            out.append((t, 0.0, 0.0))
+        else:
+            out.append((t, rows[k][1], rows[k][2]))
+    return out
+
+
+def xcorr_lag(a, b, hz=20.0, max_lag_s=1.0):
+    """Lag (s) at which b best matches a (b delayed by lag), on the linear.x column."""
+    x = [r[1] for r in a]
+    y = [r[1] for r in b]
+    n = min(len(x), len(y))
+    if n < 50:
+        return None
+    x, y = x[:n], y[:n]
+    mx, my = sum(x) / n, sum(y) / n
+    x = [v - mx for v in x]
+    y = [v - my for v in y]
+    sx = math.sqrt(sum(v * v for v in x)) or 1.0
+    sy = math.sqrt(sum(v * v for v in y)) or 1.0
+    best, best_lag = -2.0, 0
+    for lag in range(0, int(max_lag_s * hz) + 1):
+        c = sum(x[i] * y[i + lag] for i in range(n - lag)) / (sx * sy)
+        if c > best:
+            best, best_lag = c, lag
+    return best_lag / hz, best
+
+
+def episodes(rows, pred, min_len_s=0.3):
+    """[(t_start, t_end, rows)] where pred(row) holds continuously."""
+    out, cur = [], []
+    for r in rows:
+        if pred(r):
+            cur.append(r)
+        elif cur:
+            if cur[-1][0] - cur[0][0] >= min_len_s:
+                out.append((cur[0][0], cur[-1][0], cur))
+            cur = []
+    if cur and cur[-1][0] - cur[0][0] >= min_len_s:
+        out.append((cur[0][0], cur[-1][0], cur))
+    return out
+
+
+def mean_at(rows, t0, t1, col):
+    ts = [r[0] for r in rows]
+    i, j = bisect.bisect_left(ts, t0), bisect.bisect_right(ts, t1)
+    vals = [rows[k][col] for k in range(i, j)]
+    return (sum(vals) / len(vals)) if vals else None
+
+
+def first_after(rows, t, pred):
+    ts = [r[0] for r in rows]
+    for k in range(bisect.bisect_left(ts, t), len(rows)):
+        if pred(rows[k]):
+            return rows[k]
+    return None
+
+
+def inner_wheel(v, w):
+    return abs(v) - abs(w) * TRACK_HALF_M
+
+
+def fmt(x, unit='', nd=3):
+    return '-' if x is None else ('%.*f%s' % (nd, x, unit))
+
+
+# ---------------------------------------------------------------- metrics
+def report(series, csv_path=None):
+    cmd = series['/cmd_vel']
+    if not cmd:
+        print('no /cmd_vel in bag')
+        return
+    t0, t1 = cmd[0][0], cmd[-1][0]
+    print('== topics (%.0f s)' % (t1 - t0))
+    for t, rows in series.items():
+        if rows:
+            dur = rows[-1][0] - rows[0][0]
+            print('  %-40s %6d msgs  %5.1f Hz' % (t, len(rows), len(rows) / dur if dur > 0 else 0))
+
+    # regime flips
+    shape = series['/cmd_vel_slew/shape_status']
+    kinds = [(t, s.split(' ', 1)[0]) for t, s in shape]
+    changes = [(kinds[i][0], kinds[i - 1][1], kinds[i][1]) for i in range(1, len(kinds))
+               if kinds[i][1] != kinds[i - 1][1]]
+    bursts = sum(1 for i in range(1, len(changes)) if changes[i][0] - changes[i - 1][0] < 1.0)
+    print('== turn shaper: %d regime changes, %d within 1 s of the previous (flip bursts)'
+          % (len(changes), bursts))
+    for t, a, b in changes[:12]:
+        print('  t=%7.1f  %s -> %s' % (t - t0, a, b))
+    if len(changes) > 12:
+        print('  ... %d more' % (len(changes) - 12))
+
+    # one-wheel ticks
+    moving = [r for r in cmd if abs(r[1]) > 1e-6 or abs(r[2]) > 1e-6]
+    turning = [r for r in moving if abs(r[2]) > 1e-6]
+    bad = [r for r in turning if -MIN_INNER_MPS < inner_wheel(r[1], r[2]) < 0.0]
+    ramp = [r for r in turning if 0.0 < inner_wheel(r[1], r[2]) < MIN_INNER_MPS]
+    print('== /cmd_vel one-wheel check: %d moving ticks, %d turning; inner in (-0.06,0): %d; '
+          'inner in (0,0.06): %d' % (len(moving), len(turning), len(bad), len(ramp)))
+    for r in bad[:5]:
+        print('  t=%7.1f v=%.3f w=%.3f inner=%.3f' % (r[0] - t0, r[1], r[2], inner_wheel(r[1], r[2])))
+
+    # lag
+    nav = series['/cmd_vel_nav']
+    mcu_c = series['/mcu/commanded_speed']
+    # short hold: a silent lane reads as zero almost at once, so a watchdog stop on
+    # /cmd_vel is not mistaken for the lane leading the command
+    g_nav, g_cmd, g_mcu = (resample(nav, t0, t1, hold_s=0.15), resample(cmd, t0, t1, hold_s=0.15),
+                           resample(mcu_c, t0, t1, hold_s=0.15))
+    print('== lag (cross-correlation of linear.x, 20 Hz grid)')
+    for name, a, b in (('/cmd_vel_nav -> /cmd_vel', g_nav, g_cmd),
+                       ('/cmd_vel -> /mcu/commanded_speed', g_cmd, g_mcu),
+                       ('/cmd_vel_nav -> /mcu/commanded_speed', g_nav, g_mcu)):
+        r = xcorr_lag(a, b)
+        print('  %-40s %s' % (name, 'n/a' if r is None else '%.0f ms (corr %.2f)' % (r[0] * 1e3, r[1])))
+
+    # stops
+    meas = series['/mcu/measured_speed']
+    print('== stops (lane zero -> /cmd_vel zero -> MCU commanded zero -> measured < 0.01 m/s)')
+    for lane in ('/cmd_vel_emergency', '/cmd_vel_bumper', '/cmd_vel_nav', '/cmd_vel_docking'):
+        rows = series[lane]
+        shown = 0
+        events = []                      # (tz, speed before, label)
+        cmd_ts = [r[0] for r in cmd]
+        for i in range(len(rows)):
+            prev = rows[i - 1] if i else None
+            cur = rows[i]
+            if abs(cur[1]) > 1e-6 or abs(cur[2]) > 1e-6:
+                continue
+            if prev is not None and abs(prev[1]) > 0.02:
+                events.append((cur[0], prev[1], 'lane zero'))
+            elif prev is None or cur[0] - prev[0] > 1.0:
+                # a lane that only ever sends zeros (emergency, bumper): count it when the
+                # robot was moving at that moment
+                k = bisect.bisect_right(cmd_ts, cur[0]) - 1
+                if k >= 0 and abs(cmd[k][1]) > 0.02:
+                    events.append((cur[0], cmd[k][1], 'lane zero'))
+        for i in range(1, len(rows)):            # lane went silent while asking for motion
+            prev, cur = rows[i - 1], rows[i]
+            if abs(prev[1]) > 0.02 and cur[0] - prev[0] > 0.6:
+                events.append((prev[0] + 0.5, prev[1], 'silence+0.5s'))
+        if rows and abs(rows[-1][1]) > 0.02 and t1 - rows[-1][0] > 0.6:
+            events.append((rows[-1][0] + 0.5, rows[-1][1], 'silence+0.5s'))
+        for tz, v_before, label in sorted(events):
+            if True:
+                c = first_after(cmd, tz, lambda r: abs(r[1]) < 1e-6 and abs(r[2]) < 1e-6)
+                m = first_after(mcu_c, tz, lambda r: abs(r[1]) < 1e-6 and abs(r[2]) < 1e-6)
+                s = first_after(meas, tz, lambda r: abs(r[1]) < 0.01)
+                dist = None
+                if s is not None and meas:
+                    ts = [r[0] for r in meas]
+                    i0, i1 = bisect.bisect_left(ts, tz), bisect.bisect_left(ts, s[0])
+                    dist = sum(abs(meas[k][1]) * (meas[k + 1][0] - meas[k][0])
+                               for k in range(i0, min(i1, len(meas) - 1)))
+                print('  %-20s t=%7.1f %-12s from %.2f m/s: cmd_vel %s  mcu %s  measured %s  rolled %s'
+                      % (lane, tz - t0, label, v_before,
+                         fmt(None if c is None else (c[0] - tz) * 1e3, ' ms', 0),
+                         fmt(None if m is None else (m[0] - tz) * 1e3, ' ms', 0),
+                         fmt(None if s is None else (s[0] - tz) * 1e3, ' ms', 0),
+                         fmt(dist, ' m', 2)))
+                shown += 1
+                if shown >= 6:
+                    break
+        if shown == 0 and rows:
+            print('  %-20s no moving->zero transitions' % lane)
+
+    # pivot authority
+    ekf = series['/odometry/filtered']
+    print('== pivots on /cmd_vel (|v| < 0.01, |w| >= 0.2): commanded vs EKF vs MCU yaw rate')
+    piv = episodes(cmd, lambda r: abs(r[1]) < 0.01 and abs(r[2]) >= 0.2)
+    for a, b, rows in piv[:10]:
+        wc = sum(r[2] for r in rows) / len(rows)
+        we = mean_at(ekf, a + 0.3, b, 2)
+        wm = mean_at(meas, a + 0.3, b, 2)
+        print('  t=%7.1f %5.1f s  cmd %+.3f  ekf %s  mcu %s  ratio %s'
+              % (a - t0, b - a, wc, fmt(we, ' rad/s'), fmt(wm, ' rad/s'),
+                 fmt(None if we is None or abs(wc) < 1e-6 else we / wc, '', 2)))
+    if not piv:
+        print('  none')
+    arcs = episodes(cmd, lambda r: abs(r[1]) >= 0.01 and abs(r[2]) >= 0.1)
+    print('== arcs on /cmd_vel: %d episodes, mean radius %s' % (
+        len(arcs), fmt(None if not arcs else sum(abs(r[1]) / abs(r[2]) for _, _, rows in arcs
+                                                  for r in rows) / sum(len(rows) for _, _, rows in arcs), ' m', 2)))
+
+    # accel / decel
+    def accel_stats(rows, col):
+        acc, dec = 0.0, 0.0
+        for i in range(1, len(rows)):
+            dt = rows[i][0] - rows[i - 1][0]
+            if dt <= 0 or dt > 0.5:
+                continue
+            a = (abs(rows[i][col]) - abs(rows[i - 1][col])) / dt
+            acc, dec = max(acc, a), min(dec, a)
+        return acc, dec
+    for name, rows in (('/cmd_vel', cmd), ('/mcu/measured_speed', meas)):
+        if rows:
+            la, ld = accel_stats(rows, 1)
+            aa, ad = accel_stats(rows, 2)
+            print('== %s peak linear accel %+.2f / decel %+.2f m/s^2, angular %+.2f / %+.2f rad/s^2'
+                  % (name, la, ld, aa, ad))
+
+    if csv_path:
+        g_meas = resample(meas, t0, t1, hold_s=0.3)
+        g_ekf = resample(ekf, t0, t1, hold_s=0.3)
+        with open(csv_path, 'w') as f:
+            f.write('t,nav_v,nav_w,cmd_v,cmd_w,mcu_cmd_v,mcu_cmd_w,meas_v,meas_w,ekf_v,ekf_w\n')
+            for i in range(len(g_cmd)):
+                f.write('%.3f,%s\n' % (g_cmd[i][0] - t0, ','.join(
+                    '%.4f,%.4f' % (g[i][1], g[i][2]) for g in (g_nav, g_cmd, g_mcu, g_meas, g_ekf))))
+        print('csv: %s' % csv_path)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('bag', help='rosbag2 directory, or a pinned mow/incident directory of splits')
+    ap.add_argument('--csv', help='also write the resampled 20 Hz series here')
+    args = ap.parse_args(argv)
+    paths = bag_dirs(args.bag)
+    if not paths:
+        print('no rosbag2 directories under %s' % args.bag)
+        return 1
+    print('reading %d bag(s) under %s' % (len(paths), args.bag))
+    try:
+        series = read_series(paths)
+    except ImportError as exc:
+        print('needs rosbag2_py + rclpy (run inside mower:jazzy-dev-amd64, see --help): %s' % exc)
+        return 1
+    report(series, args.csv)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

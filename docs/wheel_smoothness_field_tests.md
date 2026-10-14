@@ -95,6 +95,18 @@ comparing pivot authority and completion time against the baseline.
 
 ## Review loop
 
+`scripts/wheel_bag_metrics.py <mow or incident dir>` computes every metric above from the
+pinned bags (regime flips, one-wheel ticks, lag, stop latency and roll-out, pivot authority,
+peak accel/decel; `--csv` dumps the 20 Hz series for plotting). It needs rosbag2_py, so run it
+in the dev image:
+
+```sh
+scp -r root@192.168.1.105:/userdata/ros2/mows/<ts> /tmp/mow-<ts>
+docker run --rm -v "$PWD":/work -v /tmp/mow-<ts>:/bag mower:jazzy-dev-amd64 bash -c \
+  'source /opt/ros/jazzy/setup.bash && python3 /work/scripts/wheel_bag_metrics.py /bag --csv /bag/series.csv'
+```
+
+
 For each run: bag directory, what was observed, the metrics above, decision (keep / revert
 / tune). Any revert is a parameter flip plus restart; the code paths all keep the old
 behaviour behind their parameters (`turn_shaper_hysteresis_mps: 0.0`,
