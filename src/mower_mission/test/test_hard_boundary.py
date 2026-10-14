@@ -269,3 +269,15 @@ def test_retrace_follows_a_curved_track_with_both_wheels():
     assert_slow_two_wheel_reverse(cmds)
     assert h.fsm.inputs.pose[1] < 0.6 - 0.05
     assert h.name == 'TRANSIT' and h.fsm.mission.transit_fails == 1
+
+
+def test_no_driven_track_means_no_blind_reverse():
+    """Outside with no track behind it (e.g. a START off the map): stop, needs help."""
+    h = transit_h()
+    h.fsm._hb_trail = []
+    feed(h, (2.5, 0.0, 0.0))                                    # jumped outside, no track
+    h.tick()
+    assert h.fsm._hb is not None and h.fsm._hb['track_m'] == 0.0
+    cmds = run_retrace(h)
+    assert sum(abs(v) * 0.1 for v, _ in cmds) <= 0.03 + 1e-9
+    assert h.name == 'STUCK_NEEDS_HELP'

@@ -718,7 +718,8 @@ class Params:
     # MOWING or a dock phase: cancel the goal, zero, blade off, then retrace the driven EKF
     # track (the last hard_boundary_trail_m, newest first) in reverse at
     # hard_boundary_retrace_speed_mps on /cmd_vel_emergency until back inside plus
-    # hard_boundary_retrace_extra_m (at most hard_boundary_retrace_max_m). Steering keeps
+    # hard_boundary_retrace_extra_m (at most hard_boundary_retrace_max_m, never beyond the
+    # recorded track: no blind reverse). Steering keeps
     # both wheels rolling backwards (inner wheel >= hard_boundary_min_inner_mps); a heading
     # error above hard_boundary_pivot_err_rad is turned on the spot first (counter-rotating
     # pivot at hard_boundary_pivot_rps). Counts as a transit abort (TRANSIT: the transit
@@ -5285,7 +5286,9 @@ class MissionFSM:
         follow = m is not None and m.step == 'follow'
         ox, oy = float(pose[0]), float(pose[1])
         path = [q for q in reversed(self._hb_trail) if math.hypot(q[0] - ox, q[1] - oy) > 0.02]
-        self._hb = {'phase': self.phase, 'origin': (ox, oy), 'stage': 'pause', 't': self._now,
+        track = sum(math.hypot(b[0] - a[0], b[1] - a[1])
+                    for a, b in zip([(ox, oy)] + path, path))
+        self._hb = {'track_m': track, 'phase': self.phase, 'origin': (ox, oy), 'stage': 'pause', 't': self._now,
                     'path': path, 'i': 0, 'follow': follow, 'out0': out,
                     'dock_purpose': self._dock_purpose, 'driven': 0.0, 'last': tuple(pose),
                     'prog': 0.0, 'prog_best': 0.0, 'prog_t': self._now, 'inside_at': None}
@@ -5307,7 +5310,8 @@ class MissionFSM:
         """(v, w) of the retrace: reverse toward the next track point (pure pursuit on the
         rear), both wheels rolling backwards (inner >= hard_boundary_min_inner_mps); a large
         heading error is turned on the spot first (counter-rotating pivot >= 0.25 rad/s);
-        straight reverse once the track is used up."""
+        straight reverse over the last lookahead once the track points are used up (the
+        caller stops at the track's length: never a blind reverse beyond the driven track)."""
         k, p = self._hb, self.p
         v = -min(abs(float(p.hard_boundary_retrace_speed_mps)), 0.10)   # owner: slow reverse
         path, la = k['path'], float(p.hard_boundary_lookahead_m)
@@ -5361,14 +5365,14 @@ class MissionFSM:
                 return
         elif out is not None:
             k['inside_at'] = None
-        if k['driven'] >= float(p.hard_boundary_retrace_max_m):
+        if k['driven'] >= min(float(p.hard_boundary_retrace_max_m), k['track_m'] + 0.02):
             if out is not None and out <= float(p.hard_boundary_m):
                 self._hb_retraced()
                 return
             self._hb_stop()
-            self._hb_needs_help('still %s outside after reversing %.2f m'
-                                % ('?' if out is None else '%.2f m' % out, k['driven']),
-                                k['origin'])
+            self._hb_needs_help('still %s outside after reversing %.2f m (driven track %.2f m)'
+                                % ('?' if out is None else '%.2f m' % out, k['driven'],
+                                   k['track_m']), k['origin'])
             return
         if now - k['prog_t'] > float(p.hard_boundary_progress_s):
             self._hb_stop()
