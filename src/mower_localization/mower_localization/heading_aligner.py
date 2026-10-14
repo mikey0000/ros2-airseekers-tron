@@ -14,6 +14,22 @@ rest (wheel odometry + command still, or docked) and the yaw held while resting.
 message (roll/pitch, accel, stamp, 100 Hz); its yaw is the virtual yaw + offset and its
 angular_velocity.z the active source's base_link yaw rate.
 
+Stereo stamp gaps (2026-10-14: late / dropped bursts lost their rotation, the virtual yaw
+drifted +52 deg against the WIT in one mow): a gap of 50 ms .. ``stereo_max_gap`` s is bridged
+with the WIT rate over the same interval (else the mean stereo rate), never skipped; the WIT
+never adds while the stereo source is active, so nothing is counted twice (rule in
+:class:`heading_logic.YawSource`). The status carries ``stereo_gaps``, ``stereo_gap_s``,
+``stereo_gap_max_s``, ``stereo_gaps_wit``, ``stereo_dropped`` and ``virtual_minus_wit_deg``; a
+WARN is logged when ``virtual_minus_wit_deg`` moves more than ``wit_divergence_warn_deg``
+(5 deg) within 60 s while stereo is active (at most once a minute).
+
+Parameters (yaw source)
+-----------------------
+``imu_source`` (auto), ``stereo_stale`` (0.3 s), ``stereo_stale_exit`` (0.5 s),
+``stereo_max_gap`` (1.0 s: longest stereo stamp gap bridged), ``wit_divergence_warn_deg``
+(5.0 deg, 0 = off), ``rest_settle`` (1.0 s), ``rest_window`` (3.0 s), ``rest_max_speed``,
+``rest_max_turn``, ``stereo_batch_rate`` / ``imu_batch_rate`` (+ ``_idle``).
+
 Subscribed
 ----------
 ``/imu/data``                       sensor_msgs/Imu        100 Hz, batched (periodic thread)
@@ -40,7 +56,10 @@ Published
                              patched in place (no message objects at 100 Hz).
 ``/heading_aligner/status``  std_msgs/String JSON, latched, 1 Hz + on change:
                              {aligned, source: none|file|file_verified|dock|cog|rtk,
-                             offset_deg, quality, gate, min_speed, file_check, ...}.
+                             offset_deg, quality, gate, min_speed, file_check,
+                             last_cog_age_s, imu_active, virtual_minus_wit_deg,
+                             stereo_gaps, stereo_gap_s, stereo_gap_max_s,
+                             stereo_gaps_wit, stereo_dropped, ...}.
                              ``file_check`` (source file): pending | yaw_ok (IMU kept running,
                              position unproven: a usable prior for the mission's heading
                              calibration drive) | yaw_failed | unverifiable.
@@ -168,6 +187,12 @@ class HeadingAligner(Node):
         d('stereo_z_row', [0.0])
         d('stereo_stale', 0.3)       # stereo sample within this -> may switch to stereo
         d('stereo_stale_exit', 0.5)  # stereo active: WIT fallback only after this long without
+        # Stereo stamp gaps above 50 ms (dropped / late samples) are bridged with the WIT rate
+        # (or the mean stereo rate) up to this long; longer gaps add nothing (stereo_dropped).
+        d('stereo_max_gap', 1.0)
+        # WARN when virtual_minus_wit_deg moves more than this within 60 s while the stereo
+        # source is active (at most once a minute; 0 = off). Field diagnostic, 2026-10-14.
+        d('wit_divergence_warn_deg', 5.0)
         # The 200 Hz stereo IMU is taken in batches (sampled, deliver_all) instead of one
         # pump wake per sample: every sample is still integrated in stamp order. Must stay
         # well under stereo_stale; the idle rate applies while /mission/activity is idle.
@@ -212,7 +237,9 @@ class HeadingAligner(Node):
         self.src = hl.YawSource(
             g('imu_source'), z_row=tuple(zr) if len(zr) == 3 else None,
             stale=float(g('stereo_stale')), rest_settle=float(g('rest_settle')),
-            rest_window=float(g('rest_window')), stale_exit=float(g('stereo_stale_exit')))
+            rest_window=float(g('rest_window')), stale_exit=float(g('stereo_stale_exit')),
+            max_gap=float(g('stereo_max_gap')))
+        self._divergence = hl.DivergenceWatch(warn_deg=float(g('wit_divergence_warn_deg')))
         self._base_frame = g('base_frame')
         self._rest_v, self._rest_w = float(g('rest_max_speed')), float(g('rest_max_turn'))
         self._odom = None             # (t, v, w)
@@ -551,6 +578,14 @@ class HeadingAligner(Node):
                                    'from %d rest windows)' % (
                                        st['imu_source'], st['imu_active'], st['stereo_fresh'],
                                        st['stereo_bias_dps'], st['stereo_bias_windows']))
+        warn = self._divergence.update(now, st['virtual_minus_wit_deg'],
+                                       st['imu_active'] == 'stereo')
+        if warn:
+            self.get_logger().warn('%s; stereo gaps %d (%.2f s bridged, max %.3f s, %d by WIT '
+                                   'rate), dropped %d' % (
+                                       warn, st['stereo_gaps'], st['stereo_gap_s'],
+                                       st['stereo_gap_max_s'], st['stereo_gaps_wit'],
+                                       st['stereo_dropped']))
         text = hl.status_json(st)
         self._status_pub.publish(String(data=text))
         if key != self._last_status:

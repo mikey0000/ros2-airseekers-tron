@@ -965,3 +965,172 @@ def test_stereo_enter_window_is_stale_not_stale_exit():
     src.active = 'stereo'
     assert src.select(0.4) == 'stereo'           # but not old enough to leave it
     assert src.select(0.51) == 'wit'
+
+
+# ---------------------------------------------------------------------------
+# stereo stamp gaps (2026-10-14: late / dropped stereo bursts lost their rotation)
+# ---------------------------------------------------------------------------
+class GapSim:
+    """Stereo source (mode stereo, base-frame gyro) at 200 Hz, WIT at 100 Hz (no clamp)."""
+
+    def __init__(self, w=0.5, **kw):
+        self.src = hl.YawSource('stereo', z_row=(0.0, 0.0, 1.0), **kw)
+        self.w = w
+        self.t = 0.0
+        self.truth = 0.0
+        self.wit = 0.2
+        self.src.on_wit(0.0, self.wit, w)          # initialises the virtual yaw
+        self.k = 0
+        self.late = []
+
+    def step(self, stereo=True, wit=True, rest=False, late=False):
+        self.t += 0.005
+        self.k += 1
+        self.truth += self.w * 0.005
+        self.wit = hl.wrap(self.wit + self.w * 0.005)
+        self.src.on_rest(self.t, rest)
+        if stereo:
+            sample = (1000.0 + self.t, (0.0, 0.0, self.w))
+            if late:
+                self.late.append(sample)              # stamped now, delivered later
+            else:
+                for st, g in self.late + [sample]:
+                    self.src.on_stereo(self.t, st, g)
+                self.late = []
+        if wit and self.k % 2 == 0:
+            self.src.on_wit(self.t, self.wit, self.w)
+
+    def run(self, seconds, **kw):
+        for _ in range(int(round(seconds / 0.005))):
+            self.step(**kw)
+
+
+def _gap_case(wit_available, gap=0.12):
+    s = GapSim()
+    s.run(0.2, wit=wit_available)
+    y0, t0 = s.src.yaw, s.truth
+    s.run(0.3, wit=wit_available)
+    s.run(gap, stereo=False, wit=wit_available)   # samples lost: a 125 ms stamp gap
+    s.run(0.4, wit=wit_available)
+    return s, hl.wrap(s.src.yaw - y0), s.truth - t0
+
+
+@pytest.mark.parametrize('wit_available', [True, False])
+def test_stereo_gap_integrates_full_rotation(wit_available):
+    s, got, want = _gap_case(wit_available)
+    assert got == pytest.approx(want, rel=0.01)
+    st = s.src.status(s.t)
+    assert st['stereo_gaps'] == 1 and st['stereo_dropped'] == 0
+    assert st['stereo_gap_s'] == pytest.approx(0.125, abs=1e-6)
+    assert st['stereo_gap_max_s'] == pytest.approx(0.125, abs=1e-6)
+    assert st['stereo_gaps_wit'] == (1 if wit_available else 0)
+
+
+def test_stereo_gap_without_fix_would_lose_the_rotation():
+    """The regression this guards: the 125 ms gap is 12 % of the turn in _gap_case."""
+    s, got, want = _gap_case(True)
+    assert abs(got - (want - 0.5 * 0.125)) > 0.05
+
+
+def test_stereo_gap_bridged_by_wit_rate_not_stereo_when_they_differ():
+    """The bracketing stereo rates miss a turn inside the gap; the WIT saw it."""
+    s = GapSim(w=0.0)
+    s.run(0.2)
+    y0 = s.src.yaw
+    s.w = 1.0                                     # turn only while stereo is silent
+    s.run(0.1, stereo=False)
+    s.w = 0.0
+    s.run(0.2)
+    assert hl.wrap(s.src.yaw - y0) == pytest.approx(0.1, rel=0.1)
+
+
+def test_stereo_gap_beyond_max_gap_adds_nothing_and_counts_dropped():
+    s = GapSim()
+    s.run(0.2, wit=False)
+    y0 = s.src.yaw
+    t_before = s.truth
+    s.run(1.5, stereo=False, wit=False)           # no WIT either: nothing takes over
+    s.step(wit=False)                             # first sample after the 1.505 s gap
+    assert s.src.yaw == pytest.approx(y0)
+    assert s.src.status(s.t)['stereo_dropped'] == 1
+    assert s.src.status(s.t)['stereo_gaps'] == 0
+    y1, t1 = s.src.yaw, s.truth
+    s.run(0.2, wit=False)                         # integrates normally afterwards
+    assert hl.wrap(s.src.yaw - y1) == pytest.approx(s.truth - t1, rel=0.01)
+    assert s.truth - t_before > 0.7
+
+
+def test_late_burst_with_wit_during_the_receive_gap_not_double_counted():
+    """The field case: a 120 ms burst arrives late (stamps continuous), the WIT ticks in
+    between. Old rule: the WIT filled the receive gap AND stereo integrated the burst."""
+    s = GapSim()
+    s.run(0.2)
+    y0, t0 = s.src.yaw, s.truth
+    for _ in range(5):
+        s.run(0.3)
+        s.run(0.12, late=True)                    # delivered with the next sample
+    s.run(0.3)
+    assert hl.wrap(s.src.yaw - y0) == pytest.approx(s.truth - t0, rel=0.01)
+    assert s.src.status(s.t)['stereo_gaps'] == 0
+
+
+def test_stamp_gap_with_wit_during_it_not_double_counted():
+    s = GapSim()
+    s.run(0.2)
+    y0, t0 = s.src.yaw, s.truth
+    for _ in range(5):
+        s.run(0.2)
+        s.run(0.12, stereo=False)                 # WIT keeps ticking through the gap
+    s.run(0.2)
+    assert hl.wrap(s.src.yaw - y0) == pytest.approx(s.truth - t0, rel=0.01)
+    assert s.src.status(s.t)['stereo_gaps'] == 5
+    assert s.src.status(s.t)['stereo_gaps_wit'] == 5
+
+
+def test_stereo_stale_wit_takes_over_from_last_stereo_sample():
+    """Stereo silent past stale_exit: the WIT covers from the last stereo sample on, the
+    stereo chain re-anchors when it returns (nothing lost, nothing counted twice)."""
+    s = GapSim()
+    s.run(0.2)
+    y0, t0 = s.src.yaw, s.truth
+    s.run(1.5, stereo=False)
+    assert s.src.select(s.t) == 'wit'
+    s.run(0.5)
+    assert s.src.select(s.t) == 'stereo'
+    assert hl.wrap(s.src.yaw - y0) == pytest.approx(s.truth - t0, abs=0.5 * 0.01)
+    assert s.src.status(s.t)['stereo_dropped'] == 0
+
+
+def test_resting_robot_with_a_gap_adds_nothing():
+    s = GapSim(w=0.01)                            # under rest_max_rate: gyro noise / bias
+    s.run(1.5, rest=True, wit=False)              # past rest_settle
+    y0 = s.src.yaw
+    s.run(0.3, rest=True, wit=False)
+    s.run(0.12, stereo=False, rest=True, wit=False)
+    s.run(0.3, rest=True, wit=False)
+    assert s.src.yaw == pytest.approx(y0)
+    assert s.src.status(s.t)['stereo_gaps'] == 1
+
+
+def test_divergence_watch_warns_once_for_6_deg_not_for_2():
+    w = hl.DivergenceWatch(warn_deg=5.0)
+    msgs = []
+    for k in range(30):
+        msgs.append(w.update(float(k), -50.0, True))
+    for k in range(30, 150):
+        msgs.append(w.update(float(k), -44.0, True))   # +6 deg jump, then steady
+    hits = [m for m in msgs if m]
+    assert len(hits) == 1
+    assert '-44.0' in hits[0] and '-50.0' in hits[0]
+    w = hl.DivergenceWatch(warn_deg=5.0)
+    msgs = [w.update(float(k), 0.0 if k < 30 else 2.0, True) for k in range(150)]
+    assert not any(msgs)
+
+
+def test_divergence_watch_ignores_wit_active_and_wraps():
+    w = hl.DivergenceWatch(warn_deg=5.0)
+    assert not any(w.update(float(k), 10.0 * k, False) for k in range(20))
+    w = hl.DivergenceWatch(warn_deg=5.0)
+    assert not any(w.update(float(k), 179.0 if k % 2 else -179.0, True) for k in range(20))
+    w = hl.DivergenceWatch(warn_deg=0.0)
+    assert not any(w.update(float(k), 10.0 * k, True) for k in range(20))

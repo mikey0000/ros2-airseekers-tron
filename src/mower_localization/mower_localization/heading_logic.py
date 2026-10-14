@@ -765,6 +765,7 @@ def _consistent_mean(samples, need, agree):
 
 # ---------------------------------------------------------------------- yaw-rate source
 IMU_SOURCES = ('stereo', 'wit', 'auto')
+GAP_MAX_WIT_RATE = 3.0      # rad/s; a faster WIT yaw change over a stereo gap is a WIT reset
 
 
 def quat_to_matrix(q):
@@ -816,11 +817,34 @@ class YawSource:
     The virtual yaw only ever advances by the active source's increment, so switching sources
     (or a WIT yaw reset while the stereo source is active) never steps it. ``offset`` stays
     ``yaw_enu - virtual yaw`` exactly like it was ``yaw_enu - WIT yaw``.
+
+    Who covers which interval (one rule, so no rotation is lost or counted twice; 2026-10-14:
+    late stereo bursts lost their rotation and the virtual yaw drifted +52 deg vs the WIT):
+
+    * While the stereo source is active the stereo chain covers every interval between two
+      consecutive stereo sample stamps, and the WIT adds nothing (not even during a receive
+      gap; the virtual yaw then catches up when the next sample arrives).
+
+      - ``dt <= max_dt``: ``rate * dt`` (unchanged).
+      - ``max_dt < dt <= max_gap`` (a gap: dropped / late samples): the gap is integrated
+        with the WIT's mean rate over the same wall-clock interval (WIT yaw at the previous
+        stereo sample vs now, over the WIT sample times, times ``dt``) when the WIT covered
+        at least half of it and moved (an unmoved WIT is its small-rate clamp) at a
+        plausible rate (``GAP_MAX_WIT_RATE``; faster is a WIT yaw reset), else with the mean
+        of the previous and current bias-corrected stereo rates. Counted in
+        ``stereo_gaps`` / ``stereo_gap_s`` / ``stereo_gap_max_s`` (``stereo_gaps_wit`` of
+        them bridged with the WIT rate).
+      - ``dt > max_gap``: stale, no increment (``stereo_dropped``).
+      - resting and ``|rate| < rest_max_rate``: no increment (rest hold), gaps included.
+    * When the WIT takes over (stereo stale / not calibrated / ``wit`` mode) it first adds the
+      WIT delta since the last stereo sample the chain covered, then its own deltas sample by
+      sample. That breaks the stereo chain: the first stereo sample after a WIT stretch only
+      re-anchors (no increment for the interval the WIT already counted).
     """
 
     def __init__(self, mode='auto', z_row=None, stale=0.3, rest_settle=1.0, rest_window=3.0,
                  rest_alpha=0.5, rest_max_rate=0.02, rest_max_std=0.01, max_dt=0.05,
-                 stale_exit=0.5):
+                 stale_exit=0.5, max_gap=1.0):
         if mode not in IMU_SOURCES:
             raise ValueError('imu_source must be one of %s' % (IMU_SOURCES,))
         self.mode = mode
@@ -829,6 +853,7 @@ class YawSource:
         # once none arrived for ``stale_exit`` s (the stereo IMU arrives in ~50 ms bursts; a
         # 0.1 s window flapped wit<->stereo every 1-8 s while mowing, 2026-10-07).
         self.stale, self.max_dt = stale, max_dt
+        self.max_gap = max(max_dt, max_gap)
         self.stale_exit = max(stale, stale_exit)
         self.rest_settle, self.rest_window = rest_settle, rest_window
         self.rest_alpha, self.rest_max_rate, self.rest_max_std = (rest_alpha, rest_max_rate,
@@ -849,6 +874,14 @@ class YawSource:
         self._acc = []
         self._acc_t0 = None
         self._pending_k = None        # virtual - WIT yaw to restore at the first WIT sample
+        self.wit_t = None             # local time of the last WIT sample
+        self._st_chain = False        # stereo covered the virtual yaw up to its last sample
+        self._wit_ref = None          # (WIT yaw, WIT time) when the last stereo sample came
+        self.gaps = 0                 # stamp gaps > max_dt while the stereo chain covered
+        self.gap_s = 0.0              # seconds covered by gap integration
+        self.gap_max_s = 0.0
+        self.gaps_wit = 0             # of those, filled with the WIT rate
+        self.dropped = 0              # gaps > max_gap: no increment
 
     # ---- state
     def stereo_fresh(self, now, window=None):
@@ -901,22 +934,47 @@ class YawSource:
         r = self.z_row
         wz = r[0] * gyro[0] + r[1] * gyro[1] + r[2] * gyro[2]
         self.st_raw = wz
-        self.st_rate = wz - self.bias
+        prev_rate, self.st_rate = self.st_rate, wz - self.bias
         dt = None if self.st_t is None else stamp - self.st_t
         self.st_t, self.st_mono = stamp, now
+        wit_ref, self._wit_ref = self._wit_ref, (self.wit_yaw, self.wit_t)
         if self.resting:
             if not self._acc:
                 self._acc_t0 = stamp
             self._acc.append(wz)
             if stamp - self._acc_t0 >= self.rest_window:
                 self._finish_rest_window()
-        if dt is None or not 0.0 < dt <= self.max_dt or self.yaw is None:
+        chain, self._st_chain = self._st_chain, False
+        if self.yaw is None or self.select(now) != 'stereo':
             return
-        if self.select(now) != 'stereo':
+        self._st_chain = True         # from here on the stereo chain covers the virtual yaw
+        if not chain or dt is None or dt <= 0.0:
+            return                    # (re-)anchor: the WIT covered up to here
+        if dt <= self.max_dt:
+            if self.resting and abs(self.st_rate) < self.rest_max_rate:
+                return                # zero-rate update: still robot, no yaw random walk
+            self.yaw = wrap(self.yaw + self.st_rate * dt)
             return
-        if self.resting and abs(self.st_rate) < self.rest_max_rate:
-            return                    # zero-rate update: still robot, no yaw random walk
-        self.yaw = wrap(self.yaw + self.st_rate * dt)
+        if dt > self.max_gap:
+            self.dropped += 1         # too long to bridge: stale
+            return
+        # a stamp gap (dropped or late samples): bridge it, never discard the rotation
+        rate, by_wit = 0.5 * (prev_rate + self.st_rate), False
+        if (wit_ref is not None and wit_ref[1] is not None and self.wit_t is not None
+                and self.wit_t - wit_ref[1] >= 0.5 * dt):
+            dw = wrap(self.wit_yaw - wit_ref[0])
+            w_rate = dw / (self.wit_t - wit_ref[1])
+            # a WIT yaw that did not move at all is its small-rate clamp, not a still robot;
+            # an implausible rate is a WIT yaw reset: use the stereo rates then
+            if dw != 0.0 and abs(w_rate) <= GAP_MAX_WIT_RATE:
+                rate, by_wit = w_rate, True
+        self.gaps += 1
+        self.gaps_wit += by_wit
+        self.gap_s += dt
+        self.gap_max_s = max(self.gap_max_s, dt)
+        if self.resting and abs(rate) < self.rest_max_rate:
+            return
+        self.yaw = wrap(self.yaw + rate * dt)
 
     def _finish_rest_window(self):
         a, self._acc = self._acc, []
@@ -934,17 +992,18 @@ class YawSource:
     def on_wit(self, now, wit_yaw, wit_gz):
         """Every WIT sample (drives the output). Returns the virtual yaw."""
         prev, self.wit_yaw, self.wit_gz = self.wit_yaw, wit_yaw, wit_gz
+        self.wit_t = now
         if self.yaw is None:
             k = self._pending_k or 0.0
             self._pending_k = None
             self.yaw = wrap(wit_yaw + k)
             return self.yaw
-        # WIT increment when WIT is active, or while the stereo stream has a gap longer than
-        # max_dt (stereo skips such gaps, see on_stereo; samples come in ~20 ms FIFO bursts)
-        # but is not stale yet: no motion is lost before the switch, none counted twice
-        gap = self.st_mono is None or self.st_mono < now - self.max_dt
-        if prev is not None and (self.select(now) == 'wit' or gap):
-            self.yaw = wrap(self.yaw + wrap(wit_yaw - prev))
+        if prev is None or self.select(now) == 'stereo':
+            return self.yaw           # the stereo chain covers this interval (see on_stereo)
+        if self._st_chain and self._wit_ref is not None and self._wit_ref[0] is not None:
+            prev = self._wit_ref[0]   # take over from the last stereo-covered sample
+        self._st_chain = False
+        self.yaw = wrap(self.yaw + wrap(wit_yaw - prev))
         return self.yaw
 
     def status(self, now):
@@ -953,8 +1012,46 @@ class YawSource:
                 'stereo_bias_dps': round(math.degrees(self.bias), 4),
                 'stereo_bias_windows': self.bias_windows, 'resting': self.resting,
                 'source_switches': self.switches,
+                'stereo_gaps': self.gaps, 'stereo_gap_s': round(self.gap_s, 3),
+                'stereo_gap_max_s': round(self.gap_max_s, 3),
+                'stereo_gaps_wit': self.gaps_wit, 'stereo_dropped': self.dropped,
                 'virtual_minus_wit_deg': None if (self.yaw is None or self.wit_yaw is None)
                 else round(math.degrees(wrap(self.yaw - self.wit_yaw)), 2)}
+
+
+class DivergenceWatch:
+    """Field diagnostic: does the virtual yaw walk away from the WIT while stereo is active?
+
+    Fed the status ``virtual_minus_wit_deg`` (1 Hz). Returns a warning text when the value
+    moved more than ``warn_deg`` within ``window`` s while the stereo source stayed active,
+    at most once per ``min_interval`` s. Samples taken while the WIT was active (the two
+    yaws then move together) or with no value restart the window.
+    """
+
+    def __init__(self, warn_deg=5.0, window=60.0, min_interval=60.0):
+        self.warn_deg, self.window, self.min_interval = warn_deg, window, min_interval
+        self._hist = []               # (t, value_deg)
+        self._warned = None
+
+    def update(self, now, value_deg, stereo_active):
+        if value_deg is None or not stereo_active or self.warn_deg <= 0.0:
+            self._hist = []
+            return None
+        self._hist = [(t, v) for t, v in self._hist if now - t <= self.window]
+        worst = None
+        for t, v in self._hist:
+            d = (value_deg - v + 180.0) % 360.0 - 180.0
+            if worst is None or abs(d) > abs(worst[1]):
+                worst = (t, d, v)
+        self._hist.append((now, value_deg))
+        if worst is None or abs(worst[1]) <= self.warn_deg:
+            return None
+        if self._warned is not None and now - self._warned < self.min_interval:
+            return None
+        self._warned = now
+        return ('virtual yaw diverging from the WIT yaw: virtual_minus_wit %.1f deg now, '
+                '%.1f deg %.0f s ago (%+.1f deg) with the stereo source active'
+                % (value_deg, worst[2], now - worst[0], worst[1]))
 
 
 # ---------------------------------------------------------------------- persistence
