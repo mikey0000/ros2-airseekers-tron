@@ -227,6 +227,34 @@ behavior_tree_node:
     manual_blade_requires_enable: true
 
     # --- boundary ----------------------------------------------------------
+    # Hard boundary (task 0.4 a; run 3: seven transit excursions up to 0.85 m; owner: "going
+    # outside the area is an immediate fail"). Robot centre > hard_boundary_m outside (mowing
+    # areas U drawn paths U dock corridor; map_server ~/outside_m) in TRANSIT, MOWING or a
+    # dock phase: cancel, zero, blade off, then reverse along the driven EKF track (last
+    # hard_boundary_trail_m) at hard_boundary_retrace_speed_mps (<= 0.10, /cmd_vel_emergency)
+    # until back inside + hard_boundary_retrace_extra_m (max hard_boundary_retrace_max_m).
+    # Both wheels roll backwards (inner >= hard_boundary_min_inner_mps); a heading error >
+    # hard_boundary_pivot_err_rad is turned on the spot first (pivot hard_boundary_pivot_rps).
+    # Counts as a transit abort; the hard_boundary_max_aborts-th excursion of a mission (and
+    # any failed retrace) -> STUCK_NEEDS_HELP. Heading-calibration drive: stop only.
+    # false = off (revert; the MOWING-only soft pause below stays).
+    hard_boundary: true
+    hard_boundary_m: 0.10
+    hard_boundary_stale_s: 1.0        # older ~/outside_m = no check
+    hard_boundary_max_aborts: 2
+    hard_boundary_trail_m: 1.5
+    hard_boundary_trail_step_m: 0.05
+    hard_boundary_pause_s: 0.5
+    hard_boundary_retrace_speed_mps: 0.10
+    hard_boundary_retrace_extra_m: 0.10
+    hard_boundary_retrace_max_m: 1.0
+    hard_boundary_lookahead_m: 0.25
+    hard_boundary_min_inner_mps: 0.06
+    hard_boundary_track_width_m: 0.48
+    hard_boundary_pivot_err_rad: 0.6
+    hard_boundary_pivot_rps: 0.3
+    hard_boundary_progress_s: 3.0
+    hard_boundary_progress_m: 0.05
     boundary_recover_after_s: 3.0     # soft violation while MOWING: pause this long, then ...
     boundary_max_recoveries: 2        # ... up to this many blade-off recovery transits per sub-path
     boundary_recovery_advance_m: 1.0  # recovery target: this far ahead on the sub-path; then latch

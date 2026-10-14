@@ -43,7 +43,7 @@ from sensor_msgs.msg import BatteryState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.msg import Log
 from rcl_interfaces.srv import SetParameters
-from std_msgs.msg import Bool, Int16, String
+from std_msgs.msg import Bool, Float32, Int16, String
 from std_srvs.srv import Empty, SetBool, Trigger
 
 from mower_interfaces.action import Dock, Undock
@@ -79,6 +79,8 @@ TOPIC_DEFAULTS = {
     'odom_topic': '/odometry/filtered_map',
     'boundary_violation_topic': '/map_server_node/boundary_violation',
     'lethal_boundary_violation_topic': '/map_server_node/lethal_boundary_violation',
+    # task 0.4 (a): Float32 distance outside areas U paths U dock corridor ('' = no hard boundary)
+    'outside_distance_topic': '/map_server_node/outside_m',
     # outputs (relative names resolve under /behavior_tree_node)
     'high_level_status_topic': '~/high_level_status',
     'coverage_resume_topic': '~/coverage_resume_available',
@@ -300,6 +302,9 @@ class MissionNode(Node):
         sub(Bool, '/stuck', self._on_stuck, latched, parser=flat_parser(Bool))
         sub(Bool, p['lethal_boundary_violation_topic'], self._on_lethal, 1,
             parser=flat_parser(Bool))
+        if p['outside_distance_topic']:
+            sub(Float32, p['outside_distance_topic'], self._on_outside, 1,
+                parser=flat_parser(Float32), sampled=True, with_receipt=True)
         sub(String, p['heading_status_topic'], self._on_heading, latched)
         sub(String, p['localization_status_topic'], self._on_localization, latched)
         # commanded deck height (mcu_node, latched): live height changes during a mow
@@ -662,6 +667,11 @@ class MissionNode(Node):
         with self._lock:
             self.fsm.inputs.lethal_boundary_violation = bool(msg.data)
 
+    def _on_outside(self, msg, receipt):
+        with self._lock:
+            self.fsm.inputs.outside_m = float(msg.data)
+            self.fsm.inputs.outside_stamp = receipt
+
     # ------------------------------------------------------------------
     # timers / services
     # ------------------------------------------------------------------
@@ -846,6 +856,7 @@ class MissionNode(Node):
                            i.stereo_stale_stamp is not None
                            and now - i.stereo_stale_stamp <= 15.0) else None,
                        'boundary_violation': bool(i.boundary_violation),
+                       'outside_m': i.outside_m,
                        'emergency': bool(self.fsm.status().get('emergency')),
                        'lift': bool(i.lift), 'stop_button': bool(i.stop_button),
                        'rain': bool(i.rain), 'docked': bool(i.docked),

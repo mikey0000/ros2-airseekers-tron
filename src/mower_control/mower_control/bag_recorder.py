@@ -113,13 +113,15 @@ DEFAULT_TOPICS = [
     '/mower_base/key_pressed', '/dig_stall', '/stuck_event',
     '/mower_docking/state', '/mower_docking/marker_in_view',
     '/map_server_node/lethal_boundary_violation', '/map_server_node/replan_needed',
+    '/map_server_node/outside_m',     # task 0.4 (a) hard boundary input (10 Hz float)
     '/map_server_node/boundary_status', '/map_server_node/terrain_summary',
     # diagnostics (9 Hz)
     '/diagnostics',
 ]
 
 # 'detour' is a routine decision, not an incident (several per mow); the rest are aborts.
-DEFAULT_PIN_KINDS = ['subpath_failed', 'transit_abort', 'follow_abort', 'stuck']
+# 'boundary': a hard-boundary excursion (task 0.4 a) is an immediate fail, always pinned.
+DEFAULT_PIN_KINDS = ['subpath_failed', 'transit_abort', 'follow_abort', 'stuck', 'boundary']
 
 # /mission/activity modes that allow the low-power ring (mower_mission activity.LOW_POWER;
 # anything else, including no message yet, is active).

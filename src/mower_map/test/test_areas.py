@@ -261,6 +261,24 @@ def test_boundary_classifier_debounce_and_lethal():
     assert bc.update(*core.robot_area_status(5, 5, areas)) == (False, False)
 
 
+def test_outside_distance_counts_areas_paths_and_the_dock_corridor():
+    """Task 0.4 (a): the hard boundary is areas U drawn paths U dock corridor."""
+    s = _store()
+    path = [(10.0, 4.6), (16.0, 4.6), (16.0, 5.4), (10.0, 5.4)]     # 0.8 m band east
+    s.add_area('path', path, True)
+    areas = s.areas
+    assert core.outside_distance(2.0, 2.0, areas) == 0.0             # in the lawn
+    assert core.outside_distance(5.0, 5.0, areas) == 0.0             # hole ignored
+    assert core.outside_distance(13.0, 5.0, areas) == 0.0            # on the path
+    assert core.outside_distance(13.0, 5.5, areas) == pytest.approx(0.1)
+    assert core.outside_distance(10.11, 2.0, areas) == pytest.approx(0.11)
+    dock = core.DockPose(x=12.0, y=-1.0, yaw=math.pi / 2)
+    cor = core.dock_corridor(dock, areas, 0.8, 0.35, 5.0)
+    assert core.outside_distance(12.0, -1.0, areas) > 0.5
+    assert core.outside_distance(12.0, -1.0, areas, [cor.polygon()]) == 0.0
+    assert core.outside_distance(1.0, 1.0, []) == math.inf
+
+
 def test_recovery_point():
     areas = _store().areas
     r = core.recovery_point(12.0, 5.0, areas, offset=0.8)

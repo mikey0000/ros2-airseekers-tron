@@ -246,6 +246,10 @@ STATE_CODES = {
 STUCK_PHASES = ('TRANSIT', 'MOWING') + ('RETURNING_HOME', 'LOW_BATTERY_DOCKING',
                                         'RAIN_DETECTED_DOCKING', 'COVERAGE_FAILED_DOCKING')
 STUCK_NEEDS_HELP_SUB = 'stuck: needs help at (%.2f, %.2f)'
+# Task 0.4 (a): autonomous driving phases the hard boundary applies in (the heading
+# calibration drive in WAITING_FOR_RTK too, see _hard_boundary_tick).
+HARD_BOUNDARY_PHASES = ('TRANSIT', 'MOWING') + ('RETURNING_HOME', 'LOW_BATTERY_DOCKING',
+                                                'RAIN_DETECTED_DOCKING', 'COVERAGE_FAILED_DOCKING')
 
 IDLE_NAMES = ('IDLE', 'IDLE_DOCKED', 'CHARGING')
 # ~/preview_plan is accepted only here (no mission session, robot at rest)
@@ -418,6 +422,10 @@ class Inputs:
     pose: Optional[tuple] = None        # (x, y, yaw) in map
     boundary_violation: bool = False
     lethal_boundary_violation: bool = False
+    # /map_server_node/outside_m (Float32, task 0.4 a): distance of the robot centre outside
+    # (mowing areas U drawn paths U dock corridor), 0 inside; outside_stamp = receipt time
+    outside_m: Optional[float] = None
+    outside_stamp: Optional[float] = None
     # /heading_aligner/status (latched JSON): aligned + source (none|file|dock|cog)
     heading_aligned: bool = False
     heading_source: str = 'none'
@@ -703,6 +711,39 @@ class Params:
     # (blade on as soon as MANUAL_MOW is entered).
     manual_blade_requires_enable: bool = False
     blade_spinup_s: float = 2.0         # used when confirmation is disabled
+    # --- hard boundary (task 0.4 a; 2026-10-14 run 3: seven transit excursions up to 0.85 m
+    # outside the areas and paths; owner: "going outside the area is an immediate fail") ---
+    # The robot centre more than hard_boundary_m outside (mowing areas U drawn paths U the
+    # dock corridor; map_server ~/outside_m, fresher than hard_boundary_stale_s) in TRANSIT,
+    # MOWING or a dock phase: cancel the goal, zero, blade off, then retrace the driven EKF
+    # track (the last hard_boundary_trail_m, newest first) in reverse at
+    # hard_boundary_retrace_speed_mps on /cmd_vel_emergency until back inside plus
+    # hard_boundary_retrace_extra_m (at most hard_boundary_retrace_max_m). Steering keeps
+    # both wheels rolling backwards (inner wheel >= hard_boundary_min_inner_mps); a heading
+    # error above hard_boundary_pivot_err_rad is turned on the spot first (counter-rotating
+    # pivot at hard_boundary_pivot_rps). Counts as a transit abort (TRANSIT: the transit
+    # retry path; MOWING: the sub-path is resumed; dock phases: the dock is re-run); the
+    # hard_boundary_max_aborts-th excursion of a mission ends in STUCK_NEEDS_HELP (after the
+    # retrace). Still outside after the retrace, no progress, or no pose -> STUCK_NEEDS_HELP.
+    # The heading calibration drive (unverified heading) is only stopped, not retraced.
+    # hard_boundary false = off (revert flag; the MOWING-only soft pause below still runs).
+    hard_boundary: bool = True
+    hard_boundary_m: float = 0.10
+    hard_boundary_stale_s: float = 1.0
+    hard_boundary_max_aborts: int = 2
+    hard_boundary_trail_m: float = 1.5
+    hard_boundary_trail_step_m: float = 0.05
+    hard_boundary_pause_s: float = 0.5
+    hard_boundary_retrace_speed_mps: float = 0.10
+    hard_boundary_retrace_extra_m: float = 0.10
+    hard_boundary_retrace_max_m: float = 1.0
+    hard_boundary_lookahead_m: float = 0.25
+    hard_boundary_min_inner_mps: float = 0.06
+    hard_boundary_track_width_m: float = 0.48     # URDF (cmd_vel_slew TRACK_WIDTH_M)
+    hard_boundary_pivot_err_rad: float = 0.6
+    hard_boundary_pivot_rps: float = 0.3
+    hard_boundary_progress_s: float = 3.0
+    hard_boundary_progress_m: float = 0.05        # driven + 0.24 m x |yaw| turned
     boundary_recover_after_s: float = 3.0     # pause this long, then a recovery transit
     boundary_max_recoveries: int = 2          # recovery transits per sub-path before latching
     boundary_recovery_advance_m: float = 1.0  # recovery target: this far ahead on the sub-path
@@ -983,6 +1024,9 @@ class MissionFSM:
         self._tilt_hist = []                # [[t, x, y]] steep spots backed out of
         self._tilt_trail = []               # [(x, y)] recent driven track, oldest first
         self._tilt_capped = False           # caution speed cap sent to the controller
+        self._hb = None                     # hard-boundary retrace in progress (task 0.4 a)
+        self._hb_count = 0                  # hard-boundary excursions of this mission
+        self._hb_trail = []                 # [(x, y)] recent driven EKF track, oldest first
 
     # ==================================================================
     # presentation
@@ -1606,6 +1650,7 @@ class MissionFSM:
         """Returns True when a guard owns this tick (phase logic skipped)."""
         self._stuck_watch()
         self._tilt_watch()
+        self._hard_boundary_watch()
         cause = self._emergency_cause()
         if cause:
             if not self._emergency:
@@ -1625,9 +1670,13 @@ class MissionFSM:
             return True
         if self._tilt_tick():
             return True
+        if self._hard_boundary_tick():
+            return True
 
         i = self.inputs
-        # Boundary rules apply only where the blade may be on. PLANNING right
+        # Soft / lethal boundary rules (map_server flags, mowing areas only) apply only where
+        # the blade may be on; the hard boundary above (task 0.4 a, areas U paths U dock
+        # corridor at 0.10 m) covers every autonomous driving phase. PLANNING right
         # after an undock and blade-off TRANSITs (to/from the dock, along drawn
         # paths, the return corridor) are legitimately outside the mowing areas:
         # the Nav2 keepout mask bounds them (2026-10-07: a lethal stop fired in
@@ -1963,6 +2012,7 @@ class MissionFSM:
     def _home(self):
         if self.phase in DOCK_PHASES:
             return True
+        self._hb_count = 0
         self._leave_current_mode('home')
         if self.mission is not None:
             self._interrupt_mission('home')
@@ -2106,6 +2156,8 @@ class MissionFSM:
             self._log('warn', 'start_in_area(%d) refused: mowing session running' % single)
             return False
         self._preview_drop('mission started')
+        if not auto:
+            self._hb_count = 0              # task 0.4 (a): excursions are counted per mission
         if self.phase in DOCK_PHASES:
             self._cancel_all('start')
         self._leave_current_mode('start')
@@ -4786,6 +4838,7 @@ class MissionFSM:
             self._log('info', 'stuck: cleared by the operator (command %d)' % cmd)
             self._stuck_hist = []
             self._tilt_hist = []
+            self._hb_count = 0
             self._stuck_ignore_until = self._now + float(self.p.stuck_ignore_after_s)
             self._fx.append(ResetStuckGuard())
             if cmd != CMD_STOP and cmd != CMD_RESET_EMERGENCY:
@@ -5160,6 +5213,213 @@ class MissionFSM:
         self._tob = None
         self._go('STUCK_NEEDS_HELP', 'steep slope: needs help at (%.2f, %.2f)' % (x, y))
 
+
+    # ==================================================================
+    # hard boundary (task 0.4 a, 2026-10-14 run 3)
+    # ==================================================================
+    # map_server publishes ~/outside_m: the robot centre's distance outside the mowing
+    # areas U drawn paths U dock corridor (0 inside; the return corridor does NOT count).
+    # Beyond hard_boundary_m in an autonomous driving phase: stop, blade off, reverse along
+    # the driven track until back inside, count it, resume or give up (see Params).
+    def _outside(self):
+        """The fresh ~/outside_m, else None (no check without a recent value)."""
+        i = self.inputs
+        if i.outside_m is None or i.outside_stamp is None or \
+                self._now - i.outside_stamp > float(self.p.hard_boundary_stale_s):
+            return None
+        return float(i.outside_m)
+
+    def _hard_boundary_watch(self):
+        """Abort a retrace when something else took over (emergency, STOP, phase change)."""
+        k = self._hb
+        if k is None:
+            return
+        if self._emergency_cause() or self.phase != k['phase']:
+            self._log('warn', 'boundary retrace aborted (%s)' % (
+                self._emergency_cause() or 'state %s' % self.phase))
+            self._hb = None
+            self._fx.append(SuppressStuckGuard(False))
+            self._fx.append(DriveCmd(0.0, 0.0))
+
+    def _hb_trail_add(self):
+        pose = self.inputs.pose
+        if pose is None:
+            return
+        tr, step = self._hb_trail, max(0.01, float(self.p.hard_boundary_trail_step_m))
+        if tr and math.hypot(pose[0] - tr[-1][0], pose[1] - tr[-1][1]) < step:
+            return
+        tr.append((float(pose[0]), float(pose[1])))
+        del tr[:-(int(float(self.p.hard_boundary_trail_m) / step) + 1)]
+
+    def _hard_boundary_tick(self):
+        """Returns True while the hard boundary owns the tick."""
+        if not self.p.hard_boundary:
+            return False
+        if self._hb is not None:
+            self._hb_retrace_tick()
+            return True
+        self._hb_trail_add()
+        hcal = self.phase == 'WAITING_FOR_RTK' and self._hcal is not None
+        if self.phase not in HARD_BOUNDARY_PHASES and not hcal:
+            return False
+        if self.phase in ('TRANSIT', 'MOWING') and self.mission is None:
+            return False
+        out = self._outside()
+        if out is None or out <= float(self.p.hard_boundary_m):
+            return False
+        pose = self.inputs.pose
+        where = '(%.2f, %.2f)' % (pose[0], pose[1]) if pose is not None else 'unknown pose'
+        if hcal:
+            # unverified heading: no retrace on the EKF track, just stop where it is
+            self._hcal_fail('left the mowing area by %.2f m at %s' % (out, where))
+            return True
+        self._hb_count += 1
+        self._log('error', 'HARD BOUNDARY: %.2f m outside the areas / paths at %s in %s (> %.2f '
+                           'm): cancel, zero, blade off, retrace the driven track (%d/%d this '
+                           'mission)' % (out, where, self.phase, float(self.p.hard_boundary_m),
+                                         self._hb_count, int(self.p.hard_boundary_max_aborts)))
+        if pose is None:
+            self._hb_needs_help('outside the boundary, no pose', (0.0, 0.0))
+            return True
+        m = self.mission
+        follow = m is not None and m.step == 'follow'
+        ox, oy = float(pose[0]), float(pose[1])
+        path = [q for q in reversed(self._hb_trail) if math.hypot(q[0] - ox, q[1] - oy) > 0.02]
+        self._hb = {'phase': self.phase, 'origin': (ox, oy), 'stage': 'pause', 't': self._now,
+                    'path': path, 'i': 0, 'follow': follow, 'out0': out,
+                    'dock_purpose': self._dock_purpose, 'driven': 0.0, 'last': tuple(pose),
+                    'prog': 0.0, 'prog_best': 0.0, 'prog_t': self._now, 'inside_at': None}
+        self._cancel_all('hard boundary')
+        self._blade_off('hard boundary')
+        self._fx.append(ZeroBurst())
+        self._fx.append(SuppressStuckGuard(True))
+        self._fx.append(RecordIncident('boundary', ox, oy, 'hard boundary: %.2f m outside in %s'
+                                       % (out, self.phase)))
+        self._loc = None
+        if m is not None:
+            if follow:
+                m.start_local = self._track_progress()
+            m.step = None
+        self._go(self.phase, 'boundary: %.2f m outside, stopping' % out)
+        return True
+
+    def _hb_cmd(self, pose):
+        """(v, w) of the retrace: reverse toward the next track point (pure pursuit on the
+        rear), both wheels rolling backwards (inner >= hard_boundary_min_inner_mps); a large
+        heading error is turned on the spot first (counter-rotating pivot >= 0.25 rad/s);
+        straight reverse once the track is used up."""
+        k, p = self._hb, self.p
+        v = -min(abs(float(p.hard_boundary_retrace_speed_mps)), 0.10)   # owner: slow reverse
+        path, la = k['path'], float(p.hard_boundary_lookahead_m)
+        while k['i'] < len(path) and math.hypot(path[k['i']][0] - pose[0],
+                                                path[k['i']][1] - pose[1]) < la:
+            k['i'] += 1
+        if k['i'] >= len(path):
+            return v, 0.0
+        tx, ty = path[k['i']]
+        err = geo.wrap_angle(math.atan2(ty - pose[1], tx - pose[0]) - (float(pose[2]) + math.pi))
+        if abs(err) > float(p.hard_boundary_pivot_err_rad):
+            return 0.0, math.copysign(max(0.25, abs(float(p.hard_boundary_pivot_rps))), err)
+        half = 0.5 * float(p.hard_boundary_track_width_m)
+        wmax = max(0.0, (abs(v) - float(p.hard_boundary_min_inner_mps)) / max(1e-3, half))
+        return v, max(-wmax, min(wmax, 1.5 * err))
+
+    def _hb_stop(self):
+        self._hb = None
+        self._fx.append(DriveCmd(0.0, 0.0))
+        self._fx.append(SuppressStuckGuard(False))
+
+    def _hb_retrace_tick(self):
+        k, pose, now, p = self._hb, self.inputs.pose, self._now, self.p
+        if pose is None:
+            self._hb_stop()
+            self._hb_needs_help('pose lost during the boundary retrace', k['origin'])
+            return
+        if k['stage'] == 'pause':
+            if now - k['t'] < float(p.hard_boundary_pause_s):
+                return
+            k['stage'], k['prog_t'], k['last'] = 'drive', now, tuple(pose)
+            self._go(self.phase, 'boundary: reversing along the driven track')
+            self._log('info', 'boundary: reversing along %d track points at %.2f m/s'
+                      % (len(k['path']), min(abs(float(p.hard_boundary_retrace_speed_mps)),
+                                             0.10)))
+        last = k['last']
+        step = math.hypot(pose[0] - last[0], pose[1] - last[1])
+        turn = abs(geo.wrap_angle(float(pose[2]) - float(last[2])))
+        k['driven'] += step
+        k['prog'] += step + 0.5 * float(p.hard_boundary_track_width_m) * turn
+        k['last'] = tuple(pose)
+        if k['prog'] >= k['prog_best'] + float(p.hard_boundary_progress_m):
+            k['prog_best'], k['prog_t'] = k['prog'], now
+        out = self._outside()
+        if out is not None and out <= 1e-3:
+            if k['inside_at'] is None:
+                k['inside_at'] = k['driven']
+            if k['driven'] - k['inside_at'] >= float(p.hard_boundary_retrace_extra_m) or \
+                    k['i'] >= len(k['path']):
+                self._hb_retraced()
+                return
+        elif out is not None:
+            k['inside_at'] = None
+        if k['driven'] >= float(p.hard_boundary_retrace_max_m):
+            if out is not None and out <= float(p.hard_boundary_m):
+                self._hb_retraced()
+                return
+            self._hb_stop()
+            self._hb_needs_help('still %s outside after reversing %.2f m'
+                                % ('?' if out is None else '%.2f m' % out, k['driven']),
+                                k['origin'])
+            return
+        if now - k['prog_t'] > float(p.hard_boundary_progress_s):
+            self._hb_stop()
+            self._hb_needs_help('boundary retrace made no progress in %.0f s'
+                                % float(p.hard_boundary_progress_s), k['origin'])
+            return
+        self._fx.append(DriveCmd(*self._hb_cmd(pose)))
+
+    def _hb_retraced(self):
+        k = self._hb
+        self._hb_stop()
+        self._hb_trail = []
+        ox, oy = k['origin']
+        n, lim = self._hb_count, int(self.p.hard_boundary_max_aborts)
+        self._log('info', 'boundary: back inside after reversing %.2f m (excursion %d/%d)'
+                  % (k['driven'], n, lim))
+        if n >= lim:
+            self._hb_needs_help('left the boundary %d times in this mission' % n, (ox, oy))
+            return
+        why = 'left the boundary (%.2f m outside)' % k['out0']
+        if k['phase'] in DOCK_PHASES:
+            self._dock(k['phase'], k['dock_purpose'], 'resuming after the boundary retrace')
+            return
+        m = self.mission
+        if m is None or m.area_idx is None or not m.subpaths:
+            self._go_idle('boundary retrace: nothing to resume')
+            return
+        if k['phase'] == 'TRANSIT':
+            if m.detour is not None:
+                self._detour_failed(why)
+                return
+            m.route_fallback = False          # the retry asks for the drawn route again
+            self._transit_abort(why)
+            return
+        m.detour = None
+        self._dispatch()
+
+    def _hb_needs_help(self, why, pose):
+        """Like the stuck guard's give-up (same latched phase, same operator clear)."""
+        x, y = float(pose[0]), float(pose[1])
+        self._log('error', 'STUCK_NEEDS_HELP: %s at (%.2f, %.2f): motion stopped, blade off '
+                  '(STOP / START / MANUAL to clear)' % (why, x, y))
+        if self.mission is not None:
+            self._interrupt_mission('boundary')
+        self._cancel_all('boundary')
+        self._blade_off('boundary')
+        self._fx.append(ZeroBurst())
+        self._dock_purpose = None
+        self._resume_after = None
+        self._hb = None
+        self._go('STUCK_NEEDS_HELP', 'boundary: needs help at (%.2f, %.2f)' % (x, y))
 
 
 # below these the robot counts as standing still for the in-path prediction
