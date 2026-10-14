@@ -119,7 +119,21 @@ behavior_tree_node:
     # route_cusp_radius_m whose heading is more than this off the robot's yaw the robot stops
     # and pivots in place (Nav2 Spin, route_cusp_spin_rps allowance) to the leg heading, then
     # follows it. One pivot per leg; a failed Spin still sends the leg. 0.0 = off.
-    route_corner_turn_rad: 1.5708
+    # 2026-10-15 sim on the real map: the dock path's drawn 90 deg corners were not split
+    # ("> pi/2" on 3-pose chords; exactly 90 failed, and a second corner within ~0.5 m of a
+    # split was skipped) and cost 0.20 m each. Corners are now measured between the straight
+    # runs either side (pose spacing / drawing wobble do not matter; neighbouring corners
+    # each get a split; small same-way bends within 0.3 m add up), inclusive with 1 deg.
+    # 1.38 rad (79 deg): an arc of the 0.5 m minimum turn radius cuts a corner of this angle
+    # by the 0.15 m pass limit (0.5 * (1 / cos(theta / 2) - 1) = 0.15 at 79.5 deg), so every
+    # drawn ~90 deg corner (and an 80 deg one) is a stop-and-pivot. Revert threshold: 1.5708.
+    route_corner_turn_rad: 1.38
+    # FollowPath goal checker for a route leg that ends at a split corner (not the last leg):
+    # with general_goal_checker (xy 0.25 m) the leg ended ~0.2 m short of the corner and the
+    # pivot happened there (sim: +0.2 m off the drawn line). LegGoalChecker: within 0.08 m,
+    # or past the closest approach within 0.20 m; the leg's end yaw is the run into the
+    # corner. '' = route_goal_checker_id for every leg (revert).
+    route_corner_goal_checker_id: coverage_leg_goal_checker
     # The costmap-planner fallback stays only for a start off the route graph and a route
     # abort away from any cusp, and is bounded: the robot's distance from the drawn network
     # (cross-track to the route it replaces; 0 inside a mowing area) is checked every tick
@@ -233,7 +247,9 @@ behavior_tree_node:
     # dock phase: cancel, zero, blade off, then reverse along the driven EKF track (last
     # hard_boundary_trail_m) at hard_boundary_retrace_speed_mps (<= 0.10, /cmd_vel_emergency)
     # until back inside + hard_boundary_retrace_extra_m (max hard_boundary_retrace_max_m, and
-    # never beyond the recorded track: no blind reverse).
+    # never beyond the recorded track: no blind reverse). Back inside = a fresh ~/outside_m
+    # <= 0 (2026-10-15 sim fix: not <= hard_boundary_m); the track or the max running out
+    # while still outside (or with no fresh outside_m) -> STUCK_NEEDS_HELP, never a resume.
     # Both wheels roll backwards (inner >= hard_boundary_min_inner_mps); a heading error >
     # hard_boundary_pivot_err_rad is turned on the spot first (pivot hard_boundary_pivot_rps).
     # Counts as a transit abort; the hard_boundary_max_aborts-th excursion of a mission (and

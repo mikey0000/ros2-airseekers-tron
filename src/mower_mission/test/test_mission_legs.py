@@ -550,8 +550,19 @@ def test_route_corner_100_deg_gets_an_about_turn_before_the_next_leg():
     assert len(starts(h, m, f.ACT_SPIN)) == 1 and not starts(h, m, f.ACT_NAV)
 
 
-def test_route_corner_80_deg_is_driven_without_an_about_turn():
+def test_route_corner_80_deg_is_split_at_the_default_threshold():
+    """2026-10-15: route_corner_turn_rad 1.38 (79 deg): an 80 deg corner stops and pivots."""
     h = _route_h()
+    assert abs(h.fsm.p.route_corner_turn_rad - 1.38) < 1e-9
+    _answer_route(h, resp=_route_resp(_corner_route(80.0, h.fsm.mission.transit_target)))
+    assert len(h.fsm._route_legs['legs']) == 2
+    assert h.fsm._route_legs['legs'][0][-1][:2] == (2.0, 0.0)
+    h.finish(f.ACT_FOLLOW)
+    assert abs(h.goal(f.ACT_SPIN)['angle'] - math.radians(80.0)) < 0.1
+
+
+def test_route_corner_80_deg_is_driven_without_an_about_turn_at_the_run4_threshold():
+    h = _route_h(route_corner_turn_rad=1.5708)
     route = _corner_route(80.0, h.fsm.mission.transit_target)
     _answer_route(h, resp=_route_resp(route))
     assert len(h.fsm._route_legs['legs']) == 1

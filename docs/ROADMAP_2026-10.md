@@ -96,13 +96,24 @@ goal → change → test → pass criterion → revert.
           calibration drive: stopped only. Params `hard_boundary_m` 0.10,
           `hard_boundary_max_aborts` 2, `hard_boundary_retrace_*`, `hard_boundary_trail_m` 1.5.
           Revert: `hard_boundary: false`.
+          2026-10-15 sim fix (`ws/hb-fixes`): "back inside" only on a fresh `outside_m` ≤ 0
+          (inside + 0.10 m, or inside when the track / max ends); still outside (or no fresh
+          reading) at the track end → STUCK_NEEDS_HELP, never a resume (was: resumed at
+          ≤ `hard_boundary_m`, sim: 0.066 m outside).
       (b) `cmd_vel_slew`: `turn_shaper_pivot_instead` (true), `_ratio` 0.5, `_hysteresis` 0.1.
           Revert: `turn_shaper_pivot_instead: false`.
       (c) `nav2_params.yaml` FollowPath `vx_min` −0.10, PreferForwardCritic kept; nothing
           downstream clamps negative vx. Revert: `vx_min: 0.0`.
-      (d) `route_corner_turn_rad` 1.5708: split at corners > 90°, Spin to the leg heading
-          before a leg > 90° off the robot's yaw (transit and dock route);
-          `route_cusp_radius_m` 1.0. Revert: `route_corner_turn_rad: 0.0`.
+      (d) `route_corner_turn_rad` 1.38 (2026-10-15 sim fix, was 1.5708): split at corners
+          ≥ 79° (inclusive, 1° tolerance), Spin to the leg heading before a leg ≥ 79° off the
+          robot's yaw (transit and dock route); corners measured between the straight runs
+          either side (`geometry.route_corners`: spacing / wobble independent, neighbouring
+          sharp corners each split); the leg into a split corner ends on it
+          (`route_corner_goal_checker_id` coverage_leg_goal_checker; it ended 0.2 m short
+          with general_goal_checker); `route_cusp_radius_m` 1.0. Sim: every split corner
+          ≤ 0.11–0.13 m (was 0.19–0.22); MPPI still cuts the dock path's 39° / 57° bends by
+          0.20–0.34 m. Revert: `route_corner_turn_rad: 0.0` (run 4 threshold 1.5708,
+          checker `''`).
       (e) `dock_server_nav_max_m` 0.35, `dock_route_retries` 2, `dock_approach_distance_m`
           0.8: the docking server only near the approach pose, else the dock route again,
           then NAV_TO_DOCK_FAILED in place. Revert: `dock_server_nav_max_m: 0.0`.
