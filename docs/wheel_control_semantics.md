@@ -139,7 +139,8 @@ transit to the dock approach (`MissionFSM._dock()`), which drove 151 one-wheel t
 unshaped on 2026-10-14; the marker-guided docking/undocking controller publishes on
 `/cmd_vel_docking` in those same phases and is never shaped, nor are the bumper, emergency
 and teleop lanes (teleop only with `shape_manual`). With no lane heard within its timeout
-the phase-only rule applies (TRANSIT/MOWING/BOUNDARY_PAUSED).
+the phase-only rule applies (TRANSIT/MOWING/BOUNDARY_PAUSED). `turn_shaper_dock_transit:
+false` (live-settable) leaves the dock phases unshaped again.
 
 Slow pure rotations (fix 8, 2026-10-14): from 2026-10-07 until fix 8 a pure rotation slower
 than 0.25 rad/s passed unchanged, because snapping it had turned the controller's small

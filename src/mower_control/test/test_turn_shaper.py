@@ -375,3 +375,12 @@ def test_lane_switch_to_docking_drops_the_latch():
     assert ts.regime == 'pivot'
     assert ts.apply(-0.05, 0.1, 'RETURNING_HOME', DT, 'docking') == (-0.05, 0.1)
     assert ts.regime is None and ts.status == 'pass'
+
+
+def test_dock_transit_param_off_restores_phase_exemption():
+    from mower_control.cmd_vel_slew import TURN_DEFAULTS, set_turn_param
+    assert TURN_DEFAULTS['turn_shaper_dock_transit'] is True
+    ts = TurnShaper()
+    set_turn_param(ts, 'turn_shaper_dock_transit', False)
+    assert ts.apply(0.016, 0.09, 'RETURNING_HOME', DT, 'navigation') == (0.016, 0.09)
+    assert ts.apply(0.08, 0.2, 'TRANSIT', DT, 'navigation') != (0.08, 0.2)

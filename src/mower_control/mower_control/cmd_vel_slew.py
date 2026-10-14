@@ -90,6 +90,11 @@ Parameters
                                   sub-deadband rotations that never turned the robot)
 ``turn_shaper_pivot_deadband_rps`` ``0.03``  |angular| of a pure rotation below this is
                                   an exact stop (0, 0) (only with ``turn_shaper_pure_pivot``)
+``turn_shaper_dock_transit``   ``true``  shape navigation-lane commands in the dock phases
+                                  (RETURNING_HOME, LOW_BATTERY_DOCKING,
+                                  RAIN_DETECTED_DOCKING, COVERAGE_FAILED_DOCKING: the
+                                  nav-driven transit to the dock); the docking lane is
+                                  never shaped either way; false = dock phases unshaped
 ``applied_log_period`` ``1.0``    s between ``cmd_vel applied`` log lines
                                   (0 = every tick)
 ``idle_publish_s``     ``0.5``    s of all-zero output after the last non-zero output
@@ -850,9 +855,10 @@ class TurnShaper:
     """
 
     def __init__(self, enabled=True, shape_manual=False, hysteresis_mps=0.02, latch_ticks=6,
-                 **params):
+                 dock_transit=True, **params):
         self.enabled = bool(enabled)
         self.shape_manual = bool(shape_manual)
+        self.dock_transit = bool(dock_transit)
         self.hysteresis_mps = float(hysteresis_mps)
         self.latch_ticks = int(latch_ticks)
         self.params = dict(SHAPE_DEFAULTS)
@@ -871,7 +877,7 @@ class TurnShaper:
         * lane None (unknown: no lane heard within its timeout, or no lane tracker): the
           phase-only rule, ``SHAPE_PHASES`` (+ manual opt-in), as before fix 9;
         * ``navigation``: ``SHAPE_PHASES``, ``NAV_SHAPE_PHASES`` (the nav-driven return
-          transit) and the manual opt-in;
+          transit; ``dock_transit`` False = not, as before fix 9) and the manual opt-in;
         * ``teleop``: only the manual opt-in (``shape_manual`` in MANUAL_MOWING/RECORDING);
         * ``docking``, ``bumper``, ``emergency`` (and anything else): never. The
           marker-guided docking reverse (-0.05 m/s, small steering) must reach the MCU as
@@ -883,7 +889,8 @@ class TurnShaper:
         if lane is None:
             return phase in SHAPE_PHASES or manual
         if lane == NAV_LANE:
-            return phase in SHAPE_PHASES or phase in NAV_SHAPE_PHASES or manual
+            return (phase in SHAPE_PHASES or manual
+                    or (self.dock_transit and phase in NAV_SHAPE_PHASES))
         if lane == 'teleop':
             return manual
         return False
@@ -962,11 +969,13 @@ TURN_PARAMS = {   # node parameter -> (TurnShaper attribute / params key, type)
     'turn_shaper_latch_ticks': ('latch_ticks', int),
     'turn_shaper_pure_pivot': ('pure_pivot', bool),
     'turn_shaper_pivot_deadband_rps': ('pivot_deadband_rps', float),
+    'turn_shaper_dock_transit': ('dock_transit', bool),
 }
 TURN_DEFAULTS = {'turn_shaper': True, 'shape_manual': False, 'track_width_m': TRACK_WIDTH_M,
                  'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.3,
                  'turn_shaper_hysteresis_mps': 0.02, 'turn_shaper_latch_ticks': 6,
-                 'turn_shaper_pure_pivot': True, 'turn_shaper_pivot_deadband_rps': 0.03}
+                 'turn_shaper_pure_pivot': True, 'turn_shaper_pivot_deadband_rps': 0.03,
+                 'turn_shaper_dock_transit': True}
 SHAPE_LOG_PERIOD_S = 2.0      # turn-shaper INFO log: on state-kind change, at most every 2 s
 
 
