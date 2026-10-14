@@ -635,7 +635,18 @@ class Params:
     # yaw, the robot stops and pivots in place (Nav2 Spin) to the leg heading, then the leg is
     # sent. One about-turn per leg; a failed Spin sends the leg anyway (the follow judges).
     # 0 = off (the controller turns onto the leg itself, splits at route_split_turn_deg only).
-    route_corner_turn_rad: float = 1.5708
+    # 2026-10-15 sim (real map): the dock path's drawn 90 deg corners were not split (the
+    # test was "> pi/2" on single 3-pose chords: exactly 90 failed) and cost 0.20 m each.
+    # 1.38 rad (79 deg) is where an arc of the 0.5 m minimum turn radius cuts the corner by
+    # the 0.15 m pass limit (0.5 (1 / cos(theta / 2) - 1) = 0.15 -> theta = 79.5 deg), so a
+    # drawn ~90 deg corner (and an 80 deg one) stops and pivots; the test is inclusive with
+    # a 1 deg tolerance. Revert to the run 4 threshold: 1.5708.
+    route_corner_turn_rad: float = 1.38
+    # FollowPath goal checker of a route leg that ends at a split corner (not the last leg):
+    # the transit checker (general_goal_checker, xy 0.25 m) ended them ~0.2 m short of the
+    # corner, so the pivot happened there (+0.2 m off the drawn line). The leg checker ends
+    # within 0.08 m (or after the closest approach within 0.20 m). '' = route_goal_checker_id.
+    route_corner_goal_checker_id: str = 'coverage_leg_goal_checker'
     # The costmap-planner fallback (no route: start off the route graph; a route abort away
     # from any cusp) is bounded: once the robot's own distance from the drawn network (the
     # planned route if there was one; 0 inside a mowing area) exceeds this, the fallback is
@@ -3635,12 +3646,39 @@ class MissionFSM:
         self._send_route_leg('route')
 
     def _split_route(self, poses):
-        """Route poses -> FollowPath legs, split at turns sharper than
+        """Route poses -> FollowPath legs. Task 0.4 (d), route_corner_turn_rad > 0: split at
+        every corner of at least that angle (geometry.route_corners: the bend between the
+        straight runs either side, robust to pose spacing and drawing wobble; neighbouring
+        sharp corners each get their own split), the leg ending exactly on the corner pose
+        with its yaw along the run into the corner. 0 = the old split (turns sharper than
+        route_split_turn_deg over 3 poses either side, ~0.3 m)."""
+        corner = float(self.p.route_corner_turn_rad)
+        if corner <= 0.0:
+            return self._split_route_legacy(poses)
+        th = corner
+        if float(self.p.route_split_turn_deg) > 0.0:
+            th = min(th, math.radians(float(self.p.route_split_turn_deg)))
+        poses = list(poses)
+        cuts = [i for i, _t in geo.route_corners(poses, th, tol_rad=ROUTE_CORNER_TOL_RAD)]
+        if not cuts:
+            return [poses]
+        legs, s0 = [], 0
+        for c in cuts:
+            leg = list(poses[s0:c + 1])
+            end = leg[-1]
+            if len(end) >= 3:                 # arrive along the run into the corner
+                a = poses[c - 1]
+                leg[-1] = (end[0], end[1], math.atan2(end[1] - a[1], end[0] - a[0])) + \
+                    tuple(end[3:])
+            legs.append(leg)
+            s0 = c
+        legs.append(list(poses[s0:]))
+        return [lg for lg in legs if len(lg) >= 2] or [poses]
+
+    def _split_route_legacy(self, poses):
+        """Before task 0.4 (d) (route_corner_turn_rad 0): split at turns sharper than
         route_split_turn_deg (measured over 3 poses either side, ~0.3 m)."""
         th = math.radians(float(self.p.route_split_turn_deg))
-        corner = float(self.p.route_corner_turn_rad)
-        if corner > 0.0:                      # task 0.4 (d): every corner > it is a junction
-            th = corner if th <= 0 else min(th, corner)
         k = 3
         if th <= 0 or len(poses) < 2 * k + 2:
             return [list(poses)]
@@ -3772,7 +3810,7 @@ class MissionFSM:
         if heading is None:
             return False
         delta = geo.wrap_angle(heading - float(pose[2]))
-        if abs(delta) <= lim:
+        if abs(delta) < lim - ROUTE_CORNER_TOL_RAD:     # inclusive, as the split
             return False
         rl['turned'], rl['purpose'] = rl['i'], purpose
         self._log('info', 'route corner at (%.2f, %.2f): stop and pivot %.0f deg to the next '
@@ -3803,9 +3841,13 @@ class MissionFSM:
         rl = self._route_legs
         if self._route_corner_turn(purpose):
             return
+        checker = self.p.route_goal_checker_id
+        if rl['i'] + 1 < len(rl['legs']) and float(self.p.route_corner_turn_rad) > 0.0 and \
+                self.p.route_corner_goal_checker_id:
+            checker = self.p.route_corner_goal_checker_id   # task 0.4 (d): end on the corner
         self._start_action(ACT_FOLLOW, {'poses': rl['legs'][rl['i']],
                                         'controller_id': self.p.route_controller_id,
-                                        'goal_checker_id': self.p.route_goal_checker_id},
+                                        'goal_checker_id': checker},
                            self.p.transit_timeout_s, purpose=purpose)
 
     def _route_next_leg(self, outcome, purpose):
@@ -5437,6 +5479,9 @@ class MissionFSM:
         self._hb = None
         self._go('STUCK_NEEDS_HELP', 'boundary: needs help at (%.2f, %.2f)' % (x, y))
 
+
+# route_corner_turn_rad is inclusive with this tolerance (a drawn 90 deg corner measures 89.9)
+ROUTE_CORNER_TOL_RAD = math.radians(1.0)
 
 # below these the robot counts as standing still for the in-path prediction
 _STILL_V = 0.02     # m/s

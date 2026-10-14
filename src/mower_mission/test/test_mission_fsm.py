@@ -4240,6 +4240,7 @@ def _route_continuous_in_area(h):
 def test_continuous_blade_stays_on_when_the_route_stays_in_the_area():
     h = Harness(route_transits=True)
     _route_continuous_in_area(h)
+    h.fsm.inputs.pose = (4.0, 0.0, math.pi / 2)        # facing the route (no corner pivot)
     m = h.mark()
     _answer_route(h, resp=_route_resp([(4.0, 0.0, 0.0), (4.0, 2.5, 0.0), (4.0, 5.0, 0.0)],
                                       single_area=h.fsm.mission.area_idx))
@@ -4251,6 +4252,7 @@ def test_continuous_blade_stays_on_when_the_route_stays_in_the_area():
 def test_continuous_blade_turns_off_before_a_route_that_leaves_the_area():
     h = Harness(route_transits=True)
     _route_continuous_in_area(h)
+    h.fsm.inputs.pose = (4.0, 0.0, math.pi / 2)        # facing the route (no corner pivot)
     m = h.mark()
     _answer_route(h, resp=_route_resp([(4.0, 0.0, 0.0), (4.0, 2.5, 0.0), (4.0, 5.0, 0.0)],
                                       single_area=-1))
@@ -4378,7 +4380,10 @@ def test_split_route_at_sharp_turns_only():
     assert h.fsm._split_route(straight) == [straight]
     right_angle = [(0.1 * i, 0.0, 0.0) for i in range(15)] + \
         [(1.4, -0.1 * i, -1.57) for i in range(1, 15)]
-    assert len(h.fsm._split_route(right_angle)) == 1        # 90 deg < 100: one goal
+    legs = h.fsm._split_route(right_angle)                  # task 0.4 (d): 90 deg >= 79
+    assert len(legs) == 2 and math.hypot(legs[0][-1][0] - 1.4, legs[0][-1][1]) < 1e-6
+    h1 = _route_h(route_corner_turn_rad=0.0)                # revert: 90 deg < 100, one goal
+    assert len(h1.fsm._split_route(right_angle)) == 1
     h2 = _route_h(route_split_turn_deg=0.0, route_corner_turn_rad=0.0)
     assert len(h2.fsm._split_route(_hairpin())) == 1
 

@@ -493,3 +493,83 @@ def route_cusps(poses, angle_rad, window_m=0.3):
     if group:
         out.append(max(group, key=lambda g: g[1]))
     return [(i, float(poses[i][0]), float(poses[i][1]), h2) for i, _t, h2 in out]
+
+
+def route_corners(poses, angle_rad, window_m=0.3, simplify_m=0.02, min_arm_m=0.15,
+                  tol_rad=math.radians(1.0)):
+    """Corners of a route polyline that turn by at least ``angle_rad`` (inclusive, minus
+    ``tol_rad``), for splitting it into stop-and-pivot legs (task 0.4 d).
+
+    The bend angles are measured on the route simplified to its straight runs
+    (Douglas-Peucker at ``simplify_m``): the heading in and out of a vertex is the chord of
+    the whole run before / after it, so neither the pose spacing nor a hand-drawn wobble of
+    a few centimetres / degrees changes them, and a vertex lands on the drawn vertex (a
+    route pose). Bends that each stay under the threshold but turn the same way within a
+    ``window_m`` stretch of route (a corner drawn as two or three clicks, a tight arc) add up
+    to one corner, placed at the vertex where half of the sum is reached. A bend over the
+    threshold is always its own corner, however close the next one is (two sharp corners
+    0.3 m apart are each a stop-and-pivot: the robot drives the short run between them on
+    the centreline instead of cutting both). Corners closer than ``min_arm_m`` to either
+    route end are skipped (nothing to drive on that side).
+
+    Returns ``[(i, turn)]``: route pose index and the signed turn (rad, left > 0)."""
+    n = len(poses)
+    if angle_rad <= 0.0 or n < 3:
+        return []
+    cum = cumulative_lengths(poses)
+    pts = [(float(p[0]), float(p[1]), i) for i, p in enumerate(poses)]
+    verts = [q[2] for q in douglas_peucker(pts, max(1e-4, float(simplify_m)))]
+    if len(verts) < 3:
+        return []
+
+    def head(a, b):
+        return math.atan2(float(poses[b][1]) - float(poses[a][1]),
+                          float(poses[b][0]) - float(poses[a][0]))
+
+    bends = []                            # (index, signed turn) at each simplified vertex
+    for a, v, b in zip(verts, verts[1:], verts[2:]):
+        bends.append((v, wrap_angle(head(v, b) - head(a, v))))
+    lim = float(angle_rad) - float(tol_rad)
+    out, run = [], []
+
+    def flush():
+        # within a run of same-way sub-threshold bends, every stretch shorter than window_m
+        # whose bends add up to the threshold is one corner (the earliest such stretch first)
+        j = 0
+        while j < len(run):
+            hit = None
+            for a in range(j, len(run)):
+                acc = 0.0
+                for b in range(a, len(run)):
+                    if cum[run[b][0]] - cum[run[a][0]] >= window_m:
+                        break
+                    acc += run[b][1]
+                    if abs(acc) >= lim:
+                        hit = (a, b, acc)
+                        break
+                if hit:
+                    break
+            if hit is None:
+                break
+            a, b, acc = hit
+            half, pick = 0.0, run[b][0]
+            for i, t in run[a:b + 1]:
+                half += abs(t)
+                if half >= 0.5 * abs(acc) - 1e-9:
+                    pick = i
+                    break
+            out.append((pick, acc))
+            j = b + 1
+        del run[:]
+
+    for i, t in bends:
+        if abs(t) >= lim:
+            flush()
+            out.append((i, t))
+            continue
+        if run and (t * run[-1][1] <= 0.0 or cum[i] - cum[run[-1][0]] >= window_m):
+            flush()
+        run.append((i, t))
+    flush()
+    return [(i, t) for i, t in sorted(out)
+            if cum[i] >= min_arm_m - 1e-9 and cum[-1] - cum[i] >= min_arm_m - 1e-9]
