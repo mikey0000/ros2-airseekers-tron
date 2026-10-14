@@ -160,3 +160,30 @@ Phase 0 → 1.1 → 2.1 + 2.2 (one run, they are independent of 1.x) → 1.2 →
 decision → 3.x (one run each) → 4.x (needs 3.1/3.2 so slope turns are arcs) → 5.x.
 Every run: `scp` the pin, `zstd -dkq`, metrics, aligner series, a "Run N" entry. Stop and
 re-plan whenever a run shows a failure class not in this list.
+
+## 5. Handover state (2026-10-14, end of the Fable session)
+
+Deployed on the mower (master d084328 synced, container restarted): fixes 1–11, heading A/B,
+all parameters confirmed live. **The fix 10/11 field test is running now** (task 0.1).
+
+What to do with that run:
+1. `ls /userdata/ros2/mows/` on the mower, copy the newest pin, decompress, run the metrics
+   (`wheel_smoothness_field_tests.md` "Review loop"), then the aligner series:
+   `virtual_minus_wit_deg`, `offset_deg`, `stereo_gaps` over time from
+   `/heading_aligner/status` (the dump scripts of this session lived in the scratchpad; they
+   are 30-line sqlite + rclpy dumps, trivial to rewrite: read `wheel_bag_metrics.bag_files` +
+   `read_series` for the pattern).
+2. In the container log look for: "route cusp at", "about-turn", "Spin", "turn leg end …
+   cap", "leg loop", "transit fallback left the corridor", "navigate_to_pose" (should be
+   absent from a cusp), "Failed to make progress".
+3. Write "Run 3" into `wheel_smoothness_field_tests.md` with the pass criteria of task 0.1,
+   decide keep / revert, then move to 1.1.
+
+Known open risks for run 3: Spin may refuse at the dock junction if the corridor reads lethal
+in the local costmap (the route is re-sent, bounded by `route_cusp_retries`); the 8 cm leg
+tolerance is unchanged (task 0.2); heading still drifts ≈ 1 % of rotation (Phase 1).
+
+Branches / worktrees left in place under `../ros2_stack-wt/`: `wheel-smooth`, `pure-pivot`,
+`heading-gaps`, `mission-legs` (all merged with `--no-ff`). Nothing is pushed to origin.
+Untracked docs in the tree from other sessions (`AIRSEEKERS_BACKEND_TASKS.md`,
+`DEVELOPMENT.md`, `GUI_REBASE_*.md`) are not part of this work.
