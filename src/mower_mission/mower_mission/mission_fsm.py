@@ -580,6 +580,17 @@ class Params:
     # skips its own Nav2 leg within approach_skip_radius_m).
     route_transits: bool = True
     route_dock: bool = True
+    # Task 0.4 (e), run 3: the dock route aborted at (-0.69, 0.04) and the docking server then
+    # drove its own navigate_to_pose to the approach pose across the grass. The docking
+    # server is now started only within dock_server_nav_max_m of the approach pose (dock +
+    # dock_approach_distance_m along the dock yaw, = the dock route's end; mirrors map_server
+    # corridor_half_width_m); farther away the dock route is planned and driven again from
+    # the current pose, at most dock_route_retries more times, then NAV_TO_DOCK_FAILED (the
+    # robot stops where it is). An obstacle abort of the dock route waits (blocked wait)
+    # first. 0 = the old hand-over (the docking server navigates from anywhere).
+    dock_server_nav_max_m: float = 0.35
+    dock_approach_distance_m: float = 0.8     # = map_server / mower_docking approach_distance
+    dock_route_retries: int = 2
     route_controller_id: str = 'FollowPath'          # MPPI transit controller
     route_goal_checker_id: str = 'general_goal_checker'
     route_end_tolerance_m: float = 0.5   # route "success" farther from the target = failed
@@ -603,10 +614,20 @@ class Params:
     # the route from the cusp; at most route_cusp_retries about-turns per cusp (per sub-path
     # transit), then a transit abort (transit_retries; never the costmap planner).
     # 0 retries = the old behaviour (costmap fallback).
-    route_cusp_radius_m: float = 0.5
+    # Task 0.4 (d), run 3: the start abort happened 0.75 m past the junction, outside the old
+    # 0.5 m radius, so the costmap fallback ran again: 0.5 -> 1.0.
+    route_cusp_radius_m: float = 1.0
     route_cusp_angle_rad: float = 2.0
     route_cusp_retries: int = 2
     route_cusp_spin_rps: float = 0.2    # Spin time allowance = |angle| / this + 10 s (turf slip)
+    # Task 0.4 (d), run 3 (owner: "in sharp corners it could reverse and turn rather than
+    # overshoot the corner, the turn itself looks good"): the route is also split at every
+    # corner sharper than this (rad), and before any route leg (transit or dock route) whose
+    # start is within route_cusp_radius_m and whose heading is more than this off the robot's
+    # yaw, the robot stops and pivots in place (Nav2 Spin) to the leg heading, then the leg is
+    # sent. One about-turn per leg; a failed Spin sends the leg anyway (the follow judges).
+    # 0 = off (the controller turns onto the leg itself, splits at route_split_turn_deg only).
+    route_corner_turn_rad: float = 1.5708
     # The costmap-planner fallback (no route: start off the route graph; a route abort away
     # from any cusp) is bounded: once the robot's own distance from the drawn network (the
     # planned route if there was one; 0 inside a mowing area) exceeds this, the fallback is
@@ -919,6 +940,8 @@ class MissionFSM:
         self._emergency = False
         self._dock_purpose = None
         self._dock_routed = None            # (phase, purpose) whose dock route already ran
+        self._dock_route_tries = 0          # dock route re-sends of this dock (task 0.4 e)
+        self._dock_route_end = None         # (x, y) end of the last dock route (approach pose)
         self._route_legs = None             # {'legs': [poses...], 'i': n} of a route follow
         self._dock_contact_since = None
         self._manual_undocking = False           # standalone UNDOCK (CMD_UNDOCK) in flight
@@ -3139,18 +3162,56 @@ class MissionFSM:
             self._dock_done()
             return
         if self.p.use_docking_server:
-            if self.p.route_transits and self.p.route_dock and self.inputs.pose is not None \
-                    and self._dock_routed != (name, purpose):
-                self._call(SRV_PLAN_ROUTE, {'start': tuple(self.inputs.pose), 'to_dock': True,
-                                            'variation': self._transit_run()},
-                           purpose='dock_route')
+            if self._dock_route_on() and self._dock_routed != (name, purpose):
+                self._dock_route_tries = 0
+                self._plan_dock_route()
                 return
-            self._dock_server()
+            self._dock_handover()
         elif len(self.p.dock_pose) == 3:
             self._start_action(ACT_NAV, {'pose': tuple(self.p.dock_pose)},
                                self.p.transit_timeout_s, purpose='dock')
         else:
             self._dock_failed('no docking server and no dock_pose configured')
+
+    def _dock_route_on(self):
+        return bool(self.p.route_transits and self.p.route_dock and self.inputs.pose is not None)
+
+    def _plan_dock_route(self):
+        self._call(SRV_PLAN_ROUTE, {'start': tuple(self.inputs.pose), 'to_dock': True,
+                                    'variation': self._transit_run()}, purpose='dock_route')
+
+    def _dock_approach(self):
+        """The docking server's approach pose (dock + dock_approach_distance_m along the dock
+        yaw, as map_server / mower_docking compute it); else the last dock route's end."""
+        d = self.inputs.dock_pose
+        if d is not None and len(d) >= 3:
+            ad = float(self.p.dock_approach_distance_m)
+            return (d[0] + ad * math.cos(d[2]), d[1] + ad * math.sin(d[2]))
+        return getattr(self, '_dock_route_end', None)
+
+    def _dock_handover(self):
+        """Task 0.4 (e): the docking server (whose own navigate_to_pose drives the approach
+        leg across the grass) only within dock_server_nav_max_m of the approach pose. Farther
+        away: plan and drive the dock route again (dock_route_retries), then fail in place."""
+        lim = float(self.p.dock_server_nav_max_m)
+        ap, pose = self._dock_approach(), self.inputs.pose
+        if lim > 0.0 and ap is not None and pose is not None and self._dock_route_on():
+            d = geo.dist(pose, ap)
+            if d > lim:
+                tries = getattr(self, '_dock_route_tries', 0)
+                if tries >= int(self.p.dock_route_retries):
+                    self._dock_failed('dock route did not reach the approach pose (%.2f m away '
+                                      'after %d re-sends); not crossing the lawn: the docking '
+                                      'server navigates only within %.2f m' % (d, tries, lim))
+                    return
+                self._dock_route_tries = tries + 1
+                self._log('warn', 'dock: %.2f m from the approach pose (> %.2f m): driving the '
+                                  'dock route again (%d/%d), not the docking server\'s own '
+                                  'navigation' % (d, lim, tries + 1,
+                                                  int(self.p.dock_route_retries)))
+                self._plan_dock_route()
+                return
+        self._dock_server()
 
     def _dock_server(self):
         self._start_action(ACT_DOCK, {'use_vision': self.p.dock_use_vision,
@@ -3166,10 +3227,11 @@ class MissionFSM:
         poses = resp.get('poses') or []
         if not (ok and resp.get('success') and len(poses) >= 2):
             self._dock_routed = (self.phase, self._dock_purpose)
-            self._log('info', 'dock route: %s: the docking server navigates'
+            self._log('info', 'dock route: %s: handing over to the docking server'
                       % (resp.get('message') or 'plan_route unavailable'))
-            self._dock_server()
+            self._dock_handover()
             return
+        self._dock_route_end = (float(poses[-1][0]), float(poses[-1][1]))
         legs = self._split_route([tuple(p) for p in poses])
         self._log('info', 'dock route %.1f m (%d leg%s): %s' % (
             float(resp.get('length_m', 0.0)), len(legs), '' if len(legs) == 1 else 's',
@@ -3177,22 +3239,37 @@ class MissionFSM:
         self._route_legs = {'legs': legs, 'i': 0}
         self._send_route_leg('dock_route')
 
-    def _dock_route_result(self, outcome):
-        """The dock route ended (any outcome): the docking server takes over from here (an
-        obstacle abort / failure: it plans its own Nav2 leg round it)."""
+    def _dock_route_result(self, outcome, nav2_down=False):
+        """The dock route ended (any outcome): the docking server takes over at the approach
+        pose (task 0.4 e: only within dock_server_nav_max_m of it; farther the route is driven
+        again, see _dock_handover). An obstacle abort waits first (blocked wait, then a fresh
+        dock route). Nav2 down: straight to the docking server (it cannot drive the lawn
+        without Nav2 either, and its failure names the cause)."""
         if self._route_next_leg(outcome, 'dock_route'):
             return
         self._route_legs = None
         self._dock_routed = (self.phase, self._dock_purpose)
-        if outcome != SUCCEEDED:
-            self._log('warn', 'dock route follow_path %s: the docking server navigates' % outcome)
         if self.inputs.docked:
             self._dock_done()
             return
-        self._dock_server()
+        if nav2_down:
+            self._log('warn', 'dock route follow_path %s: Nav2 down, handing over to the '
+                              'docking server' % outcome)
+            self._dock_server()
+            return
+        if outcome != SUCCEEDED:
+            self._log('warn', 'dock route follow_path %s' % outcome)
+            if outcome in (ABORTED, TIMEOUT) and float(self.p.dock_server_nav_max_m) > 0.0 \
+                    and self._blocked_cause():
+                self._dock_routed = None      # the re-send after the wait plans a fresh route
+                if self._blocked('dock', 'dock route %s' % outcome):
+                    return
+                self._dock_routed = (self.phase, self._dock_purpose)
+        self._dock_handover()
 
     def _dock_done(self):
         self._dock_routed = None
+        self._dock_route_end = None
         self._blk = None
         purpose, self._dock_purpose = self._dock_purpose, None
         if not self.p.use_docking_server:
@@ -3507,6 +3584,9 @@ class MissionFSM:
         """Route poses -> FollowPath legs, split at turns sharper than
         route_split_turn_deg (measured over 3 poses either side, ~0.3 m)."""
         th = math.radians(float(self.p.route_split_turn_deg))
+        corner = float(self.p.route_corner_turn_rad)
+        if corner > 0.0:                      # task 0.4 (d): every corner > it is a junction
+            th = corner if th <= 0 else min(th, corner)
         k = 3
         if th <= 0 or len(poses) < 2 * k + 2:
             return [list(poses)]
@@ -3597,7 +3677,9 @@ class MissionFSM:
         rest = m.cusp_resume
         m.cusp_resume = None
         m.route_poses = rest
-        self._route_legs = {'legs': self._split_route(rest), 'i': 0}
+        # the cusp about-turn was this leg's pivot (task 0.4 d: no second one, even after a
+        # failed Spin; the route follow is the judge)
+        self._route_legs = {'legs': self._split_route(rest), 'i': 0, 'turned': 0}
         self._send_route_leg('route')
 
     def _route_cusp_spun(self, outcome):
@@ -3609,8 +3691,64 @@ class MissionFSM:
             self._log('warn', 'route cusp about-turn %s: resuming the route anyway' % outcome)
         self._resume_after_cusp()
 
+    @staticmethod
+    def _leg_heading(leg, look=0.3):
+        """Heading of a route leg's start: chord to the first pose ``look`` m along it."""
+        a = leg[0]
+        for q in leg[1:]:
+            if geo.dist(a, q) >= look:
+                return math.atan2(q[1] - a[1], q[0] - a[0])
+        b = leg[-1]
+        if geo.dist(a, b) < 1e-6:
+            return None
+        return math.atan2(b[1] - a[1], b[0] - a[0])
+
+    def _route_corner_turn(self, purpose):
+        """Task 0.4 (d): before route leg ``i`` (transit or dock route), pivot in place to
+        its heading when that is more than route_corner_turn_rad off the robot's yaw and its
+        start is within route_cusp_radius_m. True = the about-turn was started."""
+        lim, rl, pose = float(self.p.route_corner_turn_rad), self._route_legs, self.inputs.pose
+        if lim <= 0.0 or rl is None or pose is None or len(pose) < 3 or \
+                rl.get('turned') == rl['i']:
+            return False
+        leg = rl['legs'][rl['i']]
+        if len(leg) < 2 or geo.dist(pose, leg[0]) > float(self.p.route_cusp_radius_m):
+            return False
+        heading = self._leg_heading(leg)
+        if heading is None:
+            return False
+        delta = geo.wrap_angle(heading - float(pose[2]))
+        if abs(delta) <= lim:
+            return False
+        rl['turned'], rl['purpose'] = rl['i'], purpose
+        self._log('info', 'route corner at (%.2f, %.2f): stop and pivot %.0f deg to the next '
+                          'leg (%d/%d), then follow it'
+                  % (leg[0][0], leg[0][1], math.degrees(delta), rl['i'] + 1, len(rl['legs'])))
+        self._go(self.phase, 'route corner: pivot %.0f deg' % math.degrees(delta))
+        allowance = abs(delta) / max(0.05, float(self.p.route_cusp_spin_rps)) + 10.0
+        self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
+                           allowance + 5.0, purpose='route_corner')
+        return True
+
+    def _route_corner_spun(self, outcome):
+        """Corner pivot ended (any outcome: the route follow is the judge): send the leg."""
+        rl, m = self._route_legs, self.mission
+        if rl is None:
+            return
+        purpose = rl.get('purpose', 'route')
+        if purpose == 'route':
+            if m is None or self.phase != 'TRANSIT' or m.step != 'transit':
+                return
+        elif self.phase not in DOCK_PHASES or self._dock_purpose is None:
+            return
+        if outcome != SUCCEEDED:
+            self._log('warn', 'route corner pivot %s: following the leg anyway' % outcome)
+        self._send_route_leg(purpose)
+
     def _send_route_leg(self, purpose):
         rl = self._route_legs
+        if self._route_corner_turn(purpose):
+            return
         self._start_action(ACT_FOLLOW, {'poses': rl['legs'][rl['i']],
                                         'controller_id': self.p.route_controller_id,
                                         'goal_checker_id': self.p.route_goal_checker_id},
@@ -3694,7 +3832,10 @@ class MissionFSM:
             self._hcal_result(outcome)
             return
         if a.purpose == 'dock_route':
-            self._dock_route_result(outcome)
+            self._dock_route_result(outcome, nav2_down)
+            return
+        if a.purpose == 'route_corner':
+            self._route_corner_spun(outcome)
             return
         if a.purpose == 'dock':
             self._dock_contact_since = None
@@ -4201,7 +4342,8 @@ class MissionFSM:
             return 'follow'
         if self.phase == 'TRANSIT' and m is not None and m.step == 'transit' and a is not None:
             return 'transit'
-        if self.phase in DOCK_PHASES and a is not None and a.purpose in ('dock', 'dock_route'):
+        if self.phase in DOCK_PHASES and a is not None and a.purpose in ('dock', 'dock_route',
+                                                                         'route_corner'):
             return 'dock'
         return None
 

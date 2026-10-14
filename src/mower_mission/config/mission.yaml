@@ -86,6 +86,15 @@ behavior_tree_node:
     # fall back to /navigate_to_pose on no route / a route abort; false = Nav2 only
     route_transits: true
     route_dock: true                  # return-to-dock: route to the approach pose first
+    # Task 0.4 (e), run 3: the dock route aborted and the docking server's own navigate_to_pose
+    # crossed the grass to the approach pose. The docking server is started only within
+    # dock_server_nav_max_m of the approach pose (dock + dock_approach_distance_m along the
+    # dock yaw; mirrors map_server corridor_half_width_m); farther, the dock route is planned
+    # and driven again from the current pose (dock_route_retries), then NAV_TO_DOCK_FAILED in
+    # place. An obstacle abort of the dock route waits first (blocked wait). 0.0 = old hand-over.
+    dock_server_nav_max_m: 0.35
+    dock_approach_distance_m: 0.8     # = map_server / mower_docking approach_distance
+    dock_route_retries: 2
     route_controller_id: FollowPath   # MPPI transit controller
     route_goal_checker_id: general_goal_checker
     route_end_tolerance_m: 0.5        # route follow "success" farther from the target = failed
@@ -99,10 +108,18 @@ behavior_tree_node:
     # nav lane) to the route direction after the cusp, re-send the route from the cusp. At
     # most route_cusp_retries about-turns per cusp (per sub-path transit), then a transit
     # abort (transit_retries) -- never the costmap planner at a cusp. 0 = old fallback.
-    route_cusp_radius_m: 0.5
+    # task 0.4 (d), run 3: the start abort was 0.75 m past the junction, outside 0.5 m
+    route_cusp_radius_m: 1.0
     route_cusp_angle_rad: 2.0
     route_cusp_retries: 2
     route_cusp_spin_rps: 0.2          # Spin time allowance = |angle| / this + 10 s (turf slip)
+    # Task 0.4 (d), run 3 (owner: "in sharp corners it could reverse and turn rather than
+    # overshoot"): the route is split at every corner sharper than this (rad, also below
+    # route_split_turn_deg), and before a route leg (transit or dock route) starting within
+    # route_cusp_radius_m whose heading is more than this off the robot's yaw the robot stops
+    # and pivots in place (Nav2 Spin, route_cusp_spin_rps allowance) to the leg heading, then
+    # follows it. One pivot per leg; a failed Spin still sends the leg. 0.0 = off.
+    route_corner_turn_rad: 1.5708
     # The costmap-planner fallback stays only for a start off the route graph and a route
     # abort away from any cusp, and is bounded: the robot's distance from the drawn network
     # (cross-track to the route it replaces; 0 inside a mowing area) is checked every tick
