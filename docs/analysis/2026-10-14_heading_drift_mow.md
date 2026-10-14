@@ -63,3 +63,14 @@ status and the `wit_divergence_warn_deg` WARN; `20c213b` a `cog` heading older t
 `heading_max_cog_age_s` (300 s) or with quality in `heading_reject_quality` (['poor']) runs
 the calibration drive before a START off the dock; `50be8e8` docs/STATUS.md entry. Field
 check above still open.
+
+## Run 2 (same day, 04:12 UTC, fixes A and B live): the drift is rotation-correlated
+
+See `wheel_smoothness_field_tests.md` "Run 2". Gap bridging worked (28 gaps, 5.3 s, none
+dropped) and the divergence WARN fired at t = 519 s (+5.7° in 60 s). Δ(stereo − WIT) tracked
+−0.65 % of the net rotation per minute; the offset vs the GPS course moved −0.4 % of the net
+rotation in the clockwise laps and kept going negative all mow (−73 → −95°), with 7 minutes of
+continuous spinning (≈ 4000°) on one turn leg in the middle. Both gyros carry ≈ 1 % scale
+error of different sign; the stereo z-row from the static TF (a pitch error δ scales yaw by
+cos δ) is the first suspect for the stereo side. Next: per-source scale from COG turn pairs,
+bias from the innovation trend, and stop the spinning (mission fix 10).

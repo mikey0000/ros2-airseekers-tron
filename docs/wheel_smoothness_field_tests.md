@@ -165,3 +165,70 @@ Decisions:
   −0.035 m/s); apply (b) params first;
 - item 5 stays parked: the slip ratio says more angular rate scrubs more, the creeping pivot
   assist is the lever.
+
+## Run 2: 2026-10-14 mow `/userdata/ros2/mows/20261014-041213` (fixes 1-3, 6-9 + heading gap/stale fixes live)
+
+37 minutes, 37 splits. Mission: START 04:12:13 UTC, transit, mowing, stuck guard twice, idle
+(lifted) at 1804 s, re-start 1961 s, return + dock 1987–2209 s. Owner: "it didn't follow the
+path back to the dock at the start either; driving outside areas / paths is bad".
+
+| Metric | Run 1 | Run 2 | Verdict |
+|---|---|---|---|
+| sustained slow pivots on `/cmd_vel` (v = 0, 0 < \|w\| < 0.24 for > 0.3 s) | 80 runs, 200 s, longest 24 s | 7 runs, 67 s, longest 0.5 s | fix 8 works; the remaining ticks are the 0.25 s ramps through the deadband at every pivot start/stop |
+| emergency stop lane zero → `/cmd_vel` / MCU / measured | 49 / 54 / 453 ms | 24-28 / 141-148 / 361 ms, 1 cm | fix 3 holds (two events) |
+| bumper stop | – | 51 / 79 / 501 ms, 5 cm | fine |
+| pivot assist | – | 127 creeps, 50 held (lethal / vision) | works with the snapped 0.25 pivots |
+| time in pure pivots (v < 0.01, \|w\| ≥ 0.2) | 152 s | 593 s (86 episodes at 0.25, 66 at 0.30; longest 27 s, 18 s, 18 s ...) | see the spinning below |
+| pivot authority (EKF yaw rate / commanded) | 0.24-0.93 | 0.24-1.2 | unchanged: turf slip |
+| output regime changes (classified from `/cmd_vel`, not the status string) | 1657 | 2744 | mostly arc↔straight at \|w\| ≈ 0.02 and the ramp through the deadband; cosmetic. The status-string count in the script is misleading because a legal ≥ 0.25 pivot reads "pass" |
+| stereo gaps (new counters) | – | 28 gaps, 5.3 s bridged, longest 0.62 s, 0 dropped | bridging works, but see below |
+| stereo − WIT yaw | +52° over the mow | −5° → +12.7° (0-890 s) → −22.7° (2205 s) | both gyros drift, rotation-correlated |
+| aligner offset | −74.4 → −7.8 (re-seed) | −73.1 → −95.3, innovations −5…−15°, never positive | the heading error kept growing all mow |
+
+### What went wrong, in order
+
+1. **Transit from the dock did not follow the drawn route (t 4-108 s).** The route is dock
+   → 1.1 m west on the dock path → junction → 1.5 m ENE on the Area 1 path (a hairpin). The
+   robot pivoted 20 s at the dock (slip), drove the dock-path leg, reached the junction at
+   t = 36 facing west with 2 cm cross-track, and MPPI (`FollowPath`) then output 0-0.015 m/s
+   and no rotation for 17 s: the progress checker (0.25 m / 0.5 rad in 20 s) aborted it
+   ("Failed to make progress"). Nearest lethal cells (nav keepout corridor, half-width 0.35 m)
+   were 0.75-1.0 m away on every side but ahead; the local costmap published nothing between
+   t = 33 and t = 54. The mission then fell back to the costmap planner (`navigate_to_pose`),
+   whose path the robot tracked up to 0.56 m off while pivoting, and which aborted 0.5 m short of
+   the goal (transit abort #172); the retry went straight to MOWING. Same fallback again at
+   t = 1556 s and "no route (start is off the route graph)" at t = 1985 s.
+2. **Seven minutes spinning on a 0.8 m turn leg (t 1140-1576 s).** Sub-path 7 of 27 is a
+   Reeds-Shepp turn piece ((−1.09, 3.68) → (−1.36, 4.31), 0.8 m; its neighbours are 0.2-0.5 m).
+   `pose_index` reached the leg's last pose at t = 1152 and stayed there; the
+   `coverage_leg_goal_checker` (xy 0.08 m, yaw 0.5 rad) and the mission's `turn_leg_skip`
+   (0.20 m / 0.5 rad) were never both satisfied with the heading ≈ 10° off and the pivots
+   slipping, so MPPI looped: 0.9 m out, U-turn, 0.9 m back, every 37 s, ≈ 4000° of rotation,
+   until the stuck guard (4 s pivot, 4.8° of yaw) fired at t = 1576. The mission has no time
+   or rotation cap on a leg once the progress checker is satisfied by the looping.
+3. **Heading drift is rotation-correlated.** Per minute, Δ(stereo − WIT) ≈ −0.65 % of the net
+   rotation (minutes 19-25: +570°/min → −3.7°/min; minutes 3-5: −220…−410°/min → +3°/min),
+   and the offset moved −0.4 % of the net rotation vs the GPS course in the laps. The 4000° of
+   spinning turned a ~1 % gyro scale mismatch into 20-40° of heading error for both sources.
+   The gap bridging (fix A) did its job (28 gaps, none dropped) but the stereo source is not
+   the clean one and neither is the WIT. The stale-COG START gate (fix B) was not exercised
+   (the saved offset passed the continuity check, source `file_verified` → `cog` within 90 s).
+
+### Decisions / next fixes
+
+- keep fixes 1-3, 6-9 and the heading fixes A, B;
+- **fix 10 (mission)**: a turn leg whose end pose has been reached in xy (pose_index at the
+  last pose, or within `turn_leg_skip_m`) is done after a cap: ≥ 1 full rotation of
+  `/odometry/filtered_map` yaw or ≥ 20 s on the leg, "next leg from here", without the yaw
+  test; and the per-leg looping must count as no progress (the leg's own timer, not Nav2's);
+- **fix 11 (mission / nav)**: no free-space fallback on a route hairpin. When the route
+  follower reports no progress at a cusp, stop, pivot to the next leg's direction with the
+  existing turn-in-place path (the docking about-turn already does this), re-send the
+  remainder of the route; the costmap-planner fallback stays only for a start off the route
+  graph and must be bounded to the corridor (reject a plan whose cross-track to the drawn path
+  exceeds the corridor half-width). Also check why the local costmap stopped publishing for
+  21 s at the junction;
+- **heading**: estimate a per-source yaw-rate scale from the COG turns (gyro Δyaw / COG Δcog
+  between consecutive straight windows, both sources) and a bias from the innovation trend;
+  until then every long pivot session costs ~1 % of its rotation in heading. The spinning fix
+  (10) removes most of the exposure.
