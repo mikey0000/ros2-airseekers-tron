@@ -661,6 +661,13 @@ class Params:
     # yaw within tolerance stays with the leg goal checker / the skip above. 0 = that cap off.
     turn_leg_done_after_s: float = 20.0
     turn_leg_done_after_rot_rad: float = 6.28
+    # Task 0.4 (f), 2026-10-14 run 3: the 49 m outer ring ends at the cusp of a reverse leg,
+    # so it counted as a turn leg; progress_local jumped to its last pose (the nearest-index
+    # search matched the ring's own end) 4.6 m before the end, the cap fired and 4.6 m of
+    # ring were skipped. True: "end reached" is the distance to the leg end only
+    # (turn_leg_skip_m, never progress_local) and a leg is capped only if its OWN length is
+    # <= turn_leg_max_m (turn_leg_skip keeps its rule). False = the fix 10 rule (revert flag).
+    turn_leg_end_by_distance: bool = True
     # Any sub-path: a follow_path that has not advanced the tracked pose index for this long
     # (Nav2's progress checker is satisfied by looping) is cancelled and handled as a
     # follow_path abort (follow_retries). Waits / holds / escapes cancel the goal, so they
@@ -2532,6 +2539,9 @@ class MissionFSM:
 
         nxt = m.subpaths[m.sub_i + 1] if m.sub_i + 1 < len(m.subpaths) else None
         cusp_next = nxt is not None and reverse_leg(nxt) and geo.dist(nxt[0], sp[-1]) <= 0.01
+        # Task 0.4 (f): this rule stays for turn_leg_skip (distance + yaw, safe on a long
+        # swath ending at a cusp: the 2026-10-13 retry case); the _leg_watch cap no longer
+        # uses it (a 49 m ring ending at a cusp was capped in run 3).
         return reverse_leg(sp) or cusp_next
 
     def _turn_leg_driven(self):
@@ -2561,8 +2571,9 @@ class MissionFSM:
     def _leg_watch(self):
         """Fix 10 (2026-10-14 run 2), called on every MOWING tick while a follow_path runs.
 
-        * Turn-leg end cap: once the leg's end is reached in xy (tracked pose index at the
-          last pose, or within turn_leg_skip_m of the end pose) the leg is done after
+        * Turn-leg end cap: once the leg's end is reached in xy (within turn_leg_skip_m of
+          the end pose; task 0.4 f: never the tracked pose index, which can jump to the last
+          pose early, and only for legs no longer than turn_leg_max_m) the leg is done after
           turn_leg_done_after_s OR turn_leg_done_after_rot_rad of accumulated |yaw change|
           of the map pose, whatever the yaw. A leg whose end yaw is met is left to the
           controller's leg goal checker (and the turn_leg_skip rule on a re-send), as before.
@@ -2576,11 +2587,14 @@ class MissionFSM:
         sp = m.subpaths[m.sub_i]
         key = (m.area_idx, m.sub_i, m.stretch)
         w = m.leg_watch
+        by_dist = bool(p.turn_leg_end_by_distance)
         if w is None or w['key'] != key:
+            short = geo.path_length(sp) <= float(p.turn_leg_max_m)
             w = m.leg_watch = {
                 'key': key, 'reached': None, 'rot': 0.0, 'yaw': None, 'token': None,
                 'idx': None, 'since': self._now,
-                'capped': self._is_turn_leg() or geo.path_length(sp) <= float(p.turn_leg_max_m)}
+                # task 0.4 (f): capped only by the leg's own length
+                'capped': short if by_dist else (self._is_turn_leg() or short)}
         if w['token'] != a.token:            # a new goal (retry / resume): fresh loop timer
             w['token'], w['idx'], w['since'], w['yaw'] = a.token, m.progress_local, self._now, None
         elif m.progress_local != w['idx']:
@@ -2594,7 +2608,9 @@ class MissionFSM:
             if w['reached'] is not None and w['yaw'] is not None:
                 w['rot'] += abs(geo.wrap_angle(float(pose[2]) - w['yaw']))
             w['yaw'] = float(pose[2])
-            at_end = m.progress_local >= len(sp) - 1 or (skip_m > 0.0 and d <= skip_m)
+            # task 0.4 (f): distance only; progress_local can jump to the last pose early
+            at_end = (skip_m > 0.0 and d <= skip_m) or \
+                (not by_dist and m.progress_local >= len(sp) - 1)
             if w['reached'] is None and at_end:
                 w['reached'], w['rot'] = self._now, 0.0
             if w['reached'] is not None:

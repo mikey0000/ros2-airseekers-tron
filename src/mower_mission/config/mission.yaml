@@ -176,6 +176,11 @@ behavior_tree_node:
     # Both 0.0 = cap off.
     turn_leg_done_after_s: 20.0
     turn_leg_done_after_rot_rad: 6.28
+    # Task 0.4 (f), run 3: the 49 m outer ring ends at a reverse leg's cusp and was capped;
+    # progress_local jumped to its last pose 4.6 m early and 4.6 m of ring were skipped.
+    # true: "end reached" = within turn_leg_skip_m of the leg end (never progress_local), and
+    # only a leg whose OWN length <= turn_leg_max_m is capped. false = the fix 10 rule.
+    turn_leg_end_by_distance: true
     # any sub-path: follow_path whose tracked pose index has not advanced for this long is
     # cancelled and handled as a follow_path abort (follow_retries); Nav2's progress checker
     # is satisfied by looping. Waits / holds / stuck escapes cancel the goal (timer restarts).
