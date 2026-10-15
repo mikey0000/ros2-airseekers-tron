@@ -100,6 +100,7 @@ class Params:
     edge_clearance_m: float = 0.20
     slack_m: float = 0.05          # a fillet may come this much closer to the edge than the
     #                                drawn path (never under margin_m unless the drawing is)
+    tangent_tol_m: float = 0.03    # a fillet's tangent points within this of the drawn runs
     cusp_rad: float = 2.6          # sharper turns within end_m of an end are turn cusps: kept
     end_m: float = 0.3
     allow_pivot: bool = True
@@ -340,7 +341,13 @@ def condition(poses, region, params: Optional[Params] = None, ring=None):
                     T2 = (v[0] + t * u_out[0], v[1] + t * u_out[1])
                     s1 = geo.path_projection(pts, T1)[0]
                     s2 = geo.path_projection(pts, T2)[0]
-                    if s1 >= s_prev - 1e-6 and s2 > s1:
+                    # the tangent points must lie ON the drawn runs either side of this
+                    # corner (2026-10-16 sim gate: a dock-route fillet whose tangent point
+                    # projected onto another stretch left an 88 deg kink at the join)
+                    on_runs = (s1 <= s_lo + 1e-6 and s2 >= s_hi - 1e-6 and
+                               geo.dist(geo._point_at(pts, cum, s1), T1) <= p.tangent_tol_m and
+                               geo.dist(geo._point_at(pts, cum, s2), T2) <= p.tangent_tol_m)
+                    if on_runs and s1 >= s_prev - 1e-6 and s2 > s1:
                         arc = _arc(T1, u_in, turn, r, p.step_m)
                         floor = _floor(raw_ref(s1, s2), req, p)
                         if all(clearance(q, region) >= floor - 1e-3 for q in arc):

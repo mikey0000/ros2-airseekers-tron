@@ -4184,6 +4184,11 @@ class MissionFSM:
         piv = float(self.p.route_leg_pivot_min_rad)
         if piv > 0.0 and rl['i'] > 0:          # stopped at a split corner
             lim = min(lim, piv)
+        if self.p.path_conditioning and float(self.p.path_conditioning_pivot_min_rad) > 0.0:
+            # one pivot rule (as _cov_pivot): every leg start, the first one too, is a vertex
+            # of the driven path no fillet fits (sim gate 2026-10-16: MPPI turned onto a
+            # transit 33 deg off and ran 0.17 m beside it)
+            lim = float(self.p.path_conditioning_pivot_min_rad)
         if abs(delta) < lim - ROUTE_CORNER_TOL_RAD:     # inclusive, as the split
             return False
         rl['turned'], rl['purpose'] = rl['i'], purpose

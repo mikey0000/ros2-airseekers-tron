@@ -495,3 +495,14 @@ def test_route_stub_is_not_trimmed_under_path_conditioning():
     h = Harness(path_conditioning=False)
     h.fsm.inputs.pose = None
     assert len(h.fsm._route_prepare(route)) < len(route)
+
+
+def test_route_leg_start_pivots_by_the_conditioner_threshold():
+    h = Harness(path_conditioning=True, route_transits=True)
+    h.fsm.inputs.pose = (0.0, 0.0, math.radians(33))
+    h.fsm._route_legs = {'legs': [[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]], 'i': 0}
+    assert h.fsm._route_corner_turn('route') is True
+    h2 = Harness(path_conditioning=False, route_transits=True)
+    h2.fsm.inputs.pose = (0.0, 0.0, math.radians(33))
+    h2.fsm._route_legs = {'legs': [[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]], 'i': 0}
+    assert h2.fsm._route_corner_turn('route') is False
