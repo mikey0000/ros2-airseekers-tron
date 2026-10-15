@@ -334,12 +334,16 @@ controller_server:
         max_angle_to_furthest: 1.0
         mode: 0
       # Keeps reversing expensive now that vx_min is -0.10 (task 0.4 c): forward unless
-      # backing out of an overshot corner is clearly cheaper.
+      # backing out of an overshot corner is clearly cheaper. threshold_to_consider 0.0
+      # (was 0.5, 2026-10-16): the critic is skipped within that distance of the goal, so on
+      # every conditioned leg shorter than 0.5 m reversing was free; sim gate (disturbed):
+      # after a pivot left the heading 0.15 rad short, MPPI backed 0.25 m away down a 0.18 m
+      # route leg (0.219 m off the drawn path at the post-undock -90 deg pivot).
       PreferForwardCritic:
         enabled: true
         cost_power: 1
         cost_weight: 5.0
-        threshold_to_consider: 0.5
+        threshold_to_consider: 0.0
       WheelFloorCritic:
         enabled: true
         cost_power: 1

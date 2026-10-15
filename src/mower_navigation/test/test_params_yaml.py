@@ -512,6 +512,8 @@ def test_mppi_transit():
     # 0.10 m/s (no rear sensing), and forward stays preferred
     assert -0.10 <= c["vx_min"] < 0.0
     assert c["PreferForwardCritic"]["enabled"] is True
+    # forward preference also within 0.5 m of the goal (short conditioned legs, 2026-10-16)
+    assert c["PreferForwardCritic"]["threshold_to_consider"] == 0.0
     critics = c["critics"]
     assert {"CostCritic", "GoalCritic", "PathAlignCritic", "PathFollowCritic",
             "PreferForwardCritic"} <= set(critics)
