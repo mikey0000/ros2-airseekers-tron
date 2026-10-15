@@ -88,7 +88,14 @@ class SimNode(Node):
         d('stereo_noise_m', 0.0)
         d('rear_camera', True)
         d('rear_camera_rate_hz', 10.0)
-        d('rear_marker_size', 0.04)           # = mower_docking marker_size
+        # The real dock marker (owner, measured 2026-10-16): black square ~0.055 m, while the
+        # deployed mower_docking keeps marker_size 0.04 (vendor constant), so every marker
+        # distance is under-read by 0.04 / 0.055. The sim renders the real size at the real
+        # distance; rear_marker_offset is chosen so that the deployed config's estimate at the
+        # docked pose equals its docked_marker_offset 0.45 (docking works in the field with
+        # it): 0.201 + (0.45 - 0.201) x 0.055 / 0.04 = 0.543 m (camera 0.201 m behind base).
+        d('rear_marker_size', 0.055)
+        d('rear_marker_offset', 0.543)
         d('linear_max', 0.3)
         d('angular_max', 0.3)
         d('min_wheel_speed_mps', 0.06)
@@ -129,7 +136,8 @@ class SimNode(Node):
                     self.drive.p.disturb_seed))
         self.stereo = StereoRaycaster(StereoParams(noise_m=float(gp('stereo_noise_m').value)))
         self.rear = RearCamera(RearCameraParams(
-            marker_size=float(gp('rear_marker_size').value)))
+            marker_size=float(gp('rear_marker_size').value),
+            marker_offset=float(gp('rear_marker_offset').value)))
         self.t0 = time.monotonic()
         self.dt = 1.0 / float(gp('physics_rate_hz').value)
         self.tick_n = 0

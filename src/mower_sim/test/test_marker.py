@@ -82,3 +82,28 @@ def test_docking_pipeline_recovers_pose_errors():
     assert err.remaining == pytest.approx(1.5, abs=0.03)
     assert err.lateral == pytest.approx(-0.2, abs=0.07)
     assert err.heading == pytest.approx(-0.2, abs=0.05)
+
+
+
+def test_real_marker_read_with_the_deployed_config_reads_its_docked_offset():
+    """Sim default (2026-10-16): the real 0.055 m marker at 0.543 m, read by mower_docking
+    with its deployed marker_size 0.04 and docked_marker_offset 0.45: at the docked pose the
+    remaining distance reads ~0 (the deployed config docks in the field)."""
+    import os
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'mower_docking'))
+    from mower_docking.aruco_detect import ArucoDetector
+    from mower_docking import dock_logic as dl
+    cam = RearCamera(RearCameraParams(marker_size=0.055, marker_offset=0.543))
+    det = ArucoDetector('DICT_4X4_50', 0.04)
+    rem = []
+    for d in (0.30, 0.50):
+        img = cam.render(d, 0.0, 0.0, 0.0, 0.0, 0.0)
+        res = det.detect(img, cam.K, [0.0] * 5)
+        assert res
+        _mid, rvec, tvec, _c = res[0]
+        m = dl.marker_in_base(rvec, tvec, REAR_CAMERA_XYZ, REAR_CAMERA_RPY)
+        rem.append(dl.dock_errors(m, 0.45).remaining)
+    # under-read by 0.04 / 0.055 in the camera frame, zero at the docked pose
+    assert rem[0] == pytest.approx(0.30 * 0.04 / 0.055, abs=0.03)
+    assert rem[1] == pytest.approx(0.50 * 0.04 / 0.055, abs=0.04)

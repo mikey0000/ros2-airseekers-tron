@@ -176,8 +176,12 @@ def generate_launch_description() -> LaunchDescription:
             'rear-camera marker).'),
         arg('docking_params_file', '', 'mower_docking params ("" = its config/docking.yaml).'),
         arg('mission_params_file', '', 'mower_mission params ("" = its config/mission.yaml).'),
-        arg('rear_marker_size', '0.04', 'sim: printed size of the rendered dock ArUco (m); '
-            'mower_docking must use the same marker_size.'),
+        arg('rear_marker_size', '0.055', 'sim: printed size of the rendered dock ArUco (m): '
+            'the real black square, measured 0.055 m (2026-10-16); mower_docking keeps its '
+            'deployed marker_size 0.04, as on the robot.'),
+        arg('rear_marker_offset', '0.543', 'sim: true distance docked base_link -> marker '
+            '(m): 0.201 + (0.45 - 0.201) x 0.055 / 0.04, so the deployed config reads its '
+            'docked_marker_offset 0.45 at the docked pose.'),
         arg('mission', 'true', 'mower_mission /behavior_tree_node.'),
         arg('mission_stub', 'false', 'A scenario client (mower_sim scenario --stub-state) '
             'stands in for the mission (/motion_enabled + high_level_status): gui_bridge then '
@@ -219,6 +223,8 @@ def generate_launch_description() -> LaunchDescription:
             'disturb_seed': ParameterValue(LaunchConfiguration('disturb_seed'), value_type=int),
             'rear_marker_size': ParameterValue(LaunchConfiguration('rear_marker_size'),
                                                value_type=float),
+            'rear_marker_offset': ParameterValue(LaunchConfiguration('rear_marker_offset'),
+                                                 value_type=float),
         }],
         arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level')],
     )
