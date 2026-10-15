@@ -202,7 +202,7 @@ def main(run, world):
 
     # ---- (d) stuck / aborts / fallback
     stuck = sum(1 for a, b in zip([''] + states, states) if b == 'STUCK_NEEDS_HELP' and a != b)
-    notmowed = grep(r'NOT mowed')
+    notmowed = grep(r'sub-path \d+ NOT mowed')
     fallback = grep(r'transit via the costmap planner|navigate_to_pose transit')
     aborts = grep(r'(follow_path|navigate_to_pose|spin) finished: (ABORTED|TIMEOUT)')
     loopg = grep(r'leg loop guard|route progress watch|turn leg end')
@@ -226,7 +226,7 @@ def main(run, world):
         pts = [(p[0], p[1]) for p in sp]
         cum = G.cumulative_lengths(pts)
         for i, turn in G.route_corners(pts, CORNER_RAD):
-            win = window(pts, cum, i, 1.0)
+            win = window(pts, cum, i, 1.6)
             dev, n = 0.0, 0
             for r in gt:
                 h = hl_at(r[0])
@@ -242,6 +242,11 @@ def main(run, world):
                 corners.append(['cov', k, i, round(pts[i][0], 2), round(pts[i][1], 2),
                                 round(math.degrees(turn)), round(dev, 3), n])
     plans = [p for p in D['plan'] if p[0] >= t0]
+    croutes = [(t, json.loads(m)['poses']) for t, m in D.get('croute', []) if t >= t0]
+    if croutes:
+        # path conditioning: judge the route as it was conditioned and driven, not the raw
+        # plan_route output (a fillet cuts the drawn corner on purpose)
+        plans = croutes
     for j, (tp, pts) in enumerate(plans):
         stp = state_at(tp + 0.5)
         if stp not in ('TRANSIT', 'RETURNING_HOME') or len(pts) < 3:
@@ -259,7 +264,7 @@ def main(run, world):
         lo, hi = bisect.bisect_left(gtT, tp), bisect.bisect_right(gtT, tend)
         cum = G.cumulative_lengths(pts)
         for i, turn in G.route_corners(pts, CORNER_RAD):
-            win = window(pts, cum, i, 1.0)
+            win = window(pts, cum, i, 1.6)
             near = [r for r in gt[lo:hi] if math.hypot(r[1] - pts[i][0], r[2] - pts[i][1])
                     <= CORNER_NEAR]
             if not near:
@@ -274,7 +279,15 @@ def main(run, world):
 
     # ---- (f) one-wheel ticks on /cmd_vel
     ow = floor = 0
-    owph = {}
+    owph, owlane = {}, {}
+    lanes = {k: [r[0] for r in D[k]] for k in ('cmd_dock', 'cmd_emerg', 'cmd_nav')}
+
+    def lane_at(t):
+        for k, ts in lanes.items():
+            j = bisect.bisect_left(ts, t - 0.1)
+            if j < len(ts) and ts[j] <= t + 0.05:
+                return {'cmd_dock': 'docking', 'cmd_emerg': 'emergency', 'cmd_nav': 'nav'}[k]
+        return 'other'
     for t, v, w in D['cmd']:
         if t < t0 or abs(v) < 0.01 or abs(w) < 0.02:
             continue
@@ -283,10 +296,12 @@ def main(run, world):
             ow += 1
             s = state_at(t)
             owph[s] = owph.get(s, 0) + 1
+            ln = lane_at(t)
+            owlane[ln] = owlane.get(ln, 0) + 1
         elif 0.0 <= inner < FLOOR:
             floor += 1
     res['criteria']['f'] = {'pass': ow == 0, 'one_wheel': ow, 'floor_inner': floor,
-                            'per_phase': owph}
+                            'per_phase': owph, 'per_lane': owlane}
 
     # ---- (g) pivot time
     piv = mov = 0.0
@@ -363,7 +378,10 @@ def main(run, world):
             key = 'P'
         else:
             key = ty[bj] if bj < len(ty) else 'l'
-        xt.setdefault(names.get(key, key), []).append(best)
+        name = names.get(key, key)
+        if types_all and not (types_all[h[4]] if h[4] < len(types_all) else ''):
+            name = 'turn-leg ' + name           # sent as planned (not conditioned)
+        xt.setdefault(name, []).append(best)
 
     def stats(v):
         v = sorted(v)
@@ -374,7 +392,8 @@ def main(run, world):
     hs = {k: stats(v) for k, v in xt.items() if v}
     if allv:
         hs['all'] = stats(allv)
-    judged = [k for k in ('line', 'arc', 'corner') if k in hs and hs[k]['n'] >= 25]
+    judged = [k for k in ('line', 'arc', 'corner', 'turn-leg line', 'turn-leg arc')
+              if k in hs and hs[k]['n'] >= 25]
     res['criteria']['h'] = {'pass': bool(hs) and all(hs[k]['p99'] <= 0.10 for k in judged),
                             'stats': hs}
 
@@ -414,8 +433,9 @@ def main(run, world):
             C['d']['stuck'], C['d']['not_mowed'], C['d']['fallback_nav'], C['d']['aborts'])),
         ('e', 'sharp corners > 0.15 m (max dev)', '%d of %d (%.3f m)' % (
             C['e']['over'], C['e']['corners'], C['e']['max_m'])),
-        ('f', 'one-wheel ticks (floor-stalled inner)', '%d (%d)' % (C['f']['one_wheel'],
-                                                                   C['f']['floor_inner'])),
+        ('f', 'one-wheel ticks (floor-stalled inner)', '%d (%d) %s' % (
+            C['f']['one_wheel'], C['f']['floor_inner'],
+            ' '.join('%s:%d' % kv for kv in sorted(C['f']['per_lane'].items())))),
         ('g', 'pivot time / moving time', '%.0f / %.0f s (%.0f %%)' % (
             C['g']['pivot_s'], C['g']['moving_s'], 100 * C['g']['share'])),
         ('h', 'MOWING cross-track p99 line / arc / corner', ' / '.join(

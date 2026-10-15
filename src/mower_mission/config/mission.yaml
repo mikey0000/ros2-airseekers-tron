@@ -180,6 +180,37 @@ behavior_tree_node:
     # 1.38): after STUCK1's corner MPPI would have had a ~51 deg turn-in, the slow-turn dither
     # regime. 0.0 = route_corner_turn_rad (revert).
     route_leg_pivot_min_rad: 0.6
+    # --- path conditioning (docs/DESIGN_path_conditioning_2026-10.md steps 2-3) -----------
+    # 2026-10-15 run 5: RPP drove the outer ring's 100 deg V at (-4.74, -1.17) as an arc
+    # 0.26 m wide, 0.11 m outside Area 1, twice -> STUCK_NEEDS_HELP. Every coverage sub-path
+    # (not a turn leg: reverse, or <= turn_leg_max_m) and every transit / dock route goes
+    # through one pure-geometry pass (mower_mission/path_conditioning.py) against the allowed
+    # region (mowing areas U drawn path channels U dock corridor): each sharp corner becomes
+    # the largest fillet arc with r in [r_min, r_max] that fits (its clearance >= min(margin +
+    # half width, the drawn path's own) - slack, never under margin unless the drawing is),
+    # else a pivot at the vertex (turns >= pivot_min; smaller unfittable bends stay as
+    # drawn); on the outermost ring convex corners >= edge_pivot_rad within
+    # edge_clearance_m of the edge pivot (edge cut). Resampled at 0.05 m with segment types
+    # (line / arc / pivot, published in ~/mow_plan "types"). A pivot = the leg ends on the
+    # vertex (route_corner_xy_m / reach / stall rule above) + an in-place Spin, blade on.
+    # Transit / dock routes are split into FollowPath legs at the pivots (fillets are inside
+    # the legs) and run through the existing route-leg machinery. A sub-path that fails the
+    # validation is reported and NOT mowed. false = raw paths as before (revert).
+    path_conditioning: true
+    path_conditioning_r_min_m: 0.5        # = min_turn_radius_m (r >= 0.44 is drivable)
+    path_conditioning_r_max_m: 1.0        # 1.0 m arcs run at full 0.3 m/s
+    path_conditioning_margin_m: 0.05
+    path_conditioning_half_width_m: 0.24
+    path_conditioning_slack_m: 0.05
+    path_conditioning_pivot_min_rad: 0.35
+    path_conditioning_edge_pivot_rad: 1.38    # 0.0 = no edge policy (fillets everywhere)
+    path_conditioning_edge_clearance_m: 0.20
+    # A coverage leg (sub-path start, after a pivot vertex, a resume after a retry / boundary
+    # retrace / hold) whose join heading is more than this off the robot's yaw is turned to
+    # in place first (sim gate base run: the ring start 140 deg off the transit's arrival
+    # heading, RPP rotated part way and arced out of the area twice -> STUCK). Not on turn
+    # legs nor swath-end turns. 0.0 = off.
+    path_conditioning_start_pivot_rad: 0.6
     # The costmap-planner fallback stays only for a start off the route graph and a route
     # abort away from any cusp, and is bounded: the robot's distance from the drawn network
     # (cross-track to the route it replaces; 0 inside a mowing area) is checked every tick

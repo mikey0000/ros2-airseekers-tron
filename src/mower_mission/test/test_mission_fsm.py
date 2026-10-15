@@ -44,6 +44,9 @@ class Harness:
         params.setdefault('detour_max_skip_m', 3.0)
         # ... and Nav2-only transits (route-graph transits, 2026-10-09, have their own tests)
         params.setdefault('route_transits', False)
+        # ... and raw paths (path conditioning, 2026-10-15, has its own tests:
+        # test_path_conditioning.py)
+        params.setdefault('path_conditioning', False)
         self.t = 0.0
         self.fsm = f.MissionFSM(f.Params.from_dict(params), cursor=cursor, now=0.0)
         i = self.fsm.inputs

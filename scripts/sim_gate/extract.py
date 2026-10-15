@@ -30,7 +30,7 @@ def yaw(q):
 def main(bagdir, out):
     keys = ['gt', 'status', 'hl', 'cmd', 'cmd_nav', 'cmd_emerg', 'cmd_dock', 'outside', 'plan',
             'rosout', 'nav_status', 'spin_status', 'fp_status', 'dock_status', 'shape',
-            'incident', 'progress', 'mow_plan', 'odom_map']
+            'incident', 'progress', 'mow_plan', 'odom_map', 'croute']
     D = {k: [] for k in keys}
     types = {}
     for f in sorted(glob.glob(bagdir + '/*.db3')):
@@ -87,6 +87,8 @@ def main(bagdir, out):
                     D['shape'].append([t, m.data])
                 elif name == '/mission/incident':
                     D['incident'].append([t, m.data])
+                elif name == '/behavior_tree_node/conditioned_route':
+                    D['croute'].append([t, m.data])
                 elif name == '/behavior_tree_node/mow_plan':
                     D['mow_plan'].append([t, m.data])
                 elif name == '/behavior_tree_node/mow_progress':
