@@ -225,9 +225,10 @@ Revert flag: `path_conditioning: false` sends raw paths as today.
   pivot on the swath end; 4 of 4 on the real map get fillets). Leg ends are judged
   along-path (`coverage_corner_goal_checker`), not on a 0.08 m disc. One pivot rule
   (`path_conditioning_pivot_min_rad`) for coverage and route leg starts, both controllers.
-- Step 4: MPPI coverage (`coverage_controller: mppi`) passes every non-docking criterion in
-  the gate on conditioned paths, ideal and disturbed; shipped default stays `rpp` until the
-  owner switches (one field run first).
+- Step 4: `coverage_controller: mppi` is the default since e4098ac (rpp = revert); in the
+  gate it passes every non-docking criterion in 4 of 4 runs (ideal and disturbed), 2 of
+  them full PASS; the other two fail on DOCK_MAXOUT (4 cm marker, see simulation.md).
+  Routes take no fillet under 0.8 m (`path_conditioning_route_r_min_m`).
 - Step 5, removed: coverage pivot-vertex-reached rule, route corner-reached rule (0.08 /
   0.15 m / 2 s stall), route stub trimming (with conditioning). Still in the code but not
   firing with conditioning: turn-leg cap (fix 10), `turn_leg_skip`, the short-leg leg

@@ -509,6 +509,52 @@ above) and two RPP-arm runs also on a transit boundary trip at the dock path's -
 fillet (a, b). With the sim artefacts removed (consistent 14 cm marker) the one run made
 passed a-h.
 
+### Gate runs with `coverage_controller: mppi` as the default (2026-10-16, e4098ac)
+
+Changes since 548a7ca: `coverage_controller: mppi` (rpp = revert);
+`path_conditioning_route_r_min_m: 0.8` (transit / dock routes take no fillet under 0.8 m, a
+tighter corner pivots at the vertex: the dock path's -111 deg bend is now a pivot);
+`mower_sim` floor model: wheels within `straight_tol_mps` 0.02 of each other count as
+straight (the final dock reverse with its heading hold is no longer zeroed: no
+DOCK_STALLED since). rpp runs use a mission.yaml copy with `coverage_controller: rpp`.
+
+| Run | a max out / > 0.10 | b trips | c complete / docked / charging (final) | d stuck / not mowed / fallback | e corners > 0.15 (max) | f one-wheel (floor) | g pivot share | h p99 line / arc / corner | shaper rewrite % nav MOWING / TRANSIT / raw | loop Hz med / p10 | rules fired | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| k-mppi-ideal-a | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.071) | 0 (139) | 32 % | 0.050 / 0.043 / - | 0.9 / 2.0 / 1.4 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 28, shaper widened arc 92 | PASS |
+| k-mppi-ideal-b | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.059) | 0 (113) | 31 % | 0.052 / 0.034 / - | 0.8 / 1.8 / 1.2 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 26, shaper widened arc 82 | FAIL |
+| k-mppi-dist-s1 | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.086) | 0 (166) | 34 % | 0.066 / 0.059 / - | 0.7 / 1.9 / 1.1 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 34, shaper pivot-instead 24, shaper widened arc 70 | PASS |
+| k-mppi-dist-s2 | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.096) | 0 (104) | 34 % | 0.064 / 0.055 / - | 0.8 / 2.0 / 1.3 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 24, shaper widened arc 81 | FAIL |
+| k-rpp-ideal-a | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.078) | 0 (94) | 36 % | 0.044 / 0.040 / - | 0.3 / 2.0 / 0.8 | 20 / 20 | route corner pivot (angle split) 15, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 15, shaper widened arc 64 | FAIL |
+| k-rpp-dist-s1 | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 1 of 29 (0.219) | 0 (130) | 38 % | 0.040 / 0.047 / - | 0.4 / 4.6 / 1.7 | 20 / 20 | route corner pivot (angle split) 15, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 16, shaper widened arc 65 | FAIL |
+
+Docking: k-mppi-ideal-a, k-mppi-dist-s1, k-rpp-dist-s1 docked; DOCK_MAXOUT in k-mppi-ideal-b,
+k-mppi-dist-s2, k-rpp-ideal-a. Ground truth at the MAXOUT retries (g-mppi-ideal-a): lateral
+0.03-0.05 m, heading -19 -> +18 -> +24 deg, the robot steering on a noisy 4 cm marker
+estimate until the marker leaves the 640x480 image; with a 14 cm marker the same stack docks
+first time (dockexp-marker14).
+
+**Verdict: 2 of 6 runs pass every criterion (both MPPI).** All four MPPI runs pass a, b, d,
+e, f, h; the two MPPI failures are docking only (DOCK_MAXOUT). The rpp revert check fails
+once on docking and once on (e): the first transit's -90 deg route pivot at (-0.23, -0.03)
+right after undocking, 0.219 m (MPPI transit, the same in both arms; not investigated further).
+
+**Marker size (question for the owner, nothing changed):** the sim renders what the deployed
+config says (`marker_size: 0.04`, from the vendor binary constant `marker_size_ = 0.04f`,
+"square width 4 cm"; rear camera 640x480 for docking in both). The repo's own measurement
+contradicts it: `config/cameras/rear_camera_info_640x480.yaml` notes the backlit dock marker's
+edges at x 102-496 px (394 px, fx 684.7) on the docked robot, i.e. ~0.14 m at the ~0.25 m
+camera distance (it would be ~110 px if it were 4 cm; the edges may be the backlit panel, not
+the black square). If the printed square is ~14 cm, every marker distance is 3.5x too short
+in the deployed docking; please measure the square on the charger.
+
+**Pivot share** (k-mppi-ideal-a: 32 % of moving time = 311 s): MOWING 212 s, of which the
+conditioner's pivot vertices 163 s (27 pivots: 24 "no fillet fits", geometrically required
+in the region; 3 "edge policy", 305 deg, ~18 s, avoidable with fillets that cost the outer
+ring's corner cut, not boundary margin), coverage leg-start junctions 34 s (6); TRANSIT /
+RETURNING_HOME 99 s (16 route pivots, up from 12 with the 0.8 m route minimum; 2 final
+approach spins). Nothing was reduced: the only avoidable part (edge policy, ~2 % of moving
+time) is a deliberate edge-quality choice (design 3.1 step 3).
+
 ## Limitations
 
 - **Simplified physics:** there is no slip, no terrain or slope, no tilt, and no
