@@ -451,3 +451,62 @@ What to look for: `route: … stub before the corner … dropped`, `route: first
 `route leg i/n: corner (x, y) reached (d m): leg done`, `route corner at …: stop and pivot`
 right after it; any `route progress watch` line is a leg that turned in place for 20 s (a
 fail to investigate, but it no longer spins for minutes).
+
+
+## Run 5: 2026-10-15 05:17, `mow-051745` (follow-ups live), and the path conditioner (branch `ws/coverage-corners`)
+
+**What happened.** Undock and the start transit worked. On sub-path 0, the outer ring, the
+ring start already arced 0.062 m outside Area 1 at (-2.09, 1.10) (FollowCoveragePath rotated
+part way from the transit's ~30 deg to -85 deg, then an arc to -160 deg). 20 s later RPP drove
+the ~100 deg V corner at (-4.74, -1.17) as an arc: 0.26 m cross-track, the robot centre 0.11 m
+outside. The hard boundary stopped, blade off, retraced 0.40 m and resumed the same leg the
+same way: the second trip ended in STUCK_NEEDS_HELP 47 s into mowing. MOWING cross-track
+against the planned lines: median 0.026 / p90 0.074 / p99 0.204 / max 0.262 m, every large
+error at a sharp corner.
+
+**Cause.** Coverage rings are the area polygon offset inward (0.05 m) and keep every drawn
+vertex; drawn paths are polylines with sharp vertices. A vertex cannot be driven without
+stopping; RPP arcs wide (design `DESIGN_path_conditioning_2026-10.md` section 1).
+
+**Sim gate (new, `scripts/sim_gate.sh`, `simulation.md` "Sim gate").** A full mow on a copy of
+run 5's map. On the deployed code (9c2fdd1) it reproduces the failure mode with and without
+the ground disturbance: two hard-boundary trips on the outer ring (at its start, the spot the
+field run missed by 4 cm), the second after resuming the same arc, STUCK_NEEDS_HELP ~30 s
+into mowing.
+
+**First fix, dropped.** A coverage-only split at corners >= 79 deg plus a boundary-retry
+special case (resume at the corner with a pivot). One sim run: no trip, but replaced by the
+owner's direction (design 2026-10): handle corners once, in one path conditioner, not with
+another runtime rule. Not committed.
+
+**Change (design steps 2-3, `path_conditioning`).** `mower_mission/path_conditioning.py`
+conditions every coverage sub-path except the turn legs, and every transit / dock route,
+against the allowed region (areas U path channels U dock corridor): per corner the largest
+fillet r in [0.5, 1.0] m that fits, else a pivot at the vertex; outermost-ring convex corners
+>= 79 deg at the edge pivot (edge cut); resampled at 0.05 m with segment types; validated.
+Pivots run as a leg end on the vertex (the existing corner-reached rule) + Nav2 Spin, blade
+on. A coverage leg whose join heading is > 0.6 rad off is turned to first (the ring start).
+On run 5's ring: the V (-4.74, -1.17) and (-0.50, 5.32) pivot by the edge policy, 18 corners
+are fillets (r 0.5-1.0), the rest pivots where no fillet fits. The dock path's 39 deg bend is a
+r = 1.0 fillet; its drawn 90 deg corner by the dock pivots.
+
+| | Change | Params (default) | Revert |
+|---|---|---|---|
+| n | Path conditioner on coverage sub-paths (not turn legs) and transit / dock routes; pivots as leg end + Spin; `~/mow_plan` types, `~/conditioned_route` | `path_conditioning` true, `path_conditioning_r_min_m` 0.5, `_r_max_m` 1.0, `_margin_m` 0.05, `_half_width_m` 0.24, `_slack_m` 0.05, `_pivot_min_rad` 0.35, `_edge_pivot_rad` 1.38, `_edge_clearance_m` 0.20 | `path_conditioning: false` |
+| o | Coverage leg join pivot (> this off the robot's yaw, not on turn legs / swath-end turns) | `path_conditioning_start_pivot_rad` 0.6 | `0.0` |
+
+**Sim gate results** (full table in `simulation.md`): with conditioning, ideal and disturbed,
+0 samples outside, 0 hard-boundary trips, every sharp corner <= 0.114 m (V corner 0.038 m),
+no one-wheel ticks (except the docking server's marker reverse, 114 ticks, in the one run that
+docked), pivot share 23-26 %. **The gate does NOT pass**: in 2 of 3 runs the 0.54 m swath-end
+turn leg (sub-path 3, sent as planned) circles under the shaper's widened r = 0.64 m arc,
+"Failed to make progress" x4, NOT mowed, MOWING_INCOMPLETE; cross-track p99 0.22-0.38 m comes
+from turn legs and leg joins (bodies: median 0.004-0.013 m). Runtime rules that still fired:
+route corner pivots 7-8, route corner-reached 1-2, stub trim / start join 1-2, fix 10 turn-leg
+cap 2-4, shaper widened arcs 155-460 and pivot-instead 15-36, pivot-assist creep 6-11; no
+costmap fallback, no progress watch, no loop guard, no stuck guard. Not for the field yet:
+next is the turn legs (condition / track them with the same rules, or the shaper as a clamp,
+design steps 4-5).
+
+What the sim cannot show: slope (the field's Spin timeouts on the slope, pivot vs K-turn),
+real turf slip and grip in pivots beyond the disturbance model, RTK float / heading error.

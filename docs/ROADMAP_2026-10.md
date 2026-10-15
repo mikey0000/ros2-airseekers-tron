@@ -136,6 +136,18 @@ goal → change → test → pass criterion → revert.
           shows one, so `turn_shaper_transit_pivot_hold_rps` exists, off by default.
           Details + reverts: `wheel_smoothness_field_tests.md` "2026-10-15 field".
           Unit-tested + sim (domain 174); field test pending.
+      (h) 2026-10-15 run 5 (`mow-051745`): the outer ring's 100 deg V at (-4.74, -1.17) driven
+          as an arc by RPP, 0.11 m outside, twice -> STUCK_NEEDS_HELP 47 s into mowing; the
+          ring start missed by 4 cm. Branch `ws/coverage-corners`: **sim gate**
+          (`scripts/sim_gate.sh`, full mow on run 5's map, criteria a-h, ground disturbance;
+          base 9c2fdd1 FAILS with the run 5 failure mode) and the **path conditioner**
+          (`DESIGN_path_conditioning_2026-10.md` steps 2-3, `path_conditioning`, revert
+          false): fillets where the space allows, else pivots on the vertex, for coverage
+          sub-paths and transit / dock routes. Gate: boundary clean (0 outside, 0 trips,
+          corners <= 0.114 m) with and without disturbance, but **FAIL** on a swath-end turn
+          leg that loops (MOWING_INCOMPLETE 2 of 3 runs) and on cross-track p99 (turn legs,
+          leg joins). Not for the field until the gate passes.
+          Details: `wheel_smoothness_field_tests.md` "Run 5", `simulation.md` "Sim gate".
 - [ ] 0.3 [C] Docs: replace every "vendor" accel/decel citation of `adaptivePurePursuit.h`
       with the running node's values (0.6 / 1.0 m/s², 2.0 rad/s²; `cfg.yaml:8-9,69-72`).
 

@@ -190,6 +190,12 @@ def generate_launch_description() -> LaunchDescription:
         arg('stereo', 'true', 'sim: synthetic /stereo_depth/points + clear_points.'),
         arg('stereo_noise_m', '0.0', 'sim: gaussian stereo range noise (m).'),
         arg('min_wheel_speed_mps', '0.06', 'sim: MCU wheel speed floor (0 = off).'),
+        arg('disturb_wheel_bias', '0.0', 'sim: left/right ground-speed mismatch (fraction, '
+            '+ = drift left; 0 = off).'),
+        arg('disturb_slip_std', '0.0', 'sim: per-wheel random slip std (fraction; 0 = off).'),
+        arg('disturb_pivot_eff', '1.0', 'sim: ground / commanded yaw rate while pivoting '
+            '(turf scrub; 1 = ideal).'),
+        arg('disturb_seed', '1', 'sim: random seed of the slip process.'),
         arg('urdf_file', default_urdf, 'xacro robot description.'),
         arg('log_level', 'info', 'Log level of the sim node.'),
     ]
@@ -204,6 +210,13 @@ def generate_launch_description() -> LaunchDescription:
                                              value_type=float),
             'min_wheel_speed_mps': ParameterValue(LaunchConfiguration('min_wheel_speed_mps'),
                                                   value_type=float),
+            'disturb_wheel_bias': ParameterValue(LaunchConfiguration('disturb_wheel_bias'),
+                                                 value_type=float),
+            'disturb_slip_std': ParameterValue(LaunchConfiguration('disturb_slip_std'),
+                                               value_type=float),
+            'disturb_pivot_eff': ParameterValue(LaunchConfiguration('disturb_pivot_eff'),
+                                                value_type=float),
+            'disturb_seed': ParameterValue(LaunchConfiguration('disturb_seed'), value_type=int),
             'rear_marker_size': ParameterValue(LaunchConfiguration('rear_marker_size'),
                                                value_type=float),
         }],

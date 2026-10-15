@@ -97,6 +97,7 @@ TOPIC_DEFAULTS = {
     'preview_summary_topic': '~/preview_summary',     # latched String JSON
     # live mow progress for the GUI map (mow_progress.py): latched String JSON
     'mow_plan_topic': '~/mow_plan',                   # sub-path geometry, on plan change
+    'conditioned_route_topic': '~/conditioned_route',  # transit / dock route as driven
     'mow_progress_topic': '~/mow_progress',           # cursor / percent / ETA, 1 Hz
     'mow_progress_rate_hz': 1.0,
     # clients
@@ -263,6 +264,7 @@ class MissionNode(Node):
                                                    latched)
         self._preview_pub = self.create_publisher(String, p['preview_summary_topic'], latched)
         self._mow_plan_pub = self.create_publisher(String, p['mow_plan_topic'], latched)
+        self._route_pub = self.create_publisher(String, p['conditioned_route_topic'], latched)
         self._mow_progress_pub = self.create_publisher(String, p['mow_progress_topic'], latched)
         # terrain-memory incidents (mower_map map_server_node, docs/terrain_aware_planning.md)
         self._incident_pub = self.create_publisher(String, '/mission/incident', 20)
@@ -801,6 +803,10 @@ class MissionNode(Node):
             threading.Thread(target=self._call_service, args=(e,), daemon=True).start()
         elif isinstance(e, f.PublishPlan):
             self._plan_pub.publish(self._path(e.poses))
+        elif isinstance(e, f.PublishRoute):
+            self._route_pub.publish(String(data=json.dumps({
+                'what': e.what, 'poses': [[round(q[0], 3), round(q[1], 3)] for q in e.poses],
+                'types': ''.join(t[0] for t in e.types)})))
         elif isinstance(e, f.PublishTrajectory):
             self._traj_pub.publish(self._path([(x, y, 0.0) for x, y in e.points]))
         elif isinstance(e, f.PublishResumeAvailable):
@@ -871,7 +877,8 @@ class MissionNode(Node):
             if geo is not None and pid != self._mp_plan_id:
                 self._mp_plan_id = pid
                 self._mow_plan_pub.publish(String(data=json.dumps(
-                    {'plan_id': pid, 'area': geo[1], 'subpaths': geo[2]})))
+                    {'plan_id': pid, 'area': geo[1], 'subpaths': geo[2],
+                     'types': mow_progress.plan_types(self.fsm)})))
             self._mow_progress_pub.publish(String(data=json.dumps(st, default=str)))
         except Exception as ex:  # noqa: BLE001 - GUI telemetry must never hurt the mission
             self.get_logger().warn('mow_progress: %s' % ex, throttle_duration_sec=30.0)

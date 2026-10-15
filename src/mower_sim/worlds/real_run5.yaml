@@ -1,0 +1,14 @@
+# Real Airseekers map as of field run 5 (2026-10-15): Area 1 + the three drawn paths, from a
+# copy of the robot's areas.dat (real_run5_areas.dat: the other mowing areas and the GPS
+# datum dropped; polygons are map metres, unchanged). Default world of scripts/sim_gate.sh.
+# Dock = run 5's docked EKF map pose (bag mow-051745, first /odometry/filtered_map sample,
+# before the undock moved): (0.236, -0.637), yaw 1.773.
+name: real_run5
+datum: {lat: 48.0, lon: 9.0}     # sim datum (UTM central meridian); geometry is map metres
+areas_file: real_run5_areas.dat
+areas_select: [Area 1, Dock path, Path 2, Path 3]
+lawn_area: Area 1
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+obstacles: []
+battery: {voltage: 25.0, percentage: 0.9}

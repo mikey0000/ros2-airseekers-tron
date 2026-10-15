@@ -7,10 +7,12 @@ drivable sub-paths have been mowed, which were skipped, where the robot is on
 the plan, and an elapsed / ETA estimate.  mission_node publishes two latched
 std_msgs/String JSON topics from it:
 
-* ``~/mow_plan``: ``{plan_id, area, subpaths: [[[x, y], ...], ...]}``, the
+* ``~/mow_plan``: ``{plan_id, area, subpaths: [[[x, y], ...], ...], types}``, the
   drivable sub-paths in map frame, republished only when the plan changes.
   Pose indices in ``~/mow_progress`` are absolute indices into the
-  concatenation of these sub-paths (the resume cursor's units).
+  concatenation of these sub-paths (the resume cursor's units). ``types``: per sub-path a
+  string with one of l / a / p (line / arc / pivot) per pose when it was conditioned
+  (path_conditioning), else ''.
 * ``~/mow_progress``: ``{plan_id, area, state, sub_state, sub_path, sub_paths,
   pose_index, total_poses, mowed_segments: [[from, to], ...], current_segment,
   skipped: [[from, to], ...], blade_on, percent, mowed_m, remaining_m,
@@ -32,6 +34,18 @@ def plan_geometry(fsm):
     if subs and subs[0]:
         pid += ':%.2f,%.2f' % tuple(subs[0][0])
     return pid, int(m.area_idx), subs
+
+
+def plan_types(fsm):
+    """Per sub-path segment types of the conditioned plan as strings of 'l' (line), 'a'
+    (arc), 'p' (pivot) per pose; '' for a sub-path sent as planned (turn legs, or path
+    conditioning off)."""
+    m = getattr(fsm, 'mission', None)
+    if m is None or not m.subpaths:
+        return []
+    cond = getattr(m, 'cond', {}) or {}
+    return [''.join(t[0] for t in cond[k]['types']) if k in cond else ''
+            for k in range(len(m.subpaths))]
 
 
 def _merge(ranges):
