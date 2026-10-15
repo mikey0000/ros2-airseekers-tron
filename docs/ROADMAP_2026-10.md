@@ -202,6 +202,11 @@ goal → change → test → pass criterion → revert.
       pose of the pair. Keep `FollowCoveragePathReverse` for the K-turn case only.
       Pass: regime changes per swath < 6; time in pure pivots < 10 % of moving time; no leg
       cap firing.
+      2026-10-16 (`ws/integrate`, sim gate): swath-end reverse turn chains replaced by the
+      swath -> connector -> swath geometry and conditioned (fillets / pivots), one forward
+      path; leg ends along-path (`coverage_corner_goal_checker`); leg cap 0 firings in every
+      run. Pivot share still 30-38 % (every unfilleted corner and leg start is a Spin).
+      Details: `simulation.md` "Gate runs on ws/integrate".
 - [ ] 3.3 [P] Angular limits to the vendor's: MCU clamp 0.3 → 0.5 rad/s (wheels-up check
       first), `velocity_smoother max_velocity[2]`, MPPI `wz_max`, RPP rotate and the shaper
       floor moved together (field-test doc item 5). Pass: pivot authority ratio > 0.7 on the

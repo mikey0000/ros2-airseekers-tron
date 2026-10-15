@@ -1,7 +1,9 @@
 # Design: drivable paths first, then tight tracking (2026-10-15)
 
-Status: proposed. It replaces the corner handling in roadmap task 0.4 (d, g) and the turn
-shaper's rewriting. Evidence: runs 3–5 in `wheel_smoothness_field_tests.md`.
+Status: steps 1-3 and part of 5 implemented on `ws/integrate` (2026-10-16, not merged, not
+field-tested); see §6. It replaces the corner handling in roadmap task 0.4 (d, g) and the
+turn shaper's rewriting. Evidence: runs 3–5 in `wheel_smoothness_field_tests.md`; sim gate
+results in `simulation.md` "Gate runs on ws/integrate".
 
 ## 1. Problem
 
@@ -191,7 +193,8 @@ K-turn) is Phase 4 and needs field data.
 | Turn choice | A fixed angle threshold (79°) for transit routes only; coverage rings get none | Per corner, from the measured space to the boundary (fillet if it fits, else pivot, else K-turn) |
 | Controllers | MPPI transit, RPP coverage, RPP reverse, docking controller; MPPI unaware of the wheel floor | One tracker for all paths, MPPI replaces pure pursuit (made aware of the wheel floor, tuned in the sim gate), RPP only as a revert param; explicit pivot / reverse steps; docking |
 | Turn shaper | Rewrites commands (widen, pivot-instead, pivot snap), so the controller's model is wrong | A clamp only; nothing to rewrite because the curvature is drivable |
-| Mission | Grows a rule per failure (cap, corner reached, stall, stub trim, progress watches) | Sends conditioned legs; keeps the safety rules; removes the corner rules |
+| Mission | Grows a rule per failure (cap, corner reached, stall, stub trim, progress watches) | Sends conditioned legs; keeps the safety rules; removes the corner rules (2026-10-16: corner-reached rules and stub trim removed, leg ends along-path) |
+| Swath-end turns | Reeds-Shepp forward / reverse legs of 0.3-0.9 m, each a FollowPath goal on a 0.08 m checker | The swath -> connector -> swath geometry, conditioned: fillets or pivots, one forward path (2026-10-16) |
 | Validation | Unit tests, partial sim runs, then field | Full-mow sim gate with fixed pass criteria, then one field run |
 | Outer ring | 0.05 m inset with sharp corners, 0.11–0.16 m tracking error at corners | Inset plus fillet / pivot per corner, validated inside the margin |
 
@@ -213,3 +216,27 @@ Each step passes the sim gate before the field.
 6. **Phase 4: slope-aware turn choice** (pivot vs K-turn by tilt), with field data.
 
 Revert flag: `path_conditioning: false` sends raw paths as today.
+
+**Status (2026-10-16, `ws/integrate`, sim gate only):**
+
+- Steps 1-3 done: gate, conditioner, used for coverage sub-paths and transit / dock routes.
+  Swath-end Reeds-Shepp turns are no longer driven as 0.3-0.9 m legs: the chain is replaced
+  by swath -> connector -> swath and conditioned (fillet r >= 0.5 m where it fits, else a
+  pivot on the swath end; 4 of 4 on the real map get fillets). Leg ends are judged
+  along-path (`coverage_corner_goal_checker`), not on a 0.08 m disc. One pivot rule
+  (`path_conditioning_pivot_min_rad`) for coverage and route leg starts, both controllers.
+- Step 4: MPPI coverage (`coverage_controller: mppi`) passes every non-docking criterion in
+  the gate on conditioned paths, ideal and disturbed; shipped default stays `rpp` until the
+  owner switches (one field run first).
+- Step 5, removed: coverage pivot-vertex-reached rule, route corner-reached rule (0.08 /
+  0.15 m / 2 s stall), route stub trimming (with conditioning). Still in the code but not
+  firing with conditioning: turn-leg cap (fix 10), `turn_leg_skip`, the short-leg leg
+  checker (kept for `path_conditioning: false` and `turn_type: reverse`). Not yet a clamp:
+  the turn shaper still rewrites 0.3-0.9 % of mowing and 4-7 % of transit commands.
+- Open: transit MPPI on a tight route fillet (r 0.5 m on the dock path's -111 deg bend) can
+  run 0.4 m wide (2 of 8 final runs: a hard-boundary trip in TRANSIT / RETURNING_HOME). The
+  speed cap v <= 0.3 r of §3.1 step 4 was tried on route legs and reverted (at 0.115 m/s
+  MPPI drifted out of the channel in 3 of 4 runs); next candidates: no fillet below ~0.8 m
+  on routes (pivot instead), or route-leg MPPI tuning. Docking fails in this sim for two
+  sim artefacts (4 cm marker render noise, the floor model's exact "turning" test), see
+  `simulation.md`. Pivot share 30-38 % (roadmap 3.2 asks < 10 %).

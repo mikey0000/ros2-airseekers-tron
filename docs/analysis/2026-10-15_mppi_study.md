@@ -403,6 +403,12 @@ corner, pivot in place, follow on):
 - **Merging with `ws/coverage-corners`.** My `coverage_leg_pivot_rad` (MPPI only, leg starts) and
   their dropped `coverage_start_pivot_min_rad` do the same thing; the conditioner's pivot
   markers should replace both.
+  *Resolved on `ws/integrate` (2026-10-16): `coverage_leg_pivot_rad` / `_max_m` removed;
+  coverage and route leg starts pivot by the conditioner's `path_conditioning_pivot_min_rad`
+  for both controllers. Short swath-end turn legs no longer exist with conditioning (the
+  Reeds-Shepp chain is replaced by conditioned swath -> connector -> swath geometry) and leg
+  ends are judged along-path, which removes the §8.2 MPPI turn-leg failure; gate results in
+  `simulation.md` "Gate runs on ws/integrate".*
 - **Docking.** Every arm ended NAV_TO_DOCK_FAILED / DOCK_MAXOUT / DOCK_STALLED in this sim
   (known sim docking-approach issue), so "docked" is not discriminating here.
 - **MOWING_INCOMPLETE.** Both arms lost the outer ring ("follow_path keeps reporting success
