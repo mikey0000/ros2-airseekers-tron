@@ -254,7 +254,7 @@ def reverse_control(err: DockErrors, g: ControllerGains,
     if g.wheel_floor > 0.0 and abs(w) > 1e-6:
         inner = vmax - abs(w) * 0.5 * g.track_width
         if -g.wheel_floor < inner < 0.0 and err.remaining <= g.final_zone:
-            return -vmax, math.copysign(vmax / (0.5 * g.track_width), w), e
+            return -vmax, math.copysign(vmax / (0.5 * g.track_width) * (1.0 - 1e-6), w), e
         if -g.wheel_floor < inner < 0.0:
             w_piv = min(max(abs(w), 2.0 * g.wheel_floor / g.track_width),
                         max(g.max_angular, 2.0 * g.wheel_floor / g.track_width))
