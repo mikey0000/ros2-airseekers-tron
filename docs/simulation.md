@@ -258,6 +258,98 @@ The drive model reproduces these behaviours:
   base_footprint`, which splits the TF tree. `mower.launch.py` is safe only because
   it includes localization first.
 
+## Sim gate: `scripts/sim_gate.sh` (every change, before the field)
+
+One command runs a full mow in the sim and judges it. A change that fails the gate does not
+go to the field (owner, 2026-10-15; design: `DESIGN_path_conditioning_2026-10.md` section 4).
+
+```bash
+./scripts/dev_build.sh build                    # once per checkout (symlink install)
+./scripts/sim_gate.sh                           # ideal drive
+./scripts/sim_gate.sh -d                        # with the ground disturbance
+./scripts/sim_gate.sh -d -s 2 -n mytest -- mission_params_file:=/work/path/mission.yaml
+```
+
+What it does:
+
+1. It starts `sim.launch.py` in the dev image (container `sim<domain>-gate-<name>`, DDS domain
+   `MOWER_SIM_ROS_DOMAIN_ID`, default 175, never 0, localhost-only; it refuses
+   `MOWER_SIM_ALLOW_LAN` / `MOWER_SIM_ALLOW_ON_ROBOT`). The default world is
+   `src/mower_sim/worlds/real_run5.yaml`: a copy of the real `areas.dat` as of field run 5
+   (Area 1 plus the three drawn paths, the GPS datum dropped) with the dock at run 5's
+   docked EKF pose. Every parameter is the committed one.
+2. It waits for the mission to be idle on the dock, starts a bag recorder inside the sim
+   container (Fast DDS shared memory), then sends START: undock, transit, every sub-path of
+   Area 1, return, dock.
+3. It stops at IDLE_DOCKED / CHARGING after the mission ran, at STUCK_NEEDS_HELP, EMERGENCY,
+   NAV_TO_DOCK_FAILED, UNDOCK_FAILED or MOWING_INCOMPLETE, or after `-t` seconds (default
+   2700).
+4. It copies the bag, dumps it (`scripts/sim_gate/extract.py`) and judges it
+   (`scripts/sim_gate/evaluate.py`), all in containers. Output in `log/sim_gate/<name>/`
+   (`SIM_GATE_OUT`): `verdict.txt`, `result.json`, `mission.log`, `launch.log`, the bag.
+   Exit code 0 only on PASS.
+
+Criteria, judged from ground truth (`/sim/ground_truth`), not from the stack's opinion:
+
+| | Criterion | PASS |
+|---|---|---|
+| a | max distance outside (areas U drawn path polygons U dock corridor), recomputed with `mower_map.areas`, per phase | no sample > 0.10 m |
+| b | hard-boundary trips (`HARD BOUNDARY` in the mission log) | 0 |
+| c | MOWING_COMPLETE, then docked and charging (sim contacts) | all |
+| d | STUCK_NEEDS_HELP / sub-paths NOT mowed / costmap-fallback transits (FollowPath / Spin aborts reported) | 0 / 0 / 0 |
+| e | max deviation within 0.8 m of every corner >= 79 deg (coverage sub-paths and transit / dock routes) | <= 0.15 m |
+| f | one-wheel ticks on `/cmd_vel` (a turn with the inner wheel in (-0.06, 0); inner in [0, 0.06), stalled by the MCU floor, is reported) | 0 |
+| g | time pivoting in place vs moving | reported |
+| h | MOWING cross-track to the sub-path actually sent (`~/mow_plan`; conditioned when path conditioning is on), median / p90 / p99 / max per segment type: line, arc, corner (raw plans: within 0.3 m of a drawn vertex >= 20 deg), pivoting | p99 <= 0.10 m on line, arc and corner |
+
+It also lists how often each runtime corner rule of the design's section 3.3 fired (route
+corner splits and corner-reached rule, stub trim, cusp about-turn, progress watches, the
+fix 10 turn-leg cap, the loop guard, costmap fallback, the shaper's widened arcs /
+pivot-instead / pivot hold, pivot-assist creep, the stuck guard). Field reference (run 5,
+MOWING, raw plan): cross-track median 0.026 / p90 0.074 / p99 0.204 / max 0.262 m.
+
+### Ground disturbance (`-d`)
+
+`mower_sim/kinematics.py` can make the ground disagree with the wheels, so the sim does not
+flatter a controller that only works on a perfect drive. Off by default; `-d` sets:
+
+| Launch argument | `-d` value | Effect |
+|---|---|---|
+| `disturb_wheel_bias` | 0.04 | the right wheel makes 2 % more ground than commanded, the left 2 % less: a slow left drift (cross slope) |
+| `disturb_slip_std` | 0.05 | per-wheel multiplicative slip, a first-order random process (correlation `disturb_slip_tau_s` 1 s) |
+| `disturb_pivot_eff` | 0.85 | ground yaw rate / commanded while counter-rotating (turf scrub) |
+| `disturb_seed` | `-s` (1) | the slip process is seeded: a run is repeatable |
+
+The commanded wheel speeds, the MCU model and what the stack sees are unchanged; only the
+ground truth moves differently (with `localization:=sim` the stack sees that truth, as it
+sees RTK on the robot).
+
+### What the gate cannot show
+
+Slope (tilt, downhill drift, the field's Spin timeouts on the slope), real turf slip and
+grip loss in pivots beyond the disturbance model, wheel-in-a-hole stalls, RTK float /
+dropouts and heading errors, stereo false positives on grass. A gate PASS is necessary, not
+sufficient: the field run still decides.
+
+### Gate runs
+
+Recorded runs (domain 175, real_run5 world). Base = master 9c2fdd1 (the code deployed for
+run 5) with only the sim / gate files added.
+
+| Run | Code | Disturbance | a max out / > 0.10 | b trips | c complete / docked | d stuck / not mowed / fallback | e corners > 0.15 | f one-wheel | g pivot share | h p99 line / arc / corner | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| base-ideal-1 | 9c2fdd1 | off | 0.107 m / 61 | 2 | no / no (STUCK 92 s after START) | 1 / 0 / 0 | 1 of 2 (0.195) | 10 | 39 % | - / - / 0.245 | FAIL |
+| base-dist-1 | 9c2fdd1 | on (seed 1) | 0.114 m / 65 | 2 | no / no (STUCK 94 s after START) | 1 / 0 / 0 | 0 of 2 (0.145) | 8 | 41 % | - / - / 0.241 | FAIL |
+
+The base reproduces run 5's failure mode on the same outer ring: two hard-boundary trips,
+the second one after resuming the same manoeuvre, STUCK_NEEDS_HELP ~30 s into mowing. In the
+sim the trip comes at the ring's start (-2.0, 1.1), not at the V corner (-4.74, -1.17): the
+transit arrives heading ~20 deg, the ring leaves at -136 deg, FollowCoveragePath rotates part
+way (to about -90 deg) and then drives an r = 0.44 m arc out of the area. In the field the same
+start arc reached 0.062 m outside at (-2.09, 1.10) (`outside_m`, run 5, t = 12.8 s), a near
+miss, and the V corner 20 s later tripped. Same cause either way: a sharp heading change in a
+coverage path executed as a forward arc.
+
 ## Limitations
 
 - **Simplified physics:** there is no slip, no terrain or slope, no tilt, and no

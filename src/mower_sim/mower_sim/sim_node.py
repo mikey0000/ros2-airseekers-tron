@@ -98,6 +98,12 @@ class SimNode(Node):
         d('battery_charge_per_s', 0.001)
         d('gps_sigma_m', 0.015)
         d('bumper_hold_s', 0.3)
+        # ground disturbance (kinematics.DriveParams.disturb_*; all off by default)
+        d('disturb_wheel_bias', 0.0)
+        d('disturb_slip_std', 0.0)
+        d('disturb_slip_tau_s', 1.0)
+        d('disturb_pivot_eff', 1.0)
+        d('disturb_seed', 1)
         gp = self.get_parameter
         path = gp('world_file').value
         if not path or not os.path.isfile(path):
@@ -108,7 +114,19 @@ class SimNode(Node):
             linear_max=float(gp('linear_max').value), angular_max=float(gp('angular_max').value),
             min_wheel_speed=float(gp('min_wheel_speed_mps').value),
             wheel_tau_s=float(gp('wheel_tau_s').value),
-            cmd_timeout_s=float(gp('cmd_vel_timeout').value)))
+            cmd_timeout_s=float(gp('cmd_vel_timeout').value),
+            disturb_wheel_bias=float(gp('disturb_wheel_bias').value),
+            disturb_slip_std=float(gp('disturb_slip_std').value),
+            disturb_slip_tau_s=float(gp('disturb_slip_tau_s').value),
+            disturb_pivot_eff=float(gp('disturb_pivot_eff').value),
+            disturb_seed=int(gp('disturb_seed').value)))
+        if self.drive.p.disturbed():
+            self.get_logger().warn(
+                'ground disturbance ON: wheel bias %+.3f, slip std %.3f (tau %.1f s), pivot '
+                'efficiency %.2f, seed %d' % (
+                    self.drive.p.disturb_wheel_bias, self.drive.p.disturb_slip_std,
+                    self.drive.p.disturb_slip_tau_s, self.drive.p.disturb_pivot_eff,
+                    self.drive.p.disturb_seed))
         self.stereo = StereoRaycaster(StereoParams(noise_m=float(gp('stereo_noise_m').value)))
         self.rear = RearCamera(RearCameraParams(
             marker_size=float(gp('rear_marker_size').value)))
