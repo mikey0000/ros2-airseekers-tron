@@ -506,3 +506,39 @@ def test_route_leg_start_pivots_by_the_conditioner_threshold():
     h2.fsm.inputs.pose = (0.0, 0.0, math.radians(33))
     h2.fsm._route_legs = {'legs': [[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]], 'i': 0}
     assert h2.fsm._route_corner_turn('route') is False
+
+
+def test_transit_ending_beside_the_start_drives_onto_it_first():
+    h = Harness(path_conditioning=True, route_transits=True)
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3.0, 3.0, 7.0, 3.0)]))
+    m = h.fsm.mission
+    assert h.name == 'TRANSIT'
+    m.transit_target = (3.0, 3.0, 0.0)
+    h.fsm.inputs.pose = (2.9, 3.15, 0.0)               # arrived 0.18 m beside the start
+    h.fsm._route_legs = {'legs': [[(0.0, 0.0, 0.0), (2.9, 3.15, 0.0)]], 'i': 0}
+    h.fsm._route_result(f.SUCCEEDED)
+    assert m.final_approach
+    leg = h.fsm._route_legs['legs'][0]
+    assert geo.dist(leg[0], (2.9, 3.15)) < 1e-9 and geo.dist(leg[-1], (3.0, 3.0)) < 1e-9
+    # whatever the approach leg's outcome, the transit has arrived: mow
+    h.fsm._action = None
+    h.fsm.inputs.pose = (3.0, 3.01, -1.0)
+    h.fsm._route_result(f.ABORTED)
+    assert not m.final_approach and h.name == 'MOWING'
+
+
+def test_transit_ending_on_the_start_mows_at_once():
+    h = Harness(path_conditioning=True, route_transits=True)
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3.0, 3.0, 7.0, 3.0)]))
+    m = h.fsm.mission
+    m.transit_target = (3.0, 3.0, 0.0)
+    h.fsm.inputs.pose = (2.98, 3.02, 0.0)
+    h.fsm._route_legs = {'legs': [[(0.0, 0.0, 0.0), (2.98, 3.02, 0.0)]], 'i': 0}
+    h.fsm._route_result(f.SUCCEEDED)
+    assert not m.final_approach and h.name == 'MOWING'

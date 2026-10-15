@@ -98,6 +98,11 @@ behavior_tree_node:
     route_controller_id: FollowPath   # MPPI transit controller
     route_goal_checker_id: general_goal_checker
     route_end_tolerance_m: 0.5        # route follow "success" farther from the target = failed
+    # 2026-10-16 (path conditioning): a transit that arrived more than this from the sub-path
+    # start drives the last straight bit onto it (pivot to face it if needed, along-path end)
+    # before the sub-path's own start pivot; sim gate: transits ended 0.1-0.23 m beside the
+    # start and the join ran that far off the line. 0.0 = off (revert).
+    route_final_approach_m: 0.05
     route_blocked_retries: 1          # obstacle abort: blocked wait, re-send the route this often, then Nav2
     route_split_turn_deg: 100.0       # route sent as FollowPath legs split at turns sharper than this
     # 2026-10-14 fix 11 (run 2: MPPI stalled at the dock-path -> area-path hairpin, the

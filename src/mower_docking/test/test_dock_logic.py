@@ -120,8 +120,7 @@ def test_reverse_control_is_reverse_and_bounded():
     v, w, _ = dl.reverse_control(dl.DockErrors(1.0, 0.4, -0.4), g)
     assert v <= 0 and abs(v) <= 0.15
     assert abs(w) <= g.max_angular
-    if v == 0.0:                          # a large error turns first as a proper pivot
-        assert abs(w) >= 0.25
+    assert not (-0.06 < abs(v) - abs(w) * 0.24 < 0.0)   # never a one-wheel turn
 
 
 def test_reverse_control_converges_in_simulation():
@@ -347,8 +346,8 @@ def test_dock_vision_docking_commands_reverse_then_final():
     m.start(dl.Snapshot(t=0.0))
     m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0.1, 0.05, stamp=0.1)))
     out = m.step(dl.Snapshot(t=0.15, marker=dl.MarkerObs(-1.3, 0.1, 0.05, stamp=0.15)))
-    # 16 cm off the axis: turn-first (2026-10-16: a pivot, both wheels, not a one-wheel creep)
-    assert out.state == S.DOCKING and (out.linear < 0 or abs(out.angular) >= 0.25)
+    # 16 cm off the axis: turn-first as a proper reversing arc (2026-10-16, both wheels)
+    assert out.state == S.DOCKING and out.linear < 0
     assert out.remaining == pytest.approx(0.85, abs=0.02)
     for i in range(3):   # median of the last 3 observations
         out = m.step(dl.Snapshot(t=0.2 + 0.05 * i,
@@ -945,8 +944,9 @@ def test_reverse_control_turn_first_slows_on_large_heading_error():
     v_mid, _, _ = dl.reverse_control(dl.DockErrors(1.0, 0.0, math.radians(8)), g)
     v_small, _, _ = dl.reverse_control(dl.DockErrors(1.0, 0.0, math.radians(2)), g)
     assert -g.max_speed <= v_small < v_mid < 0
-    # 25 deg: turn first as a proper pivot (the creep would be a one-wheel turn)
-    assert v_big == 0.0 and abs(w_big) >= 0.25
+    # 25 deg: turn first, as a proper reversing arc with the inner wheel at the floor (the
+    # creep would be a one-wheel turn)
+    assert v_big < 0 and abs(abs(v_big) - abs(w_big) * 0.24 - 0.06) < 1e-9
 
 
 # ------------------------- FINAL budget / contact handling / calibration (2026-10-07 Home)
@@ -1615,10 +1615,11 @@ def test_reverse_control_never_asks_for_a_one_wheel_turn():
                     assert abs(w) >= 0.25 - 1e-9
 
 
-def test_large_heading_error_turns_first_as_a_pivot():
+def test_large_heading_error_turns_on_a_legal_reversing_arc():
     g = dl.ControllerGains()
     v, w, _e = dl.reverse_control(dl.DockErrors(lateral=0.0, heading=0.6, remaining=0.6), g)
-    assert v == 0.0 and abs(w) >= 0.25
+    assert v < 0 and abs(w) == g.max_angular
+    assert abs(v) - abs(w) * 0.24 >= 0.06 - 1e-9 and abs(v) <= g.max_speed
 
 
 def test_wheel_floor_0_reverts_to_the_creep():

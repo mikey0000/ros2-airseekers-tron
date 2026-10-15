@@ -611,6 +611,10 @@ class Params:
     route_controller_id: str = 'FollowPath'          # MPPI transit controller
     route_goal_checker_id: str = 'general_goal_checker'
     route_end_tolerance_m: float = 0.5   # route "success" farther from the target = failed
+    # path_conditioning: a transit that arrived more than this from the sub-path start drives
+    # the last straight bit onto it (pivot to face it if needed, along-path end) before the
+    # sub-path's own start pivot (_route_final_approach). 0 = off (revert).
+    route_final_approach_m: float = 0.05
     # Sim 2026-10-09: the scripted person crossed Path 1, the route aborted (collision ahead)
     # and the /navigate_to_pose fallback after the wait cut across the lawn into a drawn
     # obstacle corner. An obstacle abort now waits (blocked wait) and re-sends the ROUTE
@@ -1051,6 +1055,7 @@ class Mission:
     route_poses: Optional[list] = None          # route of the in-flight route transit
     route_full: Optional[list] = None           # the planned route (route_cusps index into it)
     route_cusps: list = field(default_factory=list)   # [(i, x, y, heading_after)] of route_full
+    final_approach: bool = False                # this transit's final approach leg was sent
     cusp_turns: dict = field(default_factory=dict)    # cusp (x, y) -> about-turns, per sub-path
     cusp_resume: Optional[list] = None          # route remainder sent after the about-turn
     fallback_ref: Optional[list] = None         # route of a costmap fallback (corridor bound)
@@ -3846,6 +3851,7 @@ class MissionFSM:
         m = self.mission
         m.route_poses = None
         m.route_full, m.route_cusps, m.cusp_resume = None, [], None
+        m.final_approach = False
         if self.p.route_transits and not m.route_fallback and m.detour is None \
                 and not m.recovering and self.inputs.pose is not None:
             m.fallback_ref = None
@@ -4299,8 +4305,12 @@ class MissionFSM:
         m.route_poses = None
         pose = self.inputs.pose
         d = geo.dist(pose, m.transit_target) if pose is not None else math.inf
-        if (outcome == SUCCEEDED and d <= self.p.route_end_tolerance_m) or \
+        approached = m.final_approach and outcome != UNAVAILABLE
+        if approached or (outcome == SUCCEEDED and d <= self.p.route_end_tolerance_m) or \
                 (outcome != UNAVAILABLE and self._transit_arrived()):
+            if not approached and self._route_final_approach(d):
+                return
+            m.final_approach = False
             m.recovering = False
             m.transit_fails = 0
             self._blk = None
@@ -4326,6 +4336,31 @@ class MissionFSM:
         m.route_fallback = True
         self._log('warn', '%s: transit via the costmap planner' % why)
         self._start_fallback_nav(ref=route)
+
+    def _route_final_approach(self, d):
+        """Path conditioning: a transit that ended (arrived) more than route_final_approach_m
+        from the sub-path start drives onto it first - the junction robot -> start is part
+        of the driven path, a straight leg with the conditioner's pivot rule at its start
+        (sim gate 2026-10-16: transits ended 0.1-0.23 m beside the start; the start pivot
+        and the rejoin then ran 0.1-0.23 m off the line, MOWING cross-track p99 0.106).
+        One such leg per transit; its outcome is not judged (the transit had arrived).
+        True = sent."""
+        m, pose, tol = self.mission, self.inputs.pose, float(self.p.route_final_approach_m)
+        if not self.p.path_conditioning or tol <= 0.0 or d <= tol or pose is None or \
+                m.transit_target is None or m.final_approach:
+            return False
+        a, b = (float(pose[0]), float(pose[1])), tuple(m.transit_target[:2])
+        yaw = math.atan2(b[1] - a[1], b[0] - a[0])
+        n = max(2, int(math.ceil(d / 0.05)))
+        leg = [(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n, yaw)
+               for k in range(n + 1)]
+        m.final_approach = True
+        m.route_poses = leg
+        self._log('info', 'transit ended %.2f m from the sub-path start: final approach '
+                          'onto it' % d)
+        self._route_legs = {'legs': [leg], 'i': 0}
+        self._send_route_leg('route')
+        return True
 
     def _transit_arrived(self):
         """True when the last transit target is within transit_arrived_radius_m."""
