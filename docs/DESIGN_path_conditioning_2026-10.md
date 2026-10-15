@@ -134,8 +134,8 @@ Work package (`docs/analysis/2026-10-15_mppi_study.md`):
 3. run the A/B in the sim gate: MPPI (tuned) vs RPP, on raw and on conditioned paths,
    with and without the disturbance.
 
-The criteria are the same as §4, plus loop rate and smoothness (jerk, pivot share). MPPI
-becomes the single tracker if it passes the gate; RPP stays as the fallback parameter.
+The criteria are the same as §4, plus loop rate and smoothness (jerk, pivot share). MPPI replaces pure pursuit as the one tracker for transit, dock routes and coverage; RPP
+stays only as a revert parameter, not as a second controller in use.
 Pivots and reverse segments remain explicit steps whichever controller follows the
 lines.
 
@@ -189,7 +189,7 @@ K-turn) is Phase 4 and needs field data.
 | Where corners are handled | At runtime, in four places: controller (MPPI/RPP), turn shaper, mission corner rules, leg/stuck watchers | Once, before driving, in the path conditioner |
 | Path given to the controller | Raw drawn polylines and polygon-offset rings with sharp vertices | A drivable path: lines, arcs r ≥ 0.5 m, explicit pivots / K-turns |
 | Turn choice | A fixed angle threshold (79°) for transit routes only; coverage rings get none | Per corner, from the measured space to the boundary (fillet if it fits, else pivot, else K-turn) |
-| Controllers | MPPI transit, RPP coverage, RPP reverse, docking controller; MPPI unaware of the wheel floor | One tracker for all paths, MPPI the candidate (made aware of the wheel floor, tuned in the sim gate), RPP as the fallback; explicit pivot / reverse steps; docking |
+| Controllers | MPPI transit, RPP coverage, RPP reverse, docking controller; MPPI unaware of the wheel floor | One tracker for all paths, MPPI replaces pure pursuit (made aware of the wheel floor, tuned in the sim gate), RPP only as a revert param; explicit pivot / reverse steps; docking |
 | Turn shaper | Rewrites commands (widen, pivot-instead, pivot snap), so the controller's model is wrong | A clamp only; nothing to rewrite because the curvature is drivable |
 | Mission | Grows a rule per failure (cap, corner reached, stall, stub trim, progress watches) | Sends conditioned legs; keeps the safety rules; removes the corner rules |
 | Validation | Unit tests, partial sim runs, then field | Full-mow sim gate with fixed pass criteria, then one field run |
