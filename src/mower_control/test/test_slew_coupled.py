@@ -167,7 +167,7 @@ def test_param_default_on():
 def test_no_one_wheel_step_caps_w_in_the_one_wheel_band():
     from mower_control.cmd_vel_slew import no_one_wheel_step
     v, w = no_one_wheel_step(-0.025, 0.2)              # inner -0.023: one-wheel
-    assert v == -0.025 and abs(abs(v) - abs(w) * 0.24) < 1e-9
+    assert v == -0.025 and 0.0 <= abs(v) - abs(w) * 0.24 < 1e-6
     assert no_one_wheel_step(-0.05, 0.05) == (-0.05, 0.05)    # floor zone: unchanged
     assert no_one_wheel_step(0.0, 0.3) == (0.0, 0.3)          # pivot
     assert no_one_wheel_step(-0.13, 0.06) == (-0.13, 0.06)    # proper arc

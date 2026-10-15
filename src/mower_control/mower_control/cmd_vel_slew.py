@@ -829,7 +829,7 @@ def no_one_wheel_step(v, w, params=None):
     half = 0.5 * float(p['track_width_m'])
     inner = abs(v) - abs(w) * half
     if -float(p['min_inner_wheel_mps']) < inner < 0.0:
-        return v, math.copysign(abs(v) / half, w)
+        return v, math.copysign(abs(v) / half * (1.0 - 1e-6), w)   # inner >= 0, not -eps
     return v, w
 
 
