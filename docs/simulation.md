@@ -340,6 +340,29 @@ run 5) with only the sim / gate files added.
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | base-ideal-1 | 9c2fdd1 | off | 0.107 m / 61 | 2 | no / no (STUCK 92 s after START) | 1 / 0 / 0 | 1 of 2 (0.195) | 10 | 39 % | - / - / 0.245 | FAIL |
 | base-dist-1 | 9c2fdd1 | on (seed 1) | 0.114 m / 65 | 2 | no / no (STUCK 94 s after START) | 1 / 0 / 0 | 0 of 2 (0.145) | 8 | 41 % | - / - / 0.241 | FAIL |
+| br-ideal-1 | dropped: coverage split at >= 79 deg corners + boundary-retry special case (not committed) | off | 0 / 0 | 0 | no (MOWING_INCOMPLETE: turn leg sub-path 3 NOT mowed) | 0 / 1 / 0 | 1 of 22 (0.195, transit -111 deg corner) | 0 | 27 % | 0.301 / 0.431 / 0.279 | FAIL |
+| pc-ideal-2 | path conditioning (3c9f899 before the route topic / evaluator fixes) | off | 0 / 0 | 0 | **yes / yes, charging** | 0 / 0 / 0 | 2 of 27 (0.370: routes judged against the raw /plan, i.e. the intended fillet cut) | 114 (all on the docking lane) | 24 % | 0.214 / 0.148 / - | FAIL |
+| pc-ideal-3 | path conditioning 3c9f899 | off | 0 / 0 | 0 | no (MOWING_INCOMPLETE: turn leg sub-path 3 NOT mowed) | 0 / 1 / 0 | 0 of 28 (0.114) | 0 | 23 % | 0.224 / 0.268 / - | FAIL |
+| pc-dist-1 | path conditioning 3c9f899 | on (seed 1) | 0 / 0 | 0 | no (MOWING_INCOMPLETE: turn leg sub-path 3 NOT mowed) | 0 / 1 / 0 | 0 of 28 (0.105) | 0 | 26 % | 0.378 / 0.242 / - | FAIL |
+
+With path conditioning every boundary criterion passes with and without the disturbance:
+no sample outside, no hard-boundary trip, every sharp corner within 0.114 m (the V corner
+0.038 m: the robot stops on the vertex and pivots), no one-wheel tick outside the docking
+server's marker reverse. The gate still FAILS:
+
+- **c / d**: the 0.54 m swath-end turn leg (sub-path 3, sent as planned, not conditioned)
+  aborts four times with "Failed to make progress": RPP asks for the planner's r = 0.5 m
+  turn, the shaper widens it to r = 0.64 m, the robot circles past the leg end, the
+  progress checker aborts, the sub-path is NOT mowed and the mission ends
+  MOWING_INCOMPLETE in the field (`return_home_on_incomplete` false). In pc-ideal-2 the
+  same leg ended by the fix 10 time cap and the run completed and docked. Flaky either way;
+  it is the shaper widening of design section 3.3, not a corner.
+- **h**: conditioned sub-paths track tightly on their bodies (median 0.004-0.013 m) but the
+  p99 comes from leg joins: after a turn leg or a short transit the robot starts up to
+  0.25 m beside the next sub-path's first pose; the turn legs themselves run 0.15-0.26 m
+  off (p99 0.25-0.29 m).
+- **f** (pc-ideal-2): the docking server's marker reverse (`/cmd_vel_docking`) asks for
+  one-wheel turns (114 ticks); the base runs never got that far.
 
 The base reproduces run 5's failure mode on the same outer ring: two hard-boundary trips,
 the second one after resuming the same manoeuvre, STUCK_NEEDS_HELP ~30 s into mowing. In the
