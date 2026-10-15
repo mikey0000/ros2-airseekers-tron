@@ -482,3 +482,16 @@ def test_consecutive_turn_chains_are_all_joined():
     assert len(subs) == 1
     res = pc.condition(subs[0], BOX)
     assert res.valid and len([c for c in res.corners if c.choice != 'kink']) == 4
+
+
+def test_route_stub_is_not_trimmed_under_path_conditioning():
+    # a 0.24 m stub after a 90 deg corner at the route end: kept (it is the leg onto the
+    # sub-path start); the trim ended transits up to 0.3 m short (2026-10-16 sim gate)
+    route = [(0.1 * k, 0.0, 0.0) for k in range(21)] + \
+        [(2.0, 0.06 * k, math.pi / 2) for k in range(1, 5)]
+    h = Harness(path_conditioning=True)
+    h.fsm.inputs.pose = None
+    assert h.fsm._route_prepare(route) == route
+    h = Harness(path_conditioning=False)
+    h.fsm.inputs.pose = None
+    assert len(h.fsm._route_prepare(route)) < len(route)

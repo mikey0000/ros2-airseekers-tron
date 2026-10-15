@@ -3996,7 +3996,10 @@ class MissionFSM:
         route starts where the robot projects onto its first route_start_join_m."""
         poses = [tuple(p) for p in poses]
         th, stub = self._route_corner_th(), float(self.p.route_stub_trim_m)
-        if th > 0.0 and stub > 0.0:
+        # path conditioning: no stub trimming (design 3.3) - a corner near a route end is a
+        # pivot marker like any other, and the stub after it a leg that ends along-path on
+        # the target (the trim ended transits up to 0.3 m short of the sub-path start)
+        if th > 0.0 and stub > 0.0 and not self.p.path_conditioning:
             out = geo.trim_route_stubs(poses, th, stub, tol_rad=ROUTE_CORNER_TOL_RAD)
             if len(out) != len(poses):
                 cut0 = poses.index(out[0])
@@ -4213,9 +4216,11 @@ class MissionFSM:
         if self._route_corner_turn(purpose):
             return
         checker = self.p.route_goal_checker_id
-        if rl['i'] + 1 < len(rl['legs']) and float(self.p.route_corner_turn_rad) > 0.0 and \
-                self.p.route_corner_goal_checker_id:
-            checker = self.p.route_corner_goal_checker_id   # task 0.4 (d): end on the corner
+        if (rl['i'] + 1 < len(rl['legs']) and float(self.p.route_corner_turn_rad) > 0.0 or
+                self.p.path_conditioning) and self.p.route_corner_goal_checker_id:
+            # task 0.4 (d): end on the corner; path conditioning: every leg (the last one
+            # too) ends along-path on its end, not 0.25 m short on the transit disc
+            checker = self.p.route_corner_goal_checker_id
         self._start_action(ACT_FOLLOW, {'poses': rl['legs'][rl['i']],
                                         'controller_id': self.p.route_controller_id,
                                         'goal_checker_id': checker,

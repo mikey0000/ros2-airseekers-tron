@@ -116,10 +116,11 @@ TEST(LegProgressAlongPath, ReachedOnCrossingTheVertexPlaneOffsetAndTurned)
 TEST(LegProgressAlongPath, TooFarBesideTheLineIsNotReached)
 {
   LegProgress lp = alongPath();
-  lp.update(0.0, 0.0, 0.0, 0.5, 0.0, 0.0);
+  lp.update(0.0, 0.6, 0.0, 0.5, 0.0, 0.0);
   for (double x = 0.0; x <= 0.8; x += 0.01)
   {
-    EXPECT_FALSE(lp.update(x, 0.3, 0.0, 0.5, 0.0, 0.0));
+    // 0.6 m beside: outside the lateral band and never within pass_radius (0.5)
+    EXPECT_FALSE(lp.update(x, 0.6, 0.0, 0.5, 0.0, 0.0));
   }
 }
 
@@ -155,4 +156,20 @@ TEST(LegProgressAlongPath, AFarStretchOnTheGoalLineIsNotTheGoal)
   }
   EXPECT_FALSE(lp.update(1.4, 0.05, -M_PI / 2, 0.0, 0.0, 0.0));
   EXPECT_TRUE(lp.update(0.1, 0.05, M_PI, 0.0, 0.0, 0.0));
+}
+
+TEST(LegProgressAlongPath, PassedWideAndMovingAwayIsReached)
+{
+  LegProgress lp = alongPath();
+  // goal (0, 0) heading +x; the robot runs 0.3 m beside it (outside the lateral band)
+  lp.update(-1.0, 0.3, 0.0, 0.0, 0.0, 0.0);
+  bool done = false;
+  double x = -1.0;
+  for (; x <= 1.0 && !done; x += 0.01)
+  {
+    done = lp.update(x, 0.3, 0.0, 0.0, 0.0, 0.0);
+  }
+  EXPECT_TRUE(done);
+  EXPECT_GT(x, 0.0);
+  EXPECT_LT(x, 0.3);
 }

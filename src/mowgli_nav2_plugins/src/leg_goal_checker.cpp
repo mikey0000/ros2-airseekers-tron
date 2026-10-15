@@ -36,6 +36,7 @@ void LegGoalChecker::initialize(const rclcpp_lifecycle::LifecycleNode::WeakPtr& 
   state_.overshoot_xy_tol = declare("overshoot_xy_tolerance", 0.20);
   state_.overshoot_hysteresis = declare("overshoot_hysteresis", 0.03);
   state_.lateral_tol = declare("lateral_tolerance", 0.15);
+  state_.pass_radius = declare("pass_radius", 0.5);
   {
     const std::string full = plugin_name + ".along_path";
     if (!node->has_parameter(full))

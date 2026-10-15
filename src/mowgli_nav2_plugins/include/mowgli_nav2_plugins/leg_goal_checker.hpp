@@ -20,7 +20,8 @@
 // gate is met and the robot has come up to the plane through the goal, perpendicular to the
 // goal's heading (along >= -xy_goal_tolerance, measured along the goal yaw = the heading
 // of travel into the vertex), within lateral_tolerance of the goal's line and at most
-// overshoot_xy_tolerance past the plane. No yaw test and
+// overshoot_xy_tolerance past the plane, or past the plane after coming within
+// pass_radius and now moving away (passed wide). No yaw test and
 // no position disc: the pivot that follows turns the robot, so the leg end is judged by
 // along-path progress ("corner reached"), not by hitting a 0.08 m circle (which a
 // controller decelerating into the wheel floor overshoots and then circles).
@@ -53,6 +54,7 @@ struct LegProgress
   double max_step{0.5};  // ignore pose jumps larger than this (relocalisation)
   bool along_path{false};
   double lateral_tol{0.15};
+  double pass_radius{0.5};
 
   bool started{false};
   double goal_x{0.0}, goal_y{0.0};
@@ -117,10 +119,21 @@ struct LegProgress
       const double ux = std::cos(gyaw), uy = std::sin(gyaw);
       const double along = (x - gx) * ux + (y - gy) * uy;
       const double lateral = std::fabs(-(x - gx) * uy + (y - gy) * ux);
+      if (along < -xy_tol)
+      {
+        return false;
+      }
       // a box just past the goal: an earlier stretch of a curving leg that crosses the goal
       // line farther on is not the goal (2026-10-16 sim: a 5 m dock-path leg "reached" 1.4 m
-      // early)
-      return along >= -xy_tol && along <= overshoot_xy_tol && lateral <= lateral_tol;
+      // early) ...
+      if (along <= overshoot_xy_tol && lateral <= lateral_tol)
+      {
+        return true;
+      }
+      // ... or the vertex was passed wide: past its plane, it came within pass_radius and is
+      // now moving away (2026-10-16 sim: MPPI ran 0.3 m beside a transit corner and drove
+      // on for 10 s, out of the area; the corner is behind it and cannot be reached forwards)
+      return prev_min <= pass_radius && d > prev_min + overshoot_hysteresis;
     }
     if (d <= xy_tol && angleDiff(yaw, gyaw) <= yaw_tol)
     {
