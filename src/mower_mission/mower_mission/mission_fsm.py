@@ -647,6 +647,62 @@ class Params:
     # corner, so the pivot happened there (+0.2 m off the drawn line). The leg checker ends
     # within 0.08 m (or after the closest approach within 0.20 m). '' = route_goal_checker_id.
     route_corner_goal_checker_id: str = 'coverage_leg_goal_checker'
+    # 2026-10-15 undock incident: the start route began with a 0.17 m connector from the robot
+    # to the dock path, then turned 90 deg onto it. That stub was the first leg (pivot 111 deg
+    # to it, then a FollowPath of 0.17 m ending at the 90 deg corner) and MPPI circled its end
+    # for 82 s. A corner (route_corner_turn_rad) within route_stub_trim_m of either route end
+    # now cuts the stub off: the route starts (ends) at that corner, so the pre-leg pivot turns
+    # to the heading AFTER the corner. A trimmed end is <= this from the target (inside
+    # route_end_tolerance_m / dock_server_nav_max_m). 0 = off (revert).
+    route_stub_trim_m: float = 0.3
+    # ... and the first leg joins the route where the robot projects onto its first
+    # route_start_join_m (robot within that distance of the route), not at a start behind
+    # it (the robot can be ~0.15 m off the route start after undocking or a pivot).
+    # 0 = off (revert).
+    route_start_join_m: float = 0.5
+    # 2026-10-15 undock incident: MPPI turned in place / circled for 82 s on a route leg and
+    # the PoseProgressChecker (rotation counts as progress) never aborted it. Route legs
+    # (transit and dock route) now name a translation-only progress checker
+    # (nav2_params.yaml transit_progress_checker: SimpleProgressChecker 0.25 m / 20 s); the
+    # coverage follows keep the rotation-counting one (follow_progress_checker_id: an RPP
+    # rotate-to-heading at a swath end is progress). With more than one progress checker
+    # loaded, Jazzy's controller_server rejects a FollowPath goal without an id, so both
+    # are always sent. Revert: route_progress_checker_id: progress_checker.
+    route_progress_checker_id: str = 'transit_progress_checker'
+    follow_progress_checker_id: str = 'progress_checker'
+    # ... and a mission-side watch on route legs (a circle of 0.3 m diameter can keep
+    # resetting a radius progress checker): the arc length of the robot's projection onto
+    # the leg must grow by route_progress_min_m within route_progress_window_s, else the
+    # leg is cancelled and handled as a FollowPath abort (a corner leg within
+    # route_leg_end_accept_m of its end counts as reached, below; otherwise the usual route
+    # abort: blocked wait / cusp about-turn / bounded costmap fallback). Route corner pivots
+    # are Nav2 Spin, not FollowPath, so they never count. 0 window = off (revert).
+    route_progress_window_s: float = 20.0
+    route_progress_min_m: float = 0.15
+    # A route leg into a split corner (not the last leg) that aborts (Nav2 progress checker
+    # or the watch above, no obstacle) within this of its end counts as reached: the next
+    # leg's pivot is done from there, instead of a route abort beside the corner (the leg
+    # goal checker wants 0.08 m; the translation-only checker no longer counts the final
+    # turning-in as progress). 0 = off (revert).
+    route_leg_end_accept_m: float = 0.25
+    # 2026-10-15 run (mow-040433), STUCK1 / STUCK2: both were a route leg into a split corner
+    # that never ended. The leg goal checker (coverage_leg_goal_checker: 0.08 m AND the leg
+    # end yaw within 0.5 rad) was not met: STUCK1 reached 0.07 m of the corner 39 deg off the
+    # run's yaw, STUCK2 stopped 0.12 m short; MPPI then turned / dithered in place (v
+    # -0.05..+0.07, w 0.05-0.2) for ~20 s until the stuck guard, so the corner pivot never
+    # came. The yaw at a corner is irrelevant (the pivot follows), so the mission ends a
+    # corner leg itself: within route_corner_xy_m of the corner, or within
+    # route_corner_reach_m once the distance has not shrunk by 0.01 m for
+    # route_corner_stall_s. route_corner_stall_s 0 = off (revert: the leg goal checker only).
+    route_corner_xy_m: float = 0.08
+    route_corner_reach_m: float = 0.15
+    route_corner_stall_s: float = 2.0
+    # ... and before a route leg after a split corner (not the first leg: a route start keeps
+    # route_corner_turn_rad) the robot pivots (Nav2 Spin) when the leg heading is more than
+    # this off its yaw (was route_corner_turn_rad, 79 deg): after STUCK1's corner MPPI would
+    # have had a ~51 deg turn-in, the slow-turn dither regime. 0 = route_corner_turn_rad
+    # (revert).
+    route_leg_pivot_min_rad: float = 0.6
     # The costmap-planner fallback (no route: start off the route graph; a route abort away
     # from any cusp) is bounded: once the robot's own distance from the drawn network (the
     # planned route if there was one; 0 inside a mowing area) exceeds this, the fallback is
@@ -997,6 +1053,7 @@ class MissionFSM:
         self._dock_route_tries = 0          # dock route re-sends of this dock (task 0.4 e)
         self._dock_route_end = None         # (x, y) end of the last dock route (approach pose)
         self._route_legs = None             # {'legs': [poses...], 'i': n} of a route follow
+        self._route_watch = None            # route progress watch {'token', 's', 't'}
         self._dock_contact_since = None
         self._manual_undocking = False           # standalone UNDOCK (CMD_UNDOCK) in flight
         self._resume_after = None           # None | 'rain' | 'charge'
@@ -1826,6 +1883,8 @@ class MissionFSM:
         if self._loc_hold_tick():
             return
         if self._blocked_tick():
+            return
+        if self._route_progress_tick():
             return
 
         if ph == 'MANUAL_MOWING':
@@ -2800,7 +2859,8 @@ class MissionFSM:
             'poses': poses,
             'controller_id': (self.p.reverse_controller_id if reverse
                               else self.p.follow_controller_id),
-            'goal_checker_id': self._follow_goal_checker(poses, reverse)},
+            'goal_checker_id': self._follow_goal_checker(poses, reverse),
+            'progress_checker_id': self.p.follow_progress_checker_id},
             self.p.follow_timeout_s)
 
     def _follow_goal_checker(self, poses, reverse):
@@ -3297,7 +3357,7 @@ class MissionFSM:
             self._dock_handover()
             return
         self._dock_route_end = (float(poses[-1][0]), float(poses[-1][1]))
-        legs = self._split_route([tuple(p) for p in poses])
+        legs = self._split_route(self._route_prepare(poses))
         self._log('info', 'dock route %.1f m (%d leg%s): %s' % (
             float(resp.get('length_m', 0.0)), len(legs), '' if len(legs) == 1 else 's',
             resp.get('message', '')))
@@ -3635,7 +3695,7 @@ class MissionFSM:
         if m.blade_transit and int(resp.get('single_area', -1)) != m.area_idx:
             # the straight segment stays in the area but the route does not (path legs)
             self._blade_off('route leaves area %d' % m.area_idx)
-        m.route_poses = [tuple(p) for p in poses]
+        m.route_poses = self._route_prepare(poses)
         legs = self._split_route(m.route_poses)
         m.route_full = m.route_poses
         m.route_cusps = self._route_cusps(m.route_poses, legs)
@@ -3645,6 +3705,39 @@ class MissionFSM:
         self._route_legs = {'legs': legs, 'i': 0}
         self._send_route_leg('route')
 
+    def _route_corner_th(self):
+        """Corner threshold of the route split (rad; 0 = the legacy split)."""
+        th = float(self.p.route_corner_turn_rad)
+        if th > 0.0 and float(self.p.route_split_turn_deg) > 0.0:
+            th = min(th, math.radians(float(self.p.route_split_turn_deg)))
+        return th
+
+    def _route_prepare(self, poses):
+        """Planned route -> the poses to drive (2026-10-15 undock incident): stubs shorter
+        than route_stub_trim_m before the first / after the last corner are cut off, then the
+        route starts where the robot projects onto its first route_start_join_m."""
+        poses = [tuple(p) for p in poses]
+        th, stub = self._route_corner_th(), float(self.p.route_stub_trim_m)
+        if th > 0.0 and stub > 0.0:
+            out = geo.trim_route_stubs(poses, th, stub, tol_rad=ROUTE_CORNER_TOL_RAD)
+            if len(out) != len(poses):
+                cut0 = poses.index(out[0])
+                self._log('info', 'route: %.2f m stub before the corner at (%.2f, %.2f) and '
+                                  '%.2f m after (%.2f, %.2f) dropped' % (
+                                      geo.path_length(poses[:cut0 + 1]), out[0][0], out[0][1],
+                                      geo.path_length(poses[cut0 + len(out) - 1:]),
+                                      out[-1][0], out[-1][1]))
+                poses = out
+        join, pose = float(self.p.route_start_join_m), self.inputs.pose
+        if join > 0.0 and pose is not None:
+            out = geo.join_route_from(poses, pose, join)
+            if out[0] != poses[0]:
+                self._log('info', 'route: first leg joins at (%.2f, %.2f), the robot\'s '
+                                  'projection, not the start (%.2f, %.2f) behind it'
+                          % (out[0][0], out[0][1], poses[0][0], poses[0][1]))
+                poses = out
+        return poses
+
     def _split_route(self, poses):
         """Route poses -> FollowPath legs. Task 0.4 (d), route_corner_turn_rad > 0: split at
         every corner of at least that angle (geometry.route_corners: the bend between the
@@ -3652,12 +3745,9 @@ class MissionFSM:
         sharp corners each get their own split), the leg ending exactly on the corner pose
         with its yaw along the run into the corner. 0 = the old split (turns sharper than
         route_split_turn_deg over 3 poses either side, ~0.3 m)."""
-        corner = float(self.p.route_corner_turn_rad)
-        if corner <= 0.0:
+        th = self._route_corner_th()
+        if th <= 0.0:
             return self._split_route_legacy(poses)
-        th = corner
-        if float(self.p.route_split_turn_deg) > 0.0:
-            th = min(th, math.radians(float(self.p.route_split_turn_deg)))
         poses = list(poses)
         cuts = [i for i, _t in geo.route_corners(poses, th, tol_rad=ROUTE_CORNER_TOL_RAD)]
         if not cuts:
@@ -3810,6 +3900,9 @@ class MissionFSM:
         if heading is None:
             return False
         delta = geo.wrap_angle(heading - float(pose[2]))
+        piv = float(self.p.route_leg_pivot_min_rad)
+        if piv > 0.0 and rl['i'] > 0:          # stopped at a split corner
+            lim = min(lim, piv)
         if abs(delta) < lim - ROUTE_CORNER_TOL_RAD:     # inclusive, as the split
             return False
         rl['turned'], rl['purpose'] = rl['i'], purpose
@@ -3847,16 +3940,75 @@ class MissionFSM:
             checker = self.p.route_corner_goal_checker_id   # task 0.4 (d): end on the corner
         self._start_action(ACT_FOLLOW, {'poses': rl['legs'][rl['i']],
                                         'controller_id': self.p.route_controller_id,
-                                        'goal_checker_id': checker},
+                                        'goal_checker_id': checker,
+                                        'progress_checker_id': self.p.route_progress_checker_id},
                            self.p.transit_timeout_s, purpose=purpose)
+        self._route_watch = None
+
+    def _route_progress_tick(self):
+        """2026-10-15 undock incident: a route leg (transit or dock route) whose robot
+        projection has not advanced route_progress_min_m along the leg for
+        route_progress_window_s (turning / circling in place) is cancelled and handled as a
+        FollowPath abort. A leg into a split corner is ended here (handled as a success)
+        within route_corner_xy_m of the corner, or within route_corner_reach_m after a
+        route_corner_stall_s stall (run mow-040433 STUCK1/2). True when it fired."""
+        win, need = float(self.p.route_progress_window_s), float(self.p.route_progress_min_m)
+        a, rl, pose = self._action, self._route_legs, self.inputs.pose
+        if a is None or a.name != ACT_FOLLOW or rl is None or pose is None or \
+                a.purpose not in ('route', 'dock_route'):
+            return False
+        leg = rl['legs'][rl['i']]
+        s = geo.path_projection(leg, pose)[0]
+        w = self._route_watch
+        d = geo.dist(pose, leg[-1])
+        if w is None or w['token'] != a.token:
+            w = self._route_watch = {'token': a.token, 's': s, 't': self._now,
+                                     'd': d, 'dt': self._now}
+        if d < w['d'] - 0.01:
+            w['d'], w['dt'] = d, self._now
+        stall = float(self.p.route_corner_stall_s)
+        if stall > 0.0 and rl['i'] + 1 < len(rl['legs']) and (
+                d <= float(self.p.route_corner_xy_m) or
+                (d <= float(self.p.route_corner_reach_m) and self._now - w['dt'] >= stall)):
+            self._log('info', 'route leg %d/%d: corner (%.2f, %.2f) reached (%.2f m): leg done, '
+                              'pivot to the next leg' % (rl['i'] + 1, len(rl['legs']),
+                                                         leg[-1][0], leg[-1][1], d))
+            self._fx.append(CancelActions('route corner reached'))
+            self._action = None
+            self._route_watch = None
+            self._handle_action(a, SUCCEEDED, {})
+            return True
+        if w['t'] == self._now:
+            return False
+        if s >= w['s'] + need:
+            w['s'], w['t'] = s, self._now
+            return False
+        if win <= 0.0 or self._now - w['t'] < win:
+            return False
+        msg = 'no progress along route leg %d/%d for %.0f s (%.2f of %.2f m; route progress ' \
+              'watch)' % (rl['i'] + 1, len(rl['legs']), self._now - w['t'], s,
+                          geo.path_length(leg))
+        self._log('warn', '%s: cancelling follow_path, handled as an abort' % msg)
+        self._fx.append(CancelActions('route progress watch'))
+        self._action = None
+        self._route_watch = None
+        self._handle_action(a, ABORTED, {'message': msg})
+        return True
 
     def _route_next_leg(self, outcome, purpose):
         """A route leg succeeded at its end and another follows: send it. True if sent."""
         rl, pose = self._route_legs, self.inputs.pose
-        if outcome != SUCCEEDED or rl is None or rl['i'] + 1 >= len(rl['legs']) \
-                or pose is None:
+        if rl is None or rl['i'] + 1 >= len(rl['legs']) or pose is None:
             return False
-        if geo.dist(pose, rl['legs'][rl['i']][-1]) > self.p.route_end_tolerance_m:
+        d = geo.dist(pose, rl['legs'][rl['i']][-1])
+        if outcome != SUCCEEDED:
+            acc = float(self.p.route_leg_end_accept_m)
+            if outcome not in (ABORTED, TIMEOUT) or acc <= 0.0 or d > acc or \
+                    self._blocked_cause():
+                return False
+            self._log('info', 'route leg %d/%d %s %.2f m from its corner: counted as reached'
+                      % (rl['i'] + 1, len(rl['legs']), outcome, d))
+        elif d > self.p.route_end_tolerance_m:
             return False
         rl['i'] += 1
         self._send_route_leg(purpose)

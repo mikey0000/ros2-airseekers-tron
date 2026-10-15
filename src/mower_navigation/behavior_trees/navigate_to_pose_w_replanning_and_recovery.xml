@@ -3,7 +3,9 @@
      BT.CPP v4 (hence BTCPP_format="4"). Changes:
      1. FollowPath gets goal_checker_id="general_goal_checker". controller_server loads two goal
         checkers (general_goal_checker, coverage_goal_checker) and Jazzy rejects a FollowPath
-        goal with an empty goal_checker_id when more than one is loaded.
+        goal with an empty goal_checker_id when more than one is loaded. Same for
+        progress_checker_id (2026-10-15: progress_checker + transit_progress_checker); the
+        Nav2 navigations keep the rotation-counting progress_checker.
      2. Conservative recoveries: NO Spin and NO BackUp. A mow often starts parked on the dock;
         a spin there can hit the charger and a blind backup has no rear sensing. Recoveries
         are only "clear both costmaps" and a short Wait (round-robin).
@@ -43,7 +45,8 @@
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPath">
-          <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
+          <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"
+                      progress_checker_id="progress_checker"/>
           <Wait name="WaitForReplan-Context" wait_duration="1"/>
         </RecoveryNode>
       </PipelineSequence>

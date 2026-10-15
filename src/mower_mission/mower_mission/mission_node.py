@@ -1125,6 +1125,7 @@ class MissionNode(Node):
             goal.path = self._path(g['poses'])
             goal.controller_id = g['controller_id']
             goal.goal_checker_id = g['goal_checker_id']
+            goal.progress_checker_id = g.get('progress_checker_id', '')
         elif e.name == fsm_mod.ACT_NAV:
             goal = NavigateToPose.Goal()
             goal.pose = self._pose_stamped(*g['pose'])

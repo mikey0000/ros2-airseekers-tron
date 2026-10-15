@@ -4408,6 +4408,9 @@ def test_route_hairpin_sent_as_two_legs_then_mows():
     assert g2['poses'][0] == g1['poses'][-1]
     sent = 2
     while h.name == 'TRANSIT':                            # (the jump to the target is a 3rd)
+        if h.fsm._action.name == f.ACT_SPIN:              # 2026-10-15: pivot >= 0.6 rad at a
+            h.finish(f.ACT_SPIN)                          # split corner (route_leg_pivot_min_rad)
+            continue
         h.finish(f.ACT_FOLLOW)
         sent += 1 if h.name == 'TRANSIT' else 0
     assert h.name == 'MOWING' and sent >= 2
