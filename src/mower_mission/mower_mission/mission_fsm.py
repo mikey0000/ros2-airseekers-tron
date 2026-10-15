@@ -615,6 +615,7 @@ class Params:
     # the last straight bit onto it (pivot to face it if needed, along-path end) before the
     # sub-path's own start pivot (_route_final_approach). 0 = off (revert).
     route_final_approach_m: float = 0.05
+    route_final_approach_speed_mps: float = 0.1
     # Sim 2026-10-09: the scripted person crossed Path 1, the route aborted (collision ahead)
     # and the /navigate_to_pose fallback after the wait cut across the lawn into a drawn
     # obstacle corner. An obstacle abort now waits (blocked wait) and re-sends the ROUTE
@@ -4305,12 +4306,10 @@ class MissionFSM:
         m.route_poses = None
         pose = self.inputs.pose
         d = geo.dist(pose, m.transit_target) if pose is not None else math.inf
-        approached = m.final_approach and outcome != UNAVAILABLE
-        if approached or (outcome == SUCCEEDED and d <= self.p.route_end_tolerance_m) or \
+        if (outcome == SUCCEEDED and d <= self.p.route_end_tolerance_m) or \
                 (outcome != UNAVAILABLE and self._transit_arrived()):
-            if not approached and self._route_final_approach(d):
+            if self._route_final_approach(d):
                 return
-            m.final_approach = False
             m.recovering = False
             m.transit_fails = 0
             self._blk = None
@@ -4339,28 +4338,56 @@ class MissionFSM:
 
     def _route_final_approach(self, d):
         """Path conditioning: a transit that ended (arrived) more than route_final_approach_m
-        from the sub-path start drives onto it first - the junction robot -> start is part
-        of the driven path, a straight leg with the conditioner's pivot rule at its start
-        (sim gate 2026-10-16: transits ended 0.1-0.23 m beside the start; the start pivot
-        and the rejoin then ran 0.1-0.23 m off the line, MOWING cross-track p99 0.106).
-        One such leg per transit; its outcome is not judged (the transit had arrived).
-        True = sent."""
+        from the sub-path start drives onto it first. The junction robot -> start is part of
+        the driven path: a straight hop as explicit steps, like a pivot (Nav2 Spin to face
+        the start when that is path_conditioning_pivot_min_rad or more off the robot's yaw,
+        then Nav2 DriveOnHeading the remaining distance at route_final_approach_speed_mps),
+        not a tracker leg (sim gate 2026-10-16: transits ended 0.1-0.23 m beside the start
+        and the start pivot / rejoin ran that far off the line; as a 0.1 m FollowPath leg
+        MPPI reversed 0.4 m out of the area). Once per transit; the outcome is not judged
+        (the transit had arrived). True = started."""
         m, pose, tol = self.mission, self.inputs.pose, float(self.p.route_final_approach_m)
         if not self.p.path_conditioning or tol <= 0.0 or d <= tol or pose is None or \
-                m.transit_target is None or m.final_approach:
+                len(pose) < 3 or m.transit_target is None or m.final_approach:
             return False
-        a, b = (float(pose[0]), float(pose[1])), tuple(m.transit_target[:2])
-        yaw = math.atan2(b[1] - a[1], b[0] - a[0])
-        n = max(2, int(math.ceil(d / 0.05)))
-        leg = [(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n, yaw)
-               for k in range(n + 1)]
         m.final_approach = True
-        m.route_poses = leg
-        self._log('info', 'transit ended %.2f m from the sub-path start: final approach '
-                          'onto it' % d)
-        self._route_legs = {'legs': [leg], 'i': 0}
-        self._send_route_leg('route')
+        b = m.transit_target
+        delta = geo.wrap_angle(math.atan2(b[1] - pose[1], b[0] - pose[0]) - float(pose[2]))
+        self._log('info', 'transit ended %.2f m from the sub-path start: final approach onto '
+                          'it (turn %.0f deg, then straight)' % (d, math.degrees(delta)))
+        if abs(delta) >= float(self.p.path_conditioning_pivot_min_rad):
+            allowance = abs(delta) / max(0.05, float(self.p.route_cusp_spin_rps)) + 10.0
+            self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
+                               allowance + 5.0, purpose='final_approach_spin')
+            return True
+        self._final_approach_drive()
         return True
+
+    def _final_approach_drive(self):
+        """The straight hop of the final approach: the start's distance along the heading."""
+        m, pose = self.mission, self.inputs.pose
+        b = m.transit_target
+        dist = 0.0
+        if pose is not None and len(pose) >= 3:
+            dist = (b[0] - pose[0]) * math.cos(pose[2]) + (b[1] - pose[1]) * math.sin(pose[2])
+        if dist < 0.02:
+            self._final_approach_done(SUCCEEDED)
+            return
+        speed = float(self.p.route_final_approach_speed_mps)
+        self._start_action(ACT_DRIVE, {'distance_m': dist, 'speed_mps': speed,
+                                       'wait_for_rtk': False, 'rtk_timeout_s': 0.0},
+                           dist / max(0.01, speed) + 15.0, purpose='final_approach')
+
+    def _final_approach_done(self, outcome):
+        m = self.mission
+        if m is None or self.phase != 'TRANSIT' or m.step != 'transit':
+            return
+        if outcome != SUCCEEDED:
+            self._log('warn', 'final approach %s: mowing from here' % outcome)
+        m.recovering = False
+        m.transit_fails = 0
+        self._blk = None
+        self._begin_blade()
 
     def _transit_arrived(self):
         """True when the last transit target is within transit_arrived_radius_m."""
@@ -4389,6 +4416,14 @@ class MissionFSM:
             return
         if a.purpose == 'route_corner':
             self._route_corner_spun(outcome)
+            return
+        if a.purpose == 'final_approach_spin':
+            m = self.mission
+            if m is not None and self.phase == 'TRANSIT' and m.step == 'transit':
+                self._final_approach_drive()
+            return
+        if a.purpose == 'final_approach':
+            self._final_approach_done(outcome)
             return
         if a.purpose == 'dock':
             self._dock_contact_since = None

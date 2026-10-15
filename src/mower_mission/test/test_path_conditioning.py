@@ -517,17 +517,25 @@ def test_transit_ending_beside_the_start_drives_onto_it_first():
     m = h.fsm.mission
     assert h.name == 'TRANSIT'
     m.transit_target = (3.0, 3.0, 0.0)
+    h.fsm._action = None
     h.fsm.inputs.pose = (2.9, 3.15, 0.0)               # arrived 0.18 m beside the start
     h.fsm._route_legs = {'legs': [[(0.0, 0.0, 0.0), (2.9, 3.15, 0.0)]], 'i': 0}
+    h.fsm._begin(h.t)
     h.fsm._route_result(f.SUCCEEDED)
+    h._apply(h.fsm._end())
     assert m.final_approach
-    leg = h.fsm._route_legs['legs'][0]
-    assert geo.dist(leg[0], (2.9, 3.15)) < 1e-9 and geo.dist(leg[-1], (3.0, 3.0)) < 1e-9
-    # whatever the approach leg's outcome, the transit has arrived: mow
-    h.fsm._action = None
-    h.fsm.inputs.pose = (3.0, 3.01, -1.0)
-    h.fsm._route_result(f.ABORTED)
-    assert not m.final_approach and h.name == 'MOWING'
+    a = h.pending_action(f.ACT_SPIN)                   # face the start (-56 deg) first
+    assert a.purpose == 'final_approach_spin'
+    want = math.atan2(-0.15, 0.1)
+    assert abs(h.goal(f.ACT_SPIN)['angle'] - want) < 1e-6
+    h.fsm.inputs.pose = (2.9, 3.15, want)
+    h.finish(f.ACT_SPIN)
+    d = h.pending_action(f.ACT_DRIVE)                  # then straight onto it
+    assert d.purpose == 'final_approach'
+    assert abs(h.goal(f.ACT_DRIVE)['distance_m'] - math.hypot(0.1, 0.15)) < 1e-6
+    h.fsm.inputs.pose = (3.0, 3.0, want)
+    h.finish(f.ACT_DRIVE, f.ABORTED)                   # outcome not judged: mow
+    assert h.name == 'MOWING'
 
 
 def test_transit_ending_on_the_start_mows_at_once():
