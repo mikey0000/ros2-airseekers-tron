@@ -142,3 +142,17 @@ TEST(LegProgressAlongPath, DefaultModeUnchanged)
   }
   EXPECT_FALSE(lp.update(0.5, 0.0, 0.8, 0.5, 0.0, 0.0));
 }
+
+TEST(LegProgressAlongPath, AFarStretchOnTheGoalLineIsNotTheGoal)
+{
+  LegProgress lp = alongPath();
+  lp.overshoot_xy_tol = 0.20;
+  // goal (0, 0) heading +x; the leg first passes 1.4 m beyond it on the goal line
+  lp.update(-2.0, 1.0, 0.0, 0.0, 0.0, 0.0);
+  for (double x = -2.0; x <= 1.4; x += 0.01)
+  {
+    lp.update(x, 1.0, 0.0, 0.0, 0.0, 0.0);
+  }
+  EXPECT_FALSE(lp.update(1.4, 0.05, -M_PI / 2, 0.0, 0.0, 0.0));
+  EXPECT_TRUE(lp.update(0.1, 0.05, M_PI, 0.0, 0.0, 0.0));
+}

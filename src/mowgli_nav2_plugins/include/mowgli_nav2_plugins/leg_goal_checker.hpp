@@ -19,7 +19,8 @@
 // that ends on a pivot vertex, or any conditioned forward leg end): reached when the travel
 // gate is met and the robot has come up to the plane through the goal, perpendicular to the
 // goal's heading (along >= -xy_goal_tolerance, measured along the goal yaw = the heading
-// of travel into the vertex), within lateral_tolerance of the goal's line. No yaw test and
+// of travel into the vertex), within lateral_tolerance of the goal's line and at most
+// overshoot_xy_tolerance past the plane. No yaw test and
 // no position disc: the pivot that follows turns the robot, so the leg end is judged by
 // along-path progress ("corner reached"), not by hitting a 0.08 m circle (which a
 // controller decelerating into the wheel floor overshoots and then circles).
@@ -116,7 +117,10 @@ struct LegProgress
       const double ux = std::cos(gyaw), uy = std::sin(gyaw);
       const double along = (x - gx) * ux + (y - gy) * uy;
       const double lateral = std::fabs(-(x - gx) * uy + (y - gy) * ux);
-      return along >= -xy_tol && lateral <= lateral_tol;
+      // a box just past the goal: an earlier stretch of a curving leg that crosses the goal
+      // line farther on is not the goal (2026-10-16 sim: a 5 m dock-path leg "reached" 1.4 m
+      // early)
+      return along >= -xy_tol && along <= overshoot_xy_tol && lateral <= lateral_tol;
     }
     if (d <= xy_tol && angleDiff(yaw, gyaw) <= yaw_tol)
     {

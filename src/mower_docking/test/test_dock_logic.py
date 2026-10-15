@@ -118,8 +118,10 @@ def test_reverse_speed_profile():
 def test_reverse_control_is_reverse_and_bounded():
     g = dl.ControllerGains()
     v, w, _ = dl.reverse_control(dl.DockErrors(1.0, 0.4, -0.4), g)
-    assert v < 0 and abs(v) <= 0.15
+    assert v <= 0 and abs(v) <= 0.15
     assert abs(w) <= g.max_angular
+    if v == 0.0:                          # a large error turns first as a proper pivot
+        assert abs(w) >= 0.25
 
 
 def test_reverse_control_converges_in_simulation():
@@ -345,7 +347,8 @@ def test_dock_vision_docking_commands_reverse_then_final():
     m.start(dl.Snapshot(t=0.0))
     m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0.1, 0.05, stamp=0.1)))
     out = m.step(dl.Snapshot(t=0.15, marker=dl.MarkerObs(-1.3, 0.1, 0.05, stamp=0.15)))
-    assert out.state == S.DOCKING and out.linear < 0
+    # 16 cm off the axis: turn-first (2026-10-16: a pivot, both wheels, not a one-wheel creep)
+    assert out.state == S.DOCKING and (out.linear < 0 or abs(out.angular) >= 0.25)
     assert out.remaining == pytest.approx(0.85, abs=0.02)
     for i in range(3):   # median of the last 3 observations
         out = m.step(dl.Snapshot(t=0.2 + 0.05 * i,
@@ -938,10 +941,12 @@ def test_vision_docking_tolerates_gate_edge_start(x0, y0, th0):
 
 def test_reverse_control_turn_first_slows_on_large_heading_error():
     g = dl.ControllerGains()
-    v_big, _, _ = dl.reverse_control(dl.DockErrors(1.0, 0.0, math.radians(25)), g)
+    v_big, w_big, _ = dl.reverse_control(dl.DockErrors(1.0, 0.0, math.radians(25)), g)
+    v_mid, _, _ = dl.reverse_control(dl.DockErrors(1.0, 0.0, math.radians(8)), g)
     v_small, _, _ = dl.reverse_control(dl.DockErrors(1.0, 0.0, math.radians(2)), g)
-    assert -g.max_speed <= v_small < v_big < 0
-    assert abs(v_big) >= g.min_turn_speed
+    assert -g.max_speed <= v_small < v_mid < 0
+    # 25 deg: turn first as a proper pivot (the creep would be a one-wheel turn)
+    assert v_big == 0.0 and abs(w_big) >= 0.25
 
 
 # ------------------------- FINAL budget / contact handling / calibration (2026-10-07 Home)
@@ -1589,3 +1594,40 @@ def test_marker_in_base_fills_marker_height_z():
     assert obs.x == pytest.approx(-0.201 - 1.2, abs=1e-3)
     assert obs.y == pytest.approx(0.0, abs=1e-3)
     assert obs.z == pytest.approx(0.25 - 0.1, abs=1e-3)
+
+
+
+# ---- both wheels on the docking reverse (2026-10-16) ----------------------------------------
+def _inner(v, w, half=0.24):
+    return abs(v) - abs(w) * half
+
+
+def test_reverse_control_never_asks_for_a_one_wheel_turn():
+    g = dl.ControllerGains()
+    for lat in (-0.2, -0.1, 0.0, 0.1, 0.2):
+        for hd in (-0.8, -0.5, -0.3, -0.1, 0.0, 0.1, 0.3, 0.5, 0.8):
+            for rem in (0.05, 0.25, 0.6, 1.0):
+                err = dl.DockErrors(lateral=lat, heading=hd, remaining=rem)
+                v, w, _e = dl.reverse_control(err, g)
+                if abs(w) > 1e-6 and abs(v) > 1e-6:
+                    assert not (-0.06 < _inner(v, w) < 0.0), (lat, hd, rem, v, w)
+                if abs(v) < 1e-6 and abs(w) > 1e-6:
+                    assert abs(w) >= 0.25 - 1e-9
+
+
+def test_large_heading_error_turns_first_as_a_pivot():
+    g = dl.ControllerGains()
+    v, w, _e = dl.reverse_control(dl.DockErrors(lateral=0.0, heading=0.6, remaining=0.6), g)
+    assert v == 0.0 and abs(w) >= 0.25
+
+
+def test_wheel_floor_0_reverts_to_the_creep():
+    g = dl.ControllerGains(wheel_floor=0.0)
+    v, w, _e = dl.reverse_control(dl.DockErrors(lateral=0.0, heading=0.6, remaining=0.6), g)
+    assert v == -g.min_turn_speed and abs(w) == g.max_angular
+
+
+def test_final_zone_lowers_the_turn_instead_of_a_pivot():
+    g = dl.ControllerGains()
+    v, w, _ = dl.reverse_control(dl.DockErrors(0.15, 0.10, math.radians(20)), g)
+    assert v < 0 and abs(v) - abs(w) * 0.24 >= -1e-9

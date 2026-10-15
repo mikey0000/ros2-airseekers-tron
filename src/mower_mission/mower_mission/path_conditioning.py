@@ -607,11 +607,12 @@ def join_turn_chains(subpaths, region, params: Optional[Params] = None, leg_max_
                 r = condition(merged, region, p)
                 if r.valid:
                     tj.ok = True
-                    out.append(merged)
+                    subs[j] = merged
                 else:
                     tj.why = 'conditioning failed: %s' % r.errors[0]
         joins.append(tj)
         if not tj.ok:
-            out.extend(subs[k:j + 1])
-        k = j + 1
+            out.extend(subs[k:j])
+        # swath B (merged or not) may itself start the next chain: look at it again
+        k = j
     return out, joins

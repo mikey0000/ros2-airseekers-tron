@@ -466,3 +466,19 @@ def test_mission_drives_the_swath_pair_as_one_conditioned_path():
     assert geo.dist(g['poses'][-1], (0.0, 1.28)) < 0.06
     texts = [e.text for e in h.fx if isinstance(e, f.Log)]
     assert any('1 swath-end reverse turn(s) replaced' in t for t in texts)
+
+
+def test_consecutive_turn_chains_are_all_joined():
+    # swath A -> turn -> swath B -> turn -> swath C: swath B ends the first chain and starts
+    # the second (the second chain is the first mirrored at x = 2.5 and moved up a swath gap)
+    first, rev, b = rs_chain(gap=1.28)
+
+    def t(sp, reverse=False):
+        return _yawed([(5.0 - q[0], q[1] + 1.28) for q in sp], reverse)
+    first2, rev2, c = t(first), t(rev, True), t(b)
+    mid = _yawed([q[:2] for q in b] + [q[:2] for q in first2[51:]])
+    subs, joins = pc.join_turn_chains([first, rev, mid, rev2, c], BOX)
+    assert [j.ok for j in joins] == [True, True]
+    assert len(subs) == 1
+    res = pc.condition(subs[0], BOX)
+    assert res.valid and len([c for c in res.corners if c.choice != 'kink']) == 4
