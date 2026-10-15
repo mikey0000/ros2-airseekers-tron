@@ -555,6 +555,17 @@ RETURNING_HOME 99 s (16 route pivots, up from 12 with the 0.8 m route minimum; 2
 approach spins). Nothing was reduced: the only avoidable part (edge policy, ~2 % of moving
 time) is a deliberate edge-quality choice (design 3.1 step 3).
 
+### Post-undock transit corner fix (2026-10-16, 7374306)
+
+k-rpp-dist-s1's (e) failure (0.219 m at the -90 deg route pivot at (-0.23, -0.03)): the
+Spin left the heading 0.15 rad short, then on the following 0.18 m route leg MPPI
+(`FollowPath`, vx_min -0.10) reversed 0.25 m away before driving forward to the vertex.
+`PreferForwardCritic` is skipped within `threshold_to_consider` (0.5 m) of the goal, so on
+every conditioned leg shorter than 0.5 m reversing cost nothing. Now 0.0 (forward
+preference everywhere; revert 0.5). Reruns: m-rpp-dist-s1-a / -b (rpp, `-d -s 1`) and
+m-mppi-dist-s1 (mppi, `-d -s 1`) all PASS every criterion a-h, docked and charging; that
+corner 0.040 / 0.036 / 0.053 m.
+
 ## Limitations
 
 - **Simplified physics:** there is no slip, no terrain or slope, no tilt, and no
