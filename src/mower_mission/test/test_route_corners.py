@@ -182,11 +182,11 @@ def _corner(h):
     _answer_route(h, resp=_route_resp(a + b + [tuple(tgt)]))
 
 
-def test_corner_leg_uses_the_leg_goal_checker_and_the_last_leg_the_route_one():
+def test_corner_leg_uses_the_corner_goal_checker_and_the_last_leg_the_route_one():
     h = _route_h()
     _corner(h)
     g = h.goal(f.ACT_FOLLOW)
-    assert g['goal_checker_id'] == 'coverage_leg_goal_checker'
+    assert g['goal_checker_id'] == 'coverage_corner_goal_checker'
     assert g['poses'][-1][:2] == (2.0, 0.0) and g['poses'][-1][2] == 0.0
     h.fsm.inputs.pose = (2.0, 0.0, 0.0)
     h.finish(f.ACT_FOLLOW)
@@ -201,7 +201,7 @@ def test_corner_goal_checker_revert_flag():
     assert h.goal(f.ACT_FOLLOW)['goal_checker_id'] == 'general_goal_checker'
 
 
-def test_dock_route_corner_leg_uses_the_leg_goal_checker():
+def test_dock_route_corner_leg_uses_the_corner_goal_checker():
     h = Harness(route_transits=True)
     h.fsm.inputs.pose = (0.0, 0.0, 0.0)
     assert h.cmd(f.CMD_HOME)
@@ -209,4 +209,4 @@ def test_dock_route_corner_leg_uses_the_leg_goal_checker():
     b = [(2.0, 0.1 * i, math.pi / 2) for i in range(1, 20)]
     _answer_route(h, resp=_route_resp(a + b))
     assert h.pending_action(f.ACT_FOLLOW).purpose == 'dock_route'
-    assert h.goal(f.ACT_FOLLOW)['goal_checker_id'] == 'coverage_leg_goal_checker'
+    assert h.goal(f.ACT_FOLLOW)['goal_checker_id'] == 'coverage_corner_goal_checker'

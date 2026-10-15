@@ -365,8 +365,10 @@ def _drive_to(h, pose, seconds, dt=0.1):
 
 def test_run4_stuck2_dock_route_corner_leg_stalled_short_of_the_corner_ends_and_pivots():
     """STUCK2: dock route plans[6], leg 1 into the (-3.25, 1.12) corner; the robot stopped
-    0.12 m short at -147 deg and MPPI dithered. Now: stalled within 0.15 m for 2 s -> leg
-    done -> Spin to the dock path (about +106 deg) -> leg 2."""
+    0.12 m short at -147 deg and MPPI dithered. 2026-10-16 (no mission-side corner rule; the
+    along-path goal checker does not fire 0.12 m short): the route progress watch cancels
+    the leg after route_progress_window_s, an abort within route_leg_end_accept_m of the
+    corner counts as reached -> Spin to the dock path (about +106 deg) -> leg 2."""
     d = run4()
     pl = d['plans'][6]
     route = _with_yaw(pl['poses'])
@@ -381,10 +383,11 @@ def test_run4_stuck2_dock_route_corner_leg_stalled_short_of_the_corner_ends_and_
     assert 0.08 < geo.dist(stuck, legs[0][-1]) <= 0.15
     m = h.mark()
     tok = h.pending_action(f.ACT_FOLLOW).token
-    _drive_to(h, stuck, 1.5)
-    assert h.pending_action(f.ACT_FOLLOW).token == tok        # not before the stall time
-    _drive_to(h, stuck, 1.0)
-    assert any('corner (-3.25, 1.12) reached' in t for t in logs(h, m))
+    _drive_to(h, stuck, 15.0)
+    assert h.pending_action(f.ACT_FOLLOW).token == tok        # not before the watch window
+    _drive_to(h, stuck, 6.0)
+    assert any('route progress watch' in t for t in logs(h, m))
+    assert any('counted as reached' in t for t in logs(h, m))
     spin = h.pending_action(f.ACT_SPIN)
     assert spin.purpose == 'route_corner'
     after = start_heading(legs[1])
@@ -398,8 +401,9 @@ def test_run4_stuck2_dock_route_corner_leg_stalled_short_of_the_corner_ends_and_
 def test_run4_stuck1_connector_leg_reached_off_yaw_ends_and_pivots():
     """STUCK1 (route not in the bag; rebuilt as plan_route makes it: the robot's connector to
     the dock path, 0.36 m at ~47 deg, then 90 deg onto the path): the robot got within 0.07 m
-    of the join 39 deg off the connector's yaw, the leg checker never fired. Now: within
-    route_corner_xy_m -> leg done at once -> Spin ~51 deg (>= route_leg_pivot_min_rad)."""
+    of the join 39 deg off the connector's yaw, the leg checker never fired. Now (2026-10-16): the leg's goal checker is along-path with no yaw test
+    (coverage_corner_goal_checker), so it ends there -> Spin ~51 deg (>=
+    route_leg_pivot_min_rad); no mission-side corner-reached rule."""
     d = run4()
     start = tuple(d['stuck1_start_pose'])
     path = _with_yaw(d['plans'][0]['poses'])[5:]               # dock path from (-2.86, 0.76)
@@ -412,30 +416,33 @@ def test_run4_stuck1_connector_leg_reached_off_yaw_ends_and_pivots():
     answer(h, start, route)
     legs = h.fsm._route_legs['legs']
     assert len(legs) >= 2 and geo.dist(legs[0][-1], join) < 1e-6
-    m = h.mark()
+    assert h.goal(f.ACT_FOLLOW)['goal_checker_id'] == 'coverage_corner_goal_checker'
     _drive_to(h, tuple(d['stuck1_dither_pose']), 0.2)
-    assert any('corner (-2.83, 0.74) reached' in t for t in logs(h, m))
+    h.finish(f.ACT_FOLLOW, arrive=False)
     assert h.pending_action(f.ACT_SPIN).purpose == 'route_corner'
     assert 40.0 < math.degrees(h.goal(f.ACT_SPIN)['angle']) < 60.0
 
 
-def test_corner_stall_revert_flags():
-    """route_corner_stall_s 0: the leg goal checker alone (the run 4 behaviour);
-    route_leg_pivot_min_rad 0: no pivot under 79 deg at a corner."""
+def test_no_mission_corner_rule_and_pivot_revert_flag():
+    """2026-10-16: the mission no longer ends a corner leg itself (the along-path goal
+    checker does); route_leg_pivot_min_rad 0: no pivot under 79 deg at a corner."""
     d = run4()
     pl = d['plans'][6]
-    h = Harness(route_transits=True, route_corner_stall_s=0.0, route_progress_window_s=0.0)
+    h = Harness(route_transits=True, route_progress_window_s=0.0)
     h.fsm.inputs.pose = tuple(pl['pose'])
     assert h.cmd(f.CMD_HOME)
     _answer_route(h, resp=_route_resp(_with_yaw(pl['poses'])))
     tok = h.pending_action(f.ACT_FOLLOW).token
     _drive_to(h, tuple(d['stuck2_dither_pose']), 30.0)
     assert h.pending_action(f.ACT_FOLLOW).token == tok
+    for k in ('route_corner_xy_m', 'route_corner_reach_m', 'route_corner_stall_s'):
+        assert k not in f.Params.__dataclass_fields__
     h2 = _route_h(route_leg_pivot_min_rad=0.0)
     a = [(0.1 * i, 0.0, 0.0) for i in range(21)]
     b = [(2.0 + 0.1 * i * math.cos(1.5), 0.1 * i * math.sin(1.5), 1.5) for i in range(1, 20)]
     answer(h2, (0.0, 0.0, 0.0), a + b)
     _drive_to(h2, (1.97, 0.0, 0.7), 0.2)                 # turned 40 deg already: no pivot
+    h2.finish(f.ACT_FOLLOW, arrive=False)
     assert h2.pending_action(f.ACT_FOLLOW).purpose == 'route'      # MPPI turns in, no Spin
     assert h2.fsm._route_legs['i'] == 1
 

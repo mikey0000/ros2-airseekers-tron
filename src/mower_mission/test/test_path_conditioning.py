@@ -202,7 +202,8 @@ def test_mission_ends_the_leg_on_a_pivot_vertex_and_pivots_with_the_blade_on():
     g = h.goal(f.ACT_FOLLOW)
     if piv:
         assert len(g['poses']) == piv[0] + 1 and m.corner_end == piv[0]
-        assert g['goal_checker_id'] == 'coverage_leg_goal_checker'
+    # every conditioned forward leg ends along-path (2026-10-16), not on a position disc
+    assert g['goal_checker_id'] == 'coverage_corner_goal_checker'
 
 
 def tight_ring_h(**params):
@@ -253,9 +254,12 @@ def test_mission_run5_v_corner_leg_end_and_pivot_target():
     assert m.corner_end == i_v
     g = h.goal(f.ACT_FOLLOW)
     assert geo.dist(g['poses'][-1], V) < 0.01            # the leg ends ON the vertex
+    assert g['goal_checker_id'] == 'coverage_corner_goal_checker'
     mk = h.mark()
     yaw_in = drive_to_chunk_end(h)
-    assert any('pivot vertex' in e.text and 'reached' in e.text for e in h.since(mk, f.Log))
+    # the leg ends on Nav2's along-path checker (no mission-side corner-reached rule)
+    assert h.fsm._action.name == f.ACT_FOLLOW
+    h.finish(f.ACT_FOLLOW, arrive=False)
     sp = h.goal(f.ACT_SPIN)
     out = heading_after(m.subpaths[0], i_v)
     assert abs(geo.wrap_angle(sp['angle'] - geo.wrap_angle(out - yaw_in))) < math.radians(10)
@@ -276,17 +280,18 @@ def test_mission_leg_start_far_off_heading_pivots_first():
     assert h.blade and h.fsm.mission.step == 'corner_pivot'
 
 
-def test_mission_turn_legs_are_not_conditioned():
+def test_mission_short_forward_sub_paths_are_conditioned_too():
+    # 2026-10-16: no turn-leg exemption; a short forward piece is a line like any other and
+    # ends along-path
     h = Harness(path_conditioning=True)
     h.areas = [square(-1, -1, 12)]
     start_until_planning(h)
-    v = [(0.0, 0.0, 0.0), (0.3, 0.0, 0.0), (0.5, 0.0, 0.0), (0.4, 0.2, 2.0), (0.3, 0.4, 2.0)]
-    h.fsm.inputs.pose = (0.0, 0.0, 3.0)
-    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([v, line(0.3, 0.4, 4.0, 0.4)]))
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0.0, 0.0, 0.6, 0.0), line(0.3, 2.4, 4.0, 2.4)]))
     h.fsm.inputs.is_cutting = True
     h.tick()
-    assert h.goal(f.ACT_FOLLOW)['poses'] == v
-    assert 0 not in h.fsm.mission.cond
+    assert 0 in h.fsm.mission.cond
+    assert h.goal(f.ACT_FOLLOW)['goal_checker_id'] == 'coverage_corner_goal_checker'
 
 
 def test_mission_invalid_conditioning_is_not_mowed(monkeypatch):
@@ -319,11 +324,26 @@ def test_revert_path_conditioning_false_sends_the_raw_ring():
     assert not h.fsm.mission.cond and h.fsm.mission.corner_end is None
 
 
-def test_revert_start_pivot_0_follows_at_once():
+def test_small_join_heading_error_is_left_to_the_tracker():
+    # under path_conditioning_pivot_min_rad (0.35 rad, the conditioner's own threshold): no
+    # pivot, the leg is sent at once
+    h0 = ring_h()
+    m = h0.fsm.mission
+    sp = m.subpaths[0]
+    end = min([c for c in m.cond[0]['pivots'] if c > 0] + [len(sp) - 1])
+    jh = f.MissionFSM._join_heading(sp[:end + 1], h0.fsm.inputs.pose)
+    h = ring_h(yaw=jh + math.radians(15))
+    assert h.pending_action(f.ACT_FOLLOW)
+
+
+def test_leg_start_pivot_is_the_one_mechanism_for_both_controllers():
     r = ring()
     y0 = math.atan2(r[1][1] - r[0][1], r[1][0] - r[0][0])
-    h = ring_h(yaw=y0 + math.radians(140), path_conditioning_start_pivot_rad=0.0)
-    assert h.pending_action(f.ACT_FOLLOW)
+    for ctl in ('rpp', 'mppi'):
+        h = ring_h(yaw=y0 + math.radians(40), coverage_controller=ctl)
+        assert h.pending_action(f.ACT_SPIN).purpose == 'cov_pivot'
+    assert 'coverage_leg_pivot_rad' not in f.Params.__dataclass_fields__
+    assert 'path_conditioning_start_pivot_rad' not in f.Params.__dataclass_fields__
 
 
 def test_route_is_split_at_conditioner_pivots_only():
@@ -336,3 +356,113 @@ def test_route_is_split_at_conditioner_pivots_only():
     for lg in legs[:-1]:
         assert any(geo.dist(lg[-1], (c.x, c.y)) < 0.06 for c in res.corners
                    if c.choice == 'pivot')
+
+
+# ---- swath-end turn chains (2026-10-16, roadmap 3.2) ---------------------------------------
+
+def _yawed(pts, reverse=False):
+    out = []
+    for i, q in enumerate(pts):
+        a, b = (pts[i], pts[i + 1]) if i + 1 < len(pts) else (pts[i - 1], pts[i])
+        y = math.atan2(b[1] - a[1], b[0] - a[0]) + (math.pi if reverse else 0.0)
+        out.append((q[0], q[1], geo.wrap_angle(y)))
+    return out
+
+
+def _arc(c, r, a0, a1, n=10):
+    return [(c[0] + r * math.cos(a0 + (a1 - a0) * k / n), c[1] + r * math.sin(a0 + (a1 - a0) * k / n))
+            for k in range(n + 1)]
+
+
+def rs_chain(gap=1.28, swath=5.0):
+    """Swath A (0,0)->(swath,0), a Reeds-Shepp-like turn (forward arc, reverse arc, forward
+    arc) to swath B (swath, gap) -> (0, gap), as the coverage bridge cuts it: forward
+    sub-path ending at the first cusp, a reverse leg, a forward sub-path from the second
+    cusp through swath B."""
+    a = [(0.1 * k, 0.0) for k in range(int(round(swath / 0.1)) + 1)]
+    t1 = _arc((swath, 0.5), 0.5, -math.pi / 2, -math.pi / 6)[1:]       # forward, left
+    c1 = t1[-1]
+    rev = _arc((c1[0] - 0.5 * math.cos(math.pi / 3), c1[1] + 0.2), 0.3, -0.2, 0.6, 6)
+    rev = [c1] + rev[1:]
+    c2 = rev[-1]
+    b0 = (swath, gap)
+    t2 = [c2] + [(c2[0] + (b0[0] - c2[0]) * k / 6, c2[1] + (b0[1] - c2[1]) * k / 6)
+                 for k in range(1, 6)]
+    b = [(swath - 0.1 * k, gap) for k in range(int(round(swath / 0.1)) + 1)]
+    return [_yawed(a + t1), _yawed(rev, reverse=True), _yawed(t2 + b)]
+
+
+BOX = [[(-1.0, -1.0), (7.0, -1.0), (7.0, 3.0), (-1.0, 3.0)]]
+
+
+def test_reverse_turn_chain_becomes_one_forward_path_with_filleted_connector_corners():
+    subs, joins = pc.join_turn_chains(rs_chain(), BOX)
+    assert len(subs) == 1 and len(joins) == 1 and joins[0].ok
+    sp = subs[0]
+    assert not geo.is_reverse_subpath(sp)
+    assert geo.dist(joins[0].a, (5.0, 0.0)) < 1e-6 and geo.dist(joins[0].b, (5.0, 1.28)) < 1e-6
+    res = pc.condition(sp, BOX)
+    assert res.valid
+    cs = [c for c in res.corners if c.choice != 'kink']
+    assert len(cs) == 2 and all(c.choice == 'fillet' and c.r >= 0.5 for c in cs)
+    assert all(abs(abs(math.degrees(c.turn)) - 90) < 2 for c in cs)
+    assert not res.pivots
+    # drivable: nothing tighter than r_min
+    assert all(abs(k) <= 1.0 / 0.5 + 1e-6 for k in res.curvature)
+
+
+def test_short_connector_u_turn_pivots_on_both_swath_ends():
+    # a 0.25 m connector (< merge_m): no fillet fits, two 90 deg pivots (not one 180 deg)
+    subs, joins = pc.join_turn_chains(rs_chain(gap=0.25), BOX)
+    assert len(subs) == 1 and joins[0].ok
+    res = pc.condition(subs[0], BOX)
+    piv = [c for c in res.corners if c.choice == 'pivot']
+    assert len(piv) == 2 and all(abs(abs(math.degrees(c.turn)) - 90) < 3 for c in piv)
+    assert {(round(c.x, 2), round(c.y, 2)) for c in piv} == {(5.0, 0.0), (5.0, 0.25)}
+
+
+def test_u_turn_with_a_swath_width_connector_is_two_pivots():
+    # boustrophedon (pivot turn type): swath, 0.16 m connector, swath back
+    pts = [(0.1 * k, 0.0) for k in range(51)] + [(5.0, 0.08), (5.0, 0.16)] + \
+        [(5.0 - 0.1 * k, 0.16) for k in range(1, 51)]
+    res = pc.condition(pts, BOX)
+    assert res.valid
+    piv = [c for c in res.corners if c.choice == 'pivot']
+    assert len(piv) == 2 and all(abs(abs(math.degrees(c.turn)) - 90) < 3 for c in piv)
+    assert len(res.pivots) == 2
+
+
+def test_turn_chain_kept_when_the_connector_leaves_the_region():
+    # the region ends just past the swath ends: the straight connector is outside
+    tight = [[(-1.0, -1.0), (5.05, -1.0), (5.05, 0.3), (4.0, 0.6), (5.05, 1.0), (5.05, 3.0),
+              (-1.0, 3.0)]]
+    chain = rs_chain()
+    subs, joins = pc.join_turn_chains(chain, tight)
+    assert not joins[0].ok and 'region' in joins[0].why
+    assert subs == chain
+
+
+def test_turn_chain_without_reverse_or_with_a_gap_is_left_alone():
+    a, rev, b = rs_chain()
+    fwd_only = [a, b]
+    assert pc.join_turn_chains(fwd_only, BOX)[0] == fwd_only
+    far = [a, [(q[0], q[1] + 0.5, q[2]) for q in rev], b]
+    assert pc.join_turn_chains(far, BOX)[0] == far
+
+
+def test_mission_drives_the_swath_pair_as_one_conditioned_path():
+    h = Harness(path_conditioning=True)
+    h.areas = [{'name': 'a', 'outer': BOX[0], 'obstacles': [], 'is_navigation_area': False}]
+    start_until_planning(h)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(rs_chain()))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    m = h.fsm.mission
+    assert len(m.subpaths) == 1 and 0 in m.cond and not m.cond[0]['pivots']
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == 'FollowCoveragePath'
+    assert g['goal_checker_id'] == 'coverage_corner_goal_checker'
+    assert geo.dist(g['poses'][-1], (0.0, 1.28)) < 0.06
+    texts = [e.text for e in h.fx if isinstance(e, f.Log)]
+    assert any('1 swath-end reverse turn(s) replaced' in t for t in texts)

@@ -103,7 +103,7 @@ controller_server:
     # progress_checker_id="progress_checker". Keep "progress_checker" first.
     progress_checker_plugins: ["progress_checker", "transit_progress_checker"]
     goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker", "coverage_goal_checker_ftc",
-                           "coverage_leg_goal_checker"]
+                           "coverage_leg_goal_checker", "coverage_corner_goal_checker"]
     # FollowPath = MPPI transit (2026-10-09); FollowPathRPP = the previous RPP transit
     # (also usable directly as a controller_id); FollowCoveragePathMPPI = MPPI coverage
     # alternative (mission.yaml follow_controller_id).
@@ -197,6 +197,25 @@ controller_server:
       # 0.14 since 2026-10-13,
       # sign of carrot.x) with a 0.02-0.03 m swing every ~1.3 s, unable to fix a yaw miss;
       # 0.03 was never exceeded, 0.015 ends the leg on the first shuffle.
+      overshoot_hysteresis: 0.015
+
+    # Legs that end on a pivot vertex of a conditioned path (coverage and transit / dock
+    # routes; mission.yaml route_corner_goal_checker_id) and the ends of conditioned forward
+    # legs (2026-10-16, design DESIGN_path_conditioning_2026-10.md 3.1/3.2, roadmap 3.2).
+    # along_path: reached once the robot has come up to the plane through the vertex,
+    # perpendicular to the heading into it (0.02 m short counts), within 0.15 m of the line,
+    # after half the start-goal distance travelled. No yaw test, no 0.08 m disc: the pivot
+    # that follows turns the robot. Replaces the mission's corner-reached rules (0.08 m /
+    # 0.15 m after a 2 s stall). Revert: mission.yaml route_corner_goal_checker_id:
+    # coverage_leg_goal_checker (and route_corner_stall_s 2.0 to bring the rule back).
+    coverage_corner_goal_checker:
+      plugin: "mowgli_nav2_plugins::LegGoalChecker"
+      along_path: true
+      progress_fraction: 0.5
+      xy_goal_tolerance: 0.02
+      lateral_tolerance: 0.15
+      yaw_goal_tolerance: 3.14
+      overshoot_xy_tolerance: 0.20
       overshoot_hysteresis: 0.015
 
     # Transit controller (2026-10-09): MPPI instead of RPP. RPP follows the plan and can only

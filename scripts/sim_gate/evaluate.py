@@ -28,7 +28,12 @@ Criteria:
      corner (raw plans: within 0.3 m of a drawn vertex >= 20 deg) and pivoting in place;
      PASS: p99 <= 0.10 m on line, arc and corner (design 2026-10 section 4). Field run 5
      MOWING (raw plan, all types): 0.026 / 0.074 / 0.204 / 0.262 m.
-Also listed: how often each runtime corner rule of design section 3.3 fired (log / shaper).
+Also listed: how often each runtime corner rule of design section 3.3 fired (log / shaper),
+the turn shaper rewrite rate (every moving nav-lane command, /cmd_vel_nav, MOWING and
+TRANSIT, and the raw controller output /cmd_vel_nav_raw, run through
+mower_control.cmd_vel_slew.shape_for_both_wheels with its defaults: the share it would
+change) and the controller loop rate (/cmd_vel_nav_raw messages per second while the
+controller publishes, median / p10).
 """
 import bisect
 import json
@@ -41,6 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(os.path.dirname(os.path.dirname(HERE)), 'src')
 sys.path.insert(0, os.path.join(SRC, 'mower_map'))
 sys.path.insert(0, os.path.join(SRC, 'mower_mission'))
+sys.path.insert(0, os.path.join(SRC, 'mower_control'))
 from mower_map import areas as A          # noqa: E402
 from mower_mission import geometry as G   # noqa: E402
 
@@ -411,6 +417,10 @@ def main(run, world):
         'costmap fallback nav': len(fallback),
         'follow premature continue': len(grep(r'goal checker fired early')),
         'coverage pivot vertex reached': len(grep(r'pivot vertex .* reached')),
+        'swath-end reverse turns replaced': sum(int(m.group(1)) for _t, msg in grep(
+            r'swath-end reverse turn') for m in [re.search(r'(\d+) swath-end', msg)] if m),
+        'swath-end reverse turns kept': sum(int(m.group(1)) for _t, msg in grep(
+            r'swath-end reverse turn') for m in [re.search(r'(\d+) kept as planned', msg)] if m),
         'coverage pivots (vertex / leg start)': len(grep(r'pivot .* deg in place')),
         'shaper pivot-instead': sum('instead' in m for m in shp),
         'shaper widened arc': sum(bool(re.search(r'arc r=', m)) for m in shp),
@@ -418,6 +428,37 @@ def main(run, world):
         'pivot assist creep': sum('pivot assist ON' in m for m in slew),
         'stuck guard': len(grep(r'stuck: |STUCK')),
     }
+
+    # ---- shaper rewrite rate and controller loop rate (reported)
+    try:
+        from mower_control.cmd_vel_slew import shape_for_both_wheels
+    except Exception as e:                    # noqa: BLE001 - reporting only
+        shape_for_both_wheels = None
+        print('   (shaper rewrite rate not computed: %s)' % e)
+
+    def rewrite(rows, phases=None):
+        n = k = 0
+        for t, v, w in rows:
+            if t < t0 or (abs(v) < 0.01 and abs(w) < 0.02):
+                continue
+            if phases is not None and state_at(t) not in phases:
+                continue
+            n += 1
+            k += shape_for_both_wheels(v, w)[2] is not None
+        return round(100.0 * k / n, 1) if n else None
+    if shape_for_both_wheels is not None:
+        res['shaper_rewrite_pct'] = {
+            'nav_mowing': rewrite(D['cmd_nav'], ('MOWING',)),
+            'nav_transit': rewrite(D['cmd_nav'], ('TRANSIT', 'RETURNING_HOME')),
+            'raw_all': rewrite(D.get('cmd_raw', []))}
+    raw_t = [r[0] for r in D.get('cmd_raw', []) if r[0] >= t0]
+    bins = {}
+    for t in raw_t:
+        bins[int(t)] = bins.get(int(t), 0) + 1
+    full = sorted(c for s, c in bins.items() if s - 1 in bins and s + 1 in bins)
+    if full:
+        res['loop_hz'] = {'median': full[len(full) // 2],
+                          'p10': full[int(0.1 * (len(full) - 1))], 'seconds': len(full)}
 
     ok = all(c['pass'] for c in res['criteria'].values())
     res['verdict'] = 'PASS' if ok else 'FAIL'
@@ -449,6 +490,13 @@ def main(run, world):
         print('   cross-track %-13s n %5d  median %.3f  p90 %.3f  p99 %.3f  max %.3f' % (
             k, v['n'], v['median'], v['p90'], v['p99'], v['max']))
     print('   rules fired: ' + ', '.join('%s %d' % kv for kv in res['rules_fired'].items()))
+    if 'shaper_rewrite_pct' in res:
+        print('   shaper rewrite %%: nav MOWING %s, nav TRANSIT %s, raw controller %s' % (
+            res['shaper_rewrite_pct']['nav_mowing'], res['shaper_rewrite_pct']['nav_transit'],
+            res['shaper_rewrite_pct']['raw_all']))
+    if 'loop_hz' in res:
+        print('   controller loop Hz: median %d, p10 %d (%d s)' % (
+            res['loop_hz']['median'], res['loop_hz']['p10'], res['loop_hz']['seconds']))
     print('   boundary per phase: ' + ', '.join('%s %.3f' % (k, v['max_m'])
                                                 for k, v in C['a']['per_phase'].items()))
     for e in C['a']['episodes']:

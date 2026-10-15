@@ -107,6 +107,7 @@ docker exec -d "$C" bash -c "$ROS; cd $COUT && exec ros2 bag record -s sqlite3 -
   --include-hidden-topics --max-cache-size 0 \
   /sim/ground_truth /sim/status /behavior_tree_node/high_level_status \
   /behavior_tree_node/mow_plan /behavior_tree_node/mow_progress /cmd_vel /cmd_vel_nav \
+  /cmd_vel_nav_raw \
   /behavior_tree_node/conditioned_route \
   /cmd_vel_emergency /cmd_vel_docking /cmd_vel_slew/shape_status /map_server_node/outside_m \
   /odometry/filtered_map /mission/incident /plan /rosout /navigate_to_pose/_action/status \

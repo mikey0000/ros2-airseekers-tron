@@ -35,6 +35,15 @@ indices where the robot must stop and turn in place.
 
 K-turns (Reeds-Shepp with reverse, where a pivot is not allowed) are not generated yet
 (design Phase 4, slope-dependent): ``allow_pivot=False`` reports the corner as an error.
+
+Swath-end turns (:func:`join_turn_chains`, 2026-10-16, roadmap 3.2): where the planner could
+not fit a forward (Dubins) turn it plans a Reeds-Shepp turn with reverse pieces, and the
+coverage bridge cuts it into short forward / reverse sub-paths (0.3-0.9 m legs ending on a
+tight checker: the 2026-10-15 sim gate's MOWING_INCOMPLETE). Those chains are replaced by the
+geometry they connect: swath A up to its end, a straight connector, swath B from its start.
+That one forward path is then conditioned like any other: a fillet r >= r_min at each
+connector corner where it fits the region, else a pivot on the swath end. Reverse is kept
+only when this fails (the chain stays as planned).
 """
 
 import math
@@ -225,12 +234,37 @@ def find_corners(pts, p):
             groups[-1].append(i)
         else:
             groups.append([i])
-    # straight runs either side, measured on the Douglas-Peucker simplification
-    out = []
+    # A U-turn whose two vertices are closer than merge_m (a swath-end connector of one
+    # swath width) is two corners joined by the connector, not one 180 deg corner: a group
+    # that turns by cusp_rad or more between its outer runs is split back into its distinct
+    # vertices (hot indices more than 2 x detect_m apart).
+    split = []
     for g in groups:
+        if len(g) > 1:
+            subs = [[g[0]]]
+            for i in g[1:]:
+                if cum[i] - cum[subs[-1][-1]] > 2.0 * p.detect_m + 1e-9:
+                    subs.append([i])
+                else:
+                    subs[-1].append(i)
+            if len(subs) > 1:
+                u0 = _run_dir(pts, cum, cum[g[0]] - p.run_m, cum[g[0]])
+                u1 = _run_dir(pts, cum, cum[g[-1]], cum[g[-1]] + p.run_m)
+                if u0 is not None and u1 is not None and abs(geo.wrap_angle(
+                        math.atan2(u1[1], u1[0]) - math.atan2(u0[1], u0[0]))) >= p.cusp_rad:
+                    split.extend(subs)
+                    continue
+        split.append(g)
+    groups = split
+    # straight runs either side, measured on the Douglas-Peucker simplification (never
+    # past the neighbouring corner)
+    out = []
+    for k, g in enumerate(groups):
         s_lo, s_hi = cum[g[0]], cum[g[-1]]
-        u_in = _run_dir(pts, cum, s_lo - p.run_m, s_lo)
-        u_out = _run_dir(pts, cum, s_hi, s_hi + p.run_m)
+        lo = max(s_lo - p.run_m, cum[groups[k - 1][-1]] if k > 0 else 0.0)
+        hi = min(s_hi + p.run_m, cum[groups[k + 1][0]] if k + 1 < len(groups) else cum[-1])
+        u_in = _run_dir(pts, cum, lo, s_lo)
+        u_out = _run_dir(pts, cum, s_hi, hi)
         if u_in is None or u_out is None:
             continue
         turn = geo.wrap_angle(math.atan2(u_out[1], u_out[0]) - math.atan2(u_in[1], u_in[0]))
@@ -439,3 +473,145 @@ def _validate(res, pts, raw_clr, region, req, p):
     for c in res.corners:
         if c.choice == 'fillet' and c.r < p.r_min - 1e-9:
             res.errors.append('fillet r %.2f < r_min at (%.2f, %.2f)' % (c.r, c.x, c.y))
+
+
+# ---------------------------------------------------------------- swath-end turn chains
+
+def _is_reverse(poses):
+    """The coverage bridge gives a reverse leg poses that face against the travel."""
+    for a, b in zip(poses, poses[1:]):
+        if len(a) < 3:
+            return False
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        if abs(dx) + abs(dy) < 1e-6:
+            continue
+        return math.cos(float(a[2])) * dx + math.sin(float(a[2])) * dy < 0.0
+    return False
+
+
+def _straight_run_end(pts, from_end, min_run, tol, parallel_to=None, par_tol=0.09):
+    """Index of the end of the straight run that a turn starts from: scanning from the end
+    (``from_end``) or the start of ``pts``, the first pose with at least ``min_run`` m of
+    straight polyline (every segment heading within ``tol`` rad of the one next to the pose)
+    behind it (towards the swath); with ``parallel_to`` only a run parallel or antiparallel
+    to that heading (within ``par_tol`` rad: the swaths of a cell are parallel, a straight
+    piece of the turn is not). Returns (index, run heading) or (None, None)."""
+    n = len(pts)
+    if n < 2:
+        return None, None
+    cum = geo.cumulative_lengths(pts)
+    order = range(n - 1, 0, -1) if from_end else range(0, n - 1)
+    for i in order:
+        if from_end:
+            ref = math.atan2(pts[i][1] - pts[i - 1][1], pts[i][0] - pts[i - 1][0])
+            j, ok = i, True
+            while j > 0 and cum[i] - cum[j] < min_run:
+                h = math.atan2(pts[j][1] - pts[j - 1][1], pts[j][0] - pts[j - 1][0])
+                if geo.dist(pts[j], pts[j - 1]) > 1e-6 and abs(geo.wrap_angle(h - ref)) > tol:
+                    ok = False
+                    break
+                j -= 1
+            if ok and cum[i] - cum[j] >= min_run - 1e-9 and _par(ref, parallel_to, par_tol):
+                return i, ref
+        else:
+            ref = math.atan2(pts[i + 1][1] - pts[i][1], pts[i + 1][0] - pts[i][0])
+            j, ok = i, True
+            while j < n - 1 and cum[j] - cum[i] < min_run:
+                h = math.atan2(pts[j + 1][1] - pts[j][1], pts[j + 1][0] - pts[j][0])
+                if geo.dist(pts[j], pts[j + 1]) > 1e-6 and abs(geo.wrap_angle(h - ref)) > tol:
+                    ok = False
+                    break
+                j += 1
+            if ok and cum[j] - cum[i] >= min_run - 1e-9 and _par(ref, parallel_to, par_tol):
+                return i, ref
+    return None, None
+
+
+def _par(h, ref, tol):
+    return ref is None or abs(math.sin(geo.wrap_angle(h - ref))) <= math.sin(tol)
+
+
+@dataclass
+class TurnJoin:
+    first: int                   # index of the chain's first sub-path (input numbering)
+    last: int                    # index of its last sub-path
+    a: tuple = ()                # swath A end
+    b: tuple = ()                # swath B start
+    ok: bool = False
+    why: str = ''
+
+
+def join_turn_chains(subpaths, region, params: Optional[Params] = None, leg_max_m=1.2,
+                     min_run_m=0.5, tol_rad=0.02, max_gap_m=2.0):
+    """Replace every swath-end Reeds-Shepp turn chain by the geometry it connects.
+
+    A chain is a forward sub-path, then one or more turn legs (a reverse sub-path, or a
+    forward one no longer than ``leg_max_m``) each starting where the previous one ends
+    (within 0.01 m), then a forward sub-path. Swath A's end ``a`` is the end of the last
+    straight run of at least ``min_run_m`` in the first sub-path, swath B's start ``b`` the
+    start of the first one in the last; the chain becomes first[..a] + last[b..]: the turn is
+    the straight connector a -> b (swath B's run parallel to swath A's), whose corners the conditioner then fillets (fits) or
+    pivots on (the swath ends are on the drawn swaths). A chain is kept as planned when
+    a / b cannot be found, the connector is longer than ``max_gap_m``, any connector sample
+    is closer to the region edge than min(margin + half width, the clearance at a and b) -
+    slack, or the joined path fails conditioning.
+
+    Returns (subpaths, [TurnJoin]); ``subpaths`` in the input's order, chains merged."""
+    p = params or Params()
+    subs = [list(sp) for sp in subpaths]
+    out, joins = [], []
+    k = 0
+    n = len(subs)
+
+    def turn_leg(sp):
+        return len(sp) >= 2 and (_is_reverse(sp) or geo.path_length(sp) <= leg_max_m)
+
+    while k < n:
+        sp = subs[k]
+        j = k + 1
+        if not (len(sp) >= 2 and not _is_reverse(sp) and geo.path_length(sp) > leg_max_m):
+            out.append(sp)
+            k += 1
+            continue
+        has_rev = False
+        while j < n and turn_leg(subs[j]) and geo.dist(subs[j][0], subs[j - 1][-1]) <= 0.01:
+            has_rev = has_rev or _is_reverse(subs[j])
+            j += 1
+        if j == k + 1 or j >= n or not has_rev or _is_reverse(subs[j]) or \
+                geo.dist(subs[j][0], subs[j - 1][-1]) > 0.01:
+            out.append(sp)
+            k += 1
+            continue
+        tj = TurnJoin(k, j)
+        first, last = subs[k], subs[j]
+        ia, ha = _straight_run_end(first, True, min_run_m, tol_rad)
+        ib, _hb = _straight_run_end(last, False, min_run_m, tol_rad,
+                                    parallel_to=ha) if ia is not None else (None, None)
+        if ia is None or ib is None:
+            tj.why = 'no straight swath end / start'
+        else:
+            a, b = tuple(first[ia][:2]), tuple(last[ib][:2])
+            tj.a, tj.b = a, b
+            gap = geo.dist(a, b)
+            req = p.margin_m + p.half_width_m
+            floor = min(req, clearance(a, region), clearance(b, region)) - p.slack_m
+            m = max(2, int(math.ceil(gap / p.step_m)))
+            conn = [(a[0] + (b[0] - a[0]) * t / m, a[1] + (b[1] - a[1]) * t / m)
+                    for t in range(m + 1)]
+            if gap > max_gap_m:
+                tj.why = 'connector %.2f m > %.2f m' % (gap, max_gap_m)
+            elif region and any(clearance(q, region) < floor - 1e-3 for q in conn):
+                tj.why = 'connector leaves the region'
+            else:
+                merged = list(first[:ia + 1]) + list(last[ib:])
+                r = condition(merged, region, p)
+                if r.valid:
+                    tj.ok = True
+                    out.append(merged)
+                else:
+                    tj.why = 'conditioning failed: %s' % r.errors[0]
+        joins.append(tj)
+        if not tj.ok:
+            out.extend(subs[k:j + 1])
+        k = j + 1
+    return out, joins

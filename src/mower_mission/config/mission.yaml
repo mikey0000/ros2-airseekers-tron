@@ -128,12 +128,13 @@ behavior_tree_node:
     # by the 0.15 m pass limit (0.5 * (1 / cos(theta / 2) - 1) = 0.15 at 79.5 deg), so every
     # drawn ~90 deg corner (and an 80 deg one) is a stop-and-pivot. Revert threshold: 1.5708.
     route_corner_turn_rad: 1.38
-    # FollowPath goal checker for a route leg that ends at a split corner (not the last leg):
-    # with general_goal_checker (xy 0.25 m) the leg ended ~0.2 m short of the corner and the
-    # pivot happened there (sim: +0.2 m off the drawn line). LegGoalChecker: within 0.08 m,
-    # or past the closest approach within 0.20 m; the leg's end yaw is the run into the
-    # corner. '' = route_goal_checker_id for every leg (revert).
-    route_corner_goal_checker_id: coverage_leg_goal_checker
+    # FollowPath goal checker for a leg that ends on a pivot vertex: a route leg ending at a
+    # split corner (not the last leg; with general_goal_checker, xy 0.25 m, it ended ~0.2 m
+    # short and the pivot happened there) and, with path_conditioning, every conditioned
+    # forward coverage leg. 2026-10-16: coverage_corner_goal_checker (nav2_params.yaml,
+    # LegGoalChecker along_path): done at the plane through the vertex, within 0.15 m of
+    # the line, no yaw test, no 0.08 m disc. Revert: coverage_leg_goal_checker.
+    route_corner_goal_checker_id: coverage_corner_goal_checker
     # 2026-10-15 undock incident (robot circled for 82 s after the first route corner pivot):
     # the start route began with a 0.17 m connector from the robot to the dock path, then a
     # 90 deg corner; that stub was the first leg and MPPI circled its end. A corner
@@ -165,16 +166,11 @@ behavior_tree_node:
     # A corner leg (not the last) that aborts within this of its corner (no obstacle) counts
     # as reached: the next leg's pivot is done from there, not a route abort. 0.0 = off.
     route_leg_end_accept_m: 0.25
-    # 2026-10-15 run (mow-040433) STUCK1 / STUCK2: a leg into a split corner never ended (the
-    # leg goal checker wants 0.08 m AND the run's yaw within 0.5 rad; STUCK1 was 0.07 m away
-    # 39 deg off, STUCK2 stopped 0.12 m short) and MPPI dithered in place ~20 s until the
-    # stuck guard; the corner pivot never came. The mission ends a corner leg itself (yaw
-    # ignored, the pivot follows): within route_corner_xy_m, or within route_corner_reach_m
-    # once the distance stopped shrinking (0.01 m) for route_corner_stall_s.
-    # route_corner_stall_s 0.0 = off (revert).
-    route_corner_xy_m: 0.08
-    route_corner_reach_m: 0.15
-    route_corner_stall_s: 2.0
+    # (2026-10-15 run mow-040433 STUCK1 / STUCK2: a leg into a split corner never ended on
+    # the 0.08 m + yaw leg checker. The mission-side corner-reached rule route_corner_xy_m /
+    # reach / stall was removed 2026-10-16: route_corner_goal_checker_id is along-path with
+    # no yaw test; a leg that still stops short ends by the progress watch below and
+    # route_leg_end_accept_m.)
     # Pre-leg pivot (Nav2 Spin) at a split corner (legs after the first; a route start keeps
     # route_corner_turn_rad) when the next leg is more than this off the robot's yaw (was
     # 1.38): after STUCK1's corner MPPI would have had a ~51 deg turn-in, the slow-turn dither
@@ -183,7 +179,8 @@ behavior_tree_node:
     # --- path conditioning (docs/DESIGN_path_conditioning_2026-10.md steps 2-3) -----------
     # 2026-10-15 run 5: RPP drove the outer ring's 100 deg V at (-4.74, -1.17) as an arc
     # 0.26 m wide, 0.11 m outside Area 1, twice -> STUCK_NEEDS_HELP. Every coverage sub-path
-    # (not a turn leg: reverse, or <= turn_leg_max_m) and every transit / dock route goes
+    # (2026-10-16: forward ones, a reverse-curve swath-end turn chain first replaced by its
+    # swath -> connector -> swath corners) and every transit / dock route goes
     # through one pure-geometry pass (mower_mission/path_conditioning.py) against the allowed
     # region (mowing areas U drawn path channels U dock corridor): each sharp corner becomes
     # the largest fillet arc with r in [r_min, r_max] that fits (its clearance >= min(margin +
@@ -192,7 +189,7 @@ behavior_tree_node:
     # drawn); on the outermost ring convex corners >= edge_pivot_rad within
     # edge_clearance_m of the edge pivot (edge cut). Resampled at 0.05 m with segment types
     # (line / arc / pivot, published in ~/mow_plan "types"). A pivot = the leg ends on the
-    # vertex (route_corner_xy_m / reach / stall rule above) + an in-place Spin, blade on.
+    # vertex (route_corner_goal_checker_id, along-path) + an in-place Spin, blade on.
     # Transit / dock routes are split into FollowPath legs at the pivots (fillets are inside
     # the legs) and run through the existing route-leg machinery. A sub-path that fails the
     # validation is reported and NOT mowed. false = raw paths as before (revert).
@@ -205,12 +202,11 @@ behavior_tree_node:
     path_conditioning_pivot_min_rad: 0.35
     path_conditioning_edge_pivot_rad: 1.38    # 0.0 = no edge policy (fillets everywhere)
     path_conditioning_edge_clearance_m: 0.20
-    # A coverage leg (sub-path start, after a pivot vertex, a resume after a retry / boundary
-    # retrace / hold) whose join heading is more than this off the robot's yaw is turned to
-    # in place first (sim gate base run: the ring start 140 deg off the transit's arrival
-    # heading, RPP rotated part way and arced out of the area twice -> STUCK). Not on turn
-    # legs nor swath-end turns. 0.0 = off.
-    path_conditioning_start_pivot_rad: 0.6
+    # (path_conditioning_start_pivot_rad was removed 2026-10-16: a coverage leg's start is a
+    # vertex of the path driven (robot -> leg; sub-path start after a transit, a resume after
+    # a retry / retrace / hold) where no fillet fits, so it pivots by the conditioner's own
+    # rule, path_conditioning_pivot_min_rad, like any pivot marker; one mechanism for both
+    # coverage controllers.)
     # The costmap-planner fallback stays only for a start off the route graph and a route
     # abort away from any cusp, and is bounded: the robot's distance from the drawn network
     # (cross-track to the route it replaces; 0 inside a mowing area) is checked every tick

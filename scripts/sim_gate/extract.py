@@ -17,7 +17,7 @@ LOGNODES = ('behavior_tree_node', 'mower_docking', 'docking_server', 'bt_navigat
             'controller_server', 'cmd_vel_slew', 'map_server_node', 'mower_sim',
             'behavior_server', 'planner_server')
 TWIST = {'/cmd_vel': 'cmd', '/cmd_vel_nav': 'cmd_nav', '/cmd_vel_emergency': 'cmd_emerg',
-         '/cmd_vel_docking': 'cmd_dock'}
+         '/cmd_vel_docking': 'cmd_dock', '/cmd_vel_nav_raw': 'cmd_raw'}
 STATUS = {'/navigate_to_pose/_action/status': 'nav_status', '/spin/_action/status': 'spin_status',
           '/follow_path/_action/status': 'fp_status',
           '/mower_docking/dock/_action/status': 'dock_status'}
@@ -28,7 +28,8 @@ def yaw(q):
 
 
 def main(bagdir, out):
-    keys = ['gt', 'status', 'hl', 'cmd', 'cmd_nav', 'cmd_emerg', 'cmd_dock', 'outside', 'plan',
+    keys = ['gt', 'status', 'hl', 'cmd', 'cmd_nav', 'cmd_raw', 'cmd_emerg', 'cmd_dock', 'outside',
+            'plan',
             'rosout', 'nav_status', 'spin_status', 'fp_status', 'dock_status', 'shape',
             'incident', 'progress', 'mow_plan', 'odom_map', 'croute']
     D = {k: [] for k in keys}

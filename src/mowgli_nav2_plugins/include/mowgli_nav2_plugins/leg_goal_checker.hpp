@@ -14,6 +14,15 @@
 // 0.08 m target) the travel gate is met, the robot came within
 // overshoot_xy_tolerance (0.20 m) and is now moving away again (distance grew
 // by > overshoot_hysteresis 0.03 m above its minimum).
+//
+// along_path mode (2026-10-16, design DESIGN_path_conditioning_2026-10.md 3.1/3.2: a leg
+// that ends on a pivot vertex, or any conditioned forward leg end): reached when the travel
+// gate is met and the robot has come up to the plane through the goal, perpendicular to the
+// goal's heading (along >= -xy_goal_tolerance, measured along the goal yaw = the heading
+// of travel into the vertex), within lateral_tolerance of the goal's line. No yaw test and
+// no position disc: the pivot that follows turns the robot, so the leg end is judged by
+// along-path progress ("corner reached"), not by hitting a 0.08 m circle (which a
+// controller decelerating into the wheel floor overshoots and then circles).
 #ifndef MOWGLI_NAV2_PLUGINS__LEG_GOAL_CHECKER_HPP_
 #define MOWGLI_NAV2_PLUGINS__LEG_GOAL_CHECKER_HPP_
 
@@ -41,6 +50,8 @@ struct LegProgress
   double overshoot_xy_tol{0.20};
   double overshoot_hysteresis{0.03};
   double max_step{0.5};  // ignore pose jumps larger than this (relocalisation)
+  bool along_path{false};
+  double lateral_tol{0.15};
 
   bool started{false};
   double goal_x{0.0}, goal_y{0.0};
@@ -99,6 +110,13 @@ struct LegProgress
     if (!travel_ok)
     {
       return false;
+    }
+    if (along_path)
+    {
+      const double ux = std::cos(gyaw), uy = std::sin(gyaw);
+      const double along = (x - gx) * ux + (y - gy) * uy;
+      const double lateral = std::fabs(-(x - gx) * uy + (y - gy) * ux);
+      return along >= -xy_tol && lateral <= lateral_tol;
     }
     if (d <= xy_tol && angleDiff(yaw, gyaw) <= yaw_tol)
     {
