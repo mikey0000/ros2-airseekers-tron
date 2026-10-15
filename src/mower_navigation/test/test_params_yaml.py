@@ -138,6 +138,31 @@ def test_progress_checker_counts_rotation():
     assert pc["movement_time_allowance"] >= 15.0
 
 
+def test_transit_progress_checker_is_translation_only_and_every_id_exists():
+    """2026-10-15 undock incident: MPPI circled on a route leg for 82 s and the rotation-
+    counting checker never aborted it. Route legs name a translation-only checker. Jazzy
+    rejects a FollowPath goal without progress_checker_id once more than one is loaded, so
+    every FollowPath client (both BTs, the mission's route legs and coverage follows) names
+    one that exists."""
+    c = load()["controller_server"]["ros__parameters"]
+    names = c["progress_checker_plugins"]
+    assert names[0] == "progress_checker" and "transit_progress_checker" in names
+    t = c["transit_progress_checker"]
+    assert t["plugin"] == "nav2_controller::SimpleProgressChecker"
+    assert "required_movement_angle" not in t
+    assert 0.15 <= t["required_movement_radius"] <= 0.3
+    assert 15.0 <= t["movement_time_allowance"] <= 30.0
+    for name in BT_FILES:
+        fps = list(_bt(name).iter("FollowPath"))
+        assert fps and all(fp.get("progress_checker_id") in names for fp in fps), name
+    with open(MISSION) as f:
+        mdoc = yaml.safe_load(f)
+    blocks = [p for _, p in ros_param_blocks(mdoc) if "route_progress_checker_id" in p]
+    assert len(blocks) == 1
+    assert blocks[0]["route_progress_checker_id"] == "transit_progress_checker"
+    assert blocks[0]["follow_progress_checker_id"] == "progress_checker"
+
+
 def test_goal_checkers():
     c = load()["controller_server"]["ros__parameters"]
     g = c["general_goal_checker"]

@@ -119,6 +119,23 @@ goal → change → test → pass criterion → revert.
           then NAV_TO_DOCK_FAILED in place. Revert: `dock_server_nav_max_m: 0.0`.
       (f) `turn_leg_end_by_distance` (true): leg end by distance only, cap by own length
           only (`_is_turn_leg` kept for `turn_leg_skip`). Revert: `false`.
+      (g) 2026-10-15 field follow-ups (`ws/followups`; undock donut: the start route's
+          0.17 m connector stub was its own leg, the robot pivoted 111° onto it and MPPI
+          circled its 90° hook for 82 s, rotation counted as progress; run mow-040433
+          STUCK1/2: legs into split corners never ended, the leg checker wanted 0.08 m +
+          the run's yaw, so the corner pivot never came). Stubs ≤ 0.3 m before / after an end
+          corner are cut and the first leg joins at the robot's projection
+          (`route_stub_trim_m` 0.3, `route_start_join_m` 0.5); route legs use the
+          translation-only `transit_progress_checker` (`route_progress_checker_id`) plus a
+          mission leg watch (0.15 m along the leg in 20 s, `route_progress_window_s`); corner
+          legs end by the mission within 0.08 m, or 0.15 m after a 2 s stall, yaw ignored
+          (`route_corner_stall_s`), an abort ≤ 0.25 m from the corner counts as reached
+          (`route_leg_end_accept_m`), and the corner Spin triggers at 0.6 rad
+          (`route_leg_pivot_min_rad`); a `/navigate_to_pose` transit must get 0.15 m closer in
+          20 s. Shaper: field data shows 2.5× amplification but no reversal loop; the sim
+          shows one, so `turn_shaper_transit_pivot_hold_rps` exists, off by default.
+          Details + reverts: `wheel_smoothness_field_tests.md` "2026-10-15 field".
+          Unit-tested + sim (domain 174); field test pending.
 - [ ] 0.3 [C] Docs: replace every "vendor" accel/decel citation of `adaptivePurePursuit.h`
       with the running node's values (0.6 / 1.0 m/s², 2.0 rad/s²; `cfg.yaml:8-9,69-72`).
 

@@ -94,7 +94,11 @@ controller_server:
     # (0 = abort at once, -1 = never). The mission adds its own blocked wait on top.
     failure_tolerance: 2.0
     # Jazzy (Iron+) key is the plural list; Humble's singular progress_checker_plugin is gone.
-    progress_checker_plugins: ["progress_checker"]
+    # 2026-10-15: two progress checkers (coverage / transit). With more than one loaded, Jazzy
+    # rejects a FollowPath goal without progress_checker_id: the mission names one per goal
+    # (mission.yaml route_progress_checker_id / follow_progress_checker_id) and both BTs pass
+    # progress_checker_id="progress_checker". Keep "progress_checker" first.
+    progress_checker_plugins: ["progress_checker", "transit_progress_checker"]
     goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker", "coverage_goal_checker_ftc",
                            "coverage_leg_goal_checker"]
     # FollowPath = MPPI transit (2026-10-09); FollowPathRPP = the previous RPP transit
@@ -113,6 +117,18 @@ controller_server:
       plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.25
       required_movement_angle: 0.5
+      movement_time_allowance: 20.0
+    # Route legs (mission route_progress_checker_id). 2026-10-15 undock incident: on a route
+    # leg MPPI output |v| <= 0.03 m/s with |w| 0.05-0.3 for 82 s (the turn shaper made every
+    # tick a pivot) and the robot circled at ~(0.3, -0.6) until STOP; the rotation-counting
+    # checker above never aborted. Translation only here: a route corner pivot is a Nav2
+    # Spin before the leg (not FollowPath); an MPPI turn-in onto a leg is < 79 deg (else the
+    # mission pivots first): 17 s even at the slowest turf pivot seen (0.08 rad/s), inside
+    # 20 s. On the incident's odometry this aborts 20 s after the leg started. Revert: mission.yaml
+    # route_progress_checker_id: progress_checker.
+    transit_progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.25
       movement_time_allowance: 20.0
 
     # Transit goals. DEVIATION: MowgliNext has stopped_goal_checker +

@@ -134,6 +134,52 @@ behavior_tree_node:
     # or past the closest approach within 0.20 m; the leg's end yaw is the run into the
     # corner. '' = route_goal_checker_id for every leg (revert).
     route_corner_goal_checker_id: coverage_leg_goal_checker
+    # 2026-10-15 undock incident (robot circled for 82 s after the first route corner pivot):
+    # the start route began with a 0.17 m connector from the robot to the dock path, then a
+    # 90 deg corner; that stub was the first leg and MPPI circled its end. A corner
+    # (route_corner_turn_rad) within route_stub_trim_m of either route end cuts the stub off:
+    # the route starts / ends at the corner, so the pre-leg pivot turns to the heading AFTER
+    # it. 0.0 = off (revert).
+    route_stub_trim_m: 0.3
+    # ... and the first leg joins the route at the robot's projection onto its first
+    # route_start_join_m (robot within that of the route), never at a start behind the
+    # robot (undock leaves it up to ~0.15 m off). 0.0 = off (revert).
+    route_start_join_m: 0.5
+    # FollowPath progress checkers (nav2_params.yaml; Jazzy needs an id per goal once more
+    # than one is loaded). Route legs: transit_progress_checker (SimpleProgressChecker,
+    # translation only, 0.25 m / 20 s): turning in place on a route leg is not progress
+    # (route corner pivots are Nav2 Spin, not FollowPath). Coverage follows: progress_checker
+    # (PoseProgressChecker; a swath-end rotate-to-heading is progress). Revert:
+    # route_progress_checker_id: progress_checker.
+    route_progress_checker_id: transit_progress_checker
+    follow_progress_checker_id: progress_checker
+    # Mission-side route leg watch (a 0.3 m circle can keep resetting a radius checker): the
+    # robot's projection onto the leg must advance route_progress_min_m within
+    # route_progress_window_s, else the leg is cancelled and handled as a FollowPath abort.
+    # The same window applies to a /navigate_to_pose transit (costmap fallback; its BT keeps
+    # the rotation-counting checker): no route_progress_min_m closer to the target in the
+    # window -> cancel, transit abort (sim 2026-10-15: it spun in place for minutes).
+    # 0.0 window = off (revert, both).
+    route_progress_window_s: 20.0
+    route_progress_min_m: 0.15
+    # A corner leg (not the last) that aborts within this of its corner (no obstacle) counts
+    # as reached: the next leg's pivot is done from there, not a route abort. 0.0 = off.
+    route_leg_end_accept_m: 0.25
+    # 2026-10-15 run (mow-040433) STUCK1 / STUCK2: a leg into a split corner never ended (the
+    # leg goal checker wants 0.08 m AND the run's yaw within 0.5 rad; STUCK1 was 0.07 m away
+    # 39 deg off, STUCK2 stopped 0.12 m short) and MPPI dithered in place ~20 s until the
+    # stuck guard; the corner pivot never came. The mission ends a corner leg itself (yaw
+    # ignored, the pivot follows): within route_corner_xy_m, or within route_corner_reach_m
+    # once the distance stopped shrinking (0.01 m) for route_corner_stall_s.
+    # route_corner_stall_s 0.0 = off (revert).
+    route_corner_xy_m: 0.08
+    route_corner_reach_m: 0.15
+    route_corner_stall_s: 2.0
+    # Pre-leg pivot (Nav2 Spin) at a split corner (legs after the first; a route start keeps
+    # route_corner_turn_rad) when the next leg is more than this off the robot's yaw (was
+    # 1.38): after STUCK1's corner MPPI would have had a ~51 deg turn-in, the slow-turn dither
+    # regime. 0.0 = route_corner_turn_rad (revert).
+    route_leg_pivot_min_rad: 0.6
     # The costmap-planner fallback stays only for a start off the route graph and a route
     # abort away from any cusp, and is bounded: the robot's distance from the drawn network
     # (cross-track to the route it replaces; 0 inside a mowing area) is checked every tick

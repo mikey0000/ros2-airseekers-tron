@@ -3,7 +3,9 @@
      BT.CPP v4 (hence BTCPP_format="4"), with ONE change:
      FollowPath gets goal_checker_id="general_goal_checker". controller_server loads two goal
      checkers (general_goal_checker, coverage_goal_checker) and Nav2 rejects a FollowPath goal
-     with an empty goal_checker_id when more than one is loaded. -->
+     with an empty goal_checker_id when more than one is loaded. Same for progress_checker_id
+     (2026-10-15: progress_checker + transit_progress_checker; Nav2 navigations keep
+     progress_checker). -->
 <!--
   This Behavior Tree replans the global path periodically at 1 Hz through an array of poses continuously
    and it also has recovery actions specific to planning / control as well as general system issues.
@@ -32,7 +34,8 @@
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPath">
-          <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
+          <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"
+                      progress_checker_id="progress_checker"/>
           <Wait name="WaitForReplan-Context" wait_duration="1"/>
         </RecoveryNode>
       </PipelineSequence>

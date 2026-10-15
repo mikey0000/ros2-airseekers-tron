@@ -573,3 +573,85 @@ def route_corners(poses, angle_rad, window_m=0.3, simplify_m=0.02, min_arm_m=0.1
     flush()
     return [(i, t) for i, t in sorted(out)
             if cum[i] >= min_arm_m - 1e-9 and cum[-1] - cum[i] >= min_arm_m - 1e-9]
+
+
+def path_projection(poses, point, max_s=None):
+    """Nearest point of the polyline ``poses`` to ``point``: ``(s, d, k)`` = its arc length
+    from ``poses[0]``, its distance from ``point`` and the index of the segment's end pose
+    (``poses[k - 1] -> poses[k]``). ``max_s``: only the first ``max_s`` m of the polyline
+    are searched. ``(0.0, dist(point, poses[0]), 0)`` for a single pose."""
+    if not poses:
+        return 0.0, math.inf, 0
+    px, py = float(point[0]), float(point[1])
+    best = (0.0, math.hypot(px - float(poses[0][0]), py - float(poses[0][1])), 0)
+    s0 = 0.0
+    for k in range(1, len(poses)):
+        if max_s is not None and s0 > max_s:
+            break
+        ax, ay = float(poses[k - 1][0]), float(poses[k - 1][1])
+        dx, dy = float(poses[k][0]) - ax, float(poses[k][1]) - ay
+        seg = math.hypot(dx, dy)
+        t = 0.0 if seg < 1e-12 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) /
+                                               (seg * seg)))
+        if max_s is not None:
+            t = min(t, max(0.0, (max_s - s0) / seg) if seg >= 1e-12 else 0.0)
+        d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+        if d < best[1] - 1e-9:
+            best = (s0 + t * seg, d, k)
+        s0 += seg
+    return best
+
+
+def trim_route_stubs(poses, angle_rad, stub_m, tol_rad=math.radians(1.0)):
+    """Drop a stub at either end of a route: when a corner of at least ``angle_rad``
+    (``route_corners``' measure, inclusive minus ``tol_rad``) lies within ``stub_m`` of the
+    route start, the route starts at that corner (the last such one); within ``stub_m`` of
+    the end, it ends at that corner (the first such one). A route that would be left with
+    less than ``stub_m`` (or fewer than 2 poses) is returned unchanged. 2026-10-15 undock:
+    the route began with a 0.17 m connector from the robot to the dock path and then turned
+    90 deg; the first leg was that stub and MPPI circled its end for 82 s."""
+    poses = list(poses)
+    if stub_m <= 0.0 or angle_rad <= 0.0 or len(poses) < 3:
+        return poses
+    cum = cumulative_lengths(poses)
+    total = cum[-1]
+    corners = route_corners(poses, angle_rad, min_arm_m=0.0, tol_rad=tol_rad)
+    i0, i1 = 0, len(poses) - 1
+    for i, _t in corners:
+        if 0.0 < cum[i] <= stub_m + 1e-9:
+            i0 = max(i0, i)
+    for i, _t in corners:
+        if 0.0 < total - cum[i] <= stub_m + 1e-9 and i > i0:
+            i1 = min(i1, i)
+    if (i0, i1) == (0, len(poses) - 1) or i1 - i0 < 1 or cum[i1] - cum[i0] < stub_m:
+        return poses
+    return poses[i0:i1 + 1]
+
+
+def join_route_from(poses, point, max_m):
+    """Start a route where ``point`` (the robot) projects onto its first ``max_m`` m, when
+    that is ahead of the route's start and ``point`` is within ``max_m`` of it: the poses
+    behind the projection are replaced by the projected point (yaw of its segment), so the
+    robot is never sent back to a start behind it. Unchanged otherwise."""
+    poses = list(poses)
+    if max_m <= 0.0 or len(poses) < 2 or point is None:
+        return poses
+    s, d, k = path_projection(poses, point, max_s=max_m)
+    if d > max_m or s < 0.02 or k < 1:
+        return poses
+    a, b = poses[k - 1], poses[k]
+    seg = dist(a, b)
+    if seg < 1e-9:
+        return poses
+    cum = cumulative_lengths(poses)
+    t = (s - cum[k - 1]) / seg
+    x = float(a[0]) + (float(b[0]) - float(a[0])) * t
+    y = float(a[1]) + (float(b[1]) - float(a[1])) * t
+    rest = poses[k:]
+    if dist((x, y), rest[0]) < 0.02:          # the projection is (nearly) on pose k
+        return rest if len(rest) >= 2 else poses
+    first = (x, y)
+    if len(a) >= 3:
+        first = (x, y, math.atan2(float(b[1]) - float(a[1]), float(b[0]) - float(a[0]))) + \
+            tuple(a[3:])
+    return [first] + rest

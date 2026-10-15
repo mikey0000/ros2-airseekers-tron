@@ -102,6 +102,17 @@ Parameters
                                   that overshot every transit corner; the regime latch holds
                                   across ratio +- ``turn_shaper_pivot_instead_hysteresis``
                                   (``0.1``). false = the old widening (revert flag)
+``turn_shaper_transit_pivot_hold_rps`` ``0.0``  2026-10-15 (off by default): in TRANSIT and
+                                  the nav-lane dock transit, a command the shaper would snap
+                                  to the 0.25 rad/s pivot while the controller asked for
+                                  |w| below this is held at (0, 0) instead. Sim r4: MPPI's
+                                  0.1 rad/s turn-ins became +-0.25 pivots, overshot, MPPI
+                                  reversed w, and the robot rocked +-15 deg on the spot for
+                                  20 s (field mow-040433: amplified 2.5x but no reversal).
+                                  Pivots stay >= 0.25 rad/s; a held robot is ended by the
+                                  mission's route progress watch / corner rule. Caution: a
+                                  Nav2 Spin's last few hundredths of a rad are also below
+                                  it. 0 = off
 ``applied_log_period`` ``1.0``    s between ``cmd_vel applied`` log lines
                                   (0 = every tick)
 ``idle_publish_s``     ``0.5``    s of all-zero output after the last non-zero output
@@ -621,7 +632,10 @@ SHAPE_DEFAULTS = {
     'pivot_instead': True,        # False = the old widening (revert flag)
     'pivot_instead_ratio': 0.5,
     'pivot_instead_hysteresis': 0.1,  # ratio band the regime latch holds across
+    'transit_pivot_hold_rps': 0.0,    # TurnShaper: transit pivot snap below this -> (0, 0)
 }
+# Phases where turn_shaper_transit_pivot_hold_rps applies (never MOWING).
+PIVOT_HOLD_PHASES = frozenset(('TRANSIT',)) | NAV_SHAPE_PHASES
 
 
 def shape_for_both_wheels(v, w, params=None):
@@ -987,6 +1001,12 @@ class TurnShaper:
         if info is None:
             self.status = 'pass'
             return v, w
+        hold = float(self.params.get('transit_pivot_hold_rps', 0.0))
+        if (hold > 0.0 and phase in PIVOT_HOLD_PHASES and info['kind'] == 'pivot'
+                and not info.get('deadband') and abs(w) < hold):
+            self.regime, self._signs, self._pending = None, None, 0
+            self.status = 'transit pivot hold: |w| %.3f < %.3f rad/s -> 0' % (abs(w), hold)
+            return 0.0, 0.0
         held = ', held' if info.get('held') else ''
         if info.get('deadband'):
             self.status = 'pivot deadband: |w| %.3f < %.3f rad/s -> 0' % (
@@ -1016,6 +1036,7 @@ TURN_PARAMS = {   # node parameter -> (TurnShaper attribute / params key, type)
     'turn_shaper_pivot_instead': ('pivot_instead', bool),
     'turn_shaper_pivot_instead_ratio': ('pivot_instead_ratio', float),
     'turn_shaper_pivot_instead_hysteresis': ('pivot_instead_hysteresis', float),
+    'turn_shaper_transit_pivot_hold_rps': ('transit_pivot_hold_rps', float),
 }
 TURN_DEFAULTS = {'turn_shaper': True, 'shape_manual': False, 'track_width_m': TRACK_WIDTH_M,
                  'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.3,
@@ -1023,7 +1044,8 @@ TURN_DEFAULTS = {'turn_shaper': True, 'shape_manual': False, 'track_width_m': TR
                  'turn_shaper_pure_pivot': True, 'turn_shaper_pivot_deadband_rps': 0.03,
                  'turn_shaper_dock_transit': True, 'turn_shaper_pivot_instead': True,
                  'turn_shaper_pivot_instead_ratio': 0.5,
-                 'turn_shaper_pivot_instead_hysteresis': 0.1}
+                 'turn_shaper_pivot_instead_hysteresis': 0.1,
+                 'turn_shaper_transit_pivot_hold_rps': 0.0}
 SHAPE_LOG_PERIOD_S = 2.0      # turn-shaper INFO log: on state-kind change, at most every 2 s
 
 

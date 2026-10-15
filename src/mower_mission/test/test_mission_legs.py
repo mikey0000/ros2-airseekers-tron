@@ -278,7 +278,7 @@ def _abort_at(h, pose, outcome=f.ABORTED):
 
 
 def test_route_abort_at_a_hairpin_turns_about_and_resumes_the_route():
-    h = _route_h()
+    h = _route_h(route_leg_end_accept_m=0.0)     # the cusp path (end accept has its own test)
     route = _hairpin170()
     _answer_route(h, resp=_route_resp(route))
     m = h.mark()
@@ -343,7 +343,7 @@ def test_route_abort_away_from_any_cusp_falls_back_to_the_costmap_planner():
 
 
 def test_route_cusp_retries_zero_restores_the_old_fallback():
-    h = _route_h(route_cusp_retries=0)
+    h = _route_h(route_cusp_retries=0, route_leg_end_accept_m=0.0)
     _answer_route(h, resp=_route_resp(_hairpin170()))
     m = h.mark()
     _abort_at(h, (1.95, 0.02, 0.0))
