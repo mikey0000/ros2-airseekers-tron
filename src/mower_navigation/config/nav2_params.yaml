@@ -219,13 +219,12 @@ controller_server:
       vx_min: -0.10
       vy_max: 0.0
       wz_max: 0.3
-      # Plan with the accelerations the wheels actually get: cmd_vel_slew (mower_control
-      # cmd_vel_slew.py max_linear_accel 0.5 / max_linear_decel 0.8 / max_angular_accel
-      # 1.0) is the authoritative limiter; the Jazzy defaults (~3 m/s^2) let MPPI plan
-      # trajectories the slew then lags behind.
-      ax_max: 0.5
-      ax_min: -0.8
-      az_max: 1.0
+      # ax_max / ax_min / az_max stay at the MPPI defaults. 3196ffd set them to the
+      # cmd_vel_slew limits (0.5 / -0.8 / 1.0); from standstill MPPI then only produced
+      # |v| <= 0.03 m/s with |w| 0.1-0.3, the turn shaper made every tick a pivot, and the
+      # robot spun in circles for 82 s after undocking (2026-10-15 field, bag
+      # 20261015-035717; reproduced in mower_sim, transit_box fails with them and passes
+      # without). cmd_vel_slew still limits the real accelerations.
       temperature: 0.3
       gamma: 0.015
       retry_attempt_limit: 1
