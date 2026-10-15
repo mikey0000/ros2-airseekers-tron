@@ -100,22 +100,47 @@ The input is a polyline (a transit route, a dock route, or a coverage sub-path) 
    and every arc has r ≥ r_min. A failed check is a planning error. It is reported in the
    GUI and never driven.
 
-### 3.2 Tracker
+### 3.2 Tracker: MPPI is the candidate to beat (owner, 2026-10-15)
 
-There is one path tracker for transit, dock routes and coverage: Regulated Pure Pursuit with
-a short lookahead (0.3–0.4 m) and curvature-regulated speed. This is the controller family
-the vendor's running node used (pure pursuit, `navigation/param/cfg.yaml`). Pivots and
-reverse segments run as explicit steps:
+The path conditioner (§3.1) does not depend on the controller: every controller does
+better on a drivable path. The owner wants MPPI to be the controller we invest in, for all
+of transit, dock routes and coverage, rather than going back to pure pursuit.
 
-- **Pivot:** the leg ends on the vertex, then an in-place turn to the next heading.
-- **Reverse:** the existing reverse RPP.
+MPPI is in use today (transit `FollowPath`; `FollowCoveragePathMPPI` is configured but
+unused). Its field failures are known, and each one points to a fix:
 
-Because every commanded curvature is drivable, the turn shaper no longer has anything to
-rewrite. It becomes a **safety clamp** (wheel floor, slew) and no longer makes decisions.
+- **Dither at near-zero speed** (2026-10-15 undock spin; STUCK1/2 at the junction).
+  - **Cause:** MPPI samples (v, w) pairs that the robot cannot drive (an inner wheel
+    between 0 and 0.06 m/s). The turn shaper then rewrites them, so MPPI's motion model is
+    wrong about what happens next.
+  - **Fix:** make MPPI aware of what is feasible, so it never chooses those commands. For
+    example, add a custom critic that penalises inner wheel speeds below the floor, or
+    constrain the sampling. The shaper is then only a clamp.
+- **Corner cutting** (0.20–0.34 m at the 39°/57° dock-path bends).
+  - **Fix:** a conditioned path (§3.1), plus critic weights (PathFollow / PathAlign /
+    PathAngle) tuned against cross-track in the sim gate.
+- **Accel-limit livelock** (3196ffd, reverted in 1e19c15).
+  - **Fix:** `ax`/`az` set from the measured wheel response, not from the slew constants,
+    and verified in the sim.
+- **CPU** (RK3588; the control loop missed 20 Hz at 17.5 Hz).
+  - **Fix:** measure batch size / time steps against tracking error; the sim gate reports
+    the loop rate.
 
-MPPI stays available as a parameter. It was chosen for obstacle avoidance, but transit
-follows the drawn path down its centre, and obstacles in the path stop the robot. We
-compare it against RPP in the sim gate (§4) before choosing.
+Work package (`docs/analysis/2026-10-15_mppi_study.md`):
+
+1. review the current MPPI config, the field bags and the Nav2 MPPI documentation and
+   issues (and MowgliNext's MPPI attempt);
+2. design a feasibility-aware MPPI (critic and/or sampling) and a tuning plan;
+3. run the A/B in the sim gate: MPPI (tuned) vs RPP, on raw and on conditioned paths,
+   with and without the disturbance.
+
+The criteria are the same as §4, plus loop rate and smoothness (jerk, pivot share). MPPI
+becomes the single tracker if it passes the gate; RPP stays as the fallback parameter.
+Pivots and reverse segments remain explicit steps whichever controller follows the
+lines.
+
+Because every commanded curvature is drivable, the turn shaper no longer needs to rewrite
+anything. It becomes a **safety clamp** (wheel floor, slew) and no longer makes decisions.
 
 ### 3.3 What gets removed once it is measured to be unnecessary
 
@@ -164,7 +189,7 @@ K-turn) is Phase 4 and needs field data.
 | Where corners are handled | At runtime, in four places: controller (MPPI/RPP), turn shaper, mission corner rules, leg/stuck watchers | Once, before driving, in the path conditioner |
 | Path given to the controller | Raw drawn polylines and polygon-offset rings with sharp vertices | A drivable path: lines, arcs r ≥ 0.5 m, explicit pivots / K-turns |
 | Turn choice | A fixed angle threshold (79°) for transit routes only; coverage rings get none | Per corner, from the measured space to the boundary (fillet if it fits, else pivot, else K-turn) |
-| Controllers | MPPI transit, RPP coverage, RPP reverse, docking controller | One RPP tracker for all paths (MPPI as an option), plus explicit pivot / reverse steps, plus docking |
+| Controllers | MPPI transit, RPP coverage, RPP reverse, docking controller; MPPI unaware of the wheel floor | One tracker for all paths, MPPI the candidate (made aware of the wheel floor, tuned in the sim gate), RPP as the fallback; explicit pivot / reverse steps; docking |
 | Turn shaper | Rewrites commands (widen, pivot-instead, pivot snap), so the controller's model is wrong | A clamp only; nothing to rewrite because the curvature is drivable |
 | Mission | Grows a rule per failure (cap, corner reached, stall, stub trim, progress watches) | Sends conditioned legs; keeps the safety rules; removes the corner rules |
 | Validation | Unit tests, partial sim runs, then field | Full-mow sim gate with fixed pass criteria, then one field run |
@@ -180,7 +205,9 @@ Each step passes the sim gate before the field.
    paths), and a GUI/debug topic that shows the conditioned path.
 3. **Use it for coverage sub-paths and transit / dock routes**, with the existing
    controllers. Run the gate, then a field run.
-4. **Switch transit to RPP** if the gate shows it is equal or better. Gate, then field.
+4. **MPPI as the single tracker** (§3.2 work package): feasibility-aware MPPI, tuned in the
+   sim gate against RPP on conditioned paths; adopt it for transit and coverage if it passes.
+   Gate, then field.
 5. **Remove the superseded runtime rules** (§3.3) one at a time. Gate after each; field
    after the set.
 6. **Phase 4: slope-aware turn choice** (pivot vs K-turn by tilt), with field data.
