@@ -726,6 +726,25 @@ class Params:
     # After a sub-path still fails, the session ends in MOWING_INCOMPLETE; dock only
     # when this is true (default: stop in place so the operator can inspect).
     return_home_on_incomplete: bool = False
+    # 2026-10-15 MPPI study (docs/analysis/2026-10-15_mppi_study.md): which tracker drives the
+    # coverage sub-paths. 'mppi' = mppi_follow_controller_id / mppi_reverse_controller_id
+    # (feasibility-aware MPPI, nav2_params.yaml), the cut speed goes to
+    # mppi_controller_speed_param capped at mppi_speed_max_mps; 'rpp' =
+    # follow_controller_id / reverse_controller_id / controller_speed_param, as before.
+    # Default 'rpp' until MPPI passes the sim gate: on raw paths it overshoots the sharp ring
+    # vertices and, with the vertices pivoted, the short swath-end turn legs (study §8).
+    coverage_controller: str = 'rpp'
+    mppi_follow_controller_id: str = 'FollowCoveragePathMPPI'
+    mppi_reverse_controller_id: str = 'FollowCoveragePathReverseMPPI'
+    mppi_controller_speed_param: str = 'FollowCoveragePathMPPI.vx_max'
+    mppi_speed_max_mps: float = 0.3      # MPPI must not sample above the MCU clamp
+    # Under MPPI a coverage leg (forward sub-path chunk) that starts more than this off the
+    # robot's yaw begins with an explicit pivot (Nav2 Spin) to the leg heading, as RPP's
+    # rotate-to-heading did (its rotate_to_heading_min_angle 1.2); MPPI then only tracks the
+    # line. Only when the leg start is within coverage_leg_pivot_max_m. 0 = off (MPPI turns
+    # onto the leg itself).
+    coverage_leg_pivot_rad: float = 1.2
+    coverage_leg_pivot_max_m: float = 0.5
     follow_controller_id: str = 'FollowCoveragePath'
     # Sub-paths whose poses face against their travel (reverse turn legs from
     # the coverage bridge) go to this controller (RPP with allow_reversing).
@@ -2540,7 +2559,7 @@ class MissionFSM:
             self._call(SRV_CUTTER_HEIGHT, {'height_mm': hmm}, track=False)
         if self.p.set_cut_speed:
             self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER,
-                                        'params': {self.p.controller_speed_param: speed}},
+                                        'params': self.coverage_speed_params(speed)},
                        track=False)
         self._plan_run()
 
@@ -2850,7 +2869,7 @@ class MissionFSM:
             self._spin_attempt += 1
             self._spin_up()
 
-    def _follow(self):
+    def _follow(self, pivoted=False):
         m = self.mission
         m.step = 'follow'
         m.progress_local = m.start_local
@@ -2859,13 +2878,63 @@ class MissionFSM:
                                         self.p.follow_chunk_clearance_m), self._seg_last())
         poses = list(sp[m.start_local:m.chunk_end + 1])
         reverse = geo.is_reverse_subpath(sp)
+        if not pivoted and not reverse and self._coverage_leg_pivot(poses):
+            return
         self._start_action(ACT_FOLLOW, {
             'poses': poses,
-            'controller_id': (self.p.reverse_controller_id if reverse
-                              else self.p.follow_controller_id),
+            'controller_id': self.coverage_controller_id(reverse),
             'goal_checker_id': self._follow_goal_checker(poses, reverse),
             'progress_checker_id': self.p.follow_progress_checker_id},
             self.p.follow_timeout_s)
+
+    def _coverage_leg_pivot(self, poses):
+        """MPPI coverage: pivot in place (Nav2 Spin) onto a leg that starts more than
+        coverage_leg_pivot_rad off the robot's yaw. True = the Spin was started; the leg is
+        sent when it ends (any outcome: the follow is the judge)."""
+        lim, pose = float(self.p.coverage_leg_pivot_rad), self.inputs.pose
+        if lim <= 0.0 or not self.coverage_mppi() or pose is None or len(pose) < 3 \
+                or len(poses) < 2:
+            return False
+        if geo.dist(pose, poses[0]) > float(self.p.coverage_leg_pivot_max_m):
+            return False
+        heading = self._leg_heading(poses)
+        if heading is None:
+            return False
+        delta = geo.wrap_angle(heading - float(pose[2]))
+        if abs(delta) < lim:
+            return False
+        self._log('info', 'coverage leg at (%.2f, %.2f): pivot %.0f deg in place onto it, '
+                          'then follow' % (poses[0][0], poses[0][1], math.degrees(delta)))
+        allowance = abs(delta) / max(0.05, float(self.p.route_cusp_spin_rps)) + 10.0
+        self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
+                           allowance + 5.0, purpose='coverage_pivot')
+        return True
+
+    def _coverage_pivot_spun(self, outcome):
+        m = self.mission
+        if m is None or self.phase != 'MOWING' or m.step != 'follow' or not m.subpaths:
+            return
+        if outcome != SUCCEEDED:
+            self._log('warn', 'coverage leg pivot %s: following the leg anyway' % outcome)
+        self._follow(pivoted=True)
+
+    def coverage_mppi(self):
+        """True when coverage sub-paths are driven by MPPI (``coverage_controller``)."""
+        return str(self.p.coverage_controller).strip().lower() == 'mppi'
+
+    def coverage_controller_id(self, reverse):
+        """Nav2 controller id for a coverage sub-path (forward or reverse leg)."""
+        if self.coverage_mppi():
+            return (self.p.mppi_reverse_controller_id if reverse
+                    else self.p.mppi_follow_controller_id)
+        return self.p.reverse_controller_id if reverse else self.p.follow_controller_id
+
+    def coverage_speed_params(self, speed):
+        """{controller_server param: value} for a coverage cut speed."""
+        if self.coverage_mppi():
+            return {self.p.mppi_controller_speed_param:
+                    min(float(speed), float(self.p.mppi_speed_max_mps))}
+        return {self.p.controller_speed_param: float(speed)}
 
     def _follow_goal_checker(self, poses, reverse):
         """Goal checker for a FollowPath chunk: the leg checker for turn legs."""
@@ -4118,6 +4187,9 @@ class MissionFSM:
         if a.purpose == 'route_corner':
             self._route_corner_spun(outcome)
             return
+        if a.purpose == 'coverage_pivot':
+            self._coverage_pivot_spun(outcome)
+            return
         if a.purpose == 'dock':
             self._dock_contact_since = None
             if outcome == SUCCEEDED and (result.get('success', True)):
@@ -5277,16 +5349,16 @@ class MissionFSM:
         m = self.mission
         params = {}
         if want:
-            params = {self.p.controller_speed_param: cap,
-                      self.p.tilt_transit_speed_param: cap}
+            params = dict(self.coverage_speed_params(cap))
+            params[self.p.tilt_transit_speed_param] = cap
             self._log('warn', 'slope caution (%s): controller speed capped at %.2f m/s'
                       % (self._tilt_text(), cap))
         else:
             params = {self.p.tilt_transit_speed_param: float(self.p.tilt_transit_speed_mps)}
             if m is not None and m.settings:
-                params[self.p.controller_speed_param] = min(
+                params.update(self.coverage_speed_params(min(
                     float(m.settings.get('cut_speed_mps', AREA_SETTINGS_DEFAULTS['cut_speed_mps'])),
-                    float(self.p.cut_speed_max_mps))
+                    float(self.p.cut_speed_max_mps))))
             self._log('info', 'slope ok: controller speed restored')
         if self.p.set_cut_speed:
             self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER, 'params': params},

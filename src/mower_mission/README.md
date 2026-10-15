@@ -279,6 +279,7 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 | `use_docking_server`, `undock_distance_m`, `undock_speed_mps`, `dock_use_vision`, `dock_timeout_s` | true, 0.8, 0.15, true, 180 |
 | `transit_gap_m` | 0.6 |
 | `follow_controller_id` / `follow_goal_checker_id` | FollowCoveragePath / coverage_goal_checker |
+| `coverage_controller` (2026-10-15 MPPI study) | rpp (default until MPPI passes the sim gate); mppi: coverage legs on `mppi_follow_controller_id` / `mppi_reverse_controller_id` (FollowCoveragePathMPPI / FollowCoveragePathReverseMPPI), cut speed on `mppi_controller_speed_param` capped at `mppi_speed_max_mps` 0.3; a leg starting more than `coverage_leg_pivot_rad` 1.2 off the robot's yaw (start within `coverage_leg_pivot_max_m` 0.5) begins with a Nav2 Spin onto it; rpp = the `follow_controller_id` / `reverse_controller_id` pair |
 | `require_blade_confirmation`, `blade_confirm_timeout_s`, `blade_start_attempts`, `blade_retry_pause_s` | true, 5, 3, 2 |
 | `manual_blade_requires_enable` | false (upstream); `config/mission.yaml` sets true: two-step manual mowing, see `manual_blade` |
 | `progress_window_m` | 3.0 |

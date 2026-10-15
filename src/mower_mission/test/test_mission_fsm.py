@@ -44,6 +44,10 @@ class Harness:
         params.setdefault('detour_max_skip_m', 3.0)
         # ... and Nav2-only transits (route-graph transits, 2026-10-09, have their own tests)
         params.setdefault('route_transits', False)
+        # ... and the RPP coverage controllers they were written against (the shipped default;
+        # coverage_controller: mppi, 2026-10-15, has its own tests in
+        # test_coverage_controller.py; the leg logic is the same for both)
+        params.setdefault('coverage_controller', 'rpp')
         self.t = 0.0
         self.fsm = f.MissionFSM(f.Params.from_dict(params), cursor=cursor, now=0.0)
         i = self.fsm.inputs
