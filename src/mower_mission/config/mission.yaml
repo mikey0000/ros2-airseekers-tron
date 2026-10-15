@@ -156,7 +156,10 @@ behavior_tree_node:
     # Mission-side route leg watch (a 0.3 m circle can keep resetting a radius checker): the
     # robot's projection onto the leg must advance route_progress_min_m within
     # route_progress_window_s, else the leg is cancelled and handled as a FollowPath abort.
-    # 0.0 window = off (revert).
+    # The same window applies to a /navigate_to_pose transit (costmap fallback; its BT keeps
+    # the rotation-counting checker): no route_progress_min_m closer to the target in the
+    # window -> cancel, transit abort (sim 2026-10-15: it spun in place for minutes).
+    # 0.0 window = off (revert, both).
     route_progress_window_s: 20.0
     route_progress_min_m: 0.15
     # A corner leg (not the last) that aborts within this of its corner (no obstacle) counts

@@ -411,23 +411,41 @@ the dock route was split at (−3.25, 1.12) (`/plan` index 13, +106°), the robo
 0.05–0.18). In both cases no `route corner` pivot was logged because the pivot comes only
 after the leg into the corner succeeds. Shaper check: MPPI's w kept one sign throughout
 (no overshoot-and-correct cycle), the robot turned at ~0.1 rad/s against a commanded 0.25
-(slope / turf), and the reverses are MPPI's own v < 0 (vx_min −0.10). The shaper's 0.25
-rad/s snap does not drive the loop; a "hold zero below the floor" rule would only turn the
-dither into standing still, so the shaper is unchanged.
+(slope / turf), and the reverses are MPPI's own v < 0 (vx_min −0.10): in the field the
+shaper's 0.25 rad/s snap amplified MPPI 2.5× but did not drive the loop (the unended corner
+leg did). The sim (no slip) does show the amplified loop: run r4's costmap fallback asked
+~0.1 rad/s, got ±0.25 pivots, overshot, MPPI reversed w, and the robot rocked ±15° on the
+spot for 20 s (ended by the new progress watch). So a flag, **off by default**:
+`turn_shaper_transit_pivot_hold_rps` (cmd_vel_slew; e.g. 0.2): in TRANSIT / nav-lane dock
+transit a command the shaper would snap to a pivot while |w| asked < this is held at (0, 0);
+pivots stay ≥ 0.25 rad/s, the mission's corner rule / progress watch then decide. Sim r5
+with 0.2: transit unchanged (3 holds logged, corner Spins unaffected).
 
 | | Change | Params (default) | Revert |
 |---|---|---|---|
 | h | Route stubs: a corner (≥ 79°) within 0.3 m of a route end cuts the stub off (the route starts / ends at the corner, so the pre-leg pivot turns to the heading after it); the first leg joins at the robot's projection onto the first 0.5 m, never at a start behind it | `route_stub_trim_m` 0.3, `route_start_join_m` 0.5 | `0.0` each |
 | i | Route legs (transit + dock route) name a translation-only progress checker (`transit_progress_checker`, SimpleProgressChecker 0.25 m / 20 s); coverage follows and the Nav2 BTs keep `progress_checker` (rotation counts). Jazzy needs an id per FollowPath goal once two are loaded | `route_progress_checker_id`, `follow_progress_checker_id` | `route_progress_checker_id: progress_checker` |
-| j | Mission route-leg watch: the robot's projection onto the leg must advance 0.15 m in 20 s, else cancel and handle as a FollowPath abort; a corner leg that aborts within 0.25 m of its corner (no obstacle) counts as reached | `route_progress_window_s` 20, `route_progress_min_m` 0.15, `route_leg_end_accept_m` 0.25 | `route_progress_window_s: 0.0`, `route_leg_end_accept_m: 0.0` |
+| j | Mission route-leg watch: the robot's projection onto the leg must advance 0.15 m in 20 s, else cancel and handle as a FollowPath abort; a corner leg that aborts within 0.25 m of its corner (no obstacle) counts as reached; a `/navigate_to_pose` transit (costmap fallback) must get 0.15 m closer to its target in 20 s, else transit abort | `route_progress_window_s` 20, `route_progress_min_m` 0.15, `route_leg_end_accept_m` 0.25 | `route_progress_window_s: 0.0`, `route_leg_end_accept_m: 0.0` |
 | k | Corner legs end by the mission, yaw ignored: within 0.08 m, or within 0.15 m once the distance stopped shrinking for 2 s; then the corner pivot | `route_corner_xy_m` 0.08, `route_corner_reach_m` 0.15, `route_corner_stall_s` 2 | `route_corner_stall_s: 0.0` |
 | l | At a split corner (legs after the first) the pre-leg Spin triggers at 0.6 rad (34°) instead of 79° (MPPI turn-ins are the dither regime) | `route_leg_pivot_min_rad` 0.6 | `0.0` |
+| m | (off) Transit pivot hold in the shaper: a would-be 0.25 pivot for a request < X rad/s is (0, 0) in TRANSIT / dock transit | `turn_shaper_transit_pivot_hold_rps` 0.0 | already off |
 
 Unit tests (`test_route_followups.py`) replay the real `/plan`s: the donut route
 (`undock_spin_2026-10-15_plan.json`: no pivot, first leg starts on the corner heading 124°,
 was a 111° pivot onto the stub), all 8 run 4 plans (`run4_2026-10-15_plans.json`: no leg
 begins with a ≥ 79° turn within 0.3 m, every non-last leg ends on a corner), STUCK2 (leg
 ends after 2 s at 0.12 m, Spin +106°) and STUCK1 rebuilt (leg ends at 0.07 m, Spin ~51°).
+
+Sim (real map, domain 174, committed nav2 params, `localization:=sim`): r1 docked start:
+undock → route (3 legs) → Spin 112° at the approach pose → first FollowPath 7 s after the
+route; every split corner stopped 0.07–0.08 m from its vertex, deviation at the pivot ≤ 0.04 m,
+no spinning; −39° / −57° bends still cut 0.21–0.29 m (MPPI tracking, unchanged). r2 / r5
+(start at the run 3 post-undock pose): first FollowPath 1.7 s after the route, corner legs
+ended by the mission rule (`corner … reached (0.08 m)`). r3 / r4 forced spin (an extra
+50 Hz `/cmd_vel` of 0.3 rad/s): the route leg aborted by `transit_progress_checker` 20 s
+after the robot stopped advancing, then the costmap fallback (rotation-counting checker)
+spun / rocked until the new mission watch on it aborted it 20 s later and the transit retry
+drove the route to the area.
 
 What to look for: `route: … stub before the corner … dropped`, `route: first leg joins at`,
 `route leg i/n: corner (x, y) reached (d m): leg done`, `route corner at …: stop and pivot`

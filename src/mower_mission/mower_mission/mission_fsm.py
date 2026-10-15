@@ -676,7 +676,9 @@ class Params:
     # leg is cancelled and handled as a FollowPath abort (a corner leg within
     # route_leg_end_accept_m of its end counts as reached, below; otherwise the usual route
     # abort: blocked wait / cusp about-turn / bounded costmap fallback). Route corner pivots
-    # are Nav2 Spin, not FollowPath, so they never count. 0 window = off (revert).
+    # are Nav2 Spin, not FollowPath, so they never count. A /navigate_to_pose transit
+    # (costmap fallback) gets the same window on its distance to the target (no
+    # route_progress_min_m closer -> transit abort). 0 window = off (revert, both).
     route_progress_window_s: float = 20.0
     route_progress_min_m: float = 0.15
     # A route leg into a split corner (not the last leg) that aborts (Nav2 progress checker
@@ -1967,6 +1969,8 @@ class MissionFSM:
                     return
             self._tick_blade()
         elif ph == 'TRANSIT' and self.mission is not None and self.mission.step == 'transit':
+            if self._transit_nav_progress_tick():
+                return
             self._fallback_corridor_tick()
         elif ph == 'BOUNDARY_PAUSED' and self.mission is not None:
             m = self.mission
@@ -3664,6 +3668,35 @@ class MissionFSM:
         self._fx.append(CancelActions('transit fallback left the corridor'))
         self._action = None
         self._transit_abort('transit fallback left the corridor (%.2f m)' % off)
+
+    def _transit_nav_progress_tick(self):
+        """2026-10-15 sim (forced spin): after a route abort the /navigate_to_pose transit
+        (costmap planner; its FollowPath keeps the rotation-counting progress_checker) spun in
+        place for minutes inside the corridor. The robot's distance to the transit target must
+        shrink by route_progress_min_m within route_progress_window_s, else the goal is
+        cancelled and counted as a transit abort. True when it fired."""
+        win, need = float(self.p.route_progress_window_s), float(self.p.route_progress_min_m)
+        m, a, pose = self.mission, self._action, self.inputs.pose
+        if win <= 0.0 or a is None or a.name != ACT_NAV or a.purpose is not None or \
+                m.detour is not None or pose is None or m.transit_target is None:
+            return False
+        d = geo.dist(pose, m.transit_target)
+        w = self._route_watch
+        if w is None or w['token'] != a.token:
+            self._route_watch = {'token': a.token, 'd': d, 't': self._now}
+            return False
+        if d <= w['d'] - need:
+            w['d'], w['t'] = d, self._now
+            return False
+        if self._now - w['t'] < win:
+            return False
+        self._log('warn', 'transit navigate_to_pose: %.2f m from the target, no %.2f m closer '
+                          'for %.0f s (progress watch): abort' % (d, need, self._now - w['t']))
+        self._fx.append(CancelActions('transit progress watch'))
+        self._action = None
+        self._route_watch = None
+        self._transit_abort('transit made no progress for %.0f s' % win)
+        return True
 
     def _transit_abort(self, why):
         """A failed mission transit: transit_fails, 'transit_abort' incident, then a retry

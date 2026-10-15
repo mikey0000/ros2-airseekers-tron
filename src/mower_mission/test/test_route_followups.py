@@ -438,3 +438,28 @@ def test_corner_stall_revert_flags():
     _drive_to(h2, (1.97, 0.0, 0.7), 0.2)                 # turned 40 deg already: no pivot
     assert h2.pending_action(f.ACT_FOLLOW).purpose == 'route'      # MPPI turns in, no Spin
     assert h2.fsm._route_legs['i'] == 1
+
+
+def test_costmap_fallback_spinning_in_place_is_a_transit_abort():
+    """Sim 2026-10-15 (forced spin): after the route leg aborted (transit_progress_checker),
+    the /navigate_to_pose fallback spun in place for minutes. Now: no 0.15 m closer to the
+    target in 20 s -> cancel, transit abort (retry)."""
+    h = _route_h()
+    _answer_route(h, ok=False)                     # no route: costmap planner transit
+    a = h.pending_action(f.ACT_NAV)
+    m = h.mark()
+    _spin_on_the_spot(h, 19.0, x=0.0, y=0.0, r=0.05)
+    assert h.pending_action(f.ACT_NAV).token == a.token
+    _spin_on_the_spot(h, 2.0, x=0.0, y=0.0, r=0.05)
+    assert any('(progress watch): abort' in t for t in logs(h, m))
+    assert h.fsm.mission.transit_fails == 1
+
+
+def test_costmap_fallback_driving_toward_the_target_is_left_alone():
+    h = _route_h()
+    _answer_route(h, ok=False)
+    tok = h.pending_action(f.ACT_NAV).token
+    for k in range(400):                                 # 0.1 m/s toward (5, 5)
+        h.fsm.inputs.pose = (0.007 * k, 0.007 * k, 0.785)
+        h.tick(dt=0.1)
+    assert h.pending_action(f.ACT_NAV).token == tok

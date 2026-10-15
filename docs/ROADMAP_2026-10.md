@@ -131,9 +131,11 @@ goal → change → test → pass criterion → revert.
           legs end by the mission within 0.08 m, or 0.15 m after a 2 s stall, yaw ignored
           (`route_corner_stall_s`), an abort ≤ 0.25 m from the corner counts as reached
           (`route_leg_end_accept_m`), and the corner Spin triggers at 0.6 rad
-          (`route_leg_pivot_min_rad`). Shaper unchanged (the 0.25 rad/s snap is not the
-          loop's driver). Details + reverts: `wheel_smoothness_field_tests.md` "2026-10-15
-          field". Unit-tested; sim: see there.
+          (`route_leg_pivot_min_rad`); a `/navigate_to_pose` transit must get 0.15 m closer in
+          20 s. Shaper: field data shows 2.5× amplification but no reversal loop; the sim
+          shows one, so `turn_shaper_transit_pivot_hold_rps` exists, off by default.
+          Details + reverts: `wheel_smoothness_field_tests.md` "2026-10-15 field".
+          Unit-tested + sim (domain 174); field test pending.
 - [ ] 0.3 [C] Docs: replace every "vendor" accel/decel citation of `adaptivePurePursuit.h`
       with the running node's values (0.6 / 1.0 m/s², 2.0 rad/s²; `cfg.yaml:8-9,69-72`).
 

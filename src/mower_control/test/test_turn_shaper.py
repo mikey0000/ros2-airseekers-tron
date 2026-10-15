@@ -481,3 +481,24 @@ def test_latch_leaves_the_pivot_once_clearly_past_the_band():
     v_low = 0.35 * _widened_r(0.03, w) * w                            # q 0.35 < 0.4
     out = ts.apply(v_low, w, 'TRANSIT', DT, lane='navigation')
     assert out[0] == 0.0 and ts.regime == 'pivot'
+
+
+# --- 2026-10-15: transit pivot hold (off by default) ----------------------------------
+
+def test_transit_pivot_hold_is_off_by_default():
+    ts = TurnShaper()
+    assert ts.apply(0.02, 0.1, 'TRANSIT', 0.05, lane='navigation') == (0.0, 0.25)
+
+
+def test_transit_pivot_hold_stops_slow_turn_ins_in_transit_only():
+    ts = TurnShaper(transit_pivot_hold_rps=0.2)
+    assert ts.apply(0.02, 0.1, 'TRANSIT', 0.05, lane='navigation') == (0.0, 0.0)
+    assert 'transit pivot hold' in ts.status
+    assert ts.apply(0.0, -0.15, 'RETURNING_HOME', 0.05, lane='navigation') == (0.0, 0.0)
+    # a real pivot request passes as before; never in MOWING
+    assert ts.apply(0.0, 0.3, 'TRANSIT', 0.05, lane='navigation') == (0.0, 0.3)
+    ts2 = TurnShaper(transit_pivot_hold_rps=0.2)
+    assert ts2.apply(0.02, 0.1, 'MOWING', 0.05, lane='navigation') == (0.0, 0.25)
+    # arcs are untouched
+    v, w = ts.apply(0.2, 0.1, 'TRANSIT', 0.05, lane='navigation')
+    assert (v, w) == (0.2, 0.1)
