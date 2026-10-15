@@ -258,6 +258,20 @@ behavior_tree_node:
     # last recovery, and a stuck escape clears both).
     clear_global_costmap_on_retry: false
     return_home_on_incomplete: false  # sub-paths not mowed -> MOWING_INCOMPLETE; dock only if true
+    # 2026-10-15 MPPI study (docs/analysis/2026-10-15_mppi_study.md): coverage_controller: mppi
+    # drives the coverage sub-paths with the feasibility-aware MPPI (FollowCoveragePathMPPI
+    # forward, FollowCoveragePathReverseMPPI for reverse legs; the cut speed is set on
+    # mppi_controller_speed_param, capped at mppi_speed_max_mps); rpp = follow_controller_id /
+    # reverse_controller_id / controller_speed_param below (unchanged behaviour). Stays rpp
+    # until MPPI passes the sim gate: on today's raw paths MPPI overshoots the sharp ring
+    # vertices (8 / 17 trips ideal / disturbed vs RPP 2 / 2), and with the vertices pivoted
+    # (path-conditioning stand-in) it still leaves the area on the 0.3-0.6 m swath-end turn
+    # legs (5-16 trips vs RPP 0). Switch with the path conditioner (design 3.1).
+    coverage_controller: rpp
+    mppi_follow_controller_id: FollowCoveragePathMPPI
+    mppi_reverse_controller_id: FollowCoveragePathReverseMPPI
+    mppi_controller_speed_param: FollowCoveragePathMPPI.vx_max
+    mppi_speed_max_mps: 0.3
     follow_controller_id: FollowCoveragePath
     # reverse legs of reverse-then-curve swath turns (RPP allow_reversing, nav2_params.yaml)
     reverse_controller_id: FollowCoveragePathReverse

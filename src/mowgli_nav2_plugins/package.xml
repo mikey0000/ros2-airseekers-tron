@@ -28,6 +28,8 @@
   <depend>tf2_eigen</depend>
   <depend>visualization_msgs</depend>
   <depend>eigen3_cmake_module</depend>
+  <depend>nav2_mppi_controller</depend>
+  <depend>xtensor</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
@@ -37,5 +39,6 @@
     <build_type>ament_cmake</build_type>
     <nav2_core plugin="${prefix}/ftc_controller_plugin.xml"/>
     <nav2_core plugin="${prefix}/goal_checker_plugin.xml"/>
+    <nav2_mppi_controller plugin="${prefix}/mppi_critics_plugin.xml"/>
   </export>
 </package>

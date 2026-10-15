@@ -59,6 +59,20 @@ The main points:
 Corners are slower with this tuning: in the sim, a 10 m ring takes 66 s
 instead of about 41 s.
 
+## MPPI critic: WheelFloorCritic (2026-10-15)
+
+`mppi::critics::WheelFloorCritic` (library `mowgli_mppi_critics`, `mppi_critics_plugin.xml`,
+exported to `nav2_mppi_controller`). Jazzy loads critics as `"mppi::critics::" + <name>`, so the
+class lives in that namespace. It adds `cost_weight * mean_t (violation / floor)^cost_power` per
+sampled trajectory, where `violation` is the distance of (vx, wz) from the drivable set of the
+Tron's drive (`wheel_floor.hpp`: inner wheel `|v| - |w| b/2` >= +floor for an arc or <= -floor
+for a counter-rotating pivot; straight and stopped commands are free). It mirrors
+`cmd_vel_slew.both_wheels_legal`, so a command with no violation passes the turn shaper
+unchanged. Parameters (`<controller>.WheelFloorCritic.*`): `cost_weight` (10), `cost_power` (1),
+`track_width` (0.48), `min_wheel_speed` (0.06), `straight_wz` (0), `stop_speed` (0.02),
+`allow_pivots` (true). Revert: drop it from the controller's `critics` list (or `enabled: false`).
+Why and measurements: `docs/analysis/2026-10-15_mppi_study.md`. Test: `test_wheel_floor_critic`.
+
 ## Tests
 
 `./scripts/dev_build.sh test --packages-select mowgli_nav2_plugins`. The sim

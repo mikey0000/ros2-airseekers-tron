@@ -14,9 +14,12 @@
 #   * Transit FollowPath (2026-10-09) = nav2_mppi_controller (DiffDrive). The previous RPP
 #     transit config is FollowPathRPP; navigation.launch.py transit_controller:=rpp swaps
 #     it back in under the FollowPath id (launch/nav2_param_tools.py).
-#   * Coverage: FollowCoveragePath = RPP (default), FollowCoveragePathMPPI (deviates
-#     around small obstacles and rejoins), FollowCoveragePathFTC (MowgliNext FTC port);
-#     chosen by mission.yaml follow_controller_id.
+#   * Coverage (2026-10-15 MPPI study, docs/analysis/2026-10-15_mppi_study.md):
+#     FollowCoveragePath / FollowCoveragePathReverse (RPP, mission.yaml coverage_controller:
+#     rpp, shipped) or FollowCoveragePathMPPI / FollowCoveragePathReverseMPPI
+#     (feasibility-aware MPPI, coverage_controller: mppi). FollowCoveragePathFTC
+#     (MowgliNext FTC port) stays selectable. Every MPPI controller carries
+#     mowgli_nav2_plugins' WheelFloorCritic (the drive's 0.06 m/s wheel floor).
 #   * No LiDAR, no /map: the global costmap's static_layer is the nav mask
 #     (/nav_keepout_mask), not a SLAM map. Obstacles come from the front stereo
 #     (/stereo_depth/points + the ground-only clearing cloud /stereo_depth/clear_points),
@@ -106,7 +109,7 @@ controller_server:
     # alternative (mission.yaml follow_controller_id).
     controller_plugins: ["FollowPath", "FollowPathRPP", "FollowCoveragePath",
                          "FollowCoveragePathMPPI", "FollowCoveragePathFTC",
-                         "FollowCoveragePathReverse"]
+                         "FollowCoveragePathReverse", "FollowCoveragePathReverseMPPI"]
     # DEVIATION: no path_handler_plugins (Kilted-only API).
 
     # PoseProgressChecker (as MowgliNext): rotating in place counts as progress
@@ -216,6 +219,14 @@ controller_server:
     #   * CPU (RK3588): batch 1000 x 40 steps x 1 iteration at 20 Hz. Horizon 40 x 0.1 s =
     #     4 s = 1.2 m at 0.3 m/s (a 2 s horizon only sees 0.6 rad of pivot at 0.3 rad/s,
     #     too short to find the way around a box); the local costmap (+-3 m) covers it.
+    #     2026-10-15 MPPI study: model_dt 0.05 (= the control period, so Jazzy shifts the warm
+    #     start) with 56 steps / batch 700 and temperature 0.15 cut and overshot the dock-path
+    #     junction in the sim with the ground disturbance (9 trips, omega loops at split-corner
+    #     leg ends); 0.05 x 40 (2 s) cut the area entry. The 2026-10-09 values are kept.
+    #   * Feasibility (2026-10-15 MPPI study, docs/analysis/2026-10-15_mppi_study.md):
+    #     WheelFloorCritic makes samples whose inner wheel sits under the 0.06 m/s floor while
+    #     turning expensive (field: 24-84 % of transit output ticks were in that band and
+    #     rewritten by the turn shaper). Revert: drop it from critics (or enabled: false).
     #   * Collision: CostCritic with consider_footprint true on the local costmap, which
     #     NOW has an inflation layer (radius 1.0 > circumscribed 0.61, see local_costmap):
     #     without inflation CostCritic skips every pose whose CENTRE cell is free, i.e.
@@ -253,7 +264,7 @@ controller_server:
       transform_tolerance: 0.5
       enforce_path_inversion: false
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic",
-                "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"]
+                "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic", "WheelFloorCritic"]
       ConstraintCritic:
         enabled: true
         cost_power: 1
@@ -290,8 +301,8 @@ controller_server:
         cost_weight: 5.0
         offset_from_furthest: 5
         threshold_to_consider: 1.0
-      # Pivots toward the path when it is behind; forward_preference: the Tron never
-      # reverses on transit.
+      # Pivots toward the path when it is behind. mode 0 = forward preference (Jazzy 1.3 reads
+      # `mode`; the old `forward_preference: true` key was silently ignored, same default).
       PathAngleCritic:
         enabled: true
         cost_power: 1
@@ -299,7 +310,7 @@ controller_server:
         offset_from_furthest: 4
         threshold_to_consider: 0.5
         max_angle_to_furthest: 1.0
-        forward_preference: true
+        mode: 0
       # Keeps reversing expensive now that vx_min is -0.10 (task 0.4 c): forward unless
       # backing out of an overshot corner is clearly cheaper.
       PreferForwardCritic:
@@ -307,6 +318,13 @@ controller_server:
         cost_power: 1
         cost_weight: 5.0
         threshold_to_consider: 0.5
+      WheelFloorCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 20.0
+        track_width: 0.48
+        min_wheel_speed: 0.06
+        allow_pivots: true
 
     # Previous transit controller (FollowPath until 2026-10-09). Selectable as controller_id
     # FollowPathRPP, or put back under FollowPath with navigation.launch.py
@@ -466,33 +484,35 @@ controller_server:
       max_robot_pose_search_dist: 2.0
       use_interpolation: true
 
-    # MPPI coverage alternative (2026-10-09; select with mission.yaml follow_controller_id:
-    # FollowCoveragePathMPPI, goal checker coverage_goal_checker). RPP (FollowCoveragePath)
-    # only STOPS at a box on a swath; this one bends around a small obstacle and rejoins the
-    # swath. Tight tracking: PathAlign 20 / PathFollow 10 hold the 0.18 m swath while the
-    # path is clear; once > 5 % of the local path is blocked PathAlign drops out and
-    # CostCritic + PathFollow take the detour. Low speed (vx_max 0.2) so the pass-by keeps
-    # inside the cut overlap where possible. Not the default: unvalidated on turf; the GUI
-    # mowing_speed binding (FollowCoveragePath.desired_linear_vel) does not reach it.
-    # Same CPU budget as FollowPath (only the active controller computes).
+    # Coverage tracker (2026-10-15, MPPI study: docs/analysis/2026-10-15_mppi_study.md):
+    # feasibility-aware MPPI for every coverage sub-path with mission.yaml coverage_controller:
+    # mppi (shipped: rpp = FollowCoveragePath / FollowCoveragePathReverse, until MPPI passes the
+    # sim gate; it needs the path conditioner's pivots at sharp vertices, study 8-9).
+    #   * WheelFloorCritic (mowgli_nav2_plugins): samples whose inner wheel sits under the
+    #     0.06 m/s floor while turning are expensive, so the chosen command is one the drive
+    #     can execute and cmd_vel_slew's turn shaper has nothing to rewrite. Pivots
+    #     (|w| >= 0.25, wheels counter-rotating) stay allowed: a ring corner or a swath start
+    #     facing away is turned on the spot by MPPI itself.
+    #   * model_dt 0.05 = 1 / controller_frequency: MPPI then shifts its warm-start sequence by
+    #     exactly one step per cycle (with 0.1 at 20 Hz Jazzy does not shift it at all).
+    #   * Accel limits stay at the MPPI defaults (3196ffd's 0.5/-0.8/1.0 livelocked from rest).
+    #   * vx_max is set live by the mission from the area's cut speed
+    #     (mppi_controller_speed_param, capped at 0.3 = the MCU clamp).
     FollowCoveragePathMPPI:
       plugin: "nav2_mppi_controller::MPPIController"
       motion_model: "DiffDrive"
       time_steps: 40
-      model_dt: 0.1
-      batch_size: 1000
+      model_dt: 0.05
+      batch_size: 800
       iteration_count: 1
-      vx_std: 0.08
+      vx_std: 0.1
       vy_std: 0.0
-      wz_std: 0.2
-      vx_max: 0.2
+      wz_std: 0.3
+      vx_max: 0.3
       vx_min: 0.0
       vy_max: 0.0
       wz_max: 0.3
-      ax_max: 0.5       # = cmd_vel_slew limits, see FollowPath
-      ax_min: -0.8
-      az_max: 1.0
-      temperature: 0.3
+      temperature: 0.1
       gamma: 0.015
       retry_attempt_limit: 1
       reset_period: 1.0
@@ -503,7 +523,7 @@ controller_server:
       transform_tolerance: 0.5
       enforce_path_inversion: false
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic",
-                "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic"]
+                "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic", "WheelFloorCritic"]
       ConstraintCritic:
         enabled: true
         cost_power: 1
@@ -521,35 +541,121 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 5.0
-        threshold_to_consider: 0.6
+        threshold_to_consider: 0.4
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 30.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 2
+        threshold_to_consider: 0.3
+        offset_from_furthest: 4
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.4
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+        offset_from_furthest: 3
+        threshold_to_consider: 0.3
+        max_angle_to_furthest: 0.3
+        mode: 0
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.3
+      WheelFloorCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 30.0
+        track_width: 0.48
+        min_wheel_speed: 0.06
+        allow_pivots: true
+
+    # Reverse legs of reverse-then-curve swath turns under MPPI (coverage_controller: mppi;
+    # revert: FollowCoveragePathReverse). The leg's poses face against the travel, so the
+    # box is backwards-only (vx_max 0) and PathAngleCritic has no direction preference;
+    # pivots stay allowed. 0.15 m/s = the RPP reverse speed (no rear sensing).
+    FollowCoveragePathReverseMPPI:
+      plugin: "nav2_mppi_controller::MPPIController"
+      motion_model: "DiffDrive"
+      time_steps: 40
+      model_dt: 0.05
+      batch_size: 800
+      iteration_count: 1
+      vx_std: 0.1
+      vy_std: 0.0
+      wz_std: 0.3
+      vx_max: 0.0
+      vx_min: -0.15
+      vy_max: 0.0
+      wz_max: 0.3
+      temperature: 0.15
+      gamma: 0.015
+      retry_attempt_limit: 1
+      reset_period: 1.0
+      regenerate_noises: false
+      visualize: false
+      prune_distance: 1.2
+      max_robot_pose_search_dist: 2.0
+      transform_tolerance: 0.5
+      enforce_path_inversion: false
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic",
+                "PathFollowCritic", "PathAngleCritic", "WheelFloorCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 0.3
+        inflation_layer_name: "inflation_layer"
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.4
       PathAlignCritic:
         enabled: true
         cost_power: 1
         cost_weight: 20.0
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 2
-        threshold_to_consider: 0.3
-        offset_from_furthest: 10
+        threshold_to_consider: 0.2
+        offset_from_furthest: 4
         use_path_orientations: false
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 10.0
+        cost_weight: 5.0
         offset_from_furthest: 4
-        threshold_to_consider: 0.6
+        threshold_to_consider: 0.3
       PathAngleCritic:
         enabled: true
         cost_power: 1
         cost_weight: 3.0
         offset_from_furthest: 3
-        threshold_to_consider: 0.3
-        max_angle_to_furthest: 0.6
-        forward_preference: true
-      PreferForwardCritic:
+        threshold_to_consider: 0.2
+        max_angle_to_furthest: 0.5
+        mode: 1
+      WheelFloorCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 5.0
-        threshold_to_consider: 0.3
+        cost_weight: 20.0
+        track_width: 0.48
+        min_wheel_speed: 0.06
+        allow_pivots: true
 
     # Alternative coverage controller (select with mission.yaml follow_controller_id:
     # FollowCoveragePathFTC + follow_goal_checker_id: coverage_goal_checker_ftc).
