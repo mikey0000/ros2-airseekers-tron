@@ -550,3 +550,26 @@ def test_transit_ending_on_the_start_mows_at_once():
     h.fsm._route_legs = {'legs': [[(0.0, 0.0, 0.0), (2.98, 3.02, 0.0)]], 'i': 0}
     h.fsm._route_result(f.SUCCEEDED)
     assert not m.final_approach and h.name == 'MOWING'
+
+
+def test_route_leg_speed_is_capped_by_its_tightest_fillet():
+    fwd, _back = routes()
+    h = Harness(path_conditioning=True, route_transits=True)
+    h.fsm._region_areas = {i: {'outer': q} for i, q in enumerate(REGION)}
+    h.fsm._begin(h.t)
+    legs = h.fsm._condition_route([tuple(q) for q in fwd], 'route')
+    h.fsm._end()
+    caps = h.fsm._route_caps[1]
+    res = pc.condition(fwd, REGION, ring=False)
+    rs = [c.r for c in res.corners if c.choice == 'fillet']
+    assert len(caps) == len(legs) and rs
+    # the cap follows the tightest curvature on the leg (fillets: 1 / r; drawn bends: measured)
+    kmax = max(abs(k) for k in res.curvature)
+    assert min(c for c in caps if c is not None) == pytest.approx(0.3 / kmax, rel=0.02)
+    assert min(c for c in caps if c is not None) <= 0.3 * min(rs) + 1e-6
+    h.fsm._begin(h.t)
+    i = next(k for k, c in enumerate(caps) if c is not None and c < 0.3)
+    h.fsm._route_leg_speed({'legs': legs, 'i': i})
+    fx = h.fsm._end()
+    calls = [e for e in fx if isinstance(e, f.CallService)]
+    assert calls and calls[0].request['params'] == {'FollowPath.vx_max': round(caps[i], 3)}

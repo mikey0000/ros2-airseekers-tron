@@ -104,6 +104,11 @@ behavior_tree_node:
     # pivot; sim gate: transits ended 0.1-0.23 m beside the start and the join ran that far
     # off the line. 0.0 = off (revert).
     route_final_approach_m: 0.05
+    # 2026-10-16 (path conditioning, design 3.1 step 4): a route leg's speed
+    # (tilt_transit_speed_param, FollowPath.vx_max) is capped at this x the radius of its
+    # tightest fillet (0.3 = the MCU angular clamp); sim gate: MPPI ran 0.4 m wide of an
+    # r 0.5 m dock-path fillet and left the area. 0.0 = off (revert).
+    route_arc_speed_factor: 0.3
     route_final_approach_speed_mps: 0.1
     route_blocked_retries: 1          # obstacle abort: blocked wait, re-send the route this often, then Nav2
     route_split_turn_deg: 100.0       # route sent as FollowPath legs split at turns sharper than this

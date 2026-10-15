@@ -615,6 +615,10 @@ class Params:
     # the last straight bit onto it (pivot to face it if needed, along-path end) before the
     # sub-path's own start pivot (_route_final_approach). 0 = off (revert).
     route_final_approach_m: float = 0.05
+    # path_conditioning: a route leg's speed (tilt_transit_speed_param) is capped at this x
+    # the radius of its tightest fillet (rad/s: 0.3 = the MCU's angular clamp, so the arc is
+    # driven at full turn rate). 0 = off (revert).
+    route_arc_speed_factor: float = 0.3
     route_final_approach_speed_mps: float = 0.1
     # Sim 2026-10-09: the scripted person crossed Path 1, the route aborted (collision ahead)
     # and the /navigate_to_pose fallback after the wait cut across the lawn into a drawn
@@ -3014,6 +3018,17 @@ class MissionFSM:
                 s0 = c
         legs.append(list(r.poses[s0:]))
         legs = [lg for lg in legs if len(lg) >= 2] or [list(r.poses)]
+        # design 3.1 step 4: v <= route_arc_speed_factor x r on the leg's tightest fillet
+        # (the tracker has no curvature regulation of its own: sim gate 2026-10-16, MPPI ran
+        # 0.4 m wide of an r 0.5 m fillet at 0.2-0.3 m/s and left the area)
+        caps, k0 = [], 0
+        for lg in legs:
+            k1 = k0 + len(lg) - 1
+            kmax = max([abs(k) for k in r.curvature[k0:k1 + 1]] + [0.0])
+            caps.append(float(self.p.route_arc_speed_factor) / kmax if kmax > 1e-6 and
+                        float(self.p.route_arc_speed_factor) > 0.0 else None)
+            k0 = k1
+        self._route_caps = (legs, caps)
         self._fx.append(PublishRoute(what, list(r.poses), list(r.types)))
         self._log('info', '%s: conditioned: %s' % (what, ', '.join(
             '%s %+.0f deg%s' % (c.choice, math.degrees(c.turn), ' r %.1f' % c.r if c.r else '')
@@ -4233,12 +4248,31 @@ class MissionFSM:
             # task 0.4 (d): end on the corner; path conditioning: every leg (the last one
             # too) ends along-path on its end, not 0.25 m short on the transit disc
             checker = self.p.route_corner_goal_checker_id
+        self._route_leg_speed(rl)
         self._start_action(ACT_FOLLOW, {'poses': rl['legs'][rl['i']],
                                         'controller_id': self.p.route_controller_id,
                                         'goal_checker_id': checker,
                                         'progress_checker_id': self.p.route_progress_checker_id},
                            self.p.transit_timeout_s, purpose=purpose)
         self._route_watch = None
+
+    def _route_leg_speed(self, rl):
+        """The route controller's speed for this leg: the transit speed (or the slope
+        caution cap), capped at route_arc_speed_factor x r of the leg's tightest fillet
+        (path conditioning). Sent only when it changes."""
+        caps = getattr(self, '_route_caps', None)
+        cap = None
+        if caps is not None and caps[0] is rl['legs'] and rl['i'] < len(caps[1]):
+            cap = caps[1][rl['i']]
+        base = float(self.p.tilt_caution_speed_mps) if self._tilt_capped else \
+            float(self.p.tilt_transit_speed_mps)
+        want = round(min(base, cap) if cap is not None else base, 3)
+        if not self.p.set_cut_speed or want == getattr(self, '_route_vx', None):
+            return
+        self._route_vx = want
+        self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER,
+                                    'params': {self.p.tilt_transit_speed_param: want}},
+                   track=False)
 
     def _route_progress_tick(self):
         """2026-10-15 undock incident: a route leg (transit or dock route) whose robot
@@ -5592,10 +5626,12 @@ class MissionFSM:
         if want:
             params = dict(self.coverage_speed_params(cap))
             params[self.p.tilt_transit_speed_param] = cap
+            self._route_vx = None
             self._log('warn', 'slope caution (%s): controller speed capped at %.2f m/s'
                       % (self._tilt_text(), cap))
         else:
             params = {self.p.tilt_transit_speed_param: float(self.p.tilt_transit_speed_mps)}
+            self._route_vx = None           # the next route leg sets its own cap again
             if m is not None and m.settings:
                 params.update(self.coverage_speed_params(min(
                     float(m.settings.get('cut_speed_mps', AREA_SETTINGS_DEFAULTS['cut_speed_mps'])),
