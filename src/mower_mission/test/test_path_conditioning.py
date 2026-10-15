@@ -6,6 +6,7 @@ mow_plan's sub-path 0), the real dock path routes (real_dock_path_routes.json), 
 copy of run 5's areas.dat, test/data/run5_region.json)."""
 
 import json
+import re
 import math
 
 import pytest
@@ -351,7 +352,7 @@ def test_route_is_split_at_conditioner_pivots_only():
     h = Harness(path_conditioning=True)
     h.fsm._region_areas = {i: {'outer': p} for i, p in enumerate(REGION)}
     legs = h.fsm._condition_route([tuple(q) for q in fwd], 'route')
-    res = pc.condition(fwd, REGION, ring=False)
+    res = pc.condition(fwd, REGION, pc.Params(r_min=0.8), ring=False)   # route minimum
     assert len(legs) == len(res.pivots) + 1
     for lg in legs[:-1]:
         assert any(geo.dist(lg[-1], (c.x, c.y)) < 0.06 for c in res.corners
@@ -550,3 +551,19 @@ def test_transit_ending_on_the_start_mows_at_once():
     h.fsm._route_legs = {'legs': [[(0.0, 0.0, 0.0), (2.98, 3.02, 0.0)]], 'i': 0}
     h.fsm._route_result(f.SUCCEEDED)
     assert not m.final_approach and h.name == 'MOWING'
+
+
+def test_routes_take_no_fillet_under_the_route_minimum():
+    # the real dock-path routes: every route fillet r >= path_conditioning_route_r_min_m (0.8),
+    # tighter corners pivot at the vertex
+    h = Harness(path_conditioning=True)
+    h.fsm._region_areas = {i: {'outer': q} for i, q in enumerate(REGION)}
+    assert f.Params().path_conditioning_route_r_min_m == 0.8
+    for route in routes():
+        h.fsm._begin(h.t)
+        legs = h.fsm._condition_route([tuple(q) for q in route], 'route')
+        fx = h.fsm._end()
+        assert legs
+        logs = [e.text for e in fx if isinstance(e, f.Log) and 'conditioned' in e.text]
+        rs = [float(x) for x in re.findall(r' r ([0-9.]+)', logs[0])]
+        assert all(r >= 0.8 - 1e-9 for r in rs), logs[0]

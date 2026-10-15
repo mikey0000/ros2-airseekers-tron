@@ -9,7 +9,10 @@ mower_mcu_driver ``_map_command``, nav2_params.yaml comments):
 * while TURNING, a wheel asked for less than ~0.06 m/s does not turn (the speed
   floor: "wheel 0.04 m/s, under the MCU's ~0.06 m/s floor ... never broke free", the
   turn shaper's "inner >= 0.06"). Straight driving is not floored: the vendor's final
-  dock reverse at 0.05 m/s works on hardware (``floor_straight`` to floor it too);
+  dock reverse at 0.05 m/s works on hardware (``floor_straight`` to floor it too), and so
+  does that reverse with its small heading-hold correction (both wheels within
+  ``straight_tol_mps`` of each other count as straight: 2026-10-16, an exact-equality
+  test zeroed -0.046 / -0.054 m/s and stalled every final dock reverse in the sim gate);
 * the command is held until a 0.5 s timeout (the driver's ``cmd_vel_timeout``);
 * the wheels lag the command (first-order, ``wheel_tau_s``).
 
@@ -57,6 +60,7 @@ class DriveParams:
     track_width: float = 0.48        # m (cmd_vel_slew TRACK_WIDTH_M)
     min_wheel_speed: float = 0.06    # m/s, MCU floor while turning; 0 disables
     floor_straight: bool = False     # also floor straight (equal wheel) commands
+    straight_tol_mps: float = 0.02   # wheels this close count as straight (not floored)
     wheel_tau_s: float = 0.15        # first-order wheel lag; 0 = instant
     cmd_timeout_s: float = 0.5
     # dock hard stop: the charger contacts sit at the dock pose; the robot cannot
@@ -90,7 +94,7 @@ def wheel_speeds(v: float, w: float, p: DriveParams):
     w = _clamp(w, p.angular_max)
     half = p.track_width / 2.0
     left, right = v - w * half, v + w * half
-    turning = abs(left - right) > 1e-6
+    turning = abs(left - right) > max(1e-6, p.straight_tol_mps)
     if p.min_wheel_speed > 0.0 and (turning or p.floor_straight):
         left = 0.0 if abs(left) < p.min_wheel_speed else left
         right = 0.0 if abs(right) < p.min_wheel_speed else right

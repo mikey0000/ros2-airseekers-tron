@@ -50,11 +50,11 @@ def _drive_legs(h):
     return ids
 
 
-def test_default_is_rpp_until_mppi_passes_the_gate():
-    assert f.Params().coverage_controller == 'rpp'
+def test_default_is_mppi_with_path_conditioning():
+    assert f.Params().coverage_controller == 'mppi' and f.Params().path_conditioning
     h = Harness(coverage_controller=f.Params().coverage_controller)
-    assert h.fsm.coverage_controller_id(False) == 'FollowCoveragePath'
-    assert h.fsm.coverage_controller_id(True) == 'FollowCoveragePathReverse'
+    assert h.fsm.coverage_controller_id(False) == 'FollowCoveragePathMPPI'
+    assert h.fsm.coverage_controller_id(True) == 'FollowCoveragePathReverseMPPI'
 
 
 def test_mppi_forward_and_reverse():

@@ -738,6 +738,8 @@ class Params:
     path_conditioning_pivot_min_rad: float = 0.35
     path_conditioning_edge_pivot_rad: float = 1.38
     path_conditioning_edge_clearance_m: float = 0.20
+    # transit / dock routes: smallest fillet radius (tighter corners pivot at the vertex)
+    path_conditioning_route_r_min_m: float = 0.8
     # The costmap-planner fallback (no route: start off the route graph; a route abort away
     # from any cusp) is bounded: once the robot's own distance from the drawn network (the
     # planned route if there was one; 0 inside a mowing area) exceeds this, the fallback is
@@ -764,9 +766,10 @@ class Params:
     # (feasibility-aware MPPI, nav2_params.yaml), the cut speed goes to
     # mppi_controller_speed_param capped at mppi_speed_max_mps; 'rpp' =
     # follow_controller_id / reverse_controller_id / controller_speed_param, as before.
-    # Default 'rpp' until MPPI passes the sim gate: on raw paths it overshoots the sharp ring
-    # vertices and, with the vertices pivoted, the short swath-end turn legs (study §8).
-    coverage_controller: str = 'rpp'
+    # Default 'mppi' (2026-10-16, owner: MPPI as the single tracker; it needs
+    # path_conditioning: on raw paths it overshoots the sharp ring vertices and the short
+    # swath-end turn legs, study §8). 'rpp' = the revert.
+    coverage_controller: str = 'mppi'
     mppi_follow_controller_id: str = 'FollowCoveragePathMPPI'
     mppi_reverse_controller_id: str = 'FollowCoveragePathReverseMPPI'
     mppi_controller_speed_param: str = 'FollowCoveragePathMPPI.vx_max'
@@ -2981,6 +2984,7 @@ class MissionFSM:
                                   m.area_idx, len(joins) - len(kept), len(kept),
                                   ''.join(' [%s]' % j.why for j in kept)))
         npiv = nfil = 0
+        why, why_deg = {}, {}
         for k, sp in enumerate(subpaths):
             if geo.is_reverse_subpath(sp):
                 out.append(sp)                 # a reverse leg of a turn kept as planned
@@ -2995,14 +2999,28 @@ class MissionFSM:
             m.cond[k] = {'types': r.types, 'pivots': r.pivots}
             npiv += len(r.pivots)
             nfil += sum(1 for c in r.corners if c.choice == 'fillet')
+            for c in r.corners:
+                if c.choice == 'pivot':
+                    why[c.why] = why.get(c.why, 0) + 1
+                    why_deg[c.why] = why_deg.get(c.why, 0.0) + abs(math.degrees(c.turn))
             out.append(r.poses)
-        self._log('info', 'area %d: path conditioning: %d fillets, %d pivots, %d sub-path(s) '
-                          'failed validation' % (m.area_idx, nfil, npiv, len(m.cond_errors)))
+        self._log('info', 'area %d: path conditioning: %d fillets, %d pivots (%s), %d '
+                          'sub-path(s) failed validation' % (
+                              m.area_idx, nfil, npiv, ', '.join(
+                                  '%s %d / %.0f deg' % (k, n, why_deg[k])
+                                  for k, n in sorted(why.items())) or 'none',
+                              len(m.cond_errors)))
         return out
 
     def _condition_route(self, poses, what):
         """A transit / dock route -> FollowPath legs split at the conditioner's pivots."""
-        r = pcond.condition(poses, self._region(), self._cond_params(), ring=False)
+        prm = self._cond_params()
+        # routes are tracked at transit speed by the route controller: a fillet tighter than
+        # path_conditioning_route_r_min_m is not drivable there (sim gate 2026-10-16: MPPI ran
+        # 0.4 m wide of an r 0.5 m dock-path fillet and left the area) -> pivot at the vertex
+        prm.r_min = max(prm.r_min, float(self.p.path_conditioning_route_r_min_m))
+        prm.r_max = max(prm.r_max, prm.r_min)
+        r = pcond.condition(poses, self._region(), prm, ring=False)
         if not r.valid:
             self._log('error', '%s: path conditioning failed (%s): raw route split as before'
                       % (what, r.errors[0]))

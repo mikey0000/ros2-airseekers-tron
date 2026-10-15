@@ -209,6 +209,11 @@ behavior_tree_node:
     path_conditioning_pivot_min_rad: 0.35
     path_conditioning_edge_pivot_rad: 1.38    # 0.0 = no edge policy (fillets everywhere)
     path_conditioning_edge_clearance_m: 0.20
+    # 2026-10-16: transit / dock routes take no fillet tighter than this (the route
+    # controller runs them at transit speed; MPPI ran 0.4 m wide of an r 0.5 m dock-path
+    # fillet and left the area): a corner whose r >= 0.8 fillet does not fit pivots at the
+    # vertex. Revert: 0.5 (= path_conditioning_r_min_m).
+    path_conditioning_route_r_min_m: 0.8
     # (path_conditioning_start_pivot_rad was removed 2026-10-16: a coverage leg's start is a
     # vertex of the path driven (robot -> leg; sub-path start after a transit, a resume after
     # a retry / retrace / hold) where no fillet fits, so it pivots by the conditioner's own
@@ -265,12 +270,11 @@ behavior_tree_node:
     # drives the coverage sub-paths with the feasibility-aware MPPI (FollowCoveragePathMPPI
     # forward, FollowCoveragePathReverseMPPI for reverse legs; the cut speed is set on
     # mppi_controller_speed_param, capped at mppi_speed_max_mps); rpp = follow_controller_id /
-    # reverse_controller_id / controller_speed_param below (unchanged behaviour). Stays rpp
-    # until MPPI passes the sim gate: on today's raw paths MPPI overshoots the sharp ring
-    # vertices (8 / 17 trips ideal / disturbed vs RPP 2 / 2), and with the vertices pivoted
-    # (path-conditioning stand-in) it still leaves the area on the 0.3-0.6 m swath-end turn
-    # legs (5-16 trips vs RPP 0). Switch with the path conditioner (design 3.1).
-    coverage_controller: rpp
+    # reverse_controller_id / controller_speed_param below (the revert). 2026-10-16: mppi is
+    # the default (owner: MPPI as the single tracker): on conditioned paths (no sharp
+    # vertex, no swath-end turn legs) it passes the sim gate's mowing criteria ideal and
+    # disturbed (simulation.md "Gate runs on ws/integrate"). Revert: rpp.
+    coverage_controller: mppi
     mppi_follow_controller_id: FollowCoveragePathMPPI
     mppi_reverse_controller_id: FollowCoveragePathReverseMPPI
     mppi_controller_speed_param: FollowCoveragePathMPPI.vx_max
