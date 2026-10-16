@@ -198,6 +198,7 @@ controller_server:
       # sign of carrot.x) with a 0.02-0.03 m swing every ~1.3 s, unable to fix a yaw miss;
       # 0.03 was never exceeded, 0.015 ends the leg on the first shuffle.
       overshoot_hysteresis: 0.015
+      new_goal_jump: 0.25     # goal drift with map -> odom: see coverage_corner_goal_checker
 
     # Legs that end on a pivot vertex of a conditioned path (coverage and transit / dock
     # routes; mission.yaml route_corner_goal_checker_id) and the ends of conditioned forward
@@ -220,6 +221,13 @@ controller_server:
       yaw_goal_tolerance: 3.14
       overshoot_xy_tolerance: 0.20
       overshoot_hysteresis: 0.015
+      # 2026-10-16 field run 6: the goal reaches the checker in odom, re-transformed every
+      # cycle, so it drifts with map -> odom (10 Hz steps while driving: median 5 mm, p99
+      # 32 mm, max 0.16 m). The old fixed 1 mm "new goal" test restarted the travel gate on
+      # ~every cycle and no corner leg ended (MPPI drove through the vertices to the hard
+      # boundary). A new goal is controller_server's reset(); without one only a jump of
+      # more than new_goal_jump between two cycles counts as a new leg (0 = never).
+      new_goal_jump: 0.25
 
     # Transit controller (2026-10-09): MPPI instead of RPP. RPP follows the plan and can only
     # STOP at an obstacle ("collision ahead" -> abort -> BT replan); MPPI samples around it
