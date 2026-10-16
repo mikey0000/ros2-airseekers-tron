@@ -19,6 +19,10 @@ scripted moving ones). Everything above the drivers is the real code:
                    aligned /heading_aligner/status (ground truth, deterministic).
     ekf            the real gps_gate / navsat_transform / heading_aligner / ekf_node
                    (launch/nav2.launch.py) fuse the sim's /odom, /imu/data and /fix.
+``loc_drift`` (with localization:=sim): field-like dual-EKF localisation
+(mower_sim/loc_drift.py): odom drifts like wheel odometry and the sim publishes a drifting
+TF map -> odom + /odometry/filtered_map at 10 Hz instead of the static identity; gui_bridge
+then reads /odometry/filtered_map (as on the robot) instead of relaying /odometry/filtered.
 
 The world's lawn and dock are written to a scratch ``maps_dir`` (fresh temp dir
 unless given) as areas.dat / dock_pose.yaml for map_server_node; GUI-owned files
@@ -200,6 +204,9 @@ def generate_launch_description() -> LaunchDescription:
         arg('disturb_pivot_eff', '1.0', 'sim: ground / commanded yaw rate while pivoting '
             '(turf scrub; 1 = ideal).'),
         arg('disturb_seed', '1', 'sim: random seed of the slip process.'),
+        arg('loc_drift', 'false', 'sim (localization:=sim): drifting odom + map -> odom like '
+            'the field dual EKF (run 6 statistics) instead of a perfect static map -> odom.'),
+        arg('loc_drift_seed', '1', 'sim: random seed of the localisation drift.'),
         arg('urdf_file', default_urdf, 'xacro robot description.'),
         arg('log_level', 'info', 'Log level of the sim node.'),
     ]
@@ -221,6 +228,9 @@ def generate_launch_description() -> LaunchDescription:
             'disturb_pivot_eff': ParameterValue(LaunchConfiguration('disturb_pivot_eff'),
                                                 value_type=float),
             'disturb_seed': ParameterValue(LaunchConfiguration('disturb_seed'), value_type=int),
+            'loc_drift': ParameterValue(LaunchConfiguration('loc_drift'), value_type=bool),
+            'loc_drift_seed': ParameterValue(LaunchConfiguration('loc_drift_seed'),
+                                             value_type=int),
             'rear_marker_size': ParameterValue(LaunchConfiguration('rear_marker_size'),
                                                value_type=float),
             'rear_marker_offset': ParameterValue(LaunchConfiguration('rear_marker_offset'),
@@ -234,8 +244,11 @@ def generate_launch_description() -> LaunchDescription:
              name='robot_state_publisher', output='screen',
              parameters=[{'robot_description': ParameterValue(
                  Command(['xacro ', LaunchConfiguration('urdf_file')]), value_type=str)}]),
+        # with loc_drift the sim owns a drifting map -> odom (ekf_map's role on the robot)
         Node(package='tf2_ros', executable='static_transform_publisher', name='static_map_odom',
-             output='screen',
+             output='screen', condition=IfCondition(PythonExpression(
+                 ["not ('", LaunchConfiguration('loc_drift'), "'.strip().lower() == 'true' and '",
+                  LaunchConfiguration('localization'), "'.strip().lower() == 'sim')"])),
              arguments=['--x', '0', '--y', '0', '--z', '0', '--roll', '0', '--pitch', '0',
                         '--yaw', '0', '--frame-id', 'map', '--child-frame-id', 'odom']),
         Node(package='twist_mux', executable='twist_mux', name='twist_mux', output='screen',
@@ -275,6 +288,11 @@ def generate_launch_description() -> LaunchDescription:
                                                     'datum.env']),
             'datum_lat': ParameterValue(LaunchConfiguration('datum_lat'), value_type=float),
             'datum_lon': ParameterValue(LaunchConfiguration('datum_lon'), value_type=float),
+            # loc_drift: the sim publishes /odometry/filtered_map itself (as ekf_map does)
+            'filtered_odom_topic': PythonExpression(
+                ["'/odometry/filtered_map' if '", LaunchConfiguration('loc_drift'),
+                 "'.strip().lower() == 'true' and '", LaunchConfiguration('localization'),
+                 "'.strip().lower() == 'sim' else '/odometry/filtered'"]),
         }],
         condition=enabled('gui_bridge'),
     )

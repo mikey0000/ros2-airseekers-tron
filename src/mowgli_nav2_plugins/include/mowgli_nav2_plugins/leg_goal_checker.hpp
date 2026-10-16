@@ -25,6 +25,18 @@
 // no position disc: the pivot that follows turns the robot, so the leg end is judged by
 // along-path progress ("corner reached"), not by hitting a 0.08 m circle (which a
 // controller decelerating into the wheel floor overshoots and then circles).
+//
+// Goal identity (2026-10-16 field run 6): controller_server hands isGoalReached the plan's
+// end pose transformed from map into the local costmap frame (odom) on EVERY cycle, so a
+// fixed vertex moves in odom whenever map -> odom moves (RTK / EKF corrections: 97 % of the
+// 10 Hz map -> odom steps while driving were > 1 mm, median 5.4 mm, p99 32 mm, max 0.16 m).
+// The old rule "goal moved > 1 mm without reset() = new leg" restarted the travel gate on
+// nearly every cycle, so neither mode ever ended a leg and MPPI drove through the pivot
+// vertices to the hard boundary. A new goal is announced by reset() (controller_server
+// calls it from setPlannerPath for every new or preempting FollowPath goal). The fallback
+// "new goal without reset()" test compares with the previous cycle's goal and fires only on
+// a jump larger than new_goal_jump (0.25 m, > 5x the largest field goal step of 44 mm);
+// the geometry always uses the latest (drifted) goal, which is where the vertex now is in odom.
 #ifndef MOWGLI_NAV2_PLUGINS__LEG_GOAL_CHECKER_HPP_
 #define MOWGLI_NAV2_PLUGINS__LEG_GOAL_CHECKER_HPP_
 
@@ -55,6 +67,9 @@ struct LegProgress
   bool along_path{false};
   double lateral_tol{0.15};
   double pass_radius{0.5};
+  // goal move between two consecutive calls that counts as a new leg when reset() was not
+  // called (0 = never; controller_server's reset() is the primary new-goal signal)
+  double new_goal_jump{0.25};
 
   bool started{false};
   double goal_x{0.0}, goal_y{0.0};
@@ -79,16 +94,17 @@ struct LegProgress
   // Returns true when the leg is complete.
   bool update(double x, double y, double yaw, double gx, double gy, double gyaw)
   {
-    // A different goal pose without reset(): treat as a new leg.
-    if (started && std::hypot(gx - goal_x, gy - goal_y) > 1e-3)
+    // A different goal without reset(): only a jump, never the map -> odom drift of the
+    // same goal (see the header comment).
+    if (started && new_goal_jump > 0.0 && std::hypot(gx - goal_x, gy - goal_y) > new_goal_jump)
     {
       reset();
     }
+    goal_x = gx;
+    goal_y = gy;
     if (!started)
     {
       started = true;
-      goal_x = gx;
-      goal_y = gy;
       last_x = x;
       last_y = y;
       leg_len = std::hypot(gx - x, gy - y);

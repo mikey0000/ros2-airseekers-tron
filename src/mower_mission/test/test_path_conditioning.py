@@ -281,6 +281,39 @@ def test_mission_leg_start_far_off_heading_pivots_first():
     assert h.blade and h.fsm.mission.step == 'corner_pivot'
 
 
+def test_mission_unfinished_coverage_pivot_pivots_again_then_follows_within_the_threshold():
+    # 2026-10-16 field run 6: never follow a leg far off its heading after a failed pivot
+    r = ring()
+    y0 = math.atan2(r[1][1] - r[0][1], r[1][0] - r[0][0])
+    h = ring_h(yaw=y0 + math.radians(140))
+    assert h.pending_action(f.ACT_SPIN).purpose == 'cov_pivot'
+    first = h.goal(f.ACT_SPIN)['angle']
+    mk = h.mark()
+    h.finish(f.ACT_SPIN, f.ABORTED)                     # yaw unchanged
+    assert h.pending_action(f.ACT_SPIN).purpose == 'cov_pivot'
+    assert abs(h.goal(f.ACT_SPIN)['angle'] - first) < 0.05
+    assert not h.since(mk, f.StartAction) or all(
+        e.name != f.ACT_FOLLOW for e in h.since(mk, f.StartAction))
+    x, y = h.fsm.inputs.pose[:2]
+    hd = h.fsm.mission.pivot_target[0]
+    h.fsm.inputs.pose = (x, y, hd + math.radians(10))  # 10 deg short: under 20 deg
+    h.finish(f.ACT_SPIN, f.ABORTED)
+    assert h.pending_action(f.ACT_FOLLOW)
+    assert h.blade and h.fsm.mission.step == 'follow'
+
+
+def test_mission_coverage_pivot_failing_three_times_stops():
+    r = ring()
+    y0 = math.atan2(r[1][1] - r[0][1], r[1][0] - r[0][0])
+    h = ring_h(yaw=y0 + math.radians(140))
+    for _ in range(2):
+        h.finish(f.ACT_SPIN, f.ABORTED)
+        assert h.pending_action(f.ACT_SPIN).purpose == 'cov_pivot'
+    h.finish(f.ACT_SPIN, f.ABORTED)
+    assert h.name == 'STUCK_NEEDS_HELP'
+    assert h.fsm._action is None and not h.blade
+
+
 def test_mission_short_forward_sub_paths_are_conditioned_too():
     # 2026-10-16: no turn-leg exemption; a short forward piece is a line like any other and
     # ends along-path

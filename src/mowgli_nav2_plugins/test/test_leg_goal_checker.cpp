@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <random>
 
 #include "mowgli_nav2_plugins/leg_goal_checker.hpp"
 
@@ -172,4 +173,99 @@ TEST(LegProgressAlongPath, PassedWideAndMovingAwayIsReached)
   EXPECT_TRUE(done);
   EXPECT_GT(x, 0.0);
   EXPECT_LT(x, 0.3);
+}
+
+// ---- goal drift (2026-10-16 field run 6): controller_server transforms the map-frame goal
+// into odom every cycle, so a fixed vertex random-walks in odom with map -> odom. The same
+// leg must still end at the vertex.
+
+// Drives the robot (odom) 0.02 m/step along +x through a vertex at (2, 0) map, the goal seen
+// in odom random-walking sigma_step per axis per call (seeded). Returns the robot's
+// along-track position relative to the drifted vertex when the checker fired (2.0 = on the
+// vertex), or NaN when it never fired within 3 m.
+static double driveThroughDriftingVertex(LegProgress lp, unsigned seed, double sigma_step)
+{
+  std::mt19937 rng(seed);
+  std::normal_distribution<double> n(0.0, sigma_step);
+  double dx = 0.0, dy = 0.0;
+  for (double x = 0.0; x <= 3.0; x += 0.02)
+  {
+    dx += n(rng);
+    dy += n(rng);
+    if (lp.update(x, 0.0, 0.0, 2.0 + dx, dy, 0.0))
+    {
+      return x - dx;
+    }
+  }
+  return std::nan("");
+}
+
+TEST(LegProgressDrift, AlongPathEndsAtTheVertexWhileTheGoalDrifts)
+{
+  for (unsigned seed = 1; seed <= 20; ++seed)
+  {
+    LegProgress lp = alongPath();
+    const double x = driveThroughDriftingVertex(lp, seed, 0.01);
+    ASSERT_FALSE(std::isnan(x)) << "seed " << seed << ": the leg never ended";
+    // fired at the vertex plane: at most the 0.02 m tolerance (+ one step / drift step)
+    // short, and not past the 0.20 m overshoot box
+    EXPECT_GE(x, 2.0 - 0.02 - 0.05) << "seed " << seed;
+    EXPECT_LE(x, 2.0 + 0.20 + 0.05) << "seed " << seed;
+  }
+}
+
+TEST(LegProgressDrift, DiscModeEndsAtTheGoalWhileTheGoalDrifts)
+{
+  for (unsigned seed = 1; seed <= 20; ++seed)
+  {
+    LegProgress lp;    // 0.08 m disc + yaw, overshoot 0.20 m
+    const double x = driveThroughDriftingVertex(lp, seed, 0.01);
+    ASSERT_FALSE(std::isnan(x)) << "seed " << seed << ": the leg never ended";
+    EXPECT_GE(x, 2.0 - 0.08 - 0.05) << "seed " << seed;
+    EXPECT_LE(x, 2.0 + 0.20 + 0.05) << "seed " << seed;
+  }
+}
+
+TEST(LegProgressDrift, TheOldOneMillimetreRuleNeverEndsTheLeg)
+{
+  // documents the field failure: with the pre-fix 1 mm new-goal test every drift step
+  // restarted the travel gate and the leg ran through the vertex
+  int ended = 0;
+  for (unsigned seed = 1; seed <= 20; ++seed)
+  {
+    LegProgress lp = alongPath();
+    lp.new_goal_jump = 1e-3;
+    ended += std::isnan(driveThroughDriftingVertex(lp, seed, 0.01)) ? 0 : 1;
+  }
+  EXPECT_LE(ended, 2);
+}
+
+TEST(LegProgressDrift, CumulativeDriftOnALongLegIsTheSameLeg)
+{
+  // a 10 m leg with a steady 2 mm/step map -> odom drift (1 m in total, more than the
+  // 0.78 m worst 60 s drift of run 6): never a new leg, the travel gate keeps counting
+  LegProgress lp = alongPath();
+  bool done = false;
+  double x = 0.0;
+  for (int i = 0; x <= 12.0 && !done; ++i, x += 0.02)
+  {
+    done = lp.update(x, 0.0, 0.0, 10.0 + 0.002 * i, 0.0, 0.0);
+  }
+  EXPECT_TRUE(done);
+  EXPECT_GT(lp.travelled, 10.0);
+}
+
+TEST(LegProgressDrift, AGoalJumpWithoutResetIsANewLeg)
+{
+  LegProgress lp = alongPath();
+  for (double x = 0.0; x <= 0.5; x += 0.01)
+  {
+    lp.update(x, 0.0, 0.0, 1.0, 0.0, 0.0);
+  }
+  // 0.2 m step (field max map -> odom step 0.16 m): same leg, travel kept
+  lp.update(0.5, 0.0, 0.0, 1.2, 0.0, 0.0);
+  EXPECT_GT(lp.travelled, 0.45);
+  // 0.3 m jump: a different goal (reset() was not called): travel restarts
+  lp.update(0.5, 0.0, 0.0, 1.5, 0.0, 0.0);
+  EXPECT_NEAR(lp.travelled, 0.0, 1e-9);
 }

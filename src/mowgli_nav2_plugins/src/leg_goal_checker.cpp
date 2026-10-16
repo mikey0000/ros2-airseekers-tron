@@ -37,6 +37,7 @@ void LegGoalChecker::initialize(const rclcpp_lifecycle::LifecycleNode::WeakPtr& 
   state_.overshoot_hysteresis = declare("overshoot_hysteresis", 0.03);
   state_.lateral_tol = declare("lateral_tolerance", 0.15);
   state_.pass_radius = declare("pass_radius", 0.5);
+  state_.new_goal_jump = declare("new_goal_jump", 0.25);
   {
     const std::string full = plugin_name + ".along_path";
     if (!node->has_parameter(full))
@@ -46,9 +47,10 @@ void LegGoalChecker::initialize(const rclcpp_lifecycle::LifecycleNode::WeakPtr& 
     state_.along_path = node->get_parameter(full).as_bool();
   }
   RCLCPP_INFO(logger_, "LegGoalChecker %s: progress %.2f, xy %.3f m, yaw %.2f rad, overshoot %.2f m, "
-              "along_path %d (lateral %.2f m)",
+              "along_path %d (lateral %.2f m), new goal jump %.2f m",
               plugin_name.c_str(), state_.progress_fraction, state_.xy_tol, state_.yaw_tol,
-              state_.overshoot_xy_tol, state_.along_path ? 1 : 0, state_.lateral_tol);
+              state_.overshoot_xy_tol, state_.along_path ? 1 : 0, state_.lateral_tol,
+              state_.new_goal_jump);
 }
 
 void LegGoalChecker::reset()
