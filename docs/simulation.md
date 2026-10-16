@@ -140,7 +140,8 @@ The launch file is installed by mower_bringup next to `mower.launch.py`.
 | `nav2_params_file`, `docking_params_file`, `mission_params_file` | package defaults | Parameter files (a full copy with the values changed). |
 | `stereo`, `stereo_noise_m` | `true`, `0.0` | Synthetic stereo clouds and their range noise. |
 | `min_wheel_speed_mps` | `0.06` | The MCU wheel floor while turning; 0 turns it off. |
-| `rear_marker_size` | `0.04` | Printed size of the rendered dock ArUco. It must equal mower_docking's `marker_size`. |
+| `rear_marker_size` | `0.055` | Printed size of the rendered dock ArUco: the real black square (owner, measured 2026-10-16). mower_docking keeps its deployed `marker_size` 0.04 (vendor constant), as on the robot, so marker distances are under-read by 0.04 / 0.055 in the sim as in the field. |
+| `rear_marker_offset` | `0.543` | True distance docked base_link -> marker: 0.201 + (0.45 - 0.201) x 0.055 / 0.04, so the deployed config reads its `docked_marker_offset` 0.45 at the docked pose (that config docks in the field). |
 | `foxglove`, `teleop_relay` | `false` | Bridges that bind ports. |
 
 The launch file does not start the drivers, cameras, perception, det_range,
@@ -565,6 +566,59 @@ every conditioned leg shorter than 0.5 m reversing cost nothing. Now 0.0 (forwar
 preference everywhere; revert 0.5). Reruns: m-rpp-dist-s1-a / -b (rpp, `-d -s 1`) and
 m-mppi-dist-s1 (mppi, `-d -s 1`) all PASS every criterion a-h, docked and charging; that
 corner 0.040 / 0.036 / 0.053 m.
+
+### Real marker size in the sim, final batch (2026-10-16, a8e2e34)
+
+The owner measured the dock marker's black square at ~0.055 m (the earlier 0.14 m estimate
+was the backlit panel). The deployed mower_docking keeps `marker_size: 0.04` (unchanged on
+this branch: one change-set per field run), so the robot under-reads marker distances by
+27 % and docks anyway. The sim now reproduces that: it renders the real 0.055 m square
+(`rear_marker_size`) at `rear_marker_offset` 0.543 m, so that the deployed config reads its
+own `docked_marker_offset` 0.45 at the docked pose; the stack is unchanged.
+
+**Marker estimate noise, field vs sim.** The run 5 bags (copies; `mow-051745` + `full`)
+record no marker pose (only `/mower_docking/state` names and 3 `marker_in_view` samples),
+but they do record the docking controller's output `/cmd_vel_docking` and the RTK map pose.
+Same controller and gains in both, so its output in DOCKING compares the estimate noise:
+
+| | w saturated (\|w\| = 0.3) | w sign flips | docked |
+|---|---|---|---|
+| field run 5 (one dock, 15.8 s in DOCKING) | 53 % | 2.03 /s | yes, first attempt |
+| sim, rendered 0.04 m (old default, 8 runs) | 25-37 % | 1.48-2.43 /s | 2 of 8 |
+| sim, rendered 0.055 m, deployed config (6 runs below) | 23-36 % | 1.20-2.94 /s | 5 of 6 |
+| sim, rendered 0.14 m (dockexp-marker14) | 23 % | 1.02 /s | yes |
+
+The sim's flip rate matches the field's, so no noise was added: the sim renders a clean
+image and the noise is the detector's own (an offline test of +3-10 grey-level image noise
+and a 0.7 px blur changed the estimate jitter by < 10 %). The field saturates more often
+(53 vs ~30 %), probably the approach geometry of that one dock; one field sample.
+
+**Final batch** (head a8e2e34 = the code of every run below; `rpp` via a mission.yaml copy;
+`cfg55` = NOT shipped, docking config corrected to `marker_size: 0.055`,
+`docked_marker_offset: 0.543`):
+
+| Run | a max out / > 0.10 | b trips | c complete / docked / charging (final) | d stuck / not mowed / fallback | e corners > 0.15 (max) | f one-wheel (floor) | g pivot share | h p99 line / arc / corner | shaper rewrite % nav MOWING / TRANSIT / raw | loop Hz med / p10 | rules fired | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| n-mppi-ideal-a | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.078) | 0 (175) | 32 % | 0.055 / 0.048 / - | 0.8 / 2.0 / 1.3 | 20 / 20 | route corner pivot (angle split) 17, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 16, shaper widened arc 48 | PASS |
+| n-mppi-ideal-b | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.070) | 0 (194) | 32 % | 0.061 / 0.050 / - | 0.8 / 1.9 / 1.2 | 20 / 20 | route corner pivot (angle split) 16, route stub trim / start join 1, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 27, shaper widened arc 82 | PASS |
+| n-mppi-dist-s1 | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.079) | 0 (158) | 36 % | 0.060 / 0.051 / - | 1.1 / 1.6 / 1.5 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 34, shaper pivot-instead 23, shaper widened arc 67 | PASS |
+| n-mppi-dist-s2 | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.111) | 0 (150) | 35 % | 0.065 / 0.073 / - | 1.1 / 1.7 / 1.6 | 20 / 20 | route corner pivot (angle split) 15, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 8, shaper widened arc 59 | PASS |
+| n-rpp-ideal-a | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.078) | 0 (74) | 35 % | 0.047 / 0.046 / - | 0.4 / 2.0 / 1.0 | 20 / 20 | route corner pivot (angle split) 15, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 32, shaper pivot-instead 9, shaper widened arc 32 | FAIL |
+| n-rpp-dist-s1 | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.065) | 0 (176) | 38 % | 0.050 / 0.060 / - | 0.4 / 1.8 / 1.2 | 20 / 20 | route corner pivot (angle split) 15, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 8, shaper widened arc 33 | PASS |
+| n-mppi-ideal-cfg55 | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.090) | 0 (119) | 31 % | 0.064 / 0.042 / - | 0.9 / 2.0 / 1.3 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 16, shaper widened arc 48 | FAIL |
+| n-mppi-dist-s1-cfg55 | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.092) | 0 (126) | 34 % | 0.064 / 0.043 / - | 0.8 / 1.9 / 1.3 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 15, shaper widened arc 38 | FAIL |
+
+**Verdict:** every MPPI run passes every criterion a-h (4 of 4: ideal x2, disturbed seeds 1
+and 2), docked and charging. The rpp revert check: disturbed s1 PASS, ideal a fails on
+docking only (DOCK_MAXOUT; the docking server is the same in both arms). Mowing, transit,
+corners, one-wheel and cross-track criteria pass in all 8 runs.
+
+**Recommendation on the docking config (not shipped):** correcting `marker_size` to 0.055
+(with the true offset 0.543) did NOT dock in either sim run (2 x DOCK_MAXOUT), against 5 of
+6 with the deployed 0.04. The deployed values are tuned together (gates, approach distance,
+`k_lateral`, the offset) around the under-read distances; changing the size alone is not an
+improvement in the sim. Keep 0.04 for the next field run; if the size is corrected later, do
+it in its own field run together with re-tuned docking gains, sim-tested first.
 
 ## Limitations
 
