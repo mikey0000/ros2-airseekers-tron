@@ -101,7 +101,8 @@ def test_contract_ids():
     doc = load()
     c = doc["controller_server"]["ros__parameters"]
     assert set(c["controller_plugins"]) >= {"FollowPath", "FollowPathRPP", "FollowCoveragePath",
-                                            "FollowCoveragePathMPPI"}
+                                            "FollowCoveragePathMPPI",
+                                            "FollowCoveragePathReverseMPPI"}
     assert set(c["goal_checker_plugins"]) >= {"general_goal_checker", "coverage_goal_checker"}
     # 2026-10-09: GridBased = Smac Hybrid, GridBasedNavFn = the BT's fallback id
     p = doc["planner_server"]["ros__parameters"]
@@ -511,6 +512,8 @@ def test_mppi_transit():
     # 0.10 m/s (no rear sensing), and forward stays preferred
     assert -0.10 <= c["vx_min"] < 0.0
     assert c["PreferForwardCritic"]["enabled"] is True
+    # forward preference also within 0.5 m of the goal (short conditioned legs, 2026-10-16)
+    assert c["PreferForwardCritic"]["threshold_to_consider"] == 0.0
     critics = c["critics"]
     assert {"CostCritic", "GoalCritic", "PathAlignCritic", "PathFollowCritic",
             "PreferForwardCritic"} <= set(critics)
@@ -531,36 +534,104 @@ def test_mppi_transit():
     assert _ctl("FollowPathRPP")["plugin"].endswith("RegulatedPurePursuitController")
 
 
+MPPI_IDS = ("FollowPath", "FollowCoveragePathMPPI", "FollowCoveragePathReverseMPPI")
+CMD_VEL_SLEW = os.path.join(HERE, "..", "..", "mower_control", "mower_control", "cmd_vel_slew.py")
+
+
+def _shaper_constants():
+    """TRACK_WIDTH_M and the min_inner_wheel_mps default from cmd_vel_slew.py (no import)."""
+    tree = ast.parse(open(CMD_VEL_SLEW).read())
+    out = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and \
+                isinstance(node.targets[0], ast.Name) and node.targets[0].id == "TRACK_WIDTH_M":
+            out["track"] = ast.literal_eval(node.value)
+    text = open(CMD_VEL_SLEW).read()
+    i = text.index("SHAPE_DEFAULTS = {")
+    j = text.index("'min_inner_wheel_mps':", i)
+    out["floor"] = float(text[j:].split(":", 1)[1].split(",", 1)[0])
+    return out
+
+
 def test_mppi_accel_limits():
     """2026-10-15: FollowPath with the cmd_vel_slew accel limits (0.5 / -0.8 / 1.0) spun in
-    circles from standstill after undocking; it uses the MPPI defaults again. The unused
-    FollowCoveragePathMPPI alternative keeps them."""
-    c = _ctl("FollowPath")
-    for k in ("ax_max", "ax_min", "az_max"):
-        assert k not in c, k
-    c = _ctl("FollowCoveragePathMPPI")
-    assert c["ax_max"] == 0.5
-    assert c["ax_min"] == -0.8
-    assert c["az_max"] == 1.0
+    circles from standstill after undocking; the MPPI study re-tested them on coverage with the
+    wheel-floor critic (sim T3: 80 % of the time pivoting, leg loop guard). Every MPPI
+    controller uses the MPPI defaults."""
+    for name in MPPI_IDS:
+        c = _ctl(name)
+        for k in ("ax_max", "ax_min", "az_max"):
+            assert k not in c, (name, k)
 
 
-def test_mppi_coverage_alternative():
+def test_mppi_feasibility_critic_everywhere():
+    """MPPI study (docs/analysis/2026-10-15_mppi_study.md): every MPPI controller scores the
+    drive's wheel floor with mowgli_nav2_plugins' WheelFloorCritic, with the same track and
+    floor cmd_vel_slew's turn shaper enforces, so the chosen command is drivable and the
+    shaper does not rewrite it. Pivots (counter-rotation >= the floor) stay allowed."""
+    sc = _shaper_constants()
+    for name in MPPI_IDS:
+        c = _ctl(name)
+        assert c["plugin"] == "nav2_mppi_controller::MPPIController", name
+        assert c["motion_model"] == "DiffDrive", name
+        assert "WheelFloorCritic" in c["critics"], name
+        wf = c["WheelFloorCritic"]
+        assert wf["enabled"] is True, name
+        assert wf["track_width"] == sc["track"], name
+        assert wf["min_wheel_speed"] == sc["floor"], name
+        assert wf["allow_pivots"] is True, name
+        assert wf["cost_weight"] >= 10.0, name
+        for crit in c["critics"]:
+            assert isinstance(c.get(crit), dict), (name, crit)
+        # Jazzy 1.3 reads PathAngleCritic.mode (forward_preference is silently ignored)
+        pa = c.get("PathAngleCritic", {})
+        assert "forward_preference" not in pa or "mode" in pa, name
+    xml = os.path.join(HERE, "..", "..", "mowgli_nav2_plugins", "mppi_critics_plugin.xml")
+    if os.path.exists(xml):
+        assert 'type="mppi::critics::WheelFloorCritic"' in open(xml).read()
+
+
+def test_mppi_model_dt_and_cpu_budget():
+    """Coverage MPPI: model_dt = 1 / controller_frequency (Jazzy's optimizer shifts its
+    warm-start sequence by one step per cycle only then). Transit keeps 0.1 x 40 (4 s; the
+    study's 0.05 variants cut the dock-path junction). Every MPPI stays within the RK3588
+    budget that already ran at 17.5 Hz (1000 x 40 rollout points)."""
+    period = 1.0 / _ctl("controller_frequency")
+    for name in MPPI_IDS:
+        c = _ctl(name)
+        assert c["model_dt"] >= period - 1e-9, name
+        assert c["batch_size"] * c["time_steps"] <= 1000 * 40, name     # RK3588 budget
+        assert c["time_steps"] * c["model_dt"] >= 1.5, name             # horizon >= 1.5 s
+    for name in ("FollowCoveragePathMPPI", "FollowCoveragePathReverseMPPI"):
+        assert abs(_ctl(name)["model_dt"] - period) < 1e-9, name
+    assert _ctl("FollowPath")["time_steps"] * _ctl("FollowPath")["model_dt"] >= 4.0 - 1e-9
+
+
+def test_mppi_coverage_controllers():
     c = _ctl("FollowCoveragePathMPPI")
-    base = _ctl("FollowPath")
-    assert c["plugin"] == "nav2_mppi_controller::MPPIController"
-    assert c["motion_model"] == "DiffDrive"
-    assert c["vx_max"] <= 0.2 and c["wz_max"] <= 0.3 and c["vx_min"] == 0.0
-    # tight swath tracking: at least as stiff as the transit tuning
-    assert c["PathFollowCritic"]["cost_weight"] >= base["PathFollowCritic"]["cost_weight"]
-    assert c["PathAlignCritic"]["cost_weight"] >= base["PathAlignCritic"]["cost_weight"]
-    assert c["model_dt"] >= 1.0 / _ctl("controller_frequency") - 1e-9
-    # the default coverage controller stays RPP (MPPI is unvalidated on turf)
+    assert 0 < c["vx_max"] <= 0.3 and c["wz_max"] <= 0.3 and c["vx_min"] == 0.0
+    assert c["PreferForwardCritic"]["enabled"] is True
+    # tight line tracking: path alignment dominates path-follow (PathFollow pulls to a point
+    # ahead and cuts corners, nav2#5925)
+    assert c["PathAlignCritic"]["cost_weight"] >= 3 * c["PathFollowCritic"]["cost_weight"]
+    assert c["PathAlignCritic"]["use_path_orientations"] is False
+    r = _ctl("FollowCoveragePathReverseMPPI")
+    assert r["vx_max"] == 0.0 and -0.15 <= r["vx_min"] < 0.0      # backwards only, slow
+    assert "PreferForwardCritic" not in r["critics"]
+    assert r["PathAngleCritic"]["mode"] == 1                      # no direction preference
+    ids = _ctl("controller_plugins")
     with open(MISSION) as f:
         mdoc = yaml.safe_load(f)
-    blocks = [p for _, p in ros_param_blocks(mdoc) if "follow_controller_id" in p]
-    assert len(blocks) == 1
-    assert blocks[0]["follow_controller_id"] == "FollowCoveragePath"
+    m = [p for _, p in ros_param_blocks(mdoc) if "coverage_controller" in p][0]
+    assert m["coverage_controller"] in ("mppi", "rpp")
+    for k in ("mppi_follow_controller_id", "mppi_reverse_controller_id",
+              "follow_controller_id", "reverse_controller_id"):
+        assert m[k] in ids, k
+    assert m["mppi_controller_speed_param"] == m["mppi_follow_controller_id"] + ".vx_max"
+    assert m["mppi_speed_max_mps"] <= c["wz_max"] + 1e-9 or m["mppi_speed_max_mps"] <= 0.3
+    # the RPP revert pair is still configured
     assert _ctl("FollowCoveragePath")["plugin"].endswith("RegulatedPurePursuitController")
+    assert _ctl("FollowCoveragePathReverse")["allow_reversing"] is True
 
 
 def test_coverage_turn_legs_drive_as_arcs():

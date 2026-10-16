@@ -206,6 +206,16 @@ class ControllerGains:
     turn_slow_err: float = 0.5      # rad of heading-tracking error at which v hits the floor
     min_turn_speed: float = 0.035   # m/s reverse speed floor (> stall_min_cmd 0.03, so the
     #                                 stall guard stays armed while creeping)
+    # Both wheels (2026-10-16 sim gate: 80 one-wheel ticks on /cmd_vel_docking per dock): the
+    # creep floor with a large heading error asked for e.g. v -0.035, w 0.3, an inner wheel
+    # of -0.037 m/s: under the MCU's 0.06 m/s floor it does not turn, the robot pivots on it
+    # (a one-wheel turn). A command whose inner wheel would fall in (-wheel_floor, 0) is a
+    # proper reversing arc instead (|v| raised to wheel_floor + |w| track_width / 2, both
+    # wheels rolling backwards; |w| lowered when that would exceed max_speed); within
+    # final_zone of the contacts |w| is lowered to keep the inner wheel at 0 instead. The [0, wheel_floor) band
+    # (small steering on the reverse, 2026-10-07) is unchanged. wheel_floor 0 = off (revert).
+    track_width: float = 0.48
+    wheel_floor: float = 0.06
 
 
 def reverse_speed(remaining: float, g: ControllerGains, near: Optional[float] = None) -> float:
@@ -241,6 +251,19 @@ def reverse_control(err: DockErrors, g: ControllerGains,
         # so the steering gets more travel-per-correction to null it before contact
         frac = min(frac, clamp(1.0 - abs(err.lateral) / g.lateral_slow, 0.0, 1.0))
     vmax = min(vmax, max(g.min_turn_speed, vmax * frac))
+    if g.wheel_floor > 0.0 and abs(w) > 1e-6:
+        inner = vmax - abs(w) * 0.5 * g.track_width
+        if -g.wheel_floor < inner < 0.0 and err.remaining <= g.final_zone:
+            return -vmax, math.copysign(vmax / (0.5 * g.track_width) * (1.0 - 1e-6), w), e
+        if -g.wheel_floor < inner < 0.0:
+            # a proper reversing arc: both wheels rolling backwards, the inner one at the
+            # floor (2026-10-16 sim gate: an in-place pivot here dithered with the marker's
+            # heading noise and tripped the stuck guard twice -> STUCK_NEEDS_HELP)
+            half = 0.5 * g.track_width
+            v_arc = g.wheel_floor + abs(w) * half
+            if v_arc <= g.max_speed:
+                return -v_arc, w, e
+            return -g.max_speed, math.copysign((g.max_speed - g.wheel_floor) / half, w), e
     return -vmax, w, e
 
 

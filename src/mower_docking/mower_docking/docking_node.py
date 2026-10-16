@@ -165,6 +165,8 @@ class DockingServer(Node):
         decl('calibration_file', '/userdata/ros2/calibration/docking_calibration.yaml')
         decl('auto_calibrate_marker_offset', True)
         decl('min_turn_speed', g.min_turn_speed)
+        decl('track_width', g.track_width)
+        decl('wheel_floor', g.wheel_floor)
         decl('close_speed', g.close_speed)
         decl('lateral_slow', g.lateral_slow)
         decl('marker_median_n', dp.marker_median_n)
@@ -604,6 +606,7 @@ class DockingServer(Node):
             kp_heading=float(p('kp_heading')), kd_heading=float(p('kd_heading')),
             max_angular=float(p('max_angular')),
             turn_slow_err=float(p('turn_slow_err')), min_turn_speed=float(p('min_turn_speed')),
+            track_width=float(p('track_width')), wheel_floor=float(p('wheel_floor')),
             close_speed=min(float(p('close_speed')), 0.15),
             lateral_slow=float(p('lateral_slow')))
         return dl.DockParams(

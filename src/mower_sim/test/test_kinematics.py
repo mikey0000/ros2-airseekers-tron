@@ -254,3 +254,50 @@ def test_dock_hard_stop_respects_dock_yaw():
         t += DT
     assert d.dock_frame()[0] >= 0.0
     assert d.pose.y == pytest.approx(1.0, abs=0.03)
+
+
+# ---------------------------------------------------------------- ground disturbance
+
+def test_disturbance_off_by_default_is_ideal():
+    assert not DriveParams().disturbed()
+
+
+def test_wheel_bias_drifts_left():
+    d = DiffDrive(_world(start={'x': 0.0, 'y': 0.0, 'yaw': 0.0}),
+                  DriveParams(disturb_wheel_bias=0.04))
+    _run(d, 0.3, 0.0, 5.0)
+    assert d.pose.yaw > 0.05 and d.pose.y > 0.0
+
+
+def test_pivot_efficiency_slows_the_pivot():
+    ideal = DiffDrive(_world(start={'x': 0.0, 'y': 0.0, 'yaw': 0.0}))
+    turf = DiffDrive(_world(start={'x': 0.0, 'y': 0.0, 'yaw': 0.0}),
+                     DriveParams(disturb_pivot_eff=0.8))
+    _run(ideal, 0.0, 0.3, 3.0)
+    _run(turf, 0.0, 0.3, 3.0)
+    assert turf.pose.yaw == pytest.approx(0.8 * ideal.pose.yaw, rel=1e-6)
+    assert math.hypot(turf.pose.x, turf.pose.y) < 1e-6
+
+
+def test_slip_is_seeded_and_repeatable():
+    poses = []
+    for _ in range(2):
+        d = DiffDrive(_world(start={'x': 0.0, 'y': 0.0, 'yaw': 0.0}),
+                      DriveParams(disturb_slip_std=0.05, disturb_seed=7))
+        _run(d, 0.3, 0.0, 5.0)
+        poses.append((d.pose.x, d.pose.y, d.pose.yaw))
+    assert poses[0] == poses[1]
+    assert abs(poses[0][2]) > 1e-4          # not a straight line any more
+    assert 1.2 < poses[0][0] < 1.7
+
+
+def test_near_straight_reverse_is_not_floored():
+    """The final dock reverse with a small heading-hold correction (-0.05 m/s, 0.016 rad/s:
+    wheels -0.046 / -0.054) moves like the straight reverse it is (field); a real turn with
+    a sub-floor inner wheel is still floored."""
+    left, right = wheel_speeds(-0.05, 0.016, DriveParams())
+    assert left == pytest.approx(-0.05 - 0.016 * 0.24) and right == pytest.approx(-0.05 + 0.016 * 0.24)
+    assert wheel_speeds(0.0, 0.2, DriveParams()) == (0.0, 0.0)
+    left, right = wheel_speeds(-0.05, 0.2, DriveParams())     # 0.096 apart: turning
+    assert right == 0.0 and left == pytest.approx(-0.098)
+    assert wheel_speeds(-0.05, 0.016, DriveParams(straight_tol_mps=0.0)) == (0.0, 0.0)

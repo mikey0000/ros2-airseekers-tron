@@ -36,6 +36,8 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(nav2_mppi_controller REQUIRED)
+find_package(xtensor REQUIRED)
 
 # ---------------------------------------------------------------------------
 # Shared library: mowgli_nav2_plugins
@@ -77,9 +79,32 @@ target_link_libraries(${PROJECT_NAME}
   ${visualization_msgs_TARGETS}
 )
 
+# ---------------------------------------------------------------------------
+# MPPI critic plugin (2026-10-15): WheelFloorCritic, own library so the FTC / goal
+# checker library does not link nav2_mppi_controller.
+# ---------------------------------------------------------------------------
+
+add_library(mowgli_mppi_critics SHARED
+  src/wheel_floor_critic.cpp
+)
+target_include_directories(mowgli_mppi_critics
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(mowgli_mppi_critics
+  ${rclcpp_TARGETS}
+  ${rclcpp_lifecycle_TARGETS}
+  ${nav2_costmap_2d_TARGETS}
+  ${pluginlib_TARGETS}
+  xtensor
+)
+ament_target_dependencies(mowgli_mppi_critics nav2_mppi_controller)
+
 # pluginlib needs the export macro defined.
 pluginlib_export_plugin_description_file(nav2_core ftc_controller_plugin.xml)
 pluginlib_export_plugin_description_file(nav2_core goal_checker_plugin.xml)
+pluginlib_export_plugin_description_file(nav2_mppi_controller mppi_critics_plugin.xml)
 
 # ---------------------------------------------------------------------------
 # Install
@@ -91,14 +116,14 @@ install(
 )
 
 install(
-  TARGETS ${PROJECT_NAME}
+  TARGETS ${PROJECT_NAME} mowgli_mppi_critics
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
 install(
-  FILES ftc_controller_plugin.xml goal_checker_plugin.xml
+  FILES ftc_controller_plugin.xml goal_checker_plugin.xml mppi_critics_plugin.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -116,6 +141,12 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 
   find_package(ament_cmake_gtest REQUIRED)
+
+  # WheelFloorCritic math + batch scoring (no ROS graph).
+  ament_add_gtest(test_wheel_floor_critic
+    test/test_wheel_floor_critic.cpp
+  )
+  target_link_libraries(test_wheel_floor_critic mowgli_mppi_critics)
 
   ament_add_gtest(test_leg_goal_checker
     test/test_leg_goal_checker.cpp
@@ -221,7 +252,7 @@ endif()
 # ---------------------------------------------------------------------------
 
 ament_export_include_directories(include)
-ament_export_libraries(${PROJECT_NAME})
+ament_export_libraries(${PROJECT_NAME} mowgli_mppi_critics)
 ament_export_dependencies(
   rclcpp
   rclcpp_lifecycle
@@ -236,6 +267,7 @@ ament_export_dependencies(
   tf2_geometry_msgs
   tf2_eigen
   visualization_msgs
+  nav2_mppi_controller
 )
 
 ament_package()

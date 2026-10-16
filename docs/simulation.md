@@ -140,7 +140,8 @@ The launch file is installed by mower_bringup next to `mower.launch.py`.
 | `nav2_params_file`, `docking_params_file`, `mission_params_file` | package defaults | Parameter files (a full copy with the values changed). |
 | `stereo`, `stereo_noise_m` | `true`, `0.0` | Synthetic stereo clouds and their range noise. |
 | `min_wheel_speed_mps` | `0.06` | The MCU wheel floor while turning; 0 turns it off. |
-| `rear_marker_size` | `0.04` | Printed size of the rendered dock ArUco. It must equal mower_docking's `marker_size`. |
+| `rear_marker_size` | `0.055` | Printed size of the rendered dock ArUco: the real black square (owner, measured 2026-10-16). mower_docking keeps its deployed `marker_size` 0.04 (vendor constant), as on the robot, so marker distances are under-read by 0.04 / 0.055 in the sim as in the field. |
+| `rear_marker_offset` | `0.543` | True distance docked base_link -> marker: 0.201 + (0.45 - 0.201) x 0.055 / 0.04, so the deployed config reads its `docked_marker_offset` 0.45 at the docked pose (that config docks in the field). |
 | `foxglove`, `teleop_relay` | `false` | Bridges that bind ports. |
 
 The launch file does not start the drivers, cameras, perception, det_range,
@@ -257,6 +258,367 @@ The drive model reproduces these behaviours:
   a `nav2.launch.py` included after it gets an EKF publishing `odom ->
   base_footprint`, which splits the TF tree. `mower.launch.py` is safe only because
   it includes localization first.
+
+## Sim gate: `scripts/sim_gate.sh` (every change, before the field)
+
+One command runs a full mow in the sim and judges it. A change that fails the gate does not
+go to the field (owner, 2026-10-15; design: `DESIGN_path_conditioning_2026-10.md` section 4).
+
+```bash
+./scripts/dev_build.sh build                    # once per checkout (symlink install)
+./scripts/sim_gate.sh                           # ideal drive
+./scripts/sim_gate.sh -d                        # with the ground disturbance
+./scripts/sim_gate.sh -d -s 2 -n mytest -- mission_params_file:=/work/path/mission.yaml
+```
+
+What it does:
+
+1. It starts `sim.launch.py` in the dev image (container `sim<domain>-gate-<name>`, DDS domain
+   `MOWER_SIM_ROS_DOMAIN_ID`, default 175, never 0, localhost-only; it refuses
+   `MOWER_SIM_ALLOW_LAN` / `MOWER_SIM_ALLOW_ON_ROBOT`). The default world is
+   `src/mower_sim/worlds/real_run5.yaml`: a copy of the real `areas.dat` as of field run 5
+   (Area 1 plus the three drawn paths, the GPS datum dropped) with the dock at run 5's
+   docked EKF pose. Every parameter is the committed one.
+2. It waits for the mission to be idle on the dock, starts a bag recorder inside the sim
+   container (Fast DDS shared memory), then sends START: undock, transit, every sub-path of
+   Area 1, return, dock.
+3. It stops at IDLE_DOCKED / CHARGING after the mission ran, at STUCK_NEEDS_HELP, EMERGENCY,
+   NAV_TO_DOCK_FAILED, UNDOCK_FAILED or MOWING_INCOMPLETE, or after `-t` seconds (default
+   2700).
+4. It copies the bag, dumps it (`scripts/sim_gate/extract.py`) and judges it
+   (`scripts/sim_gate/evaluate.py`), all in containers. Output in `log/sim_gate/<name>/`
+   (`SIM_GATE_OUT`): `verdict.txt`, `result.json`, `mission.log`, `launch.log`, the bag.
+   Exit code 0 only on PASS.
+
+Criteria, judged from ground truth (`/sim/ground_truth`), not from the stack's opinion:
+
+| | Criterion | PASS |
+|---|---|---|
+| a | max distance outside (areas U drawn path polygons U dock corridor), recomputed with `mower_map.areas`, per phase | no sample > 0.10 m |
+| b | hard-boundary trips (`HARD BOUNDARY` in the mission log) | 0 |
+| c | MOWING_COMPLETE, then docked and charging (sim contacts) | all |
+| d | STUCK_NEEDS_HELP / sub-paths NOT mowed / costmap-fallback transits (FollowPath / Spin aborts reported) | 0 / 0 / 0 |
+| e | max deviation within 0.8 m of every corner >= 79 deg (coverage sub-paths and transit / dock routes) | <= 0.15 m |
+| f | one-wheel ticks on `/cmd_vel` (a turn with the inner wheel in (-0.06, 0); inner in [0, 0.06), stalled by the MCU floor, is reported) | 0 |
+| g | time pivoting in place vs moving | reported |
+| h | MOWING cross-track to the sub-path actually sent (`~/mow_plan`; conditioned when path conditioning is on), median / p90 / p99 / max per segment type: line, arc, corner (raw plans: within 0.3 m of a drawn vertex >= 20 deg), pivoting | p99 <= 0.10 m on line, arc and corner |
+
+It also lists how often each runtime corner rule of the design's section 3.3 fired (route
+corner splits and corner-reached rule, stub trim, cusp about-turn, progress watches, the
+fix 10 turn-leg cap, the loop guard, costmap fallback, the shaper's widened arcs /
+pivot-instead / pivot hold, pivot-assist creep, the stuck guard), and (2026-10-16) the
+swath-end turn joins, the turn shaper rewrite rate (moving nav-lane commands through
+`shape_for_both_wheels`) and the controller loop rate (`/cmd_vel_nav_raw` per second). Field
+reference (run 5, MOWING, raw plan): cross-track median 0.026 / p90 0.074 / p99 0.204 / max
+0.262 m.
+
+### Ground disturbance (`-d`)
+
+`mower_sim/kinematics.py` can make the ground disagree with the wheels, so the sim does not
+flatter a controller that only works on a perfect drive. Off by default; `-d` sets:
+
+| Launch argument | `-d` value | Effect |
+|---|---|---|
+| `disturb_wheel_bias` | 0.04 | the right wheel makes 2 % more ground than commanded, the left 2 % less: a slow left drift (cross slope) |
+| `disturb_slip_std` | 0.05 | per-wheel multiplicative slip, a first-order random process (correlation `disturb_slip_tau_s` 1 s) |
+| `disturb_pivot_eff` | 0.85 | ground yaw rate / commanded while counter-rotating (turf scrub) |
+| `disturb_seed` | `-s` (1) | the slip process is seeded: a run is repeatable |
+
+The commanded wheel speeds, the MCU model and what the stack sees are unchanged; only the
+ground truth moves differently (with `localization:=sim` the stack sees that truth, as it
+sees RTK on the robot).
+
+### What the gate cannot show
+
+Slope (tilt, downhill drift, the field's Spin timeouts on the slope), real turf slip and
+grip loss in pivots beyond the disturbance model, wheel-in-a-hole stalls, RTK float /
+dropouts and heading errors, stereo false positives on grass. A gate PASS is necessary, not
+sufficient: the field run still decides.
+
+### Gate runs
+
+Recorded runs (domain 175, real_run5 world). Base = master 9c2fdd1 (the code deployed for
+run 5) with only the sim / gate files added.
+
+| Run | Code | Disturbance | a max out / > 0.10 | b trips | c complete / docked | d stuck / not mowed / fallback | e corners > 0.15 | f one-wheel | g pivot share | h p99 line / arc / corner | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| base-ideal-1 | 9c2fdd1 | off | 0.107 m / 61 | 2 | no / no (STUCK 92 s after START) | 1 / 0 / 0 | 1 of 2 (0.195) | 10 | 39 % | - / - / 0.245 | FAIL |
+| base-dist-1 | 9c2fdd1 | on (seed 1) | 0.114 m / 65 | 2 | no / no (STUCK 94 s after START) | 1 / 0 / 0 | 0 of 2 (0.145) | 8 | 41 % | - / - / 0.241 | FAIL |
+| br-ideal-1 | dropped: coverage split at >= 79 deg corners + boundary-retry special case (not committed) | off | 0 / 0 | 0 | no (MOWING_INCOMPLETE: turn leg sub-path 3 NOT mowed) | 0 / 1 / 0 | 1 of 22 (0.195, transit -111 deg corner) | 0 | 27 % | 0.301 / 0.431 / 0.279 | FAIL |
+| pc-ideal-2 | path conditioning (3c9f899 before the route topic / evaluator fixes) | off | 0 / 0 | 0 | **yes / yes, charging** | 0 / 0 / 0 | 2 of 27 (0.370: routes judged against the raw /plan, i.e. the intended fillet cut) | 114 (all on the docking lane) | 24 % | 0.214 / 0.148 / - | FAIL |
+| pc-ideal-3 | path conditioning 3c9f899 | off | 0 / 0 | 0 | no (MOWING_INCOMPLETE: turn leg sub-path 3 NOT mowed) | 0 / 1 / 0 | 0 of 28 (0.114) | 0 | 23 % | 0.224 / 0.268 / - | FAIL |
+| pc-dist-1 | path conditioning 3c9f899 | on (seed 1) | 0 / 0 | 0 | no (MOWING_INCOMPLETE: turn leg sub-path 3 NOT mowed) | 0 / 1 / 0 | 0 of 28 (0.105) | 0 | 26 % | 0.378 / 0.242 / - | FAIL |
+
+With path conditioning every boundary criterion passes with and without the disturbance:
+no sample outside, no hard-boundary trip, every sharp corner within 0.114 m (the V corner
+0.038 m: the robot stops on the vertex and pivots), no one-wheel tick outside the docking
+server's marker reverse. The gate still FAILS:
+
+- **c / d**: the 0.54 m swath-end turn leg (sub-path 3, sent as planned, not conditioned)
+  aborts four times with "Failed to make progress": RPP asks for the planner's r = 0.5 m
+  turn, the shaper widens it to r = 0.64 m, the robot circles past the leg end, the
+  progress checker aborts, the sub-path is NOT mowed and the mission ends
+  MOWING_INCOMPLETE in the field (`return_home_on_incomplete` false). In pc-ideal-2 the
+  same leg ended by the fix 10 time cap and the run completed and docked. Flaky either way;
+  it is the shaper widening of design section 3.3, not a corner.
+- **h**: conditioned sub-paths track tightly on their bodies (median 0.004-0.013 m) but the
+  p99 comes from leg joins: after a turn leg or a short transit the robot starts up to
+  0.25 m beside the next sub-path's first pose; the turn legs themselves run 0.15-0.26 m
+  off (p99 0.25-0.29 m).
+- **f** (pc-ideal-2): the docking server's marker reverse (`/cmd_vel_docking`) asks for
+  one-wheel turns (114 ticks); the base runs never got that far.
+
+The base reproduces run 5's failure mode on the same outer ring: two hard-boundary trips,
+the second one after resuming the same manoeuvre, STUCK_NEEDS_HELP ~30 s into mowing. In the
+sim the trip comes at the ring's start (-2.0, 1.1), not at the V corner (-4.74, -1.17): the
+transit arrives heading ~20 deg, the ring leaves at -136 deg, FollowCoveragePath rotates part
+way (to about -90 deg) and then drives an r = 0.44 m arc out of the area. In the field the same
+start arc reached 0.062 m outside at (-2.09, 1.10) (`outside_m`, run 5, t = 12.8 s), a near
+miss, and the V corner 20 s later tripped. Same cause either way: a sharp heading change in a
+coverage path executed as a forward arc.
+
+### Gate runs on `ws/integrate` (2026-10-16, domain 177)
+
+`ws/integrate` = master e9e4d08 + `ws/coverage-corners` (this gate, the disturbance, the
+path conditioner) + `ws/mppi-study` (WheelFloorCritic, `coverage_controller: rpp|mppi`,
+MPPI coverage controllers; transit `FollowPath` is MPPI with the critic in both arms), plus:
+
+- **Swath-end turns as drivable geometry** (design 3.1, roadmap 3.2). A Reeds-Shepp
+  swath-end turn chain (forward leg to a cusp, reverse leg(s), forward leg: the 0.3-0.9 m
+  "turn legs") is replaced by the swath -> straight connector -> swath geometry it connects
+  (`path_conditioning.join_turn_chains`) and conditioned like any path: a fillet r >= 0.5 m
+  at each connector corner where it fits the region, else a pivot on the swath end; the
+  chain is kept as planned only if the connector leaves the region or the joined path fails
+  validation (0 of 4 on this map). No turn-leg exemption from conditioning; a U-turn drawn as
+  two vertices closer than `merge_m` is two corners; a fillet's tangent points must lie on
+  the drawn runs (a dock-route fillet had left an 88-100 deg kink).
+- **Leg ends judged along the path.** `LegGoalChecker` `along_path` mode, loaded as
+  `coverage_corner_goal_checker`: done at the plane through the leg end (perpendicular to
+  the heading into it, 0.02 m short counts, at most 0.20 m past, within 0.15 m of the line),
+  or past that plane after coming within 0.5 m and now moving away (passed wide); no yaw
+  test, no 0.08 m disc. Used for every conditioned forward coverage leg and every route leg
+  (`route_corner_goal_checker_id`).
+- **One pivot rule.** Coverage leg starts (`_cov_pivot`) and route leg starts pivot (Nav2
+  Spin, both wheels, >= 0.25 rad/s) when the leg is `path_conditioning_pivot_min_rad`
+  (0.35) or more off the robot's yaw - the conditioner's own threshold; MPPI's
+  `coverage_leg_pivot_rad` and `path_conditioning_start_pivot_rad` are gone.
+- **Transit final approach.** A transit that arrived more than `route_final_approach_m`
+  (0.05) from the sub-path start drives onto it as explicit steps (Spin to face it, Nav2
+  DriveOnHeading at 0.1 m/s). Without it the join ran 0.1-0.23 m off the line (h p99
+  0.106-0.107); as a 0.1 m FollowPath leg MPPI reversed 0.4 m out of the area.
+- **Removed runtime rules** (design 3.3): the coverage pivot-vertex-reached rule
+  (`_cov_corner_tick`), the route corner-reached rule (`route_corner_xy_m / reach / stall`),
+  route stub trimming under conditioning. The turn-leg cap (fix 10), `turn_leg_skip` and
+  the leg checker for short legs stay in the code for `path_conditioning: false` and for
+  an owner-chosen `turn_type: reverse`; with conditioning on they no longer fire (0 in
+  every run below).
+- **Docking lane, both wheels.** `dock_logic.reverse_control`: the turn-first creep
+  (v -0.035 / w 0.3, inner wheel -0.037 m/s: a one-wheel turn) becomes a proper reversing
+  arc (inner wheel at the 0.06 floor), within `final_zone` |w| is lowered to keep the inner
+  wheel at 0; `cmd_vel_slew` caps the docking lane's slewed steps out of (-0.06, 0)
+  (`docking_no_one_wheel`). The pivot variant tried first dithered with the marker noise and
+  tripped the stuck guard (STUCK_NEEDS_HELP once): rejected.
+- Gate tooling: records `/cmd_vel_nav_raw`; reports the shaper rewrite rate (moving
+  nav-lane commands through `shape_for_both_wheels`), the controller loop rate and the
+  swath-end turn joins.
+
+Final runs (code 548a7ca = the branch head's code; `rpp` = shipped default, `mppi` =
+`coverage_controller: mppi` via a mission.yaml copy; `dist` = `-d`, seed s1 / s2; base =
+master e9e4d08 + the gate / sim files only). "rules fired" lists only the non-zero counters
+(design 3.3 rules plus the new turn joins / pivots). Docking: g-rpp-ideal-a and
+g-mppi-dist-s2 docked; DOCK_MAXOUT in 5 runs, DOCK_STALLED in g-mppi-ideal-b (see below).
+
+| Run | a max out / > 0.10 | b trips | c complete / docked / charging (final) | d stuck / not mowed / fallback | e corners > 0.15 (max) | f one-wheel (floor) | g pivot share | h p99 line / arc / corner | shaper rewrite % nav MOWING / TRANSIT / raw | loop Hz med / p10 | rules fired | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| base-e9e4d08-ideal | 0.105 / 65 | 2 | False / False / False (STUCK_NEEDS_HELP) | 1 / 0 / 0 | 1 of 2 (0.194) | 12 (44) | 39 % | - / - / 0.245 | - / - / - | - / - | route corner pivot (angle split) 3, route corner reached rule 2, shaper pivot-instead 6, shaper widened arc 10, pivot assist creep 1, stuck guard 4 | FAIL |
+| g-rpp-ideal-a | 0.144 / 36 | 1 | True / True / True (CHARGING) | 0 / 0 / 1 | 0 of 27 (0.124) | 0 (161) | 34 % | 0.047 / 0.034 / - | 0.3 / 4.3 / 1.4 | 20 / 20 | route corner pivot (angle split) 11, costmap fallback nav 1, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 6, shaper widened arc 47 | FAIL |
+| g-rpp-ideal-b | 0.113 / 37 | 1 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 28 (0.129) | 0 (139) | 34 % | 0.032 / 0.035 / - | 0.3 / 3.7 / 1.6 | 20 / 20 | route corner pivot (angle split) 14, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 20, shaper widened arc 92 | FAIL |
+| g-rpp-dist-s1 | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 27 (0.054) | 0 (104) | 38 % | 0.040 / 0.040 / - | 0.3 / 6.4 / 2.2 | 20 / 20 | route corner pivot (angle split) 12, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 22, shaper widened arc 101 | FAIL |
+| g-rpp-dist-s2 | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 27 (0.069) | 0 (145) | 38 % | 0.038 / 0.040 / - | 0.3 / 3.5 / 1.2 | 20 / 20 | route corner pivot (angle split) 13, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 35, shaper pivot-instead 9, shaper widened arc 55 | FAIL |
+| g-mppi-ideal-a | 0.023 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 27 (0.148) | 0 (136) | 30 % | 0.055 / 0.043 / - | 0.8 / 3.8 / 1.7 | 20 / 20 | route corner pivot (angle split) 12, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 23, shaper widened arc 110 | FAIL |
+| g-mppi-ideal-b | 0.047 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 27 (0.144) | 0 (171) | 30 % | 0.055 / 0.043 / - | 0.8 / 4.6 / 1.8 | 20 / 20 | route corner pivot (angle split) 12, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 20, shaper widened arc 134 | FAIL |
+| g-mppi-dist-s1 | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 27 (0.138) | 0 (145) | 34 % | 0.060 / 0.047 / - | 0.9 / 4.5 / 2.1 | 20 / 20 | route corner pivot (angle split) 12, route stub trim / start join 1, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 22, shaper widened arc 123 | FAIL |
+| g-mppi-dist-s2 | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 27 (0.085) | 0 (189) | 33 % | 0.062 / 0.051 / - | 1.0 / 4.1 / 2.1 | 20 / 20 | route corner pivot (angle split) 13, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 32, shaper pivot-instead 23, shaper widened arc 126 | PASS |
+
+Earlier runs on the way (same world), for the record: int0 = the bare merge (1b5a374),
+int2 = b39c63f (turn chains joined, along-path checker, no passed-wide rule), int3 = ed86f90,
+int4 = f08898e, f = 3b6bfbb (final approach as a FollowPath leg), dockexp-marker14 = f08898e
+with a 14 cm rendered marker and docking `marker_size: 0.14`; h = 7a780fe (route-leg speed
+cap v <= 0.3 r, **reverted**: at 0.115 m/s MPPI drifted out of the dock-path channel on the
+first transit in 3 of 4 runs).
+
+| Run | a max out / > 0.10 | b trips | c complete / docked / charging (final) | d stuck / not mowed / fallback | e corners > 0.15 (max) | f one-wheel (floor) | g pivot share | h p99 line / arc / corner | shaper rewrite % nav MOWING / TRANSIT / raw | loop Hz med / p10 | rules fired | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| int0-rpp-ideal | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 3 of 31 (0.222) | 80 (812) | 24 % | 0.226 / 0.288 / - | 2.0 / 6.0 / None | - / - | route corner pivot (angle split) 8, route corner reached rule 1, route stub trim / start join 2, turn-leg cap (fix 10) 3, coverage pivot vertex reached 7, coverage pivots (vertex / leg start) 23, shaper pivot-instead 18, shaper widened arc 291, pivot assist creep 6 | FAIL |
+| int2-rpp-ideal | 0.179 / 44 | 1 | True / False / False (IDLE) | 0 / 0 / 0 | 1 of 31 (0.175) | 23 (154) | 31 % | 0.201 / 0.100 / - | 0.3 / 5.3 / 1.8 | 20 / 20 | route corner pivot (angle split) 9, route stub trim / start join 2, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 31, shaper pivot-instead 12, shaper widened arc 77 | FAIL |
+| int3-rpp-ideal | 0.045 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 2 of 32 (0.292) | 3 (527) | 34 % | 0.038 / 0.043 / - | 0.3 / 6.1 / 2.3 | 20 / 20 | route corner pivot (angle split) 13, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 32, shaper pivot-instead 18, shaper widened arc 73, stuck guard 4 | FAIL |
+| int3-mppi-ideal | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 1 of 31 (0.197) | 1 (176) | 28 % | 0.054 / 0.050 / - | 1.3 / 4.5 / 2.1 | 20 / 20 | route corner pivot (angle split) 10, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 32, shaper pivot-instead 26, shaper widened arc 150 | FAIL |
+| int4-rpp-ideal-a | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 27 (0.136) | 1 (164) | 34 % | 0.081 / 0.043 / - | 0.4 / 4.9 / 1.6 | 20 / 20 | route corner pivot (angle split) 12, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 13, shaper widened arc 78 | FAIL |
+| int4-mppi-ideal-a | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 27 (0.150) | 0 (229) | 30 % | 0.106 / 0.058 / - | 0.8 / 3.6 / 1.5 | 20 / 20 | route corner pivot (angle split) 13, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 20, shaper widened arc 115 | FAIL |
+| int4-rpp-dist-s1 | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 27 (0.086) | 0 (200) | 36 % | 0.107 / 0.042 / - | 0.3 / 4.0 / 1.2 | 20 / 20 | route corner pivot (angle split) 12, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 34, shaper pivot-instead 10, shaper widened arc 66 | FAIL |
+| int4-mppi-dist-s1 | 0.000 / 0 | 0 | True / False / False (STUCK_NEEDS_HELP) | 1 / 0 / 0 | 1 of 27 (0.187) | 0 (246) | 33 % | 0.100 / 0.054 / - | 0.8 / 4.8 / 1.8 | 20 / 20 | route corner pivot (angle split) 13, route stub trim / start join 1, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 34, shaper pivot-instead 26, shaper widened arc 96, stuck guard 6 | FAIL |
+| dockexp-marker14 | 0.075 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 27 (0.131) | 0 (161) | 34 % | 0.077 / 0.036 / - | 0.3 / 4.0 / 1.3 | 20 / 20 | route corner pivot (angle split) 12, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 18, shaper widened arc 76 | PASS |
+| f-rpp-ideal-a | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 27 (0.049) | 0 (157) | 35 % | 0.057 / 0.051 / - | 0.3 / 6.6 / 2.0 | 20 / 20 | route corner pivot (angle split) 14, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 34, shaper pivot-instead 25, shaper widened arc 109 | FAIL |
+| f-mppi-ideal-a | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 27 (0.071) | 0 (207) | 30 % | 0.058 / 0.044 / - | 0.8 / 6.6 / 2.4 | 20 / 20 | route corner pivot (angle split) 17, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 35, shaper widened arc 137 | PASS |
+| f-rpp-dist-s1 | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 27 (0.058) | 0 (175) | 38 % | 0.049 / 0.044 / - | 0.3 / 5.5 / 1.9 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 34, shaper pivot-instead 18, shaper widened arc 106 | FAIL |
+| f-mppi-dist-s1 | 0.135 / 290 | 1 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 27 (0.092) | 1 (162) | 34 % | 0.073 / 0.053 / - | 0.9 / 5.1 / 2.2 | 20 / 20 | route corner pivot (angle split) 15, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 34, shaper pivot-instead 29, shaper widened arc 123 | FAIL |
+| h-rpp-ideal-a | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 1 of 27 (0.182) | 0 (185) | 34 % | 0.036 / 0.037 / - | 0.3 / 4.6 / 1.8 | 20 / 20 | route corner pivot (angle split) 12, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 10, shaper widened arc 137 | FAIL |
+| h-mppi-ideal-a | 0.120 / 60 | 2 | False / False / False (STUCK_NEEDS_HELP) | 1 / 0 / 0 | 2 of 2 (0.371) | 0 (24) | 45 % | - / - / - | None / 5.2 / 9.4 | 20 / 20 | route corner pivot (angle split) 5, swath-end reverse turns replaced 4, shaper pivot-instead 3, shaper widened arc 16, stuck guard 4 | FAIL |
+| h-rpp-dist-s1 | 0.115 / 66 | 2 | False / False / False (STUCK_NEEDS_HELP) | 1 / 0 / 0 | 2 of 2 (0.364) | 0 (18) | 47 % | - / - / - | None / 4.5 / 8.5 | 20 / 19 | route corner pivot (angle split) 5, swath-end reverse turns replaced 4, shaper pivot-instead 3, shaper widened arc 17, stuck guard 4 | FAIL |
+| h-mppi-dist-s1 | 0.113 / 65 | 2 | False / False / False (STUCK_NEEDS_HELP) | 1 / 0 / 0 | 2 of 2 (0.348) | 0 (16) | 44 % | - / - / - | None / 5.8 / 9.9 | 20 / 20 | route corner pivot (angle split) 5, swath-end reverse turns replaced 4, shaper pivot-instead 2, shaper widened arc 16, stuck guard 4 | FAIL |
+
+Reading the tables:
+
+- **Mowing is clean in every final run, both controllers, ideal and disturbed**: no sample
+  outside and no trip while MOWING, cross-track p99 0.032-0.062 m on lines and 0.034-0.051 m
+  on arcs (limit 0.10), every sharp corner within 0.15 m, 0 one-wheel ticks, 0 sub-paths NOT
+  mowed, 0 stuck, all four swath-end reverse turns joined and filleted, the turn-leg cap and
+  every corner-reached rule silent. The base fails exactly as before (two trips at the ring
+  start, STUCK_NEEDS_HELP 31 s into mowing).
+- **Transit is the remaining boundary risk** (MPPI `FollowPath`, both arms): g-rpp-ideal-a
+  ran 0.4 m wide of the dock path's r 0.5 m fillet (-111 deg bend) on the first transit, the
+  leg ended passed-wide 0.73 m from the target, the costmap fallback took over and tripped
+  (0.144 m); g-rpp-ideal-b tripped (0.113 m) on the same bend in RETURNING_HOME. A route-leg
+  speed cap (v <= 0.3 r) made it worse (h runs, reverted).
+- **Docking (c) in this sim is not the path work.** Two sim artefacts, shown in the bags:
+  (1) DOCK_MAXOUT: the sim renders the configured 4 cm rear marker; solvePnP's yaw on it is
+  noisy (+-25 deg at 2 m, "Findings" above), the marker drops out of the docking gate for
+  > 3 s and the docking FSM retries until MAXOUT. With a consistent 14 cm marker
+  (`rear_marker_size:=0.14` + docking `marker_size: 0.14`, run `dockexp-marker14`, RPP,
+  ideal) the robot docks on the first attempt and that run PASSES every criterion a-h.
+  (The calibration image puts the real marker at ~0.14 m: worth checking on the robot.)
+  (2) DOCK_STALLED in FINAL_DOCKING: the straight reverse at 0.05 m/s with a 0.016 rad/s
+  heading hold asks for wheels -0.046 / -0.054 m/s; the sim zeroes BOTH because its floor
+  test calls any wheel difference "turning" (`kinematics.wheel_speeds`, `turning =
+  |left - right| > 1e-6`), while a straight 0.05 m/s reverse, by the sim's own field note,
+  moves. A 0.008 m/s wheel difference cannot plausibly flip the real MCU from moving to
+  stopped; the sim's exact-equality turning test is the artefact.
+- **MPPI vs RPP (coverage)**: both pass a, b (mowing), d, e, f, h in all four runs each; RPP
+  tracks tighter (line p99 0.032-0.047 vs 0.055-0.062 m), MPPI pivots less (30-34 vs 34-38 %
+  of moving time) and its runs had no transit excursion (chance: the transit tracker is the
+  same MPPI in both arms). Loop rate 20 Hz median and p10 in every run (x86).
+  g-mppi-dist-s2 is a full PASS on committed parameters.
+- **Still firing**: the turn shaper still rewrites 0.3-1.0 % of the moving nav-lane
+  commands while mowing and 3.5-6.4 % in transit (raw controller output 1.2-2.2 %;
+  pivot-instead 6-23, widened arc 47-134 latch changes per run), so it is not a pure clamp
+  yet; pivot share is 30-38 % of moving time (roadmap 3.2 asks < 10 %: every unfilleted
+  corner and every leg start is a Spin).
+
+**Verdict: the gate does not pass yet.** On committed parameters 1 of 8 final runs passes
+every criterion. The other seven fail on docking (c: 6 runs, all the two sim artefacts
+above) and two RPP-arm runs also on a transit boundary trip at the dock path's -111 deg
+fillet (a, b). With the sim artefacts removed (consistent 14 cm marker) the one run made
+passed a-h.
+
+### Gate runs with `coverage_controller: mppi` as the default (2026-10-16, e4098ac)
+
+Changes since 548a7ca: `coverage_controller: mppi` (rpp = revert);
+`path_conditioning_route_r_min_m: 0.8` (transit / dock routes take no fillet under 0.8 m, a
+tighter corner pivots at the vertex: the dock path's -111 deg bend is now a pivot);
+`mower_sim` floor model: wheels within `straight_tol_mps` 0.02 of each other count as
+straight (the final dock reverse with its heading hold is no longer zeroed: no
+DOCK_STALLED since). rpp runs use a mission.yaml copy with `coverage_controller: rpp`.
+
+| Run | a max out / > 0.10 | b trips | c complete / docked / charging (final) | d stuck / not mowed / fallback | e corners > 0.15 (max) | f one-wheel (floor) | g pivot share | h p99 line / arc / corner | shaper rewrite % nav MOWING / TRANSIT / raw | loop Hz med / p10 | rules fired | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| k-mppi-ideal-a | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.071) | 0 (139) | 32 % | 0.050 / 0.043 / - | 0.9 / 2.0 / 1.4 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 28, shaper widened arc 92 | PASS |
+| k-mppi-ideal-b | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.059) | 0 (113) | 31 % | 0.052 / 0.034 / - | 0.8 / 1.8 / 1.2 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 26, shaper widened arc 82 | FAIL |
+| k-mppi-dist-s1 | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.086) | 0 (166) | 34 % | 0.066 / 0.059 / - | 0.7 / 1.9 / 1.1 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 34, shaper pivot-instead 24, shaper widened arc 70 | PASS |
+| k-mppi-dist-s2 | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.096) | 0 (104) | 34 % | 0.064 / 0.055 / - | 0.8 / 2.0 / 1.3 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 24, shaper widened arc 81 | FAIL |
+| k-rpp-ideal-a | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.078) | 0 (94) | 36 % | 0.044 / 0.040 / - | 0.3 / 2.0 / 0.8 | 20 / 20 | route corner pivot (angle split) 15, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 15, shaper widened arc 64 | FAIL |
+| k-rpp-dist-s1 | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 1 of 29 (0.219) | 0 (130) | 38 % | 0.040 / 0.047 / - | 0.4 / 4.6 / 1.7 | 20 / 20 | route corner pivot (angle split) 15, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 16, shaper widened arc 65 | FAIL |
+
+Docking: k-mppi-ideal-a, k-mppi-dist-s1, k-rpp-dist-s1 docked; DOCK_MAXOUT in k-mppi-ideal-b,
+k-mppi-dist-s2, k-rpp-ideal-a. Ground truth at the MAXOUT retries (g-mppi-ideal-a): lateral
+0.03-0.05 m, heading -19 -> +18 -> +24 deg, the robot steering on a noisy 4 cm marker
+estimate until the marker leaves the 640x480 image; with a 14 cm marker the same stack docks
+first time (dockexp-marker14).
+
+**Verdict: 2 of 6 runs pass every criterion (both MPPI).** All four MPPI runs pass a, b, d,
+e, f, h; the two MPPI failures are docking only (DOCK_MAXOUT). The rpp revert check fails
+once on docking and once on (e): the first transit's -90 deg route pivot at (-0.23, -0.03)
+right after undocking, 0.219 m (MPPI transit, the same in both arms; not investigated further).
+
+**Marker size (question for the owner, nothing changed):** the sim renders what the deployed
+config says (`marker_size: 0.04`, from the vendor binary constant `marker_size_ = 0.04f`,
+"square width 4 cm"; rear camera 640x480 for docking in both). The repo's own measurement
+contradicts it: `config/cameras/rear_camera_info_640x480.yaml` notes the backlit dock marker's
+edges at x 102-496 px (394 px, fx 684.7) on the docked robot, i.e. ~0.14 m at the ~0.25 m
+camera distance (it would be ~110 px if it were 4 cm; the edges may be the backlit panel, not
+the black square). If the printed square is ~14 cm, every marker distance is 3.5x too short
+in the deployed docking; please measure the square on the charger.
+
+**Pivot share** (k-mppi-ideal-a: 32 % of moving time = 311 s): MOWING 212 s, of which the
+conditioner's pivot vertices 163 s (27 pivots: 24 "no fillet fits", geometrically required
+in the region; 3 "edge policy", 305 deg, ~18 s, avoidable with fillets that cost the outer
+ring's corner cut, not boundary margin), coverage leg-start junctions 34 s (6); TRANSIT /
+RETURNING_HOME 99 s (16 route pivots, up from 12 with the 0.8 m route minimum; 2 final
+approach spins). Nothing was reduced: the only avoidable part (edge policy, ~2 % of moving
+time) is a deliberate edge-quality choice (design 3.1 step 3).
+
+### Post-undock transit corner fix (2026-10-16, 7374306)
+
+k-rpp-dist-s1's (e) failure (0.219 m at the -90 deg route pivot at (-0.23, -0.03)): the
+Spin left the heading 0.15 rad short, then on the following 0.18 m route leg MPPI
+(`FollowPath`, vx_min -0.10) reversed 0.25 m away before driving forward to the vertex.
+`PreferForwardCritic` is skipped within `threshold_to_consider` (0.5 m) of the goal, so on
+every conditioned leg shorter than 0.5 m reversing cost nothing. Now 0.0 (forward
+preference everywhere; revert 0.5). Reruns: m-rpp-dist-s1-a / -b (rpp, `-d -s 1`) and
+m-mppi-dist-s1 (mppi, `-d -s 1`) all PASS every criterion a-h, docked and charging; that
+corner 0.040 / 0.036 / 0.053 m.
+
+### Real marker size in the sim, final batch (2026-10-16, a8e2e34)
+
+The owner measured the dock marker's black square at ~0.055 m (the earlier 0.14 m estimate
+was the backlit panel). The deployed mower_docking keeps `marker_size: 0.04` (unchanged on
+this branch: one change-set per field run), so the robot under-reads marker distances by
+27 % and docks anyway. The sim now reproduces that: it renders the real 0.055 m square
+(`rear_marker_size`) at `rear_marker_offset` 0.543 m, so that the deployed config reads its
+own `docked_marker_offset` 0.45 at the docked pose; the stack is unchanged.
+
+**Marker estimate noise, field vs sim.** The run 5 bags (copies; `mow-051745` + `full`)
+record no marker pose (only `/mower_docking/state` names and 3 `marker_in_view` samples),
+but they do record the docking controller's output `/cmd_vel_docking` and the RTK map pose.
+Same controller and gains in both, so its output in DOCKING compares the estimate noise:
+
+| | w saturated (\|w\| = 0.3) | w sign flips | docked |
+|---|---|---|---|
+| field run 5 (one dock, 15.8 s in DOCKING) | 53 % | 2.03 /s | yes, first attempt |
+| sim, rendered 0.04 m (old default, 8 runs) | 25-37 % | 1.48-2.43 /s | 2 of 8 |
+| sim, rendered 0.055 m, deployed config (6 runs below) | 23-36 % | 1.20-2.94 /s | 5 of 6 |
+| sim, rendered 0.14 m (dockexp-marker14) | 23 % | 1.02 /s | yes |
+
+The sim's flip rate matches the field's, so no noise was added: the sim renders a clean
+image and the noise is the detector's own (an offline test of +3-10 grey-level image noise
+and a 0.7 px blur changed the estimate jitter by < 10 %). The field saturates more often
+(53 vs ~30 %), probably the approach geometry of that one dock; one field sample.
+
+**Final batch** (head a8e2e34 = the code of every run below; `rpp` via a mission.yaml copy;
+`cfg55` = NOT shipped, docking config corrected to `marker_size: 0.055`,
+`docked_marker_offset: 0.543`):
+
+| Run | a max out / > 0.10 | b trips | c complete / docked / charging (final) | d stuck / not mowed / fallback | e corners > 0.15 (max) | f one-wheel (floor) | g pivot share | h p99 line / arc / corner | shaper rewrite % nav MOWING / TRANSIT / raw | loop Hz med / p10 | rules fired | Verdict |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| n-mppi-ideal-a | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.078) | 0 (175) | 32 % | 0.055 / 0.048 / - | 0.8 / 2.0 / 1.3 | 20 / 20 | route corner pivot (angle split) 17, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 16, shaper widened arc 48 | PASS |
+| n-mppi-ideal-b | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.070) | 0 (194) | 32 % | 0.061 / 0.050 / - | 0.8 / 1.9 / 1.2 | 20 / 20 | route corner pivot (angle split) 16, route stub trim / start join 1, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 27, shaper widened arc 82 | PASS |
+| n-mppi-dist-s1 | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.079) | 0 (158) | 36 % | 0.060 / 0.051 / - | 1.1 / 1.6 / 1.5 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 34, shaper pivot-instead 23, shaper widened arc 67 | PASS |
+| n-mppi-dist-s2 | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.111) | 0 (150) | 35 % | 0.065 / 0.073 / - | 1.1 / 1.7 / 1.6 | 20 / 20 | route corner pivot (angle split) 15, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 8, shaper widened arc 59 | PASS |
+| n-rpp-ideal-a | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.078) | 0 (74) | 35 % | 0.047 / 0.046 / - | 0.4 / 2.0 / 1.0 | 20 / 20 | route corner pivot (angle split) 15, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 32, shaper pivot-instead 9, shaper widened arc 32 | FAIL |
+| n-rpp-dist-s1 | 0.000 / 0 | 0 | True / True / True (CHARGING) | 0 / 0 / 0 | 0 of 29 (0.065) | 0 (176) | 38 % | 0.050 / 0.060 / - | 0.4 / 1.8 / 1.2 | 20 / 20 | route corner pivot (angle split) 15, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 8, shaper widened arc 33 | PASS |
+| n-mppi-ideal-cfg55 | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.090) | 0 (119) | 31 % | 0.064 / 0.042 / - | 0.9 / 2.0 / 1.3 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 16, shaper widened arc 48 | FAIL |
+| n-mppi-dist-s1-cfg55 | 0.000 / 0 | 0 | True / False / False (IDLE) | 0 / 0 / 0 | 0 of 29 (0.092) | 0 (126) | 34 % | 0.064 / 0.043 / - | 0.8 / 1.9 / 1.3 | 20 / 20 | route corner pivot (angle split) 16, swath-end reverse turns replaced 4, coverage pivots (vertex / leg start) 33, shaper pivot-instead 15, shaper widened arc 38 | FAIL |
+
+**Verdict:** every MPPI run passes every criterion a-h (4 of 4: ideal x2, disturbed seeds 1
+and 2), docked and charging. The rpp revert check: disturbed s1 PASS, ideal a fails on
+docking only (DOCK_MAXOUT; the docking server is the same in both arms). Mowing, transit,
+corners, one-wheel and cross-track criteria pass in all 8 runs.
+
+**Recommendation on the docking config (not shipped):** correcting `marker_size` to 0.055
+(with the true offset 0.543) did NOT dock in either sim run (2 x DOCK_MAXOUT), against 5 of
+6 with the deployed 0.04. The deployed values are tuned together (gates, approach distance,
+`k_lateral`, the offset) around the under-read distances; changing the size alone is not an
+improvement in the sim. Keep 0.04 for the next field run; if the size is corrected later, do
+it in its own field run together with re-tuned docking gains, sim-tested first.
 
 ## Limitations
 

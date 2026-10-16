@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from mower_mission import geometry as geo
+from mower_mission import path_conditioning as pcond
 from mower_mission.resume import AreaCursor, ResumeCursor, absolute_to_local, subpath_offsets
 
 # ---------------------------------------------------------------------------
@@ -326,6 +327,14 @@ class PublishPlan:
 
 
 @dataclass
+class PublishRoute:
+    """The conditioned transit / dock route being driven (path conditioning)."""
+    what: str
+    poses: list
+    types: list
+
+
+@dataclass
 class PublishTrajectory:
     points: list
 
@@ -602,6 +611,11 @@ class Params:
     route_controller_id: str = 'FollowPath'          # MPPI transit controller
     route_goal_checker_id: str = 'general_goal_checker'
     route_end_tolerance_m: float = 0.5   # route "success" farther from the target = failed
+    # path_conditioning: a transit that arrived more than this from the sub-path start drives
+    # the last straight bit onto it (pivot to face it if needed, along-path end) before the
+    # sub-path's own start pivot (_route_final_approach). 0 = off (revert).
+    route_final_approach_m: float = 0.05
+    route_final_approach_speed_mps: float = 0.1
     # Sim 2026-10-09: the scripted person crossed Path 1, the route aborted (collision ahead)
     # and the /navigate_to_pose fallback after the wait cut across the lawn into a drawn
     # obstacle corner. An obstacle abort now waits (blocked wait) and re-sends the ROUTE
@@ -642,11 +656,12 @@ class Params:
     # drawn ~90 deg corner (and an 80 deg one) stops and pivots; the test is inclusive with
     # a 1 deg tolerance. Revert to the run 4 threshold: 1.5708.
     route_corner_turn_rad: float = 1.38
-    # FollowPath goal checker of a route leg that ends at a split corner (not the last leg):
-    # the transit checker (general_goal_checker, xy 0.25 m) ended them ~0.2 m short of the
-    # corner, so the pivot happened there (+0.2 m off the drawn line). The leg checker ends
-    # within 0.08 m (or after the closest approach within 0.20 m). '' = route_goal_checker_id.
-    route_corner_goal_checker_id: str = 'coverage_leg_goal_checker'
+    # FollowPath goal checker of a leg that ends on a pivot vertex: a route leg ending at a
+    # split corner (not the last leg; the transit checker, xy 0.25 m, ended them ~0.2 m short
+    # and the pivot happened there) and, with path_conditioning, every conditioned forward
+    # coverage leg. coverage_corner_goal_checker (2026-10-16): along-path, done at the plane
+    # through the vertex, no yaw test, no 0.08 m disc. '' = route_goal_checker_id.
+    route_corner_goal_checker_id: str = 'coverage_corner_goal_checker'
     # 2026-10-15 undock incident: the start route began with a 0.17 m connector from the robot
     # to the dock path, then turned 90 deg onto it. That stub was the first leg (pivot 111 deg
     # to it, then a FollowPath of 0.17 m ending at the 90 deg corner) and MPPI circled its end
@@ -687,24 +702,44 @@ class Params:
     # goal checker wants 0.08 m; the translation-only checker no longer counts the final
     # turning-in as progress). 0 = off (revert).
     route_leg_end_accept_m: float = 0.25
-    # 2026-10-15 run (mow-040433), STUCK1 / STUCK2: both were a route leg into a split corner
-    # that never ended. The leg goal checker (coverage_leg_goal_checker: 0.08 m AND the leg
-    # end yaw within 0.5 rad) was not met: STUCK1 reached 0.07 m of the corner 39 deg off the
-    # run's yaw, STUCK2 stopped 0.12 m short; MPPI then turned / dithered in place (v
-    # -0.05..+0.07, w 0.05-0.2) for ~20 s until the stuck guard, so the corner pivot never
-    # came. The yaw at a corner is irrelevant (the pivot follows), so the mission ends a
-    # corner leg itself: within route_corner_xy_m of the corner, or within
-    # route_corner_reach_m once the distance has not shrunk by 0.01 m for
-    # route_corner_stall_s. route_corner_stall_s 0 = off (revert: the leg goal checker only).
-    route_corner_xy_m: float = 0.08
-    route_corner_reach_m: float = 0.15
-    route_corner_stall_s: float = 2.0
+    # (2026-10-15 run mow-040433 STUCK1 / STUCK2, a route leg into a split corner never
+    # ended on the 0.08 m + yaw leg checker, MPPI dithered: the mission-side corner-reached
+    # rule route_corner_xy_m / reach / stall was removed 2026-10-16. Corner legs end on
+    # route_corner_goal_checker_id = coverage_corner_goal_checker, along-path, no yaw test;
+    # a leg that still stops short is ended by the route progress watch and
+    # route_leg_end_accept_m.)
     # ... and before a route leg after a split corner (not the first leg: a route start keeps
     # route_corner_turn_rad) the robot pivots (Nav2 Spin) when the leg heading is more than
     # this off its yaw (was route_corner_turn_rad, 79 deg): after STUCK1's corner MPPI would
     # have had a ~51 deg turn-in, the slow-turn dither regime. 0 = route_corner_turn_rad
     # (revert).
     route_leg_pivot_min_rad: float = 0.6
+    # Path conditioning (docs/DESIGN_path_conditioning_2026-10.md steps 2-3; 2026-10-15 run 5:
+    # RPP drove the outer ring's 100 deg V at (-4.74, -1.17) as an arc 0.26 m wide, out of
+    # the area twice -> STUCK). Every forward coverage sub-path (2026-10-16: with each
+    # reverse-curve swath-end turn first replaced by its swath -> connector -> swath corners,
+    # _join_turn_chains) and every transit / dock route goes through ONE pure-geometry pass
+    # (path_conditioning.condition) against the allowed region (mowing areas U drawn path
+    # channels U the dock corridor): each sharp corner becomes the largest fillet arc of
+    # r in [r_min, r_max] that fits the space (clearance >= min(margin + half width, the
+    # drawn path's) - slack), else a pivot at the vertex; on the outermost ring convex
+    # corners >= edge_pivot_rad pivot (edge cut); resampled at 0.05 m with segment types.
+    # Pivots run as a leg end on the vertex (route_corner_goal_checker_id: along-path, the
+    # plane through the vertex) plus an in-place Spin to the next leg, blade on. A sub-path
+    # that fails the validation is NOT mowed (never driven). false = raw paths as before
+    # (revert). path_conditioning_pivot_min_rad is also the leg-start pivot threshold
+    # (_cov_pivot: the robot -> leg junction is a vertex no fillet fits).
+    path_conditioning: bool = True
+    path_conditioning_r_min_m: float = 0.5
+    path_conditioning_r_max_m: float = 1.0
+    path_conditioning_margin_m: float = 0.05
+    path_conditioning_half_width_m: float = 0.24
+    path_conditioning_slack_m: float = 0.05
+    path_conditioning_pivot_min_rad: float = 0.35
+    path_conditioning_edge_pivot_rad: float = 1.38
+    path_conditioning_edge_clearance_m: float = 0.20
+    # transit / dock routes: smallest fillet radius (tighter corners pivot at the vertex)
+    path_conditioning_route_r_min_m: float = 0.8
     # The costmap-planner fallback (no route: start off the route graph; a route abort away
     # from any cusp) is bounded: once the robot's own distance from the drawn network (the
     # planned route if there was one; 0 inside a mowing area) exceeds this, the fallback is
@@ -726,6 +761,19 @@ class Params:
     # After a sub-path still fails, the session ends in MOWING_INCOMPLETE; dock only
     # when this is true (default: stop in place so the operator can inspect).
     return_home_on_incomplete: bool = False
+    # 2026-10-15 MPPI study (docs/analysis/2026-10-15_mppi_study.md): which tracker drives the
+    # coverage sub-paths. 'mppi' = mppi_follow_controller_id / mppi_reverse_controller_id
+    # (feasibility-aware MPPI, nav2_params.yaml), the cut speed goes to
+    # mppi_controller_speed_param capped at mppi_speed_max_mps; 'rpp' =
+    # follow_controller_id / reverse_controller_id / controller_speed_param, as before.
+    # Default 'mppi' (2026-10-16, owner: MPPI as the single tracker; it needs
+    # path_conditioning: on raw paths it overshoots the sharp ring vertices and the short
+    # swath-end turn legs, study §8). 'rpp' = the revert.
+    coverage_controller: str = 'mppi'
+    mppi_follow_controller_id: str = 'FollowCoveragePathMPPI'
+    mppi_reverse_controller_id: str = 'FollowCoveragePathReverseMPPI'
+    mppi_controller_speed_param: str = 'FollowCoveragePathMPPI.vx_max'
+    mppi_speed_max_mps: float = 0.3      # MPPI must not sample above the MCU clamp
     follow_controller_id: str = 'FollowCoveragePath'
     # Sub-paths whose poses face against their travel (reverse turn legs from
     # the coverage bridge) go to this controller (RPP with allow_reversing).
@@ -1011,12 +1059,17 @@ class Mission:
     route_poses: Optional[list] = None          # route of the in-flight route transit
     route_full: Optional[list] = None           # the planned route (route_cusps index into it)
     route_cusps: list = field(default_factory=list)   # [(i, x, y, heading_after)] of route_full
+    final_approach: bool = False                # this transit's final approach leg was sent
     cusp_turns: dict = field(default_factory=dict)    # cusp (x, y) -> about-turns, per sub-path
     cusp_resume: Optional[list] = None          # route remainder sent after the about-turn
     fallback_ref: Optional[list] = None         # route of a costmap fallback (corridor bound)
     fallback_armed: Optional[bool] = None       # corridor bound active (None = not started)
     fallback_off0: float = 0.0                  # off-path distance when the fallback started
     leg_watch: Optional[dict] = None            # fix 10 leg-end cap / loop guard state
+    cond: dict = field(default_factory=dict)    # sub -> {'types', 'pivots', 'corners'}
+    cond_errors: dict = field(default_factory=dict)   # sub -> validation error (not mowed)
+    corner_end: Optional[int] = None            # the in-flight chunk ends on this pivot
+    pivot_done: Optional[tuple] = None          # (area, sub, local) just pivoted for
 
 
 @dataclass
@@ -1072,6 +1125,7 @@ class MissionFSM:
         self._last_sample = -1e9
         self._record_poly = None
         self._enum = None                   # {'purpose', 'index', 'areas', 'count'}
+        self._region_areas = {}             # last area enumeration (path conditioning)
         self._record_name = ''
         self._record_kind = 'area'          # 'area' (closed boundary) | 'path' (open band)
         self._record_line = None            # simplified centreline of a PATH being saved
@@ -2540,7 +2594,7 @@ class MissionFSM:
             self._call(SRV_CUTTER_HEIGHT, {'height_mm': hmm}, track=False)
         if self.p.set_cut_speed:
             self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER,
-                                        'params': {self.p.controller_speed_param: speed}},
+                                        'params': self.coverage_speed_params(speed)},
                        track=False)
         self._plan_run()
 
@@ -2602,6 +2656,9 @@ class MissionFSM:
             self._go('AREA_UNREACHABLE', 'area %d: planning failed: %s' % (m.area_idx, why))
             self._next_area()
             return
+        m.cond, m.cond_errors = {}, {}
+        if self.p.path_conditioning:
+            subpaths = self._condition_subpaths(subpaths)
         m.subpaths = subpaths
         m.planned_total += len(subpaths)
         m.cum = [geo.cumulative_lengths(sp) for sp in subpaths]
@@ -2650,6 +2707,7 @@ class MissionFSM:
         m.detours, m.detour = 0, None
         m.cusp_turns = {}
         m.leg_watch = None
+        m.corner_end, m.pivot_done = None, None
         self._blk = None
         self._dispatch()
 
@@ -2658,6 +2716,9 @@ class MissionFSM:
         first when its start is farther than ``transit_gap_m``."""
         m = self.mission
         sp = m.subpaths[m.sub_i]
+        if m.sub_i in m.cond_errors:
+            self._subpath_failed('path conditioning: %s' % m.cond_errors[m.sub_i])
+            return
         if self._seg_last() - m.start_local < 1:
             self._segment_done()
             return
@@ -2852,20 +2913,225 @@ class MissionFSM:
 
     def _follow(self):
         m = self.mission
+        if self._cov_pivot():
+            return
         m.step = 'follow'
         m.progress_local = m.start_local
         sp = m.subpaths[m.sub_i]
         m.chunk_end = min(geo.chunk_end(sp, m.start_local, self.p.follow_chunk_m,
                                         self.p.follow_chunk_clearance_m), self._seg_last())
+        m.corner_end = None
+        for c in self._cov_pivots():
+            if m.start_local < c <= m.chunk_end and c < self._seg_last():
+                m.chunk_end = m.corner_end = c       # this chunk ends on the pivot vertex
+                break
         poses = list(sp[m.start_local:m.chunk_end + 1])
         reverse = geo.is_reverse_subpath(sp)
+        checker = self._follow_goal_checker(poses, reverse)
+        if (m.corner_end is not None or m.sub_i in m.cond) and not reverse and \
+                self.p.route_corner_goal_checker_id:
+            # a conditioned forward leg (into a pivot vertex, to a chunk end or to the
+            # sub-path end) ends when the robot has come up to its end along the path
+            # (coverage_corner_goal_checker, along_path), not on a position disc
+            checker = self.p.route_corner_goal_checker_id
         self._start_action(ACT_FOLLOW, {
             'poses': poses,
-            'controller_id': (self.p.reverse_controller_id if reverse
-                              else self.p.follow_controller_id),
-            'goal_checker_id': self._follow_goal_checker(poses, reverse),
+            'controller_id': self.coverage_controller_id(reverse),
+            'goal_checker_id': checker,
             'progress_checker_id': self.p.follow_progress_checker_id},
             self.p.follow_timeout_s)
+
+    # ---- path conditioning (design 2026-10-15 steps 2-3) --------------------
+    def _cond_params(self):
+        p = self.p
+        return pcond.Params(
+            r_min=float(p.path_conditioning_r_min_m), r_max=float(p.path_conditioning_r_max_m),
+            margin_m=float(p.path_conditioning_margin_m),
+            half_width_m=float(p.path_conditioning_half_width_m),
+            slack_m=float(p.path_conditioning_slack_m),
+            pivot_min_rad=float(p.path_conditioning_pivot_min_rad),
+            edge_pivot_rad=float(p.path_conditioning_edge_pivot_rad),
+            edge_clearance_m=float(p.path_conditioning_edge_clearance_m))
+
+    def _region(self):
+        """Allowed region polygons: mowing areas U drawn path channels U the dock corridor
+        (the dock -> approach capsule as a rectangle)."""
+        polys = [list(a['outer']) for a in (self._region_areas or {}).values()
+                 if len(a.get('outer') or []) >= 3]
+        dock = self.inputs.dock_pose
+        if dock is not None and len(dock) >= 3:
+            x, y, yaw = float(dock[0]), float(dock[1]), float(dock[2])
+            L, w = float(self.p.dock_approach_distance_m), 0.35
+            c, sn = math.cos(yaw), math.sin(yaw)
+            polys.append([(x - w * c + w * sn, y - w * sn - w * c),
+                          (x + (L + w) * c + w * sn, y + (L + w) * sn - w * c),
+                          (x + (L + w) * c - w * sn, y + (L + w) * sn + w * c),
+                          (x - w * c - w * sn, y - w * sn + w * c)])
+        return polys
+
+    def _condition_subpaths(self, subpaths):
+        m, out, region = self.mission, [], self._region()
+        prm = self._cond_params()
+        # swath-end Reeds-Shepp turns (forward / reverse legs of 0.3-0.9 m) -> the swath ->
+        # connector -> swath geometry they connect (roadmap 3.2: one tracker path per swath
+        # pair, the turn included; conditioned below: fillets where they fit, else pivots)
+        subpaths, joins = pcond.join_turn_chains(subpaths, region, prm,
+                                                 leg_max_m=float(self.p.turn_leg_max_m))
+        kept = [j for j in joins if not j.ok]
+        if joins:
+            self._log('info', 'area %d: %d swath-end reverse turn(s) replaced by their '
+                              'connector corners, %d kept as planned%s' % (
+                                  m.area_idx, len(joins) - len(kept), len(kept),
+                                  ''.join(' [%s]' % j.why for j in kept)))
+        npiv = nfil = 0
+        why, why_deg = {}, {}
+        for k, sp in enumerate(subpaths):
+            if geo.is_reverse_subpath(sp):
+                out.append(sp)                 # a reverse leg of a turn kept as planned
+                continue
+            r = pcond.condition(sp, region, prm)
+            if not r.valid:
+                m.cond_errors[k] = r.errors[0]
+                self._log('error', 'area %d sub-path %d: path conditioning failed (%s): it will '
+                                   'not be driven' % (m.area_idx, k, r.errors[0]))
+                out.append(sp)
+                continue
+            m.cond[k] = {'types': r.types, 'pivots': r.pivots}
+            npiv += len(r.pivots)
+            nfil += sum(1 for c in r.corners if c.choice == 'fillet')
+            for c in r.corners:
+                if c.choice == 'pivot':
+                    why[c.why] = why.get(c.why, 0) + 1
+                    why_deg[c.why] = why_deg.get(c.why, 0.0) + abs(math.degrees(c.turn))
+            out.append(r.poses)
+        self._log('info', 'area %d: path conditioning: %d fillets, %d pivots (%s), %d '
+                          'sub-path(s) failed validation' % (
+                              m.area_idx, nfil, npiv, ', '.join(
+                                  '%s %d / %.0f deg' % (k, n, why_deg[k])
+                                  for k, n in sorted(why.items())) or 'none',
+                              len(m.cond_errors)))
+        return out
+
+    def _condition_route(self, poses, what):
+        """A transit / dock route -> FollowPath legs split at the conditioner's pivots."""
+        prm = self._cond_params()
+        # routes are tracked at transit speed by the route controller: a fillet tighter than
+        # path_conditioning_route_r_min_m is not drivable there (sim gate 2026-10-16: MPPI ran
+        # 0.4 m wide of an r 0.5 m dock-path fillet and left the area) -> pivot at the vertex
+        prm.r_min = max(prm.r_min, float(self.p.path_conditioning_route_r_min_m))
+        prm.r_max = max(prm.r_max, prm.r_min)
+        r = pcond.condition(poses, self._region(), prm, ring=False)
+        if not r.valid:
+            self._log('error', '%s: path conditioning failed (%s): raw route split as before'
+                      % (what, r.errors[0]))
+            return None
+        legs, s0 = [], 0
+        for c in r.pivots:
+            if 0 < c < len(r.poses) - 1:
+                legs.append(list(r.poses[s0:c + 1]))
+                s0 = c
+        legs.append(list(r.poses[s0:]))
+        legs = [lg for lg in legs if len(lg) >= 2] or [list(r.poses)]
+        self._fx.append(PublishRoute(what, list(r.poses), list(r.types)))
+        self._log('info', '%s: conditioned: %s' % (what, ', '.join(
+            '%s %+.0f deg%s' % (c.choice, math.degrees(c.turn), ' r %.1f' % c.r if c.r else '')
+            for c in r.corners) or 'no corners'))
+        return legs
+
+    def _cov_turn_leg(self, k):
+        """Sub-path ``k`` is a reverse leg (owner turn_type reverse, or a turn chain that
+        could not be conditioned): driven as planned, never pivoted onto."""
+        return geo.is_reverse_subpath(self.mission.subpaths[k])
+
+    def _cov_pivots(self, k=None):
+        m = self.mission
+        k = m.sub_i if k is None else k
+        c = m.cond.get(k)
+        return list(c['pivots']) if c else []
+
+    def _cov_pivot(self):
+        """Before a coverage follow from ``start_local``: the conditioner's pivot rule at the
+        leg's start. The start is a vertex of the path actually driven (robot -> leg): a
+        conditioner pivot marker, the sub-path start after a transit, or a resume after a
+        retry / retrace / hold. The robot is on the line, so no fillet fits there: when the
+        join heading is path_conditioning_pivot_min_rad or more off the robot's yaw it turns
+        in place (Nav2 Spin, both wheels) first, as at any pivot vertex; a smaller bend is
+        left to the tracker. One mechanism for both coverage controllers (it replaces the
+        separate leg-start rules path_conditioning_start_pivot_rad and MPPI's
+        coverage_leg_pivot_rad). Not on reverse legs. True = started."""
+        m, p, pose = self.mission, self.p, self.inputs.pose
+        key = (m.area_idx, m.sub_i, m.start_local)
+        if m.pivot_done == key:               # just pivoted for this leg: follow it
+            m.pivot_done = None
+            return False
+        m.pivot_done = None
+        lim = float(p.path_conditioning_pivot_min_rad)
+        if not p.path_conditioning or lim <= 0.0 or pose is None or len(pose) < 3 or \
+                self._cov_turn_leg(m.sub_i):
+            return False
+        sp, pivots = m.subpaths[m.sub_i], self._cov_pivots()
+        corner = m.start_local in pivots
+        end = min([c for c in pivots if c > m.start_local] + [self._seg_last()])
+        heading = self._join_heading(sp[m.start_local:end + 1], pose)
+        if heading is None:
+            return False
+        delta = geo.wrap_angle(heading - float(pose[2]))
+        if abs(delta) < lim:
+            return False
+        q = sp[m.start_local]
+        self._log('info', 'area %d sub-path %d: %s at (%.2f, %.2f): pivot %.0f deg in place, '
+                          'blade on, then follow' % (m.area_idx, m.sub_i,
+                                                     'pivot vertex' if corner else 'leg start',
+                                                     q[0], q[1], math.degrees(delta)))
+        m.step = 'corner_pivot'
+        m.pivot_done = key
+        self._go('MOWING', 'area %d sub-path %d/%d: pivot %.0f deg' % (
+            m.area_idx, m.sub_i + 1, len(m.subpaths), math.degrees(delta)))
+        allowance = abs(delta) / max(0.05, float(p.route_cusp_spin_rps)) + 10.0
+        self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
+                           allowance + 5.0, purpose='cov_pivot')
+        return True
+
+    @staticmethod
+    def _join_heading(leg, pose, look=0.4):
+        """Heading from the robot to the point ``look`` m past its projection onto ``leg``
+        (where the tracker joins it; on the leg's start: the leg's own heading)."""
+        if len(leg) < 2:
+            return None
+        cum = geo.cumulative_lengths(leg)
+        s = geo.path_projection(leg, pose)[0]
+        tx, ty = geo._point_at(leg, cum, min(cum[-1], s + look))
+        if math.hypot(tx - pose[0], ty - pose[1]) < 0.1:
+            return MissionFSM._leg_heading(leg)
+        return math.atan2(ty - pose[1], tx - pose[0])
+
+    def _cov_pivot_done(self, outcome):
+        """Coverage pivot ended (any outcome: the follow is the judge): follow the leg."""
+        m = self.mission
+        if self.phase != 'MOWING' or m.step != 'corner_pivot':
+            return
+        if outcome != SUCCEEDED:
+            self._log('warn', 'coverage pivot %s: following the leg anyway' % outcome)
+        self._go('MOWING', 'area %d sub-path %d/%d' % (m.area_idx, m.sub_i + 1, len(m.subpaths)))
+        self._follow()
+
+    def coverage_mppi(self):
+        """True when coverage sub-paths are driven by MPPI (``coverage_controller``)."""
+        return str(self.p.coverage_controller).strip().lower() == 'mppi'
+
+    def coverage_controller_id(self, reverse):
+        """Nav2 controller id for a coverage sub-path (forward or reverse leg)."""
+        if self.coverage_mppi():
+            return (self.p.mppi_reverse_controller_id if reverse
+                    else self.p.mppi_follow_controller_id)
+        return self.p.reverse_controller_id if reverse else self.p.follow_controller_id
+
+    def coverage_speed_params(self, speed):
+        """{controller_server param: value} for a coverage cut speed."""
+        if self.coverage_mppi():
+            return {self.p.mppi_controller_speed_param:
+                    min(float(speed), float(self.p.mppi_speed_max_mps))}
+        return {self.p.controller_speed_param: float(speed)}
 
     def _follow_goal_checker(self, poses, reverse):
         """Goal checker for a FollowPath chunk: the leg checker for turn legs."""
@@ -3361,7 +3627,9 @@ class MissionFSM:
             self._dock_handover()
             return
         self._dock_route_end = (float(poses[-1][0]), float(poses[-1][1]))
-        legs = self._split_route(self._route_prepare(poses))
+        prepared = self._route_prepare(poses)
+        legs = (self._condition_route(prepared, 'dock route') if self.p.path_conditioning
+                else None) or self._split_route(prepared)
         self._log('info', 'dock route %.1f m (%d leg%s): %s' % (
             float(resp.get('length_m', 0.0)), len(legs), '' if len(legs) == 1 else 's',
             resp.get('message', '')))
@@ -3602,6 +3870,7 @@ class MissionFSM:
         m = self.mission
         m.route_poses = None
         m.route_full, m.route_cusps, m.cusp_resume = None, [], None
+        m.final_approach = False
         if self.p.route_transits and not m.route_fallback and m.detour is None \
                 and not m.recovering and self.inputs.pose is not None:
             m.fallback_ref = None
@@ -3729,7 +3998,8 @@ class MissionFSM:
             # the straight segment stays in the area but the route does not (path legs)
             self._blade_off('route leaves area %d' % m.area_idx)
         m.route_poses = self._route_prepare(poses)
-        legs = self._split_route(m.route_poses)
+        legs = (self._condition_route(m.route_poses, 'route') if self.p.path_conditioning
+                else None) or self._split_route(m.route_poses)
         m.route_full = m.route_poses
         m.route_cusps = self._route_cusps(m.route_poses, legs)
         self._log('info', 'route %.1f m (%.1f m on paths, %d leg%s): %s' % (
@@ -3751,7 +4021,10 @@ class MissionFSM:
         route starts where the robot projects onto its first route_start_join_m."""
         poses = [tuple(p) for p in poses]
         th, stub = self._route_corner_th(), float(self.p.route_stub_trim_m)
-        if th > 0.0 and stub > 0.0:
+        # path conditioning: no stub trimming (design 3.3) - a corner near a route end is a
+        # pivot marker like any other, and the stub after it a leg that ends along-path on
+        # the target (the trim ended transits up to 0.3 m short of the sub-path start)
+        if th > 0.0 and stub > 0.0 and not self.p.path_conditioning:
             out = geo.trim_route_stubs(poses, th, stub, tol_rad=ROUTE_CORNER_TOL_RAD)
             if len(out) != len(poses):
                 cut0 = poses.index(out[0])
@@ -3936,6 +4209,11 @@ class MissionFSM:
         piv = float(self.p.route_leg_pivot_min_rad)
         if piv > 0.0 and rl['i'] > 0:          # stopped at a split corner
             lim = min(lim, piv)
+        if self.p.path_conditioning and float(self.p.path_conditioning_pivot_min_rad) > 0.0:
+            # one pivot rule (as _cov_pivot): every leg start, the first one too, is a vertex
+            # of the driven path no fillet fits (sim gate 2026-10-16: MPPI turned onto a
+            # transit 33 deg off and ran 0.17 m beside it)
+            lim = float(self.p.path_conditioning_pivot_min_rad)
         if abs(delta) < lim - ROUTE_CORNER_TOL_RAD:     # inclusive, as the split
             return False
         rl['turned'], rl['purpose'] = rl['i'], purpose
@@ -3968,9 +4246,11 @@ class MissionFSM:
         if self._route_corner_turn(purpose):
             return
         checker = self.p.route_goal_checker_id
-        if rl['i'] + 1 < len(rl['legs']) and float(self.p.route_corner_turn_rad) > 0.0 and \
-                self.p.route_corner_goal_checker_id:
-            checker = self.p.route_corner_goal_checker_id   # task 0.4 (d): end on the corner
+        if (rl['i'] + 1 < len(rl['legs']) and float(self.p.route_corner_turn_rad) > 0.0 or
+                self.p.path_conditioning) and self.p.route_corner_goal_checker_id:
+            # task 0.4 (d): end on the corner; path conditioning: every leg (the last one
+            # too) ends along-path on its end, not 0.25 m short on the transit disc
+            checker = self.p.route_corner_goal_checker_id
         self._start_action(ACT_FOLLOW, {'poses': rl['legs'][rl['i']],
                                         'controller_id': self.p.route_controller_id,
                                         'goal_checker_id': checker,
@@ -3982,9 +4262,7 @@ class MissionFSM:
         """2026-10-15 undock incident: a route leg (transit or dock route) whose robot
         projection has not advanced route_progress_min_m along the leg for
         route_progress_window_s (turning / circling in place) is cancelled and handled as a
-        FollowPath abort. A leg into a split corner is ended here (handled as a success)
-        within route_corner_xy_m of the corner, or within route_corner_reach_m after a
-        route_corner_stall_s stall (run mow-040433 STUCK1/2). True when it fired."""
+        FollowPath abort. True when it fired."""
         win, need = float(self.p.route_progress_window_s), float(self.p.route_progress_min_m)
         a, rl, pose = self._action, self._route_legs, self.inputs.pose
         if a is None or a.name != ACT_FOLLOW or rl is None or pose is None or \
@@ -3993,24 +4271,8 @@ class MissionFSM:
         leg = rl['legs'][rl['i']]
         s = geo.path_projection(leg, pose)[0]
         w = self._route_watch
-        d = geo.dist(pose, leg[-1])
         if w is None or w['token'] != a.token:
-            w = self._route_watch = {'token': a.token, 's': s, 't': self._now,
-                                     'd': d, 'dt': self._now}
-        if d < w['d'] - 0.01:
-            w['d'], w['dt'] = d, self._now
-        stall = float(self.p.route_corner_stall_s)
-        if stall > 0.0 and rl['i'] + 1 < len(rl['legs']) and (
-                d <= float(self.p.route_corner_xy_m) or
-                (d <= float(self.p.route_corner_reach_m) and self._now - w['dt'] >= stall)):
-            self._log('info', 'route leg %d/%d: corner (%.2f, %.2f) reached (%.2f m): leg done, '
-                              'pivot to the next leg' % (rl['i'] + 1, len(rl['legs']),
-                                                         leg[-1][0], leg[-1][1], d))
-            self._fx.append(CancelActions('route corner reached'))
-            self._action = None
-            self._route_watch = None
-            self._handle_action(a, SUCCEEDED, {})
-            return True
+            w = self._route_watch = {'token': a.token, 's': s, 't': self._now}
         if w['t'] == self._now:
             return False
         if s >= w['s'] + need:
@@ -4064,6 +4326,8 @@ class MissionFSM:
         d = geo.dist(pose, m.transit_target) if pose is not None else math.inf
         if (outcome == SUCCEEDED and d <= self.p.route_end_tolerance_m) or \
                 (outcome != UNAVAILABLE and self._transit_arrived()):
+            if self._route_final_approach(d):
+                return
             m.recovering = False
             m.transit_fails = 0
             self._blk = None
@@ -4089,6 +4353,59 @@ class MissionFSM:
         m.route_fallback = True
         self._log('warn', '%s: transit via the costmap planner' % why)
         self._start_fallback_nav(ref=route)
+
+    def _route_final_approach(self, d):
+        """Path conditioning: a transit that ended (arrived) more than route_final_approach_m
+        from the sub-path start drives onto it first. The junction robot -> start is part of
+        the driven path: a straight hop as explicit steps, like a pivot (Nav2 Spin to face
+        the start when that is path_conditioning_pivot_min_rad or more off the robot's yaw,
+        then Nav2 DriveOnHeading the remaining distance at route_final_approach_speed_mps),
+        not a tracker leg (sim gate 2026-10-16: transits ended 0.1-0.23 m beside the start
+        and the start pivot / rejoin ran that far off the line; as a 0.1 m FollowPath leg
+        MPPI reversed 0.4 m out of the area). Once per transit; the outcome is not judged
+        (the transit had arrived). True = started."""
+        m, pose, tol = self.mission, self.inputs.pose, float(self.p.route_final_approach_m)
+        if not self.p.path_conditioning or tol <= 0.0 or d <= tol or pose is None or \
+                len(pose) < 3 or m.transit_target is None or m.final_approach:
+            return False
+        m.final_approach = True
+        b = m.transit_target
+        delta = geo.wrap_angle(math.atan2(b[1] - pose[1], b[0] - pose[0]) - float(pose[2]))
+        self._log('info', 'transit ended %.2f m from the sub-path start: final approach onto '
+                          'it (turn %.0f deg, then straight)' % (d, math.degrees(delta)))
+        if abs(delta) >= float(self.p.path_conditioning_pivot_min_rad):
+            allowance = abs(delta) / max(0.05, float(self.p.route_cusp_spin_rps)) + 10.0
+            self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
+                               allowance + 5.0, purpose='final_approach_spin')
+            return True
+        self._final_approach_drive()
+        return True
+
+    def _final_approach_drive(self):
+        """The straight hop of the final approach: the start's distance along the heading."""
+        m, pose = self.mission, self.inputs.pose
+        b = m.transit_target
+        dist = 0.0
+        if pose is not None and len(pose) >= 3:
+            dist = (b[0] - pose[0]) * math.cos(pose[2]) + (b[1] - pose[1]) * math.sin(pose[2])
+        if dist < 0.02:
+            self._final_approach_done(SUCCEEDED)
+            return
+        speed = float(self.p.route_final_approach_speed_mps)
+        self._start_action(ACT_DRIVE, {'distance_m': dist, 'speed_mps': speed,
+                                       'wait_for_rtk': False, 'rtk_timeout_s': 0.0},
+                           dist / max(0.01, speed) + 15.0, purpose='final_approach')
+
+    def _final_approach_done(self, outcome):
+        m = self.mission
+        if m is None or self.phase != 'TRANSIT' or m.step != 'transit':
+            return
+        if outcome != SUCCEEDED:
+            self._log('warn', 'final approach %s: mowing from here' % outcome)
+        m.recovering = False
+        m.transit_fails = 0
+        self._blk = None
+        self._begin_blade()
 
     def _transit_arrived(self):
         """True when the last transit target is within transit_arrived_radius_m."""
@@ -4117,6 +4434,14 @@ class MissionFSM:
             return
         if a.purpose == 'route_corner':
             self._route_corner_spun(outcome)
+            return
+        if a.purpose == 'final_approach_spin':
+            m = self.mission
+            if m is not None and self.phase == 'TRANSIT' and m.step == 'transit':
+                self._final_approach_drive()
+            return
+        if a.purpose == 'final_approach':
+            self._final_approach_done(outcome)
             return
         if a.purpose == 'dock':
             self._dock_contact_since = None
@@ -4170,6 +4495,9 @@ class MissionFSM:
             return
         if a.purpose == 'route_cusp':
             self._route_cusp_spun(outcome)
+            return
+        if a.purpose == 'cov_pivot':
+            self._cov_pivot_done(outcome)
             return
         if name in (ACT_UNDOCK, ACT_BACKUP):
             if outcome == SUCCEEDED and result.get('success', True):
@@ -4619,7 +4947,7 @@ class MissionFSM:
     def _dyn_context(self):
         m, a = self.mission, self._action
         if self.phase == 'MOWING' and m is not None and m.step in ('spinup', 'spin_pause',
-                                                                    'follow'):
+                                                                    'follow', 'corner_pivot'):
             return 'follow'
         if self.phase == 'TRANSIT' and m is not None and m.step == 'transit' and a is not None:
             return 'transit'
@@ -4994,6 +5322,7 @@ class MissionFSM:
             if ok and resp.get('success'):
                 area = resp.get('area', {})
                 e['count'] += 1
+                e.setdefault('all', {})[e['index']] = area
                 if not area.get('is_navigation_area', False):
                     e['areas'][e['index']] = area
                 e['index'] += 1
@@ -5001,6 +5330,8 @@ class MissionFSM:
                     self._call(SRV_GET_AREA, {'index': e['index']}, purpose='enum')
                     return
             self._enum = None
+            if e.get('all'):
+                self._region_areas = dict(e['all'])     # path conditioning's region
             if e['purpose'] == 'start':
                 if self.mission is None:
                     return
@@ -5277,16 +5608,16 @@ class MissionFSM:
         m = self.mission
         params = {}
         if want:
-            params = {self.p.controller_speed_param: cap,
-                      self.p.tilt_transit_speed_param: cap}
+            params = dict(self.coverage_speed_params(cap))
+            params[self.p.tilt_transit_speed_param] = cap
             self._log('warn', 'slope caution (%s): controller speed capped at %.2f m/s'
                       % (self._tilt_text(), cap))
         else:
             params = {self.p.tilt_transit_speed_param: float(self.p.tilt_transit_speed_mps)}
             if m is not None and m.settings:
-                params[self.p.controller_speed_param] = min(
+                params.update(self.coverage_speed_params(min(
                     float(m.settings.get('cut_speed_mps', AREA_SETTINGS_DEFAULTS['cut_speed_mps'])),
-                    float(self.p.cut_speed_max_mps))
+                    float(self.p.cut_speed_max_mps))))
             self._log('info', 'slope ok: controller speed restored')
         if self.p.set_cut_speed:
             self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER, 'params': params},
@@ -5709,7 +6040,7 @@ def blade_allowed(fsm):
     m = fsm.mission
     if m is None:
         return False
-    if fsm.phase == 'MOWING' and m.step in ('spinup', 'follow'):
+    if fsm.phase == 'MOWING' and m.step in ('spinup', 'follow', 'corner_pivot'):
         return True
     # continuous blade policy: waits / retries / in-area transits inside the area
     return fsm._blade_keep_ok()

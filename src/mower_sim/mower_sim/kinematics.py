@@ -9,9 +9,26 @@ mower_mcu_driver ``_map_command``, nav2_params.yaml comments):
 * while TURNING, a wheel asked for less than ~0.06 m/s does not turn (the speed
   floor: "wheel 0.04 m/s, under the MCU's ~0.06 m/s floor ... never broke free", the
   turn shaper's "inner >= 0.06"). Straight driving is not floored: the vendor's final
-  dock reverse at 0.05 m/s works on hardware (``floor_straight`` to floor it too);
+  dock reverse at 0.05 m/s works on hardware (``floor_straight`` to floor it too), and so
+  does that reverse with its small heading-hold correction (both wheels within
+  ``straight_tol_mps`` of each other count as straight: 2026-10-16, an exact-equality
+  test zeroed -0.046 / -0.054 m/s and stalled every final dock reverse in the sim gate);
 * the command is held until a 0.5 s timeout (the driver's ``cmd_vel_timeout``);
 * the wheels lag the command (first-order, ``wheel_tau_s``).
+
+Disturbance (optional, off by default; ``DriveParams.disturb_*``): turf / slope effects
+the ideal model hides, so a controller that only works on a perfect drive does not pass
+the sim gate. The commanded wheel speeds are unchanged (the MCU, odometry and the stack
+see what they always see); what the ground does with them is not:
+
+* ``disturb_wheel_bias``: a constant left/right ground-speed mismatch (fraction; +0.04 =
+  the right wheel makes 2 % more ground than commanded, the left 2 % less: a slow drift
+  to the left, like a cross slope);
+* ``disturb_slip_std`` / ``disturb_slip_tau_s``: per-wheel multiplicative slip, a
+  first-order (Ornstein-Uhlenbeck) random process (std, correlation time), seeded by
+  ``disturb_seed`` so a run is repeatable;
+* ``disturb_pivot_eff``: ground yaw rate / commanded yaw rate while the wheels
+  counter-rotate (turf scrub; 1.0 = ideal).
 
 Collisions: a step whose footprint would touch an obstacle is not taken (the
 robot stops dead, as against a solid object) and the contact is reported so the
@@ -21,6 +38,7 @@ node can raise the bumper. The dock is a hard stop behind the charge point.
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -42,6 +60,7 @@ class DriveParams:
     track_width: float = 0.48        # m (cmd_vel_slew TRACK_WIDTH_M)
     min_wheel_speed: float = 0.06    # m/s, MCU floor while turning; 0 disables
     floor_straight: bool = False     # also floor straight (equal wheel) commands
+    straight_tol_mps: float = 0.02   # wheels this close count as straight (not floored)
     wheel_tau_s: float = 0.15        # first-order wheel lag; 0 = instant
     cmd_timeout_s: float = 0.5
     # dock hard stop: the charger contacts sit at the dock pose; the robot cannot
@@ -50,6 +69,16 @@ class DriveParams:
     dock_contact_xy_m: float = 0.03
     dock_contact_lateral_m: float = 0.06
     dock_contact_yaw_rad: float = 0.2
+    # ground disturbance (all off by default; see the module docstring)
+    disturb_wheel_bias: float = 0.0
+    disturb_slip_std: float = 0.0
+    disturb_slip_tau_s: float = 1.0
+    disturb_pivot_eff: float = 1.0
+    disturb_seed: int = 1
+
+    def disturbed(self) -> bool:
+        return (self.disturb_wheel_bias != 0.0 or self.disturb_slip_std > 0.0
+                or self.disturb_pivot_eff != 1.0)
 
 
 @dataclass
@@ -65,7 +94,7 @@ def wheel_speeds(v: float, w: float, p: DriveParams):
     w = _clamp(w, p.angular_max)
     half = p.track_width / 2.0
     left, right = v - w * half, v + w * half
-    turning = abs(left - right) > 1e-6
+    turning = abs(left - right) > max(1e-6, p.straight_tol_mps)
     if p.min_wheel_speed > 0.0 and (turning or p.floor_straight):
         left = 0.0 if abs(left) < p.min_wheel_speed else left
         right = 0.0 if abs(right) < p.min_wheel_speed else right
@@ -86,6 +115,27 @@ class DiffDrive:
         self.enabled = True                # False = e-stop: wheels commanded to 0
         self.collisions_total = 0
         self.blocked = False
+        self._rng = random.Random(self.p.disturb_seed)
+        self._slip = [0.0, 0.0]            # per-wheel slip state (OU process)
+
+    def ground_speeds(self, left: float, right: float, dt: float):
+        """Wheel speeds -> ground speeds under the configured disturbance."""
+        p = self.p
+        if not p.disturbed():
+            return left, right
+        if p.disturb_slip_std > 0.0:
+            tau = max(1e-3, p.disturb_slip_tau_s)
+            a = min(1.0, dt / tau)
+            sig = p.disturb_slip_std * math.sqrt(max(0.0, 2.0 * a - a * a))
+            for k in (0, 1):
+                self._slip[k] += -a * self._slip[k] + sig * self._rng.gauss(0.0, 1.0)
+        gl = left * (1.0 - 0.5 * p.disturb_wheel_bias + self._slip[0])
+        gr = right * (1.0 + 0.5 * p.disturb_wheel_bias + self._slip[1])
+        if left * right < 0.0 and p.disturb_pivot_eff != 1.0:     # counter-rotating
+            v = 0.5 * (gl + gr)
+            dw = 0.5 * (gr - gl) * max(0.0, p.disturb_pivot_eff)
+            gl, gr = v - dw, v + dw
+        return gl, gr
 
     def command(self, v: float, w: float):
         self.cmd = (float(v), float(w))
@@ -118,8 +168,9 @@ class DiffDrive:
             self.left = 0.0
         if abs(self.right) < 1e-4:
             self.right = 0.0
-        v = 0.5 * (self.left + self.right)
-        w = (self.right - self.left) / p.track_width
+        gl, gr = self.ground_speeds(self.left, self.right, dt)
+        v = 0.5 * (gl + gr)
+        w = (gr - gl) / p.track_width
         res = StepResult()
         if v == 0.0 and w == 0.0:
             self.v = self.w = 0.0

@@ -160,3 +160,15 @@ def test_param_default_on():
     import inspect
     src = inspect.getsource(cs.CmdVelSlewNode.__init__)
     assert "declare_parameter('slew_both_wheels_always', True)" in src
+
+
+
+# ---- docking lane: no one-wheel step (2026-10-16) -------------------------------------------
+def test_no_one_wheel_step_caps_w_in_the_one_wheel_band():
+    from mower_control.cmd_vel_slew import no_one_wheel_step
+    v, w = no_one_wheel_step(-0.025, 0.2)              # inner -0.023: one-wheel
+    assert v == -0.025 and 0.0 <= abs(v) - abs(w) * 0.24 < 1e-6
+    assert no_one_wheel_step(-0.05, 0.05) == (-0.05, 0.05)    # floor zone: unchanged
+    assert no_one_wheel_step(0.0, 0.3) == (0.0, 0.3)          # pivot
+    assert no_one_wheel_step(-0.13, 0.06) == (-0.13, 0.06)    # proper arc
+    assert no_one_wheel_step(-0.01, -0.3) == (-0.01, -0.3)    # inner -0.062: counter-rotating

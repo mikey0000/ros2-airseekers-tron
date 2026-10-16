@@ -816,6 +816,23 @@ def slew_both_wheels(cur_v, cur_w, tgt_v, tgt_w, max_lin_accel, max_ang_accel, d
     return vn, wn
 
 
+def no_one_wheel_step(v, w, params=None):
+    """An unshaped lane's slewed step (the docking lane, 2026-10-16) never asks for a
+    one-wheel turn: a step whose inner wheel would be in (-min_inner, 0) - the per-axis slew
+    passing between the docking controller's pivot (0, +-0.3) and its reverse arcs - has
+    |w| lowered to keep the inner wheel at 0 (the floor zone, where the reverse with small
+    steering lives and is passed unchanged, 2026-10-07). Pure rotations, straight
+    commands and everything outside that band are unchanged."""
+    p = SHAPE_DEFAULTS if params is None else params
+    if abs(v) < 1e-6 or abs(w) < 1e-6:
+        return v, w
+    half = 0.5 * float(p['track_width_m'])
+    inner = abs(v) - abs(w) * half
+    if -float(p['min_inner_wheel_mps']) < inner < 0.0:
+        return v, math.copysign(abs(v) / half * (1.0 - 1e-6), w)   # inner >= 0, not -eps
+    return v, w
+
+
 def _axis_rate(cur, tgt, accel, decel):
     """The rate limit for one axis moving ``cur`` -> ``tgt`` (decel toward zero)."""
     if decel is None:
@@ -1195,6 +1212,9 @@ class CmdVelSlewNode(Node):
                                float(self.get_parameter('max_angular_accel').value))
         self.declare_parameter('hard_stop_lanes', list(HARD_STOP_LANES))
         self.declare_parameter('slew_both_wheels_always', True)
+        # 2026-10-16: the docking lane's slewed steps never pass through a one-wheel turn
+        # (no_one_wheel_step); false = the plain per-axis slew (revert)
+        self.declare_parameter('docking_no_one_wheel', True)
         self.declare_parameter('cmd_timeout', 0.5)
         self.declare_parameter('rate', 20.0)
         self.declare_parameter('frame_id', 'base_link')
@@ -1240,6 +1260,7 @@ class CmdVelSlewNode(Node):
         self._max_angular_decel = float(self.get_parameter('max_angular_decel').value)
         self._slew_both_wheels_always = bool(
             self.get_parameter('slew_both_wheels_always').value)
+        self._docking_no_one_wheel = bool(self.get_parameter('docking_no_one_wheel').value)
         self._hard_stop_lanes = frozenset(
             str(n) for n in self.get_parameter('hard_stop_lanes').value or ())
         self._cmd_timeout = float(self.get_parameter('cmd_timeout').value)
@@ -1610,6 +1631,9 @@ class CmdVelSlewNode(Node):
                                         lin_dec, dt)
                 self._cur_ang = slew_ad(self._cur_ang, tgt_ang, self._max_angular_accel,
                                         ang_dec, dt)
+                if lane == 'docking' and getattr(self, '_docking_no_one_wheel', False):
+                    self._cur_lin, self._cur_ang = no_one_wheel_step(self._cur_lin,
+                                                                     self._cur_ang)
 
         # Pass through every component we do not shape.
         src = self._tgt if self._tgt is not None else (0.0,) * 6
