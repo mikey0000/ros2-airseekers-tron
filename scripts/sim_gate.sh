@@ -28,6 +28,12 @@
 #   -s SEED    disturbance and drift seed (default 1)
 #   -t SECS    give up after this long after START (default 2700)
 #   -k         keep the sim container running at the end (debugging)
+#   -r INDEX   resume scenario: a priming START plans area 0 and is stopped, its resume
+#              cursor is rewritten to continue at absolute pose INDEX of area 0 (sub-path 0:
+#              the local index; field run 6 resumed at 279 = the pivot vertex (-0.50, 5.32)
+#              0.14 m from the boundary, and at 402), the sim restarts docked and START
+#              resumes there (scripts/sim_gate/resume_cursor.py; the mission's
+#              coverage_resume_path is pointed into the run's maps/)
 #   -- ARGS    extra sim.launch.py arguments (e.g. mission_params_file:=/abs/path.yaml)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,8 +42,8 @@ IMG=mower:jazzy-dev-amd64
 DOMAIN="${MOWER_SIM_ROS_DOMAIN_ID:-175}"
 WORLD="$STACK/src/mower_sim/worlds/real_run5.yaml"
 NAME="gate-$(date +%Y%m%d-%H%M%S)"
-DISTURB=0; SEED=1; TIMEOUT=2700; KEEP=0; DRIFT=""
-while getopts "w:n:ds:t:klL" o; do
+DISTURB=0; SEED=1; TIMEOUT=2700; KEEP=0; DRIFT=""; RESUME=""
+while getopts "w:n:ds:t:klLr:" o; do
   case "$o" in
     w) WORLD="$(cd "$(dirname "$OPTARG")" && pwd)/$(basename "$OPTARG")" ;;
     n) NAME="$OPTARG" ;;
@@ -47,6 +53,7 @@ while getopts "w:n:ds:t:klL" o; do
     k) KEEP=1 ;;
     l) DRIFT=1 ;;
     L) DRIFT=0 ;;
+    r) RESUME="$OPTARG" ;;
     *) sed -n '2,30p' "$0"; exit 2 ;;
   esac
 done
@@ -83,6 +90,15 @@ fi
 if [ "$DRIFT" = 1 ]; then
   DARGS="$DARGS loc_drift:=true loc_drift_seed:=$SEED"
 fi
+if [ -n "$RESUME" ]; then
+  [[ "$RESUME" =~ ^[0-9]+$ ]] || { echo "sim_gate: -r needs a pose index" >&2; exit 2; }
+  mkdir -p "$OUT/params"
+  sed "s|^\( *coverage_resume_path:\).*|\1 $COUT/maps/coverage_resume.txt|" \
+    "$STACK/src/mower_mission/config/mission.yaml" > "$OUT/params/mission_resume.yaml"
+  grep -q "coverage_resume_path: $COUT/maps/coverage_resume.txt" "$OUT/params/mission_resume.yaml" \
+    || { echo "sim_gate: could not set coverage_resume_path" >&2; exit 2; }
+  EXTRA="$EXTRA mission_params_file:=$COUT/params/mission_resume.yaml"
+fi
 ROS="source /opt/ros/jazzy/setup.bash; source install/setup.bash"
 cx() { docker exec "$C" bash -c "$ROS; $*" 2>&1 | grep -v "localhost_only\|ROS_LOCALHOST_ONLY" || true; }
 state() { cx "timeout 8 ros2 topic echo --once --field state_name /behavior_tree_node/high_level_status" \
@@ -97,22 +113,45 @@ trap cleanup EXIT
   echo "extra=$EXTRA"; echo "commit=$(git -C "$STACK" rev-parse --short HEAD 2>/dev/null)"
   echo "dirty=$(git -C "$STACK" status --porcelain 2>/dev/null | grep -c . || true)"
 } > "$OUT/run.txt"
-echo "sim_gate: run $NAME -> $OUT (container $C, domain $DOMAIN, disturbance $DISTURB, drift $DRIFT)"
-docker rm -f "$C" >/dev/null 2>&1 || true
-docker run -d --rm --name "$C" --network host "${ENV[@]}" "${MOUNT[@]}" "$IMG" bash -c \
-  "$ROS; ros2 launch mower_bringup sim.launch.py world:=$CWORLD localization:=sim \
-   maps_dir:=$COUT/maps $DARGS $EXTRA > $COUT/launch.log 2>&1" >/dev/null
-
-# ready: the mission is up and idle on the dock
-ready=""; idle=""
-for _ in $(seq 1 30); do
-  sleep 5
-  s="$(state)"
-  case "$s" in CHARGING|IDLE_DOCKED) ready="$s"; break ;; IDLE) idle="$s" ;; esac
-done
-[ -n "$ready" ] || ready="$idle"
-[ -n "$ready" ] || { echo "sim_gate: the mission did not come up (see $OUT/launch.log)" >&2; exit 3; }
-sleep 10
+echo "sim_gate: run $NAME -> $OUT (container $C, domain $DOMAIN, disturbance $DISTURB, drift $DRIFT${RESUME:+, resume at pose $RESUME})"
+launch_sim() {
+  docker rm -f "$C" >/dev/null 2>&1 || true
+  docker run -d --rm --name "$C" --network host "${ENV[@]}" "${MOUNT[@]}" "$IMG" bash -c \
+    "$ROS; ros2 launch mower_bringup sim.launch.py world:=$CWORLD localization:=sim \
+     maps_dir:=$COUT/maps $DARGS $EXTRA > $COUT/$1 2>&1" >/dev/null
+  # ready: the mission is up and idle on the dock
+  ready=""; idle=""
+  for _ in $(seq 1 30); do
+    sleep 5
+    s="$(state)"
+    case "$s" in CHARGING|IDLE_DOCKED) ready="$s"; break ;; IDLE) idle="$s" ;; esac
+  done
+  [ -n "$ready" ] || ready="$idle"
+  [ -n "$ready" ] || { echo "sim_gate: the mission did not come up (see $OUT/$1)" >&2; exit 3; }
+  sleep 10
+}
+if [ -n "$RESUME" ]; then
+  # priming START: plan area 0 (the mission persists the plan's cursor), then stop the sim
+  rm -f "$OUT/maps/coverage_resume.txt"
+  launch_sim launch_prime.log
+  cx "ros2 service call /behavior_tree_node/high_level_control mowgli_interfaces/srv/HighLevelControl '{command: 1}'" >/dev/null
+  primed=""
+  for _ in $(seq 1 60); do
+    sleep 2
+    if python3 "$SCRIPT_DIR/sim_gate/resume_cursor.py" "$OUT/maps/coverage_resume.txt" 0 \
+        "$RESUME" > "$OUT/resume.txt" 2>&1; then primed=1; break; fi
+    grep -q "outside the plan" "$OUT/resume.txt" && break
+  done
+  docker stop -t 5 "$C" >/dev/null 2>&1 || true
+  sleep 3
+  [ -n "$primed" ] || { echo "sim_gate: priming START wrote no plan cursor ($(cat "$OUT/resume.txt"))" >&2; exit 3; }
+  # the stop may have rewritten the cursor (interrupt): set the resume point again
+  python3 "$SCRIPT_DIR/sim_gate/resume_cursor.py" "$OUT/maps/coverage_resume.txt" 0 "$RESUME" \
+    > "$OUT/resume.txt" 2>&1 || true
+  cat "$OUT/resume.txt"
+  echo "resume=$RESUME" >> "$OUT/run.txt"
+fi
+launch_sim launch.log
 docker exec -d "$C" bash -c "$ROS; cd $COUT && exec ros2 bag record -s sqlite3 -o bag \
   --include-hidden-topics --max-cache-size 0 \
   /sim/ground_truth /sim/status /behavior_tree_node/high_level_status \
