@@ -510,3 +510,31 @@ design steps 4-5).
 
 What the sim cannot show: slope (the field's Spin timeouts on the slope, pivot vs K-turn),
 real turf slip and grip in pivots beyond the disturbance model, RTK float / heading error.
+
+## Runs 6 and 7: 2026-10-16, path conditioning + MPPI everywhere, then the goal-drift fix
+
+**Run 6** (`20261016-030725` .. `-031918`, master f84420b): the robot drove straight through
+pivot vertices (passing 0.03 m from them) and tripped the hard boundary 4 times. Cause:
+`LegGoalChecker` reset its leg whenever the goal moved > 1 mm; controller_server re-transforms the
+map goal into odom each cycle and map->odom moved > 1 mm on 97 % of 10 Hz steps (median
+5.4-5.7 mm), so the travel gate never opened. The sim had a static map->odom. Also a -111 deg
+route pivot on the dock-path slope timed out ("aborted") and the leg was followed anyway.
+Fixed on `ws/goal-drift` (f257a15): drift-tolerant goal checker, pivot retries, sim map->odom
+drift, resume scenario in the gate.
+
+**Run 7** (`20261016-054318`, master f257a15): first complete mow with no intervention.
+- Area 0: 9/9 sub-paths, 0 not mowed; 26/26 pivot vertices pivoted (median 0.05 m from the
+  vertex when the pivot started; worst 0.34 m at the 0.09 m-apart double vertex (-2.10, 1.63) /
+  (-2.18, 1.68)); docked first try 18 s after the dock goal.
+- Boundary: 0 m outside while mowing and in transit; max 0.076 m (10 samples > 0.05) on the
+  return route at (-1.7, 0.1); 0 hard-boundary trips.
+- Cross-track while mowing (vs the conditioned plan, EKF): median 0.042, p90 0.072, p99 0.089,
+  max 0.098 m (run 5 RPP: 0.026 / 0.074 / 0.204 / 0.262). Arcs p99 0.091.
+- **Open: one-sided offset.** On straights 88 % of samples are right of the direction of travel,
+  median -0.040 m. It follows the robot, not the map, so it is a vehicle-frame bias (wheel speed
+  bias with MPPI's proportional-only correction, or a lateral GNSS lever arm), not noise; with
+  zig-zag lanes it narrows / widens alternate lane gaps by ~8 cm.
+- MPPI commands in the wheel-floor band: mowing 2.0 %, transit 2.9 %, return 1.5 % (field before
+  the critic: 24-84 %). controller_server: 28 "missed its desired rate" (min 11.9 Hz) in 18 min,
+  0 "Optimizer fail".
+- Keep: everything. Next: find the 4 cm right bias (one change, sim first).
