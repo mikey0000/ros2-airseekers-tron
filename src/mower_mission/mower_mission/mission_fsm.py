@@ -641,7 +641,19 @@ class Params:
     route_cusp_radius_m: float = 1.0
     route_cusp_angle_rad: float = 2.0
     route_cusp_retries: int = 2
-    route_cusp_spin_rps: float = 0.2    # Spin time allowance = |angle| / this + 10 s (turf slip)
+    # Spin time allowance = |angle| / this + 10 s. 0.05 (was 0.2, 2026-10-16 field run 6): on
+    # the slope beside the dock path a pivot turned 27 deg in 8.5 s (0.055 rad/s, sliding
+    # 0.38 m): a 112 deg corner needs ~37 s there, past the old 20 s allowance (Spin TIMEOUT
+    # -> "aborted"). Flat turf pivots at ~0.25 rad/s, so this only matters where it is slow.
+    route_cusp_spin_rps: float = 0.05
+    # 2026-10-16 field run 6: a route corner Spin ended "aborted" (slope) and the mission
+    # followed the leg anyway, 100+ deg off it; MPPI left the area at once (HARD BOUNDARY).
+    # A pivot Spin (route corner, cusp about-turn, coverage pivot, final approach) that ends
+    # without SUCCEEDED and leaves the robot at or beyond the pivot threshold off its heading
+    # is re-sent for the remaining angle up to this many times; then STUCK_NEEDS_HELP (motion
+    # stopped). Within the threshold the leg is followed, as after a successful pivot.
+    # Revert: pivot_retries -1 (follow the leg after any pivot outcome, the old behaviour).
+    pivot_retries: int = 2
     # Task 0.4 (d), run 3 (owner: "in sharp corners it could reverse and turn rather than
     # overshoot the corner, the turn itself looks good"): the route is also split at every
     # corner sharper than this (rad), and before any route leg (transit or dock route) whose
@@ -1062,6 +1074,7 @@ class Mission:
     final_approach: bool = False                # this transit's final approach leg was sent
     cusp_turns: dict = field(default_factory=dict)    # cusp (x, y) -> about-turns, per sub-path
     cusp_resume: Optional[list] = None          # route remainder sent after the about-turn
+    cusp_heading: Optional[float] = None        # heading the cusp about-turn turns to
     fallback_ref: Optional[list] = None         # route of a costmap fallback (corridor bound)
     fallback_armed: Optional[bool] = None       # corridor bound active (None = not started)
     fallback_off0: float = 0.0                  # off-path distance when the fallback started
@@ -1070,6 +1083,7 @@ class Mission:
     cond_errors: dict = field(default_factory=dict)   # sub -> validation error (not mowed)
     corner_end: Optional[int] = None            # the in-flight chunk ends on this pivot
     pivot_done: Optional[tuple] = None          # (area, sub, local) just pivoted for
+    pivot_target: Optional[tuple] = None        # (heading, threshold) of that coverage pivot
 
 
 @dataclass
@@ -1109,6 +1123,7 @@ class MissionFSM:
         self._dock_route_end = None         # (x, y) end of the last dock route (approach pose)
         self._route_legs = None             # {'legs': [poses...], 'i': n} of a route follow
         self._route_watch = None            # route progress watch {'token', 's', 't'}
+        self._pivot_tries = {}              # unfinished-pivot re-sends per pivot (key -> n)
         self._dock_contact_since = None
         self._manual_undocking = False           # standalone UNDOCK (CMD_UNDOCK) in flight
         self._resume_after = None           # None | 'rain' | 'charge'
@@ -3085,6 +3100,7 @@ class MissionFSM:
                                                      q[0], q[1], math.degrees(delta)))
         m.step = 'corner_pivot'
         m.pivot_done = key
+        m.pivot_target = (heading, lim)
         self._go('MOWING', 'area %d sub-path %d/%d: pivot %.0f deg' % (
             m.area_idx, m.sub_i + 1, len(m.subpaths), math.degrees(delta)))
         allowance = abs(delta) / max(0.05, float(p.route_cusp_spin_rps)) + 10.0
@@ -3105,13 +3121,53 @@ class MissionFSM:
             return MissionFSM._leg_heading(leg)
         return math.atan2(ty - pose[1], tx - pose[0])
 
+    def _pivot_unfinished(self, outcome, purpose, key, heading, lim, what):
+        """A pivot Spin ended without SUCCEEDED. False: the robot is within ``lim`` of
+        ``heading`` (the caller follows the leg, as after a successful pivot). True: handled -
+        the Spin is re-sent for the remaining angle (pivot_retries per pivot ``key``), or,
+        when those are used up, the robot stops (STUCK_NEEDS_HELP). Following a leg from a
+        large heading error is what made MPPI leave the area in field run 6."""
+        retries = int(self.p.pivot_retries)
+        if retries < 0 or heading is None:
+            self._log('warn', '%s pivot %s: following the leg anyway' % (what, outcome))
+            return False
+        pose = self.inputs.pose
+        if pose is None or len(pose) < 3:
+            self._log('error', '%s pivot %s and no pose: stopping' % (what, outcome))
+            self._stuck_needs_help('%s pivot %s (no pose)' % (what, outcome), (0.0, 0.0))
+            return True
+        delta = geo.wrap_angle(heading - float(pose[2]))
+        if abs(delta) < lim:
+            self._log('warn', '%s pivot %s %.0f deg off the leg (< %.0f): following it'
+                      % (what, outcome, math.degrees(delta), math.degrees(lim)))
+            return False
+        n = self._pivot_tries.get(key, 0)
+        if n >= retries:
+            self._stuck_needs_help('%s pivot %s %d time%s, still %.0f deg off the leg (>= %.0f)'
+                                   % (what, outcome, n + 1, '' if n == 0 else 's',
+                                      math.degrees(delta), math.degrees(lim)), pose)
+            return True
+        self._pivot_tries[key] = n + 1
+        self._log('warn', '%s pivot %s with %.0f deg left (>= %.0f): pivot again %d/%d'
+                  % (what, outcome, math.degrees(delta), math.degrees(lim), n + 1, retries))
+        allowance = abs(delta) / max(0.01, float(self.p.route_cusp_spin_rps)) + 10.0
+        self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
+                           allowance + 5.0, purpose=purpose)
+        return True
+
     def _cov_pivot_done(self, outcome):
-        """Coverage pivot ended (any outcome: the follow is the judge): follow the leg."""
+        """Coverage pivot ended: follow the leg (an unfinished pivot first goes through
+        _pivot_unfinished: pivot again or stop)."""
         m = self.mission
         if self.phase != 'MOWING' or m.step != 'corner_pivot':
             return
-        if outcome != SUCCEEDED:
-            self._log('warn', 'coverage pivot %s: following the leg anyway' % outcome)
+        if outcome == SUCCEEDED:
+            self._pivot_tries = {}
+        else:
+            heading, lim = m.pivot_target if m.pivot_target else (None, 0.0)
+            if self._pivot_unfinished(outcome, 'cov_pivot', ('cov',) + tuple(m.pivot_done or ()),
+                                      heading, lim, 'coverage'):
+                return
         self._go('MOWING', 'area %d sub-path %d/%d' % (m.area_idx, m.sub_i + 1, len(m.subpaths)))
         self._follow()
 
@@ -4147,6 +4203,7 @@ class MissionFSM:
             rest = [(cx, cy, heading), tuple(route[-1])]
         m.cusp_resume = rest
         m.route_poses = rest
+        m.cusp_heading = heading
         delta = geo.wrap_angle(heading - float(pose[2]))
         self._log('warn', 'route cusp at (%.2f, %.2f): about-turn %d/%d then resume route (%s; '
                           'turn %.0f deg)' % (cx, cy, n + 1, limit, why, math.degrees(delta)))
@@ -4171,13 +4228,29 @@ class MissionFSM:
         self._send_route_leg('route')
 
     def _route_cusp_spun(self, outcome):
-        """About-turn ended (any outcome: the route follow is the judge): resume the route."""
+        """About-turn ended: resume the route (an unfinished about-turn first goes through
+        _pivot_unfinished: pivot again or stop)."""
         m = self.mission
         if m is None or self.phase != 'TRANSIT' or m.step != 'transit' or not m.cusp_resume:
             return
-        if outcome != SUCCEEDED:
-            self._log('warn', 'route cusp about-turn %s: resuming the route anyway' % outcome)
+        if outcome == SUCCEEDED:
+            self._pivot_tries = {}
+        else:
+            q = m.cusp_resume[0]
+            if self._pivot_unfinished(outcome, 'route_cusp', ('cusp', round(q[0], 2),
+                                                             round(q[1], 2)),
+                                      m.cusp_heading,
+                                      self._pivot_follow_rad(), 'route cusp about-turn'):
+                return
         self._resume_after_cusp()
+
+    def _pivot_follow_rad(self):
+        """Largest heading error a leg is followed from after an unfinished pivot (cusp,
+        final approach): the path conditioning pivot threshold, else route_leg_pivot_min_rad."""
+        lim = float(self.p.path_conditioning_pivot_min_rad)
+        if self.p.path_conditioning and lim > 0.0:
+            return lim
+        return max(0.3, float(self.p.route_leg_pivot_min_rad))
 
     @staticmethod
     def _leg_heading(leg, look=0.3):
@@ -4217,6 +4290,7 @@ class MissionFSM:
         if abs(delta) < lim - ROUTE_CORNER_TOL_RAD:     # inclusive, as the split
             return False
         rl['turned'], rl['purpose'] = rl['i'], purpose
+        rl['pivot'] = (heading, lim - ROUTE_CORNER_TOL_RAD)
         self._log('info', 'route corner at (%.2f, %.2f): stop and pivot %.0f deg to the next '
                           'leg (%d/%d), then follow it'
                   % (leg[0][0], leg[0][1], math.degrees(delta), rl['i'] + 1, len(rl['legs'])))
@@ -4237,8 +4311,15 @@ class MissionFSM:
                 return
         elif self.phase not in DOCK_PHASES or self._dock_purpose is None:
             return
-        if outcome != SUCCEEDED:
-            self._log('warn', 'route corner pivot %s: following the leg anyway' % outcome)
+        if outcome == SUCCEEDED:
+            self._pivot_tries = {}
+        else:
+            leg = rl['legs'][rl['i']]
+            heading, lim = rl.get('pivot') or (None, 0.0)
+            if self._pivot_unfinished(outcome, 'route_corner',
+                                      ('corner', round(leg[0][0], 2), round(leg[0][1], 2)),
+                                      heading, lim, 'route corner'):
+                return
         self._send_route_leg(purpose)
 
     def _send_route_leg(self, purpose):
@@ -4438,6 +4519,17 @@ class MissionFSM:
         if a.purpose == 'final_approach_spin':
             m = self.mission
             if m is not None and self.phase == 'TRANSIT' and m.step == 'transit':
+                if outcome == SUCCEEDED:
+                    self._pivot_tries = {}
+                else:
+                    b, pose = m.transit_target, self.inputs.pose
+                    heading = None if pose is None else \
+                        math.atan2(b[1] - pose[1], b[0] - pose[0])
+                    if self._pivot_unfinished(outcome, 'final_approach_spin',
+                                              ('final', round(b[0], 2), round(b[1], 2)),
+                                              heading, self._pivot_follow_rad(),
+                                              'final approach'):
+                        return
                 self._final_approach_drive()
             return
         if a.purpose == 'final_approach':

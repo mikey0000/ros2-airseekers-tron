@@ -119,7 +119,18 @@ behavior_tree_node:
     route_cusp_radius_m: 1.0
     route_cusp_angle_rad: 2.0
     route_cusp_retries: 2
-    route_cusp_spin_rps: 0.2          # Spin time allowance = |angle| / this + 10 s (turf slip)
+    # Spin time allowance = |angle| / this + 10 s. 0.05 (was 0.2, 2026-10-16 field run 6): on
+    # the slope beside the dock path a pivot turned 27 deg in 8.5 s (0.055 rad/s): a 112 deg
+    # corner needs ~37 s there, past the old 20 s allowance (Spin TIMEOUT = "aborted").
+    # Revert: 0.2.
+    route_cusp_spin_rps: 0.05
+    # A pivot Spin (route corner, cusp about-turn, coverage pivot, final approach) that ends
+    # without SUCCEEDED leaving the robot at or beyond the pivot threshold off the leg is
+    # re-sent for the remaining angle this many times, then STUCK_NEEDS_HELP (motion stopped);
+    # within the threshold the leg is followed. Field run 6: after an aborted -111 deg corner
+    # pivot the mission followed the leg anyway and MPPI left the area at once.
+    # Revert: -1 (follow the leg after any pivot outcome).
+    pivot_retries: 2
     # Task 0.4 (d), run 3 (owner: "in sharp corners it could reverse and turn rather than
     # overshoot"): the route is split at every corner sharper than this (rad, also below
     # route_split_turn_deg), and before a route leg (transit or dock route) starting within

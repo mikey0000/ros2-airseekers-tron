@@ -304,7 +304,11 @@ def test_route_abort_at_a_hairpin_turns_about_and_resumes_the_route():
     _abort_at(h, (1.97, 0.0, 0.1))
     assert h.pending_action(f.ACT_SPIN)
     assert any('about-turn 2/2' in t for t in logs(h, m))
-    h.finish(f.ACT_SPIN, f.ABORTED)              # even a failed spin: the route is the judge
+    h.finish(f.ACT_SPIN, f.ABORTED)              # a failed about-turn: pivot again (run 6)
+    assert h.pending_action(f.ACT_SPIN).purpose == 'route_cusp'
+    assert abs(h.goal(f.ACT_SPIN)['angle'] - (math.radians(170.0) - 0.1)) < 0.05
+    h.fsm.inputs.pose = (1.97, 0.0, math.radians(170.0))
+    h.finish(f.ACT_SPIN)
     assert h.pending_action(f.ACT_FOLLOW).purpose == 'route'
     assert h.goal(f.ACT_FOLLOW)['poses'] == route[20:]
     assert not starts(h, m, f.ACT_NAV)
@@ -573,15 +577,80 @@ def test_route_corner_80_deg_is_driven_without_an_about_turn_at_the_run4_thresho
     assert not starts(h, m, f.ACT_SPIN)
 
 
-def test_failed_corner_pivot_still_follows_the_leg_and_pivots_only_once():
+def test_failed_corner_pivot_is_retried_then_stops_never_follows_far_off_the_leg():
+    """2026-10-16 field run 6: a -111 deg route corner Spin ended "aborted" (slope), the
+    mission followed the leg anyway and MPPI left the area at once. Now an unfinished pivot is
+    re-sent for the remaining angle (pivot_retries 2), then the robot stops."""
+    h = _route_h()
+    assert h.fsm.p.pivot_retries == 2
+    route = _corner_route(120.0, h.fsm.mission.transit_target)
+    _answer_route(h, resp=_route_resp(route))
+    h.finish(f.ACT_FOLLOW)                               # at the corner (2, 0), yaw 0
+    m = h.mark()
+    h.finish(f.ACT_SPIN, f.ABORTED)                      # yaw unchanged
+    assert not starts(h, m, f.ACT_FOLLOW)
+    spin = h.pending_action(f.ACT_SPIN)
+    assert spin.purpose == 'route_corner'
+    assert abs(h.goal(f.ACT_SPIN)['angle'] - math.radians(120.0)) < 0.1
+    assert any('route corner pivot aborted with 120 deg left' in t and 'again 1/2' in t
+               for t in logs(h, m))
+    h.fsm.inputs.pose = (2.0, 0.0, math.radians(60.0))   # half way, then aborted again
+    h.finish(f.ACT_SPIN, f.ABORTED)
+    assert abs(h.goal(f.ACT_SPIN)['angle'] - math.radians(60.0)) < 0.1
+    assert h.goal(f.ACT_SPIN)['time_allowance_s'] >= math.radians(60.0) / 0.05 + 10.0 - 0.1
+    m = h.mark()
+    h.finish(f.ACT_SPIN, f.TIMEOUT)                      # third failure: stop, no leg
+    assert h.name == 'STUCK_NEEDS_HELP'
+    assert not starts(h, m, f.ACT_FOLLOW) and not starts(h, m, f.ACT_NAV)
+    assert h.fsm._action is None and not h.blade
+
+
+def test_failed_corner_pivot_within_the_threshold_follows_the_leg():
     h = _route_h()
     route = _corner_route(120.0, h.fsm.mission.transit_target)
     _answer_route(h, resp=_route_resp(route))
+    h.finish(f.ACT_FOLLOW)
+    h.fsm.inputs.pose = (2.0, 0.0, math.radians(110.0))  # 10 deg short: under the threshold
+    m = h.mark()
+    h.finish(f.ACT_SPIN, f.ABORTED)
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'route'
+    assert not starts(h, m, f.ACT_SPIN)
+
+
+def test_retried_corner_pivot_that_succeeds_follows_the_leg():
+    h = _route_h()
+    _answer_route(h, resp=_route_resp(_corner_route(120.0, h.fsm.mission.transit_target)))
+    h.finish(f.ACT_FOLLOW)
+    h.finish(f.ACT_SPIN, f.ABORTED)
+    assert h.pending_action(f.ACT_SPIN).purpose == 'route_corner'
+    h.fsm.inputs.pose = (2.0, 0.0, math.radians(120.0))
+    h.finish(f.ACT_SPIN)
+    a = h.pending_action(f.ACT_FOLLOW)
+    assert a.purpose == 'route' and h.goal(f.ACT_FOLLOW)['poses'][0][:2] == (2.0, 0.0)
+
+
+def test_failed_corner_pivot_revert_follows_the_leg_anyway():
+    h = _route_h(pivot_retries=-1)
+    _answer_route(h, resp=_route_resp(_corner_route(120.0, h.fsm.mission.transit_target)))
     h.finish(f.ACT_FOLLOW)
     m = h.mark()
     h.finish(f.ACT_SPIN, f.ABORTED)                      # yaw unchanged
     assert h.pending_action(f.ACT_FOLLOW).purpose == 'route'
     assert not starts(h, m, f.ACT_SPIN)
+
+
+def test_failed_dock_route_corner_pivot_is_retried_too():
+    h = Harness(route_transits=True)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    assert h.cmd(f.CMD_HOME)
+    _answer_route(h, resp=_route_resp(_corner_route(110.0, (0.5, 2.0, 0.0))))
+    h.finish(f.ACT_FOLLOW)
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.finish(f.ACT_SPIN, f.ABORTED)
+    assert h.pending_action(f.ACT_SPIN).purpose == 'route_corner'
+    h.fsm.inputs.pose = (2.0, 0.0, math.radians(110.0))
+    h.finish(f.ACT_SPIN)
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'dock_route'
 
 
 def test_route_corner_turn_off_restores_the_controller_turn():
