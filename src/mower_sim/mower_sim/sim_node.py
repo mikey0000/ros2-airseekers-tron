@@ -19,6 +19,9 @@ Driver contract reproduced (see docs/simulation.md for the full table):
   srv   /cutter_control, /charging, /clear_estop, /cutter_off, /cutter/set_height
   localization:=sim (default) also publishes what the localization stack would:
         TF odom->base_link, /odometry/filtered, /heading_aligner/status (aligned, dock).
+        loc_drift:=true (mower_sim/loc_drift.py): odom drifts like wheel odometry and the
+        sim publishes a drifting TF map->odom + /odometry/filtered_map at 10 Hz, matched to
+        the field's dual EKF (run 6); the launch then drops its static identity map->odom.
   sim   /sim/ground_truth (Odometry, map), /sim/status (JSON 10 Hz), /sim/markers
 """
 
@@ -47,6 +50,7 @@ from mower_interfaces.msg import MowerBaseDevStatus, MowerSensorInfo
 from mower_interfaces.srv import ChargingControl, CutterControl, SetCutterHeight
 
 from .kinematics import DiffDrive, DriveParams
+from .loc_drift import LocDrift, LocDriftParams
 from .marker import RearCamera, RearCameraParams
 from .sensors import StereoParams, StereoRaycaster, bumper_sides
 from .world import enu_to_latlon, load_world
@@ -111,6 +115,9 @@ class SimNode(Node):
         d('disturb_slip_tau_s', 1.0)
         d('disturb_pivot_eff', 1.0)
         d('disturb_seed', 1)
+        # field-like localisation: drifting odom + map -> odom (loc_drift.py; off by default)
+        d('loc_drift', False)
+        d('loc_drift_seed', 1)
         gp = self.get_parameter
         path = gp('world_file').value
         if not path or not os.path.isfile(path):
@@ -134,6 +141,18 @@ class SimNode(Node):
                     self.drive.p.disturb_wheel_bias, self.drive.p.disturb_slip_std,
                     self.drive.p.disturb_slip_tau_s, self.drive.p.disturb_pivot_eff,
                     self.drive.p.disturb_seed))
+        self.drift = None
+        if self.loc_sim and bool(gp('loc_drift').value):
+            p0 = self.drive.pose
+            self.drift = LocDrift(LocDriftParams(enabled=True,
+                                                 seed=int(gp('loc_drift_seed').value)),
+                                  (p0.x, p0.y, p0.yaw))
+            dp = self.drift.p
+            self.get_logger().warn(
+                'localisation drift ON (seed %d): odom scale %+.3f, map->odom jitter %.4f m, '
+                'map error %.3f m / %.0f s, jumps %.2f Hz x %.3f m, %g Hz map->odom' % (
+                    dp.seed, self.drift.k_v, dp.jitter_std, dp.map_err_std, dp.map_err_tau_s,
+                    dp.jump_rate_hz, dp.jump_std, dp.rate_hz))
         self.stereo = StereoRaycaster(StereoParams(noise_m=float(gp('stereo_noise_m').value)))
         self.rear = RearCamera(RearCameraParams(
             marker_size=float(gp('rear_marker_size').value),
@@ -183,6 +202,8 @@ class SimNode(Node):
             self.tf = TransformBroadcaster(self)
             self.pub_filtered = P(Odometry, '/odometry/filtered', 10)
             self.pub_heading = P(String, '/heading_aligner/status', LATCHED)
+            if self.drift is not None:
+                self.pub_filtered_map = P(Odometry, '/odometry/filtered_map', 10)
         # --- inputs ---
         self.create_subscription(Twist, '/cmd_vel', self._on_cmd, 10)
         self.create_subscription(Bool, '/estop_request', self._on_estop_request, 10)
@@ -279,12 +300,16 @@ class SimNode(Node):
             pose.x, pose.y, pose.yaw, t))
         stamp = self.get_clock().now().to_msg()
         self.tick_n += 1
-
+        # odom pose: the truth, or with loc_drift the drifting wheel odometry
+        if self.drift is not None:
+            ox, oy, oyaw = self.drift.step((pose.x, pose.y, pose.yaw), elapsed)
+        else:
+            ox, oy, oyaw = pose.x, pose.y, pose.yaw
         odom = Odometry()
         odom.header.stamp = stamp
         odom.header.frame_id, odom.child_frame_id = 'odom', 'base_link'
-        odom.pose.pose.position.x, odom.pose.pose.position.y = pose.x, pose.y
-        q = _quat(pose.yaw)
+        odom.pose.pose.position.x, odom.pose.pose.position.y = ox, oy
+        q = _quat(oyaw)
         (odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
          odom.pose.pose.orientation.z, odom.pose.pose.orientation.w) = q
         odom.twist.twist.linear.x, odom.twist.twist.angular.z = self.drive.v, self.drive.w
@@ -298,20 +323,25 @@ class SimNode(Node):
             tf = TransformStamped()
             tf.header.stamp = stamp
             tf.header.frame_id, tf.child_frame_id = 'odom', 'base_link'
-            tf.transform.translation.x, tf.transform.translation.y = pose.x, pose.y
+            tf.transform.translation.x, tf.transform.translation.y = ox, oy
             tf.transform.rotation = odom.pose.pose.orientation
             self.tf.sendTransform(tf)
+            if self.drift is not None and self.drift.due():
+                self._publish_map_odom(stamp, pose, odom)
         truth = Odometry()
         truth.header.stamp = stamp
         truth.header.frame_id, truth.child_frame_id = 'map', 'base_link'
-        truth.pose.pose = odom.pose.pose
+        truth.pose.pose.position.x, truth.pose.pose.position.y = pose.x, pose.y
+        tq = _quat(pose.yaw)
+        (truth.pose.pose.orientation.x, truth.pose.pose.orientation.y,
+         truth.pose.pose.orientation.z, truth.pose.pose.orientation.w) = tq
         truth.twist.twist = odom.twist.twist
         self.pub_truth.publish(truth)
 
         imu = Imu()
         imu.header.stamp = stamp
         imu.header.frame_id = 'imu_link'
-        imu.orientation = odom.pose.pose.orientation
+        imu.orientation = truth.pose.pose.orientation
         imu.orientation_covariance = [0.02, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 1.0]
         imu.angular_velocity.z = self.drive.w
         imu.angular_velocity_covariance = [0.005, 0.0, 0.0, 0.0, 0.005, 0.0, 0.0, 0.0, 0.005]
@@ -323,6 +353,26 @@ class SimNode(Node):
             self._publish_status(stamp, t)
         if self.tick_n % max(1, int(round(0.1 / self.dt))) == 0:
             self._publish_10hz(stamp, t)
+
+    def _publish_map_odom(self, stamp, pose, odom):
+        """loc_drift: ekf_map's outputs, a new map estimate and the map -> odom it implies."""
+        (mx, my, myaw), (tx, ty, tyaw) = self.drift.sample((pose.x, pose.y, pose.yaw))
+        tf = TransformStamped()
+        tf.header.stamp = stamp
+        tf.header.frame_id, tf.child_frame_id = 'map', 'odom'
+        tf.transform.translation.x, tf.transform.translation.y = tx, ty
+        (tf.transform.rotation.x, tf.transform.rotation.y, tf.transform.rotation.z,
+         tf.transform.rotation.w) = _quat(tyaw)
+        self.tf.sendTransform(tf)
+        m = Odometry()
+        m.header.stamp = stamp
+        m.header.frame_id, m.child_frame_id = 'map', 'base_link'
+        m.pose.pose.position.x, m.pose.pose.position.y = mx, my
+        (m.pose.pose.orientation.x, m.pose.pose.orientation.y, m.pose.pose.orientation.z,
+         m.pose.pose.orientation.w) = _quat(myaw)
+        m.pose.covariance = odom.pose.covariance
+        m.twist.twist = odom.twist.twist
+        self.pub_filtered_map.publish(m)
 
     def _docked(self):
         return self.drive.on_dock()

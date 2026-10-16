@@ -21,7 +21,11 @@
 #              (SIM_GATE_OUT default: <stack>/log/sim_gate)
 #   -d         ground disturbance: wheel bias +0.04, slip std 0.05, pivot efficiency 0.85
 #              (mower_sim kinematics DriveParams.disturb_*; override with -- disturb_*:=...)
-#   -s SEED    disturbance seed (default 1)
+#              AND field-like localisation drift (mower_sim/loc_drift.py: drifting odom and
+#              map -> odom matched to field run 6, seed SEED; -L turns the drift off)
+#   -l         localisation drift also without -d (an "ideal drive, real localisation" run)
+#   -L         no localisation drift (perfect static map -> odom, the pre-2026-10-16 gate)
+#   -s SEED    disturbance and drift seed (default 1)
 #   -t SECS    give up after this long after START (default 2700)
 #   -k         keep the sim container running at the end (debugging)
 #   -- ARGS    extra sim.launch.py arguments (e.g. mission_params_file:=/abs/path.yaml)
@@ -32,8 +36,8 @@ IMG=mower:jazzy-dev-amd64
 DOMAIN="${MOWER_SIM_ROS_DOMAIN_ID:-175}"
 WORLD="$STACK/src/mower_sim/worlds/real_run5.yaml"
 NAME="gate-$(date +%Y%m%d-%H%M%S)"
-DISTURB=0; SEED=1; TIMEOUT=2700; KEEP=0
-while getopts "w:n:ds:t:k" o; do
+DISTURB=0; SEED=1; TIMEOUT=2700; KEEP=0; DRIFT=""
+while getopts "w:n:ds:t:klL" o; do
   case "$o" in
     w) WORLD="$(cd "$(dirname "$OPTARG")" && pwd)/$(basename "$OPTARG")" ;;
     n) NAME="$OPTARG" ;;
@@ -41,6 +45,8 @@ while getopts "w:n:ds:t:k" o; do
     s) SEED="$OPTARG" ;;
     t) TIMEOUT="$OPTARG" ;;
     k) KEEP=1 ;;
+    l) DRIFT=1 ;;
+    L) DRIFT=0 ;;
     *) sed -n '2,30p' "$0"; exit 2 ;;
   esac
 done
@@ -73,6 +79,10 @@ DARGS=""
 if [ "$DISTURB" = 1 ]; then
   DARGS="disturb_wheel_bias:=0.04 disturb_slip_std:=0.05 disturb_pivot_eff:=0.85 disturb_seed:=$SEED"
 fi
+[ -n "$DRIFT" ] || DRIFT="$DISTURB"
+if [ "$DRIFT" = 1 ]; then
+  DARGS="$DARGS loc_drift:=true loc_drift_seed:=$SEED"
+fi
 ROS="source /opt/ros/jazzy/setup.bash; source install/setup.bash"
 cx() { docker exec "$C" bash -c "$ROS; $*" 2>&1 | grep -v "localhost_only\|ROS_LOCALHOST_ONLY" || true; }
 state() { cx "timeout 8 ros2 topic echo --once --field state_name /behavior_tree_node/high_level_status" \
@@ -83,11 +93,11 @@ cleanup() {
 trap cleanup EXIT
 
 {
-  echo "world=$WORLD"; echo "domain=$DOMAIN"; echo "disturb=$DISTURB seed=$SEED args=$DARGS"
+  echo "world=$WORLD"; echo "domain=$DOMAIN"; echo "disturb=$DISTURB drift=$DRIFT seed=$SEED args=$DARGS"
   echo "extra=$EXTRA"; echo "commit=$(git -C "$STACK" rev-parse --short HEAD 2>/dev/null)"
   echo "dirty=$(git -C "$STACK" status --porcelain 2>/dev/null | grep -c . || true)"
 } > "$OUT/run.txt"
-echo "sim_gate: run $NAME -> $OUT (container $C, domain $DOMAIN, disturbance $DISTURB)"
+echo "sim_gate: run $NAME -> $OUT (container $C, domain $DOMAIN, disturbance $DISTURB, drift $DRIFT)"
 docker rm -f "$C" >/dev/null 2>&1 || true
 docker run -d --rm --name "$C" --network host "${ENV[@]}" "${MOUNT[@]}" "$IMG" bash -c \
   "$ROS; ros2 launch mower_bringup sim.launch.py world:=$CWORLD localization:=sim \
@@ -110,7 +120,7 @@ docker exec -d "$C" bash -c "$ROS; cd $COUT && exec ros2 bag record -s sqlite3 -
   /cmd_vel_nav_raw \
   /behavior_tree_node/conditioned_route \
   /cmd_vel_emergency /cmd_vel_docking /cmd_vel_slew/shape_status /map_server_node/outside_m \
-  /odometry/filtered_map /mission/incident /plan /rosout /navigate_to_pose/_action/status \
+  /odometry/filtered_map /odometry/filtered /mission/incident /plan /rosout /navigate_to_pose/_action/status \
   /follow_path/_action/status /spin/_action/status /mower_docking/dock/_action/status \
   > $COUT/rec.log 2>&1"
 sleep 5
