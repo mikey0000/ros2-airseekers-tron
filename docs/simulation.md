@@ -328,6 +328,48 @@ The commanded wheel speeds, the MCU model and what the stack sees are unchanged;
 ground truth moves differently (with `localization:=sim` the stack sees that truth, as it
 sees RTK on the robot).
 
+### Localisation drift (`-d`, or `-l` alone; 2026-10-16)
+
+Until 2026-10-16 the sim published a static identity `map -> odom`: perfect localisation.
+On the robot `map -> odom` is the difference of two EKFs and moves all the time, and Nav2
+re-transforms a map-frame goal into odom (the local costmap frame) on every controller cycle.
+Field run 6 overshot every pivot vertex because LegGoalChecker took each > 1 mm goal move as
+a new leg; the gate passed because nothing moved. `mower_sim/loc_drift.py` (launch
+`loc_drift:=true`, seed `loc_drift_seed`) now models it:
+
+* odom is integrated from the true motion with a linear scale error (5 %, sign from the
+  seed), a yaw-rate scale error (0.2 %) and a random-walk yaw-rate bias (<= 0.0012 rad/s):
+  smooth, drifting like wheel odometry;
+* the map estimate is the truth plus an Ornstein-Uhlenbeck error (1.2 cm, 3 s) with RTK-like
+  jumps (0.25 Hz, 2.5 cm per axis) and white jitter (1.9 mm per axis, 0.8 mrad yaw; x0.1 at
+  standstill);
+* the sim publishes TF `map -> odom` and `/odometry/filtered_map` at 10 Hz (ekf_map's
+  role); the launch drops the static identity and gui_bridge reads `/odometry/filtered_map`.
+
+Calibration against run 6 (`/odometry/filtered_map` vs `/odometry/filtered`, while driving),
+the 10 Hz `map -> odom` translation step:
+
+| | median | p90 | p99 | > 1 mm | yaw step p90 | drift 10 s / 60 s (median) |
+|---|---|---|---|---|---|---|
+| field run 6 | 5.4-5.7 mm | 13.1-13.4 mm | 32-33 mm | 97 % | 0.13 deg | 0.04-0.05 / 0.18-0.23 m |
+| model on the run 6 trajectory (seeds 1-3) | 6.0 mm | 11.8 mm | 28-38 mm | 97-98 % | 0.11 deg | 0.03 / 0.08-0.12 m |
+| sim gate base-dist-s1 (in the stack) | 6.1 mm | 12.7 mm | 30 mm | 98 % | 0.10 deg | 0.07 / 0.21 m |
+
+`-d` turns it on with the disturbance (seed `-s`); `-l` adds it to an ideal run; `-L` turns
+it off (the pre-2026-10-16 gate). `/odometry/filtered` is recorded too, so the drift of a
+run can be measured from its bag.
+
+### Resume scenario (`-r INDEX`; 2026-10-16)
+
+A resumed mow starts mid-path, often at a pivot vertex near the boundary (run 6 resumed at
+cursor (0, 279) = the vertex (-0.50, 5.32), 0.14 m from the edge, and at (0, 402)); it was
+never gated. `-r INDEX` points the mission's `coverage_resume_path` into the run's `maps/`
+(a mission.yaml copy in `params/`), sends a priming START that plans area 0 and persists the
+plan cursor, stops the sim, rewrites the cursor as an interrupted START at absolute pose
+INDEX of area 0 (`scripts/sim_gate/resume_cursor.py`; for sub-path 0 the local index), and
+restarts the sim docked; the gated START then undocks and resumes there. The real_run5 world
+plans the same sub-path 0 as the field (1478 poses, the same vertices).
+
 ### What the gate cannot show
 
 Slope (tilt, downhill drift, the field's Spin timeouts on the slope), real turf slip and
@@ -619,6 +661,22 @@ corners, one-wheel and cross-track criteria pass in all 8 runs.
 `k_lateral`, the offset) around the under-read distances; changing the size alone is not an
 improvement in the sim. Keep 0.04 for the next field run; if the size is corrected later, do
 it in its own field run together with re-tuned docking gains, sim-tested first.
+
+### Goal drift fix (2026-10-16, ws/goal-drift, domain 178)
+
+Field run 6 overshot pivot vertices because LegGoalChecker reset its travel gate on every
+> 1 mm move of the (odom-frame, re-transformed) goal; with the drifting `map -> odom` the
+gate reproduces it. Base = master f84420b + the sim / gate files only.
+
+| Run | a max out / > 0.10 | b trips | c complete / docked / charging | d stuck / not mowed | e corners > 0.15 (max) | Verdict |
+|---|---|---|---|---|---|---|
+| base-dist-s1 (`-d -s 1`, drift) | 0.146 / 68 | 2 (transit (-5.10, 2.93), mowing (-0.24, 5.34)) | False (STUCK_NEEDS_HELP) | 1 / 0 | 2 of 4 (0.798) | FAIL |
+| base-resume279-dist-s1 (`-d -s 1 -r 279`) | 0.193 / 66 | 2 ((-0.37, 5.63) right after the resume, (-5.03, -1.21)) | False (STUCK_NEEDS_HELP) | 1 / 0 | 1 of 7 (0.523) | FAIL |
+| fix-dist-s1 (`-d -s 1`, drift) | 0.000 / 0 | 0 | True / True / True | 0 / 0 | 0 of 29 (0.116) | PASS |
+| fix-resume279-dist-s1 (`-d -s 1 -r 279`) | 0.000 / 0 | 0 | True / True / True | 0 / 0 | 0 of 29 (0.110) | PASS |
+| fix-ideal-a (no drift) | 0.000 / 0 | 0 | True / True / True | 0 / 0 | 0 of 29 (0.071) | PASS |
+
+Not run (owner's usage limit): a second ideal run, `-d -s 2`, the rpp revert check.
 
 ## Limitations
 
