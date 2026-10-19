@@ -1,0 +1,13 @@
+# Error-budget scenario (docs/analysis/2026-10-20_error_budget.md): a small irregular hexagon,
+# about 3.4 x 2.7 m, so the committed coverage planner (edge-first headland rings + zig-zag at
+# operation width 0.18 m) produces ~30 in-place pivots, swath legs of 0.5-3 m, 0.18 m swath-end
+# connectors and mixed corner angles (68-150 deg) in a 3-5 min mow. Dock inside the lawn.
+#   MOWER_SIM_ROS_DOMAIN_ID=181 ./scripts/sim_gate.sh -w src/mower_sim/worlds/accuracy.yaml -t 1500 [-d]
+#   python3 scripts/sim_gate/accuracy.py sim log/sim_gate/<run>/data.json
+name: accuracy
+datum: {lat: 48.0, lon: 9.0}
+lawn: [[-1.0, -1.0], [1.8, -1.3], [2.4, 0.3], [1.6, 1.4], [-0.4, 1.2], [-1.0, 0.5]]
+dock: {x: 0.0, y: 0.0, yaw: 0.0}
+start: {docked: true}
+obstacles: []
+battery: {voltage: 25.0, percentage: 0.9}
