@@ -9,10 +9,14 @@ Every in-place pivot the mission logs ("pivot vertex at", "route corner at", "le
 "final approach ... turn N deg") is paired with its /spin goal and the following /follow_path
 goal. With a = pose when the spin is sent (the leg has ended) and b = pose when the next leg
 is sent (the pivot has ended):
+  (a0 = pose when the spin is sent, a = first rest after it, b = where the rotation in the
+  commanded direction stopped; 2026-10-20: measured at rest, see measure())
+  coast after leg          |a - a0| (still moving when the leg was declared done)
   leg-end along / lateral  a - vertex in the frame of the heading at a (+along = overshoot)
   pivot drift              |b - a| (base_link should not move in a pivot); excursion = max
-  pivot heading error      yaw(b) - yaw(a) - commanded angle (deg, + = turned too far)
-  leg-start offset         b - vertex in the frame of the target heading yaw(a) + commanded
+  pivot heading error      yaw(b) - yaw(a0) - commanded angle (deg, + = turned too far);
+                           'heading at next leg' = the same at the next leg's goal (old metric)
+  leg-start offset         b - vertex in the frame of the target heading yaw(a0) + commanded
 Legs are classed by the planned distance from the previous logged vertex: swath (>= 1.5 m),
 connector (< 1.5 m); route corners are transit. Sim: pose = /sim/ground_truth (the truth)
 and, for comparison, /odometry/filtered_map (what the stack believed).
@@ -53,25 +57,65 @@ def events(lines):
     return out
 
 
-def measure(ev, poses):
-    """poses: sorted [t, x, y, yaw, ...]."""
-    ts = [p[0] for p in poses]
+def _rates(poses):
+    """[(t, speed m/s, yaw rate rad/s)] by finite differences over ~0.1 s."""
+    out = []
+    k = 0
+    for i, p in enumerate(poses):
+        while k < i and p[0] - poses[k][0] > 0.1:
+            k += 1
+        j = max(0, min(k, i - 1))
+        q = poses[j]
+        dt = p[0] - q[0]
+        if dt <= 0:
+            out.append((p[0], 0.0, 0.0))
+            continue
+        out.append((p[0], math.hypot(p[1] - q[1], p[2] - q[2]) / dt, wrap(p[3] - q[3]) / dt))
+    return out
 
-    def at(t):
-        return poses[min(bisect.bisect(ts, t), len(poses) - 1)]
+
+def measure(ev, poses):
+    """poses: sorted [t, x, y, yaw, ...]. Measured AT REST (2026-10-20 pivot fix): the leg
+    end where the robot has stopped after the spin goal (it may still be coasting when the
+    spin is sent), the pivot end where the rotation in the commanded direction has stopped
+    (after the next leg's goal: the robot is still turning when the Spin reports success)."""
+    ts = [p[0] for p in poses]
+    rt = _rates(poses)
+
+    def idx(t):
+        return min(bisect.bisect(ts, t), len(poses) - 1)
     rows, prev = [], None
     for e in ev:
-        a, b = at(e['ts']), at(e['tf'])
-        i0, i1 = bisect.bisect(ts, e['ts']), bisect.bisect(ts, e['tf'])
-        gap = max([ts[k + 1] - ts[k] for k in range(max(i0 - 1, 0), min(i1 + 1, len(ts) - 1))]
+        i_s, i_f = idx(e['ts']), idx(e['tf'])
+        gap = max([ts[k + 1] - ts[k] for k in range(max(i_s - 1, 0), min(i_f + 1, len(ts) - 1))]
                   or [0])
+        sg = math.copysign(1.0, e['cmd']) if e['cmd'] else 1.0
+        # leg end at rest
+        i_a = i_s
+        while i_a < i_f and rt[i_a][1] > 0.01:
+            i_a += 1
+        # pivot end: the peak rotation in the commanded direction (unwrapped from a0) before
+        # the next leg drives off (cmd_vel_slew holds linear until the rotation has stopped)
+        lim = idx(e['tf'] + 3.0)
+        i_m = i_f
+        while i_m < lim and rt[i_m][1] <= 0.03:
+            i_m += 1
+        cum, best, i_b = 0.0, -1e9, i_a
+        for k in range(i_s + 1, i_m + 1):
+            cum += sg * wrap(poses[k][3] - poses[k - 1][3])
+            if k >= i_a and cum > best:
+                best, i_b = cum, k
+        a, b, a0 = poses[i_a], poses[i_b], poses[i_s]
         r = {'kind': e['kind'], 'cmd': e['cmd'], 'gap': gap,
+             'coast': math.hypot(a[1] - a0[1], a[2] - a0[2]),
              'drift': math.hypot(b[1] - a[1], b[2] - a[2]),
-             'exc': max([math.hypot(p[1] - a[1], p[2] - a[2]) for p in poses[i0:i1 + 1]] or [0])}
+             'exc': max([math.hypot(p[1] - a[1], p[2] - a[2]) for p in poses[i_a:i_b + 1]]
+                        or [0])}
         if e['cmd'] is not None:
-            r['herr'] = math.degrees(wrap(b[3] - a[3] - math.radians(e['cmd'])))
-            if abs(r['herr']) > 90:      # a spin that went the other way round: still the error
-                r['herr'] = math.degrees(wrap(math.radians(r['herr'])))
+            # + = turned too far (in the commanded direction)
+            r['herr'] = math.degrees(best) - abs(e['cmd']) if best > -1e8 else 0.0
+            r['herr_tf'] = math.degrees(sg * wrap(poses[i_f][3] - a0[3]
+                                                   - math.radians(e['cmd'])))
         if e['v']:
             v = e['v']
             if e['kind'] != 'leg start':
@@ -80,7 +124,7 @@ def measure(ev, poses):
                 r['lat'] = -dx * math.sin(a[3]) + dy * math.cos(a[3])
                 r['legL'] = math.hypot(v[0] - prev[0], v[1] - prev[1]) if prev else None
             if e['cmd'] is not None:
-                th = a[3] + math.radians(e['cmd'])
+                th = a0[3] + math.radians(e['cmd'])
                 dx, dy = b[1] - v[0], b[2] - v[1]
                 r['s_along'] = dx * math.cos(th) + dy * math.sin(th)
                 r['s_lat'] = -dx * math.sin(th) + dy * math.cos(th)
@@ -112,8 +156,9 @@ def table(rows, title):
                                                'max'))
     res = {}
     for key, name in [('along', 'leg-end along m'), ('lat', 'leg-end lateral m'),
+                      ('coast', 'coast after leg m'),
                       ('drift', 'pivot drift m'), ('exc', 'pivot excursion m'),
-                      ('herr', 'pivot heading deg'), ('s_along', 'leg-start along m'),
+                      ('herr', 'pivot heading deg'), ('herr_tf', 'heading at next leg deg'), ('s_along', 'leg-start along m'),
                       ('s_lat', 'leg-start lateral m')]:
         for c in ['swath', 'connector', 'transit', 'start', 'ALL']:
             s = stats([r[key] for r in rows if key in r and (c == 'ALL' or cls(r) == c)])
@@ -121,14 +166,12 @@ def table(rows, title):
                 res['%s/%s' % (key, c)] = s
                 print('%-22s %-10s %3d %7.3f %7.3f %7.3f %7.3f' % (
                     name, c, s['n'], s['median'], s['p90'], s['p99'], s['max']))
-    sa = [r['along'] for r in rows if 'along' in r]
-    sh = [r['herr'] for r in rows if 'herr' in r]
-    if sa:
-        print('signed: leg-end along median %+.3f m (+ = overshoot), heading error median %+.1f '
-              'deg, %d/%d pivots turned too far' % (
-                  sorted(sa)[len(sa) // 2], sorted(sh)[len(sh) // 2],
-                  sum(h * (r['cmd'] or 0) > 0 for h, r in
-                      zip(sh, [r for r in rows if 'herr' in r])), len(sh)))
+    sa = sorted(r['along'] for r in rows if 'along' in r)
+    sh = sorted(r['herr'] for r in rows if 'herr' in r)
+    if sa and sh:
+        print('signed: leg-end along median %+.3f m (+ = past the vertex); heading error median '
+              '%+.1f deg (+ = too far), %d/%d pivots turned too far' % (
+                  sa[len(sa) // 2], sh[len(sh) // 2], sum(h > 0 for h in sh), len(sh)))
     return res
 
 
