@@ -669,9 +669,10 @@ class Params:
     # the stop latency (twist_mux -> cmd_vel_slew angular decel -> MCU / wheel lag): every
     # pivot turned too far (sim ideal 6-7 deg with the old 1.0 rad/s Spin, field 2-7 deg at
     # the next leg's start). The Spin is sent this much short of the target (rad, never more
-    # than half the angle) so the robot comes to rest on it: ~0.25 rad/s x 0.15 s stop.
+    # than half the angle) so the robot comes to rest on it: 0.04 (~0.25 rad/s x 0.15 s)
+    # left a 1.3 deg median overshoot in the ideal sim (b4784b0), so 0.06.
     # 0 = the old behaviour. Calibrate on the robot (error budget doc, field check).
-    pivot_stop_lead_rad: float = 0.04
+    pivot_stop_lead_rad: float = 0.06
     # Task 0.4 (d), run 3 (owner: "in sharp corners it could reverse and turn rather than
     # overshoot the corner, the turn itself looks good"): the route is also split at every
     # corner sharper than this (rad), and before any route leg (transit or dock route) whose
