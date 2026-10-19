@@ -112,3 +112,56 @@ boundary.
 - Below that, the start offset (up to 0.25-0.33 m) and the 2-7 deg heading error are not
   removed before the leg ends. Cross-track p99 roughly doubles.
 - Connectors under 1.5 m are acceptable only as non-cutting moves with the margins above.
+
+## Pivot fix (b4784b0, same day)
+
+**The metric was wrong.** The leg end was taken when the spin goal was sent, while the
+robot was still coasting. The pivot end was taken when the next leg was sent, while the
+robot was still turning. `accuracy.py` now measures both at rest (ebe1e7d). Re-measured,
+the ideal sim's "5 cm pivot drift" turns out to be the leg coasting 5 cm past the vertex.
+The rotation itself moves base_link by 4 mm. The overshoot at rest is 7 deg, not the 1.5
+deg reported above.
+
+Root causes:
+
+1. **Legs end at 0.15-0.22 m/s and coast past the vertex.** The along-path goal checker
+   fires at the vertex plane. The robot then coasts v·0.2 s + v²/1.6 (cmd_vel_slew decel
+   0.8 m/s², 0.15 s wheel lag, pipeline delay). Fix: `coverage_corner_goal_checker` ends
+   the leg that stopping distance short of the plane (`stop_latency_s` 0.2, `stop_decel`
+   0.8).
+2. **The Spin velocity limits were above the MCU clamp.** The settings were max 1.0, min
+   0.4 and acc 2.0 rad/s, while the MCU clamps at 0.3. As a result:
+   - Spin never decelerated and stopped from 0.3 rad/s.
+   - The slew first spent 0.1 s winding a phantom 0.4 rad/s down to 0.3.
+
+   Fix: 0.3 / 0.25 (the pivot floor) / 1.0 (the slew decel), cycle 20 Hz. The mission
+   also sends the Spin 0.04 rad short (`pivot_stop_lead_rad`) to cover the stop coast.
+
+Results on the accuracy world. Values are median / p90 against sim truth, at rest. In the
+"before" columns the drift measures 4 mm in the ideal run and 0.02 m under `-d` after the
+re-measurement.
+
+| | Ideal before | Ideal after | `-d` before | `-d` after |
+|---|---|---|---|---|
+| Leg-end along (m) | 0.052 / 0.078 | **0.012 / 0.029** | 0.077 / 0.116 | **0.030 / 0.091** |
+| Leg-end lateral (m) | 0.019 / 0.063 | 0.012 / 0.048 | 0.025 / 0.059 | 0.022 / 0.053 |
+| Pivot drift, rotation only (m) | 0.004 / 0.004 | 0.004 / 0.005 | 0.011 / 0.020 | 0.011 / 0.021 |
+| Heading overshoot at rest (deg) | 7.0 / 8.4 | **1.3 / 3.4** | 5.3 / 7.0 | **0.6 / 1.8** |
+| Leg-start lateral (m) | 0.044 / 0.074 | **0.013 / 0.037** | 0.057 / 0.121 | **0.015 / 0.070** |
+| One-wheel ticks | 0 | 0 | 0 | 0 |
+| Gate e / h (line p99) | 0.180 / 0.178 | 0.192 / 0.188 | 0.232 / 0.207 | 0.219 / 0.206 |
+
+**Field run 7, re-measured at rest:**
+
+- coast 0.044 m;
+- rotation drift 0.110 / 0.220 m;
+- overshoot 4.7 / 7.8 deg.
+
+The sim cannot reproduce the rotation drift. A drift of about 2·L·sin(θ/2) with
+L ≈ 6 cm points to a GNSS lever-arm or antenna-offset error, or to an off-centre pivot on
+turf.
+
+**Field check:** do 10 pivots of ±90 deg and ±180 deg on flat turf, with a marked
+base_link (rear-axle centre) point. Compare its tape-measured displacement and the final
+heading with the EKF's. The result separates a real displacement from a lever-arm error,
+and calibrates `pivot_stop_lead_rad` and `stop_latency_s`.
