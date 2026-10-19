@@ -210,3 +210,14 @@ def test_dock_route_corner_leg_uses_the_corner_goal_checker():
     _answer_route(h, resp=_route_resp(a + b))
     assert h.pending_action(f.ACT_FOLLOW).purpose == 'dock_route'
     assert h.goal(f.ACT_FOLLOW)['goal_checker_id'] == 'coverage_corner_goal_checker'
+
+
+def test_spin_target_stops_short_by_the_stop_lead():
+    # 2026-10-20 error budget: the Spin is sent short by pivot_stop_lead_rad (the coast after
+    # it stops commanding), never by more than half the angle, sign kept; 0 = unchanged
+    assert f.Params().pivot_stop_lead_rad == 0.04
+    assert math.isclose(f.spin_target_yaw(1.5, 0.04), 1.46)
+    assert math.isclose(f.spin_target_yaw(-1.5, 0.04), -1.46)
+    assert math.isclose(f.spin_target_yaw(0.06, 0.04), 0.03)
+    assert f.spin_target_yaw(1.5, 0.0) == 1.5
+    assert f.spin_target_yaw(-0.3, -1.0) == -0.3

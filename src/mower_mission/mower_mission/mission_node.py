@@ -1158,7 +1158,9 @@ class MissionNode(Node):
             # behavior_server Spin: relative pure rotation (odom yaw), own costmap footprint
             # check, output on the twist_mux nav lane like BackUp / DriveOnHeading
             goal = Spin.Goal()
-            goal.target_yaw = float(g['angle'])
+            # short by the stop coast (pivot_stop_lead_rad): the robot comes to rest on the angle
+            goal.target_yaw = float(fsm_mod.spin_target_yaw(
+                g['angle'], getattr(self.fsm.p, 'pivot_stop_lead_rad', 0.0)))
             goal.time_allowance = Duration(sec=int(math.ceil(float(g['time_allowance_s']))))
         else:
             raise ValueError('unknown action %s' % e.name)

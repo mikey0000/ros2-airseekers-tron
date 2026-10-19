@@ -269,3 +269,43 @@ TEST(LegProgressDrift, AGoalJumpWithoutResetIsANewLeg)
   lp.update(0.5, 0.0, 0.0, 1.5, 0.0, 0.0);
   EXPECT_NEAR(lp.travelled, 0.0, 1e-9);
 }
+
+// 2026-10-20 error budget: the leg ends at the stopping distance short of the vertex plane.
+static double endAlong(LegProgress lp, double speed)
+{
+  for (double x = 0.0; x <= 3.0; x += 0.005)
+  {
+    if (lp.update(x, 0.0, 0.0, 2.0, 0.0, 0.0, speed))
+    {
+      return x - 2.0;
+    }
+  }
+  return 99.0;
+}
+
+TEST(LegProgressStopLead, OffByDefaultEndsAtThePlane)
+{
+  LegProgress lp = alongPath();
+  EXPECT_NEAR(endAlong(lp, 0.2), -lp.xy_tol, 0.006);
+}
+
+TEST(LegProgressStopLead, EndsShortByTheStoppingDistance)
+{
+  LegProgress lp = alongPath();
+  lp.stop_latency_s = 0.2;
+  lp.stop_decel = 0.8;
+  // 0.2 m/s: 0.04 + 0.025 = 0.065 m (+ xy_tol) before the plane: it coasts onto the vertex
+  EXPECT_NEAR(endAlong(lp, 0.2), -(lp.xy_tol + 0.065), 0.006);
+  EXPECT_NEAR(endAlong(lp, -0.2), -(lp.xy_tol + 0.065), 0.006);   // speed sign ignored
+  // at rest nothing changes
+  EXPECT_NEAR(endAlong(lp, 0.0), -lp.xy_tol, 0.006);
+}
+
+TEST(LegProgressStopLead, LeadIsCapped)
+{
+  LegProgress lp = alongPath();
+  lp.stop_latency_s = 2.0;
+  lp.stop_decel = 0.1;
+  EXPECT_NEAR(lp.stopLead(0.3), lp.max_stop_lead, 1e-9);
+  EXPECT_NEAR(endAlong(lp, 0.3), -(lp.xy_tol + lp.max_stop_lead), 0.006);
+}

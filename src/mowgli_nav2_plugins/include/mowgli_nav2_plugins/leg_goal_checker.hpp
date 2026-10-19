@@ -70,6 +70,24 @@ struct LegProgress
   // goal move between two consecutive calls that counts as a new leg when reset() was not
   // called (0 = never; controller_server's reset() is the primary new-goal signal)
   double new_goal_jump{0.25};
+  // along_path only (2026-10-20 error budget): the leg ends when the robot is within its
+  // stopping distance of the vertex plane, v * stop_latency_s + v^2 / (2 * stop_decel) (capped
+  // at max_stop_lead), so it comes to rest ON the vertex instead of coasting ~5 cm past it into
+  // the pivot (cmd_vel_slew linear decel 0.8 m/s^2 + MCU / wheel lag). 0 / 0 = off.
+  double stop_latency_s{0.0};
+  double stop_decel{0.0};
+  double max_stop_lead{0.15};
+
+  double stopLead(double speed) const
+  {
+    const double v = std::fabs(speed);
+    double d = v * std::max(0.0, stop_latency_s);
+    if (stop_decel > 0.0)
+    {
+      d += v * v / (2.0 * stop_decel);
+    }
+    return std::min(d, max_stop_lead);
+  }
 
   bool started{false};
   double goal_x{0.0}, goal_y{0.0};
@@ -92,7 +110,8 @@ struct LegProgress
   }
 
   // Returns true when the leg is complete.
-  bool update(double x, double y, double yaw, double gx, double gy, double gyaw)
+  bool update(double x, double y, double yaw, double gx, double gy, double gyaw,
+              double speed = 0.0)
   {
     // A different goal without reset(): only a jump, never the map -> odom drift of the
     // same goal (see the header comment).
@@ -135,7 +154,7 @@ struct LegProgress
       const double ux = std::cos(gyaw), uy = std::sin(gyaw);
       const double along = (x - gx) * ux + (y - gy) * uy;
       const double lateral = std::fabs(-(x - gx) * uy + (y - gy) * ux);
-      if (along < -xy_tol)
+      if (along < -(xy_tol + stopLead(speed)))
       {
         return false;
       }
