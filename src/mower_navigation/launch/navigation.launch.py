@@ -175,6 +175,13 @@ def generate_launch_description() -> LaunchDescription:
             name="collision_zone_gate",
             parameters=[params_file],
             **common),
+        # Plain node: WATCHDOG for a velocity lane that silently drops the controller's
+        # commands (root cause unknown, 2026-10-20); logs and cycles the silent node, bounded.
+        Node(
+            package="mower_navigation", executable="nav_lane_watchdog.py",
+            name="nav_lane_watchdog",
+            parameters=[params_file],
+            **common),
         # Started 5 s late on purpose (2026-10-13 incident): Jazzy's manager calls each
         # server's change_state with no timeout, and at container boot (~60 nodes still
         # discovering) controller_server's configure reply was dropped by rmw_fastrtps

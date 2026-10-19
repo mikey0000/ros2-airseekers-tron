@@ -928,6 +928,8 @@ collision_monitor:
     odom_frame_id: odom
     cmd_vel_in_topic: /cmd_vel_nav_smoothed
     cmd_vel_out_topic: /cmd_vel_nav
+    # active stop / slowdown published for nav_lane_watchdog (a real stop is never cycled)
+    state_topic: "/collision_monitor_state"
     transform_tolerance: 0.5
     # stereo clouds are stamped up to 0.3 s in the past (stereo_depth stamp_tf_parent);
     # 1.0 s keeps >= 4 clouds at 5 Hz valid without trusting a dead camera for long.
@@ -986,6 +988,17 @@ collision_monitor:
       min_height: -0.5
       max_height: 0.5
       enabled: true
+
+# Detects a velocity lane silently dropping the controller's commands (root cause unknown,
+# 2026-10-20). LOG ONLY on master: cycling a node could override a real stop.
+nav_lane_watchdog:
+  ros__parameters:
+    use_sim_time: false
+    stall_s: 2.0             # controller moving, /cmd_vel_nav silent this long = stall
+    recover: false           # true = also cycle the silent node (bounded)
+    max_recoveries: 3        # node cycles per window_s
+    window_s: 600.0
+    cooldown_s: 10.0
 
 # Toggles collision_monitor stop_zone / slowdown_zone (forward-only, see above). Plain node.
 collision_zone_gate:
