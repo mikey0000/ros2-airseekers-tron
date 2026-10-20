@@ -745,7 +745,7 @@ def test_goal_near_approach_with_bad_heading_aligns_then_searches():
     assert out.state == S.ALIGNING and not out.requests
     out = m.step(_snap(0.05, dl.Pose2D(-0.16, -0.42, yaw0)))
     assert out.state == S.ALIGNING
-    assert out.angular == pytest.approx(0.25)          # toward the dock yaw (left)
+    assert out.angular == pytest.approx(0.3)          # toward the dock yaw (left)
     assert out.linear == 0.0                           # true pivot (legal now)
     assert out.detail.startswith('aligning to dock heading: 70')
     assert 'marker not visible' in out.detail
@@ -759,7 +759,7 @@ def test_align_gives_up_on_travel_or_timeout_and_searches():
     m = dl.DockStateMachine(dl.DockParams(), DOCK)
     m.start(_snap(0.0, dl.Pose2D(0.0, -0.5, yaw0)))
     out = m.step(_snap(0.05, dl.Pose2D(0.0, -0.5, yaw0)))
-    assert out.state == S.ALIGNING and out.angular == pytest.approx(-0.25)   # right
+    assert out.state == S.ALIGNING and out.angular == pytest.approx(-0.3)   # right
     out = m.step(_snap(5.0, dl.Pose2D(0.0, -0.05, yaw0)))   # 0.45 m crept, still off
     assert out.state == S.SEARCHING and any('alignment stopped' in n for n in out.notes)
     m = dl.DockStateMachine(dl.DockParams(), DOCK)
@@ -793,13 +793,13 @@ def test_nav_goal_faces_the_dock_then_about_turn_pivot():
     out = m.step(_snap(30.0, arr, nav_status='succeeded'))
     assert out.state == S.ALIGNING
     out = m.step(_snap(30.05, arr))
-    assert out.linear == 0.0 and out.angular == pytest.approx(0.25)
+    assert out.linear == 0.0 and out.angular == pytest.approx(0.3)
     arr = dl.Pose2D(m.approach.x, m.approach.y, DOCK_YAW + math.pi - math.radians(10))
     m2 = dl.DockStateMachine(dl.DockParams(), DOCK)
     m2.start(_snap(0.0, dl.Pose2D(-2.5, 3.5, 0.0)))
     m2.step(_snap(30.0, arr, nav_status='succeeded'))
     out = m2.step(_snap(30.05, arr))
-    assert out.linear == 0.0 and out.angular == pytest.approx(-0.25)   # 170 deg right
+    assert out.linear == 0.0 and out.angular == pytest.approx(-0.3)   # 170 deg right
     # about-turn done -> SEARCHING
     out = m2.step(_snap(45.0, dl.Pose2D(m.approach.x, m.approach.y, DOCK_YAW + 0.05)))
     assert out.state == S.SEARCHING
