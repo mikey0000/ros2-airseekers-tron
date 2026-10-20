@@ -54,7 +54,7 @@ OUT_LIMIT = 0.10
 CORNER_RAD = 1.38          # = mission.yaml route_corner_turn_rad
 CORNER_LIMIT = 0.15
 CORNER_NEAR = 0.8
-HALF_TRACK = 0.24
+HALF_TRACK = 0.20          # MCU wheel split b 0.40 / 2 (cmd_vel_slew TRACK_WIDTH_M; was 0.24)
 FLOOR = 0.06
 
 

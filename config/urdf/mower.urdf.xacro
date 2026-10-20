@@ -89,14 +89,20 @@
   <!-- ================== tuning knobs (TODO: calibrate) ================= -->
   <!-- Chassis visual box (cosmetic; the base_link origin stays at the
        rear drive axle centre regardless of where the box is drawn). -->
-  <xacro:property name="chassis_size" value="0.7 0.5 0.2"/>
-  <xacro:property name="chassis_xyz"  value="0.12 0 0"/>
+  <!-- Owner-measured 2026-10-20 from the rear axle: rear -0.10, front bumper +0.60, 0.46 m
+       wide (0.47 with the wheel trim) -> 0.70 x 0.46 box centred at x=+0.25 (was 0.7 x 0.5 at
+       +0.12, vendor). The nav2 footprint is the same outline (nav2_params.yaml). -->
+  <xacro:property name="chassis_size" value="0.7 0.46 0.2"/>
+  <xacro:property name="chassis_xyz"  value="0.25 0 0"/>
 
-  <!-- Wheels (vendor values). Drive axle x, track half-width y, drop z. -->
-  <xacro:property name="wheel_radius"  value="0.1"/>
-  <xacro:property name="wheel_width"   value="0.05"/>
-  <xacro:property name="drive_axle_x"  value="-0.098"/>
-  <xacro:property name="drive_track_y" value="0.24"/>
+  <!-- Wheels, owner-measured 2026-10-20 (were the stale vendor 0.1 / 0.05 / -0.098 / 0.24):
+       tyre diameter 0.22, tread 0.06, tyre centre-to-centre track 0.39 (half 0.195); the
+       drive axle IS base_link (x 0). The MCU splits (v, w) with b 0.40 (cmd_vel_slew
+       TRACK_WIDTH_M), not with this physical track. Drop z unchanged (cosmetic). -->
+  <xacro:property name="wheel_radius"  value="0.11"/>
+  <xacro:property name="wheel_width"   value="0.06"/>
+  <xacro:property name="drive_axle_x"  value="0.0"/>
+  <xacro:property name="drive_track_y" value="0.195"/>
   <xacro:property name="wheel_drop_z"  value="-0.05"/>
   <!-- Omni wheels (castor pair at the front), canted by omni_yaw about Z. -->
   <xacro:property name="omni_x"        value="0.36728"/>

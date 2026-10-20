@@ -78,8 +78,8 @@ obstacle_guard:
     rear_classes: [person, dog, cat, hedgehog, rabbit]   # -> kind dynamic (stop/hold, wait)
     rear_static_classes: ['']   # opt-in solid classes -> kind static (model untested on rear)
     rear_min_score: 0.5
-    rear_edge_x_m: -0.25        # rear edge of the robot in base_link (rear axle origin)
-    rear_half_width_m: 0.27
+    rear_edge_x_m: -0.12        # rear edge of the robot in base_link (rear axle origin): -0.10 + 0.02 (was -0.25)
+    rear_half_width_m: 0.235    # 0.47 m with the wheel trim (was 0.27)
     rear_margin_m: 0.20         # + object half width + mono lateral error
     rear_range_m: 1.2           # corridor length behind the rear edge (no dock marker)
     rear_behind_tol_m: 0.10

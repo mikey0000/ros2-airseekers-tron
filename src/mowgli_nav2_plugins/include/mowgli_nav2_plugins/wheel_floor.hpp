@@ -2,17 +2,18 @@
 //
 // Pure math, no ROS: shared by the MPPI WheelFloorCritic and its unit tests.
 //
-// The drive (docs/DESIGN_path_conditioning_2026-10.md section 2): track b = 0.48 m, a wheel
+// The drive (docs/DESIGN_path_conditioning_2026-10.md section 2): track b = 0.40 m (the MCU's
+// wheel split; physical tyre track 0.39, 2026-10-20; was 0.48), a wheel
 // asked for less than ~0.06 m/s while the robot turns does not move (MCU / turf floor). With
 // h = b / 2 and inner = |v| - |w| h (the slower wheel, signed in the direction of travel):
 //
 //   * straight (|w| <= straight_wz): both wheels equal, any speed drives;
 //   * arc:   inner >= +floor (both wheels forward, the inner one above the floor);
 //   * pivot: inner <= -floor (both wheels counter-rotate above the floor; at v = 0 this is
-//            |w| >= floor / h = 0.25 rad/s);
+//            |w| >= floor / h = 0.3 rad/s, = the MCU clamp);
 //   * anything in between (0 < |inner| < floor) leaves one wheel under the floor: the robot
 //     does not do what was asked, and cmd_vel_slew's turn shaper rewrites the command
-//     (widens it, or snaps it to a 0.25 rad/s pivot).
+//     (widens it, or snaps it to a 0.3 rad/s pivot).
 //
 // violation() is the distance (m/s of wheel speed) from the nearest drivable band, 0 when
 // drivable. It mirrors cmd_vel_slew.both_wheels_legal(target=True) so that a command with
@@ -28,7 +29,7 @@ namespace mowgli_nav2_plugins::wheel_floor
 
 struct Params
 {
-  double half_track{0.24};       // b / 2, m
+  double half_track{0.20};       // b / 2, m
   double floor{0.06};            // m/s, slowest wheel speed that moves while turning
   double straight_wz{0.0};       // rad/s, |w| at or below this counts as straight
   double stop_speed{0.02};       // m/s, both wheels below this = a stop, not penalised

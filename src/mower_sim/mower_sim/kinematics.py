@@ -57,7 +57,11 @@ def wrap(a: float) -> float:
 class DriveParams:
     linear_max: float = 0.3          # MCU clamp, m/s
     angular_max: float = 0.3         # MCU clamp, rad/s
-    track_width: float = 0.48        # m (cmd_vel_slew TRACK_WIDTH_M)
+    # 2026-10-20 geometry: the MCU splits (v, w) into wheel speeds with b 0.40 (cmd_vel_slew
+    # TRACK_WIDTH_M; was 0.48), the tyres sit 0.39 apart (owner-measured): a pivot turns
+    # 0.40 / 0.39 = 2.6 % faster than commanded (field bag: IMU / MCU yaw rate 1.02-1.03).
+    track_width: float = 0.40        # m, the MCU's wheel split
+    ground_track_width: float = 0.39  # m, tyre centre-to-centre (yaw from wheel speeds); <= 0 = track_width
     min_wheel_speed: float = 0.06    # m/s, MCU floor while turning; 0 disables
     floor_straight: bool = False     # also floor straight (equal wheel) commands
     straight_tol_mps: float = 0.02   # wheels this close count as straight (not floored)
@@ -96,8 +100,9 @@ def wheel_speeds(v: float, w: float, p: DriveParams):
     left, right = v - w * half, v + w * half
     turning = abs(left - right) > max(1e-6, p.straight_tol_mps)
     if p.min_wheel_speed > 0.0 and (turning or p.floor_straight):
-        left = 0.0 if abs(left) < p.min_wheel_speed else left
-        right = 0.0 if abs(right) < p.min_wheel_speed else right
+        # 1e-9: a 0.3 rad/s pivot is exactly the 0.06 floor at b 0.40 and must drive
+        left = 0.0 if abs(left) < p.min_wheel_speed - 1e-9 else left
+        right = 0.0 if abs(right) < p.min_wheel_speed - 1e-9 else right
     return left, right
 
 
@@ -170,7 +175,7 @@ class DiffDrive:
             self.right = 0.0
         gl, gr = self.ground_speeds(self.left, self.right, dt)
         v = 0.5 * (gl + gr)
-        w = (gr - gl) / p.track_width
+        w = (gr - gl) / (p.ground_track_width if p.ground_track_width > 0.0 else p.track_width)
         res = StepResult()
         if v == 0.0 and w == 0.0:
             self.v = self.w = 0.0

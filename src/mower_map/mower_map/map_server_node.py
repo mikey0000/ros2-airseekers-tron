@@ -70,7 +70,7 @@ PARAMS = {
     # navigation mask (/nav_keepout_mask; Nav2 global costmap + keepout filter):
     # (mowing U navigation areas) grown by nav_margin_m, minus obstacles grown
     # by nav_obstacle_margin_m; the dock outline is never lethal here.
-    'nav_margin_m': 0.35,              # half footprint width (0.27) + 0.08
+    'nav_margin_m': 0.35,              # half footprint width (0.27 then; 0.235 since 2026-10-20) + 0.08
     'nav_obstacle_margin_m': 0.10,
     # navigation areas / drawn paths are grown by this instead of nav_margin_m,
     # so a drawn path stays a narrow band the planner follows (mowing areas keep

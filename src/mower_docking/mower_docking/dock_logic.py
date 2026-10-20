@@ -214,7 +214,7 @@ class ControllerGains:
     # wheels rolling backwards; |w| lowered when that would exceed max_speed); within
     # final_zone of the contacts |w| is lowered to keep the inner wheel at 0 instead. The [0, wheel_floor) band
     # (small steering on the reverse, 2026-10-07) is unchanged. wheel_floor 0 = off (revert).
-    track_width: float = 0.48
+    track_width: float = 0.40       # the MCU's wheel split (2026-10-20, was 0.48)
     wheel_floor: float = 0.06
 
 

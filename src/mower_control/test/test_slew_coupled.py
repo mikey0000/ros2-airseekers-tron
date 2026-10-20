@@ -112,7 +112,7 @@ def test_dock_phases_shape_the_nav_lane_only():
         out = run_lane(node, [(-0.05, 0.1)] * 20, 'docking')
         assert node._turn.status == 'pass'
     out = run(_node(state='RETURNING_HOME'), [(0.016, 0.09)] * 20)
-    assert out[-1] == pytest.approx((0.0, 0.25))                  # snapped to a pivot
+    assert out[-1] == pytest.approx((0.0, 0.3))                   # snapped to a pivot (floor 0.3)
 
 
 def test_pivot_to_arc_passes_through_a_stop():
@@ -146,7 +146,12 @@ def test_random_shaped_targets_never_crawl_backwards_and_respect_limits():
     prev = (0.0, 0.0)
     for v, w in out:
         assert not backward_one_wheel(v, w), (prev, (v, w))
-        assert abs(v - prev[0]) <= 0.8 * DT + 1e-9 and abs(w - prev[1]) <= 1.0 * DT + 1e-9
+        # 2026-10-20: a pure rotation steps straight to the 0.3 rad/s pivot floor or to 0
+        floor_step = v == 0.0 and (w == 0.0 or abs(abs(w) - 0.3) < 1e-9)
+        assert abs(v - prev[0]) <= 0.8 * DT + 1e-9
+        assert abs(w - prev[1]) <= 1.0 * DT + 1e-9 or floor_step, (prev, (v, w))
+        if v == 0.0 and w != 0.0:
+            assert abs(w) >= 0.3 - 1e-9, (prev, (v, w))         # never a pivot under the floor
         prev = (v, w)
 
 
@@ -167,8 +172,8 @@ def test_param_default_on():
 def test_no_one_wheel_step_caps_w_in_the_one_wheel_band():
     from mower_control.cmd_vel_slew import no_one_wheel_step
     v, w = no_one_wheel_step(-0.025, 0.2)              # inner -0.023: one-wheel
-    assert v == -0.025 and 0.0 <= abs(v) - abs(w) * 0.24 < 1e-6
+    assert v == -0.025 and 0.0 <= abs(v) - abs(w) * 0.20 < 1e-6
     assert no_one_wheel_step(-0.05, 0.05) == (-0.05, 0.05)    # floor zone: unchanged
     assert no_one_wheel_step(0.0, 0.3) == (0.0, 0.3)          # pivot
     assert no_one_wheel_step(-0.13, 0.06) == (-0.13, 0.06)    # proper arc
-    assert no_one_wheel_step(-0.01, -0.3) == (-0.01, -0.3)    # inner -0.062: counter-rotating
+    assert no_one_wheel_step(-0.01, -0.4) == (-0.01, -0.4)    # inner -0.07: counter-rotating

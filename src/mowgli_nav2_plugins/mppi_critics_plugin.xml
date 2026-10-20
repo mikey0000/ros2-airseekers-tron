@@ -3,7 +3,7 @@
     <!-- Jazzy MPPI loads critics as "mppi::critics::" + the name in the critics list. -->
     <class type="mppi::critics::WheelFloorCritic" base_class_type="mppi::critics::CriticFunction">
       <description>Penalises sampled (vx, wz) whose inner wheel sits under the drive's
-        wheel-speed floor while turning (Airseekers Tron: 0.06 m/s, track 0.48 m).</description>
+        wheel-speed floor while turning (Airseekers Tron: 0.06 m/s, track 0.40 m).</description>
     </class>
   </library>
 </class_libraries>

@@ -174,11 +174,11 @@ def _box_world(x, typ='box'):
 
 @pytest.mark.parametrize('typ', ['box', 'cylinder'])
 def test_collision_touching_vs_far(typ):
-    # footprint front is at x = 0.52; obstacle near face at x - 0.5
-    near = _box_world(1.02, typ)
+    # footprint front is at x = 0.60 (2026-10-20); obstacle near face at x - 0.5; 1.0999: touching within float noise
+    near = _box_world(1.0999, typ)
     assert [o.name for o in near.collisions(0.0, 0.0, 0.0, 0.0)] == ['o']
     assert near.clearance(0.0, 0.0, 0.0, 0.0) == pytest.approx(0.0, abs=1e-6)
-    far = _box_world(2.02, typ)
+    far = _box_world(2.10, typ)
     assert far.collisions(0.0, 0.0, 0.0, 0.0) == []
     assert far.clearance(0.0, 0.0, 0.0, 0.0) == pytest.approx(1.0, abs=0.02)
 

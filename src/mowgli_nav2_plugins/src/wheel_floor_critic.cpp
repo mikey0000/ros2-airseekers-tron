@@ -10,8 +10,8 @@ void WheelFloorCritic::initialize()
   auto getParam = parameters_handler_->getParamGetter(name_);
   getParam(power_, "cost_power", 1);
   getParam(weight_, "cost_weight", 10.0f);
-  double track = 0.48;
-  getParam(track, "track_width", 0.48);
+  double track = 0.40;
+  getParam(track, "track_width", 0.40);
   params_.half_track = 0.5 * track;
   getParam(params_.floor, "min_wheel_speed", 0.06);
   getParam(params_.straight_wz, "straight_wz", 0.0);

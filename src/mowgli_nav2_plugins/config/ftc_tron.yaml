@@ -55,9 +55,9 @@ controller_server:
       obstacle_lookahead: 30
       obstacle_footprint: true
       use_footprint_clearance: false
-      obstacle_footprint_front_length_m: 0.52
+      obstacle_footprint_front_length_m: 0.60   # owner-measured nose (2026-10-20, was 0.52)
       require_clear_exit: true
-      obstacle_body_half_width: 0.27
+      obstacle_body_half_width: 0.235          # 0.47 m with wheel trim (was 0.27)
       obstacle_clearance_margin: 0.05
       ignore_obstacles_outside_zone: true
       enable_obstacle_deviation: true

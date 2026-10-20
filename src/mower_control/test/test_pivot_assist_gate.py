@@ -207,7 +207,7 @@ def test_assisted_pivot_has_no_one_wheel_tick(ang):
     assert node._assist_ramp is False        # episode over once settled on the pivot
     bad = [(t, v, w) for t, v, w in out if _one_wheel(v, w)]
     assert not bad
-    if abs(ang) * 0.24 + 0.06 <= 0.14 + 1e-9:
+    if abs(ang) * 0.20 + 0.06 <= 0.14 + 1e-9:
         assert max_v(out[:100]) == pytest.approx(0.14)
 
 
@@ -257,5 +257,6 @@ def test_normal_driving_keeps_the_plain_slew(enabled):
         o = cs.CmdVelSlewNode.step(node, t)
         sv, sw, _ = cs.shape_for_both_wheels(lin, ang)
         v, w = cs.slew(v, sv, 0.5, DT), cs.slew(w, sw, 1.0, DT)
+        v, w = cs.pivot_floor_step(v, w, sv, sw)    # 2026-10-20: no pivot under the floor
         assert (o[0], o[5]) == pytest.approx((v, w))
     assert node._assist_ramp is False

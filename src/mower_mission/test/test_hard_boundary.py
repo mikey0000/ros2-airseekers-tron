@@ -67,13 +67,13 @@ def run_retrace(h, max_ticks=300):
 
 
 def assert_slow_two_wheel_reverse(cmds):
-    half = 0.24
+    half = 0.20
     moving = [(v, w) for v, w in cmds if v or w]
     assert moving
     for v, w in moving:
         assert v <= 0.0 and abs(v) <= 0.10 + 1e-9               # slow, never forward
         if v == 0.0:
-            assert abs(w) >= 0.25 - 1e-9                       # proper counter-rotating pivot
+            assert abs(w) >= 0.3 - 1e-9                       # proper counter-rotating pivot
         else:
             assert abs(v) - abs(w) * half >= 0.06 - 1e-9        # both wheels roll backwards
 

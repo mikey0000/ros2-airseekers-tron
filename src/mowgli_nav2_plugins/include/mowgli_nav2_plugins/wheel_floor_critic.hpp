@@ -11,7 +11,7 @@
 //
 // Jazzy (1.3.x) loads critics as "mppi::critics::" + <name in the critics list>, so the
 // class lives in that namespace; its parameters are <controller>.WheelFloorCritic.*:
-//   cost_weight (10.0), cost_power (1), track_width (0.48), min_wheel_speed (0.06),
+//   cost_weight (10.0), cost_power (1), track_width (0.40), min_wheel_speed (0.06),
 //   straight_wz (0.0), stop_speed (0.02), allow_pivots (true).
 // Revert: drop "WheelFloorCritic" from the critics list (or enabled: false).
 #ifndef MOWGLI_NAV2_PLUGINS__WHEEL_FLOOR_CRITIC_HPP_

@@ -215,10 +215,10 @@ behavior_tree_node:
     # the legs) and run through the existing route-leg machinery. A sub-path that fails the
     # validation is reported and NOT mowed. false = raw paths as before (revert).
     path_conditioning: true
-    path_conditioning_r_min_m: 0.5        # = min_turn_radius_m (r >= 0.44 is drivable)
+    path_conditioning_r_min_m: 0.5        # = min_turn_radius_m (r >= 0.40 is drivable, b 0.40)
     path_conditioning_r_max_m: 1.0        # 1.0 m arcs run at full 0.3 m/s
     path_conditioning_margin_m: 0.05
-    path_conditioning_half_width_m: 0.24
+    path_conditioning_half_width_m: 0.235   # body half width, 0.47 m with wheel trim (was 0.24)
     path_conditioning_slack_m: 0.05
     path_conditioning_pivot_min_rad: 0.35
     path_conditioning_edge_pivot_rad: 1.38    # 0.0 = no edge policy (fillets everywhere)
@@ -267,11 +267,11 @@ behavior_tree_node:
     obstacle_path_filter: true
     obstacle_path_lookahead_m: 2.0
     obstacle_path_margin_m: 0.25
-    robot_width_m: 0.54
+    robot_width_m: 0.47               # owner-measured 2026-10-20 (was 0.54)
     obstacle_sweep_horizon_s: 2.0
     obstacle_twist_max_age_s: 0.5
-    robot_front_m: 0.52
-    robot_rear_m: 0.25
+    robot_front_m: 0.60               # bumper (was 0.52)
+    robot_rear_m: 0.12                # rear 0.10 + 0.02 (was 0.25)
     blade_transit_sample_m: 0.2       # blade_policy continuous: in-area transit check step
     follow_retries: 3                 # follow_path abort/timeout: resume from the last reached pose
     clear_costmaps_on_retry: true     # clear Nav2 global+local costmaps before retries / recoveries
@@ -379,7 +379,7 @@ behavior_tree_node:
     hard_boundary_retrace_max_m: 1.0
     hard_boundary_lookahead_m: 0.25
     hard_boundary_min_inner_mps: 0.06
-    hard_boundary_track_width_m: 0.48
+    hard_boundary_track_width_m: 0.40   # MCU wheel split (was 0.48)
     hard_boundary_pivot_err_rad: 0.6
     hard_boundary_pivot_rps: 0.3
     hard_boundary_progress_s: 3.0
@@ -413,7 +413,7 @@ behavior_tree_node:
     dynamic_wait_sensitive_factor: 2.0  # sensitive areas: dynamic waits x this
     stereo_stale_window_s: 2.0        # /rosout stale-stereo WARN this recent -> 'sensor stale' sub_state
     # 2.0 (was 1.0, 2026-10-09): the robot stops ~0.3 m short of an obstacle and its footprint
-    # reaches 0.52 m ahead of base_link, so a pose 1.0 m on almost always put the goal footprint
+    # reaches 0.60 m ahead of base_link, so a pose 1.0 m on almost always put the goal footprint
     # inside the obstacle -> planner failure -> 1.5 / 2.0 / ... each burning a full Nav2
     # recovery cycle (the long "pause"). 2.0 clears a ~0.5 m deep obstacle at the first try.
     detour_skip_m: 2.0                # detour target this far along the sub-path past the robot

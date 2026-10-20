@@ -88,7 +88,7 @@ class Params:
     r_max: float = 1.0
     r_step: float = 0.1
     margin_m: float = 0.05
-    half_width_m: float = 0.24
+    half_width_m: float = 0.235    # body half width, 0.47 m with wheel trim (2026-10-20)
     step_m: float = 0.05
     simplify_m: float = 0.02
     detect_m: float = 0.06
