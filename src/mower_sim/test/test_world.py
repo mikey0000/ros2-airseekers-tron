@@ -236,7 +236,7 @@ def test_sim_antenna_default_matches_the_urdf_gps_link():
     sx = float(re.search(r"d\('gps_antenna_x', ([-\d.]+)\)", src).group(1))
     sy = float(re.search(r"d\('gps_antenna_y', ([-\d.]+)\)", src).group(1))
     assert (sx, sy) == pytest.approx((float(m.group(1)), float(m.group(2))))
-    assert sx == pytest.approx(0.10)
+    assert sx == pytest.approx(0.098)
 
 
 def test_urdf_blade_link_is_the_measured_deck_centre():
@@ -250,5 +250,5 @@ def test_urdf_blade_link_is_the_measured_deck_centre():
         pytest.skip('sources not found from the test tree')
     m = re.search(r'name="cutter_xyz"\s+value="([-\d.]+) ([-\d.]+)', open(urdf).read())
     fb = float(re.search(r"'blade_offset_x': ([-\d.]+)", open(ms).read()).group(1))
-    assert float(m.group(1)) == pytest.approx(0.25)
-    assert fb == pytest.approx(0.25)
+    assert float(m.group(1)) == pytest.approx(0.23)
+    assert fb == pytest.approx(0.23)

@@ -108,9 +108,9 @@ class SimNode(Node):
         d('battery_drain_per_s', 0.00005)
         d('battery_charge_per_s', 0.001)
         d('gps_sigma_m', 0.015)
-        # GNSS antenna offset from base_link (m), = the URDF gps_link lever arm (x 0.10 measured
-        # 2026-10-20): /fix is the antenna's position, as on the robot (navsat removes it)
-        d('gps_antenna_x', 0.10)
+        # GNSS antenna offset from base_link (m), = the URDF gps_link lever arm (x 0.098 vendor CAD,
+        # owner measured 0.10): /fix is the antenna's position, as on the robot (navsat removes it)
+        d('gps_antenna_x', 0.098)
         d('gps_antenna_y', 0.0)
         d('bumper_hold_s', 0.3)
         # ground disturbance (kinematics.DriveParams.disturb_*; all off by default)

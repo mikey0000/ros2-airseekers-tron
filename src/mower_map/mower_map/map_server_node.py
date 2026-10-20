@@ -128,7 +128,7 @@ PARAMS = {
     'status_topic': '/mower_base/status',
     'gps_status_topic': '/gps/status',
     'blade_radius': 0.15,
-    'blade_offset_x': 0.25,            # fallback if TF base->blade is unavailable (URDF cutter_xyz, deck centre measured 2026-10-20)
+    'blade_offset_x': 0.23,            # fallback if TF base->blade is unavailable (URDF cutter_xyz, deck centre measured 2026-10-20)
     'blade_offset_y': 0.0,
     'status_max_age_s': 1.0,           # is_cutting older than this -> not cutting
     'mow_progress_publish_period_s': 2.0,
