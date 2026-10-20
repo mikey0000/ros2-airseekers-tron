@@ -157,3 +157,32 @@ def test_near_goal_still_falls_back_and_zero_limit_restores_old_behaviour():
     h = _far_h(transit_fallback_max_goal_m=0.0)
     _answer_route(h, ok=False)
     assert _navs(h)
+
+
+# ---- area 5 planning time: _point_at binary search -----------------------------------
+def test_point_at_binary_search_matches_the_scan():
+    import random
+    from mower_mission import geometry as geo
+
+    def scan(poses, cum, s):
+        if s <= 0.0:
+            return float(poses[0][0]), float(poses[0][1])
+        for k in range(1, len(poses)):
+            if cum[k] >= s:
+                seg = cum[k] - cum[k - 1]
+                fr = 0.0 if seg < 1e-12 else (s - cum[k - 1]) / seg
+                return (poses[k - 1][0] + (poses[k][0] - poses[k - 1][0]) * fr,
+                        poses[k - 1][1] + (poses[k][1] - poses[k - 1][1]) * fr)
+        return float(poses[-1][0]), float(poses[-1][1])
+
+    rnd = random.Random(3)
+    pts = [(0.0, 0.0)]
+    for _ in range(300):
+        q = pts[-1] if rnd.random() < 0.05 else (pts[-1][0] + rnd.uniform(-1, 1),
+                                                 pts[-1][1] + rnd.uniform(-1, 1))
+        pts.append(q)                                # includes repeated points
+    cum = geo.cumulative_lengths(pts)
+    for s in [-1.0, 0.0, cum[-1], cum[-1] + 1.0] + [rnd.uniform(0, cum[-1]) for _ in range(500)] \
+            + cum[1:50]:
+        a, b = geo._point_at(pts, cum, s), scan(pts, cum, s)
+        assert abs(a[0] - b[0]) < 1e-9 and abs(a[1] - b[1]) < 1e-9, s

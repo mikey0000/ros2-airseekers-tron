@@ -8,6 +8,7 @@
 Points are ``(x, y)`` tuples; path poses are ``(x, y, yaw)`` tuples.
 """
 
+import bisect
 import math
 
 
@@ -447,12 +448,15 @@ def _point_at(poses, cum, s):
     """(x, y) at arc length ``s`` (clamped to the polyline)."""
     if s <= 0.0:
         return float(poses[0][0]), float(poses[0][1])
-    for k in range(1, len(poses)):
-        if cum[k] >= s:
-            seg = cum[k] - cum[k - 1]
-            f = 0.0 if seg < 1e-12 else (s - cum[k - 1]) / seg
-            return (float(poses[k - 1][0]) + (float(poses[k][0]) - float(poses[k - 1][0])) * f,
-                    float(poses[k - 1][1]) + (float(poses[k][1]) - float(poses[k - 1][1])) * f)
+    # first k >= 1 with cum[k] >= s (cum is non-decreasing): a binary search, not a scan -
+    # path conditioning calls this per pose, and the scan made it O(n^2) (area 5, field
+    # 2026-10-20: 74 s on the RK3588)
+    k = bisect.bisect_left(cum, s, 1, len(poses))
+    if k < len(poses):
+        seg = cum[k] - cum[k - 1]
+        f = 0.0 if seg < 1e-12 else (s - cum[k - 1]) / seg
+        return (float(poses[k - 1][0]) + (float(poses[k][0]) - float(poses[k - 1][0])) * f,
+                float(poses[k - 1][1]) + (float(poses[k][1]) - float(poses[k - 1][1])) * f)
     return float(poses[-1][0]), float(poses[-1][1])
 
 

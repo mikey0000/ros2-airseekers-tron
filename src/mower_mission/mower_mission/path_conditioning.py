@@ -278,17 +278,25 @@ def find_corners(pts, p):
     return out
 
 
-def condition(poses, region, params: Optional[Params] = None, ring=None):
-    """Condition the polyline ``poses`` ((x, y[, yaw]) ...) against ``region`` (list of
-    polygons). ``ring``: apply the outermost-ring edge policy (None = auto: the path turns
-    through >= 180 deg in total). Returns :class:`Conditioned`."""
-    p = params or Params()
+def _dedupe(poses):
     raw = [tuple(map(float, q[:2])) for q in poses]
-    # drop repeated points
     pts = [raw[0]] if raw else []
     for q in raw[1:]:
         if geo.dist(q, pts[-1]) > 1e-6:
             pts.append(q)
+    return pts
+
+
+def _total_turn(pts, cum, p):
+    return sum(_turn_rate(pts, cum, i, 0.5 * p.step_m + 1e-3) for i in range(1, len(pts) - 1))
+
+
+def condition(poses, region, params: Optional[Params] = None, ring=None, turn_sign=None):
+    """Condition the polyline ``poses`` ((x, y[, yaw]) ...) against ``region`` (list of
+    polygons). ``ring``: apply the outermost-ring edge policy (None = auto: the path turns
+    through >= 180 deg in total). Returns :class:`Conditioned`."""
+    p = params or Params()
+    pts = _dedupe(poses)          # drop repeated points
     res = Conditioned()
     if len(pts) < 2:
         res.errors.append('path shorter than 2 poses')
@@ -302,10 +310,11 @@ def condition(poses, region, params: Optional[Params] = None, ring=None):
         return min(vals) if vals else math.inf
 
     corners = find_corners(pts, p)
-    total_turn = sum(_turn_rate(pts, cum, i, 0.5 * p.step_m + 1e-3) for i in range(1, len(pts) - 1))
+    total_turn = _total_turn(pts, cum, p)
     if ring is None:
         ring = abs(total_turn) >= math.pi
-    ring_sign = 1.0 if total_turn > 0 else -1.0
+    # ``turn_sign``: the ring's turn sign when ``poses`` is a window of a longer path
+    ring_sign = (1.0 if total_turn > 0 else -1.0) if turn_sign is None else turn_sign
     pieces = []          # ('raw', s0, s1) | ('arc', pts, r, turn) | ('pivot', vertex)
     s_prev = 0.0
     for k, (v, turn, s_lo, s_hi, vi, u_in, u_out) in enumerate(corners):
@@ -548,8 +557,25 @@ class TurnJoin:
     why: str = ''
 
 
+def _arc_back(pts, i, d):
+    """Smallest index j <= i with at least ``d`` m of polyline from j to i (0 if shorter)."""
+    acc = 0.0
+    while i > 0 and acc < d:
+        acc += geo.dist(pts[i], pts[i - 1])
+        i -= 1
+    return i
+
+
+def _arc_fwd(pts, i, d):
+    acc, n = 0.0, len(pts)
+    while i < n - 1 and acc < d:
+        acc += geo.dist(pts[i], pts[i + 1])
+        i += 1
+    return i
+
+
 def join_turn_chains(subpaths, region, params: Optional[Params] = None, leg_max_m=1.2,
-                     min_run_m=0.5, tol_rad=0.02, max_gap_m=2.0):
+                     min_run_m=0.5, tol_rad=0.02, max_gap_m=2.0, join_window_m=4.0):
     """Replace every swath-end Reeds-Shepp turn chain by the geometry it connects.
 
     A chain is a forward sub-path, then one or more turn legs (a reverse sub-path, or a
@@ -611,7 +637,16 @@ def join_turn_chains(subpaths, region, params: Optional[Params] = None, leg_max_
                 tj.why = 'connector leaves the region'
             else:
                 merged = list(first[:ia + 1]) + list(last[ib:])
-                r = condition(merged, region, p)
+                # validate the join on a window around it (the rest of the merged path is
+                # unchanged and conditioned again in full afterwards), with the full path's
+                # ring flag / sign: conditioning the whole, ever-growing merged path per join
+                # was O(joins x n) (area 5, field 2026-10-20: 74 s on the RK3588)
+                fpts = _dedupe(merged)
+                tt = _total_turn(fpts, geo.cumulative_lengths(fpts), p)
+                lo = _arc_back(first, ia, join_window_m)
+                hi = _arc_fwd(last, ib, join_window_m)
+                r = condition(list(first[lo:ia + 1]) + list(last[ib:hi + 1]), region, p,
+                              ring=abs(tt) >= math.pi, turn_sign=1.0 if tt > 0 else -1.0)
                 if r.valid:
                     tj.ok = True
                     subs[j] = merged
