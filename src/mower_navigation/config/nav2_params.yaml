@@ -36,13 +36,14 @@
 # identity child of it, so the two are interchangeable; base_link avoids one
 # extra TF lookup and matches /odometry/filtered.child_frame_id.
 #
-# Footprint (from config/urdf/mower.urdf.xacro, base_link origin):
-#   chassis box 0.7 x 0.5 centred at x=+0.12  -> x in [-0.23, +0.47], y +-0.25
-#   drive wheels at y=+-0.24, width 0.05      -> outer y +-0.265
-#   bumper box at x=0.507, 0.02 thick         -> front x +0.517
-#   => [[0.52, 0.27], [0.52, -0.27], [-0.23, -0.27], [-0.23, 0.27]]
-# NOTE: the xacro places the drive axle at x=-0.098 while base_link is documented
-# as the rear-axle centre; if base_link moves to the axle, shift x by +0.098.
+# Footprint (owner-measured 2026-10-20, from the rear drive-axle centre = base_link = pivot):
+#   front bumper +0.60, rear -0.10, overall width 0.47 with the wheel trim (+-0.235);
+#   tyres 0.22 m diameter, 6 cm tread, centre-to-centre track 0.39 (the MCU splits
+#   (v, w) with 0.40: wheel-speed math below uses 0.40).
+#   => [[0.60, 0.235], [0.60, -0.235], [-0.10, -0.235], [-0.10, 0.235]]
+#   (was [[0.52, 0.27], ..., [-0.23, 0.27]] from the stale vendor URDF)
+#   Padded 0.02: inscribed radius 0.12 (rear), circumscribed 0.67 (front corner);
+#   unpadded pivot sweep radius 0.645 m at the front corners.
 
 bt_navigator:
   ros__parameters:
@@ -267,9 +268,9 @@ controller_server:
     #     turning expensive (field: 24-84 % of transit output ticks were in that band and
     #     rewritten by the turn shaper). Revert: drop it from critics (or enabled: false).
     #   * Collision: CostCritic with consider_footprint true on the local costmap, which
-    #     NOW has an inflation layer (radius 1.0 > circumscribed 0.61, see local_costmap):
+    #     NOW has an inflation layer (radius 1.0 > circumscribed 0.67, see local_costmap):
     #     without inflation CostCritic skips every pose whose CENTRE cell is free, i.e.
-    #     the 0.52 m nose would never be checked (CostCritic::score()).
+    #     the 0.60 m nose would never be checked (CostCritic::score()).
     #   * No GoalAngleCritic: transit goals end on xy only (general_goal_checker yaw 3.14).
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
@@ -365,7 +366,7 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 20.0
-        track_width: 0.48
+        track_width: 0.40   # MCU wheel split (2026-10-20, was 0.48)
         min_wheel_speed: 0.06
         allow_pivots: true
 
@@ -393,9 +394,9 @@ controller_server:
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.0
       use_regulated_linear_velocity_scaling: true
-      # cmd_vel_slew turn shaper (both wheels forward, inner >= 0.06 m/s, b = 0.48 m,
-      # outer <= 0.3): r_min = b/2*(v_out+v_in)/(v_out-v_in) = 0.36 m; with the MCU's
-      # |w| <= 0.3 the tightest arc is 0.44 m (v 0.132). Keep every min radius >= 0.44.
+      # cmd_vel_slew turn shaper (both wheels forward, inner >= 0.06 m/s, b = 0.40 m,
+      # outer <= 0.3): r_min = b/2*(v_out+v_in)/(v_out-v_in) = 0.30 m; with the MCU's
+      # |w| <= 0.3 the tightest arc is 0.40 m (v 0.12). Keep every min radius >= 0.40.
       regulated_linear_scaling_min_radius: 0.9
       regulated_linear_scaling_min_speed: 0.15
       use_cost_regulated_linear_velocity_scaling: false
@@ -441,12 +442,12 @@ controller_server:
       transform_tolerance: 0.5
       # 0.14 (was 0.05, 2026-10-13 swath-end pivots): every K-turn leg (~0.4 m) is inside
       # approach_velocity_scaling_dist, so RPP drove it at 0.05-0.1 m/s with w = v * k. On an
-      # r 0.5 m leg (k 2) that is inner = v - w*0.24 = 0.026 m/s: cmd_vel_slew's turn shaper
+      # r 0.5 m leg (k 2) that was inner = v - w*0.24 = 0.026 m/s (b 0.48 then): cmd_vel_slew's turn shaper
       # widened it to an r 0.84 m arc, the leg ended ~0.3 rad short of its heading and the
       # next leg began with a pivot; at v 0.05 / |w| 0.3 (inner < 0) it SNAPPED to a pure
-      # pivot. At v >= 0.132 every |w| <= 0.3 (velocity_smoother clamp) keeps the inner wheel
-      # >= 0.06: a legal arc, r >= 0.44 m (= the shaper's tightest arc at the MCU's 0.3 rad/s).
-      # 0.14 = pivot_assist's creep speed (inner 0.068 at |w| 0.3).
+      # pivot. At v >= 0.12 every |w| <= 0.3 (velocity_smoother clamp) keeps the inner wheel
+      # >= 0.06 (b 0.40): a legal arc, r >= 0.40 m (= the shaper's tightest arc at the MCU's
+      # 0.3 rad/s). 0.14 = pivot_assist's creep speed (inner 0.08 at |w| 0.3).
       min_approach_linear_velocity: 0.14
       approach_velocity_scaling_dist: 0.4
       use_collision_detection: true
@@ -458,7 +459,7 @@ controller_server:
       # it asked for 0.4-0.6 rad/s at 0.3 m/s; the robot turned on a >= 1.0-1.5 m radius
       # and ran wide (docs/analysis/2026-10-06_ring_drift.md).
       regulated_linear_scaling_min_radius: 1.5
-      # 0.14 (was 0.08, 2026-10-13): same reason as min_approach_linear_velocity. Below 0.132
+      # 0.14 (was 0.08, 2026-10-13): same reason as min_approach_linear_velocity. Below 0.12
       # a curvature the shaper must widen anyway (it raised v to ~0.13 on every tight arc), or,
       # at |w| 0.3, one it snaps to a pivot. Still v / R <= 0.2 rad/s for R >= 0.7 m.
       regulated_linear_scaling_min_speed: 0.14
@@ -470,11 +471,11 @@ controller_server:
       # of leg arc + the heading the last leg missed (coverage_leg_goal_checker yaw 0.5), so
       # 0.6 made almost every leg (and every retry of one) begin with a 0.3 rad/s pivot that
       # turns ~2 deg/s on turf, tripped the stuck guard and was resent. Up to 1.2 the leg is
-      # driven as an arc through the turn shaper (r >= 0.44 m, inner wheel >= 0.06 m/s).
+      # driven as an arc through the turn shaper (r >= 0.40 m, inner wheel >= 0.06 m/s).
       # Kept true for carrots further round (a transit that arrives facing away): without
       # rotate-to-heading RPP drives FORWARD away from a carrot behind it (curvature ~0).
       # Trade-off: a swath start up to 69 deg off now arcs onto the line (up to ~0.3 m
-      # sideways at r 0.44) instead of pivoting.
+      # sideways at r 0.40) instead of pivoting.
       rotate_to_heading_min_angle: 1.2
       # 3.2: RPP ramps its turn command from the MEASURED yaw rate; with 1.0 and wheels
       # stalled in grass the command sat at 0.07 rad/s forever (rocking in place, 10-06).
@@ -617,7 +618,7 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 30.0
-        track_width: 0.48
+        track_width: 0.40   # MCU wheel split (2026-10-20, was 0.48)
         min_wheel_speed: 0.06
         allow_pivots: true
 
@@ -696,7 +697,7 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 20.0
-        track_width: 0.48
+        track_width: 0.40   # MCU wheel split (2026-10-20, was 0.48)
         min_wheel_speed: 0.06
         allow_pivots: true
 
@@ -753,11 +754,11 @@ controller_server:
       obstacle_lookahead: 30
       obstacle_footprint: true
       use_footprint_clearance: false
-      # TRON: front of footprint 0.52 m ahead of base_link, half width 0.27 m
-      # (MowgliNext 0.30 / 0.12 for its smaller chassis).
-      obstacle_footprint_front_length_m: 0.52
+      # TRON: front of footprint 0.60 m ahead of base_link, half width 0.235 m (owner-measured
+      # 2026-10-20; was 0.52 / 0.27) (MowgliNext 0.30 / 0.12 for its smaller chassis).
+      obstacle_footprint_front_length_m: 0.60
       require_clear_exit: true
-      obstacle_body_half_width: 0.27
+      obstacle_body_half_width: 0.235
       obstacle_clearance_margin: 0.05
       ignore_obstacles_outside_zone: true
       enable_obstacle_deviation: true
@@ -782,22 +783,23 @@ planner_server:
     planner_plugins: ["GridBased", "GridBasedNavFn"]
     # 2026-10-09: GridBased = SmacPlannerHybrid (was NavFn). NavFn plans the robot CENTRE and
     # only cost >= 253 (lethal + 0.25 m inscribed band) is a wall, so it routed detours
-    # through 0.5-0.58 m gaps the 0.58 m-wide (padded) mower cannot pass; RPP then aborted
+    # through 0.5-0.58 m gaps the (then 0.58 m-wide padded, now 0.51 m) mower cannot pass; RPP then aborted
     # "collision ahead" at the gap. Hybrid-A* checks the FULL oriented footprint
     # (nav2_smac_planner collision_checker.cpp: centre cost >= the circumscribed cost ->
     # footprintCost() along the polygon, >= 254 = collision; the costmap footprint is a
     # polygon so getUseRadius() is false), so such a gap has no plan. That shortcut needs
-    # the global inflation_radius >= the circumscribed radius (0.61 m; see inflation_layer).
+    # the global inflation_radius >= the circumscribed radius (0.67 m; see inflation_layer).
     # Known limits:
     #   * The shortcut only sees INFLATED cost. Cells set only by the keepout_filter (runs
     #     after inflation_layer) are not inflated; that is why the global costmap now sets
     #     use_maximum / trinary_costmap at costmap level so the mask itself is in
     #     static_layer and inflated (see global_costmap; before, a 0.4 m mask gap passed).
     #   * footprintCost() walks the polygon OUTLINE, so a single 0.1 m lethal cell can slip
-    #     between two expansions inside the 0.75 m-long body; real stereo/bumper obstacles
+    #     between two expansions inside the 0.70 m-long body; real stereo/bumper obstacles
     #     span several cells and the inflation keeps the path off them anyway.
     # DUBIN (forward only, like the robot: no blind reversing). minimum_turning_radius 0.45:
-    # the cmd_vel_slew turn shaper + the MCU |w| <= 0.3 clamp give r_min 0.44 m (see
+    # the cmd_vel_slew turn shaper + the MCU |w| <= 0.3 clamp give r_min 0.40 m (b 0.40,
+    # 2026-10-20; 0.45 kept as a margin, was r_min 0.44 with b 0.48) (see
     # FollowPathRPP regulated_linear_scaling_min_radius). A goal that needs a pivot (e.g. the
     # dock approach pose facing away from the robot next to a wall) may have no Dubins path:
     # the BTs then fall back to GridBasedNavFn (pivot-in-place is the controller's job).
@@ -876,13 +878,15 @@ behavior_server:
     # Spin's decel profile sqrt(2 * acc * remaining) never dropped below the clamp, the pivot
     # ran at 0.3 until the target and stopped from full speed, and cmd_vel_slew first spent
     # 0.1 s winding its phantom 0.4-1.0 rad/s down to 0.3: 6-7 deg overshoot in the ideal sim.
-    # Now max = the MCU clamp, min = the pivot floor (inner wheel 0.06 m/s / 0.24 m =
-    # 0.25 rad/s, the turn shaper's pivot), acc = cmd_vel_slew max_angular_decel (1.0): the
-    # pivot slows to 0.25 over its last ~2 deg and the mission's lead covers the stop.
-    # cycle_frequency 20 (was 10): the stop decision is late by up to one cycle (0.7 deg at
-    # 0.25 rad/s instead of 1.4).
+    # Now max = the MCU clamp, min = the pivot floor (inner wheel 0.06 m/s / (b/2 0.20 m) =
+    # 0.30 rad/s since the 2026-10-20 geometry, b 0.40; was 0.25 with b 0.48): min = max, so a
+    # pivot runs at exactly 0.3 and stops from it (no slow tail under the wheel floor, the
+    # field turf stick-slip); the mission's pivot_stop_lead_rad covers the stop.
+    # acc = cmd_vel_slew max_angular_decel (1.0).
+    # cycle_frequency 20 (was 10): the stop decision is late by up to one cycle (0.9 deg at
+    # 0.3 rad/s instead of 1.7).
     max_rotational_vel: 0.3
-    min_rotational_vel: 0.25
+    min_rotational_vel: 0.3
     rotational_acc_lim: 1.0
 
 # Controller output (/cmd_vel_nav_raw) -> velocity_smoother (/cmd_vel_nav_smoothed)
@@ -931,9 +935,9 @@ velocity_smoother:
 #     everything (bumper contact: /bumper_cloud puts x=0.4 m points inside the footprint;
 #     the bumper lane 50 does the escape regardless).
 #   * Stereo blind band: stereo_depth min_range 0.2 m from the camera at x=0.466 -> nothing
-#     is seen closer than x~0.67, i.e. the first ~0.15 m ahead of the 0.52 m nose. The
+#     is seen closer than x~0.67, i.e. the first ~0.07 m ahead of the 0.60 m nose. The
 #     approach time 2.0 s brings v to <= 0.075 m/s at that band edge and stop_zone ends at
-#     x=0.75 so a forward drive is stopped while the obstacle is still visible.
+#     x=0.83 so a forward drive is stopped while the obstacle is still visible.
 #   * A stale source is ignored (WARN "Ignoring the source"), never a stop: no stereo ->
 #     pass-through (the local costmap's stereo expected_update_rate gate pauses the
 #     controller instead). bumper_controller publishes an empty /bumper_cloud heartbeat
@@ -954,28 +958,30 @@ collision_monitor:
     # 1.0 s keeps >= 4 clouds at 5 Hz valid without trusting a dead camera for long.
     source_timeout: 1.0
     # true: each cloud is moved from its stamp to "now" through odom (up to 0.3 s x 0.3 m/s
-    # = 9 cm of travel otherwise unaccounted for, on a 0.23 m stop band).
+    # = 9 cm of travel otherwise unaccounted for, on the 0.23 m stop band).
     base_shift_correction: true
     # zeros are repeated this long after a stop, then the lane goes quiet (twist_mux
     # timeout 0.6 s; the MCU driver's stop is 3 zero frames then silence).
     stop_pub_timeout: 1.0
     polygons: ["stop_zone", "slowdown_zone", "approach_footprint"]
-    # Footprint front edge x=0.52, half width 0.27 (+0.02 costmap padding = 0.29).
+    # Footprint front edge x=0.60, half width 0.235 (+0.02 costmap padding = 0.255) (owner-measured
+    # 2026-10-20; was 0.52 / 0.27 / 0.29). Zones moved with the nose: same distance ahead of it.
     stop_zone:
       type: "polygon"
       # Jazzy: PARAMETER_STRING via parseVVF (Humble used a flat double_array [x1,y1,...]).
-      points: "[[0.75, 0.29], [0.75, -0.29], [0.52, -0.29], [0.52, 0.29]]"
+      points: "[[0.83, 0.255], [0.83, -0.255], [0.60, -0.255], [0.60, 0.255]]"
       action_type: "stop"
       min_points: 4          # Jazzy: >= 4 inside (Humble's max_points 3 + 1; single speckles ignored)
       enabled: true          # forward only: collision_zone_gate
       visualize: true
       polygon_pub_topic: "/collision_monitor/stop_zone"
-    # 0.52 -> 1.3 m (0.78 m ahead of the nose), +-0.40 (a corner sweep while arcing).
+    # 0.60 -> 1.38 m (0.78 m ahead of the nose), +-0.40 (a corner sweep while arcing; kept, the
+    # front corners now sweep r 0.645 m on a pivot).
     # ratio 0.5: 0.3 -> 0.15 m/s, scales w too (scales the whole twist).
     slowdown_zone:
       type: "polygon"
       # Jazzy: string form, as above (Humble: flat double_array).
-      points: "[[1.3, 0.40], [1.3, -0.40], [0.52, -0.40], [0.52, 0.40]]"
+      points: "[[1.38, 0.40], [1.38, -0.40], [0.60, -0.40], [0.60, 0.40]]"
       action_type: "slowdown"
       slowdown_ratio: 0.5
       min_points: 4
@@ -1040,10 +1046,10 @@ local_costmap:
       robot_base_frame: base_link
       transform_tolerance: 0.5
       always_send_full_costmap: false
-      footprint: "[[0.52, 0.27], [0.52, -0.27], [-0.23, -0.27], [-0.23, 0.27]]"
+      footprint: "[[0.60, 0.235], [0.60, -0.235], [-0.10, -0.235], [-0.10, 0.235]]"
       footprint_padding: 0.02
       # DEVIATION: 6 x 6 m (MowgliNext 12 x 12). 6 (was 4, 2026-10-09): +-3 m covers the
-      # stereo / det_range / clearing ranges (2-3 m) from base_link plus the 0.52 m nose,
+      # stereo / det_range / clearing ranges (2-3 m) from base_link plus the 0.60 m nose,
       # so a mark is not dropped off the window edge before the robot reaches it.
       # 0.05 m: 120 x 120 = 14k cells at 10 Hz, cheap on the RK3588.
       rolling_window: true
@@ -1072,7 +1078,7 @@ local_costmap:
       # an empty cloud) the raytrace already touches the bounds, so live the bug bites only
       # when no clearing source is in use (stereo_costmap:=false, stereo idle/dead).
       # MPPI needs this inflation: CostCritic/footprint checks are only done for poses whose
-      # centre cell has cost (radius 1.0 > circumscribed 0.61, so any obstacle that the
+      # centre cell has cost (radius 1.0 > circumscribed 0.67, so any obstacle that the
       # footprint could touch gives the base_link cell a cost >= the "possibly inscribed"
       # cost 59). RPP / behaviors / FTC footprint checks use >= 253/254 only, so the gradient
       # below inscribed does not change them; FTC's path check (>= 253) now also sees the
@@ -1084,8 +1090,8 @@ local_costmap:
         observation_sources: ""
         footprint_clearing_enabled: true
         combination_method: 1
-      # 1.0 m / 4.0: cost = 252 * exp(-4 (d - 0.25)): 59 at the circumscribed radius 0.61,
-      # 25 at 0.8, 13 at 1.0. Wide and soft (MPPI CostCritic guidance) so MPPI starts bending
+      # 1.0 m / 4.0: cost = 252 * exp(-4 (d - 0.12)) (inscribed 0.12 since the 2026-10-20
+      # footprint; was 0.25): 28 at the circumscribed radius 0.67, 5 at 1.0. Wide and soft (MPPI CostCritic guidance) so MPPI starts bending
       # around a mark ~0.5 m before the nose would touch it (base_link is the REAR axle).
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -1220,7 +1226,7 @@ global_costmap:
       use_sim_time: false
       # 4.0 (was 1.0, 2026-10-09): the obstacle_layer now feeds the planner, and the
       # mission's detour BT replans at 1 Hz; at 1 Hz a fresh stereo mark could be up to
-      # 1 s old at plan time, i.e. ~0.3 m of travel into a 0.52 m nose. CPU: in a rolling
+      # 1 s old at plan time, i.e. ~0.3 m of travel into a 0.60 m nose. CPU: in a rolling
       # window the static/terrain layers re-apply their full extent every cycle, so each
       # update re-inflates the whole 500 x 500 grid (wider radius 0.6 now). If the RK3588
       # shows planner_server near a core (top -H), drop to 2.0 before touching anything else.
@@ -1233,7 +1239,7 @@ global_costmap:
       robot_base_frame: base_link
       transform_tolerance: 0.5
       always_send_full_costmap: false
-      footprint: "[[0.52, 0.27], [0.52, -0.27], [-0.23, -0.27], [-0.23, 0.27]]"
+      footprint: "[[0.60, 0.235], [0.60, -0.235], [-0.10, -0.235], [-0.10, 0.235]]"
       footprint_padding: 0.02
       # No /map publisher (no LiDAR, no SLAM): the static_layer below is the nav mask, not
       # an occupancy map. Rolling window in the GPS-anchored map frame; the nav mask carries
@@ -1255,7 +1261,7 @@ global_costmap:
       # apply to every StaticLayer (mask, terrain, any later grid layer): max-combined,
       # non-trinary, and the mask is inflated like any obstacle.
       # NEEDS A LIVE CHECK: the inflated mask + Smac's footprint check can make goals whose
-      # 0.52 m nose would overhang the lethal mask (0.35 m outside the area) unreachable for
+      # 0.60 m nose would overhang the lethal mask (0.35 m outside the area) unreachable for
       # GridBased; the BT then uses GridBasedNavFn (watch for "GridBasedNavFn" plans at the
       # dock / swath starts on the boundary).
       use_maximum: true
@@ -1421,17 +1427,18 @@ global_costmap:
           inf_is_valid: false
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # 2026-10-09: 0.65 / 10 (was 0.26 / 25). Footprint (padded 0.02): inscribed radius
-        # 0.25 (rear edge 0.23), circumscribed ~0.61 (corner 0.54, 0.29).
-        # cost = 252 * exp(-10 * (d - 0.25)): lethal/inscribed band unchanged (< 0.25 m),
-        # 93 at 0.35 m, 21 at 0.5 m, 8 at 0.6 m, 6 at the circumscribed radius.
-        # 0.65 (>= circumscribed 0.61, not 0.6): SmacPlannerHybrid (and MPPI) only run the full
+        # 2026-10-20 geometry: 0.70 / 6.5 (was 0.65 / 10, 2026-10-09; 0.26 / 25 before). Footprint
+        # (padded 0.02): inscribed radius 0.12 (rear edge 0.10; was 0.25), circumscribed 0.67
+        # (corner 0.62, 0.255; was 0.61). cost = 252 * exp(-6.5 * (d - 0.12)): 253 band < 0.12 m,
+        # 56 at 0.35 m, 21 at 0.5 m (as before), 11 at 0.6 m, 7 at the circumscribed radius.
+        # 0.70 (>= circumscribed 0.67): SmacPlannerHybrid (and MPPI) only run the full
         # footprint check where the CENTRE cell cost >= InflationLayer::computeCost(circumscribed)
-        # (= 6 here; computeCost is not clipped at the radius). With a radius below 0.61 a centre
-        # cell 0.60-0.61 m from a mark reads 0 and a corner touching the mark is not checked.
+        # (= 7 here; computeCost is not clipped at the radius). With a radius below 0.67 a centre
+        # cell just inside the circumscribed radius of a mark reads 0 and a corner touching the
+        # mark is not checked.
         # Gaps: the tail only biases the path; WHETHER the robot fits between INFLATED marks
         # (sensor obstacles) is decided by Smac's oriented-footprint check (gaps narrower than
-        # the 0.58 m padded width are rejected; the old NavFn planned the centre and squeezed
+        # the 0.51 m padded width are rejected (0.58 before 2026-10-20); the old NavFn planned the centre and squeezed
         # through 0.5-0.58 m gaps). The GridBasedNavFn fallback can still use any gap.
         # Nav mask: it already carries the footprint margin (nav_margin_m 0.35) and its
         # soft band reads 229, above the inflation tail (93 at 0.35 m), so the band edge
@@ -1442,8 +1449,8 @@ global_costmap:
         # unchanged in theory, but Smac checks the real footprint at every heading and must
         # arrive with the goal heading (Dubins, r 0.45); re-run that plan (and a dock->area
         # transit) on the mower and note which planner id produced it.
-        cost_scaling_factor: 10.0
-        inflation_radius: 0.65
+        cost_scaling_factor: 6.5
+        inflation_radius: 0.70
       # Filter info (/costmap_filter_info) + mask (/keepout_mask) come from the
       # ported MowgliNext map_server_node (or costmap_filter_info_server with
       # use_keepout:=true). With no publisher the filter is idle and does not

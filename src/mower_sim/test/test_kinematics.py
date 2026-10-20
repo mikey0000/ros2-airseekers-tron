@@ -39,20 +39,23 @@ def test_wheel_speeds_clamp_linear():
 
 def test_wheel_speeds_clamp_angular():
     left, right = wheel_speeds(0.0, 1.0, DriveParams())
-    assert left == pytest.approx(-0.072)
-    assert right == pytest.approx(0.072)
+    assert left == pytest.approx(-0.06)
+    assert right == pytest.approx(0.06)
 
 
 def test_wheel_speeds_clamp_is_separate():
     left, right = wheel_speeds(1.0, 1.0, DriveParams())
-    assert left == pytest.approx(0.3 - 0.072)
-    assert right == pytest.approx(0.3 + 0.072)
+    assert left == pytest.approx(0.3 - 0.06)
+    assert right == pytest.approx(0.3 + 0.06)
 
 
 def test_wheel_floor():
-    assert wheel_speeds(0.0, 0.2, DriveParams()) == (0.0, 0.0)   # 0.048 < 0.06
+    assert wheel_speeds(0.0, 0.2, DriveParams()) == (0.0, 0.0)   # 0.04 < 0.06
     left, right = wheel_speeds(0.0, 0.2, DriveParams(min_wheel_speed=0.0))
-    assert left == pytest.approx(-0.048) and right == pytest.approx(0.048)
+    assert left == pytest.approx(-0.04) and right == pytest.approx(0.04)
+    # the 0.3 rad/s pivot is exactly the floor at b 0.40 and drives
+    left, right = wheel_speeds(0.0, 0.3, DriveParams())
+    assert left == pytest.approx(-0.06) and right == pytest.approx(0.06)
 
 
 def test_wheel_floor_is_per_wheel():
@@ -62,9 +65,9 @@ def test_wheel_floor_is_per_wheel():
     assert left == pytest.approx(0.06) and right == pytest.approx(0.06)
     assert wheel_speeds(-0.05, 0.0, DriveParams()) == pytest.approx((-0.05, -0.05))
     assert wheel_speeds(0.05, 0.0, DriveParams(floor_straight=True)) == (0.0, 0.0)
-    # arc: inner wheel 0.1 - 0.24 * 0.2 = 0.052 < floor -> 0, outer keeps 0.148
-    left, right = wheel_speeds(0.1, 0.2, DriveParams())
-    assert left == 0.0 and right == pytest.approx(0.148)
+    # arc: inner wheel 0.1 - 0.20 * 0.25 = 0.05 < floor -> 0, outer keeps 0.15
+    left, right = wheel_speeds(0.1, 0.25, DriveParams())
+    assert left == 0.0 and right == pytest.approx(0.15)
 
 
 def test_wrap():
@@ -296,8 +299,8 @@ def test_near_straight_reverse_is_not_floored():
     wheels -0.046 / -0.054) moves like the straight reverse it is (field); a real turn with
     a sub-floor inner wheel is still floored."""
     left, right = wheel_speeds(-0.05, 0.016, DriveParams())
-    assert left == pytest.approx(-0.05 - 0.016 * 0.24) and right == pytest.approx(-0.05 + 0.016 * 0.24)
+    assert left == pytest.approx(-0.05 - 0.016 * 0.20) and right == pytest.approx(-0.05 + 0.016 * 0.20)
     assert wheel_speeds(0.0, 0.2, DriveParams()) == (0.0, 0.0)
-    left, right = wheel_speeds(-0.05, 0.2, DriveParams())     # 0.096 apart: turning
-    assert right == 0.0 and left == pytest.approx(-0.098)
+    left, right = wheel_speeds(-0.05, 0.2, DriveParams())     # 0.08 apart: turning
+    assert right == 0.0 and left == pytest.approx(-0.09)
     assert wheel_speeds(-0.05, 0.016, DriveParams(straight_tol_mps=0.0)) == (0.0, 0.0)

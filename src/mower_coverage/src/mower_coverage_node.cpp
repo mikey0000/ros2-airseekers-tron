@@ -97,9 +97,10 @@ class MowerCoverageNode : public rclcpp::Node {
     declare_parameter<double>("min_turn_radius_m", 0.0);
     // Turn radii (request or min_turn_radius_m) > 0 below this are raised to it: the
     // tightest arc cmd_vel_slew's both-wheel turn shaper drives (inner wheel >= 0.06 m/s,
-    // track 0.48 m, |w| <= the MCU's 0.3 rad/s -> r = 0.132 / 0.3 = 0.44 m). The area
+    // track 0.40 m (2026-10-20, was 0.48 -> 0.44 m), |w| <= the MCU's 0.3 rad/s -> r = 0.12 / 0.3
+    // = 0.40 m). The area
     // setting min_turn_radius_m accepts 0-2 m. 0 = no clamp. Read per request.
-    declare_parameter<double>("min_drivable_turn_radius_m", 0.44);
+    declare_parameter<double>("min_drivable_turn_radius_m", 0.40);
     service_ = create_service<mower_interfaces::srv::PlanCoverage>(
         "/coverage/plan",
         std::bind(&MowerCoverageNode::handlePlan, this, std::placeholders::_1,

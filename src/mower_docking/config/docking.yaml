@@ -127,7 +127,7 @@ mower_docking:
     approach_facing_dock: true
     # ALIGNING (heading off the dock yaw by more than max_yaw_error_deg): true pivot, the
     # shorter way round, until within align_tolerance_deg or the marker is in the gate
-    align_angular: 0.25            # rad/s (turn shaper passes pivots at >= 0.25)
+    align_angular: 0.3             # rad/s: the pivot floor 0.06 / (0.40 / 2) = 0.3 since 2026-10-20 (0.25 = 0.05 m/s per wheel, under the floor)
     align_creep: 0.0               # m/s forward while turning (0 = pure pivot)
     align_max_travel: 0.4          # m, then SEARCHING anyway (the marker decides)
     align_timeout_s: 25.0

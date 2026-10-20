@@ -580,7 +580,7 @@ class Params:
     obstacle_path_filter: bool = True
     obstacle_path_lookahead_m: float = 2.0
     obstacle_path_margin_m: float = 0.25
-    robot_width_m: float = 0.54
+    robot_width_m: float = 0.47        # owner-measured with wheel trim (2026-10-20, was 0.54)
     # 2026-10-13 (person stopped the mower while the robot pivoted toward a detour target:
     # the straight line to the target is not where the robot goes). Where the mission does
     # not know the path the controller tracks (/navigate_to_pose transits: detours, gaps,
@@ -592,8 +592,8 @@ class Params:
     # margin of the robot is always in the path (standing still / pivoting next to it).
     obstacle_sweep_horizon_s: float = 2.0
     obstacle_twist_max_age_s: float = 0.5
-    robot_front_m: float = 0.52       # nav2 footprint front (chassis 0.47 + bumper)
-    robot_rear_m: float = 0.25        # obstacle_guard rear_edge_x_m
+    robot_front_m: float = 0.60       # nav2 footprint front (bumper, owner-measured; was 0.52)
+    robot_rear_m: float = 0.12        # obstacle_guard rear_edge_x_m (rear 0.10 + 0.02; was 0.25)
     # 2026-10-09 route graph (docs/route_graph.md, owner: "a specific path for on paths, a
     # different navigation ... then path again"): a transit (sub-path start, end-of-area
     # retry, blocked / dynamic / localization re-send) first asks map_server's plan_route
@@ -665,12 +665,14 @@ class Params:
     pivot_retries: int = 2
     # 2026-10-20 error budget (docs/analysis/2026-10-20_error_budget.md): a Spin stops
     # commanding when its relative yaw reaches the target, but the robot is still turning at
-    # the pivot floor (behavior_server min_rotational_vel 0.25 rad/s) and keeps turning through
+    # the pivot floor (behavior_server min_rotational_vel 0.3 rad/s since 2026-10-20; was 0.25)
+    # and keeps turning through
     # the stop latency (twist_mux -> cmd_vel_slew angular decel -> MCU / wheel lag): every
     # pivot turned too far (sim ideal 6-7 deg with the old 1.0 rad/s Spin, field 2-7 deg at
     # the next leg's start). The Spin is sent this much short of the target (rad, never more
     # than half the angle) so the robot comes to rest on it: 0.04 (~0.25 rad/s x 0.15 s)
-    # left a 1.3 deg median overshoot in the ideal sim (b4784b0), so 0.06.
+    # left a 1.3 deg median overshoot in the ideal sim (b4784b0), so 0.06 (calibrated at 0.25;
+    # the pivot now ends at 0.3 rad/s, ~0.05 rad in 0.15-0.2 s: re-check in the field).
     # 0 = the old behaviour. Calibrate on the robot (error budget doc, field check).
     pivot_stop_lead_rad: float = 0.06
     # Task 0.4 (d), run 3 (owner: "in sharp corners it could reverse and turn rather than
@@ -764,7 +766,7 @@ class Params:
     path_conditioning_r_min_m: float = 0.5
     path_conditioning_r_max_m: float = 1.0
     path_conditioning_margin_m: float = 0.05
-    path_conditioning_half_width_m: float = 0.24
+    path_conditioning_half_width_m: float = 0.235   # body half width with wheel trim (was 0.24)
     path_conditioning_slack_m: float = 0.05
     path_conditioning_pivot_min_rad: float = 0.35
     path_conditioning_edge_pivot_rad: float = 1.38
@@ -889,11 +891,11 @@ class Params:
     hard_boundary_retrace_max_m: float = 1.0
     hard_boundary_lookahead_m: float = 0.25
     hard_boundary_min_inner_mps: float = 0.06
-    hard_boundary_track_width_m: float = 0.48     # URDF (cmd_vel_slew TRACK_WIDTH_M)
+    hard_boundary_track_width_m: float = 0.40     # MCU wheel split (cmd_vel_slew TRACK_WIDTH_M; was 0.48)
     hard_boundary_pivot_err_rad: float = 0.6
     hard_boundary_pivot_rps: float = 0.3
     hard_boundary_progress_s: float = 3.0
-    hard_boundary_progress_m: float = 0.05        # driven + 0.24 m x |yaw| turned
+    hard_boundary_progress_m: float = 0.05        # driven + 0.20 m x |yaw| turned
     boundary_recover_after_s: float = 3.0     # pause this long, then a recovery transit
     boundary_max_recoveries: int = 2          # recovery transits per sub-path before latching
     boundary_recovery_advance_m: float = 1.0  # recovery target: this far ahead on the sub-path
@@ -5979,7 +5981,7 @@ class MissionFSM:
     def _hb_cmd(self, pose):
         """(v, w) of the retrace: reverse toward the next track point (pure pursuit on the
         rear), both wheels rolling backwards (inner >= hard_boundary_min_inner_mps); a large
-        heading error is turned on the spot first (counter-rotating pivot >= 0.25 rad/s);
+        heading error is turned on the spot first (counter-rotating pivot >= 0.3 rad/s);
         straight reverse over the last lookahead once the track points are used up (the
         caller stops at the track's length: never a blind reverse beyond the driven track)."""
         k, p = self._hb, self.p

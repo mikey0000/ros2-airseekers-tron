@@ -120,7 +120,7 @@ def test_reverse_control_is_reverse_and_bounded():
     v, w, _ = dl.reverse_control(dl.DockErrors(1.0, 0.4, -0.4), g)
     assert v <= 0 and abs(v) <= 0.15
     assert abs(w) <= g.max_angular
-    assert not (-0.06 < abs(v) - abs(w) * 0.24 < 0.0)   # never a one-wheel turn
+    assert not (-0.06 < abs(v) - abs(w) * 0.20 < 0.0)   # never a one-wheel turn
 
 
 def test_reverse_control_converges_in_simulation():
@@ -745,7 +745,7 @@ def test_goal_near_approach_with_bad_heading_aligns_then_searches():
     assert out.state == S.ALIGNING and not out.requests
     out = m.step(_snap(0.05, dl.Pose2D(-0.16, -0.42, yaw0)))
     assert out.state == S.ALIGNING
-    assert out.angular == pytest.approx(0.25)          # toward the dock yaw (left)
+    assert out.angular == pytest.approx(0.3)          # toward the dock yaw (left)
     assert out.linear == 0.0                           # true pivot (legal now)
     assert out.detail.startswith('aligning to dock heading: 70')
     assert 'marker not visible' in out.detail
@@ -759,7 +759,7 @@ def test_align_gives_up_on_travel_or_timeout_and_searches():
     m = dl.DockStateMachine(dl.DockParams(), DOCK)
     m.start(_snap(0.0, dl.Pose2D(0.0, -0.5, yaw0)))
     out = m.step(_snap(0.05, dl.Pose2D(0.0, -0.5, yaw0)))
-    assert out.state == S.ALIGNING and out.angular == pytest.approx(-0.25)   # right
+    assert out.state == S.ALIGNING and out.angular == pytest.approx(-0.3)   # right
     out = m.step(_snap(5.0, dl.Pose2D(0.0, -0.05, yaw0)))   # 0.45 m crept, still off
     assert out.state == S.SEARCHING and any('alignment stopped' in n for n in out.notes)
     m = dl.DockStateMachine(dl.DockParams(), DOCK)
@@ -793,13 +793,13 @@ def test_nav_goal_faces_the_dock_then_about_turn_pivot():
     out = m.step(_snap(30.0, arr, nav_status='succeeded'))
     assert out.state == S.ALIGNING
     out = m.step(_snap(30.05, arr))
-    assert out.linear == 0.0 and out.angular == pytest.approx(0.25)
+    assert out.linear == 0.0 and out.angular == pytest.approx(0.3)
     arr = dl.Pose2D(m.approach.x, m.approach.y, DOCK_YAW + math.pi - math.radians(10))
     m2 = dl.DockStateMachine(dl.DockParams(), DOCK)
     m2.start(_snap(0.0, dl.Pose2D(-2.5, 3.5, 0.0)))
     m2.step(_snap(30.0, arr, nav_status='succeeded'))
     out = m2.step(_snap(30.05, arr))
-    assert out.linear == 0.0 and out.angular == pytest.approx(-0.25)   # 170 deg right
+    assert out.linear == 0.0 and out.angular == pytest.approx(-0.3)   # 170 deg right
     # about-turn done -> SEARCHING
     out = m2.step(_snap(45.0, dl.Pose2D(m.approach.x, m.approach.y, DOCK_YAW + 0.05)))
     assert out.state == S.SEARCHING
@@ -946,7 +946,7 @@ def test_reverse_control_turn_first_slows_on_large_heading_error():
     assert -g.max_speed <= v_small < v_mid < 0
     # 25 deg: turn first, as a proper reversing arc with the inner wheel at the floor (the
     # creep would be a one-wheel turn)
-    assert v_big < 0 and abs(abs(v_big) - abs(w_big) * 0.24 - 0.06) < 1e-9
+    assert v_big < 0 and abs(abs(v_big) - abs(w_big) * 0.20 - 0.06) < 1e-9
 
 
 # ------------------------- FINAL budget / contact handling / calibration (2026-10-07 Home)
@@ -1598,7 +1598,7 @@ def test_marker_in_base_fills_marker_height_z():
 
 
 # ---- both wheels on the docking reverse (2026-10-16) ----------------------------------------
-def _inner(v, w, half=0.24):
+def _inner(v, w, half=0.20):
     return abs(v) - abs(w) * half
 
 
@@ -1612,14 +1612,14 @@ def test_reverse_control_never_asks_for_a_one_wheel_turn():
                 if abs(w) > 1e-6 and abs(v) > 1e-6:
                     assert not (-0.06 < _inner(v, w) < 0.0), (lat, hd, rem, v, w)
                 if abs(v) < 1e-6 and abs(w) > 1e-6:
-                    assert abs(w) >= 0.25 - 1e-9
+                    assert abs(w) >= 0.3 - 1e-9
 
 
 def test_large_heading_error_turns_on_a_legal_reversing_arc():
     g = dl.ControllerGains()
     v, w, _e = dl.reverse_control(dl.DockErrors(lateral=0.0, heading=0.6, remaining=0.6), g)
     assert v < 0 and abs(w) == g.max_angular
-    assert abs(v) - abs(w) * 0.24 >= 0.06 - 1e-9 and abs(v) <= g.max_speed
+    assert abs(v) - abs(w) * 0.20 >= 0.06 - 1e-9 and abs(v) <= g.max_speed
 
 
 def test_wheel_floor_0_reverts_to_the_creep():
@@ -1631,4 +1631,4 @@ def test_wheel_floor_0_reverts_to_the_creep():
 def test_final_zone_lowers_the_turn_instead_of_a_pivot():
     g = dl.ControllerGains()
     v, w, _ = dl.reverse_control(dl.DockErrors(0.15, 0.10, math.radians(20)), g)
-    assert v < 0 and abs(v) - abs(w) * 0.24 >= -1e-9
+    assert v < 0 and abs(v) - abs(w) * 0.20 >= -1e-9

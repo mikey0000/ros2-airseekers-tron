@@ -22,30 +22,31 @@ TEST(WheelFloor, StraightAndStopAreDrivable)
 TEST(WheelFloor, ArcsNeedTheInnerWheelAboveTheFloor)
 {
   Params p;
-  // r 0.44 m at the MCU's 0.3 rad/s: inner = 0.132 - 0.072 = 0.06 -> drivable
-  EXPECT_TRUE(drivable(0.132, 0.3, p));
+  // b 0.40 (2026-10-20). r 0.40 m at the MCU's 0.3 rad/s: inner = 0.12 - 0.06 = 0.06 -> drivable
+  EXPECT_TRUE(drivable(0.12, 0.3, p));
   EXPECT_TRUE(drivable(0.3, 0.3, p));      // r 1.0 m at full speed
-  EXPECT_TRUE(drivable(-0.15, 0.3, p));    // reversing arc, inner 0.078
+  EXPECT_TRUE(drivable(-0.15, 0.3, p));    // reversing arc, inner 0.09
   // the undock donut: |v| <= 0.03 with |w| 0.05-0.3
-  EXPECT_FALSE(drivable(0.03, 0.1, p));    // inner 0.006: one-wheel-ish creep
+  EXPECT_FALSE(drivable(0.03, 0.1, p));    // inner 0.01: one-wheel-ish creep
   EXPECT_FALSE(drivable(0.02, 0.05, p));
   // the run 3 corners: v 0.02-0.05, w 0.1-0.2 (r 0.2-0.3 m)
   EXPECT_FALSE(drivable(0.05, 0.2, p));
-  EXPECT_NEAR(violation(0.05, 0.1, p), 0.06 - (0.05 - 0.024), 1e-9);
+  EXPECT_NEAR(violation(0.05, 0.1, p), 0.06 - (0.05 - 0.020), 1e-9);
 }
 
-TEST(WheelFloor, PivotsNeedQuarterRadianPerSecond)
+TEST(WheelFloor, PivotsNeedTheFloorRate)
 {
   Params p;
-  EXPECT_TRUE(drivable(0.0, 0.25, p));     // both wheels 0.06 m/s counter-rotating
+  EXPECT_TRUE(drivable(0.0, 0.3, p));      // both wheels 0.06 m/s counter-rotating (b 0.40)
   EXPECT_TRUE(drivable(0.0, -0.3, p));
-  EXPECT_FALSE(drivable(0.0, 0.15, p));    // 0.036 m/s per wheel: does not turn
-  EXPECT_NEAR(violation(0.0, 0.15, p), 0.06 - 0.036, 1e-9);
+  EXPECT_FALSE(drivable(0.0, 0.25, p));    // 0.05 m/s per wheel: under the floor
+  EXPECT_FALSE(drivable(0.0, 0.15, p));    // 0.03 m/s per wheel: does not turn
+  EXPECT_NEAR(violation(0.0, 0.15, p), 0.06 - 0.03, 1e-9);
   // one wheel backwards slower than the floor, the other forward
-  EXPECT_FALSE(drivable(0.04, 0.3, p));    // inner -0.032
+  EXPECT_FALSE(drivable(0.04, 0.3, p));    // inner -0.02
   p.allow_pivots = false;
   EXPECT_FALSE(drivable(0.0, 0.3, p));
-  EXPECT_NEAR(violation(0.0, 0.3, p), 0.06 + 0.072, 1e-9);
+  EXPECT_NEAR(violation(0.0, 0.3, p), 0.06 + 0.06, 1e-9);
   EXPECT_TRUE(drivable(0.2, 0.3, p));
 }
 
@@ -53,11 +54,11 @@ TEST(WheelFloor, ViolationIsDistanceToTheNearestBand)
 {
   Params p;
   // inner just under the arc band -> small; just above the pivot band -> small
-  EXPECT_NEAR(violation(0.1, 0.1, p), 0.0, 1e-9);            // inner 0.076
-  EXPECT_NEAR(violation(0.08, 0.1, p), 0.004, 1e-9);         // inner 0.056
-  EXPECT_NEAR(violation(0.0, 0.24, p), 0.06 - 0.0576, 1e-9);  // inner -0.0576
-  EXPECT_GT(violation(0.03, 0.12, p), 0.0);                   // inner 0.0012: worst case
-  EXPECT_NEAR(violation(0.03, 0.125, p), 0.06, 1e-9);         // inner 0
+  EXPECT_NEAR(violation(0.1, 0.1, p), 0.0, 1e-9);            // inner 0.08
+  EXPECT_NEAR(violation(0.076, 0.1, p), 0.004, 1e-9);        // inner 0.056
+  EXPECT_NEAR(violation(0.0, 0.24, p), 0.06 - 0.048, 1e-9);  // inner -0.048
+  EXPECT_GT(violation(0.03, 0.14, p), 0.0);                   // inner 0.002: worst case
+  EXPECT_NEAR(violation(0.03, 0.15, p), 0.06, 1e-9);          // inner 0
 }
 
 TEST(WheelFloor, StraightThresholdIsOptional)
@@ -82,7 +83,7 @@ TEST(WheelFloorCritic, ScoreBatchPenalisesOnlyInfeasibleSamples)
   const size_t bad = scoreBatch(vx, wz, costs, p, 10.0, 1);
   EXPECT_EQ(bad, 6u);
   EXPECT_FLOAT_EQ(costs(0), 1.0f);                      // unchanged
-  const double x = violation(0.03f, 0.1f, p) / 0.06;    // ~0.9
+  const double x = violation(0.03f, 0.1f, p) / 0.06;    // ~0.8
   EXPECT_NEAR(costs(1), 1.0 + 10.0 * x, 1e-4);
   EXPECT_NEAR(costs(2), 1.0 + 10.0 * x * 0.5, 1e-4);   // mean over the 4 steps
   EXPECT_GT(costs(1), costs(2));
@@ -91,8 +92,8 @@ TEST(WheelFloorCritic, ScoreBatchPenalisesOnlyInfeasibleSamples)
 TEST(WheelFloorCritic, PowerSharpensLargeViolations)
 {
   Params p;
-  xt::xtensor<float, 2> vx = {{0.03f}, {0.09f}};
-  xt::xtensor<float, 2> wz = {{0.1f}, {0.15f}};   // x ~0.9 and x ~0.5
+  xt::xtensor<float, 2> vx = {{0.03f}, {0.06f}};
+  xt::xtensor<float, 2> wz = {{0.1f}, {0.15f}};   // x ~0.8 and x ~0.5
   xt::xtensor<float, 1> c1 = {0.0f, 0.0f};
   xt::xtensor<float, 1> c2 = {0.0f, 0.0f};
   scoreBatch(vx, wz, c1, p, 1.0, 1);

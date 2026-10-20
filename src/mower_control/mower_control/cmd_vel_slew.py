@@ -45,7 +45,7 @@ Parameters
                                   MOWING, add ``pivot_assist_linear_mps`` (0.14) forward, at
                                   most ``pivot_assist_max_dist_m`` (0.3) per pivot. The creep
                                   must keep the inside wheel >= the turn shaper's
-                                  ``min_inner_wheel_mps`` (>= 0.06 + 0.3*0.24 = 0.132 at
+                                  ``min_inner_wheel_mps`` (>= 0.06 + 0.3*0.20 = 0.12 at
                                   |w| = 0.3), or shape_for_both_wheels snaps it back to an
                                   unassisted pure pivot (2026-10-10 live incident).
                                   Only for a FollowPath pivot on the twist_mux navigation
@@ -63,9 +63,9 @@ Parameters
 ``turn_shaper``        ``true``   both-wheel turn shaping (see :func:`shape_for_both_wheels`,
                                   :class:`TurnShaper`) in autonomous phases: inner wheel
                                   >= ``min_inner_wheel_mps`` (0.06) with ``track_width_m``
-                                  (0.48, URDF), ``linear_max`` (0.3), ``angular_max``
+                                  (0.40, the MCU's wheel split), ``linear_max`` (0.3), ``angular_max``
                                   (0.3): inner wheels in the one-wheel zone snap to an
-                                  arc or a proper pivot (|w| >= 0.25);
+                                  arc or a proper pivot (|w| >= 0.3, the MCU clamp);
                                   ``shape_manual`` (false) leaves the joystick untouched.
                                   Only commands on the twist_mux navigation lane are
                                   shaped (TRANSIT/MOWING/BOUNDARY_PAUSED and, fix 9, the
@@ -83,7 +83,7 @@ Parameters
 ``turn_shaper_latch_ticks``    ``6``     ticks in a row asking for the other regime
                                   (0 = no time-based release)
 ``turn_shaper_pure_pivot``     ``true``  a pure rotation (linear 0) slower than the pivot
-                                  floor (min_inner_wheel_mps / (track/2) = 0.25 rad/s)
+                                  floor (min_inner_wheel_mps / (track/2) = 0.3 rad/s)
                                   snaps to the floor and joins the pivot regime latch
                                   (v = 0 no longer resets it); false = the old
                                   pass-through (2026-10-14 mow: 0.25 / 0.10 hunting and
@@ -98,7 +98,7 @@ Parameters
 ``turn_shaper_pivot_instead``  ``true``  task 0.4 (b), run 3: a command in the widening
                                   zone (0 < inner < min_inner) whose radius |v|/|w| is below
 ``turn_shaper_pivot_instead_ratio`` ``0.5`` x the widened arc's radius snaps to the pure
-                                  pivot (v = 0, |w| >= 0.25) instead of the 2-4x wider arc
+                                  pivot (v = 0, |w| >= 0.3) instead of the 2-4x wider arc
                                   that overshot every transit corner; the regime latch holds
                                   across ratio +- ``turn_shaper_pivot_instead_hysteresis``
                                   (``0.1``). false = the old widening (revert flag)
@@ -109,7 +109,7 @@ Parameters
                                   0.1 rad/s turn-ins became +-0.25 pivots, overshot, MPPI
                                   reversed w, and the robot rocked +-15 deg on the spot for
                                   20 s (field mow-040433: amplified 2.5x but no reversal).
-                                  Pivots stay >= 0.25 rad/s; a held robot is ended by the
+                                  Pivots stay >= the 0.3 rad/s floor; a held robot is ended by the
                                   mission's route progress watch / corner rule. Caution: a
                                   Nav2 Spin's last few hundredths of a rad are also below
                                   it. 0 = off
@@ -307,7 +307,7 @@ class PivotAssist:
     * ``clear`` False (local costmap lethal in the creep sweep, close vision obstacle,
       inputs stale) holds the creep (no forward command) without resetting the budget.
 
-    ``linear`` must be >= 0.06 + |w|*0.24 (0.132 at |w| = 0.3) so the both-wheel turn
+    ``linear`` must be >= 0.06 + |w|*0.20 (0.12 at |w| = 0.3) so the both-wheel turn
     shaper keeps the creep as a legal arc; a smaller creep is snapped back to a pure pivot
     and stalls on turf (2026-10-10 live: rocking in place -> STUCK at (-1.35, 2.90)). The
     slew then moves between the pivot and the arc through a stop (see
@@ -316,7 +316,7 @@ class PivotAssist:
     The assist runs *before* the turn shaper, on the raw (heading-hold shaped) command, as
     it always has: it sees the controller's |w|, not the shaped one. Since fix 8
     (``turn_shaper_pure_pivot``) a slow pure rotation, e.g. 0.1 rad/s, is shaped to a
-    0.25 rad/s pivot, and once it has lasted ``delay_s`` with |w| >= ``min_angular`` the
+    0.3 rad/s pivot (the floor, 2026-10-20 geometry), and once it has lasted ``delay_s`` with |w| >= ``min_angular`` the
     assist adds its creep exactly as for any other pivot (the creep arc (0.14, w) is legal
     and passes the shaper unchanged). Rotations below ``min_angular`` (0.03..0.08 rad/s)
     become 0.25 pivots without a creep; a dithering v (0.01 / 0.0) keeps resetting the
@@ -466,8 +466,8 @@ class CostmapWindow:
         return v - 256 if v > 127 else v
 
 
-FOOTPRINT_FRONT_X = 0.52      # base_link front edge (nav2_params footprint)
-FOOTPRINT_HALF_Y = 0.27
+FOOTPRINT_FRONT_X = 0.60      # base_link front edge (nav2_params footprint, owner-measured 2026-10-20)
+FOOTPRINT_HALF_Y = 0.235     # 0.47 m wide with the wheel trim
 
 
 def creep_sweep_points(pose, v, w, dist_m, margin_m=0.10, step=0.05):
@@ -599,9 +599,14 @@ ASSIST_GATE_PARAMS = {   # node parameter -> (PivotAssistGate attribute, type)
 # (the MCU deadbands it, so the robot pivots on one stalled wheel and scrubs the turf).
 # The MCU mixes (linear, angular) itself (docs/wheel_control_semantics.md); we snap a
 # command whose inner wheel would fall in (-min_inner, +min_inner) to the NEARER legal
-# regime: a proper pivot (v = 0, inner <= -min_inner, |w| >= 2*min_inner/b = 0.25 rad/s)
+# regime: a proper pivot (v = 0, inner <= -min_inner, |w| >= 2*min_inner/b = 0.3 rad/s,
+# = the MCU clamp: a pure pivot runs at exactly 0.3)
 # or an arc (inner rolling the same way at >= min_inner).
-TRACK_WIDTH_M = 0.48          # 2 x drive_track_y 0.24 (config/urdf/mower.urdf.xacro, vendor)
+# 0.40 (was 0.48, the stale vendor URDF, 2026-10-20): the track the MCU splits (v, w) into wheel
+# speeds with (vendor tracking_mpc wheel_base 0.4, mcu_reimpl WHEELBASE_M 0.40; field pivot bag:
+# IMU / MCU-reported yaw rate 1.02-1.03 on clean pivots = 0.40 / 0.39). The physical tyre
+# centre-to-centre track is 0.39 m (URDF drive_track_y 0.195); wheel-speed math uses 0.40.
+TRACK_WIDTH_M = 0.40
 # Autonomous DRIVING phases only. Docking/undocking are exempt: the marker-guided
 # reverse (-0.05 m/s with small steering) sits in the one-wheel zone and was being
 # snapped to v=0 pivots, so the robot pushed nowhere and the stall guard fired at
@@ -628,7 +633,7 @@ SHAPE_DEFAULTS = {
     # Task 0.4 (b), 2026-10-14 run 3: MPPI asked for slow tight corners (r 0.2-0.3 m) and
     # _tight_arc widened them to r 0.5-1.0 m, overshooting every corner. A command whose
     # requested radius |v|/|w| is below pivot_instead_ratio x the radius the widening would
-    # give is turned on the spot instead (pure pivot, |w| >= the 0.25 rad/s floor).
+    # give is turned on the spot instead (pure pivot, |w| >= the 0.3 rad/s floor).
     'pivot_instead': True,        # False = the old widening (revert flag)
     'pivot_instead_ratio': 0.5,
     'pivot_instead_hysteresis': 0.1,  # ratio band the regime latch holds across
@@ -654,7 +659,7 @@ def shape_for_both_wheels(v, w, params=None):
       overshot); ``info['instead']`` is True and ``info['q']`` = r_req / widened radius.
     * -min_inner < inner <= 0 with some speed: snap to a pure pivot, v = 0,
       |w| = max(|w|, 2*min_inner/b) capped at angular_max.
-    * pure rotation (v = 0) slower than the pivot floor 2*min_inner/b (0.25 rad/s): both
+    * pure rotation (v = 0) slower than the pivot floor 2*min_inner/b (0.3 rad/s): both
       wheels would sit under the MCU deadband and the robot would not turn, so with
       ``pure_pivot`` (default) it snaps to the floor like any other pivot (kind 'pivot');
       below ``pivot_deadband_rps`` (0.03) it becomes an exact stop ``(0, 0)`` (kind
@@ -736,10 +741,11 @@ def both_wheels_legal(v, w, params=None, target=False):
 
     Pure rotations (v = 0): with ``target`` True (and ``pure_pivot`` on) this is the rule
     :func:`shape_for_both_wheels` applies to a *command*: legal only at |w| >= the pivot
-    floor (min_inner / (b/2) = 0.25 rad/s) or |w| < ``pivot_deadband_rps`` (a stop).
+    floor (min_inner / (b/2) = 0.3 rad/s) or |w| < ``pivot_deadband_rps`` (a stop).
     With ``target`` False (the default, used by the slew functions and their tests) any
     pure rotation is legal: a rate-limited ramp into or out of a proper pivot must pass
-    through the slow rates (0 -> 0.25 rad/s is 5 ticks at 1 rad/s^2), and both wheels
+    through the slow rates (0 -> 0.3 rad/s is 6 ticks at 1 rad/s^2; the node then applies
+    :func:`pivot_floor_step` so the *output* never dwells there), and both wheels
     counter-rotate the whole time, so there is no one-wheel tick to avoid.
     """
     p = SHAPE_DEFAULTS if params is None else params
@@ -833,6 +839,26 @@ def no_one_wheel_step(v, w, params=None):
     return v, w
 
 
+def pivot_floor_step(v, w, tgt_v, tgt_w, params=None):
+    """A slewed pure rotation on a shaped lane never sits under the pivot floor
+    (2026-10-20 geometry: b = 0.40 makes the floor min_inner / (b/2) = 0.3 rad/s = the MCU
+    clamp). Under the floor both wheels are below the MCU's ~0.06 m/s and the robot does not
+    turn (turf stick-slip in the field pivot test), so the 1 rad/s^2 ramp 0 -> 0.3 rad/s is
+    replaced by a step: a pure rotation ``(0, w)`` with 0 < |w| < floor becomes the floor in
+    the target's direction when the target is a pivot that way, else an exact stop. Straight,
+    arc and floor-or-faster commands are unchanged; ``pure_pivot`` False = unchanged."""
+    p = SHAPE_DEFAULTS if params is None else params
+    if not p.get('pure_pivot', True) or abs(v) > 1e-6 or abs(w) < 1e-6:
+        return v, w
+    floor = min(float(p['min_inner_wheel_mps']) / (0.5 * float(p['track_width_m'])),
+                float(p['angular_max']))
+    if abs(w) >= floor - 1e-9:
+        return v, w
+    if abs(tgt_v) < 1e-6 and abs(tgt_w) >= floor - 1e-9 and tgt_w * w > 0.0:
+        return 0.0, math.copysign(floor, tgt_w)
+    return 0.0, 0.0
+
+
 def _axis_rate(cur, tgt, accel, decel):
     """The rate limit for one axis moving ``cur`` -> ``tgt`` (decel toward zero)."""
     if decel is None:
@@ -894,7 +920,7 @@ class TurnShaper:
     phases pass unless ``shape_manual``.
 
     Regime latch (2026-10-14 review): the snap boundary is inner = 0, e.g. at |w| = 0.3
-    v = 0.070 snaps to a pivot (v = 0) and v = 0.075 to an arc (v = 0.132), so a
+    v = 0.055 snaps to a pivot (v = 0) and v = 0.065 to an arc (v = 0.12), so a
     controller sitting in that band flipped the target every tick. A turn command is in
     the *pivot* regime when its inner wheel runs backwards (inner < 0, pure pivots
     included; shaped to v = 0) and in the *arc* regime otherwise. Once latched, a change
@@ -1224,9 +1250,9 @@ class CmdVelSlewNode(Node):
         for name, (default, _kind) in SHAPER_PARAMS.items():
             self.declare_parameter(name, default)
         # Creep on (2026-10-10, owner 2026-10-13: "seems to be working"). It must itself keep
-        # the inside wheel >= the shaper's min_inner (>= 0.132 m/s at |w| <= 0.3), or the
+        # the inside wheel >= the shaper's min_inner (>= 0.12 m/s at |w| <= 0.3), or the
         # TurnShaper below would snap it back to a pure pivot and the pivot would stall on
-        # turf: linear 0.14 -> inner 0.068 at |w| = 0.3. The launch passes no parameters to
+        # turf: linear 0.14 -> inner 0.08 at |w| = 0.3. The launch passes no parameters to
         # this node and the GUI settings file only carries SHAPER_PARAMS, so these defaults
         # are what runs; change them live with `ros2 param set /cmd_vel_slew ...`.
         _pa = PivotAssist()
@@ -1634,6 +1660,10 @@ class CmdVelSlewNode(Node):
                 if lane == 'docking' and getattr(self, '_docking_no_one_wheel', False):
                     self._cur_lin, self._cur_ang = no_one_wheel_step(self._cur_lin,
                                                                      self._cur_ang)
+            if turn is not None and turn.is_active(phase, lane):
+                # 2026-10-20: no slow ramp under the 0.3 rad/s pivot floor
+                self._cur_lin, self._cur_ang = pivot_floor_step(
+                    self._cur_lin, self._cur_ang, tgt_lin, tgt_ang, turn.params)
 
         # Pass through every component we do not shape.
         src = self._tgt if self._tgt is not None else (0.0,) * 6

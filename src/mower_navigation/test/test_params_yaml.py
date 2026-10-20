@@ -294,14 +294,15 @@ def test_global_inflation_covers_inscribed_radius():
 
 def test_global_inflation_keeps_obstacle_clearance():
     # 2026-10-09: NavFn plans the centre point; a detour must keep ~circumscribed clearance
-    # (0.52 m nose, ~0.61 m corners) or RPP aborts "collision ahead" on the obstacle again.
+    # (0.60 m nose, ~0.67 m padded corners since the 2026-10-20 footprint; 0.52 / 0.61 before)
+    # or RPP aborts "collision ahead" on the obstacle again.
     gp = load()["global_costmap"]["global_costmap"]["ros__parameters"]
     infl = gp["inflation_layer"]
-    assert abs(_circumscribed_radius(gp) - 0.61) < 0.01
+    assert abs(_circumscribed_radius(gp) - 0.67) < 0.01
     # Smac/MPPI only footprint-check when the centre cost >= computeCost(circumscribed):
     # the inflation must reach the circumscribed radius or the shortcut skips the check.
     assert infl["inflation_radius"] >= _circumscribed_radius(gp)
-    assert 0.55 <= infl["inflation_radius"] <= 0.7
+    assert 0.55 <= infl["inflation_radius"] <= 0.75
     assert 5.0 <= infl["cost_scaling_factor"] <= 15.0
     # the tail stays below the nav mask soft band (229) at the nav margin (0.35 m), so the
     # nav-mask edge behaviour is unchanged
@@ -636,13 +637,13 @@ def test_mppi_coverage_controllers():
 
 def test_coverage_turn_legs_drive_as_arcs():
     """2026-10-13 swath-end pivots. cmd_vel_slew's turn shaper keeps the inner wheel >= 0.06
-    m/s (track 0.48 m, |w| <= 0.3): any slower RPP speed on a curve is widened, or at
-    |w| 0.3 snapped to a pure pivot, so the coverage RPPs' speed floors stay >= 0.132.
+    m/s (track 0.40 m since 2026-10-20, |w| <= 0.3): any slower RPP speed on a curve is widened,
+    or at |w| 0.3 snapped to a pure pivot, so the coverage RPPs' speed floors stay >= 0.12.
     A K-turn leg's entry angle (leg arc at the min lookahead on the r 0.5 m turn + the yaw
     the leg checker lets the previous leg miss) must stay under the rotate-to-heading
     threshold, and the mission's turn-leg skip uses the leg checker's tolerances."""
     import math
-    inner_min, half, w_max, r_turn = 0.06, 0.24, 0.3, 0.5
+    inner_min, half, w_max, r_turn = 0.06, 0.20, 0.3, 0.5
     for name in ("FollowCoveragePath", "FollowCoveragePathReverse"):
         c = _ctl(name)
         assert c["min_approach_linear_velocity"] >= inner_min + w_max * half - 1e-9, name

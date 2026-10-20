@@ -576,8 +576,8 @@ class RearConfig:
     # opt-in solid classes -> kind 'static' (the rear camera is new to the model: default none)
     static_classes: Sequence[str] = field(default_factory=list)
     min_score: float = 0.5
-    rear_edge_x_m: float = -0.25     # robot rear edge in base_link (chassis -0.23 + bumper)
-    half_width_m: float = 0.27       # chassis 0.5 m / wheels at +-0.24 (+0.025)
+    rear_edge_x_m: float = -0.12     # robot rear edge in base_link (owner-measured -0.10 + 0.02)
+    half_width_m: float = 0.235      # 0.47 m wide with the wheel trim (owner-measured)
     margin_m: float = 0.20           # lateral margin: object half width + mono lateral error
     range_m: float = 1.2             # corridor length behind the rear edge (no dock known)
     behind_tol_m: float = 0.10       # a point this far forward of the rear edge still counts

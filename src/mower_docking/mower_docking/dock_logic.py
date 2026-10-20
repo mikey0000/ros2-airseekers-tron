@@ -214,7 +214,7 @@ class ControllerGains:
     # wheels rolling backwards; |w| lowered when that would exceed max_speed); within
     # final_zone of the contacts |w| is lowered to keep the inner wheel at 0 instead. The [0, wheel_floor) band
     # (small steering on the reverse, 2026-10-07) is unchanged. wheel_floor 0 = off (revert).
-    track_width: float = 0.48
+    track_width: float = 0.40       # the MCU's wheel split (2026-10-20, was 0.48)
     wheel_floor: float = 0.06
 
 
@@ -499,9 +499,9 @@ class DockParams:
     # Owner rule (2026-10-07): "go in front of dock, then do an about turn to have the rear
     # camera face the dock". Nav2 is sent to the approach point FACING the dock (dock yaw +
     # 180 deg, the natural arrival direction: no end-of-path spin), then ALIGNING pivots
-    # in place (the turn shaper passes proper pivots, |w| >= 0.25) the shorter way round.
+    # in place (the turn shaper passes proper pivots, |w| >= 0.3) the shorter way round.
     approach_facing_dock: bool = True
-    align_angular: float = 0.25               # rad/s, true pivot (0.25..0.3)
+    align_angular: float = 0.3                # rad/s, true pivot at the 0.3 floor (b 0.40; was 0.25)
     align_creep: float = 0.0                  # m/s forward while turning (0 = pure pivot)
     align_max_travel: float = 0.4
     align_timeout_s: float = 25.0

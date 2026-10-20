@@ -83,7 +83,7 @@ BUILTIN_DEFAULTS = {
     # catches, so race-track (skip-row) order with 0.5 m smooth turns, pivot last resort.
     'route_order': 'racetrack',
     'route_spiral_size': 6,
-    'min_turn_radius_m': 0.5,  # >= 0.45: the both-wheel turn shaper's tightest arc is 0.44 m
+    'min_turn_radius_m': 0.5,  # >= 0.40: the both-wheel turn shaper's tightest arc (b 0.40)
     'turn_type': 'auto',
     'obstacle_detection': 'standard',
     'blade_policy': 'continuous',

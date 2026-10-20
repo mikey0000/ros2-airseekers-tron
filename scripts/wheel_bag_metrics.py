@@ -37,7 +37,7 @@ import sqlite3
 import subprocess
 import sys
 
-TRACK_HALF_M = 0.24          # drive_track_y (vendor urdf); inner = |v| - |w| * 0.24
+TRACK_HALF_M = 0.20          # MCU wheel split b 0.40 / 2 (2026-10-20; was 0.24); inner = |v| - |w| * 0.20
 MIN_INNER_MPS = 0.06         # cmd_vel_slew min_inner_wheel_mps
 TOPICS = {
     '/cmd_vel_nav': 'twist', '/cmd_vel_docking': 'twist', '/cmd_vel_teleop': 'twist',
@@ -231,7 +231,7 @@ def report(series, csv_path=None):
             print('  %-40s %6d msgs  %5.1f Hz' % (t, len(rows), len(rows) / dur if dur > 0 else 0))
 
     # output regimes, classified from /cmd_vel itself. The shaper status string is not a
-    # regime: a legal pivot at or above the 0.25 rad/s floor reads "pass" and a snapped one
+    # regime: a legal pivot at or above the pivot floor (0.3 rad/s since 2026-10-20) reads "pass" and a snapped one
     # "pivot", so counting status changes doubles every pivot (run 2, 2026-10-14).
     def regime(v, w):
         if abs(v) < 0.005 and abs(w) < 0.005:
