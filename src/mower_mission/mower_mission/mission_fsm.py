@@ -83,6 +83,15 @@ ACT_DOCK = 'dock'
 ACT_BACKUP = 'backup'
 ACT_DRIVE = 'drive_on_heading'      # Nav2 behavior_server DriveOnHeading (heading calibration)
 ACT_SPIN = 'spin'                   # Nav2 behavior_server Spin (route cusp about-turn, fix 11)
+
+
+def spin_target_yaw(angle, lead):
+    """Relative Spin target for a pivot of ``angle`` rad that coasts ``lead`` rad after the
+    Spin stops commanding (pivot_stop_lead_rad): short by the lead, never by more than half
+    the angle, never past zero; ``lead`` <= 0 = ``angle`` unchanged."""
+    angle = float(angle)
+    lead = min(max(0.0, float(lead)), 0.5 * abs(angle))
+    return math.copysign(abs(angle) - lead, angle) if lead > 0.0 else angle
 ACT_PLAN = 'plan_coverage'
 ACT_NAV = 'navigate_to_pose'
 ACT_FOLLOW = 'follow_path'
@@ -654,6 +663,16 @@ class Params:
     # stopped). Within the threshold the leg is followed, as after a successful pivot.
     # Revert: pivot_retries -1 (follow the leg after any pivot outcome, the old behaviour).
     pivot_retries: int = 2
+    # 2026-10-20 error budget (docs/analysis/2026-10-20_error_budget.md): a Spin stops
+    # commanding when its relative yaw reaches the target, but the robot is still turning at
+    # the pivot floor (behavior_server min_rotational_vel 0.25 rad/s) and keeps turning through
+    # the stop latency (twist_mux -> cmd_vel_slew angular decel -> MCU / wheel lag): every
+    # pivot turned too far (sim ideal 6-7 deg with the old 1.0 rad/s Spin, field 2-7 deg at
+    # the next leg's start). The Spin is sent this much short of the target (rad, never more
+    # than half the angle) so the robot comes to rest on it: 0.04 (~0.25 rad/s x 0.15 s)
+    # left a 1.3 deg median overshoot in the ideal sim (b4784b0), so 0.06.
+    # 0 = the old behaviour. Calibrate on the robot (error budget doc, field check).
+    pivot_stop_lead_rad: float = 0.06
     # Task 0.4 (d), run 3 (owner: "in sharp corners it could reverse and turn rather than
     # overshoot the corner, the turn itself looks good"): the route is also split at every
     # corner sharper than this (rad), and before any route leg (transit or dock route) whose

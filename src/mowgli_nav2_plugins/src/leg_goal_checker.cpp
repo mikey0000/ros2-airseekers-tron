@@ -38,6 +38,9 @@ void LegGoalChecker::initialize(const rclcpp_lifecycle::LifecycleNode::WeakPtr& 
   state_.lateral_tol = declare("lateral_tolerance", 0.15);
   state_.pass_radius = declare("pass_radius", 0.5);
   state_.new_goal_jump = declare("new_goal_jump", 0.25);
+  state_.stop_latency_s = declare("stop_latency_s", 0.0);
+  state_.stop_decel = declare("stop_decel", 0.0);
+  state_.max_stop_lead = declare("max_stop_lead", 0.15);
   {
     const std::string full = plugin_name + ".along_path";
     if (!node->has_parameter(full))
@@ -47,10 +50,10 @@ void LegGoalChecker::initialize(const rclcpp_lifecycle::LifecycleNode::WeakPtr& 
     state_.along_path = node->get_parameter(full).as_bool();
   }
   RCLCPP_INFO(logger_, "LegGoalChecker %s: progress %.2f, xy %.3f m, yaw %.2f rad, overshoot %.2f m, "
-              "along_path %d (lateral %.2f m), new goal jump %.2f m",
+              "along_path %d (lateral %.2f m), new goal jump %.2f m, stop lead %.2f s / %.2f m/s^2",
               plugin_name.c_str(), state_.progress_fraction, state_.xy_tol, state_.yaw_tol,
               state_.overshoot_xy_tol, state_.along_path ? 1 : 0, state_.lateral_tol,
-              state_.new_goal_jump);
+              state_.new_goal_jump, state_.stop_latency_s, state_.stop_decel);
 }
 
 void LegGoalChecker::reset()
@@ -61,12 +64,12 @@ void LegGoalChecker::reset()
 
 bool LegGoalChecker::isGoalReached(const geometry_msgs::msg::Pose& query_pose,
                                    const geometry_msgs::msg::Pose& goal_pose,
-                                   const geometry_msgs::msg::Twist& /*velocity*/)
+                                   const geometry_msgs::msg::Twist& velocity)
 {
   std::lock_guard<std::mutex> lk(mutex_);
   return state_.update(query_pose.position.x, query_pose.position.y,
                        tf2::getYaw(query_pose.orientation), goal_pose.position.x,
-                       goal_pose.position.y, tf2::getYaw(goal_pose.orientation));
+                       goal_pose.position.y, tf2::getYaw(goal_pose.orientation), velocity.linear.x);
 }
 
 bool LegGoalChecker::getTolerances(geometry_msgs::msg::Pose& pose_tolerance,

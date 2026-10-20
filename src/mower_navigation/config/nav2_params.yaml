@@ -228,6 +228,15 @@ controller_server:
       # boundary). A new goal is controller_server's reset(); without one only a jump of
       # more than new_goal_jump between two cycles counts as a new leg (0 = never).
       new_goal_jump: 0.25
+      # 2026-10-20 error budget: end the leg at the stopping distance short of the vertex plane
+      # (v * stop_latency_s + v^2 / (2 * stop_decel), <= max_stop_lead) so the robot comes to
+      # rest on the vertex. Before: legs ended at 0.15-0.22 m/s and coasted 4-8 cm past it into
+      # the pivot (ideal sim; cmd_vel_slew max_linear_decel 0.8 + 0.15 s wheel lag + pipeline),
+      # which the next leg inherits as a lateral start offset. Revert: stop_latency_s 0.0,
+      # stop_decel 0.0.
+      stop_latency_s: 0.2
+      stop_decel: 0.8
+      max_stop_lead: 0.15
 
     # Transit controller (2026-10-09): MPPI instead of RPP. RPP follows the plan and can only
     # STOP at an obstacle ("collision ahead" -> abort -> BT replan); MPPI samples around it
@@ -844,7 +853,7 @@ behavior_server:
     local_footprint_topic: local_costmap/published_footprint
     global_costmap_topic: global_costmap/costmap_raw
     global_footprint_topic: global_costmap/published_footprint
-    cycle_frequency: 10.0
+    cycle_frequency: 20.0
     # DEVIATION: no assisted_teleop (not needed; teleop goes through twist_mux).
     behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
     spin:
@@ -862,9 +871,19 @@ behavior_server:
     robot_base_frame: base_link
     transform_tolerance: 0.5
     simulate_ahead_time: 2.0
-    max_rotational_vel: 1.0
-    min_rotational_vel: 0.4
-    rotational_acc_lim: 2.0
+    # Spin (every in-place pivot, mission pivot_stop_lead_rad) - 2026-10-20 error budget:
+    # was 1.0 / 0.4 / 2.0, all above what the robot does. The MCU clamps |w| to 0.3, so
+    # Spin's decel profile sqrt(2 * acc * remaining) never dropped below the clamp, the pivot
+    # ran at 0.3 until the target and stopped from full speed, and cmd_vel_slew first spent
+    # 0.1 s winding its phantom 0.4-1.0 rad/s down to 0.3: 6-7 deg overshoot in the ideal sim.
+    # Now max = the MCU clamp, min = the pivot floor (inner wheel 0.06 m/s / 0.24 m =
+    # 0.25 rad/s, the turn shaper's pivot), acc = cmd_vel_slew max_angular_decel (1.0): the
+    # pivot slows to 0.25 over its last ~2 deg and the mission's lead covers the stop.
+    # cycle_frequency 20 (was 10): the stop decision is late by up to one cycle (0.7 deg at
+    # 0.25 rad/s instead of 1.4).
+    max_rotational_vel: 0.3
+    min_rotational_vel: 0.25
+    rotational_acc_lim: 1.0
 
 # Controller output (/cmd_vel_nav_raw) -> velocity_smoother (/cmd_vel_nav_smoothed)
 # -> collision_monitor -> /cmd_vel_nav, the twist_mux navigation lane (priority 10,
