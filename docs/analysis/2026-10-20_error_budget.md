@@ -213,16 +213,17 @@ The owner triggers every motion. Claude sends none.
 3. **Record.** Run this on the mower, in its own shell:
 
    ```
-   docker exec -it mower_jazzy bash -c 'source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash && ros2 daemon stop; cd /userdata/ros2/logs && ros2 bag record -s sqlite3 -o pivot_test /fix /fix_gated /odometry/gps /odometry/filtered /odometry/filtered_map /imu/data /tf /tf_static /cmd_vel /cmd_vel_nav /cmd_vel_raw /mcu/measured_speed /mcu/commanded_speed /spin/_action/status /behavior_tree_node/high_level_status'
+   docker exec -it mower_jazzy bash -c 'source /opt/ros/jazzy/setup.bash && source /work/install/setup.bash && ros2 daemon stop; cd /userdata/ros2/logs && ros2 bag record -s sqlite3 -o pivot_test /fix /fix_gated /odometry/gps /odometry/filtered /odometry/filtered_map /imu/data /tf /tf_static /cmd_vel /cmd_vel_nav /cmd_vel_raw /mcu/measured_speed /mcu/commanded_speed /spin/_action/status /behavior_tree_node/high_level_status'
    ```
 
-   Adjust the install path if the container differs. Do not filter `/tf`: it carries
-   map→odom→base_link, and `/tf_static` carries the base_link→gps lever arm the EKF uses.
+   The container mounts `/userdata/ros2_stack` at `/work` (checked 2026-10-20). Do not filter
+   `/tf`: it carries map→odom→base_link. There is no base_link→gps TF: the stack treats
+   the antenna as sitting on base_link, so any real offset shows up as a pivot circle.
 4. **Pivots.** Run 10 pivots, all from the same mark, in this order: +90, -90, +90, -90,
    +180, -180, +180, -180, +90, -90 (degrees). For each one, in a second shell:
 
    ```
-   docker exec -it mower_jazzy bash -c 'source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash && ros2 action send_goal /spin nav2_msgs/action/Spin "{target_yaw: 1.5708, time_allowance: {sec: 30}}"'
+   docker exec -it mower_jazzy bash -c 'source /opt/ros/jazzy/setup.bash && source /work/install/setup.bash && ros2 action send_goal /spin nav2_msgs/action/Spin "{target_yaw: 1.5708, time_allowance: {sec: 30}}"'
    ```
 
    Use target_yaw ±1.5708 or ±3.1416. This is exactly the production pivot path:
@@ -241,8 +242,8 @@ How to read the results:
 
 - **Lever-arm error.** The tape shows the axle mark staying within about 1 cm while the EKF
   base_link draws a circle (`/odometry/filtered_map`, ≈ 2·L·sin(θ/2)). The radius of the
-  raw `/fix` circle about the true pivot point gives the real antenna offset; correct the
-  base_link→gps TF to match.
+  raw `/fix` circle about the true pivot point gives the real antenna offset; add a
+  base_link→gps TF (and the EKF/navsat lever arm) to match.
 - **Real displacement.** Tape and EKF agree on the displacement. The cause is turf
   mechanics, which a TF fix cannot correct: budget for it in the pivot inset.
 - **Stop lead.** Take the tape heading and the final IMU/EKF yaw minus the target, as the
