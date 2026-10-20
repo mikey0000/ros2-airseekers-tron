@@ -53,7 +53,7 @@ from .kinematics import DiffDrive, DriveParams
 from .loc_drift import LocDrift, LocDriftParams
 from .marker import RearCamera, RearCameraParams
 from .sensors import StereoParams, StereoRaycaster, bumper_sides
-from .world import enu_to_latlon, load_world
+from .world import antenna_xy, enu_to_latlon, load_world
 
 LATCHED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      reliability=ReliabilityPolicy.RELIABLE)
@@ -108,6 +108,10 @@ class SimNode(Node):
         d('battery_drain_per_s', 0.00005)
         d('battery_charge_per_s', 0.001)
         d('gps_sigma_m', 0.015)
+        # GNSS antenna offset from base_link (m), = the URDF gps_link lever arm (x 0.098 vendor CAD,
+        # owner measured 0.10): /fix is the antenna's position, as on the robot (navsat removes it)
+        d('gps_antenna_x', 0.098)
+        d('gps_antenna_y', 0.0)
         d('bumper_hold_s', 0.3)
         # ground disturbance (kinematics.DriveParams.disturb_*; all off by default)
         d('disturb_wheel_bias', 0.0)
@@ -418,7 +422,9 @@ class SimNode(Node):
         self.pub_estop.publish(Bool(data=self.estop_latched))
 
         pose = self.drive.pose
-        lat, lon = enu_to_latlon(pose.x, pose.y, self.world.datum_lat, self.world.datum_lon)
+        ax, ay = antenna_xy(pose.x, pose.y, pose.yaw, float(self.get_parameter('gps_antenna_x').value),
+                            float(self.get_parameter('gps_antenna_y').value))
+        lat, lon = enu_to_latlon(ax, ay, self.world.datum_lat, self.world.datum_lon)
         fix = NavSatFix()
         fix.header.stamp = stamp
         fix.header.frame_id = 'gps_link'

@@ -42,7 +42,14 @@
               looks up base_link -> gps_link for the antenna lever
               arm — without it, it silently assumes the receiver sits
               at the robot origin.
-              TODO(calib): antenna mounting offset (vendor: z=+0.30).
+              Offset (0.098, 0, 0.214): the vendor ESKF base_gps_x 0.098
+              (CAD, drive-axle origin; the owner measured 0.10, centred)
+              and the antenna top 0.214 m above the wheel axle (vendor
+              eskf cfg.yaml). Was (0, 0, 0.3). Before it was (0, 0, 0.3) and navsat put
+              base_link at the antenna: the field pivot test saw a 7-10 cm
+              /fix circle and 0.08-0.19 m of EKF "displacement" per pivot
+              with the axle still (docs/analysis/2026-10-20_error_budget.md).
+              mower_sim's gps_antenna_x/_y mirror this (test_world checks).
 
   bumper      Bumper strip geometry. mower_mcu_driver reports bumper
               state in MowerSensorInfo (bumper / bumper_l / bumper_r
@@ -107,9 +114,12 @@
        0 0 0 deliberately — it matches wit_imu_driver's current
        identity broadcast (see the frame contract above). -->
   <xacro:property name="imu_xyz"    value="0 0 0"/>
-  <xacro:property name="gps_xyz"    value="0 0 0.3"/>
+  <xacro:property name="gps_xyz"    value="0.098 0 0.214"/>
   <xacro:property name="bumper_xyz" value="0.50718 0 0"/>
-  <xacro:property name="cutter_xyz" value="0.3 0 -0.05"/>
+  <!-- cutter_xyz x 0.23 (was 0.3): the owner measured the deck centre exactly 0.23 m ahead
+       of the rear axle, centred (2026-10-20). cutter_link and blade_link share it; map_server's mow
+       progress looks up base_link -> blade_link (fallback blade_offset_x, also 0.23). -->
+  <xacro:property name="cutter_xyz" value="0.23 0 -0.05"/>
   <!-- Cutter disc radius: 0.20 m cut width. TODO: measure the blade tip circle on the
        Tron and update this, the coverage cut_width_m launch arg (mower.launch.py) and
        mower_coverage's default together. -->
@@ -241,7 +251,7 @@
   <!-- IMU: identity mount matches wit_imu_driver's base_link->imu_link
        broadcast (see frame contract). TODO(calib): real offset here. -->
   <xacro:box_sensor name="imu_link" xyz="${imu_xyz}" rpy="0 0 0" size="${sensor_box}" material="green"/>
-  <!-- GNSS antenna (UM960). TODO(calib): real lever arm here. -->
+  <!-- GNSS antenna (UM960): vendor CAD lever arm x 0.098 (owner measured 0.10), z 0.214. -->
   <xacro:box_sensor name="gps_link" xyz="${gps_xyz}" rpy="0 0 0" size="${sensor_box}" material="red"/>
   <!-- Bumper strip. -->
   <xacro:box_sensor name="bumper" xyz="${bumper_xyz}" rpy="0 0 0"
@@ -264,7 +274,9 @@
   <joint name="stereo_camera_optical_joint" type="fixed">
     <parent link="base_link"/>
     <child link="stereo_camera_optical"/>
-    <origin xyz="0.466 0 0.240" rpy="-1.5547956 0 -1.5707963"/>
+    <!-- y -0.041 (was 0, 2026-10-20): the vendor ESKF base_vio (0.466, -0.041), drive-axle
+         origin, puts the optical centre on the RIGHT eye (the disparity reference). -->
+    <origin xyz="0.466 -0.041 0.240" rpy="-1.5547956 0 -1.5707963"/>
   </joint>
   <!-- Metoak stereo IMU (ICM-40608 on i2c 8-0068; mower_cameras/stereo_imu -> /stereo_imu/data,
        frame stereo_camera_imu = the chip's own axes). Factory IMU<->cam0 extrinsic from the vendor

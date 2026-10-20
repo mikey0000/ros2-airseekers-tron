@@ -283,9 +283,9 @@ Angles are in degrees.
      `/odometry/gps` reports the same displacement.
    - `/fix` traces a circle of radius 0.068-0.102 m (Kasa fit). For 90 deg pivots the
      chord, 2R·sin(θ/2), matches the EKF displacement.
-   - The stack has no base_link→gps TF. The bag's `/tf_static` has only `gps_link` at
-     (0, 0, 0.3), but the UM960 stamps `frame_id: gps` (`um960.yaml`), so navsat_transform
-     assumes the antenna is at base_link.
+   - (Corrected below.) The UM960 stamps `gps_link`: bringup.launch.py overrides the
+     driver default `gps`. The URDF had base_link→gps_link at (0, 0, 0.3), so
+     navsat_transform treated the antenna as sitting on base_link.
    - A joint least-squares fit per pivot (pivot centre plus a vehicle-frame lever, EKF
      yaw) gives x = +0.085, +0.119, +0.017, +0.081 m and y = -0.058, -0.028, -0.057,
      +0.030 m.
@@ -324,3 +324,97 @@ Recommendations (no code changed yet):
   - mower_sim already stamps `gps_link`; mirror the TF in the sim so gates stay
     comparable.
   - Pivot drift and run 7's pivot-centre offset should drop to the turf-scrub level.
+
+## Lever arm applied (ws/lever-arm, 01f2e97)
+
+The owner measured the antenna centre at x +0.10 m from the rear axle (base_link), y 0.
+
+**Frames.**
+
+- The UM960 `/fix` is stamped `gps_link`: `bringup.launch.py` overrides the driver
+  default `gps`, and the field bag confirms it.
+- robot_state_publisher publishes base_link→gps_link from `config/urdf/mower.urdf.xacro`
+  (`gps_xyz`).
+- That transform was (0, 0, 0.3). It is now **(0.098, 0, 0.214)**: the vendor ESKF
+  `base_gps_x` (CAD) and the antenna top 0.214 m above the axle. The owner measured 0.10.
+  No frame was renamed.
+- navsat_transform looks up base_link→gps_link. It rotates the arm by its world yaw (the
+  IMU, `use_odometry_yaw: false`) and removes it when it builds `/odometry/gps`, so both
+  EKFs receive base_link.
+- `mower_sim` now publishes `/fix` at the antenna, base_link + R(yaw)·(0.098, 0), through
+  the `gps_antenna_x` / `gps_antenna_y` parameters. A test keeps them equal to the URDF.
+- The gates run `localization:=sim`, which does not use `/fix`, so they show only that
+  nothing else moved.
+
+**Other consumers of the GNSS position:**
+
+| Consumer | How it uses the fix | Impact |
+|---|---|---|
+| heading_aligner | Course over ground from `/odometry/gps` on straight drives | The offset is constant on a straight, so no change |
+| gps_gate | Quality only | None |
+| GUI `/gps/fix` and datum check | Status and position display | Display only. The datum (map origin) keeps its meaning |
+| mower_alerts | Covariance | None |
+| map_server | Uses the EKF pose (`/odometry/filtered_map`), not the fix | Affected through the EKF; see below |
+| docking | Uses the EKF pose | Affected through the EKF; see below |
+| `rtk_pair.py` | Pairing only | None |
+
+**Saved dock pose: shift it, or re-record it on the charger.** The pose was recorded as
+the EKF pose while docked, which was the antenna position. With the lever arm, the same
+docked robot reads 0.098 m further back along the dock yaw:
+
+- new = old − 0.098·(cos yaw, sin yaw);
+- for the run 5 dock (0.236, -0.637, yaw 1.773 rad) that is **(+0.020, −0.096) →
+  (0.256, −0.733)**.
+
+Without the shift, the docking approach target sits 10 cm too deep. The simplest fix is to
+press "set docking point" again with the robot on the charger after the deploy (requires
+`dock_pose_measured`).
+
+**Recorded paths and boundaries: no migration needed.** They were recorded at the antenna,
+10 cm ahead of the axle along the direction of travel. A point shifted along its own
+direction of travel stays on the same line, so straight edges are unchanged. A bend's
+vertex moves at most 0.10 m along the edge, and the polygon's inset is unchanged to
+within a few millimetres.
+
+A one-off migration is possible but not recommended. It would be an optional script that
+moves each recorded vertex 0.10 m back along its recorded heading: the direction from the
+previous vertex, in recording order, which only `areas.dat`'s vertex order preserves.
+
+**Deploy:** the URDF is read by xacro at launch (`config/urdf`, symlinked).
+
+1. Sync.
+2. Restart the stack. The mower_sim change only matters on the dev host.
+3. Re-set the docking point on the charger.
+4. Re-run the field pivot test: the EKF displacement per pivot should drop from 0.08-0.19
+   m to the turf-scrub level, a few centimetres.
+
+**Static TFs against the vendor's.** All values are in the drive-axle frame (base_link),
+in metres. Sources are the vendor's `eskf_localization/param/cfg.yaml`, which uses the
+axle origin, and its `mower_base/urdf/mower.urdf`.
+
+| Frame | Ours (before) | Vendor | Adopted | Why |
+|---|---|---|---|---|
+| gps_link | 0, 0, 0.30 | 0.098, 0, 0.214 (ESKF) | **yes** | Owner measured 0.10; navsat removes this offset |
+| blade_link / cutter_link | 0.30, 0, -0.05 | 0.30 (URDF) | **0.23** (owner) | Owner measured it exactly; used by mow progress |
+| stereo_camera_optical | 0.466, 0, 0.240 | 0.466, -0.041 (ESKF base_vio) | **y only** | The ESKF puts the optical centre on the right eye. Feeds the costmap, collision monitor and non-grass projector. x matches; z and pitch were measured from the ground plane |
+| imu_link | 0, 0, 0 | 0.098, 0, 0.197 (at the antenna) | no | robot_localization fuses only IMU orientation and rates (no lever arm), and identity matches wit_imu_driver's frame contract |
+| left/right_oa_camera | 0.40, 0, 0.25 | 0.40, 0, 0.25 (URDF) | n/a | Same. No axle-frame source exists |
+| rear_camera | -0.201, 0, 0.25 | same (URDF) | n/a | Same |
+| bumper | 0.50718, 0, 0 | same (URDF) | n/a | Same |
+| drive wheels (URDF visual) | x -0.098 | x -0.098 (URDF) | not changed | **Inconsistent with our contract** (base_link = drive axle). The vendor URDF is antenna-centred for the wheels and gnss joint only; its front sensors match the axle-frame ESKF. The wheels are visual only (GUI); fix them with the footprint measurement |
+
+**Not changed (report only).**
+
+- **Footprint** `[[0.52, ±0.27], [-0.23, ±0.27]]`. The vendor's MPC footprint conflicts with
+  its URDF; the owner will measure.
+- **Wheel separation** stays 0.48 m. The vendor MPC `wheel_base` of 0.4 is stale.
+- **Coverage planner.** It plans the base_link path as the blade path
+  (`boundary_inset_m` and `border_inset_m` are blade-edge insets on base_link). With the
+  deck 0.23 m ahead:
+  - straight passes cut the same line;
+  - each swath-end turn cuts 0.23 m further than the plan ends, and each start begins
+    0.23 m late;
+  - headland pivots sweep the deck on a 0.23 m radius.
+- **map_server mow progress** now marks at 0.23.
+- **robot_body.py and body_plan** are not on master; they are on the body-aware branches.
+  Their blade/body offsets (the 0.17 assumption) need the same 0.23 when merged.
