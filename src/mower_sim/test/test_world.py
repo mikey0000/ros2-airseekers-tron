@@ -252,3 +252,18 @@ def test_urdf_blade_link_is_the_measured_deck_centre():
     fb = float(re.search(r"'blade_offset_x': ([-\d.]+)", open(ms).read()).group(1))
     assert float(m.group(1)) == pytest.approx(0.23)
     assert fb == pytest.approx(0.23)
+
+
+def test_sim_stereo_pose_matches_the_urdf_optical_frame():
+    # the sim renders stereo points from STEREO_XYZ and publishes them in stereo_camera_optical:
+    # a mismatch with the URDF would shift every point
+    import re
+    from mower_sim import sensors
+    here = os.path.dirname(os.path.abspath(__file__))
+    urdf = os.path.join(here, '..', '..', '..', 'config', 'urdf', 'mower.urdf.xacro')
+    if not os.path.exists(urdf):
+        pytest.skip('URDF not found from the test tree')
+    s = open(urdf).read()
+    j = s[s.index('name="stereo_camera_optical_joint"'):]
+    m = re.search(r'<origin xyz="([-\d.]+) ([-\d.]+) ([-\d.]+)"', j)
+    assert sensors.STEREO_XYZ == pytest.approx(tuple(float(v) for v in m.groups()))

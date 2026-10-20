@@ -18,8 +18,9 @@ import numpy as np
 
 from .world import Obstacle, to_local
 
-# URDF stereo_camera_optical_joint: xyz 0.466 0 0.240, rpy -1.5547956 0 -1.5707963
-STEREO_XYZ = (0.466, 0.0, 0.240)
+# URDF stereo_camera_optical_joint: xyz 0.466 -0.041 0.240, rpy -1.5547956 0 -1.5707963
+# (y -0.041 since 2026-10-20: vendor ESKF base_vio, right eye; test_world keeps them equal)
+STEREO_XYZ = (0.466, -0.041, 0.240)
 STEREO_RPY = (-1.5547956, 0.0, -1.5707963)
 
 
