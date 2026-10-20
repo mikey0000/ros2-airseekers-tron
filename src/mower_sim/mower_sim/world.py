@@ -349,6 +349,13 @@ def _radii(lat_deg: float) -> Tuple[float, float]:
     return meridional, normal
 
 
+def antenna_xy(x: float, y: float, yaw: float, ax: float, ay: float) -> Tuple[float, float]:
+    """GNSS antenna position for base_link (x, y, yaw) and the antenna's base_link offset
+    (ax, ay) - the URDF base_link -> gps_link lever arm (config/urdf/mower.urdf.xacro gps_xyz)."""
+    c, s = math.cos(yaw), math.sin(yaw)
+    return x + c * ax - s * ay, y + s * ax + c * ay
+
+
 def enu_to_latlon(x: float, y: float, lat0: float, lon0: float) -> Tuple[float, float]:
     m, n = _radii(lat0)
     lat = lat0 + math.degrees(y / m)

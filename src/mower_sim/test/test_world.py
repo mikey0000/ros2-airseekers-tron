@@ -216,3 +216,24 @@ def test_one_metre_east_is_degrees_lon():
     lat, lon = W.enu_to_latlon(1.0, 0.0, 48.0, 9.0)
     assert lat == 48.0
     assert lon - 9.0 == pytest.approx(8.99e-6 / math.cos(math.radians(48.0)), rel=0.01)
+
+
+def test_antenna_xy_rotates_the_lever_arm_with_yaw():
+    assert W.antenna_xy(1.0, 2.0, 0.0, 0.10, 0.0) == pytest.approx((1.10, 2.0))
+    assert W.antenna_xy(1.0, 2.0, math.pi / 2, 0.10, 0.0) == pytest.approx((1.0, 2.10))
+    assert W.antenna_xy(0.0, 0.0, math.pi, 0.10, 0.05) == pytest.approx((-0.10, -0.05))
+
+
+def test_sim_antenna_default_matches_the_urdf_gps_link():
+    # the simulated /fix must come from the same lever arm navsat removes (URDF gps_xyz)
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    urdf = os.path.join(here, '..', '..', '..', 'config', 'urdf', 'mower.urdf.xacro')
+    if not os.path.exists(urdf):
+        pytest.skip('URDF not found from the test tree')
+    m = re.search(r'name="gps_xyz"\s+value="([-\d.]+) ([-\d.]+) ([-\d.]+)"', open(urdf).read())
+    src = open(os.path.join(here, '..', 'mower_sim', 'sim_node.py')).read()
+    sx = float(re.search(r"d\('gps_antenna_x', ([-\d.]+)\)", src).group(1))
+    sy = float(re.search(r"d\('gps_antenna_y', ([-\d.]+)\)", src).group(1))
+    assert (sx, sy) == pytest.approx((float(m.group(1)), float(m.group(2))))
+    assert sx == pytest.approx(0.10)

@@ -42,7 +42,13 @@
               looks up base_link -> gps_link for the antenna lever
               arm — without it, it silently assumes the receiver sits
               at the robot origin.
-              TODO(calib): antenna mounting offset (vendor: z=+0.30).
+              Offset: x +0.10 measured by the owner 2026-10-20 (antenna
+              centre 0.10 m ahead of the rear axle, centred left-right);
+              z +0.30 vendor. Before it was (0, 0, 0.3) and navsat put
+              base_link at the antenna: the field pivot test saw a 7-10 cm
+              /fix circle and 0.08-0.19 m of EKF "displacement" per pivot
+              with the axle still (docs/analysis/2026-10-20_error_budget.md).
+              mower_sim's gps_antenna_x/_y mirror this (test_world checks).
 
   bumper      Bumper strip geometry. mower_mcu_driver reports bumper
               state in MowerSensorInfo (bumper / bumper_l / bumper_r
@@ -107,7 +113,7 @@
        0 0 0 deliberately — it matches wit_imu_driver's current
        identity broadcast (see the frame contract above). -->
   <xacro:property name="imu_xyz"    value="0 0 0"/>
-  <xacro:property name="gps_xyz"    value="0 0 0.3"/>
+  <xacro:property name="gps_xyz"    value="0.10 0 0.3"/>
   <xacro:property name="bumper_xyz" value="0.50718 0 0"/>
   <xacro:property name="cutter_xyz" value="0.3 0 -0.05"/>
   <!-- Cutter disc radius: 0.20 m cut width. TODO: measure the blade tip circle on the
@@ -241,7 +247,7 @@
   <!-- IMU: identity mount matches wit_imu_driver's base_link->imu_link
        broadcast (see frame contract). TODO(calib): real offset here. -->
   <xacro:box_sensor name="imu_link" xyz="${imu_xyz}" rpy="0 0 0" size="${sensor_box}" material="green"/>
-  <!-- GNSS antenna (UM960). TODO(calib): real lever arm here. -->
+  <!-- GNSS antenna (UM960): measured lever arm (x 0.10, owner 2026-10-20). -->
   <xacro:box_sensor name="gps_link" xyz="${gps_xyz}" rpy="0 0 0" size="${sensor_box}" material="red"/>
   <!-- Bumper strip. -->
   <xacro:box_sensor name="bumper" xyz="${bumper_xyz}" rpy="0 0 0"
