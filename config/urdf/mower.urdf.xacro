@@ -115,7 +115,10 @@
   <xacro:property name="imu_xyz"    value="0 0 0"/>
   <xacro:property name="gps_xyz"    value="0.10 0 0.3"/>
   <xacro:property name="bumper_xyz" value="0.50718 0 0"/>
-  <xacro:property name="cutter_xyz" value="0.3 0 -0.05"/>
+  <!-- cutter_xyz x 0.25 (was 0.3): the owner measured the deck centre 0.25 m ahead of the
+       rear axle, centred (2026-10-20). cutter_link and blade_link share it; map_server's mow
+       progress looks up base_link -> blade_link (fallback blade_offset_x, also 0.25). -->
+  <xacro:property name="cutter_xyz" value="0.25 0 -0.05"/>
   <!-- Cutter disc radius: 0.20 m cut width. TODO: measure the blade tip circle on the
        Tron and update this, the coverage cut_width_m launch arg (mower.launch.py) and
        mower_coverage's default together. -->

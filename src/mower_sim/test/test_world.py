@@ -237,3 +237,18 @@ def test_sim_antenna_default_matches_the_urdf_gps_link():
     sy = float(re.search(r"d\('gps_antenna_y', ([-\d.]+)\)", src).group(1))
     assert (sx, sy) == pytest.approx((float(m.group(1)), float(m.group(2))))
     assert sx == pytest.approx(0.10)
+
+
+def test_urdf_blade_link_is_the_measured_deck_centre():
+    # map_server's mow progress uses base_link -> blade_link; its fallback must agree
+    import re
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.join(here, '..', '..', '..')
+    urdf = os.path.join(root, 'config', 'urdf', 'mower.urdf.xacro')
+    ms = os.path.join(root, 'src', 'mower_map', 'mower_map', 'map_server_node.py')
+    if not (os.path.exists(urdf) and os.path.exists(ms)):
+        pytest.skip('sources not found from the test tree')
+    m = re.search(r'name="cutter_xyz"\s+value="([-\d.]+) ([-\d.]+)', open(urdf).read())
+    fb = float(re.search(r"'blade_offset_x': ([-\d.]+)", open(ms).read()).group(1))
+    assert float(m.group(1)) == pytest.approx(0.25)
+    assert fb == pytest.approx(0.25)
