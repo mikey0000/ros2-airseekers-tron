@@ -165,3 +165,87 @@ turf.
 base_link (rear-axle centre) point. Compare its tape-measured displacement and the final
 heading with the EKF's. The result separates a real displacement from a lever-arm error,
 and calibrates `pivot_stop_lead_rad` and `stop_latency_s`.
+
+## Lead 0.06 (2bf0f97) and regression check
+
+On the accuracy world, values are median / p90 against sim truth, at rest. All four runs
+had 0 one-wheel ticks.
+
+| | Ideal 0.04 | Ideal 0.06 | `-d` 0.04 | `-d` 0.06 |
+|---|---|---|---|---|
+| Heading overshoot (deg, abs) | 1.3 / 3.4 | **0.7 / 1.5** (signed -0.2) | 0.6 / 1.8 | **0.5 / 1.1** (signed -0.5) |
+| Leg-end along (m) | 0.012 / 0.029 | 0.017 / 0.029 | 0.030 / 0.091 | 0.032 / 0.093 (p99 0.147) |
+| Leg-end lateral (m) | 0.012 / 0.048 | 0.012 / 0.065 | 0.022 / 0.053 | 0.045 / 0.086 (p99 0.101) |
+| Leg-start lateral (m) | 0.013 / 0.037 | 0.016 / 0.041 | 0.015 / 0.070 | 0.033 / 0.077 |
+| Rotation drift (m) | 0.004 / 0.005 | 0.004 / 0.005 | 0.011 / 0.021 | 0.011 / 0.023 |
+| Docked | no (dock inside the lawn) | yes | yes | yes |
+
+**real_run5, ideal (2bf0f97, domain 181):**
+
+- Mow complete. Docking failed with DOCK_MAXOUT after 3 vision retries. This is the known
+  sim marker-yaw failure (simulation.md); the docking server's own controller does not use
+  behavior_server.
+- 0 hard-boundary trips. Max outside in every phase is 0.000 m.
+- 0 one-wheel ticks (134 floor-stalled).
+- Corners: 0 of 29 deviate more than 0.15 m (max 0.056 m).
+- MOWING cross-track p99: line 0.037, arc 0.028, pivot vertex 0.032, pivoting 0.056 m.
+- The 7 DriveOnHeading final approaches completed without an abort. BackUp is not used.
+
+## Field pivot test (owner, by hand)
+
+The test has two purposes:
+
+- Find out whether run 7's ~6 cm pivot-centre offset is a real displacement on turf or an
+  antenna lever-arm error in the EKF.
+- Calibrate `pivot_stop_lead_rad`. The mission applies the lead; a hand-sent Spin does not,
+  so the overshoot measured here is the lead needed.
+
+The owner triggers every motion. Claude sends none.
+
+1. **Ground.** Pick flat, mown turf with an RTK fix. Stick tape on the ground under the
+   rear-axle centre (base_link): halfway between the two wheel hubs, plumbed down.
+   - Mark a second point 0.5 m ahead on the centreline to read the heading.
+   - Clear 0.7 m around the robot: the nose swings about 0.6 m.
+2. **Mode.** In the GUI, start manual mowing (joystick mode, blade off). That puts the
+   mission in MANUAL_MOWING with motion enabled and Nav2 active.
+   - Leave the joystick untouched: the teleop lane (priority 20) would override the Spin.
+   - The GUI STOP and the hardware e-stop stay live throughout.
+3. **Record.** Run this on the mower, in its own shell:
+
+   ```
+   docker exec -it mower_jazzy bash -c 'source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash && ros2 daemon stop; cd /userdata/ros2/logs && ros2 bag record -s sqlite3 -o pivot_test /fix /fix_gated /odometry/gps /odometry/filtered /odometry/filtered_map /imu/data /tf /tf_static /cmd_vel /cmd_vel_nav /cmd_vel_raw /mcu/measured_speed /mcu/commanded_speed /spin/_action/status /behavior_tree_node/high_level_status'
+   ```
+
+   Adjust the install path if the container differs. Do not filter `/tf`: it carries
+   map→odom→base_link, and `/tf_static` carries the base_link→gps lever arm the EKF uses.
+4. **Pivots.** Run 10 pivots, all from the same mark, in this order: +90, -90, +90, -90,
+   +180, -180, +180, -180, +90, -90 (degrees). For each one, in a second shell:
+
+   ```
+   docker exec -it mower_jazzy bash -c 'source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash && ros2 action send_goal /spin nav2_msgs/action/Spin "{target_yaw: 1.5708, time_allowance: {sec: 30}}"'
+   ```
+
+   Use target_yaw ±1.5708 or ±3.1416. This is exactly the production pivot path:
+   behavior_server Spin → nav lane → cmd_vel_slew → MCU.
+5. **Measure after each pivot.**
+   - Tape the offset of the new rear-axle point from the floor mark, along and across
+     the start heading.
+   - Measure the heading change against the 0.5 m nose mark: lateral offset / 0.5 m,
+     converted to degrees.
+   - Note the time.
+   - Move the robot back onto the mark with the joystick before the next pivot.
+6. **Stop.** Ctrl-C the recorder, end manual mowing in the GUI, and copy the bag off
+   read-only.
+
+How to read the results:
+
+- **Lever-arm error.** The tape shows the axle mark staying within about 1 cm while the EKF
+  base_link draws a circle (`/odometry/filtered_map`, ≈ 2·L·sin(θ/2)). The radius of the
+  raw `/fix` circle about the true pivot point gives the real antenna offset; correct the
+  base_link→gps TF to match.
+- **Real displacement.** Tape and EKF agree on the displacement. The cause is turf
+  mechanics, which a TF fix cannot correct: budget for it in the pivot inset.
+- **Stop lead.** Take the tape heading and the final IMU/EKF yaw minus the target, as the
+  median over the 10 pivots. Set `pivot_stop_lead_rad` to that value in rad (the sim implies
+  0.06 rad). The coast time from `/cmd_vel` = 0 to
+  `/mcu/measured_speed` = 0 calibrates `stop_latency_s`.
