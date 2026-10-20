@@ -250,3 +250,77 @@ How to read the results:
   median over the 10 pivots. Set `pivot_stop_lead_rad` to that value in rad (the sim implies
   0.06 rad). The coast time from `/cmd_vel` = 0 to
   `/mcu/measured_speed` = 0 calibrates `stop_latency_s`.
+
+## Field pivot test result (bag `pivot_test`, 2026-10-20)
+
+The bag ran 611 s in MANUAL_MOWING with RTK fixed: `/fix` status 2, static noise 1.7 mm.
+It contains **4 Spin pivots, not 10** (+90, +90, +180, -180). They were segmented from
+`/cmd_vel_nav`. The Spin profile already shows the new limits (0.30 → 0.27 → 0.25 → 0
+rad/s), and no mission lead was applied. Turf rotation is stick-slip: IMU |w| ranges
+0.1-0.5 rad/s under a 0.3 command, so a 180-degree turn takes 12-16 s.
+
+Overshoot is measured against the target. "Coast" and "stop" are measured from the
+Spin's first zero command, to `/imu` |w| < 0.02 rad/s. Displacement is the EKF base_link
+displacement, start to end. The tape showed about 0 for every pivot.
+
+| Pivot | IMU-integrated | EKF / odom yaw | Overshoot (IMU / odom) | Coast | Stop | EKF disp. (`filtered_map` / `odometry/gps`) |
+|---|---|---|---|---|---|---|
+| +90 | 91.2 | 92.4 | +1.2 / +2.4 | 0.9 | 0.11 s | 0.161 / 0.153 m |
+| +90 | 93.3 | 92.0 | +3.3 / +2.0 | 1.7 | 0.35 s | 0.194 / 0.192 m |
+| +180 | 182.8 | 183.0 | +2.8 / +3.0 | 1.1 | 0.26 s | 0.079 / 0.079 m |
+| -180 | 185.2 | 185.7 | +5.2 / +5.7 | 4.1 | 0.24 s | 0.179 / 0.179 m |
+
+Angles are in degrees.
+
+1. **Overshoot.** The median is 3.0 deg on the IMU (2.7 deg on odom), at most 5.7 deg.
+   - It does not scale cleanly with turn size: +1.2 and +3.3 at 90 deg, +2.8 and +5.2 at
+     180 deg. A fixed lead is right.
+   - About 2 deg of it is coast after the Spin's stop command, which ends 0.1-0.35 s later
+     (median 0.25 s). The rest is the Spin's own stop decision on stick-slip rotation.
+   - The owner's "about 5 deg" read matches the worst pivot.
+2. **Displacement is the antenna, not the axle.**
+   - The EKF reports 0.08-0.19 m per pivot while the tape shows about 0, and
+     `/odometry/gps` reports the same displacement.
+   - `/fix` traces a circle of radius 0.068-0.102 m (Kasa fit). For 90 deg pivots the
+     chord, 2R·sin(θ/2), matches the EKF displacement.
+   - The stack has no base_link→gps TF. The bag's `/tf_static` has only `gps_link` at
+     (0, 0, 0.3), but the UM960 stamps `frame_id: gps` (`um960.yaml`), so navsat_transform
+     assumes the antenna is at base_link.
+   - A joint least-squares fit per pivot (pivot centre plus a vehicle-frame lever, EKF
+     yaw) gives x = +0.085, +0.119, +0.017, +0.081 m and y = -0.058, -0.028, -0.057,
+     +0.030 m.
+   - Sweeping the fix latency from -0.6 s to +1.5 s does not reconcile the lateral sign,
+     and the fit residual is 2.7 cm rms against 1.7 mm static noise. The centre wanders
+     during stick-slip.
+   - **Forward offset: about +0.07 m** (range 0.02-0.12). **Lateral offset: undetermined**
+     (mean -0.02 m, spread ±0.05).
+   - This matches run 7's ~6 cm pivot-centre offset (2·L·sin(θ/2) with L ≈ 0.06-0.10).
+3. **Run 7's 4 cm right-of-travel bias is not explained.** That bias was measured in the
+   EKF frame. A constant antenna offset is self-consistent on a straight, and a forward
+   offset cannot bias lateral tracking at all. It stays open (wheel bias or the
+   proportional-only MPPI correction).
+
+Recommendations (no code changed yet):
+
+- **`pivot_stop_lead_rad`:** keep 0.06 rad (3.4 deg), which already covers the 3.0 deg
+  field median. The field n = 4; re-check with 10 or more pivots after the lever-arm
+  change.
+- **`stop_latency_s` / `stop_decel`:** keep 0.2 s / 0.8 m/s².
+  - The angular stop measured 0.25 s median, in line with 0.2 s plus one Spin cycle.
+  - The linear stop was not exercised: pure pivots only. Calibrate it from the next mow's
+    leg ends with `accuracy.py field`.
+- **Lever arm:** add a static TF base_link→`gps` (the frame the UM960 stamps) of
+  x +0.07, y 0.00, z 0.30.
+  - Do it in mower_bringup's localization launch (static_transform_publisher). The
+    on-robot URDF publishing `gps_link` lives outside this repo.
+  - navsat_transform then subtracts the rotated lever when it builds `/odometry/gps`.
+    The EKF configs and the controllers are unchanged.
+  - Measure y on the robot with a ruler (antenna centre against the rear-axle centre)
+    rather than trusting this fit.
+- **Downstream after the TF:** the EKF base_link moves about 7 cm back along the heading.
+  - Re-measure the docked dock pose (it shifts about 7 cm along the dock yaw).
+  - Boundaries recorded by driving were recorded at the antenna. They shift by at most
+    7 cm, in a heading-dependent way.
+  - mower_sim already stamps `gps_link`; mirror the TF in the sim so gates stay
+    comparable.
+  - Pivot drift and run 7's pivot-centre offset should drop to the turf-scrub level.
