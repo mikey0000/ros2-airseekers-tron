@@ -10,11 +10,19 @@ front of the nose (deadlock). This node watches the same command the collision_m
 filters (``cmd_topic``, the velocity_smoother output) and sets the zones' dynamic
 ``<zone>.enabled`` parameters:
 
-* on while the robot is commanded forward (linear.x >= ``forward_on_mps``),
-* off for reverse, pivots and creeping (linear.x < ``forward_off_mps``; hysteresis between),
-* back on when no command has arrived for ``idle_rearm_s`` (the safe default).
+* on while the robot is commanded forward (linear.x >= ``forward_on_mps``) on a wide arc
+  (|angular.z| / linear.x <= ``max_curvature_on``),
+* off for reverse, pivots, creeping (linear.x < ``forward_off_mps``) and tight arcs
+  (curvature > ``max_curvature_off``); hysteresis between,
+* off while a behavior_server Spin / BackUp / DriveOnHeading goal is active (their
+  ``<action>/_action/status``) and for ``behavior_hold_s`` after it ends,
+* otherwise back on when no command has arrived for ``idle_rearm_s`` (the safe default).
 
-The direction-aware ``approach`` polygon is never touched. One SetParameters request per
+2026-10-21 field session (grass false stops): slow arcing turns (v 0.03-0.09, |w| 0.1-0.3)
+kept the zones armed while the nose swung over grass, and the idle re-arm after a Spin
+(behavior_server bypasses the smoother) armed them under the first FollowPath command.
+
+The direction-aware ``approach`` polygon is never touched (bumper source only, nav2_params). One SetParameters request per
 change, and the state is re-sent every ``resync_s`` (a respawned collision_monitor starts
 from the yaml default). A failed or unanswered (1 s) request is retried no faster than every
 ``retry_backoff_s``: while the collision_monitor is unconfigured its zone parameters are not
@@ -28,26 +36,56 @@ import time
 
 
 class ZoneGate:
-    """Pure decision logic (no ROS): wanted zone state from commands and time."""
+    """Pure decision logic (no ROS): wanted zone state from commands, behaviors and time."""
 
-    def __init__(self, forward_on=0.08, forward_off=0.06, idle_rearm_s=1.0):
+    def __init__(self, forward_on=0.08, forward_off=0.06, idle_rearm_s=1.0,
+                 max_curvature_on=1.0, max_curvature_off=1.4, behavior_hold_s=2.0):
         if forward_off > forward_on:
             raise ValueError('forward_off_mps must be <= forward_on_mps')
+        if max_curvature_off < max_curvature_on:
+            raise ValueError('max_curvature_off must be >= max_curvature_on')
         self.forward_on = float(forward_on)
         self.forward_off = float(forward_off)
         self.idle_rearm_s = float(idle_rearm_s)
+        self.k_on = float(max_curvature_on)
+        self.k_off = float(max_curvature_off)
+        self.behavior_hold_s = float(behavior_hold_s)
         self.wanted = True
         self._last_cmd_t = None
+        self._behavior = False
+        self._hold_until = None
 
-    def on_cmd(self, linear_x, now):
+    def _held(self, now):
+        return self._behavior or (self._hold_until is not None and now < self._hold_until)
+
+    def on_cmd(self, linear_x, now, angular_z=0.0):
         self._last_cmd_t = now
-        if linear_x >= self.forward_on:
+        if self._held(now):
+            self.wanted = False
+            return self.wanted
+        w = abs(float(angular_z))
+        if linear_x >= self.forward_on and w <= self.k_on * linear_x:
             self.wanted = True
-        elif linear_x < self.forward_off:
+        elif linear_x < self.forward_off or w > self.k_off * max(linear_x, 1e-6):
             self.wanted = False
         return self.wanted
 
+    def on_behavior(self, active, now):
+        """A Spin / BackUp / DriveOnHeading goal became active (True) or ended (False)."""
+        if active:
+            self._behavior = True
+            self.wanted = False
+        elif self._behavior:
+            self._behavior = False
+            self._hold_until = now + self.behavior_hold_s
+            self._last_cmd_t = now      # idle re-arm counts from the end of the hold
+        return self.wanted
+
     def on_tick(self, now):
+        if self._held(now):
+            self.wanted = False
+            return self.wanted
+        self._hold_until = None
         if self._last_cmd_t is not None and now - self._last_cmd_t >= self.idle_rearm_s:
             self.wanted = True
             self._last_cmd_t = None
@@ -81,10 +119,12 @@ class RetryBackoff:
 
 def main(args=None):
     import rclpy
+    from action_msgs.msg import GoalStatus, GoalStatusArray
     from geometry_msgs.msg import Twist
     from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
     from rcl_interfaces.srv import SetParameters
     from rclpy.node import Node
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
     class CollisionZoneGate(Node):
         def __init__(self):
@@ -95,7 +135,10 @@ def main(args=None):
             self.zones = list(d('zones', ['stop_zone', 'slowdown_zone']).value)
             self.gate = ZoneGate(d('forward_on_mps', 0.08).value,
                                  d('forward_off_mps', 0.06).value,
-                                 d('idle_rearm_s', 1.0).value)
+                                 d('idle_rearm_s', 1.0).value,
+                                 d('max_curvature_on', 1.0).value,
+                                 d('max_curvature_off', 1.4).value,
+                                 d('behavior_hold_s', 2.0).value)
             self.resync_s = float(d('resync_s', 2.0).value)
             self.backoff = RetryBackoff(d('retry_backoff_s', 5.0).value)
             self.applied = None     # last state the collision_monitor confirmed
@@ -103,12 +146,26 @@ def main(args=None):
             self.pending = None     # (state, future, sent monotonic)
             self.cli = self.create_client(SetParameters, '/%s/set_parameters' % cm.lstrip('/'))
             self.create_subscription(Twist, cmd_topic, self.on_cmd, 10)
+            # behavior_server goals publish /cmd_vel_nav directly (no smoother command here)
+            self._active = {}
+            status_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                                    durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            for a in d('behavior_actions', ['/spin', '/backup', '/drive_on_heading']).value:
+                self.create_subscription(
+                    GoalStatusArray, a.rstrip('/') + '/_action/status',
+                    lambda m, a=a: self.on_status(a, m), status_qos)
             self.create_timer(0.2, self.on_tick)
             self.get_logger().info('gating %s on %s (forward >= %.2f m/s)'
                                    % (self.zones, cmd_topic, self.gate.forward_on))
 
         def on_cmd(self, msg):
-            self.sync(self.gate.on_cmd(msg.linear.x, time.monotonic()))
+            self.sync(self.gate.on_cmd(msg.linear.x, time.monotonic(), msg.angular.z))
+
+        def on_status(self, action, msg):
+            live = (GoalStatus.STATUS_ACCEPTED, GoalStatus.STATUS_EXECUTING,
+                    GoalStatus.STATUS_CANCELING)
+            self._active[action] = any(st.status in live for st in msg.status_list)
+            self.sync(self.gate.on_behavior(any(self._active.values()), time.monotonic()))
 
         def on_tick(self):
             now = time.monotonic()

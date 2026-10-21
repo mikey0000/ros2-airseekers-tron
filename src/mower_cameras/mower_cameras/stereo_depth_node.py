@@ -205,7 +205,9 @@ class StereoDepthNode(Node):
         d('min_valid_neighbours', 5)     # of the 3x3 window incl. the pixel itself
         # --- ground removal ---
         d('ground_plane_fit', True)      # RANSAC ground plane each frame
-        d('ground_margin_m', 0.12)       # drop points < this above the plane
+        # 0.15 (was 0.12, 2026-10-21): stock firmware's stereo min height; grass tops at
+        # 0.12-0.15 m marked the costmaps and fed obstacle_tracker (map tagging) tracks.
+        d('ground_margin_m', 0.15)       # drop points < this above the plane
         d('ground_base_frame', 'base_footprint')
         d('ground_prior_height_m', 0.24)      # fallback when TF is unavailable
         d('ground_prior_pitch_up_deg', 0.92)  # (measured 2026-10-06)

@@ -64,3 +64,36 @@ def test_retry_backoff_after_refusal():
     assert b.succeeded() is True          # recovered: one INFO line
     assert b.ready(9.0)
     assert b.succeeded() is False
+
+
+def test_tight_slow_arc_off_wide_fast_arc_on():
+    """2026-10-21: slow arcs (v 0.03-0.09, |w| 0.1-0.3) kept the stop zone armed in grass."""
+    g = ZoneGate(0.08, 0.06, 1.0, max_curvature_on=1.0, max_curvature_off=1.4)
+    assert g.on_cmd(0.3, 0.0, 0.2) is True      # r 1.5 m: forward, armed
+    assert g.on_cmd(0.09, 0.1, 0.2) is False    # curvature 2.2 > 1.4: off
+    g2 = ZoneGate(0.08, 0.06, 1.0, max_curvature_on=1.0, max_curvature_off=1.4)
+    assert g2.on_cmd(0.09, 0.0, 0.2) is False   # r 0.45 m: off
+    assert g2.on_cmd(0.09, 0.1, 0.11) is False  # curvature 1.22: band, stays off
+    assert g2.on_cmd(0.09, 0.2, 0.08) is True   # curvature 0.9: on
+    assert g2.on_cmd(0.09, 0.3, -0.11) is True  # band: stays on
+    assert g2.on_cmd(0.09, 0.4, -0.2) is False  # curvature 2.2: off
+
+
+def test_behavior_holds_zones_off_then_idle_rearm():
+    g = ZoneGate(0.08, 0.06, 1.0, behavior_hold_s=2.0)
+    assert g.on_behavior(True, 0.0) is False
+    assert g.on_tick(5.0) is False               # Spin running: no idle re-arm
+    assert g.on_cmd(0.3, 5.1) is False           # nor a forward command
+    assert g.on_behavior(False, 6.0) is False
+    assert g.on_tick(7.9) is False               # inside behavior_hold_s
+    assert g.on_cmd(0.3, 8.1) is True            # after the hold: normal gating
+    g.on_cmd(0.0, 8.2, 0.3)
+    assert g.on_tick(9.3) is True                # idle re-arm still works afterwards
+
+
+def test_behavior_end_without_command_rearms_after_hold():
+    g = ZoneGate(0.08, 0.06, 1.0, behavior_hold_s=2.0)
+    g.on_behavior(True, 0.0)
+    g.on_behavior(False, 1.0)
+    assert g.on_tick(2.9) is False
+    assert g.on_tick(3.1) is True

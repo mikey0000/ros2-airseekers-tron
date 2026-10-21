@@ -64,8 +64,8 @@ except ImportError as _exc:  # pragma: no cover
     _DEP_ERROR = _exc
 
 from det_range.geometry import (DEFAULT_SIZE_CLASSES, DEFAULT_SIZE_HEIGHTS_M, StereoModel,
-                                chain_to, check_class_size, mono_range_box, quat_to_matrix,
-                                range_box, rpy_matrix)
+                                chain_to, check_class_size, mono_range_box, points_worthy,
+                                quat_to_matrix, range_box, rpy_matrix)
 from det_range.sub_pump import SubscriptionPump, _header
 
 
@@ -121,6 +121,10 @@ class DetRange(Node):
         # Per-area obstacle_detection=none (set live by mower_mission): publish an EMPTY
         # obstacle cloud so the costmap gets no detection marks (the buffer stays fresh).
         d('publish_obstacle_points', True)
+        # Only named, confident detections reach obstacle_points (costmaps + obstacle_tracker;
+        # geometry.points_worthy, 2026-10-21). Empty list = any named class.
+        d('points_classes', [''])
+        d('points_min_score', 0.5)
         # Monocular ground-plane ranging (rear camera, see module docstring)
         d('mono_frames', ['rear_camera'])
         d('mono_camera_info_topics', ['/rear_camera/camera_info'])   # parallel to mono_frames
@@ -192,6 +196,8 @@ class DetRange(Node):
         self.pub = self.create_publisher(Detection2DArray, p('output_topic'), 10)
         self.pose_pub = self.create_publisher(PoseArray, p('obstacles_topic'), 10)
         self.cloud_pub = self.create_publisher(PointCloud2, p('obstacle_points_topic'), 10)
+        self._pts_classes = {str(c).strip().lower() for c in p('points_classes')
+                             if str(c).strip()}
 
         self._pump = SubscriptionPump(self, 'det_range_inputs')
         self._pump.subscribe(Image, p('depth_topic'), self._on_depth,
@@ -358,7 +364,9 @@ class DetRange(Node):
             pose.position = r0.pose.pose.position
             pose.orientation.w = 1.0
             pa.poses.append(pose)
-            pts.append(xyz)
+            if points_worthy([(r.hypothesis.class_id, r.hypothesis.score) for r in det.results],
+                             self._pts_classes, p('points_min_score')):
+                pts.append(xyz)
             self.n_ranged += 1
         self.pub.publish(msg)
         self.pose_pub.publish(pa)
