@@ -460,20 +460,21 @@ class DockingServer(Node):
 
     def _frame_diag(self, now: float, gray, detected: bool, stamp) -> None:
         bright = float(gray[::8, ::8].mean())
-        with self._lock:
+        with self._lock:   # stepping + publishing under the lock: never after the restore
             st = self._dstat
             st['frames'] += 1
             st['detected'] += 1 if detected else 0
             st['brightness'] = bright
             stepper, active, lost = self._exposure, self._exp_active, self._exp_lost
-        if stepper is not None:
-            cmd = stepper.on_frame(now, detected, brightness=bright, active=active, lost=lost)
-            if cmd is not None:
-                ratio = stepper.last_ratio
-                self._send_exposure(cmd, 'first frame, brightness %.0f' % bright
-                                    if stepper.steps == 0 else
-                                    'marker lost' if lost else
-                                    'detection ratio %.2f' % (ratio if ratio is not None else 0))
+            if stepper is not None:
+                cmd = stepper.on_frame(now, detected, brightness=bright, active=active,
+                                       lost=lost)
+                if cmd is not None:
+                    ratio = stepper.last_ratio
+                    self._send_exposure(cmd, 'first frame, brightness %.0f' % bright
+                                        if stepper.steps == 0 else
+                                        'marker lost' if lost else
+                                        'detection ratio %.2f' % (ratio or 0.0))
         hz = float(self.get_parameter('debug_image_hz').value)
         if stepper is None and not active:
             return      # no dock goal running
@@ -959,11 +960,12 @@ class DockingServer(Node):
             with self._lock:
                 stepper, self._exposure = self._exposure, None
                 self._exp_active = self._exp_lost = False
-            if bool(self.get_parameter('exposure_control').value):
-                restore = stepper.stop() if stepper is not None else \
-                    (None if is_dock else AUTO)
-                if restore is not None:
-                    self._send_exposure(restore, 'dock goal ended' if is_dock else 'undock')
+                if bool(self.get_parameter('exposure_control').value):
+                    restore = stepper.stop() if stepper is not None else \
+                        (None if is_dock else AUTO)
+                    if restore is not None:
+                        self._send_exposure(restore, 'dock goal ended' if is_dock
+                                            else 'undock')
             with self._lock:
                 self._busy = False
                 self._progress = None
