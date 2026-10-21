@@ -105,13 +105,18 @@ START is refused while recording.
                         IDLE_DOCKED / CHARGING (1)
 
 Guards, checked every tick in this order:
-  emergency (Emergency.active, lift, stop button, /hardware_bridge/emergency silent > 2 s)
+  emergency (Emergency.active, lift, stop button, /hardware_bridge/emergency silent > 2 s;
+      the silence watchdog arms on the first message, motion commands are refused until then)
       ─► EMERGENCY (0): cancel, blade off, zero burst, cursor kept ─clear─► IDLE (no auto-resume)
   lethal boundary violation while PLANNING/MOWING/TRANSIT
       ─► BOUNDARY_EMERGENCY_STOP (0), latched until STOP / RESET_EMERGENCY
   boundary violation while MOWING ─► BOUNDARY_PAUSED (2): cancel, blade off, zero burst
       ─clear─► same sub-path from the nearest pose
       ─still outside after 3 s─► blade-off recovery TRANSIT to a pose 1 m ahead on the sub-path
+  boundary out (body-aware, TRANSIT / MOWING / dock phases) ─► stop, blade off, recover,
+      resume (see "Boundary out" below)
+  Spin drift (base_link > spin_drift_m during a pivot) ─► cancel, re-plan the approach
+  repeated bumper hits (bumper_skip_hits within 1 m) ─► skip that stretch
         (a soft violation never interrupts a TRANSIT); after 2 recoveries ─► BOUNDARY_EMERGENCY_STOP
   rain (rain_mode 1, 2 s debounce) during a run ─► RAIN_DETECTED_DOCKING ─► RAIN_WAITING (1)
       ─dry for rain_delay_minutes─► START again from the cursor
@@ -178,6 +183,8 @@ Inputs:
 * `/gps/status` (fix_type, quality)
 * `/odometry/filtered_map`
 * `/map_server_node/{boundary_violation,lethal_boundary_violation}`
+* `/map_server_node/outside_m` (base_link check in dock phases / without an area snapshot)
+* `/mower_base/bumper_routing_status` (UInt8; each 0 -> 1 is one bumper hit)
 
 Clients:
 
@@ -265,6 +272,31 @@ session is running.
 | `alternate_state_path` | `~/.ros/mower_mission/alternate_counts.json` (yaml: `/ros2_ws/maps/mission_alternate_counts.json`) |
 | `get_area_settings_service`, `coverage_server_node`, `controller_server_node`, `active_area_settings_topic` | `/map_server_node/get_area_settings`, `/coverage_server`, `/controller_server`, `~/active_area_settings` |
 
+## Boundary out (step 3 round 2, 2026-10-21)
+
+Stock-derived (`CheckRegion` / `onBoundaryOut`, see
+`docs/analysis/2026-10-21_stock_firmware_findings.md`). `mower_mission/body_boundary.py`.
+
+* **Where:** base_link in (or < 1 m outside) a mowing area: the 4 footprint corners, the
+  mid-front (nose) and mid-rear (tail) are checked against the mission's area snapshot
+  (mowing areas U drawn paths U dock corridor; a GUI map reload cannot reach it). On a
+  drawn path only, in the dock corridor and in dock phases: base_link > `hard_boundary_m`
+  0.10 (snapshot in TRANSIT / MOWING, `~/outside_m` otherwise).
+* **Limits:** edge_mode hard: any point > 0.10. Soft (stock layout, all areas for now):
+  corners 0.35, nose 0.35, tail 0.30. Normal soft driving: lap 0 puts the sides 0.235 out,
+  row ends the nose 0.15 / front corners <= 0.195 (pivot sweep included); tracking error
+  p99 0.07 (pivots) .. 0.13 (all) on top; stock trips at about the outer side 0.315 out.
+* **Recovery:** stop, blade off, then
+  * nose / tail / corner with the nose also out: 0.3 m straight (reverse; forward when the
+    worst point is behind base_link) at <= 0.10 m/s, 5 s timeout;
+  * a side corner only (lateral drift): reverse ~0.8 m along the planned leg (reverse
+    pure pursuit toward the interior);
+  * then resume from the robot's projection (the leg-start pivot turns to the path
+    heading). Still beyond the limit: the driven-track retrace (fallback).
+* **Budget:** 6 excursions per mission, 2 within 1 m -> STUCK_NEEDS_HELP.
+* A reading that jumps > 1 m in one tick is held off up to 2 s (logged, not counted).
+* The mode is fixed for the episode (no flip at an area/path junction mid-recovery).
+
 ## Parameters
 
 All parameters are in `config/mission.yaml`, with comments; `test_config_yaml_matches_fsm_parameter_types`
@@ -286,6 +318,12 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 | `follow_end_tolerance_m` / `follow_premature_retries` | 1.0 / 3 |
 | `follow_chunk_m` / `follow_chunk_clearance_m` | 25.0 / 0.5 |
 | `boundary_recover_after_s` / `boundary_max_recoveries` / `boundary_recovery_advance_m` | 3 / 2 / 1.0 |
+| `hard_boundary_body_soft_side_m` / `_soft_nose_m` / `_soft_tail_m` / `hard_boundary_body_hard_m` | 0.35 / 0.35 / 0.30 / 0.10 |
+| `hard_boundary_back_m` / `hard_boundary_back_speed_mps` / `hard_boundary_back_timeout_s` | 0.30 / 0.10 / 5 |
+| `hard_boundary_max_aborts` / `hard_boundary_spot_max` / `hard_boundary_spot_m` | 6 / 2 / 1.0 |
+| `hard_boundary_jump_m` / `hard_boundary_jump_hold_s` | 1.0 / 2.0 |
+| `spin_drift_m` | 0.15 |
+| `bumper_skip_hits` / `bumper_skip_radius_m` / `bumper_skip_window_s` | 3 / 1.0 / 180 |
 | `record_*` | 10 Hz, 5 cm, DP 0.05 m, min 1 m² |
 | `coverage_resume_path`, `recording_fallback_dir` | `~/.ros/mower_mission/...` |
 
