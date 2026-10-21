@@ -109,6 +109,11 @@ class SimNode(Node):
         # controller_server is active (its dynamic parameter callback updates the loop rate).
         d('controller_server', '/controller_server')
         d('controller_frequency', 20.0)
+        # loc_drift: also re-send the latest map -> odom on every physics tick (values still
+        # change at the drift's 10 Hz). Default: only faster than real time (rate_factor
+        # != 1), where the 10 Hz TF gap stalled the controller loop to 10 Hz sim (Nav2 waits
+        # for a map -> odom newer than the robot pose; see docs/simulation.md).
+        d('map_odom_hold', '')     # '' = auto, true, false
         d('stereo', True)
         d('stereo_rate_hz', 5.0)
         d('stereo_noise_m', 0.0)
@@ -200,6 +205,9 @@ class SimNode(Node):
         self._wall = Clock(clock_type=ClockType.STEADY_TIME)
         self._wall0 = None                   # (wall ns, clock_n) pacing reference
         self.lag_events = 0
+        hold = str(gp('map_odom_hold').value).strip().lower()
+        self.map_odom_hold = (self.rate != 1.0) if hold in ('', 'auto') else hold in ('1', 'true')
+        self._map_odom = None
         # MCU state
         self.charging_enabled = self.world.start_docked
         self.cutting = False
@@ -434,6 +442,10 @@ class SimNode(Node):
             self.tf.sendTransform(tf)
             if self.drift is not None and self.drift.due():
                 self._publish_map_odom(stamp, pose, odom)
+            elif self.map_odom_hold and self._map_odom is not None:
+                tf = self._map_odom
+                tf.header.stamp = stamp
+                self.tf.sendTransform(tf)
         truth = Odometry()
         truth.header.stamp = stamp
         truth.header.frame_id, truth.child_frame_id = 'map', 'base_link'
@@ -470,6 +482,7 @@ class SimNode(Node):
         (tf.transform.rotation.x, tf.transform.rotation.y, tf.transform.rotation.z,
          tf.transform.rotation.w) = _quat(tyaw)
         self.tf.sendTransform(tf)
+        self._map_odom = tf
         m = Odometry()
         m.header.stamp = stamp
         m.header.frame_id, m.child_frame_id = 'map', 'base_link'
