@@ -236,6 +236,7 @@ class MissionNode(Node):
         self.fsm = fsm_mod.MissionFSM(fsm_mod.Params.from_dict(fsm_params), cursor=cursor,
                                       now=time.monotonic(),
                                       alternate_counts=self._load_alternate())
+        self.fsm.clock = time.monotonic   # request deadlines from the send-time clock
         # Battery settings are applied live (GUI Settings -> Battery pushes them).
         self.add_on_set_parameters_callback(self._on_set_params)
         self._height_mm = None          # last per-area blade height (mm), re-sent with blade ON
@@ -1053,6 +1054,8 @@ class MissionNode(Node):
             self._feed_action(e.token, fsm_mod.REJECTED, {'message': str(exc)})
             return
         self.get_logger().info('sending %s goal' % ros_name)
+        with self._lock:     # the watchdog runs from the actual send (after the waits)
+            self.fsm.mark_sent(e.token, time.monotonic())
         if e.name == fsm_mod.ACT_DOCK:   # relay the docking status detail into sub_state
             fut = client.send_goal_async(
                 goal, feedback_callback=lambda fb, e=e: self._on_dock_feedback(e, fb))
@@ -1093,7 +1096,29 @@ class MissionNode(Node):
             result = self._result_dict(e.name, wrapped.result)
         except Exception as exc:  # noqa: BLE001
             outcome, result = fsm_mod.ABORTED, {'message': str(exc)}
+        if e.name == fsm_mod.ACT_PLAN:
+            result = self._precondition(e.token, outcome, result)
         self._feed_action(e.token, outcome, result)
+
+    def _precondition(self, token, outcome, result):
+        """Run a coverage plan's path conditioning on this worker thread WITHOUT the FSM
+        lock (78 s for area 5 on the RK3588, field 2026-10-20: the lock held all that time
+        starved the 10 Hz tick, so /motion_enabled went stale and the slew gate closed).
+        The FSM applies the precomputed result when the plan result is fed in."""
+        with self._lock:
+            job = self.fsm.plan_conditioning_job(token, outcome, result, time.monotonic())
+        if job is None:
+            return result
+        t0 = time.monotonic()
+        try:
+            pre = fsm_mod.condition_plan(job)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error('path conditioning failed off-lock (%s): conditioning '
+                                    'inline' % exc)
+            return result
+        self.get_logger().info('area %d: path conditioning took %.1f s (off the FSM lock)'
+                               % (job['area'], time.monotonic() - t0))
+        return dict(result, **{fsm_mod.CONDITIONED_KEY: pre})
 
     def _pose_stamped(self, x, y, yaw):
         ps = PoseStamped()
@@ -1246,6 +1271,8 @@ class MissionNode(Node):
             self.get_logger().error('bad %s request: %s' % (e.name, exc))
             self._feed_service(e.token, False, {})
             return
+        with self._lock:     # the watchdog runs from the actual send (after the waits)
+            self.fsm.mark_sent(e.token, time.monotonic())
         fut = client.call_async(req)
         fut.add_done_callback(lambda f, e=e: self._on_service_done(e, f))
 

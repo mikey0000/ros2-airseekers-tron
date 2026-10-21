@@ -210,6 +210,10 @@ TIMEOUT = 'timeout'           # FSM watchdog
 # reason then names the real cause instead of a generic docking / transit failure
 # (2026-10-13: a hung nav2 lifecycle manager showed as "Docking failed (NAV_TO_DOCK_FAILED)").
 NAV2_INACTIVE_KEY = 'nav2_inactive'
+# a /plan_coverage result whose path conditioning the node already ran off the FSM lock
+# (MissionFSM.plan_conditioning_job + condition_plan): {'subpaths', 'cond', 'cond_errors',
+# 'logs'}; without it _on_plan conditions inline (unit tests, sim without the node split)
+CONDITIONED_KEY = 'conditioned'
 NAV2_DOWN = 'navigation stack not active (Nav2 lifecycle not running)'
 
 
@@ -631,6 +635,14 @@ class Params:
     # this many times per transit; only a further obstacle abort falls back to Nav2 (a
     # static unknown obstacle on the route: Nav2 plans round its costmap marks).
     route_blocked_retries: int = 1
+    # field 2026-10-20: plan_route failed once (stale deadline) and the transit fell back to
+    # the costmap planner with a goal 34 m away, outside the 50 x 50 m rolling global costmap
+    # ("Goal outside bounds"). A failed plan_route to a goal farther than this re-asks the
+    # route (route_plan_retries times, after route_plan_retry_backoff_s[k-1]) instead; only a
+    # goal within it may fall back to /navigate_to_pose. 0 = always fall back (old).
+    transit_fallback_max_goal_m: float = 24.0
+    route_plan_retries: int = 3
+    route_plan_retry_backoff_s: list = field(default_factory=lambda: [2.0, 5.0, 10.0])
     # Sim 2026-10-09 (v4 map, end-to-end paths): MPPI stalled at the 128 deg hairpin from a
     # path's end into the lawn hop and the route aborted. The route is sent as separate
     # FollowPath legs split where it turns more than this (0 = one goal); each next leg
@@ -1089,6 +1101,7 @@ class Mission:
     blade_transit: bool = False                 # in-flight transit keeps the blade on
     route_fallback: bool = False                # this transit uses /navigate_to_pose (no route)
     route_aborts: int = 0                       # route follow aborts of this transit
+    route_plan_fails: int = 0                   # far-goal plan_route failures (re-asked)
     route_poses: Optional[list] = None          # route of the in-flight route transit
     route_full: Optional[list] = None           # the planned route (route_cusps index into it)
     route_cusps: list = field(default_factory=list)   # [(i, x, y, heading_after)] of route_full
@@ -1113,6 +1126,7 @@ class _Pending:
     token: int
     deadline: float
     purpose: Any = None
+    timeout: float = 0.0        # s; mark_sent() re-stamps deadline = send time + timeout
 
 
 class MissionFSM:
@@ -1131,6 +1145,10 @@ class MissionFSM:
         self._plan_shown = False
         self.mission = None
         self._now = now
+        # optional wall clock (the node sets time.monotonic): request deadlines are stamped
+        # from it, not from the event start, so a slow event (78 s of path conditioning on
+        # the RK3588, field 2026-10-20) cannot hand a request an already-expired deadline
+        self.clock = None
         self._created = now
         self._phase_since = now
         self._fx = []
@@ -1396,18 +1414,31 @@ class MissionFSM:
         self._token += 1
         return self._token
 
+    def _fresh_now(self):
+        """The clock a request deadline starts from: the injected clock when set (never
+        earlier than the event time), else the event time."""
+        c = self.clock
+        if c is None:
+            return self._now
+        try:
+            return max(self._now, float(c()))
+        except Exception:  # noqa: BLE001
+            return self._now
+
     def _start_action(self, name, goal, timeout, purpose=None):
         if self._action is not None:
             self._fx.append(CancelActions('superseded by %s' % name))
         tok = self._next_token()
-        self._action = _Pending(name, tok, self._now + float(timeout), purpose)
+        self._action = _Pending(name, tok, self._fresh_now() + float(timeout), purpose,
+                                float(timeout))
         self._fx.append(StartAction(name, goal, tok))
         return tok
 
     def _call(self, name, request, track=True, purpose=None):
         tok = self._next_token()
         if track:
-            self._service = _Pending(name, tok, self._now + self.p.service_timeout_s, purpose)
+            self._service = _Pending(name, tok, self._fresh_now() + self.p.service_timeout_s,
+                                     purpose, float(self.p.service_timeout_s))
         self._fx.append(CallService(name, request, tok))
         return tok
 
@@ -1482,6 +1513,31 @@ class MissionFSM:
         ok, msg = self._preview_request(int(area))
         self._log('info' if ok else 'warn', 'preview_plan(%d): %s' % (int(area), msg))
         return ok, msg, self._end()
+
+    def mark_sent(self, token, now):
+        """The node actually sent request ``token`` at ``now`` (after waiting for the
+        server / the Nav2 lifecycle): its watchdog runs from here. Never shortens a
+        deadline. No effects."""
+        for pend in (self._action, self._service):
+            if pend is not None and pend.token == token and pend.timeout > 0:
+                pend.deadline = max(pend.deadline, float(now) + pend.timeout)
+
+    def plan_conditioning_job(self, token, outcome, result, now):
+        """A /plan_coverage result ``token`` arrived: the inputs of its path conditioning
+        (seconds to minutes of pure Python on the RK3588) so the node can run
+        ``condition_plan(job)`` WITHOUT holding the FSM lock, then feed the result back with
+        ``result[CONDITIONED_KEY]``. None when nothing is to be conditioned. Re-arms the
+        plan watchdog for the conditioning time. No effects."""
+        a, m = self._action, self.mission
+        if (a is None or a.token != token or a.name != ACT_PLAN or a.purpose == 'preview'
+                or m is None or not self.p.path_conditioning or outcome != SUCCEEDED):
+            return None
+        subpaths = self._plan_subpaths(outcome, result or {})
+        if not subpaths:
+            return None
+        self._now = max(self._now, float(now))
+        a.deadline = max(a.deadline, float(now) + max(a.timeout, float(self.p.plan_timeout_s)))
+        return self._conditioning_job(subpaths)
 
     def on_action_result(self, token, outcome, result=None, now=None):
         self._begin(self._now if now is None else now)
@@ -2676,13 +2732,7 @@ class MissionFSM:
         if outcome == UNAVAILABLE:
             self._mission_failed('/plan_coverage action server unavailable')
             return
-        subpaths = []
-        if outcome == SUCCEEDED and result.get('success'):
-            subpaths = [list(sp) for sp in result.get('drivable_subpaths', []) if len(sp) >= 2]
-            if not subpaths:
-                subpaths = [list(sp) for sp in result.get('segments', []) if len(sp) >= 2]
-            if not subpaths and len(result.get('full_path', [])) >= 2:
-                subpaths = [list(result['full_path'])]
+        subpaths = self._plan_subpaths(outcome, result)
         if not subpaths:
             why = result.get('message') or outcome
             self._log('warn', 'area %d: coverage planning failed (%s): skipping it'
@@ -2694,7 +2744,7 @@ class MissionFSM:
             return
         m.cond, m.cond_errors = {}, {}
         if self.p.path_conditioning:
-            subpaths = self._condition_subpaths(subpaths)
+            subpaths = self._condition_subpaths(subpaths, result.get(CONDITIONED_KEY))
         m.subpaths = subpaths
         m.planned_total += len(subpaths)
         m.cum = [geo.cumulative_lengths(sp) for sp in subpaths]
@@ -2723,6 +2773,17 @@ class MissionFSM:
         m.sub_i = 0
         self._next_subpath()
 
+    @staticmethod
+    def _plan_subpaths(outcome, result):
+        subpaths = []
+        if outcome == SUCCEEDED and result.get('success'):
+            subpaths = [list(sp) for sp in result.get('drivable_subpaths', []) if len(sp) >= 2]
+            if not subpaths:
+                subpaths = [list(sp) for sp in result.get('segments', []) if len(sp) >= 2]
+            if not subpaths and len(result.get('full_path', [])) >= 2:
+                subpaths = [list(result['full_path'])]
+        return subpaths
+
     def _next_subpath(self):
         m = self.mission
         ac = self.cursor.area(m.area_idx)
@@ -2739,6 +2800,7 @@ class MissionFSM:
             m.resume_sub = None
         m.retry_used = False
         m.transit_fails = m.follow_fails = m.recovery_fails = 0
+        m.route_plan_fails = 0
         m.recovering = False
         m.detours, m.detour = 0, None
         m.cusp_turns = {}
@@ -3005,48 +3067,21 @@ class MissionFSM:
                           (x - w * c - w * sn, y - w * sn + w * c)])
         return polys
 
-    def _condition_subpaths(self, subpaths):
-        m, out, region = self.mission, [], self._region()
-        prm = self._cond_params()
-        # swath-end Reeds-Shepp turns (forward / reverse legs of 0.3-0.9 m) -> the swath ->
-        # connector -> swath geometry they connect (roadmap 3.2: one tracker path per swath
-        # pair, the turn included; conditioned below: fillets where they fit, else pivots)
-        subpaths, joins = pcond.join_turn_chains(subpaths, region, prm,
-                                                 leg_max_m=float(self.p.turn_leg_max_m))
-        kept = [j for j in joins if not j.ok]
-        if joins:
-            self._log('info', 'area %d: %d swath-end reverse turn(s) replaced by their '
-                              'connector corners, %d kept as planned%s' % (
-                                  m.area_idx, len(joins) - len(kept), len(kept),
-                                  ''.join(' [%s]' % j.why for j in kept)))
-        npiv = nfil = 0
-        why, why_deg = {}, {}
-        for k, sp in enumerate(subpaths):
-            if geo.is_reverse_subpath(sp):
-                out.append(sp)                 # a reverse leg of a turn kept as planned
-                continue
-            r = pcond.condition(sp, region, prm)
-            if not r.valid:
-                m.cond_errors[k] = r.errors[0]
-                self._log('error', 'area %d sub-path %d: path conditioning failed (%s): it will '
-                                   'not be driven' % (m.area_idx, k, r.errors[0]))
-                out.append(sp)
-                continue
-            m.cond[k] = {'types': r.types, 'pivots': r.pivots}
-            npiv += len(r.pivots)
-            nfil += sum(1 for c in r.corners if c.choice == 'fillet')
-            for c in r.corners:
-                if c.choice == 'pivot':
-                    why[c.why] = why.get(c.why, 0) + 1
-                    why_deg[c.why] = why_deg.get(c.why, 0.0) + abs(math.degrees(c.turn))
-            out.append(r.poses)
-        self._log('info', 'area %d: path conditioning: %d fillets, %d pivots (%s), %d '
-                          'sub-path(s) failed validation' % (
-                              m.area_idx, nfil, npiv, ', '.join(
-                                  '%s %d / %.0f deg' % (k, n, why_deg[k])
-                                  for k, n in sorted(why.items())) or 'none',
-                              len(m.cond_errors)))
-        return out
+    def _conditioning_job(self, subpaths):
+        return {'subpaths': [list(sp) for sp in subpaths], 'region': self._region(),
+                'prm': self._cond_params(), 'leg_max_m': float(self.p.turn_leg_max_m),
+                'area': self.mission.area_idx}
+
+    def _condition_subpaths(self, subpaths, pre=None):
+        """Apply a coverage plan's path conditioning: ``pre`` (condition_plan output the
+        node computed off the lock for these sub-paths) or computed inline."""
+        m = self.mission
+        if pre is None or pre.get('n_in') != len(subpaths):
+            pre = condition_plan(self._conditioning_job(subpaths))
+        m.cond, m.cond_errors = dict(pre['cond']), dict(pre['cond_errors'])
+        for level, text in pre['logs']:
+            self._log(level, text)
+        return [list(sp) for sp in pre['subpaths']]
 
     def _condition_route(self, poses, what):
         """A transit / dock route -> FollowPath legs split at the conditioner's pivots."""
@@ -4065,12 +4100,15 @@ class MissionFSM:
             return                       # superseded (stop, guard, wait) while planning
         poses = resp.get('poses') or []
         if not (ok and resp.get('success') and len(poses) >= 2):
+            why = resp.get('message') or 'plan_route unavailable'
+            if self._route_replan_far(why):
+                return
             m.route_fallback = True
-            self._log('info', 'no route (%s): transit via the costmap planner'
-                      % (resp.get('message') or 'plan_route unavailable'))
+            self._log('info', 'no route (%s): transit via the costmap planner' % why)
             m.fallback_ref = None
             self._start_fallback_nav()
             return
+        m.route_plan_fails = 0
         if m.blade_transit and int(resp.get('single_area', -1)) != m.area_idx:
             # the straight segment stays in the area but the route does not (path legs)
             self._blade_off('route leaves area %d' % m.area_idx)
@@ -4084,6 +4122,30 @@ class MissionFSM:
             len(legs), '' if len(legs) == 1 else 's', resp.get('message', '')))
         self._route_legs = {'legs': legs, 'i': 0}
         self._send_route_leg('route')
+
+    def _route_replan_far(self, why):
+        """plan_route failed for a transit goal beyond transit_fallback_max_goal_m (outside
+        the costmap planner's rolling window): re-ask the route after a back-off
+        (route_plan_retries), then a transit abort (its own bounded retries). True = handled
+        (no costmap-planner fallback)."""
+        m, pose, lim = self.mission, self.inputs.pose, float(self.p.transit_fallback_max_goal_m)
+        if lim <= 0.0 or pose is None or m.transit_target is None:
+            return False
+        d = geo.dist(pose, m.transit_target)
+        if d <= lim:
+            return False
+        m.route_plan_fails += 1
+        if m.route_plan_fails > int(self.p.route_plan_retries):
+            self._transit_abort('no route (%s) to a goal %.0f m away (beyond the costmap '
+                                'planner)' % (why, d))
+            return True
+        b = list(self.p.route_plan_retry_backoff_s or []) or [float(self.p.transit_retry_delay_s)]
+        delay = float(b[min(m.route_plan_fails, len(b)) - 1])
+        self._schedule_retry('TRANSIT', 'no route (%s): goal %.1f m away is beyond the costmap '
+                                        'planner (%.0f m): re-asking the route %d/%d in %.0f s'
+                             % (why, d, lim, m.route_plan_fails, int(self.p.route_plan_retries),
+                                delay), delay=delay)
+        return True
 
     def _route_corner_th(self):
         """Corner threshold of the route split (rad; 0 = the legacy split)."""
@@ -4432,6 +4494,7 @@ class MissionFSM:
                 return
             m.recovering = False
             m.transit_fails = 0
+            m.route_plan_fails = 0
             self._blk = None
             self._begin_blade()
             return
@@ -4506,6 +4569,7 @@ class MissionFSM:
             self._log('warn', 'final approach %s: mowing from here' % outcome)
         m.recovering = False
         m.transit_fails = 0
+        m.route_plan_fails = 0
         self._blk = None
         self._begin_blade()
 
@@ -4638,6 +4702,7 @@ class MissionFSM:
             if outcome == SUCCEEDED:
                 m.recovering = False
                 m.transit_fails = 0
+                m.route_plan_fails = 0
                 self._blk = None
                 self._begin_blade()
             elif outcome == UNAVAILABLE:
@@ -5315,6 +5380,7 @@ class MissionFSM:
         d, m.detour = m.detour, None
         m.detours += 1
         m.transit_fails = m.follow_fails = 0
+        m.route_plan_fails = 0
         m.recovering = False
         self._record_skip(d['from'], d['to'])
         self._log('info', 'detour done: sub-path %d poses %d -> %d skipped (re-tried at the '
@@ -5357,6 +5423,7 @@ class MissionFSM:
         m.sub_i, m.start_local = a
         m.retry_used, m.premature, m.boundary_recoveries = False, 0, 0
         m.transit_fails = m.follow_fails = m.recovery_fails = 0
+        m.route_plan_fails = 0
         m.recovering, m.detour = False, None
         self._log('info', 'area %d: re-trying skipped stretch sub-path %d poses %d -> %d'
                   % (m.area_idx, a[0], a[1], b[1]))
@@ -5378,6 +5445,7 @@ class MissionFSM:
         m.sub_i, m.start_local = sub, start
         m.retry_used, m.premature, m.boundary_recoveries = False, 0, 0
         m.transit_fails = m.follow_fails = m.recovery_fails = 0
+        m.route_plan_fails = 0
         m.recovering, m.detour = False, None
         self._blk = None
         self._log('info', 'area %d: end-of-area retry of sub-path %d (%s)'
@@ -6157,3 +6225,52 @@ def blade_allowed(fsm):
         return True
     # continuous blade policy: waits / retries / in-area transits inside the area
     return fsm._blade_keep_ok()
+
+
+def condition_plan(job):
+    """Path conditioning of one coverage plan (pure; the node runs it off the FSM lock).
+    ``job`` from MissionFSM._conditioning_job. Returns {'n_in', 'subpaths', 'cond',
+    'cond_errors', 'logs': [(level, text)]}."""
+    area, region, prm = job['area'], job['region'], job['prm']
+    n_in = len(job['subpaths'])
+    out, cond, cond_errors, logs = [], {}, {}, []
+    # swath-end Reeds-Shepp turns (forward / reverse legs of 0.3-0.9 m) -> the swath ->
+    # connector -> swath geometry they connect (roadmap 3.2: one tracker path per swath
+    # pair, the turn included; conditioned below: fillets where they fit, else pivots)
+    subpaths, joins = pcond.join_turn_chains(job['subpaths'], region, prm,
+                                             leg_max_m=float(job['leg_max_m']))
+    kept = [j for j in joins if not j.ok]
+    if joins:
+        logs.append(('info', 'area %d: %d swath-end reverse turn(s) replaced by their '
+                             'connector corners, %d kept as planned%s' % (
+                                 area, len(joins) - len(kept), len(kept),
+                                 ''.join(' [%s]' % j.why for j in kept))))
+    npiv = nfil = 0
+    why, why_deg = {}, {}
+    for k, sp in enumerate(subpaths):
+        if geo.is_reverse_subpath(sp):
+            out.append(sp)                 # a reverse leg of a turn kept as planned
+            continue
+        r = pcond.condition(sp, region, prm)
+        if not r.valid:
+            cond_errors[k] = r.errors[0]
+            logs.append(('error', 'area %d sub-path %d: path conditioning failed (%s): it '
+                                  'will not be driven' % (area, k, r.errors[0])))
+            out.append(sp)
+            continue
+        cond[k] = {'types': r.types, 'pivots': r.pivots}
+        npiv += len(r.pivots)
+        nfil += sum(1 for c in r.corners if c.choice == 'fillet')
+        for c in r.corners:
+            if c.choice == 'pivot':
+                why[c.why] = why.get(c.why, 0) + 1
+                why_deg[c.why] = why_deg.get(c.why, 0.0) + abs(math.degrees(c.turn))
+        out.append(r.poses)
+    logs.append(('info', 'area %d: path conditioning: %d fillets, %d pivots (%s), %d '
+                         'sub-path(s) failed validation' % (
+                             area, nfil, npiv, ', '.join(
+                                 '%s %d / %.0f deg' % (k, n, why_deg[k])
+                                 for k, n in sorted(why.items())) or 'none',
+                             len(cond_errors))))
+    return {'n_in': n_in, 'subpaths': out, 'cond': cond, 'cond_errors': cond_errors,
+            'logs': logs}

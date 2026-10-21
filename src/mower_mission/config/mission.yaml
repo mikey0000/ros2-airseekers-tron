@@ -106,6 +106,11 @@ behavior_tree_node:
     route_final_approach_m: 0.05
     route_final_approach_speed_mps: 0.1
     route_blocked_retries: 1          # obstacle abort: blocked wait, re-send the route this often, then Nav2
+    # 2026-10-21: a failed plan_route to a goal farther than this (outside the 50 m rolling
+    # global costmap) re-asks the route after the back-off instead of the costmap fallback
+    transit_fallback_max_goal_m: 24.0
+    route_plan_retries: 3
+    route_plan_retry_backoff_s: [2.0, 5.0, 10.0]
     route_split_turn_deg: 100.0       # route sent as FollowPath legs split at turns sharper than this
     # 2026-10-14 fix 11 (run 2: MPPI stalled at the dock-path -> area-path hairpin, the
     # /navigate_to_pose fallback drove 0.56 m off the drawn path). Route cusp = the route
