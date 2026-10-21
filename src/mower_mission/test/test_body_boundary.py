@@ -218,3 +218,13 @@ def test_soft_driven_arc_r044_stays_on_the_line_without_a_trip():
               for k in range(360)]
     ev = bb.evaluate((R, 0.0, math.pi / 2), [circle], SOFT)
     assert 0.44 < ev['outs']['front_right'] < 0.48 and ev['excess'] < -0.05
+
+
+def test_leg_start_pivot_turns_toward_the_interior_even_the_long_way():
+    # sim 2026-10-22: transit ended facing the line (NE) near a lap-0 start heading S; the
+    # shorter -135 deg pivot swings the nose out over the east edge, +225 deg stays inside
+    h = mowing_h([line(5, 4, 5, 1, n=31), line(1, 3, 4, 3)], (4.8, 4.0, math.radians(45)),
+                 path_conditioning=True)
+    a = h.pending_action(f.ACT_SPIN)
+    delta = h.goal(f.ACT_SPIN)['angle']
+    assert delta > math.pi                       # CCW the long way, through the interior

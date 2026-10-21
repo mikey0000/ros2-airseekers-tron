@@ -453,6 +453,7 @@ behavior_tree_node:
     hard_boundary_jump_m: 1.0            # a > 1 m jump in one tick is ignored (map reload race)
     hard_boundary_jump_hold_s: 2.0
     spin_drift_m: 0.15                   # pivot Spin slid > this: stop, re-plan the approach
+    pivot_way_gain_m: 0.05               # coverage pivot turns the interior way if its swept body is this much further in
     bumper_skip_hits: 3                  # bumper hits within bumper_skip_radius_m -> skip
     bumper_skip_radius_m: 1.0
     bumper_skip_window_s: 180.0

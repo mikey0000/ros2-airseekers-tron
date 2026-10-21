@@ -1021,6 +1021,11 @@ class Params:
     # Spin's own unfinished-pivot handling). The 2nd drift on the same coverage leg skips the
     # leg (blocked pivot). 0 = off.
     spin_drift_m: float = 0.15
+    # In-place coverage pivots without a planned way round turn the way whose swept body
+    # stays further inside (toward the interior, even the longer way) when that is better by
+    # more than this; < 0 = always the shorter way (sim 2026-10-22: a -116 deg leg-start pivot
+    # on lap 0 swung the nose 0.40 m out where +244 deg stays inside).
+    pivot_way_gain_m: float = 0.05
     # --- repeated bumper hits (field 2026-10-21 07:29: a real object just outside the line,
     # the bumper fired 6 and 9 times in turn). bumper_skip_hits hits (rising edges of the
     # bumper_controller routing status) within bumper_skip_radius_m of each other (and within
@@ -3362,6 +3367,8 @@ class MissionFSM:
         if planned is not None and delta * planned < 0.0 and \
                 (abs(delta) > 0.5 * math.pi or abs(planned) > math.pi):
             delta += math.copysign(2.0 * math.pi, planned)    # the planned way round
+        elif planned is None:
+            delta = self._pivot_way(pose, delta)
         q = sp[m.start_local]
         self._log('info', 'area %d sub-path %d: %s at (%.2f, %.2f): pivot %.0f deg in place, '
                           '%s, then follow' % (m.area_idx, m.sub_i,
@@ -3378,6 +3385,36 @@ class MissionFSM:
         self._start_action(ACT_SPIN, {'angle': delta, 'time_allowance_s': allowance},
                            allowance + 5.0, purpose='cov_pivot')
         return True
+
+    def _pivot_way(self, pose, delta):
+        """Rotation direction of an in-place pivot by ``delta`` with no planned way round
+        (owner 2026-10-21: turn TOWARD the area interior, even the longer way): the way whose
+        swept body (body_boundary points, 5 deg steps) reaches least far outside the
+        allowed region; the shorter way unless the other is pivot_way_gain_m better."""
+        gain = float(self.p.pivot_way_gain_m)
+        if gain < 0.0 or not self._region_areas or pose is None:
+            return delta
+        polys = self._region()
+        zero = {'side': 0.0, 'front': 0.0, 'nose': 0.0, 'tail': 0.0}
+        x, y, yaw0 = float(pose[0]), float(pose[1]), float(pose[2])
+
+        def worst(d):
+            n = max(1, int(abs(d) / math.radians(5.0)))
+            w = 0.0
+            for k in range(n + 1):
+                ev = bbody.evaluate((x, y, yaw0 + d * k / n), polys, zero)
+                if ev is None:
+                    return 0.0
+                w = max(w, ev['out'])
+            return w
+        other = delta - math.copysign(2.0 * math.pi, delta)
+        w0, w1 = worst(delta), worst(other)
+        if w1 + gain < w0:
+            self._log('info', 'pivot %.0f deg the long way round (%.0f deg): the swept body '
+                              'reaches %.2f m out instead of %.2f (turn toward the interior)'
+                      % (math.degrees(delta), math.degrees(other), w1, w0))
+            return other
+        return delta
 
     @staticmethod
     def _join_heading(leg, pose, look=0.4, sharp=None):
@@ -6583,6 +6620,7 @@ class MissionFSM:
             if follow:
                 m.start_local = self._track_progress()
             m.step = None
+            m.pivot_done = None           # a cut-short leg-start pivot is pivoted again
         self._go(self.phase, 'boundary: %.2f m outside, stopping' % out)
         return True
 
