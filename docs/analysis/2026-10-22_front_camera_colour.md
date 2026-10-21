@@ -1,67 +1,105 @@
 # Front camera colour cast ("looks quite yellow"), 2026-10-22
 
+> **Correction (ws/camera-colour2).** The first version of this note (branch
+> `ws/camera-colour`, merged as abdfc66) said the XC9080 sends YVYU and switched
+> `stereo_cam` to decode YVYU. **That was wrong.** Stock decodes YUYV, and live frames
+> decode correctly as YUYV. With YVYU the sky turned orange and the grass teal, which
+> is what the owner reported as "worse". `color_order` is back to `YUYV` (a9edc35, and
+> this branch). The remaining mild warm cast comes from the XC9080 ISP set-up, not
+> from the decode.
+
 ## Which stream
 The GUI "Front stereo left/right" tiles (`third_party/mowglinext/gui/pkg/api/cameras.go:186-187`)
 show `/vio/{left,right}/image_color`. These come from `mower_cameras/stereo_cam`
-(`stereo_node.py`), which reads the Metoak module on `/dev/video22` (rkcif-mipi-lvds3, behind
-the XC9080 bridge). `det_ros` (YOLO) and `seg_ros` (grass segmentation) consume
-`/vio/right/image_color` too (`det.yaml:31`, `seg.yaml:27`).
+(`stereo_node.py`), which reads `/dev/video22` (`/dev/videoIsp`, rkcif-mipi-lvds3, behind
+the XC9080). `det_ros` and `seg_ros` consume `/vio/right/image_color` too.
 
-## Cause: U/V swap (confidence high)
-* The XC9080 outputs packed **YVYU** (Y0 V Y1 U). The vendor SDK opens video22 with
-  `V4L2_PIX_FMT_YVYU` (`metoak_reimpl/user/metoak.c:184`). `HARDWARE.md`, `perception_vio.md`
-  and `stereo_depth_plan.md` all say the same.
-* `stereo_cam` asks for `YUYV` and decodes colour with `cv2.COLOR_YUV2BGR_YUYV`. rkcif DMAs the
-  bridge bytes unchanged, so the fourcc label does not reorder them, and U and V are swapped.
-  Luma, and therefore `image_raw`, VIO and stereo, is unaffected.
-* Evidence from the vendor capture `metoak/xc9080.yuv` (an office scene):
-  - Decoded as YVYU: a wooden table, white walls, a black gimbal and a green tissue box, all
-    natural colours.
-  - Decoded as YUYV, as we do now: a blue table, red rings on the black gimbal, and warm walls.
-  - Images: `ros2_stack-wt/accuracy-simout/camera_colour/xc9080_sample_decoded_as_{yuyv,yvyu}.png`
-    and `right_eye_image_color_{yuyv_current,yvyu_fixed}.png`.
-* The modules are **colour** SC132GS parts. The "mono" claims in `metoak_reimpl/docs` are wrong.
-* **The cast is scene-dependent, as the owner saw after the turn.** A swap mirrors every
-  chroma vector across U=V:
-  - blue sky and cool/shaded whites (U>0, V<0) become yellow-orange;
-  - yellow-green grass shifts toward teal.
-  The colour of the output therefore depends on what is in frame: sky versus grass, and
-  backlit versus front-lit. On top of that, the XC9080's own on-chip AE/AWB re-balances per
-  scene. That gives "yellowish again after it turned around" without any change in white
-  balance gains. A plain WB error would be a constant tint instead.
-* There were no frames to correlate with EKF yaw or sun azimuth: the live capture was stopped
-  at the coordinator's request, so that correlation was not done.
+## What stock does (confirmed from the binaries)
+| Step | Stock | Evidence |
+|---|---|---|
+| Node | `vslam_ros/stereo_ros` (ROS1). It uses `libmoMowerAPI` + `libMoGeneralSDK` 2.7.5.10, not V4L2 directly. | `ota_.../src/mower_perception/vslam_ros/CMakeLists.txt`, `src/stereo_ros.h` |
+| Device open | `MoMp021MipiV4l2Manager::OpenAllDevices` opens `/dev/videoIsp` with fourcc `0x56595559` = **`V4L2_PIX_FMT_YUYV`**, 0x500x0x1e0 (1280x480). It opens `/dev/videoSimor` with `RGB3`. | `libMoGeneralSDK_static.a` member `MoMp021MipiV4l2Manager.cpp.o`, Ghidra `OpenAllDevices` (`local_424 = 0x456595559`) |
+| Eye split | `moLocalSplitRGBFrame(&RGBFrm, &L, &R, 1)` calls `MoImage::SpliteImage`: per row, `memcpy` of the first half of the bytes to L and the second half to R. No byte reordering. | `MoImage.cpp.o` `SpliteImage` @0x3058 |
+| Colour | `cv::cvtColor(matYuv422, matRGB, 0x74)`. **116 = `COLOR_YUV2BGR_YUY2` (= YUYV)**, on a `CV_8UC2` 640x480 Mat per eye, published as `bgr8`. There is no colour matrix, white balance or gain in the node. | `native_decompile/dec/stereo_ros/stereo_ros.c:5695,5706` (`process_rgb` @0x178750) |
+| Sensor/ISP init | `MoMp021IspSensor::Init` (SDK, at every open) writes `__MoXc9080StreamOffRegData`, then **`__Mp021Xc9080InitData`, 3917 XC9080 registers** over I2C. It then writes `__Mp021Sc132InitData` (SC132GS), sleeps 0.5 s, runs `MoIspSensor::Init`, and checks XC9080 reg `0x0137 == 0x88` ("isp firmware value", otherwise "ISP maybe not work"). The 2.7.5.10 CHANGELOG says "更新ISP初始化序列，V14". 2.7.5.0 added this check "to fix the ISP green-image problem". | `MoMp021IspSensor.cpp.o` relocations @0x4a0-0x7f8; table at `libMoGeneralSDK.so.2.7.5.10` vaddr 0x1959a0 |
 
-## Ruled out
-* **RK ISP / rkaiq / IQ files.** video22 is an rkcif node, so the RK ISP is not in the path.
-  The stock OTA contains no rkaiq or 3A server, and `iqfiles/` has no SC132GS/XC9080 entry
-  (these are generic Rockchip SDK files). None of this applies.
-* **AWB.** It runs inside the XC9080, from the register tables in `regs_xc9080.h`. video22
-  exposes no V4L2 WB control (`docs/vio.md` "Exposure/gain control"). The XC9080 AWB is
-  plausibly fine. Re-check this after the fix.
-* **IR-cut filter.** The cast is not magenta or pink foliage, and the vendor sample has
-  natural colours.
+Where the YVYU claim came from: `metoak/mo_init.sh` *echoes* `"Isp: V4L2_PIX_FMT_YVYU 1280 480
+/dev/video11"`. That line is only a label, and it names the wrong device too. Our clean-room
+`metoak_reimpl/user/metoak.c:184` copied it. Neither file is what the SDK does.
 
-## Fix (branch `ws/camera-colour`)
-* `v4l2.py`: `to_bgr`, `eye_to_bgr` and decimation accept `YVYU`. A new `colour_format()`
-  helper does the swap.
-* `stereo_cam` gets a new parameter `color_order` (default `YVYU`), used only for
-  `image_color`. Capture negotiation (`pixel_format: YUYV`) is unchanged, so there is no risk
-  to the proven device setup.
-* Unit tests are in `test/test_stereo_split.py`.
+## Live-frame check (2026-10-22 ~06:4x mower time, read-only)
+* One `/vio/{left,right}/image_color` + `/vio/right/image_raw` set was taken from the
+  running mower. The node was running `color_order YVYU`.
+* The packed bytes were rebuilt from the published bgr8: inverse BT.601, then the chroma
+  pair averaged and re-packed in YVYU order. The rebuilt luma matches `image_raw` to a mean
+  of 1.2 LSB, so the rebuild is faithful.
+* The bytes were then decoded as YUYV, YVYU, UYVY and VYUY:
+  - **YUYV: natural.** Blue sky (R133 G208 B251), white clouds, green grass, and a brown
+    timber deck.
+  - **YVYU (abdfc66): orange sky** (R237 G177 B118), teal grass and a blue deck.
+  - **UYVY/VYUY: garbage.** Luma is taken from the chroma bytes, giving green/magenta stripes.
+  - NV12/NV21 cannot apply: the buffer is 1280x480x2 packed.
+* Images are in `ros2_stack-wt/accuracy-simout/camera_colour2/`:
+  `live1_right_grid_YUYV_YVYU__UYVY_VYUY.png` (top left YUYV, top right YVYU) and
+  `live1_left_as_YUYV.png`.
+* The vendor sample `metoak/xc9080.yuv` that looked right as YVYU is not representative of
+  this unit's stream. It came from a dev board with a different XC9080 set-up.
+
+## The yellow cast (before abdfc66)
+* With the correct YUYV decode, neutral objects are slightly short of blue:
+  - grey stone: R205 G201 B164;
+  - far white fence: R167 G171 B138;
+  - grass: R176 G185 B102.
+* That is a mild warm/yellow white balance. It varies with the scene, because the XC9080
+  runs its own on-chip AWB/AE.
+* Likely cause: our stack never runs the SDK. The XC9080 only gets the
+  `mo_xc9080.ko` stream-on table (`isp_xc9080_1280x480_regs`, 2299 regs). Stock overwrites
+  it with the SDK's V14 table (3917 regs) at every open.
+* The two tables differ heavily (difflib ratio 0.26), including a large patched block at
+  0x2100-0x22ff and different values for 0x8010, 0x1800 and 0x0007/0x0016/0x0017. AWB and
+  CCM tuning are among the differences that would plausibly matter. This is **inferred**:
+  the register map is not documented.
+* Dump: `accuracy-simout/camera_colour2/sdk_xc9080_v2.7.5.10.txt` (`addr val` per line, in
+  write order).
+
+## Fix
+* `stereo_cam` `color_order` default is `YUYV` again, the same as stock. YVYU stays
+  available as an override.
+* The docstrings and docs (`perception_vio.md`, `stereo_depth_plan.md`,
+  `yolo_retrain_pipeline.md`) are corrected.
+* `test/test_stereo_split.py` adds:
+  - a live-frame fixture (`test/data/xc9080_live_patches.npz`: sky, stone and grass
+    patches) that must decode blue, roughly neutral and green as YUYV;
+  - a check that the node default stays YUYV.
+
+## Proposed follow-up (not done; needs a supervised test on the mower)
+* Replay the stock XC9080 init on our stack: a one-shot `xc9080_init` that does what
+  `MoMp021IspSensor::Init` does, before `stereo_cam` opens video22:
+  - stream-off regs;
+  - the 3917-entry V14 table via `/dev/i2c-8` addr 0x1b (16-bit reg, 8-bit val);
+  - SC132GS table through the XC9080 bypass;
+  - wait 0.5 s;
+  - verify `0x0137 == 0x88`.
+* Risks:
+  - it races the kernel driver's own stream-on writes;
+  - the order relative to `mo_xc9080.ko` must be checked;
+  - stereo_depth (video11) shares the XC9080.
+* Simpler alternative to try first: fix `mo_xc9080.ko`'s 1280x480 table to the SDK's.
 
 ## Effect on perception
-* `seg_ros` and `det_ros` run on swapped colour today:
-  - grass hue is shifted;
-  - sky and blue or orange objects are inverted.
-* The impact is most likely on grass/non-grass segmentation, which is colour-driven. YOLO
-  detection is less affected, since it is mostly shape-driven, but its scores may still drop.
-* Stereo depth (`video11`) and VIO (mono8 luma) are unaffected.
+* While abdfc66 was live (YVYU), `seg_ros`/`det_ros` saw teal grass and orange sky. Grass
+  segmentation is colour-driven, so expect it to have been degraded during that window.
+* Stereo depth (`video11`) and VIO (luma) were never affected.
 
 ## Owner action
-Rebuild and deploy `mower_cameras`, then restart the camera launch. Check that the front
-tiles in the GUI show natural colours, then re-check the seg mask on grass. Nothing on the
-mower needs to be set.
+* Deploy `mower_cameras` and `mower_bringup` from this branch (or `mower_cameras` from
+  master a9edc35, which already defaults to YUYV), then restart the camera launch.
+* The new launch argument `stereo_color_order` (default `YUYV`) selects the order at launch.
+* `stereo_cam` reads `color_order` only at start-up, so `ros2 param set` at run time
+  changes nothing: always restart the node.
+* Immediate revert with no rebuild: in the container, change the default in the installed
+  `mower_cameras/stereo_node.py` (`d('color_order', 'YVYU')` -> `'YUYV'`), then restart the
+  camera launch.
 
 ## Front camera "flicked off" (20:2x-20:3x UTC)
 `stereo_depth` logs (`/userdata/ros2/log/python3_392_*.log`) show `/mission/activity` toggling

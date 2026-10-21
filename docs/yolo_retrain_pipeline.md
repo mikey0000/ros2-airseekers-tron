@@ -74,7 +74,7 @@ consequence of one of them.
 | Rear camera | `/dev/rear_camera` → `video62` | USB UVC `32e6:9221` ("FHD webcam") | `mjpeg2mono8` / `YUV422P`, **1920×1080 @ 30 fps** | `/rear_camera` (`base_cameras_node`) |
 | Left OA camera | `/dev/left_oa_camera` → `video53` | Metoak module | `uyvy` / `UYVY422`, **1920×1080 @ 15 fps** | `/rear_camera` (same node, `mower_cam_keeper` drives it) |
 | Right OA camera | `/dev/right_oa_camera` → `video44` | Metoak module | `uyvy` / `UYVY422`, **1920×1080 @ 15 fps** | idem |
-| Front stereo (raw) | `/dev/videoSimor` (`video11`), `/dev/videoIsp` (`video22`) | MIPI-CSI, Metoak `libMoGeneralSDK` | raw `V4L2_PIX_FMT_SBGGR8` 640×360 / `YVYU` 1280×480; side-by-side 3240×810 and 1920×360 geometries observed | `stereo_ros` |
+| Front stereo (raw) | `/dev/videoSimor` (`video11`), `/dev/videoIsp` (`video22`) | MIPI-CSI, Metoak `libMoGeneralSDK` | raw `V4L2_PIX_FMT_SBGGR8` 640×360 / `YUYV` 1280×480; side-by-side 3240×810 and 1920×360 geometries observed | `stereo_ros` |
 
 Sources: `ros2_port_handoff/09_platform/{dev_nodes,udev-symlinks,lsusb}.txt`,
 `ros2_port_handoff/07_system_config/udev/mower.rules`,

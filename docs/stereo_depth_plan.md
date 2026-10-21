@@ -10,7 +10,7 @@ costmap `obstacle_layer` as PointCloud2 (user picked this over bbox ground-proje
   15 fps). Source: `native_decompile/dec/stereo_ros/stereo_ros.c:5461-5613`.
 - Media graph: Simor (`m02_b_mosimor`, i2c 8-0006) -> rkcif-mipi-lvds2 -> `/dev/video11`
   (`/dev/videoSimor`), bus SBGGR8 1920x360 @30fps, current format RGB3 640x360 = 691,200 B.
-  Nothing streams it today. XC9080 -> `/dev/video22` YVYU 1280x480 is the L/R pair used by
+  Nothing streams it today. XC9080 -> `/dev/video22` YUYV 1280x480 is the L/R pair used by
   `stereo_cam`.
 - The 1920x360 frame is a packed RGBD frame, not Bayer. Vendor samples in `metoak/`:
   `simor.yuv` (640x360 NV12), `simor.depth` (640x360 uint16, max 2807), `simor.rgb`.

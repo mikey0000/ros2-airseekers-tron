@@ -223,6 +223,10 @@ def generate_launch_description():
                               description='stereo_cam: also publish <eye>/image_color (bgr8) '
                                           'for det_ros (only while subscribed).'),
         DeclareLaunchArgument('stereo_color_fps', default_value='5.0'),
+        DeclareLaunchArgument('stereo_color_order', default_value='YUYV',
+                              description='stereo_cam image_color chroma order. YUYV = stock '
+                                          'stereo_ros (COLOR_YUV2BGR_YUY2), verified live; '
+                                          'YVYU swaps U/V (orange sky, teal grass).'),
         DeclareLaunchArgument('stereo_imu', default_value='true',
                               description='mower_cameras/stereo_imu: Metoak ICM-40608 (IIO) -> '
                                           '/stereo_imu/data.'),
@@ -285,6 +289,7 @@ def generate_launch_description():
             'publish_on_demand': True,
             'publish_color': ParameterValue(LC('stereo_color'), value_type=bool),
             'color_fps': ParameterValue(LC('stereo_color_fps'), value_type=float),
+            'color_order': LC('stereo_color_order'),
             # Right eye camera_info: det_ros runs on /vio/right/image_color and obstacle_guard
             # sizes its danger zone from camera_info.
             'left_camera_info_file': PathJoinSubstitution(

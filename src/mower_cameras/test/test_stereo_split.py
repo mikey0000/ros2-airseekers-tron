@@ -59,7 +59,7 @@ def test_colour_format_only_swaps_y_first_422():
 
 
 def test_yvyu_decodes_byte1_as_v():
-    """XC9080 order Y0 V Y1 U: a high byte 1 is red (V), not blue (as YUYV would read it)."""
+    """YVYU (Y0 V Y1 U) reads byte 1 as V (red); YUYV reads it as U (blue)."""
     pytest.importorskip('cv2')
     from mower_cameras.v4l2 import eye_to_bgr
     w, h = 8, 2
@@ -86,3 +86,46 @@ def test_yvyu_equals_yuyv_of_chroma_swapped_buffer():
                               eye_to_bgr(swapped.tobytes(), 64, 48, 128, 'YUYV', eye))
     assert np.array_equal(to_bgr(raw.tobytes(), 64, 48, 128, 'YVYU', scale=2),
                           to_bgr(swapped.tobytes(), 64, 48, 128, 'YUYV', scale=2))
+
+
+def _live_patches():
+    import os
+    path = os.path.join(os.path.dirname(__file__), 'data', 'xc9080_live_patches.npz')
+    return np.load(path)
+
+
+def _patch_rgb(packed, fmt):
+    from mower_cameras.v4l2 import to_bgr
+    h, bpl = packed.shape
+    bgr = to_bgr(packed.tobytes(), bpl // 2, h, bpl, fmt)
+    return bgr[..., ::-1].reshape(-1, 3).mean(0)          # mean R, G, B
+
+
+def test_xc9080_live_frame_is_yuyv():
+    """Packed bytes of the live Metoak left eye (2026-10-22, sunny lawn; rebuilt from the
+    published frame, luma within 1.2 LSB of image_raw). Stock stereo_ros decodes with
+    COLOR_YUV2BGR_YUY2: the sky must come out blue and the grass green. YVYU (abdfc66)
+    turned the sky orange and the grass teal."""
+    pytest.importorskip('cv2')
+    p = _live_patches()
+    r, g, b = _patch_rgb(p['sky'], 'YUYV')
+    assert b > r + 60 and b > g
+    r, g, b = _patch_rgb(p['grass'], 'YUYV')
+    assert g > b + 40 and g >= r
+    r, g, b = _patch_rgb(p['stone'], 'YUYV')              # grey stone: roughly neutral
+    assert max(r, g, b) - min(r, g, b) < 60
+    r, g, b = _patch_rgb(p['sky'], 'YVYU')                # the wrong order
+    assert r > b + 60
+
+
+def test_stereo_cam_default_colour_order_is_stock_yuyv():
+    import ast
+    import os
+    src = open(os.path.join(os.path.dirname(__file__), '..', 'mower_cameras',
+                            'stereo_node.py')).read()
+    defaults = {c.args[0].value: c.args[1].value for c in ast.walk(ast.parse(src))
+                if isinstance(c, ast.Call) and getattr(c.func, 'id', None) == 'd'
+                and len(c.args) == 2 and isinstance(c.args[0], ast.Constant)
+                and isinstance(c.args[1], ast.Constant)}
+    assert defaults['color_order'] == 'YUYV'
+    assert defaults['pixel_format'] == 'YUYV'
