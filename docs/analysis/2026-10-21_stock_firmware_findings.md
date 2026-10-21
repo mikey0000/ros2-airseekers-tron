@@ -130,6 +130,32 @@ There is no user-facing setting to shrink areas (I).
 - At row ends the nose was about 0.46 past the line, and pivots swept about 0.50 past.
 - `ws/edge-layout` (round 1) implements the stock-style layout.
 
+### Edge-ring turns (round 2, 2026-10-21)
+
+What stock does (I: the decompile has no code bodies for these, only headers and comments):
+
+- `task.proto` TurningMode (field `truning_mode`) has Default, In_Place, Circular_Arc, Inner_Fish_Tail, Outer_Fish_Tail, Slope and Self_Adaptive (C).
+- `mower_controller/src/nav_cover/nav_cover.h:89-125` `NavCoverUturn` has `uturnInplace`, `fishExtern`, `fishInner` and `uturnArc`. The fish-tails are row-to-row U-turns, and there is no corner or edge-lap K-turn logic (C/I).
+- `makepath/makefish_extern.h` (outer): arc forward to perpendicular, straight reverse 0.6, arc into the next row (arc r 0.3, spacing 0.15) (I, from comments).
+- `makepath/makefish.h` ("inner", inferred): backward arc away from row B, forward 0.75, backward arc onto B. Its own comment says "outer fish-tail", so the names may be swapped (I).
+- On edges, stock forces in-place turns at path starts and ends, and skips blocked turns (C, see above).
+
+Where our large ring turns came from, and what changed:
+
+- **Rounding:** the round-1 r 0.7 lap rounding never took effect, because F2C mitres the buffered laps. Lap 0 now keeps sharp vertices on purpose, and the conditioner handles corners with the body model.
+- **Lap direction:** lap 0 ran counter-clockwise and laps 1–2 clockwise, which forced about-turns at hand-offs. All laps are now clockwise.
+- **Lap starts:** lap 0 started on a convex vertex at (-1.09, 2.14), giving a -119° hand-off pivot that swept the body 0.5 m out. Lap starts now sit at least 0.6 m from vertices.
+- **"Hairpins":** the -174°/+170° pivots at (-4.4, 2.9) and the reversing tail at (-0.91, 4.84) were stacks of sliver fill passes, not merged hairpins. Soft fill passes now need a length of at least 0.30 m and at least 35 % new area. Real hairpins condition to 90 / straight / 90.
+- **Hand-off pivots:** `_join_heading` now stops its look-ahead at a pivot vertex, giving -21° then -112° instead of a single -138°.
+- **K-turns (ours, not stock):** a convex corner whose pivot or fillet would put the body past the planning limit (soft 0.26, hard 0.0) gets a 3-point turn:
+  1. forward to P1 = V − a·u_in;
+  2. about-turn through the interior;
+  3. reverse with the blade off to V;
+  4. pivot onto the next run.
+
+  Only the rear corners (0.255) sweep out. Unit-tested on a ring with a sharp corner on the line.
+- **Known gap:** a densely drawn, curved boundary (owner_far) has no straight 0.3 m run before its corners, so no K-turn fits. About 14 corners stay at a nominal 0.36–0.63, and run5 has 2 corners at 0.39–0.41. These exceed the 0.35 soft trip limit, so expect body boundary-out trips there until the K-turn handles polyline approaches.
+
 ## Obstacles
 
 Source: `mower_task/mower_logic/config/costmap.yaml` and controller strings.

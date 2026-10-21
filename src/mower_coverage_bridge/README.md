@@ -173,6 +173,26 @@ to the next plan.
 keep the old behaviour for a client that leaves them alone: `int32 headland_rings -1`,
 `string path_mode "zigzag"` (`""` = zigzag), `bool edge_first true`.
 
+## Edge layout and edge-ring turns (step 3, rounds 1-2, 2026-10-21)
+
+`PlanCoverage.edge_layout` (from the area's `edge_mode`; all areas soft for now):
+
+* **soft (stock):** laps at 0 / 0.15 / 0.30 from the line (base_link = rear axle on lap 0),
+  rows from 0.45. **hard:** the whole body inside plus 0.10.
+* All outer laps run the same direction (clockwise). Lap 0 keeps the polygon's sharp
+  vertices (F2C `Cells::buffer` mitres; the round-1 r 0.7 rounding never rounded). Lap
+  starts / hand-offs sit >= 0.6 m from a vertex, so a ring-to-ring step is -90 / 0.15 / +90
+  mid-edge instead of a large pivot at a corner.
+* Soft fill passes must be >= 0.30 m long and add >= 35 % new area (round 1 stacked ~20
+  sliver passes 0.02 m apart, which drove the -174 deg "hairpins").
+* Mission side (`mower_mission/path_conditioning.py`): every corner's fillet / pivot sweep
+  is checked with the body (planning limit soft 0.26, hard 0.0); a convex corner over the
+  limit tries fillets up to r 2.0, then (turn >= 60 deg) a K-turn: forward to
+  P1 = V - a.u_in (least a in 0.30..1.5 that fits), about-turn at P1 through the interior,
+  reverse (blade off) to V, pivot at V onto the next run (rear corners only, 0.255, sweep
+  out). Rotation direction: the nose swings through the area. Row-to-row hairpins are
+  pivot 90 / straight one spacing / pivot 90.
+
 ## Differences from upstream `mowgli_coverage`
 
 - **Connectors.** Joins are straight connectors, not Dubins turn-around arcs.
