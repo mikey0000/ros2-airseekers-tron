@@ -235,6 +235,59 @@ Sim results (2026-10-21, `ws/docking`; mower_sim, marker rendered at 0.055 m):
 - Not testable in the sim: exposure (the renderer ignores it), the retry offsets (no
   failures to retry), dusk.
 
+### Field docking 2026-10-21 night (ec8be43, synced 08:20 UTC)
+
+Data: bag `20261021-082701`, docking log `python3_342`, incidents 08:28:57 and 08:30:42
+(copied to `ros2_stack-wt/accuracy-simout/field_dock_2026-10-21/`). The 08:17:49
+`crash_docking_failed` came from the old code (DOCK_NOT_FOUND after 3 re-approaches,
+no exposure control).
+
+Three dock goals with the new code (08:27:08, 08:29:58, 08:30:58). None docked: two
+ended in the hard boundary, and the owner stopped the third at 08:32:19 and docked by
+joystick.
+
+- **Exposure works.** All 20 `exposure_state` replies were `ok: true` (auto→100→…→20,
+  30→5, 30→2→1→auto). On auto the backlit marker glows and saturates (mean grey 68,
+  not decodable). On manual ≤ 30 the frame is black (mean 12.0–13.7) with a sharp
+  marker. There were 327 detections at exposures 20, 5 and 2. The SEARCH-window log line
+  reports "0 with a marker" even when it accepts one: a counting bug in the log only.
+- **The marker heading is bimodal (IPPE flips).** Compared with RTK over 329
+  detections: 71 % sit at −7.5° ± 3.9° (a constant bias: camera yaw or dock yaw), and
+  29 % are flips 22° (mean) away, with the lateral off by 0.35 m. Lateral is computed
+  through the marker yaw, so each flip also moves the lateral. The marker is 30–50 px
+  (0.04 m configured, about 0.055 m real). The KF (gain about 0.5 at Q 0.01 per 20 Hz
+  tick and markers at about 4 Hz) passes half of each clamped 20° / 0.5 m innovation.
+- **Reverse control swings.** The commanded w changes sign 0.9–1.8 times per second in
+  DOCKING. With k_lateral 7, h_d saturates at 28.6° from 0.07 m of lateral, so the RTK
+  heading ran 13→33° and 0→40° while the lateral was only 0.1–0.2 m. The robot reaches
+  the 0.65 m pose check mid-swing, and every check failed (−167° from a bogus first
+  solve, 30.7°, 20.8°, 29.6°, 14.7°, 45°). That spent both realigns on all three goals.
+  Commanded against measured speed: v 0.90, w 0.94 (median). Tracking is fine; this is
+  not wheel-floor arcing.
+- **LATERAL_ALIGN loop.** Its forward phase starts after the 0.65 m realign, about
+  1.1–1.2 m out. It hit the front bumper 13 times at a fixed 1.35–1.46 m from the dock
+  (something physical there). Each time the bumper back-off reversed at −28° heading,
+  then ALIGNING and LATERAL_ALIGN ran again. The lateral walked 0.28 → 0.63 m.
+- **Boundary trips.** 08:28:57 (0.14 m): the owner's joystick (`cmd_vel_teleop`
+  −0.11 m/s, −0.6 rad/s overrides docking in twist_mux) reversed the robot out of the
+  Dock path polygon. The LATERAL_ALIGN/bumper loop had already left it 0.63 m off the
+  axis, outside the 0.35 m dock corridor. 08:30:42 (0.11 m): code only. The realign 2/2
+  forward drive (0.58 → 1.21 m) and then the LATERAL_ALIGN forward arc (→ 1.40 m,
+  lateral −0.18) went past the corridor cap (approach 0.8 + 0.35 m) and out of the Dock
+  path polygon. **This is a regression:** neither manoeuvre checks the boundary.
+
+Fixes (not yet made): take the heading from RTK/odom and use the marker only for
+position, or solve with `solvePnPGeneric` and keep the IPPE solution nearest the
+prediction. Reject a first detection that differs from RTK by more than 30° / 0.3 m
+before it is accepted or pose-checked, and require ≥ 2 consistent detections. Feed the
+KF the median, gate innovations with a χ² test instead of clamping them, and scale Q by
+dt. Loosen the pose check to about 12° (bias-corrected) and check it on the median of the
+last 3–5 detections. Use k_lateral about 2.5 with h_d ≤ 15°, and add an angular rate
+limit. Cap every forward manoeuvre (realign, LATERAL_ALIGN, retry) at remaining ≤
+approach + 0.25 m, or clip it to the outside_m/corridor polygon. No LATERAL_ALIGN after a
+realign. After a bumper hit in LATERAL_ALIGN, end the pre-alignment instead of looping.
+Pause docking, or end the goal, while teleop is active.
+
 ## Field symptoms these findings explain (2026-10-20/21)
 
 - Dusk docking failed with "no usable marker", although the dock has a backlit marker. Without exposure control the camera cannot read it at dusk; stock varies the exposure.
