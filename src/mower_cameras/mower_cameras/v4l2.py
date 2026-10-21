@@ -328,13 +328,21 @@ class V4L2Capture:
             self.fd = None
 
 
+# Packed 4:2:2 formats to_bgr decodes. YUYV and YVYU share the byte positions (Y0 C Y1 C)
+# and differ only in which chroma byte is U: decoding YVYU bytes as YUYV swaps U and V, which
+# turns a blue sky / cool white yellow-orange (the 2026-10-22 front-camera colour cast).
+PACKED_422 = ('UYVY', 'YUYV', 'YVYU')
+_422_TO_BGR = {'UYVY': 'COLOR_YUV2BGR_UYVY', 'YUYV': 'COLOR_YUV2BGR_YUYV',
+               'YVYU': 'COLOR_YUV2BGR_YVYU'}
+
+
 def _decimate_422(img, k, pixel_format):
     """Pick every ``k``-th pixel of a packed 4:2:2 image ``(h, w, 2)`` (rows and columns),
     keeping it packed (chroma of the even output pixel's source macropixel). Returns a
     contiguous ``(h // k, w // k, 2)`` array; ``k`` must divide ``h`` and ``2 * k`` ``w``."""
     h, w = img.shape[:2]
     rows = img[::k].reshape(h // k, w // (2 * k), 4 * k)   # groups of k macropixels
-    # UYVY: U Y0 V Y1 -> U, Y(px 2mk), V, Y(px (2m+1)k);  YUYV: Y0 U Y1 V
+    # UYVY: U Y0 V Y1 -> U, Y(px 2mk), V, Y(px (2m+1)k);  YUYV: Y0 U Y1 V (YVYU: Y0 V Y1 U)
     cols = [0, 1, 2, 2 * k + 1] if pixel_format == 'UYVY' else [0, 1, 2 * k, 3]
     return rows[:, :, cols].reshape(h // k, w // k, 2)
 
@@ -342,7 +350,7 @@ def _decimate_422(img, k, pixel_format):
 def output_size(width, height, pixel_format, scale):
     """Size :func:`to_bgr` produces for ``scale`` (integer decimation factor, 4:2:2 only)."""
     k = int(scale)
-    if k > 1 and pixel_format in ('UYVY', 'YUYV') and height % k == 0 and width % (2 * k) == 0:
+    if k > 1 and pixel_format in PACKED_422 and height % k == 0 and width % (2 * k) == 0:
         return width // k, height // k
     return width, height
 
@@ -365,7 +373,7 @@ def to_bgr(data, width, height, bytesperline, pixel_format, dst=None, scale=1):
             np.copyto(dst, img)
             return dst
         return img
-    if pixel_format in ('UYVY', 'YUYV'):
+    if pixel_format in PACKED_422:
         if len(buf) < bytesperline * (height - 1) + 2 * width:
             return None     # short buffer (truncated frame)
         # strided view (no copy even when bytesperline > 2 * width)
@@ -373,7 +381,7 @@ def to_bgr(data, width, height, bytesperline, pixel_format, dst=None, scale=1):
             buf, shape=(height, width, 2), strides=(bytesperline, 2, 1), writeable=False)
         if output_size(width, height, pixel_format, scale) != (width, height):
             img = _decimate_422(img, int(scale), pixel_format)
-        code = cv2.COLOR_YUV2BGR_UYVY if pixel_format == 'UYVY' else cv2.COLOR_YUV2BGR_YUYV
+        code = getattr(cv2, _422_TO_BGR[pixel_format])
         if dst is not None and dst.shape == img.shape[:2] + (3,):
             return cv2.cvtColor(img, code, dst=dst)
         return cv2.cvtColor(img, code)
@@ -409,15 +417,26 @@ def split_side_by_side_bgr(data, width, height, bytesperline, pixel_format='YUYV
     return frame[:, :half], frame[:, half:2 * half]
 
 
+def colour_format(capture_format, color_order=''):
+    """Format to decode a packed 4:2:2 capture with when its chroma order differs from the
+    negotiated fourcc (``color_order``, e.g. ``YVYU`` for the Metoak XC9080). Only swaps
+    within the Y-first family (YUYV/YVYU), whose luma positions are identical; anything
+    else keeps ``capture_format``."""
+    order = (color_order or '').upper()
+    if order in ('YUYV', 'YVYU') and capture_format in ('YUYV', 'YVYU'):
+        return order
+    return capture_format
+
+
 def eye_to_bgr(data, width, height, bytesperline, pixel_format, eye):
     """One eye (0 = left, 1 = right) of a side-by-side packed 4:2:2 frame -> bgr8.
 
     Converts only that half (each eye = ``width // 2`` px = ``width`` bytes per row, a
-    YUYV/UYVY macropixel boundary), i.e. half the work of :func:`split_side_by_side_bgr`
+    YUYV/YVYU/UYVY macropixel boundary), i.e. half the work of :func:`split_side_by_side_bgr`
     when one eye is wanted. Other formats fall back to the full split.
     """
     import numpy as np
-    if pixel_format not in ('YUYV', 'UYVY'):
+    if pixel_format not in PACKED_422:
         eyes = split_side_by_side_bgr(data, width, height, bytesperline, pixel_format)
         return None if eyes is None else np.ascontiguousarray(eyes[eye])
     buf = np.frombuffer(data, dtype=np.uint8)
