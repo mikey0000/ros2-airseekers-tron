@@ -58,6 +58,7 @@ from mowgli_interfaces.srv import (AddMowingArea, GetMowingArea, HighLevelContro
 from mower_mission import activity
 from mower_mission import mission_fsm as fsm_mod
 from mower_mission import mow_progress
+from mower_mission.external_rain import ExternalRain
 from mower_mission.resume import ResumeCursor
 from mower_mission.quiet_action import QuietActionClient
 from mower_mission.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, flat_parser,
@@ -76,6 +77,9 @@ TOPIC_DEFAULTS = {
     # mower_control supervisor (latched JSON): critical_down -> EMERGENCY (docs/crash_recovery.md)
     'supervisor_status_topic': '/supervisor/status',
     'tilt_status_topic': '/tilt/status',     # mower_control tilt_monitor ('' = no tilt guard input)
+    # external rain verdict, upstream MowgliNext contract (std_msgs/Bool, latched; '' = off).
+    # The GUI's MQTT broker feeds the service below instead (external_rain.py).
+    'external_rain_topic': '/external_rain',
     'odom_topic': '/odometry/filtered_map',
     'boundary_violation_topic': '/map_server_node/boundary_violation',
     'lethal_boundary_violation_topic': '/map_server_node/lethal_boundary_violation',
@@ -91,6 +95,7 @@ TOPIC_DEFAULTS = {
     'start_in_area_service': '~/start_in_area',
     'clear_coverage_resume_service': '~/clear_coverage_resume',
     'manual_blade_service': '~/manual_blade',          # SetBool, MANUAL_MOWING only
+    'external_rain_service': '~/set_external_rain',    # SetBool: true = wet ('' = off)
     'active_area_settings_topic': '~/active_area_settings',
     # plan preview: SetAreaSettings request, area_index = area (255 = all, 254 = clear)
     'preview_plan_service': '~/preview_plan',
@@ -135,6 +140,10 @@ TOPIC_DEFAULTS = {
 }
 
 NODE_DEFAULTS = {
+    # external rain (MQTT <prefix>/external_rain via the GUI, or /external_rain): OR-ed with
+    # the mower's own sensors; a wet verdict older than the max age is ignored (0 = never)
+    'use_external_rain': True,
+    'external_rain_max_age_minutes': 120.0,
     'map_frame': 'map',
     'coverage_resume_path': '~/.ros/mower_mission/coverage_resume.txt',
     'alternate_state_path': '~/.ros/mower_mission/alternate_counts.json',
@@ -332,6 +341,11 @@ class MissionNode(Node):
         if p['tilt_status_topic']:
             sub(String, p['tilt_status_topic'], self._on_tilt, latched)
         self._hw_rain = self._base_rain = False
+        self._ext_rain = ExternalRain(p['use_external_rain'],
+                                      60.0 * float(p['external_rain_max_age_minutes']))
+        self._ext_rain_state = None
+        if p['external_rain_topic']:
+            sub(Bool, p['external_rain_topic'], self._on_external_rain, latched)
         self._hw_charging = self._base_charging = False
 
         cli = self.create_client
@@ -398,6 +412,9 @@ class MissionNode(Node):
             callback_group=self._cb)
         srv(SetAreaSettings, p['preview_plan_service'], self._srv_preview_plan,
             callback_group=self._cb)
+        if p['external_rain_service']:
+            srv(SetBool, p['external_rain_service'], self._srv_external_rain,
+                callback_group=self._cb)
 
         # tick / status / zero-burst on one plain thread (sub_pump.PeriodicRunner) instead of
         # rclpy timers in one mutually exclusive group: same sequential semantics, but no
@@ -497,8 +514,34 @@ class MissionNode(Node):
         with self._lock:
             self._hw_rain = bool(msg.rain_detected)
             self._hw_charging = bool(msg.is_charging)
-            self.fsm.inputs.rain = self._hw_rain or self._base_rain
+            self._refresh_rain()
             self.fsm.inputs.is_charging = self._hw_charging or self._base_charging
+
+    def _refresh_rain(self):
+        """fsm rain input = own sensors OR a fresh external wet verdict. Lock held."""
+        now = self._clk.now()
+        state = self._ext_rain.state(now)
+        if state != self._ext_rain_state:
+            if self._ext_rain_state is not None or state != 'no_data':
+                self.get_logger().info('external rain: %s' % state)
+            self._ext_rain_state = state
+        self.fsm.inputs.rain = self._hw_rain or self._base_rain or state == 'wet'
+
+    def _set_external_rain(self, wet, source):
+        with self._lock:
+            self._ext_rain.update(wet, self._clk.now())
+            self._refresh_rain()
+        self.get_logger().info('external rain verdict %s (%s)' % ('wet' if wet else 'dry', source))
+
+    def _on_external_rain(self, msg):
+        self._set_external_rain(bool(msg.data), 'topic')
+
+    def _srv_external_rain(self, req, res):
+        self._set_external_rain(bool(req.data), 'service')
+        res.success = self._ext_rain.enabled
+        res.message = ('wet' if req.data else 'dry') if res.success else \
+            'use_external_rain is false: verdict recorded but ignored'
+        return res
 
     LIVE_PARAMS = ('battery_low_percent', 'battery_full_percent', 'battery_low_action',
                    'battery_max_charge_percent', 'battery_charge_hysteresis_percent')
@@ -528,7 +571,7 @@ class MissionNode(Node):
             i.stop_button = bool(msg.stop_triggered)
             self._base_rain = bool(msg.rain_triggered)
             self._base_charging = bool(msg.is_charging)
-            i.rain = self._hw_rain or self._base_rain
+            self._refresh_rain()
             i.is_charging = self._hw_charging or self._base_charging
 
     def _on_heading(self, msg):
@@ -682,6 +725,7 @@ class MissionNode(Node):
     def _tick(self):
         with self._lock:
             self._pump.poll()
+            self._refresh_rain()   # a wet external verdict expires without a new message
             self._execute(self.fsm.tick(self._clk.now()))
             self._publish_motion_enabled()
             self._publish_activity()

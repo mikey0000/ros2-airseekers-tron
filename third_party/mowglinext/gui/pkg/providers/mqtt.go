@@ -142,6 +142,7 @@ func (hc *MqttProvider) subscribeToMqtt() {
 	subscribeToMqttCall(hc.server, hc.rosProvider, hc.prefix, "/hardware_bridge/emergency_stop", &mowgli.EmergencyStopReq{}, &mowgli.EmergencyStopRes{})
 	subscribeToMqttCall(hc.server, hc.rosProvider, hc.prefix, "/hardware_bridge/mower_control", &mowgli.MowerControlReq{}, &mowgli.MowerControlRes{})
 	subscribeToMqttCall(hc.server, hc.rosProvider, hc.prefix, "/behavior_tree_node/start_in_area", &mowgli.StartInAreaReq{}, &mowgli.StartInAreaRes{})
+	hc.subscribeToExternalRain()
 }
 
 // subscribeToMqttCall wires an MQTT subscription to a ROS2 service call.

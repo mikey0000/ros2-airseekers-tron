@@ -64,6 +64,11 @@ behavior_tree_node:
     rain_mode: 1                      # 0 ignore, 1 dock and wait
     rain_debounce_s: 2.0
     rain_delay_minutes: 30.0          # dry time before resuming
+    # External verdict (roof weather station / Home Assistant): MQTT <prefix>/external_rain
+    # yes|no (retained) -> GUI MQTT broker -> ~/set_external_rain, or std_msgs/Bool on
+    # /external_rain. OR-ed with the mower's sensors; can only add a reason to stop.
+    use_external_rain: true
+    external_rain_max_age_minutes: 120.0   # a wet verdict older than this is ignored (0 = never)
 
     # --- docking ---------------------------------------------------------
     use_docking_server: true          # false: undock with /backup + /charging, dock = nav to dock_pose
