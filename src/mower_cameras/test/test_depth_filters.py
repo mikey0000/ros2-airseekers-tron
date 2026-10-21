@@ -216,3 +216,27 @@ def test_precomputed_heights_match():
                           f.remove_ground(pts, plane, 0.12))
     assert np.array_equal(f.ground_clear_points(pts, plane, ok, hgt=hgt),
                           f.ground_clear_points(pts, plane, ok))
+
+
+def test_ground_plane_keeper_reuse_and_age():
+    from mower_cameras.depth_filters import GroundPlaneKeeper
+    k = GroundPlaneKeeper(3.0)
+    prior, fitted, bad = ('prior',), ('fit',), ('bad',)
+    assert k.update(bad, False, 0.0, prior) == (prior, 'prior')     # nothing good yet
+    assert k.update(fitted, True, 1.0, prior) == (fitted, 'fit')
+    assert k.update(bad, False, 3.9, prior) == (fitted, 'last')     # 2.9 s old
+    assert k.update(bad, False, 4.1, prior) == (prior, 'prior')     # 3.1 s old
+    assert k.update(bad, False, 4.2) == (bad, 'prior')              # no prior given
+
+
+def test_area_mask_inside_with_tolerance():
+    import numpy as np
+    from mower_cameras.depth_filters import AreaMask
+    grid = np.full((10, 10), 100, np.int8)
+    grid[:, :5] = 0                       # free for x in [0, 0.5) (origin 0, res 0.1)
+    m = AreaMask(grid, (0.0, 0.0), 0.1)
+    xy = np.array([[0.2, 0.5], [0.53, 0.5], [0.58, 0.5], [0.8, 0.5], [5.0, 5.0]])
+    assert m.inside(xy, 0.05).tolist() == [True, True, False, False, False]
+    assert m.inside(xy, 0.0).tolist() == [True, False, False, False, False]
+    assert m.inside(np.zeros((0, 2))).shape == (0,)
+    assert AreaMask(np.zeros((3, 3), np.int8), (0, 0), 0.1).inside(xy).all()   # no areas

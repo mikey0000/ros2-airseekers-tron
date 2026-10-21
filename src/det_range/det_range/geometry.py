@@ -435,3 +435,19 @@ def mono_range_box(cx, cy, w, h, k, d, r_bc: np.ndarray, t_bc, image_height: flo
     clipped = image_height > 0 and v >= float(image_height) - clip_px
     return MonoResult(point=(float(p[0]), float(p[1]), float(p[2])), range_m=rng,
                       variance=float(var), clipped=bool(clipped))
+
+
+def points_worthy(results, classes, min_score):
+    """True when a detection may put a point on the Nav2 / obstacle-tracker cloud
+    (2026-10-21 grass false stops): its best hypothesis is a NAMED class in ``classes``
+    (empty = any named class) with score >= ``min_score``. ``results`` are
+    (class_id, score) pairs."""
+    best = max(results, key=lambda r: r[1], default=None)
+    if best is None:
+        return False
+    label = str(best[0]).strip().lower()
+    if not label or label.lstrip('-').isdigit():
+        return False
+    if classes and label not in classes:
+        return False
+    return float(best[1]) >= float(min_score)

@@ -1,0 +1,6 @@
+<library path="mower_costmap_layers">
+  <class type="mower_costmap_layers::DecayingObstacleLayer"
+         base_class_type="nav2_costmap_2d::Layer">
+    <description>ObstacleLayer whose marks expire after decay_time s unless re-marked.</description>
+  </class>
+</library>

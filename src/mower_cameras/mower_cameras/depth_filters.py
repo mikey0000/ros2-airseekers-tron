@@ -188,3 +188,73 @@ class Persistence:
 
     def reset(self):
         self.hist.clear()
+
+
+class GroundPlaneKeeper:
+    """Choose the plane for ground removal after each fit (2026-10-21).
+
+    A fit fails when the camera looks at rising / tall terrain (too few candidates near the
+    prior, or the result tilts beyond ``max_tilt_deg``). Falling straight back to the fixed
+    prior re-marked the whole rising lawn as obstacle. Instead, reuse the last good plane while
+    it is at most ``max_age_s`` old; only then fall back to the prior, and report
+    ``'prior'`` so the caller can mark only clearly tall points (``fail_margin``).
+
+    ``update(plane, ok, t)`` -> ``(plane, source)``, source in ``'fit' | 'last' | 'prior'``.
+    """
+
+    def __init__(self, max_age_s=3.0):
+        self.max_age_s = float(max_age_s)
+        self.last = None          # (plane, t) of the newest successful fit
+
+    def update(self, plane, ok, t, prior=None):
+        if ok:
+            self.last = (plane, float(t))
+            return plane, 'fit'
+        if self.last is not None and float(t) - self.last[1] <= self.max_age_s:
+            return self.last[0], 'last'
+        return (prior if prior is not None else plane), 'prior'
+
+
+class AreaMask:
+    """Inside-the-areas test from the map_server's latched ``/keepout_mask`` (2026-10-21).
+
+    The mask is free (0) inside the union of mowing areas and navigation areas (drawn paths)
+    and lethal (100) outside them, plus inside obstacle polygons and the dock outline
+    (dropping a camera mark there is harmless: those are already no-go / the dock).
+    ``inside(xy)`` is True for points within ``tol`` of a free cell (the point and its four
+    +-tol neighbours are sampled), so a mark only ``tol`` past the line still counts.
+    A mask with no lethal cell (no areas drawn) keeps every point. Points off the grid are
+    outside (the grid spans the areas' bbox plus mask_margin).
+    """
+
+    def __init__(self, grid, origin_xy, resolution):
+        self.free = np.asarray(grid) == 0
+        self.ox, self.oy = float(origin_xy[0]), float(origin_xy[1])
+        self.res = float(resolution)
+        self.all_free = bool(self.free.all())
+
+    @classmethod
+    def from_occupancy_grid(cls, msg):
+        info = msg.info
+        grid = np.asarray(msg.data, dtype=np.int8).reshape(info.height, info.width)
+        return cls(grid, (info.origin.position.x, info.origin.position.y), info.resolution)
+
+    def _free_at(self, x, y):
+        h, w = self.free.shape
+        ix = np.floor((x - self.ox) / self.res).astype(np.int64)
+        iy = np.floor((y - self.oy) / self.res).astype(np.int64)
+        on = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
+        out = np.zeros(len(x), dtype=bool)
+        out[on] = self.free[iy[on], ix[on]]
+        return out
+
+    def inside(self, xy, tol=0.05):
+        if len(xy) == 0 or self.all_free:
+            return np.ones(len(xy), dtype=bool)
+        xy = np.asarray(xy, dtype=np.float64)
+        x, y = xy[:, 0], xy[:, 1]
+        keep = self._free_at(x, y)
+        if tol > 0:
+            for dx, dy in ((tol, 0.0), (-tol, 0.0), (0.0, tol), (0.0, -tol)):
+                keep |= self._free_at(x + dx, y + dy)
+        return keep

@@ -36,6 +36,14 @@ det_range:
     size_check_sigma_frac: 0.3      # replaced range: sigma = 0.3 x range
     source_image_height: 480        # right eye; camera_info overrides
     publish_obstacle_points: true   # false = empty /ai/det/obstacle_points (obstacle_detection none)
+    # Cloud filter (2026-10-21, grass false stops): only these named classes at >= score put
+    # a point on /ai/det/obstacle_points (costmaps + obstacle_tracker map tagging). The ranged
+    # detections / PoseArray (obstacle_guard, mission) are unchanged. det_ros obj_thresh 0.25.
+    # manhole left out (flat, mowable).
+    points_classes: [person, dog, cat, sports ball, hedgehog, rabbit, stone, hoe, shovel,
+                     brick, trashbin, toycars, potted plant, cans, bottle, book, backpack,
+                     wood, chair, trunk]
+    points_min_score: 0.5
     # Rear camera (2026-10-09): no stereo -> monocular ground-plane range from the bbox
     # bottom-centre (det_range/geometry.py mono_range_box: ~7 %/m-ish per degree of pitch
     # error, see the accuracy notes there). Intrinsics from camera_info (taken once), pose

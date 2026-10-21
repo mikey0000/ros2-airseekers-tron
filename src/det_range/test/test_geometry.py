@@ -112,3 +112,16 @@ def test_chain_to_base_link_matches_urdf():
     p = rot @ np.array([1.0, 0.0, 0.0]) + t        # optical +x (right) -> base -y
     np.testing.assert_allclose(p, [0.466, -1.0, 0.215], atol=1e-9)
     assert chain_to(static, 'nope', 'base_link') is None
+
+
+def test_points_worthy_named_confident_only():
+    from det_range.geometry import points_worthy
+    cls = {'stone', 'person'}
+    assert points_worthy([('stone', 0.6)], cls, 0.5)
+    assert not points_worthy([('stone', 0.4)], cls, 0.5)          # not confident
+    assert not points_worthy([('dock', 0.9)], cls, 0.5)           # not a listed class
+    assert not points_worthy([('', 0.9)], set(), 0.5)             # unnamed
+    assert not points_worthy([('3', 0.9)], set(), 0.5)            # numeric id
+    assert points_worthy([('wood', 0.9)], set(), 0.5)             # empty list = any named
+    assert points_worthy([('dock', 0.2), ('person', 0.7)], cls, 0.5)   # best hypothesis
+    assert not points_worthy([], cls, 0.0)

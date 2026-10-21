@@ -261,7 +261,7 @@ def test_stereo_obstacle_source():
     src = ol["stereo"]
     assert src["topic"] == "/stereo_depth/points"
     assert src["sensor_frame"] == "stereo_camera_optical"
-    assert src["min_obstacle_height"] == 0.08   # 0.08 since the 2026-10-06 box test
+    assert src["min_obstacle_height"] == 0.15   # 0.15 (stock) since 2026-10-21 grass stops; was 0.08 (2026-10-06 box test)
     assert src["max_obstacle_height"] == 1.2
     assert src["obstacle_max_range"] == 2.0
     assert src["raytrace_max_range"] >= src["obstacle_max_range"]
@@ -368,7 +368,7 @@ def test_global_obstacle_layer():
     assert g["transform_tolerance"] == 0.5
     assert 2.0 <= g["update_frequency"] <= 5.0
     ol = g["obstacle_layer"]
-    assert ol["plugin"] == "nav2_costmap_2d::ObstacleLayer"
+    assert ol["plugin"] == "mower_costmap_layers::DecayingObstacleLayer"
     assert ol["footprint_clearing_enabled"] is False     # bumper points sit in the footprint
     sources = ol["observation_sources"].split()
     assert set(sources) == {"stereo", "stereo_clear", "det_range", "bumper"}
