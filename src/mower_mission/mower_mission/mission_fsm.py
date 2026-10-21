@@ -840,6 +840,7 @@ class Params:
     path_conditioning_convex_r_max_m: float = 2.0
     path_conditioning_kturn: bool = True
     path_conditioning_kturn_min_rad: float = 1.05
+    path_conditioning_kturn_gentle_m: float = 0.33   # gentler corners: K-turn when over this
     path_conditioning_kturn_back_max_m: float = 1.5
     # transit / dock routes: smallest fillet radius (tighter corners pivot at the vertex)
     path_conditioning_route_r_min_m: float = 0.8
@@ -3238,6 +3239,7 @@ class MissionFSM:
         prm.convex_r_max = float(p.path_conditioning_convex_r_max_m)
         prm.kturn = bool(p.path_conditioning_kturn)
         prm.kturn_min_rad = float(p.path_conditioning_kturn_min_rad)
+        prm.kturn_gentle_m = float(p.path_conditioning_kturn_gentle_m)
         prm.kturn_back_max_m = float(p.path_conditioning_kturn_back_max_m)
         return {'subpaths': [list(sp) for sp in subpaths], 'region': self._region(),
                 'prm': prm, 'leg_max_m': float(self.p.turn_leg_max_m),
@@ -6940,6 +6942,16 @@ def condition_plan(job):
                 nkt += 1
                 logs.append(('info', 'area %d sub-path %d: K-turn at (%.2f, %.2f) %+.0f deg: %s'
                              % (area, len(out), c.x, c.y, math.degrees(c.turn), c.why)))
+            if prm.body_limit_m is not None and c.body_m is not None and \
+                    c.choice in ('fillet', 'pivot', 'kturn') and \
+                    c.body_m > prm.body_limit_m + 1e-3:
+                # nothing fits the planning limit here: the least-overhang option is driven
+                logs.append(('warn', 'area %d sub-path %d: corner at (%.2f, %.2f) %+.0f deg: '
+                                     '%s, body %.2f m out > planning limit %.2f (least '
+                                     'overhang of fillet / pivot / K-turn)%s' % (
+                                         area, len(out), c.x, c.y, math.degrees(c.turn),
+                                         c.choice, c.body_m, prm.body_limit_m,
+                                         ' [%s]' % c.why if c.why else '')))
         # K-turns (edge layout round 2): forward to P1 / reverse onto V / forward legs, each
         # its own sub-path; the planned pivot at a leg's start (P1 about-turn, V pivot) rides
         # along as start_turn (_cov_pivot keeps its direction: the nose through the area)

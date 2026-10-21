@@ -262,6 +262,9 @@ behavior_tree_node:
     path_conditioning_convex_r_max_m: 2.0
     path_conditioning_kturn: true
     path_conditioning_kturn_min_rad: 1.05
+    # a gentler corner K-turns too when its best fillet / pivot is over this (retracing
+    # curves and drawing jogs; nothing within the limit: the least overhang, logged at warn)
+    path_conditioning_kturn_gentle_m: 0.33
     path_conditioning_kturn_back_max_m: 1.5
     # 2026-10-16: transit / dock routes take no fillet tighter than this (the route
     # controller runs them at transit speed; MPPI ran 0.4 m wide of an r 0.5 m dock-path

@@ -663,7 +663,7 @@ def test_kturn_on_a_lap_on_the_line_keeps_the_swept_body_within_the_soft_limit(c
     assert len(kts) >= 2 and len(res.kturns) == len(kts)
     for c in kts:
         assert c.body_m <= 0.26 + 1e-3 and c.back_m >= 0.3 - 1e-9
-    # gentle corners (< kturn_min_rad) stay arcs: no K-turn there
+    # gentle corners (< kturn_min_rad) stay wide arcs (0.31 < kturn_gentle_m): no K-turn
     assert all(abs(c.turn) >= p.kturn_min_rad for c in kts)
     # each K-turn replayed (P1 about-turn, reverse, V pivot) is within the limit, and every
     # K-turn pivot turns the nose through the area, never across the line
@@ -821,3 +821,79 @@ def test_mission_drives_a_kturn_about_turn_reverse_blade_off_then_pivot_inward()
     assert m.sub_i == 2 and h.blade
     sp = h.goal(f.ACT_SPIN)
     assert -math.radians(100) < sp['angle'] < -math.radians(80)   # pivot at V, nose inward
+
+
+def _arc_lap():
+    """Lap 0 on the line of an area whose edge into a sharp corner V is curved: an r 0.6 arc
+    over the last 0.63 m (no straight 0.3 m run before V), then a 100 deg right turn."""
+    pts = [(0.0, 1.5), (0.0, 0.5)]
+    pts += [(x / 20.0, 0.5) for x in range(1, 61)]
+    # tangent continuation: an arc of r 0.6 bending right from heading 0 to heading -60 deg
+    cx, cy = pts[-1][0], 0.5 - 0.6
+    for k in range(1, 31):
+        t = math.radians(60.0) * k / 30.0
+        pts.append((cx + 0.6 * math.sin(t), cy + 0.6 * math.cos(t)))
+    V = pts[-1]
+    h = math.radians(-60.0) - math.radians(100.0)           # a sharp right turn at V
+    for k in range(1, 41):
+        pts.append((V[0] + 0.05 * k * math.cos(h), V[1] + 0.05 * k * math.sin(h)))
+    return pts, V
+
+
+def test_kturn_with_a_curved_approach_retraces_the_driven_curve():
+    lap, V = _arc_lap()
+    end = lap[-1]
+    region = [lap + [(end[0] - 3.0, end[1]), (-3.0, 1.5)]]   # interior on the right (CW)
+    p = pc.Params(body_limit_m=0.26)
+    res = pc.condition(lap, region, p, ring=True, turn_sign=-1.0)
+    assert res.valid, res.errors
+    kt = corner_at(res, V)
+    # the curve itself (r 0.6, driven forward ON the line) puts the body ~0.43 out: the
+    # K-turn is no worse than that, far better than the vertex pivot (0.65)
+    br = pc.BodyRegion(region, V, 50.0, p)
+    curve = br.drive([(q[0], q[1], math.atan2(b[1] - q[1], b[0] - q[0]))
+                      for q, b in zip(lap[60:91], lap[61:92])])
+    assert kt.choice == 'kturn' and kt.back_m >= 0.3
+    assert kt.body_m <= curve + 0.01 and kt.body_m < 0.5
+    i_p1, i_v, d1, d2 = res.kturns[0]
+    # the reverse leg runs back over the curve just driven: every pose ON the drawn line
+    for q in res.poses[i_p1:i_v + 1]:
+        assert geo.path_projection(lap, q)[1] < 0.01
+    # and follows the curve, not the chord P1 -> V
+    P1, Vq = res.poses[i_p1], res.poses[i_v]
+    assert max(abs(pc._orient(P1, Vq, q)) / geo.dist(P1, Vq)
+               for q in res.poses[i_p1:i_v + 1]) > 0.02
+    yaws = [q[2] for q in res.poses[i_p1 + 1:i_v]]
+    assert abs(geo.wrap_angle(yaws[-1] - yaws[0])) > math.radians(20)   # facing turns with it
+    worst, _nose = _replay_body(res, region, p, (i_p1, i_v))
+    assert worst <= kt.body_m + 0.01
+    assert d1 < 0 and d2 > 0          # CW: about-turn right (into the area), V pivot left
+
+
+def test_kturn_retraces_a_jog_vertex_with_a_pivot_in_the_reverse_leg():
+    # a 30 deg drawing jog 0.2 m before a sharp 100 deg corner: P1 lies back past the jog,
+    # whose pivot moves into the reverse leg (a reverse leg either side of it)
+    V = (4.0, 0.0)
+    J = (3.8, 0.0)
+    hj = math.radians(30.0)
+    pts = [(x / 20.0, 0.0) for x in range(0, 77)]
+    pts = [(J[0] - 0.05 * k * math.cos(hj), J[1] - 0.05 * k * math.sin(hj))
+           for k in range(40, 0, -1)] + [J] + [(J[0] + 0.05 * k * 4 / 4, 0.0) for k in (1, 2, 3)]
+    pts.append(V)
+    h = math.radians(100.0)
+    pts += [(V[0] + 0.05 * k * math.cos(h), V[1] + 0.05 * k * math.sin(h)) for k in range(1, 41)]
+    region = [pts + [(pts[-1][0] - 4.0, pts[-1][1]), (pts[0][0] - 1.0, pts[0][1] + 1.0)]]
+    p = pc.Params(body_limit_m=0.26)
+    res = pc.condition(pts, region, p, ring=True, turn_sign=1.0)
+    assert res.valid, res.errors
+    assert corner_at(res, V).choice == 'kturn'
+    assert corner_at(res, J).choice == 'retraced'
+    i_p1, i_v, _d1, _d2 = res.kturns[0]
+    inner = [i for i in res.pivots if i_p1 < i < i_v]
+    assert len(inner) == 1 and geo.dist(res.poses[inner[0]], J) < 0.01
+    legs = pc.split_kturns(res)
+    assert [lg['reverse'] for lg in legs] == [False, True, True, False]
+    for lg in legs[1:3]:
+        assert geo.is_reverse_subpath(lg['poses'])
+    assert abs(abs(math.degrees(legs[2]['start_turn'])) - 30.0) < 3.0
+    assert _replay_body(res, region, p, (i_p1, i_v))[0] <= 0.26 + 0.01
