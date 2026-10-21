@@ -1105,7 +1105,14 @@ local_costmap:
       # INSIDE the footprint, so footprint_clearing_enabled must be false or the
       # layer erases the hit immediately.
       obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
+        # DecayingObstacleLayer (src/mower_costmap_layers, 2026-10-21): stock ObstacleLayer +
+        # marks expire after decay_time s without a re-mark (the stock firmware ran STVL with a
+        # 5 s camera decay; STVL is not in the Jazzy image and the clear_* services wipe every
+        # clearable layer, not per cell). Stale stereo / det_range marks outside the area
+        # line that no later ray crossed blocked coverage pivots. A source still in its
+        # observation buffer re-marks each update, so a visible obstacle never decays.
+        plugin: "mower_costmap_layers::DecayingObstacleLayer"
+        decay_time: 5.0
         enabled: true
         footprint_clearing_enabled: false
         max_obstacle_height: 2.0
@@ -1346,7 +1353,14 @@ global_costmap:
       #   * footprint_clearing_enabled false: bumper points sit inside the footprint.
       #   * stereo_costmap:=false strips stereo, stereo_clear and det_range here too.
       obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
+        # DecayingObstacleLayer (src/mower_costmap_layers, 2026-10-21): stock ObstacleLayer +
+        # marks expire after decay_time s without a re-mark (the stock firmware ran STVL with a
+        # 5 s camera decay; STVL is not in the Jazzy image and the clear_* services wipe every
+        # clearable layer, not per cell). Stale stereo / det_range marks outside the area
+        # line that no later ray crossed blocked coverage pivots. A source still in its
+        # observation buffer re-marks each update, so a visible obstacle never decays.
+        plugin: "mower_costmap_layers::DecayingObstacleLayer"
+        decay_time: 5.0
         enabled: true
         footprint_clearing_enabled: false
         max_obstacle_height: 2.0

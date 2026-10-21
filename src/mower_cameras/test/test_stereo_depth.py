@@ -104,12 +104,15 @@ def _fake_node(on_demand=True, pts_subs=1, clear_subs=1, clear_on=True):
              'min_range_m': 0.2, 'max_range_m': 4.0, 'speckle_max_size': 200,
              'speckle_max_diff_px': 1.0, 'min_valid_neighbours': 5, 'ground_plane_fit': True,
              'ground_margin_m': 0.12, 'ground_max_tilt_deg': 8.0, 'ground_max_dh_m': 0.08,
-             'clear_max_range_m': 3.0, 'clear_voxel_m': 0.10},
+             'clear_max_range_m': 3.0, 'clear_voxel_m': 0.10, 'ground_fail_margin_m': 0.25,
+             'area_tolerance_m': 0.05},
+        plane_keeper=dfl.GroundPlaneKeeper(3.0), drop_outside=False, area_mask=None,
         on_demand=on_demand, cloud_period=0.0, _last_cloud=0.0,
         prior=dfl.plane_from_pose(0.24, np.radians(0.92)), prior_from_tf=True, _tf_buf=None,
         persist=dfl.Persistence(1), rng=np.random.default_rng(0),
         _stats={'frames': 0, 'raw': 0, 'denoised': 0, 'obstacle': 0, 'published': 0,
-                'clear': 0, 'clear_msgs': 0, 'fit_ok': 0, 'ms': 0.0},
+                'clear': 0, 'clear_msgs': 0, 'fit_ok': 0, 'plane_reused': 0,
+                'plane_prior': 0, 'outside_dropped': 0, 'ms': 0.0},
         cloud_pub=_Pub(pts_subs), clear_pub=_Pub(clear_subs) if clear_on else None,
         depth_pub=_Pub(0), mono_pub=_Pub(0), plane_pub=_Pub(), stats_pub=_Pub(),
         _stamp_parent='odom', _last_tf_ns=1_000_000_000_000 - 20_000_000, _extra_tf_ns={},
@@ -196,7 +199,7 @@ def _fixed_node():
     now = 10**12
     n._T_parent_child = (now - 20_000_000, sd.tf_matrix(_tr(x=1.0)))
     n._T_map_parent = (now - 60_000_000, sd.tf_matrix(_tr(x=10.0)), False)
-    for name in ('fixed_frame_clouds', '_publish_fixed'):
+    for name in ('fixed_frame_clouds', '_publish_fixed', 'outside_keep'):
         setattr(n, name, MethodType(getattr(sd.StereoDepthNode, name), n))
     return n
 
@@ -241,3 +244,36 @@ def test_on_frame_publishes_fixed_frame_clouds():
     assert n.clear_map_pub.msgs[0].header.frame_id == 'map'
     st = n.cloud_pub.msgs[0].header.stamp
     assert st.sec * 10**9 + st.nanosec == 10**12 - 20_000_000
+
+
+def test_publish_fixed_drops_obstacle_points_outside_areas():
+    from mower_cameras import depth_filters as dfl
+    n = _fixed_node()
+    # map: area free for x in [10, 12) (map->odom +10, odom->base +1, cam z 0.25)
+    grid = np.full((20, 40), 100, np.int8)
+    grid[:, :20] = 0
+    n.area_mask = dfl.AreaMask(grid, (10.0, -1.0), 0.1)
+    n.drop_outside = True
+    # optical z forward is not rotated here (identity cam tf): x_map = 11 + x_cam
+    pts = np.array([[0.5, 0.0, 1.0], [0.97, 0.0, 1.0], [1.5, 0.0, 1.0]], np.float32)
+    clr = np.array([[1.5, 0.0, 1.0]], np.float32)
+    n._publish_fixed(pts, clr, 10**12)
+    assert n.cloud_pub.msgs[0].width == 2 and n.cloud_map_pub.msgs[0].width == 2
+    assert n.clear_map_pub.msgs[0].width == 1           # clearing points are never dropped
+    assert n._stats['outside_dropped'] == 1
+    n.drop_outside = False
+    n._publish_fixed(pts, clr, 10**12)
+    assert n.cloud_map_pub.msgs[-1].width == 3
+
+
+def test_failed_fit_reuses_last_plane_then_prior_with_tall_margin():
+    n = _fake_node()
+    n.filtered_points(_ground_raw())
+    assert n.plane_keeper.last is not None
+    good = n.plane_keeper.last[0]
+    empty = np.zeros((360, 640), np.uint16)          # no points -> fit fails
+    n.filtered_points(empty)
+    assert n._stats['plane_reused'] == 1 and n.plane is good
+    n.plane_keeper.last = (good, n.plane_keeper.last[1] - 10.0)
+    n.filtered_points(empty)
+    assert n._stats['plane_prior'] == 1 and n.plane is n.prior

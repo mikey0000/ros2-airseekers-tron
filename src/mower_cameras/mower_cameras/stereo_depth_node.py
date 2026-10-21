@@ -209,8 +209,26 @@ class StereoDepthNode(Node):
         d('ground_base_frame', 'base_footprint')
         d('ground_prior_height_m', 0.24)      # fallback when TF is unavailable
         d('ground_prior_pitch_up_deg', 0.92)  # (measured 2026-10-06)
-        d('ground_max_tilt_deg', 8.0)    # fit rejected beyond this from the prior
+        # 12 (was 8, 2026-10-21): lawns that rise ahead tilted past 8 deg and every such frame
+        # fell back to the flat prior -> the rising lawn was marked as an obstacle.
+        d('ground_max_tilt_deg', 12.0)   # fit rejected beyond this from the prior
         d('ground_max_dh_m', 0.08)
+        # Failed fit (2026-10-21): reuse the last good plane while it is at most this old
+        # (dfl.GroundPlaneKeeper). Only without one fall back to the prior, and then remove
+        # everything below ground_fail_margin_m above it: mark only clearly tall points
+        # (a wall / person still marks, a slope or tall grass at the prior's edge does not).
+        # Not marking at all was rejected: a wall filling the view is a classic fit failure.
+        d('ground_reuse_max_age_s', 3.0)
+        d('ground_fail_margin_m', 0.25)
+        # --- soft edge (2026-10-21): drop OBSTACLE points (not clearing points) that lie
+        # outside the union of mowing + navigation areas by more than area_tolerance_m, using
+        # map_server's latched keepout mask (free inside areas/paths, 0.1 m cells). Stale marks
+        # just past the area line blocked coverage pivots; the body rule keeps the nose in, so
+        # hard-edge areas are treated the same. Needs the map-frame cloud (fixed_frame_clouds +
+        # map->odom known); without it, or without a mask / any area, nothing is dropped.
+        d('drop_marks_outside_areas', True)
+        d('area_mask_topic', '/keepout_mask')
+        d('area_tolerance_m', 0.05)
         # --- clearing cloud (2026-10-09): ground points -> ~/clear_points for Nav2 raytracing.
         # Same cloud_fps cap / on-demand gating / stamp as ~/points; only on fit_ok frames.
         d('publish_clear_cloud', True)
@@ -231,7 +249,11 @@ class StereoDepthNode(Node):
                                       'min_valid_neighbours', 'ground_plane_fit',
                                       'ground_margin_m', 'ground_max_tilt_deg',
                                       'ground_max_dh_m', 'clear_max_range_m',
-                                      'clear_voxel_m')}
+                                      'clear_voxel_m', 'ground_fail_margin_m',
+                                      'area_tolerance_m')}
+        self.plane_keeper = dfl.GroundPlaneKeeper(p('ground_reuse_max_age_s'))
+        self.drop_outside = bool(p('drop_marks_outside_areas'))
+        self.area_mask = None            # dfl.AreaMask from area_mask_topic (map frame)
         self.clear_on = bool(p('publish_clear_cloud'))
         self.on_demand = bool(p('publish_on_demand'))
         self._stamp_parent = str(p('stamp_tf_parent'))
@@ -266,7 +288,8 @@ class StereoDepthNode(Node):
         self.persist = dfl.Persistence(p('persist_frames'), p('persist_voxel_m'))
         self.rng = np.random.default_rng(0)
         self._stats = {'frames': 0, 'raw': 0, 'denoised': 0, 'obstacle': 0, 'published': 0,
-                       'clear': 0, 'clear_msgs': 0, 'fit_ok': 0, 'ms': 0.0}
+                       'clear': 0, 'clear_msgs': 0, 'fit_ok': 0, 'plane_reused': 0,
+                       'plane_prior': 0, 'outside_dropped': 0, 'ms': 0.0}
         self._tf_buf = None
         try:
             import tf2_ros
@@ -290,6 +313,16 @@ class StereoDepthNode(Node):
             self._tf_static_sub = self.create_subscription(
                 _TFM, '/tf_static', self._on_tf_static,
                 QoSProfile(depth=100, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        if self.drop_outside:
+            if not self.fixed_frames:
+                self.get_logger().warn('drop_marks_outside_areas needs fixed_frame_clouds: off')
+                self.drop_outside = False
+            else:
+                from nav_msgs.msg import OccupancyGrid
+                from rclpy.qos import QoSProfile, DurabilityPolicy
+                self._area_sub = self.create_subscription(
+                    OccupancyGrid, str(p('area_mask_topic')), self._on_area_mask,
+                    QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.plane_pub = self.create_publisher(Float32MultiArray, '~/ground_plane', 10)
         self.stats_pub = self.create_publisher(String, '~/stats', 10)
         self.create_timer(1.0, self._publish_stats)
@@ -351,6 +384,26 @@ class StereoDepthNode(Node):
             if t.header.frame_id == self.map_frame and t.child_frame_id == self._stamp_parent \
                     and (self._T_map_parent is None or self._T_map_parent[2]):
                 self._T_map_parent = (0, tf_matrix(t.transform), True)   # static: always valid
+
+    def _on_area_mask(self, msg):
+        if msg.header.frame_id and msg.header.frame_id != self.map_frame:
+            self.get_logger().warn(f'area mask in {msg.header.frame_id!r}, not '
+                                   f'{self.map_frame!r}: outside-area filter off')
+            self.area_mask = None
+            return
+        self.area_mask = dfl.AreaMask.from_occupancy_grid(msg)
+
+    def outside_keep(self, clouds):
+        """Boolean keep-mask over the obstacle points (None = keep all): False for points
+        whose map-frame position is more than area_tolerance_m outside every area."""
+        if not self.drop_outside or self.area_mask is None:
+            return None
+        for frame, _ns, pts in clouds:
+            if frame == self.map_frame:
+                keep = self.area_mask.inside(pts[:, :2], self.cfg['area_tolerance_m'])
+                self._stats['outside_dropped'] += int(len(keep) - np.count_nonzero(keep))
+                return keep
+        return None
 
     def fixed_frame_clouds(self, pts, now_ns):
         """Camera-frame points -> [(frame, stamp_ns, points)] in stamp_tf_parent (odom) and,
@@ -424,6 +477,9 @@ class StereoDepthNode(Node):
             self._stats['no_tf_skipped'] = self._stats.get('no_tf_skipped', 0) + 1
             return
         clears = self.fixed_frame_clouds(clear, now_ns) if clear is not None else []
+        keep = self.outside_keep(clouds)   # same point order in every frame's copy
+        if keep is not None and not keep.all():
+            clouds = [(f, ns, p[keep]) for (f, ns, p) in clouds]
         pubs = {self._stamp_parent: (self.cloud_pub, self.clear_pub),
                 self.map_frame: (self.cloud_map_pub, self.clear_map_pub)}
         for (frame, ns, p_fixed) in clouds:
@@ -498,15 +554,21 @@ class StereoDepthNode(Node):
         st['denoised'] += len(pts)
         st['raw'] += int(np.count_nonzero(raw[::step, ::step]))
         ok = False
+        margin = c['ground_margin_m']
         if c['ground_plane_fit']:
             plane, k, ok = dfl.fit_ground_plane(pts, self.prior,
                                                 max_tilt_deg=c['ground_max_tilt_deg'],
                                                 max_dh_m=c['ground_max_dh_m'], rng=self.rng)
+            plane, src = self.plane_keeper.update(plane, ok, time.monotonic(), self.prior)
             self.plane = plane
             st['fit_ok'] += int(ok)
+            st['plane_reused'] += int(src == 'last')
+            st['plane_prior'] += int(src == 'prior')
             m = Float32MultiArray()
             m.data = [float(v) for v in plane[0]] + [float(plane[1]), float(k), float(ok)]
             self.plane_pub.publish(m)
+            if src == 'prior':   # no recent good plane: only clearly tall points mark
+                margin = max(c['ground_margin_m'], c['ground_fail_margin_m'])
         hgt = dfl.heights(pts, self.plane)   # shared by ground removal + clearing selection
         clear = None
         if want_clear and ok:
@@ -514,7 +576,7 @@ class StereoDepthNode(Node):
                                             c['min_range_m'], c['clear_max_range_m'],
                                             c['clear_voxel_m'], hgt=hgt)
             st['clear'] += len(clear)
-        pts = dfl.remove_ground(pts, self.plane, c['ground_margin_m'], hgt=hgt)
+        pts = dfl.remove_ground(pts, self.plane, margin, hgt=hgt)
         st['obstacle'] += len(pts)
         pts = self.persist(pts).astype(np.float32)
         st['published'] += len(pts)
@@ -525,6 +587,8 @@ class StereoDepthNode(Node):
         st = self._stats
         f = max(st['frames'], 1)
         out = {'frames': st['frames'], 'fit_ok': st['fit_ok'], 'clear_msgs': st['clear_msgs'],
+               'plane_reused': st['plane_reused'], 'plane_prior': st['plane_prior'],
+               'outside_dropped': st['outside_dropped'],
                'ms_per_frame': round(st['ms'] / f, 1),
                'plane': [round(float(v), 4) for v in self.plane[0]] + [round(self.plane[1], 3)]}
         for k in ('raw', 'denoised', 'obstacle', 'published', 'clear'):
