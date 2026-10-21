@@ -114,4 +114,5 @@ These were sent to the implementing agents.
 | After `ws/edge-layout2` | A4 integration | Queued |
 | After `ws/edge-layout2` | A6 cleanup: delete the RPP configs, one limiter | Queued |
 | From now on | A6 rule: new FSM guards need a matching removal | Applies to all work |
+| After `ws/edge-layout2` | Resume slider (owner 2026-10-22): the GUI resume shows a draggable progress slider, e.g. drag to 60 % to skip mowed ground or redo a stretch. The map previews the start point. It sets the mission resume cursor (`coverage_resume.txt`) through a new mission service, validated against the current plan, and START then resumes from there | Queued |
 | After `ws/edge-layout2` | Stable area IDs in the stack (`MapArea` id persisted in `areas.dat`; mission, schedule and GUI bind by id; `GUI_REBASE_TASKS.md` 1.1/1.2). Prerequisite for re-forking the vendored GUI onto upstream `dev` (2–3 weeks). Owner approved 2026-10-22 | Queued |
