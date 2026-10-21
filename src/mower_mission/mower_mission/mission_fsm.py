@@ -130,6 +130,8 @@ AREA_SETTINGS_DEFAULTS = {
     # robot-wide disc-derived standard width (blade_disc_mm/1000 - swath_overlap_m, 220 mm -> 0.18)
     'swath_width_m': 0.18,
     'edge_first': True,
+    # soft | hard (owner 2026-10-21: every area soft for now): the planner's edge_layout
+    'edge_mode': 'soft',
     'repeat': 1,
     'alternate_angle_offset_deg': 90.0,
     'route_order': 'racetrack',
@@ -146,6 +148,7 @@ AREA_SETTINGS_DEFAULTS = {
 PATH_MODES = ('zigzag', 'cross', 'alternate', 'spiral', 'contour_only')
 ROUTE_ORDERS = ('boustrophedon', 'snake', 'spiral', 'racetrack')
 TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
+EDGE_MODES = ('soft', 'hard')
 OBSTACLE_DETECTION_LEVELS = ('none', 'standard', 'sensitive')
 BLADE_POLICIES = ('continuous', 'conservative')
 STEREO_STALE_SUB = 'sensor stale: stereo depth (%d s)'
@@ -193,7 +196,9 @@ def coverage_route_params(st):
             'route_order': str(st['route_order']),
             'route_spiral_size': int(st['route_spiral_size']),
             'min_turn_radius_m': float(st['min_turn_radius_m']),
-            'turn_type': str(st['turn_type'])}
+            'turn_type': str(st['turn_type']),
+            # stock-style edge layout per area edge_mode; 'legacy' = headland rings (revert)
+            'edge_layout': str(st.get('edge_layout', st.get('edge_mode', 'soft')))}
 
 # action outcomes reported by the node
 SUCCEEDED = 'succeeded'
@@ -786,6 +791,10 @@ class Params:
     # that fails the validation is NOT mowed (never driven). false = raw paths as before
     # (revert). path_conditioning_pivot_min_rad is also the leg-start pivot threshold
     # (_cov_pivot: the robot -> leg junction is a vertex no fillet fits).
+    # Stock-style edge layout (owner 2026-10-21): the planner lays laps / rows by the area's
+    # edge_mode (soft: laps 0 / 0.15 / 0.30, row ends 0.45 in; hard: body inside + 0.10).
+    # false = the headland-ring layout (revert).
+    edge_layout_enabled: bool = True
     path_conditioning: bool = True
     path_conditioning_r_min_m: float = 0.5
     path_conditioning_r_max_m: float = 1.0
@@ -793,7 +802,9 @@ class Params:
     path_conditioning_half_width_m: float = 0.235   # body half width with wheel trim (was 0.24)
     path_conditioning_slack_m: float = 0.05
     path_conditioning_pivot_min_rad: float = 0.35
-    path_conditioning_edge_pivot_rad: float = 1.38
+    # 0 since the edge layout (2026-10-21): lap-0 runs ON the line, a pivot at a convex
+    # vertex would swing the nose ~0.6 m past it; fillets keep it within ~0.1-0.25 m
+    path_conditioning_edge_pivot_rad: float = 0.0
     path_conditioning_edge_clearance_m: float = 0.20
     # transit / dock routes: smallest fillet radius (tighter corners pivot at the vertex)
     path_conditioning_route_r_min_m: float = 0.8
@@ -2587,6 +2598,10 @@ class MissionFSM:
         if st['turn_type'] not in TURN_TYPES:
             self._log('warn', 'unknown turn_type %r: auto' % st['turn_type'])
             st['turn_type'] = 'auto'
+        if st.get('edge_mode') not in EDGE_MODES:
+            self._log('warn', 'unknown edge_mode %r: soft' % st.get('edge_mode'))
+            st['edge_mode'] = 'soft'
+        st['edge_layout'] = st['edge_mode'] if self.p.edge_layout_enabled else 'legacy'
         st['route_spiral_size'] = max(2, int(st['route_spiral_size']))
         st['min_turn_radius_m'] = max(0.0, float(st['min_turn_radius_m']))
         if st['path_mode'] not in PATH_MODES:

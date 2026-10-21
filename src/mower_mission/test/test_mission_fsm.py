@@ -1358,7 +1358,7 @@ def test_height_mm_passthrough_and_clamp():
 
 
 DEFAULT_ROUTE = {'boundary_inset_m': 0.05, 'route_order': 'racetrack', 'route_spiral_size': 6,
-                 'min_turn_radius_m': 0.5, 'turn_type': 'auto'}
+                 'min_turn_radius_m': 0.5, 'turn_type': 'auto', 'edge_layout': 'soft'}
 
 
 def test_route_and_turn_settings_reach_the_coverage_server():
@@ -1370,7 +1370,7 @@ def test_route_and_turn_settings_reach_the_coverage_server():
     cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]
     assert {k: cov[k] for k in DEFAULT_ROUTE} == {
         'boundary_inset_m': 0.05, 'route_order': 'snake', 'route_spiral_size': 8, 'min_turn_radius_m': 0.3,
-        'turn_type': 'reverse'}
+        'turn_type': 'reverse', 'edge_layout': 'soft'}
 
 
 def test_bad_route_settings_fall_back():
@@ -4723,3 +4723,16 @@ def test_swept_prediction_geometry():
     assert not swept_hit((0.0, corner + 0.01), full, 0.52, 0.25, 0.27, 0.25)
     assert in_footprint((0.77, 0.0), (0.0, 0.0, 0.0), 0.52, 0.25, 0.27, 0.25)
     assert not in_footprint((0.78, 0.0), (0.0, 0.0, 0.0), 0.52, 0.25, 0.27, 0.25)
+
+
+def test_edge_mode_reaches_the_planner_and_legacy_reverts():
+    h = Harness()
+    h.area_settings = {0: {'edge_mode': 'hard'}}
+    m = h.mark()
+    start_until_planning(h)
+    assert param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]['edge_layout'] == 'hard'
+    h2 = Harness()
+    h2.fsm.p.edge_layout_enabled = False
+    m2 = h2.mark()
+    start_until_planning(h2)
+    assert param_calls(h2, f.PARAM_NODE_COVERAGE, m2)[0]['edge_layout'] == 'legacy'
