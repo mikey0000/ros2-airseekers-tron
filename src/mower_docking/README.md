@@ -54,7 +54,7 @@ DOCKING with > max_lost_frames ticks lost, or 60 s ─────────�
                                                                                      ▼
 RETRY: drive forward retry_forward_distance (0.3 m) at 0.1 m/s, then NAV_TO_APPROACH
        (with skip_nav_to_approach: drive back the distance just reversed, then retry).
-       After max_retries (3): FAILED "DOCK_MAXOUT".
+       After max_retries (8 since 2026-10-21, was 3): FAILED "DOCK_MAXOUT".
 ```
 
 **Blind final docking** (dead-reckoned reverse without a marker) is allowed only when
@@ -127,6 +127,85 @@ With `v < 0`, the desired heading is `h_d = clamp(k_lateral·lateral, ±0.35)` a
 sign is derived for reversing: `ẏ = v·sin h`. A closed-loop unicycle test in
 `test/test_dock_logic.py` confirms that it converges.
 
+## Stock structure port (2026-10-21)
+
+Ported from the decompiled stock `mower_charge` / `libmower_charge_core.so`
+(`docs/analysis/2026-10-21_stock_firmware_findings.md`, Docking). The structure is stock's;
+the speeds are ours (wheel floor 0.06 m/s, both wheels always turning, pivots at 0.3 rad/s).
+The state machine above still applies, with these changes:
+
+```
+NAV_TO_APPROACH ─► ALIGNING ─► [LATERAL_ALIGN] ─► SEARCHING ─► DOCKING ─► FINAL_DOCKING
+                                 RTK: > 0.15 m off      any         KF on the marker;
+                                 this attempt's line:   detection   lost: reverse on the
+                                 forward arc, then                  prediction <= 2 s,
+                                 reverse to 0.8 m                   then hold (8 s) -> RETRY
+                                                                    pose check at 0.65 m
+                                                                    marker distance
+```
+
+1. **Exposure stepping** (`exposure.py`, `mower_cameras` `v4l2_ctrl.py`). The rear camera
+   starts on auto exposure, or on manual `exposure_dark_start` (30) when the first frame's
+   mean grey level is under `exposure_dark_brightness` (50). In SEARCHING, a detection
+   ratio <= 0.2 over 3 s (>= 10 frames) steps to the next setting of stock's sequence:
+   auto -> 100, 90, 80, 30, 20, 10, 5, 2, 1 -> auto. While the marker is lost in DOCKING
+   it steps every 1 s. A setting that works is kept. Auto is restored at the end of the
+   dock goal (if it was changed) and after every undock. The docking node publishes
+   `std_msgs/Int32` on `/rear_camera/exposure_cmd` (-1 = auto); `mower_cameras`
+   (`camera_node`, which owns `/dev/rear_camera`) applies it with V4L2 ioctls
+   (`exposure_auto` 1/3, `exposure_absolute`) and latches the result as JSON on
+   `/rear_camera/exposure_state`. A camera without the controls reports `ok: false` and
+   nothing else happens. Untestable in the sim (the rendered marker ignores exposure).
+2. **No search gate** (`use_marker_gate: false`). Stock's 0.5 m / 25° `CheckInitJump`
+   has no call site. Any detection starts DOCKING; ALIGNING still ends early only on a
+   marker inside the old gate. Each SEARCH window is logged ("SEARCH window 4.2 s ->
+   DOCKING: 41 frames, 12 with a marker ...") and the accepting detection is compared with
+   the RTK pose (stock's intended, unused check; log only).
+3. **Offset retries.** `max_retries` 8 (was 3). Each retry re-approaches on a line offset
+   from the dock axis: 0, then +0.1, -0.1, +0.2, -0.2, +0.3, -0.3 m times `side`, the side
+   the marker was last seen from. The mission's `dock_timeout_s` is now 480 s.
+4. **RTK lateral pre-alignment** (`LATERAL_ALIGN`). After ALIGNING, with a measured dock
+   pose and RTK fixed: more than 0.15 m off this attempt's approach line -> drive forward
+   at 0.12 m/s on an arc back onto it (|w| <= (0.12 - 0.06) / 0.20 = 0.3, so both wheels
+   >= the floor), then reverse on RTK with the normal reverse controller to the approach
+   distance. Max 1.5 m forward / 40 s, then SEARCHING anyway. Bumper and rear-obstacle
+   holds cover it.
+5. **Marker Kalman filter** (`MarkerFilter`). State = robot in the docked frame, predicted
+   from `/odom`, corrected with every detection (Q 0.01, R 0.1), innovations clamped at
+   0.5 m / 20° (IPPE pose flips, bad corners). The controller and the pose check use the
+   filtered estimate. When the marker is lost outside `final_zone` the robot keeps reversing
+   on the prediction for `lost_predict_s` (2 s) at <= `lost_speed` (0.08 m/s), then holds
+   until `marker_lost_hold_s` (8 s), then RETRY. `marker_filter: false` restores the raw
+   path.
+6. **Pose check** at a marker distance of `pose_check_distance` 0.65 m (once per
+   approach): lateral > 0.05 m or heading > 8° -> forward 0.65 m and restart the final
+   approach (`max_realigns` 2, no retry used). The near-field straight reverse
+   (marker lost within `final_zone`) is unchanged.
+7. **Diagnostics** (recorded by `bag_recorder`, full and low-power rings):
+   `/mower_docking/marker_pose`, `/mower_docking/diag` (1 Hz JSON: frames, detections,
+   mean brightness, exposure setting / steps / ratio, filter state, clamps, retry offset)
+   and `/mower_docking/debug_image/compressed` (1 Hz grey JPEG of the detector input, only
+   during a dock goal), plus `/rear_camera/exposure_state`.
+
+Wheel floor: the new forward arc keeps both wheels >= 0.06 m/s. Reversing goes through
+`reverse_control`, unchanged: an inner wheel in (-floor, 0) becomes a reversing arc; its
+existing same-direction band (inner wheel in [0, floor)) is kept as on master.
+
+### marker_size
+
+`marker_size` stays 0.04 (stock's value) although the black square on the charger is
+about 0.055 m (not yet measured exactly). Every marker distance therefore reads about
+0.73 x the true one, in the field and in the sim (`rear_marker_size` 0.055). Stock uses
+0.04 on the same dock, so its marker-frame thresholds transfer as they are. If you change
+`marker_size`:
+
+- delete `calibration_file` and dock once in daylight, so `docked_marker_offset` is
+  re-measured (it is calibrated at the 0.04 scale; 0.45 in the yaml);
+- scale by new/0.04: `pose_check_distance`, `final_zone`, `slow_distance`, `slow_zone`,
+  `final_max_lateral`, `max_lateral_error`, `kf_max_innov_m`, `lateral_slow`,
+  `final_max_distance`, `calib_min_offset` / `calib_max_offset`;
+- the sim's `rear_marker_offset` (0.543) is derived from 0.45 at the 0.04 scale.
+
 ## Undock
 
 The sequence is `CHARGER_OFF` (`/charging false`, waiting for the reply), then
@@ -158,8 +237,9 @@ The vendor values were recovered from `libmower_charge_core.so`, by disassemblin
   **not** used here. This package uses the URDF rear camera joint instead.
 
 Both values are parameters (`aruco_dictionary`, `marker_size`, `marker_id`).
-**Measure the marker on your charger.** If its black square is not 40 mm, set
-`marker_size` to the measured value. Distances scale linearly with it.
+**Measure the marker on your charger**, but read "marker_size" above before changing
+`marker_size`: distances scale linearly with it, and the docked offset and the
+marker-frame thresholds were tuned at 0.04.
 
 ### Printing a replacement marker
 

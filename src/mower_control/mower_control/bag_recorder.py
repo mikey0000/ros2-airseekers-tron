@@ -112,6 +112,10 @@ DEFAULT_TOPICS = [
     '/hardware_bridge/status', '/hardware_bridge/emergency', '/hardware_bridge/power',
     '/mower_base/key_pressed', '/dig_stall', '/stuck_event',
     '/mower_docking/state', '/mower_docking/marker_in_view',
+    # docking diagnostics (2026-10-21): marker pose, detection/exposure summary (1 Hz), 1 Hz
+    # grey rear JPEG -- all silent unless a dock goal runs
+    '/mower_docking/marker_pose', '/mower_docking/diag', '/mower_docking/debug_image/compressed',
+    '/rear_camera/exposure_state',
     '/map_server_node/lethal_boundary_violation', '/map_server_node/replan_needed',
     '/map_server_node/outside_m',     # task 0.4 (a) hard boundary input (10 Hz float)
     '/map_server_node/boundary_status', '/map_server_node/terrain_summary',
@@ -141,7 +145,8 @@ LOW_POWER_TOPICS = [
     '/supervisor/status', '/battery', '/mower_sensor_info', '/rain',
     '/hardware_bridge/status', '/hardware_bridge/emergency', '/hardware_bridge/power',
     '/mower_base/key_pressed', '/dig_stall', '/stuck_event', '/mower_docking/state',
-    '/mower_docking/marker_in_view',
+    '/mower_docking/marker_in_view', '/mower_docking/marker_pose', '/mower_docking/diag',
+    '/mower_docking/debug_image/compressed', '/rear_camera/exposure_state',
 ]
 FULL, LOW = 'full', 'low'
 

@@ -553,8 +553,11 @@ def test_record_cmd_no_compression_no_preset():
 def test_default_topics_sane():
     t = bag_recorder.DEFAULT_TOPICS
     assert len(t) == len(set(t))
+    # the one image allowed: mower_docking's 1 Hz grey JPEG, published only during a dock goal
+    # (2026-10-21, dusk docking diagnosis)
+    allowed = {'/mower_docking/debug_image/compressed'}
     for bad in ('image', 'points', 'cloud', '/global_costmap'):
-        assert not [x for x in t if bad in x], bad
+        assert not [x for x in t if bad in x and x not in allowed], bad
     for need in ('/tf_static', '/cmd_vel', '/odometry/filtered', '/odometry/filtered_map',
                  '/mission/incident', '/hardware_bridge/emergency', '/diagnostics',
                  '/map_server_node/terrain_summary', '/dig_stall'):

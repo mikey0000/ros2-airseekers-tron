@@ -28,7 +28,7 @@ Frame conventions (see docs/audit_2026-10-05/vendor_mission_layer.md s3/s5):
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import List, Optional, Sequence, Tuple
 
 # --------------------------------------------------------------------------
@@ -271,6 +271,76 @@ def heading_hold(target_yaw: float, yaw: Optional[float], kp: float, max_w: floa
     if yaw is None:
         return 0.0
     return clamp(kp * wrap_angle(target_yaw - yaw), -max_w, max_w)
+
+
+def rtk_dock_errors(pose: Pose2D, dock: Pose2D) -> DockErrors:
+    """Robot (map pose) in the docked frame, same convention as :func:`dock_errors`:
+    ``remaining`` = distance out along the dock axis, ``lateral`` left positive,
+    ``heading`` relative to the docked heading (0 = facing away from the charger)."""
+    dx, dy = pose.x - dock.x, pose.y - dock.y
+    c, s = math.cos(dock.yaw), math.sin(dock.yaw)
+    return DockErrors(c * dx + s * dy, -s * dx + c * dy, wrap_angle(pose.yaw - dock.yaw))
+
+
+class MarkerFilter:
+    """Kalman filter of the robot pose in the docked (marker) frame (stock
+    ``LineTrackingDocking``: predict from the motion, correct with the marker, Q 0.01,
+    R 0.1, innovations clamped at 0.5 m / 20 deg).
+
+    State = :class:`DockErrors` (remaining, lateral, heading), diagonal covariance.
+    ``predict`` integrates the odometry displacement since the previous call (robot frame,
+    so it does not matter which odom frame it is); ``correct`` fuses one marker
+    measurement. A measurement far from the prediction (IPPE pose flip, a bad corner) is
+    clamped, not trusted in full."""
+
+    def __init__(self, q: float = 0.01, r: float = 0.1, max_innov_m: float = 0.5,
+                 max_innov_rad: float = math.radians(20.0)):
+        self.q, self.r = float(q), float(r)
+        self.max_innov_m, self.max_innov_rad = float(max_innov_m), float(max_innov_rad)
+        self._odom: Optional[Pose2D] = None
+        self.reset()
+
+    def reset(self) -> None:
+        self.x: Optional[DockErrors] = None
+        self.P = [0.0, 0.0, 0.0]
+        self.clamped = 0
+        self.updates = 0
+
+    def init(self, z: DockErrors) -> None:
+        self.x = z
+        self.P = [self.r, self.r, self.r]
+
+    def predict(self, odom: Optional[Pose2D]) -> None:
+        prev, self._odom = self._odom, odom
+        if self.x is None or odom is None or prev is None:
+            return
+        dx, dy = odom.x - prev.x, odom.y - prev.y
+        c, s = math.cos(prev.yaw), math.sin(prev.yaw)
+        df, dl = c * dx + s * dy, -s * dx + c * dy          # robot-frame displacement
+        dyaw = wrap_angle(odom.yaw - prev.yaw)
+        h = self.x.heading
+        ch, sh = math.cos(h), math.sin(h)
+        self.x = DockErrors(self.x.remaining + df * ch - dl * sh,
+                            self.x.lateral + df * sh + dl * ch,
+                            wrap_angle(h + dyaw))
+        self.P = [p + self.q for p in self.P]
+
+    def correct(self, z: DockErrors) -> DockErrors:
+        if self.x is None:
+            self.init(z)
+            return self.x
+        inn = [z.remaining - self.x.remaining, z.lateral - self.x.lateral,
+               wrap_angle(z.heading - self.x.heading)]
+        lim = [self.max_innov_m, self.max_innov_m, self.max_innov_rad]
+        if any(abs(i) > l for i, l in zip(inn, lim)):
+            self.clamped += 1
+        inn = [clamp(i, -l, l) for i, l in zip(inn, lim)]
+        k = [p / (p + self.r) for p in self.P]
+        self.x = DockErrors(self.x.remaining + k[0] * inn[0], self.x.lateral + k[1] * inn[1],
+                            wrap_angle(self.x.heading + k[2] * inn[2]))
+        self.P = [(1.0 - kk) * p for kk, p in zip(k, self.P)]
+        self.updates += 1
+        return self.x
 
 
 # --------------------------------------------------------------------------
@@ -545,12 +615,46 @@ class DockParams:
     calib_max_marker_age_s: float = 15.0
     calib_min_offset: float = 0.2
     calib_max_offset: float = 1.2
+    # ---- 2026-10-21 stock-structure port (docs/analysis/2026-10-21_stock_firmware_findings.md)
+    # Search gate: the stock 0.5 m / 25 deg CheckInitJump has no call site (dead code). Off:
+    # any detection starts DOCKING (after search_min_detections), ALIGNING keeps the gate.
+    use_marker_gate: bool = False
+    search_min_detections: int = 1
+    # Retries: re-approach with a lateral offset from the dock axis, alternating and growing
+    # (retry 1: +a0 * side, 2: -a0 * side, 3: +a1 * side ... then 0 again); side = the side
+    # of the axis the marker was last seen from (+1 when never seen).
+    retry_lateral_offsets: Tuple[float, ...] = (0.1, 0.2, 0.3)
+    # RTK lateral pre-alignment (stock adjust step 2): before SEARCHING, more than
+    # lateral_align_tolerance off the (offset) dock axis -> drive forward on an arc/line back
+    # onto it (both wheels >= wheel_floor), then reverse on RTK to approach_distance.
+    lateral_align: bool = True
+    lateral_align_require_rtk: bool = True
+    lateral_align_tolerance: float = 0.15
+    lateral_align_done: float = 0.04
+    lateral_align_heading_deg: float = 8.0
+    lateral_align_speed: float = 0.12
+    lateral_align_k: float = 2.0
+    lateral_align_max_angle: float = 0.5
+    lateral_align_max_travel: float = 1.5
+    lateral_align_timeout_s: float = 40.0
+    # Marker Kalman filter + reverse on the prediction while the marker is briefly lost
+    marker_filter: bool = True
+    kf_q: float = 0.01
+    kf_r: float = 0.1
+    kf_max_innov_m: float = 0.5
+    kf_max_innov_deg: float = 20.0
+    lost_predict_s: float = 2.0
+    lost_speed: float = 0.08
+    # Pose check (stock): at this MARKER distance (remaining + docked_marker_offset) check
+    # final_max_lateral / final_max_heading_deg once per approach; 0 = old final_zone check.
+    pose_check_distance: float = 0.65
     gains: ControllerGains = field(default_factory=ControllerGains)
 
 
 class DockState:
     NAV_TO_APPROACH = 'NAV_TO_APPROACH'
     ALIGNING = 'ALIGNING'
+    LATERAL_ALIGN = 'LATERAL_ALIGN'
     SEARCHING = 'SEARCHING'
     DOCKING = 'DOCKING'
     FINAL_DOCKING = 'FINAL_DOCKING'
@@ -648,6 +752,14 @@ class DockStateMachine:
         self._lost_t = 0.0   # bumper hold: {'t0', 'clear_t', 'state'}
         self._rear: Optional[dict] = None    # rear obstacle hold: {'t0', 'clear_t', 'state'}
         self._paused_s = 0.0                 # time spent in rear holds (goal timeout)
+        self._kf = MarkerFilter(params.kf_q, params.kf_r, params.kf_max_innov_m,
+                                math.radians(params.kf_max_innov_deg))
+        self._offset = 0.0                   # lateral offset of this attempt's approach line
+        self._side = 1.0                     # side of the axis the marker was last seen from
+        self._lat_done = False               # lateral pre-alignment done for this approach
+        self._lat_phase = 'forward'
+        self._pose_checked = False
+        self._search_n = 0                   # distinct marker detections this SEARCHING
 
     # -- helpers ---------------------------------------------------------
     def _enter(self, state: str, snap: Snapshot) -> None:
@@ -665,9 +777,11 @@ class DockStateMachine:
         self.state = DockState.FAILED
         self.message = msg
 
-    def _gate(self, err: Optional[DockErrors], scale: float = 1.0) -> bool:
+    def _gate(self, err: Optional[DockErrors], scale: float = 1.0, force: bool = False) -> bool:
         if err is None:
             return False
+        if not self.p.use_marker_gate and not force:
+            return True      # stock: the 0.5 m / 25 deg check is dead code
         k = max(1.0, scale)
         lat, yaw = k * self.p.max_lateral_error, k * math.radians(self.p.max_yaw_error_deg)
         # raw dock-axis gate (vendor) OR on the controller's approach line
@@ -675,10 +789,47 @@ class DockStateMachine:
 
     def _post_approach(self, snap: Snapshot) -> None:
         if self.use_vision:
+            if self._want_lateral_align(snap):
+                return
             self._lost = 0
+            self._obs = []
+            self._kf.reset()
+            self._search_n = 0
             self._enter(DockState.SEARCHING, snap)
         else:
             self._try_blind(snap)
+
+    def _want_lateral_align(self, snap: Snapshot) -> bool:
+        p = self.p
+        if not p.lateral_align or self._lat_done or not self.dock_pose_measured or \
+                snap.map_pose is None or (p.lateral_align_require_rtk and not snap.rtk_fixed):
+            return False
+        e = rtk_dock_errors(snap.map_pose, self.dock_pose)
+        off = e.lateral - self._offset
+        if abs(off) <= p.lateral_align_tolerance or abs(e.heading) > math.radians(45.0):
+            return False
+        self._lat_phase = 'forward'
+        self._notes.append('RTK: %.2f m off the approach line (lateral %.2f, offset %.2f, '
+                           'heading %.0f deg): lateral pre-alignment' % (
+                               off, e.lateral, self._offset, math.degrees(e.heading)))
+        self._enter(DockState.LATERAL_ALIGN, snap)
+        return True
+
+    def _set_offset(self, off: float) -> None:
+        self._offset = off
+        base = approach_pose(self.dock_pose, self.p.approach_distance)
+        y = self.dock_pose.yaw
+        self.approach = Pose2D(base.x - off * math.sin(y), base.y + off * math.cos(y), base.yaw)
+        self.approach_goal = Pose2D(
+            self.approach.x, self.approach.y,
+            wrap_angle(self.approach.yaw + (math.pi if self.p.approach_facing_dock else 0.0)))
+
+    def _offset_for(self, retry: int) -> float:
+        mags = [abs(float(a)) for a in self.p.retry_lateral_offsets if abs(float(a)) > 0]
+        seq = [0.0]
+        for a in mags:
+            seq += [a, -a]
+        return self._side * seq[retry % len(seq)]
 
     def blind_allowed(self, t: float) -> Tuple[bool, str]:
         if self.p.allow_blind_docking:
@@ -760,6 +911,11 @@ class DockStateMachine:
         self.retries += 1
         self._obs = []
         self._last_err = None
+        self._kf.reset()
+        self._lat_done = False
+        self._set_offset(self._offset_for(self.retries))
+        self._notes.append('retry %d/%d: approach line offset %+.2f m from the dock axis'
+                           % (self.retries, self.p.max_retries, self._offset))
         if renav:
             # searching (not reversing): nothing to drive forward off, Nav2 re-approach now
             self._pending.extend(self._go_to_approach(snap, force=True))
@@ -777,12 +933,13 @@ class DockStateMachine:
         self._realigns += 1
         self._realign = True
         self._retry_distance = self.p.realign_forward_distance
-        self._notes.append('off the dock axis at the final zone (lateral %.2f m, heading %.1f deg):'
+        self._notes.append('pose check: off the dock axis (lateral %.2f m, heading %.1f deg):'
                            ' realign %d/%d' % (err.lateral, math.degrees(err.heading),
                                                self._realigns, self.p.max_realigns))
         self._enter(DockState.RETRY, snap)
         self._obs = []
         self._last_err = None
+        self._kf.reset()
         if snap.odom is not None:
             self._hold_yaw = wrap_angle(snap.odom.yaw - err.heading)   # docked heading in odom
 
@@ -864,6 +1021,7 @@ class DockStateMachine:
             self._arrive(snap)
             return []
         self._relaxed_tried = False
+        self._lat_done = False
         self._enter(DockState.NAV_TO_APPROACH, snap)
         return [('start_nav', self.approach_goal)]
 
@@ -871,8 +1029,8 @@ class DockStateMachine:
     def _bumper_hold(self, snap: Snapshot) -> Optional[Output]:
         """Stop while the bumper is pressed / the bumper manoeuvre runs; resume from the
         current pose once clear. Returns an Output while holding, None otherwise."""
-        held = (DockState.ALIGNING, DockState.SEARCHING, DockState.DOCKING,
-                DockState.FINAL_DOCKING, DockState.RETRY)
+        held = (DockState.ALIGNING, DockState.LATERAL_ALIGN, DockState.SEARCHING,
+                DockState.DOCKING, DockState.FINAL_DOCKING, DockState.RETRY)
         if self._bump is None:
             if not snap.bumper or self.state not in held:
                 return None
@@ -902,7 +1060,8 @@ class DockStateMachine:
         """Hold still while obstacle_guard reports a rear obstacle in the dock corridor.
         Returns an Output while holding, None otherwise (also on the resuming tick, which
         then runs the state normally with every state timer shifted by the hold)."""
-        held = (DockState.SEARCHING, DockState.DOCKING, DockState.FINAL_DOCKING)
+        held = (DockState.LATERAL_ALIGN, DockState.SEARCHING, DockState.DOCKING,
+                DockState.FINAL_DOCKING)
         if self._rear is None:
             if not self.p.rear_hold or not snap.rear_blocked or self.state not in held:
                 return None
@@ -942,6 +1101,11 @@ class DockStateMachine:
                            % (waited, st))
         self._obs = []
         self._lost = 0
+        self._kf.reset()
+        if st == DockState.LATERAL_ALIGN:
+            self._lat_done = False
+            self._arrive(snap)
+            return
         if st in (DockState.ALIGNING, DockState.SEARCHING):
             # re-plan the about-turn from where the back-off left the robot
             self._arrive(snap)
@@ -977,6 +1141,151 @@ class DockStateMachine:
             self._marker_seen_t = m.stamp if self._marker_seen_t is None \
                 else max(self._marker_seen_t, m.stamp)
         return m
+
+    def _rtk_check(self, snap: Snapshot, med: DockErrors) -> str:
+        """Stock's intended (unused) cross-check: marker pose vs RTK pose (log only)."""
+        if snap.map_pose is None or not self.dock_pose_measured:
+            return ''
+        r = rtk_dock_errors(snap.map_pose, self.dock_pose)
+        return '; RTK says %.2f m, lateral %.2f m, heading %.1f deg (diff %.2f m / %.1f deg)' % (
+            r.remaining, r.lateral, math.degrees(r.heading), r.lateral - med.lateral,
+            math.degrees(wrap_angle(r.heading - med.heading)))
+
+    def _step_lateral_align(self, snap: Snapshot, el: float, travelled: float) -> Output:
+        p, g = self.p, self.p.gains
+        if snap.map_pose is None or el > p.lateral_align_timeout_s or \
+                (self._lat_phase == 'forward' and travelled > p.lateral_align_max_travel):
+            self._notes.append('lateral pre-alignment stopped (%s, %.1f m, %.0f s): searching'
+                               % ('no map pose' if snap.map_pose is None else self._lat_phase,
+                                  travelled, el))
+            self._lat_done = True
+            self._post_approach(snap)
+            return self._out()
+        e = rtk_dock_errors(snap.map_pose, self.dock_pose)
+        le = e.lateral - self._offset
+        self._remaining = e.remaining
+        dt = snap.t - self._prev_t if self._prev_t is not None else 0.05
+        self._prev_t = snap.t
+        if self._lat_phase == 'forward':
+            if abs(le) <= p.lateral_align_done and \
+                    abs(e.heading) <= math.radians(p.lateral_align_heading_deg):
+                self._lat_phase = 'reverse'
+                self._prev_e = None
+                self._notes.append('back on the approach line (%.2f m, %.1f deg) after %.2f m: '
+                                   'reversing to %.2f m' % (le, math.degrees(e.heading),
+                                                            travelled, p.approach_distance))
+            else:
+                v = p.lateral_align_speed
+                half = 0.5 * g.track_width
+                w_lim = g.max_angular if g.wheel_floor <= 0 else \
+                    min(g.max_angular, max(0.0, v - g.wheel_floor) / half)
+                h_d = clamp(-p.lateral_align_k * le, -p.lateral_align_max_angle,
+                            p.lateral_align_max_angle)
+                w = clamp(g.kp_heading * wrap_angle(h_d - e.heading), -w_lim, w_lim)
+                return self._out(v, w)
+        if e.remaining <= p.approach_distance:
+            self._notes.append('lateral pre-alignment done: %.2f m off the approach line, '
+                               '%.1f deg' % (le, math.degrees(e.heading)))
+            self._lat_done = True
+            self._post_approach(snap)
+            return self._out()
+        gl = replace(g, max_speed=min(g.max_speed, p.lateral_align_speed),
+                     close_speed=min(g.close_speed, p.lateral_align_speed))
+        v, w, self._prev_e = reverse_control(DockErrors(e.remaining, le, e.heading), gl,
+                                             self._prev_e, dt)
+        return self._out(v, w)
+
+    def _step_docking(self, snap: Snapshot, el: float, travelled: float) -> Output:
+        p, g = self.p, self.p.gains
+        if el > p.docking_timeout_s:
+            self._enter_retry(snap, travelled)
+            return self._out()
+        m = self._fresh_marker(snap)
+        new = m is not None and m.stamp != self._last_marker_stamp
+        err = dock_errors(m, p.docked_marker_offset) if m is not None else None
+        if err is not None:
+            self._push_obs(m, err)
+        gerr = self._median_err() if err is not None else None
+        k = max(1.0, p.docking_gate_scale)
+        usable = gerr is not None and self._gate(gerr, k)
+        use_kf = p.marker_filter
+        if usable and new:
+            self._lost = 0
+            self._last_marker_stamp = m.stamp
+            if use_kf:
+                if self._kf.x is None:
+                    self._kf.init(gerr)
+                else:
+                    c0 = self._kf.clamped
+                    self._kf.correct(err)
+                    if self._kf.clamped != c0:
+                        self._notes.append('marker jump clamped (measured lateral %.2f m, '
+                                           'heading %.1f deg)' % (err.lateral,
+                                                                  math.degrees(err.heading)))
+        dt = snap.t - self._prev_t if self._prev_t is not None else 0.05
+        self._prev_t = snap.t
+        if not usable:
+            last = self._kf.x if use_kf and self._kf.x is not None else self._last_err
+            if use_kf and last is not None and snap.odom is not None:
+                self._last_err, self._last_err_odom = last, snap.odom
+            if last is not None and last.remaining <= g.final_zone:
+                # lost in the last stretch (too close / occluded): straight on the
+                # last docked heading, dead-reckoned
+                self._notes.append('marker lost %.2f m from the contacts: reversing straight'
+                                   ' on the last heading' % last.remaining)
+                self._enter_vision_final(snap)
+                return self._out(-g.final_speed, 0.0)
+            self._lost += 1
+            if self._lost == 1:
+                self._lost_t = snap.t
+                if use_kf and last is not None and p.lost_predict_s > 0:
+                    self._notes.append('marker lost %.2f m out: reversing on the filter '
+                                       'prediction for up to %.1f s' % (last.remaining,
+                                                                       p.lost_predict_s))
+            if use_kf and self._kf.x is not None and snap.odom is not None and \
+                    snap.t - self._lost_t < p.lost_predict_s:
+                est = self._kf.x
+                self._remaining = est.remaining
+                gl = replace(g, max_speed=min(g.max_speed, p.lost_speed),
+                             close_speed=min(g.close_speed, p.lost_speed))
+                v, w, self._prev_e = reverse_control(est, gl, self._prev_e, dt)
+                return self._out(v, w)
+            if self._lost > p.max_lost_frames and \
+                    snap.t - self._lost_t >= p.marker_lost_hold_s:
+                self._enter_retry(snap, travelled)
+            self._prev_e = None
+            return self._out()  # hold still while the marker is lost
+        if use_kf and self._kf.x is None:
+            self._kf.init(gerr)
+        est = self._kf.x if use_kf else err
+        dec = self._kf.x if use_kf else gerr
+        self._last_err, self._last_err_odom = est, snap.odom
+        self._remaining = est.remaining
+        if p.pose_check_distance > 0:
+            check = not self._pose_checked and \
+                dec.remaining + p.docked_marker_offset <= p.pose_check_distance
+        else:
+            check = dec.remaining <= g.final_zone
+        if check:
+            self._pose_checked = True
+            off = abs(dec.lateral) > p.final_max_lateral or \
+                abs(dec.heading) > math.radians(p.final_max_heading_deg)
+            if off and self._realigns < p.max_realigns:
+                self._enter_realign(snap, dec)
+                return self._out()
+            if off:
+                self._notes.append('pose check at %.2f m: lateral %.2f m, heading %.1f deg off, '
+                                   'no realign left: continuing' % (
+                                       dec.remaining + p.docked_marker_offset, dec.lateral,
+                                       math.degrees(dec.heading)))
+        overrun = max(0.0, p.final_max_distance - g.final_zone)
+        if dec.remaining <= -overrun:
+            self._notes.append('passed the expected contact point by %.2f m with the marker '
+                               'in view: holding for the contacts' % -dec.remaining)
+            self._enter_vision_final(snap, phase='settle')
+            return self._out()
+        v, w, self._prev_e = reverse_control(est, g, self._prev_e, dt)
+        return self._out(v, w)
 
     # -- API -------------------------------------------------------------
     def start(self, snap: Snapshot) -> Output:
@@ -1043,6 +1352,9 @@ class DockStateMachine:
             left = '' if self._heading_left is None else \
                 ' %.0f\N{DEGREE SIGN} to go' % abs(math.degrees(self._heading_left))
             return 'aligning to dock heading:%s; marker %s' % (left, mk)
+        if st == DockState.LATERAL_ALIGN:
+            return 'lateral pre-align (%s, RTK) onto the approach line%s; marker %s' % (
+                self._lat_phase, ' %+.2f m' % self._offset if self._offset else '', mk)
         if st == DockState.SEARCHING:
             return 'searching marker: %s' % mk
         if st == DockState.DOCKING:
@@ -1081,12 +1393,13 @@ class DockStateMachine:
             self._marker_text = 'not visible'
             return
         err = dock_errors(m, self.p.docked_marker_offset)
+        self._side = 1.0 if err.lateral >= 0.0 else -1.0
         kg = max(1.0, self.p.docking_gate_scale)
         if self._gate(err, kg):
             self._valid_marker_t = m.stamp
         txt = 'seen %.2f m, %.1f\N{DEGREE SIGN}' % (math.hypot(m.x, m.y),
                                                     math.degrees(err.heading))
-        if not self._gate(err):
+        if not self._gate(err, force=True):
             txt += ' (outside gate: lateral %.2f m)' % err.lateral
         self._marker_text = txt
 
@@ -1095,6 +1408,7 @@ class DockStateMachine:
             return self._out()
         self._now = snap.t
         travelled = self._tracker.update(snap.t, snap.odom, self._last_cmd)
+        self._kf.predict(snap.odom)
         self._update_marker_text(snap)
 
         # ---- global guards ------------------------------------------------
@@ -1102,7 +1416,7 @@ class DockStateMachine:
             self._fail(DockMsg.EMERGENCY_STOP, snap)
             return self._out()
         if not snap.status_fresh and self.state in (DockState.DOCKING, DockState.FINAL_DOCKING,
-                                                    DockState.RETRY):
+                                                    DockState.RETRY, DockState.LATERAL_ALIGN):
             self._fail(DockMsg.BASE_STATUS_STALE, snap)
             return self._out()
         if snap.t - self._t_start - self._paused_s - self._rear_held_s(snap) > \
@@ -1110,7 +1424,8 @@ class DockStateMachine:
             self._fail(DockMsg.DOCK_TIMEOUT, snap)
             return self._out()
         moving = (DockState.SEARCHING, DockState.DOCKING, DockState.FINAL_DOCKING,
-                  DockState.ALIGNING, DockState.RETRY, DockState.NAV_TO_APPROACH)
+                  DockState.ALIGNING, DockState.RETRY, DockState.NAV_TO_APPROACH,
+                  DockState.LATERAL_ALIGN)
         if (snap.contact or snap.is_charging) and self.state in moving:
             if self.state == DockState.NAV_TO_APPROACH:
                 self._pending.append(('cancel_nav',))
@@ -1181,7 +1496,8 @@ class DockStateMachine:
 
         if st == DockState.ALIGNING:
             m = self._fresh_marker(snap)
-            if m is not None and self._gate(dock_errors(m, self.p.docked_marker_offset)):
+            if m is not None and self._gate(dock_errors(m, self.p.docked_marker_offset),
+                                            force=True):
                 self._notes.append('marker in gate while aligning: searching')
                 self._post_approach(snap)
                 return self._out()
@@ -1201,15 +1517,31 @@ class DockStateMachine:
             # wrap_angle(err) in (-pi, pi]: the sign is the shorter way round
             return self._out(self.p.align_creep, math.copysign(self.p.align_angular, err))
 
+        if st == DockState.LATERAL_ALIGN:
+            return self._step_lateral_align(snap, el, travelled)
+
         if st == DockState.SEARCHING:
             m = self._fresh_marker(snap)
             if m is not None:
                 err = dock_errors(m, self.p.docked_marker_offset)
+                if not self._obs or self._obs[-1][0] != m.stamp:
+                    self._search_n += 1
                 self._push_obs(m, err)
                 self._remaining = err.remaining
-                if self._gate(self._median_err()):
+                need = max(1, min(int(self.p.search_min_detections),
+                                  max(1, int(self.p.marker_median_n))))
+                med = self._median_err()
+                if self._search_n >= need and self._gate(med):
                     self._lost = 0
-                    self._last_err, self._last_err_odom = err, snap.odom
+                    self._last_err, self._last_err_odom = med, snap.odom
+                    self._notes.append(
+                        'marker accepted after %d detection(s) in %.1f s: %.2f m to go, '
+                        'lateral %.2f m, heading %.1f deg%s' % (
+                            self._search_n, el, med.remaining, med.lateral,
+                            math.degrees(med.heading), self._rtk_check(snap, med)))
+                    self._kf.reset()
+                    self._kf.init(med)
+                    self._pose_checked = False
                     self._enter(DockState.DOCKING, snap)
                     return self._out()
             if el > self.p.search_timeout_s:
@@ -1218,8 +1550,9 @@ class DockStateMachine:
                 else:
                     # Owner rule: docking is driven by the rear marker; never reverse blind.
                     # Re-approach (Nav2 to the approach pose, about-turn, search again).
-                    self._notes.append('no usable marker after %.0f s of searching: '
-                                       're-approaching (no blind reverse)' % el)
+                    self._notes.append('no usable marker after %.0f s of searching (%d '
+                                       'detection(s)): re-approaching (no blind reverse)'
+                                       % (el, self._search_n))
                     self._enter_retry(snap, travelled, renav=True)
                     if self.state == DockState.FAILED:
                         self.message = '%s: rear marker not found after %d re-approaches' % (
@@ -1227,52 +1560,7 @@ class DockStateMachine:
             return self._out()
 
         if st == DockState.DOCKING:
-            if el > self.p.docking_timeout_s:
-                self._enter_retry(snap, travelled)
-                return self._out()
-            m = self._fresh_marker(snap)
-            new = m is not None and m.stamp != self._last_marker_stamp
-            err = dock_errors(m, self.p.docked_marker_offset) if m is not None else None
-            if err is not None:
-                self._push_obs(m, err)
-            gerr = self._median_err() if err is not None else None
-            k = max(1.0, self.p.docking_gate_scale)
-            if gerr is None or not self._gate(gerr, k):
-                if self._last_err is not None and self._last_err.remaining <= g.final_zone:
-                    # lost in the last stretch (too close / occluded): straight on the
-                    # last docked heading, dead-reckoned
-                    self._notes.append('marker lost %.2f m from the contacts: reversing straight'
-                                       ' on the last heading' % self._last_err.remaining)
-                    self._enter_vision_final(snap)
-                    return self._out(-g.final_speed, 0.0)
-                self._lost += 1
-                if self._lost == 1:
-                    self._lost_t = snap.t
-                if self._lost > self.p.max_lost_frames and \
-                        snap.t - self._lost_t >= self.p.marker_lost_hold_s:
-                    self._enter_retry(snap, travelled)
-                return self._out()  # hold still while the marker is lost
-            if new:
-                self._lost = 0
-                self._last_marker_stamp = m.stamp
-            self._last_err, self._last_err_odom = err, snap.odom
-            self._remaining = err.remaining
-            if gerr.remaining <= g.final_zone:
-                off = abs(gerr.lateral) > self.p.final_max_lateral or \
-                    abs(gerr.heading) > math.radians(self.p.final_max_heading_deg)
-                if off and self._realigns < self.p.max_realigns:
-                    self._enter_realign(snap, gerr)
-                    return self._out()
-            overrun = max(0.0, self.p.final_max_distance - g.final_zone)
-            if gerr.remaining <= -overrun:
-                self._notes.append('passed the expected contact point by %.2f m with the marker '
-                                   'in view: holding for the contacts' % -gerr.remaining)
-                self._enter_vision_final(snap, phase='settle')
-                return self._out()
-            dt = snap.t - self._prev_t if self._prev_t is not None else 0.05
-            self._prev_t = snap.t
-            v, w, self._prev_e = reverse_control(err, g, self._prev_e, dt)
-            return self._out(v, w)
+            return self._step_docking(snap, el, travelled)
 
         if st == DockState.FINAL_DOCKING:
             if self._final_phase == 'settle':

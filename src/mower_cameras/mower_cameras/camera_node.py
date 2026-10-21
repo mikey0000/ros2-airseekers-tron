@@ -204,6 +204,11 @@ class CameraNode(Node):
         # stream off), reopen on the next subscriber; 0 = keep streaming
         self.declare_parameter('close_when_unused_s', 5.0)
         self.declare_parameter('fast_publish', True)     # pre-serialized Image (bytes)
+        # rear exposure (2026-10-21, docking at dusk): std_msgs/Int32 on
+        # /rear_camera/exposure_cmd, < 0 = auto (aperture priority), >= 0 = manual
+        # exposure_absolute; the result is latched as JSON on /rear_camera/exposure_state.
+        # A camera without the controls only reports ok=false (no exception).
+        self.declare_parameter('rear_exposure_control', True)
 
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.enable_stereo = bool(p('enable_stereo'))
@@ -260,6 +265,8 @@ class CameraNode(Node):
                 self.rear_loop.start()
                 self.create_timer(10.0, self._rear_watchdog)
                 self._rear_seen = 0
+            if bool(p('rear_exposure_control')):
+                self._setup_rear_exposure(p('rear_device'))
 
         if not (self.enable_stereo or self.enable_rear):
             self.get_logger().warning(
@@ -270,6 +277,26 @@ class CameraNode(Node):
             self.get_logger().info(
                 f'mower_cameras up (stereo={self.enable_stereo} split={self.split_stereo}, '
                 f'rear={self.enable_rear}, compressed={self.publish_compressed})')
+
+    # ------------------------------------------------------------------ rear exposure
+    def _setup_rear_exposure(self, device):
+        from rclpy.qos import DurabilityPolicy, QoSProfile
+        from std_msgs.msg import Int32, String
+        from mower_cameras.v4l2_ctrl import V4L2Controls
+        self._String = String
+        self._rear_ctrl = V4L2Controls(device)
+        latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._exposure_pub = self.create_publisher(String, '/rear_camera/exposure_state', latched)
+        self.create_subscription(Int32, '/rear_camera/exposure_cmd', self._on_exposure_cmd, 10)
+
+    def _on_exposure_cmd(self, msg):
+        import json
+        ok, text = self._rear_ctrl.apply(int(msg.data))
+        state = {'requested': int(msg.data), 'mode': 'auto' if msg.data < 0 else 'manual',
+                 'ok': bool(ok), 'message': text}
+        (self.get_logger().info if ok else self.get_logger().warning)(
+            'rear exposure: %s' % text)
+        self._exposure_pub.publish(self._String(data=json.dumps(state)))
 
     # ------------------------------------------------------------------ capture
 

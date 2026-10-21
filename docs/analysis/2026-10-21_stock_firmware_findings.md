@@ -168,26 +168,72 @@ Sources: `mower_charge` and `libmower_charge_core.so`. The node launched in prod
 - Contact: final reverse at −0.05 m/s for up to 10 s, waiting for the charging-done signal, debounced over 3–4 samples.
 - Undock: a PID-controlled 0.8 m drive.
 
-### Our port
+### Exposure details (decompiled, `main/mower_charge.c` OnSetParam / OnDocking)
 
-- No exposure control.
-- A 0.5 m / 25° search gate is enforced.
-- No lateral alignment before searching.
-- Retries use the same pose.
-- The robot stops when the marker is lost.
+- The manual sequence is a `std::map<int, double> exposures_`: 1→100, 2→90, 3→80, 4→30,
+  5→20, 6→10, 7→5, 8→2, 9→1 (`exposure_absolute`, 100 µs units). After index 9 it goes
+  back to auto ("From manual to AUTO ... Manual Set End") and starts over.
+- The first step from auto reads the current auto value and sets manual to that value
+  minus 50 ("From auto to manual ... SetManualExpose is: %d", `uVar2 - 0x32`). We start
+  at 100 instead (reading the auto value back is unreliable on UVC).
+- The camera commands are shell calls: `v4l2-ctl --device=/dev/rear_camera
+  --set-ctrl=exposure_auto=1 --set-ctrl=exposure_absolute=N` and `exposure_auto=3`
+  (aperture priority = UVC auto). SetAutoExposure also runs when the camera is opened.
+- Why lower exposure helps at dusk: auto exposure opens up for the dark lawn, so the
+  backlit marker (about 30 px at 1 m) saturates into a white blob without corners.
 
-Planned fixes, in order:
+### Our port (2026-10-21, branch `ws/docking`)
 
-1. Exposure control.
-2. Drop the gate.
-3. Retries with lateral offsets.
-4. RTK lateral alignment before searching.
-5. Kalman filter, and keep reversing when the marker is lost.
-6. Pose check at 0.65 m.
+Before: no exposure control, a 0.5 m / 25° search gate, no lateral alignment, three
+retries from the same pose, and a stop when the marker is lost.
 
-All of these must keep our wheel floor (0.06 m/s) and the both-wheels rule.
+Implemented, with the stock structure and our speeds (README "Stock structure port"):
 
-The marker's black square should be measured; the config says 0.04 m while the physical marker is about 5.5 cm.
+1. Exposure stepping. `mower_docking/exposure.py` steps through stock's sequence:
+   detection ratio ≤ 0.2 over 3 s in SEARCHING, every 1 s while lost in DOCKING. A dark
+   first frame (mean grey < 50) starts on manual 30. Auto is restored after docking and
+   after undocking. The commands go over `/rear_camera/exposure_cmd` to `mower_cameras`
+   (`camera_node` owns `/dev/rear_camera` on the mower), which uses V4L2 ioctls
+   (`v4l2_ctrl.py`) instead of shelling out; missing controls only report `ok: false`.
+2. Search gate off (`use_marker_gate: false`). ALIGNING keeps it for its early exit.
+   SEARCH windows are logged with raw frame and detection counts, and the accepted marker
+   pose is compared with the RTK pose (log only).
+3. Retries: 8, re-approaching on lines offset 0, ±0.1, ±0.2, ±0.3 m from the axis,
+   starting on the side the marker was last seen from. Mission `dock_timeout_s` 180 → 480.
+4. RTK lateral pre-alignment (`LATERAL_ALIGN`): more than 0.15 m off this attempt's line
+   → a forward arc at 0.12 m/s with |w| ≤ 0.3 (both wheels ≥ 0.06 m/s) back onto it, then
+   reverse on RTK to the approach distance. Needs a measured dock pose and RTK fixed.
+5. Kalman filter in the docked frame (odom prediction, Q 0.01, R 0.1, innovations clamped
+   at 0.5 m / 20°). Marker lost outside the final zone → keep reversing on the prediction
+   for 2 s at ≤ 0.08 m/s, then hold, RETRY after 8 s (was: stop at once, RETRY after 3 s).
+6. Pose check once per approach at a marker distance of 0.65 m: > 0.05 m or > 8° →
+   forward 0.65 m and restart (was 0.15 m / 20° at the final zone, forward 0.8 m).
+7. Diagnostics bagged by `bag_recorder`: `/mower_docking/marker_pose`,
+   `/mower_docking/diag` (1 Hz), `/mower_docking/debug_image/compressed` (1 Hz grey JPEG,
+   dock goals only) and `/rear_camera/exposure_state`.
+
+Not ported: stock's low speeds (0.02 m/s, 0.15 rad/s) — they break the 0.06 m/s wheel
+floor; stock's 1.2 m tracking line with lookahead (our reverse controller is already
+tuned in the sim and the field); the auto-value-minus-50 first manual step.
+
+`marker_size` stays 0.04. The physical square is about 0.055 m (not measured exactly),
+so marker distances read about 0.73 × true. Stock uses 0.04 on the same dock, so its
+marker-frame thresholds (0.65 m, 0.05 m / 8°) transfer unchanged. Changing it means
+re-calibrating `docked_marker_offset` and rescaling the marker-distance parameters (list
+in the mower_docking README, "marker_size").
+
+Sim results (2026-10-21, `ws/docking`; mower_sim, marker rendered at 0.055 m):
+
+- real_run5 ideal full gate: PASS (undock, mow, return, docked first attempt, one_wheel 0).
+  The marker was lost 0.31 m out; the filter prediction carried the reverse through it.
+- Dock-only from 1.2 m out, 0.30 m off the axis: LATERAL_ALIGN brought it to 0.00 m on
+  RTK, then docked first attempt (32 s).
+- Dock-only from 1.0 m, -0.12 m, -8.6°: docked (44 s), but the pose check fired twice on
+  heading (12.7°, 9.8°) and the 2-realign budget absorbed it. The marker-normal yaw is
+  the noisiest quantity at this marker size (the accepting detection differed from RTK by
+  up to 12°), so the 8° heading limit may cost realigns in the field too.
+- Not testable in the sim: exposure (the renderer ignores it), the retry offsets (no
+  failures to retry), dusk.
 
 ## Field symptoms these findings explain (2026-10-20/21)
 

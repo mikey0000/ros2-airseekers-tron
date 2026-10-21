@@ -329,7 +329,7 @@ def test_dock_search_timeout_falls_back_to_blind():
 
 
 def test_dock_search_rejects_bad_marker():
-    p = dl.DockParams(skip_nav_to_approach=True)
+    p = dl.DockParams(use_marker_gate=True, skip_nav_to_approach=True)
     m = dl.DockStateMachine(p, dl.Pose2D())
     m.start(dl.Snapshot(t=0.0))
     bad = dl.MarkerObs(-1.2, 0.0, math.radians(40), stamp=0.1)
@@ -341,7 +341,8 @@ def test_dock_search_rejects_bad_marker():
 
 
 def test_dock_vision_docking_commands_reverse_then_final():
-    p = dl.DockParams(skip_nav_to_approach=True)
+    # legacy (pre-2026-10-21) path: raw marker, no lost-marker prediction, final_zone check
+    p = dl.DockParams(skip_nav_to_approach=True, marker_filter=False, pose_check_distance=0.0)
     m = dl.DockStateMachine(p, dl.Pose2D())
     m.start(dl.Snapshot(t=0.0))
     m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0.1, 0.05, stamp=0.1)))
@@ -366,7 +367,8 @@ def test_dock_vision_docking_commands_reverse_then_final():
 
 
 def test_dock_lost_frames_trigger_retry():
-    p = dl.DockParams(skip_nav_to_approach=True, max_lost_frames=5, marker_lost_hold_s=0.5)
+    p = dl.DockParams(skip_nav_to_approach=True, max_lost_frames=5, marker_lost_hold_s=0.5,
+                      lost_predict_s=0.0)
     m = dl.DockStateMachine(p, dl.Pose2D())
     m.start(dl.Snapshot(t=0.0))
     m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0.0, 0.0, stamp=0.1)))
@@ -592,7 +594,7 @@ def _bad_marker(t):
 @pytest.mark.parametrize('measured,marker', [(True, None), (False, _bad_marker),
                                              (True, _bad_marker)])
 def test_search_timeout_never_reverses_blind(measured, marker):
-    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
+    m = dl.DockStateMachine(dl.DockParams(use_marker_gate=True, skip_nav_to_approach=True), dl.Pose2D(),
                             dock_pose_measured=measured)
     m.start(dl.Snapshot(t=0.0))
     out, outs = _search_to_end(m, marker)
@@ -877,13 +879,13 @@ def test_relaxed_nav_success_then_aligns():
 
 
 def test_detail_reports_marker_visibility():
-    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D())
+    m = dl.DockStateMachine(dl.DockParams(use_marker_gate=True, skip_nav_to_approach=True), dl.Pose2D())
     m.start(dl.Snapshot(t=0.0))
     out = m.step(dl.Snapshot(t=0.05))
     assert out.detail == 'searching marker: not visible'
     # marker 0.86 m behind, robot heading 3.5 deg off the dock axis
     mk = dl.MarkerObs(-0.86, 0.0, math.radians(-3.5), stamp=0.1)
-    m2 = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D())
+    m2 = dl.DockStateMachine(dl.DockParams(use_marker_gate=True, skip_nav_to_approach=True), dl.Pose2D())
     m2.start(dl.Snapshot(t=0.0))
     out = m2.step(dl.Snapshot(t=0.1, marker=mk))
     assert out.state == S.DOCKING
@@ -1132,7 +1134,8 @@ def test_moderate_error_at_final_zone_keeps_correcting_no_realign():
 
 
 def test_bad_error_at_final_zone_realigns_at_most_twice():
-    p = dl.DockParams(skip_nav_to_approach=True)
+    # legacy (pre-2026-10-21) path: raw marker, no lost-marker prediction, final_zone check
+    p = dl.DockParams(skip_nav_to_approach=True, marker_filter=False, pose_check_distance=0.0)
     m = dl.DockStateMachine(p, dl.Pose2D())
     m.start(dl.Snapshot(t=0.0))
     t = 0.0
@@ -1175,7 +1178,7 @@ def test_overrun_with_marker_in_view_holds_for_contacts():
 
 
 def test_marker_in_view_flag():
-    p = dl.DockParams(skip_nav_to_approach=True)
+    p = dl.DockParams(use_marker_gate=True, skip_nav_to_approach=True)
     m = dl.DockStateMachine(p, dl.Pose2D())
     out = m.start(dl.Snapshot(t=0.0))
     assert not out.marker_in_view
@@ -1372,7 +1375,7 @@ def test_bumper_during_docking_resumes_only_on_fresh_marker():
 
 
 def test_reverse_never_starts_without_marker_in_gate():
-    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True, search_timeout_s=2.0),
+    m = dl.DockStateMachine(dl.DockParams(use_marker_gate=True, skip_nav_to_approach=True, search_timeout_s=2.0),
                             dl.Pose2D(), dock_pose_measured=True)
     m.start(dl.Snapshot(t=0.0))
     t = 0.0
@@ -1387,7 +1390,7 @@ def test_reverse_never_starts_without_marker_in_gate():
 
 def test_marker_lost_in_reverse_falls_back_to_realign_not_blind():
     m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True, max_lost_frames=5,
-                                          marker_lost_hold_s=1.0),
+                                          marker_lost_hold_s=1.0, lost_predict_s=0.0),
                             dl.Pose2D(), dock_pose_measured=True)
     m.start(dl.Snapshot(t=0.0))
     m.step(dl.Snapshot(t=0.05, marker=dl.MarkerObs(-1.3, 0.0, 0.0, stamp=0.05)))
@@ -1441,13 +1444,15 @@ def test_dusk_replay_docks_without_retry_or_blind_reverse(x0, y0, thd):
             break
         if m.state == S.DOCKING and out.linear < 0 and not out.marker_in_view:
             lost_moves += 1
+            # 2026-10-21: reverse on the filter prediction, slower (stock structure)
+            assert -p.lost_speed - 1e-9 <= out.linear
         x += out.linear * math.cos(th) * dt
         y += out.linear * math.sin(th) * dt
         th += out.angular * dt
         x = max(x, 0.0)
     assert out.success, (out.message, m.state, x, y, th)
     assert m.retries == 0 and not m._blind
-    assert lost_moves == 0                      # never reverses in DOCKING without the marker
+    # 2026-10-21: a short lost gap is bridged on the filter prediction (<= lost_speed above)
 
 
 # ------------------------------------------- rear obstacle hold (2026-10-09 obstacle_guard)
