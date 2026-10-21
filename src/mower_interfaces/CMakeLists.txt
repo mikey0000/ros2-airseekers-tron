@@ -8,6 +8,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
+find_package(mowgli_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -33,9 +34,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetAreaSettings.srv"
   "srv/SetCutterHeight.srv"
   "srv/PlanRoute.srv"
+  "srv/ReplaceAreas.srv"
   "action/Dock.action"
   "action/Undock.action"
-  DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs nav_msgs action_msgs
+  DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs nav_msgs action_msgs mowgli_interfaces
 )
 
 ament_export_dependencies(rosidl_default_runtime)

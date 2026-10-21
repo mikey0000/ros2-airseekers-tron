@@ -229,3 +229,78 @@ def test_legacy_clear_add_without_begin_unchanged(node):
     assert n.rebuilt == [[]]
     n.srv_add_area(_add_req('a', A), _res())
     assert n.rebuilt == [[], ['a']]
+
+
+# ---- ~/replace_areas (mower_interfaces/ReplaceAreas): the whole set in one call ----------
+
+def _area(name, poly, nav=False):
+    return types.SimpleNamespace(name=name,
+                                 area=types.SimpleNamespace(points=[_pt(*p) for p in poly]),
+                                 obstacles=[], obstacle_info=[], is_navigation_area=nav)
+
+
+def _replace_req(areas, nav=(), channel=(), settings=()):
+    return types.SimpleNamespace(areas=list(areas), is_navigation_area=list(nav),
+                                 channel_json=list(channel), settings_json=list(settings))
+
+
+def _settings(n):
+    n.settings = mock.MagicMock()
+    n.saved_settings = []
+    n.save_settings = lambda: n.saved_settings.append(True)
+
+
+def test_replace_areas_swaps_in_one_step(node):
+    n = node
+    _settings(n)
+    _odom(n, *ROBOT_IN_B)
+    n.outside_pub.msgs.clear()
+    res = n.srv_replace_areas(_replace_req([_area('a', A), _area('b2', B)]), _res())
+    assert res.success, res.message
+    assert n.rebuilt == [['a', 'b2']]                       # one rebuild of the full set
+    assert n.persisted == [('replace_areas', ['a', 'b2'])]  # one save
+    assert n.synced == [[('a', A), ('b', B)]]               # settings carried / pruned
+    _odom(n, *ROBOT_IN_B)
+    assert n.outside_pub.msgs == [0.0]
+
+
+def test_replace_areas_invalid_set_leaves_the_old_map(node):
+    n = node
+    _settings(n)
+    bad = [(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]               # degenerate polygon
+    res = n.srv_replace_areas(_replace_req([_area('a', A), _area('x', bad)]), _res())
+    assert res.success is False and 'map unchanged' in res.message
+    assert [a.name for a in n.store.areas] == ['a', 'b']
+    assert n.rebuilt == [] and n.persisted == [] and n.synced == []
+    res = n.srv_replace_areas(_replace_req([_area('a', A)], nav=[True, False]), _res())
+    assert res.success is False and [a.name for a in n.store.areas] == ['a', 'b']
+    res = n.srv_replace_areas(_replace_req([_area('a', A)], settings=['{"nope": 1}']), _res())
+    assert res.success is False and n.rebuilt == []
+
+
+def test_replace_areas_paths_channels_and_settings(node):
+    n = node
+    _settings(n)
+    req = _replace_req([_area('a', A), _area('p', B)], nav=[False, True],
+                       channel=['', '{"points": [[21, 5], [29, 5]], "width_m": 0.7}'],
+                       settings=['{"cutter_height_mm": 40}', ''])
+    res = n.srv_replace_areas(req, _res())
+    assert res.success, res.message
+    assert n.store.areas[1].is_navigation and n.store.areas[1].channel
+    n.settings.set_area.assert_called_once()
+    assert n.settings.set_area.call_args[0][0] == 'a'
+    assert n.saved_settings
+
+
+def test_replace_areas_publishes_nothing_partial(node, msn):
+    n = node
+    _settings(n)
+    calls = []
+    real = core.outside_distance
+    with mock.patch.object(msn.core, 'outside_distance',
+                           side_effect=lambda x, y, areas, extra: calls.append(
+                               [a.name for a in areas]) or real(x, y, areas, extra)):
+        _odom(n, *ROBOT_IN_B)
+        n.srv_replace_areas(_replace_req([_area('a2', A), _area('b2', B)]), _res())
+        _odom(n, *ROBOT_IN_B)
+    assert calls == [['a', 'b'], ['a2', 'b2']]

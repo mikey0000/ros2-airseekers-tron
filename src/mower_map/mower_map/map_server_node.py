@@ -29,7 +29,7 @@ from std_msgs.msg import Bool, Float32, String
 from std_srvs.srv import Trigger
 
 from mower_interfaces.msg import MowerBaseDevStatus
-from mower_interfaces.srv import GetAreaSettings, PlanRoute, SetAreaSettings
+from mower_interfaces.srv import GetAreaSettings, PlanRoute, ReplaceAreas, SetAreaSettings
 from mowgli_interfaces.msg import GnssStatus, MapArea, MapObstacleInfo, ObstacleArray
 from mowgli_interfaces.srv import (AddMowingArea, ClearObstacle, GetMowingArea,
                                    GetRecoveryPoint, PromoteObstacle, RemoveObstacle,
@@ -396,6 +396,8 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         srv(Trigger, '~/begin_map_edit', self.srv_begin_map_edit)
         srv(Trigger, '~/commit_map_edit', self.srv_commit_map_edit)
         srv(Trigger, '~/abort_map_edit', self.srv_abort_map_edit)
+        # ... or the whole set in one call (mower_interfaces/ReplaceAreas, preferred)
+        srv(ReplaceAreas, '~/replace_areas', self.srv_replace_areas)
         srv(Trigger, '~/save_areas', self.srv_save_areas)
         srv(Trigger, '~/load_areas', self.srv_load_areas)
         srv(SetDockingPoint, '~/set_docking_point', self.srv_set_docking_point)
@@ -1059,17 +1061,81 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             self.get_logger().warn('commit_map_edit: ' + res.message)
             return res
         staged, self._staged = self._staged, None
+        self._swap_in(staged, 'commit_map_edit')
+        res.success = True
+        res.message = 'map edit committed: %d areas' % len(self.store.areas)
+        self.get_logger().info(res.message)
+        return res
+
+    def _swap_in(self, staged, why, settings=None):
+        """Make ``staged`` the live store in one step: settings carried over / pruned
+        (``settings`` {area name: parsed update} applied after), one rebuild, one save."""
         before = [(a.name, list(a.polygon)) for a in self.store.areas]
         after = [(a.name, list(a.polygon)) for a in staged.areas]
         self.store = staged
         if before != after:
             self.progress.reset()
+        for name, update in (settings or {}).items():
+            self.settings.set_area(name, update)
+        if settings:
+            self.save_settings()
         self.sync_settings(before)
         self.rebuild()
-        self.persist_best_effort('commit_map_edit')
+        self.persist_best_effort(why)
         self.last_boundary_check = 0.0
+
+    def build_area_set(self, req):
+        """(store, settings, error) for a ReplaceAreas request: a fresh MapStore holding
+        the whole set, validated area by area (nothing touches the live map)."""
+        staged = copy.deepcopy(self.store)
+        staged.clear()
+        n = len(req.areas)
+        for name, arr in (('is_navigation_area', req.is_navigation_area),
+                          ('channel_json', req.channel_json),
+                          ('settings_json', req.settings_json)):
+            if len(arr) not in (0, n):
+                return None, None, '%s has %d entries for %d areas' % (name, len(arr), n)
+        settings = {}
+        for i, a in enumerate(req.areas):
+            obstacles = []
+            for j, obs in enumerate(a.obstacles):
+                info = a.obstacle_info[j] if j < len(a.obstacle_info) else None
+                obstacles.append((_poly_from_msg(obs), info.name if info else '',
+                                  int(info.source) if info else core.SOURCE_USER))
+            is_nav = bool(a.is_navigation_area or
+                          (req.is_navigation_area[i] if req.is_navigation_area else False))
+            try:
+                core.grid_for_polygons([_poly_from_msg(a.area)], self.resolution,
+                                       float(self.p('mask_margin')))
+                staged.add_area(a.name, _poly_from_msg(a.area), is_nav, obstacles)
+            except ValueError as exc:
+                return None, None, "area %d '%s': %s" % (i, a.name, exc)
+            if req.channel_json and req.channel_json[i]:
+                ok, msg, points, width = core.parse_channel_json(req.channel_json[i])
+                if ok:
+                    ok, msg = staged.set_channel(i, points, width)
+                if not ok:
+                    return None, None, "area %d '%s' channel: %s" % (i, a.name, msg)
+            if req.settings_json and req.settings_json[i]:
+                ok, msg, update = aset.parse_json(req.settings_json[i])
+                if not ok:
+                    return None, None, "area %d '%s' settings: %s" % (i, a.name, msg)
+                settings[a.name] = update
+        return staged, settings, None
+
+    def srv_replace_areas(self, req, res):
+        """~/replace_areas: the whole area set in one atomic swap (see ReplaceAreas.srv)."""
+        staged, settings, err = self.build_area_set(req)
+        if err is not None:
+            res.success, res.message = False, 'replace_areas rejected, map unchanged: ' + err
+            self.get_logger().warn(res.message)
+            return res
+        if self._staged is not None:
+            self.get_logger().warn('replace_areas: an open map edit was discarded')
+            self._staged = None
+        self._swap_in(staged, 'replace_areas', settings)
         res.success = True
-        res.message = 'map edit committed: %d areas' % len(self.store.areas)
+        res.message = 'map replaced: %d areas' % len(self.store.areas)
         self.get_logger().info(res.message)
         return res
 
