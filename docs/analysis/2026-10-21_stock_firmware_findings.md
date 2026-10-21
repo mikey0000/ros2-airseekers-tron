@@ -82,6 +82,29 @@ There is no retry cap and no task failure: if the robot is still out, the check 
 - Recovery copies stock: blade off, reverse 0.3 m (at our 0.10 m/s cap), rotate to the path heading, resume. Track retrace stays as the fallback.
 - Keep our retry cap and the STUCK escalation, which stock lacks.
 
+### Our port, round 2 (implemented 2026-10-21, branch `ws/edge-layout2`)
+
+Code: `mower_mission/body_boundary.py`, `MissionFSM._hard_boundary_tick` and helpers; the README "Boundary out" section lists the parameters.
+
+- **Points:** the 4 footprint corners, the mid-front (nose) and the mid-rear (tail), against the mission's own area snapshot (mowing areas, drawn paths and the dock corridor). A GUI map reload does not reach this snapshot.
+- **Where the body check applies:** whenever base_link is in, or less than 1 m outside, a mowing area. On a drawn path only, in the dock corridor and in dock phases, the base_link check stays (more than 0.10 out).
+- **Limits:**
+  - Hard: any point more than 0.10 out.
+  - Soft: corners 0.35, nose 0.35, tail 0.30.
+- **Why these soft numbers:**
+  - Normal soft driving: lap 0 puts the sides 0.235 out; a row end 0.45 in puts the nose 0.15 and the front corners at most 0.195 out, pivot sweep included.
+  - Sim tracking error is p99 0.07 while pivoting and 0.13 over all samples.
+  - Stock with our half-width trips with the outer side about 0.33 out (0.235 + 0.4 × 0.235 at its 70 % line ratio).
+  - Tighter soft limits would trip on normal lap-0 drift. That was the round-1 problem, where base_link at 0.10 tripped on lap 0.
+- **Recovery:**
+  - A nose or tail trip moves 0.3 m straight at no more than 0.10 m/s (forward when the worst point is behind base_link), with a 5 s timeout.
+  - A side-only trip (lateral drift, where a straight move would not help) reverses about 0.8 m along the planned leg toward the interior.
+  - The mission then resumes from the robot's projection, and the leg-start pivot turns to the path heading, as stock does.
+  - If the robot is still beyond a limit, the driven-track retrace runs (fallback).
+- **Budget:** 6 per mission (was 2), plus 2 within 1 m, then STUCK_NEEDS_HELP. Stock has no cap.
+- **Jumps:** a reading that jumps more than 1 m in one tick is held off for up to 2 s and is not counted.
+- **Atomic map replace:** map_server `begin/commit/abort_map_edit`, which the GUI PUT /map uses, means no half-built map is ever published.
+
 ## Edges, turns and coverage
 
 Sources: `libmower_planning_core.so`, `mower_logic/config/coverage.yaml`, `task.proto`.
