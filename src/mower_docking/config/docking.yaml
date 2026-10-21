@@ -30,13 +30,26 @@ mower_docking:
     nav_server_wait_s: 5.0
 
     aruco_dictionary: DICT_4X4_50  # [bin] getPredefinedDictionary(0)
-    marker_size: 0.04              # [bin] marker_size_ = 0.04f ("square width 4 cm")
+    # Marker black-square side (m). [bin] stock marker_size_ = 0.04f, kept on purpose: the
+    # physical square is ~0.055 m (owner, not yet measured exactly), so every marker distance
+    # here reads 0.04/0.055 = 0.73 x the true one. Stock uses the same 0.04 with the same dock,
+    # so the stock marker-frame thresholds (pose_check_distance 0.65, 0.05 m / 8 deg) transfer
+    # unchanged. Changing it rescales every marker-derived distance: re-calibrate
+    # docked_marker_offset (delete calibration_file, dock once in daylight) and rescale
+    # pose_check_distance, final_zone, slow_distance/slow_zone, final_max_lateral,
+    # max_lateral_error, kf_max_innov_m (README "marker_size").
+    marker_size: 0.04
     marker_id: -1                  # -1 = any id
     # Pose of the rear camera OPTICAL frame in base_link: x y z roll pitch yaw.
     # = URDF rear_camera_joint (config/urdf/mower.urdf.xacro). TODO(calib).
     rear_camera_T_base: [-0.201, 0.0, 0.25, -1.5707963, 0.0, 1.5707963]
     max_detection_rate_hz: 10.0
     search_timeout_s: 15.0         # no usable marker -> dead-reckon
+    # Old search gate (0.5 m / 25 deg). Stock's CheckInitJump has no call site: OFF since
+    # 2026-10-21 (use_marker_gate false: any detection starts DOCKING; the Kalman filter's
+    # innovation clamp handles outliers). The values still bound ALIGNING's early exit.
+    use_marker_gate: false
+    search_min_detections: 1
     max_lateral_error: 0.5         # [doc] reject estimate worse than 0.5 m
     max_yaw_error_deg: 25.0        # [doc] ... or 25 deg
     marker_timeout_s: 0.5
@@ -57,7 +70,9 @@ mower_docking:
     marker_median_n: 3             # gates/realign decisions use the median of the last 3 markers
     # 2026-10-08 dusk: lost after max_lost_frames ticks (1 s) -> RETRY loop. Now hold still
     # (no reverse) and only RETRY once the marker has been lost this long as well.
-    marker_lost_hold_s: 3.0
+    # 2026-10-21: after lost_predict_s of reversing on the filter prediction, hold still
+    # (exposure steps every exposure_lost_step_s) and RETRY after this long (was 3.0; stock 20).
+    marker_lost_hold_s: 8.0
     # Gates (max_lateral_error / max_yaw_error_deg, x docking_gate_scale in DOCKING) compare
     # the heading with the reverse controller's desired approach heading
     # clamp(k_lateral * lateral, max_approach_angle), not with the raw dock axis.
@@ -73,7 +88,10 @@ mower_docking:
     final_max_distance: 0.30       # [doc] ... / 30 cm -> RETRY
     blind_extra_distance: 0.1      # dead-reckon approach_distance + 0.1 m
     blind_timeout_margin_s: 10.0
-    max_retries: 3                 # then DOCK_MAXOUT ([doc] notice 900053)
+    max_retries: 8                 # then DOCK_MAXOUT ([doc] notice 900053); stock 8 (was 3)
+    # Retry approach lines offset from the dock axis (stock): retry 1 +0.1*side, 2 -0.1*side,
+    # 3 +0.2, 4 -0.2, 5 +0.3, 6 -0.3, 7 0, 8 +0.1; side = where the marker was last seen from.
+    retry_lateral_offsets: [0.1, 0.2, 0.3]
     retry_forward_distance: 0.3
     retry_speed: 0.1
     retry_timeout_s: 15.0
@@ -138,10 +156,58 @@ mower_docking:
     docking_gate_scale: 1.4        # gate widened x1.4 once DOCKING (hysteresis)
     # 2026-10-07 first live dock: two 20 s realign loops for 8 cm / 8 deg. Now the reverse
     # controller corrects to contact; forward realign only when BADLY off at final_zone.
-    final_max_lateral: 0.15        # median lateral at final_zone beyond this -> forward realign
-    final_max_heading_deg: 20.0
+    # 2026-10-21 stock pose check: once per approach at pose_check_distance (MARKER distance
+    # = remaining + docked_marker_offset, 0 = the old every-tick final_zone check), lateral
+    # over final_max_lateral or heading over final_max_heading_deg -> drive forward
+    # realign_forward_distance and restart the final approach (was 0.15 m / 20 deg / 0.8 m).
+    pose_check_distance: 0.65
+    final_max_lateral: 0.05
+    final_max_heading_deg: 8.0
     max_realigns: 2                # per goal; does not consume max_retries
-    realign_forward_distance: 0.8
+    realign_forward_distance: 0.65
+    # Marker Kalman filter (stock LineTrackingDocking): state = robot in the docked frame,
+    # predicted from /odom, corrected per detection; innovations clamped (IPPE flips).
+    marker_filter: true
+    kf_q: 0.01
+    kf_r: 0.1
+    kf_max_innov_m: 0.5
+    kf_max_innov_deg: 20.0
+    # Marker lost in DOCKING (outside final_zone): keep reversing on the prediction this long,
+    # at most lost_speed (the wheel-floor arcing of reverse_control still applies), then hold.
+    lost_predict_s: 2.0
+    lost_speed: 0.08
+    # RTK lateral pre-alignment (stock adjust step 2) before SEARCHING: > tolerance off this
+    # attempt's approach line -> forward arc back onto it (both wheels >= wheel_floor at
+    # lateral_align_speed), then reverse on RTK to approach_distance. Needs a measured dock
+    # pose and RTK fixed.
+    lateral_align: true
+    lateral_align_require_rtk: true
+    lateral_align_tolerance: 0.15
+    lateral_align_done: 0.04
+    lateral_align_heading_deg: 8.0
+    lateral_align_speed: 0.12
+    lateral_align_k: 2.0
+    lateral_align_max_angle: 0.5
+    lateral_align_max_travel: 1.5
+    lateral_align_timeout_s: 40.0
+    # Rear exposure stepping (stock): auto, then manual exposure_absolute through
+    # exposure_sequence when the detection ratio over exposure_window_s is <= the threshold
+    # in SEARCHING, and every exposure_lost_step_s while the marker is lost in DOCKING. A
+    # dark first frame (mean grey < exposure_dark_brightness) starts on manual
+    # exposure_dark_start. Auto is restored at the end of the dock goal and after undock.
+    # Sent as std_msgs/Int32 (-1 = auto) to mower_cameras (rear_exposure_control).
+    exposure_control: true
+    exposure_cmd_topic: /rear_camera/exposure_cmd
+    exposure_sequence: [100, 90, 80, 30, 20, 10, 5, 2, 1]
+    exposure_window_s: 3.0
+    exposure_min_frames: 10
+    exposure_ratio_threshold: 0.2
+    exposure_lost_step_s: 1.0
+    exposure_dark_brightness: 50.0
+    exposure_dark_start: 30
+    # ~/debug_image/compressed (grey JPEG of the detector input) while a dock goal runs
+    debug_image_hz: 1.0
+    debug_image_quality: 70
     # FINAL budget used without contact (2026-10-07 Home: the retry drove forward off the
     # pins 7 s before the contacts reported): hold, then creep further, only then retry.
     # Any contact (debounced, or is_charging) in any state stops and confirms; a raw

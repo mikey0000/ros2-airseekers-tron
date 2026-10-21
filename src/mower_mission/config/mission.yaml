@@ -71,7 +71,7 @@ behavior_tree_node:
     manual_undock_distance_m: 0.5     # standalone UNDOCK button (Command 9)
     undock_speed_mps: 0.15
     dock_use_vision: true
-    dock_timeout_s: 180.0             # passed in the Dock goal
+    dock_timeout_s: 480.0             # passed in the Dock goal; 2026-10-21: 8 offset retries (was 180)
     dock_contact_grace_s: 10.0        # contacts seen while the dock action still runs: wait this long for its result, then cancel + treat as docked
     use_dock_pose: false              # only used when use_docking_server is false
     dock_pose_x: 0.0
@@ -506,7 +506,7 @@ behavior_tree_node:
     undock_timeout_s: 180.0
     transit_timeout_s: 300.0
     follow_timeout_s: 3600.0
-    dock_action_timeout_s: 400.0
+    dock_action_timeout_s: 540.0   # > dock_timeout_s (was 400)
 
     # --- persistence / output ---------------------------------------------
     coverage_resume_path: /ros2_ws/maps/coverage_resume.txt   # compose mounts /userdata/ros2/maps here (persistent)

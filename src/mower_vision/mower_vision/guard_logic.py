@@ -716,7 +716,7 @@ def rear_policy(boxes: Iterable[Box], cfg: RearConfig, image_width: float,
 # /mower_docking/state values in which the robot reverses onto the dock (rear counts and
 # a rear hit holds the docking FSM); ALIGNING additionally arms the detector early.
 DOCK_REVERSE_STATES = frozenset(('SEARCHING', 'DOCKING', 'FINAL_DOCKING'))
-DOCK_ARM_STATES = DOCK_REVERSE_STATES | {'ALIGNING'}
+DOCK_ARM_STATES = DOCK_REVERSE_STATES | {'ALIGNING', 'LATERAL_ALIGN'}
 
 
 class RearRelevance:
