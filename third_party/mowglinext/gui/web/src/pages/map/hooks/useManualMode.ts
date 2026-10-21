@@ -4,6 +4,15 @@ import type {IJoystickUpdateEvent} from "react-joystick-component/build/lib/Joys
 import {useTeleopLimits} from "./useTeleopLimits.ts";
 
 const JOY_SEND_INTERVAL_MS = 100;
+// A joystick "stop" is held this long before the zero-velocity command goes
+// out, and a "move" in the meantime cancels it. On a phone the widget's stop
+// (window pointerup) fires spuriously mid-drag every second or so; forwarding
+// it straight away sent 0.25 -> 0 -> 0.25 within ~20 ms, the firmware braked
+// on every zero and re-accelerated under its ramp limit, and the mower drove
+// in stop-jerk-drive steps (field capture 2026-10-15). Well inside the
+// firmware's 200 ms cmd_vel watchdog, so a genuine release still stops
+// within the same safety envelope: at most ~3 cm of extra coast at 0.25 m/s.
+const JOY_STOP_DEBOUNCE_MS = 120;
 // How long a sustained non-MANUAL_MOWING state must persist before we tear
 // down the manual UI. A single stray guard frame (EMERGENCY/battery/boundary
 // blip emits one non-MANUAL tick) must NOT collapse manual mode and kill the
@@ -68,6 +77,11 @@ export function useManualMode({mowerAction, joyStream, stateName, subStateName, 
 
     const lastTwistRef = useRef<TwistStamped | null>(null);
     const joyIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+    const joyStopTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const cancelPendingJoyStop = useCallback(() => {
+        clearTimeout(joyStopTimerRef.current);
+        joyStopTimerRef.current = undefined;
+    }, []);
 
     const startJoyInterval = useCallback(() => {
         clearInterval(joyIntervalRef.current);
@@ -87,6 +101,7 @@ export function useManualMode({mowerAction, joyStream, stateName, subStateName, 
     useEffect(() => {
         return () => {
             clearInterval(joyIntervalRef.current);
+            clearTimeout(joyStopTimerRef.current);
             clearTimeout(exitTimerRef.current);
         };
     }, []);
@@ -118,6 +133,7 @@ export function useManualMode({mowerAction, joyStream, stateName, subStateName, 
         // debounce so a lingering timer can't re-toggle it.
         clearTimeout(exitTimerRef.current);
         exitTimerRef.current = undefined;
+        cancelPendingJoyStop();
         stopJoyInterval();
         lastTwistRef.current = null;
         setManualMode(false);
@@ -132,21 +148,30 @@ export function useManualMode({mowerAction, joyStream, stateName, subStateName, 
             header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
             twist: {linear: {x: linear, y: 0, z: 0}, angular: {z: angular, x: 0, y: 0}},
         };
+        // A move right after a (spurious) stop keeps the drive going: drop
+        // the pending zero instead of braking.
+        cancelPendingJoyStop();
         lastTwistRef.current = msg;
         joyStream.sendJsonMessage(msg);
         if (!joyIntervalRef.current) {
             startJoyInterval();
         }
-    }, [joyStream, startJoyInterval]);
+    }, [joyStream, startJoyInterval, cancelPendingJoyStop]);
 
     const handleJoyStop = useCallback(() => {
-        const msg: TwistStamped = {
-            header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
-            twist: {linear: {x: 0, y: 0, z: 0}, angular: {z: 0, x: 0, y: 0}},
-        };
-        lastTwistRef.current = null;
-        stopJoyInterval();
-        joyStream.sendJsonMessage(msg);
+        if (joyStopTimerRef.current !== undefined) {
+            return; // a stop is already pending
+        }
+        joyStopTimerRef.current = setTimeout(() => {
+            joyStopTimerRef.current = undefined;
+            const msg: TwistStamped = {
+                header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
+                twist: {linear: {x: 0, y: 0, z: 0}, angular: {z: 0, x: 0, y: 0}},
+            };
+            lastTwistRef.current = null;
+            stopJoyInterval();
+            joyStream.sendJsonMessage(msg);
+        }, JOY_STOP_DEBOUNCE_MS);
     }, [joyStream, stopJoyInterval]);
 
     // Two-step blade control (only meaningful with bladeTwoStep): the mission
