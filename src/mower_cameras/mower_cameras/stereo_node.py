@@ -82,7 +82,7 @@ class StereoCamNode(Node):
         d('publish_color', False)       # bgr8 on <eye>/image_color (det_ros, debugging)
         d('color_fps', 2.0)
         # chroma byte order of the device's bytes for image_color ('' = capture fourcc)
-        d('color_order', 'YVYU')
+        d('color_order', 'YUYV')  # YVYU (abdfc66) looked worse on the live camera; reverted pending ws/camera-colour2
         d('stamp_source', 'buffer')     # buffer (V4L2 driver timestamp) | now (host receive)
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.frame_id = p('frame_id')
