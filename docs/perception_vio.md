@@ -58,7 +58,7 @@ tunings (`iqfiles/`) into the workspace. Everything below is now concrete, not i
 
 | stream | size | format |
 |---|---|---|
-| ISP stereo (combined) | **1280×480** | YUV422 (`YVYU`) — 2×640×480 side-by-side |
+| ISP stereo (combined) | **1280×480** | YUV422 `YUYV` (stock SDK requests and decodes YUYV; `mo_init.sh` echo says YVYU, which is wrong — see `analysis/2026-10-22_front_camera_colour.md`) — 2×640×480 side-by-side |
 | Simor raw | 640×360 | `SBGGR8` Bayer |
 | Simor RGB | 640×360 | RGB888 |
 | Simor YUV | 640×360 | NV12 |

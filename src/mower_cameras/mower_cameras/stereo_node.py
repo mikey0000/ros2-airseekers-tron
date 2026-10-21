@@ -1,7 +1,7 @@
 """``mower_cameras/stereo_cam`` — Metoak front stereo -> synchronised mono8 pair (+ optional colour).
 
 The Metoak module delivers ONE side-by-side frame per exposure on ``/dev/video22``
-(``/dev/videoIsp``, rkcif-mipi-lvds3, behind the XC9080 bridge: YUYV/YVYU 1280x480, two
+(``/dev/videoIsp``, rkcif-mipi-lvds3, behind the XC9080 bridge: YUYV 1280x480, two
 640x480 eyes side by side; the bridge subdev reports 30 fps, the trigger IRQ runs ~25 Hz).
 ``/dev/video11`` (``/dev/videoSimor``) is the hardware-disparity stream used by
 ``stereo_depth``; it is a separate video node, so the two nodes never contend.
@@ -17,10 +17,15 @@ Output (frame ``vio_camera``, sensor-data QoS):
 * ``/vio/{left,right}/image_color``  bgr8, only with ``publish_color: true``, at
   ``color_fps`` (default 2 Hz) and only for subscribed eyes. det_ros / seg_ros (right eye)
   and the GUI's "Front stereo" tiles use this. The colour is decoded with ``color_order``
-  (default ``YVYU``): the XC9080 packs YVYU (vendor SDK, ``metoak.c``: ``V4L2_PIX_FMT_YVYU``)
-  whatever fourcc rkcif was asked for, so decoding it as the capture fourcc (YUYV) swapped
-  U and V and gave a scene-dependent yellow/orange cast (blue sky -> orange, white -> warm).
-  Luma (``image_raw``) is unaffected (same byte positions).
+  (default ``YUYV``), exactly as stock does: ``libMoGeneralSDK`` opens ``/dev/videoIsp``
+  with ``V4L2_PIX_FMT_YUYV`` 1280x480 (``MoMp021MipiV4l2Manager::OpenAllDevices``),
+  ``MoImage::SpliteImage`` memcpy-splits each row into left/right halves, and
+  ``stereo_ros::process_rgb`` runs ``cv::cvtColor(..., COLOR_YUV2BGR_YUY2)`` (code 116).
+  Live frames confirm it (blue sky, green grass); ``YVYU`` (abdfc66) turned sky orange and
+  grass teal. The residual mild warm cast is the XC9080 ISP tuning, not the decode: stock
+  re-initialises the XC9080 with the SDK's V14 table at open, we only run the kernel
+  module's table (docs/analysis/2026-10-22_front_camera_colour.md).
+  Luma (``image_raw``) is the same for every Y-first order.
 
 Rate: ``fps`` (default 10) is an average-rate decimation of the source driven by the buffer
 timestamps (:class:`mower_cameras.stereo_pair.DecimationGate`), so a 25 Hz source gives 10 Hz
@@ -81,8 +86,9 @@ class StereoCamNode(Node):
         d('close_when_unused_s', 5.0)   # on_demand: close the device after this long unused
         d('publish_color', False)       # bgr8 on <eye>/image_color (det_ros, debugging)
         d('color_fps', 2.0)
-        # chroma byte order of the device's bytes for image_color ('' = capture fourcc)
-        d('color_order', 'YUYV')  # YVYU (abdfc66) looked worse on the live camera; reverted pending ws/camera-colour2
+        # chroma byte order of the device's bytes for image_color ('' = capture fourcc).
+        # YUYV = stock stereo_ros (COLOR_YUV2BGR_YUY2), verified on live frames 2026-10-22.
+        d('color_order', 'YUYV')
         d('stamp_source', 'buffer')     # buffer (V4L2 driver timestamp) | now (host receive)
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.frame_id = p('frame_id')

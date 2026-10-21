@@ -329,8 +329,8 @@ class V4L2Capture:
 
 
 # Packed 4:2:2 formats to_bgr decodes. YUYV and YVYU share the byte positions (Y0 C Y1 C)
-# and differ only in which chroma byte is U: decoding YVYU bytes as YUYV swaps U and V, which
-# turns a blue sky / cool white yellow-orange (the 2026-10-22 front-camera colour cast).
+# and differ only in which chroma byte is U: decoding with the wrong one swaps U and V (blue
+# sky <-> orange, green grass <-> teal). The Metoak XC9080 stream is YUYV, like stock decodes it.
 PACKED_422 = ('UYVY', 'YUYV', 'YVYU')
 _422_TO_BGR = {'UYVY': 'COLOR_YUV2BGR_UYVY', 'YUYV': 'COLOR_YUV2BGR_YUYV',
                'YVYU': 'COLOR_YUV2BGR_YVYU'}
@@ -419,7 +419,7 @@ def split_side_by_side_bgr(data, width, height, bytesperline, pixel_format='YUYV
 
 def colour_format(capture_format, color_order=''):
     """Format to decode a packed 4:2:2 capture with when its chroma order differs from the
-    negotiated fourcc (``color_order``, e.g. ``YVYU`` for the Metoak XC9080). Only swaps
+    negotiated fourcc (``color_order``; the Metoak XC9080 matches its YUYV fourcc). Only swaps
     within the Y-first family (YUYV/YVYU), whose luma positions are identical; anything
     else keeps ``capture_format``."""
     order = (color_order or '').upper()
