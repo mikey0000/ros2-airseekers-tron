@@ -143,6 +143,20 @@ behavior_tree_node:
     blocked_pivot_policy: skip
     blocked_pivot_max_skips: 20
     blocked_pivot_requeue: true
+    # 2026-10-21 field (Area 6 stone / tree just outside the line): a blocked edge-lap segment
+    # (follow abort with a collision, collision_monitor STOP held edge_blocked_hold_s, refused
+    # pivot) is skipped like stock: next pivot vertex, at most edge_blocked_skip_m
+    # ("edge blocked: skip X m", mission total logged). Revert: edge_blocked_skip false.
+    edge_blocked_skip: true
+    edge_blocked_hold_s: 3.0
+    edge_blocked_skip_m: 2.0
+    edge_lap_max_inset_m: 0.6
+    # refused coverage pivot: back straight up this far, pivot ONCE more, then skip. 0 = off.
+    pivot_backout_m: 0.35
+    pivot_backout_speed_mps: 0.1
+    # STUCK while mowing: the failing piece is recorded as skipped and the resume cursor
+    # moved past it (START never re-runs the same pivot first). Revert: false.
+    resume_skip_failing: true
     # 2026-10-20 error budget: a pivot Spin is sent this much short (rad) so the robot comes to
     # rest on the angle after the stop latency (0.04 left 1.3 deg over in the ideal sim). Revert: 0.0.
     pivot_stop_lead_rad: 0.06

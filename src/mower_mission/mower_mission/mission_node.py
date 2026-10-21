@@ -304,6 +304,9 @@ class MissionNode(Node):
         sub(Bool, p['boundary_violation_topic'], self._on_boundary, 1, parser=flat_parser(Bool))
         # stuck guard (mower_control slip_detector): latched /stuck
         sub(Bool, '/stuck', self._on_stuck, latched, parser=flat_parser(Bool))
+        # collision_monitor active STOP (edge_blocked_hold_s): nav2_params state_topic
+        from nav2_msgs.msg import CollisionMonitorState
+        sub(CollisionMonitorState, '/collision_monitor_state', self._on_cm_state, 10)
         sub(Bool, p['lethal_boundary_violation_topic'], self._on_lethal, 1,
             parser=flat_parser(Bool))
         if p['outside_distance_topic']:
@@ -650,6 +653,15 @@ class MissionNode(Node):
         with self._lock:
             self.fsm.inputs.pose = (pose.position.x, pose.position.y,
                                     _yaw_from_quat(pose.orientation))
+
+    def _on_cm_state(self, msg):
+        stop = int(msg.action_type) == 1       # CollisionMonitorState.STOP
+        with self._lock:
+            i = self.fsm.inputs
+            if not stop:
+                i.cm_stop_since = None
+            elif i.cm_stop_since is None:
+                i.cm_stop_since = time.monotonic()
 
     def _on_stuck(self, msg):
         with self._lock:

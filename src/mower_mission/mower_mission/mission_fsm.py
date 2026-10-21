@@ -25,6 +25,7 @@ stop, emergency and shutdown.
 
 import json
 import re
+import bisect
 import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -492,6 +493,8 @@ class Inputs:
     cmd_vel_stamp: Optional[float] = None
     # /stuck (slip_detector stuck guard, latched Bool)
     stuck: bool = False
+    # /collision_monitor_state: monotonic time the current STOP began (None = not stopping)
+    cm_stop_since: Optional[float] = None
     # /tilt/status (mower_control tilt_monitor, latched JSON): band ok|caution|limit|critical|
     # unknown, filtered roll / pitch (deg, REP-103), axis that set the band, receipt time
     tilt_band: str = 'unknown'
@@ -692,6 +695,26 @@ class Params:
     blocked_pivot_policy: str = 'skip'      # skip | retry
     blocked_pivot_max_skips: int = 20
     blocked_pivot_requeue: bool = True
+    # 2026-10-21 field (Area 6, stone / tree 0.15-0.35 m outside the line): edge laps against
+    # real obstacles end the blocked segment like stock ("edge end occupied -> arrived"): a
+    # follow abort with a collision, collision_monitor STOP held edge_blocked_hold_s, or a
+    # refused pivot on an edge lap skips ahead to the next pivot vertex, at most
+    # edge_blocked_skip_m ("edge blocked: skip X m"), recorded like a blocked-pivot skip; the
+    # mission total is logged at the end. Edge lap: a sub-path >= 2 m whose median distance
+    # to the area outline / an obstacle ring is <= edge_lap_max_inset_m. Revert: false.
+    edge_blocked_skip: bool = True
+    edge_blocked_hold_s: float = 3.0
+    edge_blocked_skip_m: float = 2.0
+    edge_lap_max_inset_m: float = 0.6
+    # refused coverage pivot (policy skip): back straight up this far (Nav2 BackUp at
+    # pivot_backout_speed_mps, both wheels above the 0.06 m/s floor) and pivot ONCE more
+    # before skipping. 0 = off.
+    pivot_backout_m: float = 0.35
+    pivot_backout_speed_mps: float = 0.1
+    # STUCK_NEEDS_HELP while mowing: the failing piece (leg start -> next pivot vertex / at
+    # most edge_blocked_skip_m) is recorded as skipped and the resume cursor moved past it,
+    # so START never re-runs the identical failing pivot first. Revert: false.
+    resume_skip_failing: bool = True
     # 2026-10-20 error budget (docs/analysis/2026-10-20_error_budget.md): a Spin stops
     # commanding when its relative yaw reaches the target, but the robot is still turning at
     # the pivot floor (behavior_server min_rotational_vel 0.3 rad/s since 2026-10-20; was 0.25)
@@ -1142,6 +1165,9 @@ class Mission:
     pivot_done: Optional[tuple] = None          # (area, sub, local) just pivoted for
     pivot_target: Optional[tuple] = None        # (heading, threshold) of that coverage pivot
     pivot_skips: int = 0                        # blocked coverage pivots skipped (this mission)
+    pivot_backout_key: Optional[tuple] = None   # (area, sub, local) already backed out for
+    edge_skipped_m: float = 0.0                 # edge-lap metres skipped (this mission)
+    edge_laps: dict = field(default_factory=dict)   # (area, sub) -> is an edge lap
 
 
 @dataclass
@@ -2050,6 +2076,8 @@ class MissionFSM:
         if self._ranged_static():
             self._last_static_t = now
         self._pivot_track(now)
+        if self._edge_block_tick():
+            return
         if self._dynamic_tick():
             return
         if self._loc_hold_tick():
@@ -2528,6 +2556,10 @@ class MissionFSM:
         while m.queue and m.queue[0] in self.cursor.completed_areas:
             m.queue.pop(0)
         if not m.queue:
+            if m.edge_skipped_m > 0.0:
+                self._log('warn', 'edge blocked: %.1f m of edge laps skipped this mission'
+                          % m.edge_skipped_m)
+                self._incident('edge_blocked_total', '%.1f m' % m.edge_skipped_m)
             if m.failed or m.blocked:
                 self._mission_incomplete()
             else:
@@ -3276,21 +3308,89 @@ class MissionFSM:
             self._log('warn', 'blocked pivot: %d skips this mission (cap %d): pivot again / '
                       'stop' % (m.pivot_skips, cap))
             return False
+        key = (m.area_idx, m.sub_i, m.start_local)
+        if float(p.pivot_backout_m) > 0.0 and m.stretch is None and m.pivot_backout_key != key:
+            m.pivot_backout_key = key
+            self._log('warn', 'blocked pivot (%s, %.0f deg off) at (%.2f, %.2f): back up %.2f m, '
+                      'then pivot once more' % (outcome, math.degrees(delta), pose[0], pose[1],
+                                                float(p.pivot_backout_m)))
+            m.step = 'pivot_backout'
+            self._blade_off('pivot back-up')            # never reverse with the blade on
+            self._start_action(ACT_BACKUP, {'distance_m': float(p.pivot_backout_m),
+                                            'speed_mps': float(p.pivot_backout_speed_mps)},
+                               float(p.pivot_backout_m) / max(0.02, float(p.pivot_backout_speed_mps))
+                               + 15.0, purpose='pivot_backout')
+            return True
         m.pivot_skips += 1
         self._pivot_tries = {}
         last = self._seg_last()
         frm = min(m.start_local, last)
-        end = min([c for c in self._cov_pivots() if c > frm] + [last])
+        edge = self._edge_lap(m.sub_i)
+        end = self._skip_end(frm, float(p.edge_blocked_skip_m) if edge else 0.0)
         why = 'coverage pivot %s, %.0f deg off the leg' % (outcome, math.degrees(delta))
         self._log('warn', 'blocked pivot: skip area %d sub-path %d poses %d -> %d at (%.2f, %.2f) '
                           '(%s), skip %d/%d' % (m.area_idx, m.sub_i, frm, end, pose[0], pose[1],
                                                 why, m.pivot_skips, cap))
         self._incident('blocked_pivot', why)
         m.pivot_done, m.pivot_target, m.corner_end = None, None, None
-        self._soft_blade_off('blocked pivot')
-        if m.stretch is not None:            # the end-of-area re-try of a skipped piece
-            self._stretch_blocked('blocked pivot (%s)' % why)
+        if edge:
+            self._edge_skip(frm, why, end=end)
             return True
+        self._skip_piece(frm, end, 'blocked pivot (%s)' % why)
+        return True
+
+    def _pivot_backout_done(self, outcome):
+        """The back-up before the one extra pivot ended (any outcome): pivot again from here
+        (a second refusal skips, see _cov_pivot_skip)."""
+        m = self.mission
+        if self.phase != 'MOWING' or m is None or m.step != 'pivot_backout':
+            return
+        m.step = None
+        m.pivot_done = None
+        if outcome != SUCCEEDED:
+            self._log('warn', 'blocked pivot back-up %s: pivoting once more from here' % outcome)
+        self._begin_blade()                  # blade spin-up, then _follow -> _cov_pivot
+
+    def _skip_end(self, frm, cap_m=0.0):
+        """End of the piece skipped from local ``frm``: the next pivot vertex (or the end of
+        what is being mowed), at most ``cap_m`` m along the path when ``cap_m`` > 0."""
+        m = self.mission
+        last = self._seg_last()
+        end = min([c for c in self._cov_pivots() if c > frm] + [last])
+        if cap_m > 0.0:
+            cum = geo.cumulative_lengths(m.subpaths[m.sub_i])
+            idx = bisect.bisect_left(cum, cum[frm] + cap_m)
+            end = min(end, max(frm + 1, idx))
+        return max(frm, min(end, last))
+
+    def _edge_lap(self, k):
+        """Sub-path ``k`` is an edge lap: >= 2 m long, median distance to the area outline or
+        an obstacle ring <= edge_lap_max_inset_m (lap 0 runs on the line)."""
+        m = self.mission
+        ck = (m.area_idx, k)
+        if ck not in m.edge_laps:
+            area = m.areas.get(m.area_idx) if isinstance(m.areas, dict) else None
+            rings = [] if not area else [r for r in [area.get('outer')] +
+                                         list(area.get('obstacles') or []) if r and len(r) >= 3]
+            sp = m.subpaths[k]
+            res = False
+            if rings and geo.path_length(sp) >= 2.0:
+                step = max(1, len(sp) // 40)
+                ds = sorted(min(geo.distance_to_ring(q, r) for r in rings) for q in sp[::step])
+                res = ds[len(ds) // 2] <= float(self.p.edge_lap_max_inset_m)
+            m.edge_laps[ck] = res
+        return m.edge_laps[ck]
+
+    def _skip_piece(self, frm, end, why):
+        """Record local ``frm`` -> ``end`` of the current sub-path as skipped (re-tried once at
+        the area end, else reported blocked / uncut) and go on after it."""
+        m, p = self.mission, self.p
+        self._blk = None
+        self._soft_blade_off('skip')
+        if m.stretch is not None:            # the end-of-area re-try of a skipped piece
+            self._stretch_blocked(why)
+            return
+        last = self._seg_last()
         if end > frm:
             offs, _ = subpath_offsets(m.subpaths)
             if p.blocked_pivot_requeue and p.requeue_skipped:
@@ -3300,11 +3400,45 @@ class MissionFSM:
         if end >= last:
             m.step = None
             self._segment_done()
-            return True
+            return
         m.start_local = end
         m.transit_fails = m.follow_fails = 0
         m.route_plan_fails = 0
+        m.pivot_done, m.corner_end = None, None
         self._dispatch(force_transit=True)
+
+    def _edge_skip(self, frm, why, end=None):
+        """An edge-lap segment is blocked by a real obstacle: end it like stock (no in-place
+        retry), skip to the next leg / at most edge_blocked_skip_m."""
+        m, pose = self.mission, self.inputs.pose
+        last = self._seg_last()
+        frm = min(max(frm, 0), last)
+        if end is None:
+            end = self._skip_end(frm, float(self.p.edge_blocked_skip_m))
+        cum = geo.cumulative_lengths(m.subpaths[m.sub_i])
+        length = cum[end] - cum[frm] if m.stretch is None else 0.0
+        m.edge_skipped_m += length
+        x, y = (pose[0], pose[1]) if pose is not None else (float('nan'), float('nan'))
+        self._log('warn', 'edge blocked: skip %.1f m (area %d sub-path %d poses %d -> %d at '
+                          '(%.2f, %.2f): %s), mission total %.1f m'
+                  % (length, m.area_idx, m.sub_i, frm, end, x, y, why, m.edge_skipped_m))
+        self._incident('edge_blocked', '%s, %.1f m skipped' % (why, length))
+        self._skip_piece(frm, end, 'edge blocked (%s)' % why)
+
+    def _edge_block_tick(self):
+        """collision_monitor STOP held edge_blocked_hold_s while following an edge lap (not a
+        person / pet): cancel the follow and skip the blocked segment. True = handled."""
+        m, p, a = self.mission, self.p, self._action
+        since = self.inputs.cm_stop_since
+        if not p.edge_blocked_skip or m is None or since is None or self.phase != 'MOWING' or \
+                m.step != 'follow' or a is None or a.name != ACT_FOLLOW or \
+                self._now - since < float(p.edge_blocked_hold_s) or \
+                self._policy() == 'dynamic' or not self._edge_lap(m.sub_i):
+            return False
+        self._fx.append(CancelActions('edge blocked'))
+        self._action = None
+        self._edge_skip(self._track_progress(), 'collision_monitor stop held %.1f s'
+                        % (self._now - since))
         return True
 
     def coverage_mppi(self):
@@ -4756,6 +4890,9 @@ class MissionFSM:
         if a.purpose == 'cov_pivot':
             self._cov_pivot_done(outcome)
             return
+        if a.purpose == 'pivot_backout':
+            self._pivot_backout_done(outcome)
+            return
         if name in (ACT_UNDOCK, ACT_BACKUP):
             if outcome == SUCCEEDED and result.get('success', True):
                 m.left_dock = True
@@ -4857,6 +4994,10 @@ class MissionFSM:
                 pf = int(self.p.detour_unclassified_after)
                 static = self._static_recent()
                 collided = self._collision_recent()
+                if self.p.edge_blocked_skip and (collided or self.inputs.cm_stop_since
+                                                 is not None) and self._edge_lap(m.sub_i):
+                    self._edge_skip(prog, 'follow_path %s, collision ahead' % outcome)
+                    return
                 # aborts inside a blocked wait count toward the unclassified-detour threshold
                 nb = self._blk['n'] if self._blk is not None and \
                     self._blk['ctx'] == 'follow' else 0
@@ -5796,11 +5937,30 @@ class MissionFSM:
         m.start_local = self._track_progress()
         self._dispatch()
 
+    def _skip_failing_piece(self):
+        """resume_skip_failing: before a STUCK interrupt while mowing, record the failing piece
+        as skipped and move the cursor past it (START never re-runs the same pivot first)."""
+        m = self.mission
+        if not self.p.resume_skip_failing or self.phase != 'MOWING' or m.stretch is not None \
+                or m.area_idx is None or not m.subpaths or m.sub_i >= len(m.subpaths) or \
+                m.step not in ('corner_pivot', 'pivot_backout', 'follow'):
+            return
+        last = self._seg_last()
+        frm = min(self._track_progress() if m.step == 'follow' else m.start_local, last)
+        end = self._skip_end(frm, float(self.p.edge_blocked_skip_m))
+        if end <= frm:
+            return
+        self._record_skip(frm, end)
+        self._log('warn', 'resume: area %d sub-path %d poses %d -> %d skipped (failing piece, '
+                  're-tried at the area end)' % (m.area_idx, m.sub_i, frm, end))
+        m.start_local, m.step, m.detour = end, None, None
+
     def _stuck_needs_help(self, why, pose):
         x, y = float(pose[0]), float(pose[1])
         self._log('error', 'STUCK_NEEDS_HELP: %s at (%.2f, %.2f): motion stopped, blade off '
                   '(STOP / START / MANUAL to clear)' % (why, x, y))
         if self.mission is not None:
+            self._skip_failing_piece()
             self._interrupt_mission('stuck')
         self._cancel_all('stuck')
         self._blade_off('stuck')

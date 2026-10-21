@@ -46,7 +46,8 @@ def node_now(node):
 class LaneWatchdog:
     """Pure decision logic (no ROS). Times in seconds (monotonic)."""
 
-    def __init__(self, stall_s=2.0, max_recoveries=3, window_s=600.0, cooldown_s=10.0):
+    def __init__(self, stall_s=2.0, max_recoveries=3, window_s=600.0, cooldown_s=10.0,
+                 hold_grace_s=5.0):
         self.stall_s = float(stall_s)
         self.max_recoveries = int(max_recoveries)
         self.window_s = float(window_s)
@@ -56,6 +57,11 @@ class LaneWatchdog:
         self.last_smoothed = None
         self.last_nav = None
         self.cm_holding = False         # collision_monitor reports an active stop / slowdown
+        # 2026-10-21 field: "commanding motion for 68.4 s but collision_monitor forwards
+        # nothing" during a real stop_zone hold that flickered stop <-> slowdown. A hold
+        # reported within hold_grace_s still counts as a real stop.
+        self.hold_grace_s = float(hold_grace_s)
+        self.cm_hold_t = None
         self.recoveries = []
 
     def on_raw(self, v, w, now):
@@ -70,8 +76,10 @@ class LaneWatchdog:
     def on_nav(self, now):
         self.last_nav = now
 
-    def on_cm_state(self, action_type):
+    def on_cm_state(self, action_type, now=None):
         self.cm_holding = int(action_type) != 0
+        if self.cm_holding and now is not None:
+            self.cm_hold_t = now
 
     def _silent(self, last, now):
         return last is None or now - last >= self.stall_s
@@ -86,7 +94,8 @@ class LaneWatchdog:
             return None
         if self._silent(self.last_smoothed, now):
             return 'velocity_smoother'
-        if self.cm_holding:
+        if self.cm_holding or (self.cm_hold_t is not None
+                               and now - self.cm_hold_t < self.hold_grace_s):
             return None             # a real stop: not ours to override
         return 'collision_monitor'
 
@@ -114,7 +123,8 @@ def main(args=None):
             self._now = node_now(self)
             d = self.declare_parameter
             self.wd = LaneWatchdog(d('stall_s', 2.0).value, d('max_recoveries', 3).value,
-                                   d('window_s', 600.0).value, d('cooldown_s', 10.0).value)
+                                   d('window_s', 600.0).value, d('cooldown_s', 10.0).value,
+                                   d('hold_grace_s', 5.0).value)
             self.enabled = bool(d('recover', False).value)
             self.create_subscription(Twist, d('raw_topic', '/cmd_vel_nav_raw').value,
                                      lambda m: self.wd.on_raw(m.linear.x, m.angular.z,
@@ -126,7 +136,7 @@ def main(args=None):
             self.create_subscription(
                 CollisionMonitorState,
                 d('cm_state_topic', '/collision_monitor_state').value,
-                lambda m: self.wd.on_cm_state(m.action_type), 10)
+                lambda m: self.wd.on_cm_state(m.action_type, time.monotonic()), 10)
             self.lane_clients = {n: self.create_client(ChangeState, '/%s/change_state' % n)
                             for n in ('velocity_smoother', 'collision_monitor')}
             self.busy = False

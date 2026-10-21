@@ -27,6 +27,7 @@
   <depend>mowgli_interfaces</depend>
   <depend>diagnostic_msgs</depend>
   <depend>std_srvs</depend>
+  <exec_depend>nav2_msgs</exec_depend>
   <depend>rcl_interfaces</depend>
   <exec_depend>rosbag2_py</exec_depend>
   <!-- bag_recorder runs `ros2 bag record` (sqlite3 storage, file-mode zstd) -->
