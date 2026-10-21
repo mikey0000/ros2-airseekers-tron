@@ -1274,13 +1274,19 @@ CoveragePlan planLayout(const std::string& layout, double w, double h,
 }
 
 // Every ring vertex of ring k at the expected inset (the rectangle's offsets are rectangles).
+// Ring k at its inset along the edges (rectInset, the minimum, is that inset everywhere but
+// in the rounded convex corners, where it is larger: corner radius 0.7).
 void expectRingInsets(const CoveragePlan& plan, const std::vector<double>& insets, double w,
                       double h) {
   ASSERT_EQ(plan.rings.size(), insets.size());
   for (size_t k = 0; k < insets.size(); ++k) {
+    double lo = 1e9;
     for (const auto& p : plan.rings[k]) {
-      EXPECT_NEAR(rectInset(p, w, h), insets[k], 0.01) << "ring " << k;
+      EXPECT_GE(rectInset(p, w, h), insets[k] - 0.01) << "ring " << k;
+      EXPECT_LE(rectInset(p, w, h), insets[k] + 0.7 * (1.0 - std::sqrt(0.5)) + 0.01);
+      lo = std::min(lo, rectInset(p, w, h));
     }
+    EXPECT_NEAR(lo, insets[k], 0.01) << "ring " << k;
   }
 }
 

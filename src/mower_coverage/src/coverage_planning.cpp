@@ -1419,8 +1419,16 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
     }
   } else if (layout && safe_cells.size() > 0) {
     // Stock layout: one ring per lap offset (outermost first), no op_width arithmetic.
+    // Convex corners rounded to lap_corner_radius (morphological opening: in by o + R, out
+    // by R): a lap ON the line cannot reach a sharp convex vertex without the nose 0.6 m past
+    // the next edge (2026-10-21 gate: 0.55 m); the arc keeps it ~0.2 m and the conditioner
+    // drives it as an arc (R >= its r_min), not a vertex pivot. Reflex corners stay sharp.
+    const double R = std::max(0.0, route.lap_corner_radius);
     for (double o : route.lap_offsets) {
-      f2c::types::Cells c = inset(hl_field, o);
+      f2c::types::Cells c = inset(hl_field, o + R);
+      if (R > 1e-9 && !cellsEmpty(c)) {
+        c = c.buffer(R);
+      }
       if (cellsEmpty(c)) {
         break;
       }
@@ -1741,6 +1749,7 @@ bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* rou
   } else {
     return false;
   }
+  route->lap_corner_radius = 0.7;
   // coverage target: what the blade of the outermost lap reaches
   route->target_inset = std::max(0.0, route->lap_offsets.front() - hw);
   route->hole_margin = std::max(0.0, route->hole_inset + route->lap_offsets.front() - hw);
