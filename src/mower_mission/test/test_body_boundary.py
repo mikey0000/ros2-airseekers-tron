@@ -228,3 +228,64 @@ def test_leg_start_pivot_turns_toward_the_interior_even_the_long_way():
     a = h.pending_action(f.ACT_SPIN)
     delta = h.goal(f.ACT_SPIN)['angle']
     assert delta > math.pi                       # CCW the long way, through the interior
+
+
+# ---- field 2026-10-22 morning: retrace cap, START while outside, Spin re-send back-off ----
+
+def test_retrace_ending_still_outside_moves_inward_instead_of_needs_help():
+    # the robot rode the line ~0.07 m out for 2 m, then tripped at 0.11: the 1.0 m retrace
+    # along that track ends still 0.07 out -> bounded inward moves, then resume
+    h = mowing_h([line(0.5, 0, 4.5, 0, n=41), line(1, 3, 4, 3)], (0.5, 0.0, 0.0),
+                 hard_boundary_body=False, hard_boundary_snapshot=True)
+    x = 0.5
+    while x < 3.0:
+        x += 0.05
+        feed(h, (x, -0.07, 0.0))
+        h.tick()
+    assert h.fsm._hb is None
+    feed(h, (x + 0.05, -0.11, 0.0))
+    h.tick()
+    assert h.fsm._hb is not None and h.fsm._hb_count == 1
+    integrate(h, max_ticks=400)
+    assert h.fsm._hb is None and h.name == 'MOWING'
+    assert bb.point_outside(h.fsm.inputs.pose[0], h.fsm.inputs.pose[1], [SQ]) == 0.0
+    assert h.fsm._hb_count == 1
+
+
+def test_start_while_outside_moves_inward_first_uncounted_no_pivot():
+    h = mowing_h([line(2, 0, 4.5, 0, n=26), line(1, 3, 4, 3)], (2.0, -0.07, 0.4),
+                 hard_boundary_body=False, hard_boundary_snapshot=True, path_conditioning=True)
+    k = h.fsm._hb
+    assert k is not None and k['entry'] and not k['counted'] and h.fsm._hb_count == 0
+    assert h.fsm._action is None or h.fsm._action.name != f.ACT_SPIN
+    cmds = integrate(h, max_ticks=200)
+    assert all(not (v == 0.0 and w != 0.0) for v, w in cmds)      # no pivot while outside
+    assert h.fsm._hb is None and h.fsm._hb_count == 0
+    assert h.name == 'MOWING'
+
+
+def test_refused_pivot_is_resent_after_a_real_pause():
+    h = mowing_h([line(1, 2, 4, 2), line(1, 3, 4, 3)], (1.0, 2.0, math.pi),
+                 path_conditioning=True, blocked_pivot_policy='retry', pivot_retry_pause_s=2.0)
+    h.pending_action(f.ACT_SPIN)
+    h.finish(f.ACT_SPIN, f.ABORTED)
+    assert h.fsm._action is None                 # not re-sent in the same second
+    h.tick(n=10)
+    assert h.fsm._action is None
+    h.tick(n=11)
+    assert h.pending_action(f.ACT_SPIN)
+
+
+def test_transit_to_an_edge_lap_start_ends_inside_beside_it():
+    # sim 2026-10-22: transits arriving square to the line at a lap-0 start put the nose
+    # 0.40 m out; the transit now ends 0.45 m inside, then a shallow join (look-ahead 3 x
+    # the lateral offset)
+    h = mowing_h([line(1, 3, 4, 3), line(1, 0, 4.5, 0, n=36)], (1.0, 3.0, 0.0),
+                 path_conditioning=True)
+    h.fsm.mission.sub_i = 1
+    h.fsm.mission.start_local = 0
+    h.fsm._dispatch(force_transit=True)
+    tx, ty, tyaw = h.fsm.mission.transit_target
+    assert abs(tx - 1.0) < 1e-6 and abs(ty - 0.45) < 1e-6 and abs(tyaw) < 1e-6
+    hd = f.MissionFSM._join_heading(line(1, 0, 4.5, 0, n=36), (tx, ty, 0.0))
+    assert abs(math.degrees(hd)) < 20.0

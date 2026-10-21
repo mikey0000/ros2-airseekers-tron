@@ -59,6 +59,25 @@ def _edge_dist(x, y, poly):
     return best
 
 
+def nearest_edge_point(x, y, polys):
+    """(px, py, d): the closest point on any polygon edge to (x, y); None without polygons."""
+    best = None
+    for poly in polys:
+        if len(poly) < 3:
+            continue
+        for i in range(len(poly)):
+            ax, ay = poly[i - 1][0], poly[i - 1][1]
+            bx, by = poly[i][0], poly[i][1]
+            dx, dy = bx - ax, by - ay
+            L2 = dx * dx + dy * dy
+            t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+            px, py = ax + t * dx, ay + t * dy
+            d = math.hypot(px - x, py - y)
+            if best is None or d < best[2]:
+                best = (px, py, d)
+    return best
+
+
 def point_outside(x, y, polys):
     """Distance of (x, y) outside the union of ``polys`` (0 inside; inf without polygons)."""
     best = math.inf
