@@ -982,7 +982,9 @@ class Params:
     # (mower_mission.body_boundary) are checked against the allowed region (mowing areas U
     # drawn paths U dock corridor, the mission's area snapshot: a GUI map reload cannot reach
     # it). Trip when a point is further out than its limit: edge_mode hard = every point
-    # hard_boundary_body_hard_m; soft = corners _soft_side_m, nose _soft_nose_m, tail
+    # hard_boundary_body_hard_m; soft = rear corners _soft_side_m, front corners
+    # _soft_front_m (on a convex bend the front corners sit out by geometry alone), nose
+    # _soft_nose_m, tail
     # _soft_tail_m (soft lap 0 puts the sides 0.235 out, a row end the nose 0.15 / the front
     # corners <= 0.195 out; + tracking p99 0.07..0.13). Recovery (stock): stop, blade off,
     # move hard_boundary_back_m straight (reverse; forward when the worst point is behind
@@ -992,6 +994,7 @@ class Params:
     hard_boundary_body: bool = True
     hard_boundary_body_hard_m: float = 0.10
     hard_boundary_body_soft_side_m: float = 0.35
+    hard_boundary_body_soft_front_m: float = 0.50   # front corners (convex-bend allowance)
     hard_boundary_body_soft_nose_m: float = 0.35
     hard_boundary_body_soft_tail_m: float = 0.30
     hard_boundary_body_clear_m: float = 0.02      # back-move success: excess <= -this
@@ -6421,7 +6424,8 @@ class MissionFSM:
         lim = bbody.limits_for(mode, float(p.hard_boundary_body_soft_side_m),
                                float(p.hard_boundary_body_soft_nose_m),
                                float(p.hard_boundary_body_soft_tail_m),
-                               float(p.hard_boundary_body_hard_m))
+                               float(p.hard_boundary_body_hard_m),
+                               float(p.hard_boundary_body_soft_front_m))
         return bbody.evaluate(pose, self._region(), lim)
 
     def _point_out(self, pose):

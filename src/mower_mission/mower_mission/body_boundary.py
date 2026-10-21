@@ -11,8 +11,8 @@ region (mowing areas U drawn paths U dock corridor) and trips when any point is 
 than its limit:
 
 * hard edge_mode: every point 0.10 (the body stays inside plus 0.10);
-* soft edge_mode (stock layout: lap 0 has base_link ON the line): corners (sides) 0.35, nose
-  0.35, tail 0.30. Normal soft driving stays below: lap 0 puts the sides 0.235 out, a row end
+* soft edge_mode (stock layout: lap 0 has base_link ON the line): rear corners 0.35, front
+  corners 0.50 (convex-bend allowance, see limits_for), nose 0.35, tail 0.30. Normal soft driving stays below: lap 0 puts the sides 0.235 out, a row end
   0.45 inside puts the nose 0.15 / the front corners <= 0.195 past (pivot sweep included);
   tracking error p99 0.07 (pivots) .. 0.13 (all samples, sim 2026-10-21) on top.
 """
@@ -24,11 +24,12 @@ FRONT, REAR, HALF_WIDTH = 0.60, 0.10, 0.235
 
 
 def body_points(front=FRONT, rear=REAR, half=HALF_WIDTH):
-    """name -> (bx, by, kind) with kind 'side' (corners), 'nose' or 'tail'."""
+    """name -> (bx, by, kind) with kind 'front' (front corners), 'side' (rear corners),
+    'nose' or 'tail'."""
     # nose / tail first: an equal excess (square to the line) reports the nose / tail
     return {
         'nose': (front, 0.0, 'nose'), 'tail': (-rear, 0.0, 'tail'),
-        'front_left': (front, half, 'side'), 'front_right': (front, -half, 'side'),
+        'front_left': (front, half, 'front'), 'front_right': (front, -half, 'front'),
         'rear_left': (-rear, half, 'side'), 'rear_right': (-rear, -half, 'side'),
     }
 
@@ -69,11 +70,17 @@ def point_outside(x, y, polys):
     return best
 
 
-def limits_for(mode, soft_side=0.35, soft_nose=0.35, soft_tail=0.30, hard=0.10):
-    """kind -> limit (m) for edge_mode ``mode`` ('hard' | anything else = soft)."""
+def limits_for(mode, soft_side=0.35, soft_nose=0.35, soft_tail=0.30, hard=0.10,
+               soft_front=0.50):
+    """kind -> limit (m) for edge_mode ``mode`` ('hard' | anything else = soft). Soft front
+    corners get ``soft_front``: on a convex bend of radius R tracked by base_link they sit
+    sqrt((R + 0.235)^2 + 0.6^2) - R out (0.36 at R 1.1; owner_far lap-0 bulge fillets reach
+    0.43 nominal, conditioner replay 2026-10-21) although nothing
+    drifted; stock's check line sits near the axle and is blind to that. Lateral drift is
+    still caught by the rear corners (0.235 + drift, curvature-insensitive)."""
     if str(mode).strip().lower() == 'hard':
-        return {'side': hard, 'nose': hard, 'tail': hard}
-    return {'side': soft_side, 'nose': soft_nose, 'tail': soft_tail}
+        return {'side': hard, 'front': hard, 'nose': hard, 'tail': hard}
+    return {'side': soft_side, 'front': soft_front, 'nose': soft_nose, 'tail': soft_tail}
 
 
 def evaluate(pose, polys, limits, points=None):
@@ -96,7 +103,8 @@ def evaluate(pose, polys, limits, points=None):
         e = o - float(limits[kind])
         if best is None or e > best[0]:
             best = (e, name, o, bx < 0.0)
-    side_only = pts[best[1]][2] == 'side' and all(
-        outs[n] <= float(limits[k]) for n, (_x, _y, k) in pts.items() if k != 'side')
+    side_only = pts[best[1]][2] in ('side', 'front') and all(
+        outs[n] <= float(limits[k]) for n, (_x, _y, k) in pts.items()
+        if k in ('nose', 'tail'))
     return {'excess': best[0], 'point': best[1], 'out': best[2], 'rear': best[3], 'outs': outs,
             'side_only': side_only}

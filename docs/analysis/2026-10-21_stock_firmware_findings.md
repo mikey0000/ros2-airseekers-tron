@@ -90,7 +90,8 @@ Code: `mower_mission/body_boundary.py`, `MissionFSM._hard_boundary_tick` and hel
 - **Where the body check applies:** whenever base_link is in, or less than 1 m outside, a mowing area. On a drawn path only, in the dock corridor and in dock phases, the base_link check stays (more than 0.10 out).
 - **Limits:**
   - Hard: any point more than 0.10 out.
-  - Soft: corners 0.35, nose 0.35, tail 0.30.
+  - Soft: rear corners 0.35, front corners 0.50, nose 0.35, tail 0.30.
+  - The front corners get 0.50 because on lap 0 along a tight convex bulge they sit outside by geometry alone, sqrt((R + 0.235)² + 0.6²) − R. On owner_far that is up to 0.43 nominal, and no K-turn can avoid it. Stock's check line sits near the axle and does not see it. Lateral drift is still caught by the rear corners, which are not affected by curvature.
 - **Why these soft numbers:**
   - Normal soft driving: lap 0 puts the sides 0.235 out; a row end 0.45 in puts the nose 0.15 and the front corners at most 0.195 out, pivot sweep included.
   - Sim tracking error is p99 0.07 while pivoting and 0.13 over all samples.
@@ -154,7 +155,8 @@ Where our large ring turns came from, and what changed:
   4. pivot onto the next run.
 
   Only the rear corners (0.255) sweep out. Unit-tested on a ring with a sharp corner on the line.
-- **Known gap:** a densely drawn, curved boundary (owner_far) has no straight 0.3 m run before its corners, so no K-turn fits. About 14 corners stay at a nominal 0.36–0.63, and run5 has 2 corners at 0.39–0.41. These exceed the 0.35 soft trip limit, so expect body boundary-out trips there until the K-turn handles polyline approaches.
+- **Curved approaches:** P1 is measured as arc length back along the incoming path, and the reverse leg retraces it. Pivots on the line along it, such as jogs, become in-place pivots inside the reverse leg. Corners under 60° also try a K-turn when they would exceed 0.33. Where nothing fits, the option with the least overhang is used and logged at warn.
+- **What remains:** run5 has no corner over 0.35 nominal. owner_far has 7 lap-0 corners on drawn convex bulges tighter than about r 1.3, at 0.36–0.43 nominal, and these are front-corner overhang. Driving the line there puts the front corners out whichever way the robot turns, so these are inside the 0.50 front-corner trip limit. Stepping lap 0 inward at tight bends would be a planner change, for the owner to decide.
 
 ## Obstacles
 

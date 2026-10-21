@@ -26,7 +26,7 @@ def test_soft_lap0_on_the_line_does_not_trip():
 
 def test_soft_lap0_drift_trips_on_a_side_corner():
     ev = bb.evaluate((2.0, -0.13, 0.0), [SQ], SOFT)      # 0.13 drift: corners 0.365 out
-    assert ev['excess'] > 0.0 and ev['point'] in ('front_right', 'rear_right')
+    assert ev['excess'] > 0.0 and ev['point'] == 'rear_right' and ev['side_only']
 
 
 def test_soft_row_end_nose_and_pivot_sweep_do_not_trip():
@@ -196,3 +196,15 @@ def test_side_trip_reverses_onto_the_planned_leg_toward_the_interior():
     assert h.fsm._hb is None and h.name == 'MOWING'
     assert all(v <= 0.0 for v, _ in cmds)                     # reverse only
     assert h.fsm.inputs.pose[1] > y0 + 0.05                   # moved toward the interior
+
+
+def test_soft_tight_convex_bend_on_lap0_does_not_trip_but_drift_does():
+    # owner_far lap 0 follows drawn convex bulges of radius ~1.1 m: base_link on the line,
+    # front corners sqrt((R + 0.235)^2 + 0.6^2) - R = 0.36 out by geometry alone
+    R = 1.1
+    circle = [(R * math.cos(2 * math.pi * k / 180), R * math.sin(2 * math.pi * k / 180))
+              for k in range(180)]
+    on = bb.evaluate((R, 0.0, math.pi / 2), [circle], SOFT)       # tangent, CCW
+    assert 0.35 < on['outs']['front_right'] < 0.40 and on['excess'] < 0.0
+    drift = bb.evaluate((R + 0.13, 0.0, math.pi / 2), [circle], SOFT)
+    assert drift['excess'] > 0.0                                   # lateral drift still trips

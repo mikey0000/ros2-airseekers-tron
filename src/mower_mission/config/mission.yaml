@@ -433,7 +433,8 @@ behavior_tree_node:
     # body-aware boundary-out check + stock recovery (step 3 round 2; mission_fsm Params)
     hard_boundary_body: true
     hard_boundary_body_hard_m: 0.10      # edge_mode hard: every body point
-    hard_boundary_body_soft_side_m: 0.35 # soft: corners (lap 0 nominal 0.235 + tracking)
+    hard_boundary_body_soft_side_m: 0.35 # soft: rear corners (lap 0 nominal 0.235 + tracking)
+    hard_boundary_body_soft_front_m: 0.50 # soft: front corners (owner_far lap-0 bulges: up to 0.43 nominal)
     hard_boundary_body_soft_nose_m: 0.35 # soft: mid-front (row end nominal 0.15, sweep 0.195)
     hard_boundary_body_soft_tail_m: 0.30 # soft: mid-rear
     hard_boundary_body_clear_m: 0.02
