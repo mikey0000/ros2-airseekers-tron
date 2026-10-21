@@ -290,11 +290,24 @@ def main(run, world):
     hard_min = math.inf
     hard_at = None
     mow = [r for r in gt if state_at(r[0]) == 'MOWING']
-    for j in range(0, len(mow) - 5, 5):                      # 10 Hz
-        r, q = mow[j], mow[j + 5]
-        dt = max(q[0] - r[0], 1e-3)
-        v = math.hypot(q[1] - r[1], q[2] - r[2]) / dt
-        w = abs(math.atan2(math.sin(q[3] - r[3]), math.cos(q[3] - r[3]))) / dt
+    # pivoting in place: over +-0.25 s |v| < 0.04 m/s and |w| > 0.08 rad/s; a sample within
+    # 0.6 s of one counts as sweep (a pivot's start / stop ramps are part of the pivot)
+    piv_t = []
+    for j in range(0, len(mow), 5):
+        a, b = mow[max(0, j - 12)], mow[min(len(mow) - 1, j + 12)]
+        dt = b[0] - a[0]
+        if dt < 0.2 or dt > 1.0:
+            continue
+        v = math.hypot(b[1] - a[1], b[2] - a[2]) / dt
+        w = abs(math.atan2(math.sin(b[3] - a[3]), math.cos(b[3] - a[3]))) / dt
+        if v < 0.04 and w > 0.08:
+            piv_t.append(mow[j][0])
+
+    def near_pivot(t):
+        k = bisect.bisect_left(piv_t, t - 0.6)
+        return k < len(piv_t) and piv_t[k] <= t + 0.6
+    for j in range(0, len(mow), 5):                          # 10 Hz
+        r = mow[j]
         mode = measure_body(body, 'soft', areas, modes, dflt, r[1], r[2])
         if mode is None or (corr_poly and A.point_in_polygon(r[1], r[2], corr_poly)):
             continue
@@ -303,7 +316,7 @@ def main(run, world):
             if c < hard_min:
                 hard_min, hard_at = c, [round(r[0] - t0, 1), round(r[1], 2), round(r[2], 2)]
             continue
-        sp = body_split(body, r[1], r[2], r[3], polys, v < 0.03 and w > 0.1)
+        sp = body_split(body, r[1], r[2], r[3], polys, near_pivot(r[0]))
         if sp and sp[1] > bsp[sp[0]][0]:
             bsp[sp[0]] = [sp[1], [round(r[0] - t0, 1), round(r[1], 2), round(r[2], 2),
                                   round(math.degrees(r[3]))]]
