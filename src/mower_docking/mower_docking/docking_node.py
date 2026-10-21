@@ -36,6 +36,7 @@ from mower_interfaces.msg import MowerBaseDevStatus
 from mower_interfaces.srv import ChargingControl
 
 from mower_docking import dock_logic as dl
+from mower_docking import dock_yaw
 from mower_docking.exposure import AUTO, STOCK_SEQUENCE, ExposureStepper
 from mower_docking.sub_pump import SubscriptionPump, flat_parser, parse_odometry
 from mower_docking.quiet_action import QuietActionClient
@@ -165,12 +166,29 @@ class DockingServer(Node):
         # measured docked_marker_offset (written after each vision dock, overrides the yaml)
         decl('calibration_file', '/userdata/ros2/calibration/docking_calibration.yaml')
         decl('auto_calibrate_marker_offset', True)
+        # dock yaw re-measurement from the forward undock chord (README "Dock yaw
+        # re-measurement"): measured on every undock, applied on request
+        # (~/apply_measured_dock_yaw) or, when this is true, after the next successful dock
+        decl('dock_yaw_measure', True)
+        decl('auto_apply_measured_dock_yaw', False)
+        decl('set_docking_point_service', '/map_server_node/set_docking_point')
         decl('min_turn_speed', g.min_turn_speed)
         decl('track_width', g.track_width)
         decl('wheel_floor', g.wheel_floor)
         decl('close_speed', g.close_speed)
         decl('lateral_slow', g.lateral_slow)
         decl('marker_median_n', dp.marker_median_n)
+        # 2026-10-21 night field fixes (findings doc "Field docking 2026-10-21 night")
+        decl('rear_camera_yaw_correction_deg', 0.0)
+        decl('teleop_topic', '/cmd_vel_teleop')
+        decl('teleop_active_timeout_s', 0.6)
+        for n in ('marker_position_only', 'kf_gate_chi2', 'kf_gate_chi2_heading', 'kf_q_heading',
+                  'kf_r_heading', 'kf_reinit_after', 'search_consistency_deg',
+                  'search_consistency_m', 'rtk_check_max_deg', 'rtk_check_max_m',
+                  'pose_check_median_n', 'forward_cap_margin', 'teleop_hold', 'teleop_clear_s',
+                  'teleop_wait_max_s'):
+            decl(n, getattr(dp, n))
+        decl('max_angular_accel', g.max_angular_accel)
         # 2026-10-21 stock-structure port (README "Stock structure port")
         decl('use_marker_gate', dp.use_marker_gate)
         decl('search_min_detections', dp.search_min_detections)
@@ -216,6 +234,9 @@ class DockingServer(Node):
         self._bumper = False
         self._bumper_routing = False
         self._bumper_routing_t = -1e9
+        self._teleop_t = -1e9
+        self._cum_frames = 0
+        self._cum_detected = 0
         self._rear_blocked = False
         self._contact = dl.ContactDebouncer(self.get_parameter('contact_debounce_samples').value)
         self._dock_pose_msg: Optional[dl.Pose2D] = None
@@ -296,6 +317,11 @@ class DockingServer(Node):
         # navigate_to_pose goal (the mission's transits too), which kept this idle node busy.
         self._nav_cli = None
 
+        from std_srvs.srv import Trigger
+        self._dock_yaw_meas: Optional[dict] = None
+        self._apply_yaw_srv = self.create_service(
+            Trigger, '~/apply_measured_dock_yaw', self._srv_apply_dock_yaw,
+            callback_group=self._action_group)
         self._dock_srv = ActionServer(
             self, Dock, '~/dock', execute_callback=self._execute_dock,
             goal_callback=self._goal_cb, cancel_callback=lambda _g: CancelResponse.ACCEPT,
@@ -334,6 +360,16 @@ class DockingServer(Node):
                                 getattr(msg, 'left_bumper_triggered', False) or
                                 getattr(msg, 'right_bumper_triggered', False))
             self._status_t = time.monotonic()
+
+    def _on_teleop(self, msg) -> None:
+        try:
+            lin = abs(float(msg.linear.x))
+            ang = abs(float(msg.angular.z))
+        except Exception:  # noqa: BLE001
+            return
+        if lin > 0.01 or ang > 0.02:          # the GUI joystick sends zeros when released
+            with self._lock:
+                self._teleop_t = time.monotonic()
 
     def _on_bumper_routing(self, msg) -> None:
         with self._lock:
@@ -423,7 +459,10 @@ class DockingServer(Node):
             return
         mid, rvec, tvec, _ = res[0]
         ext = list(self.get_parameter('rear_camera_T_base').value)
-        obs = dl.marker_in_base(rvec, tvec, ext[0:3], ext[3:6], stamp=now, marker_id=mid)
+        obs = dl.marker_in_base(
+            rvec, tvec, ext[0:3], ext[3:6], stamp=now, marker_id=mid,
+            yaw_correction=math.radians(float(
+                self.get_parameter('rear_camera_yaw_correction_deg').value)))
         with self._lock:
             self._marker = obs
         ps = PoseStamped()
@@ -464,6 +503,8 @@ class DockingServer(Node):
             st = self._dstat
             st['frames'] += 1
             st['detected'] += 1 if detected else 0
+            self._cum_frames += 1                   # SEARCH-window log (never reset)
+            self._cum_detected += 1 if detected else 0
             st['brightness'] = bright
             stepper, active, lost = self._exposure, self._exp_active, self._exp_lost
             if stepper is not None:
@@ -507,6 +548,7 @@ class DockingServer(Node):
             d['kf'] = [round(kf.x.remaining, 3), round(kf.x.lateral, 3),
                        round(math.degrees(kf.x.heading), 1)]
             d['kf_clamped'] = kf.clamped
+            d['kf_rejected'] = [kf.rejected_pos, kf.rejected_heading, kf.reinits]
         if stepper is not None:
             d['exposure'] = stepper.state()
         self._diag_pub.publish(String(data=json.dumps(d)))
@@ -566,6 +608,7 @@ class DockingServer(Node):
                 bumper=(self._bumper and now - self._status_t <= 1.0) or
                 (self._bumper_routing and now - self._bumper_routing_t <= 1.0),
                 rear_blocked=self._rear_blocked,
+                teleop=now - self._teleop_t <= p('teleop_active_timeout_s').value,
                 nav_status=self._nav_status, charging_result=self._charging_result,
                 rtk_fixed=self._rtk_fixed)
 
@@ -602,6 +645,10 @@ class DockingServer(Node):
         if p('bumper_routing_topic').value:
             pump.subscribe(UInt8, p('bumper_routing_topic').value, self._on_bumper_routing, 10,
                            parser=flat_parser(UInt8))
+        if p('teleop_topic').value:
+            # operator joystick: twist_mux gives it priority over /cmd_vel_docking, so the
+            # dock FSM pauses while it is active (dock_logic teleop hold)
+            pump.subscribe(Twist, p('teleop_topic').value, self._on_teleop, 10)
         pump.start()
         self._goal_pump = pump
         while time.monotonic() - t0 < timeout:
@@ -724,8 +771,17 @@ class DockingServer(Node):
             turn_slow_err=float(p('turn_slow_err')), min_turn_speed=float(p('min_turn_speed')),
             track_width=float(p('track_width')), wheel_floor=float(p('wheel_floor')),
             close_speed=min(float(p('close_speed')), 0.15),
-            lateral_slow=float(p('lateral_slow')))
+            lateral_slow=float(p('lateral_slow')),
+            max_angular_accel=float(p('max_angular_accel')))
+        extra = {}
+        for n in ('marker_position_only', 'kf_gate_chi2', 'kf_gate_chi2_heading', 'kf_q_heading',
+                  'kf_r_heading', 'kf_reinit_after', 'search_consistency_deg',
+                  'search_consistency_m', 'rtk_check_max_deg', 'rtk_check_max_m',
+                  'pose_check_median_n', 'forward_cap_margin', 'teleop_hold', 'teleop_clear_s',
+                  'teleop_wait_max_s'):
+            extra[n] = type(getattr(dl.DockParams, n))(p(n))
         return dl.DockParams(
+            **extra,
             approach_distance=float(p('approach_distance')),
             skip_nav_to_approach=bool(p('skip_nav_to_approach')),
             nav_timeout_s=float(p('nav_timeout_s')),
@@ -819,6 +875,7 @@ class DockingServer(Node):
             import yaml
             with open(path) as f:
                 data = yaml.safe_load(f) or {}
+            self._dock_yaw_meas = data.get('dock_yaw_measurement')
             off = float(data['docked_marker_offset'])
         except FileNotFoundError:
             return
@@ -848,15 +905,96 @@ class DockingServer(Node):
         try:
             import os
             import yaml
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp = path + '.tmp'
-            with open(tmp, 'w') as f:
-                yaml.safe_dump({'docked_marker_offset': round(new, 4),
-                                'last_measured': round(measured, 4),
-                                'updated': time.strftime('%Y-%m-%dT%H:%M:%S')}, f)
-            os.replace(tmp, path)
+            self._write_calibration({'docked_marker_offset': round(new, 4),
+                                     'last_measured': round(measured, 4),
+                                     'updated': time.strftime('%Y-%m-%dT%H:%M:%S')})
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warn('could not write %s: %s' % (path, exc))
+
+    def _write_calibration(self, values: dict) -> None:
+        """Merge ``values`` into the calibration yaml (atomic replace)."""
+        import os
+        import yaml
+        path = self.get_parameter('calibration_file').value
+        if not path:
+            return
+        data = {}
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            pass
+        data.update(values)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            yaml.safe_dump(data, f)
+        os.replace(tmp, path)
+
+    # ------------------------------------------------------- dock yaw re-measurement
+    def _record_undock_chord(self, samples, yaw0) -> None:
+        if not bool(self.get_parameter('dock_yaw_measure').value) or yaw0 is None:
+            return
+        res = dock_yaw.undock_chord_yaw(samples, yaw0)
+        self.get_logger().info('undock: %s' % res.describe())
+        if not res.ok:
+            return
+        with self._lock:
+            dock = self._dock_pose_msg
+        meas = {'yaw_rad': round(res.yaw, 5), 'yaw_deg': round(math.degrees(res.yaw), 2),
+                'n': res.n, 'span_m': round(res.span_m, 3), 'rms_m': round(res.rms_m, 4),
+                'turn_deg': round(res.turn_deg, 2),
+                'stored_dock_yaw_deg': None if dock is None else round(math.degrees(dock.yaw), 2),
+                'measured_at': time.strftime('%Y-%m-%dT%H:%M:%S'), 'applied': False}
+        self._dock_yaw_meas = meas
+        try:
+            self._write_calibration({'dock_yaw_measurement': meas})
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn('could not save the dock yaw measurement: %s' % exc)
+
+    def _apply_dock_yaw(self) -> tuple:
+        """Send the last undock-measured dock yaw to map_server (robot must be on the dock:
+        map_server's own gate). Returns (ok, message)."""
+        meas = self._dock_yaw_meas
+        if not meas or 'yaw_rad' not in meas:
+            return False, 'no dock yaw measurement yet (undock once with RTK fixed)'
+        with self._lock:
+            dock = self._dock_pose_msg
+        res = dock_yaw.ChordResult(True, float(meas['yaw_rad']))
+        ok, why = dock_yaw.apply_decision(res, None if dock is None else dock.yaw)
+        if not ok:
+            return False, why
+        from mowgli_interfaces.srv import SetDockingPoint
+        cli = self.create_client(SetDockingPoint, self.get_parameter(
+            'set_docking_point_service').value, callback_group=self._client_group)
+        try:
+            if not cli.wait_for_service(timeout_sec=3.0):
+                return False, 'set_docking_point service not available'
+            req = SetDockingPoint.Request()
+            req.use_gps_position = True
+            req.yaw_source = SetDockingPoint.Request.MOTION
+            req.yaw_rad = float(meas['yaw_rad'])
+            done = threading.Event()
+            fut = cli.call_async(req)
+            fut.add_done_callback(lambda _f: done.set())
+            if not done.wait(10.0) or fut.result() is None:
+                return False, 'set_docking_point timed out'
+            if not fut.result().success:
+                return False, ('set_docking_point rejected (robot not on the dock, RTK not '
+                               'fixed? see the map_server log)')
+        finally:
+            self.destroy_client(cli)
+        meas['applied'] = True
+        try:
+            self._write_calibration({'dock_yaw_measurement': meas})
+        except Exception:  # noqa: BLE001
+            pass
+        self.get_logger().warn('dock yaw updated from the undock chord: %s' % why)
+        return True, why
+
+    def _srv_apply_dock_yaw(self, _req, res):
+        res.success, res.message = self._apply_dock_yaw()
+        return res
 
     def _log_notes(self, out) -> None:
         for n in getattr(out, 'notes', None) or ():
@@ -884,6 +1022,7 @@ class DockingServer(Node):
                 self._dstat = self._new_dstat()
         diag_t = time.monotonic()
         search = None   # per-SEARCHING-window raw detection counts
+        chord, chord_yaw0 = [], None   # undock: map track for the dock yaw re-measurement
         out = machine.start(self._snapshot())
         self._log_notes(out)
         self._handle(out.requests)
@@ -898,7 +1037,14 @@ class DockingServer(Node):
                     goal_handle.canceled()
                     self.get_logger().info('goal canceled in state %s' % last_state)
                     return result_type(success=False, message=out.message)
-                out = machine.step(self._snapshot())
+                snap = self._snapshot()
+                out = machine.step(snap)
+                if not is_dock and snap.map_pose is not None and snap.odom is not None and \
+                        abs(out.linear) > 1e-3:
+                    if chord_yaw0 is None:
+                        chord_yaw0 = snap.odom.yaw
+                    chord.append((snap.map_pose.x, snap.map_pose.y, snap.odom.yaw,
+                                  bool(snap.rtk_fixed)))
                 if is_dock:
                     self._state_pub.publish(String(data=str(out.state)))
                     with self._lock:
@@ -909,19 +1055,25 @@ class DockingServer(Node):
                     if tick - diag_t >= 1.0:
                         diag_t = tick
                         d = self._publish_diag(out, machine)
-                        if out.state == dl.DockState.SEARCHING:
-                            search = search or {'frames': 0, 'detected': 0, 't0': tick}
-                            search['frames'] += d['frames']
-                            search['detected'] += d['detected']
+                        if search is not None:
                             search['brightness'] = d['brightness']
                             search['exposure'] = (d.get('exposure') or {}).get('setting')
+                    # SEARCH window counts from cumulative frame counters (2026-10-21: the
+                    # old 1 Hz diag sums missed the last partial second, so a marker accepted
+                    # within it logged "0 with a marker")
+                    if search is None and out.state == dl.DockState.SEARCHING:
+                        with self._lock:
+                            search = {'t0': tick, 'f0': self._cum_frames,
+                                      'd0': self._cum_detected}
                     if search is not None and out.state != dl.DockState.SEARCHING:
+                        with self._lock:
+                            frames = self._cum_frames - search['f0']
+                            det = self._cum_detected - search['d0']
                         self.get_logger().info(
                             'SEARCH window %.1f s -> %s: %d frames, %d with a marker (%.0f %%), '
                             'brightness %s, exposure %s' % (
-                                tick - search['t0'], out.state, search['frames'],
-                                search['detected'],
-                                100.0 * search['detected'] / max(1, search['frames']),
+                                tick - search['t0'], out.state, frames, det,
+                                100.0 * det / max(1, frames),
                                 search.get('brightness'), search.get('exposure')))
                         search = None
                 self._publish_marker_in_view(out.marker_in_view)
@@ -938,6 +1090,14 @@ class DockingServer(Node):
                 time.sleep(max(0.0, period - (time.monotonic() - tick)))
             if out.success and getattr(out, 'calibrated_offset', None) is not None:
                 self._save_calibration(float(out.calibrated_offset))
+            if out.success and not is_dock:
+                self._record_undock_chord(chord, chord_yaw0)
+            if out.success and is_dock and \
+                    bool(self.get_parameter('auto_apply_measured_dock_yaw').value) and \
+                    self._dock_yaw_meas and not self._dock_yaw_meas.get('applied'):
+                ok, why = self._apply_dock_yaw()
+                if not ok:
+                    self.get_logger().info('measured dock yaw not applied: %s' % why)
             if out.success:
                 goal_handle.succeed()
             else:

@@ -40,6 +40,10 @@ class RearCameraParams:
     marker_z: float = 0.25
     background: int = 110
     quiet_zone_cells: int = 2
+    # true camera yaw minus the URDF/docking.yaml extrinsic (deg, about base_link z through the
+    # camera): the robot's rear camera reads the heading 6.5 deg off (2026-10-21 night fit),
+    # which docking.yaml rear_camera_yaw_correction_deg undoes. 0 = ideal camera.
+    mount_yaw_deg: float = 0.0
 
 
 def _marker_bitmap(marker_id: int, cells_px: int = 20, quiet: int = 2):
@@ -62,6 +66,11 @@ class RearCamera:
         self.p = params or RearCameraParams()
         self.t_cam = np.array(xyz, dtype=float)
         self.r_cam = rpy_matrix(*rpy)      # optical -> base_link
+        if self.p.mount_yaw_deg:
+            a = math.radians(self.p.mount_yaw_deg)
+            rz = np.array([[math.cos(a), -math.sin(a), 0.0], [math.sin(a), math.cos(a), 0.0],
+                           [0.0, 0.0, 1.0]])
+            self.r_cam = rz @ self.r_cam
         self._bitmap = None
 
     @property

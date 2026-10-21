@@ -100,6 +100,9 @@ class SimNode(Node):
         # it): 0.201 + (0.45 - 0.201) x 0.055 / 0.04 = 0.543 m (camera 0.201 m behind base).
         d('rear_marker_size', 0.055)
         d('rear_marker_offset', 0.543)
+        # the real rear camera's mounting-yaw error (matches docking.yaml
+        # rear_camera_yaw_correction_deg -6.5, 2026-10-21 night fit)
+        d('rear_camera_mount_yaw_deg', -6.5)
         d('linear_max', 0.3)
         d('angular_max', 0.3)
         d('min_wheel_speed_mps', 0.06)
@@ -160,7 +163,8 @@ class SimNode(Node):
         self.stereo = StereoRaycaster(StereoParams(noise_m=float(gp('stereo_noise_m').value)))
         self.rear = RearCamera(RearCameraParams(
             marker_size=float(gp('rear_marker_size').value),
-            marker_offset=float(gp('rear_marker_offset').value)))
+            marker_offset=float(gp('rear_marker_offset').value),
+            mount_yaw_deg=float(gp('rear_camera_mount_yaw_deg').value)))
         self.t0 = time.monotonic()
         self.dt = 1.0 / float(gp('physics_rate_hz').value)
         self.tick_n = 0
