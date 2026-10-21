@@ -4723,3 +4723,65 @@ def test_swept_prediction_geometry():
     assert not swept_hit((0.0, corner + 0.01), full, 0.52, 0.25, 0.27, 0.25)
     assert in_footprint((0.77, 0.0), (0.0, 0.0, 0.0), 0.52, 0.25, 0.27, 0.25)
     assert not in_footprint((0.78, 0.0), (0.0, 0.0, 0.0), 0.52, 0.25, 0.27, 0.25)
+
+
+def test_preview_cross_plans_both_row_sets():
+    # cross = two zigzag plans 90 deg apart in one mow; the preview used to plan and draw
+    # only runs[0] (the first row set)
+    h = Harness()
+    h.areas = [square(0, 0, 5)]
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': 30.0, 'repeat': 2}}
+    m = h.mark()
+    assert preview(h, 0)[0]
+    h.answer_services()
+    assert h.goal(f.ACT_PLAN)['mow_angle_deg'] == 30.0
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan())
+    h.answer_services()
+    assert h.goal(f.ACT_PLAN)['mow_angle_deg'] == 120.0
+    assert [c['mow_angle_deg'] for c in param_calls(h, f.PARAM_NODE_COVERAGE, m)] == [30.0, 120.0]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan(1.0))
+    assert len([e for e in h.since(m, f.StartAction) if e.name == f.ACT_PLAN]) == 2
+    plans = h.since(m, f.PublishPlan)
+    assert len(plans) == 1 and len(plans[0].poses) == 2 * (5 + 22)
+    last = summaries(h, m)[-1]
+    assert last['status'] == 'ok'
+    assert (last['rings'], last['swaths'], last['sub_paths'], last['length_m']) == (2, 4, 4, 44.0)
+    assert len(last['segments']) == 6
+    a = last['areas'][0]
+    assert a['runs'] == 4 and a['preview_runs'] == 2 and a['run_angles_deg'] == [30.0, 120.0]
+    assert h.fsm._action is None and h.fsm._service is None
+
+
+def test_preview_cross_auto_angle_uses_perpendicular_flag():
+    h = Harness()
+    h.areas = [square(0, 0, 5)]
+    h.area_settings = {0: {'path_mode': 'cross', 'mow_angle_deg': -1.0}}
+    assert preview(h, 0)[0]
+    h.answer_services()
+    assert h.goal(f.ACT_PLAN)['perpendicular'] is False
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan())
+    h.answer_services()
+    assert h.goal(f.ACT_PLAN)['perpendicular'] is True
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan())
+    assert summaries(h)[-1]['areas'][0]['run_perpendicular'] == [False, True]
+
+
+def test_preview_zigzag_repeat_plans_once_and_cross_second_failure_reports():
+    h = Harness()
+    h.areas = [square(0, 0, 5)]
+    h.area_settings = {0: {'path_mode': 'zigzag', 'repeat': 3}}
+    m = h.mark()
+    assert preview(h, 0)[0]
+    h.answer_services()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan())
+    assert len([e for e in h.since(m, f.StartAction) if e.name == f.ACT_PLAN]) == 1
+    assert summaries(h, m)[-1]['areas'][0]['preview_runs'] == 1
+    h.area_settings = {0: {'path_mode': 'cross'}}
+    m = h.mark()
+    assert preview(h, 0)[0]
+    h.answer_services()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, typed_plan())
+    h.answer_services()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, {'success': False, 'message': 'no swaths'})
+    last = summaries(h, m)[-1]
+    assert last['status'] == 'failed' and 'run 2/2: no swaths' in last['areas'][0]['error']

@@ -1710,27 +1710,43 @@ class MissionFSM:
             st, src = self._merge_settings(ok, resp, area_idx=cur['index'])
             cur['settings'], cur['source'] = st, src
             cur['runs'] = self._build_runs(st, area_name=cur['name'])
-            run = cur['runs'][0]
-            self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_COVERAGE, 'params': {
-                'operation_width': self._swath_spacing(st),
-                'headland_rings': int(st['perimeter_laps']),
-                'path_mode': str(st['path_mode']),
-                'mow_angle_deg': float(run['angle']),
-                'edge_first': bool(st['edge_first']),
-                **coverage_route_params(st)}}, purpose='preview_params')
+            cur['preview_runs'] = self._preview_runs(cur['runs'])
+            cur['run_k'], cur['acc'] = 0, []
+            self._preview_params(cur)
         elif purpose == 'preview_params':
             cur = pv['cur']
             if not ok:
                 self._log('warn', 'preview area %d: /coverage_server set_parameters failed (%s): '
                                   'planning with its current parameters'
                           % (cur['index'], resp.get('message') or 'unavailable'))
-            area, run = pv['areas'][cur['index']], cur['runs'][0]
+            area, run = pv['areas'][cur['index']], cur['preview_runs'][cur['run_k']]
             self._start_action(ACT_PLAN, {
                 'outer_boundary': list(area.get('outer', [])),
                 'obstacles': [list(o) for o in area.get('obstacles', [])],
                 'mow_angle_deg': float(run['angle']),
                 'perpendicular': bool(run['perpendicular'])}, self.p.plan_timeout_s,
                 purpose='preview')
+
+    @staticmethod
+    def _preview_runs(runs):
+        """The distinct row directions of an area's runs, in mowing order: a preview draws
+        every direction one session mows (cross = both row sets, 90 deg apart), not repeats."""
+        out = []
+        for r in runs:
+            if not any(abs(float(o['angle']) - float(r['angle'])) < 1e-6
+                       and bool(o['perpendicular']) == bool(r['perpendicular']) for o in out):
+                out.append(r)
+        return out or list(runs[:1])
+
+    def _preview_params(self, cur):
+        st, run = cur['settings'], cur['preview_runs'][cur['run_k']]
+        self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_COVERAGE, 'params': {
+            'operation_width': self._swath_spacing(st),
+            'headland_rings': int(st['perimeter_laps']),
+            'path_mode': str(st['path_mode']),
+            'mow_angle_deg': float(run['angle']),
+            'edge_first': bool(st['edge_first']),
+            **coverage_route_params(st)}}, purpose='preview_params')
 
     def _preview_next(self):
         pv = self._preview
@@ -1745,12 +1761,15 @@ class MissionFSM:
             self._preview_on_service('preview_settings', False, {})
 
     def _preview_on_plan(self, outcome, result):
+        """One run of the current area planned. Every distinct direction (see _preview_runs)
+        is planned in turn and the area's results are concatenated."""
         pv = self._preview
         if pv is None:
             return
         cur = pv['cur']
         area = pv['areas'][cur['index']]
         st = cur['settings']
+        run0 = cur['preview_runs'][0]
         subpaths = []
         if outcome == SUCCEEDED and result.get('success'):
             subpaths = [list(sp) for sp in result.get('drivable_subpaths', []) if len(sp) >= 2]
@@ -1760,14 +1779,20 @@ class MissionFSM:
                 subpaths = [list(result['full_path'])]
         info = {'index': cur['index'], 'name': cur['name'], 'path_mode': st['path_mode'],
                 'headland_rings': int(st['perimeter_laps']), 'edge_first': bool(st['edge_first']),
-                'mow_angle_deg': float(cur['runs'][0]['angle']),
-                'perpendicular': bool(cur['runs'][0]['perpendicular']),
+                'mow_angle_deg': float(run0['angle']),
+                'perpendicular': bool(run0['perpendicular']),
                 'runs': len(cur['runs']), 'settings_source': cur['source'],
+                'preview_runs': len(cur['preview_runs']),
+                'run_angles_deg': [float(r['angle']) for r in cur['preview_runs']],
+                'run_perpendicular': [bool(r['perpendicular']) for r in cur['preview_runs']],
                 'operation_width_m': round(self._swath_spacing(st), 4),
                 'swath_width_m': round(self._swath_spacing(st), 4),
                 'edge_margin_m': round(max(0.0, float(st['edge_margin_m'])), 4)}
         if not subpaths:
-            info['error'] = str(result.get('message') or outcome)
+            msg = str(result.get('message') or outcome)
+            if len(cur['preview_runs']) > 1:
+                msg = 'run %d/%d: %s' % (cur['run_k'] + 1, len(cur['preview_runs']), msg)
+            info['error'] = msg
             info.update({'rings': 0, 'swaths': 0, 'length_m': 0.0, 'sub_paths': 0,
                          'inset_m': None})
             pv['results'].append((info, [], [], []))
@@ -1781,17 +1806,33 @@ class MissionFSM:
         swaths = int(result.get('swath_count', types.count(SEGMENT_SWATH) if types else 0))
         length = float(result.get('total_distance') or 0.0) or \
             sum(geo.path_length(sp) for sp in subpaths)
+        full = result.get('full_path') or [p for sp in subpaths for p in sp]
+        cur['acc'].append({'rings': rings, 'swaths': swaths, 'length': length,
+                           'full': list(full), 'typed': list(zip(types, segs)),
+                           'subpaths': subpaths})
+        cur['run_k'] += 1
+        if cur['run_k'] < len(cur['preview_runs']):
+            self._preview_params(cur)          # next direction (cross: the 90 deg row set)
+            return
+        acc = cur['acc']
+        subpaths = [sp for a in acc for sp in a['subpaths']]
+        typed = [ts for a in acc for ts in a['typed']]
         outer = list(area.get('outer', []))
-        probe = [p for s, t in zip(segs, types) if t == SEGMENT_RING for p in s] or \
+        probe = [p for t, s in typed if t == SEGMENT_RING for p in s] or \
             [p for sp in subpaths for p in sp]
         step = max(1, len(probe) // 400)
         inset = min((geo.distance_to_ring(p, outer) for p in probe[::step]), default=None) \
             if len(outer) >= 3 else None
-        info.update({'rings': rings, 'swaths': swaths, 'length_m': round(length, 2),
+        info.update({'rings': sum(a['rings'] for a in acc),
+                     'swaths': sum(a['swaths'] for a in acc),
+                     'length_m': round(sum(a['length'] for a in acc), 2),
                      'sub_paths': len(subpaths),
                      'inset_m': None if inset is None else round(inset, 3)})
-        full = result.get('full_path') or [p for sp in subpaths for p in sp]
-        pv['results'].append((info, list(full), list(zip(types, segs)), subpaths))
+        full = [p for a in acc for p in a['full']]
+        # typed segments of a run with no segment_types are drawn from its sub-paths
+        typed = [ts for a in acc for ts in (a['typed'] or
+                 [(SEGMENT_SWATH, sp) for sp in a['subpaths']])]
+        pv['results'].append((info, full, typed, subpaths))
         self._preview_next()
 
     def _preview_finish(self, status, message):
