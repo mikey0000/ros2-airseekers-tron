@@ -59,7 +59,7 @@ See the table in `2026-10-21_stock_firmware_findings.md`. The gaps to stock:
 - blade-aware spacing;
 - schedule / allowed times.
 
-## Owner decisions pending (bucket A)
+## Owner decisions (bucket A): all six approved 2026-10-21
 
 1. Fast-sim equivalence (1× against 3×) as a hard prerequisite for trusting fast verdicts.
 2. Wheel-scale and track calibration from RTK (the 4 cm bias, pivot drift).
@@ -77,7 +77,7 @@ See the table in `2026-10-21_stock_firmware_findings.md`. The gaps to stock:
 | B3 | `outside_m` from the mission's area snapshot in all phases, plus atomic map replace | A map PUT mid-mow uses 0 budget |
 | B4 | Resume the field log: auto-append wheel_bag_metrics JSON per run | Each field run produces an entry |
 | B5 | Bag-replay FSM tests for 06:31 (map reload) and 07:29 (bumper repeat); CI pytest on push | Tests fail on the old code, pass on the new |
-| B6 | Edge-lap AI avoidance off (stock), bumper only | Gate plus one field run |
+| B6 | **Owner override, not stock:** keep camera avoidance ON during edge laps, but act only on detections directly on the planned path in the way. Then detour around the obstacle (no stop-and-wait), mark it on the map, and rejoin the path. | Gate with an on-path obstacle in an edge lap: detour plus map tag, no stop; off-path detections ignored |
 | B7 | Log and bag integrity: split size, fsync, disk guard | 0 corrupt splits over 3 runs |
 | B8 | Deploy script writes a rollback tag and checks container health | A bad deploy can be rolled back in one command |
 
@@ -99,3 +99,18 @@ These were sent to the implementing agents.
 - The 8° pose check is noisy.
 - `dock_timeout_s` is 480.
 - Field 2026-10-21 night: the marker is found, but the motion is erratic.
+
+## Schedule (2026-10-21)
+
+| Slot | Work | Status |
+|---|---|---|
+| Running | A1: fast-sim equivalence, a hard prerequisite (`ws/fast-sim`) | Running |
+| Running | Step 3 round 2 (`ws/edge-layout2`), which includes B2 and B3 | Running |
+| Running | A2: wheel calibration; A4: motor-current analysis (`ws/wheel-cal`) | Running |
+| Running | Docking motion diagnosis (field 2026-10-21 night) | Running |
+| After `ws/edge-layout2` | A5: slope-aware turns | Queued |
+| After `ws/edge-layout2` | A3: coverage map and revisit | Queued |
+| After `ws/edge-layout2` | B6 (owner variant) | Queued |
+| After `ws/edge-layout2` | A4 integration | Queued |
+| After `ws/edge-layout2` | A6 cleanup: delete the RPP configs, one limiter | Queued |
+| From now on | A6 rule: new FSM guards need a matching removal | Applies to all work |
