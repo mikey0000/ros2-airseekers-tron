@@ -108,7 +108,7 @@ except ImportError:  # pragma: no cover
 
 DEG_PARAMS = ('max_imu_yaw_change', 'outlier', 'reseed_agree', 'dock_heading_offset',
               'imu_jump', 'sigma_cog', 'sigma_rtk', 'sigma_dock', 'sigma_file',
-              'sigma_file_verified', 'verify_max_yaw')
+              'sigma_file_verified', 'verify_max_yaw', 'max_offset_rate')
 
 
 def _read_dock_measured(path):

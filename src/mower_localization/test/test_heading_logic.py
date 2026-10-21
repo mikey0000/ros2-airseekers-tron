@@ -125,7 +125,8 @@ def test_curved_track_rejected():
 
 
 def test_low_pass_and_outlier_rejection():
-    s = Sim(true_offset_deg=10.0)
+    # pure low-pass behaviour (the drift-rate term has its own tests below)
+    s = Sim(true_offset_deg=10.0, rate_beta=0.0)
     s.run(0.3, 0.0, 2.2)        # first window: seed
     assert s.est.n_cog == 1
     # slow gyro drift of 4 deg: tracked by repeated COG updates
@@ -1134,3 +1135,82 @@ def test_divergence_watch_ignores_wit_active_and_wraps():
     assert not any(w.update(float(k), 179.0 if k % 2 else -179.0, True) for k in range(20))
     w = hl.DivergenceWatch(warn_deg=0.0)
     assert not any(w.update(float(k), 10.0 * k, True) for k in range(20))
+
+
+# ---------------------------------------------------------------- drift-rate (alpha-beta) term
+def _ramp_mow(s, deg_per_min, minutes, chunk=0.1):
+    """Drive straight while the IMU yaw drifts as a ramp (the 2026-10-21c field pattern)."""
+    for _ in range(int(round(minutes * 60.0 / chunk))):
+        s.drift += D(deg_per_min) / 60.0 * chunk
+        s.run(0.3, 0.0, chunk)
+
+
+def _ramp_lag(**params):
+    s = Sim(true_offset_deg=10.0, **params)
+    s.run(0.3, 0.0, 2.2)                      # seed
+    _ramp_mow(s, 3.0, 8.0)                    # converge
+    errs = []
+    for _ in range(20):
+        _ramp_mow(s, 3.0, 0.1)
+        errs.append(s.heading_error())
+    return sum(errs) / len(errs), s
+
+
+def test_fixed_offset_lags_a_gyro_ramp_and_rate_term_removes_it():
+    lag_old, s_old = _ramp_lag(rate_beta=0.0)
+    lag_new, s_new = _ramp_lag()
+    # alpha 0.1 with ~2 s windows lags a 3 deg/min ramp by ~rate * T * (1 - a) / a ~ 0.9 deg
+    assert abs(lag_old) > 0.6, lag_old
+    assert abs(lag_new) < 0.25, lag_new
+    assert s_old.est.offset_rate == 0.0
+    # the tracked rate is the ramp (the offset moves opposite to the IMU drift)
+    assert math.degrees(s_new.est.offset_rate) * 60.0 == pytest.approx(-3.0, abs=0.6)
+    assert s_new.est.status(s_new.t)['offset_rate_deg_min'] == pytest.approx(-3.0, abs=0.6)
+
+
+def test_rate_is_clamped_and_only_applied_inside_the_horizon():
+    s = Sim(true_offset_deg=10.0, max_offset_rate=D(0.05), rate_horizon=30.0)
+    s.run(0.3, 0.0, 2.2)
+    _ramp_mow(s, 12.0, 3.0)                   # 0.2 deg/s ramp, clamp is 0.05 deg/s
+    assert abs(s.est.offset_rate) <= D(0.05) + 1e-12
+    assert abs(s.est.offset_rate) == pytest.approx(D(0.05), rel=1e-6)
+    # parked (no COG windows): the offset moves for at most rate_horizon seconds
+    off0 = s.est.offset
+    s.run(0.0, 0.0, 120.0)
+    moved = abs(math.degrees(hl.wrap(s.est.offset - off0)))
+    assert moved <= 0.05 * 30.0 + 0.01, moved
+
+
+def test_rate_reset_by_seeds_and_imu_reset():
+    s = Sim(true_offset_deg=10.0)
+    s.run(0.3, 0.0, 2.2)
+    _ramp_mow(s, 3.0, 4.0)
+    assert s.est.offset_rate != 0.0
+    s.drift += D(40.0)                          # IMU reset: a step the gyro does not explain
+    s.est.on_imu(s.t + 0.01, s.imu_yaw(), 0.0)
+    assert s.est.offset is None and s.est.offset_rate == 0.0
+    s.t += 0.01
+    s.run(0.3, 0.0, 2.2)                        # new COG seed
+    assert s.est.aligned and s.est.offset_rate == 0.0
+
+
+def test_rate_beta_zero_is_the_old_behaviour():
+    a = Sim(true_offset_deg=10.0, rate_beta=0.0)
+    a.run(0.3, 0.0, 2.2)
+    a.drift = D(4.0)
+    a.run(0.3, 0.0, 2.1)
+    # identical to test_low_pass_and_outlier_rejection's first blend
+    assert math.degrees(hl.wrap(a.est.offset - a.true_offset)) == pytest.approx(-1.2, abs=0.3)
+
+
+def test_rate_term_step_response_settles():
+    s = Sim(true_offset_deg=10.0)
+    s.run(0.3, 0.0, 2.2)
+    s.drift = D(4.0)                          # a step is not a ramp: transient, then settles
+    worst = 0.0
+    for k in range(80):
+        s.run(0.3, 0.0, 2.1)
+        if k > 40:
+            worst = max(worst, abs(s.heading_error()))
+    assert worst < 0.5, worst
+    assert abs(math.degrees(s.est.offset_rate) * 60.0) < 0.5

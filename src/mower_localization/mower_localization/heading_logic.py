@@ -33,6 +33,15 @@ in priority order:
           measurement more than ``outlier_deg`` away is rejected, unless ``reseed_after``
           consecutive rejected measurements agree with each other (the IMU yaw jumped). Every
           window is non-overlapping, so long straight runs keep tracking gyro drift.
+          Drift-rate term (alpha-beta, ``rate_beta``): the gyro yaw drifts as a ramp (field
+          2026-10-21c: the offset walked 115 -> -81 deg in 75 min, up to 4.8 deg/min), and a
+          plain low-pass lags a ramp by rate x (update interval x (1 - alpha) / alpha), i.e.
+          ~2.4 deg there. That fused heading lead was the run 7 / 21c "right of travel" bias
+          (docs/analysis/2026-10-22_wheel_scale_and_motor_current.md). Each COG update also
+          moves ``offset_rate += rate_beta * innovation / dt`` (clamped to
+          ``max_offset_rate``) and the offset is integrated at that rate between updates, for
+          at most ``rate_horizon`` s after the last accepted COG. ``rate_beta`` 0 restores the
+          old fixed-between-updates offset. Seeds (COG/dock/RTK/file) and IMU resets zero it.
 ``dock``  while docked (is_charging / is_docking_done) and no fresh COG: the robot sits in
           the dock; ``offset = dock_yaw + dock_heading_offset - mean imu yaw``.
           ``dock_heading_offset`` is the sign between the stored dock yaw and the seated heading
@@ -217,6 +226,12 @@ class AlignParams:
         self.verify_samples = 5                    # consecutive RTK-fixed positions averaged
         self.sigma_none = 10.0           # rad: effectively "do not use"
         self.drift_rate = math.radians(1.0) / 60.0   # rad/s yaw drift growth after an update
+        # COG drift-rate tracking (module doc, "Drift-rate term"). beta ~ alpha^2 / (2 - alpha)
+        # (critically damped alpha-beta for alpha 0.1). Replayed on the 21c mow's 815 COG
+        # updates: mean innovation -2.42 -> 0.01 deg, sd 2.47 -> 2.01 deg. 0.0 = revert.
+        self.rate_beta = 0.005
+        self.max_offset_rate = math.radians(0.15)    # rad/s (ROS param in deg/s); 21c peak 0.08
+        self.rate_horizon = 120.0        # s after the last accepted COG update the rate is applied
         for k, v in kw.items():
             if not hasattr(self, k):
                 raise AttributeError('unknown parameter %s' % k)
@@ -243,6 +258,9 @@ class HeadingEstimator:
     def __init__(self, params=None):
         self.p = params or AlignParams()
         self.offset = None
+        self.offset_rate = 0.0       # rad/s drift of the offset (COG alpha-beta), 0 = fixed
+        self._rate_t = None          # last IMU time the rate was integrated
+        self._cog_t = None           # time of the last accepted COG blend (rate dt)
         self.source = SOURCE_NONE
         self.updated_at = None       # time of the last offset update
         self.n_cog = 0
@@ -310,6 +328,7 @@ class HeadingEstimator:
             'quality': self.quality(now),
             'yaw_sigma_deg': round(math.degrees(self.yaw_sigma(now)), 2),
             'cog_updates': self.n_cog,
+            'offset_rate_deg_min': round(math.degrees(self.offset_rate) * 60.0, 3),
             'age_s': None if self.updated_at is None else round(now - self.updated_at, 1),
             'imu_yaw_deg': None if self.imu_yaw is None else round(math.degrees(self.imu_yaw), 2),
             'heading_deg': None if (self.imu_yaw is None or self.offset is None)
@@ -442,6 +461,7 @@ class HeadingEstimator:
                     abs(step) > 3.0 * abs(gyro_z) * dt + math.radians(2.0):
                 self._imu_reset(now, step)
         self.imu_yaw, self.imu_t, self.gyro_z = yaw, now, gyro_z
+        self._integrate_rate(now)
         w = self._win
         if w is not None:
             if w.imu_first is None:
@@ -450,6 +470,21 @@ class HeadingEstimator:
             w.imu_span = max(w.imu_span, abs(wrap(yaw - w.imu_first)))
         if self._dock_mean is not None:
             self._dock_mean.add(yaw)
+
+    def _integrate_rate(self, now):
+        """Advance the offset by the tracked drift rate (COG source, inside rate_horizon)."""
+        prev, self._rate_t = self._rate_t, now
+        if (self.offset_rate == 0.0 or prev is None or self.offset is None
+                or self.source != SOURCE_COG or self._cog_t is None):
+            return
+        end = min(now, self._cog_t + self.p.rate_horizon)
+        dt = end - prev
+        if 0.0 < dt < 1.0:
+            self.offset = wrap(self.offset + self.offset_rate * dt)
+
+    def _reset_rate(self):
+        self.offset_rate = 0.0
+        self._cog_t = None
 
     def on_cmd(self, now, linear, angular):
         self.cmd, self.cmd_t = (linear, angular), now
@@ -538,6 +573,7 @@ class HeadingEstimator:
 
     def _rtk_set(self, now, offset, why):
         self.offset = wrap(offset)
+        self._reset_rate()
         self.source = SOURCE_RTK
         self.updated_at = now
         self.n_rtk += 1
@@ -583,6 +619,7 @@ class HeadingEstimator:
             self.last_event = 'dock seed: offset %.1f deg (dock yaw %.1f, imu %.1f)' % (
                 math.degrees(new), math.degrees(self.dock_yaw), math.degrees(mean))
         self.offset = new
+        self._reset_rate()
         self.source = SOURCE_DOCK
         self.updated_at = now
         self.rejected = []
@@ -692,6 +729,7 @@ class HeadingEstimator:
             else:
                 self._blend(now, innov, p.alpha_initial, 'COG refines %s seed' % self.source,
                             res)
+                self._cog_t = now
             return
         # source == cog
         if abs(innov) > p.outlier:
@@ -710,10 +748,17 @@ class HeadingEstimator:
                     self.rejected = self.rejected[1:]
             return
         alpha = p.alpha_initial if self.n_cog < p.initial_updates else p.alpha
+        if p.rate_beta > 0.0 and self._cog_t is not None:
+            dt = min(max(now - self._cog_t, 1.0), p.rate_horizon)
+            self.offset_rate = max(-p.max_offset_rate, min(
+                p.max_offset_rate, self.offset_rate + p.rate_beta * innov / dt))
         self._blend(now, innov, alpha, 'COG update', res)
+        self._cog_t = now
 
     def _set_cog(self, now, meas, why, res):
         self.offset = wrap(meas)
+        self._reset_rate()
+        self._cog_t = now
         self._accepted(now, why, res)
 
     def _blend(self, now, innov, alpha, why, res):
@@ -742,6 +787,7 @@ class HeadingEstimator:
         self._pending = None
         self.file_check = ''
         self.offset = None
+        self._reset_rate()
         self.source = SOURCE_NONE
         self.updated_at = None
         self.rejected = []
