@@ -870,6 +870,14 @@ using GeomPtr = std::unique_ptr<OGRGeometry>;
 constexpr int kFillIterations = 3;
 constexpr int kMaxPassesPerGap = 8;
 constexpr double kMinFillLenM = 0.03;
+// Edge layout (round 2, 2026-10-21): the gaps left are slivers between the row ends (0.45 in)
+// and the inner lap; a fill pass there is clipped to the row region and gains a strip a few cm
+// wide, so the passes came in stacks ~0.02 m apart (real_run5: four 0.8-1.3 m passes driven
+// as -174 / +170 / -172 deg pivots, sub-path tails of 0.1 m passes reversing on themselves).
+// A layout fill pass must be at least this long and cover at least this fraction of its own
+// swept strip (len x op_width) with new area, or it is not driven.
+constexpr double kLayoutMinFillLenM = 0.30;
+constexpr double kLayoutMinFillEfficiency = 0.35;
 constexpr int kBufQuadSegs = 8;
 // Rectangles of neighbouring swaths share an edge exactly; widen each side by
 // this so float noise does not leave zero-area slivers between them.
@@ -1136,6 +1144,12 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
                           &gain) ||
             gain < 0.1 * min_gap) {
           break;
+        }
+        if (centre != nullptr) {
+          const double len = dist(seg.first, seg.second);
+          if (len < kLayoutMinFillLenM || gain < kLayoutMinFillEfficiency * len * op_width) {
+            break;
+          }
         }
         fills.push_back(seg);
         GeomPtr rect(segRect(seg.first, seg.second, hw));
@@ -1423,8 +1437,14 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
     // by R): a lap ON the line cannot reach a sharp convex vertex without the nose 0.6 m past
     // the next edge (2026-10-21 gate: 0.55 m); the arc keeps it ~0.2 m and the conditioner
     // drives it as an arc (R >= its r_min), not a vertex pivot. Reflex corners stay sharp.
-    const double R = std::max(0.0, route.lap_corner_radius);
+    // Round 2 (2026-10-21): a lap ON the line (offset 0, soft) keeps its sharp vertices. On
+    // an r 0.7 arc there the outer front corner rides sqrt((r + 0.235)^2 + 0.6^2) - r = 0.41
+    // past the line (over the 0.35 body trip limit); the mission's conditioner now picks per
+    // corner from the body's swept outline: a wide fillet (gentle convex corners) or a K-turn
+    // (sharp ones: forward short of the vertex, about-turn, reverse onto it, pivot inward).
+    const double R0 = std::max(0.0, route.lap_corner_radius);
     for (double o : route.lap_offsets) {
+      const double R = o > 1e-9 ? R0 : 0.0;
       f2c::types::Cells c = inset(hl_field, o + R);
       if (R > 1e-9 && !cellsEmpty(c)) {
         c = c.buffer(R);
@@ -1460,6 +1480,18 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
             continue;
           }
           const bool hole = r > 0;
+          if (layout && !hole) {
+            // One drive direction for every outer lap (clockwise, as GEOS returns the
+            // buffered laps): lap 0 ON the line is the unbuffered field ring, which keeps the
+            // recorded orientation, and a lap -> lap hand-off against it is a 180 deg turn.
+            double a2 = 0.0;
+            for (size_t j = 0; j + 1 < loop.size(); ++j) {
+              a2 += loop[j].first * loop[j + 1].second - loop[j + 1].first * loop[j].second;
+            }
+            if (a2 > 0.0) {
+              std::reverse(loop.begin(), loop.end());
+            }
+          }
           RingGroup* target = nullptr;
           for (auto& g : groups) {
             // Continue a run only from the previous pass (a run that started

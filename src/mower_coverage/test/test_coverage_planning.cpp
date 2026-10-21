@@ -1369,3 +1369,62 @@ TEST(EdgeLayout, SoftHoleIsClearedByTheBodySides) {
     EXPECT_GE(holeDist(s.second), 0.30 - 0.01);
   }
 }
+
+// Round 2 (2026-10-21), real_run5 Area 1: every outer lap runs the same way round (lap 0 is
+// the unbuffered field ring and kept the recorded CCW orientation: a lap 0 -> lap 1 hand-off
+// was a 180 deg turn), lap 0 keeps the field's vertices (no r 0.7 arc ON the line: the outer
+// front corner rides 0.41 past it there), and no gap-fill pass is a short / low-yield sliver
+// pass (they came in stacks 0.02 m apart, driven as 180 deg pivots).
+TEST(EdgeLayout, SoftLapsOneDirectionLap0SharpNoSliverFills) {
+  const std::vector<Point2D> area = {
+      {-1.61954, 1.81719}, {-0.891224, 2.25271}, {-0.684406, 2.6065}, {-0.475308, 4.42287},
+      {-0.335033, 5.52028}, {-1.14671, 5.26496}, {-3.34799, 4.33405}, {-4.36569, 3.80114},
+      {-4.75099, 3.25008}, {-5.48879, 2.17825}, {-6.0423, 1.4301}, {-5.59106, 0.665662},
+      {-5.36252, 0.178298}, {-5.15124, -0.0268646}, {-5.38696, -0.585309}, {-4.74587, -1.38861},
+      {-3.28978, 0.250287}, {-1.92367, 1.30651}};
+  mower_coverage::RouteOptions route;
+  ASSERT_TRUE(mower_coverage::parseRouteOrder("racetrack", &route.order));
+  route.min_turn_radius = 0.5;
+  route.min_drivable_turn_radius = 0.40;
+  route.fill_gaps = true;
+  route.min_gap_area_m2 = 0.01;
+  route.target_inset = 0.05;
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+  const CoveragePlan plan = mower_coverage::planCoverage(
+      field(area), 0.18, 0.18, 2, 0.14, -1.0, 0.15, mower_coverage::PathMode::kZigzag, true,
+      route);
+  ASSERT_EQ(plan.rings.size(), 3u);
+  int sign = 0;
+  for (const auto& r : plan.rings) {
+    double a2 = 0.0;
+    for (size_t j = 0; j + 1 < r.size(); ++j) {
+      a2 += r[j].first * r[j + 1].second - r[j + 1].first * r[j].second;
+    }
+    const int s = a2 > 0.0 ? 1 : -1;
+    if (sign == 0) sign = s;
+    EXPECT_EQ(s, sign) << "laps run different ways round";
+  }
+  // lap 0: every field vertex that turns (> 5 deg; near-straight ones are cleaned away) is a
+  // lap vertex (sharp, on the line)
+  for (size_t i = 0; i < area.size(); ++i) {
+    const auto& u = area[(i + area.size() - 1) % area.size()];
+    const auto& v = area[i];
+    const auto& w = area[(i + 1) % area.size()];
+    const double t = std::remainder(std::atan2(w.second - v.second, w.first - v.first) -
+                                        std::atan2(v.second - u.second, v.first - u.first),
+                                    2.0 * M_PI);
+    if (std::abs(t) < 5.0 * M_PI / 180.0) continue;
+    double best = 1e9;
+    for (const auto& p : plan.rings[0]) {
+      best = std::min(best, std::hypot(p.first - v.first, p.second - v.second));
+    }
+    EXPECT_LT(best, 0.01) << "lap 0 rounded at " << v.first << ", " << v.second;
+  }
+  for (size_t i = plan.swaths.size() - plan.fill_swaths; i < plan.swaths.size(); ++i) {
+    const auto& s = plan.swaths[i];
+    EXPECT_GE(std::hypot(s.second.first - s.first.first, s.second.second - s.first.second),
+              0.30 - 1e-6);
+  }
+  EXPECT_LE(plan.fill_swaths, 6u);
+  EXPECT_GT(plan.coverage_fraction, 0.95);
+}
