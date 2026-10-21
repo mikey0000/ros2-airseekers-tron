@@ -58,6 +58,8 @@ HALF_TRACK = 0.20          # MCU wheel split b 0.40 / 2 (cmd_vel_slew TRACK_WIDT
 FLOOR = 0.06
 
 
+LOOP_HZ_MIN = 18      # controller loop median (Hz, sim time) below this: INVALID
+
 def load_world(path):
     import yaml
     with open(path) as fh:
@@ -462,6 +464,11 @@ def main(run, world):
 
     ok = all(c['pass'] for c in res['criteria'].values())
     res['verdict'] = 'PASS' if ok else 'FAIL'
+    # INVALID (not FAIL): the controller missed its 20 Hz sim-time budget, i.e. the host could
+    # not keep up with the sim rate (sim_gate.sh -x); the run says nothing about the stack
+    invalid = 'loop_hz' in res and res['loop_hz']['median'] < LOOP_HZ_MIN
+    if invalid:
+        res['verdict'] = 'INVALID'
     C = res['criteria']
     rows = [
         ('a', 'max outside (gt), samples > 0.10 m', '%.3f m, %d' % (C['a']['max_m'],
@@ -510,13 +517,17 @@ def main(run, world):
                      '  FAIL' if c[6] > CORNER_LIMIT else ''))
     for line in C['d']['lines'][:15]:
         print('   ' + line)
+    if invalid:
+        print('   INVALID: controller loop median %d Hz sim < %d Hz (host too slow for the '
+              'sim rate; rerun slower, sim_gate.sh -x)' % (res['loop_hz']['median'],
+                                                            LOOP_HZ_MIN))
     print('   VERDICT: %s' % res['verdict'])
     try:
         with open(os.path.join(run, 'result.json'), 'w') as fh:
             json.dump(res, fh, indent=1)
     except OSError as e:
         print('   (result.json not written: %s)' % e)
-    return 0 if ok else 1
+    return 4 if invalid else (0 if ok else 1)
 
 
 if __name__ == '__main__':

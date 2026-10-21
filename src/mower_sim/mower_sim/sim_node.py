@@ -23,6 +23,11 @@ Driver contract reproduced (see docs/simulation.md for the full table):
         sim publishes a drifting TF map->odom + /odometry/filtered_map at 10 Hz, matched to
         the field's dual EKF (run 6); the launch then drops its static identity map->odom.
   sim   /sim/ground_truth (Odometry, map), /sim/status (JSON 10 Hz), /sim/markers
+  clock /clock: the sim owns time. It starts at the wall clock (epoch) and advances in fixed
+        clock_rate_hz steps, rate_factor x real time (1.0 = real time, 3.0 = three times
+        faster); physics, odom/IMU/GNSS/MCU, stereo and camera all run on those steps. If the
+        host cannot keep up, sim time slows down (no bursts). The launch runs every other
+        node with use_sim_time:=true; this node itself keeps use_sim_time false.
 """
 
 from __future__ import annotations
@@ -33,9 +38,16 @@ import os
 import time
 
 import rclpy
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
+from rclpy.time import Time
 from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
                        qos_profile_sensor_data)
+
+from lifecycle_msgs.srv import GetState
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import SetParameters
+from rosgraph_msgs.msg import Clock as ClockMsg
 
 from geometry_msgs.msg import TransformStamped, Twist, TwistStamped
 from nav_msgs.msg import Odometry
@@ -87,6 +99,16 @@ class SimNode(Node):
         d('world_file', '')
         d('localization', 'sim')            # sim: publish TF/filtered; ekf: real localization
         d('physics_rate_hz', 50.0)
+        # sim time: /clock every 1 / clock_rate_hz sim seconds, rate_factor x real time
+        d('rate_factor', 1.0)
+        d('clock_rate_hz', 100.0)
+        # controller_server runs rclcpp::WallRate(controller_frequency) (Nav2 Jazzy), so at
+        # rate_factor k its loop must run k x faster in wall time to keep its sim-time rate.
+        # MPPI reads controller_frequency once at configure (model_dt == period -> warm-start
+        # shift ON), so the sim sets controller_frequency = base x k only AFTER the
+        # controller_server is active (its dynamic parameter callback updates the loop rate).
+        d('controller_server', '/controller_server')
+        d('controller_frequency', 20.0)
         d('stereo', True)
         d('stereo_rate_hz', 5.0)
         d('stereo_noise_m', 0.0)
@@ -161,10 +183,23 @@ class SimNode(Node):
         self.rear = RearCamera(RearCameraParams(
             marker_size=float(gp('rear_marker_size').value),
             marker_offset=float(gp('rear_marker_offset').value)))
-        self.t0 = time.monotonic()
         self.dt = 1.0 / float(gp('physics_rate_hz').value)
+        self.rate = max(0.05, float(gp('rate_factor').value))
+        self.clock_dt = 1.0 / float(gp('clock_rate_hz').value)
+        # physics / 10 Hz / 5 Hz / 1 Hz work every N clock steps (sim time, deterministic)
+        self.n_phys = max(1, int(round(self.dt / self.clock_dt)))
+        self.dt = self.n_phys * self.clock_dt
+        self.n_stereo = max(1, int(round(1.0 / float(gp('stereo_rate_hz').value)
+                                          / self.clock_dt)))
+        self.n_rear = max(1, int(round(1.0 / float(gp('rear_camera_rate_hz').value)
+                                        / self.clock_dt)))
+        self.n_slow = max(1, int(round(1.0 / self.clock_dt)))
+        self.epoch_ns = time.time_ns()       # sim time 0 = the wall clock at start
+        self.clock_n = 0                     # clock steps since start
         self.tick_n = 0
-        self._last_t = None
+        self._wall = Clock(clock_type=ClockType.STEADY_TIME)
+        self._wall0 = None                   # (wall ns, clock_n) pacing reference
+        self.lag_events = 0
         # MCU state
         self.charging_enabled = self.world.start_docked
         self.cutting = False
@@ -178,6 +213,7 @@ class SimNode(Node):
 
         # --- publishers (driver contract) ---
         P = self.create_publisher
+        self.pub_clock = P(ClockMsg, '/clock', 10)
         self.pub_odom = P(Odometry, '/odom', 10)
         self.pub_batt = P(BatteryState, '/battery', 10)
         self.pub_status = P(MowerBaseDevStatus, '/mower_base/status', 10)
@@ -220,12 +256,22 @@ class SimNode(Node):
 
         self.pub_rain.publish(Bool(data=False))
         self.pub_height.publish(Int16(data=self.height_mm))
-        self.create_timer(self.dt, self._tick)
-        if gp('stereo').value:
-            self.create_timer(1.0 / float(gp('stereo_rate_hz').value), self._stereo_tick)
-        if gp('rear_camera').value:
-            self.create_timer(1.0 / float(gp('rear_camera_rate_hz').value), self._rear_tick)
-        self.create_timer(1.0, self._slow_tick)
+        self.stereo_on = bool(gp('stereo').value)
+        self.rear_on = bool(gp('rear_camera').value)
+        self.pub_clock.publish(ClockMsg(clock=self.stamp()))
+        # the only wall timer: paces the sim clock (rate_factor x real time)
+        self.create_timer(self.clock_dt / self.rate / 2.0, self._clock_tick, clock=self._wall)
+        self._ctrl_base = float(gp('controller_frequency').value)
+        self._ctrl_done = self.rate == 1.0
+        if not self._ctrl_done:
+            srv = str(gp('controller_server').value).rstrip('/')
+            self._ctrl_state = self.create_client(GetState, srv + '/get_state')
+            self._ctrl_params = self.create_client(SetParameters, srv + '/set_parameters')
+            self._ctrl_future = None
+            self.create_timer(1.0, self._ctrl_rate_tick, clock=self._wall)
+        self.get_logger().info(
+            'sim clock: rate_factor %.2f, /clock %.0f Hz sim, physics %.0f Hz sim'
+            % (self.rate, 1.0 / self.clock_dt, 1.0 / self.dt))
         self.get_logger().info(
             'world %s: %d obstacles, start (%.2f, %.2f, %.2f)%s, localization=%s'
             % (self.world.name, len(self.world.obstacles), self.drive.pose.x, self.drive.pose.y,
@@ -234,7 +280,71 @@ class SimNode(Node):
 
     # ------------------------------------------------------------------ inputs
     def sim_time(self):
-        return time.monotonic() - self.t0
+        """Sim seconds since start."""
+        return self.clock_n * self.clock_dt
+
+    def stamp(self):
+        return Time(nanoseconds=self.epoch_ns + int(round(self.clock_n * self.clock_dt * 1e9))
+                    ).to_msg()
+
+    def _clock_tick(self):
+        """Wall timer (twice the clock step rate): advance sim time to rate x wall elapsed,
+        at most two clock steps per call. Further behind than 0.1 s sim: re-base, i.e. the
+        sim slows down instead of bursting (the controller would see a jump)."""
+        now = self._wall.now().nanoseconds
+        if self._wall0 is None:
+            self._wall0 = (now, self.clock_n)
+        target = self._wall0[1] + (now - self._wall0[0]) * 1e-9 * self.rate / self.clock_dt
+        behind = target - self.clock_n
+        if behind > 0.1 / self.clock_dt:
+            self.lag_events += 1
+            self._wall0 = (now, self.clock_n)
+            behind = 1.0
+        for _ in range(min(2, int(behind))):
+            self._step()
+
+    def _step(self):
+        self.clock_n += 1
+        n = self.clock_n
+        self.pub_clock.publish(ClockMsg(clock=self.stamp()))
+        if n % self.n_phys == 0:
+            self._tick()
+        if self.stereo_on and n % self.n_stereo == 0:
+            self._stereo_tick()
+        if self.rear_on and n % self.n_rear == 0:
+            self._rear_tick()
+        if n % self.n_slow == 0:
+            self._slow_tick()
+
+    def _ctrl_rate_tick(self):
+        """rate_factor != 1: once the controller_server is active, set its
+        controller_frequency to base x rate (see the parameter comment)."""
+        if self._ctrl_done:
+            return
+        if self._ctrl_future is not None:
+            if not self._ctrl_future.done():
+                return
+            res = self._ctrl_future.result()
+            self._ctrl_future = None
+            if isinstance(res, GetState.Response):
+                if res.current_state.id == 3:      # active
+                    hz = self._ctrl_base * self.rate
+                    req = SetParameters.Request(parameters=[Parameter(
+                        name='controller_frequency', value=ParameterValue(
+                            type=ParameterType.PARAMETER_DOUBLE, double_value=hz))])
+                    self._ctrl_future = self._ctrl_params.call_async(req)
+            elif res is not None and res.results and res.results[0].successful:
+                self._ctrl_done = True
+                self.get_logger().info(
+                    'controller_server controller_frequency -> %.1f Hz wall (= %.1f Hz sim)'
+                    % (self._ctrl_base * self.rate, self._ctrl_base))
+            else:
+                self.get_logger().error('setting controller_frequency failed: %s' % (
+                    res.results[0].reason if res is not None and res.results else res))
+                self._ctrl_done = True
+            return
+        if self._ctrl_state.service_is_ready():
+            self._ctrl_future = self._ctrl_state.call_async(GetState.Request())
 
     def _on_cmd(self, msg: Twist):
         self.drive.command(msg.linear.x, msg.angular.z)
@@ -282,17 +392,9 @@ class SimNode(Node):
     # ------------------------------------------------------------------ physics
     def _tick(self):
         t = self.sim_time()
-        # integrate the real elapsed time (a late timer must not slow the robot down),
-        # in steps of at most the nominal period
-        elapsed = min(0.5, t - self._last_t) if self._last_t is not None else self.dt
-        self._last_t = t
+        elapsed = self.dt                   # fixed sim-time step (the clock is ours)
         self.drive.enabled = not self.estop_latched
-        n = max(1, int(math.ceil(elapsed / self.dt - 1e-6)))
-        contacts = []
-        for i in range(n):
-            res = self.drive.step(elapsed / n, t - elapsed + (i + 1) * elapsed / n)
-            contacts = res.contacts or contacts
-        res.contacts = contacts
+        res = self.drive.step(elapsed, t)
         pose = self.drive.pose
         if res.contacts:
             lr = bumper_sides(res.contacts, pose.x, pose.y, pose.yaw, t)
@@ -302,7 +404,7 @@ class SimNode(Node):
             self.last_contact = ','.join(o.name for o in res.contacts)
         self.min_clearance = min(self.min_clearance, self.world.clearance(
             pose.x, pose.y, pose.yaw, t))
-        stamp = self.get_clock().now().to_msg()
+        stamp = self.stamp()
         self.tick_n += 1
         # odom pose: the truth, or with loc_drift the drifting wheel odometry
         if self.drift is not None:
@@ -454,11 +556,11 @@ class SimNode(Node):
               'last_contact': self.last_contact, 'bumper': s.bumper_triggered,
               'docked': s.is_docking_done, 'charging': s.is_charging,
               'cutting': self.cutting, 'estop': self.estop_latched,
-              'battery': round(self.battery, 4)}
+              'battery': round(self.battery, 4), 'rate': self.rate, 'lag': self.lag_events}
         self.pub_sim.publish(String(data=json.dumps(st)))
 
     def _slow_tick(self):
-        stamp = self.get_clock().now().to_msg()
+        stamp = self.stamp()
         s = getattr(self, '_status', None)
         charging = bool(s and s.is_charging)
         gp = self.get_parameter
@@ -492,7 +594,7 @@ class SimNode(Node):
         pose = self.drive.pose
         obs, ground = self.stereo.cast(pose.x, pose.y, pose.yaw, self.world.obstacles,
                                        self.sim_time())
-        stamp = self.get_clock().now().to_msg()
+        stamp = self.stamp()
         # Divergence from the robot: the real stereo_depth_node (fixed_frame_clouds, default
         # since 2026-10-09) publishes /points and /clear_points already in odom, stamped at
         # the odom->base_link sample used. The sim still sends them in stereo_camera_optical
@@ -511,7 +613,7 @@ class SimNode(Node):
             return
         pose, dock = self.drive.pose, self.world.dock
         img = self.rear.render(pose.x, pose.y, pose.yaw, dock.x, dock.y, dock.yaw)
-        stamp = self.get_clock().now().to_msg()
+        stamp = self.stamp()
         msg = Image()
         msg.header.stamp = stamp
         msg.header.frame_id = 'rear_camera_optical'
