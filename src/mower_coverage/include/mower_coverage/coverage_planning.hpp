@@ -92,7 +92,8 @@ struct RouteOptions {
   double row_end_inset = 0.45;
   double turn_inset = 0.45;
   double hole_inset = 0.30;
-  // convex lap corners rounded to this radius (0 = sharp, nose past the next edge)
+  // inner laps opened by this radius (F2C buffers with mitres: it drops features narrower
+  // than 2 R, it does not round corners; lap 0 ON the line is never opened)
   double lap_corner_radius = 0.0;
 };
 

@@ -416,6 +416,34 @@ std::vector<Point2D> rotateLoopToPoint(const std::vector<Point2D>& loop,
   return out;
 }
 
+// Edge layout (round 2): a lap -> lap hand-off ON a corner (the lap 0 start at a convex vertex
+// on real_run5: a 119 deg pivot sweeping the body 0.5 m out) is moved along the lap to a
+// straight stretch: the point of the edges with at least kLapJoinClearM to both their ends
+// (the edge's own vertices) nearest to `target`; `target` itself when no edge is that long.
+constexpr double kLapJoinClearM = 0.6;
+Point2D clearOfCorners(const std::vector<Point2D>& loop, const Point2D& target) {
+  Point2D best = target;
+  double best_d = std::numeric_limits<double>::infinity();
+  for (size_t i = 0; i + 1 < loop.size(); ++i) {
+    const Point2D& a = loop[i];
+    const Point2D& b = loop[i + 1];
+    const double L = dist(a, b);
+    if (L < 2.0 * kLapJoinClearM) {
+      continue;
+    }
+    const double ux = (b.first - a.first) / L, uy = (b.second - a.second) / L;
+    double t = (target.first - a.first) * ux + (target.second - a.second) * uy;
+    t = std::max(kLapJoinClearM, std::min(L - kLapJoinClearM, t));
+    const Point2D p{a.first + t * ux, a.second + t * uy};
+    const double d = dist(p, target);
+    if (d < best_d) {
+      best_d = d;
+      best = p;
+    }
+  }
+  return best;
+}
+
 // Ray-casting point-in-polygon on a closed loop.
 bool pointInLoop(const Point2D& p, const std::vector<Point2D>& loop) {
   bool inside = false;
@@ -1192,7 +1220,7 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
     // Rings follow the swaths: re-chain them from the new last swath end.
     Point2D t = plan->swaths.back().second;
     for (auto& ring : plan->rings) {
-      ring = rotateLoopToPoint(ring, t);
+      ring = rotateLoopToPoint(ring, centre != nullptr ? clearOfCorners(ring, t) : t);
       t = ring.back();
     }
   }
@@ -1433,15 +1461,15 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
     }
   } else if (layout && safe_cells.size() > 0) {
     // Stock layout: one ring per lap offset (outermost first), no op_width arithmetic.
-    // Convex corners rounded to lap_corner_radius (morphological opening: in by o + R, out
-    // by R): a lap ON the line cannot reach a sharp convex vertex without the nose 0.6 m past
-    // the next edge (2026-10-21 gate: 0.55 m); the arc keeps it ~0.2 m and the conditioner
-    // drives it as an arc (R >= its r_min), not a vertex pivot. Reflex corners stay sharp.
-    // Round 2 (2026-10-21): a lap ON the line (offset 0, soft) keeps its sharp vertices. On
-    // an r 0.7 arc there the outer front corner rides sqrt((r + 0.235)^2 + 0.6^2) - r = 0.41
-    // past the line (over the 0.35 body trip limit); the mission's conditioner now picks per
-    // corner from the body's swept outline: a wide fillet (gentle convex corners) or a K-turn
-    // (sharp ones: forward short of the vertex, about-turn, reverse onto it, pivot inward).
+    // Inner laps: morphological opening by lap_corner_radius (in by o + R, out by R; meant to
+    // round convex corners, round 1). Round 2 (2026-10-21): F2C's Cells::buffer joins with mitres, so this opening does NOT
+    // round corners (the round-1 r 0.7 arcs never existed: the laps came out with the field's
+    // vertices); it only drops features narrower than 2 R. A lap ON the line (offset 0, soft)
+    // is not opened at all: it follows the line into every corner and the mission's
+    // conditioner decides per corner from the body's swept outline (a wide fillet at gentle
+    // convex corners, a K-turn at sharp ones: forward short of the vertex, about-turn,
+    // reverse onto it, pivot inward). (An r 0.7 arc ON the line would put the outer front
+    // corner sqrt((r + 0.235)^2 + 0.6^2) - r = 0.41 past it, over the 0.35 trip limit.)
     const double R0 = std::max(0.0, route.lap_corner_radius);
     for (double o : route.lap_offsets) {
       const double R = o > 1e-9 ? R0 : 0.0;
@@ -1681,14 +1709,15 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
     plan.swaths_first = true;
     Point2D target = plan.swaths.back().second;
     for (auto& ring : plan.rings) {
-      ring = rotateLoopToPoint(ring, target);
+      ring = rotateLoopToPoint(ring, layout ? clearOfCorners(ring, target) : target);
       target = ring.back();
     }
   } else if (!plan.rings.empty()) {
     if (!plan.swaths.empty()) {
       Point2D target = plan.swaths.front().first;
       for (size_t r = plan.rings.size(); r-- > 0;) {
-        plan.rings[r] = rotateLoopToPoint(plan.rings[r], target);
+        plan.rings[r] = rotateLoopToPoint(
+            plan.rings[r], layout ? clearOfCorners(plan.rings[r], target) : target);
         target = plan.rings[r].front();
       }
     } else {

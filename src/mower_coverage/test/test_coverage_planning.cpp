@@ -1370,9 +1370,9 @@ TEST(EdgeLayout, SoftHoleIsClearedByTheBodySides) {
   }
 }
 
-// Round 2 (2026-10-21), real_run5 Area 1: every outer lap runs the same way round (lap 0 is
-// the unbuffered field ring and kept the recorded CCW orientation: a lap 0 -> lap 1 hand-off
-// was a 180 deg turn), lap 0 keeps the field's vertices (no r 0.7 arc ON the line: the outer
+// Round 2 (2026-10-21), real_run5 Area 1: every outer lap runs the same way round (an
+// unbuffered lap 0 keeps the recorded CCW orientation: a lap 0 -> lap 1 hand-off was a 180
+// deg turn), lap 0 keeps the field's corners (no r 0.7 arc ON the line: the outer
 // front corner rides 0.41 past it there), and no gap-fill pass is a short / low-yield sliver
 // pass (they came in stacks 0.02 m apart, driven as 180 deg pivots).
 TEST(EdgeLayout, SoftLapsOneDirectionLap0SharpNoSliverFills) {
@@ -1405,7 +1405,7 @@ TEST(EdgeLayout, SoftLapsOneDirectionLap0SharpNoSliverFills) {
     EXPECT_EQ(s, sign) << "laps run different ways round";
   }
   // lap 0: every field vertex that turns (> 5 deg; near-straight ones are cleaned away) is a
-  // lap vertex (sharp, on the line)
+  // lap vertex, on the line
   for (size_t i = 0; i < area.size(); ++i) {
     const auto& u = area[(i + area.size() - 1) % area.size()];
     const auto& v = area[i];
@@ -1418,7 +1418,7 @@ TEST(EdgeLayout, SoftLapsOneDirectionLap0SharpNoSliverFills) {
     for (const auto& p : plan.rings[0]) {
       best = std::min(best, std::hypot(p.first - v.first, p.second - v.second));
     }
-    EXPECT_LT(best, 0.01) << "lap 0 rounded at " << v.first << ", " << v.second;
+    EXPECT_LT(best, 0.01) << "lap 0 off the corner at " << v.first << ", " << v.second;
   }
   for (size_t i = plan.swaths.size() - plan.fill_swaths; i < plan.swaths.size(); ++i) {
     const auto& s = plan.swaths[i];
@@ -1427,4 +1427,21 @@ TEST(EdgeLayout, SoftLapsOneDirectionLap0SharpNoSliverFills) {
   }
   EXPECT_LE(plan.fill_swaths, 6u);
   EXPECT_GT(plan.coverage_fraction, 0.95);
+}
+
+// Round 2: the lap -> lap hand-offs (every lap's start) sit on a straight stretch, >= 0.6 m
+// from the lap's vertices (real_run5: lap 0 started on a convex vertex, a 119 deg pivot there).
+TEST(EdgeLayout, LapHandOffsClearOfCorners) {
+  const double w = 8.0, h = 6.0;
+  for (const char* order : {"racetrack", "boustrophedon"}) {
+    const CoveragePlan plan = planLayout("soft", w, h, order);
+    ASSERT_EQ(plan.rings.size(), 3u);
+    for (const auto& r : plan.rings) {
+      const Point2D s = r.front();
+      for (size_t i = 1; i + 1 < r.size(); ++i) {
+        EXPECT_GE(std::hypot(r[i].first - s.first, r[i].second - s.second), 0.6 - 1e-6)
+            << order << " lap start " << s.first << ", " << s.second;
+      }
+    }
+  }
 }
