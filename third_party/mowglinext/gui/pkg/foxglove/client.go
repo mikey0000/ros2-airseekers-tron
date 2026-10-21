@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -416,6 +417,11 @@ func (c *Client) Publish(topic string, msg interface{}, schemaName ...string) er
 	return c.conn.WriteMessage(websocket.BinaryMessage, buf)
 }
 
+// ErrServiceNotAdvertised is wrapped by CallService when the bridge does not
+// (or not yet) advertise the service, so callers can fall back to an older
+// service contract with errors.Is.
+var ErrServiceNotAdvertised = errors.New("service not advertised")
+
 // CallService invokes a ROS2 service and blocks until a response arrives or
 // ctx is cancelled. The request is JSON-marshalled, then CDR-encoded using the
 // service's request schema. The CDR response is deserialized back to JSON.
@@ -428,7 +434,7 @@ func (c *Client) CallService(ctx context.Context, service string, args interface
 	svc, ok := c.services[service]
 	c.svcDefMu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("foxglove: CallService %s: service not advertised", service)
+		return nil, fmt.Errorf("foxglove: CallService %s: %w", service, ErrServiceNotAdvertised)
 	}
 
 	// Parse request schema and serialize args to CDR.

@@ -1,15 +1,20 @@
 import {describe, it, expect, vi, beforeEach, afterEach} from 'vitest';
 import {renderHook, act} from '@testing-library/react';
+import type {IJoystickUpdateEvent} from 'react-joystick-component/build/lib/Joystick';
+import type {TwistStamped} from '../../../types/ros.ts';
 import {useManualMode} from './useManualMode.ts';
+
+const joyEvent = (x: number, y: number): IJoystickUpdateEvent =>
+    ({type: 'move', x, y, direction: null, distance: null}) as IJoystickUpdateEvent;
 
 describe('useManualMode', () => {
     let mowerAction: (action: string, params: Record<string, unknown>) => () => Promise<void>;
-    let sendJsonMessage: (msg: unknown) => void;
+    let sendJsonMessage: ReturnType<typeof vi.fn<(msg: unknown) => void>>;
     let startStream: (uri: string) => void;
 
     beforeEach(() => {
         mowerAction = vi.fn(() => vi.fn().mockResolvedValue(undefined));
-        sendJsonMessage = vi.fn();
+        sendJsonMessage = vi.fn<(msg: unknown) => void>();
         startStream = vi.fn();
         vi.useFakeTimers();
     });
@@ -90,15 +95,65 @@ describe('useManualMode', () => {
         });
     });
 
-    it('handleJoyStop sends zero velocity', () => {
+    const ZERO_TWIST = {
+        header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
+        twist: {linear: {x: 0, y: 0, z: 0}, angular: {z: 0, x: 0, y: 0}},
+    };
+
+    it('handleJoyStop sends zero velocity after the release debounce', () => {
         const {result} = renderManualMode();
         act(() => {
             result.current.handleJoyStop();
         });
-        expect(sendJsonMessage).toHaveBeenCalledWith({
-            header: {stamp: {sec: 0, nanosec: 0}, frame_id: ""},
-            twist: {linear: {x: 0, y: 0, z: 0}, angular: {z: 0, x: 0, y: 0}},
+        // Not yet: the stop is held so a spurious pointerup cannot brake the mower.
+        expect(sendJsonMessage).not.toHaveBeenCalledWith(ZERO_TWIST);
+        act(() => {
+            vi.advanceTimersByTime(150);
         });
+        expect(sendJsonMessage).toHaveBeenCalledWith(ZERO_TWIST);
+        expect(sendJsonMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('a stop immediately followed by a move never sends a zero', () => {
+        const {result} = renderManualMode();
+        act(() => {
+            result.current.handleJoyMove(joyEvent(0, 1));
+        });
+        act(() => {
+            result.current.handleJoyStop();
+        });
+        act(() => {
+            vi.advanceTimersByTime(20);
+            result.current.handleJoyMove(joyEvent(0, 1));
+        });
+        act(() => {
+            vi.advanceTimersByTime(300);
+        });
+        expect(sendJsonMessage).not.toHaveBeenCalledWith(ZERO_TWIST);
+        // The keepalive interval kept re-sending the last non-zero twist.
+        const calls = sendJsonMessage.mock.calls.map(
+            (call) => (call[0] as TwistStamped | undefined)?.twist?.linear?.x ?? -1
+        );
+        expect(calls.every((x) => x > 0)).toBe(true);
+        expect(calls.length).toBeGreaterThan(3);
+    });
+
+    it('a stop that is not followed by a move halts the keepalive after the debounce', () => {
+        const {result} = renderManualMode();
+        act(() => {
+            result.current.handleJoyMove(joyEvent(0, 1));
+        });
+        act(() => {
+            result.current.handleJoyStop();
+            vi.advanceTimersByTime(150);
+        });
+        const sentAfterStop = sendJsonMessage.mock.calls.length;
+        act(() => {
+            vi.advanceTimersByTime(1000);
+        });
+        expect(sendJsonMessage.mock.calls.length).toBe(sentAfterStop);
+        const lastCall = sendJsonMessage.mock.calls[sendJsonMessage.mock.calls.length - 1];
+        expect(lastCall?.[0]).toEqual(ZERO_TWIST);
     });
 
     it('starts the joy stream on entry and survives a slow state tick', async () => {

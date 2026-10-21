@@ -207,3 +207,141 @@ sshpass -e ssh $MOWER_USER@$MOWER_HOST 'cd /userdata/ros2_stack && docker compos
 Hard-refresh the browser (Ctrl+Shift+R) afterwards. `config/gui/mowgli_robot.yaml` belongs to
 the device, and `sync` does not overwrite it. The `feat/airseekers-backend` GUI is not deployed
 this way. It ships as upstream's `GUI_IMAGE` (`mowglinext-gui`) with the upstream stack.
+
+## 6. Execution, 2026-10-22 (after the owner's decisions)
+
+Owner decisions: rebase the vendored GUI and PR #986 onto `dev`; no upstream PRs yet for
+`edge_mode`, the blade binding or `replace_areas`; blackbox recorder out (4 GB RAM); yes to
+rain over MQTT. Nothing was pushed or deployed.
+
+### 6.1 PR #986: `feat/airseekers-backend-rebased`
+
+- Worktree `upstream-pr/mowglinext-airseekers-wt/rebased`. It holds the same 10 commits,
+  rebased onto `origin/dev` @ `b1d4a532` (2026-10-22). `feat/airseekers-backend` itself was
+  not touched.
+- Only "Wire HARDWARE_BACKEND=airseekers…" conflicted. It hit the same 8 files as the trial merge,
+  and dev had not touched them since `708ef0f4`, so the trial resolutions were reused.
+- The `af8aae4d` fixes are folded in, not added as a merge or fixup commit:
+  - the `settingsSectionsForBackend` case, the empty `parameterRoutes` map, the
+    `FirmwareProtocolExempt` airseekers row and the airseekers keys in `settings.generated.ts`
+    went into the wiring commit;
+  - the `undock_forward?` line went into the `undock_forward` commit.
+
+  Every commit keeps the generated types in step with the schema. The wiring commit alone
+  passes `tsc` and the settings-types drift test.
+- The final tree's diff against dev equals the trial merge's diff, for every file we touch.
+- Results:
+  - `go build`, `go test ./...` (whole repo mounted): pass;
+  - `tsc && vite build`: pass;
+  - vitest: 146 files, 1134 tests, pass;
+  - lint: 0 errors, 535 warnings.
+  - **Not re-run:** colcon (no ROS image locally) for `mowgli_behavior`/`mowgli_bringup`.
+    Their changes applied without conflicts over dev's BT changes.
+- Push (owner): `git push --force-with-lease fork feat/airseekers-backend-rebased:feat/airseekers-backend`.
+- Suggested PR description: `upstream-pr/PR_986_BODY_rebased.md`. It adds a rebase note, the
+  dev-plumbing fixes and the firmware-exemption bullet, updated test numbers, and states that
+  colcon was not re-run. It was not posted.
+
+### 6.2 Vendored GUI: `ws/gui-dev`. The full re-fork onto `dev` is **blocked**, not done
+
+**How the GUI is vendored.** It is a plain copy, not a subtree or submodule. The base is
+recorded in `third_party/mowglinext/UPSTREAM_COMMIT` (`faf658bc`). `gui/build.sh` stamps the
+image with that SHA. The fork history is about 50 monolithic stack+GUI commits, so there is
+nothing to `git rebase`.
+
+The 3-way simulation was re-run (base `faf658bc`, ours `6117732`, theirs `origin/dev`
+`b1d4a532`):
+
+- **61 conflicting files, 185 hunks.** Worst: `MapPage.tsx` 20, en/fr 12 each,
+  `MapToolbarMobile`/`MowgliNextPage` 10 each.
+- 3 paths were added on both sides.
+- dev added 406 files. Many of them need dev's `mowgli_interfaces` (new `MapArea` fields,
+  `PreviewCoverage`, `SetAreaCoverageLines`, …).
+
+**Hard gate (`GUI_REBASE_TASKS.md` 1.1/1.2), still open.** Our `mowgli_interfaces/MapArea.msg`
+has no `id`, on master and on `ws/edge-layout2`. dev's GUI keys area selection, map edits and
+per-area schedules on `MapArea.id`. With every id 0 they resolve to the first area, which is a
+**wrong-area-mowing** risk.
+
+A dev-based GUI must not reach the mower until `mower_map` publishes stable, persisted ids.
+So instead of a half-merged GUI, this branch carries the approved pieces onto the current
+vendored base. `UPSTREAM_COMMIT` stays `faf658bc`.
+
+| Commit | What |
+|---|---|
+| `58a20d5` | Joystick release debounce (upstream `caec4dff`). `git merge-file` 3-way merge, clean. |
+| `86e9fc0` | **Map save.** First the atomic `/map_server_node/replace_areas` (`mower_interfaces/srv/ReplaceAreas`, from `ws/edge-layout2`), with index-aligned `is_navigation_area` and `channel_json` and `settings_json` = "keep". A refusal or transport error is final and never falls back to clear/add. When the service is **not advertised** (the map server predates edge-layout2), it falls back to upstream's hardened sequence (`map_replace.go`): a process-wide lock, a snapshot read-back, restore on failure, a deadline per call and step-specific errors. The snapshot also reads `get_area_channel`, so drawn paths survive a rollback, which upstream lacks. Area settings are keyed by name and survive `clear_map`. `foxglove.CallService` now wraps `ErrServiceNotAdvertised`. 12 new Go tests use a stateful fake map server; the importer and channel tests were updated. |
+| `7d59d35` | Rain over MQTT (below). |
+
+**Blackbox recorder.** It is absent: it came after `faf658bc`, and nothing was pulled from it.
+A future re-fork must leave out `gui/pkg/blackbox` and `BlackboxPanel`, or default them off.
+
+### 6.3 Rain over MQTT (`7d59d35`)
+
+- **Upstream signal** (`59d59e80`, `docs/MQTT_CONTROL.md`): `<mqtt_topic_prefix>/external_rain`,
+  plain string, case-insensitive. Retained messages are accepted.
+  - `yes|on|true|rain|wet|1` means wet;
+  - `no|off|false|dry|0` means dry;
+  - anything else is ignored.
+
+  Upstream's ROS side is `mqtt_bridge_node` → `/external_rain` (`std_msgs/Bool`,
+  transient_local) → the BT, OR-ed with the mower's sensor, with a 120 min wet expiry and the
+  `use_external_rain` switch.
+- **Ours.** The MQTT broker is the GUI backend's embedded mochi server (`system.mqtt.*`,
+  default prefix `/gui`, port `:1883`).
+  - `pkg/providers/mqtt_external_rain.go` subscribes to `<prefix>/external_rain`, parses the
+    payload with the same word list, and calls `/behavior_tree_node/set_external_rain`
+    (`std_srvs/SetBool`). Garbage never calls the service.
+  - `mower_mission` serves that service and also subscribes to upstream's `/external_rain`
+    Bool.
+  - `external_rain.py` holds the verdict and its expiry. `MissionNode._refresh_rain` sets the
+    FSM `rain` input to the mower's own sensors (`/hardware_bridge/status`, `/mower_base/status`)
+    OR a fresh wet verdict. It runs on every input and on every tick, so expiry needs no new
+    message.
+
+  The existing `rain_mode` / `rain_debounce_s` / `rain_delay_minutes` handling is unchanged: dock
+  and wait, the preflight refuses to start in rain, and the mower resumes after the dry delay. It
+  can only add a reason to stop. Parameters are in `mission.yaml`: `use_external_rain: true` and
+  `external_rain_max_age_minutes: 120.0` (0 = never). There is no GUI settings binding yet.
+- **To use it.** MQTT is off in `docker/docker-compose.gui.yml` (`MQTT_ENABLED=false`), and the
+  embedded broker has **no authentication**. Enabling it, and choosing `MQTT_PREFIX` (Home
+  Assistant's example uses `mowgli`), is the owner's call. Have the automation re-publish more
+  often than the expiry.
+
+### 6.4 Build and test status (`ws/gui-dev`)
+
+| Check | Result |
+|---|---|
+| Go `go build ./...`; `go test` of `pkg/providers`, `pkg/foxglove`, the map/import tests | Pass |
+| Go `go test ./pkg/api ./pkg/updater` | 11 failures, **identical on master `6117732`**: camera tests, schema/template parity (paths to `../ros2/...` and `install/` that the vendored layout lacks), param-binding drift. None comes from these commits. |
+| Web `tsc && vite build` | Pass |
+| vitest | 888/889. `FlashBoardComponent` "YardForce500B" fails only in the full run and passes alone (flaky, untouched). |
+| Web lint | 12 errors, 946 warnings, **identical on master**, all in untouched files |
+| `mower_mission` pytest (Jazzy dev image, fresh `mower_interfaces`/`mowgli_interfaces` build) | 608 passed, including 32 new external-rain tests |
+| `ARCH=amd64` / `ARCH=arm64 ./gui/build.sh` | Both built (tags `mower-gui:gui-dev-amd64` and `mower-gui:gui-dev-arm64`) |
+| Live-mower visual check | Not done. No map save was attempted, by rule. |
+
+### 6.5 Deploy (owner, mower idle on the dock; `docs/deployment.md`)
+
+From the `ws/gui-dev` tree (or master once it is merged):
+
+```bash
+./scripts/deploy_to_mower.sh sync        # mower_mission is Python: sync + restart is enough
+sshpass -e ssh $MOWER_USER@$MOWER_HOST 'docker restart mower_jazzy'
+ARCH=arm64 ./gui/build.sh                 # §2 -> mower-gui:arm64
+docker save mower-gui:arm64 | gzip | sshpass -e ssh $MOWER_USER@$MOWER_HOST 'gunzip | docker load'
+sshpass -e ssh $MOWER_USER@$MOWER_HOST 'cd /userdata/ros2_stack && docker compose \
+  -f docker/docker-compose.yml -f docker/docker-compose.gui.yml up -d --force-recreate mower_gui'
+```
+
+Before `ws/edge-layout2` is deployed, map saves use the hardened fallback. After it is deployed,
+they use `replace_areas` automatically.
+
+### 6.6 Next steps for the re-fork
+
+1. `GUI_REBASE_TASKS.md` 1.1/1.2: sync `mowgli_interfaces` to dev and make `mower_map` publish
+   stable, persisted `MapArea.id`. This is the gate.
+2. Then re-fork per `GUI_REBASE_TASKS.md` Phase 4 on the then-current dev. Leave out the
+   blackbox. Carry this branch's three commits as patches: `map_replace.go` needs dev's
+   `ProposedObstacles` normalisation, and `mqtt.go` needs to be checked against dev's MQTT
+   provider.
