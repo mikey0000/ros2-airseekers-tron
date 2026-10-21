@@ -58,6 +58,8 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
+SIM_TIME = {'use_sim_time': True}     # every node but mower_sim itself (the /clock source)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import robot_settings  # noqa: E402  (launch/robot_settings.py, installed alongside)
 
@@ -114,13 +116,65 @@ def _prepare_world(context):
     nav2 = LaunchConfiguration('nav2_params_file').perform(context).strip()
     if not nav2:
         nav2 = _share('mower_navigation', 'config', 'nav2_params.yaml')
+    import yaml
+    with open(nav2, encoding='utf-8') as f:
+        doc = yaml.safe_load(f)
     if LaunchConfiguration('stereo_costmap').perform(context).strip().lower() not in ('true', '1'):
-        import yaml
-        with open(nav2, encoding='utf-8') as f:
-            doc = robot_settings.without_stereo_sources(yaml.safe_load(f))
-        nav2 = robot_settings.write_params_file(doc, maps_dir, 'nav2_params_no_stereo.yaml')
+        doc = robot_settings.without_stereo_sources(doc)
+    rate = float(LaunchConfiguration('rate_factor').perform(context))
+    doc, ctrl_hz = _sim_time_params(doc, rate)
+    nav2 = robot_settings.write_params_file(doc, maps_dir, 'nav2_params_sim.yaml')
     actions.append(SetLaunchConfiguration('nav2_params_file', nav2))
+    actions.append(SetLaunchConfiguration('controller_frequency', '%g' % ctrl_hz))
+    actions.append(LogInfo(msg='mower_sim: sim time (use_sim_time), rate_factor %g' % rate))
     return actions
+
+
+def _sim_time_params(doc, rate):
+    """Nav2 params for the sim clock: every ``use_sim_time`` true, and the loops Nav2 Jazzy
+    runs on WALL rates scaled by ``rate`` so their sim-time rate is unchanged (checked in the
+    1.3.13 binaries: rclcpp::WallRate / WallTimer symbols):
+      * local / global costmap update_frequency (Costmap2DROS::mapUpdateLoop, WallRate;
+        publish_frequency is judged on the node clock and stays),
+      * behavior_server cycle_frequency (TimedBehavior: Spin / BackUp WallRate),
+      * velocity_smoother smoothing_frequency (wall timer) AND its max_accel / max_decel:
+        the smoother limits each step by accel / smoothing_frequency, so both scale by
+        ``rate`` to keep the same sim-time acceleration.
+    collision_monitor runs per cmd_vel message (node clock): nothing to scale.
+    controller_server's WallRate(controller_frequency) is scaled by mower_sim after
+    configure (MPPI reads the frequency at configure); its base value is returned."""
+    def walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == 'use_sim_time':
+                    node[k] = True
+                else:
+                    walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(doc)
+    # nodes started with this file that have no section of their own (collision_zone_gate,
+    # nav_lane_watchdog, ...)
+    doc.setdefault('/**', {}).setdefault('ros__parameters', {})['use_sim_time'] = True
+    if rate == 1.0:
+        ctrl = doc.get('controller_server', {}).get('ros__parameters', {})
+        return doc, float(ctrl.get('controller_frequency', 20.0))
+    for name, key in (('velocity_smoother', 'smoothing_frequency'),
+                      ('behavior_server', 'cycle_frequency')):
+        prm = doc.get(name, {}).get('ros__parameters', {})
+        if key in prm:
+            prm[key] = float(prm[key]) * rate
+    vs = doc.get('velocity_smoother', {}).get('ros__parameters', {})
+    for key in ('max_accel', 'max_decel'):
+        if key in vs:
+            vs[key] = [float(v) * rate for v in vs[key]]
+    for name in ('local_costmap', 'global_costmap'):
+        prm = doc.get(name, {}).get(name, {}).get('ros__parameters', {})
+        if 'update_frequency' in prm:
+            prm['update_frequency'] = float(prm['update_frequency']) * rate
+    ctrl = doc.get('controller_server', {}).get('ros__parameters', {})
+    return doc, float(ctrl.get('controller_frequency', 20.0))
 
 
 def _localization(context):
@@ -209,6 +263,8 @@ def generate_launch_description() -> LaunchDescription:
         arg('loc_drift_seed', '1', 'sim: random seed of the localisation drift.'),
         arg('urdf_file', default_urdf, 'xacro robot description.'),
         arg('log_level', 'info', 'Log level of the sim node.'),
+        arg('rate_factor', '1.0', 'sim: sim time / real time (1.0 = real time, 3.0 = three '
+            'times faster). The sim publishes /clock; every node runs on use_sim_time.'),
     ]
 
     sim = Node(
@@ -235,6 +291,10 @@ def generate_launch_description() -> LaunchDescription:
                                                value_type=float),
             'rear_marker_offset': ParameterValue(LaunchConfiguration('rear_marker_offset'),
                                                  value_type=float),
+            'rate_factor': ParameterValue(LaunchConfiguration('rate_factor'), value_type=float),
+            'controller_frequency': ParameterValue(LaunchConfiguration('controller_frequency'),
+                                                   value_type=float),
+            'use_sim_time': False,       # the sim is the /clock source (explicit)
         }],
         arguments=['--ros-args', '--log-level', LaunchConfiguration('log_level')],
     )
@@ -242,37 +302,39 @@ def generate_launch_description() -> LaunchDescription:
     core = [
         Node(package='robot_state_publisher', executable='robot_state_publisher',
              name='robot_state_publisher', output='screen',
-             parameters=[{'robot_description': ParameterValue(
+             parameters=[SIM_TIME, {'robot_description': ParameterValue(
                  Command(['xacro ', LaunchConfiguration('urdf_file')]), value_type=str)}]),
         # with loc_drift the sim owns a drifting map -> odom (ekf_map's role on the robot)
         Node(package='tf2_ros', executable='static_transform_publisher', name='static_map_odom',
              output='screen', condition=IfCondition(PythonExpression(
                  ["not ('", LaunchConfiguration('loc_drift'), "'.strip().lower() == 'true' and '",
                   LaunchConfiguration('localization'), "'.strip().lower() == 'sim')"])),
+             parameters=[SIM_TIME],
              arguments=['--x', '0', '--y', '0', '--z', '0', '--roll', '0', '--pitch', '0',
                         '--yaw', '0', '--frame-id', 'map', '--child-frame-id', 'odom']),
         Node(package='twist_mux', executable='twist_mux', name='twist_mux', output='screen',
              parameters=[PathJoinSubstitution(
-                 [FindPackageShare('mower_teleop'), 'config', 'twist_mux.yaml'])],
+                 [FindPackageShare('mower_teleop'), 'config', 'twist_mux.yaml']), SIM_TIME],
              remappings=[('cmd_vel_out', '/cmd_vel_raw')]),
         Node(package='mower_teleop', executable='cmd_vel_ws_relay', name='cmd_vel_ws_relay',
-             output='screen', condition=enabled('teleop_relay')),
+             output='screen', condition=enabled('teleop_relay'), parameters=[SIM_TIME]),
         Node(package='mower_control', executable='cmd_vel_slew', name='cmd_vel_slew',
              output='screen',
              # the GUI settings file of this checkout is device-owned: do not read it
-             parameters=[{'robot_settings_file': ''}]),
+             parameters=[{'robot_settings_file': '', 'use_sim_time': True}]),
         # costmaps read the odom/map copies of /bumper_cloud and /ai/det/obstacle_points
         # (2026-10-09, mower_control/fixed_frame_relay.py)
         Node(package='mower_control', executable='fixed_frame_relay', name='fixed_frame_relay',
-             output='screen'),
+             output='screen', parameters=[SIM_TIME]),
         Node(package='mower_control', executable='slip_detector', name='slip_detector',
-             output='screen'),
+             output='screen', parameters=[SIM_TIME]),
         Node(package='bumper_controller', executable='bumper_controller_node',
              name='bumper_controller', output='screen',
              parameters=[PathJoinSubstitution([FindPackageShare('bumper_controller'), 'config',
                                                'bumper_controller.yaml']), {
                  'pid_kp': 0.8, 'pid_ki': 0.0, 'pid_kd': 0.05, 'pid_max_angular': 0.5,
-                 'pid_tolerance': 0.03, 'cmd_vel_topic': '/cmd_vel_bumper'}]),
+                 'pid_tolerance': 0.03, 'cmd_vel_topic': '/cmd_vel_bumper',
+                 'use_sim_time': True}]),
     ]
 
     gui_bridge = Node(
@@ -293,6 +355,7 @@ def generate_launch_description() -> LaunchDescription:
                 ["'/odometry/filtered_map' if '", LaunchConfiguration('loc_drift'),
                  "'.strip().lower() == 'true' and '", LaunchConfiguration('localization'),
                  "'.strip().lower() == 'sim' else '/odometry/filtered'"]),
+            'use_sim_time': True,
         }],
         condition=enabled('gui_bridge'),
     )
@@ -322,15 +385,15 @@ def generate_launch_description() -> LaunchDescription:
         ),
         include('mower_coverage_bridge', 'launch/coverage_bridge.launch.py', 'coverage'),
         include('mower_docking', 'launch/docking.launch.py', 'docking',
-                params_file=LaunchConfiguration('docking_params_file')),
+                params_file=LaunchConfiguration('docking_params_file'), use_sim_time='true'),
         include('mower_mission', 'launch/mission.launch.py', 'mission',
-                params_file=LaunchConfiguration('mission_params_file')),
+                params_file=LaunchConfiguration('mission_params_file'), use_sim_time='true'),
         Node(package='foxglove_bridge', executable='foxglove_bridge', name='foxglove_bridge',
              output='screen', condition=enabled('foxglove'),
              parameters=[{'port': ParameterValue(LaunchConfiguration('foxglove_port'),
                                                  value_type=int),
                           'send_buffer_limit': 10000000, 'use_compression': False,
-                          'sysinfo': False}]),
+                          'sysinfo': False, 'use_sim_time': True}]),
     ]
 
     return LaunchDescription(
@@ -339,6 +402,12 @@ def generate_launch_description() -> LaunchDescription:
         + arguments
         + [SetLaunchConfiguration('world_file', ''), SetLaunchConfiguration('datum_lat', '0.0'),
            SetLaunchConfiguration('datum_lon', '0.0'),
+           SetLaunchConfiguration('controller_frequency', '20.0'),
+           # the sim owns time: every node runs on /clock. Set per node (SIM_TIME below, the
+           # nav2 params file, and the use_sim_time launch configuration the included launch
+           # files read): a global launch_ros SetParameter turns the nodes' dict parameters
+           # into params files that lose to the packages' YAML (map_server ignored maps_dir)
+           SetLaunchConfiguration('use_sim_time', 'true'),
            OpaqueFunction(function=_prepare_world)]
         + [sim] + core + [gui_bridge] + stack
         + [OpaqueFunction(function=_localization)]

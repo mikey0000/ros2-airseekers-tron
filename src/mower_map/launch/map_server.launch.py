@@ -39,6 +39,8 @@ def generate_launch_description():
     overrides = {name: ParameterValue(LaunchConfiguration(name), value_type=typ)
                  for name, _, _, typ in ARGS}
     overrides['odom_topic'] = overrides.pop('map_odom_topic')
+    # mower_sim (sim.launch.py) sets the use_sim_time launch configuration
+    overrides['use_sim_time'] = ParameterValue(LaunchConfiguration('use_sim_time', default='false'), value_type=bool)
     return LaunchDescription(
         [DeclareLaunchArgument(name, default_value=default, description=desc)
          for name, default, desc, _ in ARGS]

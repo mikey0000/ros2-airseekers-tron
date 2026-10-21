@@ -26,7 +26,11 @@
 #   -l         localisation drift also without -d (an "ideal drive, real localisation" run)
 #   -L         no localisation drift (perfect static map -> odom, the pre-2026-10-16 gate)
 #   -s SEED    disturbance and drift seed (default 1)
-#   -t SECS    give up after this long after START (default 2700)
+#   -t SECS    give up after this many SIM seconds after START (default 2700)
+#   -x RATE    sim speed: sim time / real time (default $SIM_GATE_RATE or 1; 3 = three times
+#              faster). The sim owns /clock, every node runs on sim time and the bag records
+#              sim time (docs/simulation.md "Faster than real time"). A run whose controller
+#              loop fell below 18 Hz sim is INVALID (exit 4), not FAIL: the host was too slow.
 #   -k         keep the sim container running at the end (debugging)
 #   -r INDEX   resume scenario: a priming START plans area 0 and is stopped, its resume
 #              cursor is rewritten to continue at absolute pose INDEX of area 0 (sub-path 0:
@@ -42,8 +46,8 @@ IMG=mower:jazzy-dev-amd64
 DOMAIN="${MOWER_SIM_ROS_DOMAIN_ID:-175}"
 WORLD="$STACK/src/mower_sim/worlds/real_run5.yaml"
 NAME="gate-$(date +%Y%m%d-%H%M%S)"
-DISTURB=0; SEED=1; TIMEOUT=2700; KEEP=0; DRIFT=""; RESUME=""
-while getopts "w:n:ds:t:klLr:" o; do
+DISTURB=0; SEED=1; TIMEOUT=2700; KEEP=0; DRIFT=""; RESUME=""; RATE="${SIM_GATE_RATE:-1}"
+while getopts "w:n:ds:t:klLr:x:" o; do
   case "$o" in
     w) WORLD="$(cd "$(dirname "$OPTARG")" && pwd)/$(basename "$OPTARG")" ;;
     n) NAME="$OPTARG" ;;
@@ -54,7 +58,8 @@ while getopts "w:n:ds:t:klLr:" o; do
     l) DRIFT=1 ;;
     L) DRIFT=0 ;;
     r) RESUME="$OPTARG" ;;
-    *) sed -n '2,30p' "$0"; exit 2 ;;
+    x) RATE="$OPTARG" ;;
+    *) sed -n '2,34p' "$0"; exit 2 ;;
   esac
 done
 shift $((OPTIND - 1))
@@ -69,6 +74,8 @@ if [ -n "${MOWER_SIM_ALLOW_LAN:-}" ] || [ -n "${MOWER_SIM_ALLOW_ON_ROBOT:-}" ]; 
   echo "sim_gate: refusing to run with MOWER_SIM_ALLOW_LAN / MOWER_SIM_ALLOW_ON_ROBOT set" >&2
   exit 2
 fi
+[[ "$RATE" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk "BEGIN{exit !($RATE >= 0.1 && $RATE <= 10)}" \
+  || { echo "sim_gate: -x RATE must be a number in 0.1..10" >&2; exit 2; }
 [ -f "$WORLD" ] || { echo "sim_gate: world $WORLD not found" >&2; exit 2; }
 [ -f "$STACK/install/setup.bash" ] || {
   echo "sim_gate: no install/ - run ./scripts/dev_build.sh build first" >&2; exit 2; }
@@ -103,6 +110,8 @@ ROS="source /opt/ros/jazzy/setup.bash; source install/setup.bash"
 cx() { docker exec "$C" bash -c "$ROS; $*" 2>&1 | grep -v "localhost_only\|ROS_LOCALHOST_ONLY" || true; }
 state() { cx "timeout 8 ros2 topic echo --once --field state_name /behavior_tree_node/high_level_status" \
   | grep -v '^---' | head -1; }
+# sim time (s since epoch, integer) from /clock
+simsec() { cx "timeout 8 ros2 topic echo --once --field clock /clock" | awk '/^sec:/{s=$2} /^nanosec:/{n=$2} END{if (s) printf "%d.%09d\n", s, n}'; }
 cleanup() {
   if [ "$KEEP" != 1 ]; then docker stop -t 5 "$C" >/dev/null 2>&1 || true; fi
 }
@@ -110,15 +119,15 @@ trap cleanup EXIT
 
 {
   echo "world=$WORLD"; echo "domain=$DOMAIN"; echo "disturb=$DISTURB drift=$DRIFT seed=$SEED args=$DARGS"
-  echo "extra=$EXTRA"; echo "commit=$(git -C "$STACK" rev-parse --short HEAD 2>/dev/null)"
+  echo "extra=$EXTRA"; echo "rate=$RATE"; echo "commit=$(git -C "$STACK" rev-parse --short HEAD 2>/dev/null)"
   echo "dirty=$(git -C "$STACK" status --porcelain 2>/dev/null | grep -c . || true)"
 } > "$OUT/run.txt"
-echo "sim_gate: run $NAME -> $OUT (container $C, domain $DOMAIN, disturbance $DISTURB, drift $DRIFT${RESUME:+, resume at pose $RESUME})"
+echo "sim_gate: run $NAME -> $OUT (container $C, domain $DOMAIN, rate x$RATE, disturbance $DISTURB, drift $DRIFT${RESUME:+, resume at pose $RESUME})"
 launch_sim() {
   docker rm -f "$C" >/dev/null 2>&1 || true
   docker run -d --rm --name "$C" --network host "${ENV[@]}" "${MOUNT[@]}" "$IMG" bash -c \
     "$ROS; ros2 launch mower_bringup sim.launch.py world:=$CWORLD localization:=sim \
-     maps_dir:=$COUT/maps $DARGS $EXTRA > $COUT/$1 2>&1" >/dev/null
+     maps_dir:=$COUT/maps rate_factor:=$RATE $DARGS $EXTRA > $COUT/$1 2>&1" >/dev/null
   # ready: the mission is up and idle on the dock
   ready=""; idle=""
   for _ in $(seq 1 30); do
@@ -152,7 +161,7 @@ if [ -n "$RESUME" ]; then
   echo "resume=$RESUME" >> "$OUT/run.txt"
 fi
 launch_sim launch.log
-docker exec -d "$C" bash -c "$ROS; cd $COUT && exec ros2 bag record -s sqlite3 -o bag \
+docker exec -d "$C" bash -c "$ROS; cd $COUT && exec ros2 bag record -s sqlite3 -o bag --use-sim-time \
   --include-hidden-topics --max-cache-size 0 \
   /sim/ground_truth /sim/status /behavior_tree_node/high_level_status \
   /behavior_tree_node/mow_plan /behavior_tree_node/mow_progress /cmd_vel /cmd_vel_nav \
@@ -163,13 +172,21 @@ docker exec -d "$C" bash -c "$ROS; cd $COUT && exec ros2 bag record -s sqlite3 -
   /follow_path/_action/status /spin/_action/status /mower_docking/dock/_action/status \
   > $COUT/rec.log 2>&1"
 sleep 5
-date +%s.%N > "$OUT/start_epoch"
+# START time on the sim clock (the bag and evaluate.py are in sim time)
+t_start="$(simsec)"
+[ -n "$t_start" ] || { echo "sim_gate: no /clock from the sim" >&2; exit 3; }
+echo "$t_start" > "$OUT/start_epoch"
 cx "ros2 service call /behavior_tree_node/high_level_control mowgli_interfaces/srv/HighLevelControl '{command: 1}'" | tail -1
 echo "sim_gate: START sent ($ready)"
 
-end=$(( $(date +%s) + TIMEOUT )); last=""; active=0; verdict_state=""
-while [ "$(date +%s)" -lt "$end" ]; do
-  sleep 15
+# -t is sim seconds; the wall cap only guards against a stalled sim clock
+end_sim=$(awk "BEGIN{printf \"%d\", ${t_start%.*} + $TIMEOUT}")
+end_wall=$(( $(date +%s) + $(awk "BEGIN{printf \"%d\", 2 * $TIMEOUT / $RATE + 120}") ))
+poll=$(awk "BEGIN{p = 15 / $RATE; printf \"%d\", (p < 5 ? 5 : p)}")
+last=""; active=0; verdict_state=""; now_sim="${t_start%.*}"
+while [ "$(date +%s)" -lt "$end_wall" ] && [ "$now_sim" -lt "$end_sim" ]; do
+  sleep "$poll"
+  t="$(simsec)"; [ -n "$t" ] && now_sim="${t%.*}"
   s="$(state)"
   [ -z "$s" ] && continue
   if [ "$s" != "$last" ]; then echo "  $(date +%T) $s"; last="$s"; fi
@@ -181,16 +198,16 @@ while [ "$(date +%s)" -lt "$end" ]; do
     *) active=1 ;;
   esac
 done
-[ -n "$verdict_state" ] || echo "sim_gate: timeout after ${TIMEOUT}s (last state $last)"
+[ -n "$verdict_state" ] || echo "sim_gate: timeout after $(( now_sim - ${t_start%.*} )) s sim (limit ${TIMEOUT}s, last state $last)"
 cx "pkill -INT -f 'ros2 bag record'" >/dev/null; sleep 4
 grep "behavior_tree_node\]" "$OUT/launch.log" | sed 's/\x1b\[[0-9;]*m//g' > "$OUT/mission.log" || true
 docker stop -t 5 "$C" >/dev/null 2>&1 || true
-# evaluate on a copy of the bag
-mkdir -p "$OUT/snap"; rm -f "$OUT"/snap/*.db3; cp "$OUT"/bag/*.db3 "$OUT/snap/"
+# evaluate the bag in place: the recorder and its container are stopped above, so the db3
+# is final (the copy extract.py asks for only matters for a LIVE bag; it doubled the disk use)
 set +e
 docker run --rm --name "${C}-eval" --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
   "${MOUNT[@]}" "$IMG" bash -c \
-  "$ROS; python3 scripts/sim_gate/extract.py $COUT/snap $COUT/data.json >/dev/null && \
+  "$ROS; python3 scripts/sim_gate/extract.py $COUT/bag $COUT/data.json >/dev/null && \
    python3 scripts/sim_gate/evaluate.py $COUT $CWORLD" | tee "$OUT/verdict.txt"
 rc=${PIPESTATUS[0]}
 set -e

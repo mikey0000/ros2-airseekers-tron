@@ -19,6 +19,7 @@ from std_srvs.srv import Trigger  # noqa: E402
 
 DOMAIN = 89
 SERVICE = '/lifecycle_manager_navigation/is_active'
+from mower_mission.sub_pump import WALL_CLOCK
 
 
 class _Stub:
@@ -30,6 +31,7 @@ class _Stub:
         self._lock = threading.RLock()
         self._cancelled = set()
         self._node = node
+        self._clk = WALL_CLOCK
 
     def get_logger(self):
         return self._node.get_logger()

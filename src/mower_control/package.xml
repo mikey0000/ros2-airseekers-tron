@@ -14,6 +14,7 @@
 
   <!-- ROS interfaces used by the nodes -->
   <depend>rclpy</depend>
+  <exec_depend>rosgraph_msgs</exec_depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <exec_depend>map_msgs</exec_depend>

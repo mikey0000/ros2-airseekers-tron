@@ -370,6 +370,102 @@ INDEX of area 0 (`scripts/sim_gate/resume_cursor.py`; for sub-path 0 the local i
 restarts the sim docked; the gated START then undocks and resumes there. The real_run5 world
 plans the same sub-path 0 as the field (1478 poses, the same vertices).
 
+### Faster than real time (`-x RATE`; 2026-10-21, ws/fast-sim2)
+
+The sim owns time. `mower_sim` publishes `/clock` (fixed 10 ms sim steps, starting at the wall
+epoch) paced at `rate_factor` x real time by one steady wall timer, and runs physics,
+odom / IMU / GNSS / MCU, stereo, rear camera and the 1 Hz work on those steps. If it falls
+more than 0.1 s sim behind it re-bases (sim time slows, it never bursts). Every other node
+runs with `use_sim_time:=true`, at every rate (1.0 included). `sim_gate.sh -x 3` runs a gate
+three times faster; `-t` is in sim seconds, the bag is recorded with `--use-sim-time` and
+START is read from `/clock`, so `evaluate.py` and every criterion work in sim seconds
+unchanged. The default is still `-x 1` (`SIM_GATE_RATE` overrides it); see "Validation".
+
+How it is wired:
+
+* use_sim_time is set per node (the `SIM_TIME` dicts in `sim.launch.py`, the generated nav2
+  params file, and a `use_sim_time` launch configuration that map_server / obstacle_tracker /
+  coverage_bridge / navigation / docking / mission launch files read, default false). Not a
+  global `SetParameter`: with one, launch_ros turned the nodes' dict parameters into params
+  files that lost to the package YAML (map_server ignored `maps_dir`, START found no areas).
+* Python nodes: `sub_pump.NodeClock` / `node_clock(node)` (same file in every package). With
+  use_sim_time false, `now` and `sleep` are `time.monotonic` and `time.sleep`, so production
+  is unchanged. With use_sim_time true they are the node's ROS clock and sleeps that follow
+  `/clock`, and the constructor blocks for the first `/clock` and seeds the node clock with it.
+  `PeriodicRunner` schedules on it (periods in sim seconds), and the `SubscriptionPump` receipts
+  use it. The mower_navigation scripts have `node_now(node)`, which does the same.
+* Converted (all behaviour-relevant wall reads in nodes the sim runs): mission_node (input
+  stamps, `MissionFSM.clock` = the c1a4cd8 send-time request deadlines, the zero burst, the
+  nav2-ready deadline), docking_node (input freshness, control loop period, stop burst,
+  post-fail watch), cmd_vel_slew (pivot assist / interlock / lane ages), slip_detector (stuck
+  guard), gui_bridge, map_server_node (pose / status / GNSS ages), obstacle_tracker,
+  collision_zone_gate (holds, retry backoff), nav_lane_watchdog, activity_gated_lifecycle,
+  bumper_controller (node-clock timer under use_sim_time, the wall timer otherwise).
+* Intentionally left on wall time: compute-time measurements (mission conditioning,
+  map_server mask / plan ms, coverage `planning_time_s`), persistence and event wall stamps
+  (terrain decay / save, incidents, the obstacle-policy `wall_time`, slip event `ts`), and
+  two polling sleeps whose deadlines are already sim time (docking `_resume_inputs` 5 ms,
+  mission nav2-ready 0.2 s). `sub_pump`'s `max_age` drop is wall age, which is at most more
+  lenient at k x. Not started by the sim and left alone: supervisor, bag_recorder,
+  mow_recorder, tilt_monitor, imu_cal, the drivers, cameras and perception. Their
+  PeriodicRunner / pump would follow sim time too if one were ever run with use_sim_time.
+* Nav2 Jazzy (1.3.13, checked in the binaries) runs some loops on WALL rates. The launch
+  scales them by the rate: costmap `update_frequency` (Costmap2DROS WallRate),
+  behavior_server `cycle_frequency` (Spin / BackUp WallRate), and velocity_smoother
+  `smoothing_frequency` (wall timer) with its `max_accel` / `max_decel`, because it limits
+  each step by accel / frequency. collision_monitor works per message and needs nothing.
+  controller_server uses `WallRate(controller_frequency)`, but MPPI reads
+  `controller_frequency` at configure time and only shifts its warm start when
+  1 / frequency == model_dt. So mower_sim sets `controller_frequency` = 20 x rate through
+  the server's dynamic parameter only after it is active. MPPI keeps "shifting ON".
+  The 3 "Parameter controller_frequency not found" warnings at that moment come from the
+  MPPI plugins' parameter handlers and are harmless.
+* loc_drift at k > 1: the drifting map -> odom TF comes at 10 Hz sim. Nav2 waited for a
+  map -> odom newer than the robot pose, which locked the controller to 10-11 Hz sim at 3x,
+  even though controller_server used about 15 % of a core. In fast mode (`map_odom_hold`
+  auto = rate != 1) mower_sim re-sends the latest map -> odom with every physics tick. The
+  values still change at 10 Hz. That restored 20 Hz. At 1x the TF is unchanged.
+* `evaluate.py`: a controller loop median below 18 Hz (sim) makes the run **INVALID** (exit 4),
+  not FAIL: the host could not keep up. Rerun slower.
+
+Achievable rate on the dev host (20 threads, 31 GB, heavily swapped during these runs):
+3x holds the 20 Hz sim controller budget (median 20 / p10 20) in ideal, `-d` (with the hold)
+and resume runs. Gate container CPU: about 2.3 cores at 1x and 5.5-6.3 cores at 3x. Much of
+that is per-node `/clock` handling in about 15 rclpy processes (idle nodes such as
+coverage_action reach about 50 % at 3x). `clock_rate_hz` (default 100) is the knob if CPU
+becomes the limit. Wall time per gate: 1x ideal 1025 s, 3x ideal 390 s, 3x `-d` 434 s,
+3x resume 388 s (start-up included).
+
+Validation (real_run5, seed 1, commit 457ab8f + the hold):
+
+| Run | sim s | a max out | b trips | c | e corners max | g pivot | h p99 line / arc | loop med / p10 | Verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| ideal 1x | 986 | 0.000 | 0 | ok | 0.066 | 29 % | 0.031 / 0.035 | 20 / 20 | PASS |
+| ideal 3x | 1029 | 0.000 | 0 | ok | 0.121 | 28 % | 0.032 / 0.038 | 20 / 20 | PASS |
+| `-d -s 1` 1x | 1116 | 0.093 | 0 | ok | 0.162 (transit corner) | 34 % | 0.072 / 0.058 | 20 / 20 | FAIL (e) |
+| `-d -s 1` 3x, no hold | 1121 | 0.000 | 0 | ok | 0.131 | 32 % | 0.100 / 0.134 | 11 / 10 | INVALID |
+| `-d -s 1` 3x, hold | 1148 | 0.153 (39) | 1 (RETURNING_HOME) | ok | 0.141 | 34 % | 0.074 / 0.062 | 20 / 20 | FAIL (a, b) |
+| `-r 279` 3x | 914 | 0.000 | 0 | ok | 0.126 | 29 % | 0.040 / 0.045 | 20 / 20 | PASS |
+
+Ideal and resume agree with 1x and with master's earlier runs (ideal p99 about
+0.034-0.043 / 0.032-0.035, corners 0.08-0.12). For `-d`, cross-track, pivot share and loop
+rate agree, but the pass / fail outcome differs by criterion: 1x failed one transit corner
+(0.162), and 3x failed one boundary excursion on the return. Both are within the spread of
+earlier `-d` runs on this host (corner max 0.075-0.263; 3 of 17 runs had hard-boundary
+trips). One seed per rate is not enough to call `-d` equivalent. Until more seeds agree, the
+default stays 1x. Use `-x 3` for ideal and resume iterations, and confirm a `-d` verdict at
+1x before the field.
+
+What fast mode cannot be trusted for:
+
+* A Python node that is starved for X wall seconds loses 3X sim seconds. One 3x `-d` run
+  aborted on "mcu telemetry stale" while the host swapped (and `top` ran in the container).
+  The sim clock only slows down when the sim itself lags. Treat EMERGENCY / stale / timeout
+  verdicts at 3x as suspect and rerun them at 1x.
+* Anything that depends on Nav2's wall-rate loops beyond the ones scaled here (e.g. the
+  bt_navigator tick of 10 ms wall becomes 30 ms sim), or on TF wait timing.
+* CPU-budget questions (MPPI cycle time, the RK3588), and timing of real hardware.
+
 ### What the gate cannot show
 
 Slope (tilt, downhill drift, the field's Spin timeouts on the slope), real turf slip and

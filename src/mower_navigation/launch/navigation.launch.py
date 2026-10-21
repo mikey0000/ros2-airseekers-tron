@@ -211,7 +211,10 @@ def generate_launch_description() -> LaunchDescription:
                          "check_interval_s": 2.0,
                          # Restart a manager hung in a bringup transition (see its
                          # docstring); 0 disables.
-                         "bringup_watchdog_s": 90.0}],
+                         "bringup_watchdog_s": 90.0,
+                         # mower_sim (sim.launch.py) sets use_sim_time
+                         "use_sim_time": ParameterValue(LaunchConfiguration(
+                             "use_sim_time", default="false"), value_type=bool)}],
             **common),
     ]
 

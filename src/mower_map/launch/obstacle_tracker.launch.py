@@ -54,6 +54,8 @@ def generate_launch_description():
                  for name, _, _, typ in ARGS}
     overrides['step_rate'] = overrides.pop('obstacle_step_rate')
     overrides['odom_topic'] = overrides.pop('map_odom_topic')
+    # mower_sim (sim.launch.py) sets the use_sim_time launch configuration
+    overrides['use_sim_time'] = ParameterValue(LaunchConfiguration('use_sim_time', default='false'), value_type=bool)
     # Prefixed like obstacle_step_rate so the (generic) launch-argument namespace
     # cannot collide with another include; the node param itself is snapshot_quality.
     overrides['snapshot_quality'] = overrides.pop('obstacle_snapshot_quality')

@@ -22,6 +22,8 @@
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>action_msgs</exec_depend>
   <exec_depend>lifecycle_msgs</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>rosgraph_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>mower_interfaces</exec_depend>
   <exec_depend>mower_map</exec_depend>

@@ -62,6 +62,7 @@ def generate_launch_description():
                 'boundary_inset_m': ParameterValue(boundary_inset, value_type=float),
                 'min_turn_radius_m': ParameterValue(turn_radius, value_type=float),
                 'border_inset_m': ParameterValue(border_inset, value_type=float),
+                'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time', default='false'), value_type=bool),
             }],
             condition=IfCondition(start_planner),
         ),
@@ -74,6 +75,7 @@ def generate_launch_description():
             parameters=[{
                 'transit_gap_m': ParameterValue(transit_gap, value_type=float),
                 'operation_width': ParameterValue(operation_width, value_type=float),
+                'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time', default='false'), value_type=bool),
             }],
         ),
     ])

@@ -35,6 +35,25 @@ If this node is down the zones keep their last state (yaml default: on).
 import time
 
 
+def node_now(node):
+    """time.monotonic, or the node's ROS clock in seconds under use_sim_time (mower_sim
+    publishes /clock, possibly faster than real time). Under sim time it first blocks until
+    the first /clock and seeds the node clock with it (no stamp on a zero clock)."""
+    if not node.get_parameter('use_sim_time').value:
+        return time.monotonic
+    from rclpy.time import Time
+    from rclpy.wait_for_message import wait_for_message
+    from rosgraph_msgs.msg import Clock as ClockMsg
+    clock = node.get_clock()
+    while not clock.now().nanoseconds and node.context.ok():
+        ok, msg = wait_for_message(ClockMsg, node, '/clock', time_to_wait=10.0)
+        if ok and (msg.clock.sec or msg.clock.nanosec) and not clock.now().nanoseconds:
+            clock.set_ros_time_override(Time.from_msg(msg.clock))
+        elif not ok:
+            node.get_logger().warn('use_sim_time: waiting for /clock')
+    return lambda: clock.now().nanoseconds * 1e-9
+
+
 class ZoneGate:
     """Pure decision logic (no ROS): wanted zone state from commands, behaviors and time."""
 
@@ -129,6 +148,7 @@ def main(args=None):
     class CollisionZoneGate(Node):
         def __init__(self):
             super().__init__('collision_zone_gate')
+            self._now = node_now(self)
             d = self.declare_parameter
             cmd_topic = d('cmd_topic', '/cmd_vel_nav_smoothed').value
             cm = d('collision_monitor', 'collision_monitor').value
@@ -159,22 +179,22 @@ def main(args=None):
                                    % (self.zones, cmd_topic, self.gate.forward_on))
 
         def on_cmd(self, msg):
-            self.sync(self.gate.on_cmd(msg.linear.x, time.monotonic(), msg.angular.z))
+            self.sync(self.gate.on_cmd(msg.linear.x, self._now(), msg.angular.z))
 
         def on_status(self, action, msg):
             live = (GoalStatus.STATUS_ACCEPTED, GoalStatus.STATUS_EXECUTING,
                     GoalStatus.STATUS_CANCELING)
             self._active[action] = any(st.status in live for st in msg.status_list)
-            self.sync(self.gate.on_behavior(any(self._active.values()), time.monotonic()))
+            self.sync(self.gate.on_behavior(any(self._active.values()), self._now()))
 
         def on_tick(self):
-            now = time.monotonic()
+            now = self._now()
             if self.pending is None and now - self.applied_t >= self.resync_s:
                 self.applied = None
             self.sync(self.gate.on_tick(now))
 
         def failed(self, why):
-            if self.backoff.failed(time.monotonic()):
+            if self.backoff.failed(self._now()):
                 self.get_logger().warn(
                     'collision_monitor zones.enabled not set (%s); retrying every %.0f s '
                     '(normal while it is not configured yet)' % (why, self.backoff.backoff_s))
@@ -187,7 +207,7 @@ def main(args=None):
             if self.pending is not None:
                 state, fut, sent = self.pending
                 if not fut.done():
-                    if time.monotonic() - sent < 1.0:
+                    if self._now() - sent < 1.0:
                         return
                     self.cli.remove_pending_request(fut)
                     self.pending = None
@@ -197,7 +217,7 @@ def main(args=None):
                 res = fut.result()
                 if res is not None and all(r.successful for r in res.results):
                     self.applied = state
-                    self.applied_t = time.monotonic()
+                    self.applied_t = self._now()
                     if self.backoff.succeeded():
                         self.get_logger().info('collision_monitor accepted zones.enabled=%s'
                                                % state)
@@ -206,7 +226,7 @@ def main(args=None):
                                 if res is not None else 'no result')
             if wanted == self.applied:
                 return
-            if not self.backoff.ready(time.monotonic()):
+            if not self.backoff.ready(self._now()):
                 return
             if not self.cli.service_is_ready():
                 self.get_logger().warn('collision_monitor parameter service not ready',
@@ -217,7 +237,7 @@ def main(args=None):
                 req.parameters.append(Parameter(
                     name=z + '.enabled',
                     value=ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=wanted)))
-            self.pending = (wanted, self.cli.call_async(req), time.monotonic())
+            self.pending = (wanted, self.cli.call_async(req), self._now())
             self.get_logger().debug('zones.enabled -> %s' % wanted)
 
     rclpy.init(args=args)

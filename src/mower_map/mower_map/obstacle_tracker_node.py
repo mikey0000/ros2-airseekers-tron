@@ -75,6 +75,7 @@ from mowgli_interfaces.srv import GetMowingArea, PromoteObstacle, RemoveObstacle
 
 from mower_map.obstacle_snapshot import prune_snapshots, snapshot_ids, sync_snapshots
 from mower_map.obstacle_tracker_core import TrackerCore, TrackerParams, keepout_entry
+from mower_map.sub_pump import node_clock
 
 try:  # det_ros / det_range output; without vision_msgs the dynamic-class veto is off
     from vision_msgs.msg import Detection2DArray
@@ -236,6 +237,7 @@ class ObstacleTrackerNode(Node):
 
     def __init__(self):
         super().__init__('obstacle_tracker')
+        self._clk = node_clock(self)   # monotonic / sim time (use_sim_time)
         for name, default in PARAMS.items():
             self.declare_parameter(name, default)
 
@@ -357,15 +359,15 @@ class ObstacleTrackerNode(Node):
     # -- subscriptions --------------------------------------------------
     def _on_obstacle_cloud(self, msg):
         self._obstacle_pts = cloud_xy(msg)
-        self._obstacle_time = time.monotonic()
+        self._obstacle_time = self._clk.now()
 
     def _on_extra_cloud(self, msg):
         self._extra_pts = cloud_xy(msg)
-        self._extra_time = time.monotonic()
+        self._extra_time = self._clk.now()
 
     def _on_clear_cloud(self, msg):
         self._clear_pts = cloud_xy(msg)
-        self._clear_time = time.monotonic()
+        self._clear_time = self._clk.now()
 
     def _on_odom(self, msg):
         pose = msg.pose.pose
@@ -375,19 +377,19 @@ class ObstacleTrackerNode(Node):
     def _on_replan(self, msg):
         # Areas/masks changed (area edit, our own promote/remove, dock move):
         # refresh the mowing-area polygons so promotion targets stay correct.
-        if msg.data and time.monotonic() - self._replan_refresh_cooldown > 2.0:
-            self._replan_refresh_cooldown = time.monotonic()
+        if msg.data and self._clk.now() - self._replan_refresh_cooldown > 2.0:
+            self._replan_refresh_cooldown = self._clk.now()
             self._areas_time = -1e9
 
     def _on_high_level(self, msg):
         self._high_state = int(msg.state)
-        self._high_time = time.monotonic()
+        self._high_time = self._clk.now()
 
     def _on_detections(self, msg):
         """Ranged person / animal detections -> map-frame veto points. det_range tags a
         ranged detection with its base_link position in results[0].pose (covariance[0]
         > 0); an unranged one blocks every promotion for dynamic_memory_s."""
-        now = time.monotonic()
+        now = self._clk.now()
         dyn = {str(c).strip().lower() for c in (self.p('dynamic_classes') or [])}
         classes = list(self.p('det_classes') or [])
         min_score = float(self.p('dynamic_min_score'))
@@ -419,7 +421,7 @@ class ObstacleTrackerNode(Node):
     def _on_snapshot_frame(self, msg):
         # Copy the raw buffer; the JPEG is encoded lazily (once per new cluster)
         # so the idle annotated feed only costs this one copy per frame.
-        self._snapshot_frame = (time.monotonic(), bytes(msg.data), msg.encoding,
+        self._snapshot_frame = (self._clk.now(), bytes(msg.data), msg.encoding,
                                 int(msg.width), int(msg.height), int(msg.step))
 
     def _promotion_allowed(self, now):
@@ -469,12 +471,12 @@ class ObstacleTrackerNode(Node):
         self._areas = tuple(sorted(
             (i, a.name, [(pt.x, pt.y) for pt in a.area.points])
             for i, a in self._areas_acc.items() if not a.is_navigation_area))
-        self._areas_time = time.monotonic()
+        self._areas_time = self._clk.now()
         self._areas_inflight = False
         # B2: re-adopt stored SOURCE_TRACKER keepouts (accepted before a restart, or a
         # pending one after a tracker respawn) so they can still be auto-removed.
         keepouts = tracker_keepouts(self._areas_acc)
-        adopted = self.core.adopt_keepouts(keepouts, time.monotonic())
+        adopted = self.core.adopt_keepouts(keepouts, self._clk.now())
         if adopted:
             self.get_logger().info('re-adopted %d auto-marked keepout(s): #%s'
                                    % (len(adopted), ', #'.join(str(i) for i in adopted)))
@@ -514,7 +516,7 @@ class ObstacleTrackerNode(Node):
             self.core.reject_promotion(track_id)
             return
         if resp is not None and resp.success:
-            self.core.confirm_promoted(track_id, time.monotonic())
+            self.core.confirm_promoted(track_id, self._clk.now())
             self.get_logger().info('auto-proposed obstacle #%d (pending review): %s'
                                    % (track_id, resp.message))
         else:
@@ -560,7 +562,7 @@ class ObstacleTrackerNode(Node):
     def _on_step(self):
         if not bool(self.p('enabled')):
             return
-        now = time.monotonic()
+        now = self._clk.now()
         if now - self._areas_time > float(self.p('areas_refresh_s')):
             self._refresh_areas()
 

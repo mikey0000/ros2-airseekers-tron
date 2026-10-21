@@ -24,6 +24,25 @@ import time
 MOVING = 0.02           # |v| or |w| above this is a moving command
 
 
+def node_now(node):
+    """time.monotonic, or the node's ROS clock in seconds under use_sim_time (mower_sim
+    publishes /clock, possibly faster than real time). Under sim time it first blocks until
+    the first /clock and seeds the node clock with it (no stamp on a zero clock)."""
+    if not node.get_parameter('use_sim_time').value:
+        return time.monotonic
+    from rclpy.time import Time
+    from rclpy.wait_for_message import wait_for_message
+    from rosgraph_msgs.msg import Clock as ClockMsg
+    clock = node.get_clock()
+    while not clock.now().nanoseconds and node.context.ok():
+        ok, msg = wait_for_message(ClockMsg, node, '/clock', time_to_wait=10.0)
+        if ok and (msg.clock.sec or msg.clock.nanosec) and not clock.now().nanoseconds:
+            clock.set_ros_time_override(Time.from_msg(msg.clock))
+        elif not ok:
+            node.get_logger().warn('use_sim_time: waiting for /clock')
+    return lambda: clock.now().nanoseconds * 1e-9
+
+
 class LaneWatchdog:
     """Pure decision logic (no ROS). Times in seconds (monotonic)."""
 
@@ -92,17 +111,18 @@ def main(args=None):
     class NavLaneWatchdog(Node):
         def __init__(self):
             super().__init__('nav_lane_watchdog')
+            self._now = node_now(self)
             d = self.declare_parameter
             self.wd = LaneWatchdog(d('stall_s', 2.0).value, d('max_recoveries', 3).value,
                                    d('window_s', 600.0).value, d('cooldown_s', 10.0).value)
             self.enabled = bool(d('recover', False).value)
             self.create_subscription(Twist, d('raw_topic', '/cmd_vel_nav_raw').value,
                                      lambda m: self.wd.on_raw(m.linear.x, m.angular.z,
-                                                              time.monotonic()), 10)
+                                                              self._now()), 10)
             self.create_subscription(Twist, d('smoothed_topic', '/cmd_vel_nav_smoothed').value,
-                                     lambda _m: self.wd.on_smoothed(time.monotonic()), 10)
+                                     lambda _m: self.wd.on_smoothed(self._now()), 10)
             self.create_subscription(Twist, d('nav_topic', '/cmd_vel_nav').value,
-                                     lambda _m: self.wd.on_nav(time.monotonic()), 10)
+                                     lambda _m: self.wd.on_nav(self._now()), 10)
             self.create_subscription(
                 CollisionMonitorState,
                 d('cm_state_topic', '/collision_monitor_state').value,
@@ -113,7 +133,7 @@ def main(args=None):
             self.create_timer(0.5, self.on_tick)
 
         def on_tick(self):
-            now = time.monotonic()
+            now = self._now()
             stage = self.wd.check(now)
             if stage is None or self.busy:
                 return
