@@ -571,7 +571,7 @@ def test_default_topics_leave_out_the_high_rate_streams():
     for hot in ('/imu/data_aligned', '/mower_base/status', '/odom', '/tf', '/rosout',
                 '/mower_base/bumper_routing_status', '/local_plan'):
         assert hot not in t, hot
-    assert len(t) <= 60
+    assert len(t) <= 62   # + /collision_monitor_state (2026-10-21) and the docking diagnostics
 
 
 def test_record_cmd_polling_default_5s():
