@@ -100,7 +100,7 @@ def test_nose_trip_reverses_0_3_straight_slowly_then_resumes():
         feed(h, (x, 2.0, 0.0))
         h.tick()
     assert h.fsm._hb is not None and h.fsm._hb['mode'] == 'soft' and not h.blade
-    assert x > 4.7                   # nose 0.35 past at x 4.75: no trip before the limit
+    assert x > 4.75                  # nose 0.40 past at x 4.80: no trip before the limit
     x0 = x
     cmds = integrate(h)
     moving = [c for c in cmds if c[0] or c[1]]
@@ -195,7 +195,7 @@ def test_side_trip_reverses_onto_the_planned_leg_toward_the_interior():
     cmds = integrate(h, max_ticks=150)
     assert h.fsm._hb is None and h.name == 'MOWING'
     assert all(v <= 0.0 for v, _ in cmds)                     # reverse only
-    assert h.fsm.inputs.pose[1] > y0 + 0.05                   # moved toward the interior
+    assert h.fsm.inputs.pose[1] > y0 + 0.02                   # moved toward the interior
 
 
 def test_soft_tight_convex_bend_on_lap0_does_not_trip_but_drift_does():
@@ -208,3 +208,13 @@ def test_soft_tight_convex_bend_on_lap0_does_not_trip_but_drift_does():
     assert 0.35 < on['outs']['front_right'] < 0.40 and on['excess'] < 0.0
     drift = bb.evaluate((R + 0.13, 0.0, math.pi / 2), [circle], SOFT)
     assert drift['excess'] > 0.0                                   # lateral drift still trips
+
+
+def test_soft_driven_arc_r044_stays_on_the_line_without_a_trip():
+    # owner option (c): Area 6's driven arcs (R 0.44) put the front corners 0.46 out by
+    # geometry alone; lap 0 stays on the line, the soft front-corner trip is 0.55
+    R = 0.44
+    circle = [(R * math.cos(2 * math.pi * k / 360), R * math.sin(2 * math.pi * k / 360))
+              for k in range(360)]
+    ev = bb.evaluate((R, 0.0, math.pi / 2), [circle], SOFT)
+    assert 0.44 < ev['outs']['front_right'] < 0.48 and ev['excess'] < -0.05

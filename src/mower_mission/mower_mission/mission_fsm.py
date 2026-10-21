@@ -994,8 +994,8 @@ class Params:
     hard_boundary_body: bool = True
     hard_boundary_body_hard_m: float = 0.10
     hard_boundary_body_soft_side_m: float = 0.35
-    hard_boundary_body_soft_front_m: float = 0.50   # front corners (convex-bend allowance)
-    hard_boundary_body_soft_nose_m: float = 0.35
+    hard_boundary_body_soft_front_m: float = 0.55   # front corners (convex-bend allowance)
+    hard_boundary_body_soft_nose_m: float = 0.40
     hard_boundary_body_soft_tail_m: float = 0.30
     hard_boundary_body_clear_m: float = 0.02      # back-move success: excess <= -this
     hard_boundary_back_m: float = 0.30
@@ -1055,7 +1055,7 @@ class Params:
     dock_contact_grace_s: float = 10.0
     # --- per-area mowing settings ---
     use_area_settings: bool = True      # read /map_server_node/get_area_settings per area
-    cut_width_m: float = 0.20           # blade cut width (display only; spacing = area swath_width_m)
+    cut_width_m: float = 0.22           # blade cut width (display only; spacing = area swath_width_m)
     cut_speed_max_mps: float = 0.5
     controller_speed_param: str = 'FollowCoveragePath.desired_linear_vel'
     set_cut_speed: bool = True          # set_parameters on /controller_server per area

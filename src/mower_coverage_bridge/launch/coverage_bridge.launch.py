@@ -32,7 +32,7 @@ def generate_launch_description():
                               description='also start mower_coverage_node (/coverage/plan)'),
         DeclareLaunchArgument('transit_gap_m', default_value='0.6',
                               description='sub-path split gap; keep == kSegmentTransitGapM'),
-        DeclareLaunchArgument('cut_width_m', default_value='0.20',
+        DeclareLaunchArgument('cut_width_m', default_value='0.22',
                               description='blade cut width [m] (URDF cutter disc 2 x 0.10; '
                                           'TODO: measure)'),
         DeclareLaunchArgument('swath_overlap_m', default_value='0.02',

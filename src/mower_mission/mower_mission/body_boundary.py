@@ -12,7 +12,8 @@ than its limit:
 
 * hard edge_mode: every point 0.10 (the body stays inside plus 0.10);
 * soft edge_mode (stock layout: lap 0 has base_link ON the line): rear corners 0.35, front
-  corners 0.50 (convex-bend allowance, see limits_for), nose 0.35, tail 0.30. Normal soft driving stays below: lap 0 puts the sides 0.235 out, a row end
+  corners 0.55 (convex-bend allowance, see limits_for), nose 0.40 (a driven R 0.44 arc puts
+  it sqrt(R^2 + 0.6^2) - R = 0.30 out; row ends 0.15), tail 0.30. Normal soft driving stays below: lap 0 puts the sides 0.235 out, a row end
   0.45 inside puts the nose 0.15 / the front corners <= 0.195 past (pivot sweep included);
   tracking error p99 0.07 (pivots) .. 0.13 (all samples, sim 2026-10-21) on top.
 """
@@ -70,13 +71,14 @@ def point_outside(x, y, polys):
     return best
 
 
-def limits_for(mode, soft_side=0.35, soft_nose=0.35, soft_tail=0.30, hard=0.10,
-               soft_front=0.50):
+def limits_for(mode, soft_side=0.35, soft_nose=0.40, soft_tail=0.30, hard=0.10,
+               soft_front=0.55):
     """kind -> limit (m) for edge_mode ``mode`` ('hard' | anything else = soft). Soft front
     corners get ``soft_front``: on a convex bend of radius R tracked by base_link they sit
-    sqrt((R + 0.235)^2 + 0.6^2) - R out (0.36 at R 1.1; owner_far lap-0 bulge fillets reach
-    0.43 nominal, conditioner replay 2026-10-21) although nothing
-    drifted; stock's check line sits near the axle and is blind to that. Lateral drift is
+    sqrt((R + 0.235)^2 + 0.6^2) - R out (owner option (c), 2026-10-22: lap 0 stays on the
+    driven line; Area 6's driven arcs R 0.44 -> 0.46, R 0.72 -> 0.41) although nothing
+    drifted; 0.55 = the R 0.44 envelope 0.46 + tracking p99 0.07 (+ margin). Stock's check
+    line sits near the axle and is blind to that. Lateral drift is
     still caught by the rear corners (0.235 + drift, curvature-insensitive)."""
     if str(mode).strip().lower() == 'hard':
         return {'side': hard, 'front': hard, 'nose': hard, 'tail': hard}

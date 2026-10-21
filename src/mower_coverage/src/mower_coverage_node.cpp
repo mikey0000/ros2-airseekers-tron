@@ -30,8 +30,8 @@ namespace {
 // Sentinel defaults applied when a request field is left at its "unset" value.
 // The swath spacing default is cut_width_m - swath_overlap_m (ROS parameters,
 // set from mower.launch.py); these are only the parameter defaults.
-// cut_width_m: URDF cutter disc radius 0.10 m -> 0.20 m. TODO: measure the blade.
-constexpr double kDefaultCutWidth = 0.20;         // blade cut width [m]
+// cut_width_m: the fitted 220 mm blade disc (owner-measured 2026-10-20; map_server blade_disc_mm).
+constexpr double kDefaultCutWidth = 0.22;         // blade cut width [m]
 constexpr double kDefaultSwathOverlap = 0.02;     // overlap between swaths [m]
 constexpr double kDefaultHeadlandWidth = 0.20;    // desired headland band [m]
 constexpr double kDefaultMinSwathLength = 0.15;   // sliver-drop threshold [m]

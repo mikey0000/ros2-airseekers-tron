@@ -283,9 +283,10 @@ Stock-derived (`CheckRegion` / `onBoundaryOut`, see
   drawn path only, in the dock corridor and in dock phases: base_link > `hard_boundary_m`
   0.10 (snapshot in TRANSIT / MOWING, `~/outside_m` otherwise).
 * **Limits:** edge_mode hard: any point > 0.10. Soft (stock layout, all areas for now):
-  rear corners 0.35, front corners 0.50 (on lap 0 along a tight convex bulge the front
-  corners sit out by geometry alone: up to 0.43 nominal on owner_far; lateral drift is caught
-  by the curvature-insensitive rear corners), nose 0.35, tail 0.30. Normal soft driving: lap 0 puts the sides 0.235 out,
+  rear corners 0.35, front corners 0.55 (on lap 0 along a tight driven arc the front
+  corners sit out by geometry alone: sqrt((R+0.235)^2+0.6^2)-R = 0.46 at R 0.44; lateral drift is caught
+  by the curvature-insensitive rear corners), nose 0.40 (0.30 on a driven R 0.44 arc), tail
+  0.30. Normal soft driving: lap 0 puts the sides 0.235 out,
   row ends the nose 0.15 / front corners <= 0.195 (pivot sweep included); tracking error
   p99 0.07 (pivots) .. 0.13 (all) on top; stock trips at about the outer side 0.315 out.
 * **Recovery:** stop, blade off, then
@@ -320,7 +321,7 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 | `follow_end_tolerance_m` / `follow_premature_retries` | 1.0 / 3 |
 | `follow_chunk_m` / `follow_chunk_clearance_m` | 25.0 / 0.5 |
 | `boundary_recover_after_s` / `boundary_max_recoveries` / `boundary_recovery_advance_m` | 3 / 2 / 1.0 |
-| `hard_boundary_body_soft_side_m` / `_soft_front_m` / `_soft_nose_m` / `_soft_tail_m` / `hard_boundary_body_hard_m` | 0.35 / 0.50 / 0.35 / 0.30 / 0.10 |
+| `hard_boundary_body_soft_side_m` / `_soft_front_m` / `_soft_nose_m` / `_soft_tail_m` / `hard_boundary_body_hard_m` | 0.35 / 0.55 / 0.40 / 0.30 / 0.10 |
 | `hard_boundary_back_m` / `hard_boundary_back_speed_mps` / `hard_boundary_back_timeout_s` | 0.30 / 0.10 / 5 |
 | `hard_boundary_max_aborts` / `hard_boundary_spot_max` / `hard_boundary_spot_m` | 6 / 2 / 1.0 |
 | `hard_boundary_jump_m` / `hard_boundary_jump_hold_s` | 1.0 / 2.0 |

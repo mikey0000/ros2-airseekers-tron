@@ -13,7 +13,7 @@ between sub-paths.
 | Node | `coverage_server` (executable `coverage_action_server`) |
 | Serves | action `/plan_coverage` — `mowgli_interfaces/action/PlanCoverage` |
 | Calls | service `/coverage/plan` — `mower_interfaces/srv/PlanCoverage` |
-| Launch | `ros2 launch mower_coverage_bridge coverage_bridge.launch.py [start_planner:=false] [transit_gap_m:=0.6] [cut_width_m:=0.20] [swath_overlap_m:=0.02]` |
+| Launch | `ros2 launch mower_coverage_bridge coverage_bridge.launch.py [start_planner:=false] [transit_gap_m:=0.6] [cut_width_m:=0.22] [swath_overlap_m:=0.02]` |
 
 The geometry lives in `mower_coverage_bridge/splitter.py`. It is pure Python
 with no ROS imports, and pytest covers it.
@@ -157,7 +157,7 @@ Planner modes (`mower_coverage` `planCoverage`):
 ### Swath width
 
 There is one source for the swath spacing: the launch arguments `cut_width_m`
-(default `0.20`, the URDF cutter disc radius 0.10 m × 2) and `swath_overlap_m`
+(default `0.22`, the fitted 220 mm disc; map_server `blade_disc_mm`) and `swath_overlap_m`
 (default `0.02`). `coverage_bridge.launch.py` (and `mower.launch.py`, which
 forwards both) passes them to `mower_coverage_node` (parameters of the same
 name; its default spacing for requests with `operation_width ≤ 0` is their

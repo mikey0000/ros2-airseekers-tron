@@ -129,7 +129,9 @@ PARAMS = {
     'odom_topic': '/odometry/filtered_map',
     'status_topic': '/mower_base/status',
     'gps_status_topic': '/gps/status',
-    'blade_radius': 0.15,
+    # mow-progress paint radius; < 0 = blade_disc_mm / 2000 (the one robot-wide blade size, set
+    # by the GUI / robot settings; 220 mm disc -> 0.11; was 0.15 = a 0.30 disc for a 0.22 blade)
+    'blade_radius': -1.0,
     'blade_offset_x': 0.23,            # fallback if TF base->blade is unavailable (URDF cutter_xyz, deck centre measured 2026-10-20)
     'blade_offset_y': 0.0,
     'status_max_age_s': 1.0,           # is_cutting older than this -> not cutting
@@ -881,7 +883,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             ox, oy = self.get_blade_offset(msg.child_frame_id)
             c, s = math.cos(yaw), math.sin(yaw)
             if self.progress.stamp_disc(x + c * ox - s * oy, y + s * ox + c * oy,
-                                        float(self.p('blade_radius'))):
+                                        self.blade_radius()):
                 self.progress_dirty = True
 
         self.check_return_corridor(x, y, now)
@@ -927,6 +929,10 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                 self.get_logger().error('LETHAL BOUNDARY VIOLATION at (%.2f, %.2f), %.2f m '
                                         'outside' % (x, y, dist),
                                         throttle_duration_sec=2.0)
+
+    def blade_radius(self):
+        r = float(self.p('blade_radius'))
+        return r if r > 0.0 else max(0.01, float(self.p('blade_disc_mm')) / 2000.0)
 
     def _measure_body(self, x, y):
         """The body measured at (x, y) (design section 7, owner 2026-10-17): the mowing

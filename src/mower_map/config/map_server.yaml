@@ -35,7 +35,7 @@ map_server_node:
                                 # across lawn into the MIDDLE of a path (field run 20261008-201401)
     return_corridor_enabled: true  # nav mask: free robot -> nearest free cell while off the map
     return_corridor_max_m: 15.0 # longer gap: warn, no corridor
-    blade_radius: 0.15
+    blade_radius: -1.0          # mow-progress paint radius; < 0 = blade_disc_mm / 2000 (220 mm -> 0.11)
     odom_topic: /odometry/filtered_map
     status_topic: /mower_base/status
     gps_status_topic: /gps/status

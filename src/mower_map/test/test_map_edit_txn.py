@@ -66,6 +66,7 @@ def node(msn, monkeypatch):
     n.log = _Log()
     n.get_logger = lambda: n.log
     n.clock = clock
+    n._clk = types.SimpleNamespace(now=clock)   # node_clock (use_sim_time, master 6117732)
     n.resolution = 0.1
     n.store = core.MapStore()
     n.store.add_area('a', A)
