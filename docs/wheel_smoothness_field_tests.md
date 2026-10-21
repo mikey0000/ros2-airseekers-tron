@@ -538,3 +538,88 @@ drift, resume scenario in the gate.
   the critic: 24-84 %). controller_server: 28 "missed its desired rate" (min 11.9 Hz) in 18 min,
   0 "Optimizer fail".
 - Keep: everything. Next: find the 4 cm right bias (one change, sim first).
+
+## Field mow 2026-10-22 morning: session `20261021-202110` (20:21-21:37 UTC, Area 6)
+
+Data: `ros2_stack-wt/accuracy-simout/field_mow_2026-10-22/` (bag, incidents, node logs,
+`wheel_cal*.txt`, `accuracy.txt`, `wheel_metrics.txt`). Splits 1, 9, 29 and 37 are corrupt on the
+mower (2 truncated, 2 not zstd); 73/77 read. Split 9 holds the 20:30:21 trip (log only).
+
+**Code that actually ran: ec8be43, not 6117732.** `mower_jazzy` and every node process started
+2026-10-21 08:23 UTC (ec8be43 was synced at 08:20 UTC). The 6117732 sync (18:34 UTC) and the 7fb699e
+sync (21:09 UTC, mid-mow, `dirty:5`) only replaced files under `/userdata/ros2_stack`; nothing was
+restarted, so the alpha-beta heading aligner (a5c6a14), docking2 and the drive-load detector were
+NOT live. The aligner log has no drift-rate field (old code). DEPLOYED_REV now names 7fb699e while
+the processes run ec8be43: any node respawn would load a mix. A deploy must restart the stack.
+
+### Outcome
+
+| | |
+|---|---|
+| session | 75.8 min: MOWING 56.8, TRANSIT 6.9 (incl. 7 detours), STUCK_NEEDS_HELP 10.2, manual 0.6, other 1.3 |
+| plan | Area 6, cross pattern, 5 sub-paths 514.7 m; sub-paths 0-2 done (88.3 + 420.4 + 2.4 m) |
+| not done | sub-paths 3-4 (~3.6 m) and 7 skipped detour stretches (~2 m each, "re-tried at the area end", never reached) |
+| stops | 8 NEEDS_HELP (4 boundary retrace, 4 coverage Spin), 9 dynamic-obstacle stops (2 person, 7 "cat"), ~2.3 min waiting |
+| end | owner STOP button 21:36:54 in TRANSIT to sub-path 4/5 (route-corner pivot at (-30.96, -12.65)); no dock attempt, robot then driven manually / boundary recording |
+
+### Boundary trips (all MOWING, sub-path 0 = the edge ring, base_link-only 0.10 m check)
+
+| UTC | base_link pose, yaw | out (base_link / worst nose corner) | what happened | recovery |
+|---|---|---|---|---|
+| 20:25:39 | (-27.80, -15.79), -157° | 0.11 / 0.71 | S corner; stop_zone halt 20:25:31-34, then MPPI arc (w +0.23) out of the ring at -0.07 m | retrace 0.30 m OK; then follow_path abort (costmap) -> detour, 2 m skipped |
+| 20:26:24 | (-31.32, -13.02), 107° | 0.11 / 0.32 | W corner; rode the line (0 to +0.04 m) for ~2 m after the detour rejoin, then the corner arc (w -0.29) | retrace capped at 1.00 m, still 0.070 out -> NEEDS_HELP |
+| 20:28:33 | (-31.15, -13.37), 97° | 0.10 / 0.17 | operator START while 0.07 out: resume leg-start pivot (-30°) pushes base_link over 0.10 | retrace 1.0 m, 0.091 out -> NEEDS_HELP |
+| 20:29:30 | (-31.15, -13.37), 118° | 0.10 / 0.39 | same, during the resume pivot | 0.075 out -> NEEDS_HELP |
+| 20:30:21 | (-31.10, -13.45) (log) | 0.10 / - | same, during the resume pivot | 0.093 out -> NEEDS_HELP; operator drove it in manually |
+| 20:34:39 | (-26.96, -2.10), 59° | 0.11 / 0.65 | NE corner after 2 costmap detours (trunk/wood at 0.5 m); corner arc then a pivot moved base_link +0.04 -> +0.10 | retrace 0.32 m OK |
+
+Known class: the old (non-stock) layout keeps the edge ring only ~0.10-0.15 m inside, the ring
+weaves (w saturating at ±0.30), and corner arcs/pivots carry base_link over the 0.10 m line. No row
+end tripped (sub-path 1, 420 m: 0 trips). New: (a) the 1.0 m retrace cap fails when the robot rode
+the line for longer than that; (b) START after a boundary NEEDS_HELP resumes in place while still
+outside and the leg-start pivot re-trips at once: 3 of the 4 boundary NEEDS_HELP were this loop.
+
+### Heading lead (A2): control run, the fix was not live
+
+| | 21c evening | this run (3 m straights, n=19) | this run (2 m, n=33) |
+|---|---|---|---|
+| fused yaw - course | +2.37 ± 0.51° | +1.28 ± 0.66° | +1.07 ± 0.55° |
+| paired | +2.37 ± 0.79° | +2.10 ± 1.73° (n=3) | +1.32 ± 0.89° (n=10) |
+| lane-gap offset (right of travel) | 1.64 ± 0.62 cm | n/a (3 pairs) | 1.26 ± 0.74 cm (n=10) |
+| aligner COG innovation mean | -2.41° (sd 2.53) | -1.11° (sd 2.57, n=1227) | |
+| aligner offset drift | -4.4..-4.8°/min first 40 min | -0.93°/min mean (-105° -> -175°), peak ~-4°/min 20:47-20:58 | |
+| ground / MCU speed | 1.049 | 1.059 | |
+| pivot measured/commanded CCW / CW | 0.748 / 0.806 | 0.736 / 0.713 | |
+
+The smaller lead matches the slower gyro drift this morning (A2 fit: lead ≈ 0.74° per °/min of offset drift),
+not a fix. Target (lead < 0.5°, offset < 1 cm) not met and not testable until the stack restarts.
+
+### Obstacle stops and turns
+
+| per hour (1.26 h) | 21c | this run |
+|---|---|---|
+| collision_monitor stop_zone | 0 | 11 episodes (22 lines), 8.7/h |
+| Spin "Collision Ahead" | - | 13 aborts in 5 pivots (3.2 NEEDS_HELP-producing/h); the 2 retries fire in the same second |
+| false stuck (slip_detector) | - | 0 (132 slip blips, all cleared in 0.1 s) |
+| NEEDS_HELP | 2 | 8 (6.3/h) |
+| MPPI "Optimizer fail" | - | 370 (clusters at 20:25, 20:33-34) |
+
+Spin aborts (21:12, 21:18, 21:29, 21:31, 21:32) are row-end pivots at the W/S edges with 17-34 lethal
+local-costmap cells within 0.9 m, mostly just outside the area line, inside the 0.64 m sweep.
+Turns (`accuracy.py field`, 103 pivots, EKF): pivot drift median 0.054 m / p90 0.144; heading error
+median -0.7° (29/103 turned too far; run 7: 46/46 too far); leg-end lateral median 0.040 / p90
+0.120 m; outliers > 0.4 m are pivots interrupted by obstacle waits. One-wheel ticks: 321 inner in
+(-0.06, 0) and 999 in (0, 0.06) of 68 480 moving ticks.
+
+### Safety / new
+
+- Blade stayed ON at every person (0.5-0.6 m) and cat (0.4-0.9 m) stop (`blade_policy continuous`).
+  Still open from 21c; living-obstacle stops must force the blade off.
+- "cat" detections that never moved for 30 s recur at the N row ends around (-27..-28, -4..-5), the
+  21c obstacle spot next to the "trunk": possibly a misclassified static object; unverified.
+- supervisor blackbox writes fail (`incompatible constructor arguments`, 0 messages) at every event.
+- Recorder dropped at the start (20:21:10, back in 7 s) and at 21:37:08.
+
+Next: restart the stack on the intended rev and re-run (the A2 validation is still owed); fix the
+resume-while-outside loop (re-enter before any pivot) and the retrace cap; force blade off for
+living obstacles.
