@@ -1,0 +1,13 @@
+# Sim-only (2026-10-21, ws/mission-stall): the owner's map (mower /userdata/ros2/maps/areas.dat,
+# read-only copy) with Area 1 and "lawn section" turned into navigation areas so START mows
+# only Area 6, whose first transit goal is ~34 m from the dock (outside the 50 m rolling
+# global costmap): the field 2026-10-20 area-5 scenario.
+name: owner_far
+datum: {lat: 48.0, lon: 9.0}
+areas_file: owner_far_areas.dat
+areas_select: [Area 1, lawn section, Area 6, Dock path, Path 2, Path 3, Path 4]
+lawn_area: Area 6
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+obstacles: []
+battery: {voltage: 25.0, percentage: 0.9}
