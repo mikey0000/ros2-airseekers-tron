@@ -34,15 +34,16 @@ func TestReplaceMap_SendsPathChannelAfterItsAddArea(t *testing.T) {
 		services = append(services, c.Service)
 	}
 	assert.Equal(t, []string{
+		mapEditBeginService,
 		"/map_server_node/clear_map",
 		"/map_server_node/add_area",
 		"/map_server_node/add_area",
 		mowgli.SetAreaChannelService,
 		"/map_server_node/add_area",
 		"/map_server_node/save_areas",
-	}, services)
+	}, services, "no responder: begin_map_edit refused -> legacy sequence")
 
-	chReq, ok := mock.ServiceCalls[3].Req.(*mowgli.SetAreaChannelReq)
+	chReq, ok := mock.ServiceCalls[4].Req.(*mowgli.SetAreaChannelReq)
 	require.True(t, ok)
 	assert.Equal(t, uint8(1), chReq.AreaIndex)
 	var ch mowgli.AreaChannel
@@ -57,4 +58,40 @@ func TestReplaceMap_ChannelJSONRoundTripsThroughRequestBody(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(body), &req))
 	require.NotNil(t, req.Areas[0].Channel)
 	assert.Equal(t, 1.2, req.Areas[0].Channel.WidthM)
+}
+
+func TestReplaceMap_AtomicWhenMapServerStages(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	mock.ServiceResponder = func(_ string, _ any, res any) {
+		_ = json.Unmarshal([]byte(`{"success":true}`), res)
+	}
+	poly := mowgli.MapArea{Name: "x", Area: geometry.Polygon{Points: []geometry.Point32{{X: 0, Y: 0}, {X: 1, Y: 0}, {X: 1, Y: 1}}}}
+	req := &mowgli.ReplaceMapReq{Areas: []mowgli.ReplaceMapArea{{Area: poly}, {Area: poly}}}
+	require.NoError(t, replaceMapInternal(context.Background(), mock, req))
+	var services []string
+	for _, c := range mock.ServiceCalls {
+		services = append(services, c.Service)
+	}
+	assert.Equal(t, []string{
+		mapEditBeginService,
+		"/map_server_node/clear_map",
+		"/map_server_node/add_area",
+		"/map_server_node/add_area",
+		mapEditCommitService,
+		"/map_server_node/save_areas",
+	}, services)
+}
+
+func TestReplaceMap_CommitRefusedIsAnError(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	mock.ServiceResponder = func(service string, _ any, res any) {
+		if service != mapEditCommitService {
+			_ = json.Unmarshal([]byte(`{"success":true}`), res)
+		}
+	}
+	poly := mowgli.MapArea{Name: "x", Area: geometry.Polygon{Points: []geometry.Point32{{X: 0, Y: 0}, {X: 1, Y: 0}, {X: 1, Y: 1}}}}
+	err := replaceMapInternal(context.Background(), mock, &mowgli.ReplaceMapReq{Areas: []mowgli.ReplaceMapArea{{Area: poly}}})
+	require.Error(t, err)
+	last := mock.ServiceCalls[len(mock.ServiceCalls)-1].Service
+	assert.Equal(t, mapEditCommitService, last, "no save_areas after a refused commit")
 }

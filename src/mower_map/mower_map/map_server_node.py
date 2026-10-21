@@ -7,6 +7,7 @@ contract (see README.md). Geometry and persistence live in
 """
 
 import array
+import copy
 import math
 import functools
 import json
@@ -135,6 +136,13 @@ PARAMS = {
     'mow_progress_publish_period_s': 2.0,
     # boundary
     'boundary_check_rate_hz': 5.0,
+    # Map-edit transaction (field 2026-10-21: a GUI PUT /map = clear_map + add_area x N made
+    # the boundary check publish outside_m 23 m against a half-built area set): after
+    # ~/begin_map_edit, clear_map / add_area / set_area_channel build a staged copy that
+    # ~/commit_map_edit swaps in in one step. While one is open the boundary check publishes
+    # nothing. Idle longer than this (no edit call) -> the staged set is dropped, the live map
+    # stays.
+    'map_edit_timeout_s': 10.0,
     # ~/body_outside_m (design 2026-10-15 section 7, 2026-10-17): how far the robot BODY (the
     # padded Nav2 footprint at the current pose, mower_map.robot_body) sticks out of areas U
     # drawn paths U dock corridor; with base_link inside the dock corridor the point value
@@ -262,6 +270,8 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         self.settings = aset.AreaSettingsStore()
         self._cleared_areas = []             # (name, polygon) before the last clear_map
         self._prune_timer = None
+        self._staged = None                  # core.MapStore of an open map-edit transaction
+        self._staged_deadline = 0.0
         self.dock = None                     # core.DockPose
         self.spec = core.grid_for_polygons([], self.resolution, 0.0)
         self.progress = core.ProgressGrid(self.spec)
@@ -381,6 +391,11 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         srv(AddMowingArea, '~/add_area', self.srv_add_area)
         srv(GetMowingArea, '~/get_mowing_area', self.srv_get_mowing_area)
         srv(Trigger, '~/clear_map', self.srv_clear_map)
+        # Atomic map replace: begin -> clear_map / add_area / set_area_channel (staged,
+        # nothing published) -> commit (one swap + rebuild) | abort.
+        srv(Trigger, '~/begin_map_edit', self.srv_begin_map_edit)
+        srv(Trigger, '~/commit_map_edit', self.srv_commit_map_edit)
+        srv(Trigger, '~/abort_map_edit', self.srv_abort_map_edit)
         srv(Trigger, '~/save_areas', self.srv_save_areas)
         srv(Trigger, '~/load_areas', self.srv_load_areas)
         srv(SetDockingPoint, '~/set_docking_point', self.srv_set_docking_point)
@@ -872,6 +887,8 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             self.terrain_sample(x, y, yaw, msg, now)
 
         rate = float(self.p('boundary_check_rate_hz'))
+        if self.map_edit_open(now):
+            return    # map being replaced: no outside_m / body_outside_m / boundary flags
         if self.store.areas and (rate <= 0 or now - self.last_boundary_check >= 1.0 / rate):
             self.last_boundary_check = now
             self.boundary.soft_margin = float(self.p('soft_boundary_margin_m'))
@@ -941,10 +958,11 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             obstacles.append((_poly_from_msg(obs), info.name if info else '',
                               int(info.source) if info else core.SOURCE_USER))
         is_nav = bool(req.is_navigation_area or a.is_navigation_area)
+        staged = self.map_edit_store()
         try:
             core.grid_for_polygons([_poly_from_msg(a.area)], self.resolution,
                                    float(self.p('mask_margin')))
-            self.store.add_area(a.name, _poly_from_msg(a.area), is_nav, obstacles)
+            (staged or self.store).add_area(a.name, _poly_from_msg(a.area), is_nav, obstacles)
         except ValueError as exc:
             self.get_logger().warn('add_area rejected: %s' % exc)
             res.success = False
@@ -952,6 +970,9 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         self.get_logger().info("added area '%s' (%s), %d vertices, %d obstacles"
                                % (a.name, 'navigation' if is_nav else 'mowing',
                                   len(a.area.points), len(a.obstacles)))
+        if staged is not None:
+            res.success = True    # staged: applied (rebuild, save, settings) on commit
+            return res
         self.rebuild()
         self.persist_best_effort('add_area')
         self.settings_area_added(a.name, _poly_from_msg(a.area))
@@ -981,6 +1002,12 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         # of every area. An area re-added under a new name with the same
         # polygon takes its settings along (rename); entries whose area is not
         # back after area_settings_prune_delay_s are dropped (delete).
+        staged = self.map_edit_store()
+        if staged is not None:
+            staged.clear()
+            res.success = True
+            res.message = 'staged map cleared (applied on commit_map_edit).'
+            return res
         self._cleared_areas = [(a.name, list(a.polygon)) for a in self.store.areas]
         self.schedule_settings_prune()
         self.store.clear()
@@ -989,6 +1016,68 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         self.persist_best_effort('clear_map')
         res.success = True
         res.message = 'All map layers and areas cleared.'
+        self.get_logger().info(res.message)
+        return res
+
+    # -- map-edit transaction ------------------------------------------------
+    def map_edit_open(self, now=None):
+        """True while a begin_map_edit transaction is open; drops it (the live map
+        stays) once idle past map_edit_timeout_s."""
+        if self._staged is None:
+            return False
+        if (time.monotonic() if now is None else now) > self._staged_deadline:
+            self.get_logger().warn('map edit idle > %.1f s: staged map (%d areas) dropped, '
+                                   'live map kept' % (float(self.p('map_edit_timeout_s')),
+                                                      len(self._staged.areas)))
+            self._staged = None
+            self.last_boundary_check = 0.0
+            return False
+        return True
+
+    def map_edit_store(self):
+        """The staged store (deadline extended) while a transaction is open, else None."""
+        now = time.monotonic()
+        if not self.map_edit_open(now):
+            return None
+        self._staged_deadline = now + float(self.p('map_edit_timeout_s'))
+        return self._staged
+
+    def srv_begin_map_edit(self, req, res):
+        restarted = self._staged is not None
+        self._staged = copy.deepcopy(self.store)
+        self._staged_deadline = time.monotonic() + float(self.p('map_edit_timeout_s'))
+        res.success = True
+        res.message = 'map edit begun (%d areas staged%s)' % (
+            len(self._staged.areas), ', previous staged edit discarded' if restarted else '')
+        self.get_logger().info(res.message)
+        return res
+
+    def srv_commit_map_edit(self, req, res):
+        if not self.map_edit_open():
+            res.success = False
+            res.message = 'no open map edit (never begun, or timed out): live map unchanged'
+            self.get_logger().warn('commit_map_edit: ' + res.message)
+            return res
+        staged, self._staged = self._staged, None
+        before = [(a.name, list(a.polygon)) for a in self.store.areas]
+        after = [(a.name, list(a.polygon)) for a in staged.areas]
+        self.store = staged
+        if before != after:
+            self.progress.reset()
+        self.sync_settings(before)
+        self.rebuild()
+        self.persist_best_effort('commit_map_edit')
+        self.last_boundary_check = 0.0
+        res.success = True
+        res.message = 'map edit committed: %d areas' % len(self.store.areas)
+        self.get_logger().info(res.message)
+        return res
+
+    def srv_abort_map_edit(self, req, res):
+        had = self._staged is not None
+        self._staged = None
+        res.success = True
+        res.message = 'map edit aborted' if had else 'no open map edit'
         self.get_logger().info(res.message)
         return res
 
@@ -1162,9 +1251,12 @@ class MapServerNode(ngn.NonGrassMixin, Node):
     def srv_set_area_channel(self, req, res):
         idx = int(req.area_index)
         ok, msg, points, width = core.parse_channel_json(req.settings_json)
+        staged = self.map_edit_store()
         if ok:
-            ok, msg = self.store.set_channel(idx, points, width)
+            ok, msg = (staged or self.store).set_channel(idx, points, width)
         res.success, res.message = ok, msg
+        if ok and staged is not None:
+            return res
         if ok:
             self.persist_best_effort('set_area_channel')
             self.get_logger().info('set_area_channel: %s' % msg)

@@ -480,6 +480,7 @@ func TestPostImportOpenMower_ApplyCallsClearAddSaveAndDock(t *testing.T) {
 	}
 	assert.Equal(t,
 		[]string{
+			mapEditBeginService,
 			"/map_server_node/clear_map",
 			"/map_server_node/add_area",
 			"/map_server_node/add_area",
@@ -503,10 +504,10 @@ func TestPostImportOpenMower_ApplyClearMapErrorPropagates(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusInternalServerError, w.Code, "body=%s", w.Body.String())
-	// First service call attempted is clear_map and it must abort the rest.
-	require.NotEmpty(t, mock.ServiceCalls)
-	assert.Equal(t, "/map_server_node/clear_map", mock.ServiceCalls[0].Service)
-	assert.Len(t, mock.ServiceCalls, 1, "no further calls after clear_map failure")
+	// begin_map_edit fails (legacy fallback), then clear_map fails and must abort the rest.
+	require.Len(t, mock.ServiceCalls, 2, "no further calls after clear_map failure")
+	assert.Equal(t, mapEditBeginService, mock.ServiceCalls[0].Service)
+	assert.Equal(t, "/map_server_node/clear_map", mock.ServiceCalls[1].Service)
 }
 
 func TestPostImportOpenMower_RejectsBadJSON(t *testing.T) {

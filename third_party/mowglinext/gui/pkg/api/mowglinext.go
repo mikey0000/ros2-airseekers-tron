@@ -235,11 +235,39 @@ func mapWriteBudget(nAreas int) time.Duration {
 // The save_areas error is annotated so callers can distinguish a
 // partial-success (areas live but not persisted to disk) from a hard
 // failure earlier in the sequence.
+const (
+	mapEditBeginService  = "/map_server_node/begin_map_edit"
+	mapEditCommitService = "/map_server_node/commit_map_edit"
+	mapEditAbortService  = "/map_server_node/abort_map_edit"
+)
+
 func replaceMapInternal(ctx context.Context, provider types.IRosProvider, req *mowgli.ReplaceMapReq) error {
 	if req == nil {
 		return errors.New("replaceMapInternal: nil request")
 	}
+	// Atomic replace (field 2026-10-21): begin_map_edit makes the map server
+	// stage clear_map/add_area/set_area_channel and swap the complete set in
+	// on commit_map_edit, so a half-built map is never published or used by
+	// the boundary check. Best effort: a map server without the service
+	// (upstream mowgli_map) gets the legacy, non-atomic sequence.
+	staged := false
+	var beginRes mowgli.ClearMapRes
+	if err := provider.CallService(ctx, mapEditBeginService, &mowgli.ClearMapReq{}, &beginRes, "std_srvs/srv/Trigger"); err != nil {
+		log.Printf("begin_map_edit unavailable (%v): replacing the map non-atomically", err)
+	} else if !beginRes.Success {
+		log.Printf("begin_map_edit refused: replacing the map non-atomically")
+	} else {
+		staged = true
+	}
+	abort := func() {
+		if staged {
+			actx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = provider.CallService(actx, mapEditAbortService, &mowgli.ClearMapReq{}, &mowgli.ClearMapRes{}, "std_srvs/srv/Trigger")
+		}
+	}
 	if err := provider.CallService(ctx, "/map_server_node/clear_map", &mowgli.ClearMapReq{}, &mowgli.ClearMapRes{}, "std_srvs/srv/Trigger"); err != nil {
+		abort()
 		return err
 	}
 	for i, element := range req.Areas {
@@ -253,10 +281,21 @@ func replaceMapInternal(ctx context.Context, provider types.IRosProvider, req *m
 			IsNavigationArea: element.IsNavigationArea,
 		}
 		if err := provider.CallService(ctx, "/map_server_node/add_area", &areaReq, &mowgli.AddMowingAreaRes{}, "mowgli_interfaces/srv/AddMowingArea"); err != nil {
+			abort()
 			return err
 		}
 		if element.IsNavigationArea && element.Channel != nil && len(element.Channel.Points) >= 2 && i < 255 {
 			setAreaChannel(ctx, provider, uint8(i), element.Channel)
+		}
+	}
+	if staged {
+		var commitRes mowgli.ClearMapRes
+		if err := provider.CallService(ctx, mapEditCommitService, &mowgli.ClearMapReq{}, &commitRes, "std_srvs/srv/Trigger"); err != nil {
+			abort()
+			return fmt.Errorf("commit_map_edit failed (live map unchanged): %w", err)
+		}
+		if !commitRes.Success {
+			return errors.New("commit_map_edit refused (edit timed out?): live map unchanged")
 		}
 	}
 	if err := provider.CallService(ctx, "/map_server_node/save_areas", &mowgli.ClearMapReq{}, &mowgli.ClearMapRes{}, "std_srvs/srv/Trigger"); err != nil {
