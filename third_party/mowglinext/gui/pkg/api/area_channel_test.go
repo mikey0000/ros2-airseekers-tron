@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
+	"github.com/mowglinext/mowglinext/pkg/foxglove"
 	"github.com/mowglinext/mowglinext/pkg/msgs/geometry"
 	"github.com/mowglinext/mowglinext/pkg/msgs/mowgli"
 	"github.com/mowglinext/mowglinext/pkg/types"
@@ -12,13 +14,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// noReplaceAreas is a map server built before replace_areas existed: the
+// GUI must fall back to clear_map + add_area and still attach path channels.
+type noReplaceAreas struct{ *types.MockRosProvider }
+
+func (n noReplaceAreas) CallService(ctx context.Context, service string, req any, res any, t ...string) error {
+	if service == mapServiceReplaceAreas {
+		return fmt.Errorf("foxglove: CallService %s: %w", service, foxglove.ErrServiceNotAdvertised)
+	}
+	return n.MockRosProvider.CallService(ctx, service, req, res, t...)
+}
+
 func TestReplaceMap_SendsPathChannelAfterItsAddArea(t *testing.T) {
-	mock := types.NewMockRosProvider()
-	mock.ServiceResponder = func(_ string, _ any, res any) {
-		if r, ok := res.(*mowgli.SetAreaChannelRes); ok {
+	inner := types.NewMockRosProvider()
+	inner.ServiceResponder = func(_ string, _ any, res any) {
+		switch r := res.(type) {
+		case *mowgli.SetAreaChannelRes:
+			r.Success = true
+		case *mowgli.AddMowingAreaRes:
+			r.Success = true
+		case *triggerRes:
 			r.Success = true
 		}
 	}
+	mock := noReplaceAreas{inner}
 	poly := mowgli.MapArea{Name: "x", Area: geometry.Polygon{Points: []geometry.Point32{{X: 0, Y: 0}, {X: 1, Y: 0}, {X: 1, Y: 1}}}}
 	path := poly
 	path.Name = "Path 1"
@@ -30,10 +49,11 @@ func TestReplaceMap_SendsPathChannelAfterItsAddArea(t *testing.T) {
 	require.NoError(t, replaceMapInternal(context.Background(), mock, req))
 
 	var services []string
-	for _, c := range mock.ServiceCalls {
+	for _, c := range inner.ServiceCalls {
 		services = append(services, c.Service)
 	}
 	assert.Equal(t, []string{
+		"/map_server_node/get_mowing_area", // snapshot (empty map)
 		"/map_server_node/clear_map",
 		"/map_server_node/add_area",
 		"/map_server_node/add_area",
@@ -42,7 +62,7 @@ func TestReplaceMap_SendsPathChannelAfterItsAddArea(t *testing.T) {
 		"/map_server_node/save_areas",
 	}, services)
 
-	chReq, ok := mock.ServiceCalls[3].Req.(*mowgli.SetAreaChannelReq)
+	chReq, ok := inner.ServiceCalls[4].Req.(*mowgli.SetAreaChannelReq)
 	require.True(t, ok)
 	assert.Equal(t, uint8(1), chReq.AreaIndex)
 	var ch mowgli.AreaChannel

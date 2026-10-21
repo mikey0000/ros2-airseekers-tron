@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -208,80 +207,6 @@ func ClearMapRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 			c.JSON(200, OkResponse{})
 		}
 	})
-}
-
-// mapWriteBudget returns the context timeout for a clear_map → add_area×N →
-// save_areas sequence. clear_map + save_areas are fixed-cost, but each add_area
-// RASTERISES its polygon into the map_server grid, which on a large area takes
-// seconds — and on a slow SBC (RPi4) a multi-area map easily blows a fixed
-// budget, leaving the map half-written (issue #341: "can't save a big map,
-// ~30 s timeout"). Scale it: a 60 s base plus per-area headroom, capped at
-// 6 min. Map writes are rare and operator-driven, so a generous ceiling beats a
-// false timeout. Shared by ReplaceMapRoute (map editor "Save Map") and the
-// OpenMower importer so the two never drift.
-func mapWriteBudget(nAreas int) time.Duration {
-	budget := 60*time.Second + time.Duration(nAreas)*5*time.Second
-	if budget > 6*time.Minute {
-		budget = 6 * time.Minute
-	}
-	return budget
-}
-
-// replaceMapInternal is the ROS-side flow shared by the public PUT
-// handler and the OpenMower importer. It does clear_map → add_area×N →
-// save_areas; the wrapping (HTTP body decode / response codes) is the
-// caller's job.
-//
-// The save_areas error is annotated so callers can distinguish a
-// partial-success (areas live but not persisted to disk) from a hard
-// failure earlier in the sequence.
-func replaceMapInternal(ctx context.Context, provider types.IRosProvider, req *mowgli.ReplaceMapReq) error {
-	if req == nil {
-		return errors.New("replaceMapInternal: nil request")
-	}
-	if err := provider.CallService(ctx, "/map_server_node/clear_map", &mowgli.ClearMapReq{}, &mowgli.ClearMapRes{}, "std_srvs/srv/Trigger"); err != nil {
-		return err
-	}
-	for i, element := range req.Areas {
-		// Ensure Obstacles is an empty slice, not nil — the bridge rejects
-		// null for repeated fields ("msg is not a list type").
-		if element.Area.Obstacles == nil {
-			element.Area.Obstacles = []geometry.Polygon{}
-		}
-		areaReq := mowgli.AddMowingAreaReq{
-			Area:             element.Area,
-			IsNavigationArea: element.IsNavigationArea,
-		}
-		if err := provider.CallService(ctx, "/map_server_node/add_area", &areaReq, &mowgli.AddMowingAreaRes{}, "mowgli_interfaces/srv/AddMowingArea"); err != nil {
-			return err
-		}
-		if element.IsNavigationArea && element.Channel != nil && len(element.Channel.Points) >= 2 && i < 255 {
-			setAreaChannel(ctx, provider, uint8(i), element.Channel)
-		}
-	}
-	if err := provider.CallService(ctx, "/map_server_node/save_areas", &mowgli.ClearMapReq{}, &mowgli.ClearMapRes{}, "std_srvs/srv/Trigger"); err != nil {
-		return fmt.Errorf("areas added but save_areas failed: %w", err)
-	}
-	return nil
-}
-
-// setAreaChannel attaches path metadata to the just-added area. Best effort:
-// a map server without the service still gets the band polygon (the path
-// just cannot be re-edited as a line), so a failure is only logged.
-func setAreaChannel(ctx context.Context, provider types.IRosProvider, index uint8, ch *mowgli.AreaChannel) {
-	payload, err := json.Marshal(ch)
-	if err != nil {
-		return
-	}
-	var res mowgli.SetAreaChannelRes
-	req := mowgli.SetAreaChannelReq{AreaIndex: index, SettingsJSON: string(payload)}
-	if err := provider.CallService(ctx, mowgli.SetAreaChannelService, &req, &res, mowgli.SetAreaChannelType); err != nil {
-		log.Printf("set_area_channel %d failed (path saved as a plain navigation area): %v", index, err)
-		return
-	}
-	if !res.Success {
-		log.Printf("set_area_channel %d rejected: %s", index, res.Message)
-	}
 }
 
 // ReplaceMapRoute clear the map and insert areas

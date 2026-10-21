@@ -452,7 +452,10 @@ func TestPostImportOpenMower_ApplyCallsClearAddSaveAndDock(t *testing.T) {
 	mock := types.NewMockRosProvider()
 	// set_docking_point must answer success=true or the import reports failure.
 	mock.ServiceResponder = func(_ string, _ any, res any) {
-		if r, ok := res.(*mowgli.SetDockingPointRes); ok {
+		switch r := res.(type) {
+		case *mowgli.SetDockingPointRes:
+			r.Success = true
+		case *replaceAreasRes:
 			r.Success = true
 		}
 	}
@@ -470,20 +473,15 @@ func TestPostImportOpenMower_ApplyCallsClearAddSaveAndDock(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.True(t, resp.Applied, "applied flag must be true on the success response")
 
-	// Expected sequence: clear_map → add_area (mow) → add_area (nav) →
-	// save_areas → set_docking_point. The fixture has one mow area
-	// (with one obstacle nested) and one nav area, hence two add_area
-	// calls.
+	// Expected sequence: one atomic replace_areas (the fixture's mow area
+	// with its nested obstacle and its nav area), then set_docking_point.
 	services := make([]string, 0, len(mock.ServiceCalls))
 	for _, sc := range mock.ServiceCalls {
 		services = append(services, sc.Service)
 	}
 	assert.Equal(t,
 		[]string{
-			"/map_server_node/clear_map",
-			"/map_server_node/add_area",
-			"/map_server_node/add_area",
-			"/map_server_node/save_areas",
+			"/map_server_node/replace_areas",
 			"/map_server_node/set_docking_point",
 		},
 		services,
@@ -503,10 +501,11 @@ func TestPostImportOpenMower_ApplyClearMapErrorPropagates(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusInternalServerError, w.Code, "body=%s", w.Body.String())
-	// First service call attempted is clear_map and it must abort the rest.
+	// First service call attempted is replace_areas and its failure must
+	// abort the rest (no clear_map fallback, no dock write).
 	require.NotEmpty(t, mock.ServiceCalls)
-	assert.Equal(t, "/map_server_node/clear_map", mock.ServiceCalls[0].Service)
-	assert.Len(t, mock.ServiceCalls, 1, "no further calls after clear_map failure")
+	assert.Equal(t, "/map_server_node/replace_areas", mock.ServiceCalls[0].Service)
+	assert.Len(t, mock.ServiceCalls, 1, "no further calls after a replace failure")
 }
 
 func TestPostImportOpenMower_RejectsBadJSON(t *testing.T) {
