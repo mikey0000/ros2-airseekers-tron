@@ -1008,6 +1008,8 @@ class Params:
     hard_boundary_body_soft_front_m: float = 0.55   # front corners (convex-bend allowance)
     hard_boundary_body_soft_nose_m: float = 0.40
     hard_boundary_body_soft_tail_m: float = 0.30
+    hard_boundary_plan_radius_m: float = 1.0      # plan-relative soft limit near a corner
+    hard_boundary_plan_margin_m: float = 0.10     # ... its planned body out + this
     hard_boundary_body_clear_m: float = 0.02      # back-move success: excess <= -this
     hard_boundary_back_m: float = 0.30
     hard_boundary_back_speed_mps: float = 0.10
@@ -1042,7 +1044,7 @@ class Params:
     pivot_way_gain_m: float = 0.05
     # A transit to a sub-path start within edge_approach_near_m of the line (an edge-lap start
     # / resume point) ends edge_approach_inset_m inside, beside it; 0 = at the start.
-    edge_approach_inset_m: float = 0.45
+    edge_approach_inset_m: float = 0.30
     edge_approach_near_m: float = 0.25
     # --- repeated bumper hits (field 2026-10-21 07:29: a real object just outside the line,
     # the bumper fired 6 and 9 times in turn). bumper_skip_hits hits (rising edges of the
@@ -1260,6 +1262,7 @@ class Mission:
     leg_watch: Optional[dict] = None            # fix 10 leg-end cap / loop guard state
     cond: dict = field(default_factory=dict)    # sub -> {'types', 'pivots', 'corners'}
     cond_errors: dict = field(default_factory=dict)   # sub -> validation error (not mowed)
+    corner_body: list = field(default_factory=list)   # [(x, y, planned body out m)] corners
     corner_end: Optional[int] = None            # the in-flight chunk ends on this pivot
     pivot_done: Optional[tuple] = None          # (area, sub, local) just pivoted for
     pivot_target: Optional[tuple] = None        # (heading, threshold) of that coverage pivot
@@ -3341,6 +3344,7 @@ class MissionFSM:
         if pre is None or pre.get('n_in') != len(subpaths):
             pre = condition_plan(self._conditioning_job(subpaths))
         m.cond, m.cond_errors = dict(pre['cond']), dict(pre['cond_errors'])
+        m.corner_body = list(pre.get('corner_body') or [])
         for level, text in pre['logs']:
             self._log(level, text)
         return [list(sp) for sp in pre['subpaths']]
@@ -6578,6 +6582,17 @@ class MissionFSM:
                                float(p.hard_boundary_body_soft_tail_m),
                                float(p.hard_boundary_body_hard_m),
                                float(p.hard_boundary_body_soft_front_m))
+        # plan-relative (soft): near a corner whose planned swept body is already out by
+        # body_m (lap 0 on a tight driven bend, owner option (c)), any point may reach
+        # body_m + hard_boundary_plan_margin_m (tracking p99 + margin) before it trips
+        m = self.mission
+        if mode == 'soft' and m is not None and m.corner_body and pose is not None:
+            rad, add = float(p.hard_boundary_plan_radius_m), float(p.hard_boundary_plan_margin_m)
+            near = [b for x, y, b in m.corner_body
+                    if math.hypot(x - pose[0], y - pose[1]) <= rad]
+            if near:
+                allow = max(near) + add
+                lim = {k: max(v, allow) for k, v in lim.items()}
         return bbody.evaluate(pose, self._region(), lim)
 
     def _point_out(self, pose):
@@ -7192,6 +7207,7 @@ def condition_plan(job):
                                  ''.join(' [%s]' % j.why for j in kept))))
     npiv = nfil = nkt = 0
     why, why_deg = {}, {}
+    corner_body = []
     for k, sp in enumerate(subpaths):
         if geo.is_reverse_subpath(sp):
             out.append(sp)                 # a reverse leg of a turn kept as planned
@@ -7213,6 +7229,8 @@ def condition_plan(job):
                 nkt += 1
                 logs.append(('info', 'area %d sub-path %d: K-turn at (%.2f, %.2f) %+.0f deg: %s'
                              % (area, len(out), c.x, c.y, math.degrees(c.turn), c.why)))
+            if c.body_m is not None and c.body_m > 0.0:
+                corner_body.append((float(c.x), float(c.y), float(c.body_m)))
             if prm.body_limit_m is not None and c.body_m is not None and \
                     c.choice in ('fillet', 'pivot', 'kturn') and \
                     c.body_m > (c.limit_m if c.limit_m is not None else prm.body_limit_m) + 1e-3:
@@ -7241,4 +7259,4 @@ def condition_plan(job):
                                  for k, n in sorted(why.items())) or 'none', nkt,
                              len(cond_errors))))
     return {'n_in': n_in, 'subpaths': out, 'cond': cond, 'cond_errors': cond_errors,
-            'logs': logs}
+            'logs': logs, 'corner_body': corner_body}

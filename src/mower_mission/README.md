@@ -296,6 +296,14 @@ Stock-derived (`CheckRegion` / `onBoundaryOut`, see
     pure pursuit toward the interior);
   * then resume from the robot's projection (the leg-start pivot turns to the path
     heading). Still beyond the limit: the driven-track retrace (fallback).
+* **Plan-relative (soft):** within 1 m of a conditioned corner whose planned swept body is
+  already out by b (lap 0 on a tight driven bend), any point may reach b + 0.10.
+* **Recovery never ends outside:** a recovery that ends still outside makes up to 3 bounded
+  inward moves (<= 0.6 m) before STUCK_NEEDS_HELP; START / resume while outside moves inward
+  first (no pivot, not counted).
+* **Edge-start transits** end 0.30 m inside beside the start; the join looks ahead 3 x the
+  lateral offset. Coverage pivots without a planned direction turn the way whose swept body
+  stays further inside. A refused pivot is re-sent after 2 s.
 * **Budget:** 6 excursions per mission, 2 within 1 m -> STUCK_NEEDS_HELP.
 * A reading that jumps > 1 m in one tick is held off up to 2 s (logged, not counted).
 * The mode is fixed for the episode (no flip at an area/path junction mid-recovery).

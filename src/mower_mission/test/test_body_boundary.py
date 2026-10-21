@@ -278,7 +278,7 @@ def test_refused_pivot_is_resent_after_a_real_pause():
 
 def test_transit_to_an_edge_lap_start_ends_inside_beside_it():
     # sim 2026-10-22: transits arriving square to the line at a lap-0 start put the nose
-    # 0.40 m out; the transit now ends 0.45 m inside, then a shallow join (look-ahead 3 x
+    # 0.40 m out; the transit now ends 0.30 m inside, then a shallow join (look-ahead 3 x
     # the lateral offset)
     h = mowing_h([line(1, 3, 4, 3), line(1, 0, 4.5, 0, n=36)], (1.0, 3.0, 0.0),
                  path_conditioning=True)
@@ -286,6 +286,19 @@ def test_transit_to_an_edge_lap_start_ends_inside_beside_it():
     h.fsm.mission.start_local = 0
     h.fsm._dispatch(force_transit=True)
     tx, ty, tyaw = h.fsm.mission.transit_target
-    assert abs(tx - 1.0) < 1e-6 and abs(ty - 0.45) < 1e-6 and abs(tyaw) < 1e-6
+    assert abs(tx - 1.0) < 1e-6 and abs(ty - 0.30) < 1e-6 and abs(tyaw) < 1e-6
     hd = f.MissionFSM._join_heading(line(1, 0, 4.5, 0, n=36), (tx, ty, 0.0))
     assert abs(math.degrees(hd)) < 20.0
+
+
+def test_soft_trip_is_plan_relative_near_a_corner_planned_out():
+    # sim 2026-10-22 run5: lap 0's first bend is planned with the body 0.41 m out; the nose
+    # tripped at 0.40 there on every lap start. Near such a corner the soft limit is the
+    # planned body + 0.10; elsewhere the static limits stay
+    h = mowing_h([line(1, 2, 4, 2), line(1, 3, 4, 3)], (1.0, 2.0, 0.0))
+    h.fsm.mission.corner_body = [(4.8, 2.0, 0.41)]
+    near = h.fsm._hb_body_eval((4.85, 2.0, 0.0), 'soft')     # nose 0.45 out
+    assert near['excess'] < 0.0
+    h.fsm.mission.corner_body = [(1.0, 4.0, 0.41)]
+    far = h.fsm._hb_body_eval((4.85, 2.0, 0.0), 'soft')
+    assert far['excess'] > 0.0
