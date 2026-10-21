@@ -276,7 +276,7 @@ joystick.
   lateral −0.18) went past the corridor cap (approach 0.8 + 0.35 m) and out of the Dock
   path polygon. **This is a regression:** neither manoeuvre checks the boundary.
 
-Fixes (not yet made): take the heading from RTK/odom and use the marker only for
+Fixes proposed that night (implemented on `ws/docking2`, next section): take the heading from RTK/odom and use the marker only for
 position, or solve with `solvePnPGeneric` and keep the IPPE solution nearest the
 prediction. Reject a first detection that differs from RTK by more than 30° / 0.3 m
 before it is accepted or pose-checked, and require ≥ 2 consistent detections. Feed the
@@ -287,6 +287,72 @@ limit. Cap every forward manoeuvre (realign, LATERAL_ALIGN, retry) at remaining 
 approach + 0.25 m, or clip it to the outside_m/corridor polygon. No LATERAL_ALIGN after a
 realign. After a bumper hit in LATERAL_ALIGN, end the pre-alignment instead of looping.
 Pause docking, or end the goal, while teleop is active.
+
+### Fixes (2026-10-21, branch `ws/docking2`)
+
+**Where the −7.5° bias comes from: the rear camera yaw, not the dock yaw.**
+
+- The stored dock yaw (100.7°) is an old measurement; `set_docking_point` preserves it.
+  The docked EKF yaw (113.8°) is no check of it: it reads the same to 5 digits whether
+  the robot is parked crooked or straight, because a standing single-antenna robot does
+  not observe its yaw. The evening forward undock (bag 20261021-062832, 06:28:34) gives
+  EKF yaw 99.9–101.4° and a track chord of about 104°: within ~3° of the stored yaw.
+- A least-squares fit over the 232 consistent detections (marker bearing and marker
+  normal in base_link against the RTK track; marker map pose and a yaw offset free) is
+  best with a camera (or EKF) yaw error of −5.5°. Rotating the detections by −6.5° about
+  the camera removes the heading residual (+0.8° at −7.5°, −1.2° at −5.5°); the marker
+  normal then lies within 1.5° of the stored dock yaw. The marker centre sits 8–11 cm
+  right of the stored dock axis (marker mounting, or the dock position).
+- Fix: `rear_camera_yaw_correction_deg: -6.5`. A dock-yaw re-measurement from the
+  forward undock chord is added anyway (mower_docking README, "Dock yaw re-measurement").
+
+**Implemented** (mower_docking README, "Night field fixes"):
+
+- marker position with the filter's odometry heading;
+- a χ²-gated filter with per-second Q, and a restart on a consistent cluster of
+  rejections;
+- 3 consistent detections, cross-checked against RTK (30° / 0.3 m), before DOCKING;
+- k_lateral 2.5, h_d ≤ 15°, a 0.6 rad/s² angular rate limit;
+- pose check 0.08 m / 12° on the median of 5 detections;
+- forward moves capped at approach + 0.25 m on RTK;
+- no LATERAL_ALIGN after a realign, and a bumper hit ends LATERAL_ALIGN;
+- the joystick pauses the goal;
+- the SEARCH log count is fixed.
+
+Not changed: the 1.35–1.46 m front-bumper trigger (the owner will be asked what is there);
+twist_mux priorities and the mission.
+
+**Field replay** (`scripts/replay_field_dock.py` on ex082701, open loop on the recorded
+track, 6 SEARCHING→DOCKING windows):
+
+| | new code | old settings |
+|---|---|---|
+| filter heading vs RTK, median | −0.8° | −8.2° |
+| filter heading vs RTK, p5..p95 | −3.9..+4.5° | −28.2..0.0° |
+| sign changes of w, per second | 0.04 | 1.22 (recorded: 34 in 27 s) |
+
+The −167° first solve does not start DOCKING.
+
+**Synthetic tests**: 29 % flips of ±22°, a 7.5° mis-mounted camera, 4 Hz, 90 closed-loop
+runs. All docked. The filter heading stayed within 5° of the truth in 83 runs, p90 4.8°.
+The exceptions are initial transients from the 3-detection start. In one run three
+same-side flips started DOCKING 26° off; the restart caught it within 2 s. Sign changes of
+w were at most 0.34/s. With the old settings the same stream gives over 0.5/s or a swing of
+more than 20°.
+**Sim (mower_sim, marker rendered with the −6.5° camera error; out:
+`accuracy-simout/docking2/`).** The sim cannot inject flips; its renderer only gives
+the solver's own noise.
+
+- **Dock-only, start 1.2 m out, 0.30 m off the axis.** Docked in 88 s, after 2 retries.
+  LATERAL_ALIGN now stops at the corridor end, 1.20 m out (the old code drove on).
+  At 1.2 m / 0.3 m off, the solves agreed with each other but differed from RTK by
+  23° / 0.62 m, so the RTK check rejected them; the robot then docked from the offset-retry
+  approaches. Cost: time. Benefit: no DOCKING start on a biased solve.
+- **Dock-only, start 1.0 m out, −0.15 m, −11.5°.** Docked in 13 s, first attempt, no
+  realign.
+- **real_run5 ideal full gate: PASS.** The robot docked on the first attempt: accepted
+  after 6 detections, 2.2° from RTK, no pose-check realign. The undock chord measured the
+  dock yaw at 101.6° (world: 101.6°).
 
 ## Field symptoms these findings explain (2026-10-20/21)
 
