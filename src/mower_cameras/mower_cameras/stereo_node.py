@@ -15,8 +15,12 @@ Output (frame ``vio_camera``, sensor-data QoS):
   shares its clock with ``stereo_imu`` (IIO timestamps, same mapping).
 * ``/vio/{left,right}/camera_info``  same stamp as the pair (if a file is configured).
 * ``/vio/{left,right}/image_color``  bgr8, only with ``publish_color: true``, at
-  ``color_fps`` (default 2 Hz) and only for subscribed eyes. det_ros (colour YOLO on the
-  right eye) uses this; the GUI Perception page shows the mono8 ``image_raw`` topics.
+  ``color_fps`` (default 2 Hz) and only for subscribed eyes. det_ros / seg_ros (right eye)
+  and the GUI's "Front stereo" tiles use this. The colour is decoded with ``color_order``
+  (default ``YVYU``): the XC9080 packs YVYU (vendor SDK, ``metoak.c``: ``V4L2_PIX_FMT_YVYU``)
+  whatever fourcc rkcif was asked for, so decoding it as the capture fourcc (YUYV) swapped
+  U and V and gave a scene-dependent yellow/orange cast (blue sky -> orange, white -> warm).
+  Luma (``image_raw``) is unaffected (same byte positions).
 
 Rate: ``fps`` (default 10) is an average-rate decimation of the source driven by the buffer
 timestamps (:class:`mower_cameras.stereo_pair.DecimationGate`), so a 25 Hz source gives 10 Hz
@@ -47,7 +51,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from mower_cameras.activity_gate import ActivityWatch, capture_period
 from mower_cameras.image_cdr import ImageCdr
 from mower_cameras.stereo_pair import ClockMap, DecimationGate, split_luma_into
-from mower_cameras.v4l2 import eye_to_bgr
+from mower_cameras.v4l2 import colour_format, eye_to_bgr
 from mower_cameras.v4l2_node import CaptureLoop, to_image_msg
 
 STEREO_FRAME_ID = 'vio_camera'
@@ -77,11 +81,14 @@ class StereoCamNode(Node):
         d('close_when_unused_s', 5.0)   # on_demand: close the device after this long unused
         d('publish_color', False)       # bgr8 on <eye>/image_color (det_ros, debugging)
         d('color_fps', 2.0)
+        # chroma byte order of the device's bytes for image_color ('' = capture fourcc)
+        d('color_order', 'YVYU')
         d('stamp_source', 'buffer')     # buffer (V4L2 driver timestamp) | now (host receive)
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.frame_id = p('frame_id')
         self.on_demand = bool(p('publish_on_demand'))
         self.publish_color = bool(p('publish_color'))
+        self.color_order = str(p('color_order') or '').upper()
         self.stamp_from_buffer = p('stamp_source') == 'buffer'
         qos = rclpy.qos.qos_profile_sensor_data
         lt, rt = p('left_topic'), p('right_topic')
@@ -129,7 +136,7 @@ class StereoCamNode(Node):
         self.get_logger().info(
             f'stereo_cam {p("video_device")} {p("width")}x{p("height")} {p("pixel_format")} '
             f'-> {lt}, {rt} (mono8 pair, same stamp) @ {fps:g} Hz, '
-            f'colour={"on @ %g Hz" % cf if self.publish_color else "off"}, '
+            f'colour={"on @ %g Hz (%s)" % (cf, self.color_order or "capture order") if self.publish_color else "off"}, '
             f'stamp={p("stamp_source")}, on_demand={self.on_demand}')
 
     def _load_info(self, path):
@@ -175,7 +182,8 @@ class StereoCamNode(Node):
         mono = (left.serialize(stamp_ns), right.serialize(stamp_ns))   # bytes copies
         colour = None
         if self.color_pubs and self.color_gate.keep(ts * 1e-9):
-            colour = [eye_to_bgr(data, cap.width, cap.height, bpl, cap.pixel_format, i)
+            fmt = colour_format(cap.pixel_format, self.color_order)
+            colour = [eye_to_bgr(data, cap.width, cap.height, bpl, fmt, i)
                       if self._subscribed(pub) else None
                       for i, pub in enumerate(self.color_pubs)]
         with self._slot_cv:
