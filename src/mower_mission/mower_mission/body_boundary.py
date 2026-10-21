@@ -25,10 +25,11 @@ FRONT, REAR, HALF_WIDTH = 0.60, 0.10, 0.235
 
 def body_points(front=FRONT, rear=REAR, half=HALF_WIDTH):
     """name -> (bx, by, kind) with kind 'side' (corners), 'nose' or 'tail'."""
+    # nose / tail first: an equal excess (square to the line) reports the nose / tail
     return {
+        'nose': (front, 0.0, 'nose'), 'tail': (-rear, 0.0, 'tail'),
         'front_left': (front, half, 'side'), 'front_right': (front, -half, 'side'),
         'rear_left': (-rear, half, 'side'), 'rear_right': (-rear, -half, 'side'),
-        'nose': (front, 0.0, 'nose'), 'tail': (-rear, 0.0, 'tail'),
     }
 
 
@@ -79,7 +80,8 @@ def evaluate(pose, polys, limits, points=None):
     """Body check at ``pose`` (x, y, yaw). Returns a dict: ``excess`` (max over the points of
     outside - limit; > 0 = trip), ``point`` (the worst point's name), ``out`` (its outside
     distance), ``rear`` (True when the worst point is behind base_link: recover forwards),
-    ``outs`` {name: outside m}. None without polygons."""
+    ``outs`` {name: outside m}, ``side_only`` (the excess is a corner's while the nose and
+    tail are within their limits: a lateral excess, which a straight move does not fix). None without polygons."""
     if not any(len(p) >= 3 for p in polys):
         return None
     pts = points or body_points()
@@ -94,4 +96,7 @@ def evaluate(pose, polys, limits, points=None):
         e = o - float(limits[kind])
         if best is None or e > best[0]:
             best = (e, name, o, bx < 0.0)
-    return {'excess': best[0], 'point': best[1], 'out': best[2], 'rear': best[3], 'outs': outs}
+    side_only = pts[best[1]][2] == 'side' and all(
+        outs[n] <= float(limits[k]) for n, (_x, _y, k) in pts.items() if k != 'side')
+    return {'excess': best[0], 'point': best[1], 'out': best[2], 'rear': best[3], 'outs': outs,
+            'side_only': side_only}

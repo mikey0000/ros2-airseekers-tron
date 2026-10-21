@@ -398,7 +398,10 @@ behavior_tree_node:
     hard_boundary: true
     hard_boundary_m: 0.10
     hard_boundary_stale_s: 1.0        # older ~/outside_m = no check
-    hard_boundary_max_aborts: 2
+    hard_boundary_max_aborts: 6        # per mission (step 3 round 2: was 2)
+    hard_boundary_spot_max: 2          # ... and per spot (excursions within hard_boundary_spot_m)
+    hard_boundary_spot_m: 1.0
+    hard_boundary_snapshot: true       # base_link check from the mission area snapshot (TRANSIT / MOWING)
     hard_boundary_trail_m: 1.5
     hard_boundary_trail_step_m: 0.05
     hard_boundary_pause_s: 0.5

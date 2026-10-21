@@ -19,7 +19,7 @@ Criteria:
      measure is always reported (a_point); SIM_GATE_MEASURE=point judges it instead (revert).
      The body is judged in MOWING only (coverage); TRANSIT / RETURNING_HOME / docking are
      judged on the point, the body there is reported as info (a_body_info).
-  b  hard-boundary trips (mission log "HARD BOUNDARY"); PASS: 0.
+  b  hard-boundary trips (mission log "BOUNDARY OUT", formerly "HARD BOUNDARY"); PASS: 0.
   c  mission reached MOWING_COMPLETE, then docked and charging (sim contacts); PASS: both.
   d  STUCK_NEEDS_HELP entries, sub-paths NOT mowed, costmap-fallback /navigate_to_pose
      transits; PASS: all 0 (FollowPath / Spin aborts are reported, not judged).
@@ -282,14 +282,15 @@ def main(run, world):
                       'max_m': round(max((e['max'] for e in per_pt.values()), default=0.0), 3),
                       'per_phase': {k: {'max_m': round(v['max'], 3), 'over': v['gt10'],
                                         'at': v['at']} for k, v in per_pt.items()}}
-    # ---- (i) body overhang beyond the line in MOWING (owner 2026-10-21), measured body, no
+    # ---- (i) body overhang beyond the line in MOWING + TRANSIT (owner 2026-10-21), measured body, no
     # padding: soft areas side <= 0.25, nose/tail <= 0.25 (pivot sweep reported); hard areas
     # the whole body inside with a 0.10 m margin (sweep included).
     SOFT_SIDE, SOFT_NOSE, HARD_MARGIN = 0.25, 0.25, 0.10
     bsp = {'side': [0.0, None], 'nose': [0.0, None], 'sweep': [0.0, None]}
     hard_min = math.inf
     hard_at = None
-    mow = [r for r in gt if state_at(r[0]) == 'MOWING']
+    # MOWING and TRANSIT (step 3 round 2 review: the 07:05 field boundary trip was in TRANSIT)
+    mow = [r for r in gt if state_at(r[0]) in ('MOWING', 'TRANSIT')]
     # pivoting in place: over +-0.25 s |v| < 0.04 m/s and |w| > 0.08 rad/s; a sample within
     # 0.6 s of one counts as sweep (a pivot's start / stop ramps are part of the pivot)
     piv_t = []
@@ -346,7 +347,7 @@ def main(run, world):
         return [(t, m) for t, m in bt if re.search(pat, m)]
 
     # ---- (b) hard boundary
-    hb = grep(r'HARD BOUNDARY')
+    hb = grep(r'HARD BOUNDARY|BOUNDARY OUT')
     res['criteria']['b'] = {'pass': not hb, 'trips': len(hb),
                             'lines': ['%.1f %s' % (t, m[:160]) for t, m in hb]
                             + ['%.1f %s' % (t, m[:160]) for t, m in grep(
@@ -641,7 +642,7 @@ def main(run, world):
             ' '.join('%s:%d' % kv for kv in sorted(C['f']['per_lane'].items())))),
         ('g', 'pivot time / moving time', '%.0f / %.0f s (%.0f %%)' % (
             C['g']['pivot_s'], C['g']['moving_s'], 100 * C['g']['share'])),
-        ('i', 'MOWING body out side / nose / sweep (hard clr)', '%.3f / %.3f / %.3f (%s)' % (
+        ('i', 'MOWING+TRANSIT body out side / nose / sweep (hard clr)', '%.3f / %.3f / %.3f (%s)' % (
             C['i']['side_m'], C['i']['nose_m'], C['i']['sweep_m'],
             C['i']['hard_min_clearance_m'])),
         ('h', 'MOWING cross-track p99 line / arc / corner', ' / '.join(

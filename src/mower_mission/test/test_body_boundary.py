@@ -180,3 +180,19 @@ def test_three_bumper_hits_within_a_metre_skip_the_stretch():
     h.tick()
     assert 'bumper_skip' in [e.kind for e in h.since(m, f.RecordIncident)]
     assert h.fsm.mission.sub_i == 1              # the rest of the row skipped
+
+
+def test_side_trip_reverses_onto_the_planned_leg_toward_the_interior():
+    h = mowing_h([line(0.5, 0, 4.5, 0, n=41), line(1, 3, 4, 3)], (0.5, 0.0, 0.0))
+    x, y = 0.5, 0.0
+    while h.fsm._hb is None and x < 3.0:      # lap 0 on the line, sliding out sideways
+        x, y = x + 0.05, y - 0.01
+        feed(h, (x, y, 0.0))
+        h.tick()
+    k = h.fsm._hb
+    assert k is not None and k['side'] and k['mode'] == 'soft'
+    y0 = h.fsm.inputs.pose[1]
+    cmds = integrate(h, max_ticks=150)
+    assert h.fsm._hb is None and h.name == 'MOWING'
+    assert all(v <= 0.0 for v, _ in cmds)                     # reverse only
+    assert h.fsm.inputs.pose[1] > y0 + 0.05                   # moved toward the interior

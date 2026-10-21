@@ -54,6 +54,7 @@ class Harness:
         # ... and the base_link-only boundary check (the body-aware check, step 3 round 2,
         # has its own tests in test_body_boundary.py; the toy squares put lap ends on the line)
         params.setdefault('hard_boundary_body', False)
+        params.setdefault('hard_boundary_snapshot', False)    # synthetic ~/outside_m
         self.t = 0.0
         self.fsm = f.MissionFSM(f.Params.from_dict(params), cursor=cursor, now=0.0)
         i = self.fsm.inputs
