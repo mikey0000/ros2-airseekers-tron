@@ -114,3 +114,4 @@ These were sent to the implementing agents.
 | After `ws/edge-layout2` | A4 integration | Queued |
 | After `ws/edge-layout2` | A6 cleanup: delete the RPP configs, one limiter | Queued |
 | From now on | A6 rule: new FSM guards need a matching removal | Applies to all work |
+| After `ws/edge-layout2` | Stable area IDs in the stack (`MapArea` id persisted in `areas.dat`; mission, schedule and GUI bind by id; `GUI_REBASE_TASKS.md` 1.1/1.2). Prerequisite for re-forking the vendored GUI onto upstream `dev` (2–3 weeks). Owner approved 2026-10-22 | Queued |
