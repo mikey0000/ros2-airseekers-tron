@@ -241,6 +241,9 @@ mower_docking:
     final_extra_creep_m: 0.15
     # docked_marker_offset auto-calibration (last marker distance - distance driven since)
     auto_calibrate_marker_offset: true
+    dock_yaw_measure: true         # fit the dock yaw from every forward undock (RTK track chord)
+    auto_apply_measured_dock_yaw: false   # true: send it to set_docking_point after the next dock
+    set_docking_point_service: /map_server_node/set_docking_point
     calibration_file: /userdata/ros2/calibration/docking_calibration.yaml   # overrides the value above
     calib_max_marker_age_s: 15.0
     calib_min_offset: 0.2

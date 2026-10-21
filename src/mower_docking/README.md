@@ -122,8 +122,9 @@ then converted into errors relative to the docked pose:
 - `lateral` is the offset from the dock axis;
 - `heading` is the heading error.
 
-With `v < 0`, the desired heading is `h_d = clamp(k_lateral·lateral, ±0.35)` and
-`ω = kp_heading·(h_d − heading) + kd_heading·d/dt`, clamped to ±0.3 rad/s. The
+With `v < 0`, the desired heading is `h_d = clamp(k_lateral·lateral, ±max_approach_angle)`
+(2.5 and 15° since 2026-10-21) and `ω = kp_heading·(h_d − heading) + kd_heading·d/dt`,
+clamped to ±0.3 rad/s and rate-limited to `max_angular_accel` (0.6 rad/s²). The
 sign is derived for reversing: `ẏ = v·sin h`. A closed-loop unicycle test in
 `test/test_dock_logic.py` confirms that it converges.
 
@@ -205,6 +206,69 @@ about 0.055 m (not yet measured exactly). Every marker distance therefore reads 
   `final_max_lateral`, `max_lateral_error`, `kf_max_innov_m`, `lateral_slow`,
   `final_max_distance`, `calib_min_offset` / `calib_max_offset`;
 - the sim's `rear_marker_offset` (0.543) is derived from 0.45 at the 0.04 scale.
+
+## Night field fixes (2026-10-21, branch `ws/docking2`)
+
+Field test 2026-10-21 night (findings doc, "Field docking 2026-10-21 night"): exposure and
+detection worked, the motion did not. Fixes:
+
+1. **Marker heading flips.** At 30–50 px, 29 % of the solves flip the marker normal by
+   ~22°, and the old `dock_errors` derived the lateral through that yaw (0.35 m jumps).
+   Now, once the filter has a heading, the position comes from the marker centre with the
+   filter's heading (`dock_errors_with_heading`, `marker_position_only`); the filter's
+   heading is propagated by odometry and corrected by the raw marker heading through a
+   1-DOF χ² gate (`kf_gate_chi2_heading` 3.84); positions (median of the last
+   `marker_median_n`, odometry-propagated) through a 2-DOF gate (`kf_gate_chi2` 9.21).
+   `kf_q` / `kf_q_heading` are per second. When 3/4 of the last `kf_reinit_after`
+   measurements are rejected but agree with each other, the filter restarts on them.
+   Why not "heading from RTK": the docked EKF yaw is not observed (single antenna), the
+   RTK heading during a slow reverse lags, and it depends on the stored dock yaw; why not
+   "IPPE nearest the prediction": both IPPE solutions are near-equal at this size and the
+   detector would need the prediction; the gated odometry heading gets the same result
+   inside dock_logic and is testable offline.
+2. **Camera yaw bias.** The consistent detections read the robot heading −7.5° off RTK.
+   A fit over 232 detections (marker bearing + normal against the RTK track) puts it in
+   the rear camera's mounting yaw (−5.5…−7.5°); the dock yaw agrees with the evening
+   undock chord to ~3°. `rear_camera_yaw_correction_deg: -6.5` rotates the extrinsic about
+   the vertical through the camera. mower_sim renders the same error
+   (`rear_camera_mount_yaw_deg`).
+3. **Search acceptance.** `search_min_detections: 3` mutually consistent detections
+   (`search_consistency_deg` 10, `search_consistency_m` 0.15) that also agree with RTK
+   (`rtk_check_max_deg` 30, `rtk_check_max_m` 0.3; dock measured and RTK fixed).
+4. **Reverse controller.** `k_lateral` 7 → 2.5, `max_approach_angle` 28.6° → 15°,
+   `max_angular_accel` 0.6 rad/s² (before the wheel-floor shaping, so both wheels stay at or
+   above 0.06 m/s). Pose check 0.08 m / 12° on the median of the last
+   `pose_check_median_n` (5) detections. Trade-off: from extreme starts (0.3 m off at 0.6 m)
+   it reaches the contacts up to ~7 cm off instead of 2 cm; from the approach distance with
+   ≤ 0.15 m lateral within 2.5 cm.
+5. **Corridor.** Every forward manoeuvre (realign, retry drive, LATERAL_ALIGN arc) stops at
+   `approach_distance + forward_cap_margin` (0.8 + 0.25 m) on RTK; the realign distance is
+   also clipped up front. No LATERAL_ALIGN after a realign; a bumper hit ends LATERAL_ALIGN
+   (it looped 7 times on the night).
+6. **Joystick.** `/cmd_vel_teleop` (any |v| > 0.01 or |w| > 0.02 within 0.6 s) pauses the
+   goal (zero output, goal timeout paused); released for `teleop_clear_s` it resumes from the
+   current pose like the bumper hold; a joystick dock still ends DOCKED (contacts are checked
+   first). Docking side only: no twist_mux or mission change.
+7. The SEARCH-window log line counts frames from cumulative counters (it reported
+   "0 with a marker" when the marker was accepted within the last diag second).
+
+Validation: `test/test_dock_field_2026_10_21.py` (synthetic 29 % / 22° flips seen through
+a 7.5° mis-mounted camera, the over-steer case, corridor, joystick) and the field replay
+`scripts/replay_field_dock.py DIR --dock X Y YAW [--old]` on the ex082701 export.
+
+### Dock yaw re-measurement
+
+`set_docking_point` keeps a measured dock yaw unless it gets `yaw_source` MOTION, and the
+docked EKF yaw is not a measurement. The forward undock is a straight 0.8 m drive under RTK:
+the undock action records the fused map track and fits its direction
+(`mower_docking/dock_yaw.py`: skips the docked point, RTK fixed throughout, ≥ 0.45 m span,
+≤ 3° turn, ≤ 2 cm RMS). The result is logged and saved in the calibration file
+(`dock_yaw_measurement`). `ros2 service call /mower_docking/apply_measured_dock_yaw
+std_srvs/srv/Trigger` while the robot is on the dock sends it to
+`/map_server_node/set_docking_point` (MOTION, GPS position), refused when it differs from the
+stored yaw by more than 20°. `auto_apply_measured_dock_yaw: true` applies it after the next
+successful dock instead (off by default). GUI: bind it next to "Set docking point" in the
+dock settings card (mower_gui_bridge service passthrough); not wired yet.
 
 ## Undock
 
@@ -307,7 +371,8 @@ reverses blind, and heading_aligner does not seed the heading from the dock.
 2. In manual mode, drive the robot onto the charger: reverse straight onto the contacts
    until the GUI shows it charging.
 3. Press **Set docking point** in the GUI (map server `set_docking_point`). This records
-   the docked position and yaw, writes `dock_pose_measured: true` into
+   the docked position (and the yaw only if none was measured before: see "Dock yaw
+   re-measurement" to correct a stale yaw), writes `dock_pose_measured: true` into
    `/userdata/ros2/maps/dock_pose.yaml`, and republishes the latched
    `/map_server_node/docking_pose` and `docking_pose_measured`.
 4. Check the marker: from the approach pose (0.8 m straight out from the docked pose,

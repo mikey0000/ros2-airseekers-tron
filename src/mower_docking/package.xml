@@ -21,6 +21,7 @@
   <depend>nav2_msgs</depend>
   <depend>mower_interfaces</depend>
   <depend>mowgli_interfaces</depend>
+  <depend>std_srvs</depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>launch</exec_depend>
