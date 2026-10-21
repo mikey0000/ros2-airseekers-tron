@@ -69,3 +69,27 @@ def test_recoveries_are_bounded():
     assert wd.may_recover(11.0) and wd.may_recover(22.0)
     assert not wd.may_recover(40.0)         # 3 in the window
     assert wd.may_recover(700.0)            # window passed
+
+
+def test_node_starts_and_stays_up():
+    """The ROS node must construct and spin (2026-10-21: assigning self.clients, a read-only
+    rclpy Node property, crash-looped it every 4 s on the mower; the logic tests above missed it)."""
+    import signal
+    import subprocess
+    import sys
+    import time
+    script = os.path.join(HERE, "..", "scripts", "nav_lane_watchdog.py")
+    p = subprocess.Popen([sys.executable, script, "--ros-args", "-r", "__node:=wd_smoke"],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        time.sleep(4.0)
+        alive = p.poll() is None
+        if not alive:
+            raise AssertionError(p.stdout.read().decode(errors="replace")[-2000:])
+    finally:
+        if p.poll() is None:
+            p.send_signal(signal.SIGINT)
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill()

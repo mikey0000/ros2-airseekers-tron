@@ -107,7 +107,7 @@ def main(args=None):
                 CollisionMonitorState,
                 d('cm_state_topic', '/collision_monitor_state').value,
                 lambda m: self.wd.on_cm_state(m.action_type), 10)
-            self.clients = {n: self.create_client(ChangeState, '/%s/change_state' % n)
+            self.lane_clients = {n: self.create_client(ChangeState, '/%s/change_state' % n)
                             for n in ('velocity_smoother', 'collision_monitor')}
             self.busy = False
             self.create_timer(0.5, self.on_tick)
@@ -123,7 +123,7 @@ def main(args=None):
                 % (now - self.wd.moving_since, stage), throttle_duration_sec=5.0)
             if not self.enabled or not self.wd.may_recover(now):
                 return
-            cli = self.clients[stage]
+            cli = self.lane_clients[stage]
             if not cli.service_is_ready():
                 self.get_logger().error('nav lane watchdog: %s/change_state not available'
                                         % stage)
@@ -148,11 +148,12 @@ def main(args=None):
 
             cli.call_async(req).add_done_callback(deactivated)
 
+    from rclpy.executors import ExternalShutdownException
     rclpy.init(args=args)
     node = NavLaneWatchdog()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
