@@ -1,0 +1,15 @@
+# real_run5 with Area 1 in edge_mode soft (2026-10-17, design DESIGN_path_conditioning_2026-10.md
+# section 7): written to the sim's maps/area_settings.yaml. Soft = nose and tail (and the front
+# half of a pivot sweep) stay inside, the sides may overhang the drawn edge. Geometry, dock and
+# paths as real_run5 (the real map, unchanged).
+name: real_run5_soft
+datum: {lat: 48.0, lon: 9.0}
+areas_file: real_run5_areas.dat
+areas_select: [Area 1, Dock path, Path 2, Path 3]
+lawn_area: Area 1
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+obstacles: []
+battery: {voltage: 25.0, percentage: 0.9}
+area_settings:
+  Area 1: {edge_mode: soft}

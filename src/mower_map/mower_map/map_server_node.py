@@ -37,6 +37,7 @@ from mowgli_interfaces.srv import (AddMowingArea, ClearObstacle, GetMowingArea,
 from mower_map import area_settings as aset
 from mower_map import areas as core
 from mower_map import nongrass_node as ngn
+from mower_map import robot_body
 from mower_map import route_graph as rgraph
 from mower_map import terrain as terr
 from mower_map.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
@@ -134,6 +135,15 @@ PARAMS = {
     'mow_progress_publish_period_s': 2.0,
     # boundary
     'boundary_check_rate_hz': 5.0,
+    # ~/body_outside_m (design 2026-10-15 section 7, 2026-10-17): how far the robot BODY (the
+    # padded Nav2 footprint at the current pose, mower_map.robot_body) sticks out of areas U
+    # drawn paths U dock corridor; with base_link inside the dock corridor the point value
+    # (the body must enter the dock). '' / -1 = nav2_params.yaml local_costmap footprint /
+    # footprint_padding (the one source of truth); body_nav2_params_file '' = the installed
+    # mower_navigation config.
+    'body_footprint': '',
+    'body_padding_m': 0.0,   # measured body, no Nav2 padding (-1 = nav2 footprint_padding)
+    'body_nav2_params_file': '',
     'soft_boundary_margin_m': 0.3,
     'lethal_boundary_margin_m': 0.5,
     'boundary_debounce_samples': 3,
@@ -299,6 +309,13 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         # task 0.4 (a): distance outside areas U drawn paths U dock corridor (0 inside; the
         # return corridor does not count) for the mission's hard boundary
         self.outside_pub = self.create_publisher(Float32, '~/outside_m', 1)
+        # the same for the whole robot body (the mission's hard boundary measure since
+        # 2026-10-17; mission_node outside_distance_topic reverts to ~/outside_m)
+        self.body_outside_pub = self.create_publisher(Float32, '~/body_outside_m', 1)
+        self._body = robot_body.load_body(str(self.p('body_footprint')),
+                                          float(self.p('body_padding_m')),
+                                          str(self.p('body_nav2_params_file')))
+        self.get_logger().info('robot %s' % self._body.describe())
         self.replan_pub = self.create_publisher(Bool, '~/replan_needed', 1)
         self.settings_pub = self.create_publisher(String, '~/area_settings', _latched())
         # terrain memory outputs (latched): traction score 0..100 (-1 = never driven),
@@ -870,6 +887,13 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             out = core.outside_distance(x, y, self.store.areas, [dock_poly] if dock_poly else [])
             if math.isfinite(out):
                 self.outside_pub.publish(Float32(data=float(out)))
+                polys = [a.polygon for a in self.store.areas] + ([dock_poly] if dock_poly else [])
+                body = self._measure_body(x, y)
+                if body is None or (dock_poly and core.point_in_polygon(x, y, dock_poly)):
+                    body_out = out    # dock corridor (the body enters the dock) / drawn path
+                else:
+                    body_out = max(out, robot_body.body_outside(body, x, y, yaw, polys))
+                self.body_outside_pub.publish(Float32(data=float(body_out)))
             soft, lethal_raw = self.boundary.update(inside, dist)
             self._lethal_filter.min_duration_s = float(self.p('lethal_min_duration_s'))
             lethal = self._lethal_filter.update(now, lethal_raw)
@@ -884,6 +908,23 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                 self.get_logger().error('LETHAL BOUNDARY VIOLATION at (%.2f, %.2f), %.2f m '
                                         'outside' % (x, y, dist),
                                         throttle_duration_sec=2.0)
+
+    def _measure_body(self, x, y):
+        """The body measured at (x, y) (design section 7, owner 2026-10-17): the mowing
+        area base_link is in (else the nearest one, unless base_link is on a drawn path):
+        its edge_mode hard = the whole outline, soft = nose / tail only; None = on a drawn
+        path / channel only (base_link counts, the body may overhang)."""
+        mowing = [a for a in self.store.areas if not a.is_navigation and len(a.polygon) >= 3]
+        inside = [a for a in mowing if core.point_in_polygon(x, y, a.polygon)]
+        if not inside:
+            if any(a.is_navigation and len(a.polygon) >= 3 and
+                   core.point_in_polygon(x, y, a.polygon) for a in self.store.areas):
+                return None
+            if not mowing:
+                return None
+            inside = [min(mowing, key=lambda a: core.closest_edge_point(x, y, a.polygon)[2])]
+        modes = [str(self.settings.effective(a.name).get('edge_mode', 'soft')) for a in inside]
+        return self._body if 'hard' in modes else self._body.soft()
 
     def on_progress_timer(self):
         if self.progress_dirty:

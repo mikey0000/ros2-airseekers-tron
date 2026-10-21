@@ -214,6 +214,8 @@ class World:
     # map-only obstacles of the lawn area (from ``areas_file``): written to areas.dat,
     # not physical
     lawn_map_obstacles: List[Polygon] = field(default_factory=list)
+    # per-area mowing settings written to maps/area_settings.yaml (e.g. edge_mode)
+    area_settings: dict = field(default_factory=dict)
 
     def footprint_at(self, x: float, y: float, yaw: float) -> Polygon:
         return transform(FOOTPRINT, x, y, yaw)
@@ -322,7 +324,8 @@ def world_from_dict(doc: dict, name: str = 'world', base_dir: Optional[str] = No
                  battery_percentage=float(bat.get('percentage', 0.8)),
                  name=str(doc.get('name', name)), lawn_name=str(lawn_name),
                  lawn_map_obstacles=[[(float(p[0]), float(p[1])) for p in o]
-                                     for o in lawn_map_obstacles])
+                                     for o in lawn_map_obstacles],
+                 area_settings=dict(doc.get('area_settings') or {}))
 
 
 def load_world(path: str) -> World:

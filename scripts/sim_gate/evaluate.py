@@ -11,7 +11,14 @@ world's areas file and dock pose, not taken from /map_server_node/outside_m.
 
 Criteria:
   a  max ground-truth distance outside (areas u drawn path polygons u dock corridor), per
-     phase; PASS: no sample > 0.10 m.
+     phase; PASS: no sample > 0.10 m. Since 2026-10-17 (design section 7) measured for the
+     whole robot BODY (padded Nav2 footprint at the ground-truth pose, mower_map.robot_body,
+     the nav2_params.yaml footprint), not only base_link: per mowing area by its edge_mode
+     (run's maps/area_settings.yaml; hard = outline, soft = nose / tail); on a drawn path
+     only and with base_link inside the dock corridor only the point counts. The point
+     measure is always reported (a_point); SIM_GATE_MEASURE=point judges it instead (revert).
+     The body is judged in MOWING only (coverage); TRANSIT / RETURNING_HOME / docking are
+     judged on the point, the body there is reported as info (a_body_info).
   b  hard-boundary trips (mission log "HARD BOUNDARY"); PASS: 0.
   c  mission reached MOWING_COMPLETE, then docked and charging (sim contacts); PASS: both.
   d  STUCK_NEEDS_HELP entries, sub-paths NOT mowed, costmap-fallback /navigate_to_pose
@@ -48,6 +55,7 @@ sys.path.insert(0, os.path.join(SRC, 'mower_map'))
 sys.path.insert(0, os.path.join(SRC, 'mower_mission'))
 sys.path.insert(0, os.path.join(SRC, 'mower_control'))
 from mower_map import areas as A          # noqa: E402
+from mower_map import robot_body as RB    # noqa: E402
 from mower_mission import geometry as G   # noqa: E402
 
 OUT_LIMIT = 0.10
@@ -80,12 +88,86 @@ def load_world(path):
             areas.append(A.Area(name=a.get('name', ''), polygon=[tuple(p) for p in a['polygon']],
                                 is_navigation=bool(a.get('is_navigation'))))
     polys = [list(a.polygon) for a in areas if len(a.polygon) >= 3]
+    load_world.areas = areas
     d = doc.get('dock') or {}
     dock = A.DockPose(float(d.get('x', 0.0)), float(d.get('y', 0.0)), float(d.get('yaw', 0.0)))
     corr = A.dock_corridor(dock, areas, 0.8, 0.35, 5.0)
     if corr is not None:
         polys.append(list(corr.polygon()))
     return polys
+
+
+def load_body():
+    """The measured body (nav2 footprint = front 0.60 / rear 0.10 / half width 0.235), no
+    Nav2 padding."""
+    nav2 = os.path.join(SRC, 'mower_navigation', 'config', 'nav2_params.yaml')
+    return RB.load_body(padding=RB.MEASURE_PADDING, nav2_params_file=nav2, step=0.04)
+
+
+def _nearest_dir(px, py, polys):
+    """Unit vector from the nearest region edge point to (px, py) (outward when outside)."""
+    best, bv = math.inf, (0.0, 0.0)
+    for p in polys:
+        n = len(p)
+        for i in range(n):
+            ax, ay = p[i - 1][0], p[i - 1][1]
+            bx, by = p[i][0], p[i][1]
+            dx, dy = bx - ax, by - ay
+            L2 = dx * dx + dy * dy
+            t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+            qx, qy = ax + t * dx, ay + t * dy
+            d = math.hypot(px - qx, py - qy)
+            if d < best:
+                best, bv = d, ((px - qx) / max(d, 1e-9), (py - qy) / max(d, 1e-9))
+    return bv
+
+
+def body_split(body, x, y, yaw, polys, pivoting):
+    """Body overhang beyond the line at one pose, split (owner 2026-10-21): 'sweep' while
+    pivoting in place, else by the overhang direction in the body frame: 'nose' (front /
+    tail, the outward normal mostly along the heading: row ends, lap corners) or 'side'
+    (mostly lateral: edge laps). Returns (kind, metres outside, worst body point) or None."""
+    c0 = RB.clearance(x, y, polys)
+    if c0 >= body.radius:
+        return None
+    worst, wp = 0.0, None
+    for px, py in body.world(x, y, yaw):
+        c = RB.clearance(px, py, polys)
+        if -c > worst:
+            worst, wp = -c, (px, py)
+    if wp is None:
+        return None
+    if pivoting:
+        return 'sweep', worst, wp
+    nx, ny = _nearest_dir(wp[0], wp[1], polys)
+    along = abs(nx * math.cos(yaw) + ny * math.sin(yaw))
+    lat = abs(-nx * math.sin(yaw) + ny * math.cos(yaw))
+    return ('nose' if along >= lat else 'side'), worst, wp
+
+
+def edge_modes(run):
+    """Area name -> edge_mode from the run's maps/area_settings.yaml (default soft)."""
+    try:
+        import yaml
+        with open(os.path.join(run, 'maps', 'area_settings.yaml')) as fh:
+            doc = yaml.safe_load(fh) or {}
+        dflt = (doc.get('defaults') or {}).get('edge_mode', 'soft')
+        return {n: (v or {}).get('edge_mode', dflt) for n, v in (doc.get('areas') or {}).items()}, dflt
+    except (OSError, ValueError, AttributeError):
+        return {}, 'soft'
+
+
+def measure_body(body, soft, areas, modes, dflt, x, y):
+    """As map_server _measure_body: hard / soft body of the (nearest) mowing area, None on
+    a drawn path only."""
+    mowing = [a for a in areas if not a.is_navigation and len(a.polygon) >= 3]
+    inside = [a for a in mowing if A.point_in_polygon(x, y, a.polygon)]
+    if not inside:
+        if any(a.is_navigation and A.point_in_polygon(x, y, a.polygon) for a in areas
+               if len(a.polygon) >= 3) or not mowing:
+            return None
+        inside = [min(mowing, key=lambda a: A.closest_edge_point(x, y, a.polygon)[2])]
+    return body if any(modes.get(a.name, dflt) == 'hard' for a in inside) else soft
 
 
 def outside(x, y, polys):
@@ -156,24 +238,84 @@ def main(run, world):
     res['phases'] = phases
     res['duration_s'] = round(dur, 1)
 
-    # ---- (a) boundary from ground truth
-    per = {}
+    # ---- (a) boundary from ground truth: the body (padded footprint), and the point
+    body = load_body()
+    soft = body.soft()
+    modes, dflt = edge_modes(run)
+    areas = getattr(load_world, 'areas', [])
+    corr_poly = polys[-1] if polys else None    # the dock corridor (load_world appends it)
+    use_point = os.environ.get('SIM_GATE_MEASURE', 'body') == 'point'
+    per, per_pt, per_bi = {}, {}, {}
     worst = []
     for r in gt[::2]:                          # 25 Hz
         st = state_at(r[0])
-        d = outside(r[1], r[2], polys)
-        e = per.setdefault(st, {'n': 0, 'max': 0.0, 'gt10': 0, 'at': None})
-        e['n'] += 1
-        if d > e['max']:
-            e['max'], e['at'] = d, [round(r[0] - t0, 1), round(r[1], 2), round(r[2], 2)]
+        d_pt = outside(r[1], r[2], polys)
+        bd = measure_body(body, soft, areas, modes, dflt, r[1], r[2])
+        if bd is None or (corr_poly and A.point_in_polygon(r[1], r[2], corr_poly)):
+            d_body = d_pt       # docking / undocking (the body enters the dock), drawn paths
+        else:
+            d_body = max(d_pt, RB.body_outside(bd, r[1], r[2], r[3], polys))
+        # body judged in MOWING only (coverage, 2026-10-17 ws/corner-nose); transits, return,
+        # docking stay point-based (base_link), the body there is info (a_body_info)
+        judged = d_pt        # 2026-10-21: (a) is base_link; the body is criterion (i)
+        for tab, d in ((per, judged), (per_pt, d_pt), (per_bi, d_body)):
+            e = tab.setdefault(st, {'n': 0, 'max': 0.0, 'gt10': 0, 'at': None})
+            e['n'] += 1
+            if d > e['max']:
+                e['max'], e['at'] = d, [round(r[0] - t0, 1), round(r[1], 2), round(r[2], 2),
+                                        round(math.degrees(r[3]))]
+            if d > OUT_LIMIT:
+                e['gt10'] += 1
+        d = judged
         if d > OUT_LIMIT:
-            e['gt10'] += 1
             worst.append((r[0] - t0, st, d, r[1], r[2]))
     n_out = sum(e['gt10'] for e in per.values())
     a_max = max((e['max'] for e in per.values()), default=0.0)
     res['criteria']['a'] = {'pass': n_out == 0, 'samples_over': n_out, 'max_m': round(a_max, 3),
+                            'measure': 'point (base_link)',
+                            'body': body.describe(), 'edge_modes': modes or dflt,
                             'per_phase': {k: {'max_m': round(v['max'], 3), 'over': v['gt10'],
                                               'at': v['at']} for k, v in per.items()}}
+    res['a_body_info'] = {k: {'max_m': round(v['max'], 3), 'over': v['gt10'], 'at': v['at']}
+                          for k, v in per_bi.items()}
+    res['a_point'] = {'samples_over': sum(e['gt10'] for e in per_pt.values()),
+                      'max_m': round(max((e['max'] for e in per_pt.values()), default=0.0), 3),
+                      'per_phase': {k: {'max_m': round(v['max'], 3), 'over': v['gt10'],
+                                        'at': v['at']} for k, v in per_pt.items()}}
+    # ---- (i) body overhang beyond the line in MOWING (owner 2026-10-21), measured body, no
+    # padding: soft areas side <= 0.25, nose/tail <= 0.25 (pivot sweep reported); hard areas
+    # the whole body inside with a 0.10 m margin (sweep included).
+    SOFT_SIDE, SOFT_NOSE, HARD_MARGIN = 0.25, 0.25, 0.10
+    bsp = {'side': [0.0, None], 'nose': [0.0, None], 'sweep': [0.0, None]}
+    hard_min = math.inf
+    hard_at = None
+    mow = [r for r in gt if state_at(r[0]) == 'MOWING']
+    for j in range(0, len(mow) - 5, 5):                      # 10 Hz
+        r, q = mow[j], mow[j + 5]
+        dt = max(q[0] - r[0], 1e-3)
+        v = math.hypot(q[1] - r[1], q[2] - r[2]) / dt
+        w = abs(math.atan2(math.sin(q[3] - r[3]), math.cos(q[3] - r[3]))) / dt
+        mode = measure_body(body, 'soft', areas, modes, dflt, r[1], r[2])
+        if mode is None or (corr_poly and A.point_in_polygon(r[1], r[2], corr_poly)):
+            continue
+        if mode is body:                                      # hard area
+            c = RB.body_clearance(body, r[1], r[2], r[3], polys, HARD_MARGIN)
+            if c < hard_min:
+                hard_min, hard_at = c, [round(r[0] - t0, 1), round(r[1], 2), round(r[2], 2)]
+            continue
+        sp = body_split(body, r[1], r[2], r[3], polys, v < 0.03 and w > 0.1)
+        if sp and sp[1] > bsp[sp[0]][0]:
+            bsp[sp[0]] = [sp[1], [round(r[0] - t0, 1), round(r[1], 2), round(r[2], 2),
+                                  round(math.degrees(r[3]))]]
+    i_pass = bsp['side'][0] <= SOFT_SIDE and bsp['nose'][0] <= SOFT_NOSE and \
+        (hard_min >= HARD_MARGIN if math.isfinite(hard_min) else True)
+    res['criteria']['i'] = {'pass': i_pass, 'body': body.describe(),
+                            'side_m': round(bsp['side'][0], 3), 'side_at': bsp['side'][1],
+                            'nose_m': round(bsp['nose'][0], 3), 'nose_at': bsp['nose'][1],
+                            'sweep_m': round(bsp['sweep'][0], 3), 'sweep_at': bsp['sweep'][1],
+                            'hard_min_clearance_m': (round(hard_min, 3)
+                                                     if math.isfinite(hard_min) else None),
+                            'hard_at': hard_at}
     eps = []
     for w in worst:
         if eps and w[0] - eps[-1][1] < 2.0:
@@ -471,8 +613,8 @@ def main(run, world):
         res['verdict'] = 'INVALID'
     C = res['criteria']
     rows = [
-        ('a', 'max outside (gt), samples > 0.10 m', '%.3f m, %d' % (C['a']['max_m'],
-                                                                  C['a']['samples_over'])),
+        ('a', 'max %s outside (gt), samples > 0.10 m' % C['a']['measure'], '%.3f m, %d' % (
+            C['a']['max_m'], C['a']['samples_over'])),
         ('b', 'hard-boundary trips', '%d' % C['b']['trips']),
         ('c', 'MOWING_COMPLETE / docked / charging', '%s / %s / %s (final %s)' % (
             C['c']['mowing_complete'], C['c']['docked'], C['c']['charging'],
@@ -486,6 +628,9 @@ def main(run, world):
             ' '.join('%s:%d' % kv for kv in sorted(C['f']['per_lane'].items())))),
         ('g', 'pivot time / moving time', '%.0f / %.0f s (%.0f %%)' % (
             C['g']['pivot_s'], C['g']['moving_s'], 100 * C['g']['share'])),
+        ('i', 'MOWING body out side / nose / sweep (hard clr)', '%.3f / %.3f / %.3f (%s)' % (
+            C['i']['side_m'], C['i']['nose_m'], C['i']['sweep_m'],
+            C['i']['hard_min_clearance_m'])),
         ('h', 'MOWING cross-track p99 line / arc / corner', ' / '.join(
             '%.3f' % C['h']['stats'][k]['p99'] if k in C['h']['stats'] else '-'
             for k in ('line', 'arc', 'corner'))),
@@ -504,6 +649,12 @@ def main(run, world):
     if 'loop_hz' in res:
         print('   controller loop Hz: median %d, p10 %d (%d s)' % (
             res['loop_hz']['median'], res['loop_hz']['p10'], res['loop_hz']['seconds']))
+    print('   body worst at: side %s, nose %s, sweep %s' % (C['i']['side_at'], C['i']['nose_at'],
+                                                         C['i']['sweep_at']))
+    print('   body (info, all phases): ' + ', '.join('%s %.3f' % (k, v['max_m'])
+                                                  for k, v in res['a_body_info'].items()))
+    print('   point (base_link) max outside %.3f m, %d samples > 0.10 m' % (
+        res['a_point']['max_m'], res['a_point']['samples_over']))
     print('   boundary per phase: ' + ', '.join('%s %.3f' % (k, v['max_m'])
                                                 for k, v in C['a']['per_phase'].items()))
     for e in C['a']['episodes']:

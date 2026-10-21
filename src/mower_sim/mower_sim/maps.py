@@ -45,6 +45,11 @@ def write_maps(world: World, maps_dir: str) -> None:
             out.append(area)
     A.save_areas_file(os.path.join(maps_dir, 'areas.dat'), out,
                       world.datum_lat, world.datum_lon)
+    if getattr(world, 'area_settings', None):
+        import yaml
+        with open(os.path.join(maps_dir, 'area_settings.yaml'), 'w', encoding='utf-8') as fh:
+            fh.write('# mower_sim world area_settings\n' + yaml.safe_dump(
+                {'version': 1, 'defaults': {}, 'areas': dict(world.area_settings)}))
     # vendor dock outline 0.4 x 0.55 m, behind the docked robot (dock-local frame)
     outline = [(-0.65, -0.275), (-0.25, -0.275), (-0.25, 0.275), (-0.65, 0.275)]
     dock = A.DockPose(world.dock.x, world.dock.y, world.dock.yaw, outline=outline,
