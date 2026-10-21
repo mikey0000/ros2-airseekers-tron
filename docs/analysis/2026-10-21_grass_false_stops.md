@@ -56,3 +56,57 @@ A cross-track jump to 0.604 seen on the edge-layout base was variance in edge-la
 ## What to compare against stock
 
 Stock never held camera marks in its costmap: the layers are commented out. It uses labelled YOLO detections plus the bumper, and turns AI avoidance off on edge laps. See `2026-10-21_stock_firmware_findings.md`. Moving fully to that strategy (back up → plan around → rejoin for labelled obstacles) is the follow-up.
+
+## Field run 2026-10-21 evening
+
+This run was session `20261021-062832` (06:28–07:50+ UTC, Area 6), deployed 7532831, which is ed78907 plus this hotfix. The data is in `ros2_stack-wt/accuracy-simout/field_mow_2026-10-21c/`. Bag splits 41 and 49 are corrupt on the mower (bad zstd), so 07:09:44 comes from the logs only. The docker json logs are corrupt as well; the node logs that are readable are `/userdata/ros2/log/<node>_<pid>_<ms>.log`.
+
+**The grass fix worked.** The table compares this run with the morning run (about 22 min driving).
+
+| Metric | Morning | Evening (72.7 min driving) |
+|---|---|---|
+| stop_zone events | 125 (about 340/h) | 0 |
+| Spin "Collision Ahead" | 18 | 0 |
+| slip_detector STUCK | 6 | 1 (a real wheel-spin while reversing in a detour, 06:37) |
+| STUCK_NEEDS_HELP | 11 | 2 (both from the boundary budget, not from obstacles) |
+
+In the evening run, one detour (06:36) came from a stereo block at the area line. Only the slowdown zone fired, 13 times.
+
+**The remaining stops were not grass:**
+
+- **06:31:27, the 23.37 m "outside" event, was a GUI map save during the mission.**
+  - `PUT /api/mowglinext/map` at 06:31:27 does "All map layers and areas cleared", then re-adds the areas one by one.
+  - The boundary check ran when only Area 1 and the lawn section existed. The robot was in fact 0.36 m inside.
+  - The only edit was one Area 6 vertex dragged along the edge (area +0.01 m²).
+  - It still cost a retrace, used boundary budget 1/2, and discarded the resume cursor at the 07:06 restart, so the area was re-mowed from 0 %.
+  - The keepout mask was also published half-built (nav free cells dropped to 237).
+- **07:05:32 (TRANSIT, 0.10 m): a 64° route-corner Spin slipped.**
+  - The Spin took 12.7 s, with the wheels at w≈0.28 and the EKF at about 0.085 rad/s. RTK was fixed while the robot slid 0.40 m west to the line.
+  - The robot then followed the leg out.
+  - The same west-edge spot (-33.5, -6.4) caused the morning stuck and abort events there.
+  - This trip was 2/2, so the run went to STUCK_NEEDS_HELP.
+- **07:09:44 (MOWING, 0.10 m): edge-ring tracking error at a corner, base_link-only check.** This is the known issue; the bag is missing.
+- **07:29:02 and 07:40:23 follow_abort, then 07:29:11 (0.13 m, 2/2 → NEEDS_HELP) and 07:40:42 (0.10 m) boundary trips: a real physical obstacle just outside the line at (-27.8, -4.1).**
+  - On rows ending perpendicular to the edge (heading about 125°), base_link reached the line (−0.04 to −0.08 m) and the nose, about 0.35 m beyond, hit the obstacle.
+  - The bumper fired 6 and 9 times in turn, each followed by a 2 s back-off and a retry, until the controller reported "Failed to make progress".
+  - The retry then tripped the 0.10 m check.
+  - The costmap was empty: the camera marks outside the area are dropped by design.
+
+**Safety notes:**
+
+- The hotfix caused no regression.
+- During the 4 "cat ahead" stops (score up to 0.97, the cat filling the frame), `_soft_blade_off` kept the blade running (blade_policy continuous, since 397fdf8). The log line still says "blade off". Living-obstacle stops should force the blade off.
+- The startup EMERGENCY (06:27:58) was the mission node's `/hardware_bridge/emergency silent > 2 s` watchdog firing before the first MCU message. The robot was docked and the emergency cleared in 0.8 s.
+
+**Fixes, mapped to step 3 round 2:**
+
+- Use the stock edge layout so that row ends do not point the nose at the line.
+- Make the boundary-out check body-aware, with the reverse-0.3 m recovery. Also skip a stretch after N bumper hits at the same spot.
+- Gate Spin progress, and skip or replan a corner when the robot drifts more than 0.15 m during a pivot.
+
+**Fixes outside step 3 round 2:**
+
+- Make map replacement atomic in map_server: build, then swap. Alternatively, the mission ignores boundary checks for 2 s after `areas cleared`.
+- Do not count a trip toward the 2/2 budget when outside_m jumps by more than 1 m in one tick.
+- Arm the emergency watchdog only after the first message.
+- Turn the blade off for dynamic (animal or person) stops.
