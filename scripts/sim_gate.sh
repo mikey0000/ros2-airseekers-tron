@@ -202,12 +202,12 @@ done
 cx "pkill -INT -f 'ros2 bag record'" >/dev/null; sleep 4
 grep "behavior_tree_node\]" "$OUT/launch.log" | sed 's/\x1b\[[0-9;]*m//g' > "$OUT/mission.log" || true
 docker stop -t 5 "$C" >/dev/null 2>&1 || true
-# evaluate on a copy of the bag
-mkdir -p "$OUT/snap"; rm -f "$OUT"/snap/*.db3; cp "$OUT"/bag/*.db3 "$OUT/snap/"
+# evaluate the bag in place: the recorder and its container are stopped above, so the db3
+# is final (the copy extract.py asks for only matters for a LIVE bag; it doubled the disk use)
 set +e
 docker run --rm --name "${C}-eval" --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
   "${MOUNT[@]}" "$IMG" bash -c \
-  "$ROS; python3 scripts/sim_gate/extract.py $COUT/snap $COUT/data.json >/dev/null && \
+  "$ROS; python3 scripts/sim_gate/extract.py $COUT/bag $COUT/data.json >/dev/null && \
    python3 scripts/sim_gate/evaluate.py $COUT $CWORLD" | tee "$OUT/verdict.txt"
 rc=${PIPESTATUS[0]}
 set -e
