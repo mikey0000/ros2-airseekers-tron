@@ -81,7 +81,29 @@ struct RouteOptions {
   // resp. border_inset: what the rings are built for).
   double target_inset = -1.0;
   double hole_margin = -1.0;
+  // Stock-style edge layout (owner 2026-10-21, see applyEdgeLayout). Every inset is where
+  // base_link (rear axle, pivot centre) runs, measured from the recorded line. Non-empty
+  // lap_offsets replaces the headland construction (border_inset / headland_passes are then
+  // ignored for the outer field): one ring per offset, rows laterally from row_side_inset,
+  // row ends (and gap-fill passes) row_end_inset inside, swath-to-swath turns kept
+  // turn_inset inside, holes grown by hole_inset before any of that.
+  std::vector<double> lap_offsets;
+  double row_side_inset = 0.45;
+  double row_end_inset = 0.45;
+  double turn_inset = 0.45;
+  double hole_inset = 0.30;
 };
+
+// Edge layouts (PlanCoverage edge_layout / area setting edge_mode):
+//   "soft"  stock layout: laps at 0 / 0.15 / 0.30 (the first with base_link ON the line, the
+//           sides overhang up to the half width), rows fill the 0.45-eroded field (row ends
+//           0.45 in: nose ~0.15 past, a pivot there sweeps it ~0.195 past), turns >= 0.45 in,
+//           holes (obstacles) grown 0.30 so the body sides clear them.
+//   "hard"  the whole body inside plus 0.10: laps 0.45 / 0.63 / 0.81 (+ 0.99), rows from 1.10,
+//           row ends 1.08 in (pivot room ahead), turns >= 0.745 in (pivot swing 0.645 + 0.10).
+//   "" / "legacy"  unchanged (headland rings at border_inset).
+// Returns false for an unknown name (route untouched).
+bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* route);
 
 bool parseRouteOrder(const std::string& name, RouteOrder* order);  // "" = boustrophedon
 // kRacetrack half-block k for a turn radius: smallest k with (k-1)*w >= 2r, >= 2.

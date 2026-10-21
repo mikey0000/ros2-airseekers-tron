@@ -28,6 +28,8 @@ int32   route_spiral_size 6               # swaths per SpiralOrder block (>= 2)
 float64 min_turn_radius_m -1.0            # < 0 = node param min_turn_radius_m; 0 = pivot in place
 string  turn_type ""                      # auto (loop -> reverse-curve -> pivot) | loop | reverse | pivot ("" = auto)
 float64 boundary_inset_m -1.0             # per-area edge margin (blade edge inside the line) [m]; < 0 = node param
+string  edge_layout ""                    # soft | hard: stock-style laps / row insets for base_link
+                                          # (area edge_mode, owner 2026-10-21); "" / legacy = headland rings
 ---
 bool   success
 string message

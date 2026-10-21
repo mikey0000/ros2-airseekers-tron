@@ -1250,3 +1250,116 @@ TEST(CoverageGaps, VerifyReportsGapsWithoutFill) {
   EXPECT_LE(p.coverage_fraction, 1.0);
   EXPECT_EQ(p.gap_count, p.gaps.size());
 }
+
+// ---- Stock-style edge layout (owner 2026-10-21) -------------------------------------
+
+namespace {
+
+// Signed distance of p inside the axis-aligned rectangle [0, w] x [0, h] (> 0 inside).
+double rectInset(const Point2D& p, double w, double h) {
+  return std::min(std::min(p.first, w - p.first), std::min(p.second, h - p.second));
+}
+
+CoveragePlan planLayout(const std::string& layout, double w, double h,
+                        const std::string& order = "racetrack") {
+  mower_coverage::RouteOptions route;
+  EXPECT_TRUE(mower_coverage::parseRouteOrder(order, &route.order));
+  route.min_turn_radius = 0.5;
+  route.min_drivable_turn_radius = 0.40;
+  route.fill_gaps = true;
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout(layout, 0.18, &route));
+  return mower_coverage::planCoverage(
+      field({{0, 0}, {w, 0}, {w, h}, {0, h}}), 0.18, 0.20, 2, 0.14, 0.0, 0.15,
+      mower_coverage::PathMode::kZigzag, true, route);
+}
+
+// Every ring vertex of ring k at the expected inset (the rectangle's offsets are rectangles).
+void expectRingInsets(const CoveragePlan& plan, const std::vector<double>& insets, double w,
+                      double h) {
+  ASSERT_EQ(plan.rings.size(), insets.size());
+  for (size_t k = 0; k < insets.size(); ++k) {
+    for (const auto& p : plan.rings[k]) {
+      EXPECT_NEAR(rectInset(p, w, h), insets[k], 0.01) << "ring " << k;
+    }
+  }
+}
+
+double minInset(const CoveragePlan& plan, double w, double h, bool swaths, bool turns) {
+  double m = 1e9;
+  if (swaths) {
+    for (const auto& s : plan.swaths) {
+      m = std::min(m, std::min(rectInset(s.first, w, h), rectInset(s.second, w, h)));
+    }
+  }
+  if (turns) {
+    for (const auto& t : plan.turns) {
+      for (const auto& tp : t.poses) m = std::min(m, rectInset(tp.p, w, h));
+    }
+  }
+  return m;
+}
+
+}  // namespace
+
+TEST(EdgeLayout, UnknownNameIsRejectedLegacyIsANoOp) {
+  mower_coverage::RouteOptions r;
+  EXPECT_FALSE(mower_coverage::applyEdgeLayout("wobbly", 0.18, &r));
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout("", 0.18, &r));
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout("legacy", 0.18, &r));
+  EXPECT_TRUE(r.lap_offsets.empty());
+}
+
+TEST(EdgeLayout, SoftLapsOnTheLineThenStockInsetsRowsAt045) {
+  const double w = 8.0, h = 6.0;
+  const CoveragePlan plan = planLayout("soft", w, h);
+  expectRingInsets(plan, {0.0, 0.15, 0.30}, w, h);
+  ASSERT_FALSE(plan.swaths.empty());
+  // row ends (and fill passes) never closer than 0.45 to the line; the first row at 0.45
+  EXPECT_GE(minInset(plan, w, h, true, false), 0.45 - 0.01);
+  EXPECT_LE(minInset(plan, w, h, true, false), 0.45 + 0.01);
+  // swath-to-swath turns stay >= 0.45 inside (no arcs out to the edge)
+  if (!plan.turns.empty()) EXPECT_GE(minInset(plan, w, h, false, true), 0.45 - 0.02);
+  // the blade (0.18 + overlap) reaches the whole field: lap 0 covers to the line
+  EXPECT_GT(plan.coverage_fraction, 0.995);
+}
+
+TEST(EdgeLayout, HardKeepsTheBodyInsideWithMargin) {
+  const double w = 8.0, h = 6.0;
+  const CoveragePlan plan = planLayout("hard", w, h);
+  expectRingInsets(plan, {0.45, 0.63, 0.81, 0.99}, w, h);
+  ASSERT_FALSE(plan.swaths.empty());
+  EXPECT_GE(minInset(plan, w, h, true, false), 1.08 - 0.01);   // rows laterally from 1.10
+  EXPECT_GT(plan.coverage_fraction, 0.995);   // of the target (blade of lap 0.45 inwards)
+  // the row ends: 1.08 from the edge ahead (pivot room)
+  for (const auto& s : plan.swaths) {
+    const bool horizontal = std::abs(s.first.second - s.second.second) < 1e-6;
+    for (const auto& p : {s.first, s.second}) {
+      const double ahead = horizontal ? std::min(p.first, w - p.first)
+                                      : std::min(p.second, h - p.second);
+      EXPECT_GE(ahead, 1.08 - 0.01);
+    }
+  }
+  // turns: base_link >= 0.745 in (pivot swing 0.645 + 0.10 margin)
+  if (!plan.turns.empty()) EXPECT_GE(minInset(plan, w, h, false, true), 0.745 - 0.02);
+}
+
+TEST(EdgeLayout, SoftHoleIsClearedByTheBodySides) {
+  const double w = 8.0, h = 6.0;
+  mower_coverage::RouteOptions route;
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+  const std::vector<Point2D> hole = {{3, 2}, {4, 2}, {4, 3}, {3, 3}};
+  const CoveragePlan plan = mower_coverage::planCoverage(
+      mower_coverage::makeFieldCell({{0, 0}, {w, 0}, {w, h}, {0, h}}, {hole}), 0.18, 0.20, 2,
+      0.14, 0.0, 0.15, mower_coverage::PathMode::kZigzag, true, route);
+  // every driven pose >= 0.30 from the hole (body half width 0.235 + 0.065)
+  auto holeDist = [](const Point2D& p) {
+    const double dx = std::max({3.0 - p.first, 0.0, p.first - 4.0});
+    const double dy = std::max({2.0 - p.second, 0.0, p.second - 3.0});
+    return std::hypot(dx, dy);
+  };
+  for (const auto& r : plan.rings) for (const auto& p : r) EXPECT_GE(holeDist(p), 0.30 - 0.01);
+  for (const auto& s : plan.swaths) {
+    EXPECT_GE(holeDist(s.first), 0.30 - 0.01);
+    EXPECT_GE(holeDist(s.second), 0.30 - 0.01);
+  }
+}

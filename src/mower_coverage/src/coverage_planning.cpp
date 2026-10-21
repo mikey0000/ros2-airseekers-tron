@@ -242,7 +242,8 @@ double longestEdgeAngle(const f2c::types::Cell& cell) {
 // numerical noise on a swath that lies exactly on the recorded line — the
 // swath is returned unclipped rather than silently dropping coverage.
 std::vector<std::pair<Point2D, Point2D>> clipSwathToDrivable(
-    const f2c::types::Cells& drivable, const Point2D& p0, const Point2D& p1) {
+    const f2c::types::Cells& drivable, const Point2D& p0, const Point2D& p1,
+    bool keep_if_outside = true) {
   const double dx = p1.first - p0.first;
   const double dy = p1.second - p0.second;
   const double len = std::hypot(dx, dy);
@@ -278,6 +279,9 @@ std::vector<std::pair<Point2D, Point2D>> clipSwathToDrivable(
     spans.emplace_back(std::max(0.0, t_lo), std::min(len, t_hi));
   }
   if (spans.empty()) {
+    // legacy: a swath wholly outside is kept (F2C rounding at the edge); edge layout: the
+    // row region is a hard limit, drop it
+    if (!keep_if_outside) return {};
     return {{p0, p1}};
   }
   std::sort(spans.begin(), spans.end());
@@ -1111,9 +1115,11 @@ bool bestFillPass(const OGRGeometry* gap, double hw, double swath_angle,
 }
 
 void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
-              CoveragePlan* plan) {
+              CoveragePlan* plan, const OGRGeometry* centre = nullptr) {
   const double hw = op_width / 2.0;
-  GeomPtr centre_region(target->Buffer(-hw, kBufQuadSegs));
+  // centre: where a fill pass's centreline may run (edge layout: the row region, so a fill
+  // pass obeys the row-end inset); default the target shrunk by half a swath.
+  GeomPtr centre_region(centre ? centre->clone() : target->Buffer(-hw, kBufQuadSegs));
   GeomPtr covered = planFootprint(*plan, hw);
   GeomPtr unc = evaluate(target, covered.get(), min_gap, plan);
   plan->coverage_fraction_before_fill = plan->coverage_fraction;
@@ -1211,7 +1217,12 @@ void verifyAndFill(const f2c::types::Cell& field, double op_width, double border
   }
   try {
     GeomPtr target = buildTarget(field, inset, hole);
-    fillGaps(target.get(), op_width, route.min_gap_area_m2, plan);
+    GeomPtr centre;
+    if (!route.lap_offsets.empty()) {
+      centre = buildTarget(field, route.row_end_inset,
+                           std::max(0.0, route.hole_inset) + route.row_end_inset);
+    }
+    fillGaps(target.get(), op_width, route.min_gap_area_m2, plan, centre.get());
   } catch (const std::exception&) {
     plan->drops.push_back("gap fill failed");
   }
@@ -1337,18 +1348,24 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   // around a hole then runs border_inset + op_width/2 outside it — the blade
   // edge touches the obstacle edge but never overhangs it — and everything
   // inward (hole rings, mainland, swaths) moves out with it.
+  const bool layout = !route.lap_offsets.empty();
+  const double hole_grow = layout ? std::max(0.0, route.hole_inset) : op_width / 2.0;
   f2c::types::Cells hl_field = field_cells;
-  if (field.size() > 1) {
+  if (field.size() > 1 && hole_grow > 0.0) {
     f2c::types::Cells grown;
     for (size_t i = 1; i < field.size(); ++i) {
       grown.addGeometry(f2c::types::Cell::buffer(
-          f2c::types::Cell(field.getGeometry(i)), op_width / 2.0));
+          f2c::types::Cell(field.getGeometry(i)), hole_grow));
     }
     hl_field = f2c::types::Cells(f2c::types::Cell(field.getGeometry(0)))
                    .difference(grown.unionCascaded());
   }
+  // Edge layout: insets are absolute from the recorded line (never buffer(-0.0)).
+  auto inset = [&hl](const f2c::types::Cells& c, double d) {
+    return d > 1e-9 ? hl.generateHeadlands(c, d) : c;
+  };
   f2c::types::Cells safe_cells =
-      hl.generateHeadlands(hl_field, border_inset - op_width / 2.0);
+      layout ? hl_field : hl.generateHeadlands(hl_field, border_inset - op_width / 2.0);
 
   // Headland rings: one Cells per pass, outermost pass first, each pass's
   // rings as its cells (see the pass loop below for why we do not call
@@ -1399,6 +1416,15 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
         }
       }
       break;
+    }
+  } else if (layout && safe_cells.size() > 0) {
+    // Stock layout: one ring per lap offset (outermost first), no op_width arithmetic.
+    for (double o : route.lap_offsets) {
+      f2c::types::Cells c = inset(hl_field, o);
+      if (cellsEmpty(c)) {
+        break;
+      }
+      passes.push_back(c);
     }
   } else if (n_rings > 0 && safe_cells.size() > 0) {
     // Pass k = the planning cell shrunk by (k + 1/2) * op_width, outermost
@@ -1461,6 +1487,9 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   f2c::types::Cells mainland;
   if (!want_swaths) {
     // spiral / contour_only: rings only, no mainland swaths.
+  } else if (layout) {
+    // rows laterally from row_side_inset (F2C puts the first swath op_width/2 inside)
+    mainland = inset(hl_field, std::max(0.0, route.row_side_inset - op_width / 2.0));
   } else if (n_rings > 0 && safe_cells.size() > 0) {
     mainland = hl.generateHeadlands(safe_cells, n_rings * op_width);
   } else {
@@ -1480,8 +1509,9 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   // GEOS raises a TopologyException and F2C then dereferences a null result —
   // so such a field keeps its unclipped swaths and says so in `drops`.
   const f2c::types::Cells drivable =
-      (border_inset > 0.0) ? hl.generateHeadlands(field_cells, border_inset)
-                           : field_cells;
+      layout ? inset(hl_field, route.row_end_inset)
+             : ((border_inset > 0.0) ? hl.generateHeadlands(field_cells, border_inset)
+                                     : field_cells);
   const bool clip_swaths = drivable.size() > 0 && drivable.area() > 1e-9 &&
                            drivable.get() != nullptr && drivable.get()->IsValid();
   if (!clip_swaths) {
@@ -1518,7 +1548,7 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
       const Point2D a{p0.getX(), p0.getY()};
       const Point2D b{p1.getX(), p1.getY()};
       const std::vector<Seg> clipped =
-          clip_swaths ? clipSwathToDrivable(drivable, a, b) : std::vector<Seg>{{a, b}};
+          clip_swaths ? clipSwathToDrivable(drivable, a, b, !layout) : std::vector<Seg>{{a, b}};
       for (const auto& piece : clipped) {
         const double len = dist(piece.first, piece.second);
         if (len < min_swath_length) {
@@ -1638,7 +1668,12 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
       route.turn_type != TurnType::kPivot) {
     plan.turns.assign(plan.swaths.size(), SwathTurn{});
     std::unique_ptr<OGRGeometry> region;
-    if (clip_swaths) {
+    if (layout) {
+      const f2c::types::Cells tr = inset(hl_field, route.turn_inset);
+      if (tr.size() > 0 && tr.area() > 1e-9 && tr.get() != nullptr && tr.get()->IsValid()) {
+        region.reset(tr.get()->Buffer(kTurnContainTolM));
+      }
+    } else if (clip_swaths) {
       region.reset(drivable.get()->Buffer(kTurnContainTolM));
     }
     for (size_t i = 1; i < plan.swaths.size(); ++i) {
@@ -1683,6 +1718,34 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   return plan;
 }
 }  // namespace
+
+bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* route) {
+  if (name.empty() || name == "legacy") {
+    return true;
+  }
+  const double hw = op_width / 2.0;
+  if (name == "soft") {
+    route->lap_offsets = {0.0, 0.15, 0.30};
+    route->row_side_inset = 0.45;
+    route->row_end_inset = 0.45;
+    route->turn_inset = 0.45;
+    route->hole_inset = 0.30;
+  } else if (name == "hard") {
+    // 0.45 / 0.63 / 0.81 (owner) plus 0.99: rows can only be clipped by erosion, so the
+    // row region (row ends 1.08 in) also starts 1.08+ laterally; the 4th lap closes that band
+    route->lap_offsets = {0.45, 0.63, 0.81, 0.99};
+    route->row_side_inset = 1.10;
+    route->row_end_inset = 1.08;
+    route->turn_inset = 0.745;
+    route->hole_inset = 0.0;
+  } else {
+    return false;
+  }
+  // coverage target: what the blade of the outermost lap reaches
+  route->target_inset = std::max(0.0, route->lap_offsets.front() - hw);
+  route->hole_margin = std::max(0.0, route->hole_inset + route->lap_offsets.front() - hw);
+  return true;
+}
 
 bool parseRouteOrder(const std::string& name, RouteOrder* order) {
   if (name.empty() || name == "boustrophedon") {

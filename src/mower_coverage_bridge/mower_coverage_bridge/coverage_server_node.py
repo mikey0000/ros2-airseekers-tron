@@ -83,6 +83,9 @@ class CoverageServer(Node):
         p('route_spiral_size', 6)
         p('min_turn_radius_m', -1.0)
         p('turn_type', 'auto')
+        # edge_layout: soft | hard = stock-style laps / row insets (area edge_mode, owner
+        # 2026-10-21, set per area by the mission); '' / legacy = the headland-ring layout
+        p('edge_layout', '')
         self.add_on_set_parameters_callback(self._on_set_parameters)
         # Coverage verification of the last plan (the action result has no
         # field for it): latched JSON {coverage_fraction, gap_count,
@@ -139,6 +142,9 @@ class CoverageServer(Node):
                 return SetParametersResult(
                     successful=False,
                     reason='turn_type must be one of %s' % ', '.join(self._TURN_TYPES))
+            if prm.name == 'edge_layout' and v not in ('', 'legacy', 'soft', 'hard'):
+                return SetParametersResult(
+                    successful=False, reason='edge_layout must be soft, hard, legacy or empty')
             if prm.name == 'route_spiral_size' and not (isinstance(v, int) and 2 <= v <= 50):
                 return SetParametersResult(successful=False,
                                            reason='route_spiral_size must be an int in 2..50')
@@ -205,6 +211,7 @@ class CoverageServer(Node):
         req.min_turn_radius_m = self._float('min_turn_radius_m')
         req.turn_type = self._str('turn_type')
         req.boundary_inset_m = self._float('boundary_inset_m')
+        req.edge_layout = self._str('edge_layout')
 
         done = threading.Event()
         future = self._client.call_async(req)
