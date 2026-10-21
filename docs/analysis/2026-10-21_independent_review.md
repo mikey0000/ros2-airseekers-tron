@@ -72,7 +72,7 @@ See the table in `2026-10-21_stock_firmware_findings.md`. The gaps to stock:
 
 | # | Item | Validation |
 |---|---|---|
-| B1 | Consume `cutter_size`: spacing defaults by blade | Plan spacing matches the blade; coverage unchanged |
+| B1 | Row spacing as a MowgliNext UI setting. The GUI already has `tool_width`, `blade_radius` and `blade_x_offset`/`blade_y_offset` (`useSettingsManager.ts:97`, `MowgliNextPage.tsx:104`). Bind them to the coverage swath spacing and the blade geometry (blade at 0.23 forward, disc radius 0.11 small / 0.135–0.15 big). Default the spacing from the MCU `cutter_size`: small 0.18 (UI range 0.13–0.18), big about 0.23 (UI range 0.16–0.23), as in the stock app. An owner value overrides the default, globally and optionally per area. | Changing the UI value changes the planned spacing; swapping the blade changes the default; plan spacing matches |
 | B2 | Per-spot boundary budget (2 within 1 m), per-mission cap about 6 | 0 STUCK on real_run5 `-d` s1/s2 |
 | B3 | `outside_m` from the mission's area snapshot in all phases, plus atomic map replace | A map PUT mid-mow uses 0 budget |
 | B4 | Resume the field log: auto-append wheel_bag_metrics JSON per run | Each field run produces an entry |
