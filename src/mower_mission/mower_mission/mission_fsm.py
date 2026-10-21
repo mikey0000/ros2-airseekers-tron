@@ -5156,8 +5156,10 @@ class MissionFSM:
         else:
             self._blade_off('dynamic obstacle: %s' % cls)
         d = self.inputs.obstacle_distance
-        self._log('warn', '%s%s ahead: stopped, blade off, waiting up to %.0f s' % (
-            cls, (' at %.1f m' % d) if d is not None else '', self._dyn_wait_s(ctx)))
+        self._log('warn', '%s%s ahead: stopped, blade %s, waiting up to %.0f s' % (
+            cls, (' at %.1f m' % d) if d is not None else '',
+            'kept on (blade_policy continuous)' if self.blade_on else 'off',
+            self._dyn_wait_s(ctx)))
         self._go(self.phase, 'waiting for %s to move (0 s)' % cls)
 
     def _dynamic_tick(self):
