@@ -171,6 +171,17 @@ class DockingServer(Node):
         decl('close_speed', g.close_speed)
         decl('lateral_slow', g.lateral_slow)
         decl('marker_median_n', dp.marker_median_n)
+        # 2026-10-21 night field fixes (findings doc "Field docking 2026-10-21 night")
+        decl('rear_camera_yaw_correction_deg', 0.0)
+        decl('teleop_topic', '/cmd_vel_teleop')
+        decl('teleop_active_timeout_s', 0.6)
+        for n in ('marker_position_only', 'kf_gate_chi2', 'kf_gate_chi2_heading', 'kf_q_heading',
+                  'kf_r_heading', 'kf_reinit_after', 'search_consistency_deg',
+                  'search_consistency_m', 'rtk_check_max_deg', 'rtk_check_max_m',
+                  'pose_check_median_n', 'forward_cap_margin', 'teleop_hold', 'teleop_clear_s',
+                  'teleop_wait_max_s'):
+            decl(n, getattr(dp, n))
+        decl('max_angular_accel', g.max_angular_accel)
         # 2026-10-21 stock-structure port (README "Stock structure port")
         decl('use_marker_gate', dp.use_marker_gate)
         decl('search_min_detections', dp.search_min_detections)
@@ -216,6 +227,9 @@ class DockingServer(Node):
         self._bumper = False
         self._bumper_routing = False
         self._bumper_routing_t = -1e9
+        self._teleop_t = -1e9
+        self._cum_frames = 0
+        self._cum_detected = 0
         self._rear_blocked = False
         self._contact = dl.ContactDebouncer(self.get_parameter('contact_debounce_samples').value)
         self._dock_pose_msg: Optional[dl.Pose2D] = None
@@ -335,6 +349,16 @@ class DockingServer(Node):
                                 getattr(msg, 'right_bumper_triggered', False))
             self._status_t = time.monotonic()
 
+    def _on_teleop(self, msg) -> None:
+        try:
+            lin = abs(float(msg.linear.x))
+            ang = abs(float(msg.angular.z))
+        except Exception:  # noqa: BLE001
+            return
+        if lin > 0.01 or ang > 0.02:          # the GUI joystick sends zeros when released
+            with self._lock:
+                self._teleop_t = time.monotonic()
+
     def _on_bumper_routing(self, msg) -> None:
         with self._lock:
             self._bumper_routing = int(msg.data) != 0
@@ -423,7 +447,10 @@ class DockingServer(Node):
             return
         mid, rvec, tvec, _ = res[0]
         ext = list(self.get_parameter('rear_camera_T_base').value)
-        obs = dl.marker_in_base(rvec, tvec, ext[0:3], ext[3:6], stamp=now, marker_id=mid)
+        obs = dl.marker_in_base(
+            rvec, tvec, ext[0:3], ext[3:6], stamp=now, marker_id=mid,
+            yaw_correction=math.radians(float(
+                self.get_parameter('rear_camera_yaw_correction_deg').value)))
         with self._lock:
             self._marker = obs
         ps = PoseStamped()
@@ -464,6 +491,8 @@ class DockingServer(Node):
             st = self._dstat
             st['frames'] += 1
             st['detected'] += 1 if detected else 0
+            self._cum_frames += 1                   # SEARCH-window log (never reset)
+            self._cum_detected += 1 if detected else 0
             st['brightness'] = bright
             stepper, active, lost = self._exposure, self._exp_active, self._exp_lost
             if stepper is not None:
@@ -507,6 +536,7 @@ class DockingServer(Node):
             d['kf'] = [round(kf.x.remaining, 3), round(kf.x.lateral, 3),
                        round(math.degrees(kf.x.heading), 1)]
             d['kf_clamped'] = kf.clamped
+            d['kf_rejected'] = [kf.rejected_pos, kf.rejected_heading, kf.reinits]
         if stepper is not None:
             d['exposure'] = stepper.state()
         self._diag_pub.publish(String(data=json.dumps(d)))
@@ -566,6 +596,7 @@ class DockingServer(Node):
                 bumper=(self._bumper and now - self._status_t <= 1.0) or
                 (self._bumper_routing and now - self._bumper_routing_t <= 1.0),
                 rear_blocked=self._rear_blocked,
+                teleop=now - self._teleop_t <= p('teleop_active_timeout_s').value,
                 nav_status=self._nav_status, charging_result=self._charging_result,
                 rtk_fixed=self._rtk_fixed)
 
@@ -602,6 +633,10 @@ class DockingServer(Node):
         if p('bumper_routing_topic').value:
             pump.subscribe(UInt8, p('bumper_routing_topic').value, self._on_bumper_routing, 10,
                            parser=flat_parser(UInt8))
+        if p('teleop_topic').value:
+            # operator joystick: twist_mux gives it priority over /cmd_vel_docking, so the
+            # dock FSM pauses while it is active (dock_logic teleop hold)
+            pump.subscribe(Twist, p('teleop_topic').value, self._on_teleop, 10)
         pump.start()
         self._goal_pump = pump
         while time.monotonic() - t0 < timeout:
@@ -724,8 +759,17 @@ class DockingServer(Node):
             turn_slow_err=float(p('turn_slow_err')), min_turn_speed=float(p('min_turn_speed')),
             track_width=float(p('track_width')), wheel_floor=float(p('wheel_floor')),
             close_speed=min(float(p('close_speed')), 0.15),
-            lateral_slow=float(p('lateral_slow')))
+            lateral_slow=float(p('lateral_slow')),
+            max_angular_accel=float(p('max_angular_accel')))
+        extra = {}
+        for n in ('marker_position_only', 'kf_gate_chi2', 'kf_gate_chi2_heading', 'kf_q_heading',
+                  'kf_r_heading', 'kf_reinit_after', 'search_consistency_deg',
+                  'search_consistency_m', 'rtk_check_max_deg', 'rtk_check_max_m',
+                  'pose_check_median_n', 'forward_cap_margin', 'teleop_hold', 'teleop_clear_s',
+                  'teleop_wait_max_s'):
+            extra[n] = type(getattr(dl.DockParams, n))(p(n))
         return dl.DockParams(
+            **extra,
             approach_distance=float(p('approach_distance')),
             skip_nav_to_approach=bool(p('skip_nav_to_approach')),
             nav_timeout_s=float(p('nav_timeout_s')),
@@ -909,19 +953,25 @@ class DockingServer(Node):
                     if tick - diag_t >= 1.0:
                         diag_t = tick
                         d = self._publish_diag(out, machine)
-                        if out.state == dl.DockState.SEARCHING:
-                            search = search or {'frames': 0, 'detected': 0, 't0': tick}
-                            search['frames'] += d['frames']
-                            search['detected'] += d['detected']
+                        if search is not None:
                             search['brightness'] = d['brightness']
                             search['exposure'] = (d.get('exposure') or {}).get('setting')
+                    # SEARCH window counts from cumulative frame counters (2026-10-21: the
+                    # old 1 Hz diag sums missed the last partial second, so a marker accepted
+                    # within it logged "0 with a marker")
+                    if search is None and out.state == dl.DockState.SEARCHING:
+                        with self._lock:
+                            search = {'t0': tick, 'f0': self._cum_frames,
+                                      'd0': self._cum_detected}
                     if search is not None and out.state != dl.DockState.SEARCHING:
+                        with self._lock:
+                            frames = self._cum_frames - search['f0']
+                            det = self._cum_detected - search['d0']
                         self.get_logger().info(
                             'SEARCH window %.1f s -> %s: %d frames, %d with a marker (%.0f %%), '
                             'brightness %s, exposure %s' % (
-                                tick - search['t0'], out.state, search['frames'],
-                                search['detected'],
-                                100.0 * search['detected'] / max(1, search['frames']),
+                                tick - search['t0'], out.state, frames, det,
+                                100.0 * det / max(1, frames),
                                 search.get('brightness'), search.get('exposure')))
                         search = None
                 self._publish_marker_in_view(out.marker_in_view)

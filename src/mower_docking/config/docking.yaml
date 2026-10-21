@@ -43,13 +43,20 @@ mower_docking:
     # Pose of the rear camera OPTICAL frame in base_link: x y z roll pitch yaw.
     # = URDF rear_camera_joint (config/urdf/mower.urdf.xacro). TODO(calib).
     rear_camera_T_base: [-0.201, 0.0, 0.25, -1.5707963, 0.0, 1.5707963]
+    # 2026-10-21 night: against RTK the 71 % consistent detections read the robot heading
+    # -7.5 deg off; a fit of marker bearing + normal over 232 detections puts it in the
+    # camera yaw (-5.5..-7.5 deg; dock yaw re-checked on the evening undock chord, 100.7 vs
+    # ~101-104 deg). Rotates the extrinsic about the vertical through the camera.
+    rear_camera_yaw_correction_deg: -6.5
     max_detection_rate_hz: 10.0
     search_timeout_s: 15.0         # no usable marker -> dead-reckon
     # Old search gate (0.5 m / 25 deg). Stock's CheckInitJump has no call site: OFF since
     # 2026-10-21 (use_marker_gate false: any detection starts DOCKING; the Kalman filter's
     # innovation clamp handles outliers). The values still bound ALIGNING's early exit.
     use_marker_gate: false
-    search_min_detections: 1
+    search_min_detections: 3       # consistent detections before DOCKING (2026-10-21: 1 let a
+    #                                 -167 deg first solve start DOCKING; 3 same-side IPPE flips
+    #                                 in a row ~0.3 %)
     max_lateral_error: 0.5         # [doc] reject estimate worse than 0.5 m
     max_yaw_error_deg: 25.0        # [doc] ... or 25 deg
     marker_timeout_s: 0.5
@@ -77,8 +84,9 @@ mower_docking:
     # the heading with the reverse controller's desired approach heading
     # clamp(k_lateral * lateral, max_approach_angle), not with the raw dock axis.
     # 2026-10-07 retune (closed-loop sim: 0.5 m out, 8 cm / 8 deg -> <1 mm / <1 deg at contact)
-    k_lateral: 7.0
-    max_approach_angle: 0.5
+    k_lateral: 2.5                 # 2026-10-21 night: 7 saturated h_d from 0.07 m -> w sign flips 1-2 Hz
+    max_approach_angle: 0.26       # rad, 15 deg (was 0.5 = 28.6 deg)
+    max_angular_accel: 0.6         # rad/s^2 rate limit on the reverse w
     kp_heading: 1.5
     kd_heading: 0.0
     max_angular: 0.3               # [dc] Undocking angular_max 0.3
@@ -161,15 +169,32 @@ mower_docking:
     # over final_max_lateral or heading over final_max_heading_deg -> drive forward
     # realign_forward_distance and restart the final approach (was 0.15 m / 20 deg / 0.8 m).
     pose_check_distance: 0.65
-    final_max_lateral: 0.05
-    final_max_heading_deg: 8.0
+    final_max_lateral: 0.08        # pose check on the median of the last pose_check_median_n detections
+    final_max_heading_deg: 12.0    # (camera yaw corrected; 8 deg on single detections failed every check)
+    pose_check_median_n: 5
     max_realigns: 2                # per goal; does not consume max_retries
     realign_forward_distance: 0.65
     # Marker Kalman filter (stock LineTrackingDocking): state = robot in the docked frame,
     # predicted from /odom, corrected per detection; innovations clamped (IPPE flips).
     marker_filter: true
-    kf_q: 0.01
-    kf_r: 0.1
+    kf_q: 0.01                     # m^2 per SECOND in the gated mode (was per 20 Hz tick)
+    kf_r: 0.05                     # m^2 on the median-of-3 position (field inlier lateral sd 0.08 m;
+    #                                 lower follows the noise: more w sign changes in the replay)
+    kf_gate_chi2: 9.21             # Mahalanobis gate, position 2-DOF 99 % (0 = stock clamping)
+    kf_gate_chi2_heading: 3.84     # heading 1-DOF 95 %: a 22 deg flip is rejected
+    kf_q_heading: 0.0005           # rad^2/s
+    kf_r_heading: 0.006            # rad^2 (4.4 deg; field inliers 3.9 deg)
+    kf_reinit_after: 8             # 3/4 of the last 8 rejected but consistent -> restart on them
+    marker_position_only: true     # position from the marker centre with the filter heading
+    search_consistency_deg: 10.0
+    search_consistency_m: 0.15
+    rtk_check_max_deg: 30.0        # detections vs RTK (dock measured, RTK fixed); 0 = off
+    rtk_check_max_m: 0.3
+    forward_cap_margin: 0.25       # realign/retry/LATERAL_ALIGN forward never beyond approach + this (RTK)
+    teleop_topic: /cmd_vel_teleop  # joystick active -> pause; resume from the current pose
+    teleop_hold: true
+    teleop_clear_s: 1.5
+    teleop_wait_max_s: 120.0
     kf_max_innov_m: 0.5
     kf_max_innov_deg: 20.0
     # Marker lost in DOCKING (outside final_zone): keep reversing on the prediction this long,

@@ -222,15 +222,19 @@ def test_lateral_prealign_gets_back_on_axis_with_both_wheels():
     m = dl.DockStateMachine(params(), dl.Pose2D(), dock_pose_measured=True)
     w = World(m, 0.8, 0.30, 0.0)
     w.visible = False
-    w.run(60, until=lambda o: o.state == S.SEARCHING)
+    xs = []
+    w.run(60, until=lambda o: (xs.append(w.x), o.state == S.SEARCHING)[1])
     states = [o.state for o in w.outs]
     assert S.LATERAL_ALIGN in states and w.outs[-1].state == S.SEARCHING
-    assert abs(w.y) < 0.06 and abs(w.yaw) < math.radians(8)
-    assert abs(w.x - 0.8) < 0.1
+    # 2026-10-21 night: the forward arc may not leave the dock corridor (approach 0.8 +
+    # 0.25 m). From 0.30 m off it gets part of the way, then the reverse controller does
+    # the rest; before the cap it drove out to 1.40 m and tripped the Dock path polygon.
+    assert max(xs) <= 0.8 + 0.25 + 0.02
+    assert abs(w.y) < 0.25 and abs(w.yaw) < math.radians(30)
     moving = [o for o in w.outs if o.state == S.LATERAL_ALIGN]
     assert both_wheels_ok(moving)
     assert all(abs(o.angular) <= 0.3 + 1e-9 for o in moving)
-    assert any(o.linear > 0 for o in moving) and any(o.linear < 0 for o in moving)
+    assert any(o.linear > 0 for o in moving)
     for o in moving:      # forward leg: both wheels at or above the floor
         if o.linear > 0:
             assert min(o.linear - abs(o.angular) * HALF, o.linear + abs(o.angular) * HALF) \
