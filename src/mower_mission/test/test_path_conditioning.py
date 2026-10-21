@@ -210,6 +210,8 @@ def test_mission_ends_the_leg_on_a_pivot_vertex_and_pivots_with_the_blade_on():
 def tight_ring_h(**params):
     """The ring inside the real Area 1 polygon: the edge policy pivots the V."""
     params.setdefault('path_conditioning', True)
+    # the pivot machinery at the V (the round-2 body limit K-turns it: test_kturn_*)
+    params.setdefault('path_conditioning_body_limit_soft_m', -1.0)
     h = Harness(**params)
     h.areas = [{'name': 'Area 1', 'outer': POLYS['Area 1'], 'obstacles': [],
                 'is_navigation_area': False}]
@@ -600,3 +602,222 @@ def test_routes_take_no_fillet_under_the_route_minimum():
         logs = [e.text for e in fx if isinstance(e, f.Log) and 'conditioned' in e.text]
         rs = [float(x) for x in re.findall(r' r ([0-9.]+)', logs[0])]
         assert all(r >= 0.8 - 1e-9 for r in rs), logs[0]
+
+
+# ---- edge layout round 2: body limit, K-turns, hairpins, hand-off pivots (2026-10-21) ------
+
+def _lap(poly, step=0.05, mid=False):
+    """A closed lap through ``poly``'s vertices (first vertex repeated), sampled at ``step``;
+    ``mid``: starting and ending mid first edge (as the planner starts a lap)."""
+    pts = []
+    P = list(poly) + [poly[0]]
+    if mid:
+        m = ((P[0][0] + P[1][0]) / 2.0, (P[0][1] + P[1][1]) / 2.0)
+        P = [m] + P[1:] + [m]
+    for a, b in zip(P, P[1:]):
+        n = max(1, int(math.ceil(math.dist(a, b) / step)))
+        pts += [(a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n) for i in range(n)]
+    return pts + [tuple(P[-1])]
+
+
+def _replay_body(res, region, p, span=None):
+    """Replay a conditioned path the way the mission drives it and return (worst body
+    overhang, worst nose overhang during the K-turn pivots): every pose at its facing yaw,
+    every pivot swept (K-turn pivots by their planned angle, the others the short way)."""
+    br = pc.BodyRegion(region, res.poses[0], 1e3, p)
+    kt = {}
+    for i_p1, i_v, d1, d2 in res.kturns:
+        kt[i_p1], kt[i_v] = d1, d2
+    lo, hi = span if span else (0, len(res.poses) - 1)
+    worst = br.drive(res.poses[lo:hi + 1])
+    nose = 0.0
+    for i in res.pivots:
+        if i + 1 >= len(res.poses) or not lo <= i <= hi:
+            continue
+        q, nxt = res.poses[i], res.poses[i + 1]
+        yaw = q[2]
+        if i in kt:
+            d = kt[i]
+            for j in range(37):
+                y = yaw + d * j / 36.0
+                nose = max(nose, br.out(q[0] + p.body_front_m * math.cos(y),
+                                        q[1] + p.body_front_m * math.sin(y)))
+        else:
+            d = geo.wrap_angle(nxt[2] - yaw)
+        worst = max(worst, br.sweep(q[0], q[1], yaw, d))
+    return worst, nose
+
+
+@pytest.mark.parametrize('ccw', [True, False])
+def test_kturn_on_a_lap_on_the_line_keeps_the_swept_body_within_the_soft_limit(ccw):
+    # lap 0 (soft) ON the line of a pentagon with sharp convex corners: a plain pivot there
+    # sweeps the front corners ~0.64 past the next edge, a fillet ~0.41
+    poly = [(0, 0), (6, 0), (6, 4), (3, 6.5), (0, 4)]
+    lap = _lap(poly, mid=True)
+    if not ccw:
+        lap = lap[::-1]
+    p = pc.Params(body_limit_m=0.26)
+    res = pc.condition(lap, [poly], p)
+    assert res.valid, res.errors
+    kts = [c for c in res.corners if c.choice == 'kturn']
+    assert len(kts) >= 2 and len(res.kturns) == len(kts)
+    for c in kts:
+        assert c.body_m <= 0.26 + 1e-3 and c.back_m >= 0.3 - 1e-9
+    # gentle corners (< kturn_min_rad) stay arcs: no K-turn there
+    assert all(abs(c.turn) >= p.kturn_min_rad for c in kts)
+    # each K-turn replayed (P1 about-turn, reverse, V pivot) is within the limit, and every
+    # K-turn pivot turns the nose through the area, never across the line
+    for i_p1, i_v, _d1, _d2 in res.kturns:
+        worst, nose = _replay_body(res, [poly], p, (i_p1, i_v))
+        assert worst <= 0.26 + 0.01 and nose <= 0.26 + 0.01
+    # the whole lap (gentle corners on wide fillets) stays under the 0.35 body trip limit
+    assert _replay_body(res, [poly], p)[0] <= 0.35
+    sgn = 1.0 if ccw else -1.0
+    for i_p1, i_v, d1, d2 in res.kturns:
+        assert d1 * sgn > 0.0 and abs(abs(d1) - math.pi) < 1e-6   # about-turn into the area
+        assert d2 * sgn < 0.0                                     # nose sweeps inside to u1
+        assert res.types[i_p1] == pc.PIVOT and res.types[i_v] == pc.PIVOT
+        assert all(t == pc.REVERSE for t in res.types[i_p1 + 1:i_v])
+    # the opposite about-turn at P1 would swing the nose across the line
+    i_p1 = res.kturns[0][0]
+    q = res.poses[i_p1]
+    br = pc.BodyRegion([poly], q, 50.0, p)
+    wrong = max(br.out(q[0] + 0.6 * math.cos(q[2] - sgn * math.pi * j / 36),
+                       q[1] + 0.6 * math.sin(q[2] - sgn * math.pi * j / 36)) for j in range(37))
+    assert wrong > 0.3
+
+
+def test_kturn_hard_mode_keeps_the_whole_body_inside():
+    # hard: lap at 0.45 in a 2 m square, fillets forced off (r 1.0 does not fit): the
+    # vertex pivot sweeps the front corners ~0.2 m out, the K-turn keeps everything inside
+    S, d = 2.0, 0.45
+    poly = [(0, 0), (S, 0), (S, S), (0, S)]
+    lap = _lap([(d, d), (S - d, d), (S - d, S - d), (d, S - d)], mid=True)
+    p = pc.Params(body_limit_m=0.0, r_min=1.0, r_max=1.0, convex_r_max=1.0)
+    res = pc.condition(lap, [poly], p)
+    assert res.valid, res.errors
+    assert sum(1 for c in res.corners if c.choice == 'kturn') == 4
+    worst, nose = _replay_body(res, [poly], p)
+    assert worst <= 0.01 and nose <= 0.0
+    # without the body limit: vertex pivots, the body out ~0.2
+    plain = pc.condition(lap, [poly], pc.Params(r_min=1.0, r_max=1.0))
+    assert [c.choice for c in plain.corners].count('pivot') >= 3
+    assert _replay_body(plain, [poly], p)[0] > 0.15
+
+
+def test_kturn_gentle_convex_corner_takes_a_wide_fillet_not_a_kturn():
+    poly = [(0, 0), (8, 0), (8, 3), (4, 5.5), (0, 3)]     # 58 deg at (8, 3), 64 at the top
+    res = pc.condition(_lap(poly[1:] + poly[:1]), [poly], pc.Params(body_limit_m=0.26))
+    top = corner_at(res, (8, 3))
+    assert top.choice == 'fillet' and top.r > 1.0 + 1e-9    # wider than r_max: less overhang
+
+
+def test_split_kturns_gives_forward_reverse_forward_legs():
+    poly = [(0, 0), (6, 0), (6, 4), (3, 6.5), (0, 4)]
+    res = pc.condition(_lap(poly[1:] + poly[:1]), [poly], pc.Params(body_limit_m=0.26))
+    legs = pc.split_kturns(res)
+    assert len(legs) == 2 * len(res.kturns) + 1
+    for k, lg in enumerate(legs):
+        assert lg['reverse'] == (k % 2 == 1)
+        assert geo.is_reverse_subpath(lg['poses']) == lg['reverse']
+        if k:
+            assert geo.dist(lg['poses'][0], legs[k - 1]['poses'][-1]) < 1e-9
+            assert lg['start_turn'] is not None
+        assert len(lg['types']) == len(lg['poses'])
+    assert legs[0]['start_turn'] is None
+    # the reverse legs run back along the incoming run onto the vertex
+    for lg in legs[1::2]:
+        assert 0.3 - 1e-6 <= geo.path_length(lg['poses']) <= 1.5 + 1e-6
+
+
+@pytest.mark.parametrize('spacing', [0.15, 0.18])
+def test_hairpin_is_pivot_90_straight_one_row_spacing_pivot_90(spacing):
+    # row -> row hairpin (rows 0.45 in, connector of one row spacing): never merged into one
+    # ~180 deg pivot, which would leave the tracker a sideways jump onto the next row
+    rows = [(x, 0.0) for x in [i * 0.05 for i in range(61)]] + \
+        [(x, spacing) for x in [3.0 - i * 0.05 for i in range(61)]]
+    region = [[(-2, -2), (5, -2), (5, 2), (-2, 2)]]
+    res = pc.condition(rows, region, pc.Params(body_limit_m=0.26))
+    piv = [c for c in res.corners if c.choice == 'pivot']
+    assert [round(math.degrees(c.turn)) for c in piv] == [90, 90]
+    assert math.dist((piv[0].x, piv[0].y), (3.0, 0.0)) < 0.01
+    assert math.dist((piv[1].x, piv[1].y), (3.0, spacing)) < 0.01
+
+
+def test_join_heading_honours_a_pivot_vertex_inside_the_look_ahead():
+    # hand-off (2026-10-21 B run, (-0.91, 4.84)): the leg's first segment is 0.1 m long, then
+    # turns -112 deg. The 0.4 m look-ahead aimed past the vertex (one -138 deg pivot); with
+    # the vertex honoured the robot turns onto the first segment (-21) and pivots at the vertex.
+    h0 = math.radians(-21.0)
+    v = (0.1 * math.cos(h0), 0.1 * math.sin(h0))
+    h1 = h0 + math.radians(-112.0)
+    leg = [(0.0, 0.0)] + [(v[0] * k / 2, v[1] * k / 2) for k in (1, 2)] + \
+        [(v[0] + 0.05 * k * math.cos(h1), v[1] + 0.05 * k * math.sin(h1)) for k in range(1, 9)]
+    pose = (0.0, 0.0, 0.0)
+    cut = f.MissionFSM._join_heading(leg, pose)
+    assert math.degrees(geo.wrap_angle(cut)) < -60            # the old rule: past the vertex
+    hon = f.MissionFSM._join_heading(leg, pose, sharp=0.35)
+    assert abs(math.degrees(geo.wrap_angle(hon - h0))) < 1.0
+    # at the vertex: the segment after it
+    at = f.MissionFSM._join_heading(leg[2:], (v[0], v[1], h0), sharp=0.35)
+    assert abs(math.degrees(geo.wrap_angle(at - h1))) < 2.0
+
+
+def kturn_h():
+    """Lap 0 on the line of an 8 x 4 m area (soft): K-turns at its corners."""
+    h = Harness(path_conditioning=True)
+    h.areas = [{'name': 'a', 'outer': [(0, 0), (8, 0), (8, 4), (0, 4)], 'obstacles': [],
+                'is_navigation_area': False}]
+    lap = _lap([(2, 0), (8, 0), (8, 4), (0, 4), (0, 0), (1.5, 0)])
+    sp = [(q[0], q[1], math.atan2(lap[min(i + 1, len(lap) - 1)][1] - q[1],
+                                  lap[min(i + 1, len(lap) - 1)][0] - q[0]))
+          for i, q in enumerate(lap)]
+    start_until_planning(h)
+    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp, line(1.0, 2.0, 7.0, 2.0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    return h
+
+
+def test_mission_drives_a_kturn_about_turn_reverse_blade_off_then_pivot_inward():
+    h = kturn_h()
+    m = h.fsm.mission
+    kts = [k for k, c in m.cond.items() if c.get('kturn')]
+    assert kts and kts[0] == 1                       # forward to P1, reverse leg, forward ...
+    assert geo.is_reverse_subpath(m.subpaths[1]) and not geo.is_reverse_subpath(m.subpaths[2])
+    d1, d2 = m.cond[1]['start_turn'], m.cond[2]['start_turn']
+    assert d1 > 0 and d2 < 0                         # CCW lap: about-turn left, V pivot right
+    # forward leg 0 up to P1
+    p1 = m.subpaths[1][0]
+    h.finish(f.ACT_FOLLOW, arrive=False)
+    for _ in range(5):                               # (corner pivots before P1, if any)
+        if m.sub_i == 1:
+            break
+        h.fsm.inputs.pose = (p1[0], p1[1], 0.0)
+        if h.fsm._action is not None and h.fsm._action.name == f.ACT_SPIN:
+            h.finish(f.ACT_SPIN)
+        elif h.fsm._action is not None:
+            h.finish(f.ACT_FOLLOW, arrive=False)
+        h.tick()
+    assert m.sub_i == 1
+    h.tick()
+    # the about-turn: blade off, a ~180 deg Spin the planned way round (into the area)
+    assert not h.blade
+    sp = h.goal(f.ACT_SPIN)
+    assert sp['angle'] > math.radians(150)
+    h.fsm.inputs.pose = (p1[0], p1[1], geo.wrap_angle(sp['angle']))
+    h.finish(f.ACT_SPIN)
+    g = h.goal(f.ACT_FOLLOW)
+    assert g['controller_id'] == h.fsm.coverage_controller_id(True)
+    assert not h.blade
+    v = m.subpaths[1][-1]
+    h.fsm.inputs.pose = (v[0], v[1], math.pi)
+    h.finish(f.ACT_FOLLOW, arrive=False)
+    for _ in range(40):                              # the next forward leg spins the blade up
+        h.tick(dt=0.5)
+        if h.fsm._action is not None and h.fsm._action.name == f.ACT_SPIN:
+            break
+    assert m.sub_i == 2 and h.blade
+    sp = h.goal(f.ACT_SPIN)
+    assert -math.radians(100) < sp['angle'] < -math.radians(80)   # pivot at V, nose inward

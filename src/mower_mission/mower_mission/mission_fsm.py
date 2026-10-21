@@ -832,6 +832,15 @@ class Params:
     # vertex would swing the nose ~0.6 m past it; fillets keep it within ~0.1-0.25 m
     path_conditioning_edge_pivot_rad: float = 0.0
     path_conditioning_edge_clearance_m: float = 0.20
+    # Edge layout round 2 (owner 2026-10-21): body planning limit by area edge_mode (m of the
+    # body outline outside the region at a corner's fillet / pivot sweep; < 0 = off), wider
+    # convex fillets, then K-turns (path_conditioning.py header; config/mission.yaml).
+    path_conditioning_body_limit_soft_m: float = 0.26
+    path_conditioning_body_limit_hard_m: float = 0.0
+    path_conditioning_convex_r_max_m: float = 2.0
+    path_conditioning_kturn: bool = True
+    path_conditioning_kturn_min_rad: float = 1.05
+    path_conditioning_kturn_back_max_m: float = 1.5
     # transit / dock routes: smallest fillet radius (tighter corners pivot at the vertex)
     path_conditioning_route_r_min_m: float = 0.8
     # The costmap-planner fallback (no route: start off the route graph; a route abort away
@@ -3108,6 +3117,13 @@ class MissionFSM:
             self._boundary_pause()       # never spin the blade up outside the boundary
             return
         self._go('MOWING', 'area %d sub-path %d/%d' % (m.area_idx, m.sub_i + 1, len(m.subpaths)))
+        if self._cov_kturn_leg():
+            # K-turn reverse leg (and its about-turn at P1): never reverse with the blade on;
+            # the forward leg after it spins the blade up again at V
+            if self.blade_on:
+                self._blade_off('K-turn reverse leg')
+            self._follow()
+            return
         if self.blade_on and (self.inputs.is_cutting or not self.p.require_blade_confirmation):
             self._follow()
             return
@@ -3214,8 +3230,17 @@ class MissionFSM:
         return polys
 
     def _conditioning_job(self, subpaths):
+        p, prm = self.p, self._cond_params()
+        mode = str((self.mission.settings or {}).get('edge_mode', 'soft')).strip().lower()
+        lim = float(p.path_conditioning_body_limit_hard_m if mode == 'hard'
+                    else p.path_conditioning_body_limit_soft_m)
+        prm.body_limit_m = lim if lim >= 0.0 else None
+        prm.convex_r_max = float(p.path_conditioning_convex_r_max_m)
+        prm.kturn = bool(p.path_conditioning_kturn)
+        prm.kturn_min_rad = float(p.path_conditioning_kturn_min_rad)
+        prm.kturn_back_max_m = float(p.path_conditioning_kturn_back_max_m)
         return {'subpaths': [list(sp) for sp in subpaths], 'region': self._region(),
-                'prm': self._cond_params(), 'leg_max_m': float(self.p.turn_leg_max_m),
+                'prm': prm, 'leg_max_m': float(self.p.turn_leg_max_m),
                 'area': self.mission.area_idx}
 
     def _condition_subpaths(self, subpaths, pre=None):
@@ -3260,6 +3285,12 @@ class MissionFSM:
         could not be conditioned): driven as planned, never pivoted onto."""
         return geo.is_reverse_subpath(self.mission.subpaths[k])
 
+    def _cov_kturn_leg(self, k=None):
+        """Sub-path ``k`` is the reverse leg of a conditioner K-turn (P1 -> V)."""
+        m = self.mission
+        c = m.cond.get(m.sub_i if k is None else k)
+        return bool(c and c.get('kturn'))
+
     def _cov_pivots(self, k=None):
         m = self.mission
         k = m.sub_i if k is None else k
@@ -3275,7 +3306,10 @@ class MissionFSM:
         in place (Nav2 Spin, both wheels) first, as at any pivot vertex; a smaller bend is
         left to the tracker. One mechanism for both coverage controllers (it replaces the
         separate leg-start rules path_conditioning_start_pivot_rad and MPPI's
-        coverage_leg_pivot_rad). Not on reverse legs. True = started."""
+        coverage_leg_pivot_rad). Not on reverse legs, except a K-turn's (edge layout round 2):
+        before it the robot turns to face its poses (the about-turn at P1). A leg whose
+        conditioned start carries a planned pivot (start_turn: K-turn P1 / V) turns the
+        planned way round (the nose through the area), even the long way. True = started."""
         m, p, pose = self.mission, self.p, self.inputs.pose
         key = (m.area_idx, m.sub_i, m.start_local)
         if m.pivot_done == key:               # just pivoted for this leg: follow it
@@ -3283,23 +3317,33 @@ class MissionFSM:
             return False
         m.pivot_done = None
         lim = float(p.path_conditioning_pivot_min_rad)
+        kturn = self._cov_kturn_leg()
         if not p.path_conditioning or lim <= 0.0 or pose is None or len(pose) < 3 or \
-                self._cov_turn_leg(m.sub_i):
+                (self._cov_turn_leg(m.sub_i) and not kturn):
             return False
         sp, pivots = m.subpaths[m.sub_i], self._cov_pivots()
         corner = m.start_local in pivots
         end = min([c for c in pivots if c > m.start_local] + [self._seg_last()])
-        heading = self._join_heading(sp[m.start_local:end + 1], pose)
+        if kturn:                             # face the reverse leg's poses
+            heading = float(sp[min(m.start_local, len(sp) - 1)][2]) if len(sp[0]) >= 3 else None
+        else:
+            heading = self._join_heading(sp[m.start_local:end + 1], pose, sharp=lim)
         if heading is None:
             return False
         delta = geo.wrap_angle(heading - float(pose[2]))
         if abs(delta) < lim:
             return False
+        planned = (m.cond.get(m.sub_i) or {}).get('start_turn') if m.start_local == 0 else None
+        if planned is not None and delta * planned < 0.0 and \
+                (abs(delta) > 0.5 * math.pi or abs(planned) > math.pi):
+            delta += math.copysign(2.0 * math.pi, planned)    # the planned way round
         q = sp[m.start_local]
         self._log('info', 'area %d sub-path %d: %s at (%.2f, %.2f): pivot %.0f deg in place, '
-                          'blade on, then follow' % (m.area_idx, m.sub_i,
-                                                     'pivot vertex' if corner else 'leg start',
-                                                     q[0], q[1], math.degrees(delta)))
+                          '%s, then follow' % (m.area_idx, m.sub_i,
+                                               'K-turn about-turn' if kturn else
+                                               'pivot vertex' if corner else 'leg start',
+                                               q[0], q[1], math.degrees(delta),
+                                               'blade on' if self.blade_on else 'blade off'))
         m.step = 'corner_pivot'
         m.pivot_done = key
         m.pivot_target = (heading, lim)
@@ -3311,14 +3355,37 @@ class MissionFSM:
         return True
 
     @staticmethod
-    def _join_heading(leg, pose, look=0.4):
+    def _join_heading(leg, pose, look=0.4, sharp=None):
         """Heading from the robot to the point ``look`` m past its projection onto ``leg``
-        (where the tracker joins it; on the leg's start: the leg's own heading)."""
+        (where the tracker joins it; on the leg's start: the leg's own heading). ``sharp``:
+        a vertex inside the look-ahead where the leg turns by that much or more is not cut:
+        the target is that vertex (turn to the first segment, drive it, turn at the vertex;
+        2026-10-21 hand-off: one -138 deg pivot aimed past a vertex instead of -21 then
+        -112); the robot at it already: the segment after it."""
         if len(leg) < 2:
             return None
         cum = geo.cumulative_lengths(leg)
         s = geo.path_projection(leg, pose)[0]
-        tx, ty = geo._point_at(leg, cum, min(cum[-1], s + look))
+        s_end = min(cum[-1], s + look)
+        if sharp is not None:
+            w = 0.06                     # chords either side (resampling zigs do not count)
+            for j in range(1, len(leg) - 1):
+                if cum[j] <= s + 1e-3 or cum[j] < w or cum[-1] - cum[j] < w:
+                    continue
+                if cum[j] >= s_end - 1e-9:
+                    break
+                a = geo._point_at(leg, cum, cum[j] - w)
+                b = geo._point_at(leg, cum, cum[j] + w)
+                v = leg[j]
+                if geo.dist(a, v) < 0.5 * w or geo.dist(v, b) < 0.5 * w:
+                    continue
+                h0 = math.atan2(v[1] - a[1], v[0] - a[0])
+                h1 = math.atan2(b[1] - v[1], b[0] - v[0])
+                if abs(geo.wrap_angle(h1 - h0)) >= sharp:
+                    if math.hypot(v[0] - pose[0], v[1] - pose[1]) < 0.1:
+                        return h1
+                    return math.atan2(v[1] - pose[1], v[0] - pose[0])
+        tx, ty = geo._point_at(leg, cum, s_end)
         if math.hypot(tx - pose[0], ty - pose[1]) < 0.1:
             return MissionFSM._leg_heading(leg)
         return math.atan2(ty - pose[1], tx - pose[0])
@@ -6850,7 +6917,7 @@ def condition_plan(job):
                              'connector corners, %d kept as planned%s' % (
                                  area, len(joins) - len(kept), len(kept),
                                  ''.join(' [%s]' % j.why for j in kept))))
-    npiv = nfil = 0
+    npiv = nfil = nkt = 0
     why, why_deg = {}, {}
     for k, sp in enumerate(subpaths):
         if geo.is_reverse_subpath(sp):
@@ -6858,24 +6925,37 @@ def condition_plan(job):
             continue
         r = pcond.condition(sp, region, prm)
         if not r.valid:
-            cond_errors[k] = r.errors[0]
+            cond_errors[len(out)] = r.errors[0]
             logs.append(('error', 'area %d sub-path %d: path conditioning failed (%s): it '
-                                  'will not be driven' % (area, k, r.errors[0])))
+                                  'will not be driven' % (area, len(out), r.errors[0])))
             out.append(sp)
             continue
-        cond[k] = {'types': r.types, 'pivots': r.pivots}
-        npiv += len(r.pivots)
+        npiv += len(r.pivots) - 2 * len(r.kturns)
         nfil += sum(1 for c in r.corners if c.choice == 'fillet')
         for c in r.corners:
             if c.choice == 'pivot':
                 why[c.why] = why.get(c.why, 0) + 1
                 why_deg[c.why] = why_deg.get(c.why, 0.0) + abs(math.degrees(c.turn))
-        out.append(r.poses)
-    logs.append(('info', 'area %d: path conditioning: %d fillets, %d pivots (%s), %d '
-                         'sub-path(s) failed validation' % (
+            elif c.choice == 'kturn':
+                nkt += 1
+                logs.append(('info', 'area %d sub-path %d: K-turn at (%.2f, %.2f) %+.0f deg: %s'
+                             % (area, len(out), c.x, c.y, math.degrees(c.turn), c.why)))
+        # K-turns (edge layout round 2): forward to P1 / reverse onto V / forward legs, each
+        # its own sub-path; the planned pivot at a leg's start (P1 about-turn, V pivot) rides
+        # along as start_turn (_cov_pivot keeps its direction: the nose through the area)
+        for lg in pcond.split_kturns(r):
+            c = {'types': lg['types'], 'pivots': lg['pivots']}
+            if lg['start_turn'] is not None:
+                c['start_turn'] = float(lg['start_turn'])
+            if lg['reverse']:
+                c['kturn'] = True
+            cond[len(out)] = c
+            out.append(lg['poses'])
+    logs.append(('info', 'area %d: path conditioning: %d fillets, %d pivots (%s), %d K-turns, '
+                         '%d sub-path(s) failed validation' % (
                              area, nfil, npiv, ', '.join(
                                  '%s %d / %.0f deg' % (k, n, why_deg[k])
-                                 for k, n in sorted(why.items())) or 'none',
+                                 for k, n in sorted(why.items())) or 'none', nkt,
                              len(cond_errors))))
     return {'n_in': n_in, 'subpaths': out, 'cond': cond, 'cond_errors': cond_errors,
             'logs': logs}

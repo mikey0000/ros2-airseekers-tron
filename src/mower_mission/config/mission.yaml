@@ -251,6 +251,18 @@ behavior_tree_node:
     #   the 2026-10-21 edge layout: lap 0 is ON the line, a vertex pivot swings the nose ~0.6 past
     edge_layout_enabled: true                 # stock-style laps / rows by area edge_mode (false = legacy)
     path_conditioning_edge_clearance_m: 0.20
+    # Body planning limit (edge layout round 2): how far the body outline may be planned
+    # outside areas U paths U dock corridor at a corner (fillet poses, pivot sweeps), by area
+    # edge_mode; well under the body trip limits (soft corners / nose 0.35, rear 0.30; hard
+    # 0.10) for tracking error. A corner over it: wider fillet (convex, up to
+    # convex_r_max_m), then a K-turn (corners >= kturn_min_rad: forward short of the vertex,
+    # about-turn, reverse onto it blade off, pivot inward). Negative = off (revert).
+    path_conditioning_body_limit_soft_m: 0.26
+    path_conditioning_body_limit_hard_m: 0.0
+    path_conditioning_convex_r_max_m: 2.0
+    path_conditioning_kturn: true
+    path_conditioning_kturn_min_rad: 1.05
+    path_conditioning_kturn_back_max_m: 1.5
     # 2026-10-16: transit / dock routes take no fillet tighter than this (the route
     # controller runs them at transit speed; MPPI ran 0.4 m wide of an r 0.5 m dock-path
     # fillet and left the area): a corner whose r >= 0.8 fillet does not fit pivots at the

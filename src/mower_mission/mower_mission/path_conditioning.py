@@ -33,8 +33,30 @@ indices where the robot must stop and turn in place.
    the drawing is), every other pose is inside the region (or no farther out than the drawn
    poses either side), every fillet r >= r_min. Errors are returned, never silently driven.
 
-K-turns (Reeds-Shepp with reverse, where a pivot is not allowed) are not generated yet
-(design Phase 4, slope-dependent): ``allow_pivot=False`` reports the corner as an error.
+Body limit and K-turns (edge layout round 2, 2026-10-21; ``body_limit_m`` set, coverage only).
+The body outline (base_link = rear axle = pivot centre; front ``body_front_m``, rear
+``body_rear_m``, sides ``half_width_m``) is checked against the region at every pose of a
+corner's fillet arc and through a pivot's whole sweep (:class:`BodyRegion`). The value is how
+far the worst outline point is outside the region (the mission's planning limit: soft 0.26,
+hard 0.0, well under the body trip limits). Where a corner's fillet or pivot exceeds it:
+
+* a convex corner (the region is on the inside of the turn) first tries wider fillets, up to
+  ``convex_r_max`` (lap 0 ON the line: the outer front corner rides
+  sqrt((r + hw)^2 + front^2) - r past it on an arc of r, 0.41 at r 0.7, 0.31 at r 2);
+* a corner turning ``kturn_min_rad`` or more then becomes a K-turn (3-point turn, 2 cusps)
+  when that keeps the swept body within the limit: forward on the incoming run to P1 = V - a
+  u_in (a the least of ``kturn_back_min_m``..``kturn_back_max_m`` in 0.05 steps that fits),
+  pivot ~180 deg at P1, reverse a along the drawn run back onto the vertex V, pivot at V onto
+  the outgoing run. Each pivot's direction is the one whose sweep stays inside best (ties: the
+  turn's inside), so the nose swings through the area, never across the line; on lap 0 only
+  the rear corners (radius 0.255) sweep out. The reverse stretch is marked ``reverse`` with the
+  pose yaw facing against the travel; :func:`split_kturns` cuts the path into forward /
+  reverse / forward sub-paths for the mission (pivot markers at P1 and V, the planned pivot
+  angles carried along).
+Otherwise the corner keeps its fillet / pivot (gentle corners: large turns stay rare).
+
+K-turns where a pivot is not allowed at all (slopes, design Phase 4) are not generated:
+``allow_pivot=False`` reports the corner as an error.
 
 Swath-end turns (:func:`join_turn_chains`, 2026-10-16, roadmap 3.2): where the planner could
 not fit a forward (Dubins) turn it plans a Reeds-Shepp turn with reverse pieces, and the
@@ -52,7 +74,7 @@ from typing import List, Optional
 
 from . import geometry as geo
 
-LINE, ARC, PIVOT = 'line', 'arc', 'pivot'
+LINE, ARC, PIVOT, REVERSE = 'line', 'arc', 'pivot', 'reverse'
 
 
 @dataclass
@@ -65,6 +87,8 @@ class Corner:
     r: float = 0.0               # fillet radius
     cut_m: float = 0.0           # how far the fillet cuts inside the vertex
     why: str = ''
+    body_m: Optional[float] = None   # swept body outside the region (body_limit_m set)
+    back_m: float = 0.0          # K-turn: reverse length P1 -> V
 
 
 @dataclass
@@ -75,6 +99,9 @@ class Conditioned:
     pivots: list = field(default_factory=list)      # pose indices to stop and turn at
     corners: list = field(default_factory=list)     # [Corner]
     errors: list = field(default_factory=list)
+    # K-turns: (P1 pose index, V pose index, P1 pivot rad, V pivot rad); poses P1+1 .. V are
+    # driven in reverse (types REVERSE, V PIVOT; yaw facing against the travel)
+    kturns: list = field(default_factory=list)
     _floors: list = field(default_factory=list, repr=False)
 
     @property
@@ -104,6 +131,15 @@ class Params:
     cusp_rad: float = 2.6          # sharper turns within end_m of an end are turn cusps: kept
     end_m: float = 0.3
     allow_pivot: bool = True
+    # body outline from base_link (rear axle, pivot centre); sides = half_width_m
+    body_front_m: float = 0.60
+    body_rear_m: float = 0.10
+    body_limit_m: Optional[float] = None   # planning limit, m outside the region (None = off)
+    convex_r_max: float = 2.0      # body-limited convex corners: fillets up to this radius
+    kturn: bool = True
+    kturn_min_rad: float = 1.05    # K-turns only at corners turning this much (60 deg)
+    kturn_back_min_m: float = 0.30
+    kturn_back_max_m: float = 1.50
 
 
 # ---------------------------------------------------------------- region / clearance
@@ -146,6 +182,156 @@ def clearance(pt, region):
     if inside:
         return max(inside)
     return -min(_edge_dist(x, y, p) for p in polys)
+
+
+# ---------------------------------------------------------------- body vs region
+
+def _orient(a, b, c):
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _seg_dist(x, y, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - a[0]) * dx + (y - a[1]) * dy) / L2))
+    return math.hypot(a[0] + t * dx - x, a[1] + t * dy - y)
+
+
+class BodyRegion:
+    """The region around one corner, for fast body checks: only the polygon edges within
+    ``radius`` of ``centre``; inside / outside of a point by the parity of its segment to a
+    reference point next to ``centre`` (whose side is known per polygon) across those edges.
+    Valid for points within ``radius`` - 0.05 of ``centre``."""
+
+    def __init__(self, region, centre, radius, p):
+        self.radius = radius
+        cx, cy = float(centre[0]), float(centre[1])
+        self.q = (cx + 0.01234, cy + 0.00717)
+        self.polys = []
+        for poly in region:
+            if len(poly) < 3:
+                continue
+            edges = []
+            for i in range(len(poly)):
+                a = (float(poly[i - 1][0]), float(poly[i - 1][1]))
+                b = (float(poly[i][0]), float(poly[i][1]))
+                if _seg_dist(cx, cy, a, b) <= radius:
+                    edges.append((a, b))
+            self.polys.append((_pip(self.q[0], self.q[1], poly), edges))
+        F, R, W = p.body_front_m, p.body_rear_m, p.half_width_m
+        self.outline = [(F, W), (F, -W), (-R, W), (-R, -W), (F, 0.0), (-R, 0.0),
+                        (0.5 * (F - R), W), (0.5 * (F - R), -W)]
+
+    def out(self, x, y):
+        """How far (x, y) is outside the region (0 inside)."""
+        q, d = self.q, self.radius
+        for ins, edges in self.polys:
+            odd = False
+            for a, b in edges:
+                if ((_orient((x, y), q, a) > 0.0) != (_orient((x, y), q, b) > 0.0)) and \
+                        ((_orient(a, b, (x, y)) > 0.0) != (_orient(a, b, q) > 0.0)):
+                    odd = not odd
+            if ins != odd:
+                return 0.0
+        for ins, edges in self.polys:
+            for a, b in edges:
+                d = min(d, _seg_dist(x, y, a, b))
+        return d
+
+    def body(self, x, y, yaw):
+        c, s = math.cos(yaw), math.sin(yaw)
+        return max(self.out(x + a * c - b * s, y + a * s + b * c) for a, b in self.outline)
+
+    def sweep(self, x, y, yaw, dyaw, step=math.radians(5.0)):
+        """Worst body overhang of a pivot at (x, y) from ``yaw`` by ``dyaw`` (signed)."""
+        n = max(1, int(math.ceil(abs(dyaw) / step)))
+        return max(self.body(x, y, yaw + dyaw * j / n) for j in range(n + 1))
+
+    def drive(self, poses):
+        return max([self.body(q[0], q[1], q[2]) for q in poses] or [0.0])
+
+
+def _convex(v, u_in, u_out, region):
+    """The region lies on the inside of the turn at ``v`` (a convex corner of the region:
+    the robot turns around the region, as on an outer lap)."""
+    dx, dy = u_out[0] - u_in[0], u_out[1] - u_in[1]
+    L = math.hypot(dx, dy)
+    if L < 1e-6:
+        return False
+    dx, dy = dx / L * 0.25, dy / L * 0.25
+    return clearance((v[0] + dx, v[1] + dy), region) > clearance((v[0] - dx, v[1] - dy), region)
+
+
+def _arc_poses(arc):
+    out = []
+    for j, q in enumerate(arc):
+        a, b = (arc[j], arc[j + 1]) if j + 1 < len(arc) else (arc[j - 1], arc[j])
+        out.append((q[0], q[1], math.atan2(b[1] - a[1], b[0] - a[0])))
+    return out
+
+
+def _pick_rotation(br, q, yaw, inward, outward, p):
+    """(overhang, signed angle) of a pivot at ``q`` from ``yaw``: the inward rotation (the
+    nose through the area) unless it sweeps the body out farther than the limit and farther
+    than the other way (owner: turn toward the interior, even when it is longer)."""
+    a = min(((br.sweep(q[0], q[1], yaw, d), d) for d in inward), default=None)
+    b = min(((br.sweep(q[0], q[1], yaw, d), d) for d in outward), default=None)
+    if a is None:
+        return b
+    if b is None or a[0] <= max(p.body_limit_m, b[0] + 0.01):
+        return a
+    return b
+
+
+def _plan_kturn(v, turn, pts, cum, s_v, s_floor, br, p):
+    """Best K-turn at vertex ``v`` (incoming run on the drawn path ending at arc length
+    ``s_v``; P1 no earlier than ``s_floor``): (overhang, a, P1 slice, P1 pivot, V pivot) of the
+    least ``a`` within the limit, else of the least overhang; None when no straight run of at
+    least kturn_back_min_m precedes the vertex."""
+    sgn = 1.0 if turn > 0 else -1.0
+    best = None
+    a = p.kturn_back_min_m
+    rev_ov = 0.0
+    done_s = s_v
+    while a <= min(p.kturn_back_max_m, s_v - s_floor) + 1e-9:
+        s1 = s_v - a
+        P1 = geo._point_at(pts, cum, s1)
+        sl = _raw_slice(pts, cum, s1, s_v)
+        if geo.dist(sl[-1], v) > 1e-6:
+            sl = sl + [tuple(v)]
+        L = geo.dist(P1, v)
+        if L < 0.5 * a:
+            break
+        h0 = math.atan2(v[1] - P1[1], v[0] - P1[0])
+        # the reverse run must be straight (on the drawn line): every slice point within
+        # 0.03 m of the chord P1 -> V
+        if any(abs(_orient(P1, v, q)) / L > 0.03 for q in sl):
+            break
+        hb = h0 + math.pi                          # facing back along the run
+        # body along the reverse run (incremental: the stretch from done_s back to s1)
+        k = max(1, int(math.ceil((done_s - s1) / 0.05)))
+        for j in range(k + 1):
+            q = geo._point_at(pts, cum, s1 + (done_s - s1) * j / k)
+            rev_ov = max(rev_ov, br.body(q[0], q[1], hb))
+        done_s = s1
+        if a == p.kturn_back_min_m:
+            h1 = h0 + turn                             # the outgoing run's heading
+            d_short = geo.wrap_angle(h1 - hb)
+            cands = [d_short, d_short - math.copysign(2.0 * math.pi, d_short)]
+            # at V the nose swings from back along the run onto the outgoing run: through the
+            # area = against the corner's turn sign
+            v_ov, d2 = _pick_rotation(br, v, hb, [d for d in cands if d * sgn < 0],
+                                      [d for d in cands if d * sgn >= 0], p)
+        # at P1 the about-turn rotates with the corner's turn (nose into the area)
+        p_ov, d1 = _pick_rotation(br, P1, h0, [sgn * math.pi], [-sgn * math.pi], p)
+        ov = max(rev_ov, v_ov, p_ov)
+        cand = (ov, a, sl, d1, d2)
+        if best is None or ov < best[0] - 1e-3:
+            best = cand
+        if ov <= p.body_limit_m + 1e-3:
+            return cand
+        a = round(a + 0.05, 6)
+    return best
 
 
 # ---------------------------------------------------------------- helpers
@@ -340,30 +526,81 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
         edge = (p.edge_pivot_rad > 0.0 and ring and turn * ring_sign > 0.0 and
                 abs(turn) >= p.edge_pivot_rad - math.radians(1.0) and
                 clearance(v, region) <= p.edge_clearance_m)
+        def try_fillet(r):
+            t = r * math.tan(abs(turn) / 2.0)
+            if t > avail_in + 1e-9 or t > avail_out + 1e-9:
+                return None
+            T1 = (v[0] - t * u_in[0], v[1] - t * u_in[1])
+            T2 = (v[0] + t * u_out[0], v[1] + t * u_out[1])
+            s1 = geo.path_projection(pts, T1)[0]
+            s2 = geo.path_projection(pts, T2)[0]
+            # the tangent points must lie ON the drawn runs either side of this
+            # corner (2026-10-16 sim gate: a dock-route fillet whose tangent point
+            # projected onto another stretch left an 88 deg kink at the join)
+            on_runs = (s1 <= s_lo + 1e-6 and s2 >= s_hi - 1e-6 and
+                       geo.dist(geo._point_at(pts, cum, s1), T1) <= p.tangent_tol_m and
+                       geo.dist(geo._point_at(pts, cum, s2), T2) <= p.tangent_tol_m)
+            if not (on_runs and s1 >= s_prev - 1e-6 and s2 > s1):
+                return None
+            arc = _arc(T1, u_in, turn, r, p.step_m)
+            floor = _floor(raw_ref(s1, s2), req, p)
+            if all(clearance(q, region) >= floor - 1e-3 for q in arc):
+                return (s1, s2, arc, r, floor)
+            return None
+
         chosen = None
         if abs(turn) < math.radians(170.0) and not edge:
             r = p.r_max
             while r >= p.r_min - 1e-9:
-                t = r * math.tan(abs(turn) / 2.0)
-                if t <= avail_in + 1e-9 and t <= avail_out + 1e-9:
-                    T1 = (v[0] - t * u_in[0], v[1] - t * u_in[1])
-                    T2 = (v[0] + t * u_out[0], v[1] + t * u_out[1])
-                    s1 = geo.path_projection(pts, T1)[0]
-                    s2 = geo.path_projection(pts, T2)[0]
-                    # the tangent points must lie ON the drawn runs either side of this
-                    # corner (2026-10-16 sim gate: a dock-route fillet whose tangent point
-                    # projected onto another stretch left an 88 deg kink at the join)
-                    on_runs = (s1 <= s_lo + 1e-6 and s2 >= s_hi - 1e-6 and
-                               geo.dist(geo._point_at(pts, cum, s1), T1) <= p.tangent_tol_m and
-                               geo.dist(geo._point_at(pts, cum, s2), T2) <= p.tangent_tol_m)
-                    if on_runs and s1 >= s_prev - 1e-6 and s2 > s1:
-                        arc = _arc(T1, u_in, turn, r, p.step_m)
-                        floor = _floor(raw_ref(s1, s2), req, p)
-                        if all(clearance(q, region) >= floor - 1e-3 for q in arc):
-                            chosen = (s1, s2, arc, r, floor)
-                            break
+                chosen = try_fillet(r)
+                if chosen is not None:
+                    break
                 r = round(r - p.r_step, 6)
-        if chosen is not None:
+        # body limit (coverage, edge layout round 2): the swept body of the fillet / pivot
+        lim = p.body_limit_m
+        br, simple_ov, v_piv = None, None, v
+        if chosen is None and abs(turn) >= p.pivot_min_rad and geo.dist(v, pts[vi]) > 0.02 and \
+                clearance(v, region) < min(req, raw_ref(s_lo, s_hi)) - 1e-3:
+            # a merged corner pivots at the runs' intersection only when that is no
+            # closer to the edge than the drawn path, else at the drawn vertex
+            v_piv = tuple(pts[vi][:2])
+        if lim is not None and region and (chosen is not None or abs(turn) >= p.pivot_min_rad):
+            br = BodyRegion(region, v, p.kturn_back_max_m + 1.2, p)
+            h_in = math.atan2(u_in[1], u_in[0])
+            if chosen is not None:
+                simple_ov = br.drive(_arc_poses(chosen[2]))
+                if simple_ov > lim + 1e-3 and p.convex_r_max > chosen[3] + 1e-9 and \
+                        _convex(v, u_in, u_out, region):
+                    r = p.convex_r_max
+                    while r > chosen[3] + 1e-9:
+                        alt = try_fillet(r)
+                        if alt is not None:
+                            ov = br.drive(_arc_poses(alt[2]))
+                            if ov < simple_ov - 1e-3:
+                                chosen, simple_ov = alt, ov
+                            break
+                        r = round(r - 0.25, 6)
+            else:
+                simple_ov = br.sweep(v_piv[0], v_piv[1], h_in, turn)
+            c.body_m = simple_ov
+        kt = None
+        if br is not None and p.kturn and p.allow_pivot and simple_ov > lim + 1e-3 and \
+                abs(turn) >= p.kturn_min_rad:
+            s_v = s_lo if v_piv == v else cum[vi]
+            kt = _plan_kturn(v_piv, turn, pts, cum, s_v, s_prev, br, p)
+            if kt is not None and kt[0] > lim + 1e-3:
+                c.why = 'K-turn %.2f m out > %.2f: kept' % (kt[0], lim)
+                kt = None
+        if kt is not None:
+            ov, a, sl, d1, d2 = kt
+            c.choice, c.x, c.y = 'kturn', v_piv[0], v_piv[1]
+            c.why = 'body %.2f m out > %.2f: K-turn back %.2f m, body %.2f' % (
+                simple_ov, lim, a, ov)
+            c.body_m, c.back_m = ov, a
+            pieces.append(('raw', s_prev, s_v - a))
+            pieces.append(('kturn', sl, d1, d2))
+            s_prev = s_hi
+        elif chosen is not None:
             s1, s2, arc, r, floor = chosen
             c.choice, c.r = 'fillet', r
             c.cut_m = r * (1.0 / math.cos(abs(turn) / 2.0) - 1.0)
@@ -376,13 +613,10 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
                                   'are not allowed (K-turn not implemented)'
                                   % (v[0], v[1], math.degrees(turn)))
             c.choice = 'pivot'
-            c.why = 'edge policy' if edge else 'no fillet fits'
-            if geo.dist(v, pts[vi]) > 0.02 and \
-                    clearance(v, region) < min(req, raw_ref(s_lo, s_hi)) - 1e-3:
-                # a merged corner pivots at the runs' intersection only when that is no
-                # closer to the edge than the drawn path, else at the drawn vertex
-                v = tuple(pts[vi])
-                c.x, c.y = v
+            c.why = ('edge policy' if edge else 'no fillet fits') + \
+                (' (%s)' % c.why if c.why else '')
+            v = v_piv
+            c.x, c.y = v
             pieces.append(('raw', s_prev, s_lo))
             pieces.append(('pivot', v))
             s_prev = s_hi
@@ -410,7 +644,7 @@ def _raw_slice(pts, cum, s0, s1):
 
 
 def _assemble(res, pts, cum, pieces, p):
-    xy, typ, curv, floors = [], [], [], []
+    xy, typ, curv, floors, kts = [], [], [], [], []
 
     def add(q, t, k, fl=None):
         if xy and geo.dist(xy[-1], q) < 1e-3:
@@ -436,14 +670,29 @@ def _assemble(res, pts, cum, pieces, p):
             for j, q in enumerate(arc):
                 mid = 0 < j < len(arc) - 1
                 add(q, ARC if mid else LINE, k if mid else 0.0, fl)
+        elif pc[0] == 'kturn':
+            sl, d1, d2 = pc[1], pc[2], pc[3]
+            add(sl[0], PIVOT, 0.0)               # P1: about-turn, then reverse
+            i_p1 = len(xy) - 1
+            for q in _resample(sl, p.step_m)[1:]:
+                add(q, REVERSE, 0.0)
+            typ[-1] = PIVOT                      # V: pivot onto the outgoing run
+            kts.append((i_p1, len(xy) - 1, d1, d2))
         else:
             add(pc[1], PIVOT, 0.0)
+    rev = [False] * len(xy)
+    for i_p1, i_v, _d1, _d2 in kts:
+        for i in range(i_p1 + 1, i_v + 1):
+            rev[i] = True
     # yaw: direction of travel (a pivot pose keeps the incoming heading); raw stretches get
     # their measured curvature (planned Dubins / Reeds-Shepp arcs stay arcs)
     n = len(xy)
     poses = []
     for i in range(n):
-        if i + 1 < n and typ[i] != PIVOT:
+        if rev[i]:                       # reverse stretch: facing against the travel
+            yaw = math.atan2(xy[i][1] - xy[i - 1][1], xy[i][0] - xy[i - 1][0]) + math.pi
+            yaw = geo.wrap_angle(yaw)
+        elif i + 1 < n and typ[i] != PIVOT:
             yaw = math.atan2(xy[i + 1][1] - xy[i][1], xy[i + 1][0] - xy[i][0])
         elif i > 0:
             yaw = math.atan2(xy[i][1] - xy[i - 1][1], xy[i][0] - xy[i - 1][0])
@@ -466,6 +715,7 @@ def _assemble(res, pts, cum, pieces, p):
             typ[i], curv[i] = ARC, k
     res.poses, res.types, res.curvature = poses, typ, curv
     res.pivots = [i for i, t in enumerate(typ) if t == PIVOT]
+    res.kturns = kts
     res._floors = floors
 
 
@@ -489,6 +739,40 @@ def _validate(res, pts, raw_clr, region, req, p):
     for c in res.corners:
         if c.choice == 'fillet' and c.r < p.r_min - 1e-9:
             res.errors.append('fillet r %.2f < r_min at (%.2f, %.2f)' % (c.r, c.x, c.y))
+
+
+def split_kturns(res):
+    """Cut a conditioned path at its K-turns into the legs the mission drives: forward up to
+    P1, reverse P1 -> V (every pose facing against the travel, so the leg reads as a reverse
+    sub-path), forward from V, ... Returns [{'poses', 'types', 'pivots', 'reverse',
+    'start_turn'}]: ``start_turn`` the planned signed pivot at the leg's start (P1 about-turn
+    before a reverse leg, the V pivot before the next forward leg; None for the first leg)."""
+    poses, types = list(res.poses), list(res.types)
+    if not res.kturns:
+        return [{'poses': poses, 'types': types, 'pivots': list(res.pivots), 'reverse': False,
+                 'start_turn': None}]
+    out = []
+
+    def leg(i0, i1, reverse, start_turn):
+        ps = [tuple(q) for q in poses[i0:i1 + 1]]
+        if len(ps) < 2:
+            return
+        if reverse:                  # P1 faces back along the run, as the reverse poses do
+            ps[0] = (ps[0][0], ps[0][1], ps[1][2])
+        else:                        # V (end of a reverse leg) faces the outgoing run
+            ps[0] = (ps[0][0], ps[0][1],
+                     math.atan2(ps[1][1] - ps[0][1], ps[1][0] - ps[0][0]))
+        out.append({'poses': ps, 'types': types[i0:i1 + 1],
+                    'pivots': [] if reverse else [i - i0 for i in res.pivots if i0 <= i <= i1],
+                    'reverse': reverse, 'start_turn': start_turn})
+
+    s, turn = 0, None
+    for i_p1, i_v, d1, d2 in res.kturns:
+        leg(s, i_p1, False, turn)
+        leg(i_p1, i_v, True, d1)
+        s, turn = i_v, d2
+    leg(s, len(poses) - 1, False, turn)
+    return out
 
 
 # ---------------------------------------------------------------- swath-end turn chains
