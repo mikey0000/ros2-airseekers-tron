@@ -137,7 +137,8 @@ areas:
 | Key | Type | Range | Default | Meaning |
 |---|---|---|---|---|
 | `cutter_height_mm` | int | 30-90 (Tron) | 50 | blade height; the mission maps it to the MCU percent |
-| `perimeter_laps` | int | 0-4 | 2 | headland rings (vendor perimeter laps) |
+| `perimeter_laps` | int | 0-4 | 2 | headland rings (vendor perimeter laps); legacy layout only |
+| `edge_laps` | int | 0-6 | 3 | edge layout (`edge_mode` soft / hard) laps; the zigzag rows move with them. Soft: laps at 0 / 0.15 / … from the line, rows 0.15 × `edge_laps` in (3 = stock, rows from 0.45; 0 = rows from the line). Hard: laps from 0.45 at 0.18 spacing, rows behind them (at least 1 lap). Planner PlanCoverage `edge_laps` |
 | `path_mode` | string | `zigzag` `cross` `alternate` `spiral` `contour_only` | `zigzag` | vendor TaskUnit path_mode 0 zigzag, 1 cross, 2 alternate zigzag, 3 spiral; `contour_only` = vendor cut_mode 2 |
 | `mow_angle_deg` | float | -1 or 0-180 | -1 (auto) | swath heading; < 0 = auto, >= 180 folded |
 | `cut_speed_mps` | float | 0.05-0.5 | 0.3 | FollowCoveragePath speed while mowing |

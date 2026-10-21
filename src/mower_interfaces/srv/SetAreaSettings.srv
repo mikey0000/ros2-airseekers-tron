@@ -6,7 +6,8 @@
 #               without its own value for a key.
 # settings_json JSON object, every key optional (a missing key = default):
 #   cutter_height_mm            int    30..90, default 50
-#   perimeter_laps              int    0..4, default 2 (headland rings)
+#   perimeter_laps              int    0..4, default 2 (headland rings, legacy layout)
+#   edge_laps                   int    0..6, default 3 (edge layout laps; rows move with them)
 #   path_mode                   string zigzag | cross | alternate | spiral | contour_only
 #   mow_angle_deg               float  -1 = auto (default), else 0..180
 #   cut_speed_mps               float  default 0.3, max 0.5

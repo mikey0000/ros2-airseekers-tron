@@ -85,6 +85,10 @@ BUILTIN_DEFAULTS = {
     'edge_margin_m': 0.05,
     'edge_first': True,
     'edge_mode': 'soft',  # owner 2026-10-21: every area soft for now (stock layout)
+    # Edge layout: number of edge laps (3 = stock: soft laps 0 / 0.15 / 0.30, rows from
+    # 0.45); the rows move with them (soft: rows 0.15 x edge_laps in, 0 = rows from the line;
+    # hard: laps from 0.45). Planner PlanCoverage edge_laps; a GUI setting binds to this name.
+    'edge_laps': 3,
     'repeat': 1,
     'alternate_angle_offset_deg': 90.0,
     # Tron defaults (owner, 2026-10-06): pivots tear the lawn when the caster
@@ -117,6 +121,7 @@ SPEC = {
     'edge_margin_m': ('float', 0.0, 0.5),
     'edge_first': ('bool', None, None),
     'edge_mode': ('enum', EDGE_MODES, None),
+    'edge_laps': ('int', 0, 6),
     'repeat': ('int', 1, 10),
     'alternate_angle_offset_deg': ('float', 0.0, 180.0),
     'route_order': ('enum', ROUTE_ORDERS, None),

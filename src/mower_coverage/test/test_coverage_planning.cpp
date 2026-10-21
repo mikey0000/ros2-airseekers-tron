@@ -1445,3 +1445,47 @@ TEST(EdgeLayout, LapHandOffsClearOfCorners) {
     }
   }
 }
+
+// edge_laps (owner 2026-10-22): the number of edge laps, the rows moving with them. Soft: laps
+// at 0 / 0.15 / ..., rows 0.15 x edge_laps in (0: rows from the line); hard: laps from 0.45
+// at 0.18 plus the band-closing lap, rows behind them (hard 0 = 1: rows are clipped >= 0.745).
+TEST(EdgeLayout, EdgeLapsMoveTheRows) {
+  const double w = 8.0, h = 6.0;
+  struct Case { const char* mode; int laps; std::vector<double> rings; double side, end; };
+  const std::vector<Case> cases = {
+      {"soft", 0, {}, 0.0, 0.0},
+      {"soft", 1, {0.0}, 0.15, 0.15},
+      {"soft", 3, {0.0, 0.15, 0.30}, 0.45, 0.45},
+      {"hard", 0, {0.45, 0.63}, 0.74, 0.745},     // hard needs a lap: 0 = 1
+      {"hard", 1, {0.45, 0.63}, 0.74, 0.745},
+      {"hard", 3, {0.45, 0.63, 0.81, 0.99}, 1.10, 1.08},
+  };
+  for (const auto& c : cases) {
+    mower_coverage::RouteOptions route;
+    ASSERT_TRUE(mower_coverage::parseRouteOrder("racetrack", &route.order));
+    route.min_turn_radius = 0.5;
+    route.min_drivable_turn_radius = 0.40;
+    route.fill_gaps = true;
+    ASSERT_TRUE(mower_coverage::applyEdgeLayout(c.mode, 0.18, &route, c.laps));
+    EXPECT_TRUE(route.edge_layout);
+    EXPECT_NEAR(route.row_side_inset, c.side, 1e-9) << c.mode << " " << c.laps;
+    EXPECT_NEAR(route.row_end_inset, c.end, 1e-9) << c.mode << " " << c.laps;
+    const CoveragePlan plan = mower_coverage::planCoverage(
+        field({{0, 0}, {w, 0}, {w, h}, {0, h}}), 0.18, 0.20, 2, 0.14, 0.0, 0.15,
+        mower_coverage::PathMode::kZigzag, true, route);
+    SCOPED_TRACE(std::string(c.mode) + " " + std::to_string(c.laps) + " laps");
+    expectRingInsets(plan, c.rings, w, h);
+    ASSERT_FALSE(plan.swaths.empty());
+    // the outermost rows sit where the laps leave off (row ends, sides: the nearer one)
+    const double lo = std::min(c.side, c.end);
+    EXPECT_GE(minInset(plan, w, h, true, false), lo - 0.01);
+    EXPECT_LE(minInset(plan, w, h, true, false), std::max(lo, 0.09) + 0.03);
+    EXPECT_GT(plan.coverage_fraction, 0.95);
+  }
+  // the default is the stock 3 laps; negative counts are refused
+  mower_coverage::RouteOptions a, b;
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &a));
+  ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &b, 3));
+  EXPECT_EQ(a.lap_offsets, b.lap_offsets);
+  EXPECT_FALSE(mower_coverage::applyEdgeLayout("soft", 0.18, &a, -1));
+}

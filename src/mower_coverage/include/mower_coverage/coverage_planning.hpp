@@ -88,6 +88,7 @@ struct RouteOptions {
   // row ends (and gap-fill passes) row_end_inset inside, swath-to-swath turns kept
   // turn_inset inside, holes grown by hole_inset before any of that.
   std::vector<double> lap_offsets;
+  bool edge_layout = false;      // set by applyEdgeLayout (also with no laps: edge_laps 0)
   double row_side_inset = 0.45;
   double row_end_inset = 0.45;
   double turn_inset = 0.45;
@@ -105,8 +106,17 @@ struct RouteOptions {
 //   "hard"  the whole body inside plus 0.10: laps 0.45 / 0.63 / 0.81 (+ 0.99), rows from 1.10,
 //           row ends 1.08 in (pivot room ahead), turns >= 0.745 in (pivot swing 0.645 + 0.10).
 //   "" / "legacy"  unchanged (headland rings at border_inset).
-// Returns false for an unknown name (route untouched).
-bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* route);
+// edge_laps (area setting, default 3 = the above): the number of edge laps; the rows move
+// with them. soft: laps at 0, 0.15, ... (edge_laps of them), rows (sides, ends, turns) one
+// lap spacing inside the last lap = 0.15 x edge_laps (0 laps: rows from the line). hard:
+// laps at 0.45, 0.63, ... (edge_laps of them) plus the band-closing lap one spacing further
+// (b = 0.45 + 0.18 x edge_laps), rows from b + 0.11 laterally, row ends b + 0.09 in, never
+// under 0.745 (pivot swing 0.645 + 0.10); at least 1 lap (0 = 1: rows are clipped by
+// erosion, >= 0.745 in sideways too, so a lapless band would stay uncut).
+// Returns false for an unknown name or edge_laps < 0 (route untouched).
+constexpr int kDefaultEdgeLaps = 3;
+bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* route,
+                     int edge_laps = kDefaultEdgeLaps);
 
 bool parseRouteOrder(const std::string& name, RouteOrder* order);  // "" = boustrophedon
 // kRacetrack half-block k for a turn radius: smallest k with (k-1)*w >= 2r, >= 2.

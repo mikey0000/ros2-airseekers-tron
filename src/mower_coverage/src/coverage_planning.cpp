@@ -1260,7 +1260,7 @@ void verifyAndFill(const f2c::types::Cell& field, double op_width, double border
   try {
     GeomPtr target = buildTarget(field, inset, hole);
     GeomPtr centre;
-    if (!route.lap_offsets.empty()) {
+    if (route.edge_layout) {
       centre = buildTarget(field, route.row_end_inset,
                            std::max(0.0, route.hole_inset) + route.row_end_inset);
     }
@@ -1390,7 +1390,7 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   // around a hole then runs border_inset + op_width/2 outside it — the blade
   // edge touches the obstacle edge but never overhangs it — and everything
   // inward (hole rings, mainland, swaths) moves out with it.
-  const bool layout = !route.lap_offsets.empty();
+  const bool layout = route.edge_layout;
   const double hole_grow = layout ? std::max(0.0, route.hole_inset) : op_width / 2.0;
   f2c::types::Cells hl_field = field_cells;
   if (field.size() > 1 && hole_grow > 0.0) {
@@ -1788,32 +1788,49 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
 }
 }  // namespace
 
-bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* route) {
+bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* route,
+                     int edge_laps) {
   if (name.empty() || name == "legacy") {
     return true;
   }
-  const double hw = op_width / 2.0;
-  if (name == "soft") {
-    route->lap_offsets = {0.0, 0.15, 0.30};
-    route->row_side_inset = 0.45;
-    route->row_end_inset = 0.45;
-    route->turn_inset = 0.45;
-    route->hole_inset = 0.30;
-  } else if (name == "hard") {
-    // 0.45 / 0.63 / 0.81 (owner) plus 0.99: rows can only be clipped by erosion, so the
-    // row region (row ends 1.08 in) also starts 1.08+ laterally; the 4th lap closes that band
-    route->lap_offsets = {0.45, 0.63, 0.81, 0.99};
-    route->row_side_inset = 1.10;
-    route->row_end_inset = 1.08;
-    route->turn_inset = 0.745;
-    route->hole_inset = 0.0;
-  } else {
+  if (edge_laps < 0 || (name != "soft" && name != "hard")) {
     return false;
   }
+  const double hw = op_width / 2.0;
+  const int n = edge_laps;
+  route->lap_offsets.clear();
+  double first = 0.0;  // where the outermost pass (a lap, else a row) runs
+  if (name == "soft") {
+    // laps 0 / 0.15 / 0.30 / ... (stock), rows one lap spacing inside the last lap
+    constexpr double kSpacing = 0.15;
+    for (int k = 0; k < n; ++k) route->lap_offsets.push_back(kSpacing * k);
+    const double rows = kSpacing * n;
+    route->row_side_inset = rows;
+    route->row_end_inset = rows;
+    route->turn_inset = rows;
+    route->hole_inset = 0.30;
+    first = 0.0;
+  } else {
+    // 0.45 / 0.63 / 0.81 (owner, edge_laps 3) plus 0.99: rows can only be clipped by erosion,
+    // so the row region (row ends 1.08 in) also starts 1.08+ laterally; the extra lap closes
+    // that band. Row ends never under 0.745 (the nose + 0.10 inside through a row-end pivot).
+    // Hard needs at least one lap: rows are clipped by erosion, so they start >= 0.745 in
+    // laterally too, and without laps the band from the line to there stays uncut (0 = 1).
+    constexpr double kStart = 0.45, kSpacing = 0.18;
+    const int nh = std::max(1, n);
+    for (int k = 0; k <= nh; ++k) route->lap_offsets.push_back(kStart + kSpacing * k);
+    const double band = kStart + kSpacing * nh;
+    route->row_side_inset = band + 0.11;
+    route->row_end_inset = std::max(0.745, band + 0.09);
+    route->turn_inset = 0.745;
+    route->hole_inset = 0.0;
+    first = kStart;
+  }
+  route->edge_layout = true;
   route->lap_corner_radius = 0.7;
-  // coverage target: what the blade of the outermost lap reaches
-  route->target_inset = std::max(0.0, route->lap_offsets.front() - hw);
-  route->hole_margin = std::max(0.0, route->hole_inset + route->lap_offsets.front() - hw);
+  // coverage target: what the blade of the outermost pass reaches
+  route->target_inset = std::max(0.0, first - hw);
+  route->hole_margin = std::max(0.0, route->hole_inset + first - hw);
   return true;
 }
 

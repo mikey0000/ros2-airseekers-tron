@@ -30,6 +30,7 @@ string  turn_type ""                      # auto (loop -> reverse-curve -> pivot
 float64 boundary_inset_m -1.0             # per-area edge margin (blade edge inside the line) [m]; < 0 = node param
 string  edge_layout ""                    # soft | hard: stock-style laps / row insets for base_link
                                           # (area edge_mode, owner 2026-10-21); "" / legacy = headland rings
+int32   edge_laps 3                       # edge layout: number of edge laps (area edge_laps); rows move with them
 ---
 bool   success
 string message

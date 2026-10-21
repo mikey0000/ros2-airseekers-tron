@@ -197,10 +197,12 @@ class MowerCoverageNode : public rclcpp::Node {
     route.fill_gaps = true;
     route.min_gap_area_m2 = 0.01;
     route.target_inset = boundary_inset;  // blade edge; holes keep the ring keep-out
-    if (!mower_coverage::applyEdgeLayout(request->edge_layout, op_width, &route)) {
+    if (!mower_coverage::applyEdgeLayout(request->edge_layout, op_width, &route,
+                                         static_cast<int>(request->edge_laps))) {
       response->success = false;
       response->message = "unknown edge_layout '" + request->edge_layout +
-                          "' (soft | hard | legacy)";
+                          "' (soft | hard | legacy) or edge_laps " +
+                          std::to_string(request->edge_laps) + " < 0";
       return;
     }
     const mower_coverage::CoveragePlan plan =
@@ -346,7 +348,9 @@ class MowerCoverageNode : public rclcpp::Node {
     }
 
     std::string msg = (request->edge_layout.empty() ? std::string()
-                                                    : "edge " + request->edge_layout + ", ") +
+                                                    : "edge " + request->edge_layout + " " +
+                                                          std::to_string(request->edge_laps) +
+                                                          " laps, ") +
                       std::string(plan.swaths_first ? "swaths first, " : "") +
                       (request->path_mode.empty() ? std::string("zigzag")
                                                   : request->path_mode) +

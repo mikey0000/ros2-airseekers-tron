@@ -134,6 +134,8 @@ AREA_SETTINGS_DEFAULTS = {
     'edge_first': True,
     # soft | hard (owner 2026-10-21: every area soft for now): the planner's edge_layout
     'edge_mode': 'soft',
+    # edge layout: number of edge laps (3 = stock); the rows move with them (planner edge_laps)
+    'edge_laps': 3,
     'repeat': 1,
     'alternate_angle_offset_deg': 90.0,
     'route_order': 'racetrack',
@@ -200,7 +202,8 @@ def coverage_route_params(st):
             'min_turn_radius_m': float(st['min_turn_radius_m']),
             'turn_type': str(st['turn_type']),
             # stock-style edge layout per area edge_mode; 'legacy' = headland rings (revert)
-            'edge_layout': str(st.get('edge_layout', st.get('edge_mode', 'soft')))}
+            'edge_layout': str(st.get('edge_layout', st.get('edge_mode', 'soft'))),
+            'edge_laps': int(st.get('edge_laps', AREA_SETTINGS_DEFAULTS['edge_laps']))}
 
 # action outcomes reported by the node
 SUCCEEDED = 'succeeded'
@@ -2778,6 +2781,13 @@ class MissionFSM:
             self._log('warn', 'unknown blade_policy %r: continuous' % st.get('blade_policy'))
             st['blade_policy'] = 'continuous'
         st['perimeter_laps'] = max(0, int(st['perimeter_laps']))
+        try:
+            st['edge_laps'] = max(0, min(10, int(st.get('edge_laps',
+                                                         AREA_SETTINGS_DEFAULTS['edge_laps']))))
+        except (TypeError, ValueError):
+            self._log('warn', 'bad edge_laps %r: %d' % (st.get('edge_laps'),
+                                                        AREA_SETTINGS_DEFAULTS['edge_laps']))
+            st['edge_laps'] = AREA_SETTINGS_DEFAULTS['edge_laps']
         return st, src
 
     def _swath_spacing(self, st):
