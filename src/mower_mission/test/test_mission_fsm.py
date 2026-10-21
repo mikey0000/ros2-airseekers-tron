@@ -51,6 +51,9 @@ class Harness:
         # coverage_controller: mppi, 2026-10-15, has its own tests in
         # test_coverage_controller.py; the leg logic is the same for both)
         params.setdefault('coverage_controller', 'rpp')
+        # ... and the base_link-only boundary check (the body-aware check, step 3 round 2,
+        # has its own tests in test_body_boundary.py; the toy squares put lap ends on the line)
+        params.setdefault('hard_boundary_body', False)
         self.t = 0.0
         self.fsm = f.MissionFSM(f.Params.from_dict(params), cursor=cursor, now=0.0)
         i = self.fsm.inputs
@@ -4736,3 +4739,20 @@ def test_edge_mode_reaches_the_planner_and_legacy_reverts():
     m2 = h2.mark()
     start_until_planning(h2)
     assert param_calls(h2, f.PARAM_NODE_COVERAGE, m2)[0]['edge_layout'] == 'legacy'
+
+
+def test_emergency_silence_watchdog_armed_only_after_first_message():
+    # field 2026-10-21 06:27:58: the silence watchdog fired at startup before the first
+    # /hardware_bridge/emergency message; now it arms on the first message, and motion
+    # commands are refused until then
+    h = Harness()
+    h.silent = True
+    h.fsm.inputs.emergency_stamp = None
+    h.tick(n=40)
+    assert h.name != 'EMERGENCY'
+    assert not h.cmd(f.CMD_START)
+    h.silent = False
+    h.tick()
+    h.silent = True
+    h.tick(n=25)
+    assert h.name == 'EMERGENCY'

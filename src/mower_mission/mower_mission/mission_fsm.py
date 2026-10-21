@@ -30,6 +30,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from mower_mission import body_boundary as bbody
 from mower_mission import geometry as geo
 from mower_mission import path_conditioning as pcond
 from mower_mission.resume import AreaCursor, ResumeCursor, absolute_to_local, subpath_offsets
@@ -454,6 +455,8 @@ class Inputs:
     # (mowing areas U drawn paths U dock corridor), 0 inside; outside_stamp = receipt time
     outside_m: Optional[float] = None
     outside_stamp: Optional[float] = None
+    # bumper_controller routing status rising edges (/mower_base/bumper_routing_status 0 -> 1)
+    bumper_hits: int = 0
     # /heading_aligner/status (latched JSON): aligned + source (none|file|dock|cog)
     heading_aligned: bool = False
     heading_source: str = 'none'
@@ -954,6 +957,51 @@ class Params:
     hard_boundary_pivot_rps: float = 0.3
     hard_boundary_progress_s: float = 3.0
     hard_boundary_progress_m: float = 0.05        # driven + 0.20 m x |yaw| turned
+    # --- body-aware boundary-out check (step 3 round 2, stock CheckRegion / onBoundaryOut,
+    # docs/analysis/2026-10-21_stock_firmware_findings.md). Where base_link is in (or < 1 m outside) a mowing area
+    # (not on a drawn path only / the dock corridor / a dock phase: those keep the base_link
+    # hard_boundary_m check) the 4 footprint corners + mid-front + mid-rear
+    # (mower_mission.body_boundary) are checked against the allowed region (mowing areas U
+    # drawn paths U dock corridor, the mission's area snapshot: a GUI map reload cannot reach
+    # it). Trip when a point is further out than its limit: edge_mode hard = every point
+    # hard_boundary_body_hard_m; soft = corners _soft_side_m, nose _soft_nose_m, tail
+    # _soft_tail_m (soft lap 0 puts the sides 0.235 out, a row end the nose 0.15 / the front
+    # corners <= 0.195 out; + tracking p99 0.07..0.13). Recovery (stock): stop, blade off,
+    # move hard_boundary_back_m straight (reverse; forward when the worst point is behind
+    # base_link) at <= 0.10 m/s, hard_boundary_back_timeout_s; resume (the leg-start pivot
+    # turns to the path heading at the nearest point). Still beyond the limit after the move
+    # -> the track retrace above (fallback). The retry cap / STUCK escalation is unchanged.
+    hard_boundary_body: bool = True
+    hard_boundary_body_hard_m: float = 0.10
+    hard_boundary_body_soft_side_m: float = 0.35
+    hard_boundary_body_soft_nose_m: float = 0.35
+    hard_boundary_body_soft_tail_m: float = 0.30
+    hard_boundary_body_clear_m: float = 0.02      # back-move success: excess <= -this
+    hard_boundary_back_m: float = 0.30
+    hard_boundary_back_speed_mps: float = 0.10
+    hard_boundary_back_timeout_s: float = 5.0
+    # A boundary reading (outside_m / body worst point) that jumps by more than
+    # hard_boundary_jump_m since the previous fresh one is ignored for up to
+    # hard_boundary_jump_hold_s (logged, not counted): field 2026-10-21 07:0x, a GUI map
+    # reload published 23.37 m "outside" mid-reload and used a budget slot. 0 = off.
+    hard_boundary_jump_m: float = 1.0
+    hard_boundary_jump_hold_s: float = 2.0
+    # --- Spin drift (field 2026-10-21 07:05:32: a 64 deg route-corner Spin slid 0.40 m on the
+    # west-edge slope, then the drive out tripped the boundary). base_link more than
+    # spin_drift_m from where a pivot Spin started: cancel it, log, re-plan the approach
+    # (coverage: transit back to the leg start; mission transit: transit retry; else the
+    # Spin's own unfinished-pivot handling). The 2nd drift on the same coverage leg skips the
+    # leg (blocked pivot). 0 = off.
+    spin_drift_m: float = 0.15
+    # --- repeated bumper hits (field 2026-10-21 07:29: a real object just outside the line,
+    # the bumper fired 6 and 9 times in turn). bumper_skip_hits hits (rising edges of the
+    # bumper_controller routing status) within bumper_skip_radius_m of each other (and within
+    # bumper_skip_window_s) while following a coverage leg: cancel, skip that stretch (edge
+    # lap: edge_blocked_skip_m; row: to the next pivot vertex), log + incident. In a mission
+    # transit: a transit abort (re-plan). 0 = off.
+    bumper_skip_hits: int = 3
+    bumper_skip_radius_m: float = 1.0
+    bumper_skip_window_s: float = 180.0
     boundary_recover_after_s: float = 3.0     # pause this long, then a recovery transit
     boundary_max_recoveries: int = 2          # recovery transits per sub-path before latching
     boundary_recovery_advance_m: float = 1.0  # recovery target: this far ahead on the sub-path
@@ -1257,6 +1305,11 @@ class MissionFSM:
         self._hb = None                     # hard-boundary retrace in progress (task 0.4 a)
         self._hb_count = 0                  # hard-boundary excursions of this mission
         self._hb_trail = []                 # [(x, y)] recent driven EKF track, oldest first
+        self._hb_jump = None                # (last fresh boundary value, t, jump hold since)
+        self._spin_from = None              # (token, x, y) where the running Spin started
+        self._spin_drifts = {}              # coverage leg key -> Spin drifts
+        self._bump_seen = 0                 # inputs.bumper_hits already handled
+        self._bump_log = []                 # [(t, x, y)] recent bumper hits
 
     # ==================================================================
     # presentation
@@ -1481,6 +1534,9 @@ class MissionFSM:
         tok = self._next_token()
         self._action = _Pending(name, tok, self._fresh_now() + float(timeout), purpose,
                                 float(timeout))
+        pose = self.inputs.pose
+        self._spin_from = ((tok, float(pose[0]), float(pose[1]))
+                           if name == ACT_SPIN and pose is not None else None)
         self._fx.append(StartAction(name, goal, tok))
         return tok
 
@@ -1537,6 +1593,10 @@ class MissionFSM:
         self._begin(now)
         if self._emergency or self.phase in ('EMERGENCY', 'BOUNDARY_EMERGENCY_STOP'):
             self._log('warn', 'start_in_area(%d) refused: emergency' % area)
+            return False, self._end()
+        if self.inputs.emergency_stamp is None:
+            self._log('warn', 'start_in_area(%d) refused: no /hardware_bridge/emergency message '
+                              'yet' % area)
             return False, self._end()
         self._stuck_operator(CMD_START)
         ok = self._start(single=int(area))
@@ -1909,8 +1969,11 @@ class MissionFSM:
             causes.append('node down: %s' % i.critical_nodes_down)
         if self._tilt_band() == 'critical':
             causes.append('tilt critical (%s)' % self._tilt_text())
-        stamp = i.emergency_stamp if i.emergency_stamp is not None else self._created
-        if self._now - stamp > self.p.emergency_timeout_s:
+        # Silence watchdog armed only after the first Emergency message (field 2026-10-21
+        # 06:27:58: it fired at startup before the MCU driver's first message). Until then
+        # motion commands are refused instead (_command / start_in_area: no emergency feed).
+        stamp = i.emergency_stamp
+        if stamp is not None and self._now - stamp > self.p.emergency_timeout_s:
             causes.append('/hardware_bridge/emergency silent > %.1fs' % self.p.emergency_timeout_s)
         return ', '.join(causes)
 
@@ -1939,6 +2002,10 @@ class MissionFSM:
         if self._tilt_tick():
             return True
         if self._hard_boundary_tick():
+            return True
+        if self._spin_drift_tick():
+            return True
+        if self._bumper_tick():
             return True
 
         i = self.inputs
@@ -2219,6 +2286,10 @@ class MissionFSM:
         if self._emergency or self.phase == 'EMERGENCY':
             self._log('warn', 'command %d refused: emergency active' % cmd)
             return False
+        if self.inputs.emergency_stamp is None:
+            self._log('warn', 'command %d refused: no /hardware_bridge/emergency message yet '
+                              '(emergency feed not up)' % cmd)
+            return False
         if self.phase == 'BOUNDARY_EMERGENCY_STOP':
             self._log('warn', 'command %d refused: boundary emergency stop latched '
                               '(send STOP or RESET_EMERGENCY)' % cmd)
@@ -2428,6 +2499,9 @@ class MissionFSM:
             if single is None or single == self.mission.single_area_target:
                 return True             # already mowing: idempotent
             self._log('warn', 'start_in_area(%d) refused: mowing session running' % single)
+            return False
+        if self.inputs.emergency_stamp is None:
+            self._log('warn', 'START refused: no /hardware_bridge/emergency message yet')
             return False
         self._preview_drop('mission started')
         if not auto:
@@ -6234,6 +6308,61 @@ class MissionFSM:
         tr.append((float(pose[0]), float(pose[1])))
         del tr[:-(int(float(self.p.hard_boundary_trail_m) / step) + 1)]
 
+    def _hb_body_mode(self, pose):
+        """edge_mode ('soft' | 'hard') of the body check at ``pose``, or None = the base_link
+        point check (a dock phase, the dock corridor, a drawn path only, no area snapshot)."""
+        if not self.p.hard_boundary_body or pose is None or len(pose) < 3 or \
+                self.phase in DOCK_PHASES or not self._region_areas:
+            return None
+        x, y = float(pose[0]), float(pose[1])
+        mowing, nav, near = [], [], None
+        for idx, a in self._region_areas.items():
+            ring = a.get('outer') or []
+            if len(ring) < 3:
+                continue
+            if bbody._pip(x, y, ring):
+                (nav if a.get('is_navigation_area', False) else mowing).append(idx)
+            elif not a.get('is_navigation_area', False):
+                d = bbody._edge_dist(x, y, ring)
+                if near is None or d < near[0]:
+                    near = (d, idx)
+        if not mowing and not nav and near is not None and near[0] <= 1.0:
+            mowing = [near[1]]       # base_link just outside a mowing area (lap 0 drift)
+        if not mowing:
+            return None
+        m = self.mission
+        if m is not None and m.area_idx in mowing and m.settings is not None:
+            return 'hard' if str(m.settings.get('edge_mode', 'soft')) == 'hard' else 'soft'
+        return 'soft'
+
+    def _hb_body_eval(self, pose, mode):
+        p = self.p
+        lim = bbody.limits_for(mode, float(p.hard_boundary_body_soft_side_m),
+                               float(p.hard_boundary_body_soft_nose_m),
+                               float(p.hard_boundary_body_soft_tail_m),
+                               float(p.hard_boundary_body_hard_m))
+        return bbody.evaluate(pose, self._region(), lim)
+
+    def _hb_jumped(self, val):
+        """True while a boundary reading that jumped by > hard_boundary_jump_m since the last
+        fresh one is held off (at most hard_boundary_jump_hold_s; logged, never counted)."""
+        jm, now = float(self.p.hard_boundary_jump_m), self._now
+        prev = self._hb_jump
+        if jm <= 0.0:
+            return False
+        if prev is not None and now - prev[1] <= 1.0 and val - prev[0] > jm:
+            since = prev[2] if prev[2] is not None else now
+            if now - since < float(self.p.hard_boundary_jump_hold_s):
+                if prev[2] is None:
+                    self._log('warn', 'boundary: reading jumped %.2f -> %.2f m in one tick '
+                                      '(map reload / pose jump?): ignored for up to %.1f s, '
+                                      'not counted' % (prev[0], val,
+                                                       float(self.p.hard_boundary_jump_hold_s)))
+                self._hb_jump = (prev[0], now, since)
+                return True
+        self._hb_jump = (val, now, None)
+        return False
+
     def _hard_boundary_tick(self):
         """Returns True while the hard boundary owns the tick."""
         if not self.p.hard_boundary:
@@ -6244,23 +6373,42 @@ class MissionFSM:
         self._hb_trail_add()
         hcal = self.phase == 'WAITING_FOR_RTK' and self._hcal is not None
         if self.phase not in HARD_BOUNDARY_PHASES and not hcal:
+            self._hb_jump = None
             return False
         if self.phase in ('TRANSIT', 'MOWING') and self.mission is None:
-            return False
-        out = self._outside()
-        if out is None or out <= float(self.p.hard_boundary_m):
+            self._hb_jump = None
             return False
         pose = self.inputs.pose
+        mode = None if hcal else self._hb_body_mode(pose)
+        ev = self._hb_body_eval(pose, mode) if mode is not None else None
+        if ev is not None:
+            if self._hb_jumped(ev['out']) or ev['excess'] <= 0.0:
+                return False
+            out = ev['out']
+            what = ('body %s %.2f m outside (%s limit %.2f)'
+                    % (ev['point'], out, mode, out - ev['excess']))
+        else:
+            mode = None
+            out = self._outside()
+            if out is None:
+                return False
+            if self._hb_jumped(out) or out <= float(self.p.hard_boundary_m):
+                return False
+            what = 'base_link %.2f m outside (> %.2f)' % (out, float(self.p.hard_boundary_m))
         where = '(%.2f, %.2f)' % (pose[0], pose[1]) if pose is not None else 'unknown pose'
         if hcal:
             # unverified heading: no retrace on the EKF track, just stop where it is
             self._hcal_fail('left the mowing area by %.2f m at %s' % (out, where))
             return True
         self._hb_count += 1
-        self._log('error', 'HARD BOUNDARY: %.2f m outside the areas / paths at %s in %s (> %.2f '
-                           'm): cancel, zero, blade off, retrace the driven track (%d/%d this '
-                           'mission)' % (out, where, self.phase, float(self.p.hard_boundary_m),
-                                         self._hb_count, int(self.p.hard_boundary_max_aborts)))
+        self._log('error', 'BOUNDARY OUT: %s at %s in %s: cancel, zero, blade off, %s '
+                           '(%d/%d this mission)'
+                  % (what, where, self.phase,
+                     'move %.2f m %s, then resume' % (float(self.p.hard_boundary_back_m),
+                                                      'forward' if ev and ev['rear']
+                                                      else 'back') if mode
+                     else 'retrace the driven track',
+                     self._hb_count, int(self.p.hard_boundary_max_aborts)))
         if pose is None:
             self._hb_needs_help('outside the boundary, no pose', (0.0, 0.0))
             return True
@@ -6271,21 +6419,154 @@ class MissionFSM:
         track = sum(math.hypot(b[0] - a[0], b[1] - a[1])
                     for a, b in zip([(ox, oy)] + path, path))
         self._hb = {'track_m': track, 'phase': self.phase, 'origin': (ox, oy), 'stage': 'pause', 't': self._now,
-                    'path': path, 'i': 0, 'follow': follow, 'out0': out,
+                    'path': path, 'i': 0, 'follow': follow, 'out0': out, 'what': what,
+                    'mode': mode, 'dir': 1.0 if ev and ev['rear'] else -1.0,
                     'dock_purpose': self._dock_purpose, 'driven': 0.0, 'last': tuple(pose),
                     'prog': 0.0, 'prog_best': 0.0, 'prog_t': self._now, 'inside_at': None}
         self._cancel_all('hard boundary')
         self._blade_off('hard boundary')
         self._fx.append(ZeroBurst())
         self._fx.append(SuppressStuckGuard(True))
-        self._fx.append(RecordIncident('boundary', ox, oy, 'hard boundary: %.2f m outside in %s'
-                                       % (out, self.phase)))
+        self._fx.append(RecordIncident('boundary', ox, oy, 'boundary out: %s in %s'
+                                       % (what, self.phase)))
         self._loc = None
         if m is not None:
             if follow:
                 m.start_local = self._track_progress()
             m.step = None
         self._go(self.phase, 'boundary: %.2f m outside, stopping' % out)
+        return True
+
+    def _hb_inside(self, pose):
+        """(inside, out) for the running recovery: base_link mode = a fresh ~/outside_m
+        <= 1 mm; body mode = every body point at least hard_boundary_body_clear_m under its
+        limit (out = the worst point's outside distance)."""
+        k = self._hb
+        if k.get('mode') is None:
+            out = self._outside()
+            return out is not None and out <= 1e-3, out
+        ev = self._hb_body_eval(pose, k['mode'])
+        if ev is None:
+            return False, None
+        return ev['excess'] <= -float(self.p.hard_boundary_body_clear_m), ev['out']
+
+    def _hb_back_tick(self, pose):
+        """Stock onBoundaryOut: hard_boundary_back_m straight (reverse, or forward for a rear
+        trip) at <= 0.10 m/s, hard_boundary_back_timeout_s. Then inside -> resume; still
+        beyond the limit -> the track retrace (fallback)."""
+        k, p = self._hb, self.p
+        o = k['back_from']
+        moved = math.hypot(pose[0] - o[0], pose[1] - o[1])
+        if moved < float(p.hard_boundary_back_m) and \
+                self._now - k['t'] < float(p.hard_boundary_back_timeout_s):
+            v = min(abs(float(p.hard_boundary_back_speed_mps)), 0.10)
+            self._fx.append(DriveCmd(k['dir'] * v, 0.0))
+            return
+        self._fx.append(DriveCmd(0.0, 0.0))
+        inside, out = self._hb_inside(pose)
+        if inside:
+            k['driven'] = moved
+            k['inside_at'] = 0.0
+            self._log('info', 'boundary: back within the limits after moving %.2f m %s'
+                      % (moved, 'forward' if k['dir'] > 0 else 'back'))
+            self._hb_retraced()
+            return
+        self._log('warn', 'boundary: still %s after moving %.2f m straight: retracing the '
+                          'driven track' % ('unknown' if out is None else '%.2f m out' % out,
+                                            moved))
+        k['stage'], k['prog_t'], k['last'] = 'drive', self._now, tuple(pose)
+        k['driven'] = 0.0
+
+    # ==================================================================
+    # Spin drift and repeated bumper hits (step 3 round 2, field 2026-10-21 evening)
+    # ==================================================================
+    def _spin_drift_tick(self):
+        """base_link moved more than spin_drift_m during a pivot Spin: stop it, log, re-plan
+        the approach. True = handled this tick."""
+        a, sf, lim = self._action, self._spin_from, float(self.p.spin_drift_m)
+        pose = self.inputs.pose
+        if lim <= 0.0 or a is None or a.name != ACT_SPIN or sf is None or sf[0] != a.token \
+                or pose is None:
+            return False
+        d = math.hypot(float(pose[0]) - sf[1], float(pose[1]) - sf[2])
+        if d <= lim:
+            return False
+        self._spin_from = None
+        self._action = None
+        self._fx.append(CancelActions('spin drift'))
+        self._fx.append(ZeroBurst())
+        why = 'pivot drifted %.2f m' % d
+        self._log('warn', 'SPIN DRIFT: base_link moved %.2f m during a %s pivot from (%.2f, '
+                          '%.2f) to (%.2f, %.2f) (> %.2f m, slope / slip): stopped, re-planning '
+                          'the approach' % (d, a.purpose or 'Spin', sf[1], sf[2], pose[0],
+                                            pose[1], lim))
+        self._incident('spin_drift', why)
+        m = self.mission
+        if a.purpose == 'cov_pivot' and m is not None and self.phase == 'MOWING':
+            key = (m.area_idx, m.sub_i, m.start_local)
+            n = self._spin_drifts.get(key, 0) + 1
+            self._spin_drifts[key] = n
+            m.pivot_done, m.pivot_target, m.step = None, None, None
+            if n >= 2:
+                frm = min(m.start_local, self._seg_last())
+                if self._edge_lap(m.sub_i):
+                    self._edge_skip(frm, '%s twice' % why)
+                else:
+                    self._skip_piece(frm, self._skip_end(frm), '%s twice' % why)
+                return True
+            self._dispatch(force_transit=True)    # transit back onto the leg start
+            return True
+        if m is not None and self.phase == 'TRANSIT' and m.step == 'transit':
+            self._transit_abort(why)
+            return True
+        self._handle_action(a, ABORTED, {})
+        return True
+
+    def _bumper_tick(self):
+        """bumper_skip_hits bumper hits within bumper_skip_radius_m: skip that stretch (a
+        later hit near a skipped spot skips at once). True = handled this tick."""
+        n, p = int(self.inputs.bumper_hits), self.p
+        new = n - self._bump_seen
+        self._bump_seen = n
+        m, pose, need = self.mission, self.inputs.pose, int(p.bumper_skip_hits)
+        if new <= 0 or need <= 0 or m is None or pose is None or \
+                self.phase not in ('MOWING', 'TRANSIT'):
+            return False
+        now, rad = self._now, float(p.bumper_skip_radius_m)
+        x, y = float(pose[0]), float(pose[1])
+        log = [h for h in self._bump_log if now - h[0] <= float(p.bumper_skip_window_s)]
+        log += [(now, x, y, False)] * new
+        near = [h for h in log if math.hypot(h[1] - x, h[2] - y) <= rad]
+        hits = sum(1 for h in near if not h[3])
+        spot = any(h[3] for h in near)
+        self._bump_log = log
+        self._log('warn', 'bumper hit at (%.2f, %.2f): %d within %.1f m%s'
+                  % (x, y, hits, rad, ', a skipped spot' if spot else ''))
+        if hits < need and not spot:
+            return False
+        a = self._action
+        step = m.step
+        if not ((self.phase == 'MOWING' and step in ('follow', 'corner_pivot')) or
+                (self.phase == 'TRANSIT' and step == 'transit')):
+            return False
+        self._bump_log = [h for h in log if h[3]] + [(now, x, y, True)]
+        why = ('%d bumper hits within %.1f m' % (hits, rad)) if not spot else \
+            'bumper hit near a skipped spot'
+        self._log('warn', 'BUMPER SKIP at (%.2f, %.2f): %s' % (x, y, why))
+        self._incident('bumper_skip', why)
+        if a is not None:
+            self._fx.append(CancelActions('bumper skip'))
+            self._action = None
+        if self.phase == 'TRANSIT':
+            self._transit_abort(why)
+            return True
+        frm = self._track_progress() if step == 'follow' else m.start_local
+        frm = min(max(frm, 0), self._seg_last())
+        m.pivot_done, m.pivot_target, m.corner_end, m.step = None, None, None, None
+        if self._edge_lap(m.sub_i):
+            self._edge_skip(frm, why)
+        else:
+            self._skip_piece(frm, self._skip_end(frm), why)
         return True
 
     def _hb_cmd(self, pose):
@@ -6324,11 +6605,20 @@ class MissionFSM:
         if k['stage'] == 'pause':
             if now - k['t'] < float(p.hard_boundary_pause_s):
                 return
+            if k.get('mode') is not None:
+                k['stage'], k['t'], k['back_from'] = 'back', now, tuple(pose)
+                self._go(self.phase, 'boundary: moving %.2f m %s' % (
+                    float(p.hard_boundary_back_m), 'forward' if k['dir'] > 0 else 'back'))
+                self._hb_back_tick(pose)
+                return
             k['stage'], k['prog_t'], k['last'] = 'drive', now, tuple(pose)
             self._go(self.phase, 'boundary: reversing along the driven track')
             self._log('info', 'boundary: reversing along %d track points at %.2f m/s'
                       % (len(k['path']), min(abs(float(p.hard_boundary_retrace_speed_mps)),
                                              0.10)))
+        if k['stage'] == 'back':
+            self._hb_back_tick(pose)
+            return
         last = k['last']
         step = math.hypot(pose[0] - last[0], pose[1] - last[1])
         turn = abs(geo.wrap_angle(float(pose[2]) - float(last[2])))
@@ -6342,8 +6632,7 @@ class MissionFSM:
         # track / hard_boundary_retrace_max_m ends first. Never "back inside" on a reading
         # that is still outside (sim 2026-10-15: the track ran out 0.066 m outside and the
         # old <= hard_boundary_m test resumed from there), stale or missing.
-        out = self._outside()
-        inside = out is not None and out <= 1e-3
+        inside, out = self._hb_inside(pose)
         if inside:
             if k['inside_at'] is None:
                 k['inside_at'] = k['driven']
@@ -6385,7 +6674,7 @@ class MissionFSM:
         if n >= lim:
             self._hb_needs_help('left the boundary %d times in this mission' % n, (ox, oy))
             return
-        why = 'left the boundary (%.2f m outside)' % k['out0']
+        why = 'left the boundary (%s)' % k.get('what', '%.2f m outside' % k['out0'])
         if k['phase'] in DOCK_PHASES:
             self._dock(k['phase'], k['dock_purpose'], 'resuming after the boundary retrace')
             return
