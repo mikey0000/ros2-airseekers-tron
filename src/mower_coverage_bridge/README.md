@@ -180,6 +180,10 @@ keep the old behaviour for a client that leaves them alone: `int32 headland_ring
 
 * **soft (stock):** laps at 0 / 0.15 / 0.30 from the line (base_link = rear axle on lap 0),
   rows from 0.45. **hard:** the whole body inside plus 0.10.
+* **`edge_laps`** (per-area setting, default 3 = stock; GUI binding pending, keep the name):
+  the number of edge laps; soft laps at 0, 0.15, ... and rows from 0.15 x `edge_laps` (1 lap:
+  rows from 0.15; 0: rows from the line, first row centre 0.09 in). Hard: the same from its
+  0.45 start; 0 is treated as 1.
 * All outer laps run the same direction (clockwise). Lap 0 keeps the polygon's sharp
   vertices (F2C `Cells::buffer` mitres; the round-1 r 0.7 rounding never rounded). Lap
   starts / hand-offs sit >= 0.6 m from a vertex, so a ring-to-ring step is -90 / 0.15 / +90
