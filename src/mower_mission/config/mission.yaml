@@ -136,6 +136,13 @@ behavior_tree_node:
     # pivot the mission followed the leg anyway and MPPI left the area at once.
     # Revert: -1 (follow the leg after any pivot outcome).
     pivot_retries: 2
+    # 2026-10-21 owner rule (stock firmware): a blocked COVERAGE pivot (Spin aborted / timed
+    # out, e.g. "Collision Ahead") is not re-sent: its leg is skipped ("blocked pivot: skip"),
+    # re-tried once at the area end (blocked_pivot_requeue), else reported uncut. Over
+    # blocked_pivot_max_skips per mission: the pivot_retries -> STUCK path. Revert: retry.
+    blocked_pivot_policy: skip
+    blocked_pivot_max_skips: 20
+    blocked_pivot_requeue: true
     # 2026-10-20 error budget: a pivot Spin is sent this much short (rad) so the robot comes to
     # rest on the angle after the stop latency (0.04 left 1.3 deg over in the ideal sim). Revert: 0.0.
     pivot_stop_lead_rad: 0.06

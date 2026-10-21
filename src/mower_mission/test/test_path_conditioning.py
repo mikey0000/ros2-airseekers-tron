@@ -285,7 +285,7 @@ def test_mission_unfinished_coverage_pivot_pivots_again_then_follows_within_the_
     # 2026-10-16 field run 6: never follow a leg far off its heading after a failed pivot
     r = ring()
     y0 = math.atan2(r[1][1] - r[0][1], r[1][0] - r[0][0])
-    h = ring_h(yaw=y0 + math.radians(140))
+    h = ring_h(yaw=y0 + math.radians(140), blocked_pivot_policy='retry')
     assert h.pending_action(f.ACT_SPIN).purpose == 'cov_pivot'
     first = h.goal(f.ACT_SPIN)['angle']
     mk = h.mark()
@@ -305,7 +305,7 @@ def test_mission_unfinished_coverage_pivot_pivots_again_then_follows_within_the_
 def test_mission_coverage_pivot_failing_three_times_stops():
     r = ring()
     y0 = math.atan2(r[1][1] - r[0][1], r[1][0] - r[0][0])
-    h = ring_h(yaw=y0 + math.radians(140))
+    h = ring_h(yaw=y0 + math.radians(140), blocked_pivot_policy='retry')
     for _ in range(2):
         h.finish(f.ACT_SPIN, f.ABORTED)
         assert h.pending_action(f.ACT_SPIN).purpose == 'cov_pivot'

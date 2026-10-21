@@ -675,6 +675,18 @@ class Params:
     # stopped). Within the threshold the leg is followed, as after a successful pivot.
     # Revert: pivot_retries -1 (follow the leg after any pivot outcome, the old behaviour).
     pivot_retries: int = 2
+    # 2026-10-21 owner rule (stock firmware): a COVERAGE pivot Spin (leg start / pivot vertex)
+    # that ends without SUCCEEDED ("Collision Ahead", costmap blocked, Spin abort / timeout)
+    # with the robot still >= the pivot threshold off the leg is NOT re-sent: the leg (start
+    # -> next pivot vertex, or the sub-path end) is skipped ("blocked pivot: skip"), recorded
+    # and the next leg / sub-path is driven. blocked_pivot_requeue (and requeue_skipped):
+    # skipped legs are re-tried once in the end-of-area pass, else reported uncut at once.
+    # Above blocked_pivot_max_skips skips per mission (START / resume) the old re-send ->
+    # STUCK_NEEDS_HELP path (pivot_retries) applies. Revert: blocked_pivot_policy 'retry'.
+    # Route / cusp / final-approach pivots are unchanged (pivot_retries).
+    blocked_pivot_policy: str = 'skip'      # skip | retry
+    blocked_pivot_max_skips: int = 20
+    blocked_pivot_requeue: bool = True
     # 2026-10-20 error budget (docs/analysis/2026-10-20_error_budget.md): a Spin stops
     # commanding when its relative yaw reaches the target, but the robot is still turning at
     # the pivot floor (behavior_server min_rotational_vel 0.3 rad/s since 2026-10-20; was 0.25)
@@ -1118,6 +1130,7 @@ class Mission:
     corner_end: Optional[int] = None            # the in-flight chunk ends on this pivot
     pivot_done: Optional[tuple] = None          # (area, sub, local) just pivoted for
     pivot_target: Optional[tuple] = None        # (heading, threshold) of that coverage pivot
+    pivot_skips: int = 0                        # blocked coverage pivots skipped (this mission)
 
 
 @dataclass
@@ -2404,6 +2417,7 @@ class MissionFSM:
             self.cursor = ResumeCursor()
             self.cursor.single_area_target = single
         self.mission = Mission(single_area_target=single, resume=resume)
+        self._pivot_tries = {}              # pivot re-send counters start fresh on resume
         # a resumed mow keeps its live GUI deck height (on_cutter_height)
         self.mission.height_override_mm = cur.live_height_mm if resume else None
         self._bump_transit_run()            # each drive varies its transit lines
@@ -3221,11 +3235,62 @@ class MissionFSM:
             self._pivot_tries = {}
         else:
             heading, lim = m.pivot_target if m.pivot_target else (None, 0.0)
+            if self._cov_pivot_skip(outcome, heading, lim):
+                return
             if self._pivot_unfinished(outcome, 'cov_pivot', ('cov',) + tuple(m.pivot_done or ()),
                                       heading, lim, 'coverage'):
                 return
         self._go('MOWING', 'area %d sub-path %d/%d' % (m.area_idx, m.sub_i + 1, len(m.subpaths)))
         self._follow()
+
+    def _cov_pivot_skip(self, outcome, heading, lim):
+        """blocked_pivot_policy 'skip' (stock firmware): an unfinished coverage pivot is not
+        re-sent; the leg it turned onto (start_local -> next pivot vertex / sub-path end) is
+        skipped and recorded, the next leg / sub-path is driven. True = handled. False (the
+        robot is within ``lim`` of the leg, the per-mission cap is used up, policy 'retry',
+        no pose): the caller's _pivot_unfinished path (follow / re-send / STUCK)."""
+        m, p, pose = self.mission, self.p, self.inputs.pose
+        if str(p.blocked_pivot_policy).strip().lower() != 'skip' or heading is None or \
+                pose is None or len(pose) < 3 or outcome == CANCELED:
+            return False
+        delta = geo.wrap_angle(heading - float(pose[2]))
+        if abs(delta) < lim:
+            return False
+        cap = int(p.blocked_pivot_max_skips)
+        if m.pivot_skips >= cap:
+            self._log('warn', 'blocked pivot: %d skips this mission (cap %d): pivot again / '
+                      'stop' % (m.pivot_skips, cap))
+            return False
+        m.pivot_skips += 1
+        self._pivot_tries = {}
+        last = self._seg_last()
+        frm = min(m.start_local, last)
+        end = min([c for c in self._cov_pivots() if c > frm] + [last])
+        why = 'coverage pivot %s, %.0f deg off the leg' % (outcome, math.degrees(delta))
+        self._log('warn', 'blocked pivot: skip area %d sub-path %d poses %d -> %d at (%.2f, %.2f) '
+                          '(%s), skip %d/%d' % (m.area_idx, m.sub_i, frm, end, pose[0], pose[1],
+                                                why, m.pivot_skips, cap))
+        self._incident('blocked_pivot', why)
+        m.pivot_done, m.pivot_target, m.corner_end = None, None, None
+        self._soft_blade_off('blocked pivot')
+        if m.stretch is not None:            # the end-of-area re-try of a skipped piece
+            self._stretch_blocked('blocked pivot (%s)' % why)
+            return True
+        if end > frm:
+            offs, _ = subpath_offsets(m.subpaths)
+            if p.blocked_pivot_requeue and p.requeue_skipped:
+                self._record_skip(frm, end)
+            else:
+                m.blocked.append((m.area_idx, offs[m.sub_i] + frm, offs[m.sub_i] + end))
+        if end >= last:
+            m.step = None
+            self._segment_done()
+            return True
+        m.start_local = end
+        m.transit_fails = m.follow_fails = 0
+        m.route_plan_fails = 0
+        self._dispatch(force_transit=True)
+        return True
 
     def coverage_mppi(self):
         """True when coverage sub-paths are driven by MPPI (``coverage_controller``)."""
