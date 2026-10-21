@@ -265,6 +265,15 @@ behavior_tree_node:
     # a gentler corner K-turns too when its best fillet / pivot is over this (retracing
     # curves and drawing jogs; nothing within the limit: the least overhang, logged at warn)
     path_conditioning_kturn_gentle_m: 0.33
+    # a convex fillet's limit: max(body limit, its own curvature envelope
+    # sqrt((r + 0.235)^2 + 0.6^2) - r + this): the line itself bends like that (owner's
+    # drive); K-turns only where no fillet r >= r_min fits
+    path_conditioning_fillet_envelope_margin_m: 0.03
+    # area / path outlines cleaned in memory for the planner and the conditioner (never the
+    # areas file, never the body boundary check): jogs within area_outline_jog_m dropped,
+    # then Douglas-Peucker at area_outline_simplify_m (0 = off)
+    area_outline_simplify_m: 0.05
+    area_outline_jog_m: 0.10
     path_conditioning_kturn_back_max_m: 1.5
     # 2026-10-16: transit / dock routes take no fillet tighter than this (the route
     # controller runs them at transit speed; MPPI ran 0.4 m wide of an r 0.5 m dock-path

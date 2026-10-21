@@ -688,19 +688,19 @@ def test_kturn_on_a_lap_on_the_line_keeps_the_swept_body_within_the_soft_limit(c
 
 
 def test_kturn_hard_mode_keeps_the_whole_body_inside():
-    # hard: lap at 0.45 in a 2 m square, fillets forced off (r 1.0 does not fit): the
+    # hard: lap at 0.45 in a 2 m square, fillets forced off (r 2.0 does not fit): the
     # vertex pivot sweeps the front corners ~0.2 m out, the K-turn keeps everything inside
     S, d = 2.0, 0.45
     poly = [(0, 0), (S, 0), (S, S), (0, S)]
     lap = _lap([(d, d), (S - d, d), (S - d, S - d), (d, S - d)], mid=True)
-    p = pc.Params(body_limit_m=0.0, r_min=1.0, r_max=1.0, convex_r_max=1.0)
+    p = pc.Params(body_limit_m=0.0, r_min=2.0, r_max=2.0, convex_r_max=2.0)
     res = pc.condition(lap, [poly], p)
     assert res.valid, res.errors
     assert sum(1 for c in res.corners if c.choice == 'kturn') == 4
     worst, nose = _replay_body(res, [poly], p)
     assert worst <= 0.01 and nose <= 0.0
     # without the body limit: vertex pivots, the body out ~0.2
-    plain = pc.condition(lap, [poly], pc.Params(r_min=1.0, r_max=1.0))
+    plain = pc.condition(lap, [poly], pc.Params(r_min=2.0, r_max=2.0))
     assert [c.choice for c in plain.corners].count('pivot') >= 3
     assert _replay_body(plain, [poly], p)[0] > 0.15
 
@@ -764,17 +764,19 @@ def test_join_heading_honours_a_pivot_vertex_inside_the_look_ahead():
 
 
 def kturn_h():
-    """Lap 0 on the line of an 8 x 4 m area (soft): K-turns at its corners."""
-    h = Harness(path_conditioning=True)
-    h.areas = [{'name': 'a', 'outer': [(0, 0), (8, 0), (8, 4), (0, 4)], 'obstacles': [],
+    """Lap 0 on the line of a 3 x 2.5 m area (soft) whose corners no fillet fits (r 3.0
+    only): K-turns there instead of vertex pivots."""
+    h = Harness(path_conditioning=True, path_conditioning_r_min_m=3.0,
+                path_conditioning_r_max_m=3.0, path_conditioning_convex_r_max_m=3.0)
+    h.areas = [{'name': 'a', 'outer': [(0, 0), (3, 0), (3, 2.5), (0, 2.5)], 'obstacles': [],
                 'is_navigation_area': False}]
-    lap = _lap([(2, 0), (8, 0), (8, 4), (0, 4), (0, 0), (1.5, 0)])
+    lap = _lap([(1.5, 0), (3, 0), (3, 2.5), (0, 2.5), (0, 0), (1.0, 0)])
     sp = [(q[0], q[1], math.atan2(lap[min(i + 1, len(lap) - 1)][1] - q[1],
                                   lap[min(i + 1, len(lap) - 1)][0] - q[0]))
           for i, q in enumerate(lap)]
     start_until_planning(h)
-    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
-    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp, line(1.0, 2.0, 7.0, 2.0)]))
+    h.fsm.inputs.pose = (1.5, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp, line(0.6, 1.2, 2.4, 1.2)]))
     h.fsm.inputs.is_cutting = True
     h.tick()
     return h
@@ -790,6 +792,7 @@ def test_mission_drives_a_kturn_about_turn_reverse_blade_off_then_pivot_inward()
     assert d1 > 0 and d2 < 0                         # CCW lap: about-turn left, V pivot right
     # forward leg 0 up to P1
     p1 = m.subpaths[1][0]
+    h.fsm.inputs.pose = (p1[0], p1[1], 0.0)
     h.finish(f.ACT_FOLLOW, arrive=False)
     for _ in range(5):                               # (corner pivots before P1, if any)
         if m.sub_i == 1:
@@ -897,3 +900,67 @@ def test_kturn_retraces_a_jog_vertex_with_a_pivot_in_the_reverse_leg():
         assert geo.is_reverse_subpath(lg['poses'])
     assert abs(abs(math.degrees(legs[2]['start_turn'])) - 30.0) < 3.0
     assert _replay_body(res, region, p, (i_p1, i_v))[0] <= 0.26 + 0.01
+
+
+def _rounded_rect(w, h, R, n=6):
+    """A w x h rectangle whose corners are drawn arcs of radius R (n segments each), CCW."""
+    out = []
+    for cx, cy, a0 in ((w - R, R, -90), (w - R, h - R, 0), (R, h - R, 90), (R, R, 180)):
+        for k in range(n + 1):
+            a = math.radians(a0 + 90.0 * k / n)
+            out.append((cx + R * math.cos(a), cy + R * math.sin(a)))
+    return out
+
+
+@pytest.mark.parametrize('R', [0.44, 0.72])
+def test_drawn_arc_bends_on_lap0_take_fillets_not_kturns(R):
+    # owner_far Area 6's bulges are driven arcs (R 0.44 / 0.72): following them ON the line
+    # puts the outer front corner sqrt((R + 0.235)^2 + 0.6^2) - R out (0.46 / 0.41), as the
+    # owner's own drive did. That is the line's curvature, not a corner: no K-turn there.
+    poly = _rounded_rect(6.0, 4.0, R)
+    res = pc.condition(_lap(poly, mid=True), [poly], pc.Params(body_limit_m=0.26))
+    assert res.valid, res.errors
+    assert res.kturns == []
+    assert all(c.choice in ('fillet', 'kink') for c in res.corners), \
+        [(c.choice, round(math.degrees(c.turn))) for c in res.corners]
+    for c in res.corners:
+        if c.body_m is not None:
+            assert c.body_m <= c.limit_m + 1e-3
+
+
+def test_clean_area_ring_drops_a_cusp_and_a_start_wobble_only():
+    # owner_far Area 6's recorded vertices: the +40 / -60 / +25 deg wobble around the start
+    # vertex v0 (v42, v0, v1) and the 9 cm cusp v19 -> v20 (each a K-turn on lap 0); the
+    # rest of the outline is filler. Drawn R 0.72 arcs keep their shape.
+    v41, v42, v0 = (-27.8459, -15.6639), (-28.6156, -15.2297), (-28.7605, -15.2584)
+    v1, v2 = (-28.9114, -15.0863), (-29.3873, -14.8787)
+    v18, v19, v20, v21 = (-27.7254, -4.10399), (-27.1895, -3.48144), (-27.2757, -3.49238), \
+        (-27.2737, -2.70777)
+    ring = [v0, v1, v2, (-33.0, -12.0), (-33.0, -6.0), v18, v19, v20, v21, (-27.0, -1.5),
+            (-22.0, -1.5), (-22.0, -13.0), v41, v42]
+    out = geo.clean_area_ring(ring)
+    near = lambda q: any(math.dist(q, r) < 0.01 for r in out)   # noqa: E731
+
+    def turns(poly):
+        n = len(poly)
+        return [math.degrees(geo.wrap_angle(
+            math.atan2(poly[(i + 1) % n][1] - poly[i][1], poly[(i + 1) % n][0] - poly[i][0]) -
+            math.atan2(poly[i][1] - poly[i - 1][1], poly[i][0] - poly[i - 1][0])))
+            for i in range(n)]
+    # no cusp left (no vertex turns > 90 deg there) and the wobble is one gentle bend
+    for q, t in zip(out, turns(out)):
+        if math.dist(q, v19) < 0.5 or math.dist(q, v0) < 0.5:
+            assert abs(t) < 45.0, (q, t)
+    assert not (near(v19) and near(v20))
+    assert sum(1 for q in (v42, v0, v1) if near(q)) <= 1
+    for q in ring:                                               # never far off the line
+        assert abs(pc.clearance(q, [out])) <= 0.10
+    # the drawn arcs of a rounded rectangle (R 0.72) stay: corners within 0.05 of the arcs
+    rr = _rounded_rect(6.0, 4.0, 0.72)
+    out = geo.clean_area_ring(rr)
+    assert len(out) >= 4 * 3
+    for q in rr:
+        assert abs(pc.clearance(q, [out])) <= 0.05 + 1e-6
+    # an outline with nothing to drop keeps its order and vertices
+    sqr = [(0, 0), (5, 0), (5, 5), (0, 5)]
+    assert geo.clean_area_ring(sqr) == [(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)]

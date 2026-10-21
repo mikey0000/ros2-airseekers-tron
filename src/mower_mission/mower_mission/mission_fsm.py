@@ -841,6 +841,13 @@ class Params:
     path_conditioning_kturn: bool = True
     path_conditioning_kturn_min_rad: float = 1.05
     path_conditioning_kturn_gentle_m: float = 0.33   # gentler corners: K-turn when over this
+    # convex fillets: limit = max(body limit, the arc's own front-corner envelope + this)
+    path_conditioning_fillet_envelope_margin_m: float = 0.03
+    # Area / path outlines for the planner and the conditioner region, cleaned in memory
+    # (geometry.clean_area_ring): drawing jogs within area_outline_jog_m of their neighbours'
+    # chord dropped, then Douglas-Peucker at area_outline_simplify_m. 0 = that step off.
+    area_outline_simplify_m: float = 0.05
+    area_outline_jog_m: float = 0.10
     path_conditioning_kturn_back_max_m: float = 1.5
     # transit / dock routes: smallest fillet radius (tighter corners pivot at the vertex)
     path_conditioning_route_r_min_m: float = 0.8
@@ -1858,7 +1865,7 @@ class MissionFSM:
                           % (cur['index'], resp.get('message') or 'unavailable'))
             area, run = pv['areas'][cur['index']], cur['runs'][0]
             self._start_action(ACT_PLAN, {
-                'outer_boundary': list(area.get('outer', [])),
+                'outer_boundary': self._plan_outline(area.get('outer', [])),
                 'obstacles': [list(o) for o in area.get('obstacles', [])],
                 'mow_angle_deg': float(run['angle']),
                 'perpendicular': bool(run['perpendicular'])}, self.p.plan_timeout_s,
@@ -2881,7 +2888,7 @@ class MissionFSM:
         m = self.mission
         area, run = m.areas[m.area_idx], m.runs[m.run_i]
         self._start_action(ACT_PLAN, {
-            'outer_boundary': list(area.get('outer', [])),
+            'outer_boundary': self._plan_outline(area.get('outer', [])),
             'obstacles': [list(o) for o in area.get('obstacles', [])],
             'mow_angle_deg': float(run['angle']),
             'perpendicular': bool(run['perpendicular'])}, self.p.plan_timeout_s)
@@ -3217,10 +3224,22 @@ class MissionFSM:
             edge_pivot_rad=float(p.path_conditioning_edge_pivot_rad),
             edge_clearance_m=float(p.path_conditioning_edge_clearance_m))
 
+    def _plan_outline(self, outer):
+        """An area / path outline as the planner and the conditioner see it: drawing jogs
+        dropped and Douglas-Peucker'd in memory (geometry.clean_area_ring; the owner's areas
+        file and the mission's area snapshot, which the body boundary check uses, keep the
+        recorded outline)."""
+        pts = [tuple(q[:2]) for q in (outer or [])]
+        tol, jog = float(self.p.area_outline_simplify_m), float(self.p.area_outline_jog_m)
+        if len(pts) < 4 or (tol <= 0.0 and jog <= 0.0):
+            return list(pts)
+        ring = geo.clean_area_ring(pts, max(0.0, tol), max(0.0, jog))
+        return ring if len(ring) >= 3 else list(pts)
+
     def _region(self):
         """Allowed region polygons: mowing areas U drawn path channels U the dock corridor
-        (the dock -> approach capsule as a rectangle)."""
-        polys = [list(a['outer']) for a in (self._region_areas or {}).values()
+        (the dock -> approach capsule as a rectangle); outlines as the planner got them."""
+        polys = [self._plan_outline(a['outer']) for a in (self._region_areas or {}).values()
                  if len(a.get('outer') or []) >= 3]
         dock = self.inputs.dock_pose
         if dock is not None and len(dock) >= 3:
@@ -3243,6 +3262,7 @@ class MissionFSM:
         prm.kturn = bool(p.path_conditioning_kturn)
         prm.kturn_min_rad = float(p.path_conditioning_kturn_min_rad)
         prm.kturn_gentle_m = float(p.path_conditioning_kturn_gentle_m)
+        prm.fillet_envelope_margin_m = float(p.path_conditioning_fillet_envelope_margin_m)
         prm.kturn_back_max_m = float(p.path_conditioning_kturn_back_max_m)
         return {'subpaths': [list(sp) for sp in subpaths], 'region': self._region(),
                 'prm': prm, 'leg_max_m': float(self.p.turn_leg_max_m),
@@ -6948,13 +6968,13 @@ def condition_plan(job):
                              % (area, len(out), c.x, c.y, math.degrees(c.turn), c.why)))
             if prm.body_limit_m is not None and c.body_m is not None and \
                     c.choice in ('fillet', 'pivot', 'kturn') and \
-                    c.body_m > prm.body_limit_m + 1e-3:
+                    c.body_m > (c.limit_m if c.limit_m is not None else prm.body_limit_m) + 1e-3:
                 # nothing fits the planning limit here: the least-overhang option is driven
                 logs.append(('warn', 'area %d sub-path %d: corner at (%.2f, %.2f) %+.0f deg: '
                                      '%s, body %.2f m out > planning limit %.2f (least '
                                      'overhang of fillet / pivot / K-turn)%s' % (
                                          area, len(out), c.x, c.y, math.degrees(c.turn),
-                                         c.choice, c.body_m, prm.body_limit_m,
+                                         c.choice, c.body_m, c.limit_m or prm.body_limit_m,
                                          ' [%s]' % c.why if c.why else '')))
         # K-turns (edge layout round 2): forward to P1 / reverse onto V / forward legs, each
         # its own sub-path; the planned pivot at a leg's start (P1 about-turn, V pivot) rides

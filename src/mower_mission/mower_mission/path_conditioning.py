@@ -55,6 +55,9 @@ hard 0.0, well under the body trip limits). Where a corner's fillet or pivot exc
   pose yaw facing against the travel; :func:`split_kturns` cuts the path into forward /
   reverse / forward sub-paths for the mission (pivot markers at P1 and V, the planned pivot
   angles carried along).
+A convex fillet is held to max(limit, its own curvature envelope sqrt((r + hw)^2 + front^2)
+- r + ``fillet_envelope_margin_m``): that overhang is the line's curvature (the owner drives
+those arcs), not the corner's; K-turns only replace pivots (no fillet r >= r_min fits).
 Otherwise the corner keeps its fillet / pivot (gentle corners: large turns stay rare);
 ``Corner.body_m`` over the limit is logged at warn by the mission.
 
@@ -91,6 +94,8 @@ class Corner:
     cut_m: float = 0.0           # how far the fillet cuts inside the vertex
     why: str = ''
     body_m: Optional[float] = None   # swept body outside the region (body_limit_m set)
+    limit_m: Optional[float] = None  # its limit: body_limit_m, or a convex fillet's own
+    #                                  curvature envelope + fillet_envelope_margin_m
     back_m: float = 0.0          # K-turn: reverse length P1 -> V
 
 
@@ -141,7 +146,8 @@ class Params:
     convex_r_max: float = 2.0      # body-limited convex corners: fillets up to this radius
     kturn: bool = True
     kturn_min_rad: float = 1.05    # K-turns at corners turning this much (60 deg) ...
-    kturn_gentle_m: float = 0.33   # ... or at gentler ones whose fillet / pivot is over this
+    kturn_gentle_m: float = 0.33   # ... or at gentler ones whose pivot is over this
+    fillet_envelope_margin_m: float = 0.03
     kturn_back_min_m: float = 0.30
     kturn_back_max_m: float = 1.50
 
@@ -617,12 +623,25 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
                                 chosen, simple_ov = alt, ov
                             break
                         r = round(r - 0.25, 6)
+                if clearance(pts[vi], region) <= 0.05 and _convex(v, u_in, u_out, region):
+                    # a fillet r on a lap ON the line (soft lap 0; not an inset lap, not
+                    # hard): the outer front corner rides
+                    # sqrt((r + hw)^2 + front^2) - r past it, as on any curve of r the owner
+                    # drives (the recorded line itself bends like that: Area 6's R 0.44 /
+                    # 0.72 arcs). That curvature envelope (+ margin) is the fillet's limit,
+                    # not the corner's: no K-turn at a bend a fillet r >= r_min drives.
+                    r_ = chosen[3]
+                    c.limit_m = max(lim, math.hypot(r_ + p.half_width_m, p.body_front_m) - r_ +
+                                    p.fillet_envelope_margin_m)
             else:
                 simple_ov = br.sweep(v_piv[0], v_piv[1], h_in, turn)
             c.body_m = simple_ov
+            if c.limit_m is None:
+                c.limit_m = lim
         kt = None
-        if br is not None and p.kturn and p.allow_pivot and simple_ov > lim + 1e-3 and \
-                abs(turn) >= p.pivot_min_rad and \
+        # K-turns only where no fillet r >= r_min fits (the corner would pivot in place)
+        if br is not None and chosen is None and p.kturn and p.allow_pivot and \
+                simple_ov > lim + 1e-3 and abs(turn) >= p.pivot_min_rad and \
                 (abs(turn) >= p.kturn_min_rad or simple_ov > p.kturn_gentle_m + 1e-3):
             if v_piv == v and clearance(v, region) < min(0.0, clearance(pts[vi], region)) - 0.005:
                 v_piv = tuple(pts[vi][:2])   # the K-turn reverses onto the drawn vertex
@@ -649,6 +668,7 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
                     for oc in res.corners:
                         if oc.choice == 'pivot' and geo.dist((oc.x, oc.y), pc_[1]) < 1e-6:
                             oc.choice, oc.why = 'retraced', 'pivot in the K-turn reverse leg'
+                            oc.body_m = None     # the K-turn's retrace covers its sweep
                 elif pc_[0] == 'raw':
                     if pc_[1] <= s1 + 1e-9:
                         pieces.append(('raw', pc_[1], s1))
