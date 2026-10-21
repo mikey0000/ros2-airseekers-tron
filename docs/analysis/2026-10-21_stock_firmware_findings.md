@@ -158,6 +158,31 @@ Where our large ring turns came from, and what changed:
 - **Curved approaches:** P1 is measured as arc length back along the incoming path, and the reverse leg retraces it. Pivots on the line along it, such as jogs, become in-place pivots inside the reverse leg. Corners under 60° also try a K-turn when they would exceed 0.33. Where nothing fits, the option with the least overhang is used and logged at warn.
 - **What remains:** run5 has no corner over 0.35 nominal. owner_far has 7 lap-0 corners on drawn convex bulges tighter than about r 1.3, at 0.36–0.43 nominal, and these are front-corner overhang. Driving the line there puts the front corners out whichever way the robot turns, so these are inside the 0.50 front-corner trip limit. Stepping lap 0 inward at tight bends would be a planner change, for the owner to decide.
 
+### Decision 2026-10-22: lap 0 stays on the driven line (owner option (c))
+
+- **The bulges are driven arcs.** Area 6's "bulges" are arcs the owner drove: v10–15 R≈0.72, v21–25 R 0.71, v31–33 R 0.44, v40–41 R 0.44.
+- **Antenna-trace argument.** Following the recorded line with base_link reproduces the owner's own drive to within 1 cm; the antenna-trace difference is ≤ 1 cm. Stepping lap 0 inward would cut short of what the owner drove.
+- **Arc envelope.** On such an arc the front corners sit sqrt((R + 0.235)² + 0.6²) − R out, and the nose sqrt(R² + 0.6²) − R:
+
+  | Arc R | Front corners out (m) | Nose out (m) |
+  |---|---|---|
+  | 0.44 | 0.46 | 0.30 |
+  | 0.72 | 0.41 | |
+
+  This is geometry, not error.
+- **Conditioner.** A convex fillet on a lap that runs on the line is held to max(limit, its own envelope + 0.03). A K-turn only replaces a pivot that no fillet with r ≥ r_min can replace. Area outlines are cleaned in memory before planning (jog drop, then Douglas-Peucker 0.05), which removes the 9 cm cusp at (-27.19, -3.48)→(-27.28, -3.49) and the v42/v0/v1 start wobble. The areas file and the boundary-check outline stay as recorded.
+- **Lap-0 K-turns on replay:** Area 6 drops from 5 to 0; run5 Area 1 has 1 (+100° V).
+- **Soft trip limits:**
+  - front corners 0.55: the R 0.44 envelope 0.46 plus tracking p99 0.07;
+  - nose 0.40;
+  - rear corners stay at 0.35 and still catch lateral drift.
+- **Blade reference.**
+  - The blade centre stays at the deck centre (blade_link 0.23 forward). We do not adopt stock's 0.398.
+  - The cut width follows the fitted 220 mm disc everywhere:
+    - map_server paints mow progress with blade_radius = blade_disc_mm / 2000 = 0.11 (it was 0.15, a 0.30 disc);
+    - coverage cut_width_m is 0.22 (was 0.20).
+  - `blade_disc_mm` is the one robot-wide setting, and the UI cutter_size setting (B1) will drive it.
+
 ## Obstacles
 
 Source: `mower_task/mower_logic/config/costmap.yaml` and controller strings.
