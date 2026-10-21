@@ -222,7 +222,18 @@ marker-frame thresholds (0.65 m, 0.05 m / 8°) transfer unchanged. Changing it m
 re-calibrating `docked_marker_offset` and rescaling the marker-distance parameters (list
 in the mower_docking README, "marker_size").
 
-SIM_RESULTS_PLACEHOLDER
+Sim results (2026-10-21, `ws/docking`; mower_sim, marker rendered at 0.055 m):
+
+- real_run5 ideal full gate: PASS (undock, mow, return, docked first attempt, one_wheel 0).
+  The marker was lost 0.31 m out; the filter prediction carried the reverse through it.
+- Dock-only from 1.2 m out, 0.30 m off the axis: LATERAL_ALIGN brought it to 0.00 m on
+  RTK, then docked first attempt (32 s).
+- Dock-only from 1.0 m, -0.12 m, -8.6°: docked (44 s), but the pose check fired twice on
+  heading (12.7°, 9.8°) and the 2-realign budget absorbed it. The marker-normal yaw is
+  the noisiest quantity at this marker size (the accepting detection differed from RTK by
+  up to 12°), so the 8° heading limit may cost realigns in the field too.
+- Not testable in the sim: exposure (the renderer ignores it), the retry offsets (no
+  failures to retry), dusk.
 
 ## Field symptoms these findings explain (2026-10-20/21)
 
