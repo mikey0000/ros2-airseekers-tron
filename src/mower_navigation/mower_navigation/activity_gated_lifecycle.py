@@ -99,6 +99,25 @@ INACTIVE_STATES = frozenset(('docked_idle', 'idle', 'charging'))
 
 # --- pure decision logic (no ROS; unit-tested in test/test_activity_gated_lifecycle.py) ----
 
+def node_now(node):
+    """time.monotonic, or the node's ROS clock in seconds under use_sim_time (mower_sim
+    publishes /clock, possibly faster than real time). Under sim time it first blocks until
+    the first /clock and seeds the node clock with it (no stamp on a zero clock)."""
+    if not node.get_parameter('use_sim_time').value:
+        return time.monotonic
+    from rclpy.time import Time
+    from rclpy.wait_for_message import wait_for_message
+    from rosgraph_msgs.msg import Clock as ClockMsg
+    clock = node.get_clock()
+    while not clock.now().nanoseconds and node.context.ok():
+        ok, msg = wait_for_message(ClockMsg, node, '/clock', time_to_wait=10.0)
+        if ok and (msg.clock.sec or msg.clock.nanosec) and not clock.now().nanoseconds:
+            clock.set_ros_time_override(Time.from_msg(msg.clock))
+        elif not ok:
+            node.get_logger().warn('use_sim_time: waiting for /clock')
+    return lambda: clock.now().nanoseconds * 1e-9
+
+
 class ParamSync:
     """When to (re)send one node's idle/active parameter set.
 
@@ -277,6 +296,7 @@ def _make_node_class():
     class ActivityGatedLifecycleManager(Node):
         def __init__(self):
             super().__init__('activity_gated_lifecycle_manager')
+            self._now = node_now(self)
             d = self.declare_parameter
             d('lifecycle_nodes', LIFECYCLE_NODES)
             d('lifecycle_manager', 'lifecycle_manager_navigation')
@@ -303,7 +323,7 @@ def _make_node_class():
             self._startup_grace = float(gp('startup_grace_s'))
             self._query_timeout = float(gp('query_timeout_s'))
             self._manage_timeout = float(gp('manage_timeout_s'))
-            now = time.monotonic()
+            now = self._now()
             self._watchdog = BringupWatchdog(gp('bringup_watchdog_s'),
                                              gp('bringup_watchdog_max_attempts'),
                                              gp('bringup_watchdog_backoff_s'), now)
@@ -365,7 +385,7 @@ def _make_node_class():
         # --- tick -------------------------------------------------------------------
 
         def _tick(self):
-            now = time.monotonic()
+            now = self._now()
             self._service_escalation(now)
             if self._probe is not None:
                 self._service_probe(now)
@@ -437,7 +457,7 @@ def _make_node_class():
             if self._query is None or future is not self._query[0]:
                 return    # dropped after its deadline
             self._query = None
-            self._watchdog.on_answer(time.monotonic())
+            self._watchdog.on_answer(self._now())
             try:
                 manager_active = bool(future.result().success)
             except Exception as e:
@@ -485,7 +505,7 @@ def _make_node_class():
             req.command = (self._Manage.Request.RESUME if want_active
                            else self._Manage.Request.PAUSE)
             future = self._manage_client.call_async(req)
-            self._transition = (future, time.monotonic(), want_active)
+            self._transition = (future, self._now(), want_active)
             future.add_done_callback(lambda f, wa=want_active: self._on_manage_done(f, wa))
 
         def _on_manage_done(self, future, want_active):
@@ -630,7 +650,7 @@ def _make_node_class():
             except Exception as e:
                 self.get_logger().error('%s: parameter update exception: %s' % (node, e),
                                         throttle_duration_sec=60.0)
-            if sync.acked(ok, time.monotonic()):
+            if sync.acked(ok, self._now()):
                 self.get_logger().info('%s: parameters set for %s' % (
                     node, 'active' if state else 'idle'))
 

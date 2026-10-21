@@ -39,7 +39,7 @@ from mower_map import areas as core
 from mower_map import nongrass_node as ngn
 from mower_map import route_graph as rgraph
 from mower_map import terrain as terr
-from mower_map.sub_pump import SubscriptionPump, flat_parser, parse_odometry
+from mower_map.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
 
 try:
     import tf2_ros
@@ -237,6 +237,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
 
     def __init__(self, **kwargs):
         super().__init__('map_server_node', **kwargs)
+        self._clk = node_clock(self)   # monotonic / sim time (use_sim_time)
         for k, v in PARAMS.items():
             self.declare_parameter(k, v)
         maps_dir = self.p('maps_dir')
@@ -554,7 +555,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         explode)."""
         if not self.p('return_corridor_enabled') or not self.store.areas:
             return None
-        if self.pose is None or time.monotonic() - self.pose_time > 2.0:
+        if self.pose is None or self._clk.now() - self.pose_time > 2.0:
             return None
         x, y = self.pose[0], self.pose[1]
         bb = core.bounding_box(polys)
@@ -745,11 +746,11 @@ class MapServerNode(ngn.NonGrassMixin, Node):
     # ------------------------------------------------------------------
     def on_status(self, msg, receipt=None):
         self.status = msg
-        self.status_time = time.monotonic() if receipt is None else receipt
+        self.status_time = self._clk.now() if receipt is None else receipt
 
     def on_gnss(self, msg, receipt=None):
         self.gnss = msg
-        self.gnss_time = time.monotonic() if receipt is None else receipt
+        self.gnss_time = self._clk.now() if receipt is None else receipt
 
     def on_heading_status(self, msg):
         try:
@@ -802,7 +803,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
     def is_cutting(self):
         self._pump.poll((self._status_sub,))
         return (self.status is not None and self.status_time is not None
-                and time.monotonic() - self.status_time <= float(self.p('status_max_age_s'))
+                and self._clk.now() - self.status_time <= float(self.p('status_max_age_s'))
                 and bool(self.status.is_cutting))
 
     def get_blade_offset(self, child_frame):
@@ -825,7 +826,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         q = msg.pose.pose.orientation
         yaw = core.yaw_from_quaternion(q.x, q.y, q.z, q.w)
         x, y = msg.pose.pose.position.x, msg.pose.pose.position.y
-        now = time.monotonic()
+        now = self._clk.now()
         if not (math.isfinite(x) and math.isfinite(y)):
             return
         self._pose_gate.max_jump_m = float(self.p('pose_jump_max_m'))
@@ -1277,7 +1278,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         if self.p('dock_gates_override'):
             return None
         self._pump.poll((self._status_sub, self._gnss_sub))
-        now = time.monotonic()
+        now = self._clk.now()
         if self.p('require_charging'):
             max_age = float(self.p('dock_set_status_max_age_s'))
             if self.status is None or now - self.status_time > max_age:
@@ -1460,7 +1461,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         return res
 
     def robot_xy(self):
-        if self.pose is not None and time.monotonic() - self.pose_time < 2.0:
+        if self.pose is not None and self._clk.now() - self.pose_time < 2.0:
             return self.pose[0], self.pose[1], None
         if self.tf_buffer is None:
             return None, None, 'no pose (odometry stale, tf unavailable)'
@@ -1558,7 +1559,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
     def on_imu(self, msg, receipt=None):
         q = msg.orientation
         self.imu = terr.rpy_from_quaternion(q.x, q.y, q.z, q.w)[:2] + (msg.angular_velocity.z,)
-        self.imu_time = time.monotonic() if receipt is None else receipt
+        self.imu_time = self._clk.now() if receipt is None else receipt
 
     def terrain_sample(self, x, y, yaw, odom, now):
         """One tilt sample per terrain_sample_min_move_m of travel, while moving

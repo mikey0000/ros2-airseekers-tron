@@ -11,6 +11,7 @@ from mower_control import cmd_vel_slew as cs
 
 DT = 0.05
 HALF = cs.TRACK_WIDTH_M / 2.0
+from mower_control.sub_pump import WALL_CLOCK
 
 
 def inner(v, w):
@@ -41,7 +42,7 @@ def _node(always=True, state='TRANSIT'):
         _cur_lin=0.0, _cur_ang=0.0, _tgt=None, _last_cmd_time=None, _last_tick=None,
         _next_log=0.0, get_logger=lambda: log, _gate=_gate(state),
         _pivot=cs.PivotAssist(enabled=False), _turn=cs.TurnShaper(),
-        _assist_gate=cs.PivotAssistGate())
+        _assist_gate=cs.PivotAssistGate(), _clk=WALL_CLOCK)
 
 
 def run(node, seq):

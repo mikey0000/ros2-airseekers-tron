@@ -12,6 +12,7 @@
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
+  <exec_depend>rosgraph_msgs</exec_depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>mower_lights_interfaces</depend>

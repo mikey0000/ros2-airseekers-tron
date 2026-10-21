@@ -38,7 +38,7 @@ from mower_gui_bridge import datum as dt
 from mower_gui_bridge import gui_relay
 from mower_gui_bridge import diagnostics as diag
 from mower_gui_bridge import state_machine as sm
-from mower_gui_bridge.sub_pump import (PeriodicRunner, SubscriptionPump, _header,
+from mower_gui_bridge.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, _header,
                                         flat_parser, odometry_frames, odometry_with_frames)
 
 PARAM_DEFAULTS = {
@@ -171,6 +171,7 @@ class GuiBridgeNode(Node):
 
     def __init__(self, **kwargs):
         super().__init__('gui_bridge', **kwargs)
+        self._clk = node_clock(self)   # monotonic / sim time (use_sim_time)
         for name, default in PARAM_DEFAULTS.items():
             self.declare_parameter(name, default)
         p = {name: self.get_parameter(name).value for name in PARAM_DEFAULTS}
@@ -396,7 +397,7 @@ class GuiBridgeNode(Node):
 
     def _mcu_alive(self):
         t = self._base_time
-        return t is not None and (time.monotonic() - t) <= float(self._p['mcu_timeout_s'])
+        return t is not None and (self._clk.now() - t) <= float(self._p['mcu_timeout_s'])
 
     def _hl_state(self):
         return self._sm.state if self._serve_hl else self._external_hl_state
@@ -491,7 +492,7 @@ class GuiBridgeNode(Node):
     def _on_base(self, msg):
         with self._lock:
             self._base = msg
-            self._base_time = time.monotonic()
+            self._base_time = self._clk.now()
             if msg.is_cutting:
                 self._blade_stamp = self._now()
             docked = self._sm.set_docked(bool(msg.is_docking_done)) if self._serve_hl else None
@@ -502,12 +503,12 @@ class GuiBridgeNode(Node):
     def _on_sensor(self, msg):
         with self._lock:
             self._sensor = msg
-            self._sensor_time = time.monotonic()
+            self._sensor_time = self._clk.now()
 
     def _on_battery(self, msg):
         with self._lock:
             self._battery = msg
-            self._battery_time = time.monotonic()
+            self._battery_time = self._clk.now()
 
     def _on_estop(self, msg):
         changed = False
@@ -528,17 +529,17 @@ class GuiBridgeNode(Node):
         with self._lock:
             self._fix_status = sm.parse_fix_status(msg.data)
             self._fix_status_raw = msg.data
-            self._fix_status_time = time.monotonic()
+            self._fix_status_time = self._clk.now()
 
     def _on_fix(self, msg):
-        if self._gps_fix_thr.due(time.monotonic()):
+        if self._gps_fix_thr.due(self._clk.now()):
             self._gps_fix_pub.publish(msg)
         with self._lock:
             self._last_fix = (int(msg.status.status), float(msg.latitude),
-                              float(msg.longitude), float(msg.altitude), time.monotonic())
+                              float(msg.longitude), float(msg.altitude), self._clk.now())
             parsed = None
             if self._fix_status_time is not None and \
-                    time.monotonic() - self._fix_status_time <= float(
+                    self._clk.now() - self._fix_status_time <= float(
                         self._p['fix_status_timeout_s']):
                 parsed = self._fix_status
         values = sm.derive_gnss_status(int(msg.status.status), list(msg.position_covariance),
@@ -558,14 +559,14 @@ class GuiBridgeNode(Node):
             fix_type = int(values['fix_type'])
             changed = fix_type != self._gui_gnss_last_fix_type
             self._gui_gnss_last_fix_type = fix_type
-            if self._gui_gnss_thr.due(time.monotonic(), changed=changed):
+            if self._gui_gnss_thr.due(self._clk.now(), changed=changed):
                 self._gui_gnss_pub.publish(out)
 
     def _wheel_odom_due(self):
         period = self._wheel_odom_period
         if period <= 0.0:
             return True
-        now = time.monotonic()
+        now = self._clk.now()
         if now - self._wheel_odom_last < period:
             return False
         self._wheel_odom_last = now
@@ -586,7 +587,7 @@ class GuiBridgeNode(Node):
             self._map_odom_pub.publish(msg)
 
     def _on_filtered_raw(self, data):
-        self._filtered_time = time.monotonic()
+        self._filtered_time = self._clk.now()
         # Same output as _on_filtered, done on the serialized bytes (no deserialize /
         # serialize round trip): relay untouched when the frames already match, otherwise
         # rewrite the two frame strings (ekf publishes odom/base_link).
@@ -599,7 +600,7 @@ class GuiBridgeNode(Node):
             return
         if self._map_odom_pub is not None:
             self._map_odom_pub.publish(out)
-        if self._gui_pose_pub is not None and self._gui_pose_thr.due(time.monotonic()):
+        if self._gui_pose_pub is not None and self._gui_pose_thr.due(self._clk.now()):
             self._gui_pose_pub.publish(out)
 
     def _on_detections_raw(self, data):
@@ -607,7 +608,7 @@ class GuiBridgeNode(Node):
             key = _header(data)[0].frame_id
         except (ValueError, IndexError, Exception):  # noqa: BLE001
             key = None
-        if self._gui_det_thr.due(time.monotonic(), key):
+        if self._gui_det_thr.due(self._clk.now(), key):
             self._gui_det_pub.publish(data)
 
     def _relay_detections(self):
@@ -618,7 +619,7 @@ class GuiBridgeNode(Node):
 
     def _on_obstacle_close(self, msg):
         value = bool(msg.data)
-        if self._gui_obstacle_gate.due(value, time.monotonic()):
+        if self._gui_obstacle_gate.due(value, self._clk.now()):
             self._gui_obstacle_pub.publish(Bool(data=value))
 
     def _relay_obstacle_close(self):
@@ -684,7 +685,7 @@ class GuiBridgeNode(Node):
             fields = (active, latched, lift, reason)
             changed = fields != self._gui_emergency_last
             self._gui_emergency_last = fields
-            if self._gui_emergency_thr.due(time.monotonic(), changed=changed):
+            if self._gui_emergency_thr.due(self._clk.now(), changed=changed):
                 self._gui_emergency_pub.publish(msg)
 
     # ------------------------------------------------------------------
@@ -718,7 +719,7 @@ class GuiBridgeNode(Node):
                 msg.blade_status_stamp = self._blade_stamp
             msg.firmware_compatible = True
         self._status_pub.publish(msg)
-        if self._gui_status_pub is not None and self._gui_status_thr.due(time.monotonic()):
+        if self._gui_status_pub is not None and self._gui_status_thr.due(self._clk.now()):
             self._gui_status_pub.publish(msg)
 
     def _publish_power(self):
@@ -834,7 +835,7 @@ class GuiBridgeNode(Node):
                 'status': int(getattr(status, 'status', 0) if status is not None else 0)}
 
     def _diagnostics_snapshot(self):
-        now = time.monotonic()
+        now = self._clk.now()
 
         def age(t):
             return None if t is None else max(0.0, now - t)
@@ -1002,7 +1003,7 @@ class GuiBridgeNode(Node):
             ok, reason = dt.fix_usable(None, None, None, None, 0.0)
         else:
             status, lat, lon, alt, t = fix
-            ok, reason = dt.fix_usable(status, lat, lon, time.monotonic() - t,
+            ok, reason = dt.fix_usable(status, lat, lon, self._clk.now() - t,
                                        float(p['datum_fix_max_age_s']))
         if not ok:
             resp.success = False

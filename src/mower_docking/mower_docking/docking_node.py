@@ -37,7 +37,7 @@ from mower_interfaces.srv import ChargingControl
 
 from mower_docking import dock_logic as dl
 from mower_docking.exposure import AUTO, STOCK_SEQUENCE, ExposureStepper
-from mower_docking.sub_pump import SubscriptionPump, flat_parser, parse_odometry
+from mower_docking.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
 from mower_docking.quiet_action import QuietActionClient
 
 try:
@@ -52,6 +52,7 @@ class DockingServer(Node):
 
     def __init__(self):
         super().__init__('mower_docking')
+        self._clk = node_clock(self)   # monotonic / sim time (use_sim_time)
         dp = dl.DockParams()
         g = dl.ControllerGains()
         decl = self.declare_parameter
@@ -320,7 +321,7 @@ class DockingServer(Node):
                          dl.yaw_from_quaternion(q.x, q.y, q.z, q.w))
         with self._lock:
             self._odom = pose
-            self._odom_t = time.monotonic()
+            self._odom_t = self._clk.now()
 
     def _on_status(self, msg: MowerBaseDevStatus) -> None:
         with self._lock:
@@ -333,12 +334,12 @@ class DockingServer(Node):
             self._bumper = bool(getattr(msg, 'bumper_triggered', False) or
                                 getattr(msg, 'left_bumper_triggered', False) or
                                 getattr(msg, 'right_bumper_triggered', False))
-            self._status_t = time.monotonic()
+            self._status_t = self._clk.now()
 
     def _on_bumper_routing(self, msg) -> None:
         with self._lock:
             self._bumper_routing = int(msg.data) != 0
-            self._bumper_routing_t = time.monotonic()
+            self._bumper_routing_t = self._clk.now()
 
     def _on_dock_pose(self, msg: PoseStamped) -> None:
         q = msg.pose.orientation
@@ -373,7 +374,7 @@ class DockingServer(Node):
                          dl.yaw_from_quaternion(q.x, q.y, q.z, q.w))
         with self._lock:
             self._progress = pose
-            self._progress_t = time.monotonic()
+            self._progress_t = self._clk.now()
 
     def _on_map_pose(self, msg: Odometry) -> None:
         q = msg.pose.pose.orientation
@@ -381,7 +382,7 @@ class DockingServer(Node):
                          dl.yaw_from_quaternion(q.x, q.y, q.z, q.w))
         with self._lock:
             self._map_pose = pose
-            self._map_pose_t = time.monotonic()
+            self._map_pose_t = self._clk.now()
 
     def _on_gps(self, msg) -> None:
         with self._lock:
@@ -394,7 +395,7 @@ class DockingServer(Node):
                 self._cam_D = list(msg.d) if len(msg.d) else [0.0] * 5
 
     def _on_image(self, msg: Image) -> None:
-        now = time.monotonic()
+        now = self._clk.now()
         rate = float(self.get_parameter('max_detection_rate_hz').value)
         if rate > 0 and now - self._last_detect_t < 1.0 / rate:
             return
@@ -547,7 +548,7 @@ class DockingServer(Node):
         return GoalResponse.ACCEPT
 
     def _snapshot(self) -> dl.Snapshot:
-        now = time.monotonic()
+        now = self._clk.now()
         p = self.get_parameter
         with self._lock:
             fresh_progress = now - self._progress_t <= p('odom_timeout_s').value
@@ -584,7 +585,7 @@ class DockingServer(Node):
         timeout the snapshot simply reports stale inputs, as before when they were missing.
         """
         p = self.get_parameter
-        t0 = time.monotonic()
+        t0 = self._clk.now()
         with self._lock:
             self._contact.reset()
             self._status_count = 0
@@ -604,7 +605,7 @@ class DockingServer(Node):
                            parser=flat_parser(UInt8))
         pump.start()
         self._goal_pump = pump
-        while time.monotonic() - t0 < timeout:
+        while self._clk.now() - t0 < timeout:
             with self._lock:
                 map_ok = not p('map_pose_topic').value or self._map_pose_t >= t0
                 if self._status_count >= self._contact.n and self._odom_t >= t0 and map_ok:
@@ -620,10 +621,10 @@ class DockingServer(Node):
 
     def _stop_burst(self) -> None:
         rate = float(self.get_parameter('control_rate_hz').value)
-        end = time.monotonic() + float(self.get_parameter('stop_burst_s').value)
-        while time.monotonic() < end:
+        end = self._clk.now() + float(self.get_parameter('stop_burst_s').value)
+        while self._clk.now() < end:
             self._publish_cmd(0.0, 0.0)
-            time.sleep(1.0 / rate)
+            self._clk.sleep(1.0 / rate)
         self._publish_cmd(0.0, 0.0)
 
     def _call_charging(self, enable: bool) -> None:
@@ -882,7 +883,7 @@ class DockingServer(Node):
                 self._exposure = self._make_stepper()
                 self._exp_active = self._exp_lost = False
                 self._dstat = self._new_dstat()
-        diag_t = time.monotonic()
+        diag_t = self._clk.now()
         search = None   # per-SEARCHING-window raw detection counts
         out = machine.start(self._snapshot())
         self._log_notes(out)
@@ -890,7 +891,7 @@ class DockingServer(Node):
         last_state = None
         try:
             while rclpy.ok():
-                tick = time.monotonic()
+                tick = self._clk.now()
                 if goal_handle.is_cancel_requested:
                     out = machine.cancel()
                     self._handle(out.requests)
@@ -935,7 +936,7 @@ class DockingServer(Node):
                 if out.done:
                     break
                 goal_handle.publish_feedback(make_feedback(out))
-                time.sleep(max(0.0, period - (time.monotonic() - tick)))
+                self._clk.sleep(max(0.0, period - (self._clk.now() - tick)))
             if out.success and getattr(out, 'calibrated_offset', None) is not None:
                 self._save_calibration(float(out.calibrated_offset))
             if out.success:
@@ -984,7 +985,7 @@ class DockingServer(Node):
         """A failed dock goal whose robot nevertheless ends on the contacts (2026-10-07:
         DOCK_STALLED, is_docking_done 8 s later): enable charging if the base reports
         is_docking_done within ``window`` s while no other goal runs."""
-        time.sleep(0.5)    # let _run's finally release the goal inputs
+        self._clk.sleep(0.5)    # let _run's finally release the goal inputs
         state = {'contact': False, 'charging': False}
         lock = threading.Lock()
 
@@ -997,13 +998,13 @@ class DockingServer(Node):
                        20, parser=flat_parser(MowerBaseDevStatus))
         pump.start()
         try:
-            watch = dl.PostFailWatch(time.monotonic(), window)
+            watch = dl.PostFailWatch(self._clk.now(), window)
             while rclpy.ok():
                 with self._lock:
                     busy = self._busy
                 with lock:
                     contact, charging = state['contact'], state['charging']
-                act = watch.step(time.monotonic(), contact, charging, busy)
+                act = watch.step(self._clk.now(), contact, charging, busy)
                 if act == 'enable':
                     self.get_logger().warn('is_docking_done after the failed dock goal: '
                                            'enabling charging')
@@ -1012,7 +1013,7 @@ class DockingServer(Node):
                     self.get_logger().info('on the dock after the failed goal: already charging')
                 if act is not None:
                     return
-                time.sleep(0.1)
+                self._clk.sleep(0.1)
         finally:
             pump.close()
 

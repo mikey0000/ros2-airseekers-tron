@@ -13,6 +13,7 @@
 
   <!-- ROS interfaces used by the node -->
   <depend>rclpy</depend>
+  <exec_depend>rosgraph_msgs</exec_depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>geometry_msgs</depend>

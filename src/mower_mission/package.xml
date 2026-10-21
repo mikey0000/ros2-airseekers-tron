@@ -13,6 +13,7 @@
   <license>GPL-3.0-or-later</license>
 
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>rosgraph_msgs</exec_depend>
   <exec_depend>action_msgs</exec_depend>
   <exec_depend>builtin_interfaces</exec_depend>
   <exec_depend>std_msgs</exec_depend>

@@ -107,7 +107,7 @@ from std_msgs.msg import Bool, String
 
 from mower_control.fast_msgs import (bool_bytes, parse_string, parse_twist,
                                      parse_twist_stamped)
-from mower_control.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
+from mower_control.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, flat_parser,
                                     parse_odometry)
 
 _DIG_TRUE = bool_bytes(True)
@@ -256,6 +256,7 @@ class SlipDetectorNode(Node):
 
     def __init__(self):
         super().__init__('slip_detector')
+        self._clk = node_clock(self)   # monotonic / sim time (use_sim_time)
 
         self.declare_parameter('slip_threshold', 0.3)
         self.declare_parameter('slip_window', 2.0)
@@ -351,7 +352,7 @@ class SlipDetectorNode(Node):
 
         # Resolve the measured source (auto-detect /wheel_vel vs /odom) on the same thread
         # as the tick, so the pump is never polled while a subscription is being added.
-        self._discovery_deadline = time.monotonic() + self._discovery_timeout
+        self._discovery_deadline = self._clk.now() + self._discovery_timeout
         self._runner = PeriodicRunner(
             self, [(1.0 / self._publish_rate, self._tick),
                    (0.5, self._resolve_measured_topic)], 'slip_detector')
@@ -406,7 +407,7 @@ class SlipDetectorNode(Node):
         if not topic:
             if self.get_publishers_info_by_topic('/wheel_vel'):
                 topic = '/wheel_vel'
-            elif time.monotonic() > self._discovery_deadline:
+            elif self._clk.now() > self._discovery_deadline:
                 topic = '/odom'
                 self.get_logger().warn(
                     'no /wheel_vel publisher within %.1f s; falling back to /odom'
@@ -428,7 +429,7 @@ class SlipDetectorNode(Node):
     # ------------------------------------------------------------------
     def _tick(self):
         self._pump.poll()
-        now = time.monotonic()
+        now = self._clk.now()
         self.step(now)
         if getattr(self, '_stuck_enabled', False):
             self.stuck_step(now)

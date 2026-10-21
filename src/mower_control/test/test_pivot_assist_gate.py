@@ -12,6 +12,7 @@ from mower_control import cmd_vel_slew as cs
 DT = 0.05
 HERE = os.path.dirname(os.path.abspath(__file__))
 MUX_YAML = os.path.join(HERE, '..', '..', 'mower_teleop', 'config', 'twist_mux.yaml')
+from mower_control.sub_pump import WALL_CLOCK
 
 
 def _gate(state):
@@ -41,7 +42,8 @@ def _node(state='MOWING', lethal_at=()):
         _max_linear_accel=0.5, _max_angular_accel=1.0, _cmd_timeout=0.5,
         _log_period=1.0, _cur_lin=0.0, _cur_ang=0.0, _tgt=None, _last_cmd_time=None,
         _last_tick=None, _next_log=0.0, get_logger=lambda: log, _gate=_gate(state),
-        _pivot=cs.PivotAssist(), _turn=cs.TurnShaper(), _assist_gate=ag)
+        _pivot=cs.PivotAssist(), _turn=cs.TurnShaper(), _assist_gate=ag,
+        _clk=WALL_CLOCK)
 
 
 def run(node, seconds, lin=0.0, ang=0.3, lanes=('navigation',), controller=True,

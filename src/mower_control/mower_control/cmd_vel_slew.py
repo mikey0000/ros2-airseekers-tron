@@ -189,7 +189,7 @@ from rcl_interfaces.msg import SetParametersResult
 from sensor_msgs.msg import Imu
 
 from mower_control.fast_msgs import parse_twist, twist_bytes
-from mower_control.sub_pump import PeriodicRunner, SubscriptionPump, parse_imu
+from mower_control.sub_pump import node_clock, PeriodicRunner, SubscriptionPump, parse_imu
 
 
 def slew(current, target, max_accel, dt):
@@ -1229,6 +1229,7 @@ class CmdVelSlewNode(Node):
 
     def __init__(self):
         super().__init__('cmd_vel_slew')
+        self._clk = node_clock(self)   # monotonic / sim time (use_sim_time)
 
         self.declare_parameter('max_linear_accel', 0.5)
         self.declare_parameter('max_angular_accel', 1.0)
@@ -1507,7 +1508,7 @@ class CmdVelSlewNode(Node):
 
     def _tick(self):
         self._pump.poll()
-        now = time.monotonic()
+        now = self._clk.now()
         out = self.step(now)
         if out is not None and CmdVelSlewNode.should_publish(self, out, now):
             self._pub.publish(twist_bytes(*out))
@@ -1725,7 +1726,7 @@ class CmdVelSlewNode(Node):
             # Log only when the regime (pass/arc/pivot) changes, at most every 2 s: the
             # radius changes every 20 Hz tick and flooded the log.
             kind = status.split(' ', 1)[0]
-            now = time.monotonic()
+            now = self._clk.now()
             if (kind != getattr(self, '_shape_log_kind', 'pass')
                     and now >= getattr(self, '_shape_log_next', 0.0)):
                 self._shape_log_kind = kind

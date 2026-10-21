@@ -81,7 +81,13 @@ public:
         cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("/bumper_cloud", 10);
         routing_pub_ = create_publisher<std_msgs::msg::UInt8>("/mower_base/bumper_routing_status", 10);
 
-        timer_ = create_wall_timer(50ms, [this]() { onTick(); });
+        // 20 Hz on the node clock under use_sim_time (mower_sim, possibly faster than real
+        // time), a wall timer otherwise (unchanged on the robot)
+        if (get_parameter("use_sim_time").as_bool()) {
+            timer_ = rclcpp::create_timer(this, get_clock(), 50ms, [this]() { onTick(); });
+        } else {
+            timer_ = create_wall_timer(50ms, [this]() { onTick(); });
+        }
         RCLCPP_INFO(get_logger(), "bumper_controller_node up");
     }
 

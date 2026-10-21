@@ -60,7 +60,7 @@ from mower_mission import mission_fsm as fsm_mod
 from mower_mission import mow_progress
 from mower_mission.resume import ResumeCursor
 from mower_mission.quiet_action import QuietActionClient
-from mower_mission.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
+from mower_mission.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, flat_parser,
                                     parse_odometry)
 
 TOPIC_DEFAULTS = {
@@ -215,6 +215,7 @@ class MissionNode(Node):
 
     def __init__(self, **kwargs):
         super().__init__('behavior_tree_node', **kwargs)
+        self._clk = node_clock(self)   # monotonic / sim time (use_sim_time)
         fsm_defaults = fsm_mod.Params()
         fsm_names = [n for n in fsm_defaults.__dataclass_fields__ if n != 'dock_pose']
         for name in fsm_names:
@@ -234,9 +235,9 @@ class MissionNode(Node):
         cursor = self._load_cursor()
         self._alternate_path = _expand(self._p['alternate_state_path'])
         self.fsm = fsm_mod.MissionFSM(fsm_mod.Params.from_dict(fsm_params), cursor=cursor,
-                                      now=time.monotonic(),
+                                      now=self._clk.now(),
                                       alternate_counts=self._load_alternate())
-        self.fsm.clock = time.monotonic   # request deadlines from the send-time clock
+        self.fsm.clock = self._clk.now   # send-time clock of request deadlines (sim time)
         # Battery settings are applied live (GUI Settings -> Battery pushes them).
         self.add_on_set_parameters_callback(self._on_set_params)
         self._height_mm = None          # last per-area blade height (mm), re-sent with blade ON
@@ -409,7 +410,7 @@ class MissionNode(Node):
         ], 'mission_periodic')
 
         with self._lock:
-            self._execute(self.fsm.initial_effects(time.monotonic()))
+            self._execute(self.fsm.initial_effects(self._clk.now()))
         self._pump.start()
         self._periodic.start()
         self.get_logger().info(
@@ -490,7 +491,7 @@ class MissionNode(Node):
             i = self.fsm.inputs
             i.emergency_active = bool(msg.active_emergency)
             i.emergency_reason = msg.reason
-            i.emergency_stamp = time.monotonic()
+            i.emergency_stamp = self._clk.now()
 
     def _on_hw_status(self, msg):
         with self._lock:
@@ -542,7 +543,7 @@ class MissionNode(Node):
             i.heading_prior = str(st.get('file_check') or '')
             i.heading_quality = str(st.get('quality') or '')
             i.heading_cog_age = _cog_age(st)
-            i.heading_stamp = time.monotonic()
+            i.heading_stamp = self._clk.now()
 
     def _on_localization(self, msg):
         """/localization/status (JSON): ok|degraded|lost drives the localization hold."""
@@ -554,7 +555,7 @@ class MissionNode(Node):
             i = self.fsm.inputs
             i.loc_state = str(st.get('state', ''))
             i.loc_reason = str(st.get('reason', ''))
-            i.loc_stamp = time.monotonic()
+            i.loc_stamp = self._clk.now()
 
     def _on_supervisor(self, msg):
         """/supervisor/status: a safety-critical dependency (MCU driver, cmd_vel_slew,
@@ -586,7 +587,7 @@ class MissionNode(Node):
             i.tilt_roll_deg = num(st.get('roll_deg'))
             i.tilt_pitch_deg = num(st.get('pitch_deg'))
             i.tilt_axis = str(st.get('axis', '') or '')
-            i.tilt_stamp = time.monotonic()
+            i.tilt_stamp = self._clk.now()
 
     def _on_obstacle_policy(self, msg):
         """{kind: none|dynamic|static, class, distance_m, bearing_deg}; the receipt time is
@@ -607,7 +608,7 @@ class MissionNode(Node):
             i.obstacle_distance = float(d) if isinstance(d, (int, float)) else None
             b = st.get('bearing_deg')
             i.obstacle_bearing = float(b) if isinstance(b, (int, float)) else None
-            i.obstacle_stamp = time.monotonic()
+            i.obstacle_stamp = self._clk.now()
 
     def _on_marker_in_view(self, msg):
         with self._lock:
@@ -631,13 +632,13 @@ class MissionNode(Node):
     def _on_rosout(self, data):
         if fsm_mod.parse_collision_abort(data):
             with self._lock:
-                self.fsm.inputs.collision_stamp = time.monotonic()
+                self.fsm.inputs.collision_stamp = self._clk.now()
         n = fsm_mod.parse_stereo_stale(data)
         if n is None:
             return
         with self._lock:
             self.fsm.inputs.stereo_stale_s = n
-            self.fsm.inputs.stereo_stale_stamp = time.monotonic()
+            self.fsm.inputs.stereo_stale_stamp = self._clk.now()
 
     def _on_gnss(self, msg):
         with self._lock:
@@ -656,7 +657,7 @@ class MissionNode(Node):
 
     def _on_cutter_height(self, msg):
         with self._lock:
-            fx = self.fsm.on_cutter_height(int(msg.data), time.monotonic())
+            fx = self.fsm.on_cutter_height(int(msg.data), self._clk.now())
             if self.fsm.mission is not None and self.fsm.mission.height_override_mm is not None:
                 # blade-ON requests carry the height: keep them on the live value
                 self._height_mm = self.fsm.mission.height_override_mm
@@ -681,7 +682,7 @@ class MissionNode(Node):
     def _tick(self):
         with self._lock:
             self._pump.poll()
-            self._execute(self.fsm.tick(time.monotonic()))
+            self._execute(self.fsm.tick(self._clk.now()))
             self._publish_motion_enabled()
             self._publish_activity()
             dec = json.dumps(self.fsm.obstacle_decision, sort_keys=True)
@@ -702,7 +703,7 @@ class MissionNode(Node):
     def _publish_motion_enabled(self):
         """Latched /motion_enabled: on change, and re-asserted every 1 s."""
         en = bool(self.fsm.motion_enabled())
-        now = time.monotonic()
+        now = self._clk.now()
         if en != self._motion_enabled or now - self._motion_pub_t >= 1.0:
             if en != self._motion_enabled:
                 self.get_logger().info('motion_enabled -> %s (%s)' % (en, self.fsm.phase))
@@ -711,13 +712,13 @@ class MissionNode(Node):
             self._motion_pub.publish(Bool(data=en))
 
     def _burst_tick(self):
-        if time.monotonic() < self._burst_until:
+        if self._clk.now() < self._burst_until:
             self._twist_pub.publish(Twist())
 
     def _srv_hlc(self, req, resp):
         with self._lock:
             self._pump.poll()
-            ok, fx = self.fsm.command(int(req.command), time.monotonic())
+            ok, fx = self.fsm.command(int(req.command), self._clk.now())
             self.get_logger().info('high_level_control(%d) -> %s [%s]' % (
                 req.command, ok, self.fsm.phase))
             self._execute(fx)
@@ -728,7 +729,7 @@ class MissionNode(Node):
     def _srv_start_in_area(self, req, resp):
         with self._lock:
             self._pump.poll()
-            ok, fx = self.fsm.start_in_area(int(req.area), time.monotonic())
+            ok, fx = self.fsm.start_in_area(int(req.area), self._clk.now())
             self.get_logger().info('start_in_area(%d) -> %s' % (req.area, ok))
             self._execute(fx)
             self._publish_motion_enabled()
@@ -738,7 +739,7 @@ class MissionNode(Node):
     def _srv_manual_blade(self, req, resp):
         with self._lock:
             self._pump.poll()
-            ok, msg, fx = self.fsm.manual_blade(bool(req.data), time.monotonic())
+            ok, msg, fx = self.fsm.manual_blade(bool(req.data), self._clk.now())
             self._execute(fx)
         resp.success, resp.message = bool(ok), msg
         return resp
@@ -748,7 +749,7 @@ class MissionNode(Node):
         # /coverage/full_plan + ~/preview_summary (settings_json is reserved).
         with self._lock:
             self._pump.poll()
-            ok, msg, fx = self.fsm.preview_plan(int(req.area_index), time.monotonic())
+            ok, msg, fx = self.fsm.preview_plan(int(req.area_index), self._clk.now())
             self._execute(fx)
         resp.success, resp.message = bool(ok), msg
         return resp
@@ -756,7 +757,7 @@ class MissionNode(Node):
     def _srv_clear_resume(self, req, resp):
         with self._lock:
             self._pump.poll()
-            ok, msg, fx = self.fsm.clear_resume(time.monotonic())
+            ok, msg, fx = self.fsm.clear_resume(self._clk.now())
             self._execute(fx)
         resp.success, resp.message = bool(ok), msg
         return resp
@@ -794,7 +795,7 @@ class MissionNode(Node):
             self._blade(False, e.reason)
         elif isinstance(e, f.ZeroBurst):
             self._twist_pub.publish(Twist())
-            self._burst_until = time.monotonic() + float(self._p['zero_burst_s'])
+            self._burst_until = self._clk.now() + float(self._p['zero_burst_s'])
         elif isinstance(e, f.CancelActions):
             self._cancel_all(e.reason)
         elif isinstance(e, f.StartAction):
@@ -848,7 +849,7 @@ class MissionNode(Node):
     def _publish_mow_progress(self):
         """~/mow_plan + ~/mow_progress for the GUI map (read-only view of the FSM)."""
         try:
-            now = time.monotonic()
+            now = self._clk.now()
             with self._lock:
                 m = self.fsm.mission
                 if m is not self._mp_mission:
@@ -967,7 +968,7 @@ class MissionNode(Node):
             down = self._nav2_down.pop(token, None)
             if down is not None and _nav2_down_explains(down[0], outcome):
                 result = dict(result or {}, **{fsm_mod.NAV2_INACTIVE_KEY: down[1]})
-            self._execute(self.fsm.on_action_result(token, outcome, result, time.monotonic()))
+            self._execute(self.fsm.on_action_result(token, outcome, result, self._clk.now()))
 
     def _await_nav2_ready(self, token):
         """Block this worker thread until the Nav2 lifecycle stack is ACTIVE.
@@ -984,7 +985,7 @@ class MissionNode(Node):
         cli = self._nav2_active_cli
         if not cli.service_is_ready():
             return ''                   # no readiness service: behave as before
-        deadline = time.monotonic() + max(0.0, float(self._p['nav2_ready_timeout_s']))
+        deadline = self._clk.now() + max(0.0, float(self._p['nav2_ready_timeout_s']))
         waited = False
         while True:
             with self._lock:
@@ -997,7 +998,7 @@ class MissionNode(Node):
             fut.add_done_callback(lambda _f: done.set())
             # nav2's is_active waits out an in-flight transition before answering, so allow
             # a whole call up to the remaining budget (do not mistake "slow" for "down").
-            done.wait(max(0.05, deadline - time.monotonic() + 0.5))
+            done.wait(max(0.05, deadline - self._clk.now() + 0.5))
             try:
                 ready = bool(fut.result().success)
             except Exception:  # noqa: BLE001 - no/invalid answer: poll again
@@ -1010,7 +1011,7 @@ class MissionNode(Node):
                 self.get_logger().info(
                     'Nav2 stack paused; waiting for it to resume before sending the goal')
                 waited = True
-            if time.monotonic() >= deadline:
+            if self._clk.now() >= deadline:
                 # The caller still sends the goal: it costs nothing and covers a resume
                 # between polls (the goal is then accepted and runs normally). If the stack
                 # is really down the goal is rejected / its server is missing, and the
@@ -1055,7 +1056,7 @@ class MissionNode(Node):
             return
         self.get_logger().info('sending %s goal' % ros_name)
         with self._lock:     # the watchdog runs from the actual send (after the waits)
-            self.fsm.mark_sent(e.token, time.monotonic())
+            self.fsm.mark_sent(e.token, self._clk.now())
         if e.name == fsm_mod.ACT_DOCK:   # relay the docking status detail into sub_state
             fut = client.send_goal_async(
                 goal, feedback_callback=lambda fb, e=e: self._on_dock_feedback(e, fb))
@@ -1069,7 +1070,7 @@ class MissionNode(Node):
         if not detail:
             return
         with self._lock:
-            self._execute(self.fsm.on_action_feedback(e.token, detail, time.monotonic()))
+            self._execute(self.fsm.on_action_feedback(e.token, detail, self._clk.now()))
 
     def _on_goal_response(self, e, fut):
         try:
@@ -1106,7 +1107,7 @@ class MissionNode(Node):
         starved the 10 Hz tick, so /motion_enabled went stale and the slew gate closed).
         The FSM applies the precomputed result when the plan result is fed in."""
         with self._lock:
-            job = self.fsm.plan_conditioning_job(token, outcome, result, time.monotonic())
+            job = self.fsm.plan_conditioning_job(token, outcome, result, self._clk.now())
         if job is None:
             return result
         t0 = time.monotonic()
@@ -1272,7 +1273,7 @@ class MissionNode(Node):
             self._feed_service(e.token, False, {})
             return
         with self._lock:     # the watchdog runs from the actual send (after the waits)
-            self.fsm.mark_sent(e.token, time.monotonic())
+            self.fsm.mark_sent(e.token, self._clk.now())
         fut = client.call_async(req)
         fut.add_done_callback(lambda f, e=e: self._on_service_done(e, f))
 
@@ -1368,7 +1369,7 @@ class MissionNode(Node):
 
     def _feed_service(self, token, ok, resp):
         with self._lock:
-            self._execute(self.fsm.on_service_result(token, ok, resp, time.monotonic()))
+            self._execute(self.fsm.on_service_result(token, ok, resp, self._clk.now()))
 
     # ------------------------------------------------------------------
     def destroy_node(self):
@@ -1379,7 +1380,7 @@ class MissionNode(Node):
     def shutdown_effects(self):
         """Blade off, cancel goals, zero twist; returns futures to wait for."""
         with self._lock:
-            self._execute(self.fsm.shutdown(time.monotonic()))
+            self._execute(self.fsm.shutdown(self._clk.now()))
         return [f for f in self._shutdown_futures if not f.done()]
 
 
