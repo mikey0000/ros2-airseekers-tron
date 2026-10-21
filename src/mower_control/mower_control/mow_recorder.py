@@ -27,6 +27,8 @@ import shutil
 import threading
 import time
 
+from mower_control.blackbox import _topic_metadata
+
 IDLE_STATES = frozenset(('IDLE', 'IDLE_DOCKED', 'CHARGING'))
 
 DEFAULT_TOPICS = [
@@ -254,9 +256,8 @@ def main(args=None):
                                              storage_id=self._storage),
                    rosbag2_py.ConverterOptions(input_serialization_format='cdr',
                                                output_serialization_format='cdr'))
-            for topic, typ in self._types.items():
-                w.create_topic(rosbag2_py.TopicMetadata(name=topic, type=typ,
-                                                        serialization_format='cdr'))
+            for tid, (topic, typ) in enumerate(self._types.items()):
+                w.create_topic(_topic_metadata(rosbag2_py, tid, topic, typ))
             self._writer, self._current = w, os.path.basename(path)
             self._queue.clear()
             self._subscribe_streams()

@@ -87,6 +87,15 @@ class SnapshotBuffer:
                 'evicted': self.evicted}
 
 
+def _topic_metadata(rosbag2_py, tid, topic, typ):
+    """rosbag2_py.TopicMetadata: Jazzy requires ``id`` (field 2026-10-21: "__init__():
+    incompatible constructor arguments" on every black-box bag); Humble has no ``id``."""
+    try:
+        return rosbag2_py.TopicMetadata(id=tid, name=topic, type=typ, serialization_format='cdr')
+    except TypeError:
+        return rosbag2_py.TopicMetadata(name=topic, type=typ, serialization_format='cdr')
+
+
 def dump_bag(messages, bag_dir, writer_factory=None):
     """Write ``messages`` (from :meth:`SnapshotBuffer.snapshot`) to a rosbag2 at ``bag_dir``.
 
@@ -102,8 +111,7 @@ def dump_bag(messages, bag_dir, writer_factory=None):
     created = set()
     for topic, typ, _t, _d in messages:
         if topic not in created:
-            writer.create_topic(rosbag2_py.TopicMetadata(name=topic, type=typ,
-                                                         serialization_format='cdr'))
+            writer.create_topic(_topic_metadata(rosbag2_py, len(created), topic, typ))
             created.add(topic)
     for topic, _typ, t_ns, data in messages:
         writer.write(topic, data, t_ns)
