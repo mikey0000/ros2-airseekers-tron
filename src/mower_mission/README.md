@@ -297,7 +297,7 @@ Stock-derived (`CheckRegion` / `onBoundaryOut`, see
   * then resume from the robot's projection (the leg-start pivot turns to the path
     heading). Still beyond the limit: the driven-track retrace (fallback).
 * **Plan-relative (soft):** within 1 m of a conditioned corner whose planned swept body is
-  already out by b (lap 0 on a tight driven bend), any point may reach b + 0.10.
+  already out by b (lap 0 on a tight driven bend), any point may reach b + 0.20.
 * **Recovery never ends outside:** a recovery that ends still outside makes up to 3 bounded
   inward moves (<= 0.6 m) before STUCK_NEEDS_HELP; START / resume while outside moves inward
   first (no pivot, not counted).

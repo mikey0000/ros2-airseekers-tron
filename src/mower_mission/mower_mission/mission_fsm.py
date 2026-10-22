@@ -1009,7 +1009,7 @@ class Params:
     hard_boundary_body_soft_nose_m: float = 0.40
     hard_boundary_body_soft_tail_m: float = 0.30
     hard_boundary_plan_radius_m: float = 1.0      # plan-relative soft limit near a corner
-    hard_boundary_plan_margin_m: float = 0.10     # ... its planned body out + this
+    hard_boundary_plan_margin_m: float = 0.20     # ... its planned body out + this (p99 0.13 + lap-join transient)
     hard_boundary_body_clear_m: float = 0.02      # back-move success: excess <= -this
     hard_boundary_back_m: float = 0.30
     hard_boundary_back_speed_mps: float = 0.10
