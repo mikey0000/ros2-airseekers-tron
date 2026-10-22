@@ -186,7 +186,7 @@ def test_launch_renders_settings_into_params_files(sample):
                     reason='needs the built workspace sourced')
 def test_launch_without_settings_uses_package_files(tmp_path):
     cfg = _render(_load_mower_launch(), str(tmp_path / 'missing.yaml'))
-    assert cfg['cut_width_m'] == '0.20'
+    assert cfg['cut_width_m'] == '0.22'      # launch DEFAULT_CUT_WIDTH_M (220 mm disc, 2026-10-20)
     assert cfg['mission_params_file'].endswith(os.path.join('mower_mission', 'config', 'mission.yaml'))
     assert cfg['um960_params_file'] == ''
     # An explicit cut_width_m launch argument wins over the GUI value.
