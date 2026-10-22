@@ -12,7 +12,86 @@
 #include <vector>
 
 namespace mower_coverage {
+
+Point2D lapStartPoint(const std::vector<Point2D>& loop, const Point2D& target, double window_m,
+                      double max_turn_deg) {
+  // closed loop (first == last, or implicitly closed): arc length per vertex, turning per vertex
+  std::vector<Point2D> pts(loop);
+  if (pts.size() >= 2 && std::hypot(pts.front().first - pts.back().first,
+                                    pts.front().second - pts.back().second) < 1e-9) {
+    pts.pop_back();
+  }
+  const size_t n = pts.size();
+  if (n < 3) {
+    return target;
+  }
+  std::vector<double> cum(n + 1, 0.0);
+  for (size_t i = 0; i < n; ++i) {
+    const Point2D& a = pts[i];
+    const Point2D& b = pts[(i + 1) % n];
+    cum[i + 1] = cum[i] + std::hypot(b.first - a.first, b.second - a.second);
+  }
+  const double L = cum[n];
+  if (L < 1e-6) {
+    return target;
+  }
+  std::vector<double> turn(n, 0.0);
+  for (size_t i = 0; i < n; ++i) {
+    const Point2D& a = pts[(i + n - 1) % n];
+    const Point2D& v = pts[i];
+    const Point2D& b = pts[(i + 1) % n];
+    const double l0 = std::hypot(v.first - a.first, v.second - a.second);
+    const double l1 = std::hypot(b.first - v.first, b.second - v.second);
+    if (l0 < 1e-9 || l1 < 1e-9) {
+      continue;
+    }
+    const double h0 = std::atan2(v.second - a.second, v.first - a.first);
+    const double h1 = std::atan2(b.second - v.second, b.first - v.first);
+    turn[i] = std::fabs(std::remainder(h1 - h0, 2.0 * M_PI));
+  }
+  const double max_turn = max_turn_deg * M_PI / 180.0;
+  const double step = 0.05;
+  Point2D best_ok = target, best_any = target;
+  double best_ok_d = std::numeric_limits<double>::infinity();
+  double best_any_turn = std::numeric_limits<double>::infinity();
+  double best_any_d = std::numeric_limits<double>::infinity();
+  size_t seg = 0;
+  for (double s = 0.0; s < L; s += step) {
+    while (seg + 1 < n && cum[seg + 1] <= s) {
+      ++seg;
+    }
+    const Point2D& a = pts[seg];
+    const Point2D& b = pts[(seg + 1) % n];
+    const double sl = cum[seg + 1] - cum[seg];
+    const double u = sl > 1e-12 ? (s - cum[seg]) / sl : 0.0;
+    const Point2D p{a.first + u * (b.first - a.first), a.second + u * (b.second - a.second)};
+    // total turning of the vertices within +-window_m of arc length (circular)
+    double tot = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+      double d = std::fabs(cum[i] - s);
+      d = std::min(d, L - d);
+      if (d <= window_m) {
+        tot += turn[i];
+      }
+    }
+    const double d = std::hypot(p.first - target.first, p.second - target.second);
+    if (tot <= max_turn && d < best_ok_d) {
+      best_ok_d = d;
+      best_ok = p;
+    }
+    if (tot < best_any_turn - 1e-9 || (std::fabs(tot - best_any_turn) <= 1e-9 && d < best_any_d)) {
+      best_any_turn = tot;
+      best_any_d = d;
+      best_any = p;
+    }
+  }
+  return std::isfinite(best_ok_d) ? best_ok : best_any;
+}
+
 namespace {
+// lap starts / hand-offs: at most kLapStartMaxTurnDeg of total turning within +-kLapStartWindowM
+constexpr double kLapStartWindowM = 1.2;
+constexpr double kLapStartMaxTurnDeg = 10.0;
 
 // Ring sanitization tolerances. Operator-recorded field boundaries carry
 // mm-scale geometric degeneracies (a real 252 m^2 field had a 1.2 mm
@@ -416,32 +495,13 @@ std::vector<Point2D> rotateLoopToPoint(const std::vector<Point2D>& loop,
   return out;
 }
 
-// Edge layout (round 2): a lap -> lap hand-off ON a corner (the lap 0 start at a convex vertex
-// on real_run5: a 119 deg pivot sweeping the body 0.5 m out) is moved along the lap to a
-// straight stretch: the point of the edges with at least kLapJoinClearM to both their ends
-// (the edge's own vertices) nearest to `target`; `target` itself when no edge is that long.
-constexpr double kLapJoinClearM = 0.6;
+// Edge layout (round 2/3): a lap -> lap hand-off / lap start ON a bend (round 2: the lap 0 start
+// at a convex vertex on real_run5, a 119 deg pivot sweeping the body 0.5 m out; round 3: a start
+// 0.6 m before a bend built of small vertices, -23 / -29 deg, swung the body 0.25 m over plan
+// while the tracker was still joining) is moved along the lap to a straight stretch (see
+// lapStartPoint). Thin wrapper kept for the call sites.
 Point2D clearOfCorners(const std::vector<Point2D>& loop, const Point2D& target) {
-  Point2D best = target;
-  double best_d = std::numeric_limits<double>::infinity();
-  for (size_t i = 0; i + 1 < loop.size(); ++i) {
-    const Point2D& a = loop[i];
-    const Point2D& b = loop[i + 1];
-    const double L = dist(a, b);
-    if (L < 2.0 * kLapJoinClearM) {
-      continue;
-    }
-    const double ux = (b.first - a.first) / L, uy = (b.second - a.second) / L;
-    double t = (target.first - a.first) * ux + (target.second - a.second) * uy;
-    t = std::max(kLapJoinClearM, std::min(L - kLapJoinClearM, t));
-    const Point2D p{a.first + t * ux, a.second + t * uy};
-    const double d = dist(p, target);
-    if (d < best_d) {
-      best_d = d;
-      best = p;
-    }
-  }
-  return best;
+  return lapStartPoint(loop, target, kLapStartWindowM, kLapStartMaxTurnDeg);
 }
 
 // Ray-casting point-in-polygon on a closed loop.
@@ -904,7 +964,7 @@ constexpr double kMinFillLenM = 0.03;
 // as -174 / +170 / -172 deg pivots, sub-path tails of 0.1 m passes reversing on themselves).
 // A layout fill pass must be at least this long and cover at least this fraction of its own
 // swept strip (len x op_width) with new area, or it is not driven.
-constexpr double kLayoutMinFillLenM = 0.60;   // round 3: 0.3-0.5 m fills between pivots overshot (owner_far 0.19 m)
+constexpr double kLayoutMinFillLenM = 1.0;    // round 3: 0.3-0.6 m fills between pivots overshot (owner_far 0.19 m)
 constexpr double kLayoutMinFillEfficiency = 0.35;
 constexpr int kBufQuadSegs = 8;
 // Rectangles of neighbouring swaths share an edge exactly; widen each side by

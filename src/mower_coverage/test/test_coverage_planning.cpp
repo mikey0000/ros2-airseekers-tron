@@ -1489,3 +1489,81 @@ TEST(EdgeLayout, EdgeLapsMoveTheRows) {
   EXPECT_EQ(a.lap_offsets, b.lap_offsets);
   EXPECT_FALSE(mower_coverage::applyEdgeLayout("soft", 0.18, &a, -1));
 }
+
+// Round 3 (owner option (a), 2026-10-22): lap starts / hand-offs on a stretch with <= 10 deg of
+// total turning within +-1.2 m of arc length (a bend of many small vertices counts too).
+namespace {
+double turnWithin(const std::vector<Point2D>& loop, const Point2D& p, double w) {
+  std::vector<Point2D> pts(loop);
+  const size_t n = pts.size();
+  std::vector<double> cum(n + 1, 0.0);
+  double sp = 0.0, bestd = 1e9;
+  for (size_t i = 0; i < n; ++i) {
+    const Point2D& a = pts[i];
+    const Point2D& b = pts[(i + 1) % n];
+    const double L = std::hypot(b.first - a.first, b.second - a.second);
+    const double dx = b.first - a.first, dy = b.second - a.second;
+    double u = L > 0 ? ((p.first - a.first) * dx + (p.second - a.second) * dy) / (L * L) : 0;
+    u = std::max(0.0, std::min(1.0, u));
+    const double d = std::hypot(a.first + u * dx - p.first, a.second + u * dy - p.second);
+    if (d < bestd) { bestd = d; sp = cum[i] + u * L; }
+    cum[i + 1] = cum[i] + L;
+  }
+  double tot = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    const Point2D& a = pts[(i + n - 1) % n];
+    const Point2D& v = pts[i];
+    const Point2D& b = pts[(i + 1) % n];
+    double d = std::fabs(cum[i] - sp);
+    d = std::min(d, cum[n] - d);
+    if (d > w) continue;
+    const double h0 = std::atan2(v.second - a.second, v.first - a.first);
+    const double h1 = std::atan2(b.second - v.second, b.first - v.first);
+    tot += std::fabs(std::remainder(h1 - h0, 2.0 * M_PI));
+  }
+  return tot * 180.0 / M_PI;
+}
+}  // namespace
+
+TEST(EdgeLayout, LapStartOnAStraightStretchRun5) {
+  // real_run5 Area 1 outline; the round-2 lap 0 start (-0.61, 3.23) sat 0.63 m after the
+  // (-0.891, 2.253) / (-0.684, 2.606) bend (-23 / -29 deg): the run 3 gates' worst body excess
+  const std::vector<Point2D> loop = {
+      {-1.620, 1.817}, {-0.891, 2.253}, {-0.684, 2.606}, {-0.475, 4.423}, {-0.335, 5.520},
+      {-1.147, 5.265}, {-3.348, 4.334}, {-4.366, 3.801}, {-4.751, 3.250}, {-5.489, 2.178},
+      {-6.042, 1.430}, {-5.591, 0.666}, {-5.363, 0.178}, {-5.151, -0.027}, {-5.387, -0.585},
+      {-4.746, -1.389}, {-3.290, 0.250}, {-1.924, 1.307}};
+  const Point2D p = mower_coverage::lapStartPoint(loop, {-0.61, 3.23}, 1.2, 10.0);
+  EXPECT_LE(turnWithin(loop, p, 1.2), 10.0) << p.first << ", " << p.second;
+  EXPECT_GE(std::hypot(p.first + 0.684, p.second - 2.606), 1.2 - 1e-6);
+  EXPECT_LT(std::hypot(p.first + 0.61, p.second - 3.23), 1.5);   // stays on that edge
+}
+
+TEST(EdgeLayout, LapStartCountsBendsOfSmallVertices) {
+  // a 10 x 4 rectangle whose bottom edge carries a 50 deg bend made of 5 x 10 deg vertices
+  // 0.1 m apart at x 4.0 .. 4.4; target 0.5 m after it
+  std::vector<Point2D> loop = {{0, 0}};
+  double x = 4.0, y = 0.0, h = 0.0;
+  loop.push_back({x, y});
+  for (int k = 0; k < 5; ++k) {
+    h += 10.0 * M_PI / 180.0 * (k < 3 ? 1 : -1.5);
+    x += 0.1 * std::cos(h);
+    y += 0.1 * std::sin(h);
+    loop.push_back({x, y});
+  }
+  loop.push_back({10, y});
+  loop.push_back({10, 4});
+  loop.push_back({0, 4});
+  const Point2D p = mower_coverage::lapStartPoint(loop, {x + 0.5, y}, 1.2, 10.0);
+  EXPECT_LE(turnWithin(loop, p, 1.2), 10.0);
+  EXPECT_GE(p.first, x + 1.1 - 1e-6);   // 1.2 m past the last turning vertex (0.1 m before x)
+}
+
+TEST(EdgeLayout, LapStartFallsBackToTheStraightestPoint) {
+  std::vector<Point2D> circle;
+  for (int k = 0; k < 72; ++k)
+    circle.push_back({std::cos(k * M_PI / 36), std::sin(k * M_PI / 36)});
+  const Point2D p = mower_coverage::lapStartPoint(circle, {1.2, 0.0}, 1.2, 10.0);
+  EXPECT_NEAR(std::hypot(p.first, p.second), 1.0, 0.01);          // on the loop
+  EXPECT_LT(std::hypot(p.first - 1.0, p.second), 0.1);            // nearest of the equals
+}

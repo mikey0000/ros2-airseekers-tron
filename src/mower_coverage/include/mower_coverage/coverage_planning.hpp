@@ -254,6 +254,13 @@ std::vector<Point2D> planTurn(const Point2D& from, double from_yaw,
                               double robot_width, double min_turn_radius);
 
 // True when compiled against Fields2Cover v3.
+// Lap start / lap hand-off point on the closed `loop` (edge layout): the point nearest to
+// `target` whose surroundings (+-window_m of arc length) turn by at most max_turn_deg in total
+// (a bend made of many small vertices counts); none: the straightest point (least turning,
+// nearest on ties).
+Point2D lapStartPoint(const std::vector<Point2D>& loop, const Point2D& target, double window_m,
+                      double max_turn_deg);
+
 bool builtWithF2CV3();
 
 }  // namespace mower_coverage
