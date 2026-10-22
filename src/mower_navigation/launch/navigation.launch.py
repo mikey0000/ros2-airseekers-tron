@@ -44,6 +44,11 @@ from launch.actions import (DeclareLaunchArgument, GroupAction, LogInfo, OpaqueF
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+try:  # Python node hosts (mower_bringup/node_host.py, compose_nodes:=true)
+    from mower_bringup.node_host_launch import hosted_node
+except ImportError:  # mower_bringup not installed: plain processes
+    def hosted_node(_group, **kwargs):
+        return Node(**kwargs)
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
@@ -170,15 +175,15 @@ def generate_launch_description() -> LaunchDescription:
             remappings=tf_remaps,
             **common),
         # Plain node (not lifecycle): stop/slowdown zones forward-only (see its docstring).
-        Node(
-            package="mower_navigation", executable="collision_zone_gate.py",
+        hosted_node(
+            'control', package="mower_navigation", executable="collision_zone_gate.py",
             name="collision_zone_gate",
             parameters=[params_file],
             **common),
         # Plain node: WATCHDOG for a velocity lane that silently drops the controller's
         # commands (root cause unknown, 2026-10-20); logs and cycles the silent node, bounded.
-        Node(
-            package="mower_navigation", executable="nav_lane_watchdog.py",
+        hosted_node(
+            'control', package="mower_navigation", executable="nav_lane_watchdog.py",
             name="nav_lane_watchdog",
             parameters=[params_file],
             **common),
@@ -202,8 +207,8 @@ def generate_launch_description() -> LaunchDescription:
         # Activity-gated lifecycle helper: PAUSE/RESUME the Nav2 nodes (through
         # lifecycle_manager_navigation's manage_nodes service) at idle/docked_idle,
         # so it never fights the bond watchdog of the manager itself.
-        Node(
-            package="mower_navigation", executable="activity_gated_lifecycle.py",
+        hosted_node(
+            'housekeeping', package="mower_navigation", executable="activity_gated_lifecycle.py",
             name="activity_gated_lifecycle_manager",
             parameters=[{"lifecycle_nodes": LIFECYCLE_NODES,
                          "lifecycle_manager": "lifecycle_manager_navigation",

@@ -136,6 +136,7 @@ from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from mower_bringup.node_host_launch import hosted_node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
@@ -374,8 +375,8 @@ def generate_launch_description() -> LaunchDescription:
             # 1. GNSS quality gate. Start first: navsat_transform_node gets nothing
             #    on gps/fix (remapped to /fix_gated) until this is up.
             # ------------------------------------------------------------------
-            Node(
-                package="mower_localization",
+            hosted_node(
+                'localization', package="mower_localization",
                 executable="gps_gate",
                 respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
                 name="gps_gate",
@@ -413,8 +414,8 @@ def generate_launch_description() -> LaunchDescription:
             #     (course-over-ground / dock pose / persisted offset). Publishes
             #     /heading_aligner/status (latched JSON) for the mission preflight.
             # ------------------------------------------------------------------
-            Node(
-                package="mower_localization",
+            hosted_node(
+                'localization', package="mower_localization",
                 executable="heading_aligner",
                 respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
                 name="heading_aligner",
@@ -441,8 +442,8 @@ def generate_launch_description() -> LaunchDescription:
 
             # 4. vio_gate (vio:=true only): /odometry/vio -> /odometry/vio_gated while
             #    RTK is not FIXED and VIO is healthy. mower_localization/vio_gate.py.
-            Node(
-                package="mower_localization",
+            hosted_node(
+                'localization', package="mower_localization",
                 executable="vio_gate",
                 respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
                 name="vio_gate",
@@ -452,8 +453,8 @@ def generate_launch_description() -> LaunchDescription:
 
             # 5. localization_monitor (2026-10-09): /localization/status (ok|degraded|lost,
             #    RTK class, seconds since FIXED, drift estimate) for mower_mission's hold.
-            Node(
-                package="mower_localization",
+            hosted_node(
+                'localization', package="mower_localization",
                 executable="localization_monitor",
                 respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
                 name="localization_monitor",

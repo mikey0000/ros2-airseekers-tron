@@ -15,6 +15,11 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+try:  # Python node hosts (mower_bringup/node_host.py, compose_nodes:=true)
+    from mower_bringup.node_host_launch import hosted_node
+except ImportError:  # mower_bringup not installed: plain processes
+    def hosted_node(_group, **kwargs):
+        return Node(**kwargs)
 from launch_ros.parameter_descriptions import ParameterValue
 
 
@@ -66,8 +71,8 @@ def generate_launch_description():
             }],
             condition=IfCondition(start_planner),
         ),
-        Node(
-            package='mower_coverage_bridge',
+        hosted_node(
+            'gui', package='mower_coverage_bridge',
             executable='coverage_action_server',
             respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             name='coverage_server',

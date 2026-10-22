@@ -15,6 +15,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from mower_bringup.node_host_launch import hosted_node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
@@ -38,8 +39,8 @@ def generate_launch_description():
             default_value=PathJoinSubstitution([FindPackageShare('mower_bringup'), 'config',
                                                 'cameras', 'rear_camera_info.yaml'])),
     ]
-    node = Node(
-        package='mower_cameras',
+    node = hosted_node(
+        'cameras', package='mower_cameras',
         executable='camera_node',
         respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='mower_cameras',

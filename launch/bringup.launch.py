@@ -30,6 +30,7 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from mower_bringup.node_host_launch import hosted_node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
@@ -132,8 +133,8 @@ def generate_launch_description():
             respawn=True,
             respawn_delay=2.0,
         ),
-        Node(
-            package='mower_lights',
+        hosted_node(
+            'housekeeping', package='mower_lights',
             executable='light_controller',
             name='light_controller',
             condition=IfCondition(LaunchConfiguration('lights')),
@@ -146,8 +147,8 @@ def generate_launch_description():
             respawn=True,
             respawn_delay=2.0,
         ),
-        Node(
-            package='mower_mcu_driver',
+        hosted_node(
+            'housekeeping', package='mower_mcu_driver',
             executable='fill_light_node',
             name='fill_light',
             condition=IfCondition(LaunchConfiguration('fill_light')),

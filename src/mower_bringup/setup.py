@@ -38,6 +38,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
     ] + tree('launch') + tree('config'),
     install_requires=['setuptools'],
+    entry_points={'console_scripts': ['node_host = mower_bringup.node_host:main']},
     zip_safe=True,
     maintainer='michael',
     maintainer_email='michael@example.com',

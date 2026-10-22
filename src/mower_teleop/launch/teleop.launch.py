@@ -2,6 +2,11 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+try:  # Python node hosts (mower_bringup/node_host.py, compose_nodes:=true)
+    from mower_bringup.node_host_launch import hosted_node
+except ImportError:  # mower_bringup not installed: plain processes
+    def hosted_node(_group, **kwargs):
+        return Node(**kwargs)
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
@@ -33,8 +38,8 @@ def generate_launch_description():
             parameters=[mux_params],
             remappings=[('cmd_vel_out', '/cmd_vel_raw')],
         ),
-        Node(
-            package='mower_teleop',
+        hosted_node(
+            'gui', package='mower_teleop',
             executable='cmd_vel_ws_relay',
             respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
             name='cmd_vel_ws_relay',

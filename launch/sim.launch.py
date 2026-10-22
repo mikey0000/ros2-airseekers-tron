@@ -57,6 +57,7 @@ from launch.substitutions import (Command, LaunchConfiguration, PathJoinSubstitu
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+from mower_bringup.node_host_launch import arm_node_hosts, hosted_node, start_node_hosts
 
 SIM_TIME = {'use_sim_time': True}     # every node but mower_sim itself (the /clock source)
 
@@ -263,6 +264,9 @@ def generate_launch_description() -> LaunchDescription:
         arg('loc_drift_seed', '1', 'sim: random seed of the localisation drift.'),
         arg('urdf_file', default_urdf, 'xacro robot description.'),
         arg('log_level', 'info', 'Log level of the sim node.'),
+        arg('compose_nodes', 'true', 'Python node hosts (docs/analysis/2026-10-22_memory_footprint.md '
+            'M1): grouped Python nodes share one process (node_host_<group>); false = one '
+            'process per node.'),
         arg('rate_factor', '1.0', 'sim: sim time / real time (1.0 = real time, 3.0 = three '
             'times faster). The sim publishes /clock; every node runs on use_sim_time.'),
     ]
@@ -316,17 +320,17 @@ def generate_launch_description() -> LaunchDescription:
              parameters=[PathJoinSubstitution(
                  [FindPackageShare('mower_teleop'), 'config', 'twist_mux.yaml']), SIM_TIME],
              remappings=[('cmd_vel_out', '/cmd_vel_raw')]),
-        Node(package='mower_teleop', executable='cmd_vel_ws_relay', name='cmd_vel_ws_relay',
+        hosted_node('gui', package='mower_teleop', executable='cmd_vel_ws_relay', name='cmd_vel_ws_relay',
              output='screen', condition=enabled('teleop_relay'), parameters=[SIM_TIME]),
-        Node(package='mower_control', executable='cmd_vel_slew', name='cmd_vel_slew',
+        hosted_node('control', package='mower_control', executable='cmd_vel_slew', name='cmd_vel_slew',
              output='screen',
              # the GUI settings file of this checkout is device-owned: do not read it
              parameters=[{'robot_settings_file': '', 'use_sim_time': True}]),
         # costmaps read the odom/map copies of /bumper_cloud and /ai/det/obstacle_points
         # (2026-10-09, mower_control/fixed_frame_relay.py)
-        Node(package='mower_control', executable='fixed_frame_relay', name='fixed_frame_relay',
+        hosted_node('control', package='mower_control', executable='fixed_frame_relay', name='fixed_frame_relay',
              output='screen', parameters=[SIM_TIME]),
-        Node(package='mower_control', executable='slip_detector', name='slip_detector',
+        hosted_node('control', package='mower_control', executable='slip_detector', name='slip_detector',
              output='screen', parameters=[SIM_TIME]),
         Node(package='bumper_controller', executable='bumper_controller_node',
              name='bumper_controller', output='screen',
@@ -337,8 +341,8 @@ def generate_launch_description() -> LaunchDescription:
                  'use_sim_time': True}]),
     ]
 
-    gui_bridge = Node(
-        package='mower_gui_bridge', executable='gui_bridge', name='gui_bridge', output='screen',
+    gui_bridge = hosted_node(
+        'gui', package='mower_gui_bridge', executable='gui_bridge', name='gui_bridge', output='screen',
         parameters=[{
             # its stub high-level state machine only when the real mission is off
             'serve_high_level': PythonExpression(
@@ -400,6 +404,7 @@ def generate_launch_description() -> LaunchDescription:
         # must stay first: raises before any node is visited
         [OpaqueFunction(function=_isolation_guard)]
         + arguments
+        + [arm_node_hosts()]
         + [SetLaunchConfiguration('world_file', ''), SetLaunchConfiguration('datum_lat', '0.0'),
            SetLaunchConfiguration('datum_lon', '0.0'),
            SetLaunchConfiguration('controller_frequency', '20.0'),
@@ -411,4 +416,5 @@ def generate_launch_description() -> LaunchDescription:
            OpaqueFunction(function=_prepare_world)]
         + [sim] + core + [gui_bridge] + stack
         + [OpaqueFunction(function=_localization)]
+        + [start_node_hosts()]     # last: the hosted nodes of every include are registered
     )
