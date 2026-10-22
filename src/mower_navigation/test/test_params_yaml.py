@@ -219,7 +219,8 @@ def test_det_range_obstacle_source():
     assert src["topic"] == "/ai/det/obstacle_points_odom"
     assert src["data_type"] == "PointCloud2"
     assert src["marking"] is True and src["clearing"] is False
-    assert src["obstacle_max_range"] == 3.0
+    # measured from the odom origin (relayed cloud, no sensor_frame): effectively unlimited
+    assert src["obstacle_max_range"] >= 50.0
     for name in ol["observation_sources"].split():
         assert name in ol, f"observation source {name} has no sub-map"
 
@@ -239,6 +240,8 @@ def test_static_det_layer(cm, frame):
     src = layer["det_static"]
     assert src["topic"] == "/ai/det/obstacle_points_static_" + frame
     assert src["marking"] is True and src["clearing"] is False
+    # no sensor_frame: the range counts from the odom / map origin, so it must not cut
+    assert src["obstacle_max_range"] >= 50.0
     # the regular obstacle layer keeps its 5 s decay
     assert gp["obstacle_layer"]["decay_time"] == 5.0
 

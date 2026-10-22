@@ -122,6 +122,7 @@ class TrackerParams:
     det_gone_confirmations: int = 8      # det zones: "looked and absent" frames to remove
     det_verify_min_m: float = 0.8        # det zones are verified only from this far ...
     det_verify_fov_deg: float = 30.0     # ... and inside the camera's half field of view
+    camera_x_m: float = 0.466            # front camera ahead of base_link (det zone checks)
     merge_dist_m: float = 0.3            # two det zones closer than this are one object
     ignore_radius_m: float = 0.5         # Ignore suppresses new zones this close
 
@@ -483,9 +484,13 @@ class TrackerCore:
         p = self.params
         if robot_pose is None:
             return False
-        dx, dy = t.cx - robot_pose[0], t.cy - robot_pose[1]
-        dist = math.hypot(dx, dy)
         det = t.kind == 'det'
+        ox, oy = robot_pose[0], robot_pose[1]
+        if det:   # the camera looks from 0.47 m ahead of base_link
+            ox += p.camera_x_m * math.cos(robot_pose[2])
+            oy += p.camera_x_m * math.sin(robot_pose[2])
+        dx, dy = t.cx - ox, t.cy - oy
+        dist = math.hypot(dx, dy)
         if dist > p.verify_distance_m or (det and dist < p.det_verify_min_m):
             return False
         diff = abs(math.atan2(math.sin(math.atan2(dy, dx) - robot_pose[2]),

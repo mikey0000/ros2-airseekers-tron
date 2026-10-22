@@ -881,9 +881,13 @@ local_costmap:
           clearing: false
           min_obstacle_height: -0.5
           max_obstacle_height: 2.0
-          obstacle_max_range: 3.0
+          # 50 (was 3.0, 2026-10-23): no sensor_frame, so the range is measured from
+          # the cloud frame origin (the odom / map origin after fixed_frame_relay), not
+          # the robot: marks > 3 m from the dock were dropped (sim trunk gate). det_range
+          # itself only ranges 0.2-10 m from the camera.
+          obstacle_max_range: 50.0
           obstacle_min_range: 0.0
-          raytrace_max_range: 3.0
+          raytrace_max_range: 50.0
           raytrace_min_range: 0.0
           observation_persistence: 1.0
           expected_update_rate: 0.0
@@ -989,9 +993,13 @@ local_costmap:
           # Centroids sit anywhere from ~0.05 m (hedgehog) to ~1 m (person) above ground.
           min_obstacle_height: -0.5
           max_obstacle_height: 2.0
-          obstacle_max_range: 3.0
+          # 50 (was 3.0, 2026-10-23): no sensor_frame, so the range is measured from
+          # the cloud frame origin (the odom / map origin after fixed_frame_relay), not
+          # the robot: marks > 3 m from the dock were dropped (sim trunk gate). det_range
+          # itself only ranges 0.2-10 m from the camera.
+          obstacle_max_range: 50.0
           obstacle_min_range: 0.0
-          raytrace_max_range: 3.0
+          raytrace_max_range: 50.0
           raytrace_min_range: 0.0
           # 1.0 (was 0.0, review 2026-10-09): with 0 the last detection cloud is re-marked every
           # update (clear-before-mark, so stereo_clear can never erase it); if det stops
@@ -1187,9 +1195,13 @@ global_costmap:
           clearing: false
           min_obstacle_height: -0.5
           max_obstacle_height: 2.0
-          obstacle_max_range: 3.0
+          # 50 (was 3.0, 2026-10-23): no sensor_frame, so the range is measured from
+          # the cloud frame origin (the odom / map origin after fixed_frame_relay), not
+          # the robot: marks > 3 m from the dock were dropped (sim trunk gate). det_range
+          # itself only ranges 0.2-10 m from the camera.
+          obstacle_max_range: 50.0
           obstacle_min_range: 0.0
-          raytrace_max_range: 3.0
+          raytrace_max_range: 50.0
           raytrace_min_range: 0.0
           # 1.0 (was 0.0, review 2026-10-09): with 0 the last detection cloud is re-marked every
           # update (clear-before-mark, so stereo_clear can never erase it); if det stops
@@ -1234,9 +1246,13 @@ global_costmap:
           clearing: false
           min_obstacle_height: -0.5
           max_obstacle_height: 2.0
-          obstacle_max_range: 3.0
+          # 50 (was 3.0, 2026-10-23): no sensor_frame, so the range is measured from
+          # the cloud frame origin (the odom / map origin after fixed_frame_relay), not
+          # the robot: marks > 3 m from the dock were dropped (sim trunk gate). det_range
+          # itself only ranges 0.2-10 m from the camera.
+          obstacle_max_range: 50.0
           obstacle_min_range: 0.0
-          raytrace_max_range: 3.0
+          raytrace_max_range: 50.0
           raytrace_min_range: 0.0
           observation_persistence: 1.0
           expected_update_rate: 0.0

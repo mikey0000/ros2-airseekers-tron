@@ -448,6 +448,14 @@ def test_blocked_areas_from_settings_snapshot():
     p = mod.core_params(lambda k: mod.PARAMS[k])
     assert p.static_classes[0] == 'trunk' and 'person' in p.never_classes
     assert dict(p.class_prior_m)['trunk'] == 0.25
+    # det_range ranges the front face: the zone point moves half a width along the ray
+    ns = types.SimpleNamespace
+    det = ns(results=[ns(hypothesis=ns(class_id='trunk', score=0.8),
+                         pose=ns(pose=ns(position=ns(x=2.466, y=0.0)),
+                                 covariance=[0.01] + [0.0] * 34 + [0.3]))])
+    x, y, label, score, w = mod.det_observation(det, (1.0, 2.0, math.pi / 2), mod.DET_CLASSES)
+    assert (label, w) == ('trunk', 0.3)
+    assert x == pytest.approx(1.0) and y == pytest.approx(2.0 + 2.466 + 0.15)
     sys.modules.pop('mower_map.obstacle_tracker_node', None)
 
 

@@ -200,6 +200,7 @@ PARAMS = {
     'det_gone_confirmations': 8,
     'det_verify_min_m': 0.8,
     'det_verify_fov_deg': 30.0,
+    'camera_x_m': 0.466,              # front stereo camera ahead of base_link (URDF)
     'merge_dist_m': 0.3,
     'ignore_radius_m': 0.5,
     # inputs / outputs of the zones
@@ -230,7 +231,7 @@ _CORE_KEYS = (
     'det_vote_min_score', 'default_prior_m', 'size_margin_m', 'max_zone_radius_m',
     'resize_step_m', 'require_on_path', 'onpath_pivot_min_turn_deg', 'bumper_evidence_m',
     'bumper_zone_hits', 'bumper_zone_radius_m', 'pending_expire_s', 'det_gone_confirmations',
-    'det_verify_min_m', 'det_verify_fov_deg', 'merge_dist_m', 'ignore_radius_m',
+    'det_verify_min_m', 'det_verify_fov_deg', 'merge_dist_m', 'ignore_radius_m', 'camera_x_m',
 )
 # list-valued core params (converted to tuples)
 _CORE_LIST_KEYS = ('static_classes', 'never_classes')
@@ -265,9 +266,11 @@ def blocked_areas(settings_json: str, areas) -> set:
     return out
 
 
-def det_observation(det, robot_pose, classes):
+def det_observation(det, robot_pose, classes, camera_x=0.466):
     """A det_range ranged detection -> ``(x, y, label, score, width_m)`` in the map frame
-    (robot pose (x, y, yaw) of base_link), or None when it is not ranged."""
+    (robot pose (x, y, yaw) of base_link), or None when it is not ranged. det_range ranges
+    the FRONT face; with a known width the point is moved half a width further along the
+    camera ray, to the object's centre (as det_range's costmap disc)."""
     if not det.results:
         return None
     best = max(det.results, key=lambda r: r.hypothesis.score)
@@ -279,6 +282,11 @@ def det_observation(det, robot_pose, classes):
     bx, by = float(pose.pose.position.x), float(pose.pose.position.y)
     c, s = math.cos(ryaw), math.sin(ryaw)
     width = float(cov[35]) if len(cov) > 35 else 0.0
+    if width > 0.0:
+        vx, vy = bx - camera_x, by
+        n = math.hypot(vx, vy)
+        if n > 1e-6:
+            bx, by = bx + vx / n * width / 2.0, by + vy / n * width / 2.0
     return (rx + c * bx - s * by, ry + s * bx + c * by,
             dynamic_label(best.hypothesis.class_id, classes),
             float(best.hypothesis.score), max(0.0, width))
@@ -665,7 +673,7 @@ class ObstacleTrackerNode(Node):
         min_score = float(self.p('dynamic_min_score'))
         static = set(self.core.params.static_classes)
         for det in msg.detections:
-            obs = det_observation(det, self._robot_pose, classes)
+            obs = det_observation(det, self._robot_pose, classes, float(self.p('camera_x_m')))
             if obs is not None and obs[2] and not obs[2].lstrip('-').isdigit():
                 self._det_buf.append(obs)
                 del self._det_buf[:-500]

@@ -134,6 +134,7 @@ obstacle_tracker:
     det_gone_confirmations: 8
     det_verify_min_m: 0.8
     det_verify_fov_deg: 30.0
+    camera_x_m: 0.466                # front camera ahead of base_link: the verify cone apex
     merge_dist_m: 0.3
     ignore_radius_m: 0.5
     area_settings_topic: /map_server_node/area_settings   # obstacle_detection none -> no zones
