@@ -698,3 +698,65 @@ One-wheel ticks: 0 inner in (-0.06, 0) (morning 321) and 1017 in (0, 0.06) of 14
 
 Next: decide whether low battery should return home automatically; re-check the hedgehog spot; the
 yaw trim and `linear_scale` candidates; edge-layout2 field run.
+
+## Field mow 2026-10-23 morning (00c041d)
+
+Sessions `20261022-201535` and `20261022-202312` (20:15-20:39 UTC), area index 5 ("Area 7"),
+edge-layout2 + mem-diet + obstacle hotfix. Owner report: "vision can see trunk, which it should
+just go around and not get stuck". Data: `ros2_stack-wt/accuracy-simout/field_trunk_2026-10-23/`
+(bags, incidents, node logs with ntrip lines removed, `maps/`, `dump.json`).
+
+**Trunk position.** 888 of the front-camera (`vio_camera`) ranged trunk/wood detections with a
+score of 0.5 or more fall in one 0.1 m cell, map (-6.2, -0.6). The best estimate of the trunk is
+(-6.15, -0.57), **0.36 m inside the west area line**, beside the lap-0 corner (-6.49, -0.69). The
+lap-0 path runs on the line, so the body (half-width 0.235 m) passes 0.36 m from the box centre and
+clips the real trunk. The trunk reached the local costmap only as the det_range centroid disc of
+about 50-70 cells at (-6.05, -0.55), when the robot was 1-3 m away. When the robot was within
+about 0.9 m, the trunk was beside or behind the camera and had no costmap cells (20:23:36 at
+0.39 m, 20:26:58 at 0.31 m, 20:29:26). Stereo never marked it.
+
+| UTC | event | robot | to trunk | to line (+ in) |
+|---|---|---|---|---|
+| 20:17:26 | lap 0: 3 bumper hits at the NW corner, edge-blocked skip 2 m | (-5.63, 1.97) | 2.6 | +0.14 |
+| 20:19:11-37 | SW K-turn pivots drift 0.15 m (×4), costmap transit leaves the corridor | (-6.15, -2.75) | 2.2 | -0.35 |
+| 20:20:27 | boundary out, front_left 0.74 m (pitch +10°, roll -8°: on a bank) | (-5.96, -2.71) | 2.2 | -0.17 |
+| 20:21:07 | STUCK (wheels 0.22 m vs EKF 0.02 m, reversing); escapes 0.01 / 0.11 / 0.04 m; STUCK_NEEDS_HELP | (-6.06, -2.84) | 2.3 | -0.33 |
+| 20:21:44 | still stuck under the joystick (wheels 0.24 m, EKF 0.02 m); 20:22:54 lift = emergency (owner picked it up) | | | |
+| 20:23:26 | trunk static, `act`, on path (1.12 m / -23°) | (-6.27, -1.94) | 1.4 | -0.02 |
+| 20:23:37-41 | bumper hit on the trunk; MPPI "Optimizer fail" ×53, patience; edge-blocked skip | (-6.57, -0.58) | 0.42 | 0.00 |
+| 20:23:42-24:14 | route pivot "Collision Ahead" ×2, then pivot drift = transit_abort | (-6.70, -0.67) | 0.56 | -0.16 |
+| 20:24:18 | person wait 15 s (blade already off for the transit) | | | |
+| 20:25:06 | 3 bumper hits at the NW corner again = transit_abort | (-5.99, 2.00) | 2.6 | -0.15 |
+| 20:26:46-50 | lap 0 from the south: cm stop, MPPI fail, edge-blocked skip | (-6.50, -1.20) | 0.72 | -0.05 |
+| 20:28:18-29 | pivot drift ×2 at (-2.95, 0.83) = transit_abort, then skip | | 3.5 | +0.5 |
+| 20:30:41-52 | cov pivot drift, then route-corner Spin "Collision Ahead" ×3: STUCK_NEEDS_HELP | (-6.40, 0.09) | 0.71 | +0.34 |
+| 20:37:15 | owner STOP + resume; heading calibration; mowing sub-path 4/6 again | | | |
+
+**Root causes.**
+1. Coverage has no "go around". `_follow_done` routes edge-lap aborts (the stretch path and
+   `_edge_lap`) straight to `_edge_skip` (2.0 m). `_try_detour` is reached only on rows, and it
+   is a blade-off Nav2 jump 1 m ahead. MPPI cannot deviate either: its horizon is 0.6 m
+   (40 × 0.05 s × 0.3 m/s), with PathAlign 30, Constraint 4 and WheelFloor 30 against
+   CostCritic 3.81. The tree is 0.36 m inside the line, and the outside of the line is off
+   limits, so lap 0 cannot pass.
+2. The obstacle has no width: det_range puts one centroid point per box. A footprint check
+   (`consider_footprint`) against that one cell 0.5 m from the line finds no collision, so the
+   robot scrapes the trunk. The bumper and its marks then cause the abort.
+3. A Spin aborted by "Collision Ahead" in a route corner (`_pivot_unfinished`) ends in
+   STUCK_NEEDS_HELP after 2 re-sends. A coverage pivot has a blocked-pivot skip, but a transit
+   route corner has no back-off or skip.
+4. Pivot drift: 16 SPIN DRIFT trips (0.15 m) in about 43 spins, against a median of 0.037 m
+   yesterday. Each one re-plans a transit, which put the robot into the corner pivot next to
+   the trunk. Wet turf or slope (roll 4-5°) is suspected.
+5. The 20:21 stuck was real: the robot was 0.33 m outside the SW line, on a bank, and the joystick
+   could not reverse it either. The K-turn at (-5.81, -2.62) is planned with the body 0.54 m out.
+
+`blade_policy` is `continuous` (logged; Area 7 has no override). The person wait happened in
+TRANSIT, where the blade was already off; `_soft_blade_off` keeps it on in MOWING.
+
+**Fixes (not on edge-layout3):** detection width in the costmap (det_range: bbox width to a
+segment or disc at the range, or keep marks for static classes); an edge-lap static-obstacle
+detour (pull lap 0 inward around a known static mark, or a persistent no-go disc from
+obstacle_tracker in the planner); a route-corner Spin "Collision Ahead" fallback (back up 0.3 m and
+re-plan, or skip) instead of STUCK_NEEDS_HELP; check why stereo does not mark the trunk;
+investigate the pivot drift on this lawn; review the SW K-turn overhang (0.54 m) next to the bank.
