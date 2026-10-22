@@ -904,7 +904,7 @@ constexpr double kMinFillLenM = 0.03;
 // as -174 / +170 / -172 deg pivots, sub-path tails of 0.1 m passes reversing on themselves).
 // A layout fill pass must be at least this long and cover at least this fraction of its own
 // swept strip (len x op_width) with new area, or it is not driven.
-constexpr double kLayoutMinFillLenM = 0.30;
+constexpr double kLayoutMinFillLenM = 0.60;   // round 3: 0.3-0.5 m fills between pivots overshot (owner_far 0.19 m)
 constexpr double kLayoutMinFillEfficiency = 0.35;
 constexpr int kBufQuadSegs = 8;
 // Rectangles of neighbouring swaths share an edge exactly; widen each side by
