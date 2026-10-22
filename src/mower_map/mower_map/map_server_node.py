@@ -247,6 +247,14 @@ def _poly_to_msg(poly):
     return msg
 
 
+def _obstacle_from_msg(polygon, info):
+    """(polygon, name, source, pending) for MapStore.add_area from one MapArea
+    obstacle and its index-aligned MapObstacleInfo (None: a plain user keepout)."""
+    if info is None:
+        return (_poly_from_msg(polygon), '', core.SOURCE_USER, False)
+    return (_poly_from_msg(polygon), info.name, int(info.source), bool(info.pending))
+
+
 def _poly_from_msg(msg):
     # The GUI sends GeoJSON rings (first vertex repeated at the end); the
     # stored ring is implicitly closed, so drop the duplicate closing vertex.
@@ -963,8 +971,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         obstacles = []
         for j, obs in enumerate(a.obstacles):
             info = a.obstacle_info[j] if j < len(a.obstacle_info) else None
-            obstacles.append((_poly_from_msg(obs), info.name if info else '',
-                              int(info.source) if info else core.SOURCE_USER))
+            obstacles.append(_obstacle_from_msg(obs, info))
         is_nav = bool(req.is_navigation_area or a.is_navigation_area)
         staged = self.map_edit_store()
         try:
@@ -1106,8 +1113,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             obstacles = []
             for j, obs in enumerate(a.obstacles):
                 info = a.obstacle_info[j] if j < len(a.obstacle_info) else None
-                obstacles.append((_poly_from_msg(obs), info.name if info else '',
-                                  int(info.source) if info else core.SOURCE_USER))
+                obstacles.append(_obstacle_from_msg(obs, info))
             is_nav = bool(a.is_navigation_area or
                           (req.is_navigation_area[i] if req.is_navigation_area else False))
             try:

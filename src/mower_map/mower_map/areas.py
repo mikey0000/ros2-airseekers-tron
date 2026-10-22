@@ -160,17 +160,21 @@ class MapStore:
 
     def add_area(self, name: str, polygon: Polygon, is_navigation: bool = False,
                  obstacles: Sequence[Tuple[Polygon, str, int]] = ()) -> Area:
-        """Append an area. ``obstacles`` items are (polygon, name, source).
-        Raises ValueError for a polygon with fewer than 3 vertices. Obstacles
-        with fewer than 3 vertices are dropped (as upstream)."""
+        """Append an area. ``obstacles`` items are (polygon, name, source) or
+        (polygon, name, source, pending): a pending obstacle (a robot proposal
+        sent back unchanged by a GUI save) stays pending, i.e. live but not
+        written to areas.dat. Raises ValueError for a polygon with fewer than
+        3 vertices. Obstacles with fewer than 3 vertices are dropped (as upstream)."""
         polygon = normalise_polygon(polygon)
         if len(polygon) < 3:
             raise ValueError('area polygon needs at least 3 points')
         area = Area(name, polygon, bool(is_navigation), [])
-        for obs_poly, obs_name, obs_source in obstacles:
+        for obs in obstacles:
+            obs_poly, obs_name, obs_source = obs[0], obs[1], obs[2]
+            pending = bool(obs[3]) if len(obs) > 3 else False
             obs_poly = normalise_polygon(obs_poly)
             if len(obs_poly) >= 3:
-                area.obstacles.append(self._make_obstacle(obs_poly, obs_name, obs_source))
+                area.obstacles.append(self._make_obstacle(obs_poly, obs_name, obs_source, pending))
         self.areas.append(area)
         return area
 

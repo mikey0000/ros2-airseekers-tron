@@ -305,3 +305,30 @@ def test_replace_areas_publishes_nothing_partial(node, msn):
         n.srv_replace_areas(_replace_req([_area('a2', A), _area('b2', B)]), _res())
         _odom(n, *ROBOT_IN_B)
     assert calls == [['a', 'b'], ['a2', 'b2']]
+
+
+def test_replace_areas_keeps_obstacles_with_source_and_pending(node, msn):
+    """A GUI save sends every obstacle back with its index-aligned
+    MapObstacleInfo: a manual one stays SOURCE_USER, a robot proposal keeps
+    its source and stays pending (live, not persisted); a missing info entry
+    (older GUI) is a plain user keepout."""
+    n = node
+    _settings(n)
+    area = _area('a', A)
+    xs = [p[0] for p in A]
+    ys = [p[1] for p in A]
+    cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+    tri = types.SimpleNamespace(points=[_pt(cx, cy), _pt(cx + 0.3, cy), _pt(cx, cy + 0.3)])
+    tri2 = types.SimpleNamespace(points=[_pt(cx - 0.5, cy), _pt(cx - 0.2, cy), _pt(cx - 0.5, cy + 0.3)])
+    tri3 = types.SimpleNamespace(points=[_pt(cx, cy - 0.5), _pt(cx + 0.3, cy - 0.5), _pt(cx, cy - 0.2)])
+    area.obstacles = [tri, tri2, tri3]
+    area.obstacle_info = [
+        types.SimpleNamespace(name='tree', source=0, pending=False, id=0),
+        types.SimpleNamespace(name='dig', source=2, pending=True, id=7),
+    ]
+    res = n.srv_replace_areas(_replace_req([area]), _res())
+    assert res.success, res.message
+    obs = n.store.areas[0].obstacles
+    assert [(o.name, o.source, o.pending) for o in obs] == [
+        ('tree', 0, False), ('dig', 2, True), ('', 0, False)]
+    assert 'area_0_obstacle_count: 2\n' in msn.core.format_areas_dat(n.store.areas)  # proposal not persisted
