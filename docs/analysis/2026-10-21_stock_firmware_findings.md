@@ -103,6 +103,13 @@ Code: `mower_mission/body_boundary.py`, `MissionFSM._hard_boundary_tick` and hel
   - The mission then resumes from the robot's projection, and the leg-start pivot turns to the path heading, as stock does.
   - If the robot is still beyond a limit, the driven-track retrace runs (fallback).
 - **Budget:** 6 per mission (was 2), plus 2 within 1 m, then STUCK_NEEDS_HELP. Stock has no cap.
+- **Added 2026-10-22, after the sim gates and the morning field mow:**
+  - **Plan-relative soft limit:** within 1 m of a conditioned corner whose planned swept body is out by b, any point may reach b + 0.20.
+  - **No recovery ends outside:** up to 3 bounded inward moves are made first.
+  - **START or resume while outside:** the robot moves inward first, with no pivot, and the move is not counted.
+  - **Coverage pivots** turn toward the interior, choosing the direction by swept body.
+  - **Transits to an edge-lap start** end 0.30 m inside, beside the start.
+  - **Pivot retries:** a refused pivot is re-sent after 2 s.
 - **Jumps:** a reading that jumps more than 1 m in one tick is held off for up to 2 s and is not counted.
 - **Atomic map replace:** map_server `begin/commit/abort_map_edit`, which the GUI PUT /map uses, means no half-built map is ever published.
 
