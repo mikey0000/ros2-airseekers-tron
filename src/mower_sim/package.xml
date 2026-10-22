@@ -29,6 +29,8 @@
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>mower_interfaces</exec_depend>
   <exec_depend>mower_map</exec_depend>
+  <exec_depend>det_range</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
   <exec_depend>mowgli_interfaces</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

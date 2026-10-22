@@ -169,6 +169,7 @@ docker exec -d "$C" bash -c "$ROS; cd $COUT && exec ros2 bag record -s sqlite3 -
   /behavior_tree_node/conditioned_route \
   /cmd_vel_emergency /cmd_vel_docking /cmd_vel_slew/shape_status /map_server_node/outside_m \
   /odometry/filtered_map /odometry/filtered /mission/incident /plan /rosout /navigate_to_pose/_action/status \
+  /obstacle_tracker/nogo_zones /obstacle_tracker/obstacles \
   /follow_path/_action/status /spin/_action/status /mower_docking/dock/_action/status \
   > $COUT/rec.log 2>&1"
 sleep 5
