@@ -143,6 +143,7 @@ mower_docking:
     # pose, the remaining in-place pivot does not turn on turf -> cancel/re-send loop).
     map_pose_topic: /odometry/filtered_map   # map-frame pose for the distance/yaw checks
     approach_skip_radius_m: 0.6    # goal starts this close to the approach pose: no Nav2 leg
+    inplace_search_retry: true     # search timeout within approach_skip_radius_m: align in place + search again once (no Nav2)
     nav_fail_arrived_radius_m: 1.0 # Nav2 fails/times out within this: treat as arrived
     relaxed_nav_retry: true        # beyond it: one Nav2 retry with the CURRENT yaw (no pivot)
     # Owner rule: go in front of the dock FACING it (Nav2 goal yaw = dock yaw + 180 deg,
@@ -150,7 +151,7 @@ mower_docking:
     # faces the dock.
     approach_facing_dock: true
     # ALIGNING (heading off the dock yaw by more than max_yaw_error_deg): true pivot, the
-    # shorter way round, until within align_tolerance_deg or the marker is in the gate
+    # shorter way round, until within align_tolerance_deg (a marker sighting no longer ends it)
     align_angular: 0.3             # rad/s: the pivot floor 0.06 / (0.40 / 2) = 0.3 since 2026-10-20 (0.25 = 0.05 m/s per wheel, under the floor)
     align_creep: 0.0               # m/s forward while turning (0 = pure pivot)
     align_max_travel: 0.4          # m, then SEARCHING anyway (the marker decides)
@@ -171,7 +172,10 @@ mower_docking:
     final_max_heading_deg: 12.0    # (camera yaw corrected; 8 deg on single detections failed every check)
     pose_check_median_n: 5
     max_realigns: 2                # per goal; does not consume max_retries
-    realign_forward_distance: 0.65
+    realign_forward_distance: 0.40 # 2026-10-23: was 0.65 (less forward driving)
+    realign_forward_per_lateral: 1.5  # badly off: max(0.40, 1.5 x |lateral|) ...
+    realign_forward_max: 0.65      # ... at most this (and the corridor cap)
+    realign_steer: true            # realign forward arcs back toward the axis (lateral_align_k / _max_angle, wheel floor)
     # Marker Kalman filter (stock LineTrackingDocking): state = robot in the docked frame,
     # predicted from /odom, corrected per detection; innovations clamped (IPPE flips).
     marker_filter: true
@@ -188,7 +192,7 @@ mower_docking:
     search_consistency_m: 0.15
     rtk_check_max_deg: 30.0        # detections vs RTK (dock measured, RTK fixed); 0 = off
     rtk_check_max_m: 0.3
-    forward_cap_margin: 0.25       # realign/retry/LATERAL_ALIGN forward never beyond approach + this (RTK)
+    forward_cap_margin: 0.10       # realign/retry/LATERAL_ALIGN forward never beyond approach + this (RTK); 2026-10-23: was 0.25
     teleop_topic: /cmd_vel_teleop  # joystick active -> pause; resume from the current pose
     teleop_hold: true
     teleop_clear_s: 1.5
@@ -205,7 +209,9 @@ mower_docking:
     # pose and RTK fixed.
     lateral_align: true
     lateral_align_require_rtk: true
-    lateral_align_tolerance: 0.15
+    lateral_align_tolerance: 0.25  # 2026-10-23: was 0.15
+    lateral_align_max_heading_deg: 15.0  # only pre-align this close to the dock yaw (was a fixed 45)
+    lateral_align_skip_if_marker: true   # marker in view: no pre-alignment, KF + controller fix lateral
     lateral_align_done: 0.04
     lateral_align_heading_deg: 8.0
     lateral_align_speed: 0.12

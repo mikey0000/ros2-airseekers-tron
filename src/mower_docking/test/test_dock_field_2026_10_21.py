@@ -293,7 +293,8 @@ def test_realign_and_lateral_align_stay_inside_the_corridor():
 
 def test_lateral_align_bumper_hit_ends_the_prealignment():
     m = dl.DockStateMachine(params(), dl.Pose2D(), dock_pose_measured=True)
-    w = World(m, 0.8, 0.30, 0.0)
+    # 2026-10-23: start inside the approach distance (the forward cap is 0.90 m now)
+    w = World(m, 0.6, 0.30, 0.0)
     w.visible = False
     w.run(1.0)
     assert m.state == S.LATERAL_ALIGN

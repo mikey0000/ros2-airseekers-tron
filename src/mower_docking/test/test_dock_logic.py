@@ -755,15 +755,22 @@ def test_align_gives_up_on_travel_or_timeout_and_searches():
     assert out.state == S.SEARCHING
 
 
-def test_align_stops_when_marker_enters_gate():
+def test_marker_sighting_does_not_cut_aligning_short():
+    """2026-10-23 midday attempt 1: a sighting ended ALIGNING 42 deg off the dock yaw. Now
+    only the heading tolerance ends it (the sighting is still recorded)."""
     m = dl.DockStateMachine(dl.DockParams(), DOCK)
     yaw0 = DOCK_YAW - math.radians(40)
     m.start(_snap(0.0, dl.Pose2D(0.07, -0.52, yaw0)))
     good = dl.MarkerObs(-1.2, 0.05, math.radians(5), stamp=0.1)
     out = m.step(_snap(0.1, dl.Pose2D(0.07, -0.52, yaw0), marker=good))
+    assert out.state == S.ALIGNING and out.angular > 0
+    assert m._marker_seen_t == pytest.approx(0.1)
+    yaw1 = DOCK_YAW - math.radians(12)
+    out = m.step(_snap(2.0, dl.Pose2D(0.07, -0.52, yaw1), marker=good))
+    assert out.state == S.ALIGNING
+    yaw2 = DOCK_YAW - math.radians(8)
+    out = m.step(_snap(2.5, dl.Pose2D(0.07, -0.52, yaw2)))
     assert out.state == S.SEARCHING
-    out = m.step(_snap(0.15, dl.Pose2D(0.07, -0.52, yaw0), marker=good))
-    assert out.state == S.DOCKING
 
 
 def test_nav_goal_faces_the_dock_then_about_turn_pivot():
@@ -899,9 +906,18 @@ def test_marker_from_pose_matches_dock_errors():
         assert (e.remaining, e.lateral, e.heading) == pytest.approx((x, y, th), abs=1e-9)
 
 
+# 2026-10-23: realigns are 0.40 m (<= 0.65 m when badly off) under a 0.90 m corridor cap;
+# from 0.45-0.5 m lateral at <= 1.0 m two realigns no longer reach the 4 cm contact window
+# (they end 0.09-0.10 m off): the owner traded these gate-edge starts for less forward
+# driving. Nav2 + ALIGNING do not deliver such starts (field: <= 0.25 m).
+_EDGE_XFAIL = pytest.mark.xfail(strict=True, reason='2026-10-23 shorter realign / 0.90 m cap')
+
+
 @pytest.mark.parametrize('x0,y0,th0', [
-    (1.0, 0.5, math.radians(24)), (1.0, -0.5, math.radians(24)),
-    (0.8, 0.45, -math.radians(24)), (1.4, -0.5, -math.radians(24)), (0.8, 0.0, 0.0)])
+    pytest.param(1.0, 0.5, math.radians(24), marks=_EDGE_XFAIL),
+    pytest.param(1.0, -0.5, math.radians(24), marks=_EDGE_XFAIL),
+    pytest.param(0.8, 0.45, -math.radians(24), marks=_EDGE_XFAIL),
+    (1.4, -0.5, -math.radians(24)), (0.8, 0.0, 0.0)])
 def test_vision_docking_tolerates_gate_edge_start(x0, y0, th0):
     """Enter SEARCHING at the gate edge (25 deg / 0.5 m): the FSM must end on the contacts
     (within 3 cm of the axis) using realigns, without consuming retries or failing."""
@@ -1103,6 +1119,9 @@ def test_closed_loop_sweep_converges_at_contact(x0, y0, thd):
     # (the pose check realigns the worst; no over-steer is the priority)
     if x0 >= 1.0 and abs(y0) <= 0.15:
         assert abs(at[0]) < 0.025 and abs(math.degrees(at[1])) < 2.0
+    elif x0 < 1.0 and abs(y0) >= 0.3 and thd * y0 < 0:
+        # 0.6 m out, 0.3 m off AND turned away: 0.40 m realigns (2026-10-23) end within 12 cm
+        assert abs(at[0]) < 0.12 and abs(math.degrees(at[1])) < 7.0
     else:
         assert abs(at[0]) < 0.08 and abs(math.degrees(at[1])) < 5.0
     assert m._realigns <= 2 and t < 60.0
@@ -1413,8 +1432,12 @@ def _dusk_visible(t):
     return (t % 1.5) < 0.6
 
 
-@pytest.mark.parametrize('x0,y0,thd', [(0.62, -0.27, -29.0), (0.60, -0.29, -10.0),
-                                       (0.66, -0.36, -10.0), (1.0, 0.30, 38.0)])
+@pytest.mark.parametrize('x0,y0,thd', [
+    (0.62, -0.27, -29.0), (0.60, -0.29, -10.0),
+    # 2026-10-23: 0.36 m off at 0.66 m with offset 0.242 leaves < 0.5 m under the 0.90 m cap
+    pytest.param(0.66, -0.36, -10.0, marks=pytest.mark.xfail(
+        strict=True, reason='2026-10-23 0.90 m forward cap')),
+    (1.0, 0.30, 38.0)])
 def test_dusk_replay_docks_without_retry_or_blind_reverse(x0, y0, thd):
     p = dl.DockParams(skip_nav_to_approach=True, docked_marker_offset=0.242)
     m = dl.DockStateMachine(p, dl.Pose2D(), goal_timeout_s=400.0, dock_pose_measured=True)
