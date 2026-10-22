@@ -264,6 +264,8 @@ behavior_tree_node:
     # about-turn, reverse onto it blade off, pivot inward). Negative = off (revert).
     path_conditioning_body_limit_soft_m: 0.26
     path_conditioning_body_limit_hard_m: 0.0
+    path_conditioning_body_cap_soft_m: 0.35   # over the cap a corner is cut inside (tip uncut); field 2026-10-23 K-turn 0.54 out
+    path_conditioning_body_cap_hard_m: 0.09
     path_conditioning_convex_r_max_m: 2.0
     path_conditioning_kturn: true
     path_conditioning_kturn_min_rad: 1.05

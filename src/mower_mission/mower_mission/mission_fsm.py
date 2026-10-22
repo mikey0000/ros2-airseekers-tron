@@ -839,6 +839,12 @@ class Params:
     # convex fillets, then K-turns (path_conditioning.py header; config/mission.yaml).
     path_conditioning_body_limit_soft_m: float = 0.26
     path_conditioning_body_limit_hard_m: float = 0.0
+    # Field 2026-10-23 (a K-turn planned 0.54 m out next to a bank): a pivot / K-turn / sharp
+    # fillet whose planned body exceeds the cap is cut inside the corner (tip left uncut);
+    # cap = limit + 0.09 leaves ~0.15 m pivot drift under the 0.55 / 0.40 soft trips. <0 = the
+    # conditioner default (limit + 0.09).
+    path_conditioning_body_cap_soft_m: float = 0.35
+    path_conditioning_body_cap_hard_m: float = 0.09
     path_conditioning_convex_r_max_m: float = 2.0
     path_conditioning_kturn: bool = True
     path_conditioning_kturn_min_rad: float = 1.05
@@ -3454,6 +3460,9 @@ class MissionFSM:
         lim = float(p.path_conditioning_body_limit_hard_m if mode == 'hard'
                     else p.path_conditioning_body_limit_soft_m)
         prm.body_limit_m = lim if lim >= 0.0 else None
+        cap = float(p.path_conditioning_body_cap_hard_m if mode == 'hard'
+                    else p.path_conditioning_body_cap_soft_m)
+        prm.body_cap_m = cap if cap >= 0.0 else None
         prm.convex_r_max = float(p.path_conditioning_convex_r_max_m)
         prm.kturn = bool(p.path_conditioning_kturn)
         prm.kturn_min_rad = float(p.path_conditioning_kturn_min_rad)
@@ -7346,10 +7355,15 @@ def condition_plan(job):
                 nkt += 1
                 logs.append(('info', 'area %d sub-path %d: K-turn at (%.2f, %.2f) %+.0f deg: %s'
                              % (area, len(out), c.x, c.y, math.degrees(c.turn), c.why)))
+            elif c.choice == 'cut':
+                logs.append(('warn', 'area %d sub-path %d: corner cut at (%.2f, %.2f) %+.0f deg '
+                                     '(body %s m out, tip left uncut): %s'
+                             % (area, len(out), c.x, c.y, math.degrees(c.turn),
+                                '%.2f' % c.body_m if c.body_m is not None else '?', c.why)))
             if c.body_m is not None and c.body_m > 0.0:
                 corner_body.append((float(c.x), float(c.y), float(c.body_m)))
             if prm.body_limit_m is not None and c.body_m is not None and \
-                    c.choice in ('fillet', 'pivot', 'kturn') and \
+                    c.choice in ('fillet', 'pivot', 'kturn', 'cut') and \
                     c.body_m > (c.limit_m if c.limit_m is not None else prm.body_limit_m) + 1e-3:
                 # nothing fits the planning limit here: the least-overhang option is driven
                 logs.append(('warn', 'area %d sub-path %d: corner at (%.2f, %.2f) %+.0f deg: '
