@@ -149,7 +149,10 @@ export function useMapFiles({
             const points = dedupePoints(rawPoints);
 
             const target = areas[parentMapping.type][parentMapping.index];
+            // obstacle_info stays index-aligned with obstacles so the
+            // provenance (manual vs tracker/dig) and pending state survive.
             target.obstacles = [...(target.obstacles ?? []), {points}];
+            target.obstacle_info = [...(target.obstacle_info ?? []), f.getInfo()];
         }
 
         const updateMsg: MowgliReplaceMapReq = {
