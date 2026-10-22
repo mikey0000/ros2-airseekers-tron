@@ -102,7 +102,7 @@ not only after a reboot. It never touches the vendor units (`cam.service` etc.),
 `/userdata/ros2_stack` or the rest of `/userdata/ros2`, and does not stop the running
 container (the stack just loses the stereo IMU until reinstalled). `manifest` is the
 audit: it lists every host path the installers create and whether it is present, so a
-clean host shows `0/14 present`, a vendor `mower.rules` and the vendor `sys_close`.
+clean host shows `0/16 present`, a vendor `mower.rules` and the vendor `sys_close`.
 
 | Piece | Installer (`--uninstall` reverses it) | What it does | Check |
 |---|---|---|---|
@@ -110,6 +110,7 @@ clean host shows `0/14 present`, a vendor `mower.rules` and the vendor `sys_clos
 | stereo host setup | `scripts/install_stereo_host_setup.sh` | `mower-stereo-host.service` runs `scripts/stereo_host_boot.sh` once per boot (after `cam.service`, before docker): reloads the Metoak ICM-40608 IMU driver in IIO mode so `stereo_imu` can read it, and raises the UDP socket buffers to 8 MiB for Fast DDS; also writes `/etc/sysctl.d/90-ros2-dds.conf` | `journalctl -u mower-stereo-host`; `scripts/setup_stereo_host.sh status` must say `IIO mode` |
 | stereo watchdog | `scripts/install_stereo_watchdog.sh` | `mower-stereo-watchdog.service` re-runs the vendor camera init when the front stereo stops streaming, then re-applies IIO mode (the vendor init loads the IMU driver in its netlink mode, which hides it from the stack) | `journalctl -u mower-stereo-watchdog` |
 | power button | `scripts/install_power_button.sh` | `mower-poweroff.path` / `.service`: clean host shutdown from the panel key (docs/buttons.md); ships with `DRY_RUN=1` | `systemctl status mower-poweroff.path` |
+| zram swap | `scripts/install_zram.sh` | `zram-swap.service`: 1.5 GiB of zstd-compressed swap held in RAM (`/dev/zram0`, priority 100), plus `/etc/sysctl.d/92-zram-vm.conf` (`vm.swappiness 150`, `vm.page-cluster 0`). Gives the 3.9 GB board headroom so memory pressure swaps cold heap pages instead of freezing the host. **Nothing is written to the eMMC** (no writeback device), so no flash wear. Details: `docs/host_zram.md` | `swapon --show` lists `/dev/zram0 1.5G`; `zramctl` |
 | boot unit (opt-in) | `scripts/install_mower_service.sh` or `install_host_services.sh --boot-unit` | `mower-ros2.service` brings compose up at boot; not needed while docker's restart policy keeps `mower_jazzy` running | `systemctl status mower-ros2` |
 
 Why the stereo host setup matters: without it the heading aligner has no stereo gyro and

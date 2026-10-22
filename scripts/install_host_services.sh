@@ -22,7 +22,9 @@
 #                                                                 the front stereo when it stops streaming
 #   4. power button          scripts/install_power_button.sh      mower-poweroff.path/.service (DRY_RUN=1
 #                                                                 by default, see docs/buttons.md)
-#   5. (opt-in) boot unit    scripts/install_mower_service.sh     mower-ros2.service: compose up at boot
+#   5. zram swap             scripts/install_zram.sh              zram-swap.service: 1.5 GiB zstd RAM swap
+#                                                                 (no eMMC writes) + swappiness sysctl
+#   6. (opt-in) boot unit    scripts/install_mower_service.sh     mower-ros2.service: compose up at boot
 #                                                                 (docker's restart policy already does
 #                                                                 this for mower_jazzy; only needed when
 #                                                                 compose is not left running)
@@ -37,7 +39,7 @@
 # Nothing here commands motion.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-UNITS=(mower-stereo-host mower-stereo-watchdog mower-poweroff.path mower-ros2)
+UNITS=(mower-stereo-host mower-stereo-watchdog mower-poweroff.path zram-swap mower-ros2)
 # Every host path an installer creates or replaces. Keep in sync with the install_*.sh scripts.
 # (/etc/udev/rules.d/mower.rules itself is vendor-shipped and only refreshed, see install_udev.sh)
 MANIFEST=(
@@ -54,6 +56,8 @@ MANIFEST=(
     /usr/lib/systemd/system-shutdown/mower-mcu-poweroff
     /usr/bin/sys_close.vendor
     /userdata/ros2/power
+    /etc/systemd/system/zram-swap.service
+    /etc/sysctl.d/92-zram-vm.conf
     /etc/systemd/system/mower-ros2.service
 )
 
@@ -98,6 +102,7 @@ esac
 
 if [[ ${1:-} == uninstall ]]; then
     echo "### boot unit";              bash scripts/install_mower_service.sh --uninstall
+    echo "### zram swap";              bash scripts/install_zram.sh --uninstall
     echo "### power button";           bash scripts/install_power_button.sh --uninstall --purge
     echo "### stereo watchdog";        bash scripts/install_stereo_watchdog.sh --uninstall
     echo "### stereo host setup";      bash scripts/install_stereo_host_setup.sh --uninstall
@@ -108,10 +113,11 @@ if [[ ${1:-} == uninstall ]]; then
     exit 0
 fi
 
-echo "### 1/4 udev rules";            bash scripts/install_udev.sh
-echo "### 2/4 stereo host setup";     bash scripts/install_stereo_host_setup.sh
-echo "### 3/4 stereo watchdog";       bash scripts/install_stereo_watchdog.sh
-echo "### 4/4 power button (DRY_RUN)"; bash scripts/install_power_button.sh
+echo "### 1/5 udev rules";            bash scripts/install_udev.sh
+echo "### 2/5 stereo host setup";     bash scripts/install_stereo_host_setup.sh
+echo "### 3/5 stereo watchdog";       bash scripts/install_stereo_watchdog.sh
+echo "### 4/5 power button (DRY_RUN)"; bash scripts/install_power_button.sh
+echo "### 5/5 zram swap";             bash scripts/install_zram.sh
 if [[ ${1:-} == --boot-unit ]]; then
     echo "### boot unit";             bash scripts/install_mower_service.sh
 fi

@@ -18,7 +18,11 @@ The owner approved this on 2026-10-22. It is option Q1 in `docs/analysis/2026-10
 The kernel already supports it: `/sys/block/zram0` exists, and `comp_algorithm` lists zstd.
 
 ## Install
-This is done by the owner, on the mower host, once. After syncing, so that the files are in `/userdata/ros2_stack/docker/host/`:
+It is part of the standard host install (`docs/deployment.md`, "Host services"): `sudo /userdata/ros2_stack/scripts/install_host_services.sh` installs it with the other host pieces, and `uninstall` removes it.
+
+To install zram on its own: `sudo /userdata/ros2_stack/scripts/install_zram.sh`; undo it with `--uninstall`.
+
+The equivalent manual steps, after syncing so that the files are in `/userdata/ros2_stack/docker/host/`:
 ```
 sudo install -m 644 /userdata/ros2_stack/docker/host/zram-swap.service /etc/systemd/system/
 sudo install -m 644 /userdata/ros2_stack/docker/host/92-zram-vm.conf /etc/sysctl.d/
