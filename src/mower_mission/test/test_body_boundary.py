@@ -276,34 +276,19 @@ def test_refused_pivot_is_resent_after_a_real_pause():
     assert h.pending_action(f.ACT_SPIN)
 
 
-def test_transit_to_an_edge_lap_start_ends_inside_then_a_blade_off_lead_in():
+def test_transit_to_an_edge_lap_start_ends_inside_beside_it():
     # sim 2026-10-22: transits arriving square to the line at a lap-0 start put the nose
-    # 0.40 m out; round 3: the transit ends 0.30 m inside and 0.9 m before the start, then a
-    # blade-off S-curve lead-in (still TRANSIT) joins the lap on its line and heading
-    h = mowing_h([line(1, 3, 4, 3), line(2, 0, 4.5, 0, n=26)], (1.0, 3.0, 0.0),
-                 path_conditioning=True, edge_approach_inset_m=0.30)
-    m = h.fsm.mission
-    m.sub_i, m.start_local = 1, 0
-    h.fsm._begin(h.t)
+    # 0.40 m out; the transit now ends 0.30 m inside, then a shallow join (look-ahead 3 x
+    # the lateral offset)
+    h = mowing_h([line(1, 3, 4, 3), line(1, 0, 4.5, 0, n=36)], (1.0, 3.0, 0.0),
+                 path_conditioning=True)
+    h.fsm.mission.sub_i = 1
+    h.fsm.mission.start_local = 0
     h.fsm._dispatch(force_transit=True)
-    h._apply(h.fsm._end())
-    tx, ty, tyaw = m.transit_target
-    assert abs(tx - 1.1) < 1e-6 and abs(ty - 0.30) < 1e-6 and abs(tyaw) < 1e-6
-    assert m.lead_in == (2.0, 0.0, 0.0)
-    feed(h, (tx, ty, 0.0))
-    h.fsm._action = None
-    h.fsm._begin(h.t)
-    h.fsm._begin_blade()
-    h._apply(h.fsm._end())
-    a = h.pending_action(f.ACT_FOLLOW)
-    assert a.purpose == 'lead_in' and h.name == 'TRANSIT'
-    poses = h.goal(f.ACT_FOLLOW)['poses']
-    assert abs(poses[-1][0] - 2.0) < 1e-6 and abs(poses[-1][1]) < 1e-6
-    assert all(abs(q[2]) < math.radians(40) for q in poses)         # a shallow S-curve
-    feed(h, (2.0, 0.0, 0.0))
-    h.finish(f.ACT_FOLLOW, f.SUCCEEDED, arrive=False)
-    assert h.name == 'MOWING'
-
+    tx, ty, tyaw = h.fsm.mission.transit_target
+    assert abs(tx - 1.0) < 1e-6 and abs(ty - 0.30) < 1e-6 and abs(tyaw) < 1e-6
+    hd = f.MissionFSM._join_heading(line(1, 0, 4.5, 0, n=36), (tx, ty, 0.0))
+    assert abs(math.degrees(hd)) < 20.0
 
 
 def test_soft_trip_is_plan_relative_near_a_corner_planned_out():
