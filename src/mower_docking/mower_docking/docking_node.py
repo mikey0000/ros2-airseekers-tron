@@ -31,6 +31,7 @@ from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from std_msgs.msg import Bool, Int32, String, UInt8
 
+from mower_common.geometry import MARKER_SIZE_M
 from mower_interfaces.action import Dock, Undock
 from mower_interfaces.msg import MowerBaseDevStatus
 from mower_interfaces.srv import ChargingControl
@@ -38,7 +39,7 @@ from mower_interfaces.srv import ChargingControl
 from mower_docking import dock_logic as dl
 from mower_docking import dock_yaw
 from mower_docking.exposure import AUTO, STOCK_SEQUENCE, ExposureStepper
-from mower_docking.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
+from mower_common.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
 from mower_docking.quiet_action import QuietActionClient
 
 try:
@@ -86,7 +87,7 @@ class DockingServer(Node):
         decl('nav_server_wait_s', 5.0)
         # vision
         decl('aruco_dictionary', 'DICT_4X4_50')
-        decl('marker_size', 0.04)
+        decl('marker_size', MARKER_SIZE_M)
         decl('marker_id', -1)
         decl('rear_camera_T_base', [-0.201, 0.0, 0.25, -1.5707963, 0.0, 1.5707963])
         decl('max_detection_rate_hz', 10.0)

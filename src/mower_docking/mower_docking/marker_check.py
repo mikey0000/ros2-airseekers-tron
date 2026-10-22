@@ -24,13 +24,14 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from mower_common.geometry import MARKER_SIZE_M
 from mower_docking import dock_logic as dl
 
 DEFAULTS = {
     'image_topic': '/rear_camera/image_raw',
     'camera_info_topic': '/rear_camera/camera_info',
     'aruco_dictionary': 'DICT_4X4_50',
-    'marker_size': 0.04,
+    'marker_size': MARKER_SIZE_M,
     'marker_id': -1,
     'rear_camera_T_base': [-0.201, 0.0, 0.25, -1.5707963, 0.0, 1.5707963],
     'max_detection_rate_hz': 10.0,

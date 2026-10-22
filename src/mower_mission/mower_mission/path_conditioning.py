@@ -78,6 +78,8 @@ import math
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from mower_common import geometry as rgeo
+
 from . import geometry as geo
 
 LINE, ARC, PIVOT, REVERSE = 'line', 'arc', 'pivot', 'reverse'
@@ -123,7 +125,7 @@ class Params:
     r_max: float = 1.0
     r_step: float = 0.1
     margin_m: float = 0.05
-    half_width_m: float = 0.235    # body half width, 0.47 m with wheel trim (2026-10-20)
+    half_width_m: float = rgeo.FOOTPRINT_HALF_WIDTH_M   # 0.235, 0.47 m with wheel trim
     step_m: float = 0.05
     simplify_m: float = 0.02
     detect_m: float = 0.06
@@ -140,8 +142,8 @@ class Params:
     end_m: float = 0.3
     allow_pivot: bool = True
     # body outline from base_link (rear axle, pivot centre); sides = half_width_m
-    body_front_m: float = 0.60
-    body_rear_m: float = 0.10
+    body_front_m: float = rgeo.FOOTPRINT_FRONT_M   # 0.60
+    body_rear_m: float = rgeo.FOOTPRINT_REAR_M     # 0.10
     body_limit_m: Optional[float] = None   # planning limit, m outside the region (None = off)
     convex_r_max: float = 2.0      # body-limited convex corners: fillets up to this radius
     kturn: bool = True

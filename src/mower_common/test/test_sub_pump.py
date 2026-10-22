@@ -17,7 +17,7 @@ from nav_msgs.msg import Odometry  # noqa: E402
 from std_msgs.msg import Bool  # noqa: E402
 from mower_interfaces.msg import MowerBaseDevStatus  # noqa: E402
 
-from mower_gui_bridge import sub_pump  # noqa: E402
+from mower_common import sub_pump  # noqa: E402
 
 
 def _odom(frame, child, seed):

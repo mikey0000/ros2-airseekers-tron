@@ -11,6 +11,8 @@ Points are ``(x, y)`` tuples; path poses are ``(x, y, yaw)`` tuples.
 import bisect
 import math
 
+from mower_common.angles import wrap_angle_trig
+
 
 def dist(a, b):
     """Euclidean distance between the x/y parts of two points or poses."""
@@ -486,8 +488,8 @@ def swept_hit(point, poses, front_m, rear_m, half_width_m, margin_m=0.0):
 
 
 def wrap_angle(a):
-    """``a`` wrapped to (-pi, pi]."""
-    return math.atan2(math.sin(a), math.cos(a))
+    """``a`` wrapped to (-pi, pi] (mower_common.angles.wrap_angle_trig)."""
+    return wrap_angle_trig(a)
 
 
 def polyline_distance(point, poses):

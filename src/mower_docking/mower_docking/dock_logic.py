@@ -31,25 +31,17 @@ import math
 from dataclasses import dataclass, field, replace
 from typing import List, Optional, Sequence, Tuple
 
+from mower_common import geometry as rgeo
+from mower_common.angles import wrap_angle, yaw_from_quaternion  # noqa: F401 (re-exported)
+
 # --------------------------------------------------------------------------
 # small maths helpers (pure python; numpy only where a 3x3 matrix is handy)
 # --------------------------------------------------------------------------
 
 
-def wrap_angle(a: float) -> float:
-    """Wrap an angle to (-pi, pi]."""
-    a = math.fmod(a + math.pi, 2.0 * math.pi)
-    if a <= 0.0:
-        a += 2.0 * math.pi
-    return a - math.pi
-
-
 def clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
 
-
-def yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
-    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
 def quaternion_from_yaw(yaw: float) -> Tuple[float, float, float, float]:
@@ -274,7 +266,7 @@ class ControllerGains:
     # wheels rolling backwards; |w| lowered when that would exceed max_speed); within
     # final_zone of the contacts |w| is lowered to keep the inner wheel at 0 instead. The [0, wheel_floor) band
     # (small steering on the reverse, 2026-10-07) is unchanged. wheel_floor 0 = off (revert).
-    track_width: float = 0.40       # the MCU's wheel split (2026-10-20, was 0.48)
+    track_width: float = rgeo.TRACK_SPLIT_M   # the MCU's wheel split 0.40 (was 0.48)
     wheel_floor: float = 0.06
 
 

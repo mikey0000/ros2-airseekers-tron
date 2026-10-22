@@ -48,7 +48,7 @@ from std_srvs.srv import Trigger
 
 from mower_control import crash_record
 from mower_control.blackbox import SnapshotBuffer, dump_bag, make_dump_dir
-from mower_control.sub_pump import SubscriptionPump
+from mower_common.sub_pump import SubscriptionPump
 from mower_control.supervisor_logic import DEFAULT_IGNORE, LivenessTracker
 
 DEFAULT_TOPICS = [

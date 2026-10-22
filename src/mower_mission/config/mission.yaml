@@ -318,7 +318,7 @@ behavior_tree_node:
     # sweep the footprint along the PREDICTED motion: constant applied /cmd_vel (else
     # /cmd_vel_nav) twist younger than obstacle_twist_max_age_s, for obstacle_sweep_horizon_s
     # (arc / straight / pivot); a TRANSIT standing still with no prediction keeps the line to
-    # the target. Footprint robot_rear_m .. robot_front_m around base_link, +-robot_width_m/2,
+    # the target. Footprint robot_rear_edge_m .. robot_front_m around base_link, +-robot_width_m/2,
     # grown by obstacle_path_margin_m; within its circumscribed radius + margin = always in the
     # path. A dynamic stop keeps judging with the twist it started with.
     obstacle_path_filter: true
@@ -328,7 +328,7 @@ behavior_tree_node:
     obstacle_sweep_horizon_s: 2.0
     obstacle_twist_max_age_s: 0.5
     robot_front_m: 0.60               # bumper (was 0.52)
-    robot_rear_m: 0.12                # rear 0.10 + 0.02 (was 0.25)
+    robot_rear_edge_m: 0.12           # rear 0.10 + 0.02 margin (= obstacle_guard rear_edge_x_m; was robot_rear_m)
     blade_transit_sample_m: 0.2       # blade_policy continuous: in-area transit check step
     follow_retries: 3                 # follow_path abort/timeout: resume from the last reached pose
     clear_costmaps_on_retry: true     # clear Nav2 global+local costmaps before retries / recoveries

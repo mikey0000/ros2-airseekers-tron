@@ -11,7 +11,7 @@ from mower_control import cmd_vel_slew as cs
 
 DT = 0.05
 HALF = cs.TRACK_WIDTH_M / 2.0
-from mower_control.sub_pump import WALL_CLOCK
+from mower_common.sub_pump import WALL_CLOCK
 
 
 def inner(v, w):

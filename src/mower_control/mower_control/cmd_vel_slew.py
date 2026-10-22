@@ -179,7 +179,10 @@ from rcl_interfaces.msg import SetParametersResult
 from sensor_msgs.msg import Imu
 
 from mower_control.fast_msgs import parse_twist, twist_bytes
-from mower_control.sub_pump import node_clock, PeriodicRunner, SubscriptionPump, parse_imu
+from mower_common import geometry as rgeo
+from mower_common import phases as mphases
+from mower_common.angles import yaw_from_quaternion  # noqa: F401 (re-exported)
+from mower_common.sub_pump import node_clock, PeriodicRunner, SubscriptionPump, parse_imu
 
 
 def slew(current, target, max_accel, dt):
@@ -210,10 +213,6 @@ def slew_ad(current, target, max_accel, max_decel, dt):
 def wrap_angle(a):
     """``a`` wrapped to [-pi, pi)."""
     return (a + math.pi) % (2.0 * math.pi) - math.pi
-
-
-def yaw_from_quaternion(x, y, z, w):
-    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
 # Straight-line shaping parameters: name -> (default, type). The names double as
@@ -456,8 +455,8 @@ class CostmapWindow:
         return v - 256 if v > 127 else v
 
 
-FOOTPRINT_FRONT_X = 0.60      # base_link front edge (nav2_params footprint, owner-measured 2026-10-20)
-FOOTPRINT_HALF_Y = 0.235     # 0.47 m wide with the wheel trim
+FOOTPRINT_FRONT_X = rgeo.FOOTPRINT_FRONT_M      # base_link front edge 0.60 (owner-measured)
+FOOTPRINT_HALF_Y = rgeo.FOOTPRINT_HALF_WIDTH_M  # 0.235: 0.47 m wide with the wheel trim
 
 
 def creep_sweep_points(pose, v, w, dist_m, margin_m=0.10, step=0.05):
@@ -596,7 +595,7 @@ ASSIST_GATE_PARAMS = {   # node parameter -> (PivotAssistGate attribute, type)
 # speeds with (vendor tracking_mpc wheel_base 0.4, mcu_reimpl WHEELBASE_M 0.40; field pivot bag:
 # IMU / MCU-reported yaw rate 1.02-1.03 on clean pivots = 0.40 / 0.39). The physical tyre
 # centre-to-centre track is 0.39 m (URDF drive_track_y 0.195); wheel-speed math uses 0.40.
-TRACK_WIDTH_M = 0.40
+TRACK_WIDTH_M = rgeo.TRACK_SPLIT_M   # 0.40
 # Autonomous DRIVING phases only. Docking/undocking are exempt: the marker-guided
 # reverse (-0.05 m/s with small steering) sits in the one-wheel zone and was being
 # snapped to v=0 pivots, so the robot pushed nowhere and the stall guard fired at
@@ -1080,15 +1079,9 @@ def set_turn_param(shaper, name, value):
 
 
 # --------------------------------------------------------------------------- motion gate
-# Mirrors mower_mission.mission_fsm.MOTION_PHASES / DOCKED_MOTION_PHASES (kept local so
-# mower_control does not depend on mower_mission).
-MOTION_PHASES = frozenset((
-    'MANUAL_MOWING', 'RECORDING', 'UNDOCKING', 'WAITING_FOR_RTK', 'PLANNING', 'TRANSIT',
-    'MOWING', 'AREA_UNREACHABLE', 'BOUNDARY_PAUSED', 'RETURNING_HOME',
-    'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING', 'COVERAGE_FAILED_DOCKING'))
-DOCKED_MOTION_PHASES = frozenset((
-    'UNDOCKING', 'MANUAL_MOWING', 'RETURNING_HOME', 'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING',
-    'COVERAGE_FAILED_DOCKING'))
+# The mission's motion phases (mower_common.phases: the one source the FSM uses too).
+MOTION_PHASES = frozenset(mphases.MOTION_PHASES)
+DOCKED_MOTION_PHASES = frozenset(mphases.DOCKED_MOTION_PHASES)
 STUCK_REASON = 'stuck: wheels spinning'
 MOTION_ENABLE_MAX_AGE = 3.0   # s: the mission re-asserts /motion_enabled every 1 s
 
@@ -1302,7 +1295,7 @@ class CmdVelSlewNode(Node):
         from rclpy.qos import QoSDurabilityPolicy
         from mower_interfaces.msg import MowerBaseDevStatus
         from mowgli_interfaces.msg import HighLevelStatus
-        from mower_control.sub_pump import flat_parser
+        from mower_common.sub_pump import flat_parser
         self._gate = MotionGate()
         self._pump.subscribe(MowerBaseDevStatus, '/mower_base/status', self._on_base,
                              QoSProfile(depth=1,
@@ -1362,7 +1355,7 @@ class CmdVelSlewNode(Node):
         from std_msgs.msg import Bool, String
         from nav_msgs.msg import OccupancyGrid, Odometry
         from rclpy.qos import QoSDurabilityPolicy
-        from mower_control.sub_pump import parse_odometry
+        from mower_common.sub_pump import parse_odometry
         ag = self._assist_gate
         lane_qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
                               history=QoSHistoryPolicy.KEEP_LAST)

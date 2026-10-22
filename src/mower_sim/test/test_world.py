@@ -249,7 +249,9 @@ def test_urdf_blade_link_is_the_measured_deck_centre():
     if not (os.path.exists(urdf) and os.path.exists(ms)):
         pytest.skip('sources not found from the test tree')
     m = re.search(r'name="cutter_xyz"\s+value="([-\d.]+) ([-\d.]+)', open(urdf).read())
-    fb = float(re.search(r"'blade_offset_x': ([-\d.]+)", open(ms).read()).group(1))
+    assert "'blade_offset_x': rgeo.DECK_CENTRE_X_M" in open(ms).read()
+    from mower_common import geometry as rgeo
+    fb = rgeo.DECK_CENTRE_X_M
     assert float(m.group(1)) == pytest.approx(0.23)
     assert fb == pytest.approx(0.23)
 

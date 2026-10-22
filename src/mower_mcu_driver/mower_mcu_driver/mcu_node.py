@@ -125,7 +125,7 @@ from mower_mcu_driver.rate_gate import ChangeOrPeriodGate, activity_low_power
 
 try:  # real rclpy only (the offline tests run against ros_stubs)
     from rclpy.serialization import deserialize_message
-    from mower_mcu_driver.sub_pump import (SubscriptionPump, flat_serializer, odometry_bytes,
+    from mower_common.sub_pump import (SubscriptionPump, flat_serializer, odometry_bytes,
                                            parse_imu)
 except ImportError:  # pragma: no cover - stubbed ROS
     deserialize_message = parse_imu = flat_serializer = odometry_bytes = None

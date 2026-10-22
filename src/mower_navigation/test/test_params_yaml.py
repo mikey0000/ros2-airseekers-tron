@@ -501,14 +501,13 @@ CMD_VEL_SLEW = os.path.join(HERE, "..", "..", "mower_control", "mower_control", 
 
 
 def _shaper_constants():
-    """TRACK_WIDTH_M and the min_inner_wheel_mps default from cmd_vel_slew.py (no import)."""
-    tree = ast.parse(open(CMD_VEL_SLEW).read())
-    out = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1 and \
-                isinstance(node.targets[0], ast.Name) and node.targets[0].id == "TRACK_WIDTH_M":
-            out["track"] = ast.literal_eval(node.value)
+    """TRACK_WIDTH_M (= mower_common.geometry.TRACK_SPLIT_M since 2026-10-23) and the
+    min_inner_wheel_mps default from cmd_vel_slew.py (no import of the node)."""
     text = open(CMD_VEL_SLEW).read()
+    assert "TRACK_WIDTH_M = rgeo.TRACK_SPLIT_M" in text
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "mower_common"))
+    from mower_common import geometry as rgeo
+    out = {"track": rgeo.TRACK_SPLIT_M}
     i = text.index("SHAPE_DEFAULTS = {")
     j = text.index("'min_inner_wheel_mps':", i)
     out["floor"] = float(text[j:].split(":", 1)[1].split(",", 1)[0])

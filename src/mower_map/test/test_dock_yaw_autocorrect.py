@@ -103,11 +103,11 @@ def msn():
         stubs = _stub_ros()
     with mock.patch.dict(sys.modules, stubs):
         sys.modules.pop('mower_map.map_server_node', None)
-        sys.modules.pop('mower_map.sub_pump', None)
+        sys.modules.pop('mower_common.sub_pump', None)
         mod = importlib.import_module('mower_map.map_server_node')
         yield mod
     sys.modules.pop('mower_map.map_server_node', None)
-    sys.modules.pop('mower_map.sub_pump', None)
+    sys.modules.pop('mower_common.sub_pump', None)
 
 
 class _Log:

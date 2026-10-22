@@ -12,7 +12,7 @@ from mower_control import cmd_vel_slew as cs
 DT = 0.05
 HERE = os.path.dirname(os.path.abspath(__file__))
 MUX_YAML = os.path.join(HERE, '..', '..', 'mower_teleop', 'config', 'twist_mux.yaml')
-from mower_control.sub_pump import WALL_CLOCK
+from mower_common.sub_pump import WALL_CLOCK
 
 
 def _gate(state):

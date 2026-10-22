@@ -40,7 +40,8 @@ from mower_map import areas as core
 from mower_map import nongrass_node as ngn
 from mower_map import route_graph as rgraph
 from mower_map import terrain as terr
-from mower_map.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
+from mower_common import geometry as rgeo
+from mower_common.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
 
 try:
     import tf2_ros
@@ -131,7 +132,7 @@ PARAMS = {
     # mow-progress paint radius; < 0 = blade_disc_mm / 2000 (the one robot-wide blade size, set
     # by the GUI / robot settings; 220 mm disc -> 0.11; was 0.15 = a 0.30 disc for a 0.22 blade)
     'blade_radius': -1.0,
-    'blade_offset_x': 0.23,            # fallback if TF base->blade is unavailable (URDF cutter_xyz, deck centre measured 2026-10-20)
+    'blade_offset_x': rgeo.DECK_CENTRE_X_M,   # 0.23: fallback if TF base->blade is unavailable (URDF cutter_xyz, deck centre measured 2026-10-20)
     'blade_offset_y': 0.0,
     'status_max_age_s': 1.0,           # is_cutting older than this -> not cutting
     'mow_progress_publish_period_s': 2.0,
@@ -178,7 +179,7 @@ PARAMS = {
     # which win over these at startup; the GUI also sets them live). The default
     # swath_width_m = default_swath_width_m if > 0, else blade_disc_mm/1000 -
     # swath_overlap_m (area_settings.derive_default_swath_width).
-    'blade_disc_mm': 220,              # 220 standard disc | 330 optional wide disc (blades incl.)
+    'blade_disc_mm': int(round(rgeo.BLADE_DISC_M * 1000)),   # 220 standard disc | 330 optional wide disc (blades incl.)
     'swath_overlap_m': 0.04,           # 0..0.15
     'default_swath_width_m': 0.0,      # 0 = derived from the disc
     # terrain memory (docs/terrain_aware_planning.md): per-area slope + traction raster

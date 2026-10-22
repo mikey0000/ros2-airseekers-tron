@@ -30,6 +30,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from mower_common import geometry as rgeo
+from mower_common.phases import DOCK_PHASES, DOCKED_MOTION_PHASES, MOTION_PHASES  # noqa: F401
 from mower_mission import body_boundary as bbody
 from mower_mission import geometry as geo
 from mower_mission import path_conditioning as pcond
@@ -287,19 +289,12 @@ DISPLAY_NAMES = ('RECORDING_COMPLETE', 'UNDOCK_FAILED', 'NAV_TO_DOCK_FAILED')
 # a mowing session is in progress (rain / battery / boundary guards apply)
 MISSION_PHASES = ('UNDOCKING', 'WAITING_FOR_RTK', 'PLANNING', 'MOWING', 'TRANSIT',
                   'AREA_UNREACHABLE', 'BOUNDARY_PAUSED')
-DOCK_PHASES = ('RETURNING_HOME', 'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING',
-               'COVERAGE_FAILED_DOCKING')
-# Phases in which the wheels may move (published as latched /motion_enabled and
-# enforced by mower_control/cmd_vel_slew's motion gate). Everything else -- IDLE*,
-# CHARGING, EMERGENCY, BOUNDARY_EMERGENCY_STOP, MOWING_COMPLETE/INCOMPLETE,
-# NAV_TO_DOCK_FAILED, PREFLIGHT_CHECK, RAIN_WAITING, ... -- forces zero.
-# RECORDING is joystick driving (boundary recording) like MANUAL_MOWING.
-MOTION_PHASES = ('MANUAL_MOWING', 'RECORDING', 'UNDOCKING', 'WAITING_FOR_RTK',
-                 'PLANNING', 'TRANSIT', 'MOWING', 'AREA_UNREACHABLE',
-                 'BOUNDARY_PAUSED') + DOCK_PHASES
-# Phases allowed to move while the base reports docked/charging (explicit undock;
-# docking itself ends on the contacts).
-DOCKED_MOTION_PHASES = ('UNDOCKING', 'MANUAL_MOWING') + DOCK_PHASES   # manual: the operator may drive off the dock
+# DOCK_PHASES, MOTION_PHASES (the wheels may move: published as latched /motion_enabled and
+# enforced by mower_control/cmd_vel_slew's motion gate; everything else -- IDLE*, CHARGING,
+# EMERGENCY, BOUNDARY_EMERGENCY_STOP, MOWING_COMPLETE/INCOMPLETE, NAV_TO_DOCK_FAILED,
+# PREFLIGHT_CHECK, RAIN_WAITING, ... -- forces zero; RECORDING is joystick driving like
+# MANUAL_MOWING) and DOCKED_MOTION_PHASES are imported from mower_common.phases, the one
+# source both nodes use.
 
 
 # ---------------------------------------------------------------------------
@@ -600,20 +595,22 @@ class Params:
     obstacle_path_filter: bool = True
     obstacle_path_lookahead_m: float = 2.0
     obstacle_path_margin_m: float = 0.25
-    robot_width_m: float = 0.47        # owner-measured with wheel trim (2026-10-20, was 0.54)
+    robot_width_m: float = rgeo.FOOTPRINT_WIDTH_M   # 0.47 with wheel trim (2026-10-20, was 0.54)
     # 2026-10-13 (person stopped the mower while the robot pivoted toward a detour target:
     # the straight line to the target is not where the robot goes). Where the mission does
     # not know the path the controller tracks (/navigate_to_pose transits: detours, gaps,
     # retries; return-to-dock and docking) the corridor is the robot footprint swept along
     # its PREDICTED motion: constant applied /cmd_vel (else /cmd_vel_nav) twist, younger than
     # obstacle_twist_max_age_s, for obstacle_sweep_horizon_s (arc v/w, straight, or pivot).
-    # Footprint: robot_rear_m behind to robot_front_m ahead of base_link, +-robot_width_m/2,
+    # Footprint: robot_rear_edge_m behind to robot_front_m ahead of base_link, +-robot_width_m/2,
     # grown by obstacle_path_margin_m. Anything within the circumscribed footprint radius +
     # margin of the robot is always in the path (standing still / pivoting next to it).
     obstacle_sweep_horizon_s: float = 2.0
     obstacle_twist_max_age_s: float = 0.5
-    robot_front_m: float = 0.60       # nav2 footprint front (bumper, owner-measured; was 0.52)
-    robot_rear_m: float = 0.12        # obstacle_guard rear_edge_x_m (rear 0.10 + 0.02; was 0.25)
+    robot_front_m: float = rgeo.FOOTPRINT_FRONT_M   # bumper 0.60 (owner-measured; was 0.52)
+    # = obstacle_guard rear_edge_x_m: the rear 0.10 plus a deliberate 0.02 margin (renamed from
+    # robot_rear_m on 2026-10-23 so it is not read as the body's rear, 0.10; was 0.25)
+    robot_rear_edge_m: float = 0.12
     # 2026-10-09 route graph (docs/route_graph.md, owner: "a specific path for on paths, a
     # different navigation ... then path again"): a transit (sub-path start, end-of-area
     # retry, blocked / dynamic / localization re-send) first asks map_server's plan_route
@@ -830,7 +827,7 @@ class Params:
     path_conditioning_r_min_m: float = 0.5
     path_conditioning_r_max_m: float = 1.0
     path_conditioning_margin_m: float = 0.05
-    path_conditioning_half_width_m: float = 0.235   # body half width with wheel trim (was 0.24)
+    path_conditioning_half_width_m: float = rgeo.FOOTPRINT_HALF_WIDTH_M   # 0.235 (was 0.24)
     path_conditioning_slack_m: float = 0.05
     path_conditioning_pivot_min_rad: float = 0.35
     # 0 since the edge layout (2026-10-21): lap-0 runs ON the line, a pivot at a convex
@@ -977,7 +974,7 @@ class Params:
     hard_boundary_retrace_max_m: float = 1.0
     hard_boundary_lookahead_m: float = 0.25
     hard_boundary_min_inner_mps: float = 0.06
-    hard_boundary_track_width_m: float = 0.40     # MCU wheel split (cmd_vel_slew TRACK_WIDTH_M; was 0.48)
+    hard_boundary_track_width_m: float = rgeo.TRACK_SPLIT_M   # MCU wheel split 0.40 (was 0.48)
     hard_boundary_pivot_err_rad: float = 0.6
     hard_boundary_pivot_rps: float = 0.3
     hard_boundary_progress_s: float = 3.0
@@ -4046,7 +4043,7 @@ class MissionFSM:
         """Length of the straight the robot body sweeps: drive + footprint ahead of it."""
         p = self.p
         return float(p.heading_calibration_distance_m) + float(
-            p.robot_front_m if direction > 0 else p.robot_rear_m)
+            p.robot_front_m if direction > 0 else p.robot_rear_edge_m)
 
     def _hcal_clear(self, pose, direction):
         """The straight ``direction`` (+1 ahead, -1 behind) from ``pose`` by the PRIOR
@@ -5479,7 +5476,7 @@ class MissionFSM:
         o = (pose[0] + d * math.cos(a), pose[1] + d * math.sin(a))
         p = self.p
         hw, margin = float(p.robot_width_m) / 2.0, float(p.obstacle_path_margin_m)
-        front, rear = float(p.robot_front_m), float(p.robot_rear_m)
+        front, rear = float(p.robot_front_m), float(p.robot_rear_edge_m)
         model = self._upcoming_path()
         self._path_eval = {'path': model[0] if model else None,
                            'motion': self._path_motion()}

@@ -75,7 +75,7 @@ from mowgli_interfaces.srv import GetMowingArea, PromoteObstacle, RemoveObstacle
 
 from mower_map.obstacle_snapshot import prune_snapshots, snapshot_ids, sync_snapshots
 from mower_map.obstacle_tracker_core import TrackerCore, TrackerParams, keepout_entry
-from mower_map.sub_pump import node_clock
+from mower_common.sub_pump import node_clock
 
 try:  # det_ros / det_range output; without vision_msgs the dynamic-class veto is off
     from vision_msgs.msg import Detection2DArray

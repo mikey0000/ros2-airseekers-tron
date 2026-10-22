@@ -38,7 +38,7 @@ from mower_gui_bridge import datum as dt
 from mower_gui_bridge import gui_relay
 from mower_gui_bridge import diagnostics as diag
 from mower_gui_bridge import state_machine as sm
-from mower_gui_bridge.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, _header,
+from mower_common.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, _header,
                                         flat_parser, odometry_frames, odometry_with_frames)
 
 PARAM_DEFAULTS = {

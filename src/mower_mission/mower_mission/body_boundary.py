@@ -20,8 +20,11 @@ than its limit:
 
 import math
 
+from mower_common import geometry as rgeo
+
 # body frame (x forward, y left), metres from base_link (owner-measured 2026-10-20)
-FRONT, REAR, HALF_WIDTH = 0.60, 0.10, 0.235
+FRONT, REAR, HALF_WIDTH = (rgeo.FOOTPRINT_FRONT_M, rgeo.FOOTPRINT_REAR_M,
+                           rgeo.FOOTPRINT_HALF_WIDTH_M)   # 0.60, 0.10, 0.235
 
 
 def body_points(front=FRONT, rear=REAR, half=HALF_WIDTH):

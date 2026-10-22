@@ -11,6 +11,8 @@
   <maintainer email="michael@example.com">michael</maintainer>
   <license>Apache-2.0</license>
 
+  <exec_depend>mower_common</exec_depend>
+
   <depend>rclpy</depend>
   <exec_depend>rosgraph_msgs</exec_depend>
   <depend>std_msgs</depend>

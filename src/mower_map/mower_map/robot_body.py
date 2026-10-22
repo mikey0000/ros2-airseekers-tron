@@ -20,10 +20,12 @@ import ast
 import math
 import os
 
+from mower_common import geometry as rgeo
+
 # Tron, measured (owner 2026-10-21, base_link = rear axle / pivot centre): front 0.60, rear
 # 0.10, half width 0.235 (= nav2_params.yaml footprint). Measurement uses NO padding (the
 # padding is a Nav2 planning margin, not body): MEASURE_PADDING.
-DEFAULT_FOOTPRINT = ((0.60, 0.235), (0.60, -0.235), (-0.10, -0.235), (-0.10, 0.235))
+DEFAULT_FOOTPRINT = rgeo.FOOTPRINT   # ((0.60, 0.235), (0.60, -0.235), (-0.10, -0.235), (-0.10, 0.235))
 DEFAULT_PADDING = 0.02
 MEASURE_PADDING = 0.0
 

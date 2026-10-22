@@ -54,18 +54,20 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(os.path.dirname(os.path.dirname(HERE)), 'src')
+sys.path.insert(0, os.path.join(SRC, 'mower_common'))
 sys.path.insert(0, os.path.join(SRC, 'mower_map'))
 sys.path.insert(0, os.path.join(SRC, 'mower_mission'))
 sys.path.insert(0, os.path.join(SRC, 'mower_control'))
 from mower_map import areas as A          # noqa: E402
 from mower_map import robot_body as RB    # noqa: E402
 from mower_mission import geometry as G   # noqa: E402
+from mower_common import geometry as RG   # noqa: E402
 
 OUT_LIMIT = 0.10
 CORNER_RAD = 1.38          # = mission.yaml route_corner_turn_rad
 CORNER_LIMIT = 0.15
 CORNER_NEAR = 0.8
-HALF_TRACK = 0.20          # MCU wheel split b 0.40 / 2 (cmd_vel_slew TRACK_WIDTH_M; was 0.24)
+HALF_TRACK = RG.TRACK_SPLIT_M / 2.0   # MCU wheel split b 0.40 / 2 (was 0.24)
 FLOOR = 0.06
 
 

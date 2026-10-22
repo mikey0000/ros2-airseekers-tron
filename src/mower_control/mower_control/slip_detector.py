@@ -117,15 +117,14 @@ from std_msgs.msg import Bool, String
 
 from mower_control.fast_msgs import (bool_bytes, parse_string, parse_twist,
                                      parse_twist_stamped)
-from mower_control.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, flat_parser,
+from mower_common.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, flat_parser,
                                     parse_odometry)
 
 _DIG_TRUE = bool_bytes(True)
 _DIG_FALSE = bool_bytes(False)
 
 
-def _wrap(a):
-    return math.atan2(math.sin(a), math.cos(a))
+from mower_common.angles import wrap_angle_trig as _wrap  # noqa: E402
 
 
 class StuckDetector:

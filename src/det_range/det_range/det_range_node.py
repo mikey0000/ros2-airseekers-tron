@@ -66,7 +66,7 @@ except ImportError as _exc:  # pragma: no cover
 from det_range.geometry import (DEFAULT_SIZE_CLASSES, DEFAULT_SIZE_HEIGHTS_M, StereoModel,
                                 chain_to, check_class_size, mono_range_box, points_worthy,
                                 quat_to_matrix, range_box, rpy_matrix)
-from det_range.sub_pump import SubscriptionPump, _header
+from mower_common.sub_pump import SubscriptionPump, _header
 
 
 def _stamp_ns(stamp) -> int:

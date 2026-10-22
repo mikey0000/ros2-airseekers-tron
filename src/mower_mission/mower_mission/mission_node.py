@@ -61,7 +61,7 @@ from mower_mission import mow_progress
 from mower_mission.external_rain import ExternalRain
 from mower_mission.resume import ResumeCursor
 from mower_mission.quiet_action import QuietActionClient
-from mower_mission.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, flat_parser,
+from mower_common.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, flat_parser,
                                     parse_odometry)
 
 TOPIC_DEFAULTS = {
