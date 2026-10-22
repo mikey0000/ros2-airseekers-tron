@@ -623,3 +623,78 @@ median -0.7° (29/103 turned too far; run 7: 46/46 too far); leg-end lateral med
 Next: restart the stack on the intended rev and re-run (the A2 validation is still owed); fix the
 resume-while-outside loop (re-enter before any pivot) and the retrace cap; force blade off for
 living obstacles.
+
+## Field mow 2026-10-22 midday (1b862ad): session `20261021-230412` (23:04-01:08 UTC, Area 7)
+
+Data: `ros2_stack-wt/accuracy-simout/field_mow_2026-10-22b/` (bag, node logs, incident metadata,
+`wheel_cal.txt`, `accuracy.txt`, `wheel_metrics.txt`, `series.json`, `extra.json`). Splits 37, 45,
+86 and 94 are corrupt on the mower (60 s gaps at 23:41, 23:49, 00:30, 00:38); 121/125 read.
+
+**Code that ran: 1b862ad.** `mower_jazzy` started 23:03:04 UTC; `stereo_cam` opens the front camera
+as YUYV and `/heading_aligner/status` carries `offset_rate_deg_min`. Still the OLD coverage layout
+(`ws/edge-layout2` not merged). The four `mission_boundary` incidents of the day (21:47:52 0.10 m
+MOWING, 22:17:04 0.13 m TRANSIT, 22:42:53 2.94 m and 22:43:29 10.27 m MOWING; sessions 214524,
+221614, 223745) all belong to the earlier, pre-restart runs and are not analysed here. The recorder
+incidents at 23:04:17 and 01:08:42 are the usual session-start false alarms.
+
+### Outcome
+
+| | |
+|---|---|
+| area | Area 7 (index 5), cross pattern, 2 runs |
+| run 1/2 | 23:04:44-00:22:48: 5/5 sub-paths, 766.0 m, 100 % |
+| run 2/2 | 00:22:57-01:08:28: 13 sub-paths, 446.2 of 765.5 m (58.3 %), stopped in sub-path 10/13 |
+| total | 1212 of 1531 m (79 %); MOWING 120.1 min, TRANSIT 3.8 min (7 transits), PLANNING 0.3 min |
+| stops | 0 NEEDS_HELP, 0 skips, 1 dynamic stop (person, left camera, 2 s) |
+| end | 01:08:28 battery 14 % < 15 %: stop in place (`battery_low_action=stop`), resume cursor saved; RETURNING_HOME only at 01:10:29 from an external `high_level_control(2)` (dock run: separate analysis) |
+
+### Heading lead (A2): the fix works
+
+| | 21c evening | 22 Oct morning (old code) | this run (1b862ad, 3 m straights) |
+|---|---|---|---|
+| fused yaw - course | +2.37 ± 0.51° | +1.28 ± 0.66° (n=19) | **-0.07 ± 0.21° (n=65)** |
+| paired lanes | +2.37 ± 0.79° | +1.32 ± 0.89° (2 m, n=10) | **+0.03 ± 0.11° (n=29)** |
+| lane-gap offset (right of travel) | 1.64 ± 0.62 cm | 1.26 ± 0.74 cm | **0.25 ± 0.19 cm** (swath 0.179 m) |
+| aligner COG innovation mean | -2.41° (sd 2.53) | -1.11° (sd 2.57) | **+0.01° (sd 2.04, n=1459)** |
+| aligner offset drift | -4.4..-4.8°/min | -0.93°/min mean | -38° -> -155° -> -41°; rate state -4.2..+4.7°/min, \|rate\| > 2°/min half the time |
+| ground / MCU speed | 1.049 | 1.059 | 1.063 |
+| pivot measured/commanded CCW / CW | 0.748 / 0.806 | 0.736 / 0.713 | 0.804 / 0.814 |
+
+Both targets met (lead < 0.5°, offset < 1 cm) while the gyro offset drifted harder than on any
+earlier run, so the drift-rate state (`rate_beta` 0.005) is doing the work. The rate shows in
+`/heading_aligner/status` (`offset_rate_deg_min`), not in the node's text log lines.
+wheel_cal also flags ground/commanded 1.021 (`linear_scale` 0.980 suggested) and a significant
+yaw trim +0.0062 ± 0.0018 rad/s (right/left 1.011): candidates, not applied.
+
+### Edge, boundary, obstacles, turns
+
+| per run (2.07 h) | morning run (1.26 h) | this run |
+|---|---|---|
+| boundary trips / START-while-outside / retrace-cap fails | 6 / 3 / 1 | 0 / 0 / 0 (max `outside_m` 0.044 m, never lethal) |
+| Spin "Collision Ahead" aborts | 13 | 0 (217/217 spins succeeded) |
+| collision_monitor stop_zone | 11 episodes | 0 (11 slowdown episodes) |
+| false stuck (slip_detector) | 0 | 0 (188 blips, all cleared) |
+| dynamic stops | 2 person, 7 "cat" | 1 person (2 s), 0 cat |
+| MPPI "Optimizer fail" | 370 | 1 |
+
+Front camera (YUYV): no "cat" at all. New class: "hedgehog", 3 static policies plus 10 "obstacle
+close" warnings at 0.41-0.77 m, mostly at the NE leg start (-12.7, -3.5); static, so no stops. Raw
+detections (1 Hz sample): stone 488, wood 475, hedgehog 64, sports ball 35, shovel 25, person 19,
+dog 2. No segmentation topic is bagged, so the grass-segmentation change cannot be judged.
+
+Turns (`accuracy.py field`, 215 pivots): pivot drift median 0.037 / p90 0.104 m (morning 0.054 /
+0.144); heading error median -0.4° (83/215 too far); leg-end lateral swath 0.024 / p90 0.084,
+connector 0.098 / 0.142 m. (Transit rows include the dock route after 01:10 and are not mow data.)
+One-wheel ticks: 0 inner in (-0.06, 0) (morning 321) and 1017 in (0, 0.06) of 141 786 moving ticks.
+
+### Health and battery
+
+- No OOM (`dmesg` clean since the 22:14 reboot), no node restarts (supervisor: only the recorder's
+  session-start respawn), RTK fixed 100 %, localization `ok` and tilt `ok` throughout. CPU/memory
+  are not bagged; Nav2 controller missed 20 Hz 344 times (2.8/min, 18 below 10 Hz; morning 3.3/min).
+  At 01:30 UTC the host had 291 MB available and load 7-10.
+- Battery 22.9 V / 59 % -> 19.4 V / 14 % over 124 min (0.36 %/min, ~3 A). The 15 % threshold stops
+  in place; it does not return home by itself.
+
+Next: decide whether low battery should return home automatically; re-check the hedgehog spot; the
+yaw trim and `linear_scale` candidates; edge-layout2 field run.
