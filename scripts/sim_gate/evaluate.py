@@ -553,9 +553,36 @@ def main(run, world):
 
     # ---- (h) cross-track by segment type
     types_all = json.loads(plan_msg).get('types') if plan_msg else None
+    # (h) against the path actually sent (round 4): an edge-start tangent join ("edge start
+    # join: sub K local L side S inset I over D m", mission_fsm._join_leg) offsets the leg's
+    # first D m toward the interior; rebuild it here so the join is not counted as error
+    joins = {}
+    for _t, msg in bt:
+        mj = re.search(r'edge start join: sub (\d+) local (\d+) side ([+-]\d+) inset '
+                       r'([\d.]+) over ([\d.]+) m', msg)
+        if mj:
+            joins.setdefault(int(mj.group(1)), []).append(
+                (int(mj.group(2)), int(mj.group(3)), float(mj.group(4)), float(mj.group(5))))
+
+    def joined(pts, jl):
+        out = list(pts)
+        for loc, sgn, off, dj in jl:
+            acc = 0.0
+            for i in range(loc, len(pts)):
+                if i > loc:
+                    acc += math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+                if acc >= dj:
+                    break
+                a_, b_ = pts[max(0, i - 1)], pts[min(len(pts) - 1, i + 1)]
+                hh = math.atan2(b_[1] - a_[1], b_[0] - a_[0])
+                w = off * 0.5 * (1.0 + math.cos(math.pi * acc / dj))
+                out[i] = (pts[i][0] - w * math.sin(hh) * sgn, pts[i][1] + w * math.cos(hh) * sgn)
+        return out
     prep = []
     for k, sp in enumerate(subpaths):
         pts = [(p[0], p[1]) for p in sp]
+        if k in joins:
+            pts = joined(pts, joins[k])
         cum = G.cumulative_lengths(pts)
         ty = (types_all[k] if types_all and k < len(types_all) else '') or ''
         if len(ty) != len(pts):
