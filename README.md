@@ -59,7 +59,7 @@ The planner checks each plan for patches its stripes would miss and adds fill pa
 | Mowing: coverage planning, patterns and path following | Complete mows in the field; edges and turns on slopes still being improved |
 | Docking and undocking | Tested in the field; the final approach is still being tuned |
 | Obstacle detection and stop/avoid policy | Running in the field (grass false stops fixed); avoidance still being tuned |
-| Scheduling (web app), rain pause, notifications (Telegram, Pushover, ntfy, webhook) | Built in; little field use so far |
+| Scheduling (web app), rain pause, notifications (Telegram, Pushover, ntfy, webhook) | Built in; not yet tested on the mower |
 
 The current plan and work queue are in [docs/ROADMAP_2026-10.md](docs/ROADMAP_2026-10.md) and
 [docs/analysis/2026-10-21_independent_review.md](docs/analysis/2026-10-21_independent_review.md);
