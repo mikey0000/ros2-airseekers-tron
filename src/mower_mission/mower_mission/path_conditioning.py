@@ -58,6 +58,13 @@ hard 0.0, well under the body trip limits). Where a corner's fillet or pivot exc
 A convex fillet is held to max(limit, its own curvature envelope sqrt((r + hw)^2 + front^2)
 - r + ``fillet_envelope_margin_m``): that overhang is the line's curvature (the owner drives
 those arcs), not the corner's; K-turns only replace pivots (no fillet r >= r_min fits).
+Body cap (field 2026-10-23, area 5: a K-turn kept at 0.54 m, pivots drifting ~0.15 m on wet
+slope, the robot 0.74 m out and stuck): where the corner pivots (vertex pivot, K-turn, or a
+fillet at a corner >= ``kturn_min_rad``) and the plan is over ``body_cap_m`` (default
+body_limit_m + 0.09: soft 0.35, under the 0.55 / 0.40 trips with 0.15 m of drift), the
+corner is cut instead (choice ``cut``): leave the line at Q1, drive to M inside the tip on
+the bisector, rejoin at Q2 at a shallow angle (in place pivots at Q1, M, Q2; the tip stays
+uncut; :func:`_plan_cut`). If no cut fits the cap either, the least overhang is driven.
 Otherwise the corner keeps its fillet / pivot (gentle corners: large turns stay rare);
 ``Corner.body_m`` over the limit is logged at warn by the mission.
 
@@ -150,6 +157,12 @@ class Params:
     kturn_min_rad: float = 1.05    # K-turns at corners turning this much (60 deg) ...
     kturn_gentle_m: float = 0.33   # ... or at gentler ones whose pivot is over this
     fillet_envelope_margin_m: float = 0.03
+    # Cap on a corner's planned body overhang where the robot pivots (vertex pivot, K-turn):
+    # pivots on wet / sloped turf drift ~0.15 m (field 2026-10-23, area 5), so a planned
+    # overhang over the cap is never driven on the line: the corner is cut instead (a chord
+    # leaving the tip uncut). None = body_limit_m + 0.09 (soft 0.35, hard 0.09).
+    body_cap_m: Optional[float] = None
+    cut_max_m: float = 2.5         # a corner cut rejoins the path at most this far after it
     kturn_back_min_m: float = 0.30
     kturn_back_max_m: float = 1.50
 
@@ -375,6 +388,75 @@ def _plan_kturn(v, turn, h_out, pts, cum, s_v, s_floor, br, p):
         if ov <= p.body_limit_m + 1e-3:
             return cand
         a = round(a + 0.05, 6)
+    return best
+
+
+def _plan_cut(v, u_in, u_out, pts, cum, s_in, s_out, s_floor, s_ceil, region, br, cap, p):
+    """Corner cut: leave the drawn path at Q1 (``d1`` m of arc before the corner at
+    ``s_in``), drive to M, ``m`` m inside the vertex ``v`` on the corner's bisector, then on
+    to Q2 (``d2`` m after it, ``s_out``), pivoting in place at Q1, M and Q2; the corner tip
+    stays uncut. M = V (no depth) is the plain chord; a deeper M lets both legs meet the
+    line at shallower angles (the nose rides less past it). Every leg must stay inside the
+    region. Returns (overhang, (d1, m, d2), polyline Q1 .. M .. Q2, s1, s2) of the first
+    cut within ``cap`` (shortest legs first), else of the least overhang; None when there is
+    no room."""
+    room_in, room_out = s_in - s_floor, s_ceil - s_out
+    # M along the bisector of the runs ~1 m either side (a blunt tip's own short edges
+    # would skew it), into the turn (the area, at a convex corner)
+    w_in = _run_dir(pts, cum, s_in - min(1.0, max(0.3, room_in)), s_in) or u_in
+    w_out = _run_dir(pts, cum, s_out, s_out + min(1.0, max(0.3, room_out))) or u_out
+    bx, by = w_out[0] - w_in[0], w_out[1] - w_in[1]
+    bl = math.hypot(bx, by)
+    if bl < 1e-6:
+        return None
+    bx, by = bx / bl, by / bl
+    best = None
+    # leaving the line inwards costs nothing (the nose turns into the area), rejoining it
+    # does: the nose rides ~0.6 sin(angle) past the line, so the rejoining leg is the long one
+    br = BodyRegion(region, v, p.cut_max_m + 1.2, p)
+    d2s = [round(0.3 + 0.1 * i, 6) for i in range(int((p.cut_max_m - 0.3) / 0.1 + 1e-6) + 1)]
+    cands = sorted(((d1, m, d2) for d1 in (0.3, 0.5, 0.8, 1.2) for d2 in d2s
+                    for m in (0.0, 0.1, 0.2, 0.3, 0.45, 0.6, 0.8, 1.0)
+                    if d1 <= room_in + 1e-9 and d2 <= room_out + 1e-9),
+                   key=lambda c: (c[0] + c[2], c[1]))
+    for d1, m, d2 in cands:
+        s1, s2 = s_in - d1, s_out + d2
+        Q1, Q2 = geo._point_at(pts, cum, s1), geo._point_at(pts, cum, s2)
+        M = (v[0] + m * bx, v[1] + m * by)
+        legs = [Q1, Q2] if m == 0.0 else [Q1, M, Q2]
+        poly = []
+        ok = True
+        for a, b in zip(legs, legs[1:]):
+            L = geo.dist(a, b)
+            if L < 0.05:
+                ok = False
+                break
+            k = max(2, int(math.ceil(L / p.step_m)))
+            seg = [(a[0] + (b[0] - a[0]) * j / k, a[1] + (b[1] - a[1]) * j / k)
+                   for j in range(k + 1)]
+            poly += seg if not poly else seg[1:]
+        if not ok or any(br.out(q[0], q[1]) > 0.005 for q in poly[1:-1]):
+            continue
+        a = geo._point_at(pts, cum, max(0.0, s1 - 0.05))
+        b = geo._point_at(pts, cum, min(cum[-1], s2 + 0.05))
+        hs = [math.atan2(Q1[1] - a[1], Q1[0] - a[0]) if geo.dist(a, Q1) > 1e-6 else None]
+        hs += [math.atan2(y[1] - x[1], y[0] - x[0]) for x, y in zip(legs, legs[1:])]
+        hs += [math.atan2(b[1] - Q2[1], b[0] - Q2[0]) if geo.dist(Q2, b) > 1e-6 else None]
+        hs[0] = hs[1] if hs[0] is None else hs[0]
+        hs[-1] = hs[-2] if hs[-1] is None else hs[-1]
+        ov = 0.0
+        for j, q in enumerate(legs):              # pivots at Q1, (M,) Q2
+            ov = max(ov, br.sweep(q[0], q[1], hs[j], geo.wrap_angle(hs[j + 1] - hs[j])))
+            if ov > cap + 1e-3 and best is not None and ov >= best[0]:
+                break
+        for x, y, h in zip(legs, legs[1:], hs[1:-1]):
+            seg = [q for q in poly if min(x[0], y[0]) - 1e-9 <= q[0] <= max(x[0], y[0]) + 1e-9]
+            ov = max(ov, br.drive([(q[0], q[1], h) for q in seg]))
+        cand = (ov, (d1, m, d2), poly, s1, s2, legs)
+        if best is None or ov < best[0] - 1e-3:
+            best = cand
+        if ov <= cap + 1e-3:
+            return cand
     return best
 
 
@@ -655,7 +737,40 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
             if kt is not None and kt[0] > lim + 1e-3 and kt[0] >= simple_ov - 0.01:
                 c.why = 'K-turn %.2f m out > %.2f: kept' % (kt[0], lim)
                 kt = None
-        if kt is not None:
+        # body cap where the robot pivots (vertex pivot / K-turn; pivots drift): over it, cut
+        # the corner (chord, tip uncut) instead of driving it on the line
+        cut = None
+        cap = p.body_cap_m if p.body_cap_m is not None else \
+            (lim + 0.09 if lim is not None else None)
+        # (a fillet too at a sharp corner: a drawn arc / gentle bend keeps its envelope)
+        if br is not None and cap is not None and abs(turn) >= p.pivot_min_rad and \
+                (chosen is None or abs(turn) >= p.kturn_min_rad):
+            planned = kt[0] if kt is not None else simple_ov
+            if planned > cap + 1e-3:
+                s_in = s_lo if v_piv == v else cum[vi]
+                s_out = s_hi if v_piv == v else cum[vi]
+                s_ceil = corners[k + 1][2] if k + 1 < len(corners) else cum[-1]
+                cut = _plan_cut(v_piv, u_in, u_out, pts, cum, s_in, s_out, s_prev, s_ceil,
+                                region, br, cap, p)
+                if cut is not None and (cut[0] <= cap + 1e-3 or cut[0] < planned - 0.01):
+                    c.why = '%s %.2f m out > cap %.2f: corner cut (%.1f m in, %.2f m inside ' \
+                            'the tip, %.1f m out; tip uncut), body %.2f' % (
+                                'K-turn' if kt is not None else
+                                'pivot' if chosen is None else 'fillet', planned, cap,
+                                cut[1][0], cut[1][1], cut[1][2], cut[0])
+                    kt = None
+                else:
+                    cut = None
+        if cut is not None:
+            ov, dd, chord, s1, s2, legs = cut
+            c.choice, c.x, c.y = 'cut', v_piv[0], v_piv[1]
+            c.body_m, c.back_m, c.limit_m = ov, dd[0], cap
+            c.cut_m = min(geo.dist(v_piv, q) for q in chord)
+            fl = min(clearance(q, region) for q in chord) - 1e-3
+            pieces.append(('raw', s_prev, s1))
+            pieces.append(('cut', chord, fl, legs))
+            s_prev = s_retrace = s2
+        elif kt is not None:
             ov, a, sl, d1, d2 = kt
             c.choice, c.x, c.y = 'kturn', v_piv[0], v_piv[1]
             c.why = 'body %.2f m out > %.2f: K-turn back %.2f m, body %.2f' % (
@@ -752,6 +867,13 @@ def _assemble(res, pts, cum, pieces, p):
             for j, q in enumerate(arc):
                 mid = 0 < j < len(arc) - 1
                 add(q, ARC if mid else LINE, k if mid else 0.0, fl)
+        elif pc[0] == 'cut':
+            chord, fl, legs = pc[1], pc[2], pc[3]
+            add(chord[0], PIVOT, 0.0)            # Q1: pivot onto the cut
+            for q in chord[1:-1]:
+                inner = any(geo.dist(q, L) < 1e-6 for L in legs[1:-1])
+                add(q, PIVOT if inner else LINE, 0.0, fl)     # M: pivot in place
+            add(chord[-1], PIVOT, 0.0)           # Q2: pivot back onto the drawn path
         elif pc[0] == 'kturn':
             sl, d1, d2 = pc[1], pc[2], pc[3]
             add(sl[0], PIVOT, 0.0)               # P1: about-turn, then reverse

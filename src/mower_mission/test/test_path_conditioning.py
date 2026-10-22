@@ -846,7 +846,7 @@ def test_kturn_with_a_curved_approach_retraces_the_driven_curve():
     lap, V = _arc_lap()
     end = lap[-1]
     region = [lap + [(end[0] - 3.0, end[1]), (-3.0, 1.5)]]   # interior on the right (CW)
-    p = pc.Params(body_limit_m=0.26)
+    p = pc.Params(body_limit_m=0.26, body_cap_m=9.0)          # (the cap would cut it)
     res = pc.condition(lap, region, p, ring=True, turn_sign=-1.0)
     assert res.valid, res.errors
     kt = corner_at(res, V)
@@ -963,3 +963,85 @@ def test_clean_area_ring_drops_a_cusp_and_a_start_wobble_only():
     # an outline with nothing to drop keeps its order and vertices
     sqr = [(0, 0), (5, 0), (5, 5), (0, 5)]
     assert geo.clean_area_ring(sqr) == [(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)]
+
+
+# ---- body cap / corner cut (field 2026-10-23, area 5) -------------------------------------
+
+# area 5 ("Area 7") of the 2026-10-23 field maps: lap 0's -89 deg corner at (-5.81, -2.62) is
+# a blunt 71 deg spike; its K-turn reversed 0.30 m with the body 0.54 m out (the retrace into
+# the tip, whatever the reverse length), pivots drifted ~0.15 m and the robot stuck 0.74 m out
+FIELD23_AREA5 = [
+    (-2.42777, 0.603669), (-3.68007, -0.64144), (-4.13443, -1.25334), (-5.4586, -2.45428),
+    (-5.64323, -2.60242), (-5.81183, -2.6159), (-6.10666, -2.26859), (-6.40751, -1.56303),
+    (-6.49084, -0.694381), (-6.6368, -0.497456), (-6.60865, -0.32109), (-6.81943, 0.200973),
+    (-6.7096, 0.67657), (-5.97887, 1.77966), (-4.41611, 3.63844), (-3.71662, 3.98655),
+    (-2.75692, 4.28974), (-1.80164, 4.76187), (-0.601567, 4.99453), (-0.307907, 5.13676),
+    (-0.367525, 5.16016), (-0.0265033, 5.25821), (0.0592182, 4.98217), (-0.213657, 2.26314),
+    (-1.35556, 1.21173), (-2.2729, 0.579132)]
+TRIP_SOFT = {'corner': 0.55, 'rear_mid': 0.40}
+DRIFT_M = 0.15
+
+
+def _pivot_sweeps_by_point(res, region, p):
+    """Worst overhang through every planned pivot (K-turn ones by their planned angle),
+    split into the outline's corners / nose / sides and its mid-rear point."""
+    br = pc.BodyRegion(region, res.poses[0], 1e3, p)
+    kt = {}
+    for i_p1, i_v, d1, d2 in res.kturns:
+        kt[i_p1], kt[i_v] = d1, d2
+    F, R, W = p.body_front_m, p.body_rear_m, p.half_width_m
+    groups = {'corner': [(F, W), (F, -W), (-R, W), (-R, -W), (F, 0.0), (0.25, W), (0.25, -W)],
+              'rear_mid': [(-R, 0.0)]}
+    worst = {k: 0.0 for k in groups}
+    for i in res.pivots:
+        if i + 1 >= len(res.poses):
+            continue
+        q = res.poses[i]
+        d = kt.get(i, geo.wrap_angle(res.poses[i + 1][2] - q[2]))
+        n = max(1, int(abs(d) / math.radians(3)))
+        for j in range(n + 1):
+            y = q[2] + d * j / n
+            c, s = math.cos(y), math.sin(y)
+            for k, pts in groups.items():
+                for a, b in pts:
+                    worst[k] = max(worst[k], br.out(q[0] + a * c - b * s, q[1] + a * s + b * c))
+    return worst
+
+
+def test_field_corner_is_cut_with_the_body_under_the_cap():
+    ring = geo.clean_area_ring(FIELD23_AREA5)
+    p = pc.Params(body_limit_m=0.26)
+    res = pc.condition(_lap(ring, mid=True), [ring], p)
+    assert res.valid, res.errors
+    c = corner_at(res, (-5.81, -2.62), tol=0.06)
+    assert c.choice == 'cut' and c.body_m <= 0.35 + 1e-3
+    assert 'tip uncut' in c.why
+    # every corner where the robot pivots is planned within the cap (soft 0.35)...
+    for cc in res.corners:
+        if cc.choice in ('pivot', 'kturn', 'cut'):
+            assert cc.body_m <= 0.35 + 2e-3, (cc.choice, cc.x, cc.y, cc.body_m)
+    # ... and 0.15 m of pivot drift on top stays under the soft body trips
+    worst = _pivot_sweeps_by_point(res, [ring], p)
+    for k, lim in TRIP_SOFT.items():
+        assert worst[k] + DRIFT_M < lim, (k, worst[k])
+    # the cut leaves the drawn line inside the area: all its poses are inside
+    assert min(pc.clearance(q, [ring]) for q in res.poses) > -0.01
+
+
+def test_body_cap_cuts_a_spike_that_no_kturn_fits():
+    # the field spike alone (its tip vertices, closed by two far ones): a short -34 deg bend
+    # 0.17 m before the -135 deg tip; the K-turn's retrace into the tip is 0.54 out whatever
+    # its length, the cut keeps it far lower; with the cap off the K-turn is driven
+    poly = [(-4.13443, -1.25334), (-5.4586, -2.45428), (-5.64323, -2.60242),
+            (-5.81183, -2.6159), (-6.10666, -2.26859), (-6.40751, -1.56303),
+            (-6.6, 1.0), (-3.5, 1.0)]
+    p = pc.Params(body_limit_m=0.26)
+    res = pc.condition(_lap(poly, mid=True), [poly], p)
+    assert res.valid, res.errors
+    c = corner_at(res, (-5.81, -2.62), tol=0.06)
+    # (the leg after the tip is shorter here than in the field: 0.39, the least overhang)
+    assert c.choice == 'cut' and c.body_m < 0.40
+    assert _pivot_sweeps_by_point(res, [poly], p)['corner'] + DRIFT_M < TRIP_SOFT['corner']
+    off = pc.condition(_lap(poly, mid=True), [poly], pc.Params(body_limit_m=0.26, body_cap_m=9.0))
+    c = corner_at(off, (-5.81, -2.62), tol=0.06)
+    assert c.choice == 'kturn' and c.body_m > 0.45
