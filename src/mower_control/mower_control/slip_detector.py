@@ -85,6 +85,16 @@ while Nav2 kept commanding and nothing stopped the wheels)
 ``mower_control/cmd_vel_slew`` forces zero while ``/stuck`` is true;
 ``mower_mission`` runs the escape / STUCK_NEEDS_HELP logic.
 
+Docking contact phases are exempt (2026-10-22 low-battery return): while the docking server
+reports a state in ``stuck_dock_exempt_states`` on ``/mower_docking/state`` (default
+FINAL_DOCKING, CHARGING; fresher than ``stuck_dock_state_timeout_s``) the detector runs as if
+suppressed. Wheels turning while the EKF pose stays put is the EXPECTED end of a dock: the
+robot pushes against the charger until the contacts close, and the docking FSM owns that
+phase (final budget -> settle -> creep -> RETRY, final_timeout_s, its own stall guard). Four
+dock attempts that night were cut after exactly 4.0 s of FINAL_DOCKING reverse at 0.05 m/s
+(EKF 0.04 m, wheels 0.17 m) and the escape drove the robot off the dock -- once 0.4 s after
+the contacts had closed.
+
 CPU (RK3588): every input is a sampled input of a ``SubscriptionPump`` (depth
 1, read once per tick, newest message only; /odom and /wheel_vel parsed
 straight from the CDR bytes), the loop runs on a ``PeriodicRunner`` thread
@@ -281,6 +291,10 @@ class SlipDetectorNode(Node):
         # heading floor while the window is mostly pure pivots (StuckDetector docstring)
         self.declare_parameter('stuck_pivot_min_heading_deg', 5.0)
         self.declare_parameter('stuck_pose_topic', '/odometry/filtered_map')
+        # docking contact phases are the docking server's (module docstring)
+        self.declare_parameter('stuck_dock_state_topic', '/mower_docking/state')
+        self.declare_parameter('stuck_dock_exempt_states', ['FINAL_DOCKING', 'CHARGING'])
+        self.declare_parameter('stuck_dock_state_timeout_s', 1.0)
 
         self._slip_threshold = float(self.get_parameter('slip_threshold').value)
         self._slip_window = float(self.get_parameter('slip_window').value)
@@ -314,6 +328,11 @@ class SlipDetectorNode(Node):
         self._reset_req = False
         self._phase = ''
         self._stuck_last = None
+        self._dock_state = ''
+        self._dock_state_t = None
+        self._dock_exempt_states = tuple(str(x) for x in gp('stuck_dock_exempt_states') or ())
+        self._dock_state_timeout = float(gp('stuck_dock_state_timeout_s'))
+        self._dock_exempt_last = False
 
         # Latest-value inputs: depth 1, taken only when the tick consumes them.
         self._sample_qos = QoSProfile(depth=1,
@@ -334,6 +353,10 @@ class SlipDetectorNode(Node):
                              parser=flat_parser(Bool), sampled=True)
         self._pump.subscribe(Bool, '/stuck_guard/reset', self._on_reset, self._sample_qos,
                              parser=flat_parser(Bool), sampled=True)
+        dock_topic = str(gp('stuck_dock_state_topic'))
+        if dock_topic:
+            self._pump.subscribe(String, dock_topic, self._on_dock_state, self._sample_qos,
+                                 parser=parse_string, sampled=True, with_receipt=True)
         from mowgli_interfaces.msg import HighLevelStatus
         self._pump.subscribe(HighLevelStatus, '/behavior_tree_node/high_level_status',
                              self._on_hl, self._sample_qos, sampled=True)
@@ -391,6 +414,17 @@ class SlipDetectorNode(Node):
     def _on_reset(self, msg):
         self._reset_req = True
 
+    def _on_dock_state(self, msg, receipt):
+        self._dock_state = str(msg.data)
+        self._dock_state_t = receipt
+
+    @staticmethod
+    def dock_exempt(state, state_t, now, states, timeout_s):
+        """True while the docking server reports a contact phase (``states``) and its
+        /mower_docking/state is fresh: the stuck guard stands down (module docstring)."""
+        return bool(state) and state in states and state_t is not None \
+            and now - state_t <= timeout_s
+
     def _on_hl(self, msg):
         self._phase = str(msg.state_name)
 
@@ -443,9 +477,19 @@ class SlipDetectorNode(Node):
                 self.get_logger().info('stuck guard: latch reset by the mission')
             det.reset()
         was = det.stuck
+        exempt = SlipDetectorNode.dock_exempt(getattr(self, '_dock_state', ''),
+                                  getattr(self, '_dock_state_t', None), now,
+                                  getattr(self, '_dock_exempt_states', ()),
+                                  getattr(self, '_dock_state_timeout', 1.0))
+        if exempt != getattr(self, '_dock_exempt_last', False):
+            self._dock_exempt_last = exempt
+            self.get_logger().info(
+                'stuck guard: %s (docking %s)' % (
+                    'standing down, the docking server owns the push onto the contacts'
+                    if exempt else 'armed again', self._dock_state or 'ended'))
         ev = det.update(now, self._cmd, self._ekf_pose, self._ekf_t,
                         self._meas[0] if self._meas is not None else None,
-                        suppressed=self._suppressed)
+                        suppressed=self._suppressed or exempt)
         if ev is not None:
             ev['phase'] = self._phase
             ev['ts'] = time.time()
@@ -459,7 +503,8 @@ class SlipDetectorNode(Node):
             self._stuck_event_pub.publish(String(data=json.dumps(ev, sort_keys=True)))
         elif was and not det.stuck:
             self.get_logger().info('stuck guard: cleared (%s)' % (
-                'suppressed for an escape' if self._suppressed else 'robot moved'))
+                'suppressed for an escape' if self._suppressed else
+                'docking contact phase' if exempt else 'robot moved'))
         self._stuck_last = det.stuck
         self._stuck_pub.publish(_DIG_TRUE if det.stuck else _DIG_FALSE)
 

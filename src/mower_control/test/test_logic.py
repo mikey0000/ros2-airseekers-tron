@@ -657,3 +657,75 @@ def test_real_pivot_stall_with_ekf_jitter_still_latches():
         ev = det.update(t, (0.0, w), pose, t, 0.0)
         t += 0.05
     assert ev and ev['reason'] == 'stuck' and t < 4.6
+
+
+# ------------------------------------------- stuck guard vs. the docking contact phase
+def _dock_stuck_node(dock_state='', dock_t=None):
+    log = _logger()
+    pub = []
+    node = types.SimpleNamespace(
+        _stuck=slip_detector.StuckDetector(), _reset_req=False, _cmd=None, _ekf_pose=None,
+        _ekf_t=None, _meas=None, _suppressed=False, _phase='RETURNING_HOME',
+        _stuck_last=None, _dock_state=dock_state, _dock_state_t=dock_t,
+        _dock_exempt_states=('FINAL_DOCKING', 'CHARGING'), _dock_state_timeout=1.0,
+        _dock_exempt_last=False, get_logger=lambda: log, log=log, pub=pub,
+        _stuck_pub=types.SimpleNamespace(publish=pub.append),
+        _stuck_event_pub=types.SimpleNamespace(publish=pub.append))
+    return node
+
+
+def _final_reverse(node, t0, t1, state=None, dt=0.1):
+    """2026-10-22 01:13:30: FINAL_DOCKING reverse at 0.05 m/s against the charger, EKF
+    pinned (0.04 m in 4 s), wheels 0.17 m. Returns the /stuck_event messages."""
+    events, t = [], t0
+    while t <= t1 + 1e-9:
+        if state is not None:
+            node._dock_state, node._dock_state_t = state, t
+        node._cmd = (-0.05, 0.0)
+        node._ekf_pose, node._ekf_t = (0.40 + 0.01 * (t - t0) / 4.0, -1.32, 1.76), t
+        node._meas = (-0.043, 0.0)
+        before = len(node.pub)
+        slip_detector.SlipDetectorNode.stuck_step(node, t)
+        events += [m for m in node.pub[before:] if hasattr(m, 'data')
+                   and isinstance(m.data, str)]
+        t += dt
+    return events
+
+
+def test_final_docking_push_against_the_dock_latches_without_exemption():
+    node = _dock_stuck_node()                                  # no docking state: old behaviour
+    ev = _final_reverse(node, 0.0, 4.5)
+    assert node._stuck.stuck and ev and '"stuck"' in ev[0].data
+
+
+def test_final_docking_and_charging_are_exempt_from_the_stuck_guard():
+    node = _dock_stuck_node()
+    assert not _final_reverse(node, 0.0, 12.0, state='FINAL_DOCKING')
+    assert not node._stuck.stuck
+    assert not _final_reverse(node, 12.1, 16.0, state='CHARGING')
+    assert any('standing down' in text for _l, text in node.log.lines)
+
+
+def test_dock_exemption_ends_with_the_docking_state():
+    node = _dock_stuck_node()
+    assert not _final_reverse(node, 0.0, 6.0, state='FINAL_DOCKING')
+    # RETRY / DOCKING / goal ended ('') are not exempt: a real stall still latches
+    ev = _final_reverse(node, 6.1, 10.8, state='RETRY')
+    assert ev and node._stuck.stuck
+    assert any('armed again' in text for _l, text in node.log.lines)
+
+
+def test_stale_docking_state_does_not_exempt():
+    node = _dock_stuck_node('FINAL_DOCKING', 0.0)              # docking node died 1+ s ago
+    ev = _final_reverse(node, 2.0, 6.6)
+    assert ev and node._stuck.stuck
+
+
+def test_dock_exempt_helper():
+    f = slip_detector.SlipDetectorNode.dock_exempt
+    states = ('FINAL_DOCKING', 'CHARGING')
+    assert f('FINAL_DOCKING', 10.0, 10.5, states, 1.0)
+    assert not f('FINAL_DOCKING', 10.0, 11.5, states, 1.0)
+    assert not f('DOCKING', 10.0, 10.0, states, 1.0)
+    assert not f('', 10.0, 10.0, states, 1.0)
+    assert not f('CHARGING', None, 10.0, states, 1.0)
