@@ -43,7 +43,7 @@ from sensor_msgs.msg import BatteryState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.msg import Log
 from rcl_interfaces.srv import SetParameters
-from std_msgs.msg import Bool, Float32, Int16, String
+from std_msgs.msg import Bool, Float32, Int16, String, UInt8
 from std_srvs.srv import Empty, SetBool, Trigger
 
 from mower_interfaces.action import Dock, Undock
@@ -85,6 +85,9 @@ TOPIC_DEFAULTS = {
     'lethal_boundary_violation_topic': '/map_server_node/lethal_boundary_violation',
     # task 0.4 (a): Float32 distance outside areas U paths U dock corridor ('' = no hard boundary)
     'outside_distance_topic': '/map_server_node/outside_m',
+    # bumper_controller routing status (UInt8 0 idle / 1 backing up): each 0 -> 1 is one hit
+    # (bumper_skip_hits, step 3 round 2). '' = off
+    'bumper_status_topic': '/mower_base/bumper_routing_status',
     # outputs (relative names resolve under /behavior_tree_node)
     'high_level_status_topic': '~/high_level_status',
     'coverage_resume_topic': '~/coverage_resume_available',
@@ -241,6 +244,7 @@ class MissionNode(Node):
         self._fallback_dir = _expand(self._p['recording_fallback_dir'])
 
         self._lock = threading.RLock()
+        self._bumper_on = False
         cursor = self._load_cursor()
         self._alternate_path = _expand(self._p['alternate_state_path'])
         self.fsm = fsm_mod.MissionFSM(fsm_mod.Params.from_dict(fsm_params), cursor=cursor,
@@ -313,11 +317,17 @@ class MissionNode(Node):
         sub(Bool, p['boundary_violation_topic'], self._on_boundary, 1, parser=flat_parser(Bool))
         # stuck guard (mower_control slip_detector): latched /stuck
         sub(Bool, '/stuck', self._on_stuck, latched, parser=flat_parser(Bool))
+        # collision_monitor active STOP (edge_blocked_hold_s): nav2_params state_topic
+        from nav2_msgs.msg import CollisionMonitorState
+        sub(CollisionMonitorState, '/collision_monitor_state', self._on_cm_state, 10)
         sub(Bool, p['lethal_boundary_violation_topic'], self._on_lethal, 1,
             parser=flat_parser(Bool))
         if p['outside_distance_topic']:
             sub(Float32, p['outside_distance_topic'], self._on_outside, 1,
                 parser=flat_parser(Float32), sampled=True, with_receipt=True)
+        if p['bumper_status_topic']:
+            sub(UInt8, p['bumper_status_topic'], self._on_bumper, 10,
+                parser=flat_parser(UInt8))
         sub(String, p['heading_status_topic'], self._on_heading, latched)
         sub(String, p['localization_status_topic'], self._on_localization, latched)
         # commanded deck height (mcu_node, latched): live height changes during a mow
@@ -694,6 +704,15 @@ class MissionNode(Node):
             self.fsm.inputs.pose = (pose.position.x, pose.position.y,
                                     _yaw_from_quat(pose.orientation))
 
+    def _on_cm_state(self, msg):
+        stop = int(msg.action_type) == 1       # CollisionMonitorState.STOP
+        with self._lock:
+            i = self.fsm.inputs
+            if not stop:
+                i.cm_stop_since = None
+            elif i.cm_stop_since is None:
+                i.cm_stop_since = time.monotonic()
+
     def _on_stuck(self, msg):
         with self._lock:
             self.fsm.inputs.stuck = bool(msg.data)
@@ -713,6 +732,13 @@ class MissionNode(Node):
     def _on_lethal(self, msg):
         with self._lock:
             self.fsm.inputs.lethal_boundary_violation = bool(msg.data)
+
+    def _on_bumper(self, msg):
+        on = int(msg.data) != 0
+        with self._lock:
+            if on and not self._bumper_on:
+                self.fsm.inputs.bumper_hits += 1
+            self._bumper_on = on
 
     def _on_outside(self, msg, receipt):
         with self._lock:

@@ -30,8 +30,8 @@ namespace {
 // Sentinel defaults applied when a request field is left at its "unset" value.
 // The swath spacing default is cut_width_m - swath_overlap_m (ROS parameters,
 // set from mower.launch.py); these are only the parameter defaults.
-// cut_width_m: URDF cutter disc radius 0.10 m -> 0.20 m. TODO: measure the blade.
-constexpr double kDefaultCutWidth = 0.20;         // blade cut width [m]
+// cut_width_m: the fitted 220 mm blade disc (owner-measured 2026-10-20; map_server blade_disc_mm).
+constexpr double kDefaultCutWidth = 0.22;         // blade cut width [m]
 constexpr double kDefaultSwathOverlap = 0.02;     // overlap between swaths [m]
 constexpr double kDefaultHeadlandWidth = 0.20;    // desired headland band [m]
 constexpr double kDefaultMinSwathLength = 0.15;   // sliver-drop threshold [m]
@@ -197,6 +197,14 @@ class MowerCoverageNode : public rclcpp::Node {
     route.fill_gaps = true;
     route.min_gap_area_m2 = 0.01;
     route.target_inset = boundary_inset;  // blade edge; holes keep the ring keep-out
+    if (!mower_coverage::applyEdgeLayout(request->edge_layout, op_width, &route,
+                                         static_cast<int>(request->edge_laps))) {
+      response->success = false;
+      response->message = "unknown edge_layout '" + request->edge_layout +
+                          "' (soft | hard | legacy) or edge_laps " +
+                          std::to_string(request->edge_laps) + " < 0";
+      return;
+    }
     const mower_coverage::CoveragePlan plan =
         mower_coverage::planCoverage(field, op_width, headland_width,
                                      headland_passes,
@@ -339,7 +347,11 @@ class MowerCoverageNode : public rclcpp::Node {
       response->gaps.push_back(poly);
     }
 
-    std::string msg = std::string(plan.swaths_first ? "swaths first, " : "") +
+    std::string msg = (request->edge_layout.empty() ? std::string()
+                                                    : "edge " + request->edge_layout + " " +
+                                                          std::to_string(request->edge_laps) +
+                                                          " laps, ") +
+                      std::string(plan.swaths_first ? "swaths first, " : "") +
                       (request->path_mode.empty() ? std::string("zigzag")
                                                   : request->path_mode) +
                       (plan.turns.empty()

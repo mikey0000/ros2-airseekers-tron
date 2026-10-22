@@ -1,0 +1,26 @@
+# Atomic map replace (served by mower_map map_server_node at /map_server_node/replace_areas).
+#
+# The WHOLE area set in one call: map_server builds it off to the side, validates every
+# area, then swaps it in under its lock with one rebuild and one save. On any error
+# nothing changes (success=false, message says which area and why). No half-built map is
+# ever published or used by the boundary check (field 2026-10-21: the GUI's
+# clear_map + add_area x N let outside_m read 23 m mid-reload).
+#
+# areas               the new set, in areas.dat order (obstacles + obstacle_info as in
+#                     add_area). An area is a navigation area (drawn path) when
+#                     area.is_navigation_area or is_navigation_area[i] is true.
+# is_navigation_area  optional, index-aligned with areas (empty = use the MapArea flag)
+# channel_json        optional, index-aligned: set_area_channel settings_json of a
+#                     navigation area ('' = none)
+# settings_json       optional, index-aligned: set_area_settings JSON of that area
+#                     ('' = keep: settings of an area re-added with the same name, or
+#                     renamed with the same polygon, are carried over; settings of
+#                     areas no longer present are dropped)
+# The existing clear_map / add_area / set_area_channel services keep working.
+mowgli_interfaces/MapArea[] areas
+bool[] is_navigation_area
+string[] channel_json
+string[] settings_json
+---
+bool success
+string message

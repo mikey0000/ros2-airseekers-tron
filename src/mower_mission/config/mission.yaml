@@ -141,6 +141,28 @@ behavior_tree_node:
     # pivot the mission followed the leg anyway and MPPI left the area at once.
     # Revert: -1 (follow the leg after any pivot outcome).
     pivot_retries: 2
+    pivot_retry_pause_s: 2.0           # real back-off between pivot attempts (field 2026-10-22)
+    # 2026-10-21 owner rule (stock firmware): a blocked COVERAGE pivot (Spin aborted / timed
+    # out, e.g. "Collision Ahead") is not re-sent: its leg is skipped ("blocked pivot: skip"),
+    # re-tried once at the area end (blocked_pivot_requeue), else reported uncut. Over
+    # blocked_pivot_max_skips per mission: the pivot_retries -> STUCK path. Revert: retry.
+    blocked_pivot_policy: skip
+    blocked_pivot_max_skips: 20
+    blocked_pivot_requeue: true
+    # 2026-10-21 field (Area 6 stone / tree just outside the line): a blocked edge-lap segment
+    # (follow abort with a collision, collision_monitor STOP held edge_blocked_hold_s, refused
+    # pivot) is skipped like stock: next pivot vertex, at most edge_blocked_skip_m
+    # ("edge blocked: skip X m", mission total logged). Revert: edge_blocked_skip false.
+    edge_blocked_skip: true
+    edge_blocked_hold_s: 3.0
+    edge_blocked_skip_m: 2.0
+    edge_lap_max_inset_m: 0.6
+    # refused coverage pivot: back straight up this far, pivot ONCE more, then skip. 0 = off.
+    pivot_backout_m: 0.35
+    pivot_backout_speed_mps: 0.1
+    # STUCK while mowing: the failing piece is recorded as skipped and the resume cursor
+    # moved past it (START never re-runs the same pivot first). Revert: false.
+    resume_skip_failing: true
     # 2026-10-20 error budget: a pivot Spin is sent this much short (rad) so the robot comes to
     # rest on the angle after the stop latency (0.04 left 1.3 deg over in the ideal sim). Revert: 0.0.
     pivot_stop_lead_rad: 0.06
@@ -231,8 +253,34 @@ behavior_tree_node:
     path_conditioning_half_width_m: 0.235   # body half width, 0.47 m with wheel trim (was 0.24)
     path_conditioning_slack_m: 0.05
     path_conditioning_pivot_min_rad: 0.35
-    path_conditioning_edge_pivot_rad: 1.38    # 0.0 = no edge policy (fillets everywhere)
+    path_conditioning_edge_pivot_rad: 0.0     # 0.0 = no edge policy (fillets everywhere); 0 since
+    #   the 2026-10-21 edge layout: lap 0 is ON the line, a vertex pivot swings the nose ~0.6 past
+    edge_layout_enabled: true                 # stock-style laps / rows by area edge_mode (false = legacy)
     path_conditioning_edge_clearance_m: 0.20
+    # Body planning limit (edge layout round 2): how far the body outline may be planned
+    # outside areas U paths U dock corridor at a corner (fillet poses, pivot sweeps), by area
+    # edge_mode; well under the body trip limits (soft corners / nose 0.35, rear 0.30; hard
+    # 0.10) for tracking error. A corner over it: wider fillet (convex, up to
+    # convex_r_max_m), then a K-turn (corners >= kturn_min_rad: forward short of the vertex,
+    # about-turn, reverse onto it blade off, pivot inward). Negative = off (revert).
+    path_conditioning_body_limit_soft_m: 0.26
+    path_conditioning_body_limit_hard_m: 0.0
+    path_conditioning_convex_r_max_m: 2.0
+    path_conditioning_kturn: true
+    path_conditioning_kturn_min_rad: 1.05
+    # a gentler corner K-turns too when its best fillet / pivot is over this (retracing
+    # curves and drawing jogs; nothing within the limit: the least overhang, logged at warn)
+    path_conditioning_kturn_gentle_m: 0.33
+    # a convex fillet's limit: max(body limit, its own curvature envelope
+    # sqrt((r + 0.235)^2 + 0.6^2) - r + this): the line itself bends like that (owner's
+    # drive); K-turns only where no fillet r >= r_min fits
+    path_conditioning_fillet_envelope_margin_m: 0.03
+    # area / path outlines cleaned in memory for the planner and the conditioner (never the
+    # areas file, never the body boundary check): jogs within area_outline_jog_m dropped,
+    # then Douglas-Peucker at area_outline_simplify_m (0 = off)
+    area_outline_simplify_m: 0.05
+    area_outline_jog_m: 0.10
+    path_conditioning_kturn_back_max_m: 1.5
     # 2026-10-16: transit / dock routes take no fillet tighter than this (the route
     # controller runs them at transit speed; MPPI ran 0.4 m wide of an r 0.5 m dock-path
     # fillet and left the area): a corner whose r >= 0.8 fillet does not fit pivots at the
@@ -343,7 +391,7 @@ behavior_tree_node:
 
     # --- per-area mowing settings (map_server_node/get_area_settings) -----
     use_area_settings: true           # false: built-in defaults for every area
-    cut_width_m: 0.20                 # blade width; coverage_server operation_width = this - swath_overlap_m
+    cut_width_m: 0.22                 # blade width (220 mm disc, owner 2026-10-20); coverage_server operation_width = this - swath_overlap_m
     cut_speed_max_mps: 0.5            # cap on an area's cut_speed_mps
     controller_speed_param: FollowCoveragePath.desired_linear_vel   # set on /controller_server
     set_cut_speed: true
@@ -380,7 +428,10 @@ behavior_tree_node:
     hard_boundary: true
     hard_boundary_m: 0.10
     hard_boundary_stale_s: 1.0        # older ~/outside_m = no check
-    hard_boundary_max_aborts: 2
+    hard_boundary_max_aborts: 6        # per mission (step 3 round 2: was 2)
+    hard_boundary_spot_max: 2          # ... and per spot (excursions within hard_boundary_spot_m)
+    hard_boundary_spot_m: 1.0
+    hard_boundary_snapshot: true       # base_link check from the mission area snapshot (TRANSIT / MOWING)
     hard_boundary_trail_m: 1.5
     hard_boundary_trail_step_m: 0.05
     hard_boundary_pause_s: 0.5
@@ -394,6 +445,32 @@ behavior_tree_node:
     hard_boundary_pivot_rps: 0.3
     hard_boundary_progress_s: 3.0
     hard_boundary_progress_m: 0.05
+    # body-aware boundary-out check + stock recovery (step 3 round 2; mission_fsm Params)
+    hard_boundary_body: true
+    hard_boundary_body_hard_m: 0.10      # edge_mode hard: every body point
+    hard_boundary_body_soft_side_m: 0.35 # soft: rear corners (lap 0 nominal 0.235 + tracking)
+    hard_boundary_body_soft_front_m: 0.55 # soft: front corners (driven arcs R 0.44: 0.46 nominal + p99 0.07)
+    hard_boundary_body_soft_nose_m: 0.40 # soft: mid-front (row end 0.15; driven arc R 0.44: 0.30 + p99)
+    hard_boundary_body_soft_tail_m: 0.30 # soft: mid-rear
+    hard_boundary_plan_radius_m: 1.0     # soft: within this of a planned corner whose swept body is out by b ...
+    hard_boundary_plan_margin_m: 0.20    # ... any point may reach b + this (plan-relative trip; sim p99 0.13 + lap-join transient)
+    hard_boundary_body_clear_m: 0.02
+    hard_boundary_back_m: 0.30           # stock onBoundaryOut 0.3 m straight
+    hard_boundary_back_speed_mps: 0.10   # owner cap (stock 0.2)
+    hard_boundary_back_timeout_s: 5.0
+    hard_boundary_inward_tries: 3        # recovery ended still outside: bounded inward moves
+    hard_boundary_inward_max_m: 0.6
+    hard_boundary_inward_timeout_s: 10.0
+    hard_boundary_entry_m: 0.02          # START / resume this far out: inward first, not counted
+    hard_boundary_jump_m: 1.0            # a > 1 m jump in one tick is ignored (map reload race)
+    hard_boundary_jump_hold_s: 2.0
+    spin_drift_m: 0.15                   # pivot Spin slid > this: stop, re-plan the approach
+    pivot_way_gain_m: 0.05               # coverage pivot turns the interior way if its swept body is this much further in
+    edge_approach_inset_m: 0.30          # transit to an edge-lap start / resume point ends this far inside
+    edge_approach_near_m: 0.25
+    bumper_skip_hits: 3                  # bumper hits within bumper_skip_radius_m -> skip
+    bumper_skip_radius_m: 1.0
+    bumper_skip_window_s: 180.0
     boundary_recover_after_s: 3.0     # soft violation while MOWING: pause this long, then ...
     boundary_max_recoveries: 2        # ... up to this many blade-off recovery transits per sub-path
     boundary_recovery_advance_m: 1.0  # recovery target: this far ahead on the sub-path; then latch

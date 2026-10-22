@@ -191,9 +191,11 @@ class StuckDetector:
     def commanded(self, cmd):
         return cmd is not None and (abs(cmd[0]) > self.cmd_linear or abs(cmd[1]) > self.cmd_angular)
 
-    def update(self, now, cmd, pose, pose_t, wheel_v, suppressed=False):
+    def update(self, now, cmd, pose, pose_t, wheel_v, suppressed=False, held=False):
         """``cmd`` (v, w) applied command, ``pose`` (x, y, yaw) EKF map pose received at
-        ``pose_t``, ``wheel_v`` measured wheel linear speed (m/s, None = unknown)."""
+        ``pose_t``, ``wheel_v`` measured wheel linear speed (m/s, None = unknown).
+        ``held``: collision_monitor is actively stopping the robot (2026-10-21 field: its
+        zeroed commands counted as stuck time) - the window restarts, a latch stays."""
         dt = 0.0 if self._last_t is None else max(0.0, min(0.5, now - self._last_t))
         self._last_t = now
         if wheel_v is not None:
@@ -206,6 +208,10 @@ class StuckDetector:
             if fresh and math.hypot(pose[0] - self.latch_pose[0],
                                     pose[1] - self.latch_pose[1]) > self.clear_m:
                 self.reset()
+            return None
+        if held:
+            self._buf = []
+            self._last_cmd_t = None
             return None
         if not fresh:
             self._buf = []
@@ -295,6 +301,10 @@ class SlipDetectorNode(Node):
         self.declare_parameter('stuck_dock_state_topic', '/mower_docking/state')
         self.declare_parameter('stuck_dock_exempt_states', ['FINAL_DOCKING', 'CHARGING'])
         self.declare_parameter('stuck_dock_state_timeout_s', 1.0)
+        # 2026-10-21: no stuck time while collision_monitor STOPs the robot ('' = off), and a
+        # /cmd_vel older than this is no command (the lane goes silent when stopped)
+        self.declare_parameter('stuck_cm_state_topic', '/collision_monitor_state')
+        self.declare_parameter('stuck_cmd_max_age_s', 0.5)
 
         self._slip_threshold = float(self.get_parameter('slip_threshold').value)
         self._slip_window = float(self.get_parameter('slip_window').value)
@@ -305,6 +315,8 @@ class SlipDetectorNode(Node):
         self._fix_timeout = float(self.get_parameter('fix_timeout').value)
 
         self._cmd = None            # (linear.x, angular.z) of last /cmd_vel
+        self._cmd_t = None          # its receipt (monotonic)
+        self._cm_stop = False       # collision_monitor reports an active STOP
         self._meas = None           # (linear.x, angular.z) of last measured twist
         self._fix_status = None     # last /fix_status string
         self._fix_time = None       # monotonic receive time of last /fix_status
@@ -340,7 +352,19 @@ class SlipDetectorNode(Node):
                                       history=QoSHistoryPolicy.KEEP_LAST)
         self._pump = SubscriptionPump(self, 'slip_inputs')
         self._pump.subscribe(Twist, '/cmd_vel', self._on_cmd_vel, self._sample_qos,
-                             parser=parse_twist, sampled=True)
+                             parser=parse_twist, sampled=True, with_receipt=True)
+        self._cmd_max_age = float(gp('stuck_cmd_max_age_s'))
+        cm_topic = str(gp('stuck_cm_state_topic'))
+        if cm_topic:
+            try:
+                from nav2_msgs.msg import CollisionMonitorState
+                self._pump.subscribe(CollisionMonitorState, cm_topic, self._on_cm_state,
+                                     QoSProfile(depth=10,
+                                                reliability=QoSReliabilityPolicy.RELIABLE,
+                                                history=QoSHistoryPolicy.KEEP_LAST),
+                                     sampled=True)
+            except ImportError:
+                self.get_logger().warn('stuck guard: nav2_msgs missing, %s ignored' % cm_topic)
         self._pump.subscribe(String, '/fix_status', self._on_fix_status, self._sample_qos,
                              parser=parse_string, sampled=True, with_receipt=True)
         latched_in = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
@@ -393,8 +417,12 @@ class SlipDetectorNode(Node):
     # ------------------------------------------------------------------
     # callbacks (run from SubscriptionPump.poll() inside _tick)
     # ------------------------------------------------------------------
-    def _on_cmd_vel(self, msg):
+    def _on_cmd_vel(self, msg, receipt=None):
         self._cmd = (msg.linear.x, msg.angular.z)
+        self._cmd_t = receipt
+
+    def _on_cm_state(self, msg):
+        self._cm_stop = int(msg.action_type) == 1      # CollisionMonitorState.STOP
 
     def _on_meas_twist(self, msg):
         self._meas = (msg.twist.linear.x, msg.twist.angular.z)
@@ -487,9 +515,15 @@ class SlipDetectorNode(Node):
                 'stuck guard: %s (docking %s)' % (
                     'standing down, the docking server owns the push onto the contacts'
                     if exempt else 'armed again', self._dock_state or 'ended'))
-        ev = det.update(now, self._cmd, self._ekf_pose, self._ekf_t,
+        cmd = self._cmd
+        max_age = getattr(self, '_cmd_max_age', 0.0)
+        cmd_t = getattr(self, '_cmd_t', None)
+        if max_age > 0.0 and cmd_t is not None and now - cmd_t > max_age:
+            cmd = None                      # stale: the lane is silent, nothing commanded
+        ev = det.update(now, cmd, self._ekf_pose, self._ekf_t,
                         self._meas[0] if self._meas is not None else None,
-                        suppressed=self._suppressed or exempt)
+                        suppressed=self._suppressed or exempt,
+                        held=getattr(self, '_cm_stop', False))
         if ev is not None:
             ev['phase'] = self._phase
             ev['ts'] = time.time()

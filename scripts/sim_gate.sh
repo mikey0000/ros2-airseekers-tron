@@ -132,7 +132,7 @@ launch_sim() {
   ready=""; idle=""
   for _ in $(seq 1 30); do
     sleep 5
-    s="$(state)"
+    s="$(state)" || s=""
     case "$s" in CHARGING|IDLE_DOCKED) ready="$s"; break ;; IDLE) idle="$s" ;; esac
   done
   [ -n "$ready" ] || ready="$idle"
@@ -167,7 +167,7 @@ docker exec -d "$C" bash -c "$ROS; cd $COUT && exec ros2 bag record -s sqlite3 -
   /behavior_tree_node/mow_plan /behavior_tree_node/mow_progress /cmd_vel /cmd_vel_nav \
   /cmd_vel_nav_raw \
   /behavior_tree_node/conditioned_route \
-  /cmd_vel_emergency /cmd_vel_docking /cmd_vel_slew/shape_status /map_server_node/outside_m \
+  /cmd_vel_emergency /cmd_vel_docking /cmd_vel_slew/shape_status /map_server_node/outside_m /map_server_node/body_outside_m \
   /odometry/filtered_map /odometry/filtered /mission/incident /plan /rosout /navigate_to_pose/_action/status \
   /follow_path/_action/status /spin/_action/status /mower_docking/dock/_action/status \
   > $COUT/rec.log 2>&1"
@@ -187,7 +187,7 @@ last=""; active=0; verdict_state=""; now_sim="${t_start%.*}"
 while [ "$(date +%s)" -lt "$end_wall" ] && [ "$now_sim" -lt "$end_sim" ]; do
   sleep "$poll"
   t="$(simsec)"; [ -n "$t" ] && now_sim="${t%.*}"
-  s="$(state)"
+  s="$(state)" || s=""          # a busy / restarting mission node: try again
   [ -z "$s" ] && continue
   if [ "$s" != "$last" ]; then echo "  $(date +%T) $s"; last="$s"; fi
   case "$s" in
@@ -206,6 +206,7 @@ docker stop -t 5 "$C" >/dev/null 2>&1 || true
 # is final (the copy extract.py asks for only matters for a LIVE bag; it doubled the disk use)
 set +e
 docker run --rm --name "${C}-eval" --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -e SIM_GATE_MEASURE="${SIM_GATE_MEASURE:-body}" \
   "${MOUNT[@]}" "$IMG" bash -c \
   "$ROS; python3 scripts/sim_gate/extract.py $COUT/bag $COUT/data.json >/dev/null && \
    python3 scripts/sim_gate/evaluate.py $COUT $CWORLD" | tee "$OUT/verdict.txt"

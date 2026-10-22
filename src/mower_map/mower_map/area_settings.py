@@ -59,6 +59,13 @@ LEGACY_VALUES = {'transit_variation': {'lanes': 'none'}}
 # across the fall line; updown = along it; auto = contour at/above
 # slope_contour_above_deg, up/down below.
 SLOPE_MODES = ('off', 'auto', 'contour', 'updown')
+# Edge policy (owner 2026-10-17, design DESIGN_path_conditioning_2026-10.md section 7):
+# hard = the whole robot body stays inside the area (an edge with a drop-off / wall);
+# soft = only the nose and the tail (and the front half of a pivot sweep) stay inside, the
+# sides may overhang the drawn edge (outer ring back at the edge_margin_m inset). A later
+# per-edge override (polygon segments marked wall / drop) is meant to refine this per segment
+# under the same names; the area value is then the default for unmarked segments.
+EDGE_MODES = ('hard', 'soft')
 
 BUILTIN_DEFAULTS = {
     'cutter_height_mm': 50,
@@ -77,6 +84,11 @@ BUILTIN_DEFAULTS = {
     # small so the whole area is mowed (owner: no uncut band).
     'edge_margin_m': 0.05,
     'edge_first': True,
+    'edge_mode': 'soft',  # owner 2026-10-21: every area soft for now (stock layout)
+    # Edge layout: number of edge laps (3 = stock: soft laps 0 / 0.15 / 0.30, rows from
+    # 0.45); the rows move with them (soft: rows 0.15 x edge_laps in, 0 = rows from the line;
+    # hard: laps from 0.45). Planner PlanCoverage edge_laps; a GUI setting binds to this name.
+    'edge_laps': 3,
     'repeat': 1,
     'alternate_angle_offset_deg': 90.0,
     # Tron defaults (owner, 2026-10-06): pivots tear the lawn when the caster
@@ -108,6 +120,8 @@ SPEC = {
     'swath_width_m': ('float', 0.10, 0.40),
     'edge_margin_m': ('float', 0.0, 0.5),
     'edge_first': ('bool', None, None),
+    'edge_mode': ('enum', EDGE_MODES, None),
+    'edge_laps': ('int', 0, 6),
     'repeat': ('int', 1, 10),
     'alternate_angle_offset_deg': ('float', 0.0, 180.0),
     'route_order': ('enum', ROUTE_ORDERS, None),

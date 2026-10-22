@@ -15,7 +15,8 @@ def test_builtin_defaults_match_the_contract():
     assert s.BUILTIN_DEFAULTS == {
         'cutter_height_mm': 50, 'perimeter_laps': 2, 'path_mode': 'zigzag',
         'mow_angle_deg': -1.0, 'cut_speed_mps': 0.3, 'swath_overlap_m': 0.02,
-        'swath_width_m': 0.18, 'edge_margin_m': 0.05, 'edge_first': True, 'repeat': 1, 'alternate_angle_offset_deg': 90.0,
+        'swath_width_m': 0.18, 'edge_margin_m': 0.05, 'edge_first': True,
+        'edge_mode': 'soft', 'edge_laps': 3, 'repeat': 1, 'alternate_angle_offset_deg': 90.0,
         'route_order': 'racetrack', 'route_spiral_size': 6, 'min_turn_radius_m': 0.5,
         'turn_type': 'auto', 'obstacle_detection': 'standard',
         'blade_policy': 'continuous', 'transit_variation': 'none',

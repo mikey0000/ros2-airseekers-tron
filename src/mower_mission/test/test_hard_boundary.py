@@ -86,7 +86,7 @@ def test_transit_outside_by_0_11_cancels_retraces_and_counts_a_transit_abort():
     assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst)
     assert h.since(m, f.BladeOff) and not h.blade
     assert [e.kind for e in h.since(m, f.RecordIncident)] == ['boundary']
-    assert any('HARD BOUNDARY: 0.11 m outside' in e.text for e in h.since(m, f.Log))
+    assert any('BOUNDARY OUT: base_link 0.11 m outside' in e.text for e in h.since(m, f.Log))
     assert h.fsm._action is None and h.name == 'TRANSIT'
     cmds = run_retrace(h)
     assert_slow_two_wheel_reverse(cmds)

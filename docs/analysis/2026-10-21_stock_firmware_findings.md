@@ -82,6 +82,37 @@ There is no retry cap and no task failure: if the robot is still out, the check 
 - Recovery copies stock: blade off, reverse 0.3 m (at our 0.10 m/s cap), rotate to the path heading, resume. Track retrace stays as the fallback.
 - Keep our retry cap and the STUCK escalation, which stock lacks.
 
+### Our port, round 2 (implemented 2026-10-21, branch `ws/edge-layout2`)
+
+Code: `mower_mission/body_boundary.py`, `MissionFSM._hard_boundary_tick` and helpers; the README "Boundary out" section lists the parameters.
+
+- **Points:** the 4 footprint corners, the mid-front (nose) and the mid-rear (tail), against the mission's own area snapshot (mowing areas, drawn paths and the dock corridor). A GUI map reload does not reach this snapshot.
+- **Where the body check applies:** whenever base_link is in, or less than 1 m outside, a mowing area. On a drawn path only, in the dock corridor and in dock phases, the base_link check stays (more than 0.10 out).
+- **Limits:**
+  - Hard: any point more than 0.10 out.
+  - Soft: rear corners 0.35, front corners 0.50, nose 0.35, tail 0.30.
+  - The front corners get 0.50 because on lap 0 along a tight convex bulge they sit outside by geometry alone, sqrt((R + 0.235)² + 0.6²) − R. On owner_far that is up to 0.43 nominal, and no K-turn can avoid it. Stock's check line sits near the axle and does not see it. Lateral drift is still caught by the rear corners, which are not affected by curvature.
+- **Why these soft numbers:**
+  - Normal soft driving: lap 0 puts the sides 0.235 out; a row end 0.45 in puts the nose 0.15 and the front corners at most 0.195 out, pivot sweep included.
+  - Sim tracking error is p99 0.07 while pivoting and 0.13 over all samples.
+  - Stock with our half-width trips with the outer side about 0.33 out (0.235 + 0.4 × 0.235 at its 70 % line ratio).
+  - Tighter soft limits would trip on normal lap-0 drift. That was the round-1 problem, where base_link at 0.10 tripped on lap 0.
+- **Recovery:**
+  - A nose or tail trip moves 0.3 m straight at no more than 0.10 m/s (forward when the worst point is behind base_link), with a 5 s timeout.
+  - A side-only trip (lateral drift, where a straight move would not help) reverses about 0.8 m along the planned leg toward the interior.
+  - The mission then resumes from the robot's projection, and the leg-start pivot turns to the path heading, as stock does.
+  - If the robot is still beyond a limit, the driven-track retrace runs (fallback).
+- **Budget:** 6 per mission (was 2), plus 2 within 1 m, then STUCK_NEEDS_HELP. Stock has no cap.
+- **Added 2026-10-22, after the sim gates and the morning field mow:**
+  - **Plan-relative soft limit:** within 1 m of a conditioned corner whose planned swept body is out by b, any point may reach b + 0.20.
+  - **No recovery ends outside:** up to 3 bounded inward moves are made first.
+  - **START or resume while outside:** the robot moves inward first, with no pivot, and the move is not counted.
+  - **Coverage pivots** turn toward the interior, choosing the direction by swept body.
+  - **Transits to an edge-lap start** end 0.30 m inside, beside the start.
+  - **Pivot retries:** a refused pivot is re-sent after 2 s.
+- **Jumps:** a reading that jumps more than 1 m in one tick is held off for up to 2 s and is not counted.
+- **Atomic map replace:** map_server `begin/commit/abort_map_edit`, which the GUI PUT /map uses, means no half-built map is ever published.
+
 ## Edges, turns and coverage
 
 Sources: `libmower_planning_core.so`, `mower_logic/config/coverage.yaml`, `task.proto`.
@@ -106,6 +137,58 @@ There is no user-facing setting to shrink areas (I).
 - The outer lap was 0.24 m inside the line and rows ended 0.14 m inside.
 - At row ends the nose was about 0.46 past the line, and pivots swept about 0.50 past.
 - `ws/edge-layout` (round 1) implements the stock-style layout.
+
+### Edge-ring turns (round 2, 2026-10-21)
+
+What stock does (I: the decompile has no code bodies for these, only headers and comments):
+
+- `task.proto` TurningMode (field `truning_mode`) has Default, In_Place, Circular_Arc, Inner_Fish_Tail, Outer_Fish_Tail, Slope and Self_Adaptive (C).
+- `mower_controller/src/nav_cover/nav_cover.h:89-125` `NavCoverUturn` has `uturnInplace`, `fishExtern`, `fishInner` and `uturnArc`. The fish-tails are row-to-row U-turns, and there is no corner or edge-lap K-turn logic (C/I).
+- `makepath/makefish_extern.h` (outer): arc forward to perpendicular, straight reverse 0.6, arc into the next row (arc r 0.3, spacing 0.15) (I, from comments).
+- `makepath/makefish.h` ("inner", inferred): backward arc away from row B, forward 0.75, backward arc onto B. Its own comment says "outer fish-tail", so the names may be swapped (I).
+- On edges, stock forces in-place turns at path starts and ends, and skips blocked turns (C, see above).
+
+Where our large ring turns came from, and what changed:
+
+- **Rounding:** the round-1 r 0.7 lap rounding never took effect, because F2C mitres the buffered laps. Lap 0 now keeps sharp vertices on purpose, and the conditioner handles corners with the body model.
+- **Lap direction:** lap 0 ran counter-clockwise and laps 1–2 clockwise, which forced about-turns at hand-offs. All laps are now clockwise.
+- **Lap starts:** lap 0 started on a convex vertex at (-1.09, 2.14), giving a -119° hand-off pivot that swept the body 0.5 m out. Lap starts now sit at least 0.6 m from vertices.
+- **"Hairpins":** the -174°/+170° pivots at (-4.4, 2.9) and the reversing tail at (-0.91, 4.84) were stacks of sliver fill passes, not merged hairpins. Soft fill passes now need a length of at least 0.30 m and at least 35 % new area. Real hairpins condition to 90 / straight / 90.
+- **Hand-off pivots:** `_join_heading` now stops its look-ahead at a pivot vertex, giving -21° then -112° instead of a single -138°.
+- **K-turns (ours, not stock):** a convex corner whose pivot or fillet would put the body past the planning limit (soft 0.26, hard 0.0) gets a 3-point turn:
+  1. forward to P1 = V − a·u_in;
+  2. about-turn through the interior;
+  3. reverse with the blade off to V;
+  4. pivot onto the next run.
+
+  Only the rear corners (0.255) sweep out. Unit-tested on a ring with a sharp corner on the line.
+- **Curved approaches:** P1 is measured as arc length back along the incoming path, and the reverse leg retraces it. Pivots on the line along it, such as jogs, become in-place pivots inside the reverse leg. Corners under 60° also try a K-turn when they would exceed 0.33. Where nothing fits, the option with the least overhang is used and logged at warn.
+- **What remains:** run5 has no corner over 0.35 nominal. owner_far has 7 lap-0 corners on drawn convex bulges tighter than about r 1.3, at 0.36–0.43 nominal, and these are front-corner overhang. Driving the line there puts the front corners out whichever way the robot turns, so these are inside the 0.50 front-corner trip limit. Stepping lap 0 inward at tight bends would be a planner change, for the owner to decide.
+
+### Decision 2026-10-22: lap 0 stays on the driven line (owner option (c))
+
+- **The bulges are driven arcs.** Area 6's "bulges" are arcs the owner drove: v10–15 R≈0.72, v21–25 R 0.71, v31–33 R 0.44, v40–41 R 0.44.
+- **Antenna-trace argument.** Following the recorded line with base_link reproduces the owner's own drive to within 1 cm; the antenna-trace difference is ≤ 1 cm. Stepping lap 0 inward would cut short of what the owner drove.
+- **Arc envelope.** On such an arc the front corners sit sqrt((R + 0.235)² + 0.6²) − R out, and the nose sqrt(R² + 0.6²) − R:
+
+  | Arc R | Front corners out (m) | Nose out (m) |
+  |---|---|---|
+  | 0.44 | 0.46 | 0.30 |
+  | 0.72 | 0.41 | |
+
+  This is geometry, not error.
+- **Conditioner.** A convex fillet on a lap that runs on the line is held to max(limit, its own envelope + 0.03). A K-turn only replaces a pivot that no fillet with r ≥ r_min can replace. Area outlines are cleaned in memory before planning (jog drop, then Douglas-Peucker 0.05), which removes the 9 cm cusp at (-27.19, -3.48)→(-27.28, -3.49) and the v42/v0/v1 start wobble. The areas file and the boundary-check outline stay as recorded.
+- **Lap-0 K-turns on replay:** Area 6 drops from 5 to 0; run5 Area 1 has 1 (+100° V).
+- **Soft trip limits:**
+  - front corners 0.55: the R 0.44 envelope 0.46 plus tracking p99 0.07;
+  - nose 0.40;
+  - rear corners stay at 0.35 and still catch lateral drift.
+- **Blade reference.**
+  - The blade centre stays at the deck centre (blade_link 0.23 forward). We do not adopt stock's 0.398.
+  - The cut width follows the fitted 220 mm disc everywhere:
+    - map_server paints mow progress with blade_radius = blade_disc_mm / 2000 = 0.11 (it was 0.15, a 0.30 disc);
+    - coverage cut_width_m is 0.22 (was 0.20).
+  - `blade_disc_mm` is the one robot-wide setting, and the UI cutter_size setting (B1) will drive it.
 
 ## Obstacles
 

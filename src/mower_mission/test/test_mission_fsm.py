@@ -51,6 +51,11 @@ class Harness:
         # coverage_controller: mppi, 2026-10-15, has its own tests in
         # test_coverage_controller.py; the leg logic is the same for both)
         params.setdefault('coverage_controller', 'rpp')
+        # ... and the base_link-only boundary check (the body-aware check, step 3 round 2,
+        # has its own tests in test_body_boundary.py; the toy squares put lap ends on the line)
+        params.setdefault('hard_boundary_body', False)
+        params.setdefault('hard_boundary_snapshot', False)    # synthetic ~/outside_m
+        params.setdefault('pivot_retry_pause_s', 0.0)   # immediate re-send (own test)
         self.t = 0.0
         self.fsm = f.MissionFSM(f.Params.from_dict(params), cursor=cursor, now=0.0)
         i = self.fsm.inputs
@@ -1358,7 +1363,8 @@ def test_height_mm_passthrough_and_clamp():
 
 
 DEFAULT_ROUTE = {'boundary_inset_m': 0.05, 'route_order': 'racetrack', 'route_spiral_size': 6,
-                 'min_turn_radius_m': 0.5, 'turn_type': 'auto'}
+                 'min_turn_radius_m': 0.5, 'turn_type': 'auto', 'edge_layout': 'soft',
+                 'edge_laps': 3}
 
 
 def test_route_and_turn_settings_reach_the_coverage_server():
@@ -1370,7 +1376,16 @@ def test_route_and_turn_settings_reach_the_coverage_server():
     cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]
     assert {k: cov[k] for k in DEFAULT_ROUTE} == {
         'boundary_inset_m': 0.05, 'route_order': 'snake', 'route_spiral_size': 8, 'min_turn_radius_m': 0.3,
-        'turn_type': 'reverse'}
+        'turn_type': 'reverse', 'edge_layout': 'soft', 'edge_laps': 3}
+
+
+def test_edge_laps_area_setting_reaches_the_coverage_server():
+    for laps, want in ((1, 1), (0, 0), (99, 10), ('x', 3)):
+        h = Harness()
+        h.area_settings = {0: {'edge_laps': laps}}
+        m = h.mark()
+        start_until_planning(h)
+        assert param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]['edge_laps'] == want
 
 
 def test_bad_route_settings_fall_back():
@@ -4795,3 +4810,33 @@ def test_preview_zigzag_repeat_plans_once_and_cross_second_failure_reports():
     h.finish(f.ACT_PLAN, f.SUCCEEDED, {'success': False, 'message': 'no swaths'})
     last = summaries(h, m)[-1]
     assert last['status'] == 'failed' and 'run 2/2: no swaths' in last['areas'][0]['error']
+
+
+def test_edge_mode_reaches_the_planner_and_legacy_reverts():
+    h = Harness()
+    h.area_settings = {0: {'edge_mode': 'hard'}}
+    m = h.mark()
+    start_until_planning(h)
+    assert param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]['edge_layout'] == 'hard'
+    h2 = Harness()
+    h2.fsm.p.edge_layout_enabled = False
+    m2 = h2.mark()
+    start_until_planning(h2)
+    assert param_calls(h2, f.PARAM_NODE_COVERAGE, m2)[0]['edge_layout'] == 'legacy'
+
+
+def test_emergency_silence_watchdog_armed_only_after_first_message():
+    # field 2026-10-21 06:27:58: the silence watchdog fired at startup before the first
+    # /hardware_bridge/emergency message; now it arms on the first message, and motion
+    # commands are refused until then
+    h = Harness()
+    h.silent = True
+    h.fsm.inputs.emergency_stamp = None
+    h.tick(n=40)
+    assert h.name != 'EMERGENCY'
+    assert not h.cmd(f.CMD_START)
+    h.silent = False
+    h.tick()
+    h.silent = True
+    h.tick(n=25)
+    assert h.name == 'EMERGENCY'

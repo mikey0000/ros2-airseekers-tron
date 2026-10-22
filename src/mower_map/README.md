@@ -24,6 +24,8 @@ ros2 launch mower_map map_server.launch.py maps_dir:=/ros2_ws/maps \
 | `/map_server_node/add_area` | `mowgli_interfaces/AddMowingArea` | Appends an area. It is a navigation area if either `is_navigation_area` flag is set. Obstacles take name and source from the index-aligned `obstacle_info`. Polygons with fewer than 3 points are rejected. Rebuilds the mask, saves `areas.dat` and publishes `replan_needed`. |
 | `/map_server_node/get_mowing_area` | `mowgli_interfaces/GetMowingArea` | Returns `index` -> `MapArea` with `obstacle_info` (id, source, pending). Returns `success=false` past the end. |
 | `/map_server_node/clear_map` | `std_srvs/Trigger` | Drops all areas and resets mow progress, then saves. The dock pose is kept. |
+| `/map_server_node/begin_map_edit`, `commit_map_edit`, `abort_map_edit` | `std_srvs/Trigger` | Atomic map replace (2026-10-21). After begin, `clear_map` / `add_area` / `set_area_channel` edit a staged copy (no rebuild, save or publish); commit swaps it in with one rebuild + save (settings carried over / pruned like `load_areas`). While an edit is open the boundary check publishes nothing (`outside_m`, `body_outside_m`, boundary flags). Idle > `map_edit_timeout_s` (10 s) drops the staged set, the live map stays. |
+| `/map_server_node/replace_areas` | `mower_interfaces/ReplaceAreas` | Atomic map replace in ONE call (preferred for the GUI PUT /map; the vendored GUI change is separate): the whole area set (areas with obstacles, navigation flags, optional per-area channel and settings JSON) is built and validated off to the side, then swapped in under the lock with one rebuild + save (settings carried over / pruned like `load_areas`). Any invalid area: success=false, the live map unchanged. `clear_map` / `add_area` / `set_area_channel` keep working. |
 | `/map_server_node/save_areas` | `std_srvs/Trigger` | Writes `areas.dat`. |
 | `/map_server_node/load_areas` | `std_srvs/Trigger` | Re-reads `areas.dat`. |
 | `/map_server_node/set_docking_point` | `mowgli_interfaces/SetDockingPoint` | Applies the gates below, then sets position (request, or the mean `/odometry/filtered_map` position when `use_gps_position`). Yaw comes from PRESERVE / REQUEST / MOTION. Writes `dock_pose.yaml` (with `dock_pose_measured: true` when the yaw is real: MOTION, REQUEST, PRESERVE of a measured yaw, or PRESERVE with `use_gps_position` while the stored yaw is still the placeholder, which captures the docked robot's fused heading), and `robot_yaml_path` if set. Publishes `docking_pose` and `docking_pose_measured`. |
@@ -135,7 +137,8 @@ areas:
 | Key | Type | Range | Default | Meaning |
 |---|---|---|---|---|
 | `cutter_height_mm` | int | 30-90 (Tron) | 50 | blade height; the mission maps it to the MCU percent |
-| `perimeter_laps` | int | 0-4 | 2 | headland rings (vendor perimeter laps) |
+| `perimeter_laps` | int | 0-4 | 2 | headland rings (vendor perimeter laps); legacy layout only |
+| `edge_laps` | int | 0-6 | 3 | edge layout (`edge_mode` soft / hard) laps; the zigzag rows move with them. Soft: laps at 0 / 0.15 / … from the line, rows 0.15 × `edge_laps` in (3 = stock, rows from 0.45; 0 = rows from the line). Hard: laps from 0.45 at 0.18 spacing, rows behind them (at least 1 lap). Planner PlanCoverage `edge_laps` |
 | `path_mode` | string | `zigzag` `cross` `alternate` `spiral` `contour_only` | `zigzag` | vendor TaskUnit path_mode 0 zigzag, 1 cross, 2 alternate zigzag, 3 spiral; `contour_only` = vendor cut_mode 2 |
 | `mow_angle_deg` | float | -1 or 0-180 | -1 (auto) | swath heading; < 0 = auto, >= 180 folded |
 | `cut_speed_mps` | float | 0.05-0.5 | 0.3 | FollowCoveragePath speed while mowing |

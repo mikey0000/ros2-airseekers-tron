@@ -12,7 +12,86 @@
 #include <vector>
 
 namespace mower_coverage {
+
+Point2D lapStartPoint(const std::vector<Point2D>& loop, const Point2D& target, double window_m,
+                      double max_turn_deg) {
+  // closed loop (first == last, or implicitly closed): arc length per vertex, turning per vertex
+  std::vector<Point2D> pts(loop);
+  if (pts.size() >= 2 && std::hypot(pts.front().first - pts.back().first,
+                                    pts.front().second - pts.back().second) < 1e-9) {
+    pts.pop_back();
+  }
+  const size_t n = pts.size();
+  if (n < 3) {
+    return target;
+  }
+  std::vector<double> cum(n + 1, 0.0);
+  for (size_t i = 0; i < n; ++i) {
+    const Point2D& a = pts[i];
+    const Point2D& b = pts[(i + 1) % n];
+    cum[i + 1] = cum[i] + std::hypot(b.first - a.first, b.second - a.second);
+  }
+  const double L = cum[n];
+  if (L < 1e-6) {
+    return target;
+  }
+  std::vector<double> turn(n, 0.0);
+  for (size_t i = 0; i < n; ++i) {
+    const Point2D& a = pts[(i + n - 1) % n];
+    const Point2D& v = pts[i];
+    const Point2D& b = pts[(i + 1) % n];
+    const double l0 = std::hypot(v.first - a.first, v.second - a.second);
+    const double l1 = std::hypot(b.first - v.first, b.second - v.second);
+    if (l0 < 1e-9 || l1 < 1e-9) {
+      continue;
+    }
+    const double h0 = std::atan2(v.second - a.second, v.first - a.first);
+    const double h1 = std::atan2(b.second - v.second, b.first - v.first);
+    turn[i] = std::fabs(std::remainder(h1 - h0, 2.0 * M_PI));
+  }
+  const double max_turn = max_turn_deg * M_PI / 180.0;
+  const double step = 0.05;
+  Point2D best_ok = target, best_any = target;
+  double best_ok_d = std::numeric_limits<double>::infinity();
+  double best_any_turn = std::numeric_limits<double>::infinity();
+  double best_any_d = std::numeric_limits<double>::infinity();
+  size_t seg = 0;
+  for (double s = 0.0; s < L; s += step) {
+    while (seg + 1 < n && cum[seg + 1] <= s) {
+      ++seg;
+    }
+    const Point2D& a = pts[seg];
+    const Point2D& b = pts[(seg + 1) % n];
+    const double sl = cum[seg + 1] - cum[seg];
+    const double u = sl > 1e-12 ? (s - cum[seg]) / sl : 0.0;
+    const Point2D p{a.first + u * (b.first - a.first), a.second + u * (b.second - a.second)};
+    // total turning of the vertices within +-window_m of arc length (circular)
+    double tot = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+      double d = std::fabs(cum[i] - s);
+      d = std::min(d, L - d);
+      if (d <= window_m) {
+        tot += turn[i];
+      }
+    }
+    const double d = std::hypot(p.first - target.first, p.second - target.second);
+    if (tot <= max_turn && d < best_ok_d) {
+      best_ok_d = d;
+      best_ok = p;
+    }
+    if (tot < best_any_turn - 1e-9 || (std::fabs(tot - best_any_turn) <= 1e-9 && d < best_any_d)) {
+      best_any_turn = tot;
+      best_any_d = d;
+      best_any = p;
+    }
+  }
+  return std::isfinite(best_ok_d) ? best_ok : best_any;
+}
+
 namespace {
+// lap starts / hand-offs: at most kLapStartMaxTurnDeg of total turning within +-kLapStartWindowM
+constexpr double kLapStartWindowM = 1.2;
+constexpr double kLapStartMaxTurnDeg = 10.0;
 
 // Ring sanitization tolerances. Operator-recorded field boundaries carry
 // mm-scale geometric degeneracies (a real 252 m^2 field had a 1.2 mm
@@ -242,7 +321,8 @@ double longestEdgeAngle(const f2c::types::Cell& cell) {
 // numerical noise on a swath that lies exactly on the recorded line — the
 // swath is returned unclipped rather than silently dropping coverage.
 std::vector<std::pair<Point2D, Point2D>> clipSwathToDrivable(
-    const f2c::types::Cells& drivable, const Point2D& p0, const Point2D& p1) {
+    const f2c::types::Cells& drivable, const Point2D& p0, const Point2D& p1,
+    bool keep_if_outside = true) {
   const double dx = p1.first - p0.first;
   const double dy = p1.second - p0.second;
   const double len = std::hypot(dx, dy);
@@ -278,6 +358,9 @@ std::vector<std::pair<Point2D, Point2D>> clipSwathToDrivable(
     spans.emplace_back(std::max(0.0, t_lo), std::min(len, t_hi));
   }
   if (spans.empty()) {
+    // legacy: a swath wholly outside is kept (F2C rounding at the edge); edge layout: the
+    // row region is a hard limit, drop it
+    if (!keep_if_outside) return {};
     return {{p0, p1}};
   }
   std::sort(spans.begin(), spans.end());
@@ -410,6 +493,15 @@ std::vector<Point2D> rotateLoopToPoint(const std::vector<Point2D>& loop,
   }
   out.push_back(hit.p);
   return out;
+}
+
+// Edge layout (round 2/3): a lap -> lap hand-off / lap start ON a bend (round 2: the lap 0 start
+// at a convex vertex on real_run5, a 119 deg pivot sweeping the body 0.5 m out; round 3: a start
+// 0.6 m before a bend built of small vertices, -23 / -29 deg, swung the body 0.25 m over plan
+// while the tracker was still joining) is moved along the lap to a straight stretch (see
+// lapStartPoint). Thin wrapper kept for the call sites.
+Point2D clearOfCorners(const std::vector<Point2D>& loop, const Point2D& target) {
+  return lapStartPoint(loop, target, kLapStartWindowM, kLapStartMaxTurnDeg);
 }
 
 // Ray-casting point-in-polygon on a closed loop.
@@ -866,6 +958,14 @@ using GeomPtr = std::unique_ptr<OGRGeometry>;
 constexpr int kFillIterations = 3;
 constexpr int kMaxPassesPerGap = 8;
 constexpr double kMinFillLenM = 0.03;
+// Edge layout (round 2, 2026-10-21): the gaps left are slivers between the row ends (0.45 in)
+// and the inner lap; a fill pass there is clipped to the row region and gains a strip a few cm
+// wide, so the passes came in stacks ~0.02 m apart (real_run5: four 0.8-1.3 m passes driven
+// as -174 / +170 / -172 deg pivots, sub-path tails of 0.1 m passes reversing on themselves).
+// A layout fill pass must be at least this long and cover at least this fraction of its own
+// swept strip (len x op_width) with new area, or it is not driven.
+constexpr double kLayoutMinFillLenM = 1.0;    // round 3: 0.3-0.6 m fills between pivots overshot (owner_far 0.19 m)
+constexpr double kLayoutMinFillEfficiency = 0.35;
 constexpr int kBufQuadSegs = 8;
 // Rectangles of neighbouring swaths share an edge exactly; widen each side by
 // this so float noise does not leave zero-area slivers between them.
@@ -1111,9 +1211,11 @@ bool bestFillPass(const OGRGeometry* gap, double hw, double swath_angle,
 }
 
 void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
-              CoveragePlan* plan) {
+              CoveragePlan* plan, const OGRGeometry* centre = nullptr) {
   const double hw = op_width / 2.0;
-  GeomPtr centre_region(target->Buffer(-hw, kBufQuadSegs));
+  // centre: where a fill pass's centreline may run (edge layout: the row region, so a fill
+  // pass obeys the row-end inset); default the target shrunk by half a swath.
+  GeomPtr centre_region(centre ? centre->clone() : target->Buffer(-hw, kBufQuadSegs));
   GeomPtr covered = planFootprint(*plan, hw);
   GeomPtr unc = evaluate(target, covered.get(), min_gap, plan);
   plan->coverage_fraction_before_fill = plan->coverage_fraction;
@@ -1130,6 +1232,12 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
                           &gain) ||
             gain < 0.1 * min_gap) {
           break;
+        }
+        if (centre != nullptr) {
+          const double len = dist(seg.first, seg.second);
+          if (len < kLayoutMinFillLenM || gain < kLayoutMinFillEfficiency * len * op_width) {
+            break;
+          }
         }
         fills.push_back(seg);
         GeomPtr rect(segRect(seg.first, seg.second, hw));
@@ -1172,7 +1280,7 @@ void fillGaps(const OGRGeometry* target, double op_width, double min_gap,
     // Rings follow the swaths: re-chain them from the new last swath end.
     Point2D t = plan->swaths.back().second;
     for (auto& ring : plan->rings) {
-      ring = rotateLoopToPoint(ring, t);
+      ring = rotateLoopToPoint(ring, centre != nullptr ? clearOfCorners(ring, t) : t);
       t = ring.back();
     }
   }
@@ -1211,7 +1319,12 @@ void verifyAndFill(const f2c::types::Cell& field, double op_width, double border
   }
   try {
     GeomPtr target = buildTarget(field, inset, hole);
-    fillGaps(target.get(), op_width, route.min_gap_area_m2, plan);
+    GeomPtr centre;
+    if (route.edge_layout) {
+      centre = buildTarget(field, route.row_end_inset,
+                           std::max(0.0, route.hole_inset) + route.row_end_inset);
+    }
+    fillGaps(target.get(), op_width, route.min_gap_area_m2, plan, centre.get());
   } catch (const std::exception&) {
     plan->drops.push_back("gap fill failed");
   }
@@ -1337,18 +1450,24 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   // around a hole then runs border_inset + op_width/2 outside it — the blade
   // edge touches the obstacle edge but never overhangs it — and everything
   // inward (hole rings, mainland, swaths) moves out with it.
+  const bool layout = route.edge_layout;
+  const double hole_grow = layout ? std::max(0.0, route.hole_inset) : op_width / 2.0;
   f2c::types::Cells hl_field = field_cells;
-  if (field.size() > 1) {
+  if (field.size() > 1 && hole_grow > 0.0) {
     f2c::types::Cells grown;
     for (size_t i = 1; i < field.size(); ++i) {
       grown.addGeometry(f2c::types::Cell::buffer(
-          f2c::types::Cell(field.getGeometry(i)), op_width / 2.0));
+          f2c::types::Cell(field.getGeometry(i)), hole_grow));
     }
     hl_field = f2c::types::Cells(f2c::types::Cell(field.getGeometry(0)))
                    .difference(grown.unionCascaded());
   }
+  // Edge layout: insets are absolute from the recorded line (never buffer(-0.0)).
+  auto inset = [&hl](const f2c::types::Cells& c, double d) {
+    return d > 1e-9 ? hl.generateHeadlands(c, d) : c;
+  };
   f2c::types::Cells safe_cells =
-      hl.generateHeadlands(hl_field, border_inset - op_width / 2.0);
+      layout ? hl_field : hl.generateHeadlands(hl_field, border_inset - op_width / 2.0);
 
   // Headland rings: one Cells per pass, outermost pass first, each pass's
   // rings as its cells (see the pass loop below for why we do not call
@@ -1400,6 +1519,29 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
       }
       break;
     }
+  } else if (layout && safe_cells.size() > 0) {
+    // Stock layout: one ring per lap offset (outermost first), no op_width arithmetic.
+    // Inner laps: morphological opening by lap_corner_radius (in by o + R, out by R; meant to
+    // round convex corners, round 1). Round 2 (2026-10-21): F2C's Cells::buffer joins with mitres, so this opening does NOT
+    // round corners (the round-1 r 0.7 arcs never existed: the laps came out with the field's
+    // vertices); it only drops features narrower than 2 R. A lap ON the line (offset 0, soft)
+    // is not opened at all: it follows the line into every corner and the mission's
+    // conditioner decides per corner from the body's swept outline (a wide fillet at gentle
+    // convex corners, a K-turn at sharp ones: forward short of the vertex, about-turn,
+    // reverse onto it, pivot inward). (An r 0.7 arc ON the line would put the outer front
+    // corner sqrt((r + 0.235)^2 + 0.6^2) - r = 0.41 past it, over the 0.35 trip limit.)
+    const double R0 = std::max(0.0, route.lap_corner_radius);
+    for (double o : route.lap_offsets) {
+      const double R = o > 1e-9 ? R0 : 0.0;
+      f2c::types::Cells c = inset(hl_field, o + R);
+      if (R > 1e-9 && !cellsEmpty(c)) {
+        c = c.buffer(R);
+      }
+      if (cellsEmpty(c)) {
+        break;
+      }
+      passes.push_back(c);
+    }
   } else if (n_rings > 0 && safe_cells.size() > 0) {
     // Pass k = the planning cell shrunk by (k + 1/2) * op_width, outermost
     // first. This is exactly ConstHL::generateHeadlandSwaths(dir_out2in) in
@@ -1426,6 +1568,18 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
             continue;
           }
           const bool hole = r > 0;
+          if (layout && !hole) {
+            // One drive direction for every outer lap (clockwise, as GEOS returns the
+            // buffered laps): lap 0 ON the line is the unbuffered field ring, which keeps the
+            // recorded orientation, and a lap -> lap hand-off against it is a 180 deg turn.
+            double a2 = 0.0;
+            for (size_t j = 0; j + 1 < loop.size(); ++j) {
+              a2 += loop[j].first * loop[j + 1].second - loop[j + 1].first * loop[j].second;
+            }
+            if (a2 > 0.0) {
+              std::reverse(loop.begin(), loop.end());
+            }
+          }
           RingGroup* target = nullptr;
           for (auto& g : groups) {
             // Continue a run only from the previous pass (a run that started
@@ -1461,6 +1615,9 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   f2c::types::Cells mainland;
   if (!want_swaths) {
     // spiral / contour_only: rings only, no mainland swaths.
+  } else if (layout) {
+    // rows laterally from row_side_inset (F2C puts the first swath op_width/2 inside)
+    mainland = inset(hl_field, std::max(0.0, route.row_side_inset - op_width / 2.0));
   } else if (n_rings > 0 && safe_cells.size() > 0) {
     mainland = hl.generateHeadlands(safe_cells, n_rings * op_width);
   } else {
@@ -1480,8 +1637,9 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   // GEOS raises a TopologyException and F2C then dereferences a null result —
   // so such a field keeps its unclipped swaths and says so in `drops`.
   const f2c::types::Cells drivable =
-      (border_inset > 0.0) ? hl.generateHeadlands(field_cells, border_inset)
-                           : field_cells;
+      layout ? inset(hl_field, route.row_end_inset)
+             : ((border_inset > 0.0) ? hl.generateHeadlands(field_cells, border_inset)
+                                     : field_cells);
   const bool clip_swaths = drivable.size() > 0 && drivable.area() > 1e-9 &&
                            drivable.get() != nullptr && drivable.get()->IsValid();
   if (!clip_swaths) {
@@ -1518,7 +1676,7 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
       const Point2D a{p0.getX(), p0.getY()};
       const Point2D b{p1.getX(), p1.getY()};
       const std::vector<Seg> clipped =
-          clip_swaths ? clipSwathToDrivable(drivable, a, b) : std::vector<Seg>{{a, b}};
+          clip_swaths ? clipSwathToDrivable(drivable, a, b, !layout) : std::vector<Seg>{{a, b}};
       for (const auto& piece : clipped) {
         const double len = dist(piece.first, piece.second);
         if (len < min_swath_length) {
@@ -1611,14 +1769,15 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
     plan.swaths_first = true;
     Point2D target = plan.swaths.back().second;
     for (auto& ring : plan.rings) {
-      ring = rotateLoopToPoint(ring, target);
+      ring = rotateLoopToPoint(ring, layout ? clearOfCorners(ring, target) : target);
       target = ring.back();
     }
   } else if (!plan.rings.empty()) {
     if (!plan.swaths.empty()) {
       Point2D target = plan.swaths.front().first;
       for (size_t r = plan.rings.size(); r-- > 0;) {
-        plan.rings[r] = rotateLoopToPoint(plan.rings[r], target);
+        plan.rings[r] = rotateLoopToPoint(
+            plan.rings[r], layout ? clearOfCorners(plan.rings[r], target) : target);
         target = plan.rings[r].front();
       }
     } else {
@@ -1638,7 +1797,12 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
       route.turn_type != TurnType::kPivot) {
     plan.turns.assign(plan.swaths.size(), SwathTurn{});
     std::unique_ptr<OGRGeometry> region;
-    if (clip_swaths) {
+    if (layout) {
+      const f2c::types::Cells tr = inset(hl_field, route.turn_inset);
+      if (tr.size() > 0 && tr.area() > 1e-9 && tr.get() != nullptr && tr.get()->IsValid()) {
+        region.reset(tr.get()->Buffer(kTurnContainTolM));
+      }
+    } else if (clip_swaths) {
       region.reset(drivable.get()->Buffer(kTurnContainTolM));
     }
     for (size_t i = 1; i < plan.swaths.size(); ++i) {
@@ -1683,6 +1847,52 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   return plan;
 }
 }  // namespace
+
+bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* route,
+                     int edge_laps) {
+  if (name.empty() || name == "legacy") {
+    return true;
+  }
+  if (edge_laps < 0 || (name != "soft" && name != "hard")) {
+    return false;
+  }
+  const double hw = op_width / 2.0;
+  const int n = edge_laps;
+  route->lap_offsets.clear();
+  double first = 0.0;  // where the outermost pass (a lap, else a row) runs
+  if (name == "soft") {
+    // laps 0 / 0.15 / 0.30 / ... (stock), rows one lap spacing inside the last lap
+    constexpr double kSpacing = 0.15;
+    for (int k = 0; k < n; ++k) route->lap_offsets.push_back(kSpacing * k);
+    const double rows = kSpacing * n;
+    route->row_side_inset = rows;
+    route->row_end_inset = rows;
+    route->turn_inset = rows;
+    route->hole_inset = 0.30;
+    first = 0.0;
+  } else {
+    // 0.45 / 0.63 / 0.81 (owner, edge_laps 3) plus 0.99: rows can only be clipped by erosion,
+    // so the row region (row ends 1.08 in) also starts 1.08+ laterally; the extra lap closes
+    // that band. Row ends never under 0.745 (the nose + 0.10 inside through a row-end pivot).
+    // Hard needs at least one lap: rows are clipped by erosion, so they start >= 0.745 in
+    // laterally too, and without laps the band from the line to there stays uncut (0 = 1).
+    constexpr double kStart = 0.45, kSpacing = 0.18;
+    const int nh = std::max(1, n);
+    for (int k = 0; k <= nh; ++k) route->lap_offsets.push_back(kStart + kSpacing * k);
+    const double band = kStart + kSpacing * nh;
+    route->row_side_inset = band + 0.11;
+    route->row_end_inset = std::max(0.745, band + 0.09);
+    route->turn_inset = 0.745;
+    route->hole_inset = 0.0;
+    first = kStart;
+  }
+  route->edge_layout = true;
+  route->lap_corner_radius = 0.7;
+  // coverage target: what the blade of the outermost pass reaches
+  route->target_inset = std::max(0.0, first - hw);
+  route->hole_margin = std::max(0.0, route->hole_inset + first - hw);
+  return true;
+}
 
 bool parseRouteOrder(const std::string& name, RouteOrder* order) {
   if (name.empty() || name == "boustrophedon") {

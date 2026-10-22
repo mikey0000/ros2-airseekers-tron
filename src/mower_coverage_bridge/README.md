@@ -13,7 +13,7 @@ between sub-paths.
 | Node | `coverage_server` (executable `coverage_action_server`) |
 | Serves | action `/plan_coverage` — `mowgli_interfaces/action/PlanCoverage` |
 | Calls | service `/coverage/plan` — `mower_interfaces/srv/PlanCoverage` |
-| Launch | `ros2 launch mower_coverage_bridge coverage_bridge.launch.py [start_planner:=false] [transit_gap_m:=0.6] [cut_width_m:=0.20] [swath_overlap_m:=0.02]` |
+| Launch | `ros2 launch mower_coverage_bridge coverage_bridge.launch.py [start_planner:=false] [transit_gap_m:=0.6] [cut_width_m:=0.22] [swath_overlap_m:=0.02]` |
 
 The geometry lives in `mower_coverage_bridge/splitter.py`. It is pure Python
 with no ROS imports, and pytest covers it.
@@ -133,6 +133,7 @@ to [0, 180)) appears in `message`.
 | `headland_rings` | `-1` | per-area perimeter laps, forwarded as `headland_rings`: -1 = use `headland_passes`, 0 = none, > 0 = exactly (validated -1..20) |
 | `path_mode` | `zigzag` | `zigzag` / `cross` / `alternate` (all sent as `zigzag`: cross and alternate are several mission-level zigzag plans), `spiral`, `contour_only`; anything else is refused |
 | `mow_angle_deg` | `-1.0` | used only when the goal's `mow_angle_deg` is < 0 (the goal wins) |
+| `edge_laps` | `3` | edge layout (`edge_layout` soft / hard): number of edge laps, set per area by the mission (area setting `edge_laps`), forwarded as PlanCoverage `edge_laps`; the rows move with them. Soft: laps at 0 / 0.15 / … (base_link from the line), rows (sides, ends, turns) 0.15 × `edge_laps` in: 3 = stock (rows from 0.45), 1 = rows from 0.15, 0 = rows from the line. Hard: laps at 0.45 / 0.63 / … plus the band-closing lap, rows from 0.45 + 0.18 × `edge_laps` + 0.11 (ends never under 0.745); 0 is taken as 1 (rows start >= 0.745 in, a lapless band would stay uncut). Ignored by the legacy layout (`headland_rings`). Validated 0..10 |
 | `edge_first` | `true` | `false`: the planner lays out the swaths first, then the rings innermost first; the splitter is told so (`swaths_first`) |
 
 The last four are the per-area mowing settings. `behavior_tree_node` (mower_mission) sets
@@ -157,7 +158,7 @@ Planner modes (`mower_coverage` `planCoverage`):
 ### Swath width
 
 There is one source for the swath spacing: the launch arguments `cut_width_m`
-(default `0.20`, the URDF cutter disc radius 0.10 m × 2) and `swath_overlap_m`
+(default `0.22`, the fitted 220 mm disc; map_server `blade_disc_mm`) and `swath_overlap_m`
 (default `0.02`). `coverage_bridge.launch.py` (and `mower.launch.py`, which
 forwards both) passes them to `mower_coverage_node` (parameters of the same
 name; its default spacing for requests with `operation_width ≤ 0` is their
@@ -172,6 +173,30 @@ to the next plan.
 `mower_interfaces/srv/PlanCoverage` carries the per-area fields with IDL defaults that
 keep the old behaviour for a client that leaves them alone: `int32 headland_rings -1`,
 `string path_mode "zigzag"` (`""` = zigzag), `bool edge_first true`.
+
+## Edge layout and edge-ring turns (step 3, rounds 1-2, 2026-10-21)
+
+`PlanCoverage.edge_layout` (from the area's `edge_mode`; all areas soft for now):
+
+* **soft (stock):** laps at 0 / 0.15 / 0.30 from the line (base_link = rear axle on lap 0),
+  rows from 0.45. **hard:** the whole body inside plus 0.10.
+* **`edge_laps`** (per-area setting, default 3 = stock; GUI binding pending, keep the name):
+  the number of edge laps; soft laps at 0, 0.15, ... and rows from 0.15 x `edge_laps` (1 lap:
+  rows from 0.15; 0: rows from the line, first row centre 0.09 in). Hard: the same from its
+  0.45 start; 0 is treated as 1.
+* All outer laps run the same direction (clockwise). Lap 0 keeps the polygon's sharp
+  vertices (F2C `Cells::buffer` mitres; the round-1 r 0.7 rounding never rounded). Lap
+  starts / hand-offs sit >= 0.6 m from a vertex, so a ring-to-ring step is -90 / 0.15 / +90
+  mid-edge instead of a large pivot at a corner.
+* Soft fill passes must be >= 0.30 m long and add >= 35 % new area (round 1 stacked ~20
+  sliver passes 0.02 m apart, which drove the -174 deg "hairpins").
+* Mission side (`mower_mission/path_conditioning.py`): every corner's fillet / pivot sweep
+  is checked with the body (planning limit soft 0.26, hard 0.0); a convex corner over the
+  limit tries fillets up to r 2.0, then (turn >= 60 deg) a K-turn: forward to
+  P1 = V - a.u_in (least a in 0.30..1.5 that fits), about-turn at P1 through the interior,
+  reverse (blade off) to V, pivot at V onto the next run (rear corners only, 0.255, sweep
+  out). Rotation direction: the nose swings through the area. Row-to-row hairpins are
+  pivot 90 / straight one spacing / pivot 90.
 
 ## Differences from upstream `mowgli_coverage`
 

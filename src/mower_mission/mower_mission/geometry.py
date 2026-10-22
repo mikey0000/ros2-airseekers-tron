@@ -154,6 +154,70 @@ def simplify_ring(points, tolerance, close_eps=None, close_radius=None):
     return ring
 
 
+def clean_area_ring(points, tolerance=0.05, jog_m=0.10):
+    """A recorded area outline, cleaned IN MEMORY for planning (never written back): drawing
+    jogs dropped, then Douglas-Peucker at ``tolerance`` as a closed ring with no fixed vertex.
+
+    Jog (edge layout round 2, owner_far Area 6: a 9 cm cusp at (-27.19, -3.48) and the
+    +40 / -60 / +25 deg start wobble at (-28.76, -15.26), each a K-turn on lap 0): a vertex
+    within ``jog_m`` of the chord of its neighbours that turns by 90 deg or more, or against
+    the turn of both neighbours (a zig-zag). The smallest such feature goes first, then the
+    ring is looked at again. Arcs (every vertex turning the same way) are untouched by this
+    pass. Douglas-Peucker runs twice from two far-apart anchors, so the recorded first vertex
+    is not kept just for being first. ``jog_m`` 0 / ``tolerance`` 0: that step off."""
+    pts = [(float(p[0]), float(p[1])) for p in points]
+    if len(pts) >= 2 and dist(pts[0], pts[-1]) < 1e-9:
+        pts = pts[:-1]
+    if len(pts) < 4:
+        return pts
+    p0 = pts[0]
+
+    def turn(i):
+        a, b, c = pts[i - 1], pts[i], pts[(i + 1) % len(pts)]
+        h1 = math.atan2(b[1] - a[1], b[0] - a[0])
+        h2 = math.atan2(c[1] - b[1], c[0] - b[0])
+        return wrap_angle(h2 - h1)
+
+    def height(i):
+        a, b, c = pts[i - 1], pts[i], pts[(i + 1) % len(pts)]
+        L = dist(a, c)
+        if L < 1e-9:
+            return dist(a, b)
+        return abs((c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])) / L
+
+    while jog_m > 0.0 and len(pts) > 4:
+        n = len(pts)
+        t = [turn(i) for i in range(n)]
+        best = None
+        for i in range(n):
+            h = height(i)
+            if h >= jog_m:
+                continue
+            tp, tn = t[i - 1], t[(i + 1) % n]
+            zig = abs(tp) > math.radians(5) and abs(tn) > math.radians(5) and \
+                t[i] * tp < 0.0 and t[i] * tn < 0.0
+            if abs(t[i]) >= math.pi / 2.0 or zig:
+                if best is None or h < best[0]:
+                    best = (h, i)
+        if best is None:
+            break
+        del pts[best[1]]
+    if tolerance > 0.0 and len(pts) >= 4:
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        for _ in range(2):
+            k = max(range(len(pts)), key=lambda i: dist(pts[i], (cx, cy)))
+            ring = pts[k:] + pts[:k]
+            ring = douglas_peucker(ring + [ring[0]], tolerance)[:-1]
+            if len(ring) >= 3:
+                pts = ring
+            cx, cy = pts[0]          # second pass: anchored on the vertex farthest from it
+    if p0 is not None and pts:           # the recorded order: from (nearest) its first vertex
+        k = min(range(len(pts)), key=lambda i: dist(pts[i], p0))
+        pts = pts[k:] + pts[:k]
+    return pts
+
+
 def nearest_index(poses, point, start=0, max_arc=None):
     """Index (>= ``start``) of the pose closest to ``point``; ``start`` if empty.
 

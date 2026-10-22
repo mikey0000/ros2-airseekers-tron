@@ -282,6 +282,37 @@ def test_stuck_step_publishes_latch_event_and_reset():
     assert pub[-1] is False
 
 
+def test_stuck_not_counted_while_collision_monitor_stops():
+    # 2026-10-21 field: collision_monitor STOP zeroed the commands, the guard counted them
+    det = slip_detector.StuckDetector()
+    t = 0.0
+    while t < 10.0:
+        assert det.update(t, (0.2, 0.0), (1.0, 2.0, 0.0), t, 0.0, held=True) is None
+        t += 0.1
+    assert not det.stuck
+    ev = _drive(det, 10.0, 13.8, (0.2, 0.0), lambda t: (1.0, 2.0, 0.0), 0.0)
+    assert ev is None and not det.stuck               # the window restarted after the hold
+
+
+def test_stuck_step_ignores_a_stale_cmd_vel_and_cm_stop():
+    node, pub, events = _stuck_node(slip_detector.StuckDetector())
+    node._cmd_t, node._cmd_max_age = 0.0, 0.5         # last /cmd_vel at t=0, then silent
+    t = 0.0
+    while t < 8.0:
+        node._ekf_t = t
+        slip_detector.SlipDetectorNode.stuck_step(node, t)
+        t += 0.1
+    assert pub[-1] is False and not events
+    node2, pub2, events2 = _stuck_node(slip_detector.StuckDetector())
+    node2._cm_stop = True
+    t = 0.0
+    while t < 8.0:
+        node2._ekf_t = t
+        slip_detector.SlipDetectorNode.stuck_step(node2, t)
+        t += 0.1
+    assert pub2[-1] is False and not events2
+
+
 def _wit_at_rest(n=100):
     # What the JY61P on the mower reports standing still: gyro exactly 0.0 on all axes,
     # accel ~(-0.61, -0.02, 9.85) with ~0.01-0.02 m/s^2 noise.

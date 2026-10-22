@@ -102,3 +102,32 @@ def test_make_dump_dir_unique_and_sanitised(tmp_path):
     b = make_dump_dir(str(tmp_path), '20261007-120000', 'node_down /x y')
     assert a != b and os.path.isdir(a) and os.path.isdir(b)
     assert os.path.basename(a) == '20261007-120000_node_down__x_y'
+
+
+def test_dump_uses_jazzy_topic_metadata_with_id(monkeypatch, tmp_path):
+    # field 2026-10-21: Jazzy's TopicMetadata requires id -> "incompatible constructor
+    # arguments" on every black-box dump
+    ids = []
+
+    class Writer:
+        def open(self, storage, conv):
+            pass
+
+        def create_topic(self, meta):
+            ids.append(meta.id)
+
+        def write(self, topic, data, t):
+            pass
+
+    fake = types.ModuleType('rosbag2_py')
+    fake.SequentialWriter = Writer
+    fake.StorageOptions = lambda uri, storage_id: types.SimpleNamespace(uri=uri)
+    fake.ConverterOptions = lambda **k: None
+    fake.TopicMetadata = lambda id, name, type, serialization_format: types.SimpleNamespace(
+        id=id, name=name, type=type)
+    monkeypatch.setitem(sys.modules, 'rosbag2_py', fake)
+    b = buf()
+    b.push('/a', 1 * S, b'one')
+    b.push('/b', 2 * S, b'two')
+    dump_bag(b.snapshot(), str(tmp_path / 'bag'))
+    assert ids == [0, 1]

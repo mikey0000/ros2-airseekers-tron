@@ -81,7 +81,42 @@ struct RouteOptions {
   // resp. border_inset: what the rings are built for).
   double target_inset = -1.0;
   double hole_margin = -1.0;
+  // Stock-style edge layout (owner 2026-10-21, see applyEdgeLayout). Every inset is where
+  // base_link (rear axle, pivot centre) runs, measured from the recorded line. Non-empty
+  // lap_offsets replaces the headland construction (border_inset / headland_passes are then
+  // ignored for the outer field): one ring per offset, rows laterally from row_side_inset,
+  // row ends (and gap-fill passes) row_end_inset inside, swath-to-swath turns kept
+  // turn_inset inside, holes grown by hole_inset before any of that.
+  std::vector<double> lap_offsets;
+  bool edge_layout = false;      // set by applyEdgeLayout (also with no laps: edge_laps 0)
+  double row_side_inset = 0.45;
+  double row_end_inset = 0.45;
+  double turn_inset = 0.45;
+  double hole_inset = 0.30;
+  // inner laps opened by this radius (F2C buffers with mitres: it drops features narrower
+  // than 2 R, it does not round corners; lap 0 ON the line is never opened)
+  double lap_corner_radius = 0.0;
 };
+
+// Edge layouts (PlanCoverage edge_layout / area setting edge_mode):
+//   "soft"  stock layout: laps at 0 / 0.15 / 0.30 (the first with base_link ON the line, the
+//           sides overhang up to the half width), rows fill the 0.45-eroded field (row ends
+//           0.45 in: nose ~0.15 past, a pivot there sweeps it ~0.195 past), turns >= 0.45 in,
+//           holes (obstacles) grown 0.30 so the body sides clear them.
+//   "hard"  the whole body inside plus 0.10: laps 0.45 / 0.63 / 0.81 (+ 0.99), rows from 1.10,
+//           row ends 1.08 in (pivot room ahead), turns >= 0.745 in (pivot swing 0.645 + 0.10).
+//   "" / "legacy"  unchanged (headland rings at border_inset).
+// edge_laps (area setting, default 3 = the above): the number of edge laps; the rows move
+// with them. soft: laps at 0, 0.15, ... (edge_laps of them), rows (sides, ends, turns) one
+// lap spacing inside the last lap = 0.15 x edge_laps (0 laps: rows from the line). hard:
+// laps at 0.45, 0.63, ... (edge_laps of them) plus the band-closing lap one spacing further
+// (b = 0.45 + 0.18 x edge_laps), rows from b + 0.11 laterally, row ends b + 0.09 in, never
+// under 0.745 (pivot swing 0.645 + 0.10); at least 1 lap (0 = 1: rows are clipped by
+// erosion, >= 0.745 in sideways too, so a lapless band would stay uncut).
+// Returns false for an unknown name or edge_laps < 0 (route untouched).
+constexpr int kDefaultEdgeLaps = 3;
+bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* route,
+                     int edge_laps = kDefaultEdgeLaps);
 
 bool parseRouteOrder(const std::string& name, RouteOrder* order);  // "" = boustrophedon
 // kRacetrack half-block k for a turn radius: smallest k with (k-1)*w >= 2r, >= 2.
@@ -219,6 +254,13 @@ std::vector<Point2D> planTurn(const Point2D& from, double from_yaw,
                               double robot_width, double min_turn_radius);
 
 // True when compiled against Fields2Cover v3.
+// Lap start / lap hand-off point on the closed `loop` (edge layout): the point nearest to
+// `target` whose surroundings (+-window_m of arc length) turn by at most max_turn_deg in total
+// (a bend made of many small vertices counts); none: the straightest point (least turning,
+// nearest on ties).
+Point2D lapStartPoint(const std::vector<Point2D>& loop, const Point2D& target, double window_m,
+                      double max_turn_deg);
+
 bool builtWithF2CV3();
 
 }  // namespace mower_coverage

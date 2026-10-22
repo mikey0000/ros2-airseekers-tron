@@ -88,7 +88,7 @@ DEFAULT_TOPICS = [
     # command chain (silent when parked): lanes -> twist_mux -> cmd_vel_slew -> /cmd_vel -> MCU
     '/cmd_vel_nav', '/cmd_vel_docking', '/cmd_vel_teleop', '/cmd_vel_bumper',
     '/cmd_vel_emergency', '/cmd_vel', '/cmd_vel_slew/gate_status', '/cmd_vel_slew/shape_status',
-    '/estop_request', '/motion_enabled',
+    '/estop_request', '/motion_enabled', '/collision_monitor_state',
     '/mcu/measured_speed', '/mcu/commanded_speed',
     # localization (20 + 10 Hz)
     '/odometry/filtered', '/odometry/filtered_map', '/tf_static', '/heading_aligner/status',

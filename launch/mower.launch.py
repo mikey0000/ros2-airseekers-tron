@@ -178,7 +178,7 @@ SETTINGS_PARAM_FILES = {
 }
 # Targets that get an overlay file instead (the node has no params_file).
 SETTINGS_OVERLAYS = {'um960_gps_driver': 'um960_params_file'}
-DEFAULT_CUT_WIDTH_M = '0.20'
+DEFAULT_CUT_WIDTH_M = '0.22'   # 220 mm disc (map_server blade_disc_mm)
 
 
 def _share_file(package, rel):

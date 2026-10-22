@@ -93,3 +93,15 @@ def test_node_starts_and_stays_up():
                 p.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 p.kill()
+
+
+def test_a_flickering_stop_zone_hold_is_not_a_stall():
+    # 2026-10-21 field: stop <-> slowdown flicker during a real stop_zone hold reported a
+    # 68 s "collision_monitor forwards nothing" stall
+    wd = LaneWatchdog(stall_s=2.0, hold_grace_s=5.0)
+    wd.on_cm_state(1, 1.0)
+    wd.on_cm_state(0, 1.2)
+    drive(wd, 0.0, 5.0, nav=False)
+    assert wd.check(5.0) is None            # held 3.8 s ago: still a real stop
+    drive(wd, 5.0, 7.0, nav=False)
+    assert wd.check(7.0) == 'collision_monitor'   # no hold for 5.8 s: the lane is stuck
