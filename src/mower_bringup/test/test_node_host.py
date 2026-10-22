@@ -204,3 +204,14 @@ def test_standalone_groups_argument(tmp_path):
     ctx = _context()
     ctx.launch_configurations['node_host_standalone'] = 'cameras, other'
     assert nhl.compose_enabled(ctx, 'control') and not nhl.compose_enabled(ctx, 'cameras')
+
+
+def test_ros_only_arguments_are_hosted_other_arguments_are_not(tmp_path):
+    from mower_bringup import node_host_launch as nhl
+    ctx = _context()
+    assert _hosted(tmp_path, 'a', arguments=['--ros-args', '--log-level', 'info']).execute(
+        ctx) is None
+    argv = nhl._REGISTRY[ctx]['g'][0]['ros_args']
+    assert argv[:3] == ['--ros-args', '--log-level', 'info'] and '__node:=a' in argv
+    out = _hosted(tmp_path, 'b', arguments=['positional']).execute(ctx)
+    assert out and len(nhl._REGISTRY[ctx]['g']) == 1

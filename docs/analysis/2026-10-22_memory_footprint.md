@@ -218,3 +218,69 @@ what composition cannot fix: nodes that must stay isolated for safety or that bu
   x86-64 numbers; the mower's arm64 numbers are 10-15 MB higher per process (more peers, 64 kB
   pages are not in play: 4 kB kernel).
 * Nothing was changed on the mower; no sim gates were run (owner review requested first).
+
+## 6. Implemented on `ws/mem-diet` (M1, M2, M6, M3; 2026-10-22)
+
+Approved by the owner: M1, M2, M6, then M3. Not done (not approved): stage 1 (zram, earlyoom,
+malloc env, foxglove trimming, web_video_server), M4. No Rust (owner: stay with C++; L1 next).
+
+### 6.1 `node_host` design (`src/mower_bringup/mower_bringup/node_host.py`)
+
+* **One process per group**, one `rclpy` context = one Fast-DDS participant. Each node runs its
+  own **unmodified `main()`** (console_scripts entry point, or the `main` of an installed
+  script such as `collision_zone_gate.py`) in its own thread. No node code was changed.
+* **Per-node arguments**: the launch side (`node_host_launch.py`) evaluates each node exactly
+  as launch_ros would and hands the host the node's standalone `--ros-args` argv (`__node`,
+  `__ns`, the generated params files, `-p`, remaps, global `SetParameter`/`SetRemap`). The host
+  passes it to that node only (`Node(cli_args=..., use_global_arguments=False)` via an
+  `rclpy.node.Node.__init__` shim). Names, namespaces, parameters, topics and services are
+  identical; checked in the dev image (16 nodes, `compose_nodes:=true` vs `false`: same graph,
+  same parameter values, same `/cmd_vel_slew` publishers/subscribers, diff empty).
+  `--log-level` is applied to the node's logger (rcl logging is per process).
+* **Executor**: stronger than "MultiThreadedExecutor + per-node callback groups": every node
+  gets its **own executor in its own thread** (`rclpy.spin(node)` uses a per-thread
+  SingleThreadedExecutor via a `get_global_executor` shim; nodes that build their own
+  MultiThreadedExecutor, gui_bridge and coverage_server, keep it). A node's callbacks are
+  serialised exactly as in its standalone process, and a slow node never blocks another
+  node's wait set; the only shared resources are the GIL and the participant's DDS threads.
+  (One rclpy MTE over N nodes would also walk all N nodes' entities on every wake-up: more
+  Python CPU, which the mower does not have.)
+* **Crash / respawn**: fail fast. If any node's `main()` ends while the host runs (callback
+  exception, `sys.exit`, or return), the host logs `node X ENDED ... stopping the whole group`,
+  writes a crash record for that node (`<crash_dir>/<node>-*.txt`, traceback), shuts the
+  context down so every other node runs its own `finally` (lights off, bag child stopped, ...),
+  and exits 1; launch respawns the **whole group** (`respawn` = any member's, delay = the
+  largest; all hosted nodes had `respawn=True, respawn_delay=2.0` except bag_recorder 5.0).
+  No node can die silently while its peers keep running. SIGINT/SIGTERM: clean exit 0.
+  `crash_record` is installed once per host (`node_host_<group>.faulthandler.log`);
+  `mower.launch.py`'s process-exit record marks `node_host_control` SAFETY-CRITICAL.
+* **Supervisor**: it watches the graph (`get_node_names_and_namespaces`), so the critical list
+  `/mower_mcu_driver`, `/cmd_vel_slew`, `/twist_mux`, `/behavior_tree_node` works unchanged
+  (cmd_vel_slew is visible under its own name in `node_host_control`). A host restart shows
+  as all its members DOWN then UP.
+* **Revert**: `compose_nodes:=false` (mower.launch.py, sim.launch.py; default true) = one
+  process per node exactly as before. `node_host_standalone:=cameras[,group...]` keeps only
+  the listed groups split. A launch file run on its own (e.g. `ros2 launch mower_navigation
+  navigation.launch.py`) is never composed. A group with one active member runs it standalone.
+* **Logs**: lines are prefixed `[node_host_<group>-N]` by launch, the rclpy logger name still
+  says which node. `ps`/`top` show `node_host <spec>`: the spec JSON (in launch's temp dir)
+  lists the members; the host prints `hosting N nodes in pid P: ...` at start.
+
+### 6.2 Grouping (for the owner's review)
+
+| Process | Members | CPU on the mower (ps lifetime %, 2026-10-22 10:16, just restarted) | Why together / why apart |
+|---|---|---|---|
+| **standalone** | `mower_mcu_driver`, `tilt_monitor`, `base_keys` (publishes `/estop_request`), `obstacle_guard` (zero burst on `/cmd_vel_emergency` + `/cutter_off`) | | Safety leaves and the e-stop/emergency path: nothing else may take them down or delay them. |
+| **standalone** | `behavior_tree_node` (mission, signal handlers), `mower_docking`, `map_server_node` (55 %) | | Per the brief; map_server alone is half a core. |
+| **standalone** | `um960_gps_driver`, `wit_imu_driver` | | Serial drivers with reader threads; a peer's crash would cost an RTK/IMU gap. |
+| `node_host_control` | `cmd_vel_slew`, `slip_detector`, `fixed_frame_relay` (M6 pair), `collision_zone_gate`, `nav_lane_watchdog` | 7 + 5 + 16 + 4 + 3 = 35 % | Control-chain peers of the same criticality. Fail-safe: any member crash stops the host, `/cmd_vel` goes silent and mcu_node's 0.5 s `cmd_vel_timeout` stops the wheels; launch restarts it in ~2-3 s (as a standalone cmd_vel_slew crash would). fixed_frame_relay is the costmap's only obstacle path, so it already gated the control chain. Watch: its 16 % shares cmd_vel_slew's GIL. |
+| `node_host_localization` | `gps_gate`, `heading_aligner`, `localization_monitor`, `imu_cal` (+ `vio_gate` with vio) | 7 + 21 + 4 + 3 = 35 % | One failure domain: localisation quality. A crash = ~3 s without gated fixes / heading alignment, which the EKFs and mission already tolerate (heading_aligner re-aligns). |
+| `node_host_perception` | `det_range`, `obstacle_tracker` | 3 + 12 = 15 % | Perception helpers downstream of det_ros / stereo_depth; obstacle_guard stays out (emergency path). |
+| `node_host_housekeeping` | `supervisor`, `activity_gated_lifecycle_manager` (M6), `alert_node`, `bag_recorder`, `light_controller`, `fill_light` (M6), `mow_recorder` (if on) | 7 + 3 + 6 + 7 + 5 + 3 = 31 % | Monitoring/UX. activity_gated_lifecycle is restart-safe by design (reconciles with the manager's `is_active`). bag_recorder's `ros2 bag record` child stays a separate process (PDEATHSIG is tied to the thread that spawned it, which lives as long as the host). |
+| `node_host_gui` | `gui_bridge`, `coverage_server`, `cmd_vel_ws_relay` | 14 + 2 + 3 = 19 % | GUI-facing and mission utilities; the WebSocket relay (untrusted input) is kept out of the control host. |
+| `node_host_cameras` (M2) | `left_oa_camera`, `right_oa_camera`, `stereo_cam`, `stereo_imu` (M6), `stereo_depth`, `mower_cameras` (rear) | 8 + 8 + 6 + 18 + 4 + 3 = 47 % idle; ~1.5 cores when all stream (2026-10-06: rear 29 %, each OA 44 %) | M2. Its environment is cameras.launch.py's scoped camera DDS profile (stereo_imu now also uses it). **GIL risk, field check required** (6.4). |
+
+M6 was done as **co-location** (`fixed_frame_relay` with `cmd_vel_slew`, `stereo_imu` with
+`stereo_cam`, `activity_gated_lifecycle_manager` with `supervisor`, `fill_light` with
+`light_controller`), not by merging code: same node names, topics, services and parameters,
+no behaviour change, the memory saving is the same (one participant + interpreter per node).

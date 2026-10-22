@@ -23,6 +23,7 @@ sim.launch.py) brackets everything with ``arm_node_hosts()`` (first) and ``start
 ``node_host_standalone:=cameras,perception`` keeps the listed groups one process per node
 (e.g. if the camera host cannot hold the frame rates on the mower).
 
+``arguments`` that are all ROS arguments (``['--ros-args', '--log-level', x]``) are hosted.
 Nodes that cannot be hosted transparently (not a Python executable, extra non-ROS
 ``arguments``, a per-node ``env``/``additional_env``/``prefix``) fall back to standalone with
 a warning.
@@ -37,7 +38,7 @@ from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
 
 _REGISTRY = weakref.WeakKeyDictionary()     # LaunchContext -> {group: [member, ...]}
-_NOT_HOSTABLE = ('env', 'additional_env', 'prefix', 'arguments', 'exec_name')
+_NOT_HOSTABLE = ('env', 'additional_env', 'prefix', 'exec_name')   # + non-ROS `arguments`
 COMPOSE_ARG = 'compose_nodes'
 
 
