@@ -17,21 +17,22 @@ No cloud account is needed to run it.
 - **Web control app.** Open `http://<mower-ip>:4006` to see the mower live, drive it with an
   on-screen joystick, start, pause and send it home.
 - **Draw and edit your garden.** Record a mowing boundary by driving the edge, then add obstacles,
-  no-go zones, transit paths and a docking corridor. The map can be edited from a desktop browser as
+  no-go zones and transit paths; a corridor to the dock is added automatically. The map can be edited from a desktop browser as
   well as a phone, so you can tidy boundaries and zones on a big screen. Import an existing vendor
   map if you have one.
 - **Choose how each area is mowed.** See [Mowing patterns](#mowing-patterns) below. Settings are
   per area, and one run can mow several areas.
 - **Dock and charge by itself.** Undocks to start a mow, returns to the charging station when
-  finished or when the battery is low, and resumes where it left off.
+  finished, when the battery is low or when it rains, and resumes where it left off.
 - **Centimetre-level positioning.** Fuses RTK GPS, wheel odometry and the IMU. Optional visual
-  odometry (OpenVINS) uses the front stereo camera.
+  odometry (OpenVINS, off by default) uses the front stereo camera.
 - **Obstacle awareness.** Detects people, pets and objects with the front stereo camera and the
   on-board NPU, then stops or goes around them. Bumper, lift and stop-button handling are built in.
 - **Safe by design.** Wheels only move in the states where motion is allowed; a lost connection,
   crashed node or stale command stops the mower; crashes are recorded for diagnosis.
 - **Test without a mower.** A headless simulator runs the real navigation, mission and docking
-  code, so changes can be checked before they go near a lawn.
+  code, and a sim gate mows a whole map from dock to dock and passes or fails it, so changes are
+  checked before they go near a lawn.
 
 ## Mowing patterns
 
@@ -46,7 +47,8 @@ Each area has its own settings, chosen in the app:
 | **Turns** | Automatic (forward loop, else reverse-and-curve, else pivot), or force loop, reverse or pivot, with a minimum turn radius |
 | **Also per area** | Cutting height (30-90 mm), speed, path width, edge margin, repeats per mow, obstacle sensitivity, and whether to avoid flower beds and gravel |
 
-After a mow, gaps the mower missed can be detected and filled.
+The planner checks each plan for patches its stripes would miss and adds fill passes for them.
+(Tracking what was actually cut during a mow, and revisiting missed patches, is planned.)
 
 ## What works today
 
@@ -54,41 +56,59 @@ After a mow, gaps the mower missed can be detected and filled.
 |---|---|
 | Hardware drivers (MCU, RTK GPS, IMU, cameras) | Running on the mower |
 | Web app, map recording and editing (phone and desktop), mission control | Working |
-| Mowing: coverage planning, patterns and path following | Tested |
-| Docking and undocking | Tested |
-| Obstacle detection and stop/avoid policy | Working on the bench; more field testing wanted |
-| Scheduling, weather skip, notifications | Planned |
+| Mowing: coverage planning, patterns and path following | Complete mows in the field; edges and turns on slopes still being improved |
+| Docking and undocking | Tested in the field; the final approach is still being tuned |
+| Obstacle detection and stop/avoid policy | Running in the field (grass false stops fixed); avoidance still being tuned |
+| Scheduling (web app), rain pause, notifications (Telegram, Pushover, ntfy, webhook) | Built in; little field use so far |
 
-The detailed, dated picture is in [docs/STATUS.md](docs/STATUS.md) and
-[docs/ROADMAP_2026-10-06.md](docs/ROADMAP_2026-10-06.md).
+The current plan and work queue are in [docs/ROADMAP_2026-10.md](docs/ROADMAP_2026-10.md) and
+[docs/analysis/2026-10-21_independent_review.md](docs/analysis/2026-10-21_independent_review.md);
+field runs are logged in [docs/wheel_smoothness_field_tests.md](docs/wheel_smoothness_field_tests.md).
+[docs/STATUS.md](docs/STATUS.md) is the older (2026-10-05) baseline report.
 
 ## Getting started
 
 You will need an Airseekers Tron, a computer on the same network, and comfort with SSH and Docker.
-**Everything runs in containers on the mower; the stack never reflashes the mower's control boards
-or changes the host OS.** Always begin with the wheels off the ground, and never start the blade
-or drive without being ready to hit the stop button.
+**The stack runs in Docker containers on the mower and never reflashes the mower's control
+boards.** The host OS stays as shipped, apart from a few host services (udev rules, camera and
+power-button units, zram swap) that one script installs and its `uninstall` removes. Always
+begin with the wheels off the ground, and never start the blade or drive without being ready to
+hit the stop button.
 
 1. **Clone** (the repo uses a submodule):
    ```bash
    git clone --recurse-submodules https://github.com/mikey0000/ros2-airseekers-tron.git
    cd ros2-airseekers-tron
    ```
-2. **Build the images** on your computer (the mower is too small to build on):
+2. **Prepare the mower once**: install Docker on it and stop the vendor services, as described in
+   [docs/deployment.md](docs/deployment.md) ("Mower-side setup").
+3. **Build two images on your computer** and copy them to the mower (both are too heavy to build
+   there; the arm64 path-planning build needs QEMU, see `scripts/build_f2c.sh`):
    ```bash
-   ARCH=arm64 ./scripts/build_f2c.sh      # path-planning library
-   ./gui/build.sh                         # web app (needs a Mapbox token, see docs/gui.md)
+   ARCH=arm64 ./scripts/build_f2c.sh      # path-planning library (Fields2Cover)
+   ARCH=arm64 ./gui/build.sh              # web app (needs a Mapbox token, see docs/gui.md)
+   docker save mower-f2c:v3-arm64 mower-gui:arm64 | gzip | ssh root@<mower-ip> 'gunzip | docker load'
    ```
-3. **Provide the AI models.** The vendor's object-detection models can't be redistributed. Copy them
-   off your own mower and run `MODELS_SRC=<dir> ./scripts/install_models.sh`, or run without
-   perception (`perception:=false det_range:=false`).
-4. **Deploy** to the mower and start it:
+4. **Provide the AI models.** The vendor's object-detection models can't be redistributed. Copy them
+   off your own mower and run `MODELS_SRC=<dir> ./scripts/install_models.sh --runtime`, or run
+   without perception (`perception:=false det_range:=false`).
+5. **Deploy and start.** The deploy script logs in over SSH (keys, or `SSHPASS` with `sshpass`;
+   `MOWER_HOST` and `MOWER_USER` override the defaults):
    ```bash
-   ./scripts/deploy_to_mower.sh all
+   export SSHPASS=<password>
+   ./scripts/deploy_to_mower.sh all       # sync + image + colcon build, on the mower; starts nothing
    ```
-5. **Open the app** at `http://<mower-ip>:4006`, record your boundary, and press start.
+   The first time, install the host services on the mower (udev rules, stereo camera setup,
+   power button, zram swap; see [docs/host_zram.md](docs/host_zram.md)), then start the stack:
+   ```bash
+   sudo /userdata/ros2_stack/scripts/install_host_services.sh   # on the mower, once
+   ./scripts/deploy_to_mower.sh up        # start the stack and the web app
+   ```
+   For later updates note that `sync` only copies files and restarts nothing: a Python-only
+   change needs `docker restart mower_jazzy`, anything else `build` and then a restart.
+6. **Open the app** at `http://<mower-ip>:4006`, record your boundary, and press start.
 
-Full instructions, including first-time mower setup and starting the stack at boot, are in
+Full instructions, including the update loop, the GUI image and starting the stack at boot, are in
 [docs/deployment.md](docs/deployment.md). To try things with no hardware at all, see
 [docs/simulation.md](docs/simulation.md).
 
@@ -104,6 +124,31 @@ Full instructions, including first-time mower setup and starting the stack at bo
 
 More on the app in [docs/gui.md](docs/gui.md); phone Wi-Fi tips in [docs/wifi.md](docs/wifi.md).
 
+## How it works
+
+A short map of the stack; [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) has the packages and launch
+arguments.
+
+- **Hardware.** RK3588 main board (3.9 GB RAM, NPU) running the vendor Ubuntu 20.04; the stack is
+  a ROS 2 Jazzy container. Drivers talk to the vendor MCUs over serial, the UM960 RTK receiver,
+  the WIT IMU and the cameras (front Metoak XC9080 stereo, decoded as YUYV, plus obstacle and rear
+  cameras). Measured from the rear drive axle (`base_link`): body front 0.60 m, rear 0.10 m,
+  half-width 0.235 m; wheel track 0.39 m; GNSS antenna 0.098 m forward; cutting deck centre
+  0.23 m forward; stock 220 mm blade disc.
+- **Velocity chain.** Nav2 controller → velocity smoother → collision monitor → `twist_mux`
+  (navigation, docking, teleop, bumper and emergency lanes) → `cmd_vel_slew` → `/cmd_vel` → MCU.
+- **Tracking.** MPPI is the single path tracker, for mowing stripes and transits. Transits follow
+  the drawn transit paths (route graph) and fall back to Nav2's Smac Hybrid-A* planner.
+- **Localisation.** Two EKFs (odom: wheels + IMU; map: adds RTK GPS) and a heading aligner that
+  pins the IMU yaw to the RTK course and tracks its drift rate.
+- **Coverage.** Fields2Cover plans edge laps and stripes per area; the mission layer runs them as
+  blade-on sub-paths joined by blade-off transits, and keeps a resume cursor.
+- **Docking.** Reverses onto the charger, guided by the rear camera and an ArUco marker.
+- **Web app.** The MowgliNext GUI, vendored in `third_party/mowglinext/`, served on port 4006.
+- **Simulator.** `mower_sim` runs the real stack headless; `scripts/sim_gate.sh` does a full
+  dock-to-dock mow on a real map and judges it (`-x 3` runs it three times faster than real time).
+  See [docs/simulation.md](docs/simulation.md).
+
 ## Documentation
 
 | If you want to... | Read |
@@ -113,9 +158,9 @@ More on the app in [docs/gui.md](docs/gui.md); phone Wi-Fi tips in [docs/wifi.md
 | Understand positioning | [docs/localization.md](docs/localization.md) |
 | Understand cameras, detection and VIO | [docs/perception_vio.md](docs/perception_vio.md), [docs/cameras_and_video.md](docs/cameras_and_video.md) |
 | See how crashes and failures are handled | [docs/crash_recovery.md](docs/crash_recovery.md) |
-| Run the simulator | [docs/simulation.md](docs/simulation.md) |
+| Run the simulator and the sim gate | [docs/simulation.md](docs/simulation.md) |
 | Hack on the code (architecture, packages, launch arguments, tests) | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
-| See what's planned | [docs/ROADMAP_2026-10-06.md](docs/ROADMAP_2026-10-06.md) |
+| See what's planned | [docs/ROADMAP_2026-10.md](docs/ROADMAP_2026-10.md), [work queue](docs/analysis/2026-10-21_independent_review.md) |
 
 ## Based on MowgliNext
 
