@@ -14,7 +14,7 @@ import pytest
 
 from mower_map import obstacle_snapshot as snap
 
-cv2 = snap.cv2
+cv2 = snap._load_cv2()
 needs_cv2 = pytest.mark.skipif(cv2 is None, reason='python3-opencv not installed')
 
 

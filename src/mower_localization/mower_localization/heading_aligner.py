@@ -90,10 +90,10 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, NavSatFix
 from std_msgs.msg import Bool, Float32, String
 
-import tf2_ros
-from rclpy.time import Time
+from tf2_msgs.msg import TFMessage
 
 from mower_localization import heading_logic as hl
+from mower_localization.static_tf import StaticRotations
 from mower_localization.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
                                          parse_odometry)
 
@@ -243,10 +243,15 @@ class HeadingAligner(Node):
         self._base_frame = g('base_frame')
         self._rest_v, self._rest_w = float(g('rest_max_speed')), float(g('rest_max_turn'))
         self._odom = None             # (t, v, w)
-        self._tf_buf = self._tf_listener = None
+        # base_link <- stereo IMU is a static (URDF fixed-joint) rotation looked up once:
+        # read /tf_static directly instead of tf2_ros (~30 MB per process, M3 import diet).
+        self._tf_static = self._tf_static_sub = None
         if self.src.mode != 'wit' and self.src.z_row is None:
-            self._tf_buf = tf2_ros.Buffer()
-            self._tf_listener = tf2_ros.TransformListener(self._tf_buf, self, spin_thread=False)
+            self._tf_static = StaticRotations()
+            self._tf_static_sub = self.create_subscription(
+                TFMessage, '/tf_static', self._tf_static.add_msg,
+                QoSProfile(depth=100, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                           history=QoSHistoryPolicy.KEEP_LAST))
         self._src_logged = None
         # Latest receiver heading sample (monotonic receipt time, compass degrees) and the
         # latest validity flag (receipt time, bool); each heading sample is used once.
@@ -433,15 +438,12 @@ class HeadingAligner(Node):
         self.src.on_rest(now, (still and not commanded) or (self.est.docked and still))
 
     def _lookup_stereo_tf(self):
-        if self._tf_buf is None or self.src.z_row is not None or not self._st_frame:
+        if self._tf_static is None or self.src.z_row is not None or not self._st_frame:
             return
-        try:
-            t = self._tf_buf.lookup_transform(self._base_frame, self._st_frame,
-                                              Time())
-        except Exception:  # noqa: BLE001 - not there yet
+        q = self._tf_static.rotation(self._base_frame, self._st_frame)
+        if q is None:   # not there yet
             return
-        r = t.transform.rotation
-        row = hl.base_z_row((r.x, r.y, r.z, r.w))
+        row = hl.base_z_row(q)
         with self._lock:
             self.src.z_row = row
         self.get_logger().info('stereo IMU %s -> %s: wz_base = %+.3f wx %+.3f wy %+.3f wz'

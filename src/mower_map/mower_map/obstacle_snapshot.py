@@ -26,10 +26,23 @@ import os
 
 import numpy as np
 
-try:  # python3-opencv is a runtime dependency of the node, but keep the helper importable without it
-    import cv2
-except Exception:  # noqa: BLE001 - a bare ImportError is not the only failure mode on some builds
-    cv2 = None
+# cv2 (python3-opencv, ~45 MB) is imported on the first snapshot encode, not at module
+# import: obstacle_tracker only needs it once an obstacle is actually photographed.
+cv2 = None
+_cv2_tried = False
+
+
+def _load_cv2():
+    """Import cv2 once on first use; ``None`` when it is unavailable."""
+    global cv2, _cv2_tried
+    if not _cv2_tried:
+        _cv2_tried = True
+        try:
+            import cv2 as _cv2
+            cv2 = _cv2
+        except Exception:  # noqa: BLE001 - a bare ImportError is not the only failure mode
+            cv2 = None
+    return cv2
 
 _SUFFIX = '.jpg'
 
@@ -60,7 +73,7 @@ def frame_to_bgr(data, encoding, width, height, step=0):
     Returns ``None`` when ``cv2`` is unavailable or the encoding/size is not
     understood, so a bad frame never raises into the node's timer callback.
     """
-    if cv2 is None or not data:
+    if _load_cv2() is None or not data:
         return None
     ch = _CHANNELS.get(str(encoding or '').lower())
     if ch is None or width <= 0 or height <= 0:
@@ -87,7 +100,7 @@ def frame_to_bgr(data, encoding, width, height, step=0):
 
 def encode_jpeg(bgr, quality=80):
     """Encode a BGR array to JPEG bytes, or ``None`` on any failure."""
-    if cv2 is None or bgr is None:
+    if bgr is None or _load_cv2() is None:
         return None
     try:
         ok, buf = cv2.imencode('.jpg', bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
