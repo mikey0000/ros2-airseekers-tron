@@ -141,6 +141,7 @@ behavior_tree_node:
     # pivot the mission followed the leg anyway and MPPI left the area at once.
     # Revert: -1 (follow the leg after any pivot outcome).
     pivot_retries: 2
+    route_pivot_backout_m: 0.30          # transit route corner pivot refused pivot_retries times: back off, re-plan (field 2026-10-23)
     pivot_retry_pause_s: 2.0           # real back-off between pivot attempts (field 2026-10-22)
     # 2026-10-21 owner rule (stock firmware): a blocked COVERAGE pivot (Spin aborted / timed
     # out, e.g. "Collision Ahead") is not re-sent: its leg is skipped ("blocked pivot: skip"),

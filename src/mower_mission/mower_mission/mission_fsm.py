@@ -688,6 +688,7 @@ class Params:
     # stopped). Within the threshold the leg is followed, as after a successful pivot.
     # Revert: pivot_retries -1 (follow the leg after any pivot outcome, the old behaviour).
     pivot_retries: int = 2
+    route_pivot_backout_m: float = 0.30   # refused route corner pivot: back off, re-plan
     pivot_retry_pause_s: float = 2.0    # wait between a refused pivot and its re-send
     # 2026-10-21 owner rule (stock firmware): a COVERAGE pivot Spin (leg start / pivot vertex)
     # that ends without SUCCEEDED ("Collision Ahead", costmap blocked, Spin abort / timeout)
@@ -1260,7 +1261,8 @@ class Mission:
     route_full: Optional[list] = None           # the planned route (route_cusps index into it)
     route_cusps: list = field(default_factory=list)   # [(i, x, y, heading_after)] of route_full
     final_approach: bool = False                # this transit's final approach leg was sent
-    join: Any = None                            # (sub, local, side, inset) tangent join (_join_leg)
+    join: Any = None
+    route_backouts: set = field(default_factory=set)   # route corners backed off from                            # (sub, local, side, inset) tangent join (_join_leg)
     cusp_turns: dict = field(default_factory=dict)    # cusp (x, y) -> about-turns, per sub-path
     cusp_resume: Optional[list] = None          # route remainder sent after the about-turn
     cusp_heading: Optional[float] = None        # heading the cusp about-turn turns to
@@ -5031,11 +5033,47 @@ class MissionFSM:
         else:
             leg = rl['legs'][rl['i']]
             heading, lim = rl.get('pivot') or (None, 0.0)
+            if purpose == 'route' and self._route_pivot_backout(
+                    outcome, ('corner', round(leg[0][0], 2), round(leg[0][1], 2)), heading, lim):
+                return
             if self._pivot_unfinished(outcome, 'route_corner',
                                       ('corner', round(leg[0][0], 2), round(leg[0][1], 2)),
                                       heading, lim, 'route corner'):
                 return
         self._send_route_leg(purpose)
+
+    def _route_pivot_backout(self, outcome, key, heading, lim):
+        """A mission-transit route corner pivot refused pivot_retries times (field 2026-10-23
+        20:30:52: a Spin refused 0.71 m from a trunk went to STUCK_NEEDS_HELP): back off
+        route_pivot_backout_m, then re-plan the transit (a transit abort: re-routed from there;
+        transit_retries used up -> the sub-path is skipped). A second refusal at the same
+        corner re-plans at once. True = handled."""
+        m, p, pose = self.mission, self.p, self.inputs.pose
+        dist = float(p.route_pivot_backout_m)
+        if dist <= 0.0 or m is None or outcome == CANCELED or heading is None or \
+                pose is None or len(pose) < 3:
+            return False
+        if abs(geo.wrap_angle(heading - float(pose[2]))) < lim:
+            return False
+        if int(p.pivot_retries) < 0 or self._pivot_tries.get(key, 0) < int(p.pivot_retries):
+            return False
+        self._pivot_tries.pop(key, None)
+        self._route_legs = None
+        why = 'route corner pivot refused (%s) at (%.2f, %.2f)' % (outcome, pose[0], pose[1])
+        self._incident('blocked_pivot', why)
+        if key in m.route_backouts:
+            self._log('warn', '%s again: re-planning the transit' % why)
+            self._transit_abort(why)
+            return True
+        m.route_backouts.add(key)
+        self._log('warn', '%s: back off %.2f m, then re-plan the transit' % (why, dist))
+        if not self._keep_blade_inside('route pivot back-off'):
+            self._blade_off('route pivot back-off')
+        self._start_action(ACT_BACKUP, {'distance_m': dist,
+                                        'speed_mps': float(p.pivot_backout_speed_mps)},
+                           dist / max(0.02, float(p.pivot_backout_speed_mps)) + 15.0,
+                           purpose='route_pivot_backout')
+        return True
 
     def _send_route_leg(self, purpose):
         rl = self._route_legs
@@ -5232,6 +5270,11 @@ class MissionFSM:
             return
         if a.purpose == 'route_corner':
             self._route_corner_spun(outcome)
+            return
+        if a.purpose == 'route_pivot_backout':
+            m = self.mission
+            if m is not None and self.phase == 'TRANSIT':
+                self._transit_abort('route corner pivot refused: backed off, re-routing')
             return
         if a.purpose == 'final_approach_spin':
             m = self.mission
