@@ -878,23 +878,18 @@ class Params:
     # After a sub-path still fails, the session ends in MOWING_INCOMPLETE; dock only
     # when this is true (default: stop in place so the operator can inspect).
     return_home_on_incomplete: bool = False
-    # 2026-10-15 MPPI study (docs/analysis/2026-10-15_mppi_study.md): which tracker drives the
-    # coverage sub-paths. 'mppi' = mppi_follow_controller_id / mppi_reverse_controller_id
-    # (feasibility-aware MPPI, nav2_params.yaml), the cut speed goes to
-    # mppi_controller_speed_param capped at mppi_speed_max_mps; 'rpp' =
-    # follow_controller_id / reverse_controller_id / controller_speed_param, as before.
-    # Default 'mppi' (2026-10-16, owner: MPPI as the single tracker; it needs
-    # path_conditioning: on raw paths it overshoots the sharp ring vertices and the short
-    # swath-end turn legs, study §8). 'rpp' = the revert.
-    coverage_controller: str = 'mppi'
+    # 2026-10-15 MPPI study (docs/analysis/2026-10-15_mppi_study.md): coverage sub-paths are
+    # driven by the feasibility-aware MPPI (nav2_params.yaml): mppi_follow_controller_id, and
+    # mppi_reverse_controller_id for sub-paths whose poses face against their travel (reverse
+    # turn legs from the coverage bridge); the cut speed goes to mppi_controller_speed_param
+    # capped at mppi_speed_max_mps. It needs path_conditioning (on raw paths it overshoots the
+    # sharp ring vertices and the short swath-end turn legs, study §8). The 'rpp' revert
+    # (coverage_controller, follow_/reverse_controller_id, controller_speed_param) was deleted
+    # on 2026-10-23 (code review stage 0.1).
     mppi_follow_controller_id: str = 'FollowCoveragePathMPPI'
     mppi_reverse_controller_id: str = 'FollowCoveragePathReverseMPPI'
     mppi_controller_speed_param: str = 'FollowCoveragePathMPPI.vx_max'
     mppi_speed_max_mps: float = 0.3      # MPPI must not sample above the MCU clamp
-    follow_controller_id: str = 'FollowCoveragePath'
-    # Sub-paths whose poses face against their travel (reverse turn legs from
-    # the coverage bridge) go to this controller (RPP with allow_reversing).
-    reverse_controller_id: str = 'FollowCoveragePathReverse'
     follow_goal_checker_id: str = 'coverage_goal_checker'
     # Turn legs (reverse sub-paths, and any sub-path chunk no longer than
     # turn_leg_max_m: the forward pieces of a Reeds-Shepp turn) use this checker:
@@ -1091,7 +1086,6 @@ class Params:
     use_area_settings: bool = True      # read /map_server_node/get_area_settings per area
     cut_width_m: float = 0.22           # blade cut width (display only; spacing = area swath_width_m)
     cut_speed_max_mps: float = 0.5
-    controller_speed_param: str = 'FollowCoveragePath.desired_linear_vel'
     set_cut_speed: bool = True          # set_parameters on /controller_server per area
     set_cutter_height: bool = True      # /cutter_control height per area
     # --- obstacle avoidance (/obstacle_policy from obstacle_guard) ---
@@ -1167,7 +1161,7 @@ class Params:
     tilt_guard: bool = True
     tilt_status_timeout_s: float = 2.0  # older /tilt/status -> band unknown (no action)
     tilt_caution_speed_mps: float = 0.15
-    tilt_transit_speed_param: str = 'FollowPath.vx_max'  # MPPI transit (rpp: .desired_linear_vel)
+    tilt_transit_speed_param: str = 'FollowPath.vx_max'  # MPPI transit
     tilt_transit_speed_mps: float = 0.3     # restored after caution (nav2_params FollowPath)
     tilt_trail_m: float = 2.0           # driven track kept for the back-out
     tilt_trail_step_m: float = 0.05
@@ -3798,23 +3792,15 @@ class MissionFSM:
                         % (self._now - since))
         return True
 
-    def coverage_mppi(self):
-        """True when coverage sub-paths are driven by MPPI (``coverage_controller``)."""
-        return str(self.p.coverage_controller).strip().lower() == 'mppi'
-
     def coverage_controller_id(self, reverse):
         """Nav2 controller id for a coverage sub-path (forward or reverse leg)."""
-        if self.coverage_mppi():
-            return (self.p.mppi_reverse_controller_id if reverse
-                    else self.p.mppi_follow_controller_id)
-        return self.p.reverse_controller_id if reverse else self.p.follow_controller_id
+        return (self.p.mppi_reverse_controller_id if reverse
+                else self.p.mppi_follow_controller_id)
 
     def coverage_speed_params(self, speed):
         """{controller_server param: value} for a coverage cut speed."""
-        if self.coverage_mppi():
-            return {self.p.mppi_controller_speed_param:
-                    min(float(speed), float(self.p.mppi_speed_max_mps))}
-        return {self.p.controller_speed_param: float(speed)}
+        return {self.p.mppi_controller_speed_param:
+                min(float(speed), float(self.p.mppi_speed_max_mps))}
 
     def _follow_goal_checker(self, poses, reverse):
         """Goal checker for a FollowPath chunk: the leg checker for turn legs."""

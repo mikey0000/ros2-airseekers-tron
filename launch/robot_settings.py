@@ -44,6 +44,8 @@ import yaml
 #   (Nav2 plugin parameters).
 BINDINGS = {
     'tool_width': ('launch', 'cut_width_m', float, None),
+    # mowing_speed: since 2026-10-16 (MPPI coverage) nothing reads this key (the mission sets
+    # FollowCoveragePathMPPI.vx_max from the area cut speed); kept for the GUI binding table.
     'mowing_speed': ('controller_server', 'FollowCoveragePath.desired_linear_vel', float, None),
     'transit_speed': ('controller_server', 'FollowPath.desired_linear_vel', float, None),
     'undock_distance': ('behavior_tree_node', 'undock_distance_m', float, None),

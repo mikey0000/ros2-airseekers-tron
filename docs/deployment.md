@@ -64,13 +64,12 @@ name also recreates `mower_jazzy`, which is what applies compose changes (stop s
 
 **4. Switching new behaviour off** (no code change). Launch arguments of `mower.launch.py` go
 on the compose `command:` line in `docker/docker-compose.yml`, e.g.
-`command: ["/work/scripts/stack_entry.sh", "localization_mode:=single", "transit_controller:=rpp"]`,
+`command: ["/work/scripts/stack_entry.sh", "localization_mode:=single", "stereo_costmap:=false"]`,
 then `sync` + `up`. Mission/map options are yaml parameters (`sync` + restart):
 
 | To go back to | Setting |
 |---|---|
 | single EKF + static map->odom | launch `localization_mode:=single` |
-| RPP instead of MPPI for transits | launch `transit_controller:=rpp` |
 | bumper-only obstacles (no stereo) | launch `stereo_costmap:=false` |
 | no rolling bag recorder / alerts | launch `bag_recorder:=false` / `alerts:=false` |
 | Nav2 transits instead of drawn-path routes | `src/mower_mission/config/mission.yaml` `route_transits: false` |

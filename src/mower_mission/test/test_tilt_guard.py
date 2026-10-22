@@ -84,15 +84,16 @@ def test_caution_caps_speed_once_then_restores():
     mowing(h)
     m = h.mark()
     step(h, 'caution', 17, n=5)
-    assert speed_calls(h, m) == [{'FollowCoveragePath.desired_linear_vel': 0.15,
+    assert speed_calls(h, m) == [{'FollowCoveragePathMPPI.vx_max': 0.15,
                                   'FollowPath.vx_max': 0.15}]
     assert h.blade and h.name == 'MOWING' and not h.since(m, f.CancelActions)
     assert h.fsm.status()['sub_state_name'].startswith('slope caution (roll 17 deg): slowed')
     m2 = h.mark()
     step(h, 'ok', 5, n=5)
-    cut = min(float(h.fsm.mission.settings['cut_speed_mps']), float(h.fsm.p.cut_speed_max_mps))
+    cut = min(float(h.fsm.mission.settings['cut_speed_mps']), float(h.fsm.p.cut_speed_max_mps),
+              float(h.fsm.p.mppi_speed_max_mps))
     assert speed_calls(h, m2) == [{'FollowPath.vx_max': 0.3,
-                                   'FollowCoveragePath.desired_linear_vel': cut}]
+                                   'FollowCoveragePathMPPI.vx_max': cut}]
     assert h.fsm.status()['sub_state_name'] == h.fsm.sub_state
     assert h.blade and h.name == 'MOWING'
 

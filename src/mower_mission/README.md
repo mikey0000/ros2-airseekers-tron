@@ -94,7 +94,7 @@ START is refused while recording.
    │  per drivable_subpath:     │
    │   gap > 0.6 m: blade OFF ─► TRANSIT (2, /navigate_to_pose) ─fail─► skip sub-path
    │   MOWING (2): blade ON, is_cutting within 5 s (3 tries) ─fail─┤
-   │     /follow_path (FollowCoveragePath, coverage_goal_checker)  │
+   │     /follow_path (MPPI coverage, coverage_goal_checker)       │
    │       abort: retry once from nearest pose, then skip          │
    └──── next area                                                 ▼
         all done ─► MOWING_COMPLETE (2) ─► RETURNING_HOME   COVERAGE_FAILED_DOCKING (2)
@@ -232,7 +232,7 @@ parameter. Then, with the blade off:
    blade-ON command repeats the same `height.position` (enable=true), because what the MCU
    does with `height.enable=false` is unknown too.
 2. **Cut speed**: `set_parameters` on `/controller_server`
-   `FollowCoveragePath.desired_linear_vel` = `cut_speed_mps`, capped at `cut_speed_max_mps`
+   `FollowCoveragePathMPPI.vx_max` = `cut_speed_mps`, capped at `cut_speed_max_mps` and `mppi_speed_max_mps`
    (0.5). Fire and forget: without Nav2 it just logs.
 3. **Coverage parameters**: `set_parameters` on `/coverage_server`: `operation_width` =
    `cut_width_m` (0.20) - `swath_overlap_m`, `headland_rings` = `perimeter_laps`,
@@ -267,7 +267,6 @@ session is running.
 | `use_area_settings` | true (false: built-in defaults, no `get_area_settings` call) |
 | `cut_width_m` | 0.20 |
 | `cut_speed_max_mps` | 0.5 |
-| `controller_speed_param` | `FollowCoveragePath.desired_linear_vel` |
 | `set_cut_speed` / `set_cutter_height` | true / true |
 | `alternate_state_path` | `~/.ros/mower_mission/alternate_counts.json` (yaml: `/ros2_ws/maps/mission_alternate_counts.json`) |
 | `get_area_settings_service`, `coverage_server_node`, `controller_server_node`, `active_area_settings_topic` | `/map_server_node/get_area_settings`, `/coverage_server`, `/controller_server`, `~/active_area_settings` |
@@ -321,8 +320,8 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 | `rain_mode` / `rain_debounce_s` / `rain_delay_minutes` | 1 / 2 / 30 |
 | `use_docking_server`, `undock_distance_m`, `undock_speed_mps`, `dock_use_vision`, `dock_timeout_s` | true, 0.8, 0.15, true, 180 |
 | `transit_gap_m` | 0.6 |
-| `follow_controller_id` / `follow_goal_checker_id` | FollowCoveragePath / coverage_goal_checker |
-| `coverage_controller` (2026-10-15 MPPI study) | mppi (default since 2026-10-16, needs `path_conditioning`; rpp = revert); mppi: coverage legs on `mppi_follow_controller_id` / `mppi_reverse_controller_id` (FollowCoveragePathMPPI / FollowCoveragePathReverseMPPI), cut speed on `mppi_controller_speed_param` capped at `mppi_speed_max_mps` 0.3; pivots onto legs come from the path conditioner's pivot markers (one mechanism for both controllers); rpp = the `follow_controller_id` / `reverse_controller_id` pair |
+| `follow_goal_checker_id` | coverage_goal_checker |
+| coverage controllers (2026-10-15 MPPI study) | MPPI only (needs `path_conditioning`; the rpp revert was deleted 2026-10-23): coverage legs on `mppi_follow_controller_id` / `mppi_reverse_controller_id` (FollowCoveragePathMPPI / FollowCoveragePathReverseMPPI), cut speed on `mppi_controller_speed_param` capped at `mppi_speed_max_mps` 0.3; pivots onto legs come from the path conditioner's pivot markers |
 | `require_blade_confirmation`, `blade_confirm_timeout_s`, `blade_start_attempts`, `blade_retry_pause_s` | true, 5, 3, 2 |
 | `manual_blade_requires_enable` | false (upstream); `config/mission.yaml` sets true: two-step manual mowing, see `manual_blade` |
 | `progress_window_m` | 3.0 |

@@ -47,10 +47,6 @@ class Harness:
         # ... and raw paths (path conditioning, 2026-10-15, has its own tests:
         # test_path_conditioning.py)
         params.setdefault('path_conditioning', False)
-        # ... and the RPP coverage controllers they were written against (the shipped default;
-        # coverage_controller: mppi, 2026-10-15, has its own tests in
-        # test_coverage_controller.py; the leg logic is the same for both)
-        params.setdefault('coverage_controller', 'rpp')
         # ... and the base_link-only boundary check (the body-aware check, step 3 round 2,
         # has its own tests in test_body_boundary.py; the toy squares put lap ends on the line)
         params.setdefault('hard_boundary_body', False)
@@ -699,7 +695,7 @@ def test_full_mow_happy_path_with_transit():
     h.fsm.inputs.is_cutting = True
     h.tick()
     g = h.goal(f.ACT_FOLLOW)
-    assert g['controller_id'] == 'FollowCoveragePath'
+    assert g['controller_id'] == 'FollowCoveragePathMPPI'
     assert g['goal_checker_id'] == 'coverage_goal_checker'
     assert g['poses'] == sp0
     h.fsm.inputs.pose = (4, 0, 0)
@@ -1409,17 +1405,17 @@ def test_reverse_subpath_uses_the_reversing_controller():
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([fwd, rev, fwd2]))
     h.fsm.inputs.is_cutting = True
     h.tick()
-    assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePath'
+    assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePathMPPI'
     h.fsm.inputs.pose = (2.3, -0.15, 0.0)
     h.finish(f.ACT_FOLLOW)
     h.tick()
     g = h.goal(f.ACT_FOLLOW)
-    assert g['controller_id'] == 'FollowCoveragePathReverse' and g['poses'] == rev
+    assert g['controller_id'] == 'FollowCoveragePathReverseMPPI' and g['poses'] == rev
     assert h.name == 'MOWING' and h.blade      # no transit, blade stays on
     h.fsm.inputs.pose = (2.2, 0.2, -1.3)
     h.finish(f.ACT_FOLLOW)
     h.tick()
-    assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePath'
+    assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePathMPPI'
 
 
 def _k_turn(h):
@@ -1447,7 +1443,7 @@ def test_retry_of_an_all_but_driven_turn_leg_sends_the_next_leg():
     h.tick(dt=0.5, n=3)
     h.tick()
     g = h.goal(f.ACT_FOLLOW)
-    assert g['controller_id'] == 'FollowCoveragePathReverse' and g['poses'] == rev
+    assert g['controller_id'] == 'FollowCoveragePathReverseMPPI' and g['poses'] == rev
     assert 0 in h.fsm.cursor.areas[0].completed
 
 
@@ -1460,7 +1456,7 @@ def test_retry_of_a_turn_leg_facing_away_is_resent():
     h.tick(dt=0.5, n=3)
     h.tick()
     g = h.goal(f.ACT_FOLLOW)
-    assert g['controller_id'] == 'FollowCoveragePath' and g['poses'][-1] == fwd[-1]
+    assert g['controller_id'] == 'FollowCoveragePathMPPI' and g['poses'][-1] == fwd[-1]
 
 
 def test_stuck_resume_of_a_driven_reverse_leg_goes_on_to_the_next_leg():
@@ -1497,7 +1493,7 @@ def test_stuck_resume_of_a_driven_reverse_leg_goes_on_to_the_next_leg():
     assert 0.12 < math.hypot(h.fsm.inputs.pose[0] - 1.87, h.fsm.inputs.pose[1] - 0.45) < 0.2
     h.tick()
     g = h.goal(f.ACT_FOLLOW)
-    assert g['controller_id'] == 'FollowCoveragePath' and g['poses'] == fwd2
+    assert g['controller_id'] == 'FollowCoveragePathMPPI' and g['poses'] == fwd2
 
 
 def test_turn_leg_skip_off_resends():
@@ -1507,7 +1503,7 @@ def test_turn_leg_skip_off_resends():
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     h.tick(dt=0.5, n=3)
     h.tick()
-    assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePath'
+    assert h.goal(f.ACT_FOLLOW)['controller_id'] == 'FollowCoveragePathMPPI'
 
 
 def test_is_reverse_subpath():
@@ -1520,7 +1516,7 @@ def test_is_reverse_subpath():
 
 def test_area_settings_applied_before_planning():
     h = Harness()
-    h.area_settings = {0: {'path_mode': 'spiral', 'perimeter_laps': 3, 'cut_speed_mps': 0.45,
+    h.area_settings = {0: {'path_mode': 'spiral', 'perimeter_laps': 3, 'cut_speed_mps': 0.25,
                            'cutter_height_mm': 60, 'swath_overlap_m': 0.04,
                            'edge_first': False, 'mow_angle_deg': 30.0}}
     m = h.mark()
@@ -1529,7 +1525,7 @@ def test_area_settings_applied_before_planning():
     assert [c.request for c in calls(h, m, f.SRV_CUTTER_HEIGHT)] == \
         [{'height_mm': 60}]
     assert param_calls(h, f.PARAM_NODE_CONTROLLER, m) == \
-        [{'FollowCoveragePath.desired_linear_vel': 0.45}]
+        [{'FollowCoveragePathMPPI.vx_max': 0.25}]
     cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)
     # swath_overlap_m is ignored: spacing = swath_width_m (default 0.18)
     assert cov == [{'operation_width': pytest.approx(0.18), 'headland_rings': 3,
@@ -1565,12 +1561,12 @@ def test_blade_height_command_precedes_blade_on():
 
 
 def test_cut_speed_is_capped():
-    h = Harness(cut_speed_max_mps=0.4)
-    h.area_settings = {0: {'cut_speed_mps': 0.5}}
+    h = Harness(cut_speed_max_mps=0.2)
+    h.area_settings = {0: {'cut_speed_mps': 0.25}}
     m = h.mark()
     start_until_planning(h)
     assert param_calls(h, f.PARAM_NODE_CONTROLLER, m) == \
-        [{'FollowCoveragePath.desired_linear_vel': 0.4}]
+        [{'FollowCoveragePathMPPI.vx_max': 0.2}]
 
 
 def test_settings_service_unavailable_uses_defaults():
@@ -4137,7 +4133,7 @@ def test_route_transit_asks_plan_route_then_follows_the_route():
     h.fsm.inputs.is_cutting = True
     h.tick()
     g = h.goal(f.ACT_FOLLOW)
-    assert g['controller_id'] == 'FollowCoveragePath' and g['poses'] == sp
+    assert g['controller_id'] == 'FollowCoveragePathMPPI' and g['poses'] == sp
 
 
 def test_no_route_falls_back_to_navigate_to_pose():

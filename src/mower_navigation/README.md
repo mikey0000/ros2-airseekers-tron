@@ -5,7 +5,7 @@ This package holds only launch files and config (ament_cmake, Apache-2.0).
 Localization (gps_gate, navsat_transform, ekf) stays in `launch/nav2.launch.py`.
 
 ```bash
-ros2 launch mower_navigation navigation.launch.py            # params_file, use_keepout:=false, autostart:=true, transit_controller:=mppi|rpp
+ros2 launch mower_navigation navigation.launch.py            # params_file, use_keepout:=false, autostart:=true
 python3 src/mower_navigation/test/test_params_yaml.py         # static YAML check (python3 + pyyaml)
 python3 src/mower_navigation/test/nav_stack_smoke.py          # in the dev image, with the stack launched (see its docstring)
 ```
@@ -14,7 +14,7 @@ python3 src/mower_navigation/test/nav_stack_smoke.py          # in the dev image
 
 | Node | Plugins |
 |---|---|
-| `controller_server` (+ `local_costmap`) | `FollowPath` = MPPI (transit, since 2026-10-09; `transit_controller:=rpp` puts `FollowPathRPP` back under this id), `FollowPathRPP`, `FollowCoveragePath` = RPP (default coverage), `FollowCoveragePathMPPI`, `FollowCoveragePathFTC`, `FollowCoveragePathReverse`; goal checkers `general_goal_checker`, `coverage_goal_checker`, `coverage_goal_checker_ftc`, `coverage_leg_goal_checker`; `progress_checker` = PoseProgressChecker |
+| `controller_server` (+ `local_costmap`) | `FollowPath` = MPPI (transit, since 2026-10-09), `FollowCoveragePathMPPI` / `FollowCoveragePathReverseMPPI` = MPPI coverage (the RPP and FTC controllers were deleted on 2026-10-23); goal checkers `general_goal_checker`, `coverage_goal_checker`, `coverage_leg_goal_checker`, `coverage_corner_goal_checker`; `progress_checker` = PoseProgressChecker |
 | `planner_server` (+ `global_costmap`) | `GridBased` = `nav2_smac_planner/SmacPlannerHybrid` (DUBIN, r_min 0.45 m, full footprint check), `GridBasedNavFn` = NavFn (BT fallback) |
 | `behavior_server` | `spin`, `backup`, `drive_on_heading`, `wait` |
 | `bt_navigator` | Nav2 default trees (Humble 1.1.x copies in `behavior_trees/`, updated to Jazzy's BT.CPP v4 format) |
@@ -54,8 +54,7 @@ Footprint: `[[0.52,0.27],[0.52,-0.27],[-0.23,-0.27],[-0.23,0.27]]`. It comes fro
 
 ## Coverage controller ids
 
-The MowgliNext behaviour tree asks controller_server for `controller_id="FollowCoveragePath"` and `goal_checker_id="coverage_goal_checker"` on swaths. Transit uses `FollowPath` with `general_goal_checker`.
-- Today both ids map to stock Jazzy plugins (RPP at 0.25 m/s and SimpleGoalChecker).
+The mission sends coverage sub-paths to `FollowCoveragePathMPPI` (reverse legs `FollowCoveragePathReverseMPPI`) with `coverage_goal_checker` / `coverage_leg_goal_checker` / `coverage_corner_goal_checker`. Transit uses `FollowPath` with `general_goal_checker`.
 - When `mower_nav2_plugins` ports FTCController and PathProgressGoalChecker, change only the `plugin:` lines. The ids stay the same.
 
 Because two goal checkers are loaded, Nav2 rejects a FollowPath goal that has no `goal_checker_id`. For that reason `behavior_trees/` holds the Nav2 default trees (the Humble 1.1.x copies, updated with `BTCPP_format="4"` for Jazzy) with `goal_checker_id="general_goal_checker"` added. navigation.launch.py injects them into bt_navigator.
@@ -71,5 +70,5 @@ The `keepout_filter` is always configured. If no `/costmap_filter_info` arrives 
 - **Real `map -> odom`:** it is a static identity today. A GPS datum or localization back-end will publish it later.
 - **Keepout mask source:** `/keepout_mask` will come from the ported MowgliNext `map_server_node`. Nothing publishes it yet.
 - **Docking:** `opennav_docking` exists on Jazzy, but we use `mower_docking`; Undock = `BackUp`.
-- **FTCController:** ported (`src/mowgli_nav2_plugins`, `FollowCoveragePathFTC`), not the default since the 2026-10-06 ring drift.
+- **FTCController:** was ported, never shipped after the 2026-10-06 ring drift, deleted 2026-10-23.
 - **Custom MowgliNext BTs:** waiting on the mowgli_behavior port.

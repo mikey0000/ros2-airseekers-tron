@@ -105,7 +105,7 @@ DEFAULT_TOPICS = [
     # auto obstacle marking (1 Hz; what the tracker promoted/removed this mow)
     '/obstacle_tracker/obstacles',
     # Nav2: plans, local costmap (120x120 at 1 Hz), BT log
-    '/plan', '/controller_server/FollowCoveragePathFTC/global_plan', '/local_costmap/costmap',
+    '/plan', '/local_costmap/costmap',
     '/behavior_tree_log',
     # hardware: bumper/lift (sensor_info), battery, emergency, slip/stuck, docking
     '/battery', '/mower_sensor_info', '/rain',
