@@ -286,3 +286,40 @@ func TestReplaceMap_CancelledWhileWaitingForLock(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Empty(t, f.calls)
 }
+
+func lawnWithObstacles() mowgli.ReplaceMapArea {
+	a := square("lawn")
+	tri := geometry.Polygon{Points: []geometry.Point32{{X: 0.2, Y: 0.2}, {X: 0.4, Y: 0.2}, {X: 0.3, Y: 0.4}}}
+	a.Obstacles = []geometry.Polygon{tri, tri}
+	a.ObstacleInfo = []mowgli.MapObstacleInfo{
+		{Name: "tree", Source: 0},             // drawn in the GUI
+		{Name: "dig", Source: 2, Pending: true}, // robot proposal
+	}
+	return mowgli.ReplaceMapArea{Area: a}
+}
+
+// Obstacles and their index-aligned obstacle_info (manual vs auto, pending)
+// must reach map_server unchanged on the atomic path, the fallback, and the
+// fallback's rollback.
+func TestReplaceMap_ObstaclesAndInfoSurviveEveryPath(t *testing.T) {
+	check := func(t *testing.T, got mowgli.ReplaceMapArea) {
+		t.Helper()
+		require.Len(t, got.Area.Obstacles, 2)
+		require.Len(t, got.Area.ObstacleInfo, 2)
+		assert.Equal(t, "tree", got.Area.ObstacleInfo[0].Name)
+		assert.EqualValues(t, 0, got.Area.ObstacleInfo[0].Source)
+		assert.EqualValues(t, 2, got.Area.ObstacleInfo[1].Source)
+		assert.True(t, got.Area.ObstacleInfo[1].Pending)
+	}
+	for _, atomic := range []bool{true, false} {
+		f := newFakeMapServer(atomic, mowgli.ReplaceMapArea{Area: square("old")})
+		req := &mowgli.ReplaceMapReq{Areas: []mowgli.ReplaceMapArea{lawnWithObstacles()}}
+		require.NoError(t, replaceMapInternal(context.Background(), f, req))
+		check(t, f.disk[0])
+	}
+
+	f := newFakeMapServer(false, lawnWithObstacles())
+	f.failAt[mapServiceAddArea] = 1
+	require.Error(t, replaceMapInternal(context.Background(), f, newMap("new")))
+	check(t, f.live[0])
+}

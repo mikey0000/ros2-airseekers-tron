@@ -17,6 +17,7 @@ import {
     MowingFeatureBase,
     NavigationFeature,
     ObstacleFeature,
+    OBSTACLE_SOURCE_USER,
 } from "../../../types/map.ts";
 import {MowingAreaEdit} from "../utils/types.ts";
 
@@ -101,6 +102,33 @@ export function inside(
         j = i;
     }
     return isInside;
+}
+
+/**
+ * The work area a manual obstacle belongs to: the area containing the
+ * obstacle's centroid, else the area holding most of its vertices (an
+ * obstacle drawn across the boundary, e.g. a tree on the lawn edge, whose
+ * centroid falls just outside). Navigation areas never parent obstacles.
+ */
+export function findObstacleParent(
+    ring: Position[], features: Record<string, MowingFeature>
+): MowingAreaFeature | undefined {
+    if (!ring || ring.length < 3) return undefined;
+    const areas = Object.values<MowingFeature>(features)
+        .filter((f): f is MowingAreaFeature => f instanceof MowingAreaFeature)
+        .filter((f) => (f.geometry?.coordinates?.[0]?.length ?? 0) >= 3);
+    const byCentroid = areas.find((a) => inside(ring, a.geometry.coordinates[0]));
+    if (byCentroid) return byCentroid;
+    let best: MowingAreaFeature | undefined;
+    let bestCount = 0;
+    for (const a of areas) {
+        const count = ring.filter((p) => inside([p], a.geometry.coordinates[0])).length;
+        if (count > bestCount) {
+            best = a;
+            bestCount = count;
+        }
+    }
+    return best;
 }
 
 /**
@@ -337,10 +365,28 @@ export function useMapEditing({
      * explicit `new_feature`), creates the right feature class via `constructcb`,
      * and merges it into the features map.
      */
+    // Latest features for checks made outside a setFeatures updater:
+    // handleSaveNewArea is memoised on the modal state only, so its closure
+    // can hold an older features object than the one being edited.
+    const featuresRef = useRef(features);
+    featuresRef.current = features;
+
+    /** Drop a drawn-but-not-added shape from the draw layer so a cancelled
+     *  or refused add never looks like it was added (the draw store is only
+     *  rebuilt when the feature SET changes, which a failed add does not do). */
+    function discardDrawn(f: Feature | undefined) {
+        if (f?.id != null) drawRef.current?.delete(String(f.id));
+    }
+
+    /**
+     * Generic "add polygon area" helper. Reads `currentFeature` (or an
+     * explicit `new_feature`), creates the right feature class via `constructcb`
+     * (given the up-to-date features), and merges it into the features map.
+     */
     function addArea<T extends MowingFeatureBase>(
         type: string,
         component: string,
-        constructcb: (id: string) => T | null,
+        constructcb: (id: string, currFeatures: Record<string, MowingFeature>) => T | null,
         new_feature: Feature<Polygon> | undefined = undefined
     ) {
         const f = new_feature ?? currentFeature;
@@ -349,7 +395,7 @@ export function useMapEditing({
 
         setFeatures((currFeatures) => {
             const id = getNewId(currFeatures, type, null, component);
-            const nfeat = constructcb(id);
+            const nfeat = constructcb(id, currFeatures);
             if (!nfeat) return currFeatures;
             nfeat.setGeometry((f as Feature<Polygon>).geometry);
             return {...currFeatures, [id]: nfeat};
@@ -359,27 +405,33 @@ export function useMapEditing({
     }
 
     function addObstacle(new_feature: Feature<Polygon> | undefined = undefined) {
+        const f = (new_feature ?? currentFeature) as Feature<Polygon> | undefined;
+        if (f == undefined || f.geometry?.type !== "Polygon") return;
+        const ring = f.geometry.coordinates[0] ?? [];
+        if (!findObstacleParent(ring, featuresRef.current)) {
+            notification.warning({
+                message: t('mapEditing.unableToMatchAreaForObstacle'),
+                description: t('mapEditing.obstacleNeedsArea'),
+                duration: 10,
+            });
+            discardDrawn(f);
+            setCurrentFeature(undefined);
+            setModalOpen(false);
+            return;
+        }
         addArea<ObstacleFeature>(
             "area",
             "obstacle",
-            (id) => {
-                const currentLayerCoordinates = (
-                    currentFeature as Feature<Polygon>
-                ).geometry.coordinates[0];
-                const area = Object.values<MowingFeature>(features).find((f) => {
-                    if (!(f instanceof MowingAreaFeature)) return false;
-                    const areaCoordinates = f.geometry.coordinates[0];
-                    return inside(currentLayerCoordinates, areaCoordinates);
-                });
-                if (!area) {
-                    notification.info({
-                        message: t('mapEditing.unableToMatchAreaForObstacle'),
-                    });
-                    return null;
-                }
-                return new ObstacleFeature(id, area as MowingAreaFeature);
+            (id, currFeatures) => {
+                // Resolve the parent against the features being updated, not a
+                // captured copy (undo/redo or a reorder replace the instances).
+                const area = findObstacleParent(ring, currFeatures);
+                if (!area) return null;
+                const obstacle = new ObstacleFeature(id, area);
+                obstacle.setInfo({source: OBSTACLE_SOURCE_USER});
+                return obstacle;
             },
-            new_feature
+            f
         );
     }
 
@@ -695,16 +747,9 @@ export function useMapEditing({
                         type = "area";
                         const currentLayerCoordinates =
                             mergedFeature.geometry.coordinates[0];
-                        const area = Object.values<MowingFeature>(
-                            newFeatures
-                        ).find((f) => {
-                            if (!(f instanceof MowingAreaFeature)) return false;
-                            const areaCoordinates = f.geometry.coordinates[0];
-                            return inside(
-                                currentLayerCoordinates,
-                                areaCoordinates
-                            );
-                        });
+                        const area = findObstacleParent(
+                            currentLayerCoordinates, newFeatures
+                        );
                         if (!area) {
                             notification.info({
                                 message: t('mapEditing.unableToMatchAreaForObstacle'),
@@ -712,7 +757,7 @@ export function useMapEditing({
                             return features; // revert
                         }
                         constructFn = (id) =>
-                            new ObstacleFeature(id, area as MowingAreaFeature);
+                            new ObstacleFeature(id, area);
                         break;
                     }
                     default:
@@ -1093,8 +1138,11 @@ export function useMapEditing({
             delete newFeatures[currentFeature.id as string];
             return newFeatures;
         });
+        discardDrawn(currentFeature);
         setCurrentFeature(undefined);
         setModalOpen(false);
+    // discardDrawn only reads drawRef (a stable ref)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [currentFeature, setFeatures]);
 
     const updateMowingArea = useCallback(() => {

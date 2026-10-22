@@ -860,6 +860,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 
                 if (obstacle.points)
                     nobst.transpose(obstacle.points, offsetX, offsetY, datum);
+                // obstacle_info is index-aligned with obstacles; older map
+                // servers leave it empty (= plain user keepout).
+                nobst.setInfo(area.obstacle_info?.[oindex]);
 
                 return nobst;
 

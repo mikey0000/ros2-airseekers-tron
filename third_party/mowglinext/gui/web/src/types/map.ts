@@ -171,6 +171,10 @@ export class MowingFeatureBase extends MowingFeature implements Feature<Polygon>
         , source_working_area_index?: number
         , mowing_order: number
         , feature_type: string
+        // ObstacleFeature only: MapObstacleInfo carried through load/edit/save.
+        , obstacle_source?: number
+        , obstacle_pending?: boolean
+        , obstacle_id?: number
     }
     bbox?: BBox | undefined;
 
@@ -215,6 +219,23 @@ export class MowingFeatureBase extends MowingFeature implements Feature<Polygon>
 }
 
 
+// mowgli_interfaces/msg/MapObstacleInfo SOURCE_* (provenance of a stored
+// obstacle). Manual obstacles drawn in the editor are SOURCE_USER; obstacles
+// the robot proposed (tracker, dig detector) keep their source through a
+// GUI save so a later "auto vs manual" filter or accept flow still works.
+export const OBSTACLE_SOURCE_USER = 0;
+export const OBSTACLE_SOURCE_TRACKER = 1;
+export const OBSTACLE_SOURCE_DIG = 2;
+
+export interface ObstacleInfo {
+    name: string;
+    source: number;
+    /** A session-only proposal (not yet accepted); map_server keeps it out of areas.dat. */
+    pending: boolean;
+    /** map_server session handle (promote/discard); 0 when loaded from disk or new. */
+    id: number;
+}
+
 export class ObstacleFeature extends MowingFeatureBase {
     mowing_area: MowingAreaFeature;
 
@@ -228,6 +249,24 @@ export class ObstacleFeature extends MowingFeatureBase {
         return this.mowing_area;
     }
 
+    /** Record the MapObstacleInfo of this obstacle (missing fields: a plain user keepout). */
+    setInfo(info: Partial<ObstacleInfo> | undefined): ObstacleFeature {
+        if (info?.name) this.properties.name = info.name;
+        this.properties.obstacle_source = info?.source ?? OBSTACLE_SOURCE_USER;
+        this.properties.obstacle_pending = !!info?.pending;
+        this.properties.obstacle_id = info?.id ?? 0;
+        return this;
+    }
+
+    /** MapObstacleInfo to send with this obstacle on save. */
+    getInfo(): ObstacleInfo {
+        return {
+            name: this.properties.name ?? '',
+            source: this.properties.obstacle_source ?? OBSTACLE_SOURCE_USER,
+            pending: !!this.properties.obstacle_pending,
+            id: this.properties.obstacle_id ?? 0,
+        };
+    }
 }
 
 export class MapAreaFeature extends MowingFeatureBase {

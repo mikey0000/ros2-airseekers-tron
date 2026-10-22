@@ -1782,6 +1782,7 @@
   },
   "mapEditing": {
     "unableToMatchAreaForObstacle": "Impossible d'associer une zone à cet obstacle",
+    "obstacleNeedsArea": "Dessinez-le dans une zone de travail (ou sur son bord). Les obstacles ne peuvent pas être ajoutés aux chemins ni hors de la pelouse cartographiée.",
     "splitTargetNotValidPolygon": "La cible de la découpe n'est pas un polygone valide",
     "lineMustCrossTwice": "La ligne doit traverser la zone au moins deux fois pour la découper",
     "noParentAreaForObstacleSplit": "Aucune zone parente trouvée pour la découpe de l'obstacle",

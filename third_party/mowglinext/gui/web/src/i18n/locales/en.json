@@ -1786,6 +1786,7 @@
   },
   "mapEditing": {
     "unableToMatchAreaForObstacle": "Unable to match an area for this obstacle",
+    "obstacleNeedsArea": "Draw it inside a work area (or across its edge). Obstacles can't be added to paths or outside the mapped lawn.",
     "splitTargetNotValidPolygon": "Split target is not a valid polygon",
     "lineMustCrossTwice": "Line must cross the area at least twice to split it",
     "noParentAreaForObstacleSplit": "No parent area found for obstacle split",
