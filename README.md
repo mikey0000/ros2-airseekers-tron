@@ -126,8 +126,8 @@ More on the app in [docs/gui.md](docs/gui.md); phone Wi-Fi tips in [docs/wifi.md
 
 ## How it works
 
-A short map of the stack; [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) has the packages and launch
-arguments.
+A short map of the stack. Each package's own `README.md` under `src/` describes its nodes,
+parameters and launch arguments.
 
 - **Hardware.** RK3588 main board (3.9 GB RAM, NPU) running the vendor Ubuntu 20.04; the stack is
   a ROS 2 Jazzy container. Drivers talk to the vendor MCUs over serial, the UM960 RTK receiver,
@@ -159,7 +159,7 @@ arguments.
 | Understand cameras, detection and VIO | [docs/perception_vio.md](docs/perception_vio.md), [docs/cameras_and_video.md](docs/cameras_and_video.md) |
 | See how crashes and failures are handled | [docs/crash_recovery.md](docs/crash_recovery.md) |
 | Run the simulator and the sim gate | [docs/simulation.md](docs/simulation.md) |
-| Hack on the code (architecture, packages, launch arguments, tests) | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
+| Hack on the code (packages, launch arguments, tests) | the package READMEs under `src/`; build and test with `./scripts/dev_build.sh` ([docs/deployment.md](docs/deployment.md)) |
 | See what's planned | [docs/ROADMAP_2026-10.md](docs/ROADMAP_2026-10.md), [work queue](docs/analysis/2026-10-21_independent_review.md) |
 
 ## Based on MowgliNext
@@ -184,5 +184,5 @@ Modifying your mower may void its warranty.
 
 ## Contributing
 
-Issues and pull requests are welcome. Start with [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the
-build, test and architecture notes.
+Issues and pull requests are welcome. Start with "How it works" above, the package READMEs
+under `src/`, and `./scripts/dev_build.sh test` for the build and tests.
