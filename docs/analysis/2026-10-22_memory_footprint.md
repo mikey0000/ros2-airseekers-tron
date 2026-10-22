@@ -284,3 +284,88 @@ M6 was done as **co-location** (`fixed_frame_relay` with `cmd_vel_slew`, `stereo
 `stereo_cam`, `activity_gated_lifecycle_manager` with `supervisor`, `fill_light` with
 `light_controller`), not by merging code: same node names, topics, services and parameters,
 no behaviour change, the memory saving is the same (one participant + interpreter per node).
+
+### 6.3 Memory, before / after (PSS + SwapPss, MB, same `smaps_rollup` method as section 5)
+
+The dev host had 48 GB in swap during the gates, so plain PSS snapshots taken during the
+gates differed by up to 2x between runs for *unchanged* C++ nodes. The figures below are
+`Pss + SwapPss`, measured back to back in each mode. Script:
+`accuracy-simout/mem-diet/pss.sh`.
+
+| Where | Nodes concerned | `compose_nodes:=false` | `true` | Saved |
+|---|---|---|---|---|
+| dev image, 16 hostable nodes with no hardware (control 5, localization 4, housekeeping 3, gui 2, perception 2) | 16 processes -> 5 hosts | 707.6 | 306.5 | **-401 (-57 %)** |
+| sim (`sim.launch.py`, docked idle at 150 s): control 5 + gui 2 (activity_gated alone: standalone) | 7 -> 2 | 325.4 | 127.1 | **-198** |
+| sim, whole container | 26 -> 21 processes | 944.3 | 827.2 | -117 (rest = run-to-run noise of the other nodes) |
+
+On dev, hosting costs ~5-10 MB per extra node, against ~40 MB for a standalone process.
+**Mower projection (E)**: section 2 PSS per node, a host = largest member + ~10 MB per extra
+member + ~14 MB arm64 overhead: control 265 -> ~95, localization 212 -> ~90, perception 154 ->
+~95, housekeeping 336 -> ~115, gui 186 -> ~95, cameras 471 -> ~190 (cv2/numpy once). That is
+about **-950 MB** at idle. M3 adds about -25 to -55 MB (obstacle_tracker no longer loads cv2 at
+start; a hosted tracker shares det_range's interpreter). The camera activity peaks (+50 MB per
+node while streaming) partly overlap in one heap, but that is not measured.
+
+**M3 (import diet), standalone PSS on dev (x86):** obstacle_tracker 105.9 -> 47.3 (cv2 loaded
+on the first snapshot JPEG: 140-200 ms once, inside the tracker callback; more on arm64).
+heading_aligner 49.1 -> 46.6: tf2_ros was replaced by a `/tf_static` reader (`static_tf.py`) for
+its one static base_link <- stereo IMU rotation. wit_node 39.4 -> 38.4: tf2_ros is imported only
+with `publish_tf`. tf2_ros costs only 1-2.5 MB on dev, not the 30 MB estimated in section 3.
+Left alone: mower_docking already imports cv2 only on the first dock goal; its 141 MB on the
+mower is cv2 kept after the morning dock, and Python cannot unload it. map_server_node needs a
+moving tf (map -> base_link). Camera nodes need cv2. numpy is loaded by the message packages
+anyway.
+
+### 6.4 Sim gates (real_run5, domain 213) and controller rate
+
+| Run | Layout | Verdict | Controller loop Hz (median / p10) |
+|---|---|---|---|
+| A ideal `-x 3` | control host = 3 nodes (Nav2 helpers were still standalone, see below), gui host | PASS | 20 / 19 |
+| B ideal `-x 3`, `compose_nodes:=false` (same branch, baseline) | all separate | PASS | 20 / 20 |
+| C `-d -s 1 -x 1` | final layout (control 5, gui 2) | PASS (cross-track p99 0.074 / 0.085) | 20 / 20 |
+| A2 ideal `-x 3` | final layout | **INVALID** (7 Hz) | 7 / 6 |
+| A2 ideal `-x 1` (rerun per the rule) | final layout | PASS | 20 / 20 |
+| master reference: dock-return `dr_ideal_x1` | all separate | PASS | 20 / 20 |
+
+A2 at `-x 3` was INVALID while A (3-node control host) and B passed at `-x 3` within the same
+two hours. No other sim was running (checked the start times), but the host had 2.7 GB free and
+48 GB in swap. It was not rerun at `-x 3` (one attempt per failure). At `-x 1` the same layout
+holds 20 / 20 Hz on the ideal and the disturbed runs. Controller rate did not regress at `-x 1`.
+Note that controller_server is C++ and is not in a host. The first gate (A) showed that the
+Nav2 helpers' `arguments=['--ros-args', '--log-level', ..]` made them fall back to standalone;
+this was fixed (ROS-only arguments are hostable) before C and A2.
+
+### 6.5 M2 cameras: frame rates and field check
+
+The sim does not run any camera node: it renders depth and the rear marker itself. The dev
+image has no V4L2 devices either, so **no camera frame rate could be measured before or after**
+on this branch. The only baseline is 2026-10-06 (`docs/cameras_and_video.md`): rear 14.97 Hz
+with camera_node at 29 % of a core, OA left 15.02 Hz and right 14.98 Hz at 44 % / 43 %, and a
+stereo depth target of 10 Hz. All six in one interpreter would ask for ~1.5 cores of mostly
+Python-held time while everything streams. That only fits if the cv2/V4L2 calls release the
+GIL for most of the frame; the 11-35 ms conversions do, the `array('B')` copies and message
+building do not. The cameras are publish-on-demand, so mowing normally streams fewer of them.
+
+**Field check before relying on M2** (read-only, mower docked, then while mowing):
+1. `ros2 topic hz` on `/left_oa_camera/image_raw`, `/right_oa_camera/image_raw`,
+   `/rear_camera/image_raw`, `/stereo_depth/points`, `/stereo_imu/data` (200 Hz target),
+   `/vio/right/image_color`, with and without `node_host_standalone:=cameras`.
+2. `top -H -p <node_host_cameras pid>`: the busiest thread and the process total.
+3. If any rate drops more than 10 %, set `node_host_standalone:=cameras` (keeps all other
+   groups) and report the numbers; the next step is L1 (C++ camera container), as already decided.
+
+Other field checks: `ps` shows `node_host` processes and the 6 hosts. The supervisor reports
+no DOWN at boot. A forced host restart (`kill <node_host_control pid>`, docked only) must show
+`node_host_control` respawning and cmd_vel_slew DOWN -> UP in the supervisor. bag_recorder's
+`ros2 bag record` child must survive and stop with the host. Lights must go off when the
+housekeeping host stops. heading_aligner must log `stereo IMU ... -> base_link` (M3
+`/tf_static` reader). And `free -m` at idle should be compared with the 297 MB baseline.
+
+### 6.6 Deploy notes
+
+New console script (`mower_bringup/node_host`) and launch changes in mower_bringup,
+mower_navigation, mower_teleop, mower_alerts, mower_coverage_bridge, mower_map, plus M3 code in
+mower_map, mower_localization (package.xml: tf2_msgs instead of tf2_ros) and wit_imu_driver. No
+image rebuild is needed. `./scripts/deploy_to_mower.sh sync`, then `build` (all of those packages,
+or a full build), then `down` / `up`. Rollback without a rebuild: start with `compose_nodes:=false`
+(or `node_host_standalone:=cameras` for the camera host only).
