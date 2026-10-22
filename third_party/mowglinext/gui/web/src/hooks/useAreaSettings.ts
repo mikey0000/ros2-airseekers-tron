@@ -74,38 +74,52 @@ export async function saveAreaSettings(
 
 // ── Support probe ─────────────────────────────────────────────────────────
 // One GET of the defaults per page load answers "does this robot's map server
-// implement area settings?". null = not known yet.
+// implement area settings?". null = not known yet. Only a definite answer
+// (501 / supported:false) is cached as false; a transient failure (bridge not
+// connected yet while the stack starts, 500, network) leaves it unknown and
+// retries with backoff. It used to latch false on a transient 500, and the
+// Mow area button then started mowing directly with no StartMowSheet.
 let probe: {supported: boolean | null; inflight: Promise<void> | null} = {supported: null, inflight: null};
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryDelayMs = 2000;
+const PROBE_RETRY_MAX_MS = 30000;
 const listeners = new Set<() => void>();
 
 function runProbe(api: Api<unknown>) {
-    if (probe.inflight) return;
+    if (probe.inflight || probe.supported !== null) return;
     probe.inflight = (async () => {
-        let supported = false;
+        let supported: boolean | null;
         try {
             supported = (await fetchAreaSettings(api, "defaults")).supported;
+            retryDelayMs = 2000;
         } catch {
-            // Bridge offline / transient error: treat as unsupported until retried.
-            supported = false;
-            setTimeout(() => {
-                probe = {supported: probe.supported, inflight: null};
-            }, 10000);
+            supported = null;
+            if (retryTimer === null) {
+                retryTimer = setTimeout(() => {
+                    retryTimer = null;
+                    runProbe(api);
+                }, retryDelayMs);
+                retryDelayMs = Math.min(retryDelayMs * 2, PROBE_RETRY_MAX_MS);
+            }
         }
-        probe = {...probe, supported};
+        probe = {supported, inflight: null};
         listeners.forEach((l) => l());
     })();
 }
 
 /** Test hook. */
 export function resetAreaSettingsProbe(supported: boolean | null = null) {
-    probe = {supported, inflight: supported === null ? null : Promise.resolve()};
+    if (retryTimer !== null) clearTimeout(retryTimer);
+    retryTimer = null;
+    retryDelayMs = 2000;
+    probe = {supported, inflight: null};
     listeners.forEach((l) => l());
 }
 
 export type AreaSettingsSupport = {
     /** The robot profile enables the feature (UI may render). */
     enabled: boolean;
-    /** The map server answered; null while probing. */
+    /** The map server answered; null while unknown (probing or transient failure). */
     supported: boolean | null;
 };
 
