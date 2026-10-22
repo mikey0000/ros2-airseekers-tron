@@ -354,6 +354,79 @@ the solver's own noise.
   after 6 detections, 2.2° from RTK, no pose-check realign. The undock chord measured the
   dock yaw at 101.6° (world: 101.6°).
 
+### Low-battery return 2026-10-22 (master 1b862ad, branch `ws/dock-return`)
+
+Owner: "when the battery is low it should automatically go back and charge; it did not, it
+just stopped". Data: rosout of `behavior_tree_node` / `mower_docking` / `slip_detector`, bags
+`20261021-230412` (mow) and `20261022-011031` (return), copied to
+`ros2_stack-wt/accuracy-simout/field_dock_return_2026-10-22/` (`timeline.txt`,
+`scripts/extract.py`, `scripts/compact.py`). Split `011031_0` (01:10–01:11) and `_8` are
+truncated on the device (recorder restart).
+
+Timeline (UTC):
+
+| time | event |
+|---|---|
+| 01:08:28 | MOWING area 5 at (-21.2, -6.5), battery 14 % < `battery_low_percent` 15 (device GUI yaml): `battery_low_action=stop` (default since c29dde1) -> IDLE in place. **This is "it just stopped".** |
+| 01:10:29 | `high_level_control(2)` (GUI HOME) -> RETURNING_HOME, dock route 35.0 m (3 legs) |
+| 01:13:15 | docking server at the approach pose: ALIGNING (93 deg) -> SEARCHING -> DOCKING (marker 0.89 m, RTK agrees within 0.03 m / 5 deg) |
+| 01:13:30.6 | marker lost 0.04 m out -> FINAL_DOCKING, reverse 0.05 m/s |
+| 01:13:34.17 | slip_detector `/stuck`: "commanded v=-0.05 for 4.0 s, EKF moved 0.041 m, wheels 0.17 m" |
+| 01:13:34 | same tick: `is_docking_done` debounced, mower_docking CHARGING -> SUCCEEDED DOCKED; mission logs "docked at 13 %" **and** "STUCK ... escape 1/3", cancels the dock goal |
+| 01:13:35–38 | escape step 1 reverse 0.1 m/s seats the robot: `is_charging`, v_charge 19.7 V, 3.3 A |
+| 01:13:38–42 | escape step 2 forward arc drives it off the contacts (charging stops 01:13:40.5) |
+| 01:14:08–01:16:12 | re-dock: pose-check realign, RTK-disagreement rejections, retry 5/8 with -0.30 m offset, LATERAL_ALIGN, DOCKING, FINAL 01:16:08; `/stuck` after exactly 4.0 s of FINAL -> escape |
+| 01:16:41–54 | DOCKING, FINAL 01:16:50, `/stuck` at 4.0 s -> "stuck again at the same spot" -> STUCK_NEEDS_HELP |
+| 01:24:47 | owner HOME at (0.38, -1.32), i.e. in the dock pocket: dock route starts with a -84 deg pivot in place against the charger -> `/stuck` (w=-0.30, EKF 0.003 m) -> escape -> re-dock |
+| 01:25:33–37 | FINAL, `/stuck` at 4.0 s -> STUCK_NEEDS_HELP; 01:27:42 docked by hand (12 %) |
+
+Findings:
+
+1. **Automatic return was off.** `battery_low_action` defaulted to `stop`; the device yaml
+   (`config/gui/mowgli_robot.yaml`) sets only `battery_low_percent: 15`,
+   `battery_full_percent: 80`, `battery_max_charge_percent: 80`.
+2. **The slip_detector stuck guard owns no exemption for docking.** `STUCK_PHASES` includes
+   RETURNING_HOME / *_DOCKING for the whole phase, including the docking action's final push.
+   FINAL_DOCKING pushes against the charger at 0.05 m/s until the contacts close: the map EKF
+   stops at ~0.02 m past the stored dock pose (0.417, -1.307, 100.7 deg) in every attempt
+   while the wheels (and `/odometry/filtered`) keep going 0.13–0.17 m. That is `stuck`
+   (EKF < 0.05 m and path < 0.10 m in 4 s) every time. All four final pushes were cut at
+   exactly 4.0 s, before mower_docking's own sequence (final budget -> settle 3 s -> creep
+   0.15 m -> RETRY, `final_timeout_s` 10) could run.
+3. **Contacts work, they need the push.** Attempt 1 closed the contacts 3.4 s into the push
+   (no debounce or timeout problem: debounced contact and the stuck latch fell in the same
+   0.1 s). The escape's 0.1 m/s reverse then charged at 3.3 A. Attempts 2–4 ended 3–6 cm
+   left of the dock axis by RTK (marker KF said +2.5..+5 cm, so the lateral evidence is not
+   conclusive) and were cut before the settle/creep.
+4. **The mission ignored the contacts.** `_stuck_tick` runs before the dock-contact handling
+   and does not look at `is_docking_done` / `is_charging`; the escape kept going after its
+   reverse had seated the robot.
+5. HOME pressed with the robot already in the dock pocket plans a dock route that begins
+   with an in-place pivot against the charger (not fixed here, see "next").
+
+Fixes (`ws/dock-return`):
+
+- `mower_control/slip_detector`: subscribes `/mower_docking/state`; while it reports
+  `stuck_dock_exempt_states` (FINAL_DOCKING, CHARGING) and is fresher than
+  `stuck_dock_state_timeout_s` (1 s) the StuckDetector runs suppressed (latch cleared, window
+  reset). DOCKING / RETRY / LATERAL_ALIGN / no goal stay guarded; a dead docking node
+  re-arms the guard after 1 s. FINAL_DOCKING is bounded by docking's own budget and timeout.
+- `mower_mission`: a `/stuck` latch in a dock phase while `is_docking_done` or `is_charging`
+  is ignored (latch reset); a running stuck escape in a dock phase ends as docked when the
+  contacts report (no forward arc off the charger).
+- `battery_low_action` default `dock` (Params, `mission.yaml`, GUI select default).
+
+Battery threshold: the device runs `battery_low_percent` 15 (stock 20, our yaml 20). The mow
+drained ~0.36 %/min; the 35 m return took 2.8 min and the dock goal may take up to
+`dock_timeout_s` 480 s, so a far-area return with a full retry sequence costs about
+(3 + 8) x 0.36 = 4 %. 15 % works on paper, but leaves no reserve for a blocked wait, a
+NAV re-plan or a second dock goal, and the pack sits at 19.5 V from 14 % down. Recommended:
+20 % (GUI Battery -> `battery_low_percent`, a live param).
+
+Next: HOME from inside the dock pocket should reverse/creep (or drive straight out) instead
+of pivoting; watch FINAL_DOCKING with the exemption for lateral offsets that never close the
+contacts (then tighten `final_max_lateral` 0.08).
+
 ## Field symptoms these findings explain (2026-10-20/21)
 
 - Dusk docking failed with "no usable marker", although the dock has a backlit marker. Without exposure control the camera cannot read it at dusk; stock varies the exposure.
