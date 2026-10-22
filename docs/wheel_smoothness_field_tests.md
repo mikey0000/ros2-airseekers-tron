@@ -760,3 +760,139 @@ detour (pull lap 0 inward around a known static mark, or a persistent no-go disc
 obstacle_tracker in the planner); a route-corner Spin "Collision Ahead" fallback (back up 0.3 m and
 re-plan, or skip) instead of STUCK_NEEDS_HELP; check why stereo does not mark the trunk;
 investigate the pivot drift on this lawn; review the SW K-turn overhang (0.54 m) next to the bank.
+
+## Field mow 2026-10-23 midday (00c041d)
+
+The run after the trunk incident, from the owner's resume at 20:37:15 UTC to the dock at 21:08:07.
+Session `20261022-202312` (splits 15-41; splits 31 and 39 are corrupt and fall in the manual
+phase), plus `20261022-210452` and `20261022-210518` (the return to dock). Data is in
+`ros2_stack-wt/accuracy-simout/field_mow_2026-10-23b/`: bags, incidents, node logs (ntrip lines
+removed), `dock.json`/`mow.json` dumps, `wheel_cal_*.txt` and `raw/health_2110.txt`. The stack
+started at 19:38:49 and was not restarted.
+
+### Outcome
+
+| | |
+|---|---|
+| area | Area 7 (index 5) only, resumed at sub-path 4/6 (3/6 done, 43.2 %, 71.2 of 164.8 m) |
+| mowed this run | sub-path index 3 to 56.4 % (+21.8 m), then abandoned at 20:45:15 ("NOT mowed: transit made no progress 4 times"); sub-paths 4 (7.0 m) and 5 (1.1 m) done; retries of the skipped stretches all failed again |
+| end | 20:50:05 STUCK_NEEDS_HELP (boundary twice within 1 m at the SW bank); owner MANUAL 20:50:14-21:04:44; owner RETURN 21:05:17 |
+| `mow_progress` | 15.4 % at 20:50. `mowed_m` fell from 93.0 to 16.9 m when sub-path 3 was dropped, so the counter resets on a NOT-mowed sub-path (bug) |
+| time (20:37:15-20:50:05) | MOWING 5.3 min, TRANSIT 7.3 min, of which 111 s were retry waits (12 retries), PLANNING/RTK 0.2 min |
+| NEEDS_HELP | 1 (20:50:05: boundary trip 2 within 1.0 m at (-6.07, -2.66)) |
+| skips | 5 edge-blocked (3 pivot drift x2, 1 collision_monitor stop 3 s, 1 bumper x3), 3 BUMPER SKIP; 3 retried skipped stretches "still blocked"; mission skip total 1.4 m plus the rest of sub-path index 3 (poses 1865-3164) |
+| STUCK | 4, all escaped (3 reverse 0.30 m, 1 forward arc after the reverse made 0.01 m) |
+| boundary trips | 2 in the mow plus 1 in the dock run (below); 0 START-while-outside (1 START, from inside) |
+| K-turns | 1 planned, at (-5.81, -2.62) with the body 0.54 m out; its 2 about-turn pivots (-247 and -259 deg) both pivot-drifted, so it was skipped |
+| pivot drift | 19 SPIN DRIFT in 39 spins (11 coverage, 6 route corner, 2 final approach); in the morning it was 16 in 43 |
+
+The robot spent the run at the same three spots as in the morning:
+- the trunk corner: STUCK, bumper and pivot-drift events at (-6.60, -0.28), (-6.67, -0.42),
+  (-6.58, -0.67), (-6.47, -0.38) and (-6.63, -0.42), all within 0.5 m of the trunk at
+  (-6.15, -0.57), between 20:39 and 20:45;
+- the NW corner: 3 bumper hits at (-5.44, 2.08) at 20:48;
+- the SW bank: boundary trips at 20:49.
+
+**Boundary recovery (the stock-style reverse 0.3 m and resume) works.**
+- Trip 1, 20:49:27: front_left 0.82 m out (soft limit 0.74); it moved 0.30 m back and resumed.
+- Trip 2, 20:49:59: 0.74 m out; it moved 0.16 m back and was inside again. Because this was the
+  second trip within 1.0 m, the mission went to NEEDS_HELP, as designed.
+
+Both trips were on the SW bank next to the K-turn, where the robot was stuck in the morning at
+20:21. Under the joystick at 20:50:21 it was stuck again (wheels 0.36 m, EKF 0.04 m).
+
+### Return home and docking
+
+The owner triggered it (`high_level_control(2)` at 21:05:17; battery 75 %). The dock route was
+7.0 m (Area 7 2.8 m + Dock path 4.2 m). It had 3 route-corner pivot drifts and then a
+boundary trip.
+
+| UTC | state | what happened |
+|---|---|---|
+| 21:06:24 | ALIGNING | 108 deg off; pivoted to -42 deg, then "marker in gate while aligning" ended it early |
+| 21:06:29 | LATERAL_ALIGN | RTK lateral -0.21 m (> 0.15): forward arc 0.43 m, 0.65 -> 1.05 m out (cap 0.8 + 0.25); lateral -0.21 -> -0.23, heading -40 -> +20 deg. The marker was seen in 7/7 frames at 0.66-0.89 m out and lost at 1.0 m |
+| 21:06:33 | SEARCHING | 15 s, 96 frames, 0 % detected; exposure auto -> 100/90/80/30 |
+| 21:06:48 | NAV_TO_APPROACH (retry 1/8, offset -0.10 m) | Nav2 to the approach pose, facing the dock: 1.72 m forward and 0.46 m back, then a boundary trip at (-0.61, -0.21) with base_link 0.12 m out (21:07:09); a 0.28 m retrace worked |
+| 21:07:13 | BT dock route again | 1.2 m, 3 legs, 1 pivot drift |
+| 21:07:53 | ALIGNING -> SEARCHING -> DOCKING | lateral -0.07 m; marker accepted after 4 detections in 0.5 s at 0.75 m out (RTK 0.64 m; agrees within 0.01 m and 12.8 deg) |
+| 21:07:58-08:05 | DOCKING | 0.66 m reverse; KF rejected 9 headings, 0 positions, 0 clamped; KF lateral 0.03-0.07 m; no realign (the pose check at 0.65 m passed) |
+| 21:08:05 | FINAL_DOCKING | marker lost 0.08 m from the contacts, straight reverse |
+| 21:08:07 | CHARGING | debounced contact; `charging on -> ok`; current -0.6 -> +4.2 A; BT "docked at 74 %"; offset 0.216 m measured (0.218 configured) |
+
+The stuck guard stood down at 21:08:05.8 ("the docking server owns the push onto the contacts")
+and was armed again at 21:08:07.4. Time to dock was 2 min 50 s; the first dock goal plus its
+recovery cost 1 min 43 s.
+
+**Forward moves in the dock sequence** (owner: "it doesn't need to move forward so much when
+getting ready to align")
+
+| move | state / param | driven | needed? |
+|---|---|---|---|
+| route to the approach pose | BT dock route, `approach_distance` 0.8 | arrived 0.68 m out | yes. Attempt 2 docked from 0.68 m |
+| ALIGNING | `align_creep` 0, `align_max_travel` 0.4 | 0.04-0.05 m (pivot slip) | yes, but attempt 1 left it 42 deg off, because the marker gate is forced in ALIGNING |
+| **LATERAL_ALIGN forward arc** | `lateral_align_tolerance` 0.15, cap `approach_distance` + `forward_cap_margin` 0.25 = 1.05 m | **0.43 m** | **no.** It started with heading -40 deg (the code allows up to 45 deg), so the arc only turned the robot and lateral did not improve (-0.21 -> -0.23). It drove the marker out of view. The reverse controller handles 0.2 m from a marker lock |
+| pose-check realign | `realign_forward_distance` 0.65 (clamped to the cap) | not triggered | - |
+| **retry re-approach** | `retry_lateral_offsets` 0.1, Nav2 with `force=True` | **1.72 m forward + 0.46 m back**, then a boundary trip and a 1.2 m re-route | **no.** It was 0.31 m from the offset approach pose (inside `approach_skip_radius_m` 0.6), but the forced Nav2 goal facing the dock made it loop |
+
+Recommendations (no code changed):
+1. Start LATERAL_ALIGN only when |heading| <= 15 deg (now a hard-coded 45 deg) and no marker is
+   in view. Raise `lateral_align_tolerance` from 0.15 to 0.25 m.
+2. Lower `forward_cap_margin` from 0.25 to 0.10 (cap 0.90 m). The marker was lost at about 1.0 m.
+3. A retry after a failed search within `approach_skip_radius_m` should align in place and
+   continue, not run a forced Nav2 goal.
+4. Lower `realign_forward_distance` from 0.65 to 0.40.
+5. Keep `approach_distance` 0.8 and the both-wheels pivot floor.
+
+### Heading (wheel_cal, 20:38 onward)
+
+Only 6 straights of 1.5 m or more (12.3 m) were usable: the mow was all short edge legs, and no
+straight reached 3 m. There were no paired lanes, so there is no lane-gap offset.
+
+| | this run | 22 Oct midday |
+|---|---|---|
+| fused yaw - course | -0.46 ± 1.50° (n=6) | -0.07 ± 0.21° |
+| aligner COG innovation | -0.01° (sd 2.17, n=50) | +0.01° (sd 2.04) |
+| offset drift rate | -1.47..+0.98°/min, never above 2 | -4.2..+4.7°/min |
+| ground / commanded, ground / MCU | 1.024 / 1.070 | 1.021 / 1.063 |
+| pivot measured/commanded CCW / CW | **0.51 / 0.63** | 0.80 / 0.81 |
+
+The heading is fine. Pivots deliver 20-40 % less yaw rate than yesterday: wet turf or slope slip.
+This is the pivot-drift cause.
+
+### Health, cameras, controller
+
+- **Memory:**
+  - at 21:06 and 21:10 (docking and docked), 1470-1481 MB available, against the 297 MB
+    baseline;
+  - swap 22 MB used;
+  - zram 21.8 MB of data in 4.5 MB (ratio 4.8);
+  - no OOM;
+  - no memory series is bagged.
+- **Load:** 8.3 / 11.3 / 12.0 at 21:06; 6.6 / 9.8 / 11.3 at 21:10.
+- **node_host processes:** cameras 252 MB RSS / 55 % CPU, perception 210 / 18, housekeeping 137 /
+  19, gui 121 / 15, control 115 / 28, localization 105 / 18. Other large processes:
+  docking_server 255 MB, map_server 122 MB / 56 % CPU, foxglove 210 MB.
+- **Crashes and restarts:**
+  - supervisor: 0 restarts apart from the rosbag2_recorder respawns at each session start
+    (21:04:55, 21:05:21, 21:08:18);
+  - the 21:04:58 `crash_node_down_rosbag2_recorder` incident is that respawn.
+- **Cameras:** no image topics are bagged, and the composed camera host logs no rates. The
+  config is OA `fps` <= 10 (`cameras.yaml`), so the 15 Hz baseline cannot be compared.
+  - Detector throughput (`detections_ranged`) in MOWING: left/right OA and vio 4.84-4.88 Hz
+    against the 5 Hz cap (97 %), and rear 1.0 Hz. In MANUAL it was 4.3 Hz, and in the dock run
+    4.8 Hz (rear 2.0 Hz).
+  - Stereo: pairs at 10.0 Hz (source 23.8 Hz); `stereo_depth` processed about 3.8 frames/s,
+    27 ms per frame.
+  - Docking processed 6-7 rear frames/s (cap 10).
+  - So there is no sign of camera starvation from M2.
+- **Controller:** 55 misses of the 20 Hz target from 20:37 to 21:08 (min 11.2 Hz, median 18.8,
+  none below 10). That is 3.5 per active minute, against 3.3 in the morning and 2.8 yesterday.
+  19 of them came during the 21:06-21:07 dock navigation.
+
+**Next:**
+- a trunk/edge detour, as in the morning section;
+- the SW bank: move the K-turn or the boundary inward;
+- the pivot slip on wet turf: wait for dry turf, or accept the drift and widen the threshold
+  for the edge;
+- the `mow_progress` reset;
+- the dock forward moves above.
