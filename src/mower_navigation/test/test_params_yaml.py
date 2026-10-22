@@ -20,6 +20,7 @@ import ast
 import os
 import sys
 
+import pytest
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -190,7 +191,8 @@ def test_local_costmap_inflation_with_bounds_keeper():
     # (an ObstacleLayer without sources, footprint clearing on) forces non-empty bounds.
     import math
     lc = load()["local_costmap"]["local_costmap"]["ros__parameters"]
-    assert lc["plugins"] == ["obstacle_layer", "bounds_keeper", "inflation_layer"]
+    assert lc["plugins"] == ["obstacle_layer", "static_det_layer", "bounds_keeper",
+                             "inflation_layer"]
     bk = lc["bounds_keeper"]
     assert bk["plugin"] == "nav2_costmap_2d::ObstacleLayer"
     assert str(bk["observation_sources"]).split() == []
@@ -220,6 +222,25 @@ def test_det_range_obstacle_source():
     assert src["obstacle_max_range"] == 3.0
     for name in ol["observation_sources"].split():
         assert name in ol, f"observation source {name} has no sub-map"
+
+
+@pytest.mark.parametrize("cm,frame", [("local_costmap", "odom"), ("global_costmap", "map")])
+def test_static_det_layer(cm, frame):
+    # 2026-10-23 trunk incident (option B): static-class det marks in their own layer with a
+    # 60 s decay, marking only (no stereo ground ray may erase them), before inflation.
+    gp = load()[cm][cm]["ros__parameters"]
+    plugins = gp["plugins"]
+    assert "static_det_layer" in plugins
+    assert plugins.index("static_det_layer") < plugins.index("inflation_layer")
+    layer = gp["static_det_layer"]
+    assert layer["plugin"] == "mower_costmap_layers::DecayingObstacleLayer"
+    assert layer["decay_time"] == 60.0
+    assert layer["observation_sources"].split() == ["det_static"]
+    src = layer["det_static"]
+    assert src["topic"] == "/ai/det/obstacle_points_static_" + frame
+    assert src["marking"] is True and src["clearing"] is False
+    # the regular obstacle layer keeps its 5 s decay
+    assert gp["obstacle_layer"]["decay_time"] == 5.0
 
 
 def test_stereo_obstacle_source():
@@ -293,6 +314,7 @@ def test_stereo_costmap_off_is_bumper_only():
         # original untouched
         orig = load()[cm][cm]["ros__parameters"]["obstacle_layer"]["observation_sources"]
         assert {"stereo", "stereo_clear", "det_range"} <= set(orig.split()), cm
+        assert doc[cm][cm]["ros__parameters"]["static_det_layer"]["observation_sources"] == ""
 
 
 def _check_stereo_clear(src, topic="/stereo_depth/clear_points"):
@@ -331,7 +353,8 @@ def test_global_obstacle_layer():
     g = load()["global_costmap"]["global_costmap"]["ros__parameters"]
     lc = load()["local_costmap"]["local_costmap"]["ros__parameters"]["obstacle_layer"]
     # 2026-10-09: the nav mask is NOT a layer (it would be inflated): keepout_filter only
-    assert g["plugins"] == ["terrain_layer", "nongrass_layer", "obstacle_layer", "inflation_layer"]
+    assert g["plugins"] == ["terrain_layer", "nongrass_layer", "obstacle_layer",
+                            "static_det_layer", "inflation_layer"]
     assert g["global_frame"] == "map"
     assert g["transform_tolerance"] == 0.5
     assert 2.0 <= g["update_frequency"] <= 5.0

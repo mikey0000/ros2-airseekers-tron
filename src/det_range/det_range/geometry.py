@@ -22,6 +22,7 @@ shift is bxf/Z: 23 px at 1 m, 9 px at 2.5 m), over a short sweep of depth hypoth
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
@@ -451,3 +452,76 @@ def points_worthy(results, classes, min_score):
     if classes and label not in classes:
         return False
     return float(best[1]) >= float(min_score)
+
+
+# ---------------------------------------------------------------------------
+# Object width -> a disc of costmap points (option B, 2026-10-23 trunk incident)
+# ---------------------------------------------------------------------------
+# One centroid point per box gave the costmap a single cell: the 2026-10-22 trunk (0.36 m
+# inside the area line) passed the footprint check and the body scraped it. The box width at
+# its stereo range is the object's visible width (pinhole: w_px * z / fx). The stereo range
+# is the FRONT face (median of the central half of the box), so the object's centre sits
+# about half a width further along the viewing ray. The costmap gets a disc of radius
+# width / 2 + margin around that centre, filled at ``spacing`` (the local costmap cell).
+
+DEFAULT_STATIC_CLASSES = ('trunk', 'stone', 'wood', 'brick', 'trashbin', 'potted plant',
+                          'chair')
+
+
+def box_width_m(w_px: float, z: float, fx: float) -> float:
+    """Visible object width (m) of a ``w_px`` wide box at depth ``z`` (pinhole)."""
+    return max(0.0, float(w_px)) * float(z) / max(float(fx), 1e-6)
+
+
+def box_edges_ref(model: StereoModel, cx: float, cy: float, w: float, z: float):
+    """Left / right box edge (source pixels, at the box centre row) at depth ``z`` ->
+    two points in the reference optical frame (m)."""
+    uv = model.src_to_ref([[cx - w / 2.0, cy], [cx + w / 2.0, cy]], z)
+    return [np.asarray(model.ref_point(float(u), float(v), z)) for u, v in uv]
+
+
+def disc_points(cx: float, cy: float, z: float, radius: float,
+                spacing: float = 0.05) -> np.ndarray:
+    """(N, 3) points on a ``spacing`` grid inside a disc (always holds the centre)."""
+    radius = max(0.0, float(radius))
+    spacing = max(float(spacing), 1e-3)
+    n = int(math.floor(radius / spacing))
+    g = np.arange(-n, n + 1) * spacing
+    gx, gy = np.meshgrid(g, g)
+    keep = gx * gx + gy * gy <= radius * radius + 1e-9
+    pts = np.stack([gx[keep] + cx, gy[keep] + cy, np.full(int(keep.sum()), float(z))], axis=1)
+    if len(pts) == 0:
+        pts = np.array([[cx, cy, float(z)]])
+    return pts
+
+
+@dataclass
+class ObjectDisc:
+    centre: Tuple[float, float, float]   # object centre (target frame, m)
+    width: float                         # visible width (m)
+    radius: float                        # marked radius = width / 2 + margin (m)
+    points: np.ndarray                   # (N, 3) target frame
+
+
+def object_disc(edge_l, edge_r, cam_xy, *, margin: float = 0.10, spacing: float = 0.05,
+                max_width: float = 1.5) -> ObjectDisc:
+    """Disc of an object whose front-face edges are ``edge_l`` / ``edge_r`` (target frame,
+    x/y/z m) seen from a camera at ``cam_xy``. The centre is the front-face midpoint pushed
+    half a width away from the camera (horizontal); the width is capped at ``max_width``
+    (a spurious full-frame box must not paint a wall)."""
+    a = np.asarray(edge_l, dtype=float)
+    b = np.asarray(edge_r, dtype=float)
+    width = min(float(np.hypot(*(b[:2] - a[:2]))), float(max_width))
+    mid = (a + b) / 2.0
+    d = mid[:2] - np.asarray(cam_xy, dtype=float)[:2]
+    n = float(np.hypot(*d))
+    c = mid[:2] + (d / n) * (width / 2.0) if n > 1e-6 else mid[:2]
+    r = width / 2.0 + max(0.0, float(margin))
+    return ObjectDisc((float(c[0]), float(c[1]), float(mid[2])), width, r,
+                      disc_points(float(c[0]), float(c[1]), float(mid[2]), r, spacing))
+
+
+def best_label(results) -> str:
+    """Label of the best (class_id, score) pair, lower case ('' when there is none)."""
+    best = max(results, key=lambda r: r[1], default=None)
+    return str(best[0]).strip().lower() if best is not None else ''

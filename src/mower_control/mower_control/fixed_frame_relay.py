@@ -89,7 +89,9 @@ class FixedFrameRelay(Node):
         super().__init__('fixed_frame_relay')
         d = self.declare_parameter
         # 'in_topic' -> publishes '<in_topic>_odom' and '<in_topic>_map'
-        d('topics', ['/bumper_cloud', '/ai/det/obstacle_points'])
+        # /ai/det/obstacle_points_static: det_range's static-class cloud (60 s costmap layer)
+        d('topics', ['/bumper_cloud', '/ai/det/obstacle_points',
+                     '/ai/det/obstacle_points_static'])
         d('base_frame', 'base_link')
         d('odom_frame', 'odom')
         d('map_frame', 'map')

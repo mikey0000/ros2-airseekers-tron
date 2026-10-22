@@ -842,7 +842,7 @@ local_costmap:
       # cost 59). RPP / behaviors / FTC footprint checks use >= 253/254 only, so the gradient
       # below inscribed does not change them; FTC's path check (>= 253) now also sees the
       # 0.25 m inscribed band around marks, as upstream MowgliNext (which inflates) intends.
-      plugins: ["obstacle_layer", "bounds_keeper", "inflation_layer"]
+      plugins: ["obstacle_layer", "static_det_layer", "bounds_keeper", "inflation_layer"]
       bounds_keeper:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -859,6 +859,35 @@ local_costmap:
         cost_scaling_factor: 4.0
         inflate_unknown: false
         inflate_around_unknown: false
+      # Static-class YOLO marks (option B, 2026-10-23 trunk incident; det_range
+      # static_classes: trunk, stone, wood, brick, trashbin, potted plant, chair), as a disc of
+      # the measured width + 0.10 m. Their own layer with a 60 s decay: the trunk was beside
+      # the camera within 0.9 m and its 5 s mark expired, and the camera loses it mid-pivot.
+      # Marking only, NO clearing source: a stereo ground ray past the trunk would erase it
+      # (stereo never marked this trunk). Risk: a wrong range is a 60 s false mark.
+      # stereo_costmap:=false strips det_static (launch/robot_settings.py).
+      static_det_layer:
+        plugin: "mower_costmap_layers::DecayingObstacleLayer"
+        decay_time: 60.0
+        enabled: true
+        footprint_clearing_enabled: false
+        max_obstacle_height: 2.0
+        combination_method: 1
+        observation_sources: det_static
+        det_static:
+          topic: /ai/det/obstacle_points_static_odom
+          data_type: "PointCloud2"
+          marking: true
+          clearing: false
+          min_obstacle_height: -0.5
+          max_obstacle_height: 2.0
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          observation_persistence: 1.0
+          expected_update_rate: 0.0
+          inf_is_valid: false
       # Bumper contacts as a marking-only obstacle source. bumper_controller
       # publishes points in base_link at z=0 (x=0.4, y in {-0.2,0,0.2}), i.e.
       # INSIDE the footprint, so footprint_clearing_enabled must be false or the
@@ -1054,7 +1083,8 @@ global_costmap:
       # nongrass_layer (StaticLayers on the same grid) still expand the update bounds to the
       # whole mask every cycle, which is what the filter needs (see above). The unused
       # static_layer block was deleted on 2026-10-23 (code review stage 0.2).
-      plugins: ["terrain_layer", "nongrass_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["terrain_layer", "nongrass_layer", "obstacle_layer", "static_det_layer",
+                "inflation_layer"]
       filters: ["keepout_filter"]
       # Terrain memory (mower_map map_server_node ~/terrain_cost, latched, same grid as
       # the nav mask): 0..terrain_cost_max (60) from the traction score of cells where
@@ -1180,6 +1210,35 @@ global_costmap:
           raytrace_max_range: 1.5
           raytrace_min_range: 0.0
           observation_persistence: 2.0
+          expected_update_rate: 0.0
+          inf_is_valid: false
+      # Static-class YOLO marks (option B, 2026-10-23 trunk incident; det_range
+      # static_classes: trunk, stone, wood, brick, trashbin, potted plant, chair), as a disc of
+      # the measured width + 0.10 m. Their own layer with a 60 s decay: the trunk was beside
+      # the camera within 0.9 m and its 5 s mark expired, and the camera loses it mid-pivot.
+      # Marking only, NO clearing source: a stereo ground ray past the trunk would erase it
+      # (stereo never marked this trunk). Risk: a wrong range is a 60 s false mark.
+      # stereo_costmap:=false strips det_static (launch/robot_settings.py).
+      static_det_layer:
+        plugin: "mower_costmap_layers::DecayingObstacleLayer"
+        decay_time: 60.0
+        enabled: true
+        footprint_clearing_enabled: false
+        max_obstacle_height: 2.0
+        combination_method: 1
+        observation_sources: det_static
+        det_static:
+          topic: /ai/det/obstacle_points_static_map
+          data_type: "PointCloud2"
+          marking: true
+          clearing: false
+          min_obstacle_height: -0.5
+          max_obstacle_height: 2.0
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          observation_persistence: 1.0
           expected_update_rate: 0.0
           inf_is_valid: false
       inflation_layer:
