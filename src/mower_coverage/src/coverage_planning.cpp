@@ -964,6 +964,7 @@ constexpr double kMinFillLenM = 0.03;
 // as -174 / +170 / -172 deg pivots, sub-path tails of 0.1 m passes reversing on themselves).
 // A layout fill pass must be at least this long and cover at least this fraction of its own
 // swept strip (len x op_width) with new area, or it is not driven.
+constexpr double kLayoutHoleKeepoutM = 0.40;  // edge layout (soft): base_link to an obstacle
 constexpr double kLayoutMinRowM = 1.2;        // edge layout: shortest row driven
 constexpr double kLayoutMinFillLenM = 1.0;    // round 3-4: shorter fills between pivots overshot
 constexpr double kLayoutMinFillEfficiency = 0.35;
@@ -1063,6 +1064,70 @@ GeomPtr buildTarget(const f2c::types::Cell& field, double inset, double hole_mar
     if (holes) outer.reset(outer->Difference(holes.get()));
   }
   return outer;
+}
+
+// Edge-layout region around the holes (obstacles): the field minus every hole grown by
+// `grow` (round joins: base_link never comes closer than `grow` to an obstacle), with the
+// corners the hole cuts into the region filleted to radius `fillet` (a morphological opening
+// applied only within 2 * fillet of a grown hole, so the field's own corners elsewhere stay
+// sharp for lap 0 ON the line). Effects: a hole whose grown outline reaches the line (an
+// obstacle closer to the line than `grow`) merges with the outside, and lap 0 leaves the line
+// on an arc, runs `grow` around the obstacle and rejoins the line on an arc (no pivot next to
+// the obstacle); the gap between obstacle and line is left uncut. Slivers between a grown hole
+// and the line narrower than 2 * fillet go with it.
+GeomPtr holeKeepoutRegion(const f2c::types::Cell& field, double grow, double fillet) {
+  GeomPtr base = buildTarget(field, 0.0, grow);
+  if (!base || base->IsEmpty() || fillet <= 1e-9 || field.size() < 2) return base;
+  GeomPtr eroded(base->Buffer(-fillet, kBufQuadSegs));
+  if (!eroded || eroded->IsEmpty()) return base;
+  GeomPtr opened(eroded->Buffer(fillet, kBufQuadSegs));
+  GeomPtr cut(base->Difference(opened.get()));
+  if (!cut || cut->IsEmpty()) return base;
+  auto* mp = new OGRMultiPolygon();
+  for (size_t i = 1; i < field.size(); ++i) {
+    std::unique_ptr<OGRGeometry> h(loopPolygon(ringToLoop(field.getGeometry(i))));
+    addPolys(mp, h->Buffer(grow + 2.0 * fillet, kBufQuadSegs));
+  }
+  GeomPtr near = unionAll(mp);
+  GeomPtr local(cut->Intersection(near.get()));
+  if (!local || local->IsEmpty()) return base;
+  // 1 mm more: the cut shares edges with the line, and the bare difference leaves zero-width
+  // spikes along them (a lap 0 back-and-forth of a few cm at each fillet end)
+  local.reset(local->Buffer(1e-3, kBufQuadSegs));
+  GeomPtr out(base->Difference(local.get()));
+  if (!out || out->IsEmpty()) return base;
+  // the 1 mm grow leaves 1 mm arcs where a fillet meets the line: a 1 cm
+  // vertex dedup drops them (a few-mm "corner" of 8 vertices reads as a pivot to the mission)
+  auto* clean = new OGRMultiPolygon();
+  auto ringLoop = [](const OGRLinearRing* r) {
+    // vertex dedup only: the gate's near-collinear drop would thin the 0.40 arcs (each
+    // vertex sags 2 mm off its neighbours' chord) and pull them in towards the obstacle
+    std::vector<Point2D> v;
+    for (int i = 0; i < r->getNumPoints(); ++i) {
+      const Point2D p{r->getX(i), r->getY(i)};
+      if (v.empty() || dist(p, v.back()) >= kRingDedupTolM) v.push_back(p);
+    }
+    while (v.size() > 1 && dist(v.back(), v.front()) < kRingDedupTolM) v.pop_back();
+    if (!v.empty()) v.push_back(v.front());
+    return v;
+  };
+  for (const OGRPolygon* poly : polygonsOf(out.get())) {
+    const std::vector<Point2D> ext = ringLoop(poly->getExteriorRing());
+    if (ext.size() < 4) continue;
+    std::unique_ptr<OGRPolygon> np(loopPolygon(ext));
+    for (int i = 0; i < poly->getNumInteriorRings(); ++i) {
+      const std::vector<Point2D> h = ringLoop(poly->getInteriorRing(i));
+      if (h.size() < 4) continue;
+      auto* r = new OGRLinearRing();
+      for (const auto& q : h) r->addPoint(q.first, q.second);
+      r->closeRings();
+      np->addRingDirectly(r);
+    }
+    GeomPtr fixed(np->IsValid() ? np->clone() : np->Buffer(0.0));
+    addPolys(clean, fixed.release());
+  }
+  GeomPtr cleaned = unionAll(clean);
+  return (cleaned && !cleaned->IsEmpty()) ? std::move(cleaned) : std::move(out);
 }
 
 // Footprint swept by the whole plan.
@@ -1454,7 +1519,17 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   const bool layout = route.edge_layout;
   const double hole_grow = layout ? std::max(0.0, route.hole_inset) : op_width / 2.0;
   f2c::types::Cells hl_field = field_cells;
-  if (field.size() > 1 && hole_grow > 0.0) {
+  if (layout && field.size() > 1 && hole_grow > 0.0) {
+    // Edge layout (2026-10-23, manual obstacle 0.39 m inside Area 7's west line): holes are
+    // HARD keep-outs. Grow them with ROUND joins (F2C buffers mitre, limit 5: a grown
+    // corner reached 0.42 and its inner-lap opening spiked 0.55 m outside the line), then
+    // fillet the region next to them (see holeKeepoutRegion): a hole the mower cannot pass
+    // outside of merges with the outside, and lap 0 bends inward around it on drivable arcs.
+    GeomPtr region = holeKeepoutRegion(field, hole_grow, route.hole_fillet_radius);
+    if (region && !region->IsEmpty()) {
+      hl_field = f2c::types::Cells(region.get());
+    }
+  } else if (field.size() > 1 && hole_grow > 0.0) {
     f2c::types::Cells grown;
     for (size_t i = 1; i < field.size(); ++i) {
       grown.addGeometry(f2c::types::Cell::buffer(
@@ -1536,7 +1611,10 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
       const double R = o > 1e-9 ? R0 : 0.0;
       f2c::types::Cells c = inset(hl_field, o + R);
       if (R > 1e-9 && !cellsEmpty(c)) {
-        c = c.buffer(R);
+        // An opening is a subset of the plain inset; the mitred re-growth is not (at an acute
+        // corner it reaches R / sin(a / 2) out, past the line: Area 7 2026-10-23, 0.55 m), so
+        // clip it back.
+        c = c.buffer(R).intersection(inset(hl_field, o));
       }
       if (cellsEmpty(c)) {
         break;
@@ -1874,7 +1952,10 @@ bool applyEdgeLayout(const std::string& name, double op_width, RouteOptions* rou
     route->row_side_inset = rows;
     route->row_end_inset = rows;
     route->turn_inset = rows;
-    route->hole_inset = 0.30;
+    // obstacles are hard (owner 2026-10-23): base_link >= body half width 0.235 + 0.10 from
+    // them, and no tighter than the 0.40 drivable arc, which their rounded outline is driven on
+    route->hole_inset = kLayoutHoleKeepoutM;
+    route->hole_fillet_radius = kLayoutHoleKeepoutM;
     first = 0.0;
   } else {
     // 0.45 / 0.63 / 0.81 (owner, edge_laps 3) plus 0.99: rows can only be clipped by erosion,

@@ -13,6 +13,7 @@
 
 #include "mower_coverage/coverage_planning.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -1357,16 +1358,16 @@ TEST(EdgeLayout, SoftHoleIsClearedByTheBodySides) {
   const CoveragePlan plan = mower_coverage::planCoverage(
       mower_coverage::makeFieldCell({{0, 0}, {w, 0}, {w, h}, {0, h}}, {hole}), 0.18, 0.20, 2,
       0.14, 0.0, 0.15, mower_coverage::PathMode::kZigzag, true, route);
-  // every driven pose >= 0.30 from the hole (body half width 0.235 + 0.065)
+  // every driven pose >= 0.40 from the hole (body half width 0.235 + 0.10, and the 0.40 arc)
   auto holeDist = [](const Point2D& p) {
     const double dx = std::max({3.0 - p.first, 0.0, p.first - 4.0});
     const double dy = std::max({2.0 - p.second, 0.0, p.second - 3.0});
     return std::hypot(dx, dy);
   };
-  for (const auto& r : plan.rings) for (const auto& p : r) EXPECT_GE(holeDist(p), 0.30 - 0.01);
+  for (const auto& r : plan.rings) for (const auto& p : r) EXPECT_GE(holeDist(p), 0.40 - 0.01);
   for (const auto& s : plan.swaths) {
-    EXPECT_GE(holeDist(s.first), 0.30 - 0.01);
-    EXPECT_GE(holeDist(s.second), 0.30 - 0.01);
+    EXPECT_GE(holeDist(s.first), 0.85 - 0.01);   // row ends: pivot sweep 0.645 + 0.10 and more
+    EXPECT_GE(holeDist(s.second), 0.85 - 0.01);
   }
 }
 
@@ -1566,4 +1567,185 @@ TEST(EdgeLayout, LapStartFallsBackToTheStraightestPoint) {
   const Point2D p = mower_coverage::lapStartPoint(circle, {1.2, 0.0}, 1.2, 10.0);
   EXPECT_NEAR(std::hypot(p.first, p.second), 1.0, 0.01);          // on the loop
   EXPECT_LT(std::hypot(p.first - 1.0, p.second), 0.1);            // nearest of the equals
+}
+
+// Obstacles (holes) are hard keep-outs, 2026-10-23: a manual obstacle 0.39 m inside Area 7's
+// west line. The soft layout grew it 0.30 with F2C's mitred buffer, kept it as a hole ring
+// 0.30 from the pole (body side clearance 0.065) squeezed 0.08 inside the line, and the inner
+// laps' mitred opening spiked 0.55 m outside the line. Now: grown 0.40 with round joins,
+// filleted 0.40 where it meets the line; an obstacle nearer the line than 0.40 merges with
+// the outside (lap 0 bends inward around it, the gap stays uncut).
+namespace {
+
+double segDist(const Point2D& p, const Point2D& a, const Point2D& b) {
+  const double dx = b.first - a.first, dy = b.second - a.second, l = dx * dx + dy * dy;
+  const double u = l > 0 ? std::clamp(((p.first - a.first) * dx + (p.second - a.second) * dy) / l,
+                                      0.0, 1.0) : 0.0;
+  return std::hypot(p.first - a.first - u * dx, p.second - a.second - u * dy);
+}
+
+bool inPoly(const Point2D& p, const std::vector<Point2D>& pg) {
+  bool c = false;
+  for (size_t i = 0, j = pg.size() - 1; i < pg.size(); j = i++) {
+    const auto& a = pg[j];
+    const auto& b = pg[i];
+    if ((a.second > p.second) != (b.second > p.second) &&
+        p.first < a.first + (p.second - a.second) * (b.first - a.first) / (b.second - a.second)) {
+      c = !c;
+    }
+  }
+  return c;
+}
+
+// Signed distance to a polygon's outline (> 0 inside).
+double polyInset(const Point2D& p, const std::vector<Point2D>& pg) {
+  double d = 1e9;
+  for (size_t i = 0, j = pg.size() - 1; i < pg.size(); j = i++) d = std::min(d, segDist(p, pg[j], pg[i]));
+  return inPoly(p, pg) ? d : -d;
+}
+
+// Every driven polyline of the plan (rings, swaths, turn poses, and the short swath-to-swath
+// connectors a pivot drives; longer ones are bridge transits), sampled every 2 cm.
+std::vector<Point2D> drivenSamples(const CoveragePlan& plan) {
+  std::vector<std::vector<Point2D>> lines(plan.rings.begin(), plan.rings.end());
+  for (size_t i = 0; i < plan.swaths.size(); ++i) {
+    std::vector<Point2D> l;
+    if (i > 0) {
+      l.push_back(plan.swaths[i - 1].second);
+      if (i < plan.turns.size()) for (const auto& tp : plan.turns[i].poses) l.push_back(tp.p);
+      if (l.size() > 1 || std::hypot(plan.swaths[i].first.first - l[0].first,
+                                     plan.swaths[i].first.second - l[0].second) <= 0.6) {
+        l.push_back(plan.swaths[i].first);
+        lines.push_back(l);
+      }
+    }
+    lines.push_back({plan.swaths[i].first, plan.swaths[i].second});
+  }
+  std::vector<Point2D> out;
+  for (const auto& l : lines) {
+    for (size_t k = 0; k + 1 < l.size(); ++k) {
+      const int n = std::max(1, static_cast<int>(std::hypot(l[k + 1].first - l[k].first,
+                                                            l[k + 1].second - l[k].second) / 0.02));
+      for (int j = 0; j <= n; ++j) {
+        out.push_back({l[k].first + (l[k + 1].first - l[k].first) * j / n,
+                       l[k].second + (l[k + 1].second - l[k].second) * j / n});
+      }
+    }
+  }
+  return out;
+}
+
+CoveragePlan planSoft(const std::vector<Point2D>& outer, const std::vector<Point2D>& hole,
+                      double angle_rad) {
+  mower_coverage::RouteOptions route;
+  route.min_turn_radius = 0.5;
+  route.min_drivable_turn_radius = 0.40;
+  route.fill_gaps = true;
+  route.target_inset = 0.15;
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+  return mower_coverage::planCoverage(mower_coverage::makeFieldCell(outer, {hole}), 0.18, 0.20,
+                                      0, 0.24, angle_rad, 0.15,
+                                      mower_coverage::PathMode::kZigzag, true, route);
+}
+
+// Nothing driven leaves the line (lap 0 ON it: 1 cm), nothing comes within 0.40 of the
+// obstacle (round-buffer chord: 1 cm), no driven path touches the obstacle.
+void expectHardHole(const CoveragePlan& plan, const std::vector<Point2D>& outer,
+                    const std::vector<Point2D>& hole) {
+  ASSERT_FALSE(plan.rings.empty());
+  ASSERT_FALSE(plan.swaths.empty());
+  double out = -1e9, near = 1e9;
+  for (const auto& p : drivenSamples(plan)) {
+    out = std::max(out, -polyInset(p, outer));
+    near = std::min(near, -polyInset(p, hole));
+  }
+  EXPECT_LE(out, 0.01) << "a driven point outside the line";
+  EXPECT_GE(near, 0.40 - 0.01) << "a driven point too close to (or over) the obstacle";
+}
+
+const std::vector<Point2D> kRect = {{0, 0}, {8, 0}, {8, 6}, {0, 6}};
+
+std::vector<Point2D> obstacleSquare(double x, double y, double s) {
+  return {{x, y}, {x + s, y}, {x + s, y + s}, {x, y + s}};
+}
+
+}  // namespace
+
+TEST(EdgeLayoutHoles, ObstacleNearTheEdgeMergesWithTheOutside) {
+  const auto hole = obstacleSquare(0.36, 2.9, 0.25);  // 0.36 from the west line, under 0.40
+  for (double a : {0.0, M_PI / 2.0, M_PI / 4.0}) {
+    const CoveragePlan plan = planSoft(kRect, hole, a);
+    expectHardHole(plan, kRect, hole);
+    // no ring of its own around the obstacle: lap 0 is one outline that bends inward around it
+    for (const auto& r : plan.rings) {
+      bool all_near = true;
+      for (const auto& p : r) all_near = all_near && -polyInset(p, hole) < 1.0;
+      EXPECT_FALSE(all_near) << "a hole ring";
+    }
+    bool behind = false;  // lap 0 passes east of the obstacle, the gap west of it uncut
+    for (const auto& p : plan.rings.front()) {
+      EXPECT_FALSE(p.first < 0.36 - 0.01 && p.second > 2.9 && p.second < 3.15) << "gap driven";
+      behind = behind || (p.first > 0.61 + 0.39 && p.second > 2.85 && p.second < 3.2);
+    }
+    EXPECT_TRUE(behind);
+  }
+}
+
+TEST(EdgeLayoutHoles, ObstacleInACorner) {
+  const auto hole = obstacleSquare(0.36, 0.36, 0.25);
+  for (double a : {0.0, M_PI / 4.0}) expectHardHole(planSoft(kRect, hole, a), kRect, hole);
+}
+
+TEST(EdgeLayoutHoles, ObstacleWellInsideGetsItsOwnRings) {
+  const auto hole = obstacleSquare(3.9, 2.9, 0.25);
+  const CoveragePlan plan = planSoft(kRect, hole, 0.0);
+  expectHardHole(plan, kRect, hole);
+  int hole_rings = 0;
+  for (const auto& r : plan.rings) {
+    bool all_near = true;
+    for (const auto& p : r) all_near = all_near && -polyInset(p, hole) < 1.0;
+    hole_rings += all_near ? 1 : 0;
+  }
+  EXPECT_EQ(hole_rings, 3);  // laps 0.40 / 0.55 / 0.70 around it
+  // the outer laps keep their sharp corners and insets (the fillets stay near the hole)
+  EXPECT_NEAR(rectInset(plan.rings.front()[0], 8, 6), 0.0, 0.01);
+}
+
+// The field geometry of 2026-10-23 (areas.dat area_5 "Area 7" and its manual obstacle).
+TEST(EdgeLayoutHoles, Area7PoleNearTheWestLine) {
+  const std::vector<Point2D> outer = {
+      {-2.42777,0.603669},
+      {-3.68007,-0.64144},
+      {-4.13443,-1.25334},
+      {-5.4586,-2.45428},
+      {-5.64323,-2.60242},
+      {-5.81183,-2.6159},
+      {-6.10666,-2.26859},
+      {-6.40751,-1.56303},
+      {-6.49084,-0.694381},
+      {-6.6368,-0.497456},
+      {-6.60865,-0.32109},
+      {-6.81943,0.200973},
+      {-6.7096,0.67657},
+      {-5.97887,1.77966},
+      {-4.41611,3.63844},
+      {-3.71662,3.98655},
+      {-2.75692,4.28974},
+      {-1.80164,4.76187},
+      {-0.601567,4.99453},
+      {-0.307907,5.13676},
+      {-0.367525,5.16016},
+      {-0.0265033,5.25821},
+      {0.0592182,4.98217},
+      {-0.213657,2.26314},
+      {-1.35556,1.21173},
+      {-2.2729,0.579132}};
+  const std::vector<Point2D> hole = {
+      {-6.17014,-0.449989},
+      {-6.10125,-0.690233},
+      {-5.87919,-0.611264},
+      {-5.93394,-0.366968}};
+  for (double a : {-1.0, M_PI / 4.0, 3.0 * M_PI / 4.0}) {
+    expectHardHole(planSoft(outer, hole, a), outer, hole);
+  }
 }
