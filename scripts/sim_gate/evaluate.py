@@ -207,6 +207,36 @@ def window(pts, cum, i, half):
     return pts[lo:hi + 1]
 
 
+def edge_joins(D):
+    """{sub: [(local, side, inset, D)]} from the mission's "edge start join" log lines."""
+    joins = {}
+    for r in D.get('rosout', []):
+        msg = r[3] if len(r) > 3 else ''
+        mj = re.search(r'edge start join: sub (\d+) local (\d+) side ([+-]\d+) inset '
+                       r'([\d.]+) over ([\d.]+) m', str(msg))
+        if mj:
+            joins.setdefault(int(mj.group(1)), []).append(
+                (int(mj.group(2)), int(mj.group(3)), float(mj.group(4)), float(mj.group(5))))
+    return joins
+
+
+def joined(pts, jl):
+    """The sub-path as sent: edge-start tangent joins (mission_fsm._join_leg) applied."""
+    out = list(pts)
+    for loc, sgn, off, dj in jl:
+        acc = 0.0
+        for i in range(loc, len(pts)):
+            if i > loc:
+                acc += math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+            if acc >= dj:
+                break
+            a_, b_ = pts[max(0, i - 1)], pts[min(len(pts) - 1, i + 1)]
+            hh = math.atan2(b_[1] - a_[1], b_[0] - a_[0])
+            w = off * 0.5 * (1.0 + math.cos(math.pi * acc / dj))
+            out[i] = (pts[i][0] - w * math.sin(hh) * sgn, pts[i][1] + w * math.cos(hh) * sgn)
+    return out
+
+
 def main(run, world):
     D = json.load(open(os.path.join(run, 'data.json')))
     t0 = float(open(os.path.join(run, 'start_epoch')).read())
@@ -322,6 +352,9 @@ def main(run, world):
     I_TRACK_M, I_TRANSIT_M = 0.10, 0.40
     pmsg = D['mow_plan'][-1][1] if D['mow_plan'] else None
     psubs = json.loads(pmsg)['subpaths'] if pmsg else []
+    _js = edge_joins(D)
+    psubs = [joined([(q[0], q[1]) for q in sp], _js[k]) if k in _js else sp
+             for k, sp in enumerate(psubs)]
     pcums = [G.cumulative_lengths([(q[0], q[1]) for q in sp]) for sp in psubs]
 
     def plan_pose(t, x, y):
@@ -556,28 +589,7 @@ def main(run, world):
     # (h) against the path actually sent (round 4): an edge-start tangent join ("edge start
     # join: sub K local L side S inset I over D m", mission_fsm._join_leg) offsets the leg's
     # first D m toward the interior; rebuild it here so the join is not counted as error
-    joins = {}
-    for _t, msg in bt:
-        mj = re.search(r'edge start join: sub (\d+) local (\d+) side ([+-]\d+) inset '
-                       r'([\d.]+) over ([\d.]+) m', msg)
-        if mj:
-            joins.setdefault(int(mj.group(1)), []).append(
-                (int(mj.group(2)), int(mj.group(3)), float(mj.group(4)), float(mj.group(5))))
-
-    def joined(pts, jl):
-        out = list(pts)
-        for loc, sgn, off, dj in jl:
-            acc = 0.0
-            for i in range(loc, len(pts)):
-                if i > loc:
-                    acc += math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
-                if acc >= dj:
-                    break
-                a_, b_ = pts[max(0, i - 1)], pts[min(len(pts) - 1, i + 1)]
-                hh = math.atan2(b_[1] - a_[1], b_[0] - a_[0])
-                w = off * 0.5 * (1.0 + math.cos(math.pi * acc / dj))
-                out[i] = (pts[i][0] - w * math.sin(hh) * sgn, pts[i][1] + w * math.cos(hh) * sgn)
-        return out
+    joins = edge_joins(D)
     prep = []
     for k, sp in enumerate(subpaths):
         pts = [(p[0], p[1]) for p in sp]
