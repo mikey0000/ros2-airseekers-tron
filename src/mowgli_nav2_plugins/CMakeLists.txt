@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.8)
 project(mowgli_nav2_plugins)
 
+
+# arm64 GCC >= 10.1 prints "parameter passing for argument of type std::pair ... changed in
+# GCC 10.1" notes: harmless (one compiler builds the whole stack), they only clutter the log.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-Wno-psabi)
+endif()
 # Jazzy port of third_party/mowglinext/mowgli_nav2_plugins (Kilted):
 # rclcpp_lifecycle node, setPlan/3-arg computeVelocityCommands, ControllerException,
 # 3-arg GoalChecker, no mowgli_interfaces (blade-load slowdown fail-open).

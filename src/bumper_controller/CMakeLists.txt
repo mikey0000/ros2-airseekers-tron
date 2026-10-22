@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.8)
 project(bumper_controller)
 
+
+# arm64 GCC >= 10.1 prints "parameter passing for argument of type std::pair ... changed in
+# GCC 10.1" notes: harmless (one compiler builds the whole stack), they only clutter the log.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-Wno-psabi)
+endif()
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
