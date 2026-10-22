@@ -12,6 +12,7 @@ at ``control_rate_hz`` while a goal drives the robot, and zeros for
 from __future__ import annotations
 
 import math
+import sys
 import threading
 import time
 from typing import Optional
@@ -367,7 +368,8 @@ class DockingServer(Node):
         try:
             lin = abs(float(msg.linear.x))
             ang = abs(float(msg.angular.z))
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn('teleop message unreadable: %s' % exc, throttle_duration_sec=10.0)
             return
         if lin > 0.01 or ang > 0.02:          # the GUI joystick sends zeros when released
             with self._lock:
@@ -989,8 +991,8 @@ class DockingServer(Node):
         meas['applied'] = True
         try:
             self._write_calibration({'dock_yaw_measurement': meas})
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn('dock yaw measurement not saved to the calibration: %s' % exc)
         self.get_logger().warn('dock yaw updated from the undock chord: %s' % why)
         return True, why
 
@@ -1245,8 +1247,8 @@ def main(args=None):
     finally:
         try:
             node._publish_cmd(0.0, 0.0)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - context may already be gone
+            sys.stderr.write('[mower_docking] final zero cmd_vel not sent: %s\n' % exc)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

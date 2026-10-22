@@ -711,7 +711,7 @@ class MissionNode(Node):
             if not stop:
                 i.cm_stop_since = None
             elif i.cm_stop_since is None:
-                i.cm_stop_since = time.monotonic()
+                i.cm_stop_since = self._clk.now()   # node clock (sim time under use_sim_time)
 
     def _on_stuck(self, msg):
         with self._lock:

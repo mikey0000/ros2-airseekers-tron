@@ -19,7 +19,6 @@ SLOWDOWN / APPROACH / LIMIT) is never cycled. ``recover`` defaults to false (log
 without a known root cause, cycling a node could override a real stop.
 """
 
-import time
 
 MOVING = 0.02           # |v| or |w| above this is a moving command
 
@@ -124,7 +123,7 @@ def main(args=None):
             self.create_subscription(
                 CollisionMonitorState,
                 d('cm_state_topic', '/collision_monitor_state').value,
-                lambda m: self.wd.on_cm_state(m.action_type, time.monotonic()), 10)
+                lambda m: self.wd.on_cm_state(m.action_type, self._now()), 10)
             self.lane_clients = {n: self.create_client(ChangeState, '/%s/change_state' % n)
                             for n in ('velocity_smoother', 'collision_monitor')}
             self.busy = False
