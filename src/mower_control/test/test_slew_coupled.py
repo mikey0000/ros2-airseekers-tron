@@ -31,14 +31,14 @@ def _gate(state='TRANSIT'):
     return g
 
 
-def _node(always=True, state='TRANSIT'):
+def _node(state='TRANSIT'):
     log = types.SimpleNamespace()
     for level in ('debug', 'info', 'warn', 'warning', 'error'):
         setattr(log, level, lambda text: None)
     return types.SimpleNamespace(
         _max_linear_accel=0.5, _max_angular_accel=1.0, _max_linear_decel=0.8,
         _max_angular_decel=1.0, _hard_stop_lanes=frozenset(cs.HARD_STOP_LANES),
-        _slew_both_wheels_always=always, _cmd_timeout=0.5, _log_period=1.0,
+        _cmd_timeout=0.5, _log_period=1.0,
         _cur_lin=0.0, _cur_ang=0.0, _tgt=None, _last_cmd_time=None, _last_tick=None,
         _next_log=0.0, get_logger=lambda: log, _gate=_gate(state),
         _pivot=cs.PivotAssist(enabled=False), _turn=cs.TurnShaper(),
@@ -69,13 +69,6 @@ def test_arc_from_rest_keeps_curvature_and_inner_wheel(tgt):
         assert inner(v, w) >= -1e-9                       # inner rolls with the outer
         assert w == pytest.approx(k * v, abs=1e-9)          # curvature of the target
     assert out[-1] == pytest.approx(tgt)
-
-
-def test_per_axis_ramp_bent_the_arc():
-    """What the default fixes: the old per-axis ramp (always=False) changes v/w."""
-    out = run(_node(always=False), [(0.2, 0.3)] * 30)
-    ratios = {round(w / v, 3) for v, w in out if v}
-    assert len(ratios) > 1
 
 
 def run_lane(node, seq, lane):
@@ -160,12 +153,6 @@ def test_coupled_step_unit():
     assert cs.slew_coupled(0.0, 0.0, 0.2, 0.3, 0.5, 1.0, DT) == pytest.approx(
         (0.025, 0.0375))                                 # v-limited, ratio 1.5 kept
     assert cs.slew_coupled(0.2, 0.3, 0.2, 0.3, 0.5, 1.0, DT) == (0.2, 0.3)
-
-
-def test_param_default_on():
-    import inspect
-    src = inspect.getsource(cs.CmdVelSlewNode.__init__)
-    assert "declare_parameter('slew_both_wheels_always', True)" in src
 
 
 

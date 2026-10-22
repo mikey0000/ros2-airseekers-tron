@@ -92,9 +92,8 @@ def node(msn, monkeypatch):
     n.boundary = core.BoundaryClassifier(0.1, 0.5, 1)
     n._lethal_filter = types.SimpleNamespace(min_duration_s=0.0, update=lambda now, v: v)
     n._soft_prev = n._lethal_prev = False
-    n._measure_body = lambda x, y: None
     n.terrain_incident = lambda *a: None
-    n.outside_pub, n.body_outside_pub = _Pub(), _Pub()
+    n.outside_pub = _Pub()
     n.boundary_pub, n.lethal_pub = _Pub(), _Pub()
     return n
 
@@ -121,7 +120,7 @@ def _odom(n, x, y):
 
 
 def _all_pubs(n):
-    return n.outside_pub.msgs + n.body_outside_pub.msgs + n.boundary_pub.msgs + n.lethal_pub.msgs
+    return n.outside_pub.msgs + n.boundary_pub.msgs + n.lethal_pub.msgs
 
 
 def test_replace_is_atomic_and_boundary_check_silent(node):
@@ -129,7 +128,7 @@ def test_replace_is_atomic_and_boundary_check_silent(node):
     _odom(n, *ROBOT_IN_B)
     assert n.outside_pub.msgs == [0.0]
     n.outside_pub.msgs.clear()
-    n.body_outside_pub.msgs.clear(); n.boundary_pub.msgs.clear(); n.lethal_pub.msgs.clear()
+    n.boundary_pub.msgs.clear(); n.lethal_pub.msgs.clear()
 
     assert n.srv_begin_map_edit(None, _res()).success
     seen = []

@@ -201,7 +201,7 @@ def coverage_route_params(st):
             'route_spiral_size': int(st['route_spiral_size']),
             'min_turn_radius_m': float(st['min_turn_radius_m']),
             'turn_type': str(st['turn_type']),
-            # stock-style edge layout per area edge_mode; 'legacy' = headland rings (revert)
+            # stock-style edge layout per area edge_mode
             'edge_layout': str(st.get('edge_layout', st.get('edge_mode', 'soft'))),
             'edge_laps': int(st.get('edge_laps', AREA_SETTINGS_DEFAULTS['edge_laps']))}
 
@@ -825,8 +825,7 @@ class Params:
     # (_cov_pivot: the robot -> leg junction is a vertex no fillet fits).
     # Stock-style edge layout (owner 2026-10-21): the planner lays laps / rows by the area's
     # edge_mode (soft: laps 0 / 0.15 / 0.30, row ends 0.45 in; hard: body inside + 0.10).
-    # false = the headland-ring layout (revert).
-    edge_layout_enabled: bool = True
+    # The edge_layout_enabled false revert (headland rings) was deleted on 2026-10-23.
     path_conditioning: bool = True
     path_conditioning_r_min_m: float = 0.5
     path_conditioning_r_max_m: float = 1.0
@@ -2807,7 +2806,7 @@ class MissionFSM:
         if st.get('edge_mode') not in EDGE_MODES:
             self._log('warn', 'unknown edge_mode %r: soft' % st.get('edge_mode'))
             st['edge_mode'] = 'soft'
-        st['edge_layout'] = st['edge_mode'] if self.p.edge_layout_enabled else 'legacy'
+        st['edge_layout'] = st['edge_mode']
         st['route_spiral_size'] = max(2, int(st['route_spiral_size']))
         st['min_turn_radius_m'] = max(0.0, float(st['min_turn_radius_m']))
         if st['path_mode'] not in PATH_MODES:
@@ -4705,7 +4704,7 @@ class MissionFSM:
         return True
 
     def _route_corner_th(self):
-        """Corner threshold of the route split (rad; 0 = the legacy split)."""
+        """Corner threshold of the route split and pivots (rad; 0 = off)."""
         th = float(self.p.route_corner_turn_rad)
         if th > 0.0 and float(self.p.route_split_turn_deg) > 0.0:
             th = min(th, math.radians(float(self.p.route_split_turn_deg)))
@@ -4745,12 +4744,15 @@ class MissionFSM:
         every corner of at least that angle (geometry.route_corners: the bend between the
         straight runs either side, robust to pose spacing and drawing wobble; neighbouring
         sharp corners each get their own split), the leg ending exactly on the corner pose
-        with its yaw along the run into the corner. 0 = the old split (turns sharper than
-        route_split_turn_deg over 3 poses either side, ~0.3 m)."""
+        with its yaw along the run into the corner. 0 = the same split at
+        route_split_turn_deg (the 3-pose-chord split it replaced was deleted on 2026-10-23;
+        both 0 = one goal)."""
         th = self._route_corner_th()
         if th <= 0.0:
-            return self._split_route_legacy(poses)
+            th = math.radians(max(0.0, float(self.p.route_split_turn_deg)))
         poses = list(poses)
+        if th <= 0.0:
+            return [poses]
         cuts = [i for i, _t in geo.route_corners(poses, th, tol_rad=ROUTE_CORNER_TOL_RAD)]
         if not cuts:
             return [poses]
@@ -4766,35 +4768,6 @@ class MissionFSM:
             s0 = c
         legs.append(list(poses[s0:]))
         return [lg for lg in legs if len(lg) >= 2] or [poses]
-
-    def _split_route_legacy(self, poses):
-        """Before task 0.4 (d) (route_corner_turn_rad 0): split at turns sharper than
-        route_split_turn_deg (measured over 3 poses either side, ~0.3 m)."""
-        th = math.radians(float(self.p.route_split_turn_deg))
-        k = 3
-        if th <= 0 or len(poses) < 2 * k + 2:
-            return [list(poses)]
-
-        def turn(j):
-            a, b, c = poses[j - k], poses[j], poses[j + k]
-            h1 = math.atan2(b[1] - a[1], b[0] - a[0])
-            h2 = math.atan2(c[1] - b[1], c[0] - b[0])
-            return abs(math.atan2(math.sin(h2 - h1), math.cos(h2 - h1)))
-
-        cuts, i = [], k
-        while i < len(poses) - k:
-            if turn(i) >= th:
-                j = max(range(i, min(len(poses) - k, i + 2 * k)), key=turn)
-                cuts.append(j)
-                i = j + 2 * k
-            else:
-                i += 1
-        legs, s0 = [], 0
-        for c in cuts:
-            legs.append(list(poses[s0:c + 1]))
-            s0 = c
-        legs.append(list(poses[s0:]))
-        return [lg for lg in legs if len(lg) >= 2] or [list(poses)]
 
     def _route_cusps(self, poses, legs):
         """Cusps of a planned route (geometry.route_cusps at route_cusp_angle_rad) plus the

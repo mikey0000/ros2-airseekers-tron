@@ -10,7 +10,7 @@
     `plugin` key (a missing `.plugin` is the "plugin param not defined" failure);
   * frame names match the stack contract;
   * the controller / goal-checker / planner ids the MowgliNext BT requests exist;
-  * static_layer only on the keepout mask, no enable_stamped_cmd_vel (Jazzy keeps it off);
+  * no static_layer (the nav mask is the keepout_filter), no enable_stamped_cmd_vel (Jazzy keeps it off);
   * progress/goal checker, transit RPP and local-costmap layer choices that
     the first real mow (2026-10-06) showed matter;
   * sensor obstacles in the global costmap + reroute-not-clear BTs (2026-10-09);
@@ -402,17 +402,11 @@ def test_bt_reroutes_instead_of_clearing():
             assert w.get("wait_duration", "1").isdigit(), (name, w.attrib)
 
 
-def test_nav_mask_static_layer_keeps_soft_band():
-    """mower_map soft band = 90: must not be trinary-collapsed to FREE."""
+def test_no_static_layer():
+    """2026-10-09: the nav mask reaches the global costmap only through keepout_filter
+    (uninflated); the stale static_layer block was deleted on 2026-10-23."""
     g = load()["global_costmap"]["global_costmap"]["ros__parameters"]
-    st = g["static_layer"]
-    assert st["map_topic"] == "/nav_keepout_mask"
-    assert st["trinary_costmap"] is False
-    assert st.get("lethal_cost_threshold", 100) == 100
-    assert st.get("unknown_cost_value", -1) == -1
-    lethal = st.get("lethal_cost_threshold", 100)
-    assert 0 < round(90 / lethal * 254) < 253          # soft band: plannable, not inscribed
-    # the local costmap has no nav-mask layer (bumper/stereo obstacle_layer only)
+    assert "static_layer" not in g and "static_layer" not in g["plugins"]
     loc = load()["local_costmap"]["local_costmap"]["ros__parameters"]
     assert "static_layer" not in loc["plugins"]
 

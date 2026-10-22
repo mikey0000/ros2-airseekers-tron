@@ -28,11 +28,6 @@ Parameters
 ``max_angular_decel``  = ``max_angular_accel``  rad/s^2, same for angular.z
 ``hard_stop_lanes``    ``['emergency', 'bumper']``  twist_mux lanes whose zero command
                                   (while the lane wins) is applied at once, not ramped
-``slew_both_wheels_always`` ``true``  wherever the turn shaper is active, slew both axes
-                                  together (:func:`slew_coupled`: the target's v/w ratio is
-                                  kept from rest, pivot <-> arc passes through a stop);
-                                  false = the old independent per-axis slew outside
-                                  pivot-assist episodes
 ``cmd_timeout``        ``0.5``    s after the last ``/cmd_vel_raw`` the output is
                                   forced to exactly zero (immediate exact stop,
                                   MowgliNext style) and held there until a fresh
@@ -82,26 +77,22 @@ Parameters
                                   the old stateless snap) or after
 ``turn_shaper_latch_ticks``    ``6``     ticks in a row asking for the other regime
                                   (0 = no time-based release)
-``turn_shaper_pure_pivot``     ``true``  a pure rotation (linear 0) slower than the pivot
-                                  floor (min_inner_wheel_mps / (track/2) = 0.3 rad/s)
-                                  snaps to the floor and joins the pivot regime latch
-                                  (v = 0 no longer resets it); false = the old
-                                  pass-through (2026-10-14 mow: 0.25 / 0.10 hunting and
-                                  sub-deadband rotations that never turned the robot)
 ``turn_shaper_pivot_deadband_rps`` ``0.03``  |angular| of a pure rotation below this is
-                                  an exact stop (0, 0) (only with ``turn_shaper_pure_pivot``)
+                                  an exact stop (0, 0); a slower pure rotation above it
+                                  snaps to the pivot floor and joins the pivot regime latch
+                                  (fix 8, 2026-10-14 mow)
 ``turn_shaper_dock_transit``   ``true``  shape navigation-lane commands in the dock phases
                                   (RETURNING_HOME, LOW_BATTERY_DOCKING,
                                   RAIN_DETECTED_DOCKING, COVERAGE_FAILED_DOCKING: the
                                   nav-driven transit to the dock); the docking lane is
                                   never shaped either way; false = dock phases unshaped
-``turn_shaper_pivot_instead``  ``true``  task 0.4 (b), run 3: a command in the widening
-                                  zone (0 < inner < min_inner) whose radius |v|/|w| is below
-``turn_shaper_pivot_instead_ratio`` ``0.5`` x the widened arc's radius snaps to the pure
+``turn_shaper_pivot_instead_ratio`` ``0.5``  task 0.4 (b), run 3: a command in the
+                                  widening zone (0 < inner < min_inner) whose radius |v|/|w|
+                                  is below this x the widened arc's radius snaps to the pure
                                   pivot (v = 0, |w| >= 0.3) instead of the 2-4x wider arc
                                   that overshot every transit corner; the regime latch holds
                                   across ratio +- ``turn_shaper_pivot_instead_hysteresis``
-                                  (``0.1``). false = the old widening (revert flag)
+                                  (``0.1``)
 ``turn_shaper_transit_pivot_hold_rps`` ``0.0``  2026-10-15 (off by default): in TRANSIT and
                                   the nav-lane dock transit, a command the shaper would snap
                                   to the 0.25 rad/s pivot while the controller asked for
@@ -157,8 +148,7 @@ Behaviour
   ramp-down) the step also never lands in the one-wheel zone
   (:func:`slew_both_wheels`: the pivot <-> creep-arc change passes through a stop).
   Other driving in turn-shaper phases uses :func:`slew_coupled` (both axes scaled
-  together, curvature kept) unless ``slew_both_wheels_always`` is false, which gives
-  the plain per-axis slew of the turn-shaped target. Decel (magnitude shrinking toward
+  together, curvature kept); outside them the plain per-axis slew. Decel (magnitude shrinking toward
   zero) uses the ``max_*_decel`` rates.
 * Every published command is echoed to the log at full float precision (the
   MowgliNext ``/cmd_vel_applied`` idea, as a log line instead of a topic),
@@ -315,7 +305,7 @@ class PivotAssist:
 
     The assist runs *before* the turn shaper, on the raw (heading-hold shaped) command, as
     it always has: it sees the controller's |w|, not the shaped one. Since fix 8
-    (``turn_shaper_pure_pivot``) a slow pure rotation, e.g. 0.1 rad/s, is shaped to a
+    (pure pivots) a slow pure rotation, e.g. 0.1 rad/s, is shaped to a
     0.3 rad/s pivot (the floor, 2026-10-20 geometry), and once it has lasted ``delay_s`` with |w| >= ``min_angular`` the
     assist adds its creep exactly as for any other pivot (the creep arc (0.14, w) is legal
     and passes the shaper unchanged). Rotations below ``min_angular`` (0.03..0.08 rad/s)
@@ -628,13 +618,11 @@ SHAPE_DEFAULTS = {
     'min_inner_wheel_mps': 0.06,
     'linear_max': 0.3,
     'angular_max': 0.3,       # MCU clamp
-    'pure_pivot': True,       # slow pure rotations join the pivot regime (fix 8)
     'pivot_deadband_rps': 0.03,   # |w| below this in a pure rotation -> (0, 0)
     # Task 0.4 (b), 2026-10-14 run 3: MPPI asked for slow tight corners (r 0.2-0.3 m) and
     # _tight_arc widened them to r 0.5-1.0 m, overshooting every corner. A command whose
     # requested radius |v|/|w| is below pivot_instead_ratio x the radius the widening would
     # give is turned on the spot instead (pure pivot, |w| >= the 0.3 rad/s floor).
-    'pivot_instead': True,        # False = the old widening (revert flag)
     'pivot_instead_ratio': 0.5,
     'pivot_instead_hysteresis': 0.1,  # ratio band the regime latch holds across
     'transit_pivot_hold_rps': 0.0,    # TurnShaper: transit pivot snap below this -> (0, 0)
@@ -653,17 +641,17 @@ def shape_for_both_wheels(v, w, params=None):
     * inner >= +min_inner (arc) or <= -min_inner (proper counter-rotating pivot): pass.
     * 0 < inner < min_inner: widen to the tightest arc keeping the inner wheel at
       min_inner (keeping |w| when possible, else lowering |w| so outer <= linear_max);
-      reversing stays reversing. With ``pivot_instead`` (task 0.4 b, default) a request
+      reversing stays reversing. Task 0.4 b: a request
       whose radius r_req = |v|/|w| is below ``pivot_instead_ratio`` (0.5) x that widened
       radius snaps to the pure pivot instead (the corner is turned on the spot, not
       overshot); ``info['instead']`` is True and ``info['q']`` = r_req / widened radius.
     * -min_inner < inner <= 0 with some speed: snap to a pure pivot, v = 0,
       |w| = max(|w|, 2*min_inner/b) capped at angular_max.
     * pure rotation (v = 0) slower than the pivot floor 2*min_inner/b (0.3 rad/s): both
-      wheels would sit under the MCU deadband and the robot would not turn, so with
-      ``pure_pivot`` (default) it snaps to the floor like any other pivot (kind 'pivot');
-      below ``pivot_deadband_rps`` (0.03) it becomes an exact stop ``(0, 0)`` (kind
-      'pivot', ``info['deadband']`` True). ``pure_pivot`` False = the old pass-through.
+      wheels would sit under the MCU deadband and the robot would not turn, so it snaps
+      to the floor like any other pivot (kind 'pivot'); below ``pivot_deadband_rps``
+      (0.03) it becomes an exact stop ``(0, 0)`` (kind 'pivot', ``info['deadband']``
+      True).
     """
     p = dict(SHAPE_DEFAULTS)
     if params:
@@ -688,8 +676,6 @@ def shape_for_both_wheels(v, w, params=None):
         # Now a slow pure rotation is a pivot request like any other and is snapped to the
         # floor; the latch (TurnShaper) is the guard against 0.25 pulses near a goal, and a
         # tiny |w| below the deadband is a stop.
-        if not p.get('pure_pivot', True):
-            return v, w, None                 # old behaviour (turn_shaper_pure_pivot false)
         if abs(w) < float(p.get('pivot_deadband_rps', 0.0)):
             return 0.0, 0.0, {'kind': 'pivot', 'r': 0.0, 'inner': 0.0, 'outer': 0.0,
                               'deadband': True, 'w_in': w}
@@ -697,13 +683,12 @@ def shape_for_both_wheels(v, w, params=None):
     if inner <= 0.0:                          # one-wheel zone with some forward speed
         return _pivot_snap(w, half, v_min, w_max)
     arc = _tight_arc(v, w, half, v_min, v_max)
-    if p.get('pivot_instead', False):
-        q = pivot_instead_q(v, w, arc[2]['r'])
-        arc[2]['q'] = q
-        if q < float(p.get('pivot_instead_ratio', 0.5)):
-            out = _pivot_snap(w, half, v_min, w_max)
-            out[2]['instead'], out[2]['q'] = True, q
-            return out
+    q = pivot_instead_q(v, w, arc[2]['r'])
+    arc[2]['q'] = q
+    if q < float(p.get('pivot_instead_ratio', 0.5)):
+        out = _pivot_snap(w, half, v_min, w_max)
+        out[2]['instead'], out[2]['q'] = True, q
+        return out
     return arc
 
 
@@ -739,7 +724,7 @@ def both_wheels_legal(v, w, params=None, target=False):
     """True unless the inner wheel is in the one-wheel zone: straight, pure rotation,
     inner >= +min or <= -min.
 
-    Pure rotations (v = 0): with ``target`` True (and ``pure_pivot`` on) this is the rule
+    Pure rotations (v = 0): with ``target`` True this is the rule
     :func:`shape_for_both_wheels` applies to a *command*: legal only at |w| >= the pivot
     floor (min_inner / (b/2) = 0.3 rad/s) or |w| < ``pivot_deadband_rps`` (a stop).
     With ``target`` False (the default, used by the slew functions and their tests) any
@@ -752,7 +737,7 @@ def both_wheels_legal(v, w, params=None, target=False):
     if abs(w) < 1e-6:
         return True
     if abs(v) < 1e-6:
-        if not (target and p.get('pure_pivot', True)):
+        if not target:
             return True
         floor = float(p['min_inner_wheel_mps']) / (0.5 * float(p['track_width_m']))
         return (abs(w) >= floor - 1e-9
@@ -846,9 +831,9 @@ def pivot_floor_step(v, w, tgt_v, tgt_w, params=None):
     turn (turf stick-slip in the field pivot test), so the 1 rad/s^2 ramp 0 -> 0.3 rad/s is
     replaced by a step: a pure rotation ``(0, w)`` with 0 < |w| < floor becomes the floor in
     the target's direction when the target is a pivot that way, else an exact stop. Straight,
-    arc and floor-or-faster commands are unchanged; ``pure_pivot`` False = unchanged."""
+    arc and floor-or-faster commands are unchanged."""
     p = SHAPE_DEFAULTS if params is None else params
-    if not p.get('pure_pivot', True) or abs(v) > 1e-6 or abs(w) < 1e-6:
+    if abs(v) > 1e-6 or abs(w) < 1e-6:
         return v, w
     floor = min(float(p['min_inner_wheel_mps']) / (0.5 * float(p['track_width_m'])),
                 float(p['angular_max']))
@@ -932,15 +917,13 @@ class TurnShaper:
     rotation below the pivot deadband) or a sign change of v or w releases the latch.
     ``hysteresis_mps`` 0 = the old stateless behaviour.
 
-    Pure rotations (fix 8, 2026-10-14 mow): with ``pure_pivot`` on (default) an exact
-    v = 0 is the pivot regime (inner = -|w| b/2 < 0) and goes through the latch like any
+    Pure rotations (fix 8, 2026-10-14 mow): an exact v = 0 is the pivot regime (inner = -|w| b/2 < 0) and goes through the latch like any
     other command, and v = 0 is sign-compatible with either sign of v, so the controller
     dithering between v = 0.01 and v = 0.000 at the same w no longer resets the latch (it
     used to: /cmd_vel alternated 0.25 / 0.10 rad/s). An arc latched while v drops to 0 is
     held as the tightest arc for that w in the latched direction until the hysteresis
     (inner = -|w| b/2 <= -h, i.e. |w| >= 0.083 rad/s releases at once) or ``latch_ticks``
-    release it. ``pure_pivot`` False = the old rule (an exact pure pivot releases the
-    latch and passes unchanged).
+    release it.
     """
 
     def __init__(self, enabled=True, shape_manual=False, hysteresis_mps=0.02, latch_ticks=6,
@@ -988,8 +971,7 @@ class TurnShaper:
         """Apply the regime latch to the stateless decision ``(sv, sw, info)``."""
         pure = abs(v) < 1e-6
         stop = abs(w) < 1e-6 or bool(info and info.get('deadband'))
-        if (stop or self.hysteresis_mps <= 0.0
-                or (pure and not self.params.get('pure_pivot', True))):
+        if stop or self.hysteresis_mps <= 0.0:
             self.regime = None if stop else 'pivot'
             self._signs, self._pending = None, 0
             return sv, sw, info
@@ -1015,8 +997,7 @@ class TurnShaper:
         # Task 0.4 (b): in the widening zone (0 < inner < min_inner) the pivot / arc choice
         # is the radius ratio q; the latch holds across pivot_instead_ratio +- hysteresis
         # so a controller hovering at the threshold does not flip pivot <-> arc.
-        q = info.get('q') if (info and self.params.get('pivot_instead', False)
-                              and 0.0 < inner < v_min) else None
+        q = info.get('q') if (info and 0.0 < inner < v_min) else None
         ratio = float(self.params.get('pivot_instead_ratio', 0.5))
         qh = float(self.params.get('pivot_instead_hysteresis', 0.0))
         to_arc = inner >= h and (q is None or q >= ratio + qh)
@@ -1073,10 +1054,8 @@ TURN_PARAMS = {   # node parameter -> (TurnShaper attribute / params key, type)
     'angular_max': ('angular_max', float),
     'turn_shaper_hysteresis_mps': ('hysteresis_mps', float),
     'turn_shaper_latch_ticks': ('latch_ticks', int),
-    'turn_shaper_pure_pivot': ('pure_pivot', bool),
     'turn_shaper_pivot_deadband_rps': ('pivot_deadband_rps', float),
     'turn_shaper_dock_transit': ('dock_transit', bool),
-    'turn_shaper_pivot_instead': ('pivot_instead', bool),
     'turn_shaper_pivot_instead_ratio': ('pivot_instead_ratio', float),
     'turn_shaper_pivot_instead_hysteresis': ('pivot_instead_hysteresis', float),
     'turn_shaper_transit_pivot_hold_rps': ('transit_pivot_hold_rps', float),
@@ -1084,8 +1063,8 @@ TURN_PARAMS = {   # node parameter -> (TurnShaper attribute / params key, type)
 TURN_DEFAULTS = {'turn_shaper': True, 'shape_manual': False, 'track_width_m': TRACK_WIDTH_M,
                  'min_inner_wheel_mps': 0.06, 'linear_max': 0.3, 'angular_max': 0.3,
                  'turn_shaper_hysteresis_mps': 0.02, 'turn_shaper_latch_ticks': 6,
-                 'turn_shaper_pure_pivot': True, 'turn_shaper_pivot_deadband_rps': 0.03,
-                 'turn_shaper_dock_transit': True, 'turn_shaper_pivot_instead': True,
+                 'turn_shaper_pivot_deadband_rps': 0.03,
+                 'turn_shaper_dock_transit': True,
                  'turn_shaper_pivot_instead_ratio': 0.5,
                  'turn_shaper_pivot_instead_hysteresis': 0.1,
                  'turn_shaper_transit_pivot_hold_rps': 0.0}
@@ -1238,7 +1217,6 @@ class CmdVelSlewNode(Node):
         self.declare_parameter('max_angular_decel',
                                float(self.get_parameter('max_angular_accel').value))
         self.declare_parameter('hard_stop_lanes', list(HARD_STOP_LANES))
-        self.declare_parameter('slew_both_wheels_always', True)
         # 2026-10-16: the docking lane's slewed steps never pass through a one-wheel turn
         # (no_one_wheel_step); false = the plain per-axis slew (revert)
         self.declare_parameter('docking_no_one_wheel', True)
@@ -1285,8 +1263,6 @@ class CmdVelSlewNode(Node):
         self._max_angular_accel = float(self.get_parameter('max_angular_accel').value)
         self._max_linear_decel = float(self.get_parameter('max_linear_decel').value)
         self._max_angular_decel = float(self.get_parameter('max_angular_decel').value)
-        self._slew_both_wheels_always = bool(
-            self.get_parameter('slew_both_wheels_always').value)
         self._docking_no_one_wheel = bool(self.get_parameter('docking_no_one_wheel').value)
         self._hard_stop_lanes = frozenset(
             str(n) for n in self.get_parameter('hard_stop_lanes').value or ())
@@ -1631,14 +1607,12 @@ class CmdVelSlewNode(Node):
             # Assist episode: from the creep's first tick until the slewed output has
             # settled on the target again after it (ramp-down / hold / hand-back). Only
             # then does the slew keep every tick out of the one-wheel zone. Other
-            # MPPI/RPP driving in shaper phases uses slew_coupled (curvature kept), or
-            # the plain per-axis slew with slew_both_wheels_always false.
+            # MPPI driving in shaper phases uses slew_coupled (curvature kept).
             ramp = bool(pivot is not None and pivot.active) or (
                 getattr(self, '_assist_ramp', False)
                 and (self._cur_lin, self._cur_ang) != (tgt_lin, tgt_ang))
             self._assist_ramp = ramp
-            coupled = (getattr(self, '_slew_both_wheels_always', False)
-                       and turn is not None and turn.is_active(phase, lane))
+            coupled = turn is not None and turn.is_active(phase, lane)
             if CmdVelSlewNode._hard_stop(self, now):
                 # Emergency / bumper lane commands a stop: exact zero now, no decel ramp.
                 self._cur_lin = self._cur_ang = 0.0

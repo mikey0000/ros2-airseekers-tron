@@ -4808,17 +4808,13 @@ def test_preview_zigzag_repeat_plans_once_and_cross_second_failure_reports():
     assert last['status'] == 'failed' and 'run 2/2: no swaths' in last['areas'][0]['error']
 
 
-def test_edge_mode_reaches_the_planner_and_legacy_reverts():
+def test_edge_mode_reaches_the_planner():
     h = Harness()
     h.area_settings = {0: {'edge_mode': 'hard'}}
     m = h.mark()
     start_until_planning(h)
     assert param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]['edge_layout'] == 'hard'
-    h2 = Harness()
-    h2.fsm.p.edge_layout_enabled = False
-    m2 = h2.mark()
-    start_until_planning(h2)
-    assert param_calls(h2, f.PARAM_NODE_COVERAGE, m2)[0]['edge_layout'] == 'legacy'
+    assert 'edge_layout_enabled' not in f.Params.__dataclass_fields__
 
 
 def test_emergency_silence_watchdog_armed_only_after_first_message():

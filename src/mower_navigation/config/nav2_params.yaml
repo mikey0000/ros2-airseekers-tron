@@ -17,7 +17,7 @@
 #     The RPP (transit + coverage) and MowgliNext FTC controllers were deleted on
 #     2026-10-23 (code review stage 0.1). Every MPPI controller carries
 #     mowgli_nav2_plugins' WheelFloorCritic (the drive's 0.06 m/s wheel floor).
-#   * No LiDAR, no /map: the global costmap's static_layer is the nav mask
+#   * No LiDAR, no /map: the global costmap's keepout_filter carries the nav mask
 #     (/nav_keepout_mask), not a SLAM map. Obstacles come from the front stereo
 #     (/stereo_depth/points + the ground-only clearing cloud /stereo_depth/clear_points),
 #     YOLO detections (/ai/det/obstacle_points) and /bumper_cloud, fed to BOTH the
@@ -1007,7 +1007,7 @@ global_costmap:
       always_send_full_costmap: false
       footprint: "[[0.60, 0.235], [0.60, -0.235], [-0.10, -0.235], [-0.10, 0.235]]"
       footprint_padding: 0.02
-      # No /map publisher (no LiDAR, no SLAM): the static_layer below is the nav mask, not
+      # No /map publisher (no LiDAR, no SLAM): the nav mask (keepout_filter below) is not
       # an occupancy map. Rolling window in the GPS-anchored map frame; the nav mask carries
       # the field boundary / no-go zones, the obstacle_layer the live sensor obstacles.
       # DEVIATION: 0.1 m resolution, 50 x 50 m (MowgliNext 0.08 m, 70 x 70 m).
@@ -1052,26 +1052,10 @@ global_costmap:
       # the costmap only through keepout_filter (filters run AFTER inflation: uninflated, max-
       # combined), i.e. a hard robot-CENTRE limit at the drawn edges. terrain_layer /
       # nongrass_layer (StaticLayers on the same grid) still expand the update bounds to the
-      # whole mask every cycle, which is what the filter needs (see above).
+      # whole mask every cycle, which is what the filter needs (see above). The unused
+      # static_layer block was deleted on 2026-10-23 (code review stage 0.2).
       plugins: ["terrain_layer", "nongrass_layer", "obstacle_layer", "inflation_layer"]
       filters: ["keepout_filter"]
-      static_layer:
-        plugin: "nav2_costmap_2d::StaticLayer"
-        # /nav_keepout_mask = NAVIGATION mask (areas grown by nav_margin_m 0.35,
-        # no dock keepout). /keepout_mask is the mowing mask and made the dock
-        # start cell + perimeter coverage rings lethal (plans failed 2026-10-06).
-        map_topic: /nav_keepout_mask
-        map_subscribe_transient_local: true
-        subscribe_to_updates: false
-        # Non-trinary (2026-10-07): the nav mask soft band is 90; trinary would read it
-        # as FREE. 0 -> 0, 90 -> 90/100*254 = 229 (plannable, expensive), >= 100 lethal.
-        # Live check 2026-10-07: the KeepoutFilter (/costmap_filter_info -> this same
-        # mask) already raised the band to 229 (published 89), so this is belt and
-        # braces: same value from either mechanism. The mask has no -1 cells.
-        trinary_costmap: false
-        lethal_cost_threshold: 100
-        unknown_cost_value: -1
-        transform_tolerance: 0.5
       # Terrain memory (mower_map map_server_node ~/terrain_cost, latched, same grid as
       # the nav mask): 0..terrain_cost_max (60) from the traction score of cells where
       # the mower got stuck / slipped (docs/terrain_aware_planning.md). Non-trinary so

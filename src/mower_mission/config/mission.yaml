@@ -255,7 +255,6 @@ behavior_tree_node:
     path_conditioning_pivot_min_rad: 0.35
     path_conditioning_edge_pivot_rad: 0.0     # 0.0 = no edge policy (fillets everywhere); 0 since
     #   the 2026-10-21 edge layout: lap 0 is ON the line, a vertex pivot swings the nose ~0.6 past
-    edge_layout_enabled: true                 # stock-style laps / rows by area edge_mode (false = legacy)
     path_conditioning_edge_clearance_m: 0.20
     # Body planning limit (edge layout round 2): how far the body outline may be planned
     # outside areas U paths U dock corridor at a corner (fillet poses, pivot sweeps), by area

@@ -47,7 +47,7 @@ is direction-aware and always on). Details in the `collision_monitor` block of
 `config/nav2_params.yaml`.
 
 Costmaps:
-- **Global:** frame `map`, rolling window 50x50 m at 0.1 m. Layers `static_layer` (`/nav_keepout_mask`), `terrain_layer`, `obstacle_layer` (stereo, stereo_clear, det_range, bumper), `inflation_layer` (0.65 m >= circumscribed radius, scaling 10); filter `keepout_filter`.
+- **Global:** frame `map`, rolling window 50x50 m at 0.1 m. Layers `terrain_layer`, `nongrass_layer`, `obstacle_layer` (stereo, stereo_clear, det_range, bumper), `inflation_layer` (0.65 m >= circumscribed radius, scaling 10); filter `keepout_filter` (the nav mask `/nav_keepout_mask`).
 - **Local:** frame `odom`, rolling window 6x6 m at 0.05 m. Layers `obstacle_layer` (bumper, stereo, stereo_clear, det_range), `bounds_keeper` (source-less ObstacleLayer with footprint clearing: workaround for the InflationLayer reset bug in Humble 1.1.20, kept until re-verified on Jazzy) and `inflation_layer` (1.0 m, scaling 4; MPPI's footprint check needs it).
 
 Footprint: `[[0.52,0.27],[0.52,-0.27],[-0.23,-0.27],[-0.23,0.27]]`. It comes from the chassis, wheel and bumper sizes in `config/urdf/mower.urdf.xacro`, measured from base_link.
