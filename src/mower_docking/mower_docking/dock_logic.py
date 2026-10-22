@@ -530,7 +530,6 @@ class Snapshot:
     charging_result: Optional[bool] = None   # None = pending/not requested
     rtk_fixed: bool = False
     progress_pose: Optional[Pose2D] = None   # fused pose (/odometry/filtered) for the stall guard
-    dig_stall: bool = False                  # slip_detector /dig_stall (latched Bool)
     map_pose: Optional[Pose2D] = None        # robot pose in the map frame (approach skip / align)
     raw_contact: bool = False                # latest undebounced is_docking_done
     is_charging: bool = False                # MowerBaseDevStatus.is_charging
@@ -661,11 +660,10 @@ class DockParams:
     # vendor behaviour (blind reverse after any search timeout).
     allow_blind_docking: bool = False
     blind_marker_max_age_s: float = 30.0
-    # stall / dig guard (DOCKING / FINAL_DOCKING / RETRY)
+    # stall guard (DOCKING / FINAL_DOCKING / RETRY)
     stall_min_cmd: float = 0.03
     stall_progress_ratio: float = 0.2
     stall_timeout_s: float = 1.0
-    use_dig_stall: bool = True
     stall_turn_radius_m: float = 0.2          # pivot wheel travel = |d yaw| * this (progress)
     # A stall in DOCKING / FINAL_DOCKING is usually the robot pushing against the dock
     # before the 3-sample contact debounce confirms (2026-10-07: DOCK_STALLED, then
@@ -842,7 +840,6 @@ class DockStateMachine:
         self._stall = StallGuard(params.stall_min_cmd, params.stall_progress_ratio,
                                  params.stall_timeout_s, params.stall_turn_radius_m)
         self._stall_hold: Optional[Tuple[float, str]] = None   # (t, failure message)
-        self._dig_at_start = False
         self.use_vision = params.use_vision if use_vision is None else bool(use_vision)
         self.dock_pose = dock_pose
         self.approach = approach_pose(dock_pose, params.approach_distance)
@@ -1555,7 +1552,6 @@ class DockStateMachine:
         self._last_err = None
         self._valid_marker_t = None
         self._marker_seen_t = None
-        self._dig_at_start = bool(snap.dig_stall)
         if snap.contact:
             self.state = DockState.CHARGING
             self._t_state = snap.t
@@ -1726,11 +1722,9 @@ class DockStateMachine:
             return held
 
         if self.state in (DockState.DOCKING, DockState.FINAL_DOCKING, DockState.RETRY):
-            dig = self.p.use_dig_stall and snap.dig_stall and not self._dig_at_start
-            if dig or self._stall.update(snap.t, snap.progress_pose, self._last_cmd):
-                why = 'slip detector /dig_stall' if dig else \
-                    'moved %.2f m while commanding %.2f m/s' % (self._stall.measured,
-                                                                 abs(self._last_cmd))
+            if self._stall.update(snap.t, snap.progress_pose, self._last_cmd):
+                why = 'moved %.2f m while commanding %.2f m/s' % (self._stall.measured,
+                                                                   abs(self._last_cmd))
                 msg = '%s: wheels stalled in %s (%s)' % (DockMsg.DOCK_STALLED, self.state, why)
                 self._stall.reset()
                 if self.state != DockState.RETRY and self.p.stall_contact_grace_s > 0:

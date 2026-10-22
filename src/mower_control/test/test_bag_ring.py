@@ -560,7 +560,7 @@ def test_default_topics_sane():
         assert not [x for x in t if bad in x and x not in allowed], bad
     for need in ('/tf_static', '/cmd_vel', '/odometry/filtered', '/odometry/filtered_map',
                  '/mission/incident', '/hardware_bridge/emergency', '/diagnostics',
-                 '/map_server_node/terrain_summary', '/dig_stall'):
+                 '/map_server_node/terrain_summary', '/stuck_event'):
         assert need in t
     assert all(x.startswith('/') for x in t)
 

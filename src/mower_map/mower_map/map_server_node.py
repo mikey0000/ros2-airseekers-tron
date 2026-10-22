@@ -193,7 +193,6 @@ PARAMS = {
     'terrain_sample_min_move_m': 0.05,  # one tilt sample per this much travel
     'terrain_roll_offset_deg': 0.0,    # IMU mounting bias (cancels anyway over headings)
     'terrain_pitch_offset_deg': 0.0,
-    'terrain_dig_topic': '/dig_stall',
     'terrain_incident_topic': '/mission/incident',
     'terrain_bad_half_life_days': 21.0,
     'terrain_slope_half_life_days': 365.0,
@@ -328,7 +327,6 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         self.terrain_dirty = False           # published layers out of date
         self._terrain_last_xy = None
         self._terrain_last_t = None
-        self._dig_latched = False
         self._lethal_prev = False
         self._soft_prev = False
         self._pose_gate = core.PoseJumpGate(float(self.p('pose_jump_max_m')),
@@ -363,10 +361,6 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             from sensor_msgs.msg import Imu
             self._imu_sub = sub(Imu, self.p('terrain_imu_topic'), self.on_imu, 1, lock=lock,
                                 sampled=True, with_receipt=True)
-            sub(Bool, self.p('terrain_dig_topic'), self.on_dig_stall,
-                QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
-                           durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
-                           history=QoSHistoryPolicy.KEEP_LAST), lock=lock)
             sub(String, self.p('terrain_incident_topic'), self.on_incident, 20, lock=lock)
         self.nongrass_init(sub, lock, _latched())
         self.imu = None
@@ -1760,12 +1754,6 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             t.raster.add_seen(x, y, dt)
             t.dirty = True
             self.terrain_dirty = True
-
-    def on_dig_stall(self, msg):
-        latched = bool(msg.data)
-        if latched and not self._dig_latched and self.pose is not None:
-            self.terrain_incident('dig_stall', self.pose[0], self.pose[1], '/dig_stall latched')
-        self._dig_latched = latched
 
     def on_incident(self, msg):
         """/mission/incident JSON {kind, x?, y?, detail?}; pose defaults to the robot."""
