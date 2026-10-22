@@ -239,6 +239,33 @@ class MapStore:
                     return i
         return None
 
+    def find_pending_tracker(self, track_id: int) -> Optional[Obstacle]:
+        """The PENDING SOURCE_TRACKER obstacle proposed for obstacle_tracker track
+        ``track_id`` (its name ends in '#<track_id>'), or None."""
+        if track_id <= 0:
+            return None
+        tag = re.compile(r'#%d\s*$' % int(track_id))
+        for area in self.areas:
+            for obs in area.obstacles:
+                if obs.pending and obs.source == SOURCE_TRACKER and tag.search(obs.name or ''):
+                    return obs
+        return None
+
+    def replace_pending_polygon(self, pending_id: int, polygon: Polygon,
+                                name: str = '') -> bool:
+        """Re-size a PENDING proposal in place (the tracker refines a no-go zone)."""
+        polygon = normalise_polygon(polygon)
+        if pending_id == 0 or len(polygon) < 3:
+            return False
+        for area in self.areas:
+            for obs in area.obstacles:
+                if obs.id == pending_id and obs.pending:
+                    obs.polygon = list(polygon)
+                    if name:
+                        obs.name = name
+                    return True
+        return False
+
     def discard_pending(self, pending_id: int) -> bool:
         if pending_id == 0:
             return False

@@ -86,3 +86,62 @@ obstacle_tracker:
     snapshot_dir: /ros2_ws/maps/obstacle_snapshots
     snapshot_quality: 80       # JPEG quality (1-100)
     snapshot_max_age_s: 1.0    # ignore an annotated frame older than this
+    # --- class-voted no-go zones (option A, 2026-10-23 trunk incident) ----------------
+    # docs/analysis/2026-10-23_obstacle_nogo_options.md. Independent of auto_promote (the
+    # minutes-long cluster promotion above, still off). Defaults from the options doc,
+    # OWNER TO REVIEW. A ranged static-class detection track becomes a PENDING keepout
+    # ("auto: <class> #<id>", live in the nav mask for this session, not in areas.dat)
+    # once ALL hold: det_min_frames frames of score >= det_min_score within det_window_s,
+    # landing within det_assoc_m; the class vote (summed scores) is on static_classes and
+    # never on never_classes; no person / animal ranged near it (dynamic veto above); the
+    # body would touch it on the planned path ahead (require_on_path, owner rule B6:
+    # footprint corridor along the coverage plan from the robot on / the current route,
+    # or the sweep of a pivot >= onpath_pivot_min_turn_deg at a corner, or a bumper hit
+    # within bumper_evidence_m); the robot is mowing (only_while_mowing); its area's
+    # obstacle_detection is not none.
+    class_zones: true
+    det_min_score: 0.6
+    det_min_frames: 5
+    det_window_s: 10.0
+    det_assoc_m: 0.3
+    det_vote_min_score: 0.3          # lower scores still vote for the class
+    static_classes: [trunk, stone, wood, brick, trashbin, potted plant, chair]
+    never_classes: [person, dog, cat, hedgehog, rabbit]
+    # size: radius = max(median det_range width, class prior diameter) / 2 + size_margin_m
+    # (det_range width = box width x range / fx; the coverage planner grows holes 0.30 m)
+    class_prior_names: [trunk, stone, wood, brick, trashbin, potted plant, chair]
+    class_prior_diameters_m: [0.25, 0.15, 0.10, 0.20, 0.45, 0.30, 0.50]
+    default_prior_m: 0.20
+    size_margin_m: 0.10
+    max_zone_radius_m: 1.0
+    resize_step_m: 0.05              # re-send a pending zone whose radius moved this much
+    require_on_path: true
+    onpath_pivot_min_turn_deg: 30.0
+    plan_topics: [/coverage/full_plan, /plan]   # first: the latched coverage plan
+    plan_max_age_s: 600.0
+    plan_back_m: 2.0                 # coverage plan counted from 2 m behind the robot
+    bumper_topic: /bumper_cloud_map
+    bumper_debounce_s: 1.0
+    bumper_evidence_m: 0.5
+    bumper_zone_hits: 0              # >0: this many hits at one spot = a 0.25 m bumper zone (off)
+    bumper_zone_radius_m: 0.25
+    # lifecycle: a pending zone is dropped when not re-seen for pending_expire_s of mowing
+    # in its area, or when looked at (0.8-3 m, inside +-30 deg of the heading) and not
+    # detected det_gone_confirmations steps running; Ignore (GUI, ~/clear_obstacle) drops
+    # it and suppresses ignore_radius_m around it for the session; two zones within
+    # merge_dist_m are one object.
+    pending_expire_s: 3600.0
+    det_gone_confirmations: 8
+    det_verify_min_m: 0.8
+    det_verify_fov_deg: 30.0
+    merge_dist_m: 0.3
+    ignore_radius_m: 0.5
+    area_settings_topic: /map_server_node/area_settings   # obstacle_detection none -> no zones
+    # zone set for the mission's pre-pivot check (mower_map/nogo_zones.py ZoneSet JSON):
+    # promoted (pending / accepted) and candidate zones + the static-class det marks of the
+    # last mark_memory_s (= the 60 s static_det_layer)
+    zones_topic: /obstacle_tracker/nogo_zones
+    mark_memory_s: 60.0
+    mark_min_score: 0.5
+    mark_margin_m: 0.10
+    discard_service: /map_server_node/discard_obstacle
