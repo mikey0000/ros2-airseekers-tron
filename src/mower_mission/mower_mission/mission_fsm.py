@@ -1046,6 +1046,8 @@ class Params:
     # / resume point) ends edge_approach_inset_m inside, beside it; 0 = at the start.
     edge_approach_inset_m: float = 0.30
     edge_approach_near_m: float = 0.25
+    edge_lead_in_m: float = 0.9      # ... and this far before it; a blade-off S-curve lead-in
+    #                                  (TRANSIT) joins the lap on its line; 0 = beside it
     # --- repeated bumper hits (field 2026-10-21 07:29: a real object just outside the line,
     # the bumper fired 6 and 9 times in turn). bumper_skip_hits hits (rising edges of the
     # bumper_controller routing status) within bumper_skip_radius_m of each other (and within
@@ -1253,6 +1255,7 @@ class Mission:
     route_full: Optional[list] = None           # the planned route (route_cusps index into it)
     route_cusps: list = field(default_factory=list)   # [(i, x, y, heading_after)] of route_full
     final_approach: bool = False                # this transit's final approach leg was sent
+    lead_in: Any = None                         # (x, y, yaw) edge start the lead-in drives onto
     cusp_turns: dict = field(default_factory=dict)    # cusp (x, y) -> about-turns, per sub-path
     cusp_resume: Optional[list] = None          # route remainder sent after the about-turn
     cusp_heading: Optional[float] = None        # heading the cusp about-turn turns to
@@ -3051,6 +3054,8 @@ class MissionFSM:
         robot onto the lap from inside. edge_approach_inset_m <= 0: the start itself."""
         x, y = float(target[0]), float(target[1])
         inset = float(self.p.edge_approach_inset_m)
+        if self.mission is not None:
+            self.mission.lead_in = None
         if inset <= 0.0 or not self._region_areas:
             return (x, y, yaw)
         polys = self._region()
@@ -3058,9 +3063,11 @@ class MissionFSM:
         if q is None or q[2] > float(self.p.edge_approach_near_m):
             return (x, y, yaw)
         best = None
+        back = max(0.0, float(self.p.edge_lead_in_m))
         for sgn in (1.0, -1.0):
             nx, ny = -math.sin(yaw) * sgn, math.cos(yaw) * sgn
-            cx, cy = x + inset * nx, y + inset * ny
+            cx = x + inset * nx - back * math.cos(yaw)
+            cy = y + inset * ny - back * math.sin(yaw)
             if bbody.point_outside(cx, cy, polys) > 0.0:
                 continue
             e = bbody.nearest_edge_point(cx, cy, polys)
@@ -3070,7 +3077,10 @@ class MissionFSM:
         if best is None or best[0] < inset - 0.02:
             return (x, y, yaw)     # another edge closer than the start's own (a corner)
         self._log('info', 'transit to an edge start (%.2f, %.2f): approach point %.2f m inside '
-                          'at (%.2f, %.2f)' % (x, y, inset, best[1], best[2]))
+                          'and %.2f m before it at (%.2f, %.2f), then a blade-off lead-in onto '
+                          'it' % (x, y, inset, back, best[1], best[2]))
+        if back > 0.0 and self.mission is not None:
+            self.mission.lead_in = (x, y, yaw)
         return (best[1], best[2], yaw)
 
     def _is_turn_leg(self):
@@ -3194,6 +3204,8 @@ class MissionFSM:
 
     def _begin_blade(self):
         m = self.mission
+        if m.lead_in is not None and self.phase == 'TRANSIT' and self._lead_in():
+            return
         if self.inputs.boundary_violation:
             self._boundary_pause()       # never spin the blade up outside the boundary
             return
@@ -5101,6 +5113,49 @@ class MissionFSM:
         self._blk = None
         self._begin_blade()
 
+    def _lead_in(self):
+        """After a transit to an edge start's approach point: a short blade-off FollowPath
+        (an S-curve, tangent to the lap at both ends) from the robot onto the start, still in
+        TRANSIT, so the lap is joined on its line and heading (round 3: the join from 0.3 m
+        inside added ~0.1 m cross-track and swung the side out at run5's start bend). Any
+        outcome then mows from the start. True = sent."""
+        m, pose = self.mission, self.inputs.pose
+        sx, sy, h = m.lead_in
+        m.lead_in = None
+        if pose is None or len(pose) < 3:
+            return False
+        ax, ay = float(pose[0]), float(pose[1])
+        L = math.hypot(sx - ax, sy - ay)
+        if L < 0.15:
+            return False
+        a0 = float(pose[2])
+        if abs(geo.wrap_angle(a0 - h)) > math.radians(60.0):
+            a0 = h
+        k = max(4, int(L / 0.05))
+        poses = []
+        for i in range(k + 1):
+            t = i / k
+            h00, h10, h01, h11 = (2 * t ** 3 - 3 * t ** 2 + 1, t ** 3 - 2 * t ** 2 + t,
+                                  -2 * t ** 3 + 3 * t ** 2, t ** 3 - t ** 2)
+            x = h00 * ax + h10 * L * math.cos(a0) + h01 * sx + h11 * L * math.cos(h)
+            y = h00 * ay + h10 * L * math.sin(a0) + h01 * sy + h11 * L * math.sin(h)
+            poses.append([x, y, 0.0])
+        for i in range(len(poses)):
+            j0, j1 = max(0, i - 1), min(len(poses) - 1, i + 1)
+            poses[i][2] = math.atan2(poses[j1][1] - poses[j0][1], poses[j1][0] - poses[j0][0])
+        poses = [tuple(q) for q in poses]
+        if self.blade_on:
+            self._blade_off('edge start lead-in')
+        self._log('info', 'edge start lead-in: %.2f m S-curve onto (%.2f, %.2f), blade off'
+                  % (L, sx, sy))
+        checker = self.p.route_corner_goal_checker_id or self.p.follow_goal_checker_id
+        self._start_action(ACT_FOLLOW, {
+            'poses': poses, 'controller_id': self.coverage_controller_id(False),
+            'goal_checker_id': checker,
+            'progress_checker_id': self.p.follow_progress_checker_id},
+            L / 0.1 + 20.0, purpose='lead_in')
+        return True
+
     def _transit_arrived(self):
         """True when the last transit target is within transit_arrived_radius_m."""
         m = self.mission
@@ -5128,6 +5183,13 @@ class MissionFSM:
             return
         if a.purpose == 'route_corner':
             self._route_corner_spun(outcome)
+            return
+        if a.purpose == 'lead_in':
+            m = self.mission
+            if m is not None and self.phase == 'TRANSIT':
+                if outcome != SUCCEEDED:
+                    self._log('warn', 'edge start lead-in %s: mowing from here' % outcome)
+                self._begin_blade()
             return
         if a.purpose == 'final_approach_spin':
             m = self.mission

@@ -56,6 +56,7 @@ class Harness:
         params.setdefault('hard_boundary_body', False)
         params.setdefault('hard_boundary_snapshot', False)    # synthetic ~/outside_m
         params.setdefault('pivot_retry_pause_s', 0.0)   # immediate re-send (own test)
+        params.setdefault('edge_approach_inset_m', 0.0)  # edge-start approach (own test)
         self.t = 0.0
         self.fsm = f.MissionFSM(f.Params.from_dict(params), cursor=cursor, now=0.0)
         i = self.fsm.inputs

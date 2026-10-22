@@ -463,6 +463,7 @@ behavior_tree_node:
     pivot_way_gain_m: 0.05               # coverage pivot turns the interior way if its swept body is this much further in
     edge_approach_inset_m: 0.30          # transit to an edge-lap start / resume point ends this far inside
     edge_approach_near_m: 0.25
+    edge_lead_in_m: 0.9                  # ... and this far before it, then a blade-off S-curve lead-in onto the lap
     bumper_skip_hits: 3                  # bumper hits within bumper_skip_radius_m -> skip
     bumper_skip_radius_m: 1.0
     bumper_skip_window_s: 180.0
