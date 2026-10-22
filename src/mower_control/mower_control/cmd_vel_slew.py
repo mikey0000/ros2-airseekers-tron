@@ -165,8 +165,10 @@ loop runs on a ``PeriodicRunner`` thread instead of an rclpy timer, and
 ~12 % of a core to ~1 %.
 """
 
+import contextlib
 import math
 import os
+import threading
 import time
 
 import rclpy
@@ -1248,6 +1250,7 @@ class CmdVelSlewNode(Node):
             self.set_parameters([Parameter(k, value=v)
                                  for k, v in overrides.items()])
         self._shaper = DriveShaper(**{n: self.get_parameter(n).value for n in SHAPER_PARAMS})
+        self._cfg_lock = threading.Lock()   # step() vs the parameter callback
         self.add_on_set_parameters_callback(self._on_set_parameters)
         self._imu = None              # (yaw, gyro_z) of the newest /imu/data
         self._imu_time = None
@@ -1442,43 +1445,62 @@ class CmdVelSlewNode(Node):
         self._imu_time = receipt
 
     def _on_set_parameters(self, params):
-        for p in params:
-            if p.name in TURN_PARAMS and getattr(self, '_turn', None) is not None:
-                set_turn_param(self._turn, p.name, p.value)
-                self.get_logger().info('cmd_vel_slew: %s = %r' % (p.name, p.value))
-        for p in params:
-            if p.name in PIVOT_PARAMS:
-                setattr(self._pivot, PIVOT_PARAMS[p.name],
-                        bool(p.value) if p.name == 'pivot_assist' else float(p.value))
-                self.get_logger().info('cmd_vel_slew: %s = %r' % (p.name, p.value))
-        for p in params:
-            if p.name in ASSIST_GATE_PARAMS and getattr(self, '_assist_gate', None) is not None:
-                attr, kind = ASSIST_GATE_PARAMS[p.name]
-                setattr(self._assist_gate, attr, kind(p.value))
-                self.get_logger().info('cmd_vel_slew: %s = %r' % (p.name, p.value))
-        for p in params:
-            if p.name not in SHAPER_PARAMS:
-                continue
-            kind = SHAPER_PARAMS[p.name][1]
-            value = p.value
-            if kind is float and isinstance(value, int) and not isinstance(value, bool):
-                value = float(value)
-            if not isinstance(value, kind) or (kind is float and not math.isfinite(value)):
-                return SetParametersResult(successful=False,
-                                           reason='%s must be a %s' % (p.name, kind.__name__))
-        for p in params:
-            if p.name in SHAPER_PARAMS:
-                kind = SHAPER_PARAMS[p.name][1]
-                setattr(self._shaper, p.name, kind(p.value))
-                if p.name == 'heading_hold' and not p.value:
-                    self._shaper.reset()
-                self.get_logger().info('cmd_vel_slew: %s = %r' % (p.name, p.value))
+        """Validate every parameter of the request first, then apply them all at once under
+        ``_cfg_lock`` (code review 2026-10-23: this callback runs on the executor thread while
+        ``step()`` runs on the PeriodicRunner thread; before, a tick could see half a request
+        applied, and a request rejected on a SHAPER_PARAMS type had already applied its turn /
+        pivot / assist-gate parameters)."""
+        turn = getattr(self, '_turn', None)
+        gate = getattr(self, '_assist_gate', None)
+        sets = []           # (apply function, name, value): built and validated first
+        try:
+            for p in params:
+                if p.name in TURN_PARAMS and turn is not None:
+                    attr, kind = TURN_PARAMS[p.name]
+                    sets.append((('turn', attr), p.name, kind(p.value)))
+                if p.name in PIVOT_PARAMS:
+                    value = bool(p.value) if p.name == 'pivot_assist' else float(p.value)
+                    sets.append((('pivot', PIVOT_PARAMS[p.name]), p.name, value))
+                if p.name in ASSIST_GATE_PARAMS and gate is not None:
+                    attr, kind = ASSIST_GATE_PARAMS[p.name]
+                    sets.append((('gate', attr), p.name, kind(p.value)))
+                if p.name in SHAPER_PARAMS:
+                    kind = SHAPER_PARAMS[p.name][1]
+                    value = p.value
+                    if kind is float and isinstance(value, int) and not isinstance(value, bool):
+                        value = float(value)
+                    if not isinstance(value, kind) or (kind is float
+                                                       and not math.isfinite(value)):
+                        return SetParametersResult(
+                            successful=False, reason='%s must be a %s' % (p.name, kind.__name__))
+                    sets.append((('shaper', p.name), p.name, kind(value)))
+        except (TypeError, ValueError) as exc:
+            return SetParametersResult(successful=False, reason=str(exc))
+        lock = getattr(self, '_cfg_lock', None)
+        with (lock if lock is not None else contextlib.nullcontext()):
+            for (target, attr), _name, value in sets:
+                if target == 'turn':
+                    if attr in SHAPE_DEFAULTS:
+                        turn.params = dict(turn.params, **{attr: value})
+                    else:
+                        setattr(turn, attr, value)
+                elif target == 'pivot':
+                    setattr(self._pivot, attr, value)
+                elif target == 'gate':
+                    setattr(gate, attr, value)
+                else:
+                    setattr(self._shaper, attr, value)
+                    if attr == 'heading_hold' and not value:
+                        self._shaper.reset()
+        for _target, name, value in sets:
+            self.get_logger().info('cmd_vel_slew: %s = %r' % (name, value))
         return SetParametersResult(successful=True)
 
     def _tick(self):
         self._pump.poll()
         now = self._clk.now()
-        out = self.step(now)
+        with self._cfg_lock:     # a parameter change lands between ticks, never inside one
+            out = self.step(now)
         if out is not None and CmdVelSlewNode.should_publish(self, out, now):
             self._pub.publish(twist_bytes(*out))
 
