@@ -19,6 +19,9 @@ Criteria:
      measure is always reported (a_point); SIM_GATE_MEASURE=point judges it instead (revert).
      The body is judged in MOWING only (coverage); TRANSIT / RETURNING_HOME / docking are
      judged on the point, the body there is reported as info (a_body_info).
+  i  body overhang, plan-relative (round 3): MOWING samples minus the overhang of the planned
+     pose they track (lap 0 on driven arcs, row ends, pivot sweeps are planned out) <= 0.10;
+     TRANSIT absolute <= 0.40; the absolute side / nose / sweep maxima are reported.
   b  hard-boundary trips (mission log "BOUNDARY OUT", formerly "HARD BOUNDARY"); PASS: 0.
   c  mission reached MOWING_COMPLETE, then docked and charging (sim contacts); PASS: both.
   d  STUCK_NEEDS_HELP entries, sub-paths NOT mowed, costmap-fallback /navigate_to_pose
@@ -307,6 +310,47 @@ def main(run, world):
     def near_pivot(t):
         k = bisect.bisect_left(piv_t, t - 0.6)
         return k < len(piv_t) and piv_t[k] <= t + 0.6
+
+    # Plan-relative (round 3, owner option (c)): in MOWING a sample is judged against the body
+    # overhang of the PLANNED pose it tracks (nearest sub-path point around the progress index,
+    # the planned heading; a pivot: the planned position at the actual yaw) - lap 0 on a driven
+    # arc, row ends and pivot sweeps are planned to overhang; excess over the plan <=
+    # I_TRACK_M passes. TRANSIT samples are judged absolute (<= I_TRANSIT_M, the soft nose
+    # trip). The absolute maxima are reported as before.
+    I_TRACK_M, I_TRANSIT_M = 0.10, 0.40
+    pmsg = D['mow_plan'][-1][1] if D['mow_plan'] else None
+    psubs = json.loads(pmsg)['subpaths'] if pmsg else []
+    pcums = [G.cumulative_lengths([(q[0], q[1]) for q in sp]) for sp in psubs]
+
+    def plan_pose(t, x, y):
+        h = hl_at(t)
+        if h is None or h[1] != 'MOWING' or h[4] is None or h[4] < 0 or \
+                h[4] >= len(psubs) or h[5] is None or h[5] < 0:
+            return None
+        sp, cum = psubs[h[4]], pcums[h[4]]
+        if len(sp) < 2:
+            return None
+        i = min(h[5], len(sp) - 1)
+        lo, hi = i, i
+        while lo > 0 and cum[i] - cum[lo] < 1.5:
+            lo -= 1
+        while hi < len(sp) - 1 and cum[hi] - cum[i] < 1.5:
+            hi += 1
+        best = None
+        for j in range(lo, hi):
+            ax, ay, bx, by = sp[j][0], sp[j][1], sp[j + 1][0], sp[j + 1][1]
+            dx, dy = bx - ax, by - ay
+            L2 = dx * dx + dy * dy
+            if L2 < 1e-12:
+                continue
+            u = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+            px, py = ax + u * dx, ay + u * dy
+            d = math.hypot(px - x, py - y)
+            if best is None or d < best[0]:
+                best = (d, px, py, math.atan2(dy, dx))
+        return best[1:] if best else None
+    exc = {'side': [-1.0, None], 'nose': [-1.0, None], 'sweep': [-1.0, None]}
+    tr_max, tr_at = 0.0, None
     for j in range(0, len(mow), 5):                          # 10 Hz
         r = mow[j]
         mode = measure_body(body, 'soft', areas, modes, dflt, r[1], r[2])
@@ -317,11 +361,25 @@ def main(run, world):
             if c < hard_min:
                 hard_min, hard_at = c, [round(r[0] - t0, 1), round(r[1], 2), round(r[2], 2)]
             continue
-        sp = body_split(body, r[1], r[2], r[3], polys, near_pivot(r[0]))
+        pv = near_pivot(r[0])
+        sp = body_split(body, r[1], r[2], r[3], polys, pv)
+        at = [round(r[0] - t0, 1), round(r[1], 2), round(r[2], 2), round(math.degrees(r[3]))]
         if sp and sp[1] > bsp[sp[0]][0]:
-            bsp[sp[0]] = [sp[1], [round(r[0] - t0, 1), round(r[1], 2), round(r[2], 2),
-                                  round(math.degrees(r[3]))]]
-    i_pass = bsp['side'][0] <= SOFT_SIDE and bsp['nose'][0] <= SOFT_NOSE and \
+            bsp[sp[0]] = [sp[1], at]
+        if not sp:
+            continue
+        if state_at(r[0]) != 'MOWING':
+            if sp[1] > tr_max:
+                tr_max, tr_at = sp[1], at
+            continue
+        pp = plan_pose(r[0], r[1], r[2])
+        if pp is None:
+            continue
+        ideal = body_split(body, pp[0], pp[1], r[3] if pv else pp[2], polys, pv)
+        e = sp[1] - (ideal[1] if ideal else 0.0)
+        if e > exc[sp[0]][0]:
+            exc[sp[0]] = [e, at + [round(ideal[1] if ideal else 0.0, 3)]]
+    i_pass = max(v[0] for v in exc.values()) <= I_TRACK_M and tr_max <= I_TRANSIT_M and \
         (hard_min >= HARD_MARGIN if math.isfinite(hard_min) else True)
     res['criteria']['i'] = {'pass': i_pass, 'body': body.describe(),
                             'side_m': round(bsp['side'][0], 3), 'side_at': bsp['side'][1],
@@ -329,7 +387,12 @@ def main(run, world):
                             'sweep_m': round(bsp['sweep'][0], 3), 'sweep_at': bsp['sweep'][1],
                             'hard_min_clearance_m': (round(hard_min, 3)
                                                      if math.isfinite(hard_min) else None),
-                            'hard_at': hard_at}
+                            'hard_at': hard_at,
+                            'excess_side_m': round(exc['side'][0], 3), 'excess_side_at': exc['side'][1],
+                            'excess_nose_m': round(exc['nose'][0], 3), 'excess_nose_at': exc['nose'][1],
+                            'excess_sweep_m': round(exc['sweep'][0], 3),
+                            'excess_sweep_at': exc['sweep'][1],
+                            'transit_max_m': round(tr_max, 3), 'transit_at': tr_at}
     eps = []
     for w in worst:
         if eps and w[0] - eps[-1][1] < 2.0:
@@ -642,8 +705,9 @@ def main(run, world):
             ' '.join('%s:%d' % kv for kv in sorted(C['f']['per_lane'].items())))),
         ('g', 'pivot time / moving time', '%.0f / %.0f s (%.0f %%)' % (
             C['g']['pivot_s'], C['g']['moving_s'], 100 * C['g']['share'])),
-        ('i', 'MOWING+TRANSIT body out side / nose / sweep (hard clr)', '%.3f / %.3f / %.3f (%s)' % (
-            C['i']['side_m'], C['i']['nose_m'], C['i']['sweep_m'],
+        ('i', 'body over plan side / nose / sweep; transit (abs)', '%.3f / %.3f / %.3f; %.3f (abs %.3f / %.3f / %.3f, hard clr %s)' % (
+            C['i']['excess_side_m'], C['i']['excess_nose_m'], C['i']['excess_sweep_m'],
+            C['i']['transit_max_m'], C['i']['side_m'], C['i']['nose_m'], C['i']['sweep_m'],
             C['i']['hard_min_clearance_m'])),
         ('h', 'MOWING cross-track p99 line / arc / corner', ' / '.join(
             '%.3f' % C['h']['stats'][k]['p99'] if k in C['h']['stats'] else '-'
@@ -663,6 +727,9 @@ def main(run, world):
     if 'loop_hz' in res:
         print('   controller loop Hz: median %d, p10 %d (%d s)' % (
             res['loop_hz']['median'], res['loop_hz']['p10'], res['loop_hz']['seconds']))
+    print('   body over plan at [t, x, y, deg, planned]: side %s, nose %s, sweep %s; transit %s'
+          % (C['i']['excess_side_at'], C['i']['excess_nose_at'], C['i']['excess_sweep_at'],
+             C['i']['transit_at']))
     print('   body worst at: side %s, nose %s, sweep %s' % (C['i']['side_at'], C['i']['nose_at'],
                                                          C['i']['sweep_at']))
     print('   body (info, all phases): ' + ', '.join('%s %.3f' % (k, v['max_m'])
