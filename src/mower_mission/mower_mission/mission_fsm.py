@@ -1030,6 +1030,13 @@ class Params:
     # Spin's own unfinished-pivot handling). The 2nd drift on the same coverage leg skips the
     # leg (blocked pivot). 0 = off.
     spin_drift_m: float = 0.15
+    # Owner 2026-10-23: obstacle avoidance (detours, skips, retries, blocked / dynamic waits,
+    # bumper skips, pivot back-outs) keeps the blade on while the robot - and a detour's
+    # straight path to its rejoin point - stays inside the area by the boundary guard's body
+    # rules. Off still for: leaving the area, lift / tilt / e-stop / emergency, localisation
+    # hold, STOP / manual, docking / return outside, battery, STUCK, mission end. false = the
+    # old blade-off behaviour.
+    blade_keep_on_obstacles: bool = True
     # In-place coverage pivots without a planned way round turn the way whose swept body
     # stays further inside (toward the interior, even the longer way) when that is better by
     # more than this; < 0 = always the shorter way (sim 2026-10-22: a -116 deg leg-start pivot
@@ -1519,32 +1526,71 @@ class MissionFSM:
         """May a running blade stay on in the current mission step (continuous policy,
         inside the area)?  Used by the _go safety net and blade_allowed()."""
         m = self.mission
-        if not self._continuous() or self.inputs.boundary_violation or \
+        keep_obs = bool(self.p.blade_keep_on_obstacles) and self._hb is None and \
+            self._body_inside(self.inputs.pose)
+        if not (self._continuous() or keep_obs) or self.inputs.boundary_violation or \
                 self.phase not in ('MOWING', 'TRANSIT') or m.recovering:
             return False
         if m.step in ('dyn_wait', 'retry_wait', 'blocked_wait'):
             return True
+        if m.step == 'pivot_backout' and keep_obs:
+            return True
         return m.step == 'transit' and m.blade_transit
 
     def _soft_blade_off(self, reason):
-        """Blade off unless the continuous policy keeps it running here."""
+        """Blade off unless the continuous policy keeps it running here, or (owner 2026-10-23,
+        blade_keep_on_obstacles) the robot is inside the area by the body rules."""
         if self.blade_on and self._continuous() and not self.inputs.boundary_violation \
                 and self.mission is not None and not self.mission.recovering \
                 and self.phase in ('MOWING', 'TRANSIT'):
             self._log('info', 'blade kept on (%s, blade_policy continuous)' % reason)
             return
+        if self._keep_blade_inside(reason):
+            return
         self._blade_off(reason)
 
-    def _segment_in_area(self, a, b):
+    def _body_inside(self, pose):
+        """The robot at ``pose`` is inside the allowed area by the boundary guard's own rules
+        (body points within their soft / hard limits; base_link check on drawn paths / the
+        dock corridor counts as outside the mowing area here)."""
+        if pose is None or len(pose) < 3:
+            return False
+        mode = self._hb_body_mode(pose)
+        if mode is None:
+            return False
+        ev = self._hb_body_eval(pose, mode)
+        return ev is not None and ev['excess'] <= 0.0
+
+    def _keep_blade_inside(self, reason, target=None):
+        """Owner 2026-10-23: obstacle avoidance / bumper / back-outs do not stop the blade
+        while the robot stays inside the area by our body rules (and, for a move to
+        ``target``, the straight path there does too). True = kept on (logged)."""
+        m = self.mission
+        if not self.p.blade_keep_on_obstacles or not self.blade_on or m is None or \
+                self.phase not in ('MOWING', 'TRANSIT') or self.inputs.boundary_violation or \
+                m.recovering or self._hb is not None or not self._body_inside(self.inputs.pose):
+            return False
+        if target is not None and not self._segment_in_area(self.inputs.pose, target,
+                                                            body=True):
+            return False
+        self._log('info', 'blade kept on (%s): inside the area (blade_keep_on_obstacles)'
+                  % reason)
+        return True
+
+    def _segment_in_area(self, a, b, body=False):
         m = self.mission
         area = m.areas.get(m.area_idx) if m is not None else None
         if area is None or a is None or b is None:
             return False
         d = geo.dist(a, b)
         n = max(1, int(math.ceil(d / max(0.05, float(self.p.blade_transit_sample_m)))))
+        yaw = math.atan2(b[1] - a[1], b[0] - a[0]) if d > 1e-6 else \
+            (float(a[2]) if len(a) >= 3 else 0.0)
         for k in range(n + 1):
             pt = (a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n)
             if not geo.inside_area(pt, area):
+                return False
+            if body and not self._body_inside((pt[0], pt[1], yaw)):
                 return False
         return True
 
@@ -1558,6 +1604,8 @@ class MissionFSM:
         if keep:
             m.blade_transit = True
             self._log('info', 'blade kept on: %s stays inside area %d' % (reason, m.area_idx))
+        elif self.phase in ('MOWING', 'TRANSIT') and self._keep_blade_inside(reason, target):
+            m.blade_transit = True        # a detour / skip transit that stays inside the area
         else:
             self._blade_off(reason)
 
@@ -3338,6 +3386,11 @@ class MissionFSM:
             if m.start_local < c <= m.chunk_end and c < self._seg_last():
                 m.chunk_end = m.corner_end = c       # this chunk ends on the pivot vertex
                 break
+        if m.join is not None and m.join[0] == m.sub_i and m.join[1] == m.start_local:
+            # the gate's (h) rebuilds the sent path from this line (keep the format)
+            self._log('info', 'edge start join: sub %d local %d side %+d inset %.3f over %.2f m'
+                      % (m.sub_i, m.start_local, int(m.join[2]), float(m.join[3]),
+                         float(self.p.edge_join_m)))
         poses = self._join_leg(list(sp[m.start_local:m.chunk_end + 1]), m.sub_i, m.start_local)
         m.join = None
         reverse = geo.is_reverse_subpath(sp)
@@ -3704,7 +3757,8 @@ class MissionFSM:
                       'then pivot once more' % (outcome, math.degrees(delta), pose[0], pose[1],
                                                 float(p.pivot_backout_m)))
             m.step = 'pivot_backout'
-            self._blade_off('pivot back-up')            # never reverse with the blade on
+            if not self._keep_blade_inside('pivot back-up'):
+                self._blade_off('pivot back-up')        # blade_keep_on_obstacles false: off
             self._start_action(ACT_BACKUP, {'distance_m': float(p.pivot_backout_m),
                                             'speed_mps': float(p.pivot_backout_speed_mps)},
                                float(p.pivot_backout_m) / max(0.02, float(p.pivot_backout_speed_mps))
@@ -5913,7 +5967,8 @@ class MissionFSM:
         if idx >= last:
             # obstacle on the sub-path end: skip the rest, re-queued at the area end
             m.detours += 1
-            self._blade_off('obstacle at the sub-path end')
+            if not self._keep_blade_inside('obstacle at the sub-path end'):
+                self._blade_off('obstacle at the sub-path end')
             self._log('warn', 'area %d sub-path %d: %s within %.1f m of the end: skipping '
                               'poses %d -> %d' % (m.area_idx, m.sub_i, why, skip, cur, last))
             self._record_skip(cur, last)

@@ -456,6 +456,7 @@ behavior_tree_node:
     hard_boundary_jump_m: 1.0            # a > 1 m jump in one tick is ignored (map reload race)
     hard_boundary_jump_hold_s: 2.0
     spin_drift_m: 0.15                   # pivot Spin slid > this: stop, re-plan the approach
+    blade_keep_on_obstacles: true        # obstacle avoidance / bumper keep the blade on while inside the area (owner 2026-10-23)
     pivot_way_gain_m: 0.05               # coverage pivot turns the interior way if its swept body is this much further in
     edge_approach_inset_m: 0.30          # transit to an edge-lap start / resume point ends this far inside
     edge_approach_near_m: 0.25

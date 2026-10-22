@@ -330,3 +330,60 @@ def test_edge_start_join_merges_tangentially_onto_an_arc():
             assert math.hypot(b[0] - q[0], b[1] - q[1]) < 1e-6         # on the lap after 1.5 m
     turns = [abs(math.remainder(legs[i + 1][2] - legs[i][2], 2 * math.pi)) for i in range(len(legs) - 1)]
     assert max(turns) < math.radians(8)                                # smooth, no kink
+
+
+# ---- owner 2026-10-23: blade stays on for obstacle avoidance while inside the area ----
+
+def _fx_call(h, fn):
+    h.fsm._begin(h.t)
+    fn()
+    h._apply(h.fsm._end())
+
+
+def test_bumper_skip_inside_the_area_keeps_the_blade_on():
+    h = mowing_h([line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+    assert h.blade and h.pending_action(f.ACT_FOLLOW)
+    feed(h, (2.0, 2.0, 0.0))
+    for _ in range(3):
+        h.fsm.inputs.bumper_hits += 1
+        h.tick()
+    assert h.fsm.mission.sub_i == 1 or h.fsm.mission.step in ('transit', 'follow', 'spinup')
+    assert h.blade                                   # skipped, blade kept on
+    h2 = mowing_h([line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
+                  blade_keep_on_obstacles=False)
+    feed(h2, (2.0, 2.0, 0.0))
+    for _ in range(3):
+        h2.fsm.inputs.bumper_hits += 1
+        h2.tick()
+    assert not h2.blade                              # revert flag: the old blade-off
+
+
+def test_detour_inside_keeps_the_blade_on_and_one_leaving_turns_it_off():
+    h = mowing_h([line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+    feed(h, (2.0, 2.0, 0.0))
+    h.tick()
+    assert h.blade
+    _fx_call(h, lambda: h.fsm._transit_blade((3.5, 2.5), 'detour', force_off=True))
+    assert h.blade
+    _fx_call(h, lambda: h.fsm._transit_blade((5.8, 2.0), 'detour', force_off=True))
+    assert not h.blade                               # the path leaves the area
+
+
+def test_boundary_violation_lift_and_tilt_still_turn_the_blade_off():
+    for setup in ('boundary', 'lift', 'tilt'):
+        h = mowing_h([line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+        feed(h, (2.0, 2.0, 0.0))
+        h.tick()
+        assert h.blade
+        if setup == 'boundary':
+            h.fsm.inputs.boundary_violation = True
+            _fx_call(h, lambda: h.fsm._transit_blade((3.5, 2.5), 'detour', force_off=True))
+        elif setup == 'lift':
+            h.fsm.inputs.lift = True
+            h.tick()
+        else:
+            i = h.fsm.inputs
+            i.tilt_band, i.tilt_roll_deg, i.tilt_pitch_deg, i.tilt_axis = 'critical', 31.0, 0.0, 'roll'
+            i.tilt_stamp = h.t
+            h.tick()
+        assert not h.blade, setup
