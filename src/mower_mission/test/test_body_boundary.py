@@ -302,3 +302,31 @@ def test_soft_trip_is_plan_relative_near_a_corner_planned_out():
     h.fsm.mission.corner_body = [(1.0, 4.0, 0.41)]
     far = h.fsm._hb_body_eval((4.85, 2.0, 0.0), 'soft')
     assert far['excess'] > 0.0
+
+
+def test_edge_start_join_merges_tangentially_onto_an_arc():
+    # round 4: owner_far's lap 0 starts on a drawn arc (no straight stretch): from the
+    # approach point 0.30 m inside, the leg's first 1.5 m fade from the inset onto the lap
+    R = 2.0
+    arc = [(2.5 + R * math.cos(-math.pi / 2 + a / 40.0), 2.5 + R * math.sin(-math.pi / 2 + a / 40.0),
+            a / 40.0) for a in range(60)]
+    h = mowing_h([line(1, 3, 4, 3), arc], (1.0, 3.0, 0.0), path_conditioning=True,
+                 edge_approach_inset_m=0.30)
+    m = h.fsm.mission
+    h.fsm._region_areas = {0: {'outer': [(2.5 + R * math.cos(t / 80.0), 2.5 + R * math.sin(t / 80.0))
+                                         for t in range(503)], 'is_navigation_area': False}}
+    m.sub_i, m.start_local = 1, 0
+    h.fsm._begin(h.t)
+    h.fsm._dispatch(force_transit=True)
+    h._apply(h.fsm._end())
+    assert m.join is not None
+    tx, ty, _ = m.transit_target
+    legs = h.fsm._join_leg([tuple(q) for q in arc], 1, 0)
+    assert math.hypot(legs[0][0] - tx, legs[0][1] - ty) < 0.02      # starts at the approach point
+    cum = 0.0
+    for a, b, q in zip(legs, legs[1:], arc[1:]):
+        cum += math.hypot(b[0] - a[0], b[1] - a[1])
+        if cum > 1.6:
+            assert math.hypot(b[0] - q[0], b[1] - q[1]) < 1e-6         # on the lap after 1.5 m
+    turns = [abs(math.remainder(legs[i + 1][2] - legs[i][2], 2 * math.pi)) for i in range(len(legs) - 1)]
+    assert max(turns) < math.radians(8)                                # smooth, no kink

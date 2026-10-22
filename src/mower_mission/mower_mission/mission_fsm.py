@@ -1039,6 +1039,8 @@ class Params:
     # / resume point) ends edge_approach_inset_m inside, beside it; 0 = at the start.
     edge_approach_inset_m: float = 0.30
     edge_approach_near_m: float = 0.25
+    edge_join_m: float = 1.5     # ... then the leg's first metres fade from that inset onto the
+    #                              lap (tangent join, round 4); 0 = join across from the inset
     # --- repeated bumper hits (field 2026-10-21 07:29: a real object just outside the line,
     # the bumper fired 6 and 9 times in turn). bumper_skip_hits hits (rising edges of the
     # bumper_controller routing status) within bumper_skip_radius_m of each other (and within
@@ -1245,6 +1247,7 @@ class Mission:
     route_full: Optional[list] = None           # the planned route (route_cusps index into it)
     route_cusps: list = field(default_factory=list)   # [(i, x, y, heading_after)] of route_full
     final_approach: bool = False                # this transit's final approach leg was sent
+    join: Any = None                            # (sub, local, side, inset) tangent join (_join_leg)
     cusp_turns: dict = field(default_factory=dict)    # cusp (x, y) -> about-turns, per sub-path
     cusp_resume: Optional[list] = None          # route remainder sent after the about-turn
     cusp_heading: Optional[float] = None        # heading the cusp about-turn turns to
@@ -3099,12 +3102,48 @@ class MissionFSM:
             e = bbody.nearest_edge_point(cx, cy, polys)
             c = e[2] if e is not None else 0.0
             if best is None or c > best[0]:
-                best = (c, cx, cy)
+                best = (c, cx, cy, sgn)
+        if self.mission is not None:
+            self.mission.join = None
         if best is None or best[0] < inset - 0.02:
             return (x, y, yaw)     # another edge closer than the start's own (a corner)
         self._log('info', 'transit to an edge start (%.2f, %.2f): approach point %.2f m inside '
                           'at (%.2f, %.2f)' % (x, y, inset, best[1], best[2]))
+        m = self.mission
+        if m is not None and float(self.p.edge_join_m) > 0.0:
+            # the leg from this start is merged onto tangentially (_join_leg)
+            m.join = (m.sub_i, m.start_local, best[3], inset)
         return (best[1], best[2], yaw)
+
+    def _join_leg(self, poses, k, frm):
+        """Round 4 tangent join: the leg sub-path ``k`` from local ``frm``, when the transit
+        ended at its edge start's approach point (m.join), offset toward the interior by the
+        approach inset fading out (cosine) over edge_join_m of arc length - the robot merges
+        onto the lap along the curve instead of aiming across it (owner_far's lap start on a
+        drawn arc). Otherwise ``poses`` unchanged."""
+        m = self.mission
+        j = m.join if m is not None else None
+        if j is None or j[0] != k or j[1] != frm or len(poses) < 2:
+            return poses
+        D, sgn, off = float(self.p.edge_join_m), j[2], j[3]
+        cum = geo.cumulative_lengths(poses)
+        out = []
+        for i, q in enumerate(poses):
+            if cum[i] >= D:
+                out.append(tuple(q))
+                continue
+            a, b = poses[max(0, i - 1)], poses[min(len(poses) - 1, i + 1)]
+            h = math.atan2(b[1] - a[1], b[0] - a[0])
+            w = off * 0.5 * (1.0 + math.cos(math.pi * cum[i] / D))
+            nx, ny = -math.sin(h) * sgn, math.cos(h) * sgn
+            out.append((q[0] + w * nx, q[1] + w * ny) + tuple(q[2:]))
+        res = []
+        for i, q in enumerate(out):
+            if len(q) >= 3:
+                a, b = out[max(0, i - 1)], out[min(len(out) - 1, i + 1)]
+                q = (q[0], q[1], math.atan2(b[1] - a[1], b[0] - a[0])) + tuple(q[3:])
+            res.append(q)
+        return res
 
     def _is_turn_leg(self):
         """The current sub-path is a turn leg of the turn_leg_skip rule: a (short) reverse
@@ -3299,7 +3338,8 @@ class MissionFSM:
             if m.start_local < c <= m.chunk_end and c < self._seg_last():
                 m.chunk_end = m.corner_end = c       # this chunk ends on the pivot vertex
                 break
-        poses = list(sp[m.start_local:m.chunk_end + 1])
+        poses = self._join_leg(list(sp[m.start_local:m.chunk_end + 1]), m.sub_i, m.start_local)
+        m.join = None
         reverse = geo.is_reverse_subpath(sp)
         checker = self._follow_goal_checker(poses, reverse)
         if (m.corner_end is not None or m.sub_i in m.cond) and not reverse and \
@@ -3456,7 +3496,9 @@ class MissionFSM:
         if kturn:                             # face the reverse leg's poses
             heading = float(sp[min(m.start_local, len(sp) - 1)][2]) if len(sp[0]) >= 3 else None
         else:
-            heading = self._join_heading(sp[m.start_local:end + 1], pose, sharp=lim)
+            heading = self._join_heading(
+                self._join_leg(list(sp[m.start_local:end + 1]), m.sub_i, m.start_local), pose,
+                sharp=lim)
         if heading is None:
             return False
         delta = geo.wrap_angle(heading - float(pose[2]))
