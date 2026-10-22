@@ -509,7 +509,9 @@ class Params:
     battery_full_percent: float = 95.0
     # What a running mission does below battery_low_percent:
     #   'stop' = blade off, zero velocity, stay where it is (IDLE); 'dock' = go charge.
-    battery_low_action: str = 'stop'
+    # 2026-10-22: default 'dock' (owner: "when the battery is low it should automatically go
+    # back and charge"; 'stop' left the robot idle mid-lawn at 14 %).
+    battery_low_action: str = 'dock'
     # Charge limit: while docked, charging is disabled at >= this and re-enabled at
     # <= this - battery_charge_hysteresis_percent. 100 = no limit. A charge-and-resume
     # waits for min(battery_full_percent, battery_max_charge_percent).
@@ -5654,6 +5656,14 @@ class MissionFSM:
             return False
         if self.phase in ('TRANSIT', 'MOWING') and self.mission is None:
             return False
+        if self.phase in DOCK_PHASES and self._at_dock():
+            # 2026-10-22 01:13:34: the contacts closed in the same tick as a /stuck latch from
+            # the final push against the charger, and the escape drove the robot off the
+            # dock. On the contacts, wheels turning without progress is the dock itself.
+            self._log('info', 'stuck latch ignored: on the dock contacts (%s)' % self.phase)
+            self._stuck_ignore_until = self._now + float(self.p.stuck_ignore_after_s)
+            self._fx.append(ResetStuckGuard())
+            return False
         pose = i.pose
         if pose is None:
             self._stuck_needs_help('stuck, no pose', (0.0, 0.0))
@@ -5690,6 +5700,18 @@ class MissionFSM:
 
     def _stuck_escape_tick(self):
         k, pose, now = self._stk, self.inputs.pose, self._now
+        if k['phase'] in DOCK_PHASES and self._at_dock():
+            # 2026-10-22 01:13:36: escape step 1 (reverse) seated the robot on the charger
+            # (charging 3.3 A), then step 2 drove it off again.
+            self._stk = None
+            self._fx.append(DriveCmd(0.0, 0.0))
+            self._fx.append(SuppressStuckGuard(False))
+            self._fx.append(ResetStuckGuard())
+            self._stuck_ignore_until = now + float(self.p.stuck_ignore_after_s)
+            self._log('info', 'stuck escape ended: dock contacts reported (%s)' % k['phase'])
+            self._dock_purpose = k['dock_purpose']
+            self._dock_done()
+            return
         if pose is None:
             self._stk = None
             self._fx.append(SuppressStuckGuard(False))

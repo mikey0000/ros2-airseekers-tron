@@ -228,7 +228,7 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                 tooltip={t("settingsBattery.lowActionTooltip")}
                             >
                                 <Select
-                                    value={values.battery_low_action ?? "stop"}
+                                    value={values.battery_low_action ?? "dock"}
                                     onChange={(v) => onChange("battery_low_action", v)}
                                     options={[
                                         { value: "stop", label: t("settingsBattery.lowActionStop") },

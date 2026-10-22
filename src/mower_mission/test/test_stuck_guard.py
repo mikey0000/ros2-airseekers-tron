@@ -164,3 +164,69 @@ def test_emergency_aborts_escape():
     assert h.name == 'EMERGENCY' and h.fsm._stk is None
     assert [e.active for e in h.since(m, f.SuppressStuckGuard)] == [False]
     assert drives(h, m) == [(0.0, 0.0)]
+
+
+def test_stuck_latch_on_the_dock_contacts_is_ignored():
+    """2026-10-22 01:13:34: /stuck latched from the final push against the charger in the
+    same tick as the contacts closed; the escape drove the robot off the dock."""
+    h = Harness()
+    h.fsm.inputs.pose = (0.42, -1.33, 1.76)
+    h.cmd(f.CMD_HOME)
+    assert h.name == 'RETURNING_HOME' and h.pending_action(f.ACT_DOCK)
+    h.fsm.inputs.docked = True                   # is_docking_done
+    m = stuck(h, (0.42, -1.33, 1.76))
+    assert h.fsm._stk is None and h.name == 'RETURNING_HOME'
+    assert h.since(m, f.ResetStuckGuard) and not h.since(m, f.SuppressStuckGuard)
+    assert not h.since(m, f.CancelActions) and not drives(h, m)
+    assert not h.since(m, f.RecordIncident)
+    h.tick(n=5)                                  # still latched: ignored, no escape
+    assert h.fsm._stk is None and len(h.since(m, f.ResetStuckGuard)) >= 1
+    h.fsm.inputs.stuck = False
+    h.finish(f.ACT_DOCK)
+    assert h.name in f.IDLE_NAMES
+
+
+def test_stuck_latch_when_charging_only_is_ignored():
+    h = Harness()
+    h.fsm.inputs.pose = (0.42, -1.33, 1.76)
+    h.cmd(f.CMD_HOME)
+    h.fsm.inputs.is_charging = True
+    m = stuck(h, (0.42, -1.33, 1.76))
+    assert h.fsm._stk is None and not h.since(m, f.CancelActions)
+
+
+def test_stuck_escape_ends_when_the_contacts_close():
+    """2026-10-22 01:13:36: escape step 1 (reverse) seated the robot on the charger, then
+    step 2 (forward arc) drove it off again."""
+    h = Harness()
+    h.fsm.inputs.pose = (0.40, -1.30, 1.76)
+    h.cmd(f.CMD_HOME)
+    m = stuck(h, (0.40, -1.30, 1.76))            # not on the contacts yet: escape
+    assert h.fsm._stk is not None
+    h.fsm.inputs.stuck = False
+    h.tick(n=10)
+    assert drives(h, m)[-1] == (-0.1, 0.0)       # step 1: reverse (towards the contacts)
+    h.fsm.inputs.docked = True
+    m2 = h.mark()
+    h.tick()
+    assert h.fsm._stk is None
+    assert drives(h, m2)[-1] == (0.0, 0.0) and not [d for d in drives(h, m2) if d[0] > 0]
+    assert [e.active for e in h.since(m2, f.SuppressStuckGuard)] == [False]
+    assert h.since(m2, f.ResetStuckGuard)
+    assert h.name in f.IDLE_NAMES
+    h.tick(n=20)
+    assert not [d for d in drives(h, m2) if d[0] > 0]
+
+
+def test_low_battery_dock_stuck_escape_on_contacts_charges():
+    h = Harness(battery_low_action='dock')
+    mowing(h)
+    h.fsm.inputs.battery_percent = 14.0
+    h.tick()
+    assert h.name == 'LOW_BATTERY_DOCKING'
+    stuck(h, (0.40, -1.30, 1.76))
+    h.fsm.inputs.stuck = False
+    h.tick(n=10)
+    h.fsm.inputs.is_charging = True
+    h.tick()
+    assert h.name == 'CHARGING' and h.fsm._stk is None

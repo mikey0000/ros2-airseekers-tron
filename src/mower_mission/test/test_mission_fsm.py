@@ -2313,8 +2313,18 @@ def test_transit_abort_beyond_radius_still_fails():
     assert h.fsm.mission.sub_i == 1 and h.fsm.mission.skipped == 1
 
 
-def test_low_battery_stops_in_place_by_default():
+def test_low_battery_docks_by_default():
+    # 2026-10-22: the 'stop' default left the robot idle mid-lawn at 14 %
     h = Harness()
+    mowing(h)
+    h.fsm.inputs.battery_percent = 19.0
+    h.tick()
+    assert h.name == 'LOW_BATTERY_DOCKING' and not h.blade
+    assert h.fsm._dock_purpose == 'battery'
+
+
+def test_low_battery_stop_action_stops_in_place():
+    h = Harness(battery_low_action='stop')
     mowing(h)
     h.fsm.inputs.battery_percent = 19.0
     h.tick()
