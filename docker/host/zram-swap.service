@@ -1,0 +1,25 @@
+# /etc/systemd/system/zram-swap.service on the mower HOST (docs/analysis/2026-10-22_memory_footprint.md, Q1).
+# Compressed swap held entirely in RAM: nothing is written to the eMMC (no writeback device).
+# 1.5 GiB of uncompressed pages, zstd (~3:1 on ROS heaps), swap priority above any disk swap.
+# Revert: sudo systemctl disable --now zram-swap && sudo rm /etc/systemd/system/zram-swap.service
+[Unit]
+Description=Compressed RAM swap (zram0, zstd, 1.5 GiB)
+DefaultDependencies=no
+Before=swap.target docker.service
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/sbin/modprobe zram
+ExecStartPre=-/sbin/swapoff /dev/zram0
+ExecStartPre=/bin/sh -c 'echo 1 > /sys/block/zram0/reset'
+ExecStartPre=/bin/sh -c 'echo zstd > /sys/block/zram0/comp_algorithm'
+ExecStartPre=/bin/sh -c 'echo 1536M > /sys/block/zram0/disksize'
+ExecStartPre=/sbin/mkswap /dev/zram0
+ExecStart=/sbin/swapon -p 100 /dev/zram0
+ExecStop=/sbin/swapoff /dev/zram0
+ExecStop=/bin/sh -c 'echo 1 > /sys/block/zram0/reset'
+
+[Install]
+WantedBy=swap.target
