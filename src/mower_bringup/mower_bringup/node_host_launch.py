@@ -20,6 +20,9 @@ sim.launch.py) brackets everything with ``arm_node_hosts()`` (first) and ``start
   ``respawn`` of a host = any member's (``respawn_delay`` the largest); its environment is the
   first member's (e.g. the camera DDS profile of cameras.launch.py's scoped group).
 
+``node_host_standalone:=cameras,perception`` keeps the listed groups one process per node
+(e.g. if the camera host cannot hold the frame rates on the mower).
+
 Nodes that cannot be hosted transparently (not a Python executable, extra non-ROS
 ``arguments``, a per-node ``env``/``additional_env``/``prefix``) fall back to standalone with
 a warning.
@@ -38,9 +41,15 @@ _NOT_HOSTABLE = ('env', 'additional_env', 'prefix', 'arguments', 'exec_name')
 COMPOSE_ARG = 'compose_nodes'
 
 
-def compose_enabled(context):
-    return (context in _REGISTRY and
-            context.launch_configurations.get(COMPOSE_ARG, 'true').strip().lower() == 'true')
+STANDALONE_ARG = 'node_host_standalone'     # comma list of groups kept one process per node
+
+
+def compose_enabled(context, group=None):
+    cfg = context.launch_configurations
+    if context not in _REGISTRY or cfg.get(COMPOSE_ARG, 'true').strip().lower() != 'true':
+        return False
+    standalone = {g.strip() for g in cfg.get(STANDALONE_ARG, '').split(',') if g.strip()}
+    return group not in standalone
 
 
 def _is_python(path):
@@ -82,7 +91,7 @@ class HostedNode(Node):
         self.node_kwargs = node_kwargs
 
     def execute(self, context):
-        if not compose_enabled(context):
+        if not compose_enabled(context, self.group):
             return super().execute(context)
         why = None
         bad = [k for k in _NOT_HOSTABLE if self.node_kwargs.get(k)]

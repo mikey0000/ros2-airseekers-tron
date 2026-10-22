@@ -196,3 +196,11 @@ def test_launch_without_composition_runs_the_node_itself(tmp_path, compose, arme
     finally:
         launch.actions.ExecuteProcess.execute = orig
     assert called == [node]
+
+
+def test_standalone_groups_argument(tmp_path):
+    from launch_ros.actions import Node
+    from mower_bringup import node_host_launch as nhl
+    ctx = _context()
+    ctx.launch_configurations['node_host_standalone'] = 'cameras, other'
+    assert nhl.compose_enabled(ctx, 'control') and not nhl.compose_enabled(ctx, 'cameras')

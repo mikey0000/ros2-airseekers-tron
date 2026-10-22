@@ -323,6 +323,8 @@ def generate_launch_description() -> LaunchDescription:
             'docs/analysis/2026-10-22_memory_footprint.md): grouped Python nodes share one '
             'process node_host_<group> (control, localization, perception, housekeeping, gui, '
             'cameras); false = one process per node as before.'),
+        arg('node_host_standalone', '', 'Comma list of node_host groups to run one process '
+            'per node anyway (e.g. cameras), with compose_nodes:=true.'),
         arg('drivers', 'true', 'Start the serial drivers + bumper_controller.'),
         arg('localization_mode', 'dual',
             'dual: ekf_node (odom) + ekf_map (map, RTK) publishes map -> odom and '

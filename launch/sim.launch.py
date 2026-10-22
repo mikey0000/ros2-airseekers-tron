@@ -267,6 +267,8 @@ def generate_launch_description() -> LaunchDescription:
         arg('compose_nodes', 'true', 'Python node hosts (docs/analysis/2026-10-22_memory_footprint.md '
             'M1): grouped Python nodes share one process (node_host_<group>); false = one '
             'process per node.'),
+        arg('node_host_standalone', '', 'Comma list of node_host groups to run one process '
+            'per node anyway (e.g. cameras), with compose_nodes:=true.'),
         arg('rate_factor', '1.0', 'sim: sim time / real time (1.0 = real time, 3.0 = three '
             'times faster). The sim publishes /clock; every node runs on use_sim_time.'),
     ]
