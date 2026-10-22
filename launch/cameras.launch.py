@@ -73,6 +73,7 @@ from launch.conditions import IfCondition, LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
+from mower_bringup.node_host_launch import hosted_node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
@@ -88,8 +89,8 @@ def _info_url(name):
 
 def _oa_cam(name, condition):
     """OA camera via mower_cameras/v4l2_cam (multi-planar capable)."""
-    return Node(
-        package='mower_cameras',
+    return hosted_node(
+        'cameras', package='mower_cameras',
         executable='v4l2_cam',
         respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         namespace=name,                 # -> /<name>/image_raw, /<name>/camera_info
@@ -272,8 +273,8 @@ def generate_launch_description():
         condition=LaunchConfigurationEquals('rear_driver', 'opencv'),
     )
 
-    stereo = Node(
-        package='mower_cameras',
+    stereo = hosted_node(
+        'cameras', package='mower_cameras',
         executable='stereo_cam',
         respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='stereo_cam',
@@ -299,8 +300,8 @@ def generate_launch_description():
         }],
     )
 
-    stereo_imu = Node(
-        package='mower_cameras',
+    stereo_imu = hosted_node(
+        'cameras', package='mower_cameras',
         executable='stereo_imu',
         respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='stereo_imu',
@@ -309,8 +310,8 @@ def generate_launch_description():
         parameters=[{'rate': ParameterValue(LC('stereo_imu_rate'), value_type=float)}],
     )
 
-    stereo_depth = Node(
-        package='mower_cameras',
+    stereo_depth = hosted_node(
+        'cameras', package='mower_cameras',
         executable='stereo_depth',
         respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='stereo_depth',

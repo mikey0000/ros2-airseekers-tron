@@ -66,6 +66,7 @@ from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitut
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+from mower_bringup.node_host_launch import arm_node_hosts, hosted_node, start_node_hosts
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import robot_settings  # noqa: E402  (launch/robot_settings.py, installed alongside)
@@ -74,7 +75,8 @@ import robot_settings  # noqa: E402  (launch/robot_settings.py, installed alongs
 DEFAULT_DATUM_ENV = '/userdata/ros2/datum.env'
 DEFAULT_CRASH_DIR = os.environ.get('MOWER_CRASH_DIR', '/userdata/ros2/crashes')
 # Processes whose death is safety relevant (the supervisor also tells the mission).
-SAFETY_CRITICAL = ('mcu_node', 'cmd_vel_slew', 'twist_mux', 'mission_node')
+# node_host_control hosts cmd_vel_slew (compose_nodes:=true, mower_bringup/node_host.py)
+SAFETY_CRITICAL = ('mcu_node', 'cmd_vel_slew', 'twist_mux', 'mission_node', 'node_host_control')
 
 
 def crash_exit_record(event, crash_dir=DEFAULT_CRASH_DIR, shutting_down=False):
@@ -97,7 +99,7 @@ def crash_exit_record(event, crash_dir=DEFAULT_CRASH_DIR, shutting_down=False):
            'event': 'process_exit', 'process': name, 'executable': exe, 'pid': event.pid,
            'returncode': rc, 'signal': sig,
            'core_dump_expected': sig in ('SIGSEGV', 'SIGABRT', 'SIGBUS', 'SIGFPE', 'SIGILL'),
-           'safety_critical': any(c in exe for c in SAFETY_CRITICAL),
+           'safety_critical': any(c in exe or c in str(name) for c in SAFETY_CRITICAL),
            'respawn': bool(getattr(event.action, '_ExecuteLocal__respawn', False) or
                            getattr(event.action, '_ExecuteProcess__respawn', False))}
     try:
@@ -317,6 +319,12 @@ def generate_launch_description() -> LaunchDescription:
         return IfCondition(LaunchConfiguration(name))
 
     arguments = [
+        arg('compose_nodes', 'true', 'Python node hosts (memory diet M1/M2/M6, '
+            'docs/analysis/2026-10-22_memory_footprint.md): grouped Python nodes share one '
+            'process node_host_<group> (control, localization, perception, housekeeping, gui, '
+            'cameras); false = one process per node as before.'),
+        arg('node_host_standalone', '', 'Comma list of node_host groups to run one process '
+            'per node anyway (e.g. cameras), with compose_nodes:=true.'),
         arg('drivers', 'true', 'Start the serial drivers + bumper_controller.'),
         arg('localization_mode', 'dual',
             'dual: ekf_node (odom) + ekf_map (map, RTK) publishes map -> odom and '
@@ -459,10 +467,10 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     control = [
-        Node(package='mower_control', executable='cmd_vel_slew', name='cmd_vel_slew',
+        hosted_node('control', package='mower_control', executable='cmd_vel_slew', name='cmd_vel_slew',
              respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control')),
-        Node(package='mower_control', executable='slip_detector', name='slip_detector',
+        hosted_node('control', package='mower_control', executable='slip_detector', name='slip_detector',
              respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control')),
         # slope / tilt bands -> /tilt/status (mission caution cap + limit back-out) and its
@@ -473,10 +481,10 @@ def generate_launch_description() -> LaunchDescription:
         # base_link clouds (bumper heartbeat, YOLO obstacle points) republished in odom / map so
         # the costmaps never wait for a transform (Jazzy tf2 MessageFilter deadlock froze the
         # local costmap under load, 2026-10-09; mower_control/fixed_frame_relay.py)
-        Node(package='mower_control', executable='fixed_frame_relay', name='fixed_frame_relay',
+        hosted_node('control', package='mower_control', executable='fixed_frame_relay', name='fixed_frame_relay',
              respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control')),
-        Node(package='mower_control', executable='imu_cal', name='imu_cal',
+        hosted_node('localization', package='mower_control', executable='imu_cal', name='imu_cal',
              respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control'),
              parameters=[{'calibration_file': LaunchConfiguration('imu_calibration_file')}]),
@@ -489,8 +497,8 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # gui_bridge's stub high-level state machine is only used when the real mission node is off.
-    gui_bridge = Node(
-        package='mower_gui_bridge',
+    gui_bridge = hosted_node(
+        'gui', package='mower_gui_bridge',
         executable='gui_bridge',
         respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='gui_bridge',
@@ -660,8 +668,8 @@ def generate_launch_description() -> LaunchDescription:
         condition=enabled('perception'),
     )
 
-    det_range = Node(
-        package='det_range',
+    det_range = hosted_node(
+        'perception', package='det_range',
         executable='det_range',
         respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='det_range',
@@ -673,19 +681,19 @@ def generate_launch_description() -> LaunchDescription:
              LaunchConfiguration('perception'), "' == 'true'"])),
     )
 
-    supervisor = Node(
-        package='mower_control', executable='supervisor', name='supervisor',
+    supervisor = hosted_node(
+        'housekeeping', package='mower_control', executable='supervisor', name='supervisor',
         respawn=True, respawn_delay=2.0, output='screen', condition=enabled('supervisor'),
     )
-    mow_recorder = Node(
-        package='mower_control', executable='mow_recorder', name='mow_recorder',
+    mow_recorder = hosted_node(
+        'housekeeping', package='mower_control', executable='mow_recorder', name='mow_recorder',
         respawn=True, respawn_delay=2.0, output='screen', condition=enabled('mow_recorder'),
     )
     # 2026-10-09: always-on on-disk ring (docs/crash_recovery.md "Rolling bag ring"). The node
     # owns the `ros2 bag record` child (restart with backoff, SIGINT on exit, PDEATHSIG), so
     # launch respawn only covers the node itself.
-    bag_recorder = Node(
-        package='mower_control', executable='bag_recorder', name='bag_recorder',
+    bag_recorder = hosted_node(
+        'housekeeping', package='mower_control', executable='bag_recorder', name='bag_recorder',
         respawn=True, respawn_delay=5.0, output='screen', condition=enabled('bag_recorder'),
         parameters=[{'root': '/userdata/ros2/bags', 'incidents_dir': '/userdata/ros2/incidents',
                      'max_total_gb': ParameterValue(LaunchConfiguration('bag_max_gb'),
@@ -712,7 +720,7 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription(
         arguments
-        + [crash_records]
+        + [arm_node_hosts(), crash_records]
         + [OpaqueFunction(function=_resolve_datum),
            OpaqueFunction(function=_apply_robot_settings),
            OpaqueFunction(function=_apply_stereo_costmap)]
@@ -721,4 +729,5 @@ def generate_launch_description() -> LaunchDescription:
         + [teleop, gui_bridge] + foxglove + [localization, navigation,
            map_server, obstacle_tracker, coverage, docking, mission, cameras, vio, perception,
            det_range, supervisor, mow_recorder, bag_recorder, alerts]
+        + [start_node_hosts()]     # last: the hosted nodes of every include are registered
     )

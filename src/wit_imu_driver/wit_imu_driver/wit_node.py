@@ -44,7 +44,6 @@ from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from geometry_msgs.msg import TransformStamped
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32
-import tf2_ros
 
 from wit_imu_driver.imu_cdr import ImuSerializer, float32_bytes
 from wit_imu_driver.wit_protocol import (
@@ -90,7 +89,10 @@ class WitImuNode(Node):
                          history=QoSHistoryPolicy.KEEP_LAST, depth=10)
         self.imu_pub = self.create_publisher(Imu, g('imu_topic'), qos)
         self.temp_pub = self.create_publisher(Float32, '/imu/temperature_c', qos)
-        self.tf_broadcaster = tf2_ros.TransformBroadcaster(self) if self.publish_tf else None
+        self.tf_broadcaster = None
+        if self.publish_tf:  # off by default: tf2_ros (~30 MB) is only imported when used
+            import tf2_ros
+            self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
         rp, yaw = float(g('orientation_rp_covariance')), float(g('orientation_yaw_covariance'))
         self.orientation_cov = _diag3(rp, rp, yaw)

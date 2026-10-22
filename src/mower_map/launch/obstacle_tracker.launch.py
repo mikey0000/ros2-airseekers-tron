@@ -15,6 +15,11 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+try:  # Python node hosts (mower_bringup/node_host.py, compose_nodes:=true)
+    from mower_bringup.node_host_launch import hosted_node
+except ImportError:  # mower_bringup not installed: plain processes
+    def hosted_node(_group, **kwargs):
+        return Node(**kwargs)
 from launch_ros.parameter_descriptions import ParameterValue
 
 ARGS = [
@@ -66,6 +71,6 @@ def generate_launch_description():
     return LaunchDescription(
         [DeclareLaunchArgument(name, default_value=default, description=desc)
          for name, default, desc, _ in ARGS]
-        + [Node(package='mower_map', executable='obstacle_tracker', name='obstacle_tracker',
+        + [hosted_node('perception', package='mower_map', executable='obstacle_tracker', name='obstacle_tracker',
                 respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
                 output='screen', parameters=[params_file, overrides])])
