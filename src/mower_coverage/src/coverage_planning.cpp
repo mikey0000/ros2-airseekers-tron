@@ -964,7 +964,8 @@ constexpr double kMinFillLenM = 0.03;
 // as -174 / +170 / -172 deg pivots, sub-path tails of 0.1 m passes reversing on themselves).
 // A layout fill pass must be at least this long and cover at least this fraction of its own
 // swept strip (len x op_width) with new area, or it is not driven.
-constexpr double kLayoutMinFillLenM = 1.0;    // round 3: 0.3-0.6 m fills between pivots overshot (owner_far 0.19 m)
+constexpr double kLayoutMinRowM = 1.2;        // edge layout: shortest row driven
+constexpr double kLayoutMinFillLenM = 1.0;    // round 3-4: shorter fills between pivots overshot
 constexpr double kLayoutMinFillEfficiency = 0.35;
 constexpr int kBufQuadSegs = 8;
 // Rectangles of neighbouring swaths share an edge exactly; widen each side by
@@ -1679,8 +1680,13 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
           clip_swaths ? clipSwathToDrivable(drivable, a, b, !layout) : std::vector<Seg>{{a, b}};
       for (const auto& piece : clipped) {
         const double len = dist(piece.first, piece.second);
-        if (len < min_swath_length) {
-          plan.drops.push_back(fmtDrop("swath len=", len, "<", min_swath_length));
+        // edge layout (round 4): rows shorter than kLayoutMinRowM in narrow pockets were driven
+        // between two pivots and never converged (owner_far west pocket: a 0.88 m row 0.17 m
+        // off its line, gate (e) 0.198); the laps cover the pocket edge
+        const double min_len = layout ? std::max(min_swath_length, kLayoutMinRowM)
+                                      : min_swath_length;
+        if (len < min_len) {
+          plan.drops.push_back(fmtDrop("swath len=", len, "<", min_len));
           continue;
         }
         pieces.push_back(piece);

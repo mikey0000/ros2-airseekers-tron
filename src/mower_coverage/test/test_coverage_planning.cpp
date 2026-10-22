@@ -1426,7 +1426,7 @@ TEST(EdgeLayout, SoftLapsOneDirectionLap0SharpNoSliverFills) {
               0.30 - 1e-6);
   }
   EXPECT_LE(plan.fill_swaths, 6u);
-  EXPECT_GT(plan.coverage_fraction, 0.95);
+  EXPECT_GT(plan.coverage_fraction, 0.94);   // round 4: rows < 1.2 m dropped (-0.5 %)
 }
 
 // Round 2: the lap -> lap hand-offs (every lap's start) sit on a straight stretch, >= 0.6 m
