@@ -19,28 +19,15 @@ SLOWDOWN / APPROACH / LIMIT) is never cycled. ``recover`` defaults to false (log
 without a known root cause, cycling a node could override a real stop.
 """
 
-import time
 
 MOVING = 0.02           # |v| or |w| above this is a moving command
 
 
 def node_now(node):
-    """time.monotonic, or the node's ROS clock in seconds under use_sim_time (mower_sim
-    publishes /clock, possibly faster than real time). Under sim time it first blocks until
-    the first /clock and seeds the node clock with it (no stamp on a zero clock)."""
-    if not node.get_parameter('use_sim_time').value:
-        return time.monotonic
-    from rclpy.time import Time
-    from rclpy.wait_for_message import wait_for_message
-    from rosgraph_msgs.msg import Clock as ClockMsg
-    clock = node.get_clock()
-    while not clock.now().nanoseconds and node.context.ok():
-        ok, msg = wait_for_message(ClockMsg, node, '/clock', time_to_wait=10.0)
-        if ok and (msg.clock.sec or msg.clock.nanosec) and not clock.now().nanoseconds:
-            clock.set_ros_time_override(Time.from_msg(msg.clock))
-        elif not ok:
-            node.get_logger().warn('use_sim_time: waiting for /clock')
-    return lambda: clock.now().nanoseconds * 1e-9
+    """time.monotonic, or the node's ROS clock in seconds under use_sim_time (mower_common
+    .clock.node_now: blocks until the first /clock under sim time)."""
+    from mower_common.clock import node_now as _node_now
+    return _node_now(node)
 
 
 class LaneWatchdog:
@@ -136,7 +123,7 @@ def main(args=None):
             self.create_subscription(
                 CollisionMonitorState,
                 d('cm_state_topic', '/collision_monitor_state').value,
-                lambda m: self.wd.on_cm_state(m.action_type, time.monotonic()), 10)
+                lambda m: self.wd.on_cm_state(m.action_type, self._now()), 10)
             self.lane_clients = {n: self.create_client(ChangeState, '/%s/change_state' % n)
                             for n in ('velocity_smoother', 'collision_monitor')}
             self.busy = False

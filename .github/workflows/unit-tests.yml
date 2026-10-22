@@ -1,0 +1,49 @@
+# Unit tests of every package in the dev image (scripts/ci_test.sh; code review 2026-10-23 B5).
+# The image is built on the runner (no registry); the docker layer cache below keeps reruns
+# short. Never deploys or talks to a robot: dev_build.sh runs tests localhost-only on a
+# private DDS domain.
+name: unit-tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: unit-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore dev images
+        id: images
+        uses: actions/cache@v4
+        with:
+          path: /tmp/images
+          key: dev-images-${{ hashFiles('docker/Dockerfile.dev-amd64', 'scripts/build_f2c.sh') }}
+      - name: Load cached dev images
+        if: steps.images.outputs.cache-hit == 'true'
+        run: |
+          for f in /tmp/images/*.tar; do docker load -i "$f"; done
+      - name: Build and test
+        run: ./scripts/ci_test.sh
+      - name: Save dev images
+        if: steps.images.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/images
+          docker save mower:jazzy-dev-amd64 -o /tmp/images/dev.tar
+          docker save mower-f2c:v3-amd64 -o /tmp/images/f2c.tar || true
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-log
+          path: |
+            ci_test.log
+            build/*/pytest.xml
+            build/*/test_results/

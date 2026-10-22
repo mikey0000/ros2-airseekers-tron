@@ -372,12 +372,11 @@ def test_small_join_heading_error_is_left_to_the_tracker():
     assert h.pending_action(f.ACT_FOLLOW)
 
 
-def test_leg_start_pivot_is_the_one_mechanism_for_both_controllers():
+def test_leg_start_pivot_is_the_one_mechanism():
     r = ring()
     y0 = math.atan2(r[1][1] - r[0][1], r[1][0] - r[0][0])
-    for ctl in ('rpp', 'mppi'):
-        h = ring_h(yaw=y0 + math.radians(40), coverage_controller=ctl)
-        assert h.pending_action(f.ACT_SPIN).purpose == 'cov_pivot'
+    h = ring_h(yaw=y0 + math.radians(40))
+    assert h.pending_action(f.ACT_SPIN).purpose == 'cov_pivot'
     assert 'coverage_leg_pivot_rad' not in f.Params.__dataclass_fields__
     assert 'path_conditioning_start_pivot_rad' not in f.Params.__dataclass_fields__
 
@@ -497,7 +496,7 @@ def test_mission_drives_the_swath_pair_as_one_conditioned_path():
     m = h.fsm.mission
     assert len(m.subpaths) == 1 and 0 in m.cond and not m.cond[0]['pivots']
     g = h.goal(f.ACT_FOLLOW)
-    assert g['controller_id'] == 'FollowCoveragePath'
+    assert g['controller_id'] == 'FollowCoveragePathMPPI'
     assert g['goal_checker_id'] == 'coverage_corner_goal_checker'
     assert geo.dist(g['poses'][-1], (0.0, 1.28)) < 0.06
     texts = [e.text for e in h.fx if isinstance(e, f.Log)]

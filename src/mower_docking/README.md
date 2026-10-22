@@ -15,7 +15,6 @@ vendor reference is `docs/audit_2026-10-05/vendor_mission_layer.md` section 5.
 | `/map_server_node/docking_pose` (sub, latched) | `geometry_msgs/PoseStamped` | Pose of a docked robot in `map`. The fallback is param `dock_pose`. |
 | `/map_server_node/docking_pose_measured` (sub, latched) | `std_msgs/Bool` | True only after "Set docking point" recorded the pose. Blind final docking needs it. |
 | `/odometry/filtered` (sub, goal only) | `nav_msgs/Odometry` | fused pose for the stall guard (`progress_odom_topic`) |
-| `/dig_stall` (sub, latched) | `std_msgs/Bool` | slip_detector latch; a rising edge during a goal aborts with `DOCK_STALLED` |
 | `/gps/status` (sub) | `mowgli_interfaces/GnssStatus` | `fix_type == 3` means RTK fixed |
 | `/rear_camera/image_raw`, `/rear_camera/camera_info` (sub) | sensor_msgs | Subscribed only while a vision dock runs |
 | `/charging` (client) | `ChargingControl` | enable after contact, disable before undocking |
@@ -68,10 +67,10 @@ restores the vendor behaviour (blind reverse after any search timeout, also for
 followed the never-measured (0, 0, yaw 0) placeholder dock pose and drove the robot's
 rear into a log.
 
-**Stall / dig guard** (DOCKING, FINAL_DOCKING, RETRY): if `|cmd| > stall_min_cmd`
+**Stall guard** (DOCKING, FINAL_DOCKING, RETRY): if `|cmd| > stall_min_cmd`
 (0.03 m/s) and the fused pose (`/odometry/filtered`) moves less than
 `stall_progress_ratio` (20 %) of the commanded distance over `stall_timeout_s` (1 s),
-or `/dig_stall` rises during the goal, the goal fails with `DOCK_STALLED` and zero
+the goal fails with `DOCK_STALLED` and zero
 velocity. There is no retry after a stall (no further reversing). The bumper is at the
 front, so nothing else senses a reverse into an obstacle.
 
@@ -403,7 +402,6 @@ key ones are:
 | `blind_marker_max_age_s` | 30 | marker must have been seen this recently (this attempt) for a blind final dock |
 | `dock_pose_measured_override` | false | bench only: treat the dock pose as measured |
 | `stall_min_cmd` / `stall_progress_ratio` / `stall_timeout_s` | 0.03 / 0.2 / 1.0 | stall guard on `/odometry/filtered` |
-| `use_dig_stall` | true | also abort on a `/dig_stall` rising edge |
 
 ## Safety notes
 

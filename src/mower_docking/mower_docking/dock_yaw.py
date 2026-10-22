@@ -28,8 +28,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 
-def _wrap(a: float) -> float:
-    return math.atan2(math.sin(a), math.cos(a))
+from mower_common.angles import wrap_angle_trig as _wrap  # noqa: E402
 
 
 @dataclass

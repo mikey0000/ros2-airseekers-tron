@@ -1292,8 +1292,7 @@ def yaw_circular_std(yaws: Sequence[float]) -> float:
     return math.sqrt(max(0.0, -2.0 * math.log(min(max(r, 1e-12), 1.0))))
 
 
-def yaw_from_quaternion(qx, qy, qz, qw) -> float:
-    return math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+from mower_common.angles import yaw_from_quaternion  # noqa: E402,F401  (qx, qy, qz, qw)
 
 
 # ---------------------------------------------------------------------------

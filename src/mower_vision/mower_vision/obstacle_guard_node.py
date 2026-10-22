@@ -81,7 +81,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
 
-from mower_vision.sub_pump import SubscriptionPump, parse_odometry
+from mower_common.sub_pump import SubscriptionPump, parse_odometry
 from sensor_msgs.msg import CameraInfo
 from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy,
                        qos_profile_sensor_data)

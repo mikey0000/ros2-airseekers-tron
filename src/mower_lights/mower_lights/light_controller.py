@@ -32,7 +32,7 @@ from mower_lights_interfaces.srv import LightControl
 
 from . import led_hw
 from . import lights_logic as ll
-from .sub_pump import PeriodicRunner, SubscriptionPump, flat_parser
+from mower_common.sub_pump import PeriodicRunner, SubscriptionPump, flat_parser
 
 try:
     from mowgli_interfaces.msg import Emergency, HighLevelStatus

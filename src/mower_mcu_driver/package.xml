@@ -12,6 +12,7 @@
   <license>Apache-2.0</license>
 
   <!-- ROS interfaces used by the node -->
+  <exec_depend>mower_common</exec_depend>
   <depend>rclpy</depend>
   <exec_depend>rosgraph_msgs</exec_depend>
   <depend>std_msgs</depend>

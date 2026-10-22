@@ -30,6 +30,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from mower_common import geometry as rgeo
+from mower_common.phases import DOCK_PHASES, DOCKED_MOTION_PHASES, MOTION_PHASES  # noqa: F401
 from mower_mission import body_boundary as bbody
 from mower_mission import geometry as geo
 from mower_mission import path_conditioning as pcond
@@ -201,7 +203,7 @@ def coverage_route_params(st):
             'route_spiral_size': int(st['route_spiral_size']),
             'min_turn_radius_m': float(st['min_turn_radius_m']),
             'turn_type': str(st['turn_type']),
-            # stock-style edge layout per area edge_mode; 'legacy' = headland rings (revert)
+            # stock-style edge layout per area edge_mode
             'edge_layout': str(st.get('edge_layout', st.get('edge_mode', 'soft'))),
             'edge_laps': int(st.get('edge_laps', AREA_SETTINGS_DEFAULTS['edge_laps']))}
 
@@ -287,19 +289,12 @@ DISPLAY_NAMES = ('RECORDING_COMPLETE', 'UNDOCK_FAILED', 'NAV_TO_DOCK_FAILED')
 # a mowing session is in progress (rain / battery / boundary guards apply)
 MISSION_PHASES = ('UNDOCKING', 'WAITING_FOR_RTK', 'PLANNING', 'MOWING', 'TRANSIT',
                   'AREA_UNREACHABLE', 'BOUNDARY_PAUSED')
-DOCK_PHASES = ('RETURNING_HOME', 'LOW_BATTERY_DOCKING', 'RAIN_DETECTED_DOCKING',
-               'COVERAGE_FAILED_DOCKING')
-# Phases in which the wheels may move (published as latched /motion_enabled and
-# enforced by mower_control/cmd_vel_slew's motion gate). Everything else -- IDLE*,
-# CHARGING, EMERGENCY, BOUNDARY_EMERGENCY_STOP, MOWING_COMPLETE/INCOMPLETE,
-# NAV_TO_DOCK_FAILED, PREFLIGHT_CHECK, RAIN_WAITING, ... -- forces zero.
-# RECORDING is joystick driving (boundary recording) like MANUAL_MOWING.
-MOTION_PHASES = ('MANUAL_MOWING', 'RECORDING', 'UNDOCKING', 'WAITING_FOR_RTK',
-                 'PLANNING', 'TRANSIT', 'MOWING', 'AREA_UNREACHABLE',
-                 'BOUNDARY_PAUSED') + DOCK_PHASES
-# Phases allowed to move while the base reports docked/charging (explicit undock;
-# docking itself ends on the contacts).
-DOCKED_MOTION_PHASES = ('UNDOCKING', 'MANUAL_MOWING') + DOCK_PHASES   # manual: the operator may drive off the dock
+# DOCK_PHASES, MOTION_PHASES (the wheels may move: published as latched /motion_enabled and
+# enforced by mower_control/cmd_vel_slew's motion gate; everything else -- IDLE*, CHARGING,
+# EMERGENCY, BOUNDARY_EMERGENCY_STOP, MOWING_COMPLETE/INCOMPLETE, NAV_TO_DOCK_FAILED,
+# PREFLIGHT_CHECK, RAIN_WAITING, ... -- forces zero; RECORDING is joystick driving like
+# MANUAL_MOWING) and DOCKED_MOTION_PHASES are imported from mower_common.phases, the one
+# source both nodes use.
 
 
 # ---------------------------------------------------------------------------
@@ -600,20 +595,22 @@ class Params:
     obstacle_path_filter: bool = True
     obstacle_path_lookahead_m: float = 2.0
     obstacle_path_margin_m: float = 0.25
-    robot_width_m: float = 0.47        # owner-measured with wheel trim (2026-10-20, was 0.54)
+    robot_width_m: float = rgeo.FOOTPRINT_WIDTH_M   # 0.47 with wheel trim (2026-10-20, was 0.54)
     # 2026-10-13 (person stopped the mower while the robot pivoted toward a detour target:
     # the straight line to the target is not where the robot goes). Where the mission does
     # not know the path the controller tracks (/navigate_to_pose transits: detours, gaps,
     # retries; return-to-dock and docking) the corridor is the robot footprint swept along
     # its PREDICTED motion: constant applied /cmd_vel (else /cmd_vel_nav) twist, younger than
     # obstacle_twist_max_age_s, for obstacle_sweep_horizon_s (arc v/w, straight, or pivot).
-    # Footprint: robot_rear_m behind to robot_front_m ahead of base_link, +-robot_width_m/2,
+    # Footprint: robot_rear_edge_m behind to robot_front_m ahead of base_link, +-robot_width_m/2,
     # grown by obstacle_path_margin_m. Anything within the circumscribed footprint radius +
     # margin of the robot is always in the path (standing still / pivoting next to it).
     obstacle_sweep_horizon_s: float = 2.0
     obstacle_twist_max_age_s: float = 0.5
-    robot_front_m: float = 0.60       # nav2 footprint front (bumper, owner-measured; was 0.52)
-    robot_rear_m: float = 0.12        # obstacle_guard rear_edge_x_m (rear 0.10 + 0.02; was 0.25)
+    robot_front_m: float = rgeo.FOOTPRINT_FRONT_M   # bumper 0.60 (owner-measured; was 0.52)
+    # = obstacle_guard rear_edge_x_m: the rear 0.10 plus a deliberate 0.02 margin (renamed from
+    # robot_rear_m on 2026-10-23 so it is not read as the body's rear, 0.10; was 0.25)
+    robot_rear_edge_m: float = 0.12
     # 2026-10-09 route graph (docs/route_graph.md, owner: "a specific path for on paths, a
     # different navigation ... then path again"): a transit (sub-path start, end-of-area
     # retry, blocked / dynamic / localization re-send) first asks map_server's plan_route
@@ -825,13 +822,12 @@ class Params:
     # (_cov_pivot: the robot -> leg junction is a vertex no fillet fits).
     # Stock-style edge layout (owner 2026-10-21): the planner lays laps / rows by the area's
     # edge_mode (soft: laps 0 / 0.15 / 0.30, row ends 0.45 in; hard: body inside + 0.10).
-    # false = the headland-ring layout (revert).
-    edge_layout_enabled: bool = True
+    # The edge_layout_enabled false revert (headland rings) was deleted on 2026-10-23.
     path_conditioning: bool = True
     path_conditioning_r_min_m: float = 0.5
     path_conditioning_r_max_m: float = 1.0
     path_conditioning_margin_m: float = 0.05
-    path_conditioning_half_width_m: float = 0.235   # body half width with wheel trim (was 0.24)
+    path_conditioning_half_width_m: float = rgeo.FOOTPRINT_HALF_WIDTH_M   # 0.235 (was 0.24)
     path_conditioning_slack_m: float = 0.05
     path_conditioning_pivot_min_rad: float = 0.35
     # 0 since the edge layout (2026-10-21): lap-0 runs ON the line, a pivot at a convex
@@ -878,23 +874,18 @@ class Params:
     # After a sub-path still fails, the session ends in MOWING_INCOMPLETE; dock only
     # when this is true (default: stop in place so the operator can inspect).
     return_home_on_incomplete: bool = False
-    # 2026-10-15 MPPI study (docs/analysis/2026-10-15_mppi_study.md): which tracker drives the
-    # coverage sub-paths. 'mppi' = mppi_follow_controller_id / mppi_reverse_controller_id
-    # (feasibility-aware MPPI, nav2_params.yaml), the cut speed goes to
-    # mppi_controller_speed_param capped at mppi_speed_max_mps; 'rpp' =
-    # follow_controller_id / reverse_controller_id / controller_speed_param, as before.
-    # Default 'mppi' (2026-10-16, owner: MPPI as the single tracker; it needs
-    # path_conditioning: on raw paths it overshoots the sharp ring vertices and the short
-    # swath-end turn legs, study §8). 'rpp' = the revert.
-    coverage_controller: str = 'mppi'
+    # 2026-10-15 MPPI study (docs/analysis/2026-10-15_mppi_study.md): coverage sub-paths are
+    # driven by the feasibility-aware MPPI (nav2_params.yaml): mppi_follow_controller_id, and
+    # mppi_reverse_controller_id for sub-paths whose poses face against their travel (reverse
+    # turn legs from the coverage bridge); the cut speed goes to mppi_controller_speed_param
+    # capped at mppi_speed_max_mps. It needs path_conditioning (on raw paths it overshoots the
+    # sharp ring vertices and the short swath-end turn legs, study §8). The 'rpp' revert
+    # (coverage_controller, follow_/reverse_controller_id, controller_speed_param) was deleted
+    # on 2026-10-23 (code review stage 0.1).
     mppi_follow_controller_id: str = 'FollowCoveragePathMPPI'
     mppi_reverse_controller_id: str = 'FollowCoveragePathReverseMPPI'
     mppi_controller_speed_param: str = 'FollowCoveragePathMPPI.vx_max'
     mppi_speed_max_mps: float = 0.3      # MPPI must not sample above the MCU clamp
-    follow_controller_id: str = 'FollowCoveragePath'
-    # Sub-paths whose poses face against their travel (reverse turn legs from
-    # the coverage bridge) go to this controller (RPP with allow_reversing).
-    reverse_controller_id: str = 'FollowCoveragePathReverse'
     follow_goal_checker_id: str = 'coverage_goal_checker'
     # Turn legs (reverse sub-paths, and any sub-path chunk no longer than
     # turn_leg_max_m: the forward pieces of a Reeds-Shepp turn) use this checker:
@@ -983,7 +974,7 @@ class Params:
     hard_boundary_retrace_max_m: float = 1.0
     hard_boundary_lookahead_m: float = 0.25
     hard_boundary_min_inner_mps: float = 0.06
-    hard_boundary_track_width_m: float = 0.40     # MCU wheel split (cmd_vel_slew TRACK_WIDTH_M; was 0.48)
+    hard_boundary_track_width_m: float = rgeo.TRACK_SPLIT_M   # MCU wheel split 0.40 (was 0.48)
     hard_boundary_pivot_err_rad: float = 0.6
     hard_boundary_pivot_rps: float = 0.3
     hard_boundary_progress_s: float = 3.0
@@ -1091,7 +1082,6 @@ class Params:
     use_area_settings: bool = True      # read /map_server_node/get_area_settings per area
     cut_width_m: float = 0.22           # blade cut width (display only; spacing = area swath_width_m)
     cut_speed_max_mps: float = 0.5
-    controller_speed_param: str = 'FollowCoveragePath.desired_linear_vel'
     set_cut_speed: bool = True          # set_parameters on /controller_server per area
     set_cutter_height: bool = True      # /cutter_control height per area
     # --- obstacle avoidance (/obstacle_policy from obstacle_guard) ---
@@ -1167,7 +1157,7 @@ class Params:
     tilt_guard: bool = True
     tilt_status_timeout_s: float = 2.0  # older /tilt/status -> band unknown (no action)
     tilt_caution_speed_mps: float = 0.15
-    tilt_transit_speed_param: str = 'FollowPath.vx_max'  # MPPI transit (rpp: .desired_linear_vel)
+    tilt_transit_speed_param: str = 'FollowPath.vx_max'  # MPPI transit
     tilt_transit_speed_mps: float = 0.3     # restored after caution (nav2_params FollowPath)
     tilt_trail_m: float = 2.0           # driven track kept for the back-out
     tilt_trail_step_m: float = 0.05
@@ -2813,7 +2803,7 @@ class MissionFSM:
         if st.get('edge_mode') not in EDGE_MODES:
             self._log('warn', 'unknown edge_mode %r: soft' % st.get('edge_mode'))
             st['edge_mode'] = 'soft'
-        st['edge_layout'] = st['edge_mode'] if self.p.edge_layout_enabled else 'legacy'
+        st['edge_layout'] = st['edge_mode']
         st['route_spiral_size'] = max(2, int(st['route_spiral_size']))
         st['min_turn_radius_m'] = max(0.0, float(st['min_turn_radius_m']))
         if st['path_mode'] not in PATH_MODES:
@@ -3798,23 +3788,15 @@ class MissionFSM:
                         % (self._now - since))
         return True
 
-    def coverage_mppi(self):
-        """True when coverage sub-paths are driven by MPPI (``coverage_controller``)."""
-        return str(self.p.coverage_controller).strip().lower() == 'mppi'
-
     def coverage_controller_id(self, reverse):
         """Nav2 controller id for a coverage sub-path (forward or reverse leg)."""
-        if self.coverage_mppi():
-            return (self.p.mppi_reverse_controller_id if reverse
-                    else self.p.mppi_follow_controller_id)
-        return self.p.reverse_controller_id if reverse else self.p.follow_controller_id
+        return (self.p.mppi_reverse_controller_id if reverse
+                else self.p.mppi_follow_controller_id)
 
     def coverage_speed_params(self, speed):
         """{controller_server param: value} for a coverage cut speed."""
-        if self.coverage_mppi():
-            return {self.p.mppi_controller_speed_param:
-                    min(float(speed), float(self.p.mppi_speed_max_mps))}
-        return {self.p.controller_speed_param: float(speed)}
+        return {self.p.mppi_controller_speed_param:
+                min(float(speed), float(self.p.mppi_speed_max_mps))}
 
     def _follow_goal_checker(self, poses, reverse):
         """Goal checker for a FollowPath chunk: the leg checker for turn legs."""
@@ -4061,7 +4043,7 @@ class MissionFSM:
         """Length of the straight the robot body sweeps: drive + footprint ahead of it."""
         p = self.p
         return float(p.heading_calibration_distance_m) + float(
-            p.robot_front_m if direction > 0 else p.robot_rear_m)
+            p.robot_front_m if direction > 0 else p.robot_rear_edge_m)
 
     def _hcal_clear(self, pose, direction):
         """The straight ``direction`` (+1 ahead, -1 behind) from ``pose`` by the PRIOR
@@ -4719,7 +4701,7 @@ class MissionFSM:
         return True
 
     def _route_corner_th(self):
-        """Corner threshold of the route split (rad; 0 = the legacy split)."""
+        """Corner threshold of the route split and pivots (rad; 0 = off)."""
         th = float(self.p.route_corner_turn_rad)
         if th > 0.0 and float(self.p.route_split_turn_deg) > 0.0:
             th = min(th, math.radians(float(self.p.route_split_turn_deg)))
@@ -4759,12 +4741,15 @@ class MissionFSM:
         every corner of at least that angle (geometry.route_corners: the bend between the
         straight runs either side, robust to pose spacing and drawing wobble; neighbouring
         sharp corners each get their own split), the leg ending exactly on the corner pose
-        with its yaw along the run into the corner. 0 = the old split (turns sharper than
-        route_split_turn_deg over 3 poses either side, ~0.3 m)."""
+        with its yaw along the run into the corner. 0 = the same split at
+        route_split_turn_deg (the 3-pose-chord split it replaced was deleted on 2026-10-23;
+        both 0 = one goal)."""
         th = self._route_corner_th()
         if th <= 0.0:
-            return self._split_route_legacy(poses)
+            th = math.radians(max(0.0, float(self.p.route_split_turn_deg)))
         poses = list(poses)
+        if th <= 0.0:
+            return [poses]
         cuts = [i for i, _t in geo.route_corners(poses, th, tol_rad=ROUTE_CORNER_TOL_RAD)]
         if not cuts:
             return [poses]
@@ -4780,35 +4765,6 @@ class MissionFSM:
             s0 = c
         legs.append(list(poses[s0:]))
         return [lg for lg in legs if len(lg) >= 2] or [poses]
-
-    def _split_route_legacy(self, poses):
-        """Before task 0.4 (d) (route_corner_turn_rad 0): split at turns sharper than
-        route_split_turn_deg (measured over 3 poses either side, ~0.3 m)."""
-        th = math.radians(float(self.p.route_split_turn_deg))
-        k = 3
-        if th <= 0 or len(poses) < 2 * k + 2:
-            return [list(poses)]
-
-        def turn(j):
-            a, b, c = poses[j - k], poses[j], poses[j + k]
-            h1 = math.atan2(b[1] - a[1], b[0] - a[0])
-            h2 = math.atan2(c[1] - b[1], c[0] - b[0])
-            return abs(math.atan2(math.sin(h2 - h1), math.cos(h2 - h1)))
-
-        cuts, i = [], k
-        while i < len(poses) - k:
-            if turn(i) >= th:
-                j = max(range(i, min(len(poses) - k, i + 2 * k)), key=turn)
-                cuts.append(j)
-                i = j + 2 * k
-            else:
-                i += 1
-        legs, s0 = [], 0
-        for c in cuts:
-            legs.append(list(poses[s0:c + 1]))
-            s0 = c
-        legs.append(list(poses[s0:]))
-        return [lg for lg in legs if len(lg) >= 2] or [list(poses)]
 
     def _route_cusps(self, poses, legs):
         """Cusps of a planned route (geometry.route_cusps at route_cusp_angle_rad) plus the
@@ -5520,7 +5476,7 @@ class MissionFSM:
         o = (pose[0] + d * math.cos(a), pose[1] + d * math.sin(a))
         p = self.p
         hw, margin = float(p.robot_width_m) / 2.0, float(p.obstacle_path_margin_m)
-        front, rear = float(p.robot_front_m), float(p.robot_rear_m)
+        front, rear = float(p.robot_front_m), float(p.robot_rear_edge_m)
         model = self._upcoming_path()
         self._path_eval = {'path': model[0] if model else None,
                            'motion': self._path_motion()}

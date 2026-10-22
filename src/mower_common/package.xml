@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mower_common</name>
+  <version>0.1.0</version>
+  <description>
+    Shared Python library (no nodes) for the Airseekers Tron ROS 2 packages: the rclpy
+    subscription pump (sub_pump), node clocks (clock), angle helpers (angles), the mission
+    motion phases (phases) and the robot geometry constants (geometry). Created 2026-10-23
+    (code review stage 0.3) to replace 11 identical sub_pump.py copies and per-package
+    duplicates.
+  </description>
+  <maintainer email="michael@example.com">michael</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rosgraph_msgs</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>python3-yaml</test_depend>
+  <test_depend>nav_msgs</test_depend>
+  <test_depend>std_msgs</test_depend>
+  <test_depend>mower_interfaces</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

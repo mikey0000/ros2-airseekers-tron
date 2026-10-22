@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.8)
 project(mower_costmap_layers)
+
+# arm64 GCC >= 10.1 prints "parameter passing for argument of type std::pair ... changed in
+# GCC 10.1" notes: harmless (one compiler builds the whole stack), they only clutter the log.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-Wno-psabi)
+endif()
 set(CMAKE_CXX_STANDARD 17)
 find_package(ament_cmake REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)

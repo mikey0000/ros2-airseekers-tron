@@ -38,10 +38,10 @@ from mowgli_interfaces.srv import (AddMowingArea, ClearObstacle, GetMowingArea,
 from mower_map import area_settings as aset
 from mower_map import areas as core
 from mower_map import nongrass_node as ngn
-from mower_map import robot_body
 from mower_map import route_graph as rgraph
 from mower_map import terrain as terr
-from mower_map.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
+from mower_common import geometry as rgeo
+from mower_common.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
 
 try:
     import tf2_ros
@@ -132,7 +132,7 @@ PARAMS = {
     # mow-progress paint radius; < 0 = blade_disc_mm / 2000 (the one robot-wide blade size, set
     # by the GUI / robot settings; 220 mm disc -> 0.11; was 0.15 = a 0.30 disc for a 0.22 blade)
     'blade_radius': -1.0,
-    'blade_offset_x': 0.23,            # fallback if TF base->blade is unavailable (URDF cutter_xyz, deck centre measured 2026-10-20)
+    'blade_offset_x': rgeo.DECK_CENTRE_X_M,   # 0.23: fallback if TF base->blade is unavailable (URDF cutter_xyz, deck centre measured 2026-10-20)
     'blade_offset_y': 0.0,
     'status_max_age_s': 1.0,           # is_cutting older than this -> not cutting
     'mow_progress_publish_period_s': 2.0,
@@ -145,15 +145,6 @@ PARAMS = {
     # nothing. Idle longer than this (no edit call) -> the staged set is dropped, the live map
     # stays.
     'map_edit_timeout_s': 10.0,
-    # ~/body_outside_m (design 2026-10-15 section 7, 2026-10-17): how far the robot BODY (the
-    # padded Nav2 footprint at the current pose, mower_map.robot_body) sticks out of areas U
-    # drawn paths U dock corridor; with base_link inside the dock corridor the point value
-    # (the body must enter the dock). '' / -1 = nav2_params.yaml local_costmap footprint /
-    # footprint_padding (the one source of truth); body_nav2_params_file '' = the installed
-    # mower_navigation config.
-    'body_footprint': '',
-    'body_padding_m': 0.0,   # measured body, no Nav2 padding (-1 = nav2 footprint_padding)
-    'body_nav2_params_file': '',
     'soft_boundary_margin_m': 0.3,
     'lethal_boundary_margin_m': 0.5,
     'boundary_debounce_samples': 3,
@@ -188,7 +179,7 @@ PARAMS = {
     # which win over these at startup; the GUI also sets them live). The default
     # swath_width_m = default_swath_width_m if > 0, else blade_disc_mm/1000 -
     # swath_overlap_m (area_settings.derive_default_swath_width).
-    'blade_disc_mm': 220,              # 220 standard disc | 330 optional wide disc (blades incl.)
+    'blade_disc_mm': int(round(rgeo.BLADE_DISC_M * 1000)),   # 220 standard disc | 330 optional wide disc (blades incl.)
     'swath_overlap_m': 0.04,           # 0..0.15
     'default_swath_width_m': 0.0,      # 0 = derived from the disc
     # terrain memory (docs/terrain_aware_planning.md): per-area slope + traction raster
@@ -202,7 +193,6 @@ PARAMS = {
     'terrain_sample_min_move_m': 0.05,  # one tilt sample per this much travel
     'terrain_roll_offset_deg': 0.0,    # IMU mounting bias (cancels anyway over headings)
     'terrain_pitch_offset_deg': 0.0,
-    'terrain_dig_topic': '/dig_stall',
     'terrain_incident_topic': '/mission/incident',
     'terrain_bad_half_life_days': 21.0,
     'terrain_slope_half_life_days': 365.0,
@@ -321,13 +311,6 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         # task 0.4 (a): distance outside areas U drawn paths U dock corridor (0 inside; the
         # return corridor does not count) for the mission's hard boundary
         self.outside_pub = self.create_publisher(Float32, '~/outside_m', 1)
-        # the same for the whole robot body (the mission's hard boundary measure since
-        # 2026-10-17; mission_node outside_distance_topic reverts to ~/outside_m)
-        self.body_outside_pub = self.create_publisher(Float32, '~/body_outside_m', 1)
-        self._body = robot_body.load_body(str(self.p('body_footprint')),
-                                          float(self.p('body_padding_m')),
-                                          str(self.p('body_nav2_params_file')))
-        self.get_logger().info('robot %s' % self._body.describe())
         self.replan_pub = self.create_publisher(Bool, '~/replan_needed', 1)
         self.settings_pub = self.create_publisher(String, '~/area_settings', _latched())
         # terrain memory outputs (latched): traction score 0..100 (-1 = never driven),
@@ -344,7 +327,6 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         self.terrain_dirty = False           # published layers out of date
         self._terrain_last_xy = None
         self._terrain_last_t = None
-        self._dig_latched = False
         self._lethal_prev = False
         self._soft_prev = False
         self._pose_gate = core.PoseJumpGate(float(self.p('pose_jump_max_m')),
@@ -379,10 +361,6 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             from sensor_msgs.msg import Imu
             self._imu_sub = sub(Imu, self.p('terrain_imu_topic'), self.on_imu, 1, lock=lock,
                                 sampled=True, with_receipt=True)
-            sub(Bool, self.p('terrain_dig_topic'), self.on_dig_stall,
-                QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
-                           durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
-                           history=QoSHistoryPolicy.KEEP_LAST), lock=lock)
             sub(String, self.p('terrain_incident_topic'), self.on_incident, 20, lock=lock)
         self.nongrass_init(sub, lock, _latched())
         self.imu = None
@@ -892,7 +870,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
 
         rate = float(self.p('boundary_check_rate_hz'))
         if self.map_edit_open(now):
-            return    # map being replaced: no outside_m / body_outside_m / boundary flags
+            return    # map being replaced: no outside_m / boundary flags
         if self.store.areas and (rate <= 0 or now - self.last_boundary_check >= 1.0 / rate):
             self.last_boundary_check = now
             self.boundary.soft_margin = float(self.p('soft_boundary_margin_m'))
@@ -908,13 +886,6 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             out = core.outside_distance(x, y, self.store.areas, [dock_poly] if dock_poly else [])
             if math.isfinite(out):
                 self.outside_pub.publish(Float32(data=float(out)))
-                polys = [a.polygon for a in self.store.areas] + ([dock_poly] if dock_poly else [])
-                body = self._measure_body(x, y)
-                if body is None or (dock_poly and core.point_in_polygon(x, y, dock_poly)):
-                    body_out = out    # dock corridor (the body enters the dock) / drawn path
-                else:
-                    body_out = max(out, robot_body.body_outside(body, x, y, yaw, polys))
-                self.body_outside_pub.publish(Float32(data=float(body_out)))
             soft, lethal_raw = self.boundary.update(inside, dist)
             self._lethal_filter.min_duration_s = float(self.p('lethal_min_duration_s'))
             lethal = self._lethal_filter.update(now, lethal_raw)
@@ -933,23 +904,6 @@ class MapServerNode(ngn.NonGrassMixin, Node):
     def blade_radius(self):
         r = float(self.p('blade_radius'))
         return r if r > 0.0 else max(0.01, float(self.p('blade_disc_mm')) / 2000.0)
-
-    def _measure_body(self, x, y):
-        """The body measured at (x, y) (design section 7, owner 2026-10-17): the mowing
-        area base_link is in (else the nearest one, unless base_link is on a drawn path):
-        its edge_mode hard = the whole outline, soft = nose / tail only; None = on a drawn
-        path / channel only (base_link counts, the body may overhang)."""
-        mowing = [a for a in self.store.areas if not a.is_navigation and len(a.polygon) >= 3]
-        inside = [a for a in mowing if core.point_in_polygon(x, y, a.polygon)]
-        if not inside:
-            if any(a.is_navigation and len(a.polygon) >= 3 and
-                   core.point_in_polygon(x, y, a.polygon) for a in self.store.areas):
-                return None
-            if not mowing:
-                return None
-            inside = [min(mowing, key=lambda a: core.closest_edge_point(x, y, a.polygon)[2])]
-        modes = [str(self.settings.effective(a.name).get('edge_mode', 'soft')) for a in inside]
-        return self._body if 'hard' in modes else self._body.soft()
 
     def on_progress_timer(self):
         if self.progress_dirty:
@@ -1800,12 +1754,6 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             t.raster.add_seen(x, y, dt)
             t.dirty = True
             self.terrain_dirty = True
-
-    def on_dig_stall(self, msg):
-        latched = bool(msg.data)
-        if latched and not self._dig_latched and self.pose is not None:
-            self.terrain_incident('dig_stall', self.pose[0], self.pose[1], '/dig_stall latched')
-        self._dig_latched = latched
 
     def on_incident(self, msg):
         """/mission/incident JSON {kind, x?, y?, detail?}; pose defaults to the robot."""

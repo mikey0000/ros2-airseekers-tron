@@ -11,16 +11,13 @@
 #     emergency lanes do not pass through the collision_monitor.
 #   * Planner (2026-10-09): GridBased = SmacPlannerHybrid (DUBIN, r_min 0.45 m, full
 #     footprint collision check); GridBasedNavFn kept as the BT's fallback planner id.
-#   * Transit FollowPath (2026-10-09) = nav2_mppi_controller (DiffDrive). The previous RPP
-#     transit config is FollowPathRPP; navigation.launch.py transit_controller:=rpp swaps
-#     it back in under the FollowPath id (launch/nav2_param_tools.py).
+#   * Transit FollowPath (2026-10-09) = nav2_mppi_controller (DiffDrive).
 #   * Coverage (2026-10-15 MPPI study, docs/analysis/2026-10-15_mppi_study.md):
-#     FollowCoveragePath / FollowCoveragePathReverse (RPP, mission.yaml coverage_controller:
-#     rpp, shipped) or FollowCoveragePathMPPI / FollowCoveragePathReverseMPPI
-#     (feasibility-aware MPPI, coverage_controller: mppi). FollowCoveragePathFTC
-#     (MowgliNext FTC port) stays selectable. Every MPPI controller carries
+#     FollowCoveragePathMPPI / FollowCoveragePathReverseMPPI (feasibility-aware MPPI).
+#     The RPP (transit + coverage) and MowgliNext FTC controllers were deleted on
+#     2026-10-23 (code review stage 0.1). Every MPPI controller carries
 #     mowgli_nav2_plugins' WheelFloorCritic (the drive's 0.06 m/s wheel floor).
-#   * No LiDAR, no /map: the global costmap's static_layer is the nav mask
+#   * No LiDAR, no /map: the global costmap's keepout_filter carries the nav mask
 #     (/nav_keepout_mask), not a SLAM map. Obstacles come from the front stereo
 #     (/stereo_depth/points + the ground-only clearing cloud /stereo_depth/clear_points),
 #     YOLO detections (/ai/det/obstacle_points) and /bumper_cloud, fed to BOTH the
@@ -103,14 +100,12 @@ controller_server:
     # (mission.yaml route_progress_checker_id / follow_progress_checker_id) and both BTs pass
     # progress_checker_id="progress_checker". Keep "progress_checker" first.
     progress_checker_plugins: ["progress_checker", "transit_progress_checker"]
-    goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker", "coverage_goal_checker_ftc",
+    goal_checker_plugins: ["general_goal_checker", "coverage_goal_checker",
                            "coverage_leg_goal_checker", "coverage_corner_goal_checker"]
-    # FollowPath = MPPI transit (2026-10-09); FollowPathRPP = the previous RPP transit
-    # (also usable directly as a controller_id); FollowCoveragePathMPPI = MPPI coverage
-    # alternative (mission.yaml follow_controller_id).
-    controller_plugins: ["FollowPath", "FollowPathRPP", "FollowCoveragePath",
-                         "FollowCoveragePathMPPI", "FollowCoveragePathFTC",
-                         "FollowCoveragePathReverse", "FollowCoveragePathReverseMPPI"]
+    # FollowPath = MPPI transit (2026-10-09); FollowCoveragePathMPPI /
+    # FollowCoveragePathReverseMPPI = MPPI coverage (mission.yaml mppi_follow_controller_id /
+    # mppi_reverse_controller_id).
+    controller_plugins: ["FollowPath", "FollowCoveragePathMPPI", "FollowCoveragePathReverseMPPI"]
     # DEVIATION: no path_handler_plugins (Kilted-only API).
 
     # PoseProgressChecker (as MowgliNext): rotating in place counts as progress
@@ -154,27 +149,13 @@ controller_server:
       yaw_goal_tolerance: 3.14
       stateful: true
 
-    # Requested by the mission (follow_goal_checker_id: coverage_goal_checker).
-    # mowgli_nav2_plugins::PathProgressGoalChecker (Jazzy port in
-    # src/mowgli_nav2_plugins): fires only after FTC has tracked >= 95 % of the
-    # plan it republishes on /controller_server/FollowCoveragePath/global_plan
-    # AND the robot is within xy tolerance. Yaw ignored at a swath end.
-    # Coverage goal checker for FollowCoveragePath (RPP): end of the swath within 0.25 m,
-    # yaw ignored. (2026-10-06: the FTC port veered off the first ring on the real mower;
-    # RPP is the fallback until mowgli_nav2_plugins::FTCController is validated.)
+    # Requested by the mission (follow_goal_checker_id: coverage_goal_checker) for coverage
+    # sub-paths: end of the swath within 0.25 m, yaw ignored.
     coverage_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 3.14
       stateful: true
-    # Goal checker for FollowCoveragePathFTC (mowgli_nav2_plugins): fires after FTC has
-    # tracked >= 95 % of the plan it republishes AND the robot is within xy tolerance.
-    coverage_goal_checker_ftc:
-      plugin: "mowgli_nav2_plugins::PathProgressGoalChecker"
-      progress_threshold: 0.95
-      xy_goal_tolerance: 0.50
-      yaw_goal_tolerance: 3.14
-      plan_topic: "/controller_server/FollowCoveragePathFTC/global_plan"
     # Turn legs of the coverage plan (reverse legs and short forward turn pieces, mission
     # turn_leg_goal_checker_id). 2026-10-07: with coverage_goal_checker (xy 0.25) a 0.3 m
     # reverse leg was "done" 70 ms after the goal (start already inside tolerance), so the
@@ -242,8 +223,7 @@ controller_server:
     # Transit controller (2026-10-09): MPPI instead of RPP. RPP follows the plan and can only
     # STOP at an obstacle ("collision ahead" -> abort -> BT replan); MPPI samples around it
     # on the local costmap (footprint-checked) and rejoins the path, so a person / box on a
-    # transit costs a curve, not an abort + replan. Switch back: navigation.launch.py
-    # transit_controller:=rpp (copies FollowPathRPP over this block at launch).
+    # transit costs a curve, not an abort + replan.
     #   * Speed: vx_max 0.3 / wz_max 0.3 = the MCU clamps (each axis clamped separately).
     #     GUI transit_speed (robot_settings.py -> FollowPath.desired_linear_vel) is mapped to
     #     vx_max at launch by nav2_param_tools (MPPI has no desired_linear_vel); a LIVE GUI
@@ -370,168 +350,8 @@ controller_server:
         min_wheel_speed: 0.06
         allow_pivots: true
 
-    # Previous transit controller (FollowPath until 2026-10-09). Selectable as controller_id
-    # FollowPathRPP, or put back under FollowPath with navigation.launch.py
-    # transit_controller:=rpp. DEVIATION: plain RPP with use_rotate_to_heading
-    # instead of MowgliNext's RotationShim(RPP): one fewer plugin to tune,
-    # RPP's own rotate-to-heading covers pivots on a diff-drive.
-    FollowPathRPP:
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.3
-      lookahead_dist: 0.6
-      min_lookahead_dist: 0.4
-      max_lookahead_dist: 0.8
-      lookahead_time: 2.0
-      use_velocity_scaled_lookahead_dist: true
-      # 0.3 (was 0.5): = the MCU clamp. RPP rotate-to-heading is bang-bang (no
-      # deceleration), and the 0.5 command had to slew 0.2 rad/s through cmd_vel_slew
-      # (1.0 rad/s^2) before the clamped wheel command even started to drop: 0.2 s of extra
-      # dead time, overshoot ~0.16 rad vs ~0.10 rad at 0.3 (bag 2026-10-08).
-      rotate_to_heading_angular_vel: 0.3
-      transform_tolerance: 0.5
-      min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.6
-      use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
-      use_regulated_linear_velocity_scaling: true
-      # cmd_vel_slew turn shaper (both wheels forward, inner >= 0.06 m/s, b = 0.40 m,
-      # outer <= 0.3): r_min = b/2*(v_out+v_in)/(v_out-v_in) = 0.30 m; with the MCU's
-      # |w| <= 0.3 the tightest arc is 0.40 m (v 0.12). Keep every min radius >= 0.40.
-      regulated_linear_scaling_min_radius: 0.9
-      regulated_linear_scaling_min_speed: 0.15
-      use_cost_regulated_linear_velocity_scaling: false
-      # Kept true (2026-10-07 transit pivot stall): RPP without rotate-to-heading
-      # drives FORWARD when the carrot is behind (curvature ~0) - worse than a slow pivot.
-      # The Tron's in-place pivot (0.02-0.08 rad/s on turf) is helped instead by
-      # mower_control/cmd_vel_slew pivot_assist (enabled 2026-10-10): after 0.8 s of linear
-      # 0 / |angular| >= 0.08 in TRANSIT/MOWING it creeps +0.14 m/s (max 0.3 m per pivot),
-      # turning the pivot into a tight arc (~0.2 rad/s), still legal for the turn shaper
-      # (inner wheel 0.068 m/s at |w| = 0.3, >= the 0.06 deadband). The 0.8 s delay engages
-      # before the ~1 s direction flip at a swath-end turn. progress_checker: 20 s /
-      # 0.25 m / 0.5 rad.
-      use_rotate_to_heading: true
-      rotate_to_heading_min_angle: 0.785
-      # 3.2: RPP ramps its turn command from the MEASURED yaw rate; with 1.0 and wheels
-      # stalled in grass the command sat at 0.07 rad/s forever (rocking in place, 10-06).
-      # 6.4 (was 3.2): RPP ramps from the MEASURED yaw rate; at 3.2 x 0.05 s a stalled
-      # robot could only ask 0.16 rad/s (wheel 0.04 m/s, under the MCU's ~0.06 m/s floor),
-      # so it never broke free and rocked in place (2026-10-07 live incident). 6.4 lets
-      # one 20 Hz cycle reach the 0.3 rad/s clamp from rest. Do NOT lower it to tame turn
-      # hunting (2026-10-08): RPP windows around the measured rate, so 3.0 caps a stalled
-      # pivot at 0.15 rad/s forever; the real ramp is cmd_vel_slew's 1.0 rad/s^2.
-      max_angular_accel: 6.4
-      allow_reversing: false
-      max_robot_pose_search_dist: 10.0
-      use_interpolation: true
-
-    # Coverage controller (mission.yaml follow_controller_id: FollowCoveragePath).
-    # RegulatedPurePursuit tuned for 0.18 m swaths: short lookahead, no reversing,
-    # slow pivots at swath ends. desired_linear_vel is set live from the area settings.
-    FollowCoveragePath:
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.3
-      # 0.5/0.4/0.7 (was 0.4/0.3/0.6): the drive lags and caps the yaw rate, and the short
-      # carrot made RPP weave (angular.z sign flips every 1-2 s at 0.3 m/s, 10-06 runs A/B).
-      lookahead_dist: 0.5
-      min_lookahead_dist: 0.4
-      max_lookahead_dist: 0.7
-      lookahead_time: 1.5
-      use_velocity_scaled_lookahead_dist: true
-      # mower_mcu_driver clamps angular to 0.3 rad/s (vendor PID clamp): ask for no more.
-      rotate_to_heading_angular_vel: 0.3
-      transform_tolerance: 0.5
-      # 0.14 (was 0.05, 2026-10-13 swath-end pivots): every K-turn leg (~0.4 m) is inside
-      # approach_velocity_scaling_dist, so RPP drove it at 0.05-0.1 m/s with w = v * k. On an
-      # r 0.5 m leg (k 2) that was inner = v - w*0.24 = 0.026 m/s (b 0.48 then): cmd_vel_slew's turn shaper
-      # widened it to an r 0.84 m arc, the leg ended ~0.3 rad short of its heading and the
-      # next leg began with a pivot; at v 0.05 / |w| 0.3 (inner < 0) it SNAPPED to a pure
-      # pivot. At v >= 0.12 every |w| <= 0.3 (velocity_smoother clamp) keeps the inner wheel
-      # >= 0.06 (b 0.40): a legal arc, r >= 0.40 m (= the shaper's tightest arc at the MCU's
-      # 0.3 rad/s). 0.14 = pivot_assist's creep speed (inner 0.08 at |w| 0.3).
-      min_approach_linear_velocity: 0.14
-      approach_velocity_scaling_dist: 0.4
-      use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
-      use_regulated_linear_velocity_scaling: true
-      # Curvature-preserving turns: the MCU clamps linear and angular SEPARATELY (+-0.3) and
-      # the chassis only reaches ~0.1-0.25 rad/s in turf, so RPP must slow down until
-      # v / R <= ~0.2 rad/s itself. min_radius = desired_linear_vel / 0.2 = 1.5 m. At 0.5 m
-      # it asked for 0.4-0.6 rad/s at 0.3 m/s; the robot turned on a >= 1.0-1.5 m radius
-      # and ran wide (docs/analysis/2026-10-06_ring_drift.md).
-      regulated_linear_scaling_min_radius: 1.5
-      # 0.14 (was 0.08, 2026-10-13): same reason as min_approach_linear_velocity. Below 0.12
-      # a curvature the shaper must widen anyway (it raised v to ~0.13 on every tight arc), or,
-      # at |w| 0.3, one it snaps to a pivot. Still v / R <= 0.2 rad/s for R >= 0.7 m.
-      regulated_linear_scaling_min_speed: 0.14
-      use_cost_regulated_linear_velocity_scaling: false
-      use_rotate_to_heading: true
-      # 1.2 rad / 69 deg (was 0.6, 2026-10-13 11:25 log: several in-place turns per swath end,
-      # read as 360 deg spins). A forward leg of a reverse (Reeds-Shepp) swath turn starts at
-      # the cusp the reverse leg left: carrot angle = asin(lookahead 0.4 / (2 r 0.5)) ~ 0.41 rad
-      # of leg arc + the heading the last leg missed (coverage_leg_goal_checker yaw 0.5), so
-      # 0.6 made almost every leg (and every retry of one) begin with a 0.3 rad/s pivot that
-      # turns ~2 deg/s on turf, tripped the stuck guard and was resent. Up to 1.2 the leg is
-      # driven as an arc through the turn shaper (r >= 0.40 m, inner wheel >= 0.06 m/s).
-      # Kept true for carrots further round (a transit that arrives facing away): without
-      # rotate-to-heading RPP drives FORWARD away from a carrot behind it (curvature ~0).
-      # Trade-off: a swath start up to 69 deg off now arcs onto the line (up to ~0.3 m
-      # sideways at r 0.40) instead of pivoting.
-      rotate_to_heading_min_angle: 1.2
-      # 3.2: RPP ramps its turn command from the MEASURED yaw rate; with 1.0 and wheels
-      # stalled in grass the command sat at 0.07 rad/s forever (rocking in place, 10-06).
-      # 6.4 (was 3.2): RPP ramps from the MEASURED yaw rate; at 3.2 x 0.05 s a stalled
-      # robot could only ask 0.16 rad/s (wheel 0.04 m/s, under the MCU's ~0.06 m/s floor),
-      # so it never broke free and rocked in place (2026-10-07 live incident). 6.4 lets
-      # one 20 Hz cycle reach the 0.3 rad/s clamp from rest. Do NOT lower it to tame turn
-      # hunting (2026-10-08): RPP windows around the measured rate, so 3.0 caps a stalled
-      # pivot at 0.15 rad/s forever; the real ramp is cmd_vel_slew's 1.0 rad/s^2.
-      max_angular_accel: 6.4
-      allow_reversing: false
-      max_robot_pose_search_dist: 10.0
-      use_interpolation: true
-
-    # Reverse legs of reverse-then-curve swath turns (mower_coverage turn_type auto/reverse).
-    # The coverage bridge cuts every backwards run into its own short sub-path whose poses
-    # face AGAINST the travel; the mission (mission.yaml reverse_controller_id) sends it here.
-    # RPP drives backwards when the carrot is behind the robot (allow_reversing) and
-    # silently DISABLES reversing if use_rotate_to_heading is also true, hence false here.
-    # The leg is straight-ish and < ~0.6 m, so a short lookahead and a slow speed.
-    FollowCoveragePathReverse:
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.15
-      lookahead_dist: 0.3
-      min_lookahead_dist: 0.2
-      max_lookahead_dist: 0.4
-      lookahead_time: 1.5
-      use_velocity_scaled_lookahead_dist: false
-      rotate_to_heading_angular_vel: 0.3
-      transform_tolerance: 0.5
-      # 0.14 (was 0.05, 2026-10-13): keeps a reversing arc's inner wheel >= 0.06 m/s at
-      # |w| <= 0.3 (see FollowCoveragePath); at 0.05 the shaper snapped it to a pivot.
-      min_approach_linear_velocity: 0.14
-      approach_velocity_scaling_dist: 0.2
-      use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
-      use_regulated_linear_velocity_scaling: true
-      regulated_linear_scaling_min_radius: 0.5
-      regulated_linear_scaling_min_speed: 0.14   # was 0.05; as min_approach_linear_velocity
-      use_cost_regulated_linear_velocity_scaling: false
-      use_rotate_to_heading: false
-      # 6.4 (was 3.2): RPP ramps from the MEASURED yaw rate; at 3.2 x 0.05 s a stalled
-      # robot could only ask 0.16 rad/s (wheel 0.04 m/s, under the MCU's ~0.06 m/s floor),
-      # so it never broke free and rocked in place (2026-10-07 live incident). 6.4 lets
-      # one 20 Hz cycle reach the 0.3 rad/s clamp from rest. Do NOT lower it to tame turn
-      # hunting (2026-10-08): RPP windows around the measured rate, so 3.0 caps a stalled
-      # pivot at 0.15 rad/s forever; the real ramp is cmd_vel_slew's 1.0 rad/s^2.
-      max_angular_accel: 6.4
-      allow_reversing: true
-      max_robot_pose_search_dist: 2.0
-      use_interpolation: true
-
     # Coverage tracker (2026-10-15, MPPI study: docs/analysis/2026-10-15_mppi_study.md):
-    # feasibility-aware MPPI for every coverage sub-path with mission.yaml coverage_controller:
-    # mppi (shipped: rpp = FollowCoveragePath / FollowCoveragePathReverse, until MPPI passes the
-    # sim gate; it needs the path conditioner's pivots at sharp vertices, study 8-9).
+    # feasibility-aware MPPI for every coverage sub-path (it needs the path conditioner's pivots at sharp vertices, study 8-9).
     #   * WheelFloorCritic (mowgli_nav2_plugins): samples whose inner wheel sits under the
     #     0.06 m/s floor while turning are expensive, so the chosen command is one the drive
     #     can execute and cmd_vel_slew's turn shaper has nothing to rewrite. Pivots
@@ -622,10 +442,9 @@ controller_server:
         min_wheel_speed: 0.06
         allow_pivots: true
 
-    # Reverse legs of reverse-then-curve swath turns under MPPI (coverage_controller: mppi;
-    # revert: FollowCoveragePathReverse). The leg's poses face against the travel, so the
+    # Reverse legs of reverse-then-curve swath turns under MPPI. The leg's poses face against the travel, so the
     # box is backwards-only (vx_max 0) and PathAngleCritic has no direction preference;
-    # pivots stay allowed. 0.15 m/s = the RPP reverse speed (no rear sensing).
+    # pivots stay allowed. 0.15 m/s = the former RPP reverse speed (no rear sensing).
     FollowCoveragePathReverseMPPI:
       plugin: "nav2_mppi_controller::MPPIController"
       motion_model: "DiffDrive"
@@ -701,80 +520,6 @@ controller_server:
         min_wheel_speed: 0.06
         allow_pivots: true
 
-    # Alternative coverage controller (select with mission.yaml follow_controller_id:
-    # FollowCoveragePathFTC + follow_goal_checker_id: coverage_goal_checker_ftc).
-    # mowgli_nav2_plugins::FTCController (Follow-The-Carrot + decoupled PID),
-    # Jazzy port of MowgliNext's controller. Values from MowgliNext
-    # nav2_params_base.yaml unless marked TRON.
-    # desired_linear_vel (set from the GUI mowing_speed via robot_settings.py
-    # and live by the GUI) is a port-only alias: speed_fast = v,
-    # speed_slow = clamp(0.8 v, min_speed_mps, v). -1 = use the literals.
-    FollowCoveragePathFTC:
-      plugin: "mowgli_nav2_plugins::FTCController"
-      desired_linear_vel: 0.3
-      speed_fast: 0.2
-      speed_fast_threshold: 0.5
-      speed_fast_threshold_angle: 10.0
-      speed_slow: 0.16
-      speed_angular: 15.0
-      acceleration: 0.2
-      obstacle_restart_angular_acceleration: 1.0
-      # TRON: 0.10 (MowgliNext 0.15) so speed_slow can drop below 0.15 in turns.
-      min_speed_mps: 0.1
-      stall_speed_ratio: 0.35
-      stall_grace_s: 0.6
-      stall_crawl_speed: 0.08
-      # Blade telemetry is not wired in the port (fail-open); keep disabled.
-      blade_load_slowdown_enabled: false
-      blade_load_rpm_full: 2500.0
-      blade_load_rpm_min: 1800.0
-      blade_load_min_speed_ratio: 0.4
-      blade_load_telemetry_max_age_s: 1.0
-      kp_lon: 1.0
-      ki_lon: 0.0
-      kd_lon: 0.0
-      kp_lat: 1.0
-      ki_lat: 0.0
-      kd_lat: 0.3
-      kp_ang: 1.0
-      kp_ang_following: 0.8
-      ki_ang: 0.0
-      kd_ang: 0.0
-      derivative_filter_tau: 0.2
-      max_cmd_vel_speed: 0.3
-      max_cmd_vel_ang: 0.3
-      max_goal_distance_error: 0.5
-      max_goal_angle_error: 15.0
-      # 30 (was 10, 2026-10-09 FTC review): a 180 deg PRE_ROTATE at the measured turf pivot
-      # rate (0.02-0.08 rad/s, pivot_assist creep helps) takes well over 10 s and aborted.
-      goal_timeout: 30.0
-      max_follow_distance: 2.0
-      forward_only: true
-      check_obstacles: true
-      obstacle_lookahead: 30
-      obstacle_footprint: true
-      use_footprint_clearance: false
-      # TRON: front of footprint 0.60 m ahead of base_link, half width 0.235 m (owner-measured
-      # 2026-10-20; was 0.52 / 0.27) (MowgliNext 0.30 / 0.12 for its smaller chassis).
-      obstacle_footprint_front_length_m: 0.60
-      require_clear_exit: true
-      obstacle_body_half_width: 0.235
-      obstacle_clearance_margin: 0.05
-      ignore_obstacles_outside_zone: true
-      enable_obstacle_deviation: true
-      # 2026-10-09 FTC review (unproven, not changed): the deviation zone guard reads the
-      # global costmap, whose zone edge is the nav mask grown by the nav margin (+ inflation),
-      # not the mowing boundary, so a 1.5 m skirt can leave the area. Try 0.3 or
-      # enable_obstacle_deviation false if FTC is re-tested on rings.
-      max_lateral_deviation: 1.5
-      deviation_step: 0.05
-      deviation_blend_rate: 0.5
-      obstacle_wait_timeout_s: 2.5
-      obstacle_clear_hold_s: 1.5
-      obstacle_reverse_enabled: true
-      obstacle_reverse_max_dist_m: 0.3
-      obstacle_reverse_speed_mps: 0.1
-      scale_linear_on_angular_saturation: true
 
 planner_server:
   ros__parameters:
@@ -1262,7 +1007,7 @@ global_costmap:
       always_send_full_costmap: false
       footprint: "[[0.60, 0.235], [0.60, -0.235], [-0.10, -0.235], [-0.10, 0.235]]"
       footprint_padding: 0.02
-      # No /map publisher (no LiDAR, no SLAM): the static_layer below is the nav mask, not
+      # No /map publisher (no LiDAR, no SLAM): the nav mask (keepout_filter below) is not
       # an occupancy map. Rolling window in the GPS-anchored map frame; the nav mask carries
       # the field boundary / no-go zones, the obstacle_layer the live sensor obstacles.
       # DEVIATION: 0.1 m resolution, 50 x 50 m (MowgliNext 0.08 m, 70 x 70 m).
@@ -1307,26 +1052,10 @@ global_costmap:
       # the costmap only through keepout_filter (filters run AFTER inflation: uninflated, max-
       # combined), i.e. a hard robot-CENTRE limit at the drawn edges. terrain_layer /
       # nongrass_layer (StaticLayers on the same grid) still expand the update bounds to the
-      # whole mask every cycle, which is what the filter needs (see above).
+      # whole mask every cycle, which is what the filter needs (see above). The unused
+      # static_layer block was deleted on 2026-10-23 (code review stage 0.2).
       plugins: ["terrain_layer", "nongrass_layer", "obstacle_layer", "inflation_layer"]
       filters: ["keepout_filter"]
-      static_layer:
-        plugin: "nav2_costmap_2d::StaticLayer"
-        # /nav_keepout_mask = NAVIGATION mask (areas grown by nav_margin_m 0.35,
-        # no dock keepout). /keepout_mask is the mowing mask and made the dock
-        # start cell + perimeter coverage rings lethal (plans failed 2026-10-06).
-        map_topic: /nav_keepout_mask
-        map_subscribe_transient_local: true
-        subscribe_to_updates: false
-        # Non-trinary (2026-10-07): the nav mask soft band is 90; trinary would read it
-        # as FREE. 0 -> 0, 90 -> 90/100*254 = 229 (plannable, expensive), >= 100 lethal.
-        # Live check 2026-10-07: the KeepoutFilter (/costmap_filter_info -> this same
-        # mask) already raised the band to 229 (published 89), so this is belt and
-        # braces: same value from either mechanism. The mask has no -1 cells.
-        trinary_costmap: false
-        lethal_cost_threshold: 100
-        unknown_cost_value: -1
-        transform_tolerance: 0.5
       # Terrain memory (mower_map map_server_node ~/terrain_cost, latched, same grid as
       # the nav mask): 0..terrain_cost_max (60) from the traction score of cells where
       # the mower got stuck / slipped (docs/terrain_aware_planning.md). Non-trinary so

@@ -386,9 +386,6 @@ def generate_launch_description() -> LaunchDescription:
             'obstacle_layer and the collision_monitor. false = bumper-only obstacle layers (safe-off '
             'switch if the stereo marks the lawn); stereo_depth/det_range keep '
             'running for the GUI/obstacle_guard.'),
-        arg('transit_controller', 'mppi', 'navigation.launch.py: what the BT FollowPath id '
-            '(transits, docking approach) runs: mppi (default since 2026-10-09) or rpp (the '
-            'previous RegulatedPurePursuit transit).'),
         arg('vio', 'false', 'Visual-inertial odometry (docs/vio.md): include launch/vio.launch.py '
             '(OpenVINS + vio_odom_bridge) and run nav2.launch.py with vio:=true (vio_gate + '
             'config/ekf_vio.yaml). Needs ov_msckf in the image (scripts/build_openvins_mower.sh) '
@@ -582,8 +579,7 @@ def generate_launch_description() -> LaunchDescription:
     navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution(
             [FindPackageShare('mower_navigation'), 'launch', 'navigation.launch.py'])),
-        launch_arguments={'params_file': LaunchConfiguration('nav2_params_file'),
-                          'transit_controller': LaunchConfiguration('transit_controller')}.items(),
+        launch_arguments={'params_file': LaunchConfiguration('nav2_params_file')}.items(),
         condition=enabled('navigation'),
     )
 

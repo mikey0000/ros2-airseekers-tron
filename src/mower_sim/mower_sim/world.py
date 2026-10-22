@@ -40,12 +40,14 @@ import math
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
 
+from mower_common import geometry as rgeo
+
 Point = Tuple[float, float]
 Polygon = List[Point]
 
 # Footprint around base_link (rear axle), nav2_params.yaml / URDF.
 # Owner-measured 2026-10-20 (was [(0.52, 0.27), ..., (-0.23, 0.27)]).
-FOOTPRINT: Polygon = [(0.60, 0.235), (0.60, -0.235), (-0.10, -0.235), (-0.10, 0.235)]
+FOOTPRINT: Polygon = [tuple(c) for c in rgeo.FOOTPRINT]   # 0.60 / 0.10 / +-0.235
 
 
 # ---------------------------------------------------------------------------

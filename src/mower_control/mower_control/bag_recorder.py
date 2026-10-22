@@ -105,12 +105,12 @@ DEFAULT_TOPICS = [
     # auto obstacle marking (1 Hz; what the tracker promoted/removed this mow)
     '/obstacle_tracker/obstacles',
     # Nav2: plans, local costmap (120x120 at 1 Hz), BT log
-    '/plan', '/controller_server/FollowCoveragePathFTC/global_plan', '/local_costmap/costmap',
+    '/plan', '/local_costmap/costmap',
     '/behavior_tree_log',
     # hardware: bumper/lift (sensor_info), battery, emergency, slip/stuck, docking
     '/battery', '/mower_sensor_info', '/rain',
     '/hardware_bridge/status', '/hardware_bridge/emergency', '/hardware_bridge/power',
-    '/mower_base/key_pressed', '/dig_stall', '/stuck_event',
+    '/mower_base/key_pressed', '/stuck_event',
     '/mower_docking/state', '/mower_docking/marker_in_view',
     # docking diagnostics (2026-10-21): marker pose, detection/exposure summary (1 Hz), 1 Hz
     # grey rear JPEG -- all silent unless a dock goal runs
@@ -144,7 +144,7 @@ LOW_POWER_TOPICS = [
     '/behavior_tree_node/high_level_status', '/mission/incident', '/mission/activity',
     '/supervisor/status', '/battery', '/mower_sensor_info', '/rain',
     '/hardware_bridge/status', '/hardware_bridge/emergency', '/hardware_bridge/power',
-    '/mower_base/key_pressed', '/dig_stall', '/stuck_event', '/mower_docking/state',
+    '/mower_base/key_pressed', '/stuck_event', '/mower_docking/state',
     '/mower_docking/marker_in_view', '/mower_docking/marker_pose', '/mower_docking/diag',
     '/mower_docking/debug_image/compressed', '/rear_camera/exposure_state',
 ]

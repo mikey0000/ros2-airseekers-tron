@@ -22,13 +22,6 @@ def test_pivot_passes_as_pivot():
     assert shape_for_both_wheels(0.0, -0.3) == (0.0, -0.3, None)
 
 
-def test_slow_pivot_passes_unchanged_with_pure_pivot_off():
-    # The 2026-10-07 rule, now behind turn_shaper_pure_pivot: false.
-    p = {'pure_pivot': False}
-    assert shape_for_both_wheels(0.0, 0.1, p) == (0.0, 0.1, None)
-    assert shape_for_both_wheels(0.0, -0.02, p) == (0.0, -0.02, None)
-
-
 @pytest.mark.parametrize('w', [0.1, -0.05, 0.03, 0.24, 0.29])
 def test_slow_pure_rotation_snaps_to_pivot_floor(w):
     """Fix 8: v = 0 with 0 < |w| < floor left both wheels under the MCU deadband. Floor
@@ -52,22 +45,6 @@ def test_pure_rotation_at_or_above_floor_passes(w):
     assert shape_for_both_wheels(0.0, w) == (0.0, w, None)
 
 
-def test_pure_pivot_param_off_restores_pass_through():
-    from mower_control.cmd_vel_slew import TURN_DEFAULTS, set_turn_param
-    assert TURN_DEFAULTS['turn_shaper_pure_pivot'] is True
-    assert TURN_DEFAULTS['turn_shaper_pivot_deadband_rps'] == pytest.approx(0.03)
-    ts = TurnShaper()
-    set_turn_param(ts, 'turn_shaper_pure_pivot', False)
-    for w in (0.1, -0.02, 0.2):
-        assert ts.apply(0.0, w, 'TRANSIT', DT) == (0.0, w) and ts.status == 'pass'
-    ts = TurnShaper()                    # old latch rule: a pure pivot releases an arc latch
-    set_turn_param(ts, 'turn_shaper_pure_pivot', False)
-    ts.apply(0.1, 0.08, 'TRANSIT', DT)
-    assert ts.apply(0.0, 0.08, 'TRANSIT', DT) == (0.0, 0.08) and ts.regime == 'pivot'
-    set_turn_param(ts, 'turn_shaper_pivot_deadband_rps', 0.05)
-    assert ts.params['pivot_deadband_rps'] == pytest.approx(0.05)
-
-
 def test_both_wheels_legal_target_rule_for_pure_rotations():
     from mower_control.cmd_vel_slew import both_wheels_legal
     for w in (0.3, 0.02, 0.0):
@@ -75,8 +52,6 @@ def test_both_wheels_legal_target_rule_for_pure_rotations():
     for w in (0.03, 0.1, 0.24, 0.29):
         assert not both_wheels_legal(0.0, w, target=True)
         assert both_wheels_legal(0.0, w)          # slew ramps pass through slow rotations
-    assert both_wheels_legal(0.0, 0.1, {'track_width_m': 0.48, 'min_inner_wheel_mps': 0.06,
-                                        'pure_pivot': False}, target=True)
 
 
 def test_one_wheel_turn_snapped_to_nearer_regime():
@@ -114,7 +89,7 @@ def test_cruise_and_straight_untouched(v, w):
 def test_reverse_docking_leg_keeps_both_wheels_backward():
     # The widening geometry (task 0.4 b turns this r_req 0.35 m request into a pivot by
     # default; the docking lane is never shaped at all, see test_docking_phases_are_exempt).
-    sv, sw, info = shape_for_both_wheels(-0.035, 0.1, {'pivot_instead': False})
+    sv, sw, info = shape_for_both_wheels(-0.035, 0.1, {'pivot_instead_ratio': 0.0})
     a, b = wheels(sv, sw)
     assert sv < 0 and sw == pytest.approx(0.1)
     assert max(a, b) == pytest.approx(-0.06) and min(a, b) < 0
@@ -261,12 +236,6 @@ def test_field_dither_is_one_constant_pivot():
         ts.apply(v, w, 'MOWING', DT)
         regimes.append(ts.regime)
     assert set(regimes) == {'pivot'}
-
-
-def test_field_dither_with_pure_pivot_off_hunts():
-    ts = TurnShaper(pure_pivot=False)
-    outs, _ = _field_dither(ts)
-    assert {round(abs(w), 2) for _v, w in outs} == {0.3, 0.1}
 
 
 def test_latched_arc_held_when_v_drops_to_zero_briefly():
@@ -429,20 +398,9 @@ def test_pivot_instead_marks_the_status():
 def test_arcs_at_or_above_the_threshold_are_unchanged(v, w):
     """r_req >= 0.5 x widened radius: the same tight arc as before task 0.4 (b)."""
     assert (abs(v) / abs(w)) >= 0.5 * _widened_r(v, w)
-    old = shape_for_both_wheels(v, w, {'pivot_instead': False})
+    old = shape_for_both_wheels(v, w, {'pivot_instead_ratio': 0.0})
     new = shape_for_both_wheels(v, w)
     assert new[:2] == pytest.approx(old[:2]) and new[2]['kind'] == 'arc'
-
-
-def test_pivot_instead_off_restores_widening():
-    from mower_control.cmd_vel_slew import TURN_DEFAULTS, set_turn_param
-    assert TURN_DEFAULTS['turn_shaper_pivot_instead'] is True
-    assert TURN_DEFAULTS['turn_shaper_pivot_instead_ratio'] == pytest.approx(0.5)
-    ts = TurnShaper()
-    set_turn_param(ts, 'turn_shaper_pivot_instead', False)
-    v, w = ts.apply(0.03, 0.1, 'TRANSIT', DT, lane='navigation')
-    assert v > 0.0 and ts.status.startswith('arc r=')
-    assert v / w == pytest.approx(_widened_r(0.03, 0.1))
 
 
 def test_ratio_param_moves_the_threshold():

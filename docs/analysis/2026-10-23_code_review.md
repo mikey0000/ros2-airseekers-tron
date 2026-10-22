@@ -166,3 +166,28 @@ Notation: @X is the Ghidra address; the file VA is X−0x100000. Confidence is h
    - `StallGuard` as docking's only stall signal (EKF progress, 1 s / 20 %, a 3 s contact grace).
    
    In DOCKING and NAV_TO_APPROACH, `/stuck` still drives the mission escape; that is correct.
+
+## Cleanup executed
+### Stage 0 (branch `ws/cleanup`, 2026-10-23; not merged or pushed)
+Each item is one commit; together 150 files, +1,049 / −16,696 lines (most of it the FTC port and the ten deleted `sub_pump.py` copies).
+
+| Commit | What |
+|---|---|
+| 0.1 RPP / FTC | Deleted `FollowPathRPP`, `FollowCoveragePath`, `FollowCoveragePathReverse`, `FollowCoveragePathFTC`, `coverage_goal_checker_ftc`; mission `coverage_controller` / `follow_controller_id` / `reverse_controller_id` / `controller_speed_param`; launch `transit_controller:=rpp` (`nav2_param_tools` keeps only the GUI transit_speed → MPPI `vx_max` mapping); the FTC controller, `PathProgressGoalChecker`, obstacle deviation and oscillation detector with their tests (−8.3k). MPPI blocks unchanged. The GUI `mowing_speed` binding still writes `FollowCoveragePath.desired_linear_vel`, which nothing has read since MPPI coverage (2026-10-16); left for the GUI table, follow-up. |
+| 0.2 dead code | `static_layer` block; map_server `~/body_outside_m` + the body sweep (no consumer: mission reads `~/outside_m`, the sim gate's `evaluate.py` computes the body itself from `mower_map.robot_body`, which stays; the GUI never read it); `_split_route_legacy` (`route_corner_turn_rad` 0 now splits at `route_split_turn_deg` with the corner splitter); `edge_layout_enabled` (mission flag only: the coverage planner's `legacy` layout is in `mower_coverage`, which `ws/edge-layout3` is editing, so it stays until then); cmd_vel_slew `turn_shaper_pure_pivot`, `turn_shaper_pivot_instead`, `slew_both_wheels_always` (their shipped `true` is now unconditional). `motor_load.py` stays, not an entry point. |
+| 0.3 `mower_common` | New package: `sub_pump` (replaces 11 identical copies), `clock` (`NodeClock`, `node_clock`, `node_now`; the three mower_navigation `node_now` copies use it), `angles` (`wrap_angle`, `wrap_angle_trig` kept bit-identical for its atan2 users, `yaw_from_quaternion`), `phases` (`DOCK_PHASES` / `MOTION_PHASES` / `DOCKED_MOTION_PHASES`, imported by the FSM and cmd_vel_slew), `geometry` (track 0.40 / 0.39, footprint 0.60 / 0.10 / 0.235, blade disc 0.22, deck centre 0.23, marker 0.04). Python defaults read it; YAML keeps literals, `test_yaml_constants.py` checks them. **`robot_rear_m` 0.12 was deliberate** (rear 0.10 + 0.02 margin = obstacle_guard `rear_edge_x_m` −0.12), so it was renamed `robot_rear_edge_m`, not changed. Every Python executable (53) imports through `node_host.load_main`; the gate ran composed (`compose_nodes` true, the sim default). |
+| 0.4 clocks | `cm_stop_since` and the nav_lane_watchdog `/collision_monitor_state` stamp on the node clock. Swallowed exceptions in docking (teleop parse, calibration write, final zero cmd), supervisor (blackbox trigger decode), fixed_frame_relay (cloud layout) now warn (throttled). The flagged `time.time()` uses (heading_logic offset age, map_server terrain decay, supervisor crash-file mtimes) are persisted wall-clock stamps and correct as they are: unchanged. |
+| 0.5 slew params | `cmd_vel_slew._on_set_parameters` converts and validates the whole request first (a rejected request applies nothing), then applies it under `_cfg_lock`, which `_tick` holds around `step()`; the TurnShaper params dict is swapped, not mutated. New `test_param_callback.py`. |
+| build | `-Wno-psabi` (GCC only) in mower_coverage, det_ros_cpp, mower_costmap_layers, bumper_controller, mowgli_nav2_plugins. |
+| 0.6 CI | `scripts/ci_test.sh` (build + test all packages in the dev image, fails on any failed case; `CI_KNOWN_FAILURES` tolerated) and `.github/workflows/unit-tests.yml` (builds and caches the image on the runner: there is no registry). Tests run with `--executor sequential`: every package's real-rclpy tests share one test domain, and in parallel the docking goal-input test read another package's `/odom`. Stale `test_robot_settings` expectation fixed (cut width 0.22). Not pushed. |
+| 0.7 `/dig_stall` | Owner-approved pull-forward of 2.9. Deleted the slip_detector dig detector, its `slip_*` / `require_rtk_fixed` / `fix_timeout` params and `/fix_status` gate, docking `use_dig_stall` / `dig_stall_topic` / `_dig_at_start`, map_server `terrain_dig_topic`, the recorder topics. **Kept** the measured wheel twist subscription (`/wheel_vel`, else `/odom`): the `/stuck` `spinning` reason reads it. The `dig_stall` terrain kind stays for incidents already saved on disk. `/stuck` and `StallGuard` untouched. |
+
+**Validation.** `scripts/ci_test.sh` (all packages): 3,279 cases, 0 failed. Sim gate real_run5 ideal `-x 1` (domain 216, output `ros2_stack-wt/accuracy-simout/cleanup/`), two runs against merged master's x1:
+
+| | (a) point out | (d) fallback | (e) corner max | (h) p99 line / arc | (i) side over plan | loop Hz |
+|---|---|---|---|---|---|---|
+| master x1 | 0.077 | 1 | 0.050 | 0.092 / 0.073 | 0.204 | 20 |
+| stage 0 run 1 | 0.055 | 1 | 0.064 | 0.104 / 0.056 | 0.229 | 20 |
+| stage 0 run 2 | 0.028 | 1 | 0.047 | 0.088 / 0.044 | 0.218 | 20 |
+
+The two stage-0 runs straddle master in both directions (h line 0.088–0.104, i 0.218–0.229), which is run-to-run noise at x1, not a shift. Both runs: 0 trips, MOWING_COMPLETE, docked and charging, stuck guard 0.

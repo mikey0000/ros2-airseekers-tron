@@ -81,49 +81,12 @@ def test_applied_log_silent_at_rest():
     assert not [t for _l, t in node.log.lines if t.startswith('cmd_vel applied')]
 
 
-# ---------------------------------------------------------------------- slip_detector
-def _slip_node():
-    pub = []
-    node = types.SimpleNamespace(
-        _latched=False, _cmd=None, _meas=None, _require_rtk_fixed=True, _fix_status=None,
-        _fix_time=None, _fix_warned=False, _fix_timeout=5.0, _slip_threshold=0.3,
-        _slip_window=2.0, _violation_start=None, get_logger=_logger, pub=pub,
-        _publish_dig=pub.append)
-    return node
-
-
-def test_slip_latches_after_window_with_rtk_fixed():
-    node = _slip_node()
-    step = slip_detector.SlipDetectorNode.step
-    node._cmd, node._meas = (0.5, 0.0), (0.0, 0.0)
-    node._fix_status, node._fix_time = 'quality=RTK_FIXED', 0.0
-    step(node, 0.0)
-    assert node.pub == [False]
-    step(node, 1.0)
-    step(node, 2.1)
-    assert node._latched and node.pub[-1] is True and node.pub == [False, False, True]
-    step(node, 2.2)
-    assert node.pub[-1] is True
-
-
-def test_slip_gated_without_rtk_fixed_or_stale_fix():
-    node = _slip_node()
-    step = slip_detector.SlipDetectorNode.step
-    node._cmd, node._meas = (0.5, 0.0), (0.0, 0.0)
-    node._fix_status, node._fix_time = 'quality=FLOAT', 0.0
-    for t in (0.0, 1.0, 3.0):
-        step(node, t)
-    assert not node._latched and node.pub == []
-    node._fix_status, node._fix_time = 'solution=INS_RTKFIXED', 0.0
-    step(node, 10.0)                                      # stale /fix_status
-    assert not node._latched and node.pub == []
-
-
 # ---------------------------------------------------------------------- imu_cal
 THRESH = dict(gravity=9.81, accel_tolerance=0.5, gyro_variance_max=1e-4,
               accel_variance_max=0.01, gyro_bias_max=0.2, require_gyro_noise=False)
 
 
+# ---------------------------------------------------------------------- slip_detector (stuck)
 def _drive(det, t0, t1, cmd, pose_fn, wheel_v, dt=0.1, suppressed=False):
     """Feed the detector from t0 to t1; returns the first event (or None)."""
     ev, t = None, t0
@@ -261,7 +224,7 @@ def _stuck_node(det):
         _stuck=det, _reset_req=False, _cmd=(0.2, 0.0), _ekf_pose=(1.0, 1.0, 0.0), _ekf_t=0.0,
         _meas=(0.0, 0.0), _suppressed=False, _phase='TRANSIT', _stuck_last=None,
         get_logger=lambda: log,
-        _stuck_pub=types.SimpleNamespace(publish=lambda b: pub.append(b == slip_detector._DIG_TRUE)),
+        _stuck_pub=types.SimpleNamespace(publish=lambda b: pub.append(b == slip_detector._TRUE)),
         _stuck_event_pub=types.SimpleNamespace(publish=lambda m: events.append(m.data)))
     return node, pub, events
 

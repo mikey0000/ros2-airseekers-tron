@@ -142,7 +142,9 @@ class FixedFrameRelay(Node):
         now_ns = self.get_clock().now().nanoseconds
         try:
             pts = cloud_xyz(msg)
-        except Exception:  # noqa: BLE001 - unexpected layout: skip
+        except Exception as exc:  # noqa: BLE001 - unexpected layout: skip
+            self.get_logger().warn('%s: cloud skipped (unexpected layout: %s)' % (topic, exc),
+                                   throttle_duration_sec=10.0)
             return
         plan = relay_plan(msg.header.frame_id, pts, now_ns, self.max_lag_ns, self.base,
                           self.odom_tf, self.map_tf, self.static_tf)

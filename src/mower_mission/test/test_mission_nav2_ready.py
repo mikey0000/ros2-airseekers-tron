@@ -19,7 +19,7 @@ from std_srvs.srv import Trigger  # noqa: E402
 
 DOMAIN = 89
 SERVICE = '/lifecycle_manager_navigation/is_active'
-from mower_mission.sub_pump import WALL_CLOCK
+from mower_common.sub_pump import WALL_CLOCK
 
 
 class _Stub:

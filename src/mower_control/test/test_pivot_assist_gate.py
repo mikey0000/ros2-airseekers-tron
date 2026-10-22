@@ -12,7 +12,7 @@ from mower_control import cmd_vel_slew as cs
 DT = 0.05
 HERE = os.path.dirname(os.path.abspath(__file__))
 MUX_YAML = os.path.join(HERE, '..', '..', 'mower_teleop', 'config', 'twist_mux.yaml')
-from mower_control.sub_pump import WALL_CLOCK
+from mower_common.sub_pump import WALL_CLOCK
 
 
 def _gate(state):
@@ -239,26 +239,3 @@ def test_held_creep_ramps_down_without_one_wheel_tick():
     assert not [o for o in out if _one_wheel(o[1], o[2])]
 
 
-@pytest.mark.parametrize('enabled', [False, True])
-def test_normal_driving_keeps_the_plain_slew(enabled):
-    """Coordinator 2026-10-13: outside an assist episode the slew is exactly the old
-    per-axis slew of the TurnShaper target (no forced stop between pivot and arc)."""
-    node = _node(state='TRANSIT')
-    node._slew_both_wheels_always = False    # 2026-10-14: the default is now slew_coupled
-    node._pivot.enabled = enabled
-    seq = [(0.0, 0.3)] * 10 + [(0.25, 0.1)] * 20 + [(0.0, -0.3)] * 10 + [(0.2, 0.5)] * 10
-    v = w = 0.0
-    t = 0.0
-    cs.CmdVelSlewNode.step(node, t)
-    for lin, ang in seq:
-        t = round(t + DT, 6)
-        node._tgt, node._last_cmd_time = (lin, 0.0, 0.0, 0.0, 0.0, ang), t
-        node._assist_gate.note_lane('navigation', t)
-        node._assist_gate.note_controller(t)
-        node._gate.set_motion_enabled(True, t)
-        o = cs.CmdVelSlewNode.step(node, t)
-        sv, sw, _ = cs.shape_for_both_wheels(lin, ang)
-        v, w = cs.slew(v, sv, 0.5, DT), cs.slew(w, sw, 1.0, DT)
-        v, w = cs.pivot_floor_step(v, w, sv, sw)    # 2026-10-20: no pivot under the floor
-        assert (o[0], o[5]) == pytest.approx((v, w))
-    assert node._assist_ramp is False

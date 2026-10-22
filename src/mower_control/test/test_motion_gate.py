@@ -180,7 +180,7 @@ def test_receipt_callbacks_are_sampled():
 
 def test_pump_rejects_receipt_without_sampled():
     pytest.importorskip('rclpy')
-    from mower_control import sub_pump
+    from mower_common import sub_pump
     pump = sub_pump.SubscriptionPump.__new__(sub_pump.SubscriptionPump)
     pump._thread = None
     with pytest.raises(ValueError):

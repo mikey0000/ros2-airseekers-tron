@@ -40,7 +40,7 @@ SCHEMA_VERSION = 1
 # kind -> (traction weight, is a map marker). Traction kinds raise ``bad`` around
 # the event; marker kinds (boundary, detour) are only listed / clustered.
 KINDS = {
-    'dig_stall': (1.0, True),        # slip_detector /dig_stall latch (cmd vs measured)
+    'dig_stall': (1.0, True),        # saved incidents of the deleted /dig_stall latch (2026-10-23)
     'slip': (0.5, True),             # short slip burst (wheel vs EKF), offline import
     'pivot_stall': (0.4, True),      # pivot assist creeping, pivot did not turn
     'follow_abort': (0.6, True),     # FollowPath aborted (failed to make progress)

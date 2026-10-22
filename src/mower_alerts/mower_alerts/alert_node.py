@@ -35,7 +35,7 @@ from sensor_msgs.msg import Imu, NavSatFix
 from std_msgs.msg import String
 
 from mower_alerts import rules
-from mower_alerts.sub_pump import PeriodicRunner, SubscriptionPump
+from mower_common.sub_pump import PeriodicRunner, SubscriptionPump
 
 TOPIC_DEFAULTS = {
     'high_level_status_topic': '/behavior_tree_node/high_level_status',

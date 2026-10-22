@@ -12,6 +12,8 @@
   <maintainer email="michael.arthur@gameglass.gg">michael</maintainer>
   <license>GPL-3.0-or-later</license>
 
+  <exec_depend>mower_common</exec_depend>
+
   <exec_depend>rclpy</exec_depend>
   <exec_depend>rosgraph_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>

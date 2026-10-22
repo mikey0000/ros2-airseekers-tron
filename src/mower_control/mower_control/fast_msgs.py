@@ -14,7 +14,7 @@ unexpected (the pump then falls back to ``deserialize_message``).
 import struct
 import types
 
-from mower_control.sub_pump import _align, _header, _le_cdr, _string
+from mower_common.sub_pump import _align, _header, _le_cdr, _string
 
 _NS = types.SimpleNamespace
 _ENCAPSULATION = b'\x00\x01\x00\x00'   # CDR little endian, no options

@@ -94,7 +94,7 @@ from tf2_msgs.msg import TFMessage
 
 from mower_localization import heading_logic as hl
 from mower_localization.static_tf import StaticRotations
-from mower_localization.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
+from mower_common.sub_pump import (PeriodicRunner, SubscriptionPump, flat_parser,
                                          parse_odometry)
 
 try:

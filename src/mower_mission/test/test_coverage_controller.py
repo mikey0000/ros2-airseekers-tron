@@ -1,10 +1,7 @@
-"""Coverage controller selection (2026-10-15 MPPI study): coverage_controller mppi | rpp.
-
-``mppi`` drives the coverage sub-paths with the feasibility-aware MPPI (nav2_params.yaml
-FollowCoveragePathMPPI / FollowCoveragePathReverseMPPI); ``rpp`` (the shipped default until MPPI
-passes the sim gate, see docs/analysis/2026-10-15_mppi_study.md) is the RPP pair as before.
-The cut speed follows the controller: MPPI has no desired_linear_vel, its vx_max is set
-(capped at the MCU clamp)."""
+"""Coverage controllers (2026-10-15 MPPI study): the coverage sub-paths are driven by the
+feasibility-aware MPPI (nav2_params.yaml FollowCoveragePathMPPI / FollowCoveragePathReverseMPPI).
+The cut speed goes to MPPI vx_max (capped at the MCU clamp). The 'rpp' revert was deleted on
+2026-10-23 (code review stage 0.1)."""
 
 import math
 import os
@@ -51,64 +48,42 @@ def _drive_legs(h):
 
 
 def test_default_is_mppi_with_path_conditioning():
-    assert f.Params().coverage_controller == 'mppi' and f.Params().path_conditioning
-    h = Harness(coverage_controller=f.Params().coverage_controller)
+    assert f.Params().path_conditioning
+    assert 'coverage_controller' not in f.Params.__dataclass_fields__
+    h = Harness()
     assert h.fsm.coverage_controller_id(False) == 'FollowCoveragePathMPPI'
     assert h.fsm.coverage_controller_id(True) == 'FollowCoveragePathReverseMPPI'
 
 
 def test_mppi_forward_and_reverse():
-    h = Harness(coverage_controller='mppi')
+    h = Harness()
     assert _drive_legs(h) == ['FollowCoveragePathMPPI', 'FollowCoveragePathReverseMPPI',
                               'FollowCoveragePathMPPI']
     assert h.name == 'MOWING' and h.blade
 
 
-def test_rpp_revert_uses_the_rpp_pair():
-    h = Harness(coverage_controller='rpp')
-    assert _drive_legs(h) == ['FollowCoveragePath', 'FollowCoveragePathReverse',
-                              'FollowCoveragePath']
-
-
-def test_selection_is_case_and_space_tolerant():
-    h = Harness(coverage_controller=' MPPI ')
-    assert h.fsm.coverage_controller_id(False) == 'FollowCoveragePathMPPI'
-    assert h.fsm.coverage_controller_id(True) == 'FollowCoveragePathReverseMPPI'
-    h = Harness(coverage_controller='RPP')
-    assert h.fsm.coverage_controller_id(True) == 'FollowCoveragePathReverse'
-
-
 def test_custom_mppi_ids():
-    h = Harness(coverage_controller='mppi', mppi_follow_controller_id='A',
+    h = Harness(mppi_follow_controller_id='A',
                 mppi_reverse_controller_id='B')
     assert (h.fsm.coverage_controller_id(False), h.fsm.coverage_controller_id(True)) == \
         ('A', 'B')
 
 
 def test_cut_speed_goes_to_mppi_vx_max_capped_at_the_mcu_clamp():
-    h = Harness(coverage_controller='mppi')
+    h = Harness()
     h.area_settings = {0: {'cut_speed_mps': 0.45}}
     m = h.mark()
     start_until_planning(h)
     assert param_calls(h, f.PARAM_NODE_CONTROLLER, m) == [{'FollowCoveragePathMPPI.vx_max': 0.3}]
-    h = Harness(coverage_controller='mppi')
+    h = Harness()
     h.area_settings = {0: {'cut_speed_mps': 0.2}}
     m = h.mark()
     start_until_planning(h)
     assert param_calls(h, f.PARAM_NODE_CONTROLLER, m) == [{'FollowCoveragePathMPPI.vx_max': 0.2}]
 
 
-def test_cut_speed_rpp_revert_keeps_desired_linear_vel():
-    h = Harness(coverage_controller='rpp')
-    h.area_settings = {0: {'cut_speed_mps': 0.45}}
-    m = h.mark()
-    start_until_planning(h)
-    assert param_calls(h, f.PARAM_NODE_CONTROLLER, m) == \
-        [{'FollowCoveragePath.desired_linear_vel': 0.45}]
-
-
 def test_slope_caution_caps_the_mppi_coverage_speed():
-    h = Harness(coverage_controller='mppi')
+    h = Harness()
     mowing(h)
     m = h.mark()
     for _ in range(5):
@@ -122,25 +97,23 @@ def test_slope_caution_caps_the_mppi_coverage_speed():
 
 
 def test_transit_route_controller_is_unchanged():
-    """Route legs stay on FollowPath (MPPI transit) whichever coverage controller is used."""
+    """Route legs stay on FollowPath (MPPI transit)."""
     assert f.Params().route_controller_id == 'FollowPath'
 
 
-def test_shipped_mission_yaml_has_both_controllers():
+def test_shipped_mission_yaml_has_the_mppi_controllers():
     with open(MISSION_YAML) as fh:
         doc = yaml.safe_load(fh)
     p = doc['behavior_tree_node']['ros__parameters']
-    assert p['coverage_controller'] in ('mppi', 'rpp')
-    assert p['coverage_controller'] == f.Params().coverage_controller
+    for k in ('coverage_controller', 'follow_controller_id', 'reverse_controller_id',
+              'controller_speed_param'):
+        assert k not in p, k
     assert p['mppi_follow_controller_id'] == 'FollowCoveragePathMPPI'
     assert p['mppi_reverse_controller_id'] == 'FollowCoveragePathReverseMPPI'
     assert p['mppi_controller_speed_param'] == 'FollowCoveragePathMPPI.vx_max'
     assert 0.0 < p['mppi_speed_max_mps'] <= 0.3
-    # the revert ids are still configured
-    assert p['follow_controller_id'] == 'FollowCoveragePath'
-    assert p['reverse_controller_id'] == 'FollowCoveragePathReverse'
     q = f.Params.from_dict({k: v for k, v in p.items() if k in f.Params.__dataclass_fields__})
-    assert q.coverage_controller == p['coverage_controller']
+    assert q.mppi_follow_controller_id == p['mppi_follow_controller_id']
 
 
 def test_line_helper_still_forward():

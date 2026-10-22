@@ -61,7 +61,7 @@ from mower_mission import mow_progress
 from mower_mission.external_rain import ExternalRain
 from mower_mission.resume import ResumeCursor
 from mower_mission.quiet_action import QuietActionClient
-from mower_mission.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, flat_parser,
+from mower_common.sub_pump import (node_clock, PeriodicRunner, SubscriptionPump, flat_parser,
                                     parse_odometry)
 
 TOPIC_DEFAULTS = {
@@ -711,7 +711,7 @@ class MissionNode(Node):
             if not stop:
                 i.cm_stop_since = None
             elif i.cm_stop_since is None:
-                i.cm_stop_since = time.monotonic()
+                i.cm_stop_since = self._clk.now()   # node clock (sim time under use_sim_time)
 
     def _on_stuck(self, msg):
         with self._lock:

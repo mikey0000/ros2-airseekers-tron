@@ -43,7 +43,6 @@ def _node(mod, tmp_path, **params):
     n.terrain = {}
     n.terrain_dirty = False
     n.pose = (5.0, 5.0, 0.0, 'base_link')
-    n._dig_latched = False
     n._terrain_last_xy = None
     n._terrain_last_t = None
     n.status = None
@@ -78,13 +77,6 @@ def test_incident_from_mission_topic_and_robot_pose(msn, tmp_path):  # noqa: F81
     assert [(i['kind'], i['x'], i['y']) for i in incs] == [('follow_abort', 2.0, 3.0),
                                                            ('subpath_failed', 5.0, 5.0)]
     assert n.terrain_dirty
-
-
-def test_dig_stall_rising_edge_only(msn, tmp_path):  # noqa: F811
-    n = _node(msn, tmp_path)
-    for v in (False, True, True, False, True):
-        n.on_dig_stall(types.SimpleNamespace(data=v))
-    assert [i['kind'] for i in n.terrain['Lawn'].incidents] == ['dig_stall', 'dig_stall']
 
 
 def test_publish_terrain_grids_and_summary(msn, tmp_path):  # noqa: F811

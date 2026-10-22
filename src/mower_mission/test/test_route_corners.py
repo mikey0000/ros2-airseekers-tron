@@ -95,13 +95,6 @@ def test_real_routes_through_the_fsm_end_each_leg_on_the_corner():
     assert sum(len(lg) for lg in legs) == len(r) + 2
 
 
-def test_legacy_split_missed_the_real_90_deg_corners():
-    """Documents the bug: the run 4 rule (and the revert flag) leaves the 90 deg corner in."""
-    r = real()['route_from_dock']
-    legs = _route_h(route_corner_turn_rad=0.0).fsm._split_route_legacy(r)
-    assert not any(near(lg[-1], (-0.140, -0.165)) for lg in legs)
-
-
 def test_dock_path_channel_corners_do_not_depend_on_the_pose_spacing():
     ch = real()['channel']
     ref = None

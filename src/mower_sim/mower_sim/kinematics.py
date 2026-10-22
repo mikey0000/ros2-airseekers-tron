@@ -42,6 +42,8 @@ import random
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from mower_common import geometry as rgeo
+
 from .world import Obstacle, Pose2D, World, to_local
 
 
@@ -60,8 +62,8 @@ class DriveParams:
     # 2026-10-20 geometry: the MCU splits (v, w) into wheel speeds with b 0.40 (cmd_vel_slew
     # TRACK_WIDTH_M; was 0.48), the tyres sit 0.39 apart (owner-measured): a pivot turns
     # 0.40 / 0.39 = 2.6 % faster than commanded (field bag: IMU / MCU yaw rate 1.02-1.03).
-    track_width: float = 0.40        # m, the MCU's wheel split
-    ground_track_width: float = 0.39  # m, tyre centre-to-centre (yaw from wheel speeds); <= 0 = track_width
+    track_width: float = rgeo.TRACK_SPLIT_M          # m, the MCU's wheel split 0.40
+    ground_track_width: float = rgeo.TRACK_PHYSICAL_M  # m, tyre centre-to-centre 0.39 (yaw from wheel speeds); <= 0 = track_width
     min_wheel_speed: float = 0.06    # m/s, MCU floor while turning; 0 disables
     floor_straight: bool = False     # also floor straight (equal wheel) commands
     straight_tol_mps: float = 0.02   # wheels this close count as straight (not floored)

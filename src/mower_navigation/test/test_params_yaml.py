@@ -10,7 +10,7 @@
     `plugin` key (a missing `.plugin` is the "plugin param not defined" failure);
   * frame names match the stack contract;
   * the controller / goal-checker / planner ids the MowgliNext BT requests exist;
-  * static_layer only on the keepout mask, no enable_stamped_cmd_vel (Jazzy keeps it off);
+  * no static_layer (the nav mask is the keepout_filter), no enable_stamped_cmd_vel (Jazzy keeps it off);
   * progress/goal checker, transit RPP and local-costmap layer choices that
     the first real mow (2026-10-06) showed matter;
   * sensor obstacles in the global costmap + reroute-not-clear BTs (2026-10-09);
@@ -100,9 +100,9 @@ def test_frames():
 def test_contract_ids():
     doc = load()
     c = doc["controller_server"]["ros__parameters"]
-    assert set(c["controller_plugins"]) >= {"FollowPath", "FollowPathRPP", "FollowCoveragePath",
-                                            "FollowCoveragePathMPPI",
-                                            "FollowCoveragePathReverseMPPI"}
+    # 2026-10-23 cleanup: MPPI is the only tracker (RPP and FTC configs deleted).
+    assert c["controller_plugins"] == ["FollowPath", "FollowCoveragePathMPPI",
+                                       "FollowCoveragePathReverseMPPI"]
     assert set(c["goal_checker_plugins"]) >= {"general_goal_checker", "coverage_goal_checker"}
     # 2026-10-09: GridBased = Smac Hybrid, GridBasedNavFn = the BT's fallback id
     p = doc["planner_server"]["ros__parameters"]
@@ -176,44 +176,12 @@ def test_goal_checkers():
     leg = c["coverage_leg_goal_checker"]
     # the at-goal reverse shuffle swings 0.02-0.03 m; the overshoot exit must see it
     assert leg["overshoot_hysteresis"] <= 0.02
-    cov = c["coverage_goal_checker"]        # for the RPP coverage controller (fallback)
+    cov = c["coverage_goal_checker"]        # coverage sub-paths (follow_goal_checker_id)
     assert cov["plugin"] == "nav2_controller::SimpleGoalChecker"
     assert cov["stateful"] is True and cov["xy_goal_tolerance"] <= 0.25
-    ftc = c["coverage_goal_checker_ftc"]    # MowgliNext PathProgressGoalChecker for FTC
-    assert ftc["plugin"] == "mowgli_nav2_plugins::PathProgressGoalChecker"
-    assert 0.9 <= ftc["progress_threshold"] <= 1.0
-    assert ftc["plan_topic"] == "/controller_server/FollowCoveragePathFTC/global_plan"
-    assert c["FollowCoveragePath"]["plugin"].endswith("RegulatedPurePursuitController")
-    assert c["FollowCoveragePathFTC"]["plugin"] == "mowgli_nav2_plugins::FTCController"
-    assert set(c["controller_plugins"]) >= {"FollowPath", "FollowCoveragePath", "FollowCoveragePathFTC"}
-
-
-def test_transit_rpp_rotation():
-    # 2026-10-09: FollowPath is MPPI now; the RPP transit block is FollowPathRPP.
-    rpp = load()["controller_server"]["ros__parameters"]["FollowPathRPP"]
-    assert rpp["use_rotate_to_heading"] is True
-    # <= the MCU clamp (mcu_node angular_max 0.3): more only adds slew dead time.
-    assert rpp["rotate_to_heading_angular_vel"] <= 0.3
-    # RPP windows around the MEASURED rate: a stalled pivot must reach >= 0.25 rad/s in
-    # one 20 Hz cycle (2026-10-07), so max_angular_accel * 0.05 >= 0.25.
-    for name in ("FollowPathRPP", "FollowCoveragePath", "FollowCoveragePathReverse"):
-        c = load()["controller_server"]["ros__parameters"][name]
-        assert c["max_angular_accel"] * 0.05 >= 0.25, name
-        assert c["rotate_to_heading_angular_vel"] <= 0.3, name
-    assert rpp["min_approach_linear_velocity"] == 0.05
-    # RPP can only rotate to heading without reversing.
-    assert rpp["allow_reversing"] is False
-
-
-def test_coverage_rpp_respects_drive_yaw_limit():
-    # Ring drift 10-06: RPP must regulate speed so v / R stays within what the
-    # drive delivers in turf (~0.2 rad/s; MCU clamps each axis at 0.3 separately).
-    c = load()["controller_server"]["ros__parameters"]["FollowCoveragePath"]
-    yaw_rate = c["desired_linear_vel"] / c["regulated_linear_scaling_min_radius"]
-    assert c["use_regulated_linear_velocity_scaling"] is True
-    assert yaw_rate <= 0.21
-    assert c["rotate_to_heading_angular_vel"] <= 0.3
-    assert c["min_lookahead_dist"] <= c["lookahead_dist"] <= c["max_lookahead_dist"]
+    for k in c["controller_plugins"]:
+        assert "FTC" not in k and "RPP" not in k
+    assert "coverage_goal_checker_ftc" not in c["goal_checker_plugins"]
 
 
 def test_local_costmap_inflation_with_bounds_keeper():
@@ -434,17 +402,11 @@ def test_bt_reroutes_instead_of_clearing():
             assert w.get("wait_duration", "1").isdigit(), (name, w.attrib)
 
 
-def test_nav_mask_static_layer_keeps_soft_band():
-    """mower_map soft band = 90: must not be trinary-collapsed to FREE."""
+def test_no_static_layer():
+    """2026-10-09: the nav mask reaches the global costmap only through keepout_filter
+    (uninflated); the stale static_layer block was deleted on 2026-10-23."""
     g = load()["global_costmap"]["global_costmap"]["ros__parameters"]
-    st = g["static_layer"]
-    assert st["map_topic"] == "/nav_keepout_mask"
-    assert st["trinary_costmap"] is False
-    assert st.get("lethal_cost_threshold", 100) == 100
-    assert st.get("unknown_cost_value", -1) == -1
-    lethal = st.get("lethal_cost_threshold", 100)
-    assert 0 < round(90 / lethal * 254) < 253          # soft band: plannable, not inscribed
-    # the local costmap has no nav-mask layer (bumper/stereo obstacle_layer only)
+    assert "static_layer" not in g and "static_layer" not in g["plugins"]
     loc = load()["local_costmap"]["local_costmap"]["ros__parameters"]
     assert "static_layer" not in loc["plugins"]
 
@@ -532,7 +494,6 @@ def test_mppi_transit():
     # Optimizer::setOffset threw); keep the constraint anyway.
     assert c["model_dt"] >= 1.0 / _ctl("controller_frequency") - 1e-9
     assert c["batch_size"] * c["time_steps"] <= 1000 * 56         # RK3588 CPU budget
-    assert _ctl("FollowPathRPP")["plugin"].endswith("RegulatedPurePursuitController")
 
 
 MPPI_IDS = ("FollowPath", "FollowCoveragePathMPPI", "FollowCoveragePathReverseMPPI")
@@ -540,14 +501,13 @@ CMD_VEL_SLEW = os.path.join(HERE, "..", "..", "mower_control", "mower_control", 
 
 
 def _shaper_constants():
-    """TRACK_WIDTH_M and the min_inner_wheel_mps default from cmd_vel_slew.py (no import)."""
-    tree = ast.parse(open(CMD_VEL_SLEW).read())
-    out = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1 and \
-                isinstance(node.targets[0], ast.Name) and node.targets[0].id == "TRACK_WIDTH_M":
-            out["track"] = ast.literal_eval(node.value)
+    """TRACK_WIDTH_M (= mower_common.geometry.TRACK_SPLIT_M since 2026-10-23) and the
+    min_inner_wheel_mps default from cmd_vel_slew.py (no import of the node)."""
     text = open(CMD_VEL_SLEW).read()
+    assert "TRACK_WIDTH_M = rgeo.TRACK_SPLIT_M" in text
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "mower_common"))
+    from mower_common import geometry as rgeo
+    out = {"track": rgeo.TRACK_SPLIT_M}
     i = text.index("SHAPE_DEFAULTS = {")
     j = text.index("'min_inner_wheel_mps':", i)
     out["floor"] = float(text[j:].split(":", 1)[1].split(",", 1)[0])
@@ -623,38 +583,16 @@ def test_mppi_coverage_controllers():
     ids = _ctl("controller_plugins")
     with open(MISSION) as f:
         mdoc = yaml.safe_load(f)
-    m = [p for _, p in ros_param_blocks(mdoc) if "coverage_controller" in p][0]
-    assert m["coverage_controller"] in ("mppi", "rpp")
-    for k in ("mppi_follow_controller_id", "mppi_reverse_controller_id",
-              "follow_controller_id", "reverse_controller_id"):
+    m = [p for _, p in ros_param_blocks(mdoc) if "mppi_follow_controller_id" in p][0]
+    for k in ("mppi_follow_controller_id", "mppi_reverse_controller_id"):
         assert m[k] in ids, k
     assert m["mppi_controller_speed_param"] == m["mppi_follow_controller_id"] + ".vx_max"
     assert m["mppi_speed_max_mps"] <= c["wz_max"] + 1e-9 or m["mppi_speed_max_mps"] <= 0.3
-    # the RPP revert pair is still configured
-    assert _ctl("FollowCoveragePath")["plugin"].endswith("RegulatedPurePursuitController")
-    assert _ctl("FollowCoveragePathReverse")["allow_reversing"] is True
 
 
-def test_coverage_turn_legs_drive_as_arcs():
-    """2026-10-13 swath-end pivots. cmd_vel_slew's turn shaper keeps the inner wheel >= 0.06
-    m/s (track 0.40 m since 2026-10-20, |w| <= 0.3): any slower RPP speed on a curve is widened,
-    or at |w| 0.3 snapped to a pure pivot, so the coverage RPPs' speed floors stay >= 0.12.
-    A K-turn leg's entry angle (leg arc at the min lookahead on the r 0.5 m turn + the yaw
-    the leg checker lets the previous leg miss) must stay under the rotate-to-heading
-    threshold, and the mission's turn-leg skip uses the leg checker's tolerances."""
-    import math
-    inner_min, half, w_max, r_turn = 0.06, 0.20, 0.3, 0.5
-    for name in ("FollowCoveragePath", "FollowCoveragePathReverse"):
-        c = _ctl(name)
-        assert c["min_approach_linear_velocity"] >= inner_min + w_max * half - 1e-9, name
-        assert c["regulated_linear_scaling_min_speed"] >= inner_min + w_max * half - 1e-9, name
-    c = _ctl("FollowCoveragePath")
+def test_turn_leg_skip_matches_leg_checker():
+    """The mission's turn-leg skip uses the leg goal checker's tolerances (2026-10-13)."""
     leg = _ctl("coverage_leg_goal_checker")
-    entry = math.asin(min(1.0, c["min_lookahead_dist"] / (2 * r_turn))) + leg["yaw_goal_tolerance"]
-    assert c["use_rotate_to_heading"] is True       # carrot behind: pivot, never drive away
-    assert c["rotate_to_heading_min_angle"] > entry + 0.15
-    assert c["rotate_to_heading_min_angle"] < math.pi / 2
-    assert _ctl("FollowCoveragePathReverse")["use_rotate_to_heading"] is False
     with open(MISSION) as f:
         mdoc = yaml.safe_load(f)
     m = [p for _, p in ros_param_blocks(mdoc) if "turn_leg_skip_m" in p][0]

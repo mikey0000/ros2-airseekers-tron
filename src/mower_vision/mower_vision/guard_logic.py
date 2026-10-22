@@ -21,6 +21,8 @@ from dataclasses import dataclass, field, replace
 import math
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from mower_common import geometry as rgeo
+
 # Must match det_ros/labels.py BEST_LARGE_CLASSES (best_large_0208.rknn export order).
 DEFAULT_CLASSES: List[str] = [
     'person', 'dog', 'cat', 'sports ball', 'hedgehog', 'rabbit', 'stone', 'hoe',
@@ -577,7 +579,7 @@ class RearConfig:
     static_classes: Sequence[str] = field(default_factory=list)
     min_score: float = 0.5
     rear_edge_x_m: float = -0.12     # robot rear edge in base_link (owner-measured -0.10 + 0.02)
-    half_width_m: float = 0.235      # 0.47 m wide with the wheel trim (owner-measured)
+    half_width_m: float = rgeo.FOOTPRINT_HALF_WIDTH_M   # 0.235: 0.47 m wide with the wheel trim
     margin_m: float = 0.20           # lateral margin: object half width + mono lateral error
     range_m: float = 1.2             # corridor length behind the rear edge (no dock known)
     behind_tol_m: float = 0.10       # a point this far forward of the rear edge still counts

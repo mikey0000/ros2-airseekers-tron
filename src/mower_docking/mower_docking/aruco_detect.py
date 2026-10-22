@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence, Tuple
 
+from mower_common.geometry import MARKER_SIZE_M
+
 try:  # cv2 is optional so the pure logic and most tests run without it
     import cv2  # type: ignore
     import numpy as np
@@ -49,7 +51,7 @@ class ArucoDetector:
     OpenCV ArUco convention (marker X right, Y up, Z out of the marker).
     """
 
-    def __init__(self, dictionary: str = 'DICT_4X4_50', marker_size: float = 0.04):
+    def __init__(self, dictionary: str = 'DICT_4X4_50', marker_size: float = MARKER_SIZE_M):
         if not HAVE_CV2:
             raise RuntimeError('cv2.aruco is not available')
         self.dictionary = _dictionary(dictionary)

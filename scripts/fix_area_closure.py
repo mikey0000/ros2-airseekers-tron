@@ -22,6 +22,7 @@ import shutil
 import sys
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'mower_common'))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'mower_map'))
 from mower_map import areas as core  # noqa: E402
 

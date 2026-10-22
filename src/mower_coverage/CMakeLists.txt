@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.8)
 project(mower_coverage)
 
+
+# arm64 GCC >= 10.1 prints "parameter passing for argument of type std::pair ... changed in
+# GCC 10.1" notes: harmless (one compiler builds the whole stack), they only clutter the log.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-Wno-psabi)
+endif()
 # Fields2Cover 2.1.0 headers are cxx_std_17; the F2C deb's exported target
 # compiles clean under the Noble toolchain (g++ 13).
 set(CMAKE_CXX_STANDARD 17)

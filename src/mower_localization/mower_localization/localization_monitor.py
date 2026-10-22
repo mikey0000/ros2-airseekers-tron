@@ -34,7 +34,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
 from mower_localization import localization_status_logic as lsl
-from mower_localization.sub_pump import PeriodicRunner, SubscriptionPump, parse_odometry
+from mower_common.sub_pump import PeriodicRunner, SubscriptionPump, parse_odometry
 
 
 class LocalizationMonitor(Node):

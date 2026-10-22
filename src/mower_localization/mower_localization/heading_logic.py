@@ -86,12 +86,7 @@ ALIGNED_SOURCES = (SOURCE_DOCK, SOURCE_COG, SOURCE_RTK, SOURCE_FILE_VERIFIED)
 TWO_PI = 2.0 * math.pi
 
 
-def wrap(a):
-    """Angle to (-pi, pi]."""
-    a = math.fmod(a + math.pi, TWO_PI)
-    if a <= 0.0:
-        a += TWO_PI
-    return a - math.pi
+from mower_common.angles import wrap_angle as wrap  # noqa: E402  (-pi, pi]
 
 
 def enu_from_compass_deg(deg):
@@ -129,8 +124,7 @@ def rtk_heading_enu(compass_deg, baseline_yaw_deg=0.0, convergence_deg=0.0):
     return enu_from_compass_deg(compass_deg - baseline_yaw_deg - convergence_deg)
 
 
-def yaw_from_quaternion(x, y, z, w):
-    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+from mower_common.angles import yaw_from_quaternion  # noqa: E402,F401
 
 
 def rotate_yaw(q, offset):

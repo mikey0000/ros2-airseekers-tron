@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.8)
 project(mowgli_nav2_plugins)
 
+
+# arm64 GCC >= 10.1 prints "parameter passing for argument of type std::pair ... changed in
+# GCC 10.1" notes: harmless (one compiler builds the whole stack), they only clutter the log.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-Wno-psabi)
+endif()
 # Jazzy port of third_party/mowglinext/mowgli_nav2_plugins (Kilted):
 # rclcpp_lifecycle node, setPlan/3-arg computeVelocityCommands, ControllerException,
 # 3-arg GoalChecker, no mowgli_interfaces (blade-load slowdown fail-open).
@@ -40,15 +46,12 @@ find_package(nav2_mppi_controller REQUIRED)
 find_package(xtensor REQUIRED)
 
 # ---------------------------------------------------------------------------
-# Shared library: mowgli_nav2_plugins
+# Shared library: mowgli_nav2_plugins (LegGoalChecker). The FTC controller, its
+# PathProgressGoalChecker, obstacle deviation and oscillation detector were deleted in the
+# 2026-10-23 cleanup (code review stage 0.1; MPPI is the only tracker).
 # ---------------------------------------------------------------------------
 
 add_library(${PROJECT_NAME} SHARED
-  src/oscillation_detector.cpp
-  src/obstacle_deviation.cpp
-  src/ftc_controller.cpp
-  src/ftc_controller_plugin.cpp
-  src/path_progress_goal_checker.cpp
   src/leg_goal_checker.cpp
 )
 
@@ -80,7 +83,7 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 # ---------------------------------------------------------------------------
-# MPPI critic plugin (2026-10-15): WheelFloorCritic, own library so the FTC / goal
+# MPPI critic plugin (2026-10-15): WheelFloorCritic, own library so the goal
 # checker library does not link nav2_mppi_controller.
 # ---------------------------------------------------------------------------
 
@@ -102,7 +105,6 @@ target_link_libraries(mowgli_mppi_critics
 ament_target_dependencies(mowgli_mppi_critics nav2_mppi_controller)
 
 # pluginlib needs the export macro defined.
-pluginlib_export_plugin_description_file(nav2_core ftc_controller_plugin.xml)
 pluginlib_export_plugin_description_file(nav2_core goal_checker_plugin.xml)
 pluginlib_export_plugin_description_file(nav2_mppi_controller mppi_critics_plugin.xml)
 
@@ -123,7 +125,7 @@ install(
 )
 
 install(
-  FILES ftc_controller_plugin.xml goal_checker_plugin.xml mppi_critics_plugin.xml
+  FILES goal_checker_plugin.xml mppi_critics_plugin.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -154,97 +156,6 @@ if(BUILD_TESTING)
   target_link_libraries(test_leg_goal_checker ${PROJECT_NAME})
 
   # PORT: test_lyrical_goal_checker dropped (Kilted-only goal-checker API).
-
-  ament_add_gtest(test_oscillation_detector
-    test/test_oscillation_detector.cpp
-    src/oscillation_detector.cpp
-  )
-
-  target_include_directories(test_oscillation_detector
-    PRIVATE
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  )
-
-  ament_add_gtest(test_obstacle_deviation
-    test/test_obstacle_deviation.cpp
-    src/obstacle_deviation.cpp
-  )
-
-  target_include_directories(test_obstacle_deviation
-    PRIVATE
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  )
-
-  target_link_libraries(test_obstacle_deviation
-    ${geometry_msgs_TARGETS}
-    ${nav2_costmap_2d_TARGETS}
-    ${tf2_TARGETS}
-    ${tf2_geometry_msgs_TARGETS}
-  )
-
-  ament_add_gtest(test_ftc_start_index
-    test/test_ftc_start_index.cpp
-  )
-
-  target_include_directories(test_ftc_start_index
-    PRIVATE
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  )
-
-  ament_add_gtest(test_ftc_stall
-    test/test_ftc_stall.cpp
-  )
-
-  target_include_directories(test_ftc_stall
-    PRIVATE
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  )
-
-  ament_add_gtest(test_ftc_blade_load
-    test/test_ftc_blade_load.cpp
-  )
-
-  target_include_directories(test_ftc_blade_load
-    PRIVATE
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  )
-
-  ament_add_gtest(test_ftc_reverse_escape
-    test/test_ftc_reverse_escape.cpp
-  )
-
-  target_include_directories(test_ftc_reverse_escape
-    PRIVATE
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  )
-
-  ament_add_gtest(test_ftc_obstacle_wait
-    test/test_ftc_obstacle_wait.cpp
-  )
-
-  target_include_directories(test_ftc_obstacle_wait
-    PRIVATE
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  )
-  # Closed-loop unicycle simulation of the real FTCController (Tron MCU clamp).
-  # Localhost-only + private domain: the dev container runs --network host and
-  # must never be visible to the mower's DDS graph.
-  ament_add_gtest(test_ftc_tracking_sim
-    test/test_ftc_tracking_sim.cpp
-    ENV ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=97
-    TIMEOUT 120
-  )
-  target_link_libraries(test_ftc_tracking_sim ${PROJECT_NAME})
-  target_include_directories(test_ftc_tracking_sim SYSTEM PRIVATE ${EIGEN3_INCLUDE_DIRS})
-
-  # PRE_ROTATE -> FOLLOWING hand-off with a 2*pi offset in the heading unwrap.
-  ament_add_gtest(test_ftc_angle_wrap
-    test/test_ftc_angle_wrap.cpp
-    ENV ROS_LOCALHOST_ONLY=1 ROS_DOMAIN_ID=97
-    TIMEOUT 60
-  )
-  target_link_libraries(test_ftc_angle_wrap ${PROJECT_NAME})
-  target_include_directories(test_ftc_angle_wrap SYSTEM PRIVATE ${EIGEN3_INCLUDE_DIRS})
 endif()
 
 # ---------------------------------------------------------------------------

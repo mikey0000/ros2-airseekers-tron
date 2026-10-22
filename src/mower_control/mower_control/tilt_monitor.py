@@ -52,7 +52,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from mower_control import tilt_logic
-from mower_control.sub_pump import PeriodicRunner, SubscriptionPump, parse_imu
+from mower_common.sub_pump import PeriodicRunner, SubscriptionPump, parse_imu
 
 
 class TiltMonitorNode(Node):

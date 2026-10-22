@@ -98,7 +98,7 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import String
 
 from mower_control.fast_msgs import string_bytes
-from mower_control.sub_pump import PeriodicRunner, SubscriptionPump, parse_imu
+from mower_common.sub_pump import PeriodicRunner, SubscriptionPump, parse_imu
 
 _CALIBRATION_HEADER = '# mower_control_imu_calibration_v1'
 _ZERO_VAR = 1e-12   # below this a variance is rounding noise of a constant signal

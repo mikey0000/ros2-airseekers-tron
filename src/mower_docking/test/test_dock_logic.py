@@ -695,23 +695,6 @@ def test_stall_guard_unit():
     assert not any(g.update(0.05 * i, None, -0.1) for i in range(60))  # no fused pose
 
 
-def test_dig_stall_rising_edge_aborts_but_old_latch_is_ignored():
-    m = _docking_machine()
-    out = m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0, 0, stamp=0.1),
-                             dig_stall=True))
-    assert not out.done and out.linear == 0.0 and out.angular == 0.0   # contact grace hold
-    out = m.step(dl.Snapshot(t=3.2, dig_stall=True))
-    assert out.done and 'DOCK_STALLED' in out.message and out.linear == 0.0
-    m = dl.DockStateMachine(dl.DockParams(skip_nav_to_approach=True), dl.Pose2D(),
-                            dock_pose_measured=True)
-    m.start(dl.Snapshot(t=0.0, dig_stall=True))
-    out = m.step(dl.Snapshot(t=0.05, marker=dl.MarkerObs(-1.3, 0, 0, stamp=0.05),
-                             dig_stall=True))
-    out = m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0, 0, stamp=0.1),
-                             dig_stall=True))
-    assert not out.done and out.state == S.DOCKING
-
-
 def test_cancel_mid_reverse_outputs_zero():
     m = _docking_machine()
     out = m.step(dl.Snapshot(t=0.1, marker=dl.MarkerObs(-1.3, 0, 0, stamp=0.1)))

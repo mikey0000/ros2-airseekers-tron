@@ -48,7 +48,7 @@ from std_srvs.srv import Trigger
 
 from mower_control import crash_record
 from mower_control.blackbox import SnapshotBuffer, dump_bag, make_dump_dir
-from mower_control.sub_pump import SubscriptionPump
+from mower_common.sub_pump import SubscriptionPump
 from mower_control.supervisor_logic import DEFAULT_IGNORE, LivenessTracker
 
 DEFAULT_TOPICS = [
@@ -179,7 +179,9 @@ class Supervisor(Node):
     def _check_trigger(self, topic, msg_type, data):
         try:
             msg = deserialize_message(bytes(data), msg_type)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn('blackbox trigger %s: undecodable message: %s' % (topic, exc),
+                                   throttle_duration_sec=10.0)
             return
         if topic == EMERGENCY_TOPIC:
             active = bool(msg.active_emergency)

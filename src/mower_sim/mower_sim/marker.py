@@ -19,6 +19,8 @@ from typing import Optional
 
 import numpy as np
 
+from mower_common import geometry as rgeo
+
 from .sensors import rpy_matrix
 
 REAR_CAMERA_XYZ = (-0.201, 0.0, 0.25)
@@ -34,7 +36,7 @@ class RearCameraParams:
     fy: float = 684.33
     cx: float = 331.69
     cy: float = 231.39
-    marker_size: float = 0.04
+    marker_size: float = rgeo.MARKER_SIZE_M   # 0.04
     marker_id: int = 0
     marker_offset: float = 0.45     # docking.yaml docked_marker_offset
     marker_z: float = 0.25

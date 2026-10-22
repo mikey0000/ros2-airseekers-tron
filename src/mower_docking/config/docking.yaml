@@ -136,8 +136,6 @@ mower_docking:
     stall_min_cmd: 0.03            # m/s; |cmd| above this counts
     stall_progress_ratio: 0.2      # measured < 20 % of commanded distance ...
     stall_timeout_s: 1.0           # ... over this window -> stall
-    dig_stall_topic: /dig_stall    # slip_detector latch; a rising edge during the goal = stall
-    use_dig_stall: true
     stall_turn_radius_m: 0.2       # pivot wheel travel (|d yaw| * r) counts as progress
     stall_contact_grace_s: 3.0     # DOCKING/FINAL stall: hold, wait for ANY contact, then fail
     post_fail_contact_s: 10.0      # failed goal + is_docking_done within this -> enable charging

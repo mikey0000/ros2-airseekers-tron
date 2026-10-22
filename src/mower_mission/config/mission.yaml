@@ -255,7 +255,6 @@ behavior_tree_node:
     path_conditioning_pivot_min_rad: 0.35
     path_conditioning_edge_pivot_rad: 0.0     # 0.0 = no edge policy (fillets everywhere); 0 since
     #   the 2026-10-21 edge layout: lap 0 is ON the line, a vertex pivot swings the nose ~0.6 past
-    edge_layout_enabled: true                 # stock-style laps / rows by area edge_mode (false = legacy)
     path_conditioning_edge_clearance_m: 0.20
     # Body planning limit (edge layout round 2): how far the body outline may be planned
     # outside areas U paths U dock corridor at a corner (fillet poses, pivot sweeps), by area
@@ -319,7 +318,7 @@ behavior_tree_node:
     # sweep the footprint along the PREDICTED motion: constant applied /cmd_vel (else
     # /cmd_vel_nav) twist younger than obstacle_twist_max_age_s, for obstacle_sweep_horizon_s
     # (arc / straight / pivot); a TRANSIT standing still with no prediction keeps the line to
-    # the target. Footprint robot_rear_m .. robot_front_m around base_link, +-robot_width_m/2,
+    # the target. Footprint robot_rear_edge_m .. robot_front_m around base_link, +-robot_width_m/2,
     # grown by obstacle_path_margin_m; within its circumscribed radius + margin = always in the
     # path. A dynamic stop keeps judging with the twist it started with.
     obstacle_path_filter: true
@@ -329,7 +328,7 @@ behavior_tree_node:
     obstacle_sweep_horizon_s: 2.0
     obstacle_twist_max_age_s: 0.5
     robot_front_m: 0.60               # bumper (was 0.52)
-    robot_rear_m: 0.12                # rear 0.10 + 0.02 (was 0.25)
+    robot_rear_edge_m: 0.12           # rear 0.10 + 0.02 margin (= obstacle_guard rear_edge_x_m; was robot_rear_m)
     blade_transit_sample_m: 0.2       # blade_policy continuous: in-area transit check step
     follow_retries: 3                 # follow_path abort/timeout: resume from the last reached pose
     clear_costmaps_on_retry: true     # clear Nav2 global+local costmaps before retries / recoveries
@@ -338,22 +337,15 @@ behavior_tree_node:
     # last recovery, and a stuck escape clears both).
     clear_global_costmap_on_retry: false
     return_home_on_incomplete: false  # sub-paths not mowed -> MOWING_INCOMPLETE; dock only if true
-    # 2026-10-15 MPPI study (docs/analysis/2026-10-15_mppi_study.md): coverage_controller: mppi
-    # drives the coverage sub-paths with the feasibility-aware MPPI (FollowCoveragePathMPPI
-    # forward, FollowCoveragePathReverseMPPI for reverse legs; the cut speed is set on
-    # mppi_controller_speed_param, capped at mppi_speed_max_mps); rpp = follow_controller_id /
-    # reverse_controller_id / controller_speed_param below (the revert). 2026-10-16: mppi is
-    # the default (owner: MPPI as the single tracker): on conditioned paths (no sharp
-    # vertex, no swath-end turn legs) it passes the sim gate's mowing criteria ideal and
-    # disturbed (simulation.md "Gate runs on ws/integrate"). Revert: rpp.
-    coverage_controller: mppi
+    # 2026-10-15 MPPI study (docs/analysis/2026-10-15_mppi_study.md): the coverage sub-paths are
+    # driven by the feasibility-aware MPPI (FollowCoveragePathMPPI forward,
+    # FollowCoveragePathReverseMPPI for reverse legs; the cut speed is set on
+    # mppi_controller_speed_param, capped at mppi_speed_max_mps). The RPP revert
+    # (coverage_controller: rpp) was deleted on 2026-10-23.
     mppi_follow_controller_id: FollowCoveragePathMPPI
     mppi_reverse_controller_id: FollowCoveragePathReverseMPPI
     mppi_controller_speed_param: FollowCoveragePathMPPI.vx_max
     mppi_speed_max_mps: 0.3
-    follow_controller_id: FollowCoveragePath
-    # reverse legs of reverse-then-curve swath turns (RPP allow_reversing, nav2_params.yaml)
-    reverse_controller_id: FollowCoveragePathReverse
     follow_goal_checker_id: coverage_goal_checker
     # turn legs (reverse sub-paths + chunks <= turn_leg_max_m) need travel before "reached":
     # mowgli_nav2_plugins::LegGoalChecker ('' = follow_goal_checker_id for all)
@@ -393,7 +385,6 @@ behavior_tree_node:
     use_area_settings: true           # false: built-in defaults for every area
     cut_width_m: 0.22                 # blade width (220 mm disc, owner 2026-10-20); coverage_server operation_width = this - swath_overlap_m
     cut_speed_max_mps: 0.5            # cap on an area's cut_speed_mps
-    controller_speed_param: FollowCoveragePath.desired_linear_vel   # set on /controller_server
     set_cut_speed: true
     set_cutter_height: true           # /cutter_control height (blade off) before planning an area
     alternate_state_path: /ros2_ws/maps/mission_alternate_counts.json   # path_mode alternate: angle step per area
@@ -547,7 +538,7 @@ behavior_tree_node:
     tilt_status_timeout_s: 2.0        # older /tilt/status -> band unknown, nothing acted on
     tilt_caution_speed_mps: 0.15
     # FollowPath.vx_max (2026-10-09): the transit controller is MPPI now (no desired_linear_vel;
-    # vx_max is a dynamic MPPI param). Use FollowPath.desired_linear_vel with transit_controller:=rpp.
+    # vx_max is a dynamic MPPI param).
     tilt_transit_speed_param: FollowPath.vx_max
     tilt_transit_speed_mps: 0.3       # restored after caution: keep = nav2_params FollowPath
     tilt_trail_m: 2.0                 # driven track remembered for the back-out

@@ -12,6 +12,7 @@ at ``control_rate_hz`` while a goal drives the robot, and zeros for
 from __future__ import annotations
 
 import math
+import sys
 import threading
 import time
 from typing import Optional
@@ -31,6 +32,7 @@ from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from std_msgs.msg import Bool, Int32, String, UInt8
 
+from mower_common.geometry import MARKER_SIZE_M
 from mower_interfaces.action import Dock, Undock
 from mower_interfaces.msg import MowerBaseDevStatus
 from mower_interfaces.srv import ChargingControl
@@ -38,7 +40,7 @@ from mower_interfaces.srv import ChargingControl
 from mower_docking import dock_logic as dl
 from mower_docking import dock_yaw
 from mower_docking.exposure import AUTO, STOCK_SEQUENCE, ExposureStepper
-from mower_docking.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
+from mower_common.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
 from mower_docking.quiet_action import QuietActionClient
 
 try:
@@ -64,7 +66,6 @@ class DockingServer(Node):
         decl('dock_pose_topic', '/map_server_node/docking_pose')
         decl('dock_pose_measured_topic', '/map_server_node/docking_pose_measured')
         decl('progress_odom_topic', '/odometry/filtered')   # stall guard (fused pose)
-        decl('dig_stall_topic', '/dig_stall')               # slip_detector latch
         decl('gps_status_topic', '/gps/status')
         decl('image_topic', '/rear_camera/image_raw')
         decl('camera_info_topic', '/rear_camera/camera_info')
@@ -86,7 +87,7 @@ class DockingServer(Node):
         decl('nav_server_wait_s', 5.0)
         # vision
         decl('aruco_dictionary', 'DICT_4X4_50')
-        decl('marker_size', 0.04)
+        decl('marker_size', MARKER_SIZE_M)
         decl('marker_id', -1)
         decl('rear_camera_T_base', [-0.201, 0.0, 0.25, -1.5707963, 0.0, 1.5707963])
         decl('max_detection_rate_hz', 10.0)
@@ -136,7 +137,6 @@ class DockingServer(Node):
         decl('stall_min_cmd', dp.stall_min_cmd)
         decl('stall_progress_ratio', dp.stall_progress_ratio)
         decl('stall_timeout_s', dp.stall_timeout_s)
-        decl('use_dig_stall', dp.use_dig_stall)
         decl('stall_turn_radius_m', dp.stall_turn_radius_m)
         decl('stall_contact_grace_s', dp.stall_contact_grace_s)
         # failed dock goal, then the base reports is_docking_done within this window while
@@ -242,7 +242,6 @@ class DockingServer(Node):
         self._contact = dl.ContactDebouncer(self.get_parameter('contact_debounce_samples').value)
         self._dock_pose_msg: Optional[dl.Pose2D] = None
         self._dock_measured = False
-        self._dig_stall = False
         self._progress: Optional[dl.Pose2D] = None
         self._progress_t = -1e9
         self._map_pose: Optional[dl.Pose2D] = None
@@ -303,7 +302,6 @@ class DockingServer(Node):
                              history=HistoryPolicy.KEEP_LAST)
         sub(PoseStamped, p('dock_pose_topic').value, self._on_dock_pose, latched)
         sub(Bool, p('dock_pose_measured_topic').value, self._on_dock_measured, latched)
-        sub(Bool, p('dig_stall_topic').value, self._on_dig_stall, latched)
         if p('rear_blocked_topic').value:
             sub(Bool, p('rear_blocked_topic').value, self._on_rear_blocked, latched)
         if GnssStatus is not None:
@@ -366,7 +364,8 @@ class DockingServer(Node):
         try:
             lin = abs(float(msg.linear.x))
             ang = abs(float(msg.angular.z))
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn('teleop message unreadable: %s' % exc, throttle_duration_sec=10.0)
             return
         if lin > 0.01 or ang > 0.02:          # the GUI joystick sends zeros when released
             with self._lock:
@@ -399,10 +398,6 @@ class DockingServer(Node):
             self._rear_blocked = bool(msg.data)
         if changed and self._busy:
             self.get_logger().info('rear obstacle in the dock corridor: %s' % bool(msg.data))
-
-    def _on_dig_stall(self, msg: Bool) -> None:
-        with self._lock:
-            self._dig_stall = bool(msg.data)
 
     def _on_progress_odom(self, msg: Odometry) -> None:
         q = msg.pose.pose.orientation
@@ -599,7 +594,6 @@ class DockingServer(Node):
                 map_pose=self._map_pose if now - self._map_pose_t <= 1.0 else None,
                 raw_contact=self._raw_contact and now - self._status_t <= 1.0,
                 is_charging=self._is_charging and now - self._status_t <= 1.0,
-                dig_stall=self._dig_stall,
                 t=now,
                 odom=self._odom if now - self._odom_t <= p('odom_timeout_s').value else None,
                 marker=self._marker,
@@ -813,7 +807,6 @@ class DockingServer(Node):
             stall_min_cmd=float(p('stall_min_cmd')),
             stall_progress_ratio=float(p('stall_progress_ratio')),
             stall_timeout_s=float(p('stall_timeout_s')),
-            use_dig_stall=bool(p('use_dig_stall')),
             stall_turn_radius_m=float(p('stall_turn_radius_m')),
             stall_contact_grace_s=float(p('stall_contact_grace_s')),
             approach_skip_radius_m=float(p('approach_skip_radius_m')),
@@ -988,8 +981,8 @@ class DockingServer(Node):
         meas['applied'] = True
         try:
             self._write_calibration({'dock_yaw_measurement': meas})
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn('dock yaw measurement not saved to the calibration: %s' % exc)
         self.get_logger().warn('dock yaw updated from the undock chord: %s' % why)
         return True, why
 
@@ -1244,8 +1237,8 @@ def main(args=None):
     finally:
         try:
             node._publish_cmd(0.0, 0.0)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - context may already be gone
+            sys.stderr.write('[mower_docking] final zero cmd_vel not sent: %s\n' % exc)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

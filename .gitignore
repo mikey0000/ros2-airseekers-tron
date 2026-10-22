@@ -29,3 +29,4 @@ third_party/mowglinext/gui/openmower-gui
 third_party/mowglinext/gui/web/dist-ssr/
 third_party/mowglinext/gui/web/test-results/
 third_party/mowglinext/gui/web/playwright-report/
+ci_test.log
