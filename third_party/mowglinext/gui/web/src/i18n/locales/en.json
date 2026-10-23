@@ -4321,7 +4321,10 @@
     "progress": "Previous mow was interrupted",
     "start": "Start",
     "cancel": "Cancel",
-    "failed": "Could not start mowing"
+    "failed": "Could not start mowing",
+    "confirmTitle": "Start mowing?",
+    "confirmAreaTitle": "Start mowing “{{name}}”?",
+    "confirmBody": "The mower will leave the dock and start mowing."
   },
   "settingsStraightDriving": {
     "intro": "Host-side corrections on the steering command just before it reaches the motor board. The per-wheel torque loop runs inside the firmware; these settings change what it is asked to do. All are off by default and apply live on save.",

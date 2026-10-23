@@ -42,6 +42,7 @@ import {staggerParent, riseFade, popIn, springSnap} from "../concept/motion.ts";
 import {useGate} from "../hooks/useProfileGates.ts";
 import {useRobotProfile} from "../hooks/useRobotProfile.ts";
 import {useActiveAreaSettings, useAreaSettingsSupport} from "../hooks/useAreaSettings.ts";
+import {confirmThenStart} from "../components/areaSettings/confirmStart.ts";
 import {StartMowSheet} from "../components/areaSettings/StartMowSheet.tsx";
 import {AreaSettingsSummary} from "../components/areaSettings/AreaSettingsSummary.tsx";
 import {mowingAreaChoices} from "../utils/mapAreaIndex.ts";
@@ -295,7 +296,9 @@ export const MowgliNextPage = () => {
   // Robots with per-area settings get the Start sheet (area choice, effective
   // settings, per-run overrides, resume vs fresh) instead of a bare START.
   const areaSettings = useAreaSettingsSupport();
-  const useStartSheet = areaSettings.enabled && areaSettings.supported === true;
+  // Unknown support (probe pending or transiently failed) still opens the
+  // sheet; a robot without area settings gets a confirm dialog instead.
+  const useStartSheet = areaSettings.enabled && areaSettings.supported !== false;
   const [startOpen, setStartOpen] = useState(false);
   const areaChoices = useMemo(
     () => mowingAreaChoices(map, (order) => t('mapAreasList.unnamedArea', {order})),
@@ -306,7 +309,10 @@ export const MowgliNextPage = () => {
   const actions = {
     onStart: useStartSheet
       ? () => setStartOpen(true)
-      : withFeedback(mowerAction("high_level_control", {Command: 1})),
+      : () => confirmThenStart(modal, {
+          title: t('startSheet.confirmTitle'), content: t('startSheet.confirmBody'),
+          okText: t('startSheet.start'), cancelText: t('startSheet.cancel'),
+        }, withFeedback(mowerAction("high_level_control", {Command: 1}))),
     // Pause = STOP (COMMAND_STOP=8 → StopHoldSequence: mower off, halt in place,
     // Nav2 left up so the mission can resume via START, no dock drive). The
     // separate Home control keeps HOME (Command 2 → return to dock).

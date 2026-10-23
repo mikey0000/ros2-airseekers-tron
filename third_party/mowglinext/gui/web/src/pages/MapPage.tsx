@@ -48,6 +48,7 @@ import {useAreaSettingsSupport} from "../hooks/useAreaSettings.ts";
 import {MissionStopControls} from "../components/MissionStopControls.tsx";
 import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts";
 import {StartMowSheet, type StartSelection} from "../components/areaSettings/StartMowSheet.tsx";
+import {confirmThenStart} from "../components/areaSettings/confirmStart.ts";
 import {AreaSettingsDrawer} from "../components/areaSettings/AreaSettingsDrawer.tsx";
 import {mowingAreaChoices} from "../utils/mapAreaIndex.ts";
 import {pointInPolygon} from "../utils/map.tsx";
@@ -103,7 +104,7 @@ const DRIVE_VIEW_MAP_INSET: React.CSSProperties = {
 };
 
 export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
-    const {notification} = App.useApp();
+    const {notification, modal} = App.useApp();
     const {t} = useTranslation();
     const navigate = useNavigate();
     const [datumBusy, setDatumBusy] = useState(false);
@@ -1065,7 +1066,17 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     }, [dockDirty, setHasUnsavedChanges]);
 
     // Mower action callbacks shared between desktop and mobile toolbars
-    const useStartSheet = areaSettings.enabled && areaSettings.supported === true;
+    const useStartSheet = areaSettings.enabled && areaSettings.supported !== false;
+    // Unknown support (probe pending or transiently failed) still opens the
+    // sheet: it loads its own settings and always offers Resume / Start fresh.
+    // Without the sheet (robot definitively lacks area settings) a start still
+    // needs an explicit confirm: never a mission start from a single tap.
+    const confirmStartText = useCallback((name?: string) => ({
+        title: name ? t("startSheet.confirmAreaTitle", {name}) : t("startSheet.confirmTitle"),
+        content: t("startSheet.confirmBody"),
+        okText: t("startSheet.start"),
+        cancelText: t("startSheet.cancel"),
+    }), [t]);
     const startSelectedArea = (key: string) => {
         const item = mowingAreas.find(item => item.key == key);
         const index = mowingAreaIndex(map, item?.feat?.properties?.index);
@@ -1074,7 +1085,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             setStartSheet({open: true, selection: index});
             return Promise.resolve();
         }
-        return mowerAction("start_in_area", {area: index})();
+        const name = areaChoices.find((a) => a.index === index)?.name;
+        return confirmThenStart(modal, confirmStartText(name), mowerAction("start_in_area", {area: index}));
     };
 
     const previewSelectedPlan = async (key: string) => {
@@ -1108,7 +1120,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const mowerActions = useMemo(() => ({
         onStart: useStartSheet
             ? () => { setStartSheet({open: true, selection: "all"}); return Promise.resolve(); }
-            : mowerAction("high_level_control", {Command: 1}),
+            : () => confirmThenStart(modal, confirmStartText(), mowerAction("high_level_control", {Command: 1})),
         // Resume = plain START: with a cursor the mission resumes the same area at the
         // saved sub-path / pose (no sheet, no Resume-or-fresh prompt).
         onResume: canResume(highLevelStatus.highLevelStatus.state, highLevelStatus.highLevelStatus.state_name, resumeAvailable)
@@ -1116,10 +1128,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             : undefined,
         onStartFresh: useStartSheet
             ? () => { setStartSheet({open: true, selection: "all", mode: "fresh"}); return Promise.resolve(); }
-            : async () => {
+            : () => confirmThenStart(modal, confirmStartText(), async () => {
                 await mowerAction("coverage_clear_resume", {})();
                 await mowerAction("high_level_control", {Command: CMD_START})();
-            },
+            }),
         onHome: mowerAction("high_level_control", {Command: 2}),
         // Go provider "undock" route -> high_level_control Command 9 (mission_fsm CMD_UNDOCK).
         onUndock: mowerAction("undock"),
@@ -1148,7 +1160,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         onBladeOff: mowerAction("mow_enabled", {mow_enabled: 0, mow_direction: 0}),
         onRecordFinish: mowerAction("high_level_control", {Command: 5}),
         onRecordCancel: mowerAction("high_level_control", {Command: 6}),
-    }), [mowerAction, highLevelStatus.highLevelStatus.state, highLevelStatus.highLevelStatus.state_name, useStartSheet, resumeAvailable]);
+    }), [mowerAction, highLevelStatus.highLevelStatus.state, highLevelStatus.highLevelStatus.state_name, useStartSheet, resumeAvailable, modal, confirmStartText]);
 
     // Centered message panel used for the missing-token and missing-datum
     // states — a plain, translated explanation instead of an eternal spinner

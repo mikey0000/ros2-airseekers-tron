@@ -4321,7 +4321,10 @@
     "progress": "La tonte précédente a été interrompue",
     "start": "Démarrer",
     "cancel": "Annuler",
-    "failed": "Impossible de lancer la tonte"
+    "failed": "Impossible de lancer la tonte",
+    "confirmTitle": "Démarrer la tonte ?",
+    "confirmAreaTitle": "Démarrer la tonte de « {{name}} » ?",
+    "confirmBody": "La tondeuse va quitter la base et commencer à tondre."
   },
   "settingsStraightDriving": {
     "intro": "Corrections côté hôte de la consigne de rotation, juste avant la carte moteur. La boucle de couple par roue tourne dans le firmware ; ces réglages modifient ce qui lui est demandé. Tous sont désactivés par défaut et s'appliquent en direct à l'enregistrement.",
