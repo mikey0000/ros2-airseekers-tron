@@ -2948,15 +2948,26 @@ def test_ranged_static_policy_detours_on_first_abort():
     assert h.name == 'TRANSIT' and 'trunk obstacle' in h.fsm.mission.detour['why']
 
 
-def test_parse_collision_abort():
-    assert f.parse_collision_abort('controller_server RegulatedPurePursuitController '
-                                   'detected collision ahead!')
-    assert f.parse_collision_abort(b'controller_server ... FTCController: collision detected '
-                                   b'along lookahead path.')
-    assert not f.parse_collision_abort('controller_server Failed to make progress')
-    # MPPI: every sampled trajectory collides (2026-10-09)
-    assert f.parse_collision_abort('controller_server Optimizer fail to compute path')
-    assert not f.parse_collision_abort('local_costmap collision ahead')
+def test_collision_result_codes():
+    # 2026-10-23 (review 1.8): the action result code, not /rosout text. MPPI's "Optimizer
+    # fail to compute path" (every sample collides) ends FollowPath as PATIENCE_EXCEEDED
+    # after failure_tolerance, or NO_VALID_CONTROL without one.
+    assert f.collision_result(f.ACT_FOLLOW, {'error_code': 104})
+    assert f.collision_result(f.ACT_FOLLOW, {'error_code': 106})
+    assert f.collision_result(f.ACT_NAV, {'error_code': 104})     # the BT's FollowPath code
+    assert not f.collision_result(f.ACT_FOLLOW, {'error_code': 105})   # failed to make progress
+    assert not f.collision_result(f.ACT_FOLLOW, {})
+    assert not f.collision_result(f.ACT_SPIN, {'error_code': 104})
+    assert not f.collision_result(f.ACT_FOLLOW, {'error_code': 'x'})
+
+
+def test_collision_monitor_stop_counts_as_collision():
+    h = Harness()
+    assert not h.fsm._collision_recent()
+    h.fsm.inputs.cm_stop_since = h.t
+    assert h.fsm._collision_recent() and h.fsm._blocked_cause()
+    h.fsm.inputs.cm_stop_since = None
+    assert not h.fsm._collision_recent()
 
 
 def test_slow_pivot_sub_state():

@@ -26,8 +26,8 @@
               <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
               <Fallback name="PlannerWithFallback">
                 <!-- 2026-10-09: NavFn first (see navigate_to_pose_w_replanning_and_recovery.xml) -->
-                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBasedNavFn"/>
-                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBasedNavFn" error_code_id="{compute_path_error_code}"/>
+                <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}"/>
               </Fallback>
             </ReactiveSequence>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
@@ -35,7 +35,7 @@
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"
-                      progress_checker_id="progress_checker"/>
+                      progress_checker_id="progress_checker" error_code_id="{follow_path_error_code}"/>
           <Wait name="WaitForReplan-Context" wait_duration="1"/>
         </RecoveryNode>
       </PipelineSequence>

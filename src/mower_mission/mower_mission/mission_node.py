@@ -683,9 +683,6 @@ class MissionNode(Node):
             self.fsm.inputs.cmd_vel_stamp = receipt
 
     def _on_rosout(self, data):
-        if fsm_mod.parse_collision_abort(data):
-            with self._lock:
-                self.fsm.inputs.collision_stamp = self._clk.now()
         n = fsm_mod.parse_stereo_stale(data)
         if n is None:
             return
@@ -708,10 +705,14 @@ class MissionNode(Node):
         stop = int(msg.action_type) == 1       # CollisionMonitorState.STOP
         with self._lock:
             i = self.fsm.inputs
+            now = self._clk.now()               # node clock (sim time under use_sim_time)
             if not stop:
+                if i.cm_stop_since is not None:
+                    i.collision_stamp = now     # the STOP ended: collision evidence until now
                 i.cm_stop_since = None
             elif i.cm_stop_since is None:
-                i.cm_stop_since = self._clk.now()   # node clock (sim time under use_sim_time)
+                i.cm_stop_since = now
+                i.collision_stamp = now
 
     def _on_stuck(self, msg):
         with self._lock:
@@ -1169,6 +1170,9 @@ class MissionNode(Node):
             outcome, result = fsm_mod.ABORTED, {'message': str(exc)}
         if e.name == fsm_mod.ACT_PLAN:
             result = self._precondition(e.token, outcome, result)
+        if outcome == fsm_mod.ABORTED and fsm_mod.collision_result(e.name, result):
+            with self._lock:
+                self.fsm.inputs.collision_stamp = self._clk.now()
         self._feed_action(e.token, outcome, result)
 
     def _precondition(self, token, outcome, result):
@@ -1278,6 +1282,9 @@ class MissionNode(Node):
                     'total_distance': float(res.total_distance)}
         if name in (fsm_mod.ACT_DOCK, fsm_mod.ACT_UNDOCK):
             return {'success': bool(res.success), 'message': res.message}
+        if name in (fsm_mod.ACT_FOLLOW, fsm_mod.ACT_NAV):
+            return {'error_code': int(getattr(res, 'error_code', 0)),
+                    'error_msg': str(getattr(res, 'error_msg', ''))}
         return {}
 
     # ---- services ----------------------------------------------------------

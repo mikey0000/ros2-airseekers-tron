@@ -38,15 +38,15 @@
             <Fallback name="PlannerWithFallback">
               <!-- 2026-10-09: NavFn (robot centre vs the uninflated keepout mask) first so routes
                    stay inside the drawn paths; Smac (footprint check) rejects narrow paths / edge rings -->
-              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBasedNavFn"/>
-              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBasedNavFn" error_code_id="{compute_path_error_code}"/>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}"/>
             </Fallback>
             <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"
-                      progress_checker_id="progress_checker"/>
+                      progress_checker_id="progress_checker" error_code_id="{follow_path_error_code}"/>
           <Wait name="WaitForReplan-Context" wait_duration="1"/>
         </RecoveryNode>
       </PipelineSequence>
