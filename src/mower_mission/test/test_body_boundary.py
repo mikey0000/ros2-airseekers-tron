@@ -455,3 +455,18 @@ def test_replan_keeps_done_subpaths_with_unchanged_geometry():
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([A, C]))
     assert 0 in h.fsm.cursor.areas[0].completed
     assert h.fsm.mission.sub_i == 1                   # A kept as done, C next
+
+
+def test_back_off_never_reverses_the_body_over_its_limit():
+    # field 2026-10-23: the 0.30 m back-offs beside the pole / the line must not trip the
+    # boundary guard: the reverse is shortened to what keeps the body within its limits
+    h = mowing_h([line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+    feed(h, (2.0, 2.0, 0.0))
+    assert abs(h.fsm._safe_backoff(0.30) - 0.30) < 1e-9          # room behind
+    feed(h, (0.05, 2.0, 0.0))                 # tail 0.05 out (soft tail limit 0.30): ~0.20
+    d = h.fsm._safe_backoff(0.30)
+    assert 0.10 <= d < 0.30
+    ev = h.fsm._hb_body_eval((0.05 - d, 2.0, 0.0), 'soft')
+    assert ev['excess'] < 0.0
+    feed(h, (-0.12, 2.0, 0.0))                                   # no room: no back-off
+    assert h.fsm._safe_backoff(0.30) == 0.0

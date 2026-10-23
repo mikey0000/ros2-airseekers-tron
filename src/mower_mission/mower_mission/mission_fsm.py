@@ -3785,17 +3785,18 @@ class MissionFSM:
                       'stop' % (m.pivot_skips, cap))
             return False
         key = (m.area_idx, m.sub_i, m.start_local)
-        if float(p.pivot_backout_m) > 0.0 and m.stretch is None and m.pivot_backout_key != key:
+        back = self._safe_backoff(float(p.pivot_backout_m))
+        if back > 0.0 and m.stretch is None and m.pivot_backout_key != key:
             m.pivot_backout_key = key
             self._log('warn', 'blocked pivot (%s, %.0f deg off) at (%.2f, %.2f): back up %.2f m, '
                       'then pivot once more' % (outcome, math.degrees(delta), pose[0], pose[1],
-                                                float(p.pivot_backout_m)))
+                                                back))
             m.step = 'pivot_backout'
             if not self._keep_blade_inside('pivot back-up'):
                 self._blade_off('pivot back-up')        # blade_keep_on_obstacles false: off
-            self._start_action(ACT_BACKUP, {'distance_m': float(p.pivot_backout_m),
+            self._start_action(ACT_BACKUP, {'distance_m': back,
                                             'speed_mps': float(p.pivot_backout_speed_mps)},
-                               float(p.pivot_backout_m) / max(0.02, float(p.pivot_backout_speed_mps))
+                               back / max(0.02, float(p.pivot_backout_speed_mps))
                                + 15.0, purpose='pivot_backout')
             return True
         m.pivot_skips += 1
@@ -5110,6 +5111,29 @@ class MissionFSM:
                 return
         self._send_route_leg(purpose)
 
+    def _safe_backoff(self, dist):
+        """The longest straight reverse <= ``dist`` (0.05 m steps) whose poses all keep the
+        body within its boundary limits with hard_boundary_body_clear_m to spare (field
+        2026-10-23: back-offs beside the pole / the line must not trip the boundary guard);
+        0 = no room (under 0.10 m). Without a body check (drawn path, no snapshot): ``dist``."""
+        pose = self.inputs.pose
+        if dist <= 0.0 or pose is None or len(pose) < 3:
+            return 0.0
+        mode = self._hb_body_mode(pose)
+        if mode is None:
+            return dist
+        c, s = math.cos(float(pose[2])), math.sin(float(pose[2]))
+        best, d = 0.0, 0.05
+        clear = float(self.p.hard_boundary_body_clear_m)
+        while d <= dist + 1e-9:
+            q = (float(pose[0]) - c * d, float(pose[1]) - s * d, float(pose[2]))
+            ev = self._hb_body_eval(q, mode)
+            if ev is None or ev['excess'] > -clear:
+                break
+            best = d
+            d += 0.05
+        return best if best >= 0.10 - 1e-9 else 0.0
+
     def _route_pivot_backout(self, outcome, key, heading, lim):
         """A mission-transit route corner pivot refused pivot_retries times (field 2026-10-23
         20:30:52: a Spin refused 0.71 m from a trunk went to STUCK_NEEDS_HELP): back off
@@ -5134,6 +5158,12 @@ class MissionFSM:
             self._transit_abort(why)
             return True
         m.route_backouts.add(key)
+        dist = self._safe_backoff(dist)
+        if dist <= 0.0:
+            self._log('warn', '%s: no room to back off (body limit behind): re-planning the '
+                              'transit' % why)
+            self._transit_abort(why)
+            return True
         self._log('warn', '%s: back off %.2f m, then re-plan the transit' % (why, dist))
         if not self._keep_blade_inside('route pivot back-off'):
             self._blade_off('route pivot back-off')
