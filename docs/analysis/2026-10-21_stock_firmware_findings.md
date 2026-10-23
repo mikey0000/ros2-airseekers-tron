@@ -634,6 +634,26 @@ Sim (mower_sim dock-only, camera yaw 0 in both the sim and the config, out
 renders no range-dependent normal bias and accepts contact within 6 cm lateral, looser than
 the real charger (~2 cm), so it confirms the motion, not the field margin.
 
+**Near-field check (owner option a, second commit on `ws/dock-lateral`).** Stock-style:
+below `near_check_remaining` 0.25 m with the marker in view, the median of the last 5
+detections must be within 0.02 m / 9° before the blind finish, else forward 0.5 m (corridor
+cap, arcing back) and re-approach, at most 2 per goal, then continue. Closed loop on the day's
+four starts × 4 seeds: median |lateral| 1.2 / 1.3 / 1.6 / 1.8 cm per start, worst run 2.5 cm
+(the 0.18 m start, 2 near realigns already spent); 13 near realigns over 16 runs, forward
+0–1.4 m (mean 0.46 m), time 5–36 s. It also docks the gate-edge (1.0 m, ±0.5 m, 24°) and dusk
+(0.66 m, −0.36 m) starts that dock-tweak had marked xfail.
+
+| sim dock-only (camera yaw 0) | time | lateral at contact | forward | near realigns |
+|---|---|---|---|---|
+| straight on, 0.8 m | 21.0 s | −0.5 cm | 0 m | 0 |
+| 0.25 m off | 44.1 s | +0.6 cm | 1.03 m | 2 (11.7 cm, 2.2 cm), then 3.1 cm continued |
+| 40° off (2026-10-23 attempt 1) | 34.9 s | −0.1 cm | 1.03 m | 2 (11.9 cm, 5.6 cm), then 1.8 cm ok |
+| camera fix only: straight / 0.25 m off | 20.8 / 32.4 s | −0.2 / +2.0 cm | 0 / 0.41 m | – |
+
+real_run5 ideal gate x1: MOWING_COMPLETE, docked, charging (1 near realign at 4.7 cm, then
+1.5 cm ok); verdict FAIL on d (1 fallback nav) and i (body over plan), the same two criteria
+master/dock-tweak fail (mow/transit, not docking). Out: `accuracy-simout/dock-lateral/`.
+
 ## Field symptoms these findings explain (2026-10-20/21)
 
 - Dusk docking failed with "no usable marker", although the dock has a backlit marker. Without exposure control the camera cannot read it at dusk; stock varies the exposure.
