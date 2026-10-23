@@ -29,10 +29,10 @@ HEADER = 'mowgli_coverage_resume v2'
 
 
 class AreaCursor:
-    __slots__ = ('pose_count', 'fingerprint', 'resume_index', 'completed', 'skipped')
+    __slots__ = ('pose_count', 'fingerprint', 'resume_index', 'completed', 'skipped', 'done_fps')
 
     def __init__(self, pose_count=0, fingerprint=0, resume_index=-1, completed=None,
-                 skipped=None):
+                 skipped=None, done_fps=None):
         self.pose_count = int(pose_count)
         self.fingerprint = int(fingerprint)
         self.resume_index = int(resume_index)
@@ -40,6 +40,9 @@ class AreaCursor:
         # [(abs_from, abs_to)] pose stretches skipped by an obstacle detour (re-queued
         # at the end of the area pass)
         self.skipped = [tuple(s) for s in (skipped or ())]
+        # geometry fingerprints of the completed sub-paths: a re-plan (settings change, rename)
+        # keeps those whose geometry is unchanged (field 2026-10-23: 27 m lost)
+        self.done_fps = set(done_fps or ())
 
     def __eq__(self, other):
         return isinstance(other, AreaCursor) and all(
@@ -100,6 +103,9 @@ class ResumeCursor:
         for idx in sorted(self.areas):
             for fr, to in self.areas[idx].skipped:
                 out.append('area_skip %d %d %d' % (idx, fr, to))
+            if self.areas[idx].done_fps:
+                out.append(' '.join(['area_donefp', str(idx)]
+                                    + [str(f) for f in sorted(self.areas[idx].done_fps)]))
         for idx in sorted(self.area_runs):
             if self.area_runs[idx] > 0:
                 out.append('area_run %d %d' % (idx, self.area_runs[idx]))
@@ -132,6 +138,8 @@ class ResumeCursor:
                     idx = int(args[0])
                     cur.areas[idx] = AreaCursor(int(args[1]), int(args[2]), int(args[3]),
                                                 {int(s) for s in args[5:]})
+                elif tag == 'area_donefp' and len(args) >= 1:
+                    cur.area(int(args[0])).done_fps = {int(f) for f in args[1:]}
                 elif tag == 'area_skip' and len(args) >= 3:
                     cur.area(int(args[0])).skipped.append((int(args[1]), int(args[2])))
                 elif tag == 'area_run' and len(args) >= 2:

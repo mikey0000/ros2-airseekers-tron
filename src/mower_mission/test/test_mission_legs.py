@@ -599,10 +599,14 @@ def test_failed_corner_pivot_is_retried_then_stops_never_follows_far_off_the_leg
     assert abs(h.goal(f.ACT_SPIN)['angle'] - math.radians(60.0)) < 0.1
     assert h.goal(f.ACT_SPIN)['time_allowance_s'] >= math.radians(60.0) / 0.05 + 10.0 - 0.1
     m = h.mark()
-    h.finish(f.ACT_SPIN, f.TIMEOUT)                      # third failure: stop, no leg
-    assert h.name == 'STUCK_NEEDS_HELP'
+    h.finish(f.ACT_SPIN, f.TIMEOUT)                      # third failure: never the leg
     assert not starts(h, m, f.ACT_FOLLOW) and not starts(h, m, f.ACT_NAV)
-    assert h.fsm._action is None and not h.blade
+    # field 2026-10-23 (a Spin refused 0.71 m from a trunk -> STUCK): back off 0.3 m, then
+    # re-plan the transit instead of STUCK_NEEDS_HELP
+    b = h.pending_action(f.ACT_BACKUP)
+    assert b.purpose == 'route_pivot_backout' and abs(h.goal(f.ACT_BACKUP)['distance_m'] - 0.3) < 1e-9
+    h.finish(f.ACT_BACKUP)
+    assert h.name == 'TRANSIT' and h.fsm.mission.transit_fails == 1
 
 
 def test_failed_corner_pivot_within_the_threshold_follows_the_leg():

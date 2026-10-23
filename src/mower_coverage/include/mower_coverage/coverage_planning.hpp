@@ -93,6 +93,9 @@ struct RouteOptions {
   double row_end_inset = 0.45;
   double turn_inset = 0.45;
   double hole_inset = 0.30;
+  // edge layout: corners a grown hole cuts into the region (where it meets the line, or
+  // another hole) are filleted to this radius so the laps drive past them on arcs
+  double hole_fillet_radius = 0.0;
   // inner laps opened by this radius (F2C buffers with mitres: it drops features narrower
   // than 2 R, it does not round corners; lap 0 ON the line is never opened)
   double lap_corner_radius = 0.0;
@@ -101,8 +104,12 @@ struct RouteOptions {
 // Edge layouts (PlanCoverage edge_layout / area setting edge_mode):
 //   "soft"  stock layout: laps at 0 / 0.15 / 0.30 (the first with base_link ON the line, the
 //           sides overhang up to the half width), rows fill the 0.45-eroded field (row ends
-//           0.45 in: nose ~0.15 past, a pivot there sweeps it ~0.195 past), turns >= 0.45 in,
-//           holes (obstacles) grown 0.30 so the body sides clear them.
+//           0.45 in: nose ~0.15 past, a pivot there sweeps it ~0.195 past), turns >= 0.45 in.
+//           Holes (obstacles) are HARD: grown 0.40 with round joins (body half width 0.235 +
+//           0.10, and the tightest drivable arc 0.40), their corners filleted 0.40; row ends
+//           and turns stay 0.40 + 0.45 = 0.85 from them (pivot sweep 0.645 + 0.10 = 0.745).
+//           An obstacle nearer the line than 0.40 merges with the outside: lap 0 detours
+//           inward around it and the gap stays uncut.
 //   "hard"  the whole body inside plus 0.10: laps 0.45 / 0.63 / 0.81 (+ 0.99), rows from 1.10,
 //           row ends 1.08 in (pivot room ahead), turns >= 0.745 in (pivot swing 0.645 + 0.10).
 //   "" / "legacy"  unchanged (headland rings at border_inset).

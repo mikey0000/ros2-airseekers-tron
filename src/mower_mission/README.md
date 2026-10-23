@@ -333,6 +333,7 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 | `hard_boundary_max_aborts` / `hard_boundary_spot_max` / `hard_boundary_spot_m` | 6 / 2 / 1.0 |
 | `hard_boundary_jump_m` / `hard_boundary_jump_hold_s` | 1.0 / 2.0 |
 | `spin_drift_m` | 0.15 |
+| `blade_keep_on_obstacles` | true: detours, skips (bumper too), retries, obstacle waits and pivot back-outs keep the blade on while the robot (and a detour's path) is inside the area by the body rules; off for leaving the area, lift / tilt / e-stop, localisation hold, STOP / manual, docking, battery, STUCK, mission end (owner 2026-10-23). Hardware: `mower_mcu_driver` `interlock_on_bumper` is false (no host blade cut on bumper); the stock cutter board's own bumper behaviour is unknown |
 | `bumper_skip_hits` / `bumper_skip_radius_m` / `bumper_skip_window_s` | 3 / 1.0 / 180 |
 | `record_*` | 10 Hz, 5 cm, DP 0.05 m, min 1 m² |
 | `coverage_resume_path`, `recording_fallback_dir` | `~/.ros/mower_mission/...` |

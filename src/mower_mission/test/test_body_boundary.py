@@ -150,20 +150,37 @@ def test_outside_jump_is_ignored_and_not_counted():
     assert h.fsm._hb is None and h.name == 'MOWING'
 
 
-def test_spin_drift_stops_the_pivot_and_replans_the_approach():
+def test_spin_drift_inside_goes_on_beyond_the_hard_limit_pivots_again_no_skip():
+    # field 2026-10-23 afternoon: 47 % of wet-turf pivots walked ~0.14 m along the axis, well
+    # inside the area; stopping them caused transit aborts and skips. Now: inside -> the pivot
+    # goes on; beyond spin_drift_hard_m (or near the body limit) -> stop and pivot again from
+    # where the robot is (no transit, no skip)
     h = mowing_h([line(1, 2, 4, 2), line(1, 3, 4, 3)], (1.0, 2.0, math.pi),
                  path_conditioning=True)
     a = h.pending_action(f.ACT_SPIN)
     assert a.purpose == 'cov_pivot'
-    feed(h, (1.05, 1.95, 2.5))
-    h.tick()
-    assert h.fsm._action is not None and h.fsm._action.name == f.ACT_SPIN    # 0.07 m: fine
     m = h.mark()
-    feed(h, (1.1, 1.85, 2.0))                 # synthetic slip: 0.18 m from the Spin start
+    feed(h, (1.1, 1.85, 2.0))                 # 0.18 m, body well inside the 5 m square
+    h.tick()
+    assert not h.since(m, f.CancelActions) and h.fsm._action.name == f.ACT_SPIN
+    m = h.mark()
+    feed(h, (1.2, 1.70, 1.5))                 # 0.36 m > spin_drift_hard_m
     h.tick()
     assert h.since(m, f.CancelActions)
-    assert h.name == 'TRANSIT' and h.fsm.mission.step == 'transit'
+    assert h.name == 'MOWING' and h.pending_action(f.ACT_SPIN)      # pivoting again
     assert 'spin_drift' in [e.kind for e in h.since(m, f.RecordIncident)]
+    assert h.fsm.mission.sub_i == 0 and not h.fsm.mission.blocked
+
+
+def test_spin_drift_near_the_body_limit_stops_the_pivot():
+    h = mowing_h([line(4.6, 2, 4.6, 4.5), line(1, 3, 4, 3)], (4.6, 2.0, math.pi),
+                 path_conditioning=True)
+    h.pending_action(f.ACT_SPIN)
+    m = h.mark()
+    feed(h, (4.76, 2.02, 0.0))                # 0.16 m toward the east edge: nose 0.36 (limit 0.40)
+    h.tick()
+    assert h.since(m, f.CancelActions)
+
 
 
 def test_three_bumper_hits_within_a_metre_skip_the_stretch():
@@ -302,3 +319,154 @@ def test_soft_trip_is_plan_relative_near_a_corner_planned_out():
     h.fsm.mission.corner_body = [(1.0, 4.0, 0.41)]
     far = h.fsm._hb_body_eval((4.85, 2.0, 0.0), 'soft')
     assert far['excess'] > 0.0
+
+
+def test_edge_start_join_merges_tangentially_onto_an_arc():
+    # round 4: owner_far's lap 0 starts on a drawn arc (no straight stretch): from the
+    # approach point 0.30 m inside, the leg's first 1.5 m fade from the inset onto the lap
+    R = 2.0
+    arc = [(2.5 + R * math.cos(-math.pi / 2 + a / 40.0), 2.5 + R * math.sin(-math.pi / 2 + a / 40.0),
+            a / 40.0) for a in range(60)]
+    h = mowing_h([line(1, 3, 4, 3), arc], (1.0, 3.0, 0.0), path_conditioning=True,
+                 edge_approach_inset_m=0.30)
+    m = h.fsm.mission
+    h.fsm._region_areas = {0: {'outer': [(2.5 + R * math.cos(t / 80.0), 2.5 + R * math.sin(t / 80.0))
+                                         for t in range(503)], 'is_navigation_area': False}}
+    m.sub_i, m.start_local = 1, 0
+    h.fsm._begin(h.t)
+    h.fsm._dispatch(force_transit=True)
+    h._apply(h.fsm._end())
+    assert m.join is not None
+    tx, ty, _ = m.transit_target
+    legs = h.fsm._join_leg([tuple(q) for q in arc], 1, 0)
+    assert math.hypot(legs[0][0] - tx, legs[0][1] - ty) < 0.02      # starts at the approach point
+    cum = 0.0
+    for a, b, q in zip(legs, legs[1:], arc[1:]):
+        cum += math.hypot(b[0] - a[0], b[1] - a[1])
+        if cum > 1.6:
+            assert math.hypot(b[0] - q[0], b[1] - q[1]) < 1e-6         # on the lap after 1.5 m
+    turns = [abs(math.remainder(legs[i + 1][2] - legs[i][2], 2 * math.pi)) for i in range(len(legs) - 1)]
+    assert max(turns) < math.radians(8)                                # smooth, no kink
+
+
+# ---- owner 2026-10-23: blade stays on for obstacle avoidance while inside the area ----
+
+def _fx_call(h, fn):
+    h.fsm._begin(h.t)
+    fn()
+    h._apply(h.fsm._end())
+
+
+def test_bumper_skip_inside_the_area_keeps_the_blade_on():
+    h = mowing_h([line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+    assert h.blade and h.pending_action(f.ACT_FOLLOW)
+    feed(h, (2.0, 2.0, 0.0))
+    for _ in range(3):
+        h.fsm.inputs.bumper_hits += 1
+        h.tick()
+    assert h.fsm.mission.sub_i == 1 or h.fsm.mission.step in ('transit', 'follow', 'spinup')
+    assert h.blade                                   # skipped, blade kept on
+    h2 = mowing_h([line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
+                  blade_keep_on_obstacles=False)
+    feed(h2, (2.0, 2.0, 0.0))
+    for _ in range(3):
+        h2.fsm.inputs.bumper_hits += 1
+        h2.tick()
+    assert not h2.blade                              # revert flag: the old blade-off
+
+
+def test_detour_inside_keeps_the_blade_on_and_one_leaving_turns_it_off():
+    h = mowing_h([line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+    feed(h, (2.0, 2.0, 0.0))
+    h.tick()
+    assert h.blade
+    _fx_call(h, lambda: h.fsm._transit_blade((3.5, 2.5), 'detour', force_off=True))
+    assert h.blade
+    _fx_call(h, lambda: h.fsm._transit_blade((5.8, 2.0), 'detour', force_off=True))
+    assert not h.blade                               # the path leaves the area
+
+
+def test_boundary_violation_lift_and_tilt_still_turn_the_blade_off():
+    for setup in ('boundary', 'lift', 'tilt'):
+        h = mowing_h([line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+        feed(h, (2.0, 2.0, 0.0))
+        h.tick()
+        assert h.blade
+        if setup == 'boundary':
+            h.fsm.inputs.boundary_violation = True
+            _fx_call(h, lambda: h.fsm._transit_blade((3.5, 2.5), 'detour', force_off=True))
+        elif setup == 'lift':
+            h.fsm.inputs.lift = True
+            h.tick()
+        else:
+            i = h.fsm.inputs
+            i.tilt_band, i.tilt_roll_deg, i.tilt_pitch_deg, i.tilt_axis = 'critical', 31.0, 0.0, 'roll'
+            i.tilt_stamp = h.t
+            h.tick()
+        assert not h.blade, setup
+
+
+# ---- field 2026-10-23 afternoon: stretch retries, off-network transit goals ----
+
+from test_mission_fsm import _answer_route, _route_h, _route_resp   # noqa: E402
+
+
+def test_offgraph_goal_is_re_asked_inside_then_skipped_never_the_costmap_planner():
+    h = _route_h(edge_approach_inset_m=0.0)
+    goal0 = tuple(h.fsm.mission.transit_target)
+    fail = _route_resp(ok=False, message='goal (5.00, 5.00) is off the route graph')
+    _answer_route(h, resp=fail)
+    req = _answer_route(h, resp=fail)                 # 1st re-ask (0.3 m inside) failed too
+    assert math.hypot(req['goal'][0] - goal0[0], req['goal'][1] - goal0[1]) > 0.29
+    m = h.mark()
+    _answer_route(h, resp=fail)                       # 0.6 m inside failed: skip it
+    assert all(e.name != f.ACT_NAV for e in h.since(m, f.StartAction))
+    assert any('skipping it' in e.text for e in h.since(m, f.Log))
+
+
+def test_short_and_unbypassable_stretches_are_not_re_tried():
+    h = mowing_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+    m = h.fsm.mission
+    m.unbypassable = [(2.0, 2.0)]
+    m.requeue = [(5, 8), (20, 25), (30, 38)]          # 0.3 m; next to (2, 2); 0.8 m clear
+    h.fsm._begin(h.t)
+    h.fsm._area_done()
+    h._apply(h.fsm._end())
+    assert (0, 5, 8) in m.blocked and (0, 20, 25) in m.blocked
+    assert m.stretch == (30, 38)                      # the clear one is driven
+
+
+def test_replan_keeps_done_subpaths_with_unchanged_geometry():
+    # field 2026-10-23: a rename / settings change re-planned the area and the stale cursor
+    # discarded 27 m of mowed sub-paths
+    from mower_mission import geometry as G
+    from mower_mission.resume import AreaCursor, ResumeCursor
+    A, B, C = line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3), line(0.5, 4, 4.5, 4)
+    cur = ResumeCursor()
+    cur.areas[0] = AreaCursor(22, G.plan_fingerprint([A, B]), -1, {0},
+                              done_fps={G.plan_fingerprint([A])})
+    cur.current_command = f.CMD_START                 # an interrupted mow: START resumes
+    txt = cur.dumps()
+    assert ResumeCursor.loads(txt).areas[0].done_fps == {G.plan_fingerprint([A])}
+    h = Harness(cursor=ResumeCursor.loads(txt), hard_boundary_body=True)
+    h.areas = [square(0, 0, 5)]
+    feed(h, (0.5, 3.0, 0.0))
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([A, C]))
+    assert 0 in h.fsm.cursor.areas[0].completed
+    assert h.fsm.mission.sub_i == 1                   # A kept as done, C next
+
+
+def test_back_off_never_reverses_the_body_over_its_limit():
+    # field 2026-10-23: the 0.30 m back-offs beside the pole / the line must not trip the
+    # boundary guard: the reverse is shortened to what keeps the body within its limits
+    h = mowing_h([line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+    feed(h, (2.0, 2.0, 0.0))
+    assert abs(h.fsm._safe_backoff(0.30) - 0.30) < 1e-9          # room behind
+    feed(h, (0.05, 2.0, 0.0))                 # tail 0.05 out (soft tail limit 0.30): ~0.20
+    d = h.fsm._safe_backoff(0.30)
+    assert 0.10 <= d < 0.30
+    ev = h.fsm._hb_body_eval((0.05 - d, 2.0, 0.0), 'soft')
+    assert ev['excess'] < 0.0
+    feed(h, (-0.12, 2.0, 0.0))                                   # no room: no back-off
+    assert h.fsm._safe_backoff(0.30) == 0.0

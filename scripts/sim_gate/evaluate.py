@@ -207,6 +207,36 @@ def window(pts, cum, i, half):
     return pts[lo:hi + 1]
 
 
+def edge_joins(D):
+    """{sub: [(local, side, inset, D)]} from the mission's "edge start join" log lines."""
+    joins = {}
+    for r in D.get('rosout', []):
+        msg = r[3] if len(r) > 3 else ''
+        mj = re.search(r'edge start join: sub (\d+) local (\d+) side ([+-]\d+) inset '
+                       r'([\d.]+) over ([\d.]+) m', str(msg))
+        if mj:
+            joins.setdefault(int(mj.group(1)), []).append(
+                (int(mj.group(2)), int(mj.group(3)), float(mj.group(4)), float(mj.group(5))))
+    return joins
+
+
+def joined(pts, jl):
+    """The sub-path as sent: edge-start tangent joins (mission_fsm._join_leg) applied."""
+    out = list(pts)
+    for loc, sgn, off, dj in jl:
+        acc = 0.0
+        for i in range(loc, len(pts)):
+            if i > loc:
+                acc += math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+            if acc >= dj:
+                break
+            a_, b_ = pts[max(0, i - 1)], pts[min(len(pts) - 1, i + 1)]
+            hh = math.atan2(b_[1] - a_[1], b_[0] - a_[0])
+            w = off * 0.5 * (1.0 + math.cos(math.pi * acc / dj))
+            out[i] = (pts[i][0] - w * math.sin(hh) * sgn, pts[i][1] + w * math.cos(hh) * sgn)
+    return out
+
+
 def main(run, world):
     D = json.load(open(os.path.join(run, 'data.json')))
     t0 = float(open(os.path.join(run, 'start_epoch')).read())
@@ -322,9 +352,13 @@ def main(run, world):
     I_TRACK_M, I_TRANSIT_M = 0.10, 0.40
     pmsg = D['mow_plan'][-1][1] if D['mow_plan'] else None
     psubs = json.loads(pmsg)['subpaths'] if pmsg else []
+    ptypes = (json.loads(pmsg).get('types') if pmsg else None) or []
+    _js = edge_joins(D)
+    psubs = [joined([(q[0], q[1]) for q in sp], _js[k]) if k in _js else sp
+             for k, sp in enumerate(psubs)]
     pcums = [G.cumulative_lengths([(q[0], q[1]) for q in sp]) for sp in psubs]
 
-    def plan_pose(t, x, y):
+    def plan_pose(t, x, y, yaw=None):
         h = hl_at(t)
         if h is None or h[1] != 'MOWING' or h[4] is None or h[4] < 0 or \
                 h[4] >= len(psubs) or h[5] is None or h[5] < 0:
@@ -339,6 +373,8 @@ def main(run, world):
         while hi < len(sp) - 1 and cum[hi] - cum[i] < 1.5:
             hi += 1
         best = None
+        cands = []
+        ty = ptypes[h[4]] if h[4] < len(ptypes) and ptypes[h[4]] else ''
         for j in range(lo, hi):
             ax, ay, bx, by = sp[j][0], sp[j][1], sp[j + 1][0], sp[j + 1][1]
             dx, dy = bx - ax, by - ay
@@ -348,9 +384,24 @@ def main(run, world):
             u = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
             px, py = ax + u * dx, ay + u * dy
             d = math.hypot(px - x, py - y)
-            if best is None or d < best[0]:
-                best = (d, px, py, math.atan2(dy, dx))
-        return best[1:] if best else None
+            # a planned pivot vertex within 0.25 m: every yaw between its headings is
+            # planned there (the robot turns in place / settles), judge it at the actual yaw
+            piv = any(ty[q] in 'pP' for q in range(max(0, j - 5), min(len(ty), j + 7))) \
+                if len(ty) == len(sp) else False
+            cands.append((d, px, py, math.atan2(dy, dx), piv))
+        if not cands:
+            return None
+        # at a plan vertex the incoming and outgoing segments are equally near: take the one
+        # whose heading matches the robot (round 4: the outgoing leg of a 97 deg corner was
+        # matched before the robot had turned, so the planned overhang read 0)
+        dmin = min(c[0] for c in cands)
+        near = [c for c in cands if c[0] <= dmin + 0.03]
+        if yaw is not None:
+            best = min(near, key=lambda c: abs(math.atan2(math.sin(c[3] - yaw),
+                                                          math.cos(c[3] - yaw))))
+        else:
+            best = min(near)
+        return best[1:]
     exc = {'side': [-1.0, None], 'nose': [-1.0, None], 'sweep': [-1.0, None]}
     tr_max, tr_at = 0.0, None
     for j in range(0, len(mow), 5):                          # 10 Hz
@@ -374,10 +425,10 @@ def main(run, world):
             if sp[1] > tr_max:
                 tr_max, tr_at = sp[1], at
             continue
-        pp = plan_pose(r[0], r[1], r[2])
+        pp = plan_pose(r[0], r[1], r[2], r[3])
         if pp is None:
             continue
-        ideal = body_split(body, pp[0], pp[1], r[3] if pv else pp[2], polys, pv)
+        ideal = body_split(body, pp[0], pp[1], r[3] if (pv or pp[3]) else pp[2], polys, pv)
         e = sp[1] - (ideal[1] if ideal else 0.0)
         if e > exc[sp[0]][0]:
             exc[sp[0]] = [e, at + [round(ideal[1] if ideal else 0.0, 3)]]
@@ -553,9 +604,15 @@ def main(run, world):
 
     # ---- (h) cross-track by segment type
     types_all = json.loads(plan_msg).get('types') if plan_msg else None
+    # (h) against the path actually sent (round 4): an edge-start tangent join ("edge start
+    # join: sub K local L side S inset I over D m", mission_fsm._join_leg) offsets the leg's
+    # first D m toward the interior; rebuild it here so the join is not counted as error
+    joins = edge_joins(D)
     prep = []
     for k, sp in enumerate(subpaths):
         pts = [(p[0], p[1]) for p in sp]
+        if k in joins:
+            pts = joined(pts, joins[k])
         cum = G.cumulative_lengths(pts)
         ty = (types_all[k] if types_all and k < len(types_all) else '') or ''
         if len(ty) != len(pts):
