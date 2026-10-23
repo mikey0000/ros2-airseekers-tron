@@ -187,8 +187,16 @@ defaults below are the doc's recommendations; **owner to review** (all are param
   `obstacle_max_range` from the cloud frame's ORIGIN (odom / map, near the dock), not from the
   robot. det_range marks more than 3 m from the dock never reached the costmaps (found by the
   trunk gate: run 1 had no costmap marks at the trunk). Fixed for `det_range` / `det_static`
-  (50 m). The `bumper` source has the same bug with 1.0 m (bumper marks only near the dock):
-  **not changed** here, a one-line fix for the owner to approve.
+  (50 m). The `bumper` source had the same bug with 1.0 m (bumper marks only near the dock).
+  Owner-approved fix: fixed_frame_relay drops bumper points more than 1.0 m from base_link
+  (`max_range_m`), and the costmap range is 50 m. `sensor_frame: base_link` was not used: the
+  costmap would then look up the origin in TF at the relay stamp (map<-base_link through
+  map->odom, waiting up to the transform tolerance), the wait the relay exists to avoid.
+- **For C:** the mission clears both costmaps entirely on its bumper / blocked retries
+  (`clear_costmaps`, 16 times in the trunk run). That wipes the bumper marks and B's 60 s
+  static marks just when they matter: in `trunk3_x1` every local costmap published within
+  3 s of a bumper hit was empty. The pending zone (keepout mask) survives. C should clear
+  only the decaying `obstacle_layer` (or nothing) on those retries.
 
 **Validation.** Unit tests (`DEV_ROS_DOMAIN_ID=218 ./scripts/dev_build.sh test` on det_range,
 mower_map, mower_sim, mower_navigation, mower_control: all pass; mower_bringup's
@@ -206,6 +214,8 @@ Sim gate (x1, domain 219, `accuracy-simout/nogo/`):
 | `plain_x1` | real_run5 | MOWING_COMPLETE, docked, 0 trips, corners 0.051 m; FAIL only on d (1 costmap-fallback transit, goal off the route graph) and i (side overhang 0.219 m), the same two as the current baseline `cleanup/stage0_ideal_x1_r2` (1, 0.218 m): **no regression** |
 | `trunk_x1` | real_run5_trunk (before 980ec89) | zone `trunk` r 0.25 m formed 22 s after START but 0.14 m short of the trunk (front face), auto-removed at 780 s (gone check used base_link), no costmap marks (origin bug): 73 bumper hits, 2 sub-paths not mowed, MOWING_INCOMPLETE |
 | `trunk2_x1` | real_run5_trunk | zone formed 23 s after START at (-5.53, 1.27) (truth -5.529, 1.269), r 0.25 m, pending for the whole run; 14 bumper hits (was 73), lap 0 still hits it 3 times and skips 2 m (sub-path 0 not mowed: the plan clips the trunk, C); then a **route-corner Spin 0.88 m from the trunk aborted "Collision Ahead" 3 times -> STUCK_NEEDS_HELP** (field incident 20:30 reproduced: the persistent 0.25 m mark is inside the 0.645 m pivot sweep, physically 0.09 m clear) |
+
+| `trunk3_x1` | real_run5_trunk, rebased on 5027350 + bumper fix | zone at (-5.54, 1.27) r 0.25 m, pending all run; the local costmap held the 60 s trunk marks 5.6 m from the odom origin (103 recorded frames; none in `trunk_x1`); 27 bumper hits, 2 sub-paths not mowed, MOWING_INCOMPLETE, no STUCK. The bumper marks could not be seen: the mission clears the costmaps after each hit (above) |
 
 So A forms the right zone, the costmap now keeps the trunk, and the body stops hitting it
 except on lap 0, but routing round it needs C: lap 0 pulled inward and the pivot fallbacks
