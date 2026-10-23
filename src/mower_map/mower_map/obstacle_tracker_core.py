@@ -479,6 +479,16 @@ class TrackerCore:
         self.tracks.remove(t)
         return t
 
+    def drop_pending(self) -> List[Track]:
+        """End of a mowing session (option C, 2026-10-23): forget every PENDING zone (promoted
+        or being promoted, not accepted by the operator). Pending zones are hard obstacles for
+        the mow that found them only; no suppression, a next mow may propose them again.
+        Returns the dropped tracks (the caller removes their pending keepouts)."""
+        out = [t for t in self.tracks if t.pending and (t.promoted or t.promoting)]
+        for t in out:
+            self.tracks.remove(t)
+        return out
+
     def _verify_cone(self, t: Track, robot_pose) -> bool:
         """The robot is looking at the spot (for a det zone: inside the camera's view)."""
         p = self.params

@@ -215,6 +215,11 @@ PARAMS = {
     'mark_min_score': 0.5,            # = det_range points_min_score
     'mark_margin_m': 0.10,            # = det_range width_margin_m
     'discard_service': '/map_server_node/discard_obstacle',
+    # option C (2026-10-23): pending zones hold for the current mow only; when the mission
+    # reaches one of these states (HighLevelStatus.state_name) they are dropped (track and
+    # pending keepout) unless the operator accepted them
+    'drop_pending_at_session_end': True,
+    'session_end_states': ['MOWING_COMPLETE', 'MOWING_INCOMPLETE'],
 }
 
 # TrackerParams keys are a subset of PARAMS; keep the mapping explicit so a
@@ -380,6 +385,7 @@ class ObstacleTrackerNode(Node):
         self._clear_time = -1e9
         self._robot_pose = None            # (x, y, yaw)
         self._high_state = None            # HighLevelStatus.state
+        self._high_name = ''               # HighLevelStatus.state_name (mission phase)
         self._high_time = -1e9
         self._dynamic = []                 # [(monotonic, x, y)] ranged person/animal, map
         self._dynamic_unranged_time = -1e9
@@ -535,6 +541,19 @@ class ObstacleTrackerNode(Node):
     def _on_high_level(self, msg):
         self._high_state = int(msg.state)
         self._high_time = self._clk.now()
+        name = str(msg.state_name)
+        if name != self._high_name:
+            self._high_name = name
+            if bool(self.p('drop_pending_at_session_end')) and \
+                    name in list(self.p('session_end_states') or []):
+                self._drop_pending(name)
+
+    def _drop_pending(self, why):
+        """Session end: drop the pending (not accepted) zones and their keepouts."""
+        for t in self.core.drop_pending():
+            self.get_logger().info('no-go zone #%d (%s) dropped at the end of the mow (%s): '
+                                   'pending, not accepted' % (t.id, t.label(), why))
+            self._remove_keepout(t, 'session end')
 
     def _on_plan(self, topic, is_coverage, msg):
         pts = np.array([(ps.pose.position.x, ps.pose.position.y) for ps in msg.poses],

@@ -326,6 +326,24 @@ def test_ignore_suppresses_the_spot():
     assert c.ignore(12345) is None
 
 
+def test_session_end_drops_pending_zones_not_accepted_ones():
+    # option C (2026-10-23): pending zones are hard obstacles for the mow that found them;
+    # at the end of the session (MOWING_COMPLETE / _INCOMPLETE) they are dropped unless
+    # accepted, without suppressing the spot (a next mow may propose them again)
+    c = _core()
+    tid = _feed(c, 5)[0]
+    c.confirm_promoted(tid, 2.0)
+    assert c.find_track(tid).pending
+    acc = _feed(c, 6, xy=(8.0, 5.2), t0=30.0)[0]
+    c.confirm_promoted(acc, 31.0)
+    c.set_pending(acc, False)                    # accepted by the operator
+    dropped = c.drop_pending()
+    assert [t.id for t in dropped] == [tid]
+    assert c.find_track(tid) is None and c.find_track(acc) is not None
+    assert c.drop_pending() == []
+    assert len(_feed(c, 6, t0=60.0)) == 1        # not suppressed: proposed again
+
+
 def test_bumper_only_zone_is_opt_in():
     c = _core()
     for k in range(5):
