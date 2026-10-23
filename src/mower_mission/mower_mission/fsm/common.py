@@ -1229,6 +1229,8 @@ class Params:
     nogo_edge_detour: bool = True
     nogo_edge_lookahead_m: float = 2.5
     nogo_edge_clearance_m: float = 0.10
+    nogo_edge_max_offset_m: float = 0.60     # larger: no detour (re-plan / skip instead)
+    nogo_plan_grow_m: float = 0.25           # zone hole radius + this (nose 0.60 vs 0.40 keepout)
     # bumper / blocked retries clear only the clearable 5 s obstacle layer (Nav2
     # clear_around_*_costmap; static_det_layer and bumper_layer are not clearable), not the
     # whole costmaps (the 60 s det marks and bumper marks were wiped just when they mattered)

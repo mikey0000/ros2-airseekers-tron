@@ -364,18 +364,18 @@ def _edge_h():
     return h
 
 
-def test_edge_lap_abort_detours_inward_around_a_mark_and_rejoins():
+def test_edge_lap_abort_detours_inward_around_a_zone_and_rejoins():
     h = _edge_h()
     h.fsm.inputs.pose = (1.4, 0.0, 0.0)
     h.tick(n=2)
-    zones(h, marks=[Z(2.5, 0.3, 0.15, state='mark')])
+    zones(h, Z(2.5, 0.05, 0.1, 6, 'stone', 'candidate'))
     mk = h.mark()
     h.fsm.inputs.collision_stamp = h.t
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     a = h.pending_action(f.ACT_FOLLOW)
     assert a.purpose == 'nogo_detour'
     poses = h.goal(f.ACT_FOLLOW)['poses']
-    assert max(q[1] for q in poses) > 0.7      # inward (+y) past the mark's inner side
+    assert max(q[1] for q in poses) > 0.4      # inward (+y) past the stone's inner side
     assert min(q[1] for q in poses) >= -1e-9   # never outside the line
     assert not any('edge blocked: skip' in t for t in logs(h, mk))
     assert not any('path blocked' in t for t in logs(h, mk))    # no stop-wait
@@ -391,7 +391,7 @@ def test_edge_lap_proactive_detour_for_a_zone_ahead_without_stopping():
     h.fsm.p.nogo_replan = False                # zone not re-planned: the detour handles it
     h.fsm.inputs.pose = (1.0, 0.0, 0.0)
     h.tick(n=2)
-    zones(h, Z(2.6, 0.25, 0.2, 2, 'stone', 'candidate'))
+    zones(h, Z(2.6, 0.1, 0.1, 2, 'stone', 'candidate'))
     h.tick(dt=1.1)
     assert h.pending_action(f.ACT_FOLLOW).purpose == 'nogo_detour'
     assert h.fsm.mission.nogo_edge_detours == 1
@@ -414,3 +414,25 @@ def test_retry_clear_is_selective_by_default_and_full_when_off():
         h.finish(f.ACT_NAV, f.ABORTED)
         c = [e for e in h.since(mk, f.CallService) if e.name == f.SRV_CLEAR_COSTMAPS]
         assert c and all(e.request['selective'] is sel for e in c)
+
+
+def test_edge_detour_ignores_marks_and_too_large_offsets():
+    h = _edge_h()
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.tick(n=2)
+    m0 = h.mark()
+    zones(h, marks=[Z(2.6, 0.1, 0.1, state='mark')])       # 60 s marks: never a detour
+    h.tick(dt=1.1)
+    zones(h, Z(2.6, 0.4, 0.25, 2, 'stone', 'candidate'))   # needs 0.99 m > 0.60: none
+    h.tick(dt=1.1)
+    assert not [e for e in starts(h, m0, f.ACT_FOLLOW)]
+    assert h.fsm.mission.nogo_edge_detours == 0
+
+
+def test_replan_hole_is_grown_for_the_nose():
+    h = _mowing_row2()
+    zones(h, Z(1.5, 2.0, 0.2, 3, 'trunk', 'pending'))
+    h.tick(dt=1.1)
+    obs = h.goal(f.ACT_PLAN)['obstacles'][0]
+    r = min(math.hypot(q[0] - 1.5, q[1] - 2.0) for q in obs)
+    assert r >= 0.2 + h.fsm.p.nogo_plan_grow_m - 1e-6

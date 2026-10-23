@@ -78,6 +78,8 @@ behavior_tree_node:
     nogo_edge_detour: true            # edge laps (B6): detour inward around it, rejoin
     nogo_edge_lookahead_m: 2.5
     nogo_edge_clearance_m: 0.10
+    nogo_edge_max_offset_m: 0.60      # larger needed: no detour (re-plan / skip)
+    nogo_plan_grow_m: 0.25            # zone hole + this: the nose (0.60 m) vs the 0.40 keepout
 
     # --- rain ------------------------------------------------------------
     rain_mode: 1                      # 0 ignore, 1 dock and wait

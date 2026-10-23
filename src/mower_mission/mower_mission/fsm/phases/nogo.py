@@ -144,7 +144,11 @@ class NogoMixin:
             self._action = None
         self._fx.append(DriveCmd(0.0, 0.0))
         self._spin_resend = None
-        polys = [nogo.zone_polygon(z.x, z.y, z.r) for z in zones]
+        # the planner keeps base_link nogo_plan_grow_m + 0.40 from the hole; the nose / the
+        # front corners reach 0.60 / 0.645 m ahead (trunk_x1: a lap bending round a 0.40 m
+        # keepout drove its nose into the trunk head-on before the arc)
+        grow = max(0.0, float(p.nogo_plan_grow_m))
+        polys = [nogo.zone_polygon(z.x, z.y, z.r + grow) for z in zones]
         m.nogo_extra.setdefault(idx, []).extend(polys)
         m.nogo_replans[idx] = m.nogo_replans.get(idx, 0) + 1
         m.nogo_last_replan = self._now
@@ -369,9 +373,13 @@ class NogoMixin:
 
     # ---- edge-lap detour (B6) ----------------------------------------------
     def _nogo_edge_discs(self):
-        """Discs for the edge-lap check: every zone and static mark, plus the current
-        on-path static detection (ranged) as a 0.2 m disc."""
-        discs = list(self._nogo_discs())
+        """Discs for the edge-lap check: the zones (pending / accepted / candidate) not yet
+        a hole of the plan, plus the current on-path static detection (ranged) as a 0.2 m
+        disc. Not the 60 s marks: their positions scatter with the range (trunk_x1: a 1.2 m
+        detour 2 m from the trunk put the nose out)."""
+        m = self.mission
+        holes = self._nogo_area_holes(m.area_idx)
+        discs = [z for z in self._nogo_discs(marks=False) if not nogo.zone_in_plan(z, holes)]
         i, pose = self.inputs, self.inputs.pose
         if self._policy() == 'static' and i.obstacle_distance is not None and \
                 i.obstacle_bearing is not None and pose is not None and len(pose) >= 3:
@@ -401,10 +409,16 @@ class NogoMixin:
         res = nogo.edge_detour(sp, prog, discs, inside,
                                half_width=float(p.robot_width_m) / 2.0,
                                clearance=float(p.nogo_edge_clearance_m),
-                               lookahead_m=float(p.nogo_edge_lookahead_m))
+                               lookahead_m=float(p.nogo_edge_lookahead_m),
+                               max_offset_m=float(p.nogo_edge_max_offset_m))
         if res is None:
             return False
         poses, end = res
+        ex = self._nogo_body(poses)
+        if ex is not None and ex > 0.0:
+            self._log('warn', 'edge lap: %s: the detour would put the body %.2f m beyond its '
+                              'limit: no detour' % (why, ex))
+            return False
         key = (m.area_idx, m.sub_i, end)
         if key in m.nogo_detoured:
             return False
