@@ -3070,10 +3070,21 @@ class MissionFSM:
             self._log('info', 'area %d: resuming (%d/%d sub-paths done, cursor %s)' % (
                 m.area_idx, len(ac.completed), len(subpaths), m.resume_sub))
         else:
+            new = AreaCursor(total, fp, -1, set())
+            kept = 0
+            if ac is not None and ac.done_fps:
+                for k, sp in enumerate(subpaths):
+                    f = geo.plan_fingerprint([sp])
+                    if f in ac.done_fps:
+                        new.completed.add(k)
+                        new.done_fps.add(f)
+                        kept += 1
             if ac is not None and (ac.completed or ac.resume_index >= 0):
                 self._log('warn', 'area %d: plan geometry changed, stale resume cursor '
-                                  'discarded' % m.area_idx)
-            self.cursor.areas[m.area_idx] = AreaCursor(total, fp, -1, set())
+                                  'discarded%s' % (m.area_idx, '' if not kept else
+                                                   '; kept %d done sub-path(s) whose geometry '
+                                                   'is unchanged' % kept))
+            self.cursor.areas[m.area_idx] = new
         self._persist()
         self._log('info', 'area %d: %d drivable sub-paths, %.1f m' % (
             m.area_idx, len(subpaths), sum(m.lengths)))
@@ -3928,6 +3939,7 @@ class MissionFSM:
         m = self.mission
         ac = self.cursor.area(m.area_idx)
         ac.completed.add(m.sub_i)
+        ac.done_fps.add(geo.plan_fingerprint([m.subpaths[m.sub_i]]))
         m.completed_count += 1
         offs, _total = subpath_offsets(m.subpaths)
         nxt = m.sub_i + 1
@@ -6215,6 +6227,7 @@ class MissionFSM:
         ac = self.cursor.area(m.area_idx)
         if m.retry_entry is not None:
             ac.completed.add(m.retry_entry[1])
+            ac.done_fps.add(geo.plan_fingerprint([m.subpaths[m.retry_entry[1]]]))
             m.completed_count += 1
             self._log('info', 'area %d: sub-path %d mowed on the end-of-area retry'
                       % (m.area_idx, m.retry_entry[1]))

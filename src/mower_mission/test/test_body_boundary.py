@@ -434,3 +434,24 @@ def test_short_and_unbypassable_stretches_are_not_re_tried():
     h._apply(h.fsm._end())
     assert (0, 5, 8) in m.blocked and (0, 20, 25) in m.blocked
     assert m.stretch == (30, 38)                      # the clear one is driven
+
+
+def test_replan_keeps_done_subpaths_with_unchanged_geometry():
+    # field 2026-10-23: a rename / settings change re-planned the area and the stale cursor
+    # discarded 27 m of mowed sub-paths
+    from mower_mission import geometry as G
+    from mower_mission.resume import AreaCursor, ResumeCursor
+    A, B, C = line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3), line(0.5, 4, 4.5, 4)
+    cur = ResumeCursor()
+    cur.areas[0] = AreaCursor(22, G.plan_fingerprint([A, B]), -1, {0},
+                              done_fps={G.plan_fingerprint([A])})
+    cur.current_command = f.CMD_START                 # an interrupted mow: START resumes
+    txt = cur.dumps()
+    assert ResumeCursor.loads(txt).areas[0].done_fps == {G.plan_fingerprint([A])}
+    h = Harness(cursor=ResumeCursor.loads(txt), hard_boundary_body=True)
+    h.areas = [square(0, 0, 5)]
+    feed(h, (0.5, 3.0, 0.0))
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([A, C]))
+    assert 0 in h.fsm.cursor.areas[0].completed
+    assert h.fsm.mission.sub_i == 1                   # A kept as done, C next
