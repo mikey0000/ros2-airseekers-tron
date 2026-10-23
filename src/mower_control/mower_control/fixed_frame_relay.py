@@ -61,10 +61,14 @@ def make_cloud(stamp, frame_id, pts) -> PointCloud2:
     return msg
 
 
-def relay_plan(src_frame, pts, now_ns, max_lag_ns, base_frame, odom_tf, map_tf, static_tf):
+def relay_plan(src_frame, pts, now_ns, max_lag_ns, base_frame, odom_tf, map_tf, static_tf,
+               max_range=0.0):
     """-> [(frame, stamp_ns, points)] or [] (TF missing / stale / unknown source frame).
     odom_tf: (ns, 4x4 odom<-base); map_tf: (ns, 4x4 map<-odom, static) or None;
-    static_tf: {frame: 4x4 base<-frame} (identity for base_frame itself)."""
+    static_tf: {frame: 4x4 base<-frame} (identity for base_frame itself).
+    max_range > 0: drop points farther than this from base_frame (x/y/z, before the
+    transform). The costmap cannot do it: a relayed cloud has no sensor origin, so its
+    obstacle_max_range counts from the odom / map origin (2026-10-23)."""
     if odom_tf is None or odom_tf[0] <= now_ns - max_lag_ns:
         return []
     T_bs = np.eye(4) if src_frame == base_frame else static_tf.get(src_frame)
@@ -72,7 +76,10 @@ def relay_plan(src_frame, pts, now_ns, max_lag_ns, base_frame, odom_tf, map_tf, 
         return []
     ns, T_ob = odom_tf
     T = T_ob @ T_bs
-    p = np.asarray(pts, np.float64)
+    p = np.asarray(pts, np.float64).reshape(-1, 3)
+    if max_range > 0.0 and len(p):
+        pb = p @ T_bs[:3, :3].T + T_bs[:3, 3]
+        p = p[np.einsum('ij,ij->i', pb, pb) <= max_range * max_range]
     p_odom = (p @ T[:3, :3].T + T[:3, 3]).astype(np.float32) if len(p) else \
         np.zeros((0, 3), np.float32)
     out = [('odom', ns, p_odom)]
@@ -96,6 +103,10 @@ class FixedFrameRelay(Node):
         d('odom_frame', 'odom')
         d('map_frame', 'map')
         d('max_tf_lag_s', 0.3)
+        # per topic (parallel to topics; 0 = off): drop points farther than this from
+        # base_link. /bumper_cloud: 1.0 m, the bumper source's old obstacle_max_range, which
+        # the costmap measured from the odom / map origin (nav2_params.yaml, 2026-10-23).
+        d('max_range_m', [1.0, 0.0, 0.0])
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.base, self.odom, self.map = p('base_frame'), p('odom_frame'), p('map_frame')
         self.max_lag_ns = int(float(p('max_tf_lag_s')) * 1e9)
@@ -108,6 +119,9 @@ class FixedFrameRelay(Node):
         self.create_subscription(TFMessage, '/tf_static', self._on_static,
                                  QoSProfile(depth=100, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.pubs = {}
+        ranges = [float(v) for v in p('max_range_m')]
+        self.max_range = {t: (ranges[i] if i < len(ranges) else 0.0)
+                          for i, t in enumerate(p('topics'))}
         for t in p('topics'):
             self.pubs[t] = (self.create_publisher(PointCloud2, t + '_odom', 10),
                             self.create_publisher(PointCloud2, t + '_map', 10))
@@ -149,7 +163,8 @@ class FixedFrameRelay(Node):
                                    throttle_duration_sec=10.0)
             return
         plan = relay_plan(msg.header.frame_id, pts, now_ns, self.max_lag_ns, self.base,
-                          self.odom_tf, self.map_tf, self.static_tf)
+                          self.odom_tf, self.map_tf, self.static_tf,
+                          self.max_range.get(topic, 0.0))
         if not plan:
             self.skipped += 1
             self.get_logger().warn('fixed_frame_relay: no fresh %s<-%s TF for %s (skipped %d)'

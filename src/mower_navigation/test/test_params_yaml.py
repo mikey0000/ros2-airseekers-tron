@@ -246,6 +246,22 @@ def test_static_det_layer(cm, frame):
     assert gp["obstacle_layer"]["decay_time"] == 5.0
 
 
+@pytest.mark.parametrize("cm,frame", [("local_costmap", "odom"), ("global_costmap", "map")])
+def test_bumper_source_not_limited_by_the_frame_origin(cm, frame):
+    # 2026-10-23 (owner-approved): the relayed bumper cloud has no sensor_frame, so the
+    # costmap counted obstacle_max_range from the odom / map origin and dropped every hit more
+    # than 1 m from the dock. The 1 m limit is robot-relative in fixed_frame_relay now.
+    ol = load()[cm][cm]["ros__parameters"]["obstacle_layer"]
+    src = ol["bumper"]
+    assert src["topic"] == "/bumper_cloud_" + frame
+    assert "sensor_frame" not in src            # no TF origin lookup in the costmap
+    assert src["obstacle_max_range"] >= 50.0
+    relay = open(os.path.join(HERE, "..", "..", "mower_control", "mower_control",
+                              "fixed_frame_relay.py")).read()
+    assert "d('max_range_m', [1.0, 0.0, 0.0])" in relay
+    assert "d('topics', ['/bumper_cloud'," in relay
+
+
 def test_stereo_obstacle_source():
     # 2026-10-06: the stereo cloud marked the lawn lethal ("collision ahead" abort).
     ol = load()["local_costmap"]["local_costmap"]["ros__parameters"]["obstacle_layer"]

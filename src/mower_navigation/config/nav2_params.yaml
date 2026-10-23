@@ -1015,7 +1015,14 @@ local_costmap:
           clearing: false
           min_obstacle_height: -0.5
           max_obstacle_height: 2.0
-          obstacle_max_range: 1.0
+          # 50 (was 1.0, 2026-10-23, owner-approved): with no sensor_frame the range counts
+          # from the odom / map ORIGIN, so bumper hits more than 1 m from the dock were
+          # never marked. The robot-relative 1.0 m limit is now applied by
+          # fixed_frame_relay (max_range_m, in base_link before the transform);
+          # sensor_frame: base_link would make the costmap look the origin up in TF
+          # (waits up to transform_tolerance, map<-base_link at the relay stamp),
+          # which is what the relay exists to avoid.
+          obstacle_max_range: 50.0
           obstacle_min_range: 0.0
           raytrace_max_range: 1.5
           raytrace_min_range: 0.0
@@ -1217,7 +1224,14 @@ global_costmap:
           clearing: false
           min_obstacle_height: -0.5
           max_obstacle_height: 2.0
-          obstacle_max_range: 1.0
+          # 50 (was 1.0, 2026-10-23, owner-approved): with no sensor_frame the range counts
+          # from the odom / map ORIGIN, so bumper hits more than 1 m from the dock were
+          # never marked. The robot-relative 1.0 m limit is now applied by
+          # fixed_frame_relay (max_range_m, in base_link before the transform);
+          # sensor_frame: base_link would make the costmap look the origin up in TF
+          # (waits up to transform_tolerance, map<-base_link at the relay stamp),
+          # which is what the relay exists to avoid.
+          obstacle_max_range: 50.0
           obstacle_min_range: 0.0
           raytrace_max_range: 1.5
           raytrace_min_range: 0.0
