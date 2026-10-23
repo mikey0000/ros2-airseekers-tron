@@ -293,7 +293,7 @@ The 60 s marks are not used here: their positions scatter with the range, and in
 a 1.16 m detour 2 m from the trunk put the nose out. Nothing to go around: edge skip as before.
 
 **Validation.** Unit tests, all pass:
-- `mower_mission` 702 tests; `test_nogo.py` covers (a)-(e) in geometry and in the FSM, route
+- `mower_mission` 700 tests; `test_nogo.py` covers (a)-(e) in geometry and in the FSM, route
   corner (a) and (e), the re-plan with progress kept, the rate limit, candidate / stale zones,
   failure keeping the old plan, the grown hole, re-START holes, the edge detour, and the
   selective clear;
