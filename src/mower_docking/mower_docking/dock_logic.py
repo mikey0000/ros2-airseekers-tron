@@ -127,8 +127,9 @@ def marker_in_base(rvec: Sequence[float], tvec: Sequence[float],
     (``-0.201 0 0.25`` / ``-1.5708 0 1.5708``).
 
     ``yaw_correction`` (rad) rotates the camera about the base_link vertical axis through the
-    camera centre (R_bc' = Rz(yaw_correction) R_bc): the measured mounting-yaw error of the
-    rear camera (2026-10-21 night, -6.5 deg, docking.yaml ``rear_camera_yaw_correction_deg``).
+    camera centre (R_bc' = Rz(yaw_correction) R_bc): a mounting-yaw error of the rear camera
+    (docking.yaml ``rear_camera_yaw_correction_deg``; 0 since 2026-10-23, the 2026-10-21 -6.5
+    deg fit was the marker normal's range-dependent bias, not the camera).
     """
     r_bc = rpy_to_matrix(*cam_rpy)
     if yaw_correction:
@@ -804,7 +805,7 @@ class DockParams:
     inplace_search_retry: bool = True
     # ALIGNING aims the rear camera at the marker's RTK position (dock pose measured, map
     # pose available) instead of the bare dock yaw: the rear camera sees only +-25 deg
-    # (fx 684 px at 640 px) and reads 6.5 deg off, so 0.25 m off the axis at the approach
+    # (fx 684 px at 640 px), so 0.25 m off the axis at the approach
     # pose the dock yaw leaves the marker at the image edge (sim: 0 detections in 15 s).
     align_to_marker_bearing: bool = True
     # Operator joystick (/cmd_vel_teleop overrides /cmd_vel_docking in twist_mux): pause,

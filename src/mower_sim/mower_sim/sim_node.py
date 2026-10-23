@@ -127,9 +127,9 @@ class SimNode(Node):
         # it): 0.201 + (0.45 - 0.201) x 0.055 / 0.04 = 0.543 m (camera 0.201 m behind base).
         d('rear_marker_size', 0.055)
         d('rear_marker_offset', 0.543)
-        # the real rear camera's mounting-yaw error (matches docking.yaml
-        # rear_camera_yaw_correction_deg -6.5, 2026-10-21 night fit)
-        d('rear_camera_mount_yaw_deg', -6.5)
+        # the real rear camera's mounting-yaw error: none (2026-10-23 daylight, marker centre
+        # vs RTK within 1.3 cm at 0.1-1.5 m; matches docking.yaml rear_camera_yaw_correction_deg 0)
+        d('rear_camera_mount_yaw_deg', 0.0)
         d('linear_max', 0.3)
         d('angular_max', 0.3)
         d('min_wheel_speed_mps', 0.06)
