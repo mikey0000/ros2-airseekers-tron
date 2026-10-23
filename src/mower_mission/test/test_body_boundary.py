@@ -150,20 +150,37 @@ def test_outside_jump_is_ignored_and_not_counted():
     assert h.fsm._hb is None and h.name == 'MOWING'
 
 
-def test_spin_drift_stops_the_pivot_and_replans_the_approach():
+def test_spin_drift_inside_goes_on_beyond_the_hard_limit_pivots_again_no_skip():
+    # field 2026-10-23 afternoon: 47 % of wet-turf pivots walked ~0.14 m along the axis, well
+    # inside the area; stopping them caused transit aborts and skips. Now: inside -> the pivot
+    # goes on; beyond spin_drift_hard_m (or near the body limit) -> stop and pivot again from
+    # where the robot is (no transit, no skip)
     h = mowing_h([line(1, 2, 4, 2), line(1, 3, 4, 3)], (1.0, 2.0, math.pi),
                  path_conditioning=True)
     a = h.pending_action(f.ACT_SPIN)
     assert a.purpose == 'cov_pivot'
-    feed(h, (1.05, 1.95, 2.5))
-    h.tick()
-    assert h.fsm._action is not None and h.fsm._action.name == f.ACT_SPIN    # 0.07 m: fine
     m = h.mark()
-    feed(h, (1.1, 1.85, 2.0))                 # synthetic slip: 0.18 m from the Spin start
+    feed(h, (1.1, 1.85, 2.0))                 # 0.18 m, body well inside the 5 m square
+    h.tick()
+    assert not h.since(m, f.CancelActions) and h.fsm._action.name == f.ACT_SPIN
+    m = h.mark()
+    feed(h, (1.2, 1.70, 1.5))                 # 0.36 m > spin_drift_hard_m
     h.tick()
     assert h.since(m, f.CancelActions)
-    assert h.name == 'TRANSIT' and h.fsm.mission.step == 'transit'
+    assert h.name == 'MOWING' and h.pending_action(f.ACT_SPIN)      # pivoting again
     assert 'spin_drift' in [e.kind for e in h.since(m, f.RecordIncident)]
+    assert h.fsm.mission.sub_i == 0 and not h.fsm.mission.blocked
+
+
+def test_spin_drift_near_the_body_limit_stops_the_pivot():
+    h = mowing_h([line(4.6, 2, 4.6, 4.5), line(1, 3, 4, 3)], (4.6, 2.0, math.pi),
+                 path_conditioning=True)
+    h.pending_action(f.ACT_SPIN)
+    m = h.mark()
+    feed(h, (4.76, 2.02, 0.0))                # 0.16 m toward the east edge: nose 0.36 (limit 0.40)
+    h.tick()
+    assert h.since(m, f.CancelActions)
+
 
 
 def test_three_bumper_hits_within_a_metre_skip_the_stretch():
@@ -387,3 +404,33 @@ def test_boundary_violation_lift_and_tilt_still_turn_the_blade_off():
             i.tilt_stamp = h.t
             h.tick()
         assert not h.blade, setup
+
+
+# ---- field 2026-10-23 afternoon: stretch retries, off-network transit goals ----
+
+from test_mission_fsm import _answer_route, _route_h, _route_resp   # noqa: E402
+
+
+def test_offgraph_goal_is_re_asked_inside_then_skipped_never_the_costmap_planner():
+    h = _route_h(edge_approach_inset_m=0.0)
+    goal0 = tuple(h.fsm.mission.transit_target)
+    fail = _route_resp(ok=False, message='goal (5.00, 5.00) is off the route graph')
+    _answer_route(h, resp=fail)
+    req = _answer_route(h, resp=fail)                 # 1st re-ask (0.3 m inside) failed too
+    assert math.hypot(req['goal'][0] - goal0[0], req['goal'][1] - goal0[1]) > 0.29
+    m = h.mark()
+    _answer_route(h, resp=fail)                       # 0.6 m inside failed: skip it
+    assert all(e.name != f.ACT_NAV for e in h.since(m, f.StartAction))
+    assert any('skipping it' in e.text for e in h.since(m, f.Log))
+
+
+def test_short_and_unbypassable_stretches_are_not_re_tried():
+    h = mowing_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+    m = h.fsm.mission
+    m.unbypassable = [(2.0, 2.0)]
+    m.requeue = [(5, 8), (20, 25), (30, 38)]          # 0.3 m; next to (2, 2); 0.8 m clear
+    h.fsm._begin(h.t)
+    h.fsm._area_done()
+    h._apply(h.fsm._end())
+    assert (0, 5, 8) in m.blocked and (0, 20, 25) in m.blocked
+    assert m.stretch == (30, 38)                      # the clear one is driven

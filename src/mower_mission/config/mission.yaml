@@ -141,6 +141,9 @@ behavior_tree_node:
     # pivot the mission followed the leg anyway and MPPI left the area at once.
     # Revert: -1 (follow the leg after any pivot outcome).
     pivot_retries: 2
+    stretch_min_retry_m: 0.5             # skipped stretches shorter than this are not re-tried
+    stretch_block_radius_m: 1.0          # ... nor ones near a stretch that stayed blocked this mission
+    offgraph_goal_insets_m: [0.3, 0.6]   # off-graph transit goal: re-ask moved inside; then skip (no costmap transit to it)
     route_pivot_backout_m: 0.30          # transit route corner pivot refused pivot_retries times: back off, re-plan (field 2026-10-23)
     pivot_retry_pause_s: 2.0           # real back-off between pivot attempts (field 2026-10-22)
     # 2026-10-21 owner rule (stock firmware): a blocked COVERAGE pivot (Spin aborted / timed
@@ -458,7 +461,9 @@ behavior_tree_node:
     hard_boundary_entry_m: 0.02          # START / resume this far out: inward first, not counted
     hard_boundary_jump_m: 1.0            # a > 1 m jump in one tick is ignored (map reload race)
     hard_boundary_jump_hold_s: 2.0
-    spin_drift_m: 0.15                   # pivot Spin slid > this: stop, re-plan the approach
+    spin_drift_m: 0.15                   # pivot Spin slid > this ...
+    spin_drift_body_margin_m: 0.05       # ... and the body within this of its limit: stop, pivot again from here
+    spin_drift_hard_m: 0.30              # ... or slid more than this (field 2026-10-23: 47 % of wet-turf pivots walked 0.14 m)
     blade_keep_on_obstacles: true        # obstacle avoidance / bumper keep the blade on while inside the area (owner 2026-10-23)
     pivot_way_gain_m: 0.05               # coverage pivot turns the interior way if its swept body is this much further in
     edge_approach_inset_m: 0.30          # transit to an edge-lap start / resume point ends this far inside

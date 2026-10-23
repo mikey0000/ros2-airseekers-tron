@@ -688,6 +688,12 @@ class Params:
     # stopped). Within the threshold the leg is followed, as after a successful pivot.
     # Revert: pivot_retries -1 (follow the leg after any pivot outcome, the old behaviour).
     pivot_retries: int = 2
+    stretch_min_retry_m: float = 0.5      # shorter skipped stretches are not re-tried
+    stretch_block_radius_m: float = 1.0   # ... nor ones this near a stretch that stayed blocked
+    # A transit goal off the route graph (an edge / K-turn start on the line) is re-asked moved
+    # inside by these insets; never the costmap planner to it (field 2026-10-23: that fallback
+    # cut the area / dock-path junction, 6 trips). None fits: the piece is skipped.
+    offgraph_goal_insets_m: list = field(default_factory=lambda: [0.3, 0.6])
     route_pivot_backout_m: float = 0.30   # refused route corner pivot: back off, re-plan
     pivot_retry_pause_s: float = 2.0    # wait between a refused pivot and its re-send
     # 2026-10-21 owner rule (stock firmware): a COVERAGE pivot Spin (leg start / pivot vertex)
@@ -1037,6 +1043,8 @@ class Params:
     # Spin's own unfinished-pivot handling). The 2nd drift on the same coverage leg skips the
     # leg (blocked pivot). 0 = off.
     spin_drift_m: float = 0.15
+    spin_drift_body_margin_m: float = 0.05   # ... stop only with the body this near its limit
+    spin_drift_hard_m: float = 0.30          # ... or drifting more than this
     # Owner 2026-10-23: obstacle avoidance (detours, skips, retries, blocked / dynamic waits,
     # bumper skips, pivot back-outs) keeps the blade on while the robot - and a detour's
     # straight path to its rejoin point - stays inside the area by the boundary guard's body
@@ -1262,7 +1270,9 @@ class Mission:
     route_cusps: list = field(default_factory=list)   # [(i, x, y, heading_after)] of route_full
     final_approach: bool = False                # this transit's final approach leg was sent
     join: Any = None
-    route_backouts: set = field(default_factory=set)   # route corners backed off from                            # (sub, local, side, inset) tangent join (_join_leg)
+    route_backouts: set = field(default_factory=set)   # route corners backed off from
+    unbypassable: list = field(default_factory=list)   # [(x, y)] stretches that stayed blocked
+    offgraph: Any = None                        # (original goal, tries) off-graph goal re-asks                            # (sub, local, side, inset) tangent join (_join_leg)
     cusp_turns: dict = field(default_factory=dict)    # cusp (x, y) -> about-turns, per sub-path
     cusp_resume: Optional[list] = None          # route remainder sent after the about-turn
     cusp_heading: Optional[float] = None        # heading the cusp about-turn turns to
@@ -3143,6 +3153,8 @@ class MissionFSM:
         robot onto the lap from inside. edge_approach_inset_m <= 0: the start itself."""
         x, y = float(target[0]), float(target[1])
         inset = float(self.p.edge_approach_inset_m)
+        if self.mission is not None:
+            self.mission.offgraph = None
         if inset <= 0.0 or not self._region_areas:
             return (x, y, yaw)
         polys = self._region()
@@ -4761,6 +4773,8 @@ class MissionFSM:
         poses = resp.get('poses') or []
         if not (ok and resp.get('success') and len(poses) >= 2):
             why = resp.get('message') or 'plan_route unavailable'
+            if re.search(r'goal .*off the route graph', why) and self._offgraph_goal(why):
+                return
             if self._route_replan_far(why):
                 return
             m.route_fallback = True
@@ -4782,6 +4796,48 @@ class MissionFSM:
             len(legs), '' if len(legs) == 1 else 's', resp.get('message', '')))
         self._route_legs = {'legs': legs, 'i': 0}
         self._send_route_leg('route')
+
+    def _offgraph_goal(self, why):
+        """The transit goal is off the route graph: re-ask the route to the goal moved inside
+        (offgraph_goal_insets_m, toward the interior); none left: skip this piece (NOT
+        mowed / blocked) instead of a costmap-planner transit to it. True = handled."""
+        m = self.mission
+        insets = [float(v) for v in (self.p.offgraph_goal_insets_m or [])]
+        if not insets or m.transit_target is None:
+            return False
+        if m.offgraph is None or m.offgraph[0] is None:
+            m.offgraph = (tuple(m.transit_target), 0)
+        goal, k = m.offgraph
+        polys = self._region()
+        x, y, yaw = goal[0], goal[1], goal[2] if len(goal) >= 3 else 0.0
+        while k < len(insets):
+            d = insets[k]
+            k += 1
+            best = None
+            for sgn in (1.0, -1.0):
+                cx, cy = x - math.sin(yaw) * sgn * d, y + math.cos(yaw) * sgn * d
+                if bbody.point_outside(cx, cy, polys) > 0.0:
+                    continue
+                e = bbody.nearest_edge_point(cx, cy, polys)
+                c = e[2] if e is not None else 0.0
+                if best is None or c > best[0]:
+                    best = (c, cx, cy)
+            if best is None:
+                continue
+            m.offgraph = (goal, k)
+            m.transit_target = (best[1], best[2], yaw)
+            self._log('info', 'no route (%s): re-asking with the goal %.1f m inside at '
+                              '(%.2f, %.2f)' % (why, d, best[1], best[2]))
+            self._call(SRV_PLAN_ROUTE, {'start': tuple(self.inputs.pose),
+                                        'goal': tuple(m.transit_target),
+                                        'variation': self._transit_run()}, purpose='route')
+            return True
+        m.offgraph = None
+        self._log('warn', 'no route (%s), not even from inside: skipping it (no costmap-planner '
+                          'transit to an off-network goal)' % why)
+        self._incident('transit_abort', 'goal off the route graph')
+        self._subpath_failed('transit goal off the route graph')
+        return True
 
     def _route_replan_far(self, why):
         """plan_route failed for a transit goal beyond transit_fallback_max_goal_m (outside
@@ -6104,6 +6160,23 @@ class MissionFSM:
                 self._persist()
             self._area_done()
             return
+        # field 2026-10-23 afternoon (32 stretch retries, 18 still blocked): a stretch shorter
+        # than stretch_min_retry_m, or one near a stretch that could not be bypassed in this
+        # mission, is reported blocked without driving to it again
+        sp = m.subpaths[a[0]]
+        cum = geo.cumulative_lengths(sp)
+        length = cum[b[1]] - cum[a[1]]
+        p0, p1 = sp[a[1]], sp[b[1]]
+        near = [q for q in m.unbypassable
+                if min(geo.dist(q, p0), geo.dist(q, p1)) <= float(self.p.stretch_block_radius_m)]
+        if length < float(self.p.stretch_min_retry_m) or near:
+            m.blocked.append((m.area_idx, fr, to))
+            self._log('info', 'area %d: stretch sub-path %d poses %d -> %d not re-tried (%s)'
+                      % (m.area_idx, a[0], a[1], b[1],
+                         '%.2f m < %.2f m' % (length, float(self.p.stretch_min_retry_m))
+                         if not near else 'next to an obstacle that could not be bypassed'))
+            self._area_done()
+            return
         m.stretch, m.stretch_end = (fr, to), b[1]
         m.sub_i, m.start_local = a
         m.retry_used, m.premature, m.boundary_recoveries = False, 0, 0
@@ -6165,6 +6238,9 @@ class MissionFSM:
             self._area_done()
             return
         m.blocked.append((m.area_idx,) + tuple(m.stretch))
+        pose = self.inputs.pose
+        if pose is not None:
+            m.unbypassable.append((float(pose[0]), float(pose[1])))
         self._log('warn', 'area %d: stretch %s still blocked (%s): obstacle cannot be bypassed'
                   % (m.area_idx, m.stretch, why))
         m.stretch, m.stretch_end, m.step = None, None, None
@@ -7042,15 +7118,31 @@ class MissionFSM:
     # Spin drift and repeated bumper hits (step 3 round 2, field 2026-10-21 evening)
     # ==================================================================
     def _spin_drift_tick(self):
-        """base_link moved more than spin_drift_m during a pivot Spin: stop it, log, re-plan
-        the approach. True = handled this tick."""
+        """base_link moved more than spin_drift_m during a pivot Spin. Field 2026-10-23
+        afternoon: on wet turf 47 % of the pivots walked 0.14 m along the axis well inside the
+        area, and stopping each one (transit aborts, skips, NOT-mowed sub-paths) did the damage.
+        So a drift only stops the pivot when the body is within spin_drift_body_margin_m of its
+        boundary limit (or outside: the boundary guard owns that), or beyond spin_drift_hard_m;
+        then the pivot is re-started from where the robot is (no skip, no transit abort).
+        True = handled this tick."""
         a, sf, lim = self._action, self._spin_from, float(self.p.spin_drift_m)
         pose = self.inputs.pose
         if lim <= 0.0 or a is None or a.name != ACT_SPIN or sf is None or sf[0] != a.token \
-                or pose is None:
+                or pose is None or len(pose) < 3:
             return False
         d = math.hypot(float(pose[0]) - sf[1], float(pose[1]) - sf[2])
         if d <= lim:
+            return False
+        near = True
+        mode = self._hb_body_mode(pose)
+        if mode is not None:
+            ev = self._hb_body_eval(pose, mode)
+            near = ev is None or ev['excess'] > -float(self.p.spin_drift_body_margin_m)
+        if not near and d <= float(self.p.spin_drift_hard_m):
+            if not sf[3:]:
+                self._spin_from = sf + (True,)
+                self._log('info', 'pivot drifted %.2f m from (%.2f, %.2f), body well inside: '
+                                  'pivot goes on' % (d, sf[1], sf[2]))
             return False
         self._spin_from = None
         self._action = None
@@ -7058,29 +7150,17 @@ class MissionFSM:
         self._fx.append(ZeroBurst())
         why = 'pivot drifted %.2f m' % d
         self._log('warn', 'SPIN DRIFT: base_link moved %.2f m during a %s pivot from (%.2f, '
-                          '%.2f) to (%.2f, %.2f) (> %.2f m, slope / slip): stopped, re-planning '
-                          'the approach' % (d, a.purpose or 'Spin', sf[1], sf[2], pose[0],
-                                            pose[1], lim))
+                          '%.2f) to (%.2f, %.2f) (%s): stopped, pivoting again from here'
+                  % (d, a.purpose or 'Spin', sf[1], sf[2], pose[0], pose[1],
+                     'body near its limit' if near else '> %.2f m'
+                     % float(self.p.spin_drift_hard_m)))
         self._incident('spin_drift', why)
         m = self.mission
         if a.purpose == 'cov_pivot' and m is not None and self.phase == 'MOWING':
-            key = (m.area_idx, m.sub_i, m.start_local)
-            n = self._spin_drifts.get(key, 0) + 1
-            self._spin_drifts[key] = n
             m.pivot_done, m.pivot_target, m.step = None, None, None
-            if n >= 2:
-                frm = min(m.start_local, self._seg_last())
-                if self._edge_lap(m.sub_i):
-                    self._edge_skip(frm, '%s twice' % why)
-                else:
-                    self._skip_piece(frm, self._skip_end(frm), '%s twice' % why)
-                return True
-            self._dispatch(force_transit=True)    # transit back onto the leg start
+            self._follow()                    # the leg-start pivot again, from this pose
             return True
-        if m is not None and self.phase == 'TRANSIT' and m.step == 'transit':
-            self._transit_abort(why)
-            return True
-        self._handle_action(a, ABORTED, {})
+        self._handle_action(a, ABORTED, {})   # the purpose's own re-send / follow logic
         return True
 
     def _bumper_tick(self):
