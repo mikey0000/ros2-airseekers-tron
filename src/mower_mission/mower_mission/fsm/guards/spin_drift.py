@@ -3,8 +3,10 @@
 
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
-from mower_mission.fsm.common import (ABORTED, ACT_SPIN, CancelActions, DOCK_PHASES, DriveCmd,
-    SuppressStuckGuard, ZeroBurst, geo, math)  # noqa: F401
+from mower_mission.fsm.common import (ABORTED, ACT_SPIN, CancelActions, DriveCmd, ZeroBurst,
+    geo, math)
+from mower_mission.fsm.escape import Escape
+from mower_mission.fsm.guards.boundary import HB_RETRACE
 
 
 class SpinDriftGuardMixin:
@@ -129,9 +131,7 @@ class SpinDriftGuardMixin:
         return v, max(-wmax, min(wmax, 1.5 * err))
 
     def _hb_stop(self):
-        self._hb = None
-        self._fx.append(DriveCmd(0.0, 0.0))
-        self._fx.append(SuppressStuckGuard(False))
+        HB_RETRACE.stop(self)
 
     def _hb_retrace_tick(self):
         k, pose, now, p = self._hb, self.inputs.pose, self._now, self.p
@@ -234,13 +234,10 @@ class SpinDriftGuardMixin:
             self._hb_needs_help('left the boundary %d times in this mission' % n, (ox, oy))
             return
         why = 'left the boundary (%s)' % k.get('what', '%.2f m outside' % k['out0'])
-        if k['phase'] in DOCK_PHASES:
-            self._dock(k['phase'], k['dock_purpose'], 'resuming after the boundary retrace')
+        if Escape.resume_dock_or_idle(self, k, 'resuming after the boundary retrace',
+                                      'boundary retrace: nothing to resume'):
             return
         m = self.mission
-        if m is None or m.area_idx is None or not m.subpaths:
-            self._go_idle('boundary retrace: nothing to resume')
-            return
         if k['phase'] == 'TRANSIT' and k.get('entry'):
             m.detour = None
             self._dispatch(force_transit=True)    # inside again: the transit, not a failure
@@ -268,15 +265,4 @@ class SpinDriftGuardMixin:
 
     def _hb_needs_help(self, why, pose):
         """Like the stuck guard's give-up (same latched phase, same operator clear)."""
-        x, y = float(pose[0]), float(pose[1])
-        self._log('error', 'STUCK_NEEDS_HELP: %s at (%.2f, %.2f): motion stopped, blade off '
-                  '(STOP / START / MANUAL to clear)' % (why, x, y))
-        if self.mission is not None:
-            self._interrupt_mission('boundary')
-        self._cancel_all('boundary')
-        self._blade_off('boundary')
-        self._fx.append(ZeroBurst())
-        self._dock_purpose = None
-        self._resume_after = None
-        self._hb = None
-        self._go('STUCK_NEEDS_HELP', 'boundary: needs help at (%.2f, %.2f)' % (x, y))
+        HB_RETRACE.needs_help(self, why, pose)

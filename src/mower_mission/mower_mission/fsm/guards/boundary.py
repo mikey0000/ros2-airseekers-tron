@@ -3,8 +3,13 @@
 
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
-from mower_mission.fsm.common import (DOCK_PHASES, DriveCmd, HARD_BOUNDARY_PHASES,
-    RecordIncident, SuppressStuckGuard, ZeroBurst, bbody, geo, math)  # noqa: F401
+from mower_mission.fsm.common import (DOCK_PHASES, DriveCmd, HARD_BOUNDARY_PHASES, bbody, geo,
+    math)
+from mower_mission.fsm.escape import Escape
+
+# the hard-boundary retrace (starts as 'hard boundary', gives up as 'boundary')
+HB_RETRACE = Escape('_hb', 'boundary', 'boundary retrace', 'boundary: needs help at (%.2f, %.2f)',
+                    begin_label='hard boundary')
 
 
 class BoundaryGuardMixin:
@@ -27,15 +32,7 @@ class BoundaryGuardMixin:
 
     def _hard_boundary_watch(self):
         """Abort a retrace when something else took over (emergency, STOP, phase change)."""
-        k = self._hb
-        if k is None:
-            return
-        if self._emergency_cause() or self.phase != k['phase']:
-            self._log('warn', 'boundary retrace aborted (%s)' % (
-                self._emergency_cause() or 'state %s' % self.phase))
-            self._hb = None
-            self._fx.append(SuppressStuckGuard(False))
-            self._fx.append(DriveCmd(0.0, 0.0))
+        HB_RETRACE.watch(self)
 
     def _hb_trail_add(self):
         pose = self.inputs.pose
@@ -234,24 +231,21 @@ class BoundaryGuardMixin:
                      int(self.p.hard_boundary_max_aborts)))
         track = sum(math.hypot(b[0] - a[0], b[1] - a[1])
                     for a, b in zip([(ox, oy)] + path, path))
-        self._hb = {'track_m': track, 'phase': self.phase, 'origin': (ox, oy), 'stage': 'pause', 't': self._now,
-                    'path': path, 'i': 0, 'follow': follow, 'out0': out, 'what': what,
-                    'mode': mode, 'dir': 1.0 if ev and ev['rear'] else -1.0,
-                    'side': side is not None, 'counted': not entry, 'entry': entry,
-                    'tries': 0,
-                    'dock_purpose': self._dock_purpose, 'driven': 0.0, 'last': tuple(pose),
-                    'prog': 0.0, 'prog_best': 0.0, 'prog_t': self._now, 'inside_at': None}
-        self._cancel_all('hard boundary')
-        self._blade_off('hard boundary')
-        self._fx.append(ZeroBurst())
-        self._fx.append(SuppressStuckGuard(True))
-        self._fx.append(RecordIncident('boundary', ox, oy, 'boundary out: %s in %s'
-                                       % (what, self.phase)))
+        HB_RETRACE.begin(self, {'track_m': track, 'phase': self.phase, 'origin': (ox, oy),
+                                'stage': 'pause', 't': self._now,
+                                'path': path, 'i': 0, 'follow': follow, 'out0': out, 'what': what,
+                                'mode': mode, 'dir': 1.0 if ev and ev['rear'] else -1.0,
+                                'side': side is not None, 'counted': not entry, 'entry': entry,
+                                'tries': 0,
+                                'dock_purpose': self._dock_purpose, 'driven': 0.0,
+                                'last': tuple(pose),
+                                'prog': 0.0, 'prog_best': 0.0, 'prog_t': self._now,
+                                'inside_at': None},
+                         incident=('boundary', ox, oy, 'boundary out: %s in %s'
+                                   % (what, self.phase)))
         self._loc = None
+        Escape.pause_mission(self, follow)
         if m is not None:
-            if follow:
-                m.start_local = self._track_progress()
-            m.step = None
             m.pivot_done = None           # a cut-short leg-start pivot is pivoted again
         self._go(self.phase, 'boundary: %.2f m outside, stopping' % out)
         return True

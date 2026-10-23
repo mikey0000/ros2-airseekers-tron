@@ -5,8 +5,13 @@ Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
 from mower_mission.fsm.common import (CMD_HOME, CMD_MANUAL_MOW, CMD_RESET_EMERGENCY, CMD_START,
     CMD_STOP, CMD_UNDOCK, DOCK_PHASES, DriveCmd, RecordIncident, ResetStuckGuard,
-    SRV_CLEAR_COSTMAPS, STUCK_NEEDS_HELP_SUB, STUCK_PHASES, SuppressStuckGuard, ZeroBurst,
-    math)  # noqa: F401
+    SRV_CLEAR_COSTMAPS, STUCK_NEEDS_HELP_SUB, STUCK_PHASES, math)
+from mower_mission.fsm.budget import Budget
+from mower_mission.fsm.escape import Escape
+
+# the stuck escape (Escape hooks: skip the failing piece before the mission interrupt)
+STUCK_ESCAPE = Escape('_stk', 'stuck', 'stuck escape', STUCK_NEEDS_HELP_SUB,
+                      before_interrupt=lambda fsm: fsm._skip_failing_piece())
 
 
 class StuckGuardMixin:
@@ -38,15 +43,7 @@ class StuckGuardMixin:
 
     def _stuck_watch(self):
         """Abort an escape when something else took over (emergency, STOP, phase change)."""
-        k = self._stk
-        if k is None:
-            return
-        if self._emergency_cause() or self.phase != k['phase']:
-            self._log('warn', 'stuck escape aborted (%s)' % (
-                self._emergency_cause() or 'state %s' % self.phase))
-            self._stk = None
-            self._fx.append(SuppressStuckGuard(False))
-            self._fx.append(DriveCmd(0.0, 0.0))
+        STUCK_ESCAPE.watch(self)
 
     def _stuck_tick(self):
         """Returns True while the stuck guard owns the tick."""
@@ -74,15 +71,15 @@ class StuckGuardMixin:
         if pose is None:
             self._stuck_needs_help('stuck, no pose', (0.0, 0.0))
             return True
-        horizon = self._now - float(self.p.stuck_recovery_period_s)
-        self._stuck_hist = [h for h in self._stuck_hist if h[0] >= horizon]
+        budget = Budget(self.p.stuck_recovery_period_s, self.p.stuck_max_recoveries)
+        self._stuck_hist = budget.window(self._stuck_hist, self._now)
         same = [h for h in self._stuck_hist
                 if math.hypot(h[1] - pose[0], h[2] - pose[1]) <= self.p.stuck_same_spot_m
                 and h[3] < float(self.p.stuck_same_spot_left_m)]
         if same:
             self._stuck_needs_help('stuck again at the same spot', pose)
             return True
-        if len(self._stuck_hist) >= int(self.p.stuck_max_recoveries):
+        if budget.spent(self._stuck_hist):
             self._stuck_needs_help('stuck %d times within %.0f s' % (
                 len(self._stuck_hist) + 1, self.p.stuck_recovery_period_s), pose)
             return True
@@ -90,17 +87,11 @@ class StuckGuardMixin:
                   % (pose[0], pose[1], self.phase, len(self._stuck_hist) + 1,
                      int(self.p.stuck_max_recoveries)))
         m = self.mission
-        self._stk = {'phase': self.phase, 'origin': (float(pose[0]), float(pose[1])),
-                     'stage': 'pause', 't': self._now, 'step': -1,
-                     'dock_purpose': self._dock_purpose}
-        self._cancel_all('stuck')
-        self._blade_off('stuck')
-        self._fx.append(ZeroBurst())
-        self._fx.append(SuppressStuckGuard(True))
-        if m is not None:
-            if m.step == 'follow':
-                m.start_local = self._track_progress()
-            m.step = None
+        STUCK_ESCAPE.begin(self, {'phase': self.phase,
+                                  'origin': (float(pose[0]), float(pose[1])),
+                                  'stage': 'pause', 't': self._now, 'step': -1,
+                                  'dock_purpose': self._dock_purpose})
+        Escape.pause_mission(self, m is not None and m.step == 'follow')
         self.sub_state = 'stuck: stopping'
         return True
 
@@ -109,9 +100,7 @@ class StuckGuardMixin:
         if k['phase'] in DOCK_PHASES and self._at_dock():
             # 2026-10-22 01:13:36: escape step 1 (reverse) seated the robot on the charger
             # (charging 3.3 A), then step 2 drove it off again.
-            self._stk = None
-            self._fx.append(DriveCmd(0.0, 0.0))
-            self._fx.append(SuppressStuckGuard(False))
+            STUCK_ESCAPE.stop(self)
             self._fx.append(ResetStuckGuard())
             self._stuck_ignore_until = now + float(self.p.stuck_ignore_after_s)
             self._log('info', 'stuck escape ended: dock contacts reported (%s)' % k['phase'])
@@ -119,8 +108,7 @@ class StuckGuardMixin:
             self._dock_done()
             return
         if pose is None:
-            self._stk = None
-            self._fx.append(SuppressStuckGuard(False))
+            STUCK_ESCAPE.stop(self, zero=False)
             self._stuck_needs_help('stuck, pose lost during the escape', k['origin'])
             return
         if k['stage'] == 'pause':
@@ -147,8 +135,7 @@ class StuckGuardMixin:
         elif k['step'] + 1 < len(self._stuck_steps()):
             self._stuck_next_step(pose)
         else:
-            self._stk = None
-            self._fx.append(SuppressStuckGuard(False))
+            STUCK_ESCAPE.stop(self, zero=False)
             self._stuck_needs_help('escape failed', k['origin'])
 
     def _stuck_next_step(self, pose):
@@ -164,23 +151,20 @@ class StuckGuardMixin:
         self._fx.append(DriveCmd(v, w))
 
     def _stuck_escaped(self, moved):
-        k, self._stk = self._stk, None
+        k = self._stk
+        STUCK_ESCAPE.stop(self, zero=False)
         ox, oy = k['origin']
         self._stuck_hist.append([self._now, ox, oy, float(moved)])
         self._stuck_ignore_until = self._now + float(self.p.stuck_ignore_after_s)
-        self._fx.append(SuppressStuckGuard(False))
         self._fx.append(RecordIncident('stuck', ox, oy, 'stuck guard escape (%s, %.2f m)'
                                        % (k['phase'], moved)))
         self._call(SRV_CLEAR_COSTMAPS, {'global': True}, track=False)
         self._log('info', 'stuck: escaped (%.2f m): costmaps cleared, terrain incident at '
                   '(%.2f, %.2f), resuming %s' % (moved, ox, oy, k['phase']))
-        if k['phase'] in DOCK_PHASES:
-            self._dock(k['phase'], k['dock_purpose'], 'resuming after stuck escape')
+        if Escape.resume_dock_or_idle(self, k, 'resuming after stuck escape',
+                                      'stuck escape: nothing to resume'):
             return
         m = self.mission
-        if m is None or m.area_idx is None or not m.subpaths:
-            self._go_idle('stuck escape: nothing to resume')
-            return
         m.detour = None
         m.start_local = self._track_progress()
         self._dispatch()
@@ -204,16 +188,4 @@ class StuckGuardMixin:
         m.start_local, m.step, m.detour = end, None, None
 
     def _stuck_needs_help(self, why, pose):
-        x, y = float(pose[0]), float(pose[1])
-        self._log('error', 'STUCK_NEEDS_HELP: %s at (%.2f, %.2f): motion stopped, blade off '
-                  '(STOP / START / MANUAL to clear)' % (why, x, y))
-        if self.mission is not None:
-            self._skip_failing_piece()
-            self._interrupt_mission('stuck')
-        self._cancel_all('stuck')
-        self._blade_off('stuck')
-        self._fx.append(ZeroBurst())
-        self._dock_purpose = None
-        self._resume_after = None
-        self._stk = None
-        self._go('STUCK_NEEDS_HELP', STUCK_NEEDS_HELP_SUB % (x, y))
+        STUCK_ESCAPE.needs_help(self, why, pose)

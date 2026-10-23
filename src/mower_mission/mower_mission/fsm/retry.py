@@ -4,6 +4,7 @@
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
 from mower_mission.fsm.common import (SRV_CLEAR_COSTMAPS)  # noqa: F401
+from mower_mission.fsm.budget import Budget
 
 
 class RetryMixin:
@@ -21,10 +22,7 @@ class RetryMixin:
     def _retry_delay(self, n):
         """Back-off before retry ``n`` (1-based): transit_retry_backoff_s[n-1], the
         last entry repeating; transit_retry_delay_s when the list is empty."""
-        b = list(self.p.transit_retry_backoff_s or [])
-        if not b or n is None:
-            return float(self.p.transit_retry_delay_s)
-        return float(b[min(max(int(n), 1), len(b)) - 1])
+        return Budget.backoff(self.p.transit_retry_backoff_s, n, self.p.transit_retry_delay_s)
 
     def _schedule_retry(self, phase, sub, delay=None):
         """Blade off, clear the costmaps, wait ``delay`` (default transit_retry_delay_s),

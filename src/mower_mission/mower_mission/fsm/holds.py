@@ -3,9 +3,10 @@
 
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
-from mower_mission.fsm.common import (ACT_NAV, CancelActions, DOCK_PHASES, SRV_GET_AREA,
-    SRV_SET_CHANNEL, ZeroBurst, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, geo,
-    json, math, subpath_offsets)  # noqa: F401
+from mower_mission.fsm.common import (ACT_NAV, DOCK_PHASES, SRV_GET_AREA, SRV_SET_CHANNEL,
+    ZeroBurst, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, geo, json, math,
+    subpath_offsets)
+from mower_mission.fsm.hold import Hold
 
 
 class HoldsMixin:
@@ -268,19 +269,9 @@ class HoldsMixin:
             b['waiting'] = False
             self._log('info', 'path blocked %.0f s: no collision for %.0f s, re-sending'
                       % (waited, float(self.p.blocked_clear_s)))
-            if b['ctx'] == 'dock':
-                self._dock(b['phase'], b['purpose'], sub=b['sub'])
-            elif b['ctx'] == 'transit':
-                m.step = 'transit'
-                self._go('TRANSIT', b['sub'])
-                self._send_transit()
-            else:
-                m.step = None
-                self._dispatch()
+            Hold.resume(self, b, transit_phase='TRANSIT')
             return True
-        sub = 'path blocked: waiting (%d s)' % int(waited)
-        if sub != self.sub_state:
-            self._go(self.phase, sub)
+        Hold.show_wait(self, 'path blocked: waiting (%d s)' % int(waited))
         return True
 
     def _blocked_timeout(self, b):
@@ -353,10 +344,7 @@ class HoldsMixin:
         self._dyn = {'ctx': ctx, 'since': self._now, 'clear_since': None, 'cls': cls,
                      'sub': self.sub_state, 'phase': self.phase, 'purpose': self._dock_purpose,
                      'path': ev.get('path'), 'motion': ev.get('motion')}
-        if self._action is not None:
-            self._fx.append(CancelActions('dynamic obstacle: %s' % cls))
-            self._action = None
-        self._fx.append(ZeroBurst())
+        Hold.stop(self, 'dynamic obstacle: %s' % cls)
         if m is not None and ctx in ('follow', 'transit'):
             m.step = 'dyn_wait'
             self._soft_blade_off('dynamic obstacle: %s' % cls)
@@ -397,9 +385,7 @@ class HoldsMixin:
             self._dyn = None
             self._dyn_timeout(d)
             return True
-        sub = 'waiting for %s to move (%d s)' % (d['cls'], int(waited))
-        if sub != self.sub_state:
-            self._go(self.phase, sub)
+        Hold.show_wait(self, 'waiting for %s to move (%d s)' % (d['cls'], int(waited)))
         return True
 
     def _dyn_wait_s(self, ctx):
@@ -431,18 +417,7 @@ class HoldsMixin:
         return True
 
     def _dyn_resume(self, d):
-        m = self.mission
-        if d['ctx'] == 'dock':
-            self._dock(d['phase'], d['purpose'], sub=d['sub'])
-        elif m is None:
-            return
-        elif d['ctx'] == 'transit':
-            m.step = 'transit'
-            self._go(self.phase, d['sub'])
-            self._send_transit()
-        else:
-            m.step = None
-            self._dispatch()
+        Hold.resume(self, d)
 
     def _dyn_timeout(self, d):
         m = self.mission
@@ -487,10 +462,7 @@ class HoldsMixin:
                 m.start_local = self._track_progress()
             self._loc = {'ctx': ctx, 'since': self._now, 'ok_since': None, 'sub': self.sub_state,
                          'phase': self.phase, 'purpose': self._dock_purpose}
-            if self._action is not None:
-                self._fx.append(CancelActions('localization %s' % i.loc_state))
-                self._action = None
-            self._fx.append(ZeroBurst())
+            Hold.stop(self, 'localization %s' % i.loc_state)
             m.step = 'loc_hold'
             self._blade_off('localization %s' % i.loc_state)
             self._log('warn', 'localization %s (%s): stopped, blade off, waiting for RTK fixed'
@@ -520,9 +492,8 @@ class HoldsMixin:
             self._dock_purpose = None
             self._go_idle(why)
             return True
-        sub = 'localization %s: holding (%d s)' % (i.loc_state or 'unknown', int(held))
-        if sub != self.sub_state:
-            self._go(self.phase, sub)
+        Hold.show_wait(self, 'localization %s: holding (%d s)'
+                       % (i.loc_state or 'unknown', int(held)))
         return True
 
     # ---- static obstacles: blade-off detour to the swath beyond ----------

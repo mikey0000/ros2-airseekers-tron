@@ -3,9 +3,14 @@
 
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
-from mower_mission.fsm.common import (AREA_SETTINGS_DEFAULTS, DOCK_PHASES, DriveCmd,
-    PARAM_NODE_CONTROLLER, RecordIncident, SRV_SET_PARAMS, STUCK_PHASES, SUB_MANUAL_BLADE_OFF,
-    SuppressStuckGuard, ZeroBurst, math)  # noqa: F401
+from mower_mission.fsm.common import (AREA_SETTINGS_DEFAULTS, DriveCmd, PARAM_NODE_CONTROLLER,
+    SRV_SET_PARAMS, STUCK_PHASES, SUB_MANUAL_BLADE_OFF, math)
+from mower_mission.fsm.budget import Budget
+from mower_mission.fsm.escape import Escape
+
+# the steep-slope back-out
+TILT_BACKOUT = Escape('_tob', 'steep slope', 'steep-slope back-out',
+                      'steep slope: needs help at (%.2f, %.2f)')
 
 
 class TiltGuardMixin:
@@ -37,15 +42,7 @@ class TiltGuardMixin:
 
     def _tilt_watch(self):
         """Abort a back-out when something else took over (emergency, STOP, phase change)."""
-        k = self._tob
-        if k is None:
-            return
-        if self._emergency_cause() or self.phase != k['phase']:
-            self._log('warn', 'steep-slope back-out aborted (%s)' % (
-                self._emergency_cause() or 'state %s' % self.phase))
-            self._tob = None
-            self._fx.append(SuppressStuckGuard(False))
-            self._fx.append(DriveCmd(0.0, 0.0))
+        TILT_BACKOUT.watch(self)
 
     def _tilt_trail_add(self):
         pose = self.inputs.pose
@@ -113,13 +110,13 @@ class TiltGuardMixin:
         if pose is None:
             self._tilt_needs_help('steep slope, no pose', (0.0, 0.0))
             return True
-        horizon = self._now - float(self.p.tilt_backout_period_s)
-        self._tilt_hist = [h for h in self._tilt_hist if h[0] >= horizon]
+        budget = Budget(self.p.tilt_backout_period_s, self.p.tilt_max_backouts)
+        self._tilt_hist = budget.window(self._tilt_hist, self._now)
         if any(math.hypot(h[1] - pose[0], h[2] - pose[1]) <= float(self.p.tilt_same_spot_m)
                for h in self._tilt_hist):
             self._tilt_needs_help('steep again at the same spot', pose)
             return True
-        if len(self._tilt_hist) >= int(self.p.tilt_max_backouts):
+        if budget.spent(self._tilt_hist):
             self._tilt_needs_help('steep %d times within %.0f s' % (
                 len(self._tilt_hist) + 1, self.p.tilt_backout_period_s), pose)
             return True
@@ -130,19 +127,13 @@ class TiltGuardMixin:
         follow = m is not None and m.step == 'follow'
         # back-out path: the driven track, newest first, without the spot itself
         path = [q for q in reversed(self._tilt_trail)]
-        self._tob = {'phase': self.phase, 'origin': (ox, oy), 'stage': 'pause',
-                     't': self._now, 'path': path, 'i': 0, 'follow': follow,
-                     'dock_purpose': self._dock_purpose, 'best': 0.0, 'best_t': self._now}
-        self._cancel_all('steep slope')
-        self._blade_off('steep slope')
-        self._fx.append(ZeroBurst())
-        self._fx.append(SuppressStuckGuard(True))
-        self._fx.append(RecordIncident('steep', ox, oy, '%s (limit) in %s'
-                                       % (self._tilt_text(), self.phase)))
-        if m is not None:
-            if follow:
-                m.start_local = self._track_progress()
-            m.step = None
+        TILT_BACKOUT.begin(self, {'phase': self.phase, 'origin': (ox, oy), 'stage': 'pause',
+                                  't': self._now, 'path': path, 'i': 0, 'follow': follow,
+                                  'dock_purpose': self._dock_purpose, 'best': 0.0,
+                                  'best_t': self._now},
+                           incident=('steep', ox, oy, '%s (limit) in %s'
+                                     % (self._tilt_text(), self.phase)))
+        Escape.pause_mission(self, follow)
         self.sub_state = 'steep slope (%s): stopping' % self._tilt_text()
         return True
 
@@ -170,8 +161,7 @@ class TiltGuardMixin:
     def _tilt_backout_tick(self, band):
         k, pose, now, p = self._tob, self.inputs.pose, self._now, self.p
         if pose is None:
-            self._tob = None
-            self._fx.append(SuppressStuckGuard(False))
+            TILT_BACKOUT.stop(self, zero=False)
             self._tilt_needs_help('steep slope, pose lost during the back-out', k['origin'])
             return
         if k['stage'] == 'pause':
@@ -190,29 +180,23 @@ class TiltGuardMixin:
         if d >= float(p.tilt_backout_max_m) or now - k['best_t'] > float(p.tilt_backout_progress_s):
             why = ('still steep after backing out %.2f m' % d if d >= float(p.tilt_backout_max_m)
                    else 'back-out made no progress in %.0f s' % float(p.tilt_backout_progress_s))
-            self._fx.append(DriveCmd(0.0, 0.0))
-            self._tob = None
-            self._fx.append(SuppressStuckGuard(False))
+            TILT_BACKOUT.stop(self)
             self._tilt_needs_help(why, k['origin'])
             return
         self._fx.append(DriveCmd(*self._tilt_backout_cmd(pose)))
 
     def _tilt_backed_out(self, moved):
-        k, self._tob = self._tob, None
+        k = self._tob
+        TILT_BACKOUT.stop(self)
         ox, oy = k['origin']
         self._tilt_hist.append([self._now, ox, oy])
         self._tilt_trail = []
-        self._fx.append(DriveCmd(0.0, 0.0))
-        self._fx.append(SuppressStuckGuard(False))
         self._log('info', 'steep slope: backed out %.2f m from (%.2f, %.2f), resuming %s'
                   % (moved, ox, oy, k['phase']))
-        if k['phase'] in DOCK_PHASES:
-            self._dock(k['phase'], k['dock_purpose'], 'resuming after steep-slope back-out')
+        if Escape.resume_dock_or_idle(self, k, 'resuming after steep-slope back-out',
+                                      'steep-slope back-out: nothing to resume'):
             return
         m = self.mission
-        if m is None or m.area_idx is None or not m.subpaths:
-            self._go_idle('steep-slope back-out: nothing to resume')
-            return
         if k['phase'] == 'MOWING' and k['follow']:
             # skip past the spot along the swath (blade-off detour); the 'steep' incident
             # raises the terrain cost so Nav2's detour / transit plans route around it
@@ -224,15 +208,4 @@ class TiltGuardMixin:
 
     def _tilt_needs_help(self, why, pose):
         """Like the stuck guard's give-up (same latched phase, same operator clear)."""
-        x, y = float(pose[0]), float(pose[1])
-        self._log('error', 'STUCK_NEEDS_HELP: %s at (%.2f, %.2f): motion stopped, blade off '
-                  '(STOP / START / MANUAL to clear)' % (why, x, y))
-        if self.mission is not None:
-            self._interrupt_mission('steep slope')
-        self._cancel_all('steep slope')
-        self._blade_off('steep slope')
-        self._fx.append(ZeroBurst())
-        self._dock_purpose = None
-        self._resume_after = None
-        self._tob = None
-        self._go('STUCK_NEEDS_HELP', 'steep slope: needs help at (%.2f, %.2f)' % (x, y))
+        TILT_BACKOUT.needs_help(self, why, pose)

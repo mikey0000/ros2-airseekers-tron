@@ -7,6 +7,7 @@ from mower_mission.fsm.common import (ABORTED, ACT_BACKUP, ACT_DRIVE, ACT_FOLLOW
     ACT_PLAN, ACT_SPIN, ACT_UNDOCK, CANCELED, CancelActions, DOCK_PHASES, NAV2_DOWN,
     NAV2_INACTIVE_KEY, REJECTED, ROUTE_CORNER_TOL_RAD, SRV_PLAN_ROUTE, SUCCEEDED,
     SaveAlternateCounts, TIMEOUT, UNAVAILABLE, bbody, geo, math, nav2_down_why, re)  # noqa: F401
+from mower_mission.fsm.budget import Budget
 
 
 class TransitMixin:
@@ -236,8 +237,8 @@ class TransitMixin:
             self._transit_abort('no route (%s) to a goal %.0f m away (beyond the costmap '
                                 'planner)' % (why, d))
             return True
-        b = list(self.p.route_plan_retry_backoff_s or []) or [float(self.p.transit_retry_delay_s)]
-        delay = float(b[min(m.route_plan_fails, len(b)) - 1])
+        delay = Budget.backoff(self.p.route_plan_retry_backoff_s, m.route_plan_fails,
+                               self.p.transit_retry_delay_s)
         self._schedule_retry('TRANSIT', 'no route (%s): goal %.1f m away is beyond the costmap '
                                         'planner (%.0f m): re-asking the route %d/%d in %.0f s'
                              % (why, d, lim, m.route_plan_fails, int(self.p.route_plan_retries),
