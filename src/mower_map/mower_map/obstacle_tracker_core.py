@@ -12,6 +12,20 @@ across frames and decides:
   keepout (live in the mask for this session, not written to ``areas.dat``)
   for the operator to accept or discard. Off by default (``auto_promote``).
 
+* **class-voted zones** (option A, 2026-10-23 trunk incident,
+  docs/analysis/2026-10-23_obstacle_nogo_options.md) - ranged YOLO detections of a STATIC
+  class (trunk, stone, wood, ...; never a person or an animal) skip the minutes-long
+  persistence gate: ``det_min_frames`` frames of score >= ``det_min_score`` within
+  ``det_window_s`` landing within ``det_assoc_m`` of each other, the voted class on the
+  whitelist, the object ON the planned path ahead (footprint corridor or the sweep of a
+  pivot at a corner, :mod:`mower_map.nogo_zones`; a bumper hit at the spot counts too) ->
+  promoted as a PENDING keepout sized from the class-voted box width (median of the
+  ranged widths, at least the class prior) + ``size_margin_m``. It is live for the rest of
+  the mow (keepout mask: Nav2 routes round it), never written to ``areas.dat`` until the
+  operator accepts it. A pending zone is re-sized as observations accumulate, merged with a
+  duplicate, dropped when verified gone or not re-seen for ``pending_expire_s`` of mowing in
+  its area, and Ignore suppresses its spot for the session.
+
 * **remove** - a *promoted* obstacle that the sensors no longer find: either a
   ground ("clear") point appears in its footprint (the depth camera positively
   saw bare ground there), or the robot looked at the footprint from close
@@ -38,6 +52,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from mower_map.areas import point_in_polygon
+from mower_map.nogo_zones import path_hit
 
 Point = Tuple[float, float]
 Polygon = List[Point]
@@ -78,6 +93,38 @@ class TrackerParams:
     transient_timeout_s: float = 30.0    # drop never-promoted tracks unseen this long
     max_tracks: int = 200
     max_track_drift_m: float = 0.4       # reject a track whose centroid wandered this far
+
+    # --- class-voted zones (option A, 2026-10-23; owner defaults to review) ---
+    class_zones: bool = True             # independent of auto_promote (cluster promotion)
+    det_min_score: float = 0.6
+    det_min_frames: int = 5
+    det_window_s: float = 10.0
+    det_assoc_m: float = 0.3             # detections within this of the zone centre
+    det_vote_min_score: float = 0.3      # a lower score still votes for the class
+    static_classes: Tuple[str, ...] = ('trunk', 'stone', 'wood', 'brick', 'trashbin',
+                                       'potted plant', 'chair')
+    never_classes: Tuple[str, ...] = ('person', 'dog', 'cat', 'hedgehog', 'rabbit')
+    # class prior diameters (m): a zone is never smaller than its class
+    class_prior_m: Tuple[Tuple[str, float], ...] = (
+        ('trunk', 0.25), ('stone', 0.15), ('wood', 0.10), ('brick', 0.20),
+        ('trashbin', 0.45), ('potted plant', 0.30), ('chair', 0.50))
+    default_prior_m: float = 0.20
+    size_margin_m: float = 0.10          # on the measured half width (planner adds 0.30)
+    max_zone_radius_m: float = 1.0
+    resize_step_m: float = 0.05          # re-send a pending zone whose radius moved this much
+    require_on_path: bool = True         # B6: only objects the body would touch
+    onpath_pivot_min_turn_deg: float = 30.0
+    bumper_evidence_m: float = 0.5       # a bumper hit this close = on path + a vote
+    bumper_zone_hits: int = 0            # >0: this many hits within bumper_evidence_m make a
+                                         # bumper-only zone (0.25 m disc); 0 = off
+    bumper_zone_radius_m: float = 0.25
+    pending_expire_s: float = 3600.0     # mowing time in its area without a re-sighting
+    det_gone_confirmations: int = 8      # det zones: "looked and absent" frames to remove
+    det_verify_min_m: float = 0.8        # det zones are verified only from this far ...
+    det_verify_fov_deg: float = 30.0     # ... and inside the camera's half field of view
+    camera_x_m: float = 0.466            # front camera ahead of base_link (det zone checks)
+    merge_dist_m: float = 0.3            # two det zones closer than this are one object
+    ignore_radius_m: float = 0.5         # Ignore suppresses new zones this close
 
 
 # ---------------------------------------------------------------------------
@@ -192,8 +239,35 @@ class Track:
     name: str = ''
     dynamic: bool = False            # a person / animal was detected here: never promote
     adopted: bool = False            # re-adopted from a stored SOURCE_TRACKER keepout
+    # --- class-voted zones ---
+    kind: str = 'cluster'            # cluster | det | bumper
+    votes: Dict[str, float] = field(default_factory=dict)   # label -> summed score
+    frames: List[Tuple[float, float, float]] = field(default_factory=list)  # (t, x, y) >= min
+    widths: List[float] = field(default_factory=list)       # ranged widths (m), recent
+    det_pts: List[Tuple[float, float]] = field(default_factory=list)  # recent det positions
+    score_max: float = 0.0
+    on_path: str = ''                # '' | corridor | pivot | bumper
+    pending: bool = False            # promoted and not (yet) accepted by the operator
+    promoted_radius: float = 0.0     # footprint radius the keepout was sent with
+    unseen_s: float = 0.0            # mowing time in its area without a sighting
+    bumper_hits: int = 0
+    seen_det: bool = False           # a detection matched it this step
+    resizing: bool = False
+
+    def label(self) -> str:
+        return max(self.votes, key=self.votes.get) if self.votes else ''
+
+    def sized_radius(self, p: TrackerParams) -> float:
+        """Class-voted zone radius: max(median ranged width, class prior) / 2 + margin."""
+        prior = dict(p.class_prior_m).get(self.label(), p.default_prior_m)
+        w = float(np.median(self.widths)) if self.widths else 0.0
+        return min(max(w, prior) / 2.0 + p.size_margin_m, p.max_zone_radius_m)
 
     def footprint_radius(self, p: TrackerParams) -> float:
+        if self.kind == 'det':
+            return self.sized_radius(p)
+        if self.kind == 'bumper':
+            return p.bumper_zone_radius_m
         return max(self.radius, p.det_radius_m) + p.polygon_inflation_m
 
     def footprint(self, p: TrackerParams) -> Polygon:
@@ -211,6 +285,8 @@ class TrackerCore:
         self.params = params or TrackerParams()
         self.tracks: List[Track] = []
         self._next_id = 1
+        self.ignored: List[Tuple[float, float, float]] = []   # (x, y, r) Ignored this session
+        self._last_step: Optional[float] = None
 
     # -- internal helpers ---------------------------------------------------
     def find_track(self, track_id: int) -> Optional[Track]:
@@ -243,6 +319,184 @@ class TrackerCore:
         dy = pts[:, 1] - cy
         return bool(np.any(dx * dx + dy * dy <= radius * radius))
 
+    # -- class-voted zones (option A) ---------------------------------------
+    def _is_ignored(self, cx: float, cy: float) -> bool:
+        return any(math.hypot(cx - x, cy - y) <= r for (x, y, r) in self.ignored)
+
+    def add_detections(self, dets, now: float) -> None:
+        """Ranged YOLO detections in the map frame: ``[(x, y, label, score, width_m)]``
+        (``width_m`` 0 = unknown). A static-class / any named detection votes for the
+        class of the zone it lands in (within ``det_assoc_m``); a new one starts a ``det``
+        zone. Living classes are left to the dynamic veto (they never start a zone)."""
+        p = self.params
+        static = {c.lower() for c in p.static_classes}
+        never = {c.lower() for c in p.never_classes}
+        for (x, y, label, score, width) in dets:
+            label = str(label).strip().lower()
+            score = float(score)
+            if not label or score < p.det_vote_min_score:
+                continue
+            t = self._det_track(x, y)
+            if t is None:
+                if label in never or label not in static or len(self.tracks) >= p.max_tracks:
+                    continue
+                t = Track(id=self._next_id, cx=float(x), cy=float(y), radius=0.0,
+                          first_seen=now, last_seen=now, observation_count=0,
+                          origin_cx=float(x), origin_cy=float(y), kind='det')
+                self._next_id += 1
+                self.tracks.append(t)
+            elif t.kind != 'det':
+                if label in never:
+                    t.dynamic = True
+                    continue
+                if label not in static:
+                    continue
+                # a stereo cluster / adopted keepout at this spot is this object
+                t.kind = 'det'
+                if not t.promoted:
+                    t.cx, t.cy = float(x), float(y)
+            t.votes[label] = t.votes.get(label, 0.0) + score
+            t.score_max = max(t.score_max, score)
+            t.last_seen = now
+            t.seen_det = True
+            t.observation_count += 1
+            t.det_pts.append((float(x), float(y)))
+            del t.det_pts[:-100]
+            if label in never:
+                t.dynamic = True
+            if score >= p.det_min_score and label in static:
+                t.frames.append((now, float(x), float(y)))
+                if width and width > 0.0:
+                    t.widths.append(float(width))
+                    del t.widths[:-50]
+            if not t.promoted:
+                # the zone centre is the mean of the recent detections
+                arr = np.asarray(t.det_pts[-50:])
+                t.cx, t.cy = float(arr[:, 0].mean()), float(arr[:, 1].mean())
+
+    def _det_track(self, x: float, y: float) -> Optional[Track]:
+        p = self.params
+        best, best_d = None, float('inf')
+        for t in self.tracks:
+            lim = p.det_assoc_m if t.kind == 'det' else max(
+                p.det_assoc_m, t.footprint_radius(p) if t.promoted else p.det_assoc_m)
+            d = math.hypot(t.cx - x, t.cy - y)
+            if d <= lim and d < best_d:
+                best, best_d = t, d
+        return best
+
+    def add_bumper_hits(self, hits, now: float, areas=()) -> None:
+        """Bumper contact positions (map frame). A hit within ``bumper_evidence_m`` of a
+        det zone marks it on path (the body touched it) and adds a frame of evidence;
+        with ``bumper_zone_hits`` > 0 repeated hits at one spot make a bumper-only zone."""
+        p = self.params
+        for (x, y) in hits:
+            near = [t for t in self.tracks
+                    if math.hypot(t.cx - x, t.cy - y) <= p.bumper_evidence_m
+                    + (t.footprint_radius(p) if t.kind == 'det' else 0.0)]
+            if near:
+                for t in near:
+                    t.bumper_hits += 1
+                    if t.kind == 'det':
+                        t.on_path = t.on_path or 'bumper'
+                        t.frames.append((now, t.cx, t.cy))
+                    if t.kind == 'bumper':
+                        t.last_seen = now
+                continue
+            if p.bumper_zone_hits <= 0 or len(self.tracks) >= p.max_tracks:
+                continue
+            area_index = self._area_index_for(x, y, areas) if areas else -1
+            t = Track(id=self._next_id, cx=float(x), cy=float(y), radius=0.0,
+                      first_seen=now, last_seen=now, observation_count=1,
+                      origin_cx=float(x), origin_cy=float(y), area_index=area_index,
+                      kind='bumper', bumper_hits=1, on_path='bumper')
+            self._next_id += 1
+            self.tracks.append(t)
+
+    def _qualifying_frames(self, t: Track, now: float) -> int:
+        p = self.params
+        t.frames = [f for f in t.frames if now - f[0] <= p.det_window_s]
+        return sum(1 for (_, x, y) in t.frames
+                   if math.hypot(x - t.cx, y - t.cy) <= p.det_assoc_m)
+
+    def _merge_det_tracks(self) -> None:
+        p = self.params
+        dets = [t for t in self.tracks if t.kind == 'det']
+        for i, a in enumerate(dets):
+            for b in dets[i + 1:]:
+                if a not in self.tracks or b not in self.tracks:
+                    continue
+                if math.hypot(a.cx - b.cx, a.cy - b.cy) > p.merge_dist_m:
+                    continue
+                if a.promoted and b.promoted:
+                    continue   # both are keepouts already: leave them to removal / dedup
+                keep, drop = (b, a) if (b.promoted or b.promoting) or (
+                    not (a.promoted or a.promoting) and b.first_seen < a.first_seen) else (a, b)
+                if drop.promoting:
+                    continue
+                for k, v in drop.votes.items():
+                    keep.votes[k] = keep.votes.get(k, 0.0) + v
+                keep.frames.extend(drop.frames)
+                keep.widths = (keep.widths + drop.widths)[-50:]
+                keep.det_pts = (keep.det_pts + drop.det_pts)[-100:]
+                keep.score_max = max(keep.score_max, drop.score_max)
+                keep.on_path = keep.on_path or drop.on_path
+                keep.bumper_hits += drop.bumper_hits
+                keep.dynamic = keep.dynamic or drop.dynamic
+                keep.first_seen = min(keep.first_seen, drop.first_seen)
+                keep.last_seen = max(keep.last_seen, drop.last_seen)
+                keep.observation_count += drop.observation_count
+                keep.seen_det = keep.seen_det or drop.seen_det
+                self.tracks.remove(drop)
+
+    def _class_zone_ready(self, t: Track, now: float, allow_promote: bool,
+                          area_blocked) -> bool:
+        p = self.params
+        if not (p.class_zones and allow_promote) or t.promoting or t.dynamic:
+            return False
+        if t.area_index < 0 or t.area_index in area_blocked:
+            return False
+        if self._is_ignored(t.cx, t.cy):
+            return False
+        if p.require_on_path and not t.on_path:
+            return False
+        if t.kind == 'bumper':
+            return p.bumper_zone_hits > 0 and t.bumper_hits >= p.bumper_zone_hits
+        label = t.label()
+        if (label not in {c.lower() for c in p.static_classes}
+                or label in {c.lower() for c in p.never_classes}):
+            return False
+        return self._qualifying_frames(t, now) >= p.det_min_frames
+
+    def ignore(self, track_id: int) -> Optional[Track]:
+        """Operator Ignore: suppress new zones at this spot for the session and forget the
+        track. Returns the track (the caller removes its pending keepout) or None."""
+        t = self.find_track(track_id)
+        if t is None:
+            return None
+        self.ignored.append((t.cx, t.cy, max(self.params.ignore_radius_m,
+                                             t.footprint_radius(self.params))))
+        self.tracks.remove(t)
+        return t
+
+    def _verify_cone(self, t: Track, robot_pose) -> bool:
+        """The robot is looking at the spot (for a det zone: inside the camera's view)."""
+        p = self.params
+        if robot_pose is None:
+            return False
+        det = t.kind == 'det'
+        ox, oy = robot_pose[0], robot_pose[1]
+        if det:   # the camera looks from 0.47 m ahead of base_link
+            ox += p.camera_x_m * math.cos(robot_pose[2])
+            oy += p.camera_x_m * math.sin(robot_pose[2])
+        dx, dy = t.cx - ox, t.cy - oy
+        dist = math.hypot(dx, dy)
+        if dist > p.verify_distance_m or (det and dist < p.det_verify_min_m):
+            return False
+        diff = abs(math.atan2(math.sin(math.atan2(dy, dx) - robot_pose[2]),
+                              math.cos(math.atan2(dy, dx) - robot_pose[2])))
+        return diff <= math.radians(p.det_verify_fov_deg if det else p.verify_fov_deg)
+
     # -- the main step ------------------------------------------------------
     def step(self, obstacle_points: np.ndarray, now: float,
              robot_pose: Optional[Tuple[float, float, float]] = None,
@@ -250,7 +504,10 @@ class TrackerCore:
              areas: Sequence[Tuple[int, str, Polygon]] = (),
              obstacle_fresh: bool = True, clear_fresh: bool = True,
              allow_promote: bool = True,
-             dynamic_points: Optional[np.ndarray] = None) -> Dict[str, list]:
+             dynamic_points: Optional[np.ndarray] = None,
+             plans: Sequence[np.ndarray] = (),
+             robot_area: int = -1,
+             area_blocked: Sequence[int] = ()) -> Dict[str, list]:
         """Advance one tracker update.
 
         ``obstacle_points`` (N,2) map frame stereo + detection obstacle points.
@@ -266,9 +523,16 @@ class TrackerCore:
         dog, cat, ...): every unpromoted track within ``dynamic_veto_radius_m``
         of one is flagged and never promoted.
 
-        Returns ``{'promote': [track_id, ...], 'remove': [track_id, ...]}``;
-        the caller is responsible for the (async) service calls and must call
-        :meth:`confirm_promoted` / :meth:`confirm_removed` accordingly.
+        Class-voted zones (option A): ``plans`` are the planned paths ahead (map (N, 2)
+        arrays: the coverage plan from the robot on, the current transit route) for the B6
+        on-path test; ``robot_area`` the mowing area the robot is in (pending-zone expiry
+        clock); ``area_blocked`` the area indices whose ``obstacle_detection`` is ``none``
+        (no zone is made there).
+
+        Returns ``{'promote': [track_id, ...], 'remove': [track_id, ...], 'resize':
+        [track_id, ...]}``; the caller is responsible for the (async) service calls and
+        must call :meth:`confirm_promoted` / :meth:`confirm_removed` accordingly. A
+        ``resize`` is a pending zone whose keepout must be replaced by its new size.
         """
         p = self.params
         obstacle_points = np.asarray(obstacle_points, dtype=float).reshape(-1, 2) \
@@ -280,6 +544,10 @@ class TrackerCore:
 
         to_promote: List[int] = []
         to_remove: List[int] = []
+        to_resize: List[int] = []
+        dt = 0.0 if self._last_step is None else max(0.0, now - self._last_step)
+        self._last_step = now
+        area_blocked = set(int(a) for a in area_blocked)
 
         # 1. absorb clusters into tracks ------------------------------------
         # Tracking runs even when auto_promote is off, so the GUI / a bench
@@ -294,7 +562,12 @@ class TrackerCore:
             if p.require_inside_mowing_area and area_index < 0:
                 continue
             t = self._matching_track(cx, cy, matched)
-            if t is not None:
+            if t is not None and t.kind != 'cluster':
+                # a stereo blob at a class-voted zone: the same object, keep the det centre
+                t.last_seen = now
+                if area_index >= 0:
+                    t.area_index = area_index
+            elif t is not None:
                 n = t.observation_count
                 t.cx = (t.cx * n + cx) / (n + 1)
                 t.cy = (t.cy * n + cy) / (n + 1)
@@ -314,7 +587,23 @@ class TrackerCore:
             matched.add(t.id)
 
         # 2. maintenance / promotion / removal ------------------------------
+        self._merge_det_tracks()
         for t in list(self.tracks):
+            if t.kind != 'cluster':
+                if t.area_index < 0 and areas:
+                    t.area_index = self._area_index_for(t.cx, t.cy, areas)
+                if p.require_inside_mowing_area and areas and t.area_index < 0 \
+                        and not t.promoted:
+                    self.tracks.remove(t)
+                    continue
+                if not t.on_path and plans and not t.promoted:
+                    r = t.footprint_radius(p)
+                    for path in plans:
+                        why = path_hit(path, t.cx, t.cy, r,
+                                       min_turn_deg=p.onpath_pivot_min_turn_deg)
+                        if why:
+                            t.on_path = why
+                            break
             if not t.promoted:
                 if now - t.last_seen > p.transient_timeout_s:
                     self.tracks.remove(t)
@@ -323,6 +612,13 @@ class TrackerCore:
                         dynamic_points, t.cx, t.cy,
                         t.footprint_radius(p) + p.dynamic_veto_radius_m):
                     t.dynamic = True
+                if t.kind != 'cluster':
+                    # option A: class-voted / bumper zone, no minutes-long gate
+                    if self._class_zone_ready(t, now, allow_promote, area_blocked):
+                        t.promoting = True
+                        to_promote.append(t.id)
+                    t.seen_det = False
+                    continue
                 # B2: promote only a track still in view (matched this step) whose own
                 # sightings span persistence_age_s - a person who stood still for 10 s
                 # and walked off must not be promoted two minutes later.
@@ -339,8 +635,37 @@ class TrackerCore:
                 continue
 
             # promoted obstacle: has the world changed under it?
+            seen = t.seen_det or t.id in matched
+            t.seen_det = False
+            if t.pending and not t.removing:
+                # pending zone: refine its size, expire it when not re-seen
+                if (t.kind == 'det' and not t.resizing and not t.promoting
+                        and abs(t.footprint_radius(p) - t.promoted_radius) >= p.resize_step_m):
+                    t.resizing = True
+                    to_resize.append(t.id)
+                if seen:
+                    t.unseen_s = 0.0
+                elif allow_promote and robot_area >= 0 and robot_area == t.area_index:
+                    t.unseen_s += dt
+                if p.pending_expire_s > 0 and t.unseen_s >= p.pending_expire_s:
+                    t.removing = True
+                    to_remove.append(t.id)
+                    continue
             if not p.auto_remove or now - t.promoted_at < p.min_lifetime_s:
                 continue
+            if t.kind == 'det':
+                # YOLO zone (stereo may never see it, as the 2026-10-22 trunk): present =
+                # detected this step; absent only when looked at inside the camera view
+                if seen:
+                    t.gone_votes = 0
+                elif obstacle_fresh and self._verify_cone(t, robot_pose):
+                    t.gone_votes += 1
+                if t.gone_votes >= p.det_gone_confirmations and not t.removing:
+                    t.removing = True
+                    to_remove.append(t.id)
+                continue
+            if t.kind == 'bumper':
+                continue   # nothing can see it gone; Ignore / expiry only
             present = obstacle_fresh and self._points_within(
                 obstacle_points, t.cx, t.cy, p.present_radius_m)
             if present:
@@ -369,7 +694,7 @@ class TrackerCore:
                 t.removing = True
                 to_remove.append(t.id)
 
-        return {'promote': to_promote, 'remove': to_remove}
+        return {'promote': to_promote, 'remove': to_remove, 'resize': to_resize}
 
     # -- restart ------------------------------------------------------------
     def reserve_ids(self, next_id: int) -> None:
@@ -390,7 +715,9 @@ class TrackerCore:
         """
         p = self.params
         out: List[int] = []
-        for (area_index, cx, cy, fp_radius, wanted) in keepouts:
+        for entry in keepouts:
+            area_index, cx, cy, fp_radius, wanted = entry[:5]
+            pending = bool(entry[5]) if len(entry) > 5 else False
             near = [t for t in self.tracks
                     if math.hypot(t.cx - cx, t.cy - cy) <= p.association_dist_m]
             if any(t.promoted or t.promoting for t in near):
@@ -412,6 +739,8 @@ class TrackerCore:
                 self.tracks.append(t)
             t.promoted, t.promoting, t.adopted = True, False, True
             t.promoted_at, t.gone_votes = now, 0
+            t.pending = pending
+            t.promoted_radius = t.footprint_radius(p)
             out.append(t.id)
         return out
 
@@ -425,6 +754,24 @@ class TrackerCore:
             t.gone_votes = 0
             t.observation_count = max(t.observation_count, self.params.min_observations)
             t.last_seen = now
+            t.pending = True        # every tracker promotion is a proposal (B2)
+            t.promoted_radius = t.footprint_radius(self.params)
+            t.unseen_s = 0.0
+            t.resizing = False
+
+    def resize_sent(self, track_id: int, ok: bool) -> None:
+        """Outcome of re-sending a pending zone with its new size."""
+        t = self.find_track(track_id)
+        if t is not None:
+            t.resizing = False
+            if ok:
+                t.promoted_radius = t.footprint_radius(self.params)
+
+    def set_pending(self, track_id: int, pending: bool) -> None:
+        """Pending state of a promoted track's keepout as stored by map_server."""
+        t = self.find_track(track_id)
+        if t is not None and t.promoted:
+            t.pending = bool(pending)
 
     def reject_promotion(self, track_id: int) -> None:
         t = self.find_track(track_id)

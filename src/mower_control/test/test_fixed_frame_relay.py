@@ -51,3 +51,21 @@ def test_map_copy_dropped_when_map_tf_stale_but_static_kept():
     static = relay_plan('base_link', pts, NOW, 300_000_000, 'base_link',
                         (NOW - 1, T_ODOM), (0, T_MAP, True), {})
     assert [f for f, _, _ in static] == ['odom', 'map']
+
+
+def test_max_range_is_robot_relative():
+    # 2026-10-23: the costmap's obstacle_max_range counted from the odom origin, so the
+    # relay applies the bumper's 1.0 m limit around base_link instead: far from the origin
+    # (robot 20 m out) a 0.4 m bumper point is kept, a stray 3 m one dropped.
+    T = np.eye(4)
+    T[0, 3] = 20.0
+    pts = np.array([[0.4, 0.2, 0.0], [3.0, 0.0, 0.0]], np.float32)
+    out = relay_plan('base_link', pts, NOW, 300_000_000, 'base_link',
+                     (NOW - 20_000_000, T), None, {}, max_range=1.0)
+    (frame, _ns, p), = out
+    assert frame == 'odom' and len(p) == 1
+    np.testing.assert_allclose(p[0], [20.4, 0.2, 0.0], atol=1e-5)
+    # off (0): everything relayed
+    out = relay_plan('base_link', pts, NOW, 300_000_000, 'base_link',
+                     (NOW - 20_000_000, T), None, {})
+    assert len(out[0][2]) == 2

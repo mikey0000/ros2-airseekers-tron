@@ -13,6 +13,8 @@ A world is a YAML file (``worlds/*.yaml``)::
       - {name: tree, type: cylinder, x, y, radius, height}
       - {name: person, type: cylinder, radius: 0.25, height: 1.7,
          path: [[x, y], ...], speed: 0.6, mode: pingpong|loop|once, start_delay: 0.0}
+      - {name: trunk, type: cylinder, x, y, radius: 0.12, height: 1.5,
+         detect: {label: trunk, score: 0.75}, stereo: false}
     battery: {voltage: 25.2, percentage: 0.8}
 
 Instead of ``lawn``/``areas`` a world can take its map from an existing
@@ -27,6 +29,11 @@ other selected areas follow it with their drawn-path channels; map obstacles of
 the selected areas are kept as map obstacles only (not physical). The file's
 own datum is ignored: the world's ``datum`` anchors the map (polygons are map
 metres, so the geometry is unchanged).
+
+``detect`` (2026-10-23, no-go zones): the sim has no YOLO; an obstacle with ``detect`` is
+reported by the scripted ranged-detection source (mower_sim/detections.py) as det_range
+would, while it is inside the front camera's field of view. ``stereo: false`` hides it from
+the stereo raycaster (the 2026-10-22 trunk was never marked by stereo).
 
 Obstacles are 2.5D: a 2D shape extruded from the ground to ``height``. Moving
 obstacles follow ``path`` at ``speed`` (m/s) after ``start_delay`` seconds.
@@ -143,6 +150,9 @@ class Obstacle:
     mode: str = 'pingpong'         # pingpong | loop | once
     start_delay: float = 0.0
     known: bool = False            # also written into areas.dat as a map obstacle
+    detect_label: str = ''         # scripted YOLO detection class ('' = not detected)
+    detect_score: float = 0.75
+    stereo: bool = True            # seen by the stereo raycaster
 
     @property
     def moving(self) -> bool:
@@ -317,7 +327,10 @@ def world_from_dict(doc: dict, name: str = 'world', base_dir: Optional[str] = No
             path=[(float(p[0]), float(p[1])) for p in path] if path else None,
             speed=float(o.get('speed', 0.5)), mode=str(o.get('mode', 'pingpong')),
             start_delay=float(o.get('start_delay', 0.0)),
-            known=bool(o.get('known', False))))
+            known=bool(o.get('known', False)),
+            detect_label=str((o.get('detect') or {}).get('label', '')).strip().lower(),
+            detect_score=float((o.get('detect') or {}).get('score', 0.75)),
+            stereo=bool(o.get('stereo', True))))
     bat = doc.get('battery') or {}
     return World(lawn=lawn, dock=dock, start=start, start_docked=docked,
                  datum_lat=float(datum.get('lat', 48.0)), datum_lon=float(datum.get('lon', 9.0)),

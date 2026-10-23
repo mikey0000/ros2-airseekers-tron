@@ -1562,6 +1562,19 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             return res
         poly = _poly_from_msg(req.polygon)
         source = core.SOURCE_USER
+        proposal = self.store.find_pending_tracker(int(req.obstacle_id))
+        if len(poly) >= 3 and proposal is not None:
+            # 2026-10-23 (no-go option A): the GUI's Accept on a tracked obstacle sends its
+            # polygon + tracker id. When the tracker already proposed it (pending), accept
+            # that proposal: it keeps source SOURCE_TRACKER (= auto) and its name. Adding the
+            # polygon as a user keepout instead hit the 0.10 m centroid dedup: a silent no-op.
+            idx = self.store.accept_pending(proposal.id, req.name)
+            self.persist_best_effort('promote_obstacle')
+            res.success = True
+            res.message = ('auto no-go zone %r accepted as a permanent keepout for area %d'
+                           % (proposal.name, idx))
+            self.get_logger().info(res.message)
+            return res
         if len(poly) < 3:
             source = core.SOURCE_TRACKER
             self._pump.poll((self._tracker_sub,))
@@ -1572,6 +1585,13 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                                'supplied')
                 return res
             poly = _poly_from_msg(match[0].polygon)
+            if proposal is not None:
+                # the tracker re-sized its pending zone: replace the polygon in place
+                self.store.replace_pending_polygon(proposal.id, poly, req.name)
+                self.rebuild()
+                res.success = True
+                res.message = 'pending zone %r re-sized' % proposal.name
+                return res
         # B2 (review 2026-10-13): the id-only path is the tracker's automatic promotion
         # (the GUI always sends the polygon). It becomes a PENDING proposal - live in the
         # keepout mask for this session, never written to areas.dat - that the operator

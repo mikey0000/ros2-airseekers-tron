@@ -1,0 +1,18 @@
+# real_run5 + the 2026-10-22 trunk scenario (docs/analysis/2026-10-23_obstacle_nogo_options.md):
+# a trunk 0.36 m inside the area line, 0.4 m past a lap-0 corner, as the field trunk at
+# (-6.15, -0.57) beside the Area 7 west corner. Here: Area 1's west corner (-6.04, 1.43)
+# (67 deg turn), trunk on the next edge towards (-5.59, 0.67). Stereo never saw the field
+# trunk (stereo: false); the sim's scripted det_ros + det_range source reports it as
+# 'trunk' at score 0.75 while it is in the front camera's view (mower_sim/detections.py).
+# Bumper contact is physical, as in the field. Gate: sim_gate.sh -w this world.
+name: real_run5_trunk
+datum: {lat: 48.0, lon: 9.0}
+areas_file: real_run5_areas.dat
+areas_select: [Area 1, Dock path, Path 2, Path 3]
+lawn_area: Area 1
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+obstacles:
+  - {name: trunk, type: cylinder, x: -5.529, y: 1.269, radius: 0.15, height: 1.5,
+     detect: {label: trunk, score: 0.75}, stereo: false}
+battery: {voltage: 25.0, percentage: 0.9}

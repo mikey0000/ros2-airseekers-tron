@@ -39,6 +39,16 @@ Outputs:
 * ``/ai/det/obstacles``          geometry_msgs/PoseArray of the ranged centroids (base_link)
 * ``/ai/det/obstacle_points``    PointCloud2 (xyz float32, base_link) of the same points:
   Nav2 local costmap obstacle source.
+* ``/ai/det/obstacle_points_static`` the same for the STATIC classes (``static_classes``:
+  trunk, stone, wood, ...): a separate costmap layer keeps these marks for 60 s instead of
+  5 s, so a trunk stays lethal while it is beside the camera or out of view during a pivot.
+
+Width (option B, 2026-10-23 trunk incident, docs/analysis/2026-10-23_obstacle_nogo_options.md):
+a stereo-ranged box is no longer one centroid point on the clouds but a DISC of points
+(``width_points``): its visible width = box width x range / fx, centred half a width behind
+the measured front face, radius width / 2 + ``width_margin_m`` (geometry.object_disc). The
+width is also written to ``results[0].pose.covariance[35]`` (m; the yaw-yaw slot, unused for a
+point) of the ranged detection, 0 = unknown, for obstacle_tracker's sized no-go zones.
 """
 from __future__ import annotations
 
@@ -63,9 +73,10 @@ try:
 except ImportError as _exc:  # pragma: no cover
     _DEP_ERROR = _exc
 
-from det_range.geometry import (DEFAULT_SIZE_CLASSES, DEFAULT_SIZE_HEIGHTS_M, StereoModel,
-                                chain_to, check_class_size, mono_range_box, points_worthy,
-                                quat_to_matrix, range_box, rpy_matrix)
+from det_range.geometry import (DEFAULT_SIZE_CLASSES, DEFAULT_SIZE_HEIGHTS_M,
+                                DEFAULT_STATIC_CLASSES, StereoModel, best_label, box_edges_ref,
+                                chain_to, check_class_size, mono_range_box, object_disc,
+                                points_worthy, quat_to_matrix, range_box, rpy_matrix)
 from mower_common.sub_pump import SubscriptionPump, _header
 
 
@@ -125,6 +136,15 @@ class DetRange(Node):
         # geometry.points_worthy, 2026-10-21). Empty list = any named class.
         d('points_classes', [''])
         d('points_min_score', 0.5)
+        # Option B (2026-10-23): STATIC classes go to their own cloud (60 s costmap decay);
+        # every stereo-ranged box is a disc of its measured width (+ margin) instead of one
+        # centroid point (module docstring). Empty static_points_topic = one cloud as before.
+        d('static_points_topic', '/ai/det/obstacle_points_static')
+        d('static_classes', list(DEFAULT_STATIC_CLASSES))
+        d('width_points', True)
+        d('width_margin_m', 0.10)
+        d('width_spacing_m', 0.05)       # = local costmap resolution
+        d('max_width_m', 1.5)
         # Monocular ground-plane ranging (rear camera, see module docstring)
         d('mono_frames', ['rear_camera'])
         d('mono_camera_info_topics', ['/rear_camera/camera_info'])   # parallel to mono_frames
@@ -198,6 +218,10 @@ class DetRange(Node):
         self.cloud_pub = self.create_publisher(PointCloud2, p('obstacle_points_topic'), 10)
         self._pts_classes = {str(c).strip().lower() for c in p('points_classes')
                              if str(c).strip()}
+        self._static_classes = {str(c).strip().lower() for c in p('static_classes')
+                                if str(c).strip()}
+        self.static_pub = (self.create_publisher(PointCloud2, p('static_points_topic'), 10)
+                           if p('static_points_topic') else None)
 
         self._pump = SubscriptionPump(self, 'det_range_inputs')
         self._pump.subscribe(Image, p('depth_topic'), self._on_depth,
@@ -317,6 +341,7 @@ class DetRange(Node):
         pa.header.stamp = msg.header.stamp
         pa.header.frame_id = self.target
         pts = []
+        static_pts = []
         p = self.p
         mono = frame in self.mono_frames
         for det in msg.detections:
@@ -357,22 +382,46 @@ class DetRange(Node):
             r0.pose.pose.position.x, r0.pose.pose.position.y, r0.pose.pose.position.z = (
                 float(v) for v in xyz)
             r0.pose.pose.orientation.w = 1.0
+            disc = self._disc(det, point_ref, rot, trans)
             cov = [0.0] * 36
             cov[0] = max(variance, 1e-6)
+            cov[35] = disc.width if disc is not None else 0.0
             r0.pose.covariance = cov
             pose = Pose()
             pose.position = r0.pose.pose.position
             pose.orientation.w = 1.0
             pa.poses.append(pose)
-            if points_worthy([(r.hypothesis.class_id, r.hypothesis.score) for r in det.results],
-                             self._pts_classes, p('points_min_score')):
-                pts.append(xyz)
+            hyps = [(r.hypothesis.class_id, r.hypothesis.score) for r in det.results]
+            if points_worthy(hyps, self._pts_classes, p('points_min_score')):
+                out = (static_pts if self.static_pub is not None
+                       and best_label(hyps) in self._static_classes else pts)
+                if disc is not None and bool(p('width_points')):
+                    out.extend(disc.points)
+                else:
+                    out.append(xyz)
             self.n_ranged += 1
         self.pub.publish(msg)
         self.pose_pub.publish(pa)
         if not bool(p('publish_obstacle_points')):
-            pts = []
+            pts, static_pts = [], []
         self.cloud_pub.publish(cloud_msg(pa.header, pts))
+        if self.static_pub is not None:
+            self.static_pub.publish(cloud_msg(pa.header, static_pts))
+
+    def _disc(self, det, point_ref, rot, trans):
+        """The ranged box as a disc of its measured width in the target frame
+        (geometry.object_disc), or None when the box has no width."""
+        b = det.bbox
+        z = float(point_ref[2])
+        if b.size_x <= 0.0 or z <= 0.0:
+            return None
+        p = self.p
+        edges = [rot @ e + trans for e in box_edges_ref(
+            self.model, b.center.position.x, b.center.position.y, b.size_x, z)]
+        return object_disc(edges[0], edges[1], trans[:2],
+                           margin=float(p('width_margin_m')),
+                           spacing=float(p('width_spacing_m')),
+                           max_width=float(p('max_width_m')))
 
     def _size_checked(self, det, res):
         """(point_ref, variance) of a stereo range after the class-size check: an

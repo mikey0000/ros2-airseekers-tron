@@ -16,6 +16,8 @@ Driver contract reproduced (see docs/simulation.md for the full table):
         /fix, /fix_status, /vel 10 Hz (RTK fixed)                  [um960_node]
         /stereo_depth/points + /clear_points 5 Hz, sensor QoS      [stereo_depth]
         /rear_camera/image_raw + camera_info 10 Hz, on demand      [rear camera]
+        /ai/det/detections_ranged + /ai/det/obstacle_points(_static) 5 Hz, only for world
+        obstacles with ``detect`` (scripted, mower_sim/detections.py)  [det_ros + det_range]
   srv   /cutter_control, /charging, /clear_estop, /cutter_off, /cutter/set_height
   localization:=sim (default) also publishes what the localization stack would:
         TF odom->base_link, /odometry/filtered, /heading_aligner/status (aligned, dock).
@@ -36,6 +38,8 @@ import json
 import math
 import os
 import time
+
+import numpy as np
 
 import rclpy
 from rclpy.clock import Clock, ClockType
@@ -63,9 +67,15 @@ from mower_interfaces.srv import ChargingControl, CutterControl, SetCutterHeight
 
 from .kinematics import DiffDrive, DriveParams
 from .loc_drift import LocDrift, LocDriftParams
+from .detections import DetectionSource, DetParams, disc_base
 from .marker import RearCamera, RearCameraParams
 from .sensors import StereoParams, StereoRaycaster, bumper_sides
 from .world import antenna_xy, enu_to_latlon, load_world
+
+try:  # scripted ranged detections (world obstacles with ``detect``)
+    from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
+except ImportError:  # pragma: no cover
+    Detection2DArray = None
 
 LATCHED = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
                      reliability=ReliabilityPolicy.RELIABLE)
@@ -118,6 +128,15 @@ class SimNode(Node):
         d('stereo_rate_hz', 5.0)
         d('stereo_noise_m', 0.0)
         d('rear_camera', True)
+        # scripted det_ros + det_range (2026-10-23 no-go zones): world obstacles with
+        # ``detect`` are reported while in the front camera's view (mower_sim/detections.py)
+        d('det_rate_hz', 5.0)
+        d('det_hfov_deg', 80.0)
+        d('det_max_range', 4.0)
+        d('det_range_noise_m', 0.03)
+        d('det_static_classes', ['trunk', 'stone', 'wood', 'brick', 'trashbin',
+                                 'potted plant', 'chair'])
+        d('det_width_margin_m', 0.10)
         d('rear_camera_rate_hz', 10.0)
         # The real dock marker (owner, measured 2026-10-16): black square ~0.055 m, while the
         # deployed mower_docking keeps marker_size 0.04 (vendor constant), so every marker
@@ -203,6 +222,14 @@ class SimNode(Node):
         self.n_rear = max(1, int(round(1.0 / float(gp('rear_camera_rate_hz').value)
                                         / self.clock_dt)))
         self.n_slow = max(1, int(round(1.0 / self.clock_dt)))
+        self.n_det = max(1, int(round(1.0 / float(gp('det_rate_hz').value) / self.clock_dt)))
+        self.det = DetectionSource(DetParams(
+            hfov_deg=float(gp('det_hfov_deg').value),
+            max_range=float(gp('det_max_range').value),
+            range_noise_m=float(gp('det_range_noise_m').value)))
+        self.det_static = {str(c).lower() for c in gp('det_static_classes').value}
+        self.det_on = (Detection2DArray is not None
+                       and any(o.detect_label for o in self.world.obstacles))
         self.epoch_ns = time.time_ns()       # sim time 0 = the wall clock at start
         self.clock_n = 0                     # clock steps since start
         self.tick_n = 0
@@ -250,6 +277,10 @@ class SimNode(Node):
         self.pub_truth = P(Odometry, '/sim/ground_truth', 10)
         self.pub_sim = P(String, '/sim/status', 10)
         self.pub_markers = P(MarkerArray, '/sim/markers', 10)
+        if self.det_on:
+            self.pub_dets = P(Detection2DArray, '/ai/det/detections_ranged', 10)
+            self.pub_det_pts = P(PointCloud2, '/ai/det/obstacle_points', 10)
+            self.pub_det_static = P(PointCloud2, '/ai/det/obstacle_points_static', 10)
         if self.loc_sim:
             self.tf = TransformBroadcaster(self)
             self.pub_filtered = P(Odometry, '/odometry/filtered', 10)
@@ -323,6 +354,8 @@ class SimNode(Node):
             self._tick()
         if self.stereo_on and n % self.n_stereo == 0:
             self._stereo_tick()
+        if self.det_on and n % self.n_det == 0:
+            self._det_tick()
         if self.rear_on and n % self.n_rear == 0:
             self._rear_tick()
         if n % self.n_slow == 0:
@@ -609,7 +642,8 @@ class SimNode(Node):
                 self.pub_points, self.pub_clear, self.pub_points_map, self.pub_clear_map)):
             return
         pose = self.drive.pose
-        obs, ground = self.stereo.cast(pose.x, pose.y, pose.yaw, self.world.obstacles,
+        obs, ground = self.stereo.cast(pose.x, pose.y, pose.yaw,
+                                       [o for o in self.world.obstacles if o.stereo],
                                        self.sim_time())
         stamp = self.stamp()
         # Divergence from the robot: the real stereo_depth_node (fixed_frame_clouds, default
@@ -624,6 +658,44 @@ class SimNode(Node):
             make_cloud(self.stereo.to_map(obs, pose.x, pose.y, pose.yaw), 'map', stamp))
         self.pub_clear_map.publish(
             make_cloud(self.stereo.to_map(ground, pose.x, pose.y, pose.yaw), 'map', stamp))
+
+    def _det_tick(self):
+        """det_ros + det_range stand-in: ranged detections (base_link front-face point,
+        covariance[0] range variance, covariance[35] width) and the obstacle clouds (a disc
+        of the width + margin; static classes on the _static cloud), as det_range sends."""
+        pose = self.drive.pose
+        dets = self.det.detect(pose.x, pose.y, pose.yaw, self.world.obstacles, self.sim_time())
+        stamp = self.stamp()
+        arr = Detection2DArray()
+        arr.header.stamp = stamp
+        arr.header.frame_id = 'vio_camera'
+        pts, static_pts = [], []
+        cam = self.det.cam[:2]
+        for d in dets:
+            det = Detection2D()
+            det.header = arr.header
+            det.bbox.size_x = float(d.bbox_w_px)
+            det.bbox.size_y = float(d.bbox_w_px)
+            det.bbox.center.position.x = 320.0 - d.bearing * 372.0
+            det.bbox.center.position.y = 240.0
+            h = ObjectHypothesisWithPose()
+            h.hypothesis.class_id = d.label
+            h.hypothesis.score = float(d.score)
+            h.pose.pose.position.x, h.pose.pose.position.y, h.pose.pose.position.z = d.face_base
+            h.pose.pose.orientation.w = 1.0
+            cov = [0.0] * 36
+            cov[0] = max(0.0009, float(self.det.p.range_noise_m) ** 2)
+            cov[35] = float(d.width)
+            h.pose.covariance = cov
+            det.results.append(h)
+            arr.detections.append(det)
+            disc = disc_base(d, cam, margin=float(self.get_parameter('det_width_margin_m').value))
+            (static_pts if d.label in self.det_static else pts).extend(disc.points.tolist())
+        self.pub_dets.publish(arr)
+        self.pub_det_pts.publish(make_cloud(np.asarray(pts, dtype=float).reshape(-1, 3),
+                                            'base_link', stamp))
+        self.pub_det_static.publish(make_cloud(
+            np.asarray(static_pts, dtype=float).reshape(-1, 3), 'base_link', stamp))
 
     def _rear_tick(self):
         if self.pub_image.get_subscription_count() == 0:

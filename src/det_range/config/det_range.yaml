@@ -44,6 +44,19 @@ det_range:
                      brick, trashbin, toycars, potted plant, cans, bottle, book, backpack,
                      wood, chair, trunk]
     points_min_score: 0.5
+    # Option B (2026-10-23 trunk incident, docs/analysis/2026-10-23_obstacle_nogo_options.md):
+    # every stereo-ranged box goes on the clouds as a DISC of its visible width (box width x
+    # range / fx), centred half a width behind the front face, radius width/2 + margin, on a
+    # 0.05 m grid (one centroid cell let the body scrape the trunk). The STATIC classes go to
+    # /ai/det/obstacle_points_static instead, which the costmaps keep for 60 s (their own
+    # static_det_layer) so a trunk stays marked beside the camera and through a pivot.
+    # Width also in detections_ranged results[0].pose.covariance[35] (m) for obstacle_tracker.
+    static_points_topic: /ai/det/obstacle_points_static   # "" = all classes on one cloud
+    static_classes: [trunk, stone, wood, brick, trashbin, potted plant, chair]
+    width_points: true
+    width_margin_m: 0.10
+    width_spacing_m: 0.05
+    max_width_m: 1.5
     # Rear camera (2026-10-09): no stereo -> monocular ground-plane range from the bbox
     # bottom-centre (det_range/geometry.py mono_range_box: ~7 %/m-ish per degree of pitch
     # error, see the accuracy notes there). Intrinsics from camera_info (taken once), pose
