@@ -191,15 +191,16 @@ def test_local_costmap_inflation_with_bounds_keeper():
     # (an ObstacleLayer without sources, footprint clearing on) forces non-empty bounds.
     import math
     lc = load()["local_costmap"]["local_costmap"]["ros__parameters"]
-    assert lc["plugins"] == ["obstacle_layer", "static_det_layer", "bounds_keeper",
-                             "inflation_layer"]
+    assert lc["plugins"] == ["obstacle_layer", "bumper_layer", "static_det_layer",
+                             "bounds_keeper", "inflation_layer"]
     bk = lc["bounds_keeper"]
     assert bk["plugin"] == "nav2_costmap_2d::ObstacleLayer"
     assert str(bk["observation_sources"]).split() == []
     assert bk["footprint_clearing_enabled"] is True
     assert bk["combination_method"] == 1          # max: leaves the master untouched
-    # bumper points sit inside the footprint: this layer must not erase them
+    # bumper points sit inside the footprint: these layers must not erase them
     assert lc["obstacle_layer"]["footprint_clearing_enabled"] is False
+    assert lc["bumper_layer"]["footprint_clearing_enabled"] is False
     infl = lc["inflation_layer"]
     assert infl["plugin"] == "nav2_costmap_2d::InflationLayer"
     r_c = _circumscribed_radius(lc)
@@ -251,7 +252,7 @@ def test_bumper_source_not_limited_by_the_frame_origin(cm, frame):
     # 2026-10-23 (owner-approved): the relayed bumper cloud has no sensor_frame, so the
     # costmap counted obstacle_max_range from the odom / map origin and dropped every hit more
     # than 1 m from the dock. The 1 m limit is robot-relative in fixed_frame_relay now.
-    ol = load()[cm][cm]["ros__parameters"]["obstacle_layer"]
+    ol = load()[cm][cm]["ros__parameters"]["bumper_layer"]
     src = ol["bumper"]
     assert src["topic"] == "/bumper_cloud_" + frame
     assert "sensor_frame" not in src            # no TF origin lookup in the costmap
@@ -329,7 +330,9 @@ def test_stereo_costmap_off_is_bumper_only():
     assert "stereo" in load()["collision_monitor"]["ros__parameters"]["observation_sources"]
     for cm in ("local_costmap", "global_costmap"):
         ol = doc[cm][cm]["ros__parameters"]["obstacle_layer"]
-        assert ol["observation_sources"].split() == ["bumper"], cm
+        assert ol["observation_sources"].split() == [], cm
+        # bumper contacts have their own layer (option C, 2026-10-23), untouched
+        assert doc[cm][cm]["ros__parameters"]["bumper_layer"]["observation_sources"] == "bumper"
         # original untouched
         orig = load()[cm][cm]["ros__parameters"]["obstacle_layer"]["observation_sources"]
         assert {"stereo", "stereo_clear", "det_range"} <= set(orig.split()), cm
@@ -373,7 +376,7 @@ def test_global_obstacle_layer():
     lc = load()["local_costmap"]["local_costmap"]["ros__parameters"]["obstacle_layer"]
     # 2026-10-09: the nav mask is NOT a layer (it would be inflated): keepout_filter only
     assert g["plugins"] == ["terrain_layer", "nongrass_layer", "obstacle_layer",
-                            "static_det_layer", "inflation_layer"]
+                            "bumper_layer", "static_det_layer", "inflation_layer"]
     assert g["global_frame"] == "map"
     assert g["transform_tolerance"] == 0.5
     assert 2.0 <= g["update_frequency"] <= 5.0
@@ -381,7 +384,8 @@ def test_global_obstacle_layer():
     assert ol["plugin"] == "mower_costmap_layers::DecayingObstacleLayer"
     assert ol["footprint_clearing_enabled"] is False     # bumper points sit in the footprint
     sources = ol["observation_sources"].split()
-    assert set(sources) == {"stereo", "stereo_clear", "det_range", "bumper"}
+    # bumper: own layer since option C (2026-10-23), see test_retry_clears_keep_det_and_bumper_marks
+    assert set(sources) == {"stereo", "stereo_clear", "det_range"}
     for name in sources:
         assert name in ol, f"observation source {name} has no sub-map"
         # planner_server waits for isCurrent(): never gate it on a sensor
@@ -395,11 +399,12 @@ def test_global_obstacle_layer():
     assert st["topic"] == "/stereo_depth/points_map"
     assert lc["stereo"]["topic"] == "/stereo_depth/points"
     _check_stereo_clear(ol["stereo_clear"], "/stereo_depth/clear_points_map")
-    for name in ("det_range", "bumper"):
-        assert ol[name]["marking"] is True and ol[name]["clearing"] is False, name
+    lb = load()["local_costmap"]["local_costmap"]["ros__parameters"]["bumper_layer"]
+    for name, o, lo in (("det_range", ol, lc), ("bumper", g["bumper_layer"], lb)):
+        assert o[name]["marking"] is True and o[name]["clearing"] is False, name
         # global: map-frame copies, local: odom-frame copies (fixed_frame_relay, 2026-10-09)
-        assert ol[name]["topic"] == lc[name]["topic"].replace("_odom", "_map"), name
-        assert ol[name]["topic"].endswith("_map") and lc[name]["topic"].endswith("_odom"), name
+        assert o[name]["topic"] == lo[name]["topic"].replace("_odom", "_map"), name
+        assert o[name]["topic"].endswith("_map") and lo[name]["topic"].endswith("_odom"), name
     assert ol["max_obstacle_height"] >= st["max_obstacle_height"]
 
 
@@ -798,3 +803,20 @@ def test_nongrass_layer_is_soft_and_below_inflation():
     assert ng["map_subscribe_transient_local"] is True
     loc = doc["local_costmap"]["local_costmap"]["ros__parameters"]
     assert "nongrass_layer" not in loc.get("plugins", [])
+
+
+@pytest.mark.parametrize("cm,frame", [("local_costmap", "odom"), ("global_costmap", "map")])
+def test_retry_clears_keep_det_and_bumper_marks(cm, frame):
+    # option C (2026-10-23): the mission's retries call clear_around_* (clearable layers
+    # only). The 60 s static det marks and the bumper marks must survive them: their layers
+    # are not clearable; the 5 s obstacle_layer is (stereo / det_range, no bumper source).
+    gp = load()[cm][cm]["ros__parameters"]
+    assert gp["static_det_layer"]["clearable"] is False
+    bl = gp["bumper_layer"]
+    assert bl["plugin"] == "mower_costmap_layers::DecayingObstacleLayer"
+    assert bl["clearable"] is False and bl["decay_time"] == 5.0
+    assert bl["observation_sources"].split() == ["bumper"]
+    assert bl["bumper"]["topic"] == "/bumper_cloud_" + frame
+    assert gp["obstacle_layer"].get("clearable", True) is True
+    assert "bumper" not in gp["obstacle_layer"]["observation_sources"].split()
+    assert gp["plugins"].index("bumper_layer") < gp["plugins"].index("inflation_layer")

@@ -38,7 +38,7 @@ from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import Point32, Polygon, PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from nav2_msgs.action import BackUp, DriveOnHeading, FollowPath, NavigateToPose, Spin
-from nav2_msgs.srv import ClearEntireCostmap
+from nav2_msgs.srv import ClearCostmapAroundRobot, ClearEntireCostmap
 from sensor_msgs.msg import BatteryState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.msg import Log
@@ -58,6 +58,7 @@ from mowgli_interfaces.srv import (AddMowingArea, GetMowingArea, HighLevelContro
 from mower_mission import activity
 from mower_mission import mission_fsm as fsm_mod
 from mower_mission import mow_progress
+from mower_mission import nogo
 from mower_mission.external_rain import ExternalRain
 from mower_mission.resume import ResumeCursor
 from mower_mission.quiet_action import QuietActionClient
@@ -132,6 +133,11 @@ TOPIC_DEFAULTS = {
     'charging_service': '/charging',
     'clear_global_costmap_service': '/global_costmap/clear_entirely_global_costmap',
     'clear_local_costmap_service': '/local_costmap/clear_entirely_local_costmap',
+    # option C (2026-10-23): selective clears (clearable layers only: the 5 s obstacle_layer)
+    'clear_around_global_costmap_service': '/global_costmap/clear_around_global_costmap',
+    'clear_around_local_costmap_service': '/local_costmap/clear_around_local_costmap',
+    'clear_around_reset_distance_m': 100.0,
+    'nogo_zones_topic': '/obstacle_tracker/nogo_zones',
     'plan_coverage_action': '/plan_coverage',
     'follow_path_action': '/follow_path',
     'navigate_to_pose_action': '/navigate_to_pose',
@@ -334,6 +340,8 @@ class MissionNode(Node):
         sub(Int16, '/cutter/height_mm', self._on_cutter_height, latched,
             parser=flat_parser(Int16))
         sub(String, p['obstacle_policy_topic'], self._on_obstacle_policy, latched)
+        if p['nogo_zones_topic']:
+            sub(String, p['nogo_zones_topic'], self._on_nogo_zones, 1)
         sub(Bool, '/mower_docking/marker_in_view', self._on_marker_in_view, latched,
             parser=flat_parser(Bool))
         sub(PoseStamped, '/map_server_node/docking_pose', self._on_dock_pose, latched)
@@ -393,6 +401,10 @@ class MissionNode(Node):
         self._clear_costmap_clis = [
             (cli(ClearEntireCostmap, p[k], callback_group=self._cb), p[k])
             for k in ('clear_global_costmap_service', 'clear_local_costmap_service')]
+        self._clear_around_clis = [
+            (cli(ClearCostmapAroundRobot, p[k], callback_group=self._cb), p[k])
+            for k in ('clear_around_global_costmap_service',
+                      'clear_around_local_costmap_service')]
         # Nav2 lifecycle readiness: the activity gate PAUSEs the stack while the robot is
         # idle, so nav2-backed goals wait for this to report active (see _await_nav2_ready).
         self._nav2_active_cli = cli(Trigger, p['nav2_active_service'], callback_group=self._cb)
@@ -641,6 +653,17 @@ class MissionNode(Node):
             i.tilt_pitch_deg = num(st.get('pitch_deg'))
             i.tilt_axis = str(st.get('axis', '') or '')
             i.tilt_stamp = self._clk.now()
+
+    def _on_nogo_zones(self, msg):
+        """/obstacle_tracker/nogo_zones (JSON nogo_zones.ZoneSet): option C's zones and static
+        marks; the receipt time is the freshness stamp."""
+        try:
+            zs = nogo.ZoneSet.from_json(msg.data)
+        except (ValueError, KeyError, TypeError):
+            return
+        with self._lock:
+            self.fsm.inputs.nogo_zones = zs
+            self.fsm.inputs.nogo_stamp = self._clk.now()
 
     def _on_obstacle_policy(self, msg):
         """{kind: none|dynamic|static, class, distance_m, bearing_deg}; the receipt time is
@@ -1327,11 +1350,20 @@ class MissionNode(Node):
             # fire-and-forget (untracked by the FSM): let the costmaps refresh
             # before a transit / follow retry or a boundary recovery.
             want_global = bool((e.request or {}).get('global', True))
-            for client, ros_name in self._clear_costmap_clis:
+            selective = bool((e.request or {}).get('selective', False))
+            for client, ros_name in (self._clear_around_clis if selective
+                                     else self._clear_costmap_clis):
                 if 'global' in ros_name and not want_global:
                     continue
                 if client.wait_for_service(timeout_sec=float(self._p['server_wait_timeout_s'])):
-                    client.call_async(ClearEntireCostmap.Request())
+                    if selective:
+                        # clearable layers only (obstacle_layer); static_det_layer and
+                        # bumper_layer keep their marks (clearable: false)
+                        req = ClearCostmapAroundRobot.Request()
+                        req.reset_distance = float(self._p['clear_around_reset_distance_m'])
+                        client.call_async(req)
+                    else:
+                        client.call_async(ClearEntireCostmap.Request())
                 else:
                     self.get_logger().warn('service %s not available' % ros_name)
             return

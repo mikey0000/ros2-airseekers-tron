@@ -2442,12 +2442,12 @@ def test_retry_clears_local_costmap_only_by_default():
     m = len(h.fx)
     h.finish(f.ACT_NAV, f.ABORTED)
     c = _clears(h, m)
-    assert c and all(e.request == {'global': False} for e in c)
+    assert c and all(e.request == {'global': False, 'selective': True} for e in c)
     h2 = Harness(clear_global_costmap_on_retry=True)
     _two_subpaths_first_needs_transit(h2)
     m = len(h2.fx)
     h2.finish(f.ACT_NAV, f.ABORTED)
-    assert _clears(h2, m)[0].request == {'global': True}
+    assert _clears(h2, m)[0].request == {'global': True, 'selective': True}
 
 
 def test_transit_abort_waits_clears_costmaps_and_resends():

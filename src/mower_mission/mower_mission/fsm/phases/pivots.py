@@ -72,6 +72,11 @@ class PivotsMixin:
             delta += math.copysign(2.0 * math.pi, planned)    # the planned way round
         elif planned is None:
             delta = self._pivot_way(pose, delta)
+        g = self._nogo_pivot_gate('cov', key, delta)     # option C: pre-pivot sweep check
+        if g is True:
+            return True
+        if g is not None:
+            delta = g
         q = sp[m.start_local]
         self._log('info', 'area %d sub-path %d: %s at (%.2f, %.2f): pivot %.0f deg in place, '
                           '%s, then follow' % (m.area_idx, m.sub_i,

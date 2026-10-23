@@ -76,6 +76,8 @@ the user verifies zones after the mow. It does not persist without confirmation.
   Alone it still gives edge laps no go-around (the skip stays), so B is the floor, not the fix.
 
 ### C. Edge-lap and row routing around a confirmed zone
+**Implemented** 2026-10-23, branch `ws/nogo-c`: see section 5.
+
 - On a promotion inside the current area (pending or accepted), re-plan the remaining
   sub-paths from the resume cursor with the hole (0.30 m grown): rows route around it and lap 0
   is pulled inward locally (the hole's own ring joins the lap; soft edge rules unchanged). The
@@ -220,3 +222,96 @@ Sim gate (x1, domain 219, `accuracy-simout/nogo/`):
 So A forms the right zone, the costmap now keeps the trunk, and the body stops hitting it
 except on lap 0, but routing round it needs C: lap 0 pulled inward and the pivot fallbacks
 above (other direction / back-up / move the pivot) before a Spin is sent.
+
+## 5. Implemented (C), branch `ws/nogo-c` (2026-10-23)
+
+Owner-approved. Base `ws/cleanup1` 32f3e5d. Mission code in `mower_mission/fsm/phases/nogo.py`
+(NogoMixin) and `mower_mission/nogo.py` (ROS-free); the mission reads
+`/obstacle_tracker/nogo_zones` (`mower_mission` now depends on `mower_map`). Parameters
+`nogo_*` in `mission.yaml`.
+
+**1. Mid-mow re-plan.** Once a second (`nogo_replan_check_s`), in MOWING follow or TRANSIT:
+a zone in state pending / accepted (`nogo_replan_states`), centre in the current area, not yet
+a hole of its plan, that the body would touch on the remaining path (`nogo_zones.path_hit`,
+corridor or pivot, pad 0.10 m) -> stop, add it as a 16-gon of radius r + `nogo_plan_grow_m`
+(0.25 m) to the area's holes, and re-plan the area. The planner's hard-obstacle rule does the
+rest: 0.40 m keepout, a hole near the line merges with the outside and lap 0 arcs inward. The
+0.25 m grow covers the nose: the first trunk gate kept base_link 0.40 m off the 0.25 m zone,
+but approached it head-on before the arc and touched the trunk once. Progress: the old plan's
+mowed parts (completed sub-paths, the current one up to the robot, minus the skipped / blocked
+stretches) are mapped onto the new sub-paths. A pose within swath/2 + 0.02 m of a mowed line
+counts as mowed. A sub-path >= 90 % mowed is done (plus the `area_donefp` fingerprint match),
+and the first partly mowed sub-path resumes after its mowed lead-in. Rate limit: 3 per area,
+60 s apart. A failed plan keeps the old one. A zone that later expires or is Ignored leaves the
+plan as it is (`nogo_extra`) until the next area.
+
+**2. Pending zones on a re-START (decided: the recommendation).** Pending zones are hard
+obstacles for the current mow. A re-START or resume in the same mow still plans them as holes,
+because map_server's `get_mowing_area` includes them. When the mission reaches `MOWING_COMPLETE`
+or `MOWING_INCOMPLETE` (`session_end_states`), obstacle_tracker drops every pending zone that
+was not accepted: it drops the track and its pending keepout, and does not suppress the spot,
+so a next mow can propose it again. Accepted zones stay. A STOP followed by docking does not
+end the session.
+
+**3. Pre-pivot sweep check.** It runs before every coverage pivot (`_cov_pivot`: corners, leg
+starts, K-turn about-turns) and every transit route corner (`_route_corner_turn`). It checks
+`pivot_sweep_hits` against the zones (all states) and the 60 s static marks. On a hit,
+`nogo.plan_pivot` tries, in order:
+- (a) the other direction;
+- (b) a back-up of up to 0.30 m, capped so the body stays within limits (`_safe_backoff` from
+  the pose), then the pivot either way;
+- (c) a K-turn: half the turn, the capped back-up, the rest;
+- (d) the pivot point moved +0.3 / +0.15 m later or 0.15 m earlier along the heading.
+
+Every candidate's sweep must be clear and keep the body within the edge-mode limits, no
+further out than the planned pivot itself. Maneuvers run as `nogo_step` actions at >= 0.06 m/s
+(`nogo_move_speed_mps` 0.10); pivots use the usual Spin rate. The blade stays on inside the area
+(`blade_keep_on_obstacles`). Afterwards the pivot site checks again from the new pose, at most
+2 maneuvers per pivot. Then (e):
+- coverage: re-plan around a pending / accepted zone in the sweep, else skip the leg
+  (blocked_pivot_policy skip);
+- route: re-route the transit once per corner, then pivot as planned.
+
+Every choice is logged as `pre-pivot check, ... (a)..(e)`.
+
+**4. Costmap clears.** The bumper source moved from `obstacle_layer` into its own
+`bumper_layer` (DecayingObstacleLayer, 5 s). `DecayingObstacleLayer` has a new `clearable`
+parameter: `bumper_layer` and `static_det_layer` are `clearable: false`. Retries
+(`_clear_costmaps`) call `clear_around_{local,global}_costmap` (reset 100 m), which clears
+only the clearable `obstacle_layer` (stereo, det_range). `clear_costmaps_selective: false`
+restores clear_entirely. The stuck escape's own clear is unchanged.
+
+**5. Edge laps (B6, owner).** Camera avoidance stays on. A zone not yet in the plan, or the
+current ranged on-path static detection, on the lap ahead (2.5 m) is handled with no stop-wait:
+- proactively, or on a follow abort on the edge lap;
+- the lap bends inward around it, with a cosine ramp of 0.8 m and clearance 0.10 m, at most
+  0.6 m, and the body is checked;
+- it is followed blade on as `nogo_detour` and the lap is rejoined after it;
+- the tag on the map is the tracker's pending zone (A), which then re-plans the area.
+
+The 60 s marks are not used here: their positions scatter with the range, and in the first gate
+a 1.16 m detour 2 m from the trunk put the nose out. Nothing to go around: edge skip as before.
+
+**Validation.** Unit tests, all pass:
+- `mower_mission` 700 tests; `test_nogo.py` covers (a)-(e) in geometry and in the FSM, route
+  corner (a) and (e), the re-plan with progress kept, the rate limit, candidate / stale zones,
+  failure keeping the old plan, the grown hole, re-START holes, the edge detour, and the
+  selective clear;
+- `mower_map` (`test_session_end_drops_pending_zones_not_accepted_ones`);
+- `mower_navigation` (`test_retry_clears_keep_det_and_bumper_marks`);
+- mower_bringup and mower_sim.
+
+Sim gates, x1, domain 225, `accuracy-simout/nogo-c/`:
+
+| run | world | result |
+|---|---|---|
+| `trunk_x1` (b4654a6) | real_run5_trunk | zone 22 s after START, re-planned before lap 0 (1 re-plan); MOWING_COMPLETE 13/13, 0 STUCK; **1 bumper hit on the trunk** (nose, head-on before the arc), 1 edge detour round marks -> 2 hard-boundary trips |
+| `trunk2_x1` (d67df69) | real_run5_trunk | 1 re-plan, **0 bumper hits**, closest base_link 0.86 m from the trunk, 0 STUCK, MOWING_COMPLETE 8/8, docked; 0 pre-pivot re-routes needed (the re-planned lap has no pivot near it); zone dropped at MOWING_COMPLETE. FAIL only on i (transit 0.349, as baseline) |
+| `plain_x1` | real_run5 | b 1, i: same as baseline `cleanup/stage1_ideal_x1`; no no-go actions |
+| `dist_s1_x1` | real_run5 -d -s 1 | i only (baseline `stage1_dist_s1_x1`: e, i); no no-go actions |
+
+**Open.**
+- The evaluator judges cross-track against the last `mow_plan` of an area. That is fine here:
+  the re-plan came before any mowing.
+- No sim yet with a zone forming mid-lap.
+- The route-corner and edge-detour paths are covered by unit tests only.

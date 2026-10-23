@@ -59,6 +59,27 @@ behavior_tree_node:
     loc_status_timeout_s: 5.0         # stale / never-seen status: no new hold
     loc_resume_s: 3.0                 # 'ok' this long before resuming
     loc_hold_max_s: 600.0             # then stop in place (IDLE, resume cursor kept)
+    # 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py,
+    # docs/analysis/2026-10-23_obstacle_nogo_options.md section C)
+    nogo_enabled: true
+    nogo_zones_max_age_s: 10.0        # /obstacle_tracker/nogo_zones older than this: ignored
+    nogo_replan: true                 # re-plan the area around a zone on its remaining path
+    nogo_replan_states: [pending, accepted]
+    nogo_replan_pad_m: 0.10
+    nogo_replan_min_interval_s: 60.0
+    nogo_replan_max_per_area: 3
+    nogo_replan_check_s: 1.0
+    nogo_progress_tol_m: 0.02         # + swath/2: a re-planned pose counts as mowed
+    nogo_pivot_check: true            # pre-pivot sweep check (a)-(e)
+    nogo_pivot_backup_m: 0.30
+    nogo_pivot_shifts_m: [0.3, 0.15, -0.15]
+    nogo_pivot_max_maneuvers: 2
+    nogo_move_speed_mps: 0.10         # maneuver back-up / drive (both wheels >= 0.06 m/s)
+    nogo_edge_detour: true            # edge laps (B6): detour inward around it, rejoin
+    nogo_edge_lookahead_m: 2.5
+    nogo_edge_clearance_m: 0.10
+    nogo_edge_max_offset_m: 0.60      # larger needed: no detour (re-plan / skip)
+    nogo_plan_grow_m: 0.25            # zone hole + this: the nose (0.60 m) vs the 0.40 keepout
 
     # --- rain ------------------------------------------------------------
     rain_mode: 1                      # 0 ignore, 1 dock and wait
@@ -338,6 +359,7 @@ behavior_tree_node:
     blade_transit_sample_m: 0.2       # blade_policy continuous: in-area transit check step
     follow_retries: 3                 # follow_path abort/timeout: resume from the last reached pose
     clear_costmaps_on_retry: true     # clear Nav2 global+local costmaps before retries / recoveries
+    clear_costmaps_selective: true    # only the clearable 5 s obstacle_layer (not the 60 s det / bumper marks)
     # false (review 2026-10-09): retries clear only the LOCAL costmap; the global one holds the
     # stereo / det / bumper marks the replan must avoid (Nav2's BT still clears both as its
     # last recovery, and a stuck escape clears both).

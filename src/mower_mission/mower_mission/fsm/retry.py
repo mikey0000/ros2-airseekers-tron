@@ -16,7 +16,9 @@ class RetryMixin:
         # now holds the sensor obstacle marks the detour / replan must route around; wiping it
         # on every retry sent the robot straight back through marks it could no longer see.
         if self.p.clear_costmaps_on_retry:
-            self._call(SRV_CLEAR_COSTMAPS, {'global': bool(self.p.clear_global_costmap_on_retry)},
+            # option C (2026-10-23): 'selective' = only the clearable 5 s obstacle layer
+            self._call(SRV_CLEAR_COSTMAPS, {'global': bool(self.p.clear_global_costmap_on_retry),
+                                            'selective': bool(self.p.clear_costmaps_selective)},
                        track=False)
 
     def _retry_delay(self, n):
