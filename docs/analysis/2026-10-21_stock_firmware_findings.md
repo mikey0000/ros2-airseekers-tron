@@ -545,6 +545,115 @@ Trade-off: from extreme gate-edge starts (0.45–0.5 m lateral within 1 m), and 
 no longer reach the contacts in the unit closed loop. These are `xfail(strict)`. Field
 starts so far are ≤ 0.25 m.
 
+### Lateral offset at the contacts (2026-10-23 evening, branch `ws/dock-lateral`)
+
+Owner: docking ends ~5 cm to the side and misses the contacts; he docked it by hand; "it used
+to dock perfectly". Deployed: df07940 (docking2, dock-return; not dock-tweak). Data: dock goal
+00:45:22–00:47:22 UTC, bag `20261022-235436_50..52` (the `20261023-004729` session starts
+after it, docked), `mower_docking` log `python3_204`, copied with scripts to
+`ros2_stack-wt/accuracy-simout/field_dock_offset_2026-10-23/` (`timeline_raw.txt`,
+`marker_vs_rtk.txt`).
+
+**Measured at the contact line** (RTK `/odometry/filtered_map` in the stored dock frame
+0.417, −1.307, 100.7°; positive = left):
+
+| approach | filter lateral when the marker left the frame | RTK lateral / heading at the contact line | result |
+|---|---|---|---|
+| 1 (00:45:27) | +9.6 cm | +11 → +14 cm / +0.3° | no contact, retry |
+| 2 (00:46:16) | +6.0 cm | +4 → +6 cm / +0.5° | no contact, retry |
+| 3 (00:46:42) | +4.9 cm | +4 → +5 cm / +0.7° | no contact, retry |
+| 4 (00:47:09) | +6.6 cm | +3.3 cm, then a 3 cm sideways jump in 1 s with v −0.05, w ≈ 0 (the owner's hand) | contacts 00:47:22 |
+
+Docked rest after that: RTK lateral +2.1 cm, heading +1.1°. So the robot ended 3–4 cm (approach
+1: 9–12 cm) left of where it charges, **and its own filter knew it** (+4.9..+9.6 cm when it
+went blind 0.07–0.10 m out). 2026-10-22 dock-return attempts 2–4 showed the same (+3..+6 cm).
+
+**Root cause (high confidence): `rear_camera_yaw_correction_deg: -6.5`.**
+
+- Against RTK, detections near the dock (< 0.3 m to go, 120 inliers) read the heading
+  **+4.8°** off with the correction, **−1.7°** without it. The filter heading followed (+5..+7°
+  against RTK +1.6..+2.4° on approach 3).
+- The reverse controller drives the filter heading to h_d = `k_lateral` × lateral. A heading
+  bias b therefore parks the lateral at b / `k_lateral`: 0.084 rad / 2.5 = 3.4 cm,
+  0.113 / 2.5 = 4.5 cm. The final straight reverse then holds the biased "docked" heading,
+  i.e. ~−5° true, and adds to it. This is the 4–6 cm.
+- The camera has no such yaw error. Marker CENTRE + RTK heading reproduces the RTK lateral
+  within **1.3 cm at every range** without the correction (median −1.3, −0.7, −0.3, +0.4, 0.0 cm
+  over 0–0.15, 0.15–0.3, 0.3–0.6, 0.6–1, 1–2 m to go); with −6.5 it is off by −3.6, −6.0,
+  −9.6, −13.6 cm (0–0.3, 0.3–0.6, 0.6–1, 1–2 m: the centre rotated about the camera by 6.5°).
+- What the 2026-10-21 fit found is the marker NORMAL's own bias, which depends on range:
+  −1.3° (< 0.15 m), −2.0°, −1.6°, −3.7° (0.6–1 m), −7.1° (> 1 m). The night fit used
+  detections at 0.4–1.1 m and absorbed that into a camera yaw (it also needed the marker
+  centre "8–11 cm right of the dock axis": 6.5° at 0.7–1 m).
+- Before docking2 there was no correction (and k_lateral 7, so any bias cost ≤ 1.6 cm): the
+  "perfect" docks of 2026-10-21 daylight.
+
+**Ruled out:**
+
+- `marker_size` 0.04 vs ~0.055: marker distances read 1.03 × RTK distances (246 detections,
+  intercept +6 cm), so 0.04 is effectively metric with the deployed intrinsics. No 0.73 scaling
+  in the field; the lateral from the centre matches RTK.
+- `docked_marker_offset` 0.217: it only sets where FINAL starts (the marker reads 6 cm more
+  remaining than RTK; the auto-calibration under-reads because the wheels slip at the
+  contacts, today's estimate 0.126 m was rejected). No lateral effect.
+- Stored dock pose: hand-docked rest is 2 cm left / 1 cm past it, heading +1.1°; undock chord
+  100.3° vs stored 100.7°. Fine.
+- Extrinsics/intrinsics otherwise: the centre-vs-RTK agreement above.
+
+**Stock (`libmower_charge_core.so`):** `estimatePoseSingleMarkers` at 0.04 m, no rescaling;
+a hard-coded camera extrinsic with no yaw offset and no correction constant. Lateral is the
+signed distance of the marker-derived pose to a 1.2 m line in the marker frame (centre, i.e.
+tvec); heading is the marker-normal yaw, through an EMA (α 0.2) and a KF (Q 0.01, R 0.1,
+innovations clamped 0.5 m / 20°). Steering is an angle PD (0.32, 0.45) on
+angle error − 0.2 × lateral, lookahead 0.4 × remaining in 0.15–0.5 m. Pose check at 0.65 m:
+0.05 m / 8°. FINE_TUNING below 0.35 m keeps steering at 0.01–0.03 m/s. **Below 0.25 m it
+requires |lateral| < 0.018 m and angle < 9° before the blind reverse** (straight, 0.06 m/s,
+2.5 s); otherwise it drives 0.5 m forward and retries. We have no lateral check after 0.65 m.
+
+**Fix (`ws/dock-lateral`):** `rear_camera_yaw_correction_deg` −6.5 → 0 (docking.yaml), and
+the sim camera with it (`rear_camera_mount_yaw_deg` 0). Nothing else changes.
+
+Tests (`test_dock_lateral_2026_10_23.py`, fixture `test/data/field_2026_10_23_dock_markers.csv`
+= the day's 441 detections with RTK):
+
+- Replay: without the correction the centre lateral matches RTK within 1.5 cm in all four
+  range bands, and the near heading bias is −1.7° (+4.8° with it).
+- Closed loop, the day's four DOCKING starts × 4 seeds, a camera with no yaw error and the
+  measured normal bias + noise + 10 % flips: −6.5 → median 5.0 cm at the contact line (the
+  field); 0 → median ≤ 2 cm, max < 4 cm; without the normal bias ≤ 1.5 cm.
+
+Residual and option: the normal's own near bias (−1.3..−2°) still costs ~1–2 cm through
+k_lateral 2.5. In the same closed loop k_lateral 4 gives median 1.3 cm, max 2.5 cm (5 sign
+changes of w per run against 3); not changed here, since 2.5 was chosen against the night's
+over-steer. A stock-style lateral check before the blind reverse (|lateral| ≤ ~2 cm on the
+filter, else forward retry) is the other option, at the cost of forward driving.
+
+Sim (mower_sim dock-only, camera yaw 0 in both the sim and the config, out
+`accuracy-simout/dock-lateral/`): straight on (0.8 m) docked in 20.8 s, lateral at contact
+−0.2 cm; 0.25 m off docked in 32.4 s (0.41 m forward), lateral +2.0 cm, yaw 2.7°. The sim
+renders no range-dependent normal bias and accepts contact within 6 cm lateral, looser than
+the real charger (~2 cm), so it confirms the motion, not the field margin.
+
+**Near-field check (owner option a, second commit on `ws/dock-lateral`).** Stock-style:
+below `near_check_remaining` 0.25 m with the marker in view, the median of the last 5
+detections must be within 0.02 m / 9° before the blind finish, else forward 0.5 m (corridor
+cap, arcing back) and re-approach, at most 2 per goal, then continue. Closed loop on the day's
+four starts × 4 seeds: median |lateral| 1.2 / 1.3 / 1.6 / 1.8 cm per start, worst run 2.5 cm
+(the 0.18 m start, 2 near realigns already spent); 13 near realigns over 16 runs, forward
+0–1.4 m (mean 0.46 m), time 5–36 s. It also docks the gate-edge (1.0 m, ±0.5 m, 24°) and dusk
+(0.66 m, −0.36 m) starts that dock-tweak had marked xfail.
+
+| sim dock-only (camera yaw 0) | time | lateral at contact | forward | near realigns |
+|---|---|---|---|---|
+| straight on, 0.8 m | 21.0 s | −0.5 cm | 0 m | 0 |
+| 0.25 m off | 44.1 s | +0.6 cm | 1.03 m | 2 (11.7 cm, 2.2 cm), then 3.1 cm continued |
+| 40° off (2026-10-23 attempt 1) | 34.9 s | −0.1 cm | 1.03 m | 2 (11.9 cm, 5.6 cm), then 1.8 cm ok |
+| camera fix only: straight / 0.25 m off | 20.8 / 32.4 s | −0.2 / +2.0 cm | 0 / 0.41 m | – |
+
+real_run5 ideal gate x1: MOWING_COMPLETE, docked, charging (1 near realign at 4.7 cm, then
+1.5 cm ok); verdict FAIL on d (1 fallback nav) and i (body over plan), the same two criteria
+master/dock-tweak fail (mow/transit, not docking). Out: `accuracy-simout/dock-lateral/`.
+
 ## Field symptoms these findings explain (2026-10-20/21)
 
 - Dusk docking failed with "no usable marker", although the dock has a backlit marker. Without exposure control the camera cannot read it at dusk; stock varies the exposure.

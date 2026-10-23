@@ -43,11 +43,14 @@ mower_docking:
     # Pose of the rear camera OPTICAL frame in base_link: x y z roll pitch yaw.
     # = URDF rear_camera_joint (config/urdf/mower.urdf.xacro). TODO(calib).
     rear_camera_T_base: [-0.201, 0.0, 0.25, -1.5707963, 0.0, 1.5707963]
-    # 2026-10-21 night: against RTK the 71 % consistent detections read the robot heading
-    # -7.5 deg off; a fit of marker bearing + normal over 232 detections puts it in the
-    # camera yaw (-5.5..-7.5 deg; dock yaw re-checked on the evening undock chord, 100.7 vs
-    # ~101-104 deg). Rotates the extrinsic about the vertical through the camera.
-    rear_camera_yaw_correction_deg: -6.5
+    # Rotates the extrinsic about the vertical through the camera. 0 since 2026-10-23: the
+    # -6.5 of 2026-10-21 night was fitted on the marker NORMAL, whose bias depends on range
+    # (2026-10-23 daylight vs RTK: -1.3 deg < 0.15 m, -3.7 deg at 0.6-1 m, -7 deg > 1 m), not
+    # a camera yaw. With 0 the marker CENTRE + RTK heading gives the RTK lateral within 1.3 cm
+    # at every range (260 detections); with -6.5 it read 4-14 cm off and the filter heading
+    # +4.8 deg, so the reverse controller settled at lateral = bias / k_lateral = +4..6 cm and
+    # the robot missed the contacts (findings doc, "Lateral offset at the contacts").
+    rear_camera_yaw_correction_deg: 0.0
     max_detection_rate_hz: 10.0
     search_timeout_s: 15.0         # no usable marker -> dead-reckon
     # Old search gate (0.5 m / 25 deg). Stock's CheckInitJump has no call site: OFF since
@@ -173,6 +176,16 @@ mower_docking:
     final_max_heading_deg: 12.0    # (camera yaw corrected; 8 deg on single detections failed every check)
     pose_check_median_n: 5
     max_realigns: 2                # per goal; does not consume max_retries
+    # Near-field check (stock FINE_TUNING: < 0.018 m / 9 deg below 0.25 m, else 0.5 m forward):
+    # once per approach at near_check_remaining (filter) with the marker in view, the median of
+    # the last pose_check_median_n detections must be within these before the blind finish;
+    # else forward near_check_forward (corridor cap, arcing toward the axis) and re-approach,
+    # at most near_check_max_realigns per goal. 2026-10-23: blind 4.9-9.6 cm off, no contact.
+    near_check_remaining: 0.25     # 0 = off
+    near_check_max_lateral: 0.02
+    near_check_max_heading_deg: 9.0
+    near_check_forward: 0.50
+    near_check_max_realigns: 2
     realign_forward_distance: 0.40 # 2026-10-23: was 0.65 (less forward driving)
     realign_forward_per_lateral: 1.5  # badly off: max(0.40, 1.5 x |lateral|) ...
     realign_forward_max: 0.65      # ... at most this (and the corridor cap)

@@ -166,7 +166,8 @@ def _sign_flips_per_s(log):
 @pytest.mark.parametrize('x0,y0,thd', [(1.1, 0.10, 0.0), (1.0, -0.15, 8.0), (0.9, 0.05, -10.0)])
 def test_flips_and_bias_heading_estimate_stays_within_5_deg(seed, x0, y0, thd):
     stream = FieldStream(seed)
-    out, m, log = _run(x0, y0, math.radians(thd), stream)
+    # the filter heading on one approach (a near-field realign re-acquires with a fresh filter)
+    out, m, log = _run(x0, y0, math.radians(thd), stream, near_check_remaining=0.0)
     assert stream.flips > 3
     errs = [abs(math.degrees(dl.wrap_angle(r[7] - r[4]))) for r in log
             if r[1] == S.DOCKING and r[7] is not None]

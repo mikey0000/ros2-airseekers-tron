@@ -127,8 +127,9 @@ def marker_in_base(rvec: Sequence[float], tvec: Sequence[float],
     (``-0.201 0 0.25`` / ``-1.5708 0 1.5708``).
 
     ``yaw_correction`` (rad) rotates the camera about the base_link vertical axis through the
-    camera centre (R_bc' = Rz(yaw_correction) R_bc): the measured mounting-yaw error of the
-    rear camera (2026-10-21 night, -6.5 deg, docking.yaml ``rear_camera_yaw_correction_deg``).
+    camera centre (R_bc' = Rz(yaw_correction) R_bc): a mounting-yaw error of the rear camera
+    (docking.yaml ``rear_camera_yaw_correction_deg``; 0 since 2026-10-23, the 2026-10-21 -6.5
+    deg fit was the marker normal's range-dependent bias, not the camera).
     """
     r_bc = rpy_to_matrix(*cam_rpy)
     if yaw_correction:
@@ -694,6 +695,21 @@ class DockParams:
     final_max_lateral: float = 0.08
     final_max_heading_deg: float = 12.0
     max_realigns: int = 2
+    # Near-field check (stock FINE_TUNING alignment check, libmower_charge_core: |lateral| <
+    # 0.018 m and angle < 9 deg below 0.25 m, else 0.5 m forward and retry): once per approach,
+    # when the filter puts the robot within near_check_remaining of the contacts with the
+    # marker in view, the median of the last pose_check_median_n detections must be within
+    # near_check_max_lateral / near_check_max_heading_deg before the reverse goes on to the
+    # straight blind finish. Otherwise forward near_check_forward (corridor cap, arcing back
+    # toward the axis like the pose-check realign) and re-approach, at most
+    # near_check_max_realigns per goal; then continue (no contact -> the usual retry).
+    # 2026-10-23: four approaches went blind 4.9-9.6 cm off and missed the contacts.
+    # near_check_remaining 0 = off.
+    near_check_remaining: float = 0.25
+    near_check_max_lateral: float = 0.02
+    near_check_max_heading_deg: float = 9.0
+    near_check_forward: float = 0.50
+    near_check_max_realigns: int = 2
     marker_median_n: int = 3         # gates/decisions use the median of the last N markers
     # DOCKING: hold still (never reverse) while the marker is lost; RETRY only after it has
     # been lost for max_lost_frames ticks AND this long (dusk: intermittent detections).
@@ -804,7 +820,7 @@ class DockParams:
     inplace_search_retry: bool = True
     # ALIGNING aims the rear camera at the marker's RTK position (dock pose measured, map
     # pose available) instead of the bare dock yaw: the rear camera sees only +-25 deg
-    # (fx 684 px at 640 px) and reads 6.5 deg off, so 0.25 m off the axis at the approach
+    # (fx 684 px at 640 px), so 0.25 m off the axis at the approach
     # pose the dock yaw leaves the marker at the image edge (sim: 0 detections in 15 s).
     align_to_marker_bearing: bool = True
     # Operator joystick (/cmd_vel_teleop overrides /cmd_vel_docking in twist_mux): pause,
@@ -898,6 +914,8 @@ class DockStateMachine:
         self._notes: List[str] = []
         self._relaxed_tried = False
         self._realigns = 0
+        self._near_realigns = 0
+        self._near_checked = False
         self._realign = False
         self._align_target: Optional[float] = None   # odom-frame yaw to turn to
         self._marker_text = 'not visible'
@@ -1157,15 +1175,20 @@ class DockStateMachine:
             min(g.max_angular, max(0.0, v - g.wheel_floor) / (0.5 * g.track_width))
         return clamp(g.kp_heading * wrap_angle(h_d - heading), -w_lim, w_lim)
 
-    def _enter_realign(self, snap: Snapshot, err: DockErrors) -> None:
-        """Forward along the dock heading, then search again (no retry consumed)."""
-        self._realigns += 1
-        self._realign = True
+    def _enter_realign(self, snap: Snapshot, err: DockErrors, near: bool = False) -> None:
+        """Forward along the dock heading, then search again (no retry consumed). ``near``:
+        the near-field check's realign (near_check_forward, its own budget)."""
         p = self.p
-        want = p.realign_forward_distance
-        if p.realign_forward_per_lateral > 0:
-            want = max(want, min(p.realign_forward_max,
-                                 p.realign_forward_per_lateral * abs(err.lateral)))
+        if near:
+            self._near_realigns += 1
+            want = p.near_check_forward
+        else:
+            self._realigns += 1
+            want = p.realign_forward_distance
+            if p.realign_forward_per_lateral > 0:
+                want = max(want, min(p.realign_forward_max,
+                                     p.realign_forward_per_lateral * abs(err.lateral)))
+        self._realign = True
         self._retry_distance = want
         cap = self._forward_cap()
         if cap is not None:
@@ -1173,9 +1196,17 @@ class DockStateMachine:
             if rem is None:
                 rem = err.remaining
             self._retry_distance = clamp(cap - rem, 0.0, want)
-        self._notes.append('pose check: off the dock axis (lateral %.2f m, heading %.1f deg):'
-                           ' realign %d/%d' % (err.lateral, math.degrees(err.heading),
-                                               self._realigns, self.p.max_realigns))
+        if near:
+            self._notes.append('near-field check %.2f m out: lateral %.3f m, heading %.1f deg '
+                               '(max %.3f m / %.0f deg): forward %.2f m, near realign %d/%d' % (
+                                   err.remaining, err.lateral, math.degrees(err.heading),
+                                   p.near_check_max_lateral, p.near_check_max_heading_deg,
+                                   self._retry_distance, self._near_realigns,
+                                   p.near_check_max_realigns))
+        else:
+            self._notes.append('pose check: off the dock axis (lateral %.2f m, heading %.1f deg):'
+                               ' realign %d/%d' % (err.lateral, math.degrees(err.heading),
+                                                   self._realigns, self.p.max_realigns))
         self._enter(DockState.RETRY, snap)
         self._obs = []
         self._last_err = None
@@ -1627,6 +1658,19 @@ class DockStateMachine:
                                    'no realign left: continuing' % (
                                        dec.remaining + p.docked_marker_offset, dec.lateral,
                                        math.degrees(dec.heading)))
+        if p.near_check_remaining > 0 and new and not self._near_checked and \
+                len(self._obs) >= 3 and est.remaining <= p.near_check_remaining:
+            self._near_checked = True
+            nm = self._median_err(p.pose_check_median_n, snap.odom)
+            nm = DockErrors(est.remaining, nm.lateral, nm.heading)
+            off = abs(nm.lateral) > p.near_check_max_lateral or \
+                abs(nm.heading) > math.radians(p.near_check_max_heading_deg)
+            if off and self._near_realigns < p.near_check_max_realigns:
+                self._enter_realign(snap, nm, near=True)
+                return self._out()
+            self._notes.append('near-field check %.2f m out: lateral %.3f m, heading %.1f deg: %s'
+                               % (nm.remaining, nm.lateral, math.degrees(nm.heading),
+                                  'no near realign left, continuing' if off else 'ok'))
         overrun = max(0.0, p.final_max_distance - g.final_zone)
         if dec.remaining <= -overrun:
             self._notes.append('passed the expected contact point by %.2f m with the marker '
@@ -1721,8 +1765,9 @@ class DockStateMachine:
             return 'final reverse%s: %s' % (' (blind)' if self._blind else
                                              ' (marker lost, last heading)', rem)
         if st == DockState.RETRY:
-            return ('realigning %d/%d: forward along dock heading' % (
-                self._realigns, self.p.max_realigns)) if self._realign else \
+            return ('realigning (pose %d/%d, near %d/%d): forward along dock heading' % (
+                self._realigns, self.p.max_realigns, self._near_realigns,
+                self.p.near_check_max_realigns)) if self._realign else \
                 'retry %d/%d: driving forward' % (self.retries, self.p.max_retries)
         if st == DockState.CHARGING:
             return 'on contacts: enabling charging'
@@ -1908,6 +1953,7 @@ class DockStateMachine:
                     self._kf.reset()
                     self._kf.init(med)
                     self._pose_checked = False
+                    self._near_checked = False
                     self._enter(DockState.DOCKING, snap)
                     return self._out()
             if el > self.p.search_timeout_s:

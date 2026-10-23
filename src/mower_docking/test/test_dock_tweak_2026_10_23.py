@@ -135,8 +135,9 @@ def test_field_2026_10_23_attempt1_replay():
     """At the approach pose facing the dock (Nav2 arrival), 0.21 m off the axis; the rear
     marker comes into view ~40 deg into the about-turn. Must not LATERAL_ALIGN, must finish
     the about-turn, and dock without the 0.43 m forward drive."""
-    m = dl.DockStateMachine(params(skip_nav_to_approach=False), dl.Pose2D(),
-                            dock_pose_measured=True, goal_timeout_s=400.0)
+    # the pre-DOCKING forward driving (near-field realigns: test_dock_lateral_2026_10_23)
+    m = dl.DockStateMachine(params(skip_nav_to_approach=False, near_check_remaining=0.0),
+                            dl.Pose2D(), dock_pose_measured=True, goal_timeout_s=400.0)
     w = FovWorld(m, 0.62, -0.21, math.pi - 0.05)
     out = w.run(300)
     st = [o.state for o in w.outs]

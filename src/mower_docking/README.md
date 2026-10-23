@@ -231,6 +231,22 @@ detection worked, the motion did not. Fixes:
    undock chord to ~3°. `rear_camera_yaw_correction_deg: -6.5` rotates the extrinsic about
    the vertical through the camera. mower_sim renders the same error
    (`rear_camera_mount_yaw_deg`).
+   **Reverted to 0 on 2026-10-23** (`ws/dock-lateral`): the fit was on the marker normal,
+   whose bias depends on range (daylight vs RTK: −1.3° < 0.15 m, −3.7° at 0.6–1 m, −7° beyond
+   1 m), not on the camera. With −6.5 the filter heading read +4.8° near the dock and the
+   reverse controller settled at lateral = bias / `k_lateral` ≈ +4–6 cm, off the contacts.
+   With 0 the marker centre + RTK heading matches the RTK lateral within 1.3 cm at every range.
+   `test_dock_lateral_2026_10_23.py` replays the day's detections.
+   **Near-field check (2026-10-23 evening, owner option a; stock FINE_TUNING).** Once per
+   approach, the first detection with the filter within `near_check_remaining` (0.25 m) of
+   the contacts: the median of the last `pose_check_median_n` detections must be within
+   `near_check_max_lateral` (0.02 m) and `near_check_max_heading_deg` (9°) before the reverse
+   goes on to the straight blind finish. Otherwise forward `near_check_forward` (0.5 m, under
+   the corridor cap, arcing back toward the axis like the pose-check realign) and a fresh
+   approach, at most `near_check_max_realigns` (2) per goal; after that it continues and a
+   missed contact takes the normal retry. No detection inside 0.25 m = no check (no realign on
+   stale data). `near_check_remaining: 0` turns it off. Stock: < 0.018 m / 9° below 0.25 m,
+   else 0.5 m forward.
 3. **Search acceptance.** `search_min_detections: 3` mutually consistent detections
    (`search_consistency_deg` 10, `search_consistency_m` 0.15) that also agree with RTK
    (`rtk_check_max_deg` 30, `rtk_check_max_m` 0.3; dock measured and RTK fixed).
