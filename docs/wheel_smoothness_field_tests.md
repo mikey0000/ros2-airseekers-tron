@@ -896,3 +896,148 @@ This is the pivot-drift cause.
   for the edge;
 - the `mow_progress` reset;
 - the dock forward moves above.
+
+## Field mow 2026-10-23 afternoon (df07940)
+
+Stack started 23:12:43 UTC (after the 23:04 sync; every node process has that start time, so
+df07940 is what ran). Sessions `20261022-231859` (23:19-23:40), `20261022-234238` (23:42-23:54)
+and `20261022-235436` (23:54-00:33, still recording at pull time), area index 5, which the owner
+renamed from "Area 7" to "Clothesline" at 23:41 (the pole obstacle was already in the map at
+start: 7 vertices centred (-6.00, -0.57), r 0.16 m, 0.50 m inside the west line). Data:
+`ros2_stack-wt/accuracy-simout/field_mow_2026-10-23c/` (bags, incident metadata, node logs with
+ntrip lines removed, `maps/`, `series.json`/`extra.json`, `spins.json`/`spins.txt`,
+`wheel_cal_sel_mow*_1.5.txt`, `raw/health_0035.txt`).
+
+### Outcome
+
+| | |
+|---|---|
+| plan 1 (23:19, "Area 7": cross, boustrophedon) | 15 sub-paths 164.4 m; 27.3 m mowed (sub-paths 3, 8, 13, 14); 2 sub-paths NOT mowed (transit aborted 4 times: K-turn starts at (-7.20, -0.33) and (-7.24, -0.19) are 0.4-0.5 m outside the west line, Nav2 refuses the goal in 3 s); 23:34:22 STUCK_NEEDS_HELP |
+| 23:42 re-plan ("Clothesline": zigzag, racetrack) | 14 sub-paths 157.8 m; `plan geometry changed, stale resume cursor discarded`: the 27.3 m were lost |
+| plan 2 result | 00:20:19 `14/14 sub-paths mowed, 0 NOT mowed, 8 stretches blocked` -> MOWING_INCOMPLETE; 91.8 m logged as done plus the resumed laps; three more STARTs (00:22-00:29) re-tried the blocked stretches and ended with 4 still blocked: the two K-turn legs at the SW corner (sub-paths 1-2), the lap-0 corner at (-2.43, 0.60) and sub-path 9 poses 2786-2933 near (-5.8, -1.9) |
+| time 23:19-00:31 (72 min) | MOWING 27.6, TRANSIT 28.8, STUCK_NEEDS_HELP 6.8, MOWING_INCOMPLETE 3.3, IDLE 3.3, MANUAL 1.1, PLANNING 0.6 |
+| owner actions | 11 STARTs, 6 MANUAL, 2 lifts (23:54:13 during a boundary retrace, 00:31:13 during the return-home retrace) |
+| NEEDS_HELP | 6: 23:34:22, 23:46:33, 23:49:54, 00:14:19, 00:23:45 (boundary twice within 1 m) and 23:45:40 (route corner pivot refused 3 times, "Collision Ahead", 0.5 m from the pole) |
+| STUCK | 3, all escaped by the 0.30 m reverse (23:26:59 and 00:26:16 beside the pole, 00:29:35 on the SW bank) |
+| pivots | 176 Spins; **80 SPIN DRIFT trips (47 %)**: 48 coverage, 30 route corner, 2 final approach. 25 of the 40 transit_abort incidents are pivot drift |
+| boundary trips | 17 (4 MOWING, 12 TRANSIT, 1 RETURNING_HOME); 0 while docking |
+| bumper | 21 hits, 20 within 0.9 m of the pole; 4 BUMPER SKIP (3 hits) + 3 "near a skipped spot" |
+| blade | 54 ON / OFF cycles; OFF reasons: transit 86, retry 53, stretch blocked 18, hard boundary 17, skip 14; 0 off for an obstacle in MOWING; `blade kept on: transit stays inside area` 12 times |
+| docking | not reached: 00:30:55 RETURN from (-6.54, -2.22), base_link 0.38 m outside the SW line -> retrace -> lift. The robot was left in the field |
+
+### Pivot drift is physical, and it is the run's main failure
+
+From the bags (`spins.py`, EKF map pose, raw `/fix`, wheel odometry, drive-motor diagnostics):
+
+| | drift trips (n=80) | clean pivots (n=91) |
+|---|---|---|
+| yaw turned when it tripped / finished | 26 deg (median) | 63 deg |
+| base_link moved (EKF) | 0.150 m | 0.052 m |
+| raw RTK antenna moved (lever arm 0.098 m alone would give) | 0.139 m (0.044) | 0.074 m (0.102) |
+| wheel-odometry translation | 0.004 m | 0.007 m |
+| direction in the body frame: along the axis / sideways | 0.138 / 0.038 m (89 % axial) | 0.024 / 0.038 m |
+| drift per radian turned | 0.20 (CCW) / 0.26 (CW) m/rad | 0.04 |
+| MCU yaw rate / commanded | 0.83 | 0.85 |
+| drive current L / R, min/max ratio | 7.9 / 7.2 A, 0.75 | 7.1 / 7.8 A, 0.72 |
+
+The antenna moves with the EKF (RTK fixed 100 % of the session), so the drift is real, not a
+localization artefact. The wheels report pure rotation at normal torque on both sides while the
+body walks 0.14 m along its own axis and turns only a quarter of the commanded angle: the tracks
+skid on the wet turf (slope caution roll 15 deg at 23:55). The clean pivots behave like
+yesterday's (0.05 m). The 0.15 m guard then does the damage: a coverage pivot drift forces a
+transit back onto the leg, the second one skips the stretch; a route-corner drift is a
+transit_abort, 3 retries (3 / 10 / 30 s waits) and a NOT-mowed sub-path. 32 stretch retries,
+18 "still blocked", most of them the same K-turn legs attempted on every START.
+`wheel_cal` pivots measured/commanded: 0.60 CCW / 0.73 CW (midday 0.51 / 0.63, 22 Oct 0.80 / 0.81).
+
+### Every incident
+
+| UTC | kind | where | cause | class |
+|---|---|---|---|---|
+| 23:19:24-23:20:57 | transit_abort x4 -> sub-path 0 NOT mowed | dock route corners (0.1, -0.5), (-3.5, 1.1) | pivot drift 0.15-0.16 m (4 route-corner pivots in a row) | pivot drift (above) |
+| 23:22:48, 23:47:51 | boundary (MOWING) | NE corner (0.20, 4.30), base_link 0.21 / 0.23 m out, rear_left 0.45 (limit 0.41) | lap 0 on the line round the convex corner (0.06, 4.98): planned body 0.21 out + 0.2 m tracking overshoot; side-aware reverse 0.40 / 0.39 m, resumed both times | known (lap-0 convex corners); recovery works |
+| 23:24:31-23:25:24, 23:29:50-23:30:43 | transit_abort x4 twice -> sub-paths 6 and 11 NOT mowed | goals (-7.20, -0.33), (-7.24, -0.19) | K-turn back points 0.4-0.5 m outside the west line are off the route graph and lethal for Nav2 | fixed-not-deployed: `ws/edge-layout3` body cap 0.35 cuts these corners |
+| 23:26:43-23:27:18 | follow_path aborts, STUCK 23:26:59, blocked pivot, bumper skip | (-5.5..-5.7, -1.0), 0.5 m from the pole | MPPI 170 "Optimizer fail" + patience exceeded with the pole in the costmap; escape 0.30 m worked | fixed-not-deployed (edge-layout3 keep-out routing); 20 bumper hits on the pole this session |
+| 23:33:07, 23:34:03, 23:34:14 -> NEEDS_HELP | boundary (TRANSIT) | (-1.12, 1.17) 0.19 out; (-2.38, 0.17) 0.34 out of the area (inside the Dock path) | costmap-planner fallback to the K-turn start (-5.54, -2.52) ("goal off the route graph") cuts the area / dock-path junction | NEW: fallback transit to an off-network goal |
+| 23:44:45 | transit_abort | (-6.30, -0.98) | no progress 20 s on the costmap fallback beside the pole | pole geometry |
+| 23:45:40 NEEDS_HELP | route corner pivot refused x3 | (-6.31, -1.03), pole 0.5 m | behavior_server "Collision Ahead - Exiting Spin" x3 (7 in the session) | fixed-not-deployed: edge-layout3 0b55291 back-off 0.30 m + re-plan |
+| 23:46:13, 23:46:28 -> NEEDS_HELP; 23:49:40, 23:49:49 -> NEEDS_HELP; 00:18:00 | boundary | (-6.41..-6.45, -0.82..-1.24): base_link 0.02-0.07 m INSIDE, front_left 0.57-0.58 out (limit 0.57 = planned 0.37 + 0.20) | the lap-0 corner pivots at (-6.48, -0.78) / (-6.49, -0.69) are planned with the body 0.35-0.37 m out because the pole (0.50 m from the line) leaves no room; the nose swings out, a drifting pivot adds 0.2 m | fixed-not-deployed: edge-layout3 hard keep-out 0.40 (lap 0 leaves the line round the pole, no pivot next to it). The plan did go outside near the pole: body 0.37 m planned, 0.58 m driven |
+| 23:48:47-00:11:17 (10 transit_abort) | pivot drift at route corners | all over the area | wet-turf pivots (above) | pivot drift |
+| 23:54:06 | boundary (MOWING) | (-6.17, 1.71) west line, rear_left 0.36 (limit 0.35), base_link 0.12 out | lap 0 on the line, retrace started, owner lifted the robot 7 s later | known (lap 0 on the line) |
+| 00:13:41, 00:13:47, 00:14:09 -> NEEDS_HELP; 00:23:33, 00:23:41 -> NEEDS_HELP | transit fallback left the corridor 0.37; boundary 0.26 / 0.25 / 0.19 / 0.17 out | (-2.8, -0.1) and (-2.7, 0.1): the area / Dock path junction again | same costmap fallback to the K-turn start, retried on every START | NEW (as 23:33) |
+| 00:26:16 STUCK | final-approach spin refused, stuck | (-5.96, -1.10), pole 0.5 m | Collision Ahead then no motion; escape 0.30 m worked | pole geometry |
+| 00:29:18 boundary, 00:29:35 STUCK, 00:30:09 boundary violation, 00:30:21-00:30:40 transit_abort x3 | SW K-turn / bank | (-5.87, -2.72) front_right 0.75 out (limit 0.74 = K-turn body 0.54 + 0.20); then (-6.45, -2.32) | the K-turn at (-5.81, -2.62) is still planned 0.54 m out (the conditioner logs it on every plan); the robot ends on the bank outside the line as on 22 Oct 20:21 and 20:49 | fixed-not-deployed (edge-layout3 cap 0.35); the bank itself is open |
+| 00:30:55 boundary (RETURNING_HOME) | (-6.54, -2.22) base_link 0.38 out | return triggered from outside the line; retrace; lift at 00:31:13 | consequence of the above |
+
+Obstacles and cameras: 417 `act` on-path decisions for the trunk/pole (footprint 257, corridor
+149) and 175 for a backpack produced no detour and no stop on the edge laps (there is no
+edge-lap go-around; `_try_detour` is rows only), and the robot hit the pole 20 times. 224 trunk
+decisions were `advisory` (off the corridor, B6 rule). Living classes: person / cat / dog ignored
+as "too far" or "not turning", no person wait. det_range 51k detection messages in 70 min
+(about 12 Hz over the four cameras), 4336 ranged boxes; stereo 34 ms per frame; obstacle_tracker
+saved 518 snapshots (7 per minute, worth a cap). No promotion.
+
+### Heading, health, controller
+
+| | this run | 23 Oct midday | 22 Oct midday |
+|---|---|---|---|
+| fused yaw - course (straights >= 1.5 m) | -0.56 +- 0.48 deg (n=20, 47.9 m) | -0.46 +- 1.50 (n=6) | -0.07 +- 0.21 |
+| paired lanes | -0.62 +- 0.70 deg, yaw trim +0.006 rad/s (n=2) | - | - |
+| ground / commanded, ground / MCU | 1.019 / 1.057 | 1.024 / 1.070 | 1.021 / 1.063 |
+| pivot measured / commanded CCW / CW | 0.60 / 0.73 | 0.51 / 0.63 | 0.80 / 0.81 |
+| COG innovation | +0.16 deg, sd 2.4 (n=705) | -0.01, sd 2.2 | +0.01, sd 2.0 |
+| offset over the session | -151 -> -168 deg; `virtual yaw diverging from the WIT yaw` up to -15 deg/min (00:04-00:07) with the stereo source active | <= 2 deg/min | 4-5 deg/min |
+
+The heading on straights is fine. The stereo-vs-WIT divergence is NEW and worth a look (the
+yaw source flips wit -> stereo at every START).
+
+- Memory at 00:32-00:34 (recording, idle after the lift): 1528-1531 MB available, swap 62 MB,
+  zram 64.9 MB in 14.3 MB (ratio 4.5), no OOM, supervisor restarts: rosbag2_recorder 5 (the
+  per-session respawns). Load 7.2 / 10.0 / 10.9 at 00:32, 5.1 / 8.4 / 10.2 at 00:34.
+- RSS / CPU: node_host cameras 260 MB / 67 %, perception 223 / 20, foxglove 211 / 22,
+  det_ros_cpp 201 / 18, mission_node 141 / 29, map_server 122 / 42, control host 117 / 32.
+- Controller: 135 misses of the 20 Hz target in 57 active minutes (2.4 per minute; midday 3.5),
+  min 7.4 Hz, 5 below 10 Hz; 60 of them in 23:20-23:30 with the 170 MPPI optimizer failures
+  beside the pole. 5 follow_path aborts (patience / no progress), all at the pole.
+- Cameras: stereo pairs and detector throughput as in the midday run; no starvation.
+
+### Direction
+
+Against 22 Oct midday (0 NEEDS_HELP, 0 skips, median pivot drift 0.037 m) and 23 Oct midday
+(1 NEEDS_HELP in 13 min, 19/39 drift) this run is worse: 6 NEEDS_HELP and 17 boundary trips in
+72 min, 47 % of pivots tripping the drift guard. What improved: the boundary recovery (every
+MOWING trip reversed and resumed; the TRANSIT trips recovered until the second within 1 m), the
+stuck escape (3/3), lap 0 on the line elsewhere (no trips on the long east and north legs), the
+blade staying on for inside-area transits, memory (1.5 GB free against 0.3 GB before the diet),
+and the heading. What did not: the pole corner and the SW K-turn are the same three spots as the
+morning and midday, now with a drift guard that turns wet turf into a transit_abort storm, and a
+stretch-retry loop that drives the robot through the dock-path junction to the same two 3-pose
+K-turn legs on every START.
+
+### Ranked fixes
+
+1. **Pivot drift guard (new work).** `spin_drift_m` 0.15 trips on normal wet-turf pivots. Raise it
+   to about 0.30 m, or judge the drift the way the boundary guard does (trip only when the body
+   drifts toward or over the line, else re-aim and continue), and stop the "twice -> skip" and
+   the transit_abort escalation for a drift that stays inside the area. Not on any branch;
+   edge-layout3's body cap reduces the exposure at corners but does not touch the guard.
+2. **Deploy `ws/edge-layout3`** after the full-mow sim gate on this map: the 0.40 hard keep-out
+   round the pole (the five pole-side trips, two NEEDS_HELP, the refused pivots), the 0.35 body
+   cap (the SW K-turn 0.54 and the two K-turn starts outside the line), the refused-pivot back-off
+   (23:45:40). Check in the gate that the 0.30 m back-off next to the pole / line does not itself
+   trip the body guard.
+3. **Stretch retries (new work).** Persist "cannot be bypassed" across STARTs, do not retry
+   connector stretches shorter than 0.5 m (the two K-turn legs), and never transit to a goal that
+   is off the drawn network (the costmap fallback through the dock-path junction caused 6 trips
+   and 3 NEEDS_HELP).
+4. **Re-plan keeps progress (new work).** A settings or name change discards the resume cursor
+   (27 m lost at 23:42); map the mowed poses geometrically instead.
+5. **Heading source (new work, investigate).** Stereo yaw diverging from the WIT yaw at up to
+   15 deg/min; keep the WIT source during pivots or gate the stereo yaw by its own quality.
+6. **Housekeeping.** Cap obstacle snapshots (518 per session); the `mow_progress` reset on a
+   NOT-mowed sub-path (midday) is still open.
+
+`ws/nogo` would make the pole corner worse as it stands: the 60 s static det marks and width
+discs add lethal cells where the plan already pins the robot between the pole and the line, so
+more refused pivots and MPPI failures until edge-layout3 moves lap 0 off that corner. Its
+bumper range fix is fine. `ws/dock-tweak` was not exercised (no dock attempt).
