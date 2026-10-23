@@ -227,10 +227,11 @@ def test_lateral_prealign_gets_back_on_axis_with_both_wheels():
     states = [o.state for o in w.outs]
     assert S.LATERAL_ALIGN in states and w.outs[-1].state == S.SEARCHING
     # 2026-10-21 night: the forward arc may not leave the dock corridor (approach 0.8 +
-    # 0.25 m). From 0.30 m off it gets part of the way, then the reverse controller does
-    # the rest; before the cap it drove out to 1.40 m and tripped the Dock path polygon.
-    assert max(xs) <= 0.8 + 0.25 + 0.02
-    assert abs(w.y) < 0.25 and abs(w.yaw) < math.radians(30)
+    # 0.25 m; 0.10 m since 2026-10-23). From 0.30 m off it gets part of the way, then the
+    # reverse controller does the rest; before the cap it drove out to 1.40 m and tripped
+    # the Dock path polygon.
+    assert max(xs) <= 0.8 + 0.10 + 0.02
+    assert abs(w.y) < 0.30 and abs(w.yaw) < math.radians(30)
     moving = [o for o in w.outs if o.state == S.LATERAL_ALIGN]
     assert both_wheels_ok(moving)
     assert all(abs(o.angular) <= 0.3 + 1e-9 for o in moving)
@@ -263,5 +264,6 @@ def test_full_dock_from_lateral_offset():
     m = dl.DockStateMachine(params(), dl.Pose2D(), dock_pose_measured=True)
     w = World(m, 0.8, -0.25, math.radians(5))
     out = w.run(200)
-    assert out.success and S.LATERAL_ALIGN in [o.state for o in w.outs]
+    # 2026-10-23: the marker is in view -> no pre-alignment, the KF + controller fix it
+    assert out.success and S.LATERAL_ALIGN not in [o.state for o in w.outs]
     assert both_wheels_ok(w.outs)

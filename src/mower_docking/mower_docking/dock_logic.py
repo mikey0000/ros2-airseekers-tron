@@ -714,7 +714,19 @@ class DockParams:
     rear_hold: bool = True
     rear_clear_s: float = 1.5
     rear_wait_max_s: float = 60.0
-    realign_forward_distance: float = 0.8
+    realign_forward_distance: float = 0.40
+    # 2026-10-23: the (shorter) realign forward drive arcs back toward the dock axis like
+    # LATERAL_ALIGN's forward phase (heading target -lateral_align_k * lateral, at most
+    # lateral_align_max_angle, both wheels >= wheel_floor; lateral dead-reckoned on odom from
+    # the pose-check estimate) instead of holding the docked heading, so the forward travel
+    # also removes lateral error. False = pure heading hold (before).
+    realign_steer: bool = True
+    # ... and only a BADLY off pose check drives further: distance = max(realign_forward_
+    # distance, realign_forward_per_lateral * |lateral|), at most realign_forward_max (and
+    # the corridor cap). 0.40 m covers up to 0.27 m lateral; the 2026-10-08 dusk 0.36 m case
+    # gets 0.54 m. per_lateral 0 = fixed realign_forward_distance.
+    realign_forward_per_lateral: float = 1.5
+    realign_forward_max: float = 0.65
     # FINAL_DOCKING budget exhausted without contact (2026-10-07 Home: the retry drove
     # forward off the pins 7 s before the contacts reported): hold still, then creep a bit
     # further, only then retry.
@@ -738,7 +750,14 @@ class DockParams:
     # onto it (both wheels >= wheel_floor), then reverse on RTK to approach_distance.
     lateral_align: bool = True
     lateral_align_require_rtk: bool = True
-    lateral_align_tolerance: float = 0.15
+    lateral_align_tolerance: float = 0.25
+    # 2026-10-23 midday (attempt 1: entered 42 deg off with the marker in view, drove 0.43 m
+    # forward to the corridor cap, lateral -0.21 -> -0.23 m, marker lost for good): only
+    # pre-align when it can help -- heading within this of the dock yaw and (when
+    # lateral_align_skip_if_marker) no marker in view; a visible marker goes straight to
+    # SEARCHING and the KF + reverse controller correct the lateral.
+    lateral_align_max_heading_deg: float = 15.0
+    lateral_align_skip_if_marker: bool = True
     lateral_align_done: float = 0.04
     lateral_align_heading_deg: float = 8.0
     lateral_align_speed: float = 0.12
@@ -778,7 +797,16 @@ class DockParams:
     # Forward manoeuvres (realign, retry, LATERAL_ALIGN) never take the robot further than
     # approach_distance + this from the dock (RTK; the "Dock path" corridor ends ~1.15 m out).
     # 0 = no cap.
-    forward_cap_margin: float = 0.25
+    forward_cap_margin: float = 0.10
+    # Search timeout within approach_skip_radius_m of the approach pose: first rotate in place
+    # to the dock heading and search again (no Nav2 leg, offset unchanged, no retry used);
+    # the offset Nav2 re-approach is only for a search that failed from the aligned pose.
+    inplace_search_retry: bool = True
+    # ALIGNING aims the rear camera at the marker's RTK position (dock pose measured, map
+    # pose available) instead of the bare dock yaw: the rear camera sees only +-25 deg
+    # (fx 684 px at 640 px) and reads 6.5 deg off, so 0.25 m off the axis at the approach
+    # pose the dock yaw leaves the marker at the image edge (sim: 0 detections in 15 s).
+    align_to_marker_bearing: bool = True
     # Operator joystick (/cmd_vel_teleop overrides /cmd_vel_docking in twist_mux): pause,
     # resume from the current pose once released for teleop_clear_s; fail after
     # teleop_wait_max_s. A joystick dock still ends DOCKED (contacts are checked first).
@@ -903,6 +931,8 @@ class DockStateMachine:
         self._lat_phase = 'forward'
         self._pose_checked = False
         self._search_n = 0                   # distinct marker detections this SEARCHING
+        self._inplace_done = False           # in-place search retry used for this approach
+        self._realign_lat = None             # (lateral, odom pose) at the realign start
 
     # -- helpers ---------------------------------------------------------
     def _enter(self, state: str, snap: Snapshot) -> None:
@@ -950,7 +980,13 @@ class DockStateMachine:
             return False
         e = rtk_dock_errors(snap.map_pose, self.dock_pose)
         off = e.lateral - self._offset
-        if abs(off) <= p.lateral_align_tolerance or abs(e.heading) > math.radians(45.0):
+        if abs(off) <= p.lateral_align_tolerance or \
+                abs(e.heading) > math.radians(p.lateral_align_max_heading_deg):
+            return False
+        if p.lateral_align_skip_if_marker and self._fresh_marker(snap) is not None:
+            self._notes.append('RTK: %.2f m off the approach line but the marker is in view: '
+                               'no lateral pre-alignment (the filter/controller correct it)'
+                               % off)
             return False
         self._lat_phase = 'forward'
         self._notes.append('RTK: %.2f m off the approach line (lateral %.2f, offset %.2f, '
@@ -1106,17 +1142,37 @@ class DockStateMachine:
             self._retry_distance = self.p.retry_forward_distance
         self._enter(DockState.RETRY, snap)
 
+    def _realign_steer_w(self, snap: Snapshot) -> float:
+        """Forward arc back toward the dock axis during a realign (lateral on odom)."""
+        p, g = self.p, self.p.gains
+        lat0, o0 = self._realign_lat
+        hy = self._hold_yaw
+        dx, dy = snap.odom.x - o0.x, snap.odom.y - o0.y
+        lat = lat0 - math.sin(hy) * dx + math.cos(hy) * dy
+        heading = wrap_angle(snap.odom.yaw - hy)
+        h_d = clamp(-p.lateral_align_k * lat, -p.lateral_align_max_angle,
+                    p.lateral_align_max_angle)
+        v = p.retry_speed
+        w_lim = g.max_angular if g.wheel_floor <= 0 else \
+            min(g.max_angular, max(0.0, v - g.wheel_floor) / (0.5 * g.track_width))
+        return clamp(g.kp_heading * wrap_angle(h_d - heading), -w_lim, w_lim)
+
     def _enter_realign(self, snap: Snapshot, err: DockErrors) -> None:
         """Forward along the dock heading, then search again (no retry consumed)."""
         self._realigns += 1
         self._realign = True
-        self._retry_distance = self.p.realign_forward_distance
+        p = self.p
+        want = p.realign_forward_distance
+        if p.realign_forward_per_lateral > 0:
+            want = max(want, min(p.realign_forward_max,
+                                 p.realign_forward_per_lateral * abs(err.lateral)))
+        self._retry_distance = want
         cap = self._forward_cap()
         if cap is not None:
             rem = self._rtk_remaining(snap)
             if rem is None:
                 rem = err.remaining
-            self._retry_distance = clamp(cap - rem, 0.0, self.p.realign_forward_distance)
+            self._retry_distance = clamp(cap - rem, 0.0, want)
         self._notes.append('pose check: off the dock axis (lateral %.2f m, heading %.1f deg):'
                            ' realign %d/%d' % (err.lateral, math.degrees(err.heading),
                                                self._realigns, self.p.max_realigns))
@@ -1126,6 +1182,7 @@ class DockStateMachine:
         self._kf.reset()
         if snap.odom is not None:
             self._hold_yaw = wrap_angle(snap.odom.yaw - err.heading)   # docked heading in odom
+        self._realign_lat = (err.lateral, snap.odom) if snap.odom is not None else None
 
     def _calibrate(self, snap: Snapshot) -> None:
         """docked_marker_offset = marker distance (at offset 0) at the last observation
@@ -1146,16 +1203,33 @@ class DockStateMachine:
             return None
         return math.hypot(snap.map_pose.x - self.approach.x, snap.map_pose.y - self.approach.y)
 
-    def _arrive(self, snap: Snapshot) -> None:
-        """At (or near) the approach pose: turn toward the dock yaw when the heading is
-        outside the marker gate, then SEARCHING lets the marker decide."""
+    def _align_yaw(self, snap: Snapshot) -> float:
+        """Map yaw to align to: rear camera on the marker (align_to_marker_bearing, dock
+        measured), else the dock yaw."""
+        d = self.dock_pose
+        if self.p.align_to_marker_bearing and self.dock_pose_measured and \
+                snap.map_pose is not None:
+            off = self.p.docked_marker_offset
+            mx, my = d.x - off * math.cos(d.yaw), d.y - off * math.sin(d.yaw)
+            dx, dy = mx - snap.map_pose.x, my - snap.map_pose.y
+            if math.hypot(dx, dy) > 0.3:
+                return wrap_angle(math.atan2(dy, dx) + math.pi)
+        return self.approach.yaw
+
+    def _arrive(self, snap: Snapshot, force_align: bool = False) -> None:
+        """At (or near) the approach pose: turn toward the dock yaw (rear camera on the
+        marker) when the heading is outside the marker gate (or align_tolerance_deg when
+        ``force_align``), then SEARCHING lets the marker decide."""
         if self.use_vision and snap.map_pose is not None and snap.odom is not None:
-            err = wrap_angle(self.approach.yaw - snap.map_pose.yaw)
-            if abs(err) > math.radians(self.p.max_yaw_error_deg):
+            err = wrap_angle(self._align_yaw(snap) - snap.map_pose.yaw)
+            lim = self.p.align_tolerance_deg if force_align else self.p.max_yaw_error_deg
+            if abs(err) > math.radians(lim):
                 self._enter(DockState.ALIGNING, snap)
                 self._align_target = wrap_angle(snap.odom.yaw + err)
                 self._heading_left = err
-                self._notes.append('heading %.0f deg off the dock yaw: aligning' % math.degrees(err))
+                self._notes.append('heading %.0f deg off the dock yaw%s: aligning' % (
+                    math.degrees(err), ' (marker bearing)' if self.p.align_to_marker_bearing
+                    and self.dock_pose_measured else ''))
                 return
         self._post_approach(snap)
 
@@ -1192,6 +1266,25 @@ class DockStateMachine:
             self.message = DockMsg.NAV_TO_DOCK_FAILED
         return []
 
+    def _inplace_retry(self, snap: Snapshot, el: float) -> bool:
+        """Search timed out close to the approach pose: rotate in place to the dock heading
+        and search again (once per approach) instead of a forced Nav2 re-approach."""
+        if not self.p.inplace_search_retry or self._inplace_done:
+            return False
+        d = self._dist_to_approach(snap)
+        if d is None or d > self.p.approach_skip_radius_m:
+            return False
+        self._inplace_done = True
+        self._lat_done = True        # no forward pre-alignment on the in-place retry
+        self._obs = []
+        self._last_err = None
+        self._kf.reset()
+        self._notes.append('no usable marker after %.0f s of searching (%d detection(s)), '
+                           '%.2f m from the approach pose: aligning in place and searching '
+                           'again (no Nav2 leg)' % (el, self._search_n, d))
+        self._arrive(snap, force_align=True)
+        return True
+
     def _go_to_approach(self, snap: Snapshot, force: bool = False) -> List[tuple]:
         """Nav2 to the approach pose unless already within approach_skip_radius_m (and not
         ``force``: a re-approach after a failed search must actually re-position)."""
@@ -1206,6 +1299,7 @@ class DockStateMachine:
             return []
         self._relaxed_tried = False
         self._lat_done = False
+        self._inplace_done = False
         self._enter(DockState.NAV_TO_APPROACH, snap)
         return [('start_nav', self.approach_goal)]
 
@@ -1751,12 +1845,10 @@ class DockStateMachine:
             return self._out()
 
         if st == DockState.ALIGNING:
-            m = self._fresh_marker(snap)
-            if m is not None and self._gate(dock_errors(m, self.p.docked_marker_offset),
-                                            force=True):
-                self._notes.append('marker in gate while aligning: searching')
-                self._post_approach(snap)
-                return self._out()
+            # 2026-10-23 midday: a marker sighting ended the about-turn 42 deg off the dock
+            # yaw. Now only the heading tolerance (or the travel/time budget) ends it; the
+            # sighting is still recorded (blind_allowed / side).
+            self._fresh_marker(snap)
             if snap.odom is None or self._align_target is None:
                 self._post_approach(snap)
                 return self._out()
@@ -1824,6 +1916,8 @@ class DockStateMachine:
                 else:
                     # Owner rule: docking is driven by the rear marker; never reverse blind.
                     # Re-approach (Nav2 to the approach pose, about-turn, search again).
+                    if self._inplace_retry(snap, el):
+                        return self._out()
                     self._notes.append('no usable marker after %.0f s of searching (%d '
                                        'detection(s)): re-approaching (no blind reverse)'
                                        % (el, self._search_n))
@@ -1895,6 +1989,9 @@ class DockStateMachine:
             if el > self.p.retry_timeout_s:
                 self._fail(DockMsg.DOCK_MAXOUT, snap)
                 return self._out()
+            if self._realign and self.p.realign_steer and self._realign_lat is not None \
+                    and self._hold_yaw is not None and snap.odom is not None:
+                return self._out(self.p.retry_speed, self._realign_steer_w(snap))
             w = heading_hold(self._hold_yaw, snap.odom.yaw if snap.odom else None,
                              self.p.heading_hold_kp, g.max_angular) \
                 if self._hold_yaw is not None else 0.0

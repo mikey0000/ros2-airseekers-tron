@@ -510,6 +510,41 @@ Next: HOME from inside the dock pocket should reverse/creep (or drive straight o
 of pivoting; watch FINAL_DOCKING with the exemption for lateral offsets that never close the
 contacts (then tighten `final_max_lateral` 0.08).
 
+### Less forward driving before the reverse (2026-10-23, branch `ws/dock-tweak`)
+
+The trigger was the 2026-10-23 midday mow, attempt 1 (`docs/wheel_smoothness_field_tests.md`,
+df07940). A marker sighting ended ALIGNING 42° off the dock yaw. LATERAL_ALIGN then drove
+0.43 m forward to the 1.05 m cap, lateral −0.21 → −0.23 m. SEARCHING saw the marker in 0 of
+96 frames, and a forced Nav2 re-approach followed. The attempt lost 1 min 43 s. Stock has
+no forward pre-alignment past the corridor; ours had become the biggest forward mover.
+
+Changes (details and the parameter table in `src/mower_docking/README.md`, "Less forward
+driving"):
+
+- LATERAL_ALIGN only when heading ≤ 15° (was 45°) **and** no marker in view; tolerance
+  0.15 → 0.25 m.
+- A marker sighting no longer ends ALIGNING; only `align_tolerance_deg` does.
+- ALIGNING aims the rear camera at the marker's RTK bearing (dock measured). Found in the sim:
+  the rear camera sees ±25° (fx 684 px at 640 px) and reads 6.5° off, so 0.25 m off the axis
+  the dock yaw left the marker out of frame. This also explains attempt 1's 0/96 frames
+  1.05 m out, 0.23 m off.
+- `forward_cap_margin` 0.25 → 0.10 (cap 0.90 m); `realign_forward_distance` 0.65 → 0.40,
+  up to 0.65 m only above 0.27 m lateral; the realign's forward leg arcs back toward the
+  axis.
+- A search timeout within 0.6 m of the approach pose first re-aligns in place and searches
+  again (no retry used), before the offset Nav2 re-approach.
+
+Sim dock-only, master → now (time / forward travel): straight on 20.8 s / 0 → 20.7 s / 0;
+0.25 m off axis 104.7 s / 4.16 m → 33.1 s / 0.42 m; 40° off (attempt 1) 19.9 s / 0.47 m →
+24.9 s / 0.41 m, with 0 m before DOCKING. real_run5 ideal gate x1 docked (15.8 s, no forward);
+it fails d (1 fallback nav) and i (body over plan), as the master-lineage `nogo/plain_x1`
+does (mow/transit criteria, not docking).
+
+Trade-off: from extreme gate-edge starts (0.45–0.5 m lateral within 1 m), and from the
+2026-10-08 dusk start (0.36 m lateral at 0.66 m), two 0.40 m realigns under the 0.90 m cap
+no longer reach the contacts in the unit closed loop. These are `xfail(strict)`. Field
+starts so far are ≤ 0.25 m.
+
 ## Field symptoms these findings explain (2026-10-20/21)
 
 - Dusk docking failed with "no usable marker", although the dock has a backlit marker. Without exposure control the camera cannot read it at dusk; stock varies the exposure.
