@@ -190,7 +190,9 @@ class DockingServer(Node):
                   'teleop_wait_max_s', 'lateral_align_max_heading_deg',
                   'lateral_align_skip_if_marker', 'inplace_search_retry',
                   'realign_steer', 'realign_forward_per_lateral', 'realign_forward_max',
-                  'align_to_marker_bearing'):
+                  'align_to_marker_bearing', 'near_check_remaining', 'near_check_max_lateral',
+                  'near_check_max_heading_deg', 'near_check_forward',
+                  'near_check_max_realigns'):
             decl(n, getattr(dp, n))
         decl('max_angular_accel', g.max_angular_accel)
         # 2026-10-21 stock-structure port (README "Stock structure port")
@@ -779,7 +781,9 @@ class DockingServer(Node):
                   'teleop_wait_max_s', 'lateral_align_max_heading_deg',
                   'lateral_align_skip_if_marker', 'inplace_search_retry',
                   'realign_steer', 'realign_forward_per_lateral', 'realign_forward_max',
-                  'align_to_marker_bearing'):
+                  'align_to_marker_bearing', 'near_check_remaining', 'near_check_max_lateral',
+                  'near_check_max_heading_deg', 'near_check_forward',
+                  'near_check_max_realigns'):
             extra[n] = type(getattr(dl.DockParams, n))(p(n))
         return dl.DockParams(
             **extra,

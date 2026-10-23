@@ -176,6 +176,16 @@ mower_docking:
     final_max_heading_deg: 12.0    # (camera yaw corrected; 8 deg on single detections failed every check)
     pose_check_median_n: 5
     max_realigns: 2                # per goal; does not consume max_retries
+    # Near-field check (stock FINE_TUNING: < 0.018 m / 9 deg below 0.25 m, else 0.5 m forward):
+    # once per approach at near_check_remaining (filter) with the marker in view, the median of
+    # the last pose_check_median_n detections must be within these before the blind finish;
+    # else forward near_check_forward (corridor cap, arcing toward the axis) and re-approach,
+    # at most near_check_max_realigns per goal. 2026-10-23: blind 4.9-9.6 cm off, no contact.
+    near_check_remaining: 0.25     # 0 = off
+    near_check_max_lateral: 0.02
+    near_check_max_heading_deg: 9.0
+    near_check_forward: 0.50
+    near_check_max_realigns: 2
     realign_forward_distance: 0.40 # 2026-10-23: was 0.65 (less forward driving)
     realign_forward_per_lateral: 1.5  # badly off: max(0.40, 1.5 x |lateral|) ...
     realign_forward_max: 0.65      # ... at most this (and the corridor cap)

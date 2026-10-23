@@ -167,7 +167,7 @@ def test_marker_lost_long_holds_after_prediction_window():
 
 def test_pose_check_realigns_when_off():
     p = params(lateral_align=False, final_max_lateral=0.05, final_max_heading_deg=8.0,
-               realign_forward_distance=0.65)
+               realign_forward_distance=0.65, near_check_remaining=0.0)
     p.gains.k_lateral = 0.0          # controller does not correct: the check must catch it
     p.gains.kp_heading = 0.0
     m = dl.DockStateMachine(p, dl.Pose2D(), dock_pose_measured=True)

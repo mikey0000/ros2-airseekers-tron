@@ -914,8 +914,8 @@ _EDGE_XFAIL = pytest.mark.xfail(strict=True, reason='2026-10-23 shorter realign 
 
 
 @pytest.mark.parametrize('x0,y0,th0', [
-    pytest.param(1.0, 0.5, math.radians(24), marks=_EDGE_XFAIL),
-    pytest.param(1.0, -0.5, math.radians(24), marks=_EDGE_XFAIL),
+    # 2026-10-23 dock-lateral: the near-field check's 0.5 m realign brings these back in
+    (1.0, 0.5, math.radians(24)), (1.0, -0.5, math.radians(24)),
     pytest.param(0.8, 0.45, -math.radians(24), marks=_EDGE_XFAIL),
     (1.4, -0.5, -math.radians(24)), (0.8, 0.0, 0.0)])
 def test_vision_docking_tolerates_gate_edge_start(x0, y0, th0):
@@ -1100,7 +1100,10 @@ def _closed_loop(x0, y0, th0, noise_frame=None, **kw):
 
 
 def test_converges_from_half_metre_8cm_8deg_without_realign():
-    out, m, (lat, hdg), t, details = _closed_loop(0.5, 0.08, math.radians(8))
+    # the controller alone (k_lateral 2.5 leaves ~2.5 cm here, which the near-field check
+    # would send round once more: test_dock_lateral_2026_10_23)
+    out, m, (lat, hdg), t, details = _closed_loop(0.5, 0.08, math.radians(8),
+                                                  near_check_remaining=0.0)
     assert out.success and m._realigns == 0 and m.retries == 0
     assert abs(lat) < 0.025 and abs(math.degrees(hdg)) < 2.0
     assert t < 15.0
@@ -1137,7 +1140,7 @@ def test_speed_floor_keeps_stall_guard_armed():
 
 
 def test_moderate_error_at_final_zone_keeps_correcting_no_realign():
-    p = dl.DockParams(skip_nav_to_approach=True)
+    p = dl.DockParams(skip_nav_to_approach=True, near_check_remaining=0.0)   # the old final-zone rule
     m = dl.DockStateMachine(p, dl.Pose2D())
     m.start(dl.Snapshot(t=0.0))
     for i in range(4):   # 0.15 m out, 6 cm / 10 deg off: corrected while reversing
@@ -1435,8 +1438,7 @@ def _dusk_visible(t):
 @pytest.mark.parametrize('x0,y0,thd', [
     (0.62, -0.27, -29.0), (0.60, -0.29, -10.0),
     # 2026-10-23: 0.36 m off at 0.66 m with offset 0.242 leaves < 0.5 m under the 0.90 m cap
-    pytest.param(0.66, -0.36, -10.0, marks=pytest.mark.xfail(
-        strict=True, reason='2026-10-23 0.90 m forward cap')),
+    (0.66, -0.36, -10.0),      # docks again since the near-field check (2026-10-23 evening)
     (1.0, 0.30, 38.0)])
 def test_dusk_replay_docks_without_retry_or_blind_reverse(x0, y0, thd):
     p = dl.DockParams(skip_nav_to_approach=True, docked_marker_offset=0.242)
