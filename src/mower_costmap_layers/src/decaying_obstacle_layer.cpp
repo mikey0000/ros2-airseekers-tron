@@ -41,9 +41,17 @@ public:
     }
     declareParameter("decay_time", rclcpp::ParameterValue(5.0));
     node->get_parameter(name_ + ".decay_time", decay_time_);
-    RCLCPP_INFO(node->get_logger(), "%s: marks decay after %.1f s (<= 0: never)",
-      name_.c_str(), decay_time_);
+    // option C (2026-10-23): clearable false = the clear_around / clear_except costmap
+    // services (which clear only isClearable() layers) leave this layer's marks alone; the
+    // mission's bumper / blocked retries clear only the 5 s obstacle_layer that way, never the
+    // 60 s static det marks or the bumper marks. clear_entirely still resets every layer.
+    declareParameter("clearable", rclcpp::ParameterValue(true));
+    node->get_parameter(name_ + ".clearable", clearable_);
+    RCLCPP_INFO(node->get_logger(), "%s: marks decay after %.1f s (<= 0: never), %s",
+      name_.c_str(), decay_time_, clearable_ ? "clearable" : "not clearable");
   }
+
+  bool isClearable() override {return clearable_;}
 
   void reset() override
   {
@@ -108,6 +116,7 @@ private:
   }
 
   double decay_time_{5.0};
+  bool clearable_{true};
   std::unordered_map<int64_t, double> stamps_;
 };
 
