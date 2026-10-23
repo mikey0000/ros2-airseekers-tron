@@ -445,6 +445,14 @@ class TransitMixin:
             return False
         rl['turned'], rl['purpose'] = rl['i'], purpose
         rl['pivot'] = (heading, lim - ROUTE_CORNER_TOL_RAD)
+        if purpose == 'route' and self.mission is not None:
+            # option C: pre-pivot sweep check against the no-go zones / static marks
+            g = self._nogo_pivot_gate('route', ('corner', round(leg[0][0], 2),
+                                                round(leg[0][1], 2)), delta)
+            if g is True:
+                return True
+            if g is not None:
+                delta = g
         self._log('info', 'route corner at (%.2f, %.2f): stop and pivot %.0f deg to the next '
                           'leg (%d/%d), then follow it'
                   % (leg[0][0], leg[0][1], math.degrees(delta), rl['i'] + 1, len(rl['legs'])))
@@ -479,12 +487,13 @@ class TransitMixin:
                 return
         self._send_route_leg(purpose)
 
-    def _safe_backoff(self, dist):
+    def _safe_backoff(self, dist, pose=None):
         """The longest straight reverse <= ``dist`` (0.05 m steps) whose poses all keep the
         body within its boundary limits with hard_boundary_body_clear_m to spare (field
         2026-10-23: back-offs beside the pole / the line must not trip the boundary guard);
-        0 = no room (under 0.10 m). Without a body check (drawn path, no snapshot): ``dist``."""
-        pose = self.inputs.pose
+        0 = no room (under 0.10 m). Without a body check (drawn path, no snapshot): ``dist``.
+        ``pose``: from there instead of the robot's pose (the pre-pivot check, option C)."""
+        pose = self.inputs.pose if pose is None else pose
         if dist <= 0.0 or pose is None or len(pose) < 3:
             return 0.0
         mode = self._hb_body_mode(pose)
@@ -731,6 +740,9 @@ class TransitMixin:
         if a.purpose == 'heading_cal':
             self._hcal_result(outcome)
             return
+        if a.purpose in ('nogo_step', 'nogo_detour'):    # option C maneuvers / edge detour
+            self._nogo_action_done(a, outcome)
+            return
         if a.purpose == 'dock_route':
             self._dock_route_result(outcome, nav2_down)
             return
@@ -921,6 +933,10 @@ class TransitMixin:
                 pf = int(self.p.detour_unclassified_after)
                 static = self._static_recent()
                 collided = self._collision_recent()
+                if (collided or static or self.inputs.cm_stop_since is not None) and \
+                        self._edge_lap(m.sub_i) and self._nogo_edge_detour(
+                            prog, 'follow_path %s, obstacle on the lap' % outcome):
+                    return     # option C / B6: detour inward around it, rejoin, no stop-wait
                 if self.p.edge_blocked_skip and (collided or self.inputs.cm_stop_since
                                                  is not None) and self._edge_lap(m.sub_i):
                     self._edge_skip(prog, 'follow_path %s, collision ahead' % outcome)

@@ -121,9 +121,13 @@ class PhaseDispatchMixin:
                 self._track_progress()
                 if self._leg_watch():
                     return
+                if self._nogo_tick():
+                    return
             self._tick_blade()
         elif ph == 'TRANSIT' and self.mission is not None and self.mission.step == 'transit':
             if self._transit_nav_progress_tick():
+                return
+            if self._nogo_tick():
                 return
             self._fallback_corridor_tick()
         elif ph == 'BOUNDARY_PAUSED' and self.mission is not None:

@@ -28,6 +28,7 @@ from mower_mission.fsm.guards.stuck import StuckGuardMixin
 from mower_mission.fsm.guards.tilt import TiltGuardMixin
 from mower_mission.fsm.guards.boundary import BoundaryGuardMixin
 from mower_mission.fsm.guards.spin_drift import SpinDriftGuardMixin
+from mower_mission.fsm.phases.nogo import NogoMixin
 
 
 class MissionFSM(PreviewMixin,
@@ -48,7 +49,8 @@ class MissionFSM(PreviewMixin,
                  StuckGuardMixin,
                  TiltGuardMixin,
                  BoundaryGuardMixin,
-                 SpinDriftGuardMixin):
+                 SpinDriftGuardMixin,
+                 NogoMixin):
     """See module docstring."""
 
     def __init__(self, params=None, cursor=None, now=0.0, alternate_counts=None):
@@ -298,8 +300,8 @@ class MissionFSM(PreviewMixin,
             return False
         if m.step in ('dyn_wait', 'retry_wait', 'blocked_wait'):
             return True
-        if m.step == 'pivot_backout' and keep_obs:
-            return True
+        if m.step in ('pivot_backout', 'nogo_step', 'nogo_replan') and keep_obs:
+            return True              # option C maneuvers / re-plan stop inside the area
         return m.step == 'transit' and m.blade_transit
 
     def _soft_blade_off(self, reason):

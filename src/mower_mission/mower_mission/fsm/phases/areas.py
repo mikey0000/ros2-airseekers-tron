@@ -255,19 +255,24 @@ class AreasMixin:
             'edge_first': bool(st['edge_first']),
             **coverage_route_params(st)}}, purpose='coverage_params')
 
-    def _start_plan(self):
+    def _start_plan(self, purpose=None):
         m = self.mission
         area, run = m.areas[m.area_idx], m.runs[m.run_i]
         self._start_action(ACT_PLAN, {
             'outer_boundary': self._plan_outline(area.get('outer', [])),
-            'obstacles': [list(o) for o in area.get('obstacles', [])],
+            # + no-go zones added mid-mow (option C, fsm/phases/nogo.py)
+            'obstacles': self._nogo_area_holes(m.area_idx),
             'mow_angle_deg': float(run['angle']),
-            'perpendicular': bool(run['perpendicular'])}, self.p.plan_timeout_s)
+            'perpendicular': bool(run['perpendicular'])}, self.p.plan_timeout_s,
+            purpose=purpose)
 
     def _on_plan(self, outcome, result):
         m = self.mission
         if outcome == UNAVAILABLE:
             self._mission_failed('/plan_coverage action server unavailable')
+            return
+        if m.nogo_replan is not None:          # option C mid-mow re-plan
+            self._nogo_on_plan(outcome, result)
             return
         subpaths = self._plan_subpaths(outcome, result)
         if not subpaths:

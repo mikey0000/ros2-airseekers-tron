@@ -13,6 +13,7 @@
   <license>GPL-3.0-or-later</license>
 
   <exec_depend>mower_common</exec_depend>
+  <exec_depend>mower_map</exec_depend>
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>rosgraph_msgs</exec_depend>

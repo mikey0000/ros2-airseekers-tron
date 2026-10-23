@@ -508,6 +508,9 @@ class Inputs:
     loc_state: str = ''
     loc_reason: str = ''
     loc_stamp: Optional[float] = None
+    # 2026-10-23 option C: /obstacle_tracker/nogo_zones (nogo.ZoneSet) + receipt time
+    nogo_zones: Any = None
+    nogo_stamp: Optional[float] = None
 
 
 @dataclass
@@ -1205,6 +1208,31 @@ class Params:
     loc_status_timeout_s: float = 5.0
     loc_resume_s: float = 3.0
     loc_hold_max_s: float = 600.0
+    # ---- 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py) ----
+    nogo_enabled: bool = True
+    nogo_zones_max_age_s: float = 10.0       # /obstacle_tracker/nogo_zones receipt age
+    # mid-mow re-plan around a zone (pending / accepted) on the remaining path of the area
+    nogo_replan: bool = True
+    nogo_replan_states: list = field(default_factory=lambda: ['pending', 'accepted'])
+    nogo_replan_pad_m: float = 0.10          # footprint growth for the on-path test
+    nogo_replan_min_interval_s: float = 60.0
+    nogo_replan_max_per_area: int = 3
+    nogo_replan_check_s: float = 1.0         # on-path test rate
+    nogo_progress_tol_m: float = 0.02        # + swath/2: a re-plan pose that counts as mowed
+    # pre-pivot sweep check (coverage pivots, K-turn about-turns, route corners)
+    nogo_pivot_check: bool = True
+    nogo_pivot_backup_m: float = 0.30        # (b) / (c) back-up, capped by the body limits
+    nogo_pivot_shifts_m: list = field(default_factory=lambda: [0.3, 0.15, -0.15])   # (d)
+    nogo_pivot_max_maneuvers: int = 2        # per pivot, then (e) re-plan / skip
+    nogo_move_speed_mps: float = 0.10        # maneuver back-up / drive (both wheels >= 0.06)
+    # edge laps (B6, owner): detour inward around a zone / static mark on the lap, rejoin
+    nogo_edge_detour: bool = True
+    nogo_edge_lookahead_m: float = 2.5
+    nogo_edge_clearance_m: float = 0.10
+    # bumper / blocked retries clear only the clearable 5 s obstacle layer (Nav2
+    # clear_around_*_costmap; static_det_layer and bumper_layer are not clearable), not the
+    # whole costmaps (the 60 s det marks and bumper marks were wiped just when they mattered)
+    clear_costmaps_selective: bool = True
 
     @classmethod
     def from_dict(cls, d):
@@ -1290,6 +1318,19 @@ class Mission:
     pivot_backout_key: Optional[tuple] = None   # (area, sub, local) already backed out for
     edge_skipped_m: float = 0.0                 # edge-lap metres skipped (this mission)
     edge_laps: dict = field(default_factory=dict)   # (area, sub) -> is an edge lap
+    # 2026-10-23 option C (fsm/phases/nogo.py)
+    nogo_extra: dict = field(default_factory=dict)      # area -> zone polygons added mid-mow
+    nogo_replans: dict = field(default_factory=dict)    # area -> re-plans
+    nogo_last_replan: float = -1e9
+    nogo_replan: Any = None                     # in-flight re-plan context
+    nogo_check_at: float = -1e9
+    nogo_seq: Any = None                        # pre-pivot maneuver in flight
+    nogo_tries: dict = field(default_factory=dict)      # pivot key -> maneuvers
+    nogo_route_aborts: set = field(default_factory=set)
+    nogo_turns: int = 0                         # pivots re-routed by the sweep check
+    nogo_detour: Any = None                     # edge detour in flight
+    nogo_detoured: set = field(default_factory=set)
+    nogo_edge_detours: int = 0
 
 
 @dataclass
@@ -1345,7 +1386,7 @@ def blade_allowed(fsm):
     m = fsm.mission
     if m is None:
         return False
-    if fsm.phase == 'MOWING' and m.step in ('spinup', 'follow', 'corner_pivot'):
+    if fsm.phase == 'MOWING' and m.step in ('spinup', 'follow', 'corner_pivot', 'nogo_detour'):
         return True
     # continuous blade policy: waits / retries / in-area transits inside the area
     return fsm._blade_keep_ok()
