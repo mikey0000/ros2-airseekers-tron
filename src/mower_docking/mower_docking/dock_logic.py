@@ -802,6 +802,11 @@ class DockParams:
     # to the dock heading and search again (no Nav2 leg, offset unchanged, no retry used);
     # the offset Nav2 re-approach is only for a search that failed from the aligned pose.
     inplace_search_retry: bool = True
+    # ALIGNING aims the rear camera at the marker's RTK position (dock pose measured, map
+    # pose available) instead of the bare dock yaw: the rear camera sees only +-25 deg
+    # (fx 684 px at 640 px) and reads 6.5 deg off, so 0.25 m off the axis at the approach
+    # pose the dock yaw leaves the marker at the image edge (sim: 0 detections in 15 s).
+    align_to_marker_bearing: bool = True
     # Operator joystick (/cmd_vel_teleop overrides /cmd_vel_docking in twist_mux): pause,
     # resume from the current pose once released for teleop_clear_s; fail after
     # teleop_wait_max_s. A joystick dock still ends DOCKED (contacts are checked first).
@@ -1198,16 +1203,33 @@ class DockStateMachine:
             return None
         return math.hypot(snap.map_pose.x - self.approach.x, snap.map_pose.y - self.approach.y)
 
-    def _arrive(self, snap: Snapshot) -> None:
-        """At (or near) the approach pose: turn toward the dock yaw when the heading is
-        outside the marker gate, then SEARCHING lets the marker decide."""
+    def _align_yaw(self, snap: Snapshot) -> float:
+        """Map yaw to align to: rear camera on the marker (align_to_marker_bearing, dock
+        measured), else the dock yaw."""
+        d = self.dock_pose
+        if self.p.align_to_marker_bearing and self.dock_pose_measured and \
+                snap.map_pose is not None:
+            off = self.p.docked_marker_offset
+            mx, my = d.x - off * math.cos(d.yaw), d.y - off * math.sin(d.yaw)
+            dx, dy = mx - snap.map_pose.x, my - snap.map_pose.y
+            if math.hypot(dx, dy) > 0.3:
+                return wrap_angle(math.atan2(dy, dx) + math.pi)
+        return self.approach.yaw
+
+    def _arrive(self, snap: Snapshot, force_align: bool = False) -> None:
+        """At (or near) the approach pose: turn toward the dock yaw (rear camera on the
+        marker) when the heading is outside the marker gate (or align_tolerance_deg when
+        ``force_align``), then SEARCHING lets the marker decide."""
         if self.use_vision and snap.map_pose is not None and snap.odom is not None:
-            err = wrap_angle(self.approach.yaw - snap.map_pose.yaw)
-            if abs(err) > math.radians(self.p.max_yaw_error_deg):
+            err = wrap_angle(self._align_yaw(snap) - snap.map_pose.yaw)
+            lim = self.p.align_tolerance_deg if force_align else self.p.max_yaw_error_deg
+            if abs(err) > math.radians(lim):
                 self._enter(DockState.ALIGNING, snap)
                 self._align_target = wrap_angle(snap.odom.yaw + err)
                 self._heading_left = err
-                self._notes.append('heading %.0f deg off the dock yaw: aligning' % math.degrees(err))
+                self._notes.append('heading %.0f deg off the dock yaw%s: aligning' % (
+                    math.degrees(err), ' (marker bearing)' if self.p.align_to_marker_bearing
+                    and self.dock_pose_measured else ''))
                 return
         self._post_approach(snap)
 
@@ -1260,7 +1282,7 @@ class DockStateMachine:
         self._notes.append('no usable marker after %.0f s of searching (%d detection(s)), '
                            '%.2f m from the approach pose: aligning in place and searching '
                            'again (no Nav2 leg)' % (el, self._search_n, d))
-        self._arrive(snap)
+        self._arrive(snap, force_align=True)
         return True
 
     def _go_to_approach(self, snap: Snapshot, force: bool = False) -> List[tuple]:

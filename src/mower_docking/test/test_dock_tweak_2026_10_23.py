@@ -44,7 +44,8 @@ def test_new_defaults_and_yaml_agree():
               'realign_forward_distance', 'approach_distance', 'approach_skip_radius_m',
               'realign_forward_per_lateral', 'realign_forward_max'):
         assert y[n] == pytest.approx(getattr(p, n)), n
-    for n in ('lateral_align_skip_if_marker', 'inplace_search_retry', 'realign_steer'):
+    for n in ('lateral_align_skip_if_marker', 'inplace_search_retry', 'realign_steer',
+              'align_to_marker_bearing'):
         assert y[n] is getattr(p, n), n
 
 
@@ -153,3 +154,25 @@ def test_field_2026_10_23_attempt1_replay():
     # at most one 0.40 m pose-check realign afterwards (was up to 0.65 m)
     assert forward_travel(w.outs) <= 0.40 + 0.01 and m.retries == 0
     assert both_wheels_ok(w.outs)
+
+
+def test_aligning_aims_the_rear_camera_at_the_marker():
+    """Sim 2026-10-23 off25: 0.25 m off the axis at the approach pose, aligned to the dock
+    yaw, the marker sat outside the +-25 deg rear camera: 0 detections in 15 s, twice."""
+    m = dl.DockStateMachine(params(skip_nav_to_approach=False), dl.Pose2D(),
+                            dock_pose_measured=True, goal_timeout_s=400.0)
+    snap = dl.Snapshot(t=0.0, map_pose=dl.Pose2D(0.8, 0.25, math.pi))
+    want = math.atan2(-0.25, -0.8 - 0.45) + math.pi
+    assert m._align_yaw(snap) == pytest.approx(dl.wrap_angle(want))      # ~ +11 deg
+    assert dl.DockStateMachine(params(align_to_marker_bearing=False), dl.Pose2D(),
+                               dock_pose_measured=True)._align_yaw(snap) == 0.0
+    global CAM_HALF_FOV
+    old, CAM_HALF_FOV = CAM_HALF_FOV, math.radians(25.0)
+    try:
+        w = FovWorld(m, 0.8, 0.25, math.pi)
+        out = w.run(300)
+    finally:
+        CAM_HALF_FOV = old
+    notes = [n for o in w.outs for n in o.notes]
+    assert out.success and m.retries == 0, notes
+    assert not any('no usable marker' in n for n in notes)

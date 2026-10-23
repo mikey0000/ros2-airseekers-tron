@@ -157,6 +157,7 @@ mower_docking:
     align_max_travel: 0.4          # m, then SEARCHING anyway (the marker decides)
     align_timeout_s: 25.0
     align_tolerance_deg: 10.0      # stop turning within this of the dock yaw
+    align_to_marker_bearing: true  # dock measured: align the rear camera onto the marker's RTK bearing (+-25 deg FOV)
     # Reverse controller tolerance for a gate-edge start (25 deg / 0.5 m)
     turn_slow_err: 0.5             # rad heading-tracking error -> reverse speed at the floor
     min_turn_speed: 0.035          # m/s reverse speed floor; > stall_min_cmd so the guard stays armed
