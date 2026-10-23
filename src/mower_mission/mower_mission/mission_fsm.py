@@ -4,6 +4,7 @@ Mission, helpers), fsm/core.py (MissionFSM) and its mixins in fsm/phases, fsm/gu
 fsm/holds.py, fsm/retry.py, fsm/commands.py. Every name stays importable from here."""
 
 from mower_mission.fsm.common import (  # noqa: F401
+    COLLISION_ERROR_CODES, collision_result,
     ABORTED, ACT_BACKUP, ACT_DOCK, ACT_DRIVE, ACT_FOLLOW, ACT_NAV, ACT_PLAN, ACT_SPIN,
     ACT_UNDOCK, AREA_SETTINGS_DEFAULTS, Any, AreaCursor, BLADE_POLICIES, BladeOff, BladeOn,
     CANCELED, CMD_DELETE_MAPS, CMD_HOME, CMD_MANUAL_MOW, CMD_RECORD_AREA, CMD_RECORD_CANCEL,
@@ -24,10 +25,10 @@ from mower_mission.fsm.common import (  # noqa: F401
     STATE_IDLE, STATE_MANUAL_MOWING, STATE_NULL, STATE_RECORDING, STEREO_STALE_SUB,
     STUCK_NEEDS_HELP_SUB, STUCK_PHASES, SUB_MANUAL_BLADE_OFF, SUB_MANUAL_BLADE_ON, SUCCEEDED,
     SaveAlternateCounts, SaveRecordingFallback, SaveResume, StartAction, SuppressStuckGuard,
-    TIMEOUT, TURN_TYPES, UNAVAILABLE, ZeroBurst, _COLLISION_MARKERS, _Pending,
+    TIMEOUT, TURN_TYPES, UNAVAILABLE, ZeroBurst, _Pending,
     _STEREO_STALE_RE, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, bbody, bisect,
     blade_allowed, blocked_text, condition_plan, coverage_route_params, dataclass, field, geo,
-    json, math, nav2_down_why, parse_collision_abort, parse_stereo_stale, pcond, re, rgeo,
+    json, math, nav2_down_why, parse_stereo_stale, pcond, re, rgeo,
     spin_target_yaw, subpath_offsets,
 )
 from mower_mission.fsm.core import MissionFSM  # noqa: F401

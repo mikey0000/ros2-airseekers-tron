@@ -176,24 +176,25 @@ def parse_stereo_stale(data, logger_name=b'local_costmap'):
     return float(mo.group(1)) if mo else None
 
 
-# Controller aborts caused by lethal costmap cells on the path ahead (Jazzy RPP
-# "RegulatedPurePursuitController detected collision ahead!", FTC "collision detected ...",
-# "lethal footprint collision"). A plain "Failed to make progress" is NOT one (grass stall).
-# 2026-10-09: MPPI (transit FollowPath) aborts with "Optimizer fail to compute path" only when
-# its cost critic flags EVERY sampled trajectory as colliding (data.fail_flag), i.e. blocked.
-_COLLISION_MARKERS = (b'collision ahead', b'collision detected', b'lethal footprint collision',
-                      b'Optimizer fail to compute path')
+# Controller aborts caused by lethal costmap cells on the path ahead, read from the action
+# result code (2026-10-23 code review 1.8; before, controller_server's /rosout text was
+# parsed). MPPI throws NoValidControl ("Optimizer fail to compute path") only when its cost
+# critic flags EVERY sampled trajectory as colliding, i.e. blocked; controller_server keeps
+# retrying for failure_tolerance (2 s) and then aborts FollowPath with PATIENCE_EXCEEDED (104),
+# or NO_VALID_CONTROL (106) without a tolerance. A plain FAILED_TO_MAKE_PROGRESS (105) is NOT
+# one (grass stall). NavigateToPose carries its BT's FollowPath code (behavior_trees
+# error_code_id="{follow_path_error_code}", bt_navigator error_code_names).
+COLLISION_ERROR_CODES = (104, 106)
 
 
-def parse_collision_abort(data, logger_name=b'controller_server'):
-    """True when a serialized rcl_interfaces/Log (raw /rosout bytes, or text) from
-    ``logger_name`` reports a costmap collision on the path ahead. Byte search only."""
-    if isinstance(data, str):
-        data = data.encode('utf-8', 'replace')
-    data = bytes(data)
-    if logger_name not in data:
+def collision_result(name, result):
+    """True when a FollowPath / NavigateToPose result reports the collision-blocked abort."""
+    if name not in (ACT_FOLLOW, ACT_NAV):
         return False
-    return any(mk in data for mk in _COLLISION_MARKERS)
+    try:
+        return int((result or {}).get('error_code', 0)) in COLLISION_ERROR_CODES
+    except (TypeError, ValueError):
+        return False
 
 
 def coverage_route_params(st):
@@ -483,7 +484,9 @@ class Inputs:
     # for N seconds": last receipt time + N (stale stereo -> controller aborts FollowPath)
     stereo_stale_s: Optional[float] = None
     stereo_stale_stamp: Optional[float] = None
-    # /rosout controller_server collision-ahead abort (parse_collision_abort): receipt time
+    # costmap collision evidence (2026-10-23, was /rosout text): a FollowPath / NavigateToPose
+    # abort with a collision result code (collision_result), or a /collision_monitor_state
+    # STOP (its start and its end): receipt time
     collision_stamp: Optional[float] = None
     # /cmd_vel_nav (the controller's command): (linear.x, angular.z) + receipt time
     nav_cmd: Optional[tuple] = None

@@ -63,6 +63,10 @@ bt_navigator:
     # DEVIATION: MowgliNext uses its own custom trees; we use the Nav2 defaults
     # until mowgli_behavior is ported.
     # DEVIATION: no enable_stamped_cmd_vel (unstamped Twist only).
+    # 2026-10-23 (code review 1.8): the trees write these (error_code_id ports) and the
+    # NavigateToPose result carries the code, so the mission sees a collision-blocked
+    # FollowPath (104 / 106) without parsing /rosout. Jazzy's default list, made explicit.
+    error_code_names: ["compute_path_error_code", "follow_path_error_code"]
 
 bt_navigator_navigate_through_poses_rclcpp_node:
   ros__parameters:

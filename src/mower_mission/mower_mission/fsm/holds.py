@@ -204,7 +204,8 @@ class HoldsMixin:
 
     def _collision_recent(self):
         c = self.inputs.collision_stamp
-        return c is not None and self._now - c <= self.p.collision_abort_window_s
+        return (c is not None and self._now - c <= self.p.collision_abort_window_s) or \
+            self.inputs.cm_stop_since is not None      # collision_monitor STOP right now
 
     # ---- path blocked (costmap collision / obstacle policy): wait, no retry ----
     def _blocked_cause(self):
