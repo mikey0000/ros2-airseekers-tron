@@ -136,7 +136,7 @@ The state machine above still applies, with these changes:
 
 ```
 NAV_TO_APPROACH ─► ALIGNING ─► [LATERAL_ALIGN] ─► SEARCHING ─► DOCKING ─► FINAL_DOCKING
-                                 RTK: > 0.15 m off      any         KF on the marker;
+                                 RTK: > 0.25 m off      any         KF on the marker;
                                  this attempt's line:   detection   lost: reverse on the
                                  forward arc, then                  prediction <= 2 s,
                                  reverse to 0.8 m                   then hold (8 s) -> RETRY
@@ -268,6 +268,54 @@ std_srvs/srv/Trigger` while the robot is on the dock sends it to
 stored yaw by more than 20°. `auto_apply_measured_dock_yaw: true` applies it after the next
 successful dock instead (off by default). GUI: bind it next to "Set docking point" in the
 dock settings card (mower_gui_bridge service passthrough); not wired yet.
+
+## Less forward driving before the reverse (2026-10-23, branch `ws/dock-tweak`)
+
+Owner request after the 2026-10-23 midday mow (`docs/wheel_smoothness_field_tests.md`).
+In attempt 1, a marker sighting ended ALIGNING 42° off the dock yaw. LATERAL_ALIGN then
+drove 0.43 m forward to the 1.05 m cap and fixed nothing (lateral −0.21 → −0.23 m), and it
+lost the marker. SEARCHING saw it in 0 of 96 frames, and a forced Nav2 re-approach
+followed (1.72 m forward, 0.46 m back). That cost 1 min 43 s.
+
+| rule | before | now |
+|---|---|---|
+| ALIGNING ends on a marker sighting | yes (inside the old gate) | no, only at `align_tolerance_deg` (or the travel/time budget) |
+| LATERAL_ALIGN heading limit | 45° | `lateral_align_max_heading_deg` 15° |
+| LATERAL_ALIGN with the marker in view | yes | no (`lateral_align_skip_if_marker`); the KF + reverse controller correct the lateral |
+| `lateral_align_tolerance` | 0.15 m | 0.25 m |
+| `forward_cap_margin` (cap = 0.8 + margin) | 0.25 (1.05 m) | 0.10 (0.90 m) |
+| `realign_forward_distance` | 0.65 m | 0.40 m; badly off: max(0.40, 1.5 × \|lateral\|) ≤ `realign_forward_max` 0.65 (and the cap) |
+| realign forward leg | heading hold | `realign_steer`: arcs back toward the axis (gain/limit of LATERAL_ALIGN, both wheels ≥ floor) |
+| ALIGNING target | dock yaw | rear camera on the marker's RTK bearing (`align_to_marker_bearing`, dock pose measured): the camera sees ±25° and reads 6.5° off, so at 0.25 m lateral the dock yaw put the marker out of frame |
+| search timeout within `approach_skip_radius_m` (0.6 m) | forced Nav2 re-approach (offset retry) | once per approach: rotate in place to the dock yaw and search again (`inplace_search_retry`, no retry used); a second failed search gets the offset Nav2 retry |
+
+These are unchanged: `approach_distance` 0.8, the both-wheels and 0.06 m/s floor rules, and
+the corridor cap.
+
+The trade-off: with 0.40 m realigns under a 0.90 m cap, starts that are extremely far off
+no longer reach the 4 cm contact window in the unit closed loop. Those are the gate-edge
+starts at 0.45–0.5 m lateral within 1 m, and the 2026-10-08 dusk start at 0.36 m lateral,
+0.66 m out. They are marked `xfail(strict)` in `test_dock_logic.py`. Nav2 + ALIGNING have
+not delivered starts like these in the field (≤ 0.25 m). From the approach pose,
+LATERAL_ALIGN now has only 0.10 m of forward room, so in practice it runs only when the robot
+is inside the approach distance with no marker in view.
+
+Sim (`accuracy-simout/dock-tweak/`, `run_dock.sh`, dock-only `scenario dock`, start at
+the approach pose facing the dock unless noted; forward = sim ground-truth forward travel):
+
+| scenario | master time / forward | now time / forward |
+|---|---|---|
+| straight on (0.8, 0, facing the dock) | 20.8 s / 0.00 m | 20.7 s / 0.00 m |
+| 0.25 m off axis | 104.7 s / 4.16 m (LATERAL_ALIGN to the cap, 2 Nav2 retries) | 33.1 s / 0.42 m (one pose-check realign) |
+| 40° off heading, 0.21 m off (attempt 1) | 19.9 s / 0.47 m (LATERAL_ALIGN 0.43 m) | 24.9 s / 0.41 m (0 before DOCKING, one realign) |
+| real_run5 ideal gate x1, dock phase | 14.1 s / 0 (e10ed95) | 15.8 s / 0, docked |
+
+In the sim, the marker stays in view after master's 0.43 m LATERAL_ALIGN in the 40° case,
+so master docks there. In the field it did not (0/96 frames).
+
+Tests: `test/test_dock_tweak_2026_10_23.py` (one test per rule, plus a replay of attempt 1
+with a 35° rear-camera field of view: no LATERAL_ALIGN, no Nav2, no forward drive before
+DOCKING).
 
 ## Undock
 
