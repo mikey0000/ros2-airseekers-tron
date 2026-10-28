@@ -664,7 +664,12 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
             # the tangent points must lie ON the drawn runs either side of this
             # corner (2026-10-16 sim gate: a dock-route fillet whose tangent point
             # projected onto another stretch left an 88 deg kink at the join)
+            # ... and on THIS corner's runs: path_projection is a global nearest-point
+            # search; a long tangent (near-U corner: t = r tan(turn / 2) = 6.3 m at 162 deg)
+            # landed on a later pass of the sub-path (field 2026-10-28 area 4 re-plan: a
+            # 0.03 m piece, s_prev ~1600 poses ahead, a 3.9 m hop to the next pivot)
             on_runs = (s1 <= s_lo + 1e-6 and s2 >= s_hi - 1e-6 and
+                       s2 <= s_hi + lim_out + p.tangent_tol_m and
                        geo.dist(geo._point_at(pts, cum, s1), T1) <= p.tangent_tol_m and
                        geo.dist(geo._point_at(pts, cum, s2), T2) <= p.tangent_tol_m)
             if not (on_runs and s1 >= s_prev - 1e-6 and s2 > s1):
@@ -819,6 +824,13 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
                 s_retrace = s_hi          # off the drawn line: no retrace back past it
         res.corners.append(c)
     pieces.append(('raw', s_prev, cum[-1]))
+    # backstop: a raw piece that runs backwards means a corner jumped past drawn path (the
+    # assembly would bridge it with one straight hop): not driven, logged
+    for pc in pieces:
+        if pc[0] == 'raw' and pc[2] < pc[1] - 0.05:
+            res.errors.append('conditioning skipped %.2f m of the drawn path at s %.2f'
+                              % (pc[1] - pc[2], pc[2]))
+            break
     _assemble(res, pts, cum, pieces, p)
     _validate(res, pts, raw_clr, region, req, p)
     return res

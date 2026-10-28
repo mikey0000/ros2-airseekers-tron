@@ -1400,6 +1400,38 @@ def blade_allowed(fsm):
     return fsm._blade_keep_ok()
 
 
+HOP_SPLIT_M = 0.6      # the bridge's transit gap (splitter DEFAULT_TRANSIT_GAP_M)
+
+
+def split_hops(subpaths, gap_m=HOP_SPLIT_M):
+    """Backstop (field 2026-10-28): split a densified forward sub-path at a single segment
+    longer than ``gap_m`` (an undensified hop; the robot orbited one). Reverse turn legs and
+    sparse (not densified: median step > 0.15 m) sub-paths are left alone. Returns
+    (subpaths, splits)."""
+    out, n = [], 0
+    for sp in subpaths:
+        sp = list(sp)
+        if len(sp) < 3 or geo.is_reverse_subpath(sp):
+            out.append(sp)
+            continue
+        steps = sorted(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(sp, sp[1:]))
+        if steps[len(steps) // 2] > 0.15:
+            out.append(sp)
+            continue
+        cur = [sp[0]]
+        for a, b in zip(sp, sp[1:]):
+            if math.hypot(b[0] - a[0], b[1] - a[1]) > gap_m:
+                if len(cur) >= 2:
+                    out.append(cur)
+                n += 1
+                cur = [b]
+            else:
+                cur.append(b)
+        if len(cur) >= 2:
+            out.append(cur)
+    return out, n
+
+
 def condition_plan(job):
     """Path conditioning of one coverage plan (pure; the node runs it off the FSM lock).
     ``job`` from MissionFSM._conditioning_job. Returns {'n_in', 'subpaths', 'cond',
@@ -1410,7 +1442,11 @@ def condition_plan(job):
     # swath-end Reeds-Shepp turns (forward / reverse legs of 0.3-0.9 m) -> the swath ->
     # connector -> swath geometry they connect (roadmap 3.2: one tracker path per swath
     # pair, the turn included; conditioned below: fillets where they fit, else pivots)
-    subpaths, joins = pcond.join_turn_chains(job['subpaths'], region, prm,
+    subpaths, nsplit = split_hops(job['subpaths'])
+    if nsplit:
+        logs.append(('warn', 'area %d: %d undensified hop(s) > %.1f m inside sub-paths: split '
+                             'there (the gap is a transit)' % (area, nsplit, HOP_SPLIT_M)))
+    subpaths, joins = pcond.join_turn_chains(subpaths, region, prm,
                                              leg_max_m=float(job['leg_max_m']))
     kept = [j for j in joins if not j.ok]
     if joins:
