@@ -782,7 +782,7 @@ def test_velocity_smoother_wider_than_cmd_vel_slew():
     assert vs["max_accel"][0] >= 1.0 and vs["max_accel"][2] >= 1.0
     assert vs["max_decel"][0] <= -1.5 and vs["max_decel"][2] <= -1.0
     assert vs["smoothing_frequency"] == 20.0 and vs["feedback"] == "OPEN_LOOP"
-    assert vs["deadband_velocity"] == [0.01, 0.0, 0.01]
+    assert vs["deadband_velocity"] == [0.01, 0.0, 0.002]
 
 
 def test_nongrass_layer_is_soft_and_below_inflation():

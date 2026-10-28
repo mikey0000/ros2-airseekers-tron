@@ -415,6 +415,50 @@ corner, pivot in place, follow on):
   with 10–18 m left") after the boundary retraces: a mission issue, not the tracker.
 
 
+## 11. 2026-10-28 weave retune
+
+Field bag 2026-10-28, straight swaths: cross-track p50 1.3 / p90 3.5 / max 9.9 cm, weave period
+about 6.4 s (1.3 m), commanded w ~ -3.98 e - 0.57 psi (underdamped), 37 % of the w variance
+MPPI sampling noise, and velocity_smoother's 0.01 rad/s angular deadband zeroing MPPI's small
+corrections. Three tweaks were tried, cumulative, in the sim (`real_run5`, x3 unless noted).
+Metrics on the 17 straight runs of the mow plan (56 m, >= 1.5 m long, 0.4 m trimmed at each
+end), cross-track of `/sim/ground_truth` to the planned line; w = `/cmd_vel_nav_raw` on those
+runs; band = rms of w in 0.1-0.3 Hz; e / arc = gate criterion e max and h arc p99.
+
+| Run | Config | XTE p50 / p90 / max cm | w std rad/s | band rms | e max m | h arc p99 m | Gate |
+|---|---|---|---|---|---|---|---|
+| w0-base | master, ideal | 0.41 / 1.12 / 2.97 | 0.036 | 0.014 | 0.060 | 0.041 | only i |
+| w1-6c-r2 | + deadband 0.002, ideal | 0.35 / 1.08 / 1.87 | 0.032 | 0.009 | 0.098 | 0.081 | only i |
+| w2-6b | + wz_std 0.2, ideal | 0.39 / 0.76 / 2.65 | 0.023 | 0.007 | 0.072 | 0.084 | only i |
+| w3-6a1 | + PathAlign orientations, ideal | 0.86 / 1.75 / 3.50 | 0.019 | 0.004 | 0.062 | 0.048 | only i (reverted) |
+| w4-6a2 | + PathAngle 0.05 rad / w 8, ideal | 0.38 / 0.73 / 2.39 | 0.027 | 0.008 | 0.083 | 0.080 | only i (reverted) |
+| w6-base-l | master, `-l` | 1.32 / 3.18 / 7.50 | 0.081 | 0.052 | 0.099 | 0.056 | only i |
+| w7-head-l-r2 | 6c + 6b, `-l` | 1.26 / 2.93 / 5.66 | 0.070 | 0.044 | 0.101 | 0.095 | only i |
+| w5-final | 6c + 6b, `-d -s 1 -x 1` | 1.24 / 3.79 / 10.79 | 0.090 | 0.064 | 0.133 | 0.091 | only i (a 0.087, b 0, docked) |
+
+- **The ideal sim barely weaves** (p90 1.1 cm): the field weave needs localisation error.
+  With `-l` / `-d` (loc_drift) the sim reproduces the field almost exactly (p90 3-4 cm, max
+  8-11 cm, w peak at 6.4 s with `-d`), and the stack's own map pose shows p90 2.5-3.0 cm, so
+  most of the field weave is the controller following the EKF map pose's 1-3 cm wander, not
+  an intrinsic MPPI oscillation. No controller retune removes that part; RTK / EKF smoothing
+  would.
+- **6c (deadband 0.01 -> 0.002)**: zeroed commands on the straights 35 % -> 7 %, 0.1-0.3 Hz
+  rms -35 %, max -37 %. Kept.
+- **6b (wz_std 0.3 -> 0.2)**: w std -28 %, XTE p90 -30 % (ideal). Kept.
+- **6a1 (PathAlignCritic use_path_orientations)**: removes the weave but the heading term
+  weakens the lateral pull: standing per-swath offsets up to 2.3 cm, absolute p90 doubles.
+  Reverted.
+- **6a2 (PathAngleCritic 0.05 rad, weight 8)**: no reduction in the sim (w std up), more
+  error on fillets. Reverted; its threshold is above the sim's heading error, so the sim
+  cannot show a field benefit either way.
+- **6c + 6b under `-l`**: p90 -8 %, max -25 %, per-swath max p90 6.2 -> 4.7 cm, w std -14 %.
+- **Cost: the saturated fillet after sub-path 0's 94 deg corner** (about (-0.5, 4.5), R about
+  0.5 m, w at the 0.3 limit). The head keeps more speed into it and runs wide: 0.084-0.116 m
+  in all four runs with 6c (w1, w2, w5, w7-r2), <= 0.05-0.07 m in four runs without it
+  (w0-base, w6-base-l and two other-branch ideal runs). h arc p99 0.08-0.095
+  (gate 0.10) and e stay in limits; watch that fillet in the field.
+
+
 ## References
 
 1. Nav2 MPPI README and source, jazzy branch:
