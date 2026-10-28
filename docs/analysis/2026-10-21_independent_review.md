@@ -80,6 +80,11 @@ See the table in `2026-10-21_stock_firmware_findings.md`. The gaps to stock:
 | B6 | **Owner override, not stock:** keep camera avoidance ON during edge laps, but act only on detections directly on the planned path in the way. Then detour around the obstacle (no stop-and-wait), mark it on the map, and rejoin the path. | Gate with an on-path obstacle in an edge lap: detour plus map tag, no stop; off-path detections ignored |
 | B7 | Log and bag integrity: split size, fsync, disk guard | 0 corrupt splits over 3 runs |
 | B8 | Deploy script writes a rollback tag and checks container health | A bad deploy can be rolled back in one command |
+| B9 | (2026-10-22 follow-up 3, dropped until 2026-10-29) `mcu_node` `odom_linear_scale`: scale the MCU-measured speed published on `/odom`, not the commands (`linear_scale`). Field 10-22: ground/odom 1.049; 10-28: 1.066 (varies with turf, re-check with `scripts/wheel_cal.py`). Prerequisite for GNSS smoothing in ekf_map. | Unit test; `wheel_cal.py` odom scale within 1 % of 1.0 on the next mow |
+| B10 | (2026-10-22 follow-up 3) Confirm the left/right motor label swap wheels-up and fix `MOTOR_NAMES`; pivot reversing-wheel deficit (3.0 vs 5.1 rpm) | Wheels-up check by the owner |
+| B11 | (2026-10-22 follow-up 4) Wire `DriveLoadDetector` (slip_detector feeds it, `/stuck_event` reason `drive_load`), log-only for 2 mows first | 2 field mows logged, no false events |
+| B12 | (2026-10-22 follow-up 2, owner) Blade-off / blade-on calibration drive (procedure in `2026-10-22_wheel_scale_and_motor_current.md`) to settle the yaw trim (~+0.007 rad/s, `cmd_vel_slew` `angular_trim_radps`) | `wheel_cal.py` on both halves |
+| B13 | (2026-10-29 localisation wander, `2026-10-29_localisation_wander.md`) Weave: (1) MPPI heading damping / control point ahead of the rotation centre, (2) GNSS smoothing in ekf_map (x/y process noise), (3) realistic sim localisation (fix latency ~0.1 s, effective antenna lever 0.072, no 2.5 cm jumps). Owner 2026-10-29: do (2) and (3) now, (1) after (3). | (3) sim reproduces field weave by the field mechanism; (2) field A/B; (1) sim + field |
 
 ## Risks flagged in in-progress work
 
