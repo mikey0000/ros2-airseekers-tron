@@ -375,7 +375,7 @@ controller_server:
       iteration_count: 1
       vx_std: 0.1
       vy_std: 0.0
-      wz_std: 0.3
+      wz_std: 0.2   # 2026-10-28 weave retune (was 0.3; transit uses 0.2): less sampling noise in w on straights
       vx_max: 0.3
       vx_min: 0.0
       vy_max: 0.0
