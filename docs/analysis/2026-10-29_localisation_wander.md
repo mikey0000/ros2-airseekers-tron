@@ -218,7 +218,7 @@ be tested.
    fix.
 7. **Faster or smoothed map -> odom:** nothing to gain (0.05 cm band).
 
-## 4. Why no change on this branch
+## 4. Why no change on this branch (at the time of the analysis; see §5)
 
 - The one localisation change with a large modelled effect (item 2) trades pose fidelity
   for smoothness. Its accuracy cost is 1-2 cm p90, plus bias, unless the odometry scale is
@@ -228,3 +228,152 @@ be tested.
   this localisation scope. They also change the gate's reference behaviour, so the owner
   should decide on them.
 - No sim runs were made: there was no change to compare against master.
+
+## 5. Follow-up on `ws/loc1029` (2026-10-29): B9, B13-3, B13-2
+
+The owner approved B9 and B13 (2) and (3) the same day. What changed:
+
+- **B9:** `mcu_node` `odom_linear_scale` 1.06.
+- **B13-3:** the sim `loc_model` field model.
+- **B13-2:** the `gnss_smoothing` switch, off by default.
+
+### 5.1 B13-3: the sim's field localisation model
+
+`loc_model:=field` is now the default whenever `loc_drift` is on (`-l` / `-d`).
+`-M legacy` gives the 2026-10-16 model. Details are in docs/simulation.md
+"Localisation drift". The model adds:
+
+- **Fix latency.** The map position is the GNSS antenna's position 0.1 s ago, minus the
+  0.098 m navsat lever along the current yaw.
+- **Rotation centre.** The sim drive turns about a point 0.026 m ahead of base_link.
+- **Track lag.** At speed the ground track lags the heading by 0.055 m.
+- **No RTK jumps.** The OU error and jitter are unchanged.
+- **Odometry.** Odom sees no lateral motion and has a 1 % scale error.
+
+The robot's 0.098 m lever is unchanged.
+
+Validation: master controller, `real_run5`, the 17 straight runs of `weave.py`. The
+mechanism columns come from `simmech.py`, which applies the §1 regression to
+/odometry/filtered_map against the ground truth and against DR.
+
+| | Field 10-28 | Sim legacy `-l` (w7-head-l-r2) | Sim field `-l` x3 | Sim field, no track lag | Sim field `-d -s 1 -x 1` (2 runs) |
+|---|---|---|---|---|---|
+| w spectral peak (s) | 6.4 | 4.3 | **6.4** | 3.2 | 6.4 |
+| XTE on truth p50 / p90 (cm) | 1.3 / 3.3-3.5 | 1.26 / 2.93 | 1.19 / 2.97 | 1.03 / 2.37 | 1.55-1.61 / 4.05-4.14 |
+| w band rms 0.1-0.3 Hz (rad/s) | | 0.044 | 0.053 | 0.031 | 0.089 (run 1) |
+| seen - DR band rms (cm) | 1.00 | 1.02 | 0.89 | 0.72 | 1.08-1.21 |
+| random part, band rms (cm) | 0.66-0.82 | 0.73 | 0.50 | 0.48 | 0.53-0.54 |
+| b, seen vs DR (m) | 0.107 | **0.121** | 0.166 | 0.138 | 0.111-0.122 |
+| b, seen vs truth (m) | | 0.126 | 0.090 | 0.117 | 0.036-0.047 |
+
+What the table shows:
+
+- **The §1 regression is biased in closed loop.**
+  - The legacy model has no in-loop lag by construction, yet the regression reads b about
+    0.12 m on it (w6-base-l: 0.12 as well).
+  - The controller turns in response to the pose noise, so the heading correlates with
+    the error.
+  - The field's 0.107 m is therefore not a clean measure of the in-loop lag. Only its
+    independently measured parts are firm: the 0.026 m lever (pivots) and the
+    0.02-0.025 m latency (velocity cross-correlation).
+- **The weave's frequency decides the model.**
+  - Only the model with the track lag weaves at the field's 6.4 s period. Without the
+    lag the w peak sits at 3.2 s and the cross-track is too small.
+  - So the 0.055 m stays, as a physical lag in the drive.
+- **Band power.** The random part is 0.50 cm against the field's 0.66-0.82 cm upper
+  bound. The total seen - DR band power is 0.89-1.08 cm against 1.00. The OU size was
+  left at 1.2 cm, which keeps the open-loop p90 at 1.57 cm against the field's 1.49.
+  Open-loop check of the field model: |lat| p50 0.65 / p90 1.57 cm, band 0.59 cm. The
+  legacy model gives 0.96 / 2.63 / 1.03 cm.
+- **Gate baselines.** These are in docs/simulation.md. With the field model the master
+  controller fails:
+  - e and h arc on the saturated fillet after sub-path 0's 94 deg corner (§11 of the MPPI
+    study already flagged that fillet; the track lag widens it);
+  - with `-d`, also **a**: 0.13-0.16 m outside at the SW K-turn, in both runs (legacy
+    0.087).
+
+  The field bag's own `outside_m` (map pose) exceeds 0.10 m on edge passes too (131
+  samples, max 0.20 m), so the new model is showing a real margin problem.
+
+### 5.2 B13-2: GNSS smoothing in ekf_map (field A/B switch)
+
+**Replay.** The 10-28 bag was replayed through the real robot_localization `ekf_node`,
+on sim time, x10, three filter instances at once:
+
+- `/odom` is rebuilt from `/odometry/filtered` vx (× 1.06, as with B9) and the yaw rate;
+- `/imu/data_aligned` is rebuilt from the fused yaw;
+- `/odometry/gps` is the RTK base in the map frame, with the 3 cm floor;
+- the `ekf_map` parameters are the committed ones, plus the overlay.
+
+The scripts are in the session scratchpad (`loc1029/rl/`).
+
+**Finding: the x/y process noise alone does nothing in robot_localization.** With
+mcu_node's odom twist covariance (vx 0.02 m²/s², vy not observed), the velocity
+uncertainty lets the position drift faster than the x/y process noise does. At q 1e-4 the
+pose stayed within 0.9 cm p90 of RTK and the modelled weave went *up* 4 %. The §3
+emulation had assumed exact odometry increments.
+
+The switch therefore also:
+
+- tightens `mcu_node` `odom_vx_variance` / `odom_vy_variance` to 1e-4;
+- fuses vy (= 0) in ekf_map (`odom0_config`).
+
+With those, robot_localization reproduces the emulation:
+
+| ekf_map (tight odom covariance) | Pose - RTK on straights p50 / p90 (cm) | While moving p90 (cm) | Along-track bias on straights (cm) | Lateral p90 (cm) | In-loop b (m) | Random band rms (cm) | Model weave (cm) |
+|---|---|---|---|---|---|---|---|
+| q 0.05 (today) | 0.10 / 0.24 | 0.25 | -0.00 | 0.15 | 0.099 | 0.82 | 2.16 |
+| **q 1e-4 (the switch)** | 0.83 / 1.70 | 2.03 | -0.10 | 1.40 | 0.067 | 0.57 | 1.15 (**-47 %**) |
+| q 2e-5 | 1.24 / 2.50 | 3.12 | -0.23 | 2.15 | 0.033 | 0.50 | 0.80 (-63 %) |
+| q 1e-4, odom NOT scaled (no B9) | 1.44 / 2.28 | 2.53 | **-1.18** | 1.44 | 0.073 | 0.56 | 1.19 (-45 %) |
+| q 1e-4, loose odom covariance | 0.42 / 0.87 | 0.98 | -0.02 | 0.51 | 0.102 | 0.84 | 2.28 (+4 %) |
+
+- **The lag.** Along-track bias divided by speed is 0.00 s with B9 and 0.06 s without it.
+  The fixed 0.1 s fix latency is not compensated by either setting.
+- **B9 is the prerequisite.** Without it the pose runs 1.2 cm behind RTK along the track.
+- **Phase gating (smooth only on MOWING straights, raw RTK when docking, undocking or
+  near the boundary): not done.** It is too complex for this step, for three reasons:
+  - robot_localization reads `process_noise_covariance` once at start. There is no
+    runtime switch.
+  - The runtime equivalent would be to inflate the GNSS measurement covariance per phase.
+    That also inflates ekf_map's reported pose covariance, which `localization_monitor`
+    reads. It would also need a separate `/odometry/gps` copy, because heading_aligner
+    reads that covariance.
+  - Boundary proximity needs a signed inside-distance, which map_server does not publish
+    (`outside_m` is 0 inside).
+
+  So `gnss_smoothing` is one switch for the whole run. That is acceptable for an A/B, not
+  for a default.
+- **Other effects of the switch:**
+  - ekf_node gets the tighter vx covariance as well;
+  - after a GNSS gap, or in RTK float (0.4 m sigma floor), the map pose re-converges
+    over seconds instead of at once;
+  - `initial_estimate_covariance` x/y 1 m² lets the first fixes after boot snap the pose
+    from (0, 0).
+
+### 5.3 Field A/B procedure (owner)
+
+1. **Before the A/B: deploy this branch as is.** That includes B9 (`odom_linear_scale`
+   1.06) and keeps `gnss_smoothing` off.
+2. **Mow A (off).** Do one normal full mow of Area 1 with the blade on and RTK fixed.
+3. **Run `scripts/wheel_cal.py <session>` on mow A.** Check that "ground / fused odom
+   speed" reads 1.00 ± 0.01. That is B9's acceptance; if it reads otherwise, adjust
+   `odom_linear_scale` first. Note:
+   - "weave: RTK lateral about the swath line" p50 / p90 (10-28: 0.84 / 2.09 cm);
+   - "map pose - RTK, in-line rms" (10-28: 0.56 cm).
+4. **Mow B (on).** Start the stack with `gnss_smoothing:=true` (`mower.launch.py`
+   argument, e.g. `scripts/run_stack.sh gnss_smoothing:=true` or the service's launch
+   arguments). Mow the same area on the same day, with similar turf and the blade on.
+   - Watch the first undock and the dock return closely.
+   - Stop the A/B if the docking misses, or if the GUI pose visibly lags in turns.
+5. **Run `wheel_cal.py` on mow B and compare.**
+   - **Success:** weave p90 down by 30 % or more, and no new boundary events.
+   - **Expected cost:** "map pose - RTK" rises to about 1.5-2 cm.
+   - **The sim gate cannot judge this.** Compare the boundary and docking items from the
+     mission log and bag on both mows:
+     - `/map_server_node/outside_m` maximum;
+     - hard-boundary trips;
+     - the docking attempts and the final docked offset.
+   - The §1 decomposition (`straight1028/decomp.py` pipeline) gives the in-band split
+     when needed.
+6. **Revert.** Restart without the argument. Nothing is persisted.

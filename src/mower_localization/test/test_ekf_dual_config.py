@@ -146,3 +146,66 @@ class TestPackaging:
     def test_monitor_entry_point(self):
         assert 'localization_monitor = mower_localization.localization_monitor:main' \
             in self._setup_py()
+
+
+class TestGnssSmoothingOverlay:
+    """config/ekf_map_gnss_smoothing.yaml (2026-10-29, B13-2): ekf_map only, off by default."""
+
+    @pytest.fixture(scope='class')
+    def overlay(self):
+        return _load('ekf_map_gnss_smoothing.yaml')
+
+    def test_touches_ekf_map_only(self, overlay):
+        assert set(overlay) == {'ekf_map'}
+        assert set(_params(overlay, 'ekf_map')) == {'process_noise_covariance',
+                                                    'initial_estimate_covariance',
+                                                    'odom0_config'}
+
+    def test_matrices_are_15x15_floats(self, overlay):
+        for k in ('process_noise_covariance', 'initial_estimate_covariance'):
+            v = _params(overlay, 'ekf_map')[k]
+            assert len(v) == 225
+            assert all(isinstance(x, float) for x in v)
+
+    def test_odom_adds_only_the_vy_constraint(self, dual, overlay):
+        base = _params(dual, 'ekf_map')['odom0_config']
+        new = _params(overlay, 'ekf_map')['odom0_config']
+        assert len(new) == 15 and all(isinstance(x, bool) for x in new)
+        assert [i for i in range(15) if new[i] != base[i]] == [7]
+        assert new[7] is True
+
+    def test_bringup_tightens_the_odom_twist_covariance_only_when_on(self):
+        stack = os.path.dirname(os.path.dirname(PKG))
+        path = os.path.join(stack, 'launch', 'bringup.launch.py')
+        if not os.path.exists(path):
+            pytest.skip('launch/ not in this tree')
+        with open(path) as f:
+            src = f.read()
+        assert "'odom_vx_variance': _smoothing_variance(1e-4, 0.02)" in src
+        assert "'odom_vy_variance': _smoothing_variance(1e-4, 1e6)" in src
+
+    def test_only_xy_process_noise_lowered(self, dual, overlay):
+        base = _params(dual, 'ekf_map')['process_noise_covariance']
+        new = _params(overlay, 'ekf_map')['process_noise_covariance']
+        assert new[0] == new[16] == pytest.approx(1e-4)
+        assert base[0] == base[16] == pytest.approx(0.05)    # default stays raw-RTK tracking
+        for i in range(225):
+            if i not in (0, 16):
+                assert new[i] == base[i]
+
+    def test_initial_xy_covariance_lets_the_first_fix_snap(self, overlay):
+        p0 = _params(overlay, 'ekf_map')['initial_estimate_covariance']
+        assert p0[0] == p0[16] == pytest.approx(1.0)
+        assert all(p0[i] == 0.0 for i in range(225) if i % 16)
+
+    def test_overlay_is_installed_and_launch_switch_defaults_off(self):
+        with open(os.path.join(PKG, 'setup.py')) as f:
+            assert 'config/ekf_map_gnss_smoothing.yaml' in f.read()
+        stack = os.path.dirname(os.path.dirname(PKG))
+        for launch in ('nav2.launch.py', 'mower.launch.py'):
+            path = os.path.join(stack, 'launch', launch)
+            if not os.path.exists(path):
+                pytest.skip('launch/ not in this tree')
+            with open(path) as f:
+                src = f.read()
+            assert re.search(r"""['"]gnss_smoothing['"],\s*(default_value=)?['"]false['"]""", src), launch

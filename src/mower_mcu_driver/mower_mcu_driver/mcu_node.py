@@ -64,6 +64,8 @@ Parameters
                                  with no scale or wheel geometry, so stock odom reads short too.
                                  Not the command path (``linear_scale``); ``/mcu/measured_speed``
                                  stays the raw MCU value so ``wheel_cal.py`` keeps measuring it.
+``odom_vx_variance`` ``0.02`` / ``odom_vy_variance`` ``1e6``  ``/odom`` twist covariance while
+                                 measured; bringup sets 1e-4 / 1e-4 with ``gnss_smoothing:=true``
 ``linear_max`` ``0.3`` / ``angular_max`` ``0.3``       clamp (m/s, rad/s; vendor PID clamp)
 ``battery_voltage_scale`` ``0.1``  raw 0.1 V units -> volts (set 1.0 to mimic the stock node)
 ``battery_current_scale`` ``-0.1`` raw 0.1 A, positive = discharging -> ROS amperes (negative
@@ -546,6 +548,13 @@ class McuNode(Node):
         # Measured-speed calibration (2026-10-21 review B9): ground / MCU SpeedData linear
         # speed. Applied to the measured speed only (odometry), never to the commands.
         self.declare_parameter('odom_linear_scale', 1.0)
+        # /odom twist covariance while measured (2026-10-29, B13-2): vx and vy variances.
+        # Defaults = the long-standing loose values; the GNSS-smoothing A/B
+        # (gnss_smoothing:=true) tightens them to 1e-4 so ekf_map can carry the in-band
+        # motion on the wheels (robot_localization replay of the 10-28 bag: with vx 0.02 and
+        # vy unobserved the ekf_map pose follows RTK whatever its x/y process noise).
+        self.declare_parameter('odom_vx_variance', 0.02)
+        self.declare_parameter('odom_vy_variance', 1e6)
         # Vendor PidControllerROS clamps its /cmd_vel output to +-0.3; mirror it until the
         # wheel scale/sign has been characterised wheels-up.
         self.declare_parameter('linear_max', 0.3)
@@ -645,6 +654,8 @@ class McuNode(Node):
         self.linear_scale = float(param('linear_scale'))
         self.angular_scale = float(param('angular_scale'))
         self.odom_linear_scale = float(param('odom_linear_scale'))
+        self._twist_cov_measured = _diag6(float(param('odom_vx_variance')),
+                                          float(param('odom_vy_variance')), 1e6, 1e6, 1e6, 0.05)
         self.linear_max = float(param('linear_max'))
         self.angular_max = float(param('angular_max'))
         self.battery_voltage_scale = float(param('battery_voltage_scale'))
@@ -1814,7 +1825,7 @@ class McuNode(Node):
         self._yaw = math.atan2(math.sin(self._yaw), math.cos(self._yaw))
 
         _, _, qz, qw = _yaw_to_quaternion(self._yaw)
-        twist_cov = _TWIST_COVARIANCE_MEASURED if measured else _TWIST_COVARIANCE_COMMANDED
+        twist_cov = self._twist_cov_measured if measured else _TWIST_COVARIANCE_COMMANDED
         if self._fast_odom:
             self._odom_pub.publish(odometry_bytes(
                 self._stamp_ns(), self.odom_frame, self.base_frame,
@@ -1832,8 +1843,7 @@ class McuNode(Node):
         msg.pose.covariance = _POSE_COVARIANCE
         msg.twist.twist.linear.x = linear
         msg.twist.twist.angular.z = angular
-        msg.twist.covariance = (_TWIST_COVARIANCE_MEASURED if measured
-                                else _TWIST_COVARIANCE_COMMANDED)
+        msg.twist.covariance = twist_cov
         self._odom_pub.publish(msg)
 
     # -------------------------------------------------------------- shutdown

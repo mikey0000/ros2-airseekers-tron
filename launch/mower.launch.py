@@ -330,6 +330,10 @@ def generate_launch_description() -> LaunchDescription:
             'dual: ekf_node (odom) + ekf_map (map, RTK) publishes map -> odom and '
             '/odometry/filtered_map (REP-105). single: old one-filter EKF + static identity '
             'map -> odom + gui_bridge relaying /odometry/filtered as /odometry/filtered_map.'),
+        arg('gnss_smoothing', 'false',
+            'dual mode, field A/B (2026-10-29, review B13-2): ekf_map smooths RTK with wheels + '
+            'IMU (x/y process noise 1e-4, ~0.9 s time constant; '
+            'mower_localization/config/ekf_map_gnss_smoothing.yaml). false = raw-RTK tracking.'),
         arg('publish_static_map_odom', 'true',
             'Publish identity map -> odom when localization_mode is single (or localization '
             'is false). Never together with ekf_map (two map -> odom owners).'),
@@ -426,7 +430,8 @@ def generate_launch_description() -> LaunchDescription:
     drivers = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(launch_dir, 'bringup.launch.py')),
         # NTRIP caster / correction source from the GUI settings (empty = none).
-        launch_arguments={'um960_params_file': LaunchConfiguration('um960_params_file')}.items(),
+        launch_arguments={'um960_params_file': LaunchConfiguration('um960_params_file'),
+                          'gnss_smoothing': LaunchConfiguration('gnss_smoothing')}.items(),
         condition=enabled('drivers'),
     )
 
@@ -572,6 +577,7 @@ def generate_launch_description() -> LaunchDescription:
             'datum_yaw': LaunchConfiguration('datum_yaw'),
             'vio': LaunchConfiguration('vio'),
             'localization_mode': LaunchConfiguration('localization_mode'),
+            'gnss_smoothing': LaunchConfiguration('gnss_smoothing'),
         }.items(),
         condition=enabled('localization'),
     )

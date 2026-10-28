@@ -683,6 +683,16 @@ class TestMcuNode(unittest.TestCase):
         (lin, _ang), = self._speeds()
         self.assertAlmostEqual(lin, 0.2, places=6)
 
+    def test_odom_twist_covariance_defaults_and_override(self):
+        self.assertEqual(self.node._twist_cov_measured, mn._TWIST_COVARIANCE_MEASURED)
+        self.node._twist_cov_measured = mn._diag6(1e-4, 1e-4, 1e6, 1e6, 1e6, 0.05)
+        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SPEED, mn.speed_payload(0.2, 0.0)))
+        self.node._last_reckon -= 0.1
+        self.node._reckon()
+        cov = self.node.published['/odom'][0].twist.covariance
+        self.assertAlmostEqual(cov[0], 1e-4)
+        self.assertAlmostEqual(cov[7], 1e-4)
+
     def test_odom_degrades_to_commanded_velocity(self):
         self.node._on_cmd_vel(cmd_vel(0.3, 0.0))
         self.node._last_reckon -= 0.1

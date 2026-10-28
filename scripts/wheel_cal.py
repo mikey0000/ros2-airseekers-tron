@@ -201,6 +201,11 @@ def straights(d, min_len=3.0, eps=0.05, max_resid=0.03):
             seg['rpmL'] = -sel(ms, 2, t0, t1).mean()
             seg['rpmR'] = -sel(ms, 3, t0, t1).mean()
             seg['cut'] = sel(ms, 1, t0, t1).mean()
+        # weave (2026-10-29 GNSS-smoothing A/B): RTK lateral residual about the fitted
+        # (quadratic) swath line, and the map pose's own residual on the same line
+        res = e - np.polyval(c, s)
+        seg['weave_rms_cm'] = float(np.std(res) * 100)
+        seg['weave_abs'] = np.abs(res) * 100
         mp = d.get('map')
         if mp is not None and len(sel(mp, 3, t0, t1)) > 3:
             q = np.c_[sel(mp, 1, t0, t1), sel(mp, 2, t0, t1)]
@@ -208,6 +213,14 @@ def straights(d, min_len=3.0, eps=0.05, max_resid=0.03):
             yw = sel(mp, 3, t0, t1)
             seg['crab_deg'] = math.degrees(math.atan2(np.mean(np.sin(yw - cq)),
                                                       np.mean(np.cos(yw - cq))))
+            if len(q) > 10:
+                # map vs RTK in-band: both detrended by their own quadratic, so the map /
+                # ENU frame offset drops out; the antenna lever is a constant along a line
+                uq = (q[-1] - q[0]) / max(1e-6, float(np.hypot(*(q[-1] - q[0]))))
+                qs, qe = (q - q[0]) @ uq, (q - q[0]) @ np.array([-uq[1], uq[0]])
+                qr = qe - np.polyval(np.polyfit(qs, qe, 2), qs)
+                mres = np.interp(ft[k], sel(mp, 0, t0, t1), qr)
+                seg['map_rtk_cm'] = float(np.std(mres - res) * 100)
         segs.append(seg)
     return segs
 
@@ -295,6 +308,15 @@ def report(d, min_len=3.0):
     line('right / left wheel rpm', col('rpmR') / col('rpmL'))
     if np.isfinite(col('crab_deg')).any():
         rec['heading_lead_deg'] = line('fused yaw - course [deg]', col('crab_deg'), '%.2f')
+    w = [s['weave_abs'] for s in segs if 'weave_abs' in s]
+    if w:
+        w = np.concatenate(w)
+        print('  weave: RTK lateral about the swath line |.| p50 %.2f / p90 %.2f cm, rms per '
+              'straight median %.2f cm' % (np.percentile(w, 50), np.percentile(w, 90),
+                                          float(np.nanmedian(col('weave_rms_cm')))))
+        rec['weave_p90_cm'] = float(np.percentile(w, 90))
+    if np.isfinite(col('map_rtk_cm')).any():
+        rec['map_rtk_cm'] = line('map pose - RTK, in-line rms [cm]', col('map_rtk_cm'), '%.2f')
     pr = pairs(segs)
     if pr:
         a = np.array([p[0] for p in pr])

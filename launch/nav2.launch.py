@@ -249,9 +249,14 @@ def _ekf_nodes(context, configs):
     if _mode(context) == "single":
         return [ekf("ekf_node", [configs["single"]] + ([configs["single_vio"]] if vio else []))]
     files = [configs["dual"]] + ([configs["dual_vio"]] if vio else [])
+    # 2026-10-29 (B13-2): gnss_smoothing:=true adds the ekf_map-only overlay (low x/y
+    # process noise; config/ekf_map_gnss_smoothing.yaml). Default off = the values above.
+    smooth = LaunchConfiguration("gnss_smoothing").perform(context).strip().lower() in (
+        "true", "1")
+    map_files = files + ([configs["gnss_smoothing"]] if smooth else [])
     return [
         ekf("ekf_node", files),
-        ekf("ekf_map", files, remappings=[
+        ekf("ekf_map", map_files, remappings=[
             ("odometry/filtered", LaunchConfiguration("map_odom_topic"))]),
     ]
 
@@ -266,6 +271,7 @@ def generate_launch_description() -> LaunchDescription:
         "single_vio": ekf_vio_config,
         "dual": PathJoinSubstitution([share, "config", "ekf_dual.yaml"]),
         "dual_vio": PathJoinSubstitution([share, "config", "ekf_dual_vio.yaml"]),
+        "gnss_smoothing": PathJoinSubstitution([share, "config", "ekf_map_gnss_smoothing.yaml"]),
     }
 
     # The URDF is a stack asset under config/, not a colcon package, so
@@ -301,6 +307,10 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("localization_mode", default_value="dual",
                               description="dual (ekf_node + ekf_map, map -> odom from GPS) | "
                                           "single (ekf.yaml, static map -> odom)."),
+        DeclareLaunchArgument("gnss_smoothing", default_value="false",
+                              description="dual mode: ekf_map smooths RTK with wheels + IMU "
+                                          "(x/y process noise 1e-4, ~0.9 s; field A/B, "
+                                          "docs/analysis/2026-10-29_localisation_wander.md)."),
         DeclareLaunchArgument("map_odom_topic", default_value="/odometry/filtered_map",
                               description="ekf_map output (dual mode)."),
         DeclareLaunchArgument("gps_quality_covariance", default_value="true",

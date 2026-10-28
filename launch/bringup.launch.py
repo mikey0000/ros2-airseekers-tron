@@ -28,7 +28,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from mower_bringup.node_host_launch import hosted_node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -58,8 +58,18 @@ def _um960(context):
     )]
 
 
+def _smoothing_variance(tight, default):
+    """mcu_node /odom twist variance: ``tight`` with gnss_smoothing:=true, else ``default``."""
+    return ParameterValue(PythonExpression([
+        "%r if '" % tight, LaunchConfiguration('gnss_smoothing'),
+        "'.strip().lower() in ('true', '1') else %r" % default]), value_type=float)
+
+
 def generate_launch_description():
     return LaunchDescription([
+        DeclareLaunchArgument('gnss_smoothing', default_value='false',
+                              description='GNSS-smoothing A/B (mower.launch.py): mcu_node '
+                                          'publishes a tight /odom vx/vy covariance (1e-4).'),
         DeclareLaunchArgument('um960_params_file', default_value='',
                               description='Extra um960_gps_driver parameters file (GUI NTRIP '
                                           'settings); empty = none.'),
@@ -84,6 +94,10 @@ def generate_launch_description():
                 # (10-22: 1.049, 10-28: 1.066; varies with turf, re-check with
                 # scripts/wheel_cal.py). Odometry only; the command path is linear_scale.
                 'odom_linear_scale': 1.06,
+                # B13-2 GNSS smoothing (off by default): ekf_map can only lean on the wheels
+                # when /odom says they are good to ~1 cm/s and sideways-still.
+                'odom_vx_variance': _smoothing_variance(1e-4, 0.02),
+                'odom_vy_variance': _smoothing_variance(1e-4, 1e6),
             }],
             output='screen',
             respawn=True,
