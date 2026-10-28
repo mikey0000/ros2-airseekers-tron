@@ -188,6 +188,19 @@ def _sweep(x, y, yaw, ang, discs):
     return nz.pivot_sweep_hits(x, y, yaw, yaw + ang, d, discs)
 
 
+# Living classes (obstacle_tracker never_classes): a candidate det track of one of these in a
+# pivot sweep is a person / animal standing there, not an obstacle to route round.
+LIVING_CLASSES = ('person', 'dog', 'cat', 'hedgehog', 'rabbit')
+
+
+def living_sweep_hits(x: float, y: float, yaw: float, delta: float, discs: Sequence) -> list:
+    """Labels of the living-class zones the pivot of ``delta`` at (x, y, yaw) sweeps."""
+    live = [z for z in (discs or []) if z.state != 'mark' and z.label in LIVING_CLASSES]
+    if abs(delta) < 1e-6 or not live:
+        return []
+    return sorted({h.zone.label for h in _sweep(x, y, yaw, delta, live)})
+
+
 def _sweep_poses(x, y, yaw, ang, step_deg=5.0):
     n = max(1, int(math.ceil(abs(math.degrees(ang)) / step_deg)))
     return [(x, y, yaw + ang * k / n) for k in range(n + 1)]

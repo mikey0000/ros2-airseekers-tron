@@ -1332,6 +1332,7 @@ class Mission:
     nogo_seq: Any = None                        # pre-pivot maneuver in flight
     nogo_tries: dict = field(default_factory=dict)      # pivot key -> maneuvers
     nogo_route_aborts: set = field(default_factory=set)
+    nogo_living_wait: Any = None                # {'xy', 'since'}: route-corner living wait
     nogo_turns: int = 0                         # pivots re-routed by the sweep check
     nogo_detour: Any = None                     # edge detour in flight
     nogo_detoured: set = field(default_factory=set)

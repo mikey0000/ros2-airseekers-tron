@@ -236,6 +236,61 @@ def test_route_corner_e_reroutes_once_then_pivots_as_planned():
     assert h.name != 'STUCK_NEEDS_HELP'
 
 
+def _incidents(h, mark=0):
+    return [(e.kind, e.detail) for e in h.since(mark, f.RecordIncident)]
+
+
+def test_route_corner_dog_in_the_sweep_waits_then_continues_without_an_abort():
+    # field 2026-10-28: a dog beside a route corner -> "pivot sweep blocked" -> transit
+    # abort, 47 times. Now: the dynamic wait at the corner, then the transit continues.
+    dog = Z(2.0, 0.55, 0.45, 7, 'dog', 'candidate')
+    h = _route_corner_h([dog])
+    assert h.fsm._dyn is not None and h.fsm._dyn.get('nogo')
+    assert h.fsm.mission.step == 'dyn_wait'
+    assert any('dog in the sweep: waiting' in t for t in logs(h))
+    assert not [k for k, _ in _incidents(h) if k == 'transit_abort']
+    mark = len(h.fx)
+    h.tick(n=50)                               # 5 s: the dog is still there -> still waiting
+    zones(h, dog)
+    h.tick(n=20)
+    assert h.fsm._dyn is not None and h.fsm.mission.step == 'dyn_wait'
+    zones(h)                                   # the dog left the sweep
+    for _ in range(40):
+        zones(h)
+        h.tick()
+    assert h.fsm._dyn is None
+    assert h.fsm.mission.step == 'transit' and h.name == 'TRANSIT'
+    assert h.fsm._service is not None and h.fsm._service.name == f.SRV_PLAN_ROUTE
+    assert not [k for k, _ in _incidents(h, mark) if k == 'transit_abort']
+    assert not h.fsm.mission.nogo_route_aborts
+
+
+def test_route_corner_dog_wait_times_out_into_the_re_route():
+    dog = Z(2.0, 0.55, 0.45, 7, 'dog', 'candidate')
+    h = _route_corner_h([dog])
+    assert h.fsm._dyn is not None
+    for _ in range(170):                       # > dynamic_wait_transit_s (15 s)
+        zones(h, dog)
+        h.tick()
+    assert h.fsm._dyn is None
+    assert ('transit_abort', 'route corner pivot sweep blocked') in _incidents(h)
+    assert h.fsm.mission.nogo_route_aborts and h.name != 'STUCK_NEEDS_HELP'
+
+
+def test_route_corner_static_zone_still_re_routes_without_a_wait():
+    h = _route_corner_h([Z(2.0, 0.55, 0.45, 5, 'trunk', 'pending')])
+    assert h.fsm._dyn is None
+    assert any('(e)' in t and 're-route' in t for t in logs(h))
+
+
+def test_living_sweep_hits_only_living_candidates():
+    zs = [Z(0.45, 0.45, 0.2, 1, 'dog', 'candidate'), Z(0.45, 0.45, 0.2, 2, 'trunk', 'pending'),
+          Z(0.45, 0.45, 0.2, state='mark')]
+    assert nogo.living_sweep_hits(0, 0, 0, D90, zs) == ['dog']
+    assert nogo.living_sweep_hits(0, 0, 0, D90, zs[1:]) == []
+    assert nogo.living_sweep_hits(0, 0, 0, -D90, zs[:1]) == []   # the other way is clear
+
+
 # =====================================================================
 # mid-mow re-plan with progress kept
 # =====================================================================
