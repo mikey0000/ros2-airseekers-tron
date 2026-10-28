@@ -19,6 +19,23 @@ This model reproduces both halves, seeded:
   (``jump_rate_hz``, ``jump_std``) and white per-sample jitter (``jitter_std``, scaled by
   ``still_jitter_scale`` while the robot stands still), plus a small yaw jitter.
 
+Two models (``LocDriftParams.model``, sim parameter ``loc_model``):
+
+* ``legacy`` (the 2026-10-16 calibration, the dataclass defaults): the map error is purely
+  exogenous noise; the gate baselines before 2026-10-29 were taken with it;
+* ``field`` (2026-10-29, docs/analysis/2026-10-29_localisation_wander.md, from the
+  2026-10-28 bag): the error the controller sees partly moves WITH the robot, as in the
+  field. The map position is the GNSS antenna's position ``fix_latency_s`` (0.1 s) ago
+  minus the navsat lever arm along the CURRENT heading (the fused yaw is not delayed);
+  wheel odometry sees only forward motion (no lateral slip) with a 1 % scale error (after
+  mcu_node ``odom_linear_scale``); the Poisson RTK jumps, which the field bag does not
+  show, are off; the slow OU error and jitter are kept (band rms 0.6 cm, field random
+  part 0.66-0.82). The rest of the field mechanism is physical, in the drive: pivots turn
+  about a point 0.026 m ahead of base_link (kinematics ``rot_centre_x_m``; the field's
+  antenna circles at 0.072 m while navsat removes 0.098) and the ground track lags the
+  heading at speed (``slip_lead_m`` 0.055 m), which sim_node sets with this model.
+  See ``field_params``.
+
 ``map -> odom`` = map estimate (+) inverse(odom), sampled at ``rate_hz`` (ekf_map's 10 Hz).
 Defaults are calibrated against run 6 (2026-10-16 field bags, /odometry/filtered_map vs
 /odometry/filtered while driving: map -> odom 10 Hz step median 5.4 mm, p90 13 mm,
@@ -30,7 +47,8 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, replace
 from typing import Tuple
 
 Pose = Tuple[float, float, float]
@@ -69,9 +87,40 @@ class LocDriftParams:
     jitter_std: float = 0.0019       # white per-sample jitter, m per axis (while moving)
     still_jitter_scale: float = 0.1  # jitter (and jumps) scale while standing still
     yaw_jitter_std: float = 0.0008   # rad per sample (white)
+    # field model (model 'field'; the legacy defaults leave all of it off)
+    model: str = 'legacy'
+    fix_latency_s: float = 0.0       # GNSS fix age when ekf_map fuses it
+    antenna_x: float = 0.0           # GNSS antenna ahead of base_link (truth), m
+    navsat_lever_x: float = 0.0      # lever arm navsat removes along the current yaw, m
+    odom_lateral: bool = True        # odom integrates the true lateral motion (legacy)
 
     def active(self) -> bool:
         return bool(self.enabled)
+
+
+MODELS = ('legacy', 'field')
+
+
+def field_params(**kw) -> LocDriftParams:
+    """The 2026-10-29 field model (see the module docstring); ``kw`` overrides fields."""
+    p = LocDriftParams(
+        model='field',
+        odom_scale_err=0.01,          # after odom_linear_scale (field: 6.3 % before)
+        jump_rate_hz=0.0,             # not in the 10-28 bag
+        fix_latency_s=0.1,            # field 0.07-0.12 s
+        antenna_x=0.098,              # URDF gps_link = navsat lever: no static offset
+        navsat_lever_x=0.098,
+        odom_lateral=False)           # wheels do not see lateral slip
+    return replace(p, **kw)
+
+
+def params_for(model: str, **kw) -> LocDriftParams:
+    model = (model or 'legacy').strip().lower()
+    if model == 'field':
+        return field_params(**kw)
+    if model == 'legacy':
+        return replace(LocDriftParams(), **kw)
+    raise ValueError('loc_drift model %r: expected one of %s' % (model, MODELS))
 
 
 class LocDrift:
@@ -93,6 +142,10 @@ class LocDrift:
         self.t_since_sample = 0.0
         self.map_to_odom: Pose = (0.0, 0.0, 0.0)
         self.map_est: Pose = truth
+        self.t = 0.0
+        # (t, truth) history for the fix latency
+        n = int(math.ceil(max(0.0, p.fix_latency_s) / 0.005)) + 4
+        self.hist = deque([(0.0, truth)], maxlen=max(8, n * 2))
 
     def step(self, truth: Pose, dt: float) -> Pose:
         """Integrate odom over one physics step from the true motion; advance the map error
@@ -118,7 +171,8 @@ class LocDrift:
             self.bias_w = max(-p.odom_yaw_bias_max, min(p.odom_yaw_bias_max, self.bias_w))
         moving_any = self.moving
         odth = dth * (1.0 + self.k_w) + (self.bias_w * dt if moving_any else 0.0)
-        obx, oby = bx * (1.0 + self.k_v), by * (1.0 + self.k_v)
+        obx = bx * (1.0 + self.k_v)
+        oby = by * (1.0 + self.k_v) if p.odom_lateral else 0.0
         ox, oy, oth = self.odom
         mid = oth + 0.5 * odth
         cm, sm = math.cos(mid), math.sin(mid)
@@ -134,7 +188,38 @@ class LocDrift:
                 for i in range(2):
                     self.err[i] += self.rng.gauss(0.0, p.jump_std)
         self.t_since_sample += dt
+        self.t += dt
+        self.hist.append((self.t, truth))
         return self.odom
+
+    def _delayed(self, truth: Pose) -> Pose:
+        """The truth ``fix_latency_s`` ago (linear interpolation over the step history)."""
+        lat = self.p.fix_latency_s
+        if lat <= 0.0 or len(self.hist) < 2:
+            return truth
+        tq = self.t - lat
+        prev = None
+        for tk, pk in self.hist:
+            if tk >= tq:
+                if prev is None or tk == prev[0]:
+                    return pk
+                a = (tq - prev[0]) / (tk - prev[0])
+                q = prev[1]
+                return (q[0] + a * (pk[0] - q[0]), q[1] + a * (pk[1] - q[1]),
+                        _wrap(q[2] + a * _wrap(pk[2] - q[2])))
+            prev = (tk, pk)
+        return truth
+
+    def gnss_base(self, truth: Pose) -> Tuple[float, float]:
+        """Where navsat puts base_link: the (delayed) antenna minus the lever along the
+        current yaw. Equal to the truth when the antenna and the lever agree and there is
+        no latency (legacy)."""
+        p = self.p
+        d = self._delayed(truth)
+        ax = d[0] + p.antenna_x * math.cos(d[2])
+        ay = d[1] + p.antenna_x * math.sin(d[2])
+        return (ax - p.navsat_lever_x * math.cos(truth[2]),
+                ay - p.navsat_lever_x * math.sin(truth[2]))
 
     def due(self) -> bool:
         """True when a new map estimate / map -> odom sample is due (``rate_hz``)."""
@@ -155,7 +240,7 @@ class LocDrift:
         jx = self.rng.gauss(0.0, p.jitter_std * scale)
         jy = self.rng.gauss(0.0, p.jitter_std * scale)
         jth = self.rng.gauss(0.0, p.yaw_jitter_std * scale)
-        self.map_est = (truth[0] + self.err[0] + jx, truth[1] + self.err[1] + jy,
-                        _wrap(truth[2] + jth))
+        bx, by = self.gnss_base(truth)
+        self.map_est = (bx + self.err[0] + jx, by + self.err[1] + jy, _wrap(truth[2] + jth))
         self.map_to_odom = compose(self.map_est, inverse(self.odom))
         return self.map_est, self.map_to_odom

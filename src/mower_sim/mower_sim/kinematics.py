@@ -30,6 +30,20 @@ see what they always see); what the ground does with them is not:
 * ``disturb_pivot_eff``: ground yaw rate / commanded yaw rate while the wheels
   counter-rotate (turf scrub; 1.0 = ideal).
 
+Rotation centre and track lag (optional, off by default; ``DriveParams.rot_centre_x_m``,
+``slip_lead_m``): the 2026-10-28 field bag (docs/analysis/2026-10-29_localisation_wander.md)
+shows the ground does not turn the robot about base_link (the axle):
+
+* ``rot_centre_x_m``: pivots turn about a point this far AHEAD of base_link (field: the
+  antenna, 0.098 m ahead of the axle, circles at 0.072 m, so 0.026 m), so base_link moves
+  sideways by ``-rot_centre_x_m * w`` in the body frame, at any speed;
+* ``slip_lead_m``: while driving, the ground track lags the heading (tyre / castor slip):
+  a further ``-slip_lead_m * w`` lateral velocity, faded in with ``|v| / slip_v_ref`` (and
+  mirrored in reverse), so it is absent in pivots. Field 2026-10-28: the unexplained
+  0.055 m of heading-proportional lag; with it the sim weaves at the field's 6.4 s period.
+
+The wheels (and so the sim's wheel odometry) never see this lateral motion.
+
 Collisions: a step whose footprint would touch an obstacle is not taken (the
 robot stops dead, as against a solid object) and the contact is reported so the
 node can raise the bumper. The dock is a hard stop behind the charge point.
@@ -81,6 +95,10 @@ class DriveParams:
     disturb_slip_tau_s: float = 1.0
     disturb_pivot_eff: float = 1.0
     disturb_seed: int = 1
+    # rotation centre ahead of base_link and track lag (see the module docstring; 0 = ideal)
+    rot_centre_x_m: float = 0.0
+    slip_lead_m: float = 0.0
+    slip_v_ref: float = 0.1
 
     def disturbed(self) -> bool:
         return (self.disturb_wheel_bias != 0.0 or self.disturb_slip_std > 0.0
@@ -119,6 +137,7 @@ class DiffDrive:
         self.cmd_age = math.inf
         self.left = self.right = 0.0       # actual wheel speeds, m/s
         self.v = self.w = 0.0              # actual body twist
+        self.vy = 0.0                      # actual body lateral velocity (rot centre / slip)
         self.enabled = True                # False = e-stop: wheels commanded to 0
         self.collisions_total = 0
         self.blocked = False
@@ -180,12 +199,14 @@ class DiffDrive:
         w = (gr - gl) / (p.ground_track_width if p.ground_track_width > 0.0 else p.track_width)
         res = StepResult()
         if v == 0.0 and w == 0.0:
-            self.v = self.w = 0.0
+            self.v = self.w = self.vy = 0.0
             self.blocked = False
             return res
+        vy = self.lateral_velocity(v, w)
         cur = self.pose
         yaw_mid = cur.yaw + 0.5 * w * dt
-        cand = Pose2D(cur.x + v * dt * math.cos(yaw_mid), cur.y + v * dt * math.sin(yaw_mid),
+        cm, sm = math.cos(yaw_mid), math.sin(yaw_mid)
+        cand = Pose2D(cur.x + (v * cm - vy * sm) * dt, cur.y + (v * sm + vy * cm) * dt,
                       wrap(cur.yaw + w * dt))
         # dock hard stop (charger contacts at the dock pose, robot reverses in)
         xd, yd, yawd = self.dock_frame(cand)
@@ -211,10 +232,18 @@ class DiffDrive:
             self.blocked = bool(hits)
             # stopped dead: the wheels stall
             self.left = self.right = 0.0
-            self.v = self.w = 0.0
+            self.v = self.w = self.vy = 0.0
             return res
         if self.blocked and self.world.clearance(cand.x, cand.y, cand.yaw, t) > 0.02:
             self.blocked = False   # contact ends only once clear (no recount on creep)
         self.pose = cand
-        self.v, self.w = v, w
+        self.v, self.w, self.vy = v, w, vy
         return res
+
+    def lateral_velocity(self, v: float, w: float) -> float:
+        """Body-frame lateral ground velocity of base_link (rotation centre + track lag)."""
+        p = self.p
+        if p.rot_centre_x_m == 0.0 and p.slip_lead_m == 0.0:
+            return 0.0
+        fade = max(-1.0, min(1.0, v / p.slip_v_ref)) if p.slip_v_ref > 0.0 else 0.0
+        return -w * (p.rot_centre_x_m + p.slip_lead_m * fade)

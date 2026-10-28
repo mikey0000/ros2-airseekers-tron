@@ -23,6 +23,9 @@ scripted moving ones). Everything above the drivers is the real code:
 (mower_sim/loc_drift.py): odom drifts like wheel odometry and the sim publishes a drifting
 TF map -> odom + /odometry/filtered_map at 10 Hz instead of the static identity; gui_bridge
 then reads /odometry/filtered_map (as on the robot) instead of relaying /odometry/filtered.
+``loc_model`` (with loc_drift): ``field`` (default since 2026-10-29: fix latency, rotation
+centre ahead of base_link, track lag, no RTK jumps) or ``legacy`` (the 2026-10-16 model;
+reproduces gate results taken before 2026-10-29). docs/simulation.md "Localisation drift".
 
 The world's lawn and dock are written to a scratch ``maps_dir`` (fresh temp dir
 unless given) as areas.dat / dock_pose.yaml for map_server_node; GUI-owned files
@@ -262,6 +265,9 @@ def generate_launch_description() -> LaunchDescription:
         arg('loc_drift', 'false', 'sim (localization:=sim): drifting odom + map -> odom like '
             'the field dual EKF (run 6 statistics) instead of a perfect static map -> odom.'),
         arg('loc_drift_seed', '1', 'sim: random seed of the localisation drift.'),
+        arg('loc_model', 'field', 'sim (with loc_drift): field (2026-10-29, 10-28 bag: fix '
+            'latency, rotation centre, track lag, no jumps) or legacy (2026-10-16 model, older gate '
+            'baselines).'),
         arg('urdf_file', default_urdf, 'xacro robot description.'),
         arg('log_level', 'info', 'Log level of the sim node.'),
         arg('compose_nodes', 'true', 'Python node hosts (docs/analysis/2026-10-22_memory_footprint.md '
@@ -293,6 +299,7 @@ def generate_launch_description() -> LaunchDescription:
             'loc_drift': ParameterValue(LaunchConfiguration('loc_drift'), value_type=bool),
             'loc_drift_seed': ParameterValue(LaunchConfiguration('loc_drift_seed'),
                                              value_type=int),
+            'loc_model': LaunchConfiguration('loc_model'),
             'rear_marker_size': ParameterValue(LaunchConfiguration('rear_marker_size'),
                                                value_type=float),
             'rear_marker_offset': ParameterValue(LaunchConfiguration('rear_marker_offset'),

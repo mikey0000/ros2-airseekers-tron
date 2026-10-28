@@ -304,3 +304,36 @@ def test_near_straight_reverse_is_not_floored():
     left, right = wheel_speeds(-0.05, 0.2, DriveParams())     # 0.08 apart: turning
     assert right == 0.0 and left == pytest.approx(-0.09)
     assert wheel_speeds(-0.05, 0.016, DriveParams(straight_tol_mps=0.0)) == (0.0, 0.0)
+
+
+# ------------------------------------------- rotation centre / track lag (2026-10-29)
+
+def test_rotation_centre_off_by_default():
+    d = DiffDrive(_world(start={'x': 0.0, 'y': 0.0, 'yaw': 0.0}))
+    _run(d, 0.0, 0.3, 2.0)
+    assert math.hypot(d.pose.x, d.pose.y) < 1e-9
+
+
+def test_pivot_turns_about_a_point_ahead_of_base_link():
+    rc = 0.026
+    d = DiffDrive(_world(start={'x': 0.0, 'y': 0.0, 'yaw': 0.0}),
+                  DriveParams(rot_centre_x_m=rc, slip_lead_m=0.055, wheel_tau_s=0.0))
+    _run(d, 0.0, 0.3, math.pi / 0.3)            # ~180 deg pivot
+    # base_link circles the centre (rc, 0): after a half turn it sits 2 rc ahead
+    cx, cy = rc, 0.0
+    assert math.hypot(d.pose.x - cx, d.pose.y - cy) == pytest.approx(rc, abs=2e-3)
+    assert d.pose.x == pytest.approx(2 * rc, abs=4e-3)
+
+
+def test_track_lag_shifts_a_turn_by_the_lead_times_the_heading_change():
+    # at speed the lateral offset vs pure dead reckoning is -(rc + slip) x heading change
+    p = DriveParams(rot_centre_x_m=0.026, slip_lead_m=0.055, wheel_tau_s=0.0)
+    d = DiffDrive(_world(start={'x': 0.0, 'y': 0.0, 'yaw': 0.0}), p)
+    ref = DiffDrive(_world(start={'x': 0.0, 'y': 0.0, 'yaw': 0.0}),
+                    DriveParams(wheel_tau_s=0.0))
+    _run(d, 0.2, 0.1, 1.0)
+    _run(ref, 0.2, 0.1, 1.0)
+    dpsi = d.pose.yaw
+    assert dpsi == pytest.approx(ref.pose.yaw, abs=1e-9)
+    lat = -(d.pose.x - ref.pose.x) * math.sin(dpsi / 2) + (d.pose.y - ref.pose.y) * math.cos(dpsi / 2)
+    assert lat == pytest.approx(-0.081 * dpsi, rel=0.05)

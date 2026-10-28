@@ -66,7 +66,8 @@ from mower_interfaces.msg import MowerBaseDevStatus, MowerSensorInfo
 from mower_interfaces.srv import ChargingControl, CutterControl, SetCutterHeight
 
 from .kinematics import DiffDrive, DriveParams
-from .loc_drift import LocDrift, LocDriftParams
+from .loc_drift import LocDrift
+from .loc_drift import params_for as loc_params_for
 from .detections import DetectionSource, DetParams, disc_base
 from .marker import RearCamera, RearCameraParams
 from .sensors import StereoParams, StereoRaycaster, bumper_sides
@@ -171,12 +172,24 @@ class SimNode(Node):
         # field-like localisation: drifting odom + map -> odom (loc_drift.py; off by default)
         d('loc_drift', False)
         d('loc_drift_seed', 1)
+        # loc_drift model: 'field' (2026-10-29: fix latency, rotation centre ahead of base_link,
+        # track lag, no RTK jumps; docs/simulation.md) or 'legacy' (the 2026-10-16 model,
+        # for reproducing older gate results). The drive terms apply only with loc_drift.
+        d('loc_model', 'field')
+        d('field_rot_centre_x_m', 0.026)
+        # track lag at speed (the analysis' unexplained 0.055 m): with it the -l run weaves at
+        # the field's 6.4 s period (3.2 s without); docs/simulation.md "Localisation drift"
+        d('field_slip_lead_m', 0.055)
+        d('field_fix_latency_s', 0.1)
         gp = self.get_parameter
         path = gp('world_file').value
         if not path or not os.path.isfile(path):
             raise RuntimeError('mower_sim: world_file %r not found' % path)
         self.world = load_world(path)
         self.loc_sim = str(gp('localization').value).lower() == 'sim'
+        drift_on = self.loc_sim and bool(gp('loc_drift').value)
+        loc_model = str(gp('loc_model').value).strip().lower()
+        field = drift_on and loc_model == 'field'
         self.drive = DiffDrive(self.world, DriveParams(
             linear_max=float(gp('linear_max').value), angular_max=float(gp('angular_max').value),
             min_wheel_speed=float(gp('min_wheel_speed_mps').value),
@@ -186,7 +199,9 @@ class SimNode(Node):
             disturb_slip_std=float(gp('disturb_slip_std').value),
             disturb_slip_tau_s=float(gp('disturb_slip_tau_s').value),
             disturb_pivot_eff=float(gp('disturb_pivot_eff').value),
-            disturb_seed=int(gp('disturb_seed').value)))
+            disturb_seed=int(gp('disturb_seed').value),
+            rot_centre_x_m=float(gp('field_rot_centre_x_m').value) if field else 0.0,
+            slip_lead_m=float(gp('field_slip_lead_m').value) if field else 0.0))
         if self.drive.p.disturbed():
             self.get_logger().warn(
                 'ground disturbance ON: wheel bias %+.3f, slip std %.3f (tau %.1f s), pivot '
@@ -195,17 +210,20 @@ class SimNode(Node):
                     self.drive.p.disturb_slip_tau_s, self.drive.p.disturb_pivot_eff,
                     self.drive.p.disturb_seed))
         self.drift = None
-        if self.loc_sim and bool(gp('loc_drift').value):
+        if drift_on:
             p0 = self.drive.pose
-            self.drift = LocDrift(LocDriftParams(enabled=True,
-                                                 seed=int(gp('loc_drift_seed').value)),
-                                  (p0.x, p0.y, p0.yaw))
+            kw = dict(enabled=True, seed=int(gp('loc_drift_seed').value))
+            if field:
+                kw['fix_latency_s'] = float(gp('field_fix_latency_s').value)
+            self.drift = LocDrift(loc_params_for(loc_model, **kw), (p0.x, p0.y, p0.yaw))
             dp = self.drift.p
             self.get_logger().warn(
-                'localisation drift ON (seed %d): odom scale %+.3f, map->odom jitter %.4f m, '
-                'map error %.3f m / %.0f s, jumps %.2f Hz x %.3f m, %g Hz map->odom' % (
-                    dp.seed, self.drift.k_v, dp.jitter_std, dp.map_err_std, dp.map_err_tau_s,
-                    dp.jump_rate_hz, dp.jump_std, dp.rate_hz))
+                'localisation drift ON (model %s, seed %d): odom scale %+.3f, map->odom jitter '
+                '%.4f m, map error %.3f m / %.0f s, jumps %.2f Hz x %.3f m, %g Hz map->odom, '
+                'fix latency %.2f s, rotation centre +%.3f m, track lag %.3f m' % (
+                    dp.model, dp.seed, self.drift.k_v, dp.jitter_std, dp.map_err_std,
+                    dp.map_err_tau_s, dp.jump_rate_hz, dp.jump_std, dp.rate_hz,
+                    dp.fix_latency_s, self.drive.p.rot_centre_x_m, self.drive.p.slip_lead_m))
         self.stereo = StereoRaycaster(StereoParams(noise_m=float(gp('stereo_noise_m').value)))
         self.rear = RearCamera(RearCameraParams(
             marker_size=float(gp('rear_marker_size').value),

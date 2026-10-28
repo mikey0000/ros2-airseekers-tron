@@ -359,6 +359,61 @@ the 10 Hz `map -> odom` translation step:
 it off (the pre-2026-10-16 gate). `/odometry/filtered` is recorded too, so the drift of a
 run can be measured from its bag.
 
+#### Field model (`loc_model`, default since 2026-10-29)
+
+The model above injects the whole localisation error as exogenous noise; it is now
+`loc_model:=legacy` (`sim_gate.sh -M legacy`), kept so gate results taken before
+2026-10-29 can be reproduced. The 2026-10-28 field bag
+(`docs/analysis/2026-10-29_localisation_wander.md`) shows part of the error moving *with*
+the robot, which lowers the damping of the controller's lateral mode. `loc_model:=field`
+(the default with `-l` / `-d`) models that physically, without touching the robot's
+0.098 m lever-arm config:
+
+| Term | Field evidence | Sim |
+|---|---|---|
+| GNSS fix latency | 0.07-0.12 s (velocity match against odom / MCU) | map position = antenna 0.1 s ago (`field_fix_latency_s`) minus the navsat lever along the *current* yaw |
+| rotation centre | pivots circle the antenna at 0.072 m, navsat removes 0.098 | the drive turns about a point 0.026 m ahead of base_link (`field_rot_centre_x_m`; kinematics `rot_centre_x_m`), at any speed |
+| track lag | the unexplained 0.055 m of heading-proportional lag | lateral ground velocity -0.055 m x w at speed (`field_slip_lead_m`, faded in by v / 0.1 m/s) |
+| RTK jumps | not in the bag | off (`jump_rate_hz` 0) |
+| odometry | 6.3 % short before `odom_linear_scale` | 1 % scale error; forward motion only (no lateral slip) |
+
+The OU error (1.2 cm, 3 s) and the jitter are unchanged. Open loop on a straight the map
+error is |lat| p50 0.65 / p90 1.57 cm, band (0.08-0.4 Hz) rms 0.59 cm (legacy 0.96 / 2.63 /
+1.03; field random part p90 1.49, 0.66-0.82 cm rms as an upper bound).
+
+Closed loop, master controller, `real_run5`, 17 straights (`weave.py`, `simmech.py` in the
+analysis note): the field model weaves at the field's period, the legacy model does not;
+without the track lag the period is 3.2 s:
+
+| | Field 10-28 | legacy `-l` (w7-head-l-r2) | field `-l` x3 | field `-d -s 1 -x 1` (2 runs) |
+|---|---|---|---|---|
+| w peak period | 6.4 s | 4.3 s | 6.4 s | 6.4 s |
+| XTE p50 / p90 (truth) | 1.3 / 3.3-3.5 cm | 1.26 / 2.93 | 1.19 / 2.97 | 1.55-1.61 / 4.05-4.14 |
+| seen - DR band rms | 1.00 cm | 1.02 | 0.89 | 1.08-1.21 |
+
+The field analysis' regression (seen = true - b x heading) is biased in closed loop: it
+reads b 0.12 m on the legacy model, which has no in-loop lag, so it cannot validate b; the
+weave period does.
+
+**Re-baseline (2026-10-29, ws/loc1029, master controller + B9; field model):**
+
+| Run | a max out / > 0.10 | b | c | e corners > 0.15 | h p99 line / arc | i | Verdict |
+|---|---|---|---|---|---|---|---|
+| field-l-x3 (`-l -x 3`) | 0.096 / 0 | 0 | docked, charging | 2 (0.228, 94 deg fillet sub-path 0) | 0.095 / 0.236 | fail | FAIL (e, h, i) |
+| field-dist-s1-x1 (`-d -s 1 -x 1`) | 0.155 / 153 | 0 | docked, charging | 2 (0.168, same fillet) | 0.116 / 0.179 | fail | FAIL (a, e, h, i) |
+| field-dist-s1-x1-r2 (rerun) | 0.132 / 114 | 0 | docked, charging | 0 (0.144) | 0.103 / 0.138 | fail | FAIL (a, h, i) |
+| (old baseline, legacy model: w7-head-l-r2 / w5-final) | 0.078-0.087 | 0 | docked | 0 | 0.061-0.09 / 0.091-0.095 | fail | only i |
+
+- **a**: both `-d` runs leave the area by 0.13-0.16 m (base_link, ground truth) at the SW
+  K-turn around (-5.3, -0.9), MOWING. The legacy model gave 0.087. The field bag of 10-28
+  (another part of the lawn) shows the same order on its edge passes: map-pose
+  `outside_m` > 0.10 m in 131 samples, max 0.20 m. So this is the realistic model showing
+  a real margin problem, not a sim artefact.
+- **e / h arc**: the saturated fillet after sub-path 0's 94 deg corner (MPPI study section
+  11) runs wider with the track lag.
+- Gate results before 2026-10-29 are only comparable with `-M legacy`. A controller
+  change (B13-1) should be judged against the rows above.
+
 ### Resume scenario (`-r INDEX`; 2026-10-16)
 
 A resumed mow starts mid-path, often at a pivot vertex near the boundary (run 6 resumed at
