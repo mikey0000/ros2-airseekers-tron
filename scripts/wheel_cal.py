@@ -17,7 +17,9 @@ Run in the dev image (rclpy + numpy); `.zstd` splits as in wheel_bag_metrics.py:
 
 It prints, with 95 % confidence intervals over the straight segments (one segment = one sample):
   * speed scale        ground (RTK) speed / commanded           -> mcu_node linear_scale
-  * odom scale         ground speed / MCU measured speed         -> wheel odometry scale
+  * odom scale         ground speed / MCU measured speed         -> mcu_node odom_linear_scale
+                       (/mcu/measured_speed is raw, so this stays valid after the scale is set;
+                       'ground / fused odom speed' is the post-scale check, target 1.00 +- 0.01)
   * yaw bias           commanded yaw rate needed to drive straight (vehicle frame, paired
                        opposite-direction lanes; slope effects cancel)  -> yaw trim
   * wheel rpm ratio    MotorInfo right/left rpm on straights (coarse: integer rpm at 1 Hz)
@@ -191,6 +193,9 @@ def straights(d, min_len=3.0, eps=0.05, max_resid=0.03):
                    vcmd=sel(cv, 1, t0, t1).mean(), wcmd=sel(cv, 2, t0, t1).mean())
         mm = d.get('meas')
         seg['mcu_v'] = sel(mm, 1, t0, t1).mean() if mm is not None else float('nan')
+        od = d.get('odom')
+        seg['odom_v'] = (sel(od, 4, t0, t1).mean() if od is not None and len(sel(od, 4, t0, t1))
+                         else float('nan'))
         ms = d.get('msi')
         if ms is not None and len(sel(ms, 2, t0, t1)):
             seg['rpmL'] = -sel(ms, 2, t0, t1).mean()
@@ -282,6 +287,9 @@ def report(d, min_len=3.0):
     print('Straights (95 % CI over segments):')
     rec['speed_scale'] = line('ground / commanded speed', v / col('vcmd'))
     rec['odom_scale'] = line('ground / MCU measured speed', v / col('mcu_v'))
+    if np.isfinite(col('odom_v')).any():
+        # after mcu_node odom_linear_scale (B9): should be within 1 % of 1.0
+        rec['fused_odom_scale'] = line('ground / fused odom speed', v / col('odom_v'))
     line('RTK curvature [1/m] (closed loop ~0)', col('kappa'))
     line('commanded yaw rate [rad/s]', col('wcmd'))
     line('right / left wheel rpm', col('rpmR') / col('rpmL'))
@@ -311,6 +319,9 @@ def report(d, min_len=3.0):
     print('Suggested constants (apply only if the CI excludes "no change"):')
     m, h = rec['speed_scale']
     print('  mcu_node linear_scale            %.3f  (now 1.0; revert 1.0)' % (1.0 / m if m else 1.0))
+    m, h = rec['odom_scale']
+    if np.isfinite(m):
+        print('  mcu_node odom_linear_scale       %.3f +- %.3f (raw ground / MCU speed)' % (m, h))
     if 'yaw_bias' in rec:
         m, h = rec['yaw_bias']
         print('  yaw trim at %.2f m/s            %+.4f rad/s +- %.4f (%s)' % (

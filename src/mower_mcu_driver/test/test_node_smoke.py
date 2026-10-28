@@ -663,6 +663,26 @@ class TestMcuNode(unittest.TestCase):
         self.assertAlmostEqual(odom.twist.twist.angular.z, 0.1)
         self.assertEqual(odom.twist.covariance, mn._TWIST_COVARIANCE_MEASURED)
 
+    def test_odom_linear_scale_scales_measured_speed_only(self):
+        self.assertEqual(self.node.odom_linear_scale, 1.0)      # default: no change
+        self.node.odom_linear_scale = 1.06
+        self.node.linear_scale = 1.0
+        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SPEED, mn.speed_payload(0.2, 0.1)))
+        self.node._last_reckon -= 0.1
+        self.node._reckon()
+        odom = self.node.published['/odom'][0]
+        self.assertAlmostEqual(odom.twist.twist.linear.x, 0.212, places=5)
+        self.assertAlmostEqual(odom.twist.twist.angular.z, 0.1)  # yaw rate untouched
+        self.assertAlmostEqual(odom.pose.pose.position.x, 0.0212, places=3)
+        # raw MCU telemetry stays raw (wheel_cal.py measures the scale from it)
+        self.assertAlmostEqual(self.node._meas_linear, 0.2, places=6)
+        # the command path is not scaled by it
+        self._clock()
+        self.node._on_cmd_vel(cmd_vel(0.2, 0.0))
+        self.node._speed_tick(self.t)
+        (lin, _ang), = self._speeds()
+        self.assertAlmostEqual(lin, 0.2, places=6)
+
     def test_odom_degrades_to_commanded_velocity(self):
         self.node._on_cmd_vel(cmd_vel(0.3, 0.0))
         self.node._last_reckon -= 0.1

@@ -31,6 +31,7 @@ host→MCU type 0, MCU→host type 8, heartbeat type 255         all multi-byte 
 Parameters are listed in the module docstring of `mower_mcu_driver/mcu_node.py`
 (`port`, `baud`, `heartbeat_period`, `cmd_vel_timeout`, `stop_frames`, `stop_frame_spacing_s`,
 `speed_stream_enabled` (debug), `speed_cmd_rate` (debug stream rate), `linear_scale`,
+`odom_linear_scale` (measured speed -> `/odom` only; `/mcu/measured_speed` stays raw),
 `angular_scale`, `linear_max`, `angular_max`, `use_imu_yaw`, `*_frame`, battery scaling …).
 
 ## Known gaps (do not treat as safety-complete)

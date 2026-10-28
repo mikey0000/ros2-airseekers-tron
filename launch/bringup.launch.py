@@ -80,6 +80,10 @@ def generate_launch_description():
                 'port': '/dev/serial_mower',
                 'baud': 115200,
                 'cmd_vel_timeout': 0.5,
+                # Ground / MCU-measured speed (2026-10-21 review B9): /odom reads 5-6 % short
+                # (10-22: 1.049, 10-28: 1.066; varies with turf, re-check with
+                # scripts/wheel_cal.py). Odometry only; the command path is linear_scale.
+                'odom_linear_scale': 1.06,
             }],
             output='screen',
             respawn=True,

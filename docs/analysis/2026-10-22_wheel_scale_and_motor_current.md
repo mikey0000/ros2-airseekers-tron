@@ -312,7 +312,14 @@ existing escape 2 s earlier. Pivots stay with the stuck guard.
 2. **Blade off/on calibration drive** (procedure above), to settle the +0.0055 rad/s yaw
    bias and the cutter-torque hypothesis.
 3. **`mcu_node`:**
-   - `odom_linear_scale` 1.049;
+   - `odom_linear_scale`: **done 2026-10-29** (review B9, branch `ws/loc1029`). The
+     parameter scales the MCU-measured linear speed used for `/odom` (twist and dead
+     reckoning) only, not the commands; `/mcu/measured_speed` stays raw. `bringup.launch.py`
+     sets 1.06 (field 1.049 on 10-22, 1.066 on 10-28; it varies with turf, re-check with
+     `scripts/wheel_cal.py`, whose new "ground / fused odom speed" line should read
+     1.00 ± 0.01 afterwards). Stock has no equivalent:
+     `MowerOdom::speedDataCallbackSDK` (mower_base_node, 0x003e5c1c) dead-reckons the raw
+     SpeedData m/s with no scale or wheel geometry, so stock odometry reads short too;
    - confirm the left/right label swap wheels-up and fix `MOTOR_NAMES`;
    - raise the pivot reversing-wheel deficit (3.0 against 5.1 rpm) with the MCU team or
      the cmd_vel_slew shaping.

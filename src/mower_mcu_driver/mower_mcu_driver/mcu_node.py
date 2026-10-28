@@ -54,6 +54,16 @@ Parameters
 ``odom_rate`` ``50.0``           Hz for ``/odom``
 ``use_imu_yaw`` ``true``         use MCU ``ImuData`` yaw for heading (falls back to integration)
 ``linear_scale`` ``1.0`` / ``angular_scale`` ``1.0``   host-side ``/cmd_vel`` -> ``SpeedData`` map
+``odom_linear_scale`` ``1.0``     measured-speed calibration: the MCU's ``SpeedData`` linear speed
+                                 is multiplied by this before it is used for ``/odom`` (twist +
+                                 dead reckoning) and ``is_moving``.  Ground / MCU speed from
+                                 ``scripts/wheel_cal.py`` (field 1.049 on 10-22, 1.066 on 10-28;
+                                 it varies with turf, so re-check it; bringup.launch.py sets 1.06).
+                                 Stock has no equivalent: ``MowerOdom::speedDataCallbackSDK``
+                                 (mower_base_node, 0x003e5c1c) dead-reckons the raw SpeedData m/s
+                                 with no scale or wheel geometry, so stock odom reads short too.
+                                 Not the command path (``linear_scale``); ``/mcu/measured_speed``
+                                 stays the raw MCU value so ``wheel_cal.py`` keeps measuring it.
 ``linear_max`` ``0.3`` / ``angular_max`` ``0.3``       clamp (m/s, rad/s; vendor PID clamp)
 ``battery_voltage_scale`` ``0.1``  raw 0.1 V units -> volts (set 1.0 to mimic the stock node)
 ``battery_current_scale`` ``-0.1`` raw 0.1 A, positive = discharging -> ROS amperes (negative
@@ -533,6 +543,9 @@ class McuNode(Node):
         self.declare_parameter('use_imu_yaw', True)
         self.declare_parameter('linear_scale', 1.0)
         self.declare_parameter('angular_scale', 1.0)
+        # Measured-speed calibration (2026-10-21 review B9): ground / MCU SpeedData linear
+        # speed. Applied to the measured speed only (odometry), never to the commands.
+        self.declare_parameter('odom_linear_scale', 1.0)
         # Vendor PidControllerROS clamps its /cmd_vel output to +-0.3; mirror it until the
         # wheel scale/sign has been characterised wheels-up.
         self.declare_parameter('linear_max', 0.3)
@@ -631,6 +644,7 @@ class McuNode(Node):
         self.use_imu_yaw = bool(param('use_imu_yaw'))
         self.linear_scale = float(param('linear_scale'))
         self.angular_scale = float(param('angular_scale'))
+        self.odom_linear_scale = float(param('odom_linear_scale'))
         self.linear_max = float(param('linear_max'))
         self.angular_max = float(param('angular_max'))
         self.battery_voltage_scale = float(param('battery_voltage_scale'))
@@ -1760,11 +1774,12 @@ class McuNode(Node):
     def _speed(self, now):
         """Best available body velocity as ``(linear, angular, measured)``.
 
-        Prefers the MCU's own ``SpeedData`` estimate; once that goes stale we degrade to the
-        last commanded velocity (and report ``measured=False`` so callers can flag it).
+        Prefers the MCU's own ``SpeedData`` estimate, its linear part scaled by
+        ``odom_linear_scale`` (ground / MCU speed); once that goes stale we degrade to the
+        last commanded velocity (unscaled, and report ``measured=False`` so callers can flag it).
         """
         if now - self._meas_stamp < self.speed_timeout:
-            return self._meas_linear, self._meas_angular, True
+            return self._meas_linear * self.odom_linear_scale, self._meas_angular, True
         if now - self._cmd_stamp < self.cmd_vel_timeout:
             return self._cmd_linear, self._cmd_angular, False  # degraded: commanded
         return 0.0, 0.0, False
