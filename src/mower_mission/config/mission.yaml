@@ -79,6 +79,7 @@ behavior_tree_node:
     nogo_edge_lookahead_m: 2.5
     nogo_edge_clearance_m: 0.10
     nogo_edge_max_offset_m: 0.60      # larger needed: no detour (re-plan / skip)
+    nogo_living_memory_s: 60.0        # a static mark this recently under a person / animal zone is it
     nogo_plan_grow_m: 0.25            # zone hole + this: the nose (0.60 m) vs the 0.40 keepout
 
     # --- rain ------------------------------------------------------------

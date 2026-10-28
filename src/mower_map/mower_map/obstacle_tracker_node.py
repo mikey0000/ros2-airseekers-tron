@@ -144,6 +144,7 @@ PARAMS = {
     'present_radius_m': 0.4,
     'clear_radius_m': 0.4,
     'transient_timeout_s': 30.0,
+    'living_timeout_s': 10.0,
     'max_track_drift_m': 0.4,
     # --- dynamic-class veto (B2): people / animals are never promoted ---
     # Ranged det_range detections (base_link positions) of these classes, put into the map
@@ -230,7 +231,7 @@ _CORE_KEYS = (
     'det_radius_m', 'polygon_inflation_m', 'polygon_steps',
     'require_inside_mowing_area', 'max_tracks', 'auto_promote', 'auto_remove',
     'min_lifetime_s', 'gone_confirmations', 'verify_distance_m', 'verify_fov_deg',
-    'present_radius_m', 'clear_radius_m', 'transient_timeout_s',
+    'present_radius_m', 'clear_radius_m', 'transient_timeout_s', 'living_timeout_s',
     'max_track_drift_m', 'dynamic_veto_radius_m',
     'class_zones', 'det_min_score', 'det_min_frames', 'det_window_s', 'det_assoc_m',
     'det_vote_min_score', 'default_prior_m', 'size_margin_m', 'max_zone_radius_m',

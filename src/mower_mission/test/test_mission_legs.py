@@ -163,6 +163,9 @@ def test_follow_without_pose_index_progress_is_aborted_and_retried():
     assert 'retry 1/3' in h.fsm.sub_state
     assert any('leg loop guard' in t for t in logs(h, m))
     assert any(t.startswith('follow_path finished: aborted') for t in logs(h, m))
+    # field 2026-10-28: a loop-guard abort is its own incident kind (no terrain weight)
+    kinds = [e.kind for e in h.since(m, f.RecordIncident)]
+    assert kinds == ['leg_loop']
     h.tick(dt=1.0, n=4)
     g = h.goal(f.ACT_FOLLOW)                     # the existing retry: from the reached pose
     assert abs(g['poses'][0][0] - 1.2) < 1e-6

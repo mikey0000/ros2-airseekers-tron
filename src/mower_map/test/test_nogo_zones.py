@@ -316,6 +316,64 @@ def test_promoted_zone_absorbs_later_detections_and_stereo_cluster():
     assert len(c.tracks) == 1 and c.tracks[0].cx == pytest.approx(5.0, abs=0.05)
 
 
+def test_long_object_seen_in_parts_grows_one_zone_instead_of_stacking():
+    # field 2026-10-28: a 1.5 m ladder seen in parts made 8+ stacked r 0.85 zones; the
+    # promoted zone associated only within det_assoc_m (0.3 m) of its centre
+    c = _core()
+    tid = _feed(c, 5, xy=(5.0, 5.3), width=0.8)[0]
+    c.confirm_promoted(tid, 3.0)
+    t = c.find_track(tid)
+    r0 = t.promoted_radius
+    assert r0 == pytest.approx(0.5)
+    out = []
+    for k in range(30):                    # the other end of the object, 0.55 m away
+        tk = 3.5 + 0.5 * k
+        c.add_detections([(5.55, 5.3, 'trunk', 0.8, 0.8)], tk)
+        r = c.step(np.empty((0, 2)), tk, areas=LAWN, plans=(ROW,))
+        out += r['resize']
+        assert r['promote'] == []
+    assert [q.id for q in c.tracks] == [tid]          # no second zone
+    assert out == [tid]                                # grown through the resize protocol
+    c.resize_sent(tid, True)
+    assert t.promoted_radius > r0 + 0.1 and t.promoted_radius <= 1.0
+    assert (t.cx, t.cy) == (pytest.approx(5.0, abs=0.05), pytest.approx(5.3, abs=0.05))
+    # beyond the footprint + 0.10 m: a separate object
+    c.add_detections([(5.0 + t.footprint_radius(c.params) + 0.3, 5.3, 'trunk', 0.8, 0.2)], 30.0)
+    assert len(c.tracks) == 2
+
+
+def test_candidate_overlapping_a_promoted_zone_is_absorbed():
+    # ladder parts 0.66 m apart: the second part's candidate merges into the first zone
+    c = _core()
+    tid = _feed(c, 5, xy=(5.0, 5.3), width=0.75)[0]
+    c.confirm_promoted(tid, 3.0)
+    out = []
+    for k in range(10):
+        tk = 3.5 + 0.5 * k
+        c.add_detections([(5.66, 5.3, 'wood', 0.8, 0.75)], tk)
+        r = c.step(np.empty((0, 2)), tk, areas=LAWN, plans=(ROW,))
+        out += r['promote']
+    assert out == [] and [t.id for t in c.tracks] == [tid]
+    assert c.find_track(tid).footprint_radius(c.params) > 0.7
+    # a dog beside the zone is not absorbed (living votes never join a zone)
+    c.add_detections([(5.9, 5.3, 'stone', 0.6, 0.3), (5.9, 5.3, 'dog', 0.9, 0.3),
+                      (5.9, 5.3, 'dog', 0.9, 0.3)], 10.0)
+    c.step(np.empty((0, 2)), 10.0, areas=LAWN, plans=(ROW,))
+    assert c.find_track(tid).votes.get("dog", 0.0) == 0.0
+
+
+def test_zone_growth_is_capped():
+    c = _core()
+    tid = _feed(c, 5, xy=(5.0, 5.3), width=1.5)[0]
+    c.confirm_promoted(tid, 3.0)
+    t = c.find_track(tid)
+    for k in range(60):
+        c.add_detections([(5.0 + 0.9 * math.cos(k), 5.3 + 0.9 * math.sin(k), 'trunk', 0.8,
+                           1.5)], 3.5 + k)
+    assert t.footprint_radius(c.params) == pytest.approx(1.0)
+    assert len(c.tracks) == 1
+
+
 def test_ignore_suppresses_the_spot():
     c = _core()
     tid = _feed(c, 5)[0]
@@ -480,3 +538,14 @@ def test_blocked_areas_from_settings_snapshot():
 def test_footprint_box_matches_nav2():
     assert FOOTPRINT_BOX == (-0.10, 0.60, -0.235, 0.235)
     assert math.hypot(0.60, 0.235) == pytest.approx(0.644, abs=1e-3)
+
+
+def test_living_candidate_expires_sooner_than_a_static_one():
+    c = _core()
+    c.add_detections([(5.0, 5.3, 'stone', 0.6, 0.2)], 0.0)      # misdetection starts it
+    for k in range(5):
+        c.add_detections([(5.0, 5.3, 'dog', 0.9, 0.4)], 0.5 * k)
+    c.add_detections([(8.0, 5.3, 'stone', 0.6, 0.2)], 2.0)      # a real stone elsewhere
+    assert [t.label() for t in c.tracks] == ['dog', 'stone']
+    c.step(np.empty((0, 2)), 12.5, areas=LAWN, plans=(ROW,))
+    assert [t.label() for t in c.tracks] == ['stone']

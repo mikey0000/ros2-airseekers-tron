@@ -236,6 +236,61 @@ def test_route_corner_e_reroutes_once_then_pivots_as_planned():
     assert h.name != 'STUCK_NEEDS_HELP'
 
 
+def _incidents(h, mark=0):
+    return [(e.kind, e.detail) for e in h.since(mark, f.RecordIncident)]
+
+
+def test_route_corner_dog_in_the_sweep_waits_then_continues_without_an_abort():
+    # field 2026-10-28: a dog beside a route corner -> "pivot sweep blocked" -> transit
+    # abort, 47 times. Now: the dynamic wait at the corner, then the transit continues.
+    dog = Z(2.0, 0.55, 0.45, 7, 'dog', 'candidate')
+    h = _route_corner_h([dog])
+    assert h.fsm._dyn is not None and h.fsm._dyn.get('nogo')
+    assert h.fsm.mission.step == 'dyn_wait'
+    assert any('dog in the sweep: waiting' in t for t in logs(h))
+    assert not [k for k, _ in _incidents(h) if k == 'transit_abort']
+    mark = len(h.fx)
+    h.tick(n=50)                               # 5 s: the dog is still there -> still waiting
+    zones(h, dog)
+    h.tick(n=20)
+    assert h.fsm._dyn is not None and h.fsm.mission.step == 'dyn_wait'
+    zones(h)                                   # the dog left the sweep
+    for _ in range(40):
+        zones(h)
+        h.tick()
+    assert h.fsm._dyn is None
+    assert h.fsm.mission.step == 'transit' and h.name == 'TRANSIT'
+    assert h.fsm._service is not None and h.fsm._service.name == f.SRV_PLAN_ROUTE
+    assert not [k for k, _ in _incidents(h, mark) if k == 'transit_abort']
+    assert not h.fsm.mission.nogo_route_aborts
+
+
+def test_route_corner_dog_wait_times_out_into_the_re_route():
+    dog = Z(2.0, 0.55, 0.45, 7, 'dog', 'candidate')
+    h = _route_corner_h([dog])
+    assert h.fsm._dyn is not None
+    for _ in range(170):                       # > dynamic_wait_transit_s (15 s)
+        zones(h, dog)
+        h.tick()
+    assert h.fsm._dyn is None
+    assert ('transit_abort', 'route corner pivot sweep blocked') in _incidents(h)
+    assert h.fsm.mission.nogo_route_aborts and h.name != 'STUCK_NEEDS_HELP'
+
+
+def test_route_corner_static_zone_still_re_routes_without_a_wait():
+    h = _route_corner_h([Z(2.0, 0.55, 0.45, 5, 'trunk', 'pending')])
+    assert h.fsm._dyn is None
+    assert any('(e)' in t and 're-route' in t for t in logs(h))
+
+
+def test_living_sweep_hits_only_living_candidates():
+    zs = [Z(0.45, 0.45, 0.2, 1, 'dog', 'candidate'), Z(0.45, 0.45, 0.2, 2, 'trunk', 'pending'),
+          Z(0.45, 0.45, 0.2, state='mark')]
+    assert nogo.living_sweep_hits(0, 0, 0, D90, zs) == ['dog']
+    assert nogo.living_sweep_hits(0, 0, 0, D90, zs[1:]) == []
+    assert nogo.living_sweep_hits(0, 0, 0, -D90, zs[:1]) == []   # the other way is clear
+
+
 # =====================================================================
 # mid-mow re-plan with progress kept
 # =====================================================================
@@ -436,3 +491,36 @@ def test_replan_hole_is_grown_for_the_nose():
     obs = h.goal(f.ACT_PLAN)['obstacles'][0]
     r = min(math.hypot(q[0] - 1.5, q[1] - 2.0) for q in obs)
     assert r >= 0.2 + h.fsm.p.nogo_plan_grow_m - 1e-6
+
+
+def test_zone_in_plan_needs_half_of_the_disc_inside_a_hole():
+    hole = nogo.zone_polygon(0.0, 0.0, 1.1)
+    assert nogo.zone_in_plan(Z(0.0, 0.0, 0.85), [hole])
+    assert nogo.zone_in_plan(Z(0.6, 0.0, 0.85), [hole])          # mostly inside: stacked
+    assert not nogo.zone_in_plan(Z(1.5, 0.0, 0.85), [hole])      # mostly outside: new
+    assert not nogo.zone_in_plan(Z(0.0, 0.0, 2.0), [hole])       # outgrew its hole
+    assert not nogo.zone_in_plan(Z(0.0, 0.0, 0.3), [])
+
+
+def test_route_corner_mark_under_a_dog_is_the_dog_and_clears_with_it():
+    # field 2026-10-28: "sweeps dog (-23.82, -4.24) r 0.35, mark (-23.89, -4.22) r 0.35"
+    dog = Z(2.0, 0.55, 0.35, 7, 'dog', 'candidate')
+    mark = Z(1.95, 0.57, 0.35, state='mark')
+    h = _route_corner_h([dog])
+    zones(h, dog, marks=[mark])
+    assert h.fsm._dyn is not None and h.fsm._dyn.get('nogo')
+    for _ in range(40):                        # the dog candidate expired, the mark stays
+        zones(h, marks=[mark])
+        h.tick()
+    assert h.fsm._dyn is None and h.fsm.mission.step == 'transit'
+    m = len(h.fx)
+    _answer_corner_route(h)
+    zones(h, marks=[mark])
+    h.finish(f.ACT_FOLLOW)
+    assert h.pending_action(f.ACT_SPIN).purpose == 'route_corner'
+    assert not [k for k, _ in _incidents(h, m) if k == 'transit_abort']
+
+
+def _answer_corner_route(h):
+    from test_mission_fsm import _answer_route, _route_resp
+    _answer_route(h, resp=_route_resp(_corner_route(100.0, h.fsm.mission.transit_target)))

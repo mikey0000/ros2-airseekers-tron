@@ -315,3 +315,51 @@ Sim gates, x1, domain 225, `accuracy-simout/nogo-c/`:
   the re-plan came before any mowing.
 - No sim yet with a zone forming mid-lap.
 - The route-corner and edge-detour paths are covered by unit tests only.
+
+## 6. 2026-10-28 field fixes (branch `ws/fix1028`)
+
+Field mow 2026-10-28 (bag `20261028-023252`): a 1.5 m ladder ("wood") at (-19.6, -11.3)
+stacked 8+ r 0.85 pending zones (3 re-plans, transit aborts, a stuck); the 04:11 re-plan
+left a 3.94 m hop in area 4 sub-path 7 that the robot orbited until the leg loop guard
+aborted 4 times (each a `follow_abort` terrain incident on grass); a dog at a transit route
+corner made "pivot sweep blocked" abort the transit (47 retries in four clusters).
+
+- **Person / animal at a route corner (item 5).** The route branch of (e) now waits
+  (`_dyn_start('transit')`, blade per `blade_policy`) when the policy is dynamic or a
+  living-class zone is in the sweep; it clears when neither is left in the sweep, then the
+  transit is re-sent. The wait is bounded per corner (`dynamic_wait_transit_s`, summed over
+  re-sends); its timeout falls through to today's re-route / abort. In the field the policy
+  was already `none` (dog last seen 25 s before) and the sweep also hit a `stone` mark under
+  the dog, so: tracker candidates voted a living class expire after `living_timeout_s` 10 s
+  unseen, and static marks within a living zone of the last `nogo_living_memory_s` 60 s are
+  left out of the pivot discs.
+- **Stacked zones (item 1).** A promoted det zone associates detections within
+  max(`det_assoc_m`, its radius + 0.10 m) and grows (p90 spread of its detections from its
+  fixed centre + margin, cap 1.0 m) through the existing resize protocol; a candidate whose
+  disc overlaps a promoted zone merges into it. Living-class detections never associate
+  wide or merge. The mission counts a zone as planned when >= 50 % of its disc is inside an
+  existing hole. (No "ignore detections near zones": it would break on-path camera
+  avoidance and discard width evidence.)
+- **Leg loop guard (item 4).** Its abort records incident kind `leg_loop` (terrain weight 0,
+  pinned by bag_recorder), not `follow_abort`.
+- **The 04:11 hop (item 3).** Not the planner or the splitter (the bridge densifies to
+  0.10 m): mission path conditioning. Staggered row ends at the hole made a 162 deg corner;
+  the r 1.0 fillet's 6.3 m outgoing tangent was projected (global nearest point) onto a later
+  pass of the same sub-path, `s_prev` jumped ~1600 poses and the next raw piece collapsed:
+  a 0.03 m piece, then one straight hop. Fix: the tangent point must lie on the corner's own
+  outgoing run. Backstops: a conditioned path that skips > 0.05 m of drawn path fails
+  validation (not driven, logged); `condition_plan` splits densified forward sub-paths at any
+  segment > 0.6 m. The C++ turn-loop guard was not added: the planner output was continuous.
+- **Right-sized detour (item 2): not done.** A hole grown only along the swath direction
+  leaves the edge-lap approach (not along the swath) at the 0.40 m keepout, which is exactly
+  the `trunk_x1` nose contact; `nogo_plan_grow_m` stays 0.25.
+
+Sims (domain 232, real_run5 worlds):
+
+| run | world / code | result |
+|---|---|---|
+| `fx_plain_ideal_x3` | real_run5, e845029 | complete, docked, 0 trips; FAIL only i (transit 0.366), as master |
+| `fx_dog_corner_x1` / `fx_dog_corner2_x1` | dog + `stone` phantom 0.70 m from the route corner (-3.00, 0.89) | run 1: timing missed the dog, PASS (plain baseline at x1). Run 2: the dog's track was outside the area (det tracks there are dropped), only its `stone` marks were in the sweep, and (a) the other direction resolved it: no transit abort and no contact. The blocked branch (wait) was not reached; at this corner (b)-(d) also clear a single dog. Unit tests only for the wait |
+| `fx_ladder_x3` | real_run5_ladder, cc34b8d+23c8d8a | 2 zones (the halves, r 0.52), 2 re-plans; ended in an x3 "mcu telemetry stale" EMERGENCY (host) |
+| `fx_ladder2_x1` | real_run5_ladder, 644d368 | **2 zones** (whole r 0.87 and a half r 0.52, promoted together, 1 re-plan), no bumper hits, 0 stuck, no loop-guard / hop, MOWING_COMPLETE and docked; gate FAIL a 0.150 / b 1 (nose at the north line) / d 1 fallback / h 0.214 / i (no master run on this world to compare) |
+| `fx_final_dist_s1_x1` | real_run5 -d -s 1, 644d368 | complete, docked, d 0; FAIL a 0.116 / b 1 at the south-west K-turn (-5.13, -1.02), e 0.230 (return route corner), i. The plan is pose-for-pose identical to the pre-item-3 runs and no zone / split fired, so it is run variance at the known tight K-turn (it also tripped there in `fx_dog_corner2_x1`, ideal, but not in `fx_dog_corner_x1`); master 11a2d72 had only i. Check: ideal x3 on the head (`fx_head_ideal_x3`) and on the head with 23c8d8a reverted (`fx_rev3_ideal_x3`): both 0 trips, a 0.043 / 0.046, i only; a repeat `fx_final2_dist_s1_x1` on the head: a 0.087, b 0, e 0.124, i only (master-like) |

@@ -44,6 +44,7 @@ KINDS = {
     'slip': (0.5, True),             # short slip burst (wheel vs EKF), offline import
     'pivot_stall': (0.4, True),      # pivot assist creeping, pivot did not turn
     'follow_abort': (0.6, True),     # FollowPath aborted (failed to make progress)
+    'leg_loop': (0.0, True),         # mission leg loop guard: a plan loop, not traction
     'transit_abort': (0.3, True),    # NavigateToPose aborted / failed
     'subpath_failed': (0.8, True),   # retries exhausted, sub-path not mowed
     'stall_guard': (0.8, True),      # docking stall/dig guard

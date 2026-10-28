@@ -56,6 +56,7 @@ obstacle_tracker:
     present_radius_m: 0.4      # an obstacle point this close means "still there"
     clear_radius_m: 0.4        # a ground point this close means "positively gone"
     transient_timeout_s: 30.0  # drop never-promoted tracks unseen this long
+    living_timeout_s: 10.0     # ... a candidate voted person / dog / cat ... unseen this long
     max_track_drift_m: 0.4     # reject a track whose centroid drifted further (swaying bush)
 
     # --- dynamic-class veto (people / animals are never promoted) --------

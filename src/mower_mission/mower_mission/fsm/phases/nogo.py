@@ -33,7 +33,30 @@ class NogoMixin:
 
     def _nogo_discs(self, marks=True):
         zs = self._nogo_set()
-        return [] if zs is None else zs.discs(include_candidates=True, include_marks=marks)
+        if zs is None:
+            return []
+        self._nogo_living_note(zs)
+        discs = zs.discs(include_candidates=True, include_marks=marks)
+        spots = self.mission.nogo_living_spots if self.mission is not None else []
+        if not marks or not spots:
+            return discs
+        # a static mark where a person / animal was recently is that animal (field
+        # 2026-10-28: a 'stone' mark under the dog kept the corner blocked after it left)
+        return [z for z in discs if z.state != 'mark' or not any(
+            math.hypot(z.x - x, z.y - y) <= r + z.r for (x, y, r, _t) in spots)]
+
+    def _nogo_living_note(self, zs):
+        """Remember where living-class zones were in the last nogo_living_memory_s."""
+        m = self.mission
+        if m is None:
+            return
+        keep = float(self.p.nogo_living_memory_s)
+        spots = [q for q in m.nogo_living_spots if self._now - q[3] <= keep]
+        for z in zs.zones:
+            if z.label in nogo.LIVING_CLASSES:
+                spots = [q for q in spots if math.hypot(q[0] - z.x, q[1] - z.y) > 0.05]
+                spots.append((z.x, z.y, z.r, self._now))
+        m.nogo_living_spots = spots[-50:]
 
     def _nogo_area_holes(self, idx):
         m = self.mission
@@ -53,6 +76,7 @@ class NogoMixin:
         zs = self._nogo_set()
         if zs is None:
             return False
+        self._nogo_living_note(zs)
         zones = self._nogo_replan_zones(zs.zones)
         if zones and self._nogo_replan_budget():
             return self._nogo_replan(zones, 'zone on the remaining path')
@@ -277,13 +301,17 @@ class NogoMixin:
             self._nogo_next_step()
             return True
         why = plan.why if plan.kind == 'blocked' else '%s (maneuvers used up)' % plan.why
-        return self._nogo_pivot_blocked(site, key, plan, why, what, (x, y))
+        return self._nogo_pivot_blocked(site, key, plan, why, what, (x, y),
+                                        pivot=(x, y, yaw, delta))
 
-    def _nogo_pivot_blocked(self, site, key, plan, why, what, xy):
+    def _nogo_pivot_blocked(self, site, key, plan, why, what, xy, pivot=None):
         """(e): coverage - re-plan around a pending / accepted zone in the sweep, else skip
-        the leg (blocked_pivot_policy skip); route - re-route the transit once per corner.
-        None = pivot as planned (Nav2 judges)."""
+        the leg (blocked_pivot_policy skip); route - a person / animal in the sweep: wait
+        for it (the dynamic-obstacle wait), else (and once that wait timed out) re-route
+        the transit once per corner. None = pivot as planned (Nav2 judges)."""
         m, p = self.mission, self.p
+        if site == 'route' and pivot is not None and self._nogo_living_wait(plan, key, pivot):
+            return True
         if site == 'cov':
             zones = self._nogo_replan_zones([h.zone for h in plan.hits if h.zone.state !=
                                              'mark'], require_hit=False)
@@ -307,6 +335,55 @@ class NogoMixin:
         self._log('warn', 'pre-pivot check, %s at (%.2f, %.2f): %s: pivot as planned'
                   % (what, xy[0], xy[1], why))
         return None
+
+    def _nogo_living_wait(self, plan, key, pivot):
+        """Field 2026-10-28: a dog beside a transit route corner blocked the pivot sweep and
+        every retry aborted the transit (47 aborts, sub-paths dropped). A person / animal
+        (the dynamic policy, or a living-class zone in the sweep) is waited for instead, as
+        the dynamic-obstacle stop does (blade per blade_policy). The wait clears once the
+        policy is not dynamic and no living zone is in the sweep; then the transit is
+        re-sent. Matching removal: the wait is bounded per corner (dynamic_wait_transit_s,
+        summed over re-sends at the same spot); then today's re-route / abort follows.
+        True = the wait was started."""
+        m = self.mission
+        if self.phase != 'TRANSIT' or m is None or m.step != 'transit':
+            return False
+        x, y, yaw, delta = pivot
+        living = nogo.living_sweep_hits(x, y, yaw, delta, plan.hits and
+                                        [h.zone for h in plan.hits])
+        dyn = self._policy() == 'dynamic'
+        if not living and not dyn:
+            return False
+        w = m.nogo_living_wait
+        budget = self._dyn_wait_s('transit')
+        if w is None or math.hypot(x - w['xy'][0], y - w['xy'][1]) > 0.5 or \
+                self._now - w['since'] > 4.0 * budget:
+            w = m.nogo_living_wait = {'xy': (x, y), 'since': self._now}
+        if self._now - w['since'] >= budget:
+            return False
+        cls = (self.inputs.obstacle_class if dyn else None) or (living[0] if living else
+                                                                'obstacle')
+        self._log('warn', 'pre-pivot check, route corner at (%.2f, %.2f): %s in the sweep: '
+                          'waiting for it to move' % (x, y, cls))
+        self._incident('nogo_pivot', 'wait for %s' % cls)
+        self._dyn_start('transit')
+        d = self._dyn
+        d['cls'], d['since'] = cls, w['since']
+        d['nogo'] = {'pivot': pivot, 'key': key}
+        return True
+
+    def _nogo_living_blocks(self, d):
+        """Dynamic wait at a route corner: a living-class zone still in the sweep."""
+        x, y, yaw, delta = d['nogo']['pivot']
+        return bool(nogo.living_sweep_hits(x, y, yaw, delta, self._nogo_discs(marks=False)))
+
+    def _nogo_living_timeout(self, d, why):
+        """The corner wait timed out: today's (e) route branch (re-route the transit)."""
+        m = self.mission
+        m.nogo_route_aborts.add(d['nogo']['key'])
+        self._log('warn', '%s at a route corner: re-routing the transit' % why)
+        self._route_legs = None
+        self._transit_abort('route corner pivot sweep blocked')
 
     def _nogo_skip_leg(self, why):
         m, p = self.mission, self.p

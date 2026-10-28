@@ -369,7 +369,7 @@ class HoldsMixin:
                 return False
             self._dyn_start(ctx)
             return True
-        if kind == 'dynamic':
+        if kind == 'dynamic' or (d.get('nogo') and self._nogo_living_blocks(d)):
             d['clear_since'] = None
             d['cls'] = self.inputs.obstacle_class or d['cls']
         elif d['clear_since'] is None:
@@ -427,6 +427,9 @@ class HoldsMixin:
         self._dyn_ignore = {'until': self._now + float(self.p.dynamic_ignore_after_timeout_s),
                             'cls': d['cls'], 'logged': False,
                             'pose': (pose[0], pose[1]) if pose is not None else None}
+        if d.get('nogo') and m is not None and self.phase == 'TRANSIT':
+            self._nogo_living_timeout(d, why)
+            return
         if d['ctx'] != 'follow' or m is None:
             # transits / docking: Nav2 plans around the marked obstacle
             self._log('warn', '%s: continuing (Nav2 plans around it)' % why)

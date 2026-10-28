@@ -6,6 +6,7 @@ mow_plan's sub-path 0), the real dock path routes (real_dock_path_routes.json), 
 copy of run 5's areas.dat, test/data/run5_region.json)."""
 
 import json
+import types
 import re
 import math
 
@@ -1045,3 +1046,68 @@ def test_body_cap_cuts_a_spike_that_no_kturn_fits():
     off = pc.condition(_lap(poly, mid=True), [poly], pc.Params(body_limit_m=0.26, body_cap_m=9.0))
     c = corner_at(off, (-5.81, -2.62), tol=0.06)
     assert c.choice == 'kturn' and c.body_m > 0.45
+
+
+# =====================================================================
+# field 2026-10-28 (area 4 re-plan, 04:11): a near-U corner's long fillet tangent snapped
+# onto a later pass of the same sub-path -> a 0.03 m piece and a 3.9 m hop to the next
+# pivot vertex (the robot orbited it until the leg loop guard). Staggered row ends: R1
+# south to (0, 0), R2 starts 0.554 m further north, so R1's end is a 162 deg corner (r 1.0:
+# tangent 6.3 m) and R2's start is no corner.
+# =====================================================================
+def _staggered_rows():
+    def densify(q, step=0.10):
+        out = [q[0]]
+        for a, b in zip(q, q[1:]):
+            n = max(1, math.ceil(math.dist(a, b) / step - 1e-9))
+            out += [(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n)
+                    for k in range(1, n + 1)]
+        return out
+    w, top = 0.18, 10.0
+    rows = [(0.0, top, 0.0), (w, 0.554, top)]
+    x, down = 2 * w, True
+    while x < 2.6:
+        rows.append((x, top, 0.0) if down else (x, 0.0, top))
+        down = not down
+        x = round(x + w, 6)
+    raw = [(-0.18, 0.0), (-0.18, top)]
+    for (rx, y0, y1) in rows:
+        raw += [(rx, y0), (rx, y1)]
+    prm = pc.Params(r_min=0.5, r_max=1.0, margin_m=0.05, half_width_m=0.235, slack_m=0.05,
+                    pivot_min_rad=0.35, edge_pivot_rad=0.0, edge_clearance_m=0.20)
+    prm.body_limit_m, prm.body_cap_m, prm.convex_r_max = 0.26, 0.35, 2.0
+    region = [[(-1.0, -1.0), (4.0, -1.0), (4.0, 11.0), (-1.0, 11.0)]]
+    return densify(raw), region, prm
+
+
+def test_fillet_tangent_stays_on_its_own_corner_runs_no_hop():
+    pts, region, prm = _staggered_rows()
+    res = pc.condition(pts, region, prm)
+    assert res.valid, res.errors
+    P = res.poses
+    assert max(math.dist(P[i][:2], P[i + 1][:2]) for i in range(len(P) - 1)) < 0.3
+    assert len([q for q in P if abs(q[0] - 0.18) < 0.02 and 1.0 < q[1] < 9.0]) > 100   # R2 kept
+
+
+def test_conditioning_that_skips_drawn_path_is_invalid(monkeypatch):
+    # backstop: without the tangent bound (the old global projection) the conditioned path
+    # skipped R1's tail and R2 with one straight hop; it must fail validation, not be driven
+    pts, region, prm = _staggered_rows()
+    src = open(pc.__file__).read().replace(
+        "s2 <= s_hi + lim_out + p.tangent_tol_m and", "True and", 1)
+    old = types.ModuleType('pc_old')
+    old.__file__, old.__package__ = pc.__file__, 'mower_mission'
+    exec(compile(src, pc.__file__, 'exec'), old.__dict__)
+    res = old.condition(pts, region, prm)
+    assert not res.valid and 'skipped' in res.errors[0]
+
+
+def test_split_hops_backstop_splits_densified_forward_subpaths_only():
+    from mower_mission.fsm.common import split_hops
+    a = [(0.05 * i, 0.0, 0.0) for i in range(41)]               # 2 m densified
+    b = [(2.0 + 0.05 * i, 3.9, 0.0) for i in range(41)]
+    out, n = split_hops([a + b])
+    assert n == 1 and [len(s) for s in out] == [41, 41]
+    sparse = [(0, 0, 0), (1, 0, 0), (5, 0, 0), (6, 0, 0)]          # raw vertices: untouched
+    rev = [(0.05 * i, 0.0, math.pi) for i in range(41)] + [(4.0, 0.0, math.pi)]
+    assert split_hops([sparse, rev]) == ([sparse, rev], 0)

@@ -957,7 +957,11 @@ class TransitMixin:
                         return
                 m.follow_fails += 1
                 m.start_local = prog
-                self._incident('follow_abort', 'follow_path %s at pose %d' % (outcome, prog))
+                # the leg loop guard's abort is the robot orbiting a bad plan piece, not a
+                # traction failure: its own kind, no terrain weight (field 2026-10-28: four
+                # loop-guard aborts became follow_abort incidents on plain grass)
+                self._incident('leg_loop' if result.get('leg_loop') else 'follow_abort',
+                               'follow_path %s at pose %d' % (outcome, prog))
                 if m.follow_fails > self.p.follow_retries:
                     self._subpath_failed('follow_path %s %d times (at pose %d)'
                                          % (outcome, m.follow_fails, m.start_local))
