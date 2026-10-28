@@ -26,10 +26,28 @@ for ((i = 0; i < WAIT_S; i++)); do
 done
 grep -qs '^inv_icm42600 ' /proc/modules || log "vendor IMU driver not loaded after ${WAIT_S}s; applying anyway"
 
-out=$(sh "$SETUP" iio 2>&1); rc=$?
-log "$out"
+# The module appearing is not the end of mo_init.sh: cam.service is Type=simple, so the
+# unit's After=cam.service orders nothing, and mo_init.sh keeps configuring the camera and
+# the vendor IMU for a few more seconds. Field 2026-10-28: this script reloaded at 10:25:54,
+# mo_init.sh exited at 10:25:57, the reload failed in the same second and the whole mow ran
+# on the WIT gyro. Wait for cam.service to finish, then retry the reload a few times.
+for ((; i < WAIT_S; i++)); do
+    case "$(systemctl is-active cam.service 2>/dev/null)" in
+        active|activating|reloading) sleep 1 ;;
+        *) break ;;
+    esac
+done
+sleep "${SETTLE_S:-3}"
+
+TRIES=${TRIES:-5}
+for ((n = 1; n <= TRIES; n++)); do
+    out=$(sh "$SETUP" iio 2>&1); rc=$?
+    log "attempt $n/$TRIES: $out"
+    (( rc == 0 )) && break
+    sleep 5
+done
 if (( rc != 0 )); then
-    log "IIO mode FAILED (rc=$rc); the stack's stereo_imu node will keep retrying and the heading aligner stays on the WIT gyro"
+    log "IIO mode FAILED after $TRIES attempts (rc=$rc); the stack's stereo_imu node will keep retrying and the heading aligner stays on the WIT gyro"
     exit $rc
 fi
 sh "$SETUP" status 2>&1 | sed 's/^/[stereo-host] /'
