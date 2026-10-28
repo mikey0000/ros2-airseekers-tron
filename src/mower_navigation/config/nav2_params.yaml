@@ -418,7 +418,7 @@ controller_server:
         trajectory_point_step: 2
         threshold_to_consider: 0.3
         offset_from_furthest: 4
-        use_path_orientations: true   # 2026-10-28 weave retune 6a: heading term (coverage poses carry yaw)
+        use_path_orientations: false
       PathFollowCritic:
         enabled: true
         cost_power: 1
