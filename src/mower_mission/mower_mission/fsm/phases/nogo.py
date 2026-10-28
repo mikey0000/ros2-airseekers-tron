@@ -33,7 +33,30 @@ class NogoMixin:
 
     def _nogo_discs(self, marks=True):
         zs = self._nogo_set()
-        return [] if zs is None else zs.discs(include_candidates=True, include_marks=marks)
+        if zs is None:
+            return []
+        self._nogo_living_note(zs)
+        discs = zs.discs(include_candidates=True, include_marks=marks)
+        spots = self.mission.nogo_living_spots if self.mission is not None else []
+        if not marks or not spots:
+            return discs
+        # a static mark where a person / animal was recently is that animal (field
+        # 2026-10-28: a 'stone' mark under the dog kept the corner blocked after it left)
+        return [z for z in discs if z.state != 'mark' or not any(
+            math.hypot(z.x - x, z.y - y) <= r + z.r for (x, y, r, _t) in spots)]
+
+    def _nogo_living_note(self, zs):
+        """Remember where living-class zones were in the last nogo_living_memory_s."""
+        m = self.mission
+        if m is None:
+            return
+        keep = float(self.p.nogo_living_memory_s)
+        spots = [q for q in m.nogo_living_spots if self._now - q[3] <= keep]
+        for z in zs.zones:
+            if z.label in nogo.LIVING_CLASSES:
+                spots = [q for q in spots if math.hypot(q[0] - z.x, q[1] - z.y) > 0.05]
+                spots.append((z.x, z.y, z.r, self._now))
+        m.nogo_living_spots = spots[-50:]
 
     def _nogo_area_holes(self, idx):
         m = self.mission
@@ -53,6 +76,7 @@ class NogoMixin:
         zs = self._nogo_set()
         if zs is None:
             return False
+        self._nogo_living_note(zs)
         zones = self._nogo_replan_zones(zs.zones)
         if zones and self._nogo_replan_budget():
             return self._nogo_replan(zones, 'zone on the remaining path')

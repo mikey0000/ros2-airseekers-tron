@@ -91,6 +91,10 @@ class TrackerParams:
     clear_radius_m: float = 0.4          # a ground point this close = positively gone
 
     transient_timeout_s: float = 30.0    # drop never-promoted tracks unseen this long
+    # a candidate voted a living class (a static-class misdetection of a dog started it) is
+    # dropped sooner: it only feeds the mission's pivot sweep check, which waits for it
+    # (field 2026-10-28: a dog candidate blocked a route corner 25 s after it was last seen)
+    living_timeout_s: float = 10.0
     max_tracks: int = 200
     max_track_drift_m: float = 0.4       # reject a track whose centroid wandered this far
 
@@ -626,7 +630,10 @@ class TrackerCore:
                             t.on_path = why
                             break
             if not t.promoted:
-                if now - t.last_seen > p.transient_timeout_s:
+                unseen = now - t.last_seen
+                if unseen > p.transient_timeout_s or (
+                        t.kind == 'det' and unseen > p.living_timeout_s
+                        and t.label() in {c.lower() for c in p.never_classes}):
                     self.tracks.remove(t)
                     continue
                 if not t.dynamic and len(dynamic_points) and self._points_within(

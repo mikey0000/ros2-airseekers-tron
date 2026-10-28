@@ -500,3 +500,27 @@ def test_zone_in_plan_needs_half_of_the_disc_inside_a_hole():
     assert not nogo.zone_in_plan(Z(1.5, 0.0, 0.85), [hole])      # mostly outside: new
     assert not nogo.zone_in_plan(Z(0.0, 0.0, 2.0), [hole])       # outgrew its hole
     assert not nogo.zone_in_plan(Z(0.0, 0.0, 0.3), [])
+
+
+def test_route_corner_mark_under_a_dog_is_the_dog_and_clears_with_it():
+    # field 2026-10-28: "sweeps dog (-23.82, -4.24) r 0.35, mark (-23.89, -4.22) r 0.35"
+    dog = Z(2.0, 0.55, 0.35, 7, 'dog', 'candidate')
+    mark = Z(1.95, 0.57, 0.35, state='mark')
+    h = _route_corner_h([dog])
+    zones(h, dog, marks=[mark])
+    assert h.fsm._dyn is not None and h.fsm._dyn.get('nogo')
+    for _ in range(40):                        # the dog candidate expired, the mark stays
+        zones(h, marks=[mark])
+        h.tick()
+    assert h.fsm._dyn is None and h.fsm.mission.step == 'transit'
+    m = len(h.fx)
+    _answer_corner_route(h)
+    zones(h, marks=[mark])
+    h.finish(f.ACT_FOLLOW)
+    assert h.pending_action(f.ACT_SPIN).purpose == 'route_corner'
+    assert not [k for k, _ in _incidents(h, m) if k == 'transit_abort']
+
+
+def _answer_corner_route(h):
+    from test_mission_fsm import _answer_route, _route_resp
+    _answer_route(h, resp=_route_resp(_corner_route(100.0, h.fsm.mission.transit_target)))

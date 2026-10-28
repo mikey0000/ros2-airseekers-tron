@@ -518,3 +518,14 @@ def test_blocked_areas_from_settings_snapshot():
 def test_footprint_box_matches_nav2():
     assert FOOTPRINT_BOX == (-0.10, 0.60, -0.235, 0.235)
     assert math.hypot(0.60, 0.235) == pytest.approx(0.644, abs=1e-3)
+
+
+def test_living_candidate_expires_sooner_than_a_static_one():
+    c = _core()
+    c.add_detections([(5.0, 5.3, 'stone', 0.6, 0.2)], 0.0)      # misdetection starts it
+    for k in range(5):
+        c.add_detections([(5.0, 5.3, 'dog', 0.9, 0.4)], 0.5 * k)
+    c.add_detections([(8.0, 5.3, 'stone', 0.6, 0.2)], 2.0)      # a real stone elsewhere
+    assert [t.label() for t in c.tracks] == ['dog', 'stone']
+    c.step(np.empty((0, 2)), 12.5, areas=LAWN, plans=(ROW,))
+    assert [t.label() for t in c.tracks] == ['stone']

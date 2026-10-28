@@ -1233,6 +1233,7 @@ class Params:
     nogo_edge_lookahead_m: float = 2.5
     nogo_edge_clearance_m: float = 0.10
     nogo_edge_max_offset_m: float = 0.60     # larger: no detour (re-plan / skip instead)
+    nogo_living_memory_s: float = 60.0       # static marks this recently under a living zone
     nogo_plan_grow_m: float = 0.25           # zone hole radius + this (nose 0.60 vs 0.40 keepout)
     # bumper / blocked retries clear only the clearable 5 s obstacle layer (Nav2
     # clear_around_*_costmap; static_det_layer and bumper_layer are not clearable), not the
@@ -1333,6 +1334,7 @@ class Mission:
     nogo_tries: dict = field(default_factory=dict)      # pivot key -> maneuvers
     nogo_route_aborts: set = field(default_factory=set)
     nogo_living_wait: Any = None                # {'xy', 'since'}: route-corner living wait
+    nogo_living_spots: list = field(default_factory=list)   # [(x, y, r, t)] living zones
     nogo_turns: int = 0                         # pivots re-routed by the sweep check
     nogo_detour: Any = None                     # edge detour in flight
     nogo_detoured: set = field(default_factory=set)
