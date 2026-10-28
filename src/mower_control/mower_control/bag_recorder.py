@@ -125,7 +125,8 @@ DEFAULT_TOPICS = [
 
 # 'detour' is a routine decision, not an incident (several per mow); the rest are aborts.
 # 'boundary': a hard-boundary excursion (task 0.4 a) is an immediate fail, always pinned.
-DEFAULT_PIN_KINDS = ['subpath_failed', 'transit_abort', 'follow_abort', 'stuck', 'boundary']
+DEFAULT_PIN_KINDS = ['subpath_failed', 'transit_abort', 'follow_abort', 'leg_loop', 'stuck',
+                     'boundary']
 
 # /mission/activity modes that allow the low-power ring (mower_mission activity.LOW_POWER;
 # anything else, including no message yet, is active).

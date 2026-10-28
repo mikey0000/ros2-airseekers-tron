@@ -707,3 +707,7 @@ def test_save_enabled_unwritable_returns_false(tmp_path):
     blocker = tmp_path / 'file'
     blocker.write_text('x')
     assert br.save_enabled(str(blocker / 'state.json'), True) is False
+
+
+def test_leg_loop_incidents_pin_a_bag():
+    assert 'leg_loop' in bag_recorder.DEFAULT_PIN_KINDS

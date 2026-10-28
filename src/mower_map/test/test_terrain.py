@@ -56,6 +56,13 @@ def test_marker_kind_has_no_traction():
     assert len(a.clusters()) == 1
 
 
+def test_leg_loop_incident_is_a_marker_without_traction():
+    assert T.KINDS['leg_loop'] == (0.0, True)
+    a = T.AreaTerrain('A', SQUARE, t=0)
+    a.add_incident('leg_loop', 5, 5, 0)
+    assert a.raster.bad.max() == 0
+
+
 def test_decay_half_life_and_prune():
     a = T.AreaTerrain('A', SQUARE, {'bad_half_life_days': 10}, t=0)
     a.add_incident('dig_stall', 5, 5, 0)

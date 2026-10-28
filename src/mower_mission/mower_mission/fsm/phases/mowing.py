@@ -247,7 +247,7 @@ class MowingMixin:
             self._fx.append(CancelActions('leg loop guard'))
             self._action = None
             w['token'] = None
-            self._handle_action(a, ABORTED, {'message': msg})
+            self._handle_action(a, ABORTED, {'message': msg, 'leg_loop': True})
             return True
         return False
 
