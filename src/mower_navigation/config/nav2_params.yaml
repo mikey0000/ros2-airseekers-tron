@@ -366,6 +366,11 @@ controller_server:
     #   * Accel limits stay at the MPPI defaults (3196ffd's 0.5/-0.8/1.0 livelocked from rest).
     #   * vx_max is set live by the mission from the area's cut speed
     #     (mppi_controller_speed_param, capped at 0.3 = the MCU clamp).
+    #   * PathAlignAheadCritic (mowgli_nav2_plugins, B13-1 2026-10-29) = Nav2 PathAlignCritic
+    #     scored at a control point control_point_x ahead of base_link: heading damping for
+    #     the drive's track lag and the ~0.1 s GNSS fix latency (the field weave, docs/analysis/
+    #     2026-10-29_localisation_wander.md section 6). control_point_x 0 = PathAlignCritic;
+    #     revert: "PathAlignCritic" in critics and rename the block.
     FollowCoveragePathMPPI:
       plugin: "nav2_mppi_controller::MPPIController"
       motion_model: "DiffDrive"
@@ -390,7 +395,7 @@ controller_server:
       max_robot_pose_search_dist: 2.0
       transform_tolerance: 0.5
       enforce_path_inversion: false
-      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic",
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignAheadCritic",
                 "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic", "WheelFloorCritic"]
       ConstraintCritic:
         enabled: true
@@ -410,7 +415,7 @@ controller_server:
         cost_power: 1
         cost_weight: 5.0
         threshold_to_consider: 0.4
-      PathAlignCritic:
+      PathAlignAheadCritic:
         enabled: true
         cost_power: 1
         cost_weight: 30.0
@@ -419,6 +424,7 @@ controller_server:
         threshold_to_consider: 0.3
         offset_from_furthest: 4
         use_path_orientations: false
+        control_point_x: 0.25
       PathFollowCritic:
         enabled: true
         cost_power: 1

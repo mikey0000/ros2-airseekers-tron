@@ -377,3 +377,122 @@ With those, robot_localization reproduces the emulation:
    - The §1 decomposition (`straight1028/decomp.py` pipeline) gives the in-band split
      when needed.
 6. **Revert.** Restart without the argument. Nothing is persisted.
+
+## 6. B13-1: heading damping with a control point ahead (`ws/damp1029`, 2026-10-29)
+
+The coverage MPPI (`FollowCoveragePathMPPI`) now scores path alignment at a point
+0.25 m ahead of base_link. The new critic is `PathAlignAheadCritic` (mowgli_nav2_plugins),
+and its parameter is `control_point_x: 0.25`. The transit and reverse controllers are
+unchanged.
+
+### 6.1 Why this approach
+
+- **The lever is in the controller.** The weave is the lightly damped lateral mode (§1).
+  PathAlignCritic matches each sampled pose to the path point at the same arc length.
+  It gives `w ≈ -4.9 lat - 0.77 yaw`, i.e. it tracks a point only 0.157 m ahead.
+- **The lag sits behind the rotation centre.** On the drive the track lag (0.055 m) and
+  the turn centre (0.026 m ahead of base_link) are physical. The fix latency adds about
+  0.02 m. All three put what the controller sees behind the rotation centre, which takes
+  most of that 0.157 m.
+- **The fix.** Scoring `(x + d cos yaw, y + d sin yaw)` against the path point `d` further
+  along adds `d × heading` to every lateral error. That is the classic look-ahead control
+  point. With d 0.25 the modelled true damping ratio goes from about 0.12 to about 0.7.
+- **It is robust to the latency.** It does not depend on the latency value or on the
+  stamps. It only adds heading damping.
+- **How the critic is built.**
+  - It is Nav2 1.3.13's PathAlignCritic loop with the control point.
+  - It has the same parameters and the same gating (goal threshold, `offset_from_furthest`,
+    occupancy ratio, invalid points).
+  - With `d > 0` it uses the path up to d beyond the furthest reached point. Without that,
+    the ahead points at the end of the horizon would be clamped to that point, which
+    would bias speed.
+  - A gtest checks that `control_point_x: 0` reproduces the upstream loop bit for bit, on
+    random rollouts over a curved path with an invalid point.
+- **The cost on arcs.** On an arc of radius R a control point d ahead holds base_link
+  `d²/2R` inside: 3 cm at R 1 m, 6 cm on the 0.5 m fillets. That is towards the area,
+  and it is what fixed the wide fillets.
+
+### 6.2 What was not done
+
+- **Latency compensation at the source (B13 candidate 1).**
+  - On the robot `um960_node` stamps `/fix` with `now()` when its 10 Hz timer publishes
+    the latest sentence. The stamp is therefore receive / publish time, not measurement
+    time.
+  - The sim cannot test a fix there. `loc_drift` replaces ekf_map and publishes the
+    0.1 s-old antenna position, stamped now. Its latency is invisible to stamps, so
+    re-stamping or `smooth_lagged_data` would show nothing in the gate.
+  - It is also worth only about 0.02 m of the lag (§1), and the UM960 driver is due to
+    be replaced by the RTCM gateway.
+  - Left for later. It would need a field A/B.
+- **Critic retunes (candidate 3) and slew rate damping (candidate 4).** Not tried. The
+  control point passed a, e and h on the first setting, so a weaker or riskier lever was
+  not needed.
+- **control_point_x 0.35.** One `-l -x 3` run. Straights improved further (XTE p90 1.95 cm,
+  max 3.45). But e failed with 0.28 m and a with 0.108. The run was INVALID: controller
+  loop 7 Hz sim, because the host was loaded. So it is inconclusive, and 0.25 was kept.
+  The params test bounds `control_point_x` to 0.1-0.4.
+
+### 6.3 Results (sim, `real_run5`)
+
+Weave columns are `weave.py` / `simmech.py` on the 17 straights (truth vs the sent plan):
+
+- XTE p50 / p90 / max;
+- detrended true lateral p50 / p90 and band rms (0.08-0.4 Hz);
+- `/cmd_vel_nav_raw` w rms in 0.1-0.3 Hz and its spectral peak.
+
+| Run | a max out / > 0.10 | e max | h p99 line / arc | i side excess | XTE p50 / p90 / max (cm) | detrended lat p50 / p90, band rms (cm) | w band rms, peak | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| field `-l -x 3`, master (loc1029) | 0.096 / 0 | 0.228 (2 fail) | 0.095 / 0.236 | 0.261 | 1.19 / 2.97 / 5.35 | 0.87 / 2.12, 1.19 | 0.053, 6.4 s | FAIL e h i |
+| **field `-l -x 3`, d 0.25** | **0.056 / 0** | **0.091** | **0.068 / 0.036** | 0.102 | 0.97 / 2.34 / 5.32 | 0.53 / 1.33, 0.66 | 0.028, 4.3 s | FAIL i only |
+| field `-d -s 1 -x 1`, master (loc1029, 2 runs) | 0.155 / 153; 0.132 / 114 | 0.168 (2 fail); 0.144 | 0.116 / 0.179; 0.103 / 0.138 | 0.213; 0.177 | 1.61 / 4.14 / 10.27; 1.55 / 4.05 / 9.58 | 1.47 / 3.49, 1.90; 1.42 / 3.60, 1.98 | 0.089; 0.100, 6.4 s | FAIL a e h i; a h i |
+| **field `-d -s 1 -x 1`, d 0.25 (r2)** | **0.079 / 0** | **0.133** | **0.089 / 0.063** | 0.108 | 1.06 / 3.01 / 5.15 | 0.85 / 1.93, 1.02 | 0.055, 4.3 s | FAIL i only |
+| field `-d -s 1 -x 1`, d 0.25 (r1, INVALID: loop 17 Hz, host load) | 0.098 / 0 | 0.116 | 0.080 / 0.058 | 0.137 | 1.05 / 2.94 / 5.48 | 0.80 / 1.86, 1.01 | 0.054, 4.3 s | (INVALID) |
+| legacy `-M legacy -d -s 1 -x 1`, master (w5-final) | 0.087 | 0.133 | 0.091 arc | fail | 1.24 / 3.79 / 10.79 | | 0.064 | FAIL i only |
+| **legacy `-M legacy -d -s 1 -x 1`, d 0.25** | **0.060 / 0** | 0.104 | 0.057 / 0.095 | 0.122 | 1.24 / 2.88 / 5.25 | | 0.043, 4.3 s | FAIL i only |
+
+What the runs show:
+
+- **Criterion a passes with margin on the field model.**
+  - `-d` gives 0.079 m against 0.13-0.16, and `-l` gives 0.056.
+  - The SW K-turn edge arc (sub-path 0, poses 269-290, R about 0.6 m) is now tracked
+    inside the area.
+  - The remaining excursion is the pivot at vertex 292, 0.06-0.08 m beyond the vertex,
+    which lies on the edge. That is the pivot-stop overshoot, not tracking.
+- **e and h pass.** The 94 deg fillet after sub-path 0's corner went from 0.168-0.228 to
+  0.034-0.09, and h arc p99 from 0.14-0.24 to 0.04-0.06.
+- **The weave is damped.**
+  - Truth band rms is down 45-48 % (1.19 -> 0.66 cm with `-l`, 1.9-2.0 -> 1.02 cm with `-d`).
+  - Detrended p90 is down 37-46 %, and the straight XTE max halves with `-d`.
+  - w in the weave band is down 40-47 %.
+  - The 6.4 s peak is gone. The residual w spectrum peaks at 4.3 s, with half the power.
+  - XTE p90 against the plan falls less (-21 % / -26 %), because it includes the
+    per-swath standing offsets. Those are not what the fix addresses.
+- **i still fails, as on every baseline.** That includes the legacy "only i".
+  - Edge-lap side excess is now 0.10-0.12 m, down from 0.18-0.26.
+  - The worst is on the west edge arc (-5.5..-5.75, 1.9-2.0), where the body runs about
+    6 cm outside its plan on a R about 1.4 m right-hand arc.
+  - That is a steady arc offset (the drive's crab with the track lag, plus the
+    disturbance's wheel bias), not the weave. It is left for a separate item.
+- **No regression on the legacy model.** The verdict is the same (only i). a, e, h and the
+  straights are all better.
+- **CPU.** The critic costs the same as PathAlignCritic plus a few path points per
+  cycle. `-l -x 3` held 20 Hz sim. The x1 runs' 17-18 Hz medians coincided with host
+  load: the 0.35 run fell to 7 Hz at the same time. The rollout count is unchanged.
+
+### 6.4 Field check (owner)
+
+1. Deploy `ws/damp1029`. It is the coverage MPPI change only, and needs a rebuild of
+   `mowgli_nav2_plugins`.
+2. Mow Area 1 as in §5.3 mow A, with `gnss_smoothing` off. This is a separate A/B from
+   B13-2: don't combine the two on the first mow.
+3. Run `wheel_cal.py` on the session. Compare against 10-28:
+   - "weave: RTK lateral about the swath line" p50 / p90: 0.84 / 2.09 cm. Success is
+     -30 % or more.
+   - the mission log's boundary events and `/map_server_node/outside_m` max on the edge
+     laps.
+   - the pivot vertices on the edge: overshoot at pivots is unchanged by this.
+4. Watch the fillets and the edge-lap arcs. They now run slightly inside (2-6 cm on tight
+   arcs).
+5. **Revert:** in `nav2_params.yaml`, put `PathAlignCritic` back in the
+   `FollowCoveragePathMPPI` critics list and rename its block. Alternatively, set
+   `control_point_x: 0.0`, which is equivalent.

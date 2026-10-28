@@ -7,6 +7,12 @@ Nav2 plugins for the Airseekers Tron:
   vertex of a conditioned path (`coverage_corner_goal_checker`, `along_path: true`).
   Test: `test_leg_goal_checker`.
 * `mppi::critics::WheelFloorCritic` (below).
+* `mppi::critics::PathAlignAheadCritic` (2026-10-29, B13-1): Nav2 PathAlignCritic scored at
+  a control point `control_point_x` ahead of base_link (heading damping against the
+  drive's track lag and the GNSS fix latency; 0 = PathAlignCritic). Used by
+  `FollowCoveragePathMPPI` at 0.25 m. Header comment and
+  `docs/analysis/2026-10-29_localisation_wander.md` section 6. Test:
+  `test_path_align_ahead_critic`.
 
 The package started as the Jazzy port of MowgliNext's `FTCController` and
 `PathProgressGoalChecker` (`third_party/mowglinext/mowgli_nav2_plugins`). Both, with the

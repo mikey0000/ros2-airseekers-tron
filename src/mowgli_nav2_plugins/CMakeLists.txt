@@ -83,12 +83,13 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 # ---------------------------------------------------------------------------
-# MPPI critic plugin (2026-10-15): WheelFloorCritic, own library so the goal
+# MPPI critic plugins (2026-10-15): WheelFloorCritic (+ PathAlignAheadCritic 2026-10-29), own library so the goal
 # checker library does not link nav2_mppi_controller.
 # ---------------------------------------------------------------------------
 
 add_library(mowgli_mppi_critics SHARED
   src/wheel_floor_critic.cpp
+  src/path_align_ahead_critic.cpp
 )
 target_include_directories(mowgli_mppi_critics
   PUBLIC
@@ -149,6 +150,12 @@ if(BUILD_TESTING)
     test/test_wheel_floor_critic.cpp
   )
   target_link_libraries(test_wheel_floor_critic mowgli_mppi_critics)
+
+  # PathAlignAheadCritic scoring (B13-1): control point 0 == PathAlignCritic, look-ahead.
+  ament_add_gtest(test_path_align_ahead_critic
+    test/test_path_align_ahead_critic.cpp
+  )
+  target_link_libraries(test_path_align_ahead_critic mowgli_mppi_critics)
 
   ament_add_gtest(test_leg_goal_checker
     test/test_leg_goal_checker.cpp

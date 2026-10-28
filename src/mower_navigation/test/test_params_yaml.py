@@ -621,8 +621,13 @@ def test_mppi_coverage_controllers():
     assert c["PreferForwardCritic"]["enabled"] is True
     # tight line tracking: path alignment dominates path-follow (PathFollow pulls to a point
     # ahead and cuts corners, nav2#5925)
-    assert c["PathAlignCritic"]["cost_weight"] >= 3 * c["PathFollowCritic"]["cost_weight"]
-    assert c["PathAlignCritic"]["use_path_orientations"] is False
+    # B13-1 (2026-10-29): PathAlignAheadCritic = PathAlignCritic at a control point ahead of
+    # base_link (heading damping); 0 would be PathAlignCritic, beyond ~0.4 m it cuts fillets
+    pa = c["PathAlignAheadCritic"]
+    assert "PathAlignAheadCritic" in c["critics"] and "PathAlignCritic" not in c["critics"]
+    assert pa["cost_weight"] >= 3 * c["PathFollowCritic"]["cost_weight"]
+    assert pa["use_path_orientations"] is False
+    assert 0.1 <= pa["control_point_x"] <= 0.4
     r = _ctl("FollowCoveragePathReverseMPPI")
     assert r["vx_max"] == 0.0 and -0.15 <= r["vx_min"] < 0.0      # backwards only, slow
     assert "PreferForwardCritic" not in r["critics"]
