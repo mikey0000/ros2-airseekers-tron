@@ -342,6 +342,26 @@ def test_long_object_seen_in_parts_grows_one_zone_instead_of_stacking():
     assert len(c.tracks) == 2
 
 
+def test_candidate_overlapping_a_promoted_zone_is_absorbed():
+    # ladder parts 0.66 m apart: the second part's candidate merges into the first zone
+    c = _core()
+    tid = _feed(c, 5, xy=(5.0, 5.3), width=0.75)[0]
+    c.confirm_promoted(tid, 3.0)
+    out = []
+    for k in range(10):
+        tk = 3.5 + 0.5 * k
+        c.add_detections([(5.66, 5.3, 'wood', 0.8, 0.75)], tk)
+        r = c.step(np.empty((0, 2)), tk, areas=LAWN, plans=(ROW,))
+        out += r['promote']
+    assert out == [] and [t.id for t in c.tracks] == [tid]
+    assert c.find_track(tid).footprint_radius(c.params) > 0.7
+    # a dog beside the zone is not absorbed (living votes never join a zone)
+    c.add_detections([(5.9, 5.3, 'stone', 0.6, 0.3), (5.9, 5.3, 'dog', 0.9, 0.3),
+                      (5.9, 5.3, 'dog', 0.9, 0.3)], 10.0)
+    c.step(np.empty((0, 2)), 10.0, areas=LAWN, plans=(ROW,))
+    assert c.find_track(tid).votes.get("dog", 0.0) == 0.0
+
+
 def test_zone_growth_is_capped():
     c = _core()
     tid = _feed(c, 5, xy=(5.0, 5.3), width=1.5)[0]

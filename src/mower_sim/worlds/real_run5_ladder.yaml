@@ -1,0 +1,24 @@
+# real_run5 + the 2026-10-28 ladder: a 1.5 m object ('wood') lying in the lawn, which the
+# field detector saw in parts (det boxes 0.3-0.8 m apart along it) and which stacked 8+
+# r 0.85 pending zones -> 3 re-plans, transit aborts, a stuck. The sim's scripted detector
+# reports one box per obstacle, so the ladder is a 1.5 m box plus its two 0.75 m halves,
+# each detected as 'wood' at its own front face (mower_sim/detections.py): whole + parts. Stereo sees
+# it too. Gate: sim_gate.sh -w this world (pass: <= 2 zones at the ladder, <= 1 re-plan, no
+# stuck, MOWING_COMPLETE and docked).
+name: real_run5_ladder
+datum: {lat: 48.0, lon: 9.0}
+areas_file: real_run5_areas.dat
+areas_select: [Area 1, Dock path, Path 2, Path 3]
+lawn_area: Area 1
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+obstacles:
+  # the whole ladder (stereo + a whole-object box) and its two halves (part boxes only;
+  # inside the whole one, so the body touches the same outline)
+  - {name: ladder, type: box, x: -3.0, y: 2.6, yaw: 0.5, size_x: 1.5, size_y: 0.4,
+     height: 0.25, detect: {label: wood, score: 0.75}}
+  - {name: ladder_part_a, type: box, x: -3.329, y: 2.420, yaw: 0.5, size_x: 0.75, size_y: 0.4,
+     height: 0.25, detect: {label: wood, score: 0.7}, stereo: false}
+  - {name: ladder_part_b, type: box, x: -2.671, y: 2.780, yaw: 0.5, size_x: 0.75, size_y: 0.4,
+     height: 0.25, detect: {label: wood, score: 0.7}, stereo: false}
+battery: {voltage: 25.0, percentage: 0.9}

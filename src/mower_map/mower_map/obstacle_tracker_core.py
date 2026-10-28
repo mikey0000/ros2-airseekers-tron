@@ -348,7 +348,8 @@ class TrackerCore:
             score = float(score)
             if not label or score < p.det_vote_min_score:
                 continue
-            t = self._det_track(x, y)
+            # a person / animal beside a zone is not part of it (only within det_assoc_m)
+            t = self._det_track(x, y, wide=label not in never)
             if t is None:
                 if label in never or label not in static or len(self.tracks) >= p.max_tracks:
                     continue
@@ -386,15 +387,15 @@ class TrackerCore:
                 arr = np.asarray(t.det_pts[-50:])
                 t.cx, t.cy = float(arr[:, 0].mean()), float(arr[:, 1].mean())
 
-    def _det_track(self, x: float, y: float) -> Optional[Track]:
+    def _det_track(self, x: float, y: float, wide: bool = True) -> Optional[Track]:
         p = self.params
         best, best_d = None, float('inf')
         for t in self.tracks:
             # a promoted zone absorbs detections over its whole footprint (+ 0.10 m): a 1.5 m
             # ladder seen in parts stacked 8+ r 0.85 zones (field 2026-10-28) while the zone
             # only associated within det_assoc_m of its centre; it grows instead (resize)
-            lim = max(p.det_assoc_m, t.footprint_radius(p) + 0.10) if t.promoted else \
-                p.det_assoc_m
+            lim = max(p.det_assoc_m, t.footprint_radius(p) + 0.10) if t.promoted and wide \
+                else p.det_assoc_m
             d = math.hypot(t.cx - x, t.cy - y)
             if d <= lim and d < best_d:
                 best, best_d = t, d
@@ -441,10 +442,20 @@ class TrackerCore:
             for b in dets[i + 1:]:
                 if a not in self.tracks or b not in self.tracks:
                     continue
-                if math.hypot(a.cx - b.cx, a.cy - b.cy) > p.merge_dist_m:
-                    continue
+                d = math.hypot(a.cx - b.cx, a.cy - b.cy)
                 if a.promoted and b.promoted:
                     continue   # both are keepouts already: leave them to removal / dedup
+                # a candidate overlapping a promoted zone is more of that object (field
+                # 2026-10-28: the parts of a 1.5 m ladder promoted as stacked zones): the
+                # promoted zone absorbs it and grows (resize) instead of a second zone
+                never = {c.lower() for c in p.never_classes}
+                one_promoted = ((a.promoted and not (b.promoted or b.promoting)
+                                 and b.label() not in never) or
+                                (b.promoted and not (a.promoted or a.promoting)
+                                 and a.label() not in never))
+                if d > p.merge_dist_m and not (
+                        one_promoted and d <= a.footprint_radius(p) + b.footprint_radius(p)):
+                    continue
                 keep, drop = (b, a) if (b.promoted or b.promoting) or (
                     not (a.promoted or a.promoting) and b.first_seen < a.first_seen) else (a, b)
                 if drop.promoting:
