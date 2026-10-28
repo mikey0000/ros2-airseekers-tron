@@ -53,17 +53,28 @@ def _pip(x, y, poly):
     return inside
 
 
-def zone_in_plan(zone, obstacles, tol: float = 0.3) -> bool:
-    """The zone is already a hole of the plan: its centre is inside one of ``obstacles``
-    (polygons) or within ``tol`` of one's vertex centroid."""
+def _disc_samples(x, y, r, n=64):
+    """``n`` equal-area sample points of the disc (sunflower pattern)."""
+    g = math.pi * (3.0 - math.sqrt(5.0))
+    return [(x + r * math.sqrt((k + 0.5) / n) * math.cos(k * g),
+             y + r * math.sqrt((k + 0.5) / n) * math.sin(k * g)) for k in range(n)]
+
+
+def zone_in_plan(zone, obstacles, frac: float = 0.5) -> bool:
+    """The zone is already a hole of the plan: at least ``frac`` of its disc lies inside
+    one of ``obstacles`` (polygons). Field 2026-10-28: a zone stacked beside a hole
+    re-planned again; a zone that outgrew its hole (re-sized) is planned again."""
+    pts = _disc_samples(zone.x, zone.y, max(float(zone.r), 1e-3))
     for o in obstacles or []:
         if len(o) < 3:
             continue
-        if _pip(zone.x, zone.y, o):
-            return True
-        cx = sum(q[0] for q in o) / len(o)
-        cy = sum(q[1] for q in o) / len(o)
-        if math.hypot(cx - zone.x, cy - zone.y) <= tol:
+        xs = [q[0] for q in o]
+        ys = [q[1] for q in o]
+        if zone.x + zone.r < min(xs) or zone.x - zone.r > max(xs) or \
+                zone.y + zone.r < min(ys) or zone.y - zone.r > max(ys):
+            continue
+        inside = sum(1 for (px, py) in pts if _pip(px, py, o))
+        if inside >= frac * len(pts):
             return True
     return False
 

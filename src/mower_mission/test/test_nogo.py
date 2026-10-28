@@ -491,3 +491,12 @@ def test_replan_hole_is_grown_for_the_nose():
     obs = h.goal(f.ACT_PLAN)['obstacles'][0]
     r = min(math.hypot(q[0] - 1.5, q[1] - 2.0) for q in obs)
     assert r >= 0.2 + h.fsm.p.nogo_plan_grow_m - 1e-6
+
+
+def test_zone_in_plan_needs_half_of_the_disc_inside_a_hole():
+    hole = nogo.zone_polygon(0.0, 0.0, 1.1)
+    assert nogo.zone_in_plan(Z(0.0, 0.0, 0.85), [hole])
+    assert nogo.zone_in_plan(Z(0.6, 0.0, 0.85), [hole])          # mostly inside: stacked
+    assert not nogo.zone_in_plan(Z(1.5, 0.0, 0.85), [hole])      # mostly outside: new
+    assert not nogo.zone_in_plan(Z(0.0, 0.0, 2.0), [hole])       # outgrew its hole
+    assert not nogo.zone_in_plan(Z(0.0, 0.0, 0.3), [])

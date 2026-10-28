@@ -258,10 +258,18 @@ class Track:
         return max(self.votes, key=self.votes.get) if self.votes else ''
 
     def sized_radius(self, p: TrackerParams) -> float:
-        """Class-voted zone radius: max(median ranged width, class prior) / 2 + margin."""
+        """Class-voted zone radius: max(median ranged width, class prior) / 2 + margin; a
+        promoted zone also covers the spread of the detections it absorbed (p90 distance
+        from its fixed centre + margin: a long object seen in parts, field 2026-10-28
+        ladder), capped at max_zone_radius_m."""
         prior = dict(p.class_prior_m).get(self.label(), p.default_prior_m)
         w = float(np.median(self.widths)) if self.widths else 0.0
-        return min(max(w, prior) / 2.0 + p.size_margin_m, p.max_zone_radius_m)
+        r = max(w, prior) / 2.0 + p.size_margin_m
+        if self.promoted and len(self.det_pts) >= 3:
+            arr = np.asarray(self.det_pts[-50:])
+            d = np.hypot(arr[:, 0] - self.cx, arr[:, 1] - self.cy)
+            r = max(r, float(np.percentile(d, 90)) + p.size_margin_m)
+        return min(r, p.max_zone_radius_m)
 
     def footprint_radius(self, p: TrackerParams) -> float:
         if self.kind == 'det':
@@ -378,8 +386,11 @@ class TrackerCore:
         p = self.params
         best, best_d = None, float('inf')
         for t in self.tracks:
-            lim = p.det_assoc_m if t.kind == 'det' else max(
-                p.det_assoc_m, t.footprint_radius(p) if t.promoted else p.det_assoc_m)
+            # a promoted zone absorbs detections over its whole footprint (+ 0.10 m): a 1.5 m
+            # ladder seen in parts stacked 8+ r 0.85 zones (field 2026-10-28) while the zone
+            # only associated within det_assoc_m of its centre; it grows instead (resize)
+            lim = max(p.det_assoc_m, t.footprint_radius(p) + 0.10) if t.promoted else \
+                p.det_assoc_m
             d = math.hypot(t.cx - x, t.cy - y)
             if d <= lim and d < best_d:
                 best, best_d = t, d

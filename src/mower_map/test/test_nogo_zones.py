@@ -316,6 +316,44 @@ def test_promoted_zone_absorbs_later_detections_and_stereo_cluster():
     assert len(c.tracks) == 1 and c.tracks[0].cx == pytest.approx(5.0, abs=0.05)
 
 
+def test_long_object_seen_in_parts_grows_one_zone_instead_of_stacking():
+    # field 2026-10-28: a 1.5 m ladder seen in parts made 8+ stacked r 0.85 zones; the
+    # promoted zone associated only within det_assoc_m (0.3 m) of its centre
+    c = _core()
+    tid = _feed(c, 5, xy=(5.0, 5.3), width=0.8)[0]
+    c.confirm_promoted(tid, 3.0)
+    t = c.find_track(tid)
+    r0 = t.promoted_radius
+    assert r0 == pytest.approx(0.5)
+    out = []
+    for k in range(30):                    # the other end of the object, 0.55 m away
+        tk = 3.5 + 0.5 * k
+        c.add_detections([(5.55, 5.3, 'trunk', 0.8, 0.8)], tk)
+        r = c.step(np.empty((0, 2)), tk, areas=LAWN, plans=(ROW,))
+        out += r['resize']
+        assert r['promote'] == []
+    assert [q.id for q in c.tracks] == [tid]          # no second zone
+    assert out == [tid]                                # grown through the resize protocol
+    c.resize_sent(tid, True)
+    assert t.promoted_radius > r0 + 0.1 and t.promoted_radius <= 1.0
+    assert (t.cx, t.cy) == (pytest.approx(5.0, abs=0.05), pytest.approx(5.3, abs=0.05))
+    # beyond the footprint + 0.10 m: a separate object
+    c.add_detections([(5.0 + t.footprint_radius(c.params) + 0.3, 5.3, 'trunk', 0.8, 0.2)], 30.0)
+    assert len(c.tracks) == 2
+
+
+def test_zone_growth_is_capped():
+    c = _core()
+    tid = _feed(c, 5, xy=(5.0, 5.3), width=1.5)[0]
+    c.confirm_promoted(tid, 3.0)
+    t = c.find_track(tid)
+    for k in range(60):
+        c.add_detections([(5.0 + 0.9 * math.cos(k), 5.3 + 0.9 * math.sin(k), 'trunk', 0.8,
+                           1.5)], 3.5 + k)
+    assert t.footprint_radius(c.params) == pytest.approx(1.0)
+    assert len(c.tracks) == 1
+
+
 def test_ignore_suppresses_the_spot():
     c = _core()
     tid = _feed(c, 5)[0]
