@@ -28,7 +28,7 @@ Recovered from the vendor driver ``libmower_gps_driver.so``
   ``$GNRTK,ON``, and sends ``RTKRESET`` when NRTK is first enabled or drops.
 """
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .ntrip_client import nmea_wrap
 
@@ -50,9 +50,21 @@ QUERY_HARDWARE = "$GHARD,F*32"
 NRTK_ON = "$GNRTK,ON*69"
 NRTK_OFF = "$GNRTK,OFF*27"
 RTK_RESET = "RTKRESET"
+# Rover firmware string; asks the board to reset (and, per the base firmware, relay a
+# reset to the base). Untested on hardware.
+BASE_RESET = "$BRESET*17"
 
 CHANNEL_MIN = 1
 CHANNEL_MAX = 75
+ADDR_MAX = 0xFFFE
+
+# $GLIST band (what the board reports back) -> radio band.
+BAND_NAMES: Dict[str, str] = {
+    "0": "Europe 863 MHz",
+    "1": "Americas 902 MHz",
+    "2": "Australia/NZ 927 MHz",
+    "F": "all bands",
+}
 
 
 def gncon_command(addr: int, channel: int) -> str:
@@ -73,19 +85,61 @@ def band_for_sn(sn: str) -> Tuple[Optional[str], str]:
     return command, "sn region %s" % region
 
 
+def _fields(line: str) -> List[str]:
+    return line.strip().lstrip("$").split("*")[0].split(",")
+
+
+def parse_gncon(line: str) -> Optional[Tuple[int, int]]:
+    """``$GNCON,AAAA,CC*XX`` (both hex) -> ``(addr, channel)``; None if not one.
+
+    The query sentence itself (``$GNCON,0000,FF``) is not a pairing: channel 0xFF is
+    outside 1-75, so it is rejected like any other out-of-range reply."""
+    fields = _fields(line)
+    if len(fields) < 3 or fields[0] != "GNCON":
+        return None
+    try:
+        addr, channel = int(fields[1], 16), int(fields[2], 16)
+    except ValueError:
+        return None
+    if not (0 <= addr <= 0xFFFF and CHANNEL_MIN <= channel <= CHANNEL_MAX):
+        return None
+    return addr, channel
+
+
+def parse_glist(line: str) -> Optional[str]:
+    """``$GLIST,<band>*XX`` -> band (``"0"``, ``"1"``, ``"2"``, ``"F"``); None if not one."""
+    fields = _fields(line)
+    if len(fields) < 2 or fields[0] != "GLIST":
+        return None
+    band = fields[1].strip().upper()
+    return band or None
+
+
+def validate_pairing(addr: int, channel: int, area: str) -> str:
+    """Empty string when ``set_lora`` may write this pairing, else the reason.
+
+    ``area`` "" is allowed: the vendor BLE path derives the band from the base serial."""
+    if not 0 <= int(addr) <= ADDR_MAX:
+        return "addr %d outside 0-%d (0x0000-0x%04X)" % (addr, ADDR_MAX, ADDR_MAX)
+    if not CHANNEL_MIN <= int(channel) <= CHANNEL_MAX:
+        return "channel %d outside %d-%d" % (channel, CHANNEL_MIN, CHANNEL_MAX)
+    if area and area not in GLIST_BY_AREA:
+        return "area %r unknown (expected 00, 01, 02, 03 or F)" % area
+    return ""
+
+
 def pairing_commands(sn: str, addr: int, channel: int,
                      area: str = "") -> Tuple[bool, List[str], str]:
     """Commands for one ``set_lora`` call: ``(ok, [band_cmd?, gncon], message)``.
 
-    ``ok`` is false only where the vendor returned false (unknown area), plus a
-    channel outside the documented 1-75 range.
+    ``ok`` is false where the vendor returned false (unknown area), plus an address
+    or channel outside the documented ranges (``validate_pairing``).
     """
-    if not CHANNEL_MIN <= int(channel) <= CHANNEL_MAX:
-        return False, [], "channel %d outside %d-%d" % (channel, CHANNEL_MIN, CHANNEL_MAX)
+    error = validate_pairing(addr, channel, area)
+    if error:
+        return False, [], error
     commands: List[str] = []
     if area:
-        if area not in GLIST_BY_AREA:
-            return False, [], "area error: %s" % area
         commands.append(GLIST_BY_AREA[area])
         note = "area %s" % area
     else:
@@ -97,6 +151,8 @@ def pairing_commands(sn: str, addr: int, channel: int,
 
 
 __all__ = [
+    "BAND_NAMES",
+    "BASE_RESET",
     "GLIST_BY_AREA",
     "NRTK_ON",
     "NRTK_OFF",
@@ -105,4 +161,7 @@ __all__ = [
     "band_for_sn",
     "gncon_command",
     "pairing_commands",
+    "parse_gncon",
+    "parse_glist",
+    "validate_pairing",
 ]

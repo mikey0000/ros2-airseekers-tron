@@ -2,12 +2,14 @@
 
 Checks that RTCM from the caster lands on the receiver port only in ntrip mode,
 that the receiver GGA reaches the caster, the /fix_status tokens, the
-/gps/corrections JSON, the vendor ntrip.yaml fallback and the set_lora stub.
+/gps/corrections JSON, the vendor ntrip.yaml fallback and the LoRa pairing services
+(set_lora / get_lora / reset_base, /mower_gps_node/lora_status) against a fake rover board.
 """
 
 import json
 import os
 import select
+import threading
 import time
 import types
 
@@ -92,7 +94,7 @@ def caster():
     c.stop()
 
 
-def test_lora_default_is_read_only_and_reports_receiver_diff_age():
+def test_lora_default_only_queries_the_pairing_and_reports_receiver_diff_age():
     h = Harness()
     try:
         reader = PtyReader(h.master)
@@ -103,7 +105,8 @@ def test_lora_default_is_read_only_and_reports_receiver_diff_age():
         status = _status(h)
         assert "corr_flow=active" in status and "corr_age=0.5s" in status
         assert _corrections(h)["source"] == "lora"
-        assert reader.poll(0.2) == b"", "lora mode must never write to the receiver"
+        # The vendor's on-connect pairing query is the only write in lora mode.
+        assert reader.poll(0.2) == lora.QUERY_PAIRING.encode() + b"\r\n"
     finally:
         h.close()
 
@@ -270,38 +273,213 @@ def test_vendor_ntrip_yaml_disabled_keeps_lora(tmp_path):
         h.close()
 
 
-def test_set_lora_is_a_stub_by_default():
-    h = Harness()
+class FakeRoverBoard:
+    """The rtk_rover board's pairing replies on the receiver end of the pty.
+
+    Stores ``$GLIST`` / ``$GNCON`` writes and answers the ``$GNCON,0000,FF`` query with
+    ``$GNCON,<addr>,<chan>`` then ``$GLIST,<band>``, as the real board does.
+    ``store=False`` models a board that ignores the pairing write."""
+
+    def __init__(self, master, addr="9527", channel="18", band="0", store=True):
+        self.master = master
+        self.addr, self.channel, self.band, self.store = addr, channel, band, store
+        self.written = bytearray()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        buf = b""
+        while not self._stop.is_set():
+            ready, _, _ = select.select([self.master], [], [], 0.02)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(self.master, 4096)
+            except OSError:
+                return
+            self.written.extend(chunk)
+            buf += chunk
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                self._handle(raw.strip().decode("ascii", "ignore"))
+
+    def _handle(self, line):
+        body = line.lstrip("$").split("*")[0]
+        fields = body.split(",")
+        if body == "GNCON,0000,FF":
+            os.write(self.master, _cs("GNCON,%s,%s" % (self.addr, self.channel))
+                     + _cs("GLIST,%s" % self.band))
+        elif fields[0] == "GNCON" and len(fields) == 3 and self.store:
+            self.addr, self.channel = fields[1], fields[2]
+            os.write(self.master, _cs(body))  # the board echoes the pairing
+        elif fields[0] == "GLIST" and self.store:
+            self.band = fields[1]
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+
+def _lora_harness(**extra):
+    h = Harness(extra_params=extra)
+    board = FakeRoverBoard(h.master)
+    _wait(lambda: h.node.lora_pairing() is not None)  # answer to the on-connect query
+    return h, board
+
+
+def _trigger():
+    return types.SimpleNamespace(success=None, message="")
+
+
+def _lora_status(h):
+    rec = _Recorder()
+    h.node.lora_status_pub = rec
+    h.node.publish_lora_status()
+    return json.loads(rec.msgs[-1].data)
+
+
+def test_set_lora_is_disabled_by_parameter():
+    h = Harness(extra_params={"lora_pairing_enabled": False})
     try:
         response = h.node._on_set_lora(_request(sn="AB12030000"), types.SimpleNamespace())
         assert response.result is False
+        assert h.node._on_get_lora(None, types.SimpleNamespace()).ok is False
+        assert h.node._on_reset_base(None, _trigger()).success is False
         assert PtyReader(h.master).poll(0.2) == b""
     finally:
         h.close()
 
 
-def test_set_lora_writes_vendor_commands_when_enabled():
-    h = Harness(extra_params={"lora_pairing_enabled": True})
+def test_get_lora_reads_the_stored_pairing_and_band():
+    h, board = _lora_harness()
     try:
-        reader = PtyReader(h.master)
-        _wait(lambda: lora.QUERY_PAIRING.encode() in reader.poll())  # on-connect query
-        reader.data.clear()
-        response = h.node._on_set_lora(_request(sn="AB12030000", addr=0x1234, channel=75),
-                                       types.SimpleNamespace())
-        assert response.result is True
-        assert reader.poll(0.2) == b"$GLIST,2*5B\r\n" + lora.gncon_command(0x1234, 75).encode() \
-            + b"\r\n"
-        h.send(_cs("GNCON,1234,4B"))
-        assert h.node.correction_summary()["lora_pairing"] == "1234,4B"
-        bad = h.node._on_set_lora(_request(area="ZZ"), types.SimpleNamespace())
-        assert bad.result is False
+        response = h.node._on_get_lora(None, types.SimpleNamespace())
+        assert response.ok is True
+        assert (response.addr, response.channel, response.band) == (0x9527, 24, "0")
+        assert response.raw.splitlines() == ["$GNCON,9527,18*4B", "$GLIST,0*59"]
+        assert h.node.lora_pairing() == {"addr": 0x9527, "addr_hex": "9527", "channel": 24,
+                                          "band": "0", "band_name": "Europe 863 MHz"}
+    finally:
+        board.stop()
+        h.close()
+
+
+def test_get_lora_without_a_board_reply_is_not_ok():
+    h = Harness()
+    try:
+        response = h.node._on_get_lora(None, types.SimpleNamespace())
+        assert response.ok is False and "no $GNCON reply" in response.message
     finally:
         h.close()
 
 
-def test_set_lora_refused_in_ntrip_mode(caster):
-    h = Harness(extra_params=_ntrip_params(caster, lora_pairing_enabled=True))
+def test_set_lora_writes_vendor_bytes_and_verifies_the_read_back():
+    h, board = _lora_harness()
     try:
-        assert h.node._on_set_lora(_request(), types.SimpleNamespace()).result is False
+        board.written.clear()
+        response = h.node._on_set_lora(_request(addr=38183, channel=40, area="03"),
+                                       types.SimpleNamespace())
+        assert response.result is True
+        assert bytes(board.written) == (b"$GLIST,2*5B\r\n$GNCON,9527,28*48\r\n"
+                                        + lora.QUERY_PAIRING.encode() + b"\r\n")
+        pairing = h.node.lora_pairing()
+        assert (pairing["addr"], pairing["channel"], pairing["band"]) == (38183, 40, "2")
+        assert h.node.correction_summary()["lora_pairing"] == "9527,28"
+    finally:
+        board.stop()
+        h.close()
+
+
+def test_set_lora_vendor_ble_path_derives_the_band_from_the_serial():
+    h, board = _lora_harness()
+    try:
+        board.written.clear()
+        response = h.node._on_set_lora(_request(sn="AB12030000", addr=0x1234, channel=75),
+                                       types.SimpleNamespace())
+        assert response.result is True
+        assert bytes(board.written).startswith(
+            b"$GLIST,2*5B\r\n" + lora.gncon_command(0x1234, 75).encode() + b"\r\n")
+    finally:
+        board.stop()
+        h.close()
+
+
+def test_set_lora_is_false_when_the_board_keeps_its_old_pairing():
+    h, board = _lora_harness()
+    try:
+        board.store = False
+        response = h.node._on_set_lora(_request(addr=38183, channel=40, area="02"),
+                                       types.SimpleNamespace())
+        assert response.result is False
+        assert h.node.lora_pairing()["channel"] == 24
+    finally:
+        board.stop()
+        h.close()
+
+
+def test_set_lora_validates_before_writing():
+    h, board = _lora_harness()
+    try:
+        board.written.clear()
+        for request in (_request(area="ZZ"), _request(addr=0xFFFF, area="02"),
+                        _request(channel=0, area="02"), _request(channel=76, area="02")):
+            assert h.node._on_set_lora(request, types.SimpleNamespace()).result is False
+        time.sleep(0.1)
+        assert bytes(board.written) == b""
+    finally:
+        board.stop()
+        h.close()
+
+
+def test_reset_base_writes_breset_in_lora_mode():
+    h, board = _lora_harness()
+    try:
+        board.written.clear()
+        response = h.node._on_reset_base(None, _trigger())
+        assert response.success is True
+        _wait(lambda: bytes(board.written) == b"$BRESET*17\r\n")
+    finally:
+        board.stop()
+        h.close()
+
+
+def test_lora_status_json():
+    h, board = _lora_harness()
+    try:
+        h.send(_cs("GLIST,2"))
+        h.send(_cs("GNSTA,3,FINE"))
+        h.send(GGA_RTK)
+        status = _lora_status(h)
+        assert status["pairing"] == {"addr": 0x9527, "addr_hex": "9527", "channel": 24,
+                                     "band": "2", "band_name": "Australia/NZ 927 MHz"}
+        assert status["ref_station"] == "FINE"
+        assert status["nrtk_on"] is False
+        assert status["station_id"] == "0451"
+        assert status["diff_age_s"] == 0.5
+        assert status["fix_type"] == "RTK_FIXED"
+        assert status["correction_source"] == "lora"
+        assert status["pairing_enabled"] is True
+    finally:
+        board.stop()
+        h.close()
+
+
+def test_lora_status_before_any_reply():
+    h = Harness(extra_params={"lora_pairing_enabled": False})
+    try:
+        status = _lora_status(h)
+        assert status["pairing"] is None and status["ref_station"] is None
+        assert status["pairing_enabled"] is False
+    finally:
+        h.close()
+
+
+def test_set_lora_and_reset_base_refused_in_ntrip_mode(caster):
+    h = Harness(extra_params=_ntrip_params(caster))
+    try:
+        assert h.node._on_set_lora(_request(area="02"), types.SimpleNamespace()).result is False
+        response = h.node._on_reset_base(None, _trigger())
+        assert response.success is False and "ntrip" in response.message
     finally:
         h.close()

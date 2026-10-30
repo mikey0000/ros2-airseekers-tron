@@ -267,6 +267,8 @@ ros2 topic info /fix_gated       # QoS reliable/10 on both ends
   guardrail; anything that must gate on fix *quality* (e.g. the
   dig detector, baseline §4.3.8) should gate on RTK-fixed status,
   never on the EKF's own covariance.
+  The vendor LoRa base station works without the cloud once the
+  mower is paired with it: see `docs/rtk_pairing.md`.
 - **odom can jump.** Fusing absolute GPS into the odom world
   (this package's single-EKF design) means the odom frame
   discontinuously corrects itself at each good fix. The jump-free

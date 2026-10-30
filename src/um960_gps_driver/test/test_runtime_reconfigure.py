@@ -46,7 +46,8 @@ def test_lora_to_ntrip_at_runtime(caster):
     try:
         reader = PtyReader(h.master)
         assert h.node.correction_source == "lora" and h.node.ntrip is None
-        assert reader.poll(0.2) == b"", "lora mode never writes"
+        assert reader.poll(0.2) == b"$GNCON,0000,FF*4B\r\n", "lora mode: pairing query only"
+        reader.data.clear()
 
         # Caster fields and the source in one request, as the GUI binding sends them.
         params = _ntrip_params(caster)

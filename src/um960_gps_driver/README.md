@@ -8,8 +8,10 @@ ROS 2 driver for the Unicore UM960 RTK receiver on `/dev/serial_rtk`. Full docum
 `correction_source` selects where RTCM corrections come from:
 
 * `lora` — vendor RTK base station over LoRa; the rover board feeds the UM960 and the
-  host only reads. `/mower_gps_node/set_lora` is a logged stub unless
-  `lora_pairing_enabled: true` (then it writes the vendor `$GLIST`/`$GNCON` commands).
+  host only reads. `/mower_gps_node/set_lora` writes the vendor `$GLIST`/`$GNCON`
+  commands and reads the pairing back, `/mower_gps_node/get_lora` reads it,
+  `/mower_gps_node/reset_base` sends `$BRESET`, and `/mower_gps_node/lora_status` is the
+  1 Hz JSON for the GUI card (`lora_pairing_enabled: false` makes them log only).
 * `ntrip` — host NTRIP v1/v2 client: RTCM from your caster is written into the
   receiver port, the GGA is uploaded every `ntrip_gga_interval_s`. The rtk_rover board
   is switched with `RTKRESET` + `$GNRTK,ON*69` (again on an ON→OFF report) and kept

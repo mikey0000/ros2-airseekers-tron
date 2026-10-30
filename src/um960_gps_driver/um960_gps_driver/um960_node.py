@@ -12,9 +12,14 @@ Publishes
     /nmea         std_msgs/msg/String         (raw ASCII sentences, optional)
     /gps/corrections std_msgs/msg/String      (1 Hz JSON correction-source diagnostics)
     /ntrip/status std_msgs/msg/String         (1 Hz JSON NTRIP client stats, latched)
+    /mower_gps_node/lora_status std_msgs/msg/String (1 Hz JSON: stored LoRa pairing,
+                                               reference station, network-RTK state)
 
 Serves
-    /mower_gps_node/set_lora  mower_interfaces/srv/SetLoRa (vendor LoRa base pairing)
+    /mower_gps_node/set_lora    mower_interfaces/srv/SetLoRa (vendor LoRa base pairing,
+                                verified by reading the pairing back)
+    /mower_gps_node/get_lora    mower_interfaces/srv/GetLoRa (read the stored pairing)
+    /mower_gps_node/reset_base  std_srvs/srv/Trigger ($BRESET to the rtk_rover board)
 
 RTK corrections (``rtcm_source``; only one source ever feeds RTCM to the UM960):
     auto   (default) NTRIP while the caster delivers valid RTCM, otherwise the LoRa
@@ -66,6 +71,10 @@ try:  # absent from the plain-Python test shim
     from rclpy.qos import DurabilityPolicy
 except ImportError:  # pragma: no cover - depends on the environment
     DurabilityPolicy = None
+try:  # absent from the plain-Python test shim
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+except ImportError:  # pragma: no cover - depends on the environment
+    MutuallyExclusiveCallbackGroup = None
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 from std_msgs.msg import Bool, Float32, String
 
@@ -107,6 +116,14 @@ try:  # mower_interfaces is optional: without it the set_lora service is not off
     from mower_interfaces.srv import SetLoRa
 except ImportError:  # pragma: no cover - depends on the workspace
     SetLoRa = None
+try:  # GetLoRa is newer than SetLoRa: an older mower_interfaces build lacks it.
+    from mower_interfaces.srv import GetLoRa
+except ImportError:  # pragma: no cover - depends on the workspace
+    GetLoRa = None
+try:
+    from std_srvs.srv import Trigger
+except ImportError:  # pragma: no cover - depends on the environment
+    Trigger = None
 
 CORRECTION_SOURCES = ("none", "lora", "ntrip")
 RTCM_SOURCES = ("auto", "ntrip", "lora", "none")
@@ -133,6 +150,12 @@ RECONFIGURE_DEBOUNCE_S = 0.3
 STARTUP_HANDSHAKE_WINDOW_S = 60.0
 # A raw receiver GGA older than this is not uploaded; a synthesized one is used.
 GGA_MAX_AGE_S = 5.0
+# get_lora / set_lora read-back: wait this long for the board's $GNCON reply, then
+# this much longer for the $GLIST that follows it.
+LORA_REPLY_TIMEOUT_S = 1.5
+LORA_BAND_TIMEOUT_S = 0.5
+# set_lora: time for the board to store $GNCON (and echo it) before the read-back.
+LORA_STORE_DELAY_S = 0.3
 
 # NMEA sentence suffixes that carry a position. feed() returns the full talker id
 # ("GNGGA", "GPGGA", ...), so match on the suffix.
@@ -238,8 +261,12 @@ class Um960Node(Node):
         self.declare_parameter("corrections_topic", "/gps/corrections")
         self.declare_parameter("corrections_stale_s", 10.0)
         self.declare_parameter("set_lora_service", "/mower_gps_node/set_lora")
-        # set_lora is a logged stub unless this is true (see docs/um960.md).
-        self.declare_parameter("lora_pairing_enabled", False)
+        self.declare_parameter("get_lora_service", "/mower_gps_node/get_lora")
+        self.declare_parameter("reset_base_service", "/mower_gps_node/reset_base")
+        self.declare_parameter("lora_status_topic", "/mower_gps_node/lora_status")
+        # false: set_lora / get_lora / reset_base only log, and the port is never written
+        # for pairing (see docs/um960.md). Verified byte-exact with scripts/rtk_pair.py.
+        self.declare_parameter("lora_pairing_enabled", True)
 
         self.port_name = str(self.get_parameter("port").value)
         self.baud = int(self.get_parameter("baud").value)
@@ -298,6 +325,9 @@ class Um960Node(Node):
         self.ntrip_status_pub = self.create_publisher(
             String, str(self.get_parameter("ntrip_status_topic").value), status_qos
         )
+        self.lora_status_pub = self.create_publisher(
+            String, str(self.get_parameter("lora_status_topic").value), status_qos
+        )
 
         self.nmea = NmeaParser()
         self.splitter = Um960StreamSplitter()
@@ -334,16 +364,33 @@ class Um960Node(Node):
         self._pending_persist: Dict[str, object] = {}
         self._persist_error = ""
         self._lora_pairing: Optional[str] = None    # "addr,channel" from $GNCON
+        self._lora_band: Optional[str] = None       # "0"/"1"/"2"/"F" from $GLIST
+        # Counts the board's $GNCON / $GLIST replies, so a service can wait for one
+        # newer than its own query (notified from the reader thread).
+        self._lora_cond = threading.Condition()
+        self._lora_gncon_seq = 0
+        self._lora_glist_seq = 0
+        self._lora_last_lines: Dict[str, str] = {}
         self.ntrip: Optional[NtripClient] = None
         # Runtime reconfiguration of the corrections (see _on_set_parameters).
         self._reconfigure_lock = threading.Lock()
         self._reconfigure_timer: Optional[threading.Timer] = None
         self.corrections_reconfigured = 0           # count, for diagnostics/tests
-        self.set_lora_srv = None
-        if SetLoRa is not None and hasattr(self, "create_service"):
-            self.set_lora_srv = self.create_service(
-                SetLoRa, str(self.get_parameter("set_lora_service").value), self._on_set_lora
-            )
+        self.set_lora_srv = self.get_lora_srv = self.reset_base_srv = None
+        if hasattr(self, "create_service"):
+            # The pairing services wait up to ~3 s for the board; their own group (with
+            # main()'s MultiThreadedExecutor) keeps the publish timers running meanwhile.
+            group = (MutuallyExclusiveCallbackGroup()
+                     if MutuallyExclusiveCallbackGroup is not None else None)
+            for attr, srv_type, param, callback in (
+                ("set_lora_srv", SetLoRa, "set_lora_service", self._on_set_lora),
+                ("get_lora_srv", GetLoRa, "get_lora_service", self._on_get_lora),
+                ("reset_base_srv", Trigger, "reset_base_service", self._on_reset_base),
+            ):
+                if srv_type is not None:
+                    setattr(self, attr, self.create_service(
+                        srv_type, str(self.get_parameter(param).value), callback,
+                        callback_group=group))
 
         self.get_logger().info(
             "UM960 driver starting on %s @ %d baud (frame_id=%s)"
@@ -357,6 +404,7 @@ class Um960Node(Node):
         self._timer = self.create_timer(1.0 / max(self.publish_rate, 1.0), self._publish_tick)
         self._corrections_timer = self.create_timer(1.0, self.publish_corrections)
         self._ntrip_status_timer = self.create_timer(1.0, self.publish_ntrip_status)
+        self._lora_status_timer = self.create_timer(1.0, self.publish_lora_status)
         self._start_corrections()
         if hasattr(self, "add_on_set_parameters_callback"):
             self.add_on_set_parameters_callback(self._on_set_parameters)
@@ -873,11 +921,94 @@ class Um960Node(Node):
         self.ntrip_status_pub.publish(String(data=json.dumps(clean, sort_keys=True)))
 
     # -- vendor LoRa pairing -------------------------------------------------------
+    def lora_pairing(self) -> Optional[Dict[str, object]]:
+        """The last pairing the board reported, or None before its first $GNCON."""
+        parsed = lora.parse_gncon("GNCON,%s" % self._lora_pairing) if self._lora_pairing \
+            else None
+        if parsed is None:
+            return None
+        addr, channel = parsed
+        band = self._lora_band
+        return {"addr": addr, "addr_hex": "%04X" % addr, "channel": channel,
+                "band": band, "band_name": lora.BAND_NAMES.get(band or "")}
+
+    def lora_status(self) -> Dict[str, object]:
+        """The /mower_gps_node/lora_status payload (GUI "RTK base station" card)."""
+        fix = self.nmea.fix
+        age = fix.get("fix_age")
+        return {
+            "pairing": self.lora_pairing(),
+            "pairing_enabled": self.lora_pairing_enabled,
+            "ref_station": fix.get("reference_station_status"),
+            "nrtk_on": self._rover_nrtk == "ON",
+            "station_id": fix.get("station_id") or None,
+            "diff_age_s": None if age is None else float(age),
+            "fix_type": fix.get("quality_label"),
+            "solution": fix.get("position_type"),
+            "correction_source": self.correction_source,
+            "rtcm_source": self.rtcm_source,
+            "connected": self._connected,
+        }
+
+    def publish_lora_status(self) -> None:
+        with self._lock:
+            status = self.lora_status()
+        clean = {k: (None if isinstance(v, float) and not math.isfinite(v) else v)
+                 for k, v in status.items()}
+        self.lora_status_pub.publish(String(data=json.dumps(clean, sort_keys=True)))
+
+    def _query_lora(self) -> Dict[str, object]:
+        """Write ``$GNCON,0000,FF*4B`` and wait for the board's ``$GNCON``/``$GLIST``."""
+        with self._lora_cond:
+            gncon_seq, glist_seq = self._lora_gncon_seq, self._lora_glist_seq
+        out: Dict[str, object] = {"ok": False, "addr": 0, "channel": 0, "band": "",
+                                  "raw": "", "message": ""}
+        if not self._serial_write((lora.QUERY_PAIRING + "\r\n").encode("ascii"),
+                                  "lora_pairing"):
+            out["message"] = ("pairing disabled (lora_pairing_enabled=false)"
+                              if not self.lora_pairing_enabled else "receiver port not open")
+            return out
+        with self._lora_cond:
+            got = self._lora_cond.wait_for(
+                lambda: self._lora_gncon_seq > gncon_seq or self._stopping.is_set(),
+                LORA_REPLY_TIMEOUT_S) and self._lora_gncon_seq > gncon_seq
+            if got:
+                self._lora_cond.wait_for(
+                    lambda: self._lora_glist_seq > glist_seq or self._stopping.is_set(),
+                    LORA_BAND_TIMEOUT_S)
+            lines = [self._lora_last_lines[k] for k in ("GNCON", "GLIST")
+                     if k in self._lora_last_lines]
+            band_fresh = self._lora_glist_seq > glist_seq
+        if not got:
+            out["message"] = "no $GNCON reply from the rtk_rover board within %.1f s" \
+                % LORA_REPLY_TIMEOUT_S
+            return out
+        out["raw"] = "\n".join(lines)
+        pairing = self.lora_pairing()
+        if pairing is None:
+            out["message"] = "unexpected reply %s" % self._lora_pairing
+            return out
+        out.update(ok=True, addr=pairing["addr"], channel=pairing["channel"],
+                   band=(self._lora_band or "") if band_fresh else "")
+        return out
+
+    def _on_get_lora(self, request, response):
+        result = self._query_lora()
+        for key, value in result.items():
+            setattr(response, key, value)
+        self.get_logger().info("get_lora -> %s" % (
+            "addr=0x%04X channel=%d band=%s"
+            % (result["addr"], result["channel"], result["band"] or "?")
+            if result["ok"] else result["message"]))
+        return response
+
     def _on_set_lora(self, request, response):
         sn = str(getattr(request, "sn", "") or "")
         addr = int(getattr(request, "addr", 0))
         channel = int(getattr(request, "channel", 0))
-        area = str(getattr(request, "area", "") or "")
+        area = str(getattr(request, "area", "") or "").strip().upper()
+        if area in ("0", "1", "2", "3"):
+            area = "0" + area
         response.result = False
         ok, commands, note = lora.pairing_commands(sn, addr, channel, area)
         self.get_logger().info(
@@ -893,8 +1024,8 @@ class Um960Node(Node):
             return response
         if not self.lora_pairing_enabled:
             self.get_logger().warn(
-                "set_lora is a stub (lora_pairing_enabled=false): would write %s to %s via "
-                "the rtk_rover board; unverified on hardware, see docs/um960.md"
+                "set_lora disabled (lora_pairing_enabled=false): would write %s to %s via "
+                "the rtk_rover board, see docs/um960.md"
                 % (" then ".join(commands), self.port_name)
             )
             return response
@@ -906,7 +1037,35 @@ class Um960Node(Node):
                 and written
             self.get_logger().info("set_lora wrote %s (%s)" % (command, "ok" if written else
                                                                  "FAILED"))
-        response.result = bool(written)
+        if not written:
+            return response
+        # The vendor stops here; read the pairing back instead of trusting the write.
+        self._stopping.wait(LORA_STORE_DELAY_S)
+        stored = self._query_lora()
+        response.result = bool(stored["ok"] and stored["addr"] == addr
+                               and stored["channel"] == channel)
+        self.get_logger().info(
+            "set_lora read-back: %s" % (
+                "stored pairing matches" if response.result else
+                "stored addr=0x%04X channel=%d != requested addr=0x%04X channel=%d"
+                % (stored["addr"], stored["channel"], addr, channel) if stored["ok"] else
+                stored["message"]))
+        return response
+
+    def _on_reset_base(self, request, response):
+        """``$BRESET*17``: ask the rtk_rover board to reset (relayed to the base)."""
+        response.success = False
+        if self.correction_source != "lora":
+            response.message = "refused: correction source is %r, not 'lora'" \
+                % self.correction_source
+        elif not self.lora_pairing_enabled:
+            response.message = "refused: lora_pairing_enabled=false"
+        elif self._serial_write((lora.BASE_RESET + "\r\n").encode("ascii"), "lora_pairing"):
+            response.success = True
+            response.message = "sent %s" % lora.BASE_RESET
+        else:
+            response.message = "receiver port not open"
+        self.get_logger().info("reset_base: %s" % response.message)
         return response
 
     # -- serial --------------------------------------------------------------------
@@ -1006,7 +1165,7 @@ class Um960Node(Node):
             return
         if not nmea_checksum_ok(line):
             return
-        if line.startswith(("$GNRTK,", "$GNCON,")):
+        if line.startswith(("$GNRTK,", "$GNCON,", "$GLIST,")):
             self._consume_rover_line(line)
             return
         with self._lock:
@@ -1027,7 +1186,7 @@ class Um960Node(Node):
             self._mark_fix_time()
 
     def _consume_rover_line(self, line: str) -> None:
-        """Replies of the rtk_rover board: ``$GNRTK,ON|OFF`` and ``$GNCON,addr,ch``."""
+        """rtk_rover board replies: ``$GNRTK,ON|OFF``, ``$GNCON,addr,ch``, ``$GLIST,band``."""
         fields = line[1:].split("*")[0].split(",")
         if fields[0] == "GNRTK" and len(fields) > 1:
             state = fields[1].strip().upper()
@@ -1040,7 +1199,17 @@ class Um960Node(Node):
             if self.correction_source == "ntrip" and previous == "ON" and state != "ON":
                 self._nrtk_enable("board dropped to %s" % state)
         elif fields[0] == "GNCON" and len(fields) > 2:
-            self._lora_pairing = "%s,%s" % (fields[1], fields[2])
+            with self._lora_cond:
+                self._lora_pairing = "%s,%s" % (fields[1], fields[2])
+                self._lora_last_lines["GNCON"] = line
+                self._lora_gncon_seq += 1
+                self._lora_cond.notify_all()
+        elif fields[0] == "GLIST" and len(fields) > 1:
+            with self._lora_cond:
+                self._lora_band = lora.parse_glist(line)
+                self._lora_last_lines["GLIST"] = line
+                self._lora_glist_seq += 1
+                self._lora_cond.notify_all()
 
     # -- fix construction ----------------------------------------------------------
     def _mark_fix_time(self) -> None:
@@ -1265,13 +1434,20 @@ class Um960Node(Node):
 
 
 def main(args: Optional[List[str]] = None) -> None:
+    from rclpy.executors import MultiThreadedExecutor
+
     rclpy.init(args=args)
     node = Um960Node()
+    # Two threads: the publish timers (default group) never wait on the pairing
+    # services (their own group), which block for up to ~3 s on the board's replies.
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

@@ -156,6 +156,7 @@ arguments.
 | Install and update the mower | [docs/deployment.md](docs/deployment.md) |
 | Use the web app | [docs/gui.md](docs/gui.md) |
 | Understand positioning | [docs/localization.md](docs/localization.md) |
+| Pair the RTK base station (no vendor app) | [docs/rtk_pairing.md](docs/rtk_pairing.md) |
 | Understand cameras, detection and VIO | [docs/perception_vio.md](docs/perception_vio.md), [docs/cameras_and_video.md](docs/cameras_and_video.md) |
 | See how crashes and failures are handled | [docs/crash_recovery.md](docs/crash_recovery.md) |
 | Run the simulator and the sim gate | [docs/simulation.md](docs/simulation.md) |

@@ -30,6 +30,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PlanCoverage.srv"
   "srv/MappingControl.srv"
   "srv/SetLoRa.srv"
+  "srv/GetLoRa.srv"
   "srv/SetAreaSettings.srv"
   "srv/GetAreaSettings.srv"
   "srv/SetCutterHeight.srv"

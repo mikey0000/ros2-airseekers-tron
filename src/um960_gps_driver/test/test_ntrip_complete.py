@@ -239,8 +239,10 @@ def test_auto_hands_over_from_lora_to_ntrip_and_back(harness_mod, tmp_path):
         assert h.node.ntrip_config_source == str(path)
         reader = tc.PtyReader(h.master)
         _wait(lambda: h.node.correction_source == "ntrip")
-        # first hand-over after start: ON only (no RTKRESET, rtk_reset_on_start false)
-        _wait(lambda: reader.poll().startswith(lora.NRTK_ON.encode()))
+        # first hand-over after start: ON only (no RTKRESET, rtk_reset_on_start false);
+        # the LoRa pairing query from the connect (still in lora mode) may come first.
+        query = lora.QUERY_PAIRING.encode() + b"\r\n"
+        _wait(lambda: reader.poll().replace(query, b"").startswith(lora.NRTK_ON.encode()))
         _wait(lambda: sample_frame(1005, 4) in reader.poll())
         status = h.node.ntrip_status()
         assert status["active_source"] == "ntrip" and status["connected"]
@@ -264,7 +266,7 @@ def test_auto_hands_over_from_lora_to_ntrip_and_back(harness_mod, tmp_path):
             pass
 
 
-def test_auto_disabled_stays_on_lora_and_writes_nothing(harness_mod, tmp_path):
+def test_auto_disabled_stays_on_lora_and_only_queries_the_pairing(harness_mod, tmp_path):
     tum, tc = harness_mod
     with FakeCaster(frame_period_s=0.02) as caster:
         path = tmp_path / "ntrip.yaml"
@@ -272,7 +274,8 @@ def test_auto_disabled_stays_on_lora_and_writes_nothing(harness_mod, tmp_path):
         h = tum.Harness(extra_params={"ntrip_settings_file": str(path)})
         try:
             assert h.node.correction_source == "lora" and h.node.ntrip is None
-            assert tc.PtyReader(h.master).poll(0.3) == b""
+            # lora mode: only the on-connect pairing query
+            assert tc.PtyReader(h.master).poll(0.3) == lora.QUERY_PAIRING.encode() + b"\r\n"
             assert caster.connections == 0
             assert h.node.ntrip_status()["state"] == "off"
         finally:
@@ -306,7 +309,8 @@ def test_rtcm_source_lora_ignores_enabled_ntrip(harness_mod, tmp_path):
         h = tum.Harness(extra_params={"ntrip_settings_file": str(path), "rtcm_source": "lora"})
         try:
             assert h.node.correction_source == "lora" and h.node.ntrip is None
-            assert tc.PtyReader(h.master).poll(0.3) == b""
+            # lora mode: only the on-connect pairing query
+            assert tc.PtyReader(h.master).poll(0.3) == lora.QUERY_PAIRING.encode() + b"\r\n"
         finally:
             h.close()
 

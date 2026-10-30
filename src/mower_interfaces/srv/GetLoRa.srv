@@ -1,0 +1,14 @@
+# Read the LoRa pairing stored on the rtk_rover board (um960_gps_driver
+# /mower_gps_node/get_lora). The driver writes $GNCON,0000,FF*4B and waits for the
+# board's $GNCON,<addr>,<channel> and $GLIST,<band> replies.
+---
+# true when a $GNCON reply arrived; addr/channel are only meaningful then.
+bool ok
+uint16 addr
+uint8 channel
+# $GLIST band: "0" Europe 863 MHz, "1" Americas 902 MHz, "2" AU/NZ 927 MHz, "F" all;
+# "" when the board sent no $GLIST in time.
+string band
+# the reply sentences, newline-separated
+string raw
+string message
