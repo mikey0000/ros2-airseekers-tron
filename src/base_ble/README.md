@@ -3,8 +3,16 @@
 Bridge between the Airseekers Tron BLE module (phone app) and ROS 2.
 
 The BLE module is a transparent UART passthrough at `/dev/ttyS3` (`/dev/serial_ble`,
-115200). Linux has no Bluetooth stack, so GATT UUIDs are only visible from the phone; this
-node just reads/writes the framed serial protocol and dispatches commands to ROS.
+115200). Linux on the mower has no Bluetooth stack; this node just reads/writes the framed
+serial protocol and dispatches commands to ROS. The module's GATT layout (read with BlueZ
+from a laptop, 2026-10-30): device name `AIRSEEKERS_<last 6 digits of the mower serial>`,
+no pairing, vendor service `c1db0001-431d-4cbe-96e2-9f9286c41572` with
+`c1db0002-…` (notify: mower → phone), `c1db0004-…` (write: phone → mower) and
+`c1db0003-…` (read, 4 zero bytes). Full table in `mower_docs/04-ble-protocol.md`. A Web Bluetooth client needs
+`c1db0001-431d-4cbe-96e2-9f9286c41572` in `optionalServices`.
+
+This node is **not launched** by `mower.launch.py` yet (the serial device is mapped into the
+container).
 
 ## What was recovered
 
