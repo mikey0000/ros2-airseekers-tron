@@ -1,0 +1,131 @@
+{
+ "_doc": "docs/ble_tunnel_protocol.md section 2; wire = AA55|len u16|stream u16|kind u8|seq u8|payload|crc16 LE, CRC-16/CCITT-FALSE over len..payload",
+ "crc_check": {
+  "input_utf8": "123456789",
+  "crc": 10673
+ },
+ "frames": [
+  {
+   "name": "hello",
+   "stream": 0,
+   "kind": 10,
+   "seq": 0,
+   "payload_utf8": "{\"v\":1,\"token\":\"EXAMPLETOKEN\",\"client\":\"test\",\"window\":2048,\"max_rate\":5000}",
+   "wire_hex": "aa554c0000000a007b2276223a312c22746f6b656e223a224558414d504c45544f4b454e222c22636c69656e74223a2274657374222c2277696e646f77223a323034382c226d61785f72617465223a353030307debd7"
+  },
+  {
+   "name": "welcome",
+   "stream": 0,
+   "kind": 11,
+   "seq": 0,
+   "payload_utf8": "{\"v\":1,\"host\":\"mower\",\"max_payload\":480,\"session\":\"0badcafe\"}",
+   "wire_hex": "aa553d0000000b007b2276223a312c22686f7374223a226d6f776572222c226d61785f7061796c6f6164223a3438302c2273657373696f6e223a223062616463616665227dab21"
+  },
+  {
+   "name": "open_http",
+   "stream": 1,
+   "kind": 0,
+   "seq": 1,
+   "payload_utf8": "{\"t\":\"http\",\"method\":\"GET\",\"path\":\"/api/settings\",\"headers\":{\"accept\":\"application/json\"}}",
+   "wire_hex": "aa555a00010000017b2274223a2268747470222c226d6574686f64223a22474554222c2270617468223a222f6170692f73657474696e6773222c2268656164657273223a7b22616363657074223a226170706c69636174696f6e2f6a736f6e227d7d5926"
+  },
+  {
+   "name": "empty_end",
+   "stream": 1,
+   "kind": 3,
+   "seq": 2,
+   "payload_hex": "",
+   "wire_hex": "aa55000001000302b50d"
+  },
+  {
+   "name": "head",
+   "stream": 1,
+   "kind": 1,
+   "seq": 1,
+   "payload_utf8": "{\"status\":200,\"headers\":{\"content-type\":\"application/json\"}}",
+   "wire_hex": "aa553c00010001017b22737461747573223a3230302c2268656164657273223a7b22636f6e74656e742d74797065223a226170706c69636174696f6e2f6a736f6e227d7d10e1"
+  },
+  {
+   "name": "data",
+   "stream": 1,
+   "kind": 2,
+   "seq": 2,
+   "payload_hex": "00010203fdfeff",
+   "wire_hex": "aa5507000100020200010203fdfeff4e66"
+  },
+  {
+   "name": "text_end",
+   "stream": 3,
+   "kind": 4,
+   "seq": 7,
+   "payload_utf8": "hb",
+   "wire_hex": "aa5502000300040768627ef1"
+  },
+  {
+   "name": "close",
+   "stream": 1,
+   "kind": 5,
+   "seq": 3,
+   "payload_utf8": "{\"code\":1000,\"reason\":\"\"}",
+   "wire_hex": "aa551900010005037b22636f6465223a313030302c22726561736f6e223a22227da24f"
+  },
+  {
+   "name": "credit",
+   "stream": 0,
+   "kind": 6,
+   "seq": 255,
+   "payload_hex": "40e20100",
+   "wire_hex": "aa550400000006ff40e20100be08"
+  },
+  {
+   "name": "reset",
+   "stream": 0,
+   "kind": 7,
+   "seq": 0,
+   "payload_hex": "",
+   "wire_hex": "aa550000000007008797"
+  },
+  {
+   "name": "ping",
+   "stream": 0,
+   "kind": 8,
+   "seq": 9,
+   "payload_hex": "0102030405060708",
+   "wire_hex": "aa5508000000080901020304050607083abc"
+  },
+  {
+   "name": "max_payload",
+   "stream": 5,
+   "kind": 2,
+   "seq": 4,
+   "payload_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+   "wire_hex": "aa55e00105000204000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf95dd"
+  }
+ ],
+ "streams": [
+  {
+   "name": "two_frames_one_write",
+   "wire_hex": "aa554c0000000a007b2276223a312c22746f6b656e223a224558414d504c45544f4b454e222c22636c69656e74223a2274657374222c2277696e646f77223a323034382c226d61785f72617465223a353030307debd7aa5508000000080901020304050607083abc",
+   "frames": [
+    "hello",
+    "ping"
+   ]
+  },
+  {
+   "name": "garbage_then_frame",
+   "wire_hex": "00aa55ffaa55000001000302b50d",
+   "frames": [
+    "empty_end"
+   ],
+   "note": "leading junk and a false sync must be skipped"
+  },
+  {
+   "name": "bad_crc_dropped",
+   "wire_hex": "aa5502000300040768627e00aa5502000300040768627ef1",
+   "frames": [
+    "text_end"
+   ],
+   "note": "first copy has a corrupted CRC"
+  }
+ ]
+}

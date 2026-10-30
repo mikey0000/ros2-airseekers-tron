@@ -57,8 +57,9 @@ import os
 import sys
 
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, LogInfo,
-                            OpaqueFunction, RegisterEventHandler, SetLaunchConfiguration)
+from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription,
+                            LogInfo, OpaqueFunction, RegisterEventHandler,
+                            SetLaunchConfiguration)
 from launch.event_handlers import OnProcessExit
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -290,6 +291,9 @@ FOXGLOVE_GUI_TOPICS = [
     # mower_alerts/alert_node: theft / lift / incident alerts + heartbeat (JSON String),
     # pushed by the GUI's notification provider and forwarded to its MQTT broker.
     r'^/mower_alerts/events$',
+    # um960_gps_driver's 1 Hz LoRa base status JSON (GUI Settings > GPS & Positioning >
+    # RTK base station card; pairing itself goes over the /mower_gps_node/* services).
+    r'^/mower_gps_node/lora_status$',
     # gui_bridge's low-rate GUI copies (mower_gui_bridge/gui_relay.py): pose 5 Hz, status
     # 2 Hz, emergency on change + 1 Hz, detections 2 Hz/camera on demand. The GUI provider
     # reads these instead of the 20 / 5 / 5 / 15 Hz originals (kept above for older GUIs);
@@ -425,6 +429,9 @@ def generate_launch_description() -> LaunchDescription:
             '(launch/robot_settings.py). Empty = package defaults only.'),
         arg('imu_calibration_file', '/userdata/ros2/calibration/imu_calibration.yaml',
             'imu_cal persisted bias file (on the device /userdata partition).'),
+        arg('ble_bridge', 'true', 'scripts/ble/ble_bridge.py: the GUI over Bluetooth LE '
+            '(docs/ble_tunnel_protocol.md) on /dev/serial_ble. false while running '
+            'ble_echo_daemon.py, which needs the port to itself.'),
     ]
 
     drivers = IncludeLaunchDescription(
@@ -711,6 +718,16 @@ def generate_launch_description() -> LaunchDescription:
                          value_type=bool)}],
     )
 
+    # 2026-10-30: BLE tunnel to the Go backend (docs/DESIGN_ble_transport_2026-10.md). Plain
+    # Python (stdlib), not a ROS node; realpath leads from the symlink install back to the
+    # stack root (/work in mower_jazzy), where scripts/ is not installed.
+    ble_bridge = ExecuteProcess(
+        cmd=['python3', os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                                     'scripts', 'ble', 'ble_bridge.py')],
+        name='ble_bridge', output='screen', respawn=True, respawn_delay=5.0,
+        condition=enabled('ble_bridge'),
+    )
+
     alerts = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution(
             [FindPackageShare('mower_alerts'), 'launch', 'alerts.launch.py'])),
@@ -730,6 +747,6 @@ def generate_launch_description() -> LaunchDescription:
         + control
         + [teleop, gui_bridge] + foxglove + [localization, navigation,
            map_server, obstacle_tracker, coverage, docking, mission, cameras, vio, perception,
-           det_range, supervisor, mow_recorder, bag_recorder, alerts]
+           det_range, supervisor, mow_recorder, bag_recorder, ble_bridge, alerts]
         + [start_node_hosts()]     # last: the hosted nodes of every include are registered
     )
