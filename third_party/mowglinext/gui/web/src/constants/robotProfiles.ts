@@ -22,7 +22,8 @@ export type FeatureId =
     | "stm32_firmware"      // flashable STM32 board + firmware debug log
     | "gnss_sidecar"        // mowgli-gps container (receiver plan/apply/factory reset)
     | "docker_host"         // Docker socket: container list/logs/restart (ROS restart)
-    | "docker_admin"        // Docker-driven admin tools: host updater, rosbag recorder, remote access sidecar
+    | "docker_admin"        // Docker-driven admin tools: host updater, rosbag recorder
+    | "remote_access_sidecar" // Tailscale sidecar container created over the Docker socket
     | "drive_tuning"        // drive / PID auto-tuning
     | "lidar"               // LiDAR settings, scan and map-anchor layers
     | "cameras"             // camera streams (perception page)
@@ -31,14 +32,15 @@ export type FeatureId =
     | "imu_yaw_calibration" // calibrate_imu_yaw_node
     | "status_leds"         // LED settings section
     | "lora_corrections"    // GNSS corrections over a LoRa base radio
+    | "lora_rtk_base"       // pair the vendor LoRa RTK base (um960_gps_driver get/set_lora)
     | "area_settings"       // per-area mowing settings served by the map server
     | "straight_driving"    // host-side angular trim / deadband / IMU heading hold (cmd_vel_slew)
     | "manual_blade_two_step"; // manual mode drives blade-off; blades start as a separate step
 
 export const FEATURE_IDS: readonly FeatureId[] = [
-    "stm32_firmware", "gnss_sidecar", "docker_host", "docker_admin", "drive_tuning", "lidar",
-    "cameras", "dock_calibration", "fusion_graph", "imu_yaw_calibration",
-    "status_leds", "lora_corrections", "area_settings", "straight_driving",
+    "stm32_firmware", "gnss_sidecar", "docker_host", "docker_admin", "remote_access_sidecar",
+    "drive_tuning", "lidar", "cameras", "dock_calibration", "fusion_graph", "imu_yaw_calibration",
+    "status_leds", "lora_corrections", "lora_rtk_base", "area_settings", "straight_driving",
     "manual_blade_two_step",
 ];
 
@@ -51,6 +53,7 @@ export const UPSTREAM_FEATURES: Readonly<Record<FeatureId, boolean>> = {
     gnss_sidecar: true,
     docker_host: true,
     docker_admin: true,
+    remote_access_sidecar: true,
     drive_tuning: true,
     lidar: true,
     cameras: false,
@@ -59,6 +62,7 @@ export const UPSTREAM_FEATURES: Readonly<Record<FeatureId, boolean>> = {
     imu_yaw_calibration: true,
     status_leds: true,
     lora_corrections: false,
+    lora_rtk_base: false,
     area_settings: false,
     straight_driving: false,
     manual_blade_two_step: false,
@@ -163,7 +167,10 @@ const PROFILE_OVERLAYS: Record<string, ProfileOverlay> = {
             stm32_firmware: false,
             gnss_sidecar: false,
             docker_host: true,   // socket mounted: restart ROS 2, container list + logs
-            docker_admin: false, // no host updater / rosbag / remote-access sidecar on Tron
+            docker_admin: false, // no host updater / rosbag on Tron (the updater pulls upstream images)
+            // Tailscale sidecar over the mounted socket: a real-certificate HTTPS origin
+            // (Web Bluetooth without installing the mower CA) that also works over the LTE link.
+            remote_access_sidecar: true,
             drive_tuning: false,
             lidar: false,
             cameras: true,
@@ -172,6 +179,7 @@ const PROFILE_OVERLAYS: Record<string, ProfileOverlay> = {
             imu_yaw_calibration: false,
             status_leds: false,
             lora_corrections: true,
+            lora_rtk_base: true,  // Settings > GPS & Positioning > RTK base station
             area_settings: true,  // map_server_node get/set_area_settings
             straight_driving: true, // mower_control cmd_vel_slew trim / heading hold
             // mower_mission manual_blade_requires_enable: manual drive starts blade-off,

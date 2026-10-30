@@ -42,6 +42,7 @@ export type SettingsSection =
     | "mqtt"
     | "irrisense"
     | "remote_access"
+    | "connection"
     | "notifications"
     | "advanced";
 
@@ -299,6 +300,15 @@ export const SECTION_DEFINITIONS: SectionMeta[] = [
         description: "settingsSections.remote_access.description",
         // No yaml keys: the remote-access settings (auth key included) live
         // in the GUI's key-value DB and the section loads/saves them itself.
+        keys: [],
+    },
+    {
+        id: "connection",
+        label: "settingsSections.connection.label",
+        icon: "wifi",
+        description: "settingsSections.connection.description",
+        // No yaml keys: the link choice, BLE token and device live in this
+        // browser's localStorage (transport/connectionManager.ts).
         keys: [],
     },
     {

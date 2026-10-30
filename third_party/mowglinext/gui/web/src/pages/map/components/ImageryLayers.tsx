@@ -1,6 +1,6 @@
 import {useEffect, useMemo} from "react";
 import {Layer, Source, useMap} from "react-map-gl/mapbox";
-import {httpBase} from "../../../utils/apiHost.ts";
+import {networkHttpBase} from "../../../transport/index.ts";
 import {
     drawableOverlays,
     imageCornersMap,
@@ -68,7 +68,8 @@ export function ImageryLayers({overlays, offsetX, offsetY, datum, draft}: Props)
         return () => { m.off("styledata", fix); };
     }, [map, order]);
 
-    const base = httpBase();
+    // mapbox-gl loads tiles and images itself: network transport only.
+    const base = networkHttpBase();
     return (
         <>
             {list.map((o) => {

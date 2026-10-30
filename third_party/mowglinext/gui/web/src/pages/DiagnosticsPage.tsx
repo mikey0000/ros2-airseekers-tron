@@ -89,6 +89,7 @@ import {groupAlertsByComponent} from "../utils/diagnosticsAlerts.ts";
 import {deriveLidarAnchor} from "../utils/lidarAnchor.ts";
 import {useValueSince} from "../hooks/useValueSince.ts";
 import {SystemPowerCard} from "../components/SystemPowerCard.tsx";
+import {apiFetch} from "../transport/index.ts";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -1570,7 +1571,7 @@ export const DiagnosticsPage = () => {
                 const controller = new AbortController();
                 const timeoutId = window.setTimeout(() => controller.abort(), MAG_CALIB_CLIENT_TIMEOUT_MS);
                 try {
-                    const res = await fetch("/api/calibration/magnetometer", {
+                    const res = await apiFetch("/api/calibration/magnetometer", {
                         method: "POST",
                         headers: {"Content-Type": "application/json"},
                         body: JSON.stringify({}),

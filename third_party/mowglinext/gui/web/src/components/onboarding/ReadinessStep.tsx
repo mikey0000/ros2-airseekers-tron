@@ -19,7 +19,6 @@ import {useFusionGraphDiagnostics} from "../../hooks/useFusionGraphDiagnostics.t
 import {useFirmwareStatus} from "../../hooks/useFirmwareStatus.ts";
 import {useMowingMap} from "../../hooks/useMowingMap.ts";
 import {restartRos2, restartGui} from "../../utils/containers.ts";
-import {httpBase} from "../../utils/apiHost.ts";
 import {
     computeReadinessChecks,
     requiredFailingChecks,
@@ -34,6 +33,7 @@ import {
     type OnboardingStepId,
 } from "./steps.ts";
 import {hasFeature, type RobotProfile} from "../../constants/robotProfiles.ts";
+import {apiFetch} from "../../transport/index.ts";
 
 const {Text} = Typography;
 
@@ -108,7 +108,7 @@ export const ReadinessStep: React.FC<ReadinessStepProps> = ({values, profile, st
         try {
             // Mark onboarding done in the DB so the wizard doesn't redirect again,
             // then restart ROS2 (picks up the new mowgli_robot.yaml) and the GUI.
-            await fetch(`${httpBase()}/api/settings/status`, {method: "POST"});
+            await apiFetch(`/api/settings/status`, {method: "POST"});
             // Restarting goes through the Docker socket; a robot without one
             // runs its stack natively and applies the settings on its next
             // start (see the hint on the result screen).

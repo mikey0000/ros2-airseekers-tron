@@ -19,7 +19,8 @@ describe("Settings sections per robot profile", () => {
         const hidden = ids(SECTION_DEFINITIONS).filter(
             (id) => !ids(visibleSections(getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID))).includes(id),
         );
-        expect(hidden).toEqual(["updates", "drive_motor", "leds", "remote_access"]);
+        // Remote access stays: its HTTPS card works everywhere (Tailscale part gated).
+        expect(hidden).toEqual(["updates", "drive_motor", "leds"]);
     });
 
     it("keeps rain and MQTT on Tron", () => {

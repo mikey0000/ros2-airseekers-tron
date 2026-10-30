@@ -29,7 +29,9 @@ export const PROFILE_GATES = {
 
     // Settings sections
     "settings:updates": ["docker_admin"],        // host updater (docker image pulls)
-    "settings:remote_access": ["docker_admin"],  // Tailscale sidecar created over the docker socket
+    // Remote access: the HTTPS / mower-CA card needs nothing, so the section
+    // shows everywhere; its Tailscale part is "feature:tailscale".
+    "settings:remote_access": [],
     "settings:drive_motor": ["drive_tuning"],   // drive / PID auto-tuning (docker exec)
     "settings:leds": ["status_leds"],           // mowgli_leds SPI strip
     "settings:straight_driving": ["straight_driving"], // cmd_vel_slew trim / deadband / heading hold
@@ -47,6 +49,8 @@ export const PROFILE_GATES = {
     "feature:imu_yaw_calibration": ["imu_yaw_calibration"], // /calibrate_imu_yaw_node/* buttons
     "feature:dock_calibration": ["dock_calibration"],  // CalibrateDock wizard (charger contacts)
     "feature:area_settings": ["area_settings"],        // per-area mow settings panel + Start sheet
+    "feature:rtk_base": ["lora_rtk_base"],             // RTK base station card (LoRa pairing)
+    "feature:tailscale": ["remote_access_sidecar"],    // Tailscale sidecar created over the docker socket
 } as const satisfies Record<string, readonly FeatureId[]>;
 
 export type GateId = keyof typeof PROFILE_GATES;

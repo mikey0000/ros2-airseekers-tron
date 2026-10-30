@@ -1,6 +1,7 @@
 import {Alert, App, Button, Col, Collapse, Row, Typography} from "antd";
 import {useEffect, useMemo, useRef, useState} from "react";
 import {fetchEventSource} from "@microsoft/fetch-event-source";
+import {apiFetch} from "../transport/index.ts";
 import {createSchemaField} from "@formily/react";
 import {
     Checkbox,
@@ -260,7 +261,10 @@ export const FlashBoardComponent = (props: { onNext: () => void; mowerModel?: st
         setFlashError(null);
         setData([]);
         try {
-            await fetchEventSource(`/api/setup/flashBoard`, {
+            const flashPath = "/api/setup/flashBoard";
+            await fetchEventSource(flashPath, {
+                // Through the transport seam like every other backend request.
+                fetch: (_input, init) => apiFetch(flashPath, init),
                 method: "POST",
                 keepalive: false,
                 // Keep the stream open when the tab is backgrounded / loses

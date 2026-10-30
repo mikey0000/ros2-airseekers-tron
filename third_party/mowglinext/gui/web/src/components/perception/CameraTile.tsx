@@ -6,6 +6,7 @@ import type {CameraInfo, CameraStatus, TopicHealth} from "../../hooks/useCameras
 import type {DetectionBox} from "../../hooks/useDetections.ts";
 import type {StreamVariant} from "./streamUrl.ts";
 import {MjpegImg} from "./MjpegImg.tsx";
+import {apiFetch} from "../../transport/index.ts";
 
 /** A tile is "stale" when its newest frame is older than this. */
 export const STALE_AFTER_MS = 3000;
@@ -190,7 +191,7 @@ function useSnapshotSrc(base: string | undefined, enabled: boolean, intervalMs: 
         const ctrl = new AbortController();
         const tick = async () => {
             try {
-                const res = await fetch(base, {signal: ctrl.signal, cache: "no-store"});
+                const res = await apiFetch(base, {signal: ctrl.signal, cache: "no-store"});
                 if (res.ok) {
                     const blob = await res.blob();
                     if (cancelled) return;

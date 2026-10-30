@@ -53,16 +53,53 @@ fallbacks in `pkg/providers/db.go`, so a value saved in the bitcask DB wins):
 | `ONBOARDING_COMPLETED` | `true` | Tron addition: `onboarding.completed` fallback, skips the wizard |
 | `MQTT_ENABLED` / `HOMEKIT_ENABLED` | `false` | integrations off |
 | `API_ADDR` / `WEB_DIR` | `:4006` / `/app/web` | image defaults |
+| `API_TLS_ADDR` | `:4443` (default) | HTTPS listener, DB key `system.api.tls_addr` |
+| `TLS_DIR` | unset → `$DB_PATH/tls` | mower CA (`ca.key`, `ca.crt`), see "Secure origin" below |
 
 ## Ports
 
 | Port | Who | What |
 |------|-----|------|
 | 4006/tcp | `mower_gui` | HTTP + WebSocket (SPA, `/api/...`, `/api/mowglinext/multiplex`). **No auth** — LAN only. |
+| 4443/tcp | `mower_gui` | the same API and SPA over HTTPS, certificate from the mower's own CA. **No auth** either. |
 | 8765/tcp | `mower_jazzy` (foxglove_bridge) | all topic subscriptions and service calls from the GUI backend |
 | 8766/tcp | `mower_jazzy` (cmd_vel relay) | teleop/joystick `TwistStamped` JSON relay; falls back to publishing `/cmd_vel_teleop` via foxglove |
 
 Everything is `network_mode: host`, so the GUI reaches both on `localhost`.
+
+## Secure origin (HTTPS on 4443)
+
+Web Bluetooth and service workers need a secure origin, which
+`http://<mower>:4006` is not. The backend creates its own CA on first start
+and serves the GUI on `https://<hostname>.local:4443` and `https://<lan-ip>:4443`
+as well. Each phone installs the CA once from Settings → Remote access →
+"Secure origin (HTTPS)". Details, the file locations and the install steps:
+`third_party/mowglinext/docs/REMOTE_ACCESS.md`, section "Secure origin".
+The BLE tunnel token (`GET /api/ble/token`, `POST /api/ble/token/rotate`, DB key
+`ble.token`) lives next to it in `pkg/api/ble_token.go`.
+
+## Bluetooth connection (no Wi-Fi needed)
+
+The GUI can run entirely over the mower's Bluetooth LE module: every page, setting, service call
+and the joystick, but not video. Wire protocol: `ble_tunnel_protocol.md`; design and measured link
+budget: `DESIGN_ble_transport_2026-10.md`. Requirements: Chrome or Edge on Android, Windows, macOS
+or Linux (no iPhone), and the app opened from its HTTPS address (section above), because Web
+Bluetooth and the offline shell need a secure origin.
+
+1. While on Wi-Fi, open `https://<mower>.local:4443` (or the IP form) once. The app stores the
+   Bluetooth token (`GET /api/ble/token`) and the service worker caches the app shell.
+2. Settings → Connection → "Connect a Bluetooth mower", pick the `AIRSEEKERS_…` device. Chrome
+   remembers the permission; later connections need no prompt.
+3. Switch with the Wi-Fi / Bluetooth control in Settings → Connection or the chip in the header.
+   The switch is manual, with one exception: when the app starts without reaching the mower, or
+   the network has been dead for 3 s, and a remembered mower is in range, it switches to
+   Bluetooth by itself and says so. It never switches back on its own.
+
+On the mower the bridge daemon (`scripts/ble/ble_bridge.py`, launched by `mower.launch.py`, disable
+with `ble_bridge:=false`) owns `/dev/serial_ble` and forwards to the local backend. Expect roughly
+5 KB/s mower → phone and 1.5 KB/s phone → mower; a round trip is about 80 ms, so the joystick is
+usable. Reconnecting after a drop can take 20-30 s because the module re-advertises slowly.
+Rotate the token from the backend with `POST /api/ble/token/rotate`.
 
 ## What the GUI needs from ROS
 
@@ -126,7 +163,7 @@ Gates hidden on Tron:
 | Id | What | Needs |
 |----|------|-------|
 | `settings:updates` | Settings → Updates (host updater) | `docker_host` |
-| `settings:remote_access` | Settings → Remote access (Tailscale sidecar) | `docker_host` |
+| `feature:tailscale` | Settings → Remote access → Tailscale sidecar part (the section itself, with the HTTPS card, shows on every robot). On Tron the sidecar is enabled: it uses the Docker socket the GUI compose already mounts and publishes the GUI at `https://<node>.<tailnet>.ts.net` with a real certificate, a secure origin for Web Bluetooth that needs no CA install and works over the LTE link | `remote_access_sidecar` |
 | `settings:drive_motor` | Settings → Drive motor (FF / PID auto-tuning) | `drive_tuning` |
 | `settings:leds` | Settings → LEDs | `status_leds` |
 | `feature:firmware_flash` | dashboard "flash firmware" CTA | `stm32_firmware` |
@@ -135,6 +172,7 @@ Gates hidden on Tron:
 | `feature:host_updater` | running-version footer / updates links | `docker_host` |
 | `feature:rosbag`, `feature:containers`, `feature:restart_ros2` | Diagnostics rosbag, container table, Settings "Restart ROS2" | `docker_host` |
 | `feature:lidar` | LiDAR settings, scan / LiDAR-map layers | `lidar` |
+| `feature:rtk_base` | Settings → GPS & Positioning → RTK base station card (LoRa base pairing, `/api/rtk-base/*` → `/mower_gps_node/{get,set}_lora`, `reset_base`, `lora_status`). Shown only on Tron (additive) | `lora_rtk_base` |
 | `feature:fusion_graph`, `feature:imu_yaw_calibration`, `feature:dock_calibration` | their diagnostics / buttons / wizard | the same-named feature |
 
 `/perception` is the reverse: additive, shown only with `cameras`. The onboarding

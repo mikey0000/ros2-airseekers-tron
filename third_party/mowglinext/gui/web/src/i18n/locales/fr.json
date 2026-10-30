@@ -3655,7 +3655,11 @@
     },
     "remote_access": {
       "label": "Accès distant",
-      "description": "Accéder au robot depuis n'importe où via votre réseau Tailscale privé"
+      "description": "HTTPS pour le Bluetooth et l'usage hors ligne, et accès depuis n'importe où via Tailscale"
+    },
+    "connection": {
+      "label": "Connexion",
+      "description": "Liaison Wi-Fi ou Bluetooth avec la tondeuse, appairage Bluetooth et jeton"
     },
     "leds": {
       "label": "LED d'état",
@@ -4465,7 +4469,68 @@
   },
   "connection": {
     "reconnecting": "Reconnexion…",
-    "joystickReconnecting": "Reconnexion du joystick…"
+    "joystickReconnecting": "Reconnexion du joystick…",
+    "wifi": "Wi-Fi",
+    "bluetooth": "Bluetooth",
+    "chipLabel": "Connexion : {{link}}, {{state}}",
+    "chip": {
+      "connected": "Connecté",
+      "connecting": "Connexion…",
+      "reconnecting": "Reconnexion…",
+      "wifiDown": "Wi-Fi coupé",
+      "wifiBack": "Wi-Fi disponible",
+      "notConnected": "Non connecté",
+      "tokenRejected": "Jeton refusé"
+    },
+    "title": "Connexion",
+    "linkTitle": "Liaison",
+    "modeHint": "Le Bluetooth sert de secours quand le Wi-Fi est coupé ou faible. L’application passe d’elle-même en Bluetooth seulement si le Wi-Fi est injoignable et qu’une tondeuse appairée est à portée, et ne revient jamais seule au Wi-Fi.",
+    "wifiStatus": "Wi-Fi",
+    "network": {
+      "up": "Joignable",
+      "down": "Injoignable",
+      "unknown": "Vérification…"
+    },
+    "bluetoothTitle": "Bluetooth",
+    "connectNew": "Connecter une tondeuse en Bluetooth",
+    "reconnect": "Reconnecter",
+    "forget": "Oublier l’appareil",
+    "forgetConfirm": "Oublier cette tondeuse ? Il faudra la reconnecter depuis cet écran.",
+    "device": "Tondeuse",
+    "noDevice": "Aucune tondeuse connectée pour l’instant",
+    "linkState": "Liaison",
+    "sessionState": "Session",
+    "rtt": "Aller-retour",
+    "received": "Reçu",
+    "sent": "Envoyé",
+    "link": {
+      "idle": "Non connecté",
+      "connecting": "Connexion…",
+      "connected": "Connecté",
+      "reconnecting": "Reconnexion…",
+      "unavailable": "Indisponible"
+    },
+    "session": {
+      "idle": "Non démarrée",
+      "handshaking": "Authentification…",
+      "ready": "Prête",
+      "unauthenticated": "Jeton refusé",
+      "backend_unavailable": "Le serveur de la tondeuse ne répond pas",
+      "dead": "Liaison perdue"
+    },
+    "notInRange": "La tondeuse n’est pas à portée ou ne s’annonce pas encore (jusqu’à 30 s après une déconnexion). Rapprochez-vous puis touchez Reconnecter.",
+    "tokenTitle": "Jeton Bluetooth",
+    "tokenHint": "Rempli automatiquement quand l’application est ouverte en Wi-Fi depuis son adresse HTTPS. Vous pouvez aussi coller un jeton copié depuis un autre téléphone.",
+    "tokenPlaceholder": "Jeton de 32 caractères",
+    "tokenSave": "Enregistrer le jeton",
+    "tokenSaved": "Jeton enregistré",
+    "tokenMissing": "Pas encore de jeton. Ouvrez l’application une fois en Wi-Fi depuis son adresse HTTPS, ou collez le jeton ici.",
+    "tokenRejected": "La tondeuse a refusé ce jeton. Ouvrez l’application une fois en Wi-Fi pour récupérer le jeton actuel, ou collez-le à nouveau.",
+    "unsupportedTitle": "Bluetooth indisponible ici",
+    "insecure": "Ouvrez l’application depuis son adresse HTTPS (Réglages → Accès distant → Origine sécurisée).",
+    "unsupported": "Le Bluetooth nécessite Chrome ou Edge sur Android, Windows, macOS ou Linux ; l’iPhone n’est pas pris en charge.",
+    "autoSwitched": "Pas de Wi-Fi : passage en Bluetooth. Allez dans Réglages → Connexion pour revenir au Wi-Fi.",
+    "pairFailed": "Échec de la connexion Bluetooth : {{error}}"
   },
   "mowProgress": {
     "title": "Progression de la tonte",
@@ -4573,5 +4638,82 @@
   },
   "map": {
     "rotateHandle": "Glisser pour faire pivoter la zone"
+  },
+  "rtkBase": {
+    "title": "Station de base RTK",
+    "intro": "Associez la tondeuse à la station de base LoRa Airseekers livrée avec elle. La carte RTK de la tondeuse enregistre l'adresse radio, le canal et la bande de la base ; la base elle-même n'est jamais modifiée.",
+    "storedPairing": "Association enregistrée",
+    "pairingSummary": "adresse {{addr}} · canal {{channel}} · {{band}}",
+    "notReadYet": "pas encore lue",
+    "corrections": "Corrections de la base",
+    "refFine": "base reçue",
+    "refFail": "aucun signal de la base",
+    "unknown": "inconnu",
+    "stationId": "Identifiant de station",
+    "correctionAge": "Âge des corrections",
+    "fixType": "Type de fix",
+    "bandUnknown": "bande inconnue",
+    "band": {
+      "europe": "Europe 863 MHz",
+      "americas": "Amériques 902 MHz",
+      "australia": "Australie / NZ 927 MHz",
+      "all": "toutes les bandes"
+    },
+    "region": {
+      "label": "Région",
+      "europe": "Europe / Royaume-Uni (863 MHz)",
+      "northAmerica": "Amérique du Nord (902 MHz)",
+      "australia": "Australie / Nouvelle-Zélande (927 MHz)"
+    },
+    "ntripOwns": "NTRIP utilise actuellement le récepteur, la base est donc ignorée. Désactivez « Activer NTRIP » (Paramètres → Corrections NTRIP) pour utiliser la base.",
+    "address": "Adresse de la base",
+    "addressHelp": "Décimal ou hexadécimal 0x",
+    "addressInvalid": "Saisissez 0–65534 ou 0x0000–0xFFFE",
+    "channel": "Canal (1–75)",
+    "channelInvalid": "Le canal doit être compris entre 1 et 75",
+    "pair": "Associer",
+    "useUniversal": "Utiliser le code universel",
+    "readFromBoard": "Lire depuis la carte",
+    "reboot": "Redémarrer la base",
+    "confirmTitle": "Associer la station de base RTK ?",
+    "confirmBody": "La carte RTK de la tondeuse enregistrera l'adresse {{addr}}, le canal {{channel}}, la région {{region}} et remplacera l'association actuelle.",
+    "pairSuccess": "Association enregistrée et relue. Les corrections arrivent une fois que la base a terminé son auto-positionnement (environ 2 minutes après la mise sous tension).",
+    "pairRejected": "L'association n'a pas été enregistrée : {{message}}",
+    "readSuccess": "La carte indique l'adresse {{addr}}, le canal {{channel}}, {{band}}.",
+    "readNoAnswer": "La carte RTK n'a pas répondu : {{message}}",
+    "rebootConfirmTitle": "Redémarrer la station de base ?",
+    "rebootConfirmBody": "La tondeuse demande à sa carte RTK de se réinitialiser et de transmettre une réinitialisation à la base. La base a ensuite besoin d'environ 2 minutes pour se repositionner avant le retour des corrections.",
+    "rebootSent": "Réinitialisation envoyée.",
+    "rebootRejected": "Réinitialisation non envoyée : {{message}}",
+    "actionFailed": "Échec de la requête : {{error}}",
+    "help": "Après l'association, alimentez la base à quelques mètres de la tondeuse avec une vue dégagée du ciel. Elle a besoin d'environ 2 minutes pour se positionner avant l'arrivée des corrections. Désactivez « Activer NTRIP » pour utiliser la base. La région doit correspondre à votre lieu, pas au lieu d'achat de la tondeuse."
+  },
+  "secureOrigin": {
+    "title": "Origine sécurisée (HTTPS)",
+    "why": "La connexion Bluetooth et l'utilisation hors ligne ne fonctionnent que si l'interface est ouverte en HTTPS avec un certificat approuvé par cet appareil.",
+    "onSecureOrigin": "Cette page est sur une origine sécurisée.",
+    "notOnSecureOrigin": "Cette page n'est pas sur une origine sécurisée : ouvrez l'une des adresses HTTPS ci-dessous.",
+    "loadFailed": "Impossible de lire l'état HTTPS de la tondeuse",
+    "disabled": "Le HTTPS ne fonctionne pas sur la tondeuse : son certificat n'a pas pu être créé (voir le journal de l'interface).",
+    "openAt": "Ouvrir l'interface en HTTPS :",
+    "downloadCa": "Télécharger le certificat de la tondeuse",
+    "caExpires": "Valable jusqu'au {{date}}",
+    "fingerprint": "Empreinte SHA-256 :",
+    "android": {
+      "title": "Android (une fois par téléphone)",
+      "step1": "Téléchargez le certificat de la tondeuse ci-dessus.",
+      "step2": "Ouvrez Paramètres → Sécurité et confidentialité → Autres paramètres de sécurité → Chiffrement et identifiants → Installer un certificat → Certificat CA (les intitulés varient selon le fabricant).",
+      "step3": "Choisissez mower-ca.crt dans Téléchargements, puis ouvrez l'adresse HTTPS dans Chrome."
+    },
+    "desktop": {
+      "title": "Chrome sur ordinateur",
+      "step1": "Téléchargez le certificat de la tondeuse ci-dessus.",
+      "step2": "Ouvrez chrome://settings/certificates → Autorités → Importer et choisissez mower-ca.crt.",
+      "step3": "Cochez « Faire confiance à ce certificat pour identifier des sites Web », puis ouvrez l'adresse HTTPS."
+    },
+    "ios": {
+      "title": "iPhone / iPad",
+      "note": "Installez le profil téléchargé, puis activez la confiance totale dans Réglages → Général → Informations → Réglages des certificats. Le Web Bluetooth reste indisponible sur iOS."
+    }
   }
 }

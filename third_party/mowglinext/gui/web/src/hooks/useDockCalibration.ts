@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useWS } from "./useWS.ts";
+import {apiFetch} from "../transport/index.ts";
 
 // Mirrors mowgli_interfaces/msg/DockCalibrationStatus (phase codes + retry_reason
 // mirror CalibrateDock.action). The GUI has no ROS-action support (foxglove
@@ -76,7 +77,7 @@ export const useDockCalibration = () => {
         setStartError(null);
         startedRef.current = true;
         try {
-            const resp = await fetch("/api/calibration/dock/start", { method: "POST" });
+            const resp = await apiFetch("/api/calibration/dock/start", { method: "POST" });
             const body = (await resp.json()) as StartResponse;
             if (!resp.ok || !body.success) {
                 setStartError(body?.message || `Start rejected (HTTP ${resp.status}).`);

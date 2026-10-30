@@ -1,11 +1,11 @@
 import {useCallback, useEffect, useRef, useState} from "react";
-import {httpBase} from "../utils/apiHost.ts";
 import type {ImageryControlPoint, ImageryOverlay, ImageryPlacement} from "../utils/imagery.ts";
+import {apiFetch, networkHttpBase} from "../transport/index.ts";
 
 const BASE = "/api/mowglinext";
 
 async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${httpBase()}${BASE}${path}`, {
+    const res = await apiFetch(`${BASE}${path}`, {
         ...init,
         headers: init?.body ? {"Content-Type": "application/json"} : undefined,
     });
@@ -93,7 +93,8 @@ export function useImagery(enabled = true) {
             fd.append("file", file); // last: the server reads fields before the file
             const xhr = new XMLHttpRequest();
             xhrRef.current = xhr;
-            xhr.open("POST", `${httpBase()}${BASE}/imagery`);
+            // XHR for upload progress events: network transport only, never tunnelled over BLE.
+            xhr.open("POST", `${networkHttpBase()}${BASE}/imagery`);
             setUpload({fileName: file.name, progress: 0});
             xhr.upload.onprogress = (ev) => {
                 if (ev.lengthComputable) setUpload({fileName: file.name, progress: ev.loaded / ev.total});

@@ -123,6 +123,9 @@ var topicMap = map[string]topicDef{
 	// event matters, so it is queued (see queuedTopics) and fed to the push
 	// notifier and MQTT.
 	"alerts": {"/mower_alerts/events", "std_msgs/msg/String"},
+	// RTK base station (vendor LoRa base): um960_gps_driver's 1 Hz JSON status
+	// {pairing, ref_station, nrtk_on, station_id, diff_age_s, fix_type, ...}.
+	"rtkBaseStatus": {"/mower_gps_node/lora_status", "std_msgs/msg/String"},
 }
 
 // queuedTopics lists logical keys whose subscribers must see every message, in

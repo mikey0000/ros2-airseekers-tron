@@ -17,6 +17,17 @@ const (
 	immutableAssetCacheControl = "public, max-age=31536000, immutable"
 )
 
+// noCachePaths must be revalidated on every load: the shell, the service worker that
+// precaches it (Workbox only updates the cached app when it sees a new sw.js), its
+// registration script, and the build manifest the GUI polls to detect a new version.
+var noCachePaths = map[string]bool{
+	"/":               true,
+	"/index.html":     true,
+	"/sw.js":          true,
+	"/registerSW.js":  true,
+	"/web-build.json": true,
+}
+
 func registerWebUI(router *gin.Engine, webDir string) {
 	router.Use(webAssetDelivery(webDir))
 	router.Use(static.Serve("/", static.LocalFile(webDir, false)))
@@ -29,7 +40,7 @@ func registerWebUI(router *gin.Engine, webDir string) {
 func webAssetDelivery(webDir string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestPath := c.Request.URL.Path
-		if requestPath == "/" || requestPath == "/index.html" {
+		if noCachePaths[requestPath] {
 			c.Header("Cache-Control", noCacheHTMLControl)
 		}
 

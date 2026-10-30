@@ -40,6 +40,7 @@ describe("robot profiles", () => {
         expect(hasFeature(yf, "docker_host")).toBe(true);
         expect(hasFeature(yf, "cameras")).toBe(false);
         expect(hasFeature(yf, "lora_corrections")).toBe(false);
+        expect(hasFeature(yf, "lora_rtk_base")).toBe(false);
         expect(hasFeature(yf, "area_settings")).toBe(false);
         expect(hasFeature(yf, "manual_blade_two_step")).toBe(false);
         expect(hasFeature(getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID), "manual_blade_two_step")).toBe(true);
@@ -69,8 +70,10 @@ describe("robot profiles", () => {
             expect(hasFeature(tron, off)).toBe(false);
         }
         expect(hasFeature(tron, "docker_host")).toBe(true);
+        expect(hasFeature(tron, "remote_access_sidecar")).toBe(true);
         expect(hasFeature(tron, "cameras")).toBe(true);
         expect(hasFeature(tron, "lora_corrections")).toBe(true);
+        expect(hasFeature(tron, "lora_rtk_base")).toBe(true);
         expect(hasFeature(tron, "area_settings")).toBe(true);
         expect(hasFeature(tron, "straight_driving")).toBe(true);
         expect(tron.perception).toBe("camera");

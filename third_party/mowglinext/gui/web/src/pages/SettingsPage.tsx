@@ -39,6 +39,7 @@ import { RecorderCard } from "../components/settings/RecorderCard.tsx";
 import { MqttSection } from "../components/settings/MqttSection.tsx";
 import { IrriSenseSection } from "../components/settings/IrriSenseSection.tsx";
 import { RemoteAccessSection } from "../components/settings/RemoteAccessSection.tsx";
+import { ConnectionSection } from "../components/settings/ConnectionSection.tsx";
 import { NotificationsSection } from "../components/settings/NotificationsSection.tsx";
 import { AdvancedSection } from "../components/settings/AdvancedSection.tsx";
 import { SettingsPreview } from "../components/settings/SettingsPreview.tsx";
@@ -289,6 +290,8 @@ export const SettingsPage = () => {
                         unregisterSaver={unregisterExternalSaver}
                     />
                 );
+            case "connection":
+                return <ConnectionSection/>;
             case "notifications":
                 return (
                     <NotificationsSection

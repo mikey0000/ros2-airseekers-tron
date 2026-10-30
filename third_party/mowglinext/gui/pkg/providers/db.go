@@ -20,6 +20,7 @@ type DBProvider struct {
 
 var EnvFallbacks = map[string]string{
 	"system.api.addr":             "API_ADDR",
+	"system.api.tls_addr":         "API_TLS_ADDR",
 	"system.api.webDirectory":     "WEB_DIR",
 	"system.map.enabled":          "MAP_TILE_ENABLED",
 	"system.map.tileServer":       "MAP_TILE_SERVER",
@@ -45,6 +46,7 @@ var EnvFallbacks = map[string]string{
 }
 var Defaults = map[string]string{
 	"system.api.addr":             ":4006",
+	"system.api.tls_addr":         ":4443",
 	"system.api.webDirectory":     "/app/web",
 	"system.map.enabled":          "false",
 	"system.map.tileServer":       "http://localhost:5000",

@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import type {ApiUpdateCheck} from '../api/Api';
-import {httpBase} from '../utils/apiHost';
+import {apiFetch} from "../transport/index.ts";
 
 export function useUpdateChecks() {
     const [channel, setChannel] = useState<'dev' | 'stable'>(() => {
@@ -16,7 +16,7 @@ export function useUpdateChecks() {
         controller.current = request;
         setChecking(true);
         try {
-            const response = await fetch(`${httpBase()}/api/system/updates?channel=${channel}&check=${String(check)}`, {signal: request.signal, cache: 'no-store'});
+            const response = await apiFetch(`/api/system/updates?channel=${channel}&check=${String(check)}`, {signal: request.signal, cache: 'no-store'});
             if (!response.ok) throw new Error('update check unavailable');
             const next = await response.json() as ApiUpdateCheck;
             if (next.channel !== channel || !Array.isArray(next.components) || !next.state) throw new Error('invalid update check');

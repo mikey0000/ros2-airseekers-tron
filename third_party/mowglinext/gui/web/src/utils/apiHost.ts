@@ -11,6 +11,10 @@
  * VITE_API_HOST remains as an explicit escape hatch that bypasses the proxy,
  * but note that WebSocket upgrades sent straight to a backend on another
  * host:port fail its origin check.
+ *
+ * Only the network transport (src/transport/network.ts) uses these; everything else
+ * goes through apiFetch / openApiSocket so the active transport (Wi-Fi or Bluetooth)
+ * carries it. src/transport/noDirectBackendAccess.test.ts enforces that.
  */
 export function apiHost(): string {
     const override = import.meta.env.VITE_API_HOST as string | undefined;

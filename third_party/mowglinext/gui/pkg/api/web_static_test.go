@@ -140,6 +140,26 @@ func TestRegisterWebUIDoesNotCacheHTMLShell(t *testing.T) {
 	}
 }
 
+func TestRegisterWebUIDoesNotCacheServiceWorker(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	webDir, _ := writeWebFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(webDir, "sw.js"), []byte("self.skipWaiting()"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(webDir, "registerSW.js"), []byte("register()"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(webDir, "web-build.json"), []byte(`{"id":"x"}`), 0o644))
+	router := gin.New()
+	registerWebUI(router, webDir)
+
+	for _, path := range []string{"/sw.js", "/registerSW.js", "/web-build.json"} {
+		response := performRequest(router, path, "gzip")
+		require.Equal(t, http.StatusOK, response.Code, path)
+		require.Equal(t, noCacheHTMLControl, response.Header().Get("Cache-Control"), path)
+		require.Empty(t, response.Header().Get("Content-Encoding"), path)
+	}
+	response := performRequest(router, "/sw.js", "")
+	require.True(t, strings.HasPrefix(response.Header().Get("Content-Type"), "text/javascript"),
+		response.Header().Get("Content-Type"))
+}
+
 func BenchmarkStaticAssetDelivery(b *testing.B) {
 	gin.SetMode(gin.TestMode)
 	webDir, _ := writeWebFixture(b)

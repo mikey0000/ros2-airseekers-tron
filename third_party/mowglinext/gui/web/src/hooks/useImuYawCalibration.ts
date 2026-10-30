@@ -1,6 +1,7 @@
 import {useCallback, useState} from "react";
 import {App} from "antd";
 import {useTranslation} from "react-i18next";
+import {apiFetch} from "../transport/index.ts";
 
 // Shared state machine for the IMU yaw + dock pose auto-calibration.
 // Used by both:
@@ -94,7 +95,7 @@ export const useImuYawCalibration = ({onApplyValue, currentImuYawRad}: UseImuYaw
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), CALIB_CLIENT_TIMEOUT_MS);
         try {
-            const res = await fetch("/api/calibration/imu-yaw", {
+            const res = await apiFetch("/api/calibration/imu-yaw", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({duration_sec: CALIB_DURATION_SEC}),

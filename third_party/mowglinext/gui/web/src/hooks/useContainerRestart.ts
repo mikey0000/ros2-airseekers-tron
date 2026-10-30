@@ -1,7 +1,8 @@
 import { useCallback, useRef, useState } from "react";
 import { App } from "antd";
 import { useTranslation } from "react-i18next";
-import { wsBase } from "../utils/apiHost";
+import { openApiSocket, type SocketLike } from "../transport/index.ts";
+import { isTransportSwitchClose } from "./reconnect.ts";
 
 /**
  * Wait for ROS2 to be reachable again after a container restart.
@@ -13,14 +14,13 @@ import { wsBase } from "../utils/apiHost";
  */
 const waitForRos2 = (timeoutMs: number): Promise<boolean> =>
     new Promise((resolve) => {
-        const url = `${wsBase()}/api/mowglinext/subscribe/highLevelStatus`;
-
         let settled = false;
+        let ws: SocketLike | null = null;
         const finish = (ok: boolean) => {
             if (settled) return;
             settled = true;
             try {
-                ws.close();
+                ws?.close();
             } catch {
                 /* ignore */
             }
@@ -28,12 +28,21 @@ const waitForRos2 = (timeoutMs: number): Promise<boolean> =>
             resolve(ok);
         };
 
-        const ws = new WebSocket(url);
-        const timer = setTimeout(() => finish(false), timeoutMs);
-        ws.onmessage = () => finish(true);
-        ws.onerror = () => {
-            /* keep waiting — backend will reconnect */
+        const open = () => {
+            const probe = openApiSocket("/api/mowglinext/subscribe/highLevelStatus");
+            ws = probe;
+            probe.onmessage = () => finish(true);
+            probe.onerror = () => {
+                /* keep waiting — backend will reconnect */
+            };
+            // Wi-Fi <-> Bluetooth switch mid-wait: probe again on the new transport.
+            probe.onclose = (ev: CloseEvent | undefined) => {
+                if (!settled && isTransportSwitchClose(ev)) open();
+            };
         };
+
+        const timer = setTimeout(() => finish(false), timeoutMs);
+        open();
     });
 
 export type ContainerRestartOptions = {

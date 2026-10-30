@@ -17,10 +17,12 @@ import {
 import {SECTION_DEFINITIONS} from "../hooks/useSettingsManager.ts";
 
 // The build-time list this module replaced (web/src/tronFeatures.ts), minus
-// "/onboarding": the wizard is profile-aware now and shows for every robot.
+// "/onboarding": the wizard is profile-aware now and shows for every robot,
+// and minus "settings:remote_access": the section now carries the HTTPS card
+// everywhere; its Tailscale part ("feature:tailscale") is open on Tron too,
+// since the sidecar only needs the Docker socket the Tron compose mounts.
 const TRON_HIDDEN_PAGES_BEFORE = [
     "settings:updates",
-    "settings:remote_access",
     "settings:drive_motor",
     "feature:firmware_flash",
     "feature:gnss_configurator",
@@ -40,7 +42,9 @@ const NEW_TRON_GATES = [
 ];
 
 // Gates for UI no stock robot has ever shown (additive features).
-const ADDITIVE_GATES = ["/perception", "settings:straight_driving", "feature:area_settings"];
+const ADDITIVE_GATES = [
+    "/perception", "settings:straight_driving", "feature:area_settings", "feature:rtk_base",
+];
 
 const STOCK_MODELS = MOWER_MODELS.filter((m) => m.value !== AIRSEEKERS_TRON_PROFILE_ID);
 const tron = getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID);

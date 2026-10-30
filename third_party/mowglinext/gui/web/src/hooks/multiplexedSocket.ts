@@ -15,7 +15,10 @@
 // main thread (one msgpack decode vs JSON.parse(envelope)+atob+JSON.parse).
 
 import {unpack} from "msgpackr";
-import {LIVENESS_CHECK_MS, LIVENESS_TIMEOUT_MS, onNetworkRegained, reconnectDelayMs} from "./reconnect.ts";
+import {openApiSocket, type SocketLike} from "../transport/index.ts";
+import {
+    isTransportSwitchClose, LIVENESS_CHECK_MS, LIVENESS_TIMEOUT_MS, onNetworkRegained, reconnectDelayMs,
+} from "./reconnect.ts";
 
 type Listener = (data: unknown, first: boolean) => void;
 
@@ -42,8 +45,8 @@ interface ClientOp {
 }
 
 export class MultiplexedSocket {
-    private url: string;
-    private ws: WebSocket | null = null;
+    private path: string;
+    private ws: SocketLike | null = null;
     private state: "idle" | "connecting" | "open" = "idle";
     private listeners = new Map<string, Set<Listener>>();
     // Functions that have not yet received their first payload — they get
@@ -57,8 +60,9 @@ export class MultiplexedSocket {
     private lastRxAt = 0;
     private everOpened = false;
 
-    constructor(url: string, private readonly now: () => number = () => Date.now()) {
-        this.url = url;
+    /** `path` is the backend path, opened through the transport seam. */
+    constructor(path: string, private readonly now: () => number = () => Date.now()) {
+        this.path = path;
         // Wi-Fi back / phone unlocked: retry now instead of waiting for backoff.
         onNetworkRegained(() => this.retryNow());
     }
@@ -165,7 +169,8 @@ export class MultiplexedSocket {
         this.state = "connecting";
         this.notifyStatus();
 
-        const ws = new WebSocket(this.url);
+        // Status traffic may be thinned by the BLE tunnel when the link is saturated.
+        const ws = openApiSocket(this.path, {lossy: true});
         // Server frames are MessagePack binary; receive them as ArrayBuffer.
         ws.binaryType = "arraybuffer";
         this.ws = ws;
@@ -217,15 +222,16 @@ export class MultiplexedSocket {
         };
 
         ws.onerror = () => this.handleDrop(ws);
-        ws.onclose = () => this.handleDrop(ws);
+        ws.onclose = (ev: CloseEvent | undefined) => this.handleDrop(ws, isTransportSwitchClose(ev));
     }
 
     /**
      * Forget `ws` and reconnect if anything is still subscribed. Also used by
      * the liveness watchdog for a half-open socket, whose close handshake
-     * would otherwise take tens of seconds to fire onclose.
+     * would otherwise take tens of seconds to fire onclose. `immediate` (transport
+     * switch) reconnects now instead of after the backoff.
      */
-    private handleDrop(ws: WebSocket): void {
+    private handleDrop(ws: SocketLike, immediate = false): void {
         if (this.ws !== ws) return;
         this.ws = null;
         ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
@@ -234,12 +240,16 @@ export class MultiplexedSocket {
         this.state = "idle";
         this.notifyStatus();
         // Reconnect only if there's still something to listen for.
-        if (this.listeners.size > 0) {
+        if (this.listeners.size === 0) return;
+        if (immediate) {
+            this.reconnectAttempt = 0;
+            this.retryNow();
+        } else {
             this.scheduleReconnect();
         }
     }
 
-    private startLiveness(ws: WebSocket): void {
+    private startLiveness(ws: SocketLike): void {
         this.stopLiveness();
         this.livenessTimer = setInterval(() => {
             if (this.ws === ws && this.now() - this.lastRxAt > LIVENESS_TIMEOUT_MS) {
@@ -292,17 +302,13 @@ export class MultiplexedSocket {
     }
 }
 
-import {wsBase} from "../utils/apiHost";
-
 let singleton: MultiplexedSocket | null = null;
 
-function multiplexUrl(): string {
-    return `${wsBase()}/api/mowglinext/multiplex`;
-}
+const MULTIPLEX_PATH = "/api/mowglinext/multiplex";
 
 export function getMultiplexedSocket(): MultiplexedSocket {
     if (singleton == null) {
-        singleton = new MultiplexedSocket(multiplexUrl());
+        singleton = new MultiplexedSocket(MULTIPLEX_PATH);
     }
     return singleton;
 }

@@ -1,5 +1,4 @@
 import {useCallback, useEffect, useRef, useState} from "react";
-import {wsBase} from "../utils/apiHost";
 import {
     getMultiplexedSocket,
     isMultiplexableSubscribeUri,
@@ -95,7 +94,7 @@ export const useWS = <T>(
     const start = (uri: string) => {
         // Re-starting the same publish stream (every RECORDING/MANUAL_MOWING
         // state frame calls start) must keep the live socket, not reconnect.
-        if (pubRef.current && pubRef.current.url === `${wsBase()}${uri}`) return;
+        if (pubRef.current && pubRef.current.path === uri) return;
         teardown();
 
         if (isMultiplexableSubscribeUri(uri)) {
@@ -127,7 +126,7 @@ export const useWS = <T>(
         }
 
         // Publish path: dedicated socket with automatic reconnect.
-        const sock = new PublishSocket(`${wsBase()}${uri}`);
+        const sock = new PublishSocket(uri);
         pubRef.current = sock;
         pubStatusUnsubRef.current = sock.onStatusChange((status) => {
             setPubStatus(status);

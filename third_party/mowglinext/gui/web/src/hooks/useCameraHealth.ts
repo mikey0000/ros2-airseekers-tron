@@ -1,5 +1,6 @@
 import {useEffect, useState} from "react";
 import type {CameraStatus} from "./useCameras.ts";
+import {apiFetch} from "../transport/index.ts";
 
 /**
  * Polls GET /api/cameras/:id/health while `enabled` (the tile is streaming):
@@ -16,7 +17,7 @@ export function useCameraHealth(healthUrl: string | undefined, enabled: boolean,
         const ctrl = new AbortController();
         const poll = async () => {
             try {
-                const res = await fetch(healthUrl, {signal: ctrl.signal, cache: "no-store"});
+                const res = await apiFetch(healthUrl, {signal: ctrl.signal, cache: "no-store"});
                 if (res.ok) {
                     const body = await res.json() as { status?: CameraStatus };
                     if (!cancelled && body?.status) setStatus(body.status);

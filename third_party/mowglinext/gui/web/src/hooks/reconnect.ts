@@ -1,3 +1,5 @@
+import {openApiSocket, TRANSPORT_SWITCHED_CLOSE_CODE, type SocketLike} from "../transport/index.ts";
+
 // Reconnect policy shared by the GUI's WebSockets (status multiplex + joystick).
 //
 // The phone roams at the edge of the house Wi-Fi: the link drops for a moment
@@ -8,7 +10,9 @@
 //     and closed, which triggers the reconnect;
 //   - reconnects are fast and capped at 1 s (LAN, not a public server);
 //   - the browser's `online` event and the page becoming visible again retry
-//     immediately instead of waiting for the backoff timer.
+//     immediately instead of waiting for the backoff timer;
+//   - a close with TRANSPORT_SWITCHED_CLOSE_CODE (Wi-Fi <-> Bluetooth switch) also
+//     reconnects immediately, on the newly active transport.
 
 /** Multiplex pseudo-topic of the server heartbeat (never subscribed). */
 export const HEARTBEAT_TOPIC = "__hb";
@@ -45,7 +49,13 @@ export function onNetworkRegained(cb: () => void): () => void {
 
 export type PublishSocketStatus = "idle" | "connecting" | "open" | "reconnecting";
 
-type WSFactory = (url: string) => WebSocket;
+/** Opens the socket for a backend path; the default goes through the transport seam. */
+type WSFactory = (path: string) => SocketLike;
+
+/** True for the close the transport seam sends when the active transport changes. */
+export function isTransportSwitchClose(ev: CloseEvent | undefined): boolean {
+    return ev?.code === TRANSPORT_SWITCHED_CLOSE_CODE;
+}
 
 /**
  * PublishSocket — the joystick's dedicated WebSocket (/api/mowglinext/publish/joy).
@@ -57,7 +67,7 @@ type WSFactory = (url: string) => WebSocket;
  * by itself once the socket is back, without a page reload.
  */
 export class PublishSocket {
-    private ws: WebSocket | null = null;
+    private ws: SocketLike | null = null;
     private status: PublishSocketStatus = "idle";
     private wanted = false;
     private attempt = 0;
@@ -69,8 +79,9 @@ export class PublishSocket {
     private unregisterNetwork: (() => void) | null = null;
 
     constructor(
-        readonly url: string,
-        private readonly wsFactory: WSFactory = (u) => new WebSocket(u),
+        /** Backend path, e.g. "/api/mowglinext/publish/joy". */
+        readonly path: string,
+        private readonly wsFactory: WSFactory = (p) => openApiSocket(p, {prio: true}),
         private readonly now: () => number = () => Date.now(),
         /** Receives non-heartbeat text frames (none today). */
         private readonly onMessage?: (data: unknown) => void,
@@ -148,9 +159,9 @@ export class PublishSocket {
     private connect(): void {
         if (!this.wanted) return;
         this.setStatus(this.everOpened ? "reconnecting" : "connecting");
-        let ws: WebSocket;
+        let ws: SocketLike;
         try {
-            ws = this.wsFactory(this.url);
+            ws = this.wsFactory(this.path);
         } catch {
             this.scheduleReconnect();
             return;
@@ -177,13 +188,16 @@ export class PublishSocket {
         ws.onerror = () => {
             if (this.ws === ws) this.drop(ws);
         };
-        ws.onclose = () => {
-            if (this.ws === ws) this.drop(ws);
+        ws.onclose = (ev: CloseEvent | undefined) => {
+            if (this.ws === ws) this.drop(ws, isTransportSwitchClose(ev));
         };
     }
 
-    /** Forget a dead/closed socket and schedule the next attempt. */
-    private drop(ws: WebSocket): void {
+    /**
+     * Forget a dead/closed socket and schedule the next attempt (`immediate`: now, for a
+     * transport switch).
+     */
+    private drop(ws: SocketLike, immediate = false): void {
         if (this.ws !== ws) return;
         this.ws = null;
         ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
@@ -195,7 +209,14 @@ export class PublishSocket {
             return;
         }
         this.setStatus(this.everOpened ? "reconnecting" : "connecting");
-        this.scheduleReconnect();
+        if (immediate) {
+            this.attempt = 0;
+            if (this.reconnectTimer != null) clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+            this.connect();
+        } else {
+            this.scheduleReconnect();
+        }
     }
 
     private scheduleReconnect(): void {

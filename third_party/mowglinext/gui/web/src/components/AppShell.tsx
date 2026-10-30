@@ -11,6 +11,7 @@ import {NotificationBell} from "./NotificationBell.tsx";
 import {LanguageSwitcher} from "./LanguageSwitcher.tsx";
 import {LiveStatusStrip} from "./LiveStatusStrip.tsx";
 import {ConnectionBadge} from "./ConnectionBadge.tsx";
+import {ConnectionChip} from "./ConnectionChip.tsx";
 import {IOSInstallBanner} from "./IOSInstallBanner.tsx";
 import {useIOSInstallPrompt} from "../hooks/useIOSInstallPrompt.ts";
 import {useAutoNotifications} from "../hooks/useNotificationCenter.tsx";
@@ -21,11 +22,11 @@ import {useHostUpdater} from "../hooks/useHostUpdater";
 import {useIsMobile} from "../hooks/useIsMobile";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
 import {BRAND_GRADIENT} from "../theme/colors.ts";
-import {httpBase} from "../utils/apiHost.ts";
 import {KEYFRAMES_CSS} from "./dashboard";
 import "../concept/concept.css";
 import {useGate, useProfileGates} from "../hooks/useProfileGates.ts";
 import {filterNavItems, type NavItem} from "./navItems.ts";
+import {apiFetch} from "../transport/index.ts";
 
 /** Build-time escape hatch: never redirect to the onboarding wizard. */
 const SKIP_ONBOARDING = import.meta.env.VITE_SKIP_ONBOARDING === '1';
@@ -92,7 +93,7 @@ export function AppShell() {
     if (configChecked || SKIP_ONBOARDING || profileLoading) return;
     (async () => {
       try {
-        const res = await fetch(`${httpBase()}/api/settings/status`);
+        const res = await apiFetch(`/api/settings/status`);
         const data = await res.json();
         if (!data.onboarding_completed && currentPath !== '/onboarding') {
           navigate({pathname: '/onboarding'});
@@ -160,6 +161,7 @@ export function AppShell() {
             )}
           </div>
           <div style={{display: 'flex', alignItems: 'center', gap: 6}}>
+            <ConnectionChip/>
             <LanguageSwitcher/>
             <NotificationBell/>
           </div>
@@ -241,6 +243,7 @@ export function AppShell() {
             )}
           </div>
           <div style={{display: 'flex', alignItems: 'center', gap: 12}}>
+            <ConnectionChip/>
             <LanguageSwitcher/>
             <NotificationBell/>
             <MowerStatus/>

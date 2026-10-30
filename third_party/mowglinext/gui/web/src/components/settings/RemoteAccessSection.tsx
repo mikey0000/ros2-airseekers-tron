@@ -3,11 +3,13 @@ import {Alert, App, Card, Spin, Switch, Typography} from "antd";
 import {GlobalOutlined} from "@ant-design/icons";
 import {useTranslation} from "react-i18next";
 import {useApi} from "../../hooks/useApi.ts";
+import {useGate} from "../../hooks/useProfileGates.ts";
 import {useRemoteAccessStatus} from "../../hooks/useRemoteAccessStatus.ts";
 import {apiErrorMessage} from "../../types/irrisense.ts";
 import type {RemoteAccessSettings, RemoteAccessSettingsUpdate} from "../../types/remoteAccess.ts";
 import {RemoteAccessConnectionCard} from "./RemoteAccessConnectionCard.tsx";
 import {RemoteAccessStatusCard} from "./RemoteAccessStatusCard.tsx";
+import {SecureOriginCard} from "./SecureOriginCard.tsx";
 import type {ExternalSaver} from "../../hooks/useSettingsManager.ts";
 
 const SAVER_ID = "remote_access";
@@ -32,6 +34,7 @@ const STATUS_REFRESH_AFTER_SAVE_MS = 1000;
 export function RemoteAccessSection({registerSaver, unregisterSaver}: RemoteAccessSectionProps = {}) {
     const {t} = useTranslation();
     const guiApi = useApi();
+    const tailscaleAvailable = useGate("feature:tailscale");
     const {notification} = App.useApp();
     const [settings, setSettings] = useState<RemoteAccessSettings | null>(null);
     const [draft, setDraft] = useState<RemoteAccessSettingsUpdate>({});
@@ -41,6 +44,7 @@ export function RemoteAccessSection({registerSaver, unregisterSaver}: RemoteAcce
     const {status, error: statusError, refresh: refreshStatus} = useRemoteAccessStatus({enabled: settings?.enabled ?? false});
 
     useEffect(() => {
+        if (!tailscaleAvailable) return;
         void (async () => {
             try {
                 const res = await guiApi.request<RemoteAccessSettings>({path: "/remote-access/settings", method: "GET", format: "json"});
@@ -49,7 +53,7 @@ export function RemoteAccessSection({registerSaver, unregisterSaver}: RemoteAcce
                 setLoadError(apiErrorMessage(e));
             }
         })();
-    }, [guiApi]);
+    }, [guiApi, tailscaleAvailable]);
 
     // An `undefined` in a patch withdraws that key (e.g. setting a key
     // cancels a pending clear) instead of counting as a pending edit.
@@ -99,15 +103,31 @@ export function RemoteAccessSection({registerSaver, unregisterSaver}: RemoteAcce
         }
     }, [guiApi, notification, refreshStatus, t]);
 
+    // The HTTPS card does not depend on the Tailscale settings, so it shows
+    // on robots without the sidecar and when those settings fail to load.
+    if (!tailscaleAvailable) {
+        return <div><SecureOriginCard/></div>;
+    }
     if (loadError) {
-        return <Alert type="error" showIcon message={t("settingsRemoteAccess.loadFailed")} description={loadError}/>;
+        return (
+            <div>
+                <SecureOriginCard/>
+                <Alert type="error" showIcon message={t("settingsRemoteAccess.loadFailed")} description={loadError}/>
+            </div>
+        );
     }
     if (!settings) {
-        return <Spin style={{display: "block", margin: "40px auto"}}/>;
+        return (
+            <div>
+                <SecureOriginCard/>
+                <Spin style={{display: "block", margin: "40px auto"}}/>
+            </div>
+        );
     }
 
     return (
         <div>
+            <SecureOriginCard/>
             <Card size="small" style={{marginBottom: 16}}>
                 <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12}}>
                     <div>

@@ -9,6 +9,7 @@ import {ThemeProvider, useThemeMode} from "./theme/ThemeContext.tsx";
 import {NotificationCenterProvider} from "./hooks/useNotificationCenter.tsx";
 import {TimeFormatProvider} from "./hooks/useTimeFormat.tsx";
 import "./i18n";
+import "./transport/ble/register";
 import {ProfileRoute} from "./components/ProfileRoute.tsx";
 import {isGateId} from "./constants/profileGates.ts";
 import {NotFoundPage, RouteErrorPage} from "./components/RouteFallbacks.tsx";

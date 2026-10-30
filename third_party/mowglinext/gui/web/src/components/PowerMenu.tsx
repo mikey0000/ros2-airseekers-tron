@@ -6,6 +6,7 @@ import {useApi} from "../hooks/useApi.ts";
 import {useMowerAction} from "./MowerActions.tsx";
 import {restartMowgliStack} from "../utils/containers.ts";
 import {useFeature} from "../hooks/useRobotProfile.ts";
+import {apiFetch} from "../transport/index.ts";
 
 // Shared existing power flow: the battery menu and Diagnostics differ only in
 // their trigger and menu entries, not in handlers, confirmation or reconnect UI.
@@ -33,7 +34,7 @@ export function PowerMenu({children, hostOnly = false}: {children: ReactElement;
     const watchForGuiAndReload = () => {
         const poll = window.setInterval(async () => {
             try {
-                const r = await fetch("/api/system/info", {cache: "no-store"});
+                const r = await apiFetch("/api/system/info", {cache: "no-store"});
                 if (r.ok) {
                     window.clearInterval(poll);
                     window.location.reload();

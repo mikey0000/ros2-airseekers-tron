@@ -25,6 +25,7 @@ import { GnssReceiverActionsCard } from "./GnssReceiverActionsCard.tsx";
 import { datumErrorDetail, requestDatumFromGps } from "../../utils/datumGps.ts";
 import { useGate } from "../../hooks/useProfileGates.ts";
 import { GnssSerialDeviceConfigField } from "./GnssSerialDeviceConfigField.tsx";
+import { RtkBaseCard } from "./RtkBaseCard.tsx";
 
 const { Text, Paragraph } = Typography;
 
@@ -55,6 +56,7 @@ export const PositioningSection: React.FC<Props> = ({
     const [datumLoading, setDatumLoading] = useState(false);
     const [expertMode, setExpertMode] = useState(false);
     const hasGnssSidecar = useGate("feature:gnss_configurator");
+    const hasRtkBase = useGate("feature:rtk_base");
     const gnssStatus = useGnssStatus();
     const gpsStatus = deriveGpsStatus(gnssStatus);
     const detectedReceiver = gnssReceiverLabel(gnssStatus);
@@ -163,6 +165,8 @@ export const PositioningSection: React.FC<Props> = ({
                 message={t("settingsPositioning.detectedReceiver", { receiver: detectedReceiver })}
                 description={t("settingsPositioning.liveGnssStatus", { status: gpsStatus.label })}
             />
+
+            {hasRtkBase && <RtkBaseCard ntripEnabled={values.ntrip_enabled === true} />}
 
             <Card
                 size="small"

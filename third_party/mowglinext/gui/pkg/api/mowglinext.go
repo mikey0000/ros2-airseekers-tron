@@ -139,7 +139,7 @@ func topicSubscribeInterval(topic string) (int, bool) {
 		"fusionDiag", "dockCalibrationStatus",
 		"areaSettings", "activeAreaSettings", "dockCorridor", "previewSummary",
 		"terrainSummary",
-		"missionPlan", "missionProgress", "cutterHeight",
+		"missionPlan", "missionProgress", "cutterHeight", "rtkBaseStatus",
 		// Unthrottled: messages alternate between cameras (frame_id), so a
 		// throttle would starve one of them; det_ros caps the rate itself.
 		"detections":

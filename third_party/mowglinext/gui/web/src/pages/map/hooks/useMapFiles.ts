@@ -16,6 +16,7 @@ import {
 } from "../../../types/map.ts";
 import type {Api, MowgliMapArea, MowgliReplaceMapReq} from "../../../api/Api.ts";
 import {dedupePoints, getQuaternionFromHeading, isRingInsidePolygon, itranspose} from "../../../utils/map.tsx";
+import {apiFetch} from "../../../transport/index.ts";
 
 interface UseMapFilesOptions {
     features: Record<string, MowingFeature>;
@@ -370,7 +371,7 @@ export function useMapFiles({
                 // before we hit the network.
                 JSON.parse(text);
 
-                const res = await fetch("/api/import/openmower", {
+                const res = await apiFetch("/api/import/openmower", {
                     method: "POST",
                     headers: {"Content-Type": "application/json"},
                     body: text,
@@ -414,7 +415,7 @@ export function useMapFiles({
             body.om_datum_lat = omDatumLat;
             body.om_datum_lon = omDatumLon;
         }
-        const res = await fetch("/api/import/openmower", {
+        const res = await apiFetch("/api/import/openmower", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify(body),
@@ -462,7 +463,7 @@ export function useMapFiles({
             body.om_datum_lat = omDatumLat;
             body.om_datum_lon = omDatumLon;
         }
-        const res = await fetch("/api/import/openmower", {
+        const res = await apiFetch("/api/import/openmower", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify(body),
@@ -476,7 +477,7 @@ export function useMapFiles({
         // when the operator opted in. Uses the settings write path so the
         // sparse-config + fixed-precision handling stays in one place.
         if (importDatum && omDatumLat !== undefined && omDatumLon !== undefined) {
-            const datumRes = await fetch("/api/settings/yaml", {
+            const datumRes = await apiFetch("/api/settings/yaml", {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({datum_lat: omDatumLat, datum_lon: omDatumLon}),

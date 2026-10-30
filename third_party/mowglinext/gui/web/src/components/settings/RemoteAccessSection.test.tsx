@@ -12,6 +12,16 @@ vi.mock("../../hooks/useApi.ts", () => ({
     useApi: () => ({request: requestMock}),
 }));
 
+const gate = {tailscale: true};
+vi.mock("../../hooks/useProfileGates.ts", () => ({
+    useGate: (id: string) => id !== "feature:tailscale" || gate.tailscale,
+}));
+
+// The HTTPS card has its own test; here it only must not hit the network.
+vi.mock("./SecureOriginCard.tsx", () => ({
+    SecureOriginCard: () => <div data-testid="secure-origin-card"/>,
+}));
+
 const defaultSettings: RemoteAccessSettings = {
     enabled: false,
     hostname: "mowgli",
@@ -75,6 +85,25 @@ function renderSection() {
 describe("RemoteAccessSection", () => {
     beforeEach(() => {
         requestMock.mockReset();
+        gate.tailscale = true;
+    });
+
+    it("shows only the HTTPS card on a robot without the Tailscale sidecar", async () => {
+        gate.tailscale = false;
+        installFakeBackend();
+        renderSection();
+
+        expect(await screen.findByTestId("secure-origin-card")).toBeInTheDocument();
+        expect(screen.queryByRole("switch")).toBeNull();
+        expect(requestMock).not.toHaveBeenCalled();
+    });
+
+    it("puts the HTTPS card above the Tailscale settings", async () => {
+        installFakeBackend();
+        renderSection();
+
+        await screen.findByRole("switch", {name: /settingsRemoteAccess.title|Remote access/i});
+        expect(screen.getByTestId("secure-origin-card")).toBeInTheDocument();
     });
 
     it("loads settings and hides the form while disabled", async () => {

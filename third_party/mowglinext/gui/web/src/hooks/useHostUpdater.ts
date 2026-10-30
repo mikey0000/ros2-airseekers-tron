@@ -1,4 +1,5 @@
 import {useCallback, useEffect, useState} from 'react';
+import {apiFetch} from "../transport/index.ts";
 
 export interface UpdateSource {repository: string; track: 'stable' | 'dev' | 'custom'; branch: string}
 export interface UpdatePolicy {source: UpdateSource; interval_hours: number; pinned: boolean}
@@ -16,7 +17,7 @@ export interface HostUpdater {
     state: {custom_images?:Record<string,CustomImage>; active_job_id?: string; policy: UpdatePolicy; installed_policy?: UpdatePolicy; overrides?: Record<string, Deployment>; active?: Deployment; last_check: string; last_success: string; next_check: string; check_error?: string; releases: Deployment[]; notices: UpdateNotice[]; job?: UpdateJob; history: UpdateJob[]};
 }
 export async function updaterRequest<T>(operation: string, body?: unknown): Promise<T> {
-    const response = await fetch(`/api/system/updater/${operation}`, body === undefined ? {cache: 'no-store'} : {
+    const response = await apiFetch(`/api/system/updater/${operation}`, body === undefined ? {cache: 'no-store'} : {
         method: 'POST', headers: {'Content-Type': 'application/json', 'X-Mowgli-Update': '1'}, body: JSON.stringify(body),
     });
     const text = await response.text();

@@ -4,6 +4,7 @@ import {
     HEARTBEAT_TOPIC, LIVENESS_TIMEOUT_MS, PUBLISH_HEARTBEAT, PublishSocket, reconnectDelayMs,
 } from "./reconnect.ts";
 import {MultiplexedSocket} from "./multiplexedSocket.ts";
+import {registerTransport, setActiveTransport, type SocketLike} from "../transport/index.ts";
 
 class FakeWS {
     static all: FakeWS[] = [];
@@ -45,8 +46,8 @@ describe("PublishSocket (joystick)", () => {
     const made: PublishSocket[] = [];
     afterEach(() => { made.splice(0).forEach((s) => s.stop()); });
     const make = () => {
-        const s = new PublishSocket("ws://x/api/mowglinext/publish/joy",
-            (u) => new FakeWS(u) as unknown as WebSocket, () => Date.now());
+        const s = new PublishSocket("/api/mowglinext/publish/joy",
+            (p) => new FakeWS(p) as unknown as SocketLike, () => Date.now());
         made.push(s);
         return s;
     };
@@ -123,6 +124,17 @@ describe("PublishSocket (joystick)", () => {
         s.stop();
     });
 
+    it("reconnects immediately after a transport-switch close (4000)", () => {
+        const s = make();
+        s.start();
+        last().open();
+        last().onclose?.({code: 4000});
+        expect(FakeWS.all).toHaveLength(2);
+        expect(last().url).toBe("/api/mowglinext/publish/joy");
+        last().open();
+        expect(s.getStatus()).toBe("open");
+    });
+
     it("stop() closes and does not reconnect", () => {
         const s = make();
         s.start();
@@ -143,7 +155,7 @@ describe("MultiplexedSocket reconnect", () => {
     };
 
     it("re-subscribes every topic after a drop and re-delivers state", () => {
-        const m = new MultiplexedSocket("ws://x/mux");
+        const m = new MultiplexedSocket("/mux");
         const got: unknown[] = [];
         m.subscribe("highLevelStatus", (d) => got.push(d));
         m.subscribe("recordingTrajectory", () => {});
@@ -161,7 +173,7 @@ describe("MultiplexedSocket reconnect", () => {
     });
 
     it("heartbeat frames keep it alive; silence triggers a reconnect", () => {
-        const m = new MultiplexedSocket("ws://x/mux");
+        const m = new MultiplexedSocket("/mux");
         m.subscribe("emergency", () => {});
         const first = last();
         first.open();
@@ -177,12 +189,41 @@ describe("MultiplexedSocket reconnect", () => {
     });
 
     it("backoff never exceeds 1 s", () => {
-        const m = new MultiplexedSocket("ws://x/mux");
+        const m = new MultiplexedSocket("/mux");
         m.subscribe("status", () => {});
         for (let i = 0; i < 6; i++) {
             last().drop();
             vi.advanceTimersByTime(1000);
         }
         expect(FakeWS.all).toHaveLength(7);
+    });
+
+    it("a transport switch closes the socket and reconnects on the new transport at once", () => {
+        const opened: string[] = [];
+        registerTransport("ble", () => ({
+            kind: "ble",
+            fetch: () => Promise.reject(new Error("unused")),
+            openSocket: (path) => {
+                opened.push(path);
+                return new FakeWS(`ble:${path}`) as unknown as SocketLike;
+            },
+        }));
+        try {
+            const m = new MultiplexedSocket("/mux");
+            m.subscribe("status", () => {});
+            const first = last();
+            first.open();
+            const before = FakeWS.all.length;
+            setActiveTransport("ble");
+            expect(first.closed).toBe(true);
+            // Sockets of the earlier tests' instances reconnect too; all of them on ble.
+            expect(opened.length).toBe(FakeWS.all.length - before);
+            expect(opened.length).toBeGreaterThan(0);
+            expect(last().url).toBe("ble:/mux");
+            last().open();
+            expect(m.getStatus()).toBe("open");
+        } finally {
+            setActiveTransport("network");
+        }
     });
 });

@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import type {ApiVersionsResponse} from '../api/Api';
-import {httpBase} from '../utils/apiHost';
+import {apiFetch} from "../transport/index.ts";
 
 export const browserBuild = {
     id: import.meta.env.VITE_WEB_BUILD_ID as string | undefined,
@@ -20,7 +20,7 @@ export function useInstalledVersions() {
         controller.current = request;
         setLoading(true);
         try {
-            const response = await fetch(`${httpBase()}/api/system/versions`, {signal: request.signal, cache: 'no-store'});
+            const response = await apiFetch(`/api/system/versions`, {signal: request.signal, cache: 'no-store'});
             if (!response.ok) throw new Error('version inventory unavailable');
             const next: ApiVersionsResponse = await response.json();
             if (!Array.isArray(next.components) || typeof next.docker_available !== 'boolean') throw new Error('invalid inventory');
@@ -54,7 +54,7 @@ export function useServedWebBuild() {
             request?.abort();
             const current = new AbortController(); request = current;
             try {
-                const response = await fetch('/web-build.json', {cache:'no-store', signal:current.signal});
+                const response = await apiFetch('/web-build.json', {cache:'no-store', signal:current.signal});
                 if (!response.ok) throw new Error('web build unavailable');
                 const data: unknown = await response.json();
                 if (!data || typeof data !== 'object' || !('id' in data) || typeof data.id !== 'string' || !data.id) throw new Error('invalid web build');

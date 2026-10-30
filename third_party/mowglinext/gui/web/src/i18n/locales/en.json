@@ -3659,7 +3659,11 @@
     },
     "remote_access": {
       "label": "Remote access",
-      "description": "Reach the robot from anywhere over your private Tailscale network"
+      "description": "HTTPS for Bluetooth and offline use, and access from anywhere over Tailscale"
+    },
+    "connection": {
+      "label": "Connection",
+      "description": "Wi-Fi or Bluetooth link to the mower, Bluetooth pairing and token"
     },
     "leds": {
       "label": "Status LEDs",
@@ -4465,7 +4469,68 @@
   },
   "connection": {
     "reconnecting": "Reconnecting…",
-    "joystickReconnecting": "Joystick reconnecting…"
+    "joystickReconnecting": "Joystick reconnecting…",
+    "wifi": "Wi-Fi",
+    "bluetooth": "Bluetooth",
+    "chipLabel": "Connection: {{link}}, {{state}}",
+    "chip": {
+      "connected": "Connected",
+      "connecting": "Connecting…",
+      "reconnecting": "Reconnecting…",
+      "wifiDown": "Wi-Fi down",
+      "wifiBack": "Wi-Fi available",
+      "notConnected": "Not connected",
+      "tokenRejected": "Token rejected"
+    },
+    "title": "Connection",
+    "linkTitle": "Link",
+    "modeHint": "Bluetooth is the fallback when Wi-Fi is down or weak. The app switches to Bluetooth by itself only when Wi-Fi is unreachable and a paired mower is in range, and never switches back on its own.",
+    "wifiStatus": "Wi-Fi",
+    "network": {
+      "up": "Reachable",
+      "down": "Not reachable",
+      "unknown": "Checking…"
+    },
+    "bluetoothTitle": "Bluetooth",
+    "connectNew": "Connect a Bluetooth mower",
+    "reconnect": "Reconnect",
+    "forget": "Forget device",
+    "forgetConfirm": "Forget this mower? You will have to connect it again from this screen.",
+    "device": "Mower",
+    "noDevice": "No mower connected yet",
+    "linkState": "Link",
+    "sessionState": "Session",
+    "rtt": "Round trip",
+    "received": "Received",
+    "sent": "Sent",
+    "link": {
+      "idle": "Not connected",
+      "connecting": "Connecting…",
+      "connected": "Connected",
+      "reconnecting": "Reconnecting…",
+      "unavailable": "Unavailable"
+    },
+    "session": {
+      "idle": "Not started",
+      "handshaking": "Signing in…",
+      "ready": "Ready",
+      "unauthenticated": "Token rejected",
+      "backend_unavailable": "Mower backend not answering",
+      "dead": "Link lost"
+    },
+    "notInRange": "The mower is not in range or not advertising yet (this can take up to 30 s after a disconnect). Move closer and tap Reconnect.",
+    "tokenTitle": "Bluetooth token",
+    "tokenHint": "Filled in automatically while this app is open on Wi-Fi from its HTTPS address. You can also paste a token copied from another phone.",
+    "tokenPlaceholder": "32-character token",
+    "tokenSave": "Save token",
+    "tokenSaved": "Token saved",
+    "tokenMissing": "No token yet. Open the app once on Wi-Fi from its HTTPS address, or paste the token here.",
+    "tokenRejected": "The mower rejected this token. Open the app on Wi-Fi once to fetch the current one, or paste it again.",
+    "unsupportedTitle": "Bluetooth is not available here",
+    "insecure": "Open the app from its HTTPS address (Settings → Remote access → Secure origin).",
+    "unsupported": "Bluetooth needs Chrome or Edge on Android, Windows, macOS or Linux; iPhone is not supported.",
+    "autoSwitched": "No Wi-Fi: switched to Bluetooth. Go to Settings → Connection to switch back.",
+    "pairFailed": "Bluetooth connection failed: {{error}}"
   },
   "mowProgress": {
     "title": "Mowing progress",
@@ -4573,5 +4638,82 @@
   },
   "map": {
     "rotateHandle": "Drag to rotate the area"
+  },
+  "rtkBase": {
+    "title": "RTK base station",
+    "intro": "Pair the mower with the Airseekers LoRa base station that came with it. The mower's RTK board stores the base's radio address, channel and band; the base itself is never changed.",
+    "storedPairing": "Stored pairing",
+    "pairingSummary": "address {{addr}} · channel {{channel}} · {{band}}",
+    "notReadYet": "not read yet",
+    "corrections": "Base corrections",
+    "refFine": "receiving the base",
+    "refFail": "no base signal",
+    "unknown": "unknown",
+    "stationId": "Station id",
+    "correctionAge": "Correction age",
+    "fixType": "Fix type",
+    "bandUnknown": "band unknown",
+    "band": {
+      "europe": "Europe 863 MHz",
+      "americas": "Americas 902 MHz",
+      "australia": "Australia / NZ 927 MHz",
+      "all": "all bands"
+    },
+    "region": {
+      "label": "Region",
+      "europe": "Europe / UK (863 MHz)",
+      "northAmerica": "North America (902 MHz)",
+      "australia": "Australia / New Zealand (927 MHz)"
+    },
+    "ntripOwns": "NTRIP currently owns the receiver, so the base is ignored. Turn Enable NTRIP off (Settings → NTRIP Corrections) to use the base.",
+    "address": "Base address",
+    "addressHelp": "Decimal or 0x hex",
+    "addressInvalid": "Enter 0–65534 or 0x0000–0xFFFE",
+    "channel": "Channel (1–75)",
+    "channelInvalid": "Channel must be 1–75",
+    "pair": "Pair",
+    "useUniversal": "Use universal code",
+    "readFromBoard": "Read from board",
+    "reboot": "Reboot base",
+    "confirmTitle": "Pair the RTK base station?",
+    "confirmBody": "The mower's RTK board will store address {{addr}}, channel {{channel}}, region {{region}} and replace its current pairing.",
+    "pairSuccess": "Pairing stored and read back. Corrections arrive once the base has finished its survey-in (about 2 minutes after power-up).",
+    "pairRejected": "The pairing was not stored: {{message}}",
+    "readSuccess": "Board reports address {{addr}}, channel {{channel}}, {{band}}.",
+    "readNoAnswer": "The RTK board did not answer: {{message}}",
+    "rebootConfirmTitle": "Reboot the base station?",
+    "rebootConfirmBody": "The mower asks its RTK board to reset and relay a reset to the base. The base then needs about 2 minutes to survey in again before corrections return.",
+    "rebootSent": "Reset sent.",
+    "rebootRejected": "Reset not sent: {{message}}",
+    "actionFailed": "Request failed: {{error}}",
+    "help": "After pairing, power the base within a few metres of the mower with a clear view of the sky. It needs about 2 minutes to survey in before corrections arrive. Turn Enable NTRIP off to use the base. The region must match where you are, not where the mower was bought."
+  },
+  "secureOrigin": {
+    "title": "Secure origin (HTTPS)",
+    "why": "Bluetooth connection and offline use only work when the GUI is opened over HTTPS that this device trusts.",
+    "onSecureOrigin": "This page is on a secure origin.",
+    "notOnSecureOrigin": "This page is not on a secure origin: open one of the HTTPS addresses below.",
+    "loadFailed": "Could not read the HTTPS status from the mower",
+    "disabled": "HTTPS is not running on the mower: its certificate could not be set up (see the GUI log).",
+    "openAt": "Open the GUI over HTTPS:",
+    "downloadCa": "Download the mower certificate",
+    "caExpires": "Valid until {{date}}",
+    "fingerprint": "SHA-256 fingerprint:",
+    "android": {
+      "title": "Android (once per phone)",
+      "step1": "Download the mower certificate above.",
+      "step2": "Open Settings → Security & privacy → More security settings → Encryption & credentials → Install a certificate → CA certificate (wording varies by vendor).",
+      "step3": "Pick mower-ca.crt from Downloads, then open the HTTPS address in Chrome."
+    },
+    "desktop": {
+      "title": "Chrome on a computer",
+      "step1": "Download the mower certificate above.",
+      "step2": "Open chrome://settings/certificates → Authorities → Import and pick mower-ca.crt.",
+      "step3": "Tick \"Trust this certificate for identifying websites\", then open the HTTPS address."
+    },
+    "ios": {
+      "title": "iPhone / iPad",
+      "note": "Install the downloaded profile, then enable full trust for it in Settings → General → About → Certificate Trust Settings. Web Bluetooth is still unavailable on iOS."
+    }
   }
 }
