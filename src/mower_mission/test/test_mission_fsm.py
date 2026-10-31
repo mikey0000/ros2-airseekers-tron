@@ -1834,13 +1834,28 @@ def test_upstream_manual_blade_request_off_keeps_manual():
 # =====================================================================
 @pytest.mark.parametrize('source', ['none', 'file'])
 def test_preflight_refuses_unaligned_heading_away_from_dock(source):
-    h = Harness()
+    h = Harness(heading_calibration_blind=False)
     h.heading(source)
     h.tick()
     assert not h.cmd(f.CMD_START)
     assert h.name == 'IDLE' and h.fsm.sub_state == \
         'preflight failed: heading not aligned: drive straight 1 m at 0.1 m/s or more in ' \
         'manual, or start from the dock'
+    assert h.fsm.mission is None and not h.since(0, f.StartAction)
+
+
+@pytest.mark.parametrize('source', ['none', 'file'])
+def test_preflight_unaligned_heading_away_from_dock_tries_a_blind_drive(source):
+    # 2026-11-01: START goes through for a blind calibration drive; here the robot sits on
+    # the area corner, so the disc check refuses it at the drive without moving
+    h = Harness()
+    h.heading(source)
+    h.tick()
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick(dt=1.0, n=4)
+    assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+    assert 'no clear 1.4 m disc' in h.fsm.sub_state
     assert h.fsm.mission is None and not h.since(0, f.StartAction)
 
 
@@ -1977,10 +1992,12 @@ def test_hcal_nothing_clear_refused_without_moving():
     assert not h.fsm.motion_enabled()
 
 
-@pytest.mark.parametrize('source, prior', [('file', ''), ('file', 'yaw_failed'),
-                                           ('file', 'unverifiable'), ('none', '')])
+NO_PRIOR = [('file', ''), ('file', 'yaw_failed'), ('file', 'unverifiable'), ('none', '')]
+
+
+@pytest.mark.parametrize('source, prior', NO_PRIOR)
 def test_hcal_no_usable_prior_refused_at_preflight(source, prior):
-    h = hcal_harness(prior=prior)
+    h = hcal_harness(prior=prior, heading_calibration_blind=False)
     h.heading(source)
     h.tick()
     assert not h.cmd(f.CMD_START)
@@ -1991,13 +2008,138 @@ def test_hcal_no_usable_prior_refused_at_preflight(source, prior):
 
 
 def test_hcal_prior_lost_before_the_drive_refused():
-    h = hcal_harness(prior='pending')
+    h = hcal_harness(prior='pending', heading_calibration_blind=False)
     assert h.cmd(f.CMD_START)            # pending: may still turn out usable
     h.answer_services()
     h.fsm.inputs.heading_prior = 'yaw_failed'   # the IMU had restarted after all
     h.tick(dt=1.0, n=4)
     assert h.name == 'IDLE' and 'saved heading not usable' in h.fsm.sub_state
     assert not h.since(0, f.StartAction)
+
+
+def test_hcal_prior_lost_before_the_drive_goes_blind():
+    h = hcal_harness(prior='pending')
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    h.fsm.inputs.heading_prior = 'yaw_failed'
+    h.tick(dt=1.0, n=4)
+    assert h.goal(f.ACT_DRIVE) == {'distance_m': 0.8, 'speed_mps': 0.15}
+    assert 'forward blind' in h.fsm.sub_state
+
+
+# ---------------------------------------------------------------------------
+# heading self-recovery (2026-11-01): pose_prior after a reboot, blind drive with no prior
+# ---------------------------------------------------------------------------
+def test_hcal_pose_prior_drives_like_yaw_ok():
+    """Reboot off the dock: the aligner re-seeded the offset from the saved map heading
+    (file_check pose_prior) -> the ordinary 1 m calibration drive by that prior."""
+    h = hcal_harness(prior='pose_prior')
+    m = h.mark()
+    start_hcal(h)
+    assert h.goal(f.ACT_DRIVE) == {'distance_m': 1.0, 'speed_mps': 0.15}
+    assert 'forward' in h.fsm.sub_state and 'blind' not in h.fsm.sub_state
+    assert [e.name for e in h.since(m, f.StartAction)] == [f.ACT_DRIVE]
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.finish(f.ACT_DRIVE)
+    h.heading('cog')
+    h.tick()
+    assert h.name == 'PLANNING' and h.fsm.mission is not None
+
+
+def test_hcal_pose_prior_blocked_ahead_reverses():
+    h = hcal_harness(prior='pose_prior', area=square(-3.0, -2.0, 4.0))
+    start_hcal(h)
+    assert h.goal(f.ACT_BACKUP) == {'distance_m': 1.0, 'speed_mps': 0.15}
+
+
+@pytest.mark.parametrize('source, prior', NO_PRIOR)
+def test_hcal_no_prior_blind_drive_in_a_clear_disc(source, prior):
+    h = hcal_harness(prior=prior)
+    h.heading(source)
+    h.tick()
+    m = h.mark()
+    start_hcal(h)
+    assert h.goal(f.ACT_DRIVE) == {'distance_m': 0.8, 'speed_mps': 0.15}
+    assert h.name == 'WAITING_FOR_RTK' and 'forward blind' in h.fsm.sub_state
+    assert h.fsm.motion_enabled() and not h.blade
+    assert [e.name for e in h.since(m, f.StartAction)] == [f.ACT_DRIVE]
+    tok = h.pending_action(f.ACT_DRIVE).token
+    h.fsm.inputs.pose = (0.6, 0.0, 0.0)
+    m = h.mark()
+    h.heading('cog')                     # aligned after one COG window: stop, plan
+    h.tick()
+    assert [e.reason for e in h.since(m, f.CancelActions)][0] == 'heading aligned'
+    assert h.name == 'PLANNING' and h.fsm.mission is not None
+    h._apply(h.fsm.on_action_result(tok, f.CANCELED, {}, h.t))
+    assert h.name == 'PLANNING'
+
+
+def test_hcal_no_prior_full_blind_drive_then_cog():
+    h = hcal_harness(prior='yaw_failed')
+    start_hcal(h)
+    h.fsm.inputs.pose = (0.8, 0.0, 0.0)
+    h.finish(f.ACT_DRIVE)
+    assert h.name == 'WAITING_FOR_RTK' and 'COG' in h.fsm.sub_state
+    h.heading('cog')
+    h.tick()
+    assert h.name == 'PLANNING'
+
+
+def test_hcal_no_prior_no_cog_after_the_blind_drive_goes_idle():
+    h = hcal_harness(prior='yaw_failed')
+    start_hcal(h)
+    h.finish(f.ACT_DRIVE)
+    h.tick(dt=1.0, n=4)
+    assert h.name == 'IDLE' and 'no COG alignment after the drive' in h.fsm.sub_state
+    assert not h.fsm.motion_enabled()
+
+
+def test_hcal_no_prior_disc_not_clear_refused_without_moving():
+    # robot 1.0 m from the west edge: the 1.4 m disc (0.8 m + the front corner) crosses it
+    h = hcal_harness(prior='yaw_failed', area=square(-1.0, -5.0, 10.0))
+    m = h.mark()
+    start_hcal(h)
+    assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+    assert 'no usable heading prior (file yaw_failed) and no clear 1.4 m disc' \
+        in h.fsm.sub_state
+    assert not h.since(m, f.StartAction) and h.fsm.mission is None
+    assert not h.fsm.motion_enabled()
+
+
+def test_hcal_no_prior_keepout_in_the_disc_refused():
+    # with a prior this keepout ahead reverses the drive; blind, every direction must be clear
+    area = square(-5, -5, 10)
+    area['obstacles'] = [[(1.0, -0.5), (1.5, -0.5), (1.5, 0.5), (1.0, 0.5)]]
+    h = hcal_harness(prior='yaw_failed', area=area)
+    start_hcal(h)
+    assert h.name == 'IDLE' and 'no clear 1.4 m disc' in h.fsm.sub_state
+
+
+def test_hcal_no_prior_obstacle_stops_the_blind_drive():
+    h = hcal_harness(prior='yaw_failed')
+    start_hcal(h)
+    h.fsm.inputs.pose = (0.3, 0.0, 0.0)
+    m = h.mark()
+    _obstacle(h, 'dynamic', 0.9, 0.0)    # person in front
+    h.tick()
+    assert h.name == 'IDLE' and 'dynamic person in the way' in h.fsm.sub_state
+    assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst)
+    assert not h.fsm.motion_enabled() and h.fsm._action is None
+
+
+def test_hcal_blind_disabled_refuses_as_before():
+    h = hcal_harness(prior='yaw_failed', heading_calibration_blind=False)
+    assert not h.cmd(f.CMD_START)
+    assert h.fsm.sub_state == 'preflight failed: ' + f.HEADING_NOT_ALIGNED
+
+
+def test_hcal_blind_never_from_the_dock():
+    h = hcal_harness(prior='yaw_failed')
+    h.fsm.inputs.docked = True
+    h.tick()
+    h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'UNDOCKING'
 
 
 def test_hcal_disabled_refuses_as_before():

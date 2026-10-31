@@ -337,9 +337,19 @@ def test_persisted_continuity_accepted(tmp_path):
     assert 'verified' in e.last_event
 
 
-def test_persisted_yaw_jump_rejected(tmp_path):
+def test_persisted_yaw_jump_unmoved_becomes_pose_prior(tmp_path):
+    # the IMU restarted but the robot did not move: the saved map heading (30 deg) is kept
+    # as a low-quality prior for the mission's calibration drive (2026-11-01)
     e = _restart(tmp_path, yaw_shift_deg=40.0)
-    assert e.source == hl.SOURCE_FILE and not e.aligned and 'IMU yaw' in e.last_event
+    assert e.source == hl.SOURCE_FILE and not e.aligned and 'IMU restarted' in e.last_event
+    assert e.file_check == 'pose_prior'
+    assert math.degrees(e.apply(e.imu_yaw)) == pytest.approx(30.0, abs=0.5)
+
+
+def test_persisted_yaw_jump_and_moved_rejected(tmp_path):
+    e = _restart(tmp_path, yaw_shift_deg=40.0, move=(1.0, 0.0))
+    assert e.source == hl.SOURCE_FILE and not e.aligned and 'IMU restarted' in e.last_event
+    assert e.file_check == 'yaw_failed'
 
 
 def test_persisted_moved_rejected(tmp_path):
@@ -405,8 +415,66 @@ def test_persisted_imu_restart_rejected_at_once(tmp_path):
     e.poll_verify(0.1)
     assert e.source == hl.SOURCE_FILE and not e.aligned
     assert e.file_check == 'yaw_failed' and 'IMU yaw moved 90.0 deg' in e.last_event
+    assert 'waiting for 5 RTK-fixed positions to re-seed' in e.last_event
+    assert e.status(0.1)['file_check'] == 'yaw_failed'
+
+
+def test_persisted_imu_restart_unmoved_reseeds_pose_prior(tmp_path):
+    """Reboot off the dock (2026-11-01): the IMU restarted but the robot sits where the
+    record was saved -> the offset is re-seeded from the saved MAP heading (low quality,
+    'pose_prior') so the mission can run its calibration drive instead of asking for a
+    manual one."""
+    e = _saved_1040(tmp_path)
+    e.on_imu(0.1, D(145.9 + 90.0), 0.0)
+    e.poll_verify(0.1)
+    t = _feed(e, 0.1, 4, 3, -18.06 + 0.05, -0.45, yaw_deg=145.9 + 90.0)
+    assert e.file_check == 'yaw_failed'                 # 4 fixed: not yet enough
+    t = _feed(e, t, 1, 3, -18.06 + 0.05, -0.45, yaw_deg=145.9 + 90.0)
+    assert e.source == hl.SOURCE_FILE and not e.aligned
+    assert e.file_check == 'pose_prior' and e.status(t)['file_check'] == 'pose_prior'
+    assert e.quality(t) == 'low'
+    # saved map heading 145.9 - 62.0 = 83.9 deg, whatever the new IMU yaw is
+    assert math.degrees(e.apply(D(145.9 + 90.0))) == pytest.approx(83.9, abs=0.01)
+    assert 're-seeded from the saved map heading 83.9 deg' in e.last_event
+    assert 'has not moved (0.05 m' in e.last_event
+    # nothing left pending: the status stays pose_prior
+    _feed(e, t, 10, 3, -18.06 + 0.05, -0.45, yaw_deg=145.9 + 90.0)
+    assert e.file_check == 'pose_prior' and e.source == hl.SOURCE_FILE
+
+
+def test_persisted_imu_restart_moved_stays_rejected(tmp_path):
+    e = _saved_1040(tmp_path)
+    e.on_imu(0.1, D(145.9 + 90.0), 0.0)
+    e.poll_verify(0.1)
+    _feed(e, 0.1, 5, 3, -18.06 + 1.0, -0.45, yaw_deg=145.9 + 90.0)
+    assert e.source == hl.SOURCE_FILE and not e.aligned and e.file_check == 'yaw_failed'
+    assert 'IMU restarted and the robot moved 1.00 m' in e.last_event
+    assert math.degrees(e.offset) == pytest.approx(-62.0)     # untouched
+
+
+def test_persisted_imu_restart_float_only_times_out_as_yaw_failed(tmp_path):
+    e = _saved_1040(tmp_path)
+    e.on_imu(0.1, D(145.9 + 90.0), 0.0)
+    e.poll_verify(0.1)
+    _feed(e, 0.1, 5, 2, -18.06, -0.45, yaw_deg=145.9 + 90.0)    # float: never decides
+    e.poll_verify(200.0)
+    assert e.file_check == 'yaw_failed'
+    assert 'IMU restarted and no 5 RTK-fixed positions' in e.last_event
+
+
+def test_persisted_imu_restart_pose_prior_disabled_rejects_at_once(tmp_path):
+    path = str(tmp_path / 'heading_offset.yaml')
+    hl.save_offset(path, D(-62.0), 'cog', 12, now_wall=1000.0, imu_yaw=D(145.9), x=-18.06,
+                   y=-0.45)
+    rec = hl.load_record(path)
+    e = hl.HeadingEstimator(hl.AlignParams(verify_pose_prior=False))
+    e.load_persisted(rec['offset'], 0.0, record=rec, now_wall=1005.0)
+    e.on_imu(0.1, D(145.9 + 90.0), 0.0)
+    e.poll_verify(0.1)
+    assert e.file_check == 'yaw_failed' and 'waiting' not in e.last_event
     _feed(e, 0.1, 10, 3, -18.06, -0.45, yaw_deg=145.9 + 90.0)   # fixed + in place: too late
     assert e.source == hl.SOURCE_FILE and e.file_check == 'yaw_failed'
+    assert math.degrees(e.offset) == pytest.approx(-62.0)
 
 
 def test_persisted_fixed_samples_far_away_rejected(tmp_path):
