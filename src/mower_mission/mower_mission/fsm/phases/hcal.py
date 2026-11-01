@@ -14,19 +14,32 @@ class HeadingCalMixin:
     # ------------------------------------------------------------------
     # heading calibration drive (2026-10-13; Params.heading_calibration_*)
     # ------------------------------------------------------------------
-    def _hcal_prior_ok(self, checks=('yaw_ok',)):
-        """A calibration drive may use the aligner's saved 'file' heading as its prior:
-        enabled, status fresh, source file, continuity check state in ``checks`` (yaw_ok =
-        the IMU kept integrating since the save, only the position is unproven); or an
-        aligned 'cog' heading that is stale for planning (_heading_cog_stale, 2026-10-14)."""
+    def _hcal_enabled(self):
+        """Calibration drives are on and the aligner status is fresh."""
         p, i = self.p, self.inputs
         if not (p.heading_calibration_drive and p.require_heading_alignment):
             return False
-        if i.heading_stamp is None or self._now - i.heading_stamp > p.heading_status_timeout_s:
+        return i.heading_stamp is not None and \
+            self._now - i.heading_stamp <= p.heading_status_timeout_s
+
+    def _hcal_prior_ok(self, checks=('yaw_ok', 'pose_prior')):
+        """A calibration drive may use the aligner's saved 'file' heading as its prior:
+        enabled, status fresh, source file, continuity check state in ``checks`` (yaw_ok =
+        the IMU kept integrating since the save, only the position is unproven; pose_prior =
+        the IMU restarted but the robot sits where the record was saved, 2026-11-01); or an
+        aligned 'cog' heading that is stale for planning (_heading_cog_stale, 2026-10-14)."""
+        i = self.inputs
+        if not self._hcal_enabled():
             return False
         if i.heading_source == 'cog':
             return bool(self._heading_cog_stale())
         return i.heading_source == 'file' and i.heading_prior in checks
+
+    def _hcal_blind_ok(self):
+        """No usable prior, but a blind drive is allowed: enabled, status fresh, heading not
+        aligned (2026-11-01). The disc check (_hcal_disc_clear) decides at the drive."""
+        return bool(self.p.heading_calibration_blind) and self._hcal_enabled() \
+            and not self.heading_ok()
 
     def _hcal_prior_text(self):
         i = self.inputs
@@ -34,11 +47,39 @@ class HeadingCalMixin:
             return 'cog %s' % (self._heading_cog_stale() or 'fresh')
         return i.heading_prior or 'unchecked'
 
-    def _hcal_reach(self, direction):
+    def _hcal_reach(self, direction, dist=None):
         """Length of the straight the robot body sweeps: drive + footprint ahead of it."""
         p = self.p
-        return float(p.heading_calibration_distance_m) + float(
-            p.robot_front_m if direction > 0 else p.robot_rear_edge_m)
+        if dist is None:
+            dist = float(p.heading_calibration_distance_m)
+        return dist + float(p.robot_front_m if direction > 0 else p.robot_rear_edge_m)
+
+    def _hcal_disc_radius(self):
+        """Radius the body can sweep in a blind drive of unknown direction: the drive plus
+        the body's front corner radius."""
+        p = self.p
+        return float(p.heading_calibration_blind_distance_m) + math.hypot(
+            float(p.robot_front_m), float(p.robot_width_m) / 2.0)
+
+    def _hcal_disc_clear(self, pose):
+        """The disc of _hcal_disc_radius around ``pose`` lies inside one mowing area (outside
+        its keepout holes): a blind drive cannot leave it whatever the true heading. Returns
+        the area index or None."""
+        m = self.mission
+        if m is None or not m.areas or pose is None:
+            return None
+        reach = self._hcal_disc_radius()
+        rings = max(1, int(math.ceil(reach / 0.1)))
+        pts = [(pose[0], pose[1])]
+        for k in range(1, rings + 1):
+            r = reach * k / rings
+            n = max(8, int(math.ceil(2.0 * math.pi * r / 0.1)))
+            pts.extend((pose[0] + r * math.cos(2.0 * math.pi * j / n),
+                        pose[1] + r * math.sin(2.0 * math.pi * j / n)) for j in range(n))
+        for idx in sorted(m.areas):
+            if all(geo.inside_area(pt, m.areas[idx]) for pt in pts):
+                return idx
+        return None
 
     def _hcal_clear(self, pose, direction):
         """The straight ``direction`` (+1 ahead, -1 behind) from ``pose`` by the PRIOR
@@ -70,13 +111,14 @@ class HeadingCalMixin:
         """Obstacle corridor of the calibration drive: the rest of its straight."""
         h = self._hcal
         base = h['yaw'] + (0.0 if h['dir'] > 0 else math.pi)
-        left = max(0.0, self._hcal_reach(h['dir']) - geo.dist(pose, h['start']))
+        left = max(0.0, self._hcal_reach(h['dir'], h['dist']) - geo.dist(pose, h['start']))
         return [(pose[0], pose[1]),
                 (pose[0] + left * math.cos(base), pose[1] + left * math.sin(base))]
 
     def _hcal_maybe_start(self):
-        """RTK fixed, heading not aligned, START came off the dock with a saved heading:
-        give the continuity check heading_calibration_settle_s, then drive."""
+        """RTK fixed, heading not aligned, START came off the dock with a saved heading (or
+        none, blind drive): give the continuity check heading_calibration_settle_s, then
+        drive."""
         now, p, i = self._now, self.p, self.inputs
         if self._hcal_rtk_since is None:
             self._hcal_rtk_since = now
@@ -84,28 +126,43 @@ class HeadingCalMixin:
             return
         if now - self._hcal_rtk_since < float(p.heading_calibration_settle_s):
             return
-        if not self._hcal_prior_ok():
+        pose = i.pose
+        v = float(p.heading_calibration_speed_mps)
+        if self._hcal_prior_ok():
+            for direction in (1, -1):
+                area = self._hcal_clear(pose, direction)
+                if area is not None:
+                    break
+            else:
+                self._hcal_fail('no clear %.1f m straight ahead or behind inside a mowing area'
+                                % float(p.heading_calibration_distance_m), drove=False)
+                return
+            d = float(p.heading_calibration_distance_m)
+            word = 'forward' if direction > 0 else 'backward'
+            what = 'saved heading %s' % self._hcal_prior_text()
+        elif self._hcal_blind_ok():
+            # no usable prior (2026-11-01): the whole disc must be clear, then creep forward
+            area = self._hcal_disc_clear(pose)
+            if area is None:
+                self._hcal_fail('no usable heading prior (%s %s) and no clear %.1f m disc '
+                                'around the robot inside a mowing area'
+                                % (i.heading_source, self._hcal_prior_text(),
+                                   self._hcal_disc_radius()), drove=False)
+                return
+            direction, d = 1, float(p.heading_calibration_blind_distance_m)
+            word = 'forward blind'
+            what = 'no usable prior (%s %s), %.1f m disc clear' % (
+                i.heading_source, self._hcal_prior_text(), self._hcal_disc_radius())
+        else:
             self._hcal_fail('saved heading not usable (%s %s)'
                             % (i.heading_source, self._hcal_prior_text()), drove=False)
             return
-        pose = i.pose
-        for direction in (1, -1):
-            area = self._hcal_clear(pose, direction)
-            if area is not None:
-                break
-        else:
-            self._hcal_fail('no clear %.1f m straight ahead or behind inside a mowing area'
-                            % float(p.heading_calibration_distance_m), drove=False)
-            return
-        d, v = float(p.heading_calibration_distance_m), float(p.heading_calibration_speed_mps)
-        word = 'forward' if direction > 0 else 'backward'
         if self.blade_on:
             self._blade_off('heading calibration')
-        self._hcal = {'dir': direction, 'start': (pose[0], pose[1]), 'yaw': pose[2],
-                      'done_at': None, 'outcome': None}
-        self._log('info', 'heading calibration: saved heading %s, driving %.1f m %s at %.2f m/s '
-                          'inside area %d (blade off)' % (self._hcal_prior_text(), d, word, v,
-                                                          area))
+        self._hcal = {'dir': direction, 'dist': d, 'start': (pose[0], pose[1]),
+                      'yaw': pose[2], 'done_at': None, 'outcome': None}
+        self._log('info', 'heading calibration: %s, driving %.1f m %s at %.2f m/s inside '
+                          'area %d (blade off)' % (what, d, word, v, area))
         self._go('WAITING_FOR_RTK', 'calibrating heading: driving %.1f m %s' % (d, word))
         self._start_action(ACT_DRIVE if direction > 0 else ACT_BACKUP,
                            {'distance_m': d, 'speed_mps': v},

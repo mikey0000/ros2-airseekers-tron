@@ -496,6 +496,44 @@ poor `cog` heading and drove its transit 65 deg off.
   If the WIT keeps agreeing with the GPS course and the stereo does not, `imu_source: wit`
   is the fallback.
 
+## Heading self-recovery after a reboot off the dock (2026-11-01, unit-tested only)
+
+Owner note 2026-11-01: after a power cycle or reboot on the lawn the GUI asked for a manual
+"drive straight 1 m" before START. The aligner only needs 0.6 m of RTK-fixed straight travel
+and no prior to align from COG; the mission refused to drive because the saved heading's
+continuity check had failed (`yaw_failed`: the JY61P yaw restarts at power-up, so the saved
+IMU-to-map offset is meaningless) and the 2026-10-13 calibration drive needs a usable prior
+to check its line against the map.
+
+- **Pose prior** (`heading_logic._try_verify`, `verify_pose_prior` on). The yaw test still
+  marks the record `yaw_failed` at the first IMU sample, but the position test keeps running:
+  `verify_samples` consecutive RTK-fixed positions within `verify_max_move` of the saved
+  position re-seed the offset from the saved MAP heading (saved IMU yaw + saved offset,
+  minus the IMU yaw now). Status `file_check: pose_prior`, source stays `file` (quality
+  low, not aligned). Moved farther, or float only until `verify_timeout`: stays
+  `yaw_failed`, offset untouched. The first COG window replaces a `file` offset outright
+  (`_update_offset`), so a prior that is wrong because the robot was turned while off
+  costs nothing beyond the drive.
+- **Calibration drive by the pose prior** (`fsm/phases/hcal.py`): `pose_prior` counts like
+  `yaw_ok`; the 1.0 m line (+ footprint, +-10 deg cone) ahead or behind must be inside one
+  area as before.
+- **Blind drive** (`heading_calibration_blind` on, `heading_calibration_blind_distance_m`
+  0.8): no usable prior at all (`yaw_failed` and moved, `unverifiable`, no file, source
+  none) no longer refuses at preflight. After RTK fixed + the settle wait, the disc of
+  0.8 m + the body's front corner radius (hypot(0.60, 0.235) = 0.64 m, so 1.44 m) around the
+  robot must lie inside one mowing area and clear of its keepouts: then it creeps 0.8 m
+  forward at 0.15 m/s, blade off, obstacle policy and bumper live, and stops as soon as the
+  aligner reports aligned (the usual `_hcal_tick`). Disc not clear: refused in place with
+  "no usable heading prior (...) and no clear 1.4 m disc", exactly as before otherwise. No
+  COG after the drive: idle, never Nav2 on the unverified heading. START from the dock is
+  unchanged (undock seeds the heading).
+- **Verify live:** reboot the mower on the lawn where it stood: the log shows "persisted
+  offset re-seeded from the saved map heading", START drives 1 m, "heading calibrated
+  (cog)", then plans. Carry it 1 m sideways before the boot: "IMU restarted and the robot
+  moved", START creeps 0.8 m "forward blind", aligns, plans. Put it within 1.4 m of an
+  edge: refused without moving. The mower_sim's `localization: sim` mode latches an
+  aligned heading, so only the full-mow regression gate covers this in sim.
+
 ## Mission: turn-leg cap, leg loop guard, route hairpins (fix 10/11, 2026-10-14, unit-tested only)
 
 Run 2 of 2026-10-14 (`docs/wheel_smoothness_field_tests.md`, "Run 2"): 7 minutes of MPPI

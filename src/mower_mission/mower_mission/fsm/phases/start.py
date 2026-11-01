@@ -33,11 +33,17 @@ class StartMixin:
             # Undocked: Nav2 would steer with an arbitrary IMU heading (or a stale COG one,
             # 2026-10-14). At the dock the undock (straight drive out along the dock yaw)
             # seeds it instead.
-            if self._hcal_prior_ok(('pending', 'yaw_ok')):
+            if self._hcal_prior_ok(('pending', 'yaw_ok', 'pose_prior')):
                 # a usable saved heading: calibrate by a short straight drive once RTK is
                 # fixed (WAITING_FOR_RTK, _hcal_maybe_start)
                 if stale:
                     self._log('info', 'heading cog is %s: calibration drive first' % stale)
+                self._hcal_wanted = True
+                return ''
+            if self._hcal_blind_ok():
+                # no usable prior (2026-11-01): a blind creep inside a clear disc
+                self._log('info', 'heading %s (%s): no usable prior, blind calibration drive '
+                                  'first' % (i.heading_source, self._hcal_prior_text()))
                 self._hcal_wanted = True
                 return ''
             if stale:

@@ -63,6 +63,11 @@ in priority order:
           arrive or ``verify_timeout`` expires. ``status()['file_check']`` tells the mission
           whether a ``file`` offset is still a usable prior (``yaw_ok``: the IMU did not
           restart, only the position is unproven) for its heading-calibration drive.
+          IMU restarted (``yaw_failed``, a reboot off the dock) but the robot has not
+          moved since the save (``verify_samples`` fixed positions within
+          ``verify_max_move``): the offset is re-seeded from the saved MAP heading
+          (``pose_prior``, ``verify_pose_prior``), low quality, so the mission can still run
+          its calibration drive instead of asking for a manual one (2026-11-01).
 
 The estimator also detects an IMU yaw reset (a step in yaw that the gyro rate does not
 explain) and drops back to unaligned.
@@ -173,6 +178,9 @@ class AlignParams:
         self.gps_timeout = 0.5           # s
         self.imu_timeout = 0.2           # s
         self.min_distance = 0.6          # m of straight travel per COG measurement (RTK fixed)
+        self.verify_pose_prior = True    # IMU restarted but the robot sits where the record was
+                                         # saved: re-seed the offset from the saved map heading
+                                         # ('pose_prior', low quality) instead of dropping it
         self.float_min_distance = 1.5    # m with RTK float (decimetre noise)
         self.max_window_time = 30.0      # s; a slower window is restarted
         self.max_lateral = 0.08          # m GPS deviation from the chord
@@ -283,7 +291,8 @@ class HeadingEstimator:
         # continuity check of a 'file' offset: '' (none loaded), 'unverifiable' (no / old
         # record), 'pending' (no IMU yet), 'yaw_ok' (IMU did not restart; position pending,
         # rejected or timed out), 'yaw_failed' (IMU restarted: the offset is meaningless),
-        # 'verified'
+        # 'pose_prior' (IMU restarted but the robot did not move: offset re-seeded from the
+        # saved map heading, still low quality), 'verified'
         self.file_check = ''
         self.n_rtk = 0               # RTK heading samples accepted (seed / blend)
         self.rtk_gate = ''           # why the last RTK sample was not used
@@ -400,12 +409,19 @@ class HeadingEstimator:
         if self.imu_yaw is not None:
             dyaw = wrap(self.imu_yaw - rec['imu_yaw'])
             if abs(dyaw) > p.verify_max_yaw:
-                self._pending = None
-                self.file_check = 'yaw_failed'
-                self.last_event = ('persisted offset rejected: IMU yaw moved %.1f deg since the '
-                                   'save (IMU restarted?)' % math.degrees(dyaw))
-                return
-            if not rec['yaw_ok']:
+                if not rec.get('yaw_failed'):
+                    rec['yaw_failed'] = True
+                    self.file_check = 'yaw_failed'
+                    self.last_event = ('persisted offset rejected: IMU yaw moved %.1f deg since '
+                                       'the save (IMU restarted?)' % math.degrees(dyaw))
+                    if p.verify_pose_prior:
+                        # the position test still runs: unmoved -> pose_prior re-seed below
+                        self.last_event += ('; waiting for %d RTK-fixed positions to re-seed '
+                                            'from the saved map heading' % p.verify_samples)
+                if not p.verify_pose_prior:
+                    self._pending = None
+                    return
+            elif not rec['yaw_ok']:
                 rec['yaw_ok'] = True
                 self.file_check = 'yaw_ok'
                 self.last_event = ('persisted offset: IMU yaw %+.1f deg since the save (ok), '
@@ -417,6 +433,21 @@ class HeadingEstimator:
             my = sum(q[1] for q in self._gps_recent) / n
             moved = math.hypot(mx - rec['x'], my - rec['y'])
             self._pending = None
+            if rec.get('yaw_failed'):
+                if moved > p.verify_max_move:
+                    self.last_event = ('persisted offset rejected: IMU restarted and the robot '
+                                       'moved %.2f m since the save (RTK fixed)' % moved)
+                    return                      # file_check stays yaw_failed
+                map_yaw = wrap(rec['imu_yaw'] + rec['offset'])
+                self.offset = wrap(map_yaw - self.imu_yaw)
+                self.updated_at = now
+                self.file_check = 'pose_prior'
+                self.last_event = ('persisted offset re-seeded from the saved map heading '
+                                   '%.1f deg: IMU restarted (yaw %+.1f deg since the save) but '
+                                   'the robot has not moved (%.2f m, RTK fixed); low quality '
+                                   'until a COG fix' % (math.degrees(map_yaw),
+                                                        math.degrees(dyaw), moved))
+                return
             if moved > p.verify_max_move:
                 # yaw_ok stays: the offset is still a usable prior for a calibration drive
                 self.last_event = ('persisted offset rejected: robot moved %.2f m since the '
@@ -436,6 +467,8 @@ class HeadingEstimator:
             else:
                 what = 'no %d RTK-fixed positions (got %d)' % (p.verify_samples,
                                                                len(self._gps_recent))
+                if rec.get('yaw_failed'):
+                    what = 'IMU restarted and ' + what   # file_check stays yaw_failed
             self.last_event = ('persisted offset not verified: %s within %.0f s'
                                % (what, p.verify_timeout))
 

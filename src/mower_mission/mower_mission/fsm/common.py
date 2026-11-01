@@ -461,7 +461,8 @@ class Inputs:
     heading_source: str = 'none'
     heading_stamp: Optional[float] = None     # receipt time of the last status
     # status file_check (source file): pending | yaw_ok (IMU kept running: the saved offset
-    # is a usable prior) | yaw_failed | unverifiable | '' (see heading_logic._try_verify)
+    # is a usable prior) | pose_prior (IMU restarted, robot unmoved: re-seeded from the saved
+    # map heading, usable prior) | yaw_failed | unverifiable | '' (heading_logic._try_verify)
     heading_prior: str = ''
     # status quality (good|fair|poor|low|none) and the age of the COG heading (s: the older of
     # last_cog_age_s and age_s, see mission_node._on_heading); None/'' = not reported
@@ -549,6 +550,15 @@ class Params:
     heading_calibration_speed_mps: float = 0.15
     heading_calibration_timeout_s: float = 45.0     # drive incl. the Nav2 resume wait
     heading_calibration_cone_deg: float = 10.0      # prior heading error the map check allows
+    # 2026-11-01 self-recovery: a saved heading whose IMU restarted but whose robot did not
+    # move (status file_check pose_prior) is a usable prior for the drive above. With NO
+    # usable prior at all (yaw_failed and moved, unverifiable, no file) the drive is blind:
+    # the disc of blind_distance + the body's front corner radius around the robot must lie
+    # inside one mowing area clear of its keepouts, then it creeps forward with the obstacle
+    # policy and bumper live and stops as soon as the aligner reports aligned. Refused only
+    # when the disc is not clear (or blind drives are off).
+    heading_calibration_blind: bool = True
+    heading_calibration_blind_distance_m: float = 0.8   # aligner COG window 0.6 m + margin
     heading_calibration_settle_s: float = 3.0       # RTK fixed this long first (the saved
                                                     # heading may still verify without a drive)
     heading_calibration_status_wait_s: float = 3.0  # after the drive: aligner status latency
