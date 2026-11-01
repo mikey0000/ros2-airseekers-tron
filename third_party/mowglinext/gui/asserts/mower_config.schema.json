@@ -702,6 +702,25 @@
           "default": 20.0,
           "description": "Start heading to dock below this battery percentage."
         },
+        "battery_low_action": {
+          "type": "string",
+          "title": "When battery is low",
+          "enum": ["dock", "stop"],
+          "default": "dock",
+          "description": "What a running mow does below the Low threshold: dock (charge, then resume) or stop (blade off, stay put)."
+        },
+        "battery_max_charge_percent": {
+          "type": "number",
+          "title": "Charge limit",
+          "default": 100.0,
+          "description": "While docked, charging stops at this level and restarts 5 % below it. 100 = no limit."
+        },
+        "return_home_on_incomplete": {
+          "type": "boolean",
+          "title": "Return to dock when mowing is incomplete",
+          "default": true,
+          "description": "When a mow ends with skipped stretches, drive back to the dock instead of waiting on the lawn."
+        },
         "battery_critical_percent": {
           "type": "number",
           "title": "Critical Percent",

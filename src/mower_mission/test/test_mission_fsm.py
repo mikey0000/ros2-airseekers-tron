@@ -36,6 +36,9 @@ class Harness:
         # The pre-obstacle-avoidance tests exercise plain follow retries: an unclassified
         # abort never detours unless a test asks for it.
         params.setdefault('detour_unclassified_after', -1)
+        # ... and the stop-in-place MOWING_INCOMPLETE (the shipped dock-after-incomplete
+        # default has its own tests).
+        params.setdefault('return_home_on_incomplete', False)
         # ... and a fixed transit_retry_delay_s (the 3/10/30 s back-off has its own tests)
         params.setdefault('transit_retry_backoff_s', [])
         # ... and the detour geometry the detour tests were written for (1.0 / 3.0 m skips;
@@ -2553,6 +2556,18 @@ def test_return_home_on_incomplete_docks_and_keeps_reason():
     h.finish(f.ACT_DOCK)
     assert h.name == 'IDLE_DOCKED' and 'not mowed' in h.fsm.sub_state
     assert h.fsm.cursor.available
+
+
+def test_return_home_on_incomplete_is_the_shipped_default():
+    assert f.Params().return_home_on_incomplete is True
+    h = Harness(transit_retries=0, return_home_on_incomplete=f.Params().return_home_on_incomplete,
+                requeue_failed_transits=False)
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
+    m = h.mark()
+    h.finish(f.ACT_NAV, f.ABORTED)
+    assert 'MOWING_INCOMPLETE' in h.statuses(m)
+    assert h.name == 'RETURNING_HOME'
 
 
 def test_follow_abort_resumes_from_last_pose_up_to_follow_retries():

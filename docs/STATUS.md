@@ -541,6 +541,12 @@ route hairpin at the dock-path / area-path junction where FollowPath stalled and
   local costmap: check that it does not refuse the pivot inside the 0.35 m path corridor.
   Revert flags: `docs/wheel_smoothness_field_tests.md` rows 10 and 11.
 
+2026-11-01: `return_home_on_incomplete` now defaults to true (Params, `mission.yaml`) and
+is a live GUI toggle under Settings > Battery ("Return to dock when mowing is incomplete";
+bindings in `launch/robot_settings.py` and the GUI `param_bindings`). Reason: the mower twice
+sat idle on the lawn for over an hour after MOWING_INCOMPLETE; it now docks and keeps the
+resume cursor. Sim gate still required before deploy.
+
 ## Open risks
 
 - Grass segmentation (2026-10-09, not yet run on the mower, `nongrass:=false` by default): seg_ros now runs on the front stereo right colour eye, `nongrass_projector` projects its mask onto the ground and map_server_node keeps a confirmed non-grass memory that feeds a SOFT global-costmap layer (`nongrass_layer`). The model was trained on the OA cameras: class quality on the front eye, NPU sharing with det_ros on core 1 and the shadow false-positive rate need a live check (`docs/grass_segmentation.md`).

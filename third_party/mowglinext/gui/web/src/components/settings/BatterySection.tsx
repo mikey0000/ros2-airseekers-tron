@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { Alert, Card, Col, Form, InputNumber, Row, Select, Space, Typography } from "antd";
+import { Alert, Card, Col, Form, InputNumber, Row, Select, Space, Switch, Typography } from "antd";
 import { ThunderboltOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { useThemeMode } from "../../theme/ThemeContext.tsx";
@@ -247,6 +247,19 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                     onChange={(v) => onChange("battery_max_charge_percent", v)}
                                     min={50} max={100} step={5} precision={0}
                                     style={{ width: "100%" }} addonAfter="%"
+                                />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                    <Row gutter={[16, 0]}>
+                        <Col xs={24}>
+                            <Form.Item
+                                label={fieldLabel("return_home_on_incomplete", <Text style={{ fontSize: 12 }}>{t("settingsBattery.returnHomeOnIncomplete")}</Text>)}
+                                extra={t("settingsBattery.returnHomeOnIncompleteTooltip")}
+                            >
+                                <Switch
+                                    checked={values.return_home_on_incomplete ?? true}
+                                    onChange={(v) => onChange("return_home_on_incomplete", v)}
                                 />
                             </Form.Item>
                         </Col>

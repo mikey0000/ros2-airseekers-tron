@@ -890,9 +890,10 @@ class Params:
     follow_retries: int = 3
     clear_costmaps_on_retry: bool = True
     clear_global_costmap_on_retry: bool = False
-    # After a sub-path still fails, the session ends in MOWING_INCOMPLETE; dock only
-    # when this is true (default: stop in place so the operator can inspect).
-    return_home_on_incomplete: bool = False
+    # After a sub-path still fails, the session ends in MOWING_INCOMPLETE and then docks
+    # when this is true (default since 2026-11-01: the mower sat idle on the lawn >1 h twice
+    # after MOWING_INCOMPLETE). False = stop in place so the operator can inspect.
+    return_home_on_incomplete: bool = True
     # 2026-10-15 MPPI study (docs/analysis/2026-10-15_mppi_study.md): coverage sub-paths are
     # driven by the feasibility-aware MPPI (nav2_params.yaml): mppi_follow_controller_id, and
     # mppi_reverse_controller_id for sub-paths whose poses face against their travel (reverse
