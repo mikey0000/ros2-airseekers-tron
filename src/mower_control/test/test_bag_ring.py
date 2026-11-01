@@ -539,12 +539,14 @@ def test_record_cmd_defaults():
     assert '--max-cache-size 1048576' in j
     assert '--storage-preset-profile resilient' in j
     assert '--compression-mode file --compression-format zstd' in j
+    assert '--compression-threads 1 --compression-queue-size 2' in j
     assert cmd[-2:] == ['/tf', '/odom']
 
 
 def test_record_cmd_no_compression_no_preset():
     cmd = br.record_cmd('/b/s', ['/tf'], 60, 1, compression='', preset='')
     assert '--compression-mode' not in cmd and '--compression-format' not in cmd
+    assert '--compression-threads' not in cmd
     assert '--storage-preset-profile' not in cmd
     assert cmd[-1] == '/tf'
 
