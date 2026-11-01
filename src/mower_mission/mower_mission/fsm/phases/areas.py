@@ -320,11 +320,64 @@ class AreasMixin:
                                                    '; kept %d done sub-path(s) whose geometry '
                                                    'is unchanged' % kept))
             self.cursor.areas[m.area_idx] = new
+        excl = self._exclude_marks(subpaths, m.cum)
         self._persist()
-        self._log('info', 'area %d: %d drivable sub-paths, %.1f m' % (
-            m.area_idx, len(subpaths), sum(m.lengths)))
+        self._log('info', 'area %d: %d drivable sub-paths, %.1f m%s' % (
+            m.area_idx, len(subpaths), sum(m.lengths),
+            '' if excl is None else '; %d stretches / %.1f m excluded by obstacle marks' % excl))
         m.sub_i = 0
         self._next_subpath()
+
+    def _exclude_marks(self, subpaths, cums):
+        """exclude_marked_obstacles: sub-path poses within (mark r + robot half-width +
+        0.05 m) of a static obstacle mark become blocked_static stretches of the area cursor
+        (never driven). Gaps shorter than exclude_mark_merge_m are merged in. Returns
+        (count, metres) of the new exclusions, None when off / no marks."""
+        m, p = self.mission, self.p
+        if not p.exclude_marked_obstacles:
+            return None
+        marks = [z for z in self._nogo_discs() if z.state == 'mark']
+        if not marks:
+            return None
+        ac = self.cursor.area(m.area_idx)
+        pad = float(p.robot_width_m) / 2.0 + 0.05
+        gap = float(p.exclude_mark_merge_m)
+        offs, _ = subpath_offsets(subpaths)
+        n, total = 0, 0.0
+        for k, sp in enumerate(subpaths):
+            if k in ac.completed:
+                continue
+            cum = cums[k]
+            last = len(sp) - 1
+            hits = [i for i, q in enumerate(sp) if any(
+                math.hypot(q[0] - z.x, q[1] - z.y) <= z.r + pad for z in marks)]
+            runs = []
+            for i in hits:
+                if runs and i == runs[-1][1] + 1:
+                    runs[-1][1] = i
+                else:
+                    runs.append([i, i])
+            # (last clear pose before, first clear pose after) the hit run
+            pieces = []
+            for a, b in runs:
+                fr, to = max(a - 1, 0), min(b + 1, last)
+                if pieces and cum[fr] - cum[pieces[-1][1]] < gap:
+                    pieces[-1][1] = to
+                else:
+                    pieces.append([fr, to])
+            for fr, to in pieces:
+                if to <= fr:
+                    continue
+                st = (offs[k] + fr, offs[k] + to)
+                if st in ac.blocked_static:
+                    continue
+                ac.blocked_static.append(st)
+                ac.skipped = [s for s in ac.skipped if not (st[0] <= s[0] and s[1] <= st[1])]
+                n += 1
+                total += cum[to] - cum[fr]
+        if n:
+            self._incident('marks_excluded', '%d stretches, %.1f m' % (n, total))
+        return n, total
 
     @staticmethod
     def _plan_subpaths(outcome, result):

@@ -2923,7 +2923,7 @@ def test_static_obstacle_detours_and_resumes_beyond_then_requeues_stretch():
 
 
 def test_skipped_stretch_still_blocked_ends_incomplete():
-    h = Harness()
+    h = Harness(retry_each_skipped_stretch=False)
     sp0, sp1 = mowing_two_swaths(h)
     static_abort_and_detour(h, sp0)
     h.finish(f.ACT_FOLLOW)
@@ -5000,3 +5000,145 @@ def test_emergency_silence_watchdog_armed_only_after_first_message():
     h.silent = True
     h.tick(n=25)
     assert h.name == 'EMERGENCY'
+
+
+# =====================================================================
+# 2026-11-01: bounded sweep-blocked skip, retry every skipped stretch, plan-time exclusions
+# =====================================================================
+def _skips_h(subpaths, pose, zs=None, **params):
+    from mower_mission import nogo
+    h = Harness(**params)
+    h.areas = [square(0, 0, 5)]
+    i = h.fsm.inputs
+    i.pose, i.outside_m, i.outside_stamp = tuple(pose), 0.0, h.t
+    start_until_planning(h)
+    if zs:
+        h.fsm.inputs.nogo_zones = nogo.ZoneSet(h.t, [], [nogo.Zone(x, y, r, state='mark')
+                                                         for x, y, r in zs])
+        h.fsm.inputs.nogo_stamp = h.t
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan(subpaths))
+    h.fsm.inputs.is_cutting = True
+    return h
+
+
+def _exhaust_transit(h):
+    for _ in range(h.fsm.p.transit_retries + 1):
+        h.fsm._begin(h.t)
+        h.fsm._transit_abort('route corner pivot sweep blocked')
+        h._apply(h.fsm._end())
+
+
+def test_sweep_blocked_transit_skips_a_bounded_stretch_and_rejoins():
+    sp0 = line(0.5, 2, 4.5, 2, n=41)                     # 0.1 m spacing
+    h = _skips_h([sp0, line(0.5, 3, 4.5, 3)], (4.5, 4.5, 0.0))
+    m = h.fsm.mission
+    assert h.name == 'TRANSIT' and m.sub_i == 0 and m.step == 'transit'
+    _exhaust_transit(h)
+    assert not m.failed and m.sub_i == 0
+    assert h.fsm.cursor.areas[0].skipped == [(0, 20)]     # 2.0 m, not the whole sub-path
+    assert m.start_local == 20 and m.step == 'transit' and h.name == 'TRANSIT'
+    assert any('sweep blocked: skip 2.0 m' in e.text for e in h.since(0, f.Log))
+
+
+def test_sweep_blocked_repeated_skips_fall_back_to_subpath_failed():
+    h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (4.5, 4.5, 0.0),
+                 edge_blocked_skip_m=1.0)
+    m = h.fsm.mission
+    for _ in range(h.fsm.p.sweep_blocked_max_skips):
+        _exhaust_transit(h)
+        assert m.sub_i == 0 and not m.failed
+    _exhaust_transit(h)
+    assert m.failed and m.failed[0][1] == 0 and m.sub_i == 1
+    assert len(h.fsm.cursor.areas[0].skipped) == h.fsm.p.sweep_blocked_max_skips
+
+
+def test_sweep_blocked_skip_off_keeps_the_old_drop():
+    h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (4.5, 4.5, 0.0),
+                 sweep_blocked_skip=False)
+    _exhaust_transit(h)
+    m = h.fsm.mission
+    assert m.failed and m.sub_i == 1 and not h.fsm.cursor.areas[0].skipped
+
+
+def _pass_h(**params):
+    h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
+                 **params)
+    m = h.fsm.mission
+    m.unbypassable = [(2.0, 2.0)]
+    h.fsm.cursor.areas[0].skipped = [(30, 38), (20, 25)]
+    m.requeue = [(30, 38), (20, 25)]
+    h.fsm._begin(h.t)
+    h.fsm._area_done()
+    h._apply(h.fsm._end())
+    return h, m
+
+
+def test_retry_pass_tries_every_stretch_nearest_first_before_incomplete():
+    h, m = _pass_h()
+    assert m.stretch == (20, 25)          # nearest first, despite the unbypassable spot
+    h.fsm._begin(h.t)
+    h.fsm._stretch_blocked('follow_path aborted at pose 21')   # no obstacle evidence
+    h._apply(h.fsm._end())
+    assert m.stretch == (30, 38)          # still attempted
+    assert (0, 20, 25) in m.blocked and h.name != 'MOWING_INCOMPLETE'
+    h.fsm._begin(h.t)
+    h.fsm._stretch_blocked('follow_path aborted at pose 31')
+    h._apply(h.fsm._end())
+    assert len(m.blocked) == 2
+    h.tick()
+    assert h.name in ('MOWING_INCOMPLETE', 'RETURNING_HOME') and h.fsm.cursor.available
+
+
+def test_retry_pass_off_keeps_the_unbypassable_shortcut():
+    h, m = _pass_h(retry_each_skipped_stretch=False)
+    assert m.stretch == (30, 38)          # list order, not nearest first
+    h.fsm._begin(h.t)
+    h.fsm._stretch_blocked('follow_path aborted at pose 31')
+    h._apply(h.fsm._end())
+    assert (0, 20, 25) in m.blocked       # next to the unbypassable spot: not driven
+
+
+def test_static_blocked_stretches_finish_complete_with_exclusions():
+    h, m = _pass_h()
+    for st in ((20, 25), (30, 38)):
+        assert m.stretch == st
+        h.fsm.obstacle_decision = {'kind': 'static', 'on_path': True, 'action': 'act'}
+        h.fsm._begin(h.t)
+        h.fsm._stretch_blocked('obstacle_decision act, trunk on_path')
+        h._apply(h.fsm._end())
+    assert not m.blocked and m.excluded_count == 2
+    logs = [e.text for e in h.since(0, f.Log)]
+    assert any('excluded_count 2, excluded_m 1.3' in t for t in logs), logs[-5:]
+    assert h.name == 'RETURNING_HOME' and not h.fsm.cursor.available
+
+
+def test_blocked_static_round_trips_in_the_resume_file():
+    from mower_mission.resume import ResumeCursor
+    cur = ResumeCursor()
+    cur.area(0).blocked_static.append((3, 9))
+    assert ResumeCursor.loads(cur.dumps()).areas[0].blocked_static == [(3, 9)]
+
+
+def test_plan_time_exclusion_around_an_obstacle_mark():
+    sp0 = line(0.5, 2, 4.5, 2, n=41)
+    h = _skips_h([sp0, line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0), zs=[(2.0, 2.0, 0.1)])
+    assert h.fsm.cursor.areas[0].blocked_static == [(11, 19)]
+    assert any('1 stretches / 0.8 m excluded by obstacle marks' in e.text
+               for e in h.since(0, f.Log))
+    h.tick()
+    assert h.goal(f.ACT_FOLLOW)['poses'][-1][:2] == sp0[11][:2]   # stops before the mark
+    h.fsm.inputs.pose = (1.6, 2.0, 0.0)
+    h.finish(f.ACT_FOLLOW)
+    assert h.name == 'TRANSIT' and h.fsm.mission.start_local == 19
+
+
+def test_plan_time_exclusion_merges_short_gaps():
+    h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
+                 zs=[(2.0, 2.0, 0.1), (2.9, 2.0, 0.1)])
+    assert h.fsm.cursor.areas[0].blocked_static == [(11, 28)]
+
+
+def test_plan_time_exclusion_off():
+    h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
+                 zs=[(2.0, 2.0, 0.1)], exclude_marked_obstacles=False)
+    assert h.fsm.cursor.areas[0].blocked_static == []

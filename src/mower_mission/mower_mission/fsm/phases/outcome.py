@@ -5,7 +5,7 @@ Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
 from mower_mission.fsm.common import (AreaCursor, CMD_START, DeleteResume, HEADING_NOT_ALIGNED,
     PublishAreaSettings, PublishResumeAvailable, ResumeCursor, SaveAlternateCounts, ZeroBurst,
-    blocked_text, geo, subpath_offsets)  # noqa: F401
+    absolute_to_local, blocked_text, geo, subpath_offsets)  # noqa: F401
 
 
 class OutcomeMixin:
@@ -135,6 +135,7 @@ class OutcomeMixin:
             self._persist()
             self._next_area()
             return
+        self._count_excluded(ac)
         if m.runs and m.run_i + 1 < len(m.runs):
             # repeat / cross: plan and mow the same area again.
             if self.blade_on:
@@ -161,12 +162,35 @@ class OutcomeMixin:
         self._persist()
         self._next_area()
 
+    def _count_excluded(self, ac):
+        """An area finished with only blocked_static stretches left: add them to the
+        mission's excluded_m / excluded_count (log line per area)."""
+        m = self.mission
+        n, length = 0, 0.0
+        for fr, to in ac.blocked_static:
+            a = absolute_to_local(m.subpaths, fr)
+            b = absolute_to_local(m.subpaths, to)
+            if a is None or b is None or a[0] != b[0]:
+                continue
+            c = m.cum[a[0]] if a[0] < len(m.cum) else geo.cumulative_lengths(m.subpaths[a[0]])
+            n += 1
+            length += c[b[1]] - c[a[1]]
+        if n:
+            m.excluded_count += n
+            m.excluded_m += length
+            self._log('warn', 'area %d complete with %d stretch(es) / %.1f m excluded '
+                              '(static obstacles)' % (m.area_idx, n, length))
+
     def _mission_complete(self):
+        m = self.mission
         self._blade_off('mowing complete')
-        self._go('MOWING_COMPLETE', '')
+        text = '' if m is None or not m.excluded_count else \
+            'excluded_count %d, excluded_m %.1f (static obstacles)' % (m.excluded_count,
+                                                                      m.excluded_m)
+        self._go('MOWING_COMPLETE', text)
         self.mission = None
         self._fx.append(PublishAreaSettings({}))
-        self._log('info', 'all areas mowed: returning home')
+        self._log('info', 'all areas mowed%s: returning home' % (': ' + text if text else ''))
         self.cursor = ResumeCursor()
         self._fx.append(DeleteResume())
         self._fx.append(PublishResumeAvailable(False))

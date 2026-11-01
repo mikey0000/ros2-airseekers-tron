@@ -595,6 +595,10 @@ class HoldsMixin:
     def _next_stretch(self):
         m = self.mission
         ac = self.cursor.area(m.area_idx)
+        each = bool(self.p.retry_each_skipped_stretch)
+        pose = self.inputs.pose
+        if each and pose is not None and len(m.requeue) > 1:
+            m.requeue.sort(key=lambda s: self._stretch_dist(s, pose))     # nearest first
         fr, to = m.requeue.pop(0)
         a = absolute_to_local(m.subpaths, fr)
         b = absolute_to_local(m.subpaths, to)
@@ -611,8 +615,9 @@ class HoldsMixin:
         cum = geo.cumulative_lengths(sp)
         length = cum[b[1]] - cum[a[1]]
         p0, p1 = sp[a[1]], sp[b[1]]
-        near = [q for q in m.unbypassable
-                if min(geo.dist(q, p0), geo.dist(q, p1)) <= float(self.p.stretch_block_radius_m)]
+        near = [] if each else [
+            q for q in m.unbypassable
+            if min(geo.dist(q, p0), geo.dist(q, p1)) <= float(self.p.stretch_block_radius_m)]
         if length < float(self.p.stretch_min_retry_m) or near:
             m.blocked.append((m.area_idx, fr, to))
             self._log('info', 'area %d: stretch sub-path %d poses %d -> %d not re-tried (%s)'
@@ -630,6 +635,26 @@ class HoldsMixin:
         self._log('info', 'area %d: re-trying skipped stretch sub-path %d poses %d -> %d'
                   % (m.area_idx, a[0], a[1], b[1]))
         self._dispatch()
+
+    def _stretch_dist(self, s, pose):
+        m = self.mission
+        a = absolute_to_local(m.subpaths, s[0])
+        if a is None:
+            return float('inf')
+        q = m.subpaths[a[0]][a[1]]
+        return math.hypot(q[0] - pose[0], q[1] - pose[1])
+
+    def _static_block(self):
+        """The retry was stopped by a static obstacle on the path: an on-path obstacle
+        decision (act / stop) or a recent collision ahead / ranged static (not a person or
+        animal, which moves)."""
+        if self._policy() == 'dynamic':
+            return False
+        dec = self.obstacle_decision or {}
+        if dec.get('kind', 'none') != 'none' and dec.get('on_path') is True and \
+                dec.get('action') in ('act', 'stop'):
+            return True
+        return bool(self._collision_recent() or self._static_recent())
 
     def _next_failed_retry(self):
         """End-of-area pass: re-try one sub-path dropped on transit failure, as a
@@ -680,6 +705,21 @@ class HoldsMixin:
                       '(%s)' % (m.area_idx, e[1], why))
             m.stretch, m.stretch_end, m.step = None, None, None
             self._blade_off('end-of-area retry failed')
+            self._area_done()
+            return
+        if self.p.retry_each_skipped_stretch and self._static_block():
+            ac = self.cursor.area(m.area_idx)
+            st = tuple(m.stretch)
+            if st in ac.skipped:
+                ac.skipped.remove(st)
+            if st not in ac.blocked_static:
+                ac.blocked_static.append(st)
+            self._persist()
+            self._log('warn', 'area %d: stretch %s blocked by a static obstacle on the path '
+                      '(%s): excluded (blocked_static)' % (m.area_idx, st, why))
+            self._incident('stretch_blocked_static', why)
+            m.stretch, m.stretch_end, m.step = None, None, None
+            self._blade_off('stretch blocked')
             self._area_done()
             return
         m.blocked.append((m.area_idx,) + tuple(m.stretch))

@@ -4,7 +4,7 @@
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
 from mower_mission.fsm.common import (ABORTED, ACT_FOLLOW, CancelActions, PublishRoute, bbody,
-    condition_plan, geo, math, pcond)  # noqa: F401
+    condition_plan, geo, math, pcond, subpath_offsets)  # noqa: F401
 
 
 class MowingMixin:
@@ -43,6 +43,8 @@ class MowingMixin:
         if m.sub_i in m.cond_errors:
             self._subpath_failed('path conditioning: %s' % m.cond_errors[m.sub_i])
             return
+        if self._excluded_jump():
+            force_transit = True
         if self._seg_last() - m.start_local < 1:
             self._segment_done()
             return
@@ -62,6 +64,38 @@ class MowingMixin:
             self._send_transit()
         else:
             self._begin_blade()
+
+    def _excluded_local(self):
+        """[(local_from, local_to)] blocked_static stretches of the current sub-path."""
+        m = self.mission
+        ac = self.cursor.areas.get(m.area_idx)
+        if ac is None or not ac.blocked_static:
+            return []
+        offs, _ = subpath_offsets(m.subpaths)
+        o, n = offs[m.sub_i], len(m.subpaths[m.sub_i])
+        return [(fr - o, to - o) for fr, to in ac.blocked_static if o <= fr < to < o + n]
+
+    def _excluded_jump(self):
+        """start_local inside a blocked_static stretch: move it to the stretch end (never
+        drive the excluded piece). True = moved."""
+        m = self.mission
+        moved = True
+        any_moved = False
+        while moved:
+            moved = False
+            for fr, to in self._excluded_local():
+                if fr <= m.start_local < to:
+                    m.start_local, moved, any_moved = to, True, True
+        if any_moved:
+            self._log('info', 'area %d sub-path %d: excluded stretch (static obstacle) not '
+                              'driven, going on from pose %d' % (m.area_idx, m.sub_i,
+                                                                 m.start_local))
+        return any_moved
+
+    def _next_excluded(self, frm):
+        """Local start of the next blocked_static stretch after ``frm`` (None = none)."""
+        c = [fr for fr, _to in self._excluded_local() if fr > frm]
+        return min(c) if c else None
 
     def _transit_approach(self, target, yaw):
         """Transit goal for a sub-path start: a start on (or within edge_approach_near_m of)
@@ -313,6 +347,10 @@ class MowingMixin:
 
     def _follow(self):
         m = self.mission
+        if self._excluded_jump():
+            self._dispatch(force_transit=True)
+            return
+        m.sweep_skips.pop((m.area_idx, m.sub_i), None)    # rejoined: consecutive count ends
         if self._cov_pivot():
             return
         m.step = 'follow'
@@ -320,6 +358,9 @@ class MowingMixin:
         sp = m.subpaths[m.sub_i]
         m.chunk_end = min(geo.chunk_end(sp, m.start_local, self.p.follow_chunk_m,
                                         self.p.follow_chunk_clearance_m), self._seg_last())
+        nxt = self._next_excluded(m.start_local)
+        if nxt is not None and nxt < m.chunk_end:
+            m.chunk_end = max(m.start_local + 1, nxt)    # stop where the excluded piece starts
         m.corner_end = None
         for c in self._cov_pivots():
             if m.start_local < c <= m.chunk_end and c < self._seg_last():
