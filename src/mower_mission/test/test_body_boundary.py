@@ -425,7 +425,8 @@ def test_offgraph_goal_is_re_asked_inside_then_skipped_never_the_costmap_planner
 
 
 def test_short_and_unbypassable_stretches_are_not_re_tried():
-    h = mowing_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+    h = mowing_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
+                 retry_each_skipped_stretch=False)
     m = h.fsm.mission
     m.unbypassable = [(2.0, 2.0)]
     m.requeue = [(5, 8), (20, 25), (30, 38)]          # 0.3 m; next to (2, 2); 0.8 m clear

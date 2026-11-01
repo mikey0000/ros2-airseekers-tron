@@ -140,12 +140,45 @@ class TransitMixin:
         m.transit_fails += 1
         self._incident('transit_abort', why)
         if m.transit_fails > self.p.transit_retries:
+            if self._sweep_blocked_skip(why):
+                return
             self._subpath_failed('%s %d times' % (why, m.transit_fails), transit=True)
             return
         delay = self._retry_delay(m.transit_fails)
         self._schedule_retry('TRANSIT', 'area %d sub-path %d/%d: %s, retry %d/%d in %.0f s'
                              % (m.area_idx, m.sub_i + 1, len(m.subpaths), why,
                                 m.transit_fails, self.p.transit_retries, delay), delay=delay)
+
+    def _sweep_blocked_skip(self, why):
+        """sweep_blocked_skip (2026-11-01): the transit to the current sub-path is exhausted
+        by a blocked pre-pivot sweep. Skip only edge_blocked_skip_m of the sub-path from the
+        rejoin pose (at least to the next pose, at most to the next pivot vertex), record it
+        like a detour skip and transit to the pose after it. False (off, another cause, a
+        detour / recovery / stretch re-try, or sweep_blocked_max_skips consecutive skips on
+        this sub-path): the caller drops the sub-path as before."""
+        m, p = self.mission, self.p
+        if not p.sweep_blocked_skip or 'sweep blocked' not in why or m.stretch is not None \
+                or m.detour is not None or m.recovering:
+            return False
+        key = (m.area_idx, m.sub_i)
+        n = m.sweep_skips.get(key, 0)
+        if n >= int(p.sweep_blocked_max_skips):
+            self._log('warn', 'sweep blocked: %d consecutive skips on area %d sub-path %d: '
+                              'dropping the sub-path' % (n, m.area_idx, m.sub_i))
+            return False
+        frm = min(m.start_local, self._seg_last())
+        end = self._skip_end(frm, float(p.edge_blocked_skip_m))
+        if end <= frm:
+            return False
+        m.sweep_skips[key] = n + 1
+        cum = geo.cumulative_lengths(m.subpaths[m.sub_i])
+        self._log('warn', 'sweep blocked: skip %.1f m (area %d sub-path %d poses %d -> %d), '
+                          'rejoin after it (skip %d/%d): %s'
+                  % (cum[end] - cum[frm], m.area_idx, m.sub_i, frm, end, n + 1,
+                     int(p.sweep_blocked_max_skips), why))
+        self._incident('sweep_blocked_skip', '%s, %.1f m skipped' % (why, cum[end] - cum[frm]))
+        self._skip_piece(frm, end, 'sweep blocked (%s)' % why)
+        return True
 
     def _route_planned(self, ok, resp):
         m = self.mission

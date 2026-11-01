@@ -626,3 +626,39 @@ SSID / AP / channel / bitrate / roams) once `/wifi/status` arrives. Parsing:
 `docker/Dockerfile.jazzy` on 2026-11-01: until the mower image is rebuilt, the container has
 only `/proc/net/wireless` and wifi_monitor reports `connected=false` (chip "No link": no signal, BSSID, freq,
 bitrate or roams). Parsers checked against the mower's real bcmdhd output the same day.
+
+## Bounded obstacle skips, one retry pass, plan-time mark exclusions (2026-11-01, unit + sim gate)
+
+Field run 2026-11-01 (area 3): a transit route corner whose pre-pivot sweep stayed blocked by
+three stone marks dropped a whole edge lap (38 m) after the transit retries, and a resume
+retried only the first of four stretches skipped behind one tree trunk before reporting
+MOWING_INCOMPLETE. Three behaviours, each behind a mission param (`config/mission.yaml`):
+
+- `sweep_blocked_skip` (true), `sweep_blocked_max_skips` (3), length `edge_blocked_skip_m`
+  (2.0, the existing edge-skip length): when a sub-path's transit is exhausted by a blocked
+  sweep ("route corner pivot sweep blocked"), only the piece from the rejoin pose up to
+  `edge_blocked_skip_m` along the path (at least one pose, at most the next pivot vertex) is
+  recorded as skipped (the same `area_skip` stretch a detour records, re-tried in the
+  end-of-area pass) and the transit goes to the pose after it. Consecutive skips on one
+  sub-path are counted until the robot starts following it again; above the cap the old
+  `subpath_failed` drop applies. Log: `sweep blocked: skip X m ...`, incident
+  `sweep_blocked_skip`.
+- `retry_each_skipped_stretch` (true): the end-of-area pass orders the skipped stretches
+  nearest-first from the robot and drives every one of them once (the "next to an
+  unbypassable obstacle" shortcut is not applied; the short-stretch rule stays). A retry
+  stopped by an on-path obstacle decision (act / stop with on_path true), a recent collision
+  ahead or a ranged static (never a person / animal) moves the stretch to the area cursor's
+  new `blocked_static` list (resume file row `area_static <area> <from> <to>`). Only static
+  stretches left: the area is complete and the mission ends MOWING_COMPLETE, with
+  `excluded_count N, excluded_m X (static obstacles)` in the outcome text and the log.
+  Anything else still blocked stays MOWING_INCOMPLETE (return_home_on_incomplete as before).
+- `exclude_marked_obstacles` (true), `exclude_mark_merge_m` (0.5): at plan time, sub-path poses
+  within (mark r + robot_width_m / 2 + 0.05 m) of a static obstacle mark from
+  /obstacle_tracker/nogo_zones (the marks the pre-pivot sweep consults) become blocked_static
+  stretches from the start; gaps shorter than 0.5 m between them are merged so an edge lap is
+  not cut into slivers. Follow chunks stop at an excluded stretch and continue (transit) after
+  it. Plan log: `N stretches / X m excluded by obstacle marks`. Needs fresh nogo zones at plan
+  time; with none the plan is unchanged.
+
+All three off restores the previous behaviour. The GUI progress `skipped` ranges include the
+blocked_static stretches.

@@ -185,6 +185,16 @@ behavior_tree_node:
     edge_blocked_hold_s: 3.0
     edge_blocked_skip_m: 2.0
     edge_lap_max_inset_m: 0.6
+    # 2026-11-01: blocked transit sweep -> skip only edge_blocked_skip_m of the sub-path and
+    # rejoin after it (sweep_blocked_max_skips consecutive skips -> sub-path dropped as before)
+    sweep_blocked_skip: true
+    sweep_blocked_max_skips: 3
+    # end-of-area pass tries every skipped stretch once; on-path obstacle again -> blocked_static
+    # (excluded, area complete) instead of MOWING_INCOMPLETE
+    retry_each_skipped_stretch: true
+    # plan time: poses near static obstacle marks are excluded (blocked_static) up front
+    exclude_marked_obstacles: true
+    exclude_mark_merge_m: 0.5
     # refused coverage pivot: back straight up this far, pivot ONCE more, then skip. 0 = off.
     pivot_backout_m: 0.35
     pivot_backout_speed_mps: 0.1

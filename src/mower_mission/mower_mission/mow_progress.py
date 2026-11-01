@@ -92,7 +92,7 @@ def progress(fsm, plan_id, blade_on, elapsed_s, session_mowed_m, why=None):
         if local > 0:
             mowed.append((offs[sub_i], offs[sub_i] + local))
         cur = [offs[sub_i] + local, offs[sub_i] + last]
-    for s in (ac.skipped if ac else ()):
+    for s in (list(ac.skipped) + list(getattr(ac, "blocked_static", ())) if ac else ()):
         skipped.append((s[0], s[1]))
     for f in getattr(m, 'failed', ()) or ():
         try:

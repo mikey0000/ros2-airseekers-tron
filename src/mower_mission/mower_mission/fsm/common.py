@@ -735,6 +735,25 @@ class Params:
     edge_blocked_hold_s: float = 3.0
     edge_blocked_skip_m: float = 2.0
     edge_lap_max_inset_m: float = 0.6
+    # 2026-11-01 field (area 3): a transit route corner whose pre-pivot sweep stayed blocked
+    # (stone marks) dropped the whole edge lap after the transit retries (38 m). True: when a
+    # sub-path's transit is exhausted by a blocked sweep, only edge_blocked_skip_m of the
+    # sub-path from its rejoin point is skipped (recorded like a detour skip, re-tried in the
+    # end-of-area pass) and the transit goes to the pose after it; after
+    # sweep_blocked_max_skips consecutive skips on one sub-path the old subpath_failed applies.
+    sweep_blocked_skip: bool = True
+    sweep_blocked_max_skips: int = 3
+    # 2026-11-01 field: the end-of-area pass tries every skipped stretch once (nearest first,
+    # no "next to an unbypassable obstacle" shortcut); a retry stopped again by an on-path
+    # obstacle decision / collision ahead marks the stretch blocked_static. Only static
+    # stretches left: the area counts as complete (excluded_m / excluded_count logged and in
+    # the outcome text), not MOWING_INCOMPLETE. False: the old pass.
+    retry_each_skipped_stretch: bool = True
+    # plan time: sub-path poses within (mark r + robot_width_m / 2 + 0.05 m) of a static
+    # obstacle mark (/obstacle_tracker/nogo_zones marks) are excluded (blocked_static) from
+    # the start and never driven; gaps shorter than exclude_mark_merge_m are merged in.
+    exclude_marked_obstacles: bool = True
+    exclude_mark_merge_m: float = 0.5
     # refused coverage pivot (policy skip): back straight up this far (Nav2 BackUp at
     # pivot_backout_speed_mps, both wheels above the 0.06 m/s floor) and pivot ONCE more
     # before skipping. 0 = off.
@@ -1334,6 +1353,9 @@ class Mission:
     pivot_skips: int = 0                        # blocked coverage pivots skipped (this mission)
     pivot_backout_key: Optional[tuple] = None   # (area, sub, local) already backed out for
     edge_skipped_m: float = 0.0                 # edge-lap metres skipped (this mission)
+    sweep_skips: dict = field(default_factory=dict)   # (area, sub) -> consecutive sweep skips
+    excluded_m: float = 0.0                     # blocked_static metres of completed areas
+    excluded_count: int = 0                     # blocked_static stretches of completed areas
     edge_laps: dict = field(default_factory=dict)   # (area, sub) -> is an edge lap
     # 2026-10-23 option C (fsm/phases/nogo.py)
     nogo_extra: dict = field(default_factory=dict)      # area -> zone polygons added mid-mow

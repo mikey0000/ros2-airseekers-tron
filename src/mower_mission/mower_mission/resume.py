@@ -29,10 +29,11 @@ HEADER = 'mowgli_coverage_resume v2'
 
 
 class AreaCursor:
-    __slots__ = ('pose_count', 'fingerprint', 'resume_index', 'completed', 'skipped', 'done_fps')
+    __slots__ = ('pose_count', 'fingerprint', 'resume_index', 'completed', 'skipped', 'done_fps',
+                 'blocked_static')
 
     def __init__(self, pose_count=0, fingerprint=0, resume_index=-1, completed=None,
-                 skipped=None, done_fps=None):
+                 skipped=None, done_fps=None, blocked_static=None):
         self.pose_count = int(pose_count)
         self.fingerprint = int(fingerprint)
         self.resume_index = int(resume_index)
@@ -43,6 +44,9 @@ class AreaCursor:
         # geometry fingerprints of the completed sub-paths: a re-plan (settings change, rename)
         # keeps those whose geometry is unchanged (field 2026-10-23: 27 m lost)
         self.done_fps = set(done_fps or ())
+        # [(abs_from, abs_to)] stretches excluded as blocked by a static obstacle (a retry hit
+        # it again, or a plan-time obstacle mark): never driven, the area counts as complete
+        self.blocked_static = [tuple(s) for s in (blocked_static or ())]
 
     def __eq__(self, other):
         return isinstance(other, AreaCursor) and all(
@@ -103,6 +107,8 @@ class ResumeCursor:
         for idx in sorted(self.areas):
             for fr, to in self.areas[idx].skipped:
                 out.append('area_skip %d %d %d' % (idx, fr, to))
+            for fr, to in self.areas[idx].blocked_static:
+                out.append('area_static %d %d %d' % (idx, fr, to))
             if self.areas[idx].done_fps:
                 out.append(' '.join(['area_donefp', str(idx)]
                                     + [str(f) for f in sorted(self.areas[idx].done_fps)]))
@@ -142,6 +148,8 @@ class ResumeCursor:
                     cur.area(int(args[0])).done_fps = {int(f) for f in args[1:]}
                 elif tag == 'area_skip' and len(args) >= 3:
                     cur.area(int(args[0])).skipped.append((int(args[1]), int(args[2])))
+                elif tag == 'area_static' and len(args) >= 3:
+                    cur.area(int(args[0])).blocked_static.append((int(args[1]), int(args[2])))
                 elif tag == 'area_run' and len(args) >= 2:
                     cur.area_runs[int(args[0])] = int(args[1])
                 elif tag == 'live_height' and args:
