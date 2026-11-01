@@ -5142,3 +5142,44 @@ def test_plan_time_exclusion_off():
     h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
                  zs=[(2.0, 2.0, 0.1)], exclude_marked_obstacles=False)
     assert h.fsm.cursor.areas[0].blocked_static == []
+
+
+def _out_and_back():
+    """A lap that runs down a slit to a hole and back up beside itself (2026-11-01 trunk
+    re-plan, sub-path 0 poses 373 -> 667): the return comes within 0.15 m of the start."""
+    down = line(0, 0, 0, -3, n=61)
+    across = line(0, -3, 0.15, -3, n=4)[1:]
+    up = line(0.15, -3, 0.15, 0, n=61)[1:]
+    back = line(0.15, 0, 0.0, 0.05, n=4)[1:]
+    on = line(0.0, 0.05, -3.0, 0.05, n=61)[1:]
+    sp = down + across + up + back
+    return sp + on, len(sp) - 1
+
+
+def test_clear_end_before_moves_an_end_that_passes_near_the_chunk_start():
+    from mower_mission import geometry as geo
+    sp, c = _out_and_back()
+    assert not geo.end_is_clear(sp, 0, c, 0.5)
+    e = geo.clear_end_before(sp, 0, c, 0.5)
+    assert 0 < e < c and geo.end_is_clear(sp, 0, e, 0.5)
+    assert min(math.dist(sp[e][:2], q[:2]) for q in sp[:e - 20]) > 0.5
+    assert geo.clear_end_before(sp, e, c, 0.5) == c       # from close by: the vertex itself
+
+
+def test_chunk_ending_on_a_pivot_vertex_beside_its_start_is_cut_short():
+    # the corner goal checker matched the vertex at the chunk start and follow_path
+    # "succeeded" 3/3 times with 14 m left -> sub-path NOT mowed (trunk gate 2026-11-01)
+    h = Harness(follow_chunk_m=25.0)
+    start_until_planning(h)
+    sp, c = _out_and_back()
+    h.fsm._cov_pivots = lambda k=None: [c]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)['poses']
+    assert h.fsm.mission.corner_end is None and len(g) - 1 < c
+    assert math.dist(g[-1][:2], sp[0][:2]) > 0.5
+    h.finish(f.ACT_FOLLOW)
+    assert h.fsm.mission.premature == 0
+    g2 = h.goal(f.ACT_FOLLOW)['poses']
+    assert g2[-1][:2] == sp[c][:2] and h.fsm.mission.corner_end == c

@@ -292,6 +292,29 @@ def chunk_end(poses, start, max_len, clearance):
     return best if best is not None else min(start + 1, last)
 
 
+def end_is_clear(poses, start, e, clearance):
+    """True when pose ``e`` stays more than ``clearance`` away from every pose of
+    ``poses[start:e]`` that is more than ``2 * clearance`` of path before it (the
+    chunk_end rule: a goal checker cannot match the end pose early)."""
+    acc = 0.0
+    for j in range(e - 1, start - 1, -1):
+        acc += dist(poses[j], poses[j + 1])
+        if acc >= 2.0 * clearance and dist(poses[j], poses[e]) <= clearance:
+            return False
+    return True
+
+
+def clear_end_before(poses, start, e, clearance):
+    """``e`` when it is a clear chunk end from ``start`` (end_is_clear), else the
+    furthest clear index in ``(start, e)``; ``e`` when there is none."""
+    if clearance <= 0 or end_is_clear(poses, start, e, clearance):
+        return e
+    for k in range(e - 1, start, -1):
+        if end_is_clear(poses, start, k, clearance):
+            return k
+    return e
+
+
 def needs_transit(pose, target, transit_gap):
     """Blade-off transit decision of upstream ``FollowStrip::sendCurrentSwath``.
 
