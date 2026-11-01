@@ -54,7 +54,7 @@ def parse_iw_link(text):
         if mm:
             out[key] = mm.group(1).strip()
     for key, pattern in (('freq_mhz', r'^\s*freq:\s*' + _NUM),
-                         ('signal_dbm', r'^\s*signal:\s*' + _NUM + r'\s*dBm'),
+                         ('signal_dbm', r'^\s*signal:\s*' + _NUM + r'(?:\s*\[[^]]*\])?\s*dBm'),
                          ('tx_bitrate_mbps', r'^\s*tx bitrate:\s*' + _NUM + r'\s*MBit/s'),
                          ('rx_bitrate_mbps', r'^\s*rx bitrate:\s*' + _NUM + r'\s*MBit/s')):
         mm = re.search(pattern, text, re.M)

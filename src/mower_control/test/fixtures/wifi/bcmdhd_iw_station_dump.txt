@@ -1,0 +1,12 @@
+Station 02:00:5e:33:44:55 (on wlan0)
+	rx bytes:	120013000
+	rx packets:	1102290
+	tx bytes:	900130000
+	tx packets:	40211
+	tx retries:	4321
+	tx failed:	7654
+	rx drop misc:	0
+	signal:  	-72 dBm
+	tx bitrate:	39.0 MBit/s
+	rx bitrate:	54.0 MBit/s
+	current time:	1700000000000 ms

@@ -622,4 +622,7 @@ retries/failed, roam count). Connect / roam / disconnect / reconnect go to `/wif
 `connected=false`. Both topics are in the full and low-power bag rings, so roams line up with
 incidents in a pin. The GUI header shows a Wi-Fi chip (dBm, four colour levels, tooltip with
 SSID / AP / channel / bitrate / roams) once `/wifi/status` arrives. Parsing:
-`wifi_logic.py`, tests `test/test_wifi_monitor.py`. Observability only, no behaviour change.
+`wifi_logic.py`, tests `test/test_wifi_monitor.py`. Observability only, no behaviour change. Needs `iw`, added to
+`docker/Dockerfile.jazzy` on 2026-11-01: until the mower image is rebuilt, the container has
+only `/proc/net/wireless` and wifi_monitor reports `connected=false` (chip "No link": no signal, BSSID, freq,
+bitrate or roams). Parsers checked against the mower's real bcmdhd output the same day.

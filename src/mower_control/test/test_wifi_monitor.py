@@ -166,3 +166,24 @@ def test_fill_status_and_describe():
     assert not off.connected and math.isnan(off.signal_dbm)
     line = wm.describe_event(ev[0])
     assert 'roam' in line and '02:00:5e:10:20:41 2437 MHz -71 dBm' in line
+
+
+def test_bcmdhd_shapes():
+    """Shapes captured from the mower's bcmdhd on 2026-11-01 (values made up)."""
+    proc = fx('bcmdhd_proc_net_wireless.txt')
+    assert wl.parse_proc_wireless(proc, 'wlan0') == {'link_quality': 3.0, 'signal_dbm': -73.0}
+    assert wl.parse_proc_wireless(proc, 'wlan1') == {'link_quality': 0.0, 'signal_dbm': 0.0}
+    d = wl.parse_iw_link(fx('bcmdhd_iw_link.txt'))
+    assert (d['bssid'], d['freq_mhz'], d['signal_dbm']) == ('02:00:5e:33:44:55', 5500.0, -72.0)
+    assert (d['tx_bitrate_mbps'], d['rx_bitrate_mbps']) == (39.0, 54.0)
+    assert wl.parse_station_dump(fx('bcmdhd_iw_station_dump.txt')) == {
+        'tx_retries': 4321, 'tx_failed': 7654}
+    s = wl.build_sample('wlan0', proc, fx('bcmdhd_iw_link.txt'), 'up')
+    assert s['link_state'] == 'weak' and wl.freq_to_channel(5500) == 100
+
+
+def test_signal_chain_form():
+    d = wl.parse_iw_link('Connected to 02:00:5e:00:00:01 (on wlan0)\n'
+                         '\tsignal: -69 [-69, -71] dBm\n'
+                         '\ttx bitrate: 97.5 MBit/s VHT-MCS 4 80MHz VHT-NSS 1\n')
+    assert d['signal_dbm'] == -69.0 and d['tx_bitrate_mbps'] == 97.5
