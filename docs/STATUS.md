@@ -662,3 +662,14 @@ MOWING_INCOMPLETE. Three behaviours, each behind a mission param (`config/missio
 
 All three off restores the previous behaviour. The GUI progress `skipped` ranges include the
 blocked_static stretches.
+
+## Pivot-vertex chunk ends beside their start (2026-11-01, sim-tested)
+
+Trunk gate (real_run5_trunk, seed 2): after the no-go re-plan the edge lap runs down a slit
+to the trunk hole and back up 0.15 m beside itself, with pivot vertices at both ends of the
+slit. `_follow` let a pivot vertex (or an excluded-piece start) override `chunk_end`'s
+clearance rule, so the chunk from pose 373 ended on the vertex at 667, at the same spot; the
+along-path corner checker matched it at once and follow_path "succeeded" 3/3 times with 14 m
+left (sub-path NOT mowed, MOWING_INCOMPLETE). Now such a chunk ends at the furthest pose
+before the vertex that clears the chunk start (`geometry.clear_end_before`) and the next
+chunk reaches the vertex from close by. Log: `chunk end N passes near its own start`.

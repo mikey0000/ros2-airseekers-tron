@@ -366,6 +366,18 @@ class MowingMixin:
             if m.start_local < c <= m.chunk_end and c < self._seg_last():
                 m.chunk_end = m.corner_end = c       # this chunk ends on the pivot vertex
                 break
+        # A pivot vertex / excluded-piece start overrides chunk_end's clearance rule; when
+        # the path came past that pose earlier in the chunk (a lap that runs out and back
+        # along a slit to a hole), the goal checker matches it at the start and follow_path
+        # "succeeds" at once. End this chunk at the furthest clear pose before it instead;
+        # the next chunk reaches the vertex from close by.
+        e = geo.clear_end_before(sp, m.start_local, m.chunk_end,
+                                 self.p.follow_chunk_clearance_m)
+        if e != m.chunk_end:
+            self._log('info', 'area %d sub-path %d: chunk end %d passes near its own start '
+                              '(pose %d); chunk ends at %d instead'
+                      % (m.area_idx, m.sub_i, m.chunk_end, m.start_local, e))
+            m.chunk_end, m.corner_end = e, None
         if m.join is not None and m.join[0] == m.sub_i and m.join[1] == m.start_local:
             # the gate's (h) rebuilds the sent path from this line (keep the format)
             self._log('info', 'edge start join: sub %d local %d side %+d inset %.3f over %.2f m'
