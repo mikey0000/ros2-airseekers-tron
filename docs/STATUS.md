@@ -579,6 +579,18 @@ route hairpin at the dock-path / area-path junction where FollowPath stalled and
   local costmap: check that it does not refuse the pivot inside the 0.35 m path corridor.
   Revert flags: `docs/wheel_smoothness_field_tests.md` rows 10 and 11.
 
+## Bag ring: corrupt zstd splits, false recorder crash dumps (2026-11-01, unit-tested only)
+
+During a mow at load avg ~12 on 8 cores, 10 of 68 one-minute splits were unreadable: half had a
+zstd frame with no end block ("premature end"), half had end blocks but no frame header
+("unsupported format"). rosbag2 file compression ran with one thread per core, so a split still
+compressing when the next one rolled was compressed in parallel and the frames got mixed.
+`record_cmd` now passes `--compression-threads 1 --compression-queue-size 2`. Separately, every
+low/full ring switch stops the `ros2 bag record` child on purpose, which the supervisor reported
+as `/rosbag2_recorder` vanishing with a node_down blackbox; it is now in the supervisor's
+default ignore list (bag_recorder already restarts and logs real child exits). A SIGKILL after
+the 15 s stop timeout is now logged as a possibly partial last split.
+
 ## Open risks
 
 - Grass segmentation (2026-10-09, not yet run on the mower, `nongrass:=false` by default): seg_ros now runs on the front stereo right colour eye, `nongrass_projector` projects its mask onto the ground and map_server_node keeps a confirmed non-grass memory that feeds a SOFT global-costmap layer (`nongrass_layer`). The model was trained on the OA cameras: class quality on the front eye, NPU sharing with det_ros on core 1 and the shadow false-positive rate need a live check (`docs/grass_segmentation.md`).

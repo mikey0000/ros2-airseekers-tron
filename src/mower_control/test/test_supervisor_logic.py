@@ -47,6 +47,14 @@ def test_ignored_patterns():
     assert tr.status(5)['nodes'] == {}
 
 
+def test_bag_recorder_child_not_tracked():
+    """bag_recorder stops its child on ring switches; that must not be a node_down."""
+    tr = LivenessTracker(adopt_after_s=0, down_after_s=1, now=0)
+    run(tr, 0, 5, {'/rosbag2_recorder', '/bag_recorder'})
+    assert run(tr, 6, 12, {'/bag_recorder'}) == []
+    assert '/rosbag2_recorder' not in tr.status(12)['nodes']
+
+
 def test_critical_never_started_after_grace():
     tr = LivenessTracker(critical=['mower_mcu_driver'], startup_grace_s=30, now=0)
     assert run(tr, 0, 29, set()) == []

@@ -16,8 +16,11 @@ set of fully qualified names to :meth:`LivenessTracker.update`:
 
 import fnmatch
 
+# /rosbag2_recorder is the `ros2 bag record` child of bag_recorder, which stops it on every
+# low/full ring switch and restarts/logs real exits itself; tracking it here only produced
+# false node_down blackboxes.
 DEFAULT_IGNORE = ('/_ros2cli_*', '/launch_ros_*', '*/transform_listener_impl_*',
-                  '/_NODE_NAME_UNKNOWN_*', '*/_*')
+                  '/_NODE_NAME_UNKNOWN_*', '*/_*', '/rosbag2_recorder')
 
 
 class LivenessTracker:

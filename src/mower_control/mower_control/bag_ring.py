@@ -563,5 +563,10 @@ def record_cmd(output, topics, split_s, max_cache_bytes, compression='zstd',
     if preset:
         cmd += ['--storage-preset-profile', preset]
     if compression:
-        cmd += ['--compression-mode', 'file', '--compression-format', compression]
+        # One compression thread: with the default (one per core) a split that is still
+        # compressing when the next one rolls is compressed in parallel and both frames come
+        # out mangled (2026-11-01: 10 of 68 splits unreadable at load avg 12). Queue 2 so a
+        # slow compression delays the next split instead of dropping it.
+        cmd += ['--compression-mode', 'file', '--compression-format', compression,
+                '--compression-threads', '1', '--compression-queue-size', '2']
     return cmd + list(topics)

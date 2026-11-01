@@ -56,6 +56,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 
@@ -246,6 +247,8 @@ class RecorderProcess:
         if p.poll() is not None:
             self.stopping = None
         elif now >= self.stop_deadline:
+            sys.stderr.write('bag_recorder: ros2 bag record did not exit after SIGINT, SIGKILL: '
+                             'its last split may be partial or uncompressed\n')
             try:
                 p.kill()
             except OSError:
