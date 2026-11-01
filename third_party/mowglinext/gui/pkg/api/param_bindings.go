@@ -133,6 +133,8 @@ var paramBindingTables = map[string]ParamBindingTable{
 			{Key: "battery_low_action", Node: "/behavior_tree_node", Param: "battery_low_action", Type: ParamTypeString, Live: true},
 			// Charge limit while docked (100 = no limit; re-enables 5 % below).
 			{Key: "battery_max_charge_percent", Node: "/behavior_tree_node", Param: "battery_max_charge_percent", Type: ParamTypeDouble, Live: true},
+			// MOWING_INCOMPLETE -> drive back to the dock instead of waiting on the lawn.
+			{Key: "return_home_on_incomplete", Node: "/behavior_tree_node", Param: "return_home_on_incomplete", Type: ParamTypeBool, Live: true},
 			// GUI 0 ignore / 1 dock / 2 dock until dry / 3 pause; Tron 0 ignore / 1 dock and wait.
 			{Key: "rain_mode", Node: "/behavior_tree_node", Param: "rain_mode", Type: ParamTypeInteger,
 				ValueMap: map[string]any{"0": 0, "1": 1, "2": 1, "3": 1}},

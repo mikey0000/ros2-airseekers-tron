@@ -566,7 +566,8 @@ class MissionNode(Node):
         return res
 
     LIVE_PARAMS = ('battery_low_percent', 'battery_full_percent', 'battery_low_action',
-                   'battery_max_charge_percent', 'battery_charge_hysteresis_percent')
+                   'battery_max_charge_percent', 'battery_charge_hysteresis_percent',
+                   'return_home_on_incomplete')
 
     def _on_set_params(self, params):
         from rcl_interfaces.msg import SetParametersResult

@@ -579,6 +579,12 @@ route hairpin at the dock-path / area-path junction where FollowPath stalled and
   local costmap: check that it does not refuse the pivot inside the 0.35 m path corridor.
   Revert flags: `docs/wheel_smoothness_field_tests.md` rows 10 and 11.
 
+2026-11-01: `return_home_on_incomplete` now defaults to true (Params, `mission.yaml`) and
+is a live GUI toggle under Settings > Battery ("Return to dock when mowing is incomplete";
+bindings in `launch/robot_settings.py` and the GUI `param_bindings`). Reason: the mower twice
+sat idle on the lawn for over an hour after MOWING_INCOMPLETE; it now docks and keeps the
+resume cursor. Sim gate still required before deploy.
+
 ## Bag ring: corrupt zstd splits, false recorder crash dumps (2026-11-01, unit-tested only)
 
 During a mow at load avg ~12 on 8 cores, 10 of 68 one-minute splits were unreadable: half had a

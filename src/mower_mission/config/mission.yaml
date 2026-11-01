@@ -365,7 +365,7 @@ behavior_tree_node:
     # stereo / det / bumper marks the replan must avoid (Nav2's BT still clears both as its
     # last recovery, and a stuck escape clears both).
     clear_global_costmap_on_retry: false
-    return_home_on_incomplete: false  # sub-paths not mowed -> MOWING_INCOMPLETE; dock only if true
+    return_home_on_incomplete: true   # sub-paths not mowed -> MOWING_INCOMPLETE, then dock (false: stay put)
     # 2026-10-15 MPPI study (docs/analysis/2026-10-15_mppi_study.md): the coverage sub-paths are
     # driven by the feasibility-aware MPPI (FollowCoveragePathMPPI forward,
     # FollowCoveragePathReverseMPPI for reverse legs; the cut speed is set on

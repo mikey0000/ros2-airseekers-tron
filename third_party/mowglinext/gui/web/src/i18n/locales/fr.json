@@ -2615,6 +2615,8 @@
     "lowActionTooltip": "What a running mow does when the battery drops below the Low threshold.",
     "lowActionStop": "Stop where it is (blade off)",
     "lowActionDock": "Return to dock and charge",
+    "returnHomeOnIncomplete": "Return to dock when mowing is incomplete",
+    "returnHomeOnIncompleteTooltip": "When a mow ends with skipped stretches, drive back to the dock instead of waiting on the lawn.",
     "maxCharge": "Max charge level",
     "maxChargeTooltip": "While docked, charging stops at this level and restarts 5 % below it. 100 % = no limit. A paused mow resumes once this level (or Resume Above, whichever is lower) is reached."
   },
