@@ -287,7 +287,7 @@ controller_server:
       max_robot_pose_search_dist: 10.0
       transform_tolerance: 0.5
       enforce_path_inversion: false
-      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic",
+      critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignAheadCritic",
                 "PathFollowCritic", "PathAngleCritic", "PreferForwardCritic", "WheelFloorCritic"]
       ConstraintCritic:
         enabled: true
@@ -310,7 +310,16 @@ controller_server:
       # max_path_occupancy_ratio 0.05: once > 5 % of the local path is in collision /
       # inscribed space, path alignment switches off and CostCritic + PathFollow steer
       # around the obstacle (this is the "deviate and rejoin" mechanism).
-      PathAlignCritic:
+      # PathAlignAheadCritic (2026-11-01, ws/transit-align): the coverage controller's B13-1
+      # heading damping (control point 0.25 m ahead, docs/analysis/2026-10-29_localisation_
+      # wander.md section 6) applied to transit, which still wove (field RTK XTE p90 3.8 cm,
+      # 6.4 s period). The critic has no coverage-only assumptions (path-agnostic, same
+      # gating as PathAlignCritic); it reads the planner path up to 0.25 m past the furthest
+      # reached point. Weight, step, threshold and offset_from_furthest keep the transit
+      # values (planner paths are dense, offset 20 ~ the old gating); only the control point
+      # changes. On curves base_link sits d^2/2R inside (3 cm at R 1 m). Revert:
+      # "PathAlignCritic" in critics, rename the block, drop control_point_x.
+      PathAlignAheadCritic:
         enabled: true
         cost_power: 1
         cost_weight: 14.0
@@ -319,6 +328,7 @@ controller_server:
         threshold_to_consider: 0.5
         offset_from_furthest: 20
         use_path_orientations: false
+        control_point_x: 0.25
       PathFollowCritic:
         enabled: true
         cost_power: 1

@@ -525,7 +525,7 @@ def test_mppi_transit():
     # forward preference also within 0.5 m of the goal (short conditioned legs, 2026-10-16)
     assert c["PreferForwardCritic"]["threshold_to_consider"] == 0.0
     critics = c["critics"]
-    assert {"CostCritic", "GoalCritic", "PathAlignCritic", "PathFollowCritic",
+    assert {"CostCritic", "GoalCritic", "PathAlignAheadCritic", "PathFollowCritic",
             "PreferForwardCritic"} <= set(critics)
     # transit ends on xy only (general_goal_checker yaw tolerance 3.14)
     assert "GoalAngleCritic" not in critics
@@ -613,6 +613,17 @@ def test_mppi_model_dt_and_cpu_budget():
     for name in ("FollowCoveragePathMPPI", "FollowCoveragePathReverseMPPI"):
         assert abs(_ctl(name)["model_dt"] - period) < 1e-9, name
     assert _ctl("FollowPath")["time_steps"] * _ctl("FollowPath")["model_dt"] >= 4.0 - 1e-9
+
+
+def test_transit_path_align_ahead():
+    """2026-11-01: transit FollowPath uses the B13-1 control-point critic as coverage does."""
+    c = _ctl("FollowPath")
+    pa = c["PathAlignAheadCritic"]
+    assert "PathAlignAheadCritic" in c["critics"] and "PathAlignCritic" not in c["critics"]
+    assert pa["use_path_orientations"] is False
+    assert 0.1 <= pa["control_point_x"] <= 0.4
+    assert pa["max_path_occupancy_ratio"] <= 0.1      # deviate-and-rejoin around obstacles
+    assert c["vx_max"] <= 0.3
 
 
 def test_mppi_coverage_controllers():
