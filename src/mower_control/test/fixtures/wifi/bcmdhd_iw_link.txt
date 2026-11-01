@@ -1,0 +1,8 @@
+Connected to 02:00:5e:33:44:55 (on wlan0)
+	SSID: example-net
+	freq: 5500
+	RX: 120004512 bytes (1102233 packets)
+	TX: 900112233 bytes (40211 packets)
+	signal: -72 dBm
+	rx bitrate: 54.0 MBit/s
+	tx bitrate: 39.0 MBit/s

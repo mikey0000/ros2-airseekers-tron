@@ -294,6 +294,8 @@ FOXGLOVE_GUI_TOPICS = [
     # um960_gps_driver's 1 Hz LoRa base status JSON (GUI Settings > GPS & Positioning >
     # RTK base station card; pairing itself goes over the /mower_gps_node/* services).
     r'^/mower_gps_node/lora_status$',
+    # mower_control/wifi_monitor 1 Hz link status (GUI header Wi-Fi chip).
+    r'^/wifi/status$',
     # gui_bridge's low-rate GUI copies (mower_gui_bridge/gui_relay.py): pose 5 Hz, status
     # 2 Hz, emergency on change + 1 Hz, detections 2 Hz/camera on demand. The GUI provider
     # reads these instead of the 20 / 5 / 5 / 15 Hz originals (kept above for older GUIs);
@@ -348,6 +350,9 @@ def generate_launch_description() -> LaunchDescription:
         arg('supervisor', 'true', 'mower_control/supervisor: node liveness (/supervisor/status, '
             '/diagnostics), black-box rosbag dumps to /userdata/ros2/crashes '
             '(docs/crash_recovery.md).'),
+        arg('wifi_monitor', 'true', 'mower_control/wifi_monitor: Wi-Fi link signal / bitrate / '
+            'roams of wifi_iface on /wifi/status (1 Hz) and /wifi/event (roam, disconnect).'),
+        arg('wifi_iface', 'wlan0', 'Interface wifi_monitor watches.'),
         arg('alerts', 'true', 'mower_alerts/alert_node: theft / geofence, lift / tilt and '
             'mission incident alerts on /mower_alerts/events (pushed by the GUI). Thresholds: '
             'mower_alerts/config/alerts.yaml.'),
@@ -694,6 +699,12 @@ def generate_launch_description() -> LaunchDescription:
         'housekeeping', package='mower_control', executable='supervisor', name='supervisor',
         respawn=True, respawn_delay=2.0, output='screen', condition=enabled('supervisor'),
     )
+    # 2026-11-01: own process (subprocess `iw` calls must not stall a shared host executor).
+    wifi_monitor = Node(
+        package='mower_control', executable='wifi_monitor', name='wifi_monitor',
+        respawn=True, respawn_delay=5.0, output='screen', condition=enabled('wifi_monitor'),
+        parameters=[{'iface': LaunchConfiguration('wifi_iface'), 'period_s': 1.0}],
+    )
     mow_recorder = hosted_node(
         'housekeeping', package='mower_control', executable='mow_recorder', name='mow_recorder',
         respawn=True, respawn_delay=2.0, output='screen', condition=enabled('mow_recorder'),
@@ -747,6 +758,6 @@ def generate_launch_description() -> LaunchDescription:
         + control
         + [teleop, gui_bridge] + foxglove + [localization, navigation,
            map_server, obstacle_tracker, coverage, docking, mission, cameras, vio, perception,
-           det_range, supervisor, mow_recorder, bag_recorder, ble_bridge, alerts]
+           det_range, supervisor, wifi_monitor, mow_recorder, bag_recorder, ble_bridge, alerts]
         + [start_node_hosts()]     # last: the hosted nodes of every include are registered
     )

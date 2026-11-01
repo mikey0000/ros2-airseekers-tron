@@ -147,5 +147,5 @@ RUN pip3 install --break-system-packages --no-cache-dir \
 # gdb: read the core dumps that kernel.core_pattern writes to /userdata/ros2/crashes
 #   (gdb /work/install/<pkg>/lib/<pkg>/<exe> /userdata/ros2/crashes/core.<exe>.<pid>.<t>).
 # elfutils (eu-stack/eu-unstrip): quick backtraces and re-joining split debug files.
-RUN apt-get update && apt-get install -y --no-install-recommends gdb elfutils \
+RUN apt-get update && apt-get install -y --no-install-recommends gdb elfutils iw \
     && rm -rf /var/lib/apt/lists/*

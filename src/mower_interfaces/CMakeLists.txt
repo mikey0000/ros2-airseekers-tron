@@ -23,6 +23,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MotorControl.msg"
   "msg/MowerBaseDevInfo.msg"
   "msg/BatteryHealthInfo.msg"
+  "msg/WifiStatus.msg"
   "srv/PlannerTaskSet.srv"
   "srv/BumperControl.srv"
   "srv/CutterControl.srv"

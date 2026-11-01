@@ -1,0 +1,12 @@
+Connected to 02:00:5e:10:20:30 (on wlan0)
+	SSID: example-net
+	freq: 5180
+	RX: 48211904 bytes (61022 packets)
+	TX: 7310255 bytes (30418 packets)
+	signal: -63 dBm
+	rx bitrate: 390.0 MBit/s VHT-MCS 8 80MHz VHT-NSS 1
+	tx bitrate: 433.3 MBit/s VHT-MCS 9 80MHz short GI VHT-NSS 1
+
+	bss flags:	short-slot-time
+	dtim period:	1
+	beacon int:	100

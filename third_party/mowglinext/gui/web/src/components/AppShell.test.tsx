@@ -17,6 +17,7 @@ vi.hoisted(() => {
 // only the routing/outlet behaviour.
 vi.mock('./MowerStatus.tsx', () => ({MowerStatus: () => null}));
 vi.mock('./NotificationBell.tsx', () => ({NotificationBell: () => null}));
+vi.mock('./WifiChip.tsx', () => ({WifiChip: () => null}));
 vi.mock('./LanguageSwitcher.tsx', () => ({LanguageSwitcher: () => null}));
 vi.mock('./LiveStatusStrip.tsx', () => ({LiveStatusStrip: () => null}));
 vi.mock('../hooks/useNotificationCenter.tsx', () => ({useAutoNotifications: () => undefined}));

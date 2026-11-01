@@ -29,6 +29,7 @@ setup(
             'tilt_monitor = mower_control.tilt_monitor:main',
             'bag_recorder = mower_control.bag_recorder:main',
             'fixed_frame_relay = mower_control.fixed_frame_relay:main',
+            'wifi_monitor = mower_control.wifi_monitor:main',
         ],
     },
 )

@@ -1,0 +1,16 @@
+Station 02:00:5e:10:20:30 (on wlan0)
+	inactive time:	1210 ms
+	rx bytes:	48211904
+	rx packets:	61022
+	tx bytes:	7310255
+	tx packets:	30418
+	tx retries:	1873
+	tx failed:	42
+	signal:  	-63 dBm
+	signal avg:	-62 dBm
+	tx bitrate:	433.3 MBit/s VHT-MCS 9 80MHz short GI VHT-NSS 1
+	rx bitrate:	390.0 MBit/s VHT-MCS 8 80MHz VHT-NSS 1
+	authorized:	yes
+	authenticated:	yes
+	associated:	yes
+	connected time:	5321 seconds

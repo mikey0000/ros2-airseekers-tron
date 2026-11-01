@@ -4717,5 +4717,23 @@
       "title": "iPhone / iPad",
       "note": "Installez le profil téléchargé, puis activez la confiance totale dans Réglages → Général → Informations → Réglages des certificats. Le Web Bluetooth reste indisponible sur iOS."
     }
+  },
+  "wifiChip": {
+    "label": "Mower Wi-Fi: {{state}}",
+    "noSignal": "No link",
+    "state": {
+      "good": "good",
+      "ok": "ok",
+      "weak": "weak",
+      "bad": "bad",
+      "disconnected": "disconnected",
+      "down": "interface down"
+    },
+    "ssid": "SSID: {{value}}",
+    "bssid": "Access point: {{value}}",
+    "channel": "Channel {{channel}} ({{freq}} MHz)",
+    "bitrate": "Bitrate: tx {{tx}} / rx {{rx}} Mbit/s",
+    "roams": "Roams since start: {{count}}",
+    "retries": "Tx retries {{retries}}, failed {{failed}}"
   }
 }

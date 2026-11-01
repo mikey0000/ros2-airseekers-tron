@@ -610,3 +610,19 @@ the 15 s stop timeout is now logged as a possibly partial last split.
 - `map -> odom` comes from `ekf_map` since 2026-10-09 (not yet run on the mower). The datum
   (`datum_lat`/`datum_lon`/`datum_yaw`) is still to be set per site (dock position, same as
   `config/gui/mowgli_robot.yaml`).
+
+## Wi-Fi link monitor (2026-11-01, unit-tested only, not yet run on the mower)
+
+`mower_control/wifi_monitor` (own process, launch arg `wifi_monitor`, `wifi_iface` default
+`wlan0`) reads `/proc/net/wireless`, `iw dev <iface> link`, `/sys/class/net/<iface>/operstate`
+every second and `iw dev <iface> station dump` every 10 s, all without root, and publishes
+`mower_interfaces/WifiStatus` on `/wifi/status` (signal, BSSID, freq, bitrates, tx
+retries/failed, roam count). Connect / roam / disconnect / reconnect go to `/wifi/event`
+(JSON String, old and new BSSID / freq / signal) and the log. A missing `iw` or interface gives
+`connected=false`. Both topics are in the full and low-power bag rings, so roams line up with
+incidents in a pin. The GUI header shows a Wi-Fi chip (dBm, four colour levels, tooltip with
+SSID / AP / channel / bitrate / roams) once `/wifi/status` arrives. Parsing:
+`wifi_logic.py`, tests `test/test_wifi_monitor.py`. Observability only, no behaviour change. Needs `iw`, added to
+`docker/Dockerfile.jazzy` on 2026-11-01: until the mower image is rebuilt, the container has
+only `/proc/net/wireless` and wifi_monitor reports `connected=false` (chip "No link": no signal, BSSID, freq,
+bitrate or roams). Parsers checked against the mower's real bcmdhd output the same day.
