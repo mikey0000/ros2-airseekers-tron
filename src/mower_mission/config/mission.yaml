@@ -42,6 +42,8 @@ behavior_tree_node:
     heading_calibration_settle_s: 3.0       # RTK fixed this long first: the saved heading
                                             # may verify on its own (no drive needed)
     heading_calibration_status_wait_s: 3.0  # after the drive: wait this long for the COG fix
+    heading_calibration_blind: true         # no pose prior: drive blind (no Nav2) to get a COG heading
+    heading_calibration_blind_distance_m: 0.8  # blind drive length: 0.6 m COG window + margin
     # Stale / poor COG heading at START (2026-10-14: the second START planned on "aligned
     # (cog)" with quality poor and a 1200 s old fix and drove its transit 65 deg off). Off
     # the dock, a cog heading whose COG age (aligner status: the older of last_cog_age_s and
