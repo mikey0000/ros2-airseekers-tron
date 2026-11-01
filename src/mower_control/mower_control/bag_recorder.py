@@ -122,6 +122,8 @@ DEFAULT_TOPICS = [
     '/map_server_node/boundary_status', '/map_server_node/terrain_summary',
     # diagnostics (9 Hz)
     '/diagnostics',
+    # Wi-Fi link (2026-11-01, wifi_monitor: 1 Hz status + roam/disconnect events)
+    '/wifi/status', '/wifi/event',
 ]
 
 # 'detour' is a routine decision, not an incident (several per mow); the rest are aborts.
@@ -149,6 +151,7 @@ LOW_POWER_TOPICS = [
     '/mower_base/key_pressed', '/stuck_event', '/mower_docking/state',
     '/mower_docking/marker_in_view', '/mower_docking/marker_pose', '/mower_docking/diag',
     '/mower_docking/debug_image/compressed', '/rear_camera/exposure_state',
+    '/wifi/status', '/wifi/event',
 ]
 FULL, LOW = 'full', 'low'
 

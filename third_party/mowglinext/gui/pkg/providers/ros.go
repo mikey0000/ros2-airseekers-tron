@@ -126,6 +126,9 @@ var topicMap = map[string]topicDef{
 	// RTK base station (vendor LoRa base): um960_gps_driver's 1 Hz JSON status
 	// {pairing, ref_station, nrtk_on, station_id, diff_age_s, fix_type, ...}.
 	"rtkBaseStatus": {"/mower_gps_node/lora_status", "std_msgs/msg/String"},
+	// Wi-Fi link of the mower (mower_control/wifi_monitor, 1 Hz): signal, BSSID,
+	// freq, bitrates, roam count. Header Wi-Fi chip.
+	"wifiStatus": {"/wifi/status", "mower_interfaces/msg/WifiStatus"},
 }
 
 // queuedTopics lists logical keys whose subscribers must see every message, in

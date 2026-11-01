@@ -12,6 +12,7 @@ import {LanguageSwitcher} from "./LanguageSwitcher.tsx";
 import {LiveStatusStrip} from "./LiveStatusStrip.tsx";
 import {ConnectionBadge} from "./ConnectionBadge.tsx";
 import {ConnectionChip} from "./ConnectionChip.tsx";
+import {WifiChip} from "./WifiChip.tsx";
 import {IOSInstallBanner} from "./IOSInstallBanner.tsx";
 import {useIOSInstallPrompt} from "../hooks/useIOSInstallPrompt.ts";
 import {useAutoNotifications} from "../hooks/useNotificationCenter.tsx";
@@ -162,6 +163,7 @@ export function AppShell() {
           </div>
           <div style={{display: 'flex', alignItems: 'center', gap: 6}}>
             <ConnectionChip/>
+            <WifiChip/>
             <LanguageSwitcher/>
             <NotificationBell/>
           </div>
@@ -244,6 +246,7 @@ export function AppShell() {
           </div>
           <div style={{display: 'flex', alignItems: 'center', gap: 12}}>
             <ConnectionChip/>
+            <WifiChip/>
             <LanguageSwitcher/>
             <NotificationBell/>
             <MowerStatus/>
