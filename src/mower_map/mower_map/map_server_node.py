@@ -83,12 +83,12 @@ PARAMS = {
     # navigation mask (/nav_keepout_mask; Nav2 global costmap + keepout filter):
     # (mowing U navigation areas) grown by nav_margin_m, minus obstacles grown
     # by nav_obstacle_margin_m; the dock outline is never lethal here.
-    'nav_margin_m': 0.35,              # half footprint width (0.27 then; 0.235 since 2026-10-20) + 0.08
+    'nav_margin_m': 0.05,  # = map_server.yaml: GPS-jitter tolerance only (review 2026-11-02 H5; was 0.35)
     'nav_obstacle_margin_m': 0.10,
     # navigation areas / drawn paths are grown by this instead of nav_margin_m,
     # so a drawn path stays a narrow band the planner follows (mowing areas keep
     # nav_margin_m for recovery/docking from just outside)
-    'path_margin_m': 0.15,
+    'path_margin_m': 0.0,  # = map_server.yaml: exactly the drawn band (review 2026-11-02 H5; was 0.15)
     # half-width of the dock corridor and the return corridor (2026-10-09: decoupled from
     # nav_margin_m, which is now ~0 so routes stay inside the drawn areas / paths)
     'corridor_half_width_m': 0.35,
@@ -115,7 +115,7 @@ PARAMS = {
     'approach_distance': 0.8,          # same name/default as mower_docking
     # soft band (nav mask only): cells outside the free set but within this
     # distance of it cost SOFT_COST (90 of 100; 100 = lethal) instead of lethal
-    'nav_soft_band_m': 1.5,
+    'nav_soft_band_m': 0.0,  # = map_server.yaml: no plannable band outside areas / paths (review 2026-11-02 H5; was 1.5)
     # 2026-10-09 (field run 20261008-201401): with a drawn user path the 1.5 m band bridged the
     # ~1 m of unmapped lawn between Area 1 and the MIDDLE of Path 2, so the planner cut across
     # instead of entering the path at its start (offline repro: band 1.5 / 0.5 cut across,
@@ -148,7 +148,7 @@ PARAMS = {
     'status_max_age_s': 1.0,           # is_cutting older than this -> not cutting
     'mow_progress_publish_period_s': 2.0,
     # boundary
-    'boundary_check_rate_hz': 5.0,
+    'boundary_check_rate_hz': 10.0,  # = map_server.yaml (review 2026-11-02 H5; was 5.0)
     # Map-edit transaction (field 2026-10-21: a GUI PUT /map = clear_map + add_area x N made
     # the boundary check publish outside_m 23 m against a half-built area set): after
     # ~/begin_map_edit, clear_map / add_area / set_area_channel build a staged copy that
@@ -158,7 +158,7 @@ PARAMS = {
     'map_edit_timeout_s': 10.0,
     'soft_boundary_margin_m': 0.3,
     'lethal_boundary_margin_m': 0.5,
-    'boundary_debounce_samples': 3,
+    'boundary_debounce_samples': 2,  # = map_server.yaml (review 2026-11-02 H5; was 3)
     # lethal must hold this long before ~/lethal_boundary_violation goes True (one bad pose
     # sample must never latch BOUNDARY_EMERGENCY_STOP; 2026-10-07 incident)
     'lethal_min_duration_s': 1.0,

@@ -450,21 +450,30 @@ class HoldsMixin:
             self._subpath_failed(why)
 
     # ---- localization hold (2026-10-09): drift budget spent -> stop, blade off ----
-    def _loc_fresh(self):
+    def _loc_view(self):
+        """(state, reason) the hold acts on. Fail closed (review 2026-11-02 H3a): a status
+        that was received but is older than loc_status_stale_s reads as 'degraded'
+        (monitor crashed / hung); never received ('' state) applies no hold (bench or
+        localization_monitor not launched)."""
         i = self.inputs
-        return i.loc_stamp is not None and \
-            self._now - i.loc_stamp <= float(self.p.loc_status_timeout_s)
+        if i.loc_stamp is None:
+            return '', ''
+        age = self._now - i.loc_stamp
+        if age > float(self.p.loc_status_stale_s):
+            return 'degraded', '/localization/status stale %.0f s' % age
+        return i.loc_state, i.loc_reason
 
     def _loc_hold_tick(self):
         """Returns True while the localization hold owns this tick. Reuses the dynamic-
         obstacle resume path (_dyn_resume), so a held follow re-dispatches from its
         progress and a held transit re-sends its goal."""
-        m, i, d = self.mission, self.inputs, self._loc
+        m, d = self.mission, self._loc
+        state, reason = self._loc_view()
         if d is not None and (m is None or self.phase != d['phase'] or m.step != 'loc_hold'):
             self._loc = None                 # another guard / command took over
             return False
         if d is None:
-            if not self.p.loc_hold or not self._loc_fresh() or i.loc_state in ('', 'ok'):
+            if not self.p.loc_hold or state in ('', 'ok'):
                 return False
             ctx = self._dyn_context()
             if ctx not in ('follow', 'transit'):
@@ -473,14 +482,14 @@ class HoldsMixin:
                 m.start_local = self._track_progress()
             self._loc = {'ctx': ctx, 'since': self._now, 'ok_since': None, 'sub': self.sub_state,
                          'phase': self.phase, 'purpose': self._dock_purpose}
-            Hold.stop(self, 'localization %s' % i.loc_state)
+            Hold.stop(self, 'localization %s' % state)
             m.step = 'loc_hold'
-            self._blade_off('localization %s' % i.loc_state)
+            self._blade_off('localization %s' % state)
             self._log('warn', 'localization %s (%s): stopped, blade off, waiting for RTK fixed'
-                      % (i.loc_state, i.loc_reason or 'no reason'))
-            self._go(self.phase, 'localization %s: holding' % i.loc_state)
+                      % (state, reason or 'no reason'))
+            self._go(self.phase, 'localization %s: holding' % state)
             return True
-        if self._loc_fresh() and i.loc_state == 'ok':
+        if state == 'ok':
             if d['ok_since'] is None:
                 d['ok_since'] = self._now
             if self._now - d['ok_since'] >= float(self.p.loc_resume_s):
@@ -494,7 +503,7 @@ class HoldsMixin:
         held = self._now - d['since']
         if held >= float(self.p.loc_hold_max_s):
             self._loc = None
-            why = 'localization not ok for %.0f s (%s)' % (held, i.loc_reason or i.loc_state)
+            why = 'localization not ok for %.0f s (%s)' % (held, reason or state)
             self._log('error', '%s: stopping in place' % why)
             self._interrupt_mission(why)
             self._cancel_all(why)
@@ -504,7 +513,7 @@ class HoldsMixin:
             self._go_idle(why)
             return True
         Hold.show_wait(self, 'localization %s: holding (%d s)'
-                       % (i.loc_state or 'unknown', int(held)))
+                       % (state or 'unknown', int(held)))
         return True
 
     # ---- static obstacles: blade-off detour to the swath beyond ----------

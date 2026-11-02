@@ -525,7 +525,7 @@
         "dock_max_retries": {
           "type": "integer",
           "title": "Dock Max Retries",
-          "default": 3,
+          "default": 8,
           "description": "Maximum docking retry attempts (nav2 docking_server.max_retries). Applied at launch: takes effect after a ROS2 restart."
         },
         "dock_use_charger_detection": {

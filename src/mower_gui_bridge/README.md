@@ -22,7 +22,7 @@ node packages).
 | Topic | Type | Source / rate |
 |---|---|---|
 | `/hardware_bridge/status` | `mowgli_interfaces/Status` | 5 Hz from `/mower_base/status`, `/mower_sensor_info`. `mower_status=255` while the MCU is alive (status within `mcu_timeout_s`), else 0. `mow_enabled` = blade requested on by us OR `is_cutting`. `mower_motor_rpm` = `cutter_motor.speed_rpm`. `firmware_version` = `cutter_board_version`. `firmware_compatible=true`. |
-| `/hardware_bridge/emergency` | `mowgli_interfaces/Emergency` | 5 Hz always (clamped to at least 2 Hz), plus immediately when `/estop` changes. `active` = `/estop` OR stop button OR lift OR MCU telemetry stale. `latched` = `/estop`. `lift_warning` = lift. |
+| `/gui/emergency` (and `/hardware_bridge/emergency` only if `emergency_topic` is set; default `''`: since 2026-11-03 mcu_node publishes it, `mower_mcu_driver/safety_relay.py`) | `mowgli_interfaces/Emergency` | evaluated at 5 Hz (clamped to at least 2 Hz) and when `/estop` changes; `/gui/emergency` at 1 Hz plus on change. `active` = `/estop` OR stop button OR lift OR MCU telemetry stale. `latched` = `/estop`. `lift_warning` = lift. |
 | `/hardware_bridge/power` | `mowgli_interfaces/Power` | 2 Hz from `/battery` (+ `is_charging`). |
 | `/gps/fix` | `sensor_msgs/NavSatFix` | relay of `/fix`, rate-limited to `gps_fix_rate_hz` (2 Hz; GUI-only topic) |
 | `/gui/gnss_status` | `mowgli_interfaces/GnssStatus` | GUI copy of `/gps/status` at `gui_gnss_status_rate_hz` (2 Hz, fix-type changes at once) |
@@ -193,9 +193,8 @@ coverage resume cursor, and the rain, battery, boundary and emergency guards. St
 this bridge next to it with `serve_high_level:=false`, for example `ros2 run
 mower_gui_bridge gui_bridge --ros-args -p serve_high_level:=false`. If you leave it
 at true, both nodes serve the same services and topics. With `false` the bridge
-stops serving that namespace. It still publishes `/hardware_bridge/emergency` and
-`/hardware_bridge/status`, which the mission node uses for its emergency and rain
-guards. It still gates the GUI's blade button (`/hardware_bridge/mower_control`) on
+stops serving that namespace. It still publishes `/hardware_bridge/status`, which the
+mission node uses for its rain guard (`/hardware_bridge/emergency` comes from mcu_node). It still gates the GUI's blade button (`/hardware_bridge/mower_control`) on
 the mission node's `high_level_status`. It still forces the cutter off on the rising
 edge of an emergency. The mission node switches the blade itself through
 `/cutter_control` and `/cutter_off`. While the mission reports MANUAL_MOWING, a GUI

@@ -304,7 +304,7 @@ def test_unsupported_commands():
 # manual mowing
 # =====================================================================
 def test_manual_mow_publishes_state_4_before_blade_on():
-    h = Harness()
+    h = Harness(manual_blade_requires_enable=False)   # upstream one-step manual mow
     m = h.mark()
     assert h.cmd(f.CMD_MANUAL_MOW)
     seq = [type(e) for e in h.since(m) if isinstance(e, (f.PublishStatus, f.BladeOn))]
@@ -1059,6 +1059,28 @@ def test_critical_node_down_mid_mission_is_a_safe_stop():
     h.tick(n=5)
     assert h.name == 'IDLE' and h.fsm.mission is None and h.fsm.cursor.available
     assert not h.fsm.motion_enabled()
+
+
+def test_stale_supervisor_status_is_a_node_down():
+    """Review 2026-11-02 H3b: /supervisor/status seen once, then silent > 10 s: the same
+    safe stop as critical_down; never seen (no supervisor launched): no effect."""
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick(dt=1.0, n=15)
+    assert h.fsm.motion_enabled()                 # supervisor_stamp None: not armed
+    h.fsm.inputs.supervisor_stamp = h.t
+    h.tick(dt=1.0, n=9)
+    assert h.fsm.motion_enabled()
+    m = h.mark()
+    h.tick(dt=1.5)                                # 10.5 s since the last status
+    assert h.name == 'EMERGENCY' and not h.blade
+    assert 'node down: /supervisor' in h.fsm.sub_state
+    assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst) and h.since(m, f.BladeOff)
+    h.fsm.inputs.supervisor_stamp = h.t           # supervisor respawned
+    h.tick(n=5)
+    assert h.name == 'IDLE' and h.fsm.cursor.available
 
 
 def test_critical_node_down_refuses_start():
@@ -1822,7 +1844,7 @@ def test_manual_from_docked_drive_only():
 
 
 def test_upstream_manual_blade_request_off_keeps_manual():
-    h = Harness()
+    h = Harness(manual_blade_requires_enable=False)   # upstream one-step manual mow
     h.cmd(f.CMD_MANUAL_MOW)
     assert h.blade
     assert blade_req(h, False)

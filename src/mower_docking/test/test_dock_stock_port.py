@@ -4,6 +4,15 @@ import math
 
 from mower_docking import dock_logic as dl
 
+
+def _dock_params(**kw):
+    """DockParams for the DOCKING / FINAL unit tests here: a single detection leaves SEARCH.
+    The shipped 3-frame debounce (docking.yaml search_min_detections, the code default since
+    review 2026-11-02 H5) has its own tests (test_dock_field_2026_10_21, test_dock_search_
+    debounce_shipped)."""
+    kw.setdefault('search_min_detections', 1)
+    return dl.DockParams(**kw)
+
 S = dl.DockState
 OFF = 0.45
 FLOOR = 0.06
@@ -62,7 +71,7 @@ class World:
 
 def params(**kw):
     kw.setdefault('skip_nav_to_approach', True)
-    return dl.DockParams(**kw)
+    return _dock_params(**kw)
 
 
 def both_wheels_ok(outs):
@@ -198,7 +207,7 @@ def test_retry_offsets_alternate_and_grow_on_the_seen_side():
 
 def test_retry_moves_the_approach_goal_sideways():
     d = dl.Pose2D(1.0, 2.0, math.pi / 2)
-    m = dl.DockStateMachine(dl.DockParams(max_retries=8), d)
+    m = dl.DockStateMachine(_dock_params(max_retries=8), d)
     m.start(dl.Snapshot(t=0.0, map_pose=dl.Pose2D(5, 5, 0)))
     m._side = 1.0
     m._enter_retry(dl.Snapshot(t=1.0), 0.0, renav=True)

@@ -43,6 +43,25 @@ recovery layer.
 A respawned mission starts in IDLE and never resumes a mission by itself. A respawned
 `mcu_node` starts with the cutter off.
 
+### Process layout: shared node hosts and the standalone safety nodes (2026-11-03)
+
+With `compose_nodes:=true` (default) the small Python nodes share `node_host_<group>`
+processes (`mower_bringup/node_host.py`); a crash of one member stops its host and launch
+respawns the whole group. Since review 2026-11-02 H2 these run as their own process in
+`mower.launch.py` (and `sim.launch.py` where present), not in a host:
+
+| Node | Was in | Why it is alone |
+|---|---|---|
+| `cmd_vel_slew` | `node_host_control` | last velocity stage and motion gate; a slip_detector / fixed_frame_relay crash must not drop it |
+| `supervisor` | `node_host_housekeeping` | the liveness monitor must not share fate with bag_recorder, alerts, lights |
+| `gui_bridge` | `node_host_gui` | a supervisor critical node (section 2); must not die with the coverage server or the WebSocket relay |
+
+`mcu_node`, `tilt_monitor`, `twist_mux` and the mission were standalone already. Expected
+cost (not measured on the mower; `docs/analysis/2026-10-22_memory_footprint.md` section 1:
+a Python process floor is ~50-55 MB PSS on the mower, a host member ~1-2 MB): about
++150 MB PSS for the three processes, i.e. half of the ~300 MB idle margin measured on
+2026-10-22. `node_host_standalone:=<group>` still splits a whole group further.
+
 ### Nav2 lifecycle nodes
 
 Nav2 servers are lifecycle nodes. A respawned server comes back UNCONFIGURED, so respawn
@@ -100,9 +119,17 @@ alone is not enough. Nav2's `nav2_lifecycle_manager` handles the rest. The insta
 | `twist_mux` | `cmd_vel_slew` watchdog (no `/cmd_vel_raw`) | `cmd_vel_slew.py` |
 | `cmd_vel_slew` | **MCU driver zero-on-timeout**: after a non-zero command, 0.5 s of `/cmd_vel` silence (`cmd_vel_timeout`) sends `stop_frames` (3) zero SpeedData frames 0.1 s apart | `mcu_node.py` (`_speed_tick`, docstring "SpeedData TX policy") |
 | the mission | `cmd_vel_slew` motion gate: the latched `/motion_enabled` must be true **and** fresher than 3 s (`MOTION_ENABLE_MAX_AGE`, the mission re-asserts it every 1 s); stale means forced zero and the held command is dropped (`gate_status` "/motion_enabled stale") | `cmd_vel_slew.py` `MotionGate` |
-| `gui_bridge` (publishes `/hardware_bridge/emergency`) | the mission enters EMERGENCY when `/hardware_bridge/emergency` is silent for more than 2 s (`emergency_timeout_s`): blade off, goals cancelled, zero burst, `/motion_enabled` false | `mission_fsm._emergency_cause` |
-| `mcu_node` | the host can no longer command anything. The MCU's own heartbeat failsafe is **not characterised yet** (heartbeat period 100 ms confirmed; the firmware timeout is unknown, see `mcu_node.py` "Known gaps"). The mission goes to EMERGENCY through the supervisor (next row), and the respawned driver starts with the cutter off. | open item |
-| a **critical node** (`/mower_mcu_driver`, `/cmd_vel_slew`, `/twist_mux`) vanishes | the supervisor lists it in `critical_down`; the mission treats that as an emergency cause (`node down: …`): EMERGENCY, blade off, cancel, zero burst, motion gate closed. It is not resumed automatically once the node is back. | `mission_node._on_supervisor`, `mission_fsm.Inputs.critical_nodes_down` |
+| `mcu_node` I/O loop hung or dead (publishes `/hardware_bridge/emergency`, 10 Hz, since 2026-11-03; was gui_bridge, review H1) | the mission enters EMERGENCY when `/hardware_bridge/emergency` is silent for more than 2 s (`emergency_timeout_s`): blade off, goals cancelled, zero burst, `/motion_enabled` false. A gui_bridge or coverage-server crash no longer silences it. | `mower_mcu_driver/safety_relay.py`, `fsm/guards/reactive.py` |
+| `mcu_node` | the host can no longer command anything. The MCU's own heartbeat failsafe is **not characterised yet** (heartbeat period 100 ms confirmed; the firmware timeout is unknown, see `mcu_node.py` "Known gaps"). The mission goes to EMERGENCY through the supervisor (next row), and the respawned driver starts with the cutter off. A **hung** driver keeps its graph entry: since review H4 its I/O loop publishes `/mcu/driver_heartbeat` (std_msgs/UInt32, 2 Hz) and the supervisor reports `/mower_mcu_driver` DOWN (`heartbeat silent > 2.0 s`, param `heartbeats`) after 2 s of silence; the emergency relay goes silent at the same time. Firmware timeout: `docs/MCU_HEARTBEAT_BENCH_TEST.md` (not run yet). | open item (bench test) |
+| a **critical node** (`supervisor_logic.DEFAULT_CRITICAL`: `/mower_mcu_driver`, `/cmd_vel_slew`, `/twist_mux`, `/behavior_tree_node`, and since H3c `/map_server_node`, `/ekf_node`, `/ekf_map`, `/controller_server`, `/mower_docking`, `/gui_bridge`) vanishes | the supervisor lists it in `critical_down`; the mission treats that as an emergency cause (`node down: …`): EMERGENCY, blade off, cancel, zero burst, motion gate closed. It is not resumed automatically once the node is back. | `mission_node._on_supervisor`, `mission_fsm.Inputs.critical_nodes_down` |
+
+| the **supervisor** (review H3b) | `/supervisor/status` (re-sent every 5 s) received once and then silent > `supervisor_status_timeout_s` (10 s): same safe stop, cause `node down: /supervisor`. Never received (no supervisor launched, sim) = not armed. | `fsm/guards/reactive.py` |
+| `localization_monitor` (review H3a) | a `/localization/status` received once and then older than `loc_status_stale_s` (5 s) reads as `degraded`: the localization hold stops a follow/transit with the blade off, and resumes after `loc_resume_s` of fresh `ok`. Was: stale = no hold. | `fsm/holds.py` `_loc_view` |
+
+Nav2 lifecycle PAUSE (activity_gated_lifecycle at docked_idle) leaves the nodes in the graph,
+so it never counts as down. Its bringup watchdog restarts a hung manager and its nodes at
+boot (not while mowing); the restart of `controller_server` then shows as a short
+critical_down (EMERGENCY, then IDLE once it is back), which is the intended signal.
 
 Unit tests in `mower_mission/test/test_mission_fsm.py` cover this:
 `test_critical_node_down_mid_mission_is_a_safe_stop` and

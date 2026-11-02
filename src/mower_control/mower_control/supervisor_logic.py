@@ -16,6 +16,16 @@ set of fully qualified names to :meth:`LivenessTracker.update`:
 
 import fnmatch
 
+# Nodes whose loss the mission treats as an emergency cause (critical_down). Review 2026-11-02
+# H3c widened it from the command chain to everything a mow depends on: map_server (boundary
+# guard), both EKFs (pose), controller_server (path following), docking, gui_bridge. All of
+# these stay in the ROS graph while intentionally idle (Nav2 lifecycle PAUSE at docked_idle,
+# docking/map servers idle), so only a real exit counts; a node never started (e.g. ekf_map
+# with localization_mode:=single, or in the sim) is reported in `down` only.
+DEFAULT_CRITICAL = ('/mower_mcu_driver', '/cmd_vel_slew', '/twist_mux', '/behavior_tree_node',
+                    '/map_server_node', '/ekf_node', '/ekf_map', '/controller_server',
+                    '/mower_docking', '/gui_bridge')
+
 # /rosbag2_recorder is the `ros2 bag record` child of bag_recorder, which stops it on every
 # low/full ring switch and restarts/logs real exits itself; tracking it here only produced
 # false node_down blackboxes.
@@ -49,10 +59,23 @@ class LivenessTracker:
     def _ignored(self, name):
         return any(fnmatch.fnmatch(name, p) for p in self.ignore)
 
-    def update(self, now, present):
-        """Returns a list of events ``('down', name, reason)`` / ``('up', name, downtime_s)``."""
+    def update(self, now, present, stale=None):
+        """Returns a list of events ``('down', name, reason)`` / ``('up', name, downtime_s)``.
+
+        ``stale`` maps node name -> reason for nodes that are still in the graph but whose
+        heartbeat topic went silent (review 2026-11-02 H4: a hung mcu_node keeps its graph
+        entry). They are DOWN at once (the heartbeat timeout is the debounce) and UP again
+        when the heartbeat resumes."""
         events = []
-        present = {self._fq(n) for n in present if not self._ignored(self._fq(n))}
+        stale = {self._fq(n): r for n, r in (stale or {}).items()}
+        present = {self._fq(n) for n in present
+                   if not self._ignored(self._fq(n)) and self._fq(n) not in stale}
+        for name, reason in stale.items():
+            st = self.nodes.get(name)
+            if st is not None and st['adopted'] and st['down_since'] is None:
+                st['down_since'] = now
+                st['reason'] = reason
+                events.append(('down', name, reason))
         for name in present:
             st = self.nodes.get(name)
             if st is None:
@@ -114,3 +137,32 @@ class LivenessTracker:
         return {'ok': not down, 'down': down, 'critical_down': self.critical_down(),
                 'restarts': {n: v['restarts'] for n, v in nodes.items() if v['restarts']},
                 'nodes': nodes}
+
+
+# node|topic|timeout_s: the node's own main loop publishes on topic (review 2026-11-02 H4)
+DEFAULT_HEARTBEATS = ('/mower_mcu_driver|/mcu/driver_heartbeat|2.0',)
+
+
+def parse_heartbeats(specs):
+    out = []
+    for spec in specs:
+        node, topic, timeout = (str(spec).split('|') + ['2.0'])[:3]
+        if node.strip() and topic.strip():
+            out.append((LivenessTracker._fq(node.strip()), topic.strip(), float(timeout)))
+    return out
+
+
+class HeartbeatWatch:
+    """Receipt times of per-node heartbeat topics. Armed by the first message, so a driver
+    build without the topic is never flagged; silent longer than its timeout = stale."""
+
+    def __init__(self, specs):
+        self.timeouts = {node: timeout for node, _topic, timeout in specs}
+        self.last = {}
+
+    def beat(self, node, now):
+        self.last[node] = float(now)
+
+    def stale(self, now):
+        return {node: 'heartbeat silent > %.1f s' % self.timeouts[node]
+                for node, t in self.last.items() if now - t > self.timeouts[node]}

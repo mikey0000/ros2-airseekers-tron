@@ -76,7 +76,8 @@ import robot_settings  # noqa: E402  (launch/robot_settings.py, installed alongs
 DEFAULT_DATUM_ENV = '/userdata/ros2/datum.env'
 DEFAULT_CRASH_DIR = os.environ.get('MOWER_CRASH_DIR', '/userdata/ros2/crashes')
 # Processes whose death is safety relevant (the supervisor also tells the mission).
-# node_host_control hosts cmd_vel_slew (compose_nodes:=true, mower_bringup/node_host.py)
+# node_host_control hosts the costmap obstacle relay + slip detector (compose_nodes:=true,
+# mower_bringup/node_host.py); cmd_vel_slew runs standalone since 2026-11-03 (H2)
 SAFETY_CRITICAL = ('mcu_node', 'cmd_vel_slew', 'twist_mux', 'mission_node', 'node_host_control')
 
 
@@ -481,7 +482,9 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     control = [
-        hosted_node('control', package='mower_control', executable='cmd_vel_slew', name='cmd_vel_slew',
+        # own process (review 2026-11-02 H2): a crash elsewhere in node_host_control must not
+        # take the last velocity stage down with it
+        Node(package='mower_control', executable='cmd_vel_slew', name='cmd_vel_slew',
              respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
              output='screen', condition=enabled('control')),
         hosted_node('control', package='mower_control', executable='slip_detector', name='slip_detector',
@@ -511,8 +514,10 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # gui_bridge's stub high-level state machine is only used when the real mission node is off.
-    gui_bridge = hosted_node(
-        'gui', package='mower_gui_bridge',
+    # own process (review 2026-11-02 H2/H3): gui_bridge is a supervisor critical node, so it
+    # must not share fate with the coverage server / WebSocket relay in node_host_gui
+    gui_bridge = Node(
+        package='mower_gui_bridge',
         executable='gui_bridge',
         respawn=True, respawn_delay=2.0,  # docs/crash_recovery.md
         name='gui_bridge',
@@ -695,8 +700,10 @@ def generate_launch_description() -> LaunchDescription:
              LaunchConfiguration('perception'), "' == 'true'"])),
     )
 
-    supervisor = hosted_node(
-        'housekeeping', package='mower_control', executable='supervisor', name='supervisor',
+    # own process (review 2026-11-02 H2): the liveness monitor must not share fate with
+    # bag_recorder & co. in node_host_housekeeping
+    supervisor = Node(
+        package='mower_control', executable='supervisor', name='supervisor',
         respawn=True, respawn_delay=2.0, output='screen', condition=enabled('supervisor'),
     )
     # 2026-11-01: own process (subprocess `iw` calls must not stall a shared host executor).

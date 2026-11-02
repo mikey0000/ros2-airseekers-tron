@@ -81,3 +81,53 @@ def test_down_reported_once_per_episode():
     tr.update(0, {'/a'})
     ev = run(tr, 1, 30, set())
     assert len(ev) == 1
+
+
+def test_default_critical_covers_the_mow_dependencies():
+    """Review 2026-11-02 H3c."""
+    from mower_control.supervisor_logic import DEFAULT_CRITICAL
+    assert set(DEFAULT_CRITICAL) >= {
+        '/mower_mcu_driver', '/cmd_vel_slew', '/twist_mux', '/behavior_tree_node',
+        '/map_server_node', '/ekf_node', '/ekf_map', '/controller_server', '/mower_docking',
+        '/gui_bridge'}
+
+
+def test_paused_lifecycle_node_stays_up_and_exit_is_critical():
+    """A Nav2 node PAUSEd at docked_idle (inactive) is still in the graph: not down. Its
+    process exiting is critical_down; ekf_map never launched (single mode) is not."""
+    from mower_control.supervisor_logic import DEFAULT_CRITICAL
+    tr = LivenessTracker(critical=DEFAULT_CRITICAL, now=0.0)
+    alive = [n for n in DEFAULT_CRITICAL if n != '/ekf_map']
+    assert run(tr, 0, 200, alive) == [('down', '/ekf_map', 'never started')]
+    assert tr.critical_down() == []
+    gone = [n for n in alive if n != '/controller_server']
+    run(tr, 201, 205, gone)
+    assert tr.critical_down() == ['/controller_server']
+
+
+def test_stale_heartbeat_is_down_while_the_node_stays_in_the_graph():
+    """Review 2026-11-02 H4: a hung mcu_node keeps its graph entry; its silent
+    /mcu/driver_heartbeat (> 2 s) makes it critical_down, the heartbeat resuming brings it
+    back UP; a node that never sent a heartbeat is never flagged."""
+    from mower_control.supervisor_logic import (DEFAULT_HEARTBEATS, HeartbeatWatch,
+                                                parse_heartbeats)
+    specs = parse_heartbeats(DEFAULT_HEARTBEATS)
+    assert specs == [('/mower_mcu_driver', '/mcu/driver_heartbeat', 2.0)]
+    hb = HeartbeatWatch(specs)
+    tr = LivenessTracker(critical=['/mower_mcu_driver'], now=0.0)
+    graph = ['/mower_mcu_driver']
+    assert hb.stale(100.0) == {}                       # not armed yet
+    events = []
+    for t in range(0, 11):
+        hb.beat('/mower_mcu_driver', float(t))
+        events += tr.update(float(t), graph, hb.stale(float(t)))
+    assert events == [] and tr.critical_down() == []
+    events += tr.update(12.0, graph, hb.stale(12.0))   # 2.0 s: not yet
+    assert events == []
+    events += tr.update(13.0, graph, hb.stale(13.0))   # 3.0 s > 2.0 s: down, still in graph
+    assert events == [('down', '/mower_mcu_driver', 'heartbeat silent > 2.0 s')]
+    assert tr.critical_down() == ['/mower_mcu_driver']
+    assert tr.update(14.0, graph, hb.stale(14.0)) == []     # reported once
+    hb.beat('/mower_mcu_driver', 15.0)
+    ev = tr.update(15.0, graph, hb.stale(15.0))
+    assert ev and ev[0][0] == 'up' and tr.critical_down() == []

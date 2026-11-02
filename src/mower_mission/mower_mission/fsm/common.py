@@ -493,6 +493,8 @@ class Inputs:
     dock_pose: Optional[tuple] = None
     # /supervisor/status critical_down (comma-joined node names; '' = all alive)
     critical_nodes_down: str = ''
+    # receipt time of the last /supervisor/status (None = never seen: no supervisor launched)
+    supervisor_stamp: Optional[float] = None
     # /rosout local_costmap "/stereo_depth/points observation buffer has not been updated
     # for N seconds": last receipt time + N (stale stereo -> controller aborts FollowPath)
     stereo_stale_s: Optional[float] = None
@@ -540,6 +542,10 @@ class Inputs:
 class Params:
     tick_hz: float = 10.0
     emergency_timeout_s: float = 2.0
+    # review 2026-11-02 H3b: /supervisor/status (latched, re-sent every 5 s) received once and
+    # then silent this long = the liveness monitor itself is down: same safe stop as a
+    # critical node down. <= 0 disables.
+    supervisor_status_timeout_s: float = 10.0
     battery_low_percent: float = 20.0
     battery_full_percent: float = 95.0
     # What a running mission does below battery_low_percent:
@@ -604,7 +610,7 @@ class Params:
     manual_undock_distance_m: float = 0.5    # standalone UNDOCK command (GUI button)
     undock_speed_mps: float = 0.15
     dock_use_vision: bool = True
-    dock_timeout_s: float = 180.0
+    dock_timeout_s: float = 480.0   # = mission.yaml (review 2026-11-02 H5; was 180)
     dock_pose: tuple = ()               # (x, y, yaw); only used without docking server
     mow_angle_deg: float = -1.0
     transit_gap_m: float = 0.6
@@ -1023,7 +1029,7 @@ class Params:
     # MANUAL_MOWING starts blade OFF; the blade runs only after an explicit
     # manual_blade(True) request (GUI mow_enabled=1). False = upstream behaviour
     # (blade on as soon as MANUAL_MOW is entered).
-    manual_blade_requires_enable: bool = False
+    manual_blade_requires_enable: bool = True   # = mission.yaml (H5; was False)
     blade_spinup_s: float = 2.0         # used when confirmation is disabled
     # --- hard boundary (task 0.4 a; 2026-10-14 run 3: seven transit excursions up to 0.85 m
     # outside the areas and paths; owner: "going outside the area is an immediate fail") ---
@@ -1218,7 +1224,7 @@ class Params:
     undock_timeout_s: float = 180.0
     transit_timeout_s: float = 300.0
     follow_timeout_s: float = 3600.0
-    dock_action_timeout_s: float = 400.0
+    dock_action_timeout_s: float = 540.0   # = mission.yaml (H5; was 400)
     # Contacts reported while the docking action still runs: wait for its result (the
     # server stops and confirms on contact); only after this long cancel it and treat the
     # robot as docked (2026-10-07: the mission flipped while the server was in RETRY).
@@ -1320,10 +1326,11 @@ class Params:
     # 2026-10-09 localization hold (_loc_hold_tick): a mow follow / transit stops with the
     # blade off while /localization/status is not 'ok' (RTK float/dropout drift budget
     # spent) and resumes after loc_resume_s of 'ok'; after loc_hold_max_s it stops in
-    # place (IDLE, resume cursor kept). No status ever received / older than
-    # loc_status_timeout_s = no new hold (localization_monitor off or restarting).
+    # place (IDLE, resume cursor kept). No status ever received = no hold (monitor not
+    # launched); received but older than loc_status_stale_s = 'degraded' (fail closed,
+    # review 2026-11-02 H3a: monitor crashed or hung).
     loc_hold: bool = True
-    loc_status_timeout_s: float = 5.0
+    loc_status_stale_s: float = 5.0
     loc_resume_s: float = 3.0
     loc_hold_max_s: float = 600.0
     # ---- 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py) ----

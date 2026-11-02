@@ -25,8 +25,8 @@ ros2 run mower_gui_bridge gui_bridge --ros-args -p serve_high_level:=false
 ```
 
 Start `gui_bridge` with `serve_high_level:=false`. Otherwise both nodes serve
-`/behavior_tree_node/*`. In that mode the bridge keeps the `/hardware_bridge/*` facade and
-the `/hardware_bridge/emergency` topic this node needs. It also follows our
+`/behavior_tree_node/*`. In that mode the bridge keeps the `/hardware_bridge/*` facade
+(`/hardware_bridge/emergency` itself comes from mcu_node since 2026-11-03). It also follows our
 `high_level_status` to gate the GUI's blade button.
 
 ## How the GUI drives it
