@@ -57,6 +57,20 @@ def test_older_plain_split_without_compression_is_closed(tmp_path):
     assert states(splits) == {0: br.CLOSED, 1: br.CLOSED, 2: br.ACTIVE}
 
 
+def test_nozstd_marker_closes_rolled_split_of_active_session(tmp_path):
+    d = mk(tmp_path, S1, [S1 + '_0.db3', S1 + '_0.db3.nozstd', S1 + '_1.db3'])
+    splits, _ = br.scan_session(d, active=True, compressed=True)
+    assert states(splits) == {0: br.CLOSED, 1: br.ACTIVE}
+    assert splits[0].data_path().endswith('_0.db3')
+
+
+def test_compress_tmp_counted_in_split_not_other(tmp_path):
+    d = mk(tmp_path, S1, [S1 + '_0.db3', S1 + '_0.db3.zstd.tmp', S1 + '_1.db3'], size=5)
+    splits, other = br.scan_session(d, active=True, compressed=True)
+    assert other == 0 and splits[0].size == 10
+    assert states(splits) == {0: br.COMPRESSING, 1: br.ACTIVE}
+
+
 def test_inactive_session_plain_splits_are_closed(tmp_path):
     d = mk(tmp_path, S1, [S1 + '_0.db3', S1 + '_1.db3'])
     for compressed in (True, False):
@@ -538,16 +552,15 @@ def test_record_cmd_defaults():
     assert '--max-bag-duration 60' in j
     assert '--max-cache-size 1048576' in j
     assert '--storage-preset-profile resilient' in j
-    assert '--compression-mode file --compression-format zstd' in j
-    # queue overflow drops splits (rosbag2): 10 splits of slack, not 2
-    assert '--compression-threads 1 --compression-queue-size 10' in j
+    # bag_compress compresses closed splits: rosbag2 records plain .db3 (2026-11-03)
+    assert '--compression-mode none' in j
+    assert '--compression-format' not in j and '--compression-threads' not in j
+    assert '--compression-queue-size' not in j
     assert cmd[-2:] == ['/tf', '/odom']
 
 
-def test_record_cmd_no_compression_no_preset():
-    cmd = br.record_cmd('/b/s', ['/tf'], 60, 1, compression='', preset='')
-    assert '--compression-mode' not in cmd and '--compression-format' not in cmd
-    assert '--compression-threads' not in cmd
+def test_record_cmd_no_preset():
+    cmd = br.record_cmd('/b/s', ['/tf'], 60, 1, preset='')
     assert '--storage-preset-profile' not in cmd
     assert cmd[-1] == '/tf'
 

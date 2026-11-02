@@ -11,6 +11,12 @@ samples (wifi_logic.LinkFilter). One tick runs up to two ``iw`` calls of ``cmd_t
 (0.8 s) each, so a tick under load can take longer than ``period_s``; the timer then just
 skips ticks.
 
+Fallback (2026-11-03): with no ``iw`` binary, or ``iw`` failing for more than
+``stale_samples`` samples in a row, the status comes from /proc/net/wireless,
+/sys/class/net/<iface>/operstate and .../carrier only (``source`` = 'proc': signal, no
+BSSID/SSID/bitrate; logged once). ``iw`` is still tried each tick (when installed) and the
+monitor goes back to 'iw' on the first good call.
+
 Published
 ---------
 ``/wifi/status`` mower_interfaces/WifiStatus every ``period_s`` (1 s).
@@ -19,6 +25,7 @@ Published
 """
 
 import json
+import shutil
 import subprocess
 import time
 
@@ -53,7 +60,8 @@ class WifiSampler:
     """Collects one sample from the system (injectable runners for tests)."""
 
     def __init__(self, iface, station_period_s=10.0, cmd_timeout_s=0.8,
-                 run=run_cmd, read=read_file, clock=time.monotonic):
+                 run=run_cmd, read=read_file, clock=time.monotonic, stale_samples=3,
+                 have_iw=None):
         self._iface = iface
         self._station_period_s = station_period_s
         self._cmd_timeout_s = cmd_timeout_s
@@ -62,20 +70,34 @@ class WifiSampler:
         self._clock = clock
         self._station = None
         self._last_station = None
+        self._stale_samples = max(0, int(stale_samples))
+        self._have_iw = (shutil.which('iw') is not None) if have_iw is None else bool(have_iw)
+        self._iw_fail_run = 0
+        self.source = 'iw'                  # of the last sample
 
     def sample(self):
         iface = self._iface
         now = self._clock()
+        proc_text = self._read('/proc/net/wireless')
+        operstate = self._read('/sys/class/net/%s/operstate' % iface)
+        link = None
+        if self._have_iw:
+            link = self._run(['iw', 'dev', iface, 'link'], self._cmd_timeout_s)
+        if link is None:
+            self._iw_fail_run += 1
+        else:
+            self._iw_fail_run = 0
+        if not self._have_iw or self._iw_fail_run > self._stale_samples:
+            self.source = 'proc'
+            return wifi_logic.build_proc_sample(
+                iface, proc_text, operstate,
+                self._read('/sys/class/net/%s/carrier' % iface))
+        self.source = 'iw'
         if self._last_station is None or now - self._last_station >= self._station_period_s:
             self._last_station = now
             self._station = wifi_logic.parse_station_dump(
                 self._run(['iw', 'dev', iface, 'station', 'dump'], self._cmd_timeout_s))
-        return wifi_logic.build_sample(
-            iface,
-            self._read('/proc/net/wireless'),
-            self._run(['iw', 'dev', iface, 'link'], self._cmd_timeout_s),
-            self._read('/sys/class/net/%s/operstate' % iface),
-            self._station)
+        return wifi_logic.build_sample(iface, proc_text, link, operstate, self._station)
 
 
 def fill_status(msg, sample, roam_count):
@@ -92,6 +114,7 @@ def fill_status(msg, sample, roam_count):
     msg.tx_failed = int(sample['tx_failed'])
     msg.roam_count = int(roam_count)
     msg.link_state = sample['link_state']
+    msg.source = sample.get('source', 'iw')
     return msg
 
 
@@ -122,8 +145,10 @@ class WifiMonitorNode(Node):
         dp('event_topic', '/wifi/event')
         gp = lambda n: self.get_parameter(n).value  # noqa: E731
         self._sampler = WifiSampler(gp('iface'), float(gp('station_period_s')),
-                                    float(gp('cmd_timeout_s')))
+                                    float(gp('cmd_timeout_s')),
+                                    stale_samples=int(gp('stale_samples')))
         self._filter = wifi_logic.LinkFilter(int(gp('stale_samples')))
+        self._fallback_logged = False
         self._tracker = wifi_logic.RoamTracker()
         self._status_pub = self.create_publisher(WifiStatus, gp('status_topic'), 10)
         self._event_pub = self.create_publisher(String, gp('event_topic'), 10)
@@ -131,6 +156,9 @@ class WifiMonitorNode(Node):
 
     def _tick(self):
         sample = self._filter.update(self._sampler.sample())
+        if self._sampler.source == 'proc' and not self._fallback_logged:
+            self._fallback_logged = True
+            self.get_logger().warning('iw not available: signal from /proc/net/wireless only')
         for ev in self._tracker.update(sample):
             text = describe_event(ev)
             if ev['event'] == 'disconnect':

@@ -17,7 +17,11 @@ export interface WifiStatusView {
     txRetries: number;
     txFailed: number;
     roamCount: number;
+    /** "iw": full link data; "proc": iw unavailable, signal from /proc/net/wireless only. */
+    source: WifiSource;
 }
+
+export type WifiSource = "iw" | "proc";
 
 export type WifiLevel = "good" | "ok" | "weak" | "bad";
 
@@ -41,6 +45,7 @@ export function selectWifiStatus(raw: unknown): WifiStatusView | undefined {
         txRetries: num(r.tx_retries),
         txFailed: num(r.tx_failed),
         roamCount: num(r.roam_count),
+        source: r.source === "proc" ? "proc" : "iw",
     };
 }
 
@@ -80,7 +85,10 @@ export function WifiChip() {
     const Icon = data.connected ? ICONS[level] : WifiOff;
     const text = data.signalDbm !== null ? `${Math.round(data.signalDbm)} dBm` : t("wifiChip.noSignal");
     const stateKey = data.connected ? level : "disconnected";
-    const tooltip = data.connected ? [
+    const tooltip = data.connected && data.source === "proc" ? [
+        t("wifiChip.signalOnly"),
+        t("wifiChip.roams", {count: data.roamCount}),
+    ].join("\n") : data.connected ? [
         t("wifiChip.ssid", {value: data.ssid || "-"}),
         t("wifiChip.bssid", {value: data.bssid || "-"}),
         t("wifiChip.channel", {channel: freqToChannel(data.freqMhz), freq: Math.round(data.freqMhz)}),

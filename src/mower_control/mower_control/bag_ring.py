@@ -5,11 +5,17 @@ Layout written by ``ros2 bag record`` (rosbag2 0.15.17, verified in the dev imag
 
     <root>/<YYYYmmdd-HHMMSS>/<YYYYmmdd-HHMMSS>_<i>.db3        split being written (+ -wal/-shm
                                                              with the 'resilient' preset)
-    <root>/<YYYYmmdd-HHMMSS>/<YYYYmmdd-HHMMSS>_<i>.db3.zstd   closed split (file compression)
-    <root>/<YYYYmmdd-HHMMSS>/metadata.yaml                    only after a clean stop
+    <root>/<YYYYmmdd-HHMMSS>/<YYYYmmdd-HHMMSS>_<i>.db3.zstd   closed split, compressed by
+                                                             bag_compress (not rosbag2)
+    <root>/<YYYYmmdd-HHMMSS>/metadata.yaml                    rewritten by bag_compress
 
-With file compression a closed split is compressed by a rosbag2 thread and then the .db3 is
-deleted, so for a moment both exist: that split is "compressing" (never deleted, never copied).
+Since 2026-11-03 rosbag2 records uncompressed (``--compression-mode none``) and
+``bag_compress.CompressWorker`` compresses each closed split itself: ``.db3.zstd.tmp`` while it
+runs, verified, renamed to ``.db3.zstd``, then the ``.db3`` is deleted. rosbag2's own file
+compression lost the split under compression whenever the recorder was stopped (SIGINT does not
+finish an in-flight compression). With compression on, a rolled split of the active session
+is "compressing" until its .zstd exists (never deleted, never pinned), so pins get the small
+file. A split the worker gave up on has a ``.nozstd`` marker and is closed as plain .db3.
 Without compression a split is closed once a higher index exists or the session has ended.
 
 Each decompressed split is a complete sqlite3 bag on its own (``ros2 bag info x_3.db3`` works
@@ -23,7 +29,10 @@ import shutil
 import time
 
 SPLIT_RE = re.compile(r'^(?P<stem>.+)_(?P<idx>\d+)\.(?P<ext>db3|mcap)(?P<zst>\.zstd)?$')
-SIDECARS = ('-wal', '-shm', '-journal')
+# per-split extra files: sqlite sidecars, bag_compress's temp output and its give-up marker
+TMP_SUFFIX = '.tmp'
+NOZSTD_SUFFIX = '.nozstd'
+SIDECARS = ('-wal', '-shm', '-journal', TMP_SUFFIX, NOZSTD_SUFFIX)
 SESSION_RE = re.compile(r'^\d{8}-\d{6}(\.\d+)?$')
 
 ACTIVE, COMPRESSING, CLOSED = 'active', 'compressing', 'closed'
@@ -74,6 +83,7 @@ def scan_session(path, active, compressed=True):
     splits = {}
     plain = {}                       # index -> has an uncompressed data file
     zst = {}                         # index -> has a .zstd file
+    gave_up = {}                     # index -> bag_compress left a .nozstd marker
     other = 0
     for name in names:
         full = os.path.join(path, name)
@@ -94,6 +104,8 @@ def scan_session(path, active, compressed=True):
         sp.paths.append(full)
         sp.size += size
         sp.mtime = max(sp.mtime, mtime)
+        if name.endswith(NOZSTD_SUFFIX):
+            gave_up[idx] = True
         if base == name:
             if m.group('zst'):
                 zst[idx] = True
@@ -106,8 +118,8 @@ def scan_session(path, active, compressed=True):
             sp.state = COMPRESSING
         elif plain.get(sp.index) and active and sp.index == newest:
             sp.state = ACTIVE
-        elif plain.get(sp.index) and active and compressed:
-            sp.state = COMPRESSING   # rolled, .zstd not started yet: leave it to rosbag2
+        elif plain.get(sp.index) and active and compressed and not gave_up.get(sp.index):
+            sp.state = COMPRESSING   # rolled, queued for bag_compress
         else:                        # compressed, or uncompressed with a later split / ended
             sp.state = CLOSED
     return ordered, other
@@ -552,8 +564,8 @@ def session_name(wall_time):
     return time.strftime('%Y%m%d-%H%M%S', time.localtime(wall_time))
 
 
-def record_cmd(output, topics, split_s, max_cache_bytes, compression='zstd',
-               storage='sqlite3', preset='resilient', polling_ms=5000):
+def record_cmd(output, topics, split_s, max_cache_bytes, storage='sqlite3',
+               preset='resilient', polling_ms=5000):
     """``ros2 bag record`` argv (C++ recorder: no deserialization, no Python per message)."""
     cmd = ['ros2', 'bag', 'record', '-o', output,
            '--storage', storage,
@@ -562,13 +574,8 @@ def record_cmd(output, topics, split_s, max_cache_bytes, compression='zstd',
            '--polling-interval', str(int(polling_ms))]
     if preset:
         cmd += ['--storage-preset-profile', preset]
-    if compression:
-        # One compression thread: with the default (one per core) a split that is still
-        # compressing when the next one rolls is compressed in parallel and both frames come
-        # out mangled (2026-11-01: 10 of 68 splits unreadable at load avg 12). A split that
-        # finds the compression queue full is DROPPED (rosbag2: "files ... that may be
-        # queued for compression before being dropped"): queue 10 splits (10 min at 60 s)
-        # so a slow single-thread compression under load falls behind, not loses data.
-        cmd += ['--compression-mode', 'file', '--compression-format', compression,
-                '--compression-threads', '1', '--compression-queue-size', '10']
+    # Uncompressed: bag_compress compresses closed splits (2026-11-03). rosbag2's file mode
+    # lost the split it was compressing whenever the recorder was stopped (SIGINT does not
+    # finish an in-flight compression: field 2026-11-03, split _21 "premature end").
+    cmd += ['--compression-mode', 'none']
     return cmd + list(topics)
