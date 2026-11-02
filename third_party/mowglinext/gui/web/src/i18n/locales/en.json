@@ -4446,7 +4446,8 @@
     "ring": "Recording size: {{gb}} GB",
     "free": "Free space: {{gb}} GB",
     "mowRecording": "Recording this mow",
-    "unreachable": "Data recorder not reachable (the recorder may not be launched)"
+    "unreachable": "Data recorder not reachable (the recorder may not be launched)",
+    "notRunning": "The data recorder is not running on this robot."
   },
   "dockHeading": {
     "title": "Dock heading",

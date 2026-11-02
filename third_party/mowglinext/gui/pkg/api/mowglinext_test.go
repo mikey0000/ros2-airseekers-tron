@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/mowglinext/mowglinext/pkg/foxglove"
 	"github.com/mowglinext/mowglinext/pkg/msgs/mowgli"
 	"github.com/mowglinext/mowglinext/pkg/types"
 	"github.com/stretchr/testify/assert"
@@ -551,5 +553,28 @@ func TestServiceRoute_BagRecorder(t *testing.T) {
 		assert.Contains(t, w.Body.String(), `"success":true`)
 		require.Len(t, mock.ServiceCalls, 1)
 		assert.Equal(t, "/bag_recorder/get_state", mock.ServiceCalls[0].Service)
+	})
+
+	t.Run("state without a recorder node is reported, not a 500", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		mock.ServiceErr = fmt.Errorf("foxglove: CallService /bag_recorder/get_state: %w", foxglove.ErrServiceNotAdvertised)
+		router := setupMowgliNextRouter(mock)
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/api/mowglinext/call/bag_recorder_state", bytes.NewReader([]byte(`{}`)))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.JSONEq(t, `{"success":false,"available":false,"message":""}`, w.Body.String())
+	})
+
+	t.Run("state with a failing recorder node is still a 500", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		mock.ServiceErr = assert.AnError
+		router := setupMowgliNextRouter(mock)
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/api/mowglinext/call/bag_recorder_state", bytes.NewReader([]byte(`{}`)))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
 	})
 }

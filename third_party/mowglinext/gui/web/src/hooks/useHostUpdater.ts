@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useState} from 'react';
 import {apiFetch} from "../transport/index.ts";
+import {useProfileGates} from "./useProfileGates.ts";
 
 export interface UpdateSource {repository: string; track: 'stable' | 'dev' | 'custom'; branch: string}
 export interface UpdatePolicy {source: UpdateSource; interval_hours: number; pinned: boolean}
@@ -26,15 +27,41 @@ export async function updaterRequest<T>(operation: string, body?: unknown): Prom
     if (operation === 'state' && (!data || typeof data !== 'object' || !('state' in data) || !('agent' in data))) throw new Error('Host updater unavailable');
     return data as T;
 }
+export const UPDATER_POLL_MS = 5000;
+export const UPDATER_MAX_POLL_MS = 60000;
+
+/** Delay before the next status read: the base interval after a success, doubling (capped) after each failure. */
+export function nextUpdaterPollDelay(previousMs: number, ok: boolean): number {
+    return ok ? UPDATER_POLL_MS : Math.min(UPDATER_MAX_POLL_MS, Math.max(UPDATER_POLL_MS, previousMs) * 2);
+}
+
 // Polling only reads cached local status. It never schedules a registry check.
+// It only runs on a robot with the host updater (gate "settings:updates", known
+// once the profile has loaded), and backs off while the updater does not answer
+// (503 when the agent is absent), so a robot without one is not asked every 5 s.
 export function useHostUpdater() {
+    const enabled = useProfileGates().isVisibleStrict('settings:updates');
     const [data, setData] = useState<HostUpdater>();
     const [error, setError] = useState<string>();
-    const refresh = useCallback(async () => {
-        try {setData(await updaterRequest<HostUpdater>('state')); setError(undefined);}
-        catch (e) {setError(e instanceof Error ? e.message : String(e));}
+    const load = useCallback(async (): Promise<boolean> => {
+        try {setData(await updaterRequest<HostUpdater>('state')); setError(undefined); return true;}
+        catch (e) {setError(e instanceof Error ? e.message : String(e)); return false;}
     }, []);
-    useEffect(() => {void refresh(); const timer = window.setInterval(() => void refresh(), 5000); return () => window.clearInterval(timer);}, [refresh]);
+    const refresh = useCallback(async () => {await load();}, [load]);
+    useEffect(() => {
+        if (!enabled) return;
+        let cancelled = false;
+        let timer: number | undefined;
+        let delay = UPDATER_POLL_MS;
+        const poll = async () => {
+            const ok = await load();
+            if (cancelled) return;
+            delay = nextUpdaterPollDelay(delay, ok);
+            timer = window.setTimeout(() => void poll(), delay);
+        };
+        void poll();
+        return () => {cancelled = true; window.clearTimeout(timer);};
+    }, [enabled, load]);
     return {data, error, refresh};
 }
 

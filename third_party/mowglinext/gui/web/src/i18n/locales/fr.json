@@ -4446,7 +4446,8 @@
     "ring": "Taille de l'enregistrement : {{gb}} Go",
     "free": "Espace libre : {{gb}} Go",
     "mowRecording": "Enregistrement de cette tonte en cours",
-    "unreachable": "Enregistreur injoignable (il n'est peut-être pas lancé)"
+    "unreachable": "Enregistreur injoignable (il n'est peut-être pas lancé)",
+    "notRunning": "L'enregistreur de données ne tourne pas sur ce robot."
   },
   "dockHeading": {
     "title": "Orientation de la station",
