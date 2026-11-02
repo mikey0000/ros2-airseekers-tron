@@ -123,12 +123,13 @@ class BoundaryGuardMixin:
         return self.inputs.boundary_lines or []
 
     def _hb_line_hit(self, pose):
-        """(depth, line) of the deepest boundary line the footprint at ``pose`` reaches more
-        than boundary_line_trip_m into, else None."""
+        """(depth, line) of the deepest boundary line the footprint (body lines) or the blade
+        disc (blade lines) at ``pose`` reaches more than boundary_line_trip_m into, else None."""
         lines = self._hb_lines()
         if not lines or pose is None or len(pose) < 3:
             return None
-        h = walls.hits(lines, pose, float(self.p.boundary_line_trip_m))
+        h = walls.hits(lines, pose, float(self.p.boundary_line_trip_m),
+                       self.inputs.boundary_blade_radius)
         return h[0] if h else None
 
     def _hb_keepouts(self):
@@ -315,7 +316,8 @@ class BoundaryGuardMixin:
         k = self._hb
         if k.get('line') is not None:
             # a boundary line: away from its nearest point, to the side base_link is on
-            d = walls.depth_of(self._hb_lines(), k['line'], pose)
+            d = walls.depth_of(self._hb_lines(), k['line'], pose,
+                               self.inputs.boundary_blade_radius)
             if d is None or d <= -float(self.p.hard_boundary_body_clear_m):
                 return None
             return walls.away_dir(self._hb_lines(), k['line'], pose)
@@ -395,7 +397,8 @@ class BoundaryGuardMixin:
         if k.get('line') is not None:
             # boundary line trip: clear of the line by hard_boundary_body_clear_m (a line that
             # was deleted meanwhile counts as clear); the area rules resume after it
-            d = walls.depth_of(self._hb_lines(), k['line'], pose)
+            d = walls.depth_of(self._hb_lines(), k['line'], pose,
+                               self.inputs.boundary_blade_radius)
             if d is None:
                 return True, 0.0
             return d <= -float(self.p.hard_boundary_body_clear_m), max(0.0, d)

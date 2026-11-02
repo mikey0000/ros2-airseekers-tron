@@ -164,7 +164,7 @@ func replaceMapInternalWithLockWait(ctx context.Context, provider types.IRosProv
 
 // emptyBoundaryLinesJSON is the encoding of "no boundary lines".
 var emptyBoundaryLinesJSON = func() string {
-	b, _ := json.Marshal(mowgli.BoundaryLineSet{Version: mowgli.BoundaryLinesVersion, Lines: []mowgli.BoundaryLine{}})
+	b, _ := json.Marshal(mowgli.BoundaryLineSet{Version: mowgli.BoundaryLinesWireVersion(nil), Lines: []mowgli.BoundaryLine{}})
 	return string(b)
 }()
 
@@ -174,13 +174,16 @@ func boundaryLinesJSON(lines *[]mowgli.BoundaryLine) (string, error) {
 	if lines == nil {
 		return "", nil
 	}
-	set := mowgli.BoundaryLineSet{Version: mowgli.BoundaryLinesVersion, Lines: *lines}
+	set := mowgli.BoundaryLineSet{Version: mowgli.BoundaryLinesWireVersion(*lines), Lines: *lines}
 	if set.Lines == nil {
 		set.Lines = []mowgli.BoundaryLine{}
 	}
 	for i, l := range set.Lines {
 		if len(l.Points) < 2 {
 			return "", fmt.Errorf("replace map: boundary line %d (%q) needs at least 2 points", i+1, l.Name)
+		}
+		if l.Mode != "" && l.Mode != mowgli.BoundaryLineModeBody && l.Mode != mowgli.BoundaryLineModeBlade {
+			return "", fmt.Errorf("replace map: boundary line %d (%q) has an unknown mode %q", i+1, l.Name, l.Mode)
 		}
 	}
 	payload, err := json.Marshal(set)

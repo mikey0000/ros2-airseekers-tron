@@ -8,7 +8,7 @@ import turfArea from "@turf/area";
 import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {useTranslation} from "react-i18next";
 import {MapArea, Map as MapType} from "../types/ros.ts";
-import type {AreaChannel, MapWithBoundaryLines, MapWithChannels} from "../types/map.ts";
+import type {AreaChannel, BoundaryLineMode, MapWithBoundaryLines, MapWithChannels} from "../types/map.ts";
 import DrawControl from "../components/DrawControl.tsx";
 import Map, {Layer, Popup, Source} from 'react-map-gl/mapbox';
 import turfCentroid from "@turf/centroid";
@@ -107,6 +107,8 @@ const DYN_OBSTACLE_INTERACTIVE_LAYERS = ['dyn-obstacle-fill', 'dock-corridor-fil
 
 /** Boundary lines (virtual walls): distinct red dashed line. */
 const BOUNDARY_LINE_COLOR = '#ff1744';
+/** Blade lines (only the cutter stays off, the body may overhang): orange, short dots. */
+const BOUNDARY_LINE_BLADE_COLOR = '#ff9100';
 /** Click tolerance (CSS px) for selecting a boundary line; wider on touch. */
 const BOUNDARY_HIT_PX = {mouse: 10, touch: 16};
 /** Vertices closer than this (px) to the previous one are double-click / double-tap jitter. */
@@ -1131,16 +1133,20 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         features: Object.values(features).flatMap((f) =>
             f instanceof BoundaryLineFeature && f.getCoordinates().length >= 2 ? [{
                 type: "Feature" as const, id: f.id, geometry: f.geometry,
-                properties: {label: f.getName() || boundaryFallbackNames[f.id] || ''},
+                properties: {
+                    label: f.getName() || boundaryFallbackNames[f.id] || '',
+                    mode: f.getMode(),
+                    color: f.getMode() === 'blade' ? BOUNDARY_LINE_BLADE_COLOR : BOUNDARY_LINE_COLOR,
+                },
             }] : []),
     }), [features, boundaryFallbackNames]);
-    const applySelectedBoundary = (name: string, widthM: number) => {
+    const applySelectedBoundary = (name: string, widthM: number, mode: BoundaryLineMode) => {
         if (!selectedBoundary) return;
         const id = selectedBoundary.id;
         setSelectedMapItem(null);
         applyMapChange((curr) => {
             const f = curr[id];
-            return f instanceof BoundaryLineFeature ? {...curr, [id]: f.withProps(name, widthM)} : curr;
+            return f instanceof BoundaryLineFeature ? {...curr, [id]: f.withProps(name, widthM, mode)} : curr;
         }, t('mapBoundary.pendingSave'));
     };
     const deleteSelectedBoundary = () => {
@@ -1653,6 +1659,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     name={selectedBoundary.getName()}
                     fallbackName={boundaryFallbackNames[selectedBoundary.id] ?? t('mapBoundary.sheetTitle')}
                     widthM={selectedBoundary.getWidthM()}
+                    mode={selectedBoundary.getMode()}
                     onApply={applySelectedBoundary}
                     onDelete={deleteSelectedBoundary}
                     onClose={closeMapItemSheet}
@@ -1843,15 +1850,21 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             filter={['==', ['get', 'kind'], 'centerline']}
                             paint={{"line-color": LAYER_COLORS.dockHeading, "line-width": 2, "line-opacity": 0.9, "line-dasharray": [3, 2]}}/>
                     </Source>
-                    {/* Boundary lines (virtual walls): red dashed line + name along it. */}
+                    {/* Boundary lines (virtual walls) + name along them: body lines red dashed,
+                        blade lines orange dotted (line-dasharray is not data-driven: one layer each). */}
                     <Source type={"geojson"} id={"boundary-lines"} data={boundaryLinesCollection}>
                         <Layer type={"line"} id={"boundary-line"}
+                            filter={['!=', ['get', 'mode'], 'blade']}
                             layout={{'line-join': 'round'}}
                             paint={{'line-color': BOUNDARY_LINE_COLOR, 'line-width': 3, 'line-dasharray': [2, 1.5]}}/>
+                        <Layer type={"line"} id={"boundary-line-blade"}
+                            filter={['==', ['get', 'mode'], 'blade']}
+                            layout={{'line-join': 'round'}}
+                            paint={{'line-color': BOUNDARY_LINE_BLADE_COLOR, 'line-width': 3, 'line-dasharray': [0.6, 1.4]}}/>
                         <Layer type={"symbol"} id={"boundary-line-label"}
                             layout={{'symbol-placement': 'line-center', 'text-field': ['get', 'label'],
                                 'text-size': 11, 'text-offset': [0, -0.9], 'text-allow-overlap': false}}
-                            paint={{'text-color': BOUNDARY_LINE_COLOR, 'text-halo-color': '#ffffff', 'text-halo-width': 1.5}}/>
+                            paint={{'text-color': ['get', 'color'], 'text-halo-color': '#ffffff', 'text-halo-width': 1.5}}/>
                     </Source>
                     {/* Boundary line tool live preview: placed vertices + rubber band to the cursor. */}
                     <Source type={"geojson"} id={"boundary-preview"} data={boundaryTool.previewCollection}>

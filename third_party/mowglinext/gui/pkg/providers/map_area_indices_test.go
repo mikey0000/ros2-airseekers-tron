@@ -3,6 +3,7 @@ package providers
 import (
 	"github.com/mowglinext/mowglinext/pkg/msgs/mowgli"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -37,6 +38,12 @@ func TestParseBoundaryLines(t *testing.T) {
 	assert.Equal(t, "drop-off", lines[0].Name)
 	assert.Equal(t, [2]float64{2, 3.5}, lines[0].Points[1])
 	assert.Equal(t, 0.2, lines[0].WidthM)
+	assert.Equal(t, "", lines[0].Mode, "a version 1 line has no mode (body)")
+
+	lines = parseBoundaryLines(mowgli.GetAreaChannelRes{Success: true, SettingsJSON: `{"version":2,"lines":[` +
+		`{"id":"bed","name":"","points":[[0,1],[2,3]],"width_m":0,"mode":"blade"}]}`})
+	require.Len(t, lines, 1)
+	assert.Equal(t, mowgli.BoundaryLineModeBlade, lines[0].Mode)
 
 	assert.Empty(t, parseBoundaryLines(mowgli.GetAreaChannelRes{Success: true, SettingsJSON: `{"version":1,"lines":[]}`}))
 	assert.Nil(t, parseBoundaryLines(mowgli.GetAreaChannelRes{Success: false, SettingsJSON: `{"lines":[]}`}))

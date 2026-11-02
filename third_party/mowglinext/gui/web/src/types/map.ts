@@ -17,10 +17,20 @@ export type AreaChannel = {
 export type MapWithChannels = {navigation_channels?: (AreaChannel | null)[]};
 
 /**
+ * What a boundary line keeps off it: "body" = the whole mower (drop-offs,
+ * ponds), "blade" = only the cutting disc, the body may overhang (flower beds,
+ * paths). A line without a mode (older map servers) is a body line.
+ */
+export type BoundaryLineMode = 'body' | 'blade';
+export const BOUNDARY_LINE_MODES: readonly BoundaryLineMode[] = ['body', 'blade'];
+export const boundaryLineMode = (mode: unknown): BoundaryLineMode => mode === 'blade' ? 'blade' : 'body';
+
+/**
  * A boundary line ("virtual wall"): a polyline the mower must never cross.
  * Served by the Go backend as Map.boundary_lines and sent back in
  * PUT /mowglinext/map (replaces the stored set when present; omitted = keep).
- * Map metres, [x, y]; width_m 0 = the body footprint must not cross the line.
+ * Map metres, [x, y]; width_m 0 = the protected part (body footprint or blade
+ * disc, by `mode`) must not cross the line itself.
  * Hand-written: not part of the generated ROS / swagger types.
  */
 export type BoundaryLine = {
@@ -28,6 +38,7 @@ export type BoundaryLine = {
     name: string;
     points: [number, number][];
     width_m: number;
+    mode?: BoundaryLineMode;
 };
 export type MapWithBoundaryLines = {boundary_lines?: BoundaryLine[]};
 export type ReplaceMapBoundaryLines = {boundary_lines?: BoundaryLine[]};
@@ -165,9 +176,10 @@ export class BoundaryLineFeature extends MowingFeature implements Feature<LineSt
         line_id: string;
         name: string;
         width_m: number;
+        mode: BoundaryLineMode;
     };
 
-    constructor(lineId: string, coordinates: Position[], name = '', widthM = 0) {
+    constructor(lineId: string, coordinates: Position[], name = '', widthM = 0, mode: BoundaryLineMode = 'body') {
         super(boundaryLineFeatureId(lineId));
         this.geometry = {type: 'LineString', coordinates: coordinates.map((c) => [c[0], c[1]])};
         this.properties = {
@@ -175,6 +187,7 @@ export class BoundaryLineFeature extends MowingFeature implements Feature<LineSt
             line_id: lineId,
             name: name.slice(0, BOUNDARY_LINE_NAME_MAX),
             width_m: Math.min(BOUNDARY_LINE_MAX_WIDTH_M, Math.max(0, Number.isFinite(widthM) ? widthM : 0)),
+            mode: boundaryLineMode(mode),
         };
     }
 
@@ -190,13 +203,17 @@ export class BoundaryLineFeature extends MowingFeature implements Feature<LineSt
         return this.properties.width_m;
     }
 
+    getMode(): BoundaryLineMode {
+        return this.properties.mode;
+    }
+
     getCoordinates(): Position[] {
         return this.geometry.coordinates;
     }
 
-    /** Copy with a new name / width (features are replaced, never mutated in place). */
-    withProps(name: string, widthM: number): BoundaryLineFeature {
-        return new BoundaryLineFeature(this.getLineId(), this.getCoordinates(), name, widthM);
+    /** Copy with a new name / width / mode (features are replaced, never mutated in place). */
+    withProps(name: string, widthM: number, mode: BoundaryLineMode = this.getMode()): BoundaryLineFeature {
+        return new BoundaryLineFeature(this.getLineId(), this.getCoordinates(), name, widthM, mode);
     }
 }
 
@@ -557,7 +574,8 @@ export function featureFromJSON(
             if (line?.type !== 'LineString') return null;
             return new BoundaryLineFeature(
                 typeof props.line_id === 'string' ? props.line_id : json.id, line.coordinates,
-                typeof props.name === 'string' ? props.name : '', Number(props.width_m ?? 0));
+                typeof props.name === 'string' ? props.name : '', Number(props.width_m ?? 0),
+                boundaryLineMode(props.mode));
         }
         case 'dock': {
             const coords = (json.geometry as Point).coordinates;

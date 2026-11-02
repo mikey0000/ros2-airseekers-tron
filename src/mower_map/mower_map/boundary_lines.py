@@ -1,20 +1,32 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Boundary lines ("virtual walls", 2026-11-02): polylines the mower body must never cross.
+"""Boundary lines ("virtual walls", 2026-11-02): polylines the mower must never cross.
 
 ROS-free. A boundary line is drawn in the GUI along a drop-off or a flower-bed edge, inside or
 across areas. It is stored in areas.dat next to the areas (same map frame, same datum stamp, see
 ``areas.format_areas_dat``) and enforced in two ways:
 
-* the TRUE line (plus ``width_m``) is a hard rule: a body footprint that touches it trips the
-  mission's hard boundary guard (``body_depth`` / ``body_hits``; reason names the line id);
+* the TRUE line (plus ``width_m``) is a hard rule: touching it trips the mission's hard
+  boundary guard (``line_depth`` / ``line_hits``; reason names the line id);
 * planners see it as a thin keepout polygon (``keepout_polygon``: the line buffered to
-  ``width_m + boundary_line_keepout_m``): the keepout / nav masks, the route graph and the
+  ``width_m`` + the mode's keepout): the keepout / nav masks, the route graph and the
   coverage holes, the same way no-go polygons are handled.
+
+Each line has a ``mode`` (2026-11-03):
+
+* ``"body"`` (default): the body footprint must not cross (drop-offs, ponds). Trip test: the
+  footprint box; planner keepout ``boundary_line_keepout_m`` (0.57 = 2 x (0.235 + 0.05)).
+* ``"blade"``: only the cutting disc must not cross, the body may overhang (flower beds,
+  paths). Trip test: the disc (centre ``blade_offset`` ahead of base_link, radius
+  ``blade_radius``); planner keepout ``2 x (blade_radius + 0.05)`` (0.32 for the 220 mm disc).
 
 Wire format (GUI <-> map_server <-> mission), map metres::
 
-    {"version": 1, "lines": [{"id": "bl-1", "name": "drop-off",
-                              "points": [[x, y], ...], "width_m": 0.0}, ...]}
+    {"version": 2, "lines": [{"id": "bl-1", "name": "drop-off", "points": [[x, y], ...],
+                              "width_m": 0.0, "mode": "body"}, ...]}
+
+Version 1 (no ``mode``) is still read: every line of it is a body line. map_server's latched
+``~/boundary_lines`` adds ``"blade_radius_m"`` (its blade disc), so the mission's blade band
+and disc test use the same disc as the masks.
 """
 
 from __future__ import annotations
@@ -26,7 +38,11 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 
 Point = Tuple[float, float]
 
-VERSION = 1
+# 1 (2026-11-02): id, name, points, width_m. 2 (2026-11-03): + mode; a v1 line is a body line.
+VERSION = 2
+MODE_BODY = 'body'
+MODE_BLADE = 'blade'
+MODES = (MODE_BODY, MODE_BLADE)
 WIDTH_MAX_M = 2.0
 NAME_MAX = 64
 ID_MAX = 64
@@ -41,6 +57,24 @@ KEEPOUT_NAME_PREFIX = 'boundary line '
 # 0.645 m nose-corner sweep reached the line (test_coverage_planning BoundaryLineBody). The
 # masks are robot-centre limits, so this band is also what keeps the body off the line there.
 DEFAULT_KEEPOUT_M = 0.57
+# Blade lines: clearance of the cutting disc's edge from the band, each side.
+BLADE_MARGIN_M = 0.05
+# The standard 220 mm disc (mower_common.geometry BLADE_DISC_M / 2) centred DECK_CENTRE_X_M
+# (0.23) ahead of base_link; map_server's blade_disc_mm / blade_radius / blade_offset_x
+# override them on the robot.
+DEFAULT_BLADE_RADIUS_M = 0.11
+DEFAULT_BLADE_OFFSET_X_M = 0.23
+
+
+def blade_keepout_m(blade_radius_m: float) -> float:
+    """Planner keepout of a blade line: the disc radius + BLADE_MARGIN_M on each side. The
+    swaths are base_link paths and the disc rides on them (centre 0.23 m ahead), so laterally
+    this keeps the disc edge BLADE_MARGIN_M off the band; at row ends and turns the edge
+    layouts' own clearance from the hole covers the deck offset (gtest BoundaryLineBlade)."""
+    return 2.0 * (max(0.0, float(blade_radius_m)) + BLADE_MARGIN_M)
+
+
+DEFAULT_BLADE_KEEPOUT_M = blade_keepout_m(DEFAULT_BLADE_RADIUS_M)       # 0.32
 
 
 @dataclass
@@ -49,6 +83,11 @@ class BoundaryLine:
     points: List[Point] = field(default_factory=list)
     name: str = ''
     width_m: float = 0.0
+    mode: str = MODE_BODY
+
+    @property
+    def is_blade(self) -> bool:
+        return self.mode == MODE_BLADE
 
     def label(self) -> str:
         """'id "name"' (or just the id) for log lines and trip reasons."""
@@ -83,6 +122,8 @@ def validate(lines: Sequence[BoundaryLine]) -> Tuple[bool, str]:
             return False, '%s has a non-finite point' % what
         if not (math.isfinite(ln.width_m) and 0.0 <= ln.width_m <= WIDTH_MAX_M):
             return False, '%s width_m %r outside 0..%.1f' % (what, ln.width_m, WIDTH_MAX_M)
+        if ln.mode not in MODES:
+            return False, '%s mode %r is not one of %s' % (what, ln.mode, '/'.join(MODES))
     return True, 'ok'
 
 
@@ -96,7 +137,7 @@ def assign_ids(lines: Sequence[BoundaryLine]) -> List[BoundaryLine]:
                 n += 1
             lid = 'line-%d' % n
         seen.add(lid)
-        out.append(BoundaryLine(lid, list(ln.points), ln.name, ln.width_m))
+        out.append(BoundaryLine(lid, list(ln.points), ln.name, ln.width_m, ln.mode))
     return out
 
 
@@ -107,6 +148,7 @@ def parse_json(text: str) -> Tuple[bool, str, List[BoundaryLine]]:
         obj = json.loads(text) if text and text.strip() else {}
     except ValueError as exc:
         return False, 'bad JSON: %s' % exc, []
+    version = VERSION
     if isinstance(obj, dict):
         version = obj.get('version', VERSION)
         if not isinstance(version, int) or version < 1:
@@ -130,8 +172,11 @@ def parse_json(text: str) -> Tuple[bool, str, List[BoundaryLine]]:
             width = float(d.get('width_m', 0.0) or 0.0)
         except (TypeError, ValueError, IndexError) as exc:
             return False, 'boundary line %d: bad points/width_m: %s' % (k, exc), []
+        # v1 has no mode: a body line (the conservative reading); missing / null = body
+        mode = d.get('mode') if version >= 2 else None
+        mode = MODE_BODY if mode is None or mode == '' else str(mode)
         lines.append(BoundaryLine(_clean_text(d.get('id'), ID_MAX), pts,
-                                  _clean_text(d.get('name'), NAME_MAX), width))
+                                  _clean_text(d.get('name'), NAME_MAX), width, mode))
     lines = assign_ids(lines)
     ok, msg = validate(lines)
     return ok, msg, (lines if ok else [])
@@ -141,11 +186,25 @@ def to_dict(lines: Sequence[BoundaryLine]) -> dict:
     return {'version': VERSION, 'lines': [
         {'id': ln.id, 'name': ln.name,
          'points': [[round(x, 4), round(y, 4)] for x, y in ln.points],
-         'width_m': round(float(ln.width_m), 4)} for ln in lines]}
+         'width_m': round(float(ln.width_m), 4), 'mode': ln.mode} for ln in lines]}
 
 
-def to_json(lines: Sequence[BoundaryLine]) -> str:
-    return json.dumps(to_dict(lines))
+def to_json(lines: Sequence[BoundaryLine], blade_radius_m: Optional[float] = None) -> str:
+    """The wire format; ``blade_radius_m`` (map_server's latched topic) is added when given."""
+    d = to_dict(lines)
+    if blade_radius_m is not None:
+        d['blade_radius_m'] = round(float(blade_radius_m), 4)
+    return json.dumps(d)
+
+
+def blade_radius_of(text: str) -> Optional[float]:
+    """``blade_radius_m`` of a wire message (map_server's latched topic), None when absent."""
+    try:
+        obj = json.loads(text) if text and text.strip() else {}
+        r = float(obj.get('blade_radius_m')) if isinstance(obj, dict) else math.nan
+    except (TypeError, ValueError):
+        return None
+    return r if math.isfinite(r) and r > 0.0 else None
 
 
 # ---------------------------------------------------------------------------
@@ -235,40 +294,82 @@ def body_depth(line: BoundaryLine, corners: Sequence[Point]) -> float:
     return best
 
 
-def body_hits(lines: Sequence[BoundaryLine], pose, front: float = 0.60, rear: float = 0.10,
-              half: float = 0.235, min_depth: float = 0.0):
-    """[(depth, line)] of every line the footprint at ``pose`` (x, y, yaw) reaches deeper than
-    ``min_depth`` into, deepest first."""
+@dataclass(frozen=True)
+class Geometry:
+    """What a line is tested against: the footprint box (body lines) and the blade disc
+    (blade lines), around base_link (x forward, y left)."""
+    front: float = 0.60
+    rear: float = 0.10
+    half: float = 0.235
+    blade_radius: float = DEFAULT_BLADE_RADIUS_M
+    blade_x: float = DEFAULT_BLADE_OFFSET_X_M
+    blade_y: float = 0.0
+
+
+def blade_centre(x: float, y: float, yaw: float, blade_x: float = DEFAULT_BLADE_OFFSET_X_M,
+                 blade_y: float = 0.0) -> Point:
+    """The blade disc centre in the map frame."""
+    c, s = math.cos(yaw), math.sin(yaw)
+    return (x + c * blade_x - s * blade_y, y + s * blade_x + c * blade_y)
+
+
+def disc_depth(line: BoundaryLine, cx: float, cy: float, radius: float) -> float:
+    """How far the disc (centre, radius) reaches into the line band (centreline +- width_m / 2):
+    > 0 = crossing / touching, <= 0 = clear by that much."""
+    half = 0.5 * max(0.0, float(line.width_m))
+    d = min((_pt_seg(cx, cy, a, b) for a, b in segments(line)), default=math.inf)
+    return max(0.0, float(radius)) + half - d
+
+
+def line_depth(line: BoundaryLine, pose, geom: Geometry = Geometry()) -> float:
+    """Depth into ``line`` at ``pose`` (x, y, yaw) of what its mode protects: the footprint box
+    for a body line, the blade disc for a blade line (> 0 = crossing, <= 0 = clear by that)."""
+    x, y, yaw = float(pose[0]), float(pose[1]), float(pose[2])
+    if line.is_blade:
+        cx, cy = blade_centre(x, y, yaw, geom.blade_x, geom.blade_y)
+        return disc_depth(line, cx, cy, geom.blade_radius)
+    return body_depth(line, body_corners(x, y, yaw, geom.front, geom.rear, geom.half))
+
+
+def line_hits(lines: Sequence[BoundaryLine], pose, geom: Geometry = Geometry(),
+              min_depth: float = 0.0):
+    """[(depth, line)] of every line reached deeper than ``min_depth`` at ``pose`` (x, y,
+    yaw), deepest first (``line_depth``: body box or blade disc by the line's mode)."""
     if pose is None or len(pose) < 3 or not lines:
         return []
-    corners = body_corners(float(pose[0]), float(pose[1]), float(pose[2]), front, rear, half)
     out = []
     for ln in lines:
         if len(ln.points) < 2:
             continue
-        d = body_depth(ln, corners)
+        d = line_depth(ln, pose, geom)
         if d > min_depth:
             out.append((d, ln))
     out.sort(key=lambda t: -t[0])
     return out
 
 
-def clearance(lines: Sequence[BoundaryLine], pose, front: float = 0.60, rear: float = 0.10,
-              half: float = 0.235) -> float:
-    """Smallest body-to-line-band distance at ``pose`` (negative = crossing by that much);
-    inf without lines."""
+def clearance(lines: Sequence[BoundaryLine], pose, geom: Geometry = Geometry()) -> float:
+    """Smallest distance of the protected part (body / disc by mode) to a line band at
+    ``pose`` (negative = crossing by that much); inf without lines."""
     if pose is None or not lines:
         return math.inf
-    corners = body_corners(float(pose[0]), float(pose[1]), float(pose[2]), front, rear, half)
-    return min((-body_depth(ln, corners) for ln in lines if len(ln.points) >= 2),
+    return min((-line_depth(ln, pose, geom) for ln in lines if len(ln.points) >= 2),
                default=math.inf)
 
 
-def keepout_polygon(line: BoundaryLine, keepout_m: float) -> List[Point]:
+def keepout_m_of(line: BoundaryLine, keepout_m: float,
+                 blade_keepout: float = DEFAULT_BLADE_KEEPOUT_M) -> float:
+    """The planner keepout of ``line`` by its mode (added to width_m)."""
+    return float(blade_keepout) if line.is_blade else float(keepout_m)
+
+
+def keepout_polygon(line: BoundaryLine, keepout_m: float,
+                    blade_keepout: float = DEFAULT_BLADE_KEEPOUT_M) -> List[Point]:
     """The planner's thin keepout polygon: the line buffered to a band of total width
-    ``width_m + keepout_m`` (square caps, mitred joints; areas.buffer_polyline)."""
+    ``width_m + keepout_m`` (body line) or ``width_m + blade_keepout`` (blade line) (square
+    caps, mitred joints; areas.buffer_polyline)."""
     from mower_map.areas import buffer_polyline
-    w = max(0.0, float(line.width_m)) + max(0.0, float(keepout_m))
+    w = max(0.0, float(line.width_m)) + max(0.0, keepout_m_of(line, keepout_m, blade_keepout))
     if w <= 0.0 or len(line.points) < 2:
         return []
     return buffer_polyline(list(line.points), 0.5 * w)
@@ -308,11 +409,12 @@ def polygon_touches(poly_a: Sequence[Point], poly_b: Sequence[Point]) -> bool:
 
 
 def keepouts_for_polygon(lines: Sequence[BoundaryLine], poly: Sequence[Point],
-                         keepout_m: float) -> List[Tuple[BoundaryLine, List[Point]]]:
+                         keepout_m: float, blade_keepout: float = DEFAULT_BLADE_KEEPOUT_M
+                         ) -> List[Tuple[BoundaryLine, List[Point]]]:
     """[(line, keepout polygon)] of the lines whose keepout overlaps ``poly`` (an area)."""
     out = []
     for ln in lines:
-        k = keepout_polygon(ln, keepout_m)
+        k = keepout_polygon(ln, keepout_m, blade_keepout)
         if len(k) >= 3 and polygon_touches(k, poly):
             out.append((ln, k))
     return out

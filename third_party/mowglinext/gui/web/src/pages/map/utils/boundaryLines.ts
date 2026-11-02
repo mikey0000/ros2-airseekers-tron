@@ -1,6 +1,7 @@
 import type {Position} from "geojson";
 import {
     BoundaryLineFeature,
+    boundaryLineMode,
     type BoundaryLine,
     type MowingFeature,
 } from "../../../types/map.ts";
@@ -24,7 +25,8 @@ export function boundaryLineFeaturesFromMap(
     for (const line of lines ?? []) {
         if (!line?.id || (line.points?.length ?? 0) < 2) continue;
         const coords = line.points.map(([x, y]) => transpose(offsetX, offsetY, datum, y, x));
-        const f = new BoundaryLineFeature(line.id, coords, line.name ?? "", line.width_m ?? 0);
+        const f = new BoundaryLineFeature(line.id, coords, line.name ?? "", line.width_m ?? 0,
+            boundaryLineMode(line.mode));
         result[f.id] = f;
     }
     return result;
@@ -45,6 +47,7 @@ export function boundaryLinesForSave(
             name: f.getName(),
             points: f.getCoordinates().map((c) => itranspose(offsetX, offsetY, datum, c[1], c[0])),
             width_m: f.getWidthM(),
+            mode: f.getMode(),
         }));
 }
 

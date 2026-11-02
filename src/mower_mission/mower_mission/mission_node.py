@@ -693,10 +693,14 @@ class MissionNode(Node):
             self.get_logger().warn('boundary lines: unparsable message ignored (keeping %d)'
                                    % len(self.fsm.inputs.boundary_lines or []))
             return
+        blade = walls.blade_radius_of(msg.data)
         with self._lock:
             self.fsm.inputs.boundary_lines = lines
-        self.get_logger().info('boundary lines: %d (%s)'
-                               % (len(lines), ', '.join(ln.label() for ln in lines) or 'none'))
+            self.fsm.inputs.boundary_blade_radius = blade
+        self.get_logger().info('boundary lines: %d (%s)%s'
+                               % (len(lines), ', '.join('%s %s' % (ln.label(), ln.mode)
+                                                        for ln in lines) or 'none',
+                                  '' if blade is None else ', blade radius %.3f m' % blade))
 
     def _on_obstacle_policy(self, msg):
         """{kind: none|dynamic|static, class, distance_m, bearing_deg}; the receipt time is

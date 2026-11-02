@@ -357,7 +357,7 @@ func TestReplaceMap_AtomicCarriesBoundaryLines(t *testing.T) {
 	require.NoError(t, replaceMapInternal(context.Background(), f, req))
 	assert.Equal(t, []string{mapServiceReplaceAreas}, f.calls)
 	set := storedLines(t, f)
-	assert.Equal(t, mowgli.BoundaryLinesVersion, set.Version)
+	assert.Equal(t, mowgli.BoundaryLinesVersionBody, set.Version, "body lines only: version 1")
 	require.Len(t, set.Lines, 1)
 	assert.Equal(t, "bl-1", set.Lines[0].ID)
 	assert.Equal(t, [2]float64{2, 1}, set.Lines[0].Points[2])
@@ -398,6 +398,35 @@ func TestReplaceMap_FallbackWithoutLineServiceOnlyFailsForRealLines(t *testing.T
 	err := replaceMapInternal(context.Background(), f, req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "boundary lines were NOT")
+}
+
+// A blade line needs the version 2 wire format (per-line mode); the mode
+// reaches map_server, an unknown one never does.
+func TestReplaceMap_BladeLineIsSentAsVersion2(t *testing.T) {
+	f := newFakeMapServer(true)
+	req := newMap("lawn")
+	bed := wall("bed", [2]float64{0, 0}, [2]float64{2, 0})
+	bed.Mode = mowgli.BoundaryLineModeBlade
+	lines := []mowgli.BoundaryLine{wall("pond", [2]float64{0, 1}, [2]float64{2, 1}), bed}
+	req.BoundaryLines = &lines
+
+	require.NoError(t, replaceMapInternal(context.Background(), f, req))
+	set := storedLines(t, f)
+	assert.Equal(t, mowgli.BoundaryLinesVersion, set.Version)
+	require.Len(t, set.Lines, 2)
+	assert.Equal(t, "", set.Lines[0].Mode, "a body line without a mode stays without one")
+	assert.Equal(t, mowgli.BoundaryLineModeBlade, set.Lines[1].Mode)
+	assert.Contains(t, f.lines, `"mode":"blade"`)
+
+	bad := []mowgli.BoundaryLine{wall("x", [2]float64{0, 0}, [2]float64{2, 0})}
+	bad[0].Mode = "deck"
+	f = newFakeMapServer(true)
+	req = newMap("lawn")
+	req.BoundaryLines = &bad
+	err := replaceMapInternal(context.Background(), f, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown mode")
+	assert.Empty(t, f.calls)
 }
 
 func TestReplaceMap_RejectsBoundaryLineWithOnePoint(t *testing.T) {

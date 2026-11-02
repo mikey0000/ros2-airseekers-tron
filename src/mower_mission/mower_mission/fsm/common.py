@@ -529,6 +529,8 @@ class Inputs:
     # 2026-11-02 boundary lines (virtual walls): /map_server_node/boundary_lines (latched),
     # [walls.BoundaryLine]; None = never received (no lines known)
     boundary_lines: Any = None
+    # map_server's blade disc radius from the same message (blade lines); None = not sent
+    boundary_blade_radius: Optional[float] = None
 
 
 @dataclass
@@ -1051,6 +1053,10 @@ class Params:
     boundary_lines_enabled: bool = True
     boundary_line_trip_m: float = 0.0
     boundary_line_keepout_m: float = 0.57     # = mower_map boundary_lines.DEFAULT_KEEPOUT_M
+    # blade lines (2026-11-03): the blade disc, not the body, is tested against the line and
+    # the hole is width_m + this; < 0 = 2 x (blade radius + 0.05), the radius from map_server
+    # (latched blade_radius_m; 0.32 with the 220 mm disc). = map_server.yaml
+    boundary_line_blade_keepout_m: float = -1.0
     hard_boundary_trail_m: float = 1.5
     hard_boundary_trail_step_m: float = 0.05
     hard_boundary_pause_s: float = 0.5
