@@ -40,6 +40,7 @@ import { MqttSection } from "../components/settings/MqttSection.tsx";
 import { IrriSenseSection } from "../components/settings/IrriSenseSection.tsx";
 import { RemoteAccessSection } from "../components/settings/RemoteAccessSection.tsx";
 import { ConnectionSection } from "../components/settings/ConnectionSection.tsx";
+import { NetworkSection } from "../components/settings/NetworkSection.tsx";
 import { NotificationsSection } from "../components/settings/NotificationsSection.tsx";
 import { AdvancedSection } from "../components/settings/AdvancedSection.tsx";
 import { SettingsPreview } from "../components/settings/SettingsPreview.tsx";
@@ -292,6 +293,8 @@ export const SettingsPage = () => {
                 );
             case "connection":
                 return <ConnectionSection/>;
+            case "network":
+                return <NetworkSection/>;
             case "notifications":
                 return (
                     <NotificationsSection

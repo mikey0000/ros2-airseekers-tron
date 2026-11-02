@@ -36,6 +36,7 @@ export const PROFILE_GATES = {
     "settings:drive_motor": ["drive_tuning"],   // drive / PID auto-tuning (docker exec)
     "settings:leds": ["status_leds"],           // mowgli_leds SPI strip
     "settings:straight_driving": ["straight_driving"], // cmd_vel_slew trim / deadband / heading hold
+    "settings:network": ["wifi_setup"],          // host Wi-Fi (NetworkManager over D-Bus)
 
     // In-page features
     "feature:firmware_flash": ["stm32_firmware"],      // dashboard "flash firmware" CTA
@@ -52,6 +53,7 @@ export const PROFILE_GATES = {
     "feature:area_settings": ["area_settings"],        // per-area mow settings panel + Start sheet
     "feature:rtk_base": ["lora_rtk_base"],             // RTK base station card (LoRa pairing)
     "feature:tailscale": ["remote_access_sidecar"],    // Tailscale sidecar created over the docker socket
+    "feature:wifi_setup": ["wifi_setup"],              // Wi-Fi scan / join / forget / band lock / power save
 } as const satisfies Record<string, readonly FeatureId[]>;
 
 export type GateId = keyof typeof PROFILE_GATES;

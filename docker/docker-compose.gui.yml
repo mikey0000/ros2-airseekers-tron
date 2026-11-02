@@ -14,6 +14,15 @@
 # to docker.sock is root-equivalent on the host. Acceptable for a
 # single-owner robot on a private LAN (the GUI API has no auth layer); do not
 # expose port 4006 beyond that. NOT granted: /dev, privileged, pid: host.
+#
+# The host's system D-Bus socket is mounted so Settings > Network can drive
+# NetworkManager (Wi-Fi status, scan, join/forget, band lock, power save;
+# pkg/providers/network_wifi.go). The container runs as root, which
+# NetworkManager authorises without polkit; the routes that change the network
+# additionally need the X-Mower-Token header (the BLE token). Drop the mount to
+# take Wi-Fi setup out of the GUI: the page then says it is not available.
+# Docker's default AppArmor profile blocks D-Bus from the container where
+# AppArmor is on: see docs/gui.md "Wi-Fi setup".
 
 services:
   mower_gui:
@@ -48,6 +57,7 @@ services:
       - MAP_TILES_DIR=/map_tiles
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
       - /userdata/ros2/gui_db:/db
       - ../config/gui:/mowgli_config
       - /userdata/ros2/maps:/ros2_ws/maps

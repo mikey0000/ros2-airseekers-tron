@@ -76,6 +76,7 @@ describe("robot profiles", () => {
         expect(hasFeature(tron, "lora_rtk_base")).toBe(true);
         expect(hasFeature(tron, "area_settings")).toBe(true);
         expect(hasFeature(tron, "straight_driving")).toBe(true);
+        expect(hasFeature(tron, "wifi_setup")).toBe(true);
         expect(tron.perception).toBe("camera");
         expect(tron.docking).toBe("vision_marker");
         expect(tron.battery.preferReportedPercent).toBe(true);

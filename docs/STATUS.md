@@ -965,3 +965,16 @@ on the second pass at the bend 0.051 / 0.059 (five pre-fix runs: 0.055-0.144). O
 0.108 at (-0.60, 4.80) / 0.124 at (-5.73, 1.85) (the first lap's pass of the same bend, into
 the pivot vertex at 367, which this rule does not touch), so i still FAILs (limit 0.10); a
 0.065 / 0.091, h line 0.089 / 0.081, loop 20 Hz.
+
+## Wi-Fi setup in the GUI (2026-11-03, branch ws/wifi-setup; Go + vitest, read-only check against a dev box)
+
+Settings → Network (Tron profile) drives the host NetworkManager over D-Bus: link status, scan,
+join / forget, band lock (Auto / 2.4 / 5 GHz) and power save. Backend
+`pkg/providers/network_wifi.go` + `pkg/api/network_wifi.go`, routes `/api/network/wifi/*`; the
+mutating ones need `X-Mower-Token` = the BLE token, which the BLE bridge now forwards
+(`ble_streams.py`, `httpStream.ts`, `ble_tunnel_protocol.md`). `docker-compose.gui.yml` mounts
+`/run/dbus/system_bus_socket`; the GUI runs as root, so NetworkManager needs no polkit rule. On the
+Ubuntu dev box Docker's `docker-default` AppArmor profile blocked every D-Bus message from the
+container (the page then says Wi-Fi setup is unavailable); whether the mower confines containers the
+same way is unchecked (docs/gui.md lists the two commands and the options). Not yet run on the mower: connect / forget / band / power save are tested only against a fake
+NetworkManager. Details: `docs/gui.md` "Wi-Fi setup".

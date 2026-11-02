@@ -35,13 +35,14 @@ export type FeatureId =
     | "lora_rtk_base"       // pair the vendor LoRa RTK base (um960_gps_driver get/set_lora)
     | "area_settings"       // per-area mowing settings served by the map server
     | "straight_driving"    // host-side angular trim / deadband / IMU heading hold (cmd_vel_slew)
-    | "manual_blade_two_step"; // manual mode drives blade-off; blades start as a separate step
+    | "manual_blade_two_step" // manual mode drives blade-off; blades start as a separate step
+    | "wifi_setup";         // host NetworkManager over D-Bus: Settings > Network (scan, join, band lock)
 
 export const FEATURE_IDS: readonly FeatureId[] = [
     "stm32_firmware", "gnss_sidecar", "docker_host", "docker_admin", "remote_access_sidecar",
     "drive_tuning", "lidar", "cameras", "dock_calibration", "fusion_graph", "imu_yaw_calibration",
     "status_leds", "lora_corrections", "lora_rtk_base", "area_settings", "straight_driving",
-    "manual_blade_two_step",
+    "manual_blade_two_step", "wifi_setup",
 ];
 
 /**
@@ -66,6 +67,7 @@ export const UPSTREAM_FEATURES: Readonly<Record<FeatureId, boolean>> = {
     area_settings: false,
     straight_driving: false,
     manual_blade_two_step: false,
+    wifi_setup: false,
 };
 
 export type PerceptionKind = "lidar" | "camera" | "none";
@@ -185,6 +187,8 @@ const PROFILE_OVERLAYS: Record<string, ProfileOverlay> = {
             // mower_mission manual_blade_requires_enable: manual drive starts blade-off,
             // the map page's Blades control sends mow_enabled (-> ~/manual_blade).
             manual_blade_two_step: true,
+            // GUI compose mounts the host D-Bus socket: NetworkManager Wi-Fi setup.
+            wifi_setup: true,
         },
         perception: "camera",
         docking: "vision_marker",

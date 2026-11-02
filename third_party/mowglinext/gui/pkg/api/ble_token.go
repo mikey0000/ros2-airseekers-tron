@@ -33,9 +33,18 @@ type bleTokens struct {
 	mu sync.Mutex
 }
 
+func newBleTokens(dbProvider types.IDBProvider) *bleTokens {
+	return &bleTokens{db: dbProvider}
+}
+
 // BleTokenRoutes registers the BLE tunnel token endpoints.
 func BleTokenRoutes(r *gin.RouterGroup, dbProvider types.IDBProvider) {
-	tokens := &bleTokens{db: dbProvider}
+	bleTokenRoutes(r, newBleTokens(dbProvider))
+}
+
+// bleTokenRoutes registers the endpoints on a shared token store, so the
+// routes that check the token (requireMowerToken) mint under the same lock.
+func bleTokenRoutes(r *gin.RouterGroup, tokens *bleTokens) {
 	group := r.Group("/ble")
 	group.GET("/token", getBleToken(tokens))
 	group.POST("/token/rotate", postBleTokenRotate(tokens))

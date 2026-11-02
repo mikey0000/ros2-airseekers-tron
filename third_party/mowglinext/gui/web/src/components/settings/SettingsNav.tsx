@@ -20,6 +20,7 @@ import {
     GlobalOutlined,
     WarningOutlined,
     WifiOutlined,
+    SignalFilled,
 } from "@ant-design/icons";
 import { useIsMobile } from "../../hooks/useIsMobile.ts";
 import { useThemeMode } from "../../theme/ThemeContext.tsx";
@@ -32,6 +33,7 @@ const SECTION_ICONS: Record<string, React.ReactNode> = {
     dashboard: <DashboardOutlined />,
     global: <GlobalOutlined />,
     wifi: <WifiOutlined />,
+    signal: <SignalFilled />,
     aim: <AimOutlined />,
     "node-index": <NodeIndexOutlined />,
     scissor: <ScissorOutlined />,

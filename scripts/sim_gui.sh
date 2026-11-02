@@ -77,7 +77,13 @@ up() {
   for _ in $(seq 60); do port_busy 8765 && break; sleep 1; done
   port_busy 8765 || { echo "foxglove_bridge did not come up: docker logs $SIM" >&2; exit 1; }
 
-  docker run -d --rm --name "$GUI" --network host \
+  # SIM_GUI_WIFI=1 mounts this host's system D-Bus so Settings > Network shows the dev box's own
+  # NetworkManager. Off by default: the GUI runs as root, so with the mount its connect / forget /
+  # band / powersave routes would change THIS machine's Wi-Fi (token-gated, but port 4006 is
+  # reachable from the LAN). Use it for read-only checks of status and scan.
+  local dbus_mount=()
+  [[ "${SIM_GUI_WIFI:-0}" == 1 ]] && dbus_mount=(-v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket)
+  docker run -d --rm --name "$GUI" --network host "${dbus_mount[@]}" \
     -e FOXGLOVE_URL=ws://localhost:8765 \
     -e MOWER_YAML_CONFIG_FILE=/mowgli_config/mowgli_robot.yaml \
     -e DB_PATH=/db -e ONBOARDING_COMPLETED=true -e ROBOT_PROFILE=AirseekersTron \

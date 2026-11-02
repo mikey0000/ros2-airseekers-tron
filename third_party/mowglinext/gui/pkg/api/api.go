@@ -17,7 +17,7 @@ import (
 // gin-swagger middleware
 // swagger embed files
 
-func NewAPI(dbProvider types.IDBProvider, dockerProvider types.IDockerProvider, rosProvider types.IRosProvider, firmwareProvider *providers.FirmwareProvider, irriSenseProvider *providers.IrriSenseProvider, remoteAccessProvider *providers.RemoteAccessProvider, notificationProvider *providers.NotificationProvider) {
+func NewAPI(dbProvider types.IDBProvider, dockerProvider types.IDockerProvider, rosProvider types.IRosProvider, firmwareProvider *providers.FirmwareProvider, irriSenseProvider *providers.IrriSenseProvider, remoteAccessProvider *providers.RemoteAccessProvider, notificationProvider *providers.NotificationProvider, wifiProvider *providers.NetworkWifiProvider) {
 	httpAddr, err := dbProvider.Get("system.api.addr")
 	if err != nil {
 		log.Fatal(err)
@@ -67,7 +67,9 @@ func NewAPI(dbProvider types.IDBProvider, dockerProvider types.IDockerProvider, 
 	NotificationRoutes(apiGroup, notificationProvider)
 	ImportRoutes(apiGroup, rosProvider, dbProvider)
 	CameraRoutes(apiGroup, dbProvider)
-	BleTokenRoutes(apiGroup, dbProvider)
+	bleTokens := newBleTokens(dbProvider)
+	bleTokenRoutes(apiGroup, bleTokens)
+	NetworkWifiRoutes(apiGroup, wifiProvider, bleTokens)
 	tlsAddr, tlsProvider := setupTLS(dbProvider)
 	if tlsProvider != nil {
 		SecureOriginRoutes(apiGroup, tlsProvider, tlsAddr)
