@@ -134,6 +134,10 @@ mower_docking:
     rear_wait_max_s: 60.0
     dock_pose_measured_topic: /map_server_node/docking_pose_measured   # latched Bool
     dock_pose_measured_override: false   # bench only
+    # charger-moved check (stock parity): docked RTK-fixed pose vs the stored dock pose
+    dock_moved_warn_m: 0.5         # > this apart -> alert + latched dock_moved_topic JSON; 0 = off
+    dock_moved_topic: /mower_docking/dock_moved
+    notice_topic: /mower_alerts/notice
     # stall / dig guard in DOCKING / FINAL_DOCKING / RETRY -> FAILED "DOCK_STALLED"
     progress_odom_topic: /odometry/filtered   # fused pose used to measure real progress
     stall_min_cmd: 0.03            # m/s; |cmd| above this counts

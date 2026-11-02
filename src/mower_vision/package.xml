@@ -26,6 +26,7 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>vision_msgs</exec_depend>
+  <exec_depend>mowgli_interfaces</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

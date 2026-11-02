@@ -212,7 +212,7 @@ class AreasMixin:
             m.run_i = 0
         hmm = self.height_mm(st['cutter_height_mm'])
         speed = min(float(st['cut_speed_mps']), float(self.p.cut_speed_max_mps))
-        cap = self._speed_cap()             # slope caution / degraded localization cap
+        cap = self._speed_cap()             # slope / camera-blocked / degraded-localization cap
         if cap is not None:
             speed = min(speed, cap)
         self._log('info', 'area %d %s: settings (%s) %s; blade height %d mm, '

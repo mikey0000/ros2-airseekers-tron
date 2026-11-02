@@ -78,6 +78,14 @@ HEADING_ALIGNED_SOURCES = ('dock', 'cog', 'file_verified')
 HEADING_NOT_ALIGNED = ('heading not aligned: in manual, drive straight 1 m or more without '
                        'turning at 0.1 m/s or more, or start from the dock')
 
+# Battery temperature refusal / pause text (stock TaskManager::checkTaskEnv "battery temp high",
+# StartTaskRsp Battery_Temp_High -112; IotNotice BatteryHigh/LowTemperature 500002 / 500001).
+# Prefix kept stable: mower_alerts and the GUI key on 'battery temperature'.
+BATTERY_TEMP_HIGH = ('battery temperature %.0f C above %.0f C: let it cool in the shade or on '
+                     'the dock, mowing starts again by itself once it is below the limit')
+BATTERY_TEMP_LOW = ('battery temperature %.0f C below %.0f C: too cold to mow, start again '
+                    'once it is warmer')
+
 # MANUAL_MOWING sub_state (the GUI reads the blade state from it)
 SUB_MANUAL_BLADE_ON = 'joystick, blade on'
 SUB_MANUAL_BLADE_OFF = 'joystick, blade off'
@@ -114,6 +122,7 @@ CUTTER_HEIGHT_MAX_MM = 90
 SRV_CUTTER_HEIGHT = 'cutter_height'           # /cutter_control height only, blade off
 SRV_CLEAR_COSTMAPS = 'clear_costmaps'         # Nav2 clear_entirely_{global,local}_costmap
 SRV_PLAN_ROUTE = 'plan_route'                 # /map_server_node/plan_route (route graph)
+SRV_POWEROFF = 'request_poweroff'             # /base_keys/request_poweroff (host power-off)
 
 # set_parameters targets (the node maps them to <node>/set_parameters)
 PARAM_NODE_COVERAGE = 'coverage_server'
@@ -406,6 +415,27 @@ class RecordIncident:
 
 
 @dataclass
+class Notice:
+    """A stock-parity alert condition for mower_alerts (/mower_alerts/notice JSON,
+    rules.parse_notice): active=True raises it, False clears it."""
+    incident: str
+    active: bool
+    text: str = ''
+    kind: str = 'blocked'
+    priority: int = 3
+    message: str = ''
+
+
+@dataclass
+class SaveRecordingQuality:
+    """Per-vertex RTK quality of a saved recording (the node writes a JSON sidecar named
+    after the area / no-go / path in recording_quality_dir for the GUI to colour)."""
+    name: str
+    kind: str                   # area | obstacle | path
+    vertices: list              # [{'x', 'y', 'fix_type', 'hdop', 'fixed'}]
+
+
+@dataclass
 class DriveCmd:
     """Stuck escape: one Twist on /cmd_vel_emergency (highest twist_mux lane)."""
     linear: float = 0.0
@@ -446,7 +476,12 @@ class Inputs:
     docked: bool = False                # MowerBaseDevStatus.is_docking_done
     is_cutting: bool = False
     battery_percent: Optional[float] = None
+    # /vision/camera_blocked (latched Bool, mower_vision camera_blocked)
+    camera_blocked: bool = False
+    # /battery temperature (deg C, mcu_node BatteryInfo.temperature); None = not reported
+    battery_temp_c: Optional[float] = None
     fix_type: Optional[int] = None
+    hdop: Optional[float] = None        # /gps/status hdop (recorded-vertex quality)
     gps_quality: float = 0.0            # 0..1 (upstream publishes a fraction)
     pose: Optional[tuple] = None        # (x, y, yaw) in map
     boundary_violation: bool = False
@@ -557,6 +592,20 @@ class Params:
     # waits for min(battery_full_percent, battery_max_charge_percent).
     battery_max_charge_percent: float = 100.0
     battery_charge_hysteresis_percent: float = 5.0
+    # Battery temperature (stock: "battery temp high" start refusal, ChargeEnvCheck docks on
+    # it mid-task; the vendor thresholds are not in the recovered code, these are ours).
+    # START is refused outside [min_start, max_start]; above max_mow for battery_temp_debounce_s
+    # a running mission docks (purpose battery_temp) and resumes once <= max_start.
+    battery_temp_max_start_c: float = 45.0
+    battery_temp_min_start_c: float = 0.0
+    battery_temp_max_mow_c: float = 55.0
+    battery_temp_debounce_s: float = 10.0
+    # Critical battery (stock IotNotice ShutdownSoon 900023): below this while not on the
+    # dock / charging: stop, blade off, alert; still so after battery_critical_grace_s ->
+    # ask base_keys for the host power-off (battery_critical_poweroff). 0 disables.
+    battery_critical_percent: float = 5.0
+    battery_critical_grace_s: float = 120.0
+    battery_critical_poweroff: bool = True
     preflight_min_fix_type_docked: int = 1
     rtk_fix_type: int = FIX_RTK_FIXED
     rtk_timeout_s: float = 120.0
@@ -1210,6 +1259,9 @@ class Params:
     record_max_points: int = 50000
     record_path_width_m: float = 0.7      # default band width of a recorded PATH
     record_path_min_length_m: float = 1.0
+    # recorded vertices carry their RTK fix type + hdop (SaveRecordingQuality sidecar); true =
+    # a vertex sampled without RTK fixed is warned about and flagged 'fixed: false' there
+    record_require_fixed: bool = True
     max_areas: int = 200
     result_display_s: float = 5.0
     service_timeout_s: float = 10.0
@@ -1303,6 +1355,9 @@ class Params:
     tilt_caution_speed_mps: float = 0.15
     tilt_transit_speed_param: str = 'FollowPath.vx_max'  # MPPI transit
     tilt_transit_speed_mps: float = 0.3     # restored after caution (nav2_params FollowPath)
+    # front camera blocked (mower_vision camera_blocked, stock CameraBlocked 100105): both
+    # controllers capped at this while a mission runs; 0 disables
+    camera_blocked_speed_mps: float = 0.15
     tilt_trail_m: float = 2.0           # driven track kept for the back-out
     tilt_trail_step_m: float = 0.05
     tilt_backout_pause_s: float = 0.5

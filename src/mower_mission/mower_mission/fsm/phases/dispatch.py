@@ -56,6 +56,8 @@ class PhaseDispatchMixin:
                     self._resume('charge')
                 elif ph != 'CHARGING':
                     self._go('CHARGING')
+            elif self._resume_after == 'battery_temp':
+                self._battery_temp_wait_tick()
             elif ph != self._idle_name():
                 self._go(self._idle_name())
         elif ph in DISPLAY_NAMES:

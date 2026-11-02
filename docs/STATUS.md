@@ -1082,3 +1082,44 @@ no-progress counters. Dock transits and docking are exempt unless lost for more 
 Details: docs/localization.md "RTK-loss policy". The sim cannot inject an RTK loss yet, so
 this has only had unit tests and a plain no-regression gate.
 
+
+
+## Stock-parity small behaviours (2026-11-03, branch ws/stock-parity, unit-tested only)
+
+The small stock Tron behaviours we lacked (OTA excluded); evidence in
+`docs/audit_2026-10-05/vendor_mission_layer.md` 1.2 / 1.4 and `mower_docs/reference/IotNotice.msg`.
+No sim gate: none of these changes the drive path on a healthy run (each needs a hot battery,
+a flat battery, a blocked lens, a moved dock, a repeated stuck spot or an RTK-float recording).
+All alerts go through the new `/mower_alerts/notice` (JSON, `mower_alerts/rules.py parse_notice`).
+
+* **Battery temperature** (stock "battery temp high", -112): START refused outside
+  `battery_temp_min_start_c` 0 .. `battery_temp_max_start_c` 45 (from `/battery` temperature,
+  mcu_node BatteryInfo); mid-mow above `battery_temp_max_mow_c` 55 for 10 s the robot docks
+  and resumes once <= 45. Vendor thresholds are not in the recovered code: ours.
+* **Critical battery** (stock ShutdownSoon 900023): < `battery_critical_percent` 5 off the dock
+  -> stop, blade off, priority-5 alert; still off the dock after `battery_critical_grace_s` 120
+  -> `/base_keys/request_poweroff` (new Trigger service: the power-key power-off sequence).
+* **Charger moved**: after a successful dock with RTK fixed and a measured dock pose, docked
+  pose vs stored dock pose > `dock_moved_warn_m` 0.5 -> alert + latched `/mower_docking/dock_moved`
+  JSON (for the GUI dock card's re-calibration offer; the GUI side is not wired yet).
+* **Camera blocked** (stock CameraBlocked 100105): new `mower_vision camera_blocked` node; dark /
+  washed-out / uniform front image for 10 s while MOWING in `daylight_hours` -> latched
+  `/vision/camera_blocked`, alert, mission caps both controllers at `camera_blocked_speed_mps` 0.15.
+* **Stuck spots -> no-go proposal**: two STUCK_NEEDS_HELP / stuck-escape events within 1.0 m,
+  across sessions (`/userdata/ros2/stuck_spots.json`), propose a pending 1.0 m no-go disc
+  (`auto: stuck spot #id`) for owner Accept; it survives the session-end drop.
+* **Recorded-vertex RTK quality**: recordings save `<recording_quality_dir>/<name>.json` with
+  fix type + hdop per vertex; `record_require_fixed` warns and flags vertices without RTK fixed
+  (the GUI does not colour them yet).
+
+## Row-end turns vs pivot time (2026-11-03, branch ws/turns, sim only)
+
+Pivot share on real_run5 is 27 %. Row-end pivots account for 7 % of moving time, edge-lap
+corners for 4 %, and transit route corners and sub-path starts for 15 %. A small area with
+racetrack rows becomes 16 transits. With a 0.60 m nose and row ends 0.45 m from the line,
+neither forward arcs nor bulb turns fit the 0.26 m body limit, and a pivot is the fastest
+turn that does fit. `mower_coverage_node` param `turn_mode` (pivot | arc | fishtail | auto,
+default pivot) lets swath turns use the edge-lap band, with a body-outline check. A gate
+with auto gives 27 % and regresses d and e, so pivot stays the default. Details and next
+levers (fewer transits on small areas, tangent transit ends):
+docs/analysis/2026-11-03_turns.md.

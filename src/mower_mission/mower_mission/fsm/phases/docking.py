@@ -323,6 +323,10 @@ class DockingMixin:
         elif purpose == 'battery':
             self._go('CHARGING', 'charging to %.0f%%, then resuming' % self._resume_charge_percent())
             self._resume_after = 'charge'
+        elif purpose == 'battery_temp':
+            self._go_idle('battery temperature high: waiting to cool below %.0f C, then resuming'
+                          % self.p.battery_temp_max_start_c)
+            self._resume_after = 'battery_temp'
         elif purpose == 'incomplete':
             self._go_idle('docked; %s' % self._incomplete_text or 'mowing incomplete')
         else:

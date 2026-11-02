@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'obstacle_guard = mower_vision.obstacle_guard_node:main',
             'fake_camera = mower_vision.fake_camera:main',
+            'camera_blocked = mower_vision.camera_blocked_node:main',
         ],
     },
 )

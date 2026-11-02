@@ -287,6 +287,9 @@ Stock Tron for comparison: wheels-only for 10 s, VIO for 100 m.
 Tests: `mower_localization/test/test_localization_status.py::TestSigmaGate`,
 `mower_mission/test/test_loc_hold.py`, `mower_mission/test/test_loc_policy.py`.
 
+Recorded vertices (2026-11-03): each saved recording gets a per-vertex fix type / hdop
+sidecar (`recording_quality_dir`); vertices recorded without RTK fixed are warned about.
+
 ## Caveats and TODOs
 
 - **`robot_localization` is not in the Docker image yet.** Add

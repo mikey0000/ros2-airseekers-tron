@@ -28,6 +28,7 @@ from mower_mission.fsm.guards.stuck import StuckGuardMixin
 from mower_mission.fsm.guards.tilt import TiltGuardMixin
 from mower_mission.fsm.guards.boundary import BoundaryGuardMixin
 from mower_mission.fsm.guards.spin_drift import SpinDriftGuardMixin
+from mower_mission.fsm.guards.parity import ParityGuardsMixin
 from mower_mission.fsm.phases.nogo import NogoMixin
 
 
@@ -50,6 +51,7 @@ class MissionFSM(PreviewMixin,
                  TiltGuardMixin,
                  BoundaryGuardMixin,
                  SpinDriftGuardMixin,
+                 ParityGuardsMixin,
                  NogoMixin):
     """See module docstring."""
 
@@ -91,7 +93,7 @@ class MissionFSM(PreviewMixin,
         self._pivot_tries = {}              # unfinished-pivot re-sends per pivot (key -> n)
         self._dock_contact_since = None
         self._manual_undocking = False           # standalone UNDOCK (CMD_UNDOCK) in flight
-        self._resume_after = None           # None | 'rain' | 'charge'
+        self._resume_after = None           # None | 'rain' | 'charge' | 'battery_temp'
         self._rain_since = None
         self._rain_clear_since = None
         self._boundary_since = None
@@ -135,6 +137,7 @@ class MissionFSM(PreviewMixin,
         self._tilt_hist = []                # [[t, x, y]] steep spots backed out of
         self._tilt_trail = []               # [(x, y)] recent driven track, oldest first
         self._tilt_capped = False           # caution speed cap sent to the controller
+        self._camera_capped = False         # camera-blocked speed cap sent to the controller
         self._hb = None                     # hard-boundary retrace in progress (task 0.4 a)
         self._hb_count = 0                  # hard-boundary excursions of this mission
         self._hb_spots = []                 # [(x, y)] excursion origins of this mission

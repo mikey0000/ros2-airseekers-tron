@@ -275,3 +275,19 @@ def test_dock_hold_timeout_without_fix_fails_docking():
     run(h, 'lost', 605.0, dt=2.0)
     assert h.fsm._loc is None and h.name in ('NAV_TO_DOCK_FAILED',) + f.IDLE_NAMES
     assert any('no RTK fixed' in e.text for e in h.fx if isinstance(e, f.Log))
+
+
+def test_camera_and_loc_caps_lift_independently():
+    """All caps go through _push_speed_caps: the lowest wins, each lifts on its own."""
+    h = big_mow(camera_blocked_speed_mps=0.2, loc_degraded_speed_mps=0.1)
+    h.fsm.inputs.camera_blocked = True
+    run(h, 'degraded', 0.5, est=0.4)
+    m = h.mark()
+    h.fsm.inputs.camera_blocked = False
+    run(h, 'degraded', 0.5, est=0.4)
+    assert all(v == 0.1 for v in speed_calls(h, m)[-1].values())
+    h.fsm.inputs.camera_blocked = True
+    run(h, 'degraded', 0.5, est=0.4)
+    m = h.mark()
+    run(h, 'ok', 0.5)                   # loc lifts, camera cap stays
+    assert all(v == 0.2 for v in speed_calls(h, m)[-1].values())

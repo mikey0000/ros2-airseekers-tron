@@ -11,7 +11,7 @@ from mower_mission.fsm.common import Params
 
 # Host paths: the yaml carries the container mount (/ros2_ws/maps), the code a per-user
 # default so tests and dev runs never write into a mower path.
-EXEMPT = ('coverage_resume_path', 'alternate_state_path')
+EXEMPT = ('coverage_resume_path', 'alternate_state_path', 'recording_quality_dir')
 
 
 def shipped():

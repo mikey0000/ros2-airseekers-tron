@@ -3,7 +3,8 @@
 
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
-from mower_mission.fsm.common import (ACT_BACKUP, ACT_UNDOCK, CMD_START, DOCK_PHASES,
+from mower_mission.fsm.common import (ACT_BACKUP, ACT_UNDOCK, BATTERY_TEMP_HIGH,
+    BATTERY_TEMP_LOW, CMD_START, DOCK_PHASES,
     HEADING_ALIGNED_SOURCES, HEADING_NOT_ALIGNED, Mission, ResumeCursor, SRV_CHARGING,
     SRV_GET_AREA)  # noqa: F401
 
@@ -23,6 +24,11 @@ class StartMixin:
             return 'battery level unknown'
         if i.battery_percent <= self.p.battery_low_percent:
             return 'battery %.0f%% <= %.0f%%' % (i.battery_percent, self.p.battery_low_percent)
+        temp = self._battery_temp_refusal(self.p.battery_temp_max_start_c)
+        if temp:
+            self._notice('battery_temp', True, 'START refused: %s.' % temp, 'battery', 4,
+                         'batteryTempStart')
+            return temp
         if self.p.rain_mode == 1 and i.rain:
             return 'rain detected'
         if i.docked and (i.fix_type is None or i.fix_type < self.p.preflight_min_fix_type_docked):
@@ -54,6 +60,18 @@ class StartMixin:
                 self._log('warn', 'heading cog is %s and no calibration drive: not aligned'
                           % stale)
             return '%s (%s)' % (HEADING_NOT_ALIGNED, self._heading_refusal_why())
+        return ''
+
+    def _battery_temp_refusal(self, max_c):
+        """Operator text when the battery temperature is outside [battery_temp_min_start_c,
+        max_c], else '' (also '' while the MCU reports no temperature)."""
+        t = self.inputs.battery_temp_c
+        if t is None:
+            return ''
+        if t > float(max_c):
+            return BATTERY_TEMP_HIGH % (t, float(max_c))
+        if t < float(self.p.battery_temp_min_start_c):
+            return BATTERY_TEMP_LOW % (t, float(self.p.battery_temp_min_start_c))
         return ''
 
     def _at_dock(self):

@@ -47,6 +47,8 @@ TOPIC_DEFAULTS = {
     'mask_topic': '/keepout_mask',
     'imu_topic': '/imu/data',
     'events_topic': '/mower_alerts/events',
+    # stock-parity notices raised by other nodes (rules.parse_notice); '' = off
+    'notice_topic': '/mower_alerts/notice',
 }
 NODE_DEFAULTS = {
     'tick_hz': 2.0,
@@ -131,6 +133,7 @@ class AlertNode(Node):
         self._pose = None
         self._imu = None
         self._last_heartbeat = 0.0
+        self._notices = {}          # incident -> rules.Notice (active ones)
 
         self._pub = self.create_publisher(String, self._p['events_topic'], 50)
         latched = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -146,6 +149,8 @@ class AlertNode(Node):
         sub(NavSatFix, p['fix_topic'], self._store('_fix'), 1, **sampled)
         sub(GnssStatus, p['gnss_status_topic'], self._store('_gnss'), 1, **sampled)
         sub(Odometry, p['pose_topic'], self._store('_pose'), 1, **sampled)
+        if p['notice_topic']:
+            sub(String, p['notice_topic'], self._on_notice, 20, lock=self._lock)
         if bool(p['tilt_enabled']):
             sub(Imu, p['imu_topic'], self._store('_imu'), qos_profile_sensor_data, **sampled)
         self._pump.start()
@@ -166,6 +171,18 @@ class AlertNode(Node):
 
     def _on_hl(self, msg):
         self._hl = (msg, time.monotonic())
+
+    def _on_notice(self, msg):
+        try:
+            inc, notice = rules.parse_notice(json.loads(msg.data))
+        except (ValueError, TypeError, AttributeError) as ex:
+            self.get_logger().warn('bad notice %r: %s' % (msg.data[:120], ex),
+                                   throttle_duration_sec=60.0)
+            return
+        if notice is None:
+            self._notices.pop(inc, None)
+        else:
+            self._notices[inc] = notice
 
     def _on_mask(self, msg):
         try:
@@ -222,6 +239,7 @@ class AlertNode(Node):
         if imu is not None:
             q = imu.orientation
             i.tilt_deg = rules.tilt_from_quaternion(q.x, q.y, q.z, q.w)
+        i.notices = dict(self._notices)
         return i
 
     # ---- tick ---------------------------------------------------------------
@@ -230,6 +248,8 @@ class AlertNode(Node):
         now = time.monotonic()
         with self._lock:
             alerts = self.engine.step(self.inputs(now), now)
+            for k in [k for k, n in self._notices.items() if n.oneshot]:
+                del self._notices[k]
             anchor_changed = self.engine.anchor_changed
             self.engine.anchor_changed = False
             anchor = self.engine.anchor

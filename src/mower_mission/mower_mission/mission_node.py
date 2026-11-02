@@ -71,6 +71,7 @@ TOPIC_DEFAULTS = {
     'emergency_topic': '/hardware_bridge/emergency',
     'hw_status_topic': '/hardware_bridge/status',
     'battery_topic': '/battery',
+    'notice_topic': '/mower_alerts/notice',  # stock-parity alerts (mower_alerts rules.parse_notice)
     'mower_status_topic': '/mower_base/status',
     'gnss_status_topic': '/gps/status',
     'heading_status_topic': '/heading_aligner/status',   # mower_localization heading_aligner
@@ -78,6 +79,7 @@ TOPIC_DEFAULTS = {
     'obstacle_policy_topic': '/obstacle_policy',   # mower_vision obstacle_guard (JSON, 5 Hz)
     # mower_control supervisor (latched JSON): critical_down -> EMERGENCY (docs/crash_recovery.md)
     'supervisor_status_topic': '/supervisor/status',
+    'camera_blocked_topic': '/vision/camera_blocked',  # mower_vision camera_blocked ('' = off)
     'tilt_status_topic': '/tilt/status',     # mower_control tilt_monitor ('' = no tilt guard input)
     # external rain verdict, upstream MowgliNext contract (std_msgs/Bool, latched; '' = off).
     # The GUI's MQTT broker feeds the service below instead (external_rain.py).
@@ -134,6 +136,7 @@ TOPIC_DEFAULTS = {
     'cutter_off_service': '/cutter_off',
     'clear_estop_service': '/clear_estop',
     'charging_service': '/charging',
+    'poweroff_request_service': '/base_keys/request_poweroff',  # critical battery (base_keys)
     'clear_global_costmap_service': '/global_costmap/clear_entirely_global_costmap',
     'clear_local_costmap_service': '/local_costmap/clear_entirely_local_costmap',
     # option C (2026-10-23): selective clears (clearable layers only: the 5 s obstacle_layer)
@@ -162,6 +165,7 @@ NODE_DEFAULTS = {
     'coverage_resume_path': '~/.ros/mower_mission/coverage_resume.txt',
     'alternate_state_path': '~/.ros/mower_mission/alternate_counts.json',
     'recording_fallback_dir': '~/.ros/mower_mission/recordings',
+    'recording_quality_dir': '~/.ros/mower_mission/record_quality',
     'server_wait_timeout_s': 3.0,
     # Nav2 readiness gate: the activity gate (mower_navigation/activity_gated_lifecycle)
     # PAUSEs the Nav2 lifecycle stack while the robot is idle, so a navigation started
@@ -253,6 +257,7 @@ class MissionNode(Node):
                                        self._p['dock_pose_yaw'])
         self._resume_path = _expand(self._p['coverage_resume_path'])
         self._fallback_dir = _expand(self._p['recording_fallback_dir'])
+        self._quality_dir = _expand(self._p['recording_quality_dir'])
 
         self._lock = threading.RLock()
         self._bumper_on = False
@@ -295,6 +300,7 @@ class MissionNode(Node):
         self._mow_progress_pub = self.create_publisher(String, p['mow_progress_topic'], latched)
         # terrain-memory incidents (mower_map map_server_node, docs/terrain_aware_planning.md)
         self._incident_pub = self.create_publisher(String, '/mission/incident', 20)
+        self._notice_pub = self.create_publisher(String, p['notice_topic'], 20)
         # path-corridor decision on the current obstacle policy (GUI "Why stopped")
         self._decision_pub = self.create_publisher(String, '/mission/obstacle_decision', latched)
         # activity mode for the perception / logging duty cycle (mower_mission/activity.py)
@@ -368,6 +374,8 @@ class MissionNode(Node):
             sub(String, p['supervisor_status_topic'], self._on_supervisor, latched)
         if p['tilt_status_topic']:
             sub(String, p['tilt_status_topic'], self._on_tilt, latched)
+        if p['camera_blocked_topic']:
+            sub(Bool, p['camera_blocked_topic'], self._on_camera_blocked, latched)
         self._hw_rain = self._base_rain = False
         self._ext_rain = ExternalRain(p['use_external_rain'],
                                       60.0 * float(p['external_rain_max_age_minutes']))
@@ -395,6 +403,8 @@ class MissionNode(Node):
             fsm_mod.SRV_GET_AREA_SETTINGS: (
                 cli(GetAreaSettings, p['get_area_settings_service'], callback_group=self._cb),
                 p['get_area_settings_service']),
+            fsm_mod.SRV_POWEROFF: (cli(Trigger, p['poweroff_request_service'],
+                                       callback_group=self._cb), p['poweroff_request_service']),
             fsm_mod.SRV_PLAN_ROUTE: (cli(PlanRoute, p['plan_route_service'],
                                          callback_group=self._cb), p['plan_route_service']),
         }
@@ -532,6 +542,21 @@ class MissionNode(Node):
         except OSError as exc:
             self.get_logger().error('cannot save recorded polygon: %s' % exc)
 
+    def _save_quality(self, e):
+        """<recording_quality_dir>/<name>.json: per-vertex RTK fix type / hdop."""
+        try:
+            os.makedirs(self._quality_dir, exist_ok=True)
+            path = os.path.join(self._quality_dir, '%s.json' % e.name.replace(' ', '_'))
+            tmp = path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump({'name': e.name, 'kind': e.kind, 'saved': time.time(),
+                           'require_fixed': bool(self.fsm.p.record_require_fixed),
+                           'not_fixed': sum(1 for v in e.vertices if not v['fixed']),
+                           'vertices': e.vertices}, fh, indent=1)
+            os.replace(tmp, path)
+        except OSError as exc:
+            self.get_logger().warn('cannot save the recording quality file: %s' % exc)
+
     # ------------------------------------------------------------------
     # inputs
     # ------------------------------------------------------------------
@@ -594,6 +619,8 @@ class MissionNode(Node):
     def _on_battery(self, msg):
         with self._lock:
             self.fsm.inputs.battery_percent = _battery_percent(msg.percentage)
+            t = float(msg.temperature)
+            self.fsm.inputs.battery_temp_c = t if math.isfinite(t) else None
 
     def _on_base(self, msg):
         with self._lock:
@@ -658,6 +685,10 @@ class MissionNode(Node):
         with self._lock:
             self.fsm.inputs.critical_nodes_down = ', '.join(sorted(down))
             self.fsm.inputs.supervisor_stamp = self._clk.now()
+
+    def _on_camera_blocked(self, msg):
+        with self._lock:
+            self.fsm.inputs.camera_blocked = bool(msg.data)
 
     def _on_tilt(self, msg):
         """/tilt/status JSON (tilt_logic.TiltBands.status); the receipt time is the
@@ -758,6 +789,8 @@ class MissionNode(Node):
     def _on_gnss(self, msg):
         with self._lock:
             self.fsm.inputs.fix_type = int(msg.fix_type)
+            h = float(msg.hdop)
+            self.fsm.inputs.hdop = h if math.isfinite(h) and h > 0.0 else None
             self.fsm.inputs.gps_quality = max(0.0, min(1.0, float(msg.quality_percent) / 100.0))
 
     def _on_odom(self, msg):
@@ -976,6 +1009,12 @@ class MissionNode(Node):
             self._stuck_suppress_pub.publish(Bool(data=bool(e.active)))
         elif isinstance(e, f.ResetStuckGuard):
             self._stuck_reset_pub.publish(Bool(data=True))
+        elif isinstance(e, f.SaveRecordingQuality):
+            self._save_quality(e)
+        elif isinstance(e, f.Notice):
+            self._notice_pub.publish(String(data=json.dumps(
+                {'incident': e.incident, 'active': e.active, 'text': e.text, 'kind': e.kind,
+                 'priority': e.priority, 'message': e.message}, sort_keys=True)))
         elif isinstance(e, f.RecordIncident):
             self._incident_pub.publish(String(data=json.dumps(
                 {'kind': e.kind, 'x': e.x, 'y': e.y, 'detail': e.detail,
@@ -1458,6 +1497,8 @@ class MissionNode(Node):
             return ChargingControl.Request(enable_charging=bool(r['enable']))
         if e.name == fsm_mod.SRV_CLEAR_ESTOP:
             return Empty.Request()
+        if e.name == fsm_mod.SRV_POWEROFF:
+            return Trigger.Request()
         if e.name == fsm_mod.SRV_GET_AREA_SETTINGS:
             return GetAreaSettings.Request(area_index=int(r['index']))
         if e.name == fsm_mod.SRV_PLAN_ROUTE:
@@ -1495,6 +1536,12 @@ class MissionNode(Node):
                 'is_navigation_area': bool(a.is_navigation_area)}}
         elif e.name == fsm_mod.SRV_ADD_AREA:
             resp = {'success': bool(res.success)}
+        elif e.name == fsm_mod.SRV_POWEROFF:
+            if res.success:
+                self.get_logger().warn('host power-off request accepted: %s' % res.message)
+            else:
+                self.get_logger().error('host power-off request refused: %s' % res.message)
+            resp = {'success': bool(res.success), 'message': res.message}
         elif e.name == fsm_mod.SRV_PROMOTE_OBSTACLE:
             resp = {'success': bool(res.success), 'message': res.message}
         elif e.name == fsm_mod.SRV_SET_CHANNEL:

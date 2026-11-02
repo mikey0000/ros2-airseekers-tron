@@ -14,6 +14,9 @@ Calls (each one can be disabled by parameter)
   /clear_estop                           std_srvs/Empty          power short
   /behavior_tree_node/high_level_control mowgli_interfaces/HighLevelControl
   /poweroff                              std_srvs/Empty          power long, only if power_long_action=poweroff_service
+Serves
+  ~/request_poweroff                     std_srvs/Trigger        same power-off sequence on request
+                                                                 (mower_mission critical battery)
   /cutter_off                            std_srvs/Trigger        power long (sequence)
   /light_control                         mower_lights_interfaces/LightControl  power long (sequence)
 Publishes (power_long_action=sequence)
@@ -143,6 +146,7 @@ class BaseKeysNode(Node):
         dp('power_request_dir', ph.REQUEST_DIR)    # bind-mounted /userdata/ros2/power; host watches it
         dp('power_settle_s', 3.0)                  # stop -> request delay (vendor slept 3000 ms)
         dp('power_min_uptime_s', 30.0)             # ignore long presses this early after boot
+        dp('request_poweroff_enabled', True)     # ~/request_poweroff runs the sequence
         dp('cutter_off_service', '/cutter_off')
         dp('light_control_service', '/light_control')
         # names
@@ -191,6 +195,9 @@ class BaseKeysNode(Node):
         self.cli_cutter_off = self.create_client(Trigger, g('cutter_off_service'))
         self.cli_light = (self.create_client(LightControl, g('light_control_service'))
                           if LightControl is not None else None)
+
+        self._power_lock = threading.Lock()    # power_seq: loop thread + service callback
+        self.create_service(Trigger, '~/request_poweroff', self._srv_request_poweroff)
 
         self.q = queue.Queue()
         self.reader = None
@@ -308,7 +315,9 @@ class BaseKeysNode(Node):
                 self._publish(0)      # vendor: release -> key 0
         for b in self.sm.tick(now):
             self._emit(b)
-        for step in self.power_seq.tick(now):
+        with self._power_lock:
+            steps = self.power_seq.tick(now)
+        for step in steps:
             self._power_step(step)
         if self.reader is None and now - self._last_open_try >= self.reopen_period:
             self._try_open()
@@ -366,8 +375,9 @@ class BaseKeysNode(Node):
                        'high_level_control(%d)' % a.arg)
         elif a.kind == 'power_sequence':
             log.warn(a.note)
-            steps = self.power_seq.on_power_long(time.monotonic(), ph.read_uptime(),
-                                                 os.path.isdir(self.power_request_dir))
+            with self._power_lock:
+                steps = self.power_seq.on_power_long(time.monotonic(), ph.read_uptime(),
+                                                     os.path.isdir(self.power_request_dir))
             for step in steps:
                 self._power_step(step)
         elif a.kind == 'poweroff_service':
@@ -384,6 +394,23 @@ class BaseKeysNode(Node):
                 log.warn('%s: wrote %s' % (a.note, self.shutdown_hook_file))
             except OSError as e:
                 log.error('shutdown hook write failed: %s' % e)
+
+    def _srv_request_poweroff(self, req, res):
+        """Software power-off (mower_mission critical battery): the power-long sequence."""
+        if not bool(self.get_parameter('request_poweroff_enabled').value):
+            res.success, res.message = False, 'request_poweroff_enabled is false'
+            return res
+        self.get_logger().warn('power off requested over ~/request_poweroff')
+        with self._power_lock:
+            steps = self.power_seq.on_power_long(time.monotonic(), ph.read_uptime(),
+                                                 os.path.isdir(self.power_request_dir))
+            busy = self.power_seq.state != ps.IDLE
+        for step in steps:
+            self._power_step(step)
+        res.success = busy
+        res.message = '; '.join(s.note for s in steps if s.kind in ('log', 'error')) or \
+            'power-off sequence started'
+        return res
 
     def _power_step(self, step):
         log = self.get_logger()

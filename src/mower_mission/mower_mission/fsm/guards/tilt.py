@@ -73,11 +73,14 @@ class TiltGuardMixin:
         self._push_speed_caps()
 
     def _speed_cap(self):
-        """The active controller speed cap (m/s): tilt caution and / or degraded
-        localization (2026-11-03), the lower wins; None = no cap."""
+        """The active controller speed cap (m/s): tilt caution, camera blocked
+        (guards/parity.py) and degraded localization (2026-11-03), the lowest wins;
+        None = no cap (the area cut speed applies)."""
         caps = []
         if self._tilt_capped:
             caps.append(float(self.p.tilt_caution_speed_mps))
+        if self._camera_capped and float(self.p.camera_blocked_speed_mps) > 0.0:
+            caps.append(float(self.p.camera_blocked_speed_mps))
         if self._loc_capped:
             caps.append(float(self.p.loc_degraded_speed_mps))
         return min(caps) if caps else None
