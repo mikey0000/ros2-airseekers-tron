@@ -1424,3 +1424,92 @@ def test_slow_drive_lateral_check_still_rejects_a_weaving_track():
     s.run(0.035, 0.0, 25.0, gps_lateral_wobble=0.2)
     assert not s.est.aligned
     assert any('track not straight' in r.get('reason', '') for r in s.results)
+
+
+# ---------------------------------------------------------------- cog_method 'keyframes'
+def _kf_feed(kf, v, w, seconds, offset=D(40.0), yaw0=D(30.0), r_lever=0.0, t0=0.0):
+    """Feed a KeyframeHeadingEstimator at 10 Hz; returns the measurements."""
+    out, yaw, x, y, t = [], yaw0, 0.0, 0.0, t0
+    for _ in range(int(round(seconds * 10))):
+        t += 0.1
+        yaw += w * 0.1
+        x += v * math.cos(yaw) * 0.1
+        y += v * math.sin(yaw) * 0.1
+        ax, ay = x + r_lever * math.cos(yaw), y + r_lever * math.sin(yaw)
+        m = kf.add(t, ax, ay, hl.wrap(yaw - offset), 1)
+        if m is not None:
+            out.append(m)
+    return out
+
+
+def test_keyframes_straight_run_accepted():
+    kf = hl.KeyframeHeadingEstimator(hl.AlignParams())
+    ms = _kf_feed(kf, 0.3, 0.0, 5.0)
+    assert len(ms) >= 10
+    assert all(abs(math.degrees(hl.wrap(m['measured'] - D(40.0)))) < 0.1 for m in ms)
+    ts = [m['t'] for m in ms]
+    assert all(b - a >= 0.2 - 1e-9 for a, b in zip(ts, ts[1:]))
+
+
+def test_keyframes_pivot_rejected_on_yaw_spread():
+    kf = hl.KeyframeHeadingEstimator(hl.AlignParams(kf_yaw_jump=1.0))
+    # pivot in place, antenna 0.3 m ahead of the axle: the antenna sweeps a circle
+    ms = _kf_feed(kf, 0.0, 0.6, 4.0, r_lever=0.3)
+    assert ms == []
+    assert 'not steady' in kf.gate or 'chord' in kf.gate
+
+
+def test_keyframes_curve_rejected():
+    kf = hl.KeyframeHeadingEstimator(hl.AlignParams())
+    ms = _kf_feed(kf, 0.3, 0.2, 6.0)
+    assert ms == []
+    assert 'not steady' in kf.gate
+
+
+def test_keyframes_large_correction_rejected():
+    p = hl.AlignParams()
+    kf = hl.KeyframeHeadingEstimator(p)
+    kf.seed(0.0)
+    new, innov, k = kf.correct(0.2, 0.0, 1.0)
+    assert new is None and innov == pytest.approx(1.0)
+    new, innov, k = kf.correct(0.4, 0.0, 0.05)
+    assert new is not None and 0.0 < new < 0.05 and 0.0 < k <= p.kf_weight
+
+
+def test_keyframes_yaw_jump_resets_window():
+    kf = hl.KeyframeHeadingEstimator(hl.AlignParams())
+    for i in range(8):
+        kf.add(i * 0.2, i * 0.06, 0.0, 0.1, 1)
+    assert len(kf.kfs) == 8
+    kf.add(2.0, 8 * 0.06, 0.0, 0.1 + 0.3, 1)
+    assert len(kf.kfs) == 1 and 'yaw jump' in kf.last_reset
+
+
+def test_keyframes_estimator_aligns_and_rejects_large_correction():
+    s = Sim(cog_method='keyframes')
+    s.run(0.3, 0.0, 4.0)
+    assert s.est.aligned and s.est.source == hl.SOURCE_COG
+    assert abs(s.heading_error()) < 0.5
+    assert s.est.status(s.t)['cog_method'] == 'keyframes'
+    # one bad measurement beyond kf_max_correction is rejected, not blended
+    off = s.est.offset
+    res = {}
+    s.est._update_offset(s.t, hl.wrap(off + 1.0), res)
+    assert not res.get('accepted') and s.est.offset == off
+
+
+def test_keyframes_needs_rtk_fixed():
+    s = Sim(cog_method='keyframes', fix_type=2)
+    s.run(0.3, 0.0, 6.0)
+    assert not s.est.aligned
+
+
+def test_keyframes_final_offset_matches_window_method():
+    finals = {}
+    for method in ('window', 'keyframes'):
+        s = Sim(true_offset_deg=-150.0, cog_method=method)
+        s.gps_noise = None
+        s.run(0.3, 0.0, 20.0, gps_lateral_wobble=0.005, imu_wobble=D(0.3))
+        assert s.est.aligned
+        finals[method] = s.est.offset
+    assert abs(math.degrees(hl.wrap(finals['window'] - finals['keyframes']))) < 0.5
