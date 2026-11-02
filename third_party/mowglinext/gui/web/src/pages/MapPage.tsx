@@ -33,6 +33,9 @@ import {useMapStreams} from "./map/hooks/useMapStreams.ts";
 import {useMapFiles, type ImportOpenMowerSummary} from "./map/hooks/useMapFiles.ts";
 import {useResetMowingProgress} from "./map/hooks/useResetMowingProgress.tsx";
 import {useElementHeight} from "./map/hooks/useElementHeight.ts";
+import {useStuckReset} from "../hooks/useStuckReset.ts";
+import {skippedLengthM} from "../utils/missionPresentation.ts";
+import {parseBoolish} from "../utils/settingsValues.ts";
 import {ImportOpenMowerModal} from "./map/components/ImportOpenMowerModal.tsx";
 import {NewAreaModal} from "./map/components/NewAreaModal.tsx";
 import {EditAreaModal} from "./map/components/EditAreaModal.tsx";
@@ -981,6 +984,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const [settingsNavName, setSettingsNavName] = useState<string | null>(null);
     const [startSheet, setStartSheet] = useState<{open: boolean; selection: StartSelection; mode?: "resume" | "fresh"}>({open: false, selection: "all"});
     const resumeAvailable = useCoverageResumeAvailable();
+    // STUCK_NEEDS_HELP: Resume only after Reset, same as the fault banner.
+    const [stuckResetDone] = useStuckReset(highLevelStatus.highLevelStatus.state_name);
     const areaChoices = useMemo(
         () => mowingAreaChoices(map, (order) => t('mapAreasList.unnamedArea', {order})),
         [map, t],
@@ -1133,6 +1138,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         // Resume = plain START: with a cursor the mission resumes the same area at the
         // saved sub-path / pose (no sheet, no Resume-or-fresh prompt).
         onResume: canResume(highLevelStatus.highLevelStatus.state, highLevelStatus.highLevelStatus.state_name, resumeAvailable)
+            && (highLevelStatus.highLevelStatus.state_name !== "STUCK_NEEDS_HELP" || stuckResetDone)
             ? mowerAction("high_level_control", {Command: CMD_START})
             : undefined,
         onStartFresh: useStartSheet
@@ -1169,7 +1175,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         onBladeOff: mowerAction("mow_enabled", {mow_enabled: 0, mow_direction: 0}),
         onRecordFinish: mowerAction("high_level_control", {Command: 5}),
         onRecordCancel: mowerAction("high_level_control", {Command: 6}),
-    }), [mowerAction, highLevelStatus.highLevelStatus.state, highLevelStatus.highLevelStatus.state_name, useStartSheet, resumeAvailable, modal, confirmStartText]);
+    }), [mowerAction, highLevelStatus.highLevelStatus.state, highLevelStatus.highLevelStatus.state_name, useStartSheet, resumeAvailable, stuckResetDone, modal, confirmStartText]);
 
     // Centered message panel used for the missing-token and missing-datum
     // states — a plain, translated explanation instead of an eternal spinner
@@ -1385,6 +1391,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             onStartFresh={() => { void mowerActions.onStartFresh(); }}
             compact={inline}
             showFollowUp={inline}
+            onManualDrive={() => { void handleManualMode(); }}
+            skippedM={skippedLengthM(missionPlan, missionProgress)}
+            returnHomeOnIncomplete={parseBoolish(settings["return_home_on_incomplete"])}
+            onOpenReturnHomeSetting={() => navigate("/settings?section=battery")}
         />
     );
 

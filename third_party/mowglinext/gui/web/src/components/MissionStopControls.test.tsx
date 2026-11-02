@@ -26,7 +26,7 @@ const renderAt = (stateName: string, state = 1, onStart = vi.fn()) =>
 describe('MissionStopControls Resume', () => {
     beforeEach(() => { callCreate.mockClear(); resumeAvailable = true; });
 
-    it.each(['IDLE', 'IDLE_DOCKED', 'MOWING_INCOMPLETE', 'NAV_TO_DOCK_FAILED'])(
+    it.each(['IDLE', 'IDLE_DOCKED', 'MOWING_INCOMPLETE'])(
         'shows Resume at rest in %s and sends START (no sheet)', async (name) => {
             const onStart = vi.fn();
             renderAt(name, 1, onStart);
@@ -62,10 +62,60 @@ describe('MissionStopControls Resume', () => {
         expect(callCreate).toHaveBeenLastCalledWith('high_level_control', {Command: 1});
     });
 
-    it('fault banner shows Resume inline next to Reset for NAV_TO_DOCK_FAILED', () => {
-        renderAt('NAV_TO_DOCK_FAILED');
-        expect(screen.getByTestId('mission-reset')).toBeInTheDocument();
-        expect(screen.getByTestId('mission-resume')).toBeInTheDocument();
+    it('NAV_TO_DOCK_FAILED says why and offers Try again + Drive home manually, no Reset', async () => {
+        const onManualDrive = vi.fn();
+        render(<AntApp><MissionStopControls state={0} stateName="NAV_TO_DOCK_FAILED"
+            subStateName="docking failed: marker not found after 3 attempts" onStart={vi.fn()}
+            onManualDrive={onManualDrive}/></AntApp>);
+        expect(screen.getByTestId('mission-fault-title')).toHaveTextContent(en.missionText.dockFailedTitle);
+        expect(screen.getByTestId('mission-dock-reason')).toHaveTextContent(en.missionText.dockReasonMarker);
+        expect(screen.queryByTestId('mission-reset')).toBeNull();
+        expect(screen.queryByTestId('mission-resume')).toBeNull();
+        await userEvent.click(screen.getByTestId('mission-dock-retry'));
+        expect(callCreate).toHaveBeenCalledWith('high_level_control', {Command: 2});
+        await userEvent.click(screen.getByTestId('mission-drive-home'));
+        expect(onManualDrive).toHaveBeenCalled();
+    });
+
+    it('STUCK_NEEDS_HELP: plain title and reason, Reset is the action, no Stop', () => {
+        render(<AntApp><MissionStopControls state={1} stateName="STUCK_NEEDS_HELP"
+            subStateName="steep slope: needs help at (-5.20, 0.40)" onStart={vi.fn()}/></AntApp>);
+        const banner = screen.getByTestId('mission-fault');
+        expect(screen.getByTestId('mission-fault-title')).toHaveTextContent(en.missionText.stuckTitle);
+        expect(banner).toHaveTextContent(en.missionText.stuckSlope);
+        expect(banner).not.toHaveTextContent('STUCK_NEEDS_HELP');
+        expect(banner).not.toHaveTextContent('-5.20');
+        expect(screen.queryByTestId('mission-stop')).toBeNull();
+        expect(screen.getByTestId('mission-reset')).toHaveClass('ant-btn-primary');
+    });
+
+    it('MOWING_INCOMPLETE: plain summary, one action name, return-home setting inline with a link', async () => {
+        const onOpen = vi.fn();
+        render(<AntApp><MissionStopControls state={1} stateName="MOWING_INCOMPLETE"
+            subStateName="2 of 7 sub-paths not mowed: follow aborted: path blocked" onStart={vi.fn()}
+            skippedM={13.6} returnHomeOnIncomplete={false} onOpenReturnHomeSetting={onOpen}/></AntApp>);
+        expect(screen.getByTestId('mission-incomplete-summary'))
+            .toHaveTextContent('2 strips skipped · about 14 m not mowed · reason: path blocked');
+        expect(screen.getByTestId('mission-notice')).toHaveTextContent(en.missionText.incompleteTitle);
+        expect(screen.getByTestId('mission-resume')).toHaveTextContent(en.missionStop.resumeMowing);
+        expect(screen.queryByText(en.missionStop.start)).toBeNull();
+        expect(screen.getByTestId('mission-return-home-setting')).toHaveTextContent(en.missionText.returnHomeOff);
+        await userEvent.click(screen.getByTestId('mission-return-home-link'));
+        expect(onOpen).toHaveBeenCalled();
+    });
+
+    it('heading hint: full text and a Drive manually action', async () => {
+        const onManualDrive = vi.fn();
+        resumeAvailable = false;
+        render(<AntApp><MissionStopControls state={1} stateName="IDLE" compact
+            subStateName="heading not aligned: in manual, drive straight 1 m or more (heading calibration: no usable heading prior (cog unchecked))"
+            onStart={vi.fn()} onManualDrive={onManualDrive}/></AntApp>);
+        const hint = screen.getByTestId('mission-heading-hint');
+        expect(hint).toHaveTextContent(en.missionText.headingTitle);
+        expect(hint).toHaveTextContent(en.missionText.headingBody);
+        expect(hint).not.toHaveTextContent('cog unchecked');
+        await userEvent.click(screen.getByTestId('mission-heading-drive'));
+        expect(onManualDrive).toHaveBeenCalled();
     });
 
     it('Start fresh clears the cursor then sends START', async () => {

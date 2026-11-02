@@ -27,9 +27,9 @@ const MATRIX: [string, number, boolean, boolean, boolean, boolean, boolean, bool
     ["RAIN_DETECTED_DOCKING", 2, true, false, true, false, false, true],
     ["COVERAGE_FAILED_DOCKING", 2, true, false, true, false, false, true],
     ["BOUNDARY_EMERGENCY_STOP", 0, false, true, true, true, false, false],
-    ["NAV_TO_DOCK_FAILED", 0, false, true, false, true, false, true],
+    ["NAV_TO_DOCK_FAILED", 0, false, true, false, false, false, true],
     ["MOWING_INCOMPLETE", 1, false, false, false, false, true, true],
-    ["STUCK_NEEDS_HELP", 1, false, true, true, true, true, true],
+    ["STUCK_NEEDS_HELP", 1, false, true, false, true, true, true],
 ];
 
 describe("mission state matrix", () => {

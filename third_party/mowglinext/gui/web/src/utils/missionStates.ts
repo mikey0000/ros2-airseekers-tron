@@ -78,10 +78,11 @@ export const isLatchedFault = (name: N): boolean =>
 /** "Stop mowing" (Command 8) is offered. STOP is the one command the
  *  BOUNDARY_EMERGENCY_STOP latch accepts besides RESET. */
 export const canStop = (state: S, name: N): boolean =>
-    isMissionActive(state, name) || name === "BOUNDARY_EMERGENCY_STOP" || name === "STUCK_NEEDS_HELP";
+    isMissionActive(state, name) || name === "BOUNDARY_EMERGENCY_STOP";
 
-/** Reset (Command 254) is offered. */
-export const canReset = (name: N): boolean => isLatchedFault(name);
+/** Reset (Command 254) is offered. Not after a failed dock drive: there the
+ *  mission only re-requests /clear_estop, so "Try again" (HOME) is the action. */
+export const canReset = (name: N): boolean => isLatchedFault(name) && name !== "NAV_TO_DOCK_FAILED";
 
 export const canStart = (state: S, name: N): boolean =>
     state !== HL_STATE_AUTONOMOUS && !!name && IDLE_START_NAMES.has(name);

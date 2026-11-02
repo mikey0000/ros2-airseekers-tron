@@ -1,6 +1,6 @@
 import React, {useEffect, useState} from "react";
 import {Alert, App, Button, Popover, Space} from "antd";
-import {CloseOutlined, PlayCircleOutlined, QuestionCircleOutlined, RedoOutlined, StepForwardOutlined, StopOutlined} from "@ant-design/icons";
+import {CloseOutlined, ControlOutlined, PlayCircleOutlined, QuestionCircleOutlined, RedoOutlined, StepForwardOutlined, StopOutlined} from "@ant-design/icons";
 import {DockIcon} from "./DockIcon.tsx";
 import {BladeHeightControl} from "./BladeHeightControl.tsx";
 import {useTranslation} from "react-i18next";
@@ -8,6 +8,9 @@ import {useMowerAction} from "./MowerActions.tsx";
 import {useStatus} from "../hooks/useStatus.ts";
 import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts";
 import {useIsMobile} from "../hooks/useIsMobile.ts";
+import {useStuckReset} from "../hooks/useStuckReset.ts";
+import {stateRenderer} from "./utils.tsx";
+import {dockFailReason, incompletePhrases, isHeadingHint, stuckReason, type Phrase} from "../utils/missionPresentation.ts";
 import {
     canHome, canReset, canResume, canStop, CMD_HOME, CMD_START, CMD_RESET_EMERGENCY, CMD_STOP, isLatchedFault, isMissionActive,
     isNotice, MISSION_PHASES, stopNeedsConfirm,
@@ -32,6 +35,15 @@ interface Props {
     /** false hides the post-stop / interrupted follow-up (Map edit mode); the
      *  Stop button and fault / notice banners are always shown. */
     showFollowUp?: boolean;
+    /** Opens manual drive (Map page): "Drive home manually" after a failed
+     *  dock drive and "Drive manually" for the heading hint. */
+    onManualDrive?: () => void;
+    /** MOWING_INCOMPLETE: length of the skipped stretches of the plan (m). */
+    skippedM?: number | null;
+    /** MOWING_INCOMPLETE: current return_home_on_incomplete value (undefined = unknown). */
+    returnHomeOnIncomplete?: boolean;
+    /** Opens Settings at the return-home-on-incomplete switch. */
+    onOpenReturnHomeSetting?: () => void;
 }
 
 /**
@@ -40,7 +52,8 @@ interface Props {
  * Return to dock / Start-or-Resume. State gating lives in utils/missionStates.
  */
 export const MissionStopControls: React.FC<Props> = ({state, stateName, subStateName, onStart, onStartFresh, style,
-                                                        compact = false, showFollowUp = true}) => {
+                                                        compact = false, showFollowUp = true, onManualDrive,
+                                                        skippedM, returnHomeOnIncomplete, onOpenReturnHomeSetting}) => {
     const {t} = useTranslation();
     const {modal, notification} = App.useApp();
     const mowerAction = useMowerAction();
@@ -51,7 +64,9 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
     const [stopped, setStopped] = useState(false);
     // STUCK_NEEDS_HELP: the owner moves the robot by hand first; Resume appears only
     // once Reset was pressed in this latch (it clears the stuck guard history).
-    const [stuckReset, setStuckReset] = useState(false);
+    // Shared with the map toolbars, which gate their Resume on the same flag.
+    const [stuckReset, markStuckReset] = useStuckReset(stateName);
+    const phrase = (p: Phrase) => t(p.key, p.params);
 
     const active = isMissionActive(state, stateName);
     const fault = isLatchedFault(stateName);
@@ -61,9 +76,6 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
     useEffect(() => {
         if (active || fault) setStopped(false);
     }, [active, fault]);
-    useEffect(() => {
-        if (stateName !== "STUCK_NEEDS_HELP") setStuckReset(false);
-    }, [stateName]);
 
     const run = (key: string, command: number, after?: () => void) => async () => {
         setBusy(key);
@@ -158,31 +170,51 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
         : {description, action};
 
     if (fault) {
+        const stuck = stateName === "STUCK_NEEDS_HELP";
+        const dockFailed = stateName === "NAV_TO_DOCK_FAILED";
+        const title = stuck ? t('missionText.stuckTitle')
+            : dockFailed ? t('missionText.dockFailedTitle')
+                : stateRenderer(stateName);
+        const body = stuck
+            ? <>
+                <div>{phrase(stuckReason(subStateName))}</div>
+                <div data-testid="mission-stuck-hint">
+                    {stuckReset ? t('missionText.stuckAfterReset') : t('missionText.stuckBody')}
+                </div>
+            </>
+            : dockFailed
+                ? <div data-testid="mission-dock-reason">{phrase(dockFailReason(subStateName))}</div>
+                : (subStateName || t('missionStop.faultNoReason'));
         return (
             <Alert
                 style={style}
                 type="error"
                 showIcon
                 data-testid="mission-fault"
-                message={t('missionStop.faultTitle', {state: stateName})}
-                {...alertBody(<>
-                    {subStateName || t('missionStop.faultNoReason')}
-                    {stateName === "STUCK_NEEDS_HELP" && resumeAvailable && !stuckReset && (
-                        <div data-testid="mission-stuck-hint">{t('missionStop.stuckResetFirst')}</div>
-                    )}
-                </>,
+                message={<span data-testid="mission-fault-title">{title}</span>}
+                {...alertBody(body,
                     <Space direction="vertical">
                         {stopButton}
-                        {canReset(stateName) && (
-                            <Button icon={<RedoOutlined/>} loading={busy === "reset"}
-                                    onClick={run("reset", CMD_RESET_EMERGENCY,
-                                        () => { if (stateName === "STUCK_NEEDS_HELP") setStuckReset(true); })}
+                        {dockFailed && (
+                            <Button type="primary" icon={<DockIcon/>} loading={busy === "home"}
+                                    onClick={run("home", CMD_HOME)} data-testid="mission-dock-retry">
+                                {t('missionText.tryAgain')}
+                            </Button>
+                        )}
+                        {dockFailed && onManualDrive && (
+                            <Button icon={<ControlOutlined/>} onClick={onManualDrive} data-testid="mission-drive-home">
+                                {t('missionText.driveHome')}
+                            </Button>
+                        )}
+                        {canReset(stateName) && !(stuck && stuckReset) && (
+                            <Button type={stuck ? "primary" : "default"} icon={<RedoOutlined/>} loading={busy === "reset"}
+                                    onClick={run("reset", CMD_RESET_EMERGENCY, () => { if (stuck) markStuckReset(); })}
                                     data-testid="mission-reset">
                                 {t('missionStop.reset')}
                             </Button>
                         )}
-                        {resumeButton}
-                        {startFreshButton}
+                        {!dockFailed && resumeButton}
+                        {!dockFailed && startFreshButton}
                     </Space>
                 )}
             />
@@ -191,24 +223,42 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
 
     if (isNotice(stateName)) {
         // MOWING_INCOMPLETE: stopped in place, sub_state says what was not mowed.
+        // One action name everywhere: "Resume mowing" (START with the kept cursor).
+        const parts = incompletePhrases(subStateName, skippedM).map(phrase);
         return (
             <Alert
                 style={style}
                 type="warning"
                 showIcon
                 data-testid="mission-notice"
-                message={t('missionStop.incompleteTitle')}
-                {...alertBody(subStateName || t('missionStop.faultNoReason'),
+                message={t('missionText.incompleteTitle')}
+                {...alertBody(<>
+                    <div data-testid="mission-incomplete-summary">
+                        {parts.length > 0 ? parts.join(" · ") : (subStateName || t('missionStop.faultNoReason'))}
+                    </div>
+                    {resumable && <div>{t('missionText.incompleteHint')}</div>}
+                    {returnHomeOnIncomplete !== undefined && (
+                        <div data-testid="mission-return-home-setting">
+                            {returnHomeOnIncomplete ? t('missionText.returnHomeOn') : t('missionText.returnHomeOff')}
+                            {onOpenReturnHomeSetting && (
+                                <Button size="small" type="link" onClick={onOpenReturnHomeSetting}
+                                        data-testid="mission-return-home-link">
+                                    {t('missionText.returnHomeChange')}
+                                </Button>
+                            )}
+                        </div>
+                    )}
+                </>,
                     <Space direction="vertical">
-                        <Button icon={<DockIcon/>} loading={busy === "home"}
-                                onClick={run("home", CMD_HOME)}>
-                            {t('missionStop.returnToDock')}
-                        </Button>
                         {resumeButton ?? (
                             <Button type="primary" icon={<PlayCircleOutlined/>} onClick={onStart}>
                                 {t('missionStop.start')}
                             </Button>
                         )}
+                        <Button icon={<DockIcon/>} loading={busy === "home"}
+                                onClick={run("home", CMD_HOME)}>
+                            {t('missionStop.returnToDock')}
+                        </Button>
                         {startFreshButton}
                     </Space>
                 )}
@@ -225,6 +275,26 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
             </div>
         );
     }
+
+    // "heading not aligned" (IDLE): the next START will be refused, so the hint
+    // and its Drive action come first, in full (it used to be cut off on a phone).
+    const headingHint = isHeadingHint(subStateName) ? (
+        <Alert
+            type="info"
+            showIcon
+            data-testid="mission-heading-hint"
+            style={compact ? {width: "100%"} : style}
+            message={t('missionText.headingTitle')}
+            {...alertBody(<>
+                {t('missionText.headingBody')}
+                {!onManualDrive && <div>{t('missionText.headingMapHint')}</div>}
+            </>, onManualDrive ? (
+                <Button type="primary" icon={<ControlOutlined/>} onClick={onManualDrive} data-testid="mission-heading-drive">
+                    {t('missionText.headingDrive')}
+                </Button>
+            ) : undefined)}
+        />
+    ) : null;
 
     if ((stopped || resumable) && showFollowUp) {
         const title = resumable && !stopped ? t('missionStop.interruptedTitle') : t('missionStop.stoppedTitle');
@@ -244,7 +314,8 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
             )}
         </>;
         if (compact) {
-            return (
+            return (<>
+                {headingHint}
                 <div data-testid="mission-stopped" style={{display: "flex", flexWrap: "wrap", alignItems: "center",
                     gap: 6, minWidth: 0, ...style}}>
                     <span style={{fontWeight: 600, flex: "1 1 auto", minWidth: 0}}>{title}</span>
@@ -254,9 +325,10 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                                 onClick={() => setStopped(false)}/>
                     )}
                 </div>
-            );
+            </>);
         }
-        return (
+        return (<>
+            {headingHint}
             <Alert
                 style={style}
                 type="info"
@@ -269,7 +341,7 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
                     <Space direction="vertical">{followUpButtons}</Space>
                 )}
             />
-        );
+        </>);
     }
-    return null;
+    return headingHint;
 };

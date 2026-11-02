@@ -6,6 +6,7 @@ import {stateRenderer} from "../../../components/utils.tsx";
 import {useThemeMode} from "../../../theme/ThemeContext.tsx";
 import {useDetections} from "../../../hooks/useDetections.ts";
 import {isLatchedFault} from "../../../utils/missionStates.ts";
+import {plainSubState} from "../../../utils/missionPresentation.ts";
 import type {WhyStopped} from "../../../utils/missionProgress.ts";
 import {WhyStoppedPanel} from "./WhyStoppedPanel.tsx";
 
@@ -38,7 +39,10 @@ export const MissionStatusLine: React.FC<Props> = ({stateName, subStateName, why
     const [open, setOpen] = useState(false);
     // Detections are unthrottled: subscribe only while the explainer is open.
     const det = useDetections(open);
-    const sub = subStateName?.trim();
+    // Plain words for the states the owner has to act on; the mission's own
+    // text stays in "Why stopped?".
+    const plain = plainSubState(stateName, subStateName);
+    const sub = plain ? t(plain.key, plain.params) : subStateName?.trim();
     const label = stateRenderer(stateName);
     const fault = isLatchedFault(stateName);
     return (
@@ -52,7 +56,10 @@ export const MissionStatusLine: React.FC<Props> = ({stateName, subStateName, why
                 {!fault && <span style={{fontWeight: 600, flexShrink: 0}}>{label}</span>}
                 {!fault && sub && <span style={{color: colors.textSecondary, flexShrink: 0}}>·</span>}
                 {!fault && sub && (
-                    <span title={sub} style={{overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1}}>{sub}</span>
+                    // Wraps instead of an ellipsis: a phone cut "heading not
+                    // aligned: in manu…" mid-instruction.
+                    <span title={sub} data-testid="map-status-sub"
+                          style={{overflowWrap: 'anywhere', minWidth: 0, flex: 1}}>{sub}</span>
                 )}
                 <Popover
                     open={open}
