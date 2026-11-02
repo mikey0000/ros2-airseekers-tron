@@ -1038,3 +1038,7 @@ the window final offset moved from -45.3 to -39.0 deg and the window-keyframes g
 3.7 deg p50. On 20261102-030022, error against the RTK track was p95 2.90 deg for window (3.42
 before) and 1.66 deg for keyframes (2.97 before). Keyframes convergence to within 2 deg of its
 final value went from 106 to 824 s, because the final value moved.
+
+## Short skipped stretches no longer make a mow incomplete (2026-11-03, dev-image tested only)
+
+Field 2026-11-03, area 5: the end-of-area pass logged "stretch sub-path 4 poses 140 -> 145 not re-tried (0.23 m < 0.50 m)", counted it as "1 stretch blocked by obstacles", and ended a 99.8 % mow MOWING_INCOMPLETE. Now a skipped stretch shorter than `stretch_min_retry_m` is dropped from the area's skipped list as too short to matter (logged, its metres added to the mission's `ignored_short_m`). It never counts as blocked or NOT mowed, so the area completes. Stretches next to an unbypassable spot are still reported blocked, a 0.6 m stretch is still retried, and a retry stopped by a static obstacle is still excluded as blocked_static. The outcome text now carries the percentage mowed (planned minus NOT mowed sub-paths, skipped / blocked_static stretches and ignored short ones, over the planned metres of the finished area runs), e.g. "99.8 % mowed, 0.23 m skipped as too short". It goes on MOWING_INCOMPLETE sub_state and on MOWING_COMPLETE when anything was left out. No sim gate: this only changes completion bookkeeping, not driving.

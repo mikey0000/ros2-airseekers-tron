@@ -1440,6 +1440,9 @@ class Mission:
     sweep_skips: dict = field(default_factory=dict)   # (area, sub) -> consecutive sweep skips
     excluded_m: float = 0.0                     # blocked_static metres of completed areas
     excluded_count: int = 0                     # blocked_static stretches of completed areas
+    ignored_short_m: float = 0.0                # skipped stretches < stretch_min_retry_m dropped
+    planned_m: float = 0.0                      # planned metres of finished area runs
+    missed_m: float = 0.0                       # of those, metres left unmowed (any reason)
     edge_laps: dict = field(default_factory=dict)   # (area, sub) -> is an edge lap
     # 2026-10-23 option C (fsm/phases/nogo.py)
     nogo_extra: dict = field(default_factory=dict)      # area -> zone polygons added mid-mow
