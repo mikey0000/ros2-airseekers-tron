@@ -278,7 +278,8 @@ export const MissionStopControls: React.FC<Props> = ({state, stateName, subState
 
     // "heading not aligned" (IDLE): the next START will be refused, so the hint
     // and its Drive action come first, in full (it used to be cut off on a phone).
-    const headingHint = isHeadingHint(subStateName) ? (
+    // Not in the map editor (showFollowUp false): it would cover the tools.
+    const headingHint = showFollowUp && isHeadingHint(subStateName) ? (
         <Alert
             type="info"
             showIcon

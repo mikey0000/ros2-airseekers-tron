@@ -118,6 +118,13 @@ describe('MissionStopControls Resume', () => {
         expect(onManualDrive).toHaveBeenCalled();
     });
 
+    it('heading hint stays out of the map editor', () => {
+        resumeAvailable = false;
+        render(<AntApp><MissionStopControls state={1} stateName="IDLE" showFollowUp={false}
+            subStateName="heading not aligned: in manual, drive straight 1 m" onStart={vi.fn()}/></AntApp>);
+        expect(screen.queryByTestId('mission-heading-hint')).toBeNull();
+    });
+
     it('Start fresh clears the cursor then sends START', async () => {
         renderAt('IDLE');
         await userEvent.click(screen.getByTestId('mission-start-fresh'));
