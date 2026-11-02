@@ -480,7 +480,7 @@ behavior_tree_node:
     # trip naming the line (retrace); coverage holes of width width_m + boundary_line_keepout_m
     boundary_lines_enabled: true
     boundary_line_trip_m: 0.0
-    boundary_line_keepout_m: 0.3
+    boundary_line_keepout_m: 0.57      # 2 x (body half width 0.235 + 0.05); = map_server.yaml
     hard_boundary_trail_m: 1.5
     hard_boundary_trail_step_m: 0.05
     hard_boundary_pause_s: 0.5

@@ -202,3 +202,39 @@ def test_route_graph_has_no_route_through_a_full_wall():
     g = rg.RouteGraph(core.with_boundary_lines([a], [wall([(5, -1), (5, 7)])], 0.3))
     route = g.plan((2.0, 1.0, 0.0), (8.0, 1.0, 0.0))
     assert isinstance(route, str) or not _crosses(route, wall([(5, -1), (5, 7)]))
+
+
+def test_keepout_default_is_the_same_everywhere():
+    """map_server PARAMS / yaml, mission Params / yaml and the library share one default."""
+    import os
+    import yaml
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    with open(os.path.join(root, 'mower_map', 'config', 'map_server.yaml')) as fh:
+        ms = yaml.safe_load(fh)['map_server_node']['ros__parameters']
+    with open(os.path.join(root, 'mower_mission', 'config', 'mission.yaml')) as fh:
+        mi = yaml.safe_load(fh)['behavior_tree_node']['ros__parameters']
+    assert bl.DEFAULT_KEEPOUT_M == pytest.approx(2 * (HALF + 0.05))
+    assert ms['boundary_line_keepout_m'] == mi['boundary_line_keepout_m'] == bl.DEFAULT_KEEPOUT_M
+
+
+def _min_pose_dist(route, ln):
+    return min(bl.nearest_point(ln, p[0], p[1])[2] for p in route.poses)
+
+
+def test_route_graph_never_uses_a_gap_narrower_than_the_body():
+    """(c) a wall across the area leaves a gap at the south edge. 0.32 m (narrower than the
+    0.47 m body): no route through it. 1.3 m: the route uses it, base_link >= body half
+    width + 0.05 off the true line all the way."""
+    a = _area()
+    narrow = wall([(5, 0.6), (5, 7)])                # band ends 0.315 above the edge
+    g = rg.RouteGraph(core.with_boundary_lines([a], [narrow]))
+    route = g.plan((2.0, 3.0, 0.0), (8.0, 3.0, 0.0))
+    assert isinstance(route, str) or (not _crosses(route, narrow) and
+                                      _min_pose_dist(route, narrow) >= HALF + 0.05)
+    wide = wall([(5, 1.6), (5, 7)])                  # band ends 1.315 above the edge
+    route = rg.RouteGraph(core.with_boundary_lines([a], [wide])).plan((2.0, 3.0, 0.0),
+                                                                       (8.0, 3.0, 0.0))
+    assert not isinstance(route, str), route
+    assert not _crosses(route, wide)
+    assert _min_pose_dist(route, wide) >= HALF + 0.05
+    assert min(p[1] for p in route.poses) < 1.3      # it did go through the gap

@@ -87,7 +87,7 @@ def test_coverage_goal_gets_the_line_as_a_hole():
     holes = h.goal(f.ACT_PLAN)['obstacles']
     assert len(holes) == 1                                   # the far line is not in this area
     xs = [p[0] for p in holes[0]]
-    assert min(xs) == 2.35 and max(xs) == 2.65               # keepout 0.3: +-0.15 m
+    assert math.isclose(min(xs), 2.215) and math.isclose(max(xs), 2.785)   # keepout 0.57
     h2 = Harness(boundary_line_keepout_m=0.6)
     h2.areas = [square(0, 0, 5)]
     h2.fsm.inputs.boundary_lines = [walls.BoundaryLine('bed', [(2.5, -1.0), (2.5, 3.5)],

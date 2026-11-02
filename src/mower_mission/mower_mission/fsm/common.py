@@ -1048,7 +1048,7 @@ class Params:
     # width width_m + boundary_line_keepout_m (swaths cut at the line)
     boundary_lines_enabled: bool = True
     boundary_line_trip_m: float = 0.0
-    boundary_line_keepout_m: float = 0.3
+    boundary_line_keepout_m: float = 0.57     # = mower_map boundary_lines.DEFAULT_KEEPOUT_M
     hard_boundary_trail_m: float = 1.5
     hard_boundary_trail_step_m: float = 0.05
     hard_boundary_pause_s: float = 0.5

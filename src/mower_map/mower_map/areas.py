@@ -757,7 +757,7 @@ def with_dock_nogo(areas: List['Area'], dock: Optional['DockPose'],
 
 
 def with_boundary_lines(areas: List['Area'], lines: Sequence[blines.BoundaryLine],
-                        keepout_m: float = 0.3) -> List['Area']:
+                        keepout_m: float = blines.DEFAULT_KEEPOUT_M) -> List['Area']:
     """Boundary lines as planners see them (2026-11-02): every area (mowing or navigation)
     whose polygon a line's thin keepout (``boundary_lines.keepout_polygon``, width
     ``width_m + keepout_m``) overlaps gets that keepout as an extra obstacle named

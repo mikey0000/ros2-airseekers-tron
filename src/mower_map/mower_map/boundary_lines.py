@@ -35,6 +35,12 @@ POINTS_MAX = 500
 VERTEX_EPS_M = 0.01
 # obstacle name of the planner keepout of a line (route graph / masks / coverage holes)
 KEEPOUT_NAME_PREFIX = 'boundary line '
+# Default boundary_line_keepout_m: the planner band is width_m + this, i.e. the body half
+# width (0.235) + 0.05 on each side of the line. The coverage planner's hard edge layout does
+# not grow holes (laps run 0.45 from them) and pivots at lap corners: with a 0.30 band the
+# 0.645 m nose-corner sweep reached the line (test_coverage_planning BoundaryLineBody). The
+# masks are robot-centre limits, so this band is also what keeps the body off the line there.
+DEFAULT_KEEPOUT_M = 0.57
 
 
 @dataclass

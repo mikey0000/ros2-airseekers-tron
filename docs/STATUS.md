@@ -805,7 +805,8 @@ area), next to the existing area / no-go polygons. Branch `ws/boundary-lines`.
   the line; counted like any excursion. At START / resume: inward move first, not counted.
   `boundary_lines_enabled` (true) switches the trip and the coverage holes off.
 * **Planners (thin keepout).** Each line buffered to `width_m + boundary_line_keepout_m`
-  (0.3; map_server and mission params) is an extra obstacle of every area it overlaps
+  (0.57 = 2 x (body half width 0.235 + 0.05); same default in map_server and mission) is an
+  extra obstacle of every area it overlaps
   (`areas.with_boundary_lines`, copies like the dock no-go): /keepout_mask, /nav_keepout_mask,
   the route graph (transits go round, or find no route through a full wall), and the
   coverage goals (`_nogo_area_holes`, preview too), so swaths are cut at the line.
@@ -823,8 +824,13 @@ area), next to the existing area / no-go polygons. Branch `ws/boundary-lines`.
 * **Sim gate.** Criterion b counts line trips (they are BOUNDARY OUT lines) and reports
   them separately (`line_trips`).
 
-Open: the 0.3 m keepout band is 0.15 m each side of the line. The planner test checks that
-no swath crosses the band (partial and full cut, both sides mowed); whether the hole rings
-and row ends keep the BODY (nose 0.60 m ahead of base_link) off the true line is not tested:
-a sim run with a drawn line is the check, and the trip is the backstop. A line lying
+Body clearance is tested, not assumed (gtest `BoundaryLineBody`): soft and hard edge layouts,
+a wall parallel to the rows 0.5 m inside an edge, rows ending at a wall, a full cut; the
+footprint box along every lap, row, turn and driven connector, pivots swept, stays >= 0.05 m
+off the true line. A 0.30 band failed it: the hard layout does not grow holes (laps 0.45 m
+off) and its lap-corner pivot swept the nose corner (0.645 m) across the line. The soft
+layout grows holes by 0.40 and passed at 0.30 too. The masks are robot-centre limits, so the
+0.57 band is also what keeps a Nav2 fallback transit's body off the line. Route graph: a gap
+between a wall and the area edge narrower than the body is never used (test). Not modelled:
+tracking error / leg overshoot at row ends (the trip is the backstop). A line lying
 outside every area is not in the masks (no area to carry it).

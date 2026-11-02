@@ -75,7 +75,7 @@ PARAMS = {
     # ~/boundary_lines. Planners (keepout + nav masks, route graph) see each line as a thin
     # keepout polygon of width width_m + boundary_line_keepout_m; the hard trip (mission guard)
     # uses the true line. ~/boundary_line_hit reports a footprint touching a line.
-    'boundary_line_keepout_m': 0.3,
+    'boundary_line_keepout_m': blines.DEFAULT_KEEPOUT_M,   # 0.57 = 2 x (0.235 + 0.05)
     'boundary_line_check': True,
     # navigation mask (/nav_keepout_mask; Nav2 global costmap + keepout filter):
     # (mowing U navigation areas) grown by nav_margin_m, minus obstacles grown
