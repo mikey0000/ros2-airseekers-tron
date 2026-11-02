@@ -775,3 +775,56 @@ mission.yaml):
 The sim gate's `-d` disturbance (wheel bias 0.04, per-wheel slip std 0.05) is mild and the
 sim publishes no roll on /tilt/status, so a 3x wheel-vs-RTK slip and the slope rule never
 occur there: the slip and slope paths are unit-tested only.
+
+## Boundary lines (virtual walls) and the no-go zone sheet (2026-11-02, unit-tested; sim gate pending with the integration run)
+
+Owner request: a line the mower must never cross (a drop-off, a flower-bed edge inside an
+area), next to the existing area / no-go polygons. Branch `ws/boundary-lines`.
+
+* **Data model.** `mower_map/boundary_lines.py`: `{id, name, points [[x, y], ...] (map
+  metres), width_m}`; `width_m` 0..2.0 (default 0.0 = the body must not touch the line
+  itself). Wire format `{"version": 1, "lines": [...]}`. Stored in `areas.dat` after the
+  areas (`boundary_lines_version: 1`, `boundary_line_count`, `boundary_line_<k>_id / _name /
+  _points / _width_m`), so the lines share the file's datum stamp and are never re-projected
+  separately; a file without lines stays byte-identical to the upstream format. `clear_map`
+  keeps them.
+* **Services / topics** (`map_server_node`): `~/get_boundary_lines` / `~/set_boundary_lines`
+  (the area-settings service types, JSON in `settings_json`, the whole set);
+  `ReplaceAreas.srv` gained `boundary_lines_json` ('' = keep, the set is swapped in with the
+  areas in the same rebuild + save); latched `~/boundary_lines` (JSON) for the mission;
+  `~/boundary_line_hit` (JSON, every boundary check: the lines the footprint touches, with
+  depth). GUI backend: `Map.boundary_lines` in the polled map, `ReplaceMapReq.boundary_lines`
+  (absent = keep) sent in `replace_areas`, or `set_boundary_lines` after the fallback
+  clear/add sequence.
+* **Hard trip (true line).** Mission guard (`fsm/guards/boundary.py`, `walls.py`): in every
+  hard-boundary phase the footprint box (0.60 / 0.10 / 0.235) at the current pose is tested
+  against each line's centreline +- width_m / 2 (separating-axis depth, so a line between
+  two body points counts). Deeper than `boundary_line_trip_m` (0.0) -> `BOUNDARY OUT: body
+  crosses boundary line <id> "<name>" by N m`, blade off, retrace of the driven track until
+  the body is `hard_boundary_body_clear_m` clear of that line, then the inward move away from
+  the line; counted like any excursion. At START / resume: inward move first, not counted.
+  `boundary_lines_enabled` (true) switches the trip and the coverage holes off.
+* **Planners (thin keepout).** Each line buffered to `width_m + boundary_line_keepout_m`
+  (0.3; map_server and mission params) is an extra obstacle of every area it overlaps
+  (`areas.with_boundary_lines`, copies like the dock no-go): /keepout_mask, /nav_keepout_mask,
+  the route graph (transits go round, or find no route through a full wall), and the
+  coverage goals (`_nogo_area_holes`, preview too), so swaths are cut at the line.
+  `get_mowing_area` still serves the stored areas (the GUI never sees the keepouts).
+* **GUI.** Map editor tool "Boundary line" (desktop editor toolbar, phone edit cluster):
+  click vertices, double-click / Enter / Finish (>= 2 points), Undo point, Cancel / Escape;
+  red dashed line (#ff1744) with its name; own sheet (name, width 0..2 m, delete). Edits made
+  from the view-mode sheet open the editor with the change pending (Save writes the map).
+* **No-go click fix (owner bug).** A click on a no-go zone opened the mowing-area sheet: the
+  view-mode click hit-tested mowing areas first. `pages/map/utils/mapHitTest.ts` now picks the
+  most specific feature (boundary line within 10 px / 16 px on phones > no-go zone > path >
+  mowing area, smallest polygon when nested). A no-go zone opens its own sheet (name,
+  provenance, area m², delete, edit vertices, "Mow <area>"), also without area settings; an
+  amber outline marks the feature whose sheet is open.
+* **Sim gate.** Criterion b counts line trips (they are BOUNDARY OUT lines) and reports
+  them separately (`line_trips`).
+
+Open: the 0.3 m keepout band is 0.15 m each side of the line. The planner test checks that
+no swath crosses the band (partial and full cut, both sides mowed); whether the hole rings
+and row ends keep the BODY (nose 0.60 m ahead of base_link) off the true line is not tested:
+a sim run with a drawn line is the check, and the trip is the backstop. A line lying
+outside every area is not in the masks (no area to carry it).

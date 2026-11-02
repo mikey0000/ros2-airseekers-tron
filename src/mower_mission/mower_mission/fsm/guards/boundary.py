@@ -4,7 +4,7 @@
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
 from mower_mission.fsm.common import (DOCK_PHASES, DriveCmd, HARD_BOUNDARY_PHASES, bbody, geo,
-    math)
+    math, walls)
 from mower_mission.fsm.escape import Escape
 
 # the hard-boundary retrace (starts as 'hard boundary', gives up as 'boundary')
@@ -116,6 +116,21 @@ class BoundaryGuardMixin:
         the one metric every boundary log line and the recovery planner use."""
         return bbody.worst_outside(pose, self._region(), keepouts=self._hb_keepouts())
 
+    def _hb_lines(self):
+        """The boundary lines the guard enforces ([] when disabled / none received)."""
+        if not self.p.boundary_lines_enabled:
+            return []
+        return self.inputs.boundary_lines or []
+
+    def _hb_line_hit(self, pose):
+        """(depth, line) of the deepest boundary line the footprint at ``pose`` reaches more
+        than boundary_line_trip_m into, else None."""
+        lines = self._hb_lines()
+        if not lines or pose is None or len(pose) < 3:
+            return None
+        h = walls.hits(lines, pose, float(self.p.boundary_line_trip_m))
+        return h[0] if h else None
+
     def _hb_keepouts(self):
         return [list(o) for a in (self._region_areas or {}).values()
                 if not a.get('is_navigation_area', False)
@@ -188,12 +203,20 @@ class BoundaryGuardMixin:
             self._hb_jump = None
             return False
         pose = self.inputs.pose
-        mode = None if hcal else self._hb_body_mode(pose)
-        ev = self._hb_body_eval(pose, mode) if mode is not None else None
         # START / resume while still outside (field 2026-10-22: START 0.07 m out, the resume
         # pivot re-tripped 3 times): recover inward FIRST, no pivot, not counted
         entry = self._hb_entry and not hcal
-        if ev is not None:
+        # boundary lines (virtual walls, 2026-11-02): the footprint touching a line's TRUE
+        # geometry is a trip of its own (reason names the line), recovered by the track retrace
+        line = self._hb_line_hit(pose)
+        mode = None if hcal or line is not None else self._hb_body_mode(pose)
+        ev = self._hb_body_eval(pose, mode) if mode is not None else None
+        if line is not None:
+            out = max(0.0, line[0])
+            if entry:
+                self._hb_entry = False
+            what = walls.describe(line[0], line[1]) + (' at START / resume' if entry else '')
+        elif ev is not None:
             out = ev['out']
             if self._hb_jumped(out):
                 return False
@@ -230,7 +253,8 @@ class BoundaryGuardMixin:
         where = '(%.2f, %.2f)' % (pose[0], pose[1]) if pose is not None else 'unknown pose'
         if hcal:
             # unverified heading: no retrace on the EKF track, just stop where it is
-            self._hcal_fail('left the mowing area by %.2f m at %s' % (out, where))
+            self._hcal_fail('%s at %s' % (what, where) if line is not None else
+                            'left the mowing area by %.2f m at %s' % (out, where))
             return True
         if not entry:
             self._hb_count += 1
@@ -274,7 +298,8 @@ class BoundaryGuardMixin:
                                 'dock_purpose': self._dock_purpose, 'driven': 0.0,
                                 'last': tuple(pose),
                                 'prog': 0.0, 'prog_best': 0.0, 'prog_t': self._now,
-                                'inside_at': None},
+                                'inside_at': None,
+                                'line': line[1].id if line is not None else None},
                          incident=('boundary', ox, oy, 'boundary out: %s in %s'
                                    % (what, self.phase)))
         self._loc = None
@@ -288,6 +313,12 @@ class BoundaryGuardMixin:
         """Unit vector from the worst point (body mode) / base_link toward the nearest
         boundary point, i.e. into the allowed region; None when nothing is outside."""
         k = self._hb
+        if k.get('line') is not None:
+            # a boundary line: away from its nearest point, to the side base_link is on
+            d = walls.depth_of(self._hb_lines(), k['line'], pose)
+            if d is None or d <= -float(self.p.hard_boundary_body_clear_m):
+                return None
+            return walls.away_dir(self._hb_lines(), k['line'], pose)
         polys = self._region()
         x, y, yaw = float(pose[0]), float(pose[1]), float(pose[2])
         px, py = x, y
@@ -361,6 +392,13 @@ class BoundaryGuardMixin:
         <= 1 mm; body mode = every body point at least hard_boundary_body_clear_m under its
         limit (out = the worst point's outside distance)."""
         k = self._hb
+        if k.get('line') is not None:
+            # boundary line trip: clear of the line by hard_boundary_body_clear_m (a line that
+            # was deleted meanwhile counts as clear); the area rules resume after it
+            d = walls.depth_of(self._hb_lines(), k['line'], pose)
+            if d is None:
+                return True, 0.0
+            return d <= -float(self.p.hard_boundary_body_clear_m), max(0.0, d)
         if k.get('mode') is None:
             out = self._point_out(pose)
             return out is not None and out <= 1e-3, out

@@ -12,6 +12,9 @@ map_server_node:
     dock_nogo_in_areas: true    # 2026-10-09: a mowing area drawn around the dock gets the dock (+margin) as an
                                 # automatic no-go for coverage + in-area route legs (never stored; docking ignores it)
     dock_nogo_margin_m: 0.15
+    # boundary lines (virtual walls, 2026-11-02): planner keepout band = width_m + this
+    boundary_line_keepout_m: 0.3
+    boundary_line_check: true          # ~/boundary_line_hit (footprint on a line)
     dock_keepout: true          # mowing mask only; never in /nav_keepout_mask
     # 2026-10-09 owner: all routing stays INSIDE the drawn areas and paths. The nav mask is now a
     # robot-CENTRE limit applied uninflated (KeepoutFilter only, nav2_params.yaml), so no outward

@@ -15,4 +15,7 @@ type ReplaceMapArea struct {
 
 type ReplaceMapReq struct {
 	Areas []ReplaceMapArea `json:"areas"`
+	// Boundary lines: nil (field absent) keeps the stored set, a non-nil
+	// slice (even empty) replaces it.
+	BoundaryLines *[]BoundaryLine `json:"boundary_lines,omitempty"`
 }

@@ -29,6 +29,7 @@ import {
     WarningOutlined,
     PlusOutlined,
     BorderOutlined,
+    BorderVerticleOutlined,
     AimOutlined,
     ForwardOutlined,
     CaretRightOutlined,
@@ -103,6 +104,9 @@ interface MapToolbarMobileProps {
     onDrawPathToDock?: () => void;
     onEditPath?: () => void;
     editPathEnabled?: boolean;
+    /** Boundary line (virtual wall) tool. */
+    onDrawBoundaryLine?: () => void;
+    boundaryDrawing?: boolean;
     dockAvailable?: boolean;
     stateName?: string;
     highLevelState?: number;
@@ -142,7 +146,7 @@ export const MapToolbarMobile = ({
     onMowArea, onPreviewPlan, settingsAreas, onAreaSettings, selectedFeatureCount = 0, onEditSelectedFeature,
     onDrawPolygon, onDrawShape, onDrawEmoji, onTrash, onCombine, onSubtract, onSplit,
     onPlaceDock, dockPlacementMode, onDrawPath, onConnectDock, dockAvailable,
-    onDrawPathToDock, onEditPath, editPathEnabled,
+    onDrawPathToDock, onEditPath, editPathEnabled, onDrawBoundaryLine, boundaryDrawing,
     stateName, highLevelState, emergency,
     onStart, onResume, onStartFresh, onHome, onUndock, onEmergencyOn, onEmergencyOff,
     onAreaRecording, onPathRecording, onObstacleRecording, onMowNextArea, onContinueOrPause,
@@ -474,6 +478,18 @@ export const MapToolbarMobile = ({
                                 />
                             )}
                         </Space.Compact>
+                    )}
+
+                    {onDrawBoundaryLine && (
+                        <Button
+                            size="large"
+                            icon={<BorderVerticleOutlined />}
+                            type={boundaryDrawing ? "primary" : "default"}
+                            onClick={onDrawBoundaryLine}
+                            aria-label={t("mapBoundary.tool")}
+                            data-testid="tool-boundary-line"
+                            style={touchTarget}
+                        />
                     )}
 
                     {/* Combine/Subtract/Split now live inside this More menu

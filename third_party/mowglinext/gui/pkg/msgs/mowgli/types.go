@@ -21,7 +21,33 @@ type Map struct {
 	// plain polygon navigation areas. Omitted when the map server does not
 	// serve get_area_channel.
 	NavigationChannels []*AreaChannel `json:"navigation_channels,omitempty"`
+	// Boundary lines (virtual walls): polylines the mower body must never
+	// cross. Omitted when the map server does not serve get_boundary_lines.
+	BoundaryLines []BoundaryLine `json:"boundary_lines,omitempty"`
 }
+
+// BoundaryLine is one virtual wall as mower_map stores it (boundary_lines.py):
+// a polyline in map metres with an optional band width (0 = the line itself).
+type BoundaryLine struct {
+	ID     string       `json:"id"`
+	Name   string       `json:"name"`
+	Points [][2]float64 `json:"points"`
+	WidthM float64      `json:"width_m"`
+}
+
+// BoundaryLineSet is the map server's wire format for the whole set.
+type BoundaryLineSet struct {
+	Version int            `json:"version"`
+	Lines   []BoundaryLine `json:"lines"`
+}
+
+// Map server boundary-line services (reuse the area-settings service types;
+// area_index is ignored, payload = BoundaryLineSet JSON).
+const (
+	SetBoundaryLinesService = "/map_server_node/set_boundary_lines"
+	GetBoundaryLinesService = "/map_server_node/get_boundary_lines"
+	BoundaryLinesVersion    = 1
+)
 
 // AreaChannel is the centreline (map metres) + band width of a navigation
 // area drawn with the path tool. The area polygon stays the authoritative

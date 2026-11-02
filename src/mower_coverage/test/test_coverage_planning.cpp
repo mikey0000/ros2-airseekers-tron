@@ -591,6 +591,39 @@ TEST(CoveragePlanning, ManyHolesStillPlanAndStayOutOfHoles) {
   EXPECT_LT(transits, 30) << total << " m";
 }
 
+// Boundary lines (virtual walls, 2026-11-02): the mission sends each line as a thin hole
+// (the line buffered to width_m + boundary_line_keepout_m, 0.30 m by default) that may run
+// across the outer boundary, or cut the field in two. No swath may cross the band, and both
+// sides of a full cut are still mowed.
+static bool segmentHitsRect(const Point2D& a, const Point2D& b, double x0, double x1, double y0,
+                     double y1) {
+  for (int k = 0; k <= 200; ++k) {
+    const double t = k / 200.0;
+    const double x = a.first + t * (b.first - a.first);
+    const double y = a.second + t * (b.second - a.second);
+    if (x > x0 && x < x1 && y > y0 && y < y1) return true;
+  }
+  return false;
+}
+
+TEST(CoveragePlanning, BoundaryLineKeepoutCutsSwaths) {
+  // wall from below the south edge to y 4.5 (gap in the north), and a full cut
+  for (double top : {4.65, 7.15}) {
+    const std::vector<Point2D> band = {{4.85, -1.15}, {5.15, -1.15}, {5.15, top}, {4.85, top}};
+    auto plan = planNode(kRect10x6, {band}, 0.0);
+    ASSERT_FALSE(plan.swaths.empty()) << "top " << top;
+    bool west = false, east = false;
+    for (const auto& s : plan.swaths) {
+      EXPECT_FALSE(segmentHitsRect(s.first, s.second, 4.85, 5.15, -1.15, top))
+          << "swath (" << s.first.first << ", " << s.first.second << ") -> (" << s.second.first
+          << ", " << s.second.second << ") crosses the boundary line band (top " << top << ")";
+      west = west || std::max(s.first.first, s.second.first) < 4.85;
+      east = east || std::min(s.first.first, s.second.first) > 5.15;
+    }
+    EXPECT_TRUE(west && east) << "both sides of the line are mowed (top " << top << ")";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Path modes (per-area settings): spiral, contour_only, edge_first = false.
 // ---------------------------------------------------------------------------

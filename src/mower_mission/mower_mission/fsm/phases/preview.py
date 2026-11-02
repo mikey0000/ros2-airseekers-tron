@@ -113,7 +113,8 @@ class PreviewMixin:
             area, run = pv['areas'][cur['index']], cur['preview_runs'][cur['run_k']]
             self._start_action(ACT_PLAN, {
                 'outer_boundary': self._plan_outline(area.get('outer', [])),
-                'obstacles': [list(o) for o in area.get('obstacles', [])],
+                'obstacles': [list(o) for o in area.get('obstacles', [])] +
+                self._line_holes(area.get('outer') or []),
                 'mow_angle_deg': float(run['angle']),
                 'perpendicular': bool(run['perpendicular'])}, self.p.plan_timeout_s,
                 purpose='preview')

@@ -147,6 +147,18 @@ describe("MapToolbarMobile", () => {
     expect(onEditPath).toHaveBeenCalledOnce();
   });
 
+  it("shows the boundary line tool in the mobile edit toolbar only", async () => {
+    const user = userEvent.setup();
+    const onDrawBoundaryLine = vi.fn();
+    const { rerender } = render(
+      <MapToolbarMobile {...defaultProps} editMap onDrawBoundaryLine={onDrawBoundaryLine} />,
+    );
+    await user.click(screen.getByRole("button", { name: en.mapBoundary.tool }));
+    expect(onDrawBoundaryLine).toHaveBeenCalledOnce();
+    rerender(<MapToolbarMobile {...defaultProps} onDrawBoundaryLine={onDrawBoundaryLine} />);
+    expect(screen.queryByRole("button", { name: en.mapBoundary.tool })).toBeNull();
+  });
+
   it("hides the path tools outside edit mode", () => {
     render(<MapToolbarMobile {...defaultProps} onDrawPath={vi.fn()} onDrawPathToDock={vi.fn()} onEditPath={vi.fn()} />);
     expect(screen.queryByRole("button", { name: en.mapToolbarMobile.drawPath })).toBeNull();

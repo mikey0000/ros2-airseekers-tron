@@ -8,7 +8,7 @@ import turfArea from "@turf/area";
 import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {useTranslation} from "react-i18next";
 import {MapArea, Map as MapType} from "../types/ros.ts";
-import type {AreaChannel, MapWithChannels} from "../types/map.ts";
+import type {AreaChannel, MapWithBoundaryLines, MapWithChannels} from "../types/map.ts";
 import DrawControl from "../components/DrawControl.tsx";
 import Map, {Layer, Popup, Source} from 'react-map-gl/mapbox';
 import turfCentroid from "@turf/centroid";
@@ -22,7 +22,7 @@ import {useSettings} from "../hooks/useSettings.ts";
 import {useConfig} from "../hooks/useConfig.tsx";
 import {useEnv} from "../hooks/useEnv.tsx";
 import {Spinner} from "../components/Spinner.tsx";
-import {MowingFeature, MowingAreaFeature, DockFeatureBase, MowingFeatureBase, NavigationFeature, ObstacleFeature, ActivePathFeature, PathFeature} from "../types/map.ts";
+import {MowingFeature, MowingAreaFeature, DockFeatureBase, MowingFeatureBase, NavigationFeature, ObstacleFeature, ActivePathFeature, PathFeature, BoundaryLineFeature} from "../types/map.ts";
 import {useMapEditHistory} from "./map/hooks/useMapEditHistory.ts";
 import {useMapOffset} from "./map/hooks/useMapOffset.ts";
 import {useMapBearing} from "./map/hooks/useMapBearing.ts";
@@ -51,7 +51,12 @@ import {StartMowSheet, type StartSelection} from "../components/areaSettings/Sta
 import {confirmThenStart} from "../components/areaSettings/confirmStart.ts";
 import {AreaSettingsDrawer} from "../components/areaSettings/AreaSettingsDrawer.tsx";
 import {mowingAreaChoices} from "../utils/mapAreaIndex.ts";
-import {pointInPolygon} from "../utils/map.tsx";
+import {hitTestMap, metresPerPixel, type MapItem} from "./map/utils/mapHitTest.ts";
+import {boundaryLineFeaturesFromMap, newBoundaryLineId, ringAreaM2} from "./map/utils/boundaryLines.ts";
+import {useBoundaryLineTool} from "./map/hooks/useBoundaryLineTool.ts";
+import {BoundaryLineDrawPanel} from "./map/components/BoundaryLineDrawPanel.tsx";
+import {BoundaryLineSheet} from "./map/components/BoundaryLineSheet.tsx";
+import {NoGoZoneSheet} from "./map/components/NoGoZoneSheet.tsx";
 import {MapImageMarker} from "./map/components/MapImageMarker.tsx";
 import {markerCorners, selectDockMarker} from "../utils/mapMarker.ts";
 import {useRobotProfile} from "../hooks/useRobotProfile.ts";
@@ -95,6 +100,13 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
 // stable across renders and react-map-gl does not re-bind the query on every
 // render.
 const DYN_OBSTACLE_INTERACTIVE_LAYERS = ['dyn-obstacle-fill', 'dock-corridor-fill', 'terrain-cluster-circle'];
+
+/** Boundary lines (virtual walls): distinct red dashed line. */
+const BOUNDARY_LINE_COLOR = '#ff1744';
+/** Click tolerance (CSS px) for selecting a boundary line; wider on touch. */
+const BOUNDARY_HIT_PX = {mouse: 10, touch: 16};
+/** Vertices closer than this (px) to the previous one are double-click / double-tap jitter. */
+const BOUNDARY_VERTEX_MIN_PX = 4;
 
 /** Drive view: the map shrinks to an inset (top-right, clear of both joystick corners). */
 const DRIVE_VIEW_MAP_INSET: React.CSSProperties = {
@@ -255,7 +267,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // Display-only features (mower, dock, heading, paths) rendered as separate layers
     const displayFeatures = useMemo<GeoJSON.FeatureCollection>(() => {
         const feats = Object.values(features)
-            .filter(f => !(f instanceof MowingFeatureBase))
+            .filter(f => !(f instanceof MowingFeatureBase) && !(f instanceof BoundaryLineFeature))
             .map(f => ({
                 type: "Feature" as const,
                 id: f.id,
@@ -567,7 +579,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         if (map) {
             const workingAreas = buildFeatures(map.working_area??[], "area", true)
             const navigationAreas = buildFeatures(map.navigation_areas??[], "navigation", false, (map as MapWithChannels).navigation_channels)
-            newFeatures = {...workingAreas, ...navigationAreas}
+            const boundaryLines = boundaryLineFeaturesFromMap((map as MapWithBoundaryLines).boundary_lines, offsetX, offsetY, datum)
+            newFeatures = {...workingAreas, ...navigationAreas, ...boundaryLines}
 
             // dock_x/dock_y are optional on the wire. `map?.dock_y!` claimed
             // otherwise and pushed `undefined` into transpose(), painting the
@@ -886,6 +899,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         const newFeatures: Record<string, MowingFeature> = {
             ...buildFeatures(m.working_area ?? [], "area"),
             ...buildFeatures(m.navigation_areas ?? [], "navigation", false, (m as MapWithChannels).navigation_channels),
+            ...boundaryLineFeaturesFromMap((m as MapWithBoundaryLines).boundary_lines, offsetX, offsetY, datum),
         };
         const dockLonLat = transpose(offsetX, offsetY, datum, m.dock_y ?? 0, m.dock_x ?? 0);
         newFeatures["dock"] = new DockFeatureBase(dockLonLat, m.dock_heading ?? 0);
@@ -978,10 +992,15 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         () => mowingAreaChoices(map, (order) => t('mapAreasList.unnamedArea', {order})),
         [map, t],
     );
+    // The map item whose sheet is open (mowing area, nav area, no-go zone,
+    // boundary line): drives the no-go / boundary sheets and the selection
+    // highlight. null = nothing selected.
+    const [selectedMapItem, setSelectedMapItem] = useState<MapItem | null>(null);
     const openAreaSettingsForFeature = useCallback((f: MowingFeature | undefined) => {
         if (f instanceof NavigationFeature) {
             const navIdx = Object.values(features).filter((x) => x instanceof NavigationFeature).indexOf(f) + 1;
             setSettingsNavName(f.getName() || t('mapAreasList.navigationArea', {index: navIdx}));
+            setSelectedMapItem({kind: "nav", id: f.id});
             return true;
         }
         if (!(f instanceof MowingAreaFeature)) return false;
@@ -992,41 +1011,208 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             name: f.getLabel(t('mapAreasList.unnamedArea', {order: f.getMowingOrder()})),
             areaName: map?.working_area?.[f.properties.source_working_area_index ?? -1]?.name,
         });
+        setSelectedMapItem({kind: "area", id: f.id});
         return true;
     }, [map, t, features]);
-    const openAreaSettingsById = useCallback(
-        (id: string) => { openAreaSettingsForFeature(features[id]); },
-        [features, openAreaSettingsForFeature],
-    );
+    const openAreaSettingsById = useCallback((id: string) => {
+        // A no-go zone row opens the no-go sheet, never its area's mow sheet.
+        if (features[id] instanceof ObstacleFeature) {
+            setSettingsArea(null);
+            setSettingsNavName(null);
+            setSelectedMapItem({kind: "nogo", id});
+            return;
+        }
+        openAreaSettingsForFeature(features[id]);
+    }, [features, openAreaSettingsForFeature]);
+
+    // --- Map item sheets (no-go zone, boundary line) + selection highlight ---
+    // Entering / leaving edit mode drops the selection: the sheet's change is
+    // pending in the editor then, and Save / Cancel rebuild the features.
+    useEffect(() => {
+        setSelectedMapItem(null);
+    }, [editMap]);
+    const selectedFeature = selectedMapItem ? features[selectedMapItem.id] : undefined;
+    const selectedNoGo = selectedMapItem?.kind === "nogo" && selectedFeature instanceof ObstacleFeature
+        ? selectedFeature : null;
+    const selectedBoundary = selectedMapItem?.kind === "boundary" && selectedFeature instanceof BoundaryLineFeature
+        ? selectedFeature : null;
+    const closeMapItemSheet = useCallback(() => setSelectedMapItem(null), []);
+    const selectedGeometry = selectedFeature?.geometry;
+    const selectionCollection = useMemo<FeatureCollection | null>(() => selectedGeometry ? {
+        type: "FeatureCollection",
+        features: [{type: "Feature", id: "map-selection", geometry: selectedGeometry, properties: {}}],
+    } : null, [selectedGeometry]);
+
+    // A sheet edit made in view mode opens the editor with the change pending
+    // (undo-able, persisted by Save), the same state a delete in the editor
+    // leaves: the map server is only written by the editor's Save.
+    const applyMapChange = (change: (curr: Record<string, MowingFeature>) => Record<string, MowingFeature>,
+                            pendingMessage: string) => {
+        if (!editMap) {
+            handleEditMap();
+            notification.info({message: pendingMessage});
+        }
+        setFeatures(change);
+    };
+    const removeFeature = (id: string) => (curr: Record<string, MowingFeature>) => {
+        const next = {...curr};
+        delete next[id];
+        return next;
+    };
+
+    const noGoSheet = useMemo(() => {
+        if (!selectedNoGo) return null;
+        const info = selectedNoGo.getInfo();
+        const linked = selectedNoGo.getMowingArea();
+        const current = linked ? features[linked.id] : undefined;
+        const parent = current instanceof MowingAreaFeature ? current : linked;
+        const order = parent?.getMowingOrder();
+        return {
+            title: info.name || areasList.find((a) => a.id === selectedNoGo.id)?.name || t('mapNoGo.title'),
+            areaM2: ringAreaM2(selectedNoGo.geometry.coordinates[0] ?? [], offsetX, offsetY, datum),
+            source: info.source,
+            pending: info.pending,
+            parent,
+            parentName: parent?.getLabel(t('mapAreasList.unnamedArea', {order, index: order})),
+        };
+    }, [selectedNoGo, features, areasList, offsetX, offsetY, datum, t]);
+    const deleteSelectedNoGo = () => {
+        if (!selectedNoGo) return;
+        const id = selectedNoGo.id;
+        setSelectedMapItem(null);
+        applyMapChange(removeFeature(id), t('mapNoGo.pendingSave'));
+    };
+    // "Edit vertices": open the editor and put that zone in direct_select once
+    // DrawControl has switched to edit mode.
+    const [pendingVertexEdit, setPendingVertexEdit] = useState<string | null>(null);
+    const editSelectedNoGoVertices = () => {
+        if (!selectedNoGo) return;
+        const id = selectedNoGo.id;
+        setSelectedMapItem(null);
+        if (!editMap) handleEditMap();
+        setPendingVertexEdit(id);
+    };
+    useEffect(() => {
+        if (!editMap || !pendingVertexEdit) return;
+        const id = pendingVertexEdit;
+        const timer = setTimeout(() => {
+            const draw = drawRef.current;
+            const feature = draw?.get(id);
+            if (draw && feature) {
+                draw.changeMode("direct_select", {featureId: id});
+                onSelectionChange({features: [feature]});
+            }
+            setPendingVertexEdit(null);
+        }, 50);
+        return () => clearTimeout(timer);
+    }, [editMap, pendingVertexEdit, onSelectionChange]);
+
+    // Boundary lines: display labels ("Boundary line N" when unnamed), map layer data.
+    const boundaryFallbackNames = useMemo(() => {
+        const names: Record<string, string> = {};
+        Object.values(features)
+            .filter((f): f is BoundaryLineFeature => f instanceof BoundaryLineFeature)
+            .forEach((f, i) => { names[f.id] = t('mapBoundary.fallbackName', {index: i + 1}); });
+        return names;
+    }, [features, t]);
+    const boundaryLinesCollection = useMemo<FeatureCollection>(() => ({
+        type: "FeatureCollection",
+        features: Object.values(features).flatMap((f) =>
+            f instanceof BoundaryLineFeature && f.getCoordinates().length >= 2 ? [{
+                type: "Feature" as const, id: f.id, geometry: f.geometry,
+                properties: {label: f.getName() || boundaryFallbackNames[f.id] || ''},
+            }] : []),
+    }), [features, boundaryFallbackNames]);
+    const applySelectedBoundary = (name: string, widthM: number) => {
+        if (!selectedBoundary) return;
+        const id = selectedBoundary.id;
+        setSelectedMapItem(null);
+        applyMapChange((curr) => {
+            const f = curr[id];
+            return f instanceof BoundaryLineFeature ? {...curr, [id]: f.withProps(name, widthM)} : curr;
+        }, t('mapBoundary.pendingSave'));
+    };
+    const deleteSelectedBoundary = () => {
+        if (!selectedBoundary) return;
+        const id = selectedBoundary.id;
+        setSelectedMapItem(null);
+        applyMapChange(removeFeature(id), t('mapBoundary.pendingSave'));
+    };
+
+    // Boundary line tool (editor): finishing adds the line and opens its sheet to name it.
+    const handleBoundaryFinish = useCallback((points: Position[]) => {
+        const feature = new BoundaryLineFeature(newBoundaryLineId(), points);
+        setFeatures((curr) => ({...curr, [feature.id]: feature}));
+        setSelectedMapItem({kind: "boundary", id: feature.id});
+    }, []);
+    const boundaryTool = useBoundaryLineTool({drawRef, mapInstanceRef, onFinish: handleBoundaryFinish});
+    const {cancel: boundaryCancel, start: boundaryStart, drawing: boundaryDrawing, setCursor: setBoundaryCursor} = boundaryTool;
+    const toggleBoundaryLineTool = useCallback(() => {
+        if (boundaryDrawing) {
+            boundaryCancel();
+            return;
+        }
+        pathCancel();
+        setDockPlacementMode(false);
+        setSelectedMapItem(null);
+        boundaryStart();
+    }, [boundaryDrawing, boundaryCancel, boundaryStart, pathCancel]);
+    // Leaving edit mode or arming dock placement abandons an in-progress line.
+    useEffect(() => {
+        if (!editMap || dockPlacementMode) boundaryCancel();
+    }, [editMap, dockPlacementMode, boundaryCancel]);
+    const handleMapDblClick = useCallback((e: {preventDefault: () => void}) => {
+        if (!boundaryDrawing) return;
+        e.preventDefault();
+        boundaryTool.finish();
+    }, [boundaryDrawing, boundaryTool]);
 
     const handleMapClick = useCallback((e: {lngLat: {lng: number; lat: number}; features?: {properties?: Record<string, unknown> | null}[]}) => {
         if (imageryAlign.handleMapClick(e.lngLat.lng, e.lngLat.lat)) return;
+        const pt: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+        const mpp = metresPerPixel(pt[1], mapInstanceRef.current?.getZoom() ?? 20);
+        if (boundaryTool.drawing) {
+            boundaryTool.addVertex(pt, BOUNDARY_VERTEX_MIN_PX * mpp);
+            return;
+        }
+        if (dockPlacementMode) {
+            setDockPlacementMode(false);
+            setFeatures(prev => {
+                const existingDock = prev["dock"];
+                const heading = existingDock instanceof DockFeatureBase ? existingDock.getHeading() : 0;
+                return {...prev, dock: new DockFeatureBase(pt, heading)};
+            });
+            setHasUnsavedChanges(true);
+            setDockDirty(true);
+            return;
+        }
         const tc = e.features?.find((f) => f.properties?.kind === "cluster");
-        if (!dockPlacementMode && !editMap && tc) {
+        if (!editMap && tc) {
             setTerrainSel({area: Number(tc.properties?.area_index), id: Number(tc.properties?.cluster_id)});
             setTerrainCardHidden(false);
             return;
         }
-        if (!dockPlacementMode) {
-            if (editMap || !areaSettings.enabled) return;
-            const pt: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-            const hit = Object.values(features).find((f) =>
-                f instanceof MowingAreaFeature && pointInPolygon(pt, f.geometry.coordinates))
-                ?? Object.values(features).find((f) =>
-                    f instanceof NavigationFeature && pointInPolygon(pt, f.geometry.coordinates));
-            openAreaSettingsForFeature(hit);
+        const hit = hitTestMap(pt, features, (isMobile ? BOUNDARY_HIT_PX.touch : BOUNDARY_HIT_PX.mouse) * mpp);
+        if (editMap) {
+            // Polygons are selected by mapbox-gl-draw; boundary lines are not in
+            // its store, so they open their sheet from here (no draw tool active).
+            if (pathTool.phase === "idle" && drawRef.current?.getMode() === "simple_select") {
+                setSelectedMapItem(hit?.kind === "boundary" ? hit : null);
+            }
             return;
         }
-        setDockPlacementMode(false);
-        const coord: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-        setFeatures(prev => {
-            const existingDock = prev["dock"];
-            const heading = existingDock instanceof DockFeatureBase ? existingDock.getHeading() : 0;
-            return {...prev, dock: new DockFeatureBase(coord, heading)};
-        });
-        setHasUnsavedChanges(true);
-        setDockDirty(true);
-    }, [dockPlacementMode, setHasUnsavedChanges, editMap, areaSettings.enabled, features, openAreaSettingsForFeature, imageryAlign]);
+        // Most specific item first (mapHitTest): a no-go zone never opens its
+        // containing mowing area's sheet.
+        if (hit?.kind === "boundary" || hit?.kind === "nogo") {
+            setSettingsArea(null);
+            setSettingsNavName(null);
+            setSelectedMapItem(hit);
+            return;
+        }
+        if (hit && areaSettings.enabled && openAreaSettingsForFeature(features[hit.id])) return;
+        setSelectedMapItem(null);
+    }, [dockPlacementMode, setHasUnsavedChanges, editMap, areaSettings.enabled, features, openAreaSettingsForFeature,
+        imageryAlign, boundaryTool, isMobile, pathTool.phase]);
 
     // Dock heading panel: rotate the dock marker in place (position kept).
     const handleDockHeadingChange = useCallback((heading: number) => {
@@ -1052,7 +1238,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         setSelectedObstacleId(prev => (prev === id ? prev : id));
         const corridor = e.features?.some(f => f.properties?.feature_type === 'dock-corridor');
         setCorridorHover(corridor && e.lngLat ? {lng: e.lngLat.lng, lat: e.lngLat.lat} : null);
-    }, []);
+        if (boundaryDrawing && e.lngLat) setBoundaryCursor([e.lngLat.lng, e.lngLat.lat]);
+    }, [boundaryDrawing, setBoundaryCursor]);
 
     // Belt-and-suspenders: any time dockDirty flips to true, ensure
     // hasUnsavedChanges is also true so the Save Map button glows. The
@@ -1415,6 +1602,44 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 onDelete={pathTool.remove}
                 mobile={isMobile}
             />
+            <BoundaryLineDrawPanel
+                open={boundaryDrawing}
+                pointCount={boundaryTool.pointCount}
+                canFinish={boundaryTool.canFinish}
+                onUndo={boundaryTool.undoVertex}
+                onFinish={boundaryTool.finish}
+                onCancel={boundaryCancel}
+                mobile={isMobile}
+            />
+            {noGoSheet && (
+                <NoGoZoneSheet
+                    open
+                    title={noGoSheet.title}
+                    areaM2={noGoSheet.areaM2}
+                    source={noGoSheet.source}
+                    pending={noGoSheet.pending}
+                    parentName={noGoSheet.parentName}
+                    onClose={closeMapItemSheet}
+                    onDelete={deleteSelectedNoGo}
+                    onEditVertices={editSelectedNoGoVertices}
+                    onMowArea={areaSettings.enabled && noGoSheet.parent ? () => {
+                        setSelectedMapItem(null);
+                        openAreaSettingsForFeature(noGoSheet.parent);
+                    } : undefined}
+                />
+            )}
+            {selectedBoundary && (
+                <BoundaryLineSheet
+                    open
+                    lineKey={selectedBoundary.id}
+                    name={selectedBoundary.getName()}
+                    fallbackName={boundaryFallbackNames[selectedBoundary.id] ?? t('mapBoundary.sheetTitle')}
+                    widthM={selectedBoundary.getWidthM()}
+                    onApply={applySelectedBoundary}
+                    onDelete={deleteSelectedBoundary}
+                    onClose={closeMapItemSheet}
+                />
+            )}
             <EditAreaModal
                 open={areaModelOpen}
                 area={curMowingAreaFeature}
@@ -1439,9 +1664,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                                          mapStyle={useSatellite ? "mapbox://styles/mapbox/satellite-streets-v12" : "mapbox://styles/mapbox/dark-v11"}
                                                          onLoad={onMapLoad}
                                                          onClick={handleMapClick}
+                                                         onDblClick={handleMapDblClick}
+                                                         doubleClickZoom={!boundaryDrawing}
                                                          interactiveLayerIds={DYN_OBSTACLE_INTERACTIVE_LAYERS}
                                                          onMouseMove={handleMapMouseMove}
-                                                         cursor={dockPlacementMode || imageryAlign.pick ? 'crosshair' : undefined}
+                                                         cursor={dockPlacementMode || imageryAlign.pick || boundaryDrawing ? 'crosshair' : undefined}
                 >
                     {tileUri ? <Source type={"raster"} id={"custom-raster"} tiles={[tileUri]} tileSize={256}/> : null}
                     {tileUri ? <Layer type={"raster"} source={"custom-raster"} id={"custom-layer"}/> : null}
@@ -1468,6 +1695,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         position="top-left"
                         displayControlsDefault={false}
                         editMode={editMap}
+                        selectionLocked={boundaryDrawing}
                         controls={{}}
                         defaultMode="simple_select"
                         onCreate={onCreateWithPath}
@@ -1597,6 +1825,25 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             filter={['==', ['get', 'kind'], 'centerline']}
                             paint={{"line-color": LAYER_COLORS.dockHeading, "line-width": 2, "line-opacity": 0.9, "line-dasharray": [3, 2]}}/>
                     </Source>
+                    {/* Boundary lines (virtual walls): red dashed line + name along it. */}
+                    <Source type={"geojson"} id={"boundary-lines"} data={boundaryLinesCollection}>
+                        <Layer type={"line"} id={"boundary-line"}
+                            layout={{'line-join': 'round'}}
+                            paint={{'line-color': BOUNDARY_LINE_COLOR, 'line-width': 3, 'line-dasharray': [2, 1.5]}}/>
+                        <Layer type={"symbol"} id={"boundary-line-label"}
+                            layout={{'symbol-placement': 'line-center', 'text-field': ['get', 'label'],
+                                'text-size': 11, 'text-offset': [0, -0.9], 'text-allow-overlap': false}}
+                            paint={{'text-color': BOUNDARY_LINE_COLOR, 'text-halo-color': '#ffffff', 'text-halo-width': 1.5}}/>
+                    </Source>
+                    {/* Boundary line tool live preview: placed vertices + rubber band to the cursor. */}
+                    <Source type={"geojson"} id={"boundary-preview"} data={boundaryTool.previewCollection}>
+                        <Layer type={"line"} id={"boundary-preview-line"}
+                            filter={['==', ['get', 'kind'], 'line']}
+                            paint={{'line-color': BOUNDARY_LINE_COLOR, 'line-width': 3, 'line-opacity': 0.85, 'line-dasharray': [2, 1.5]}}/>
+                        <Layer type={"circle"} id={"boundary-preview-vertex"}
+                            filter={['==', ['get', 'kind'], 'vertex']}
+                            paint={{'circle-radius': 5, 'circle-color': '#ffffff', 'circle-stroke-color': BOUNDARY_LINE_COLOR, 'circle-stroke-width': 2}}/>
+                    </Source>
                     {/* Path tool live preview: buffered corridor + centreline. */}
                     <Source type={"geojson"} id={"path-preview"} data={pathTool.previewCollection}>
                         <Layer type={"fill"} id={"path-preview-fill"}
@@ -1693,6 +1940,18 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     <MapImageMarker key={`robot-img-${!!mowProgressImage}-${!!lidarMapImage}`} id={"robot-image"}
                         src={robotMarker?.src ?? ""} corners={robotMarkerCorners}/>
                     <ImageryAlignMarkers align={imageryAlign} offsetX={offsetX} offsetY={offsetY} datum={datum}/>
+                    {/* Outline of the map item whose sheet is open. Mounted only while
+                        something is selected, so it is added on top of the draw polygons. */}
+                    {selectionCollection && (
+                        <Source type={"geojson"} id={"map-selection"} data={selectionCollection}>
+                            <Layer type={"line"} id={"map-selection-casing"}
+                                layout={{'line-join': 'round', 'line-cap': 'round'}}
+                                paint={{'line-color': '#ffffff', 'line-width': 7, 'line-opacity': 0.9}}/>
+                            <Layer type={"line"} id={"map-selection-line"}
+                                layout={{'line-join': 'round', 'line-cap': 'round'}}
+                                paint={{'line-color': LAYER_COLORS.lidarMiss, 'line-width': 3.5}}/>
+                        </Source>
+                    )}
                 </Map> : <Spinner/>}
                 {hasDriveCamera && (
                     <DrivingCameraPip
@@ -1774,7 +2033,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         />
                     </div>
                 ))}
-                {editMap && !pathTool.editing && features["dock"] instanceof DockFeatureBase && (
+                {editMap && !pathTool.editing && !boundaryDrawing && features["dock"] instanceof DockFeatureBase && (
                     <DockHeadingPanel
                         heading={(features["dock"] as DockFeatureBase).getHeading()}
                         onChange={handleDockHeadingChange}
@@ -1811,6 +2070,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onDrawPathToDock={pathTool.startPathToDock}
                         onEditPath={handleEditPath}
                         editPathEnabled={selectedPath !== null}
+                        onDrawBoundaryLine={toggleBoundaryLineTool}
+                        boundaryDrawing={boundaryDrawing}
                         onConnectDock={pathTool.connectNearestAreaToDock}
                         dockAvailable={pathTool.dockAvailable}
                         onSaveMap={handleSaveMap}
@@ -1860,6 +2121,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onEditPath={handleEditPath}
                         editPathEnabled={selectedPath !== null}
                         pathDrawing={pathTool.drawing}
+                        onDrawBoundaryLine={toggleBoundaryLineTool}
+                        boundaryDrawing={boundaryDrawing}
                         onConnectDock={pathTool.connectNearestAreaToDock}
                         dockAvailable={pathTool.dockAvailable}
                     />
@@ -1949,7 +2212,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         title={settingsNavName ?? settingsArea?.name}
                         areaName={settingsArea?.areaName}
                         disabledHint={settingsNavName !== null ? t('mapPath.notMowedHint') : undefined}
-                        onClose={() => { setSettingsArea(null); setSettingsNavName(null); }}
+                        onClose={() => {
+                            setSettingsArea(null);
+                            setSettingsNavName(null);
+                            setSelectedMapItem((sel) => sel?.kind === "area" || sel?.kind === "nav" ? null : sel);
+                        }}
                     />
                     <StartMowSheet
                         open={startSheet.open}

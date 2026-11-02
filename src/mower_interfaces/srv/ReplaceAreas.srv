@@ -16,11 +16,16 @@
 #                     ('' = keep: settings of an area re-added with the same name, or
 #                     renamed with the same polygon, are carried over; settings of
 #                     areas no longer present are dropped)
+# boundary_lines_json optional (2026-11-02): the WHOLE boundary-line set (virtual walls),
+#                     JSON {"version": 1, "lines": [{"id", "name", "points": [[x, y], ...],
+#                     "width_m"}]} in map metres (mower_map boundary_lines.py), swapped in with
+#                     the areas; '' = keep the stored lines, '{"lines": []}' = remove them all.
 # The existing clear_map / add_area / set_area_channel services keep working.
 mowgli_interfaces/MapArea[] areas
 bool[] is_navigation_area
 string[] channel_json
 string[] settings_json
+string boundary_lines_json
 ---
 bool success
 string message
