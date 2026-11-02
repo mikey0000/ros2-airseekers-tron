@@ -46,6 +46,17 @@ enum class TurnType {
   kPivot,    // pivot in place (straight connector), the pre-turn behaviour
 };
 
+// Row-end turn room (per-area setting `turn_mode`, 2026-11-03, docs/analysis/2026-11-03_turns.md).
+// kPivot keeps the pre-2026-11 behaviour: turns must stay inside the field pulled in by
+// turn_inset (edge layout), so at a row end (which sits ON that inset) nothing but a pivot
+// fits. The others let a swath-to-swath turn use the edge-lap band: base_link stays
+// body_half_width + turn_base_margin inside the line and every body outline corner (front
+// body_front, rear body_rear) at every turn pose at most turn_body_limit outside it (the
+// mission's soft planning limit); the turn type is then kLoop (arc), kReverse (fishtail:
+// Reeds-Shepp with reverse pieces) or kAuto (loop, else fishtail), else a pivot.
+enum class TurnMode { kPivot, kArc, kFishtail, kAuto };
+bool parseTurnMode(const std::string& name, TurnMode* mode);  // "" = pivot
+
 enum class TurnKind { kNone, kPivot, kLoop, kReverseCurve };
 
 struct TurnPose {
@@ -71,6 +82,12 @@ struct RouteOptions {
   // m/s, track 0.40 m (2026-10-20; 0.44 with the old 0.48), |w| <= 0.3). 0 = no clamp.
   double min_drivable_turn_radius = 0.0;
   TurnType turn_type = TurnType::kAuto;
+  TurnMode turn_mode = TurnMode::kPivot;
+  double body_front = 0.60;       // base_link -> nose [m] (mower_common FOOTPRINT)
+  double body_rear = 0.10;
+  double body_half_width = 0.235;
+  double turn_base_margin = 0.05;
+  double turn_body_limit = 0.26;  // soft edge planning limit (path_conditioning body_limit_m)
   // Coverage verification / gap filling (see CoveragePlan::coverage_fraction).
   // fill_gaps: add extra fill passes (ordinary swaths) for uncovered pieces
   // larger than min_gap_area_m2, up to kFillIterations rounds.
@@ -249,6 +266,15 @@ SwathTurn planSwathTurn(const Point2D& from, double from_yaw,
                         const Point2D& to, double to_yaw,
                         double robot_width, double min_turn_radius, TurnType type,
                         const f2c::types::Cells* region);
+
+// The same with the turn_mode body check: base_link inside `base_region`, every body
+// outline corner (route body_* fields) inside `body_region` at every pose (yaw from the
+// pose sequence, a reverse pose faces against its travel). Either may be nullptr.
+SwathTurn planSwathTurnBody(const Point2D& from, double from_yaw,
+                            const Point2D& to, double to_yaw,
+                            double robot_width, double min_turn_radius, TurnType type,
+                            const RouteOptions& route, const f2c::types::Cells* base_region,
+                            const f2c::types::Cells* body_region);
 
 // Forward turn between the end of one swath (pose `from`, heading from_yaw)
 // and the start of the next (pose `to`, heading to_yaw) with the F2C v3

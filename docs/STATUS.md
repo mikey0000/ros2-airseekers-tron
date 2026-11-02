@@ -1096,3 +1096,15 @@ All alerts go through the new `/mower_alerts/notice` (JSON, `mower_alerts/rules.
 * **Recorded-vertex RTK quality**: recordings save `<recording_quality_dir>/<name>.json` with
   fix type + hdop per vertex; `record_require_fixed` warns and flags vertices without RTK fixed
   (the GUI does not colour them yet).
+
+## Row-end turns vs pivot time (2026-11-03, branch ws/turns, sim only)
+
+Pivot share on real_run5 is 27 %. Row-end pivots account for 7 % of moving time, edge-lap
+corners for 4 %, and transit route corners and sub-path starts for 15 %. A small area with
+racetrack rows becomes 16 transits. With a 0.60 m nose and row ends 0.45 m from the line,
+neither forward arcs nor bulb turns fit the 0.26 m body limit, and a pivot is the fastest
+turn that does fit. `mower_coverage_node` param `turn_mode` (pivot | arc | fishtail | auto,
+default pivot) lets swath turns use the edge-lap band, with a body-outline check. A gate
+with auto gives 27 % and regresses d and e, so pivot stays the default. Details and next
+levers (fewer transits on small areas, tangent transit ends):
+docs/analysis/2026-11-03_turns.md.

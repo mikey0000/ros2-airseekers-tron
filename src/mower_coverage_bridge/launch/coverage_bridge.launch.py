@@ -52,6 +52,9 @@ def generate_launch_description():
         # edge margin, default 0.05) inside the recorded line. The former 0.20 left a ~0.19 m
         # band uncut all round (owner: "no gaps"); tracking margin now comes from the edge
         # margin (docs/analysis/2026-10-06_ring_drift.md for the history).
+        DeclareLaunchArgument('turn_mode', default_value='pivot',
+                              description='row-end turn room: pivot | arc | fishtail | auto '
+                                          '(docs/analysis/2026-11-03_turns.md)'),
         DeclareLaunchArgument('border_inset_m', default_value='0.0',
                               description='outer ring centreline pull-back inside the '
                                           'recorded boundary [m]'),
@@ -67,6 +70,7 @@ def generate_launch_description():
                 'boundary_inset_m': ParameterValue(boundary_inset, value_type=float),
                 'min_turn_radius_m': ParameterValue(turn_radius, value_type=float),
                 'border_inset_m': ParameterValue(border_inset, value_type=float),
+                'turn_mode': LaunchConfiguration('turn_mode'),
                 'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time', default='false'), value_type=bool),
             }],
             condition=IfCondition(start_planner),
