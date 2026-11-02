@@ -1513,3 +1513,30 @@ def test_keyframes_final_offset_matches_window_method():
         assert s.est.aligned
         finals[method] = s.est.offset
     assert abs(math.degrees(hl.wrap(finals['window'] - finals['keyframes']))) < 0.5
+
+
+@pytest.mark.parametrize('method', ['window', 'keyframes'])
+def test_drift_rate_frozen_while_parked(method):
+    s = Sim(cog_method=method)
+    s.run(0.3, 0.0, 8.0)
+    assert s.est.aligned
+    s.est.offset_rate = D(0.1)
+    s.run(0.0, 0.0, 6.0)                   # the motion window (5 s) drains
+    off = s.est.offset
+    s.run(0.0, 0.0, 300.0)
+    assert s.est.offset == off
+    assert s.est.offset_rate == D(0.1)      # the estimate is kept
+
+
+@pytest.mark.parametrize('method', ['window', 'keyframes'])
+def test_drift_rate_applied_while_moving_and_capped(method):
+    s = Sim(cog_method=method)
+    s.run(0.3, 0.0, 8.0)
+    s.est.offset_rate = D(0.05)
+    off = s.est.offset
+    s.run(0.3, 0.4, 10.0)                  # turning: no COG update, but moving
+    moved = math.degrees(hl.wrap(s.est.offset - off))
+    assert 0.4 < moved < 0.6
+    s.est.offset_rate = D(0.15)
+    s.run(0.3, 0.4, 60.0)
+    assert math.degrees(hl.wrap(s.est.offset - off)) <= 2.0 + 1e-6

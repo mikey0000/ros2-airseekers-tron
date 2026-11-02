@@ -252,6 +252,12 @@ class AlignParams:
         self.rate_beta = 0.005
         self.max_offset_rate = math.radians(0.15)    # rad/s (ROS param in deg/s); 21c peak 0.08
         self.rate_horizon = 120.0        # s after the last accepted COG update the rate is applied
+        # 2026-11-03 drift freeze: the rate is only integrated while RTK positions show motion
+        # (>= rate_motion_min m over the last rate_motion_window s); parked, the offset is held
+        # (rate estimate kept). Total extrapolation between COG fixes is capped.
+        self.rate_motion_window = 5.0    # s
+        self.rate_motion_min = 0.1       # m
+        self.rate_max_extrapolation = math.radians(2.0)
         # COG measurement method (module doc): 'window' (default) or 'keyframes' (stock
         # firmware HeadingEstimator gating, 2026-11-03; defaults = the vendor Config values,
         # radians, not converted to degrees in the ROS parameters)
@@ -400,6 +406,8 @@ class HeadingEstimator:
         self.offset_rate = 0.0       # rad/s drift of the offset (COG alpha-beta), 0 = fixed
         self._rate_t = None          # last IMU time the rate was integrated
         self._cog_t = None           # time of the last accepted COG blend (rate dt)
+        self._extrapolated = 0.0     # rad integrated from offset_rate since the last COG fix
+        self._motion_xy = []         # (t, x, y) recent RTK positions (drift freeze)
         self.source = SOURCE_NONE
         self.updated_at = None       # time of the last offset update
         self.n_cog = 0
@@ -685,8 +693,20 @@ class HeadingEstimator:
             return
         end = min(now, self._cog_t + self.p.rate_horizon)
         dt = end - prev
-        if 0.0 < dt < 1.0:
-            self.offset = wrap(self.offset + self.offset_rate * dt)
+        if 0.0 < dt < 1.0 and self.moving(now):
+            room = self.p.rate_max_extrapolation - abs(self._extrapolated)
+            step = max(-room, min(room, self.offset_rate * dt)) if room > 0.0 else 0.0
+            self._extrapolated += step
+            self.offset = wrap(self.offset + step)
+
+    def moving(self, now):
+        """RTK displacement over the last rate_motion_window s >= rate_motion_min."""
+        p = self.p
+        pts = [q for q in self._motion_xy if now - q[0] <= p.rate_motion_window]
+        if not pts or self.gps_xy_t is None or now - self.gps_xy_t > max(p.gps_timeout, 1.0):
+            return False
+        x0, y0 = pts[0][1], pts[0][2]
+        return any(math.hypot(x - x0, y - y0) >= p.rate_motion_min for _t, x, y in pts)
 
     def _reset_rate(self):
         self.offset_rate = 0.0
@@ -849,6 +869,8 @@ class HeadingEstimator:
         if self.fix_type is not None and p.min_fix_type <= self.fix_type <= 3 and \
                 self.fix_t is not None and now - self.fix_t <= max(p.gps_timeout, 1.0):
             self.gps_xy, self.gps_xy_t = (x, y), now
+            self._motion_xy = [q for q in self._motion_xy
+                               if now - q[0] <= self.p.rate_motion_window] + [(now, x, y)]
             if self.fix_type == 3:
                 self._gps_recent = (self._gps_recent + [(x, y)])[-p.verify_samples:]
             else:
@@ -1041,6 +1063,7 @@ class HeadingEstimator:
                        % (why, alpha, math.degrees(innov)), res)
 
     def _accepted(self, now, why, res):
+        self._extrapolated = 0.0
         self.source = SOURCE_COG
         self.updated_at = now
         self._mark_fix()
