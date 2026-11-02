@@ -218,7 +218,7 @@ limit, and treats critical as an emergency; the monitor also stops on `/cmd_vel_
   since_fixed_s, dist_since_fixed_m, est_drift_m = 3 cm + 3 %/m wheel (1.5 %/m with VIO) since
   the last confirmed FIXED, capped at 0.5 m while float is fused). Budget 0.3 m -> degraded,
   1.0 m -> lost. `mower_mission` `_loc_hold_tick`: follow/transit stop with the blade off while
-  not ok, resume after 3 s ok, stop in place after 600 s (`loc_*` in mission.yaml).
+  not ok, resume after 3 s ok (`loc_*` in mission.yaml). Graded since 2026-11-03, see below.
 - Live checks needed: both EKFs' CPU on the RK3588, map -> odom behaviour on a real RTK
   fixed/float drive, the drift rates (measure with a float/dropout drive), Nav2 in dual mode.
 
@@ -1067,4 +1067,18 @@ bitrate 0, BSSID/SSID empty). New `WifiStatus.source` field (`iw` | `proc`); log
 sample. The GUI chip tooltip says "Signal only" for `proc`; the Go side decodes by name, no
 change. The 2026-11-02 rule "iw failing past stale_samples = unknown" now applies only to
 those `stale_samples`; after them the /proc signal is reported.
+
+## Graded RTK-loss policy (2026-11-03, unit-tested; RTK-loss sim scenario pending)
+
+Branch `ws/rtk-loss` (REVIEW_2026-11-02 step 7). The monitor's `ok` also needs the ekf_map xy
+sigma <= `loc_sigma_ok_m` 0.15 m. When degraded, both controllers are capped at 0.15 m/s
+through the tilt-caution speed mechanism, and a mow follow finishes its straight swath only
+while est_drift + 0.3 m fits the swath's edge clearance; otherwise it holds. When lost, it
+holds. After 120 s held it retraces up to 3 m of the driven track toward the last RTK-fixed
+pose. After 600 s it goes to MOWING_INCOMPLETE, docks if RTK is fixed
+(`return_home_on_incomplete`), and otherwise stays stopped with the mowIncomplete alert
+(`loc_hold_max_s` is replaced by `loc_lost_dock_s`). A hold never charges the retry or
+no-progress counters. Dock transits and docking are exempt unless lost for more than 60 s.
+Details: docs/localization.md "RTK-loss policy". The sim cannot inject an RTK loss yet, so
+this has only had unit tests and a plain no-regression gate.
 

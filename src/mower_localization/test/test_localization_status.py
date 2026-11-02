@@ -220,3 +220,54 @@ class TestStatusDict:
         d = LocalizationStatus().status(5.0)
         assert d['state'] == 'lost' and d['est_drift_m'] is None
         assert d['ekf_xy_sigma_m'] is None and d['since_fixed_s'] is None
+
+
+class TestSigmaGate:
+    """RTK-loss policy 2026-11-03: ok also needs the fused ekf_map sigma <= loc_sigma_ok_m."""
+
+    def _fixed_with_cov(self, cov, **params):
+        sim = _Sim(**params)
+        sim.fixed()
+        sim.s.on_map_odom(sim.t, cov, cov)
+        return sim
+
+    def test_fixed_with_small_sigma_is_ok(self):
+        sim = self._fixed_with_cov(0.10 ** 2)
+        assert sim.verdict() == ('ok', '')
+
+    def test_fixed_with_large_sigma_is_degraded(self):
+        sim = self._fixed_with_cov(0.20 ** 2)
+        state, reason = sim.verdict()
+        assert state == 'degraded' and 'sigma 0.20' in reason and 'rtk fixed' in reason
+
+    def test_boundary_sigma_is_ok(self):
+        sim = self._fixed_with_cov(0.15 ** 2 - 1e-9)
+        assert sim.verdict()[0] == 'ok'
+
+    def test_non_finite_covariance_is_degraded(self):
+        sim = self._fixed_with_cov(float('nan'))
+        state, reason = sim.verdict()
+        assert state == 'degraded' and 'unavailable' in reason
+
+    def test_gate_off(self):
+        sim = self._fixed_with_cov(1.0, loc_sigma_ok_m=0.0)
+        assert sim.verdict()[0] == 'ok'
+
+    def test_drift_tiers_still_win(self):
+        """Over the lost drift a large sigma still reads lost, not degraded."""
+        sim = _Sim()
+        sim.fixed()
+        sim.drive(FLOAT, 1.0)
+        sim.drive('um960=connected solution=NONE sats=0/30', 40.0)
+        sim.s.on_map_odom(sim.t, 4.0, 4.0)
+        assert sim.verdict()[0] == 'lost'
+
+    def test_sigma_recovers_to_ok(self):
+        sim = self._fixed_with_cov(0.30 ** 2)
+        assert sim.verdict()[0] == 'degraded'
+        sim.tick(FIXED)                     # _Sim.tick feeds cov 0.01 -> sigma 0.1
+        assert sim.verdict()[0] == 'ok'
+
+    def test_status_reports_threshold(self):
+        sim = self._fixed_with_cov(0.01)
+        assert sim.s.status(sim.t)['sigma_ok_m'] == 0.15

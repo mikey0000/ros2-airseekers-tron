@@ -11,6 +11,7 @@ Subscribed (all sampled by one 5 Hz thread through sub_pump, no executor wakes)
 ``/fix_status``              std_msgs/String       um960 solution tokens (RTK class)
 ``/odometry/filtered``       nav_msgs/Odometry     ekf_odom, continuous: distance travelled
 ``/odometry/filtered_map``   nav_msgs/Odometry     ekf_map: freshness + pose covariance
+                                                   (ok needs xy sigma <= loc_sigma_ok_m)
 ``/odometry/vio_gated``      nav_msgs/Odometry     vio_gate output: VIO is being fused
 ``/heading_aligner/status``  std_msgs/String JSON  heading alignment (reported only)
 
@@ -19,7 +20,7 @@ Published
 ``/localization/status``     std_msgs/String JSON, latched, 1 Hz + on state change:
     {state: ok|degraded|lost, reason, rtk: fixed|float|dgps|single|none|stale,
      since_fixed_s, dist_since_fixed_m, est_drift_m, drift_budget_m, lost_drift_m,
-     ekf_xy_sigma_m, vio_active, heading_aligned, heading_source, heading_sigma_deg, ...}
+     ekf_xy_sigma_m, sigma_ok_m, vio_active, heading_aligned, heading_source, heading_sigma_deg, ...}
 """
 
 import json
@@ -84,8 +85,9 @@ class LocalizationMonitor(Node):
         p = self.est.p
         self.get_logger().info(
             'localization_monitor up: budget %.2f m, lost %.2f m, drift %.1f%% wheel / %.1f%% '
-            'VIO -> %s' % (p.drift_budget_m, p.lost_drift_m, 100 * p.drift_rate_wheel,
-                           100 * p.drift_rate_vio, g('status_topic')))
+            'VIO, ok needs ekf sigma <= %.2f m -> %s' % (
+                p.drift_budget_m, p.lost_drift_m, 100 * p.drift_rate_wheel,
+                100 * p.drift_rate_vio, p.loc_sigma_ok_m, g('status_topic')))
 
     # sampled callbacks (run inside _tick under the lock)
     def _on_fix_status(self, msg, t):

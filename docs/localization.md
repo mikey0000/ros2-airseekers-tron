@@ -250,6 +250,43 @@ ros2 topic hz /odometry/gps      # ~10
 ros2 topic info /fix_gated       # QoS reliable/10 on both ends
 ```
 
+## RTK-loss policy (2026-11-03, unit-tested; RTK-loss sim scenario pending)
+
+`localization_monitor` publishes `ok` / `degraded` / `lost` from the drift budget
+(`localization_status_logic.py`: 3 cm + 3 %/m wheel or 1.5 %/m VIO since the last confirmed
+FIXED; degraded above 0.3 m, lost above 1.0 m). `ok` also needs the fused `ekf_map` xy sigma
+(`/odometry/filtered_map` pose covariance) at or below `loc_sigma_ok_m` (0.15 m). A larger
+sigma, or no finite covariance, reads `degraded` whatever the receiver reports, so a FIXED
+flag alone no longer makes `ok`. `loc_sigma_ok_m: 0.0` turns this gate off.
+
+`mower_mission` (`fsm/holds.py`, `_loc_hold_tick`) acts on the status by tier. All
+parameters are in `config/mission.yaml`:
+
+| Tier | What the mission does | Parameters |
+|---|---|---|
+| degraded | Coverage and transit controllers capped at 0.15 m/s, through the same `set_parameters` call as the tilt caution cap (the lower cap wins, and lifting one cap keeps the other). A mow follow finishes the straight swath it is on (plan heading within 20 deg of the current pose's) while `est_drift_m + 0.3 m` is at most that swath's least distance to the area outline and its obstacle holes. It holds at the swath end, as soon as the drift outgrows the clearance, or at once with no drift estimate. Transits, pivots and spin-ups hold at once. | `loc_degraded_speed_mps` 0.15, `loc_degraded_edge_margin_m` 0.3, `loc_degraded_swath_turn_deg` 20 |
+| lost | Hold: stop, blade off, the interrupted goal kept. | |
+| held 120 s, not ok | Retrace the driven track (sampled every 0.1 m since the last `ok` + RTK FIXED pose) back toward that pose, at most 3 m at 0.10 m/s on `/cmd_vel_emergency`, with the stuck guard suppressed. Then wait. Runs once per hold. A return to `ok` stops it. | `loc_lost_retrace_s` 120, `loc_lost_retrace_max_m` 3.0, `loc_lost_retrace_speed_mps` 0.10, `loc_trail_step_m` 0.1 |
+| held 600 s | Resume cursor saved, MOWING_INCOMPLETE. With RTK FIXED (the status is fresh and its `rtk` is `fixed`, for example when only the sigma gate keeps it from `ok`) the robot then docks as `return_home_on_incomplete` says. Without a fix it stays stopped and logs the reason; mower_alerts raises `mowIncomplete` from the state. | `loc_lost_dock_s` 600 (replaces `loc_hold_max_s`) |
+| ok for 3 s | Resume: a follow re-dispatches from its held progress (transit back first after a retrace), a transit re-sends its goal, a dock re-docks. | `loc_resume_s` 3 |
+
+As in MowgliNext, a hold is a guard pause and never charges a budget. The sub-path's
+`transit_fails`, `follow_fails`, `recovery_fails`, `route_plan_fails`, `route_aborts` and
+`detours` are snapshotted when the hold starts and restored when it resumes, and the route
+progress watch restarts.
+
+Dock transits and docking (RETURNING_HOME and the other dock phases: dock route, join,
+docking server) are exempt. Degraded never holds them. Lost holds them only after
+`loc_hold_dock_exempt_max_s` (60 s) of continuous `lost`. Such a hold times out at
+`loc_lost_dock_s`: with RTK FIXED the robot docks again, without it the mission goes to
+NAV_TO_DOCK_FAILED (alert `dockFailed`). `_dock()` ends any localization hold of the
+interrupted mow.
+
+Stock Tron for comparison: wheels-only for 10 s, VIO for 100 m.
+
+Tests: `mower_localization/test/test_localization_status.py::TestSigmaGate`,
+`mower_mission/test/test_loc_hold.py`, `mower_mission/test/test_loc_policy.py`.
+
 ## Caveats and TODOs
 
 - **`robot_localization` is not in the Docker image yet.** Add

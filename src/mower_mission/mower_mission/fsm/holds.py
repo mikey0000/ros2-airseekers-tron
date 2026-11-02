@@ -3,8 +3,8 @@
 
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
-from mower_mission.fsm.common import (ACT_NAV, DOCK_PHASES, SRV_GET_AREA, SRV_SET_CHANNEL,
-    ZeroBurst, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, geo, json, math,
+from mower_mission.fsm.common import (ACT_NAV, DOCK_PHASES, SRV_GET_AREA,
+    SRV_SET_CHANNEL, DriveCmd, SuppressStuckGuard, ZeroBurst, _STILL_V, _STILL_W, _along, _seg_dist, absolute_to_local, geo, json, math,
     subpath_offsets)
 from mower_mission.fsm.hold import Hold
 
@@ -449,7 +449,14 @@ class HoldsMixin:
         elif not self._try_detour(m.start_local, why):
             self._subpath_failed(why)
 
-    # ---- localization hold (2026-10-09): drift budget spent -> stop, blade off ----
+    # ---- localization hold: graded RTK-loss policy (2026-10-09, 2026-11-03) ----
+    # docs/localization.md "RTK-loss policy". degraded: speed cap, finish the straight swath
+    # when the drift fits the edge clearance, else hold; lost: hold; held loc_lost_retrace_s:
+    # retrace the driven track toward the last RTK-fixed pose; held loc_lost_dock_s:
+    # MOWING_INCOMPLETE, dock when fixed, else stay + alert. Never charges a retry budget.
+    _LOC_BUDGETS = ('transit_fails', 'follow_fails', 'recovery_fails', 'route_plan_fails',
+                    'route_aborts', 'detours')
+
     def _loc_view(self):
         """(state, reason) the hold acts on. Fail closed (review 2026-11-02 H3a): a status
         that was received but is older than loc_status_stale_s reads as 'degraded'
@@ -463,58 +470,314 @@ class HoldsMixin:
             return 'degraded', '/localization/status stale %.0f s' % age
         return i.loc_state, i.loc_reason
 
+    def _loc_fixed(self):
+        """A fresh status with the receiver at RTK FIXED."""
+        i = self.inputs
+        return (i.loc_stamp is not None and i.loc_rtk == 'fixed'
+                and self._now - i.loc_stamp <= float(self.p.loc_status_stale_s))
+
+    def _loc_est(self):
+        """Fresh est_drift_m, or None (stale / before the first FIXED)."""
+        i = self.inputs
+        if i.loc_stamp is None or self._now - i.loc_stamp > float(self.p.loc_status_stale_s):
+            return None
+        return i.loc_est_drift
+
+    def _loc_observe(self, state):
+        """Every tick: the 'lost' run timer, the degraded speed cap and the driven track
+        since the last RTK-fixed pose (the retrace path)."""
+        if state == 'lost':
+            if self._loc_lost_since is None:
+                self._loc_lost_since = self._now
+        else:
+            self._loc_lost_since = None
+        want = bool(self.p.loc_hold) and state in ('degraded', 'lost') and \
+            self.phase in ('MOWING', 'TRANSIT') + tuple(DOCK_PHASES)
+        if want != self._loc_capped:
+            self._loc_capped = want
+            if want:
+                self._log('warn', 'localization %s: controller speed capped at %.2f m/s'
+                          % (state, float(self.p.loc_degraded_speed_mps)))
+            else:
+                self._log('info', 'localization speed cap lifted')
+            self._push_speed_caps()
+        pose, d = self.inputs.pose, self._loc
+        if pose is None or (d is not None and d.get('rt') is not None):
+            return
+        xy = (float(pose[0]), float(pose[1]))
+        if state == 'ok' and self._loc_fixed():
+            self._loc_trail = [xy]
+            return
+        tr = self._loc_trail
+        if tr and math.hypot(xy[0] - tr[-1][0], xy[1] - tr[-1][1]) \
+                < float(self.p.loc_trail_step_m):
+            return
+        tr.append(xy)
+        keep, acc = float(self.p.loc_lost_retrace_max_m) + 1.0, 0.0
+        for k in range(len(tr) - 1, 0, -1):
+            acc += math.hypot(tr[k][0] - tr[k - 1][0], tr[k][1] - tr[k - 1][1])
+            if acc > keep:
+                del tr[:k - 1]
+                break
+
+    def _loc_swath_ahead(self):
+        """(end local index, edge clearance m) of the straight swath the follow is on:
+        from the tracked progress while the plan heading stays within
+        loc_degraded_swath_turn_deg; clearance = the least distance of that stretch to the
+        area outline / its obstacle holes. None when the area outline is unknown."""
+        m = self.mission
+        if m is None or not m.subpaths or m.sub_i >= len(m.subpaths):
+            return None
+        area = (m.areas or {}).get(m.area_idx) or {}
+        rings = [r for r in [area.get('outer') or []] + list(area.get('obstacles') or [])
+                 if len(r) >= 3]
+        if not rings or len(rings[0]) < 3 or not (area.get('outer')):
+            return None
+        sp = m.subpaths[m.sub_i]
+        i = self._track_progress()
+        last = min(self._seg_last(), len(sp) - 1)
+        h0, turn = geo.heading_of(sp, i), math.radians(float(self.p.loc_degraded_swath_turn_deg))
+        j = i
+        while j < last and abs(geo.wrap_angle(geo.heading_of(sp, j + 1) - h0)) < turn:
+            j += 1
+        pts = [sp[i]]
+        for k in range(i, j):
+            a, b = sp[k], sp[k + 1]
+            n = max(1, int(math.ceil(geo.dist(a, b) / 0.25)))
+            pts.extend((a[0] + (b[0] - a[0]) * t / n, a[1] + (b[1] - a[1]) * t / n)
+                       for t in range(1, n + 1))
+        pose = self.inputs.pose
+        if pose is not None:
+            pts.append((pose[0], pose[1]))
+        clear = min(geo.distance_to_ring(q, r) for q in pts for r in rings)
+        if not geo.point_in_polygon(pts[0], rings[0]):
+            clear = 0.0
+        return j, clear
+
+    def _loc_swath_continue(self, state):
+        """Degraded during a mow follow: True while the current straight swath may be
+        finished (est_drift + loc_degraded_edge_margin_m <= its edge clearance)."""
+        m = self.mission
+        if state != 'degraded' or m is None or m.step != 'follow' or self.phase != 'MOWING':
+            self._loc_swath = None
+            return False
+        est, margin = self._loc_est(), float(self.p.loc_degraded_edge_margin_m)
+        sw = self._loc_swath
+        if sw is None or sw['sub'] != m.sub_i or sw['area'] != m.area_idx:
+            r = self._loc_swath_ahead()
+            if r is None or est is None or est + margin > r[1] or r[0] <= m.progress_local:
+                self._loc_swath = None
+                return False
+            self._loc_swath = {'sub': m.sub_i, 'area': m.area_idx, 'end': r[0], 'clear': r[1]}
+            self._log('warn', 'localization degraded (drift %.2f m): finishing the current '
+                      'swath at %.2f m/s (edge clearance %.2f m >= drift + %.2f m)'
+                      % (est, float(self.p.loc_degraded_speed_mps), r[1], margin))
+            return True
+        if est is None or est + margin > sw['clear']:
+            self._log('warn', 'localization degraded: drift %s + %.2f m > edge clearance '
+                      '%.2f m: holding' % ('unknown' if est is None else '%.2f m' % est,
+                                           margin, sw['clear']))
+            self._loc_swath = None
+            return False
+        if self._track_progress() >= sw['end']:
+            self._log('warn', 'localization degraded: swath end reached, holding')
+            self._loc_swath = None
+            return False
+        return True
+
+    def _loc_drop(self):
+        """Forget the hold (another guard / command took over); stops a running retrace."""
+        d, self._loc = self._loc, None
+        if d is not None and d.get('rt') is not None:
+            self._fx.append(DriveCmd(0.0, 0.0))
+            self._fx.append(SuppressStuckGuard(False))
+
+    def _loc_hold_valid(self, d):
+        m = self.mission
+        if self.phase != d['phase']:
+            return False
+        if d['ctx'] == 'dock':
+            return self._action is None
+        return m is not None and m.step == 'loc_hold'
+
     def _loc_hold_tick(self):
         """Returns True while the localization hold owns this tick. Reuses the dynamic-
-        obstacle resume path (_dyn_resume), so a held follow re-dispatches from its
-        progress and a held transit re-sends its goal."""
+        obstacle resume path (Hold.resume), so a held follow re-dispatches from its
+        progress, a held transit re-sends its goal and a held dock re-docks."""
         m, d = self.mission, self._loc
         state, reason = self._loc_view()
-        if d is not None and (m is None or self.phase != d['phase'] or m.step != 'loc_hold'):
-            self._loc = None                 # another guard / command took over
+        self._loc_observe(state)
+        if d is not None and not self._loc_hold_valid(d):
+            self._loc_drop()                 # another guard / command took over
             return False
         if d is None:
             if not self.p.loc_hold or state in ('', 'ok'):
+                self._loc_swath = None
                 return False
             ctx = self._dyn_context()
-            if ctx not in ('follow', 'transit'):
+            if ctx is None:
+                return False
+            if ctx == 'dock':
+                lost = self._loc_lost_since
+                if lost is None or self._now - lost <= float(self.p.loc_hold_dock_exempt_max_s):
+                    return False             # dock transit / docking exempt (MowgliNext)
+            elif self._loc_swath_continue(state):
                 return False
             if ctx == 'follow' and m.step == 'follow':
                 m.start_local = self._track_progress()
             self._loc = {'ctx': ctx, 'since': self._now, 'ok_since': None, 'sub': self.sub_state,
-                         'phase': self.phase, 'purpose': self._dock_purpose}
+                         'phase': self.phase, 'purpose': self._dock_purpose, 'rt': None,
+                         'retraced': False,
+                         'budget': None if m is None else
+                         {k: getattr(m, k) for k in self._LOC_BUDGETS}}
             Hold.stop(self, 'localization %s' % state)
-            m.step = 'loc_hold'
+            if ctx != 'dock':
+                m.step = 'loc_hold'
             self._blade_off('localization %s' % state)
             self._log('warn', 'localization %s (%s): stopped, blade off, waiting for RTK fixed'
                       % (state, reason or 'no reason'))
             self._go(self.phase, 'localization %s: holding' % state)
             return True
+        held = self._now - d['since']
         if state == 'ok':
+            if d['rt'] is not None:
+                self._loc_retrace_stop('localization ok')
             if d['ok_since'] is None:
                 d['ok_since'] = self._now
             if self._now - d['ok_since'] >= float(self.p.loc_resume_s):
                 self._loc = None
-                self._log('info', 'localization ok again after %.0f s: resuming'
-                          % (self._now - d['since']))
-                self._dyn_resume(d)
+                self._log('info', 'localization ok again after %.0f s: resuming' % held)
+                self._loc_restore_budgets(d)
+                Hold.resume(self, d)
                 return True
         else:
             d['ok_since'] = None
-        held = self._now - d['since']
-        if held >= float(self.p.loc_hold_max_s):
-            self._loc = None
-            why = 'localization not ok for %.0f s (%s)' % (held, reason or state)
-            self._log('error', '%s: stopping in place' % why)
-            self._interrupt_mission(why)
-            self._cancel_all(why)
-            self._blade_off(why)
-            self._fx.append(ZeroBurst())
-            self._dock_purpose = None
-            self._go_idle(why)
+        if held >= float(self.p.loc_lost_dock_s):
+            self._loc_give_up(d, held, state, reason)
+            return True
+        if d['rt'] is not None:
+            self._loc_retrace_tick(d)
+            return True
+        if state != 'ok' and not d['retraced'] and held >= float(self.p.loc_lost_retrace_s):
+            self._loc_retrace_begin(d)
             return True
         Hold.show_wait(self, 'localization %s: holding (%d s)'
                        % (state or 'unknown', int(held)))
         return True
+
+    def _loc_restore_budgets(self, d):
+        """A localization hold is a guard pause (MowgliNext): whatever the stop cost a
+        retry / no-progress counter is given back, and the route progress watch restarts."""
+        m, b = self.mission, d.get('budget')
+        if m is not None and b:
+            for k, v in b.items():
+                setattr(m, k, v)
+        self._route_watch = None
+
+    def _loc_give_up(self, d, held, state, reason):
+        """Held loc_lost_dock_s: MOWING_INCOMPLETE (resume cursor kept); RTK fixed -> dock
+        (return_home_on_incomplete), else stay stopped (mower_alerts mowIncomplete)."""
+        if d['rt'] is not None:
+            self._loc_retrace_stop('giving up')
+        self._loc = None
+        fixed = self._loc_fixed()
+        why = 'localization not ok for %.0f s (%s)' % (held, reason or state)
+        if d['ctx'] == 'dock':
+            if fixed:
+                self._log('warn', '%s: RTK fixed, docking again' % why)
+                self._dock(d['phase'], d['purpose'], sub=d['sub'])
+            else:
+                self._blade_off(why)
+                self._fx.append(ZeroBurst())
+                self._dock_failed('%s, no RTK fixed: stopped' % why)
+            return
+        m = self.mission
+        left = self._not_mowed_text() if m is not None else ''
+        self._log('error', '%s: %s' % (why, 'RTK fixed, ending the session' if fixed
+                                       else 'no RTK fixed, stopping in place'))
+        self._interrupt_mission(why)
+        self._cancel_all(why)
+        self._blade_off(why)
+        self._fx.append(ZeroBurst())
+        self._dock_purpose = None
+        text = why + ('; ' + left if left else '')
+        self._finish_incomplete(text, stay_reason=None if fixed else
+                                'no RTK fixed (localization %s)' % (state or 'unknown'))
+
+    # ---- lost: retrace the driven track toward the last RTK-fixed pose ----
+    def _loc_retrace_begin(self, d):
+        pose = self.inputs.pose
+        d['retraced'] = True
+        if pose is None:
+            return
+        max_m = float(self.p.loc_lost_retrace_max_m)
+        path, acc, prev = [], 0.0, (float(pose[0]), float(pose[1]))
+        for q in reversed(self._loc_trail):
+            step = math.hypot(q[0] - prev[0], q[1] - prev[1])
+            if step < 0.02:
+                continue
+            if acc + step > max_m:
+                f = (max_m - acc) / step
+                path.append((prev[0] + (q[0] - prev[0]) * f, prev[1] + (q[1] - prev[1]) * f))
+                break
+            acc += step
+            path.append(q)
+            prev = q
+        if not path or max_m <= 0.0:
+            self._log('info', 'localization: no driven track to retrace, waiting in place')
+            return
+        d['rt'] = {'path': path, 'i': 0, 'driven': 0.0, 'last': (float(pose[0]), float(pose[1])),
+                   'best_t': self._now, 'len': geo.path_length(
+                       [(pose[0], pose[1])] + path)}
+        self._fx.append(SuppressStuckGuard(True))
+        self._log('warn', 'localization not ok for %.0f s: retracing %.2f m of the driven track '
+                  'toward the last RTK-fixed pose at %.2f m/s'
+                  % (self._now - d['since'], d['rt']['len'],
+                     float(self.p.loc_lost_retrace_speed_mps)))
+        self._go(self.phase, 'localization lost: retracing toward the last fix')
+
+    def _loc_retrace_stop(self, why):
+        d = self._loc
+        rt = d['rt']
+        d['rt'] = None
+        self._fx.append(DriveCmd(0.0, 0.0))
+        self._fx.append(SuppressStuckGuard(False))
+        self._log('info', 'localization retrace ended after %.2f m (%s): waiting'
+                  % (rt['driven'], why))
+
+    def _loc_retrace_tick(self, d):
+        rt, pose = d['rt'], self.inputs.pose
+        if pose is None:
+            self._loc_retrace_stop('no pose')
+            return
+        step = math.hypot(pose[0] - rt['last'][0], pose[1] - rt['last'][1])
+        if step > 0.005:
+            rt['driven'] += step
+            rt['best_t'] = self._now
+            rt['last'] = (float(pose[0]), float(pose[1]))
+        path, la = rt['path'], 0.3
+        while rt['i'] < len(path) - 1 and math.hypot(path[rt['i']][0] - pose[0],
+                                                    path[rt['i']][1] - pose[1]) < la:
+            rt['i'] += 1
+        end = path[-1]
+        if rt['driven'] >= float(self.p.loc_lost_retrace_max_m) or \
+                math.hypot(end[0] - pose[0], end[1] - pose[1]) < 0.1:
+            self._loc_retrace_stop('track end' if rt['driven'] < float(
+                self.p.loc_lost_retrace_max_m) else 'loc_lost_retrace_max_m')
+            return
+        if self._now - rt['best_t'] > 10.0:
+            self._loc_retrace_stop('no progress for 10 s')
+            return
+        tx, ty = path[rt['i']]
+        dx, dy = tx - pose[0], ty - pose[1]
+        c, s = math.cos(pose[2]), math.sin(pose[2])
+        xr, yr = c * dx + s * dy, -s * dx + c * dy
+        v0 = abs(float(self.p.loc_lost_retrace_speed_mps))
+        v = v0 if xr > 0 else -v0
+        w = max(-0.3, min(0.3, v * 2.0 * yr / max(1e-6, xr * xr + yr * yr)))
+        self._fx.append(DriveCmd(v, w))
+        Hold.show_wait(self, 'localization lost: retracing (%.1f of %.1f m)'
+                       % (rt['driven'], rt['len']))
 
     # ---- static obstacles: blade-off detour to the swath beyond ----------
     def _try_detour(self, cur, why):
