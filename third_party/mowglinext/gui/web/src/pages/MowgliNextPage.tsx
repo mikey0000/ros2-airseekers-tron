@@ -29,7 +29,7 @@ import {GlassCard} from "../concept/components/GlassCard.tsx";
 import {BatteryRing} from "../concept/components/BatteryRing.tsx";
 import {StatusOrb} from "../concept/components/StatusOrb.tsx";
 import {MissionStopControls} from "../components/MissionStopControls.tsx";
-import {attentionTitleKey, isHeadingHint, plainSubState} from "../utils/missionPresentation.ts";
+import {attentionTitleKey, isHeadingHint} from "../utils/missionPresentation.ts";
 import {useNotificationCenter} from "../hooks/useNotificationCenter.tsx";
 import {isLatchedFault} from "../utils/missionStates.ts";
 import {ActionCluster} from "../concept/components/ActionCluster.tsx";
@@ -243,7 +243,6 @@ export const MowgliNextPage = () => {
   // hint) must not read "idle, tap Play": the hero names it and the banner
   // below carries the one action.
   const attentionKey = data.isMoving || data.emergency ? null : attentionTitleKey(data.state, data.subState);
-  const attentionPlain = attentionKey ? plainSubState(data.state, data.subState) : null;
   const headline = attentionKey
     ? <span data-testid="hero-attention" style={{color: isHeadingHint(data.subState) ? 'var(--amber, #FFC861)' : 'var(--rose, #FF6B7A)'}}>{t(attentionKey)}</span>
     : data.isMoving
@@ -264,9 +263,9 @@ export const MowgliNextPage = () => {
         ? <span style={{color: 'var(--rose, #FF6B7A)'}}>{t('mowgliNextPage.emergencyStop')}</span>
         : <>{t('mowgliNextPage.headlineIdlePrefix', {robotName})}<em style={{fontStyle: 'italic', color: 'var(--lime, #7CFFB2)'}}>{t('mowgliNextPage.headlineIdleEmphasis')}</em>{t('mowgliNextPage.headlineIdleSuffix')}</>;
 
+  // The banner inside the hero card carries the reason and the action.
   const subline = attentionKey
-    ? (isHeadingHint(data.subState) ? t('missionText.headingBody')
-      : attentionPlain ? t(attentionPlain.key, attentionPlain.params) : '')
+    ? ''
     : data.isMoving
     ? t('mowgliNextPage.sublineMoving', {gps: data.gpsLabel.toLowerCase(), area: data.currentArea ?? t('mowgliNextPage.activeZone')})
     : data.charging

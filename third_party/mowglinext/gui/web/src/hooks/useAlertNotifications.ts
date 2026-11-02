@@ -96,7 +96,6 @@ export function useAlertNotifications(enabled = true): void {
                 body: a.text || undefined,
                 key: alertNotificationKey(a),
                 source: "alert",
-                href: a.params.map ? undefined : "/#/map",
             });
         });
     }, [enabled]);

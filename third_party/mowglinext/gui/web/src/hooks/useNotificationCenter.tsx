@@ -184,14 +184,14 @@ export function useAutoNotifications(opts: {
         if (opts.state === 'BOUNDARY_EMERGENCY_STOP' && prevStateRef.current !== 'BOUNDARY_EMERGENCY_STOP') {
             push({level: 'error', title: t('notificationCenter.boundaryTitle'),
                   body: t('notificationCenter.boundaryBody'), key: stateNotificationKey('BOUNDARY_EMERGENCY_STOP'),
-                  source: 'state', href: '/#/map'});
+                  source: 'state'});
         }
         const attention = opts.state ? STATE_NOTIFICATIONS[opts.state] : undefined;
         if (attention && prevStateRef.current !== opts.state) {
             const plain = plainSubState(opts.state, subStateRef.current);
             push({level: attention.level, title: t(attention.titleKey),
                   body: plain ? t(plain.key, plain.params) : undefined,
-                  key: stateNotificationKey(opts.state!), source: 'state', href: '/#/map'});
+                  key: stateNotificationKey(opts.state!), source: 'state'});
         }
         prevStateRef.current = opts.state;
     }, [opts.state, push, t]);

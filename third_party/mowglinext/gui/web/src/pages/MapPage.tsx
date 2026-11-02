@@ -2007,7 +2007,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     with "Why stopped?" (and, on a phone, the compact progress bar).
                     Desktop leaves the right 272 px to the areas panel. */}
                 <div style={{position: 'absolute', top: 12, left: isMobile ? 12 : 16, right: isMobile ? 12 : 272,
-                    zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, pointerEvents: 'none'}}>
+                    zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, pointerEvents: 'none',
+                    // Phone: stop above the fixed bottom toolbar (2 rows + nav); the
+                    // terrain card is the one child that shrinks and scrolls.
+                    maxHeight: isMobile ? 'calc(100dvh - 370px)' : 'calc(100% - 150px)'}}>
                     {/* One banner: in view mode the stop / resume controls live inside
                         the status line (compact follow-up row); edit mode keeps only
                         Stop and fault banners, no interrupted card over the map. */}
@@ -2044,6 +2047,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             onDismiss={() => setTerrainCardHidden(true)}
                             style={{pointerEvents: 'auto', alignSelf: isMobile ? 'stretch' : 'center',
                                 width: isMobile ? undefined : 'min(340px, 100%)', maxHeight: isMobile ? '34vh' : '40vh',
+                                flex: '0 1 auto', minHeight: 72,
                                 background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow,
                                 borderRadius: 14, padding: '8px 12px'}}
                         />
