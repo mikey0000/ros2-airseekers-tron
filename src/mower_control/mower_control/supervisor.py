@@ -49,7 +49,7 @@ from std_srvs.srv import Trigger
 from mower_control import crash_record
 from mower_control.blackbox import SnapshotBuffer, dump_bag, make_dump_dir
 from mower_common.sub_pump import SubscriptionPump
-from mower_control.supervisor_logic import DEFAULT_IGNORE, LivenessTracker
+from mower_control.supervisor_logic import DEFAULT_CRITICAL, DEFAULT_IGNORE, LivenessTracker
 
 DEFAULT_TOPICS = [
     '/cmd_vel|geometry_msgs/msg/Twist|20',
@@ -71,7 +71,6 @@ DEFAULT_TOPICS = [
     '/diagnostics|diagnostic_msgs/msg/DiagnosticArray|0',
     '/rosout|rcl_interfaces/msg/Log|0',
 ]
-DEFAULT_CRITICAL = ['/mower_mcu_driver', '/cmd_vel_slew', '/twist_mux', '/behavior_tree_node']
 # mission log lines (from /rosout) that trigger a dump
 DUMP_LOG_PATTERNS = ('docking failed', 'undock failed', 'BOUNDARY_EMERGENCY_STOP')
 EMERGENCY_TOPIC = '/hardware_bridge/emergency'
@@ -108,7 +107,7 @@ class Supervisor(Node):
         super().__init__('supervisor')
         dp = self.declare_parameter
         dp('poll_hz', 1.0)
-        dp('critical_nodes', DEFAULT_CRITICAL)
+        dp('critical_nodes', list(DEFAULT_CRITICAL))
         dp('ignore_nodes', list(DEFAULT_IGNORE))
         dp('adopt_after_s', 10.0)
         dp('down_after_s', 2.5)

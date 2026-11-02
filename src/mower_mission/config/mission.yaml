@@ -6,6 +6,7 @@ behavior_tree_node:
 
     # --- emergency -------------------------------------------------------
     emergency_timeout_s: 2.0          # /hardware_bridge/emergency silence => emergency
+    supervisor_status_timeout_s: 10.0 # /supervisor/status seen, then silent => emergency
 
     # --- battery ---------------------------------------------------------
     battery_low_percent: 20.0         # preflight minimum and low-battery threshold (vendor 20 %)
@@ -62,7 +63,7 @@ behavior_tree_node:
     # Mow follow / transit stop with the blade off while the drift estimate is over budget
     # (RTK float / dropout on wheel + IMU + VIO); resume after RTK fixed brings it back to ok.
     loc_hold: true
-    loc_status_timeout_s: 5.0         # stale / never-seen status: no new hold
+    loc_status_stale_s: 5.0           # received, then silent this long: 'degraded' (hold)
     loc_resume_s: 3.0                 # 'ok' this long before resuming
     loc_hold_max_s: 600.0             # then stop in place (IDLE, resume cursor kept)
     # 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py,

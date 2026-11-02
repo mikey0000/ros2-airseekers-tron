@@ -174,7 +174,7 @@ def test_follow_without_pose_index_progress_is_aborted_and_retried():
 def test_loop_guard_restarts_with_every_new_goal_and_does_not_fire_in_a_hold():
     """Localization hold for 100 s (the follow is cancelled): no loop abort while held; the
     resumed goal gets its own leg_loop_abort_s."""
-    h = Harness()
+    h = Harness(loc_status_stale_s=1e9)          # the status is only fed while held
     mowing(h)
     h.tick(dt=1.0, n=50)
     m = h.mark()

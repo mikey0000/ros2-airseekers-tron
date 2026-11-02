@@ -119,9 +119,17 @@ alone is not enough. Nav2's `nav2_lifecycle_manager` handles the rest. The insta
 | `twist_mux` | `cmd_vel_slew` watchdog (no `/cmd_vel_raw`) | `cmd_vel_slew.py` |
 | `cmd_vel_slew` | **MCU driver zero-on-timeout**: after a non-zero command, 0.5 s of `/cmd_vel` silence (`cmd_vel_timeout`) sends `stop_frames` (3) zero SpeedData frames 0.1 s apart | `mcu_node.py` (`_speed_tick`, docstring "SpeedData TX policy") |
 | the mission | `cmd_vel_slew` motion gate: the latched `/motion_enabled` must be true **and** fresher than 3 s (`MOTION_ENABLE_MAX_AGE`, the mission re-asserts it every 1 s); stale means forced zero and the held command is dropped (`gate_status` "/motion_enabled stale") | `cmd_vel_slew.py` `MotionGate` |
-| `gui_bridge` (publishes `/hardware_bridge/emergency`) | the mission enters EMERGENCY when `/hardware_bridge/emergency` is silent for more than 2 s (`emergency_timeout_s`): blade off, goals cancelled, zero burst, `/motion_enabled` false | `mission_fsm._emergency_cause` |
+| `mcu_node` I/O loop hung or dead (publishes `/hardware_bridge/emergency`, 10 Hz, since 2026-11-03; was gui_bridge, review H1) | the mission enters EMERGENCY when `/hardware_bridge/emergency` is silent for more than 2 s (`emergency_timeout_s`): blade off, goals cancelled, zero burst, `/motion_enabled` false. A gui_bridge or coverage-server crash no longer silences it. | `mower_mcu_driver/safety_relay.py`, `fsm/guards/reactive.py` |
 | `mcu_node` | the host can no longer command anything. The MCU's own heartbeat failsafe is **not characterised yet** (heartbeat period 100 ms confirmed; the firmware timeout is unknown, see `mcu_node.py` "Known gaps"). The mission goes to EMERGENCY through the supervisor (next row), and the respawned driver starts with the cutter off. | open item |
-| a **critical node** (`/mower_mcu_driver`, `/cmd_vel_slew`, `/twist_mux`) vanishes | the supervisor lists it in `critical_down`; the mission treats that as an emergency cause (`node down: …`): EMERGENCY, blade off, cancel, zero burst, motion gate closed. It is not resumed automatically once the node is back. | `mission_node._on_supervisor`, `mission_fsm.Inputs.critical_nodes_down` |
+| a **critical node** (`supervisor_logic.DEFAULT_CRITICAL`: `/mower_mcu_driver`, `/cmd_vel_slew`, `/twist_mux`, `/behavior_tree_node`, and since H3c `/map_server_node`, `/ekf_node`, `/ekf_map`, `/controller_server`, `/mower_docking`, `/gui_bridge`) vanishes | the supervisor lists it in `critical_down`; the mission treats that as an emergency cause (`node down: …`): EMERGENCY, blade off, cancel, zero burst, motion gate closed. It is not resumed automatically once the node is back. | `mission_node._on_supervisor`, `mission_fsm.Inputs.critical_nodes_down` |
+
+| the **supervisor** (review H3b) | `/supervisor/status` (re-sent every 5 s) received once and then silent > `supervisor_status_timeout_s` (10 s): same safe stop, cause `node down: /supervisor`. Never received (no supervisor launched, sim) = not armed. | `fsm/guards/reactive.py` |
+| `localization_monitor` (review H3a) | a `/localization/status` received once and then older than `loc_status_stale_s` (5 s) reads as `degraded`: the localization hold stops a follow/transit with the blade off, and resumes after `loc_resume_s` of fresh `ok`. Was: stale = no hold. | `fsm/holds.py` `_loc_view` |
+
+Nav2 lifecycle PAUSE (activity_gated_lifecycle at docked_idle) leaves the nodes in the graph,
+so it never counts as down. Its bringup watchdog restarts a hung manager and its nodes at
+boot (not while mowing); the restart of `controller_server` then shows as a short
+critical_down (EMERGENCY, then IDLE once it is back), which is the intended signal.
 
 Unit tests in `mower_mission/test/test_mission_fsm.py` cover this:
 `test_critical_node_down_mid_mission_is_a_safe_stop` and

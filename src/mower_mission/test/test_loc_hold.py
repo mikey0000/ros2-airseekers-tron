@@ -82,11 +82,19 @@ def test_ok_and_empty_do_not_hold():
 
 
 # ---- 3, 4: stale / never received / disabled -----------------------------------------------
-def test_stale_status_does_not_hold():
+def test_stale_status_is_degraded():
+    """Review 2026-11-02 H3a: a monitor that stops publishing fails closed."""
     h = Harness()
     mow_follow(h)
-    set_loc(h, 'degraded')
-    h.tick(dt=5.5)                      # older than loc_status_timeout_s (5 s)
+    m = h.mark()
+    set_loc(h, 'ok')
+    h.tick(dt=4.5)                      # still fresh (loc_status_stale_s 5 s): no hold
+    assert h.fsm.mission.step == 'follow' and h.fsm._loc is None
+    h.tick(dt=1.0)                      # 5.5 s old: degraded -> stop, blade off
+    assert h.fsm.mission.step == 'loc_hold' and h.fsm._loc is not None
+    assert h.since(m, f.BladeOff)
+    assert 'stale' in h.fsm.sub_state or 'degraded' in h.fsm.sub_state
+    run(h, 'ok', 4.0)                   # the monitor is back and ok: resumes
     assert h.fsm.mission.step == 'follow' and h.fsm._loc is None
 
 
@@ -217,15 +225,15 @@ def test_docking_is_not_held():
 # ---- 10: param plumbing --------------------------------------------------------------------
 def test_param_defaults_and_yaml_keys():
     p = f.Params()
-    assert (p.loc_hold, p.loc_status_timeout_s, p.loc_resume_s, p.loc_hold_max_s) == \
+    assert (p.loc_hold, p.loc_status_stale_s, p.loc_resume_s, p.loc_hold_max_s) == \
         (True, 5.0, 3.0, 600.0)
     with open(CONFIG) as fh:
         cfg = yaml.safe_load(fh)['behavior_tree_node']['ros__parameters']
     assert cfg['loc_hold'] is True
-    for k, v in (('loc_status_timeout_s', 5.0), ('loc_resume_s', 3.0),
+    for k, v in (('loc_status_stale_s', 5.0), ('loc_resume_s', 3.0),
                  ('loc_hold_max_s', 600.0)):
         assert isinstance(cfg[k], float) and cfg[k] == v, k
     q = f.Params.from_dict({k: cfg[k] for k in
-                            ('loc_hold', 'loc_status_timeout_s', 'loc_resume_s',
+                            ('loc_hold', 'loc_status_stale_s', 'loc_resume_s',
                              'loc_hold_max_s')})
     assert q.loc_hold_max_s == 600.0

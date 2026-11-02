@@ -81,3 +81,25 @@ def test_down_reported_once_per_episode():
     tr.update(0, {'/a'})
     ev = run(tr, 1, 30, set())
     assert len(ev) == 1
+
+
+def test_default_critical_covers_the_mow_dependencies():
+    """Review 2026-11-02 H3c."""
+    from mower_control.supervisor_logic import DEFAULT_CRITICAL
+    assert set(DEFAULT_CRITICAL) >= {
+        '/mower_mcu_driver', '/cmd_vel_slew', '/twist_mux', '/behavior_tree_node',
+        '/map_server_node', '/ekf_node', '/ekf_map', '/controller_server', '/mower_docking',
+        '/gui_bridge'}
+
+
+def test_paused_lifecycle_node_stays_up_and_exit_is_critical():
+    """A Nav2 node PAUSEd at docked_idle (inactive) is still in the graph: not down. Its
+    process exiting is critical_down; ekf_map never launched (single mode) is not."""
+    from mower_control.supervisor_logic import DEFAULT_CRITICAL
+    tr = LivenessTracker(critical=DEFAULT_CRITICAL, now=0.0)
+    alive = [n for n in DEFAULT_CRITICAL if n != '/ekf_map']
+    assert run(tr, 0, 200, alive) == [('down', '/ekf_map', 'never started')]
+    assert tr.critical_down() == []
+    gone = [n for n in alive if n != '/controller_server']
+    run(tr, 201, 205, gone)
+    assert tr.critical_down() == ['/controller_server']

@@ -643,8 +643,9 @@ class MissionNode(Node):
             i.loc_stamp = self._clk.now()
 
     def _on_supervisor(self, msg):
-        """/supervisor/status: a safety-critical dependency (MCU driver, cmd_vel_slew,
-        twist_mux) that vanished from the graph is an emergency cause (safe stop)."""
+        """/supervisor/status: a safety-critical dependency (supervisor_logic.DEFAULT_CRITICAL)
+        that vanished from the graph is an emergency cause (safe stop). The receipt time arms
+        the supervisor_status_timeout_s watchdog (review 2026-11-02 H3b)."""
         try:
             st = json.loads(msg.data)
             down = [str(n) for n in st.get('critical_down', [])
@@ -653,6 +654,7 @@ class MissionNode(Node):
             return
         with self._lock:
             self.fsm.inputs.critical_nodes_down = ', '.join(sorted(down))
+            self.fsm.inputs.supervisor_stamp = self._clk.now()
 
     def _on_tilt(self, msg):
         """/tilt/status JSON (tilt_logic.TiltBands.status); the receipt time is the

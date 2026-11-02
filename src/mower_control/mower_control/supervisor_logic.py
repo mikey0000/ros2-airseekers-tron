@@ -16,6 +16,16 @@ set of fully qualified names to :meth:`LivenessTracker.update`:
 
 import fnmatch
 
+# Nodes whose loss the mission treats as an emergency cause (critical_down). Review 2026-11-02
+# H3c widened it from the command chain to everything a mow depends on: map_server (boundary
+# guard), both EKFs (pose), controller_server (path following), docking, gui_bridge. All of
+# these stay in the ROS graph while intentionally idle (Nav2 lifecycle PAUSE at docked_idle,
+# docking/map servers idle), so only a real exit counts; a node never started (e.g. ekf_map
+# with localization_mode:=single, or in the sim) is reported in `down` only.
+DEFAULT_CRITICAL = ('/mower_mcu_driver', '/cmd_vel_slew', '/twist_mux', '/behavior_tree_node',
+                    '/map_server_node', '/ekf_node', '/ekf_map', '/controller_server',
+                    '/mower_docking', '/gui_bridge')
+
 # /rosbag2_recorder is the `ros2 bag record` child of bag_recorder, which stops it on every
 # low/full ring switch and restarts/logs real exits itself; tracking it here only produced
 # false node_down blackboxes.

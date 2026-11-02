@@ -23,6 +23,10 @@ class ReactiveGuardsMixin:
             causes.append('stop button')
         if i.critical_nodes_down:
             causes.append('node down: %s' % i.critical_nodes_down)
+        # review 2026-11-02 H3b: a silent supervisor is a node down (armed on the first msg)
+        sup_t, sup_max = i.supervisor_stamp, float(self.p.supervisor_status_timeout_s)
+        if sup_t is not None and sup_max > 0.0 and self._now - sup_t > sup_max:
+            causes.append('node down: /supervisor (status silent > %.0fs)' % sup_max)
         if self._tilt_band() == 'critical':
             causes.append('tilt critical (%s)' % self._tilt_text())
         # Silence watchdog armed only after the first Emergency message (field 2026-10-21

@@ -1061,6 +1061,28 @@ def test_critical_node_down_mid_mission_is_a_safe_stop():
     assert not h.fsm.motion_enabled()
 
 
+def test_stale_supervisor_status_is_a_node_down():
+    """Review 2026-11-02 H3b: /supervisor/status seen once, then silent > 10 s: the same
+    safe stop as critical_down; never seen (no supervisor launched): no effect."""
+    h = Harness()
+    start_until_planning(h)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick(dt=1.0, n=15)
+    assert h.fsm.motion_enabled()                 # supervisor_stamp None: not armed
+    h.fsm.inputs.supervisor_stamp = h.t
+    h.tick(dt=1.0, n=9)
+    assert h.fsm.motion_enabled()
+    m = h.mark()
+    h.tick(dt=1.5)                                # 10.5 s since the last status
+    assert h.name == 'EMERGENCY' and not h.blade
+    assert 'node down: /supervisor' in h.fsm.sub_state
+    assert h.since(m, f.CancelActions) and h.since(m, f.ZeroBurst) and h.since(m, f.BladeOff)
+    h.fsm.inputs.supervisor_stamp = h.t           # supervisor respawned
+    h.tick(n=5)
+    assert h.name == 'IDLE' and h.fsm.cursor.available
+
+
 def test_critical_node_down_refuses_start():
     h = Harness()
     h.fsm.inputs.critical_nodes_down = '/mower_mcu_driver'
