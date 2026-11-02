@@ -3,8 +3,9 @@
 
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
-from mower_mission.fsm.common import (PublishTrajectory, SRV_ADD_AREA, SRV_GET_AREA,
-    SRV_PROMOTE_OBSTACLE, STATE_AUTONOMOUS, SaveRecordingFallback, geo)  # noqa: F401
+from mower_mission.fsm.common import (FIX_RTK_FIXED, PublishTrajectory, SRV_ADD_AREA,
+    SRV_GET_AREA, SRV_PROMOTE_OBSTACLE, STATE_AUTONOMOUS, SaveRecordingFallback,
+    SaveRecordingQuality, geo)  # noqa: F401
 
 
 class RecordingMixin:
@@ -23,6 +24,7 @@ class RecordingMixin:
         self._leave_current_mode('record %s' % kind)
         self._blade_off('recording')
         self._track = []
+        self._track_q = []               # (fix_type, hdop) per _track sample
         self._record_poly = None
         self._record_line = None
         self._record_kind = kind
@@ -42,6 +44,7 @@ class RecordingMixin:
         if self._track and geo.dist(self._track[-1], pt) < self.p.record_min_spacing_m:
             return
         self._track.append(pt)
+        self._track_q.append((self.inputs.fix_type, self.inputs.hdop))
         self._fx.append(PublishTrajectory(list(self._track)))
 
     def _tick_record(self):
@@ -153,13 +156,39 @@ class RecordingMixin:
                 return i
         return sorted(areas)[0]
 
+    def _record_vertex_quality(self, verts):
+        """[{'x', 'y', 'fix_type', 'hdop', 'fixed'}] for the saved vertices: the quality of
+        the nearest recorded sample (simplification keeps sample points)."""
+        track, q = list(self.__dict__.get('_track') or []), list(
+            self.__dict__.get('_track_q') or [])
+        out = []
+        for v in verts:
+            k = min(range(len(track)), key=lambda j: geo.dist(track[j], v)) if track else None
+            fix, hdop = q[k] if k is not None and k < len(q) else (None, None)
+            out.append({'x': round(float(v[0]), 3), 'y': round(float(v[1]), 3),
+                        'fix_type': fix, 'hdop': None if hdop is None else round(float(hdop), 2),
+                        'fixed': fix is not None and fix >= FIX_RTK_FIXED})
+        return out
+
     def _record_saved(self, ok, failed_service='add_area'):
         poly, self._record_poly = self._record_poly, None
+        verts = self._record_line if self._record_kind == 'path' and self._record_line else poly
+        quality = self._record_vertex_quality(verts) if ok else []
         self._track = []
+        self._track_q = []
         self._fx.append(PublishTrajectory([]))
         if ok:
             self._log('info', '%s "%s" saved (%d vertices)' % (
                 self._record_kind, self._record_name, len(poly)))
+            self._fx.append(SaveRecordingQuality(self._record_name, self._record_kind, quality))
+            bad = sum(1 for v in quality if not v['fixed'])
+            if bad and self.p.record_require_fixed:
+                self._log('warn', '%s "%s": %d of %d vertices recorded without RTK fixed '
+                          '(flagged in the saved quality file): check them in the map'
+                          % (self._record_kind, self._record_name, bad, len(quality)))
+                self._go('RECORDING_COMPLETE', '%s (%d vertices without RTK fixed)'
+                         % (self._record_name, bad))
+                return
             self._go('RECORDING_COMPLETE', self._record_name)
         else:
             self._log('error', '%s failed: polygon kept in a fallback file' % failed_service)

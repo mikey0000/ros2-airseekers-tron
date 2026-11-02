@@ -653,6 +653,8 @@ behavior_tree_node:
     record_path_width_m: 0.7         # CMD_RECORD_PATH (10): band width of a recorded path
     record_path_min_length_m: 1.0
     recording_fallback_dir: ~/.ros/mower_mission/recordings   # polygon kept here if add_area fails
+    record_require_fixed: true        # warn + flag recorded vertices sampled without RTK fixed
+    recording_quality_dir: /ros2_ws/maps/record_quality   # per-vertex fix type / hdop JSON per recording
 
     # --- timeouts ----------------------------------------------------------
     result_display_s: 5.0             # UNDOCK_FAILED / NAV_TO_DOCK_FAILED / RECORDING_COMPLETE shown this long

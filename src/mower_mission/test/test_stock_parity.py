@@ -136,3 +136,50 @@ def test_camera_blocked_ignored_when_idle():
     h.fsm.inputs.camera_blocked = True
     h.tick(n=3)
     assert not controller_caps(h, m)
+
+
+# ---- 6. recorded-vertex RTK quality -------------------------------------
+from test_mission_fsm import drive_rectangle, square  # noqa: E402
+
+
+def record_area(h, float_corner=None):
+    """Drive a 4 x 3 m rectangle; the samples near ``float_corner`` see RTK float."""
+    h.areas = [square(0, 0, 5)]
+    i = h.fsm.inputs
+    i.hdop = 0.6
+    h.cmd(f.CMD_RECORD_AREA)
+    orig = h.tick
+
+    def tick(dt=0.1, n=1):
+        x, y = i.pose[:2]
+        near = float_corner is not None and abs(x - float_corner[0]) < 0.3 \
+            and abs(y - float_corner[1]) < 0.3
+        i.fix_type, i.hdop = (2, 1.8) if near else (3, 0.6)
+        orig(dt, n)
+    h.tick = tick
+    drive_rectangle(h)
+    h.tick = orig
+    m = h.mark()
+    assert h.cmd(f.CMD_RECORD_FINISH)
+    h.answer_services()
+    return m
+
+
+def test_recorded_vertices_carry_fix_type_and_hdop():
+    h = Harness()
+    m = record_area(h)
+    q = h.since(m, f.SaveRecordingQuality)
+    assert len(q) == 1 and q[0].name == 'Area 2' and q[0].kind == 'area'
+    assert len(q[0].vertices) == 4
+    assert all(v['fixed'] and v['fix_type'] == 3 and v['hdop'] == 0.6 for v in q[0].vertices)
+    assert h.name == 'RECORDING_COMPLETE' and h.fsm.sub_state == 'Area 2'
+
+
+def test_float_vertex_is_flagged_and_warned():
+    h = Harness()
+    m = record_area(h, float_corner=(4.0, 3.0))
+    q = h.since(m, f.SaveRecordingQuality)[0]
+    bad = [v for v in q.vertices if not v['fixed']]
+    assert len(bad) == 1 and bad[0]['fix_type'] == 2 and bad[0]['hdop'] == 1.8
+    assert '1 vertices without RTK fixed' in h.fsm.sub_state
+    assert any('without RTK fixed' in e.text for e in h.since(m, f.Log))

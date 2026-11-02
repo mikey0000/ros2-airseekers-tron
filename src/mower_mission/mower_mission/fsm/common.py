@@ -427,6 +427,15 @@ class Notice:
 
 
 @dataclass
+class SaveRecordingQuality:
+    """Per-vertex RTK quality of a saved recording (the node writes a JSON sidecar named
+    after the area / no-go / path in recording_quality_dir for the GUI to colour)."""
+    name: str
+    kind: str                   # area | obstacle | path
+    vertices: list              # [{'x', 'y', 'fix_type', 'hdop', 'fixed'}]
+
+
+@dataclass
 class DriveCmd:
     """Stuck escape: one Twist on /cmd_vel_emergency (highest twist_mux lane)."""
     linear: float = 0.0
@@ -472,6 +481,7 @@ class Inputs:
     # /battery temperature (deg C, mcu_node BatteryInfo.temperature); None = not reported
     battery_temp_c: Optional[float] = None
     fix_type: Optional[int] = None
+    hdop: Optional[float] = None        # /gps/status hdop (recorded-vertex quality)
     gps_quality: float = 0.0            # 0..1 (upstream publishes a fraction)
     pose: Optional[tuple] = None        # (x, y, yaw) in map
     boundary_violation: bool = False
@@ -1247,6 +1257,9 @@ class Params:
     record_max_points: int = 50000
     record_path_width_m: float = 0.7      # default band width of a recorded PATH
     record_path_min_length_m: float = 1.0
+    # recorded vertices carry their RTK fix type + hdop (SaveRecordingQuality sidecar); true =
+    # a vertex sampled without RTK fixed is warned about and flagged 'fixed: false' there
+    record_require_fixed: bool = True
     max_areas: int = 200
     result_display_s: float = 5.0
     service_timeout_s: float = 10.0

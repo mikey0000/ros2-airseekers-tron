@@ -165,6 +165,7 @@ NODE_DEFAULTS = {
     'coverage_resume_path': '~/.ros/mower_mission/coverage_resume.txt',
     'alternate_state_path': '~/.ros/mower_mission/alternate_counts.json',
     'recording_fallback_dir': '~/.ros/mower_mission/recordings',
+    'recording_quality_dir': '~/.ros/mower_mission/record_quality',
     'server_wait_timeout_s': 3.0,
     # Nav2 readiness gate: the activity gate (mower_navigation/activity_gated_lifecycle)
     # PAUSEs the Nav2 lifecycle stack while the robot is idle, so a navigation started
@@ -256,6 +257,7 @@ class MissionNode(Node):
                                        self._p['dock_pose_yaw'])
         self._resume_path = _expand(self._p['coverage_resume_path'])
         self._fallback_dir = _expand(self._p['recording_fallback_dir'])
+        self._quality_dir = _expand(self._p['recording_quality_dir'])
 
         self._lock = threading.RLock()
         self._bumper_on = False
@@ -540,6 +542,21 @@ class MissionNode(Node):
         except OSError as exc:
             self.get_logger().error('cannot save recorded polygon: %s' % exc)
 
+    def _save_quality(self, e):
+        """<recording_quality_dir>/<name>.json: per-vertex RTK fix type / hdop."""
+        try:
+            os.makedirs(self._quality_dir, exist_ok=True)
+            path = os.path.join(self._quality_dir, '%s.json' % e.name.replace(' ', '_'))
+            tmp = path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump({'name': e.name, 'kind': e.kind, 'saved': time.time(),
+                           'require_fixed': bool(self.fsm.p.record_require_fixed),
+                           'not_fixed': sum(1 for v in e.vertices if not v['fixed']),
+                           'vertices': e.vertices}, fh, indent=1)
+            os.replace(tmp, path)
+        except OSError as exc:
+            self.get_logger().warn('cannot save the recording quality file: %s' % exc)
+
     # ------------------------------------------------------------------
     # inputs
     # ------------------------------------------------------------------
@@ -769,6 +786,8 @@ class MissionNode(Node):
     def _on_gnss(self, msg):
         with self._lock:
             self.fsm.inputs.fix_type = int(msg.fix_type)
+            h = float(msg.hdop)
+            self.fsm.inputs.hdop = h if math.isfinite(h) and h > 0.0 else None
             self.fsm.inputs.gps_quality = max(0.0, min(1.0, float(msg.quality_percent) / 100.0))
 
     def _on_odom(self, msg):
@@ -987,6 +1006,8 @@ class MissionNode(Node):
             self._stuck_suppress_pub.publish(Bool(data=bool(e.active)))
         elif isinstance(e, f.ResetStuckGuard):
             self._stuck_reset_pub.publish(Bool(data=True))
+        elif isinstance(e, f.SaveRecordingQuality):
+            self._save_quality(e)
         elif isinstance(e, f.Notice):
             self._notice_pub.publish(String(data=json.dumps(
                 {'incident': e.incident, 'active': e.active, 'text': e.text, 'kind': e.kind,
