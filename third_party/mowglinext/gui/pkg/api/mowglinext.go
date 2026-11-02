@@ -140,6 +140,11 @@ func topicSubscribeInterval(topic string) (int, bool) {
 		"areaSettings", "activeAreaSettings", "dockCorridor", "previewSummary",
 		"terrainSummary",
 		"missionPlan", "missionProgress", "cutterHeight", "rtkBaseStatus",
+		// Header Wi-Fi chip; wifi_monitor publishes at 1 Hz anyway.
+		"wifiStatus",
+		// mower_alerts operator events (JSON). Queued server-side, so the
+		// throttle never applies and every event reaches the bell.
+		"alerts",
 		// Unthrottled: messages alternate between cameras (frame_id), so a
 		// throttle would starve one of them; det_ros caps the rate itself.
 		"detections":

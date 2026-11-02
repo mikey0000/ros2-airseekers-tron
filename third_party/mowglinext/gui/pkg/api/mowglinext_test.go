@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/mowglinext/mowglinext/pkg/msgs/mowgli"
+	"github.com/mowglinext/mowglinext/pkg/providers"
 	"github.com/mowglinext/mowglinext/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -426,6 +427,32 @@ func TestTopicSubscribeInterval_CoversKnownSubscriberRouteTopics(t *testing.T) {
 
 	_, known := topicSubscribeInterval("not_a_real_topic")
 	assert.False(t, known)
+}
+
+// TestTopicSubscribeInterval_CoversProviderTopicMap fails when a topic is
+// added to the provider's topicMap without a browser allowlist entry: the
+// multiplex route would log "ignoring unknown topic" and the widget would
+// silently never receive data (the Wi-Fi chip bug, 2026-11-02).
+func TestTopicSubscribeInterval_CoversProviderTopicMap(t *testing.T) {
+	// Keys deliberately not streamed to the browser over subscribe/multiplex.
+	serverOnly := map[string]bool{
+		"rosout": true, // Logs page reads it through the rosout hub (rosout.go)
+	}
+	for _, topic := range providers.TopicKeys() {
+		if serverOnly[topic] {
+			continue
+		}
+		_, known := topicSubscribeInterval(topic)
+		assert.Truef(t, known, "topicMap key %q is missing from topicSubscribeInterval", topic)
+	}
+}
+
+func TestTopicSubscribeInterval_WifiAndAlertsUnthrottled(t *testing.T) {
+	for _, topic := range []string{"wifiStatus", "alerts"} {
+		interval, known := topicSubscribeInterval(topic)
+		assert.Truef(t, known, "%q must be subscribable from the browser", topic)
+		assert.Equal(t, -1, interval, topic)
+	}
 }
 
 // dialSubscribe opens the test server's dedicated /subscribe/:topic
