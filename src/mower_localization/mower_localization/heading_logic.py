@@ -160,7 +160,7 @@ class AlignParams:
     """Tunables (all angles in degrees in the ROS parameters, radians here)."""
 
     def __init__(self, **kw):
-        self.min_speed = 0.04            # m/s |cmd linear|: GUI joystick drives often sit near 0.05-0.1
+        self.min_speed = 0.03            # m/s (0.04 until 2026-11-02: a 0.04 m/s owner drive sat on the gate) |cmd linear|: GUI joystick drives often sit near 0.05-0.1
                                          # (2026-10-13: an owner drive at 0.05 never aligned under
                                          # 0.06). Accuracy does not depend on speed: the window is
                                          # min_distance (0.6 m) of travel, and RTK fixed noise
@@ -214,6 +214,10 @@ class AlignParams:
         # 2026-11-02 stationary hold: an IMU sample gap longer than this breaks the yaw
         # continuity since the last absolute fix (status imu_continuous false)
         self.imu_gap_max = 1.0           # s
+        # stationary hold of the advertised sigma/quality: while the robot moved less than
+        # this (RTK fixed) since the last fix and the IMU stayed continuous, the age-driven
+        # sigma growth is capped at the 'fair' band (good -> fair at most, never poor)
+        self.hold_move = 0.5             # m (= mission heading_stale_move_m)
         # yaw standard deviations advertised on /imu/data_aligned
         self.sigma_cog = math.radians(3.0)
         self.sigma_rtk = math.radians(3.0)
@@ -255,6 +259,9 @@ class _Window:
         self.imu_span = 0.0
         self.direction = direction
         self.fix_type = fix_type
+
+
+FAIR_SIGMA = math.radians(15.0)     # quality 'fair' upper bound (yaw sigma)
 
 
 class HeadingEstimator:
@@ -323,15 +330,23 @@ class HeadingEstimator:
         if self.offset is None or self.source == SOURCE_NONE:
             return p.sigma_none
         if self.updated_at is not None and self.source in ALIGNED_SOURCES:
-            base += p.drift_rate * max(0.0, now - self.updated_at)
+            grown = base + p.drift_rate * max(0.0, now - self.updated_at)
+            if self.stationary_since_fix():
+                grown = min(grown, max(base, FAIR_SIGMA))
+            base = grown
         return min(base, p.sigma_none)
+
+    def stationary_since_fix(self):
+        """Moved less than hold_move (RTK fixed) since the last absolute fix and the IMU yaw
+        stayed continuous (2026-11-02): the heading does not decay with wall-clock time."""
+        return (self.aligned and self.imu_continuous and self.moved_since_fix is not None
+                and self.moved_since_fix < self.p.hold_move)
 
     def quality(self, now):
         if not self.aligned:
             return 'low' if self.source == SOURCE_FILE else 'none'
         s = self.yaw_sigma(now)
-        return 'good' if s <= math.radians(8.0) else 'fair' if s <= math.radians(15.0) \
-            else 'poor'
+        return 'good' if s <= math.radians(8.0) else 'fair' if s <= FAIR_SIGMA else 'poor'
 
     def status(self, now):
         d = {
@@ -960,6 +975,7 @@ class YawSource:
         self.stale, self.max_dt = stale, max_dt
         self.max_gap = max(max_dt, max_gap)
         self.stale_exit = max(stale, stale_exit)
+        self._active_exit = (self.stale_exit, self.max_gap)
         self.rest_settle, self.rest_window = rest_settle, rest_window
         self.rest_alpha, self.rest_max_rate, self.rest_max_std = (rest_alpha, rest_max_rate,
                                                                    rest_max_std)
@@ -987,6 +1003,16 @@ class YawSource:
         self.gap_max_s = 0.0
         self.gaps_wit = 0             # of those, filled with the WIT rate
         self.dropped = 0              # gaps > max_gap: no increment
+
+    def set_idle(self, idle, stale_exit_idle=5.0):
+        """Idle hysteresis (2026-11-02): while idle the stereo source is left only after
+        ``stale_exit_idle`` s without a sample, and gaps up to that long are bridged (WIT
+        rate) instead of dropped; active restores the constructor values."""
+        if idle:
+            self.stale_exit = max(self._active_exit[0], float(stale_exit_idle))
+            self.max_gap = max(self._active_exit[1], float(stale_exit_idle))
+        else:
+            self.stale_exit, self.max_gap = self._active_exit
 
     # ---- state
     def stereo_fresh(self, now, window=None):

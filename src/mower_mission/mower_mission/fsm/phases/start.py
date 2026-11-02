@@ -82,7 +82,8 @@ class StartMixin:
                                                     i.heading_prior or 'unchecked')
 
     def _heading_cog_held(self):
-        """(age, moved) when an aligned cog heading is older than heading_max_cog_age_s but
+        """(age, moved) when an aligned cog heading is older than heading_max_cog_age_s (or
+        its quality is in heading_reject_quality: the aligner's sigma grows with age) but
         the robot moved less than heading_stale_move_m since the fix and the IMU stayed
         continuous (2026-11-02: heading validity does not decay with wall-clock time while
         stationary); else None. None also when move / continuity are not reported (the age
@@ -92,13 +93,16 @@ class StartMixin:
                 or not i.heading_aligned:
             return None
         age, max_age = i.heading_cog_age, float(p.heading_max_cog_age_s)
-        if not (max_age > 0.0 and age is not None and age > max_age):
+        aged = max_age > 0.0 and age is not None and age > max_age
+        poor = bool(i.heading_quality) and i.heading_quality in [
+            str(q) for q in (p.heading_reject_quality or []) if str(q)]
+        if not (aged or poor):
             return None
         if i.heading_moved_m is None or i.heading_imu_continuous is not True:
             return None
         if i.heading_moved_m >= float(p.heading_stale_move_m):
             return None
-        return age, i.heading_moved_m
+        return (age or 0.0), i.heading_moved_m
 
     def _heading_cog_stale(self):
         """Why an aligned 'cog' heading is too old / too poor to plan a START off the dock on
@@ -111,10 +115,10 @@ class StartMixin:
             return ''
         why = []
         age, max_age = i.heading_cog_age, float(p.heading_max_cog_age_s)
+        if self._heading_cog_held() is not None:
+            # stationary since the fix, IMU continuous: age / quality decayed with time only
+            return ''
         if max_age > 0.0 and age is not None and age > max_age:
-            if self._heading_cog_held() is not None:
-                # stationary since the fix: the quality decayed with the age only
-                return ''
             why.append('%.0f s old' % age)
         reject = [str(q) for q in (p.heading_reject_quality or []) if str(q)]
         if i.heading_quality and i.heading_quality in reject:

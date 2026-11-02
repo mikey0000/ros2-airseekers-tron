@@ -74,8 +74,8 @@ HEADING_ALIGNED_SOURCES = ('dock', 'cog', 'file_verified')
 # Operator text (GUI sub_state); mower_gui_bridge diagnostics.HEADING_HINT says the same.
 # 0.1 m/s leaves margin over heading_aligner min_speed (0.04 m/s, 2026-10-13: a 0.05 m/s
 # joystick drive never aligned under the old 0.06 and the message did not say why).
-HEADING_NOT_ALIGNED = ('heading not aligned: drive straight 1 m at 0.1 m/s or more in manual, '
-                       'or start from the dock')
+HEADING_NOT_ALIGNED = ('heading not aligned: in manual, drive straight 1 m or more without '
+                       'turning at 0.1 m/s or more, or start from the dock')
 
 # MANUAL_MOWING sub_state (the GUI reads the blade state from it)
 SUB_MANUAL_BLADE_ON = 'joystick, blade on'

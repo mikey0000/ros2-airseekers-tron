@@ -1842,8 +1842,8 @@ def test_preflight_refuses_unaligned_heading_away_from_dock(source):
     h.tick()
     assert not h.cmd(f.CMD_START)
     assert h.name == 'IDLE' and h.fsm.sub_state.startswith(
-        'preflight failed: heading not aligned: drive straight 1 m at 0.1 m/s or more in '
-        'manual, or start from the dock (no usable heading prior')
+        'preflight failed: heading not aligned: in manual, drive straight 1 m or more '
+        'without turning at 0.1 m/s or more, or start from the dock (no usable heading prior')
     assert h.fsm.mission is None and not h.since(0, f.StartAction)
 
 
@@ -2007,8 +2007,9 @@ def test_hcal_no_usable_prior_refused_at_preflight(source, prior):
     assert not h.cmd(f.CMD_START)
     assert h.name == 'IDLE' and h.fsm.sub_state.startswith(
         'preflight failed: ' + f.HEADING_NOT_ALIGNED + ' (no usable heading prior')
-    assert f.HEADING_NOT_ALIGNED == ('heading not aligned: drive straight 1 m at 0.1 m/s or '
-                                     'more in manual, or start from the dock')
+    assert f.HEADING_NOT_ALIGNED == ('heading not aligned: in manual, drive straight 1 m or '
+                                     'more without turning at 0.1 m/s or more, or start from '
+                                     'the dock')
     assert not h.since(0, f.StartAction)
 
 
@@ -5304,3 +5305,13 @@ def test_file_yaw_ok_aligned_earlier_no_room_starts_low_quality():
     start_hcal(h)
     assert h.name == 'PLANNING'
     assert not [e for e in h.since(0, f.StartAction) if e.name == f.ACT_DRIVE]
+
+
+def test_poor_quality_but_stationary_cog_starts_without_a_drive():
+    # field 03:10 UTC: 1615 s old, quality poor, offset unchanged, robot parked
+    h = held_harness(age=1615.0, quality='poor', heading_max_cog_age_s=0.0)
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick()
+    assert h.name == 'PLANNING'
+    assert not [e for e in h.since(0, f.StartAction) if e.name in MOVING_ACTIONS]
