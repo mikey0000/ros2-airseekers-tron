@@ -1027,3 +1027,14 @@ keyframe rate term (scaled by gain/alpha) barely moves. Default not flipped: fie
 
 Magnetometer seed experiment removed (revert of 185aab6). The LIS2MDL has a DT node but no ACK on
 I2C on this unit, and the stock firmware never reads it. `docs/HEADING_RECEIVER_2026-11.md` stays.
+
+## Heading drift-rate freeze while parked (2026-11-03, branch ws/drift-freeze, unit + offline replay)
+
+The COG drift-rate term (both `cog_method`s) is now integrated only while RTK positions show
+motion: at least `rate_motion_min` 0.1 m over the last `rate_motion_window` 5 s. When the robot is
+parked the offset holds and the rate estimate is kept. Total extrapolation between COG fixes is
+capped at `rate_max_extrapolation` 2 deg. Replay of 20261102-021049 (robot parked from minute 5):
+the window final offset moved from -45.3 to -39.0 deg and the window-keyframes gap from 10.8 to
+3.7 deg p50. On 20261102-030022, error against the RTK track was p95 2.90 deg for window (3.42
+before) and 1.66 deg for keyframes (2.97 before). Keyframes convergence to within 2 deg of its
+final value went from 106 to 824 s, because the final value moved.
