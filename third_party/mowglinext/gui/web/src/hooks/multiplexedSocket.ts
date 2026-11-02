@@ -31,6 +31,12 @@ export type MultiplexStatus = "connecting" | "open" | "closed";
 
 type StatusListener = (status: MultiplexStatus) => void;
 
+/**
+ * Event topics: every frame is a distinct event (a log line, an alert), not
+ * the latest state, so a late subscriber must not get the previous one again.
+ */
+const EVENT_TOPICS = new Set(["rosout", "alerts", "btLog"]);
+
 /** Minimum interval between "malformed frame" console warnings. */
 const DECODE_WARN_INTERVAL_MS = 10_000;
 
@@ -49,6 +55,13 @@ export class MultiplexedSocket {
     private ws: SocketLike | null = null;
     private state: "idle" | "connecting" | "open" = "idle";
     private listeners = new Map<string, Set<Listener>>();
+    // Last payload per state topic. The server subscribes upstream once per
+    // topic per tab and replays the latched value only on that first
+    // subscribe, so a second component subscribing later (a banner that
+    // mounts on a state change) would otherwise wait for the next message,
+    // forever on a latched topic: the stopped banner said "Start mowing"
+    // while the toolbar, subscribed earlier, said "Resume mowing".
+    private readonly lastPayload = new Map<string, unknown>();
     // Functions that have not yet received their first payload — they get
     // first=true on the next delivery, then are removed.
     private pendingFirst = new WeakSet<Listener>();
@@ -132,6 +145,18 @@ export class MultiplexedSocket {
         } else if (this.state === "open" && isFirstSubscriberForTopic) {
             this.send({op: "subscribe", topic});
         }
+        if (!isFirstSubscriberForTopic && this.lastPayload.has(topic)) {
+            // Async, like a real frame: never call back inside subscribe().
+            queueMicrotask(() => {
+                if (!this.pendingFirst.has(listener) || !this.listeners.get(topic)?.has(listener)) return;
+                this.pendingFirst.delete(listener);
+                try {
+                    listener(this.lastPayload.get(topic), true);
+                } catch (err) {
+                    console.error("MultiplexedSocket: listener threw", err);
+                }
+            });
+        }
 
         return () => this.unsubscribe(topic, listener);
     }
@@ -143,6 +168,7 @@ export class MultiplexedSocket {
         this.pendingFirst.delete(listener);
         if (set.size === 0) {
             this.listeners.delete(topic);
+            this.lastPayload.delete(topic);
             if (this.state === "open") {
                 this.send({op: "unsubscribe", topic});
             }
@@ -207,6 +233,7 @@ export class MultiplexedSocket {
             }
             const set = this.listeners.get(frame.topic);
             if (!set || set.size === 0) return;
+            if (!EVENT_TOPICS.has(frame.topic)) this.lastPayload.set(frame.topic, frame.data);
             // Snapshot listeners so a callback that unsubscribes mid-iteration
             // does not affect the current dispatch.
             const snapshot = Array.from(set);
