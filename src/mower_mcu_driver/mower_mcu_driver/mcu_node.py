@@ -129,7 +129,7 @@ except ImportError:  # pragma: no cover - ros_stubs
 from geometry_msgs.msg import Twist, TwistStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState, Imu
-from std_msgs.msg import Bool, Int16, String
+from std_msgs.msg import Bool, Int16, String, UInt32
 from std_srvs.srv import Empty, Trigger
 
 from mower_mcu_driver.rain import RainDetector
@@ -631,6 +631,10 @@ class McuNode(Node):
         self.declare_parameter('emergency_topic', '/hardware_bridge/emergency')
         self.declare_parameter('emergency_rate_hz', 10.0)
         self.declare_parameter('emergency_stale_s', 1.0)
+        # 2026-11-03 (review H4): /mcu/driver_heartbeat (std_msgs/UInt32 counter) from the I/O
+        # loop; the supervisor counts > 2 s of silence as /mower_mcu_driver DOWN even while
+        # the node is still in the graph (hung loop). <= 0 disables.
+        self.declare_parameter('driver_heartbeat_period', 0.5)
         # BatteryInfo.current: 0.1 A units (vendor PowerManager logs raw*100 as mA), positive
         # while discharging (raw 7 off-dock at rest). BatteryState wants negative = discharge.
         self.declare_parameter('battery_current_scale', -0.1)
@@ -793,6 +797,10 @@ class McuNode(Node):
             self._emergency_pub = self.create_publisher(Emergency, str(param('emergency_topic')),
                                                         10)
         self._emergency_period = 1.0 / max(2.0, float(param('emergency_rate_hz')))
+        self._driver_hb_period = float(param('driver_heartbeat_period'))
+        self._driver_hb_pub = self.create_publisher(UInt32, '/mcu/driver_heartbeat', 10) \
+            if self._driver_hb_period > 0.0 else None
+        self._driver_hb_seq = 0
         self._safety = SafetyRelay(self._publish_emergency, period_s=self._emergency_period,
                                    stale_s=float(param('emergency_stale_s')))
         latched = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
@@ -888,6 +896,8 @@ class McuNode(Node):
             (1.0 / max(odom_rate, 1.0), self._reckon),
             (self._emergency_period, self._safety.tick),
         ]
+        if self._driver_hb_pub is not None:
+            self._periodic.append((self._driver_hb_period, self._driver_heartbeat))
         if float(self.get_parameter('rain_poll_hz').value) > 0.0:
             self._periodic.append((1.0 / float(self.get_parameter('rain_poll_hz').value),
                                    self._rain_tick))
@@ -1669,6 +1679,12 @@ class McuNode(Node):
         s = self._sensor_info or {}
         self._safety.set_inputs(active, bool(s.get('stop')) or self._estop_latched,
                                 bool(s.get('lift')))
+
+    def _driver_heartbeat(self):
+        """I/O-loop liveness for the supervisor (not the MCU link: that is the emergency
+        relay's 'mcu telemetry stale')."""
+        self._driver_hb_seq = (self._driver_hb_seq + 1) & 0xFFFFFFFF
+        self._driver_hb_pub.publish(UInt32(data=self._driver_hb_seq))
 
     def _publish_emergency(self, fields):
         if self._emergency_pub is None:

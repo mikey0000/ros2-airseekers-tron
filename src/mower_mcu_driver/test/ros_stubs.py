@@ -274,6 +274,7 @@ def install():
             self.data = data
 
     _mod('std_msgs.msg').Int16 = Int16
+    _mod('std_msgs.msg').UInt32 = Int16.__class__('UInt32', (), {'__init__': Int16.__init__})
     _mod('std_msgs.msg').String = Bool.__class__('String', (), {'__init__': Bool.__init__})
 
     class _Srv:

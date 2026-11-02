@@ -43,13 +43,14 @@ from rclpy.serialization import deserialize_message
 
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from rcl_interfaces.msg import Log
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, String, UInt32
 from std_srvs.srv import Trigger
 
 from mower_control import crash_record
 from mower_control.blackbox import SnapshotBuffer, dump_bag, make_dump_dir
 from mower_common.sub_pump import SubscriptionPump
-from mower_control.supervisor_logic import DEFAULT_CRITICAL, DEFAULT_IGNORE, LivenessTracker
+from mower_control.supervisor_logic import (DEFAULT_CRITICAL, DEFAULT_HEARTBEATS, DEFAULT_IGNORE,
+                                            HeartbeatWatch, LivenessTracker, parse_heartbeats)
 
 DEFAULT_TOPICS = [
     '/cmd_vel|geometry_msgs/msg/Twist|20',
@@ -109,6 +110,7 @@ class Supervisor(Node):
         dp('poll_hz', 1.0)
         dp('critical_nodes', list(DEFAULT_CRITICAL))
         dp('ignore_nodes', list(DEFAULT_IGNORE))
+        dp('heartbeats', list(DEFAULT_HEARTBEATS))   # node|topic|timeout_s (std_msgs/UInt32)
         dp('adopt_after_s', 10.0)
         dp('down_after_s', 2.5)
         dp('startup_grace_s', 90.0)
@@ -159,6 +161,15 @@ class Supervisor(Node):
                                  raw=True)
         self._pump.start()
 
+        # A node can hang with its graph entry intact (mcu_node's I/O loop): its own
+        # heartbeat topic going silent counts as DOWN too (review 2026-11-02 H4).
+        hb_specs = parse_heartbeats(gp('heartbeats'))
+        self._heartbeats = HeartbeatWatch(hb_specs)
+        for node, topic, _timeout in hb_specs:
+            self.create_subscription(
+                UInt32, topic,
+                lambda _msg, n=node: self._heartbeats.beat(n, time.monotonic()), 10)
+
         self.create_timer(1.0 / max(0.2, float(gp('poll_hz'))), self._poll)
         self.get_logger().info(
             'supervisor: critical=%s, black box %d topics / %.0f s -> %s'
@@ -206,7 +217,7 @@ class Supervisor(Node):
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warn('graph query failed: %s' % exc)
             return
-        events = self._tracker.update(now, names)
+        events = self._tracker.update(now, names, self._heartbeats.stale(now))
         for ev in events:
             if ev[0] == 'down':
                 self._ever_down.add(ev[1])

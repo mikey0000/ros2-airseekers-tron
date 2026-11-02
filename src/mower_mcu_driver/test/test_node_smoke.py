@@ -926,3 +926,49 @@ class ClearEstopFrameTest(unittest.TestCase):
         frames = list(mn.FrameParser().feed(bytes(tx)))
         self.assertEqual([(t, m, len(p)) for (t, m, p) in frames], [(mn.TYPE_ROS_MOWER, mn.MOD_SENSOR, 8)])
         self.assertEqual(frames[0][2], bytes(8))
+
+
+class FakeEmergency:
+    def __init__(self):
+        self.stamp = None
+        self.active_emergency = self.latched_emergency = self.lift_warning = False
+        self.lift_duration_sec = 0.0
+        self.reason = ''
+
+
+@unittest.skipUnless(ros_stubs.is_stubbed(), 'stub-only test (needs ros_stubs internals; real rclpy present)')
+class TestSafetyOutputs(unittest.TestCase):
+    """Review 2026-11-02 H1 / H4: /hardware_bridge/emergency and /mcu/driver_heartbeat come
+    from the I/O loop of this node."""
+
+    def setUp(self):
+        self._saved = mn.Emergency
+        mn.Emergency = FakeEmergency
+        self.node = make_node()
+
+    def tearDown(self):
+        self.node.shutdown()
+        mn.Emergency = self._saved
+
+    def test_io_loop_periods(self):
+        periods = {getattr(fn, '__name__', ''): period for period, fn in self.node._periodic}
+        self.assertAlmostEqual(periods['tick'], 0.1)                 # emergency 10 Hz
+        self.assertAlmostEqual(periods['_driver_heartbeat'], 0.5)
+
+    def test_emergency_fields_follow_the_sensor_frames(self):
+        sensor = dict.fromkeys(mn._SENSOR_NAMES, 0)
+        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SENSOR,
+                           struct.pack(mn.SENSOR_FMT, *sensor.values())))
+        self.node._safety.tick()
+        out = self.node.published['/hardware_bridge/emergency']
+        self.assertFalse(out[-1].active_emergency)
+        sensor['lift'] = 1
+        inject(self.node, (mn.TYPE_MOWER_ROS, mn.MOD_SENSOR,
+                           struct.pack(mn.SENSOR_FMT, *sensor.values())))
+        self.assertTrue(out[-1].active_emergency and out[-1].lift_warning)
+        self.assertIn('lift', out[-1].reason)
+
+    def test_driver_heartbeat_counts(self):
+        self.node._driver_heartbeat()
+        self.node._driver_heartbeat()
+        self.assertEqual([m.data for m in self.node.published['/mcu/driver_heartbeat']], [1, 2])

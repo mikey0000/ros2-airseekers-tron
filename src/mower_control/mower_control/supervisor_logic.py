@@ -59,10 +59,23 @@ class LivenessTracker:
     def _ignored(self, name):
         return any(fnmatch.fnmatch(name, p) for p in self.ignore)
 
-    def update(self, now, present):
-        """Returns a list of events ``('down', name, reason)`` / ``('up', name, downtime_s)``."""
+    def update(self, now, present, stale=None):
+        """Returns a list of events ``('down', name, reason)`` / ``('up', name, downtime_s)``.
+
+        ``stale`` maps node name -> reason for nodes that are still in the graph but whose
+        heartbeat topic went silent (review 2026-11-02 H4: a hung mcu_node keeps its graph
+        entry). They are DOWN at once (the heartbeat timeout is the debounce) and UP again
+        when the heartbeat resumes."""
         events = []
-        present = {self._fq(n) for n in present if not self._ignored(self._fq(n))}
+        stale = {self._fq(n): r for n, r in (stale or {}).items()}
+        present = {self._fq(n) for n in present
+                   if not self._ignored(self._fq(n)) and self._fq(n) not in stale}
+        for name, reason in stale.items():
+            st = self.nodes.get(name)
+            if st is not None and st['adopted'] and st['down_since'] is None:
+                st['down_since'] = now
+                st['reason'] = reason
+                events.append(('down', name, reason))
         for name in present:
             st = self.nodes.get(name)
             if st is None:
@@ -124,3 +137,32 @@ class LivenessTracker:
         return {'ok': not down, 'down': down, 'critical_down': self.critical_down(),
                 'restarts': {n: v['restarts'] for n, v in nodes.items() if v['restarts']},
                 'nodes': nodes}
+
+
+# node|topic|timeout_s: the node's own main loop publishes on topic (review 2026-11-02 H4)
+DEFAULT_HEARTBEATS = ('/mower_mcu_driver|/mcu/driver_heartbeat|2.0',)
+
+
+def parse_heartbeats(specs):
+    out = []
+    for spec in specs:
+        node, topic, timeout = (str(spec).split('|') + ['2.0'])[:3]
+        if node.strip() and topic.strip():
+            out.append((LivenessTracker._fq(node.strip()), topic.strip(), float(timeout)))
+    return out
+
+
+class HeartbeatWatch:
+    """Receipt times of per-node heartbeat topics. Armed by the first message, so a driver
+    build without the topic is never flagged; silent longer than its timeout = stale."""
+
+    def __init__(self, specs):
+        self.timeouts = {node: timeout for node, _topic, timeout in specs}
+        self.last = {}
+
+    def beat(self, node, now):
+        self.last[node] = float(now)
+
+    def stale(self, now):
+        return {node: 'heartbeat silent > %.1f s' % self.timeouts[node]
+                for node, t in self.last.items() if now - t > self.timeouts[node]}
