@@ -15,6 +15,9 @@ map_server_node:
     # boundary lines (virtual walls, 2026-11-02): planner keepout band = width_m + this;
     # 0.57 = 2 x (body half width 0.235 + 0.05), same default as mission.yaml
     boundary_line_keepout_m: 0.57
+    # blade lines (2026-11-03): band = width_m + this; < 0 = 2 x (blade radius + 0.05)
+    # (blade_radius / blade_disc_mm: 0.32 with the 220 mm disc)
+    boundary_line_blade_keepout_m: -1.0
     boundary_line_check: true          # ~/boundary_line_hit (footprint on a line)
     dock_keepout: true          # mowing mask only; never in /nav_keepout_mask
     # 2026-10-09 owner: all routing stays INSIDE the drawn areas and paths. The nav mask is now a

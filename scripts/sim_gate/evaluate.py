@@ -23,7 +23,7 @@ Criteria:
      pose they track (lap 0 on driven arcs, row ends, pivot sweeps are planned out) <= 0.10;
      TRANSIT absolute <= 0.40; the absolute side / nose / sweep maxima are reported.
   b  hard-boundary trips (mission log "BOUNDARY OUT", formerly "HARD BOUNDARY"), boundary-line
-     crossings included ("BOUNDARY OUT: body crosses boundary line <id>", also counted as
+     crossings included ("BOUNDARY OUT: body|blade crosses boundary line <id>", also counted as
      line_trips); PASS: 0.
   c  mission reached MOWING_COMPLETE, then docked and charging (sim contacts); PASS: both.
   d  STUCK_NEEDS_HELP entries, sub-paths NOT mowed, costmap-fallback /navigate_to_pose

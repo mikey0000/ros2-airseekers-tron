@@ -396,7 +396,8 @@ def format_areas_dat(areas: List[Area], datum_lat: float = 0.0, datum_lon: float
             if ln.name:
                 out.append('boundary_line_%d_name: %s\n' % (k, _one_line(ln.name)))
             out.append('boundary_line_%d_points: %s\n' % (k, polygon_to_string(ln.points)))
-            out.append('boundary_line_%d_width_m: %g\n\n' % (k, float(ln.width_m)))
+            out.append('boundary_line_%d_width_m: %g\n' % (k, float(ln.width_m)))
+            out.append('boundary_line_%d_mode: %s\n\n' % (k, ln.mode))
     return ''.join(out)
 
 
@@ -430,8 +431,12 @@ def parse_boundary_lines_dat(text: str) -> Tuple[List[blines.BoundaryLine], int]
             width = float(kv.get(pre + '_width_m', '0') or 0.0)
         except ValueError:
             width = -1.0
+        # version 1 has no _mode key, and a mode this version does not know (a newer
+        # writer) is read as the strictest one: a body line
+        mode = kv.get(pre + '_mode', '').strip() if version >= 2 else ''
         ln = blines.BoundaryLine(kv.get(pre + '_id', '').strip(), pts,
-                                 kv.get(pre + '_name', '').strip(), width)
+                                 kv.get(pre + '_name', '').strip(), width,
+                                 mode if mode in blines.MODES else blines.MODE_BODY)
         if blines.validate([ln])[0]:
             lines.append(ln)
     return blines.assign_ids(lines), version
@@ -757,10 +762,12 @@ def with_dock_nogo(areas: List['Area'], dock: Optional['DockPose'],
 
 
 def with_boundary_lines(areas: List['Area'], lines: Sequence[blines.BoundaryLine],
-                        keepout_m: float = blines.DEFAULT_KEEPOUT_M) -> List['Area']:
+                        keepout_m: float = blines.DEFAULT_KEEPOUT_M,
+                        blade_keepout: float = blines.DEFAULT_BLADE_KEEPOUT_M) -> List['Area']:
     """Boundary lines as planners see them (2026-11-02): every area (mowing or navigation)
     whose polygon a line's thin keepout (``boundary_lines.keepout_polygon``, width
-    ``width_m + keepout_m``) overlaps gets that keepout as an extra obstacle named
+    ``width_m + keepout_m``, blade lines ``width_m + blade_keepout``) overlaps gets that
+    keepout as an extra obstacle named
     ``boundary line <id>``. COPIES, like with_dock_nogo: the stored map never changes and the
     GUI never sees the keepouts (get_mowing_area serves the stored areas). The hard trip is NOT
     built on these polygons but on the true line (mission boundary guard)."""
@@ -769,7 +776,8 @@ def with_boundary_lines(areas: List['Area'], lines: Sequence[blines.BoundaryLine
     out = []
     for a in areas:
         extra = [Obstacle(polygon=k, name=blines.KEEPOUT_NAME_PREFIX + ln.id, source=SOURCE_USER)
-                 for ln, k in blines.keepouts_for_polygon(lines, a.polygon, keepout_m)]
+                 for ln, k in blines.keepouts_for_polygon(lines, a.polygon, keepout_m,
+                                                          blade_keepout)]
         if extra:
             a = Area(**{**a.__dict__, 'obstacles': list(a.obstacles) + extra})
         out.append(a)

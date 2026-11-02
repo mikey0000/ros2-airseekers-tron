@@ -21,19 +21,28 @@ type Map struct {
 	// plain polygon navigation areas. Omitted when the map server does not
 	// serve get_area_channel.
 	NavigationChannels []*AreaChannel `json:"navigation_channels,omitempty"`
-	// Boundary lines (virtual walls): polylines the mower body must never
-	// cross. Omitted when the map server does not serve get_boundary_lines.
+	// Boundary lines (virtual walls): polylines the mower must never cross.
+	// Omitted when the map server does not serve get_boundary_lines.
 	BoundaryLines []BoundaryLine `json:"boundary_lines,omitempty"`
 }
 
 // BoundaryLine is one virtual wall as mower_map stores it (boundary_lines.py):
-// a polyline in map metres with an optional band width (0 = the line itself).
+// a polyline in map metres with an optional band width (0 = the line itself)
+// and a mode: "body" (the body must not cross; "" means body) or "blade"
+// (only the cutting disc must not cross, the body may overhang).
 type BoundaryLine struct {
 	ID     string       `json:"id"`
 	Name   string       `json:"name"`
 	Points [][2]float64 `json:"points"`
 	WidthM float64      `json:"width_m"`
+	Mode   string       `json:"mode,omitempty"`
 }
+
+// Boundary line modes.
+const (
+	BoundaryLineModeBody  = "body"
+	BoundaryLineModeBlade = "blade"
+)
 
 // BoundaryLineSet is the map server's wire format for the whole set.
 type BoundaryLineSet struct {
@@ -46,8 +55,22 @@ type BoundaryLineSet struct {
 const (
 	SetBoundaryLinesService = "/map_server_node/set_boundary_lines"
 	GetBoundaryLinesService = "/map_server_node/get_boundary_lines"
-	BoundaryLinesVersion    = 1
+	// 2 added the per-line mode. A set with body lines only is still sent as
+	// version 1, which every map server reads (a missing mode is a body line).
+	BoundaryLinesVersion     = 2
+	BoundaryLinesVersionBody = 1
 )
+
+// BoundaryLinesWireVersion is the lowest wire version that carries `lines`:
+// 2 when a line is not a body line, else 1.
+func BoundaryLinesWireVersion(lines []BoundaryLine) int {
+	for _, l := range lines {
+		if l.Mode != "" && l.Mode != BoundaryLineModeBody {
+			return BoundaryLinesVersion
+		}
+	}
+	return BoundaryLinesVersionBody
+}
 
 // AreaChannel is the centreline (map metres) + band width of a navigation
 // area drawn with the path tool. The area polygon stays the authoritative

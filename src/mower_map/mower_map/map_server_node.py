@@ -73,9 +73,12 @@ PARAMS = {
     # boundary lines (virtual walls, 2026-11-02, boundary_lines.py): stored in areas.dat,
     # served by ~/get_boundary_lines / ~/set_boundary_lines / replace_areas and latched on
     # ~/boundary_lines. Planners (keepout + nav masks, route graph) see each line as a thin
-    # keepout polygon of width width_m + boundary_line_keepout_m; the hard trip (mission guard)
-    # uses the true line. ~/boundary_line_hit reports a footprint touching a line.
+    # keepout polygon of width width_m + boundary_line_keepout_m (body lines) or width_m +
+    # boundary_line_blade_keepout_m (blade lines, 2026-11-03); the hard trip (mission guard)
+    # uses the true line. ~/boundary_line_hit reports a footprint / blade disc touching a line.
     'boundary_line_keepout_m': blines.DEFAULT_KEEPOUT_M,   # 0.57 = 2 x (0.235 + 0.05)
+    # < 0 = 2 x (blade_radius() + 0.05): 0.32 with the 220 mm disc, 0.43 with the 330 mm one
+    'boundary_line_blade_keepout_m': -1.0,
     'boundary_line_check': True,
     # navigation mask (/nav_keepout_mask; Nav2 global costmap + keepout filter):
     # (mowing U navigation areas) grown by nav_margin_m, minus obstacles grown
@@ -302,6 +305,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         self.pose_time = None
         self.recent_poses = deque()          # (t, x, y, yaw)
         self.blade_offset = None
+        self._blade_rebuild_timer = None     # one-shot rebuild after a blade_disc_mm change
         self.last_boundary_check = 0.0
         self.base_nav = None                 # (spec, nav mask without return corridor)
         self.return_anchor = None            # robot (x, y) the return corridor was built for
@@ -413,7 +417,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         # in map metres (reuses the area-settings service types).
         srv(SetAreaSettings, '~/set_area_channel', self.srv_set_area_channel)
         srv(GetAreaSettings, '~/get_area_channel', self.srv_get_area_channel)
-        # Boundary lines, JSON {"version": 1, "lines": [...]} (boundary_lines.py; area_index
+        # Boundary lines, JSON {"version": 2, "lines": [...]} (boundary_lines.py; area_index
         # is ignored): set replaces the whole set (rebuild + save), get returns it.
         srv(SetAreaSettings, '~/set_boundary_lines', self.srv_set_boundary_lines)
         srv(GetAreaSettings, '~/get_boundary_lines', self.srv_get_boundary_lines)
@@ -577,14 +581,31 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             self.load_terrain()
             self.terrain_dirty = True
         self.nongrass_sync_areas()
-        self.lines_pub.publish(String(data=blines.to_json(self.store.boundary_lines)))
+        # + blade_radius_m: the mission's blade-line band and disc trip use this disc
+        self.lines_pub.publish(String(data=blines.to_json(self.store.boundary_lines,
+                                                          blade_radius_m=self.blade_radius())))
         if replan:
             self.replan_pub.publish(Bool(data=True))
 
     def _areas_with_lines(self, areas):
         """``areas`` plus the boundary-line keepouts (planner view; copies)."""
         return core.with_boundary_lines(areas, self.store.boundary_lines,
-                                        float(self.p('boundary_line_keepout_m')))
+                                        float(self.p('boundary_line_keepout_m')),
+                                        self.boundary_blade_keepout())
+
+    def boundary_blade_keepout(self):
+        """Planner keepout of a blade line: boundary_line_blade_keepout_m, or (< 0) the blade
+        disc radius + 0.05 on each side."""
+        v = float(self.p('boundary_line_blade_keepout_m'))
+        return v if v > 0.0 else blines.blade_keepout_m(self.blade_radius())
+
+    def boundary_geometry(self):
+        """Footprint + blade disc the boundary-line hit test uses (blade offset from TF when
+        resolved, else blade_offset_x / _y)."""
+        bx, by = self.blade_offset if self.blade_offset is not None else (
+            float(self.p('blade_offset_x')), float(self.p('blade_offset_y')))
+        return blines.Geometry(rgeo.FOOTPRINT_FRONT_M, rgeo.FOOTPRINT_REAR_M,
+                               rgeo.FOOTPRINT_HALF_WIDTH_M, self.blade_radius(), bx, by)
 
     def _nav_soft_band(self):
         """nav_soft_band_m, or nav_soft_band_with_paths_m once a drawn user path exists."""
@@ -749,8 +770,8 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                                    'map server (%d): read with the keys it knows'
                                    % (lines_version, blines.VERSION))
         for ln in lines:
-            self.get_logger().info('loaded boundary line %s: %d points, width %.2f m'
-                                   % (ln.label(), len(ln.points), ln.width_m))
+            self.get_logger().info('loaded boundary line %s: %d points, width %.2f m, %s'
+                                   % (ln.label(), len(ln.points), ln.width_m, ln.mode))
         self.sync_settings(before, startup=startup)
         lat, lon = float(self.p('datum_lat')), float(self.p('datum_lon'))
         if datum and (abs(lat) > 1e-9 or abs(lon) > 1e-9) and \
@@ -1219,7 +1240,26 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                 self.get_logger().info('standard path width now %.3f m (%s)'
                                        % (self.settings.robot_defaults['swath_width_m'], upd))
                 self.publish_settings()
+                if 'blade_disc_mm' in upd and any(ln.is_blade for ln in self.store.boundary_lines):
+                    self.schedule_blade_rebuild()
         return SetParametersResult(successful=True)
+
+    def schedule_blade_rebuild(self):
+        """A new blade disc moves the blade-line bands (masks, route graph, the latched
+        blade_radius_m the mission plans with): rebuild once the parameter is applied (this
+        runs from the set-parameters callback, before the new value is visible)."""
+        if self._blade_rebuild_timer is not None:
+            return
+        self._blade_rebuild_timer = self.create_timer(0.2, self._locked(self.on_blade_rebuild))
+
+    def on_blade_rebuild(self):
+        if self._blade_rebuild_timer is not None:
+            self._blade_rebuild_timer.cancel()
+            self.destroy_timer(self._blade_rebuild_timer)
+            self._blade_rebuild_timer = None
+        self.get_logger().info('blade disc changed: blade-line band now %.2f m, rebuilding'
+                               % self.boundary_blade_keepout())
+        self.rebuild()
 
     def load_settings(self):
         try:
@@ -1371,20 +1411,22 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         return res
 
     def check_boundary_lines(self, x, y, yaw):
-        """~/boundary_line_hit: {"hits": [{id, name, depth_m}], "x", "y"} of the lines the
-        footprint touches now ([] = clear). Diagnostic: the mission guard trips on its own
-        check of the same geometry (~/boundary_lines)."""
+        """~/boundary_line_hit: {"hits": [{id, name, mode, depth_m}], "x", "y"} of the lines
+        touched now ([] = clear): the footprint for body lines, the blade disc for blade lines.
+        Diagnostic: the mission guard trips on its own check of the same geometry
+        (~/boundary_lines)."""
         if not self.p('boundary_line_check') or not self.store.boundary_lines:
             return
-        hits = blines.body_hits(self.store.boundary_lines, (x, y, yaw), rgeo.FOOTPRINT_FRONT_M,
-                                rgeo.FOOTPRINT_REAR_M, rgeo.FOOTPRINT_HALF_WIDTH_M)
+        hits = blines.line_hits(self.store.boundary_lines, (x, y, yaw), self.boundary_geometry())
         self.line_hit_pub.publish(String(data=json.dumps({
             'x': round(x, 3), 'y': round(y, 3),
-            'hits': [{'id': ln.id, 'name': ln.name, 'depth_m': round(d, 3)} for d, ln in hits]})))
+            'hits': [{'id': ln.id, 'name': ln.name, 'mode': ln.mode, 'depth_m': round(d, 3)}
+                     for d, ln in hits]})))
         if hits and self.is_cutting():
             d, ln = hits[0]
-            self.get_logger().error('BOUNDARY LINE %s crossed by the body (%.2f m) at '
-                                    '(%.2f, %.2f)' % (ln.label(), d, x, y),
+            self.get_logger().error('BOUNDARY LINE %s crossed by the %s (%.2f m) at '
+                                    '(%.2f, %.2f)' % (ln.label(), 'blade' if ln.is_blade
+                                                      else 'body', d, x, y),
                                     throttle_duration_sec=2.0)
 
     # ------------------------------------------------------------------
@@ -1418,7 +1460,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         params = self.route_params()
         d = self.dock if self.p('dock_corridor_enabled') else None
         key = (core.format_areas_dat(self.store.areas, boundary_lines=self.store.boundary_lines),
-               float(self.p('boundary_line_keepout_m')),
+               float(self.p('boundary_line_keepout_m')), self.boundary_blade_keepout(),
                None if d is None else (d.x, d.y, d.yaw), repr(params),
                bool(self.p('dock_nogo_in_areas')), float(self.p('dock_nogo_margin_m')),
                None if self.dock is None else tuple(map(tuple, self.dock.outline or [])))

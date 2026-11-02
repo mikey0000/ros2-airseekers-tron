@@ -11,6 +11,7 @@ const props = (over: Partial<BoundaryLineSheetProps> = {}): BoundaryLineSheetPro
     name: '',
     fallbackName: 'Boundary line 1',
     widthM: 0,
+    mode: 'body',
     onApply: vi.fn(),
     onDelete: vi.fn(),
     onClose: vi.fn(),
@@ -33,7 +34,7 @@ describe('BoundaryLineSheet', () => {
         await userEvent.clear(width);
         await userEvent.type(width, '0.35');
         await userEvent.click(screen.getByTestId('boundary-apply'));
-        expect(p.onApply).toHaveBeenCalledWith('Pond', 0.35);
+        expect(p.onApply).toHaveBeenCalledWith('Pond', 0.35, 'body');
     });
 
     it('clamps the width to 2 m', async () => {
@@ -43,7 +44,29 @@ describe('BoundaryLineSheet', () => {
         await userEvent.clear(width);
         await userEvent.type(width, '5');
         await userEvent.click(screen.getByTestId('boundary-apply'));
-        expect(p.onApply).toHaveBeenCalledWith('Wall', 2);
+        expect(p.onApply).toHaveBeenCalledWith('Wall', 2, 'body');
+    });
+
+    it('shows both modes with their help, the line\'s mode selected', () => {
+        render(<BoundaryLineSheet {...props({mode: 'blade'})}/>);
+        expect(screen.getByText(en.mapBoundary.modeBodyHelp)).toBeInTheDocument();
+        expect(screen.getByText(en.mapBoundary.modeBladeHelp)).toBeInTheDocument();
+        expect(screen.getByRole('radio', {name: new RegExp(en.mapBoundary.modeBlade)})).toBeChecked();
+        expect(screen.getByRole('radio', {name: new RegExp(`^${en.mapBoundary.modeBody}`)})).not.toBeChecked();
+    });
+
+    it('switches a body line to blade and back; Apply sends the mode', async () => {
+        const p = props({name: 'Roses'});
+        render(<BoundaryLineSheet {...p}/>);
+        const blade = screen.getByRole('radio', {name: new RegExp(en.mapBoundary.modeBlade)});
+        await userEvent.click(blade);
+        expect(blade).toBeChecked();
+        expect(screen.getByTestId('boundary-apply')).toBeEnabled();
+        await userEvent.click(screen.getByRole('radio', {name: new RegExp(`^${en.mapBoundary.modeBody}`)}));
+        expect(screen.getByTestId('boundary-apply')).toBeDisabled();       // back to the stored mode
+        await userEvent.click(blade);
+        await userEvent.click(screen.getByTestId('boundary-apply'));
+        expect(p.onApply).toHaveBeenCalledWith('Roses', 0, 'blade');
     });
 
     it('deletes only after the confirm', async () => {

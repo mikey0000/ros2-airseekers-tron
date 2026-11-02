@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Boundary lines (virtual walls, 2026-11-02) in the mission: the hard boundary guard trips on
 the footprint touching the TRUE line (reason names it) and retraces until the body is clear;
-coverage goals get each line overlapping the area as a thin hole."""
+coverage goals get each line overlapping the area as a thin hole. Blade lines (2026-11-03):
+the blade disc, not the body, trips, and the hole is the disc-sized band."""
 
 import math
 import os
@@ -17,8 +18,8 @@ from test_mission_fsm import Harness, line, plan, square, start_until_planning  
 WALL_X = 1.75     # the robot starts at (1.0, 0) facing east: the nose (+0.60) reaches it at x 1.15
 
 
-def wall(x=WALL_X, lid='bl-1', name='drop-off', width=0.0):
-    return walls.BoundaryLine(lid, [(x, -2.0), (x, 2.0)], name, width)
+def wall(x=WALL_X, lid='bl-1', name='drop-off', width=0.0, mode='body'):
+    return walls.BoundaryLine(lid, [(x, -2.0), (x, 2.0)], name, width, mode)
 
 
 def drive_east(h, x_to, step=0.02):
@@ -111,6 +112,72 @@ def test_area_holes_and_parse():
     assert [ln.id for ln in lines] == ['x']
     assert walls.area_holes(lines, [(5, 5), (6, 5), (6, 6)], 0.3) == []
     assert len(walls.area_holes(lines, [(-1, -1), (2, -1), (2, 1), (-1, 1)], 0.3)) == 1
+
+
+def test_blade_line_trips_when_the_disc_reaches_it_and_retraces_until_the_disc_is_clear():
+    h = transit_h()
+    h.fsm.inputs.boundary_lines = [wall(mode='blade', name='flower bed')]
+    m = h.mark()
+    drive_east(h, 1.6)
+    x = h.fsm.inputs.pose[0]
+    # disc front edge = x + 0.23 + 0.11: past 1.75 first at x 1.42 (the nose was 0.27 across)
+    assert h.fsm._hb is not None and x == 1.42
+    logs = [e.text for e in h.since(m, f.Log)]
+    assert any('BOUNDARY OUT: blade crosses boundary line bl-1 "flower bed" by 0.01 m' in t
+               for t in logs), logs
+    assert h.since(m, f.BladeOff)
+    assert h.fsm._hb['line'] == 'bl-1'
+    run_retrace(h)
+    assert h.fsm._hb is None
+    assert h.fsm.inputs.pose[0] + 0.34 <= WALL_X - 0.02 + 1e-6    # disc clear by body_clear_m
+
+
+def test_blade_line_beside_the_path_lets_the_body_overhang():
+    # line at y 0.15: the body (half width 0.235) overhangs it, the disc (0.11) does not
+    h = transit_h()
+    side = [(0.0, 0.15), (3.0, 0.15)]
+    h.fsm.inputs.boundary_lines = [walls.BoundaryLine('bed', side, '', 0.0, 'blade')]
+    drive_east(h, 1.5)
+    assert h.fsm._hb is None
+    h = transit_h()
+    h.fsm.inputs.boundary_lines = [walls.BoundaryLine('pond', side, '', 0.0, 'body')]
+    drive_east(h, 1.5)
+    assert h.fsm._hb is not None                             # a body line trips at once
+
+
+def test_blade_radius_from_map_server_moves_the_trip():
+    h = transit_h()
+    h.fsm.inputs.boundary_lines = [wall(mode='blade')]
+    h.fsm.inputs.boundary_blade_radius = 0.165               # 330 mm disc: edge 0.395 ahead
+    drive_east(h, 1.6)
+    assert h.fsm._hb is not None and h.fsm.inputs.pose[0] == 1.36
+
+
+def test_coverage_goal_blade_hole_is_disc_sized():
+    def hole_width(lines, radius=None, **params):
+        h = Harness(**params)
+        h.areas = [square(0, 0, 5)]
+        h.fsm.inputs.boundary_lines = lines
+        h.fsm.inputs.boundary_blade_radius = radius
+        start_until_planning(h)
+        return sorted(round(max(p[0] for p in o) - min(p[0] for p in o), 4)
+                      for o in h.goal(f.ACT_PLAN)['obstacles'])
+    bed = walls.BoundaryLine('bed', [(2.5, -1.0), (2.5, 3.5)], '', 0.0, 'blade')
+    pond = walls.BoundaryLine('pond', [(1.0, -1.0), (1.0, 3.5)])
+    assert hole_width([bed, pond]) == [0.32, 0.57]           # 2 x (0.11 + 0.05), body 0.57
+    assert hole_width([bed], 0.165) == [0.43]                # map_server's 330 mm disc
+    assert hole_width([bed], 0.165, boundary_line_blade_keepout_m=0.5) == [0.5]
+
+
+def test_parse_reads_the_mode_and_the_blade_radius():
+    text = ('{"version": 2, "blade_radius_m": 0.165, "lines": ['
+            '{"id": "a", "points": [[0, 0], [1, 0]], "mode": "blade"},'
+            '{"id": "b", "points": [[0, 1], [1, 1]]}]}')
+    assert [(ln.id, ln.mode) for ln in walls.parse(text)] == [('a', 'blade'), ('b', 'body')]
+    assert walls.blade_radius_of(text) == 0.165
+    assert walls.blade_radius_of('{"version": 1, "lines": []}') is None
+    assert walls.blade_keepout() == walls.blade_keepout(None, -1.0) == 0.32
+    assert walls.describe(0.02, walls.parse(text)[0]) == 'blade crosses boundary line a by 0.02 m'
 
 
 # keep the imported helpers referenced (flake8)

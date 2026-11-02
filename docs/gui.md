@@ -151,6 +151,15 @@ Known gaps / notes:
   saves them with the areas (`replace_areas` `boundary_lines_json`, or
   `set_boundary_lines` after the fallback sequence); format and enforcement in
   `docs/STATUS.md` ("Boundary lines").
+* **Body / blade lines (2026-11-03).** The line sheet has a Body / Blade choice with a
+  one-line help each. Body: the mower never crosses (drop-offs, ponds). Blade: only the
+  cutter stays off the line and the mower may overhang (flower beds, paths). Body lines
+  draw red dashed (#ff1744), blade lines orange dotted (#ff9100), each on its own layer
+  because `line-dasharray` is not data-driven. `BoundaryLine.mode` is `"body"` or
+  `"blade"` (absent = body) in the TS types and in the Go `mowgli.BoundaryLine`. The
+  backend sends a set that has only body lines as wire version 1, which every map server
+  reads, and a set with a blade line as version 2. It rejects an unknown mode before
+  calling map_server.
 
 ## Owner-facing states, alerts and layout (UX batch, 2026-11-02)
 

@@ -72,7 +72,9 @@ class NogoMixin:
         if not p.boundary_lines_enabled:
             return []
         return walls.area_holes(self.inputs.boundary_lines, outer,
-                                float(p.boundary_line_keepout_m))
+                                float(p.boundary_line_keepout_m),
+                                walls.blade_keepout(self.inputs.boundary_blade_radius,
+                                                    p.boundary_line_blade_keepout_m))
 
     # ---- tick: re-plan trigger, edge-lap detour ----------------------------
     def _nogo_tick(self):

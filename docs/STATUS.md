@@ -899,6 +899,28 @@ between a wall and the area edge narrower than the body is never used (test). No
 tracking error / leg overshoot at row ends (the trip is the backstop). A line lying
 outside every area is not in the masks (no area to carry it).
 
+**Body / blade mode (2026-11-03, branch `ws/wall-mode`; unit-tested, sim gate pending).**
+Each line now has a `mode`. `"body"` is the default and the behaviour above. `"blade"`
+(flower beds, paths) protects only the cutting disc and lets the body overhang. The trip
+tests the disc against the band: centre 0.23 m ahead of base_link
+(`DECK_CENTRE_X_M`), radius from map_server's `blade_radius()` (0.11 for the 220 mm disc,
+0.165 for the 330 mm one). That radius is latched as `blade_radius_m` on
+`~/boundary_lines`, so the mission uses the same disc. The trip reason is `blade crosses
+boundary line ...`. The planner band is `width_m + 2 x (blade radius + 0.05)` =
+0.32 (220 mm) / 0.43 (330 mm), against 0.57 for body lines. The parameter
+`boundary_line_blade_keepout_m` (-1 = derived from the disc) exists in map_server and in
+the mission, and a `blade_disc_mm` change rebuilds the bands. Wire / areas.dat version 2
+adds `mode` (`boundary_line_<k>_mode`). A v1 set, a missing mode, and an unknown mode in
+areas.dat all read as body. gtest `BoundaryLineBlade` uses the same layouts as
+`BoundaryLineBody`. For both discs the disc stays at least 0.27 m (hard) / 0.37 m (soft)
+off the true line, with the worst point at a lap-corner pivot. Each figure is the same
+for both discs, because the band grows with the radius. The gain is smaller than the band
+suggests. The paths nearest a parallel wall move only 0.125 m closer (blade 0.56 soft /
+0.61 hard from the line, against 0.685 / 0.735 for body lines), so the disc edge still
+cuts no closer than 0.45 / 0.50 m. The rest of the gap is the edge layouts' own
+clearance from holes (soft grows holes by 0.40; hard keeps its laps 0.45 off them). That
+clearance is the lever for a tighter flower-bed edge.
+
 ## Sim gate loop-rate INVALID runs: two causes (2026-11-03, branch ws/sim-rate-race)
 
 From 2026-11-01 evening every gate read a flat 7 Hz sim at `-x 3` (10 Hz at `-x 2`) and

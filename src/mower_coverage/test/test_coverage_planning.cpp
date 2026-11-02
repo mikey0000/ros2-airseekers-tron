@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -1824,10 +1825,13 @@ double bodyLineDist(const Point2D& p, double yaw, const std::vector<Point2D>& li
   return best;
 }
 
-// Worst body-to-line distance along a driven polyline: straight legs every 2 cm at the leg
-// heading (reverse legs: the body faces the other way), pivots at the vertices swept.
-double drivenBodyClearance(const std::vector<Point2D>& pts, const std::vector<bool>& rev,
-                           const std::vector<Point2D>& line, Point2D* where) {
+// What a line keeps off: distance of the body (or the blade disc) at base_link pose (p, yaw).
+using PoseDist = std::function<double(const Point2D&, double)>;
+
+// Worst distance along a driven polyline: straight legs every 2 cm at the leg heading
+// (reverse legs: the body faces the other way), pivots at the vertices swept.
+double drivenClearance(const std::vector<Point2D>& pts, const std::vector<bool>& rev,
+                       const PoseDist& dist, Point2D* where) {
   double worst = std::numeric_limits<double>::max();
   double prev_yaw = std::nan("");
   for (size_t i = 0; i + 1 < pts.size(); ++i) {
@@ -1840,13 +1844,13 @@ double drivenBodyClearance(const std::vector<Point2D>& pts, const std::vector<bo
     if (!std::isnan(prev_yaw)) {
       const double turn = std::remainder(yaw - prev_yaw, 2.0 * M_PI);
       for (int k = 0; k <= 12; ++k) {
-        const double d = bodyLineDist(a, prev_yaw + turn * k / 12.0, line);
+        const double d = dist(a, prev_yaw + turn * k / 12.0);
         if (d < worst) { worst = d; *where = a; }
       }
     }
     for (double t = 0.0; t <= len + 1e-9; t += 0.02) {
       const Point2D q{a.first + (b.first - a.first) * t / len, a.second + (b.second - a.second) * t / len};
-      const double d = bodyLineDist(q, yaw, line);
+      const double d = dist(q, yaw);
       if (d < worst) { worst = d; *where = q; }
     }
     prev_yaw = yaw;
@@ -1858,8 +1862,8 @@ double drivenBodyClearance(const std::vector<Point2D>& pts, const std::vector<bo
 // straight connector from the previous swath is driven only as the bridge joins it
 // (splitter.join_subpaths: gap <= kTransitGap and not through a hole); otherwise it is a
 // blade-off transit (route graph), not part of this check.
-double planBodyClearance(const CoveragePlan& plan, const std::vector<Point2D>& line,
-                         const std::vector<Point2D>& band, std::string* what) {
+double planClearance(const CoveragePlan& plan, const PoseDist& dist,
+                     const std::vector<Point2D>& band, std::string* what) {
   double worst = std::numeric_limits<double>::max();
   Point2D at{0, 0};
   auto take = [&](double d, const std::string& w) {
@@ -1869,7 +1873,7 @@ double planBodyClearance(const CoveragePlan& plan, const std::vector<Point2D>& l
   for (size_t r = 0; r < plan.rings.size(); ++r) {
     auto ring = plan.rings[r];
     if (!ring.empty()) ring.push_back(ring.front());
-    take(drivenBodyClearance(ring, {}, line, &at), "ring " + std::to_string(r));
+    take(drivenClearance(ring, {}, dist, &at), "ring " + std::to_string(r));
   }
   for (size_t i = 0; i < plan.swaths.size(); ++i) {
     std::vector<Point2D> pts;
@@ -1899,9 +1903,16 @@ double planBodyClearance(const CoveragePlan& plan, const std::vector<Point2D>& l
     rev.push_back(false);
     pts.push_back(plan.swaths[i].second);
     rev.push_back(false);
-    take(drivenBodyClearance(pts, rev, line, &at), "swath " + std::to_string(i));
+    take(drivenClearance(pts, rev, dist, &at), "swath " + std::to_string(i));
   }
   return worst;
+}
+
+double planBodyClearance(const CoveragePlan& plan, const std::vector<Point2D>& line,
+                         const std::vector<Point2D>& band, std::string* what) {
+  return planClearance(
+      plan, [&line](const Point2D& p, double yaw) { return bodyLineDist(p, yaw, line); }, band,
+      what);
 }
 
 std::vector<Point2D> lineBand(const std::vector<Point2D>& line, double half) {
@@ -1953,5 +1964,93 @@ TEST(BoundaryLineBody, EdgeLayoutsKeepTheBodyOffTheLine) {
                   kBodyHalf + kBodyMargin) << layout << " " << name;
       }
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Blade boundary lines (2026-11-03, mode "blade": a flower-bed edge, a path): only the cutting
+// disc must stay off the line, the body may overhang. The mission sends the line as a hole of
+// width width_m + 2 x (blade radius + 0.05): 0.32 for the 220 mm disc, 0.43 for the 330 mm
+// one. The swaths are base_link paths; the disc rides 0.23 m AHEAD of base_link (deck centre,
+// mower_common DECK_CENTRE_X_M), so at row ends, lap corners and turns it reaches past the
+// base_link path. The same edge layouts and walls as BoundaryLineBody: the disc (centre 0.23
+// ahead, its radius) stays >= 0.05 m off the true line on every leg, turn and pivot sweep.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr double kDeckX = 0.23, kBladeMargin = 0.05;
+
+double discLineDist(const Point2D& p, double yaw, const std::vector<Point2D>& line,
+                    double radius) {
+  const Point2D c{p.first + kDeckX * std::cos(yaw), p.second + kDeckX * std::sin(yaw)};
+  double best = std::numeric_limits<double>::max();
+  for (size_t i = 0; i + 1 < line.size(); ++i) {
+    best = std::min(best, pointSegDist(c, line[i], line[i + 1]));
+  }
+  return best - radius;
+}
+
+}  // namespace
+
+TEST(BoundaryLineBlade, EdgeLayoutsKeepTheDiscOffTheLine) {
+  const std::vector<std::pair<std::string, std::vector<Point2D>>> walls = {
+      {"parallel", {{-1.0, 0.5}, {11.0, 0.5}}},
+      {"parallel-short", {{2.0, 0.5}, {8.0, 0.5}}},
+      {"perpendicular", {{5.0, -1.0}, {5.0, 4.5}}},
+      {"full-cut", {{5.0, -1.0}, {5.0, 7.0}}},
+  };
+  for (const double radius : {0.11, 0.165}) {          // 220 mm and 330 mm discs
+    const double band = 2.0 * (radius + kBladeMargin);
+    for (const std::string layout : {"soft", "hard"}) {
+      for (const auto& [name, line] : walls) {
+        const std::string tag = layout + " " + name + " r " + std::to_string(radius);
+        const CoveragePlan plan = planLayoutWithLine(layout, line, band);
+        ASSERT_FALSE(plan.swaths.empty()) << tag;
+        std::string what;
+        const double d = planClearance(
+            plan,
+            [&line, radius](const Point2D& p, double yaw) {
+              return discLineDist(p, yaw, line, radius);
+            },
+            lineBand(line, band / 2.0), &what);
+        RecordProperty("blade_" + layout + "_" + name + "_" + std::to_string(radius),
+                       std::to_string(d));
+        EXPECT_GE(d, kBladeMargin) << tag << ": the blade disc comes within " << d
+                                   << " m of the line (" << what << ")";
+        // swath centrelines laterally: blade radius + margin (the disc rides on them)
+        for (const auto& s : plan.swaths) {
+          EXPECT_GE(segSegDist(s.first, s.second, line.front(), line.back()),
+                    radius + kBladeMargin - 1e-9) << tag;
+        }
+      }
+    }
+  }
+}
+
+// The point of the blade mode: a blade line leaves less uncut grass than a body line. The
+// planned paths nearest a wall parallel to the rows (the hole's laps) come closer by the band
+// difference, (0.57 - 0.32) / 2 = 0.125 m with the 220 mm disc. The rest of the gap is the edge
+// layout's own clearance from a hole (hard: laps 0.45 m off it; soft: holes grown by 0.40).
+TEST(BoundaryLineBlade, CutsCloserThanABodyLine) {
+  const std::vector<Point2D> line = {{-1.0, 0.5}, {11.0, 0.5}};
+  auto closest = [&line](const CoveragePlan& plan) {
+    double best = std::numeric_limits<double>::max();
+    for (const auto& s : plan.swaths) {
+      best = std::min(best, segSegDist(s.first, s.second, line.front(), line.back()));
+    }
+    for (const auto& ring : plan.rings) {
+      for (size_t i = 0; i < ring.size(); ++i) {
+        best = std::min(best, segSegDist(ring[i], ring[(i + 1) % ring.size()], line.front(),
+                                         line.back()));
+      }
+    }
+    return best;
+  };
+  for (const std::string layout : {"soft", "hard"}) {
+    const double body = closest(planLayoutWithLine(layout, line, 0.57));
+    const double blade = closest(planLayoutWithLine(layout, line, 0.32));
+    RecordProperty(layout + "_closest_path_body", std::to_string(body));
+    RecordProperty(layout + "_closest_path_blade", std::to_string(blade));
+    EXPECT_NEAR(body - blade, 0.125, 0.03) << layout << ": body " << body << ", blade " << blade;
   }
 }
