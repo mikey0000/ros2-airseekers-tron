@@ -1282,3 +1282,50 @@ def test_rate_term_step_response_settles():
             worst = max(worst, abs(s.heading_error()))
     assert worst < 0.5, worst
     assert abs(math.degrees(s.est.offset_rate) * 60.0) < 0.5
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-02 stationary hold: moved_since_fix_m / imu_continuous in the status
+# ---------------------------------------------------------------------------
+def test_stationary_hold_status_after_a_long_idle():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)                 # COG fix
+    assert s.est.source == hl.SOURCE_COG
+    s.run(0.0, 0.0, 400.0)               # parked, wall clock runs on
+    st = s.est.status(s.t)
+    assert st['last_cog_age_s'] > 300.0
+    assert st['moved_since_fix_m'] < 0.5 and st['imu_continuous'] is True
+
+
+def test_stationary_hold_moved_after_the_fix_counts_the_farthest_point():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)
+    s.run(0.3, 0.5, 4.0)                 # turning: no new COG fix, but it moves
+    s.run(0.0, 0.0, 1.0)
+    assert s.est.status(s.t)['moved_since_fix_m'] > 0.5
+
+
+def test_stationary_hold_imu_gap_breaks_continuity():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)
+    s.t += 2.0                           # 2 s without an IMU sample
+    s.run(0.0, 0.0, 1.0)
+    st = s.est.status(s.t)
+    assert st['imu_continuous'] is False and st['aligned']
+
+
+def test_stationary_hold_imu_reset_unaligns_and_unknown_move():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)
+    s.drift += D(90.0)                   # yaw jump without rotation = IMU reset
+    s.run(0.0, 0.0, 0.5)
+    st = s.est.status(s.t)
+    assert not st['aligned'] and st['imu_continuous'] is False
+    assert st['moved_since_fix_m'] is None
+
+
+def test_stationary_hold_unknown_without_rtk_fixed_at_the_fix():
+    s = Sim(fix_type=2, min_fix_type=2)
+    s.run(0.3, 0.0, 7.0)
+    assert s.est.aligned
+    assert s.est.status(s.t)['moved_since_fix_m'] is None

@@ -609,6 +609,13 @@ class MissionNode(Node):
             i.heading_prior = str(st.get('file_check') or '')
             i.heading_quality = str(st.get('quality') or '')
             i.heading_cog_age = _cog_age(st)
+            moved = st.get('moved_since_fix_m')
+            try:
+                i.heading_moved_m = None if moved is None else float(moved)
+            except (TypeError, ValueError):
+                i.heading_moved_m = None
+            cont = st.get('imu_continuous')
+            i.heading_imu_continuous = None if cont is None else bool(cont)
             i.heading_stamp = self._clk.now()
 
     def _on_localization(self, msg):

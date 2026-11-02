@@ -468,6 +468,11 @@ class Inputs:
     # last_cog_age_s and age_s, see mission_node._on_heading); None/'' = not reported
     heading_quality: str = ''
     heading_cog_age: Optional[float] = None
+    # 2026-11-02 stationary hold: farthest RTK-fixed move since the last absolute heading fix
+    # (status moved_since_fix_m, None = unknown) and IMU yaw continuity since it
+    # (status imu_continuous, None = not reported)
+    heading_moved_m: Optional[float] = None
+    heading_imu_continuous: Optional[bool] = None
     # /obstacle_policy (mower_vision obstacle_guard, JSON): closest close detection
     obstacle_kind: str = 'none'         # none | dynamic | static
     obstacle_class: str = ''
@@ -568,6 +573,10 @@ class Params:
     # heading_reject_quality is treated like the 'file' prior: calibration drive first.
     heading_max_cog_age_s: float = 300.0
     heading_reject_quality: list = field(default_factory=lambda: ['poor'])
+    # 2026-11-02: a cog heading older than heading_max_cog_age_s is kept (no calibration
+    # drive, no age/quality rejection) while the robot moved less than this since the fix
+    # and the IMU stayed continuous; the age check is the fallback when either is unknown
+    heading_stale_move_m: float = 0.5
     rain_mode: int = 1                  # 0 ignore, 1 dock and wait
     rain_debounce_s: float = 2.0
     rain_delay_minutes: float = 30.0

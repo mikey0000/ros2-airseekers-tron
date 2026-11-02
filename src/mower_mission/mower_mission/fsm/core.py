@@ -94,6 +94,7 @@ class MissionFSM(PreviewMixin,
         self._hcal_wanted = False           # preflight let START through for a calibration drive
         self._hcal = None                   # heading calibration drive in progress
         self._hcal_rtk_since = None
+        self._heading_was_aligned = False   # heading_ok() seen in this process lifetime
         self._spin_attempt = 0
         self._spin_deadline = 0.0
         self._track = []
@@ -438,6 +439,9 @@ class MissionFSM(PreviewMixin,
     # ==================================================================
     def tick(self, now):
         self._begin(now)
+        if not self._heading_was_aligned and self.p.require_heading_alignment \
+                and self.heading_ok():
+            self._heading_was_aligned = True
         self._charge_limit_tick()
         if not self._guards():
             self._run_phase()

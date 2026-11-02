@@ -29,6 +29,10 @@ class StartMixin:
             return 'no GNSS fix (fix_type %s < %d)' % (
                 i.fix_type, self.p.preflight_min_fix_type_docked)
         stale = '' if self._at_dock() else self._heading_cog_stale()
+        held = None if self._at_dock() else self._heading_cog_held()
+        if held is not None and self.heading_ok():
+            self._log('info', 'heading cog fix is %.0f s old but the robot has not moved '
+                              '(%.2f m) and the IMU is continuous: keeping it' % held)
         if not self._at_dock() and (not self.heading_ok() or stale):
             # Undocked: Nav2 would steer with an arbitrary IMU heading (or a stale COG one,
             # 2026-10-14). At the dock the undock (straight drive out along the dock yaw)
@@ -49,7 +53,7 @@ class StartMixin:
             if stale:
                 self._log('warn', 'heading cog is %s and no calibration drive: not aligned'
                           % stale)
-            return HEADING_NOT_ALIGNED
+            return '%s (%s)' % (HEADING_NOT_ALIGNED, self._heading_refusal_why())
         return ''
 
     def _at_dock(self):
@@ -65,6 +69,37 @@ class StartMixin:
             return False
         return bool(i.heading_aligned) and i.heading_source in HEADING_ALIGNED_SOURCES
 
+    def _heading_refusal_why(self):
+        """Why START off the dock has no way to an aligned heading (operator text)."""
+        p, i = self.p, self.inputs
+        if not (p.heading_calibration_drive and p.require_heading_alignment):
+            return 'calibration drive disabled'
+        if not self._hcal_enabled():
+            return 'no heading_aligner status'
+        if i.heading_source == 'cog':
+            return 'cog heading %s' % (self._heading_cog_stale() or 'not usable')
+        return 'no usable heading prior (%s %s)' % (i.heading_source,
+                                                    i.heading_prior or 'unchecked')
+
+    def _heading_cog_held(self):
+        """(age, moved) when an aligned cog heading is older than heading_max_cog_age_s but
+        the robot moved less than heading_stale_move_m since the fix and the IMU stayed
+        continuous (2026-11-02: heading validity does not decay with wall-clock time while
+        stationary); else None. None also when move / continuity are not reported (the age
+        check then applies as before)."""
+        p, i = self.p, self.inputs
+        if not p.require_heading_alignment or i.heading_source != 'cog' \
+                or not i.heading_aligned:
+            return None
+        age, max_age = i.heading_cog_age, float(p.heading_max_cog_age_s)
+        if not (max_age > 0.0 and age is not None and age > max_age):
+            return None
+        if i.heading_moved_m is None or i.heading_imu_continuous is not True:
+            return None
+        if i.heading_moved_m >= float(p.heading_stale_move_m):
+            return None
+        return age, i.heading_moved_m
+
     def _heading_cog_stale(self):
         """Why an aligned 'cog' heading is too old / too poor to plan a START off the dock on
         ('' = fine, or not a cog heading): last COG fix older than heading_max_cog_age_s, or
@@ -77,6 +112,9 @@ class StartMixin:
         why = []
         age, max_age = i.heading_cog_age, float(p.heading_max_cog_age_s)
         if max_age > 0.0 and age is not None and age > max_age:
+            if self._heading_cog_held() is not None:
+                # stationary since the fix: the quality decayed with the age only
+                return ''
             why.append('%.0f s old' % age)
         reject = [str(q) for q in (p.heading_reject_quality or []) if str(q)]
         if i.heading_quality and i.heading_quality in reject:

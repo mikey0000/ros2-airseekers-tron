@@ -211,6 +211,9 @@ class AlignParams:
         self.rtk_seed_samples = 3        # consistent samples needed to seed (none/file)
         self.rtk_reseed_after = 10       # consecutive agreeing outliers -> re-seed an aligned offset
         self.imu_jump = math.radians(20.0)   # yaw step not explained by the gyro = IMU reset
+        # 2026-11-02 stationary hold: an IMU sample gap longer than this breaks the yaw
+        # continuity since the last absolute fix (status imu_continuous false)
+        self.imu_gap_max = 1.0           # s
         # yaw standard deviations advertised on /imu/data_aligned
         self.sigma_cog = math.radians(3.0)
         self.sigma_rtk = math.radians(3.0)
@@ -298,6 +301,13 @@ class HeadingEstimator:
         self.rtk_gate = ''           # why the last RTK sample was not used
         self._rtk_seed = []          # consistent-sample buffer while unaligned (offsets)
         self._rtk_rejected = []      # consecutive outlier samples while aligned (offsets)
+        # 2026-11-02 stationary hold (mission _heading_cog_stale): position at the last
+        # absolute fix (cog / dock / rtk / file_verified), the farthest RTK position from it
+        # since (None = no position at the fix), and whether the IMU yaw stream stayed
+        # continuous since (no gap > imu_gap_max, no IMU reset)
+        self.fix_xy = None
+        self.moved_since_fix = None
+        self.imu_continuous = False
 
     # ------------------------------------------------------------------ properties
     @property
@@ -344,6 +354,9 @@ class HeadingEstimator:
             'file_check': self.file_check if self.source in (SOURCE_FILE, SOURCE_FILE_VERIFIED)
             else '',
             'min_speed': self.p.min_speed,
+            'moved_since_fix_m': None if self.moved_since_fix is None
+            else round(self.moved_since_fix, 2),
+            'imu_continuous': bool(self.imu_continuous and self.aligned),
         }
         if self.last_cog is not None:
             t, cog, meas, dist = self.last_cog
@@ -455,6 +468,7 @@ class HeadingEstimator:
                 return
             self.source = SOURCE_FILE_VERIFIED
             self.updated_at = now
+            self._mark_fix()
             self.file_check = 'verified'
             self.last_event = ('persisted offset verified (IMU yaw %+.1f deg, moved %.2f m '
                                'since the save, RTK fixed)' % (math.degrees(dyaw), moved))
@@ -484,6 +498,9 @@ class HeadingEstimator:
         if self.imu_yaw is not None and self.imu_t is not None:
             dt = now - self.imu_t if dt is None else dt
             step = wrap(yaw - self.imu_yaw)
+            if dt > p.imu_gap_max and self.imu_continuous:
+                self.imu_continuous = False
+                self.last_event = 'IMU gap %.1f s: yaw continuity since the last fix lost' % dt
             if 0.0 < dt < 1.0 and abs(step) > p.imu_jump and \
                     abs(step) > 3.0 * abs(gyro_z) * dt + math.radians(2.0):
                 self._imu_reset(now, step)
@@ -603,6 +620,7 @@ class HeadingEstimator:
         self._reset_rate()
         self.source = SOURCE_RTK
         self.updated_at = now
+        self._mark_fix()
         self.n_rtk += 1
         self.rejected = []
         self._rtk_seed = []
@@ -649,6 +667,7 @@ class HeadingEstimator:
         self._reset_rate()
         self.source = SOURCE_DOCK
         self.updated_at = now
+        self._mark_fix()
         self.rejected = []
 
     def on_gps(self, now, x, y, variance):
@@ -662,6 +681,9 @@ class HeadingEstimator:
                 self._gps_recent = (self._gps_recent + [(x, y)])[-p.verify_samples:]
             else:
                 self._gps_recent = []
+            if self.fix_xy is not None and self.fix_type == 3:   # RTK fixed only
+                self.moved_since_fix = max(self.moved_since_fix or 0.0, math.hypot(
+                    x - self.fix_xy[0], y - self.fix_xy[1]))
         self._try_verify(now)
         ok, direction = self._straight_motion(now, variance)
         w = self._win
@@ -796,12 +818,20 @@ class HeadingEstimator:
     def _accepted(self, now, why, res):
         self.source = SOURCE_COG
         self.updated_at = now
+        self._mark_fix()
         self.n_cog += 1
         self.rejected = []
         self.dirty = True
         self.last_event = '%s: offset %.1f deg' % (why, math.degrees(self.offset))
         res['accepted'] = True
         res['offset'] = self.offset
+
+    def _mark_fix(self):
+        """An absolute heading fix now: restart the stationary-hold tracking from here."""
+        xy = self._gps_recent[-1] if self._gps_recent else None   # RTK fixed only
+        self.fix_xy = xy
+        self.moved_since_fix = None if xy is None else 0.0
+        self.imu_continuous = self.imu_t is not None
 
     def _imu_reset(self, now, step):
         self.last_event = 'IMU yaw jumped %.1f deg without rotation: IMU reset, unaligned' \
@@ -817,6 +847,8 @@ class HeadingEstimator:
         self._reset_rate()
         self.source = SOURCE_NONE
         self.updated_at = None
+        self.imu_continuous = False
+        self.fix_xy = self.moved_since_fix = None
         self.rejected = []
         self._rtk_seed = []
         self._rtk_rejected = []

@@ -81,16 +81,17 @@ class HeadingCalMixin:
                 return idx
         return None
 
-    def _hcal_clear(self, pose, direction):
-        """The straight ``direction`` (+1 ahead, -1 behind) from ``pose`` by the PRIOR
-        heading, widened by the robot width and +-heading_calibration_cone_deg, lies inside
-        one mowing area (outside its keepout holes). Returns the area index or None."""
+    def _hcal_clear(self, pose, direction, dist=None):
+        """The straight ``direction`` (+1 ahead, -1 behind) of ``dist`` (default
+        heading_calibration_distance_m) from ``pose`` by the PRIOR heading, widened by the
+        robot width and +-heading_calibration_cone_deg, lies inside one mowing area (outside
+        its keepout holes). Returns the area index or None."""
         m = self.mission
         if m is None or not m.areas or pose is None:
             return None
         p = self.p
         base = pose[2] + (0.0 if direction > 0 else math.pi)
-        reach = self._hcal_reach(direction)
+        reach = self._hcal_reach(direction, dist)
         hw = float(p.robot_width_m) / 2.0
         cone = math.radians(float(p.heading_calibration_cone_deg))
         n = max(2, int(math.ceil(reach / 0.1)))
@@ -106,6 +107,42 @@ class HeadingCalMixin:
             if all(geo.inside_area(pt, m.areas[idx]) for pt in pts):
                 return idx
         return None
+
+    def _hcal_low_quality_ok(self):
+        """START may go ahead on the current heading at low quality (2026-11-02): it was
+        aligned earlier in this process lifetime and the IMU yaw stayed continuous since the
+        fix (cog: aligner imu_continuous; file: continuity check yaw_ok). The first leg is
+        inside the area by construction and the aligner's COG fix completes in 0.6 m."""
+        i = self.inputs
+        if not self._heading_was_aligned:
+            return False
+        if i.heading_source == 'cog':
+            return bool(i.heading_aligned) and i.heading_imu_continuous is True
+        return i.heading_source == 'file' and i.heading_prior == 'yaw_ok'
+
+    def _hcal_no_room(self, line):
+        """Neither the line nor the disc is clear: start at low quality when allowed, else
+        refuse with the reason."""
+        i = self.inputs
+        room = '%s, no clear %.1f m straight and no clear %.1f m disc inside a mowing ' \
+            'area' % (line, float(self.p.heading_calibration_blind_distance_m),
+                      self._hcal_disc_radius())
+        if self._hcal_low_quality_ok():
+            self._log('warn', 'heading calibration skipped (%s): heading %s was aligned '
+                              'earlier and the IMU is continuous, starting with a low-quality '
+                              'heading (COG refines it on the first leg)'
+                      % (room, self._hcal_prior_text()))
+            self._hcal_wanted = False
+            self._next_area()
+            return
+        if not self._heading_was_aligned:
+            why = 'never aligned since start-up'
+        elif i.heading_source == 'cog' and i.heading_imu_continuous is None:
+            why = 'IMU continuity not reported'
+        else:
+            why = 'IMU not continuous since the last fix (%s %s)' % (
+                i.heading_source, self._hcal_prior_text())
+        self._hcal_fail('%s; %s' % (room, why), drove=False)
 
     def _hcal_line(self, pose):
         """Obstacle corridor of the calibration drive: the rest of its straight."""
@@ -134,12 +171,31 @@ class HeadingCalMixin:
                 if area is not None:
                     break
             else:
-                self._hcal_fail('no clear %.1f m straight ahead or behind inside a mowing area'
-                                % float(p.heading_calibration_distance_m), drove=False)
-                return
-            d = float(p.heading_calibration_distance_m)
-            word = 'forward' if direction > 0 else 'backward'
-            what = 'saved heading %s' % self._hcal_prior_text()
+                area = None
+            if area is not None:
+                d = float(p.heading_calibration_distance_m)
+                word = 'forward' if direction > 0 else 'backward'
+                what = 'saved heading %s' % self._hcal_prior_text()
+            else:
+                # 2026-11-02: no clear line -> the shorter blind-drive length (0.8 m: the
+                # aligner's 0.6 m COG window + margin) by the prior, then the disc (any
+                # direction safe)
+                line = 'no clear %.1f m straight ahead or behind' % float(
+                    p.heading_calibration_distance_m)
+                d = float(p.heading_calibration_blind_distance_m)
+                for direction in (1, -1):
+                    area = self._hcal_clear(pose, direction, d)
+                    if area is not None:
+                        how = 'a %.1f m straight clear' % d
+                        break
+                else:
+                    direction, area = 1, self._hcal_disc_clear(pose)
+                    how = 'a %.1f m disc clear' % self._hcal_disc_radius()
+                if area is None:
+                    self._hcal_no_room(line)
+                    return
+                word = 'forward' if direction > 0 else 'backward'
+                what = 'saved heading %s, %s but %s' % (self._hcal_prior_text(), line, how)
         elif self._hcal_blind_ok():
             # no usable prior (2026-11-01): the whole disc must be clear, then creep forward
             area = self._hcal_disc_clear(pose)

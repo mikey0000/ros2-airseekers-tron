@@ -1841,9 +1841,9 @@ def test_preflight_refuses_unaligned_heading_away_from_dock(source):
     h.heading(source)
     h.tick()
     assert not h.cmd(f.CMD_START)
-    assert h.name == 'IDLE' and h.fsm.sub_state == \
-        'preflight failed: heading not aligned: drive straight 1 m at 0.1 m/s or more in ' \
-        'manual, or start from the dock'
+    assert h.name == 'IDLE' and h.fsm.sub_state.startswith(
+        'preflight failed: heading not aligned: drive straight 1 m at 0.1 m/s or more in '
+        'manual, or start from the dock (no usable heading prior')
     assert h.fsm.mission is None and not h.since(0, f.StartAction)
 
 
@@ -1942,6 +1942,7 @@ def hcal_harness(prior='yaw_ok', area=None, **params):
     h.fsm.inputs.heading_prior = prior
     h.areas = [area or square(-5, -5, 10)]
     h.tick()
+    h.fsm._heading_was_aligned = False   # fresh process: never aligned (Harness starts cog)
     return h
 
 
@@ -1986,7 +1987,7 @@ def test_hcal_keepout_ahead_reverses():
 
 
 def test_hcal_nothing_clear_refused_without_moving():
-    h = hcal_harness(area=square(-1.0, -1.0, 2.0))
+    h = hcal_harness(area=square(-0.8, -0.8, 1.6))
     m = h.mark()
     start_hcal(h)
     assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
@@ -2004,7 +2005,8 @@ def test_hcal_no_usable_prior_refused_at_preflight(source, prior):
     h.heading(source)
     h.tick()
     assert not h.cmd(f.CMD_START)
-    assert h.name == 'IDLE' and h.fsm.sub_state == 'preflight failed: ' + f.HEADING_NOT_ALIGNED
+    assert h.name == 'IDLE' and h.fsm.sub_state.startswith(
+        'preflight failed: ' + f.HEADING_NOT_ALIGNED + ' (no usable heading prior')
     assert f.HEADING_NOT_ALIGNED == ('heading not aligned: drive straight 1 m at 0.1 m/s or '
                                      'more in manual, or start from the dock')
     assert not h.since(0, f.StartAction)
@@ -2133,7 +2135,7 @@ def test_hcal_no_prior_obstacle_stops_the_blind_drive():
 def test_hcal_blind_disabled_refuses_as_before():
     h = hcal_harness(prior='yaw_failed', heading_calibration_blind=False)
     assert not h.cmd(f.CMD_START)
-    assert h.fsm.sub_state == 'preflight failed: ' + f.HEADING_NOT_ALIGNED
+    assert h.fsm.sub_state.startswith('preflight failed: ' + f.HEADING_NOT_ALIGNED + ' (')
 
 
 def test_hcal_blind_never_from_the_dock():
@@ -2337,7 +2339,7 @@ def test_stale_cog_no_fresh_fix_after_the_drive_goes_idle():
 
 def test_stale_cog_no_clear_line_idles_in_place():
     h = cog_harness()
-    h.areas = [square(-1.0, -1.0, 2.0)]
+    h.areas = [square(-0.8, -0.8, 1.6)]
     m = h.mark()
     start_hcal(h)
     assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
@@ -5183,3 +5185,122 @@ def test_chunk_ending_on_a_pivot_vertex_beside_its_start_is_cut_short():
     assert h.fsm.mission.premature == 0
     g2 = h.goal(f.ACT_FOLLOW)['poses']
     assert g2[-1][:2] == sp[c][:2] and h.fsm.mission.corner_end == c
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-02 stationary hold / no-room fallback (field: 350 s old cog fix after a STUCK
+# wait refused START although the robot had not moved)
+# ---------------------------------------------------------------------------
+def held_harness(age=350.0, quality='fair', moved=0.1, cont=True, **params):
+    h = cog_harness(age, quality, **params)
+    h.fsm.inputs.heading_moved_m = moved
+    h.fsm.inputs.heading_imu_continuous = cont
+    h.tick()
+    return h
+
+
+@pytest.mark.parametrize('quality', ['fair', 'poor'])
+def test_stale_but_stationary_cog_starts_without_a_drive(quality):
+    h = held_harness(quality=quality)
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick()
+    assert h.name == 'PLANNING'
+    assert not [e for e in h.since(0, f.StartAction) if e.name in MOVING_ACTIONS]
+    assert any('heading cog fix is 350 s old but the robot has not moved (0.10 m) and the '
+               'IMU is continuous: keeping it' in t for t in _logs(h))
+    assert not any('calibration drive first' in t for t in _logs(h))
+
+
+def test_stale_and_moved_cog_runs_the_calibration_drive():
+    h = held_harness(moved=0.8)
+    start_hcal(h)
+    assert h.goal(f.ACT_DRIVE) == {'distance_m': 1.0, 'speed_mps': 0.15}
+    assert 'heading cog is 350 s old: calibration drive first' in _logs(h)
+
+
+@pytest.mark.parametrize('moved, cont', [(None, True), (0.1, None)])
+def test_stale_cog_without_hold_info_falls_back_to_the_age_check(moved, cont):
+    h = held_harness(moved=moved, cont=cont)
+    start_hcal(h)
+    assert h.goal(f.ACT_DRIVE) is not None
+
+
+def test_imu_restart_not_moved_keeps_the_pose_prior_path():
+    h = hcal_harness(prior='pose_prior')
+    h.fsm.inputs.heading_moved_m, h.fsm.inputs.heading_imu_continuous = 0.0, False
+    start_hcal(h)
+    assert h.goal(f.ACT_DRIVE) == {'distance_m': 1.0, 'speed_mps': 0.15}
+
+
+def rect(x0, y0, x1, y1):
+    a = square(x0, y0, 1.0)
+    a['outer'] = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    return a
+
+
+def test_no_clear_line_falls_back_to_the_shorter_straight():
+    # facing +x: 1.3 m to the edge ahead (0.8 m + 0.6 m bumper fails), 1.0 m behind
+    # (1.0 + 0.1 rear fails, 0.8 + 0.1 fits)
+    h = held_harness(moved=0.8)
+    h.areas = [rect(-1.0, -1.5, 1.3, 1.5)]
+    m = h.mark()
+    start_hcal(h)
+    assert [e.name for e in h.since(m, f.StartAction)] == [f.ACT_BACKUP]
+    assert h.goal(f.ACT_BACKUP) == {'distance_m': 0.8, 'speed_mps': 0.15}
+    assert any('no clear 1.0 m straight ahead or behind but a 0.8 m straight clear' in t
+               for t in _logs(h, m))
+
+
+def test_no_clear_straight_falls_back_to_the_disc(monkeypatch):
+    # the disc implies the 0.8 m straight behind for the stock footprint; force the line
+    # checks to fail to exercise the disc branch
+    h = held_harness(moved=0.8)
+    monkeypatch.setattr(h.fsm, '_hcal_clear', lambda pose, direction, dist=None: None)
+    m = h.mark()
+    start_hcal(h)
+    assert h.goal(f.ACT_DRIVE) == {'distance_m': 0.8, 'speed_mps': 0.15}
+    assert any('disc clear' in t for t in _logs(h, m))
+
+
+def test_no_room_but_aligned_before_and_imu_continuous_starts_low_quality():
+    h = held_harness(moved=0.8)
+    h.areas = [square(-0.8, -0.8, 1.6)]
+    m = h.mark()
+    start_hcal(h)
+    assert h.name == 'PLANNING' and h.fsm.mission is not None
+    assert not h.since(m, f.StartAction) or not [
+        e for e in h.since(m, f.StartAction) if e.name == f.ACT_DRIVE]
+    assert any('starting with a low-quality heading' in t for t in _logs(h, m))
+
+
+def test_no_room_and_imu_not_continuous_refuses():
+    h = held_harness(moved=0.8, cont=False)
+    h.areas = [square(-0.8, -0.8, 1.6)]
+    start_hcal(h)
+    assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+    assert 'IMU not continuous' in h.fsm.sub_state and 'disc' in h.fsm.sub_state
+
+
+def test_no_prior_at_all_refuses_with_the_reason():
+    h = hcal_harness(prior='unverifiable', area=square(-0.8, -0.8, 1.6))
+    if h.cmd(f.CMD_START):               # blind drive allowed: the disc check refuses
+        h.answer_services()
+        h.tick(dt=1.0, n=4)
+    assert h.name == 'IDLE' and f.HEADING_NOT_ALIGNED in h.fsm.sub_state
+    assert 'no usable heading prior' in h.fsm.sub_state
+    assert not h.since(0, f.StartAction)
+
+
+def test_file_yaw_ok_never_aligned_no_room_refuses():
+    h = hcal_harness(area=square(-0.8, -0.8, 1.6))
+    start_hcal(h)
+    assert h.name == 'IDLE' and 'never aligned since start-up' in h.fsm.sub_state
+
+
+def test_file_yaw_ok_aligned_earlier_no_room_starts_low_quality():
+    h = hcal_harness(area=square(-0.8, -0.8, 1.6))
+    h.fsm._heading_was_aligned = True    # aligned (cog) earlier in this process lifetime
+    start_hcal(h)
+    assert h.name == 'PLANNING'
+    assert not [e for e in h.since(0, f.StartAction) if e.name == f.ACT_DRIVE]
