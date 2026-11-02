@@ -75,7 +75,7 @@ export const SettingsPage = () => {
         advancedKeys,
         setSearchQuery,
         matchesSearch,
-        isSettingKeyHidden,
+        isSettingFieldHidden,
         handleChange,
         handleBulkChange,
         isSectionDirty,
@@ -122,11 +122,11 @@ export const SettingsPage = () => {
         if (!searchQuery) return sections;
         return sections.filter(
             (section) =>
-                section.keys.some((key) => !isSettingKeyHidden(key) && matchesSearch(key)) ||
+                section.keys.some((key) => !isSettingFieldHidden(key) && matchesSearch(key)) ||
                 matchesSearch("", t(section.label)) ||
                 matchesSearch("", t(section.description)),
         );
-    }, [sections, searchQuery, matchesSearch, isSettingKeyHidden, t]);
+    }, [sections, searchQuery, matchesSearch, isSettingFieldHidden, t]);
 
     const requestedSection = searchParams.get('section') ?? 'hardware';
     const activeSection = visibleSections.find(section => section.id === requestedSection)?.id

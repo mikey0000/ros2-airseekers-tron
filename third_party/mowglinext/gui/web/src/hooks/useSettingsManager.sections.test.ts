@@ -15,12 +15,17 @@ describe("Settings sections per robot profile", () => {
         expect(ids(visibleSections(getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID)))).toContain("straight_driving");
     });
 
-    it("Tron hides today's trim plus the LED section", () => {
+    it("Tron hides today's trim, the LED section and the fields-only navigation section", () => {
         const hidden = ids(SECTION_DEFINITIONS).filter(
             (id) => !ids(visibleSections(getRobotProfile(AIRSEEKERS_TRON_PROFILE_ID))).includes(id),
         );
         // Remote access stays: its HTTPS card works everywhere (Tailscale part gated).
-        expect(hidden).toEqual(["updates", "drive_motor", "leds"]);
+        // Navigation renders only its six fields and Tron reads none of them.
+        expect(hidden).toEqual(["updates", "drive_motor", "navigation", "leds"]);
+    });
+
+    it("keeps a fields-only section while the profile is loading", () => {
+        expect(ids(visibleSections(null))).toContain("navigation");
     });
 
     it("keeps rain and MQTT on Tron", () => {
