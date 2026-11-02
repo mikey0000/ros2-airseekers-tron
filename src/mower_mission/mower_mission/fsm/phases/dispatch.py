@@ -61,6 +61,8 @@ class PhaseDispatchMixin:
         elif ph in DISPLAY_NAMES:
             if now - self._phase_since >= self.p.result_display_s:
                 self._go_idle()
+        elif ph in DOCK_PHASES and a is not None and a.purpose == 'dock_join':
+            self._dock_join_tick()
         elif ph in DOCK_PHASES and a is not None and a.purpose == 'dock':
             if self._at_dock():
                 if self._dock_contact_since is None:

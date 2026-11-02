@@ -755,3 +755,124 @@ def test_dock_server_nav_max_zero_restores_the_old_hand_over():
     h.fsm.inputs.pose = (1.3, -3.5, 1.6)
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert h.pending_action(f.ACT_DOCK)
+
+
+# =====================================================================
+# 2026-11-02 field: off the route graph inside an area -> join it first
+# =====================================================================
+SQUARE = [(-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)]
+EDGE_START = (-9.8, 1.95, 0.0)        # 0.2 m in from the west edge (edge-lap start)
+
+
+def _offgraph(start=EDGE_START):
+    return _route_resp(ok=False, message='start (%.2f, %.2f) is off the route graph'
+                       % (start[0], start[1]))
+
+
+def _home_offgraph(**params):
+    h = Harness(route_transits=True, **params)
+    h.fsm._region_areas = {5: {'outer': SQUARE, 'name': 'Clothesline'}}
+    h.fsm.inputs.dock_pose = DOCK
+    h.fsm.inputs.pose = EDGE_START
+    assert h.cmd(f.CMD_HOME)
+    return h
+
+
+def test_offgraph_start_in_an_area_joins_the_graph_then_drives_the_dock_route():
+    h = _home_offgraph()
+    m = h.mark()
+    _answer_route(h, resp=_offgraph())
+    a = h.pending_action(f.ACT_NAV)
+    assert a.purpose == 'dock_join' and h.name == 'RETURNING_HOME'
+    goal = h.goal(f.ACT_NAV)['pose']
+    assert abs(goal[0] + 9.0) < 1e-6 and abs(goal[1] - 1.95) < 1e-6
+    assert any('off the route graph, joining it at (-9.00, 1.95) via in-area transit' in t
+               for t in logs(h, m))
+    assert not starts(h, m, f.ACT_DOCK)
+    h.fsm.inputs.pose = (-9.0, 1.95, 0.0)
+    h.finish(f.ACT_NAV)
+    req = _pending_route_request(h)
+    assert req['to_dock'] and req['start'][:2] == (-9.0, 1.95)
+    _answer_route(h, resp=_route_resp([(-9.0, 1.95, 0.0), (-4.0, 1.0, 0.0),
+                                       (0.8, 0.0, math.pi)]))
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'dock_route'
+    h.finish(f.ACT_FOLLOW)
+    assert h.pending_action(f.ACT_DOCK)
+
+
+def test_offgraph_join_prefers_the_last_inbound_transit_entry():
+    h = _home_offgraph()
+    h.fsm._dock_join_record([(12.0, 1.0, 0.0), (9.5, 1.0, 0.0), (8.0, 1.0, 0.0),
+                             (-9.8, 1.95, 0.0)])
+    _answer_route(h, resp=_offgraph())
+    goal = h.goal(f.ACT_NAV)['pose']
+    assert abs(goal[0] - 8.0) < 1e-6 and abs(goal[1] - 1.0) < 1e-6
+
+
+def test_on_graph_return_home_is_unchanged():
+    h = _home_offgraph()
+    m = h.mark()
+    _answer_route(h, resp=_route_resp([EDGE_START, (-4.0, 1.0, 0.0), (0.8, 0.0, math.pi)]))
+    assert h.pending_action(f.ACT_FOLLOW).purpose == 'dock_route'
+    assert not starts(h, m, f.ACT_NAV)
+    assert not any('joining it' in t for t in logs(h, m))
+
+
+def test_offgraph_outside_every_area_keeps_the_old_handover():
+    h = _home_offgraph()
+    h.fsm.inputs.pose = (30.0, 30.0, 0.0)
+    m = h.mark()
+    _answer_route(h, resp=_offgraph((30.0, 30.0)))
+    assert not starts(h, m, f.ACT_NAV)
+    assert any('handing over to the docking server' in t for t in logs(h, m))
+
+
+def test_offgraph_join_unreachable_fails_with_the_new_text():
+    h = _home_offgraph(transit_retries=0)
+    m = h.mark()
+    _answer_route(h, resp=_offgraph())
+    for _ in range(3):                         # every candidate (insets 1, 2, 3 m) aborts
+        h.finish(f.ACT_NAV, f.ABORTED)
+    assert h.name == 'NAV_TO_DOCK_FAILED'
+    assert 'no join point is reachable inside area Clothesline (5)' in h.fsm.sub_state
+    assert '3 tried' in h.fsm.sub_state
+    assert not starts(h, m, f.ACT_DOCK)
+
+
+def test_offgraph_join_still_offgraph_tries_the_next_join_point():
+    h = _home_offgraph()
+    _answer_route(h, resp=_offgraph())
+    h.fsm.inputs.pose = (-9.0, 1.95, 0.0)
+    h.finish(f.ACT_NAV)
+    _answer_route(h, resp=_offgraph((-9.0, 1.95)))
+    goal = h.goal(f.ACT_NAV)['pose']
+    assert abs(goal[0] + 8.0) < 1e-6            # 2 m in from the edge
+
+
+def test_offgraph_join_distance_cap():
+    h = _home_offgraph(dock_join_max_m=0.5)    # every join point is >= 0.8 m away
+    m = h.mark()
+    _answer_route(h, resp=_offgraph())
+    assert not starts(h, m, f.ACT_NAV)
+    assert h.name == 'NAV_TO_DOCK_FAILED'
+    assert 'within 0.5 m (0 tried)' in h.fsm.sub_state
+
+
+def test_offgraph_join_off_restores_the_old_handover():
+    h = _home_offgraph(dock_join_max_m=0.0)
+    m = h.mark()
+    _answer_route(h, resp=_offgraph())
+    assert not starts(h, m, f.ACT_NAV)
+    assert any('handing over to the docking server' in t for t in logs(h, m))
+
+
+def test_low_battery_return_also_joins():
+    h = Harness(route_transits=True)
+    h.fsm._region_areas = {5: {'outer': SQUARE, 'name': 'Clothesline'}}
+    h.fsm.inputs.dock_pose = DOCK
+    h.fsm.inputs.pose = EDGE_START
+    h.fsm._begin(h.t)
+    h.fsm._dock('RETURNING_HOME', 'battery')      # the low-battery return's entry
+    h._apply(h.fsm._end())
+    _answer_route(h, resp=_offgraph())
+    assert h.pending_action(f.ACT_NAV).purpose == 'dock_join'

@@ -124,6 +124,12 @@ behavior_tree_node:
     dock_server_nav_max_m: 0.35
     dock_approach_distance_m: 0.8     # = map_server / mower_docking approach_distance
     dock_route_retries: 2
+    # Off the route graph inside a mowing area: drive to a join point inside the area first
+    # (the last inbound route's entry, else dock_join_insets_m in from the nearest edge),
+    # then the dock route. 0 = off.
+    dock_join_max_m: 40.0
+    dock_join_inset_m: 1.0
+    dock_join_insets_m: [1.0, 2.0, 3.0]
     route_controller_id: FollowPath   # MPPI transit controller
     route_goal_checker_id: general_goal_checker
     route_end_tolerance_m: 0.5        # route follow "success" farther from the target = failed

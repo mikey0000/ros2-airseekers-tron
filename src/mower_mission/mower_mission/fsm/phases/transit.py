@@ -198,6 +198,7 @@ class TransitMixin:
             self._start_fallback_nav()
             return
         m.route_plan_fails = 0
+        self._dock_join_record(poses)
         if m.blade_transit and int(resp.get('single_area', -1)) != m.area_idx:
             # the straight segment stays in the area but the route does not (path legs)
             self._blade_off('route leaves area %d' % m.area_idx)
@@ -779,6 +780,9 @@ class TransitMixin:
             return
         if a.purpose == 'dock_route':
             self._dock_route_result(outcome, nav2_down)
+            return
+        if a.purpose == 'dock_join':
+            self._dock_join_result(outcome, nav2_down)
             return
         if a.purpose == 'route_corner':
             self._route_corner_spun(outcome)

@@ -673,3 +673,24 @@ along-path corner checker matched it at once and follow_path "succeeded" 3/3 tim
 left (sub-path NOT mowed, MOWING_INCOMPLETE). Now such a chunk ends at the furthest pose
 before the vertex that clears the chunk start (`geometry.clear_end_before`) and the next
 chunk reaches the vertex from close by. Log: `chunk end N passes near its own start`.
+
+## Dock return from off the route graph joins it inside the area first (2026-11-02, unit-tested)
+
+Field 2026-11-02 03:47 UTC: RETURN HOME from the edge-lap start of area 5 (-5.85, 1.95), 0.2 m
+off the area edge, got "start is off the route graph" from plan_route (no clearance anchor that
+close to the edge), handed over to the docking server, which may only navigate within 0.35 m of
+the approach pose, so after 2 re-sends it was NAV_TO_DOCK_FAILED without moving. Now a dock
+route start off the graph inside a mowing area (the last area enumeration) first drives a join
+transit (`/navigate_to_pose`, purpose `dock_join`, state RETURNING_HOME): to where the
+mission's last inbound route entered that area (first route pose `dock_join_inset_m` 1.0 m in
+from the edge), else to points `dock_join_insets_m` [1, 2, 3] m in from the nearest edge,
+nearest first. Every candidate must be inside the area with a straight line to it inside the
+area and within `dock_join_max_m` (40 m). The join transit is cancelled once it gets more than
+`transit_fallback_max_offpath_m` outside the area; obstacle aborts get the blocked wait, other
+failures get `transit_retries`, then the next candidate. On arrival the dock route is planned
+again; still off the graph moves on to the next candidate. With no candidates left it fails with
+"start ... is off the route graph and no join point is reachable inside area <name> (<idx>)
+within N m (K tried)". Outside every area (or `dock_join_max_m: 0`) the old hand-over still
+applies. Covers every RETURNING_HOME (user, battery, rain, incomplete, schedule end): they all
+go through `_dock`. Log: `dock: off the route graph, joining it at (x, y) via in-area transit`.
+Drawn path corridors are not join regions; the FSM only knows the area outlines.

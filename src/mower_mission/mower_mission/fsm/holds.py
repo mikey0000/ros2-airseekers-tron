@@ -329,6 +329,7 @@ class HoldsMixin:
         if self.phase == 'TRANSIT' and m is not None and m.step == 'transit' and a is not None:
             return 'transit'
         if self.phase in DOCK_PHASES and a is not None and a.purpose in ('dock', 'dock_route',
+                                                                         'dock_join',
                                                                          'route_corner'):
             return 'dock'
         return None
