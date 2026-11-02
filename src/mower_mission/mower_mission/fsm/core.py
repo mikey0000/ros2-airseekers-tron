@@ -80,6 +80,8 @@ class MissionFSM(PreviewMixin,
         self._dock_purpose = None
         self._dock_routed = None            # (phase, purpose) whose dock route already ran
         self._dock_route_tries = 0          # dock route re-sends of this dock (task 0.4 e)
+        self._dock_join_state = None        # off-graph join transit of this dock (2026-11-02)
+        self._dock_join_entries = {}        # area idx -> last inbound route's entry point
         self._dock_route_end = None         # (x, y) end of the last dock route (approach pose)
         self._route_legs = None             # {'legs': [poses...], 'i': n} of a route follow
         self._route_watch = None            # route progress watch {'token', 's', 't'}
@@ -428,6 +430,7 @@ class MissionFSM(PreviewMixin,
         self._enum = None
         self._manual_undocking = False
         self._dock_routed = None
+        self._dock_join_state = None
         self._fx.append(CancelActions(reason))
 
     def _persist(self):

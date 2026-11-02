@@ -4,7 +4,7 @@
 Moved verbatim from mission_fsm.py (2026-10-23 code review stage 1.6)."""
 
 from mower_mission.fsm.common import (ABORTED, ACT_DOCK, ACT_NAV, CancelActions, DOCK_PHASES,
-    SRV_CHARGING, SRV_PLAN_ROUTE, SUCCEEDED, TIMEOUT, geo, math)  # noqa: F401
+    SRV_CHARGING, SRV_PLAN_ROUTE, SUCCEEDED, TIMEOUT, bbody, geo, math, re)  # noqa: F401
 
 
 class DockingMixin:
@@ -89,6 +89,9 @@ class DockingMixin:
             return
         poses = resp.get('poses') or []
         if not (ok and resp.get('success') and len(poses) >= 2):
+            why = resp.get('message') or 'plan_route unavailable'
+            if re.search(r'start .*off the route graph', why) and self._dock_join(why):
+                return
             self._dock_routed = (self.phase, self._dock_purpose)
             self._log('info', 'dock route: %s: handing over to the docking server'
                       % (resp.get('message') or 'plan_route unavailable'))
@@ -132,7 +135,178 @@ class DockingMixin:
                 self._dock_routed = (self.phase, self._dock_purpose)
         self._dock_handover()
 
+    # ---- off the route graph: join it inside the area first (2026-11-02) ------------
+    def _dock_join_record(self, poses):
+        """A transit route was planned: remember where it entered the area of its goal (the
+        first route pose inside that area at least dock_join_inset_m from its edge, i.e. on
+        an in-area graph leg) when it started outside that area."""
+        if len(poses) < 2 or not self._region_areas:
+            return
+        a, b = poses[0], poses[-1]
+        inset = float(self.p.dock_join_inset_m)
+        for idx, area in self._region_areas.items():
+            outer = [tuple(q[:2]) for q in (area.get('outer') or [])]
+            if len(outer) < 3 or not geo.point_in_polygon(b, outer) or \
+                    geo.point_in_polygon(a, outer):
+                continue
+            for q in poses:
+                if geo.point_in_polygon(q, outer) and \
+                        geo.distance_to_ring(q, outer) >= inset - 1e-6:
+                    entries = getattr(self, '_dock_join_entries', None) or {}
+                    entries[idx] = (float(q[0]), float(q[1]))
+                    self._dock_join_entries = entries
+                    break
+            return
+
+    def _dock_join_areas(self, pose):
+        """[(idx, name, outer)] of the mowing areas containing ``pose``."""
+        out = []
+        for idx, area in (self._region_areas or {}).items():
+            outer = [tuple(q[:2]) for q in (area.get('outer') or [])]
+            if len(outer) >= 3 and geo.point_in_polygon(pose, outer):
+                out.append((idx, str(area.get('name') or idx), outer))
+        return out
+
+    def _dock_join_reachable(self, pose, q, outer, cap):
+        """``q`` inside ``outer``, within ``cap`` and the straight line to it inside too."""
+        d = geo.dist(pose, q)
+        if d > cap or not geo.point_in_polygon(q, outer):
+            return False
+        n = max(1, int(math.ceil(d / 0.2)))
+        return all(geo.point_in_polygon((pose[0] + (q[0] - pose[0]) * k / n,
+                                         pose[1] + (q[1] - pose[1]) * k / n), outer)
+                   for k in range(n + 1))
+
+    def _dock_join_candidates(self, pose, areas, cap):
+        """Join points, best first: the last inbound route's entry into each area, then
+        points dock_join_insets_m in from the nearest edge (nearest first)."""
+        cands = []
+        entries = getattr(self, '_dock_join_entries', None) or {}
+        for idx, _name, outer in areas:
+            e = entries.get(idx)
+            if e is not None and geo.dist(pose, e) > 0.3 and \
+                    self._dock_join_reachable(pose, e, outer, cap):
+                cands.append((e, 'entry of the last inbound transit', outer))
+        near = []
+        for _idx, _name, outer in areas:
+            ne = bbody.nearest_edge_point(pose[0], pose[1], [outer])
+            if ne is None or ne[2] <= 1e-6:
+                continue
+            px, py, d0 = ne
+            nx, ny = (pose[0] - px) / d0, (pose[1] - py) / d0
+            for inset in self.p.dock_join_insets_m or []:
+                step = float(inset) - d0
+                if step <= 0.3:
+                    continue
+                q = (pose[0] + nx * step, pose[1] + ny * step)
+                if geo.distance_to_ring(q, outer) >= float(inset) * 0.8 and \
+                        self._dock_join_reachable(pose, q, outer, cap):
+                    near.append((geo.dist(pose, q), q, outer))
+        near.sort(key=lambda t: t[0])
+        return cands + [(q, 'nearest', outer) for _d, q, outer in near]
+
+    def _dock_join(self, why, advance=False):
+        """plan_route(to_dock) said the start is off the route graph. Inside a mowing area:
+        drive to the next join point in it and plan the dock route again from there. True =
+        handled (driving, or failed with the reason); False = outside every area (or off):
+        the old hand-over. A re-plan after a hold (blocked / dynamic obstacle wait) before
+        the join point was reached drives to the same join point again."""
+        cap, pose = float(self.p.dock_join_max_m), self.inputs.pose
+        if cap <= 0.0 or pose is None:
+            return False
+        j = getattr(self, '_dock_join_state', None)
+        if j is None:
+            areas = self._dock_join_areas(pose)
+            if not areas:
+                return False
+            j = {'areas': areas, 'cands': self._dock_join_candidates(pose, areas, cap),
+                 'i': -1, 'fails': 0, 'outer': None, 'start': tuple(pose[:2])}
+            self._dock_join_state = j
+            advance = True
+        if advance or j.get('arrived'):
+            j['i'] += 1
+            j['fails'] = 0
+        elif j['i'] < len(j['cands']):
+            self._dock_routed = None
+            self._dock_join_send()
+            return True
+        if j['i'] >= len(j['cands']):
+            names = ', '.join('%s (%s)' % (n, i) for i, n, _o in j['areas'])
+            tried = len(j['cands'])
+            st = j['start']
+            self._dock_join_state = None
+            self._dock_failed('dock route: start (%.2f, %.2f) is off the route graph and no '
+                              'join point is reachable inside area %s within %.1f m (%d '
+                              'tried); not crossing the lawn: the docking server navigates '
+                              'only within %.2f m' % (st[0], st[1], names, cap, tried,
+                                                      float(self.p.dock_server_nav_max_m)))
+            return True
+        q, kind, outer = j['cands'][j['i']]
+        j['target'], j['outer'], j['arrived'] = q, outer, False
+        self._dock_routed = None
+        self._log('info', 'dock: off the route graph, joining it at (%.2f, %.2f) via in-area '
+                          'transit (%.1f m, %s; %s)' % (q[0], q[1], geo.dist(pose, q), kind, why))
+        self._dock_join_send()
+        return True
+
+    def _dock_join_send(self):
+        j, pose = self._dock_join_state, self.inputs.pose
+        q = j['target']
+        yaw = math.atan2(q[1] - pose[1], q[0] - pose[0]) if pose is not None else 0.0
+        j['off0'] = None
+        self._go(self.phase, 'joining the route graph at (%.2f, %.2f)' % (q[0], q[1]))
+        self._start_action(ACT_NAV, {'pose': (q[0], q[1], yaw)}, self.p.transit_timeout_s,
+                           purpose='dock_join')
+
+    def _dock_join_tick(self):
+        """The join transit stays in its area: cancelled (a failed attempt) once it is more
+        than transit_fallback_max_offpath_m outside it (beyond where it started)."""
+        j, pose, lim = self._dock_join_state, self.inputs.pose, \
+            float(self.p.transit_fallback_max_offpath_m)
+        if j is None or pose is None or lim <= 0.0 or not j.get('outer'):
+            return
+        off = bbody.point_outside(pose[0], pose[1], [j['outer']])
+        if j.get('off0') is None:
+            j['off0'] = off
+            return
+        if off <= j['off0'] + lim:
+            return
+        self._log('warn', 'dock join transit left the area by %.2f m: abort' % off)
+        self._fx.append(CancelActions('dock join left the area'))
+        self._action = None
+        self._dock_join_result(ABORTED)
+
+    def _dock_join_result(self, outcome, nav2_down=False):
+        j = self._dock_join_state
+        if j is None or self.phase not in DOCK_PHASES or self._dock_purpose is None:
+            return
+        if self.inputs.docked:
+            self._dock_done()
+            return
+        if outcome == SUCCEEDED:
+            self._log('info', 'dock: joined the route graph at (%.2f, %.2f): planning the dock '
+                              'route' % tuple(j['target']))
+            j['arrived'] = True
+            self._dock_route_tries = 0
+            self._plan_dock_route()
+            return
+        if nav2_down:
+            self._dock_join_state = None
+            self._dock_failed('dock join transit %s: Nav2 down' % outcome)
+            return
+        if outcome in (ABORTED, TIMEOUT) and self._blocked_cause() and \
+                self._blocked('dock', 'dock join transit %s' % outcome):
+            return                          # the re-send (_dock) re-plans, re-joins here
+        j['fails'] += 1
+        if j['fails'] <= int(self.p.transit_retries):
+            self._log('warn', 'dock join transit %s: retry %d/%d'
+                      % (outcome, j['fails'], int(self.p.transit_retries)))
+            self._dock_join_send()
+            return
+        self._dock_join('join transit %s %d times' % (outcome, j['fails']), advance=True)
+
     def _dock_done(self):
+        self._dock_join_state = None
         self._dock_routed = None
         self._dock_route_end = None
         self._blk = None
@@ -152,6 +326,7 @@ class DockingMixin:
             self._go_idle('docked')
 
     def _dock_failed(self, why):
+        self._dock_join_state = None
         self._dock_routed = None
         self._blk = None
         self._dock_purpose = None

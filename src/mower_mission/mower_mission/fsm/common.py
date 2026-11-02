@@ -659,6 +659,18 @@ class Params:
     dock_server_nav_max_m: float = 0.35
     dock_approach_distance_m: float = 0.8     # = map_server / mower_docking approach_distance
     dock_route_retries: int = 2
+    # 2026-11-02 field: RETURN HOME from the edge-lap start of an area (off the route graph:
+    # no clearance anchor near the boundary) handed straight to the docking server and then
+    # refused (6.6 m from the approach pose) without moving. Now a start off the route graph
+    # inside a mowing area first drives (/navigate_to_pose, bounded to the area by
+    # transit_fallback_max_offpath_m, blocked waits, transit_retries per candidate) to a join
+    # point inside that area: the point where the mission's last inbound route entered the
+    # area (dock_join_inset_m from its edge), else points dock_join_insets_m inward from the
+    # nearest edge; then the dock route is planned again. Join points farther than
+    # dock_join_max_m are not used. 0 = off (old hand-over).
+    dock_join_max_m: float = 40.0
+    dock_join_inset_m: float = 1.0
+    dock_join_insets_m: list = field(default_factory=lambda: [1.0, 2.0, 3.0])
     route_controller_id: str = 'FollowPath'          # MPPI transit controller
     route_goal_checker_id: str = 'general_goal_checker'
     route_end_tolerance_m: float = 0.5   # route "success" farther from the target = failed
