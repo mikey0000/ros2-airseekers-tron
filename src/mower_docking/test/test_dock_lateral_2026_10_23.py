@@ -20,6 +20,15 @@ import pytest
 import yaml
 
 from mower_docking import dock_logic as dl
+
+
+def _dock_params(**kw):
+    """DockParams for the DOCKING / FINAL unit tests here: a single detection leaves SEARCH.
+    The shipped 3-frame debounce (docking.yaml search_min_detections, the code default since
+    review 2026-11-02 H5) has its own tests (test_dock_field_2026_10_21, test_dock_search_
+    debounce_shipped)."""
+    kw.setdefault('search_min_detections', 1)
+    return dl.DockParams(**kw)
 from test_dock_field_2026_10_21 import detection
 
 S = dl.DockState
@@ -131,7 +140,7 @@ def _final_lateral(x0, y0, thd, correction, seed=1, seconds=60.0, info=None, los
     import test_dock_field_2026_10_21 as f
     old_off, f.OFF = f.OFF, OFF
     try:
-        p = dl.DockParams(skip_nav_to_approach=True, docked_marker_offset=OFF, **kw)
+        p = _dock_params(skip_nav_to_approach=True, docked_marker_offset=OFF, **kw)
         m = dl.DockStateMachine(p, dl.Pose2D(), goal_timeout_s=400.0)
         stream = DayStream(correction, seed, lose_below)
         fwd = 0.0
@@ -238,7 +247,7 @@ def test_near_check_realign_drives_forward_05_m_arcing_back(monkeypatch):
 
 
 def test_near_check_defaults_and_yaml_agree():
-    p = dl.DockParams()
+    p = _dock_params()
     assert p.near_check_remaining == 0.25 and p.near_check_max_lateral == 0.02
     assert p.near_check_max_heading_deg == 9.0 and p.near_check_forward == 0.5
     assert p.near_check_max_realigns == 2

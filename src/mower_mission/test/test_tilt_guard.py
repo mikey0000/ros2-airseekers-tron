@@ -234,7 +234,7 @@ def test_critical_aborts_a_running_backout():
 
 def test_manual_mowing_limit_blade_off_only():
     """Manual mowing: limit turns the blade off, keeps the phase, never drives; blade-on refused."""
-    h = Harness()
+    h = Harness(manual_blade_requires_enable=False)   # upstream one-step manual mow
     h.cmd(f.CMD_MANUAL_MOW)
     assert h.blade and h.name == 'MANUAL_MOWING'
     m = h.mark()

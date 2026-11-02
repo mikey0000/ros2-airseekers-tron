@@ -649,7 +649,7 @@ class DockParams:
     final_max_distance: float = 0.30
     blind_extra_distance: float = 0.1
     blind_timeout_margin_s: float = 10.0
-    max_retries: int = 3
+    max_retries: int = 8   # = docking.yaml, stock 8 (review 2026-11-02 H5; was 3)
     retry_forward_distance: float = 0.3
     retry_speed: float = 0.1
     retry_timeout_s: float = 15.0
@@ -713,7 +713,7 @@ class DockParams:
     marker_median_n: int = 3         # gates/decisions use the median of the last N markers
     # DOCKING: hold still (never reverse) while the marker is lost; RETRY only after it has
     # been lost for max_lost_frames ticks AND this long (dusk: intermittent detections).
-    marker_lost_hold_s: float = 3.0
+    marker_lost_hold_s: float = 8.0   # = docking.yaml (H5; was 3)
     # Bumper during docking (2026-10-08: a bike pressed the front bumper mid-ALIGNING; the
     # bumper_controller backed off + rotated over the docking lane while the FSM's timers ran
     # on, the about-turn ended off the approach line, SEARCHING timed out and the robot
@@ -756,7 +756,7 @@ class DockParams:
     # Search gate: the stock 0.5 m / 25 deg CheckInitJump has no call site (dead code). Off:
     # any detection starts DOCKING (after search_min_detections), ALIGNING keeps the gate.
     use_marker_gate: bool = False
-    search_min_detections: int = 1
+    search_min_detections: int = 3   # = docking.yaml (H5; was 1)
     # Retries: re-approach with a lateral offset from the dock axis, alternating and growing
     # (retry 1: +a0 * side, 2: -a0 * side, 3: +a1 * side ... then 0 again); side = the side
     # of the axis the marker was last seen from (+1 when never seen).

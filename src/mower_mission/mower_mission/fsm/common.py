@@ -601,7 +601,7 @@ class Params:
     manual_undock_distance_m: float = 0.5    # standalone UNDOCK command (GUI button)
     undock_speed_mps: float = 0.15
     dock_use_vision: bool = True
-    dock_timeout_s: float = 180.0
+    dock_timeout_s: float = 480.0   # = mission.yaml (review 2026-11-02 H5; was 180)
     dock_pose: tuple = ()               # (x, y, yaw); only used without docking server
     mow_angle_deg: float = -1.0
     transit_gap_m: float = 0.6
@@ -1020,7 +1020,7 @@ class Params:
     # MANUAL_MOWING starts blade OFF; the blade runs only after an explicit
     # manual_blade(True) request (GUI mow_enabled=1). False = upstream behaviour
     # (blade on as soon as MANUAL_MOW is entered).
-    manual_blade_requires_enable: bool = False
+    manual_blade_requires_enable: bool = True   # = mission.yaml (H5; was False)
     blade_spinup_s: float = 2.0         # used when confirmation is disabled
     # --- hard boundary (task 0.4 a; 2026-10-14 run 3: seven transit excursions up to 0.85 m
     # outside the areas and paths; owner: "going outside the area is an immediate fail") ---
@@ -1215,7 +1215,7 @@ class Params:
     undock_timeout_s: float = 180.0
     transit_timeout_s: float = 300.0
     follow_timeout_s: float = 3600.0
-    dock_action_timeout_s: float = 400.0
+    dock_action_timeout_s: float = 540.0   # = mission.yaml (H5; was 400)
     # Contacts reported while the docking action still runs: wait for its result (the
     # server stops and confirms on contact); only after this long cancel it and treat the
     # robot as docked (2026-10-07: the mission flipped while the server was in RETRY).

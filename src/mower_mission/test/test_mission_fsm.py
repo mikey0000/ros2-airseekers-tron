@@ -304,7 +304,7 @@ def test_unsupported_commands():
 # manual mowing
 # =====================================================================
 def test_manual_mow_publishes_state_4_before_blade_on():
-    h = Harness()
+    h = Harness(manual_blade_requires_enable=False)   # upstream one-step manual mow
     m = h.mark()
     assert h.cmd(f.CMD_MANUAL_MOW)
     seq = [type(e) for e in h.since(m) if isinstance(e, (f.PublishStatus, f.BladeOn))]
@@ -1844,7 +1844,7 @@ def test_manual_from_docked_drive_only():
 
 
 def test_upstream_manual_blade_request_off_keeps_manual():
-    h = Harness()
+    h = Harness(manual_blade_requires_enable=False)   # upstream one-step manual mow
     h.cmd(f.CMD_MANUAL_MOW)
     assert h.blade
     assert blade_req(h, False)
