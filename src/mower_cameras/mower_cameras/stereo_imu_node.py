@@ -19,13 +19,33 @@ looked "loaded but not attached"). ``scripts/setup_stereo_host.sh`` reloads it w
 Publishes ``sensor_msgs/Imu`` (frame ``stereo_camera_imu``, the chip's own axes; the URDF
 places that frame with the vendor's factory IMU<->cam0 extrinsic), no orientation
 (covariance[0] = -1), and ``~/bias`` (Vector3Stamped, rad/s) latched once found.
+
+Magnetometer (``mag_enable``, 2026-11-03 experiment, UNTESTED ON HARDWARE): the LIS2MDL on the
+same module (i2c-8 0x1e, :mod:`mower_cameras.mag_device`) is read by its own thread at
+``mag_rate`` (``mag_rate_idle`` while /mission/activity is idle) and published as
+
+* ``/imu/mag`` sensor_msgs/MagneticField, frame base_link, tesla, RAW (not calibrated: a bag
+  can be re-calibrated offline), rotated from the chip axes by ``mag_to_base_rpy_deg``;
+* ``/imu/mag_gravity`` geometry_msgs/Vector3Stamped, base_link: the mean stereo-IMU accel
+  (m/s^2, rotated by ``imu_to_base_rpy_deg``) over the same period: the tilt the heading used,
+  recorded so scripts/mag_cal.py can redo the tilt compensation offline;
+* ``/imu/mag_heading`` geometry_msgs/Vector3Stamped, frame map: x = ENU map-frame yaw (deg,
+  CCW from east, UTM grid) after calibration (``mag_calibration_file``), tilt compensation,
+  ``mag_declination_deg`` (site value, owner sets it; 0 by default) and the grid convergence
+  from the first ``/fix``; y = quality 0..1 (:func:`mag_logic.heading`; 0 while
+  uncalibrated); z = calibrated field magnitude (uT).
+
+A missing magnetometer only logs (retry with backoff); the IMU stream is unaffected.
 """
 from __future__ import annotations
 
+import math
 import os
 import select
 import threading
 import time
+
+import numpy as np
 
 import rclpy
 from geometry_msgs.msg import Vector3Stamped
@@ -33,9 +53,9 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Imu
+from sensor_msgs.msg import Imu, MagneticField, NavSatFix
 
-from mower_cameras import iio_imu
+from mower_cameras import iio_imu, mag_device, mag_logic
 from mower_cameras.activity_gate import ActivityWatch, imu_decimation
 
 IDLE_BLOCK_S = 0.05             # idle FIFO block per wake-up (watermark = rate * this)
@@ -144,6 +164,27 @@ class StereoImuNode(Node):
         # Noise densities measured at rest on the mower 2026-10-07 (200 Hz): see docs/vio.md.
         d('gyro_noise_std', 0.0010)      # rad/s per sample
         d('accel_noise_std', 0.02)       # m/s^2 per sample
+        # magnetometer (module doc). Rotations: URDF rpy (deg, child -> base_link). The IMU one
+        # is base_link <- stereo_camera_optical <- stereo_camera_imu composed from
+        # config/urdf/mower.urdf.xacro; the magnetometer's is ASSUMED equal (same board) until a
+        # turn on the spot confirms it (scripts/mag_cal.py reports a mirrored axis).
+        d('mag_enable', True)
+        d('mag_backend', 'auto')          # auto | iio | i2c (mag_device)
+        d('mag_i2c_bus', 8)
+        d('mag_i2c_addr', 0x1E)
+        d('mag_odr', 100.0)               # Hz, chip output data rate (nearest available)
+        d('mag_rate', 20.0)               # Hz published while active
+        d('mag_rate_idle', 2.0)           # Hz while /mission/activity is idle
+        d('mag_to_base_rpy_deg', [-90.917, 0.0, 90.0])
+        d('imu_to_base_rpy_deg', [-90.917, 0.0, 90.0])
+        d('mag_topic', '/imu/mag')
+        d('mag_heading_topic', '/imu/mag_heading')
+        d('mag_gravity_topic', '/imu/mag_gravity')
+        d('mag_calibration_file', '/userdata/ros2/mag_calibration.yaml')
+        d('mag_declination_deg', 0.0)     # site magnetic declination, east positive
+        d('mag_grid_convergence', True)   # map frame = UTM grid: convergence from /fix
+        d('mag_fix_topic', '/fix')
+        d('mag_noise_ut', 0.3)            # LIS2MDL RMS noise (datasheet 3 mgauss)
         p = lambda n: self.get_parameter(n).value  # noqa: E731
         self.p = {n: p(n) for n in ('device_names', 'rate', 'gyro_scale', 'accel_scale',
                                     'watermark', 'frame_id')}
@@ -177,6 +218,14 @@ class StereoImuNode(Node):
         self.activity.subscribe(self)
         self.thread = threading.Thread(target=self._run, name='iio:stereo_imu', daemon=True)
         self.thread.start()
+        self._acc_lock = threading.Lock()
+        self._acc = [0.0, 0.0, 0.0, 0]         # chip-axis accel sum + count since the last mag
+        self.mag_count = 0
+        self.mag_thread = None
+        if p('mag_enable'):
+            self._setup_mag(p)
+            self.mag_thread = threading.Thread(target=self._run_mag, name='mag', daemon=True)
+            self.mag_thread.start()
         self._t_stats = time.monotonic()
         self.create_timer(30.0, self._log_stats)
 
@@ -278,6 +327,14 @@ class StereoImuNode(Node):
             if clock is None:
                 clock = iio_imu.choose_clock(out[-1][0], time.monotonic_ns(), time.time_ns())
                 self.get_logger().info(f'stereo_imu: IIO timestamps are CLOCK_{clock.upper()}')
+            if out:
+                with self._acc_lock:
+                    acc = self._acc
+                    for _t, _g, a in out:
+                        acc[0] += a[0]
+                        acc[1] += a[1]
+                        acc[2] += a[2]
+                    acc[3] += len(out)
             for t, g, a in out:
                 if self.bias is not None and self.bias.bias is None:
                     if time.monotonic() < self._odom_moving_until:
@@ -329,15 +386,138 @@ class StereoImuNode(Node):
             f'stereo_imu: gyro bias {b[0]:+.5f} {b[1]:+.5f} {b[2]:+.5f} rad/s '
             f'(std {self.bias.std.max():.5f}, rejected windows {self.bias.windows_rejected})')
 
+    # ------------------------------------------------------------------ magnetometer
+    def _setup_mag(self, p):
+        self._mag_p = {n: p(n) for n in ('mag_backend', 'mag_i2c_bus', 'mag_i2c_addr', 'mag_odr',
+                                         'mag_rate', 'mag_rate_idle')}
+        self._r_mag = mag_logic.rpy_deg_matrix(p('mag_to_base_rpy_deg'))
+        self._r_imu = mag_logic.rpy_deg_matrix(p('imu_to_base_rpy_deg'))
+        self._declination = math.radians(float(p('mag_declination_deg')))
+        self._convergence = 0.0
+        self._cal = mag_logic.MagCalibration.load(p('mag_calibration_file'))
+        rpy = [float(v) for v in p('mag_to_base_rpy_deg')]
+        if self._cal.calibrated and self._cal.mag_to_base_rpy_deg is not None and \
+                max(abs(a - b) for a, b in zip(self._cal.mag_to_base_rpy_deg, rpy)) > 0.5:
+            self.get_logger().warn(
+                f'stereo_imu: {p("mag_calibration_file")} was fitted with mag_to_base_rpy_deg '
+                f'{self._cal.mag_to_base_rpy_deg}, now {rpy}: ignoring it (re-run mag_cal.py)')
+            self._cal = mag_logic.MagCalibration()
+        self.get_logger().info(
+            f'stereo_imu: magnetometer calibration {p("mag_calibration_file")}: '
+            f'{"fit " + self._cal.fit if self._cal.calibrated else "none (quality 0)"}, '
+            f'declination {float(p("mag_declination_deg")):+.2f} deg')
+        var = (float(p('mag_noise_ut')) * mag_logic.TESLA_PER_UT) ** 2
+        self._mag_cov = [var, 0.0, 0.0, 0.0, var, 0.0, 0.0, 0.0, var]
+        self.mag_pub = self.create_publisher(MagneticField, p('mag_topic'), 10)
+        self.mag_heading_pub = self.create_publisher(Vector3Stamped, p('mag_heading_topic'), 10)
+        self.mag_gravity_pub = self.create_publisher(Vector3Stamped, p('mag_gravity_topic'), 10)
+        self._fix_sub = None
+        if p('mag_grid_convergence') and p('mag_fix_topic'):
+            self._fix_sub = self.create_subscription(NavSatFix, p('mag_fix_topic'),
+                                                     self._on_fix, 1)
+
+    def _on_fix(self, msg):
+        """First valid fix: the grid convergence (constant over a lawn), then unsubscribe."""
+        if not (math.isfinite(msg.latitude) and math.isfinite(msg.longitude)) or \
+                (msg.latitude == 0.0 and msg.longitude == 0.0) or msg.status.status < 0:
+            return
+        self._convergence = mag_logic.utm_grid_convergence(msg.latitude, msg.longitude)
+        self.get_logger().info(f'stereo_imu: mag grid convergence '
+                               f'{math.degrees(self._convergence):+.2f} deg')
+        sub, self._fix_sub = self._fix_sub, None
+        if sub is not None:
+            try:
+                self.destroy_subscription(sub)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _take_accel(self):
+        """Mean chip-axis accel since the last call, rotated to base_link (None if none)."""
+        with self._acc_lock:
+            sx, sy, sz, n = self._acc
+            self._acc = [0.0, 0.0, 0.0, 0]
+        if not n:
+            return None
+        return self._r_imu @ np.array([sx / n, sy / n, sz / n])
+
+    def _run_mag(self):
+        mp = self._mag_p
+        backoff = 1.0
+        while not self.stop_evt.is_set():
+            try:
+                dev = mag_device.open_mag(mp['mag_backend'], int(mp['mag_i2c_bus']),
+                                          int(mp['mag_i2c_addr']), float(mp['mag_odr']))
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().warn(f'stereo_imu: no magnetometer ({exc}); retry in '
+                                       f'{backoff:.0f}s', throttle_duration_sec=300.0)
+                self.stop_evt.wait(backoff)
+                backoff = min(backoff * 2, 60.0)
+                continue
+            backoff = 1.0
+            self.get_logger().info(f'stereo_imu: magnetometer {dev.describe()}')
+            try:
+                self._mag_loop(dev)
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(f'stereo_imu: magnetometer failed: {exc}')
+            finally:
+                dev.close()
+            self.stop_evt.wait(1.0)
+
+    def _mag_loop(self, dev):
+        mp = self._mag_p
+        nxt = time.monotonic()
+        while not self.stop_evt.is_set():
+            rate = float(mp['mag_rate_idle'] if self.activity.low_power else mp['mag_rate'])
+            period = 1.0 / max(0.1, rate)
+            now = time.monotonic()
+            if now < nxt:
+                self.stop_evt.wait(nxt - now)
+                continue
+            nxt = max(nxt + period, now)      # a slow sysfs read: no catch-up burst
+            raw = dev.read()
+            stamp = self.get_clock().now().nanoseconds
+            m = self._r_mag @ np.asarray(raw, dtype=float)
+            a = self._take_accel()
+            h = mag_logic.heading(m, a, self._cal, self._declination, self._convergence)
+            self._publish_mag(stamp, m, a, h)
+
+    def _publish_mag(self, stamp_ns, m, a, h):
+        sec, nsec = divmod(int(stamp_ns), 1_000_000_000)
+        msg = MagneticField()
+        msg.header.stamp.sec, msg.header.stamp.nanosec = sec, nsec
+        msg.header.frame_id = 'base_link'
+        t = mag_logic.TESLA_PER_UT
+        msg.magnetic_field.x, msg.magnetic_field.y, msg.magnetic_field.z = (
+            float(m[0]) * t, float(m[1]) * t, float(m[2]) * t)
+        msg.magnetic_field_covariance = self._mag_cov
+        self.mag_pub.publish(msg)
+        if a is not None:
+            g = Vector3Stamped()
+            g.header = msg.header
+            g.vector.x, g.vector.y, g.vector.z = (float(v) for v in a)
+            self.mag_gravity_pub.publish(g)
+        hm = Vector3Stamped()
+        hm.header.stamp = msg.header.stamp
+        hm.header.frame_id = 'map'
+        hm.vector.x = math.degrees(h['yaw'])
+        hm.vector.y = float(h['quality'])
+        hm.vector.z = float(h['field'])
+        self.mag_heading_pub.publish(hm)
+        self.mag_count += 1
+
     def _log_stats(self):
         now = time.monotonic()
         dt, self._t_stats = now - self._t_stats, now
-        self.get_logger().info(f'stereo_imu: {self.count / dt:.1f} Hz')
+        mag = f', mag {self.mag_count / dt:.1f} Hz' if self.mag_thread is not None else ''
+        self.get_logger().info(f'stereo_imu: {self.count / dt:.1f} Hz{mag}')
         self.count = 0
+        self.mag_count = 0
 
     def destroy_node(self):
         self.stop_evt.set()
         self.thread.join(timeout=3.0)
+        if self.mag_thread is not None:
+            self.mag_thread.join(timeout=3.0)
         super().destroy_node()
 
 

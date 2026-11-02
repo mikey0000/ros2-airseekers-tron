@@ -617,6 +617,11 @@ class MissionNode(Node):
             i.heading_aligned = bool(st.get('aligned', False))
             i.heading_source = str(st.get('source', 'none'))
             i.heading_prior = str(st.get('file_check') or '')
+            mq = st.get('mag_seed_quality')
+            try:
+                i.heading_mag_quality = None if mq is None else float(mq)
+            except (TypeError, ValueError):
+                i.heading_mag_quality = None
             i.heading_quality = str(st.get('quality') or '')
             i.heading_cog_age = _cog_age(st)
             moved = st.get('moved_since_fix_m')

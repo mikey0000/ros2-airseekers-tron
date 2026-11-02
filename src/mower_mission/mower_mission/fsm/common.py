@@ -465,6 +465,9 @@ class Inputs:
     # is a usable prior) | pose_prior (IMU restarted, robot unmoved: re-seeded from the saved
     # map heading, usable prior) | yaw_failed | unverifiable | '' (heading_logic._try_verify)
     heading_prior: str = ''
+    # status mag_seed_quality (source mag, 2026-11-03): lowest quality (0..1) of the
+    # magnetometer samples that seeded the offset; None = not reported / not a mag seed
+    heading_mag_quality: Optional[float] = None
     # status quality (good|fair|poor|low|none) and the age of the COG heading (s: the older of
     # last_cog_age_s and age_s, see mission_node._on_heading); None/'' = not reported
     heading_quality: str = ''
@@ -572,6 +575,12 @@ class Params:
     # policy and bumper live and stops as soon as the aligner reports aligned. Refused only
     # when the disc is not clear (or blind drives are off).
     heading_calibration_blind: bool = True
+    # 2026-11-03 magnetometer seed (heading_aligner heading_mag_seed, off by default): a
+    # 'mag' source whose seed quality (status mag_seed_quality) is >= this is a usable prior
+    # for the calibration drive above (like pose_prior) instead of the blind drive; a lower
+    # one is treated as no prior. The +-heading_calibration_cone_deg map check assumes the
+    # mag heading p95 is inside the cone (scripts/mag_cal.py verdict 'seed').
+    heading_mag_min_quality: float = 0.7
     heading_calibration_blind_distance_m: float = 0.8   # aligner COG window 0.6 m + margin
     heading_calibration_settle_s: float = 3.0       # RTK fixed this long first (the saved
                                                     # heading may still verify without a drive)
