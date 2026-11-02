@@ -63,6 +63,9 @@ Behaviour:
   and zero is published every tick until a fresh command arrives; recovery
   slews up from zero.
 
+Stock parity (2026-11-03): mower_mission also caps the controllers at
+`camera_blocked_speed_mps` while `/vision/camera_blocked` is true (the tilt caution cap path).
+
 ## slip_detector
 
 Compares commanded vs measured twist and latches `/dig_stall`
