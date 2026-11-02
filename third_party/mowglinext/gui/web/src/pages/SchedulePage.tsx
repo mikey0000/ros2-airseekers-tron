@@ -9,6 +9,8 @@ import {useIsMobile} from "../hooks/useIsMobile";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
 import {DashCard, ActionButton, IconPlus, FONT} from "../components/dashboard";
 import {IrriSenseStatusChip} from "../components/schedule/IrriSenseStatusChip.tsx";
+import {scheduleRules} from "../components/schedule/scheduleRules.ts";
+import {useSettings} from "../hooks/useSettings.ts";
 import dayjs from "dayjs";
 
 interface Schedule {
@@ -43,6 +45,7 @@ function errorMessage(e: unknown): string | undefined {
 
 export const SchedulePage = () => {
   const {t} = useTranslation();
+  const {settings: robotSettings} = useSettings();
   const {colors} = useThemeMode();
   const guiApi = useApi();
   const {notification, modal} = App.useApp();
@@ -454,10 +457,10 @@ export const SchedulePage = () => {
           <div style={{fontSize: 11, color: colors.textMuted, marginBottom: 12}}>
             {t('schedulePage.rulesDescription')}
           </div>
-          {[
-            {k: t('schedulePage.ruleRainAware'), on: true, hint: t('schedulePage.ruleRainAwareHint')},
-            {k: t('schedulePage.ruleAutoDockLow'), on: true, hint: t('schedulePage.ruleAutoDockLowHint')},
-          ].map(r => (
+          {scheduleRules(robotSettings).map(rule => ({
+            k: t(rule.id === 'rain' ? 'schedulePage.ruleRainAware' : 'schedulePage.ruleAutoDockLow'),
+            on: rule.on, hint: t(rule.hintKey, rule.hintParams),
+          })).map(r => (
             <div key={r.k} style={{display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0'}}>
               <span style={{
                 fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',

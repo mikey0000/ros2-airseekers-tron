@@ -1121,10 +1121,12 @@
     "areaLabel": "Area {{index}}",
     "schedulesConfigured": "{{count}} schedules configured.",
     "rules": "Rules",
-    "rulesDescription": "Built-in safety behaviors — always active.",
+    "rulesDescription": "Apply to every run. Change them in Settings > Rain and Battery.",
     "ruleRainAware": "Rain-aware",
     "ruleRainAwareHint": "pause if rain detected",
     "ruleAutoDockLow": "Auto-dock low",
+    "ruleAutoDockLowHintPct": "return to the dock below {{pct}} % battery",
+    "ruleStopLowHintPct": "stop in place below {{pct}} % battery",
     "ruleAutoDockLowHint": "return at <20% battery",
     "on": "On",
     "off": "Off"
