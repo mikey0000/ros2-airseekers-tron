@@ -11,4 +11,4 @@ float32 rx_bitrate_mbps
 uint32 tx_retries          # cumulative station counters (refreshed every 10 s)
 uint32 tx_failed
 uint32 roam_count          # BSSID changes while connected since node start
-string link_state          # good | ok | weak | bad | disconnected | down
+string link_state          # good | ok | weak | bad | disconnected | down | unknown (iw failed)

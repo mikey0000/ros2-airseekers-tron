@@ -665,6 +665,34 @@ func (r *RosProvider) fetchNavigationChannels(ctx context.Context, all []mowgli.
 	return out
 }
 
+// fetchBoundaryLines returns the map server's boundary lines (virtual walls),
+// or nil when it does not serve get_boundary_lines or answers garbage.
+func (r *RosProvider) fetchBoundaryLines(ctx context.Context) []mowgli.BoundaryLine {
+	var res mowgli.GetAreaChannelRes
+	req := mowgli.GetAreaChannelReq{}
+	if err := r.CallService(ctx, mowgli.GetBoundaryLinesService, &req, &res, mowgli.GetAreaChannelType); err != nil {
+		return nil
+	}
+	return parseBoundaryLines(res)
+}
+
+func parseBoundaryLines(res mowgli.GetAreaChannelRes) []mowgli.BoundaryLine {
+	if !res.Success || res.SettingsJSON == "" {
+		return nil
+	}
+	var set mowgli.BoundaryLineSet
+	if err := json.Unmarshal([]byte(res.SettingsJSON), &set); err != nil {
+		return nil
+	}
+	out := make([]mowgli.BoundaryLine, 0, len(set.Lines))
+	for _, l := range set.Lines {
+		if len(l.Points) >= 2 {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 func parseAreaChannel(res mowgli.GetAreaChannelRes) *mowgli.AreaChannel {
 	if !res.Success || res.SettingsJSON == "" {
 		return nil
@@ -719,6 +747,7 @@ func (r *RosProvider) pollMap() {
 		WorkingArea:        workingAreas,
 		WorkingAreaIndices: workingIndices,
 		NavigationChannels: navChannels,
+		BoundaryLines:      r.fetchBoundaryLines(ctx),
 	}
 	r.addDockPose(&mapData)
 

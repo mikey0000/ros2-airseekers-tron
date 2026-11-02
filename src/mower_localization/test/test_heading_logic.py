@@ -1295,6 +1295,7 @@ def test_stationary_hold_status_after_a_long_idle():
     st = s.est.status(s.t)
     assert st['last_cog_age_s'] > 300.0
     assert st['moved_since_fix_m'] < 0.5 and st['imu_continuous'] is True
+    assert st['held'] is True                # the mission's one hold verdict
 
 
 def test_stationary_hold_moved_after_the_fix_counts_the_farthest_point():
@@ -1314,6 +1315,18 @@ def test_stationary_hold_imu_gap_breaks_continuity():
     assert st['imu_continuous'] is False and st['aligned']
 
 
+def test_stationary_hold_imu_stream_stopped_is_not_continuous():
+    """Review 2026-11-02 (finding 8): with no IMU sample at all the flag stayed true."""
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)
+    s.run(0.0, 0.0, 1.0)
+    assert s.est.status(s.t)['imu_continuous'] is True
+    t = s.t + 5.0                        # the IMU stream stops; no next sample flips it
+    st = s.est.status(t)
+    assert st['imu_continuous'] is False and st['held'] is False
+    assert not s.est.stationary_since_fix(t)
+
+
 def test_stationary_hold_imu_reset_unaligns_and_unknown_move():
     s = Sim()
     s.run(0.3, 0.0, 3.0)
@@ -1329,6 +1342,51 @@ def test_stationary_hold_unknown_without_rtk_fixed_at_the_fix():
     s.run(0.3, 0.0, 7.0)
     assert s.est.aligned
     assert s.est.status(s.t)['moved_since_fix_m'] is None
+
+
+def test_stationary_hold_counts_motion_on_rtk_float():
+    """Review 2026-11-02: a 7.5 m weave on RTK float after the COG fix (no new fix) left
+    moved_since_fix_m at 0.27, so the parked heading was held at 'fair' however old."""
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)                 # COG fix, RTK fixed
+    assert s.est.source == hl.SOURCE_COG
+    fixes = s.est.n_cog
+    s.fix_type = 2                       # RTK float
+    for _ in range(6):                   # weave away from the fix (no straight window)
+        s.run(0.3, 0.6, 2.0)
+        s.run(0.3, -0.6, 2.0)
+    s.run(0.0, 0.0, 1700.0)
+    st = s.est.status(s.t)
+    assert s.est.n_cog == fixes and math.hypot(s.x, s.y) > 5.0
+    assert st['moved_since_fix_m'] > 5.0 and st['held'] is False
+    assert not s.est.stationary_since_fix() and st['quality'] == 'poor'
+
+
+def test_stationary_hold_counts_wheel_odometry_without_gnss():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)                 # COG fix, RTK fixed
+    s.est.on_odom(s.t, 0.0, 0.0)
+    s.fix_type = 0                       # GNSS gone: no position reaches on_gps
+    s.run(0.0, 0.0, 1.5)                 # ... for longer than the GNSS freshness window
+    for k in range(1, 21):               # 2 m on the wheels
+        s.run(0.0, 0.0, 0.1)
+        s.est.on_odom(s.t, 0.1 * k, 0.0)
+    s.run(0.0, 0.0, 1700.0)
+    st = s.est.status(s.t)
+    assert st['moved_since_fix_m'] > 1.9 and st['quality'] == 'poor'
+
+
+def test_stationary_hold_ignores_wheel_odometry_while_gnss_is_fresh():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)
+    s.run(0.0, 0.0, 0.5)
+    s.est.on_odom(s.t, 0.0, 0.0)
+    moved = s.est.moved_since_fix
+    for k in range(1, 21):               # wheels spin in place, RTK fixed says it stands
+        s.run(0.0, 0.0, 0.1)
+        s.est.on_odom(s.t, 0.1 * k, 0.0)
+    assert s.est.moved_since_fix == pytest.approx(moved, abs=0.01)
+    assert s.est.stationary_since_fix()
 
 
 def test_stationary_hold_quality_stops_at_fair():

@@ -90,13 +90,21 @@ class PhaseDispatchMixin:
                 self._hcal_tick()
                 return
             if i.fix_type is not None and i.fix_type >= self.p.rtk_fix_type:
-                # a START that came through preflight for a calibration drive plans only on a
-                # fresh heading; the dock path (undock seeds 'dock') is unchanged
-                if self._heading_plan_ok() if self._hcal_wanted else self.heading_ok():
+                # a START off the dock plans only on a fresh heading: one held at START (RTK
+                # float, the aligner saw no motion) is re-checked now that RTK fixed shows
+                # whether the robot moved since the fix (review 2026-11-02). The dock path
+                # (undock seeds 'dock') is unchanged.
+                off_dock = self._hcal_wanted or (self.mission is not None
+                                                 and not self.mission.left_dock)
+                if self._heading_plan_ok() if off_dock else self.heading_ok():
                     self._log('info', 'RTK fixed, heading aligned (%s): planning'
                               % i.heading_source)
                     self._next_area()
                     return
+                if off_dock and not self._hcal_wanted and self.heading_ok():
+                    self._log('info', 'heading cog is %s now RTK is fixed: calibration drive '
+                                      'first' % self._heading_cog_stale())
+                    self._hcal_wanted = True
                 if self._hcal_wanted:
                     self._hcal_maybe_start()
                     return

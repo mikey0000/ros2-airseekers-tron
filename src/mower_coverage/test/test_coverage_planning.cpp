@@ -591,6 +591,39 @@ TEST(CoveragePlanning, ManyHolesStillPlanAndStayOutOfHoles) {
   EXPECT_LT(transits, 30) << total << " m";
 }
 
+// Boundary lines (virtual walls, 2026-11-02): the mission sends each line as a thin hole
+// (the line buffered to width_m + boundary_line_keepout_m, 0.57 m by default) that may run
+// across the outer boundary, or cut the field in two. No swath may cross the band, and both
+// sides of a full cut are still mowed.
+static bool segmentHitsRect(const Point2D& a, const Point2D& b, double x0, double x1, double y0,
+                     double y1) {
+  for (int k = 0; k <= 200; ++k) {
+    const double t = k / 200.0;
+    const double x = a.first + t * (b.first - a.first);
+    const double y = a.second + t * (b.second - a.second);
+    if (x > x0 && x < x1 && y > y0 && y < y1) return true;
+  }
+  return false;
+}
+
+TEST(CoveragePlanning, BoundaryLineKeepoutCutsSwaths) {
+  // wall from below the south edge to y 4.5 (gap in the north), and a full cut
+  for (double top : {4.785, 7.285}) {
+    const std::vector<Point2D> band = {{4.715, -1.285}, {5.285, -1.285}, {5.285, top}, {4.715, top}};
+    auto plan = planNode(kRect10x6, {band}, 0.0);
+    ASSERT_FALSE(plan.swaths.empty()) << "top " << top;
+    bool west = false, east = false;
+    for (const auto& s : plan.swaths) {
+      EXPECT_FALSE(segmentHitsRect(s.first, s.second, 4.715, 5.285, -1.285, top))
+          << "swath (" << s.first.first << ", " << s.first.second << ") -> (" << s.second.first
+          << ", " << s.second.second << ") crosses the boundary line band (top " << top << ")";
+      west = west || std::max(s.first.first, s.second.first) < 4.715;
+      east = east || std::min(s.first.first, s.second.first) > 5.285;
+    }
+    EXPECT_TRUE(west && east) << "both sides of the line are mowed (top " << top << ")";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Path modes (per-area settings): spiral, contour_only, edge_first = false.
 // ---------------------------------------------------------------------------
@@ -1747,5 +1780,178 @@ TEST(EdgeLayoutHoles, Area7PoleNearTheWestLine) {
       {-5.93394,-0.366968}};
   for (double a : {-1.0, M_PI / 4.0, 3.0 * M_PI / 4.0}) {
     expectHardHole(planSoft(outer, hole, a), outer, hole);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Boundary lines (2026-11-02): the BODY, not just the swath centrelines, stays off the true
+// line. The mission sends a line as a hole of width width_m + boundary_line_keepout_m (0.30);
+// the edge layouts must keep the footprint box (0.60 ahead / 0.10 behind base_link, 0.235 to
+// each side) at least 0.05 m off the line along every planned leg, every turn and through
+// every pivot at a vertex (the sweep between the incoming and outgoing heading), with the
+// production route options (racetrack, r 0.5, 0.18 m spacing, edge_laps 3).
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr double kBodyFront = 0.60, kBodyRear = 0.10, kBodyHalf = 0.235, kBodyMargin = 0.05;
+
+double segSegDist(const Point2D& a, const Point2D& b, const Point2D& c, const Point2D& d) {
+  auto cross = [](const Point2D& o, const Point2D& p, const Point2D& q) {
+    return (p.first - o.first) * (q.second - o.second) - (p.second - o.second) * (q.first - o.first);
+  };
+  const double d1 = cross(c, d, a), d2 = cross(c, d, b), d3 = cross(a, b, c), d4 = cross(a, b, d);
+  if (((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0))) return 0.0;
+  return std::min({pointSegDist(a, c, d), pointSegDist(b, c, d), pointSegDist(c, a, b),
+                   pointSegDist(d, a, b)});
+}
+
+// Distance from the footprint box at (p, yaw) to the polyline `line`; 0 when they touch or
+// the line runs through the box.
+double bodyLineDist(const Point2D& p, double yaw, const std::vector<Point2D>& line) {
+  const double c = std::cos(yaw), s = std::sin(yaw);
+  std::vector<Point2D> box;
+  for (const auto& [bx, by] : std::vector<Point2D>{{kBodyFront, -kBodyHalf}, {kBodyFront, kBodyHalf},
+                                                   {-kBodyRear, kBodyHalf}, {-kBodyRear, -kBodyHalf}}) {
+    box.push_back({p.first + c * bx - s * by, p.second + s * bx + c * by});
+  }
+  double best = std::numeric_limits<double>::max();
+  for (size_t i = 0; i + 1 < line.size(); ++i) {
+    if (pointInPolygon(line[i], box, false)) return 0.0;
+    for (size_t k = 0; k < 4; ++k) {
+      best = std::min(best, segSegDist(line[i], line[i + 1], box[k], box[(k + 1) % 4]));
+    }
+  }
+  return best;
+}
+
+// Worst body-to-line distance along a driven polyline: straight legs every 2 cm at the leg
+// heading (reverse legs: the body faces the other way), pivots at the vertices swept.
+double drivenBodyClearance(const std::vector<Point2D>& pts, const std::vector<bool>& rev,
+                           const std::vector<Point2D>& line, Point2D* where) {
+  double worst = std::numeric_limits<double>::max();
+  double prev_yaw = std::nan("");
+  for (size_t i = 0; i + 1 < pts.size(); ++i) {
+    const Point2D& a = pts[i];
+    const Point2D& b = pts[i + 1];
+    const double len = ptDist(a, b);
+    if (len < 1e-6) continue;
+    double yaw = std::atan2(b.second - a.second, b.first - a.first);
+    if (i + 1 < rev.size() && rev[i + 1]) yaw += M_PI;
+    if (!std::isnan(prev_yaw)) {
+      const double turn = std::remainder(yaw - prev_yaw, 2.0 * M_PI);
+      for (int k = 0; k <= 12; ++k) {
+        const double d = bodyLineDist(a, prev_yaw + turn * k / 12.0, line);
+        if (d < worst) { worst = d; *where = a; }
+      }
+    }
+    for (double t = 0.0; t <= len + 1e-9; t += 0.02) {
+      const Point2D q{a.first + (b.first - a.first) * t / len, a.second + (b.second - a.second) * t / len};
+      const double d = bodyLineDist(q, yaw, line);
+      if (d < worst) { worst = d; *where = q; }
+    }
+    prev_yaw = yaw;
+  }
+  return worst;
+}
+
+// Every planned motion of a plan: each ring (closed), each swath with the turn into it. A
+// straight connector from the previous swath is driven only as the bridge joins it
+// (splitter.join_subpaths: gap <= kTransitGap and not through a hole); otherwise it is a
+// blade-off transit (route graph), not part of this check.
+double planBodyClearance(const CoveragePlan& plan, const std::vector<Point2D>& line,
+                         const std::vector<Point2D>& band, std::string* what) {
+  double worst = std::numeric_limits<double>::max();
+  Point2D at{0, 0};
+  auto take = [&](double d, const std::string& w) {
+    if (d < worst) { worst = d; *what = w + " near (" + std::to_string(at.first) + ", " +
+                                     std::to_string(at.second) + ")"; }
+  };
+  for (size_t r = 0; r < plan.rings.size(); ++r) {
+    auto ring = plan.rings[r];
+    if (!ring.empty()) ring.push_back(ring.front());
+    take(drivenBodyClearance(ring, {}, line, &at), "ring " + std::to_string(r));
+  }
+  for (size_t i = 0; i < plan.swaths.size(); ++i) {
+    std::vector<Point2D> pts;
+    std::vector<bool> rev;
+    const bool turned = i > 0 && i < plan.turns.size() && !plan.turns[i].poses.empty();
+    bool joined = turned;
+    if (i > 0 && !turned) {
+      const Point2D& a = plan.swaths[i - 1].second;
+      const Point2D& b = plan.swaths[i].first;
+      bool through = false;
+      for (size_t k = 0; k < band.size(); ++k) {
+        through = through || segSegDist(a, b, band[k], band[(k + 1) % band.size()]) == 0.0;
+      }
+      joined = ptDist(a, b) <= kTransitGap && !through;
+    }
+    if (joined) {
+      pts.push_back(plan.swaths[i - 1].second);
+      rev.push_back(false);
+      if (i < plan.turns.size()) {
+        for (const auto& tp : plan.turns[i].poses) {
+          pts.push_back(tp.p);
+          rev.push_back(tp.reverse);
+        }
+      }
+    }
+    pts.push_back(plan.swaths[i].first);
+    rev.push_back(false);
+    pts.push_back(plan.swaths[i].second);
+    rev.push_back(false);
+    take(drivenBodyClearance(pts, rev, line, &at), "swath " + std::to_string(i));
+  }
+  return worst;
+}
+
+std::vector<Point2D> lineBand(const std::vector<Point2D>& line, double half) {
+  // a straight two-point line buffered with square caps (the mission's keepout polygon)
+  const Point2D& a = line.front();
+  const Point2D& b = line.back();
+  const double L = ptDist(a, b), ux = (b.first - a.first) / L, uy = (b.second - a.second) / L;
+  const double nx = -uy * half, ny = ux * half, ex = ux * half, ey = uy * half;
+  return {{a.first - ex + nx, a.second - ey + ny}, {b.first + ex + nx, b.second + ey + ny},
+          {b.first + ex - nx, b.second + ey - ny}, {a.first - ex - nx, a.second - ey - ny}};
+}
+
+CoveragePlan planLayoutWithLine(const std::string& layout, const std::vector<Point2D>& line,
+                                double band = 0.57) {
+  mower_coverage::RouteOptions route;
+  EXPECT_TRUE(mower_coverage::parseRouteOrder("racetrack", &route.order));
+  route.min_turn_radius = 0.5;
+  route.min_drivable_turn_radius = 0.40;
+  route.fill_gaps = true;
+  EXPECT_TRUE(mower_coverage::applyEdgeLayout(layout, 0.18, &route, 3));
+  return mower_coverage::planCoverage(
+      mower_coverage::makeFieldCell(kRect10x6, {lineBand(line, band / 2.0)}), 0.18, 0.20, 2,
+      0.14, 0.0, 0.15, mower_coverage::PathMode::kZigzag, true, route);
+}
+
+}  // namespace
+
+// (a) a wall along the swath direction 0.5 m inside the south edge, and (b) rows (along x)
+// ending at a wall across the area (a gap at the north end, and a full cut).
+TEST(BoundaryLineBody, EdgeLayoutsKeepTheBodyOffTheLine) {
+  const std::vector<std::pair<std::string, std::vector<Point2D>>> walls = {
+      {"parallel", {{-1.0, 0.5}, {11.0, 0.5}}},
+      {"parallel-short", {{2.0, 0.5}, {8.0, 0.5}}},
+      {"perpendicular", {{5.0, -1.0}, {5.0, 4.5}}},
+      {"full-cut", {{5.0, -1.0}, {5.0, 7.0}}},
+  };
+  for (const std::string layout : {"soft", "hard"}) {
+    for (const auto& [name, line] : walls) {
+      const CoveragePlan plan = planLayoutWithLine(layout, line);
+      ASSERT_FALSE(plan.swaths.empty()) << layout << " " << name;
+      std::string what;
+      const double d = planBodyClearance(plan, line, lineBand(line, 0.57 / 2.0), &what);
+      RecordProperty(layout + "_" + name, std::to_string(d));
+      EXPECT_GE(d, kBodyMargin) << layout << " " << name << ": the body comes within " << d
+                                << " m of the line (" << what << ")";
+      // swath / ring centrelines laterally: robot half width + margin
+      for (const auto& s : plan.swaths) {
+        EXPECT_GE(segSegDist(s.first, s.second, line.front(), line.back()),
+                  kBodyHalf + kBodyMargin) << layout << " " << name;
+      }
+    }
   }
 }

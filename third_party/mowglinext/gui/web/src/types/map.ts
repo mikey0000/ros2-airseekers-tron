@@ -16,6 +16,22 @@ export type AreaChannel = {
 };
 export type MapWithChannels = {navigation_channels?: (AreaChannel | null)[]};
 
+/**
+ * A boundary line ("virtual wall"): a polyline the mower must never cross.
+ * Served by the Go backend as Map.boundary_lines and sent back in
+ * PUT /mowglinext/map (replaces the stored set when present; omitted = keep).
+ * Map metres, [x, y]; width_m 0 = the body footprint must not cross the line.
+ * Hand-written: not part of the generated ROS / swagger types.
+ */
+export type BoundaryLine = {
+    id: string;
+    name: string;
+    points: [number, number][];
+    width_m: number;
+};
+export type MapWithBoundaryLines = {boundary_lines?: BoundaryLine[]};
+export type ReplaceMapBoundaryLines = {boundary_lines?: BoundaryLine[]};
+
 export class MowingFeature implements Feature {
     id: string;
     type: 'Feature';
@@ -127,6 +143,60 @@ export class DynObstacleFeature extends MowingFeature implements Feature<Polygon
             obs_id: obstacleId,
             obs_label: String(obstacleId),
         };
+    }
+}
+
+export const BOUNDARY_LINE_FEATURE_TYPE = 'boundary_line';
+export const BOUNDARY_LINE_MAX_WIDTH_M = 2.0;
+export const BOUNDARY_LINE_NAME_MAX = 64;
+
+/** Feature id of the boundary line with server id `lineId`. */
+export const boundaryLineFeatureId = (lineId: string) => `boundary-${lineId}`;
+
+/**
+ * Boundary line (virtual wall) on the editable map: display lon/lat
+ * coordinates, plus the server id, name and enforced width. Not a polygon, so
+ * it never enters the mapbox-gl-draw store; MapPage draws it on its own layer.
+ */
+export class BoundaryLineFeature extends MowingFeature implements Feature<LineString> {
+    declare geometry: LineString;
+    declare properties: {
+        feature_type: typeof BOUNDARY_LINE_FEATURE_TYPE;
+        line_id: string;
+        name: string;
+        width_m: number;
+    };
+
+    constructor(lineId: string, coordinates: Position[], name = '', widthM = 0) {
+        super(boundaryLineFeatureId(lineId));
+        this.geometry = {type: 'LineString', coordinates: coordinates.map((c) => [c[0], c[1]])};
+        this.properties = {
+            feature_type: BOUNDARY_LINE_FEATURE_TYPE,
+            line_id: lineId,
+            name: name.slice(0, BOUNDARY_LINE_NAME_MAX),
+            width_m: Math.min(BOUNDARY_LINE_MAX_WIDTH_M, Math.max(0, Number.isFinite(widthM) ? widthM : 0)),
+        };
+    }
+
+    getLineId(): string {
+        return this.properties.line_id;
+    }
+
+    getName(): string {
+        return this.properties.name;
+    }
+
+    getWidthM(): number {
+        return this.properties.width_m;
+    }
+
+    getCoordinates(): Position[] {
+        return this.geometry.coordinates;
+    }
+
+    /** Copy with a new name / width (features are replaced, never mutated in place). */
+    withProps(name: string, widthM: number): BoundaryLineFeature {
+        return new BoundaryLineFeature(this.getLineId(), this.getCoordinates(), name, widthM);
     }
 }
 
@@ -481,6 +551,13 @@ export function featureFromJSON(
             obstacle.setGeometry(json.geometry as Polygon);
             obstacle.properties = {...obstacle.properties, ...props} as ObstacleFeature['properties'];
             return obstacle;
+        }
+        case BOUNDARY_LINE_FEATURE_TYPE: {
+            const line = json.geometry as LineString;
+            if (line?.type !== 'LineString') return null;
+            return new BoundaryLineFeature(
+                typeof props.line_id === 'string' ? props.line_id : json.id, line.coordinates,
+                typeof props.name === 'string' ? props.name : '', Number(props.width_m ?? 0));
         }
         case 'dock': {
             const coords = (json.geometry as Point).coordinates;

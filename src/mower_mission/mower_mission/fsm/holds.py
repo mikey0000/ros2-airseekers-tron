@@ -141,13 +141,9 @@ class HoldsMixin:
         (unranged, no bearing, no path) -> counts as before. Records how it was judged in
         ``self._path_eval`` (for /mission/obstacle_decision and the dynamic stop)."""
         self._path_eval = None
-        i = self.inputs
-        d, b, pose = i.obstacle_distance, i.obstacle_bearing, i.pose
-        if d is None or b is None or pose is None:
+        pose, o = self.inputs.pose, self._obstacle_xy()
+        if o is None:
             return None
-        yaw = pose[2] if len(pose) > 2 else 0.0
-        a = yaw + math.radians(float(b))
-        o = (pose[0] + d * math.cos(a), pose[1] + d * math.sin(a))
         p = self.p
         hw, margin = float(p.robot_width_m) / 2.0, float(p.obstacle_path_margin_m)
         front, rear = float(p.robot_front_m), float(p.robot_rear_edge_m)
@@ -167,6 +163,16 @@ class HoldsMixin:
         for p0, p1 in zip(pts, pts[1:] if len(pts) > 1 else pts):
             best = min(best, _seg_dist(o, p0, p1))
         return best <= hw + margin
+
+    def _obstacle_xy(self):
+        """Map position of the ranged detection (pose + obstacle_distance / bearing), or None
+        (unranged, no bearing, no pose)."""
+        i = self.inputs
+        d, b, pose = i.obstacle_distance, i.obstacle_bearing, i.pose
+        if d is None or b is None or pose is None:
+            return None
+        a = (pose[2] if len(pose) > 2 else 0.0) + math.radians(float(b))
+        return pose[0] + d * math.cos(a), pose[1] + d * math.sin(a)
 
     def _decide(self, kind, on):
         i = self.inputs
@@ -646,16 +652,45 @@ class HoldsMixin:
         return math.hypot(q[0] - pose[0], q[1] - pose[1])
 
     def _static_block(self):
-        """The retry was stopped by a static obstacle on the path: an on-path obstacle
-        decision (act / stop) or a recent collision ahead / ranged static (not a person or
-        animal, which moves)."""
+        """The retry was stopped by a static obstacle on the stretch (not a person or
+        animal, which moves): an on-path obstacle decision (act / stop); or a recent ranged
+        static on the path (_obstacle_on_path) or within robot_width_m / 2 +
+        obstacle_path_margin_m of the stretch; or a recent collision with the robot's front
+        that close to the stretch. Review 2026-11-02: a detection anywhere in the frame
+        used to exclude the stretch for good (blocked_static, area 'complete')."""
         if self._policy() == 'dynamic':
             return False
         dec = self.obstacle_decision or {}
         if dec.get('kind', 'none') != 'none' and dec.get('on_path') is True and \
                 dec.get('action') in ('act', 'stop'):
             return True
-        return bool(self._collision_recent() or self._static_recent())
+        p, pose = self.p, self.inputs.pose
+        near = float(p.robot_width_m) / 2.0 + float(p.obstacle_path_margin_m)
+        if self._static_recent():
+            o = self._obstacle_xy()
+            if self._obstacle_on_path() is True or \
+                    (o is not None and self._stretch_seg_dist(o) <= near):
+                return True
+        if self._collision_recent() and pose is not None:
+            front = float(p.robot_front_m)
+            nose = (pose[0] + front * math.cos(pose[2]), pose[1] + front * math.sin(pose[2]))
+            if self._stretch_seg_dist(nose) <= near:
+                return True
+        return False
+
+    def _stretch_seg_dist(self, pt):
+        """Distance from ``pt`` to the polyline of the stretch being re-tried (inf without)."""
+        m = self.mission
+        if m is None or m.stretch is None:
+            return float('inf')
+        a = absolute_to_local(m.subpaths, m.stretch[0])
+        b = absolute_to_local(m.subpaths, m.stretch[1])
+        if a is None or b is None or a[0] != b[0]:
+            return float('inf')
+        pts = m.subpaths[a[0]][a[1]:b[1] + 1]
+        if len(pts) < 2:
+            return geo.dist(pt, pts[0]) if pts else float('inf')
+        return min(_seg_dist(pt, p0, p1) for p0, p1 in zip(pts, pts[1:]))
 
     def _next_failed_retry(self):
         """End-of-area pass: re-try one sub-path dropped on transit failure, as a

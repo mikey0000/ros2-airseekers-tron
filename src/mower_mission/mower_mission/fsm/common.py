@@ -35,6 +35,7 @@ from mower_common.phases import DOCK_PHASES, DOCKED_MOTION_PHASES, MOTION_PHASES
 from mower_mission import body_boundary as bbody
 from mower_mission import geometry as geo
 from mower_mission import path_conditioning as pcond
+from mower_mission import walls
 from mower_mission.resume import AreaCursor, ResumeCursor, absolute_to_local, subpath_offsets
 
 # ---------------------------------------------------------------------------
@@ -473,6 +474,9 @@ class Inputs:
     # (status imu_continuous, None = not reported)
     heading_moved_m: Optional[float] = None
     heading_imu_continuous: Optional[bool] = None
+    # the aligner's stationary hold verdict (status held: moved < its hold_move since the
+    # fix by any motion evidence, IMU continuous; None = not reported). The one threshold.
+    heading_held: Optional[bool] = None
     # /obstacle_policy (mower_vision obstacle_guard, JSON): closest close detection
     obstacle_kind: str = 'none'         # none | dynamic | static
     obstacle_class: str = ''
@@ -522,6 +526,9 @@ class Inputs:
     # 2026-10-23 option C: /obstacle_tracker/nogo_zones (nogo.ZoneSet) + receipt time
     nogo_zones: Any = None
     nogo_stamp: Optional[float] = None
+    # 2026-11-02 boundary lines (virtual walls): /map_server_node/boundary_lines (latched),
+    # [walls.BoundaryLine]; None = never received (no lines known)
+    boundary_lines: Any = None
 
 
 @dataclass
@@ -576,9 +583,8 @@ class Params:
     heading_max_cog_age_s: float = 300.0
     heading_reject_quality: list = field(default_factory=lambda: ['poor'])
     # 2026-11-02: a cog heading older than heading_max_cog_age_s is kept (no calibration
-    # drive, no age/quality rejection) while the robot moved less than this since the fix
-    # and the IMU stayed continuous; the age check is the fallback when either is unknown
-    heading_stale_move_m: float = 0.5
+    # drive, no age/quality rejection) while the aligner reports it held (status held,
+    # heading_logic hold_move 0.5 m; review 2026-11-02 dropped heading_stale_move_m)
     rain_mode: int = 1                  # 0 ignore, 1 dock and wait
     rain_debounce_s: float = 2.0
     rain_delay_minutes: float = 30.0
@@ -1038,6 +1044,13 @@ class Params:
     # base_link check (drawn paths) from the mission's own area snapshot in TRANSIT / MOWING
     # (immune to a GUI map reload); ~/outside_m in dock phases / without a snapshot
     hard_boundary_snapshot: bool = True
+    # boundary lines (virtual walls, 2026-11-02, walls.py): the footprint reaching more than
+    # boundary_line_trip_m into a line (centreline +- width_m / 2) is a hard-boundary trip
+    # naming the line (retrace the driven track); coverage plans get each line as a hole of
+    # width width_m + boundary_line_keepout_m (swaths cut at the line)
+    boundary_lines_enabled: bool = True
+    boundary_line_trip_m: float = 0.0
+    boundary_line_keepout_m: float = 0.57     # = mower_map boundary_lines.DEFAULT_KEEPOUT_M
     hard_boundary_trail_m: float = 1.5
     hard_boundary_trail_step_m: float = 0.05
     hard_boundary_pause_s: float = 0.5

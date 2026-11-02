@@ -145,6 +145,13 @@ Known gaps / notes:
   `GET /api/mowglinext/obstacles/{id}/snapshot` (`pkg/api/mowglinext.go`). It is
   a no-op (icon fallback) when snapshots are disabled or the file is absent.
 
+* **Boundary lines (virtual walls, 2026-11-02).** Polylines the mower body must
+  never cross, drawn with the map editor's "Boundary line" tool. The backend reads
+  them from `/map_server_node/get_boundary_lines` into `Map.boundary_lines` and
+  saves them with the areas (`replace_areas` `boundary_lines_json`, or
+  `set_boundary_lines` after the fallback sequence); format and enforcement in
+  `docs/STATUS.md` ("Boundary lines").
+
 ## Profile gating (Tron trim)
 
 What the GUI shows is decided at runtime by the active robot profile

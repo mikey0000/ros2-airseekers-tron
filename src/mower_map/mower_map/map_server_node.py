@@ -37,6 +37,7 @@ from mowgli_interfaces.srv import (AddMowingArea, ClearObstacle, GetMowingArea,
 
 from mower_map import area_settings as aset
 from mower_map import areas as core
+from mower_map import boundary_lines as blines
 from mower_map import nongrass_node as ngn
 from mower_map import route_graph as rgraph
 from mower_map import terrain as terr
@@ -69,6 +70,13 @@ PARAMS = {
     'dock_nogo_in_areas': True,
     'dock_nogo_margin_m': 0.15,
     'dock_keepout': True,              # dock outline lethal in the MOWING mask only
+    # boundary lines (virtual walls, 2026-11-02, boundary_lines.py): stored in areas.dat,
+    # served by ~/get_boundary_lines / ~/set_boundary_lines / replace_areas and latched on
+    # ~/boundary_lines. Planners (keepout + nav masks, route graph) see each line as a thin
+    # keepout polygon of width width_m + boundary_line_keepout_m; the hard trip (mission guard)
+    # uses the true line. ~/boundary_line_hit reports a footprint touching a line.
+    'boundary_line_keepout_m': blines.DEFAULT_KEEPOUT_M,   # 0.57 = 2 x (0.235 + 0.05)
+    'boundary_line_check': True,
     # navigation mask (/nav_keepout_mask; Nav2 global costmap + keepout filter):
     # (mowing U navigation areas) grown by nav_margin_m, minus obstacles grown
     # by nav_obstacle_margin_m; the dock outline is never lethal here.
@@ -319,6 +327,8 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         # task 0.4 (a): distance outside areas U drawn paths U dock corridor (0 inside; the
         # return corridor does not count) for the mission's hard boundary
         self.outside_pub = self.create_publisher(Float32, '~/outside_m', 1)
+        self.lines_pub = self.create_publisher(String, '~/boundary_lines', _latched())
+        self.line_hit_pub = self.create_publisher(String, '~/boundary_line_hit', 1)
         self.replan_pub = self.create_publisher(Bool, '~/replan_needed', 1)
         self.settings_pub = self.create_publisher(String, '~/area_settings', _latched())
         # terrain memory outputs (latched): traction score 0..100 (-1 = never driven),
@@ -403,6 +413,10 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         # in map metres (reuses the area-settings service types).
         srv(SetAreaSettings, '~/set_area_channel', self.srv_set_area_channel)
         srv(GetAreaSettings, '~/get_area_channel', self.srv_get_area_channel)
+        # Boundary lines, JSON {"version": 1, "lines": [...]} (boundary_lines.py; area_index
+        # is ignored): set replaces the whole set (rebuild + save), get returns it.
+        srv(SetAreaSettings, '~/set_boundary_lines', self.srv_set_boundary_lines)
+        srv(GetAreaSettings, '~/get_boundary_lines', self.srv_get_boundary_lines)
         # Terrain memory actions, JSON in settings_json (area_index = area, 255 = all):
         # {"action": "keepout"|"confirm"|"dismiss"|"clear", "cluster_id": n}; non-grass
         # memory: "nongrass_keepout"|"nongrass_dismiss" + cluster_id, "nongrass_clear".
@@ -501,11 +515,12 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             self.get_logger().error('keepout mask not rebuilt: %s' % exc)
             return
         t0 = time.monotonic()
-        mask = core.build_keepout_mask(self.store.areas, spec, outline,
+        areas = self._areas_with_lines(self.store.areas)
+        mask = core.build_keepout_mask(areas, spec, outline,
                                        float(self.p('obstacle_margin')),
                                        bool(self.p('lethal_outside_areas')))
         self.mask_pub.publish(self.grid_msg(spec, mask))
-        nav_mask = core.build_nav_mask(self.store.areas, spec,
+        nav_mask = core.build_nav_mask(areas, spec,
                                        float(self.p('nav_margin_m')),
                                        float(self.p('nav_obstacle_margin_m')),
                                        corridor, self._nav_soft_band(),
@@ -530,7 +545,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                     throttle_duration_sec=30.0)
                 ret = None
             if ret is not None:
-                nav_mask = core.build_nav_mask(self.store.areas, spec,
+                nav_mask = core.build_nav_mask(areas, spec,
                                                float(self.p('nav_margin_m')),
                                                float(self.p('nav_obstacle_margin_m')),
                                                corridor, self._nav_soft_band(),
@@ -562,8 +577,14 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             self.load_terrain()
             self.terrain_dirty = True
         self.nongrass_sync_areas()
+        self.lines_pub.publish(String(data=blines.to_json(self.store.boundary_lines)))
         if replan:
             self.replan_pub.publish(Bool(data=True))
+
+    def _areas_with_lines(self, areas):
+        """``areas`` plus the boundary-line keepouts (planner view; copies)."""
+        return core.with_boundary_lines(areas, self.store.boundary_lines,
+                                        float(self.p('boundary_line_keepout_m')))
 
     def _nav_soft_band(self):
         """nav_soft_band_m, or nav_soft_band_with_paths_m once a drawn user path exists."""
@@ -697,7 +718,8 @@ class MapServerNode(ngn.NonGrassMixin, Node):
 
     def save_areas(self):
         core.save_areas_file(self.areas_path, self.store.areas,
-                             float(self.p('datum_lat')), float(self.p('datum_lon')))
+                             float(self.p('datum_lat')), float(self.p('datum_lon')),
+                             self.store.boundary_lines)
 
     def persist_best_effort(self, context):
         try:
@@ -713,6 +735,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             return False, 'no file %s' % self.areas_path
         try:
             areas, datum = core.load_areas_file(self.areas_path)
+            lines, lines_version = core.load_boundary_lines_file(self.areas_path)
         except (OSError, UnicodeDecodeError) as exc:
             self.get_logger().error('load %s failed: %s' % (self.areas_path, exc))
             if startup:
@@ -720,6 +743,14 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             return False, str(exc)
         before = [(a.name, list(a.polygon)) for a in self.store.areas]
         self.store.load(areas)
+        self.store.boundary_lines = lines
+        if lines_version > blines.VERSION:
+            self.get_logger().warn('areas.dat boundary lines version %d is newer than this '
+                                   'map server (%d): read with the keys it knows'
+                                   % (lines_version, blines.VERSION))
+        for ln in lines:
+            self.get_logger().info('loaded boundary line %s: %d points, width %.2f m'
+                                   % (ln.label(), len(ln.points), ln.width_m))
         self.sync_settings(before, startup=startup)
         lat, lon = float(self.p('datum_lat')), float(self.p('datum_lon'))
         if datum and (abs(lat) > 1e-9 or abs(lon) > 1e-9) and \
@@ -894,6 +925,7 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             out = core.outside_distance(x, y, self.store.areas, [dock_poly] if dock_poly else [])
             if math.isfinite(out):
                 self.outside_pub.publish(Float32(data=float(out)))
+            self.check_boundary_lines(x, y, yaw)
             soft, lethal_raw = self.boundary.update(inside, dist)
             self._lethal_filter.min_duration_s = float(self.p('lethal_min_duration_s'))
             lethal = self._lethal_filter.update(now, lethal_raw)
@@ -1087,6 +1119,12 @@ class MapServerNode(ngn.NonGrassMixin, Node):
                 if not ok:
                     return None, None, "area %d '%s' settings: %s" % (i, a.name, msg)
                 settings[a.name] = update
+        lines_json = getattr(req, 'boundary_lines_json', '')
+        if lines_json:                   # '' = keep the stored lines
+            ok, msg, lines = blines.parse_json(lines_json)
+            if not ok:
+                return None, None, 'boundary lines: %s' % msg
+            staged.boundary_lines = lines
         return staged, settings, None
 
     def srv_replace_areas(self, req, res):
@@ -1101,7 +1139,8 @@ class MapServerNode(ngn.NonGrassMixin, Node):
             self._staged = None
         self._swap_in(staged, 'replace_areas', settings)
         res.success = True
-        res.message = 'map replaced: %d areas' % len(self.store.areas)
+        res.message = 'map replaced: %d areas, %d boundary lines' % (
+            len(self.store.areas), len(self.store.boundary_lines))
         self.get_logger().info(res.message)
         return res
 
@@ -1306,6 +1345,49 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         return res
 
     # ------------------------------------------------------------------
+    # boundary lines (virtual walls, 2026-11-02)
+    # ------------------------------------------------------------------
+    def srv_set_boundary_lines(self, req, res):
+        ok, msg, lines = blines.parse_json(req.settings_json)
+        if not ok:
+            res.success, res.message = False, 'set_boundary_lines rejected: %s' % msg
+            self.get_logger().warn(res.message)
+            return res
+        staged = self.map_edit_store()
+        if staged is not None:
+            staged.boundary_lines = lines        # applied on commit
+            res.success, res.message = True, 'staged %d boundary lines' % len(lines)
+            return res
+        self.store.boundary_lines = lines
+        self.rebuild()
+        self.persist_best_effort('set_boundary_lines')
+        res.success, res.message = True, 'boundary lines set: %d' % len(lines)
+        self.get_logger().info('%s (%s)' % (res.message, ', '.join(ln.label() for ln in lines)))
+        return res
+
+    def srv_get_boundary_lines(self, req, res):
+        res.success = True
+        res.settings_json = blines.to_json(self.store.boundary_lines)
+        return res
+
+    def check_boundary_lines(self, x, y, yaw):
+        """~/boundary_line_hit: {"hits": [{id, name, depth_m}], "x", "y"} of the lines the
+        footprint touches now ([] = clear). Diagnostic: the mission guard trips on its own
+        check of the same geometry (~/boundary_lines)."""
+        if not self.p('boundary_line_check') or not self.store.boundary_lines:
+            return
+        hits = blines.body_hits(self.store.boundary_lines, (x, y, yaw), rgeo.FOOTPRINT_FRONT_M,
+                                rgeo.FOOTPRINT_REAR_M, rgeo.FOOTPRINT_HALF_WIDTH_M)
+        self.line_hit_pub.publish(String(data=json.dumps({
+            'x': round(x, 3), 'y': round(y, 3),
+            'hits': [{'id': ln.id, 'name': ln.name, 'depth_m': round(d, 3)} for d, ln in hits]})))
+        if hits and self.is_cutting():
+            d, ln = hits[0]
+            self.get_logger().error('BOUNDARY LINE %s crossed by the body (%.2f m) at '
+                                    '(%.2f, %.2f)' % (ln.label(), d, x, y),
+                                    throttle_duration_sec=2.0)
+
+    # ------------------------------------------------------------------
     # route graph (2026-10-09)
     # ------------------------------------------------------------------
     def route_params(self):
@@ -1335,13 +1417,16 @@ class MapServerNode(ngn.NonGrassMixin, Node):
         dock or route parameters changed (cheap key: the areas.dat text)."""
         params = self.route_params()
         d = self.dock if self.p('dock_corridor_enabled') else None
-        key = (core.format_areas_dat(self.store.areas),
+        key = (core.format_areas_dat(self.store.areas, boundary_lines=self.store.boundary_lines),
+               float(self.p('boundary_line_keepout_m')),
                None if d is None else (d.x, d.y, d.yaw), repr(params),
                bool(self.p('dock_nogo_in_areas')), float(self.p('dock_nogo_margin_m')),
                None if self.dock is None else tuple(map(tuple, self.dock.outline or [])))
         if key != self._route_key:
             t0 = time.monotonic()
-            self._route_graph = rgraph.RouteGraph(self._areas_with_dock_nogo(), d, params)
+            # + boundary-line keepouts: transits never route across a line
+            self._route_graph = rgraph.RouteGraph(
+                self._areas_with_lines(self._areas_with_dock_nogo()), d, params)
             self._route_key = key
             g = self._route_graph
             # params in the log line: 2026-10-09 a map_server_node started before a rebuild

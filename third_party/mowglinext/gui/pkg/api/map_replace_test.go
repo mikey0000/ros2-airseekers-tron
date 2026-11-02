@@ -30,6 +30,8 @@ type fakeMapServer struct {
 	calls     []string
 	failAt    map[string]int // service → 1-based call number that fails
 	callCount map[string]int
+	lines     string // stored boundary-line set (JSON)
+	linesSvc  bool   // advertises set_boundary_lines
 }
 
 func newFakeMapServer(atomic bool, initial ...mowgli.ReplaceMapArea) *fakeMapServer {
@@ -84,7 +86,16 @@ func (f *fakeMapServer) CallService(_ context.Context, service string, req any, 
 			next = append(next, el)
 		}
 		f.live, f.disk = next, append([]mowgli.ReplaceMapArea{}, next...)
+		if r.BoundaryLinesJSON != "" {
+			f.lines = r.BoundaryLinesJSON
+		}
 		out.Success = true
+	case mowgli.SetBoundaryLinesService:
+		if !f.linesSvc {
+			return fmt.Errorf("foxglove: CallService %s: %w", service, foxglove.ErrServiceNotAdvertised)
+		}
+		f.lines = req.(*mowgli.SetAreaChannelReq).SettingsJSON
+		res.(*mowgli.SetAreaChannelRes).Success = true
 	case mapServiceGetMowingArea:
 		out := res.(*mowgli.GetMowingAreaRes)
 		idx := int(req.(*mowgli.GetMowingAreaReq).Index)
@@ -322,4 +333,81 @@ func TestReplaceMap_ObstaclesAndInfoSurviveEveryPath(t *testing.T) {
 	f.failAt[mapServiceAddArea] = 1
 	require.Error(t, replaceMapInternal(context.Background(), f, newMap("new")))
 	check(t, f.live[0])
+}
+
+func wall(id string, pts ...[2]float64) mowgli.BoundaryLine {
+	return mowgli.BoundaryLine{ID: id, Name: "drop-off " + id, Points: pts, WidthM: 0.1}
+}
+
+func storedLines(t *testing.T, f *fakeMapServer) mowgli.BoundaryLineSet {
+	t.Helper()
+	var set mowgli.BoundaryLineSet
+	require.NoError(t, json.Unmarshal([]byte(f.lines), &set))
+	return set
+}
+
+// Boundary lines ride the atomic replace_areas as one JSON set; a request
+// without the field keeps the stored set, an empty slice clears it.
+func TestReplaceMap_AtomicCarriesBoundaryLines(t *testing.T) {
+	f := newFakeMapServer(true)
+	req := newMap("lawn")
+	lines := []mowgli.BoundaryLine{wall("bl-1", [2]float64{0, 0}, [2]float64{2, 0}, [2]float64{2, 1})}
+	req.BoundaryLines = &lines
+
+	require.NoError(t, replaceMapInternal(context.Background(), f, req))
+	assert.Equal(t, []string{mapServiceReplaceAreas}, f.calls)
+	set := storedLines(t, f)
+	assert.Equal(t, mowgli.BoundaryLinesVersion, set.Version)
+	require.Len(t, set.Lines, 1)
+	assert.Equal(t, "bl-1", set.Lines[0].ID)
+	assert.Equal(t, [2]float64{2, 1}, set.Lines[0].Points[2])
+	assert.Equal(t, 0.1, set.Lines[0].WidthM)
+
+	require.NoError(t, replaceMapInternal(context.Background(), f, newMap("lawn")))
+	assert.Len(t, storedLines(t, f).Lines, 1, "no boundary_lines field keeps the stored set")
+
+	empty := []mowgli.BoundaryLine{}
+	req = newMap("lawn")
+	req.BoundaryLines = &empty
+	require.NoError(t, replaceMapInternal(context.Background(), f, req))
+	assert.Empty(t, storedLines(t, f).Lines, "an empty set clears the lines")
+}
+
+func TestReplaceMap_FallbackWritesBoundaryLinesAfterTheAreas(t *testing.T) {
+	f := newFakeMapServer(false)
+	f.linesSvc = true
+	req := newMap("lawn")
+	lines := []mowgli.BoundaryLine{wall("bl-1", [2]float64{0, 0}, [2]float64{2, 0})}
+	req.BoundaryLines = &lines
+
+	require.NoError(t, replaceMapInternal(context.Background(), f, req))
+	assert.Equal(t, mowgli.SetBoundaryLinesService, f.calls[len(f.calls)-1])
+	assert.Equal(t, "bl-1", storedLines(t, f).Lines[0].ID)
+}
+
+func TestReplaceMap_FallbackWithoutLineServiceOnlyFailsForRealLines(t *testing.T) {
+	empty := []mowgli.BoundaryLine{}
+	f := newFakeMapServer(false)
+	req := newMap("lawn")
+	req.BoundaryLines = &empty
+	require.NoError(t, replaceMapInternal(context.Background(), f, req), "nothing to sync on an old map server")
+
+	lines := []mowgli.BoundaryLine{wall("bl-1", [2]float64{0, 0}, [2]float64{2, 0})}
+	req = newMap("lawn")
+	req.BoundaryLines = &lines
+	err := replaceMapInternal(context.Background(), f, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boundary lines were NOT")
+}
+
+func TestReplaceMap_RejectsBoundaryLineWithOnePoint(t *testing.T) {
+	f := newFakeMapServer(true)
+	req := newMap("lawn")
+	lines := []mowgli.BoundaryLine{wall("bl-1", [2]float64{0, 0})}
+	req.BoundaryLines = &lines
+
+	err := replaceMapInternal(context.Background(), f, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at least 2 points")
+	assert.Empty(t, f.calls, "an invalid set never reaches map_server")
 }

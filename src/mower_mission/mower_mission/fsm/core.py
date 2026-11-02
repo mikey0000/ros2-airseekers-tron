@@ -70,6 +70,9 @@ class MissionFSM(PreviewMixin,
         # from it, not from the event start, so a slow event (78 s of path conditioning on
         # the RK3588, field 2026-10-20) cannot hand a request an already-expired deadline
         self.clock = None
+        # optional immediate effect executor (the node sets its _execute): _fx_now runs an
+        # effect before the tick returns, e.g. the stop ahead of a slow recovery plan
+        self.effect_sink = None
         self._created = now
         self._phase_since = now
         self._fx = []
@@ -198,6 +201,14 @@ class MissionFSM(PreviewMixin,
     def _end(self):
         fx, self._fx = self._fx, []
         return fx
+
+    def _fx_now(self, effect):
+        """Execute ``effect`` now through ``effect_sink`` (queued with the tick's effects
+        when no sink is set, as in the unit-test harness)."""
+        if self.effect_sink is None:
+            self._fx.append(effect)
+        else:
+            self.effect_sink([effect])
 
     def _log(self, level, text):
         self._fx.append(Log(level, text))

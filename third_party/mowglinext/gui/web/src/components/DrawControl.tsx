@@ -13,6 +13,8 @@ type DrawControlProps = ConstructorParameters<typeof MapboxDraw>[0] & {
     position?: ControlPosition;
     features?: GeoJSON.Feature[];
     editMode?: boolean;
+    /** Block feature selection even in edit mode (a non-draw tool owns the clicks). */
+    selectionLocked?: boolean;
     drawRef?: RefObject<MapboxDraw | null>;
 
     onCreate: (evt: { features: GeoJSON.Feature[] }) => void;
@@ -25,7 +27,7 @@ type DrawControlProps = ConstructorParameters<typeof MapboxDraw>[0] & {
 
 export default function DrawControl(props: DrawControlProps) {
     const {
-        drawRef, features, editMode, position,
+        drawRef, features, editMode, selectionLocked, position,
         onCreate = () => {},
         onUpdate = () => {},
         onCombine = () => {},
@@ -37,6 +39,8 @@ export default function DrawControl(props: DrawControlProps) {
     const rawMapRef = useRef<ReturnType<MapRef['getMap']> | null>(null);
     const editModeRef = useRef(editMode);
     editModeRef.current = editMode;
+    const selectionLockedRef = useRef(selectionLocked);
+    selectionLockedRef.current = selectionLocked;
 
     // Use refs for all callbacks so event listeners always call the latest version.
     // useControl only binds listeners once during setup — without refs, stale closures
@@ -177,7 +181,7 @@ export default function DrawControl(props: DrawControlProps) {
         if (!rawMap) return;
 
         const blockSelection = () => {
-            if (!editModeRef.current) {
+            if (!editModeRef.current || selectionLockedRef.current) {
                 // Use setTimeout to avoid re-entrant mode changes during event dispatch
                 setTimeout(() => {
                     mp.changeMode('simple_select', { featureIds: [] });

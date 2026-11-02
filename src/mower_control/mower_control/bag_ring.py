@@ -565,8 +565,10 @@ def record_cmd(output, topics, split_s, max_cache_bytes, compression='zstd',
     if compression:
         # One compression thread: with the default (one per core) a split that is still
         # compressing when the next one rolls is compressed in parallel and both frames come
-        # out mangled (2026-11-01: 10 of 68 splits unreadable at load avg 12). Queue 2 so a
-        # slow compression delays the next split instead of dropping it.
+        # out mangled (2026-11-01: 10 of 68 splits unreadable at load avg 12). A split that
+        # finds the compression queue full is DROPPED (rosbag2: "files ... that may be
+        # queued for compression before being dropped"): queue 10 splits (10 min at 60 s)
+        # so a slow single-thread compression under load falls behind, not loses data.
         cmd += ['--compression-mode', 'file', '--compression-format', compression,
-                '--compression-threads', '1', '--compression-queue-size', '2']
+                '--compression-threads', '1', '--compression-queue-size', '10']
     return cmd + list(topics)

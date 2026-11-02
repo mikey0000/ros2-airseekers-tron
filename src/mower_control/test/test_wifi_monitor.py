@@ -95,6 +95,11 @@ def _s(link, station=None):
     return wl.build_sample('wlan0', fx('proc_net_wireless.txt'), fx(link), 'up', station)
 
 
+def _off():
+    """A real disconnect: iw 'Not connected.' and no wlan0 signal in /proc/net/wireless."""
+    return wl.build_sample('wlan0', '', fx('iw_link_disconnected.txt'), 'up')
+
+
 def test_roam_tracker_sequence():
     t = wl.RoamTracker()
     ev = t.update(_s('iw_link_connected.txt'))
@@ -105,11 +110,11 @@ def test_roam_tracker_sequence():
     assert ev[0]['old']['bssid'] == '02:00:5e:10:20:30'
     assert ev[0]['new'] == {'bssid': '02:00:5e:10:20:41', 'freq_mhz': 2437.0,
                             'signal_dbm': -71.0}
-    ev = t.update(_s('iw_link_disconnected.txt'))
+    ev = t.update(_off())
     assert [e['event'] for e in ev] == ['disconnect']
     assert ev[0]['old']['bssid'] == '02:00:5e:10:20:41' and ev[0]['new']['bssid'] == ''
     assert ev[0]['ssid'] == 'example-net'
-    assert t.update(_s('iw_link_disconnected.txt')) == []
+    assert t.update(_off()) == []
     ev = t.update(_s('iw_link_connected.txt'))
     # reconnect to a different AP is a reconnect, not a roam
     assert [e['event'] for e in ev] == ['reconnect'] and t.roam_count == 1
@@ -148,7 +153,10 @@ def test_sampler_station_period_and_missing_iw():
 
 def test_run_cmd_missing_binary():
     wm = _import_node()
-    assert wm.run_cmd(['/nonexistent/iw-binary', 'dev'], 0.5) == ''
+    assert wm.run_cmd(['/nonexistent/iw-binary', 'dev'], 0.5) is None     # unknown
+    assert wm.run_cmd(['sh', '-c', 'exit 1'], 0.5) is None
+    assert wm.run_cmd(['sleep', '2'], 0.2) is None                        # timeout
+    assert wm.run_cmd(['echo', 'Not connected.'], 0.5) == 'Not connected.\n'
     assert wm.read_file('/nonexistent/operstate') == ''
 
 
@@ -187,3 +195,75 @@ def test_signal_chain_form():
                          '\tsignal: -69 [-69, -71] dBm\n'
                          '\ttx bitrate: 97.5 MBit/s VHT-MCS 4 80MHz VHT-NSS 1\n')
     assert d['signal_dbm'] == -69.0 and d['tx_bitrate_mbps'] == 97.5
+
+
+# --------------------------------------------------------------------------- review 2026-11-02
+def _chain(stale_samples=3):
+    """Sampler -> LinkFilter -> RoamTracker as WifiMonitorNode._tick runs them; ``link`` /
+    ``proc`` / ``oper`` set what the next sample sees (link None = iw timed out)."""
+    wm = _import_node()
+    src = {'link': fx('iw_link_connected.txt'), 'proc': fx('proc_net_wireless.txt'),
+           'oper': 'up\n'}
+
+    def run(argv, _timeout):
+        return src['link'] if argv[-1] == 'link' else None
+
+    def read(path):
+        return src['oper'] if path.endswith('operstate') else src['proc']
+
+    sampler = wm.WifiSampler('wlan0', run=run, read=read, clock=lambda: 0.0)
+    filt, tracker = wl.LinkFilter(stale_samples), wl.RoamTracker()
+
+    def tick():
+        sample = filt.update(sampler.sample())
+        return sample, [e['event'] for e in tracker.update(sample)]
+    return src, tick
+
+
+def test_iw_timeout_keeps_the_last_link_no_disconnect_reconnect():
+    src, tick = _chain()
+    assert tick()[1] == ['connect']
+    src['link'] = None                               # iw timed out (load avg 12)
+    for _ in range(3):
+        sample, ev = tick()
+        assert ev == [] and sample['connected'] and sample['bssid'] == '02:00:5e:10:20:30'
+        assert sample['link_state'] != 'unknown'
+    src['link'] = fx('iw_link_connected.txt')
+    assert tick()[1] == []                           # no reconnect
+
+
+def test_iw_timeout_beyond_stale_samples_is_unknown_never_an_event():
+    src, tick = _chain(stale_samples=3)
+    tick()
+    src['link'] = None
+    for _ in range(3):
+        tick()
+    for _ in range(5):
+        sample, ev = tick()
+        assert ev == [] and not sample['connected'] and sample['link_state'] == 'unknown'
+    src['link'] = fx('iw_link_roamed.txt')            # it roamed meanwhile: a roam
+    assert tick()[1] == ['roam']
+
+
+def test_real_disconnect_is_logged_at_once():
+    src, tick = _chain()
+    tick()
+    src['link'], src['proc'] = fx('iw_link_disconnected.txt'), ''
+    sample, ev = tick()
+    assert ev == ['disconnect'] and sample['link_state'] == 'disconnected'
+    src['link'], src['proc'] = fx('iw_link_connected.txt'), fx('proc_net_wireless.txt')
+    assert tick()[1] == ['reconnect']
+    src['link'], src['oper'] = None, 'down\n'        # operstate down: no iw needed
+    sample, ev = tick()
+    assert ev == ['disconnect'] and sample['link_state'] == 'down'
+
+
+def test_iw_not_connected_with_a_proc_signal_waits_stale_samples_then_disconnects():
+    src, tick = _chain(stale_samples=3)
+    tick()
+    src['link'] = fx('iw_link_disconnected.txt')     # /proc still shows -62 dBm
+    for _ in range(3):
+        sample, ev = tick()
+        assert ev == [] and sample['connected']
+    sample, ev = tick()
+    assert ev == ['disconnect'] and sample['link_state'] == 'disconnected'

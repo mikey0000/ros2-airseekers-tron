@@ -394,3 +394,16 @@ def test_reverse_leg_orientations_face_against_travel_kinematically():
             dy = dense[i + 1][1] - dense[i][1]
             dot = math.cos(ys[i]) * dx + math.sin(ys[i]) * dy
             assert (dot < 0.0) if s.reverse else (dot > 0.0)
+
+
+def test_boundary_line_keepout_hole_splits_the_join_across_the_line():
+    """Boundary lines (2026-11-02): the mission sends a line as a thin hole (0.30 m band).
+    Two swath pieces on either side of it, 0.30 m apart (< transit gap), must not be joined
+    by a straight connector across the wall: the blade-off transit routes round it."""
+    from mower_map import boundary_lines as bl
+    band = bl.keepout_polygon(bl.BoundaryLine('bl-1', [(5.0, -1.0), (5.0, 4.5)]), 0.3)
+    segs = [sp.Segment(SEGMENT_SWATH, [(0.5, 1.0), (4.85, 1.0)]),
+            sp.Segment(SEGMENT_SWATH, [(5.15, 1.0), (9.5, 1.0)])]
+    assert len(sp.join_subpaths(segs, 0.6)) == 1
+    subs = sp.join_subpaths(segs, 0.6, holes=[band])
+    assert [s.segment_indices for s in subs] == [[0], [1]]

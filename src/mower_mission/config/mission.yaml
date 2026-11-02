@@ -54,10 +54,9 @@ behavior_tree_node:
     heading_max_cog_age_s: 300.0            # 0 = no age limit
     heading_reject_quality: ['poor']        # status quality values (good|fair|poor); [''] = none
     # 2026-11-02: age alone does not block. A cog heading past heading_max_cog_age_s is kept
-    # (no drive, its age-decayed quality ignored) while the robot moved less than this since
-    # the fix (aligner moved_since_fix_m, RTK fixed) and the IMU stayed continuous
-    # (imu_continuous); the age check applies only when either is not reported.
-    heading_stale_move_m: 0.5
+    # (no drive, its age-decayed quality ignored) while heading_aligner reports it held
+    # (status held: moved < hold_move 0.5 m since the fix by any motion evidence, IMU
+    # continuous); the age check applies when held is not reported.
 
     # --- localization hold (2026-10-09, /localization/status from localization_monitor) ---
     # Mow follow / transit stop with the blade off while the drift estimate is over budget
@@ -475,6 +474,12 @@ behavior_tree_node:
     hard_boundary_spot_max: 2          # ... and per spot (excursions within hard_boundary_spot_m)
     hard_boundary_spot_m: 1.0
     hard_boundary_snapshot: true       # base_link check from the mission area snapshot (TRANSIT / MOWING)
+    # boundary lines (virtual walls, 2026-11-02, walls.py; /map_server_node/boundary_lines):
+    # footprint more than boundary_line_trip_m into a line (+- width_m / 2) = a hard-boundary
+    # trip naming the line (retrace); coverage holes of width width_m + boundary_line_keepout_m
+    boundary_lines_enabled: true
+    boundary_line_trip_m: 0.0
+    boundary_line_keepout_m: 0.57      # 2 x (body half width 0.235 + 0.05); = map_server.yaml
     hard_boundary_trail_m: 1.5
     hard_boundary_trail_step_m: 0.05
     hard_boundary_pause_s: 0.5

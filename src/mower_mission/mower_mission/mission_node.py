@@ -59,6 +59,7 @@ from mower_mission import activity
 from mower_mission import mission_fsm as fsm_mod
 from mower_mission import mow_progress
 from mower_mission import nogo
+from mower_mission import walls
 from mower_mission.external_rain import ExternalRain
 from mower_mission.resume import ResumeCursor
 from mower_mission.quiet_action import QuietActionClient
@@ -140,6 +141,8 @@ TOPIC_DEFAULTS = {
     'clear_around_local_costmap_service': '/local_costmap/clear_around_local_costmap',
     'clear_around_reset_distance_m': 100.0,
     'nogo_zones_topic': '/obstacle_tracker/nogo_zones',
+    # boundary lines (virtual walls, JSON, latched by map_server): walls.py; '' = none
+    'boundary_lines_topic': '/map_server_node/boundary_lines',
     'plan_coverage_action': '/plan_coverage',
     'follow_path_action': '/follow_path',
     'navigate_to_pose_action': '/navigate_to_pose',
@@ -259,6 +262,7 @@ class MissionNode(Node):
                                       now=self._clk.now(),
                                       alternate_counts=self._load_alternate())
         self.fsm.clock = self._clk.now   # send-time clock of request deadlines (sim time)
+        self.fsm.effect_sink = self._execute   # _fx_now: e.g. a stop ahead of a slow plan
         # Battery settings are applied live (GUI Settings -> Battery pushes them).
         self.add_on_set_parameters_callback(self._on_set_params)
         self._height_mm = None          # last per-area blade height (mm), re-sent with blade ON
@@ -346,6 +350,8 @@ class MissionNode(Node):
         sub(String, p['obstacle_policy_topic'], self._on_obstacle_policy, latched)
         if p['nogo_zones_topic']:
             sub(String, p['nogo_zones_topic'], self._on_nogo_zones, 1)
+        if p['boundary_lines_topic']:
+            sub(String, p['boundary_lines_topic'], self._on_boundary_lines, latched)
         sub(Bool, '/mower_docking/marker_in_view', self._on_marker_in_view, latched,
             parser=flat_parser(Bool))
         sub(PoseStamped, '/map_server_node/docking_pose', self._on_dock_pose, latched)
@@ -620,6 +626,8 @@ class MissionNode(Node):
                 i.heading_moved_m = None
             cont = st.get('imu_continuous')
             i.heading_imu_continuous = None if cont is None else bool(cont)
+            held = st.get('held')
+            i.heading_held = None if held is None else bool(held)
             i.heading_stamp = self._clk.now()
 
     def _on_localization(self, msg):
@@ -676,6 +684,19 @@ class MissionNode(Node):
         with self._lock:
             self.fsm.inputs.nogo_zones = zs
             self.fsm.inputs.nogo_stamp = self._clk.now()
+
+    def _on_boundary_lines(self, msg):
+        """/map_server_node/boundary_lines (latched JSON, mower_map boundary_lines.py): the
+        lines the hard boundary guard enforces and the coverage plans are cut at."""
+        lines = walls.parse(msg.data)
+        if lines is None:
+            self.get_logger().warn('boundary lines: unparsable message ignored (keeping %d)'
+                                   % len(self.fsm.inputs.boundary_lines or []))
+            return
+        with self._lock:
+            self.fsm.inputs.boundary_lines = lines
+        self.get_logger().info('boundary lines: %d (%s)'
+                               % (len(lines), ', '.join(ln.label() for ln in lines) or 'none'))
 
     def _on_obstacle_policy(self, msg):
         """{kind: none|dynamic|static, class, distance_m, bearing_deg}; the receipt time is

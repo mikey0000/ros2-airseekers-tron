@@ -36,9 +36,6 @@ class Harness:
         # The pre-obstacle-avoidance tests exercise plain follow retries: an unclassified
         # abort never detours unless a test asks for it.
         params.setdefault('detour_unclassified_after', -1)
-        # ... and the stop-in-place MOWING_INCOMPLETE (the shipped dock-after-incomplete
-        # default has its own tests).
-        params.setdefault('return_home_on_incomplete', False)
         # ... and a fixed transit_retry_delay_s (the 3/10/30 s back-off has its own tests)
         params.setdefault('transit_retry_backoff_s', [])
         # ... and the detour geometry the detour tests were written for (1.0 / 3.0 m skips;
@@ -2634,7 +2631,7 @@ def test_transit_retry_counts_as_arrived_when_within_radius():
 
 
 def test_transit_retries_exhausted_ends_mowing_incomplete_in_place():
-    h = Harness(transit_retries=3, transit_retry_delay_s=3.0)
+    h = Harness(transit_retries=3, transit_retry_delay_s=3.0, return_home_on_incomplete=False)
     _two_subpaths_first_needs_transit(h)
     for k in range(4):
         h.finish(f.ACT_NAV, f.ABORTED)
@@ -2677,7 +2674,7 @@ def test_transit_retries_exhausted_ends_mowing_incomplete_in_place():
 
 
 def test_mowing_incomplete_commands():
-    h = Harness(transit_retries=0, requeue_failed_transits=False)
+    h = Harness(transit_retries=0, requeue_failed_transits=False, return_home_on_incomplete=False)
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
     h.finish(f.ACT_NAV, f.ABORTED)
@@ -2716,7 +2713,7 @@ def test_return_home_on_incomplete_is_the_shipped_default():
 
 
 def test_follow_abort_resumes_from_last_pose_up_to_follow_retries():
-    h = Harness(follow_retries=3, transit_retry_delay_s=3.0)
+    h = Harness(follow_retries=3, transit_retry_delay_s=3.0, return_home_on_incomplete=False)
     start_until_planning(h)
     sp = line(0, 0, 10, 0, n=21)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp]))
@@ -2739,7 +2736,7 @@ def test_follow_abort_resumes_from_last_pose_up_to_follow_retries():
 
 
 def test_planning_failure_ends_incomplete():
-    h = Harness()
+    h = Harness(return_home_on_incomplete=False)   # asserts stop-in-place
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, {'success': False, 'message': 'degenerate polygon'})
     assert h.name == 'MOWING_INCOMPLETE'
@@ -2775,8 +2772,12 @@ def test_boundary_recovery_transit_abort_is_retried():
 
 def test_boundary_recovery_failures_stop_in_place_incomplete():
     """Real-mower regression: the recovery transit aborted, the sub-path was
-    skipped and the mission reported MOWING_COMPLETE and docked."""
-    h = Harness(boundary_recovery_retries=2, transit_retry_delay_s=3.0)
+    skipped and the mission reported MOWING_COMPLETE and docked. Review 2026-11-02: it stays
+    put with the shipped return_home_on_incomplete=true too (outside the boundary, Nav2
+    could not get it back in: no dock route or drive from there)."""
+    assert f.Params().return_home_on_incomplete is True
+    h = Harness(boundary_recovery_retries=2, transit_retry_delay_s=3.0,
+                return_home_on_incomplete=f.Params().return_home_on_incomplete)
     _boundary_paused(h)
     m = h.mark()
     for k in range(3):
@@ -2791,6 +2792,11 @@ def test_boundary_recovery_failures_stop_in_place_incomplete():
     assert 'MOWING_COMPLETE' not in names and 'RETURNING_HOME' not in names
     assert 'COVERAGE_FAILED_DOCKING' not in names
     assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_DOCK]
+    h.tick(dt=1.0, n=5)
+    assert h.name == 'MOWING_INCOMPLETE'
+    assert len(h.since(m, f.StartAction)) == 2           # the two retried recovery transits
+    assert any('not returning home: boundary recovery failed' in e.text
+               for e in h.since(m, f.Log))
     assert h.fsm.cursor.available and h.fsm.mission is None
     assert ResumeCursor.loads(h.saved).areas[0].completed == set()
     start_until_planning(h)
@@ -2926,7 +2932,7 @@ def test_static_obstacle_detours_and_resumes_beyond_then_requeues_stretch():
 
 
 def test_skipped_stretch_still_blocked_ends_incomplete():
-    h = Harness(retry_each_skipped_stretch=False)
+    h = Harness(retry_each_skipped_stretch=False, return_home_on_incomplete=False)
     sp0, sp1 = mowing_two_swaths(h)
     static_abort_and_detour(h, sp0)
     h.finish(f.ACT_FOLLOW)
@@ -3915,7 +3921,7 @@ def test_genuine_abort_after_blocked_episode_uses_retry_policy():
 
 
 def test_failed_transit_requeue_disabled_ends_incomplete_immediately():
-    h = Harness(transit_retries=0, requeue_failed_transits=False)
+    h = Harness(transit_retries=0, requeue_failed_transits=False, return_home_on_incomplete=False)
     _two_subpaths_first_needs_transit(h)
     h.finish(f.ACT_NAV, f.ABORTED)
     follow_current(h)
@@ -5115,6 +5121,61 @@ def test_static_blocked_stretches_finish_complete_with_exclusions():
     assert h.name == 'RETURNING_HOME' and not h.fsm.cursor.available
 
 
+def _first_stretch_blocked(h, m):
+    assert m.stretch == (20, 25)                    # sub-path 0 poses 20 -> 25 (y = 2)
+    h.fsm._begin(h.t)
+    h.fsm._stretch_blocked('follow_path aborted at pose 21')
+    h._apply(h.fsm._end())
+    return h.fsm.cursor.areas[0]
+
+
+@pytest.mark.parametrize('pose', [(0.5, 3.5, 0.0), (2.0, 2.0, 1.2)])
+def test_collision_off_the_stretch_keeps_it_skipped_not_blocked_static(pose):
+    """Review 2026-11-02: any recent collision stop / static anywhere in the frame moved a
+    failed stretch to blocked_static (area 'complete', never re-offered)."""
+    h, m = _pass_h()
+    h.fsm.inputs.pose = pose                       # robot off the stretch / nose off it
+    h.fsm.inputs.collision_stamp = h.t
+    ac = _first_stretch_blocked(h, m)
+    assert (20, 25) not in ac.blocked_static and (20, 25) in ac.skipped
+    assert (0, 20, 25) in m.blocked
+
+
+def test_collision_on_the_stretch_still_blocks_it_static():
+    h, m = _pass_h()
+    h.fsm.inputs.pose = (2.0, 2.0, 0.0)            # nose at (2.6, 2) on the stretch
+    h.fsm.inputs.collision_stamp = h.t
+    ac = _first_stretch_blocked(h, m)
+    assert ac.blocked_static == [(20, 25)] and (20, 25) not in ac.skipped
+
+
+@pytest.mark.parametrize('dist, bearing, static', [(1.0, 90.0, False), (2.2, 0.0, True)])
+def test_remembered_static_counts_only_near_the_stretch(dist, bearing, static):
+    h, m = _pass_h(obstacle_path_filter=False)
+    i = h.fsm.inputs
+    i.pose = (0.5, 2.0, 0.0)
+    i.obstacle_distance, i.obstacle_bearing = dist, bearing
+    h.fsm._last_static_t = h.t                     # a static seen within the memory
+    ac = _first_stretch_blocked(h, m)
+    assert ((20, 25) in ac.blocked_static) is static
+    assert ((20, 25) in ac.skipped) is not static
+
+
+def test_sweep_skip_count_restarts_with_each_new_plan():
+    """Review 2026-11-02: sweep_skips[(area, sub)] outlived the plan (repeat / cross run,
+    re-plan): the new run's sub-path 0 started at the cap and was dropped at once."""
+    subs = [line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)]
+    h = _skips_h(subs, (4.5, 4.5, 0.0), edge_blocked_skip_m=1.0)
+    m = h.fsm.mission
+    m.sweep_skips[(0, 0)] = h.fsm.p.sweep_blocked_max_skips     # capped in the last run
+    h.fsm._begin(h.t)
+    h.fsm._on_plan(f.SUCCEEDED, plan(subs))                     # the next run's plan
+    h._apply(h.fsm._end())
+    assert m.sub_i == 0 and h.name == 'TRANSIT'
+    _exhaust_transit(h)
+    assert not m.failed and m.sub_i == 0 and m.sweep_skips == {(0, 0): 1}
+
+
 def test_blocked_static_round_trips_in_the_resume_file():
     from mower_mission.resume import ResumeCursor
     cur = ResumeCursor()
@@ -5192,10 +5253,17 @@ def test_chunk_ending_on_a_pivot_vertex_beside_its_start_is_cut_short():
 # 2026-11-02 stationary hold / no-room fallback (field: 350 s old cog fix after a STUCK
 # wait refused START although the robot had not moved)
 # ---------------------------------------------------------------------------
+def _aligner_held(moved, cont):
+    """heading_aligner status held for these moved_since_fix_m / imu_continuous
+    (heading_logic stationary_since_fix, hold_move 0.5 m)."""
+    return moved is not None and cont is True and moved < 0.5
+
+
 def held_harness(age=350.0, quality='fair', moved=0.1, cont=True, **params):
     h = cog_harness(age, quality, **params)
     h.fsm.inputs.heading_moved_m = moved
     h.fsm.inputs.heading_imu_continuous = cont
+    h.fsm.inputs.heading_held = _aligner_held(moved, cont)
     h.tick()
     return h
 
@@ -5220,11 +5288,60 @@ def test_stale_and_moved_cog_runs_the_calibration_drive():
     assert 'heading cog is 350 s old: calibration drive first' in _logs(h)
 
 
+def _held_start_on_float(moved_at_fixed):
+    """START off the dock on RTK float with a held cog heading (preflight keeps it, no
+    calibration drive wanted); RTK then fixes and the aligner reports ``moved_at_fixed``."""
+    h = held_harness(age=425.0, quality='fair', moved=0.27, cont=True)
+    h.fsm.inputs.fix_type = 2
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    assert h.name == 'WAITING_FOR_RTK' and not h.fsm._hcal_wanted
+    h.fsm.inputs.fix_type = 3
+    h.fsm.inputs.heading_moved_m = moved_at_fixed
+    h.fsm.inputs.heading_held = _aligner_held(moved_at_fixed, True)
+    h.tick(dt=1.0, n=5)
+    h.answer_services()
+    h.tick()
+    return h
+
+
+def test_held_cog_at_float_start_is_rechecked_once_rtk_fixes():
+    """Review 2026-11-02: the hold seen on float went to PLANNING without the calibration
+    drive although, RTK fixed, the aligner then reported 7.5 m moved since the fix."""
+    h = _held_start_on_float(7.5)
+    assert h.fsm._heading_cog_stale()
+    assert h.name == 'WAITING_FOR_RTK' and h.goal(f.ACT_DRIVE) == {'distance_m': 1.0,
+                                                                  'speed_mps': 0.15}
+    assert 'heading cog is 425 s old now RTK is fixed: calibration drive first' in _logs(h)
+
+
+def test_held_cog_at_float_start_still_held_at_rtk_fixed_plans_without_a_drive():
+    h = _held_start_on_float(0.3)
+    assert h.name == 'PLANNING'
+    assert not [e for e in h.since(0, f.StartAction) if e.name in MOVING_ACTIONS]
+
+
 @pytest.mark.parametrize('moved, cont', [(None, True), (0.1, None)])
 def test_stale_cog_without_hold_info_falls_back_to_the_age_check(moved, cont):
     h = held_harness(moved=moved, cont=cont)
     start_hcal(h)
     assert h.goal(f.ACT_DRIVE) is not None
+
+
+def test_hold_is_the_aligners_verdict_not_a_mission_threshold():
+    """Review 2026-11-02 simplification: one stationary threshold (aligner hold_move);
+    the mission keeps a stale cog heading exactly when the status says held."""
+    assert not hasattr(f.Params(), 'heading_stale_move_m')
+    h = held_harness(moved=0.1)
+    h.fsm.inputs.heading_held = False            # e.g. a larger aligner hold_move said no
+    start_hcal(h)
+    assert h.goal(f.ACT_DRIVE) is not None
+    h = held_harness(moved=0.8)
+    h.fsm.inputs.heading_held = True
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick()
+    assert h.name == 'PLANNING'
 
 
 def test_imu_restart_not_moved_keeps_the_pose_prior_path():

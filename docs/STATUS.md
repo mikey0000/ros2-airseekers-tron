@@ -775,3 +775,111 @@ mission.yaml):
 The sim gate's `-d` disturbance (wheel bias 0.04, per-wheel slip std 0.05) is mild and the
 sim publishes no roll on /tilt/status, so a 3x wheel-vs-RTK slip and the slope rule never
 occur there: the slip and slope paths are unit-tested only.
+
+## Review fixes (2026-11-02, branch ws/review-fixes, unit-tested; sim gate pending)
+
+Code review of 335ef53..3cfe973. Each fix has a regression test that fails on 3cfe973.
+
+* **Boundary recovery failure stays put.** `_boundary_recovery_failed` used to end in
+  `_finish_incomplete`, which docked once `return_home_on_incomplete` became true. It now passes
+  `stay_reason`, so the robot stops outside the region whatever that setting says, and
+  MOWING_INCOMPLETE logs "not returning home: ...". The test Harness no longer defaults
+  `return_home_on_incomplete` to false. The six tests that assert a stop in place set it
+  explicitly, and the recovery-failure test runs with the shipped true.
+* **The stationary heading hold sees all motion.** `moved_since_fix` now grows on RTK float
+  positions too, and on wheel-odometry path (`/odom`, `HeadingEstimator.on_odom`) while no
+  GNSS position is fresh. When RTK becomes fixed in WAITING_FOR_RTK after a START off the
+  dock, `_heading_plan_ok()` is checked again. If a held cog heading turned out stale, the
+  calibration drive runs ("heading cog is N s old now RTK is fixed: calibration drive
+  first").
+* **One stationary threshold.** The aligner status has a new `held` field
+  (`stationary_since_fix`, `hold_move` 0.5). The mission's `_heading_cog_held` reads it, and
+  the `heading_stale_move_m` param is removed (Params, mission.yaml).
+* **`plan_recovery` cost.** It now scans only the region and keepout edges within 2 m of the
+  pose (`_LocalRegion`: inside/outside by crossing parity from a reference point, with a full
+  scan when nothing is near). The result matches the full scan. On the review's 1000-vertex
+  region it takes about 20 ms on amd64 (was 0.75 s). The DriveCmd(0, 0) that ends a recovery
+  motion (done / timed out / grown, and the slip trip) now goes out through the node at
+  once (`MissionFSM.effect_sink` / `_fx_now`), before the next plan runs.
+* **`_static_block()` needs evidence on the stretch.** Outside the on-path decision, a
+  remembered ranged static counts only when it is on the path or within robot_width/2 +
+  obstacle_path_margin_m of the stretch. A collision counts only when the robot's nose is
+  that close to the stretch. Anything else leaves the stretch `skipped`, not `blocked_static`.
+* **Sweep-skip counts** are cleared with every new plan (each repeat / cross run, re-plan,
+  no-go re-plan).
+* **wifi_monitor.** An `iw` that fails or times out returns None, which gives link_state
+  `unknown` and no event. `LinkFilter` keeps the last known sample for `stale_samples` (3).
+  A disconnect is logged when operstate is down, or when iw is not connected AND
+  /proc/net/wireless has no signal. If iw keeps saying "Not connected." while /proc still
+  shows a signal, the disconnect comes after `stale_samples`.
+* **bag_ring.** `--compression-queue-size` is 10. Overflow DROPS a split (rosbag2), so the
+  old comment ("delays the next split") was wrong.
+
+Known limitations from the review, not fixed:
+- Review 8: the hold anchor (`_mark_fix`) can be the last RTK-fixed position from before a
+  GNSS outage. (Its other half is fixed: `imu_continuous` / `held` in the status now turn
+  false once no IMU sample has come for `imu_gap_max`.)
+- Review 9: the slip check's "real" distance is the map EKF pose, which fuses wheel
+  velocity, so wheel slip between GNSS updates is under-detected (check the ekf.yaml inputs).
+- Review 10: `plan_recovery` / `worst_outside` count keepout incursion but `_hb_inside` /
+  `evaluate` do not. A trip next to a keepout with a corner already in it can leave no
+  admissible candidate, which ends in STUCK_NEEDS_HELP.
+
+## Boundary lines (virtual walls) and the no-go zone sheet (2026-11-02, unit-tested; sim gate pending with the integration run)
+
+Owner request: a line the mower must never cross (a drop-off, a flower-bed edge inside an
+area), next to the existing area / no-go polygons. Branch `ws/boundary-lines`.
+
+* **Data model.** `mower_map/boundary_lines.py`: `{id, name, points [[x, y], ...] (map
+  metres), width_m}`; `width_m` 0..2.0 (default 0.0 = the body must not touch the line
+  itself). Wire format `{"version": 1, "lines": [...]}`. Stored in `areas.dat` after the
+  areas (`boundary_lines_version: 1`, `boundary_line_count`, `boundary_line_<k>_id / _name /
+  _points / _width_m`), so the lines share the file's datum stamp and are never re-projected
+  separately; a file without lines stays byte-identical to the upstream format. `clear_map`
+  keeps them.
+* **Services / topics** (`map_server_node`): `~/get_boundary_lines` / `~/set_boundary_lines`
+  (the area-settings service types, JSON in `settings_json`, the whole set);
+  `ReplaceAreas.srv` gained `boundary_lines_json` ('' = keep, the set is swapped in with the
+  areas in the same rebuild + save); latched `~/boundary_lines` (JSON) for the mission;
+  `~/boundary_line_hit` (JSON, every boundary check: the lines the footprint touches, with
+  depth). GUI backend: `Map.boundary_lines` in the polled map, `ReplaceMapReq.boundary_lines`
+  (absent = keep) sent in `replace_areas`, or `set_boundary_lines` after the fallback
+  clear/add sequence.
+* **Hard trip (true line).** Mission guard (`fsm/guards/boundary.py`, `walls.py`): in every
+  hard-boundary phase the footprint box (0.60 / 0.10 / 0.235) at the current pose is tested
+  against each line's centreline +- width_m / 2 (separating-axis depth, so a line between
+  two body points counts). Deeper than `boundary_line_trip_m` (0.0) -> `BOUNDARY OUT: body
+  crosses boundary line <id> "<name>" by N m`, blade off, retrace of the driven track until
+  the body is `hard_boundary_body_clear_m` clear of that line, then the inward move away from
+  the line; counted like any excursion. At START / resume: inward move first, not counted.
+  `boundary_lines_enabled` (true) switches the trip and the coverage holes off.
+* **Planners (thin keepout).** Each line buffered to `width_m + boundary_line_keepout_m`
+  (0.57 = 2 x (body half width 0.235 + 0.05); same default in map_server and mission) is an
+  extra obstacle of every area it overlaps
+  (`areas.with_boundary_lines`, copies like the dock no-go): /keepout_mask, /nav_keepout_mask,
+  the route graph (transits go round, or find no route through a full wall), and the
+  coverage goals (`_nogo_area_holes`, preview too), so swaths are cut at the line.
+  `get_mowing_area` still serves the stored areas (the GUI never sees the keepouts).
+* **GUI.** Map editor tool "Boundary line" (desktop editor toolbar, phone edit cluster):
+  click vertices, double-click / Enter / Finish (>= 2 points), Undo point, Cancel / Escape;
+  red dashed line (#ff1744) with its name; own sheet (name, width 0..2 m, delete). Edits made
+  from the view-mode sheet open the editor with the change pending (Save writes the map).
+* **No-go click fix (owner bug).** A click on a no-go zone opened the mowing-area sheet: the
+  view-mode click hit-tested mowing areas first. `pages/map/utils/mapHitTest.ts` now picks the
+  most specific feature (boundary line within 10 px / 16 px on phones > no-go zone > path >
+  mowing area, smallest polygon when nested). A no-go zone opens its own sheet (name,
+  provenance, area m², delete, edit vertices, "Mow <area>"), also without area settings; an
+  amber outline marks the feature whose sheet is open.
+* **Sim gate.** Criterion b counts line trips (they are BOUNDARY OUT lines) and reports
+  them separately (`line_trips`).
+
+Body clearance is tested, not assumed (gtest `BoundaryLineBody`): soft and hard edge layouts,
+a wall parallel to the rows 0.5 m inside an edge, rows ending at a wall, a full cut; the
+footprint box along every lap, row, turn and driven connector, pivots swept, stays >= 0.05 m
+off the true line. A 0.30 band failed it: the hard layout does not grow holes (laps 0.45 m
+off) and its lap-corner pivot swept the nose corner (0.645 m) across the line. The soft
+layout grows holes by 0.40 and passed at 0.30 too. The masks are robot-centre limits, so the
+0.57 band is also what keeps a Nav2 fallback transit's body off the line. Route graph: a gap
+between a wall and the area edge narrower than the body is never used (test). Not modelled:
+tracking error / leg overshoot at row ends (the trip is the backstop). A line lying
+outside every area is not in the masks (no area to carry it).

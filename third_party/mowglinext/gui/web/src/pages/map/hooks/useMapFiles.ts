@@ -3,7 +3,7 @@ import {useTranslation} from "react-i18next";
 import type {NotificationInstance} from "antd/es/notification/interface";
 import type {FeatureCollection} from "geojson";
 import type {Map as MapType} from "../../../types/ros.ts";
-import type {AreaChannel} from "../../../types/map.ts";
+import type {AreaChannel, ReplaceMapBoundaryLines} from "../../../types/map.ts";
 import {
     MowingFeature,
     MowingAreaFeature,
@@ -11,12 +11,15 @@ import {
     ObstacleFeature,
     DockFeatureBase,
     MowingFeatureBase,
+    BoundaryLineFeature,
+    BOUNDARY_LINE_FEATURE_TYPE,
     featuresFromJSON,
     type SerializedMapFeature,
 } from "../../../types/map.ts";
 import type {Api, MowgliMapArea, MowgliReplaceMapReq} from "../../../api/Api.ts";
 import {dedupePoints, getQuaternionFromHeading, isRingInsidePolygon, itranspose} from "../../../utils/map.tsx";
 import {apiFetch} from "../../../transport/index.ts";
+import {boundaryLinesForSave} from "../utils/boundaryLines.ts";
 
 interface UseMapFilesOptions {
     features: Record<string, MowingFeature>;
@@ -156,8 +159,11 @@ export function useMapFiles({
             target.obstacle_info = [...(target.obstacle_info ?? []), f.getInfo()];
         }
 
-        const updateMsg: MowgliReplaceMapReq = {
+        // boundary_lines always carries the full current set: present = the
+        // backend replaces its stored lines ([] clears them).
+        const updateMsg: MowgliReplaceMapReq & ReplaceMapBoundaryLines = {
             areas: [],
+            boundary_lines: boundaryLinesForSave(features, offsetX, offsetY, datum),
         };
         for (const [type, areasOfType] of Object.entries(areas)) {
             areasOfType.forEach((area, index) => {
@@ -306,7 +312,8 @@ export function useMapFiles({
         const geojson = {
             type: "FeatureCollection",
             features: Object.values(features)
-                .filter((f) => f instanceof MowingFeatureBase || f instanceof DockFeatureBase)
+                .filter((f) => f instanceof MowingFeatureBase || f instanceof DockFeatureBase
+                    || f instanceof BoundaryLineFeature)
                 .map((f) => ({
                     type: "Feature" as const,
                     id: f.id,
@@ -531,7 +538,7 @@ export function useMapFiles({
                     return;
                 }
 
-                const KNOWN_TYPES = new Set(['workarea', 'navigation', 'obstacle', 'dock']);
+                const KNOWN_TYPES = new Set(['workarea', 'navigation', 'obstacle', 'dock', BOUNDARY_LINE_FEATURE_TYPE]);
                 const snapshot: Record<string, SerializedMapFeature> = {};
                 for (const element of geojson.features) {
                     if (element.id == null || !element.geometry) continue;
