@@ -61,7 +61,45 @@ class OutcomeMixin:
         if m.blocked:
             b = blocked_text(len(m.blocked))
             txt = '%s, %s' % (txt, b) if txt else b
-        return txt + (': %s' % reason if reason else '')
+        txt += ': %s' % reason if reason else ''
+        pct = self._mowed_text()
+        return '%s (%s)' % (txt, pct) if pct else txt
+
+    def _stretch_len(self, fr, to):
+        m = self.mission
+        a = absolute_to_local(m.subpaths, fr)
+        b = absolute_to_local(m.subpaths, to)
+        if a is None or b is None or a[0] != b[0] or b[1] <= a[1]:
+            return 0.0
+        c = m.cum[a[0]] if a[0] < len(m.cum) else geo.cumulative_lengths(m.subpaths[a[0]])
+        return c[b[1]] - c[a[1]]
+
+    def _tally_area(self, ac, failed):
+        """An area run finished: add its planned metres and the metres it left unmowed
+        (NOT mowed sub-paths, skipped / blocked_static stretches) to the mission totals.
+        Short stretches dropped by the end-of-area pass are in ignored_short_m."""
+        m = self.mission
+        lengths = list(m.lengths or [])
+        m.planned_m += sum(lengths)
+        subs = {x[1] for x in failed if x[1] is not None and x[1] < len(lengths)}
+        missed = sum(lengths[i] for i in subs)
+        for fr, to in list(ac.skipped) + list(ac.blocked_static):
+            a = absolute_to_local(m.subpaths, fr)
+            if a is not None and a[0] not in subs:
+                missed += self._stretch_len(fr, to)
+        m.missed_m += missed
+
+    def _mowed_text(self):
+        """'99.8 % mowed, 0.23 m skipped as too short' (mowed_m / planned_m of the area
+        runs finished so far); '' before any area finished."""
+        m = self.mission
+        if m is None or m.planned_m <= 0:
+            return ''
+        mowed = max(0.0, m.planned_m - m.missed_m - m.ignored_short_m)
+        txt = '%.1f %% mowed' % (100.0 * mowed / m.planned_m)
+        if m.ignored_short_m > 0:
+            txt += ', %.2f m skipped as too short' % m.ignored_short_m
+        return txt
 
     def _finish_incomplete(self, text, stay_reason=None):
         """Session over with sub-paths left: latch MOWING_INCOMPLETE (resume kept), then dock
@@ -132,6 +170,7 @@ class OutcomeMixin:
                   'area %d done: %d/%d sub-paths mowed, %d NOT mowed' % (
                       m.area_idx, len(ac.completed), len(m.subpaths), len(failed))
                   + ('' if not blocked else ', %s' % blocked_text(len(blocked))))
+        self._tally_area(ac, failed)
         if failed or blocked:
             # not complete: keep it out of completed_areas, keep its run index, and
             # point the cursor at the first missing pose so START resumes there.
@@ -194,6 +233,9 @@ class OutcomeMixin:
         text = '' if m is None or not m.excluded_count else \
             'excluded_count %d, excluded_m %.1f (static obstacles)' % (m.excluded_count,
                                                                       m.excluded_m)
+        pct = self._mowed_text()
+        if pct and (text or m.ignored_short_m > 0 or m.missed_m > 0):
+            text = '%s, %s' % (text, pct) if text else pct
         self._go('MOWING_COMPLETE', text)
         self.mission = None
         self._fx.append(PublishAreaSettings({}))

@@ -624,22 +624,34 @@ class HoldsMixin:
                 self._persist()
             self._area_done()
             return
-        # field 2026-10-23 afternoon (32 stretch retries, 18 still blocked): a stretch shorter
-        # than stretch_min_retry_m, or one near a stretch that could not be bypassed in this
-        # mission, is reported blocked without driving to it again
+        # field 2026-10-23 afternoon (32 stretch retries, 18 still blocked): a stretch near a
+        # stretch that could not be bypassed in this mission is reported blocked without
+        # driving to it again. Field 2026-11-03: one shorter than stretch_min_retry_m is
+        # dropped as too short to matter (ignored_short_m), never counted blocked / NOT
+        # mowed, so a 99.8 % mow still completes.
         sp = m.subpaths[a[0]]
         cum = geo.cumulative_lengths(sp)
         length = cum[b[1]] - cum[a[1]]
         p0, p1 = sp[a[1]], sp[b[1]]
+        if length < float(self.p.stretch_min_retry_m):
+            if (fr, to) in ac.skipped:
+                ac.skipped.remove((fr, to))
+                self._persist()
+            m.ignored_short_m += length
+            self._log('info', 'area %d: stretch sub-path %d poses %d -> %d dropped as too '
+                      'short to matter (%.2f m < %.2f m)'
+                      % (m.area_idx, a[0], a[1], b[1], length,
+                         float(self.p.stretch_min_retry_m)))
+            self._area_done()
+            return
         near = [] if each else [
             q for q in m.unbypassable
             if min(geo.dist(q, p0), geo.dist(q, p1)) <= float(self.p.stretch_block_radius_m)]
-        if length < float(self.p.stretch_min_retry_m) or near:
+        if near:
             m.blocked.append((m.area_idx, fr, to))
-            self._log('info', 'area %d: stretch sub-path %d poses %d -> %d not re-tried (%s)'
-                      % (m.area_idx, a[0], a[1], b[1],
-                         '%.2f m < %.2f m' % (length, float(self.p.stretch_min_retry_m))
-                         if not near else 'next to an obstacle that could not be bypassed'))
+            self._log('info', 'area %d: stretch sub-path %d poses %d -> %d not re-tried (next '
+                      'to an obstacle that could not be bypassed)'
+                      % (m.area_idx, a[0], a[1], b[1]))
             self._area_done()
             return
         m.stretch, m.stretch_end = (fr, to), b[1]

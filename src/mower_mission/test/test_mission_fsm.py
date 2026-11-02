@@ -2671,7 +2671,8 @@ def test_transit_retries_exhausted_ends_mowing_incomplete_in_place():
         if k < 3:
             h.tick(dt=1.0, n=4)
     assert h.name == 'MOWING_INCOMPLETE' and h.fsm.state == f.STATE_IDLE
-    assert h.fsm.sub_state == '1 of 2 sub-paths not mowed: transit aborted 4 times'
+    assert h.fsm.sub_state.startswith('1 of 2 sub-paths not mowed: transit aborted 4 times (')
+    assert '% mowed)' in h.fsm.sub_state
     assert 'MOWING_COMPLETE' not in h.statuses(m)
     assert not [e for e in h.since(m, f.StartAction) if e.name == f.ACT_DOCK]
     assert h.since(m, f.ZeroBurst) and not h.blade
@@ -2966,7 +2967,8 @@ def test_skipped_stretch_still_blocked_ends_incomplete():
     h.tick()
     h.finish(f.ACT_FOLLOW, f.ABORTED)             # chair still there: no retries, no detour
     assert h.name == 'MOWING_INCOMPLETE'
-    assert h.fsm.sub_state == '1 stretch blocked by obstacles'
+    assert h.fsm.sub_state.startswith('1 stretch blocked by obstacles (')
+    assert '% mowed)' in h.fsm.sub_state, h.fsm.sub_state
     cur = ResumeCursor.loads(h.saved)
     assert cur.areas[0].skipped == [(6, 8)] and 0 not in cur.completed_areas
     assert cur.available and not h.blade
@@ -5531,3 +5533,43 @@ def test_poor_quality_but_stationary_cog_starts_without_a_drive():
     h.tick()
     assert h.name == 'PLANNING'
     assert not [e for e in h.since(0, f.StartAction) if e.name in MOVING_ACTIONS]
+
+
+def _short_pass_h(stretch):
+    h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
+    m = h.fsm.mission
+    ac = h.fsm.cursor.areas[0]
+    ac.completed.update({0, 1})
+    ac.skipped = [stretch]
+    m.failed = []
+    h.fsm._begin(h.t)
+    h.fsm._area_done()
+    h._apply(h.fsm._end())
+    return h, m
+
+
+def test_stretch_below_retry_minimum_is_dropped_and_the_mow_completes():
+    """Field 2026-11-03: a 0.23 m stretch 'not re-tried' was counted blocked, so a 99.8 %
+    mow ended MOWING_INCOMPLETE."""
+    h, m = _short_pass_h((20, 22))                 # 0.2 m < stretch_min_retry_m 0.5
+    logs = [e.text for e in h.since(0, f.Log)]
+    assert any('dropped as too short to matter (0.20 m < 0.50 m)' in t for t in logs)
+    assert h.name == 'RETURNING_HOME' and not h.fsm.cursor.available
+    assert any('MOWING_COMPLETE' in t or 'all areas mowed' in t for t in logs)
+    done = [t for t in logs if 'all areas mowed' in t][-1]
+    assert '% mowed, 0.20 m skipped as too short' in done, done
+
+
+def test_stretch_above_retry_minimum_is_still_retried():
+    h, m = _short_pass_h((20, 26))                 # 0.6 m
+    assert m.stretch == (20, 26) and not m.ignored_short_m
+
+
+def test_retried_stretch_blocked_static_stays_excluded():
+    h, m = _short_pass_h((20, 26))
+    h.fsm.obstacle_decision = {'kind': 'static', 'on_path': True, 'action': 'act'}
+    h.fsm._begin(h.t)
+    h.fsm._stretch_blocked('obstacle_decision act, trunk on_path')
+    h._apply(h.fsm._end())
+    assert h.fsm.cursor.available is False or h.name == 'RETURNING_HOME'
+    assert m.excluded_count == 1 and not m.blocked and not m.ignored_short_m
