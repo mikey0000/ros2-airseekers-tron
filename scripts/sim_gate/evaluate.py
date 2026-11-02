@@ -74,6 +74,41 @@ FLOOR = 0.06
 
 
 LOOP_HZ_MIN = 18      # controller loop median (Hz, sim time) below this: INVALID
+CTRL_BASE_HZ = 20.0   # nav2_params controller_server controller_frequency (sim Hz)
+START_MARK = 'high_level_control(1) -> True'
+RATE_RACE = 'controller_frequency not applied (sim rate race)'
+_MISSED = re.compile(r'Control loop missed its desired rate of ([0-9.]+) Hz')
+
+
+def run_rate(run):
+    """sim_gate.sh -x RATE from the run's run.txt (1.0 when absent)."""
+    try:
+        with open(os.path.join(run, 'run.txt')) as fh:
+            for line in fh:
+                if line.startswith('rate='):
+                    return float(line.split('=', 1)[1])
+    except (OSError, ValueError):
+        pass
+    return 1.0
+
+
+def rate_race(lines, rate, base_hz=CTRL_BASE_HZ):
+    """True when, faster than real time, controller_server ran at an unscaled
+    controller_frequency after START: its missed-rate warnings name a desired rate other
+    than base x rate (mower_sim sets base x rate after every activation; a set lost in the
+    dock pause left 20 Hz wall = 7 Hz sim at 3x, docs/simulation.md)."""
+    if abs(rate - 1.0) < 1e-6:
+        return False
+    started = not any(START_MARK in ln for ln in lines)
+    want = base_hz * rate
+    for ln in lines:
+        if not started:
+            started = START_MARK in ln
+            continue
+        m = _MISSED.search(ln)
+        if m and abs(float(m.group(1)) - want) > 0.01 * want:
+            return True
+    return False
 
 def load_world(path):
     import yaml
@@ -749,9 +784,21 @@ def main(run, world):
     res['verdict'] = 'PASS' if ok else 'FAIL'
     # INVALID (not FAIL): the controller missed its 20 Hz sim-time budget, i.e. the host could
     # not keep up with the sim rate (sim_gate.sh -x); the run says nothing about the stack
-    invalid = 'loop_hz' in res and res['loop_hz']['median'] < LOOP_HZ_MIN
+    reasons = []
+    if 'loop_hz' in res and res['loop_hz']['median'] < LOOP_HZ_MIN:
+        reasons.append('controller loop median %d Hz sim < %d Hz (host too slow for the sim '
+                       'rate; rerun slower, sim_gate.sh -x)' % (res['loop_hz']['median'],
+                                                                LOOP_HZ_MIN))
+    try:
+        with open(os.path.join(run, 'launch.log'), errors='replace') as fh:
+            if rate_race(fh.readlines(), run_rate(run)):
+                reasons.insert(0, RATE_RACE)
+    except OSError:
+        pass
+    invalid = bool(reasons)
     if invalid:
         res['verdict'] = 'INVALID'
+        res['invalid'] = reasons
     C = res['criteria']
     rows = [
         ('a', 'max %s outside (gt), samples > 0.10 m' % C['a']['measure'], '%.3f m, %d' % (
@@ -814,10 +861,8 @@ def main(run, world):
                      '  FAIL' if c[6] > CORNER_LIMIT else ''))
     for line in C['d']['lines'][:15]:
         print('   ' + line)
-    if invalid:
-        print('   INVALID: controller loop median %d Hz sim < %d Hz (host too slow for the '
-              'sim rate; rerun slower, sim_gate.sh -x)' % (res['loop_hz']['median'],
-                                                            LOOP_HZ_MIN))
+    for reason in reasons:
+        print('   INVALID: %s' % reason)
     print('   VERDICT: %s' % res['verdict'])
     try:
         with open(os.path.join(run, 'result.json'), 'w') as fh:

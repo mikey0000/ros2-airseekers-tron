@@ -473,6 +473,13 @@ How it is wired:
   `controller_frequency` at configure time and only shifts its warm start when
   1 / frequency == model_dt. So mower_sim sets `controller_frequency` = 20 x rate through
   the server's dynamic parameter only after it is active. MPPI keeps "shifting ON".
+  The server holds that parameter callback only while ACTIVE: `on_deactivate` removes it and
+  `on_activate` does not re-read the parameter. The gate pauses nav2 on the dock and resumes it
+  on START, so mower_sim (`mower_sim/ctrl_rate.py`) re-sends the rate on EVERY transition into
+  active, from `/controller_server/transition_event` and a 1 s GetState poll. It retries a
+  refused set and logs `controller_server activation N: controller_frequency -> 60.0 Hz wall
+  (= 20.0 Hz sim), read back 60.0`. Before 2026-11-03 it was set once. A set that landed
+  after the pause left 20 Hz wall (7 Hz sim at 3x).
   The 3 "Parameter controller_frequency not found" warnings at that moment come from the
   MPPI plugins' parameter handlers and are harmless.
 * loc_drift at k > 1: the drifting map -> odom TF comes at 10 Hz sim. Nav2 waited for a
@@ -481,7 +488,14 @@ How it is wired:
   auto = rate != 1) mower_sim re-sends the latest map -> odom with every physics tick. The
   values still change at 10 Hz. That restored 20 Hz. At 1x the TF is unchanged.
 * `evaluate.py`: a controller loop median below 18 Hz (sim) makes the run **INVALID** (exit 4),
-  not FAIL: the host could not keep up. Rerun slower.
+  not FAIL: the host could not keep up. Rerun slower. A run with `-x` != 1 is also INVALID,
+  with the reason "controller_frequency not applied (sim rate race)", when launch.log has a
+  "Control loop missed its desired rate of X Hz" warning after START and X is not 20 x rate.
+* Host preflight (`sim_gate.sh`): the gate refuses to start (exit 2) unless `powerprofilesctl
+  get` prints `performance`. The check is skipped when powerprofilesctl is absent. The gate
+  also prints the 1-minute load average. On 2026-11-02/03 every 1x run under the balanced or
+  quiet profile read 10 Hz (INVALID). The first one under performance read 20. Start gates
+  on a quiet host (load5 < 3) and run one gate at a time.
 
 Achievable rate on the dev host (20 threads, 31 GB, heavily swapped during these runs):
 3x holds the 20 Hz sim controller budget (median 20 / p10 20) in ideal, `-d` (with the hold)
