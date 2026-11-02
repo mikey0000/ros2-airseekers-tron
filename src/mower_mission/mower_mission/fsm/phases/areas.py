@@ -287,6 +287,9 @@ class AreasMixin:
         m.cond, m.cond_errors = {}, {}
         if self.p.path_conditioning:
             subpaths = self._condition_subpaths(subpaths, result.get(CONDITIONED_KEY))
+        # a new plan (each repeat / cross run, a re-plan) reuses the sub-path indices: no
+        # consecutive sweep skips carried over (review 2026-11-02)
+        m.sweep_skips = {}
         m.subpaths = subpaths
         m.planned_total += len(subpaths)
         m.cum = [geo.cumulative_lengths(sp) for sp in subpaths]

@@ -54,10 +54,9 @@ behavior_tree_node:
     heading_max_cog_age_s: 300.0            # 0 = no age limit
     heading_reject_quality: ['poor']        # status quality values (good|fair|poor); [''] = none
     # 2026-11-02: age alone does not block. A cog heading past heading_max_cog_age_s is kept
-    # (no drive, its age-decayed quality ignored) while the robot moved less than this since
-    # the fix (aligner moved_since_fix_m, RTK fixed) and the IMU stayed continuous
-    # (imu_continuous); the age check applies only when either is not reported.
-    heading_stale_move_m: 0.5
+    # (no drive, its age-decayed quality ignored) while heading_aligner reports it held
+    # (status held: moved < hold_move 0.5 m since the fix by any motion evidence, IMU
+    # continuous); the age check applies when held is not reported.
 
     # --- localization hold (2026-10-09, /localization/status from localization_monitor) ---
     # Mow follow / transit stop with the blade off while the drift estimate is over budget

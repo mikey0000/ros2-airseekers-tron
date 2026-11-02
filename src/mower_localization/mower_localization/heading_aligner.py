@@ -34,7 +34,7 @@ Subscribed
 ----------
 ``/imu/data``                       sensor_msgs/Imu        100 Hz, batched (periodic thread)
 ``/stereo_imu/data``                sensor_msgs/Imu        200 Hz, event (best effort)
-``/odom``                           nav_msgs/Odometry      wheel odometry (rest detection)
+``/odom``                           nav_msgs/Odometry      wheel odometry (rest detection, hold)
 ``/cmd_vel``                        geometry_msgs/Twist    commanded motion (post-mux/slew)
 ``/odometry/gps``                   nav_msgs/Odometry      navsat output, map/ENU (= odom)
 ``/gps/status``                     mowgli GnssStatus      fix_type (2 float, 3 fixed)
@@ -431,7 +431,10 @@ class HeadingAligner(Node):
     # ------------------------------------------------------------------ sampled inputs
     def _on_odom(self, msg):
         tw = msg.twist.twist
-        self._odom = (time.monotonic(), tw.linear.x, tw.angular.z)
+        now = time.monotonic()
+        self._odom = (now, tw.linear.x, tw.angular.z)
+        p = msg.pose.pose.position
+        self.est.on_odom(now, p.x, p.y)       # stationary hold: motion without GNSS
 
     def _update_rest(self):
         now = time.monotonic()

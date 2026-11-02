@@ -190,26 +190,127 @@ def simulate(pose, v, w, duration, dt=0.1):
     return out
 
 
+def _seg_point_dist(x, y, e):
+    """Distance from (x, y) to edge ``e`` = (ax, ay, bx, by, dx, dy, L2)."""
+    ax, ay, _bx, _by, dx, dy, L2 = e
+    t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+    return math.hypot(ax + t * dx - x, ay + t * dy - y)
+
+
+class _LocalRegion:
+    """``worst_outside`` restricted to the edges near one pose (review fix 3, 2026-11-02:
+    plan_recovery on a 1000-vertex region took 0.75 s on amd64, under the node lock).
+
+    Only edges within ``radius`` of ``pose`` are kept (``radius`` is raised to cover
+    ``reach``, the furthest any queried body point gets from ``pose``). Inside / outside
+    of a query point q is that of a reference point next to the pose (one full
+    point-in-polygon test per polygon; nudged off any edge it sits on) flipped once per
+    kept edge the segment ref -> q crosses: every such edge lies within reach of the pose.
+    A point whose nearest kept edge is further than ``radius - reach`` (or that has none)
+    falls back to the full edge scan; a polygon with no kept edge is at least that far
+    away. So the result equals ``worst_outside`` (a query point exactly on an edge is 0
+    out either way)."""
+
+    def __init__(self, pose, polys, keepouts, points, reach, radius):
+        x0, y0 = float(pose[0]), float(pose[1])
+        self.points = points
+        self.radius = max(float(radius), float(reach) + 0.1)
+        self.far = self.radius - float(reach) - 0.01
+        polys = [self._near(p, x0, y0) for p in polys if len(p) >= 3]
+        keepouts = [self._near(k, x0, y0) for k in keepouts if len(k) >= 3]
+        edges = [e for _p, es in polys + keepouts for e in es]
+        self.rx, self.ry = x0, y0
+        for k in range(1, 8):         # a reference point on no kept edge (parity is exact)
+            if all(_seg_point_dist(self.rx, self.ry, e) > 1e-7 for e in edges):
+                break
+            self.rx, self.ry = x0 + 1e-4 * k * 0.6180339887, y0 + 1e-4 * k * 0.3819660113
+        self.polys = [(p, _pip(self.rx, self.ry, p), es) for p, es in polys]
+        self.keepouts = [(p, _pip(self.rx, self.ry, p), es) for p, es in keepouts]
+
+    def _near(self, poly, x0, y0):
+        edges = []
+        for i in range(len(poly)):
+            ax, ay = float(poly[i - 1][0]), float(poly[i - 1][1])
+            bx, by = float(poly[i][0]), float(poly[i][1])
+            e = (ax, ay, bx, by, bx - ax, by - ay, (bx - ax) ** 2 + (by - ay) ** 2)
+            if _seg_point_dist(x0, y0, e) <= self.radius:
+                edges.append(e)
+        return poly, edges
+
+    def _query(self, px, py, prepped):
+        """(inside, edge distance over the kept edges) of (px, py) against one polygon."""
+        _poly, inside, edges = prepped
+        rx, ry = self.rx, self.ry
+        ux, uy = px - rx, py - ry
+        best = math.inf                  # squared
+        for e in edges:
+            ax, ay, bx, by, dx, dy, L2 = e
+            t = 0.0 if L2 < 1e-12 else ((px - ax) * dx + (py - ay) * dy) / L2
+            t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+            ex, ey = ax + t * dx - px, ay + t * dy - py
+            d2 = ex * ex + ey * ey
+            if d2 < best:
+                best = d2
+            # the edge crosses ref -> q: its ends on either side of that line (a point on
+            # the line counts as the right side, like _pip's half-open rule) and the
+            # crossing within the segment
+            sa = ux * (ay - ry) - uy * (ax - rx) > 0.0
+            sb = ux * (by - ry) - uy * (bx - rx) > 0.0
+            if sa != sb:
+                s_ = ((ax - rx) * dy - (ay - ry) * dx) / (ux * dy - uy * dx)
+                if 0.0 <= s_ <= 1.0:
+                    inside = not inside
+        return inside, math.sqrt(best)
+
+    def worst(self, pose):
+        x, y, yaw = float(pose[0]), float(pose[1]), float(pose[2])
+        c, s = math.cos(yaw), math.sin(yaw)
+        best = None
+        for name, (bx, by, _kind) in self.points.items():
+            px, py = x + c * bx - s * by, y + s * bx + c * by
+            o = math.inf
+            for pp in self.polys:
+                inside, d = self._query(px, py, pp)
+                if inside:
+                    o = 0.0
+                    break
+                o = min(o, d)
+            if o > self.far:                 # nothing near: the full scan (exact, rare)
+                o = point_outside(px, py, [pp[0] for pp in self.polys])
+            for kp in self.keepouts:
+                inside, d = self._query(px, py, kp)
+                if inside:
+                    o = max(o, d if d <= self.far else _edge_dist(px, py, kp[0]))
+            if best is None or o > best[1]:
+                best = (name, o)
+        return best
+
+
 def plan_recovery(pose, polys, motions, max_worsen=0.05, points=None, keepouts=(),
-                  exclude=(), reverse_bias=0.02):
+                  exclude=(), reverse_bias=0.02, radius=2.0):
     """Score the candidate ``motions`` (name -> (v, w, duration)) by the worst-corner outside
     distance along the simulated footprint. A candidate is admissible when it never exceeds
     the current worst by more than ``max_worsen`` (a pivot: never exceeds it at all) and ends
     lower than it started. Returns a list of (name, v, w, duration, end_m, peak_m), best
     first (lowest end; reverse moves get ``reverse_bias`` of credit: they back off the edge
-    rather than driving along it), or [] when nothing admissible is left."""
-    cur = worst_outside(pose, polys, points, keepouts)
-    if cur is None:
+    rather than driving along it), or [] when nothing admissible is left. Only region /
+    keepout edges within ``radius`` of ``pose`` are scanned (_LocalRegion; same result)."""
+    if not any(len(p) >= 3 for p in polys):
         return []
-    cur = cur[1]
+    pts = points or body_points()
+    todo = [n for n in CANDIDATE_ORDER if n in motions and n not in exclude]
+    travel = max([abs(motions[n][0]) * motions[n][2] for n in todo] or [0.0])
+    reach = travel + max(math.hypot(bx, by) for bx, by, _k in pts.values())
+    region = _LocalRegion(pose, polys, keepouts, pts, reach, radius)
+    cur = region.worst(pose)[1]
+    if not math.isfinite(cur):
+        return []
     rows = []
-    for name in CANDIDATE_ORDER:
-        if name not in motions or name in exclude:
-            continue
+    for name in todo:
         v, w, dur = motions[name]
         peak, end = 0.0, cur
         for q in simulate(pose, v, w, dur):
-            end = worst_outside(q, polys, points, keepouts)[1]
+            end = region.worst(q)[1]
             peak = max(peak, end)
         cap = cur + 1e-6 if v == 0.0 else cur + max(0.0, max_worsen)
         if peak > cap or end >= cur - 1e-3:

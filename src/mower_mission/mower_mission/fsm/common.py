@@ -473,6 +473,9 @@ class Inputs:
     # (status imu_continuous, None = not reported)
     heading_moved_m: Optional[float] = None
     heading_imu_continuous: Optional[bool] = None
+    # the aligner's stationary hold verdict (status held: moved < its hold_move since the
+    # fix by any motion evidence, IMU continuous; None = not reported). The one threshold.
+    heading_held: Optional[bool] = None
     # /obstacle_policy (mower_vision obstacle_guard, JSON): closest close detection
     obstacle_kind: str = 'none'         # none | dynamic | static
     obstacle_class: str = ''
@@ -576,9 +579,8 @@ class Params:
     heading_max_cog_age_s: float = 300.0
     heading_reject_quality: list = field(default_factory=lambda: ['poor'])
     # 2026-11-02: a cog heading older than heading_max_cog_age_s is kept (no calibration
-    # drive, no age/quality rejection) while the robot moved less than this since the fix
-    # and the IMU stayed continuous; the age check is the fallback when either is unknown
-    heading_stale_move_m: float = 0.5
+    # drive, no age/quality rejection) while the aligner reports it held (status held,
+    # heading_logic hold_move 0.5 m; review 2026-11-02 dropped heading_stale_move_m)
     rain_mode: int = 1                  # 0 ignore, 1 dock and wait
     rain_debounce_s: float = 2.0
     rain_delay_minutes: float = 30.0

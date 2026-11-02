@@ -5,7 +5,11 @@
 2026-11-01. The mower roams badly (bcmdhd firmware roaming under NetworkManager) and the
 stack kept no record of the link. Everything here is read without root; parsing and roam
 tracking live in ``wifi_logic.py`` (pure, unit tested). A missing ``iw`` or interface
-publishes ``connected=false``, never crashes.
+publishes ``connected=false``, never crashes. An ``iw`` that fails or times out is
+``unknown``, not a disconnect: the last known state is kept for ``stale_samples`` (3)
+samples (wifi_logic.LinkFilter). One tick runs up to two ``iw`` calls of ``cmd_timeout_s``
+(0.8 s) each, so a tick under load can take longer than ``period_s``; the timer then just
+skips ticks.
 
 Published
 ---------
@@ -28,13 +32,13 @@ from mower_control import wifi_logic
 
 
 def run_cmd(argv, timeout_s):
-    """stdout of argv, or '' on a missing binary, timeout or non-zero exit."""
+    """stdout of argv, or None (unknown) on a missing binary, timeout or non-zero exit."""
     try:
         res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s,
                              check=False)
     except (OSError, subprocess.SubprocessError):
-        return ''
-    return res.stdout if res.returncode == 0 else ''
+        return None
+    return res.stdout if res.returncode == 0 else None
 
 
 def read_file(path):
@@ -113,18 +117,20 @@ class WifiMonitorNode(Node):
         dp('period_s', 1.0)
         dp('station_period_s', 10.0)
         dp('cmd_timeout_s', 0.8)
+        dp('stale_samples', 3)       # unknown samples (iw failed) bridged with the last one
         dp('status_topic', '/wifi/status')
         dp('event_topic', '/wifi/event')
         gp = lambda n: self.get_parameter(n).value  # noqa: E731
         self._sampler = WifiSampler(gp('iface'), float(gp('station_period_s')),
                                     float(gp('cmd_timeout_s')))
+        self._filter = wifi_logic.LinkFilter(int(gp('stale_samples')))
         self._tracker = wifi_logic.RoamTracker()
         self._status_pub = self.create_publisher(WifiStatus, gp('status_topic'), 10)
         self._event_pub = self.create_publisher(String, gp('event_topic'), 10)
         self.create_timer(float(gp('period_s')), self._tick)
 
     def _tick(self):
-        sample = self._sampler.sample()
+        sample = self._filter.update(self._sampler.sample())
         for ev in self._tracker.update(sample):
             text = describe_event(ev)
             if ev['event'] == 'disconnect':

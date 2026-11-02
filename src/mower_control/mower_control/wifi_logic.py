@@ -9,6 +9,14 @@ sample dict and track BSSID changes across samples:
 * ``iw dev <iface> link``       BSSID, SSID, freq, tx/rx bitrate
 * ``iw dev <iface> station dump`` tx retries / tx failed (cumulative counters)
 * ``/sys/class/net/<iface>/operstate``
+
+Review 2026-11-02: an ``iw`` that times out or fails (load avg 12 on the mower) is not a
+disconnect. ``build_sample`` labels such a sample ``unknown``, as it does one where ``iw``
+says "Not connected." while /proc/net/wireless still shows a signal; ``LinkFilter`` keeps
+the last known sample for ``stale_samples`` of them and ``RoamTracker`` never turns an
+unknown sample into an event. A disconnect is logged when the link is really gone: operstate
+down, or ``iw`` not connected AND no signal in /proc/net/wireless (or ``iw`` not connected
+for more than ``stale_samples`` samples in a row).
 """
 
 import re
@@ -96,7 +104,8 @@ def freq_to_channel(freq_mhz):
 
 
 def link_state(connected, operstate, signal_dbm):
-    """Short label: down | disconnected | bad | weak | ok | good."""
+    """Short label: down | disconnected | bad | weak | ok | good (build_sample adds
+    unknown)."""
     if operstate not in ('up', 'unknown', 'dormant', '') and not connected:
         return 'down'
     if not connected:
@@ -113,11 +122,19 @@ def link_state(connected, operstate, signal_dbm):
 
 
 def build_sample(iface, proc_text, link_text, operstate, station=None):
-    """Combine the raw sources into one sample dict (all fields always present)."""
+    """Combine the raw sources into one sample dict (all fields always present).
+
+    ``link_text`` None = ``iw`` failed or timed out. Such a sample, and one where ``iw``
+    says not connected while /proc/net/wireless has a signal, gets link_state ``unknown``
+    (connected False) unless operstate is down; ``iw_said_not_connected`` tells the two
+    apart (LinkFilter)."""
     link = parse_iw_link(link_text)
     proc = parse_proc_wireless(proc_text, iface)
     operstate = (operstate or '').strip()
     connected = link['connected'] and operstate != 'down'
+    proc_signal = proc is not None and proc['signal_dbm'] < 0.0
+    unknown = operstate != 'down' and not link['connected'] and (
+        link_text is None or proc_signal)
     signal = link['signal_dbm']
     if signal is None and proc is not None and connected:
         signal = proc['signal_dbm']
@@ -133,8 +150,37 @@ def build_sample(iface, proc_text, link_text, operstate, station=None):
         'tx_retries': station['tx_retries'] if station else 0,
         'tx_failed': station['tx_failed'] if station else 0,
     }
-    sample['link_state'] = link_state(connected, operstate, sample['signal_dbm'])
+    sample['link_state'] = 'unknown' if unknown else \
+        link_state(connected, operstate, sample['signal_dbm'])
+    sample['iw_said_not_connected'] = link_text is not None and not link['connected']
     return sample
+
+
+class LinkFilter:
+    """Bridges ``unknown`` samples (build_sample): the last known sample is reported for
+    up to ``stale_samples`` consecutive unknown ones; after that the unknown sample itself
+    (connected False, link_state unknown) -- or, when ``iw`` kept saying not connected all
+    along, a plain disconnected one."""
+
+    def __init__(self, stale_samples=3):
+        self._stale_samples = max(0, int(stale_samples))
+        self._known = None
+        self._unknown_run = 0
+        self._iw_not_connected_run = 0
+
+    def update(self, sample):
+        if sample['link_state'] != 'unknown':
+            self._known = sample
+            self._unknown_run = self._iw_not_connected_run = 0
+            return sample
+        self._unknown_run += 1
+        self._iw_not_connected_run = self._iw_not_connected_run + 1 \
+            if sample['iw_said_not_connected'] else 0
+        if self._known is not None and self._unknown_run <= self._stale_samples:
+            return self._known
+        if self._iw_not_connected_run > self._stale_samples:
+            return dict(sample, link_state=link_state(False, sample['operstate'], None))
+        return sample
 
 
 class RoamTracker:
@@ -151,7 +197,10 @@ class RoamTracker:
         self._ever_connected = False
 
     def update(self, sample):
-        """Feed one sample; returns the list of event dicts it caused."""
+        """Feed one sample; returns the list of event dicts it caused. An ``unknown``
+        sample (build_sample) causes none and is not remembered."""
+        if sample['link_state'] == 'unknown':
+            return []
         prev = self._last
         events = []
         if sample['connected']:

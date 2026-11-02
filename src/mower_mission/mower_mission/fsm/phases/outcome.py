@@ -63,8 +63,10 @@ class OutcomeMixin:
             txt = '%s, %s' % (txt, b) if txt else b
         return txt + (': %s' % reason if reason else '')
 
-    def _finish_incomplete(self, text):
-        """Session over with sub-paths left: latch MOWING_INCOMPLETE (resume kept)."""
+    def _finish_incomplete(self, text, stay_reason=None):
+        """Session over with sub-paths left: latch MOWING_INCOMPLETE (resume kept), then dock
+        when return_home_on_incomplete. ``stay_reason`` (non-empty) keeps the robot where it
+        is whatever that setting says: it is logged as the reason not to dock."""
         self._cancel_all('mowing incomplete')
         self._blade_off('mowing incomplete')
         self._fx.append(ZeroBurst())
@@ -72,6 +74,10 @@ class OutcomeMixin:
         self._persist()
         self._log('warn', 'MOWING_INCOMPLETE: %s (START resumes the missing sub-paths)' % text)
         self._go('MOWING_INCOMPLETE', text)
+        if stay_reason:
+            if self.p.return_home_on_incomplete:
+                self._log('warn', 'MOWING_INCOMPLETE: not returning home: %s' % stay_reason)
+            return
         if self.p.return_home_on_incomplete:
             self._incomplete_text = text
             self._dock('RETURNING_HOME', 'incomplete', sub=text)
@@ -97,7 +103,8 @@ class OutcomeMixin:
         if unvisited:
             text += ' (%d more area(s) not started)' % unvisited
         self._interrupt_mission(why)
-        self._finish_incomplete(text)
+        self._finish_incomplete(text, stay_reason='boundary recovery failed outside the '
+                                                  'region, the operator moves it')
 
     def _area_done(self):
         m = self.mission
