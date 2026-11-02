@@ -31,10 +31,13 @@
   <exec_depend>nav2_msgs</exec_depend>
   <depend>rcl_interfaces</depend>
   <exec_depend>rosbag2_py</exec_depend>
-  <!-- bag_recorder runs `ros2 bag record` (sqlite3 storage, file-mode zstd) -->
+  <!-- bag_recorder runs `ros2 bag record` (sqlite3, uncompressed) and compresses closed
+       splits itself (bag_compress: python3-zstandard or the zstd binary); the rosbag2 zstd
+       plugin is kept so `ros2 bag info` reads the compressed sessions -->
   <exec_depend>ros2bag</exec_depend>
   <exec_depend>rosbag2_storage_default_plugins</exec_depend>
   <exec_depend>rosbag2_compression_zstd</exec_depend>
+  <exec_depend>python3-zstandard</exec_depend>
 
   <!-- imu_cal persists biases to YAML -->
   <exec_depend>python3-yaml</exec_depend>

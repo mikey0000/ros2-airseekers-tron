@@ -40,15 +40,17 @@ Rosbag2 choices (rosbag2 0.15.17 in the image, checked 2026-10-09): storage sqli
 not installed: ``ros-jazzy-rosbag2-storage-mcap`` would need an image rebuild); preset
 ``resilient`` (WAL + synchronous=NORMAL: a power cut loses at most the last cache flush, not
 the db); ``--max-cache-size`` 1 MiB (the default 100 MiB double buffer would hold ~10 min of
-this topic set in RAM, all lost on a crash, and cost up to 200 MB of the 4 GB); file-mode zstd:
-each closed split is compressed once by one rosbag2 thread (zstd level 1, ~10 MB per minute of
-data, tens of ms of one A76 core per split on the RK3588), 3-5x smaller on odometry/IMU/tf, so
-3 GB holds a day of operation and the eMMC sees a third of the writes. Message-mode compression
+this topic set in RAM, all lost on a crash, and cost up to 200 MB of the 4 GB); zstd per closed
+split (level 1, 3-5x smaller on odometry/IMU/tf, so 3 GB holds a day of operation). Since
+2026-11-03 rosbag2 records with ``--compression-mode none`` and ``bag_compress.CompressWorker``
+(a nice-10 thread here) compresses each closed split, verifies it and only then replaces the
+.db3, and rewrites metadata.yaml to the .zstd names: rosbag2's file mode lost the split under
+compression whenever the child was stopped (profile switch, pause). Message-mode compression
 is avoided: per-message zstd on 100-byte messages costs far more CPU and compresses poorly.
 
 Reading a pinned/pulled split: ``zstd -d x_3.db3.zstd && ros2 bag info x_3.db3`` (each split is
-a complete sqlite3 bag; the image has no zstd CLI, decompress on the dev box; see
-``scripts/deploy_to_mower.sh bags``).
+a complete sqlite3 bag); a whole session dir: ``ros2 bag info <session>`` once every split is
+compressed. See ``scripts/deploy_to_mower.sh bags``.
 """
 
 import json
@@ -60,6 +62,7 @@ import sys
 import threading
 import time
 
+from mower_control import bag_compress as bc
 from mower_control import bag_ring as br
 
 # Curated (2026-10-09, measured on the mower): the first ring recorded 73 topics, 554 msg/s,
@@ -270,7 +273,7 @@ class RecorderProcess:
             pass
 
     def stop(self, timeout_s=15.0):
-        """SIGINT (rosbag2 flushes, compresses the last split, writes metadata.yaml) and wait
+        """SIGINT (rosbag2 flushes the last split, writes metadata.yaml) and wait
         (shutdown only; the node uses :meth:`stop_async`)."""
         if self.stopping is not None:
             self.stop_child(self.stopping, timeout_s)
@@ -291,8 +294,9 @@ class RecorderProcess:
 class RecorderSwitch:
     """Runtime on/off of the ring (``~/enable`` std_srvs/SetBool), persisted in ``state_file``
     so a GUI "off" survives a stack restart. Off = the child is stopped cleanly (SIGINT:
-    rosbag2 closes and compresses the last split) and not restarted; pruning, the incident
-    pins of already recorded splits and the status keep working. No ROS here (unit-tested)."""
+    rosbag2 closes the last split, bag_compress compresses it) and not restarted; pruning,
+    the incident pins of already recorded splits and the status keep working. No ROS here
+    (unit-tested)."""
 
     def __init__(self, rec, state_file, default=True):
         self.rec = rec
@@ -409,7 +413,7 @@ def main(args=None):
             dp('max_total_gb', 3.0)
             dp('min_free_gb', 3.0)
             dp('max_cache_bytes', 1024 * 1024)
-            dp('compression', 'zstd')           # '' = none
+            dp('compression', 'zstd')           # '' = none (bag_compress worker, not rosbag2)
             dp('storage', 'sqlite3')
             dp('storage_preset', 'resilient')
             dp('prune_period_s', 10.0)
@@ -452,11 +456,21 @@ def main(args=None):
             comp, storage, preset = str(gp('compression')), str(gp('storage')), \
                 str(gp('storage_preset'))
             self._compressed = bool(comp)
+            self._lock = threading.Lock()
+            self._compressor = None
+            if comp:
+                self._compressor = bc.CompressWorker(
+                    self._root, self._open_session, self._lock, log=self._log)
+                if self._compressor.backend is None:
+                    self.get_logger().error('bag_recorder: no zstd (python3-zstandard or the '
+                                            'zstd binary): splits stay uncompressed')
+                    self._compressor, self._compressed = None, False
+                    comp = ''
             polling = int(gp('polling_ms'))
             self._low_topics = list(dict.fromkeys(t for t in gp('low_power_topics') if t))
             self._cmd_for = {
                 prof: (lambda out, _t=topics: br.record_cmd(
-                    out, _t, split_s, cache, comp, storage, preset, polling))
+                    out, _t, split_s, cache, storage, preset, polling))
                 for prof, topics in ((FULL, self._topics), (LOW, self._low_topics))}
             self._rec = RecorderProcess(self._root, os.path.join(self._root, 'recorder.log'))
             self._switch = RecorderSwitch(self._rec, str(gp('state_file')),
@@ -480,7 +494,6 @@ def main(args=None):
             self._last_prune = 0.0
             self._prune_period = float(gp('prune_period_s'))
             self._last_crash_poll = 0.0
-            self._lock = threading.Lock()
 
             qos = QoSProfile(depth=10, reliability=QoSReliabilityPolicy.RELIABLE)
             self.create_subscription(String, '/mission/incident', self._on_incident, qos)
@@ -505,14 +518,26 @@ def main(args=None):
             self.create_service(SetBool, '~/enable', self._srv_enable)
             self.create_service(Trigger, '~/get_state', self._srv_get_state)
             self.create_timer(1.0, self._tick)
+            if self._compressor is not None:
+                self._compressor.start()       # also resumes leftovers of earlier runs
             self.get_logger().info(
                 'bag_recorder: %s, %d topics -> %s (%d s splits, %s/%s%s), ring %.1f GB, '
                 'floor %.1f GB free, pins -> %s, mows -> %s (state file %s)' % (
                     'ENABLED' if self._switch.enabled else 'DISABLED (~/enable to start)',
                     len(self._topics), self._root, split_s, storage, preset,
-                    ' + zstd' if comp else '', self._max_bytes / gb, self._min_free / gb,
+                    ' + zstd (%s, own worker)' % self._compressor.backend.name if comp
+                    else '', self._max_bytes / gb, self._min_free / gb,
                     self._inc_dir, self._mows_dir if self._mow_pins else 'off',
                     self._switch.state_file))
+
+        def _open_session(self):
+            """The session rosbag2 is writing or still closing (bag_compress leaves its
+            newest split alone)."""
+            rec = self._rec
+            return rec.session if rec.running() or rec.busy() else None
+
+        def _log(self, level, text):
+            getattr(self.get_logger(), level)(text)
 
         # ------------------------------------------------------------ triggers
         def _on_incident(self, msg):
@@ -626,6 +651,9 @@ def main(args=None):
                     'restarts': self._rec.restarts, 'pending_pins': len(self._pins.pending),
                     'suppressed_triggers': self._det.suppressed,
                     'mow_pins': self._mow_pins,
+                    'compressed_splits': self._compressor.compressed if self._compressor
+                    else 0,
+                    'compress_failed': self._compressor.failed if self._compressor else 0,
                     'mow': os.path.basename(self._mow.mow_dir) if self._mow.active else None,
                     'topics': len(self._topics)}
 
@@ -784,6 +812,8 @@ def main(args=None):
 
         def shutdown(self):
             self._rec.stop()
+            if self._compressor is not None:
+                self._compressor.stop(30.0)    # an unfinished split is redone next start
 
     rclpy.init(args=args)
     node = BagRecorder()

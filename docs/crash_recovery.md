@@ -318,9 +318,20 @@ manual drive, were lost. The 2026-10-08 tuning bags had to be recorded by hand w
   - 60 s splits, using the sqlite3 `resilient` preset (WAL, synchronous=NORMAL), which survives
     a power cut.
   - `--max-cache-size` 1 MiB. The default 100 MiB double buffer would hold about 10 min in RAM.
-  - File-mode zstd. Each closed split is compressed once by one rosbag2 thread. This costs about
-    tens of ms of one core per minute, gives 3-5x on this data and cuts eMMC writes by the same
-    factor. Per-message compression would cost more CPU on 100-byte messages for little gain.
+  - zstd per closed split, done by bag_recorder itself (`bag_compress.py`, since 2026-11-03).
+    rosbag2 records with `--compression-mode none`; a nice-10 worker thread compresses each
+    closed `.db3` to `<name>.db3.zstd.tmp` (level 1, python3-zstandard or the `zstd` binary),
+    decompresses it in full and compares size + sha256 with the source, renames it to
+    `.db3.zstd` and only then deletes the `.db3`. It never touches the split being written
+    (newest split of the session the child writes or is still closing), checkpoints a crashed
+    session's leftover WAL first, resumes leftovers and deletes stale `.tmp` on start, and
+    after 3 failed tries leaves a `.nozstd` marker (the split stays plain and prunable). After
+    each pass it rewrites `metadata.yaml` (`relative_file_paths`, `files[].path` to `.zstd`;
+    `compression_format: zstd` / `compression_mode: FILE` once every listed split is
+    compressed), so `ros2 bag info <session>` works. Why not rosbag2's file mode: a SIGINT for
+    a ring-profile switch does not finish an in-flight compression, so that split was lost
+    (field 2026-11-03: `_21` "premature end"). Cost: tens of ms of one core per minute,
+    3-5x smaller. Per-message compression would cost more CPU on 100-byte messages.
   - Measured 2026-10-09: the old 73-topic set was 181 KB/s before compression (`/plan` 49 KB/s
     at 0.9 Hz, `/odom` 37 KB/s, IMU 33 KB/s); in the benchmark the zstd ring grew ~12 KB/s with
     it and ~3.4 KB/s with the curated set (~300 MB/day). See `/bag_recorder/status`
@@ -328,7 +339,9 @@ manual drive, were lost. The 2026-10-08 tuning bags had to be recorded by hand w
 - **Pruning**: every 10 s, delete the oldest closed splits while the ring is over `max_total_gb`
   or /userdata has less than `min_free_gb` free. These are never deleted:
   - the split being written;
-  - a split being compressed;
+  - a split of the current session still waiting for or under compression (pins wait for the
+    `.zstd` too; a hard link to a plain `.db3` taken earlier stays valid after the ring's
+    name is replaced);
   - split 0 of the current session, which holds `/tf_static` and the latched topics (rosbag2 has
     no `--repeat-transient-local`);
   - splits an incident pin still waits for.
@@ -352,8 +365,8 @@ manual drive, were lost. The 2026-10-08 tuning bags had to be recorded by hand w
     prunes its own name.
   - Pins have their own retention: 50 dirs and 1 GB. Each pin has an `incident.json` with the
     reason, detail and files.
-- **Reading**: each split is a complete sqlite3 bag once decompressed. The image has no
-  `zstd` CLI. On the dev box:
+- **Reading**: each split is a complete sqlite3 bag once decompressed (`zstd` is in the image
+  since 2026-11-03). On the dev box:
   ```
   ./scripts/deploy_to_mower.sh bags            # incidents -> ../bags/mower, zstd -d
   ./scripts/deploy_to_mower.sh bags ring       # the whole ring (rsync -aH, wal/shm skipped)
@@ -364,7 +377,7 @@ manual drive, were lost. The 2026-10-08 tuning bags had to be recorded by hand w
   paths and not the session dir.
 - **On/off at runtime**: `ros2 service call /bag_recorder/enable std_srvs/srv/SetBool
   "{data: false}"` (or the GUI: Settings > Advanced > Data recorder). Off stops the child with
-  SIGINT (last split closed and compressed) and does not restart it; pruning, pins of what is
+  SIGINT (last split closed; the worker compresses it) and does not restart it; pruning, pins of what is
   already recorded and the status keep running. The choice persists in
   `/userdata/ros2/bag_recorder.json` (`state_file`; `enabled_default` when it does not exist).
   `/bag_recorder/get_state` (Trigger) returns the status JSON (the GUI uses it).
