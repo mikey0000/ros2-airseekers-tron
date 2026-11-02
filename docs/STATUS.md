@@ -965,3 +965,29 @@ on the second pass at the bend 0.051 / 0.059 (five pre-fix runs: 0.055-0.144). O
 0.108 at (-0.60, 4.80) / 0.124 at (-5.73, 1.85) (the first lap's pass of the same bend, into
 the pivot vertex at 367, which this rule does not touch), so i still FAILs (limit 0.10); a
 0.065 / 0.091, h line 0.089 / 0.081, loop 20 Hz.
+
+## Reliability hazards H1-H5 (2026-11-03, branch ws/hazards, unit + launch tests, one sim gate)
+
+Review 2026-11-02 section 2, one commit per hazard:
+
+- **H1** `/hardware_bridge/emergency` comes from mcu_node (`mower_mcu_driver/safety_relay.py`,
+  10 Hz from the I/O loop, at once on change; sim_node the same). gui_bridge only feeds
+  `/gui/emergency` (`emergency_topic` default `''`).
+- **H2** cmd_vel_slew, supervisor and gui_bridge run as their own processes (were in
+  node_host_control / _housekeeping / _gui). Expected ~+150 MB PSS on the mower, not measured.
+- **H3** stale `/localization/status` (> `loc_status_stale_s` 5 s) = degraded hold; stale
+  `/supervisor/status` (> 10 s) = node down; critical nodes + map_server, both EKFs,
+  controller_server, mower_docking, gui_bridge.
+- **H4** `/mcu/driver_heartbeat` (2 Hz); supervisor `heartbeats` param marks a hung driver DOWN
+  after 2 s. Bench procedure `docs/MCU_HEARTBEAT_BENCH_TEST.md` (not run).
+- **H5** code defaults = shipped yaml (mission, docking, map_server; `mower_common.shipped_params`
+  drift tests). Field values kept: dock_timeout_s 480, dock_action_timeout_s 540,
+  manual_blade_requires_enable true, docking max_retries 8 (GUI schema too), marker_lost_hold_s 8,
+  search_min_detections 3, map nav_margin_m 0.05, path_margin_m 0, nav_soft_band_m 0,
+  boundary_check_rate_hz 10, boundary_debounce_samples 2.
+
+Sim gate `-d -s 2 -x 3`: b-h PASS, a 0.104 m / 26 samples (FAIL by 4 mm; master 0.081),
+i 0.091 / 0.044 / 0.115, transit 0.365 (master 0.101 / 0.098 / 0.082, 0.364); loop 20 Hz.
+These are inside the recent same-code spread (a 0.06-0.13, side 0.09-0.19). Kill test:
+`kill -9` of coverage_action_server mid-mow. The mission stayed in MOWING (no EMERGENCY),
+launch respawned the server in under 8 s, and the mow completed and docked.
