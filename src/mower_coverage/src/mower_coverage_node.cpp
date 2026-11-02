@@ -101,6 +101,10 @@ class MowerCoverageNode : public rclcpp::Node {
     // = 0.40 m). The area
     // setting min_turn_radius_m accepts 0-2 m. 0 = no clamp. Read per request.
     declare_parameter<double>("min_drivable_turn_radius_m", 0.40);
+    // Row-end turn room (pivot | arc | fishtail | auto; RouteOptions::turn_mode, edge layout
+    // only). pivot = turns stay turn_inset inside the line (the pre-2026-11 behaviour).
+    // Read per request.
+    declare_parameter<std::string>("turn_mode", "pivot");
     service_ = create_service<mower_interfaces::srv::PlanCoverage>(
         "/coverage/plan",
         std::bind(&MowerCoverageNode::handlePlan, this, std::placeholders::_1,
@@ -193,6 +197,12 @@ class MowerCoverageNode : public rclcpp::Node {
                                 : get_parameter("min_turn_radius_m").as_double();
     route.min_drivable_turn_radius =
         std::max(0.0, get_parameter("min_drivable_turn_radius_m").as_double());
+
+    if (!mower_coverage::parseTurnMode(get_parameter("turn_mode").as_string(),
+                                       &route.turn_mode)) {
+      RCLCPP_WARN(get_logger(), "unknown turn_mode '%s': pivot",
+                  get_parameter("turn_mode").as_string().c_str());
+    }
 
     route.fill_gaps = true;
     route.min_gap_area_m2 = 0.01;

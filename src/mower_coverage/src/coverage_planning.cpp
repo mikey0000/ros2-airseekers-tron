@@ -856,24 +856,68 @@ bool turnInside(const Point2D& from, const std::vector<TurnPose>& poses, const P
   return region->Contains(&line);
 }
 
+// turn_mode body check: every body outline corner at every pose of from -> poses -> to
+// inside `body_region`. Pose yaw from the sequence; a reverse pose faces against its travel.
+bool bodyInside(const Point2D& from, double from_yaw, const std::vector<TurnPose>& poses,
+                const Point2D& to, double to_yaw, const RouteOptions& rb,
+                const OGRGeometry* body_region) {
+  if (body_region == nullptr) {
+    return true;
+  }
+  std::vector<std::pair<Point2D, double>> st;
+  st.push_back({from, from_yaw});
+  for (size_t i = 0; i < poses.size(); ++i) {
+    const Point2D& a = i == 0 ? from : poses[i - 1].p;
+    const Point2D& b = poses[i].p;
+    double yaw = std::atan2(b.second - a.second, b.first - a.first);
+    if (poses[i].reverse) {
+      yaw += M_PI;
+    }
+    if (dist(a, b) > 1e-4) {
+      st.push_back({b, yaw});
+    }
+  }
+  st.push_back({to, to_yaw});
+  const double xs[2] = {rb.body_front, -rb.body_rear};
+  const double ys[2] = {rb.body_half_width, -rb.body_half_width};
+  for (const auto& s : st) {
+    const double c = std::cos(s.second), sn = std::sin(s.second);
+    for (double x : xs) {
+      for (double y : ys) {
+        OGRPoint pt(s.first.first + c * x - sn * y, s.first.second + sn * x + c * y);
+        if (!body_region->Contains(&pt)) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 SwathTurn planTurnIn(const Point2D& from, double from_yaw, const Point2D& to, double to_yaw,
                      double robot_width, double radius, TurnType type,
-                     const OGRGeometry* region) {
+                     const OGRGeometry* region, const RouteOptions* body = nullptr,
+                     const OGRGeometry* body_region = nullptr) {
   SwathTurn pivot{TurnKind::kPivot, {}};
+  auto fits = [&](const std::vector<TurnPose>& poses) {
+    return turnInside(from, poses, to, region) &&
+           (body == nullptr ||
+            bodyInside(from, from_yaw, poses, to, to_yaw, *body, body_region));
+  };
   if (!(radius > 0.0) || !(robot_width > 0.0) || type == TurnType::kPivot) {
     return pivot;
   }
 #ifdef MOWER_COVERAGE_F2C_V3
   if (type == TurnType::kAuto || type == TurnType::kLoop) {
     auto poses = f2cTurn<f2c::pp::DubinsCurves>(from, from_yaw, to, to_yaw, robot_width, radius);
-    if (!poses.empty() && turnInside(from, poses, to, region)) {
+    if (!poses.empty() && fits(poses)) {
       return {TurnKind::kLoop, std::move(poses)};
     }
   }
   if (type == TurnType::kAuto || type == TurnType::kReverse) {
     auto poses =
         f2cTurn<f2c::pp::ReedsSheppCurves>(from, from_yaw, to, to_yaw, robot_width, radius);
-    if (!poses.empty() && turnInside(from, poses, to, region)) {
+    if (!poses.empty() && fits(poses)) {
       const bool any_rev = std::any_of(poses.begin(), poses.end(),
                                        [](const TurnPose& tp) { return tp.reverse; });
       return {any_rev ? TurnKind::kReverseCurve : TurnKind::kLoop, std::move(poses)};
@@ -1881,7 +1925,25 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
       route.turn_type != TurnType::kPivot) {
     plan.turns.assign(plan.swaths.size(), SwathTurn{});
     std::unique_ptr<OGRGeometry> region;
-    if (layout) {
+    std::unique_ptr<OGRGeometry> body_region;
+    const bool wide = layout && route.turn_mode != TurnMode::kPivot;
+    TurnType ttype = route.turn_type;
+    if (wide) {
+      // turn_mode: the turn may use the edge-lap band (base_link body half width + margin
+      // in, the body outline at most turn_body_limit out)
+      const f2c::types::Cells tr =
+          inset(hl_field, route.body_half_width + route.turn_base_margin);
+      if (tr.size() > 0 && tr.area() > 1e-9 && tr.get() != nullptr && tr.get()->IsValid()) {
+        region.reset(tr.get()->Buffer(kTurnContainTolM));
+      }
+      if (hl_field.size() > 0 && hl_field.get() != nullptr) {
+        body_region.reset(hl_field.get()->Buffer(route.turn_body_limit));
+      }
+      ttype = route.turn_mode == TurnMode::kArc
+                  ? TurnType::kLoop
+                  : (route.turn_mode == TurnMode::kFishtail ? TurnType::kReverse
+                                                            : TurnType::kAuto);
+    } else if (layout) {
       const f2c::types::Cells tr = inset(hl_field, route.turn_inset);
       if (tr.size() > 0 && tr.area() > 1e-9 && tr.get() != nullptr && tr.get()->IsValid()) {
         region.reset(tr.get()->Buffer(kTurnContainTolM));
@@ -1896,7 +1958,8 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
         continue;  // a transit, not a turn
       }
       SwathTurn t = region ? planTurnIn(a.second, segYaw(a), b.first, segYaw(b), op_width,
-                                        route.min_turn_radius, route.turn_type, region.get())
+                                        route.min_turn_radius, ttype, region.get(),
+                                        wide ? &route : nullptr, body_region.get())
                            : SwathTurn{TurnKind::kPivot, {}};
       plan.loop_turns += t.kind == TurnKind::kLoop ? 1 : 0;
       plan.reverse_turns += t.kind == TurnKind::kReverseCurve ? 1 : 0;
@@ -2089,6 +2152,38 @@ SwathTurn planSwathTurn(const Point2D& from, double from_yaw,
   }
   return planTurnIn(from, from_yaw, to, to_yaw, robot_width, min_turn_radius, type,
                     buf.get());
+}
+
+SwathTurn planSwathTurnBody(const Point2D& from, double from_yaw,
+                            const Point2D& to, double to_yaw,
+                            double robot_width, double min_turn_radius, TurnType type,
+                            const RouteOptions& route, const f2c::types::Cells* base_region,
+                            const f2c::types::Cells* body_region) {
+  std::unique_ptr<OGRGeometry> b1, b2;
+  if (base_region != nullptr && base_region->size() > 0 && base_region->get() != nullptr) {
+    b1.reset(base_region->get()->Buffer(kTurnContainTolM));
+  }
+  if (body_region != nullptr && body_region->size() > 0 && body_region->get() != nullptr) {
+    b2.reset(body_region->get()->Buffer(0.0));
+  }
+  return planTurnIn(from, from_yaw, to, to_yaw, robot_width, min_turn_radius, type, b1.get(),
+                    &route, b2.get());
+}
+
+bool parseTurnMode(const std::string& name, TurnMode* mode) {
+  if (name.empty() || name == "pivot") {
+    *mode = TurnMode::kPivot;
+  } else if (name == "arc") {
+    *mode = TurnMode::kArc;
+  } else if (name == "fishtail") {
+    *mode = TurnMode::kFishtail;
+  } else if (name == "auto") {
+    *mode = TurnMode::kAuto;
+  } else {
+    *mode = TurnMode::kPivot;
+    return false;
+  }
+  return true;
 }
 
 bool builtWithF2CV3() {

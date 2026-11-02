@@ -2054,3 +2054,78 @@ TEST(BoundaryLineBlade, CutsCloserThanABodyLine) {
     EXPECT_NEAR(body - blade, 0.125, 0.03) << layout << ": body " << body << ", blade " << blade;
   }
 }
+
+// ---------------------------------------------------------------------------
+// turn_mode (2026-11-03, docs/analysis/2026-11-03_turns.md): row-end turns may use the
+// edge-lap band, the body outline (nose 0.60 ahead of base_link) at most 0.26 out.
+// ---------------------------------------------------------------------------
+TEST(CoverageTurnMode, ParseTurnMode) {
+  using mower_coverage::TurnMode;
+  TurnMode m;
+  EXPECT_TRUE(mower_coverage::parseTurnMode("", &m));
+  EXPECT_EQ(m, TurnMode::kPivot);
+  EXPECT_TRUE(mower_coverage::parseTurnMode("arc", &m));
+  EXPECT_EQ(m, TurnMode::kArc);
+  EXPECT_TRUE(mower_coverage::parseTurnMode("fishtail", &m));
+  EXPECT_EQ(m, TurnMode::kFishtail);
+  EXPECT_TRUE(mower_coverage::parseTurnMode("auto", &m));
+  EXPECT_EQ(m, TurnMode::kAuto);
+  EXPECT_FALSE(mower_coverage::parseTurnMode("bulb", &m));
+  EXPECT_EQ(m, TurnMode::kPivot);
+}
+
+// Rows end 0.45 m inside the line (soft layout). A forward U-turn of r 0.5 between racetrack
+// rows 1.08 m apart puts the nose ~0.95 m past the row end: a loop does not fit the 0.26
+// limit (auto may still find a Reeds-Shepp fish-tail). With 1.2 m of room past the row end it fits.
+TEST(CoverageTurnMode, BodyCheckRejectsNoseOverhang) {
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  using mower_coverage::TurnKind;
+  using mower_coverage::TurnType;
+  mower_coverage::RouteOptions r;
+  const Point2D a{0.0, 0.0}, b{0.0, 1.08};
+  auto cellsFor = [](double room) {
+    f2c::types::Cells c;
+    c.addGeometry(mower_coverage::makeFieldCell(
+        {{-6.0, -1.5}, {room, -1.5}, {room, 2.6}, {-6.0, 2.6}}, {}));
+    return c;
+  };
+  auto plan = [&](double room, TurnType type = TurnType::kAuto) {
+    const auto base = cellsFor(room - r.body_half_width - r.turn_base_margin);
+    const auto body = cellsFor(room + r.turn_body_limit);
+    return mower_coverage::planSwathTurnBody(a, 0.0, b, M_PI, 0.18, 0.5, type, r, &base,
+                                             &body);
+  };
+  EXPECT_EQ(plan(0.45, TurnType::kLoop).kind, TurnKind::kPivot);
+  EXPECT_NE(plan(0.45).kind, TurnKind::kLoop);  // a Reeds-Shepp fish-tail may fit
+  const auto wide = plan(1.3, TurnType::kLoop);
+  EXPECT_EQ(wide.kind, TurnKind::kLoop);
+  for (const auto& tp : wide.poses) EXPECT_LE(tp.p.first, 1.3 - 0.285 + 0.011);
+}
+
+// Whole plans: every planned turn pose of turn_mode auto keeps base_link 0.285 inside the
+// line, and (soft rectangle) turns that do not fit stay pivots; pivot mode plans no turns
+// into the band at all.
+TEST(CoverageTurnMode, PlannedTurnsStayInsideTheArea) {
+  if (!mower_coverage::builtWithF2CV3()) GTEST_SKIP() << "F2C v3 only";
+  const double w = 6.0, h = 5.0;
+  for (auto mode : {mower_coverage::TurnMode::kPivot, mower_coverage::TurnMode::kAuto,
+                    mower_coverage::TurnMode::kArc}) {
+    mower_coverage::RouteOptions route;
+    ASSERT_TRUE(mower_coverage::parseRouteOrder("racetrack", &route.order));
+    route.min_turn_radius = 0.5;
+    route.min_drivable_turn_radius = 0.40;
+    route.fill_gaps = true;
+    ASSERT_TRUE(mower_coverage::applyEdgeLayout("soft", 0.18, &route));
+    route.turn_mode = mode;
+    const auto p = mower_coverage::planCoverage(
+        field({{0, 0}, {w, 0}, {w, h}, {0, h}}), 0.18, 0.20, 2, 0.14, 0.0, 0.15,
+        mower_coverage::PathMode::kZigzag, true, route);
+    ASSERT_FALSE(p.swaths.empty());
+    for (const auto& t : p.turns) {
+      for (const auto& tp : t.poses) {
+        EXPECT_GE(rectInset(tp.p, w, h), route.body_half_width + route.turn_base_margin - 0.011)
+            << "mode " << static_cast<int>(mode);
+      }
+    }
+  }
+}
