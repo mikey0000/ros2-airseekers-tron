@@ -160,7 +160,7 @@ class AlignParams:
     """Tunables (all angles in degrees in the ROS parameters, radians here)."""
 
     def __init__(self, **kw):
-        self.min_speed = 0.04            # m/s |cmd linear|: GUI joystick drives often sit near 0.05-0.1
+        self.min_speed = 0.03            # m/s (0.04 until 2026-11-02: a 0.04 m/s owner drive sat on the gate) |cmd linear|: GUI joystick drives often sit near 0.05-0.1
                                          # (2026-10-13: an owner drive at 0.05 never aligned under
                                          # 0.06). Accuracy does not depend on speed: the window is
                                          # min_distance (0.6 m) of travel, and RTK fixed noise
@@ -211,6 +211,13 @@ class AlignParams:
         self.rtk_seed_samples = 3        # consistent samples needed to seed (none/file)
         self.rtk_reseed_after = 10       # consecutive agreeing outliers -> re-seed an aligned offset
         self.imu_jump = math.radians(20.0)   # yaw step not explained by the gyro = IMU reset
+        # 2026-11-02 stationary hold: an IMU sample gap longer than this breaks the yaw
+        # continuity since the last absolute fix (status imu_continuous false)
+        self.imu_gap_max = 1.0           # s
+        # stationary hold of the advertised sigma/quality: while the robot moved less than
+        # this (RTK fixed) since the last fix and the IMU stayed continuous, the age-driven
+        # sigma growth is capped at the 'fair' band (good -> fair at most, never poor)
+        self.hold_move = 0.5             # m (= mission heading_stale_move_m)
         # yaw standard deviations advertised on /imu/data_aligned
         self.sigma_cog = math.radians(3.0)
         self.sigma_rtk = math.radians(3.0)
@@ -252,6 +259,9 @@ class _Window:
         self.imu_span = 0.0
         self.direction = direction
         self.fix_type = fix_type
+
+
+FAIR_SIGMA = math.radians(15.0)     # quality 'fair' upper bound (yaw sigma)
 
 
 class HeadingEstimator:
@@ -298,6 +308,13 @@ class HeadingEstimator:
         self.rtk_gate = ''           # why the last RTK sample was not used
         self._rtk_seed = []          # consistent-sample buffer while unaligned (offsets)
         self._rtk_rejected = []      # consecutive outlier samples while aligned (offsets)
+        # 2026-11-02 stationary hold (mission _heading_cog_stale): position at the last
+        # absolute fix (cog / dock / rtk / file_verified), the farthest RTK position from it
+        # since (None = no position at the fix), and whether the IMU yaw stream stayed
+        # continuous since (no gap > imu_gap_max, no IMU reset)
+        self.fix_xy = None
+        self.moved_since_fix = None
+        self.imu_continuous = False
 
     # ------------------------------------------------------------------ properties
     @property
@@ -313,15 +330,23 @@ class HeadingEstimator:
         if self.offset is None or self.source == SOURCE_NONE:
             return p.sigma_none
         if self.updated_at is not None and self.source in ALIGNED_SOURCES:
-            base += p.drift_rate * max(0.0, now - self.updated_at)
+            grown = base + p.drift_rate * max(0.0, now - self.updated_at)
+            if self.stationary_since_fix():
+                grown = min(grown, max(base, FAIR_SIGMA))
+            base = grown
         return min(base, p.sigma_none)
+
+    def stationary_since_fix(self):
+        """Moved less than hold_move (RTK fixed) since the last absolute fix and the IMU yaw
+        stayed continuous (2026-11-02): the heading does not decay with wall-clock time."""
+        return (self.aligned and self.imu_continuous and self.moved_since_fix is not None
+                and self.moved_since_fix < self.p.hold_move)
 
     def quality(self, now):
         if not self.aligned:
             return 'low' if self.source == SOURCE_FILE else 'none'
         s = self.yaw_sigma(now)
-        return 'good' if s <= math.radians(8.0) else 'fair' if s <= math.radians(15.0) \
-            else 'poor'
+        return 'good' if s <= math.radians(8.0) else 'fair' if s <= FAIR_SIGMA else 'poor'
 
     def status(self, now):
         d = {
@@ -344,6 +369,9 @@ class HeadingEstimator:
             'file_check': self.file_check if self.source in (SOURCE_FILE, SOURCE_FILE_VERIFIED)
             else '',
             'min_speed': self.p.min_speed,
+            'moved_since_fix_m': None if self.moved_since_fix is None
+            else round(self.moved_since_fix, 2),
+            'imu_continuous': bool(self.imu_continuous and self.aligned),
         }
         if self.last_cog is not None:
             t, cog, meas, dist = self.last_cog
@@ -455,6 +483,7 @@ class HeadingEstimator:
                 return
             self.source = SOURCE_FILE_VERIFIED
             self.updated_at = now
+            self._mark_fix()
             self.file_check = 'verified'
             self.last_event = ('persisted offset verified (IMU yaw %+.1f deg, moved %.2f m '
                                'since the save, RTK fixed)' % (math.degrees(dyaw), moved))
@@ -484,6 +513,9 @@ class HeadingEstimator:
         if self.imu_yaw is not None and self.imu_t is not None:
             dt = now - self.imu_t if dt is None else dt
             step = wrap(yaw - self.imu_yaw)
+            if dt > p.imu_gap_max and self.imu_continuous:
+                self.imu_continuous = False
+                self.last_event = 'IMU gap %.1f s: yaw continuity since the last fix lost' % dt
             if 0.0 < dt < 1.0 and abs(step) > p.imu_jump and \
                     abs(step) > 3.0 * abs(gyro_z) * dt + math.radians(2.0):
                 self._imu_reset(now, step)
@@ -603,6 +635,7 @@ class HeadingEstimator:
         self._reset_rate()
         self.source = SOURCE_RTK
         self.updated_at = now
+        self._mark_fix()
         self.n_rtk += 1
         self.rejected = []
         self._rtk_seed = []
@@ -649,6 +682,7 @@ class HeadingEstimator:
         self._reset_rate()
         self.source = SOURCE_DOCK
         self.updated_at = now
+        self._mark_fix()
         self.rejected = []
 
     def on_gps(self, now, x, y, variance):
@@ -662,6 +696,9 @@ class HeadingEstimator:
                 self._gps_recent = (self._gps_recent + [(x, y)])[-p.verify_samples:]
             else:
                 self._gps_recent = []
+            if self.fix_xy is not None and self.fix_type == 3:   # RTK fixed only
+                self.moved_since_fix = max(self.moved_since_fix or 0.0, math.hypot(
+                    x - self.fix_xy[0], y - self.fix_xy[1]))
         self._try_verify(now)
         ok, direction = self._straight_motion(now, variance)
         w = self._win
@@ -796,12 +833,20 @@ class HeadingEstimator:
     def _accepted(self, now, why, res):
         self.source = SOURCE_COG
         self.updated_at = now
+        self._mark_fix()
         self.n_cog += 1
         self.rejected = []
         self.dirty = True
         self.last_event = '%s: offset %.1f deg' % (why, math.degrees(self.offset))
         res['accepted'] = True
         res['offset'] = self.offset
+
+    def _mark_fix(self):
+        """An absolute heading fix now: restart the stationary-hold tracking from here."""
+        xy = self._gps_recent[-1] if self._gps_recent else None   # RTK fixed only
+        self.fix_xy = xy
+        self.moved_since_fix = None if xy is None else 0.0
+        self.imu_continuous = self.imu_t is not None
 
     def _imu_reset(self, now, step):
         self.last_event = 'IMU yaw jumped %.1f deg without rotation: IMU reset, unaligned' \
@@ -817,6 +862,8 @@ class HeadingEstimator:
         self._reset_rate()
         self.source = SOURCE_NONE
         self.updated_at = None
+        self.imu_continuous = False
+        self.fix_xy = self.moved_since_fix = None
         self.rejected = []
         self._rtk_seed = []
         self._rtk_rejected = []
@@ -928,6 +975,7 @@ class YawSource:
         self.stale, self.max_dt = stale, max_dt
         self.max_gap = max(max_dt, max_gap)
         self.stale_exit = max(stale, stale_exit)
+        self._active_exit = (self.stale_exit, self.max_gap)
         self.rest_settle, self.rest_window = rest_settle, rest_window
         self.rest_alpha, self.rest_max_rate, self.rest_max_std = (rest_alpha, rest_max_rate,
                                                                    rest_max_std)
@@ -955,6 +1003,16 @@ class YawSource:
         self.gap_max_s = 0.0
         self.gaps_wit = 0             # of those, filled with the WIT rate
         self.dropped = 0              # gaps > max_gap: no increment
+
+    def set_idle(self, idle, stale_exit_idle=5.0):
+        """Idle hysteresis (2026-11-02): while idle the stereo source is left only after
+        ``stale_exit_idle`` s without a sample, and gaps up to that long are bridged (WIT
+        rate) instead of dropped; active restores the constructor values."""
+        if idle:
+            self.stale_exit = max(self._active_exit[0], float(stale_exit_idle))
+            self.max_gap = max(self._active_exit[1], float(stale_exit_idle))
+        else:
+            self.stale_exit, self.max_gap = self._active_exit
 
     # ---- state
     def stereo_fresh(self, now, window=None):

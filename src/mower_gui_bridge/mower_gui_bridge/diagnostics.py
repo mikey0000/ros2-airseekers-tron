@@ -210,7 +210,8 @@ def imu_status(imu_age, temperature, bias_text, timeout):
 
 
 # Same text as mower_mission.mission_fsm.HEADING_NOT_ALIGNED (no package dependency).
-HEADING_HINT = 'drive straight 1 m at 0.1 m/s or more in manual, or start from the dock'
+HEADING_HINT = ('in manual, drive straight 1 m or more without turning at 0.1 m/s or more, '
+                'or start from the dock')
 
 
 def heading_status(status_text):

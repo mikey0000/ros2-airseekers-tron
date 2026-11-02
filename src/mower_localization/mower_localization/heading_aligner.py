@@ -186,6 +186,10 @@ class HeadingAligner(Node):
         # base_link z row of R(base<-stereo imu); [] = look it up from TF (stereo frame_id)
         d('stereo_z_row', [0.0])
         d('stereo_stale', 0.3)       # stereo sample within this -> may switch to stereo
+        # idle (/mission/activity idle): stereo_imu runs at its idle rate and its bursts
+        # flapped the source wit<->stereo every 1-2 s (2026-11-02); leave stereo only after
+        # this long without a sample, gaps up to it bridged with the WIT rate
+        d('stereo_stale_exit_idle', 5.0)
         d('stereo_stale_exit', 0.5)  # stereo active: WIT fallback only after this long without
         # Stereo stamp gaps above 50 ms (dropped / late samples) are bridged with the WIT rate
         # (or the mean stereo rate) up to this long; longer gaps add nothing (stereo_dropped).
@@ -239,6 +243,7 @@ class HeadingAligner(Node):
             stale=float(g('stereo_stale')), rest_settle=float(g('rest_settle')),
             rest_window=float(g('rest_window')), stale_exit=float(g('stereo_stale_exit')),
             max_gap=float(g('stereo_max_gap')))
+        self._stale_exit_idle = float(g('stereo_stale_exit_idle'))
         self._divergence = hl.DivergenceWatch(warn_deg=float(g('wit_divergence_warn_deg')))
         self._base_frame = g('base_frame')
         self._rest_v, self._rest_w = float(g('rest_max_speed')), float(g('rest_max_turn'))
@@ -421,6 +426,7 @@ class HeadingAligner(Node):
 
     def _on_activity(self, msg):
         self._low_power = hl.activity_low_power(msg.data)
+        self.src.set_idle(self._low_power, self._stale_exit_idle)
 
     # ------------------------------------------------------------------ sampled inputs
     def _on_odom(self, msg):

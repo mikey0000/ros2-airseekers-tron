@@ -165,7 +165,7 @@ def test_heading_status_entry():
     vals = dict(ok.values)
     assert vals['Offset (deg)'] == '-150.2' and vals['Source'] == 'cog'
     warn = d.heading_status('{"aligned": false, "source": "file", "offset_deg": 10.0}')
-    assert warn.level == d.WARN and 'drive straight 1 m' in warn.message
+    assert warn.level == d.WARN and 'drive straight 1 m or more without turning' in warn.message
     assert 'at 0.1 m/s or more' in warn.message and 'or start from the dock' in warn.message
     slow = d.heading_status('{"aligned": false, "source": "file", "gate": '
                             '"slow (0.03 m/s < 0.04)", "file_check": "yaw_ok"}')

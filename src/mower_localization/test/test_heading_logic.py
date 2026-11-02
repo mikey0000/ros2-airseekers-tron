@@ -510,13 +510,13 @@ def test_persisted_fixed_samples_must_be_consecutive(tmp_path):
 
 def test_min_speed_default_accepts_slow_manual_drive():
     """2026-10-13: a 0.05 m/s joystick drive never aligned under min_speed 0.06."""
-    assert hl.AlignParams().min_speed == pytest.approx(0.04)
+    assert hl.AlignParams().min_speed == pytest.approx(0.03)
     s = Sim()
     s.yaw = D(20.0)
     s.run(0.05, 0.0, 16.0)
     assert s.est.aligned and s.est.source == hl.SOURCE_COG
     assert abs(s.heading_error()) < 1.0
-    assert s.est.status(s.t)['min_speed'] == pytest.approx(0.04)
+    assert s.est.status(s.t)['min_speed'] == pytest.approx(0.03)
 
 
 def test_old_file_without_imu_yaw_stays_file(tmp_path):
@@ -1282,3 +1282,87 @@ def test_rate_term_step_response_settles():
             worst = max(worst, abs(s.heading_error()))
     assert worst < 0.5, worst
     assert abs(math.degrees(s.est.offset_rate) * 60.0) < 0.5
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-02 stationary hold: moved_since_fix_m / imu_continuous in the status
+# ---------------------------------------------------------------------------
+def test_stationary_hold_status_after_a_long_idle():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)                 # COG fix
+    assert s.est.source == hl.SOURCE_COG
+    s.run(0.0, 0.0, 400.0)               # parked, wall clock runs on
+    st = s.est.status(s.t)
+    assert st['last_cog_age_s'] > 300.0
+    assert st['moved_since_fix_m'] < 0.5 and st['imu_continuous'] is True
+
+
+def test_stationary_hold_moved_after_the_fix_counts_the_farthest_point():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)
+    s.run(0.3, 0.5, 4.0)                 # turning: no new COG fix, but it moves
+    s.run(0.0, 0.0, 1.0)
+    assert s.est.status(s.t)['moved_since_fix_m'] > 0.5
+
+
+def test_stationary_hold_imu_gap_breaks_continuity():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)
+    s.t += 2.0                           # 2 s without an IMU sample
+    s.run(0.0, 0.0, 1.0)
+    st = s.est.status(s.t)
+    assert st['imu_continuous'] is False and st['aligned']
+
+
+def test_stationary_hold_imu_reset_unaligns_and_unknown_move():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)
+    s.drift += D(90.0)                   # yaw jump without rotation = IMU reset
+    s.run(0.0, 0.0, 0.5)
+    st = s.est.status(s.t)
+    assert not st['aligned'] and st['imu_continuous'] is False
+    assert st['moved_since_fix_m'] is None
+
+
+def test_stationary_hold_unknown_without_rtk_fixed_at_the_fix():
+    s = Sim(fix_type=2, min_fix_type=2)
+    s.run(0.3, 0.0, 7.0)
+    assert s.est.aligned
+    assert s.est.status(s.t)['moved_since_fix_m'] is None
+
+
+def test_stationary_hold_quality_stops_at_fair():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)
+    assert s.est.quality(s.t) == 'good'
+    s.run(0.0, 0.0, 1700.0)             # field: 1615 s parked went 'poor'
+    assert s.est.quality(s.t) == 'fair'
+
+
+def test_quality_still_decays_after_moving_without_a_fix():
+    s = Sim()
+    s.run(0.3, 0.0, 3.0)
+    s.run(0.3, 0.5, 4.0)                # moved, turning: no new fix
+    s.run(0.0, 0.0, 1700.0)
+    assert s.est.quality(s.t) == 'poor'
+
+
+def test_slow_joystick_drive_at_0_03_aligns():
+    s = Sim()
+    s.run(0.035, 0.0, 25.0)              # 0.875 m at the joystick's slow end
+    assert s.est.aligned and abs(s.heading_error()) < 2.0
+
+
+def test_yaw_source_idle_hysteresis_widens_and_restores():
+    src = hl.YawSource('auto', stale_exit=0.5, max_gap=1.0)
+    src.set_idle(True, 5.0)
+    assert src.stale_exit == 5.0 and src.max_gap == 5.0
+    src.set_idle(False)
+    assert src.stale_exit == 0.5 and src.max_gap == 1.0
+
+
+def test_slow_drive_lateral_check_still_rejects_a_weaving_track():
+    s = Sim()
+    s.run(0.035, 0.0, 25.0, gps_lateral_wobble=0.2)
+    assert not s.est.aligned
+    assert any('track not straight' in r.get('reason', '') for r in s.results)

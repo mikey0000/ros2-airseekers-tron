@@ -74,8 +74,8 @@ HEADING_ALIGNED_SOURCES = ('dock', 'cog', 'file_verified')
 # Operator text (GUI sub_state); mower_gui_bridge diagnostics.HEADING_HINT says the same.
 # 0.1 m/s leaves margin over heading_aligner min_speed (0.04 m/s, 2026-10-13: a 0.05 m/s
 # joystick drive never aligned under the old 0.06 and the message did not say why).
-HEADING_NOT_ALIGNED = ('heading not aligned: drive straight 1 m at 0.1 m/s or more in manual, '
-                       'or start from the dock')
+HEADING_NOT_ALIGNED = ('heading not aligned: in manual, drive straight 1 m or more without '
+                       'turning at 0.1 m/s or more, or start from the dock')
 
 # MANUAL_MOWING sub_state (the GUI reads the blade state from it)
 SUB_MANUAL_BLADE_ON = 'joystick, blade on'
@@ -468,6 +468,11 @@ class Inputs:
     # last_cog_age_s and age_s, see mission_node._on_heading); None/'' = not reported
     heading_quality: str = ''
     heading_cog_age: Optional[float] = None
+    # 2026-11-02 stationary hold: farthest RTK-fixed move since the last absolute heading fix
+    # (status moved_since_fix_m, None = unknown) and IMU yaw continuity since it
+    # (status imu_continuous, None = not reported)
+    heading_moved_m: Optional[float] = None
+    heading_imu_continuous: Optional[bool] = None
     # /obstacle_policy (mower_vision obstacle_guard, JSON): closest close detection
     obstacle_kind: str = 'none'         # none | dynamic | static
     obstacle_class: str = ''
@@ -568,6 +573,10 @@ class Params:
     # heading_reject_quality is treated like the 'file' prior: calibration drive first.
     heading_max_cog_age_s: float = 300.0
     heading_reject_quality: list = field(default_factory=lambda: ['poor'])
+    # 2026-11-02: a cog heading older than heading_max_cog_age_s is kept (no calibration
+    # drive, no age/quality rejection) while the robot moved less than this since the fix
+    # and the IMU stayed continuous; the age check is the fallback when either is unknown
+    heading_stale_move_m: float = 0.5
     rain_mode: int = 1                  # 0 ignore, 1 dock and wait
     rain_debounce_s: float = 2.0
     rain_delay_minutes: float = 30.0

@@ -496,6 +496,46 @@ poor `cog` heading and drove its transit 65 deg off.
   If the WIT keeps agreeing with the GPS course and the stereo does not, `imu_source: wit`
   is the fallback.
 
+## Stale-but-stationary COG heading at START (2026-11-02, branch ws/heading-stale)
+
+Field 2026-11-02 15:19 (d3230fd): area 5 mowed with a good cog heading, STUCK_NEEDS_HELP at
+a boundary, ~6 min idle, then both STARTs logged "heading cog is 350 s old: calibration drive
+first" and refused because no 1.0 m line was clear. The robot had not moved.
+
+- **Aligner** (`heading_logic.HeadingEstimator`): every absolute fix (cog / dock / rtk /
+  file_verified, `_mark_fix`) anchors the RTK-fixed position; status gains
+  `moved_since_fix_m` (farthest RTK-fixed position from the anchor since, None = no fixed
+  position at the fix) and `imu_continuous` (false after an IMU sample gap > `imu_gap_max`
+  1 s or an IMU reset). The idle activity mode only batches the IMU / stereo polling (every
+  sample still integrated) and GPS keeps flowing, so both stay tracked while idle.
+- **Mission** (`_heading_cog_held`): a cog fix older than `heading_max_cog_age_s` is kept,
+  with its age-decayed quality ignored, while `moved_since_fix_m < heading_stale_move_m`
+  (new, 0.5) and `imu_continuous`; log "heading cog fix is N s old but the robot has not
+  moved (X m) and the IMU is continuous: keeping it". Either field missing: the age check
+  as before.
+- **No room for the 1.0 m drive** (`hcal`): try the 0.8 m straight ahead/behind by the
+  prior, then the disc. Nothing clear: START at low quality when the heading was aligned
+  earlier in this process lifetime and the IMU stayed continuous (cog `imu_continuous`, or
+  file `yaw_ok`); else refuse with the case (never aligned since start-up / IMU not
+  continuous / no usable prior / drive disabled) appended to the HEADING_NOT_ALIGNED text.
+- **Aligner quality** (field 03:03-03:10 UTC: good -> fair -> poor at an unchanged offset,
+  1615 s parked): while `stationary_since_fix` (moved < `hold_move` 0.5 m RTK fixed, IMU
+  continuous) the age-driven sigma growth is capped at the fair band; the mission's quality
+  rejection uses the same hold.
+- **Manual recovery**: HEADING_NOT_ALIGNED / GUI hint now say "in manual, drive straight
+  1 m or more without turning at 0.1 m/s or more"; `min_speed` 0.04 -> 0.03 (field drive
+  sat at 0.04 on the gate). The 0.08 m lateral check and the IMU-span check still guard a
+  slow window (test: a weaving 0.035 m/s track is rejected); min_distance unchanged.
+- **Idle yaw-source flapping** (wit<->stereo every 1-2 s while idle): a switch never steps
+  the virtual yaw nor resets the COG window / continuity (on_imu sees one continuous yaw),
+  so it was log noise, but stereo gaps > `stereo_max_gap` were dropped. While idle
+  `YawSource.set_idle` now uses `stereo_stale_exit_idle` (5 s) for both the stereo exit and
+  the bridged gap length; active restores 0.5 s / 1 s.
+- Observation, not addressed: 02:31 UTC WARN "virtual yaw diverging from the WIT yaw
+  (-5.2 deg in 57 s, stereo gaps 37, 12.87 s bridged)": stereo IMU gaps under load.
+- Note: the anchor is the last COG fix, not where the robot stopped, so a stop several
+  metres after the last fix still drives (or falls back to the low-quality start).
+
 ## Heading self-recovery after a reboot off the dock (2026-11-01, unit-tested only)
 
 Owner note 2026-11-01: after a power cycle or reboot on the lawn the GUI asked for a manual
