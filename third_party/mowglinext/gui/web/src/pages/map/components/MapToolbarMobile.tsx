@@ -158,7 +158,7 @@ export const MapToolbarMobile = ({
     // thumb-reach guideline). Applied via a shared style so size="large" AntD
     // buttons never fall below the floor. flexShrink 0: the explicit minWidth
     // replaces flex's min-content floor, so without it the row squeezed labelled
-    // buttons to 44 px and they overlapped instead of scrolling.
+    // buttons to 44 px and they overlapped.
     const touchTarget: React.CSSProperties = {minWidth: 44, minHeight: 44, flexShrink: 0};
     const group: React.CSSProperties = {flexShrink: 0};
 
@@ -180,14 +180,11 @@ export const MapToolbarMobile = ({
         zIndex: 55,
         display: "flex",
         gap: 8,
-        // Horizontally scrollable cluster — never force a multi-row wrap that
-        // would push controls under the bottom-nav on short phones.
-        flexWrap: "nowrap",
-        overflowX: "auto",
-        overflowY: "hidden",
-        WebkitOverflowScrolling: "touch",
-        scrollbarWidth: "thin",
-        overscrollBehaviorX: "contain",
+        // Wrap instead of scrolling sideways (F11): a horizontally scrolled row
+        // hid Preview, Manual, Edit Map and More off-screen with nothing but a
+        // thin scrollbar to say they existed. The toolbar is anchored at its
+        // bottom, so extra rows grow upward over the map, never under the nav.
+        flexWrap: "wrap",
         alignItems: "center",
         background: colors.glassBackground,
         backdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined,
@@ -354,7 +351,8 @@ export const MapToolbarMobile = ({
             type={emergency ? "default" : "primary"}
             icon={<WarningOutlined />}
             onAsyncClick={(emergency ? onEmergencyOff : onEmergencyOn)!}
-            aria-label={emergency ? t("mapToolbarMobile.emergencyOff") : t("mapToolbarMobile.emergencyOn")}
+            // An action name, not a state: "Emergency stop" / "Release emergency stop".
+            aria-label={emergency ? t("mapToolbar.emergencyOff") : t("mapToolbar.emergencyOn")}
             style={stopButtonStyle}
         >
             {t("mapToolbarMobile.stop")}
@@ -577,14 +575,14 @@ export const MapToolbarMobile = ({
                         trigger={["click"]}
                         placement="topLeft"
                     >
+                        {/* Icon-only so the view-mode cluster fits two rows on a phone. */}
                         <Button
                             size="large"
                             icon={<SettingOutlined />}
                             aria-label={t("mapToolbarMobile.areaSettings")}
+                            title={t("mapToolbarMobile.areaSettings")}
                             style={touchTarget}
-                        >
-                            {t("mapToolbarMobile.areaSettingsShort")}
-                        </Button>
+                        />
                     </Dropdown>
                 )}
 
