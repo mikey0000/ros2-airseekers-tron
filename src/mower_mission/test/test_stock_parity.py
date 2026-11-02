@@ -59,3 +59,47 @@ def test_hot_battery_mid_mow_docks_and_resumes_when_cool():
     h.fsm.inputs.battery_temp_c = 40.0
     h.tick()
     assert h.fsm.mission is not None and h.fsm.mission.resume
+
+
+# ---- 2. critical battery ------------------------------------------------
+def poweroff_calls(h, m):
+    return [e for e in h.since(m, f.CallService) if e.name == f.SRV_POWEROFF]
+
+
+def test_critical_battery_stops_then_requests_poweroff_after_grace():
+    h = Harness(battery_critical_grace_s=10.0)
+    mowing(h)
+    m = h.mark()
+    h.fsm.inputs.battery_percent = 4.0
+    h.tick()
+    assert h.name == 'IDLE' and 'battery critical' in h.fsm.sub_state and not h.blade
+    assert h.since(m, f.ZeroBurst)
+    n = notices(h, m, 'battery_critical')
+    assert n and n[-1].active and n[-1].priority == 5
+    h.tick(dt=1.0, n=8)
+    assert not poweroff_calls(h, m)
+    h.tick(dt=1.0, n=3)
+    assert len(poweroff_calls(h, m)) == 1
+    h.tick(dt=1.0, n=5)
+    assert len(poweroff_calls(h, m)) == 1          # asked once
+
+
+def test_critical_battery_put_on_dock_in_grace_cancels_poweroff():
+    h = Harness(battery_critical_grace_s=10.0)
+    h.fsm.inputs.battery_percent = 3.0
+    h.tick()
+    m = h.mark()
+    h.tick(dt=1.0, n=5)
+    h.fsm.inputs.docked = True
+    h.fsm.inputs.is_charging = True
+    h.tick(dt=1.0, n=20)
+    assert not poweroff_calls(h, m)
+    assert notices(h, m, 'battery_critical')[-1].active is False
+
+
+def test_critical_battery_poweroff_disabled():
+    h = Harness(battery_critical_grace_s=1.0, battery_critical_poweroff=False)
+    h.fsm.inputs.battery_percent = 3.0
+    m = h.mark()
+    h.tick(dt=1.0, n=5)
+    assert not poweroff_calls(h, m) and notices(h, m, 'battery_critical')[-1].active

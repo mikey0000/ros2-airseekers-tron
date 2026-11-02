@@ -135,6 +135,7 @@ TOPIC_DEFAULTS = {
     'cutter_off_service': '/cutter_off',
     'clear_estop_service': '/clear_estop',
     'charging_service': '/charging',
+    'poweroff_request_service': '/base_keys/request_poweroff',  # critical battery (base_keys)
     'clear_global_costmap_service': '/global_costmap/clear_entirely_global_costmap',
     'clear_local_costmap_service': '/local_costmap/clear_entirely_local_costmap',
     # option C (2026-10-23): selective clears (clearable layers only: the 5 s obstacle_layer)
@@ -397,6 +398,8 @@ class MissionNode(Node):
             fsm_mod.SRV_GET_AREA_SETTINGS: (
                 cli(GetAreaSettings, p['get_area_settings_service'], callback_group=self._cb),
                 p['get_area_settings_service']),
+            fsm_mod.SRV_POWEROFF: (cli(Trigger, p['poweroff_request_service'],
+                                       callback_group=self._cb), p['poweroff_request_service']),
             fsm_mod.SRV_PLAN_ROUTE: (cli(PlanRoute, p['plan_route_service'],
                                          callback_group=self._cb), p['plan_route_service']),
         }
@@ -1463,6 +1466,8 @@ class MissionNode(Node):
             return ChargingControl.Request(enable_charging=bool(r['enable']))
         if e.name == fsm_mod.SRV_CLEAR_ESTOP:
             return Empty.Request()
+        if e.name == fsm_mod.SRV_POWEROFF:
+            return Trigger.Request()
         if e.name == fsm_mod.SRV_GET_AREA_SETTINGS:
             return GetAreaSettings.Request(area_index=int(r['index']))
         if e.name == fsm_mod.SRV_PLAN_ROUTE:
@@ -1500,6 +1505,12 @@ class MissionNode(Node):
                 'is_navigation_area': bool(a.is_navigation_area)}}
         elif e.name == fsm_mod.SRV_ADD_AREA:
             resp = {'success': bool(res.success)}
+        elif e.name == fsm_mod.SRV_POWEROFF:
+            if res.success:
+                self.get_logger().warn('host power-off request accepted: %s' % res.message)
+            else:
+                self.get_logger().error('host power-off request refused: %s' % res.message)
+            resp = {'success': bool(res.success), 'message': res.message}
         elif e.name == fsm_mod.SRV_PROMOTE_OBSTACLE:
             resp = {'success': bool(res.success), 'message': res.message}
         elif e.name == fsm_mod.SRV_SET_CHANNEL:

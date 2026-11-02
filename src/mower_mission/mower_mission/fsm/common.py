@@ -122,6 +122,7 @@ CUTTER_HEIGHT_MAX_MM = 90
 SRV_CUTTER_HEIGHT = 'cutter_height'           # /cutter_control height only, blade off
 SRV_CLEAR_COSTMAPS = 'clear_costmaps'         # Nav2 clear_entirely_{global,local}_costmap
 SRV_PLAN_ROUTE = 'plan_route'                 # /map_server_node/plan_route (route graph)
+SRV_POWEROFF = 'request_poweroff'             # /base_keys/request_poweroff (host power-off)
 
 # set_parameters targets (the node maps them to <node>/set_parameters)
 PARAM_NODE_COVERAGE = 'coverage_server'
@@ -585,6 +586,12 @@ class Params:
     battery_temp_min_start_c: float = 0.0
     battery_temp_max_mow_c: float = 55.0
     battery_temp_debounce_s: float = 10.0
+    # Critical battery (stock IotNotice ShutdownSoon 900023): below this while not on the
+    # dock / charging: stop, blade off, alert; still so after battery_critical_grace_s ->
+    # ask base_keys for the host power-off (battery_critical_poweroff). 0 disables.
+    battery_critical_percent: float = 5.0
+    battery_critical_grace_s: float = 120.0
+    battery_critical_poweroff: bool = True
     preflight_min_fix_type_docked: int = 1
     rtk_fix_type: int = FIX_RTK_FIXED
     rtk_timeout_s: float = 120.0

@@ -18,6 +18,9 @@ behavior_tree_node:
     battery_temp_min_start_c: 0.0     # START refused below this
     battery_temp_max_mow_c: 55.0      # mid-mow above this (debounced): dock, resume once <= max_start
     battery_temp_debounce_s: 10.0
+    battery_critical_percent: 5.0     # below this off the dock: stop, blade off, alert (0 = off)
+    battery_critical_grace_s: 120.0   # ... then host power-off unless docked / charging by then
+    battery_critical_poweroff: true   # false = stop + alert only
 
     # --- GNSS ------------------------------------------------------------
     preflight_min_fix_type_docked: 1  # GnssStatus.fix_type needed to START from the dock

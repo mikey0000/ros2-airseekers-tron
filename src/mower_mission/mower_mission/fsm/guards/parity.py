@@ -4,6 +4,9 @@
 Small behaviours the stock Tron firmware has (docs/audit_2026-10-05/vendor_mission_layer.md
 1.2 / 1.4, mower_docs/reference/IotNotice.msg):
 
+* critical battery: below battery_critical_percent off the dock -> stop, blade off, alert,
+  then after battery_critical_grace_s the host power-off via base_keys (stock ShutdownSoon
+  900023 + PowerManager power-off; the lithium pack must not be run flat);
 * battery temperature: START refused outside the start band (start.py _preflight); above
   battery_temp_max_mow_c mid-mission the robot docks and resumes once cooled (stock
   ChargeEnvCheck "battery temperature high" -> auto-charge flow, pseudo-state
@@ -12,7 +15,8 @@ Small behaviours the stock Tron firmware has (docs/audit_2026-10-05/vendor_missi
 Every guard raises / clears a mower_alerts notice (:class:`Notice`).
 """
 
-from mower_mission.fsm.common import MISSION_PHASES, Notice
+from mower_mission.fsm.common import (IDLE_NAMES, MISSION_PHASES, Notice, SRV_POWEROFF,
+    ZeroBurst)
 
 
 class ParityGuardsMixin:
@@ -27,6 +31,48 @@ class ParityGuardsMixin:
         sent[incident] = key
         self._fx.append(Notice(incident, bool(active), text, kind, int(priority),
                                message or incident))
+
+    # ---- critical battery -------------------------------------------------
+    def _battery_critical_tick(self):
+        """True on the tick it stopped the robot."""
+        p, i = self.p, self.inputs
+        b, limit = i.battery_percent, float(p.battery_critical_percent)
+        low = (limit > 0.0 and b is not None and 0.0 < b < limit and not self._at_dock())
+        since = self.__dict__.get('_crit_since')
+        if not low:
+            if since is not None:
+                self._log('info', 'battery critical cleared (%s): no power-off'
+                          % ('on the dock' if self._at_dock() else '%.0f%%' % (b or 0.0)))
+                self._notice('battery_critical', False)
+            self._crit_since = None
+            self._crit_requested = False
+            return False
+        if since is None:
+            self._crit_since = self._now
+            self._crit_requested = False
+            off = ('powering off in %.0f s unless it is put on the dock'
+                   % p.battery_critical_grace_s if p.battery_critical_poweroff else 'no power-off')
+            self._log('error', 'battery critical %.0f%% < %.0f%% off the dock: stopping, %s'
+                      % (b, limit, off))
+            self._notice('battery_critical', True, 'Battery critical (%.0f %%): robot stopped, '
+                         '%s.' % (b, off), 'battery', 5, 'batteryCriticalStop')
+            if self.mission is not None:
+                self._interrupt_mission('battery critical')
+            if self.phase not in IDLE_NAMES:
+                self._cancel_all('battery critical')
+                self._blade_off('battery critical')
+                self._fx.append(ZeroBurst())
+                self._dock_purpose = None
+                self._go_idle('battery critical %.0f%%: stopped' % b)
+                return True
+            return False
+        if p.battery_critical_poweroff and not self.__dict__.get('_crit_requested') \
+                and self._now - since >= float(p.battery_critical_grace_s):
+            self._crit_requested = True
+            self._log('error', 'battery critical for %.0f s off the dock: requesting host '
+                      'power-off' % (self._now - since))
+            self._call(SRV_POWEROFF, {'reason': 'battery critical %.0f%%' % b}, track=False)
+        return False
 
     # ---- battery temperature --------------------------------------------
     def _battery_temp_tick(self):
