@@ -250,6 +250,9 @@ ros2 topic hz /odometry/gps      # ~10
 ros2 topic info /fix_gated       # QoS reliable/10 on both ends
 ```
 
+Recorded vertices (2026-11-03): each saved recording gets a per-vertex fix type / hdop
+sidecar (`recording_quality_dir`); vertices recorded without RTK fixed are warned about.
+
 ## Caveats and TODOs
 
 - **`robot_localization` is not in the Docker image yet.** Add

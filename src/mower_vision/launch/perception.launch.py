@@ -46,6 +46,7 @@ def generate_launch_description():
         DeclareLaunchArgument('seg', default_value='false'),
         DeclareLaunchArgument('nongrass', default_value='false'),
         DeclareLaunchArgument('obstacle_guard', default_value='true'),
+        DeclareLaunchArgument('camera_blocked', default_value='true'),
         DeclareLaunchArgument('models_dir', default_value=''),
         DeclareLaunchArgument('dry_run', default_value='false'),
         DeclareLaunchArgument('stop_on_close', default_value='false'),
@@ -105,4 +106,11 @@ def generate_launch_description():
                                           'obstacle_guard.yaml']),
                     {'stop_on_close': ParameterValue(LC('stop_on_close'), value_type=bool)}],
     )
-    return LaunchDescription(args + [det, det_cpp, seg, nongrass, guard])
+    blocked = Node(
+        package='mower_vision', executable='camera_blocked', name='camera_blocked',
+        respawn=True, respawn_delay=2.0, output='screen',
+        condition=IfCondition(LC('camera_blocked')),
+        parameters=[PathJoinSubstitution([FindPackageShare('mower_vision'), 'config',
+                                          'camera_blocked.yaml'])],
+    )
+    return LaunchDescription(args + [det, det_cpp, seg, nongrass, guard, blocked])

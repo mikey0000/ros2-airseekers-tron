@@ -1,0 +1,16 @@
+# mower_vision camera_blocked (stock parity: IotNotice CameraBlocked 100105).
+# Front camera dark / washed out / uniform for camera_blocked_s while MOWING in daylight ->
+# /vision/camera_blocked true (mower_mission slows to camera_blocked_speed_mps) + alert.
+camera_blocked:
+  ros__parameters:
+    enabled: true
+    image_topic: /vio/right/image_raw
+    active_states: [MOWING]
+    daylight_hours: [8.0, 18.0]   # local time [start, end); [] = always
+    sample_hz: 1.0                # frames looked at per second (decimated by 8)
+    decimate: 8
+    camera_blocked_s: 10.0
+    clear_s: 3.0
+    std_max: 6.0                  # luminance std below this = uniform (lens covered)
+    mean_min: 12.0                # mean below this = dark
+    mean_max: 250.0               # mean above this = washed out

@@ -11,6 +11,7 @@ at ``control_rate_hz`` while a goal drives the robot, and zeros for
 
 from __future__ import annotations
 
+import json
 import math
 import sys
 import threading
@@ -39,6 +40,7 @@ from mower_interfaces.srv import ChargingControl
 
 from mower_docking import dock_logic as dl
 from mower_docking import dock_yaw
+from mower_docking.dock_moved import dock_moved, notice as dock_moved_notice
 from mower_docking.exposure import AUTO, STOCK_SEQUENCE, ExposureStepper
 from mower_common.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
 from mower_docking.quiet_action import QuietActionClient
@@ -134,6 +136,10 @@ class DockingServer(Node):
         decl('rear_wait_max_s', dp.rear_wait_max_s)
         decl('blind_marker_max_age_s', dp.blind_marker_max_age_s)
         decl('dock_pose_measured_override', False)   # bench: treat the dock pose as measured
+        # charger-moved check after a successful dock (dock_moved.py); 0 = off
+        decl('dock_moved_warn_m', 0.5)
+        decl('dock_moved_topic', '/mower_docking/dock_moved')
+        decl('notice_topic', '/mower_alerts/notice')
         decl('stall_min_cmd', dp.stall_min_cmd)
         decl('stall_progress_ratio', dp.stall_progress_ratio)
         decl('stall_timeout_s', dp.stall_timeout_s)
@@ -283,6 +289,11 @@ class DockingServer(Node):
         # Docking FSM state for bumper_controller's docking-aware back-off: republished every
         # control tick while a Dock goal runs ('' when idle); a stale value means "not docking".
         self._state_pub = self.create_publisher(String, '/mower_docking/state', 10)
+        self._dock_moved_pub = self.create_publisher(
+            String, p('dock_moved_topic').value, QoSProfile(
+                depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                reliability=ReliabilityPolicy.RELIABLE))
+        self._notice_pub = self.create_publisher(String, p('notice_topic').value, 10)
         # diagnostics (bag_recorder records these): per-second detection/exposure summary and
         # a throttled grey JPEG of what the detector saw, only while a dock goal runs
         self._diag_pub = self.create_publisher(String, '~/diag', 10)
@@ -1102,6 +1113,8 @@ class DockingServer(Node):
                 ok, why = self._apply_dock_yaw()
                 if not ok:
                     self.get_logger().info('measured dock yaw not applied: %s' % why)
+            if out.success and is_dock:
+                self._check_dock_moved()
             if out.success:
                 goal_handle.succeed()
             else:
@@ -1179,6 +1192,30 @@ class DockingServer(Node):
                 self._clk.sleep(0.1)
         finally:
             pump.close()
+
+    def _check_dock_moved(self) -> None:
+        """Docked: compare the RTK-fixed map pose with the stored dock pose (dock_moved).
+        Latched JSON on dock_moved_topic (the GUI dock card) + a mower_alerts notice."""
+        now = self._clk.now()
+        with self._lock:
+            pose = self._map_pose if now - self._map_pose_t <= 1.0 else None
+            stored, rtk = self._dock_pose_msg, self._rtk_fixed
+            measured = self._dock_measured or bool(
+                self.get_parameter('dock_pose_measured_override').value)
+        res = dock_moved(None if pose is None else (pose.x, pose.y, pose.yaw),
+                         None if stored is None else (stored.x, stored.y, stored.yaw),
+                         rtk, measured, float(self.get_parameter('dock_moved_warn_m').value))
+        if res is None:
+            return
+        self._dock_moved_pub.publish(String(data=json.dumps(res, sort_keys=True)))
+        if res['moved']:
+            self.get_logger().warn('dock appears to have moved: docked at (%.2f, %.2f), stored '
+                                   '(%.2f, %.2f), %.2f m apart: re-calibrate the dock' % (
+                                       res['docked'][0], res['docked'][1], res['stored'][0],
+                                       res['stored'][1], res['distance_m']))
+            self._notice_pub.publish(String(data=json.dumps(dock_moved_notice(res))))
+        else:
+            self.get_logger().info('docked %.2f m from the stored dock pose' % res['distance_m'])
 
     def _execute_dock(self, goal_handle):
         req = goal_handle.request

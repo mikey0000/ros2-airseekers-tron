@@ -214,6 +214,8 @@ class AreasMixin:
         speed = min(float(st['cut_speed_mps']), float(self.p.cut_speed_max_mps))
         if self._tilt_capped:               # area starts on a slope: keep the caution cap
             speed = min(speed, float(self.p.tilt_caution_speed_mps))
+        if self._camera_capped:             # front camera blocked: keep its cap
+            speed = min(speed, float(self.p.camera_blocked_speed_mps))
         self._log('info', 'area %d %s: settings (%s) %s; blade height %d mm, '
                           'cut speed %.2f m/s, %d run(s)'
                   % (m.area_idx, self._area_name(), src, json.dumps(st, sort_keys=True),

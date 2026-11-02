@@ -73,6 +73,9 @@ class TiltGuardMixin:
             params[self.p.tilt_transit_speed_param] = cap
             self._log('warn', 'slope caution (%s): controller speed capped at %.2f m/s'
                       % (self._tilt_text(), cap))
+        elif self._camera_capped:
+            params = self._speed_cap_params(float(self.p.camera_blocked_speed_mps))
+            self._log('info', 'slope ok: camera-blocked speed cap kept')
         else:
             params = {self.p.tilt_transit_speed_param: float(self.p.tilt_transit_speed_mps)}
             if m is not None and m.settings:

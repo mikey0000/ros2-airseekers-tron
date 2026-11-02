@@ -129,6 +129,8 @@ class TrackerParams:
     camera_x_m: float = 0.466            # front camera ahead of base_link (det zone checks)
     merge_dist_m: float = 0.3            # two det zones closer than this are one object
     ignore_radius_m: float = 0.5         # Ignore suppresses new zones this close
+    # repeated stuck spots (obstacle_tracker_stuck): pending disc of this radius
+    stuck_keepout_radius_m: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +246,7 @@ class Track:
     dynamic: bool = False            # a person / animal was detected here: never promote
     adopted: bool = False            # re-adopted from a stored SOURCE_TRACKER keepout
     # --- class-voted zones ---
-    kind: str = 'cluster'            # cluster | det | bumper
+    kind: str = 'cluster'            # cluster | det | bumper | stuck
     votes: Dict[str, float] = field(default_factory=dict)   # label -> summed score
     frames: List[Tuple[float, float, float]] = field(default_factory=list)  # (t, x, y) >= min
     widths: List[float] = field(default_factory=list)       # ranged widths (m), recent
@@ -280,6 +282,8 @@ class Track:
             return self.sized_radius(p)
         if self.kind == 'bumper':
             return p.bumper_zone_radius_m
+        if self.kind == 'stuck':
+            return p.stuck_keepout_radius_m
         return max(self.radius, p.det_radius_m) + p.polygon_inflation_m
 
     def footprint(self, p: TrackerParams) -> Polygon:
@@ -429,6 +433,24 @@ class TrackerCore:
             self._next_id += 1
             self.tracks.append(t)
 
+    def add_stuck_zone(self, x: float, y: float, now: float, areas=()) -> Optional[Track]:
+        """A repeated stuck spot (obstacle_tracker_stuck): a ``stuck`` track proposed as a
+        pending no-go disc on the next step, whatever the mission phase (the robot is
+        usually stuck, not mowing). None when inside an Ignored spot or an existing zone."""
+        p = self.params
+        if self._is_ignored(x, y):
+            return None
+        for t in self.tracks:
+            if t.kind == 'stuck' and math.hypot(t.cx - x, t.cy - y) <= p.stuck_keepout_radius_m:
+                return None
+        area_index = self._area_index_for(x, y, areas) if areas else -1
+        t = Track(id=self._next_id, cx=float(x), cy=float(y), radius=0.0, first_seen=now,
+                  last_seen=now, origin_cx=float(x), origin_cy=float(y),
+                  area_index=area_index, kind='stuck', on_path='stuck')
+        self._next_id += 1
+        self.tracks.append(t)
+        return t
+
     def _qualifying_frames(self, t: Track, now: float) -> int:
         p = self.params
         t.frames = [f for f in t.frames if now - f[0] <= p.det_window_s]
@@ -478,6 +500,8 @@ class TrackerCore:
     def _class_zone_ready(self, t: Track, now: float, allow_promote: bool,
                           area_blocked) -> bool:
         p = self.params
+        if t.kind == 'stuck':
+            return not t.promoting and t.area_index >= 0 and not self._is_ignored(t.cx, t.cy)
         if not (p.class_zones and allow_promote) or t.promoting or t.dynamic:
             return False
         if t.area_index < 0 or t.area_index in area_blocked:
@@ -510,7 +534,8 @@ class TrackerCore:
         or being promoted, not accepted by the operator). Pending zones are hard obstacles for
         the mow that found them only; no suppression, a next mow may propose them again.
         Returns the dropped tracks (the caller removes their pending keepouts)."""
-        out = [t for t in self.tracks if t.pending and (t.promoted or t.promoting)]
+        out = [t for t in self.tracks if t.pending and (t.promoted or t.promoting)
+               and t.kind != 'stuck']     # a stuck spot waits for the owner's decision
         for t in out:
             self.tracks.remove(t)
         return out
@@ -642,6 +667,8 @@ class TrackerCore:
                             break
             if not t.promoted:
                 unseen = now - t.last_seen
+                if t.kind == 'stuck':
+                    unseen = 0.0                  # nothing re-sights it: wait for map_server
                 if unseen > p.transient_timeout_s or (
                         t.kind == 'det' and unseen > p.living_timeout_s
                         and t.label() in {c.lower() for c in p.never_classes}):
@@ -686,7 +713,8 @@ class TrackerCore:
                     t.unseen_s = 0.0
                 elif allow_promote and robot_area >= 0 and robot_area == t.area_index:
                     t.unseen_s += dt
-                if p.pending_expire_s > 0 and t.unseen_s >= p.pending_expire_s:
+                if p.pending_expire_s > 0 and t.unseen_s >= p.pending_expire_s \
+                        and t.kind != 'stuck':
                     t.removing = True
                     to_remove.append(t.id)
                     continue
@@ -703,7 +731,7 @@ class TrackerCore:
                     t.removing = True
                     to_remove.append(t.id)
                 continue
-            if t.kind == 'bumper':
+            if t.kind in ('bumper', 'stuck'):
                 continue   # nothing can see it gone; Ignore / expiry only
             present = obstacle_fresh and self._points_within(
                 obstacle_points, t.cx, t.cy, p.present_radius_m)

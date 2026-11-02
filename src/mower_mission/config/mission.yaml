@@ -14,6 +14,13 @@ behavior_tree_node:
     battery_low_action: dock          # below battery_low_percent during a mission: dock (charge, then resume) | stop (blade off, stay put)
     battery_max_charge_percent: 100.0 # charge limit while docked (e.g. 80.0); 100 = no limit
     battery_charge_hysteresis_percent: 5.0  # re-enable charging at max - this
+    battery_temp_max_start_c: 45.0    # START refused above this battery temperature (stock "battery temp high")
+    battery_temp_min_start_c: 0.0     # START refused below this
+    battery_temp_max_mow_c: 55.0      # mid-mow above this (debounced): dock, resume once <= max_start
+    battery_temp_debounce_s: 10.0
+    battery_critical_percent: 5.0     # below this off the dock: stop, blade off, alert (0 = off)
+    battery_critical_grace_s: 120.0   # ... then host power-off unless docked / charging by then
+    battery_critical_poweroff: true   # false = stop + alert only
 
     # --- GNSS ------------------------------------------------------------
     preflight_min_fix_type_docked: 1  # GnssStatus.fix_type needed to START from the dock
@@ -620,6 +627,7 @@ behavior_tree_node:
     # vx_max is a dynamic MPPI param).
     tilt_transit_speed_param: FollowPath.vx_max
     tilt_transit_speed_mps: 0.3       # restored after caution: keep = nav2_params FollowPath
+    camera_blocked_speed_mps: 0.15    # front camera blocked (mower_vision camera_blocked): speed cap; 0 = off
     tilt_trail_m: 2.0                 # driven track remembered for the back-out
     tilt_trail_step_m: 0.05
     tilt_backout_pause_s: 0.5
@@ -645,6 +653,8 @@ behavior_tree_node:
     record_path_width_m: 0.7         # CMD_RECORD_PATH (10): band width of a recorded path
     record_path_min_length_m: 1.0
     recording_fallback_dir: ~/.ros/mower_mission/recordings   # polygon kept here if add_area fails
+    record_require_fixed: true        # warn + flag recorded vertices sampled without RTK fixed
+    recording_quality_dir: /ros2_ws/maps/record_quality   # per-vertex fix type / hdop JSON per recording
 
     # --- timeouts ----------------------------------------------------------
     result_display_s: 5.0             # UNDOCK_FAILED / NAV_TO_DOCK_FAILED / RECORDING_COMPLETE shown this long

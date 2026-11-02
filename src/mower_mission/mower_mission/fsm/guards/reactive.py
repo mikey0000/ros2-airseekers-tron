@@ -41,6 +41,7 @@ class ReactiveGuardsMixin:
         """Returns True when a guard owns this tick (phase logic skipped)."""
         self._stuck_watch()
         self._tilt_watch()
+        self._camera_blocked_tick()
         self._hard_boundary_watch()
         cause = self._emergency_cause()
         if cause:
@@ -101,6 +102,11 @@ class ReactiveGuardsMixin:
                     return True
             else:
                 self._rain_since = None
+
+        if self._battery_critical_tick():
+            return True
+        if self._battery_temp_tick():
+            return True
 
         b = i.battery_percent
         if b is not None and b < self.p.battery_low_percent and self.phase in MISSION_PHASES \

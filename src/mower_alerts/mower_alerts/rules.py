@@ -128,6 +128,40 @@ class Inputs:
     rtk_fix_type: Optional[int] = None  # /gps/status fix_type
     pose: Optional[Tuple[float, float]] = None  # map frame (x, y)
     tilt_deg: Optional[Tuple[float, float]] = None  # (roll, pitch) degrees
+    # /mower_alerts/notice (JSON, see parse_notice): incident -> Notice, the active ones only
+    notices: Dict[str, 'Notice'] = field(default_factory=dict)
+
+
+@dataclass
+class Notice:
+    """A condition another node raised on ``/mower_alerts/notice`` (stock-parity alerts:
+    battery temperature, critical battery, camera blocked, dock moved). The engine applies
+    the usual dedupe / rate limit; the publisher owns the condition and its text."""
+    incident: str
+    kind: str = 'blocked'
+    message: str = ''
+    priority: int = 3
+    text: str = ''
+    oneshot: bool = False       # an event, not a held condition: the node drops it after a step
+
+
+NOTICE_KINDS = ('theft', 'lift', 'emergency', 'blocked', 'battery', 'gpsLost')
+
+
+def parse_notice(data):
+    """``{"incident", "active", "kind", "message", "priority", "text", "oneshot"}`` (dict)
+    -> (incident, Notice or None for inactive). Raises ValueError on a malformed one."""
+    inc = str(data.get('incident') or '').strip()
+    if not inc:
+        raise ValueError('notice without an incident')
+    if not bool(data.get('active', True)):
+        return inc, None
+    kind = str(data.get('kind') or 'blocked')
+    if kind not in NOTICE_KINDS:
+        kind = 'blocked'
+    prio = int(data.get('priority', PRIORITY_DEFAULT))
+    return inc, Notice(inc, kind, str(data.get('message') or inc), max(1, min(5, prio)),
+                       str(data.get('text') or inc), bool(data.get('oneshot', False)))
 
 
 @dataclass
@@ -334,6 +368,7 @@ class AlertEngine:
         self.anchor_changed = False
         self.mask: Optional[MapMask] = None
         self.estop_from_lift = False
+        self.notice_keys: List[str] = []
         self.sent_times: List[float] = []
         self.suppressed = 0
 
@@ -354,7 +389,7 @@ class AlertEngine:
             return []
         self._update_mode(i, now)
         out: List[Alert] = []
-        for key, cond, build in self._rules(i, now):
+        for key, cond, build in self._rules(i, now) + self._notice_rules(i):
             result = self.incidents[key].update(bool(cond), now)
             if result in (FIRE, REPEAT):
                 alert = build()
@@ -465,6 +500,21 @@ class AlertEngine:
                            dict(self._base_params(i), minutes=_minutes(p.rtk_lost_alert_s),
                                 detail=_fix_label(i.rtk_fix_type)))),
         ]
+
+    def _notice_rules(self, i):
+        """One incident per notice name seen so far (created on first sight; a cleared
+        notice re-arms after clear_s like every other incident)."""
+        out = []
+        for key in sorted(set(self.notice_keys) | set(i.notices)):
+            name = 'notice:' + key
+            if name not in self.incidents:
+                self.incidents[name] = Incident(0.0, self.p.clear_s)
+                self.notice_keys.append(key)
+            n = i.notices.get(key)
+            out.append((name, n is not None,
+                        lambda n=n, i=i: Alert(n.incident, n.kind, n.message, n.priority,
+                                               n.text, self._base_params(i))))
+        return out
 
     # ---- rule helpers ---------------------------------------------------
     def _geofence_distance(self, i, armed):
