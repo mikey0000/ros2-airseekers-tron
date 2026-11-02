@@ -9,6 +9,7 @@ import {
     getConnectionManager,
     useConnectionState,
 } from "../../transport/connectionManager.ts";
+import {BluetoothGuideCard} from "./BluetoothGuideCard.tsx";
 
 const {Text, Paragraph} = Typography;
 
@@ -71,6 +72,7 @@ export function ConnectionSection() {
 
     return (
         <div data-testid="connection-section">
+            <BluetoothGuideCard/>
             <Card size="small" title={t("connection.linkTitle")} style={{marginBottom: 16}}>
                 <Segmented<ConnectionMode>
                     block
