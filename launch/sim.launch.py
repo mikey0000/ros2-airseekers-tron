@@ -331,7 +331,9 @@ def generate_launch_description() -> LaunchDescription:
              remappings=[('cmd_vel_out', '/cmd_vel_raw')]),
         hosted_node('gui', package='mower_teleop', executable='cmd_vel_ws_relay', name='cmd_vel_ws_relay',
              output='screen', condition=enabled('teleop_relay'), parameters=[SIM_TIME]),
-        hosted_node('control', package='mower_control', executable='cmd_vel_slew', name='cmd_vel_slew',
+        # own process (review 2026-11-02 H2): a crash elsewhere in node_host_control must not
+        # take the last velocity stage down with it
+        Node(package='mower_control', executable='cmd_vel_slew', name='cmd_vel_slew',
              output='screen',
              # the GUI settings file of this checkout is device-owned: do not read it
              parameters=[{'robot_settings_file': '', 'use_sim_time': True}]),
@@ -350,8 +352,10 @@ def generate_launch_description() -> LaunchDescription:
                  'use_sim_time': True}]),
     ]
 
-    gui_bridge = hosted_node(
-        'gui', package='mower_gui_bridge', executable='gui_bridge', name='gui_bridge', output='screen',
+    # own process (review 2026-11-02 H2/H3): gui_bridge is a supervisor critical node, so it
+    # must not share fate with the coverage server / WebSocket relay in node_host_gui
+    gui_bridge = Node(
+        package='mower_gui_bridge', executable='gui_bridge', name='gui_bridge', output='screen',
         parameters=[{
             # its stub high-level state machine only when the real mission is off
             'serve_high_level': PythonExpression(

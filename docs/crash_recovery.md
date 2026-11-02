@@ -43,6 +43,25 @@ recovery layer.
 A respawned mission starts in IDLE and never resumes a mission by itself. A respawned
 `mcu_node` starts with the cutter off.
 
+### Process layout: shared node hosts and the standalone safety nodes (2026-11-03)
+
+With `compose_nodes:=true` (default) the small Python nodes share `node_host_<group>`
+processes (`mower_bringup/node_host.py`); a crash of one member stops its host and launch
+respawns the whole group. Since review 2026-11-02 H2 these run as their own process in
+`mower.launch.py` (and `sim.launch.py` where present), not in a host:
+
+| Node | Was in | Why it is alone |
+|---|---|---|
+| `cmd_vel_slew` | `node_host_control` | last velocity stage and motion gate; a slip_detector / fixed_frame_relay crash must not drop it |
+| `supervisor` | `node_host_housekeeping` | the liveness monitor must not share fate with bag_recorder, alerts, lights |
+| `gui_bridge` | `node_host_gui` | a supervisor critical node (section 2); must not die with the coverage server or the WebSocket relay |
+
+`mcu_node`, `tilt_monitor`, `twist_mux` and the mission were standalone already. Expected
+cost (not measured on the mower; `docs/analysis/2026-10-22_memory_footprint.md` section 1:
+a Python process floor is ~50-55 MB PSS on the mower, a host member ~1-2 MB): about
++150 MB PSS for the three processes, i.e. half of the ~300 MB idle margin measured on
+2026-10-22. `node_host_standalone:=<group>` still splits a whole group further.
+
 ### Nav2 lifecycle nodes
 
 Nav2 servers are lifecycle nodes. A respawned server comes back UNCONFIGURED, so respawn
