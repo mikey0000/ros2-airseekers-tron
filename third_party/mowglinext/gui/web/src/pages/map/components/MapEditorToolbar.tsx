@@ -16,6 +16,7 @@ import {
     NodeIndexOutlined,
     ApiOutlined,
     EditOutlined,
+    BorderVerticleOutlined,
 } from "@ant-design/icons";
 import {DockIcon} from "../../../components/DockIcon.tsx";
 import AsyncButton from "../../../components/AsyncButton.tsx";
@@ -53,6 +54,9 @@ interface MapEditorToolbarProps {
     /** Re-edit the selected path as a line (enabled when exactly one path is selected). */
     onEditPath?: () => void;
     editPathEnabled?: boolean;
+    /** Boundary line (virtual wall) tool: click vertices, finish, name it. */
+    onDrawBoundaryLine?: () => void;
+    boundaryDrawing?: boolean;
 }
 
 interface ToolButtonProps {
@@ -63,9 +67,10 @@ interface ToolButtonProps {
     danger?: boolean;
     primary?: boolean;
     glow?: boolean;
+    testId?: string;
 }
 
-const ToolButton = ({icon, tooltip, onClick, disabled, danger, primary, glow}: ToolButtonProps) => {
+const ToolButton = ({icon, tooltip, onClick, disabled, danger, primary, glow, testId}: ToolButtonProps) => {
     const {colors} = useThemeMode();
     return (
     <Tooltip title={tooltip} placement="right">
@@ -73,6 +78,7 @@ const ToolButton = ({icon, tooltip, onClick, disabled, danger, primary, glow}: T
             onClick={onClick}
             disabled={disabled}
             aria-label={tooltip}
+            data-testid={testId}
             style={{
                 width: 40,
                 height: 40,
@@ -106,7 +112,7 @@ export const MapEditorToolbar = ({
     selectedFeatureCount, onSaveMap, onCancel, onUndo, onRedo,
     onDrawPolygon, onDrawShape, onDrawEmoji, onTrash, onCombine, onSubtract, onSplit, onEditSelectedFeature,
     onPlaceDock, dockPlacementMode, onDrawPath, pathDrawing, onConnectDock, dockAvailable,
-    onDrawPathToDock, onEditPath, editPathEnabled,
+    onDrawPathToDock, onEditPath, editPathEnabled, onDrawBoundaryLine, boundaryDrawing,
 }: MapEditorToolbarProps) => {
     const {colors, displayMode} = useThemeMode();
     const {t} = useTranslation();
@@ -193,6 +199,15 @@ export const MapEditorToolbar = ({
                 tooltip={editPathEnabled ? t('mapEditorToolbar.editPath') : t('mapEditorToolbar.editPathDisabled')}
                 onClick={onEditPath}
                 disabled={!editPathEnabled}
+            />
+        )}
+        {onDrawBoundaryLine && (
+            <ToolButton
+                icon={<BorderVerticleOutlined/>}
+                tooltip={boundaryDrawing ? t('mapBoundary.toolActive') : t('mapBoundary.tool')}
+                onClick={onDrawBoundaryLine}
+                primary={boundaryDrawing}
+                testId="tool-boundary-line"
             />
         )}
         <ShapePickerDropdown onDrawShape={onDrawShape} onDrawEmoji={onDrawEmoji} placement="bottomLeft">

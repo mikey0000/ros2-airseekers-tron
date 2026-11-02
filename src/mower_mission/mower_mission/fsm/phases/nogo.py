@@ -16,7 +16,7 @@ docs/analysis/2026-10-23_obstacle_nogo_options.md).
 from mower_mission import nogo
 from mower_mission.fsm.common import (ACT_BACKUP, ACT_DRIVE, ACT_FOLLOW, ACT_PLAN, ACT_SPIN,
     AreaCursor, CancelActions, DriveCmd, PublishPlan, SUCCEEDED, CONDITIONED_KEY, geo, math,
-    subpath_offsets)  # noqa: F401
+    subpath_offsets, walls)  # noqa: F401
 
 
 class NogoMixin:
@@ -62,7 +62,17 @@ class NogoMixin:
         m = self.mission
         area = m.areas.get(idx, {}) if isinstance(m.areas, dict) else {}
         return [list(o) for o in area.get('obstacles', [])] + \
-            [list(o) for o in m.nogo_extra.get(idx, [])]
+            [list(o) for o in m.nogo_extra.get(idx, [])] + \
+            self._line_holes(area.get('outer') or [])
+
+    def _line_holes(self, outer):
+        """Boundary-line keepouts (walls.area_holes) overlapping the area ``outer``: coverage
+        holes, so the planner cuts its swaths at every line (2026-11-02)."""
+        p = self.p
+        if not p.boundary_lines_enabled:
+            return []
+        return walls.area_holes(self.inputs.boundary_lines, outer,
+                                float(p.boundary_line_keepout_m))
 
     # ---- tick: re-plan trigger, edge-lap detour ----------------------------
     def _nogo_tick(self):

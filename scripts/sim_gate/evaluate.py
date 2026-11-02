@@ -22,7 +22,9 @@ Criteria:
   i  body overhang, plan-relative (round 3): MOWING samples minus the overhang of the planned
      pose they track (lap 0 on driven arcs, row ends, pivot sweeps are planned out) <= 0.10;
      TRANSIT absolute <= 0.40; the absolute side / nose / sweep maxima are reported.
-  b  hard-boundary trips (mission log "BOUNDARY OUT", formerly "HARD BOUNDARY"); PASS: 0.
+  b  hard-boundary trips (mission log "BOUNDARY OUT", formerly "HARD BOUNDARY"), boundary-line
+     crossings included ("BOUNDARY OUT: body crosses boundary line <id>", also counted as
+     line_trips); PASS: 0.
   c  mission reached MOWING_COMPLETE, then docked and charging (sim contacts); PASS: both.
   d  STUCK_NEEDS_HELP entries, sub-paths NOT mowed, costmap-fallback /navigate_to_pose
      transits; PASS: all 0 (FollowPath / Spin aborts are reported, not judged).
@@ -464,7 +466,10 @@ def main(run, world):
 
     # ---- (b) hard boundary
     hb = grep(r'HARD BOUNDARY|BOUNDARY OUT')
+    # boundary lines (virtual walls, 2026-11-02): a line crossing is a BOUNDARY OUT trip whose
+    # reason names the line; counted in trips and separately
     res['criteria']['b'] = {'pass': not hb, 'trips': len(hb),
+                            'line_trips': sum(1 for _t, m in hb if 'boundary line' in m),
                             'lines': ['%.1f %s' % (t, m[:160]) for t, m in hb]
                             + ['%.1f %s' % (t, m[:160]) for t, m in grep(
                                 r'boundary: back inside|retrace ended|retrace aborted|'
@@ -751,7 +756,8 @@ def main(run, world):
     rows = [
         ('a', 'max %s outside (gt), samples > 0.10 m' % C['a']['measure'], '%.3f m, %d' % (
             C['a']['max_m'], C['a']['samples_over'])),
-        ('b', 'hard-boundary trips', '%d' % C['b']['trips']),
+        ('b', 'hard-boundary trips', '%d (%d boundary line)' % (C['b']['trips'],
+                                                                C['b'].get('line_trips', 0))),
         ('c', 'MOWING_COMPLETE / docked / charging', '%s / %s / %s (final %s)' % (
             C['c']['mowing_complete'], C['c']['docked'], C['c']['charging'],
             C['c']['final_state'])),

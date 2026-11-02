@@ -73,6 +73,8 @@ type replaceAreasReq struct {
 	IsNavigationArea []bool           `json:"is_navigation_area"`
 	ChannelJSON      []string         `json:"channel_json"`
 	SettingsJSON     []string         `json:"settings_json"`
+	// "" keeps the stored boundary lines; otherwise the whole new set.
+	BoundaryLinesJSON string `json:"boundary_lines_json"`
 }
 
 type replaceAreasRes struct {
@@ -146,22 +148,80 @@ func replaceMapInternalWithLockWait(ctx context.Context, provider types.IRosProv
 	}
 	defer unlockMapReplacement()
 
-	done, err := replaceAreasAtomic(ctx, provider, req.Areas)
+	linesJSON, err := boundaryLinesJSON(req.BoundaryLines)
+	if err != nil {
+		return err
+	}
+	done, err := replaceAreasAtomic(ctx, provider, req.Areas, linesJSON)
 	if done {
 		return err
 	}
-	return replaceMapSequence(ctx, provider, req.Areas)
+	if err := replaceMapSequence(ctx, provider, req.Areas); err != nil {
+		return err
+	}
+	return setBoundaryLines(ctx, provider, linesJSON)
+}
+
+// emptyBoundaryLinesJSON is the encoding of "no boundary lines".
+var emptyBoundaryLinesJSON = func() string {
+	b, _ := json.Marshal(mowgli.BoundaryLineSet{Version: mowgli.BoundaryLinesVersion, Lines: []mowgli.BoundaryLine{}})
+	return string(b)
+}()
+
+// boundaryLinesJSON encodes the request's boundary lines for the map server;
+// "" (nil lines) means "keep the stored set".
+func boundaryLinesJSON(lines *[]mowgli.BoundaryLine) (string, error) {
+	if lines == nil {
+		return "", nil
+	}
+	set := mowgli.BoundaryLineSet{Version: mowgli.BoundaryLinesVersion, Lines: *lines}
+	if set.Lines == nil {
+		set.Lines = []mowgli.BoundaryLine{}
+	}
+	for i, l := range set.Lines {
+		if len(l.Points) < 2 {
+			return "", fmt.Errorf("replace map: boundary line %d (%q) needs at least 2 points", i+1, l.Name)
+		}
+	}
+	payload, err := json.Marshal(set)
+	if err != nil {
+		return "", fmt.Errorf("replace map: encoding the boundary lines: %w", err)
+	}
+	return string(payload), nil
+}
+
+// setBoundaryLines is the fallback path's boundary-line write (the atomic
+// replace_areas carries them itself). Not best effort: a wall the operator
+// drew and saved must not silently stay unsaved.
+func setBoundaryLines(ctx context.Context, provider types.IRosProvider, linesJSON string) error {
+	if linesJSON == "" {
+		return nil
+	}
+	var res mowgli.SetAreaChannelRes
+	req := mowgli.SetAreaChannelReq{SettingsJSON: linesJSON}
+	err := callMapService(ctx, provider, mowgli.SetBoundaryLinesService, &req, &res, mowgli.SetAreaChannelType)
+	if err != nil && errors.Is(err, foxglove.ErrServiceNotAdvertised) && linesJSON == emptyBoundaryLinesJSON {
+		return nil // a map server without boundary lines: nothing to keep in sync
+	}
+	if err != nil {
+		return fmt.Errorf("replace map: the areas were saved but the boundary lines were NOT: %w", err)
+	}
+	if !res.Success {
+		return fmt.Errorf("replace map: the areas were saved but map_server refused the boundary lines: %s", res.Message)
+	}
+	return nil
 }
 
 // replaceAreasAtomic tries map_server's replace_areas. done=false means the
 // service is not advertised and the caller should use the fallback sequence;
 // any other outcome is final.
-func replaceAreasAtomic(ctx context.Context, provider types.IRosProvider, areas []mowgli.ReplaceMapArea) (bool, error) {
+func replaceAreasAtomic(ctx context.Context, provider types.IRosProvider, areas []mowgli.ReplaceMapArea, linesJSON string) (bool, error) {
 	req := replaceAreasReq{
-		Areas:            make([]mowgli.MapArea, len(areas)),
-		IsNavigationArea: make([]bool, len(areas)),
-		ChannelJSON:      make([]string, len(areas)),
-		SettingsJSON:     make([]string, len(areas)),
+		Areas:             make([]mowgli.MapArea, len(areas)),
+		IsNavigationArea:  make([]bool, len(areas)),
+		ChannelJSON:       make([]string, len(areas)),
+		SettingsJSON:      make([]string, len(areas)),
+		BoundaryLinesJSON: linesJSON,
 	}
 	for i, el := range areas {
 		req.Areas[i] = normalizedArea(el.Area)

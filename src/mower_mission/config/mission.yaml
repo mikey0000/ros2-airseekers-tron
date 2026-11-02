@@ -474,6 +474,12 @@ behavior_tree_node:
     hard_boundary_spot_max: 2          # ... and per spot (excursions within hard_boundary_spot_m)
     hard_boundary_spot_m: 1.0
     hard_boundary_snapshot: true       # base_link check from the mission area snapshot (TRANSIT / MOWING)
+    # boundary lines (virtual walls, 2026-11-02, walls.py; /map_server_node/boundary_lines):
+    # footprint more than boundary_line_trip_m into a line (+- width_m / 2) = a hard-boundary
+    # trip naming the line (retrace); coverage holes of width width_m + boundary_line_keepout_m
+    boundary_lines_enabled: true
+    boundary_line_trip_m: 0.0
+    boundary_line_keepout_m: 0.57      # 2 x (body half width 0.235 + 0.05); = map_server.yaml
     hard_boundary_trail_m: 1.5
     hard_boundary_trail_step_m: 0.05
     hard_boundary_pause_s: 0.5

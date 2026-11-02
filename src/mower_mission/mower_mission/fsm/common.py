@@ -35,6 +35,7 @@ from mower_common.phases import DOCK_PHASES, DOCKED_MOTION_PHASES, MOTION_PHASES
 from mower_mission import body_boundary as bbody
 from mower_mission import geometry as geo
 from mower_mission import path_conditioning as pcond
+from mower_mission import walls
 from mower_mission.resume import AreaCursor, ResumeCursor, absolute_to_local, subpath_offsets
 
 # ---------------------------------------------------------------------------
@@ -525,6 +526,9 @@ class Inputs:
     # 2026-10-23 option C: /obstacle_tracker/nogo_zones (nogo.ZoneSet) + receipt time
     nogo_zones: Any = None
     nogo_stamp: Optional[float] = None
+    # 2026-11-02 boundary lines (virtual walls): /map_server_node/boundary_lines (latched),
+    # [walls.BoundaryLine]; None = never received (no lines known)
+    boundary_lines: Any = None
 
 
 @dataclass
@@ -1040,6 +1044,13 @@ class Params:
     # base_link check (drawn paths) from the mission's own area snapshot in TRANSIT / MOWING
     # (immune to a GUI map reload); ~/outside_m in dock phases / without a snapshot
     hard_boundary_snapshot: bool = True
+    # boundary lines (virtual walls, 2026-11-02, walls.py): the footprint reaching more than
+    # boundary_line_trip_m into a line (centreline +- width_m / 2) is a hard-boundary trip
+    # naming the line (retrace the driven track); coverage plans get each line as a hole of
+    # width width_m + boundary_line_keepout_m (swaths cut at the line)
+    boundary_lines_enabled: bool = True
+    boundary_line_trip_m: float = 0.0
+    boundary_line_keepout_m: float = 0.57     # = mower_map boundary_lines.DEFAULT_KEEPOUT_M
     hard_boundary_trail_m: float = 1.5
     hard_boundary_trail_step_m: float = 0.05
     hard_boundary_pause_s: float = 0.5

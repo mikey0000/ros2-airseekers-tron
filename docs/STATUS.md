@@ -824,3 +824,62 @@ Known limitations from the review, not fixed:
 - Review 10: `plan_recovery` / `worst_outside` count keepout incursion but `_hb_inside` /
   `evaluate` do not. A trip next to a keepout with a corner already in it can leave no
   admissible candidate, which ends in STUCK_NEEDS_HELP.
+
+## Boundary lines (virtual walls) and the no-go zone sheet (2026-11-02, unit-tested; sim gate pending with the integration run)
+
+Owner request: a line the mower must never cross (a drop-off, a flower-bed edge inside an
+area), next to the existing area / no-go polygons. Branch `ws/boundary-lines`.
+
+* **Data model.** `mower_map/boundary_lines.py`: `{id, name, points [[x, y], ...] (map
+  metres), width_m}`; `width_m` 0..2.0 (default 0.0 = the body must not touch the line
+  itself). Wire format `{"version": 1, "lines": [...]}`. Stored in `areas.dat` after the
+  areas (`boundary_lines_version: 1`, `boundary_line_count`, `boundary_line_<k>_id / _name /
+  _points / _width_m`), so the lines share the file's datum stamp and are never re-projected
+  separately; a file without lines stays byte-identical to the upstream format. `clear_map`
+  keeps them.
+* **Services / topics** (`map_server_node`): `~/get_boundary_lines` / `~/set_boundary_lines`
+  (the area-settings service types, JSON in `settings_json`, the whole set);
+  `ReplaceAreas.srv` gained `boundary_lines_json` ('' = keep, the set is swapped in with the
+  areas in the same rebuild + save); latched `~/boundary_lines` (JSON) for the mission;
+  `~/boundary_line_hit` (JSON, every boundary check: the lines the footprint touches, with
+  depth). GUI backend: `Map.boundary_lines` in the polled map, `ReplaceMapReq.boundary_lines`
+  (absent = keep) sent in `replace_areas`, or `set_boundary_lines` after the fallback
+  clear/add sequence.
+* **Hard trip (true line).** Mission guard (`fsm/guards/boundary.py`, `walls.py`): in every
+  hard-boundary phase the footprint box (0.60 / 0.10 / 0.235) at the current pose is tested
+  against each line's centreline +- width_m / 2 (separating-axis depth, so a line between
+  two body points counts). Deeper than `boundary_line_trip_m` (0.0) -> `BOUNDARY OUT: body
+  crosses boundary line <id> "<name>" by N m`, blade off, retrace of the driven track until
+  the body is `hard_boundary_body_clear_m` clear of that line, then the inward move away from
+  the line; counted like any excursion. At START / resume: inward move first, not counted.
+  `boundary_lines_enabled` (true) switches the trip and the coverage holes off.
+* **Planners (thin keepout).** Each line buffered to `width_m + boundary_line_keepout_m`
+  (0.57 = 2 x (body half width 0.235 + 0.05); same default in map_server and mission) is an
+  extra obstacle of every area it overlaps
+  (`areas.with_boundary_lines`, copies like the dock no-go): /keepout_mask, /nav_keepout_mask,
+  the route graph (transits go round, or find no route through a full wall), and the
+  coverage goals (`_nogo_area_holes`, preview too), so swaths are cut at the line.
+  `get_mowing_area` still serves the stored areas (the GUI never sees the keepouts).
+* **GUI.** Map editor tool "Boundary line" (desktop editor toolbar, phone edit cluster):
+  click vertices, double-click / Enter / Finish (>= 2 points), Undo point, Cancel / Escape;
+  red dashed line (#ff1744) with its name; own sheet (name, width 0..2 m, delete). Edits made
+  from the view-mode sheet open the editor with the change pending (Save writes the map).
+* **No-go click fix (owner bug).** A click on a no-go zone opened the mowing-area sheet: the
+  view-mode click hit-tested mowing areas first. `pages/map/utils/mapHitTest.ts` now picks the
+  most specific feature (boundary line within 10 px / 16 px on phones > no-go zone > path >
+  mowing area, smallest polygon when nested). A no-go zone opens its own sheet (name,
+  provenance, area m², delete, edit vertices, "Mow <area>"), also without area settings; an
+  amber outline marks the feature whose sheet is open.
+* **Sim gate.** Criterion b counts line trips (they are BOUNDARY OUT lines) and reports
+  them separately (`line_trips`).
+
+Body clearance is tested, not assumed (gtest `BoundaryLineBody`): soft and hard edge layouts,
+a wall parallel to the rows 0.5 m inside an edge, rows ending at a wall, a full cut; the
+footprint box along every lap, row, turn and driven connector, pivots swept, stays >= 0.05 m
+off the true line. A 0.30 band failed it: the hard layout does not grow holes (laps 0.45 m
+off) and its lap-corner pivot swept the nose corner (0.645 m) across the line. The soft
+layout grows holes by 0.40 and passed at 0.30 too. The masks are robot-centre limits, so the
+0.57 band is also what keeps a Nav2 fallback transit's body off the line. Route graph: a gap
+between a wall and the area edge narrower than the body is never used (test). Not modelled:
+tracking error / leg overshoot at row ends (the trip is the backstop). A line lying
+outside every area is not in the masks (no area to carry it).
