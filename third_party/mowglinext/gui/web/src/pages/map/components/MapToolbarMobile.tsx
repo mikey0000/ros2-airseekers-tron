@@ -183,7 +183,9 @@ export const MapToolbarMobile = ({
         // Above the bottom-nav (zIndex 50) so the nav never paints over it.
         zIndex: 55,
         display: "flex",
-        gap: 8,
+        // 6 px gaps + 10 px side padding: at 390 px the view-mode cluster
+        // (Dock, Undock, Mow / 5 icon buttons) fits two rows.
+        gap: 6,
         // Wrap instead of scrolling sideways (F11): a horizontally scrolled row
         // hid Preview, Manual, Edit Map and More off-screen with nothing but a
         // thin scrollbar to say they existed. The toolbar is anchored at its
@@ -196,7 +198,7 @@ export const MapToolbarMobile = ({
         borderRadius: 18,
         border: colors.glassBorder,
         boxShadow: colors.glassShadow,
-        padding: "8px 12px",
+        padding: "8px 10px",
     };
 
     // The emergency / STOP button is deliberately separated from the tool

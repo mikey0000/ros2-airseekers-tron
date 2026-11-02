@@ -542,8 +542,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // Desktop view-mode toolbar wraps to 1-3 rows; the floating progress and
     // preview cards sit above its measured height instead of a fixed offset
     // (F04: a fixed bottom:84 covered Dock, Edit map and the E-stop).
-    const desktopToolbarRef = useRef<HTMLDivElement>(null);
-    const desktopToolbarHeight = useElementHeight(desktopToolbarRef, !isMobile && !editMap);
+    const [desktopToolbarRef, desktopToolbarHeight] = useElementHeight();
     const desktopCardBottom = 12 + (desktopToolbarHeight || 72) + 12;
     const terrainCollection = useMemo<FeatureCollection>(() => {
         const features: Feature[] = [];

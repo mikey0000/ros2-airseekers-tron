@@ -1,14 +1,17 @@
-import {type RefObject, useEffect, useState} from "react";
+import {useEffect, useState} from "react";
 
 /**
- * Live border-box height of an element (0 until it mounts). Floating map cards
- * use it to sit above a toolbar whose height depends on its wrapped rows.
+ * Live border-box height of an element (0 while it is not mounted), via a
+ * callback ref so it follows the element through remounts: MapPage renders a
+ * loading branch first, and an object ref read once in an effect never saw
+ * the toolbar mount later. Floating map cards use it to sit above a toolbar
+ * whose height depends on its wrapped rows.
  */
-export function useElementHeight(ref: RefObject<HTMLElement | null>, enabled = true): number {
+export function useElementHeight(): [(el: HTMLElement | null) => void, number] {
+    const [el, setEl] = useState<HTMLElement | null>(null);
     const [height, setHeight] = useState(0);
     useEffect(() => {
-        const el = ref.current;
-        if (!enabled || !el) {
+        if (!el) {
             setHeight(0);
             return;
         }
@@ -18,6 +21,6 @@ export function useElementHeight(ref: RefObject<HTMLElement | null>, enabled = t
         const ro = new ResizeObserver(measure);
         ro.observe(el);
         return () => ro.disconnect();
-    }, [ref, enabled]);
-    return height;
+    }, [el]);
+    return [setEl, height];
 }
