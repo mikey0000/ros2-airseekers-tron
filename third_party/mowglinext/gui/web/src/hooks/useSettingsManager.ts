@@ -43,6 +43,7 @@ export type SettingsSection =
     | "irrisense"
     | "remote_access"
     | "connection"
+    | "network"
     | "notifications"
     | "advanced";
 
@@ -316,6 +317,15 @@ export const SECTION_DEFINITIONS: SectionMeta[] = [
         description: "settingsSections.connection.description",
         // No yaml keys: the link choice, BLE token and device live in this
         // browser's localStorage (transport/connectionManager.ts).
+        keys: [],
+    },
+    {
+        id: "network",
+        label: "settingsSections.network.label",
+        icon: "signal",
+        description: "settingsSections.network.description",
+        // No yaml keys: the host's NetworkManager owns the Wi-Fi profiles
+        // (pkg/providers/network_wifi.go); gated on "settings:network".
         keys: [],
     },
     {

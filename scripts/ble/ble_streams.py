@@ -21,7 +21,7 @@ import ble_ws
 log = logging.getLogger("ble_bridge")
 
 METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
-REQUEST_HEADERS = ("content-type", "accept", "if-none-match", "range")
+REQUEST_HEADERS = ("content-type", "accept", "if-none-match", "range", "x-mower-token")
 RESPONSE_HEADERS = ("content-type", "etag", "cache-control", "content-disposition",
                     "last-modified")
 HEAD_DROP_ORDER = ("last-modified", "content-disposition", "cache-control", "etag",

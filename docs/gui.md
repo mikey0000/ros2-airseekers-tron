@@ -101,6 +101,63 @@ with `ble_bridge:=false`) owns `/dev/serial_ble` and forwards to the local backe
 usable. Reconnecting after a drop can take 20-30 s because the module re-advertises slowly.
 Rotate the token from the backend with `POST /api/ble/token/rotate`.
 
+## Wi-Fi setup
+
+Settings → Network (Tron profile only: feature `wifi_setup`, gates `settings:network` and
+`feature:wifi_setup`) shows the mower's Wi-Fi and changes it through the host's NetworkManager:
+current link, available networks with signal and security, join (WPA/WPA2/WPA3-personal or open;
+enterprise and WEP are refused), saved networks with Forget, a band lock (Auto / 2.4 GHz / 5 GHz,
+`802-11-wireless.band` = "" / `bg` / `a`) and power save (`802-11-wireless.powersave` 3 / 2).
+A band or power-save change re-activates the network, so the page drops for a few seconds. The
+live numbers (dBm, bitrates, roams) come from `/wifi/status` (`mower_control/wifi_monitor`);
+NetworkManager supplies the rest.
+
+Backend: `pkg/providers/network_wifi.go` (D-Bus client, `github.com/godbus/dbus/v5`) and
+`pkg/api/network_wifi.go`:
+
+| Route | Auth | What |
+|---|---|---|
+| `GET /api/network/wifi/status` | open | device state, SSID, BSSID, frequency, strength (%), IPv4, saved networks |
+| `GET /api/network/wifi/scan` | open | cached scan list, strongest first |
+| `POST /api/network/wifi/scan` | open | `RequestScan`, waits up to 6 s, then the list |
+| `POST /api/network/wifi/connect` | token | `{ssid, password?, uuid?, hidden?, remember?}`; saved profile → `ActivateConnection`, new → `AddAndActivateConnection` (`remember:false` → `AddAndActivateConnection2` with `persist: memory`) |
+| `POST /api/network/wifi/forget` | token | `{uuid}` → `Settings.Connection.Delete` |
+| `POST /api/network/wifi/band` | token | `{uuid?, band}`; no uuid = the active network |
+| `POST /api/network/wifi/powersave` | token | `{uuid?, enabled}` |
+
+"token" = header `X-Mower-Token` equal to the BLE tunnel token (`GET /api/ble/token`). The page
+sends the token this browser stored for Bluetooth, fetching it first while on Wi-Fi if there is
+none. The BLE bridge forwards the header, so the page works over Bluetooth too, which is the way
+back in when a change leaves the mower on a network the phone is not on. The LAN API is still
+unauthenticated otherwise, and `GET /api/ble/token` is open on the LAN, so the token stops blind
+cross-site posts and casual clicks. It does not stop a client on the LAN that wants in.
+
+Prerequisites on the host:
+
+* The GUI container needs the host system bus: `docker/docker-compose.gui.yml` mounts
+  `/run/dbus/system_bus_socket`. Without it (or with NetworkManager stopped, or no Wi-Fi device)
+  the status route answers `available:false` with a reason and the page says Wi-Fi setup is not
+  available on this host. `WIFI_INTERFACE` pins the device (default: the Wi-Fi device that is
+  activated, else the first one).
+* Polkit: none needed. The GUI image runs as root (no `USER` in `gui/Dockerfile`), and
+  NetworkManager authorises uid 0 without asking polkit (`settings.modify.system`,
+  `network-control` and `wifi.scan` included). A non-root GUI would need a polkit rule granting
+  those three actions to its uid.
+* AppArmor: on a host where Docker confines containers with its `docker-default` profile, the
+  bus refuses every message from the container, even `Hello`. The status route then reports
+  `available:false` with "An AppArmor policy prevents this sender from sending this message"
+  (seen on an Ubuntu dev box). Check on the mower with
+  `docker inspect mower_gui --format '{{.AppArmorProfile}}'` and
+  `cat /sys/module/apparmor/parameters/enabled`. If the profile is `docker-default` and AppArmor
+  is on, the GUI needs a profile that allows D-Bus to NetworkManager, or
+  `security_opt: [apparmor:unconfined]` on `mower_gui`. That is the owner's call, and the compose
+  does not set either.
+
+Dev box: `SIM_GUI_WIFI=1 ./scripts/sim_gui.sh up` mounts the dev machine's bus into the sim GUI.
+That GUI runs as root too, so its token-gated routes would change the dev machine's Wi-Fi; use it
+for status and scan only. The mutating paths are covered by the Go tests with a fake
+NetworkManager (`pkg/providers/network_wifi_test.go`).
+
 ## What the GUI needs from ROS
 
 The GUI never talks DDS; the backend subscribes through foxglove_bridge using

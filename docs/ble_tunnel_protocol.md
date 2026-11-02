@@ -93,7 +93,8 @@ Open request fields: `method` (GET, POST, PUT, PATCH, DELETE; anything else, or 
 `path`, answers `CLOSE {"code":4400}`), `path` (must start with `/api/` or equal
 `/web-build.json`, checked on the part before any `?`; printable ASCII only, no `..` segment;
 anything else answers `HEAD {"status":403}` + `CLOSE` without touching the backend), `headers` (only these are forwarded, lower-case keys: `content-type`,
-`accept`, `if-none-match`, `range`). The bridge adds `Host: 127.0.0.1:4006`,
+`accept`, `if-none-match`, `range`, `x-mower-token`; the last carries the BLE token on the
+GUI routes that change the mower's Wi-Fi, `/api/network/wifi/*`). The bridge adds `Host: 127.0.0.1:4006`,
 `X-Mower-Transport: ble` and `Accept-Encoding: identity`.
 
 Response head: `status` and these response headers when present, lower-case keys:

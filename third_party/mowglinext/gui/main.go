@@ -49,5 +49,8 @@ func main() {
 	} else {
 		log.Printf("notifications: ROS provider %T cannot feed status events", rosProvider)
 	}
-	api.NewAPI(dbProvider, dockerProvider, rosProvider, firmwareProvider, irriSenseProvider, remoteAccessProvider, notificationProvider)
+	// Host Wi-Fi over NetworkManager's D-Bus API; reports unavailable when the
+	// system bus socket is not mounted (docker/docker-compose.gui.yml).
+	wifiProvider := providers.NewNetworkWifiProvider()
+	api.NewAPI(dbProvider, dockerProvider, rosProvider, firmwareProvider, irriSenseProvider, remoteAccessProvider, notificationProvider, wifiProvider)
 }

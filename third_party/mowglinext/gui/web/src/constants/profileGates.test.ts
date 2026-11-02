@@ -44,7 +44,8 @@ const NEW_TRON_GATES = [
 
 // Gates for UI no stock robot has ever shown (additive features).
 const ADDITIVE_GATES = [
-    "/perception", "settings:straight_driving", "feature:area_settings", "feature:rtk_base",
+    "/perception", "settings:straight_driving", "settings:network", "feature:area_settings", "feature:rtk_base",
+    "feature:wifi_setup",
 ];
 
 const STOCK_MODELS = MOWER_MODELS.filter((m) => m.value !== AIRSEEKERS_TRON_PROFILE_ID);

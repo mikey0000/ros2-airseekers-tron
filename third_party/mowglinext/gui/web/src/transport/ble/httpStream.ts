@@ -4,7 +4,7 @@ import {concatBytes, linkError, type StreamHandler, type StreamPort} from "./str
 /** ble_tunnel_protocol.md section 3.1. */
 export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 /** Request headers the bridge forwards; everything else is dropped on the phone already. */
-export const FORWARDED_REQUEST_HEADERS = ["content-type", "accept", "if-none-match", "range"] as const;
+export const FORWARDED_REQUEST_HEADERS = ["content-type", "accept", "if-none-match", "range", "x-mower-token"] as const;
 
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
