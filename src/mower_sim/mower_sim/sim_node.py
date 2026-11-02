@@ -11,7 +11,7 @@ Driver contract reproduced (see docs/simulation.md for the full table):
   sub   /cmd_vel (Twist)                    MCU clamp +-0.3 / +-0.3, 0.06 m/s wheel floor,
                                             0.5 s timeout, wheel lag; /estop_request (Bool)
   pub   /odom 50 Hz, /battery 1 Hz, /mower_base/status 20 Hz, /mower_sensor_info 10 Hz,
-        /estop 10 Hz, /rain + /cutter/height_mm (latched)          [mcu_node]
+        /estop + /hardware_bridge/emergency 10 Hz, /rain + /cutter/height_mm (latched)          [mcu_node]
         /imu/data 50 Hz                                            [wit_node]
         /fix, /fix_status, /vel 10 Hz (RTK fixed)                  [um960_node]
         /stereo_depth/points + /clear_points 5 Hz, sensor QoS      [stereo_depth]
@@ -64,6 +64,8 @@ from tf2_ros import TransformBroadcaster
 from visualization_msgs.msg import Marker, MarkerArray
 
 from mower_interfaces.msg import MowerBaseDevStatus, MowerSensorInfo
+from mower_mcu_driver.safety_relay import emergency_fields
+from mowgli_interfaces.msg import Emergency
 from mower_interfaces.srv import ChargingControl, CutterControl, SetCutterHeight
 
 from .ctrl_rate import CtrlRateKeeper
@@ -280,6 +282,8 @@ class SimNode(Node):
         self.pub_status = P(MowerBaseDevStatus, '/mower_base/status', 10)
         self.pub_sensor = P(MowerSensorInfo, '/mower_sensor_info', 10)
         self.pub_estop = P(Bool, '/estop', 10)
+        # mcu_node's safety relay (review 2026-11-02 H1): the emergency topic is the driver's
+        self.pub_emergency = P(Emergency, '/hardware_bridge/emergency', 10)
         self.pub_rain = P(Bool, '/rain', LATCHED)
         self.pub_height = P(Int16, '/cutter/height_mm', LATCHED)
         self.pub_imu = P(Imu, '/imu/data', 10)
@@ -618,6 +622,11 @@ class SimNode(Node):
         info.right_motor.speed_rpm = int(self.drive.right * 300)
         self.pub_sensor.publish(info)
         self.pub_estop.publish(Bool(data=self.estop_latched))
+        em = Emergency()
+        em.stamp = stamp
+        em.active_emergency, em.latched_emergency, em.lift_warning, em.reason = \
+            emergency_fields(self.estop_latched, self.estop_latched, False)
+        self.pub_emergency.publish(em)
 
         pose = self.drive.pose
         ax, ay = antenna_xy(pose.x, pose.y, pose.yaw, float(self.get_parameter('gps_antenna_x').value),

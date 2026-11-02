@@ -60,7 +60,10 @@ PARAM_DEFAULTS = {
     'emergency_twist_topic': '/cmd_vel_emergency',
     # outputs for the GUI
     'status_topic': '/hardware_bridge/status',
-    'emergency_topic': '/hardware_bridge/emergency',
+    # 2026-11-03 (review H1): mcu_node (mower_mcu_driver/safety_relay.py) publishes
+    # /hardware_bridge/emergency; gui_bridge only feeds /gui/emergency and its stub state
+    # machine from the same inputs. Set a topic here only on a stack without mcu_node.
+    'emergency_topic': '',
     'power_topic': '/hardware_bridge/power',
     'gps_fix_topic': '/gps/fix',
     # /gps/fix (this relay) is GUI-only (foxglove_bridge is its sole subscriber); the GUI
@@ -126,7 +129,7 @@ PARAM_DEFAULTS = {
     'base_frame': 'base_footprint',
     # rates / timeouts
     'status_rate_hz': 5.0,
-    'emergency_rate_hz': 5.0,      # clamped to >= 2 Hz (BT treats >2 s silence as emergency)
+    'emergency_rate_hz': 5.0,      # evaluation + /gui/emergency source rate (>= 2 Hz)
     'power_rate_hz': 2.0,
     'high_level_rate_hz': 1.0,
     'mcu_timeout_s': 1.0,          # /mower_base/status older than this -> MCU not alive
@@ -215,7 +218,8 @@ class GuiBridgeNode(Node):
 
         # ---- publishers -------------------------------------------------
         self._status_pub = self.create_publisher(Status, p['status_topic'], 10)
-        self._emergency_pub = self.create_publisher(Emergency, p['emergency_topic'], 10)
+        self._emergency_pub = self.create_publisher(Emergency, p['emergency_topic'], 10) \
+            if str(p['emergency_topic']) else None
         self._power_pub = self.create_publisher(Power, p['power_topic'], 10)
         self._gps_fix_pub = self.create_publisher(NavSatFix, p['gps_fix_topic'], 10)
         self._gnss_pub = self.create_publisher(GnssStatus, p['gnss_status_topic'], 10)
@@ -680,7 +684,8 @@ class GuiBridgeNode(Node):
         msg.lift_warning = lift
         msg.lift_duration_sec = 0.0
         msg.reason = reason
-        self._emergency_pub.publish(msg)
+        if self._emergency_pub is not None:
+            self._emergency_pub.publish(msg)
         if self._gui_emergency_pub is not None:
             fields = (active, latched, lift, reason)
             changed = fields != self._gui_emergency_last
