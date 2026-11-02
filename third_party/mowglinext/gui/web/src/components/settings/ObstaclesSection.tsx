@@ -3,6 +3,7 @@ import { Alert, Card, Col, Form, InputNumber, Row, Switch, Typography } from "an
 import { useTranslation } from "react-i18next";
 import { parseBoolish } from "../../utils/settingsValues.ts";
 import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
+import { useProfileGates } from "../../hooks/useProfileGates.ts";
 
 const { Paragraph } = Typography;
 
@@ -32,6 +33,9 @@ type Props = {
  * All keys live in mowgli_robot.yaml (sparse over template) and are injected
  * into map server/Nav2/coverage params at launch — changes need a ROS2 restart,
  * except obstacle_auto_promote, which the backend pushes live to the tracker.
+ * Fields the robot profile hides or does not use are left out, and so is a
+ * card left without fields; the root-zone tip only names the LiDAR and the
+ * drawn obstacle margin where the robot has them.
  */
 export const ObstaclesSection: React.FC<Props> = ({
     values,
@@ -42,6 +46,16 @@ export const ObstaclesSection: React.FC<Props> = ({
     defaults,
 }) => {
     const { t } = useTranslation();
+    const { isVisible, isSettingFieldHidden } = useProfileGates();
+    const shown = (key: string) => !isSettingFieldHidden(key);
+    const anyShown = (keys: readonly string[]) => keys.some(shown);
+    const marginKeys = [
+        "obstacle_inflation_radius", "max_obstacle_avoidance_distance", "obstacle_margin",
+        "obstacle_clearance_margin", "obstacle_detection_range_m", "obstacle_wait_timeout_s",
+    ] as const;
+    const rootZoneHint = isVisible("feature:lidar") && shown("obstacle_margin")
+        ? t("settingsObstacles.rootZoneHintDescription")
+        : t("settingsObstacles.rootZoneHintDescriptionDrawOnly");
     const boolSetting = (key: string) => parseBoolish(values[key] ?? defaults?.[key]) ?? false;
     const fieldLabel = (key: string, label: React.ReactNode) => (
         <SettingFieldLabel
@@ -59,10 +73,11 @@ export const ObstaclesSection: React.FC<Props> = ({
                 type="info"
                 showIcon
                 message={t("settingsObstacles.rootZoneHintTitle")}
-                description={t("settingsObstacles.rootZoneHintDescription")}
+                description={rootZoneHint}
                 style={{ marginBottom: 16 }}
             />
 
+            {shown("obstacle_auto_promote") && (
             <Card size="small" title={t("settingsObstacles.autoMarkTitle")} style={{ marginBottom: 16 }}>
                 <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
                     {t("settingsObstacles.autoMarkDescription")}
@@ -77,7 +92,9 @@ export const ObstaclesSection: React.FC<Props> = ({
                     </Form.Item>
                 </Form>
             </Card>
+            )}
 
+            {shown("dig_obstacle_enabled") && (
             <Card size="small" title={t("settingsObstacles.digKeepouts")} style={{ marginBottom: 16 }}>
                 <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
                     {t("settingsObstacles.digKeepoutsDescription")}
@@ -92,14 +109,17 @@ export const ObstaclesSection: React.FC<Props> = ({
                     </Form.Item>
                 </Form>
             </Card>
+            )}
 
             {/* Avoidance margins */}
+            {anyShown(marginKeys) && (
             <Card size="small" title={t("settingsObstacles.avoidanceMargins")} style={{ marginBottom: 16 }}>
                 <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
                     {t("settingsObstacles.avoidanceMarginsDescription")}
                 </Paragraph>
                 <Form layout="vertical" size="small">
                     <Row gutter={[16, 0]}>
+                        {shown("obstacle_inflation_radius") && (
                         <Col xs={12} sm={8}>
                             <Form.Item
                                 label={fieldLabel("obstacle_inflation_radius", t("settingsObstacles.inflationRadius"))}
@@ -113,6 +133,8 @@ export const ObstaclesSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("max_obstacle_avoidance_distance") && (
                         <Col xs={12} sm={8}>
                             <Form.Item
                                 label={fieldLabel("max_obstacle_avoidance_distance", t("settingsObstacles.maxDetourDistance"))}
@@ -126,6 +148,8 @@ export const ObstaclesSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("obstacle_margin") && (
                         <Col xs={12} sm={8}>
                             <Form.Item
                                 label={fieldLabel("obstacle_margin", t("settingsObstacles.drawnObstacleMargin"))}
@@ -139,8 +163,10 @@ export const ObstaclesSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                     </Row>
                     <Row gutter={[16, 0]}>
+                        {shown("obstacle_clearance_margin") && (
                         <Col xs={12} sm={8}>
                             <Form.Item
                                 label={fieldLabel("obstacle_clearance_margin", t("settingsObstacles.clearanceMargin"))}
@@ -154,6 +180,8 @@ export const ObstaclesSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("obstacle_detection_range_m") && (
                         <Col xs={12} sm={8}>
                             <Form.Item
                                 label={fieldLabel("obstacle_detection_range_m", t("settingsObstacles.detectionRange"))}
@@ -167,6 +195,8 @@ export const ObstaclesSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("obstacle_wait_timeout_s") && (
                         <Col xs={12} sm={8}>
                             <Form.Item
                                 label={fieldLabel("obstacle_wait_timeout_s", t("settingsObstacles.waitTimeout"))}
@@ -180,17 +210,21 @@ export const ObstaclesSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                     </Row>
                 </Form>
             </Card>
+            )}
 
             {/* Approach slowdown */}
+            {shown("obstacle_slowdown_ratio") && (
             <Card size="small" title={t("settingsObstacles.approachSlowdown")} style={{ marginBottom: 16 }}>
                 <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
                     {t("settingsObstacles.approachSlowdownDescription")}
                 </Paragraph>
                 <Form layout="vertical" size="small">
                     <Row gutter={[16, 0]}>
+                        {shown("obstacle_slowdown_ratio") && (
                         <Col xs={12} sm={8}>
                             <Form.Item
                                 label={fieldLabel("obstacle_slowdown_ratio", t("settingsObstacles.slowdownRatio"))}
@@ -204,9 +238,11 @@ export const ObstaclesSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                     </Row>
                 </Form>
             </Card>
+            )}
         </div>
     );
 };

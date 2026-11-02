@@ -8,7 +8,7 @@ import { getQuaternionFromHeading } from "../utils/map.tsx";
 import { ContentType } from "../api/Api.ts";
 import { valuesMatch } from "../utils/settingsValues.ts";
 import { useProfileGates } from "./useProfileGates.ts";
-import { isGateId, isGateVisible } from "../constants/profileGates.ts";
+import { isGateId, isGateVisible, isProfileSettingFieldHidden } from "../constants/profileGates.ts";
 import type { RobotProfile } from "../constants/robotProfiles.ts";
 
 /** A section that saves outside mowgli_robot.yaml but wants the page's Save button. */
@@ -52,6 +52,12 @@ export type SectionMeta = {
     icon: string;
     description: string;
     keys: string[];
+    /**
+     * The section renders nothing but its keys' fields: it is left out for a
+     * robot that hides every one of them (isProfileSettingFieldHidden), rather
+     * than showing an empty page.
+     */
+    fieldsOnly?: boolean;
 };
 
 export const SECTION_DEFINITIONS: SectionMeta[] = [
@@ -240,6 +246,7 @@ export const SECTION_DEFINITIONS: SectionMeta[] = [
         label: "settingsSections.navigation.label",
         icon: "compass",
         description: "settingsSections.navigation.description",
+        fieldsOnly: true,
         keys: [
             "xy_goal_tolerance", "yaw_goal_tolerance", "coverage_xy_tolerance",
             "progress_timeout_sec",
@@ -331,11 +338,16 @@ export const SECTION_DEFINITIONS: SectionMeta[] = [
  * Sections listed in the Settings nav. A section gated by the robot profile
  * ("settings:<id>" in constants/profileGates.ts) is left out for a robot
  * without the feature, or for everyone while the profile is loading
- * (`profile === null`). Its keys stay claimed by SECTION_DEFINITIONS, so they
- * never leak into AdvancedSection's free-form editor.
+ * (`profile === null`). So is a `fieldsOnly` section whose every field the
+ * robot hides. Its keys stay claimed by SECTION_DEFINITIONS, so they never leak
+ * into AdvancedSection's free-form editor.
  */
 export function visibleSections(profile: RobotProfile | null): SectionMeta[] {
     return SECTION_DEFINITIONS.filter((s) => {
+        if (s.fieldsOnly && profile !== null
+            && s.keys.every((key) => isProfileSettingFieldHidden(profile, key))) {
+            return false;
+        }
         const gate = `settings:${s.id}`;
         if (!isGateId(gate)) return true;
         return profile !== null && isGateVisible(profile, gate);
@@ -346,7 +358,7 @@ export const useSettingsManager = () => {
     const { t } = useTranslation();
     const guiApi = useApi();
     const { notification } = App.useApp();
-    const { profile, loading: profileLoading, isSettingKeyHidden } = useProfileGates();
+    const { profile, loading: profileLoading, isSettingKeyHidden, isSettingFieldHidden } = useProfileGates();
     const sections = useMemo(
         () => visibleSections(profileLoading ? null : profile),
         [profile, profileLoading],
@@ -804,6 +816,8 @@ export const useSettingsManager = () => {
         sections,
         /** Settings key the active robot does not use; sections skip its field. */
         isSettingKeyHidden,
+        /** Settings field the active robot does not render (hidden or unused key). */
+        isSettingFieldHidden,
         values: localValues,
         savedValues,
         defaults,

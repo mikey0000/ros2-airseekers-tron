@@ -3,6 +3,7 @@ import {useRobotProfile} from "./useRobotProfile.ts";
 import {
     type GateId,
     isGateVisible,
+    isProfileSettingFieldHidden,
     isProfileSettingKeyHidden,
 } from "../constants/profileGates.ts";
 import type {RobotProfile} from "../constants/robotProfiles.ts";
@@ -24,6 +25,11 @@ export type ProfileGates = {
     isVisibleStrict: (id: GateId) => boolean;
     /** Settings key this robot does not use (its own list + missing features). */
     isSettingKeyHidden: (key: string) => boolean;
+    /**
+     * Settings field a form should not render on this robot: hidden keys plus
+     * keys nothing on the robot reads (constants/paramBindings.ts).
+     */
+    isSettingFieldHidden: (key: string) => boolean;
 };
 
 /** Profile gates of the active robot. See constants/profileGates.ts. */
@@ -38,7 +44,11 @@ export function useProfileGates(): ProfileGates {
         (key: string) => isProfileSettingKeyHidden(profile, key),
         [profile],
     );
-    return {profile, loading, isVisible, isVisibleStrict, isSettingKeyHidden};
+    const isSettingFieldHidden = useCallback(
+        (key: string) => isProfileSettingFieldHidden(profile, key),
+        [profile],
+    );
+    return {profile, loading, isVisible, isVisibleStrict, isSettingKeyHidden, isSettingFieldHidden};
 }
 
 /** `true` when gate `id` is visible for the active robot (stock while loading). */

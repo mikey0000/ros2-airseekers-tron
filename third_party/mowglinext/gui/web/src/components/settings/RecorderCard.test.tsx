@@ -68,6 +68,17 @@ describe("RecorderCard", () => {
         expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("false");
     });
 
+    it("shows one line and no switch when the robot runs no recorder", async () => {
+        callCreateMock.mockResolvedValue({ data: { success: false, available: false, message: "" }, error: null });
+        render(<RecorderCard />);
+
+        expect(await screen.findByText("settingsRecorder.notRunning")).toBeTruthy();
+        expect(screen.queryByRole("switch")).toBeNull();
+        expect(screen.queryByText("settingsRecorder.unreachable")).toBeNull();
+        // Read once on mount, not polled.
+        expect(callCreateMock).toHaveBeenCalledTimes(1);
+    });
+
     it("shows an alert when the recorder is unreachable", async () => {
         callCreateMock.mockResolvedValue({ data: null, error: { error: "service not available" } });
         render(<RecorderCard />);

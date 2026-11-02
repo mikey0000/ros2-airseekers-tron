@@ -1,5 +1,6 @@
 import {useTranslation} from "react-i18next";
 import {useThemeMode} from "../../theme/ThemeContext.tsx";
+import {useProfileGates} from "../../hooks/useProfileGates.ts";
 
 /**
  * Right-side live-preview panel for the Settings page.
@@ -181,6 +182,11 @@ function SwathsPreview({values}: {values: Record<string, unknown>}) {
 function BatteryPreview({values}: {values: Record<string, unknown>}) {
   const {t} = useTranslation();
   const {colors} = useThemeMode();
+  // Leave out what the robot does not use (no voltage thresholds or critical
+  // level on a robot that reports its own percentage), as the section does.
+  const {isSettingFieldHidden} = useProfileGates();
+  const showVoltages = !isSettingFieldHidden("battery_full_voltage") || !isSettingFieldHidden("battery_empty_voltage");
+  const showCritical = !isSettingFieldHidden("battery_critical_percent");
   const full = m(values.battery_full_voltage, 28.5);
   const empty = m(values.battery_empty_voltage, 24.0);
   const fullPct = m(values.battery_full_percent, 95);
@@ -204,18 +210,24 @@ function BatteryPreview({values}: {values: Record<string, unknown>}) {
           background: `linear-gradient(90deg, ${colors.danger}, ${colors.amber} 35%, ${colors.accent} 70%)`,
           opacity: 0.45,
         }}/>
-        {[criticalReturn, lowReturn].map((pct, i) => (
-          <div key={i} style={{
-            position: 'absolute', left: `${pct}%`, top: -4, bottom: -4,
-            width: 1.5, background: i === 0 ? colors.danger : colors.amber,
+        {showCritical && (
+          <div style={{
+            position: 'absolute', left: `${criticalReturn}%`, top: -4, bottom: -4,
+            width: 1.5, background: colors.danger,
           }}/>
-        ))}
+        )}
         <div style={{
-          position: 'absolute', left: `${criticalReturn}%`, top: -16, fontSize: 9, color: colors.danger,
-          transform: 'translateX(-50%)',
-        }}>
-          {criticalReturn}%
-        </div>
+          position: 'absolute', left: `${lowReturn}%`, top: -4, bottom: -4,
+          width: 1.5, background: colors.amber,
+        }}/>
+        {showCritical && (
+          <div style={{
+            position: 'absolute', left: `${criticalReturn}%`, top: -16, fontSize: 9, color: colors.danger,
+            transform: 'translateX(-50%)',
+          }}>
+            {criticalReturn}%
+          </div>
+        )}
         <div style={{
           position: 'absolute', left: `${lowReturn}%`, bottom: -16, fontSize: 9, color: colors.amber,
           transform: 'translateX(-50%)',
@@ -224,10 +236,14 @@ function BatteryPreview({values}: {values: Record<string, unknown>}) {
         </div>
       </div>
       <div style={{fontSize: 11, color: colors.textDim, marginTop: 22, lineHeight: 1.5}}>
-        {t("settingsPreview.batteryVoltageLine", {
-          empty: empty.toFixed(2), full: full.toFixed(2), fullPct,
-        })}{" "}
-        {t("settingsPreview.batteryReturnLine", {low: lowReturn, critical: criticalReturn})}
+        {showVoltages && <>
+          {t("settingsPreview.batteryVoltageLine", {
+            empty: empty.toFixed(2), full: full.toFixed(2), fullPct,
+          })}{" "}
+        </>}
+        {showCritical
+          ? t("settingsPreview.batteryReturnLine", {low: lowReturn, critical: criticalReturn})
+          : t("settingsPreview.batteryReturnLineNoCritical", {low: lowReturn, full: fullPct})}
       </div>
     </div>
   );

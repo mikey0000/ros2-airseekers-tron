@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { useThemeMode } from "../../theme/ThemeContext.tsx";
 import { usePower } from "../../hooks/usePower.ts";
 import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
-import { useRobotProfile } from "../../hooks/useRobotProfile.ts";
+import { useProfileGates } from "../../hooks/useProfileGates.ts";
 
 const { Text, Paragraph } = Typography;
 
@@ -131,15 +131,21 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
         />
     );
 
+    // Fields the robot profile hides or does not use are left out (a robot
+    // that reports its own percentage has no use for voltage thresholds).
+    const { profile, isSettingFieldHidden } = useProfileGates();
+    const shown = (key: string) => !isSettingFieldHidden(key);
+    const voltageKeys = ["battery_full_voltage", "battery_empty_voltage", "battery_critical_voltage"];
+    const showVoltages = voltageKeys.some(shown);
     // Gauge window: yaml value, else the robot profile's thresholds, else the
     // historical fallbacks.
-    const { profile } = useRobotProfile();
     const fullV = values.battery_full_voltage ?? profile.battery.fullV ?? 28.5;
     const emptyV = values.battery_empty_voltage ?? profile.battery.emptyV ?? 24.0;
     const criticalV = values.battery_critical_voltage ?? profile.battery.criticalV ?? 23.0;
 
     return (
         <div>
+            {showVoltages && (
             <Card size="small" style={{ marginBottom: 16 }}>
                 <Space direction="vertical" size={12} style={{ width: "100%" }}>
                     <div>
@@ -174,6 +180,7 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                     {/* Voltage thresholds */}
                     <Form layout="vertical" size="small">
                         <Row gutter={[16, 0]}>
+                            {shown("battery_full_voltage") && (
                             <Col xs={8}>
                                 <Form.Item
                                     label={fieldLabel("battery_full_voltage", <Text style={{ color: "#52c41a", fontSize: 12 }}>{t("settingsBattery.fullVoltage")}</Text>)}
@@ -187,6 +194,8 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                     />
                                 </Form.Item>
                             </Col>
+                            )}
+                            {shown("battery_empty_voltage") && (
                             <Col xs={8}>
                                 <Form.Item
                                     label={fieldLabel("battery_empty_voltage", <Text style={{ color: "#fa8c16", fontSize: 12 }}>{t("settingsBattery.emptyVoltage")}</Text>)}
@@ -200,6 +209,8 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                     />
                                 </Form.Item>
                             </Col>
+                            )}
+                            {shown("battery_critical_voltage") && (
                             <Col xs={8}>
                                 <Form.Item
                                     label={fieldLabel("battery_critical_voltage", <Text style={{ color: "#f5222d", fontSize: 12 }}>{t("settingsBattery.criticalVoltage")}</Text>)}
@@ -213,15 +224,18 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                     />
                                 </Form.Item>
                             </Col>
+                            )}
                         </Row>
                     </Form>
                 </Space>
             </Card>
+            )}
 
             {/* Low-battery action + charge limit (Tron mission node) */}
             <Card size="small" title={t("settingsBattery.chargingBehaviour")} style={{ marginBottom: 16 }}>
                 <Form layout="vertical" size="small">
                     <Row gutter={[16, 0]}>
+                        {shown("battery_low_action") && (
                         <Col xs={12}>
                             <Form.Item
                                 label={fieldLabel("battery_low_action", <Text style={{ fontSize: 12 }}>{t("settingsBattery.lowAction")}</Text>)}
@@ -237,6 +251,8 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("battery_max_charge_percent") && (
                         <Col xs={12}>
                             <Form.Item
                                 label={fieldLabel("battery_max_charge_percent", <Text style={{ color: "#52c41a", fontSize: 12 }}>{t("settingsBattery.maxCharge")}</Text>)}
@@ -250,8 +266,10 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                     </Row>
                     <Row gutter={[16, 0]}>
+                        {shown("return_home_on_incomplete") && (
                         <Col xs={24}>
                             <Form.Item
                                 label={fieldLabel("return_home_on_incomplete", <Text style={{ fontSize: 12 }}>{t("settingsBattery.returnHomeOnIncomplete")}</Text>)}
@@ -263,6 +281,7 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                     </Row>
                 </Form>
             </Card>
@@ -271,6 +290,7 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
             <Card size="small" title={t("settingsBattery.percentageThresholds")} style={{ marginBottom: 16 }}>
                 <Form layout="vertical" size="small">
                     <Row gutter={[16, 0]}>
+                        {shown("battery_full_percent") && (
                         <Col xs={8}>
                             <Form.Item
                                 label={fieldLabel("battery_full_percent", <Text style={{ color: "#52c41a", fontSize: 12 }}>{t("settingsBattery.resumeAbove")}</Text>)}
@@ -284,6 +304,8 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("battery_low_percent") && (
                         <Col xs={8}>
                             <Form.Item
                                 label={fieldLabel("battery_low_percent", <Text style={{ color: "#fa8c16", fontSize: 12 }}>{t("settingsBattery.lowDock")}</Text>)}
@@ -297,6 +319,8 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("battery_critical_percent") && (
                         <Col xs={8}>
                             <Form.Item
                                 label={fieldLabel("battery_critical_percent", <Text style={{ color: "#f5222d", fontSize: 12 }}>{t("settingsBattery.critical")}</Text>)}
@@ -310,8 +334,11 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                     </Row>
+                    {(shown("battery_critical_recovery_percent") || shown("battery_manual_resume_percent")) && (
                     <Row gutter={[16, 0]}>
+                        {shown("battery_critical_recovery_percent") && (
                         <Col xs={8}>
                             <Form.Item
                                 label={fieldLabel("battery_critical_recovery_percent", <Text style={{ color: "#52c41a", fontSize: 12 }}>{t("settingsBattery.criticalRecovery")}</Text>)}
@@ -325,6 +352,8 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("battery_manual_resume_percent") && (
                         <Col xs={8}>
                             <Form.Item
                                 label={fieldLabel("battery_manual_resume_percent", <Text style={{ color: "#1677ff", fontSize: 12 }}>{t("settingsBattery.manualResume")}</Text>)}
@@ -338,7 +367,9 @@ export const BatterySection: React.FC<Props> = ({ values, onChange, isOverridden
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                     </Row>
+                    )}
                 </Form>
             </Card>
         </div>
