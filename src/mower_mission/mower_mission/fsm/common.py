@@ -512,6 +512,8 @@ class Inputs:
     tilt_pitch_deg: Optional[float] = None
     tilt_axis: str = ''
     tilt_stamp: Optional[float] = None
+    # wheel odometry position (/odom, x, y; boundary_recover_slip_check): distance only
+    wheel_xy: Optional[tuple] = None
     # 2026-10-09 /localization/status (mower_localization localization_monitor, latched
     # JSON): state ok|degraded|lost + reason; loc_stamp = receipt time (None = never seen)
     loc_state: str = ''
@@ -1093,6 +1095,37 @@ class Params:
     hard_boundary_entry_m: float = 0.02
     hard_boundary_jump_m: float = 1.0
     hard_boundary_jump_hold_s: float = 2.0
+    # --- boundary recovery on a side slope (field 2026-11-02, area edge, 8-12 deg roll: the
+    # lining-up pivot swung the nose from 0.43 to 0.69 m out, the retrace / inward moves slid
+    # downhill on spinning wheels, STUCK_NEEDS_HELP named the stale trip origin).
+    # boundary_recover_footprint_plan (body mode): before every recovery motion the footprint
+    # is simulated for reverse / forward straight, reverse / forward arcs (inner wheel
+    # >= hard_boundary_min_inner_mps), pivots both ways; the worst-corner outside distance
+    # (raw, no per-kind limits; keepouts count) must never exceed the current one by more
+    # than _max_worsen_m (a pivot: never at all) and must end lower; the lowest end wins
+    # (reverse gets _reverse_bias_m credit). Linear moves _move_m, pivots _pivot_rad, at
+    # most _max_moves motions per excursion, a motion whose live worst corner exceeds the
+    # start + _max_worsen_m is cut and re-planned. false = the old straight move / retrace /
+    # inward moves.
+    boundary_recover_footprint_plan: bool = True
+    boundary_recover_max_worsen_m: float = 0.05
+    boundary_recover_move_m: float = 0.30
+    boundary_recover_pivot_rad: float = 0.35
+    boundary_recover_max_moves: int = 4
+    boundary_recover_reverse_bias_m: float = 0.02
+    # boundary_recover_slip_check: every recovery motion compares the wheel odometry distance
+    # (Inputs.wheel_xy) with the map pose displacement while RTK is fixed; wheel > _ratio x
+    # real after >= _min_m of wheel = wheel slip: the motion stops, the next-best planned
+    # candidate is tried once, then STUCK_NEEDS_HELP (the slip_detector stays suppressed
+    # during the recovery: this is its local replacement). false = no slip check.
+    boundary_recover_slip_check: bool = True
+    boundary_recover_slip_ratio: float = 3.0
+    boundary_recover_slip_min_m: float = 0.3
+    # |roll| above this (fresh /tilt/status) in soft edge_mode: the front corners get the
+    # side limit (hard_boundary_body_soft_side_m) instead of the convex-bend allowance
+    # hard_boundary_body_soft_front_m, so an edge lap on a side slope does not run the nose
+    # past the edge. Logged once per episode. 0 = off.
+    edge_slope_roll_deg: float = 8.0
     # --- Spin drift (field 2026-10-21 07:05:32: a 64 deg route-corner Spin slid 0.40 m on the
     # west-edge slope, then the drive out tripped the boundary). base_link more than
     # spin_drift_m from where a pivot Spin started: cancel it, log, re-plan the approach

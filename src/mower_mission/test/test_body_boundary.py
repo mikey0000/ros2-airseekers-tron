@@ -113,7 +113,8 @@ def test_nose_trip_reverses_0_3_straight_slowly_then_resumes():
 
 
 def test_side_drift_not_fixed_by_the_straight_move_falls_back_to_the_retrace():
-    h = mowing_h([line(1, 0, 4, 0), line(1, 3, 4, 3)], (1.0, 0.0, 0.0))
+    h = mowing_h([line(1, 0, 4, 0), line(1, 3, 4, 3)], (1.0, 0.0, 0.0),
+                 boundary_recover_footprint_plan=False)      # the pre-2026-11-02 recovery
     for k in range(1, 30):           # drift out sideways while driving east
         feed(h, (1.0 + 0.05 * k, -0.01 * k, 0.0))     # lateral slide
         h.tick()
@@ -200,7 +201,8 @@ def test_three_bumper_hits_within_a_metre_skip_the_stretch():
 
 
 def test_side_trip_reverses_onto_the_planned_leg_toward_the_interior():
-    h = mowing_h([line(0.5, 0, 4.5, 0, n=41), line(1, 3, 4, 3)], (0.5, 0.0, 0.0))
+    h = mowing_h([line(0.5, 0, 4.5, 0, n=41), line(1, 3, 4, 3)], (0.5, 0.0, 0.0),
+                 boundary_recover_footprint_plan=False)      # the pre-2026-11-02 recovery
     x, y = 0.5, 0.0
     while h.fsm._hb is None and x < 3.0:      # lap 0 on the line, sliding out sideways
         x, y = x + 0.05, y - 0.01
@@ -471,3 +473,182 @@ def test_back_off_never_reverses_the_body_over_its_limit():
     assert ev['excess'] < 0.0
     feed(h, (-0.12, 2.0, 0.0))                                   # no room: no back-off
     assert h.fsm._safe_backoff(0.30) == 0.0
+
+
+# ------------------------------------------- side-slope recovery (field 2026-11-02)
+
+FIELD_POSE = (-6.455, -1.800, math.radians(106.0))
+FIELD_PTS = bb.body_points(0.60, 0.12, 0.235)
+
+
+def field_edge():
+    """The area edge at the 2026-11-02 trip, reconstructed: base_link 0.136 m out, the edge
+    veering 4.4 deg right of the heading (nose 0.18, front_left 0.42, rear_left 0.36 out),
+    the area on the right."""
+    x0, y0, yaw = FIELD_POSE
+    a = yaw - math.atan(0.077)
+    d, r = (math.cos(a), math.sin(a)), (math.cos(a - math.pi / 2), math.sin(a - math.pi / 2))
+    ex, ey = x0 + 0.136 * r[0], y0 + 0.136 * r[1]
+    p0, p1 = (ex - 20 * d[0], ey - 20 * d[1]), (ex + 20 * d[0], ey + 20 * d[1])
+    return [p0, p1, (p1[0] + 20 * r[0], p1[1] + 20 * r[1]), (p0[0] + 20 * r[0], p0[1] + 20 * r[1])]
+
+
+def test_field_geometry_rejects_the_outward_pivot_and_turns_the_nose_inward():
+    poly = field_edge()
+    outs = bb.evaluate(FIELD_POSE, [poly], SOFT, FIELD_PTS)['outs']
+    assert abs(outs['front_left'] - 0.416) < 0.01 and abs(outs['rear_left'] - 0.361) < 0.01
+    cur = bb.worst_outside(FIELD_POSE, [poly], FIELD_PTS)[1]
+    mo = bb.candidate_motions(0.10, 0.2, 0.3, 0.30, 0.35)
+    # the field's lining-up pivot (wz +0.3) swings the nose out: never admissible
+    piv = bb.simulate(FIELD_POSE, *mo['pivot_left'])
+    assert max(bb.worst_outside(q, [poly], FIELD_PTS)[1] for q in piv) > cur + 0.15
+    rows = bb.plan_recovery(FIELD_POSE, [poly], mo, 0.05, points=FIELD_PTS)
+    names = [r[0] for r in rows]
+    assert rows and 'pivot_left' not in names and 'forward_arc_left' not in names
+    assert 'reverse_arc_left' not in names                    # reversing CCW swings the nose out
+    best = rows[0]
+    assert best[2] < 0.0 and best[4] < cur - 0.05             # turns the nose in, lowers the worst
+    assert all(r[5] <= cur + 0.05 + 1e-9 for r in rows)
+    assert all(r[5] <= cur + 1e-6 for r in rows if r[1] == 0.0)   # pivots never worsen
+    # forward moves off: the best reverse candidate
+    rev = bb.plan_recovery(FIELD_POSE, [poly], mo, 0.05, points=FIELD_PTS,
+                           exclude=('forward', 'forward_arc_left', 'forward_arc_right'))
+    assert rev and rev[0][1] < 0.0
+
+
+def slide_out(h, x=0.5, y=0.0):
+    """Lap 0 on the y = 0 edge, sliding out sideways until the boundary trips."""
+    while h.fsm._hb is None and x < 3.0:
+        x, y = x + 0.05, y - 0.012
+        feed(h, (x, y, 0.0))
+        h.tick()
+    assert h.fsm._hb is not None
+
+
+def lap0_h(**params):
+    return mowing_h([line(0.5, 0, 4.5, 0, n=41), line(1, 3, 4, 3)], (0.5, 0.0, 0.0), **params)
+
+
+def test_planned_recovery_never_worsens_the_worst_corner_and_resumes():
+    h = lap0_h()
+    slide_out(h)
+    w0 = bb.worst_outside(h.fsm.inputs.pose, h.fsm._region())[1]
+    peak = w0
+    for _ in range(200):
+        if h.fsm._hb is None:
+            break
+        integrate(h, max_ticks=1)
+        peak = max(peak, bb.worst_outside(h.fsm.inputs.pose, h.fsm._region())[1])
+    assert h.fsm._hb is None and h.name == 'MOWING'
+    assert peak <= w0 + 0.05 + 1e-6
+    assert bb.worst_outside(h.fsm.inputs.pose, h.fsm._region())[1] < w0
+
+
+def slip_h(**params):
+    """A row-end nose trip (several admissible candidates) with RTK fixed, rolled 10 deg."""
+    h = mowing_h([line(1, 2, 4.9, 2, n=41), line(1, 3, 4, 3)], (1.0, 2.0, 0.0), **params)
+    h.fsm.inputs.fix_type = h.fsm.p.rtk_fix_type
+    h.fsm.inputs.tilt_roll_deg, h.fsm.inputs.tilt_stamp = 10.4, h.t
+    h.fsm.inputs.wheel_xy = (0.0, 0.0)
+    x = 1.0
+    while h.fsm._hb is None and x < 4.9:
+        x += 0.05
+        feed(h, (x, 2.0, 0.0))
+        h.tick()
+    assert h.fsm._hb is not None
+    return h
+
+
+def spin_wheels(h, ticks, creep=0.002):
+    """The wheels turn at the commanded speed, the map pose barely moves (wheel slip)."""
+    m = h.mark()
+    for _ in range(ticks):
+        if h.fsm._hb is None:
+            break
+        h.tick()
+        dc = h.since(m, f.DriveCmd)
+        v = abs(dc[-1].linear) if dc else 0.0
+        wx, wy = h.fsm.inputs.wheel_xy
+        h.fsm.inputs.wheel_xy = (wx + max(v, 0.03) * 0.1, wy)
+        h.fsm.inputs.tilt_stamp = h.t
+        x, y, yaw = h.fsm.inputs.pose
+        feed(h, (x, y - creep, yaw))          # sideways creep along the edge
+    return h.since(m, f.Log)
+
+
+def test_wheel_slip_aborts_tries_the_next_candidate_once_then_needs_help_at_the_pose():
+    h = slip_h()
+    origin = h.fsm._hb['origin']
+    logs = [e.text for e in spin_wheels(h, 400, creep=0.001)]
+    slips = [t for t in logs if 'wheel slip on slope (roll 10 deg)' in t]
+    moves = [t for t in logs if 'recovery move' in t and 'planned' in t]
+    assert h.name == 'STUCK_NEEDS_HELP' and h.fsm._hb is None
+    assert len(moves) == 2 and len(slips) >= 2                # first + next-best, then help
+    x, y = h.fsm.inputs.pose[:2]
+    assert abs(y - origin[1]) > 0.04                           # it slid: origin is stale
+    sx, sy = (float(v) for v in h.fsm.sub_state.split('(')[1].rstrip(')').split(','))
+    assert abs(sx - x) < 0.01 and abs(sy - y) < 0.01           # the pose when it gave up
+    assert any('STUCK_NEEDS_HELP: wheel slip on slope' in t and 'm wheel odom' in t
+               for t in logs)
+
+
+def test_slip_check_off_keeps_driving_on_spinning_wheels():
+    h = slip_h(boundary_recover_slip_check=False)
+    logs = [e.text for e in spin_wheels(h, 30)]
+    assert not any('wheel slip' in t for t in logs) and h.fsm._hb is not None
+
+
+def test_slip_check_needs_rtk_fixed():
+    h = slip_h()
+    h.fsm.inputs.fix_type = 0
+    logs = [e.text for e in spin_wheels(h, 60)]
+    assert not any('wheel slip' in t for t in logs)
+
+
+def test_needs_help_reports_the_current_pose_not_the_trip_origin():
+    h = lap0_h(boundary_recover_footprint_plan=False)
+    slide_out(h)
+    origin = h.fsm._hb['origin']
+    feed(h, (origin[0] + 0.3, origin[1] - 0.2, 0.0))
+    h.fsm._hb_needs_help('test', origin)
+    assert h.name == 'STUCK_NEEDS_HELP'
+    assert ('%.2f, %.2f' % (origin[0] + 0.3, origin[1] - 0.2)) in h.fsm.sub_state
+
+
+def test_side_slope_withdraws_the_front_corner_allowance_logged_once():
+    h = mowing_h([line(1, 2, 4, 2)], (1.0, 2.0, 0.0))
+    pose = (2.0, 5.07, math.radians(15))       # front_left 0.45 out, the rest under limits
+    ev = h.fsm._hb_body_eval(pose, 'soft')
+    assert ev['excess'] < 0.0 and 0.35 < max(ev['outs'].values()) < 0.55
+    h.fsm.inputs.tilt_roll_deg, h.fsm.inputs.tilt_stamp = 9.5, h.t
+    for _ in range(3):
+        ev = h.fsm._hb_body_eval(pose, 'soft')
+    assert ev['excess'] > 0.0 and ev['point'].startswith('front')
+    assert len([e for e in h.fsm._fx if isinstance(e, f.Log) and 'side slope' in e.text]) == 1
+    assert h.fsm._hb_body_eval(pose, 'hard')['excess'] > 0.0          # hard: unchanged rule
+    h.fsm.inputs.tilt_roll_deg = 3.0
+    assert h.fsm._hb_body_eval(pose, 'soft')['excess'] < 0.0
+
+
+def test_edge_slope_zero_keeps_the_front_allowance():
+    h = mowing_h([line(1, 2, 4, 2)], (1.0, 2.0, 0.0), edge_slope_roll_deg=0.0)
+    h.fsm.inputs.tilt_roll_deg, h.fsm.inputs.tilt_stamp = 12.0, h.t
+    assert h.fsm._hb_body_eval((2.0, 5.07, math.radians(15)), 'soft')['excess'] < 0.0
+
+
+def test_trip_log_and_recovery_use_the_worst_corner_metric():
+    h = lap0_h(boundary_recover_footprint_plan=False)
+    m = h.mark()
+    feed(h, (2.0, 0.0, 0.0))
+    h.tick()
+    # rear_right trips (0.35 limit) while front_right is further out (0.55 limit)
+    feed(h, (2.0, -0.14, math.radians(-8)))
+    h.tick()
+    k = h.fsm._hb
+    assert k is not None
+    worst = bb.worst_outside((2.0, -0.14, math.radians(-8)), h.fsm._region())
+    assert worst[0] == 'front_right'
+    trip = [e.text for e in h.since(m, f.Log) if 'BOUNDARY OUT' in e.text][0]
+    assert 'rear_right' in trip and ('worst corner front_right %.2f m' % worst[1]) in trip
+    assert abs(k['out0'] - worst[1]) < 1e-9
+    assert abs(h.fsm._hb_inside((2.0, -0.14, math.radians(-8)))[1] - worst[1]) < 1e-9
