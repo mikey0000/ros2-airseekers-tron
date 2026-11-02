@@ -1,0 +1,56 @@
+# CI: scripts/ci_test.sh without --gate (code review 2026-10-23 B5, review 2026-11-02 step 3):
+# colcon build + every package's tests (incident replay tests included), the BLE and sim-gate
+# script tests, and the replay tests as a named stage. The sim gate is not run here (45+ min
+# of 3 cores at x3; run `./scripts/ci_test.sh --gate` on a dev host).
+#
+# The dev image (mower:jazzy-dev-amd64) is not in a registry: scripts/dev_build.sh builds it
+# from docker/Dockerfile.dev-amd64 (Fields2Cover via scripts/build_f2c.sh first, ~20-30 min
+# cold), and the cache below keeps it between runs (keyed on the two files that define it).
+# Runner: GitHub-hosted ubuntu-24.04 by default; set the repository variable CI_RUNNER (e.g.
+# to a self-hosted label whose host already has the image) to run elsewhere. Never deploys or
+# talks to a robot: tests run localhost-only on a private DDS domain.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore dev images
+        id: images
+        uses: actions/cache@v4
+        with:
+          path: /tmp/images
+          key: dev-images-${{ hashFiles('docker/Dockerfile.dev-amd64', 'scripts/build_f2c.sh') }}
+      - name: Load cached dev images
+        if: steps.images.outputs.cache-hit == 'true'
+        run: |
+          for f in /tmp/images/*.tar; do docker load -i "$f"; done
+      - name: Build and test
+        run: ./scripts/ci_test.sh
+      - name: Save dev images
+        if: always() && steps.images.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/images
+          docker save mower:jazzy-dev-amd64 -o /tmp/images/dev.tar || true
+          docker save mower-f2c:v3-amd64 -o /tmp/images/f2c.tar || true
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-log
+          path: |
+            ci_test.log
+            build/*/pytest.xml
+            build/*/test_results/
