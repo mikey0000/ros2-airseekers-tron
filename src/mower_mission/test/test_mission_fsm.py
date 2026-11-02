@@ -2130,6 +2130,86 @@ def test_hcal_no_prior_obstacle_stops_the_blind_drive():
     assert not h.fsm.motion_enabled() and h.fsm._action is None
 
 
+# ---------------------------------------------------------------------------
+# magnetometer seed (2026-11-03): aligner source 'mag' + mag_seed_quality
+# ---------------------------------------------------------------------------
+def mag_harness(quality, area=None, **params):
+    h = hcal_harness(prior='', area=area, **params)
+    h.heading('mag')
+    h.fsm.inputs.heading_mag_quality = quality
+    h.tick()
+    return h
+
+
+def test_hcal_mag_seed_drives_by_the_prior_instead_of_blind():
+    h = mag_harness(0.85)
+    assert not h.fsm.heading_ok()            # low quality: never planned on directly
+    m = h.mark()
+    start_hcal(h)
+    assert h.goal(f.ACT_DRIVE) == {'distance_m': 1.0, 'speed_mps': 0.15}
+    assert 'forward' in h.fsm.sub_state and 'blind' not in h.fsm.sub_state
+    assert [e.name for e in h.since(m, f.StartAction)] == [f.ACT_DRIVE]
+    assert any('magnetometer heading quality 0.85' in e.text for e in h.since(m, f.Log))
+    h.fsm.inputs.pose = (1.0, 0.0, 0.0)
+    h.finish(f.ACT_DRIVE)
+    h.heading('cog')                         # COG refines it on the drive
+    h.tick()
+    assert h.name == 'PLANNING' and h.fsm.mission is not None
+
+
+def test_hcal_mag_seed_blocked_ahead_reverses_by_the_prior():
+    h = mag_harness(0.85, area=square(-3.0, -2.0, 4.0))
+    start_hcal(h)
+    assert h.goal(f.ACT_BACKUP) == {'distance_m': 1.0, 'speed_mps': 0.15}
+
+
+@pytest.mark.parametrize('quality', [0.5, None])
+def test_hcal_mag_seed_low_quality_is_no_prior(quality):
+    # below heading_mag_min_quality (or not reported): treated as no prior -> blind drive
+    h = mag_harness(quality)
+    m = h.mark()
+    start_hcal(h)
+    assert h.goal(f.ACT_DRIVE) == {'distance_m': 0.8, 'speed_mps': 0.15}
+    assert 'forward blind' in h.fsm.sub_state
+    assert any('no usable prior (mag quality' in e.text for e in h.since(m, f.Log))
+
+
+def test_hcal_mag_seed_low_quality_without_blind_refused():
+    h = mag_harness(0.5, heading_calibration_blind=False)
+    assert not h.cmd(f.CMD_START)
+    assert 'no usable heading prior (mag' in h.fsm.sub_state
+
+
+def test_hcal_mag_min_quality_param():
+    h = mag_harness(0.5, heading_mag_min_quality=0.4)
+    start_hcal(h)
+    assert 'blind' not in h.fsm.sub_state and h.goal(f.ACT_DRIVE)['distance_m'] == 1.0
+
+
+def test_hcal_mag_quality_ignored_when_a_better_source_exists():
+    # a stale mag_seed_quality next to an aligned cog heading: plans directly, no drive
+    h = mag_harness(0.9)
+    h.heading('cog')
+    h.fsm._heading_was_aligned = True
+    h.tick()
+    m = h.mark()
+    assert h.cmd(f.CMD_START)
+    h.answer_services()
+    h.tick(dt=1.0, n=4)
+    assert f.ACT_DRIVE not in [e.name for e in h.since(m, f.StartAction)]
+    assert h.fsm._hcal is None and h.name == 'PLANNING'
+    # and a usable file prior (pose_prior) keeps its own path, the mag quality unused
+    h2 = mag_harness(0.1)
+    h2.heading('file')
+    h2.fsm.inputs.heading_prior = 'pose_prior'
+    h2.tick()
+    m = h2.mark()
+    start_hcal(h2)
+    assert h2.goal(f.ACT_DRIVE) == {'distance_m': 1.0, 'speed_mps': 0.15}
+    assert 'blind' not in h2.fsm.sub_state
+    assert any('saved heading pose_prior' in e.text for e in h2.since(m, f.Log))
+
+
 def test_hcal_blind_disabled_refuses_as_before():
     h = hcal_harness(prior='yaw_failed', heading_calibration_blind=False)
     assert not h.cmd(f.CMD_START)

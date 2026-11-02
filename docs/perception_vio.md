@@ -54,6 +54,10 @@ tunings (`iqfiles/`) into the workspace. Everything below is now concrete, not i
 | `0x50` | 24c128 (AT24 EE) | **calibration EEPROM** |
 | `0x68` | icm40608 | 6-axis IMU (driven by `inv-icm42600` kmod) |
 
+The magnetometer is read by `mower_cameras/stereo_imu` (`mag_device.py`: IIO `st_magn` or raw
+i2c registers; untested on hardware as of 2026-11-03) for the heading-seed experiment
+(`/imu/mag*`, `scripts/mag_cal.py`, docs/HEADING_RECEIVER_2026-11.md).
+
 ### Frame formats (from `mo_init.sh` + sample file sizes)
 
 | stream | size | format |
