@@ -1183,6 +1183,9 @@ class Params:
     follow_end_tolerance_m: float = 1.0  # FollowPath "success" with more path left = premature
     follow_chunk_m: float = 25.0        # max FollowPath goal length (0 = whole sub-path)
     follow_chunk_clearance_m: float = 0.5   # goal end kept this far from earlier chunk poses
+    follow_chunk_min_tail_m: float = 1.5    # a clearance-cut chunk leaves at least this much
+    follow_chunk_end_straight_deg: float = 10.0  # ... and is moved back onto path straight to
+    follow_chunk_end_straight_m: float = 0.4     # within this over this length before its end
     follow_premature_retries: int = 3
     record_rate_hz: float = 10.0
     record_min_spacing_m: float = 0.05
@@ -1378,6 +1381,7 @@ class Mission:
     boundary_recoveries: int = 0
     premature: int = 0
     chunk_end: int = 0
+    chunk_end_moved: Optional[tuple] = None     # (area, sub, start, end) last logged as moved back
     left_dock: bool = False
     settings: Optional[dict] = None             # effective settings of the current area
     height_override_mm: Optional[int] = None    # live deck height change (this mow only)

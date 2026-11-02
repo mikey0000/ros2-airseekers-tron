@@ -315,6 +315,55 @@ def clear_end_before(poses, start, e, clearance):
     return e
 
 
+def straight_before(poses, e, length, max_turn):
+    """True when the plan heading (heading_of) varies by less than ``max_turn`` (rad)
+    over the ``length`` metres of path before pose ``e``; False when the path before
+    ``e`` is shorter than that."""
+    h_e = heading_of(poses, e)
+    lo = hi = 0.0
+    acc = 0.0
+    for j in range(e - 1, -1, -1):
+        acc += dist(poses[j], poses[j + 1])
+        d = wrap_angle(heading_of(poses, j) - h_e)
+        lo, hi = min(lo, d), max(hi, d)
+        if hi - lo >= max_turn:
+            return False
+        if acc >= length:
+            return True
+    return False
+
+
+def ease_chunk_end(poses, start, e, stop, clearance, min_tail, straight_m, max_turn):
+    """Chunk end to use instead of ``e`` when the clearance rule ended a chunk short of
+    ``stop`` (the next forced end: segment end, pivot vertex, excluded piece) and left a
+    piece shorter than ``min_tail`` metres to it.
+
+    Near a chunk goal the coverage controller drops its path critics and holds its
+    heading into the goal, so a goal at the end of a bend is reached outside the plan and
+    past its heading, and a short last chunk then turns hard from there (sim run5 area 0:
+    side 0.09-0.19 m at the west-edge bend). The end moves back to the furthest pose
+    ``k`` that is clear (end_is_clear), leaves at least ``min_tail`` to ``stop``, starts
+    a chunk of at least ``min_tail`` and sits on straight path (straight_before over
+    ``straight_m``).  ``e`` when the tail is long enough or no pose qualifies."""
+    if min_tail <= 0.0 or e >= stop or e <= start:
+        return e
+    cum = [0.0]
+    for i in range(start + 1, stop + 1):
+        cum.append(cum[-1] + dist(poses[i - 1], poses[i]))
+    total = cum[-1]
+    if total - cum[e - start] >= min_tail:
+        return e
+    for k in range(e - 1, start, -1):
+        if total - cum[k - start] < min_tail:
+            continue
+        if cum[k - start] < max(min_tail, straight_m):
+            break
+        if straight_before(poses, k, straight_m, max_turn) and \
+                end_is_clear(poses, start, k, clearance):
+            return k
+    return e
+
+
 def needs_transit(pose, target, transit_gap):
     """Blade-off transit decision of upstream ``FollowStrip::sendCurrentSwath``.
 

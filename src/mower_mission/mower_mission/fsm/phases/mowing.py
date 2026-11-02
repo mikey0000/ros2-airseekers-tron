@@ -355,16 +355,22 @@ class MowingMixin:
             return
         m.step = 'follow'
         m.progress_local = m.start_local
-        sp = m.subpaths[m.sub_i]
-        m.chunk_end = min(geo.chunk_end(sp, m.start_local, self.p.follow_chunk_m,
-                                        self.p.follow_chunk_clearance_m), self._seg_last())
+        sp, last = m.subpaths[m.sub_i], self._seg_last()
+        raw = geo.chunk_end(sp, m.start_local, self.p.follow_chunk_m,
+                            self.p.follow_chunk_clearance_m)
+        m.chunk_end = min(raw, last)
+        # cut by the clearance rule: the next pose was within follow_chunk_m but not clear
+        clear_cut = raw < last and geo.path_length(sp[m.start_local:raw + 2]) <= \
+            self.p.follow_chunk_m
         nxt = self._next_excluded(m.start_local)
         if nxt is not None and nxt < m.chunk_end:
             m.chunk_end = max(m.start_local + 1, nxt)    # stop where the excluded piece starts
+            clear_cut = False
         m.corner_end = None
         for c in self._cov_pivots():
-            if m.start_local < c <= m.chunk_end and c < self._seg_last():
+            if m.start_local < c <= m.chunk_end and c < last:
                 m.chunk_end = m.corner_end = c       # this chunk ends on the pivot vertex
+                clear_cut = False
                 break
         # A pivot vertex / excluded-piece start overrides chunk_end's clearance rule; when
         # the path came past that pose earlier in the chunk (a lap that runs out and back
@@ -378,6 +384,9 @@ class MowingMixin:
                               '(pose %d); chunk ends at %d instead'
                       % (m.area_idx, m.sub_i, m.chunk_end, m.start_local, e))
             m.chunk_end, m.corner_end = e, None
+            clear_cut = True
+        if clear_cut:
+            self._ease_chunk_end(sp, last)
         if m.join is not None and m.join[0] == m.sub_i and m.join[1] == m.start_local:
             # the gate's (h) rebuilds the sent path from this line (keep the format)
             self._log('info', 'edge start join: sub %d local %d side %+d inset %.3f over %.2f m'
@@ -399,6 +408,36 @@ class MowingMixin:
             'goal_checker_id': checker,
             'progress_checker_id': self.p.follow_progress_checker_id},
             self.p.follow_timeout_s)
+
+    def _ease_chunk_end(self, sp, last):
+        """A chunk the clearance rule ended short of the segment end: when the piece left to
+        the next forced end (pivot vertex, excluded piece, segment end) is shorter than
+        follow_chunk_min_tail_m, move the end back onto straight path (geometry
+        ease_chunk_end; FollowCoveragePathMPPI drops its path critics within ~0.4 m of the
+        goal, so an end on a bend is reached off the plan and the short last chunk then
+        turns hard: sim run5 area 0 pose 684). No pivot vertex lies at or before the end
+        here (it would have ended the chunk), so corner_end stays None."""
+        m, p = self.mission, self.p
+        e = m.chunk_end
+        stops = [c for c in self._cov_pivots() if e < c < last]
+        nxt = self._next_excluded(e)
+        if nxt is not None and nxt < last:
+            stops.append(nxt)
+        stop = min(stops + [last])
+        k = geo.ease_chunk_end(sp, m.start_local, e, stop, p.follow_chunk_clearance_m,
+                               float(p.follow_chunk_min_tail_m),
+                               float(p.follow_chunk_end_straight_m),
+                               math.radians(float(p.follow_chunk_end_straight_deg)))
+        if k == e:
+            return
+        key = (m.area_idx, m.sub_i, m.start_local, k)
+        if m.chunk_end_moved != key:
+            m.chunk_end_moved = key
+            self._log('info', 'area %d sub-path %d: chunk end %d moved back to %d: tail too '
+                              'short / bend (tail %.2f m < %.2f; next chunk %.2f m)'
+                      % (m.area_idx, m.sub_i, e, k, geo.path_length(sp[e:stop + 1]),
+                         float(p.follow_chunk_min_tail_m), geo.path_length(sp[k:stop + 1])))
+        m.chunk_end = k
 
     # ---- path conditioning (design 2026-10-15 steps 2-3) --------------------
     def _cond_params(self):
