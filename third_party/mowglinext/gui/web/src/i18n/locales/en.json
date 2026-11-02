@@ -4821,7 +4821,8 @@
     "channel": "Channel {{channel}} ({{freq}} MHz)",
     "bitrate": "Bitrate: tx {{tx}} / rx {{rx}} Mbit/s",
     "roams": "Roams since start: {{count}}",
-    "retries": "Tx retries {{retries}}, failed {{failed}}"
+    "retries": "Tx retries {{retries}}, failed {{failed}}",
+    "signalOnly": "Signal only (iw not available on the mower)"
   },
   "networkWifi": {
     "notOnRobot": "Wi-Fi setup is not part of this robot's profile.",

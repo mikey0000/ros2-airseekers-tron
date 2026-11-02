@@ -58,6 +58,21 @@ describe("WifiChip", () => {
         expect(chip.title).toContain('"count":3');
     });
 
+    it("shows signal only when the source is /proc", () => {
+        payload = selectWifiStatus({...RAW, ssid: "", bssid: "", freq_mhz: 0, tx_bitrate_mbps: 0,
+            rx_bitrate_mbps: 0, source: "proc"})!;
+        expect(payload.source).toBe("proc");
+        render(<WifiChip/>);
+        const chip = screen.getByTestId("wifi-chip");
+        expect(chip.textContent).toContain("-63 dBm");
+        expect(chip.title).toContain("wifiChip.signalOnly");
+        expect(chip.title).not.toContain("wifiChip.bssid");
+    });
+
+    it("defaults the source to iw (older monitors)", () => {
+        expect(selectWifiStatus(RAW)!.source).toBe("iw");
+    });
+
     it("shows disconnected", () => {
         payload = selectWifiStatus({...RAW, connected: false})!;
         render(<WifiChip/>);

@@ -17,6 +17,11 @@ the last known sample for ``stale_samples`` of them and ``RoamTracker`` never tu
 unknown sample into an event. A disconnect is logged when the link is really gone: operstate
 down, or ``iw`` not connected AND no signal in /proc/net/wireless (or ``iw`` not connected
 for more than ``stale_samples`` samples in a row).
+
+2026-11-03: when ``iw`` is absent, or every call failed for more than ``stale_samples``
+samples, ``build_proc_sample`` reports from /proc/net/wireless + operstate + carrier alone
+(``source`` 'proc': connected with the /proc signal, no BSSID/SSID/bitrates). Samples carry
+``source`` 'iw' otherwise; RoamTracker never counts a roam across a 'proc' sample (no BSSID).
 """
 
 import re
@@ -153,7 +158,27 @@ def build_sample(iface, proc_text, link_text, operstate, station=None):
     sample['link_state'] = 'unknown' if unknown else \
         link_state(connected, operstate, sample['signal_dbm'])
     sample['iw_said_not_connected'] = link_text is not None and not link['connected']
+    sample['source'] = 'iw'
     return sample
+
+
+def build_proc_sample(iface, proc_text, operstate, carrier):
+    """Signal-only sample when ``iw`` is unavailable: connected when /proc/net/wireless has a
+    signal, operstate is not down and carrier is not '0'; link_state from the signal."""
+    proc = parse_proc_wireless(proc_text, iface)
+    operstate = (operstate or '').strip()
+    carrier = (carrier or '').strip()
+    connected = proc is not None and proc['signal_dbm'] < 0.0 and operstate != 'down' and \
+        carrier != '0'
+    signal = proc['signal_dbm'] if connected else None
+    return {
+        'iface': iface, 'connected': connected, 'operstate': operstate,
+        'ssid': '', 'bssid': '', 'freq_mhz': 0.0, 'signal_dbm': signal,
+        'link_quality': proc['link_quality'] if proc else 0.0,
+        'tx_bitrate_mbps': 0.0, 'rx_bitrate_mbps': 0.0, 'tx_retries': 0, 'tx_failed': 0,
+        'link_state': link_state(connected, operstate, signal),
+        'iw_said_not_connected': False, 'source': 'proc',
+    }
 
 
 class LinkFilter:
@@ -207,7 +232,8 @@ class RoamTracker:
             if prev is None or not prev['connected']:
                 kind = 'reconnect' if self._ever_connected else 'connect'
                 events.append(self._event(kind, prev, sample))
-            elif prev['bssid'] != sample['bssid']:
+            elif prev['bssid'] != sample['bssid'] and \
+                    prev.get('source', 'iw') == sample.get('source', 'iw') == 'iw':
                 self.roam_count += 1
                 events.append(self._event('roam', prev, sample))
             self._ever_connected = True
