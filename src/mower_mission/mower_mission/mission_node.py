@@ -259,6 +259,7 @@ class MissionNode(Node):
                                       now=self._clk.now(),
                                       alternate_counts=self._load_alternate())
         self.fsm.clock = self._clk.now   # send-time clock of request deadlines (sim time)
+        self.fsm.effect_sink = self._execute   # _fx_now: e.g. a stop ahead of a slow plan
         # Battery settings are applied live (GUI Settings -> Battery pushes them).
         self.add_on_set_parameters_callback(self._on_set_params)
         self._height_mm = None          # last per-area blade height (mm), re-sent with blade ON
@@ -620,6 +621,8 @@ class MissionNode(Node):
                 i.heading_moved_m = None
             cont = st.get('imu_continuous')
             i.heading_imu_continuous = None if cont is None else bool(cont)
+            held = st.get('held')
+            i.heading_held = None if held is None else bool(held)
             i.heading_stamp = self._clk.now()
 
     def _on_localization(self, msg):

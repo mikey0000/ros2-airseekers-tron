@@ -775,3 +775,52 @@ mission.yaml):
 The sim gate's `-d` disturbance (wheel bias 0.04, per-wheel slip std 0.05) is mild and the
 sim publishes no roll on /tilt/status, so a 3x wheel-vs-RTK slip and the slope rule never
 occur there: the slip and slope paths are unit-tested only.
+
+## Review fixes (2026-11-02, branch ws/review-fixes, unit-tested; sim gate pending)
+
+Code review of 335ef53..3cfe973. Each fix has a regression test that fails on 3cfe973.
+
+* **Boundary recovery failure stays put.** `_boundary_recovery_failed` used to end in
+  `_finish_incomplete`, which docked once `return_home_on_incomplete` became true. It now passes
+  `stay_reason`, so the robot stops outside the region whatever that setting says, and
+  MOWING_INCOMPLETE logs "not returning home: ...". The test Harness no longer defaults
+  `return_home_on_incomplete` to false. The six tests that assert a stop in place set it
+  explicitly, and the recovery-failure test runs with the shipped true.
+* **The stationary heading hold sees all motion.** `moved_since_fix` now grows on RTK float
+  positions too, and on wheel-odometry path (`/odom`, `HeadingEstimator.on_odom`) while no
+  GNSS position is fresh. When RTK becomes fixed in WAITING_FOR_RTK after a START off the
+  dock, `_heading_plan_ok()` is checked again. If a held cog heading turned out stale, the
+  calibration drive runs ("heading cog is N s old now RTK is fixed: calibration drive
+  first").
+* **One stationary threshold.** The aligner status has a new `held` field
+  (`stationary_since_fix`, `hold_move` 0.5). The mission's `_heading_cog_held` reads it, and
+  the `heading_stale_move_m` param is removed (Params, mission.yaml).
+* **`plan_recovery` cost.** It now scans only the region and keepout edges within 2 m of the
+  pose (`_LocalRegion`: inside/outside by crossing parity from a reference point, with a full
+  scan when nothing is near). The result matches the full scan. On the review's 1000-vertex
+  region it takes about 20 ms on amd64 (was 0.75 s). The DriveCmd(0, 0) that ends a recovery
+  motion (done / timed out / grown, and the slip trip) now goes out through the node at
+  once (`MissionFSM.effect_sink` / `_fx_now`), before the next plan runs.
+* **`_static_block()` needs evidence on the stretch.** Outside the on-path decision, a
+  remembered ranged static counts only when it is on the path or within robot_width/2 +
+  obstacle_path_margin_m of the stretch. A collision counts only when the robot's nose is
+  that close to the stretch. Anything else leaves the stretch `skipped`, not `blocked_static`.
+* **Sweep-skip counts** are cleared with every new plan (each repeat / cross run, re-plan,
+  no-go re-plan).
+* **wifi_monitor.** An `iw` that fails or times out returns None, which gives link_state
+  `unknown` and no event. `LinkFilter` keeps the last known sample for `stale_samples` (3).
+  A disconnect is logged when operstate is down, or when iw is not connected AND
+  /proc/net/wireless has no signal. If iw keeps saying "Not connected." while /proc still
+  shows a signal, the disconnect comes after `stale_samples`.
+* **bag_ring.** `--compression-queue-size` is 10. Overflow DROPS a split (rosbag2), so the
+  old comment ("delays the next split") was wrong.
+
+Known limitations from the review, not fixed:
+- Review 8: the hold anchor (`_mark_fix`) can be the last RTK-fixed position from before a
+  GNSS outage. (Its other half is fixed: `imu_continuous` / `held` in the status now turn
+  false once no IMU sample has come for `imu_gap_max`.)
+- Review 9: the slip check's "real" distance is the map EKF pose, which fuses wheel
+  velocity, so wheel slip between GNSS updates is under-detected (check the ekf.yaml inputs).
+- Review 10: `plan_recovery` / `worst_outside` count keepout incursion but `_hb_inside` /
+  `evaluate` do not. A trip next to a keepout with a corner already in it can leave no
+  admissible candidate, which ends in STUCK_NEEDS_HELP.

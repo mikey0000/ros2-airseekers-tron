@@ -539,7 +539,8 @@ def test_record_cmd_defaults():
     assert '--max-cache-size 1048576' in j
     assert '--storage-preset-profile resilient' in j
     assert '--compression-mode file --compression-format zstd' in j
-    assert '--compression-threads 1 --compression-queue-size 2' in j
+    # queue overflow drops splits (rosbag2): 10 splits of slack, not 2
+    assert '--compression-threads 1 --compression-queue-size 10' in j
     assert cmd[-2:] == ['/tf', '/odom']
 
 

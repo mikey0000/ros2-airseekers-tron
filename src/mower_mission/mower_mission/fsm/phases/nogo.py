@@ -218,6 +218,9 @@ class NogoMixin:
         for k, sp in enumerate(subpaths):
             if geo.plan_fingerprint([sp]) in old_ac.done_fps:
                 done.add(k)
+        # a new plan (each repeat / cross run, a re-plan) reuses the sub-path indices: no
+        # consecutive sweep skips carried over (review 2026-11-02)
+        m.sweep_skips = {}
         m.subpaths = subpaths
         m.planned_total += len(subpaths)
         m.cum = [geo.cumulative_lengths(sp) for sp in subpaths]

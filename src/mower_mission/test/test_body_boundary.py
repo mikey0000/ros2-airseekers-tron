@@ -6,6 +6,8 @@ import math
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mower_mission import body_boundary as bb   # noqa: E402
@@ -516,6 +518,60 @@ def test_field_geometry_rejects_the_outward_pivot_and_turns_the_nose_inward():
     assert rev and rev[0][1] < 0.0
 
 
+def _ring(cx, cy, r, n):
+    return [(cx + r * math.cos(2 * math.pi * k / n), cy + r * math.sin(2 * math.pi * k / n))
+            for k in range(n)]
+
+
+# review 2026-11-02 perf.py: 4 areas of 1000 vertices, 10 small path channels, 5 keepouts
+BIG_REGION = [_ring(0, 0, 10, 300), _ring(25, 0, 10, 300), _ring(50, 0, 8, 200),
+              _ring(0, 25, 8, 200)] + [_ring(12 + 2 * k, 0, 1.0, 4) for k in range(10)]
+BIG_KEEPOUTS = [_ring(3, 3, 0.5, 24) for _ in range(5)]
+
+
+def _plan_full_scan(pose, polys, motions, max_worsen=0.05, keepouts=(), reverse_bias=0.02):
+    """plan_recovery as it was: worst_outside over every edge at every simulated pose."""
+    cur = bb.worst_outside(pose, polys, keepouts=keepouts)[1]
+    rows = []
+    for name in bb.CANDIDATE_ORDER:
+        v, w, dur = motions[name]
+        peak, end = 0.0, cur
+        for q in bb.simulate(pose, v, w, dur):
+            end = bb.worst_outside(q, polys, keepouts=keepouts)[1]
+            peak = max(peak, end)
+        cap = cur + 1e-6 if v == 0.0 else cur + max(0.0, max_worsen)
+        if peak > cap or end >= cur - 1e-3:
+            continue
+        rows.append((name, v, w, dur, end, peak))
+    rows.sort(key=lambda r: (r[4] - (reverse_bias if r[1] < 0.0 else 0.0), r[5]))
+    return rows
+
+
+def test_plan_recovery_on_a_1000_edge_region_is_fast():
+    """Review 2026-11-02: 0.75 s on amd64 (several s on the A55) under the node lock;
+    only the edges within 2 m of the robot are scanned now (about 20 ms)."""
+    import time
+    mo = bb.candidate_motions(0.1, 0.13, 0.35, 0.30, 0.35)
+    best = float('inf')
+    for _ in range(5):                           # best of 5: a loaded dev host
+        t0 = time.perf_counter()
+        rows = bb.plan_recovery((9.6, 0.0, 0.3), BIG_REGION, mo, keepouts=BIG_KEEPOUTS)
+        best = min(best, time.perf_counter() - t0)
+    assert rows and best < 0.050, best
+
+
+@pytest.mark.parametrize('pose', [(9.6, 0.0, 0.3), (10.3, 0.4, 2.0), (3.4, 3.1, 0.7),
+                                  (12.9, 0.2, -0.4), (14.6, 0.0, 3.0), (0.0, 7.7, 1.6),
+                                  (11.5, -0.5, 0.0), (30.0, 12.0, 0.0)])
+def test_local_plan_recovery_matches_the_full_scan(pose):
+    mo = bb.candidate_motions(0.1, 0.13, 0.35, 0.30, 0.35)
+    fast = bb.plan_recovery(pose, BIG_REGION, mo, keepouts=BIG_KEEPOUTS)
+    full = _plan_full_scan(pose, BIG_REGION, mo, keepouts=BIG_KEEPOUTS)
+    assert [r[0] for r in fast] == [r[0] for r in full]
+    for a, b in zip(fast, full):
+        assert a[4] == pytest.approx(b[4], abs=1e-9) and a[5] == pytest.approx(b[5], abs=1e-9)
+
+
 def slide_out(h, x=0.5, y=0.0):
     """Lap 0 on the y = 0 edge, sliding out sideways until the boundary trips."""
     while h.fsm._hb is None and x < 3.0:
@@ -590,6 +646,43 @@ def test_wheel_slip_aborts_tries_the_next_candidate_once_then_needs_help_at_the_
     assert abs(sx - x) < 0.01 and abs(sy - y) < 0.01           # the pose when it gave up
     assert any('STUCK_NEEDS_HELP: wheel slip on slope' in t and 'm wheel odom' in t
                for t in logs)
+
+
+def _stops_at_each_plan(h, monkeypatch):
+    """The DriveCmds the node executed at once (effect_sink) when each plan_recovery
+    started."""
+    sent, seen = [], []
+    h.fsm.effect_sink = sent.extend              # the node executes these at once
+    real = bb.plan_recovery
+
+    def spy(*a, **kw):
+        seen.append([(e.linear, e.angular) for e in sent if isinstance(e, f.DriveCmd)])
+        return real(*a, **kw)
+    monkeypatch.setattr(bb, 'plan_recovery', spy)
+    return seen
+
+
+def test_recovery_stop_is_published_before_the_next_plan_after_a_slip(monkeypatch):
+    """Review 2026-11-02: the DriveCmd(0, 0) ending a motion went out only after the next
+    plan_recovery returned (seconds on the mower): the old arc kept driving meanwhile."""
+    h = slip_h()
+    seen = _stops_at_each_plan(h, monkeypatch)
+    spin_wheels(h, 400, creep=0.001)
+    # the first plan starts from the trip pause (stopped already); the re-plan after the
+    # slip trip has its stop out first
+    assert len(seen) == 2 and seen[0] == [] and seen[1] == [(0.0, 0.0)]
+
+
+def test_recovery_stop_is_published_before_the_next_plan_after_a_motion(monkeypatch):
+    h = lap0_h()
+    slide_out(h)
+    seen = _stops_at_each_plan(h, monkeypatch)
+    for _ in range(400):                         # the pose never moves: each move times out
+        if h.fsm._hb is None:
+            break
+        h.tick()
+    assert len(seen) >= 2 and seen[0] == []
+    assert all(len(s) == k and s[-1] == (0.0, 0.0) for k, s in enumerate(seen) if k), seen
 
 
 def test_slip_check_off_keeps_driving_on_spinning_wheels():

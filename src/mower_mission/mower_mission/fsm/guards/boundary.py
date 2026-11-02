@@ -463,7 +463,7 @@ class BoundaryGuardMixin:
         if why is None:
             self._fx.append(DriveCmd(mv['v'], mv['w']))
             return
-        self._fx.append(DriveCmd(0.0, 0.0))
+        self._fx_now(DriveCmd(0.0, 0.0))   # out before the next (slow) plan_recovery
         if inside:                         # the whole planned move, not just the limit
             k['driven'], k['inside_at'] = moved, 0.0
             self._log('info', 'boundary: inside after recovery move %d (%s %s, %.2f m)'
@@ -501,7 +501,7 @@ class BoundaryGuardMixin:
         if sl['wheel'] < float(p.boundary_recover_slip_min_m) or \
                 sl['wheel'] <= float(p.boundary_recover_slip_ratio) * real:
             return False
-        self._fx.append(DriveCmd(0.0, 0.0))
+        self._fx_now(DriveCmd(0.0, 0.0))   # out before the next-best plan_recovery
         roll = i.tilt_roll_deg
         why = 'wheel slip on slope (roll %s deg): %.2f m wheel odom, %.2f m real' % (
             '?' if roll is None else '%.0f' % abs(float(roll)), sl['wheel'], real)

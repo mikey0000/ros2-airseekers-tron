@@ -215,9 +215,10 @@ class AlignParams:
         # continuity since the last absolute fix (status imu_continuous false)
         self.imu_gap_max = 1.0           # s
         # stationary hold of the advertised sigma/quality: while the robot moved less than
-        # this (RTK fixed) since the last fix and the IMU stayed continuous, the age-driven
-        # sigma growth is capped at the 'fair' band (good -> fair at most, never poor)
-        self.hold_move = 0.5             # m (= mission heading_stale_move_m)
+        # this since the last fix (RTK fixed or float positions; wheel odometry while there
+        # is no GNSS position) and the IMU stayed continuous, the age-driven sigma growth is
+        # capped at the 'fair' band (good -> fair at most, never poor)
+        self.hold_move = 0.5             # m (the one threshold: status 'held' -> mission)
         # yaw standard deviations advertised on /imu/data_aligned
         self.sigma_cog = math.radians(3.0)
         self.sigma_rtk = math.radians(3.0)
@@ -309,11 +310,15 @@ class HeadingEstimator:
         self._rtk_seed = []          # consistent-sample buffer while unaligned (offsets)
         self._rtk_rejected = []      # consecutive outlier samples while aligned (offsets)
         # 2026-11-02 stationary hold (mission _heading_cog_stale): position at the last
-        # absolute fix (cog / dock / rtk / file_verified), the farthest RTK position from it
-        # since (None = no position at the fix), and whether the IMU yaw stream stayed
-        # continuous since (no gap > imu_gap_max, no IMU reset)
+        # absolute fix (cog / dock / rtk / file_verified; RTK fixed), how far the robot may
+        # have moved since (None = no position at the fix): the farthest RTK fixed or float
+        # position from it, plus the wheel-odometry path driven while no GNSS position came
+        # in (review 2026-11-02: motion on float / without GNSS was invisible), and whether
+        # the IMU yaw stream stayed continuous since (no gap > imu_gap_max, no IMU reset)
         self.fix_xy = None
         self.moved_since_fix = None
+        self.gps_xy_t = None         # time of gps_xy
+        self.odom_xy = None          # last wheel / fused odometry position (odom frame)
         self.imu_continuous = False
 
     # ------------------------------------------------------------------ properties
@@ -331,16 +336,26 @@ class HeadingEstimator:
             return p.sigma_none
         if self.updated_at is not None and self.source in ALIGNED_SOURCES:
             grown = base + p.drift_rate * max(0.0, now - self.updated_at)
-            if self.stationary_since_fix():
+            if self.stationary_since_fix(now):
                 grown = min(grown, max(base, FAIR_SIGMA))
             base = grown
         return min(base, p.sigma_none)
 
-    def stationary_since_fix(self):
-        """Moved less than hold_move (RTK fixed) since the last absolute fix and the IMU yaw
-        stayed continuous (2026-11-02): the heading does not decay with wall-clock time."""
-        return (self.aligned and self.imu_continuous and self.moved_since_fix is not None
+    def stationary_since_fix(self, now=None):
+        """Moved less than hold_move since the last absolute fix (any motion evidence: RTK
+        fixed / float positions, wheel odometry without GNSS) and the IMU yaw stayed
+        continuous (2026-11-02): the heading does not decay with wall-clock time."""
+        return (self.aligned and self._imu_continuous_at(now)
+                and self.moved_since_fix is not None
                 and self.moved_since_fix < self.p.hold_move)
+
+    def _imu_continuous_at(self, now=None):
+        """imu_continuous, and at ``now`` the IMU stream has not stopped for longer than
+        imu_gap_max (review 2026-11-02: a stopped stream kept it true, the flag only flips
+        on the next sample)."""
+        if not self.imu_continuous:
+            return False
+        return now is None or (self.imu_t is not None and now - self.imu_t <= self.p.imu_gap_max)
 
     def quality(self, now):
         if not self.aligned:
@@ -371,7 +386,8 @@ class HeadingEstimator:
             'min_speed': self.p.min_speed,
             'moved_since_fix_m': None if self.moved_since_fix is None
             else round(self.moved_since_fix, 2),
-            'imu_continuous': bool(self.imu_continuous and self.aligned),
+            'imu_continuous': bool(self._imu_continuous_at(now) and self.aligned),
+            'held': bool(self.stationary_since_fix(now)),   # mission _heading_cog_held
         }
         if self.last_cog is not None:
             t, cog, meas, dist = self.last_cog
@@ -545,6 +561,16 @@ class HeadingEstimator:
         self.offset_rate = 0.0
         self._cog_t = None
 
+    def on_odom(self, now, x, y):
+        """Wheel / fused odometry position (odom frame). While no GNSS position is fresh
+        (on_gps within gps_timeout), its path counts toward moved_since_fix."""
+        last, self.odom_xy = self.odom_xy, (x, y)
+        if last is None or self.moved_since_fix is None:
+            return
+        if self.gps_xy_t is not None and now - self.gps_xy_t <= max(self.p.gps_timeout, 1.0):
+            return
+        self.moved_since_fix += math.hypot(x - last[0], y - last[1])
+
     def on_cmd(self, now, linear, angular):
         self.cmd, self.cmd_t = (linear, angular), now
 
@@ -691,13 +717,15 @@ class HeadingEstimator:
         p = self.p
         if self.fix_type is not None and p.min_fix_type <= self.fix_type <= 3 and \
                 self.fix_t is not None and now - self.fix_t <= max(p.gps_timeout, 1.0):
-            self.gps_xy = (x, y)
+            self.gps_xy, self.gps_xy_t = (x, y), now
             if self.fix_type == 3:
                 self._gps_recent = (self._gps_recent + [(x, y)])[-p.verify_samples:]
             else:
                 self._gps_recent = []
-            if self.fix_xy is not None and self.fix_type == 3:   # RTK fixed only
-                self.moved_since_fix = max(self.moved_since_fix or 0.0, math.hypot(
+            if self.fix_xy is not None and self.moved_since_fix is not None:
+                # RTK fixed or float: float motion counts too (it may be noisier, the hold
+                # then ends early, never late)
+                self.moved_since_fix = max(self.moved_since_fix, math.hypot(
                     x - self.fix_xy[0], y - self.fix_xy[1]))
         self._try_verify(now)
         ok, direction = self._straight_motion(now, variance)

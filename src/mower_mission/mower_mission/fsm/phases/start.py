@@ -84,10 +84,10 @@ class StartMixin:
     def _heading_cog_held(self):
         """(age, moved) when an aligned cog heading is older than heading_max_cog_age_s (or
         its quality is in heading_reject_quality: the aligner's sigma grows with age) but
-        the robot moved less than heading_stale_move_m since the fix and the IMU stayed
-        continuous (2026-11-02: heading validity does not decay with wall-clock time while
-        stationary); else None. None also when move / continuity are not reported (the age
-        check then applies as before)."""
+        the aligner reports it held: moved less than its hold_move since the fix and the IMU
+        stayed continuous (2026-11-02: heading validity does not decay with wall-clock time
+        while stationary); else None. None also when held is not reported (the age check
+        then applies as before)."""
         p, i = self.p, self.inputs
         if not p.require_heading_alignment or i.heading_source != 'cog' \
                 or not i.heading_aligned:
@@ -98,11 +98,9 @@ class StartMixin:
             str(q) for q in (p.heading_reject_quality or []) if str(q)]
         if not (aged or poor):
             return None
-        if i.heading_moved_m is None or i.heading_imu_continuous is not True:
+        if i.heading_held is not True:
             return None
-        if i.heading_moved_m >= float(p.heading_stale_move_m):
-            return None
-        return (age or 0.0), i.heading_moved_m
+        return (age or 0.0), (i.heading_moved_m or 0.0)
 
     def _heading_cog_stale(self):
         """Why an aligned 'cog' heading is too old / too poor to plan a START off the dock on
