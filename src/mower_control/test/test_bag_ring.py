@@ -574,9 +574,7 @@ def test_default_topics_leave_out_the_high_rate_streams():
     for hot in ('/imu/data_aligned', '/mower_base/status', '/odom', '/tf', '/rosout',
                 '/mower_base/bumper_routing_status', '/local_plan'):
         assert hot not in t, hot
-    # + /collision_monitor_state (2026-10-21), the docking diagnostics and the magnetometer
-    # experiment (2026-11-03: /imu/mag* at 20 Hz)
-    assert len(t) <= 65
+    assert len(t) <= 62   # + /collision_monitor_state (2026-10-21) and the docking diagnostics
 
 
 def test_record_cmd_polling_default_5s():

@@ -332,11 +332,6 @@ def generate_launch_description() -> LaunchDescription:
                               description="Heading-aligned IMU fused by ekf_node / navsat."),
         DeclareLaunchArgument("use_heading_aligner", default_value="true",
                               description="Start mower_localization/heading_aligner."),
-        DeclareLaunchArgument("heading_mag_seed", default_value="false",
-                              description="heading_aligner: seed a low-quality heading from "
-                                          "the stereo module magnetometer (/imu/mag_heading) "
-                                          "when there is no prior (2026-11-03 experiment; off "
-                                          "until scripts/mag_cal.py shows p95 < 10 deg)."),
         DeclareLaunchArgument("heading_offset_file",
                               default_value="/userdata/ros2/heading_offset.yaml",
                               description="heading_aligner persisted offset."),
@@ -440,8 +435,6 @@ def generate_launch_description() -> LaunchDescription:
                     "imu_topic": LaunchConfiguration("raw_imu_topic"),
                     "output_topic": LaunchConfiguration("imu_data_topic"),
                     "offset_file": LaunchConfiguration("heading_offset_file"),
-                    "heading_mag_seed": ParameterValue(
-                        LaunchConfiguration("heading_mag_seed"), value_type=bool),
                 }],
             ),
 

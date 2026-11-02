@@ -42,6 +42,16 @@ in priority order:
           ``max_offset_rate``) and the offset is integrated at that rate between updates, for
           at most ``rate_horizon`` s after the last accepted COG. ``rate_beta`` 0 restores the
           old fixed-between-updates offset. Seeds (COG/dock/RTK/file) and IMU resets zero it.
+          ``cog_method`` picks how COG measurements are formed: ``window`` (above, default)
+          or ``keyframes`` (:class:`KeyframeHeadingEstimator`, the stock firmware's
+          HeadingEstimator gating: RTK-FIXED keyframes every ``kf_dist`` m, a sliding window of
+          ``kf_window`` keyframes whose end-to-end chord is ``kf_chord_min``..``kf_chord_max``,
+          accepted only while the IMU yaw over the window is steady (spread / sigma /
+          end-to-end), at most one measurement per ``kf_update_period``; each is folded in with
+          a scalar Kalman gain ``kf_weight * P / (P + kf_meas_var)``, a correction beyond
+          ``kf_max_correction`` is rejected, a keyframe-to-keyframe yaw step beyond
+          ``kf_yaw_jump`` restarts the window). Seeding, source precedence, the drift-rate
+          term and the quality bookkeeping are shared with ``window``.
 ``dock``  while docked (is_charging / is_docking_done) and no fresh COG: the robot sits in
           the dock; ``offset = dock_yaw + dock_heading_offset - mean imu yaw``.
           ``dock_heading_offset`` is the sign between the stored dock yaw and the seated heading
@@ -68,15 +78,6 @@ in priority order:
           ``verify_max_move``): the offset is re-seeded from the saved MAP heading
           (``pose_prior``, ``verify_pose_prior``), low quality, so the mission can still run
           its calibration drive instead of asking for a manual one (2026-11-01).
-``mag``   magnetometer seed (``heading_mag_seed``, default off, 2026-11-03 experiment): the
-          stereo module's LIS2MDL heading (``/imu/mag_heading``, map-frame ENU, tilt-compensated,
-          quality 0..1 from mower_cameras.mag_logic). Used only when there is no usable prior
-          (no offset, or a ``file`` offset whose check ended unverifiable / yaw_failed with no
-          pose_prior re-seed pending), not docked, IMU fresh: ``mag_seed_samples`` consecutive
-          samples of quality >= ``mag_min_quality`` agreeing within ``mag_seed_agree`` seed the
-          offset once. Low quality, never aligned, never persisted: it is a prior for the
-          mission's calibration drive (like pose_prior), and COG / RTK / dock replace it like a
-          ``file`` seed. Off until a field evaluation (scripts/mag_cal.py) shows p95 < 10 deg.
 
 The estimator also detects an IMU yaw reset (a step in yaw that the gyro rate does not
 explain) and drops back to unaligned.
@@ -95,13 +96,7 @@ SOURCE_FILE_VERIFIED = 'file_verified'
 SOURCE_DOCK = 'dock'
 SOURCE_COG = 'cog'
 SOURCE_RTK = 'rtk'
-SOURCE_MAG = 'mag'
 ALIGNED_SOURCES = (SOURCE_DOCK, SOURCE_COG, SOURCE_RTK, SOURCE_FILE_VERIFIED)
-# low-quality seeds that any real measurement (COG / RTK) replaces outright
-PRIOR_SOURCES = (SOURCE_NONE, SOURCE_FILE, SOURCE_MAG)
-# file continuity-check outcomes that leave no usable prior: a magnetometer seed may replace
-# them ('' = no check: a record without imu_yaw / position)
-MAG_REPLACES_FILE = ('unverifiable', 'yaw_failed', '')
 
 TWO_PI = 2.0 * math.pi
 
@@ -257,13 +252,24 @@ class AlignParams:
         self.rate_beta = 0.005
         self.max_offset_rate = math.radians(0.15)    # rad/s (ROS param in deg/s); 21c peak 0.08
         self.rate_horizon = 120.0        # s after the last accepted COG update the rate is applied
-        # magnetometer seed (module doc, 2026-11-03): off until the field evaluation passes
-        self.heading_mag_seed = False
-        self.mag_min_quality = 0.7       # mag_logic quality (0..1) of every seed sample
-        self.mag_seed_samples = 10       # consecutive agreeing samples (0.5 s at 20 Hz)
-        self.mag_seed_agree = math.radians(5.0)
-        self.mag_timeout = 0.5           # s; an older sample is not used
-        self.sigma_mag = math.radians(20.0)
+        # COG measurement method (module doc): 'window' (default) or 'keyframes' (stock
+        # firmware HeadingEstimator gating, 2026-11-03; defaults = the vendor Config values,
+        # radians, not converted to degrees in the ROS parameters)
+        self.cog_method = 'window'
+        self.kf_dist = 0.05              # m between RTK-fixed keyframes
+        self.kf_window = 10              # keyframes in the sliding window
+        self.kf_chord_min = 0.3          # m first..last keyframe
+        self.kf_chord_max = 0.8          # m
+        self.kf_yaw_spread = 0.17        # rad max |imu yaw - window mean|
+        self.kf_yaw_sigma = 0.08         # rad imu yaw standard deviation over the window
+        self.kf_yaw_end = 0.08           # rad |imu yaw last - first|
+        self.kf_update_period = 0.2      # s between measurements
+        self.kf_weight = 0.7             # scale of the Kalman gain
+        self.kf_meas_var = 3.6e-5        # rad^2 measurement noise
+        self.kf_max_correction = 0.8     # rad; a larger innovation is rejected
+        self.kf_yaw_jump = 0.17          # rad keyframe-to-keyframe imu yaw step: window reset
+        self.kf_seed_var = math.radians(3.0) ** 2   # rad^2 offset variance after a seed
+        self.kf_reseed_after = 15        # consecutive agreeing rejected corrections -> re-seed
         for k, v in kw.items():
             if not hasattr(self, k):
                 raise AttributeError('unknown parameter %s' % k)
@@ -285,6 +291,104 @@ class _Window:
 
 
 FAIR_SIGMA = math.radians(15.0)     # quality 'fair' upper bound (yaw sigma)
+
+
+class KeyframeHeadingEstimator:
+    """Stock-firmware style COG heading from RTK keyframes (pure; see the module doc).
+
+    :meth:`add` takes one RTK-FIXED position with the IMU yaw at that time and the travel
+    direction (+1 forward, -1 reverse) and returns a measured offset (``cog - mean imu yaw``,
+    rad) when a steady window is due, else None; :attr:`gate` says why not. :meth:`correct`
+    folds a measurement into an offset with the Kalman gain. The caller resets the window
+    whenever the position stream is not usable (no RTK fixed, not moving straight).
+    """
+
+    def __init__(self, p):
+        self.p = p
+        self.kfs = []                # (t, x, y, imu_yaw) keyframes, oldest first
+        self.direction = 0
+        self.last_meas_t = None
+        self.var = None              # offset variance (None: no offset yet)
+        self.var_t = None
+        self.gate = ''
+        self.last_reset = ''         # why the window was last restarted
+
+    def reset(self, why=''):
+        self.kfs = []
+        self.direction = 0
+        if why:
+            self.gate = self.last_reset = why
+
+    def add(self, t, x, y, imu_yaw, direction):
+        p = self.p
+        if direction != self.direction:
+            self.reset('direction change' if self.direction else '')
+            self.direction = direction
+        if self.kfs:
+            lx, ly, lyaw = self.kfs[-1][1:]
+            if math.hypot(x - lx, y - ly) < p.kf_dist:
+                return None
+            step = wrap(imu_yaw - lyaw)
+            if abs(step) > p.kf_yaw_jump:
+                self.reset('yaw jump %.1f deg between keyframes' % math.degrees(step))
+                self.direction = direction
+        self.kfs = (self.kfs + [(t, x, y, imu_yaw)])[-p.kf_window:]
+        if len(self.kfs) < p.kf_window:
+            self.gate = 'collecting %d/%d keyframes' % (len(self.kfs), p.kf_window)
+            return None
+        x0, y0, yaw0 = self.kfs[0][1:]
+        dx, dy = x - x0, y - y0
+        chord = math.hypot(dx, dy)
+        if chord < p.kf_chord_min or chord > p.kf_chord_max:
+            self.gate = 'chord %.2f m outside %.2f..%.2f' % (chord, p.kf_chord_min, p.kf_chord_max)
+            if chord > p.kf_chord_max:
+                self.kfs = []
+            return None
+        rel = [wrap(k[3] - yaw0) for k in self.kfs]
+        mean_rel = sum(rel) / len(rel)
+        spread = max(abs(r - mean_rel) for r in rel)
+        sigma = math.sqrt(sum((r - mean_rel) ** 2 for r in rel) / len(rel))
+        end = abs(rel[-1])
+        if spread > p.kf_yaw_spread or sigma > p.kf_yaw_sigma or end > p.kf_yaw_end:
+            self.gate = 'imu yaw not steady (spread %.1f, sigma %.1f, end %.1f deg)' % (
+                math.degrees(spread), math.degrees(sigma), math.degrees(end))
+            return None
+        if self.last_meas_t is not None and t - self.last_meas_t < p.kf_update_period:
+            self.gate = 'cadence'
+            return None
+        self.last_meas_t = t
+        cog = math.atan2(dy, dx)
+        if direction < 0:
+            cog = wrap(cog + math.pi)
+        imu_mean = wrap(yaw0 + mean_rel)
+        self.gate = ''
+        return {'t': t, 'measured': wrap(cog - imu_mean), 'cog': cog, 'imu_mean': imu_mean,
+                'distance': chord, 'yaw_spread': spread, 'yaw_sigma': sigma, 'yaw_end': end}
+
+    def seed(self, t, var=None):
+        """The offset was set outright (any source): restart the variance."""
+        self.var = self.p.kf_seed_var if var is None else var
+        self.var_t = t
+
+    def gain(self, t):
+        """(Kalman gain, predicted variance) for a measurement at ``t``: the variance grows
+        with ``drift_rate`` (as a random walk) since the last correction."""
+        p = self.p
+        if self.var is None:
+            self.seed(t)
+        dt = max(0.0, t - self.var_t)
+        var = self.var + (p.drift_rate ** 2) * dt
+        return p.kf_weight * var / (var + p.kf_meas_var), var
+
+    def correct(self, t, offset, meas):
+        """(new offset or None when rejected, innovation, gain)."""
+        innov = wrap(meas - offset)
+        if abs(innov) > self.p.kf_max_correction:
+            return None, innov, 0.0
+        k, var = self.gain(t)
+        self.var = (1.0 - k) * var
+        self.var_t = t
+        return wrap(offset + k * innov), innov, k
 
 
 class HeadingEstimator:
@@ -320,6 +424,7 @@ class HeadingEstimator:
         self._win = None
         self.gps_xy = None           # last RTK (float/fixed) GPS position, map/ENU
         self._gps_recent = []        # last consecutive RTK-FIXED positions (continuity check)
+        self.kf = KeyframeHeadingEstimator(self.p)   # cog_method 'keyframes'
         self._pending = None         # persisted record awaiting the continuity check
         # continuity check of a 'file' offset: '' (none loaded), 'unverifiable' (no / old
         # record), 'pending' (no IMU yet), 'yaw_ok' (IMU did not restart; position pending,
@@ -331,10 +436,6 @@ class HeadingEstimator:
         self.rtk_gate = ''           # why the last RTK sample was not used
         self._rtk_seed = []          # consistent-sample buffer while unaligned (offsets)
         self._rtk_rejected = []      # consecutive outlier samples while aligned (offsets)
-        self.mag_gate = ''           # why the last magnetometer sample did not seed
-        self.mag_last = None         # (t, heading_enu, quality) of the last sample
-        self.mag_seed_quality = None  # lowest sample quality of the seed (source mag)
-        self._mag_seed = []          # consecutive candidate offsets
         # 2026-11-02 stationary hold (mission _heading_cog_stale): position at the last
         # absolute fix (cog / dock / rtk / file_verified; RTK fixed), how far the robot may
         # have moved since (None = no position at the fix): the farthest RTK fixed or float
@@ -356,7 +457,7 @@ class HeadingEstimator:
         p = self.p
         base = {SOURCE_COG: p.sigma_cog, SOURCE_DOCK: p.sigma_dock,
                 SOURCE_RTK: p.sigma_rtk,
-                SOURCE_FILE: p.sigma_file, SOURCE_MAG: p.sigma_mag,
+                SOURCE_FILE: p.sigma_file,
                 SOURCE_FILE_VERIFIED: p.sigma_file_verified}.get(self.source, p.sigma_none)
         if self.offset is None or self.source == SOURCE_NONE:
             return p.sigma_none
@@ -385,7 +486,7 @@ class HeadingEstimator:
 
     def quality(self, now):
         if not self.aligned:
-            return 'low' if self.source in (SOURCE_FILE, SOURCE_MAG) else 'none'
+            return 'low' if self.source == SOURCE_FILE else 'none'
         s = self.yaw_sigma(now)
         return 'good' if s <= math.radians(8.0) else 'fair' if s <= FAIR_SIGMA else 'poor'
 
@@ -397,6 +498,7 @@ class HeadingEstimator:
             'quality': self.quality(now),
             'yaw_sigma_deg': round(math.degrees(self.yaw_sigma(now)), 2),
             'cog_updates': self.n_cog,
+            'cog_method': self.p.cog_method,
             'offset_rate_deg_min': round(math.degrees(self.offset_rate) * 60.0, 3),
             'age_s': None if self.updated_at is None else round(now - self.updated_at, 1),
             'imu_yaw_deg': None if self.imu_yaw is None else round(math.degrees(self.imu_yaw), 2),
@@ -414,21 +516,16 @@ class HeadingEstimator:
             else round(self.moved_since_fix, 2),
             'imu_continuous': bool(self._imu_continuous_at(now) and self.aligned),
             'held': bool(self.stationary_since_fix(now)),   # mission _heading_cog_held
-            'mag_seed_quality': None if self.source != SOURCE_MAG or self.mag_seed_quality is None
-            else round(self.mag_seed_quality, 3),
-            'mag_gate': self.mag_gate,
         }
-        if self.mag_last is not None:
-            t, h, q = self.mag_last
-            d['mag_heading_deg'] = round(math.degrees(h), 2)
-            d['mag_quality'] = round(q, 3)
-            d['mag_age_s'] = round(now - t, 1)
         if self.last_cog is not None:
             t, cog, meas, dist = self.last_cog
             d['last_cog_deg'] = round(math.degrees(cog), 2)
             d['last_cog_offset_deg'] = round(math.degrees(meas), 2)
             d['last_cog_distance_m'] = round(dist, 2)
             d['last_cog_age_s'] = round(now - t, 1)
+        if self.p.cog_method == 'keyframes':
+            d['kf_gate'] = self.kf.gate
+            d['kf_keyframes'] = len(self.kf.kfs)
         if self._win is not None:
             w = self._win
             d['window_m'] = round(math.hypot(w.pts[-1][0] - w.x0, w.pts[-1][1] - w.y0), 2)
@@ -653,7 +750,7 @@ class HeadingEstimator:
             return False
         self.rtk_gate = ''
         meas = wrap(heading_enu - self.imu_yaw)
-        if self.offset is None or self.source in PRIOR_SOURCES:
+        if self.offset is None or self.source in (SOURCE_NONE, SOURCE_FILE):
             # No trustworthy offset: seed only from several mutually consistent samples. An
             # unverified file seed is gated like any other: one sample never replaces it.
             self._rtk_seed = (self._rtk_seed + [meas])[-p.rtk_seed_samples:]
@@ -662,12 +759,10 @@ class HeadingEstimator:
                 self.last_event = 'RTK heading sample %d/%d towards a seed' % (
                     len(self._rtk_seed), p.rtk_seed_samples)
                 return False
-            if self.source in (SOURCE_FILE, SOURCE_MAG) and self.offset is not None:
+            if self.source == SOURCE_FILE and self.offset is not None:
                 off = wrap(mean - self.offset)
-                why = ('RTK replaces %s seed (%.1f deg off)' % (self.source, math.degrees(off))
-                       if abs(off) > p.outlier else
-                       'RTK seed confirms %s seed (%.1f deg off)' % (self.source,
-                                                                     math.degrees(off)))
+                why = ('RTK replaces file seed (%.1f deg off)' if abs(off) > p.outlier
+                       else 'RTK seed confirms file seed (%.1f deg off)') % math.degrees(off)
             else:
                 why = 'RTK heading seed from %d samples' % len(self._rtk_seed)
             self._rtk_set(now, mean, why)
@@ -704,68 +799,6 @@ class HeadingEstimator:
         self._rtk_rejected = []
         self.dirty = True
         self.last_event = '%s: offset %.1f deg' % (why, math.degrees(self.offset))
-
-    def _mag_refusal(self, now, quality):
-        """Why a magnetometer sample cannot seed now ('' = usable)."""
-        p = self.p
-        if not p.heading_mag_seed:
-            return 'off'
-        if self.source == SOURCE_MAG:
-            return 'seeded'                 # one seed; COG / RTK / dock take over from it
-        if self.offset is not None and self.source not in (SOURCE_NONE, SOURCE_FILE):
-            return 'better source (%s)' % self.source
-        if self._pending is not None:
-            return 'awaiting the persisted-offset continuity check'
-        if self.source == SOURCE_FILE and self.file_check not in MAG_REPLACES_FILE:
-            return 'file prior %s' % self.file_check
-        if self.docked:
-            return 'docked (dock seed owns the heading)'
-        if self.imu_yaw is None or self.imu_t is None or now - self.imu_t > p.imu_timeout:
-            return 'no IMU'
-        if not (quality >= p.mag_min_quality):
-            return 'quality %.2f < %.2f' % (quality, p.mag_min_quality)
-        return ''
-
-    def on_mag_heading(self, now, heading_enu, quality, stamp=None):
-        """One magnetometer heading sample (map-frame ENU yaw, rad; quality 0..1; ``stamp``
-        = sample time, default ``now``). Seeds the offset (source 'mag', low quality) when there
-        is no usable prior. Returns True on the seed."""
-        p = self.p
-        t = now if stamp is None else stamp
-        self.mag_last = (t, heading_enu, quality)
-        if now - t > p.mag_timeout:
-            why = 'stale sample (%.1f s)' % (now - t)
-        else:
-            why = self._mag_refusal(now, quality)
-        if why:
-            self.mag_gate = why
-            self._mag_seed = []
-            return False
-        self.mag_gate = ''
-        self._mag_seed = (self._mag_seed + [(wrap(heading_enu - self.imu_yaw), quality)])[
-            -p.mag_seed_samples:]
-        mean = _consistent_mean([m for m, _q in self._mag_seed], p.mag_seed_samples,
-                                p.mag_seed_agree)
-        if mean is None:
-            self.mag_gate = 'collecting %d/%d agreeing samples' % (len(self._mag_seed),
-                                                                    p.mag_seed_samples)
-            return False
-        q = min(qq for _m, qq in self._mag_seed)
-        prev = self.source
-        self.offset = wrap(mean)
-        self._reset_rate()
-        self.source = SOURCE_MAG
-        self.updated_at = now
-        self.mag_seed_quality = q
-        self.rejected = []
-        self._rtk_seed = []
-        self._mag_seed = []
-        self.file_check = ''
-        self.mag_gate = 'seeded'
-        self.last_event = ('magnetometer seed from %d samples (quality >= %.2f, replaces %s): '
-                           'offset %.1f deg, low quality until COG'
-                           % (p.mag_seed_samples, q, prev, math.degrees(self.offset)))
-        return True
 
     def on_dock_pose(self, x, y, yaw):
         self.dock_xy = (x, y)
@@ -827,6 +860,8 @@ class HeadingEstimator:
                     x - self.fix_xy[0], y - self.fix_xy[1]))
         self._try_verify(now)
         ok, direction = self._straight_motion(now, variance)
+        if p.cog_method == 'keyframes':
+            return self._on_gps_keyframes(now, x, y, ok, direction)
         w = self._win
         if not ok:
             if w is not None and len(w.pts) > 1:
@@ -847,6 +882,20 @@ class HeadingEstimator:
         # window complete: start the next one here (non-overlapping)
         self._win = _Window(now, x, y, direction, self.fix_type)
         return self._finish_window(now, w, dx, dy, dist)
+
+    def _on_gps_keyframes(self, now, x, y, ok, direction):
+        if ok and self.fix_type != 3:
+            ok, self.gate_reason = False, 'RTK not fixed (fix_type %s)' % self.fix_type
+        if not ok:
+            self.kf.reset(self.gate_reason)
+            return None
+        m = self.kf.add(now, x, y, self.imu_yaw, direction)
+        if m is None:
+            return None
+        res = dict(m, accepted=False)
+        self.last_cog = (now, m['cog'], m['measured'], m['distance'])
+        self._update_offset(now, m['measured'], res)
+        return res
 
     # ------------------------------------------------------------------ internals
     def _straight_motion(self, now, variance):
@@ -907,7 +956,7 @@ class HeadingEstimator:
 
     def _update_offset(self, now, meas, res):
         p = self.p
-        if self.offset is None or self.source in PRIOR_SOURCES:
+        if self.offset is None or self.source in (SOURCE_NONE, SOURCE_FILE):
             self._set_cog(now, meas, 'COG seed', res)
             return
         innov = wrap(meas - self.offset)
@@ -922,6 +971,9 @@ class HeadingEstimator:
                 self._cog_t = now
             return
         # source == cog
+        if p.cog_method == 'keyframes':
+            self._update_keyframes(now, meas, innov, res)
+            return
         if abs(innov) > p.outlier:
             self.rejected.append(meas)
             res['reason'] = 'outlier %.1f deg' % math.degrees(innov)
@@ -945,14 +997,46 @@ class HeadingEstimator:
         self._blend(now, innov, alpha, 'COG update', res)
         self._cog_t = now
 
+    def _update_keyframes(self, now, meas, innov, res):
+        p = self.p
+        new, innov, k = self.kf.correct(now, self.offset, meas)
+        if new is None:
+            self.rejected.append(meas)
+            res['reason'] = 'correction %.1f deg > %.1f' % (
+                math.degrees(innov), math.degrees(p.kf_max_correction))
+            self.last_event = 'keyframe COG rejected: ' + res['reason']
+            if len(self.rejected) >= p.kf_reseed_after:
+                cm = CircularMean()
+                for m in self.rejected:
+                    cm.add(m)
+                mean = cm.mean()
+                if all(abs(wrap(m - mean)) <= p.reseed_agree for m in self.rejected):
+                    self._set_cog(now, mean, 're-seeded from %d consistent keyframe COG '
+                                  'rejections' % len(self.rejected), res)
+                else:
+                    self.rejected = self.rejected[1:]
+            return
+        if p.rate_beta > 0.0 and self._cog_t is not None and p.alpha > 0.0:
+            # same alpha-beta drift tracking, scaled to the (much smaller) per-update gain
+            dt = min(max(now - self._cog_t, 1.0), p.rate_horizon)
+            self.offset_rate = max(-p.max_offset_rate, min(
+                p.max_offset_rate, self.offset_rate + p.rate_beta * (k / p.alpha) * innov / dt))
+        res['innovation'] = innov
+        self.offset = new
+        self._cog_t = now
+        self._accepted(now, 'keyframe COG update (gain %.3f, innovation %.1f deg)'
+                       % (k, math.degrees(innov)), res)
+
     def _set_cog(self, now, meas, why, res):
         self.offset = wrap(meas)
         self._reset_rate()
         self._cog_t = now
+        self.kf.seed(now)
         self._accepted(now, why, res)
 
     def _blend(self, now, innov, alpha, why, res):
         self.offset = wrap(self.offset + alpha * innov)
+        self.kf.seed(now)
         self._accepted(now, '%s (alpha %.2f, innovation %.1f deg)'
                        % (why, alpha, math.degrees(innov)), res)
 
@@ -978,6 +1062,8 @@ class HeadingEstimator:
         self.last_event = 'IMU yaw jumped %.1f deg without rotation: IMU reset, unaligned' \
             % math.degrees(step)
         self._win = None
+        self.kf.reset('IMU reset')
+        self.kf.var = None
         if self._dock_mean is not None:
             self._dock_mean = CircularMean()
             self.docked_since = now
@@ -993,7 +1079,6 @@ class HeadingEstimator:
         self.rejected = []
         self._rtk_seed = []
         self._rtk_rejected = []
-        self._mag_seed = []
 
 
 def _consistent_mean(samples, need, agree):

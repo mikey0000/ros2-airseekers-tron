@@ -43,10 +43,6 @@ Subscribed
                                     confirmed dual-antenna receiver (um960 publish_rtk_heading,
                                     off by default: the UM960 is single-antenna)
 ``/fix``                            sensor_msgs/NavSatFix  lat/lon for the UTM grid convergence
-``/imu/mag_heading``                geometry_msgs/Vector3Stamped  only with ``heading_mag_seed``
-                                    (default false): x = magnetometer map-frame ENU yaw (deg),
-                                    y = quality 0..1 (mower_cameras stereo_imu, mag_logic); seeds
-                                    the low-quality ``mag`` source when there is no prior
 ``/mower_base/status``              MowerBaseDevStatus     is_charging / is_docking_done
 ``/map_server_node/docking_pose``   PoseStamped (latched)  dock pose; fallback ``dock_pose_file``
 ``/map_server_node/docking_pose_measured``  Bool (latched)  dock pose recorded by set_docking_point;
@@ -59,7 +55,7 @@ Published
                              from the alignment quality (huge while unaligned). Bytes are
                              patched in place (no message objects at 100 Hz).
 ``/heading_aligner/status``  std_msgs/String JSON, latched, 1 Hz + on change:
-                             {aligned, source: none|file|file_verified|dock|cog|rtk|mag,
+                             {aligned, source: none|file|file_verified|dock|cog|rtk,
                              offset_deg, quality, gate, min_speed, file_check,
                              last_cog_age_s, imu_active, virtual_minus_wit_deg,
                              stereo_gaps, stereo_gap_s, stereo_gap_max_s,
@@ -67,8 +63,6 @@ Published
                              ``file_check`` (source file): pending | yaw_ok (IMU kept running,
                              position unproven: a usable prior for the mission's heading
                              calibration drive) | yaw_failed | unverifiable.
-                             ``mag_seed_quality`` (source mag), ``mag_gate``, ``mag_heading_deg``,
-                             ``mag_quality``, ``mag_age_s`` (last magnetometer sample).
 
 Persisted: ``offset_file`` (default /userdata/ros2/heading_offset.yaml) when the source changes,
 the offset moves >= ``persist_min_change`` deg, the robot moves 0.3 m / turns 5 deg, or every
@@ -91,7 +85,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import (QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile,
                        QoSReliabilityPolicy)
-from geometry_msgs.msg import PoseStamped, Twist, Vector3Stamped
+from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, NavSatFix
 from std_msgs.msg import Bool, Float32, String
@@ -114,8 +108,7 @@ except ImportError:  # pragma: no cover
 
 DEG_PARAMS = ('max_imu_yaw_change', 'outlier', 'reseed_agree', 'dock_heading_offset',
               'imu_jump', 'sigma_cog', 'sigma_rtk', 'sigma_dock', 'sigma_file',
-              'sigma_file_verified', 'verify_max_yaw', 'max_offset_rate', 'mag_seed_agree',
-              'sigma_mag')
+              'sigma_file_verified', 'verify_max_yaw', 'max_offset_rate')
 
 
 def _read_dock_measured(path):
@@ -167,7 +160,6 @@ class HeadingAligner(Node):
         d('gnss_status_topic', '/gps/status')
         d('heading_topic', '/heading')
         d('heading_valid_topic', '/heading_valid')
-        d('mag_heading_topic', '/imu/mag_heading')   # used only with heading_mag_seed
         d('heading_stale', 0.5)      # s; older /heading or /heading_valid is not used
         # Bearing of the GPS antenna baseline relative to the robot's forward axis (deg,
         # clockwise): robot bearing = GPHPR - this. Measure on a dual-antenna install.
@@ -312,16 +304,6 @@ class HeadingAligner(Node):
                          history=QoSHistoryPolicy.KEEP_LAST)
         self._cmd_sub = self._pump.subscribe(Twist, g('cmd_vel_topic'), self._on_cmd, one,
                                              raw=True, **sampled)
-        self._mag_sub = None
-        if self.est.p.heading_mag_seed:
-            self._mag_sub = self._pump.subscribe(
-                Vector3Stamped, g('mag_heading_topic'), self._on_mag,
-                QoSProfile(depth=10, reliability=QoSReliabilityPolicy.RELIABLE,
-                           history=QoSHistoryPolicy.KEEP_LAST),
-                sampled=True, deliver_all=True, with_receipt=True)
-            self.get_logger().info('heading_mag_seed on: %s seeds a low-quality mag heading '
-                                   'when there is no prior (quality >= %.2f)' % (
-                                       g('mag_heading_topic'), self.est.p.mag_min_quality))
         self._odom_sub = self._pump.subscribe(
             Odometry, g('odom_topic'), self._on_odom,
             QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
@@ -510,15 +492,6 @@ class HeadingAligner(Node):
     def _on_heading(self, msg):
         self._heading = (time.monotonic(), float(msg.data))
 
-    def _on_mag(self, msg, receipt):
-        before = self.est.source
-        x, q = float(msg.vector.x), float(msg.vector.y)
-        if not (math.isfinite(x) and math.isfinite(q)):
-            return
-        self.est.on_mag_heading(time.monotonic(), math.radians(x), q, stamp=receipt)
-        if self.est.source != before:
-            self.get_logger().info(self.est.last_event)
-
     def _on_heading_valid(self, msg):
         self._heading_valid = (time.monotonic(), bool(msg.data))
 
@@ -579,8 +552,7 @@ class HeadingAligner(Node):
     # ------------------------------------------------------------------ ticks
     def _fast_tick(self):
         with self._lock:
-            self._pump.poll([s for s in (self._cmd_sub, self._gps_sub, self._odom_sub,
-                                         self._mag_sub) if s is not None])
+            self._pump.poll([self._cmd_sub, self._gps_sub, self._odom_sub])
             self._update_rest()
 
     def _slow_tick(self):
