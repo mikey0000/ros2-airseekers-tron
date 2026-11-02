@@ -2,27 +2,14 @@ import {useEffect, useState} from "react";
 import {Alert, Button, Card, Collapse, Space, Spin, Tag, Typography} from "antd";
 import {CheckCircleOutlined, DownloadOutlined, LockOutlined, WarningOutlined} from "@ant-design/icons";
 import {useTranslation} from "react-i18next";
-import {apiFetch, networkHttpBase} from "../../transport/index.ts";
+import {networkHttpBase} from "../../transport/index.ts";
+import {fetchSecureOrigin, type SecureOriginStatus} from "./secureOrigin.ts";
 
 const {Text, Paragraph, Link} = Typography;
 
-/** GET /api/secure-origin (pkg/api/secure_origin.go). */
-export interface SecureOriginStatus {
-    enabled: boolean;
-    https_urls: string[];
-    hostname: string;
-    ca_fingerprint_sha256?: string;
-    ca_not_after?: string;
-}
+export type {SecureOriginStatus} from "./secureOrigin.ts";
 
 const SECURE_ORIGIN_CA_PATH = "/api/secure-origin/ca.crt";
-
-/** The card's only backend call, kept in one place for the transport seam. */
-async function fetchSecureOrigin(signal?: AbortSignal): Promise<SecureOriginStatus> {
-    const res = await apiFetch("/api/secure-origin", {signal, cache: "no-store"});
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json() as SecureOriginStatus;
-}
 
 const INSTALL_GUIDES = [
     {key: "android", steps: ["step1", "step2", "step3"]},

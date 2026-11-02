@@ -4534,6 +4534,29 @@
     "autoSwitched": "Pas de Wi-Fi : passage en Bluetooth. Allez dans Réglages → Connexion pour revenir au Wi-Fi.",
     "pairFailed": "Échec de la connexion Bluetooth : {{error}}"
   },
+  "bleGuide": {
+    "title": "Configurer le Bluetooth",
+    "ready": "Bluetooth prêt",
+    "browser": {
+      "title": "Navigateur compatible Bluetooth",
+      "fail": "Utilisez Chrome ou Edge sur Android, Windows, macOS ou Linux ; les navigateurs iPhone et iPad ne prennent pas en charge Web Bluetooth.",
+      "unknown": "Vérifié une fois l'application ouverte depuis son adresse HTTPS."
+    },
+    "origin": {
+      "title": "Adresse sécurisée (HTTPS)",
+      "fail": "Ouvrez l'application depuis une des adresses HTTPS de la tondeuse ; installez d'abord le certificat de la tondeuse (Accès distant → Origine sécurisée).",
+      "openRemoteAccess": "Ouvrir les réglages Accès distant"
+    },
+    "token": {
+      "title": "Jeton Bluetooth enregistré",
+      "fail": "Ouvrez l'application une fois en Wi-Fi depuis son adresse HTTPS pour le récupérer, ou collez-le dans Jeton Bluetooth ci-dessous.",
+      "rejected": "La tondeuse a refusé le jeton enregistré. Ouvrez l'application une fois en Wi-Fi pour récupérer le jeton actuel, ou collez-le à nouveau ci-dessous."
+    },
+    "paired": {
+      "title": "Tondeuse appairée",
+      "fail": "Près de la tondeuse, touchez « Connecter une tondeuse en Bluetooth » ci-dessous et choisissez-la dans la liste."
+    }
+  },
   "mowProgress": {
     "title": "Progression de la tonte",
     "titleArea": "Tonte : {{name}}",

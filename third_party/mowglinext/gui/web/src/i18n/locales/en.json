@@ -4534,6 +4534,29 @@
     "autoSwitched": "No Wi-Fi: switched to Bluetooth. Go to Settings → Connection to switch back.",
     "pairFailed": "Bluetooth connection failed: {{error}}"
   },
+  "bleGuide": {
+    "title": "Set up Bluetooth",
+    "ready": "Bluetooth ready",
+    "browser": {
+      "title": "Browser supports Bluetooth",
+      "fail": "Use Chrome or Edge on Android, Windows, macOS or Linux; iPhone and iPad browsers do not support Web Bluetooth.",
+      "unknown": "Checked once the app is open from its HTTPS address."
+    },
+    "origin": {
+      "title": "Secure (HTTPS) address",
+      "fail": "Open the app from one of the mower's HTTPS addresses; install the mower certificate first (Remote access → Secure origin).",
+      "openRemoteAccess": "Open Remote access settings"
+    },
+    "token": {
+      "title": "Bluetooth token stored",
+      "fail": "Open the app once on Wi-Fi from its HTTPS address to fetch it, or paste it under Bluetooth token below.",
+      "rejected": "The mower rejected the stored token. Open the app on Wi-Fi once to fetch the current one, or paste it again below."
+    },
+    "paired": {
+      "title": "Mower paired",
+      "fail": "Near the mower, tap Connect a Bluetooth mower below and pick it in the list."
+    }
+  },
   "mowProgress": {
     "title": "Mowing progress",
     "titleArea": "Mowing {{name}}",
