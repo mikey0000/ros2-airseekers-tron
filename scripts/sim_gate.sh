@@ -41,6 +41,9 @@
 #              resumes there (scripts/sim_gate/resume_cursor.py; the mission's
 #              coverage_resume_path is pointed into the run's maps/)
 #   -- ARGS    extra sim.launch.py arguments (e.g. mission_params_file:=/abs/path.yaml)
+#
+# Preflight: refuses to start (exit 2) unless `powerprofilesctl get` is performance (skipped
+# when powerprofilesctl is absent), and prints the 1-minute load average.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK="$(dirname "$SCRIPT_DIR")"
@@ -62,7 +65,7 @@ while getopts "w:n:ds:t:klLM:r:x:" o; do
     M) LOCMODEL="$OPTARG" ;;
     r) RESUME="$OPTARG" ;;
     x) RATE="$OPTARG" ;;
-    *) sed -n '2,43p' "$0"; exit 2 ;;
+    *) sed -n '2,46p' "$0"; exit 2 ;;
   esac
 done
 shift $((OPTIND - 1))
@@ -80,6 +83,17 @@ fi
 [[ "$RATE" =~ ^[0-9]+(\.[0-9]+)?$ ]] && awk "BEGIN{exit !($RATE >= 0.1 && $RATE <= 10)}" \
   || { echo "sim_gate: -x RATE must be a number in 0.1..10" >&2; exit 2; }
 [ -f "$WORLD" ] || { echo "sim_gate: world $WORLD not found" >&2; exit 2; }
+# host preflight (2026-11-03): balanced / quiet profiles halved the controller loop at 1x
+# (10 Hz sim, INVALID); the load average is printed so a busy host shows in the log
+if command -v powerprofilesctl >/dev/null 2>&1; then
+  prof="$(powerprofilesctl get 2>/dev/null || true)"
+  if [ "$prof" != performance ]; then
+    echo "sim_gate: power profile is '${prof:-unknown}', not performance: the controller loop" \
+      "misses its sim-time budget (INVALID runs). Run: powerprofilesctl set performance" >&2
+    exit 2
+  fi
+fi
+echo "sim_gate: host load average (1 min) $(cut -d' ' -f1 /proc/loadavg), power profile ${prof:-n/a}"
 [ -f "$STACK/install/setup.bash" ] || {
   echo "sim_gate: no install/ - run ./scripts/dev_build.sh build first" >&2; exit 2; }
 case "$WORLD" in "$STACK"/*) ;; *) echo "sim_gate: the world must be inside $STACK" >&2; exit 2 ;; esac

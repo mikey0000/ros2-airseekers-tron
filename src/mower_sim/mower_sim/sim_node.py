@@ -48,9 +48,10 @@ from rclpy.time import Time
 from rclpy.qos import (DurabilityPolicy, QoSProfile, ReliabilityPolicy,
                        qos_profile_sensor_data)
 
+from lifecycle_msgs.msg import TransitionEvent
 from lifecycle_msgs.srv import GetState
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
-from rcl_interfaces.srv import SetParameters
+from rcl_interfaces.srv import GetParameters, SetParameters
 from rosgraph_msgs.msg import Clock as ClockMsg
 
 from geometry_msgs.msg import TransformStamped, Twist, TwistStamped
@@ -65,6 +66,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from mower_interfaces.msg import MowerBaseDevStatus, MowerSensorInfo
 from mower_interfaces.srv import ChargingControl, CutterControl, SetCutterHeight
 
+from .ctrl_rate import CtrlRateKeeper
 from .kinematics import DiffDrive, DriveParams
 from .loc_drift import LocDrift
 from .loc_drift import params_for as loc_params_for
@@ -117,7 +119,9 @@ class SimNode(Node):
         # rate_factor k its loop must run k x faster in wall time to keep its sim-time rate.
         # MPPI reads controller_frequency once at configure (model_dt == period -> warm-start
         # shift ON), so the sim sets controller_frequency = base x k only AFTER the
-        # controller_server is active (its dynamic parameter callback updates the loop rate).
+        # controller_server is active (its dynamic parameter callback updates the loop rate),
+        # and again after EVERY re-activation (mower_sim/ctrl_rate.py: the callback is gone
+        # while inactive, and nav2 is paused on the dock and resumed on START).
         d('controller_server', '/controller_server')
         d('controller_frequency', 20.0)
         # loc_drift: also re-send the latest map -> odom on every physics tick (values still
@@ -323,12 +327,17 @@ class SimNode(Node):
         # the only wall timer: paces the sim clock (rate_factor x real time)
         self.create_timer(self.clock_dt / self.rate / 2.0, self._clock_tick, clock=self._wall)
         self._ctrl_base = float(gp('controller_frequency').value)
-        self._ctrl_done = self.rate == 1.0
-        if not self._ctrl_done:
+        if self.rate != 1.0:
             srv = str(gp('controller_server').value).rstrip('/')
+            self._ctrl_hz = self._ctrl_base * self.rate
+            self._ctrl = CtrlRateKeeper(self._ctrl_send, self._ctrl_hz)
             self._ctrl_state = self.create_client(GetState, srv + '/get_state')
-            self._ctrl_params = self.create_client(SetParameters, srv + '/set_parameters')
-            self._ctrl_future = None
+            self._ctrl_set = self.create_client(SetParameters, srv + '/set_parameters')
+            self._ctrl_get = self.create_client(GetParameters, srv + '/get_parameters')
+            self._ctrl_poll = None              # GetState future in flight
+            self._ctrl_events = 0               # transition events seen (stale-poll guard)
+            self.create_subscription(TransitionEvent, srv + '/transition_event',
+                                     self._on_ctrl_transition, 10)
             self.create_timer(1.0, self._ctrl_rate_tick, clock=self._wall)
         self.get_logger().info(
             'sim clock: rate_factor %.2f, /clock %.0f Hz sim, physics %.0f Hz sim'
@@ -379,35 +388,54 @@ class SimNode(Node):
         if n % self.n_slow == 0:
             self._slow_tick()
 
+    def _on_ctrl_transition(self, msg: TransitionEvent):
+        self._ctrl_events += 1
+        self._ctrl.observe(msg.goal_state.id)
+
     def _ctrl_rate_tick(self):
-        """rate_factor != 1: once the controller_server is active, set its
-        controller_frequency to base x rate (see the parameter comment)."""
-        if self._ctrl_done:
+        """rate_factor != 1: poll the controller_server's lifecycle state (covers transition
+        events missed before discovery) and retry a failed controller_frequency set."""
+        self._ctrl.tick()
+        if self._ctrl_poll is not None or not self._ctrl_state.service_is_ready():
             return
-        if self._ctrl_future is not None:
-            if not self._ctrl_future.done():
+        seen = self._ctrl_events
+        self._ctrl_poll = self._ctrl_state.call_async(GetState.Request())
+
+        def done(fut):
+            self._ctrl_poll = None
+            res = fut.result()
+            # a transition event after the request is newer than this answer
+            if res is not None and self._ctrl_events == seen:
+                self._ctrl.observe(res.current_state.id)
+        self._ctrl_poll.add_done_callback(done)
+
+    def _ctrl_send(self, hz: float):
+        n = self._ctrl.activations
+        req = SetParameters.Request(parameters=[Parameter(
+            name='controller_frequency', value=ParameterValue(
+                type=ParameterType.PARAMETER_DOUBLE, double_value=hz))])
+
+        def set_done(fut):
+            res = fut.result()
+            ok = res is not None and bool(res.results) and res.results[0].successful
+            self._ctrl.result(ok)
+            if not ok:
+                self.get_logger().warn(
+                    'controller_server activation %d: setting controller_frequency %.1f '
+                    'failed (%s), retrying while active' % (
+                        n, hz, res.results[0].reason if res is not None and res.results
+                        else res))
                 return
-            res = self._ctrl_future.result()
-            self._ctrl_future = None
-            if isinstance(res, GetState.Response):
-                if res.current_state.id == 3:      # active
-                    hz = self._ctrl_base * self.rate
-                    req = SetParameters.Request(parameters=[Parameter(
-                        name='controller_frequency', value=ParameterValue(
-                            type=ParameterType.PARAMETER_DOUBLE, double_value=hz))])
-                    self._ctrl_future = self._ctrl_params.call_async(req)
-            elif res is not None and res.results and res.results[0].successful:
-                self._ctrl_done = True
+            get = self._ctrl_get.call_async(GetParameters.Request(names=['controller_frequency']))
+
+            def get_done(gfut):
+                g = gfut.result()
+                back = (g.values[0].double_value if g is not None and g.values else float('nan'))
                 self.get_logger().info(
-                    'controller_server controller_frequency -> %.1f Hz wall (= %.1f Hz sim)'
-                    % (self._ctrl_base * self.rate, self._ctrl_base))
-            else:
-                self.get_logger().error('setting controller_frequency failed: %s' % (
-                    res.results[0].reason if res is not None and res.results else res))
-                self._ctrl_done = True
-            return
-        if self._ctrl_state.service_is_ready():
-            self._ctrl_future = self._ctrl_state.call_async(GetState.Request())
+                    'controller_server activation %d: controller_frequency -> %.1f Hz wall '
+                    '(= %.1f Hz sim), read back %.1f' % (n, hz, self._ctrl_base, back))
+            get.add_done_callback(get_done)
+        self._ctrl_set.call_async(req).add_done_callback(set_done)
 
     def _on_cmd(self, msg: Twist):
         self.drive.command(msg.linear.x, msg.angular.z)

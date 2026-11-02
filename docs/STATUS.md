@@ -898,3 +898,29 @@ layout grows holes by 0.40 and passed at 0.30 too. The masks are robot-centre li
 between a wall and the area edge narrower than the body is never used (test). Not modelled:
 tracking error / leg overshoot at row ends (the trip is the backstop). A line lying
 outside every area is not in the masks (no area to carry it).
+
+## Sim gate loop-rate INVALID runs: two causes (2026-11-03, branch ws/sim-rate-race)
+
+From 2026-11-01 evening every gate read a flat 7 Hz sim at `-x 3` (10 Hz at `-x 2`) and
+10 Hz at `-x 1`, for old and new code alike. There were two separate causes. DDS leakage
+(the gate graph on domain 175 holds only its own nodes) and thermal clock collapse (3.0-3.9
+GHz average under a sustained 8-core load) were both ruled out.
+
+* **Lifecycle race (x2 / x3, code).** mower_sim set controller_server's
+  `controller_frequency` to 20 x rate once, as soon as the server was active. At the same
+  moment activity_gated_lifecycle_manager pauses nav2 on the dock and resumes it on START.
+  Nav2 Jazzy removes the server's dynamic-parameter callback in `on_deactivate` and does not
+  re-read the parameter in `on_activate`, so a set that landed after the pause reported success
+  and changed the parameter, but the loop kept running at 20 Hz wall (= 20 / rate Hz sim). This
+  matched all 15 x2 / x3 runs since 2026-11-01, including a 335ef53 run at 17:28 that predates
+  the "slow era". Fix: `mower_sim/ctrl_rate.py` re-sends the rate on every transition into
+  active (`/controller_server/transition_event` plus a GetState poll), retries a refused set
+  and logs the value read back. `evaluate.py` marks a run INVALID with "controller_frequency
+  not applied (sim rate race)" when, with `-x` != 1, launch.log has a missed-rate warning
+  naming another desired rate after START.
+* **Power profile (x1, host).** Every 1x run from 2026-11-02 15:30 to 2026-11-03 02:55 ran
+  under the balanced or quiet platform profile (asusd journal) and read 10 Hz. The first 1x
+  run after the switch to performance read median 20 / p10 19. `sim_gate.sh` now refuses to
+  start unless `powerprofilesctl get` is `performance` and prints the 1-minute load average.
+  The stall looks tied to sim time rather than compute (controller_server 1-30 % CPU, about
+  90 ms sim cycles at 1x and 3x). It is not fully explained.
