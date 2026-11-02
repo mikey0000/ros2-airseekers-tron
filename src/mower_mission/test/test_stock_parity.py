@@ -103,3 +103,36 @@ def test_critical_battery_poweroff_disabled():
     m = h.mark()
     h.tick(dt=1.0, n=5)
     assert not poweroff_calls(h, m) and notices(h, m, 'battery_critical')[-1].active
+
+
+# ---- 4. camera blocked --------------------------------------------------
+def controller_caps(h, m):
+    return [e.request['params'] for e in h.since(m, f.CallService)
+            if e.name == f.SRV_SET_PARAMS and e.request['node'] == f.PARAM_NODE_CONTROLLER]
+
+
+def test_camera_blocked_caps_speed_and_restores():
+    h = Harness()
+    mowing(h)
+    m = h.mark()
+    h.fsm.inputs.camera_blocked = True
+    h.tick()
+    caps = controller_caps(h, m)
+    assert caps and caps[-1][h.fsm.p.tilt_transit_speed_param] == 0.15
+    assert all(v <= 0.15 for v in caps[-1].values())
+    assert h.name == 'MOWING'                      # keeps mowing, slowly
+    h.tick(n=5)
+    assert len(controller_caps(h, m)) == 1         # sent once
+    m = h.mark()
+    h.fsm.inputs.camera_blocked = False
+    h.tick()
+    restored = controller_caps(h, m)
+    assert restored and restored[-1][h.fsm.p.tilt_transit_speed_param] == 0.3
+
+
+def test_camera_blocked_ignored_when_idle():
+    h = Harness()
+    m = h.mark()
+    h.fsm.inputs.camera_blocked = True
+    h.tick(n=3)
+    assert not controller_caps(h, m)

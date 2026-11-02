@@ -7,6 +7,8 @@ Small behaviours the stock Tron firmware has (docs/audit_2026-10-05/vendor_missi
 * critical battery: below battery_critical_percent off the dock -> stop, blade off, alert,
   then after battery_critical_grace_s the host power-off via base_keys (stock ShutdownSoon
   900023 + PowerManager power-off; the lithium pack must not be run flat);
+* camera blocked: while mower_vision flags the front camera blocked, both controllers are
+  capped at camera_blocked_speed_mps (the tilt caution cap path);
 * battery temperature: START refused outside the start band (start.py _preflight); above
   battery_temp_max_mow_c mid-mission the robot docks and resumes once cooled (stock
   ChargeEnvCheck "battery temperature high" -> auto-charge flow, pseudo-state
@@ -15,7 +17,8 @@ Small behaviours the stock Tron firmware has (docs/audit_2026-10-05/vendor_missi
 Every guard raises / clears a mower_alerts notice (:class:`Notice`).
 """
 
-from mower_mission.fsm.common import (IDLE_NAMES, MISSION_PHASES, Notice, SRV_POWEROFF,
+from mower_mission.fsm.common import (AREA_SETTINGS_DEFAULTS, IDLE_NAMES,
+    PARAM_NODE_CONTROLLER, SRV_SET_PARAMS, MISSION_PHASES, Notice, SRV_POWEROFF,
     ZeroBurst)
 
 
@@ -31,6 +34,40 @@ class ParityGuardsMixin:
         sent[incident] = key
         self._fx.append(Notice(incident, bool(active), text, kind, int(priority),
                                message or incident))
+
+    # ---- camera blocked ---------------------------------------------------
+    def _speed_cap_params(self, cap):
+        params = dict(self.coverage_speed_params(cap))
+        params[self.p.tilt_transit_speed_param] = cap
+        return params
+
+    def _camera_blocked_tick(self):
+        p = self.p
+        want = (bool(self.inputs.camera_blocked) and float(p.camera_blocked_speed_mps) > 0.0
+                and self.phase in MISSION_PHASES and self.mission is not None)
+        if want == self._camera_capped:
+            return
+        self._camera_capped = want
+        m = self.mission
+        if want:
+            cap = float(p.camera_blocked_speed_mps)
+            if self._tilt_capped:
+                cap = min(cap, float(p.tilt_caution_speed_mps))
+            params = self._speed_cap_params(cap)
+            self._log('warn', 'front camera blocked: controller speed capped at %.2f m/s' % cap)
+        elif self._tilt_capped:
+            self._log('info', 'front camera ok: slope caution cap kept')
+            return
+        else:
+            params = {p.tilt_transit_speed_param: float(p.tilt_transit_speed_mps)}
+            if m is not None and m.settings:
+                params.update(self.coverage_speed_params(min(
+                    float(m.settings.get('cut_speed_mps', AREA_SETTINGS_DEFAULTS['cut_speed_mps'])),
+                    float(p.cut_speed_max_mps))))
+            self._log('info', 'front camera ok: controller speed restored')
+        if p.set_cut_speed:
+            self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER, 'params': params},
+                       track=False)
 
     # ---- critical battery -------------------------------------------------
     def _battery_critical_tick(self):

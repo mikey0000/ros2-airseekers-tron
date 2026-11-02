@@ -41,6 +41,7 @@ class ReactiveGuardsMixin:
         """Returns True when a guard owns this tick (phase logic skipped)."""
         self._stuck_watch()
         self._tilt_watch()
+        self._camera_blocked_tick()
         self._hard_boundary_watch()
         cause = self._emergency_cause()
         if cause:

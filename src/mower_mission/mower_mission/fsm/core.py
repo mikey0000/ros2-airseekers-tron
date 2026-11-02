@@ -133,6 +133,7 @@ class MissionFSM(PreviewMixin,
         self._tilt_hist = []                # [[t, x, y]] steep spots backed out of
         self._tilt_trail = []               # [(x, y)] recent driven track, oldest first
         self._tilt_capped = False           # caution speed cap sent to the controller
+        self._camera_capped = False         # camera-blocked speed cap sent to the controller
         self._hb = None                     # hard-boundary retrace in progress (task 0.4 a)
         self._hb_count = 0                  # hard-boundary excursions of this mission
         self._hb_spots = []                 # [(x, y)] excursion origins of this mission

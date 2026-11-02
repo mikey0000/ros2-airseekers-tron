@@ -467,6 +467,8 @@ class Inputs:
     docked: bool = False                # MowerBaseDevStatus.is_docking_done
     is_cutting: bool = False
     battery_percent: Optional[float] = None
+    # /vision/camera_blocked (latched Bool, mower_vision camera_blocked)
+    camera_blocked: bool = False
     # /battery temperature (deg C, mcu_node BatteryInfo.temperature); None = not reported
     battery_temp_c: Optional[float] = None
     fix_type: Optional[int] = None
@@ -1338,6 +1340,9 @@ class Params:
     tilt_caution_speed_mps: float = 0.15
     tilt_transit_speed_param: str = 'FollowPath.vx_max'  # MPPI transit
     tilt_transit_speed_mps: float = 0.3     # restored after caution (nav2_params FollowPath)
+    # front camera blocked (mower_vision camera_blocked, stock CameraBlocked 100105): both
+    # controllers capped at this while a mission runs; 0 disables
+    camera_blocked_speed_mps: float = 0.15
     tilt_trail_m: float = 2.0           # driven track kept for the back-out
     tilt_trail_step_m: float = 0.05
     tilt_backout_pause_s: float = 0.5

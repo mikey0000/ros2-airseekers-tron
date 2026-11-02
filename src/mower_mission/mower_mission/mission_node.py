@@ -79,6 +79,7 @@ TOPIC_DEFAULTS = {
     'obstacle_policy_topic': '/obstacle_policy',   # mower_vision obstacle_guard (JSON, 5 Hz)
     # mower_control supervisor (latched JSON): critical_down -> EMERGENCY (docs/crash_recovery.md)
     'supervisor_status_topic': '/supervisor/status',
+    'camera_blocked_topic': '/vision/camera_blocked',  # mower_vision camera_blocked ('' = off)
     'tilt_status_topic': '/tilt/status',     # mower_control tilt_monitor ('' = no tilt guard input)
     # external rain verdict, upstream MowgliNext contract (std_msgs/Bool, latched; '' = off).
     # The GUI's MQTT broker feeds the service below instead (external_rain.py).
@@ -371,6 +372,8 @@ class MissionNode(Node):
             sub(String, p['supervisor_status_topic'], self._on_supervisor, latched)
         if p['tilt_status_topic']:
             sub(String, p['tilt_status_topic'], self._on_tilt, latched)
+        if p['camera_blocked_topic']:
+            sub(Bool, p['camera_blocked_topic'], self._on_camera_blocked, latched)
         self._hw_rain = self._base_rain = False
         self._ext_rain = ExternalRain(p['use_external_rain'],
                                       60.0 * float(p['external_rain_max_age_minutes']))
@@ -662,6 +665,10 @@ class MissionNode(Node):
         with self._lock:
             self.fsm.inputs.critical_nodes_down = ', '.join(sorted(down))
             self.fsm.inputs.supervisor_stamp = self._clk.now()
+
+    def _on_camera_blocked(self, msg):
+        with self._lock:
+            self.fsm.inputs.camera_blocked = bool(msg.data)
 
     def _on_tilt(self, msg):
         """/tilt/status JSON (tilt_logic.TiltBands.status); the receipt time is the
