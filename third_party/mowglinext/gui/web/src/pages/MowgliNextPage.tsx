@@ -30,6 +30,7 @@ import {BatteryRing} from "../concept/components/BatteryRing.tsx";
 import {StatusOrb} from "../concept/components/StatusOrb.tsx";
 import {MissionStopControls} from "../components/MissionStopControls.tsx";
 import {attentionTitleKey, isHeadingHint, plainSubState} from "../utils/missionPresentation.ts";
+import {useNotificationCenter} from "../hooks/useNotificationCenter.tsx";
 import {isLatchedFault} from "../utils/missionStates.ts";
 import {ActionCluster} from "../concept/components/ActionCluster.tsx";
 import {LiveMapMini} from "../concept/components/LiveMapMini.tsx";
@@ -734,12 +735,23 @@ function HealthCard({data}: {data: ReturnType<typeof useMowerData>}) {
   const weather = useWeather();
   const canFlashFirmware = useGate('feature:firmware_flash');
   const hasHostUpdater = useGate('settings:updates');
+  const {items: notifications} = useNotificationCenter();
+  // Alerts row: the e-stop latch first, then a state that needs the owner,
+  // then any unread error/warning in the bell (mower_alerts events included);
+  // it said "No alerts — all clear" while the robot was stuck (F07).
+  const alertsRow = (): HealthRow => {
+    if (data.emergency) return {k: t('mowgliNextPage.alertActive'), ok: false, note: t('mowgliNextPage.toRearm')};
+    const attention = data.isMoving ? null : attentionTitleKey(data.state, data.subState);
+    if (attention) return {k: t(attention), ok: false, note: t('missionText.healthAttention')};
+    const unread = notifications.find(n => !n.read && (n.level === 'error' || n.level === 'warning'));
+    if (unread) return {k: unread.title, ok: false, note: t('missionText.healthAlert')};
+    return {k: t('mowgliNextPage.noAlerts'), ok: true, note: t('mowgliNextPage.allClear')};
+  };
   const rows: HealthRow[] = [
     {k: t('mowgliNextPage.gpsSignal'),         ok: data.gps > 0,           note: data.gpsLabel},
     {k: data.rain ? t('mowgliNextPage.rainDetectedRow') : t('mowgliNextPage.noRain'),
                               ok: !data.rain,             note: data.rain ? t('mowgliNextPage.mowingPausedShort') : t('mowgliNextPage.conditionsOk')},
-    {k: data.emergency ? t('mowgliNextPage.alertActive') : t('mowgliNextPage.noAlerts'),
-                              ok: !data.emergency,        note: data.emergency ? t('mowgliNextPage.toRearm') : t('mowgliNextPage.allClear')},
+    alertsRow(),
     {k: t('mowgliNextPage.motorTemp', {temp: data.motorTemp.toFixed(0)}),
                               ok: data.motorTemp < 55,    note: data.motorTemp >= 55 ? t('mowgliNextPage.runningHot') : t('mowgliNextPage.nominal')},
   ];

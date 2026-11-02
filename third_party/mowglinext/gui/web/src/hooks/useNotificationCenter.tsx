@@ -4,6 +4,19 @@ import {
 } from "react";
 import {useTranslation} from "react-i18next";
 import {updaterRequest, useHostUpdater} from './useHostUpdater';
+import {plainSubState} from '../utils/missionPresentation.ts';
+
+/** Mission states that need the owner, pushed on entry (F07). */
+const STATE_NOTIFICATIONS: Record<string, {level: NotificationLevel; titleKey: string}> = {
+    STUCK_NEEDS_HELP: {level: 'error', titleKey: 'missionText.stuckTitle'},
+    MOWING_INCOMPLETE: {level: 'warning', titleKey: 'missionText.incompleteTitle'},
+    NAV_TO_DOCK_FAILED: {level: 'error', titleKey: 'missionText.dockFailedTitle'},
+    UNDOCK_FAILED: {level: 'error', titleKey: 'utils.stateStartFailed'},
+    AREA_UNREACHABLE: {level: 'warning', titleKey: 'utils.stateAreaUnreachable'},
+};
+
+/** Shared dedupe key of a mission state and the mower_alerts event for it. */
+export const stateNotificationKey = (stateName: string): string => `state:${stateName}`;
 
 /**
  * App-scoped notification center.
@@ -26,6 +39,11 @@ export interface NotificationItem {
     timestamp: number;
     read: boolean;
     href?: string;
+    /** Dedupe key: one event seen twice (the mission state change and the
+     *  mower_alerts event for it, or a replayed alert) is pushed once. */
+    key?: string;
+    /** Where it came from: 'alert' = /mower_alerts/events, 'state' = a mission state change. */
+    source?: 'alert' | 'state';
 }
 
 interface NotificationCenterValue {
@@ -49,6 +67,8 @@ const NotificationCenterContext = createContext<NotificationCenterValue>({
 });
 
 const MAX_ITEMS = 100;
+/** A second push with the same key within this window is dropped. */
+export const NOTIFICATION_DEDUPE_MS = 10 * 60 * 1000;
 
 export function NotificationCenterProvider({children}: {children: ReactNode}) {
     const {t} = useTranslation();
@@ -71,6 +91,8 @@ export function NotificationCenterProvider({children}: {children: ReactNode}) {
 
     const push = useCallback((n: Omit<NotificationItem, 'id' | 'timestamp' | 'read'>) => {
         setItems(prev => {
+            const now = Date.now();
+            if (n.key && prev.some(it => it.key === n.key && now - it.timestamp < NOTIFICATION_DEDUPE_MS)) return prev;
             const next: NotificationItem = {
                 ...n,
                 id: `n-${Date.now()}-${counterRef.current++}`,
@@ -126,12 +148,17 @@ export function useAutoNotifications(opts: {
     emergencyLatched: boolean;
     rainDetected: boolean;
     state: string | undefined;
+    /** sub_state_name: the plain reason in the stuck / unfinished / dock-failed items. */
+    subState?: string;
 }) {
     const {t} = useTranslation();
     const {push} = useNotificationCenter();
     const prevEmergencyRef = useRef(opts.emergencyActive);
     const prevRainRef = useRef(opts.rainDetected);
     const prevStateRef = useRef(opts.state);
+    // Read when the state changes; not a trigger of its own.
+    const subStateRef = useRef(opts.subState);
+    subStateRef.current = opts.subState;
 
     useEffect(() => {
         if (opts.emergencyActive && !prevEmergencyRef.current) {
@@ -156,7 +183,15 @@ export function useAutoNotifications(opts: {
         }
         if (opts.state === 'BOUNDARY_EMERGENCY_STOP' && prevStateRef.current !== 'BOUNDARY_EMERGENCY_STOP') {
             push({level: 'error', title: t('notificationCenter.boundaryTitle'),
-                  body: t('notificationCenter.boundaryBody')});
+                  body: t('notificationCenter.boundaryBody'), key: stateNotificationKey('BOUNDARY_EMERGENCY_STOP'),
+                  source: 'state', href: '/#/map'});
+        }
+        const attention = opts.state ? STATE_NOTIFICATIONS[opts.state] : undefined;
+        if (attention && prevStateRef.current !== opts.state) {
+            const plain = plainSubState(opts.state, subStateRef.current);
+            push({level: attention.level, title: t(attention.titleKey),
+                  body: plain ? t(plain.key, plain.params) : undefined,
+                  key: stateNotificationKey(opts.state!), source: 'state', href: '/#/map'});
         }
         prevStateRef.current = opts.state;
     }, [opts.state, push, t]);
