@@ -78,6 +78,8 @@ class BoundaryGuardMixin:
                                float(p.hard_boundary_body_soft_tail_m),
                                float(p.hard_boundary_body_hard_m),
                                float(p.hard_boundary_body_soft_front_m))
+        if mode != 'hard' and self._edge_slope():
+            lim['front'] = min(lim['front'], lim['side'])   # no convex-bend allowance on a slope
         # plan-relative (soft): near a corner whose planned swept body is already out by
         # body_m (lap 0 on a tight driven bend, owner option (c)), any point may reach
         # body_m + hard_boundary_plan_margin_m (tracking p99 + margin) before it trips
@@ -90,6 +92,34 @@ class BoundaryGuardMixin:
                 allow = max(near) + add
                 lim = {k: max(v, allow) for k, v in lim.items()}
         return bbody.evaluate(pose, self._region(), lim)
+
+    def _edge_slope(self):
+        """True while |roll| (fresh /tilt/status) exceeds edge_slope_roll_deg: the soft
+        front-corner allowance is withdrawn (logged once per episode)."""
+        thr, i = float(self.p.edge_slope_roll_deg), self.inputs
+        on = thr > 0.0 and i.tilt_roll_deg is not None and i.tilt_stamp is not None and \
+            self._now - i.tilt_stamp <= float(self.p.tilt_status_timeout_s) and \
+            abs(float(i.tilt_roll_deg)) > thr
+        if on != getattr(self, '_edge_slope_on', False):
+            self._edge_slope_on = on
+            if on:
+                self._log('warn', 'boundary: side slope (roll %.1f deg > %.1f): front corners '
+                                  'get the side limit %.2f m (no convex-bend allowance)'
+                          % (float(i.tilt_roll_deg), thr,
+                             float(self.p.hard_boundary_body_soft_side_m)))
+            else:
+                self._log('info', 'boundary: off the side slope: front-corner allowance back')
+        return on
+
+    def _hb_worst(self, pose):
+        """(name, m): the worst-corner outside distance (raw, no limits; keepouts count),
+        the one metric every boundary log line and the recovery planner use."""
+        return bbody.worst_outside(pose, self._region(), keepouts=self._hb_keepouts())
+
+    def _hb_keepouts(self):
+        return [list(o) for a in (self._region_areas or {}).values()
+                if not a.get('is_navigation_area', False)
+                for o in (a.get('obstacles') or []) if len(o) >= 3]
 
     def _point_out(self, pose):
         """base_link distance outside: from the mission's area snapshot (areas U paths U
@@ -177,6 +207,10 @@ class BoundaryGuardMixin:
                 entry = False
                 what = ('body %s %.2f m outside (%s limit %.2f)'
                         % (ev['point'], out, mode, out - ev['excess']))
+            wn, wo = max(ev['outs'].items(), key=lambda kv: kv[1])
+            if wn != ev['point']:
+                what += ', worst corner %s %.2f m' % (wn, wo)
+            out = wo                      # the worst-corner metric from here on
         else:
             mode = None
             out = self._point_out(pose)
@@ -236,7 +270,7 @@ class BoundaryGuardMixin:
                                 'path': path, 'i': 0, 'follow': follow, 'out0': out, 'what': what,
                                 'mode': mode, 'dir': 1.0 if ev and ev['rear'] else -1.0,
                                 'side': side is not None, 'counted': not entry, 'entry': entry,
-                                'tries': 0,
+                                'tries': 0, 'moves': 0,
                                 'dock_purpose': self._dock_purpose, 'driven': 0.0,
                                 'last': tuple(pose),
                                 'prog': 0.0, 'prog_best': 0.0, 'prog_t': self._now,
@@ -333,7 +367,9 @@ class BoundaryGuardMixin:
         ev = self._hb_body_eval(pose, k['mode'])
         if ev is None:
             return False, None
-        return ev['excess'] <= -float(self.p.hard_boundary_body_clear_m), ev['out']
+        # out = the worst-corner outside distance (2026-11-02: the trip point's distance was
+        # logged instead - rear_left 0.523 while front_left was 0.655 out)
+        return ev['excess'] <= -float(self.p.hard_boundary_body_clear_m), max(ev['outs'].values())
 
     def _hb_back_tick(self, pose):
         """Stock onBoundaryOut: hard_boundary_back_m straight (reverse, or forward for a rear
@@ -361,3 +397,119 @@ class BoundaryGuardMixin:
                                             moved))
         k['stage'], k['prog_t'], k['last'] = 'drive', self._now, tuple(pose)
         k['driven'] = 0.0
+
+    # ------------------------------------------------------------------
+    # footprint-planned recovery + wheel-slip check (field 2026-11-02 side slope)
+    # ------------------------------------------------------------------
+    def _hb_plan_on(self):
+        k = self._hb
+        return bool(self.p.boundary_recover_footprint_plan) and k is not None and \
+            k.get('mode') is not None
+
+    def _hb_motions(self):
+        p = self.p
+        v = min(abs(float(p.hard_boundary_back_speed_mps)), 0.10)
+        half = 0.5 * float(p.hard_boundary_track_width_m)
+        w_arc = max(0.0, (v - float(p.hard_boundary_min_inner_mps)) / max(1e-3, half))
+        return bbody.candidate_motions(v, w_arc, max(0.25, abs(float(p.hard_boundary_pivot_rps))),
+                                       float(p.boundary_recover_move_m),
+                                       float(p.boundary_recover_pivot_rad))
+
+    def _hb_plan_start(self, pose, exclude=()):
+        """Plan and start the next recovery motion from ``pose``. False = the move budget is
+        used up or no candidate keeps the worst corner from growing."""
+        k, p = self._hb, self.p
+        if k['moves'] >= max(1, int(p.boundary_recover_max_moves)):
+            return False
+        rows = bbody.plan_recovery(pose, self._region(), self._hb_motions(),
+                                   float(p.boundary_recover_max_worsen_m),
+                                   keepouts=self._hb_keepouts(), exclude=exclude,
+                                   reverse_bias=float(p.boundary_recover_reverse_bias_m))
+        if not rows:
+            return False
+        name, v, w, dur, end, peak = rows[0]
+        wn, wo = self._hb_worst(pose)
+        k['moves'] += 1
+        k['stage'], k['t'] = 'plan', self._now
+        k['mv'] = {'name': name, 'v': v, 'w': w, 'dur': dur, 'from': tuple(pose),
+                   'worst0': wo, 'yaw_acc': 0.0, 'yaw_last': float(pose[2])}
+        self._hb_slip_reset(pose)
+        self._go(self.phase, 'boundary: recovery move %d (%s)' % (k['moves'], name))
+        self._log('info', 'boundary: recovery move %d/%d %s (v %.2f, w %.2f): worst corner %s '
+                          '%.2f m -> %.2f m planned (peak %.2f; %d other candidates)'
+                  % (k['moves'], int(p.boundary_recover_max_moves), name, v, w, wn, wo, end,
+                     peak, len(rows) - 1))
+        self._hb_plan_tick(pose)
+        return True
+
+    def _hb_plan_tick(self, pose):
+        k, p, mv = self._hb, self.p, self._hb['mv']
+        inside, out = self._hb_inside(pose)
+        o = mv['from']
+        moved = math.hypot(pose[0] - o[0], pose[1] - o[1])     # map / RTK, not wheel odom
+        if self._hb_slip_tick(pose, exclude=(mv['name'],)):
+            return
+        mv['yaw_acc'] += abs(geo.wrap_angle(float(pose[2]) - mv['yaw_last']))
+        mv['yaw_last'] = float(pose[2])
+        worst = self._hb_worst(pose)[1]
+        why = None
+        if worst > mv['worst0'] + float(p.boundary_recover_max_worsen_m):
+            why = 'worst corner grew %.2f -> %.2f m' % (mv['worst0'], worst)
+        elif (mv['v'] != 0.0 and moved >= float(p.boundary_recover_move_m)) or \
+                (mv['v'] == 0.0 and mv['yaw_acc'] >= float(p.boundary_recover_pivot_rad)):
+            why = 'done'
+        elif self._now - k['t'] > 2.0 * mv['dur'] + 2.0:
+            why = 'timed out'
+        if why is None:
+            self._fx.append(DriveCmd(mv['v'], mv['w']))
+            return
+        self._fx.append(DriveCmd(0.0, 0.0))
+        if inside:                         # the whole planned move, not just the limit
+            k['driven'], k['inside_at'] = moved, 0.0
+            self._log('info', 'boundary: inside after recovery move %d (%s %s, %.2f m)'
+                      % (k['moves'], mv['name'], why, moved))
+            self._hb_retraced()
+            return
+        self._log('info' if why == 'done' else 'warn',
+                  'boundary: recovery move %d (%s) %s after %.2f m: worst corner %.2f m out'
+                  % (k['moves'], mv['name'], why, moved, worst))
+        if self._hb_plan_start(pose):
+            return
+        self._hb_stop()
+        self._hb_needs_help('still %.2f m out (worst corner) after %d recovery moves'
+                            % (worst, k['moves']), pose)
+
+    def _hb_slip_reset(self, pose):
+        k = self._hb
+        k['slip'] = {'from': tuple(pose[:2]), 'wheel': 0.0, 'last': self.inputs.wheel_xy}
+
+    def _hb_slip_tick(self, pose, exclude=None):
+        """Wheel-vs-RTK check of the running recovery motion. True = it tripped and was
+        handled (next-best candidate once when ``exclude`` is given, else needs help)."""
+        k, p, i = self._hb, self.p, self.inputs
+        sl = k.get('slip')
+        if not p.boundary_recover_slip_check or sl is None:
+            return False
+        w = i.wheel_xy
+        if w is not None and sl['last'] is not None:
+            sl['wheel'] += math.hypot(w[0] - sl['last'][0], w[1] - sl['last'][1])
+        sl['last'] = w
+        if i.fix_type is None or int(i.fix_type) != int(p.rtk_fix_type):
+            sl['from'], sl['wheel'] = tuple(pose[:2]), 0.0     # no RTK: no real reference
+            return False
+        real = math.hypot(pose[0] - sl['from'][0], pose[1] - sl['from'][1])
+        if sl['wheel'] < float(p.boundary_recover_slip_min_m) or \
+                sl['wheel'] <= float(p.boundary_recover_slip_ratio) * real:
+            return False
+        self._fx.append(DriveCmd(0.0, 0.0))
+        roll = i.tilt_roll_deg
+        why = 'wheel slip on slope (roll %s deg): %.2f m wheel odom, %.2f m real' % (
+            '?' if roll is None else '%.0f' % abs(float(roll)), sl['wheel'], real)
+        self._log('warn', 'boundary: %s, stopping that motion' % why)
+        if exclude is not None and not k.get('slip_retried'):
+            k['slip_retried'] = True
+            if self._hb_plan_start(pose, exclude=exclude):
+                return True
+        self._hb_stop()
+        self._hb_needs_help(why, pose)
+        return True

@@ -496,6 +496,17 @@ behavior_tree_node:
     hard_boundary_entry_m: 0.02          # START / resume this far out: inward first, not counted
     hard_boundary_jump_m: 1.0            # a > 1 m jump in one tick is ignored (map reload race)
     hard_boundary_jump_hold_s: 2.0
+    # boundary recovery on a side slope (field 2026-11-02; mission_fsm Params)
+    boundary_recover_footprint_plan: true  # simulate the footprint per candidate motion, never worsen
+    boundary_recover_max_worsen_m: 0.05
+    boundary_recover_move_m: 0.30          # stock onBoundaryOut distance
+    boundary_recover_pivot_rad: 0.35
+    boundary_recover_max_moves: 4
+    boundary_recover_reverse_bias_m: 0.02
+    boundary_recover_slip_check: true      # wheel odom vs RTK displacement during the recovery
+    boundary_recover_slip_ratio: 3.0
+    boundary_recover_slip_min_m: 0.3
+    edge_slope_roll_deg: 8.0               # |roll| above: front corners get the side limit (0 = off)
     spin_drift_m: 0.15                   # pivot Spin slid > this ...
     spin_drift_body_margin_m: 0.05       # ... and the body within this of its limit: stop, pivot again from here
     spin_drift_hard_m: 0.30              # ... or slid more than this (field 2026-10-23: 47 % of wet-turf pivots walked 0.14 m)

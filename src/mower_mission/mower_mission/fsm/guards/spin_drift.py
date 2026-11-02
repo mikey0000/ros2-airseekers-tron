@@ -142,6 +142,13 @@ class SpinDriftGuardMixin:
         if k['stage'] == 'pause':
             if now - k['t'] < float(p.hard_boundary_pause_s):
                 return
+            if self._hb_plan_on():
+                if not self._hb_plan_start(pose):
+                    wn, wo = self._hb_worst(pose)
+                    self._hb_stop()
+                    self._hb_needs_help('no recovery motion keeps the worst corner (%s %.2f m '
+                                        'out) from growing' % (wn, wo), pose)
+                return
             if k.get('entry'):
                 if not self._hb_inward_start(pose):
                     self._hb_stop()
@@ -159,6 +166,13 @@ class SpinDriftGuardMixin:
             self._log('info', 'boundary: reversing along %d track points at %.2f m/s'
                       % (len(k['path']), min(abs(float(p.hard_boundary_retrace_speed_mps)),
                                              0.10)))
+        if k['stage'] == 'plan':
+            self._hb_plan_tick(pose)
+            return
+        if k.get('slip') is None:
+            self._hb_slip_reset(pose)
+        if self._hb_slip_tick(pose):
+            return
         if k['stage'] == 'back':
             self._hb_back_tick(pose)
             return
@@ -264,5 +278,7 @@ class SpinDriftGuardMixin:
         self._dispatch()
 
     def _hb_needs_help(self, why, pose):
-        """Like the stuck guard's give-up (same latched phase, same operator clear)."""
-        HB_RETRACE.needs_help(self, why, pose)
+        """Like the stuck guard's give-up (same latched phase, same operator clear); reported
+        at the CURRENT pose when there is one (2026-11-02: the stale trip origin was named)."""
+        cur = self.inputs.pose
+        HB_RETRACE.needs_help(self, why, cur if cur is not None else pose)

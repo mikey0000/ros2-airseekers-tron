@@ -673,3 +673,44 @@ along-path corner checker matched it at once and follow_path "succeeded" 3/3 tim
 left (sub-path NOT mowed, MOWING_INCOMPLETE). Now such a chunk ends at the furthest pose
 before the vertex that clears the chunk start (`geometry.clear_end_before`) and the next
 chunk reaches the vertex from close by. Log: `chunk end N passes near its own start`.
+
+## Boundary recovery on a side slope (2026-11-02, unit-tested; sim gate pending with the integration run)
+
+Field 2026-11-02 (area edge, 8-12 deg roll): BOUNDARY OUT on rear_left 0.384 m while
+front_left was 0.43 m out. The retrace's lining-up pivot (wz +0.3) took the worst corner to
+0.69 m, the reverse retrace and three inward moves spun the wheels while the RTK pose crept
+downhill, and STUCK_NEEDS_HELP named the stale trip origin. Changes (mission Params +
+mission.yaml):
+
+* `boundary_recover_footprint_plan` (true): in body mode every recovery motion is chosen by
+  simulating the footprint (`body_boundary.plan_recovery`) for reverse / forward straight,
+  reverse / forward arcs (R 0.5, inner wheel >= 0.06 m/s), pivots both ways, 0.30 m /
+  0.35 rad each. Admissible: the worst-corner outside distance (raw, keepouts count) never
+  exceeds the current one by more than `boundary_recover_max_worsen_m` (0.05; pivots: never)
+  and ends lower. Lowest end wins (reverse gets 0.02 credit). A motion whose live worst
+  corner grows past the start + 0.05 is cut and re-planned; at most
+  `boundary_recover_max_moves` (4). No admissible motion -> STUCK_NEEDS_HELP. On the
+  reconstructed field geometry the outward pivot is rejected (it would reach +0.18 m) and the
+  pick is the forward arc turning the nose in (0.42 -> 0.33 m); the best reverse candidate
+  there is reverse straight (0.39 m), not a reverse arc: a short reverse arc swings the
+  nose out one way or the tail out the other. false = the old straight move / retrace /
+  inward moves.
+* `boundary_recover_slip_check` (true): wheel odometry (`/odom`, new mission_node input
+  `wheel_odom_topic`) vs map/RTK displacement per recovery motion while RTK is fixed; wheel >
+  3.0 x real after >= 0.3 m wheel -> "wheel slip on slope (roll X deg): N m wheel odom, M m
+  real", the next-best candidate once, then STUCK_NEEDS_HELP. The slip_detector stays
+  suppressed during the recovery (it would latch /stuck and start its own escape); this
+  check replaces it there. The old stages (flag off / base_link mode) get the same check,
+  straight to needs help. Planned motions measure progress by map displacement.
+* STUCK_NEEDS_HELP from the boundary recovery reports the current pose (all params).
+* `edge_slope_roll_deg` (8.0): |roll| above it (fresh /tilt/status), soft edge_mode: front
+  corners get the side limit 0.35 instead of the 0.55 convex-bend allowance; logged once per
+  episode. 0 = off.
+* Logged outside distances are the worst-corner metric everywhere. The "retrace ended
+  0.523 m out" vs recomputed 0.655 m: `_hb_inside` returned the outside distance of the
+  point with the largest excess over its own limit (rear_left, limit 0.35), not of the point
+  furthest out (front_left, limit 0.55). The trip line now adds `worst corner <name> <m>`.
+
+The sim gate's `-d` disturbance (wheel bias 0.04, per-wheel slip std 0.05) is mild and the
+sim publishes no roll on /tilt/status, so a 3x wheel-vs-RTK slip and the slope rule never
+occur there: the slip and slope paths are unit-tested only.

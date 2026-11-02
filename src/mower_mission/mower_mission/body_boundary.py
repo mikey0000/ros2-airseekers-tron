@@ -132,3 +132,88 @@ def evaluate(pose, polys, limits, points=None):
         if k in ('nose', 'tail'))
     return {'excess': best[0], 'point': best[1], 'out': best[2], 'rear': best[3], 'outs': outs,
             'side_only': side_only}
+
+
+def worst_outside(pose, polys, points=None, keepouts=()):
+    """(name, m): the body point furthest outside the allowed ``polys`` (or furthest inside
+    a keepout of ``keepouts``) at ``pose``; the raw worst-corner metric the recovery logs
+    and plans with (no per-kind limits). None without polygons."""
+    if not any(len(p) >= 3 for p in polys):
+        return None
+    pts = points or body_points()
+    x, y, yaw = float(pose[0]), float(pose[1]), float(pose[2])
+    c, s = math.cos(yaw), math.sin(yaw)
+    best = None
+    for name, (bx, by, _kind) in pts.items():
+        px, py = x + c * bx - s * by, y + s * bx + c * by
+        o = point_outside(px, py, polys)
+        for k in keepouts:
+            if len(k) >= 3 and _pip(px, py, k):
+                o = max(o, _edge_dist(px, py, k))
+        if best is None or o > best[1]:
+            best = (name, o)
+    return best
+
+
+# recovery candidates (boundary_recover_footprint_plan, 2026-11-02 field side-slope failure)
+CANDIDATE_ORDER = ('reverse_arc_left', 'reverse_arc_right', 'reverse', 'forward_arc_left',
+                   'forward_arc_right', 'forward', 'pivot_left', 'pivot_right')
+
+
+def candidate_motions(v, w_arc, w_pivot, dist_m, pivot_rad):
+    """name -> (v, w, duration s): reverse / forward straight, reverse / forward arcs both
+    ways (the scoring keeps the one toward the inside) and pivots both ways."""
+    v, w_arc, w_pivot = abs(v), abs(w_arc), abs(w_pivot)
+    t_lin = dist_m / max(1e-3, v)
+    t_piv = pivot_rad / max(1e-3, w_pivot)
+    return {
+        'reverse_arc_left': (-v, w_arc, t_lin), 'reverse_arc_right': (-v, -w_arc, t_lin),
+        'reverse': (-v, 0.0, t_lin),
+        'forward_arc_left': (v, w_arc, t_lin), 'forward_arc_right': (v, -w_arc, t_lin),
+        'forward': (v, 0.0, t_lin),
+        'pivot_left': (0.0, w_pivot, t_piv), 'pivot_right': (0.0, -w_pivot, t_piv),
+    }
+
+
+def simulate(pose, v, w, duration, dt=0.1):
+    """Unicycle poses (x, y, yaw) along the motion, the start excluded, the end included."""
+    x, y, yaw = float(pose[0]), float(pose[1]), float(pose[2])
+    out, t = [], 0.0
+    n = max(1, int(math.ceil(duration / dt - 1e-9)))
+    h = duration / n
+    for _ in range(n):
+        yaw += w * h
+        x += v * h * math.cos(yaw)
+        y += v * h * math.sin(yaw)
+        t += h
+        out.append((x, y, yaw))
+    return out
+
+
+def plan_recovery(pose, polys, motions, max_worsen=0.05, points=None, keepouts=(),
+                  exclude=(), reverse_bias=0.02):
+    """Score the candidate ``motions`` (name -> (v, w, duration)) by the worst-corner outside
+    distance along the simulated footprint. A candidate is admissible when it never exceeds
+    the current worst by more than ``max_worsen`` (a pivot: never exceeds it at all) and ends
+    lower than it started. Returns a list of (name, v, w, duration, end_m, peak_m), best
+    first (lowest end; reverse moves get ``reverse_bias`` of credit: they back off the edge
+    rather than driving along it), or [] when nothing admissible is left."""
+    cur = worst_outside(pose, polys, points, keepouts)
+    if cur is None:
+        return []
+    cur = cur[1]
+    rows = []
+    for name in CANDIDATE_ORDER:
+        if name not in motions or name in exclude:
+            continue
+        v, w, dur = motions[name]
+        peak, end = 0.0, cur
+        for q in simulate(pose, v, w, dur):
+            end = worst_outside(q, polys, points, keepouts)[1]
+            peak = max(peak, end)
+        cap = cur + 1e-6 if v == 0.0 else cur + max(0.0, max_worsen)
+        if peak > cap or end >= cur - 1e-3:
+            continue
+        rows.append((name, v, w, dur, end, peak))
+    rows.sort(key=lambda r: (r[4] - (reverse_bias if r[1] < 0.0 else 0.0), r[5]))
+    return rows

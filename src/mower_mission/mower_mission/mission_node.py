@@ -82,6 +82,8 @@ TOPIC_DEFAULTS = {
     # The GUI's MQTT broker feeds the service below instead (external_rain.py).
     'external_rain_topic': '/external_rain',
     'odom_topic': '/odometry/filtered_map',
+    # wheel odometry (boundary_recover_slip_check: wheel vs RTK distance; '' = off)
+    'wheel_odom_topic': '/odom',
     'boundary_violation_topic': '/map_server_node/boundary_violation',
     'lethal_boundary_violation_topic': '/map_server_node/lethal_boundary_violation',
     # task 0.4 (a): Float32 distance outside areas U paths U dock corridor ('' = no hard boundary)
@@ -320,6 +322,8 @@ class MissionNode(Node):
             parser=flat_parser(MowerBaseDevStatus))
         sub(GnssStatus, p['gnss_status_topic'], self._on_gnss, 1)
         sub(Odometry, p['odom_topic'], self._on_odom, 1, parser=parse_odometry)
+        if p['wheel_odom_topic']:
+            sub(Odometry, p['wheel_odom_topic'], self._on_wheel_odom, 1, parser=parse_odometry)
         sub(Bool, p['boundary_violation_topic'], self._on_boundary, 1, parser=flat_parser(Bool))
         # stuck guard (mower_control slip_detector): latched /stuck
         sub(Bool, '/stuck', self._on_stuck, latched, parser=flat_parser(Bool))
@@ -724,6 +728,11 @@ class MissionNode(Node):
         with self._lock:
             self.fsm.inputs.pose = (pose.position.x, pose.position.y,
                                     _yaw_from_quat(pose.orientation))
+
+    def _on_wheel_odom(self, msg):
+        pos = msg.pose.pose.position
+        with self._lock:
+            self.fsm.inputs.wheel_xy = (float(pos.x), float(pos.y))
 
     def _on_cm_state(self, msg):
         stop = int(msg.action_type) == 1       # CollisionMonitorState.STOP
