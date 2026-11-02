@@ -63,6 +63,7 @@ Srv: /map_server_node/promote_obstacle, /map_server_node/remove_obstacle
 
 from __future__ import annotations
 
+import json
 import math
 import time
 
@@ -87,6 +88,7 @@ from mowgli_interfaces.srv import ClearObstacle, GetMowingArea, PromoteObstacle,
 from mower_map.obstacle_snapshot import prune_snapshots, snapshot_ids, sync_snapshots
 from mower_map.areas import point_in_polygon
 from mower_map.nogo_zones import PathCursor, Zone, ZoneSet
+from mower_map.obstacle_tracker_stuck import StuckSpotStore
 from mower_map.obstacle_tracker_core import TrackerCore, TrackerParams, keepout_entry
 from mower_common.sub_pump import node_clock
 
@@ -221,6 +223,15 @@ PARAMS = {
     # pending keepout) unless the operator accepted them
     'drop_pending_at_session_end': True,
     'session_end_states': ['MOWING_COMPLETE', 'MOWING_INCOMPLETE'],
+    # stock parity 2026-11-03 (obstacle_tracker_stuck): a spot where the robot got stuck
+    # stuck_keepout_hits times (any sessions, persisted) -> pending no-go disc for Accept
+    'stuck_keepouts': True,
+    'stuck_keepout_radius_m': 1.0,
+    'stuck_keepout_hits': 2,
+    'stuck_spots_path': '/userdata/ros2/stuck_spots.json',
+    'stuck_states': ['STUCK_NEEDS_HELP'],            # HighLevelStatus.state_name entries
+    'incident_topic': '/mission/incident',          # mission terrain incidents (JSON)
+    'stuck_incident_kinds': ['stuck'],              # stuck guard escape (wheel slip)
 }
 
 # TrackerParams keys are a subset of PARAMS; keep the mapping explicit so a
@@ -238,6 +249,7 @@ _CORE_KEYS = (
     'resize_step_m', 'require_on_path', 'onpath_pivot_min_turn_deg', 'bumper_evidence_m',
     'bumper_zone_hits', 'bumper_zone_radius_m', 'pending_expire_s', 'det_gone_confirmations',
     'det_verify_min_m', 'det_verify_fov_deg', 'merge_dist_m', 'ignore_radius_m', 'camera_x_m',
+    'stuck_keepout_radius_m',
 )
 # list-valued core params (converted to tuples)
 _CORE_LIST_KEYS = ('static_classes', 'never_classes')
@@ -432,6 +444,13 @@ class ObstacleTrackerNode(Node):
         if self.p('area_settings_topic'):
             self.create_subscription(String, self.p('area_settings_topic'),
                                      self._on_area_settings, _latched_qos())
+        self._stuck = None
+        if bool(self.p('stuck_keepouts')):
+            self._stuck = StuckSpotStore(str(self.p('stuck_spots_path')),
+                                         float(self.p('stuck_keepout_radius_m')),
+                                         int(self.p('stuck_keepout_hits')))
+            if self.p('incident_topic'):
+                self.create_subscription(String, self.p('incident_topic'), self._on_incident, 20)
         self._zones_pub = (self.create_publisher(String, self.p('zones_topic'), 1)
                            if self.p('zones_topic') else None)
         self.create_service(ClearObstacle, '~/clear_obstacle', self._srv_clear_obstacle)
@@ -545,9 +564,40 @@ class ObstacleTrackerNode(Node):
         name = str(msg.state_name)
         if name != self._high_name:
             self._high_name = name
+            if name in list(self.p('stuck_states') or []) and self._robot_pose is not None:
+                self._stuck_event(self._robot_pose[0], self._robot_pose[1], name)
             if bool(self.p('drop_pending_at_session_end')) and \
                     name in list(self.p('session_end_states') or []):
                 self._drop_pending(name)
+
+    def _on_incident(self, msg):
+        try:
+            d = json.loads(msg.data)
+            kind, x, y = str(d.get('kind', '')), d.get('x'), d.get('y')
+        except (ValueError, AttributeError):
+            return
+        if kind in list(self.p('stuck_incident_kinds') or []) and x is not None \
+                and y is not None:
+            self._stuck_event(float(x), float(y), kind)
+
+    def _stuck_event(self, x, y, kind):
+        """File a stuck event; a repeated spot becomes a pending no-go proposal."""
+        if self._stuck is None:
+            return
+        try:
+            spot = self._stuck.record(x, y, time.time(), kind)
+        except OSError as ex:
+            self.get_logger().warn('stuck spots file: %s' % ex)
+            return
+        self.get_logger().info('stuck event (%s) at (%.2f, %.2f) filed' % (kind, x, y))
+        if spot is None:
+            return
+        t = self.core.add_stuck_zone(spot[0], spot[1], self._clk.now(), self._areas)
+        if t is not None:
+            self.get_logger().warn('repeated stuck spot at (%.2f, %.2f): proposing a %.1f m '
+                                   'no-go zone #%d for review' % (
+                                       spot[0], spot[1], self.core.params.stuck_keepout_radius_m,
+                                       t.id))
 
     def _drop_pending(self, why):
         """Session end: drop the pending (not accepted) zones and their keepouts."""
@@ -829,6 +879,8 @@ class ObstacleTrackerNode(Node):
             req.name = 'auto: %s #%d' % (t.label(), t.id)
         elif t.kind == 'bumper':
             req.name = 'auto: bumper #%d' % t.id
+        elif t.kind == 'stuck':
+            req.name = 'auto: stuck spot #%d' % t.id
         else:
             req.name = '%s #%d' % (self.p('obstacle_name'), t.id)
         # the polygon map_server copies is the one in our latest snapshot: publish first

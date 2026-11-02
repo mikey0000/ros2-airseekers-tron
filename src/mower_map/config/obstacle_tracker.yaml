@@ -147,3 +147,13 @@ obstacle_tracker:
     mark_min_score: 0.5
     mark_margin_m: 0.10
     discard_service: /map_server_node/discard_obstacle
+    # repeated stuck spots (stock parity 2026-11-03): STUCK_NEEDS_HELP / stuck-escape incidents
+    # filed in stuck_spots_path; stuck_keepout_hits of them within stuck_keepout_radius_m ->
+    # pending no-go disc (owner Accept / Ignore in the GUI)
+    stuck_keepouts: true
+    stuck_keepout_radius_m: 1.0
+    stuck_keepout_hits: 2
+    stuck_spots_path: /userdata/ros2/stuck_spots.json
+    stuck_states: [STUCK_NEEDS_HELP]
+    incident_topic: /mission/incident
+    stuck_incident_kinds: [stuck]
