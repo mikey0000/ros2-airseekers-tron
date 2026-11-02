@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { useThemeMode } from "../../theme/ThemeContext.tsx";
 import {CrossHatchSettings} from "./CrossHatchSettings.tsx";
 import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
+import { useProfileGates } from "../../hooks/useProfileGates.ts";
 
 const { Text, Paragraph } = Typography;
 
@@ -195,6 +196,10 @@ export const MowingSection: React.FC<Props> = ({
     defaults,
 }) => {
     const { t } = useTranslation();
+    // Fields the robot profile hides or does not use are left out; the
+    // blade-load card goes with its switch.
+    const { isSettingFieldHidden } = useProfileGates();
+    const shown = (key: string) => !isSettingFieldHidden(key);
     const fieldLabel = (key: string, label: React.ReactNode) => (
         <SettingFieldLabel
             settingKey={key}
@@ -209,7 +214,7 @@ export const MowingSection: React.FC<Props> = ({
     // strips tile exactly, no overlap or gap.
     const pathSpacing = values.tool_width ?? 0.18;
     const toolWidth = values.tool_width ?? 0.18;
-    const headlandWidth = values.headland_width ?? 0.18;
+    const headlandWidth = shown("headland_width") ? values.headland_width ?? 0.18 : 0;
     // Turn-Around Headland Limit only makes sense against a FORCED ring count
     // (num_headland_passes > 0) — with AUTO (0) the actual ring count is not
     // known until a plan runs, and with NONE (negative) there are no rings to
@@ -237,6 +242,7 @@ export const MowingSection: React.FC<Props> = ({
             {/* Blade toggle + speeds */}
             <Card size="small" style={{ marginBottom: 16 }}>
                 <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                    {shown("mowing_enabled") && (
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <div>
                             {/* Wired since issue #195: hardware_bridge_node gates
@@ -259,8 +265,10 @@ export const MowingSection: React.FC<Props> = ({
                             onChange={(v) => onChange("mowing_enabled", v)}
                         />
                     </div>
+                    )}
                     <Form layout="vertical" size="small">
                         <Row gutter={[16, 0]}>
+                            {shown("mowing_speed") && (
                             <Col xs={12} sm={8}>
                                 <Form.Item label={fieldLabel("mowing_speed", t("settingsMowing.mowingSpeed"))} tooltip={t("settingsMowing.mowingSpeedTooltip")}>
                                     <InputNumber
@@ -271,6 +279,8 @@ export const MowingSection: React.FC<Props> = ({
                                     />
                                 </Form.Item>
                             </Col>
+                            )}
+                            {shown("transit_speed") && (
                             <Col xs={12} sm={8}>
                                 <Form.Item label={fieldLabel("transit_speed", t("settingsMowing.transitSpeed"))} tooltip={t("settingsMowing.transitSpeedTooltip")}>
                                     <InputNumber
@@ -281,12 +291,14 @@ export const MowingSection: React.FC<Props> = ({
                                     />
                                 </Form.Item>
                             </Col>
+                            )}
                         </Row>
                     </Form>
                 </Space>
             </Card>
 
             {/* Blade-load slowdown: feed the blade slower when its RPM sags */}
+            {shown("blade_load_slowdown_enabled") && (
             <Card size="small" style={{ marginBottom: 16 }}>
                 <Space direction="vertical" size={12} style={{ width: "100%" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -313,6 +325,7 @@ export const MowingSection: React.FC<Props> = ({
                     )}
                     <Form layout="vertical" size="small">
                         <Row gutter={[16, 0]}>
+                            {shown("blade_load_rpm_full") && (
                             <Col xs={12} sm={8}>
                                 <Form.Item label={fieldLabel("blade_load_rpm_full", t("settingsMowing.bladeLoadRpmFull"))} tooltip={t("settingsMowing.bladeLoadRpmFullTooltip")}>
                                     <InputNumber
@@ -324,6 +337,8 @@ export const MowingSection: React.FC<Props> = ({
                                     />
                                 </Form.Item>
                             </Col>
+                            )}
+                            {shown("blade_load_rpm_min") && (
                             <Col xs={12} sm={8}>
                                 <Form.Item label={fieldLabel("blade_load_rpm_min", t("settingsMowing.bladeLoadRpmMin"))} tooltip={t("settingsMowing.bladeLoadRpmMinTooltip")}>
                                     <InputNumber
@@ -335,6 +350,8 @@ export const MowingSection: React.FC<Props> = ({
                                     />
                                 </Form.Item>
                             </Col>
+                            )}
+                            {shown("blade_load_min_speed_ratio") && (
                             <Col xs={12} sm={8}>
                                 <Form.Item label={fieldLabel("blade_load_min_speed_ratio", t("settingsMowing.bladeLoadMinSpeedRatio"))} tooltip={t("settingsMowing.bladeLoadMinSpeedRatioTooltip")}>
                                     <InputNumber
@@ -346,10 +363,12 @@ export const MowingSection: React.FC<Props> = ({
                                     />
                                 </Form.Item>
                             </Col>
+                            )}
                         </Row>
                     </Form>
                 </Space>
             </Card>
+            )}
 
             {/* Path pattern with visual preview */}
             <Card size="small" title={t("settingsMowing.mowingPattern")} style={{ marginBottom: 16 }}>
@@ -357,6 +376,7 @@ export const MowingSection: React.FC<Props> = ({
                     <Col xs={24} lg={14}>
                         <Form layout="vertical" size="small">
                             <Row gutter={[16, 0]}>
+                                {shown("headland_width") && (
                                 <Col xs={12}>
                                     <Form.Item label={fieldLabel("headland_width", t("settingsMowing.headlandWidth"))} tooltip={t("settingsMowing.headlandWidthTooltip")}>
                                         <InputNumber
@@ -367,6 +387,8 @@ export const MowingSection: React.FC<Props> = ({
                                         />
                                     </Form.Item>
                                 </Col>
+                                )}
+                                {shown("num_headland_passes") && (
                                 <Col xs={12}>
                                     <Form.Item label={fieldLabel("num_headland_passes", t("settingsMowing.headlandPasses"))} tooltip={t("settingsMowing.headlandPassesTooltip")}>
                                         <Select
@@ -385,6 +407,8 @@ export const MowingSection: React.FC<Props> = ({
                                         />
                                     </Form.Item>
                                 </Col>
+                                )}
+                                {shown("connector_max_headland_passes") && (
                                 <Col xs={12}>
                                     <Form.Item label={fieldLabel("connector_max_headland_passes", t("settingsMowing.connectorMaxHeadlandPasses"))} tooltip={t("settingsMowing.connectorMaxHeadlandPassesTooltip")}>
                                         <Select
@@ -403,6 +427,8 @@ export const MowingSection: React.FC<Props> = ({
                                         />
                                     </Form.Item>
                                 </Col>
+                                )}
+                                {shown("chassis_safety_inset") && (
                                 <Col xs={12}>
                                     <Form.Item label={fieldLabel("chassis_safety_inset", t("settingsMowing.chassisSafetyInset"))} tooltip={t("settingsMowing.chassisSafetyInsetTooltip")}>
                                         <InputNumber
@@ -413,6 +439,8 @@ export const MowingSection: React.FC<Props> = ({
                                         />
                                     </Form.Item>
                                 </Col>
+                                )}
+                                {shown("min_turning_radius") && (
                                 <Col xs={12}>
                                     <Form.Item label={fieldLabel("min_turning_radius", t("settingsMowing.minTurningRadius"))} tooltip={t("settingsMowing.minTurningRadiusTooltip")}>
                                         <InputNumber
@@ -423,6 +451,8 @@ export const MowingSection: React.FC<Props> = ({
                                         />
                                     </Form.Item>
                                 </Col>
+                                )}
+                                {shown("swath_overlap") && (
                                 <Col xs={12}>
                                     <Form.Item label={fieldLabel("swath_overlap", t("settingsMowing.swathOverlap"))} tooltip={t("settingsMowing.swathOverlapTooltip")}>
                                         <InputNumber
@@ -433,6 +463,8 @@ export const MowingSection: React.FC<Props> = ({
                                         />
                                     </Form.Item>
                                 </Col>
+                                )}
+                                {shown("mow_direction") && (
                                 <Col xs={12}>
                                     <Form.Item label={fieldLabel("mow_direction", t("settingsMowing.mowDirection"))} tooltip={t("settingsMowing.mowDirectionTooltip")}>
                                         <Select
@@ -447,6 +479,8 @@ export const MowingSection: React.FC<Props> = ({
                                         />
                                     </Form.Item>
                                 </Col>
+                                )}
+                                {shown("mow_cross_hatch") && (
                                 <Col xs={12}>
                                     <Form.Item label={fieldLabel("mow_cross_hatch", t("settingsMowing.crossHatch"))} tooltip={t("settingsMowing.crossHatchTooltip")}>
                                         <Switch
@@ -456,6 +490,8 @@ export const MowingSection: React.FC<Props> = ({
                                         />
                                     </Form.Item>
                                 </Col>
+                                )}
+                                {shown("mow_angle_deg") && (
                                 <Col xs={12}>
                                     <Form.Item label={fieldLabel("mow_angle_deg", t("settingsMowing.mowAngleDeg"))} tooltip={t("settingsMowing.mowAngleDegTooltip")}>
                                         <Space>
@@ -476,6 +512,7 @@ export const MowingSection: React.FC<Props> = ({
                                         </Space>
                                     </Form.Item>
                                 </Col>
+                                )}
                             </Row>
                         </Form>
                     </Col>
@@ -490,7 +527,7 @@ export const MowingSection: React.FC<Props> = ({
                         />
                     </Col>
                 </Row>
-                {values.mow_cross_hatch && <CrossHatchSettings angle={values.mow_angle_deg ?? MOW_ANGLE_AUTO}/>}
+                {values.mow_cross_hatch && shown("mow_cross_hatch") && <CrossHatchSettings angle={values.mow_angle_deg ?? MOW_ANGLE_AUTO}/>}
             </Card>
         </div>
     );

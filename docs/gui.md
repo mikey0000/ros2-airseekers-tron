@@ -152,6 +152,53 @@ Known gaps / notes:
   `set_boundary_lines` after the fallback sequence); format and enforcement in
   `docs/STATUS.md` ("Boundary lines").
 
+## Owner-facing states, alerts and layout (UX batch, 2026-11-02)
+
+From the UX audit of 2026-11-02 (findings F03-F11, F20, F21, F25, F27; branch `ws/ux-batch`).
+Paths below are under `third_party/mowglinext/gui/web/src/`.
+
+* **States that need the owner.** `utils/missionPresentation.ts` turns the mission's sub-state
+  text into i18n phrases (`missionText.*`), used by the map banner (`MissionStopControls`), the
+  map status line and the Home hero:
+  * STUCK_NEEDS_HELP: "Stuck — needs help", the cause (wheels turning / steep slope / outside
+    the boundary), Reset as the one action, no Stop. Resume appears after Reset in the banner
+    and the toolbars alike (`hooks/useStuckReset.ts`).
+  * MOWING_INCOMPLETE: "Mow not finished", "N strips skipped · about M m not mowed · reason:
+    ...", one action name ("Resume mowing"), and the current `return_home_on_incomplete` value
+    with a link to Settings > Battery.
+  * NAV_TO_DOCK_FAILED: "Couldn't reach the dock", the reason, "Try again" (HOME) and "Drive
+    home manually" (manual mode). No Reset.
+  * Heading not aligned (IDLE sub-state): a hint card with the full instruction and "Drive
+    manually". There is no separate heading-calibration command: the calibration drive only
+    runs inside START (`mower_mission` `fsm/phases/hcal.py`).
+  * The Home hero names the state instead of "idle, Tap Play" and hides the Play cluster.
+* **Alerts in the bell.** `hooks/useAlertNotifications.ts` subscribes to the `alerts` key
+  (`/mower_alerts/events`) and pushes each alert into the notification center; the state
+  watcher (`useAutoNotifications`) also pushes the states above on entry. An alert and the
+  state it reports share a dedupe key, so each event shows once. Home's Health check shows a
+  state that needs the owner or the newest unread error/warning.
+* **Backend allowlist.** A browser topic needs `topicMap` (`pkg/providers/ros.go`) and
+  `topicSubscribeInterval` (`pkg/api/mowglinext.go`). `wifiStatus` and `alerts` were missing
+  from the second, so the header Wi-Fi chip never appeared. `TestTopicSubscribeInterval_CoversProviderTopicMap`
+  now fails for any topicMap key the allowlist misses (`rosout` excepted).
+* **Late subscribers.** `hooks/multiplexedSocket.ts` hands the last payload of a state topic to
+  a component that subscribes after it arrived (the server replays latched values only on the
+  first subscribe per tab). Event topics (`rosout`, `alerts`, `btLog`) are not replayed.
+* **Map layout.** The terrain card and the phone plan-preview card flow in the top stack under
+  the status line; the terrain card closes on Escape and on a tap outside. Desktop progress
+  and preview cards sit above the toolbar's measured height. The phone toolbar wraps (two
+  rows at 390 px) instead of scrolling sideways; E-STOP's accessible name is "Emergency stop".
+* **Settings (Tron).** Fields the profile does not use are hidden rather than marked "Not
+  used by this robot" (`isProfileSettingFieldHidden`); the Robot Model picker shows only the
+  Tron card; the Obstacles tip mentions the LiDAR only on robots that have one; no-go areas
+  read "No-go zone" in en/fr display strings. Settings > Connection starts with a Bluetooth
+  guide that checks browser support, secure origin, stored token and pairing live.
+* **Console noise.** The host updater poll runs only with the `settings:updates` feature and
+  backs off to 60 s on errors. `call/bag_recorder_state` answers 200 `{available:false}` when
+  the recorder service is not advertised (the sim does not start it); the card says so.
+* **Schedule.** The Rules card reads `rain_mode`, `battery_low_action` and
+  `battery_low_percent` instead of always showing "ON".
+
 ## Profile gating (Tron trim)
 
 What the GUI shows is decided at runtime by the active robot profile

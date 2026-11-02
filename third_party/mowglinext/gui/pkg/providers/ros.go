@@ -131,6 +131,16 @@ var topicMap = map[string]topicDef{
 	"wifiStatus": {"/wifi/status", "mower_interfaces/msg/WifiStatus"},
 }
 
+// TopicKeys returns every logical topic key the provider can subscribe to, so
+// the API layer can check that its browser allowlist covers them.
+func TopicKeys() []string {
+	keys := make([]string, 0, len(topicMap))
+	for k := range topicMap {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // queuedTopics lists logical keys whose subscribers must see every message, in
 // order, rather than only the latest one: their messages are events (log
 // lines), not state. The value caps the per-subscriber backlog; past it the

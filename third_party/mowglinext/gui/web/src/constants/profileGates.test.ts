@@ -12,6 +12,7 @@ import {
     hiddenGates,
     isGateId,
     isGateVisible,
+    isProfileSettingFieldHidden,
     isProfileSettingKeyHidden,
 } from "./profileGates.ts";
 import {SECTION_DEFINITIONS} from "../hooks/useSettingsManager.ts";
@@ -97,6 +98,46 @@ describe("profile setting keys", () => {
         }
         for (const key of ["wheel_radius", "wheel_track", "imu_yaw", "gps_x", "rain_mode", "mqtt_topic_prefix"]) {
             expect(isProfileSettingKeyHidden(tron, key), key).toBe(false);
+        }
+    });
+});
+
+describe("profile setting fields", () => {
+    const allSectionKeys = SECTION_DEFINITIONS.flatMap((s) => s.keys);
+
+    it("hides no settings field on a stock robot", () => {
+        for (const model of STOCK_MODELS) {
+            const p = getRobotProfile(model.value);
+            expect(allSectionKeys.filter((k) => isProfileSettingFieldHidden(p, k))).toEqual([]);
+        }
+    });
+
+    it("hides every hidden key on Tron", () => {
+        for (const key of allSectionKeys.filter((k) => isProfileSettingKeyHidden(tron, k))) {
+            expect(isProfileSettingFieldHidden(tron, key), key).toBe(true);
+        }
+    });
+
+    it("hides the keys nothing on Tron reads (formerly tagged 'not used')", () => {
+        for (const key of [
+            "xy_goal_tolerance", "boundary_inner_margin_m",
+            "battery_full_voltage", "battery_empty_voltage", "battery_critical_voltage",
+            "battery_critical_percent", "obstacle_margin", "obstacle_inflation_radius",
+            "dig_obstacle_enabled", "wheel_track", "chassis_length", "mowing_enabled",
+            "dock_pose_yaw_sigma_rad",
+        ]) {
+            expect(isProfileSettingFieldHidden(tron, key), key).toBe(true);
+        }
+    });
+
+    it("keeps bound and GUI-read keys on Tron", () => {
+        for (const key of [
+            "mower_model", "tool_width", "mowing_speed", "transit_speed", "mow_angle_deg",
+            "battery_low_percent", "battery_full_percent", "battery_low_action",
+            "obstacle_auto_promote", "undock_distance", "dock_max_retries", "rain_mode",
+            "ntrip_host", "dock_pose_yaw", "datum_lat",
+        ]) {
+            expect(isProfileSettingFieldHidden(tron, key), key).toBe(false);
         }
     });
 });

@@ -21,6 +21,7 @@ vi.mock('./WifiChip.tsx', () => ({WifiChip: () => null}));
 vi.mock('./LanguageSwitcher.tsx', () => ({LanguageSwitcher: () => null}));
 vi.mock('./LiveStatusStrip.tsx', () => ({LiveStatusStrip: () => null}));
 vi.mock('../hooks/useNotificationCenter.tsx', () => ({useAutoNotifications: () => undefined}));
+vi.mock('../hooks/useAlertNotifications.ts', () => ({useAlertNotifications: () => undefined}));
 vi.mock('../hooks/useHighLevelStatus.ts', () => ({useHighLevelStatus: () => ({highLevelStatus: {}})}));
 vi.mock('../hooks/useEmergency.ts', () => ({useEmergency: () => ({})}));
 vi.mock('../hooks/useStatus.ts', () => ({useStatus: () => ({})}));

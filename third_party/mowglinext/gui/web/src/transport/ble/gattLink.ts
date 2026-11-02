@@ -54,6 +54,26 @@ export function isWebBluetoothAvailable(): boolean {
     return webBluetoothSupport() === "ok";
 }
 
+/** The permitted device to use: `deviceId` if this origin still holds it, else the first AIRSEEKERS_ one. */
+function findMower(devices: BluetoothDevice[], deviceId: string | null): BluetoothDevice | undefined {
+    return devices.find((d) => deviceId !== null && d.id === deviceId)
+        ?? devices.find((d) => d.name?.startsWith(NAME_PREFIX));
+}
+
+/**
+ * Whether this origin still holds a Bluetooth permission for a mower (the one connectKnown()
+ * would use). null when the browser cannot list permitted devices (no getDevices()).
+ */
+export async function hasPermittedMower(deviceId: string | null): Promise<boolean | null> {
+    const bluetooth = typeof navigator !== "undefined" ? navigator.bluetooth : undefined;
+    if (!bluetooth?.getDevices) return null;
+    try {
+        return findMower(await bluetooth.getDevices(), deviceId) !== undefined;
+    } catch {
+        return null;
+    }
+}
+
 export class GattLink implements ByteLink {
     onBytes: ((bytes: Uint8Array) => void) | null = null;
     onDown: (() => void) | null = null;
@@ -137,8 +157,7 @@ export class GattLink implements ByteLink {
         if (!bluetooth?.getDevices) return false;
         if (this.status.state === "connected") return true;
         const devices = await bluetooth.getDevices();
-        const device = devices.find((d) => deviceId !== null && d.id === deviceId)
-            ?? devices.find((d) => d.name?.startsWith(NAME_PREFIX));
+        const device = findMower(devices, deviceId);
         if (!device) return false;
         if (!(await this.inRange(device))) return false;
         this.useDevice(device);

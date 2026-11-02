@@ -20,6 +20,11 @@ type RecorderStatus = {
     topics?: number;
 };
 
+/** The backend answers `available: false` when no bag_recorder node is running. */
+function isNotRunning(data: unknown): boolean {
+    return (data as { available?: boolean } | undefined)?.available === false;
+}
+
 function parseStatus(data: unknown): RecorderStatus | null {
     const msg = (data as { message?: string } | undefined)?.message;
     if (!msg) return null;
@@ -35,6 +40,8 @@ const gb = (bytes: number) => (bytes / 1e9).toFixed(1);
 /**
  * Always-on rosbag "black box" recorder (bag_recorder node). The switch enables or
  * disables it, including per-mow recordings; the robot remembers the setting.
+ * The state is read once on mount and on the refresh button, never polled; a
+ * robot without the node gets one line instead of an error and a dead switch.
  */
 export const RecorderCard: React.FC = () => {
     const { t } = useTranslation();
@@ -42,6 +49,7 @@ export const RecorderCard: React.FC = () => {
     const [status, setStatus] = useState<RecorderStatus | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [notRunning, setNotRunning] = useState(false);
 
     const call = useCallback(async (command: string, body: Record<string, unknown>) => {
         setBusy(true);
@@ -49,6 +57,7 @@ export const RecorderCard: React.FC = () => {
         try {
             const res = await guiApi.mowglinext.callCreate(command, body);
             if (res.error) throw new Error((res.error as { error?: string }).error ?? "error");
+            setNotRunning(isNotRunning(res.data));
             setStatus(parseStatus(res.data));
         } catch (e) {
             setError(e instanceof Error ? e.message : String(e));
@@ -73,6 +82,9 @@ export const RecorderCard: React.FC = () => {
             <Paragraph type="secondary" style={{ marginBottom: 12 }}>
                 {t("settingsRecorder.description")}
             </Paragraph>
+            {notRunning ? (
+                <Text type="secondary">{t("settingsRecorder.notRunning")}</Text>
+            ) : (
             <Space direction="vertical" style={{ width: "100%" }}>
                 <Switch
                     checked={status?.enabled ?? false}
@@ -95,6 +107,7 @@ export const RecorderCard: React.FC = () => {
                 {error && <Alert type="error" showIcon message={t("settingsRecorder.unreachable")}
                                  description={error} />}
             </Space>
+            )}
         </Card>
     );
 };

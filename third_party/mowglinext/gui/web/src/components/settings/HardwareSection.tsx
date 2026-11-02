@@ -6,6 +6,7 @@ import { useThemeMode } from "../../theme/ThemeContext.tsx";
 import { MOWER_MODELS } from "../../constants/mowerModels.ts";
 import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
 import { useProfileGates } from "../../hooks/useProfileGates.ts";
+import { isUpstreamFeatureSet } from "../../constants/profileGates.ts";
 
 const { Text, Paragraph } = Typography;
 
@@ -51,10 +52,24 @@ export const HardwareSection: React.FC<Props> = ({
     const { modal } = App.useApp();
     const [showAdvanced, setShowAdvanced] = useState(false);
     const selectedModel = values.mower_model || "YardForce500";
-    // Keys the robot profile marks unused (e.g. encoder/PID/caster keys that
-    // only feed STM32 odometry on a robot whose motor MCU computes /odom).
-    const { isSettingKeyHidden } = useProfileGates();
-    const shown = (key: string) => !isSettingKeyHidden(key);
+    // Keys the robot profile hides (e.g. encoder/PID/caster keys that only feed
+    // STM32 odometry on a robot whose motor MCU computes /odom) or that nothing
+    // on the robot reads (constants/paramBindings.ts) are left out, and so is
+    // a card left without fields.
+    const { profile, isSettingFieldHidden } = useProfileGates();
+    const shown = (key: string) => !isSettingFieldHidden(key);
+    const chassisKeys = [
+        "chassis_length", "chassis_width", "chassis_height", "chassis_center_x", "chassis_mass_kg",
+        "wheel_width", "wheel_x_offset", "caster_radius", "caster_track",
+    ];
+    const wheelKeys = ["wheel_radius", "wheel_track", "blade_radius", "tool_width", "ticks_per_meter"];
+    // A stock MowgliNext robot can be any of the presets. A robot with its own
+    // feature set (e.g. Airseekers Tron) only offers itself: switching it to a
+    // YardForce preset would not change the robot, only break its settings.
+    const ownModelOnly = !isUpstreamFeatureSet(profile);
+    const pickerModels = ownModelOnly
+        ? MOWER_MODELS.filter((m) => m.value === profile.value)
+        : MOWER_MODELS;
 
     const fieldLabel = (key: string, label: React.ReactNode) => (
         <SettingFieldLabel
@@ -102,21 +117,21 @@ export const HardwareSection: React.FC<Props> = ({
                         </Paragraph>
                     </div>
                     <Row gutter={[8, 8]}>
-                        {MOWER_MODELS.map((model) => {
-                            const isSelected = selectedModel === model.value;
+                        {pickerModels.map((model) => {
+                            const isSelected = ownModelOnly || selectedModel === model.value;
                             return (
                                 <Col xs={12} sm={8} lg={6} key={model.value}>
                                     <Card
-                                        hoverable
+                                        hoverable={!ownModelOnly}
                                         size="small"
-                                        onClick={() => handleModelSelect(model.value)}
+                                        onClick={ownModelOnly ? undefined : () => handleModelSelect(model.value)}
                                         style={{
                                             border: isSelected
                                                 ? `2px solid ${colors.primary}`
                                                 : `1px solid ${colors.border}`,
                                             background: isSelected ? colors.primaryBg : undefined,
                                             height: "100%",
-                                            cursor: "pointer",
+                                            cursor: ownModelOnly ? "default" : "pointer",
                                         }}
                                         styles={{ body: { padding: "8px 12px" } }}
                                     >
@@ -141,6 +156,7 @@ export const HardwareSection: React.FC<Props> = ({
             </Card>
 
             {/* Essential parameters (always visible) */}
+            {wheelKeys.some(shown) && (
             <Card
                 size="small"
                 title={t("settingsHardware.wheelsAndBlade")}
@@ -148,6 +164,7 @@ export const HardwareSection: React.FC<Props> = ({
             >
                 <Form layout="vertical" size="small">
                     <Row gutter={[16, 0]}>
+                        {shown("wheel_radius") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("wheel_radius", t("settingsHardware.wheelRadius"))} tooltip={t("settingsHardware.wheelRadiusTooltip")}>
                                 <InputNumber
@@ -158,6 +175,8 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("wheel_track") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("wheel_track", t("settingsHardware.wheelTrack"))} tooltip={t("settingsHardware.wheelTrackTooltip")}>
                                 <InputNumber
@@ -168,6 +187,8 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("blade_radius") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("blade_radius", t("settingsHardware.bladeRadius"))} tooltip={t("settingsHardware.bladeRadiusTooltip")}>
                                 <InputNumber
@@ -178,6 +199,8 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("tool_width") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("tool_width", t("settingsHardware.toolWidth"))} tooltip={t("settingsHardware.toolWidthTooltip")}>
                                 <InputNumber
@@ -188,6 +211,7 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                         {shown("ticks_per_meter") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("ticks_per_meter", t("settingsHardware.encoderTicksPerMeter"))} tooltip={t("settingsHardware.encoderTicksPerMeterTooltip")}>
@@ -202,8 +226,10 @@ export const HardwareSection: React.FC<Props> = ({
                     </Row>
                 </Form>
             </Card>
+            )}
 
             {/* Advanced: chassis dimensions */}
+            {chassisKeys.some(shown) && (
             <Card
                 size="small"
                 title={
@@ -221,6 +247,7 @@ export const HardwareSection: React.FC<Props> = ({
             >
                 <Form layout="vertical" size="small">
                     <Row gutter={[16, 0]}>
+                        {shown("chassis_length") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("chassis_length", t("settingsHardware.chassisLength"))}>
                                 <InputNumber
@@ -231,6 +258,8 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("chassis_width") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("chassis_width", t("settingsHardware.chassisWidth"))}>
                                 <InputNumber
@@ -241,6 +270,8 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("chassis_height") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("chassis_height", t("settingsHardware.chassisHeight"))}>
                                 <InputNumber
@@ -251,6 +282,8 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("chassis_center_x") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("chassis_center_x", t("settingsHardware.chassisCenterX"))} tooltip={t("settingsHardware.chassisCenterXTooltip")}>
                                 <InputNumber
@@ -261,6 +294,7 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                         {shown("chassis_mass_kg") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("chassis_mass_kg", t("settingsHardware.mass"))}>
@@ -273,6 +307,7 @@ export const HardwareSection: React.FC<Props> = ({
                             </Form.Item>
                         </Col>
                         )}
+                        {shown("wheel_width") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("wheel_width", t("settingsHardware.wheelWidth"))}>
                                 <InputNumber
@@ -283,6 +318,8 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
+                        {shown("wheel_x_offset") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("wheel_x_offset", t("settingsHardware.wheelXOffset"))} tooltip={t("settingsHardware.wheelXOffsetTooltip")}>
                                 <InputNumber
@@ -293,6 +330,7 @@ export const HardwareSection: React.FC<Props> = ({
                                 />
                             </Form.Item>
                         </Col>
+                        )}
                         {shown("caster_radius") && (
                         <Col xs={12} sm={8} lg={6}>
                             <Form.Item label={fieldLabel("caster_radius", t("settingsHardware.casterRadius"))}>
@@ -320,6 +358,7 @@ export const HardwareSection: React.FC<Props> = ({
                     </Row>
                 </Form>
             </Card>
+            )}
         </div>
     );
 };

@@ -20,6 +20,7 @@ import {
     hasFeature,
     isSettingKeyHidden,
 } from "./robotProfiles.ts";
+import {isKeyUsedByRobot} from "./paramBindings.ts";
 
 /** Gate id -> features it needs (ALL of them must be present). */
 export const PROFILE_GATES = {
@@ -82,6 +83,17 @@ const matchesKey = (pattern: string, key: string) =>
 export function isProfileSettingKeyHidden(profile: RobotProfile, key: string): boolean {
     if (isSettingKeyHidden(profile, key)) return true;
     return !hasFeature(profile, "lidar") && LIDAR_SETTING_KEYS.some((p) => matchesKey(p, key));
+}
+
+/**
+ * True when a settings form should leave `key`'s field out on this robot: the
+ * profile hides it (isProfileSettingKeyHidden), or the robot has a parameter
+ * binding table and nothing on it reads the key (the keys that used to carry a
+ * "not used by this robot" tag, constants/paramBindings.ts). Stock robots
+ * hide nothing. The key stays claimed by its section either way.
+ */
+export function isProfileSettingFieldHidden(profile: RobotProfile, key: string): boolean {
+    return isProfileSettingKeyHidden(profile, key) || !isKeyUsedByRobot(profile, key);
 }
 
 /** Upstream mqtt_bridge_node default; also the schema default. */

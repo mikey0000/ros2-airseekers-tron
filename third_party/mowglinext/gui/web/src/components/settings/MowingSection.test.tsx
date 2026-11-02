@@ -1,6 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { ThemeProvider } from "../../theme/ThemeContext.tsx";
+import { AIRSEEKERS_TRON_PROFILE_ID, getRobotProfile } from "../../constants/robotProfiles.ts";
+
+// Active robot profile for useProfileGates (stock unless a test switches it).
+const active = vi.hoisted(() => ({ id: "YardForce500" }));
+vi.mock("../../hooks/useRobotProfile.ts", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../hooks/useRobotProfile.ts")>()),
+    useRobotProfile: () => ({ profile: getRobotProfile(active.id), source: "settings", loading: false }),
+}));
+afterEach(() => { active.id = "YardForce500"; });
 vi.mock("./CrossHatchSettings.tsx", () => ({CrossHatchSettings: () => null}));
 import { MowingSection } from "./MowingSection.tsx";
 
@@ -223,5 +232,31 @@ describe("MowingSection — blade load slowdown", () => {
 
         renderSection(vi.fn(), { ...invalid, blade_load_slowdown_enabled: false });
         expect(screen.queryByText(/full-speed RPM must be above/)).toBeNull();
+    });
+});
+
+describe("MowingSection profile gating", () => {
+    const renderMowing = () => render(
+        <ThemeProvider>
+            <MowingSection values={{ tool_width: 0.18 }} onChange={vi.fn()} />
+        </ThemeProvider>,
+    );
+
+    it("shows the blade, blade-load and pattern fields on a stock robot", () => {
+        renderMowing();
+        expect(screen.getByText("Mowing Motor")).toBeInTheDocument();
+        expect(screen.getByText("Blade Load Slowdown")).toBeInTheDocument();
+        expect(screen.getByText("Headland Width")).toBeInTheDocument();
+    });
+
+    it("on Tron keeps only the bound speeds and mow angle", () => {
+        active.id = AIRSEEKERS_TRON_PROFILE_ID;
+        renderMowing();
+        expect(screen.getByText("Mowing Speed")).toBeInTheDocument();
+        expect(screen.getByText("Mow Angle")).toBeInTheDocument();
+        expect(screen.queryByText("Mowing Motor")).toBeNull();
+        expect(screen.queryByText("Blade Load Slowdown")).toBeNull();
+        expect(screen.queryByText("Headland Width")).toBeNull();
+        expect(screen.queryByText("Not used by this robot")).toBeNull();
     });
 });

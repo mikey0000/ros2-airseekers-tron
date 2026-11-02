@@ -164,13 +164,14 @@ describe("MapToolbarMobile", () => {
     expect(screen.queryByRole("button", { name: en.mapToolbarMobile.drawPath })).toBeNull();
   });
 
-describe('scrollable row layout', () => {
-    // Every item keeps its width (no squeeze/overlap); the row scrolls instead,
-    // and E-STOP stays outside the scrolling row, never covered by it.
+describe('wrapping row layout', () => {
+    // Every item keeps its width (no squeeze/overlap); the row wraps instead of
+    // scrolling sideways, so no action hides off-screen (F11), and E-STOP stays
+    // outside the row, never covered by it.
     const assertRow = () => {
         const row = screen.getByTestId('map-toolbar-mobile');
-        expect(row.style.overflowX).toBe('auto');
-        expect(row.style.flexWrap).toBe('nowrap');
+        expect(row.style.flexWrap).toBe('wrap');
+        expect(row.style.overflowX).toBe('');
         expect(row.children.length).toBeGreaterThan(3);
         for (const child of Array.from(row.children)) {
             expect((child as HTMLElement).style.flexShrink).toBe('0');
@@ -188,6 +189,12 @@ describe('scrollable row layout', () => {
     it('edit mode: no item or button group shrinks', () => {
         render(<AntApp><MapToolbarMobile {...defaultProps} editMap onDrawPath={vi.fn()} onDrawPathToDock={vi.fn()} onEditPath={vi.fn()}/></AntApp>);
         assertRow();
+    });
+    it('names E-STOP as an action', () => {
+        const {rerender} = render(<AntApp><MapToolbarMobile {...defaultProps}/></AntApp>);
+        expect(screen.getByRole('button', {name: 'Emergency stop'})).toHaveTextContent(en.mapToolbarMobile.stop);
+        rerender(<AntApp><MapToolbarMobile {...defaultProps} emergency/></AntApp>);
+        expect(screen.getByRole('button', {name: 'Release emergency stop'})).toBeInTheDocument();
     });
 });
 

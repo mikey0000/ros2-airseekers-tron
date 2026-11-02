@@ -16,6 +16,7 @@ import {WifiChip} from "./WifiChip.tsx";
 import {IOSInstallBanner} from "./IOSInstallBanner.tsx";
 import {useIOSInstallPrompt} from "../hooks/useIOSInstallPrompt.ts";
 import {useAutoNotifications} from "../hooks/useNotificationCenter.tsx";
+import {useAlertNotifications} from "../hooks/useAlertNotifications.ts";
 import {useHighLevelStatus} from "../hooks/useHighLevelStatus.ts";
 import {useEmergency} from "../hooks/useEmergency.ts";
 import {useStatus} from "../hooks/useStatus.ts";
@@ -113,7 +114,10 @@ export function AppShell() {
     emergencyLatched: emergency.latched_emergency ?? false,
     rainDetected: hwStatus.rain_detected ?? false,
     state: highLevelStatus.state_name,
+    subState: highLevelStatus.sub_state_name,
   });
+  // mower_alerts events (stuck, unfinished mow, dock failed, theft, ...) -> bell.
+  useAlertNotifications();
 
   // Bottom-nav items: the primary destinations live in the bar; the rest are
   // reachable through a "More" overflow sheet so nothing is unreachable on mobile.

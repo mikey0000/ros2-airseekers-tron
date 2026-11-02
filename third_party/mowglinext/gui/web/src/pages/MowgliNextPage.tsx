@@ -29,6 +29,8 @@ import {GlassCard} from "../concept/components/GlassCard.tsx";
 import {BatteryRing} from "../concept/components/BatteryRing.tsx";
 import {StatusOrb} from "../concept/components/StatusOrb.tsx";
 import {MissionStopControls} from "../components/MissionStopControls.tsx";
+import {attentionTitleKey, isHeadingHint} from "../utils/missionPresentation.ts";
+import {useNotificationCenter} from "../hooks/useNotificationCenter.tsx";
 import {isLatchedFault} from "../utils/missionStates.ts";
 import {ActionCluster} from "../concept/components/ActionCluster.tsx";
 import {LiveMapMini} from "../concept/components/LiveMapMini.tsx";
@@ -237,7 +239,13 @@ export const MowgliNextPage = () => {
   // contradict. When moving WITH a usable ETA we show the countdown; when moving
   // but the coverage snapshot hasn't arrived yet (remainingMin === 0) we still
   // say "en tonte" instead of falling through to the idle "au repos" text.
-  const headline = data.isMoving
+  // A state that needs the owner (stuck, unfinished mow, dock failed, heading
+  // hint) must not read "idle, tap Play": the hero names it and the banner
+  // below carries the one action.
+  const attentionKey = data.isMoving || data.emergency ? null : attentionTitleKey(data.state, data.subState);
+  const headline = attentionKey
+    ? <span data-testid="hero-attention" style={{color: isHeadingHint(data.subState) ? 'var(--amber, #FFC861)' : 'var(--rose, #FF6B7A)'}}>{t(attentionKey)}</span>
+    : data.isMoving
     ? (remainingMin > 0
         ? <>{t('mowgliNextPage.headlineUntilHomePrefix')}<span style={{
             background: 'var(--grad-primary, linear-gradient(135deg, #7CFFB2, #2BAA66))',
@@ -255,7 +263,10 @@ export const MowgliNextPage = () => {
         ? <span style={{color: 'var(--rose, #FF6B7A)'}}>{t('mowgliNextPage.emergencyStop')}</span>
         : <>{t('mowgliNextPage.headlineIdlePrefix', {robotName})}<em style={{fontStyle: 'italic', color: 'var(--lime, #7CFFB2)'}}>{t('mowgliNextPage.headlineIdleEmphasis')}</em>{t('mowgliNextPage.headlineIdleSuffix')}</>;
 
-  const subline = data.isMoving
+  // The banner inside the hero card carries the reason and the action.
+  const subline = attentionKey
+    ? ''
+    : data.isMoving
     ? t('mowgliNextPage.sublineMoving', {gps: data.gpsLabel.toLowerCase(), area: data.currentArea ?? t('mowgliNextPage.activeZone')})
     : data.charging
       ? t('mowgliNextPage.sublineCharging', {current: data.current.toFixed(1)})
@@ -373,7 +384,7 @@ export const MowgliNextPage = () => {
             <motion.div variants={popIn}>
               <HeroCard
                 data={data} phase={phase} actions={actions}
-                headline={headline} subline={subline}
+                headline={headline} subline={subline} attention={attentionKey !== null}
                 coveragePct={coveragePct}
                 todayMowedM2={todayMowedM2} totalArea={totalArea}
                 activeSettings={activeSettings}
@@ -389,7 +400,7 @@ export const MowgliNextPage = () => {
               <motion.div variants={popIn}>
                 <HeroCard
                   data={data} phase={phase} actions={actions}
-                  headline={headline} subline={subline}
+                  headline={headline} subline={subline} attention={attentionKey !== null}
                   coveragePct={coveragePct}
                   todayMowedM2={todayMowedM2} totalArea={totalArea}
                 activeSettings={activeSettings}
@@ -430,6 +441,8 @@ interface HeroCardProps {
   };
   headline: React.ReactNode;
   subline: string;
+  /** The robot waits for the owner: no Play cluster, the banner below acts. */
+  attention?: boolean;
   coveragePct: number;
   todayMowedM2: number;
   totalArea: number;
@@ -439,7 +452,7 @@ interface HeroCardProps {
 }
 
 function HeroCard({
-  data, phase, actions, headline, subline, coveragePct, todayMowedM2, totalArea, large, activeSettings,
+  data, phase, actions, headline, subline, attention, coveragePct, todayMowedM2, totalArea, large, activeSettings,
 }: HeroCardProps) {
   const {t} = useTranslation();
   const robotName = useRobotName();
@@ -474,10 +487,10 @@ function HeroCard({
             }}>
               {subline}
             </p>
-            {data.subState && !isLatchedFault(data.state) && (
+            {data.subState && !isLatchedFault(data.state) && !attention && (
               <p data-testid="hero-sub-state" style={{
                 fontSize: 12, color: 'var(--lime, #7CFFB2)', marginTop: 6, marginBottom: 0,
-                maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                maxWidth: '100%', overflowWrap: 'anywhere',
               }} title={data.subState}>
                 {data.subState}
               </p>
@@ -552,9 +565,11 @@ function HeroCard({
           );
         })()}
 
-        <div style={{marginTop: large ? 28 : 22}}>
-          <ActionCluster phase={phase} {...actions}/>
-        </div>
+        {!attention && (
+          <div style={{marginTop: large ? 28 : 22}}>
+            <ActionCluster phase={phase} {...actions}/>
+          </div>
+        )}
         <MissionStopControls
           state={data.stateNum} stateName={data.state} subStateName={data.subState}
           onStart={actions.onStart}
@@ -719,12 +734,23 @@ function HealthCard({data}: {data: ReturnType<typeof useMowerData>}) {
   const weather = useWeather();
   const canFlashFirmware = useGate('feature:firmware_flash');
   const hasHostUpdater = useGate('settings:updates');
+  const {items: notifications} = useNotificationCenter();
+  // Alerts row: the e-stop latch first, then a state that needs the owner,
+  // then any unread error/warning in the bell (mower_alerts events included);
+  // it said "No alerts — all clear" while the robot was stuck (F07).
+  const alertsRow = (): HealthRow => {
+    if (data.emergency) return {k: t('mowgliNextPage.alertActive'), ok: false, note: t('mowgliNextPage.toRearm')};
+    const attention = data.isMoving ? null : attentionTitleKey(data.state, data.subState);
+    if (attention) return {k: t(attention), ok: false, note: t('missionText.healthAttention')};
+    const unread = notifications.find(n => !n.read && (n.level === 'error' || n.level === 'warning'));
+    if (unread) return {k: unread.title, ok: false, note: t('missionText.healthAlert')};
+    return {k: t('mowgliNextPage.noAlerts'), ok: true, note: t('mowgliNextPage.allClear')};
+  };
   const rows: HealthRow[] = [
     {k: t('mowgliNextPage.gpsSignal'),         ok: data.gps > 0,           note: data.gpsLabel},
     {k: data.rain ? t('mowgliNextPage.rainDetectedRow') : t('mowgliNextPage.noRain'),
                               ok: !data.rain,             note: data.rain ? t('mowgliNextPage.mowingPausedShort') : t('mowgliNextPage.conditionsOk')},
-    {k: data.emergency ? t('mowgliNextPage.alertActive') : t('mowgliNextPage.noAlerts'),
-                              ok: !data.emergency,        note: data.emergency ? t('mowgliNextPage.toRearm') : t('mowgliNextPage.allClear')},
+    alertsRow(),
     {k: t('mowgliNextPage.motorTemp', {temp: data.motorTemp.toFixed(0)}),
                               ok: data.motorTemp < 55,    note: data.motorTemp >= 55 ? t('mowgliNextPage.runningHot') : t('mowgliNextPage.nominal')},
   ];

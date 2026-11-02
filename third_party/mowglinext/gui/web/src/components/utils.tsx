@@ -51,7 +51,9 @@ const STATE_LABEL_KEYS: Record<string, string> = {
     BOUNDARY_EMERGENCY_STOP: "stateBoundaryAlert",
     UNDOCK_FAILED: "stateStartFailed",
     CHARGER_FAILED: "stateChargerFailed",
-    NAV_TO_DOCK_FAILED: "stateNavigationFailed",
+    // Our mission uses NAV_TO_DOCK_FAILED only for failed drives to the dock.
+    NAV_TO_DOCK_FAILED: "stateDockFailed",
+    MOWING_INCOMPLETE: "stateIncomplete",
     COVERAGE_FAILED_DOCKING: "stateCoverageFailed",
     STUCK_NEEDS_HELP: "stateStuckNeedsHelp",
 };

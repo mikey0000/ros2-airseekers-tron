@@ -17,6 +17,7 @@ import (
 	"github.com/docker/distribution/uuid"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/mowglinext/mowglinext/pkg/foxglove"
 	"github.com/mowglinext/mowglinext/pkg/msgs/geometry"
 	"github.com/mowglinext/mowglinext/pkg/msgs/mowgli"
 	"github.com/mowglinext/mowglinext/pkg/types"
@@ -140,6 +141,11 @@ func topicSubscribeInterval(topic string) (int, bool) {
 		"areaSettings", "activeAreaSettings", "dockCorridor", "previewSummary",
 		"terrainSummary",
 		"missionPlan", "missionProgress", "cutterHeight", "rtkBaseStatus",
+		// Header Wi-Fi chip; wifi_monitor publishes at 1 Hz anyway.
+		"wifiStatus",
+		// mower_alerts operator events (JSON). Queued server-side, so the
+		// throttle never applies and every event reaches the bell.
+		"alerts",
 		// Unthrottled: messages alternate between cameras (frame_id), so a
 		// throttle would starve one of them; det_ros caps the rate itself.
 		"detections":
@@ -821,6 +827,13 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 			var res TriggerRes
 			if command == "bag_recorder_state" {
 				err = provider.CallService(ctx, "/bag_recorder/get_state", &struct{}{}, &res, "std_srvs/srv/Trigger")
+				if errors.Is(err, foxglove.ErrServiceNotAdvertised) {
+					// No bag_recorder node on this robot (launched with bag_recorder:=false,
+					// or a stack such as the simulator that does not start it): that is a
+					// state to show, not a server error.
+					c.JSON(200, map[string]interface{}{"success": false, "available": false, "message": ""})
+					return
+				}
 			} else {
 				var body struct {
 					Enabled *bool `json:"enabled"`

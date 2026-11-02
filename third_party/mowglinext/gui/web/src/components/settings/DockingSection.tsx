@@ -7,7 +7,7 @@ import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
 import { DockingKindOnly } from "./DockingKindOnly.tsx";
 import { DockCalibrationCard } from "./DockCalibrationCard.tsx";
 import { VisionDockCard } from "./VisionDockCard.tsx";
-import { useGate } from "../../hooks/useProfileGates.ts";
+import { useProfileGates } from "../../hooks/useProfileGates.ts";
 
 const { Text, Paragraph } = Typography;
 
@@ -26,7 +26,10 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
     // onto charger contacts. A robot that docks another way (profile.docking,
     // e.g. "vision_marker") renders its own calibration card at the gate point
     // below instead.
-    const hasDockCalibration = useGate("feature:dock_calibration");
+    const { isVisible, isSettingFieldHidden } = useProfileGates();
+    const hasDockCalibration = isVisible("feature:dock_calibration");
+    // Fields the robot profile hides or does not use are left out.
+    const shown = (key: string) => !isSettingFieldHidden(key);
     const fieldLabel = (key: string, label: React.ReactNode) => (
         <SettingFieldLabel
             settingKey={key}
@@ -60,6 +63,7 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                     </div>
                     <Form layout="vertical" size="small">
                         <Row gutter={[16, 0]}>
+                            {shown("undock_distance") && (
                             <Col xs={24} sm={12}>
                                 <Form.Item label={fieldLabel("undock_distance", t('dockingSection.undockDistance'))} tooltip={t('dockingSection.undockDistanceTooltip')}>
                                     <InputNumber
@@ -70,6 +74,8 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                                     />
                                 </Form.Item>
                             </Col>
+                            )}
+                            {shown("undock_speed") && (
                             <Col xs={24} sm={12}>
                                 <Form.Item label={fieldLabel("undock_speed", t('dockingSection.undockSpeed'))} tooltip={t('dockingSection.undockSpeedTooltip')}>
                                     <InputNumber
@@ -80,6 +86,8 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                                     />
                                 </Form.Item>
                             </Col>
+                            )}
+                            {shown("dock_approach_distance") && (
                             <Col xs={24} sm={12}>
                                 <Form.Item label={fieldLabel("dock_approach_distance", t('dockingSection.approachDistance'))} tooltip={t('dockingSection.approachDistanceTooltip')}>
                                     <InputNumber
@@ -90,8 +98,10 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                                     />
                                 </Form.Item>
                             </Col>
+                            )}
                             {/* Charger-contact docking only (profile.docking). */}
                             <DockingKindOnly kind="charger_contacts">
+                                {shown("dock_use_charger_detection") && (
                                 <Col xs={24} sm={12}>
                                     <Form.Item label={fieldLabel("dock_use_charger_detection", t('dockingSection.chargerDetection'))} tooltip={t('dockingSection.chargerDetectionTooltip')}>
                                         <Switch
@@ -100,6 +110,7 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                                         />
                                     </Form.Item>
                                 </Col>
+                                )}
                             </DockingKindOnly>
                         </Row>
                     </Form>
@@ -117,6 +128,7 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                                 children: (
                                     <Form layout="vertical" size="small">
                                         <Row gutter={[16, 0]}>
+                                            {shown("dock_max_retries") && (
                                             <Col xs={24} sm={12}>
                                                 <Form.Item label={fieldLabel("dock_max_retries", t('dockingSection.maxRetries'))} tooltip={t('dockingSection.maxRetriesTooltip')}>
                                                     <InputNumber
@@ -127,8 +139,10 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                                                     />
                                                 </Form.Item>
                                             </Col>
+                                            )}
                                             {/* Charger-contact docking only (profile.docking). */}
                                             <DockingKindOnly kind="charger_contacts">
+                                                {shown("dock_charging_threshold") && (
                                                 <Col xs={24} sm={12}>
                                                     <Form.Item label={fieldLabel("dock_charging_threshold", t('dockingSection.chargingThreshold'))} tooltip={t('dockingSection.chargingThresholdTooltip')}>
                                                         <InputNumber
@@ -139,9 +153,11 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                                                         />
                                                     </Form.Item>
                                                 </Col>
+                                                )}
                                             </DockingKindOnly>
                                             {/* Charger-contact docking only (profile.docking). */}
                                             <DockingKindOnly kind="charger_contacts">
+                                                {shown("dock_approach_overshoot") && (
                                                 <Col xs={24} sm={12}>
                                                     <Form.Item label={fieldLabel("dock_approach_overshoot", t('dockingSection.approachOvershoot'))} tooltip={t('dockingSection.approachOvershootTooltip')}>
                                                         <InputNumber
@@ -152,7 +168,9 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                                                         />
                                                     </Form.Item>
                                                 </Col>
+                                                )}
                                             </DockingKindOnly>
+                                            {shown("dock_pose_yaw_sigma_rad") && (
                                             <Col xs={24} sm={12}>
                                                 <Form.Item label={fieldLabel("dock_pose_yaw_sigma_rad", t('dockingSection.baseHeadingUncertainty'))} tooltip={t('dockingSection.baseHeadingUncertaintyTooltip')}>
                                                     <InputNumber
@@ -163,6 +181,7 @@ export const DockingSection: React.FC<Props> = ({ values, onChange, isOverridden
                                                     />
                                                 </Form.Item>
                                             </Col>
+                                            )}
                                         </Row>
                                     </Form>
                                 ),

@@ -32,6 +32,10 @@ import {useMapEditing} from "./map/hooks/useMapEditing.ts";
 import {useMapStreams} from "./map/hooks/useMapStreams.ts";
 import {useMapFiles, type ImportOpenMowerSummary} from "./map/hooks/useMapFiles.ts";
 import {useResetMowingProgress} from "./map/hooks/useResetMowingProgress.tsx";
+import {useElementHeight} from "./map/hooks/useElementHeight.ts";
+import {useStuckReset} from "../hooks/useStuckReset.ts";
+import {skippedLengthM} from "../utils/missionPresentation.ts";
+import {parseBoolish} from "../utils/settingsValues.ts";
 import {ImportOpenMowerModal} from "./map/components/ImportOpenMowerModal.tsx";
 import {NewAreaModal} from "./map/components/NewAreaModal.tsx";
 import {EditAreaModal} from "./map/components/EditAreaModal.tsx";
@@ -535,6 +539,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const terrainSummary = useTerrainSummary(!compact);
     const [terrainSel, setTerrainSel] = useState<{area: number; id: number} | null>(null);
     const [terrainCardHidden, setTerrainCardHidden] = useState(false);
+    // Desktop view-mode toolbar wraps to 1-3 rows; the floating progress and
+    // preview cards sit above its measured height instead of a fixed offset
+    // (F04: a fixed bottom:84 covered Dock, Edit map and the E-stop).
+    const [desktopToolbarRef, desktopToolbarHeight] = useElementHeight();
+    const desktopCardBottom = 12 + (desktopToolbarHeight || 72) + 12;
     const terrainCollection = useMemo<FeatureCollection>(() => {
         const features: Feature[] = [];
         if (!terrainSummary || datum[0] === 0) return {type: "FeatureCollection", features};
@@ -988,6 +997,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const [settingsNavName, setSettingsNavName] = useState<string | null>(null);
     const [startSheet, setStartSheet] = useState<{open: boolean; selection: StartSelection; mode?: "resume" | "fresh"}>({open: false, selection: "all"});
     const resumeAvailable = useCoverageResumeAvailable();
+    // STUCK_NEEDS_HELP: Resume only after Reset, same as the fault banner.
+    const [stuckResetDone] = useStuckReset(highLevelStatus.highLevelStatus.state_name);
     const areaChoices = useMemo(
         () => mowingAreaChoices(map, (order) => t('mapAreasList.unnamedArea', {order})),
         [map, t],
@@ -1293,8 +1304,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         ? (areaChoices.find((a) => a.index === liveProgress.area)?.name ?? undefined) : undefined;
     const showPreviewCard = !compact && !editMap && !liveProgress && planPreview !== null
         && planPreview.status !== "cleared" && planPreview.id !== previewHiddenId;
+    // Phone: the preview card flows in the top stack under the status line;
+    // desktop: bottom-left above the toolbar.
     const previewCard = showPreviewCard && planPreview ? (
-        <div style={{position: 'absolute', zIndex: 15, ...(isMobile ? {top: 64, left: 12} : {bottom: 84, left: 16}), maxWidth: 300, background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow, borderRadius: 14, padding: '8px 12px'}}>
+        <div style={{...(isMobile ? {position: 'relative', pointerEvents: 'auto', alignSelf: 'stretch'} : {position: 'absolute', zIndex: 15, bottom: desktopCardBottom, left: 16}), maxWidth: isMobile ? undefined : 300, background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow, borderRadius: 14, padding: '8px 12px'}}>
             <PlanPreviewCard
                 summary={planPreview}
                 colors={{ring: LAYER_COLORS.previewRing, swath: LAYER_COLORS.previewSwath, transit: LAYER_COLORS.previewTransit}}
@@ -1311,6 +1324,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         // Resume = plain START: with a cursor the mission resumes the same area at the
         // saved sub-path / pose (no sheet, no Resume-or-fresh prompt).
         onResume: canResume(highLevelStatus.highLevelStatus.state, highLevelStatus.highLevelStatus.state_name, resumeAvailable)
+            && (highLevelStatus.highLevelStatus.state_name !== "STUCK_NEEDS_HELP" || stuckResetDone)
             ? mowerAction("high_level_control", {Command: CMD_START})
             : undefined,
         onStartFresh: useStartSheet
@@ -1347,7 +1361,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         onBladeOff: mowerAction("mow_enabled", {mow_enabled: 0, mow_direction: 0}),
         onRecordFinish: mowerAction("high_level_control", {Command: 5}),
         onRecordCancel: mowerAction("high_level_control", {Command: 6}),
-    }), [mowerAction, highLevelStatus.highLevelStatus.state, highLevelStatus.highLevelStatus.state_name, useStartSheet, resumeAvailable, modal, confirmStartText]);
+    }), [mowerAction, highLevelStatus.highLevelStatus.state, highLevelStatus.highLevelStatus.state_name, useStartSheet, resumeAvailable, stuckResetDone, modal, confirmStartText]);
 
     // Centered message panel used for the missing-token and missing-datum
     // states — a plain, translated explanation instead of an eternal spinner
@@ -1563,6 +1577,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             onStartFresh={() => { void mowerActions.onStartFresh(); }}
             compact={inline}
             showFollowUp={inline}
+            onManualDrive={() => { void handleManualMode(); }}
+            skippedM={skippedLengthM(missionPlan, missionProgress)}
+            returnHomeOnIncomplete={parseBoolish(settings["return_home_on_incomplete"])}
+            onOpenReturnHomeSetting={() => navigate("/settings?section=battery")}
         />
     );
 
@@ -1989,7 +2007,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     with "Why stopped?" (and, on a phone, the compact progress bar).
                     Desktop leaves the right 272 px to the areas panel. */}
                 <div style={{position: 'absolute', top: 12, left: isMobile ? 12 : 16, right: isMobile ? 12 : 272,
-                    zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, pointerEvents: 'none'}}>
+                    zIndex: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, pointerEvents: 'none',
+                    // Phone: stop above the fixed bottom toolbar (2 rows + nav); the
+                    // terrain card is the one child that shrinks and scrolls.
+                    maxHeight: isMobile ? 'calc(100dvh - 370px)' : 'calc(100% - 150px)'}}>
                     {/* One banner: in view mode the stop / resume controls live inside
                         the status line (compact follow-up row); edit mode keeps only
                         Stop and fault banners, no interrupted card over the map. */}
@@ -2011,28 +2032,34 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             )}
                         </MissionStatusLine>
                     )}
-                </div>
-                {!isMobile && !editMap && liveProgress && (
-                    <div style={{position: 'absolute', zIndex: 15, bottom: 84, left: 16, maxWidth: 300, background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow, borderRadius: 14, padding: '8px 12px'}}>
-                        <MowProgressCard progress={liveProgress} colors={progressColors}
-                                         areaName={liveAreaName}/>
-                    </div>
-                )}
-                {previewCard}
-                {!compact && !editMap && terrainSummary && terrainHasData && (terrainCardHidden ? (
-                    <Button size="small" style={{position: 'absolute', zIndex: 15, ...(isMobile ? {top: 64, right: 12} : {top: 72, left: 16})}}
-                            onClick={() => setTerrainCardHidden(false)}>Terrain</Button>
-                ) : (
-                    <div style={{position: 'absolute', zIndex: 15, ...(isMobile ? {top: 64, right: 12} : {top: 72, left: 16}), maxWidth: 340, background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow, borderRadius: 14, padding: '8px 12px'}}>
+                    {/* Cards that used to float at fixed offsets flow here, under the
+                        status line, so a taller status never covers them (F03). */}
+                    {isMobile && previewCard}
+                    {!compact && !editMap && terrainSummary && terrainHasData && (terrainCardHidden ? (
+                        <Button size="small" style={{pointerEvents: 'auto', alignSelf: isMobile ? 'flex-end' : 'center'}}
+                                onClick={() => setTerrainCardHidden(false)}>Terrain</Button>
+                    ) : (
                         <TerrainCard
                             summary={terrainSummary}
                             selected={terrainSel}
                             onSelect={setTerrainSel}
                             onAction={(action, area, id) => postTerrainAction(guiApi, action, area, id)}
                             onDismiss={() => setTerrainCardHidden(true)}
+                            style={{pointerEvents: 'auto', alignSelf: isMobile ? 'stretch' : 'center',
+                                width: isMobile ? undefined : 'min(340px, 100%)', maxHeight: isMobile ? '34vh' : '40vh',
+                                flex: '0 1 auto', minHeight: 72,
+                                background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow,
+                                borderRadius: 14, padding: '8px 12px'}}
                         />
+                    ))}
+                </div>
+                {!isMobile && !editMap && liveProgress && (
+                    <div style={{position: 'absolute', zIndex: 15, bottom: desktopCardBottom, left: 16, maxWidth: 300, background: colors.glassBackground, border: colors.glassBorder, boxShadow: colors.glassShadow, borderRadius: 14, padding: '8px 12px'}}>
+                        <MowProgressCard progress={liveProgress} colors={progressColors}
+                                         areaName={liveAreaName}/>
                     </div>
-                ))}
+                )}
+                {!isMobile && previewCard}
                 {editMap && !pathTool.editing && !boundaryDrawing && features["dock"] instanceof DockFeatureBase && (
                     <DockHeadingPanel
                         heading={(features["dock"] as DockFeatureBase).getHeading()}
@@ -2129,7 +2156,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 )}
                 {/* Desktop: View mode — bottom glass toolbar */}
                 {!isMobile && !editMap && (
-                    <div style={{position: 'absolute', bottom: 12, left: 16, right: 272, zIndex: 10, background: colors.glassBackground, backdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, WebkitBackdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, borderRadius: 18, border: colors.glassBorder, boxShadow: colors.glassShadow, padding: '10px 14px'}}>
+                    <div ref={desktopToolbarRef} style={{position: 'absolute', bottom: 12, left: 16, right: 272, zIndex: 10, background: colors.glassBackground, backdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, WebkitBackdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, borderRadius: 18, border: colors.glassBorder, boxShadow: colors.glassShadow, padding: '10px 14px'}}>
                         <MapToolbar
                             manualMode={manualMode}
                             useSatellite={useSatellite}

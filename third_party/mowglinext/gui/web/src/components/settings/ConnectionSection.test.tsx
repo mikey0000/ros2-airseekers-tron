@@ -1,6 +1,7 @@
 import {App} from "antd";
 import {act, render, screen, waitFor} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import {MemoryRouter} from "react-router-dom";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 import type {ConnectionState} from "../../transport/connectionManager.ts";
 import {ConnectionSection} from "./ConnectionSection.tsx";
@@ -47,7 +48,7 @@ function setState(patch: Partial<ConnectionState>) {
 }
 
 function renderSection() {
-    return render(<App><ConnectionSection/></App>);
+    return render(<MemoryRouter><App><ConnectionSection/></App></MemoryRouter>);
 }
 
 beforeEach(() => {

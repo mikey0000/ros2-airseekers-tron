@@ -776,6 +776,21 @@ The sim gate's `-d` disturbance (wheel bias 0.04, per-wheel slip std 0.05) is mi
 sim publishes no roll on /tilt/status, so a 3x wheel-vs-RTK slip and the slope rule never
 occur there: the slip and slope paths are unit-tested only.
 
+## GUI UX batch (2026-11-02, branch ws/ux-batch, vitest + sim GUI check)
+
+Fixes from the GUI UX audit (`docs/gui.md` "Owner-facing states, alerts and layout"). The
+header Wi-Fi chip now appears (the backend multiplex allowlist was missing `wifiStatus`). The
+terrain card can always be closed: it sits under the status line and closes on Escape or a tap
+outside. On desktop the progress card no longer covers Dock, Edit map or the E-stop. The phone
+toolbar wraps instead of hiding actions off-screen. Stuck, unfinished-mow, dock-failed and
+heading-hint states show plain text with one primary action, and `/mower_alerts/events` reaches
+the notification bell and Home's Health check. On Tron, Settings hides unused fields, and
+Settings > Connection opens with a Bluetooth setup guide. The updater 503 and bag-recorder 500
+console noise is gone, and the Schedule rules read the real settings. Checked in the
+real_run5 sim GUI at 390x844 and 1280x800 (stuck, unfinished and dock-failed states faked on
+`high_level_status`). Not done: the new-zone dialog (F12), path labels and taps (F14), the
+Logs backlog (F24).
+
 ## Review fixes (2026-11-02, branch ws/review-fixes, unit-tested; sim gate pending)
 
 Code review of 335ef53..3cfe973. Each fix has a regression test that fails on 3cfe973.
