@@ -33,15 +33,7 @@ class HeadingCalMixin:
             return False
         if i.heading_source == 'cog':
             return bool(self._heading_cog_stale())
-        if i.heading_source == 'mag':
-            return self._hcal_mag_ok()
         return i.heading_source == 'file' and i.heading_prior in checks
-
-    def _hcal_mag_ok(self):
-        """A magnetometer seed (aligner source mag, 2026-11-03) with a seed quality of at
-        least heading_mag_min_quality is a usable prior for the calibration drive."""
-        q = self.inputs.heading_mag_quality
-        return q is not None and q >= float(self.p.heading_mag_min_quality)
 
     def _hcal_blind_ok(self):
         """No usable prior, but a blind drive is allowed: enabled, status fresh, heading not
@@ -53,13 +45,7 @@ class HeadingCalMixin:
         i = self.inputs
         if i.heading_source == 'cog':
             return 'cog %s' % (self._heading_cog_stale() or 'fresh')
-        if i.heading_source == 'mag':
-            q = i.heading_mag_quality
-            return 'quality %s' % ('?' if q is None else '%.2f' % q)
         return i.heading_prior or 'unchecked'
-
-    def _hcal_prior_name(self):
-        return 'magnetometer heading' if self.inputs.heading_source == 'mag' else 'saved heading'
 
     def _hcal_reach(self, direction, dist=None):
         """Length of the straight the robot body sweeps: drive + footprint ahead of it."""
@@ -189,7 +175,7 @@ class HeadingCalMixin:
             if area is not None:
                 d = float(p.heading_calibration_distance_m)
                 word = 'forward' if direction > 0 else 'backward'
-                what = '%s %s' % (self._hcal_prior_name(), self._hcal_prior_text())
+                what = 'saved heading %s' % self._hcal_prior_text()
             else:
                 # 2026-11-02: no clear line -> the shorter blind-drive length (0.8 m: the
                 # aligner's 0.6 m COG window + margin) by the prior, then the disc (any
@@ -209,8 +195,7 @@ class HeadingCalMixin:
                     self._hcal_no_room(line)
                     return
                 word = 'forward' if direction > 0 else 'backward'
-                what = '%s %s, %s but %s' % (self._hcal_prior_name(), self._hcal_prior_text(),
-                                             line, how)
+                what = 'saved heading %s, %s but %s' % (self._hcal_prior_text(), line, how)
         elif self._hcal_blind_ok():
             # no usable prior (2026-11-01): the whole disc must be clear, then creep forward
             area = self._hcal_disc_clear(pose)

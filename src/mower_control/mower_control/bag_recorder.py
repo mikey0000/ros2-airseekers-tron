@@ -124,9 +124,6 @@ DEFAULT_TOPICS = [
     '/diagnostics',
     # Wi-Fi link (2026-11-01, wifi_monitor: 1 Hz status + roam/disconnect events)
     '/wifi/status', '/wifi/event',
-    # magnetometer heading experiment (2026-11-03, stereo_imu: 20 Hz active, 2 Hz idle; raw
-    # field + the tilt it used + the heading, for scripts/mag_cal.py)
-    '/imu/mag', '/imu/mag_gravity', '/imu/mag_heading',
 ]
 
 # 'detour' is a routine decision, not an incident (several per mow); the rest are aborts.
@@ -155,7 +152,6 @@ LOW_POWER_TOPICS = [
     '/mower_docking/marker_in_view', '/mower_docking/marker_pose', '/mower_docking/diag',
     '/mower_docking/debug_image/compressed', '/rear_camera/exposure_state',
     '/wifi/status', '/wifi/event',
-    '/imu/mag', '/imu/mag_gravity', '/imu/mag_heading',
 ]
 FULL, LOW = 'full', 'low'
 

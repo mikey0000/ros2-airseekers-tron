@@ -49,14 +49,10 @@ tunings (`iqfiles/`) into the workspace. Everything below is now concrete, not i
 |---|---|---|
 | `0x06` | simor | stereo-matching / depth ASIC |
 | `0x1b` | xc9080 | **ISP / disparity engine** (not the sensor — it sits ahead of the SC132GS pair) |
-| `0x1e` | lis2mdl / IIS2MDC | magnetometer |
+| `0x1e` | lis2mdl / IIS2MDC | magnetometer (DT node only: no ACK on this unit, stock never reads it) |
 | `0x48` | tmp112 | temperature |
 | `0x50` | 24c128 (AT24 EE) | **calibration EEPROM** |
 | `0x68` | icm40608 | 6-axis IMU (driven by `inv-icm42600` kmod) |
-
-The magnetometer is read by `mower_cameras/stereo_imu` (`mag_device.py`: IIO `st_magn` or raw
-i2c registers; untested on hardware as of 2026-11-03) for the heading-seed experiment
-(`/imu/mag*`, `scripts/mag_cal.py`, docs/HEADING_RECEIVER_2026-11.md).
 
 ### Frame formats (from `mo_init.sh` + sample file sizes)
 

@@ -1,8 +1,8 @@
 # Dual-antenna heading receiver: spec (2026-11-03)
 
 Goal (REVIEW_2026-11-02 step 4): an absolute heading at every START, with no COG calibration
-drive, no blind drive and no dock seed. The magnetometer experiment (`heading_mag_seed`,
-`scripts/mag_cal.py`) runs first; this spec is the hardware path if its verdict is not `seed`.
+drive, no blind drive and no dock seed. The magnetometer experiment was dropped on 2026-11-03
+(the LIS2MDL is not fitted on this unit), so this spec is the hardware path.
 
 ## Candidates (UM982: dual-antenna, L1/L2/L5, internal heading engine)
 

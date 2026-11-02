@@ -232,9 +232,6 @@ def generate_launch_description():
                               description='mower_cameras/stereo_imu: Metoak ICM-40608 (IIO) -> '
                                           '/stereo_imu/data.'),
         DeclareLaunchArgument('stereo_imu_rate', default_value='200.0'),
-        DeclareLaunchArgument('mag_declination_deg', default_value='0.0',
-                              description='stereo_imu magnetometer: site magnetic declination '
-                                          '(deg, east positive) for /imu/mag_heading.'),
         DeclareLaunchArgument('stereo_depth', default_value='true',
                               description='mower_cameras/stereo_depth: Metoak hardware disparity '
                                           '(/dev/video11) -> /stereo_depth/points (Nav2 local '
@@ -310,9 +307,7 @@ def generate_launch_description():
         name='stereo_imu',
         output='screen',
         condition=IfCondition(LC('stereo_imu')),
-        parameters=[{'rate': ParameterValue(LC('stereo_imu_rate'), value_type=float),
-                     'mag_declination_deg': ParameterValue(LC('mag_declination_deg'),
-                                                           value_type=float)}],
+        parameters=[{'rate': ParameterValue(LC('stereo_imu_rate'), value_type=float)}],
     )
 
     stereo_depth = hosted_node(
