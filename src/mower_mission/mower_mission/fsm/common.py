@@ -78,6 +78,14 @@ HEADING_ALIGNED_SOURCES = ('dock', 'cog', 'file_verified')
 HEADING_NOT_ALIGNED = ('heading not aligned: in manual, drive straight 1 m or more without '
                        'turning at 0.1 m/s or more, or start from the dock')
 
+# Battery temperature refusal / pause text (stock TaskManager::checkTaskEnv "battery temp high",
+# StartTaskRsp Battery_Temp_High -112; IotNotice BatteryHigh/LowTemperature 500002 / 500001).
+# Prefix kept stable: mower_alerts and the GUI key on 'battery temperature'.
+BATTERY_TEMP_HIGH = ('battery temperature %.0f C above %.0f C: let it cool in the shade or on '
+                     'the dock, mowing starts again by itself once it is below the limit')
+BATTERY_TEMP_LOW = ('battery temperature %.0f C below %.0f C: too cold to mow, start again '
+                    'once it is warmer')
+
 # MANUAL_MOWING sub_state (the GUI reads the blade state from it)
 SUB_MANUAL_BLADE_ON = 'joystick, blade on'
 SUB_MANUAL_BLADE_OFF = 'joystick, blade off'
@@ -406,6 +414,18 @@ class RecordIncident:
 
 
 @dataclass
+class Notice:
+    """A stock-parity alert condition for mower_alerts (/mower_alerts/notice JSON,
+    rules.parse_notice): active=True raises it, False clears it."""
+    incident: str
+    active: bool
+    text: str = ''
+    kind: str = 'blocked'
+    priority: int = 3
+    message: str = ''
+
+
+@dataclass
 class DriveCmd:
     """Stuck escape: one Twist on /cmd_vel_emergency (highest twist_mux lane)."""
     linear: float = 0.0
@@ -446,6 +466,8 @@ class Inputs:
     docked: bool = False                # MowerBaseDevStatus.is_docking_done
     is_cutting: bool = False
     battery_percent: Optional[float] = None
+    # /battery temperature (deg C, mcu_node BatteryInfo.temperature); None = not reported
+    battery_temp_c: Optional[float] = None
     fix_type: Optional[int] = None
     gps_quality: float = 0.0            # 0..1 (upstream publishes a fraction)
     pose: Optional[tuple] = None        # (x, y, yaw) in map
@@ -555,6 +577,14 @@ class Params:
     # waits for min(battery_full_percent, battery_max_charge_percent).
     battery_max_charge_percent: float = 100.0
     battery_charge_hysteresis_percent: float = 5.0
+    # Battery temperature (stock: "battery temp high" start refusal, ChargeEnvCheck docks on
+    # it mid-task; the vendor thresholds are not in the recovered code, these are ours).
+    # START is refused outside [min_start, max_start]; above max_mow for battery_temp_debounce_s
+    # a running mission docks (purpose battery_temp) and resumes once <= max_start.
+    battery_temp_max_start_c: float = 45.0
+    battery_temp_min_start_c: float = 0.0
+    battery_temp_max_mow_c: float = 55.0
+    battery_temp_debounce_s: float = 10.0
     preflight_min_fix_type_docked: int = 1
     rtk_fix_type: int = FIX_RTK_FIXED
     rtk_timeout_s: float = 120.0

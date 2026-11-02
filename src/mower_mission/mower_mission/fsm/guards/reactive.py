@@ -102,6 +102,9 @@ class ReactiveGuardsMixin:
             else:
                 self._rain_since = None
 
+        if self._battery_temp_tick():
+            return True
+
         b = i.battery_percent
         if b is not None and b < self.p.battery_low_percent and self.phase in MISSION_PHASES \
                 and self.mission is not None:

@@ -760,3 +760,28 @@ def test_fix_label_and_minutes_helpers():
     assert r._fix_label(9) == 'fix type 9'
     assert r._minutes(10) == '1 min'
     assert r._minutes(300) == '5 min'
+
+
+# ---------------------------------------------------------------------------
+# stock-parity notices (/mower_alerts/notice)
+# ---------------------------------------------------------------------------
+def test_parse_notice_active_and_inactive():
+    inc, n = r.parse_notice({'incident': 'battery_temp', 'kind': 'battery', 'priority': 9,
+                             'text': 'hot', 'message': 'batteryTemp'})
+    assert inc == 'battery_temp' and n.kind == 'battery' and n.priority == 5
+    assert r.parse_notice({'incident': 'battery_temp', 'active': False}) == ('battery_temp', None)
+    assert r.parse_notice({'incident': 'x', 'kind': 'bogus'})[1].kind == 'blocked'
+    with pytest.raises(ValueError):
+        r.parse_notice({'active': True})
+
+
+def test_notice_fires_once_and_rearms_after_clear():
+    e = r.AlertEngine(r.Params(clear_s=5.0))
+    _, n = r.parse_notice({'incident': 'camera_blocked', 'text': 'front camera blocked'})
+    held = r.Inputs(notices={'camera_blocked': n})
+    out = run(e, held, 0.0, 10.0)
+    assert [a.text for _, a in out] == ['front camera blocked']
+    assert 'notice:camera_blocked' in e.active_incidents()
+    assert run(e, r.Inputs(), 10.0, 6.0) == []
+    assert 'notice:camera_blocked' not in e.active_incidents()
+    assert len(run(e, held, 16.0, 1.0)) == 1

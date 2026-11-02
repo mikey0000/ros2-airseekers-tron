@@ -71,6 +71,7 @@ TOPIC_DEFAULTS = {
     'emergency_topic': '/hardware_bridge/emergency',
     'hw_status_topic': '/hardware_bridge/status',
     'battery_topic': '/battery',
+    'notice_topic': '/mower_alerts/notice',  # stock-parity alerts (mower_alerts rules.parse_notice)
     'mower_status_topic': '/mower_base/status',
     'gnss_status_topic': '/gps/status',
     'heading_status_topic': '/heading_aligner/status',   # mower_localization heading_aligner
@@ -295,6 +296,7 @@ class MissionNode(Node):
         self._mow_progress_pub = self.create_publisher(String, p['mow_progress_topic'], latched)
         # terrain-memory incidents (mower_map map_server_node, docs/terrain_aware_planning.md)
         self._incident_pub = self.create_publisher(String, '/mission/incident', 20)
+        self._notice_pub = self.create_publisher(String, p['notice_topic'], 20)
         # path-corridor decision on the current obstacle policy (GUI "Why stopped")
         self._decision_pub = self.create_publisher(String, '/mission/obstacle_decision', latched)
         # activity mode for the perception / logging duty cycle (mower_mission/activity.py)
@@ -594,6 +596,8 @@ class MissionNode(Node):
     def _on_battery(self, msg):
         with self._lock:
             self.fsm.inputs.battery_percent = _battery_percent(msg.percentage)
+            t = float(msg.temperature)
+            self.fsm.inputs.battery_temp_c = t if math.isfinite(t) else None
 
     def _on_base(self, msg):
         with self._lock:
@@ -973,6 +977,10 @@ class MissionNode(Node):
             self._stuck_suppress_pub.publish(Bool(data=bool(e.active)))
         elif isinstance(e, f.ResetStuckGuard):
             self._stuck_reset_pub.publish(Bool(data=True))
+        elif isinstance(e, f.Notice):
+            self._notice_pub.publish(String(data=json.dumps(
+                {'incident': e.incident, 'active': e.active, 'text': e.text, 'kind': e.kind,
+                 'priority': e.priority, 'message': e.message}, sort_keys=True)))
         elif isinstance(e, f.RecordIncident):
             self._incident_pub.publish(String(data=json.dumps(
                 {'kind': e.kind, 'x': e.x, 'y': e.y, 'detail': e.detail,

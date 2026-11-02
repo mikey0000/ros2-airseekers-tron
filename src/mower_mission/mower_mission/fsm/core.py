@@ -28,6 +28,7 @@ from mower_mission.fsm.guards.stuck import StuckGuardMixin
 from mower_mission.fsm.guards.tilt import TiltGuardMixin
 from mower_mission.fsm.guards.boundary import BoundaryGuardMixin
 from mower_mission.fsm.guards.spin_drift import SpinDriftGuardMixin
+from mower_mission.fsm.guards.parity import ParityGuardsMixin
 from mower_mission.fsm.phases.nogo import NogoMixin
 
 
@@ -50,6 +51,7 @@ class MissionFSM(PreviewMixin,
                  TiltGuardMixin,
                  BoundaryGuardMixin,
                  SpinDriftGuardMixin,
+                 ParityGuardsMixin,
                  NogoMixin):
     """See module docstring."""
 
@@ -91,7 +93,7 @@ class MissionFSM(PreviewMixin,
         self._pivot_tries = {}              # unfinished-pivot re-sends per pivot (key -> n)
         self._dock_contact_since = None
         self._manual_undocking = False           # standalone UNDOCK (CMD_UNDOCK) in flight
-        self._resume_after = None           # None | 'rain' | 'charge'
+        self._resume_after = None           # None | 'rain' | 'charge' | 'battery_temp'
         self._rain_since = None
         self._rain_clear_since = None
         self._boundary_since = None

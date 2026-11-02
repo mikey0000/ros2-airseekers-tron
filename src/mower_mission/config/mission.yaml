@@ -14,6 +14,10 @@ behavior_tree_node:
     battery_low_action: dock          # below battery_low_percent during a mission: dock (charge, then resume) | stop (blade off, stay put)
     battery_max_charge_percent: 100.0 # charge limit while docked (e.g. 80.0); 100 = no limit
     battery_charge_hysteresis_percent: 5.0  # re-enable charging at max - this
+    battery_temp_max_start_c: 45.0    # START refused above this battery temperature (stock "battery temp high")
+    battery_temp_min_start_c: 0.0     # START refused below this
+    battery_temp_max_mow_c: 55.0      # mid-mow above this (debounced): dock, resume once <= max_start
+    battery_temp_debounce_s: 10.0
 
     # --- GNSS ------------------------------------------------------------
     preflight_min_fix_type_docked: 1  # GnssStatus.fix_type needed to START from the dock
