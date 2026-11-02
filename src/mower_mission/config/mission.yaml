@@ -543,6 +543,9 @@ behavior_tree_node:
     follow_premature_retries: 3
     follow_chunk_m: 25.0              # FollowPath goals are split into chunks of at most this length (0 = off)
     follow_chunk_clearance_m: 0.5     # a chunk's final pose stays this far from its earlier poses
+    follow_chunk_min_tail_m: 1.5      # a chunk the clearance rule ends short of the segment end leaves >= this;
+    follow_chunk_end_straight_deg: 10.0  # else its end moves back to a clear pose where the plan heading
+    follow_chunk_end_straight_m: 0.4  # changes < straight_deg over the straight_m before it (MPPI critic-off zone)
 
     # --- obstacle avoidance (/obstacle_policy from mower_vision obstacle_guard) ---
     # person/dog/cat (dynamic): stop, blade off, wait; everything else (static): on a

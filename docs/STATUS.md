@@ -924,3 +924,22 @@ GHz average under a sustained 8-core load) were both ruled out.
   start unless `powerprofilesctl get` is `performance` and prints the 1-minute load average.
   The stall looks tied to sim time rather than compute (controller_server 1-30 % CPU, about
   90 ms sim cycles at 1x and 3x). It is not fully explained.
+
+## Chunk ends on a bend with a short tail (2026-11-03, branch ws/chunk-end-bend, unit + sim gate)
+
+Sim (real_run5, `-d -s 2 -x 3`): the area-0 edge lap passes beside its own start twice. The
+chunk from the pivot vertex at pose 370 cannot end near the lap start (clearance rule), so it
+ended at pose 684, at the end of the west-edge bend (plan heading 90 -> 53 deg), and left a
+0.52 m last chunk. FollowCoveragePathMPPI drops its path critics within 0.3-0.4 m of a goal,
+so the robot reached 684 off the plan and past its heading, and the last chunk's turn swung
+the tail out (criterion i side up to 0.19 at (-5.5, 2.0)). Now, when the clearance rule (or
+`clear_end_before`) ends a chunk short of the next forced end (segment end, pivot vertex,
+excluded piece) with less than `follow_chunk_min_tail_m` (1.5) left, the end moves back to
+the furthest clear pose whose plan heading changes by less than
+`follow_chunk_end_straight_deg` (10) over the `follow_chunk_end_straight_m` (0.4) before it
+(`geometry.ease_chunk_end`). A pivot-vertex end is never moved. Log: `chunk end N moved back
+to M: tail too short / bend`. Two gates: the rule fired at 684 -> 662 in both; side excess
+on the second pass at the bend 0.051 / 0.059 (five pre-fix runs: 0.055-0.144). Overall i side
+0.108 at (-0.60, 4.80) / 0.124 at (-5.73, 1.85) (the first lap's pass of the same bend, into
+the pivot vertex at 367, which this rule does not touch), so i still FAILs (limit 0.10); a
+0.065 / 0.091, h line 0.089 / 0.081, loop 20 Hz.

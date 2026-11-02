@@ -5249,6 +5249,83 @@ def test_chunk_ending_on_a_pivot_vertex_beside_its_start_is_cut_short():
     assert g2[-1][:2] == sp[c][:2] and h.fsm.mission.corner_end == c
 
 
+
+def _lap_past_its_start():
+    """A lap that comes back beside its own start (sim run5 area 0 edge lap, chunk from the
+    pivot vertex at pose 370): east 4 m, north 3 m, west 4.35 m, south down the west edge
+    to (-0.35, 1.0), a 45 deg left bend (r 0.5 m), then 0.8 m straight past the start. The
+    clearance rule ends the chunk 0.2 m after the bend; 0.6 m would be left."""
+    def seg(x0, y0, x1, y1, step=0.04):
+        n = max(2, int(round(math.hypot(x1 - x0, y1 - y0) / step)) + 1)
+        yaw = math.atan2(y1 - y0, x1 - x0)
+        return [(x0 + (x1 - x0) * k / (n - 1), y0 + (y1 - y0) * k / (n - 1), yaw)
+                for k in range(n)]
+    sp = seg(0, 0, 4, 0) + seg(4, 0, 4, 3)[1:] + seg(4, 3, -0.35, 3)[1:] + \
+        seg(-0.35, 3, -0.35, 1.0)[1:]
+    bend_start = len(sp) - 1
+    for k in range(1, 11):                      # centre (0.15, 1.0), 180 -> 225 deg
+        th = math.radians(180.0 + 4.5 * k)
+        sp.append((0.15 + 0.5 * math.cos(th), 1.0 + 0.5 * math.sin(th), th + math.pi / 2))
+    x, y = sp[-1][:2]
+    d = 0.8 / math.sqrt(2.0)
+    sp += seg(x, y, x + d, y - d)[1:]
+    return sp, bend_start
+
+
+def test_short_tail_after_a_bend_moves_the_chunk_end_onto_straight_path():
+    from mower_mission import geometry as geo
+    sp, bend = _lap_past_its_start()
+    last = len(sp) - 1
+    e = geo.chunk_end(sp, 0, 25.0, 0.5)
+    assert bend < e < last and geo.path_length(sp[e:]) < 1.5          # the run5 fallback
+    assert not geo.straight_before(sp, e, 0.4, math.radians(10.0))     # just past the bend
+    k = geo.ease_chunk_end(sp, 0, e, last, 0.5, 1.5, 0.4, math.radians(10.0))
+    assert k < bend and geo.end_is_clear(sp, 0, k, 0.5)
+    assert geo.path_length(sp[k:]) >= 1.5 > geo.path_length(sp[k + 1:])  # the furthest one
+    assert geo.straight_before(sp, k, 0.4, math.radians(10.0))
+    assert abs(sp[k][0] + 0.35) < 1e-9                                 # on the west edge
+    # a long enough tail / the rule off: unchanged
+    assert geo.ease_chunk_end(sp, 0, e, last, 0.5, 0.5, 0.4, math.radians(10.0)) == e
+    assert geo.ease_chunk_end(sp, 0, e, last, 0.5, 0.0, 0.4, math.radians(10.0)) == e
+    # no 5 m straight stretch to move to: unchanged
+    assert geo.ease_chunk_end(sp, 0, e, last, 0.5, 1.5, 5.0, math.radians(10.0)) == e
+
+
+def test_chunk_end_cut_short_beside_the_start_leaves_a_min_tail():
+    h = Harness(follow_chunk_m=25.0)
+    start_until_planning(h)
+    sp, bend = _lap_past_its_start()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)['poses']
+    k = len(g) - 1
+    assert k < bend and abs(g[-1][0] + 0.35) < 1e-9 and h.fsm.mission.corner_end is None
+    moved = [t for t in _logs(h) if 'moved back to %d: tail too short / bend' % k in t]
+    assert len(moved) == 1
+    h.finish(f.ACT_FOLLOW)
+    g2 = h.goal(f.ACT_FOLLOW)['poses']
+    assert g2[-1][:2] == sp[-1][:2] and geo_len(g2) >= 1.5
+    h.finish(f.ACT_FOLLOW)
+    assert h.name == 'RETURNING_HOME'
+
+
+def test_short_tail_to_a_pivot_vertex_keeps_the_vertex_as_the_next_end():
+    h = Harness(follow_chunk_m=25.0)
+    start_until_planning(h)
+    sp, bend = _lap_past_its_start()
+    c = len(sp) - 4                              # a pivot vertex in the short tail
+    h.fsm._cov_pivots = lambda k=None: [c]
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([sp]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    g = h.goal(f.ACT_FOLLOW)['poses']
+    assert len(g) - 1 < bend and h.fsm.mission.corner_end is None
+    assert geo_len(sp[len(g) - 1:c + 1]) >= 1.5
+    h.finish(f.ACT_FOLLOW)
+    g2 = h.goal(f.ACT_FOLLOW)['poses']
+    assert g2[-1][:2] == sp[c][:2] and h.fsm.mission.corner_end == c
+
 # ---------------------------------------------------------------------------
 # 2026-11-02 stationary hold / no-room fallback (field: 350 s old cog fix after a STUCK
 # wait refused START although the robot had not moved)

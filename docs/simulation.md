@@ -312,6 +312,8 @@ swath-end turn joins, the turn shaper rewrite rate (moving nav-lane commands thr
 reference (run 5, MOWING, raw plan): cross-track median 0.026 / p90 0.074 / p99 0.204 / max
 0.262 m.
 
+Run-to-run noise (2026-11-03): criteria a and i vary by about ±0.05 m between runs of identical code on the same world and seed (run5 `-d -s 2 -x 3`, 8 runs: i side 0.087-0.188, a 0.087-0.127), so a single run cannot gate a 0.03 m difference.
+
 ### Ground disturbance (`-d`)
 
 `mower_sim/kinematics.py` can make the ground disagree with the wheels, so the sim does not

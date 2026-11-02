@@ -327,6 +327,7 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 | `progress_window_m` | 3.0 |
 | `follow_end_tolerance_m` / `follow_premature_retries` | 1.0 / 3 |
 | `follow_chunk_m` / `follow_chunk_clearance_m` | 25.0 / 0.5 |
+| `follow_chunk_min_tail_m` / `follow_chunk_end_straight_deg` / `follow_chunk_end_straight_m` | 1.5 / 10 / 0.4 |
 | `boundary_recover_after_s` / `boundary_max_recoveries` / `boundary_recovery_advance_m` | 3 / 2 / 1.0 |
 | `hard_boundary_body_soft_side_m` / `_soft_front_m` / `_soft_nose_m` / `_soft_tail_m` / `hard_boundary_body_hard_m` | 0.35 / 0.55 / 0.40 / 0.30 / 0.10 |
 | `hard_boundary_back_m` / `hard_boundary_back_speed_mps` / `hard_boundary_back_timeout_s` | 0.30 / 0.10 / 5 |
@@ -372,6 +373,11 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
   1. A sub-path is sent in chunks of at most `follow_chunk_m` (25 m). Each chunk's final
      pose is more than `follow_chunk_clearance_m` (0.5 m) away from every earlier pose of
      that chunk.
+     When that rule ends a chunk short of the segment end with less than
+     `follow_chunk_min_tail_m` (1.5 m) left, the end moves back to the furthest clear pose
+     on straight path (heading change < 10 deg over the 0.4 m before it): the MPPI
+     controller drops its path critics near a goal, so a goal on a bend is reached off the
+     plan.
   2. A success reported more than `follow_end_tolerance_m` (1 m) before the chunk end
      (judged by tracked progress) continues from the progress pose, up to 3 times, and the
      sub-path is skipped after that.
