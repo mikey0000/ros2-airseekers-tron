@@ -1004,3 +1004,26 @@ i 0.091 / 0.044 / 0.115, transit 0.365 (master 0.101 / 0.098 / 0.082, 0.364); lo
 These are inside the recent same-code spread (a 0.06-0.13, side 0.09-0.19). Kill test:
 `kill -9` of coverage_action_server mid-mow. The mission stayed in MOWING (no EMERGENCY),
 launch respawned the server in under 8 s, and the mow completed and docked.
+
+## Keyframe COG heading method + magnetometer removal (2026-11-03, branch ws/heading-estimator, unit + offline replay)
+
+Stock heading maintenance (`fusion_localization_ros/src/common/heading_estimator.h`, `gnss_initor.h`):
+- RTK keyframes every 0.05 m, sliding window of 10, chord between window ends 0.3-0.8 m.
+- A segment counts only while the IMU yaw is steady: spread <= 0.17, sigma <= 0.08, end-to-end <= 0.08 rad.
+- Updates every 0.2 s, weight 0.7, measurement noise 3.6e-5 rad^2, corrections > 0.8 rad rejected.
+- A yaw-jump checker resets the window. The ESKF pose is fed back to detect heading offsets.
+- No magnetometer anywhere in the stock heading path.
+
+New: `heading_logic.KeyframeHeadingEstimator`, selected by `cog_method: keyframes` (default stays
+`window`). It uses the vendor defaults (`kf_*` params, radians) and only RTK-fixed positions. Seeding,
+source precedence, drift rate and quality are the same as for `window`. Replay tool:
+`scripts/heading_replay.py <bagdir>`. The rings have no /imu/data, so IMU yaw = EKF yaw minus the
+live offset (checked against the status imu_yaw, p95 0.25 deg). Truth = RTK track over >= 1 m straights.
+On mow 20261102-030022 (28 min) window/keyframes gave 196/945 updates, a 3.0/0.3 s cadence, and
+2 deg convergence after 447/106 s. Error against the track was p50 1.01/1.10 and p95 3.42/2.97 deg
+(live 1.21/2.16). The two methods differed by p50 1.2 and p95 5.5 deg. On mow 20261102-021049
+(9 min, mostly stopped) the drift-rate term took the window offset 10 deg away during a stop. The
+keyframe rate term (scaled by gain/alpha) barely moves. Default not flipped: field test first.
+
+Magnetometer seed experiment removed (revert of 185aab6). The LIS2MDL has a DT node but no ACK on
+I2C on this unit, and the stock firmware never reads it. `docs/HEADING_RECEIVER_2026-11.md` stays.
