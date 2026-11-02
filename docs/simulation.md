@@ -302,6 +302,8 @@ Criteria, judged from ground truth (`/sim/ground_truth`), not from the stack's o
 | f | one-wheel ticks on `/cmd_vel` (a turn with the inner wheel in (-0.06, 0); inner in [0, 0.06), stalled by the MCU floor, is reported) | 0 |
 | g | time pivoting in place vs moving | reported |
 | h | MOWING cross-track to the sub-path actually sent (`~/mow_plan`; conditioned when path conditioning is on), median / p90 / p99 / max per segment type: line, arc, corner (raw plans: within 0.3 m of a drawn vertex >= 20 deg), pivoting | p99 <= 0.10 m on line, arc and corner |
+| j | slope worlds only (world `terrain:`): STUCK_NEEDS_HELP count and base_link samples > 0.10 m outside; roll max, slip windows and the mission's slip trips reported | 0 / 0 (n/a on flat worlds) |
+| k | RTK injection only (world `rtk:` or `--rtk-loss`): per loss window, the mission holds within 3 s of `/localization/status` leaving ok, the blade is off, it resumes after the fix is back, no sample > 0.10 m outside; a window the drift budget absorbs (status stays ok) passes without a hold | every window (n/a otherwise) |
 
 It also lists how often each runtime corner rule of the design's section 3.3 fired (route
 corner splits and corner-reached rule, stub trim, cusp about-turn, progress watches, the
@@ -537,11 +539,76 @@ What fast mode cannot be trusted for:
   bt_navigator tick of 10 ms wall becomes 30 ms sim), or on TF wait timing.
 * CPU-budget questions (MPPI cycle time, the RK3588), and timing of real hardware.
 
+### Terrain: slopes, tilt and wheel slip (world `terrain:`; 2026-11-03)
+
+`mower_sim/terrain.py`. A world lists slope regions (polygon, `slope_deg`, `downhill_deg` =
+map direction of downhill, `fade_m` ramp inside the edge; the steepest overlapping region
+wins). Without `terrain:` nothing changes. With it:
+
+* `/imu/data` orientation carries roll / pitch from the slope and the heading (REP-103: roll
+  > 0 right side down, pitch > 0 nose down), and the sim publishes `/tilt/status` (latched
+  JSON, 10 Hz) from the real `mower_control.tilt_logic.TiltBands` fed with that attitude, so
+  the mission's tilt guard and `edge_slope_roll_deg` see what tilt_monitor would send;
+* `/odom` becomes encoder odometry (`DiffDrive.wheel_odom`, integrated from the wheel
+  speeds), so a spinning wheel runs ahead of the real motion as on the robot; TF and
+  `/odometry/filtered` stay the localisation output (truth, or loc_drift);
+* the ground loses traction (`terrain.SlipParams`, slope factor f = 0 at 3 deg .. 1 at 10 deg):
+
+| Param | Default | Effect at f = 1 |
+|---|---|---|
+| `fwd_max` | 0.25 | forward ground speed x (1 - 0.25 x sqrt(min(1, \|v\| / `v_ref` 0.1))) |
+| `rev_max` | 0.95 | reversing (castor leading, drive wheels unloaded): 95 % slip at >= 0.1 m/s |
+| `pivot_yaw_loss` | 0.2 | pivot yaw rate x 0.8 |
+| `creep_drive` | 0.010 m/s | downhill body creep while driving |
+| `creep_pivot` | 0.045 m/s | downhill body creep while counter-rotating (blended by the pivot share) |
+| `act_ref` | 0.06 m/s | creep scales with the wheel activity min(1, \|wheel\| / act_ref); standing still does not creep |
+
+Calibration (unit tests `test_terrain_rtk.py`, field 2026-11-02 / spin_drift incidents): at
+10 deg a 0.1 m/s reverse for 38 s turns the wheels 3.8 m while the body moves ~0.4 m, mostly
+downhill at 1 cm/s (field: 3.8 m wheel vs 0.4 m RTK); a 90 deg pivot slides 0.15-0.30 m
+(field 0.15-0.30 m); forward mowing at 0.2 m/s keeps 75 % of its speed and never trips the
+mission's 3x slip check. `/sim/status` adds `roll_deg`, `pitch_deg`, `wheel_dist`, `creep`.
+
+`worlds/real_run5_slope.yaml`: real_run5 plus a 10 deg slope over the Area 1 west edge band
+(x <= -4.4, y -2.2..2.6, downhill west = out of the area), which also covers the field's
+BOUNDARY OUT point by the clothesline (-6.45, -1.8), 0.7 m beyond real_run5's older edge.
+
+### RTK loss and multipath (world `rtk:` or `--rtk-loss`; 2026-11-03)
+
+`mower_sim/rtk.py`. Timed segments count from an anchor (`blade`: first cutter on, default;
+`undock`; `sim`): `float` adds a random walk (OU per axis, std 0.5 m, tau 20 s, magnitude
+kept in 0.3-1.0 m) to `/fix`, sets its covariance to 0.5^2 and `/fix_status` to
+`solution=NARROW_FLOAT` (gui_bridge then reports RTK float on `/gps/status`); `dropout`
+publishes no `/fix`, `/fix_status` or `/vel` at all. With loc_drift the map estimate follows:
+a dropout freezes map -> odom (ekf_map dead-reckons on odom), float adds
+`rtk_float_map_gain` (0.3) of the offset. A `multipath` polygon (the house) biases the fix
+away from it (`bias_m` at the wall fading to 0 at `range_m`) and drops to FLOAT within
+`float_within_m`. `/sim/status` adds `rtk` (fixed / float / dropout).
+
+`sim_gate.sh --rtk-loss T0:DUR[:float|dropout]` (repeatable, before the short options)
+writes the events into a run copy of the world (`$OUT/world.yaml`). Any RTK injection turns
+on loc_drift (unless `-L`; the monitor needs `/odometry/filtered_map`) and starts the real
+`localization_monitor` in the sim container, so `/localization/status` and the mission's
+`loc_hold` run as on the robot. Note: the monitor times on the wall clock
+(`time.monotonic`), so at `-x 3` its 1 s FIXED confirmation and 2 s stale timeout are 3 s and
+6 s of sim time. The drift budget is distance-based (3 % of travel + 0.03 m > 0.30 m): a
+dropout only degrades the status after ~9 m of driving, so a short loss is absorbed.
+
+### Process kills (`--kill NODE:T`; 2026-11-03)
+
+`sim_gate.sh --kill NODE:T` (repeatable) SIGKILLs the matching process in the sim container
+T sim seconds after START: `coverage` (coverage_action_server), `map_server`
+(map_server_node), `controller_server`, `mission` (mission_node), or any `pgrep -f` pattern.
+It then waits up to 120 s wall for a new process (launch respawn) and appends
+`{node, t_kill, pids, respawn_s, new_pids}` to `$OUT/kills.jsonl`; evaluate.py reports each
+kill with its respawn time, the mission state 60 s later, the mission lines around it and
+`recovered` (respawned, MOWING_COMPLETE, no failure end state).
+
 ### What the gate cannot show
 
-Slope (tilt, downhill drift, the field's Spin timeouts on the slope), real turf slip and
-grip loss in pivots beyond the disturbance model, wheel-in-a-hole stalls, RTK float /
-dropouts and heading errors, stereo false positives on grass. A gate PASS is necessary, not
+Real turf slip beyond the terrain model (wet grass, wheel-in-a-hole stalls), heading
+errors, stereo false positives on grass. Slope, RTK loss and process kills are modelled
+since 2026-11-03 (above) but only where a world or gate argument asks for them. A gate PASS is necessary, not
 sufficient: the field run still decides.
 
 ### Gate runs
@@ -847,18 +914,17 @@ Not run (owner's usage limit): a second ideal run, `-d -s 2`, the rpp revert che
 
 ## Limitations
 
-- **Simplified physics:** there is no slip, no terrain or slope, no tilt, and no
-  wheel-in-a-hole stalls. Turf pivot inefficiency (0.02-0.08 rad/s on grass) is not
-  modelled beyond the wheel floor. slip_detector and stuck logic therefore never
-  trigger.
+- **Simplified physics:** no wheel-in-a-hole stalls. Slope, tilt and slope slip exist
+  only in worlds with `terrain:` (2026-11-03, "Terrain" above); turf pivot inefficiency on
+  flat ground is the `-d` disturbance only.
 - **Idealised stereo:** no false positives on grass, no specular noise, and no
   temporal filtering. det_range, YOLO detections and grass segmentation are not
   simulated (no images except the rear marker).
 - **Collisions:** a collision is an instant stop with no push. Only the front bumper
   reports a contact; a contact behind the robot just stalls it. The dock body is not a
   collision object, only the hard stop at the contacts.
-- **GPS:** RTK FIXED always. Ground-truth pose with σ in the covariance only; there is
-  no noise, multipath or fix loss. In `localization:=ekf`, heading_aligner starts
+- **GPS:** RTK FIXED unless a world `rtk:` block or `--rtk-loss` injects float / dropout /
+  multipath (2026-11-03). Otherwise ground-truth pose with σ in the covariance only. In `localization:=ekf`, heading_aligner starts
   unaligned, so the mission's preflight needs a COG drive. The scenario stand-in does
   not check alignment.
 - **Clock:** wall time only (no `use_sim_time`), real-time only.

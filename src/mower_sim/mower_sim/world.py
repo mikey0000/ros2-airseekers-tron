@@ -16,6 +16,8 @@ A world is a YAML file (``worlds/*.yaml``)::
       - {name: trunk, type: cylinder, x, y, radius: 0.12, height: 1.5,
          detect: {label: trunk, score: 0.75}, stereo: false}
     battery: {voltage: 25.2, percentage: 0.8}
+    terrain: {regions: [{polygon, slope_deg, downhill_deg, fade_m}], slip: {...}}  # terrain.py
+    rtk: {anchor, events: [{t0, dur, kind: float|dropout}], multipath: {...}}       # rtk.py
 
 Instead of ``lawn``/``areas`` a world can take its map from an existing
 mower_map ``areas.dat`` (e.g. a copy of the robot's map)::
@@ -228,6 +230,10 @@ class World:
     lawn_map_obstacles: List[Polygon] = field(default_factory=list)
     # per-area mowing settings written to maps/area_settings.yaml (e.g. edge_mode)
     area_settings: dict = field(default_factory=dict)
+    # 2026-11-03 (sim fidelity): slope regions + slip (mower_sim/terrain.py) and RTK
+    # degradation (mower_sim/rtk.py); None = flat ground / always RTK FIXED (unchanged)
+    terrain: Optional[object] = None
+    rtk: Optional[object] = None
 
     def footprint_at(self, x: float, y: float, yaw: float) -> Polygon:
         return transform(FOOTPRINT, x, y, yaw)
@@ -332,6 +338,8 @@ def world_from_dict(doc: dict, name: str = 'world', base_dir: Optional[str] = No
             detect_score=float((o.get('detect') or {}).get('score', 0.75)),
             stereo=bool(o.get('stereo', True))))
     bat = doc.get('battery') or {}
+    from .rtk import rtk_from_dict
+    from .terrain import terrain_from_dict
     return World(lawn=lawn, dock=dock, start=start, start_docked=docked,
                  datum_lat=float(datum.get('lat', 48.0)), datum_lon=float(datum.get('lon', 9.0)),
                  obstacles=obstacles, extra_areas=extra_areas,
@@ -340,7 +348,9 @@ def world_from_dict(doc: dict, name: str = 'world', base_dir: Optional[str] = No
                  name=str(doc.get('name', name)), lawn_name=str(lawn_name),
                  lawn_map_obstacles=[[(float(p[0]), float(p[1])) for p in o]
                                      for o in lawn_map_obstacles],
-                 area_settings=dict(doc.get('area_settings') or {}))
+                 area_settings=dict(doc.get('area_settings') or {}),
+                 terrain=terrain_from_dict(doc.get('terrain')),
+                 rtk=rtk_from_dict(doc.get('rtk')))
 
 
 def load_world(path: str) -> World:
