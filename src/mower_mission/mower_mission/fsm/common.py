@@ -738,6 +738,9 @@ class Params:
     dock_join_max_m: float = 40.0
     dock_join_inset_m: float = 1.0
     dock_join_insets_m: list = field(default_factory=lambda: [1.0, 2.0, 3.0])
+    # 2026-11-02 incident pose was 0.013 m outside the area outline: a pose within this of an
+    # outline (about the body half-width) counts as in that area (nearest outline first).
+    dock_join_edge_tol_m: float = 0.30
     route_controller_id: str = 'FollowPath'          # MPPI transit controller
     route_goal_checker_id: str = 'general_goal_checker'
     route_end_tolerance_m: float = 0.5   # route "success" farther from the target = failed

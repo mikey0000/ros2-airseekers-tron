@@ -733,7 +733,7 @@ again; still off the graph moves on to the next candidate. With no candidates le
 within N m (K tried)". Outside every area (or `dock_join_max_m: 0`) the old hand-over still
 applies. Covers every RETURNING_HOME (user, battery, rain, incomplete, schedule end): they all
 go through `_dock`. Log: `dock: off the route graph, joining it at (x, y) via in-area transit`.
-Drawn path corridors are not join regions; the FSM only knows the area outlines.
+Drawn path corridors are not join regions; the FSM only knows the area outlines. A pose within `dock_join_edge_tol_m` (0.30 m) outside an outline counts as in the nearest such area (the real incident pose was 0.013 m outside area 5; replay test (c) now passes); the join line may start outside and must enter inward.
 
 ## Boundary recovery on a side slope (2026-11-02, unit-tested; sim gate pending with the integration run)
 
