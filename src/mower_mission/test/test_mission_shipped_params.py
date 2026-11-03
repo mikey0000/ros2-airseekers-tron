@@ -43,7 +43,7 @@ def test_every_yaml_key_is_a_parameter():
 def test_field_values_review_2026_11_02():
     p = Params()
     assert (p.dock_timeout_s, p.dock_action_timeout_s, p.manual_blade_requires_enable) == \
-        (480.0, 540.0, True)
+        (900.0, 960.0, True)
 
 
 def test_disabled_safety_guards_are_listed_for_the_startup_warning():

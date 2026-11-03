@@ -667,7 +667,7 @@ class Params:
     manual_undock_distance_m: float = 0.5    # standalone UNDOCK command (GUI button)
     undock_speed_mps: float = 0.15
     dock_use_vision: bool = True
-    dock_timeout_s: float = 480.0   # = mission.yaml (review 2026-11-02 H5; was 180)
+    dock_timeout_s: float = 900.0   # = mission.yaml; >= the docking server's 8-retry worst case
     dock_pose: tuple = ()               # (x, y, yaw); only used without docking server
     mow_angle_deg: float = -1.0
     transit_gap_m: float = 0.6
@@ -1301,7 +1301,7 @@ class Params:
     undock_timeout_s: float = 180.0
     transit_timeout_s: float = 300.0
     follow_timeout_s: float = 3600.0
-    dock_action_timeout_s: float = 540.0   # = mission.yaml (H5; was 400)
+    dock_action_timeout_s: float = 960.0   # = mission.yaml; > dock_timeout_s
     # Contacts reported while the docking action still runs: wait for its result (the
     # server stops and confirms on contact); only after this long cancel it and treat the
     # robot as docked (2026-10-07: the mission flipped while the server was in RETRY).

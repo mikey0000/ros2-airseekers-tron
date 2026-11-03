@@ -318,7 +318,7 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 | `emergency_timeout_s` | 2.0 |
 | `preflight_min_fix_type_docked` / `rtk_fix_type` / `rtk_timeout_s` | 1 / 3 / 120 |
 | `rain_mode` / `rain_debounce_s` / `rain_delay_minutes` | 1 / 2 / 30 |
-| `use_docking_server`, `undock_distance_m`, `undock_speed_mps`, `dock_use_vision`, `dock_timeout_s` | true, 0.8, 0.15, true, 180 |
+| `use_docking_server`, `undock_distance_m`, `undock_speed_mps`, `dock_use_vision`, `dock_timeout_s` | true, 0.8, 0.15, true, 900 |
 | `transit_gap_m` | 0.6 |
 | `follow_goal_checker_id` | coverage_goal_checker |
 | coverage controllers (2026-10-15 MPPI study) | MPPI only (needs `path_conditioning`; the rpp revert was deleted 2026-10-23): coverage legs on `mppi_follow_controller_id` / `mppi_reverse_controller_id` (FollowCoveragePathMPPI / FollowCoveragePathReverseMPPI), cut speed on `mppi_controller_speed_param` capped at `mppi_speed_max_mps` 0.3; pivots onto legs come from the path conditioner's pivot markers |
