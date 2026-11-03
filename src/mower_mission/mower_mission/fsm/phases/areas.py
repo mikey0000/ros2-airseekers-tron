@@ -29,7 +29,14 @@ class AreasMixin:
                 self._log('warn', 'edge blocked: %.1f m of edge laps skipped this mission'
                           % m.edge_skipped_m)
                 self._incident('edge_blocked_total', '%.1f m' % m.edge_skipped_m)
-            if m.failed or m.blocked:
+            if (m.failed and not m.blocked and m.completed_count == 0 and
+                    all(x[1] is None for x in m.failed)):
+                # no area could be planned / no plan was drivable: nothing was driven, so a
+                # planning failure (idle at the dock, else dock), not MOWING_INCOMPLETE
+                self._mission_failed(m.failed[-1][2] if len(m.failed) == 1 else
+                                     '%d area(s) not planned: %s' % (len(m.failed),
+                                                                     m.failed[-1][2]))
+            elif m.failed or m.blocked:
                 self._mission_incomplete()
             else:
                 self._mission_complete()     # status still shows the last area's counts
@@ -296,6 +303,16 @@ class AreasMixin:
         m.cond, m.cond_errors = {}, {}
         if self.p.path_conditioning:
             subpaths = self._condition_subpaths(subpaths, result.get(CONDITIONED_KEY))
+            if subpaths and len(m.cond_errors) >= len(subpaths):
+                # nothing of this plan is drivable: a planning failure, not a mow that left
+                # sub-paths (field 2026-11-03: MOWING_INCOMPLETE "0.0 % mowed" + a dock run)
+                why = 'plan rejected: %s' % next(iter(m.cond_errors.values()))
+                self._log('warn', 'area %d: %s: skipping it' % (m.area_idx, why))
+                m.failed.append((m.area_idx, None, 'area %d %s' % (m.area_idx, why), -1))
+                m.cond, m.cond_errors = {}, {}
+                self._go('AREA_UNREACHABLE', 'area %d: %s' % (m.area_idx, why))
+                self._next_area()
+                return
         # a new plan (each repeat / cross run, a re-plan) reuses the sub-path indices: no
         # consecutive sweep skips carried over (review 2026-11-02)
         m.sweep_skips = {}

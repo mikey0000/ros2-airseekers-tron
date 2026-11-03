@@ -115,6 +115,7 @@ class MissionFSM(PreviewMixin,
         self._record_index = -1             # area index the PATH gets in the map server
         self._last_status = None
         self._incomplete_text = ''
+        self._failed_text = ''          # _mission_failed reason, shown once docked
         self._dyn = None                    # dynamic-obstacle wait context
         self._path_eval = None              # last in-path judgement (_obstacle_on_path)
         self._loc = None                    # localization hold context (_loc_hold_tick)

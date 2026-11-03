@@ -449,7 +449,8 @@ class MowingMixin:
             slack_m=float(p.path_conditioning_slack_m),
             pivot_min_rad=float(p.path_conditioning_pivot_min_rad),
             edge_pivot_rad=float(p.path_conditioning_edge_pivot_rad),
-            edge_clearance_m=float(p.path_conditioning_edge_clearance_m))
+            edge_clearance_m=float(p.path_conditioning_edge_clearance_m),
+            edge_reject_tol_m=float(p.path_conditioning_edge_reject_tol_m))
 
     def _plan_outline(self, outer):
         """An area / path outline as the planner and the conditioner see it: drawing jogs

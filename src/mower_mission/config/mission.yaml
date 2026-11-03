@@ -349,6 +349,9 @@ behavior_tree_node:
     area_outline_simplify_m: 0.05
     area_outline_jog_m: 0.10
     path_conditioning_kturn_back_max_m: 1.5
+    # validator: a conditioned pose at most this much closer to the edge than allowed is
+    # projected inward onto its floor (logged); deeper ones drop the sub-path (2026-11-03)
+    path_conditioning_edge_reject_tol_m: 0.05
     # 2026-10-16: transit / dock routes take no fillet tighter than this (the route
     # controller runs them at transit speed; MPPI ran 0.4 m wide of an r 0.5 m dock-path
     # fillet and left the area): a corner whose r >= 0.8 fillet does not fit pivots at the

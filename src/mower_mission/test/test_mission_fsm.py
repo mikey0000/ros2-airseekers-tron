@@ -2758,9 +2758,26 @@ def test_follow_abort_resumes_from_last_pose_up_to_follow_retries():
     assert cur.areas[0].resume_index == 10         # resume at the last reached pose (5 m)
 
 
-def test_planning_failure_ends_incomplete():
-    h = Harness(return_home_on_incomplete=False)   # asserts stop-in-place
+def test_planning_failure_with_nothing_driven_is_a_mission_failure():
+    # 2026-11-03: no area planned, nothing driven: a planning failure (docks / stays docked),
+    # not MOWING_INCOMPLETE with a resume of "0.0 % mowed"
+    h = Harness(return_home_on_incomplete=False)
     start_until_planning(h)
+    m = h.mark()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, {'success': False, 'message': 'degenerate polygon'})
+    assert 'MOWING_INCOMPLETE' not in h.statuses(m)
+    assert h.name == 'COVERAGE_FAILED_DOCKING' and 'degenerate' in h.fsm.sub_state
+
+
+def test_planning_failure_after_a_mowed_area_ends_incomplete():
+    h = Harness(return_home_on_incomplete=False)   # asserts stop-in-place
+    h.areas = [square(0, 0, 5), square(10, 0, 5)]
+    start_until_planning(h)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0)]))
+    follow_current(h)
+    assert h.name == 'PLANNING' and h.fsm.mission.area_idx == 1
+    h.answer_services()
     h.finish(f.ACT_PLAN, f.SUCCEEDED, {'success': False, 'message': 'degenerate polygon'})
     assert h.name == 'MOWING_INCOMPLETE'
     assert 'area(s) not planned' in h.fsm.sub_state and 'degenerate' in h.fsm.sub_state
