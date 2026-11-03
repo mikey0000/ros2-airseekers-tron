@@ -319,7 +319,7 @@ and resumed after 2 s.
   - Walk up to the robot from the front: it must still stop at about 1 m.
   - Stand about 1 m to the side of a pivoting robot: the result must be advisory.
 
-## Row links and tangent transits (2026-11-03, ws/routing-snake, gates pending)
+## Row links and tangent transits (2026-11-03, ws/routing-snake, gated: not adopted)
 
 New area settings, all off by default (docs/analysis/2026-11-03_turns.md appendix B):
 
@@ -330,7 +330,12 @@ New area settings, all off by default (docs/analysis/2026-11-03_turns.md appendi
   leg-start pivot is skipped.
 - `pivot_rate_rad_s`: recorded only.
 
-All three are unit-tested. The real_run5 gate comparison has not been run yet.
+All three are unit-tested.
+
+real_run5 gate (-d -s 2 -x 3): snake cuts area 0 from 11 to 7 sub-paths, but the pivot
+share only goes from 28 % to 27 %. The connector pivots add 40 s of row-end pivoting. a
+and i regress, side 0.116 against 0.10. tangent_approach never fired. Keep both settings
+off.
 
 ## Swath-end turns without pivot loops (2026-10-13, unit-tested only)
 
