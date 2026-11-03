@@ -288,3 +288,23 @@ def test_side_slope_cap_off_when_zero():
     m = h.mark()
     step(h, 'ok', 12.0, n=3)
     assert speed_calls(h, m) == []
+
+
+def slew_calls(h, m):
+    return [e.request['params'] for e in h.since(m, f.CallService)
+            if e.name == f.SRV_SET_PARAMS and e.request['node'] == f.PARAM_NODE_SLEW]
+
+
+def test_pivot_rate_follows_the_roll():
+    """Roll-aware pivot rate: 0.35 flat, 0.3 above pivot_creep_roll_deg, sent on change."""
+    h = Harness()
+    mowing(h)
+    m = h.mark()
+    step(h, 'ok', 2.0, n=3)
+    assert slew_calls(h, m) == [{'pivot_max_radps': 0.35}]
+    m = h.mark()
+    step(h, 'ok', -7.0, n=3)
+    assert slew_calls(h, m) == [{'pivot_max_radps': 0.3}]
+    m = h.mark()
+    step(h, 'ok', 3.0, n=3)
+    assert slew_calls(h, m) == [{'pivot_max_radps': 0.35}]

@@ -723,3 +723,12 @@ def test_dock_exempt_helper():
     assert not f('DOCKING', 10.0, 10.0, states, 1.0)
     assert not f('', 10.0, 10.0, states, 1.0)
     assert not f('CHARGING', None, 10.0, states, 1.0)
+
+
+def test_pivot_max_radps_caps_pure_rotations_only():
+    from mower_control.cmd_vel_slew import DriveShaper as DS
+    s = DS(pivot_max_radps=0.3)
+    assert s.shape(0.0, 0.35) == pytest.approx(0.3)
+    assert s.shape(0.0, -0.35) == pytest.approx(-0.3)
+    assert s.shape(0.2, 0.35) == pytest.approx(0.35)       # driving: untouched
+    assert DS().shape(0.0, 0.35) == pytest.approx(0.35)     # 0 = off

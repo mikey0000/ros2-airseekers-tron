@@ -171,7 +171,7 @@ class SimNode(Node):
         # vs RTK within 1.3 cm at 0.1-1.5 m; matches docking.yaml rear_camera_yaw_correction_deg 0)
         d('rear_camera_mount_yaw_deg', 0.0)
         d('linear_max', 0.3)
-        d('angular_max', 0.3)
+        d('angular_max', 0.35)
         d('min_wheel_speed_mps', 0.06)
         d('wheel_tau_s', 0.15)
         d('cmd_vel_timeout', 0.5)

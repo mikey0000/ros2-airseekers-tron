@@ -128,6 +128,7 @@ SRV_POWEROFF = 'request_poweroff'             # /base_keys/request_poweroff (hos
 PARAM_NODE_COVERAGE = 'coverage_server'
 PARAM_NODE_CONTROLLER = 'controller_server'
 PARAM_NODE_OBSTACLE_GUARD = 'obstacle_guard'   # mower_vision: obstacle_detection level
+PARAM_NODE_SLEW = 'cmd_vel_slew'               # pivot_max_radps (roll-aware pivot rate)
 PARAM_NODE_DET_RANGE = 'det_range'             # publish_obstacle_points (costmap marks)
 
 # Per-area mowing settings (mower_map area_settings.py BUILTIN_DEFAULTS; used
@@ -1214,6 +1215,12 @@ class Params:
     # No extra rotation is ever added. Skipped when the drive would put the body past the
     # edge-mode limit or the distance is under 0.03 m. 0 = off.
     pivot_creep_roll_deg: float = 6.0
+    # roll-aware pivot rate (2026-11-03): cmd_vel_slew pivot_max_radps = flat below
+    # pivot_creep_roll_deg, slope above (Spin runs at its max_rotational_vel 0.35). The
+    # turn shaper's pivot floor 2 x 0.06 / 0.40 = 0.3 rad/s lifts any slower pure rotation
+    # back to 0.3, so the slope rate is 0.3 in effect. 0 = leave the slew cap alone.
+    pivot_rate_flat_rad_s: float = 0.35
+    pivot_rate_slope_rad_s: float = 0.3
     pivot_creep_mps: float = 0.045
     pivot_creep_ref_deg: float = 10.0
     pivot_creep_spin_rps: float = 0.3
