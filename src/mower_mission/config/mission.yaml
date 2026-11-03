@@ -545,6 +545,14 @@ behavior_tree_node:
     edge_slope_roll_deg: 8.0               # |roll| above: front corners get the side limit (0 = off)
     edge_slope_roll_hyst_deg: 2.0          # off only below roll_deg - hyst ...
     edge_slope_hold_s: 5.0                 # ... and after this long on (no flapping at a fade edge)
+    # coverage pivot on a side slope (|roll| > pivot_creep_roll_deg, 0 = off): pivot to face
+    # upslope, drive up by the expected pivot creep, then pivot onto the leg
+    pivot_creep_roll_deg: 6.0
+    pivot_creep_mps: 0.045                 # downhill creep while pivoting at pivot_creep_ref_deg
+    pivot_creep_ref_deg: 10.0
+    pivot_creep_spin_rps: 0.3              # = behavior_server Spin max_rotational_vel
+    pivot_creep_drive_gain: 1.3            # forward slip of the upslope drive
+    pivot_creep_max_m: 0.4
     spin_drift_m: 0.15                   # pivot Spin slid > this ...
     spin_drift_body_margin_m: 0.05       # ... and the body within this of its limit: stop, pivot again from here
     spin_drift_hard_m: 0.30              # ... or slid more than this (field 2026-10-23: 47 % of wet-turf pivots walked 0.14 m)

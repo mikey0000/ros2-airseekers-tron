@@ -435,7 +435,7 @@ class NogoMixin:
             return
         kind, val = s['steps'].pop(0)
         speed = max(float(p.nogo_move_speed_mps), 0.06)
-        m.step = 'nogo_step' if s['site'] == 'cov' else m.step
+        m.step = s.get('step', 'nogo_step') if s['site'] == 'cov' else m.step
         if kind == 'spin':
             allowance = abs(val) / max(0.05, float(p.route_cusp_spin_rps)) + 10.0
             self._start_action(ACT_SPIN, {'angle': val, 'time_allowance_s': allowance},
