@@ -322,8 +322,8 @@ class MissionFSM(PreviewMixin,
             return False
         if m.step in ('dyn_wait', 'retry_wait', 'blocked_wait'):
             return True
-        if m.step in ('pivot_backout', 'nogo_step', 'nogo_replan') and keep_obs:
-            return True              # option C maneuvers / re-plan stop inside the area
+        if m.step in ('pivot_backout', 'nogo_step', 'nogo_replan', 'slope_pivot') and keep_obs:
+            return True              # option C maneuvers / slope pre-drive / re-plan stop inside
         return m.step == 'transit' and m.blade_transit
 
     def _soft_blade_off(self, reason):

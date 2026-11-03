@@ -48,6 +48,10 @@ def test_side_slope_pivot_faces_upslope_drives_up_then_pivots():
     h.fsm.inputs.tilt_stamp = h.t
     h.finish(f.ACT_SPIN)
     h.pending_action(f.ACT_DRIVE)
+    # the three blade gates agree on the slope pre-drive (val5: _blade_keep_ok listed it late)
+    assert h.fsm.mission.step == 'slope_pivot'
+    assert h.fsm._blade_keep_ok() and f.blade_allowed(h.fsm)
+    assert h.fsm._keep_blade_inside('slope pre-drive') == h.fsm.blade_on
     # half the creep of the 140 deg pivot at 0.3 rad/s, 0.045 m/s, x1.3, capped at 0.2 m
     t = math.radians(140) / 0.3
     assert abs(h.goal(f.ACT_DRIVE)['distance_m'] - min(0.2, 0.5 * 0.045 * t * 1.3)) < 0.02
