@@ -319,6 +319,32 @@ and resumed after 2 s.
   - Walk up to the robot from the front: it must still stop at about 1 m.
   - Stand about 1 m to the side of a pivoting robot: the result must be advisory.
 
+## Whole plan rejected over a 0.027 m pose (2026-11-03, ws/edge-reject)
+
+Field, build cbdddbb: START on area 1 ("Area 4", narrow strip, soft edge layout so lap 0
+runs on the line) rejected the area's only sub-path. One pose was 0.027 m closer to the edge
+than allowed. The mission then went MOWING_INCOMPLETE "0.0 % mowed" and returned to the dock.
+The offline replay (mower map, coverage_bridge plus `condition_plan` in the dev image) gives
+the same rejection at d3230fd, 1126c60, 9fc5214 and cbdddbb. No merge since d3230fd caused
+it: this geometry and these settings fail on every build. The cause is in the conditioner.
+Three short drawn edges at the east tip merge into one -139 deg corner, and the intersection
+of its runs lies 0.5 m past the tip, inside a neighbouring path channel. The K-turn
+reversed onto that point because only the point's own clearance was checked. Its leg
+crossed the gap between the two polygons. Fixes:
+
+- The runs' intersection is used (pivot or K-turn apex) only when both legs to it stay
+  inside; otherwise the turn uses the drawn vertex (`path_conditioning.py` `_leg_clearance`).
+- The validator projects a pose up to `path_conditioning_edge_reject_tol_m` (0.05) too close
+  to the edge inward onto its allowed clearance and logs a warning. Only a deeper pose
+  rejects the sub-path.
+- If no part of a plan is drivable (every sub-path rejected, or no area planned) and
+  nothing has been driven, the mission fails with "plan rejected: ...". It stays idle when
+  docked, otherwise it docks and stays idle there with the reason. It no longer reports
+  MOWING_INCOMPLETE. Mowing still undocks before RTK and planning, so in the field the robot
+  drives back onto the dock.
+
+Regression fixture: `src/mower_mission/test/data/area_edge_reject_2026-11-03.json`.
+
 ## Row links and tangent transits (2026-11-03, ws/routing-snake, gated: not adopted)
 
 New area settings, all off by default (docs/analysis/2026-11-03_turns.md appendix B):

@@ -348,9 +348,130 @@ def test_mission_invalid_conditioning_is_not_mowed(monkeypatch):
     h.tick()
     texts = [e.text for e in h.fx if isinstance(e, f.Log)]
     assert any('path conditioning failed' in t and 'will not be driven' in t for t in texts)
-    assert any('NOT mowed: path conditioning' in t for t in texts)
+    # nothing of the plan is drivable: a planning failure, never a follow
+    assert any('plan rejected: test: forced failure' in t for t in texts)
     assert not h.since(0, f.StartAction) or all(
         e.name != f.ACT_FOLLOW for e in h.since(0, f.StartAction))
+
+
+def test_mission_one_invalid_sub_path_is_not_mowed(monkeypatch):
+    real = pc.condition
+
+    def broken(poses, *a, **k):
+        res = real(poses, *a, **k)
+        if abs(poses[0][1]) < 1e-9:            # the first line only
+            res.errors.append('test: forced failure')
+        return res
+    monkeypatch.setattr(pc, 'condition', broken)
+    h = Harness(path_conditioning=True)
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0), line(0, 2, 4, 2)]))
+    h.fsm.inputs.is_cutting = True
+    h.tick()
+    texts = [e.text for e in h.fx if isinstance(e, f.Log)]
+    assert any('NOT mowed: path conditioning' in t for t in texts)
+    assert not any('plan rejected' in t for t in texts)
+
+
+# ---- field 2026-11-03 (build cbdddbb): area 1's whole plan rejected for a 0.027 m pose ----
+def _edge_reject_fixture():
+    with open(os.path.join(HERE, 'data', 'area_edge_reject_2026-11-03.json')) as fh:
+        d = json.load(fh)
+    region = [[tuple(q) for q in p] for p in d['region']]
+    subs = [[tuple(q) for q in sp] for sp in d['subpaths']]
+    return region, subs, d
+
+
+@pytest.mark.parametrize('tol', [0.05, 0.0])
+def test_field_area_merged_corner_k_turn_stays_on_the_drawn_tip(tol):
+    # The ring (soft lap 0, ON the line) turns -139 deg around the area's narrow east tip in
+    # three short drawn edges: one merged corner whose runs' intersection lies 0.5 m past the
+    # tip, inside a neighbouring path channel. The K-turn reversed onto that intersection and
+    # its leg crossed the gap 0.027 m outside the region: the only sub-path was rejected.
+    # The apex is now taken only when the legs to it stay inside: the K-turn reverses onto
+    # the drawn vertex, valid even without the validator's projection (tol 0).
+    region, subs, d = _edge_reject_fixture()
+    prm = pc.Params(**dict(d['params'], edge_reject_tol_m=tol))
+    pre = f.condition_plan({'subpaths': subs, 'region': region, 'prm': prm,
+                            'leg_max_m': d['leg_max_m'], 'area': 1})
+    assert pre['cond_errors'] == {}
+    assert pre['subpaths']
+    r = pc.condition(pc.join_turn_chains(subs, region, prm, leg_max_m=d['leg_max_m'])[0][0],
+                     region, prm)
+    assert r.valid and not r.projected
+    tip = [c for c in r.corners if abs(c.x + 11.31) < 0.05 and abs(c.y - 2.41) < 0.05]
+    assert tip and tip[0].choice == 'kturn'          # at the drawn vertex, not (-11.09, 2.85)
+    for q in r.poses:
+        assert pc.clearance(q, region) >= -0.01
+
+
+def test_validator_projects_a_shallow_violation_and_rejects_a_deep_one():
+    sq = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]
+    prm = pc.Params(edge_reject_tol_m=0.05)
+    pts = [(x * 0.1, 0.0) for x in range(41)]           # drawn ON the bottom edge
+    raw = [pc.clearance(q, [sq]) for q in pts]
+
+    def run(depth):
+        res = pc.Conditioned()
+        res.poses = [(q[0], q[1], 0.0) for q in pts]
+        res.poses[20] = (2.0, -depth, 0.0)
+        res._floors = [None] * len(pts)
+        pc._validate(res, pts, raw, [sq], prm.margin_m + prm.half_width_m, prm)
+        return res
+    r = run(0.03)                                       # 0.03 m out: projected onto the line
+    assert r.valid and [i for i, *_ in r.projected] == [20]
+    assert abs(r.poses[20][0] - 2.0) < 1e-6 and pc.clearance(r.poses[20], [sq]) >= -0.01
+    assert r.poses[20][2] == 0.0
+    r = run(0.08)                                       # deeper than edge_reject_tol_m
+    assert not r.valid and 'closer to the edge than allowed' in r.errors[0]
+    assert not r.projected
+    prm.edge_reject_tol_m = 0.0                         # tolerance off: the old rejection
+    r = run(0.03)
+    assert not r.valid
+
+
+def _all_rejected(monkeypatch):
+    real = pc.condition
+
+    def broken(*a, **k):
+        res = real(*a, **k)
+        res.errors.append('pose 71 (-11.54, 2.66) closer to the edge than allowed')
+        return res
+    monkeypatch.setattr(pc, 'condition', broken)
+
+
+def test_never_driven_plan_docked_is_a_planning_failure_idle(monkeypatch):
+    _all_rejected(monkeypatch)
+    h = Harness(path_conditioning=True)
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.fsm.inputs.docked = True                  # planned while still on the dock
+    m = h.mark()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0), line(0, 2, 4, 2)]))
+    st = h.statuses(m)
+    assert 'MOWING_INCOMPLETE' not in st and 'RETURNING_HOME' not in st
+    assert h.name in ('IDLE_DOCKED', 'CHARGING') and h.fsm.mission is None
+    assert 'plan rejected: pose 71' in h.fsm.sub_state
+    assert '% mowed' not in h.fsm.sub_state
+    assert all(e.name not in (f.ACT_FOLLOW, f.ACT_DOCK) for e in h.since(m, f.StartAction))
+
+
+def test_never_driven_plan_undocked_docks_as_a_planning_failure(monkeypatch):
+    _all_rejected(monkeypatch)
+    h = Harness(path_conditioning=True)
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    m = h.mark()
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(0, 0, 4, 0), line(0, 2, 4, 2)]))
+    st = h.statuses(m)
+    assert 'MOWING_INCOMPLETE' not in st and 'RETURNING_HOME' not in st
+    assert h.name == 'COVERAGE_FAILED_DOCKING' and 'plan rejected' in h.fsm.sub_state
+    h.fsm.inputs.docked = True
+    h.finish(f.ACT_DOCK)
+    assert h.name in ('IDLE_DOCKED', 'CHARGING', 'IDLE') and h.fsm.mission is None
+    assert 'plan rejected' in h.fsm.sub_state
 
 
 def test_revert_path_conditioning_false_sends_the_raw_ring():

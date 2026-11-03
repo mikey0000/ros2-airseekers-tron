@@ -998,6 +998,7 @@ class Params:
     area_outline_simplify_m: float = 0.05
     area_outline_jog_m: float = 0.10
     path_conditioning_kturn_back_max_m: float = 1.5
+    path_conditioning_edge_reject_tol_m: float = 0.05
     # transit / dock routes: smallest fillet radius (tighter corners pivot at the vertex)
     path_conditioning_route_r_min_m: float = 0.8
     # The costmap-planner fallback (no route: start off the route graph; a route abort away
@@ -1718,6 +1719,13 @@ def condition_plan(job):
                                   'will not be driven' % (area, len(out), r.errors[0])))
             out.append(sp)
             continue
+        if r.projected:
+            deep = max(r.projected, key=lambda t: t[3])
+            logs.append(('warn', 'area %d sub-path %d: %d pose(s) up to %.3f m closer to the edge '
+                                 'than allowed projected inward (worst at (%.2f, %.2f); '
+                                 'edge_reject_tol_m %.2f)' % (
+                                     area, len(out), len(r.projected), deep[3], deep[1], deep[2],
+                                     prm.edge_reject_tol_m)))
         npiv += len(r.pivots) - 2 * len(r.kturns)
         nfil += sum(1 for c in r.corners if c.choice == 'fillet')
         for c in r.corners:

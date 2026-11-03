@@ -289,6 +289,7 @@ class HeadingCalMixin:
         if self.inputs.docked:
             self._go_idle('mowing aborted: %s' % reason)
         else:
+            self._failed_text = reason
             self._dock('COVERAGE_FAILED_DOCKING', 'failed', sub=reason)
 
     def _interrupt_mission(self, why):

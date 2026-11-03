@@ -351,6 +351,9 @@ class DockingMixin:
             self._resume_after = 'battery_temp'
         elif purpose == 'incomplete':
             self._go_idle('docked; %s' % self._incomplete_text or 'mowing incomplete')
+        elif purpose == 'failed' and self._failed_text:
+            self._go_idle('docked; mowing aborted: %s' % self._failed_text)
+            self._failed_text = ''
         else:
             self._go_idle('docked')
 

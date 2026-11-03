@@ -119,6 +119,8 @@ class Conditioned:
     # K-turns: (P1 pose index, V pose index, P1 pivot rad, V pivot rad); poses P1+1 .. V are
     # driven in reverse (types REVERSE, V PIVOT; yaw facing against the travel)
     kturns: list = field(default_factory=list)
+    # validator projections: (pose index, x, y, depth m) of poses moved inward onto their floor
+    projected: list = field(default_factory=list)
     _floors: list = field(default_factory=list, repr=False)
 
     @property
@@ -165,6 +167,9 @@ class Params:
     cut_max_m: float = 2.5         # a corner cut rejoins the path at most this far after it
     kturn_back_min_m: float = 0.30
     kturn_back_max_m: float = 1.50
+    # validator: a pose closer to the edge than allowed by at most this much is projected
+    # inward onto its allowed clearance (and logged); only a deeper one rejects the sub-path
+    edge_reject_tol_m: float = 0.05
 
 
 # ---------------------------------------------------------------- region / clearance
@@ -207,6 +212,49 @@ def clearance(pt, region):
     if inside:
         return max(inside)
     return -min(_edge_dist(x, y, p) for p in polys)
+
+
+def _leg_clearance(a, b, region, step=0.05):
+    """Least clearance along the straight leg a -> b (sampled every ``step`` m)."""
+    n = max(1, int(math.ceil(geo.dist(a, b) / step)))
+    return min(clearance((a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n), region)
+               for i in range(n + 1))
+
+
+def _project_inward(q, region, target):
+    """``q`` moved along the clearance gradient (away from / back towards the nearest region
+    edge) so that its clearance is ``target``. None when no polygon is usable."""
+    polys = [p for p in region if len(p) >= 3]
+    if not polys:
+        return None
+    x, y = float(q[0]), float(q[1])
+    c = clearance((x, y), region)
+    # the polygon that defines the clearance: the containing one with the largest clearance,
+    # else the nearest one
+    inside = [p for p in polys if _pip(x, y, p)]
+    poly = max(inside, key=lambda p: _edge_dist(x, y, p)) if inside else \
+        min(polys, key=lambda p: _edge_dist(x, y, p))
+    best, foot = math.inf, None
+    for i in range(len(poly)):
+        ax, ay = poly[i - 1][0], poly[i - 1][1]
+        dx, dy = poly[i][0] - ax, poly[i][1] - ay
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+        fx, fy = ax + t * dx, ay + t * dy
+        d = math.hypot(fx - x, fy - y)
+        if d < best:
+            best, foot = d, (fx, fy, -dy, dx, L2)
+    fx, fy, nx, ny, L2 = foot
+    if best > 1e-9:
+        ux, uy = (fx - x) / best, (fy - y) / best      # towards the edge
+        if c >= 0.0:                                    # inside: inward is away from it
+            ux, uy = -ux, -uy
+    else:                                               # on the edge: the edge normal
+        n = math.sqrt(L2) if L2 > 1e-12 else 1.0
+        ux, uy = nx / n, ny / n
+        if not _pip(fx + 1e-4 * ux, fy + 1e-4 * uy, poly):
+            ux, uy = -ux, -uy
+    return (fx + target * ux, fy + target * uy) + tuple(q[2:])
 
 
 # ---------------------------------------------------------------- body vs region
@@ -692,9 +740,12 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
         lim = p.body_limit_m
         br, simple_ov, v_piv = None, None, v
         if chosen is None and abs(turn) >= p.pivot_min_rad and geo.dist(v, pts[vi]) > 0.02 and \
-                clearance(v, region) < min(req, raw_ref(s_lo, s_hi)) - 1e-3:
-            # a merged corner pivots at the runs' intersection only when that is no
-            # closer to the edge than the drawn path, else at the drawn vertex
+                min(_leg_clearance(a_in, v, region), _leg_clearance(v, b_out, region)) < \
+                min(req, raw_ref(s_lo, s_hi)) - 1e-3:
+            # a merged corner pivots at the runs' intersection only when the runs extended
+            # to it are no closer to the edge than the drawn path, else at the drawn vertex
+            # (field 2026-11-03 Area 4: the intersection past a narrow tip sat inside a
+            # neighbouring path channel, its legs crossed the gap 0.03 m outside)
             v_piv = tuple(pts[vi][:2])
         if lim is not None and region and (chosen is not None or abs(turn) >= p.pivot_min_rad):
             br = BodyRegion(region, v, p.kturn_back_max_m + 1.2, p)
@@ -732,7 +783,8 @@ def condition(poses, region, params: Optional[Params] = None, ring=None, turn_si
         if br is not None and chosen is None and p.kturn and p.allow_pivot and \
                 simple_ov > lim + 1e-3 and abs(turn) >= p.pivot_min_rad and \
                 (abs(turn) >= p.kturn_min_rad or simple_ov > p.kturn_gentle_m + 1e-3):
-            if v_piv == v and clearance(v, region) < min(0.0, clearance(pts[vi], region)) - 0.005:
+            if v_piv == v and min(_leg_clearance(a_in, v, region), _leg_clearance(
+                    v, b_out, region)) < min(0.0, clearance(pts[vi], region)) - 0.005:
                 v_piv = tuple(pts[vi][:2])   # the K-turn reverses onto the drawn vertex
             s_v = s_lo if v_piv == v else cum[vi]
             # P1 may lie back past earlier pivots ON the drawn line (a drawing jog): the
@@ -950,10 +1002,20 @@ def _validate(res, pts, raw_clr, region, req, p):
             ref = min([0.0] + raw_clr[max(0, j - 1):j + 2])
         else:
             ref = fl
-        if clearance(q, region) < ref - 0.01:
-            res.errors.append('pose %d (%.2f, %.2f) closer to the edge than allowed '
-                              '(%.3f < %.3f m)' % (i, q[0], q[1], clearance(q, region), ref))
-            break
+        c = clearance(q, region)
+        if c >= ref - 0.01:
+            continue
+        # a shallow violation (a merged-corner leg, a rounding of the outline) is projected
+        # inward onto the floor; only one deeper than edge_reject_tol_m drops the sub-path
+        moved = _project_inward(q, region, ref + 0.002) if ref - c <= p.edge_reject_tol_m else None
+        if moved is not None and clearance(moved, region) >= ref - 0.01 and \
+                geo.dist(moved, q) <= p.edge_reject_tol_m + 0.01:
+            res.poses[i] = (moved[0], moved[1]) + tuple(q[2:])
+            res.projected.append((i, q[0], q[1], ref - c))
+            continue
+        res.errors.append('pose %d (%.2f, %.2f) closer to the edge than allowed '
+                          '(%.3f < %.3f m)' % (i, q[0], q[1], c, ref))
+        break
     for c in res.corners:
         if c.choice == 'fillet' and c.r < p.r_min - 1e-9:
             res.errors.append('fillet r %.2f < r_min at (%.2f, %.2f)' % (c.r, c.x, c.y))
