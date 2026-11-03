@@ -620,6 +620,27 @@ trip). The controller does not take out a steady lateral creep. The `edge_slope_
 fires and clears within 2 s on the faded region edge. Tilt bands stay ok (10 deg < 15 deg
 caution). `--rtk-loss` and `--kill` runs: not taken (host power profile went to balanced).
 
+### Slope handling gate runs (2026-11-03, ws/slope-creep, `-d -s 2 -x 3`)
+
+Changes: PathAlignAheadCritic path trim (integral tau 5 s, |trim| <= 0.10 m, roll
+feed-forward k_roll 1.0, coverage controller only); coverage pivots on |roll| > 6 deg split
+where the sweep passes the upslope heading with an upslope drive of half the expected creep
+(`pivot_creep_*`); `edge_slope_roll_deg` hysteresis 2 deg + 5 s hold; `slope_caution_roll_deg`
+8 (caution cap at 10 deg roll); roll-aware pivot rate (Spin 0.35 rad/s, cmd_vel_slew
+`pivot_max_radps` 0.3 on slope; host clamps 0.3 -> 0.35).
+
+| Run | a max / n | e | g | h p99 line / arc | i side / nose / sweep; transit | Verdict |
+|---|---|---|---|---|---|---|
+| real_run5_slope, master fa87bbc | 0.256 / 471 | 5 of 19 (0.720) | 21 % | 0.373 / 0.679 | 0.383 / 0.407 / 0.411; 0.407 | FAIL |
+| real_run5_slope, ws/slope-creep | 0.285 / 675 | 6 of 19 (0.712) | 20 % | 0.326 / 0.680 | 0.305 / 0.395 / 0.397; 0.466 | FAIL |
+| real_run5, ws/slope-creep | 0.084 / 0 | 0 of 19 (0.139) | 25 % | 0.091 / 0.099 | 0.123 / 0.083 / 0.108; 0.397 | FAIL (i) |
+
+The slope world still fails on the pivots: the remaining excursions sit at the west-edge
+pivot vertices, where the 4.5 cm/s pivot creep trips the spin-drift guard (0.15 m), whose
+cancel / re-pivot adds more creep. The upslope split fires only when the sweep passes the
+upslope heading (1 of ~6 slope pivots). The trim integral stays small (<= 0.05 m): on the
+straights the line p99 dropped 0.373 -> 0.326; it cannot act during a pivot.
+
 ### What the gate cannot show
 
 Real turf slip beyond the terrain model (wet grass, wheel-in-a-hole stalls), heading
