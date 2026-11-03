@@ -435,6 +435,20 @@ controller_server:
         offset_from_furthest: 4
         use_path_orientations: false
         control_point_x: 0.25
+        # path trim (2026-11-03 slope sim, mowgli_nav2_plugins path_trim.hpp): MPPI has no
+        # integral action, a steady downhill creep became a steady cross-track offset. A slow
+        # integral of the cross-track error (tau 5 s, |trim| <= 0.10 m, winds only on the
+        # path and moving) plus k_roll x sin(roll) x |v| from /imu/data shift the alignment
+        # target upslope. Flat ground: roll 0, no persistent error -> no shift.
+        trim_enabled: true
+        trim_tau_s: 5.0
+        trim_max_m: 0.10
+        trim_max_err_m: 0.30
+        trim_min_speed: 0.05
+        trim_leak_tau_s: 60.0
+        k_roll: 1.0
+        roll_topic: "/imu/data"
+        roll_timeout_s: 1.0
       PathFollowCritic:
         enabled: true
         cost_power: 1

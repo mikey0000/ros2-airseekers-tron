@@ -41,6 +41,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(nav2_mppi_controller REQUIRED)
 find_package(xtensor REQUIRED)
@@ -101,6 +102,8 @@ target_link_libraries(mowgli_mppi_critics
   ${rclcpp_lifecycle_TARGETS}
   ${nav2_costmap_2d_TARGETS}
   ${pluginlib_TARGETS}
+  ${sensor_msgs_TARGETS}
+  ${tf2_TARGETS}
   xtensor
 )
 ament_target_dependencies(mowgli_mppi_critics nav2_mppi_controller)
@@ -157,6 +160,12 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_path_align_ahead_critic mowgli_mppi_critics)
 
+  # Path trim (slope creep, 2026-11-03): integral, feed-forward, path shift.
+  ament_add_gtest(test_path_trim
+    test/test_path_trim.cpp
+  )
+  target_link_libraries(test_path_trim mowgli_mppi_critics)
+
   ament_add_gtest(test_leg_goal_checker
     test/test_leg_goal_checker.cpp
   )
@@ -185,6 +194,7 @@ ament_export_dependencies(
   tf2_geometry_msgs
   tf2_eigen
   visualization_msgs
+  sensor_msgs
   nav2_mppi_controller
 )
 
