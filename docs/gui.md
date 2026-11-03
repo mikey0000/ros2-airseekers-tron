@@ -265,6 +265,19 @@ Paths below are under `third_party/mowglinext/gui/web/src/`.
 * **Schedule.** The Rules card reads `rain_mode`, `battery_low_action` and
   `battery_low_percent` instead of always showing "ON".
 
+## Vertex editing in the map editor (2026-11-03)
+
+In Edit Map, a selected area, no-go zone or path shows a Points card with its vertex count. Dragging
+a point onto a ring neighbour (within 12 px, 16 px on touch screens) merges the two; the neighbour
+keeps its position. A selected point gets a ✕ chip, and Delete / Backspace removes it; right-click
+or long-press opens Delete point / Insert point here (edge midpoint). "Merge nearby points" merges
+consecutive points closer than a distance (default 0.15 m) and "Simplify" runs Douglas–Peucker
+(default 0.05 m); both preview the result as a dashed yellow outline with "N → M points" and refuse
+a result below 3 points (2 for a boundary line) or one that crosses itself. The boundary line sheet
+has the same two actions. Every change is a normal editor change: undo / redo cover it and only Save
+writes map_server. Code: `pages/map/utils/vertexEdit.ts` (geometry), `pages/map/hooks/vertexToolState.ts`
+and `useVertexTools.ts` (dialog), `modes/vertexTools.ts` (drag-merge, chip, menu in direct_select).
+
 ## Profile gating (Tron trim)
 
 What the GUI shows is decided at runtime by the active robot profile

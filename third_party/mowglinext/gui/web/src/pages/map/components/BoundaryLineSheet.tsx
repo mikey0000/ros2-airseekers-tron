@@ -10,6 +10,7 @@ import {
     type BoundaryLineMode,
 } from "../../../types/map.ts";
 import {MapItemDrawer} from "./MapItemDrawer.tsx";
+import {VertexActions} from "./VertexTools.tsx";
 
 export const BOUNDARY_LINE_WIDTH_STEP_M = 0.05;
 
@@ -28,6 +29,10 @@ export interface BoundaryLineSheetProps {
     /** Called after the operator confirmed the delete. */
     onDelete: () => void;
     onClose: () => void;
+    /** Vertex tools (Merge nearby points / Simplify); hidden when not given. */
+    vertexCount?: number;
+    onMergeNearby?: () => void;
+    onSimplify?: () => void;
 }
 
 const clampWidth = (w: number | null | undefined) =>
@@ -39,7 +44,7 @@ const MODE_LABEL_KEYS: Record<BoundaryLineMode, {label: string; help: string}> =
 };
 
 const BoundaryLineForm: React.FC<Omit<BoundaryLineSheetProps, "open" | "onClose" | "lineKey">> = ({
-    name, fallbackName, widthM, mode, onApply, onDelete,
+    name, fallbackName, widthM, mode, onApply, onDelete, vertexCount, onMergeNearby, onSimplify,
 }) => {
     const {t} = useTranslation();
     const [draftName, setDraftName] = useState(name);
@@ -104,6 +109,11 @@ const BoundaryLineForm: React.FC<Omit<BoundaryLineSheetProps, "open" | "onClose"
                     />
                 </div>
             </Form.Item>
+            {vertexCount !== undefined && onMergeNearby && onSimplify && (
+                <Form.Item style={{marginBottom: 8}}>
+                    <VertexActions vertexCount={vertexCount} onMerge={onMergeNearby} onSimplify={onSimplify}/>
+                </Form.Item>
+            )}
             <Alert type="info" showIcon message={t("mapBoundary.saveHint")} style={{marginBottom: 12}}/>
             <Space style={{width: "100%", justifyContent: "space-between"}} wrap>
                 <Popconfirm
