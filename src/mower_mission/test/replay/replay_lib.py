@@ -44,6 +44,11 @@ HANDLERS = {
     '/map_server_node/lethal_boundary_violation': '_on_lethal',
 }
 RECEIPT = {'_on_outside'}           # handlers that take (msg, receipt)
+# Fields a handler reads that older fixtures did not record (recorded values win). hdop NaN
+# = unknown: _on_gnss maps it to Inputs.hdop None, as for a receiver that reports none.
+MSG_DEFAULTS = {
+    '/gps/status': {'fix_type': 0, 'quality_percent': 0.0, 'hdop': float('nan')},
+}
 
 
 def load(name):
@@ -125,7 +130,10 @@ class Replay:
         if hit is None:
             return
         fn, receipt = hit
-        msg = ns(_msg(e['topic'], e['msg']))
+        raw = _msg(e['topic'], e['msg'])
+        if isinstance(raw, dict) and e['topic'] in MSG_DEFAULTS:
+            raw = {**MSG_DEFAULTS[e['topic']], **raw}
+        msg = ns(raw)
         fn(self.node, msg, self.h.t) if receipt else fn(self.node, msg)
 
     def run_until(self, t_rel, tick=True):

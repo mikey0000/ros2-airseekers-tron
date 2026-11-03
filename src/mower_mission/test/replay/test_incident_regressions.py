@@ -9,7 +9,7 @@ recorded outcomes where the log has them, and asserts on the FSM's reaction.
 |---|---|---|---|
 | a | 20261102-021049 (3-4) + mission log, 02:13:50-02:19:53 | ws/heading-stale a58fee6 | d3230fd |
 | b | 20261102-021049 (3-4), 02:14:20-02:15:45 | ws/boundary-recover 5e67b08 | d3230fd |
-| c | incident 20261102-034715 (bag 20261102-034709_0), 03:47:08-03:47:20 | ws/dock-join e1a79db | d3230fd; xfail on master (open) |
+| c | incident 20261102-034715 (bag 20261102-034709_0), 03:47:08-03:47:20 | ws/dock-join e1a79db + ws/dock-join-tol | d3230fd |
 | d | 20261028-023252 (9-14) + tracker log, 02:42:00-02:47:40 | e845029 + 644d368 | 0f91864 |
 | e | 20261028-023252 (87-88) + mission log, 04:00:40-04:01:45 | 32ac8f8 + cc34b8d | 49cd802 |
 
@@ -39,13 +39,6 @@ def _states(h, mark=0):
 # ---------------------------------------------------------------------------------------
 # (c) 2026-11-02 03:47 UTC: RETURN HOME from the edge-lap start of area 5, off the route graph
 # ---------------------------------------------------------------------------------------
-@pytest.mark.xfail(strict=True, reason=(
-    'open: the recorded pose is 0.013 m OUTSIDE the area 5 outline (map_server outside_m in '
-    'the bag), and the dock-join (e1a79db) only joins from inside an area '
-    '(_dock_join_areas: point_in_polygon), so master still hands over and fails with '
-    'NAV_TO_DOCK_FAILED 6.60 m away exactly as the field did. The fix\'s unit test used a '
-    'start 0.2 m inside. Remove this mark with the fix (join from within a tolerance of the '
-    'edge).'))
 def test_c_offgraph_dock_return_joins_the_graph_instead_of_failing():
     fx = rl.load('20261102_offgraph_dock')
     rec = rl.recorded_log(fx, 'is off the route graph')

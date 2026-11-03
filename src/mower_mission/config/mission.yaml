@@ -151,6 +151,7 @@ behavior_tree_node:
     dock_join_max_m: 40.0
     dock_join_inset_m: 1.0
     dock_join_insets_m: [1.0, 2.0, 3.0]
+    dock_join_edge_tol_m: 0.30        # pose this close outside an outline counts as inside
     route_controller_id: FollowPath   # MPPI transit controller
     route_goal_checker_id: general_goal_checker
     route_end_tolerance_m: 0.5        # route follow "success" farther from the target = failed

@@ -866,6 +866,35 @@ def test_offgraph_join_off_restores_the_old_handover():
     assert any('handing over to the docking server' in t for t in logs(h, m))
 
 
+def test_offgraph_join_from_just_outside_the_outline_moves_inward():
+    # 2026-11-02 03:47 incident: the pose was 0.013 m outside the area outline
+    h = Harness(route_transits=True)
+    h.fsm._region_areas = {5: {'outer': SQUARE, 'name': 'Clothesline'},
+                           6: {'outer': [(-30.0, -10.0), (-10.5, -10.0), (-10.5, 10.0),
+                                         (-30.0, 10.0)], 'name': 'Far'}}
+    h.fsm.inputs.dock_pose = DOCK
+    h.fsm.inputs.pose = (-10.1, 1.95, 0.0)        # 0.1 m outside area 5, 0.4 m from area 6
+    assert h.cmd(f.CMD_HOME)
+    m = h.mark()
+    _answer_route(h, resp=_offgraph((-10.1, 1.95)))
+    assert h.pending_action(f.ACT_NAV).purpose == 'dock_join'
+    goal = h.goal(f.ACT_NAV)['pose']
+    assert abs(goal[0] + 9.0) < 1e-6 and abs(goal[1] - 1.95) < 1e-6, goal
+    assert any('(5)' in t or 'joining it at (-9.00, 1.95)' in t for t in logs(h, m))
+
+
+def test_offgraph_join_far_outside_every_area_keeps_the_old_handover():
+    h = Harness(route_transits=True)
+    h.fsm._region_areas = {5: {'outer': SQUARE, 'name': 'Clothesline'}}
+    h.fsm.inputs.dock_pose = DOCK
+    h.fsm.inputs.pose = (-10.5, 1.95, 0.0)        # 0.5 m outside: beyond the 0.30 m band
+    assert h.cmd(f.CMD_HOME)
+    m = h.mark()
+    _answer_route(h, resp=_offgraph((-10.5, 1.95)))
+    assert not starts(h, m, f.ACT_NAV)
+    assert any('handing over to the docking server' in t for t in logs(h, m))
+
+
 def test_low_battery_return_also_joins():
     h = Harness(route_transits=True)
     h.fsm._region_areas = {5: {'outer': SQUARE, 'name': 'Clothesline'}}

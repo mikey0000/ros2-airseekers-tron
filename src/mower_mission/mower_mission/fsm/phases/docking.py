@@ -162,23 +162,43 @@ class DockingMixin:
             return
 
     def _dock_join_areas(self, pose):
-        """[(idx, name, outer)] of the mowing areas containing ``pose``."""
-        out = []
+        """[(idx, name, outer)] of the mowing areas containing ``pose``; none: the area whose
+        outline is nearest, if ``pose`` is within dock_join_edge_tol_m outside it (2026-11-02
+        incident: 0.013 m outside the area 5 outline)."""
+        out, near = [], None
+        tol = float(getattr(self.p, 'dock_join_edge_tol_m', 0.0) or 0.0)
         for idx, area in (self._region_areas or {}).items():
             outer = [tuple(q[:2]) for q in (area.get('outer') or [])]
-            if len(outer) >= 3 and geo.point_in_polygon(pose, outer):
-                out.append((idx, str(area.get('name') or idx), outer))
+            if len(outer) < 3:
+                continue
+            cand = (idx, str(area.get('name') or idx), outer)
+            if geo.point_in_polygon(pose, outer):
+                out.append(cand)
+                continue
+            d = geo.distance_to_ring(pose, outer)
+            if d <= tol and (near is None or d < near[0]):
+                near = (d, cand)
+        if not out and near is not None:
+            out.append(near[1])
         return out
 
     def _dock_join_reachable(self, pose, q, outer, cap):
-        """``q`` inside ``outer``, within ``cap`` and the straight line to it inside too."""
+        """``q`` inside ``outer``, within ``cap`` and the straight line to it inside too (a
+        start just outside the outline may leave it inward: samples outside within
+        dock_join_edge_tol_m are allowed until the line has entered)."""
         d = geo.dist(pose, q)
         if d > cap or not geo.point_in_polygon(q, outer):
             return False
+        tol = float(getattr(self.p, 'dock_join_edge_tol_m', 0.0) or 0.0)
         n = max(1, int(math.ceil(d / 0.2)))
-        return all(geo.point_in_polygon((pose[0] + (q[0] - pose[0]) * k / n,
-                                         pose[1] + (q[1] - pose[1]) * k / n), outer)
-                   for k in range(n + 1))
+        entered = False
+        for k in range(n + 1):
+            s = (pose[0] + (q[0] - pose[0]) * k / n, pose[1] + (q[1] - pose[1]) * k / n)
+            if geo.point_in_polygon(s, outer):
+                entered = True
+            elif entered or geo.distance_to_ring(s, outer) > tol:
+                return False
+        return True
 
     def _dock_join_candidates(self, pose, areas, cap):
         """Join points, best first: the last inbound route's entry into each area, then
@@ -197,6 +217,8 @@ class DockingMixin:
                 continue
             px, py, d0 = ne
             nx, ny = (pose[0] - px) / d0, (pose[1] - py) / d0
+            if not geo.point_in_polygon(pose, outer):   # just outside: inward is to the edge
+                nx, ny, d0 = -nx, -ny, -d0
             for inset in self.p.dock_join_insets_m or []:
                 step = float(inset) - d0
                 if step <= 0.3:
