@@ -57,7 +57,24 @@ enum class TurnType {
 enum class TurnMode { kPivot, kArc, kFishtail, kAuto };
 bool parseTurnMode(const std::string& name, TurnMode* mode);  // "" = pivot
 
-enum class TurnKind { kNone, kPivot, kLoop, kReverseCurve };
+// Row change across a gap wider than a pivot connector joins (per-area setting
+// `row_link_mode`, 2026-11-03, docs/analysis/2026-11-03_turns.md appendix B). Applies to
+// edge layouts, where a turn that does not fit makes the bridge split the plan there and the
+// mission bridge it with a blade-off transit (about 3 pivots: two route corners and the
+// leg-start pivot, plus a sub-path start).
+//   kTransit  today's behaviour: such a row change stays a transit.
+//   kSnake    when the turn planner found nothing, try a snake connector inside the same
+//             sub-path: pivot at the row end, straight along the row-end band, pivot onto the
+//             next row (2 pivots, no transit). base_link stays body_half_width +
+//             turn_base_margin inside the line, every body corner (straight and both pivot
+//             sweeps) at most turn_body_limit outside it, the turn_mode prototype's limits.
+//             Where it does not fit, the transit stays.
+//   kAuto     kSnake when turn_mode lets turns use the edge-lap band (turn_mode != pivot),
+//             else kTransit, so the default (turn_mode pivot) keeps today's output.
+enum class RowLinkMode { kTransit, kSnake, kAuto };
+bool parseRowLinkMode(const std::string& name, RowLinkMode* mode);  // "" = auto
+
+enum class TurnKind { kNone, kPivot, kLoop, kReverseCurve, kSnake };
 
 struct TurnPose {
   Point2D p;
@@ -83,6 +100,7 @@ struct RouteOptions {
   double min_drivable_turn_radius = 0.0;
   TurnType turn_type = TurnType::kAuto;
   TurnMode turn_mode = TurnMode::kPivot;
+  RowLinkMode row_link_mode = RowLinkMode::kAuto;
   double body_front = 0.60;       // base_link -> nose [m] (mower_common FOOTPRINT)
   double body_rear = 0.10;
   double body_half_width = 0.235;
@@ -175,6 +193,15 @@ struct CoveragePlan {
   size_t loop_turns = 0, reverse_turns = 0, pivot_turns = 0;
   // Pivots across a gap > 0.6 m: the bridge makes those blade-off transits.
   size_t wide_pivot_turns = 0;
+  // row_link_mode snake connectors (kSnake turns; 2 pivots each, no transit)
+  size_t snake_links = 0;
+  // Row changes (consecutive swaths) by expected pivot count, for the plan log: a loop /
+  // reverse-curve turn 0, a pivot connector 1 (one pivot through ~180 deg), a snake link 2,
+  // a transit ~3 (two route corners and the leg-start pivot).
+  size_t row_changes = 0, transit_links = 0;
+  size_t expectedRowChangePivots() const {
+    return (pivot_turns - wide_pivot_turns) + 2 * snake_links + 3 * transit_links;
+  }
   // Coverage verification: the swept footprint (every ring / swath / turn /
   // short connector sweeps op_width) against the target region. Exact OGR
   // (GEOS) geometry, no raster.
@@ -295,5 +322,16 @@ Point2D lapStartPoint(const std::vector<Point2D>& loop, const Point2D& target, d
                       double max_turn_deg);
 
 bool builtWithF2CV3();
+
+// row_link_mode snake connector from a row end (from, heading from_yaw) to the next row's
+// start (to, to_yaw): pivot at `from` onto the from -> to heading, straight, pivot at `to`.
+// True when base_link stays inside `base_region` along the straight and every body corner
+// (route body_* fields) stays inside `body_region` through both pivot sweeps (5 deg steps,
+// the shorter way) and along the straight (<= 0.10 m steps); either region may be nullptr.
+// `poses` (may be nullptr) gets the interior connector points (forward turn poses, <= 0.5 m
+// apart, at least one) so the bridge keeps the connector inside the sub-path.
+bool snakeLink(const Point2D& from, double from_yaw, const Point2D& to, double to_yaw,
+               const RouteOptions& route, const f2c::types::Cells* base_region,
+               const f2c::types::Cells* body_region, std::vector<TurnPose>* poses);
 
 }  // namespace mower_coverage

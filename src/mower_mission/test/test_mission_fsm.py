@@ -1381,8 +1381,8 @@ def test_height_mm_passthrough_and_clamp():
 
 
 DEFAULT_ROUTE = {'boundary_inset_m': 0.05, 'route_order': 'racetrack', 'route_spiral_size': 6,
-                 'min_turn_radius_m': 0.5, 'turn_type': 'auto', 'edge_layout': 'soft',
-                 'edge_laps': 3}
+                 'min_turn_radius_m': 0.5, 'turn_type': 'auto', 'row_link_mode': 'auto',
+                 'edge_layout': 'soft', 'edge_laps': 3}
 
 
 def test_route_and_turn_settings_reach_the_coverage_server():
@@ -1394,7 +1394,7 @@ def test_route_and_turn_settings_reach_the_coverage_server():
     cov = param_calls(h, f.PARAM_NODE_COVERAGE, m)[0]
     assert {k: cov[k] for k in DEFAULT_ROUTE} == {
         'boundary_inset_m': 0.05, 'route_order': 'snake', 'route_spiral_size': 8, 'min_turn_radius_m': 0.3,
-        'turn_type': 'reverse', 'edge_layout': 'soft', 'edge_laps': 3}
+        'turn_type': 'reverse', 'row_link_mode': 'auto', 'edge_layout': 'soft', 'edge_laps': 3}
 
 
 def test_edge_laps_area_setting_reaches_the_coverage_server():

@@ -105,6 +105,10 @@ class MowerCoverageNode : public rclcpp::Node {
     // only). pivot = turns stay turn_inset inside the line (the pre-2026-11 behaviour).
     // Read per request.
     declare_parameter<std::string>("turn_mode", "pivot");
+    // Row changes a turn does not join (transit | snake | auto; RouteOptions::row_link_mode,
+    // edge layout only): the request's row_link_mode, "" = this parameter. auto = snake only
+    // with turn_mode != pivot, so the defaults keep today's transits.
+    declare_parameter<std::string>("row_link_mode", "auto");
     service_ = create_service<mower_interfaces::srv::PlanCoverage>(
         "/coverage/plan",
         std::bind(&MowerCoverageNode::handlePlan, this, std::placeholders::_1,
@@ -202,6 +206,13 @@ class MowerCoverageNode : public rclcpp::Node {
                                        &route.turn_mode)) {
       RCLCPP_WARN(get_logger(), "unknown turn_mode '%s': pivot",
                   get_parameter("turn_mode").as_string().c_str());
+    }
+
+    const std::string rlm = request->row_link_mode.empty()
+                                ? get_parameter("row_link_mode").as_string()
+                                : request->row_link_mode;
+    if (!mower_coverage::parseRowLinkMode(rlm, &route.row_link_mode)) {
+      RCLCPP_WARN(get_logger(), "unknown row_link_mode '%s': auto", rlm.c_str());
     }
 
     route.fill_gaps = true;
@@ -373,7 +384,12 @@ class MowerCoverageNode : public rclcpp::Node {
                                  std::to_string(static_cast<int>(route.min_turn_radius * 100)) +
                                  "cm: " + std::to_string(plan.loop_turns) + " loop, " +
                                  std::to_string(plan.reverse_turns) + " reverse-curve, " +
-                                 std::to_string(plan.pivot_turns) + " pivot)") +
+                                 std::to_string(plan.pivot_turns) + " pivot; row changes " +
+                                 std::to_string(plan.row_changes) + ": " +
+                                 std::to_string(plan.snake_links) + " snake, " +
+                                 std::to_string(plan.transit_links) +
+                                 " transit, expected pivots " +
+                                 std::to_string(plan.expectedRowChangePivots()) + ")") +
                       ": " + std::to_string(plan.rings.size()) + " rings, " +
                       std::to_string(plan.swaths.size()) + " swaths, " +
                       std::to_string(static_cast<int>(total_distance * 100)) +
