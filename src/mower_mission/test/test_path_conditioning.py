@@ -1111,3 +1111,59 @@ def test_split_hops_backstop_splits_densified_forward_subpaths_only():
     sparse = [(0, 0, 0), (1, 0, 0), (5, 0, 0), (6, 0, 0)]          # raw vertices: untouched
     rev = [(0.05 * i, 0.0, math.pi) for i in range(41)] + [(4.0, 0.0, math.pi)]
     assert split_hops([sparse, rev]) == ([sparse, rev], 0)
+
+
+def _tangent_harness(enabled=True):
+    h = Harness(path_conditioning=True, route_transits=True)
+    h.areas = [square(-1, -1, 12)]
+    start_until_planning(h)
+    h.fsm.inputs.pose = (0.0, 0.0, 0.0)
+    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3.0, 3.0, 7.0, 3.0)]))
+    m = h.fsm.mission
+    assert h.name == 'TRANSIT' and m.step == 'transit'
+    h.fsm._region_areas = {0: {'outer': square(-1, -1, 12)['outer']}}
+    m.settings = dict(m.settings, tangent_approach=enabled)
+    m.transit_target = (3.0, 3.0, 0.0)
+    return h, m
+
+
+# route (0, 0) -> (3, 0) -> (3, 3): arrives 90 deg off the leg (heading 0)
+_TANGENT_ROUTE = [(0.1 * k, 0.0, 0.0) for k in range(31)] + \
+    [(3.0, 0.1 * k, math.pi / 2) for k in range(1, 31)]
+
+
+def test_tangent_approach_ends_the_route_along_the_first_leg():
+    h, m = _tangent_harness()
+    h.fsm._begin(h.t)
+    out = h.fsm._route_tangent(list(_TANGENT_ROUTE))
+    h._apply(h.fsm._end())
+    texts = [e.text for e in h.fx if isinstance(e, f.Log)]
+    assert any('tangent approach onto the sub-path start' in t for t in texts)
+    assert out[-1][:2] == (3.0, 3.0) and out[-1][2] == 0.0
+    assert geo.dist(out[-2], (2.0, 3.0)) < 1e-9            # 1.0 m back along the leg
+    assert geo.dist(out[-3], (3.0, 3.0)) >= 1.2             # route cut before it
+    assert m.tangent == (3.0, 3.0)
+    # the robot then arrives on the start along the leg: no final approach, no leg pivot
+    h.fsm.inputs.pose = (3.0, 3.0, 0.0)
+    h.fsm._route_legs = {'legs': [out[-2:]], 'i': 0}
+    h.fsm._begin(h.t)
+    h.fsm._route_result(f.SUCCEEDED)
+    h._apply(h.fsm._end())
+    assert not m.final_approach and h.name == 'MOWING'
+    texts = [e.text for e in h.fx if isinstance(e, f.Log)]
+    assert not any('leg start at' in t for t in texts)
+    assert h.fsm._action is None or h.fsm._action.name != f.ACT_SPIN
+
+
+def test_tangent_approach_off_aligned_or_no_room_keeps_the_route():
+    h, m = _tangent_harness(enabled=False)
+    assert h.fsm._route_tangent(list(_TANGENT_ROUTE)) == _TANGENT_ROUTE
+    h, m = _tangent_harness()
+    aligned = [(0.1 * k, 3.0, 0.0) for k in range(31)]
+    assert h.fsm._route_tangent(list(aligned)) == aligned   # already tangent
+    # the start 0.3 m inside the line: 1.0 m back along the leg is outside the area
+    m.transit_target = (-0.7, 3.0, 0.0)
+    m.subpaths[m.sub_i] = [(-0.7, 3.0, 0.0), (7.0, 3.0, 0.0)]
+    route = [(-0.7, 0.1 * k, math.pi / 2) for k in range(31)]
+    assert h.fsm._route_tangent(list(route)) == route
+    assert m.tangent is None

@@ -407,3 +407,16 @@ def test_boundary_line_keepout_hole_splits_the_join_across_the_line():
     assert len(sp.join_subpaths(segs, 0.6)) == 1
     subs = sp.join_subpaths(segs, 0.6, holes=[band])
     assert [s.segment_indices for s in subs] == [[0], [1]]
+
+
+def test_snake_link_joins_racetrack_rows_into_one_subpath():
+    """row_link_mode snake (mower_coverage TurnKind::kSnake): two forward turn poses on the
+    row-end line join rows 1.08 m apart (a transit without them) into one sub-path."""
+    rows = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.08), (0.0, 1.08)]
+    plain = splitter.plan(rows, ring_count=0, swath_count=2, pose_flags=[0, 0, 0, 0])
+    assert len(plain.subpaths) == 2 and splitter.transit_gaps(plain.subpaths) == \
+        [pytest.approx(1.08)]
+    pts = rows[:2] + [(2.0, 0.36), (2.0, 0.72)] + rows[2:]
+    res = splitter.plan(pts, ring_count=0, swath_count=2, pose_flags=[0, 0, 1, 1, 0, 0])
+    assert len(res.subpaths) == 1 and not res.subpaths[0].reverse
+    assert res.subpaths[0].points == pts

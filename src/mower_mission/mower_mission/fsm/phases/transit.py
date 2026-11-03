@@ -202,7 +202,7 @@ class TransitMixin:
         if m.blade_transit and int(resp.get('single_area', -1)) != m.area_idx:
             # the straight segment stays in the area but the route does not (path legs)
             self._blade_off('route leaves area %d' % m.area_idx)
-        m.route_poses = self._route_prepare(poses)
+        m.route_poses = self._route_tangent(self._route_prepare(poses))
         legs = (self._condition_route(m.route_poses, 'route') if self.p.path_conditioning
                 else None) or self._split_route(m.route_poses)
         m.route_full = m.route_poses
@@ -314,6 +314,79 @@ class TransitMixin:
                           % (out[0][0], out[0][1], poses[0][0], poses[0][1]))
                 poses = out
         return poses
+
+    def _route_tangent(self, poses):
+        """Area setting tangent_approach: a route to a sub-path start ends on a straight of
+        tangent_approach_m along the first leg (the target yaw), so the robot arrives aligned
+        and the leg-start pivot is skipped (_cov_pivot, leg_start_align_deg). The route is cut
+        where it comes within that distance of the start and joined to the point that far
+        back along the leg; kept only when base_link stays tangent_approach_base_m inside the
+        line along the straight (inside along the join) and the body at most
+        tangent_approach_body_m out. Already arriving within leg_start_align_deg, an
+        edge-approach target or no room: the route unchanged."""
+        m = self.mission
+        if m is not None:
+            m.tangent = None
+        st = (m.settings or {}) if m is not None else {}
+        tgt = m.transit_target if m is not None else None
+        L = float(self.p.tangent_approach_m)
+        if not st.get('tangent_approach') or L <= 0.0 or len(poses) < 2 or tgt is None or \
+                len(tgt) < 3 or not self._region_areas or m.step != 'transit' or \
+                not (0 <= m.sub_i < len(m.subpaths or [])):
+            return poses
+        sp = m.subpaths[m.sub_i]
+        start = sp[min(m.start_local, len(sp) - 1)]
+        sx, sy, yaw = float(tgt[0]), float(tgt[1]), float(tgt[2])
+        if math.hypot(sx - start[0], sy - start[1]) > 0.02:
+            return poses                       # edge-approach point beside the start
+        S = poses[-1]
+        if math.hypot(S[0] - sx, S[1] - sy) > 0.1:
+            return poses
+        align = math.radians(float(self.p.leg_start_align_deg))
+        k = len(poses) - 2
+        while k > 0 and math.hypot(poses[k][0] - sx, poses[k][1] - sy) < 1e-3:
+            k -= 1
+        run_in = math.atan2(sy - poses[k][1], sx - poses[k][0])
+        if abs(geo.wrap_angle(run_in - yaw)) < align:
+            return poses                       # already tangent
+        ux, uy = math.cos(yaw), math.sin(yaw)
+        P = (sx - L * ux, sy - L * uy)
+        # keep the route up to its last pose farther than L + 0.2 m from the start
+        keep = [q for q in poses[:-1]]
+        while keep and math.hypot(keep[-1][0] - sx, keep[-1][1] - sy) < L + 0.2:
+            keep.pop()
+        if not keep:
+            return poses
+        polys = self._region()
+        base_in, body_out = float(self.p.tangent_approach_base_m), \
+            float(self.p.tangent_approach_body_m)
+        zero = {'side': 0.0, 'front': 0.0, 'nose': 0.0, 'tail': 0.0}
+        n = max(2, int(math.ceil(L / 0.1)))
+        for i in range(n + 1):
+            x, y = P[0] + (sx - P[0]) * i / n, P[1] + (sy - P[1]) * i / n
+            e = bbody.nearest_edge_point(x, y, polys)
+            if bbody.point_outside(x, y, polys) > 0.0 or e is None or e[2] < base_in:
+                return poses
+            ev = bbody.evaluate((x, y, yaw), polys, zero)
+            if ev is not None and ev['out'] > body_out:
+                return poses
+        Q = keep[-1]
+        nq = max(2, int(math.ceil(math.hypot(P[0] - Q[0], P[1] - Q[1]) / 0.1)))
+        for i in range(1, nq):
+            x, y = Q[0] + (P[0] - Q[0]) * i / nq, Q[1] + (P[1] - Q[1]) * i / nq
+            if bbody.point_outside(x, y, polys) > 0.0:
+                return poses
+        tail = tuple(S[3:]) if len(S) > 3 else ()
+        jy = math.atan2(P[1] - Q[1], P[0] - Q[0])
+        out = list(keep)
+        out.append((P[0], P[1], jy) + tail if len(S) >= 3 else P)
+        out.append((sx, sy, yaw) + tail if len(S) >= 3 else (sx, sy))
+        m.tangent = (round(sx, 3), round(sy, 3))
+        self._log('info', 'transit: tangent approach onto the sub-path start (%.2f, %.2f): '
+                          'last %.1f m straight along its %.0f deg leg (route arrived %.0f deg '
+                          'off it)' % (sx, sy, L, math.degrees(yaw),
+                                       math.degrees(abs(geo.wrap_angle(run_in - yaw)))))
+        return out
 
     def _split_route(self, poses):
         """Route poses -> FollowPath legs. Task 0.4 (d), route_corner_turn_rad > 0: split at

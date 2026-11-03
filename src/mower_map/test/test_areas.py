@@ -896,3 +896,26 @@ def test_route_leg_goes_round_the_dock_nogo():
     poses = r.poses
     nogo = areas[0].obstacles[0].polygon
     assert poses and not any(core.point_in_polygon(x, y, nogo) for x, y, _ in poses)
+
+
+def test_point_in_polygon_scalar_matches_vectorised():
+    """The scalar fast path keeps the exact points_in_polygon rule, vertices and edges
+    included (2026-11-03 CPU review)."""
+    import random
+    import numpy as np
+    from mower_map import areas as core
+    rng = random.Random(7)
+    for _ in range(200):
+        n = rng.randint(3, 40)
+        poly = [(round(rng.uniform(-5, 5), 2), round(rng.uniform(-5, 5), 2)) for _ in range(n)]
+        pts = [(rng.uniform(-6, 6), rng.uniform(-6, 6)) for _ in range(40)]
+        pts += [p for p in poly[:5]]                                   # vertices
+        pts += [((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) for a, b in zip(poly, poly[1:5])]
+        pts += [(p[0], 0.0) for p in poly[:5]]                         # shared ordinates
+        xs = np.array([p[0] for p in pts])
+        ys = np.array([p[1] for p in pts])
+        ref = core.points_in_polygon(xs, ys, poly)
+        got = [core.point_in_polygon(x, y, poly) for x, y in pts]
+        assert got == [bool(v) for v in ref]
+    assert core.point_in_polygon(0.0, 0.0, [(0, 0), (1, 1)]) is False
+    assert core.point_in_polygon(0.5, 0.5, [[0, 0], [1, 0], [1, 1], [0, 1]]) is True

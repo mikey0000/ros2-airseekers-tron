@@ -929,6 +929,73 @@ SwathTurn planTurnIn(const Point2D& from, double from_yaw, const Point2D& to, do
   return pivot;
 }
 
+// row_link_mode snake connector (see snakeLink in the header), on OGR regions.
+bool snakeLinkIn(const Point2D& from, double from_yaw, const Point2D& to, double to_yaw,
+                 const RouteOptions& rb, const OGRGeometry* base_region,
+                 const OGRGeometry* body_region, std::vector<TurnPose>* poses) {
+  const double len = dist(from, to);
+  if (!(len > 1e-3)) {
+    return false;
+  }
+  const double c = std::atan2(to.second - from.second, to.first - from.first);
+  if (base_region != nullptr) {
+    OGRLineString line;
+    line.addPoint(from.first, from.second);
+    line.addPoint(to.first, to.second);
+    if (!base_region->Contains(&line)) {
+      return false;
+    }
+  }
+  const double xs[2] = {rb.body_front, -rb.body_rear};
+  const double ys[2] = {rb.body_half_width, -rb.body_half_width};
+  auto bodyOk = [&](const Point2D& p, double yaw) {
+    if (body_region == nullptr) {
+      return true;
+    }
+    const double cy = std::cos(yaw), sy = std::sin(yaw);
+    for (double x : xs) {
+      for (double y : ys) {
+        OGRPoint pt(p.first + cy * x - sy * y, p.second + sy * x + cy * y);
+        if (!body_region->Contains(&pt)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  auto sweepOk = [&](const Point2D& p, double y0, double y1) {
+    const double d = std::remainder(y1 - y0, 2.0 * M_PI);
+    const int n = std::max(1, static_cast<int>(std::ceil(std::fabs(d) / (M_PI / 36.0))));
+    for (int k = 0; k <= n; ++k) {
+      if (!bodyOk(p, y0 + d * k / n)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!sweepOk(from, from_yaw, c) || !sweepOk(to, c, to_yaw)) {
+    return false;
+  }
+  const int nb = std::max(1, static_cast<int>(std::ceil(len / 0.10)));
+  for (int k = 0; k <= nb; ++k) {
+    const double t = static_cast<double>(k) / nb;
+    if (!bodyOk({from.first + t * (to.first - from.first),
+                 from.second + t * (to.second - from.second)}, c)) {
+      return false;
+    }
+  }
+  if (poses != nullptr) {
+    poses->clear();
+    const int np = std::max(2, static_cast<int>(std::ceil(len / 0.5)));
+    for (int k = 1; k < np; ++k) {
+      const double t = static_cast<double>(k) / np;
+      poses->push_back({{from.first + t * (to.first - from.first),
+                         from.second + t * (to.second - from.second)}, false});
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 f2c::types::LinearRing makeCleanRing(const std::vector<Point2D>& raw) {
@@ -1472,7 +1539,8 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
   CoveragePlan plan = planCoverageOnce(field, op_width, headland_width, headland_passes,
                                        border_inset, mow_angle_rad, min_swath_length, mode,
                                        edge_first, route);
-  if (route.order != RouteOrder::kRacetrack || plan.wide_pivot_turns == 0) {
+  if (route.order != RouteOrder::kRacetrack ||
+      (plan.wide_pivot_turns == 0 && plan.snake_links == 0)) {
     verifyAndFill(field, op_width, border_inset, mode, route, &plan);
     return noted(std::move(plan));
   }
@@ -1481,7 +1549,10 @@ CoveragePlan planCoverage(const f2c::types::Cell& field,
   CoveragePlan alt = planCoverageOnce(field, op_width, headland_width, headland_passes,
                                       border_inset, mow_angle_rad, min_swath_length, mode,
                                       edge_first, snake);
-  auto badness = [](const CoveragePlan& p) { return 10 * p.wide_pivot_turns + p.pivot_turns; };
+  // a snake link (row_link_mode) costs a pivot more than a pivot connector
+  auto badness = [](const CoveragePlan& p) {
+    return 10 * p.wide_pivot_turns + p.pivot_turns + 2 * p.snake_links;
+  };
   if (badness(alt) < badness(plan)) {
     char buf[160];
     std::snprintf(buf, sizeof(buf),
@@ -1921,8 +1992,12 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
   // Swath-to-swath turns (route.turn_type), each kept inside the drivable
   // region; a turn that would leave it falls back (loop -> reverse-curve ->
   // pivot). Only between swaths close enough to be one sub-path anyway.
-  if (!plan.swaths.empty() && route.min_turn_radius > 0.0 &&
-      route.turn_type != TurnType::kPivot) {
+  const bool turns_on = route.min_turn_radius > 0.0 && route.turn_type != TurnType::kPivot;
+  const bool snake_links =
+      layout && (route.row_link_mode == RowLinkMode::kSnake ||
+                 (route.row_link_mode == RowLinkMode::kAuto &&
+                  route.turn_mode != TurnMode::kPivot));
+  if (!plan.swaths.empty() && (turns_on || snake_links)) {
     plan.turns.assign(plan.swaths.size(), SwathTurn{});
     std::unique_ptr<OGRGeometry> region;
     std::unique_ptr<OGRGeometry> body_region;
@@ -1951,21 +2026,47 @@ CoveragePlan planCoverageOnce(const f2c::types::Cell& field,
     } else if (clip_swaths) {
       region.reset(drivable.get()->Buffer(kTurnContainTolM));
     }
+    // row_link_mode: snake connectors for the row changes a turn did not join (the edge-lap
+    // band limits of turn_mode, whatever turn_mode itself is)
+    std::unique_ptr<OGRGeometry> snake_base, snake_body;
+    if (snake_links) {
+      const f2c::types::Cells tr =
+          inset(hl_field, route.body_half_width + route.turn_base_margin);
+      if (tr.size() > 0 && tr.area() > 1e-9 && tr.get() != nullptr && tr.get()->IsValid()) {
+        snake_base.reset(tr.get()->Buffer(kTurnContainTolM));
+      }
+      if (hl_field.size() > 0 && hl_field.get() != nullptr) {
+        snake_body.reset(hl_field.get()->Buffer(route.turn_body_limit));
+      }
+    }
     for (size_t i = 1; i < plan.swaths.size(); ++i) {
       const Seg& a = plan.swaths[i - 1];
       const Seg& b = plan.swaths[i];
-      if (dist(a.second, b.first) > kMaxTurnGapM) {
+      const double gap = dist(a.second, b.first);
+      ++plan.row_changes;
+      if (gap > kMaxTurnGapM) {
+        ++plan.transit_links;
         continue;  // a transit, not a turn
       }
-      SwathTurn t = region ? planTurnIn(a.second, segYaw(a), b.first, segYaw(b), op_width,
-                                        route.min_turn_radius, ttype, region.get(),
-                                        wide ? &route : nullptr, body_region.get())
-                           : SwathTurn{TurnKind::kPivot, {}};
+      SwathTurn t = region && turns_on
+                        ? planTurnIn(a.second, segYaw(a), b.first, segYaw(b), op_width,
+                                     route.min_turn_radius, ttype, region.get(),
+                                     wide ? &route : nullptr, body_region.get())
+                        : SwathTurn{TurnKind::kPivot, {}};
+      if (t.kind == TurnKind::kPivot && gap > kTransitGapM && snake_base) {
+        std::vector<TurnPose> poses;
+        if (snakeLinkIn(a.second, segYaw(a), b.first, segYaw(b), route, snake_base.get(),
+                        snake_body.get(), &poses)) {
+          t = SwathTurn{TurnKind::kSnake, std::move(poses)};
+        }
+      }
       plan.loop_turns += t.kind == TurnKind::kLoop ? 1 : 0;
       plan.reverse_turns += t.kind == TurnKind::kReverseCurve ? 1 : 0;
+      plan.snake_links += t.kind == TurnKind::kSnake ? 1 : 0;
+      const bool wide_pivot = t.kind == TurnKind::kPivot && gap > kTransitGapM;
       plan.pivot_turns += t.kind == TurnKind::kPivot ? 1 : 0;
-      plan.wide_pivot_turns +=
-          (t.kind == TurnKind::kPivot && dist(a.second, b.first) > kTransitGapM) ? 1 : 0;
+      plan.wide_pivot_turns += wide_pivot ? 1 : 0;
+      plan.transit_links += wide_pivot ? 1 : 0;
       plan.turns[i] = std::move(t);
     }
   }
@@ -2168,6 +2269,33 @@ SwathTurn planSwathTurnBody(const Point2D& from, double from_yaw,
   }
   return planTurnIn(from, from_yaw, to, to_yaw, robot_width, min_turn_radius, type, b1.get(),
                     &route, b2.get());
+}
+
+bool snakeLink(const Point2D& from, double from_yaw, const Point2D& to, double to_yaw,
+               const RouteOptions& route, const f2c::types::Cells* base_region,
+               const f2c::types::Cells* body_region, std::vector<TurnPose>* poses) {
+  std::unique_ptr<OGRGeometry> b1, b2;
+  if (base_region != nullptr && base_region->size() > 0 && base_region->get() != nullptr) {
+    b1.reset(base_region->get()->Buffer(kTurnContainTolM));
+  }
+  if (body_region != nullptr && body_region->size() > 0 && body_region->get() != nullptr) {
+    b2.reset(body_region->get()->Buffer(0.0));
+  }
+  return snakeLinkIn(from, from_yaw, to, to_yaw, route, b1.get(), b2.get(), poses);
+}
+
+bool parseRowLinkMode(const std::string& name, RowLinkMode* mode) {
+  if (name.empty() || name == "auto") {
+    *mode = RowLinkMode::kAuto;
+  } else if (name == "transit") {
+    *mode = RowLinkMode::kTransit;
+  } else if (name == "snake") {
+    *mode = RowLinkMode::kSnake;
+  } else {
+    *mode = RowLinkMode::kAuto;
+    return false;
+  }
+  return true;
 }
 
 bool parseTurnMode(const std::string& name, TurnMode* mode) {

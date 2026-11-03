@@ -83,6 +83,9 @@ class CoverageServer(Node):
         p('route_spiral_size', 6)
         p('min_turn_radius_m', -1.0)
         p('turn_type', 'auto')
+        #   row_link_mode      transit | snake | auto: a row change no turn joins (area
+        #                      row_link_mode; '' = mower_coverage_node's own parameter)
+        p('row_link_mode', '')
         # edge_layout: soft | hard = stock-style laps / row insets (area edge_mode, owner
         # 2026-10-21, set per area by the mission); '' / legacy = the headland-ring layout
         p('edge_layout', '')
@@ -128,6 +131,7 @@ class CoverageServer(Node):
     _PATH_MODES = ('zigzag', 'cross', 'alternate', 'spiral', 'contour_only')
     _ROUTE_ORDERS = ('boustrophedon', 'snake', 'spiral', 'racetrack')
     _TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
+    _ROW_LINK_MODES = ('', 'transit', 'snake', 'auto')
 
     def _on_set_parameters(self, params):
         """Validate runtime changes (values are read live per plan)."""
@@ -145,6 +149,9 @@ class CoverageServer(Node):
                 return SetParametersResult(
                     successful=False,
                     reason='turn_type must be one of %s' % ', '.join(self._TURN_TYPES))
+            if prm.name == 'row_link_mode' and v not in self._ROW_LINK_MODES:
+                return SetParametersResult(
+                    successful=False, reason='row_link_mode must be transit, snake or auto')
             if prm.name == 'edge_layout' and v not in ('', 'legacy', 'soft', 'hard'):
                 return SetParametersResult(
                     successful=False, reason='edge_layout must be soft, hard, legacy or empty')
@@ -216,6 +223,7 @@ class CoverageServer(Node):
         req.route_spiral_size = self._int('route_spiral_size')
         req.min_turn_radius_m = self._float('min_turn_radius_m')
         req.turn_type = self._str('turn_type')
+        req.row_link_mode = self._str('row_link_mode')
         req.boundary_inset_m = self._float('boundary_inset_m')
         req.edge_layout = self._str('edge_layout')
         req.edge_laps = self._int('edge_laps')

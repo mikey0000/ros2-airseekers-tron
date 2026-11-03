@@ -222,5 +222,73 @@ Known host-side gaps (the image does not have them): `base_keys` fails to import
 when pytest is run from the repo root, and `stereo_vio_bridge/test/test_odom_convert.py`
 imports `rclpy` unguarded. Both pass under `dev_build.sh test`.
 
+### CI (`scripts/ci_test.sh`)
+
+`./scripts/ci_test.sh` runs, all in the dev image: `dev_build.sh build` + `test` (sequential
+executor; `CI_KNOWN_FAILURES` lists tolerated cases), the script tests in `scripts/ble` and
+`scripts/sim_gate`, and the incident replay tests (below) as their own stage. `--gate` adds one
+ideal sim gate, `scripts/sim_gate.sh -s 2 -x 3`, taken under `flock /tmp/mower_sim_gate.lock`;
+exit 4 (INVALID: the controller loop fell below 18 Hz sim) is reported as INVALID, not as a code
+failure (`CI_GATE_ALLOW_INVALID=1` tolerates it). `--no-colcon` runs only the script and replay
+stages against an existing build. The last lines are a per-stage summary.
+
+`.github/workflows/ci.yml` runs `ci_test.sh` without `--gate` on push to master and on PRs. The
+dev image has no registry: the job builds it with `dev_build.sh` (Fields2Cover, then
+`docker/Dockerfile.dev-amd64`, ~20-30 min cold) and caches it keyed on those two files. It
+runs on `ubuntu-24.04` unless the repository variable `CI_RUNNER` names another runner label
+(a self-hosted host that already has the image skips the cold build).
+
+### Incident -> regression
+
+Every field incident gets a test that fails on the commit the field ran and passes with its
+fix (review 2026-11-02 step 3). The FSM tests replay recorded inputs into the pure-Python
+`MissionFSM` through the real `MissionNode._on_*` handlers (no ROS graph):
+`src/mower_mission/test/replay/` (`replay_lib.py`, `test_incident_regressions.py`,
+`fixtures/*.json`).
+
+1. **Collect.** Note the UTC window from the mission log. The recorder's splits are one minute
+   each (`/userdata/ros2/bags/<session>/<session>_<N>.db3.zstd`, split N covers minute N
+   after the session start); incident directories (`/userdata/ros2/incidents/<stamp>_<kind>/`)
+   hold hard links to the splits around the trigger. The mission log is
+   `/userdata/ros2/log/python3_<pid>_<start ms>.log` with `[behavior_tree_node]` lines (the
+   obstacle tracker's has `[obstacle_tracker]`). Copy the splits, the log and
+   `/userdata/ros2/maps/areas.dat` off the robot read-only (rsync), into a scratch directory.
+2. **Extract** in the dev image (built and sourced):
+   ```bash
+   scripts/replay/fsm_replay.py extract --bag <splits or dirs> --log <mission log> \
+       --from 2026-11-02T02:14:20 --until 02:15:45 --areas areas.dat --area 5 \
+       --id 20261102_side_slope_boundary --bag-id 20261102-021049 \
+       --fix 'ws/boundary-recover 5e67b08' --pre-fix d3230fd [--plan-slice 0:262:420] \
+       [--every TOPIC=S] [--drop TOPIC] [--merge scripts/replay/derived/<id>.json] \
+       --out src/mower_mission/test/replay/fixtures/<id>.json
+   scripts/replay/fsm_replay.py run <id>          # replayed vs recorded transitions
+   ```
+   The fixture holds the mission inputs (heading / localization / tilt / supervisor status,
+   map pose, outside distance, obstacle policy, no-go zones, GNSS fix type from `/fix_status`),
+   the mission log lines of the window, the area outlines and optionally the recorded mow plan.
+   Keep it under 200 KB (`--every` / `--drop` / `--odom-hz`). Inputs the bag did not record
+   (e.g. `/obstacle_tracker/nogo_zones` before 2026-11) are reconstructed from the log into
+   `scripts/replay/derived/<id>.json` and merged; every such event carries `"derived"` and
+   the fixture's `notes` say how. `extract-dets` makes an obstacle-tracker fixture (map-frame
+   detections + poses) for `TrackerCore` replays.
+3. **Name.** `<yyyymmdd>_<what happened>` for the fixture, `test_<letter>_<expected behaviour>`
+   for the test, and a row in the module docstring table: bag, UTC window, fix, pre-fix commit.
+4. **Assert the behaviour, not the code path.** Feed the recorded inputs up to the incident,
+   answer services / actions with the recorded outcomes where the log has them (synthetic
+   ones only where the fix creates a request the field never made; say so), and assert what
+   the field got wrong (refused START, worst corner growing, NAV_TO_DOCK_FAILED, stacked
+   zones, retries into an abort). Once the FSM acts differently from the field, the recorded
+   poses no longer apply: close the loop on the FSM's own `DriveCmd`s.
+5. **Red before green.** Run the test on the pre-fix commit and on master, and record both:
+   ```bash
+   git worktree add --detach ../ros2_stack-wt/pre-<c> <c>
+   rsync -a src/mower_mission/test/replay/ ../ros2_stack-wt/pre-<c>/src/mower_mission/test/replay/
+   # in the dev image, with this tree's build/ + install/ mounted and PYTHONPATH=src/* first:
+   cd src/mower_mission && python3 -m pytest -q test/replay -k test_<letter>
+   ```
+   A test that passes on the pre-fix commit does not reproduce the incident: fix the
+   fixture or the assertion. A test that fails on master too has found an open bug: mark it
+   `xfail(strict=True, reason=...)` with the finding and remove the mark with the fix.
+
 The three driver packages (`mower_mcu_driver`, `wit_imu_driver`, `um960_gps_driver`) all run
 on the mower; `docs/STATUS.md` records what was verified there.

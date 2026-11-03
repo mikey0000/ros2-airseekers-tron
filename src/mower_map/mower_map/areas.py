@@ -785,7 +785,22 @@ def with_boundary_lines(areas: List['Area'], lines: Sequence[blines.BoundaryLine
 
 
 def point_in_polygon(x: float, y: float, poly: Polygon) -> bool:
-    return bool(points_in_polygon(np.array([x]), np.array([y]), poly)[0])
+    """Scalar :func:`points_in_polygon` (same even-odd rule and arithmetic, plain floats):
+    the 1-element numpy path cost ~1 us per op per vertex, and map_server runs this for
+    every area at the boundary-check rate (2026-11-03 CPU review)."""
+    n = len(poly)
+    if n < 3:
+        return False
+    x = float(x)
+    y = float(y)
+    inside = False
+    xj, yj = poly[n - 1]
+    for xi, yi in poly:
+        if yi != yj and ((yi > y) != (yj > y)):
+            if x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+                inside = not inside
+        xj, yj = xi, yi
+    return inside
 
 
 def distance_to_polygon_edges(px, py, poly: Polygon) -> np.ndarray:

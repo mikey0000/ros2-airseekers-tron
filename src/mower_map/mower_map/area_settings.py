@@ -41,6 +41,11 @@ ROUTE_ORDERS = ('boustrophedon', 'snake', 'spiral', 'racetrack')
 # pivot; loop = loop turn or pivot; reverse = reverse-curve or pivot; pivot =
 # pivot in place (straight connector, the pre-turn behaviour).
 TURN_TYPES = ('auto', 'loop', 'reverse', 'pivot')
+# Row change that no turn joins (2026-11-03, docs/analysis/2026-11-03_turns.md appendix B):
+# transit = blade-off transit (~3 pivots), snake = connector inside the sub-path (pivot,
+# straight along the row-end band, pivot: 2 pivots) where it fits, auto = snake only when the
+# planner's turn_mode lets turns use the edge-lap band (default turn_mode pivot: transit).
+ROW_LINK_MODES = ('transit', 'snake', 'auto')
 # Vision obstacle reaction (mower_vision obstacle_guard level): none = bumper +
 # stereo costmap only, standard = 1.0 m ranged / near side boxes while turning,
 # sensitive = 1.5 m, lower score, any camera.
@@ -97,6 +102,13 @@ BUILTIN_DEFAULTS = {
     'route_spiral_size': 6,
     'min_turn_radius_m': 0.5,  # >= 0.40: the both-wheel turn shaper's tightest arc (b 0.40)
     'turn_type': 'auto',
+    'row_link_mode': 'auto',
+    # transit to a sub-path start ends on a straight along its first leg (fsm transit.py
+    # _route_tangent), so the leg-start pivot is skipped; off = today's final approach
+    'tangent_approach': False,
+    # in-place pivot rate [rad/s]; 0 = the stack's own (behavior_server 0.3 commanded,
+    # ~0.25 achieved). Recorded and shown; see docs/analysis/2026-11-03_turns.md appendix B
+    'pivot_rate_rad_s': 0.0,
     'obstacle_detection': 'standard',
     'blade_policy': 'continuous',
     'transit_variation': 'none',
@@ -128,6 +140,9 @@ SPEC = {
     'route_spiral_size': ('int', 2, 20),
     'min_turn_radius_m': ('float', 0.0, 2.0),      # 0 = pivot in place
     'turn_type': ('enum', TURN_TYPES, None),
+    'row_link_mode': ('enum', ROW_LINK_MODES, None),
+    'tangent_approach': ('bool', None, None),
+    'pivot_rate_rad_s': ('float', 0.0, 0.5),
     'obstacle_detection': ('enum', OBSTACLE_DETECTION_LEVELS, None),
     'blade_policy': ('enum', BLADE_POLICIES, None),
     'transit_variation': ('enum', TRANSIT_VARIATIONS, None),

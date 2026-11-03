@@ -42,7 +42,8 @@ from mower_map import nongrass_node as ngn
 from mower_map import route_graph as rgraph
 from mower_map import terrain as terr
 from mower_common import geometry as rgeo
-from mower_common.sub_pump import node_clock, SubscriptionPump, flat_parser, parse_odometry
+from mower_common.sub_pump import (executor_hidden_group, flat_parser, node_clock, parse_odometry,
+                                   SubscriptionPump)
 
 try:
     import tf2_ros
@@ -463,6 +464,17 @@ class MapServerNode(ngn.NonGrassMixin, Node):
 
     def p(self, name):
         return self.get_parameter(name).value
+
+    def create_publisher(self, *args, callback_group=None, **kwargs):
+        """Publishers' QoS event handlers stay out of the executor (2026-11-03 CPU review):
+        the spin thread wakes ~20 times/s for services and timers and walked ~60 publisher
+        event waitables each time (~23 % of a mower core docked)."""
+        if callback_group is None:
+            group = getattr(self, '_publisher_group', None)
+            if group is None:
+                group = self._publisher_group = executor_hidden_group()
+            callback_group = group
+        return super().create_publisher(*args, callback_group=callback_group, **kwargs)
 
     def _locked(self, fn):
         @functools.wraps(fn)
