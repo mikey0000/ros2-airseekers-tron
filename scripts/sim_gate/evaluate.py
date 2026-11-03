@@ -139,6 +139,129 @@ def load_world(path):
     return polys
 
 
+def world_features(path):
+    """(has terrain regions, has RTK injection) of a world YAML (j / k apply only then)."""
+    import yaml
+    with open(path) as fh:
+        doc = yaml.safe_load(fh) or {}
+    if isinstance(doc.get('world'), dict):
+        doc = doc['world']
+    terr = bool((doc.get('terrain') or {}).get('regions'))
+    rtk = doc.get('rtk') or {}
+    return terr, bool(rtk.get('events') or rtk.get('multipath'))
+
+
+SLIP_WIN_S, SLIP_MIN_M, SLIP_RATIO = 3.0, 0.3, 3.0
+
+
+def slip_events(wodom, gt, t0=0.0, win=SLIP_WIN_S, min_m=SLIP_MIN_M, ratio=SLIP_RATIO):
+    """Wheel-odometry path vs ground-truth displacement over ``win`` s windows (1 s hop):
+    windows with wheel >= min_m and wheel > ratio x real, merged into events
+    [t_from, t_to, wheel m, real m] (relative to t0)."""
+    if len(wodom) < 2 or not gt:
+        return []
+    gT = [r[0] for r in gt]
+
+    def gt_at(t):
+        i = max(0, min(len(gt) - 1, bisect.bisect_left(gT, t)))
+        return gt[i]
+    cum = [0.0]
+    for a, b in zip(wodom, wodom[1:]):
+        cum.append(cum[-1] + math.hypot(b[1] - a[1], b[2] - a[2]))
+    wT = [r[0] for r in wodom]
+    ev = []
+    t = wT[0]
+    while t + win <= wT[-1]:
+        i, j = bisect.bisect_left(wT, t), bisect.bisect_left(wT, t + win)
+        j = min(j, len(wT) - 1)
+        wheel = cum[j] - cum[i]
+        a, b = gt_at(wT[i]), gt_at(wT[j])
+        real = math.hypot(b[1] - a[1], b[2] - a[2])
+        if wheel >= min_m and wheel > ratio * real:
+            if ev and wT[i] - t0 <= ev[-1][1] + 1e-6:
+                e = ev[-1]
+                e[1] = wT[j] - t0
+                e[2] = max(e[2], wheel)
+                e[3] = max(e[3], real)
+            else:
+                ev.append([wT[i] - t0, wT[j] - t0, wheel, real])
+        t += 1.0
+    return [[round(v, 2) for v in e] for e in ev]
+
+
+def rtk_windows(simx, t0=0.0):
+    """[t_from, t_to, mode] runs of a non-fixed sim RTK mode (/sim/status 'rtk')."""
+    out = []
+    for r in simx:
+        mode = r[4] if len(r) > 4 else None
+        if mode in (None, 'fixed'):
+            if out and out[-1][1] is None:
+                out[-1][1] = r[0] - t0
+            continue
+        if out and out[-1][1] is None and out[-1][2] == mode:
+            continue
+        if out and out[-1][1] is None:
+            out[-1][1] = r[0] - t0
+        out.append([r[0] - t0, None, mode])
+    if out and out[-1][1] is None:
+        out[-1][1] = (simx[-1][0] - t0) if simx else out[-1][0]
+    return out
+
+
+def rtk_handling(windows, loc, bt, cutting, outside_over, hold_s=3.0, resume_tail_s=120.0):
+    """Per RTK-loss window: did /localization/status leave ok, did the mission hold within
+    ``hold_s`` of that (blade off), resume after the fix came back, and stay inside.
+
+    ``loc`` [t, state, ...], ``bt`` [(t, msg)], ``cutting`` [(t, bool)], ``outside_over``
+    [t] of boundary samples > 0.10 m; all relative to START."""
+    res = []
+    for ta, tb, mode in windows:
+        nxt = [w[0] for w in windows if w[0] > tb]
+        horizon = min([tb + resume_tail_s] + nxt)
+        td = next((r[0] for r in loc if ta <= r[0] <= tb + 10.0 and r[1] not in ('ok', None)),
+                  None)
+        th = next((t for t, m in bt if t >= ta and t <= horizon
+                   and re.search(r'^localization \w+ \(.*\): stopped, blade off', m)), None)
+        tr = next((t for t, m in bt if th is not None and t > th and t <= horizon
+                   and m.startswith('localization ok again')), None)
+        blade = None
+        if th is not None:
+            after = [c for t, c in cutting if th <= t <= th + hold_s]
+            blade = not any(after) if after else None
+        exc = [t for t in outside_over if ta <= t <= (tr if tr is not None else horizon) + 10.0]
+        e = {'from': round(ta, 1), 'to': round(tb, 1), 'kind': mode,
+             'degraded_at': None if td is None else round(td, 1),
+             'hold_at': None if th is None else round(th, 1),
+             'resume_at': None if tr is None else round(tr, 1),
+             'blade_off': blade, 'excursions': len(exc)}
+        if td is None:
+            e['held'] = True
+            e['ok'] = not exc and th is None
+            e['note'] = 'status stayed ok (drift within budget): no hold needed'
+        else:
+            e['held'] = th is not None and th - td <= hold_s
+            e['resumed'] = tr is not None and tr >= tb
+            e['ok'] = bool(e['held'] and blade is not False and e['resumed'] and not exc)
+        res.append(e)
+    return res
+
+
+def load_kills(run):
+    out = []
+    try:
+        with open(os.path.join(run, 'kills.jsonl')) as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        out.append(json.loads(line))
+                    except ValueError:
+                        out.append({'error': 'bad line %r' % line[:80]})
+    except OSError:
+        pass
+    return out
+
+
 def load_body():
     """The measured body (nav2 footprint = front 0.60 / rear 0.10 / half width 0.235), no
     Nav2 padding."""
@@ -780,6 +903,50 @@ def main(run, world):
         res['loop_hz'] = {'median': full[len(full) // 2],
                           'p10': full[int(0.1 * (len(full) - 1))], 'seconds': len(full)}
 
+    # ---- (j) / (k) sim fidelity (2026-11-03): slope world / RTK injection; n/a otherwise
+    has_terrain, has_rtk = world_features(world)
+    try:
+        with open(os.path.join(run, 'run.txt')) as fh:
+            has_rtk = has_rtk or any(l.startswith('rtk=1') for l in fh)
+    except OSError:
+        pass
+    simx = D.get('simx', [])
+    rolls = [abs(r[2]) for r in D.get('tilt', []) if r[2] is not None and r[0] >= t0]
+    rolls += [abs(r[1]) for r in simx if r[1] is not None and r[0] >= t0]
+    slips = slip_events([r for r in D.get('wodom', []) if r[0] >= t0], gt, t0) \
+        if has_terrain else []
+    slip_lines = grep(r'wheel slip on slope')
+    stuck_lines = [(t, m) for t, m in bt if re.search(r'STUCK_NEEDS_HELP|needs help', m)]
+    rec_lines = grep(r'boundary: recovery move|boundary: back inside|recovery plan|'
+                     r'BOUNDARY OUT')
+    res['fidelity'] = {'roll_max_deg': round(max(rolls), 1) if rolls else None,
+                       'tilt_bands': sorted({r[1] for r in D.get('tilt', []) if r[1]}),
+                       'slip_events': slips, 'mission_slip_trips': len(slip_lines),
+                       'lines': ['%.1f %s' % (t, m[:200]) for t, m in
+                                 sorted(slip_lines + stuck_lines + rec_lines)[:40]]}
+    res['criteria']['j'] = {'pass': (not has_terrain) or (stuck == 0 and n_out == 0),
+                            'applies': has_terrain, 'stuck': stuck, 'samples_over': n_out,
+                            'roll_max_deg': res['fidelity']['roll_max_deg'],
+                            'slip_events': len(slips), 'mission_slip_trips': len(slip_lines)}
+    wins = rtk_windows([r for r in simx if r[0] >= t0], t0) if has_rtk else []
+    loc = [[r[0] - t0] + list(r[1:]) for r in D.get('loc', []) if r[0] >= t0]
+    cut = [(r[0] - t0, bool(r[4])) for r in D['status'] if r[0] >= t0]
+    over_t = [w[0] for w in worst]
+    rh = rtk_handling(wins, loc, bt, cut, over_t)
+    res['criteria']['k'] = {'pass': (not has_rtk) or (bool(wins) and all(e['ok'] for e in rh)),
+                            'applies': has_rtk, 'windows': rh}
+    kills = load_kills(run)
+    for k in kills:
+        tk = k.get('t_kill')
+        if tk is None:
+            continue
+        k['state_after_60s'] = state_at(t0 + tk + 60.0)
+        k['recovered'] = bool(k.get('respawn_s') is not None and final not in (
+            'STUCK_NEEDS_HELP', 'EMERGENCY', 'NAV_TO_DOCK_FAILED', 'UNDOCK_FAILED')
+            and complete)
+        k['lines'] = ['%.1f %s' % (t, m[:160]) for t, m in bt if tk - 1.0 <= t <= tk + 90.0][:12]
+    res['kills'] = kills
+
     ok = all(c['pass'] for c in res['criteria'].values())
     res['verdict'] = 'PASS' if ok else 'FAIL'
     # INVALID (not FAIL): the controller missed its 20 Hz sim-time budget, i.e. the host could
@@ -824,6 +991,16 @@ def main(run, world):
         ('h', 'MOWING cross-track p99 line / arc / corner', ' / '.join(
             '%.3f' % C['h']['stats'][k]['p99'] if k in C['h']['stats'] else '-'
             for k in ('line', 'arc', 'corner'))),
+        ('j', 'slope: STUCK / samples > 0.10 m (roll max, slips)', 'n/a' if not C['j']['applies']
+         else '%d / %d (%s deg, %d windows, %d mission trips)' % (
+             C['j']['stuck'], C['j']['samples_over'], C['j']['roll_max_deg'],
+             C['j']['slip_events'], C['j']['mission_slip_trips'])),
+        ('k', 'RTK loss: held <= 3 s / blade off / resumed / inside', 'n/a' if not C['k']['applies']
+         else ' '.join('%s@%.0f:%s/%s/%s/%d' % (
+             e['kind'], e['from'], 'y' if e['held'] else 'n',
+             {True: 'y', False: 'n', None: '-'}[e['blade_off']],
+             'y' if e.get('resumed', True) else 'n', e['excursions'])
+             for e in C['k']['windows']) or 'no loss window seen'),
     ]
     print('   %-2s %-44s %-40s %s' % ('', 'criterion', 'value', 'result'))
     for k, name, val in rows:
@@ -861,6 +1038,25 @@ def main(run, world):
                      '  FAIL' if c[6] > CORNER_LIMIT else ''))
     for line in C['d']['lines'][:15]:
         print('   ' + line)
+    fd = res['fidelity']
+    if C['j']['applies'] or fd['roll_max_deg']:
+        print('   slope: roll max %s deg, tilt bands %s, slip windows %s' % (
+            fd['roll_max_deg'], fd['tilt_bands'], fd['slip_events'][:10]))
+        for line in fd['lines'][:20]:
+            print('   ' + line)
+    for e in C['k'].get('windows', []):
+        print('   rtk %s %.1f..%.1f s: degraded %s, hold %s, resume %s, blade off %s, '
+              'excursions %d%s' % (e['kind'], e['from'], e['to'], e['degraded_at'], e['hold_at'],
+                                   e['resume_at'], e['blade_off'], e['excursions'],
+                                   ' (%s)' % e['note'] if 'note' in e else ''))
+    for k in res['kills']:
+        if 't_kill' not in k:
+            print('   kill %s: %s' % (k.get('node'), k.get('error')))
+            continue
+        print('   kill %s at +%.1f s: respawn %s s, state +60 s %s, recovered %s' % (
+            k['node'], k['t_kill'], k.get('respawn_s'), k['state_after_60s'], k['recovered']))
+        for line in k['lines']:
+            print('     ' + line)
     for reason in reasons:
         print('   INVALID: %s' % reason)
     print('   VERDICT: %s' % res['verdict'])

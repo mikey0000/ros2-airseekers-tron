@@ -15,16 +15,18 @@ CONFIG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
                       'config', 'mission.yaml')
 
 
-def set_loc(h, state, reason='rtk float'):
+def set_loc(h, state, reason='rtk float', rtk=None, est=None):
     """Fresh /localization/status message received now."""
     i = h.fsm.inputs
     i.loc_state, i.loc_reason, i.loc_stamp = state, reason, h.t
+    i.loc_rtk = rtk if rtk is not None else ('fixed' if state == 'ok' else 'float')
+    i.loc_est_drift = est
 
 
-def run(h, state, secs, dt=0.5, reason='rtk float'):
+def run(h, state, secs, dt=0.5, reason='rtk float', rtk=None, est=None):
     """Tick for `secs` while the monitor keeps publishing `state` (status stays fresh)."""
     for _ in range(int(round(secs / dt))):
-        set_loc(h, state, reason)
+        set_loc(h, state, reason, rtk, est)
         h.tick(dt=dt)
 
 
@@ -168,23 +170,24 @@ def test_transit_hold_cancels_nav_and_resends_goal_on_resume():
     assert h.name == 'TRANSIT' and h.goal(f.ACT_NAV)['pose'] == target
 
 
-# ---- 7: timeout ----------------------------------------------------------------------------
-def test_hold_timeout_interrupts_mission_and_goes_idle():
+# ---- 7: timeout (graded policy 2026-11-03: loc_lost_dock_s) ---------------------------------
+def test_hold_timeout_without_fix_latches_incomplete_and_stays():
     h = Harness()
     mow_follow(h)
     hold(h, 'lost')
     run(h, 'lost', 590.0, dt=5.0)
     assert held(h)
     m = h.mark()
-    run(h, 'lost', 15.0, dt=5.0)        # past loc_hold_max_s (600 s)
-    assert h.name in f.IDLE_NAMES and h.fsm.mission is None and h.fsm._loc is None
+    run(h, 'lost', 15.0, dt=5.0)        # past loc_lost_dock_s (600 s), rtk not fixed
+    assert h.name == 'MOWING_INCOMPLETE' and h.fsm.mission is None and h.fsm._loc is None
     assert h.since(m, f.BladeOff) and h.since(m, f.ZeroBurst)
     errs = [e.text for e in h.since(m, f.Log) if e.level == 'error']
     assert any('localization not ok' in t for t in errs), errs
-    assert not h.blade
+    assert 'localization not ok' in h.fsm.sub_state
+    assert h.fsm._action is None and not h.blade     # no dock: stays put
     h.tick(n=20)                        # stays stopped, no re-hold on a dead mission
-    assert h.name in f.IDLE_NAMES and h.fsm._loc is None
-
+    assert h.fsm._loc is None and h.fsm._action is None
+    assert h.fsm.cursor.current_command == f.CMD_START       # START resumes
 
 # ---- 8: another guard takes over -----------------------------------------------------------
 def test_emergency_during_hold_clears_it_and_no_later_resume():
@@ -223,17 +226,21 @@ def test_docking_is_not_held():
 
 
 # ---- 10: param plumbing --------------------------------------------------------------------
+LOC_DEFAULTS = (('loc_status_stale_s', 5.0), ('loc_resume_s', 3.0),
+                ('loc_degraded_speed_mps', 0.15), ('loc_degraded_edge_margin_m', 0.3),
+                ('loc_lost_retrace_s', 120.0), ('loc_lost_retrace_max_m', 3.0),
+                ('loc_lost_dock_s', 600.0), ('loc_hold_dock_exempt_max_s', 60.0))
+
+
 def test_param_defaults_and_yaml_keys():
     p = f.Params()
-    assert (p.loc_hold, p.loc_status_stale_s, p.loc_resume_s, p.loc_hold_max_s) == \
-        (True, 5.0, 3.0, 600.0)
+    assert p.loc_hold is True
+    for k, v in LOC_DEFAULTS:
+        assert getattr(p, k) == v, k
     with open(CONFIG) as fh:
         cfg = yaml.safe_load(fh)['behavior_tree_node']['ros__parameters']
     assert cfg['loc_hold'] is True
-    for k, v in (('loc_status_stale_s', 5.0), ('loc_resume_s', 3.0),
-                 ('loc_hold_max_s', 600.0)):
+    for k, v in LOC_DEFAULTS:
         assert isinstance(cfg[k], float) and cfg[k] == v, k
-    q = f.Params.from_dict({k: cfg[k] for k in
-                            ('loc_hold', 'loc_status_stale_s', 'loc_resume_s',
-                             'loc_hold_max_s')})
-    assert q.loc_hold_max_s == 600.0
+    q = f.Params.from_dict({k: cfg[k] for k, _ in LOC_DEFAULTS})
+    assert q.loc_lost_dock_s == 600.0

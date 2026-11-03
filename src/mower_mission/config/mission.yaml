@@ -72,7 +72,16 @@ behavior_tree_node:
     loc_hold: true
     loc_status_stale_s: 5.0           # received, then silent this long: 'degraded' (hold)
     loc_resume_s: 3.0                 # 'ok' this long before resuming
-    loc_hold_max_s: 600.0             # then stop in place (IDLE, resume cursor kept)
+    # graded RTK-loss policy 2026-11-03 (docs/localization.md "RTK-loss policy")
+    loc_degraded_speed_mps: 0.15      # degraded: both controllers capped (tilt caution mechanism)
+    loc_degraded_edge_margin_m: 0.3   # degraded: finish the swath while est_drift + this <= edge distance
+    loc_degraded_swath_turn_deg: 20.0 # heading change that ends the current straight swath
+    loc_lost_retrace_s: 120.0         # held this long: retrace the driven track toward the last fix
+    loc_lost_retrace_max_m: 3.0       # ... at most this far, then wait
+    loc_lost_retrace_speed_mps: 0.10
+    loc_lost_dock_s: 600.0            # held this long: MOWING_INCOMPLETE; RTK fixed -> dock, else stay + alert
+    loc_hold_dock_exempt_max_s: 60.0  # dock transit / docking held only when lost longer than this
+    loc_trail_step_m: 0.1             # driven-track sample spacing for the retrace
     # 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py,
     # docs/analysis/2026-10-23_obstacle_nogo_options.md section C)
     nogo_enabled: true

@@ -667,6 +667,9 @@ class MissionNode(Node):
             i = self.fsm.inputs
             i.loc_state = str(st.get('state', ''))
             i.loc_reason = str(st.get('reason', ''))
+            i.loc_rtk = str(st.get('rtk', '') or '')
+            est = st.get('est_drift_m')
+            i.loc_est_drift = float(est) if isinstance(est, (int, float)) else None
             i.loc_stamp = self._clk.now()
 
     def _on_supervisor(self, msg):

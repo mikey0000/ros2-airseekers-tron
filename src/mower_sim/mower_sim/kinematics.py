@@ -44,6 +44,12 @@ shows the ground does not turn the robot about base_link (the axle):
 
 The wheels (and so the sim's wheel odometry) never see this lateral motion.
 
+Terrain (optional, ``World.terrain``, mower_sim/terrain.py, 2026-11-03): on a slope region
+the ground speed loses a slip fraction (worst reversing), pivots lose some yaw rate and the
+body creeps downhill while the wheels turn. ``wheel_odom`` integrates the wheel (encoder)
+speeds, so a spinning wheel shows as wheel odometry far ahead of the real motion, as in the
+field; without terrain it equals the ground motion of the ideal drive.
+
 Collisions: a step whose footprint would touch an obstacle is not taken (the
 robot stops dead, as against a solid object) and the contact is reported so the
 node can raise the bumper. The dock is a hard stop behind the charge point.
@@ -143,6 +149,11 @@ class DiffDrive:
         self.blocked = False
         self._rng = random.Random(self.p.disturb_seed)
         self._slip = [0.0, 0.0]            # per-wheel slip state (OU process)
+        self.terrain = getattr(world, 'terrain', None)
+        # encoder-integrated pose (what mcu_node's /odom would report), start = start pose
+        self.wheel_odom = Pose2D(self.pose.x, self.pose.y, self.pose.yaw)
+        self.wheel_dist = 0.0               # encoder path length, m
+        self.creep = (0.0, 0.0)             # last downhill creep velocity (map, m/s)
 
     def ground_speeds(self, left: float, right: float, dt: float):
         """Wheel speeds -> ground speeds under the configured disturbance."""
@@ -198,15 +209,21 @@ class DiffDrive:
         v = 0.5 * (gl + gr)
         w = (gr - gl) / (p.ground_track_width if p.ground_track_width > 0.0 else p.track_width)
         res = StepResult()
-        if v == 0.0 and w == 0.0:
+        cx = cy = 0.0
+        if self.terrain is not None and (v != 0.0 or w != 0.0):
+            v, w, cx, cy = self.terrain.apply(self.pose.x, self.pose.y, self.pose.yaw, v, w,
+                                              self.left, self.right)
+        self.creep = (cx, cy)
+        if v == 0.0 and w == 0.0 and cx == 0.0 and cy == 0.0:
             self.v = self.w = self.vy = 0.0
             self.blocked = False
+            self._integrate_wheels(dt)
             return res
         vy = self.lateral_velocity(v, w)
         cur = self.pose
         yaw_mid = cur.yaw + 0.5 * w * dt
         cm, sm = math.cos(yaw_mid), math.sin(yaw_mid)
-        cand = Pose2D(cur.x + (v * cm - vy * sm) * dt, cur.y + (v * sm + vy * cm) * dt,
+        cand = Pose2D(cur.x + (v * cm - vy * sm + cx) * dt, cur.y + (v * sm + vy * cm + cy) * dt,
                       wrap(cur.yaw + w * dt))
         # dock hard stop (charger contacts at the dock pose, robot reverses in)
         xd, yd, yawd = self.dock_frame(cand)
@@ -237,8 +254,26 @@ class DiffDrive:
         if self.blocked and self.world.clearance(cand.x, cand.y, cand.yaw, t) > 0.02:
             self.blocked = False   # contact ends only once clear (no recount on creep)
         self.pose = cand
-        self.v, self.w, self.vy = v, w, vy
+        # body-frame twist incl. the downhill creep (ground truth /odom twist, IMU yaw rate)
+        c0, s0 = math.cos(cur.yaw), math.sin(cur.yaw)
+        self.v, self.w, self.vy = v + c0 * cx + s0 * cy, w, vy - s0 * cx + c0 * cy
+        self._integrate_wheels(dt)
         return res
+
+    def _integrate_wheels(self, dt: float):
+        """Advance the encoder pose with the wheel speeds (stalled wheels: blocked steps
+        return before this, so a stopped-dead step adds nothing)."""
+        p = self.p
+        b = p.ground_track_width if p.ground_track_width > 0.0 else p.track_width
+        v = 0.5 * (self.left + self.right)
+        w = (self.right - self.left) / b
+        if v == 0.0 and w == 0.0:
+            return
+        o = self.wheel_odom
+        ym = o.yaw + 0.5 * w * dt
+        self.wheel_odom = Pose2D(o.x + v * math.cos(ym) * dt, o.y + v * math.sin(ym) * dt,
+                                 wrap(o.yaw + w * dt))
+        self.wheel_dist += abs(v) * dt
 
     def lateral_velocity(self, v: float, w: float) -> float:
         """Body-frame lateral ground velocity of base_link (rotation centre + track lag)."""

@@ -13,7 +13,11 @@ one verdict the mission layer acts on:
 
 Drift model (deliberately explicit, not the EKF covariance): robot_localization's pose
 covariance grows with the hand-set process noise, not with the real dead-reckoning error,
-so it is reported (``ekf_xy_sigma_m``) but not gated on. Instead::
+so it does not drive the drift estimate. It is a second gate on ``ok`` only (RTK-loss
+policy 2026-11-03): ``ok`` also needs the fused ekf_map xy sigma (``ekf_xy_sigma_m``,
+from /odometry/filtered_map) <= ``loc_sigma_ok_m``; above it, or with no finite
+covariance, the verdict is ``degraded``. A receiver FIXED flag alone is not enough when
+the filter has not (yet) pulled its estimate in. The drift estimate::
 
     est = fixed_sigma_m + sum(distance travelled since the last confirmed RTK FIXED
                               x drift_rate_{vio|wheel} at the time)
@@ -52,6 +56,7 @@ class StatusParams:
     map_odom_timeout_s: float = 1.0      # /odometry/filtered_map older -> lost
     vio_timeout_s: float = 1.0          # /odometry/vio_gated older -> VIO not active
     max_step_m: float = 1.0             # odom pose step larger than this = jump, not travel
+    loc_sigma_ok_m: float = 0.15        # ok also needs ekf_map xy sigma <= this (<= 0 = off)
 
 
 class LocalizationStatus:
@@ -150,6 +155,13 @@ class LocalizationStatus:
         if est > p.drift_budget_m:
             return STATE_DEGRADED, 'estimated drift %.2f m > budget %.2f m (rtk %s)' % (
                 est, p.drift_budget_m, rtk)
+        sig = p.loc_sigma_ok_m
+        if sig > 0.0:
+            if self.ekf_sigma is None:
+                return STATE_DEGRADED, 'ekf_map covariance unavailable (rtk %s)' % rtk
+            if self.ekf_sigma > sig:
+                return STATE_DEGRADED, 'ekf_map sigma %.2f m > %.2f m (rtk %s)' % (
+                    self.ekf_sigma, sig, rtk)
         if rtk == rq.RTK_FIXED:
             return STATE_OK, ''
         return STATE_OK, 'rtk %s, drift %.2f m within budget' % (rtk, est)
@@ -173,6 +185,7 @@ class LocalizationStatus:
             'drift_budget_m': p_round(self.p.drift_budget_m),
             'lost_drift_m': p_round(self.p.lost_drift_m),
             'ekf_xy_sigma_m': r(self.ekf_sigma, 3),
+            'sigma_ok_m': p_round(self.p.loc_sigma_ok_m),
             'map_odom_age_s': r(None if self.map_odom_t is None else now - self.map_odom_t),
             'vio_active': self.vio_active(now),
             'heading_aligned': bool(h.get('aligned', False)),

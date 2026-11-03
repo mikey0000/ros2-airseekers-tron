@@ -218,7 +218,7 @@ limit, and treats critical as an emergency; the monitor also stops on `/cmd_vel_
   since_fixed_s, dist_since_fixed_m, est_drift_m = 3 cm + 3 %/m wheel (1.5 %/m with VIO) since
   the last confirmed FIXED, capped at 0.5 m while float is fused). Budget 0.3 m -> degraded,
   1.0 m -> lost. `mower_mission` `_loc_hold_tick`: follow/transit stop with the blade off while
-  not ok, resume after 3 s ok, stop in place after 600 s (`loc_*` in mission.yaml).
+  not ok, resume after 3 s ok (`loc_*` in mission.yaml). Graded since 2026-11-03, see below.
 - Live checks needed: both EKFs' CPU on the RK3588, map -> odom behaviour on a real RTK
   fixed/float drive, the drift rates (measure with a float/dropout drive), Nav2 in dual mode.
 
@@ -789,6 +789,13 @@ The sim gate's `-d` disturbance (wheel bias 0.04, per-wheel slip std 0.05) is mi
 sim publishes no roll on /tilt/status, so a 3x wheel-vs-RTK slip and the slope rule never
 occur there: the slip and slope paths are unit-tested only.
 
+2026-11-03 (ws/sim-fidelity): the sim now has slope regions with tilt, `/tilt/status`, encoder
+`/odom` and calibrated slip (docs/simulation.md "Terrain"), RTK float / dropout / multipath
+injection and process kills in the gate. `real_run5_slope -d -s 2 -x 3`: no STUCK, but base_link
+0.28 m out (485 samples) and corner deviations to 0.72 m on the west-edge slope with no
+BOUNDARY OUT; the downhill creep stays under the body limits, so the recovery and the slip
+check were not reached. Plain real_run5 unchanged (PASS, a 0.084, i 0.096 / 0.087 / 0.091, 0.364).
+
 ## GUI UX batch (2026-11-02, branch ws/ux-batch, vitest + sim GUI check)
 
 Fixes from the GUI UX audit (`docs/gui.md` "Owner-facing states, alerts and layout"). The
@@ -1080,6 +1087,21 @@ bitrate 0, BSSID/SSID empty). New `WifiStatus.source` field (`iw` | `proc`); log
 sample. The GUI chip tooltip says "Signal only" for `proc`; the Go side decodes by name, no
 change. The 2026-11-02 rule "iw failing past stale_samples = unknown" now applies only to
 those `stale_samples`; after them the /proc signal is reported.
+
+## Graded RTK-loss policy (2026-11-03, unit-tested; RTK-loss sim scenario pending)
+
+Branch `ws/rtk-loss` (REVIEW_2026-11-02 step 7). The monitor's `ok` also needs the ekf_map xy
+sigma <= `loc_sigma_ok_m` 0.15 m. When degraded, both controllers are capped at 0.15 m/s
+through the tilt-caution speed mechanism, and a mow follow finishes its straight swath only
+while est_drift + 0.3 m fits the swath's edge clearance; otherwise it holds. When lost, it
+holds. After 120 s held it retraces up to 3 m of the driven track toward the last RTK-fixed
+pose. After 600 s it goes to MOWING_INCOMPLETE, docks if RTK is fixed
+(`return_home_on_incomplete`), and otherwise stays stopped with the mowIncomplete alert
+(`loc_hold_max_s` is replaced by `loc_lost_dock_s`). A hold never charges the retry or
+no-progress counters. Dock transits and docking are exempt unless lost for more than 60 s.
+Details: docs/localization.md "RTK-loss policy". The sim cannot inject an RTK loss yet, so
+this has only had unit tests and a plain no-regression gate.
+
 
 
 ## Stock-parity small behaviours (2026-11-03, branch ws/stock-parity, unit-tested only)

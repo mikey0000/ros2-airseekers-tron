@@ -1,0 +1,29 @@
+# real_run5 + a 10 deg side slope along the Area 1 west edge (2026-11-03, sim fidelity,
+# docs/REVIEW_2026-11-02.md step 2). Field 2026-11-02 (docs/STATUS.md "Boundary recovery on a
+# side slope"): 8-12 deg roll at the west edge by the clothesline, BOUNDARY OUT near
+# (-6.45, -1.8), wheel odom 3.8 m vs 0.4 m real in the recovery, downhill slide. That point lies
+# ~0.7 m beyond real_run5's (older) west edge, so the region covers the whole west edge band
+# (x <= -4.4, y -2.2 .. 2.6) and extends past the edge to the field point. Downhill is west,
+# i.e. OUT of the area: the slide pushes the mower across the boundary, the worst case.
+# Geometry, dock and paths as real_run5. Terrain model: mower_sim/terrain.py.
+name: real_run5_slope
+datum: {lat: 48.0, lon: 9.0}
+areas_file: real_run5_areas.dat
+areas_select: [Area 1, Dock path, Path 2, Path 3]
+lawn_area: Area 1
+dock: {x: 0.236, y: -0.637, yaw: 1.773}
+start: {docked: true}
+obstacles: []
+battery: {voltage: 25.0, percentage: 0.9}
+terrain:
+  regions:
+    - name: west_edge_clothesline
+      polygon: [[-7.2, -2.2], [-4.4, -2.2], [-4.4, 2.6], [-7.2, 2.6]]
+      slope_deg: 10.0
+      downhill_deg: 180.0
+      fade_m: 0.4
+  # slip: {}      # terrain.SlipParams defaults (calibrated: see docs/simulation.md "Terrain")
+# optional RTK loss mid-swath (or sim_gate.sh --rtk-loss 120:60:float):
+# rtk:
+#   anchor: blade
+#   events: [{t0: 120, dur: 60, kind: float}]

@@ -48,26 +48,14 @@ class ParityGuardsMixin:
         if want == self._camera_capped:
             return
         self._camera_capped = want
-        m = self.mission
         if want:
-            cap = float(p.camera_blocked_speed_mps)
-            if self._tilt_capped:
-                cap = min(cap, float(p.tilt_caution_speed_mps))
-            params = self._speed_cap_params(cap)
-            self._log('warn', 'front camera blocked: controller speed capped at %.2f m/s' % cap)
-        elif self._tilt_capped:
-            self._log('info', 'front camera ok: slope caution cap kept')
-            return
+            self._log('warn', 'front camera blocked: controller speed capped at %.2f m/s'
+                      % self._speed_cap())
         else:
-            params = {p.tilt_transit_speed_param: float(p.tilt_transit_speed_mps)}
-            if m is not None and m.settings:
-                params.update(self.coverage_speed_params(min(
-                    float(m.settings.get('cut_speed_mps', AREA_SETTINGS_DEFAULTS['cut_speed_mps'])),
-                    float(p.cut_speed_max_mps))))
-            self._log('info', 'front camera ok: controller speed restored')
-        if p.set_cut_speed:
-            self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER, 'params': params},
-                       track=False)
+            self._log('info', 'front camera ok: controller speed %s'
+                      % ('restored' if self._speed_cap() is None else
+                         'capped at %.2f m/s (other caps kept)' % self._speed_cap()))
+        self._push_speed_caps()
 
     # ---- critical battery -------------------------------------------------
     def _battery_critical_tick(self):

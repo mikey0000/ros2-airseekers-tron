@@ -567,6 +567,8 @@ class Inputs:
     loc_state: str = ''
     loc_reason: str = ''
     loc_stamp: Optional[float] = None
+    loc_rtk: str = ''                       # receiver class: fixed|float|dgps|single|none|stale
+    loc_est_drift: Optional[float] = None   # est_drift_m (None before the first RTK FIXED)
     # 2026-10-23 option C: /obstacle_tracker/nogo_zones (nogo.ZoneSet) + receipt time
     nogo_zones: Any = None
     nogo_stamp: Optional[float] = None
@@ -1388,16 +1390,32 @@ class Params:
     tilt_max_backouts: int = 3          # within tilt_backout_period_s -> STUCK_NEEDS_HELP
     tilt_backout_period_s: float = 300.0
     tilt_same_spot_m: float = 0.75      # limit again this close to a backed-out spot -> help
-    # 2026-10-09 localization hold (_loc_hold_tick): a mow follow / transit stops with the
-    # blade off while /localization/status is not 'ok' (RTK float/dropout drift budget
-    # spent) and resumes after loc_resume_s of 'ok'; after loc_hold_max_s it stops in
-    # place (IDLE, resume cursor kept). No status ever received = no hold (monitor not
-    # launched); received but older than loc_status_stale_s = 'degraded' (fail closed,
-    # review 2026-11-02 H3a: monitor crashed or hung).
+    # 2026-10-09 localization hold (_loc_hold_tick), graded RTK-loss policy 2026-11-03
+    # (docs/localization.md "RTK-loss policy"). No status ever received = no hold (monitor
+    # not launched); received but older than loc_status_stale_s = 'degraded' (fail closed,
+    # review 2026-11-02 H3a). Resume after loc_resume_s of 'ok'.
+    #   degraded: both controllers capped at loc_degraded_speed_mps; a mow follow finishes
+    #     the current straight swath while est_drift + loc_degraded_edge_margin_m <= the
+    #     swath's distance to the area edge, else (and at the swath end, and in a transit)
+    #     it holds: stop, blade off.
+    #   lost: hold. Held loc_lost_retrace_s: retrace the driven track back toward the last
+    #     RTK-fixed pose, at most loc_lost_retrace_max_m, then wait. Held loc_lost_dock_s:
+    #     MOWING_INCOMPLETE; with RTK fixed it then docks (return_home_on_incomplete),
+    #     without it stays stopped (mower_alerts mowIncomplete).
+    #   A hold never charges a retry / no-progress budget. Dock transits and docking
+    #   (HOME) are exempt unless 'lost' for more than loc_hold_dock_exempt_max_s.
     loc_hold: bool = True
     loc_status_stale_s: float = 5.0
     loc_resume_s: float = 3.0
-    loc_hold_max_s: float = 600.0
+    loc_degraded_speed_mps: float = 0.15
+    loc_degraded_edge_margin_m: float = 0.3
+    loc_degraded_swath_turn_deg: float = 20.0   # heading change that ends the straight swath
+    loc_lost_retrace_s: float = 120.0
+    loc_lost_retrace_max_m: float = 3.0
+    loc_lost_retrace_speed_mps: float = 0.10
+    loc_lost_dock_s: float = 600.0
+    loc_hold_dock_exempt_max_s: float = 60.0
+    loc_trail_step_m: float = 0.1
     # ---- 2026-10-23 option C: no-go zones in the mission (fsm/phases/nogo.py) ----
     nogo_enabled: bool = True
     nogo_zones_max_age_s: float = 10.0       # /obstacle_tracker/nogo_zones receipt age

@@ -15,6 +15,9 @@ class DockingMixin:
     # ==================================================================
     def _dock(self, name, purpose, sub=''):
         self._dyn = None
+        # a localization hold of the interrupted mow / transit ends here: the dock route
+        # and docking are exempt from it unless lost > loc_hold_dock_exempt_max_s (holds.py)
+        self._loc_drop()
         self._blade_off('dock')
         if self._action is not None:
             self._fx.append(CancelActions('dock'))

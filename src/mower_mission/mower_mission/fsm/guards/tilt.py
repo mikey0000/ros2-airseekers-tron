@@ -65,24 +65,39 @@ class TiltGuardMixin:
         if want == self._tilt_capped:
             return
         self._tilt_capped = want
-        cap = float(self.p.tilt_caution_speed_mps)
-        m = self.mission
-        params = {}
         if want:
+            self._log('warn', 'slope caution (%s): controller speed capped at %.2f m/s'
+                      % (self._tilt_text(), float(self.p.tilt_caution_speed_mps)))
+        else:
+            self._log('info', 'slope ok: controller speed restored')
+        self._push_speed_caps()
+
+    def _speed_cap(self):
+        """The active controller speed cap (m/s): tilt caution, camera blocked
+        (guards/parity.py) and degraded localization (2026-11-03), the lowest wins;
+        None = no cap (the area cut speed applies)."""
+        caps = []
+        if self._tilt_capped:
+            caps.append(float(self.p.tilt_caution_speed_mps))
+        if self._camera_capped and float(self.p.camera_blocked_speed_mps) > 0.0:
+            caps.append(float(self.p.camera_blocked_speed_mps))
+        if self._loc_capped:
+            caps.append(float(self.p.loc_degraded_speed_mps))
+        return min(caps) if caps else None
+
+    def _push_speed_caps(self):
+        """Send the coverage + transit controller speeds for the active cap (or restore
+        the area cut speed / transit speed when no cap is left)."""
+        cap, m = self._speed_cap(), self.mission
+        if cap is not None:
             params = dict(self.coverage_speed_params(cap))
             params[self.p.tilt_transit_speed_param] = cap
-            self._log('warn', 'slope caution (%s): controller speed capped at %.2f m/s'
-                      % (self._tilt_text(), cap))
-        elif self._camera_capped:
-            params = self._speed_cap_params(float(self.p.camera_blocked_speed_mps))
-            self._log('info', 'slope ok: camera-blocked speed cap kept')
         else:
             params = {self.p.tilt_transit_speed_param: float(self.p.tilt_transit_speed_mps)}
             if m is not None and m.settings:
                 params.update(self.coverage_speed_params(min(
                     float(m.settings.get('cut_speed_mps', AREA_SETTINGS_DEFAULTS['cut_speed_mps'])),
                     float(self.p.cut_speed_max_mps))))
-            self._log('info', 'slope ok: controller speed restored')
         if self.p.set_cut_speed:
             self._call(SRV_SET_PARAMS, {'node': PARAM_NODE_CONTROLLER, 'params': params},
                        track=False)

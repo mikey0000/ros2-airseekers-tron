@@ -31,7 +31,9 @@ def main(bagdir, out):
     keys = ['gt', 'status', 'hl', 'cmd', 'cmd_nav', 'cmd_raw', 'cmd_emerg', 'cmd_dock', 'outside',
             'plan',
             'rosout', 'nav_status', 'spin_status', 'fp_status', 'dock_status', 'shape',
-            'incident', 'progress', 'mow_plan', 'odom_map', 'croute']
+            'incident', 'progress', 'mow_plan', 'odom_map', 'croute',
+            # 2026-11-03 sim fidelity (terrain / RTK injection; empty in older bags)
+            'tilt', 'loc', 'fix_status', 'wodom', 'gnss', 'simx']
     D = {k: [] for k in keys}
     types = {}
     for f in sorted(glob.glob(bagdir + '/*.db3')):
@@ -68,6 +70,9 @@ def main(bagdir, out):
                         continue
                     D['status'].append([t, s.get('docked'), s.get('charging'),
                                         s.get('collisions'), s.get('cutting'), s.get('estop')])
+                    if 'roll_deg' in s or 'rtk' in s:
+                        D['simx'].append([t, s.get('roll_deg'), s.get('pitch_deg'),
+                                          s.get('wheel_dist'), s.get('rtk')])
                 elif name == '/behavior_tree_node/high_level_status':
                     D['hl'].append([t, m.state_name, m.sub_state_name, m.current_area,
                                     m.current_path, m.current_path_index])
@@ -88,6 +93,30 @@ def main(bagdir, out):
                     D['shape'].append([t, m.data])
                 elif name == '/mission/incident':
                     D['incident'].append([t, m.data])
+                elif name == '/tilt/status':
+                    try:
+                        s = json.loads(m.data)
+                    except ValueError:
+                        continue
+                    D['tilt'].append([t, s.get('band'), s.get('roll_deg'), s.get('pitch_deg')])
+                elif name == '/localization/status':
+                    try:
+                        s = json.loads(m.data)
+                    except ValueError:
+                        continue
+                    D['loc'].append([t, s.get('state'), s.get('rtk'), s.get('est_drift_m')])
+                elif name == '/fix_status':
+                    q = 'FLOAT' if 'FLOAT' in m.data else 'FIXED' if 'NARROW_INT' in m.data \
+                        else m.data[:40]
+                    if not D['fix_status'] or D['fix_status'][-1][1] != q:
+                        D['fix_status'].append([t, q])
+                elif name == '/odom':
+                    if not D['wodom'] or t - D['wodom'][-1][0] >= 0.1:     # 10 Hz is plenty
+                        p = m.pose.pose
+                        D['wodom'].append([t, p.position.x, p.position.y])
+                elif name == '/gps/status':
+                    if not D['gnss'] or D['gnss'][-1][1] != int(m.fix_type):
+                        D['gnss'].append([t, int(m.fix_type)])
                 elif name == '/behavior_tree_node/conditioned_route':
                     D['croute'].append([t, m.data])
                 elif name == '/behavior_tree_node/mow_plan':
