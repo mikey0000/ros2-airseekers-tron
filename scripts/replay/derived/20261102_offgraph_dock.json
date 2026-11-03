@@ -1,0 +1,13 @@
+{
+"notes": [
+"dock_pose from /userdata/ros2/maps/dock_pose.yaml (not in the bag)",
+"area outline: 2026-11-03 areas.dat index 5 (Clothesline); the bag's /map_server_node/outside_m (0.013 m) shows the same outline was live then",
+"the bag starts 1.9 s after the RETURN HOME: the parked pose at its start is applied first",
+"join-point plan_route replies (on the graph) are synthetic; the off-graph reply is recorded"
+],
+"dock_pose": [
+0.417016,
+-1.306964,
+1.757547
+]
+}

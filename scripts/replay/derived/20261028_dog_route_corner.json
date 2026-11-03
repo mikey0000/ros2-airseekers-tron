@@ -1,0 +1,926 @@
+{
+"notes": [
+"/obstacle_tracker/nogo_zones was not recorded: the zone set is reconstructed from the mission log pre-pivot lines: dog candidate (-23.82, -4.24) r 0.35 in the checks at 04:00:55.4 and 04:00:58.6, not in the one at 04:01:08.8 (removed here at 04:00:59.0, the earliest time the log allows; the last dog detection in the bag is 04:00:44.2); static mark (-23.89, -4.22) r 0.35 in all three checks, the sweep clear at 04:01:38.9 (mark removed at 04:01:38.8). Zone id / score made up.",
+"the transit route (2.0 m, 1 leg, corner +101 deg at its start) is rebuilt from the log lines; plan_route replies are synthetic with that geometry",
+"area outline: 2026-11-03 areas.dat index 4 (closer backyard lawn)"
+],
+"route": {
+"corner": [
+-24.23,
+-4.23
+],
+"turn_deg": 101.0,
+"leg_m": 2.0
+},
+"events": [
+{
+"t": 14.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [{\"x\": -23.82, \"y\": -4.24, \"r\": 0.35, \"id\": 2850, \"label\": \"dog\", \"state\": \"candidate\", \"score\": 0.8}], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 14.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [{\"x\": -23.82, \"y\": -4.24, \"r\": 0.35, \"id\": 2850, \"label\": \"dog\", \"state\": \"candidate\", \"score\": 0.8}], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 15.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [{\"x\": -23.82, \"y\": -4.24, \"r\": 0.35, \"id\": 2850, \"label\": \"dog\", \"state\": \"candidate\", \"score\": 0.8}], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 15.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [{\"x\": -23.82, \"y\": -4.24, \"r\": 0.35, \"id\": 2850, \"label\": \"dog\", \"state\": \"candidate\", \"score\": 0.8}], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 16.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [{\"x\": -23.82, \"y\": -4.24, \"r\": 0.35, \"id\": 2850, \"label\": \"dog\", \"state\": \"candidate\", \"score\": 0.8}], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 16.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [{\"x\": -23.82, \"y\": -4.24, \"r\": 0.35, \"id\": 2850, \"label\": \"dog\", \"state\": \"candidate\", \"score\": 0.8}], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 17.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [{\"x\": -23.82, \"y\": -4.24, \"r\": 0.35, \"id\": 2850, \"label\": \"dog\", \"state\": \"candidate\", \"score\": 0.8}], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 17.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [{\"x\": -23.82, \"y\": -4.24, \"r\": 0.35, \"id\": 2850, \"label\": \"dog\", \"state\": \"candidate\", \"score\": 0.8}], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 18.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [{\"x\": -23.82, \"y\": -4.24, \"r\": 0.35, \"id\": 2850, \"label\": \"dog\", \"state\": \"candidate\", \"score\": 0.8}], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 18.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [{\"x\": -23.82, \"y\": -4.24, \"r\": 0.35, \"id\": 2850, \"label\": \"dog\", \"state\": \"candidate\", \"score\": 0.8}], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 19.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 19.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 20.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 20.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 21.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 21.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 22.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 22.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 23.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 23.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 24.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 24.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 25.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 25.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 26.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 26.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 27.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 27.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 28.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 28.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 29.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 29.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 30.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 30.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 31.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 31.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 32.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 32.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 33.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 33.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 34.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 34.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 35.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 35.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 36.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 36.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 37.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 37.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 38.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 38.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 39.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 39.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 40.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 40.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 41.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 41.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 42.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 42.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 43.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 43.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 44.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 44.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 45.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 45.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 46.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 46.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 47.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 47.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 48.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 48.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 49.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 49.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 50.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 50.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 51.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 51.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 52.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 52.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 53.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 53.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 54.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 54.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 55.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 55.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 56.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 56.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 57.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 57.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 58.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 58.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": [[-23.89, -4.22, 0.35]]}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 59.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": []}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 59.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": []}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 60.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": []}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 60.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": []}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 61.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": []}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 61.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": []}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 62.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": []}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 62.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": []}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 63.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": []}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 63.5,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": []}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+},
+{
+"t": 64.0,
+"topic": "/obstacle_tracker/nogo_zones",
+"stamp_t": true,
+"msg": {
+"data": "{\"zones\": [], \"marks\": []}"
+},
+"derived": "reconstructed from the logged pre-pivot sweep hits"
+}
+]
+}
