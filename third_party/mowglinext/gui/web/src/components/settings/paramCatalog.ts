@@ -166,7 +166,6 @@ const TRON_OVERLAY: Record<string, ParamMeta> = {
   "behavior_tree_node.dock_timeout_s": pm("dock_timeout_s", "middle", "Docking", "s"),
   "behavior_tree_node.dock_use_vision": pm("dock_use_vision", "middle", "Docking"),
   "behavior_tree_node.use_docking_server": pm("use_docking_server", "middle", "Docking"),
-  "behavior_tree_node.require_blade_confirmation": pm("require_blade_confirmation", "middle", "Mission"),
   "behavior_tree_node.follow_chunk_m": pm("follow_chunk_m", "middle", "Coverage", "m"),
   "behavior_tree_node.boundary_recover_after_s": pm("boundary_recover_after_s", "middle", "Mission", "s"),
   "behavior_tree_node.boundary_max_recoveries": pm("boundary_max_recoveries", "middle", "Mission"),

@@ -149,7 +149,7 @@ Every variant keeps the hard rules:
 The variant is deterministic per run index; it is not re-drawn on a replan. The mission
 increments `alternate_counts['__transit_run__']` (the same persisted file as the alternate
 mow angles) on every mission start and passes it as `PlanRoute.variation`. Run 0 is the base
-route. `route_variation: false` always sends 0. map_server reads each area's setting, logs
+route. map_server reads each area's setting, logs
 the variant used and returns it in `PlanRoute.variant`.
 
 Sim on the v4 map (garden world without the scripted person, domain 96, then-default

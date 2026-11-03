@@ -21,12 +21,10 @@ class TransitMixin:
 
     def _transit_run(self):
         """Run index for plan_route's transit variation (0 = base route)."""
-        if not self.p.route_variation:
-            return 0
         return int(self.alternate_counts.get(self.TRANSIT_RUN_KEY, 0))
 
     def _bump_transit_run(self):
-        if self.p.route_transits and self.p.route_variation:
+        if self.p.route_transits:
             self.alternate_counts[self.TRANSIT_RUN_KEY] = self._transit_run() + 1
             self._fx.append(SaveAlternateCounts(dict(self.alternate_counts)))
 
@@ -150,14 +148,14 @@ class TransitMixin:
                                 m.transit_fails, self.p.transit_retries, delay), delay=delay)
 
     def _sweep_blocked_skip(self, why):
-        """sweep_blocked_skip (2026-11-01): the transit to the current sub-path is exhausted
+        """Sweep-blocked skip (2026-11-01): the transit to the current sub-path is exhausted
         by a blocked pre-pivot sweep. Skip only edge_blocked_skip_m of the sub-path from the
         rejoin pose (at least to the next pose, at most to the next pivot vertex), record it
         like a detour skip and transit to the pose after it. False (off, another cause, a
         detour / recovery / stretch re-try, or sweep_blocked_max_skips consecutive skips on
         this sub-path): the caller drops the sub-path as before."""
         m, p = self.mission, self.p
-        if not p.sweep_blocked_skip or 'sweep blocked' not in why or m.stretch is not None \
+        if 'sweep blocked' not in why or m.stretch is not None \
                 or m.detour is not None or m.recovering:
             return False
         key = (m.area_idx, m.sub_i)
@@ -1048,8 +1046,8 @@ class TransitMixin:
                         self._edge_lap(m.sub_i) and self._nogo_edge_detour(
                             prog, 'follow_path %s, obstacle on the lap' % outcome):
                     return     # option C / B6: detour inward around it, rejoin, no stop-wait
-                if self.p.edge_blocked_skip and (collided or self.inputs.cm_stop_since
-                                                 is not None) and self._edge_lap(m.sub_i):
+                if (collided or self.inputs.cm_stop_since is not None) and \
+                        self._edge_lap(m.sub_i):
                     self._edge_skip(prog, 'follow_path %s, collision ahead' % outcome)
                     return
                 # aborts inside a blocked wait count toward the unclassified-detour threshold

@@ -370,13 +370,6 @@ def test_bumper_skip_inside_the_area_keeps_the_blade_on():
         h.tick()
     assert h.fsm.mission.sub_i == 1 or h.fsm.mission.step in ('transit', 'follow', 'spinup')
     assert h.blade                                   # skipped, blade kept on
-    h2 = mowing_h([line(0.5, 2, 4.5, 2), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
-                  blade_keep_on_obstacles=False)
-    feed(h2, (2.0, 2.0, 0.0))
-    for _ in range(3):
-        h2.fsm.inputs.bumper_hits += 1
-        h2.tick()
-    assert not h2.blade                              # revert flag: the old blade-off
 
 
 def test_detour_inside_keeps_the_blade_on_and_one_leaving_turns_it_off():
@@ -428,23 +421,22 @@ def test_offgraph_goal_is_re_asked_inside_then_skipped_never_the_costmap_planner
     assert any('skipping it' in e.text for e in h.since(m, f.Log))
 
 
-def test_short_stretches_dropped_and_unbypassable_ones_not_re_tried():
-    h = mowing_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
-                 retry_each_skipped_stretch=False)
+def test_short_stretches_dropped_and_the_rest_re_tried_nearest_first():
+    h = mowing_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0))
     m = h.fsm.mission
     sp = m.subpaths[0]                                # as conditioned (re-sampled)
 
     def at(x):
         return min(range(len(sp)), key=lambda k: abs(sp[k][0] - x))
     short, near, clear = (at(1.0), at(1.3)), (at(2.5), at(3.0)), (at(3.5), at(4.3))
-    m.unbypassable = [(2.0, 2.0)]
-    m.requeue = [short, near, clear]                  # 0.3 m; next to (2, 2); 0.8 m clear
+    m.requeue = [short, near, clear]                  # 0.3 m; 0.5 m; 0.8 m
     h.fsm._begin(h.t)
     h.fsm._area_done()
     h._apply(h.fsm._end())
-    assert (0,) + short not in m.blocked and (0,) + near in m.blocked
+    assert (0,) + short not in m.blocked and (0,) + near not in m.blocked
     assert abs(m.ignored_short_m - 0.3) < 1e-6        # too short: dropped, not blocked
-    assert m.stretch == clear                         # the clear one is driven
+    # the nearest one is driven next
+    assert m.stretch == near and m.requeue == [clear]
 
 
 def test_replan_keeps_done_subpaths_with_unchanged_geometry():

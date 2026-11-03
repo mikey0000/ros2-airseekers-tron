@@ -73,7 +73,7 @@ then `sync` + `up`. Mission/map options are yaml parameters (`sync` + restart):
 | bumper-only obstacles (no stereo) | launch `stereo_costmap:=false` |
 | no rolling bag recorder / alerts | launch `bag_recorder:=false` / `alerts:=false` |
 | Nav2 transits instead of drawn-path routes | `src/mower_mission/config/mission.yaml` `route_transits: false` |
-| no transit variation | mission.yaml `route_variation: false` (or area setting `transit_variation: none`) |
+| no transit variation | area setting `transit_variation: none` |
 | no automatic dock no-go in areas | `src/mower_map/config/map_server.yaml` `dock_nogo_in_areas: false` |
 
 ### Host services (one-off, root on the device)

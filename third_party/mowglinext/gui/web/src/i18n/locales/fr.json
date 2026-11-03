@@ -4150,10 +4150,6 @@
         "label": "Utiliser le serveur d'accostage",
         "description": "Accoster et quitter la base avec le serveur d'actions d'accostage plutôt qu'avec la navigation simple."
       },
-      "require_blade_confirmation": {
-        "label": "Confirmer le démarrage de la lame",
-        "description": "Attendre que la carte moteur signale la lame en rotation avant de suivre un trajet."
-      },
       "follow_chunk_m": {
         "label": "Longueur des tronçons",
         "description": "Les longs trajets sont envoyés au contrôleur par morceaux de cette longueur au plus (0 = désactivé)."

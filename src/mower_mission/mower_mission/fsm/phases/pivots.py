@@ -333,7 +333,7 @@ class PivotsMixin:
                                                 back))
             m.step = 'pivot_backout'
             if not self._keep_blade_inside('pivot back-up'):
-                self._blade_off('pivot back-up')        # blade_keep_on_obstacles false: off
+                self._blade_off('pivot back-up')        # outside the body rules: off
             self._start_action(ACT_BACKUP, {'distance_m': back,
                                             'speed_mps': float(p.pivot_backout_speed_mps)},
                                back / max(0.02, float(p.pivot_backout_speed_mps))
@@ -402,7 +402,7 @@ class PivotsMixin:
     def _skip_piece(self, frm, end, why):
         """Record local ``frm`` -> ``end`` of the current sub-path as skipped (re-tried once at
         the area end, else reported blocked / uncut) and go on after it."""
-        m, p = self.mission, self.p
+        m = self.mission
         self._blk = None
         self._soft_blade_off('skip')
         if m.stretch is not None:            # the end-of-area re-try of a skipped piece
@@ -410,11 +410,7 @@ class PivotsMixin:
             return
         last = self._seg_last()
         if end > frm:
-            offs, _ = subpath_offsets(m.subpaths)
-            if p.blocked_pivot_requeue and p.requeue_skipped:
-                self._record_skip(frm, end)
-            else:
-                m.blocked.append((m.area_idx, offs[m.sub_i] + frm, offs[m.sub_i] + end))
+            self._record_skip(frm, end)
         if end >= last:
             m.step = None
             self._segment_done()
@@ -448,7 +444,7 @@ class PivotsMixin:
         person / pet): cancel the follow and skip the blocked segment. True = handled."""
         m, p, a = self.mission, self.p, self._action
         since = self.inputs.cm_stop_since
-        if not p.edge_blocked_skip or m is None or since is None or self.phase != 'MOWING' or \
+        if m is None or since is None or self.phase != 'MOWING' or \
                 m.step != 'follow' or a is None or a.name != ACT_FOLLOW or \
                 self._now - since < float(p.edge_blocked_hold_s) or \
                 self._policy() == 'dynamic' or not self._edge_lap(m.sub_i):

@@ -341,13 +341,11 @@ class AreasMixin:
         self._next_subpath()
 
     def _exclude_marks(self, subpaths, cums):
-        """exclude_marked_obstacles: sub-path poses within (mark r + robot half-width +
+        """Sub-path poses within (mark r + robot half-width +
         0.05 m) of a static obstacle mark become blocked_static stretches of the area cursor
         (never driven). Gaps shorter than exclude_mark_merge_m are merged in. Returns
-        (count, metres) of the new exclusions, None when off / no marks."""
+        (count, metres) of the new exclusions, None without marks."""
         m, p = self.mission, self.p
-        if not p.exclude_marked_obstacles:
-            return None
         marks = [z for z in self._nogo_discs() if z.state == 'mark']
         if not marks:
             return None

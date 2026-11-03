@@ -83,7 +83,7 @@ class Harness:
                 self.blade = False
             elif isinstance(e, f.StartAction) and e.name in MOVING_ACTIONS:
                 # continuous blade policy: an in-area mission transit / detour may keep it on;
-                # blade_keep_on_obstacles: so may a mission back-up with the body inside
+                # owner rule 2026-10-23: so may a mission back-up with the body inside
                 assert not self.blade or (e.name == f.ACT_NAV and self.fsm.mission is not None
                                           and self.fsm.mission.blade_transit) or (
                     e.name == f.ACT_BACKUP and self.fsm.mission is not None
@@ -723,7 +723,7 @@ def test_full_mow_happy_path_with_transit():
     h.fsm.inputs.pose = (4, 0, 0)
     m = h.mark()
     h.finish(f.ACT_FOLLOW)
-    # the in-area transit keeps the blade on (blade_keep_on_obstacles: body inside the area)
+    # the in-area transit keeps the blade on (owner rule 2026-10-23: body inside the area)
     assert h.name == 'TRANSIT' and h.blade and h.fsm.mission.blade_transit
     st = h.fsm.status()
     assert st['completed_swaths'] == 1 and st['total_swaths'] == 2
@@ -808,7 +808,7 @@ def test_follow_abort_retries_from_nearest_then_fails_subpath():
     h.tick()
     h.fsm.inputs.pose = (2.1, 0.1, 0.0)
     h.finish(f.ACT_FOLLOW, f.ABORTED)
-    # the blade stays on while the body is inside the area (blade_keep_on_obstacles)
+    # the blade stays on while the body is inside the area (owner rule 2026-10-23)
     assert h.name == 'MOWING' and h.blade and h.fsm._action is None
     assert 'retry 1/1' in h.fsm.sub_state and 'follow_path aborted' in h.fsm.sub_state
     h.tick(dt=1.0, n=3)
@@ -2644,7 +2644,7 @@ def _two_subpaths_first_needs_transit(h):
     assert h.name == 'TRANSIT'
 
 
-def test_retry_clears_local_costmap_only_by_default():
+def test_retry_clears_local_costmap_only():
     """review 2026-10-09: the global costmap keeps the obstacle marks on a retry."""
     h = Harness()
     _two_subpaths_first_needs_transit(h)
@@ -2652,11 +2652,6 @@ def test_retry_clears_local_costmap_only_by_default():
     h.finish(f.ACT_NAV, f.ABORTED)
     c = _clears(h, m)
     assert c and all(e.request == {'global': False, 'selective': True} for e in c)
-    h2 = Harness(clear_global_costmap_on_retry=True)
-    _two_subpaths_first_needs_transit(h2)
-    m = len(h2.fx)
-    h2.finish(f.ACT_NAV, f.ABORTED)
-    assert _clears(h2, m)[0].request == {'global': True, 'selective': True}
 
 
 def test_transit_abort_waits_clears_costmaps_and_resends():
@@ -2739,10 +2734,11 @@ def test_transit_retries_exhausted_ends_mowing_incomplete_in_place():
 
 
 def test_mowing_incomplete_commands():
-    h = Harness(transit_retries=0, requeue_failed_transits=False, return_home_on_incomplete=False)
+    h = Harness(transit_retries=0, return_home_on_incomplete=False)
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
     h.finish(f.ACT_NAV, f.ABORTED)
+    h.finish(f.ACT_NAV, f.ABORTED)               # the end-of-area re-try fails too
     assert h.name == 'MOWING_INCOMPLETE'
     assert h.fsm.sub_state.startswith('1 of 1 sub-paths not mowed: transit aborted')
     assert h.cmd(f.CMD_HOME) and h.name == 'RETURNING_HOME'
@@ -2751,12 +2747,12 @@ def test_mowing_incomplete_commands():
 
 
 def test_return_home_on_incomplete_docks_and_keeps_reason():
-    h = Harness(transit_retries=0, return_home_on_incomplete=True,
-                requeue_failed_transits=False)
+    h = Harness(transit_retries=0, return_home_on_incomplete=True)
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
     m = h.mark()
     h.finish(f.ACT_NAV, f.ABORTED)
+    h.finish(f.ACT_NAV, f.ABORTED)               # the end-of-area re-try fails too
     assert 'MOWING_INCOMPLETE' in h.statuses(m)
     assert h.name == 'RETURNING_HOME' and 'not mowed' in h.fsm.sub_state
     h.fsm.inputs.docked = True
@@ -2767,12 +2763,12 @@ def test_return_home_on_incomplete_docks_and_keeps_reason():
 
 def test_return_home_on_incomplete_is_the_shipped_default():
     assert f.Params().return_home_on_incomplete is True
-    h = Harness(transit_retries=0, return_home_on_incomplete=f.Params().return_home_on_incomplete,
-                requeue_failed_transits=False)
+    h = Harness(transit_retries=0, return_home_on_incomplete=f.Params().return_home_on_incomplete)
     start_until_planning(h)
     h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(3, 3, 4, 3)]))
     m = h.mark()
     h.finish(f.ACT_NAV, f.ABORTED)
+    h.finish(f.ACT_NAV, f.ABORTED)               # the end-of-area re-try fails too
     assert 'MOWING_INCOMPLETE' in h.statuses(m)
     assert h.name == 'RETURNING_HOME'
 
@@ -2792,7 +2788,7 @@ def test_follow_abort_resumes_from_last_pose_up_to_follow_retries():
         h.tick()
         h.finish(f.ACT_FOLLOW, f.ABORTED)
         if k < 3:
-            # blade_keep_on_obstacles: kept on with the body inside the area
+            # owner rule 2026-10-23: kept on with the body inside the area
             assert 'retry %d/3' % (k + 1) in h.fsm.sub_state and h.blade
             h.tick(dt=1.0, n=4)
             starts.append(h.goal(f.ACT_FOLLOW)['poses'][0][0])
@@ -2971,7 +2967,7 @@ def static_abort_and_detour(h, sp0):
     h.tick()
     m = h.mark()
     h.finish(f.ACT_FOLLOW, f.ABORTED)
-    # blade_keep_on_obstacles: the in-area detour keeps the blade on
+    # owner rule 2026-10-23: the in-area detour keeps the blade on
     assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state and h.blade
     a = near_index(sp0, 3.0, 0.0)
     target = h.goal(f.ACT_NAV)['pose']
@@ -3008,7 +3004,7 @@ def test_static_obstacle_detours_and_resumes_beyond_then_requeues_stretch():
 
 
 def test_skipped_stretch_still_blocked_ends_incomplete():
-    h = Harness(retry_each_skipped_stretch=False, return_home_on_incomplete=False)
+    h = Harness(return_home_on_incomplete=False)
     sp0, sp1 = mowing_two_swaths(h)
     a, b = static_abort_and_detour(h, sp0)
     h.finish(f.ACT_FOLLOW)
@@ -3036,7 +3032,7 @@ def test_dynamic_obstacle_stops_waits_and_resumes_from_last_pose():
     policy(h, 'dynamic', 'dog')
     h.tick()
     assert h.since(m, f.ZeroBurst) and h.since(m, f.CancelActions)
-    # blade_keep_on_obstacles: the blade stays on through the wait (body inside)
+    # owner rule 2026-10-23: the blade stays on through the wait (body inside)
     assert h.name == 'MOWING' and h.blade and h.fsm._action is None
     assert h.fsm.sub_state == 'waiting for dog to move (0 s)'
     tick_seen(h, 'dynamic', 'dog', 5.0)
@@ -3145,21 +3141,8 @@ def test_unclassified_collision_abort_detours_at_once_with_zero():
     h.finish(f.ACT_FOLLOW, f.ABORTED)
     assert h.name == 'TRANSIT' and 'detour' in h.fsm.sub_state
     assert 'path blocked' not in h.fsm.sub_state
-    # blade_keep_on_obstacles (owner 2026-10-23): kept on with the body inside the area
-    # (the 2026-10-09 blade-off detour is test_detour_forces_blade_off_*)
+    # owner 2026-10-23: kept on with the body inside the area
     assert h.blade and h.fsm.blade_on
-
-
-def test_detour_forces_blade_off_even_in_continuous_area():
-    h = Harness(blade_keep_on_obstacles=False)   # revert path
-    sp0, _ = mowing_two_swaths(h)
-    assert h.blade
-    h.fsm.inputs.pose = (3.0, 0.0, 0.0)
-    policy(h, 'static', 'chair')
-    h.tick()
-    h.finish(f.ACT_FOLLOW, f.ABORTED)
-    assert h.fsm.mission.detour is not None
-    assert not h.blade and not h.fsm.mission.blade_transit
 
 
 def test_shipped_defaults_detour_two_metres_ahead():
@@ -4007,14 +3990,6 @@ def test_genuine_abort_after_blocked_episode_uses_retry_policy():
     assert 'retry 1/3' in h.fsm.sub_state and h.fsm._blk is None
 
 
-def test_failed_transit_requeue_disabled_ends_incomplete_immediately():
-    h = Harness(transit_retries=0, requeue_failed_transits=False, return_home_on_incomplete=False)
-    _two_subpaths_first_needs_transit(h)
-    h.finish(f.ACT_NAV, f.ABORTED)
-    follow_current(h)
-    assert h.name == 'MOWING_INCOMPLETE'
-
-
 def test_follow_abort_with_collision_waits_then_detours_on_second():
     h = Harness(detour_unclassified_after=1)
     sp0, _ = mowing_two_swaths(h)
@@ -4188,16 +4163,6 @@ def test_continuous_blade_off_on_boundary_violation_and_stop():
     _continuous(h2)
     mowing_two_swaths(h2)
     assert h2.cmd(f.CMD_STOP) and not h2.blade
-
-
-def test_conservative_policy_keeps_old_blade_off_on_dynamic_wait():
-    h = Harness(blade_keep_on_obstacles=False)   # revert path
-    mowing_two_swaths(h)                          # harness default: conservative
-    h.fsm.inputs.pose = (2.0, 0.0, 0.0)
-    h.tick()
-    _seen_at(h, 'dynamic', 'dog', 1.0, 0.0)
-    h.tick()
-    assert h.fsm._dyn is not None and not h.blade
 
 
 def test_turn_legs_use_the_leg_goal_checker():
@@ -4765,16 +4730,6 @@ def test_transit_variation_run_counter_persisted_and_sent():
     assert _pending_route_request(h)['variation'] == 5
 
 
-def test_transit_variation_off_sends_run_zero():
-    h = Harness(auto_route=False, route_variation=False)
-    h.areas = [square(-1, -1, 12)]
-    m = h.mark()
-    start_until_planning(h)
-    assert not [e for e in h.since(m) if isinstance(e, f.SaveAlternateCounts)]
-    h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(5, 5, 9, 5)]))
-    assert _pending_route_request(h)['variation'] == 0
-
-
 # =====================================================================
 # Nav2 stack not active (2026-10-13: a hung nav2 lifecycle manager showed as a
 # generic "Docking failed (NAV_TO_DOCK_FAILED)")
@@ -5175,19 +5130,10 @@ def test_sweep_blocked_repeated_skips_fall_back_to_subpath_failed():
     assert len(h.fsm.cursor.areas[0].skipped) == h.fsm.p.sweep_blocked_max_skips
 
 
-def test_sweep_blocked_skip_off_keeps_the_old_drop():
-    h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (4.5, 4.5, 0.0),
-                 sweep_blocked_skip=False)
-    _exhaust_transit(h)
-    m = h.fsm.mission
-    assert m.failed and m.sub_i == 1 and not h.fsm.cursor.areas[0].skipped
-
-
 def _pass_h(**params):
     h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
                  **params)
     m = h.fsm.mission
-    m.unbypassable = [(2.0, 2.0)]
     # stretches x 2.5 -> 3.0 (st0) and 3.5 -> 4.3 (st1) of sub-path 0 (y = 2)
     h.st0, h.st1 = (_ix(h, 2.5), _ix(h, 3.0)), (_ix(h, 3.5), _ix(h, 4.3))
     h.fsm.cursor.areas[0].skipped = [h.st1, h.st0]
@@ -5200,7 +5146,7 @@ def _pass_h(**params):
 
 def test_retry_pass_tries_every_stretch_nearest_first_before_incomplete():
     h, m = _pass_h()
-    assert m.stretch == h.st0          # nearest first, despite the unbypassable spot
+    assert m.stretch == h.st0          # nearest first
     h.fsm._begin(h.t)
     h.fsm._stretch_blocked('follow_path aborted at pose %d' % (h.st0[0] + 1))   # no evidence
     h._apply(h.fsm._end())
@@ -5212,15 +5158,6 @@ def test_retry_pass_tries_every_stretch_nearest_first_before_incomplete():
     assert len(m.blocked) == 2
     h.tick()
     assert h.name in ('MOWING_INCOMPLETE', 'RETURNING_HOME') and h.fsm.cursor.available
-
-
-def test_retry_pass_off_keeps_the_unbypassable_shortcut():
-    h, m = _pass_h(retry_each_skipped_stretch=False)
-    assert m.stretch == h.st1          # list order, not nearest first
-    h.fsm._begin(h.t)
-    h.fsm._stretch_blocked('follow_path aborted at pose %d' % (h.st1[0] + 1))
-    h._apply(h.fsm._end())
-    assert (0,) + h.st0 in m.blocked       # next to the unbypassable spot: not driven
 
 
 def test_static_blocked_stretches_finish_complete_with_exclusions():
@@ -5267,7 +5204,7 @@ def test_collision_on_the_stretch_still_blocks_it_static():
 
 @pytest.mark.parametrize('dist, bearing, static', [(1.0, 90.0, False), (2.2, 0.0, True)])
 def test_remembered_static_counts_only_near_the_stretch(dist, bearing, static):
-    h, m = _pass_h(obstacle_path_filter=False)
+    h, m = _pass_h()
     i = h.fsm.inputs
     i.pose = (0.5, 2.0, 0.0)
     i.obstacle_distance, i.obstacle_bearing = dist, bearing
@@ -5318,12 +5255,6 @@ def test_plan_time_exclusion_merges_short_gaps():
     h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
                  zs=[(2.0, 2.0, 0.1), (2.9, 2.0, 0.1)])
     assert h.fsm.cursor.areas[0].blocked_static == [(_ix(h, 1.6), _ix(h, 3.3))]
-
-
-def test_plan_time_exclusion_off():
-    h = _skips_h([line(0.5, 2, 4.5, 2, n=41), line(0.5, 3, 4.5, 3)], (0.5, 2.0, 0.0),
-                 zs=[(2.0, 2.0, 0.1)], exclude_marked_obstacles=False)
-    assert h.fsm.cursor.areas[0].blocked_static == []
 
 
 def _out_and_back():

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Harness for maneuvers the shipped blade_keep_on_obstacles rule (owner 2026-10-23) runs with
-the blade on: a pivot back-up / no-go step / K-turn back-up inside the area by the body rules.
-test_mission_fsm.Harness asserts no back-up / drive starts with the blade on; this one allows
-it exactly where the FSM's own rules say the blade may stay on (_blade_keep_ok; the slope
-pre-drive's 'slope_pivot' step, which blade_allowed lists)."""
+"""Harness for maneuvers the owner rule (2026-10-23: blade stays on through obstacle handling
+inside the area) runs with the blade on: a no-go step / slope pre-drive (ACT_DRIVE) as well as
+a back-up. test_mission_fsm.Harness allows only a mission back-up with the body inside; this
+one also allows a drive, exactly where the FSM's own rules say the blade may stay on
+(_blade_keep_ok; the slope pre-drive's 'slope_pivot' step, which blade_allowed lists)."""
 from mower_mission import mission_fsm as f
 
 from test_mission_fsm import Harness

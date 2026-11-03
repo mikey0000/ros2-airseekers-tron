@@ -226,14 +226,13 @@ class MowingMixin:
         sp = m.subpaths[m.sub_i]
         key = (m.area_idx, m.sub_i, m.stretch)
         w = m.leg_watch
-        by_dist = bool(p.turn_leg_end_by_distance)
         if w is None or w['key'] != key:
             short = geo.path_length(sp) <= float(p.turn_leg_max_m)
             w = m.leg_watch = {
                 'key': key, 'reached': None, 'rot': 0.0, 'yaw': None, 'token': None,
                 'idx': None, 'since': self._now,
                 # task 0.4 (f): capped only by the leg's own length
-                'capped': short if by_dist else (self._is_turn_leg() or short)}
+                'capped': short}
         if w['token'] != a.token:            # a new goal (retry / resume): fresh loop timer
             w['token'], w['idx'], w['since'], w['yaw'] = a.token, m.progress_local, self._now, None
         elif m.progress_local != w['idx']:
@@ -248,8 +247,7 @@ class MowingMixin:
                 w['rot'] += abs(geo.wrap_angle(float(pose[2]) - w['yaw']))
             w['yaw'] = float(pose[2])
             # task 0.4 (f): distance only; progress_local can jump to the last pose early
-            at_end = (skip_m > 0.0 and d <= skip_m) or \
-                (not by_dist and m.progress_local >= len(sp) - 1)
+            at_end = skip_m > 0.0 and d <= skip_m
             if w['reached'] is None and at_end:
                 w['reached'], w['rot'] = self._now, 0.0
             if w['reached'] is not None:
@@ -298,7 +296,7 @@ class MowingMixin:
                 self._blade_off('K-turn reverse leg')
             self._follow()
             return
-        if self.blade_on and (self.inputs.is_cutting or not self.p.require_blade_confirmation):
+        if self.blade_on and self.inputs.is_cutting:
             self._follow()
             return
         self._spin_attempt = 1
@@ -308,9 +306,7 @@ class MowingMixin:
         m = self.mission
         m.step = 'spinup'
         self._blade_on()
-        wait = self.p.blade_confirm_timeout_s if self.p.require_blade_confirmation \
-            else self.p.blade_spinup_s
-        self._spin_deadline = self._now + wait
+        self._spin_deadline = self._now + self.p.blade_confirm_timeout_s
 
     def _track_progress(self):
         """Advance ``progress_local`` to the pose nearest the robot, searching
@@ -325,22 +321,19 @@ class MowingMixin:
     def _tick_blade(self):
         m = self.mission
         if m.step == 'spinup':
-            if self.p.require_blade_confirmation:
-                if self.inputs.is_cutting:
-                    self._follow()
-                elif self._now >= self._spin_deadline:
-                    self._blade_off('blade start attempt %d not confirmed' % self._spin_attempt)
-                    if self._spin_attempt >= self.p.blade_start_attempts:
-                        self._mission_failed('blade did not start (is_cutting false after %d '
-                                             'attempts)' % self._spin_attempt)
-                        return
-                    self._log('warn', 'blade not cutting after %.0fs (attempt %d/%d): retrying'
-                              % (self.p.blade_confirm_timeout_s, self._spin_attempt,
-                                 self.p.blade_start_attempts))
-                    m.step = 'spin_pause'
-                    self._spin_deadline = self._now + self.p.blade_retry_pause_s
-            elif self._now >= self._spin_deadline:
+            if self.inputs.is_cutting:
                 self._follow()
+            elif self._now >= self._spin_deadline:
+                self._blade_off('blade start attempt %d not confirmed' % self._spin_attempt)
+                if self._spin_attempt >= self.p.blade_start_attempts:
+                    self._mission_failed('blade did not start (is_cutting false after %d '
+                                         'attempts)' % self._spin_attempt)
+                    return
+                self._log('warn', 'blade not cutting after %.0fs (attempt %d/%d): retrying'
+                          % (self.p.blade_confirm_timeout_s, self._spin_attempt,
+                             self.p.blade_start_attempts))
+                m.step = 'spin_pause'
+                self._spin_deadline = self._now + self.p.blade_retry_pause_s
         elif m.step == 'spin_pause' and self._now >= self._spin_deadline:
             self._spin_attempt += 1
             self._spin_up()

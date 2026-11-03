@@ -110,7 +110,7 @@ def _cov_pivot_h(monkeypatch, plans, zs=None, **params):
         calls.append((x, y, yaw, delta))
         return plans.pop(0) if plans else nogo.PivotPlan('clear')
     monkeypatch.setattr(nogo_phase.nogo, 'plan_pivot', fake)
-    h = KeepHarness(**params)      # the steps run with the blade on (blade_keep_on_obstacles)
+    h = KeepHarness(**params)      # the steps run with the blade on (owner rule 2026-10-23)
     h.areas = [square(-8, -4, 12)]
     r = ring()
     start_until_planning(h)
@@ -460,20 +460,6 @@ def test_edge_lap_proactive_detour_for_a_zone_ahead_without_stopping():
 def test_edge_detour_without_a_disc_is_none():
     lap = [(0.1 * i, 0.0, 0.0) for i in range(50)]
     assert nogo.edge_detour(lap, 0, [Z(2.0, 2.0, 0.2)], lambda x, y: y > 0) is None
-
-
-# =====================================================================
-# costmap clears on retries: only the 5 s obstacle layer
-# =====================================================================
-def test_retry_clear_is_selective_by_default_and_full_when_off():
-    for sel in (True, False):
-        h = Harness(clear_costmaps_selective=sel)
-        start_until_planning(h)
-        h.finish(f.ACT_PLAN, f.SUCCEEDED, plan([line(2, 2, 4, 2)]))
-        mk = h.mark()
-        h.finish(f.ACT_NAV, f.ABORTED)
-        c = [e for e in h.since(mk, f.CallService) if e.name == f.SRV_CLEAR_COSTMAPS]
-        assert c and all(e.request['selective'] is sel for e in c)
 
 
 def test_edge_detour_ignores_marks_and_too_large_offsets():

@@ -322,7 +322,7 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 | `transit_gap_m` | 0.6 |
 | `follow_goal_checker_id` | coverage_goal_checker |
 | coverage controllers (2026-10-15 MPPI study) | MPPI only (needs `path_conditioning`; the rpp revert was deleted 2026-10-23): coverage legs on `mppi_follow_controller_id` / `mppi_reverse_controller_id` (FollowCoveragePathMPPI / FollowCoveragePathReverseMPPI), cut speed on `mppi_controller_speed_param` capped at `mppi_speed_max_mps` 0.3; pivots onto legs come from the path conditioner's pivot markers |
-| `require_blade_confirmation`, `blade_confirm_timeout_s`, `blade_start_attempts`, `blade_retry_pause_s` | true, 5, 3, 2 |
+| `blade_confirm_timeout_s`, `blade_start_attempts`, `blade_retry_pause_s` (the blade is always confirmed by `is_cutting`) | 5, 3, 2 |
 | `manual_blade_requires_enable` | false (upstream); `config/mission.yaml` sets true: two-step manual mowing, see `manual_blade` |
 | `progress_window_m` | 3.0 |
 | `follow_end_tolerance_m` / `follow_premature_retries` | 1.0 / 3 |
@@ -334,7 +334,7 @@ keeps it in sync with `mission_fsm.Params`. The main ones:
 | `hard_boundary_max_aborts` / `hard_boundary_spot_max` / `hard_boundary_spot_m` | 6 / 2 / 1.0 |
 | `hard_boundary_jump_m` / `hard_boundary_jump_hold_s` | 1.0 / 2.0 |
 | `spin_drift_m` | 0.15 |
-| `blade_keep_on_obstacles` | true: detours, skips (bumper too), retries, obstacle waits and pivot back-outs keep the blade on while the robot (and a detour's path) is inside the area by the body rules; off for leaving the area, lift / tilt / e-stop, localisation hold, STOP / manual, docking, battery, STUCK, mission end (owner 2026-10-23). Hardware: `mower_mcu_driver` `interlock_on_bumper` is false (no host blade cut on bumper); the stock cutter board's own bumper behaviour is unknown |
+| blade on through obstacle handling (always; `blade_keep_on_obstacles` retired 2026-11-03) | detours, skips (bumper too), retries, obstacle waits and pivot back-outs keep the blade on while the robot (and a detour's path) is inside the area by the body rules; off for leaving the area, lift / tilt / e-stop, localisation hold, STOP / manual, docking, battery, STUCK, mission end (owner 2026-10-23). Hardware: `mower_mcu_driver` `interlock_on_bumper` is false (no host blade cut on bumper); the stock cutter board's own bumper behaviour is unknown |
 | `bumper_skip_hits` / `bumper_skip_radius_m` / `bumper_skip_window_s` | 3 / 1.0 / 180 |
 | `record_*` | 10 Hz, 5 cm, DP 0.05 m, min 1 m² |
 | `coverage_resume_path`, `recording_fallback_dir` | `~/.ros/mower_mission/...` |

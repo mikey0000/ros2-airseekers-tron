@@ -4150,10 +4150,6 @@
         "label": "Use docking server",
         "description": "Dock and undock with the docking action server instead of plain navigation."
       },
-      "require_blade_confirmation": {
-        "label": "Confirm blade start",
-        "description": "Wait for the motor board to report the blade running before following a path."
-      },
       "follow_chunk_m": {
         "label": "Path chunk length",
         "description": "Long paths are sent to the controller in pieces of at most this length (0 = off)."

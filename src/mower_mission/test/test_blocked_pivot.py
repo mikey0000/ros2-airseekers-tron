@@ -15,7 +15,7 @@ from keep_harness import KeepHarness                   # noqa: E402
 
 def ring_h(yaw=None, **params):
     """test_path_conditioning.ring_h on a KeepHarness: the pivot back-up runs with the blade
-    on inside the area (blade_keep_on_obstacles)."""
+    on inside the area (owner rule 2026-10-23)."""
     params.setdefault('path_conditioning', True)
     h = KeepHarness(**params)
     h.areas = [square(-8, -4, 12)]
@@ -64,15 +64,6 @@ def test_blocked_coverage_pivot_is_skipped_not_resent():
         assert h.pending_action(f.ACT_NAV) and m.step == 'transit'
     else:                                               # next sub-path
         assert m.sub_i == 1
-
-
-def test_blocked_pivot_without_requeue_is_reported_uncut():
-    h = _blocked(blocked_pivot_requeue=False)
-    m = h.fsm.mission
-    h.finish(f.ACT_SPIN, f.TIMEOUT)
-    assert m.blocked and m.blocked[0][0] == m.area_idx and m.blocked[0][1] == 0
-    assert not h.fsm.cursor.area(m.area_idx).skipped
-    assert 'blocked' in h.fsm._not_mowed_text()
 
 
 def test_blocked_pivot_cap_falls_back_to_resend_then_stuck():
@@ -159,13 +150,6 @@ def test_edge_lap_collision_monitor_stop_held_skips_the_segment():
     assert m.edge_skipped_m > 0.0
 
 
-def test_edge_blocked_skip_revert_keeps_the_retry():
-    h = _edge_h(edge_blocked_skip=False)
-    h.fsm.inputs.cm_stop_since = h.fsm._now
-    h.tick(dt=0.5, n=10)
-    assert h.fsm._action.name == f.ACT_FOLLOW and h.fsm.mission.edge_skipped_m == 0.0
-
-
 def test_refused_pivot_backs_up_then_pivots_once_more_then_skips():
     h = _blocked(pivot_backout_m=0.35)
     m = h.fsm.mission
@@ -174,7 +158,7 @@ def test_refused_pivot_backs_up_then_pivots_once_more_then_skips():
     assert a.purpose == 'pivot_backout'
     g = h.goal(f.ACT_BACKUP)
     assert abs(g['distance_m'] - 0.35) < 1e-6 and g['speed_mps'] >= 0.06
-    # owner 2026-10-23 (blade_keep_on_obstacles): inside the area the blade stays on
+    # owner 2026-10-23: inside the area the blade stays on
     assert h.blade and any('blade kept on (pivot back-up)' in t for t in _logs(h))
     h.finish(f.ACT_BACKUP)
     h.fsm.inputs.is_cutting = True
@@ -189,14 +173,6 @@ def test_refused_pivot_backs_up_then_pivots_once_more_then_skips():
     assert any('blocked pivot: skip' in t for t in _logs(h, mk)) and m.pivot_skips == 1
 
 
-def test_refused_pivot_back_up_blade_off_revert():
-    # revert path: blade_keep_on_obstacles off -> never reversing with the blade on
-    h = _blocked(pivot_backout_m=0.35, blade_keep_on_obstacles=False)
-    h.finish(f.ACT_SPIN, f.ABORTED)
-    assert h.pending_action(f.ACT_BACKUP).purpose == 'pivot_backout'
-    assert not h.blade
-
-
 def test_stuck_moves_the_resume_cursor_past_the_failing_pivot():
     h = _blocked(blocked_pivot_policy='retry')
     m = h.fsm.mission
@@ -208,11 +184,3 @@ def test_stuck_moves_the_resume_cursor_past_the_failing_pivot():
     assert ac.skipped and ac.skipped[0][0] == 0
     assert ac.resume_index == ac.skipped[0][1] > 0     # START resumes after the piece
 
-
-def test_stuck_resume_skip_revert():
-    h = _blocked(blocked_pivot_policy='retry', resume_skip_failing=False)
-    area = h.fsm.mission.area_idx
-    for _ in range(3):
-        h.finish(f.ACT_SPIN, f.ABORTED)
-    ac = h.fsm.cursor.area(area)
-    assert not ac.skipped and ac.resume_index == 0

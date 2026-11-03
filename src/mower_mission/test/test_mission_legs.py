@@ -72,29 +72,6 @@ def test_turn_leg_end_reached_with_yaw_off_completes_after_the_time_cap():
     assert h.since(m, f.CancelActions)
 
 
-def test_turn_leg_end_reached_completes_after_one_full_rotation():
-    """The run 2 loop: pose index at the leg's last pose, the robot looping 0.4 m away
-    (outside turn_leg_skip_m, so the yaw-pass skip can never fire) and turning. That
-    progress_local rule is the fix 10 one, kept behind turn_leg_end_by_distance: false
-    (task 0.4 f; see test_turn_leg_end_by_distance_rotation_cap for the default)."""
-    h = Harness(turn_leg_end_by_distance=False)
-    _fwd, rev, fwd2 = _k_turn_on_rev(h)
-    h.fsm.inputs.pose = (1.9, 0.35, RYAW + 1.0)
-    h.tick()                                     # end reached (pose index at the last pose)
-    m = h.mark()
-    yaw = RYAW + 1.0
-    for k in range(70):                          # 0.1 rad per 0.1 s tick, 0.4 m off the end
-        yaw += 0.1
-        h.fsm.inputs.pose = (1.9, 0.75, yaw)
-        h.tick()
-        if h.since(m, f.CancelActions):
-            break
-    assert 60 <= k < 66                          # ~6.28 rad, after ~6.3 s (< the 20 s cap)
-    assert _ends(h.goal(f.ACT_FOLLOW)['poses']) == _ends(fwd2)
-    done = [t for t in logs(h, m) if 'leg done' in t]
-    assert len(done) == 1 and 'rotation cap' in done[0]
-
-
 def test_turn_leg_end_with_yaw_met_is_unchanged():
     """Yaw within tolerance at the end: the leg goal checker ends it (0.2 s later) and the
     caps stay out of it; an abort there is skipped on the re-send as before (turn_leg_skip)."""
@@ -458,8 +435,8 @@ def test_off_graph_fallback_moving_away_is_cancelled():
 # =====================================================================
 # task 0.4 (f), run 3: "end reached" by distance only, capped by own length only
 # =====================================================================
-def test_turn_leg_end_by_distance_rotation_cap():
-    """Default rule: the rotation cap still fires once the robot is within turn_leg_skip_m
+def test_turn_leg_end_reached_by_distance_rotation_cap():
+    """The rotation cap still fires once the robot is within turn_leg_skip_m
     of the end (yaw off, so the yaw-pass skip does not end it)."""
     h = Harness()
     _fwd, rev, fwd2 = _k_turn_on_rev(h)
@@ -526,17 +503,6 @@ def test_long_ring_ending_at_a_cusp_is_not_a_turn_leg_and_not_capped():
     assert not h.fsm.mission.leg_watch['capped']
     assert 0 not in h.fsm.cursor.areas[0].completed
     assert not [t for t in logs(h) if 'leg done' in t]
-
-
-def test_long_ring_old_rule_capped_it_revert_flag():
-    h = Harness(follow_chunk_m=0.0, turn_leg_end_by_distance=False)
-    ring = _ring_then_cusp(h)
-    h.fsm.inputs.pose = (0.0, 4.6, -math.pi / 2)
-    h.fsm.mission.progress_local = len(h.goal(f.ACT_FOLLOW)['poses']) - 1   # conditioned ring
-    m = h.mark()
-    h.tick(dt=0.1, n=210)
-    done = [t for t in logs(h, m) if 'leg done' in t]
-    assert len(done) == 1 and 'time cap' in done[0]
 
 
 # =====================================================================

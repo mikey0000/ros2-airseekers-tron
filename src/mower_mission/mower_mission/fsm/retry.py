@@ -12,14 +12,11 @@ class RetryMixin:
 
     # ---- retries ---------------------------------------------------------
     def _clear_costmaps(self):
-        # global only when clear_global_costmap_on_retry (review 2026-10-09): the global costmap
-        # now holds the sensor obstacle marks the detour / replan must route around; wiping it
-        # on every retry sent the robot straight back through marks it could no longer see.
-        if self.p.clear_costmaps_on_retry:
-            # option C (2026-10-23): 'selective' = only the clearable 5 s obstacle layer
-            self._call(SRV_CLEAR_COSTMAPS, {'global': bool(self.p.clear_global_costmap_on_retry),
-                                            'selective': bool(self.p.clear_costmaps_selective)},
-                       track=False)
+        # Local only (review 2026-10-09): the global costmap holds the sensor obstacle marks the
+        # detour / replan must route around; wiping it on every retry sent the robot straight
+        # back through marks it could no longer see. Option C (2026-10-23): 'selective' = only
+        # the clearable 5 s obstacle layer.
+        self._call(SRV_CLEAR_COSTMAPS, {'global': False, 'selective': True}, track=False)
 
     def _retry_delay(self, n):
         """Back-off before retry ``n`` (1-based): transit_retry_backoff_s[n-1], the

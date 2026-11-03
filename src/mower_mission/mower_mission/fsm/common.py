@@ -687,12 +687,10 @@ class Params:
     blocked_resend_s: float = 5.0
     blocked_clear_s: float = 3.0
     # a sub-path whose transit still fails is re-tried once in the end-of-area pass
-    requeue_failed_transits: bool = True
     # Owner 2026-10-07: "if it is not in the way of the path it should not stop the mow".
     # A ranged detection (distance + bearing) counts only inside the corridor along the
     # next obstacle_path_lookahead_m of the current follow / transit path, half-width =
     # robot_width_m / 2 + obstacle_path_margin_m; off-corridor = advisory only.
-    obstacle_path_filter: bool = True
     obstacle_path_lookahead_m: float = 2.0
     obstacle_path_margin_m: float = 0.25
     robot_width_m: float = rgeo.FOOTPRINT_WIDTH_M   # 0.47 with wheel trim (2026-10-20, was 0.54)
@@ -804,7 +802,6 @@ class Params:
     # Revert: pivot_retries -1 (follow the leg after any pivot outcome, the old behaviour).
     pivot_retries: int = 2
     stretch_min_retry_m: float = 0.5      # shorter skipped stretches are not re-tried
-    stretch_block_radius_m: float = 1.0   # ... nor ones this near a stretch that stayed blocked
     # A transit goal off the route graph (an edge / K-turn start on the line) is re-asked moved
     # inside by these insets; never the costmap planner to it (field 2026-10-23: that fallback
     # cut the area / dock-path junction, 6 trips). None fits: the piece is skipped.
@@ -815,22 +812,20 @@ class Params:
     # that ends without SUCCEEDED ("Collision Ahead", costmap blocked, Spin abort / timeout)
     # with the robot still >= the pivot threshold off the leg is NOT re-sent: the leg (start
     # -> next pivot vertex, or the sub-path end) is skipped ("blocked pivot: skip"), recorded
-    # and the next leg / sub-path is driven. blocked_pivot_requeue (and requeue_skipped):
-    # skipped legs are re-tried once in the end-of-area pass, else reported uncut at once.
+    # and the next leg / sub-path is driven. Skipped legs are re-tried once in the end-of-area
+    # pass, else reported uncut at once.
     # Above blocked_pivot_max_skips skips per mission (START / resume) the old re-send ->
     # STUCK_NEEDS_HELP path (pivot_retries) applies. Revert: blocked_pivot_policy 'retry'.
     # Route / cusp / final-approach pivots are unchanged (pivot_retries).
     blocked_pivot_policy: str = 'skip'      # skip | retry
     blocked_pivot_max_skips: int = 20
-    blocked_pivot_requeue: bool = True
     # 2026-10-21 field (Area 6, stone / tree 0.15-0.35 m outside the line): edge laps against
     # real obstacles end the blocked segment like stock ("edge end occupied -> arrived"): a
     # follow abort with a collision, collision_monitor STOP held edge_blocked_hold_s, or a
     # refused pivot on an edge lap skips ahead to the next pivot vertex, at most
     # edge_blocked_skip_m ("edge blocked: skip X m"), recorded like a blocked-pivot skip; the
     # mission total is logged at the end. Edge lap: a sub-path >= 2 m whose median distance
-    # to the area outline / an obstacle ring is <= edge_lap_max_inset_m. Revert: false.
-    edge_blocked_skip: bool = True
+    # to the area outline / an obstacle ring is <= edge_lap_max_inset_m.
     edge_blocked_hold_s: float = 3.0
     edge_blocked_skip_m: float = 2.0
     edge_lap_max_inset_m: float = 0.6
@@ -840,18 +835,15 @@ class Params:
     # sub-path from its rejoin point is skipped (recorded like a detour skip, re-tried in the
     # end-of-area pass) and the transit goes to the pose after it; after
     # sweep_blocked_max_skips consecutive skips on one sub-path the old subpath_failed applies.
-    sweep_blocked_skip: bool = True
     sweep_blocked_max_skips: int = 3
     # 2026-11-01 field: the end-of-area pass tries every skipped stretch once (nearest first,
     # no "next to an unbypassable obstacle" shortcut); a retry stopped again by an on-path
     # obstacle decision / collision ahead marks the stretch blocked_static. Only static
     # stretches left: the area counts as complete (excluded_m / excluded_count logged and in
-    # the outcome text), not MOWING_INCOMPLETE. False: the old pass.
-    retry_each_skipped_stretch: bool = True
+    # the outcome text), not MOWING_INCOMPLETE.
     # plan time: sub-path poses within (mark r + robot_width_m / 2 + 0.05 m) of a static
     # obstacle mark (/obstacle_tracker/nogo_zones marks) are excluded (blocked_static) from
     # the start and never driven; gaps shorter than exclude_mark_merge_m are merged in.
-    exclude_marked_obstacles: bool = True
     exclude_mark_merge_m: float = 0.5
     # refused coverage pivot (policy skip): back straight up this far (Nav2 BackUp at
     # pivot_backout_speed_mps, both wheels above the 0.06 m/s floor) and pivot ONCE more
@@ -860,8 +852,7 @@ class Params:
     pivot_backout_speed_mps: float = 0.1
     # STUCK_NEEDS_HELP while mowing: the failing piece (leg start -> next pivot vertex / at
     # most edge_blocked_skip_m) is recorded as skipped and the resume cursor moved past it,
-    # so START never re-runs the identical failing pivot first. Revert: false.
-    resume_skip_failing: bool = True
+    # so START never re-runs the identical failing pivot first.
     # 2026-10-20 error budget (docs/analysis/2026-10-20_error_budget.md): a Spin stops
     # commanding when its relative yaw reaches the target, but the robot is still turning at
     # the pivot floor (behavior_server min_rotational_vel 0.3 rad/s since 2026-10-20; was 0.25)
@@ -1009,15 +1000,12 @@ class Params:
     transit_fallback_max_offpath_m: float = 0.35
     # 2026-10-09 transit variation (owner: tyre tracks from driving the same line): every
     # mission start bumps a persisted run counter (alternate_counts['__transit_run__']) that
-    # plan_route uses with each area's transit_variation setting. False = always run 0.
-    route_variation: bool = True
+    # plan_route uses with each area's transit_variation setting.
     # in-area blade-on transit / detour: straight segment sampled this finely must stay
     # inside the area polygon (minus its obstacle holes)
     blade_transit_sample_m: float = 0.2
     # FollowPath abort / timeout mid-swath: resume from the last reached pose.
     follow_retries: int = 3
-    clear_costmaps_on_retry: bool = True
-    clear_global_costmap_on_retry: bool = False
     # After a sub-path still fails, the session ends in MOWING_INCOMPLETE and then docks
     # when this is true (default since 2026-11-01: the mower sat idle on the lawn >1 h twice
     # after MOWING_INCOMPLETE). False = stop in place so the operator can inspect.
@@ -1066,10 +1054,9 @@ class Params:
     # Task 0.4 (f), 2026-10-14 run 3: the 49 m outer ring ends at the cusp of a reverse leg,
     # so it counted as a turn leg; progress_local jumped to its last pose (the nearest-index
     # search matched the ring's own end) 4.6 m before the end, the cap fired and 4.6 m of
-    # ring were skipped. True: "end reached" is the distance to the leg end only
-    # (turn_leg_skip_m, never progress_local) and a leg is capped only if its OWN length is
-    # <= turn_leg_max_m (turn_leg_skip keeps its rule). False = the fix 10 rule (revert flag).
-    turn_leg_end_by_distance: bool = True
+    # ring were skipped. "End reached" is the distance to the leg end only (turn_leg_skip_m,
+    # never progress_local) and a leg is capped only if its OWN length is <= turn_leg_max_m
+    # (turn_leg_skip keeps its rule).
     # Any sub-path: a follow_path that has not advanced the tracked pose index for this long
     # (Nav2's progress checker is satisfied by looping) is cancelled and handled as a
     # follow_path abort (follow_retries). Waits / holds / escapes cancel the goal, so they
@@ -1078,12 +1065,10 @@ class Params:
     blade_confirm_timeout_s: float = 5.0
     blade_start_attempts: int = 3
     blade_retry_pause_s: float = 2.0
-    require_blade_confirmation: bool = True
     # MANUAL_MOWING starts blade OFF; the blade runs only after an explicit
     # manual_blade(True) request (GUI mow_enabled=1). False = upstream behaviour
     # (blade on as soon as MANUAL_MOW is entered).
     manual_blade_requires_enable: bool = True   # = mission.yaml (H5; was False)
-    blade_spinup_s: float = 2.0         # used when confirmation is disabled
     # --- hard boundary (task 0.4 a; 2026-10-14 run 3: seven transit excursions up to 0.85 m
     # outside the areas and paths; owner: "going outside the area is an immediate fail") ---
     # The robot centre more than hard_boundary_m outside (mowing areas U drawn paths U the
@@ -1251,9 +1236,8 @@ class Params:
     # bumper skips, pivot back-outs) keeps the blade on while the robot - and a detour's
     # straight path to its rejoin point - stays inside the area by the boundary guard's body
     # rules. Off still for: leaving the area, lift / tilt / e-stop / emergency, localisation
-    # hold, STOP / manual, docking / return outside, battery, STUCK, mission end. false = the
-    # old blade-off behaviour.
-    blade_keep_on_obstacles: bool = True
+    # hold, STOP / manual, docking / return outside, battery, STUCK, mission end. Always on
+    # since 2026-11-03 (the blade_keep_on_obstacles flag is retired).
     # In-place coverage pivots without a planned way round turn the way whose swept body
     # stays further inside (toward the interior, even the longer way) when that is better by
     # more than this; < 0 = always the shorter way (sim 2026-10-22: a -116 deg leg-start pivot
@@ -1365,7 +1349,6 @@ class Params:
     # sub_state 'turning (slow pivot)' after the controller commands linear 0 / angular != 0
     # this long (the Tron pivots at 0.02-0.08 rad/s on turf; the GUI explains the wait)
     pivot_sub_after_s: float = 3.0
-    requeue_skipped: bool = True        # re-try detour-skipped stretches at the area end
     # --- stuck guard (2026-10-07: the robot dug a hole for 45 s on a return transit) ---
     # /stuck in STUCK_PHASES: cancel, blade off, wait stuck_pause_s, then escape steps on
     # /cmd_vel_emergency (reverse / forward arc / reverse opposite arc, stuck_step_m each);
@@ -1475,10 +1458,6 @@ class Params:
     nogo_edge_max_offset_m: float = 0.60     # larger: no detour (re-plan / skip instead)
     nogo_living_memory_s: float = 60.0       # static marks this recently under a living zone
     nogo_plan_grow_m: float = 0.25           # zone hole radius + this (nose 0.60 vs 0.40 keepout)
-    # bumper / blocked retries clear only the clearable 5 s obstacle layer (Nav2
-    # clear_around_*_costmap; static_det_layer and bumper_layer are not clearable), not the
-    # whole costmaps (the 60 s det marks and bumper marks were wiped just when they mattered)
-    clear_costmaps_selective: bool = True
 
     @classmethod
     def from_dict(cls, d):
@@ -1547,7 +1526,6 @@ class Mission:
     tangent: object = None                      # transit target the route ends tangent onto
     join: Any = None
     route_backouts: set = field(default_factory=set)   # route corners backed off from
-    unbypassable: list = field(default_factory=list)   # [(x, y)] stretches that stayed blocked
     offgraph: Any = None                        # (original goal, tries) off-graph goal re-asks                            # (sub, local, side, inset) tangent join (_join_leg)
     cusp_turns: dict = field(default_factory=dict)    # cusp (x, y) -> about-turns, per sub-path
     cusp_resume: Optional[list] = None          # route remainder sent after the about-turn
